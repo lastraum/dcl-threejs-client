@@ -79,7 +79,7 @@ import { bindWhatsNewShippedOpener, openWhatsNewFromMenu } from './whatsNew/What
 import { CommunitiesPageView } from './ui/explore/CommunitiesPageView'
 import { EventsPageView } from './ui/explore/EventsPageView'
 import { ExplorerView } from './ui/explore/ExplorerView'
-import { GachaPageView } from './ui/explore/GachaPageView'
+import { LootBagPageView } from './ui/explore/LootBagPageView'
 import { MapPageView } from './ui/explore/MapPageView'
 import { ProfilePageView } from './ui/explore/ProfilePageView'
 import type { SocialShellTab } from './ui/explore/SocialShellTopNav'
@@ -163,7 +163,7 @@ export class AppController {
   private explorerView: ExplorerView | null = null
   private mapPageView: MapPageView | null = null
   private eventsPageView: EventsPageView | null = null
-  private gachaPageView: GachaPageView | null = null
+  private lootBagPageView: LootBagPageView | null = null
   private communitiesPageView: CommunitiesPageView | null = null
   private profilePageView: ProfilePageView | null = null
   private sceneLandingView: SceneLandingView | null = null
@@ -249,8 +249,8 @@ export class AppController {
       return
     }
 
-    if (postLoginRoute.kind === 'gacha') {
-      await this.showGachaPage({ replace: true })
+    if (postLoginRoute.kind === 'lootbag') {
+      await this.showLootBagPage({ replace: true })
       return
     }
 
@@ -339,10 +339,10 @@ export class AppController {
       return
     }
 
-    if (target.kind === 'gacha') {
+    if (target.kind === 'lootbag') {
       this.navigating = true
       try {
-        await this.showGachaPage({ fromHistory: opts.fromHistory, replace: opts.replace })
+        await this.showLootBagPage({ fromHistory: opts.fromHistory, replace: opts.replace })
       } finally {
         this.navigating = false
       }
@@ -401,7 +401,7 @@ export class AppController {
     if (tab === 'explore') void this.navigateTo({ kind: 'blank' })
     else if (tab === 'map') void this.navigateTo({ kind: 'map' })
     else if (tab === 'communities') void this.navigateTo({ kind: 'communities' })
-    else if (tab === 'gacha') void this.navigateTo({ kind: 'gacha' })
+    else if (tab === 'lootbag') void this.navigateTo({ kind: 'lootbag' })
     else if (tab === 'editor') void this.navigateTo({ kind: 'editor' })
     else void this.navigateTo({ kind: 'events' })
   }
@@ -420,7 +420,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
-    this.teardownGachaPage()
+    this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
     this.teardownExplorer()
@@ -1241,7 +1241,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
-    this.teardownGachaPage()
+    this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -1289,7 +1289,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
-    this.teardownGachaPage()
+    this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -1345,7 +1345,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
-    this.teardownGachaPage()
+    this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -1370,7 +1370,7 @@ export class AppController {
     this.collapseSocialChatThread()
   }
 
-  private async showGachaPage(
+  private async showLootBagPage(
     opts: { fromHistory?: boolean; replace?: boolean } = {}
   ): Promise<void> {
     if (this.appMode === 'play') {
@@ -1380,17 +1380,17 @@ export class AppController {
     }
 
     if (!opts.fromHistory) {
-      applyRouteToHistory({ kind: 'gacha' }, opts.replace ?? false)
+      applyRouteToHistory({ kind: 'lootbag' }, opts.replace ?? false)
     }
-    this.currentRoute = { kind: 'gacha' }
-    this.appMode = 'gacha'
+    this.currentRoute = { kind: 'lootbag' }
+    this.appMode = 'lootbag'
     this.clearSceneBanWatch()
 
     this.teardownExplorer()
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
-    this.teardownGachaPage()
+    this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -1399,12 +1399,12 @@ export class AppController {
     const hudEl = document.getElementById('hud')
     if (hudEl) hudEl.hidden = true
 
-    this.gachaPageView = new GachaPageView({
+    this.lootBagPageView = new LootBagPageView({
       login: this.login,
       onNavigate: (tab) => this.navigateSocialShell(tab),
       ...this.socialShellLoginHandlers()
     })
-    this.gachaPageView.mount(this.container)
+    this.lootBagPageView.mount(this.container)
     this.ensureSocialChatShell()
     this.collapseSocialChatThread()
   }
@@ -1429,7 +1429,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
-    this.teardownGachaPage()
+    this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -1475,7 +1475,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
-    this.teardownGachaPage()
+    this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -1513,9 +1513,9 @@ export class AppController {
     this.eventsPageView = null
   }
 
-  private teardownGachaPage(): void {
-    this.gachaPageView?.dispose()
-    this.gachaPageView = null
+  private teardownLootBagPage(): void {
+    this.lootBagPageView?.dispose()
+    this.lootBagPageView = null
   }
 
   private teardownCommunitiesPage(): void {
@@ -1584,7 +1584,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
-    this.teardownGachaPage()
+    this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -3342,7 +3342,7 @@ export class AppController {
     this.explorerView?.setLogin(login)
     this.mapPageView?.setLogin(login)
     this.eventsPageView?.setLogin(login)
-    this.gachaPageView?.setLogin(login)
+    this.lootBagPageView?.setLogin(login)
     this.communitiesPageView?.setLogin(login)
     this.profilePageView?.setLogin(login)
     this.sceneLandingView?.setLogin(login)

@@ -6,7 +6,7 @@ import {
 } from '../../../social/translation'
 
 /**
- * Preferences → Chat: translation + notification banners (incl. grab bag claims).
+ * Preferences → Chat: translation + notification banners (incl. Loot Bag claims).
  * Per-channel auto-translate is toggled from the chat header (A 文).
  */
 export class ChatSettingsView {
@@ -51,8 +51,8 @@ export class ChatSettingsView {
     )
     notifGrid.appendChild(
       this.toggleRow(
-        'Grab bag claims',
-        'When someone else claims from the grab bag, show a toast (uses the social LiveKit room — works across scenes).',
+        'Loot Bag claims',
+        'When someone else claims a Loot Pack from the Loot Bag, show a toast (uses the social LiveKit room — works across scenes).',
         prefs.poolClaims,
         (on) => notificationPrefs.setPoolClaims(on)
       )
@@ -62,7 +62,7 @@ export class ChatSettingsView {
     const notifHint = document.createElement('p')
     notifHint.className = 'chat-settings-hint'
     notifHint.textContent =
-      'Your own grab bag claim still opens the win modal. Peer claim toasts are off when master banners are disabled.'
+      'Your own Loot Pack claim still opens the win modal. Peer claim toasts are off when master banners are disabled.'
     notifSection.appendChild(notifHint)
     scroll.appendChild(notifSection)
 

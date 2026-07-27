@@ -1,4 +1,5 @@
 import { formatEther } from 'viem'
+import { DEFAULT_DEPOSITOR_BID_RATE_BPS } from './config'
 
 export function shortAddr(a: string | undefined | null): string {
   if (!a || a.length < 12) return a ?? '—'
@@ -46,6 +47,19 @@ export function escapeHtml(value: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
+}
+
+/**
+ * Net mMANA (wei) a claimer receives when taking tokens instead of the prize.
+ * Uses depositor bid rate (default 85% of backing); protocol keeps the remainder.
+ */
+export function takeTokensNetWei(
+  backing: bigint,
+  depositorBidRateBps: number = DEFAULT_DEPOSITOR_BID_RATE_BPS
+): bigint {
+  if (backing <= 0n) return 0n
+  const bps = BigInt(Math.max(0, Math.min(10_000, Math.floor(depositorBidRateBps))))
+  return (backing * bps) / 10_000n
 }
 
 /**

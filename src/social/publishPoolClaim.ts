@@ -1,6 +1,6 @@
 /**
- * Publish a grab bag claim on the private-messages LiveKit room
- * (topic `d3js-gacha:claims`). Peers toast; sender does not.
+ * Publish a Loot Bag claim on the private-messages LiveKit room
+ * (topic `d3js-lootbag:claims`). Peers toast; sender does not.
  */
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
@@ -14,6 +14,15 @@ export type PublishPoolClaimArgs = {
   positionId: number
   label: string
   demo?: boolean
+  imageUrl?: string | null
+  rarity?: string | null
+  issueId?: string | null
+  itemName?: string | null
+  kind?: 'nft' | 'pack' | null
+  /** Formatted mMANA (pack prize or take-tokens payout). */
+  manaAmount?: string | null
+  /** Keep prize vs take MANA. */
+  outcome?: 'keep' | 'take' | null
 }
 
 export async function publishPoolClaim(args: PublishPoolClaimArgs): Promise<boolean> {
@@ -61,7 +70,14 @@ export async function publishPoolClaim(args: PublishPoolClaimArgs): Promise<bool
       l: (args.label || `pos ${args.positionId}`).slice(0, 80),
       at: Date.now(),
       n: args.displayName?.trim().slice(0, 48) || undefined,
-      demo: args.demo === true ? true : undefined
+      demo: args.demo === true ? true : undefined,
+      img: args.imageUrl?.trim().slice(0, 512) || undefined,
+      r: args.rarity?.trim().toLowerCase().slice(0, 24) || undefined,
+      issue: args.issueId?.trim().slice(0, 24) || undefined,
+      name: args.itemName?.trim().slice(0, 80) || undefined,
+      k: args.kind === 'pack' || args.kind === 'nft' ? args.kind : undefined,
+      mana: args.manaAmount?.trim().slice(0, 32) || undefined,
+      out: args.outcome === 'keep' || args.outcome === 'take' ? args.outcome : undefined
     }
     const sent = await pm.sendPoolClaim(msg)
     // Brief hold so reliable SCTP can flush before optional teardown on release.

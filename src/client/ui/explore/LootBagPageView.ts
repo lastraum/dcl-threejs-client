@@ -1,25 +1,25 @@
 import type { LoginResult } from '../../../auth/AuthClient'
 import { SocialShellTopNav, type SocialShellChromeHandlers, type SocialShellTab } from './SocialShellTopNav'
-import { GachaCasinoView } from './GachaCasinoView'
+import { LootBagView } from './LootBagView'
 
-export type GachaPageViewOptions = SocialShellChromeHandlers & {
+export type LootBagPageViewOptions = SocialShellChromeHandlers & {
   login: LoginResult
   onNavigate: (tab: SocialShellTab) => void
 }
 
-/** Full-page casino gacha at `/gacha` — 2D site only (not the in-world HUD panel). */
-export class GachaPageView {
+/** Full-page Loot Bag at `/lootbag` — 2D site only (not the in-world HUD panel). */
+export class LootBagPageView {
   readonly root: HTMLElement
 
   private readonly topNav: SocialShellTopNav
-  private readonly casino: GachaCasinoView
+  private readonly lootBag: LootBagView
 
-  constructor(opts: GachaPageViewOptions) {
+  constructor(opts: LootBagPageViewOptions) {
     this.root = document.createElement('div')
-    this.root.className = 'gacha-page-view'
+    this.root.className = 'lootbag-page-view'
 
     this.topNav = new SocialShellTopNav({
-      activeTab: 'gacha',
+      activeTab: 'lootbag',
       login: opts.login,
       onNavigate: opts.onNavigate,
       onLoginChange: opts.onLoginChange,
@@ -31,32 +31,32 @@ export class GachaPageView {
       onOpenWhatsNew: opts.onOpenWhatsNew
     })
 
-    this.casino = new GachaCasinoView({ login: opts.login })
+    this.lootBag = new LootBagView({ login: opts.login })
 
     const mainEl = document.createElement('main')
-    mainEl.className = 'gacha-page-view__main'
-    mainEl.appendChild(this.casino.root)
+    mainEl.className = 'lootbag-page-view__main'
+    mainEl.appendChild(this.lootBag.root)
 
     this.root.appendChild(this.topNav.el)
     this.root.appendChild(mainEl)
   }
 
   mount(container: HTMLElement): void {
-    document.body.classList.add('gacha-route')
+    document.body.classList.add('lootbag-route')
     container.innerHTML = ''
     container.appendChild(this.root)
     this.topNav.mount()
-    this.casino.mount()
+    this.lootBag.mount()
   }
 
   setLogin(login: LoginResult): void {
     this.topNav.setLogin(login)
-    this.casino.setLogin(login)
+    this.lootBag.setLogin(login)
   }
 
   dispose(): void {
-    document.body.classList.remove('gacha-route')
-    this.casino.dispose()
+    document.body.classList.remove('lootbag-route')
+    this.lootBag.dispose()
     this.topNav.dispose()
     this.root.remove()
   }

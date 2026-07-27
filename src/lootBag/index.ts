@@ -4,6 +4,7 @@ export * from './format'
 export * from './poolReads'
 export * from './poolWrites'
 export * from './creatorCollections'
+export * from './walletInventory'
 export {
   authorizePoolAsCollectionMinter,
   getCollectionMinterStatus,
@@ -11,10 +12,10 @@ export {
   type CollectionMinterStatus
 } from './collectionMinter'
 export {
-  hideGachaSignOverlay,
-  requestGachaSignContinue,
-  showGachaSuccessOverlay,
-  syncGachaSignOverlay
-} from './gachaSignOverlay'
+  hideLootBagSignOverlay,
+  requestLootBagSignContinue,
+  showLootBagSuccessOverlay,
+  syncLootBagSignOverlay
+} from './lootBagSignOverlay'
 export { polygonPublicClient } from './polygonClient'
 export { ensureWalletAddress, supportsMetaTx } from './metaTx'

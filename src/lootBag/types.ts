@@ -2,7 +2,7 @@ import type { Address, Hex } from 'viem'
 
 export type PositionKind = 'nft' | 'manaPack'
 
-export type GachaPosition = {
+export type LootBagPosition = {
   positionId: number
   kind: PositionKind
   collection: Address
@@ -31,14 +31,37 @@ export type PoolSnapshot = {
   nextPositionId: bigint
   paused: boolean
   testFulfillEnabled: boolean
-  positions: GachaPosition[]
+  /**
+   * On-chain share of backing paid to claimer on Take MANA (bps, e.g. 8500 = 85%).
+   * @see GachaPool.depositorBidRateBps
+   */
+  depositorBidRateBps: number
+  /** Protocol cut on settlement (bps). */
+  protocolSettlementCutBps: number
+  positions: LootBagPosition[]
+}
+
+/** Depositable NFT from wallet (real Collection V2 or mock). */
+export type WalletOwnedNft = {
+  id: string
+  collection: Address
+  tokenId: string
+  name: string
+  rarity: string
+  imageUrl?: string
+  urn?: string
+  itemId?: number
+  issuedId?: string
 }
 
 export type WalletSnapshot = {
   address: Address
   mana: bigint
   claimable: bigint
+  /** @deprecated Prefer ownedNfts — mock sequential ids only */
   ownedTokenIds: number[]
+  /** Real + mock NFTs for deposit UI */
+  ownedNfts: WalletOwnedNft[]
 }
 
 export type TxStepStatus = 'pending' | 'active' | 'done' | 'error'
@@ -55,5 +78,5 @@ export type FlowStatus = 'idle' | 'running' | 'success' | 'error'
 
 export type PendingWin = {
   positionId: number
-  position: GachaPosition | null
+  position: LootBagPosition | null
 }

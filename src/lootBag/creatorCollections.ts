@@ -1,14 +1,24 @@
 /**
- * Creator collections for gacha stock UI.
+ * Creator collections for Loot Bag stock UI.
  *
  * Builder API (`builder-api.decentraland.org/v1/{address}/collections`) requires a
  * signed Auth Chain — browser guests cannot call it raw.
  *
- * Public Marketplace API lists on-chain Collection V2 by creator (no auth).
+ * Marketplace index is same-origin `/api/marketplace/v1` (nginx/Vite → marketplace-api).
+ * Direct marketplace-api CORS fails on custom hosts (Allow-Origin: false).
  */
 
-const MARKETPLACE_API = 'https://marketplace-api.decentraland.org/v1'
+import { MARKETPLACE_API_BASE } from './config'
+
 const PEER_THUMB_BASE = 'https://peer.decentraland.org/lambdas/collections/contents'
+
+/** Build marketplace path (same-origin `/api/marketplace/v1/...` by default). */
+function marketplaceUrl(path: string, query: Record<string, string>): string {
+  const base = MARKETPLACE_API_BASE.replace(/\/$/, '')
+  const p = path.startsWith('/') ? path : `/${path}`
+  const qs = new URLSearchParams(query).toString()
+  return `${base}${p}${qs ? `?${qs}` : ''}`
+}
 
 export type CreatorCollection = {
   name: string
@@ -73,7 +83,7 @@ function isEthAddress(a: string): boolean {
 
 /**
  * Polygon Collection V2 created by `creatorAddress` (marketplace index).
- * Prefer MATIC / chain 137 for gacha stock.
+ * Prefer MATIC / chain 137 for Loot Bag stock.
  */
 export async function fetchCreatorCollections(
   creatorAddress: string,
@@ -83,15 +93,14 @@ export async function fetchCreatorCollections(
   if (!isEthAddress(creator)) return []
 
   const first = Math.min(Math.max(opts?.first ?? 50, 1), 100)
-  const url = new URL(`${MARKETPLACE_API}/collections`)
-  url.searchParams.set('creator', creator)
-  url.searchParams.set('first', String(first))
   // Marketplace may ignore network; we filter client-side.
-
-  const res = await fetch(url.toString(), {
-    signal: opts?.signal,
-    headers: { Accept: 'application/json' }
-  })
+  const res = await fetch(
+    marketplaceUrl('/collections', { creator, first: String(first) }),
+    {
+      signal: opts?.signal,
+      headers: { Accept: 'application/json' }
+    }
+  )
   if (!res.ok) {
     throw new Error(`Collections fetch failed (${res.status})`)
   }
@@ -131,14 +140,13 @@ export async function fetchCollectionItems(
   if (!isEthAddress(contract)) return []
 
   const first = Math.min(Math.max(opts?.first ?? 50, 1), 100)
-  const url = new URL(`${MARKETPLACE_API}/items`)
-  url.searchParams.set('contractAddress', contract)
-  url.searchParams.set('first', String(first))
-
-  const res = await fetch(url.toString(), {
-    signal: opts?.signal,
-    headers: { Accept: 'application/json' }
-  })
+  const res = await fetch(
+    marketplaceUrl('/items', { contractAddress: contract, first: String(first) }),
+    {
+      signal: opts?.signal,
+      headers: { Accept: 'application/json' }
+    }
+  )
   if (!res.ok) {
     throw new Error(`Items fetch failed (${res.status})`)
   }

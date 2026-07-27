@@ -98,12 +98,20 @@ export default defineConfig({
         secure: true,
         rewrite: (path) => path.replace(/^\/api\/storage/, '')
       },
-      // Grab bag meta-tx — same-origin proxy (avoids browser CORS to lastslice)
-      // Local tx server: set target to http://localhost:5356
-      '/v1': {
+      // Marketplace — never call marketplace-api from the browser (CORS broken)
+      '/api/marketplace': {
+        target: 'https://marketplace-api.decentraland.org',
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/api\/marketplace/, '')
+      },
+      // Loot Bag meta-tx — same-origin (CORS broken on transactions.lastslice.co)
+      // Local self-relayer: change target to http://localhost:5356
+      '/api/meta-tx': {
         target: 'https://transactions.lastslice.co',
         changeOrigin: true,
-        secure: true
+        secure: true,
+        rewrite: (path) => path.replace(/^\/api\/meta-tx/, '')
       }
     }
   },

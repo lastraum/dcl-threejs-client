@@ -5,11 +5,12 @@ import {
   getManaAllowance,
   getNftApproved,
   isNftApprovedForAll,
+  nftMetaTxDomain,
   sendContractMetaTx,
   waitReceipt,
   DCL_COLLECTION_V2_META_TX_DOMAIN,
   type MetaTxDomain,
-  gachaPoolAbi,
+  lootBagPoolAbi,
   mockManaAbi,
   mockWearableAbi
 } from './metaTx'
@@ -70,20 +71,26 @@ async function sleep(ms: number): Promise<void> {
 
 export async function runDepositNft(args: {
   sessionAddress?: string | null
+  /** ERC721 collection (DCL Collection V2 or mock) */
+  collection: Address
   tokenId: bigint
   backingMana: string
   api: FlowApi
 }): Promise<Hex> {
   const from = await ensureWalletAddress(args.sessionAddress)
-  const pool = ADDRESSES.gachaPool
+  const pool = ADDRESSES.lootBagPool
+  const collection = args.collection.toLowerCase() as Address
   const amount = parseEther(args.backingMana || '0')
   if (amount <= 0n) throw new Error('Backing must be greater than 0')
+  if (!/^0x[a-f0-9]{40}$/.test(collection)) throw new Error('Invalid collection address')
+
+  const nftDomain = nftMetaTxDomain(collection)
 
   args.api.note('Checking NFT + mMANA approvals…')
   const [allowance, approved, approvedAll] = await Promise.all([
     getManaAllowance(from, pool),
-    getNftApproved(args.tokenId).catch(() => '0x0' as Address),
-    isNftApprovedForAll(from, pool)
+    getNftApproved(collection, args.tokenId).catch(() => '0x0' as Address),
+    isNftApprovedForAll(collection, from, pool)
   ])
 
   const needNft = !approvedAll && approved.toLowerCase() !== pool.toLowerCase()
@@ -91,12 +98,13 @@ export async function runDepositNft(args: {
 
   if (needNft) {
     await sendAndWait(args.api, {
-      address: ADDRESSES.mockWearable,
+      address: collection,
       abi: mockWearableAbi,
       functionName: 'setApprovalForAll',
       args: [pool, true],
       from,
-      label: 'NFT setApprovalForAll → grab bag'
+      label: 'Approve NFT for Loot Bag',
+      domainOverride: nftDomain
     })
   } else {
     args.api.note('NFT already approved — skip')
@@ -109,25 +117,25 @@ export async function runDepositNft(args: {
       functionName: 'approve',
       args: [pool, MANA_MAX_APPROVAL],
       from,
-      label: 'mMANA approve (unlimited)'
+      label: 'Allow Loot Bag to use mMANA'
     })
   } else {
-    args.api.note('mMANA allowance high — skip')
+    args.api.note('mMANA already allowed — skip')
   }
 
-  args.api.note('Waiting for approvals to settle…')
+  args.api.note('Waiting for approvals…')
   for (let i = 0; i < 15; i++) {
     const [a, appr, all] = await Promise.all([
       getManaAllowance(from, pool),
-      getNftApproved(args.tokenId).catch(() => '0x0' as Address),
-      isNftApprovedForAll(from, pool)
+      getNftApproved(collection, args.tokenId).catch(() => '0x0' as Address),
+      isNftApprovedForAll(collection, from, pool)
     ])
     const nftOk = all || appr.toLowerCase() === pool.toLowerCase()
     const manaOk = a >= amount
     if (nftOk && manaOk) break
     if (i === 14) {
       throw new Error(
-        `Approvals not visible on-chain yet (nftOk=${nftOk} manaOk=${manaOk}). Wait and retry.`
+        'Approvals are not ready on-chain yet. Wait a moment and try again.'
       )
     }
     await sleep(1500)
@@ -135,11 +143,11 @@ export async function runDepositNft(args: {
 
   return sendAndWait(args.api, {
     address: pool,
-    abi: gachaPoolAbi,
+    abi: lootBagPoolAbi,
     functionName: 'depositNFT',
-    args: [ADDRESSES.mockWearable, args.tokenId, amount],
+    args: [collection, args.tokenId, amount],
     from,
-    label: 'depositNFT'
+    label: 'Deposit wearable into Loot Bag'
   })
 }
 
@@ -154,7 +162,7 @@ export async function runDepositManaPack(args: {
   api: FlowApi
 }): Promise<Hex> {
   const from = await ensureWalletAddress(args.sessionAddress)
-  const pool = ADDRESSES.gachaPool
+  const pool = ADDRESSES.lootBagPool
   const prize = parseEther(args.packPrizeMana || '0')
   const back = parseEther(args.backingMana || '0')
   if (prize <= 0n) throw new Error('Pack prize must be greater than 0')
@@ -170,29 +178,29 @@ export async function runDepositManaPack(args: {
       functionName: 'approve',
       args: [pool, MANA_MAX_APPROVAL],
       from,
-      label: 'mMANA approve (unlimited)'
+      label: 'Allow Loot Bag to use mMANA'
     })
   } else {
-    args.api.note('mMANA allowance high — skip')
+    args.api.note('mMANA already allowed — skip')
   }
 
-  args.api.note('Waiting for allowance…')
+  args.api.note('Waiting for mMANA permission…')
   for (let i = 0; i < 15; i++) {
     const a = await getManaAllowance(from, pool)
     if (a >= total) break
     if (i === 14) {
-      throw new Error('mMANA allowance not visible on-chain yet. Wait and retry.')
+      throw new Error('mMANA permission is not ready on-chain yet. Wait a moment and try again.')
     }
     await sleep(1500)
   }
 
   return sendAndWait(args.api, {
     address: pool,
-    abi: gachaPoolAbi,
+    abi: lootBagPoolAbi,
     functionName: 'depositManaPack',
     args: [prize, back],
     from,
-    label: 'depositManaPack'
+    label: 'Deposit MANA pack into Loot Bag'
   })
 }
 
@@ -219,7 +227,7 @@ export async function runStockFromCollection(args: {
   }) => Promise<void>
 }): Promise<Hex[]> {
   const from = await ensureWalletAddress(args.sessionAddress)
-  const pool = ADDRESSES.gachaPool
+  const pool = ADDRESSES.lootBagPool
   const collection = args.collection.trim().toLowerCase() as Address
   if (!/^0x[a-f0-9]{40}$/.test(collection)) {
     throw new Error('Invalid collection address')
@@ -254,18 +262,18 @@ export async function runStockFromCollection(args: {
   if (!minter.canMintItem) {
     if (minter.creator && minter.creator !== from.toLowerCase()) {
       throw new Error(
-        `Grab bag cannot mint and you are not the collection creator (${minter.creator.slice(0, 10)}…). ` +
-          'Ask the creator to authorize the grab bag as minter.'
+        `Loot Bag cannot mint and you are not the collection creator (${minter.creator.slice(0, 10)}…). ` +
+          'Ask the creator to authorize the Loot Bag as minter.'
       )
     }
-    args.api.note('Confirm in wallet: allow the grab bag to mint from your collection')
+    args.api.note('Confirm in wallet: allow the Loot Bag to mint from your collection')
     await sendAndWait(args.api, {
       address: collection,
       abi: collectionV2MinterAbi as unknown as Abi,
       functionName: 'setMinters',
       args: [[pool], [true]],
       from,
-      label: nextStep('Allow grab bag to mint from collection'),
+      label: nextStep('Allow Loot Bag to mint from collection'),
       domainOverride: DCL_COLLECTION_V2_META_TX_DOMAIN
     })
 
@@ -303,14 +311,14 @@ export async function runStockFromCollection(args: {
   // ── 2) mMANA approve ─────────────────────────────────────────────────────
   const allowance = await getManaAllowance(from, pool)
   if (allowance < totalBacking) {
-    args.api.note('Confirm in wallet: allow the grab bag to use your mMANA')
+    args.api.note('Confirm in wallet: allow the Loot Bag to use your mMANA')
     await sendAndWait(args.api, {
       address: ADDRESSES.mockMana,
       abi: mockManaAbi,
       functionName: 'approve',
       args: [pool, MANA_MAX_APPROVAL],
       from,
-      label: nextStep('Allow grab bag to use mMANA')
+      label: nextStep('Allow Loot Bag to use mMANA')
     })
 
     for (let i = 0; i < 20; i++) {
@@ -326,18 +334,18 @@ export async function runStockFromCollection(args: {
       await args.waitForContinue({
         needsApprove: true,
         mintCount,
-        label: `mMANA ready. Continue to mint ${mintCount} into the grab bag.`
+        label: `mMANA ready. Continue to mint ${mintCount} into the Loot Bag.`
       })
     }
   } else if (args.waitForContinue && stepNo > 0) {
     await args.waitForContinue({
       needsApprove: false,
       mintCount,
-      label: `Continue to mint ${mintCount} into the grab bag.`
+      label: `Continue to mint ${mintCount} into the Loot Bag.`
     })
   }
 
-  // ── 3) Mint into grab bag ────────────────────────────────────────────────
+  // ── 3) Mint into Loot Bag ────────────────────────────────────────────────
   const hashes: Hex[] = []
   let remaining = mintCount
   let chunkIdx = 0
@@ -347,16 +355,16 @@ export async function runStockFromCollection(args: {
     chunkIdx += 1
     const stepLabel =
       totalChunks > 1
-        ? nextStep(`Mint ${n} into grab bag (${chunkIdx}/${totalChunks})`)
-        : nextStep(`Mint ${n} into grab bag`)
+        ? nextStep(`Mint ${n} into Loot Bag (${chunkIdx}/${totalChunks})`)
+        : nextStep(`Mint ${n} into Loot Bag`)
     args.api.note(
       totalChunks > 1
         ? `Confirm in wallet: mint batch ${chunkIdx} of ${totalChunks}`
-        : `Confirm in wallet: mint ${n} into the grab bag`
+        : `Confirm in wallet: mint ${n} into the Loot Bag`
     )
     const hash = await sendAndWait(args.api, {
       address: pool,
-      abi: gachaPoolAbi,
+      abi: lootBagPoolAbi,
       functionName: 'stockFromCollection',
       args: [collection, itemId, BigInt(n), avgBacking],
       from,
@@ -374,7 +382,7 @@ export async function runStockFromCollection(args: {
     }
   }
 
-  args.api.note(`Done — ${mintCount} items in the grab bag`)
+  args.api.note(`Done — ${mintCount} items in the Loot Bag`)
   return hashes
 }
 
@@ -384,10 +392,10 @@ export async function runPull(args: {
   api: FlowApi
 }): Promise<{ hash: Hex; win: PendingWin | null }> {
   const from = await ensureWalletAddress(args.sessionAddress)
-  const pool = ADDRESSES.gachaPool
+  const pool = ADDRESSES.lootBagPool
   const maxFee = args.acquisitionFee + parseEther('1')
 
-  args.api.note('Checking mMANA allowance for pull fee…')
+  args.api.note('Checking mMANA for pack cost…')
   const allowance = await getManaAllowance(from, pool)
   if (allowance < maxFee || allowance < HIGH_ALLOWANCE) {
     await sendAndWait(args.api, {
@@ -396,27 +404,27 @@ export async function runPull(args: {
       functionName: 'approve',
       args: [pool, MANA_MAX_APPROVAL],
       from,
-      label: 'mMANA approve (unlimited)'
+      label: 'Allow Loot Bag to use mMANA'
     })
   } else {
-    args.api.note('mMANA allowance already high — skip')
+    args.api.note('mMANA already allowed — skip')
   }
 
   if (!USE_TEST_FULFILL) {
-    throw new Error('Production VRF pull is not wired in client yet — use test fulfill pool')
+    throw new Error('Loot Pack claims are not available on this network yet.')
   }
 
   const rand = BigInt(Math.floor(Math.random() * 1e12))
   const hash = await sendAndWait(args.api, {
     address: pool,
-    abi: gachaPoolAbi,
+    abi: lootBagPoolAbi,
     functionName: 'requestAndFulfillForTest',
     args: [maxFee, rand],
     from,
-    label: 'requestAndFulfillForTest (pull)'
+    label: 'Open Loot Pack'
   })
 
-  args.api.note('Looking up pending win…')
+  args.api.note('Finding your prize…')
   const win = await findPendingWinForPurchaser(from)
   return {
     hash,
@@ -432,12 +440,12 @@ export async function runSettle(args: {
 }): Promise<Hex> {
   const from = await ensureWalletAddress(args.sessionAddress)
   return sendAndWait(args.api, {
-    address: ADDRESSES.gachaPool,
-    abi: gachaPoolAbi,
+    address: ADDRESSES.lootBagPool,
+    abi: lootBagPoolAbi,
     functionName: 'settle',
     args: [BigInt(args.positionId), args.keepPrize],
     from,
-    label: args.keepPrize ? 'settle (keep prize)' : 'settle (take MANA)'
+    label: args.keepPrize ? 'Keep your prize' : 'Take the MANA instead'
   })
 }
 
@@ -447,11 +455,11 @@ export async function runWithdrawRewards(args: {
 }): Promise<Hex> {
   const from = await ensureWalletAddress(args.sessionAddress)
   return sendAndWait(args.api, {
-    address: ADDRESSES.gachaPool,
-    abi: gachaPoolAbi,
+    address: ADDRESSES.lootBagPool,
+    abi: lootBagPoolAbi,
     functionName: 'withdrawRewards',
     from,
-    label: 'Withdraw grab fees'
+    label: 'Collect your rewards'
   })
 }
 

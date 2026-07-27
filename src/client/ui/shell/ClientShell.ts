@@ -14,7 +14,7 @@ import { NotificationsPanel } from './NotificationsPanel'
 import { PortableExperiencePanel } from './PortableExperiencePanel'
 import { FriendsPanel } from './FriendsPanel'
 import { PetsPanel } from './PetsPanel'
-import { GachaPanel } from './GachaPanel'
+import { LootBagPanel } from './LootBagPanel'
 import type { PortableExperienceManager } from '../../../dcl/multiScene/PortableExperienceManager'
 import type { VoiceChatService } from '../../../network/voice/VoiceChatService'
 import type { DebugPanel } from '../DebugPanel'
@@ -56,7 +56,7 @@ const TOP_BUTTONS: TopButtonConfig[] = [
   { id: 'tour-options', icon: 'tourOptions', label: 'Tour Options' },
   { id: 'backpack', icon: 'backpack', label: 'Backpack', shortcut: 'I' },
   { id: 'pets', icon: 'pets', label: 'Pets', shortcut: 'P' },
-  { id: 'gacha', icon: 'gacha', label: 'Wearable Gacha' },
+  { id: 'lootbag', icon: 'lootbag', label: 'Loot Bag' },
   { id: 'marketplace', icon: 'marketplace', label: 'Marketplace' },
   { id: 'pictures', icon: 'pictures', label: 'Pictures', shortcut: 'K' },
   { id: 'settings', icon: 'settings', label: 'Settings' },
@@ -96,7 +96,7 @@ export class ClientShell {
   private readonly marketplaceCreditsPanel: MarketplaceCreditsPanel
   private readonly friendsPanel: FriendsPanel
   private readonly petsPanel: PetsPanel
-  private readonly gachaPanel: GachaPanel
+  private readonly lootBagPanel: LootBagPanel
   private readonly emoteWheel: EmoteWheelPanel
   private readonly buttons = new Map<string, SidebarButton>()
   private unreadPollTimer: ReturnType<typeof setInterval> | null = null
@@ -271,9 +271,9 @@ export class ClientShell {
       onActivePetChange: () => this.onActivePetChange?.()
     })
 
-    this.gachaPanel = new GachaPanel({
+    this.lootBagPanel = new LootBagPanel({
       getSession: () => this.session,
-      onClose: () => this.buttons.get('gacha')?.setActive(false)
+      onClose: () => this.buttons.get('lootbag')?.setActive(false)
     })
 
     this.profileButton = new ProfileSidebarButton('Profile', () => this.profilePopup.toggle())
@@ -413,8 +413,8 @@ export class ClientShell {
     this.buttons.get('chat')?.setActive(false)
     this.friendsPanel.hide()
     this.buttons.get('friend-requests')?.setActive(false)
-    this.gachaPanel.hide()
-    this.buttons.get('gacha')?.setActive(false)
+    this.lootBagPanel.hide()
+    this.buttons.get('lootbag')?.setActive(false)
   }
 
   attachChatPanel(panel: ChatPanel, social: SocialService): void {
@@ -629,7 +629,7 @@ export class ClientShell {
     this.marketplaceCreditsPanel.dispose()
     this.friendsPanel.dispose()
     this.petsPanel.dispose()
-    this.gachaPanel.dispose()
+    this.lootBagPanel.dispose()
     this.pePanel.dispose()
     this.emoteWheel.dispose()
     this.devProgressPanel?.hide()
@@ -696,8 +696,7 @@ export class ClientShell {
         this.buttons.get('friend-requests')?.setActive(false)
         this.petsPanel.hide()
         this.buttons.get('pets')?.setActive(false)
-        this.gachaPanel.hide()
-        this.buttons.get('gacha')?.setActive(false)
+        // Loot Bag dock stays open alongside chat (sits to the right of chat)
         if (!this.chatPanel) return
         const open = this.chatPanel.toggle()
         this.syncChatFabState(open)
@@ -829,8 +828,8 @@ export class ClientShell {
         this.buttons.get('chat')?.setActive(false)
         this.petsPanel.hide()
         this.buttons.get('pets')?.setActive(false)
-        this.gachaPanel.hide()
-        this.buttons.get('gacha')?.setActive(false)
+        this.lootBagPanel.hide()
+        this.buttons.get('lootbag')?.setActive(false)
         void this.friendsPanel.toggle()
         this.buttons.get('friend-requests')?.setActive(this.friendsPanel.isVisible())
       }
@@ -848,14 +847,14 @@ export class ClientShell {
         this.buttons.get('chat')?.setActive(false)
         this.friendsPanel.hide()
         this.buttons.get('friend-requests')?.setActive(false)
-        this.gachaPanel.hide()
-        this.buttons.get('gacha')?.setActive(false)
+        this.lootBagPanel.hide()
+        this.buttons.get('lootbag')?.setActive(false)
         void this.petsPanel.toggle()
         this.buttons.get('pets')?.setActive(this.petsPanel.isVisible())
       }
     }
 
-    if (id === 'gacha') {
+    if (id === 'lootbag') {
       return (ev) => {
         ev.stopPropagation()
         this.closeMobileDrawerForOverlay()
@@ -863,14 +862,13 @@ export class ClientShell {
         this.buttons.get('notifications')?.setActive(false)
         this.marketplaceCreditsPanel.hide()
         this.buttons.get('marketplace-credits')?.setActive(false)
-        this.chatPanel?.hide()
-        this.buttons.get('chat')?.setActive(false)
+        // Keep chat open — dock is padded to the right of the chat slot
         this.friendsPanel.hide()
         this.buttons.get('friend-requests')?.setActive(false)
         this.petsPanel.hide()
         this.buttons.get('pets')?.setActive(false)
-        void this.gachaPanel.toggle()
-        this.buttons.get('gacha')?.setActive(this.gachaPanel.isVisible())
+        void this.lootBagPanel.toggle()
+        this.buttons.get('lootbag')?.setActive(this.lootBagPanel.isVisible())
       }
     }
 

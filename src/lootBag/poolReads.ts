@@ -1,10 +1,11 @@
 import type { Address } from 'viem'
-import { ADDRESSES, MAX_POSITION_SCAN } from './config'
-import { gachaPoolAbi } from './abis/GachaPool'
+import { ADDRESSES, MAX_MOCK_WEARABLE_SCAN, MAX_POSITION_SCAN } from './config'
+import { lootBagPoolAbi } from './abis/GachaPool'
 import { mockManaAbi } from './abis/MockMANA'
 import { mockWearableAbi } from './abis/MockWearable'
 import { polygonPublicClient } from './polygonClient'
-import type { GachaPosition, PoolSnapshot, WalletSnapshot } from './types'
+import type { LootBagPosition, PoolSnapshot, WalletOwnedNft, WalletSnapshot } from './types'
+import { fetchWalletDepositNfts } from './walletInventory'
 import { decodeCollectionV2TokenId, resolvePositionMedia } from './resolvePositionMedia'
 import { fetchCollectionItems } from './creatorCollections'
 
@@ -39,9 +40,9 @@ function normalizeRawPosition(pos: RawPosition | readonly unknown[]): RawPositio
   return pos as RawPosition
 }
 
-function toPosition(id: number, pos: RawPosition): GachaPosition {
-  const kind: GachaPosition['kind'] = Number(pos.kind) === 1 ? 'manaPack' : 'nft'
-  const base: GachaPosition = {
+function toPosition(id: number, pos: RawPosition): LootBagPosition {
+  const kind: LootBagPosition['kind'] = Number(pos.kind) === 1 ? 'manaPack' : 'nft'
+  const base: LootBagPosition = {
     positionId: id,
     kind,
     collection: pos.collection,
@@ -65,8 +66,8 @@ function toPosition(id: number, pos: RawPosition): GachaPosition {
 }
 
 /** Attach marketplace names for unique DCL collections (best-effort). */
-async function enrichPositionNames(positions: GachaPosition[]): Promise<void> {
-  const byCollection = new Map<string, GachaPosition[]>()
+async function enrichPositionNames(positions: LootBagPosition[]): Promise<void> {
+  const byCollection = new Map<string, LootBagPosition[]>()
   for (const p of positions) {
     if (p.kind !== 'nft') continue
     if (p.itemId == null) continue
@@ -98,7 +99,7 @@ async function enrichPositionNames(positions: GachaPosition[]): Promise<void> {
 
 export async function fetchPoolSnapshot(): Promise<PoolSnapshot> {
   const client = polygonPublicClient
-  const pool = ADDRESSES.gachaPool
+  const pool = ADDRESSES.lootBagPool
 
   const [
     acquisitionFee,
@@ -107,15 +108,19 @@ export async function fetchPoolSnapshot(): Promise<PoolSnapshot> {
     activePackCount,
     nextPositionId,
     paused,
-    testFulfillEnabled
+    testFulfillEnabled,
+    depositorBidRateBpsRaw,
+    protocolSettlementCutBpsRaw
   ] = await Promise.all([
-    client.readContract({ address: pool, abi: gachaPoolAbi, functionName: 'getAcquisitionFee' }),
-    client.readContract({ address: pool, abi: gachaPoolAbi, functionName: 'activeCount' }),
-    client.readContract({ address: pool, abi: gachaPoolAbi, functionName: 'activeNftCount' }),
-    client.readContract({ address: pool, abi: gachaPoolAbi, functionName: 'activePackCount' }),
-    client.readContract({ address: pool, abi: gachaPoolAbi, functionName: 'nextPositionId' }),
-    client.readContract({ address: pool, abi: gachaPoolAbi, functionName: 'paused' }),
-    client.readContract({ address: pool, abi: gachaPoolAbi, functionName: 'testFulfillEnabled' })
+    client.readContract({ address: pool, abi: lootBagPoolAbi, functionName: 'getAcquisitionFee' }),
+    client.readContract({ address: pool, abi: lootBagPoolAbi, functionName: 'activeCount' }),
+    client.readContract({ address: pool, abi: lootBagPoolAbi, functionName: 'activeNftCount' }),
+    client.readContract({ address: pool, abi: lootBagPoolAbi, functionName: 'activePackCount' }),
+    client.readContract({ address: pool, abi: lootBagPoolAbi, functionName: 'nextPositionId' }),
+    client.readContract({ address: pool, abi: lootBagPoolAbi, functionName: 'paused' }),
+    client.readContract({ address: pool, abi: lootBagPoolAbi, functionName: 'testFulfillEnabled' }),
+    client.readContract({ address: pool, abi: lootBagPoolAbi, functionName: 'depositorBidRateBps' }),
+    client.readContract({ address: pool, abi: lootBagPoolAbi, functionName: 'protocolSettlementCutBps' })
   ])
 
   // nextPositionId = next free id → valid positions are 1 … nextId-1
@@ -125,10 +130,10 @@ export async function fetchPoolSnapshot(): Promise<PoolSnapshot> {
   const scanEnd = lastId + 1 // exclusive
   const scanStart =
     lastId > MAX_POSITION_SCAN ? lastId - MAX_POSITION_SCAN + 1 : 1
-  const positions: GachaPosition[] = []
+  const positions: LootBagPosition[] = []
 
-  // Parallel batches of 16 to keep RPC load reasonable
-  const batchSize = 16
+  // Smaller batches to avoid public RPC 429s
+  const batchSize = 8
   for (let start = scanStart; start < scanEnd; start += batchSize) {
     const ids: number[] = []
     for (let id = start; id < Math.min(start + batchSize, scanEnd); id++) ids.push(id)
@@ -137,7 +142,7 @@ export async function fetchPoolSnapshot(): Promise<PoolSnapshot> {
         try {
           const pos = (await client.readContract({
             address: pool,
-            abi: gachaPoolAbi,
+            abi: lootBagPoolAbi,
             functionName: 'getPosition',
             args: [BigInt(id)]
           })) as RawPosition
@@ -164,6 +169,15 @@ export async function fetchPoolSnapshot(): Promise<PoolSnapshot> {
 
   await enrichPositionNames(positions)
 
+  const depositorBidRateBps = Math.min(
+    10_000,
+    Math.max(0, Number(depositorBidRateBpsRaw as number | bigint))
+  )
+  const protocolSettlementCutBps = Math.min(
+    10_000,
+    Math.max(0, Number(protocolSettlementCutBpsRaw as number | bigint))
+  )
+
   return {
     acquisitionFee: acquisitionFee as bigint,
     activeCount: activeCount as bigint,
@@ -172,6 +186,12 @@ export async function fetchPoolSnapshot(): Promise<PoolSnapshot> {
     nextPositionId: nextPositionId as bigint,
     paused: paused as boolean,
     testFulfillEnabled: testFulfillEnabled as boolean,
+    depositorBidRateBps: Number.isFinite(depositorBidRateBps)
+      ? depositorBidRateBps
+      : 8500,
+    protocolSettlementCutBps: Number.isFinite(protocolSettlementCutBps)
+      ? protocolSettlementCutBps
+      : 1500,
     positions
   }
 }
@@ -186,49 +206,111 @@ export async function fetchWalletSnapshot(address: Address): Promise<WalletSnaps
       args: [address]
     }),
     client.readContract({
-      address: ADDRESSES.gachaPool,
-      abi: gachaPoolAbi,
+      address: ADDRESSES.lootBagPool,
+      abi: lootBagPoolAbi,
       functionName: 'claimable',
       args: [address]
     })
   ])
 
-  // Mock collection is small — probe token IDs 1..40 (admin pattern)
-  const ownedTokenIds: number[] = []
-  for (let id = 1; id <= 40; id++) {
-    try {
-      const o = (await client.readContract({
-        address: ADDRESSES.mockWearable,
-        abi: mockWearableAbi,
-        functionName: 'ownerOf',
-        args: [BigInt(id)]
-      })) as Address
-      if (o.toLowerCase() === address.toLowerCase()) ownedTokenIds.push(id)
-    } catch {
-      /* not minted */
-    }
+  const ownedTokenIds = await fetchMockWearableIds(address)
+
+  // Real Catalyst inventory (Collection V2 + remaining mocks)
+  let ownedNfts: WalletOwnedNft[] = []
+  try {
+    const items = await fetchWalletDepositNfts(address)
+    ownedNfts = items.map((it) => ({
+      id: it.id,
+      collection: it.collection,
+      tokenId: it.tokenId,
+      name: it.name,
+      rarity: it.rarity,
+      imageUrl: it.imageUrl,
+      urn: it.urn,
+      itemId: it.itemId,
+      issuedId: it.issuedId
+    }))
+  } catch {
+    // Fallback: mock ids only
+    ownedNfts = ownedTokenIds.map((id) => ({
+      id: `${ADDRESSES.mockWearable.toLowerCase()}:${id}`,
+      collection: ADDRESSES.mockWearable as Address,
+      tokenId: String(id),
+      name: `Mock Wearable #${id}`,
+      rarity:
+        id % 5 === 0 ? 'legendary' : id % 3 === 0 ? 'epic' : id % 2 === 0 ? 'rare' : 'common'
+    }))
   }
 
   return {
     address,
     mana: mana as bigint,
     claimable: claimable as bigint,
-    ownedTokenIds
+    ownedTokenIds,
+    ownedNfts
   }
+}
+
+/** MockWearable ownerOf scan (no enumerable). Exported for wallet inventory merge. */
+export async function fetchMockWearableIds(address: Address): Promise<number[]> {
+  const client = polygonPublicClient
+  const me = address.toLowerCase()
+  let bal = 0
+  try {
+    bal = Number(
+      (await client.readContract({
+        address: ADDRESSES.mockWearable,
+        abi: mockWearableAbi,
+        functionName: 'balanceOf',
+        args: [address]
+      })) as bigint
+    )
+  } catch {
+    bal = 0
+  }
+
+  const ownedTokenIds: number[] = []
+  if (bal <= 0) return ownedTokenIds
+
+  const batchSize = 16
+  for (let start = 1; start <= MAX_MOCK_WEARABLE_SCAN && ownedTokenIds.length < bal; start += batchSize) {
+    const ids: number[] = []
+    for (let id = start; id < start + batchSize && id <= MAX_MOCK_WEARABLE_SCAN; id++) ids.push(id)
+    const rows = await Promise.all(
+      ids.map(async (id) => {
+        try {
+          const o = (await client.readContract({
+            address: ADDRESSES.mockWearable,
+            abi: mockWearableAbi,
+            functionName: 'ownerOf',
+            args: [BigInt(id)]
+          })) as Address
+          return o.toLowerCase() === me ? id : null
+        } catch {
+          return null
+        }
+      })
+    )
+    for (const id of rows) {
+      if (id != null) ownedTokenIds.push(id)
+    }
+  }
+  ownedTokenIds.sort((a, b) => a - b)
+  return ownedTokenIds
 }
 
 export async function findPendingWinForPurchaser(
   purchaser: Address,
   maxId?: number
-): Promise<{ positionId: number; position: GachaPosition | null } | null> {
+): Promise<{ positionId: number; position: LootBagPosition | null } | null> {
   const client = polygonPublicClient
-  const pool = ADDRESSES.gachaPool
+  const pool = ADDRESSES.lootBagPool
   let nextId = maxId
   if (nextId == null) {
     nextId = Number(
       (await client.readContract({
         address: pool,
-        abi: gachaPoolAbi,
+        abi: lootBagPoolAbi,
         functionName: 'nextPositionId'
       })) as bigint
     )
@@ -240,7 +322,7 @@ export async function findPendingWinForPurchaser(
     try {
       const raw = await client.readContract({
         address: pool,
-        abi: gachaPoolAbi,
+        abi: lootBagPoolAbi,
         functionName: 'pendingByPosition',
         args: [BigInt(id)]
       })
@@ -260,11 +342,11 @@ export async function findPendingWinForPurchaser(
       if (!exists) continue
       if (purchaser.toLowerCase() !== me) continue
 
-      let position: GachaPosition | null = null
+      let position: LootBagPosition | null = null
       try {
         const pos = (await client.readContract({
           address: pool,
-          abi: gachaPoolAbi,
+          abi: lootBagPoolAbi,
           functionName: 'getPosition',
           args: [BigInt(id)]
         })) as RawPosition

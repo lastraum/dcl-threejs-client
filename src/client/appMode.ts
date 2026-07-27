@@ -5,6 +5,6 @@ export type AppMode =
   | 'communities'
   | 'events'
   | 'profile'
-  | 'gacha'
+  | 'lootbag'
   | 'landing'
   | 'play'

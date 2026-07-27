@@ -1,6 +1,6 @@
 import { ADDRESSES } from './config'
 import { collectionItemThumbnailUrl } from './creatorCollections'
-import type { GachaPosition } from './types'
+import type { LootBagPosition } from './types'
 
 /** Collection V2 packing: itemId in high 40 bits, issuedId in low 216 bits. */
 const ISSUED_ID_BITS = 216n
@@ -20,7 +20,7 @@ export function decodeCollectionV2TokenId(tokenId: bigint | string): {
  * Catalyst wearable thumbnail for a pool NFT position.
  * DCL Collection V2: peer lambdas `/collections/contents/{urn}:{itemId}/thumbnail`
  */
-export function resolvePositionMedia(pos: GachaPosition): string | undefined {
+export function resolvePositionMedia(pos: LootBagPosition): string | undefined {
   if (pos.imageUrl) return pos.imageUrl
   if (pos.kind === 'manaPack') return undefined
 
@@ -40,7 +40,7 @@ export function resolvePositionMedia(pos: GachaPosition): string | undefined {
 }
 
 /** Display-friendly issued id for Collection V2 (falls back to full tokenId). */
-export function formatPositionTokenLabel(pos: GachaPosition): string {
+export function formatPositionTokenLabel(pos: LootBagPosition): string {
   if (pos.kind === 'manaPack') return 'MANA Pack'
   try {
     const { itemId, issuedId } = decodeCollectionV2TokenId(pos.tokenId)

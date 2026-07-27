@@ -21,7 +21,8 @@ const ROUTE_SEGMENT_DENY = new Set(
     'communities',
     'map',
     'profile',
-    'gacha',
+    'lootbag',
+    'gacha', // legacy path alias for lootbag
     'chat',
     'favicon.ico',
     'robots.txt',
@@ -39,7 +40,7 @@ export type RouteTarget =
   | { kind: 'events' }
   | { kind: 'communities' }
   | { kind: 'profile' }
-  | { kind: 'gacha' }
+  | { kind: 'lootbag' }
   | { kind: 'editor' }
   | {
       kind: 'world'
@@ -59,14 +60,18 @@ const EVENTS_ROUTE_SEGMENT = 'events'
 const COMMUNITIES_ROUTE_SEGMENT = 'communities'
 const MAP_ROUTE_SEGMENT = 'map'
 const PROFILE_ROUTE_SEGMENT = 'profile'
-const GACHA_ROUTE_SEGMENT = 'gacha'
+/** Canonical URL path for the 2D Loot Bag page. */
+const LOOTBAG_ROUTE_SEGMENT = 'lootbag'
+/** Previous path — still parsed so old links work. */
+const LOOTBAG_ROUTE_SEGMENT_LEGACY = 'gacha'
 
 const APP_ROUTE_SEGMENTS = new Set([
   EVENTS_ROUTE_SEGMENT,
   COMMUNITIES_ROUTE_SEGMENT,
   MAP_ROUTE_SEGMENT,
   PROFILE_ROUTE_SEGMENT,
-  GACHA_ROUTE_SEGMENT
+  LOOTBAG_ROUTE_SEGMENT,
+  LOOTBAG_ROUTE_SEGMENT_LEGACY
 ])
 
 const EDITOR_ROUTE_SEGMENT = 'editor'
@@ -113,7 +118,12 @@ export function parseRouteTarget(segment: string | null): RouteTarget {
   if (segment.toLowerCase() === COMMUNITIES_ROUTE_SEGMENT) return { kind: 'communities' }
   if (segment.toLowerCase() === MAP_ROUTE_SEGMENT) return { kind: 'map' }
   if (segment.toLowerCase() === PROFILE_ROUTE_SEGMENT) return { kind: 'profile' }
-  if (segment.toLowerCase() === GACHA_ROUTE_SEGMENT) return { kind: 'gacha' }
+  if (
+    segment.toLowerCase() === LOOTBAG_ROUTE_SEGMENT ||
+    segment.toLowerCase() === LOOTBAG_ROUTE_SEGMENT_LEGACY
+  ) {
+    return { kind: 'lootbag' }
+  }
 
   const coordMatch = /^(-?\d+)\s*,\s*(-?\d+)$/.exec(segment)
   if (coordMatch) {
@@ -211,7 +221,7 @@ export function routePathForTarget(target: RouteTarget): string {
   if (target.kind === 'communities') return '/communities'
   if (target.kind === 'map') return '/map'
   if (target.kind === 'profile') return '/profile'
-  if (target.kind === 'gacha') return '/gacha'
+  if (target.kind === 'lootbag') return '/lootbag'
   if (target.kind === 'editor') return '/editor'
   if (target.kind === 'coords') return `/${encodeURIComponent(`${target.x},${target.y}`)}`
   // Custom server worlds: `/` + `?realm=host&worldName=Name`.
@@ -245,7 +255,7 @@ export function routeEquals(a: RouteTarget, b: RouteTarget): boolean {
     a.kind === 'communities' ||
     a.kind === 'map' ||
     a.kind === 'profile' ||
-    a.kind === 'gacha'
+    a.kind === 'lootbag'
   ) {
     return true
   }

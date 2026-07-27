@@ -1,10 +1,9 @@
 import type { SessionIdentity } from '../../../network/SessionIdentity'
 import {
   ADDRESSES,
-  EXPLORER_TX,
-  USE_FAKE_CLAIM,
   computeClaimChanceLabels,
   formatMana,
+  takeTokensNetWei,
   shortAddr,
   escapeHtml,
   fetchPoolSnapshot,
@@ -14,26 +13,25 @@ import {
   runDepositManaPack,
   runDepositNft,
   runStockFromCollection,
-  runPull,
   runSettle,
   runWithdrawRewards,
   humanizeStockError,
-  hideGachaSignOverlay,
-  requestGachaSignContinue,
-  showGachaSuccessOverlay,
-  syncGachaSignOverlay,
+  hideLootBagSignOverlay,
+  requestLootBagSignContinue,
+  showLootBagSuccessOverlay,
+  syncLootBagSignOverlay,
   type CreatorCollection,
   type CreatorCollectionItem,
   type FlowApi,
-  type GachaPosition,
+  type LootBagPosition,
   type PendingWin,
   type PoolSnapshot,
   type TxStep,
   type WalletSnapshot
-} from '../../../gacha'
+} from '../../../lootBag'
 import { publishPoolClaim } from '../../../social/publishPoolClaim'
 
-export type GachaPanelOptions = {
+export type LootBagPanelOptions = {
   getSession: () => SessionIdentity
   onClose?: () => void
 }
@@ -42,7 +40,8 @@ type PanelMode = 'main' | 'deposit'
 /** Wallet inventory deposit vs creator Collection V2 stock */
 type DepositSource = 'wallet' | 'creator'
 
-const INV_PAGE_SIZE = 8
+/** Match main bag row (~6 cards wide) for 3D deposit grid pages */
+const INV_PAGE_SIZE = 6
 const DEFAULT_BACKING = '10'
 const DEFAULT_PACK_PRIZE = '5'
 const DEFAULT_STOCK_COUNT = '5'
@@ -57,6 +56,8 @@ type InvItem = {
   name: string
   rarity: string
   collection: string
+  imageUrl?: string
+  issuedId?: string
 }
 
 type DepositSelection = {
@@ -76,53 +77,60 @@ function manaPackInvItem(): InvItem {
   }
 }
 
-function ownedToInventory(tokenIds: number[]): InvItem[] {
-  const nfts: InvItem[] = tokenIds.map((id) => ({
-    id: `mock-${id}`,
+function walletNftsToInventory(
+  nfts: { id: string; collection: string; tokenId: string; name: string; rarity: string; imageUrl?: string; issuedId?: string }[]
+): InvItem[] {
+  const items: InvItem[] = nfts.map((n) => ({
+    id: n.id,
     kind: 'nft' as const,
-    tokenId: String(id),
-    name: `Mock Wearable #${id}`,
-    rarity: id % 5 === 0 ? 'legendary' : id % 3 === 0 ? 'epic' : id % 2 === 0 ? 'rare' : 'common',
-    collection: ADDRESSES.mockWearable
+    tokenId: n.tokenId,
+    name: n.name,
+    rarity: n.rarity || 'common',
+    collection: n.collection,
+    imageUrl: n.imageUrl,
+    issuedId: n.issuedId
   }))
-  return [manaPackInvItem(), ...nfts]
+  // A–Z by name (pack stays pinned first in filterInv)
+  items.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+  return [manaPackInvItem(), ...items]
 }
 
-function formatManaDisplay(n: number): string {
-  if (!Number.isFinite(n)) return '0'
-  if (n >= 1000) return n.toLocaleString(undefined, { maximumFractionDigits: 0 })
-  return n.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 0 })
+/** Filter + A–Z inventory; MANA pack stays first when it matches. */
+function filterInv(items: InvItem[], query: string): InvItem[] {
+  const q = query.trim().toLowerCase()
+  const pack = items.find((i) => i.kind === 'pack')
+  let nfts = items.filter((i) => i.kind === 'nft')
+  if (q) {
+    nfts = nfts.filter((i) => {
+      const hay = [i.name, i.rarity, i.tokenId, i.issuedId ?? '', i.collection, i.id]
+        .join(' ')
+        .toLowerCase()
+      return hay.includes(q)
+    })
+  }
+  nfts.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+  const showPack =
+    !!pack &&
+    (!q || pack.name.toLowerCase().includes(q) || q === 'pack' || q.includes('mana'))
+  return showPack && pack ? [pack, ...nfts] : nfts
 }
 
-/** Skeleton shelf while pool snapshot loads (distinct from true empty). */
-function shelfLoadingHtml(count: number, label: string): string {
-  const cards = Array.from({ length: count }, (_, i) => {
-    const delay = (i * 0.08).toFixed(2)
-    return `
-      <div class="gacha-shelf-skel__card gacha-shelf-skel__card--panel" style="animation-delay:${delay}s" aria-hidden="true">
-        <div class="gacha-shelf-skel__art"></div>
-        <div class="gacha-shelf-skel__lines">
-          <div class="gacha-shelf-skel__line gacha-shelf-skel__line--title"></div>
-          <div class="gacha-shelf-skel__line"></div>
-          <div class="gacha-shelf-skel__line gacha-shelf-skel__line--short"></div>
-        </div>
-      </div>`
-  }).join('')
+/** Centered loading status while pool snapshot loads (no skeleton cards). */
+function shelfLoadingHtml(label: string): string {
   return `
-    <div class="gacha-shelf-skel gacha-shelf-skel--panel" role="status" aria-live="polite" aria-busy="true">
-      <div class="gacha-shelf-skel__track">${cards}</div>
-      <div class="gacha-shelf-skel__footer">
-        <span class="gacha-shelf-skel__spin" aria-hidden="true"></span>
-        <p class="gacha-shelf-skel__label">${escapeHtml(label)}</p>
+    <div class="lootbag-shelf-skel lootbag-shelf-skel--panel lootbag-shelf-skel--text-only" role="status" aria-live="polite" aria-busy="true">
+      <div class="lootbag-shelf-skel__footer">
+        <span class="lootbag-shelf-skel__spin" aria-hidden="true"></span>
+        <p class="lootbag-shelf-skel__label">${escapeHtml(label)}</p>
       </div>
     </div>`
 }
 
 /**
- * Left HUD grab bag — ~2× chat width.
+ * Left HUD Loot Bag — ~2× chat width.
  * Main: glass display shelf · Deposit: 1/3 + 2/3 inventory · Win: center modal.
  */
-export class GachaPanel {
+export class LootBagPanel {
   readonly element: HTMLDivElement
   private readonly winModal: HTMLDivElement
   private visible = false
@@ -134,7 +142,9 @@ export class GachaPanel {
   private inventory: InvItem[] = []
   private selections: DepositSelection[] = []
   private invPage = 0
-  /** Creator stock (Collection V2 → grab bag) — grid browse + stock selection */
+  /** Wallet inventory search (name / rarity / issue / collection) */
+  private invSearch = ''
+  /** Creator stock (Collection V2 → Loot Bag) — grid browse + stock selection */
   private creatorBrowse: 'collections' | 'items' = 'collections'
   private creatorCollections: CreatorCollection[] = []
   private creatorItems: CreatorCollectionItem[] = []
@@ -150,69 +160,88 @@ export class GachaPanel {
   private status = ''
   private error: string | null = null
   private pendingWin: PendingWin | null = null
-  /** True when pending win came from USE_FAKE_CLAIM (settle is demo-only). */
+  /** True when pending win is a 3D simulated claim (no chain settle). */
   private pendingWinIsFake = false
   private stepSeq = 0
 
   private readonly titleEl: HTMLElement
   private readonly feeEl: HTMLElement
   private readonly balanceEl: HTMLElement
-  private readonly poolCountEl: HTMLElement
+  private readonly headerDepositEl: HTMLElement
   private readonly bodyEl: HTMLElement
   private readonly statusEl: HTMLElement
   private readonly stepsEl: HTMLElement
   private readonly footerEl: HTMLElement
   private readonly onKeyDown: (ev: KeyboardEvent) => void
 
-  constructor(private readonly options: GachaPanelOptions) {
+  constructor(private readonly options: LootBagPanelOptions) {
     this.element = document.createElement('div')
-    this.element.id = 'gacha-panel-wrap'
-    this.element.className = 'gacha-panel-wrap'
+    this.element.id = 'lootbag-panel-wrap'
+    this.element.className = 'lootbag-panel-wrap lootbag-panel-wrap--dock'
     this.element.hidden = true
     this.element.setAttribute('role', 'dialog')
-    this.element.setAttribute('aria-label', 'Grab bag')
+    this.element.setAttribute('aria-label', 'Loot Bag')
     this.element.innerHTML = `
-      <div class="gacha-panel gacha-panel--vitrine">
-        <header class="gacha-panel__header">
-          <div class="gacha-panel__header-main">
-            <h2 class="gacha-panel__title" data-title>Grab bag</h2>
-            <div class="gacha-panel__stats">
-              <span class="gacha-panel__stat" data-fee title="Grab cost">Grab cost —</span>
-              <span class="gacha-panel__stat gacha-panel__stat--mana" data-balance title="Your MockMANA">Balance —</span>
-              <span class="gacha-panel__stat" data-pool-count title="Items in the grab bag">In bag —</span>
+      <div class="lootbag-panel lootbag-panel--dock">
+        <div class="lootbag-panel__dock" data-dock>
+          <section class="lootbag-panel__bag" aria-label="Loot Bag">
+            <header class="lootbag-panel__header">
+              <div class="lootbag-panel__header-main">
+                <h2 class="lootbag-panel__title" data-title>Loot Bag</h2>
+                <div class="lootbag-panel__stats" data-stats>
+                  <span class="lootbag-panel__stat" data-fee title="Loot Pack claim cost">Pack cost —</span>
+                  <span class="lootbag-panel__stat-sep" aria-hidden="true">|</span>
+                  <span class="lootbag-panel__stat lootbag-panel__stat--mana" data-balance title="Your mMANA balance">Balance —</span>
+                </div>
+                <div class="lootbag-panel__header-deposit" data-header-deposit hidden></div>
+              </div>
+              <div class="lootbag-panel__header-actions">
+                <button type="button" class="lootbag-panel__btn lootbag-panel__btn--secondary lootbag-panel__btn--sm" data-deposit>Add Loot</button>
+                <button type="button" class="lootbag-panel__icon-btn" data-refresh title="Refresh" aria-label="Refresh">↻</button>
+                <button type="button" class="lootbag-panel__close" data-close aria-label="Close">×</button>
+              </div>
+            </header>
+            <div class="lootbag-panel__body" data-body></div>
+            <div class="lootbag-panel__steps" data-steps hidden></div>
+            <p class="lootbag-panel__status" data-status hidden></p>
+          </section>
+          <div class="lootbag-panel__dock-gap" aria-hidden="true"></div>
+          <aside class="lootbag-panel__pack" data-pack-col aria-label="Loot Pack">
+            <div class="lootbag-panel__pack-frame">
+              <img
+                class="lootbag-panel__pack-art"
+                src="/lootbag/lootpack.png?v=5"
+                alt="Loot Pack"
+                width="512"
+                height="768"
+                decoding="async"
+              />
             </div>
-          </div>
-          <div class="gacha-panel__header-actions">
-            <button type="button" class="gacha-panel__icon-btn" data-refresh title="Refresh" aria-label="Refresh">↻</button>
-            <button type="button" class="gacha-panel__close" data-close aria-label="Close">×</button>
-          </div>
-        </header>
-        <div class="gacha-panel__body" data-body></div>
-        <div class="gacha-panel__steps" data-steps hidden></div>
-        <p class="gacha-panel__status" data-status hidden></p>
-        <footer class="gacha-panel__footer" data-footer>
-          <button type="button" class="gacha-panel__btn gacha-panel__btn--secondary" data-deposit>Deposit</button>
-          <button type="button" class="gacha-panel__btn gacha-panel__btn--primary" data-claim>Claim</button>
-        </footer>
+            <button type="button" class="lootbag-panel__btn lootbag-panel__btn--primary lootbag-panel__pack-claim" data-claim>
+              Claim Loot Pack
+            </button>
+          </aside>
+        </div>
+        <footer class="lootbag-panel__footer" data-footer hidden></footer>
       </div>
     `
 
     this.winModal = document.createElement('div')
-    this.winModal.id = 'gacha-win-modal'
-    this.winModal.className = 'gacha-win-modal'
+    this.winModal.id = 'lootbag-win-modal'
+    this.winModal.className = 'lootbag-win-modal'
     this.winModal.hidden = true
     this.winModal.setAttribute('role', 'dialog')
     this.winModal.setAttribute('aria-modal', 'true')
-    this.winModal.setAttribute('aria-label', 'Grab bag claim result')
+    this.winModal.setAttribute('aria-label', 'Loot Bag claim result')
     this.winModal.innerHTML = `
-      <div class="gacha-win-modal__backdrop" data-win-backdrop></div>
-      <div class="gacha-win-modal__card" data-win-card></div>
+      <div class="lootbag-win-modal__backdrop" data-win-backdrop></div>
+      <div class="lootbag-win-modal__card" data-win-card></div>
     `
 
     this.titleEl = this.element.querySelector('[data-title]')!
     this.feeEl = this.element.querySelector('[data-fee]')!
     this.balanceEl = this.element.querySelector('[data-balance]')!
-    this.poolCountEl = this.element.querySelector('[data-pool-count]')!
+    this.headerDepositEl = this.element.querySelector('[data-header-deposit]')!
     this.bodyEl = this.element.querySelector('[data-body]')!
     this.statusEl = this.element.querySelector('[data-status]')!
     this.stepsEl = this.element.querySelector('[data-steps]')!
@@ -225,6 +254,9 @@ export class GachaPanel {
 
     this.bodyEl.addEventListener('click', (ev) => void this.onBodyClick(ev))
     this.bodyEl.addEventListener('input', (ev) => this.onBodyInput(ev))
+    // Deposit toolbar lives in the outer header (same row as title)
+    this.headerDepositEl.addEventListener('click', (ev) => void this.onBodyClick(ev))
+    this.headerDepositEl.addEventListener('input', (ev) => this.onBodyInput(ev))
     this.winModal.addEventListener('click', (ev) => void this.onWinModalClick(ev))
 
     this.onKeyDown = (ev) => {
@@ -271,12 +303,13 @@ export class GachaPanel {
   }
 
   /**
-   * Always land on main grab bag shelf when reopening — clear deposit state, win modal, etc.
+   * Always land on main Loot Bag shelf when reopening — clear deposit state, win modal, etc.
    */
   private resetToMainMenu(): void {
     this.mode = 'main'
     this.selections = []
     this.invPage = 0
+    this.invSearch = ''
     this.pendingWin = null
     this.pendingWinIsFake = false
     this.steps = []
@@ -285,8 +318,12 @@ export class GachaPanel {
     this.status = ''
     this.busy = false
     this.element.classList.remove('is-deposit-mode', 'is-busy')
-    this.footerEl.hidden = false
-    this.titleEl.textContent = 'Grab bag'
+    this.footerEl.hidden = true
+    const packCol = this.element.querySelector('[data-pack-col]') as HTMLElement | null
+    if (packCol) packCol.hidden = false
+    const gap = this.element.querySelector('.lootbag-panel__dock-gap') as HTMLElement | null
+    if (gap) gap.hidden = false
+    this.titleEl.textContent = 'Loot Bag'
     this.closeWinModal({ clearPending: true })
     this.stepsEl.hidden = true
     this.stepsEl.innerHTML = ''
@@ -344,7 +381,7 @@ export class GachaPanel {
       ;(b as HTMLButtonElement).disabled = on
     })
     this.element.classList.toggle('is-busy', on)
-    if (!on && this.steps.length === 0) hideGachaSignOverlay()
+    if (!on && this.steps.length === 0) hideLootBagSignOverlay()
     // Keep settle buttons in sync (modal HTML is static after open)
     this.winModal.querySelectorAll<HTMLButtonElement>('[data-settle-keep], [data-settle-take]').forEach((b) => {
       b.disabled = on
@@ -353,24 +390,47 @@ export class GachaPanel {
   }
 
   private syncInventory(): void {
-    this.inventory = ownedToInventory(this.wallet?.ownedTokenIds ?? [])
+    this.inventory = walletNftsToInventory(this.wallet?.ownedNfts ?? [])
   }
 
   private isPackSel(s: DepositSelection): boolean {
     return s.item.kind === 'pack'
   }
 
-  private totalLockMana(): number {
-    let t = 0
+  /** Mana + NFT/pack totals the user will send with this deposit. */
+  private depositSendTotals(): { mana: number; nfts: number; packs: number } {
+    let mana = 0
+    let nfts = 0
+    let packs = 0
     for (const s of this.selections) {
       const back = Number(s.backingMana)
-      if (Number.isFinite(back) && back > 0) t += back
+      if (Number.isFinite(back) && back > 0) mana += back
       if (this.isPackSel(s)) {
+        packs++
         const prize = Number(s.packPrizeMana || '0')
-        if (Number.isFinite(prize) && prize > 0) t += prize
+        if (Number.isFinite(prize) && prize > 0) mana += prize
+      } else {
+        nfts++
       }
     }
-    return t
+    return { mana, nfts, packs }
+  }
+
+  private depositSendSummaryText(): string {
+    if (this.selections.length === 0) return 'Nothing selected'
+    const { mana, nfts, packs } = this.depositSendTotals()
+    const manaLabel = Number.isFinite(mana)
+      ? mana.toLocaleString(undefined, { maximumFractionDigits: 2 })
+      : '0'
+    const parts: string[] = [`${manaLabel} mMANA`]
+    if (nfts) parts.push(`${nfts} NFT${nfts === 1 ? '' : 's'}`)
+    if (packs) parts.push(`${packs} pack${packs === 1 ? '' : 's'}`)
+    return parts.join(' · ')
+  }
+
+  private refreshDepositSendSummary(): void {
+    const el = this.bodyEl.querySelector('[data-dep-send-summary]')
+    if (el) el.textContent = this.depositSendSummaryText()
   }
 
   async refresh(): Promise<void> {
@@ -400,41 +460,86 @@ export class GachaPanel {
         this.renderMainBody()
         this.status = this.pool.positions.length
           ? ''
-          : 'Empty grab bag — deposit a wearable or MANA pack'
+          : 'Empty Loot Bag — deposit a wearable or MANA pack'
         this.renderStatus()
       }
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e)
-      this.bodyEl.innerHTML = `<p class="gacha-panel__error">${escapeHtml(this.error)}</p>`
+      this.bodyEl.innerHTML = `<p class="lootbag-panel__error">${escapeHtml(this.error)}</p>`
       this.status = ''
       this.renderStatus()
     }
   }
 
-  private renderHeader(): void {
+  /** Pack claim cost + wallet balance for header / claim modals. */
+  private manaCostBalance(): { feeLabel: string; balLabel: string; summary: string } {
     const fee = this.pool ? formatMana(this.pool.acquisitionFee) : '—'
-    this.feeEl.textContent = `Grab cost ${fee} mMANA`
     const bal = this.wallet ? formatMana(this.wallet.mana) : '—'
-    this.balanceEl.textContent = `Balance ${bal}`
-    const n =
-      this.pool != null
-        ? Math.max(Number(this.pool.activeCount), this.pool.positions.length)
-        : 0
-    this.poolCountEl.textContent = `In bag ${n}`
+    const feeLabel = `Pack cost ${fee} mMANA`
+    const balLabel = `Balance ${bal}`
+    return { feeLabel, balLabel, summary: `${feeLabel} | ${balLabel}` }
+  }
+
+  private renderHeader(): void {
+    const { feeLabel, balLabel } = this.manaCostBalance()
+    this.feeEl.textContent = feeLabel
+    this.balanceEl.textContent = balLabel
   }
 
   private setMode(mode: PanelMode): void {
     this.mode = mode
     this.element.classList.toggle('is-deposit-mode', mode === 'deposit')
-    this.footerEl.hidden = mode === 'deposit'
+    // Pack column only on main play dock
+    const packCol = this.element.querySelector('[data-pack-col]') as HTMLElement | null
+    if (packCol) packCol.hidden = mode === 'deposit'
+    const gap = this.element.querySelector('.lootbag-panel__dock-gap') as HTMLElement | null
+    if (gap) gap.hidden = mode === 'deposit'
+    // Outer header: bag stats + Add Loot on main; deposit toolbar on title row while depositing
+    const stats = this.element.querySelector('.lootbag-panel__stats') as HTMLElement | null
+    if (stats) stats.hidden = mode === 'deposit'
+    const depositBtn = this.element.querySelector('[data-deposit]') as HTMLElement | null
+    if (depositBtn) depositBtn.hidden = mode === 'deposit'
+    this.headerDepositEl.hidden = mode !== 'deposit'
+    if (mode !== 'deposit') this.headerDepositEl.innerHTML = ''
+    this.footerEl.hidden = true
     if (mode === 'deposit') {
-      this.titleEl.textContent = 'Deposit to grab bag'
+      this.titleEl.textContent = 'Add Loot'
       this.closeWinModal({ clearPending: false })
       this.renderDepositBody()
     } else {
-      this.titleEl.textContent = 'Grab bag'
+      this.titleEl.textContent = 'Loot Bag'
+      if (stats) stats.hidden = false
+      if (depositBtn) depositBtn.hidden = false
       this.renderMainBody()
     }
+  }
+
+  /** Deposit controls on the same row as the "Add Loot" title (search/pager optional). */
+  private renderHeaderDepositToolbar(opts: {
+    balLabel: string
+    tabs: string
+    searchHtml?: string
+    pagerHtml?: string
+  }): void {
+    this.headerDepositEl.hidden = false
+    this.headerDepositEl.innerHTML = `
+      <div class="lootbag-dep__toolbar">
+        <div class="lootbag-dep__toolbar-left">
+          <button type="button" class="lootbag-panel__btn lootbag-panel__btn--secondary lootbag-panel__btn--sm lootbag-dep__back" data-dep-back ${this.busy ? 'disabled' : ''}>← Back</button>
+          ${opts.tabs}
+        </div>
+        ${
+          opts.searchHtml || opts.pagerHtml
+            ? `<div class="lootbag-dep__toolbar-tools">
+                ${opts.searchHtml || ''}
+                ${opts.pagerHtml || ''}
+              </div>`
+            : ''
+        }
+        <div class="lootbag-dep__toolbar-center">
+          <span class="lootbag-dep__stat lootbag-dep__stat--ok">${escapeHtml(opts.balLabel)} mMANA</span>
+        </div>
+      </div>`
   }
 
   private openDeposit(): void {
@@ -450,6 +555,7 @@ export class GachaPanel {
     const owned = new Set(this.inventory.map((i) => i.id))
     this.selections = this.selections.filter((s) => owned.has(s.item.id))
     this.invPage = 0
+    this.invSearch = ''
     this.setMode('deposit')
   }
 
@@ -460,17 +566,16 @@ export class GachaPanel {
   }
 
   private renderShelfLoading(): void {
-    this.bodyEl.innerHTML = shelfLoadingHtml(4, 'Opening the grab bag…')
+    this.bodyEl.innerHTML = shelfLoadingHtml('Opening the Loot Bag…')
   }
 
   private renderMainBody(): void {
     const positions = this.pool?.positions ?? []
     if (!positions.length) {
       this.bodyEl.innerHTML = `
-        <div class="gacha-panel__empty">
-          <div class="gacha-panel__empty-icon" aria-hidden="true">◈</div>
-          <p>Grab bag is empty</p>
-          <p class="gacha-panel__muted">Deposit a wearable or MANA pack to fill the grab bag.</p>
+        <div class="lootbag-panel__row-empty">
+          <p>Loot Bag is empty</p>
+          <p class="lootbag-panel__muted">Add loot to fill the bag</p>
         </div>`
       return
     }
@@ -481,11 +586,8 @@ export class GachaPanel {
       .map((p) => this.shelfCardHtml(p, chances.get(p.positionId) ?? '—'))
       .join('')
     this.bodyEl.innerHTML = `
-      <div class="gacha-panel__vitrine">
-        <div class="gacha-panel__vitrine-glass" aria-hidden="true"></div>
-        <div class="gacha-panel__shelf" data-shelf>
-          <div class="gacha-panel__shelf-track">${cards}</div>
-        </div>
+      <div class="lootbag-panel__row-shelf" data-shelf>
+        <div class="lootbag-panel__row-track">${cards}</div>
       </div>
     `
     requestAnimationFrame(() => {
@@ -494,7 +596,7 @@ export class GachaPanel {
     })
   }
 
-  private shelfCardHtml(p: GachaPosition, chanceLabel: string): string {
+  private shelfCardHtml(p: LootBagPosition, chanceLabel: string): string {
     const isPack = p.kind === 'manaPack'
     const rarity = isPack ? 'legendary' : (p.rarity || 'common').toLowerCase()
     const title = isPack
@@ -512,29 +614,26 @@ export class GachaPanel {
         : `Token #${escapeHtml(p.tokenId)}`
     // Wearables with a real name show issue under title; title-only issue tokens skip the duplicate
     const detailHtml = isPack || p.name?.trim()
-      ? `<div class="gacha-panel__card-line">${detail}</div>`
+      ? `<div class="lootbag-panel__card-line">${detail}</div>`
       : ''
     const rarityLabel = isPack ? 'pack' : escapeHtml(rarity)
     const backing = `Backed by ${formatMana(p.backing)} mMANA`
     const chance = chanceLabel === '—' ? '— chance' : `${escapeHtml(chanceLabel)} chance`
     const img = p.imageUrl
-      ? `<img class="gacha-panel__card-img" src="${escapeHtml(p.imageUrl)}" alt="" loading="lazy" decoding="async" />`
-      : `<div class="gacha-panel__card-placeholder" aria-hidden="true">${isPack ? '◈' : '✦'}</div>`
+      ? `<img class="lootbag-panel__card-img" src="${escapeHtml(p.imageUrl)}" alt="" loading="lazy" decoding="async" />`
+      : `<div class="lootbag-panel__card-placeholder" aria-hidden="true">${isPack ? '◈' : '✦'}</div>`
     return `
-      <article class="gacha-panel__card${isPack ? ' is-pack' : ''} gacha-rarity--${escapeHtml(rarity)}" data-pos="${p.positionId}" data-rarity="${escapeHtml(rarity)}">
-        <div class="gacha-panel__card-media gacha-rarity-bg--${escapeHtml(rarity)}">${img}</div>
-        <div class="gacha-panel__card-line gacha-panel__card-line--title" title="${title}">${title}</div>
+      <article class="lootbag-panel__card${isPack ? ' is-pack' : ''} lootbag-rarity--${escapeHtml(rarity)}" data-pos="${p.positionId}" data-rarity="${escapeHtml(rarity)}">
+        <div class="lootbag-panel__card-media lootbag-rarity-bg--${escapeHtml(rarity)}">${img}</div>
+        <div class="lootbag-panel__card-line lootbag-panel__card-line--title" title="${title}">${title}</div>
         ${detailHtml}
-        <div class="gacha-panel__card-line gacha-panel__card-line--rarity is-${escapeHtml(rarity)}">${rarityLabel}</div>
-        <div class="gacha-panel__card-line">${backing}</div>
-        <div class="gacha-panel__card-line gacha-panel__card-line--chance">${chance}</div>
+        <div class="lootbag-panel__card-line lootbag-panel__card-line--rarity is-${escapeHtml(rarity)}">${rarityLabel}</div>
+        <div class="lootbag-panel__card-line">${backing}</div>
+        <div class="lootbag-panel__card-line lootbag-panel__card-line--chance">${chance}</div>
       </article>`
   }
 
   private renderCreatorDepositHtml(balLabel: string, tabs: string): string {
-    const count = Math.max(0, Math.floor(Number(this.stockMintCount) || 0))
-    const avg = Number(this.stockAvgBacking) || 0
-    const lockEst = this.stockItem && count > 0 && avg > 0 ? formatManaDisplay(count * avg) : '0'
     const pageSize = INV_PAGE_SIZE
     const browsingItems = this.creatorBrowse === 'items'
     const gridList = browsingItems ? this.creatorItems : this.creatorCollections
@@ -546,33 +645,33 @@ export class GachaPanel {
     const canNext = this.creatorPage + 1 < totalPages
 
     const selBlock = !this.stockItem
-      ? `<p class="gacha-dep__empty">Pick a collection, then an item →</p>`
+      ? `<p class="lootbag-dep__empty">Pick a collection, then an item →</p>`
       : `
-        <div class="gacha-dep__stock-card">
-          <button type="button" class="gacha-dep__stock-clear" data-stock-clear aria-label="Clear selection" ${this.busy ? 'disabled' : ''}>×</button>
-          <div class="gacha-dep__stock-top">
-            <div class="gacha-dep__stock-thumb gacha-dep__thumb--${escapeHtml(this.stockItem.rarity)}">
+        <div class="lootbag-dep__stock-card">
+          <button type="button" class="lootbag-dep__stock-clear" data-stock-clear aria-label="Clear selection" ${this.busy ? 'disabled' : ''}>×</button>
+          <div class="lootbag-dep__stock-top">
+            <div class="lootbag-dep__stock-thumb lootbag-dep__thumb--${escapeHtml(this.stockItem.rarity)}">
               ${
                 this.stockItem.thumbnail
                   ? `<img src="${escapeHtml(this.stockItem.thumbnail)}" alt="" loading="lazy" />`
                   : 'NFT'
               }
             </div>
-            <div class="gacha-dep__stock-meta">
-              <div class="gacha-dep__stock-name" title="${escapeHtml(this.stockItem.name)}">${escapeHtml(this.stockItem.name)}</div>
-              <div class="gacha-dep__stock-tags">
-                <span class="gacha-dep__pill gacha-dep__pill--${escapeHtml(this.stockItem.rarity)}">${escapeHtml(this.stockItem.rarity)}</span>
-                <span class="gacha-dep__pill">item ${this.stockItem.itemId}</span>
+            <div class="lootbag-dep__stock-meta">
+              <div class="lootbag-dep__stock-name" title="${escapeHtml(this.stockItem.name)}">${escapeHtml(this.stockItem.name)}</div>
+              <div class="lootbag-dep__stock-tags">
+                <span class="lootbag-dep__pill lootbag-dep__pill--${escapeHtml(this.stockItem.rarity)}">${escapeHtml(this.stockItem.rarity)}</span>
+                <span class="lootbag-dep__pill">item ${this.stockItem.itemId}</span>
               </div>
-              <div class="gacha-dep__stock-addr" title="${escapeHtml(this.stockItem.contractAddress)}">${escapeHtml(shortAddr(this.stockItem.contractAddress))}</div>
+              <div class="lootbag-dep__stock-addr" title="${escapeHtml(this.stockItem.contractAddress)}">${escapeHtml(shortAddr(this.stockItem.contractAddress))}</div>
             </div>
           </div>
-          <div class="gacha-dep__stock-fields">
-            <label class="gacha-dep__stock-field">
+          <div class="lootbag-dep__stock-fields">
+            <label class="lootbag-dep__stock-field">
               <span>Mint count</span>
               <input type="text" inputmode="numeric" data-stock-count value="${escapeHtml(this.stockMintCount)}" ${this.busy ? 'disabled' : ''} />
             </label>
-            <label class="gacha-dep__stock-field">
+            <label class="lootbag-dep__stock-field">
               <span>Avg backing</span>
               <input type="text" inputmode="decimal" data-stock-backing value="${escapeHtml(this.stockAvgBacking)}" ${this.busy ? 'disabled' : ''} />
             </label>
@@ -581,19 +680,19 @@ export class GachaPanel {
 
     let cells = ''
     if (this.creatorLoading) {
-      cells = `<div class="gacha-dep__empty gacha-dep__empty--center">Loading…</div>`
+      cells = `<div class="lootbag-dep__empty lootbag-dep__empty--center">Loading…</div>`
     } else if (this.creatorLoadError) {
-      cells = `<div class="gacha-dep__empty gacha-dep__empty--center">${escapeHtml(this.creatorLoadError)}</div>`
+      cells = `<div class="lootbag-dep__empty lootbag-dep__empty--center">${escapeHtml(this.creatorLoadError)}</div>`
     } else if (gridList.length === 0) {
       cells = browsingItems
-        ? `<div class="gacha-dep__empty gacha-dep__empty--center">No items in this collection</div>`
-        : `<div class="gacha-dep__empty gacha-dep__empty--center">No Polygon collections for this wallet (marketplace index)</div>`
+        ? `<div class="lootbag-dep__empty lootbag-dep__empty--center">No items in this collection</div>`
+        : `<div class="lootbag-dep__empty lootbag-dep__empty--center">No Polygon collections for this wallet (marketplace index)</div>`
     } else {
       const parts: string[] = []
       for (let i = 0; i < pageSize; i++) {
         const row = pageSlice[i]
         if (!row) {
-          parts.push(`<div class="gacha-dep__cell gacha-dep__cell--empty" aria-hidden="true"></div>`)
+          parts.push(`<div class="lootbag-panel__card lootbag-panel__card--empty" aria-hidden="true"></div>`)
           continue
         }
         if (browsingItems) {
@@ -601,78 +700,73 @@ export class GachaPanel {
           const on =
             this.stockItem?.contractAddress === it.contractAddress &&
             this.stockItem?.itemId === it.itemId
-          const thumb = it.thumbnail
-            ? `<img class="gacha-dep__cell-img" src="${escapeHtml(it.thumbnail)}" alt="" loading="lazy" />`
-            : 'NFT'
+          const rarity = (it.rarity || 'common').toLowerCase()
           const avail =
-            it.available != null ? `${it.available} left` : `item ${it.itemId}`
+            it.available != null ? `${it.available} left` : `Item #${it.itemId}`
+          const media = it.thumbnail
+            ? `<img class="lootbag-panel__card-img" src="${escapeHtml(it.thumbnail)}" alt="" loading="lazy" decoding="async" />`
+            : `<div class="lootbag-panel__card-placeholder" aria-hidden="true">✦</div>`
           parts.push(`
-            <button type="button" class="gacha-dep__cell${on ? ' is-selected' : ''}" data-creator-item="${it.itemId}" ${this.busy ? 'disabled' : ''}>
-              <div class="gacha-dep__cell-thumb gacha-dep__thumb--${escapeHtml(it.rarity)}">${thumb}</div>
-              <div class="gacha-dep__cell-name">${escapeHtml(it.name)}</div>
-              <div class="gacha-dep__cell-sub">${escapeHtml(it.rarity.toUpperCase())} · ${escapeHtml(avail)}</div>
+            <button type="button" class="lootbag-panel__card lootbag-dep__pick${on ? ' is-selected' : ''} lootbag-rarity--${escapeHtml(rarity)}" data-creator-item="${it.itemId}" ${this.busy ? 'disabled' : ''}>
+              <div class="lootbag-panel__card-media lootbag-rarity-bg--${escapeHtml(rarity)}">${media}</div>
+              <div class="lootbag-panel__card-line lootbag-panel__card-line--title" title="${escapeHtml(it.name)}">${escapeHtml(it.name)}</div>
+              <div class="lootbag-panel__card-line">${escapeHtml(avail)}</div>
+              <div class="lootbag-panel__card-line lootbag-panel__card-line--rarity is-${escapeHtml(rarity)}">${escapeHtml(rarity)}</div>
             </button>`)
         } else {
           const col = row as CreatorCollection
           const on =
             this.selectedCreatorCollection?.contractAddress === col.contractAddress
-          const thumb = col.thumbnail
-            ? `<img class="gacha-dep__cell-img" src="${escapeHtml(col.thumbnail)}" alt="" loading="lazy" />`
-            : 'COL'
+          const media = col.thumbnail
+            ? `<img class="lootbag-panel__card-img" src="${escapeHtml(col.thumbnail)}" alt="" loading="lazy" decoding="async" />`
+            : `<div class="lootbag-panel__card-placeholder" aria-hidden="true">COL</div>`
           parts.push(`
-            <button type="button" class="gacha-dep__cell${on ? ' is-selected' : ''}" data-creator-col="${escapeHtml(col.contractAddress)}" ${this.busy ? 'disabled' : ''}>
-              <div class="gacha-dep__cell-thumb gacha-dep__thumb--epic">${thumb}</div>
-              <div class="gacha-dep__cell-name">${escapeHtml(col.name)}</div>
-              <div class="gacha-dep__cell-sub">${col.size} item${col.size === 1 ? '' : 's'} · ${escapeHtml(shortAddr(col.contractAddress))}</div>
+            <button type="button" class="lootbag-panel__card lootbag-dep__pick${on ? ' is-selected' : ''} lootbag-rarity--epic" data-creator-col="${escapeHtml(col.contractAddress)}" ${this.busy ? 'disabled' : ''}>
+              <div class="lootbag-panel__card-media lootbag-rarity-bg--epic">${media}</div>
+              <div class="lootbag-panel__card-line lootbag-panel__card-line--title" title="${escapeHtml(col.name)}">${escapeHtml(col.name)}</div>
+              <div class="lootbag-panel__card-line">${col.size} item${col.size === 1 ? '' : 's'}</div>
+              <div class="lootbag-panel__card-line">${escapeHtml(shortAddr(col.contractAddress))}</div>
             </button>`)
         }
       }
       cells = parts.join('')
     }
 
-    const invTitle = browsingItems
-      ? `${this.selectedCreatorCollection?.name ?? 'Items'} · ${this.creatorItems.length}`
-      : `Your collections · ${this.creatorCollections.length}`
     const upBtn = browsingItems
-      ? `<button type="button" class="gacha-dep__page-btn" data-creator-up ${this.busy ? 'disabled' : ''} title="Back to collections">↑</button>`
+      ? `<button type="button" class="lootbag-dep__page-btn" data-creator-up ${this.busy ? 'disabled' : ''} title="Back to collections">↑</button>`
       : ''
 
+    this.renderHeaderDepositToolbar({
+      balLabel,
+      tabs,
+      pagerHtml: `
+        <div class="lootbag-dep__pager lootbag-dep__pager--header">
+          ${upBtn}
+          <button type="button" class="lootbag-dep__page-btn" data-creator-prev ${!canPrev || this.busy || this.creatorLoading ? 'disabled' : ''}>‹</button>
+          <span class="lootbag-dep__page-label">${this.creatorPage + 1}/${totalPages}</span>
+          <button type="button" class="lootbag-dep__page-btn" data-creator-next ${!canNext || this.busy || this.creatorLoading ? 'disabled' : ''}>›</button>
+        </div>`
+    })
+
     return `
-      <div class="gacha-dep gacha-dep--hud gacha-dep--creator">
-        <div class="gacha-dep__header gacha-dep__header--compact">
-          <button type="button" class="gacha-panel__btn gacha-panel__btn--secondary gacha-dep__back" data-dep-back ${this.busy ? 'disabled' : ''}>← Back</button>
-          <div class="gacha-dep__header-stats">
-            <span class="gacha-dep__stat gacha-dep__stat--ok">${escapeHtml(balLabel)} mMANA</span>
-            <span class="gacha-dep__stat gacha-dep__stat--gold">Lock ~${escapeHtml(lockEst)}</span>
-          </div>
-        </div>
-        ${tabs}
-        <div class="gacha-dep__body">
-          <aside class="gacha-dep__left">
-            <h3 class="gacha-dep__section-title">To stock</h3>
-            <div class="gacha-dep__list">${selBlock}</div>
-          </aside>
-          <section class="gacha-dep__right">
-            <div class="gacha-dep__inv-head">
-              <h3 class="gacha-dep__section-title">${escapeHtml(invTitle)}</h3>
-              <div class="gacha-dep__pager">
-                ${upBtn}
-                <button type="button" class="gacha-dep__page-btn" data-creator-prev ${!canPrev || this.busy || this.creatorLoading ? 'disabled' : ''}>‹</button>
-                <span class="gacha-dep__page-label">${this.creatorPage + 1}/${totalPages}</span>
-                <button type="button" class="gacha-dep__page-btn" data-creator-next ${!canNext || this.busy || this.creatorLoading ? 'disabled' : ''}>›</button>
-              </div>
-            </div>
-            <div class="gacha-dep__grid gacha-dep__grid--hud">${cells}</div>
+      <div class="lootbag-dep lootbag-dep--hud lootbag-dep--creator">
+        <div class="lootbag-dep__body">
+          <section class="lootbag-dep__main">
+            <div class="lootbag-dep__grid lootbag-dep__grid--bag">${cells}</div>
           </section>
+          <aside class="lootbag-dep__side">
+            <h3 class="lootbag-dep__section-title">To stock</h3>
+            <div class="lootbag-dep__list">${selBlock}</div>
+          </aside>
         </div>
-        <footer class="gacha-dep__footer">
+        <footer class="lootbag-dep__footer">
           ${
             this.error || (this.status && this.mode === 'deposit')
-              ? `<p class="gacha-dep__footer-hint">${escapeHtml(this.error || this.status)}</p>`
+              ? `<p class="lootbag-dep__footer-hint">${escapeHtml(this.error || this.status)}</p>`
               : ''
           }
-          <button type="button" class="gacha-panel__btn gacha-panel__btn--primary gacha-dep__confirm" data-stock-confirm ${this.busy || !this.stockItem ? 'disabled' : ''}>
-            Stock into grab bag
+          <button type="button" class="lootbag-panel__btn lootbag-panel__btn--primary lootbag-dep__confirm" data-stock-confirm ${this.busy || !this.stockItem ? 'disabled' : ''}>
+            Stock into Loot Bag
           </button>
         </footer>
       </div>`
@@ -682,9 +776,9 @@ export class GachaPanel {
   private renderDepositBody(): void {
     const balLabel = this.wallet ? formatMana(this.wallet.mana) : '—'
     const tabs = `
-      <div class="gacha-dep__tabs" role="tablist">
-        <button type="button" class="gacha-dep__tab${this.depositSource === 'wallet' ? ' is-active' : ''}" data-dep-source="wallet" ${this.busy ? 'disabled' : ''}>Wallet</button>
-        <button type="button" class="gacha-dep__tab${this.depositSource === 'creator' ? ' is-active' : ''}" data-dep-source="creator" ${this.busy ? 'disabled' : ''}>Creator collection</button>
+      <div class="lootbag-dep__tabs lootbag-dep__tabs--header" role="tablist">
+        <button type="button" class="lootbag-dep__tab${this.depositSource === 'wallet' ? ' is-active' : ''}" data-dep-source="wallet" ${this.busy ? 'disabled' : ''}>Wallet</button>
+        <button type="button" class="lootbag-dep__tab${this.depositSource === 'creator' ? ' is-active' : ''}" data-dep-source="creator" ${this.busy ? 'disabled' : ''}>Creator collection</button>
       </div>`
 
     if (this.depositSource === 'creator') {
@@ -693,68 +787,81 @@ export class GachaPanel {
     }
 
     const nftCount = this.inventory.filter((i) => i.kind === 'nft').length
-    const invTotal = this.inventory.length
+    const filtered = filterInv(this.inventory, this.invSearch)
+    const invTotal = filtered.length
     const totalPages = Math.max(1, Math.ceil(invTotal / INV_PAGE_SIZE))
     if (this.invPage >= totalPages) this.invPage = totalPages - 1
+    if (this.invPage < 0) this.invPage = 0
     const start = this.invPage * INV_PAGE_SIZE
-    const pageItems = this.inventory.slice(start, start + INV_PAGE_SIZE)
+    const pageItems = filtered.slice(start, start + INV_PAGE_SIZE)
     const selectedIds = new Set(this.selections.map((s) => s.item.id))
-    const totalLock = this.totalLockMana()
     const canPrev = this.invPage > 0
     const canNext = this.invPage + 1 < totalPages
     const packCount = this.selections.filter((s) => this.isPackSel(s)).length
     const nftSelCount = this.selections.length - packCount
     const selectedLabel =
       this.selections.length === 0
-        ? 'Selected: 0'
-        : `Selected: ${nftSelCount ? `${nftSelCount} NFT` : ''}${nftSelCount && packCount ? ' · ' : ''}${packCount ? `${packCount} pack` : ''}`
+        ? '0'
+        : `${nftSelCount ? `${nftSelCount} NFT` : ''}${nftSelCount && packCount ? ' · ' : ''}${packCount ? `${packCount} pack` : ''}`
 
     const selRows =
       this.selections.length === 0
-        ? `<p class="gacha-dep__empty">Select items from your inventory →</p>`
+        ? `<p class="lootbag-dep__empty">${
+            nftCount === 0
+              ? 'No Polygon wearables in this wallet · use Creator collection to mint'
+              : '← Select items from your inventory'
+          }</p>`
         : this.selections
             .map((sel) => {
               if (this.isPackSel(sel)) {
                 return `
-        <div class="gacha-dep__stock-card gacha-dep__stock-card--pack" data-sel-id="${escapeHtml(sel.item.id)}">
-          <button type="button" class="gacha-dep__stock-clear" data-remove="${escapeHtml(sel.item.id)}" aria-label="Remove" ${this.busy ? 'disabled' : ''}>×</button>
-          <div class="gacha-dep__stock-top">
-            <div class="gacha-dep__stock-thumb gacha-dep__thumb--pack">◈</div>
-            <div class="gacha-dep__stock-meta">
-              <div class="gacha-dep__stock-name">${escapeHtml(sel.item.name)}</div>
-              <div class="gacha-dep__stock-tags">
-                <span class="gacha-dep__pill gacha-dep__pill--legendary">pack</span>
-                <span class="gacha-dep__pill">escrow</span>
+        <div class="lootbag-dep__stock-card lootbag-dep__stock-card--pack" data-sel-id="${escapeHtml(sel.item.id)}">
+          <button type="button" class="lootbag-dep__stock-clear" data-remove="${escapeHtml(sel.item.id)}" aria-label="Remove" ${this.busy ? 'disabled' : ''}>×</button>
+          <div class="lootbag-dep__stock-top">
+            <div class="lootbag-dep__stock-thumb lootbag-dep__thumb--pack">◈</div>
+            <div class="lootbag-dep__stock-meta">
+              <div class="lootbag-dep__stock-name">${escapeHtml(sel.item.name)}</div>
+              <div class="lootbag-dep__stock-tags">
+                <span class="lootbag-dep__pill lootbag-dep__pill--legendary">pack</span>
+                <span class="lootbag-dep__pill">escrow</span>
               </div>
             </div>
           </div>
-          <div class="gacha-dep__stock-fields">
-            <label class="gacha-dep__stock-field">
+          <div class="lootbag-dep__stock-fields">
+            <label class="lootbag-dep__stock-field">
               <span>Pack prize</span>
               <input type="text" inputmode="decimal" data-prize-id="${escapeHtml(sel.item.id)}" value="${escapeHtml(sel.packPrizeMana || DEFAULT_PACK_PRIZE)}" ${this.busy ? 'disabled' : ''} />
             </label>
-            <label class="gacha-dep__stock-field">
+            <label class="lootbag-dep__stock-field">
               <span>Backing</span>
               <input type="text" inputmode="decimal" data-backing-id="${escapeHtml(sel.item.id)}" value="${escapeHtml(sel.backingMana)}" ${this.busy ? 'disabled' : ''} />
             </label>
           </div>
         </div>`
               }
+              const thumb = sel.item.imageUrl
+                ? `<img src="${escapeHtml(sel.item.imageUrl)}" alt="" loading="lazy" />`
+                : 'NFT'
+              const marketUrl = `https://market.decentraland.org/contracts/${encodeURIComponent(sel.item.collection)}/tokens/${encodeURIComponent(sel.item.tokenId)}`
+              const issuePill = sel.item.issuedId
+                ? `<span class="lootbag-dep__pill">Issue #${escapeHtml(sel.item.issuedId)}</span>`
+                : ''
               return `
-        <div class="gacha-dep__stock-card gacha-dep__stock-card--nft" data-sel-id="${escapeHtml(sel.item.id)}">
-          <button type="button" class="gacha-dep__stock-clear" data-remove="${escapeHtml(sel.item.id)}" aria-label="Remove" ${this.busy ? 'disabled' : ''}>×</button>
-          <div class="gacha-dep__stock-top">
-            <div class="gacha-dep__stock-thumb gacha-dep__thumb--${escapeHtml(sel.item.rarity)}">NFT</div>
-            <div class="gacha-dep__stock-meta">
-              <div class="gacha-dep__stock-name">${escapeHtml(sel.item.name)}</div>
-              <div class="gacha-dep__stock-tags">
-                <span class="gacha-dep__pill gacha-dep__pill--${escapeHtml(sel.item.rarity)}">${escapeHtml(sel.item.rarity)}</span>
-                <span class="gacha-dep__pill">#${escapeHtml(sel.item.tokenId)}</span>
+        <div class="lootbag-dep__stock-card lootbag-dep__stock-card--nft" data-sel-id="${escapeHtml(sel.item.id)}">
+          <button type="button" class="lootbag-dep__stock-clear" data-remove="${escapeHtml(sel.item.id)}" aria-label="Remove" ${this.busy ? 'disabled' : ''}>×</button>
+          <div class="lootbag-dep__stock-top">
+            <div class="lootbag-dep__stock-thumb lootbag-dep__thumb--${escapeHtml(sel.item.rarity)} lootbag-rarity-bg--${escapeHtml(sel.item.rarity)}">${thumb}</div>
+            <div class="lootbag-dep__stock-meta">
+              <div class="lootbag-dep__stock-name">${escapeHtml(sel.item.name)}</div>
+              <div class="lootbag-dep__stock-tags">
+                <span class="lootbag-dep__pill lootbag-dep__pill--${escapeHtml(sel.item.rarity)}">${escapeHtml(sel.item.rarity)}</span>
+                ${issuePill}
+                <a class="lootbag-dep__pill lootbag-dep__pill--view" href="${escapeHtml(marketUrl)}" target="_blank" rel="noopener noreferrer" title="Token #${escapeHtml(sel.item.tokenId)}">View</a>
               </div>
             </div>
           </div>
-          <div class="gacha-dep__stock-fields gacha-dep__stock-fields--single">
-            <label class="gacha-dep__stock-field">
+          <div class="lootbag-dep__stock-fields lootbag-dep__stock-fields--single">
+            <label class="lootbag-dep__stock-field">
               <span>Backing</span>
               <input type="text" inputmode="decimal" data-backing-id="${escapeHtml(sel.item.id)}" value="${escapeHtml(sel.backingMana)}" ${this.busy ? 'disabled' : ''} />
             </label>
@@ -763,60 +870,104 @@ export class GachaPanel {
             })
             .join('')
 
+    // Same card chrome as bag inventory row
     const cells: string[] = []
     for (let i = 0; i < INV_PAGE_SIZE; i++) {
       const item = pageItems[i]
       if (!item) {
-        cells.push(`<div class="gacha-dep__cell gacha-dep__cell--empty" aria-hidden="true"></div>`)
+        cells.push(`<div class="lootbag-panel__card lootbag-panel__card--empty" aria-hidden="true"></div>`)
         continue
       }
       const on = selectedIds.has(item.id)
       const isPack = item.kind === 'pack'
+      const rarity = isPack ? 'legendary' : (item.rarity || 'common').toLowerCase()
+      const media = item.imageUrl && !isPack
+        ? `<img class="lootbag-panel__card-img" src="${escapeHtml(item.imageUrl)}" alt="" loading="lazy" decoding="async" />`
+        : `<div class="lootbag-panel__card-placeholder" aria-hidden="true">${isPack ? '◈' : '✦'}</div>`
+      const detail = isPack
+        ? 'Always available'
+        : item.issuedId
+          ? `Issue #${escapeHtml(item.issuedId)}`
+          : `Token #${escapeHtml(item.tokenId)}`
+      const rarityLabel = isPack ? 'pack' : rarity
       cells.push(`
-        <button type="button" class="gacha-dep__cell${on ? ' is-selected' : ''}${isPack ? ' is-pack' : ''}" data-pick="${escapeHtml(item.id)}" ${this.busy ? 'disabled' : ''}>
-          <div class="gacha-dep__cell-thumb ${isPack ? 'gacha-dep__thumb--pack' : `gacha-dep__thumb--${escapeHtml(item.rarity)}`}">${isPack ? '◈' : 'NFT'}</div>
-          <div class="gacha-dep__cell-name">${escapeHtml(item.name)}</div>
-          <div class="gacha-dep__cell-sub">${isPack ? 'ALWAYS' : `#${escapeHtml(item.tokenId)}`}</div>
+        <button type="button" class="lootbag-panel__card lootbag-dep__pick${on ? ' is-selected' : ''}${isPack ? ' is-pack' : ''} lootbag-rarity--${escapeHtml(rarity)}" data-pick="${escapeHtml(item.id)}" ${this.busy ? 'disabled' : ''}>
+          <div class="lootbag-panel__card-media lootbag-rarity-bg--${escapeHtml(rarity)}">${media}</div>
+          <div class="lootbag-panel__card-line lootbag-panel__card-line--title" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
+          <div class="lootbag-panel__card-line">${detail}</div>
+          <div class="lootbag-panel__card-line lootbag-panel__card-line--rarity is-${escapeHtml(rarity)}">${escapeHtml(rarityLabel)}</div>
         </button>`)
     }
 
-    this.bodyEl.innerHTML = `
-      <div class="gacha-dep gacha-dep--hud">
-        <div class="gacha-dep__header gacha-dep__header--compact">
-          <button type="button" class="gacha-panel__btn gacha-panel__btn--secondary gacha-dep__back" data-dep-back ${this.busy ? 'disabled' : ''}>← Back</button>
-          <div class="gacha-dep__header-stats">
-            <span class="gacha-dep__stat gacha-dep__stat--ok">${escapeHtml(balLabel)} mMANA</span>
-            <span class="gacha-dep__stat">${escapeHtml(selectedLabel)}</span>
-            <span class="gacha-dep__stat gacha-dep__stat--gold">Lock ${escapeHtml(formatManaDisplay(totalLock))}</span>
-          </div>
-        </div>
-        ${tabs}
-        <div class="gacha-dep__body">
-          <aside class="gacha-dep__left">
-            <h3 class="gacha-dep__section-title">To Deposit</h3>
-            <div class="gacha-dep__list">${selRows}</div>
-          </aside>
-          <section class="gacha-dep__right">
-            <div class="gacha-dep__inv-head">
-              <h3 class="gacha-dep__section-title">${nftCount} NFT + pack</h3>
-              <div class="gacha-dep__pager">
-                <button type="button" class="gacha-dep__page-btn" data-inv-prev ${!canPrev || this.busy ? 'disabled' : ''}>‹</button>
-                <span class="gacha-dep__page-label">${this.invPage + 1}/${totalPages}</span>
-                <button type="button" class="gacha-dep__page-btn" data-inv-next ${!canNext || this.busy ? 'disabled' : ''}>›</button>
-              </div>
-            </div>
-            <div class="gacha-dep__grid gacha-dep__grid--hud">${cells.join('')}</div>
-          </section>
-        </div>
-        <footer class="gacha-dep__footer">
+    this.renderHeaderDepositToolbar({
+      balLabel,
+      tabs,
+      searchHtml: `
+        <div class="lootbag-dep__search-row lootbag-dep__search-row--header">
+          <input
+            type="search"
+            class="lootbag-dep__search"
+            data-inv-search
+            placeholder="Search name, rarity, issue…"
+            value="${escapeHtml(this.invSearch)}"
+            ${this.busy ? 'disabled' : ''}
+            autocomplete="off"
+            spellcheck="false"
+          />
           ${
-            this.error || (this.status && this.mode === 'deposit')
-              ? `<p class="gacha-dep__footer-hint">${escapeHtml(this.error || this.status)}</p>`
+            this.invSearch.trim()
+              ? `<button type="button" class="lootbag-dep__search-clear" data-inv-search-clear ${this.busy ? 'disabled' : ''}>Clear</button>`
               : ''
           }
-          <button type="button" class="gacha-panel__btn gacha-panel__btn--primary gacha-dep__confirm" data-dep-confirm ${this.busy || this.selections.length === 0 ? 'disabled' : ''}>
-            Confirm${this.selections.length ? ` (${this.selections.length})` : ''}
-          </button>
+        </div>`,
+      pagerHtml: `
+        <div class="lootbag-dep__pager lootbag-dep__pager--header">
+          <button type="button" class="lootbag-dep__page-btn" data-inv-prev ${!canPrev || this.busy ? 'disabled' : ''}>‹</button>
+          <span class="lootbag-dep__page-label">${this.invPage + 1}/${totalPages}</span>
+          <button type="button" class="lootbag-dep__page-btn" data-inv-next ${!canNext || this.busy ? 'disabled' : ''}>›</button>
+        </div>`
+    })
+
+    const sendSummary = this.depositSendSummaryText()
+
+    this.bodyEl.innerHTML = `
+      <div class="lootbag-dep lootbag-dep--hud">
+        <div class="lootbag-dep__body">
+          <section class="lootbag-dep__main">
+            <div class="lootbag-dep__grid lootbag-dep__grid--bag">${
+              invTotal === 0
+                ? `<div class="lootbag-dep__empty lootbag-dep__empty--center">${
+                    this.invSearch.trim()
+                      ? 'No items match your search'
+                      : nftCount === 0
+                        ? 'No wearables in wallet'
+                        : 'Nothing to show'
+                  }</div>`
+                : cells.join('')
+            }</div>
+          </section>
+          <aside class="lootbag-dep__side">
+            <div class="lootbag-dep__side-head">
+              <h3 class="lootbag-dep__section-title">To Deposit</h3>
+              <span class="lootbag-dep__side-count" data-dep-selected title="Selected">${escapeHtml(selectedLabel)}</span>
+            </div>
+            <div class="lootbag-dep__list">${selRows}</div>
+          </aside>
+        </div>
+        <footer class="lootbag-dep__footer lootbag-dep__footer--inv-row">
+          <div class="lootbag-dep__footer-inv">
+            <button type="button" class="lootbag-panel__btn lootbag-panel__btn--primary lootbag-dep__confirm" data-dep-confirm ${this.busy || this.selections.length === 0 ? 'disabled' : ''}>
+              Confirm deposit
+            </button>
+            ${
+              this.error || (this.status && this.mode === 'deposit')
+                ? `<p class="lootbag-dep__footer-hint lootbag-dep__footer-hint--row">${escapeHtml(this.error || this.status)}</p>`
+                : ''
+            }
+          </div>
+          <div class="lootbag-dep__footer-side">
+            <span class="lootbag-dep__footer-send" data-dep-send-summary title="Assets you will send">${escapeHtml(sendSummary)}</span>
+          </div>
         </footer>
       </div>
     `
@@ -832,37 +983,49 @@ export class GachaPanel {
         ? 'MANA Pack'
         : `Token #${escapeHtml(p.tokenId)}`
       : `Position #${win.positionId}`
+    const netTake =
+      p && p.backing > 0n
+        ? takeTokensNetWei(p.backing, this.pool?.depositorBidRateBps)
+        : 0n
     const sub = p
       ? isPack
         ? `Prize ${formatMana(p.packMana)} mMANA · Backed by ${formatMana(p.backing)} mMANA`
         : `Backed by ${formatMana(p.backing)} mMANA · ${shortAddr(p.depositor)}`
       : 'Settle your claim'
+    const bidPct = Math.round((this.pool?.depositorBidRateBps ?? 8500) / 100)
+    const takeHint =
+      netTake > 0n
+        ? `<p class="lootbag-win-modal__hint">Take MANA nets ${formatMana(netTake)} mMANA (${bidPct}% of backing after protocol cut).</p>`
+        : ''
     const glyph = isPack ? '◈' : '✦'
     const demo = isFake
-      ? `<p class="gacha-win-modal__demo">Demo mode — no chain. Tap Keep or Take to preview settle.</p>`
+      ? `<p class="lootbag-win-modal__demo">Demo mode — no chain. Tap Keep or Take to preview settle.</p>`
       : ''
     // Always enable settle on open; setBusy() toggles disabled while a settle runs.
     const card = this.winModal.querySelector('[data-win-card]')!
     card.innerHTML = `
-      <button type="button" class="gacha-win-modal__x" data-win-close aria-label="Close">×</button>
-      <div class="gacha-win-modal__kicker">Selected from grab bag</div>
-      <div class="gacha-win-modal__art" aria-hidden="true">${glyph}</div>
-      <h3 class="gacha-win-modal__title">${title}</h3>
-      <p class="gacha-win-modal__sub">${sub}</p>
-      <p class="gacha-win-modal__pos">pos ${win.positionId}</p>
+      <button type="button" class="lootbag-win-modal__x" data-win-close aria-label="Close">×</button>
+      <div class="lootbag-win-modal__kicker">Selected from Loot Bag</div>
+      <div class="lootbag-win-modal__art" aria-hidden="true">${glyph}</div>
+      <h3 class="lootbag-win-modal__title">${title}</h3>
+      <p class="lootbag-win-modal__sub">${sub}</p>
+      <p class="lootbag-win-modal__pos">pos ${win.positionId}</p>
+      ${takeHint}
       ${demo}
-      <div class="gacha-win-modal__actions">
-        <button type="button" class="gacha-panel__btn gacha-panel__btn--primary" data-settle-keep>Keep prize</button>
-        <button type="button" class="gacha-panel__btn gacha-panel__btn--secondary" data-settle-take>Take MANA</button>
+      <div class="lootbag-win-modal__actions">
+        <button type="button" class="lootbag-panel__btn lootbag-panel__btn--primary" data-settle-keep>Keep prize</button>
+        <button type="button" class="lootbag-panel__btn lootbag-panel__btn--secondary" data-settle-take>${
+          netTake > 0n ? `Take ${formatMana(netTake)} mMANA` : 'Take MANA'
+        }</button>
       </div>
     `
     this.winModal.hidden = false
-    document.documentElement.classList.add('gacha-win-open')
+    document.documentElement.classList.add('lootbag-win-open')
   }
 
   private closeWinModal(opts: { clearPending: boolean }): void {
     this.winModal.hidden = true
-    document.documentElement.classList.remove('gacha-win-open')
+    document.documentElement.classList.remove('lootbag-win-open')
     const card = this.winModal.querySelector('[data-win-card]')
     if (card) card.innerHTML = ''
     if (opts.clearPending) {
@@ -875,57 +1038,52 @@ export class GachaPanel {
     // Centered viewport overlay for all sign / meta-tx steps (2D + 3D).
     if (this.steps.length > 0) {
       const active = this.steps.find((s) => s.status === 'active')
+      const errored = this.steps.find((s) => s.status === 'error')
       const title =
         this.mode === 'deposit'
           ? this.depositSource === 'creator'
-            ? 'Stock into grab bag'
-            : 'Deposit to grab bag'
-          : 'Grab bag transaction'
-      // Avoid duplicating the step label in the status line
-      const statusLine = active != null ? 'Confirm in your wallet…' : this.status?.trim() || 'Working…'
-      syncGachaSignOverlay({
+            ? 'Stock into Loot Bag'
+            : 'Deposit to Loot Bag'
+          : this.steps.some((s) => /open loot pack|claim|pack cost|mMANA for pack/i.test(s.label))
+            ? 'Claim Loot Pack'
+            : this.steps.some((s) => /keep your prize|take the mana|settle/i.test(s.label))
+              ? 'Settle claim'
+              : this.steps.some((s) => /collect your rewards|withdraw/i.test(s.label))
+                ? 'Collect rewards'
+                : 'Loot Bag'
+      // Never surface step labels / contract names as the subtitle
+      const statusLine =
+        active != null
+          ? 'Confirm in your wallet…'
+          : errored != null
+            ? errored.detail?.trim() || 'Something went wrong'
+            : 'Working…'
+      const isClaimFlow =
+        this.mode !== 'deposit' &&
+        this.steps.some((s) => /open loot pack|claim|pack cost|mMANA for pack/i.test(s.label))
+      const isSettleFlow =
+        this.mode !== 'deposit' &&
+        this.steps.some((s) => /keep your prize|take the mana|settle/i.test(s.label))
+      syncLootBagSignOverlay({
         title,
         status: statusLine,
+        meta: isClaimFlow || isSettleFlow ? this.manaCostBalance().summary : undefined,
         steps: this.steps
       })
     } else {
-      hideGachaSignOverlay()
+      hideLootBagSignOverlay()
     }
 
-    // Keep inline list only on main panel (non-deposit); deposit uses overlay only.
-    if (!this.steps.length || this.mode === 'deposit') {
-      this.stepsEl.hidden = true
-      this.stepsEl.innerHTML = ''
-      return
-    }
-    this.stepsEl.hidden = false
-    this.stepsEl.innerHTML = `<ol class="gacha-panel__step-list">${this.steps
-      .map((s) => {
-        const hash = s.hash
-          ? ` <a class="gacha-panel__tx" href="${EXPLORER_TX}${s.hash}" target="_blank" rel="noopener">${s.hash.slice(0, 10)}…</a>`
-          : ''
-        const detail = s.detail ? ` <span class="gacha-panel__muted">${escapeHtml(s.detail)}</span>` : ''
-        return `<li class="gacha-panel__step is-${s.status}">${escapeHtml(s.label)}${hash}${detail}</li>`
-      })
-      .join('')}</ol>`
+    // Progress / errors live in the centered overlay only — never under the bag inventory.
+    this.stepsEl.hidden = true
+    this.stepsEl.innerHTML = ''
   }
 
   private renderStatus(): void {
-    if (this.mode === 'deposit') return
-    if (this.error) {
-      this.statusEl.hidden = false
-      this.statusEl.className = 'gacha-panel__status is-error'
-      this.statusEl.textContent = this.error
-      return
-    }
-    if (!this.status) {
-      this.statusEl.hidden = true
-      this.statusEl.textContent = ''
-      return
-    }
-    this.statusEl.hidden = false
-    this.statusEl.className = 'gacha-panel__status'
-    this.statusEl.textContent = this.status
+    // Don't mirror claim/deposit notes or wallet errors into the bag panel footer.
+    this.statusEl.hidden = true
+    this.statusEl.textContent = ''
+    this.statusEl.className = 'lootbag-panel__status'
   }
 
   private async onBodyClick(ev: MouseEvent): Promise<void> {
@@ -996,6 +1154,12 @@ export class GachaPanel {
       await this.confirmStockFromCollection()
       return
     }
+    if (t.closest('[data-inv-search-clear]')) {
+      this.invSearch = ''
+      this.invPage = 0
+      this.renderDepositBody()
+      return
+    }
     if (t.closest('[data-inv-prev]')) {
       if (this.invPage > 0) {
         this.invPage -= 1
@@ -1004,7 +1168,10 @@ export class GachaPanel {
       return
     }
     if (t.closest('[data-inv-next]')) {
-      const totalPages = Math.max(1, Math.ceil(this.inventory.length / INV_PAGE_SIZE))
+      const totalPages = Math.max(
+        1,
+        Math.ceil(filterInv(this.inventory, this.invSearch).length / INV_PAGE_SIZE)
+      )
       if (this.invPage + 1 < totalPages) {
         this.invPage += 1
         this.renderDepositBody()
@@ -1030,24 +1197,30 @@ export class GachaPanel {
   private onBodyInput(ev: Event): void {
     if (this.mode !== 'deposit') return
     const input = ev.target as HTMLInputElement
+    if ('invSearch' in input.dataset) {
+      this.invSearch = input.value
+      this.invPage = 0
+      this.renderDepositBody()
+      const el =
+        (this.headerDepositEl.querySelector('[data-inv-search]') as HTMLInputElement | null) ||
+        (this.bodyEl.querySelector('[data-inv-search]') as HTMLInputElement | null)
+      if (el) {
+        el.focus()
+        const len = el.value.length
+        try {
+          el.setSelectionRange(len, len)
+        } catch {
+          /* type=search may ignore selection in some browsers */
+        }
+      }
+      return
+    }
     if ('stockCount' in input.dataset) {
       this.stockMintCount = input.value
-      const gold = this.bodyEl.querySelector('.gacha-dep__stat--gold')
-      if (gold) {
-        const c = Math.max(0, Math.floor(Number(this.stockMintCount) || 0))
-        const a = Number(this.stockAvgBacking) || 0
-        gold.textContent = `Lock ~${formatManaDisplay(c * a)}`
-      }
       return
     }
     if ('stockBacking' in input.dataset) {
       this.stockAvgBacking = input.value
-      const gold = this.bodyEl.querySelector('.gacha-dep__stat--gold')
-      if (gold) {
-        const c = Math.max(0, Math.floor(Number(this.stockMintCount) || 0))
-        const a = Number(this.stockAvgBacking) || 0
-        gold.textContent = `Lock ~${formatManaDisplay(c * a)}`
-      }
       return
     }
     const prizeId = input.dataset.prizeId
@@ -1056,15 +1229,13 @@ export class GachaPanel {
       this.selections = this.selections.map((s) =>
         s.item.id === prizeId ? { ...s, packPrizeMana: input.value } : s
       )
+      this.refreshDepositSendSummary()
     } else if (backingId) {
       this.selections = this.selections.map((s) =>
         s.item.id === backingId ? { ...s, backingMana: input.value } : s
       )
-    } else {
-      return
+      this.refreshDepositSendSummary()
     }
-    const gold = this.bodyEl.querySelector('.gacha-dep__stat--gold')
-    if (gold) gold.textContent = `Lock ${formatManaDisplay(this.totalLockMana())}`
   }
 
   private async ensureCreatorCollectionsLoaded(): Promise<void> {
@@ -1171,8 +1342,8 @@ export class GachaPanel {
         avgBackingMana: this.stockAvgBacking,
         api: this.flowApi(),
         waitForContinue: async ({ label }) => {
-          await requestGachaSignContinue({
-            title: 'Stock into grab bag',
+          await requestLootBagSignContinue({
+            title: 'Stock into Loot Bag',
             status: label,
             steps: this.steps,
             buttonLabel: 'Continue'
@@ -1180,18 +1351,18 @@ export class GachaPanel {
         }
       })
       this.steps = []
-      hideGachaSignOverlay()
+      hideLootBagSignOverlay()
       this.stockItem = null
       await this.refresh()
       this.setBusy(false)
-      await showGachaSuccessOverlay({
+      await showLootBagSuccessOverlay({
         title: 'Stocked!',
-        message: `${mintCount} item${mintCount === 1 ? '' : 's'} added to the grab bag.`,
+        message: `${mintCount} item${mintCount === 1 ? '' : 's'} added to the Loot Bag.`,
         detail: item.name,
-        buttonLabel: 'Back to grab bag'
+        buttonLabel: 'Back to Loot Bag'
       })
       this.setMode('main')
-      this.status = `Stocked ${mintCount} into grab bag`
+      this.status = `Stocked ${mintCount} into Loot Bag`
       this.renderStatus()
     } catch (e) {
       this.error = humanizeStockError(e)
@@ -1271,6 +1442,7 @@ export class GachaPanel {
         } else {
           await runDepositNft({
             sessionAddress: this.sessionAddress(),
+            collection: sel.item.collection as `0x${string}`,
             tokenId: BigInt(sel.item.tokenId),
             backingMana: sel.backingMana,
             api: this.flowApi()
@@ -1280,6 +1452,7 @@ export class GachaPanel {
           if (this.wallet) {
             this.wallet = {
               ...this.wallet,
+              ownedNfts: this.wallet.ownedNfts.filter((n) => n.id !== sel.item.id),
               ownedTokenIds: this.wallet.ownedTokenIds.filter((id) => String(id) !== sel.item.tokenId)
             }
           }
@@ -1289,7 +1462,7 @@ export class GachaPanel {
       this.steps = []
       await this.refresh()
       this.setMode('main')
-      this.status = 'Deposits locked in — grab bag refreshed'
+      this.status = 'Deposits locked in — Loot Bag refreshed'
       this.renderStatus()
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e)
@@ -1302,13 +1475,14 @@ export class GachaPanel {
 
   private async onClaimClick(): Promise<void> {
     if (this.busy || this.mode !== 'main') return
-    if (!this.sessionAddress() && !USE_FAKE_CLAIM) {
+    // 3D HUD always simulates claim (no chain pull) so peers can toast the prize.
+    if (!this.sessionAddress()) {
       this.error = 'Connect a wallet to claim'
       this.renderStatus()
       return
     }
     if (!this.pool || this.pool.positions.length === 0) {
-      this.error = 'Grab bag is empty — deposit first'
+      this.error = 'Loot Bag is empty — deposit first'
       this.renderStatus()
       return
     }
@@ -1321,45 +1495,20 @@ export class GachaPanel {
     this.stepSeq = 0
     this.closeWinModal({ clearPending: true })
     this.renderSteps()
-    this.status = USE_FAKE_CLAIM ? 'Demo claim…' : 'Claiming from grab bag…'
+    this.status = ''
     this.renderStatus()
 
     try {
-      let win: PendingWin | null = null
-      let isFake = false
+      // Simulated open — pick a random bag item, no wallet tx.
+      await new Promise((r) => setTimeout(r, 650))
+      const pick =
+        this.pool.positions[Math.floor(Math.random() * this.pool.positions.length)] ?? null
+      if (!pick) throw new Error('No positions to preview')
+      const win: PendingWin = { positionId: pick.positionId, position: pick }
 
-      if (USE_FAKE_CLAIM) {
-        isFake = true
-        await new Promise((r) => setTimeout(r, 700))
-        const pick =
-          this.pool.positions[Math.floor(Math.random() * this.pool.positions.length)] ?? null
-        if (!pick) throw new Error('No positions to preview')
-        win = { positionId: pick.positionId, position: pick }
-      } else {
-        const result = await runPull({
-          sessionAddress: this.sessionAddress(),
-          acquisitionFee: this.pool.acquisitionFee,
-          api: this.flowApi()
-        })
-        win = result.win
-        await this.refresh()
-      }
-
-      if (win) {
-        this.status = isFake
-          ? `Demo: selected pos #${win.positionId}`
-          : `Selected pos #${win.positionId} — settle in modal`
-        this.renderStatus()
-        // Peers only — PM topic broadcast (no local toast).
-        void this.broadcastClaim(win, isFake)
-        // Clear busy before opening so Keep / Take are clickable immediately.
-        this.setBusy(false)
-        this.openWinModal(win, isFake)
-      } else {
-        this.status = 'Claim confirmed'
-        this.renderStatus()
-        this.setBusy(false)
-      }
+      // Do not broadcast yet — wait until Keep prize / Take MANA.
+      this.setBusy(false)
+      this.openWinModal(win, true)
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e)
       this.renderStatus()
@@ -1367,31 +1516,55 @@ export class GachaPanel {
     }
   }
 
-  private async broadcastClaim(win: PendingWin, demo: boolean): Promise<void> {
+  /** Peers toast after the claimer settles (Keep / Take) — not when the pack first opens. */
+  private async broadcastClaim(
+    win: PendingWin,
+    demo: boolean,
+    keepPrize: boolean
+  ): Promise<void> {
     const session = this.options.getSession()
     const p = win.position
-    const label = p
-      ? p.kind === 'manaPack'
-        ? 'MANA Pack'
-        : `Token #${p.tokenId}`
-      : `pos ${win.positionId}`
+    const isPack = p?.kind === 'manaPack'
+    // Keep pack → full prize; take tokens → backing × depositorBidRateBps (default 85%).
+    const bidBps = this.pool?.depositorBidRateBps
+    const manaAmount = p
+      ? keepPrize
+        ? isPack && p.packMana > 0n
+          ? formatMana(p.packMana)
+          : null
+        : p.backing > 0n
+          ? formatMana(takeTokensNetWei(p.backing, bidBps))
+          : null
+      : null
+    const label = !keepPrize
+      ? manaAmount
+        ? `Took ${manaAmount} mMANA`
+        : 'Took MANA'
+      : p
+        ? isPack
+          ? manaAmount
+            ? `MANA Pack · ${manaAmount} mMANA`
+            : 'MANA Pack'
+          : p.name?.trim() ||
+            (p.issuedId ? `Issue #${p.issuedId}` : `Token #${p.tokenId}`)
+        : `pos ${win.positionId}`
     const profile = session.getProfile()
     const displayName = profile?.displayName?.trim() || null
-    const ok = await publishPoolClaim({
+    await publishPoolClaim({
       identity: session.getAuthIdentity(),
       address: session.getAddress() ?? this.sessionAddress(),
       displayName,
       positionId: win.positionId,
       label,
-      demo
+      demo,
+      imageUrl: p?.imageUrl ?? null,
+      rarity: isPack ? 'legendary' : (p?.rarity ?? null),
+      issueId: isPack ? null : (p?.issuedId ?? null),
+      itemName: isPack ? 'MANA Pack' : (p?.name?.trim() || null),
+      kind: isPack ? 'pack' : 'nft',
+      manaAmount,
+      outcome: keepPrize ? 'keep' : 'take'
     })
-    // Surface peer-toast path in panel status (win modal stays the local UX).
-    if (!ok) {
-      this.status = demo
-        ? `Demo win #${win.positionId} — peer toast not sent (check social logs)`
-        : `Win #${win.positionId} — peer toast not sent (check social logs)`
-      this.renderStatus()
-    }
   }
 
   private async onWinModalClick(ev: MouseEvent): Promise<void> {
@@ -1413,22 +1586,22 @@ export class GachaPanel {
     this.renderSteps()
     try {
       if (this.pendingWinIsFake) {
+        const settled = this.pendingWin
         const card = this.winModal.querySelector('[data-win-card]')
         if (card) {
           card.innerHTML = `
-            <div class="gacha-win-modal__kicker">Demo settle</div>
-            <div class="gacha-win-modal__art" aria-hidden="true">✓</div>
-            <h3 class="gacha-win-modal__title">${keepPrize ? 'Kept prize' : 'Took MANA'}</h3>
-            <p class="gacha-win-modal__sub">UI preview only — no chain transaction.</p>
-            <div class="gacha-win-modal__actions">
-              <button type="button" class="gacha-panel__btn gacha-panel__btn--primary" data-win-close>Done</button>
+            <div class="lootbag-win-modal__kicker">Demo settle</div>
+            <div class="lootbag-win-modal__art" aria-hidden="true">✓</div>
+            <h3 class="lootbag-win-modal__title">${keepPrize ? 'Kept prize' : 'Took MANA'}</h3>
+            <p class="lootbag-win-modal__sub">UI preview only — no chain transaction.</p>
+            <div class="lootbag-win-modal__actions">
+              <button type="button" class="lootbag-panel__btn lootbag-panel__btn--primary" data-win-close>Done</button>
             </div>
           `
         }
+        // Peer toast only after Keep / Take
+        void this.broadcastClaim(settled, true, keepPrize)
         await new Promise((r) => setTimeout(r, 900))
-        this.status = keepPrize
-          ? 'Demo settle — keep (no chain)'
-          : 'Demo settle — take MANA (no chain)'
         this.pendingWin = null
         this.pendingWinIsFake = false
         this.closeWinModal({ clearPending: true })
@@ -1436,16 +1609,17 @@ export class GachaPanel {
         return
       }
 
+      const settled = this.pendingWin
       await runSettle({
         sessionAddress: this.sessionAddress(),
-        positionId: this.pendingWin.positionId,
+        positionId: settled.positionId,
         keepPrize,
         api: this.flowApi()
       })
+      void this.broadcastClaim(settled, false, keepPrize)
       this.pendingWin = null
       this.pendingWinIsFake = false
       this.closeWinModal({ clearPending: true })
-      this.status = keepPrize ? 'Settled — prize kept' : 'Settled — took MANA'
       this.renderStatus()
       await this.refresh()
     } catch (e) {

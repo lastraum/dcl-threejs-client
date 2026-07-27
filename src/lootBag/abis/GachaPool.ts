@@ -1,6 +1,6 @@
 import type { Abi } from 'viem'
 
-export const gachaPoolAbi = [
+export const lootBagPoolAbi = [
   {
     "inputs": [],
     "name": "activeCount",

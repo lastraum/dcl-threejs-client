@@ -95,7 +95,7 @@ export async function getCollectionMinterStatus(
 ): Promise<CollectionMinterStatus> {
   const collection = collectionRaw.trim().toLowerCase() as Address
   if (!isAddr(collection)) throw new Error('Invalid collection address')
-  const pool = ADDRESSES.gachaPool.toLowerCase() as Address
+  const pool = ADDRESSES.lootBagPool.toLowerCase() as Address
   const itemId = opts?.itemId != null ? BigInt(opts.itemId) : null
 
   let isGlobalMinter = false
@@ -166,7 +166,7 @@ export async function getCollectionMinterStatus(
 }
 
 /**
- * Meta-tx: collection.setMinters([gachaPool], [true]).
+ * Meta-tx: collection.setMinters([lootBagPool], [true]).
  * EIP-712 domain = Decentraland Collection / 2 (Collection V2).
  * Creator must sign; relay pays gas. Collection must pass dcl-meta-tx allowlist
  * (DCL collections subgraph usually covers published Collection V2).
@@ -178,11 +178,11 @@ export async function authorizePoolAsCollectionMinter(args: {
   const from = await ensureWalletAddress(args.sessionAddress)
   const collection = args.collection.trim().toLowerCase() as Address
   if (!isAddr(collection)) throw new Error('Invalid collection address')
-  const pool = ADDRESSES.gachaPool
+  const pool = ADDRESSES.lootBagPool
 
   const status = await getCollectionMinterStatus(collection, { account: from })
   if (status.isGlobalMinter) {
-    throw new Error('Grab bag is already a global minter on this collection')
+    throw new Error('Loot Bag is already a global minter on this collection')
   }
   if (status.creator && status.creator !== from.toLowerCase()) {
     throw new Error(
@@ -230,9 +230,9 @@ export function humanizeStockError(err: unknown): string {
     lower.includes('_issuetoken: caller_can_not_mint')
   ) {
     return (
-      'Grab bag is not allowed to mint on this collection yet. ' +
+      'Loot Bag is not allowed to mint on this collection yet. ' +
       'Stock will prompt setMinters as step 1 (meta-tx) if you are the creator. ' +
-      `Grab bag: ${ADDRESSES.gachaPool}`
+      `Loot Bag: ${ADDRESSES.lootBagPool}`
     )
   }
 
@@ -245,7 +245,7 @@ export function humanizeStockError(err: unknown): string {
   }
 
   if (raw.includes('onlyCreator') || lower.includes('caller_is_not_creator')) {
-    return 'Only the collection creator can authorize the grab bag as minter (setMinters).'
+    return 'Only the collection creator can authorize the Loot Bag as minter (setMinters).'
   }
 
   if (raw.includes('UNPREDICTABLE_GAS_LIMIT') || lower.includes('cannot estimate gas')) {
@@ -258,7 +258,7 @@ export function humanizeStockError(err: unknown): string {
     }
     return (
       'Transaction would revert on-chain (gas estimate failed). ' +
-      'Most common: grab bag is not a minter — stock flow will try setMinters first. ' +
+      'Most common: Loot Bag is not a minter — stock flow will try setMinters first. ' +
       `Detail: ${raw.slice(0, 220)}`
     )
   }

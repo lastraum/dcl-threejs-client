@@ -1,12 +1,12 @@
 /**
- * Meta-tx path ported from gacha/admin/src/metaTx.ts.
+ * Meta-tx path ported from Loot Bag admin/src/metaTx.ts.
  * EIP-712 sign via client ethereum provider → forge dcl-meta-tx POST /v1/transactions.
  */
 import { encodeFunctionData, type Abi, type Address, type Hex } from 'viem'
 import { getEthereumProvider } from '../auth/ethereumProvider'
 import { ADDRESSES, CHAIN_ID, META_TX_DOMAINS, META_TX_URL } from './config'
 import { polygonPublicClient } from './polygonClient'
-import { gachaPoolAbi } from './abis/GachaPool'
+import { lootBagPoolAbi } from './abis/GachaPool'
 import { mockManaAbi } from './abis/MockMANA'
 import { mockWearableAbi } from './abis/MockWearable'
 
@@ -229,7 +229,7 @@ export async function sendContractMetaTx(args: {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     throw new Error(
-      `Meta-tx relay unreachable (${META_TX_URL}). Check CORS / network, or set VITE_META_TX_URL. ${msg}`
+      `Meta-tx relay unreachable (${META_TX_URL}). Ensure nginx/Vite proxies /api/meta-tx → transactions.lastslice.co. ${msg}`
     )
   }
 
@@ -273,22 +273,36 @@ export async function getManaAllowance(owner: Address, spender: Address): Promis
   }) as Promise<bigint>
 }
 
-export async function getNftApproved(tokenId: bigint): Promise<Address> {
+export async function getNftApproved(
+  collection: Address,
+  tokenId: bigint
+): Promise<Address> {
   return polygonPublicClient.readContract({
-    address: ADDRESSES.mockWearable,
+    address: collection,
     abi: mockWearableAbi,
     functionName: 'getApproved',
     args: [tokenId]
   }) as Promise<Address>
 }
 
-export async function isNftApprovedForAll(owner: Address, operator: Address): Promise<boolean> {
+export async function isNftApprovedForAll(
+  collection: Address,
+  owner: Address,
+  operator: Address
+): Promise<boolean> {
   return polygonPublicClient.readContract({
-    address: ADDRESSES.mockWearable,
+    address: collection,
     abi: mockWearableAbi,
     functionName: 'isApprovedForAll',
     args: [owner, operator]
   }) as Promise<boolean>
+}
+
+/** EIP-712 domain for NFT meta-tx approve (Mock vs DCL Collection V2). */
+export function nftMetaTxDomain(collection: Address): MetaTxDomain {
+  const key = collection.toLowerCase()
+  if (META_TX_DOMAINS[key]) return META_TX_DOMAINS[key]!
+  return DCL_COLLECTION_V2_META_TX_DOMAIN
 }
 
 /** Wait for receipt; throw if reverted */
@@ -303,4 +317,4 @@ export async function waitReceipt(hash: Hex): Promise<void> {
   }
 }
 
-export { gachaPoolAbi, mockManaAbi, mockWearableAbi }
+export { lootBagPoolAbi, mockManaAbi, mockWearableAbi }

@@ -161,45 +161,77 @@ export class SocialMobileNotifications {
     return this.isSignedIn() && notificationPrefs.isPoolClaimsEnabled()
   }
 
-  /** Peer grab bag claim (PM topic). Local winner uses the win modal, not this toast. */
+  /** Peer Loot Bag claim (PM topic). Local winner uses the win modal, not this toast. */
   private pushPoolClaimBanner(ev: PoolClaimDataEvent): void {
     if (!this.canShowPoolClaims()) {
       clientDebugLog.log(
         'social',
-        'Grab bag claim toast suppressed (banners or grab bag claims off in Chat settings)',
+        'Loot Bag claim toast suppressed (banners or Loot Bag claims off in Chat settings)',
         { level: 'info', alsoConsole: true, throttleMs: 5000, throttleKey: 'pool-claim-prefs-off' }
       )
       return
     }
-    const name = ev.msg.n?.trim() || `${ev.fromAddress.slice(0, 6)}…${ev.fromAddress.slice(-4)}`
-    const prize = ev.msg.l || `pos ${ev.msg.p}`
+    const claimer = ev.msg.n?.trim() || `${ev.fromAddress.slice(0, 6)}…${ev.fromAddress.slice(-4)}`
+    const isPack = ev.msg.k === 'pack' || /mana pack|^pack$/i.test(ev.msg.l || '')
+    const tookMana = ev.msg.out === 'take' || /^took\b/i.test(ev.msg.l || '')
+    const rarity = (ev.msg.r || (isPack ? 'legendary' : 'common')).toLowerCase()
+    const itemName =
+      ev.msg.name?.trim() ||
+      (isPack ? 'MANA Pack' : ev.msg.l?.trim() || `Item #${ev.msg.p}`)
+    const manaLine = ev.msg.mana ? `${ev.msg.mana} mMANA` : ''
+    // Meta row: pack prize · issue # · or take-tokens net amount
+    let metaPrimary = isPack ? 'pack' : rarity
+    let metaSecondary = ''
+    if (tookMana) {
+      metaPrimary = 'took mana'
+      // Net tokens from position backing when they cash out instead of keeping the prize
+      metaSecondary = manaLine ? `net ${manaLine}` : 'net from deposit'
+    } else if (isPack) {
+      metaPrimary = 'pack'
+      metaSecondary = manaLine || 'Pack'
+    } else if (ev.msg.issue) {
+      metaSecondary = `Issue #${ev.msg.issue}`
+    } else if (ev.msg.l && /token|issue/i.test(ev.msg.l)) {
+      metaSecondary = ev.msg.l
+    }
+    const media = ev.msg.img
+      ? `<img class="social-mobile-notif__loot-img" src="${escapeHtml(ev.msg.img)}" alt="" loading="lazy" decoding="async" />`
+      : `<span class="social-mobile-notif__loot-fallback" aria-hidden="true">${isPack || tookMana ? '◈' : '✦'}</span>`
     const demo = ev.msg.demo ? ' · demo' : ''
-    const title = name
-    const sub = `claimed ${prize} from the grab bag${demo}`
+    const sub = tookMana
+      ? `${claimer} took MANA from a Loot Pack${demo}`
+      : `${claimer} claimed a Loot Pack${demo}`
 
     const banner = document.createElement('button')
     banner.type = 'button'
-    banner.className = 'social-mobile-notif'
-    banner.setAttribute('aria-label', `${title} ${sub}`)
+    banner.className = 'social-mobile-notif social-mobile-notif--loot'
+    banner.setAttribute('aria-label', `${itemName}. ${sub}`)
     banner.innerHTML = `
-      <div class="social-mobile-notif__card">
-        <div class="social-mobile-notif__header">
-          <span class="social-mobile-notif__app-icon" aria-hidden="true">◇</span>
-          <span class="social-mobile-notif__app-name">WEARABLE POOL</span>
+      <div class="social-mobile-notif__card social-mobile-notif__card--loot">
+        <div class="social-mobile-notif__header social-mobile-notif__header--loot">
+          <span class="social-mobile-notif__app-icon social-mobile-notif__app-icon--loot" aria-hidden="true">◈</span>
+          <span class="social-mobile-notif__app-name">LOOT BAG</span>
           <span class="social-mobile-notif__time">now</span>
         </div>
-        <div class="social-mobile-notif__body">
-          <span class="social-mobile-notif__avatar"><span class="social-mobile-notif__avatar-fallback" aria-hidden="true">◈</span></span>
+        <div class="social-mobile-notif__body social-mobile-notif__body--loot">
+          <span class="social-mobile-notif__loot-media lootbag-rarity-bg--${escapeHtml(tookMana ? 'legendary' : rarity)}">${media}</span>
           <span class="social-mobile-notif__text">
-            <span class="social-mobile-notif__title">${escapeHtml(title)}</span>
             <span class="social-mobile-notif__sub">${escapeHtml(sub)}</span>
+            <span class="social-mobile-notif__title">${escapeHtml(itemName)}</span>
+            <span class="social-mobile-notif__loot-meta">
+              <span class="social-mobile-notif__loot-rarity is-${escapeHtml(tookMana ? 'legendary' : isPack ? 'pack' : rarity)}">${escapeHtml(metaPrimary)}</span>
+              ${
+                metaSecondary
+                  ? `<span class="social-mobile-notif__loot-issue${tookMana || (isPack && manaLine) ? ' social-mobile-notif__loot-issue--mana' : ''}">${escapeHtml(metaSecondary)}</span>`
+                  : ''
+              }
+            </span>
           </span>
         </div>
       </div>
     `
     banner.addEventListener('click', () => {
       this.dismissBanner(banner)
-      // 3D: open pool panel if available via chat open is weak — leave as dismiss for now.
       this.onOpenChat?.()
     })
     this.showBanner(
@@ -238,7 +270,7 @@ export class SocialMobileNotifications {
 
   private poolClaimRoomHeld = false
 
-  /** Hold the shared PM room so we receive `d3js-gacha:claims` while notifications are mounted. */
+  /** Hold the shared PM room so we receive `d3js-lootbag:claims` while notifications are mounted. */
   private async ensurePoolClaimRoom(): Promise<void> {
     const id = this.getAuthIdentity?.() ?? null
     const addr = this.getUserAddress?.()?.trim().toLowerCase() ?? null

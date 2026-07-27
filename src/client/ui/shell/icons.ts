@@ -78,8 +78,8 @@ export const SIDEBAR_ICONS = {
     <path d="M7.2 7.2c-.8-1.3-2.2-1.8-3.2-1.2M10.8 7.2c.8-1.3 2.2-1.8 3.2-1.2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
     <path d="M16.5 8.2c.3-1.2 1.2-2 2.2-1.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
   </svg>`,
-  /** Wearable gacha — slot machine */
-  gacha: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+  /** Loot Bag */
+  lootbag: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <rect x="4.5" y="5" width="13" height="15" rx="2" stroke="currentColor" stroke-width="1.5"/>
     <rect x="6.5" y="8" width="3" height="7" rx="0.8" stroke="currentColor" stroke-width="1.3"/>
     <rect x="10.5" y="8" width="3" height="7" rx="0.8" stroke="currentColor" stroke-width="1.3"/>

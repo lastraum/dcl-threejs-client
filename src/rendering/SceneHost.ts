@@ -124,12 +124,10 @@ export class SceneHost {
       this.camera.aspect = width / height
       this.camera.updateProjectionMatrix()
     }
-    // updateStyle=true so canvas CSS matches CSS pixel size (false left a black letterbox
-    // under the WebGL surface when buffer size drifted from element style).
-    this.renderer.setSize(width, height, true)
+    // Drawing buffer = CSS pixel size of #app (canvas is position:absolute inset 0 in CSS).
+    // updateStyle=false: CSS width/height 100% from index.html; only buffer tracks container.
+    this.renderer.setSize(width, height, false)
     const canvas = this.renderer.domElement
-    canvas.style.width = `${width}px`
-    canvas.style.height = `${height}px`
     canvas.style.display = 'block'
     this.ensureMsaaTargetSize()
     this.configureBloom(renderQuality.getOptions())
@@ -140,6 +138,13 @@ export class SceneHost {
   private applyViewportSize(): void {
     if (this.viewportElement) {
       this.setViewportSize(this.viewportElement.clientWidth, this.viewportElement.clientHeight)
+      return
+    }
+    // Prefer #app client box (fills 100dvh) over window — avoids black strip when
+    // window.innerHeight ≠ layout height (mobile chrome / dock / address bar).
+    const app = document.getElementById('app')
+    if (app && app.clientWidth > 0 && app.clientHeight > 0) {
+      this.setViewportSize(app.clientWidth, app.clientHeight)
       return
     }
     this.setViewportSize(window.innerWidth, window.innerHeight)

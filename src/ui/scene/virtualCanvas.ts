@@ -15,8 +15,11 @@ export type ScreenUiRect = {
 
 /**
  * Viewport mapping virtual Yoga space → screen pixels.
- * Fills the interactable area (no letterbox) so fullscreen scrims and edge-anchored panels
- * hit the real screen edges — Explorer stretch behavior. Typography/radii use `uniform`.
+ *
+ * Scene UI is **authored** in virtual px (default 1920×1080 / setUiRenderer).
+ * We then **stretch-map** that rect onto the full interactable (WebGL canvas box) —
+ * non-uniform scaleX/scaleY so the HUD fills the real screen (no letterbox black bars).
+ * Typography/radii use `uniform` so text does not stretch weirdly.
  */
 export type UiViewport = {
   scaleX: number
@@ -31,6 +34,7 @@ export function computeUiViewport(
   virtual: VirtualCanvasSize,
   interactable: ScreenUiRect
 ): UiViewport {
+  // Stretch virtual design space onto full canvas (Explorer fill, not letterbox).
   const scaleX = interactable.width / Math.max(1, virtual.width)
   const scaleY = interactable.height / Math.max(1, virtual.height)
   return {
@@ -66,12 +70,26 @@ export function readInteractableArea(canvas?: HTMLElement | null): ScreenUiRect 
   const el = canvas ?? document.querySelector('#app canvas')
   if (el) {
     const r = el.getBoundingClientRect()
-    return { left: r.left, top: r.top, width: r.width, height: r.height }
+    if (r.width > 1 && r.height > 1) {
+      return { left: r.left, top: r.top, width: r.width, height: r.height }
+    }
+  }
+  // Fallback: full #app (absolute-fill canvas) so UI is never letterboxed short.
+  const app = document.getElementById('app')
+  if (app) {
+    const r = app.getBoundingClientRect()
+    if (r.width > 1 && r.height > 1) {
+      return { left: r.left, top: r.top, width: r.width, height: r.height }
+    }
   }
   return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight }
 }
 
-/** Pin the DOM overlay to the same screen rect used for layoutToScreen / hit regions. */
+/**
+ * Pin #scene-ui-root to the WebGL canvas box.
+ * Yoga laid out in virtual 1920×1080; this root is the **fullscreen overlay** of that
+ * design space onto real pixels (see computeUiViewport stretch mapping).
+ */
 export function alignSceneUiRoot(root: HTMLElement, interactable: ScreenUiRect): void {
   root.style.position = 'fixed'
   root.style.inset = 'unset'
@@ -81,6 +99,8 @@ export function alignSceneUiRoot(root: HTMLElement, interactable: ScreenUiRect):
   root.style.height = `${interactable.height}px`
   root.style.right = 'auto'
   root.style.bottom = 'auto'
+  root.style.overflow = 'hidden'
+  root.style.pointerEvents = 'none'
 }
 
 /** Virtual-space insets for UiCanvasInformation (Explorer react-ecs uiSizer). */

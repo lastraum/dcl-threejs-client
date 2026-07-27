@@ -399,18 +399,23 @@ function clearBgImg(el: HTMLElement): void {
 }
 
 /**
- * Parse UiBackground.uvs — 8 floats, bottom-left clockwise (Explorer / SDK7):
+ * Parse UiBackground.uvs — 8 floats, bottom-left clockwise (Explorer / SDK7 / fishing s4e):
  *   [u0,v0, u1,v1, u2,v2, u3,v3] = BL, TL, TR, BR
- * Dead Surge atlas: createAtlasUvs → [left,bottom, left,top, right,top, right,bottom].
+ * Fishing atlas builder: s4e(pixelX, pixelY, atlas) flips Y so v is GL-style (0 bottom).
  * Returns axis-aligned UV rect, or null when full texture / unusable.
  */
 export function parseUiBackgroundUvRect(
-  uvs: number[] | null | undefined
+  uvs: number[] | ArrayLike<number> | null | undefined
 ): { u0: number; v0: number; u1: number; v1: number } | null {
-  if (!uvs || uvs.length < 8) return null
-  const nums = uvs.map((n) => Number(n))
-  if (nums.some((n) => !Number.isFinite(n))) return null
-  // Prefer corners BL/TR; also min/max in case winding differs.
+  if (!uvs) return null
+  const len = (uvs as { length: number }).length
+  if (len < 8) return null
+  const nums: number[] = []
+  for (let i = 0; i < 8; i++) {
+    const n = Number((uvs as ArrayLike<number>)[i])
+    if (!Number.isFinite(n)) return null
+    nums.push(n)
+  }
   const us = [nums[0]!, nums[2]!, nums[4]!, nums[6]!]
   const vs = [nums[1]!, nums[3]!, nums[5]!, nums[7]!]
   const u0 = Math.min(...us)
@@ -423,53 +428,83 @@ export function parseUiBackgroundUvRect(
   return { u0, v0, u1, v1 }
 }
 
+/**
+ * Atlas UV → CSS background-size / background-position (top-left CSS space).
+ * More reliable for fishing rarity tags than oversized <img> + overflow clip
+ * (percentage positioning on nested absolute shells was clipping mid-glyph).
+ */
+function applyAtlasUvAsBackground(
+  el: HTMLElement,
+  imageUrl: string,
+  u0: number,
+  v0: number,
+  u1: number,
+  v1: number,
+  colorAlpha: number
+): void {
+  const uSpan = Math.max(1e-6, u1 - u0)
+  const vSpan = Math.max(1e-6, v1 - v0)
+  // GL v=0 bottom → CSS y=0 top: sprite top edge is at (1 - v1).
+  const cssTop = 1 - v1
+  const sizeX = 100 / uSpan
+  const sizeY = 100 / vSpan
+  // background-position % is relative to (container - image) when size ≠ 100%.
+  const posX = uSpan >= 1 - 1e-6 ? 0 : (u0 / (1 - uSpan)) * 100
+  const posY = vSpan >= 1 - 1e-6 ? 0 : (cssTop / (1 - vSpan)) * 100
+  const safeUrl = imageUrl.replace(/\\/g, '/').replace(/"/g, '%22')
+
+  clearBgImg(el)
+  el.style.overflow = 'hidden'
+  el.style.backgroundImage = `url("${safeUrl}")`
+  el.style.backgroundRepeat = 'no-repeat'
+  el.style.backgroundSize = `${sizeX.toFixed(4)}% ${sizeY.toFixed(4)}%`
+  el.style.backgroundPosition = `${posX.toFixed(4)}% ${posY.toFixed(4)}%`
+  el.style.backgroundColor = 'transparent'
+  el.style.backgroundBlendMode = ''
+  el.style.opacity = String(clamp01(colorAlpha))
+  el.style.borderImage = ''
+  el.style.borderImageSource = ''
+  el.style.borderImageSlice = ''
+  el.style.borderImageWidth = ''
+  el.style.borderImageRepeat = ''
+  el.style.borderWidth = ''
+  el.style.borderStyle = ''
+  el.style.borderColor = ''
+}
+
 function applyBgImg(
   el: HTMLElement,
   imageUrl: string,
   mode: number,
   colorAlpha = 1,
-  uvs?: number[] | null
+  uvs?: number[] | ArrayLike<number> | null
 ): void {
-  const img = ensureBgImg(el)
-  assignUiImageSrc(img, imageUrl)
   if (getComputedStyle(el).position === 'static') el.style.position = 'relative'
-  img.style.position = 'absolute'
-  img.style.pointerEvents = 'none'
-  // Explorer multiplies UiBackground.color with the texture (incl. alpha).
-  img.style.opacity = String(clamp01(colorAlpha))
-  img.style.borderRadius = 'inherit'
-  img.style.objectFit = 'fill'
-  img.style.objectPosition = 'center'
 
-  // Atlas UV crop whenever non-full uvs are present (any textureMode).
-  // Previously only STRETCH cropped — CENTER/default mode painted the entire atlas
-  // into every inventory cell (fishing shop full-screen icon chaos).
+  // Atlas UV crop — background-size/position (not oversized img) so equip HUD rarity
+  // tags / ribbons crop cleanly (img+overflow was mid-slicing COMMON→MON, LEGENDARY→LEGENDAR).
   const rect = parseUiBackgroundUvRect(uvs)
   if (rect) {
-    const { u0, v0, u1, v1 } = rect
-    const uSpan = Math.max(1e-6, u1 - u0)
-    const vSpan = Math.max(1e-6, v1 - v0)
-    // GL v=0 bottom; CSS top=0 top → image top edge is at (1 - v1).
-    el.style.overflow = 'hidden'
-    img.style.inset = 'unset'
-    img.style.right = 'auto'
-    img.style.bottom = 'auto'
-    img.style.width = `${(100 / uSpan).toFixed(4)}%`
-    img.style.height = `${(100 / vSpan).toFixed(4)}%`
-    img.style.left = `${((-u0 / uSpan) * 100).toFixed(4)}%`
-    img.style.top = `${((-(1 - v1) / vSpan) * 100).toFixed(4)}%`
-    img.style.objectFit = 'fill'
-  } else {
-    el.style.overflow = ''
-    img.style.inset = '0'
-    img.style.left = ''
-    img.style.top = ''
-    img.style.right = ''
-    img.style.bottom = ''
-    img.style.width = '100%'
-    img.style.height = '100%'
-    img.style.objectFit = mode === BackgroundTextureMode.CENTER ? 'contain' : 'fill'
+    applyAtlasUvAsBackground(el, imageUrl, rect.u0, rect.v0, rect.u1, rect.v1, colorAlpha)
+    return
   }
+
+  const img = ensureBgImg(el)
+  assignUiImageSrc(img, imageUrl)
+  img.style.position = 'absolute'
+  img.style.pointerEvents = 'none'
+  img.style.opacity = String(clamp01(colorAlpha))
+  img.style.borderRadius = 'inherit'
+  img.style.objectFit = mode === BackgroundTextureMode.CENTER ? 'contain' : 'fill'
+  img.style.objectPosition = 'center'
+  el.style.overflow = ''
+  img.style.inset = '0'
+  img.style.left = ''
+  img.style.top = ''
+  img.style.right = ''
+  img.style.bottom = ''
+  img.style.width = '100%'
+  img.style.height = '100%'
 
   el.style.backgroundImage = ''
   el.style.backgroundSize = ''
@@ -477,6 +512,7 @@ function applyBgImg(
   el.style.backgroundRepeat = ''
   el.style.backgroundColor = 'transparent'
   el.style.backgroundBlendMode = ''
+  el.style.opacity = ''
   // Clear nine-slice leftovers so mode switches don't stick.
   el.style.borderImage = ''
   el.style.borderImageSource = ''

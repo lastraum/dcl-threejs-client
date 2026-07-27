@@ -86,18 +86,30 @@
         }
       }
       html,
-      body,
-      #app {
+      body {
         width: 100%;
         height: 100%;
+        height: var(--app-vh, 100vh);
+        margin: 0;
         overflow: hidden;
         background: #0a1624;
         font-family: system-ui, sans-serif;
+      }
+      #app {
+        width: 100%;
+        height: 100%;
+        height: var(--app-vh, 100vh);
+        overflow: hidden;
+        background: #0a1624;
         position: relative;
       }
+      /* Fill #app — no letterbox black bar under the WebGL surface. */
       #app canvas {
         display: block;
-        position: relative;
+        position: absolute;
+        inset: 0;
+        width: 100% !important;
+        height: 100% !important;
         z-index: var(--z-canvas);
       }
       /* Canvas-center aim mark while pointer-locked (clicks raycast from center). */

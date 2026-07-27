@@ -86,14 +86,6 @@ export function aoiLiveSecondariesOnly(): boolean {
   return AOI_LIVE_SECONDARIES_ONLY
 }
 
-/**
- * Cold auto-boot only: refuse live-worker boot for plaza-scale neighbors unless they
- * are under-feet priority (promote path). Composites still cover them visually.
- * **Never** used to pick tertiary vs secondary for sticky demote — demote is always
- * secondary; tertiary is leave-ring / secondary-cap pressure only.
- */
-export const SECONDARY_LIVE_AUTO_MAX_PARCELS = 16
-
 /** Only one secondary full boot at a time — parallel 2MB workers thrash CBD promotes. */
 export const SECONDARY_LIVE_BOOT_CONCURRENCY = 1
 

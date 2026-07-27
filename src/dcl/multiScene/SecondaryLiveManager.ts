@@ -8,7 +8,6 @@ import { resolveSceneFromRoute } from '../content/resolveScene'
 import type { ResolvedScene } from '../content/types'
 import type { Mesh, Object3D } from 'three'
 import {
-  SECONDARY_LIVE_AUTO_MAX_PARCELS,
   SECONDARY_LIVE_BOOT_CONCURRENCY,
   secondaryLiveCap,
   secondaryLiveRadiusM,
@@ -278,12 +277,9 @@ export class SecondaryLiveManager {
   /**
    * Keep outgoing primary **resident** as sticky — never unload into void.
    *
-   * Mode policy (NOT parcel-count):
-   * - Promote always steps onto an adjacent/under-feet scene → prior primary is still
-   *   inside the live ring of the new primary → start **secondary** (scripts on, mute).
-   * - Size gate ({@link SECONDARY_LIVE_AUTO_MAX_PARCELS}) is only for **cold auto-boot**
-   *   of distant neighbors as live workers — never for sticky demote of the scene you left.
-   * - Tertiary only later: leave 16m live ring (reconcile) or secondary-cap pressure
+   * Mode policy (NOT parcel-count — parcel size never gates secondary):
+   * - Sticky demote of prior primary → **secondary** (scripts on, mute).
+   * - Tertiary only later: leave 16m live ring or secondary-cap pressure
    *   (prefer demoting non-sticky first; sticky last).
    *
    * @param newPrimaryBaseParcel — **incoming** primary SW (required on promote handoff).
@@ -325,9 +321,8 @@ export class SecondaryLiveManager {
 
     const id = scene.entityId
     const parcelCount = scene.parcels?.length || 1
-    // Sticky demote is ALWAYS secondary (muted scripts, meshes stay). Parcel count must
-    // NEVER pick tertiary — tertiary is only leave-ring / secondary-cap pressure.
-    // (Size gate SECONDARY_LIVE_AUTO_MAX_PARCELS is cold auto-boot only.)
+    // Sticky demote is ALWAYS secondary (muted scripts, meshes stay).
+    // Tertiary is only leave-ring / secondary-cap pressure — never parcel count.
     const initialMode: ResidentMode = 'secondary'
 
     // Host origin is the NEW primary SW after promote — always prefer explicit base.
@@ -500,20 +495,6 @@ export class SecondaryLiveManager {
           this.balanceModes()
         }
         return true
-      }
-
-      // Under-feet promote target: always allow force-boot (any parcel count).
-      const parcelCount = scene.parcels?.length ?? 0
-      const isPriority =
-        this.priorityParcelKey === key ||
-        scene.baseParcel.trim() === this.priorityParcelKey ||
-        scene.parcels.some((p) => p.trim() === this.priorityParcelKey)
-      if (parcelCount > SECONDARY_LIVE_AUTO_MAX_PARCELS && !isPriority) {
-        console.info(
-          `[multi-scene] refuse force-boot “${scene.title}” parcels=${parcelCount} ` +
-            `(not under-feet priority — composite only)`
-        )
-        return false
       }
 
       this.ensureCapacityForNew('secondary')
@@ -774,11 +755,7 @@ export class SecondaryLiveManager {
       : [...inRange]
     for (const req of bootOrder) {
       if (this.slots.has(req.entityId) || this.booting.has(req.entityId)) continue
-      const parcels = req.parcelCount ?? 1
-      if (parcels > SECONDARY_LIVE_AUTO_MAX_PARCELS && !coversPri(req)) {
-        continue
-      }
-      // Need a secondary script slot.
+      // Need a secondary script slot (cap + live radius only — never parcel-count refuse).
       if (this.countMode('secondary') + this.booting.size >= cap) {
         this.demoteOneSecondaryToTertiary({ preferNonSticky: true })
         if (this.countMode('secondary') + this.booting.size >= cap) break

@@ -20,7 +20,7 @@ Treat every multi-scene, performance, and continuity task as **ship-or-iterate A
 | **Secondary FocusOwner mute** | No video, audio, scene UI, privileged pointers/nav — `FocusPolicy = 'secondary'`. |
 | **Primary FocusOwner** | Only primary owns UI / media / inputs / locomotion. |
 | **Tertiary residents** | Only when **leave 16m live ring** or **secondary-cap pressure** (prefer non-sticky). Scripts OFF + LOD. Re-enter → scripts on only (**no GLB reload**). |
-| **Size gate** | `SECONDARY_LIVE_AUTO_MAX_PARCELS` only blocks **cold auto-boot** of plaza-scale neighbors — not sticky demote of the scene you just left. |
+| **No parcel-size gate** | Parcel count never refuses secondary boot or picks tertiary. Budget = live radius + hard secondary cap + boot concurrency. |
 | **Tertiary composites** | Roads / empty / AOI shells fill the world without workers; distance-budgeted. |
 | **Default ground everywhere** | Default parcel GLB on **all** non-road AOI parcels. Procedural trees/rocks **only** on vacant / catalyst-empty. |
 | **Freecam always free** | Only feet-primary FocusOwner applies InputModifier / MainCamera / video / UI. Demoted secondaries never apply player-frame. Clear freeze on demote + promote handoff. |

@@ -3273,7 +3273,10 @@ export class World {
     }
     this.multiScene = runtime
     if (!runtime || !this.loadedPrimaryScene) return
-    runtime.setOnLiveSecondaryIds((ids) => this.aoiVisual.setLiveSecondaryIds(ids))
+    runtime.setOnLiveSecondaryIds((ids) => {
+      this.aoiVisual.setLiveSecondaryIds(ids)
+      this.aoiVisual.setResidentParcelKeys(runtime.residentParcelKeys())
+    })
     // PE worker: full main-thread surface (identity, pointer, keys, avatar modifiers, physics lamport).
     runtime.pe.setOnPeWorkerReady((system, physOffset) => {
       this.wirePeWorkerToMainThread(system, physOffset)
@@ -3778,8 +3781,14 @@ export class World {
     this.session.setCatalystEndpoints(newScene.realm.contentUrl, newScene.realm.lambdasUrl)
 
     // Sticky secondaries already retargeted before demote; re-sync live ids + AOI hide.
-    multi.setOnLiveSecondaryIds((ids) => this.aoiVisual.setLiveSecondaryIds(ids))
+    multi.setOnLiveSecondaryIds((ids) => {
+      this.aoiVisual.setLiveSecondaryIds(ids)
+      // Keep empty-land skip set in lockstep with residents.
+      this.aoiVisual.setResidentParcelKeys(multi.residentParcelKeys())
+    })
     multi.syncLiveSecondaryVisibility()
+    // CRITICAL: register demoted plaza parcels BEFORE retarget refresh paints empty-land.
+    this.aoiVisual.setResidentParcelKeys(multi.residentParcelKeys())
     // Re-assert demoted offsets after comms origin swap (host Three space is continuous;
     // secondary roots are relative to primary SW which just changed).
     multi.notifyPrimaryChanged(newScene)
@@ -3790,7 +3799,14 @@ export class World {
     const feetLocal = this.player.getPosition()
     this.aoiVisual.retargetPrimary(newScene, feetLocal.x, feetLocal.z)
     this.scenePromote.bind(newScene)
+    // Neighbor promote evaluate OK; live secondary auto-boots stay off until settle.
     this.scenePromote.setNeighborActivityEnabled(true)
+
+    console.info(
+      `[promote] HANDOFF OK stickyParcels=${multi.residentParcelKeys().length} ` +
+        `liveIds=${multi.secondaryManager?.liveEntityIds().size ?? 0} ` +
+        `newPrimary="${newScene.title}" base=${newScene.baseParcel}`
+    )
 
     // Re-cook colliders under primary entity ids.
     this.colliderCookQueue.clear()

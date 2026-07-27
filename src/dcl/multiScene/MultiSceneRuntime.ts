@@ -56,6 +56,14 @@ export class MultiSceneRuntime {
     this.onLiveSecondaryIds?.(ids)
   }
 
+  /**
+   * Absolute parcel keys for all resident secondary/tertiary graphs.
+   * AOI empty-land must skip these (sticky demoted plaza continuity).
+   */
+  residentParcelKeys(): string[] {
+    return this.secondary?.residentParcelKeys() ?? []
+  }
+
   get secondaryManager(): SecondaryLiveManager | null {
     return this.secondary
   }

@@ -6,6 +6,7 @@ import type { PerformanceTier } from '../../shim/types'
 import type { SceneScriptSystem } from '../../core/systems/SceneScriptSystem'
 import { resolveSceneFromRoute } from '../content/resolveScene'
 import type { ResolvedScene } from '../content/types'
+import type { Mesh, Object3D } from 'three'
 import {
   SECONDARY_LIVE_AUTO_MAX_PARCELS,
   SECONDARY_LIVE_BOOT_CONCURRENCY,
@@ -107,6 +108,54 @@ export class SecondaryLiveManager {
 
   liveEntityIds(): Set<string> {
     return new Set(this.slots.keys())
+  }
+
+  /**
+   * Absolute parcel keys for every resident graph (secondary + tertiary sticky).
+   * AOI must skip empty-land ground under these — otherwise demoted CBD becomes red void.
+   */
+  residentParcelKeys(): string[] {
+    const out: string[] = []
+    const seen = new Set<string>()
+    for (const slot of this.slots.values()) {
+      for (const p of slot.scene.parcels ?? []) {
+        const k = p.trim()
+        if (!k || seen.has(k)) continue
+        seen.add(k)
+        out.push(k)
+      }
+      const base = slot.scene.baseParcel?.trim()
+      if (base && !seen.has(base)) {
+        seen.add(base)
+        out.push(base)
+      }
+    }
+    return out
+  }
+
+  /** Continuity assert after demote — mesh count + root pose for logs. */
+  assertResidentVisible(entityId: string): {
+    ok: boolean
+    meshCount: number
+    rootPos: { x: number; y: number; z: number } | null
+    parented: boolean
+  } {
+    const slot = this.slots.get(entityId)
+    if (!slot) return { ok: false, meshCount: 0, rootPos: null, parented: false }
+    const root = slot.system.getEntityStore()?.root
+    if (!root) return { ok: false, meshCount: 0, rootPos: null, parented: false }
+    let meshCount = 0
+    root.traverse((o: Object3D) => {
+      if ((o as Mesh).isMesh) meshCount++
+    })
+    const parented = !!root.parent
+    root.visible = true
+    return {
+      ok: parented && root.visible && meshCount > 0,
+      meshCount,
+      rootPos: { x: root.position.x, y: root.position.y, z: root.position.z },
+      parented
+    }
   }
 
   hasSecondaryForParcel(x: number, y: number): boolean {
@@ -310,10 +359,28 @@ export class SecondaryLiveManager {
     this.slots.set(id, slot)
     this.stickyIds.add(id)
     this.emitLiveIds()
+    const assert = this.assertResidentVisible(id)
     console.info(
       `[multi-scene] demoted “${scene.title}” → sticky secondary parcels=${parcelCount} ` +
-        `offset vs primary=${primaryBase} (still in live ring — size does not force tertiary)`
+        `offset vs primary=${primaryBase} meshes=${assert.meshCount} ` +
+        `rootPos=(${assert.rootPos?.x.toFixed(1) ?? '?'},${assert.rootPos?.z.toFixed(1) ?? '?'}) ` +
+        `parented=${assert.parented} ok=${assert.ok}`
     )
+    if (!assert.ok) {
+      console.error(
+        `[multi-scene] STICKY DEMOTO INTEGRITY FAIL “${scene.title}” — meshes may void; ` +
+          `forcing root visible on host`
+      )
+      try {
+        const root = system.getEntityStore()?.root
+        if (root && this.host.scene) {
+          root.visible = true
+          this.host.scene.add(root)
+        }
+      } catch {
+        /* ignore */
+      }
+    }
     return { entityId: id, primaryPhysIds }
   }
 
@@ -341,6 +408,21 @@ export class SecondaryLiveManager {
     }
 
     const key = `${x},${y}`
+    // Exclusive boot: only one secondary full boot at a time (no CBD thrash chain).
+    if (this.booting.size > 0 && !this.booting.has(key)) {
+      // If under-feet priority is this parcel, wait for other boot to finish first.
+      if (this.priorityParcelKey === key) {
+        console.info(
+          `[multi-scene] ensureSecondary wait — boot in flight, priority=${key}`
+        )
+      } else {
+        console.info(
+          `[multi-scene] ensureSecondary skip ${key} — exclusive boot busy ` +
+            `(inFlight=${[...this.booting].join(',')})`
+        )
+        return false
+      }
+    }
     this.booting.add(key)
     try {
       const scene = await resolveSceneFromRoute({
@@ -624,8 +706,11 @@ export class SecondaryLiveManager {
     // Serial boot — one full secondary worker at a time.
     if (this.booting.size >= SECONDARY_LIVE_BOOT_CONCURRENCY) return
 
-    // Boot missing live candidates. Skip plaza-scale auto-boots unless under-feet.
-    const bootOrder = [...inRange]
+    // While under-feet priority is pinned (promote path), only boot that parcel —
+    // never chain-boot 3 neighbors and thrash CBD into 13fps void.
+    const bootOrder = pri
+      ? inRange.filter((c) => coversPri(c))
+      : [...inRange]
     for (const req of bootOrder) {
       if (this.slots.has(req.entityId) || this.booting.has(req.entityId)) continue
       const parcels = req.parcelCount ?? 1

@@ -2235,10 +2235,10 @@ export class AppController {
       onSoftRoute: (x, y) => {
         this.softUpdatePlayRoute({ kind: 'coords', x, y, segment: `${x},${y}` })
         void this.refreshLocationTitleForParcel(x, y)
-        // Prefer live-secondary boot for the parcel under feet (before promote dwell).
+        // Pin under-feet only — exclusive pre-boot (never chain-boot every parcel step).
         this.multiSceneRuntime.setSecondaryPriorityParcel(x, y)
-        // Pre-boot under-feet scene so promote can handoff+demote (no seamless unload).
         if (!this.multiSceneRuntime.hasLiveSecondaryForParcel(x, y)) {
+          // Fire-and-forget one ensure; manager rejects concurrent boots for other parcels.
           void this.multiSceneRuntime.ensureSecondaryForParcel(x, y, 28_000)
         }
       },

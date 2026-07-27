@@ -128,6 +128,11 @@ export class AoiVisualLayer {
   /** Live secondary workers — hide tertiary FF/composite for these entity ids. */
   private readonly liveSecondaryIds = new Set<string>()
   /**
+   * Absolute parcel keys owned by sticky/live residents (demoted plaza, live secondaries).
+   * Empty-land red ground MUST NOT paint these — that was the CBD void after promote.
+   */
+  private readonly residentParcelSet = new Set<string>()
+  /**
    * When false, skip refresh (neighbor visuals + secondary candidates).
    * Primary mega-scenes must finish boot before AOI steals main thread.
    */
@@ -165,6 +170,24 @@ export class AoiVisualLayer {
       const id = name.slice('aoi-secondary:'.length)
       child.visible = !this.liveSecondaryIds.has(id)
     }
+  }
+
+  /**
+   * Parcel footprints of sticky demoted + live secondary/tertiary residents.
+   * Call before {@link retargetPrimary} refresh so empty-land does not paint red
+   * over the prior primary (CBD void bug).
+   */
+  setResidentParcelKeys(keys: ReadonlyArray<string> | ReadonlySet<string>): void {
+    this.residentParcelSet.clear()
+    for (const k of keys) {
+      const t = k.trim()
+      if (t) this.residentParcelSet.add(t)
+    }
+  }
+
+  /** Current resident parcel skip set (debug / World assert). */
+  getResidentParcelKeys(): ReadonlySet<string> {
+    return this.residentParcelSet
   }
 
   /**
@@ -250,6 +273,7 @@ export class AoiVisualLayer {
     this.primaryIsEmpty = !ctx.scene.entityId?.trim() && !ctx.scene.mainEntry?.trim()
     this.primaryParcelSet.clear()
     this.liveSecondaryIds.clear()
+    this.residentParcelSet.clear()
     for (const p of ctx.scene.parcels) this.primaryParcelSet.add(p)
     this.loadedCompositeIds.clear()
     this.loadedRoadIds.clear()
@@ -282,6 +306,9 @@ export class AoiVisualLayer {
     this.loadedCompositeIds.clear()
     this.loadedRoadIds.clear()
     this.roadParcelSignature = ''
+    this.liveSecondaryIds.clear()
+    this.residentParcelSet.clear()
+    this.primaryParcelSet.clear()
     this.firstFrameSampler.reset()
     this.root.removeFromParent()
     this.ctx = null
@@ -380,22 +407,43 @@ export class AoiVisualLayer {
       }
     }
 
-    // --- Default ground: every AOI parcel except primary content + explorer roads ---
-    // (secondary footprints, vacant, and tertiary composite bases all get the empty-land GLB)
+    // --- Default ground: vacant + roads-adjacent only ---
+    // NEVER paint empty-land under: primary, sticky demoted, live secondary/tertiary residents.
+    // Painting red under demoted CBD after promote was the void screenshot bug.
     const vacantKeys: string[] = []
     const groundKeys: string[] = []
+    let skippedResidentGround = 0
     for (const key of pointers) {
       if (this.primaryParcelSet.has(key) && !this.primaryIsEmpty) continue
+      // Sticky / live resident mesh graphs own these parcels — no red blank tiles.
+      if (this.residentParcelSet.has(key)) {
+        skippedResidentGround++
+        continue
+      }
+      // Live worker entity still covers this pointer — skip blank ground.
+      const owner = pointerToEntity.get(key)
+      if (owner?.id && this.liveSecondaryIds.has(owner.id)) {
+        skippedResidentGround++
+        continue
+      }
       // Explorer road catalog has its own tiles — skip default ground under streets
       if (isExplorerRoadParcel(key)) continue
       const ent = pointerToEntity.get(key)
       if (ent && isOpenRoadEntity(ent)) continue
-      groundKeys.push(key)
-      // Scatter (trees/rocks) only on true vacant / catalyst empty land
+      // Real SDK7 secondary footprint (even before resident slot): no empty-land fill.
+      // Composites / first-frame / live workers own the visual — red ground is for vacant only.
       if (secondaryFootprint.has(key)) continue
       if (ent && isSecondarySceneCandidate(ent) && !isVacantForEmptyLayer(ent)) continue
+      groundKeys.push(key)
+      // Scatter (trees/rocks) only on true vacant / catalyst empty land
       if (ent && !isVacantForEmptyLayer(ent)) continue
       vacantKeys.push(key)
+    }
+    if (skippedResidentGround > 0) {
+      console.info(
+        `[aoi] ground skip resident/secondary parcels=${skippedResidentGround} ` +
+          `(no red empty-land under sticky/live graphs)`
+      )
     }
 
     const blankTiles = groundKeys.map((key) => {

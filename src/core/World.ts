@@ -2494,8 +2494,9 @@ export class World {
     this.sceneScript.syncCollisionPoses()
     const descs = this.sceneScript.getAllPhysicsColliderDescs()
     if (!descs.length) return
+    // force:false — unmoved statics already in SQ from cook; do not thrash reinsert.
     const updated = this.physics.applyStaticColliderPoseUpdates(descs, {
-      force: true,
+      force: false,
       actorRootOnly: true
     })
     if (updated > 0) this.physics.warmStaticScene()
@@ -2659,8 +2660,9 @@ export class World {
       }
     }
     if (staticRoot.length) {
+      // force:false — unmoved statics must not re-touch SQ (COD: cook once, leave alone).
       updated += this.physics.applyStaticColliderPoseUpdates(staticRoot, {
-        force: true,
+        force: false,
         actorRootOnly: true
       })
     }
@@ -2957,7 +2959,10 @@ export class World {
       }
     }
     if (slideDescs.length) {
-      const updated = this.physics.applyStaticColliderPoseUpdates(slideDescs, { force: true })
+      const updated = this.physics.applyStaticColliderPoseUpdates(slideDescs, {
+        force: false,
+        actorRootOnly: true
+      })
       if (updated > 0) this.physics.refreshStaticColliderQueries()
       for (const desc of slideDescs) {
         // Scale/geom mismatch still needs recook; pure T+R is synced after slide.

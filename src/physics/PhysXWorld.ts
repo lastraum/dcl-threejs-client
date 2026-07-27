@@ -1043,7 +1043,7 @@ export class PhysXWorld {
       if (!this.updateMultiShapeActorPose(act, desc, true, { skipScaleCheck: true })) return false
       this.staticFp.set(desc.entity, desc.fingerprint)
       this.staticPoseFp.set(desc.entity, multiShapePoseFingerprint(desc))
-      this.reinsertStaticActorForSceneQuery(act)
+      // Kinematic: setKinematicTarget already set — no static reinsert.
       this.invalidateControllerCache()
       return true
     } catch (err) {
@@ -1188,13 +1188,13 @@ export class PhysXWorld {
 
   /**
    * Runtime pose slide — moves existing actors without remove/recook gaps.
-   * Returns how many actors were repositioned.
    *
-   * @param options.actorRootOnly — multi-shape: only set actor global T+R from desc.matrix;
-   *   leave per-shape local poses alone. Required after boot: re-extracting shape locals and
-   *   applying relative slides against cook baselines double-transforms plaza solids (soft world).
-   * @param options.forceEntities — allow-list that also enables full multi-shape shape slides
-   *   (Animator door/lift shape-motion only).
+   * **COD / Explorer:** Static plaza hulls are cooked into SQ once. Unmoved statics must
+   * **never** reinsert (already in the tree). `force` does **not** bypass no-op pose skip.
+   * PART/kinematic movers update pose without mass static reinsert; boot seal does one rebuild.
+   *
+   * @param options.actorRootOnly — multi-shape: only set actor global T+R from desc.matrix.
+   * @param options.forceEntities — PART shape-motion allow-list only (not “force reinsert”).
    */
   applyStaticColliderPoseUpdates(
     descs: PhysicsColliderDesc[],
@@ -1209,34 +1209,27 @@ export class PhysXWorld {
     const forceEntities = options?.forceEntities
     const actorRootOnly = options?.actorRootOnly === true
     let updated = 0
-    /** True when any multi-shape child local pose changed (needs SQ tree rebuild). */
     let shapeLocalsChanged = false
     for (const desc of descs) {
       if (this.failedCookFp.has(desc.fingerprint)) continue
       if (forceEntities && !forceAll && !forceEntities.has(desc.entity)) continue
-      const forceThis = forceAll || (!!forceEntities && forceEntities.has(desc.entity))
-      const shapeMotion = forceThis && !actorRootOnly
+      // Shape-motion only for explicit PART allow-list — not forceAll root noise.
+      const shapeMotion = !!forceEntities && forceEntities.has(desc.entity) && !actorRootOnly
 
       if (desc.shapes?.length) {
         if (!this.geomFingerprintMatches(desc)) continue
         const actor = this.staticActors.get(desc.entity)
         if (!actor) continue
         const worldBaked = this.actorWorldBaked.get(desc.entity) === true
+        const poseFp = multiShapePoseFingerprint(desc)
 
         // World-baked: verts fixed in world space at cook. Root-only slides are no-ops.
-        // PART shape-motion uses world-relative shape poses (see updateMultiShapeActorPose).
         if (worldBaked && (actorRootOnly || !shapeMotion)) continue
 
         if (actorRootOnly || !shapeMotion) {
-          // Plaza static / entity Transform only: slide actor root; keep cooked shape locals.
+          // Plaza static ROOT — skip if pose unchanged (force does not reinsert unmoved).
           if (!this.matrixHasFinitePose(desc.matrix)) continue
-          // Skip no-op when not forced (shape locals stay at cook baseline).
-          if (!forceThis && this.staticPoseFp.get(desc.entity) === multiShapePoseFingerprint(desc)) {
-            continue
-          }
-          // Scale gate: entity-local cooks bake world scale into verts. Sliding T+R after
-          // parent scale settle leaves unit-sized soft walls. Clear geom fp once so World
-          // can bounded-recook — still slide T+R so we don't freeze the live solid.
+          if (this.staticPoseFp.get(desc.entity) === poseFp) continue
           if (!worldBaked && !this.isPoseSlideSafe(actor, desc)) {
             if (this.staticFp.has(desc.entity)) {
               this.staticFp.delete(desc.entity)
@@ -1247,9 +1240,8 @@ export class PhysXWorld {
             this._pos.toPxTransform(this.actorPoseTransform)
             this._quat.toPxTransform(this.actorPoseTransform)
             actor.setGlobalPose(this.actorPoseTransform)
-            // Static setGlobalPose leaves SQ BVH at old AABB — reinsert so CCT hits walls.
-            this.reinsertStaticActorForSceneQuery(actor)
-            this.staticPoseFp.set(desc.entity, multiShapePoseFingerprint(desc))
+            // No reinsert — static already in SQ from cook. Seal does one tree rebuild.
+            this.staticPoseFp.set(desc.entity, poseFp)
             updated++
           } catch (err) {
             console.warn('[PhysXWorld] multi-shape root pose slide failed:', desc.entity, err)
@@ -1257,12 +1249,8 @@ export class PhysXWorld {
           continue
         }
 
-        // PART shape-motion: relative shape poses (world-relative when world-baked).
-        const poseFp = multiShapePoseFingerprint(desc)
-        const prevPoseFp = this.staticPoseFp.get(desc.entity)
-        // Skip pure no-ops (rewrite thrash kills FPS).
-        if (prevPoseFp === poseFp) continue
-        // World-baked PART uses world baselines — skip entity-local scale gate.
+        // PART shape-motion only.
+        if (this.staticPoseFp.get(desc.entity) === poseFp) continue
         if (!worldBaked && !this.isPoseSlideSafe(actor, desc)) {
           continue
         }
@@ -1279,8 +1267,10 @@ export class PhysXWorld {
           this.staticPoseFp.set(desc.entity, poseFp)
           updated++
           shapeLocalsChanged = true
-          // setLocalPose does not expand actor SQ bounds — reinsert for CCT.
-          this.reinsertStaticActorForSceneQuery(actor)
+          // Kinematic: SQ follows setKinematicTarget. Static PART: boot-only reinsert if allowed.
+          if (!kinematic) {
+            this.reinsertStaticActorForSceneQuery(actor)
+          }
         } catch (err) {
           console.warn('[PhysXWorld] multi-shape pose slide failed:', desc.entity, err)
         }
@@ -1289,7 +1279,8 @@ export class PhysXWorld {
 
       if (!this.geomFingerprintMatches(desc)) continue
       const poseFp = matrixFingerprint(desc.matrix)
-      if (!forceThis && this.staticPoseFp.get(desc.entity) === poseFp) continue
+      // Always skip no-op — force must not reinsert unmoved primitives.
+      if (this.staticPoseFp.get(desc.entity) === poseFp) continue
       const actor = this.staticActors.get(desc.entity)
       if (!actor || this.actorWorldBaked.get(desc.entity)) continue
       if (!this.matrixHasFinitePose(desc.matrix)) continue
@@ -1298,7 +1289,7 @@ export class PhysXWorld {
         this._pos.toPxTransform(this.actorPoseTransform)
         this._quat.toPxTransform(this.actorPoseTransform)
         actor.setGlobalPose(this.actorPoseTransform)
-        this.reinsertStaticActorForSceneQuery(actor)
+        // No reinsert for static primitives — already in SQ from cook.
         this.staticPoseFp.set(desc.entity, poseFp)
         updated++
       } catch (err) {
@@ -1306,9 +1297,6 @@ export class PhysXWorld {
         this.invalidateStaticCollider(desc.entity)
       }
     }
-    // Prefer per-actor reinsert (already done above) + CCT cache invalidate.
-    // NEVER forceDynamicTreeRebuild on the hot path — plaza-scale rebuild corrupts WASM
-    // scene queries (sphere sweepFeetY flips to MISS; CCT stays soft). Logs proved this.
     if (updated > 0 || shapeLocalsChanged) {
       this.invalidateControllerCache()
     }
@@ -1513,7 +1501,7 @@ export class PhysXWorld {
             this._pos.toPxTransform(this.actorPoseTransform)
             this._quat.toPxTransform(this.actorPoseTransform)
             actor.setGlobalPose(this.actorPoseTransform)
-            this.reinsertStaticActorForSceneQuery(actor)
+            // No reinsert — static already in SQ from cook; pose slide only.
             this.staticPoseFp.set(desc.entity, poseFp)
             geometryChanged = true
             continue
@@ -3240,7 +3228,7 @@ export class PhysXWorld {
           pxShape.setLocalPose(this.shapeLocalPoseTransform)
         }
       }
-      this.reinsertStaticActorForSceneQuery(actor)
+      // World-baked PART: no static reinsert (kinematic preferred; seal rebuild if boot).
       return true
     }
 
@@ -3273,8 +3261,7 @@ export class PhysXWorld {
         pxShape.setLocalPose(this.shapeLocalPoseTransform)
       }
     }
-    // Static setGlobalPose / setLocalPose do not refresh SQ BVH — reinsert so CCT sees walls.
-    this.reinsertStaticActorForSceneQuery(actor)
+    // Kinematic: target drives SQ. Static: already in tree from cook — no reinsert.
     return true
   }
 

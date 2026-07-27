@@ -791,6 +791,7 @@ export class SceneUiBridge {
       mountedEntities: mounted,
       authoritativeEntities: this.workerUiEntities!,
       layoutBoxes: layoutBoxMap,
+      forceDismissedEntities: this.forceDismissedEntities,
       onRegions: (regions: UiScreenRegion[]) => this.hitMap.replace(regions)
     }
 

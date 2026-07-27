@@ -70,6 +70,12 @@ export type SceneUiDrawInput = {
   authoritativeEntities: ReadonlySet<Entity>
   /** Yoga layout boxes — sole geometry authority for paint + hit-map (canvas-absolute). */
   layoutBoxes: ReadonlyMap<Entity, LayoutBox>
+  /**
+   * Fullscreen PE shells force-dismissed after welcome-splash click.
+   * Paint must not re-enable display/interactive (was flash: hide→show→hide every alpha tick).
+   * Still paint color.a so the fade is visible; pointer stays off.
+   */
+  forceDismissedEntities?: ReadonlySet<Entity>
 }
 
 /** Yoga canvas-absolute box → client-space hit region (same mapping as DOM paint). */
@@ -307,13 +313,41 @@ export class SceneUiDomRenderer {
 
   /**
    * Immediate client-side dismiss — free pointer while worker fade/unmount lags.
-   * Full-screen PE shells (welcome splash) stay mounted mid-fade with PE still on.
+   * Full-screen PE shells (CBD Plaza welcome) stay mounted mid-fade with PE still on.
+   *
+   * Do **not** set display:none / opacity:0 — that made paint undo hide every alpha tick
+   * (splash vanished, then reappeared, then slow-faded). Keep visible for Color4.a fade;
+   * only kill interactivity so WASD/look work.
    */
   forceDismissEntity(entity: Entity): void {
     const shell = this.nodes.get(entity)
     if (!shell) return
-    this.applyHiddenDomState(shell)
-    shell.style.opacity = '0'
+    this.applyForceDismissPointerOff(shell)
+  }
+
+  /** Pointer-off only — leave opacity/display for background alpha fade. */
+  applyForceDismissPointerOff(shell: HTMLElement): void {
+    shell.classList.remove('scene-ui-node--interactive')
+    shell.style.pointerEvents = 'none'
+    shell.style.cursor = 'default'
+    shell.setAttribute('inert', '')
+    // Do not set aria-hidden while fading — content still visible.
+  }
+
+  /** Entity or any UiTransform ancestor is force-dismissed (welcome PE + nested logo). */
+  private isForceDismissedLineage(entity: Entity, input: SceneUiDrawInput): boolean {
+    const set = input.forceDismissedEntities
+    if (!set?.size) return false
+    if (set.has(entity)) return true
+    let walk: Entity | null = entity
+    for (let i = 0; i < 12 && walk; i++) {
+      const t = input.transformOf(walk)
+      const parent = (t?.parent ?? 0) as Entity
+      if (!parent || parent === 0 || parent === CANVAS_ROOT_ENTITY) break
+      if (set.has(parent)) return true
+      walk = parent
+    }
+    return false
   }
 
   getFieldDom(entity: Entity): HTMLInputElement | HTMLSelectElement | null {
@@ -564,14 +598,22 @@ export class SceneUiDomRenderer {
     // Undo applyHiddenDomState — display:none stuck after prior hide left dead shells.
     shell.style.display = 'block'
     shell.style.visibility = 'visible'
-    shell.style.pointerEvents = ''
     applyUiTransformContentStyles(el, transform, scale)
     shell.style.opacity = String(Math.min(1, Math.max(0, transform.opacity ?? 1)))
     shell.style.zIndex = String(transform.zIndex ?? 0)
     shell.style.backgroundImage = ''
     shell.style.borderImage = ''
-    shell.removeAttribute('inert')
     shell.removeAttribute('aria-hidden')
+    // Welcome splash force-dismiss: never re-arm pointer while PE is still mounted.
+    // (Previously undid force-dismiss every paint → flash + re-catcher.)
+    // Also cover children of the PE shell (logo e1103 under catcher e1104).
+    const forceDismissed = this.isForceDismissedLineage(entity, input)
+    if (forceDismissed) {
+      this.applyForceDismissPointerOff(shell)
+    } else {
+      shell.style.pointerEvents = ''
+      shell.removeAttribute('inert')
+    }
 
     // Clip nearly all sized shells — fishing absolute children escape overflow:visible
     // parents and stack every OPEN/EQUIP/wood slot across the modal (and the plaza).
@@ -599,15 +641,17 @@ export class SceneUiDomRenderer {
       el.style.border = 'none'
     }
 
-    const interactive = isSceneUiNodeInteractive(
-      entity,
-      input.ecs,
-      transform,
-      input.inputOf,
-      input.dropdownOf,
-      input.pointerEventsOf,
-      bg
-    )
+    const interactive =
+      !forceDismissed &&
+      isSceneUiNodeInteractive(
+        entity,
+        input.ecs,
+        transform,
+        input.inputOf,
+        input.dropdownOf,
+        input.pointerEventsOf,
+        bg
+      )
 
     const compactControl =
       layoutBox.width < 500 &&
@@ -704,9 +748,13 @@ export class SceneUiDomRenderer {
     // Nested shells: parent-relative; roots: canvas-absolute. Clip large panels (clipShell).
     applyYogaLayoutBox(shell, layoutBox, scale, coords, clipShell)
     shell.style.zIndex = String(transform.zIndex ?? 0)
+    // Re-apply after layout (applyYogaLayoutBox does not touch pointerEvents).
+    if (forceDismissed) this.applyForceDismissPointerOff(shell)
 
     // Hit map always canvas-absolute (not nested DOM rects).
-    pushLayoutHitRegion(regions, entity, transform, layoutBox, input, depth)
+    if (!forceDismissed) {
+      pushLayoutHitRegion(regions, entity, transform, layoutBox, input, depth)
+    }
 
     const children = input.forest.get(entity) ?? []
     for (const child of children) {

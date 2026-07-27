@@ -512,7 +512,16 @@ export class PhysXWorld {
     const sceneDesc = new PHYSX.PxSceneDesc(this.tolerances)
     sceneDesc.gravity = new PHYSX.PxVec3(0, -9.81, 0)
     sceneDesc.cpuDispatcher = PHYSX.DefaultCpuDispatcherCreate(0)
-    sceneDesc.filterShader = PHYSX.DefaultFilterShader()
+    // DefaultFilterShader is a static on PxTopLevelFunctions — call via prototype (Hyperfy style).
+    try {
+      const tlf = PHYSX.PxTopLevelFunctions?.prototype
+      sceneDesc.filterShader =
+        typeof tlf?.DefaultFilterShader === 'function'
+          ? tlf.DefaultFilterShader.call(tlf)
+          : PHYSX.DefaultFilterShader()
+    } catch {
+      sceneDesc.filterShader = PHYSX.DefaultFilterShader()
+    }
     sceneDesc.flags.raise(PHYSX.PxSceneFlagEnum.eENABLE_CCD, true)
     sceneDesc.flags.raise(PHYSX.PxSceneFlagEnum.eENABLE_ACTIVE_ACTORS, true)
     sceneDesc.solverType = PHYSX.PxSolverTypeEnum.eTGS
@@ -520,8 +529,6 @@ export class PhysXWorld {
     // eMBP drops actors outside PxBroadPhase regions → "out of broadphase bounds" + fall-through.
     sceneDesc.broadPhaseType = PHYSX.PxBroadPhaseTypeEnum.eSAP
     // DYNAMIC tree so bulk static addActor lands in SQ without requiring a rebuild every time.
-    // eSTATIC_AABB_TREE needs forceDynamicTreeRebuild after bulk cook or sweeps MISS while
-    // getWorldBounds still looks solid (plaza walk-through).
     try {
       sceneDesc.staticStructure = PHYSX.PxPruningStructureTypeEnum.eDYNAMIC_AABB_TREE
       sceneDesc.dynamicStructure = PHYSX.PxPruningStructureTypeEnum.eDYNAMIC_AABB_TREE
@@ -540,15 +547,16 @@ export class PhysXWorld {
     }
 
     this.sweepPose = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
-    this.sweepResult = new PHYSX.PxSweepResult()
+    // PxSweepBuffer10 is the fixed-capacity buffer PhysX-js examples use; PxSweepResult can
+    // report didHit=false forever on some WASM builds with 1000+ statics.
+    this.sweepResult =
+      typeof PHYSX.PxSweepBuffer10 === 'function'
+        ? new PHYSX.PxSweepBuffer10()
+        : new PHYSX.PxSweepResult()
     this.queryFilterData = new PHYSX.PxQueryFilterData()
-    // Permanent words object — assign via set_data so WASM owns stable filter words.
-    this.sceneQueryFilterWords = new PHYSX.PxFilterData(
-      Layers.player.group,
-      Layers.player.mask,
-      0,
-      0
-    )
+    // Zero words = PhysX default "accept all" for scene queries (not a color / not new colliders).
+    // Solid shapes still carry group bits; CCT ignores eTRIGGER_SHAPE for blocking.
+    this.sceneQueryFilterWords = new PHYSX.PxFilterData(0, 0, 0, 0)
     this.queryFilterData.data = this.sceneQueryFilterWords
     try {
       this.queryFilterData.flags = new PHYSX.PxQueryFlags(
@@ -693,18 +701,12 @@ export class PhysXWorld {
 
   private setupControllerManager(): void {
     this.controllerManager = PHYSX.PxTopLevelFunctions.prototype.CreateControllerManager(this.scene)
-    // Keep filter data alive for the process lifetime — C++ holds a raw pointer only.
-    // Open solid mask (0xffffffff) so bilateral never rejects env/prop/gltf hulls.
-    this.cctFilterData = new PHYSX.PxFilterData(
-      Layers.player.group,
-      SOLID_FILTER_OPEN,
-      0,
-      0
-    )
+    // Keep filter data alive — C++ stores a raw pointer. Zero words = accept all SQ hits
+    // (CCT still ignores eTRIGGER_SHAPE for blocking; fishing volumes stay non-solid).
+    this.cctFilterData = new PHYSX.PxFilterData(0, 0, 0, 0)
     this.controllerFilters = new PHYSX.PxControllerFilters(this.cctFilterData)
     this.controllerFilters.mFilterData = this.cctFilterData
-    // No ePREFILTER — custom preFilter was a soft-world footgun (garbage words / wrong eNONE).
-    // Triggers stay on trigger layer (narrow mask) and do not match open solid blocking.
+    // No ePREFILTER — custom preFilter was a soft-world footgun.
     this.cctQueryFlags = new PHYSX.PxQueryFlags(
       PHYSX.PxQueryFlagEnum.eSTATIC | PHYSX.PxQueryFlagEnum.eDYNAMIC
     )
@@ -1471,7 +1473,7 @@ export class PhysXWorld {
       /* optional API */
     }
     this.invalidateControllerCache()
-    console.info(
+    console.warn(
       `[PhysXWorld] seal membership — inScene=${inScene} orphansReadded=${readded} map=${this.staticActors.size}`
     )
     return readded
@@ -1539,30 +1541,11 @@ export class PhysXWorld {
       return { didHit: false, distance: null, normalY: null, inScene, map }
     }
 
-    // Open filter for diagnostic.
-    if (!this.sceneQueryFilterWords) {
-      this.sceneQueryFilterWords = new PHYSX.PxFilterData(
-        Layers.player.group,
-        SOLID_FILTER_OPEN,
-        0,
-        0
-      )
-    } else {
-      this.sceneQueryFilterWords.word0 = Layers.player.group
-      this.sceneQueryFilterWords.word1 = SOLID_FILTER_OPEN
-    }
-    this.queryFilterData.data = this.sceneQueryFilterWords
-    try {
-      this.queryFilterData.flags = new PHYSX.PxQueryFlags(
-        PHYSX.PxQueryFlagEnum.eSTATIC | PHYSX.PxQueryFlagEnum.eDYNAMIC
-      )
-    } catch {
-      /* optional */
-    }
+    // Zero filter words = accept all (diagnostic).
+    this.applySceneQueryFilter(0)
 
     this._v1.set(x, y + 2.5, z)
     this._v1.toPxVec3(this.sweepPose.p)
-    // Identity quat for sphere
     try {
       this._identityQuat.set(0, 0, 0, 1)
       this._identityQuat.toPxTransform(this.sweepPose)
@@ -1575,9 +1558,9 @@ export class PhysXWorld {
     down.z = 0
 
     const hitFlags =
+      (PHYSX.PxHitFlagEnum.eDEFAULT ?? 1) |
       (PHYSX.PxHitFlagEnum.ePOSITION ?? 0) |
       (PHYSX.PxHitFlagEnum.eNORMAL ?? 0) |
-      (PHYSX.PxHitFlagEnum.eDEFAULT ?? 0) |
       (PHYSX.PxHitFlagEnum.eMESH_BOTH_SIDES ?? 0)
 
     let didHit = false
@@ -1590,21 +1573,23 @@ export class PhysXWorld {
         down,
         8,
         this.sweepResult,
-        hitFlags || PHYSX.PxHitFlagEnum.eDEFAULT,
+        hitFlags,
         this.queryFilterData
       )
       if (didHit) {
         const hit = this.sweepResult.getAnyHit(0)
-        distance = hit?.distance ?? null
-        normalY = hit?.normal?.y ?? null
+        distance = typeof hit?.distance === 'number' ? hit.distance : null
+        normalY = typeof hit?.normal?.y === 'number' ? hit.normal.y : null
       }
     } catch (err) {
       console.warn(`[phys] ${label} sweep threw`, err)
     }
 
-    console.info(
+    // warn = always visible in client log panel
+    console.warn(
       `[phys] ${label} didHit=${didHit} dist=${distance != null ? distance.toFixed(3) : 'n/a'} ` +
         `ny=${normalY != null ? normalY.toFixed(2) : 'n/a'} map=${map} inScene=${inScene} ` +
+        `buf=${this.sweepResult?.__class__?.name ?? typeof this.sweepResult} ` +
         `at=(${x.toFixed(1)},${y.toFixed(1)},${z.toFixed(1)})`
     )
     return { didHit, distance, normalY, inScene, map }
@@ -1949,7 +1934,7 @@ export class PhysXWorld {
     this.allowStaticReinsert = false
     this.staticSqSealed = true
     this.invalidateControllerCache()
-    console.info(
+    console.warn(
       `[PhysXWorld] static SQ sealed — static=${n} filters=${filters} orphans=${orphans} ` +
         `rebuild=${rebuilt ? 'once' : 'skip'} probe=${probeBefore}→${probeAfter} frozen=true`
     )
@@ -2215,9 +2200,10 @@ export class PhysXWorld {
 
     // Always re-assert y=0 floor before any move (scene cook churn must not strand the avatar).
     this.ensureInfiniteGroundPlane()
-    // Re-pin filter data pointer each move — WASM may clear it; GC must never free cctFilterData.
-    if (this.controllerFilters && this.cctFilterData) {
-      this.controllerFilters.mFilterData = this.cctFilterData
+    // Re-pin filter data + flags each move — WASM may clear pointers; GC must never free them.
+    if (this.controllerFilters) {
+      if (this.cctFilterData) this.controllerFilters.mFilterData = this.cctFilterData
+      if (this.cctQueryFlags) this.controllerFilters.mFilterFlags = this.cctQueryFlags
     }
 
     this.pendingCctGroundEntity = null
@@ -3099,17 +3085,20 @@ export class PhysXWorld {
     this.actorCookScale.delete(entity)
   }
 
-  /** Scene queries — bilateral layer test (matches CCT). No ePREFILTER (null callback → MISS). */
+  /**
+   * Scene queries. layerMask 0 → zero words (PhysX accept-all).
+   * Camera/trigger pass a non-zero mask for bilateral filtering.
+   * No ePREFILTER (null callback → MISS everything).
+   */
   private applySceneQueryFilter(layerMask: number): void {
-    // layerMask 0 → open solid mask. Camera/trigger pass a narrower mask.
-    const mask = layerMask === 0 ? SOLID_FILTER_OPEN : layerMask >>> 0
+    const w0 = layerMask === 0 ? 0 : Layers.player.group
+    const w1 = layerMask === 0 ? 0 : layerMask >>> 0
     if (!this.sceneQueryFilterWords) {
-      this.sceneQueryFilterWords = new PHYSX.PxFilterData(Layers.player.group, mask, 0, 0)
+      this.sceneQueryFilterWords = new PHYSX.PxFilterData(w0, w1, 0, 0)
     } else {
-      this.sceneQueryFilterWords.word0 = Layers.player.group
-      this.sceneQueryFilterWords.word1 = mask
+      this.sceneQueryFilterWords.word0 = w0
+      this.sceneQueryFilterWords.word1 = w1
     }
-    // Assign permanent object (not a temp wrap) so WASM keeps words.
     this.queryFilterData.data = this.sceneQueryFilterWords
     try {
       this.queryFilterData.flags = new PHYSX.PxQueryFlags(

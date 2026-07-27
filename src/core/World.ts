@@ -2180,9 +2180,10 @@ export class World {
           const probe = this.physics.probeWalkSurfaceFeetY(feet.x, feet.z, feet.y + 2.5, 6, feet.y)
           console.info(
             `[phys] health-soft sweepFeetY=${probe != null ? probe.toFixed(2) : 'MISS'} ` +
-              `sides=${sides ? 'yes' : 'no'} ` +
-              `(MISS = SQ bounds not queryable; missing-actor repair only — never reinsert-all)`
+              `sides=${sides ? 'yes' : 'no'}`
           )
+          // Always-visible SQ diagnostic (console.warn so it is not lost in noise).
+          this.physics.diagnoseSceneQueryAt(feet.x, feet.y, feet.z, 'health-soft')
           this.physics.invalidateControllerCache()
           // Bounded recover: enqueue truly missing actors (single-entity cook + single reinsert).
           this.discoverMissingColliderActors()

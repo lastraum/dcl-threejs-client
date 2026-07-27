@@ -1293,20 +1293,29 @@ initSceneEngineScheduler({
   },
   onSceneUiInjectPointerComplete: ({ mountGrew }) => {
     // Drop pointer session so pointerBlocksEngineTick no longer returns true.
-    // CBD Plaza welcome: nZ(dt) fades Color4.a; without eng.update the splash freezes mid-fade
-    // and the full-screen PE catcher keeps the pointer captive.
+    // CBD Plaza welcome: nZ(dt) fades Color4.a; without eng.update the splash freezes mid-fade.
     resetPointerInputSession()
     sceneTicksPaused = false
     workerLog(
       'log',
       `[sceneWorker] sceneUi inject complete — session ended, ticks unpaused (mountGrew=${mountGrew ? 1 : 0})`
     )
-    // requestSceneEngineTick during pointerDeliverWorkInFlight is blocked — schedule after drain.
-    const kick = (): void => requestSceneEngineTick()
-    queueMicrotask(kick)
-    setTimeout(kick, 0)
-    setTimeout(kick, 32)
-    setTimeout(kick, 100)
+    // Kicks must run AFTER pointer deliver serial finishes: this callback fires mid-batch while
+    // pointerDeliverWorkInFlight still blocks requestSceneEngineTick (only sets tickQueued).
+    // Chaining on pointerDeliverSerial guarantees real-dt eng.update for Color4.a fade.
+    void pointerDeliverSerial.then(() => {
+      if (!sceneEngine || sceneTicksPaused) return
+      const kick = (): void => {
+        if (!sceneEngine || sceneTicksPaused || pointerBlocksEngineTick()) return
+        requestSceneEngineTick()
+      }
+      kick()
+      // ~1s of ~60Hz boost so frame-step fade systems (a -= k, not a -= k*dt) still finish
+      // near Explorer wall time when play-frame-tick is sparse after inject.
+      for (const ms of [0, 16, 33, 50, 66, 83, 100, 133, 166, 200, 250, 300, 400, 500, 650, 800, 1000]) {
+        setTimeout(kick, ms)
+      }
+    })
   }
 })
 
@@ -1973,11 +1982,17 @@ function executePointerInjection(body: InjectPointerClickBody, injectOnly = fals
   if (isEngineUpdateInFlight()) {
     forceRecoverStuckSceneEngineTick('inject-pointer-click-preempt')
   }
-  sceneTicksPaused = true
+  // Mesh open-panel: pause cooperative ticks until deliver-done.
+  // sceneUi (CBD welcome splash, DOM HUD): do NOT pause — onMouseDown starts Color4.a fade
+  // systems that need real eng.update(dt) every frame. Pausing froze the scrim opaque.
+  if (!body.sceneUi) {
+    sceneTicksPaused = true
+  }
   workerVerboseLog(
     debugPointerDeliver,
     'log',
-    `[sceneWorker] inject-pointer-click entity=${body.entity} button=${body.button} ts=${body.downTimestamp}/${body.upTimestamp}`
+    `[sceneWorker] inject-pointer-click entity=${body.entity} button=${body.button} ts=${body.downTimestamp}/${body.upTimestamp}` +
+      ` sceneUi=${body.sceneUi ? 1 : 0}`
   )
   if (!sceneEngine) {
     pendingInjectPointer = body
@@ -1993,7 +2008,7 @@ function executePointerInjection(body: InjectPointerClickBody, injectOnly = fals
       '[sceneWorker] inject-pointer-click — queued split DOWN/UP inject for pointer tick'
     )
     beginPointerDeliverBatch('inject-pointer-click')
-    workerLog('log', `[sceneWorker] inject-pointer-click batch open injectOnly=${injectOnly}`)
+    workerLog('log', `[sceneWorker] inject-pointer-click batch open injectOnly=${injectOnly} sceneUi=${body.sceneUi ? 1 : 0}`)
     if (injectOnly) {
       finalizePointerDelivery('inject-pointer-click')
     }

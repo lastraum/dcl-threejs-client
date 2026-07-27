@@ -115,8 +115,8 @@ export class SceneUiBridge {
   private lastPointerClientX = 0
   private lastPointerClientY = 0
   /**
-   * Fullscreen PE entities force-hidden after sceneUi inject (welcome splash click-to-fade).
-   * Worker fade may lag; paint must not re-enable PE until unmount.
+   * @deprecated Empty forever — force-dismiss was a client hack (flash + desync from scene Color4.a).
+   * Kept only so paint/pick branches compile; never add entities here.
    */
   private readonly forceDismissedEntities = new Set<Entity>()
   private readonly forceDismissPurgeTimers = new Map<Entity, number>()
@@ -227,82 +227,12 @@ export class SceneUiBridge {
   }
 
   /**
-   * After sceneUi inject-pointer-click: free the pointer from a **fullscreen** catcher only.
-   * CBD Plaza welcome fades Color4.a over several frames; if worker ticks lag the shell
-   * stays pointer-events:auto and blocks WASD/look.
-   *
-   * Must NOT touch non-fullscreen PE HUD buttons (Neurolink, menus, CREATOR cards):
-   * stripping interactive / pointer-events then re-painting causes visible flash on every
-   * click — the PX UI flashing regression.
+   * @deprecated No-op. Scene owns welcome-splash visuals (Color4.a fade). Client must not
+   * invent display:none / opacity:0 — that flash-desynced from scene alpha and blocked
+   * Explorer parity. Pointer freedom comes from worker ticks + PE session reset after inject.
    */
-  forceDismissAfterSceneUiClick(entity: Entity): void {
-    if (this.forceDismissedEntities.has(entity)) {
-      this.applyForceDismissDom(entity)
-      return
-    }
-    const vw = Math.max(1, window.innerWidth)
-    const vh = Math.max(1, window.innerHeight)
-    // Only true full-viewport shells (welcome scrim). Empty if click was on a HUD button.
-    const targets = this.collectFullscreenDismissTargets(entity, vw, vh)
-    if (!targets.length) return
-
-    for (const id of targets) {
-      this.forceDismissedEntities.add(id)
-      this.applyForceDismissDom(id)
-      const prev = this.forceDismissPurgeTimers.get(id)
-      if (prev != null) window.clearTimeout(prev)
-      const captured = id
-      const timer = window.setTimeout(() => {
-        this.forceDismissPurgeTimers.delete(captured)
-        if (!this.forceDismissedEntities.has(captured)) return
-        // Worker never unmounted — hard purge ghost DOM so it cannot reappear.
-        this.dom.forceDismissEntity(captured)
-        this.hitMap.removeEntity(captured)
-        console.info(`[scene-ui] force-dismiss purge e${captured as number} (worker lag)`)
-      }, 1400)
-      this.forceDismissPurgeTimers.set(id, timer)
-    }
-    console.info(
-      `[scene-ui] force-dismiss fullscreen after sceneUi click — [${targets.map((e) => `e${e as number}`).join(',')}]`
-    )
-  }
-
-  /**
-   * Clicked PE + fullscreen PE ancestors (nested welcome scrim / image + catcher).
-   * Returns only entities that actually cover ≥72% of the viewport — never falls back
-   * to the clicked entity when it is a small HUD control.
-   */
-  private collectFullscreenDismissTargets(entity: Entity, vw: number, vh: number): Entity[] {
-    const out: Entity[] = []
-    const seen = new Set<number>()
-    const pushIfFullscreen = (id: Entity): void => {
-      const n = id as number
-      if (seen.has(n)) return
-      const region = this.hitMap.regionFor(id)
-      const shell = this.dom.getNode(id)
-      const rect = shell?.getBoundingClientRect()
-      const w = region?.width ?? rect?.width ?? 0
-      const h = region?.height ?? rect?.height ?? 0
-      if (w < vw * 0.72 || h < vh * 0.72) return
-      seen.add(n)
-      out.push(id)
-    }
-    pushIfFullscreen(entity)
-    const ecs = this.mirrorEcs
-    const view = this.lastView
-    if (!ecs || !view) return out
-    let current: Entity | null = entity
-    const root = view.RootEntity
-    for (let i = 0; i < 12 && current; i++) {
-      const t = ecs.UiTransform.getOrNull(current)
-      const parent = (t?.parent ?? 0) as Entity
-      if (!parent || parent === root || parent === 0) break
-      if (isUiEntityBlocking(ecs, parent, this.pointerEventsLookup)) {
-        pushIfFullscreen(parent)
-      }
-      current = parent
-    }
-    return out
+  forceDismissAfterSceneUiClick(_entity: Entity): void {
+    /* intentionally empty — see executePointerInjection sceneUi path (no tick pause) */
   }
 
   private applyForceDismissDom(entity: Entity): void {

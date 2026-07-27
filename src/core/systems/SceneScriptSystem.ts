@@ -3985,12 +3985,8 @@ export class SceneScriptSystem {
         body: inject,
         injectOnly
       } satisfies MainToWorker)
-      // Welcome splash / click-to-fade: free pointer from fullscreen primary-scene scrims.
-      // Never run on PE HUD root — Neurolink / smart-wearable buttons are not welcome
-      // catchers, and force-dismiss + paint thrash caused PX UI flashing.
-      if (inject.sceneUi && this.uiRootId !== 'pe-ui-root') {
-        this.sceneUiBridge?.forceDismissAfterSceneUiClick(inject.entity as never)
-      }
+      // Scene owns splash visuals (Color4.a fade). Do not force-dismiss / display:none —
+      // that was a client hack and caused flash + desync from scene alpha.
     } else {
       console.warn('[pointer]', 'inject payload missing — direct CRDT only')
       this.logPointer('inject payload missing — direct CRDT only')

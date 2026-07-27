@@ -711,22 +711,43 @@ export class SceneUiBridge {
       }
     }
 
+    // Layout-only dirties (position/size) — UV/text-only frames must not re-run Yoga.
+    const layoutDirtyEntities: Entity[] = []
+    if (this.lastEntityLayoutKeys.size > 0) {
+      for (const [entity, lk] of entityLayoutKeys) {
+        if (this.lastEntityLayoutKeys.get(entity) !== lk) layoutDirtyEntities.push(entity)
+      }
+      for (const entity of this.lastEntityLayoutKeys.keys()) {
+        if (!entityLayoutKeys.has(entity)) layoutDirtyEntities.push(entity)
+      }
+    } else if (dirtyEntities.length > 0 && this.lastLayoutBoxMap) {
+      // First dirty after mount — treat all dirties as layout until baseline is set.
+      layoutDirtyEntities.push(...dirtyEntities)
+    }
+
     let layoutBoxes = this.layoutCache.get(layoutKey)
     let layoutCacheHit = true
     if (!layoutBoxes) {
       layoutCacheHit = false
-      // Fishing reeling: height% + position + UVs change every tick. Full Yoga on 100+
-      // nodes at 10–15Hz is the cast animation stutter. Prefer refining absolute boxes.
+      // UV/color/text only — reuse last Yoga boxes (COD: no thrash on reeling UV ticks).
       if (
+        layoutDirtyEntities.length === 0 &&
+        this.lastLayoutBoxMap &&
+        this.lastLayoutBoxMap.size > 0
+      ) {
+        layoutBoxes = [...this.lastLayoutBoxMap.values()]
+        layoutCacheHit = true
+      } else if (
         this.lastLayoutBoxMap &&
         this.lastLayoutBoxMap.size > 0 &&
-        dirtyEntities.length > 0 &&
-        dirtyEntities.length <= 24 &&
-        dirtyEntities.length < mounted.size * 0.35
+        layoutDirtyEntities.length > 0 &&
+        layoutDirtyEntities.length <= 32 &&
+        layoutDirtyEntities.length < mounted.size * 0.4
       ) {
+        // Fishing reeling: absolute height% + position every tick. Refine only those.
         const refined = tryRefineAbsoluteLayoutBoxes(
           this.lastLayoutBoxMap,
-          dirtyEntities,
+          layoutDirtyEntities,
           transformOf,
           this.virtual
         )

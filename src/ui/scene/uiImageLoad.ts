@@ -53,7 +53,24 @@ export function assignUiImageSrc(img: HTMLImageElement, url: string): void {
   img.dataset.uiSrc = target
   img.decoding = 'async'
   img.crossOrigin = 'anonymous'
-  img.onload = () => notifySceneUiImageLoaded()
+  // Cache successful proxy loads as blob URLs so scale/tween repaints never re-hit the network.
+  img.onload = () => {
+    const key = img.dataset.uiSrc
+    if (key && !blobByUrl.has(key) && img.src && !img.src.startsWith('blob:')) {
+      // Best-effort: promote HTTP-cached image into a stable blob for the session.
+      void fetch(fetchTarget(key))
+        .then((res) => (res.ok ? res.blob() : null))
+        .then((blob) => {
+          if (!blob || blobByUrl.has(key)) return
+          const blobUrl = URL.createObjectURL(blob)
+          blobByUrl.set(key, blobUrl)
+        })
+        .catch(() => {
+          /* browser HTTP cache still helps */
+        })
+    }
+    notifySceneUiImageLoaded()
+  }
 
   img.onerror = () => {
     const key = img.dataset.uiSrc

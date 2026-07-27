@@ -71,34 +71,47 @@ export function readInteractableArea(canvas?: HTMLElement | null): ScreenUiRect 
   const app = document.getElementById('app')
   const canvasRaw = el?.getBoundingClientRect()
   const appRaw = app?.getBoundingClientRect()
-  const canvasRect =
-    canvasRaw && canvasRaw.width > 1 && canvasRaw.height > 1 ? canvasRaw : null
-  const appRect = appRaw && appRaw.width > 1 && appRaw.height > 1 ? appRaw : null
+  const vv = window.visualViewport
+  const winW = Math.max(
+    1,
+    Math.round(vv?.width ?? 0),
+    document.documentElement.clientWidth || 0,
+    window.innerWidth || 0
+  )
+  const winH = Math.max(
+    1,
+    Math.round(vv?.height ?? 0),
+    document.documentElement.clientHeight || 0,
+    window.innerHeight || 0
+  )
 
-  // Prefer the larger of canvas vs #app — a short canvas (stale setSize / CSS fight)
-  // was leaving a navy/black strip under the HUD while UI mapped only to the short box.
-  if (canvasRect && appRect) {
-    const useApp =
-      appRect.height > canvasRect.height + 2 || appRect.width > canvasRect.width + 2
-    const r = useApp ? appRect : canvasRect
-    return { left: r.left, top: r.top, width: r.width, height: r.height }
+  // Prefer the largest box among canvas / #app / window — never letterbox the HUD
+  // into a short 884px strip under a taller browser chrome (black bar under fishing).
+  let left = 0
+  let top = 0
+  let width = winW
+  let height = winH
+  if (appRaw && appRaw.width > 1 && appRaw.height > 1) {
+    left = appRaw.left
+    top = appRaw.top
+    width = Math.max(width, appRaw.width)
+    height = Math.max(height, appRaw.height)
   }
-  if (canvasRect) {
-    return {
-      left: canvasRect.left,
-      top: canvasRect.top,
-      width: canvasRect.width,
-      height: canvasRect.height
+  if (canvasRaw && canvasRaw.width > 1 && canvasRaw.height > 1) {
+    // If canvas is already full-size, use its origin (may be offset by sidebar).
+    if (canvasRaw.width + 2 >= width && canvasRaw.height + 2 >= height) {
+      left = canvasRaw.left
+      top = canvasRaw.top
+      width = canvasRaw.width
+      height = canvasRaw.height
+    } else if (appRaw && appRaw.width > 1) {
+      left = appRaw.left
+      top = appRaw.top
+      width = Math.max(width, appRaw.width, canvasRaw.width)
+      height = Math.max(height, appRaw.height, canvasRaw.height, winH)
     }
   }
-  if (appRect) {
-    return { left: appRect.left, top: appRect.top, width: appRect.width, height: appRect.height }
-  }
-  const vv = window.visualViewport
-  if (vv && vv.width > 1 && vv.height > 1) {
-    return { left: vv.offsetLeft, top: vv.offsetTop, width: vv.width, height: vv.height }
-  }
-  return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight }
+  return { left, top, width, height }
 }
 
 /**

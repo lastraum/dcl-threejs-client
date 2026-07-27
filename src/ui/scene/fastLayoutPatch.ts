@@ -7,9 +7,11 @@ import type { VirtualCanvasSize } from './virtualCanvas'
 
 /**
  * Fast re-layout for **absolute** nodes when only size/position change (fishing reeling bars).
- * Full Yoga is too expensive at 10–15Hz during cast/reel (height % + UV every tick).
+ * Full Yoga is too expensive every tick during cast/reel.
  *
- * Returns null if any dirty entity needs flex layout (caller runs full Yoga).
+ * Non-absolute dirties are **skipped** (keep previous box) so a single flex life-bar
+ * text/layout dirty does not force full Yoga on 100+ nodes (COD: no thrash).
+ * Callers should only pass layout-dirty entities when possible.
  */
 export function tryRefineAbsoluteLayoutBoxes(
   prev: ReadonlyMap<Entity, LayoutBox>,
@@ -19,6 +21,7 @@ export function tryRefineAbsoluteLayoutBoxes(
 ): Map<Entity, LayoutBox> | null {
   if (!dirty.length || !prev.size) return null
   const next = new Map(prev)
+  let refinedAny = false
 
   const parentBox = (parentId: number): LayoutBox | null => {
     if (parentId === 0 || parentId === (CANVAS_ROOT_ENTITY as number)) {
@@ -48,16 +51,17 @@ export function tryRefineAbsoluteLayoutBoxes(
 
   for (const entity of ordered) {
     const t = transformOf(entity)
-    if (!t) return null
-    if (normalizeYGPositionType(t.positionType) !== YGPositionType.ABSOLUTE) return null
+    if (!t) continue
+    // Flex/relative dirties keep previous box — do not poison the whole refine.
+    if (normalizeYGPositionType(t.positionType) !== YGPositionType.ABSOLUTE) continue
 
     const parentId = (t.parent ?? CANVAS_ROOT_ENTITY) as number
     const pb = parentBox(parentId)
-    if (!pb || pb.width <= 0 || pb.height <= 0) return null
+    if (!pb || pb.width <= 0 || pb.height <= 0) continue
 
     const w = resolveSize(t.width, t.widthUnit, pb.width)
     const h = resolveSize(t.height, t.heightUnit, pb.height)
-    if (w == null || h == null) return null
+    if (w == null || h == null) continue
 
     const leftEdge = resolveEdge(t.positionLeft, t.positionLeftUnit, pb.width)
     const rightEdge = resolveEdge(t.positionRight, t.positionRightUnit, pb.width)
@@ -83,8 +87,9 @@ export function tryRefineAbsoluteLayoutBoxes(
       width: Math.max(0, w),
       height: Math.max(0, h)
     })
+    refinedAny = true
   }
-  return next
+  return refinedAny || dirty.length > 0 ? next : null
 }
 
 function resolveSize(

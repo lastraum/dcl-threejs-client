@@ -443,52 +443,8 @@ export function parseUiBackgroundUvRect(
 }
 
 /**
- * Small atlas sprites (rarity tags, icons) — background-size/position.
- * Avoids nested absolute % img clip glitches on equip HUD badges.
- */
-function applyAtlasUvAsBackground(
-  el: HTMLElement,
-  imageUrl: string,
-  u0: number,
-  v0: number,
-  u1: number,
-  v1: number,
-  colorAlpha: number
-): void {
-  const uSpan = Math.max(1e-6, u1 - u0)
-  const vSpan = Math.max(1e-6, v1 - v0)
-  const cssTop = 1 - v1
-  const sizeX = 100 / uSpan
-  const sizeY = 100 / vSpan
-  const posX = uSpan >= 1 - 1e-6 ? 0 : (u0 / (1 - uSpan)) * 100
-  const posY = vSpan >= 1 - 1e-6 ? 0 : (cssTop / (1 - vSpan)) * 100
-  const safeUrl = imageUrl.replace(/\\/g, '/').replace(/"/g, '%22')
-
-  clearBgImg(el)
-  el.style.overflow = 'hidden'
-  el.style.backgroundImage = `url("${safeUrl}")`
-  el.style.backgroundRepeat = 'no-repeat'
-  el.style.backgroundSize = `${sizeX.toFixed(4)}% ${sizeY.toFixed(4)}%`
-  el.style.backgroundPosition = `${posX.toFixed(4)}% ${posY.toFixed(4)}%`
-  el.style.backgroundColor = 'transparent'
-  el.style.backgroundBlendMode = ''
-  el.style.opacity = String(clamp01(colorAlpha))
-  el.style.borderImage = ''
-  el.style.borderImageSource = ''
-  el.style.borderImageSlice = ''
-  el.style.borderImageWidth = ''
-  el.style.borderImageRepeat = ''
-  el.style.borderWidth = ''
-  el.style.borderStyle = ''
-  el.style.borderColor = ''
-}
-
-/**
- * Full-width / full-height UV strips — fishing reeling bars use **animated** UVs:
- *   fill:  uvs [0,0, 0,t/100, 1,t/100, 1,0] + height t%
- *   zone:  uvs [0,k, 0,G, 1,G, 1,k] while zone slides (k,G change every tick)
- * Explorer maps that UV quad onto the element (stretch). Oversized <img> + overflow
- * matches mesh UVs; background-position made the lure bar look like a sliding texture.
+ * Atlas UV crop (icons + animated reeling bars) — oversized <img> + overflow.
+ * Matches Explorer mesh UV mapping for fishing s4e (BL-clockwise, GL V).
  */
 function applyAtlasUvAsImgStrip(
   el: HTMLElement,
@@ -539,19 +495,6 @@ function applyAtlasUvAsImgStrip(
   img.style.top = `${((-(1 - v1) / vSpan) * 100).toFixed(5)}%`
 }
 
-/** Full-width or full-height UV window = progress/scroll bar, not a tiny atlas icon. */
-function isUvFillOrScrollStrip(u0: number, v0: number, u1: number, v1: number): boolean {
-  const uSpan = u1 - u0
-  const vSpan = v1 - v0
-  // Atlas cells (tutoE/tutoF, rarity tags) are small in **both** axes — never strip.
-  if (uSpan < 0.55 && vSpan < 0.55) return false
-  // Fishing reeling bars: u covers ~full texture width, v is a moving/growing window.
-  // Require a meaningful partial window on the other axis so full-bleed icons stay cropped.
-  if (uSpan >= 0.85 && vSpan > 0.02 && vSpan < 0.95) return true
-  if (vSpan >= 0.85 && uSpan > 0.02 && uSpan < 0.95) return true
-  return false
-}
-
 function applyBgImg(
   el: HTMLElement,
   imageUrl: string,
@@ -563,11 +506,11 @@ function applyBgImg(
 
   const rect = parseUiBackgroundUvRect(uvs)
   if (rect) {
-    if (isUvFillOrScrollStrip(rect.u0, rect.v0, rect.u1, rect.v1)) {
-      applyAtlasUvAsImgStrip(el, imageUrl, rect.u0, rect.v0, rect.u1, rect.v1, colorAlpha)
-    } else {
-      applyAtlasUvAsBackground(el, imageUrl, rect.u0, rect.v0, rect.u1, rect.v1, colorAlpha)
-    }
+    // Always crop via oversized <img> + overflow — background-position was wrong for
+    // fishing s4e (BL-clockwise GL V) and painted full-sheet “celebrate” ghosts when
+    // UVs were missing. Img strip matches Explorer mesh UV mapping for both atlas
+    // icons (tutoE/tutoF) and animated reeling fill/zone windows.
+    applyAtlasUvAsImgStrip(el, imageUrl, rect.u0, rect.v0, rect.u1, rect.v1, colorAlpha)
     return
   }
 

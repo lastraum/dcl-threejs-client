@@ -150,30 +150,36 @@ export class SceneHost {
       this.setViewportSize(this.viewportElement.clientWidth, this.viewportElement.clientHeight)
       return
     }
-    // Prefer #app, but force it to match the visible viewport first — a short #app
-    // (stale CSS / safe-area) left a solid black/navy strip under the WebGL HUD.
+    // Always size to the largest stable viewport metric. A short #app (stale CSS /
+    // 100dvh vs layout chrome) left a solid black strip under the HUD while scene-ui
+    // mapped to 1920×884 of a taller window (logs: e1835 1920×884).
     const app = document.getElementById('app')
     const vv = window.visualViewport
     const targetW = Math.max(
       1,
-      Math.round(vv?.width ?? 0) || document.documentElement.clientWidth || window.innerWidth
+      Math.round(vv?.width ?? 0),
+      document.documentElement.clientWidth || 0,
+      window.innerWidth || 0,
+      app?.clientWidth || 0
     )
     const targetH = Math.max(
       1,
-      Math.round(vv?.height ?? 0) || document.documentElement.clientHeight || window.innerHeight
+      Math.round(vv?.height ?? 0),
+      document.documentElement.clientHeight || 0,
+      window.innerHeight || 0,
+      app?.clientHeight || 0
     )
     if (app) {
-      // Keep CSS box in sync with the viewport we render into (no letterbox under #app).
-      if (Math.abs(app.clientWidth - targetW) > 1 || Math.abs(app.clientHeight - targetH) > 1) {
-        app.style.width = `${targetW}px`
-        app.style.height = `${targetH}px`
-        app.style.maxHeight = `${targetH}px`
+      app.style.width = '100%'
+      app.style.height = '100%'
+      app.style.minHeight = `${targetH}px`
+      app.style.maxHeight = 'none'
+      // Absolute fill in case % height collapses under a non-height parent.
+      if (app.clientHeight + 2 < targetH || app.clientWidth + 2 < targetW) {
+        app.style.position = app.style.position || 'relative'
         app.style.minHeight = `${targetH}px`
+        app.style.minWidth = `${targetW}px`
       }
-      const w = app.clientWidth > 0 ? app.clientWidth : targetW
-      const h = app.clientHeight > 0 ? app.clientHeight : targetH
-      this.setViewportSize(w, h)
-      return
     }
     this.setViewportSize(targetW, targetH)
   }

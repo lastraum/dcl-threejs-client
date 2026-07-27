@@ -256,7 +256,7 @@ export class SceneWorkerSlot {
         /* optional */
       }
       this.captureRemappedColliders()
-      // Apply initial mode (large demotes often tertiary for FPS).
+      // Apply initial mode (sticky demote = secondary; tertiary only via ring/cap later).
       this.setResidentMode(this.mode)
       // Re-bake origin after mode visuals.
       this.applySceneOriginOffset()

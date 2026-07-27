@@ -325,11 +325,10 @@ export class SecondaryLiveManager {
 
     const id = scene.entityId
     const parcelCount = scene.parcels?.length || 1
-    // Sticky demote: always keep meshes. Large multi-parcel (plaza) starts **tertiary**
-    // (scripts off) so dual full workers cannot freeze the tab. Re-promote unpauses.
-    // Modest neighbors stay secondary (scripts warm for walk-back).
-    const initialMode: ResidentMode =
-      parcelCount > SECONDARY_LIVE_AUTO_MAX_PARCELS ? 'tertiary' : 'secondary'
+    // Sticky demote is ALWAYS secondary (muted scripts, meshes stay). Parcel count must
+    // NEVER pick tertiary — tertiary is only leave-ring / secondary-cap pressure.
+    // (Size gate SECONDARY_LIVE_AUTO_MAX_PARCELS is cold auto-boot only.)
+    const initialMode: ResidentMode = 'secondary'
 
     // Host origin is the NEW primary SW after promote — always prefer explicit base.
     const primaryBase =
@@ -359,17 +358,15 @@ export class SecondaryLiveManager {
       }
       this.stickyIds.add(id)
       existing.retargetPrimaryBase(primaryBase)
-      // Large sticky stays tertiary (scripts off); modest re-enter secondary.
-      if (initialMode === 'secondary' && existing.residentMode === 'tertiary') {
+      // Re-assert secondary scripts (muted) — never leave sticky stuck tertiary by size.
+      if (existing.residentMode === 'tertiary') {
         existing.setResidentMode('secondary')
-      } else if (initialMode === 'tertiary' && existing.residentMode === 'secondary') {
-        existing.setResidentMode('tertiary')
       }
       this.emitLiveIds()
       return { entityId: id, primaryPhysIds: [] }
     }
 
-    // Make room for a secondary sticky — demote other non-sticky first (never size-force tertiary).
+    // Make room for a secondary sticky — demote other non-sticky first (cap pressure only).
     this.ensureCapacityForNew(initialMode)
 
     // Collect native primary phys ids before remapping under offset.
@@ -424,11 +421,10 @@ export class SecondaryLiveManager {
     this.emitLiveIds()
     const assert = this.assertResidentVisible(id)
     console.info(
-      `[multi-scene] demoted “${scene.title}” → sticky ${initialMode} parcels=${parcelCount} ` +
+      `[multi-scene] demoted “${scene.title}” → sticky secondary parcels=${parcelCount} ` +
         `offset vs primary=${primaryBase} meshes=${assert.meshCount} ` +
         `rootPos=(${assert.rootPos?.x.toFixed(1) ?? '?'},${assert.rootPos?.z.toFixed(1) ?? '?'}) ` +
-        `parented=${assert.parented} ok=${assert.ok}` +
-        (initialMode === 'tertiary' ? ' (scripts off — dual-worker thrash guard)' : '')
+        `parented=${assert.parented} ok=${assert.ok}`
     )
     if (!assert.ok) {
       console.error(
@@ -742,24 +738,12 @@ export class SecondaryLiveManager {
     }
 
     // Mode transitions for existing residents — never dispose on leave ring.
+    // NEVER use parcel count to force tertiary (sticky CBD stays secondary while in ring).
     for (const [id, slot] of this.slots) {
       const isPri =
         !!pri &&
         (slot.scene.baseParcel.trim() === pri ||
           slot.scene.parcels.some((p) => p.trim() === pri))
-      const large = (slot.scene.parcels?.length ?? 1) > SECONDARY_LIVE_AUTO_MAX_PARCELS
-      // Sticky plaza shells stay tertiary (scripts off) unless under-feet priority —
-      // dual full CBD+neighbor workers = 12fps freeze. Re-promote unpauses.
-      const stickyLargeKeepTertiary = this.stickyIds.has(id) && large && !isPri
-      if (stickyLargeKeepTertiary) {
-        if (slot.residentMode === 'secondary') {
-          slot.setResidentMode('tertiary')
-          console.info(
-            `[multi-scene] sticky large → tertiary “${slot.scene.title}” (FPS thrash guard)`
-          )
-        }
-        continue
-      }
       if (wantSecondary.has(id) || isPri) {
         if (slot.residentMode === 'tertiary') {
           // Re-enter live ring: scripts only, no GLB reload.

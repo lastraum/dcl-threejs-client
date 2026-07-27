@@ -87,10 +87,10 @@ export function aoiLiveSecondariesOnly(): boolean {
 }
 
 /**
- * Auto-boot live workers only for modest neighbors (nested hole scenes, buildings).
- * Plaza-scale multi-parcel estates stay as composite meshes unless under-feet priority
- * force-boot (promote path). **Does not apply to sticky demote** of the prior primary —
- * that always starts secondary while still in the live ring.
+ * Cold auto-boot only: refuse live-worker boot for plaza-scale neighbors unless they
+ * are under-feet priority (promote path). Composites still cover them visually.
+ * **Never** used to pick tertiary vs secondary for sticky demote — demote is always
+ * secondary; tertiary is leave-ring / secondary-cap pressure only.
  */
 export const SECONDARY_LIVE_AUTO_MAX_PARCELS = 16
 

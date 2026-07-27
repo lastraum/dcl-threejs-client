@@ -14,7 +14,7 @@ Treat every multi-scene, performance, and continuity task as **ship-or-iterate A
 |------|--------|
 | **No unload on parcel walk** | Promote = handoff + sticky demote only. **Never** `disposeSecondariesOnly` + seamless `jumpIn` for stand-on-parcel promote. |
 | **Rebind origin on promote** | `comms.bindSceneTarget(newPrimary)` **before** `restoreGenesisFeet`. Missing this warps soft-route (old local + new base → wrong parcel like -135,107) and voids CBD. |
-| **Prior primary stays resident** | Demote keeps mesh graph sticky. **Modest** → secondary scripts; **large plaza (>16 parcels)** → tertiary scripts-off (dual-worker thrash guard). Re-promote unpauses. **Never** `system.dispose()` into void. |
+| **Prior primary stays resident** | Demote keeps mesh graph sticky as **secondary** (muted scripts) regardless of parcel count. Tertiary only via leave-ring / cap pressure. Re-promote unpauses. **Never** `system.dispose()` into void. |
 | **Freeze hold pin** | `disableAllHoldFeet` only for intentional `InputModifier.disableAll`. Never pin for colliders-ready or multi-scene thrash. Stall auto-recover if keys held + free + feet stuck. |
 | **Secondary scripts 100%** | Live secondary `onUpdate` every frame (`secondaryTickIntervalMs = 0`), hard-capped (≤3). |
 | **Secondary FocusOwner mute** | No video, audio, scene UI, privileged pointers/nav — `FocusPolicy = 'secondary'`. |

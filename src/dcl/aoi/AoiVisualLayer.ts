@@ -359,7 +359,8 @@ export class AoiVisualLayer {
     const now = performance.now()
     const movedParcel = parcelKey !== this.lastParcelKey
     const radiusChanged = radius !== this.lastRadius
-    if (!force && !movedParcel && !radiusChanged && now - this.lastRefreshAt < 2500) return
+    // 5s stand-still throttle — pointer cache absorbs most work; still refresh on parcel change.
+    if (!force && !movedParcel && !radiusChanged && now - this.lastRefreshAt < 5000) return
 
     this.lastParcelKey = parcelKey
     this.lastRadius = radius

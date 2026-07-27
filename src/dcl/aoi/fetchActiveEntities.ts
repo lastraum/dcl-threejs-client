@@ -13,6 +13,24 @@ export type ActiveSceneEntity = {
   content: ContentFile[]
 }
 
+/** Catalyst parcel map rarely changes mid-session — reuse across AOI ticks. */
+const ENTITY_CACHE_TTL_MS = 90_000
+/** Cap memory if someone walks the whole world. */
+const MAX_CACHED_POINTERS = 8_000
+const MAX_CACHED_ENTITIES = 2_000
+
+type TimedEntity = { entity: ActiveSceneEntity; expiresAt: number }
+type TimedPointer = { entityId: string; expiresAt: number }
+
+const entityById = new Map<string, TimedEntity>()
+const pointerOwner = new Map<string, TimedPointer>()
+/** In-flight POST by contentUrl + sorted chunk — coalesces AOI + promote races. */
+const inflightChunks = new Map<string, Promise<ActiveSceneEntity[]>>()
+
+let cacheHits = 0
+let cacheMisses = 0
+let networkChunks = 0
+
 function parseContent(raw: unknown): ContentFile[] {
   if (!Array.isArray(raw)) return []
   const out: ContentFile[] = []
@@ -63,7 +81,85 @@ function normalizeEntity(raw: Record<string, unknown>): ActiveSceneEntity | null
   }
 }
 
-/** Batch catalyst active entities for parcel pointers (chunks of 80). */
+function pruneExpired(now: number): void {
+  for (const [id, e] of entityById) {
+    if (e.expiresAt <= now) entityById.delete(id)
+  }
+  for (const [p, e] of pointerOwner) {
+    if (e.expiresAt <= now) pointerOwner.delete(p)
+  }
+  // Soft LRU: if over cap, drop oldest half by expiry
+  if (pointerOwner.size > MAX_CACHED_POINTERS) {
+    const sorted = [...pointerOwner.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt)
+    const drop = sorted.slice(0, Math.floor(sorted.length / 2))
+    for (const [p] of drop) pointerOwner.delete(p)
+  }
+  if (entityById.size > MAX_CACHED_ENTITIES) {
+    const sorted = [...entityById.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt)
+    const drop = sorted.slice(0, Math.floor(sorted.length / 2))
+    for (const [id] of drop) entityById.delete(id)
+  }
+}
+
+function rememberEntity(ent: ActiveSceneEntity, now: number): void {
+  const expiresAt = now + ENTITY_CACHE_TTL_MS
+  entityById.set(ent.id, { entity: ent, expiresAt })
+  const keys = ent.pointers.length ? ent.pointers : ent.parcels
+  for (const raw of keys) {
+    const p = normalizePointer(raw)
+    // Prefer higher-rank owners when writing (same as buildPointerOwnershipMap intent).
+    const prev = pointerOwner.get(p)
+    if (prev && prev.expiresAt > now) {
+      const prevEnt = entityById.get(prev.entityId)?.entity
+      if (prevEnt && entityParcelClaimRank(prevEnt) > entityParcelClaimRank(ent)) continue
+    }
+    pointerOwner.set(p, { entityId: ent.id, expiresAt })
+  }
+}
+
+async function fetchChunk(
+  url: string,
+  chunk: string[],
+  contentUrl: string
+): Promise<ActiveSceneEntity[]> {
+  const key = `${contentUrl}|${chunk.join(';')}`
+  const existing = inflightChunks.get(key)
+  if (existing) return existing
+
+  const promise = (async () => {
+    networkChunks++
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pointers: chunk })
+      })
+      if (!res.ok) return []
+      const data = (await res.json()) as unknown
+      if (!Array.isArray(data)) return []
+      const out: ActiveSceneEntity[] = []
+      for (const row of data) {
+        if (!row || typeof row !== 'object') continue
+        const ent = normalizeEntity(row as Record<string, unknown>)
+        if (ent) out.push(ent)
+      }
+      return out
+    } catch {
+      return []
+    } finally {
+      inflightChunks.delete(key)
+    }
+  })()
+
+  inflightChunks.set(key, promise)
+  return promise
+}
+
+/**
+ * Batch catalyst active entities for parcel pointers (chunks of 80).
+ * Pointer-level TTL cache + in-flight chunk dedupe — AOI used to re-POST the same
+ * ~80-parcel rings every 2.5s (hundreds of identical /entities/active calls).
+ */
 export async function fetchActiveEntitiesForPointers(
   contentUrl: string,
   pointers: string[]
@@ -71,29 +167,66 @@ export async function fetchActiveEntitiesForPointers(
   if (!pointers.length) return []
   const url = catalystEntitiesActiveUrl(contentUrl)
   const unique = [...new Set(pointers.map(normalizePointer))]
+  const now = performance.now()
+  pruneExpired(now)
+
   const byId = new Map<string, ActiveSceneEntity>()
-  const chunkSize = 80
-  for (let i = 0; i < unique.length; i += chunkSize) {
-    const chunk = unique.slice(i, i + chunkSize)
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pointers: chunk })
-      })
-      if (!res.ok) continue
-      const data = (await res.json()) as unknown
-      if (!Array.isArray(data)) continue
-      for (const row of data) {
-        if (!row || typeof row !== 'object') continue
-        const ent = normalizeEntity(row as Record<string, unknown>)
-        if (ent) byId.set(ent.id, ent)
+  const needFetch: string[] = []
+
+  for (const p of unique) {
+    const hit = pointerOwner.get(p)
+    if (hit && hit.expiresAt > now) {
+      const ent = entityById.get(hit.entityId)?.entity
+      if (ent && entityById.get(hit.entityId)!.expiresAt > now) {
+        cacheHits++
+        byId.set(ent.id, ent)
+        continue
       }
-    } catch {
-      /* network — skip chunk */
+    }
+    cacheMisses++
+    needFetch.push(p)
+  }
+
+  const chunkSize = 80
+  for (let i = 0; i < needFetch.length; i += chunkSize) {
+    const chunk = needFetch.slice(i, i + chunkSize)
+    const fresh = await fetchChunk(url, chunk, contentUrl)
+    const t = performance.now()
+    for (const ent of fresh) {
+      rememberEntity(ent, t)
+      byId.set(ent.id, ent)
     }
   }
+
+  // Multi-parcel entities from cache may cover more pointers than we requested — fine.
   return [...byId.values()]
+}
+
+/** Dev / diagnostics — cache effectiveness for AOI spam. */
+export function getActiveEntitiesCacheStats(): {
+  hits: number
+  misses: number
+  networkChunks: number
+  pointersCached: number
+  entitiesCached: number
+} {
+  return {
+    hits: cacheHits,
+    misses: cacheMisses,
+    networkChunks,
+    pointersCached: pointerOwner.size,
+    entitiesCached: entityById.size
+  }
+}
+
+/** Test helper. */
+export function clearActiveEntitiesCache(): void {
+  entityById.clear()
+  pointerOwner.clear()
+  inflightChunks.clear()
+  cacheHits = 0
+  cacheMisses = 0
+  networkChunks = 0
 }
 
 /**

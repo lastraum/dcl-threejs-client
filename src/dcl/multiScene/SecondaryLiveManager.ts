@@ -85,10 +85,9 @@ export class SecondaryLiveManager {
     const base = scene.baseParcel
     for (const slot of this.slots.values()) {
       slot.retargetPrimaryBase(base)
-      // Root offset changed → recapture PhysX descs under secondary namespace
-      // (tertiary freezes scripts but colliders must stay solid).
+      // Cheap recapture from existing collider extract (NO syncCollisionForce — that
+      // full plaza walk every handoff was the 3fps death spiral).
       try {
-        slot.system.syncCollisionForce()
         slot.captureRemappedColliders()
       } catch {
         /* optional during teardown */
@@ -184,6 +183,13 @@ export class SecondaryLiveManager {
       out.push(...slot.getCachedRemappedColliders())
     }
     return out
+  }
+
+  /** After World pushes sticky colliders once — stop re-streaming them every async frame. */
+  markAllCollidersSynced(): void {
+    for (const slot of this.slots.values()) {
+      slot.markCollidersSynced()
+    }
   }
 
   /** Continuity assert after demote — mesh count + root pose for logs. */

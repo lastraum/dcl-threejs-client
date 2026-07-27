@@ -3675,12 +3675,14 @@ export class World {
         }
         if (remapped.length > 0) {
           try {
+            // One-shot register under secondary ids — never forceRecook (geometry already cooked).
             this.physics.syncStaticColliders(remapped, {
-              cookBudget: Math.min(64, remapped.length),
+              cookBudget: Math.min(32, remapped.length),
               freezeRemoval: true,
               forceRecookOnPoseChange: false,
               geometryCache: true
             })
+            multi.markResidentCollidersSynced()
             console.info(
               `[promote] sticky colliders kept “${oldScene.title}” remapped=${remapped.length} ` +
                 `(invalidated native=${demoted.primaryPhysIds.length})`
@@ -3884,19 +3886,21 @@ export class World {
     }
     if (oldScene?.baseParcel) residentKeys.add(oldScene.baseParcel.trim())
     this.aoiVisual.setResidentParcelKeys([...residentKeys])
-    // Re-assert demoted offsets after origin + primary SW change (also recaptures colliders).
+    // Re-assert demoted mesh offsets after origin change. Colliders already registered
+    // once above — do NOT forceRecook here (that was the CBD→snow→CBD 3fps death spiral).
     multi.notifyPrimaryChanged(newScene)
-    // Push retargeted sticky colliders into PhysX again (root moved with new primary SW).
+    // Pose-only refresh if retarget dirtied colliders (cheap; fingerprints unchanged → no recook).
     {
       const remapped = multi.collectResidentColliders()
       if (remapped.length > 0) {
         try {
           this.physics.syncStaticColliders(remapped, {
-            cookBudget: Math.min(64, remapped.length),
+            cookBudget: 8,
             freezeRemoval: true,
-            forceRecookOnPoseChange: true,
+            forceRecookOnPoseChange: false,
             geometryCache: true
           })
+          multi.markResidentCollidersSynced()
         } catch (err) {
           console.warn('[promote] sticky collider retarget sync failed', err)
         }
@@ -3927,8 +3931,9 @@ export class World {
         `newPrimary="${newScene.title}" base=${newScene.baseParcel} soft=${softPx},${softPy}`
     )
 
-    // Re-cook colliders under primary entity ids (walk-back from sticky tertiary).
-    // Prefer force full extract so Missing-actors queue does not leave 2fps void floors.
+    // Re-register colliders under primary entity ids (secondary-offset actors were
+    // invalidated above). Prefer geometryCache + no forceRecook — walk-back must not
+    // re-trimesh the entire plaza (that was continuous 3fps with Missing-actors thrash).
     this.colliderCookQueue.clear()
     try {
       this.sceneScript.syncCollisionForce()
@@ -3936,24 +3941,23 @@ export class World {
       console.warn('[promote] primary syncCollisionForce failed', err)
     }
     this.reconcileColliderCookQueue()
-    if (this.colliderCookQueue.size > 0) {
-      // Drain more aggressively after handoff — plaza recook must not trickle at 2fps.
-      void this.scheduleColliderCookDrain()
-      // Immediate extra drain pass if available
-      try {
-        const descs = this.sceneScript.getAllPhysicsColliderDescs?.() ?? []
-        if (descs.length > 0) {
-          this.physics.syncStaticColliders(descs, {
-            cookBudget: Math.min(128, descs.length),
-            freezeRemoval: true,
-            forceRecookOnPoseChange: false,
-            geometryCache: true
-          })
-          console.info(`[promote] primary colliders force-sync n=${descs.length}`)
-        }
-      } catch {
-        /* optional API */
+    try {
+      const descs = this.sceneScript.getAllPhysicsColliderDescs?.() ?? []
+      if (descs.length > 0) {
+        // Bounded first push — remaining cooks trickle via cook queue (not 128 main-thread).
+        this.physics.syncStaticColliders(descs, {
+          cookBudget: Math.min(48, descs.length),
+          freezeRemoval: true,
+          forceRecookOnPoseChange: false,
+          geometryCache: true
+        })
+        console.info(`[promote] primary colliders force-sync n=${descs.length}`)
       }
+    } catch {
+      /* optional API */
+    }
+    if (this.colliderCookQueue.size > 0) {
+      void this.scheduleColliderCookDrain()
     }
 
     // Longer settle: dual full workers after walk-back thrash freeze locomotion.

@@ -68,10 +68,11 @@ export class SceneWorkerSlot {
   private readonly registeredPhysIds = new Set<number>()
   /**
    * Last remapped collider snapshot (secondary-offset entity ids).
-   * Tertiary keeps returning this so demote never drops plaza PhysX into the void
-   * (Missing actors + 2fps recook storm on walk-back).
+   * Tertiary keeps these in PhysX; we only re-push when {@link collidersDirty}.
    */
   private lastRemappedColliders: PhysicsColliderDesc[] = []
+  /** True when World should re-sync lastRemappedColliders (once, not every frame). */
+  private collidersDirty = false
   private primaryBaseParcel: string
   private readonly host: SceneHost
 
@@ -400,8 +401,11 @@ export class SceneWorkerSlot {
     cache: AssetCache
   ): Promise<PhysicsColliderDesc[]> {
     if (!this.running || this.disposed || this.detached) return []
-    // Tertiary: no projection thrash — return frozen remapped colliders (keep PhysX).
+    // Tertiary: scripts off — only re-push colliders when dirty (demote/retarget once).
+    // Returning hundreds of descs every frame was 2–3fps death with freezeRemoval still cooking.
     if (this.mode === 'tertiary') {
+      if (!this.collidersDirty || this.lastRemappedColliders.length === 0) return []
+      this.collidersDirty = false
       return this.lastRemappedColliders
     }
     cache.setScene(this.scene)
@@ -419,7 +423,7 @@ export class SceneWorkerSlot {
 
   /**
    * Build/refresh remapped collider descs under this slot's phys offset.
-   * Always updates {@link lastRemappedColliders} + {@link registeredPhysIds}.
+   * Marks dirty so the next multi-scene tick pushes once into PhysX.
    */
   captureRemappedColliders(): PhysicsColliderDesc[] {
     if (this.disposed || this.detached) return this.lastRemappedColliders
@@ -429,13 +433,15 @@ export class SceneWorkerSlot {
     for (const d of raw) {
       const entity = d.entity + this.physOffset
       this.registeredPhysIds.add(entity)
+      // Keep the original geometry fingerprint — PhysX geometryCache keys off it.
+      // Prefixing `ms:…` forced full plaza recooks on every demote/promote (3fps).
       out.push({
         ...d,
-        entity,
-        fingerprint: `ms:${this.kind}:${this.id.slice(0, 12)}:${d.fingerprint}`
+        entity
       })
     }
     this.lastRemappedColliders = out
+    this.collidersDirty = out.length > 0
     return out
   }
 
@@ -448,6 +454,11 @@ export class SceneWorkerSlot {
   /** Cached colliders for immediate World PhysX sync after demote (before next tick). */
   getCachedRemappedColliders(): readonly PhysicsColliderDesc[] {
     return this.lastRemappedColliders
+  }
+
+  /** After World consumes the dirty push — don't re-stream every frame. */
+  markCollidersSynced(): void {
+    this.collidersDirty = false
   }
 
   registeredPhysicsEntities(): ReadonlySet<number> {

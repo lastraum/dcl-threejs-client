@@ -78,6 +78,15 @@ export class MultiSceneRuntime {
     return this.secondary?.collectAllCachedColliders() ?? []
   }
 
+  markResidentCollidersSynced(): void {
+    this.secondary?.markAllCollidersSynced()
+    // Seed tracking immediately so the next tickAsync does not treat sticky ids as gone
+    // before it rebuilds from allRegisteredPhysIds (race with promote handoff).
+    for (const id of this.secondary?.allRegisteredPhysIds() ?? []) {
+      this.lastMultiPhysIds.add(id)
+    }
+  }
+
   get secondaryManager(): SecondaryLiveManager | null {
     return this.secondary
   }
@@ -214,6 +223,11 @@ export class MultiSceneRuntime {
   /**
    * Async projection + collider descs for PE/secondary.
    * World cooks these into PhysX with namespaced entity ids.
+   *
+   * Dirty-once tertiary residents return [] after the first PhysX push (FPS guard).
+   * They still own remapped entity ids — only invalidate when a slot actually drops
+   * its registered set (dispose / promote detach). Treating "not streamed this frame"
+   * as removal was the CBD→scene→CBD 3fps death spiral (wipe→Missing actors→recook).
    */
   async tickAsync(): Promise<{
     colliders: PhysicsColliderDesc[]
@@ -232,8 +246,12 @@ export class MultiSceneRuntime {
     }
 
     const invalidatePhysIds = this.pe.takePhysInvalidations()
-    // Track live multi phys ids.
-    const next = new Set(colliders.map((d) => d.entity))
+    // Still-resident remapped ids (even when tertiary returned [] this frame).
+    const next = new Set<number>()
+    for (const d of colliders) next.add(d.entity)
+    for (const id of this.secondary?.allRegisteredPhysIds() ?? []) {
+      next.add(id)
+    }
     for (const id of this.lastMultiPhysIds) {
       if (!next.has(id)) invalidatePhysIds.push(id)
     }

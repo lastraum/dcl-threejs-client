@@ -312,13 +312,6 @@ export class PhysXWorld {
   private controllerManager: any = null
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private controllerFilters: any = null
-  /**
-   * Permanent CCT filter data — PhysX stores a raw pointer (`const PxFilterData*`).
-   * A temporary `new PxFilterData` assigned once can be GC'd → dangling filter → CCT
-   * preFilter sees garbage words → eNONE for every wall while sphere sweeps still work.
-   */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private cctFilterData: any = null
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private controller: any = null
   /**
@@ -718,7 +711,6 @@ export class PhysXWorld {
     // Collide with ALL static/dynamic shapes. PhysX: null mFilterData = no bilateral filter.
     // Bilateral word filters kept failing CCT (sides=no) while sphere sweeps still hit.
     // eTRIGGER_SHAPE is still ignored by the controller for blocking.
-    this.cctFilterData = null
     this.controllerFilters = new PHYSX.PxControllerFilters()
     // Explicit null — never leave a dangling filter pointer that rejects all solids.
     try {

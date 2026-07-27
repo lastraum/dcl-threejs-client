@@ -198,6 +198,7 @@ spawnLocalPlayer:
   extract once (final matrices)
   cook missing only — never wipe all actors
   integrity drain
+  reinsertAllStaticActorsForSceneQuery()  // ONCE — SQ AABB commit (world-bake)
   sealStaticSceneQuery (freeze reinsert; NEVER forceDynamicTreeRebuild)
   initCapsule
   collidersReady = true
@@ -208,19 +209,20 @@ world.start()
 |---------|--------|
 | Soft at play with walls in probe | Graph settle early-exit (old: 4s + pending>0) → incomplete cook seal |
 | Soft after "cook complete" wipe | `clearGltfStaticActors` + cache clear then recook partial extract |
-| Bounds solid, CCT walk-through | Zero-dt `simulate(0)` **or** `forceDynamicTreeRebuild` / reinsert-all after bulk cook |
+| Bounds solid, CCT walk-through | Missing **one-shot** reinsertAll before seal; or zero-dt warm / forceDynamicTreeRebuild thrash |
 | Soft after avatar load | Late GLB attaches never cooked before `collidersReady` |
-| Soft after ~1 min idle | Bulk reinsert thrash (now frozen at seal) |
+| Soft after ~1 min idle | Runtime reinsert-all / rebuild thrash (must stay frozen after seal) |
 
 Platform rules:
 
 - **Never** `simulate(0)` / `computeInteractions(0)` to warm statics — only CCT cache invalidate.
-- **Never** `forceDynamicTreeRebuild` / reinsert-all (plaza MISS root cause).
+- **Never** `forceDynamicTreeRebuild` (WASM SQ death).
+- **Once** at boot: `reinsertAll` before seal so multi-shape SQ AABBs match (static=1100 + MISS without it).
+- **Never** reinsert-all after seal / from health.
 - Graph settle: wait `pendingMesh===0` (soft only at ≥97% attached + 2s stable).
 - prepare: **cook missing only** — do not wipe all GLTF actors / geometry cache.
-- Seal = freeze thrash only; actors already in SQ via `addActor`.
 - `ensurePrimaryColliderIntegrity` after prepare + avatar + pre-walk before free walk.
-- Log `[phys] integrity` / `prewarm cook` / `collider graph settle` / `static SQ sealed` on collision channel.
+- Log `[phys] integrity` / `prewarm cook` / `collider graph settle` / `reinsert=` / `static SQ sealed` on collision channel.
 
 ## Open follow-ups
 

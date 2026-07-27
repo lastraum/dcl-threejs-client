@@ -2174,17 +2174,17 @@ export class World {
             }`
         )
         // Soft-world smoking gun: actors exist but CCT never leaves infinite ground.
-        // COD: never forceDynamicTreeRebuild / reinsert-all (docs/STATIC_COLLIDER_COD.md).
+        // COD: never forceDynamicTreeRebuild / reinsert-all at runtime (seal did one boot reinsert).
         if (feet && (ground === null || ground === -1)) {
           this.physics.logStaticCollidersNear(feet.x, feet.y, feet.z, 14, 'health-soft')
           const probe = this.physics.probeWalkSurfaceFeetY(feet.x, feet.z, feet.y + 2.5, 6, feet.y)
           console.info(
             `[phys] health-soft sweepFeetY=${probe != null ? probe.toFixed(2) : 'MISS'} ` +
               `sides=${sides ? 'yes' : 'no'} ` +
-              `(MISS = SQ cannot hit hulls; repair missing actors only — never rebuild tree)`
+              `(MISS = SQ bounds not queryable; missing-actor repair only — never reinsert-all)`
           )
           this.physics.invalidateControllerCache()
-          // Bounded recover: enqueue truly missing actors near feet (single-entity cook).
+          // Bounded recover: enqueue truly missing actors (single-entity cook + single reinsert).
           this.discoverMissingColliderActors()
           // At most 2 under-floor lifts per session — spam teleports were unsticking CCT.
           const nowLift = performance.now()
@@ -2357,7 +2357,10 @@ export class World {
       await this.ensurePrimaryColliderIntegrity('prepare-seal', 96)
 
       this.pushAllColliderPosesToPhysX()
-      // COD: seal freezes thrash only — never reinsert-all / forceDynamicTreeRebuild.
+      // COD seal: ONE reinsert-all so world-baked multi-shape SQ AABBs match (plaza MISS
+      // without this: static=1100 maps ok, sweepFeetY=MISS). Then freeze forever.
+      // Never forceDynamicTreeRebuild. Never reinsert-all again from health/runtime.
+      const reinserted = this.physics.reinsertAllStaticActorsForSceneQuery()
       this.physics.warmStaticScene()
       this.physics.sealStaticSceneQuery()
 
@@ -2371,7 +2374,7 @@ export class World {
       const elapsed = ((performance.now() - started) / 1000).toFixed(1)
       console.info(
         `[phys] colliders ready — static=${staticN} gltf=${gltfN}/${extracted} ` +
-          `pending=${this.colliderCookQueue.size} sealedSQ=true rebuild=never (${elapsed}s)`
+          `pending=${this.colliderCookQueue.size} reinsert=${reinserted} sealedSQ=true rebuild=never (${elapsed}s)`
       )
       this.physics.logStaticCollidersNear(
         this.colliderCookPriority.x,

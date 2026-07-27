@@ -1329,9 +1329,10 @@ export class PhysXWorld {
   }
 
   /**
-   * COD no-op — full static SQ rebuild is forbidden (see docs/STATIC_COLLIDER_COD.md).
-   * forceDynamicTreeRebuild corrupts PhysX WASM query state on plaza-scale scenes (MISS).
-   * Callers that need a query refresh should use {@link invalidateControllerCache} only.
+   * Runtime no-op after seal. Prefer {@link invalidateControllerCache}.
+   * forceDynamicTreeRebuild is never used (plaza WASM SQ death). Boot uses
+   * {@link reinsertAllStaticActorsForSceneQuery} once before seal instead.
+   * See docs/STATIC_COLLIDER_COD.md.
    */
   rebuildStaticSceneQueryTree(): void {
     this.invalidateControllerCache()
@@ -1356,12 +1357,34 @@ export class PhysXWorld {
   }
 
   /**
-   * COD no-op — mass remove+add softs plaza CCT (see docs/STATIC_COLLIDER_COD.md).
-   * Never reintroduce a full reinsert-all; late cooks reinsert one actor in addStatic.
+   * **Boot seal only** — remove+add every static so SQ AABBs match world-baked multi-shape
+   * children. Without this once: static=1100+ in maps (getWorldBounds ok) but CCT/sweep
+   * MISS (plaza walk-through). After {@link sealStaticSceneQuery} this is a no-op forever.
+   * Never call from health / pose / PART paths (thrash softs solids after ~1 min).
    */
   reinsertAllStaticActorsForSceneQuery(): number {
+    if (!this.allowStaticReinsert || !this.scene) return 0
+    let n = 0
+    for (const actor of this.staticActors.values()) {
+      if (!actor) continue
+      try {
+        this.scene.removeActor(actor)
+        this.scene.addActor(actor)
+        n++
+      } catch {
+        /* skip broken actor */
+      }
+    }
+    // Commit deferred SQ updates without full BVH force-rebuild (safer on plaza WASM).
+    try {
+      if (typeof this.scene.flushQueryUpdates === 'function') {
+        this.scene.flushQueryUpdates()
+      }
+    } catch {
+      /* optional API */
+    }
     this.invalidateControllerCache()
-    return 0
+    return n
   }
 
   /** True when this geom fingerprint already failed cook (skip re-queue thrash). */
@@ -1636,24 +1659,31 @@ export class PhysXWorld {
   }
 
   /**
-   * Call once after boot cook: freezes bulk remove+add reinsert.
+   * Call once after boot cook + one-shot reinsert:
+   * freezes bulk remove+add; never forceDynamicTreeRebuild.
    *
-   * COD law (docs/STATIC_COLLIDER_COD.md): **never** forceDynamicTreeRebuild.
-   * Actors already enter SQ via addActor during cook. Full static tree rebuild on
-   * PhysX WASM corrupts query state → sweepFeetY=MISS while near-log still lists walls
-   * (any static count — plaza only made it obvious).
-   *
-   * Late single-actor cooks still reinsert once inside {@link addStatic}.
+   * COD (docs/STATIC_COLLIDER_COD.md):
+   * - Boot: reinsertAll once so world-baked multi-shape SQ bounds match (required on plaza).
+   * - Seal: freeze thrash forever.
+   * - Never forceDynamicTreeRebuild (WASM SQ death at plaza scale).
+   * - Late single-actor cooks still reinsert once inside {@link addStatic}.
    */
   sealStaticSceneQuery(): void {
     this.allowZeroDtWarmSim = false
     const n = this.staticActors.size
-    // Freeze bulk reinsert thrash; do not rebuild SQ tree.
+    // Freeze bulk reinsert thrash after the one boot reinsertAll.
     this.allowStaticReinsert = false
     this.ensureInfiniteGroundPlane()
+    try {
+      if (this.scene && typeof this.scene.flushQueryUpdates === 'function') {
+        this.scene.flushQueryUpdates()
+      }
+    } catch {
+      /* optional */
+    }
     this.invalidateControllerCache()
     console.info(
-      `[PhysXWorld] static SQ sealed — static=${n} rebuild=never (COD cook-once; addActor only)`
+      `[PhysXWorld] static SQ sealed — static=${n} rebuild=never reinsertFrozen=true (COD)`
     )
   }
 
@@ -2801,11 +2831,18 @@ export class PhysXWorld {
     this.actorCookScale.delete(entity)
   }
 
-  /** Scene queries — bilateral layer test (matches CCT preFilter). */
+  /** Scene queries — bilateral layer test (matches CCT). No ePREFILTER (null callback → MISS). */
   private applySceneQueryFilter(layerMask: number): void {
     this.queryFilterData.data.word0 = Layers.player.group
     this.queryFilterData.data.word1 =
       layerMask === 0 ? Layers.player.mask : layerMask & Layers.player.mask
+    try {
+      this.queryFilterData.flags = new PHYSX.PxQueryFlags(
+        PHYSX.PxQueryFlagEnum.eSTATIC | PHYSX.PxQueryFlagEnum.eDYNAMIC
+      )
+    } catch {
+      /* older bindings */
+    }
   }
 
   private ensureCameraSweepGeometry(): void {

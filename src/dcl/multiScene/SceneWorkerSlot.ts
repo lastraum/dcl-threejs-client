@@ -127,6 +127,10 @@ export class SceneWorkerSlot {
           : `secondary-entities:${this.id.slice(0, 16)}`
         // Continuity: never leave demoted content invisible after handoff.
         store.root.visible = true
+        // Ensure still parented to host scene (never drop demoted graph).
+        if (host.scene && store.root.parent !== host.scene) {
+          host.scene.add(store.root)
+        }
       }
       // Was host origin as primary — shift into new primary's frame (or 0 until retarget).
       this.applySceneOriginOffset()

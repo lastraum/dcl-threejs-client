@@ -50,6 +50,12 @@ export class MultiSceneRuntime {
     this.onLiveSecondaryIds = fn
   }
 
+  /** Push current live/sticky entity ids to AOI (hide duplicate composites). */
+  syncLiveSecondaryVisibility(): void {
+    const ids = this.secondary?.liveEntityIds() ?? new Set<string>()
+    this.onLiveSecondaryIds?.(ids)
+  }
+
   get secondaryManager(): SecondaryLiveManager | null {
     return this.secondary
   }

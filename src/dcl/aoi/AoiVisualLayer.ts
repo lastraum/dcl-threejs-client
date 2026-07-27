@@ -204,6 +204,41 @@ export class AoiVisualLayer {
     void this.refresh(dclX, dclZ, renderQuality.getSceneLoadRadiusM())
   }
 
+  /**
+   * Promote handoff: retarget primary footprint **without** wiping tertiary meshes.
+   * Full {@link bind} → unbind cleared the CBD plaza ring into void.
+   */
+  retargetPrimary(scene: ResolvedScene, dclX: number, dclZ: number): void {
+    if (this.disposed || scene.source.kind !== 'coords') return
+    if (!this.ctx) {
+      // First bind only when layer never attached.
+      return
+    }
+    this.ctx = {
+      ...this.ctx,
+      scene
+    }
+    this.enabled = true
+    this.primaryIsEmpty = !scene.entityId?.trim() && !scene.mainEntry?.trim()
+    this.primaryParcelSet.clear()
+    for (const p of scene.parcels) this.primaryParcelSet.add(p)
+    // Keep composites/roads/scatter; force refresh under new primary + feet.
+    this.lastParcelKey = ''
+    this.lastRadius = -1
+    this.lastRefreshAt = 0
+    this.neighborActivityEnabled = true
+    // Live worker reconcile stays off until settle (caller enables via setNeighborActivityEnabled).
+    this.liveReconcileEnabled = false
+    if (!this.root.parent && this.ctx.hostScene) {
+      this.ctx.hostScene.add(this.root)
+    }
+    console.info(
+      `[aoi] retarget primary “${scene.title}” base=${scene.baseParcel} ` +
+        `(preserve tertiary — no unbind wipe)`
+    )
+    void this.refresh(dclX, dclZ, renderQuality.getSceneLoadRadiusM())
+  }
+
   /** Call after primary scene is known — coords only. */
   bind(ctx: AoiVisualLayerContext): void {
     this.unbind()
@@ -523,27 +558,38 @@ export class AoiVisualLayer {
       }
     }
 
-    // Near player first, then multi-parcel ring owners (CBD plaza around nested hole).
+    // Multi-parcel shells first (CBD plaza around nested hole), then nearest.
     const ranked = [...compositeCandidates].sort((a, b) => {
+      const aParcels = a.parcels.length || a.pointers.length
+      const bParcels = b.parcels.length || b.pointers.length
+      const aMega = aParcels >= 16 ? 1 : 0
+      const bMega = bParcels >= 16 ? 1 : 0
+      if (bMega !== aMega) return bMega - aMega
+      if (bParcels !== aParcels) return bParcels - aParcels
       const da = distToEntity(a)
       const db = distToEntity(b)
       if (da !== db) return da - db
       const aHit = (a.pointers.length ? a.pointers : a.parcels).filter((p) => pointerSet.has(p)).length
       const bHit = (b.pointers.length ? b.pointers : b.parcels).filter((p) => pointerSet.has(p)).length
-      if (bHit !== aHit) return bHit - aHit
-      const aParcels = a.parcels.length || a.pointers.length
-      const bParcels = b.parcels.length || b.pointers.length
-      return bParcels - aParcels
+      return bHit - aHit
     })
 
-    // LRU eviction when over retain cap — drop farthest loaded first.
+    // LRU eviction when over retain cap — never drop multi-parcel shells first.
     if (this.loadedCompositeIds.size > COMPOSITE_MAX_RETAINED) {
       const loadedRanked = [...this.loadedCompositeIds]
         .map((id) => {
           const ent = compositeCandidates.find((c) => c.id === id)
-          return { id, dist: ent ? distToEntity(ent) : Infinity }
+          const parcels = ent ? ent.parcels.length || ent.pointers.length : 0
+          return {
+            id,
+            dist: ent ? distToEntity(ent) : Infinity,
+            mega: parcels >= 16
+          }
         })
-        .sort((a, b) => b.dist - a.dist)
+        .sort((a, b) => {
+          if (a.mega !== b.mega) return a.mega ? 1 : -1 // drop non-mega first
+          return b.dist - a.dist
+        })
       while (this.loadedCompositeIds.size > COMPOSITE_MAX_RETAINED && loadedRanked.length) {
         const drop = loadedRanked.shift()!
         const child = this.compositeRoot.getObjectByName(`aoi-secondary:${drop.id}`)
@@ -552,8 +598,8 @@ export class AoiVisualLayer {
       }
     }
 
-    // CBD density: trickle 2 new composites per refresh (serial) — distance-banded GLB caps.
-    const toLoad = ranked.filter((c) => !this.loadedCompositeIds.has(c.id)).slice(0, 2)
+    // Prefer plaza shells: load up to 3/refresh, mega-parcel first (ranked above).
+    const toLoad = ranked.filter((c) => !this.loadedCompositeIds.has(c.id)).slice(0, 3)
     for (const ent of toLoad) {
       if (this.loadedCompositeIds.size >= COMPOSITE_MAX_RETAINED) break
       const comp = findCompositeFile(ent.content)

@@ -3638,7 +3638,7 @@ export class World {
       this.physics.invalidateStaticCollider(id)
     }
 
-    // Demote old primary → sticky secondary (resume without reload when walking back).
+    // Demote old primary → sticky secondary (meshes MUST stay — never dispose into void).
     // Do this before wiring new primary so entity roots stay valid.
     if (oldScene?.entityId && oldScene.mainEntry && oldScene.entityId !== newScene.entityId) {
       // Revoke FocusOwner before sticky adopt (mute/stop media; drop primary InputHub).
@@ -3649,20 +3649,28 @@ export class World {
         for (const id of demoted.primaryPhysIds) {
           this.physics.invalidateStaticCollider(id)
         }
-        // Demoted will re-register colliders under secondary offset on next multi-scene tick.
+        // Demoted re-registers colliders under secondary offset on multi-scene tick.
+        console.info(
+          `[promote] prior primary sticky resident “${oldScene.title}” parcels=${oldScene.parcels?.length ?? '?'}`
+        )
       } else {
+        // Continuity P0: never dispose — leave system muted on host even if slot adopt failed.
+        console.error(
+          `[promote] demote failed for “${oldScene.title}” — keeping system resident (no dispose)`
+        )
         try {
-          oldPrimary.dispose()
-        } catch (err) {
-          console.warn('[promote] old primary dispose after demote fail', err)
+          const store = oldPrimary.getEntityStore()
+          if (store?.root) {
+            store.root.name = `secondary-orphan:${oldScene.entityId.slice(0, 16)}`
+            store.root.visible = true
+          }
+        } catch {
+          /* ignore */
         }
       }
-    } else {
-      try {
-        oldPrimary.dispose()
-      } catch (err) {
-        console.warn('[promote] old primary dispose', err)
-      }
+    } else if (oldPrimary !== newSystem) {
+      // Same entity or missing identity — only dispose if truly replacing same graph.
+      console.warn('[promote] skip demote (same/missing entity) — not disposing old primary blindly')
     }
 
     this.sceneScript = newSystem
@@ -3738,33 +3746,18 @@ export class World {
     this.comms.applyRealmAbout(newScene.realm, newScene.commsPointer)
     this.session.setCatalystEndpoints(newScene.realm.contentUrl, newScene.realm.lambdasUrl)
 
-    // AOI tertiary (composites) retarget immediately so plaza ring doesn't stay blank.
-    // New live secondary *boots* stay off for a settle window — sticky demoted prior primary
-    // still ticks via tickStickySync (meshes never unload into void).
-    multi.setSecondaryActivityEnabled(false)
-    this.aoiVisual.bind({
-      scene: newScene,
-      cache: this.assets,
-      hostScene: this.host.scene,
-      syncRoadColliders: (descs) => {
-        this.physics.syncAoiRoadColliders(descs)
-      },
-      clearRoadColliders: () => this.physics.clearAoiRoadColliders(),
-      syncEmptyLandColliders: (descs) => {
-        this.physics.syncAoiEmptyLandColliders(descs)
-      },
-      clearEmptyLandColliders: () => this.physics.clearAoiEmptyLandColliders(),
-      onSecondaryCandidates: (candidates) => {
-        this.multiScene?.reconcileSecondaries(candidates)
-      }
-    })
-    this.aoiVisual.setNeighborActivityEnabled(true)
-    this.scenePromote.bind(newScene)
-    this.scenePromote.setNeighborActivityEnabled(true)
-
-    // Multi-scene keeps PE + demoted/remaining secondaries; retarget content map.
+    // Multi-scene first: retarget sticky secondaries to new primary SW (critical for plaza).
     multi.notifyPrimaryChanged(newScene)
     multi.setOnLiveSecondaryIds((ids) => this.aoiVisual.setLiveSecondaryIds(ids))
+    multi.syncLiveSecondaryVisibility()
+
+    // AOI: retarget without unbind wipe (bind→unbind cleared CBD plaza into void).
+    // Live worker boots stay off for settle; sticky demoted still ticks; visuals refresh.
+    multi.setSecondaryActivityEnabled(false)
+    const feetLocal = this.player.getPosition()
+    this.aoiVisual.retargetPrimary(newScene, feetLocal.x, feetLocal.z)
+    this.scenePromote.bind(newScene)
+    this.scenePromote.setNeighborActivityEnabled(true)
 
     // Re-cook colliders under primary entity ids.
     this.colliderCookQueue.clear()
@@ -3780,9 +3773,13 @@ export class World {
     window.setTimeout(() => {
       if (this.loadedPrimaryScene?.entityId !== newScene.entityId) return
       multi.setSecondaryActivityEnabled(true)
+      // Allow live-secondary candidate emit + boots (visuals already on).
+      this.aoiVisual.setNeighborActivityEnabled(true)
+      const p = this.player?.getPosition()
+      if (p) this.aoiVisual.update(p.x, p.z, true)
       console.info(
         `[promote] live secondaries re-enabled after ${SETTLE_LIVE_SECONDARIES_MS}ms settle ` +
-          `(primary “${newScene.title}” hydrating alone)`
+          `(primary “${newScene.title}” hydrating alone; sticky demoted stayed resident)`
       )
     }, SETTLE_LIVE_SECONDARIES_MS)
 

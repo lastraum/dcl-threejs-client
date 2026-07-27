@@ -20,8 +20,8 @@ const AOI_LIVE_SECONDARY_HARD_CAP = 3
  */
 export const ROAD_PHYS_RADIUS_M = 48
 
-/** Max retained composite tertiary entities (LRU by player distance). */
-export const COMPOSITE_MAX_RETAINED = 12
+/** Max retained composite tertiary entities (LRU; multi-parcel shells preferred). */
+export const COMPOSITE_MAX_RETAINED = 16
 
 /**
  * Composite GLB budget by distance from player (scene-local meters).

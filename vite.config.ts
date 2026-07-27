@@ -4,6 +4,7 @@ import { patchYogaNbindSource } from './src/shim/vite/yogaNbindFix'
 import { createSuggestionProxyMiddleware } from './scripts/suggestion-dispatch-proxy.mjs'
 import { createTextureProxyMiddleware } from './scripts/texture-dispatch-proxy.mjs'
 import { createAnalyticsProxyMiddleware } from './scripts/analytics-dispatch-proxy.mjs'
+import { createSceneFetchProxyMiddleware } from './scripts/scene-fetch-proxy.mjs'
 import { sceneBundleMirrorPlugin } from './vite-plugins/sceneBundleMirror'
 
 const ARCHIPELAGO_PEERS = 'https://archipelago-ea-stats.decentraland.org/peers'
@@ -36,6 +37,17 @@ export default defineConfig({
       enforce: 'pre',
       configureServer(server) {
         server.middlewares.use(createTextureProxyMiddleware())
+      }
+    },
+    {
+      name: 'scene-fetch-proxy',
+      enforce: 'pre',
+      configureServer(server) {
+        // Dev CORS bypass for fishing auth / third-party scene SignedFetch hosts.
+        server.middlewares.use(createSceneFetchProxyMiddleware())
+      },
+      configurePreviewServer(server) {
+        server.middlewares.use(createSceneFetchProxyMiddleware())
       }
     },
     // Dev-only: POST /api/mirror-scene-bundle → dev/scene-bundles/ (inspect scene scripts).

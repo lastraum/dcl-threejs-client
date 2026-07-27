@@ -37,6 +37,31 @@ function prefersPlainSceneHttpFetch(url: string): boolean {
   }
 }
 
+/**
+ * Dev-only same-origin proxy for scene HTTP that third-party auth servers block via CORS
+ * (e.g. fishing game auth host allows Explorer origins but not localhost:5173).
+ *
+ * Signature is always computed against the **original** pathname; only the transport URL
+ * is rewritten to `/api/scene-http/...` (vite middleware).
+ */
+function sceneHttpProxyUrl(absoluteUrl: string): string | null {
+  if (!import.meta.env.DEV) return null
+  try {
+    const u = new URL(absoluteUrl)
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+    if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return null
+    // DCL first-party APIs already CORS-allow browser origins.
+    if (u.hostname.endsWith('.decentraland.org') || u.hostname === 'decentraland.org') {
+      return null
+    }
+    const proto = u.protocol === 'https:' ? 'https' : 'http'
+    const path = u.pathname.startsWith('/') ? u.pathname : `/${u.pathname}`
+    return `/api/scene-http/${proto}/${u.host}${path}${u.search}`
+  } catch {
+    return null
+  }
+}
+
 function gatekeeperMetadata(context: SignedFetchSceneContext) {
   return {
     signer: 'decentraland-kernel-scene',
@@ -99,9 +124,11 @@ export async function performSignedFetch(
   sceneContext?: SignedFetchSceneContext | null
 ): Promise<SignedFetchResponse> {
   const init = request.init ?? {}
+  const method = init.method ?? 'GET'
+  const requestHeaders = headersToRecord(init.headers)
   const fetchInit: RequestInit = {
-    method: init.method ?? 'GET',
-    headers: headersToRecord(init.headers),
+    method,
+    headers: requestHeaders,
     body: init.body
   }
 
@@ -112,6 +139,41 @@ export async function performSignedFetch(
       !!identity &&
       !!sceneContext?.sceneId &&
       isGatekeeperSignedFetchUrl(request.url)
+
+    // Prefer same-origin proxy for third-party hosts in dev (fishing auth CORS).
+    // Sign the original URL path; transport via /api/scene-http/...
+    const proxyUrl = sceneHttpProxyUrl(request.url)
+    if (proxyUrl) {
+      const headers: Record<string, string> = { ...requestHeaders }
+      if (identity && !usePlainFetch) {
+        const auth = performGetSignedHeaders(
+          {
+            url: request.url,
+            init: {
+              method,
+              headers: requestHeaders,
+              body: init.body
+            }
+          },
+          identity
+        )
+        Object.assign(headers, auth.headers)
+        // Gatekeeper-style metadata is embedded by signedHeader when metadata is passed —
+        // performGetSignedHeaders does not attach gatekeeper metadata. For gatekeeper
+        // keep direct signedFetch (DCL hosts skip proxy). Non-gatekeeper auth servers
+        // only need ADR-44 identity headers.
+      }
+      const res = await fetch(proxyUrl, { method, headers, body: init.body })
+      const body = await res.text()
+      return {
+        ok: res.ok,
+        status: res.status,
+        statusText: res.statusText,
+        body,
+        headers: headersRecordFromResponse(res)
+      }
+    }
+
     const res =
       identity && !usePlainFetch
         ? await signedFetch(request.url, {

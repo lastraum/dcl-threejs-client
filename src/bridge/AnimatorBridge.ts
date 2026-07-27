@@ -646,21 +646,53 @@ export class AnimatorBridge {
     for (const e of this.dirtyReplay) toProcess.add(e)
     for (const e of this.pendingBind) toProcess.add(e)
 
+    // Cap new mixer binds per async tick — unbound storm on play-ready
+    // (clone + AnimationMixer + retarget) was multi-second bridges= spikes.
+    // Already-bound dirtyReplay applies are cheap; always process those first.
+    const BIND_BUDGET = 8
+    let newBinds = 0
+
+    // Pass 1: already-bound dirty apply (open/close doors must not wait for bind budget).
     for (const entity of toProcess) {
       if (!GltfContainer.has(entity)) {
         this.markRemoved(entity)
+        continue
+      }
+      if (!this.entries.has(entity)) continue
+      const result = this.bindAndApplyEntity(entity)
+      if (result === 'bound') {
+        this.dirtyReplay.delete(entity)
+        this.pendingBind.delete(entity)
+      } else if (result === 'waiting') {
+        this.dirtyReplay.delete(entity)
+        this.pendingBind.add(entity)
+      } else {
+        this.dirtyReplay.delete(entity)
+        this.pendingBind.delete(entity)
+      }
+    }
+
+    // Pass 2: first-time binds (expensive clone path) under budget.
+    for (const entity of toProcess) {
+      if (this.entries.has(entity)) continue
+      if (!GltfContainer.has(entity)) {
+        this.markRemoved(entity)
+        continue
+      }
+      if (newBinds >= BIND_BUDGET) {
+        this.dirtyReplay.delete(entity)
+        this.pendingBind.add(entity)
         continue
       }
       const result = this.bindAndApplyEntity(entity)
       if (result === 'bound') {
         this.dirtyReplay.delete(entity)
         this.pendingBind.delete(entity)
+        newBinds++
       } else if (result === 'waiting') {
-        // Keep in pending; drop dirtyReplay so we don't thrash markDirty bookkeeping.
         this.dirtyReplay.delete(entity)
         this.pendingBind.add(entity)
       } else {
-        // skip — no clips / static / given up
         this.dirtyReplay.delete(entity)
         this.pendingBind.delete(entity)
       }

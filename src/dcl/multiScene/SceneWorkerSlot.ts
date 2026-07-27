@@ -309,6 +309,13 @@ export class SceneWorkerSlot {
     await this.system.start(scene, cache, host)
     this.system.syncCollisionForce()
     this.applySceneOriginOffset()
+    // Snapshot remapped colliders once at boot so dirty-once PhysX stream has content.
+    // (Without this, secondary never sets collidersDirty after dirty-once FPS guard.)
+    try {
+      this.captureRemappedColliders()
+    } catch {
+      /* optional during partial hydrate */
+    }
     this.running = true
     this.lastTickAt = performance.now()
     if (this.kind === 'secondary') {
@@ -396,26 +403,53 @@ export class SceneWorkerSlot {
     return true
   }
 
+  /**
+   * Dirty collider push only — no renderer/bridges.
+   * Used when this slot is not selected for a full async tick this frame.
+   */
+  takeDirtyCollidersOnly(): PhysicsColliderDesc[] {
+    if (!this.running || this.disposed || this.detached) return []
+    if (!this.collidersDirty || this.lastRemappedColliders.length === 0) return []
+    this.collidersDirty = false
+    return this.lastRemappedColliders
+  }
+
   async tickAsync(
     primaryScene: ResolvedScene | null,
-    cache: AssetCache
+    cache: AssetCache,
+    options?: { fullWork?: boolean }
   ): Promise<PhysicsColliderDesc[]> {
     if (!this.running || this.disposed || this.detached) return []
     // Tertiary: scripts off — only re-push colliders when dirty (demote/retarget once).
     // Returning hundreds of descs every frame was 2–3fps death with freezeRemoval still cooking.
     if (this.mode === 'tertiary') {
-      if (!this.collidersDirty || this.lastRemappedColliders.length === 0) return []
-      this.collidersDirty = false
-      return this.lastRemappedColliders
+      return this.takeDirtyCollidersOnly()
     }
+
+    // Secondary scripts run on tickSync every frame; full renderer/bridges can stagger.
+    // When not selected this frame, still push dirty colliders (boot/demote/structure).
+    if (options?.fullWork === false) {
+      return this.takeDirtyCollidersOnly()
+    }
+
     cache.setScene(this.scene)
     try {
       await this.system.syncRenderer()
+      let structureOrPoseChanged = false
       if (this.system.hasColliderWorkPending()) {
         this.system.syncCollision()
+        structureOrPoseChanged = true
       }
       await this.system.syncAsyncBridges()
-      return this.captureRemappedColliders()
+
+      // Dirty-once PhysX stream — re-capturing + syncStaticColliders every frame for
+      // every secondary was multi-second "bridges=" death (hundreds of actors × N neighbors).
+      if (structureOrPoseChanged) {
+        this.captureRemappedColliders()
+      }
+      if (!this.collidersDirty || this.lastRemappedColliders.length === 0) return []
+      this.collidersDirty = false
+      return this.lastRemappedColliders
     } finally {
       if (primaryScene) cache.setScene(primaryScene)
     }

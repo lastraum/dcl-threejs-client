@@ -870,11 +870,32 @@ export class SecondaryLiveManager {
     }
   }
 
+  /** Round-robin cursor — at most one secondary full renderer/bridges pass per async frame. */
+  private asyncFullWorkCursor = 0
+
+  /**
+   * Async projection + bridges for live secondaries.
+   * Scripts still run every sync frame (tickSync); full renderer/bridges are staggered
+   * so N neighbors cannot each pay plaza-scale attach/animator cost on the same rAF.
+   */
   async tickAsync(): Promise<PhysicsColliderDesc[]> {
     if (!this.cache) return []
     const descs: PhysicsColliderDesc[] = []
-    for (const slot of this.slots.values()) {
-      descs.push(...(await slot.tickAsync(this.primaryScene, this.cache)))
+    const slots = [...this.slots.values()]
+    const secondaries = slots.filter((s) => !s.isTertiary)
+    const fullIdx =
+      secondaries.length > 0 ? this.asyncFullWorkCursor++ % secondaries.length : -1
+    const fullSlot = fullIdx >= 0 ? secondaries[fullIdx] : null
+
+    for (const slot of slots) {
+      if (slot.isTertiary) {
+        descs.push(...(await slot.tickAsync(this.primaryScene, this.cache)))
+        continue
+      }
+      const fullWork = slot === fullSlot
+      descs.push(
+        ...(await slot.tickAsync(this.primaryScene, this.cache, { fullWork }))
+      )
     }
     return descs
   }
@@ -883,9 +904,10 @@ export class SecondaryLiveManager {
   async tickStickyAsync(): Promise<PhysicsColliderDesc[]> {
     if (!this.cache) return []
     const descs: PhysicsColliderDesc[] = []
+    // Settle: only dirty collider push — no full secondary thrash during promote handoff.
     for (const [id, slot] of this.slots) {
       if (!this.stickyIds.has(id)) continue
-      descs.push(...(await slot.tickAsync(this.primaryScene, this.cache)))
+      descs.push(...slot.takeDirtyCollidersOnly())
     }
     return descs
   }

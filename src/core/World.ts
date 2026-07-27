@@ -1681,7 +1681,10 @@ export class World {
           const part = this.sceneScript.refreshAnimatorColliderPosesNow()
           if (part.size > 0) this.pushColliderPartPoses(part)
         }
+        const bridgesOnlyMs = performance.now() - t2
         // PE + secondary async projection + multi-scene colliders into PhysX.
+        const t3 = performance.now()
+        let multiMs = 0
         if (this.multiScene) {
           const { colliders, invalidatePhysIds } = await this.multiScene.tickAsync()
           for (const id of invalidatePhysIds) {
@@ -1700,17 +1703,18 @@ export class World {
               console.warn('[multi-scene] PE/secondary collider sync failed', err)
             }
           }
+          multiMs = performance.now() - t3
         }
-        const bridgesMs = performance.now() - t2
         const totalMs = performance.now() - t0
         // Diagnose multi-second async frames (was ~3300ms = cold GLB parse await / 3k pending walk).
+        // bridges = primary Animator/Avatar/Particle only; multi = PE+secondary async + cook.
         if (totalMs > 100) {
           // Lite counters only — full getHydrationStats walks every GltfContainer (was 3k+).
           const lite = this.sceneScript.getAttachProgressLite()
           clientDebugLog.consoleOnly(
             'warn',
             `[fps] async breakdown ${totalMs.toFixed(0)}ms — renderer=${rendererMs.toFixed(0)} ` +
-              `collision=${collisionMs.toFixed(0)} bridges=${bridgesMs.toFixed(0)} ` +
+              `collision=${collisionMs.toFixed(0)} bridges=${bridgesOnlyMs.toFixed(0)} multi=${multiMs.toFixed(0)} ` +
               `gltfCached=${this.assets.getLoadStats().gltfCached} inflight=${this.assets.getLoadStats().gltfInflight}` +
               (lite
                 ? ` attached=${lite.attached} pendingMesh=${lite.pendingMesh} sceneTris=${(lite.sceneTris / 1e6).toFixed(2)}M`

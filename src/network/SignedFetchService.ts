@@ -69,14 +69,23 @@ function sceneHttpProxyUrl(absoluteUrl: string): string | null {
   }
 }
 
-/** Gatekeeper-only compact metadata (legacy companion-compatible). */
+/**
+ * Gatekeeper signed-fetch metadata. Must include `realm` (hostname) — without it
+ * scene-admin/scene-bans return 401 "no realm".
+ */
 function gatekeeperMetadata(context: SignedFetchSceneContext) {
+  const realmName = context.realmName || 'main'
   return {
     signer: 'decentraland-kernel-scene',
     sceneId: context.sceneId,
     parcel: context.parcel,
-    realmName: context.realmName,
-    isWorld: context.isWorld ?? false
+    realmName,
+    isWorld: context.isWorld ?? false,
+    realm: {
+      hostname: context.realmHostname ?? 'realm.decentraland.org',
+      protocol: context.realmProtocol ?? 'https',
+      serverName: realmName
+    }
   }
 }
 
@@ -226,8 +235,12 @@ function logSignedFetch(
   extra?: Record<string, unknown>
 ): void {
   // Always console so Network tab users can correlate without ClientDebugLog filters.
+  // Use warn for auth-critical paths (auth-token / matchmake) so they survive default filters.
   const tag = `[SignedFetch] ${phase} ${detail}`
-  if (phase === 'fail') console.warn(tag, extra ?? '')
+  const critical =
+    /auth-token|matchmake|colyseus|fishing/i.test(detail) ||
+    (typeof extra?.bodyPreview === 'string' && /auth|token|userName/i.test(extra.bodyPreview))
+  if (phase === 'fail' || critical) console.warn(tag, extra ?? '')
   else console.info(tag, extra ?? '')
 }
 

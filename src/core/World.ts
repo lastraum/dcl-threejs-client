@@ -1213,21 +1213,28 @@ export class World {
           : '') +
         (pos ? ` feet=(${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})` : '')
     )
-    // Clear auth banner for fishing / SignedFetch debugging.
+    // Clear auth banner for fishing / SignedFetch debugging (filter console for "[auth]").
     {
       const addr = this.session.getAddress()
       const id = this.session.getAuthIdentity()
       const prof = this.session.getProfile()
-      console.info(
+      const ctx = this.signedFetchSceneContext
+      // warn so it survives "default levels" / React DevTools noise — not an error.
+      console.warn(
         `[auth] play-ready address=${addr ? addr.slice(0, 12) + '…' : 'NONE'} ` +
           `identity=${id ? 'yes' : 'NO'} guest=${this.loginIsGuest} ` +
           `displayName=${prof?.displayName ?? 'null'} ` +
           `hasConnectedWeb3=${!!addr && !this.loginIsGuest} ` +
-          `signedFetchCtx=${this.signedFetchSceneContext?.sceneId ? 'yes' : 'NO'}`
+          `signedFetchCtx=${ctx?.sceneId ? `yes parcel=${ctx.parcel} realm=${ctx.realmName}` : 'NO'}`
       )
       if (!id) {
         console.warn(
           '[auth] No AuthIdentity — scene SignedFetch will be unsigned; fishing Colyseus auth will fail'
+        )
+      } else {
+        console.warn(
+          '[auth] Wallet OK — look for [SignedFetch] start/ok on /auth-token and matchmake; ' +
+            'gatekeeper scene-admin 401 is separate (not fishing).'
         )
       }
     }
@@ -1952,16 +1959,29 @@ export class World {
       }
       const ground = this.physics.getLastGroundPhysEntity()
       const feet = this.player?.getWorldPosition()
+      const sides = this.physics.getLastCctHitSides()
       if (missing > 0 || staticN !== this.lastLoggedStaticCount || now - this.lastColliderHealthLogMs < 50) {
         console.info(
           `[phys] health static=${staticN} extracted≈${extracted} missing≈${missing} ` +
             `queue=${this.colliderCookQueue.size} seal=${this.spawnColliderSealComplete} ` +
-            `groundPhys=${ground ?? 'none'} feet=${
+            `groundPhys=${ground ?? 'none'} sides=${sides ? 'yes' : 'no'} feet=${
               feet
                 ? `(${feet.x.toFixed(1)},${feet.y.toFixed(2)},${feet.z.toFixed(1)})`
                 : '?'
             }`
         )
+        // Soft-world smoking gun: actors exist but CCT never leaves infinite ground.
+        // Always print nearby walls + a short down-sweep when ground is missing/-1.
+        if (feet && (ground === null || ground === -1)) {
+          this.physics.logStaticCollidersNear(feet.x, feet.y, feet.z, 14, 'health-soft')
+          const probe = this.physics.probeWalkSurfaceFeetY(feet.x, feet.z, feet.y + 2.5, 6, feet.y)
+          console.info(
+            `[phys] health-soft sweepFeetY=${probe != null ? probe.toFixed(2) : 'MISS'} ` +
+              `(down 2.5→-3.5 from feet+2.5; MISS = SQ tree cannot hit scene hulls)`
+          )
+          // One defensive SQ rebuild when soft is observed — heals stale BVH after pose slides.
+          this.physics.rebuildStaticSceneQueryTree()
+        }
       }
       this.lastLoggedStaticCount = staticN
     }

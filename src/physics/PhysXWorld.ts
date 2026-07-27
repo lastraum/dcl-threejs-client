@@ -207,6 +207,8 @@ export class PhysXWorld {
   /** Last walkable PhysX actor under the feet — from CCT onShapeHit during move(). */
   private lastGroundPhysEntity: number | null = null
   private lastCctShapeContact: { entity: number; point: THREE.Vector3 } | null = null
+  /** Last move() reported eCOLLISION_SIDES (wall/prop contact). */
+  private lastCctHitSides = false
   private pendingCctGroundEntity: number | null = null
   private pendingCctGroundY = Number.NEGATIVE_INFINITY
   private pendingCctGroundContact: { entity: number; point: THREE.Vector3 } | null = null
@@ -288,6 +290,7 @@ export class PhysXWorld {
   private readonly _quat = new THREE.Quaternion()
   private readonly _scale = new THREE.Vector3()
   private readonly _v1 = new THREE.Vector3()
+  private readonly _v2 = new THREE.Vector3()
   private readonly _worldMatrix = new THREE.Matrix4()
   private readonly _shapeRel = new THREE.Matrix4()
   private readonly _shapeBBox = new THREE.Box3()
@@ -1263,6 +1266,8 @@ export class PhysXWorld {
             this._pos.toPxTransform(this.actorPoseTransform)
             this._quat.toPxTransform(this.actorPoseTransform)
             actor.setGlobalPose(this.actorPoseTransform)
+            // Static setGlobalPose leaves SQ BVH at old AABB — reinsert so CCT hits walls.
+            this.reinsertStaticActorForSceneQuery(actor)
             this.staticPoseFp.set(desc.entity, multiShapePoseFingerprint(desc))
             updated++
           } catch (err) {
@@ -1312,6 +1317,7 @@ export class PhysXWorld {
         this._pos.toPxTransform(this.actorPoseTransform)
         this._quat.toPxTransform(this.actorPoseTransform)
         actor.setGlobalPose(this.actorPoseTransform)
+        this.reinsertStaticActorForSceneQuery(actor)
         this.staticPoseFp.set(desc.entity, poseFp)
         updated++
       } catch (err) {
@@ -1319,9 +1325,9 @@ export class PhysXWorld {
         this.invalidateStaticCollider(desc.entity)
       }
     }
-    // PhysX SQ stores one bound per static actor. setLocalPose does not expand it —
-    // rebuild so CCT tests updated child hulls.
-    if (shapeLocalsChanged) {
+    // Per-actor reinsert refreshes that actor's SQ bounds. Full static tree rebuild is
+    // still needed for bulk batches / shape-local PART motion (child setLocalPose).
+    if (shapeLocalsChanged || updated > 8) {
       this.rebuildStaticSceneQueryTree()
     } else if (updated > 0) {
       this.invalidateControllerCache()
@@ -1330,8 +1336,9 @@ export class PhysXWorld {
   }
 
   /**
-   * After multi-shape child local poses move, rebuild static SQ structure so CCT
-   * queries see the new hull bounds. No-op if scene missing.
+   * After static actor poses move (root setGlobalPose or child setLocalPose), rebuild
+   * the static SQ structure so CCT/scene queries hit current hull bounds.
+   * Cache-invalidate alone is not enough — BVH can keep cook-time AABBs.
    */
   rebuildStaticSceneQueryTree(): void {
     if (!this.scene) {
@@ -1340,7 +1347,7 @@ export class PhysXWorld {
     }
     try {
       // (rebuildStaticStructure, rebuildDynamicStructure)
-      this.scene.forceDynamicTreeRebuild(true, false)
+      this.scene.forceDynamicTreeRebuild(true, true)
     } catch (err) {
       console.warn('[PhysXWorld] forceDynamicTreeRebuild failed:', err)
     }
@@ -1521,6 +1528,7 @@ export class PhysXWorld {
             this._pos.toPxTransform(this.actorPoseTransform)
             this._quat.toPxTransform(this.actorPoseTransform)
             actor.setGlobalPose(this.actorPoseTransform)
+            this.reinsertStaticActorForSceneQuery(actor)
             this.staticPoseFp.set(desc.entity, poseFp)
             geometryChanged = true
             continue
@@ -1587,7 +1595,8 @@ export class PhysXWorld {
     }
 
     if (geometryChanged) {
-      this.invalidateControllerCache()
+      // New cooks + any pose slides in this batch — rebuild SQ so CCT cannot keep stale AABBs.
+      this.rebuildStaticSceneQueryTree()
     }
     return { geometryChanged, pendingCooks }
   }
@@ -1615,12 +1624,8 @@ export class PhysXWorld {
   }
 
   /**
-   * After bulk static registration — refresh CCT obstacle cache so move() sees new actors.
-   *
-   * NEVER runs `scene.simulate(0)` / `computeInteractions(0)`. Zero-dt warm on plaza-scale
-   * (hundreds of multi-shape actors) corrupts PhysX WASM query state: actors still report
-   * world bounds (logStaticCollidersNear looks "solid") but CCT walks through walls.
-   * Cache invalidate is enough for the capsule to re-query statics.
+   * After bulk static registration — rebuild static SQ BVH + CCT cache so move() sees
+   * current hulls. NEVER runs `scene.simulate(0)` (plaza-scale WASM corruption).
    */
   warmStaticScene(): void {
     if (!this.scene) return
@@ -1628,16 +1633,16 @@ export class PhysXWorld {
     // allowZeroDtWarmSim kept for callers that still toggle it around boot seal —
     // intentionally ignored (simulate(0) path removed).
     void this.allowZeroDtWarmSim
-    this.invalidateControllerCache()
+    this.rebuildStaticSceneQueryTree()
   }
 
   /**
    * Runtime-safe refresh after late cooks / road AOI / heavy main-thread hitch.
-   * Never runs simulate(0) — CCT re-queries solids via cache invalidate only.
+   * Rebuild static SQ + CCT cache — never simulate(0).
    */
   refreshStaticAfterRuntimeGeometryChange(): void {
     this.ensureInfiniteGroundPlane()
-    this.invalidateControllerCache()
+    this.rebuildStaticSceneQueryTree()
   }
 
   /**
@@ -1885,6 +1890,16 @@ export class PhysXWorld {
     this.pendingCctGroundY = Number.NEGATIVE_INFINITY
     this.pendingCctGroundContact = null
 
+    // Stick-to-ground: pure horizontal moves often omit eCOLLISION_DOWN (PlayerSystem strips
+    // gravity while grounded). A tiny downward bias keeps ground hits + wall contacts reliable.
+    const stickDown =
+      displacement.y > -1e-5 && displacement.y < 0.02
+        ? Math.max(0.02, Math.min(0.12, 2.5 * Math.max(1e-3, delta)))
+        : 0
+    if (stickDown > 0) {
+      displacement = this._v2.set(displacement.x, displacement.y - stickDown, displacement.z)
+    }
+
     // Substep large moves so low-FPS genesis loads cannot tunnel ground or thin plaza walls.
     const absY = Math.abs(displacement.y)
     const absH = Math.hypot(displacement.x, displacement.z)
@@ -1902,6 +1917,7 @@ export class PhysXWorld {
 
     let grounded = false
     let hitUp = false
+    let hitSides = false
     for (let i = 0; i < substeps; i++) {
       const flags = this.controller.move(
         stepDisp.toPxVec3(this._pv2),
@@ -1911,8 +1927,10 @@ export class PhysXWorld {
       )
       if (flags.isSet(PHYSX.PxControllerCollisionFlagEnum.eCOLLISION_DOWN)) grounded = true
       if (flags.isSet(PHYSX.PxControllerCollisionFlagEnum.eCOLLISION_UP)) hitUp = true
+      if (flags.isSet(PHYSX.PxControllerCollisionFlagEnum.eCOLLISION_SIDES)) hitSides = true
     }
     this.syncPlayerTransform()
+    this.lastCctHitSides = hitSides
 
     if (hitUp && this.correctDescendingPlatformHeadCrush()) {
       grounded = true
@@ -2720,6 +2738,11 @@ export class PhysXWorld {
     return this.lastGroundPhysEntity
   }
 
+  /** True when last move() reported side collision (wall/prop). */
+  getLastCctHitSides(): boolean {
+    return this.lastCctHitSides
+  }
+
   getStandingPlatformEntity(): number | null {
     return this.standingPlatformEntity
   }
@@ -3211,6 +3234,7 @@ export class PhysXWorld {
           pxShape.setLocalPose(this.shapeLocalPoseTransform)
         }
       }
+      this.reinsertStaticActorForSceneQuery(actor)
       return true
     }
 
@@ -3243,6 +3267,8 @@ export class PhysXWorld {
         pxShape.setLocalPose(this.shapeLocalPoseTransform)
       }
     }
+    // Static setGlobalPose / setLocalPose do not refresh SQ BVH — reinsert so CCT sees walls.
+    this.reinsertStaticActorForSceneQuery(actor)
     return true
   }
 

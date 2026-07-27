@@ -3804,8 +3804,6 @@ export class World {
         this.remoteAvatars?.setModifierHidden(id, effects.hide)
       }
     })
-    // Drive freecam from primary bridge only (not demoted sticky).
-    this.player.setVirtualCameraBridge(this.sceneScript.getVirtualCameraBridge())
 
     // Comms / signed-fetch context for new primary.
     this.signedFetchSceneContext = {
@@ -3832,8 +3830,9 @@ export class World {
 
     // Feet stay put in Genesis space under the NEW origin.
     const ok = this.restoreGenesisFeet(genesis)
-    // Restore freecam immediately after feet (before any VC/frame can overwrite look).
-    this.player.restoreFreecamOrbit(freecamOrbit, 3000)
+    // Freecam lock AFTER feet + bridge swap — 5s ignore scene VC (look stays player-owned).
+    this.player.setVirtualCameraBridge(this.sceneScript.getVirtualCameraBridge())
+    this.player.restoreFreecamOrbit(freecamOrbit, 5000)
     const originAfter = this.comms.getSceneOrigin()
     const feetAfter = this.player.getPosition()
     const baseParts = newScene.baseParcel.split(',').map((s) => Number.parseInt(s.trim(), 10))

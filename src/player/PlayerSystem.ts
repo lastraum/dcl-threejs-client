@@ -234,10 +234,11 @@ export class PlayerSystem {
   /** Prior frame had an active VirtualCamera — seed freecam yaw/pitch on unbind. */
   private wasVirtualCameraActive = false
   /**
-   * After multi-scene promote: do not overwrite freecam yaw/pitch from VC lens
-   * (MainCamera clear was sniping look direction on snow→CBD handoff).
+   * After multi-scene promote: ignore scene VirtualCamera ownership of the lens and
+   * keep freecam orbit locked until the player looks/zooms (or timer ends).
    */
   private suppressVcFreecamReseedUntil = 0
+  private lockedFreecamOrbit: { yaw: number; pitch: number; dist: number } | null = null
   /** AvatarModifierArea hide (local mesh). */
   private modifierHidden = false
   /** CameraModeArea force — null when freecam is player-controlled. */
@@ -422,18 +423,44 @@ export class PlayerSystem {
   }
 
   /**
-   * Restore freecam after promote handoff. Suppresses VC→freecam reseed so
-   * MainCamera clear / bridge swap does not reset look for no reason.
+   * Restore freecam after promote handoff. For `suppressVcReseedMs`, scene
+   * VirtualCamera / MainCamera must NOT take the lens — look stays where the
+   * player left it (COD multi-scene continuity).
    */
   restoreFreecamOrbit(
     orbit: { yaw: number; pitch: number; dist: number },
-    suppressVcReseedMs = 2500
+    suppressVcReseedMs = 5000
   ): void {
+    this.lockedFreecamOrbit = {
+      yaw: orbit.yaw,
+      pitch: orbit.pitch,
+      dist: orbit.dist
+    }
     this.camYaw = orbit.yaw
     this.camPitch = orbit.pitch
     this.camDistance = orbit.dist
     this.wasVirtualCameraActive = false
     this.suppressVcFreecamReseedUntil = performance.now() + suppressVcReseedMs
+    // Snap freecam lens immediately (no lerp frame of VC pose).
+    try {
+      this.syncCamera(true, 1 / 60)
+    } catch {
+      /* host may be mid-teardown */
+    }
+    console.info(
+      `[player] freecam locked across promote yaw=${orbit.yaw.toFixed(2)} pitch=${orbit.pitch.toFixed(2)} dist=${orbit.dist.toFixed(1)} ${suppressVcReseedMs}ms`
+    )
+  }
+
+  private isFreecamPromoteLocked(): boolean {
+    return performance.now() < this.suppressVcFreecamReseedUntil
+  }
+
+  private clearFreecamPromoteLock(reason: string): void {
+    if (!this.lockedFreecamOrbit && this.suppressVcFreecamReseedUntil <= 0) return
+    this.lockedFreecamOrbit = null
+    this.suppressVcFreecamReseedUntil = 0
+    console.info(`[player] freecam promote lock cleared (${reason})`)
   }
 
   async loadAvatar(
@@ -1929,6 +1956,8 @@ export class PlayerSystem {
 
   /** Scene owns the lens — no freecam orbit/zoom/look (including hydrate lag before isActive). */
   private isSceneVirtualCameraDriving(): boolean {
+    // Multi-scene promote: player freecam wins until lock ends.
+    if (this.isFreecamPromoteLocked()) return false
     return (
       this.virtualCamera?.isActive() === true || this.virtualCamera?.isMainCameraVcBound() === true
     )
@@ -1962,12 +1991,15 @@ export class PlayerSystem {
       this.camPitch += this.isFirstPerson() ? -pitchDelta : pitchDelta
       const pitchMin = this.isFirstPerson() ? -CAM_PITCH_MAX + 0.05 : CAM_PITCH_MIN
       this.camPitch = clamp(this.camPitch, pitchMin, CAM_PITCH_MAX)
+      // User took control — release promote lock so further look is free.
+      if (this.lockedFreecamOrbit) this.clearFreecamPromoteLock('look')
     }
 
     const zoomDelta = this.input.scrollDelta + this.input.pinchZoomDelta * 3
     if (zoomDelta !== 0 && this.forcedCameraMode === null) {
       this.camDistance += zoomDelta * ZOOM_WHEEL_SPEED
       this.camDistance = clamp(this.camDistance, CAM_DISTANCE_MIN, CAM_DISTANCE_MAX)
+      if (this.lockedFreecamOrbit) this.clearFreecamPromoteLock('zoom')
     } else if (this.forcedCameraMode === 'first_person') {
       this.camDistance = 0
     } else if (this.forcedCameraMode === 'third_person') {
@@ -1980,17 +2012,15 @@ export class PlayerSystem {
   }
 
   private syncCamera(snap: boolean, delta = 0.016): void {
-    const suppressReseed = performance.now() < this.suppressVcFreecamReseedUntil
-    if (this.virtualCamera?.apply(delta)) {
-      if (!suppressReseed) {
+    // Promote lock: never hand the lens to scene VC / MainCamera — freecam only.
+    if (!this.isFreecamPromoteLocked()) {
+      if (this.virtualCamera?.apply(delta)) {
         this.wasVirtualCameraActive = true
         // Keep freecam yaw/pitch aligned so unbind + orbit does not snap 180° from stale freecam state.
         _forward.set(0, 0, -1).applyQuaternion(this.host.camera.quaternion)
         if (_forward.lengthSq() > 1e-8) {
           _forward.normalize()
           this.camYaw = Math.atan2(-_forward.x, -_forward.z)
-          // freecam camPitch is boom elevation (positive = above); look-down has negative forward.y.
-          // Never seed a looking-up VC into negative boom (under-floor freecam on unbind).
           if (_forward.y <= 0.15) {
             const lookPitch = Math.asin(THREE.MathUtils.clamp(_forward.y, -1, 1))
             this.camPitch = clamp(-lookPitch, CAM_PITCH_MIN, CAM_PITCH_MAX)
@@ -1998,26 +2028,29 @@ export class PlayerSystem {
             this.camPitch = CAM_PITCH_DEFAULT
           }
         }
+        this.avatar?.setBodyVisible(!this.modifierHidden)
+        if (this.nameTag) {
+          this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
+        }
+        return
       }
-      this.avatar?.setBodyVisible(!this.modifierHidden)
-      if (this.nameTag) {
-        this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
+      // MainCamera still points at a VC but bridge inactive — hold last lens pose.
+      if (this.virtualCamera?.isMainCameraVcBound()) {
+        this.wasVirtualCameraActive = true
+        this.avatar?.setBodyVisible(!this.modifierHidden)
+        if (this.nameTag) {
+          this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
+        }
+        return
       }
-      // During promote suppress: still apply VC if scene wants it, but keep freecam orbit for unbind.
-      if (!suppressReseed) return
-      // Fall through to freecam if suppress — player keeps look across handoff.
-      if (this.virtualCamera?.isActive()) return
+    } else if (this.lockedFreecamOrbit) {
+      // Hold orbit locked every frame until look/zoom or timer ends.
+      this.camYaw = this.lockedFreecamOrbit.yaw
+      this.camPitch = this.lockedFreecamOrbit.pitch
+      this.camDistance = this.lockedFreecamOrbit.dist
+      this.wasVirtualCameraActive = false
     }
-    // MainCamera still points at a VC but bridge inactive (missing Transform this frame) —
-    // hold last lens pose; do not let freecam/orbit steal the shot.
-    if (this.virtualCamera?.isMainCameraVcBound() && !suppressReseed) {
-      this.wasVirtualCameraActive = true
-      this.avatar?.setBodyVisible(!this.modifierHidden)
-      if (this.nameTag) {
-        this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
-      }
-      return
-    }
+
     if (this.wasVirtualCameraActive) {
       this.wasVirtualCameraActive = false
     }
@@ -2028,12 +2061,15 @@ export class PlayerSystem {
       this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible() && !fpv
     }
 
+    // During promote lock always snap (no lerp from VC pose).
+    const hardSnap = snap || this.isFreecamPromoteLocked()
+
     if (fpv) {
       _pivot.copy(this.root.position)
       _pivot.y += CAM_EYE_HEIGHT + 0.3
       _camEuler.set(this.camPitch, this.camYaw, 0)
       _camQuat.setFromEuler(_camEuler)
-      const alpha = snap ? 1 : 1 - Math.exp(-14 * delta)
+      const alpha = hardSnap ? 1 : 1 - Math.exp(-14 * delta)
       this.host.camera.position.lerp(_pivot, alpha)
       this.host.camera.quaternion.slerp(_camQuat, alpha)
       return
@@ -2064,7 +2100,7 @@ export class PlayerSystem {
     _offset.setLength(safeDist)
 
     _camPos.copy(_pivot).add(_offset)
-    const alpha = snap ? 1 : 1 - Math.exp(-14 * delta)
+    const alpha = hardSnap ? 1 : 1 - Math.exp(-14 * delta)
 
     this.host.camera.position.lerp(_camPos, alpha)
     this.host.camera.lookAt(_lookAt)

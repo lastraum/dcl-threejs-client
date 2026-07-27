@@ -762,11 +762,20 @@ export class World {
           this.physics.syncAoiRoadColliders(descs)
         },
         clearRoadColliders: () => this.physics.clearAoiRoadColliders(),
+        syncEmptyLandColliders: (descs) => {
+          this.physics.syncAoiEmptyLandColliders(descs)
+        },
+        clearEmptyLandColliders: () => this.physics.clearAoiEmptyLandColliders(),
         onSecondaryCandidates: (candidates) => {
           this.multiScene?.reconcileSecondaries(candidates)
         }
       })
       this.scenePromote.bind(scene)
+      // Prewarm default ground + roads + scatter for Scene Distance while primary hydrates.
+      const spawnFeet = scene.spawn
+        ? { x: scene.spawn.x, z: scene.spawn.z }
+        : { x: 8, z: 8 }
+      this.aoiVisual.prewarmVisuals(spawnFeet.x, spawnFeet.z)
       console.info(
         `[aoi] Genesis walk — Scene Distance warm=${renderQuality.getSceneLoadRadiusM()}m · FocusOwner=primary · base=${scene.baseParcel}`
       )
@@ -2028,6 +2037,7 @@ export class World {
     let added = 0
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
+      if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
       if (this.physics.hasStaticActor(desc.entity)) continue
       if (!this.colliderCookQueue.has(desc.entity)) added++
       this.colliderCookQueue.add(desc.entity)
@@ -2200,12 +2210,14 @@ export class World {
     if (!this.playerMode || !physIds.length) return
     for (const physId of physIds) {
       if (this.physics.isAoiRoadColliderEntity(physId)) continue
+      if (this.physics.isAoiEmptyLandColliderEntity(physId)) continue
       this.sceneScript.refreshColliderPose(physId)
     }
     const descs = this.collectColliderDescs(physIds)
     const slideDescs: PhysicsColliderDesc[] = []
     for (const desc of descs) {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
+      if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
       if (
         this.physics.isWorldBakedStatic(desc.entity) ||
         this.physics.needsWorldBakedPoseRecook(desc)
@@ -2581,6 +2593,7 @@ export class World {
     let added = 0
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
+      if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
       if (this.physics.isColliderSynced(desc)) {
         this.colliderCookQueue.delete(desc.entity)
         continue
@@ -2677,6 +2690,7 @@ export class World {
     for (const entity of entities) {
       for (const physId of this.sceneScript.collectPhysCookTargets(entity)) {
         if (this.physics.isAoiRoadColliderEntity(physId)) continue
+      if (this.physics.isAoiEmptyLandColliderEntity(physId)) continue
         const hasActor = this.physics.hasStaticActor(physId)
         if (hasActor) {
           // ALWAYS refresh extract from live matrixWorld then pose-slide PhysX.
@@ -2919,6 +2933,7 @@ export class World {
     // Full re-enqueue (do not rely on post-boot reconcile — it only prunes the live queue).
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
+      if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
       this.colliderCookQueue.add(desc.entity)
     }
     this.pendingColliderCooks = this.colliderCookQueue.size
@@ -3735,6 +3750,10 @@ export class World {
         this.physics.syncAoiRoadColliders(descs)
       },
       clearRoadColliders: () => this.physics.clearAoiRoadColliders(),
+      syncEmptyLandColliders: (descs) => {
+        this.physics.syncAoiEmptyLandColliders(descs)
+      },
+      clearEmptyLandColliders: () => this.physics.clearAoiEmptyLandColliders(),
       onSecondaryCandidates: (candidates) => {
         this.multiScene?.reconcileSecondaries(candidates)
       }

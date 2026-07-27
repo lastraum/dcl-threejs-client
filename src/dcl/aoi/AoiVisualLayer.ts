@@ -68,6 +68,9 @@ export type AoiVisualLayerContext = {
   /** Sync AOI road furniture colliders (real FBX hulls) into PhysX. */
   syncRoadColliders?: (descs: PhysicsColliderDesc[]) => void
   clearRoadColliders?: () => void
+  /** Sync empty-land tree/rock simple box colliders into PhysX. */
+  syncEmptyLandColliders?: (descs: PhysicsColliderDesc[]) => void
+  clearEmptyLandColliders?: () => void
   /**
    * Inner-ring secondary candidates for live workers (MultiSceneRuntime).
    * Called after each AOI refresh; does not start workers itself.
@@ -129,6 +132,11 @@ export class AoiVisualLayer {
    * Primary mega-scenes must finish boot before AOI steals main thread.
    */
   private neighborActivityEnabled = false
+  /**
+   * Live secondary reconcile (workers). Visuals can prewarm earlier; workers wait
+   * until play-ready so primary hydrate is alone.
+   */
+  private liveReconcileEnabled = false
 
   constructor() {
     this.root.name = 'aoi-visual-layer'
@@ -161,19 +169,39 @@ export class AoiVisualLayer {
 
   /**
    * Enable/disable neighbor AOI work (visuals + live candidates).
-   * Call true only after primary notifyPlayReady — CBD-scale primary + AOI dual-boot = 2fps.
+   * Call true after primary notifyPlayReady for live workers.
+   * Visual prewarm may run earlier via {@link prewarmVisuals}.
    */
   setNeighborActivityEnabled(enabled: boolean): void {
-    if (this.neighborActivityEnabled === enabled) return
+    if (this.neighborActivityEnabled === enabled && this.liveReconcileEnabled === enabled) return
     this.neighborActivityEnabled = enabled
+    this.liveReconcileEnabled = enabled
     if (enabled) {
-      console.info('[aoi] neighbor activity ON (primary play-ready)')
+      console.info('[aoi] neighbor activity ON (primary play-ready — visuals + live)')
       // Force refresh next update so ring fills after boot gate lifts.
       this.lastParcelKey = ''
       this.lastRefreshAt = 0
     } else {
       console.info('[aoi] neighbor activity OFF (primary booting)')
     }
+  }
+
+  /**
+   * Loading-phase warm: fill default ground + roads + empty scatter + composites
+   * for Scene Distance **before** play-ready. Live secondary workers stay off
+   * until {@link setNeighborActivityEnabled}(true).
+   */
+  prewarmVisuals(dclX: number, dclZ: number): void {
+    if (this.disposed || !this.enabled || !this.ctx) return
+    this.neighborActivityEnabled = true
+    this.liveReconcileEnabled = false
+    this.lastParcelKey = ''
+    this.lastRefreshAt = 0
+    console.info(
+      `[aoi] prewarm visuals @ feet=(${dclX.toFixed(1)},${dclZ.toFixed(1)}) ` +
+        `radius=${renderQuality.getSceneLoadRadiusM()}m (live workers still gated)`
+    )
+    void this.refresh(dclX, dclZ, renderQuality.getSceneLoadRadiusM())
   }
 
   /** Call after primary scene is known — coords only. */
@@ -183,6 +211,7 @@ export class AoiVisualLayer {
     this.ctx = ctx
     this.enabled = ctx.scene.source.kind === 'coords'
     this.neighborActivityEnabled = false
+    this.liveReconcileEnabled = false
     this.primaryIsEmpty = !ctx.scene.entityId?.trim() && !ctx.scene.mainEntry?.trim()
     this.primaryParcelSet.clear()
     this.liveSecondaryIds.clear()
@@ -316,34 +345,28 @@ export class AoiVisualLayer {
       }
     }
 
-    // --- Empty layer: vacant parcels only (no road / secondary / full scene) ---
+    // --- Default ground: every AOI parcel except primary content + explorer roads ---
+    // (secondary footprints, vacant, and tertiary composite bases all get the empty-land GLB)
     const vacantKeys: string[] = []
+    const groundKeys: string[] = []
     for (const key of pointers) {
       if (this.primaryParcelSet.has(key) && !this.primaryIsEmpty) continue
-      if (secondaryFootprint.has(key)) continue
-      // Explorer road catalog — never paint empty-land over streets
+      // Explorer road catalog has its own tiles — skip default ground under streets
       if (isExplorerRoadParcel(key)) continue
       const ent = pointerToEntity.get(key)
       if (ent && isOpenRoadEntity(ent)) continue
-      if (ent && isSecondarySceneCandidate(ent)) continue
-      // Only true vacant / catalyst empty-land — skip other SDK6/7 content
+      groundKeys.push(key)
+      // Scatter (trees/rocks) only on true vacant / catalyst empty land
+      if (secondaryFootprint.has(key)) continue
+      if (ent && isSecondarySceneCandidate(ent) && !isVacantForEmptyLayer(ent)) continue
       if (ent && !isVacantForEmptyLayer(ent)) continue
       vacantKeys.push(key)
     }
 
-    // Blank floor under secondary footprints in AOI (no wrong-origin GLB dumps).
-    const secondaryFloorTiles = [...secondaryFootprint].map((key) => {
+    const blankTiles = groundKeys.map((key) => {
       const sw = parcelSwSceneLocal(key, base)
       return { x: sw.x, z: sw.z }
     })
-
-    const blankTiles = [
-      ...vacantKeys.map((key) => {
-        const sw = parcelSwSceneLocal(key, base)
-        return { x: sw.x, z: sw.z }
-      }),
-      ...secondaryFloorTiles
-    ]
 
     try {
       // Pass base so tiles use dclSceneToLandscapeThree (X reflection) like InfiniteGround.
@@ -370,7 +393,7 @@ export class AoiVisualLayer {
     }
 
     try {
-      const scatter = await buildEmptyParcelScatter({
+      const { root: scatter, colliders } = await buildEmptyParcelScatter({
         cache: ctx.cache,
         parcelKeys: vacantKeys,
         primaryBase: base
@@ -382,6 +405,7 @@ export class AoiVisualLayer {
       this.clearScatter()
       this.scatterRoot = scatter
       this.root.add(scatter)
+      ctx.syncEmptyLandColliders?.(colliders)
     } catch (err) {
       console.warn('[aoi] empty scatter failed', err)
     }
@@ -587,6 +611,10 @@ export class AoiVisualLayer {
     _dclZ: number,
     pointerSet: Set<string>
   ): void {
+    // Prewarm visuals only — do not boot workers until play-ready.
+    if (!this.liveReconcileEnabled) {
+      return
+    }
     const liveProxM = secondaryLiveRadiusM()
     if (liveProxM <= 0) {
       this.ctx?.onSecondaryCandidates?.([])
@@ -893,7 +921,7 @@ export class AoiVisualLayer {
       this.blankRoot = blankGroup
       this.root.add(blankGroup)
 
-      const scatter = await buildEmptyParcelScatter({
+      const { root: scatter, colliders } = await buildEmptyParcelScatter({
         cache: ctx.cache,
         parcelKeys: vacantKeys,
         primaryBase: base
@@ -902,7 +930,10 @@ export class AoiVisualLayer {
       this.clearScatter()
       this.scatterRoot = scatter
       this.root.add(scatter)
-      console.info(`[aoi] empty primary fill parcels=${vacantKeys.length}`)
+      ctx.syncEmptyLandColliders?.(colliders)
+      console.info(
+        `[aoi] empty primary fill parcels=${vacantKeys.length} colliders=${colliders.length}`
+      )
     } catch (err) {
       console.warn('[aoi] empty primary fill failed', err)
     }
@@ -1039,6 +1070,7 @@ export class AoiVisualLayer {
       }
     })
     this.scatterRoot = null
+    this.ctx?.clearEmptyLandColliders?.()
   }
 }
 

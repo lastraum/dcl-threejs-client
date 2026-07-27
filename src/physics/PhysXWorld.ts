@@ -18,6 +18,10 @@ import {
   ROAD_AOI_COLLIDER_ENTITY_BASE,
   ROAD_AOI_COLLIDER_ID_SPAN
 } from '../dcl/aoi/roadTiles'
+import {
+  EMPTY_LAND_AOI_COLLIDER_ENTITY_BASE,
+  EMPTY_LAND_AOI_COLLIDER_ID_SPAN
+} from '../dcl/aoi/emptyParcelLayer'
 
 export type PhysicsColliderShapeDesc = {
   fingerprint: string
@@ -1089,6 +1093,7 @@ export class PhysXWorld {
       if (entity === INFINITE_GROUND_ENTITY) continue
       // Preserve by id range (not only bookkeeping set) so roads never die on scene recook.
       if (keepRoads && this.isAoiRoadColliderEntity(entity)) continue
+      if (keepRoads && this.isAoiEmptyLandColliderEntity(entity)) continue
       this.removeStatic(entity)
     }
     this.ensureInfiniteGroundPlane()
@@ -1103,6 +1108,7 @@ export class PhysXWorld {
     for (const entity of [...this.staticFp.keys()]) {
       if (entity === INFINITE_GROUND_ENTITY) continue
       if (this.isAoiRoadColliderEntity(entity)) continue
+      if (this.isAoiEmptyLandColliderEntity(entity)) continue
       this.staticFp.delete(entity)
       this.staticPoseFp.delete(entity)
       n++
@@ -1792,6 +1798,61 @@ export class PhysXWorld {
       }
     }
     this.aoiRoadEntityIds.clear()
+    this.invalidateControllerCache()
+  }
+
+  // --- Empty-land AOI tree/rock boxes (29.1M band) ---
+  private aoiEmptyLandEntityIds = new Set<number>()
+
+  isAoiEmptyLandColliderEntity(entity: number): boolean {
+    return (
+      entity >= EMPTY_LAND_AOI_COLLIDER_ENTITY_BASE &&
+      entity < EMPTY_LAND_AOI_COLLIDER_ENTITY_BASE + EMPTY_LAND_AOI_COLLIDER_ID_SPAN
+    )
+  }
+
+  syncAoiEmptyLandColliders(descs: PhysicsColliderDesc[]): {
+    geometryChanged: boolean
+    pendingCooks: number
+  } {
+    const only = descs.filter((d) => this.isAoiEmptyLandColliderEntity(d.entity))
+    if (only.length !== descs.length) {
+      console.warn(
+        `[PhysXWorld] AOI empty-land sync rejected ${descs.length - only.length} non-empty id(s)`
+      )
+    }
+    const next = new Set(only.map((d) => d.entity))
+    for (const entity of this.aoiEmptyLandEntityIds) {
+      if (next.has(entity)) continue
+      if (!this.isAoiEmptyLandColliderEntity(entity)) continue
+      try {
+        this.removeStatic(entity)
+      } catch (err) {
+        console.warn('[PhysXWorld] aoi empty-land collider remove failed', entity, err)
+      }
+    }
+    this.aoiEmptyLandEntityIds = next
+    const result = this.syncStaticColliders(only, {
+      freezeRemoval: true,
+      geometryCache: true,
+      cookBudget: only.length
+    })
+    if (result.geometryChanged) {
+      this.refreshStaticAfterRuntimeGeometryChange()
+    }
+    return result
+  }
+
+  clearAoiEmptyLandColliders(): void {
+    for (const entity of this.aoiEmptyLandEntityIds) {
+      if (!this.isAoiEmptyLandColliderEntity(entity)) continue
+      try {
+        this.removeStatic(entity)
+      } catch {
+        /* ignore */
+      }
+    }
+    this.aoiEmptyLandEntityIds.clear()
     this.invalidateControllerCache()
   }
 

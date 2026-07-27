@@ -1,8 +1,10 @@
 import * as THREE from 'three'
 import type { AssetCache } from '../../rendering/AssetCache'
+import type { PhysicsColliderDesc } from '../../physics/PhysXWorld'
 import { EMPTY_LAND } from '../landscape/Data/EmptyLandCatalog'
 import { buildInstancedScatter, type ScatterInstance } from '../landscape/gltfInstancing'
 import { distributedParcelPositions } from '../landscape/parcelDistribution'
+import { dclSceneToLandscapeThree } from '../landscape/Utils/SceneSpace'
 import { hashParcelCoords, mulberry32, pickInt } from '../landscape/Utils/SeededRandom'
 import { parseParcelKey } from '../content/parseParcel'
 import type { ActiveSceneEntity } from './fetchActiveEntities'
@@ -33,12 +35,26 @@ export function isCatalystEmptyLandEntity(ent: ActiveSceneEntity): boolean {
   return false
 }
 
-/** Parcel should get client empty-land ground + prop scatter. */
-export function isVacantForEmptyLayer(
-  ent: ActiveSceneEntity | undefined
-): boolean {
+/** Parcel should get client empty-land prop scatter (trees/rocks). */
+export function isVacantForEmptyLayer(ent: ActiveSceneEntity | undefined): boolean {
   if (!ent) return true
   return isCatalystEmptyLandEntity(ent)
+}
+
+/**
+ * Reserved PhysX ids for AOI empty-land tree/rock boxes.
+ * Sits just below secondary 30M; does not overlap road 21–29M hash span end.
+ */
+export const EMPTY_LAND_AOI_COLLIDER_ENTITY_BASE = 29_100_000
+export const EMPTY_LAND_AOI_COLLIDER_ID_SPAN = 800_000
+
+export function stableEmptyLandColliderEntityId(instanceKey: string): number {
+  let h = 2166136261
+  for (let i = 0; i < instanceKey.length; i++) {
+    h ^= instanceKey.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return EMPTY_LAND_AOI_COLLIDER_ENTITY_BASE + ((h >>> 0) % EMPTY_LAND_AOI_COLLIDER_ID_SPAN)
 }
 
 type EmptyScatterCounts = {
@@ -56,27 +72,36 @@ const EMPTY_SCATTER: EmptyScatterCounts = {
   grass: [4, 9]
 }
 
+/** Simple box half-size in meters (scale multiplies) for tree trunks / rock boulders. */
+const TREE_COLLIDER = { w: 0.55, h: 2.4, d: 0.55 }
+const ROCK_COLLIDER = { w: 0.7, h: 0.55, d: 0.7 }
+
+type ScatterKind = 'tree' | 'rock' | 'bush' | 'grass'
+
 /**
- * Build instanced trees/bushes/rocks/grass on vacant AOI parcels.
- * Positions are scene-local DCL meters (SW-relative); `base` enables X reflection.
+ * Build instanced trees/bushes/rocks/grass on vacant AOI parcels + simple box colliders
+ * for trees and rocks (instanced positions, not full mesh cooks).
  */
 export async function buildEmptyParcelScatter(opts: {
   cache: AssetCache
   parcelKeys: string[]
   primaryBase: string
-}): Promise<THREE.Group> {
+}): Promise<{ root: THREE.Group; colliders: PhysicsColliderDesc[] }> {
   const root = new THREE.Group()
   root.name = 'aoi-empty-scatter'
-  if (!opts.parcelKeys.length) return root
+  const colliders: PhysicsColliderDesc[] = []
+  if (!opts.parcelKeys.length) return { root, colliders }
 
   const base = parseParcelKey(opts.primaryBase)
   const byHash = new Map<string, ScatterInstance[]>()
+  const kindByHash = new Map<string, ScatterKind>()
 
-  const push = (hash: string, inst: ScatterInstance) => {
+  const push = (hash: string, kind: ScatterKind, inst: ScatterInstance) => {
     let list = byHash.get(hash)
     if (!list) {
       list = []
       byHash.set(hash, list)
+      kindByHash.set(hash, kind)
     }
     list.push(inst)
   }
@@ -88,6 +113,7 @@ export async function buildEmptyParcelScatter(opts: {
 
     const place = (
       pool: readonly string[],
+      kind: ScatterKind,
       countRange: [number, number],
       sep: number,
       inset: number,
@@ -103,7 +129,7 @@ export async function buildEmptyParcelScatter(opts: {
       })
       for (const loc of locals) {
         const hash = pool[Math.floor(rng() * pool.length)]!
-        push(hash, {
+        push(hash, kind, {
           x: sw.x + loc.x,
           z: sw.z + loc.z,
           rotY: rng() * Math.PI * 2,
@@ -112,17 +138,24 @@ export async function buildEmptyParcelScatter(opts: {
       }
     }
 
-    place(EMPTY_LAND.landscapeTrees, EMPTY_SCATTER.trees, 4.5, 2.2, 0.75, 0.35)
-    place(EMPTY_LAND.bushes, EMPTY_SCATTER.bushes, 2.2, 1.4, 0.7, 0.4)
-    place(EMPTY_LAND.rocks, EMPTY_SCATTER.rocks, 3, 1.6, 0.6, 0.5)
-    place(EMPTY_LAND.grass, EMPTY_SCATTER.grass, 1.4, 1.0, 0.85, 0.3)
+    place(EMPTY_LAND.landscapeTrees, 'tree', EMPTY_SCATTER.trees, 4.5, 2.2, 0.75, 0.35)
+    place(EMPTY_LAND.bushes, 'bush', EMPTY_SCATTER.bushes, 2.2, 1.4, 0.7, 0.4)
+    place(EMPTY_LAND.rocks, 'rock', EMPTY_SCATTER.rocks, 3, 1.6, 0.6, 0.5)
+    place(EMPTY_LAND.grass, 'grass', EMPTY_SCATTER.grass, 1.4, 1.0, 0.85, 0.3)
   }
 
   // Cap total instances per prop type for large radii
   const MAX_PER_HASH = 400
+  const _pos = new THREE.Vector3()
+  const _quat = new THREE.Quaternion()
+  const _scale = new THREE.Vector3()
+  const _mat = new THREE.Matrix4()
+  const _euler = new THREE.Euler()
+
   await Promise.all(
     [...byHash.entries()].map(async ([hash, instances]) => {
       const slice = instances.slice(0, MAX_PER_HASH)
+      const kind = kindByHash.get(hash) ?? 'grass'
       try {
         const group = await buildInstancedScatter(
           opts.cache,
@@ -135,10 +168,32 @@ export async function buildEmptyParcelScatter(opts: {
       } catch (err) {
         console.warn('[aoi] empty scatter prop failed', hash.slice(0, 12), err)
       }
+
+      // Simple box colliders for trees + rocks only (walk/block).
+      if (kind !== 'tree' && kind !== 'rock') return
+      const box = kind === 'tree' ? TREE_COLLIDER : ROCK_COLLIDER
+      for (let i = 0; i < slice.length; i++) {
+        const inst = slice[i]!
+        const p = dclSceneToLandscapeThree(inst.x, inst.z, base)
+        const h = box.h * inst.scale
+        _pos.set(p.x, h * 0.5, p.z)
+        _euler.set(0, inst.rotY, 0)
+        _quat.setFromEuler(_euler)
+        _scale.set(box.w * inst.scale, h, box.d * inst.scale)
+        _mat.compose(_pos, _quat, _scale)
+        const idKey = `${hash.slice(0, 16)}:${inst.x.toFixed(2)},${inst.z.toFixed(2)}`
+        colliders.push({
+          entity: stableEmptyLandColliderEntityId(idKey),
+          kind: 'box',
+          fingerprint: `empty-aoi:v1:${kind}:${idKey}`,
+          matrix: _mat.clone()
+        })
+      }
     })
   )
 
   root.userData.emptyParcelCount = opts.parcelKeys.length
   root.userData.instanceHashes = byHash.size
-  return root
+  root.userData.colliderCount = colliders.length
+  return { root, colliders }
 }

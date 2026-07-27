@@ -1,4 +1,4 @@
-import { absoluteUrlFromTextureProxyPath } from '../../rendering/textureProxy'
+import { proxiedTextureUrl, TEXTURE_PROXY_PREFIX } from '../../rendering/textureProxy'
 
 const blobByUrl = new Map<string, string>()
 const SCENE_UI_IMAGE_LOADED = 'scene-ui-image-loaded'
@@ -16,13 +16,31 @@ function absoluteImageUrl(url: string): string {
   return url
 }
 
+/**
+ * Prefer same-origin proxy for any remote http(s) scene-ui image (dclnodes peers lack CORS).
+ * Already-proxied paths pass through; data/blob untouched.
+ */
+function sameOriginImageUrl(url: string): string {
+  if (!url || url.startsWith('blob:') || url.startsWith('data:')) return url
+  // Absolute same-origin including /api/texture/...
+  if (typeof location !== 'undefined' && url.startsWith(location.origin)) return url
+  if (url.startsWith(TEXTURE_PROXY_PREFIX) || url.startsWith('/api/texture/')) {
+    return absoluteImageUrl(url)
+  }
+  if (/^https?:/i.test(url)) {
+    return absoluteImageUrl(proxiedTextureUrl(url))
+  }
+  return absoluteImageUrl(url)
+}
+
 function fetchTarget(url: string): string {
-  return absoluteUrlFromTextureProxyPath(url) ?? absoluteImageUrl(url)
+  return sameOriginImageUrl(url)
 }
 
 /** Keep DOM <img> elements alive across layout passes so loads can finish. */
 export function assignUiImageSrc(img: HTMLImageElement, url: string): void {
-  const target = absoluteImageUrl(url)
+  // Always load via same-origin proxy when remote — never set raw peer.dclnodes.io as img.src.
+  const target = sameOriginImageUrl(url)
   const cached = blobByUrl.get(target)
   if (cached) {
     if (img.src !== cached) img.src = cached
@@ -34,6 +52,7 @@ export function assignUiImageSrc(img: HTMLImageElement, url: string): void {
 
   img.dataset.uiSrc = target
   img.decoding = 'async'
+  img.crossOrigin = 'anonymous'
   img.onload = () => notifySceneUiImageLoaded()
 
   img.onerror = () => {

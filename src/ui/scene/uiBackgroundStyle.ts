@@ -1,7 +1,7 @@
 import type { PBUiBackground } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_background.gen'
 import type { ResolvedScene } from '../../dcl/content/types'
 import { resolveSceneTextureUrl } from '../../bridge/material/resolveTexture'
-import { isCorsSafeTextureUrl, proxiedTextureUrl } from '../../rendering/textureProxy'
+import { proxiedTextureUrl } from '../../rendering/textureProxy'
 import type { UiScreenScale } from './uiDomStyles'
 import { assignUiImageSrc } from './uiImageLoad'
 
@@ -203,18 +203,34 @@ export function normalizeBackgroundTextureMode(
   return BackgroundTextureMode.CENTER
 }
 
-/** DOM overlay images — prefer direct CORS-safe URLs; WebGL path uses proxiedTextureUrl. */
+/**
+ * DOM overlay images — **always same-origin proxy for remote http(s)**.
+ * peer.dclnodes.io and many community peers send no ACAO; treating them as
+ * "cors-safe" (or resolveSceneTextureUrl → absolute peer URL) made Image()/fetch
+ * fail and left blank/broken shop tiles. WebGL uses its own loader path.
+ */
 export function resolveUiBackgroundImageUrl(
   bg: PBUiBackground | null | undefined,
   scene: ResolvedScene | null
 ): string | null {
   const src = extractUiTextureSrc(bg?.texture)
   if (!src) return null
-  if (/^(https?:|data:|blob:)/i.test(src)) {
-    return isCorsSafeTextureUrl(src) ? src : proxiedTextureUrl(src)
+  if (/^(data:|blob:)/i.test(src)) return src
+  if (/^https?:/i.test(src)) {
+    if (typeof window !== 'undefined' && src.startsWith(window.location.origin)) return src
+    return proxiedTextureUrl(src)
   }
   if (!scene) return null
-  return resolveSceneTextureUrl(src, scene)
+  const resolved = resolveSceneTextureUrl(src, scene)
+  if (!resolved) return null
+  if (/^(data:|blob:)/i.test(resolved)) return resolved
+  if (/^https?:/i.test(resolved)) {
+    if (typeof window !== 'undefined' && resolved.startsWith(window.location.origin)) return resolved
+    return proxiedTextureUrl(resolved)
+  }
+  // Relative / already-proxied path
+  if (resolved.startsWith('/api/texture/')) return resolved
+  return resolved
 }
 
 /** Near-white RGB only (alpha ignored). */

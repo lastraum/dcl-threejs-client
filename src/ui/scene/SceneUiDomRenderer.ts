@@ -405,7 +405,9 @@ export class SceneUiDomRenderer {
       return { parent: this.host, coords: 'canvas' }
     }
     const parentShell = this.nodes.get(parentId as Entity)
-    if (parentShell?.isConnected) {
+    // 0×0 / unusable parents are not valid containing blocks — paint children with
+    // canvas-absolute Yoga boxes (parent-relative piles every shop icon at one point).
+    if (parentShell?.isConnected && parentShell.dataset.uiUnusable !== '1') {
       return { parent: parentShell, coords: 'parent' }
     }
     return { parent: this.host, coords: 'canvas' }
@@ -475,6 +477,7 @@ export class SceneUiDomRenderer {
     const layoutBox = input.layoutBoxes.get(entity)
     if (!layoutBox || layoutBox.width <= 0.5 || layoutBox.height <= 0.5) {
       this.applyHiddenDomState(shell)
+      shell.dataset.uiUnusable = '1'
       if (
         typeof location !== 'undefined' &&
         location.search.includes('sceneuidebug') &&
@@ -487,6 +490,8 @@ export class SceneUiDomRenderer {
           console.warn(`[scene-ui] yoga box unusable for mounted entity ${entity} (${size})`)
         }
       }
+      // Children may still have usable canvas-absolute boxes — paint them via host (not
+      // nested under this 0×0 shell). resolveDomParent reads dataset.uiUnusable.
       const children = input.forest.get(entity) ?? []
       for (const child of children) {
         this.renderEntityTree(child, input, alive, visited, depth + 1, regions, scale)
@@ -494,6 +499,7 @@ export class SceneUiDomRenderer {
       return
     }
 
+    delete shell.dataset.uiUnusable
     applyUiTransformContentStyles(el, transform, scale)
     shell.style.opacity = String(Math.min(1, Math.max(0, transform.opacity ?? 1)))
     shell.style.zIndex = String(transform.zIndex ?? 0)

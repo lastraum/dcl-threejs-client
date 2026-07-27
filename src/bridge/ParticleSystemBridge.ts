@@ -71,6 +71,8 @@ export class ParticleSystemBridge {
     }
 
     const active = new Set<Entity>()
+    // Cap new particle runtime creates per async tick (texture load + GPU mesh).
+    let createsLeft = 2
     for (const [entity] of view.getEntitiesWith(ParticleSystem)) {
       if (!Transform.has(entity)) continue
       const parent = nodes.get(entity)
@@ -82,9 +84,11 @@ export class ParticleSystemBridge {
       let runtime = this.runtimes.get(entity)
 
       if (!runtime || runtime.specSig !== sig) {
+        if (createsLeft <= 0) continue
         if (runtime) this.disposeRuntime(entity, parent)
         const created = await this.createRuntime(spec, sig)
         if (!created) continue
+        createsLeft--
         created.gpu.mesh.name = particleKey(entity)
         parent.add(created.gpu.mesh)
         this.runtimes.set(entity, created)

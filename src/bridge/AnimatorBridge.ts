@@ -919,12 +919,17 @@ export class AnimatorBridge {
     this.sampleFrame++
     const schedule = delta > 1e-8 && sampleCtx != null
 
-    // delta=0 pose pass — no budget (bind just applied).
+    // delta=0 pose pass after async bind — budget so plaza can't spend multi-seconds
+    // mixer.update(0) on every decorative clip (was bridges=5s+ spikes).
     if (!schedule) {
+      let poseN = 0
+      const POSE_BUDGET = 24
       for (const [entity, entry] of this.entries) {
         if (!mixerHasActiveWork(entry)) continue
+        if (poseN >= POSE_BUDGET) break
         entry.mixer.update(0)
         this.markShapeMotionAfterSample(entity, entry)
+        poseN++
       }
       return
     }

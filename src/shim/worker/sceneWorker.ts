@@ -3214,12 +3214,14 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       !sceneUpdateInFlight &&
       !sceneUpdatePromiseActive &&
       !pointerDeliverBatchOpen &&
-      !pendingInjectPointer &&
-      sceneEngineTickDue(performance.now())
+      !pendingInjectPointer
     ) {
+      // Always request — requestSceneEngineTick rate-limits via resolveDt / tickInFlight.
+      // Dropping when sceneEngineTickDue was false after a long onUpdate left fishing
+      // cast/reel under-ticked (wall clock advanced, MAX_ENGINE_DT cap → slow-mo).
       requestSceneEngineTick()
     } else if (sceneEngine && !sceneOnUpdatePaused) {
-      // Engine tick skipped (pointer hold) — still hydrate bind graph + pose live lane.
+      // Engine tick skipped (pointer hold / onUpdate still running) — still hydrate VC.
       if (sceneOnStartComplete) {
         publishVcBindHydrateIfNeeded()
         publishVcPoseLiveIfBound()

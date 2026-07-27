@@ -99,17 +99,23 @@
         width: 100%;
         height: 100%;
         height: var(--app-vh, 100vh);
+        min-height: var(--app-vh, 100vh);
+        max-height: var(--app-vh, 100vh);
         overflow: hidden;
         background: #0a1624;
         position: relative;
       }
-      /* Fill #app — no letterbox black bar under the WebGL surface. */
+      /* Fill #app — no letterbox black/navy bar under the WebGL surface. */
       #app canvas {
         display: block;
-        position: absolute;
-        inset: 0;
+        position: absolute !important;
+        inset: 0 !important;
+        left: 0 !important;
+        top: 0 !important;
         width: 100% !important;
         height: 100% !important;
+        max-width: none !important;
+        max-height: none !important;
         z-index: var(--z-canvas);
       }
       /* Canvas-center aim mark while pointer-locked (clicks raycast from center). */

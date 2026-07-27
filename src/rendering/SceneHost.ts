@@ -104,6 +104,9 @@ export class SceneHost {
     })
 
     window.addEventListener('resize', () => this.applyViewportSize())
+    // Mobile URL bar show/hide changes visualViewport without a window resize.
+    window.visualViewport?.addEventListener('resize', () => this.applyViewportSize())
+    window.visualViewport?.addEventListener('scroll', () => this.applyViewportSize())
   }
 
   /** Size renderer/camera to a panel element (editor workspace) instead of the full window. */
@@ -125,10 +128,17 @@ export class SceneHost {
       this.camera.updateProjectionMatrix()
     }
     // Drawing buffer = CSS pixel size of #app (canvas is position:absolute inset 0 in CSS).
-    // updateStyle=false: CSS width/height 100% from index.html; only buffer tracks container.
+    // updateStyle=false: keep CSS width/height 100% so we never letterbox under #app.
     this.renderer.setSize(width, height, false)
     const canvas = this.renderer.domElement
     canvas.style.display = 'block'
+    // Three may leave inline width/height from an earlier setSize(true) — force fill.
+    canvas.style.width = '100%'
+    canvas.style.height = '100%'
+    canvas.style.inset = '0'
+    canvas.style.position = 'absolute'
+    canvas.style.left = '0'
+    canvas.style.top = '0'
     this.ensureMsaaTargetSize()
     this.configureBloom(renderQuality.getOptions())
     this.nameTags?.setSize(width, height)
@@ -140,11 +150,16 @@ export class SceneHost {
       this.setViewportSize(this.viewportElement.clientWidth, this.viewportElement.clientHeight)
       return
     }
-    // Prefer #app client box (fills 100dvh) over window — avoids black strip when
+    // Prefer #app client box (fills 100dvh) over window — avoids black/navy strip when
     // window.innerHeight ≠ layout height (mobile chrome / dock / address bar).
     const app = document.getElementById('app')
     if (app && app.clientWidth > 0 && app.clientHeight > 0) {
       this.setViewportSize(app.clientWidth, app.clientHeight)
+      return
+    }
+    const vv = window.visualViewport
+    if (vv && vv.width > 0 && vv.height > 0) {
+      this.setViewportSize(Math.round(vv.width), Math.round(vv.height))
       return
     }
     this.setViewportSize(window.innerWidth, window.innerHeight)

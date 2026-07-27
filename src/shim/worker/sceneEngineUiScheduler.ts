@@ -66,8 +66,11 @@ export function leaveCooperativeSchedulerTick(): void {
  * Systems still run every engine tick (timers, LoadingScreen wall-clock).
  * Full react-ecs on 250–350 Ui* entities every 16ms saturates the worker after
  * connect (NPC flood + character UI) → engine-tick recovery / ~1fps.
+ *
+ * 100ms made fishing reeling / cast UI feel ~10× slow (zone+marker only paint on
+ * react-ecs frames). 32ms ≈ 30Hz is enough for fluid HUD without saturating Genesis.
  */
-const COOPERATIVE_REACT_ECS_MIN_MS = 100
+const COOPERATIVE_REACT_ECS_MIN_MS = 32
 let lastCooperativeReactEcsAt = 0
 /** True when the current cooperative eng.update skipped react-ecs (throttle). */
 let cooperativeReactEcsSkippedThisTick = false

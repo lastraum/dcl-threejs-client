@@ -68,19 +68,35 @@ export function layoutToScreen(
 /** WebGL canvas rect — single source for Yoga→screen mapping and #scene-ui-root placement. */
 export function readInteractableArea(canvas?: HTMLElement | null): ScreenUiRect {
   const el = canvas ?? document.querySelector('#app canvas')
-  if (el) {
-    const r = el.getBoundingClientRect()
-    if (r.width > 1 && r.height > 1) {
-      return { left: r.left, top: r.top, width: r.width, height: r.height }
+  const app = document.getElementById('app')
+  const canvasRaw = el?.getBoundingClientRect()
+  const appRaw = app?.getBoundingClientRect()
+  const canvasRect =
+    canvasRaw && canvasRaw.width > 1 && canvasRaw.height > 1 ? canvasRaw : null
+  const appRect = appRaw && appRaw.width > 1 && appRaw.height > 1 ? appRaw : null
+
+  // Prefer the larger of canvas vs #app — a short canvas (stale setSize / CSS fight)
+  // was leaving a navy/black strip under the HUD while UI mapped only to the short box.
+  if (canvasRect && appRect) {
+    const useApp =
+      appRect.height > canvasRect.height + 2 || appRect.width > canvasRect.width + 2
+    const r = useApp ? appRect : canvasRect
+    return { left: r.left, top: r.top, width: r.width, height: r.height }
+  }
+  if (canvasRect) {
+    return {
+      left: canvasRect.left,
+      top: canvasRect.top,
+      width: canvasRect.width,
+      height: canvasRect.height
     }
   }
-  // Fallback: full #app (absolute-fill canvas) so UI is never letterboxed short.
-  const app = document.getElementById('app')
-  if (app) {
-    const r = app.getBoundingClientRect()
-    if (r.width > 1 && r.height > 1) {
-      return { left: r.left, top: r.top, width: r.width, height: r.height }
-    }
+  if (appRect) {
+    return { left: appRect.left, top: appRect.top, width: appRect.width, height: appRect.height }
+  }
+  const vv = window.visualViewport
+  if (vv && vv.width > 1 && vv.height > 1) {
+    return { left: vv.offsetLeft, top: vv.offsetTop, width: vv.width, height: vv.height }
   }
   return { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight }
 }

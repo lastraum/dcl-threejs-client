@@ -281,9 +281,11 @@ export function setSceneEngineLastExecutedAt(ms: number): void {
  * Explorer-style max frame step (seconds). Timers (`accumulatedTime += 1000*dt`) and
  * continuous systems need hitch recovery; 33ms was too tight and leftover “debt skips”
  * froze SDK setTimeout (Spring flower scale 0.1→1 after 500ms).
- * Unity/Explorer-class engines typically clamp ~50–100ms after a hitch.
+ *
+ * Cap at 250ms so sustained heavy ticks (fishing cast/reel UI + plaza systems) still
+ * advance scene time near wall clock. A 100ms cap with 5Hz ticks ran animations at ~½ speed.
  */
-const MAX_ENGINE_DT_SEC = 0.1
+const MAX_ENGINE_DT_SEC = 0.25
 
 /**
  * Wall elapsed still available for a positive system step (seconds).

@@ -484,6 +484,34 @@ export class PlayerSystem {
     return readLocomotionFromComponents(this.readComponents, SDK_RESERVED.player)
   }
 
+  /**
+   * Multi-scene promote — player must read InputModifier/MainCamera from the **new**
+   * primary SceneScriptSystem. Leaving the demoted system's MirrorComponents bound
+   * freezes locomotion after walk-back (stale disableAll / hold pin).
+   */
+  setReadComponents(readComponents: MirrorComponents): void {
+    this.readComponents = readComponents
+  }
+
+  /**
+   * Release disableAll foot pin after promote handoff so the player can walk while
+   * the new primary hydrates (scene may re-freeze later via legitimate InputModifier).
+   */
+  releaseSceneFreezeHold(reason = 'promote'): void {
+    if (this.disableAllHoldFeet) {
+      const f = this.disableAllHoldFeet
+      physLog(
+        'freeze-hold-clear',
+        `disableAll hold force-clear (${reason}) · lastPin=(${f.x.toFixed(1)},${f.y.toFixed(2)},${f.z.toFixed(1)})`,
+        0
+      )
+    }
+    this.disableAllHoldFeet = null
+    this.scenePositionLock = false
+    this.moveTask = null
+    this.wasLocomotionAllowed = true
+  }
+
   /** Main/World — clear stuck sit mode-freeze when player presses WASD/Space. */
   setModeFreezeEscapeHandler(handler: (() => void) | null): void {
     this.modeFreezeEscapeHandler = handler

@@ -3760,12 +3760,16 @@ export class World {
       return true
     })
     // FocusOwner swap: media + UI for adopted primary; InputHub primary subscriber.
-    // Clear any mid-boot InputModifier freeze / stale MainCamera from secondary life so freecam
-    // and feet stay free while the new primary hydrates (user must always orbit between scenes).
+    // CRITICAL: rebind player locomotion reads to the NEW primary MirrorComponents.
+    // Without this, walk-back freezes forever on demoted system's stale InputModifier.
+    this.player.setReadComponents(this.sceneScript.readComponents)
+    this.player.setImpulseLamportProvider(() => this.sceneScript.getPhysicsImpulseLamport())
+    // Clear freeze + arm 12s grace (worker freezes stripped on player-frame).
     this.sceneScript.clearPlayerFocusState()
     this.sceneScript.setFocusPolicy('primary')
     this.sceneScript.setInputHub(this.inputHub, 'primary')
     this.sceneScript.setSceneUiVisible(true)
+    this.player.releaseSceneFreezeHold('promote-handoff')
     // Drive freecam from primary bridge only (not demoted sticky).
     this.player.setVirtualCameraBridge(this.sceneScript.getVirtualCameraBridge())
 
@@ -3846,9 +3850,13 @@ export class World {
       void this.scheduleColliderCookDrain()
     }
 
-    const SETTLE_LIVE_SECONDARIES_MS = 5_000
+    // Longer settle: dual full workers after walk-back thrash freeze locomotion.
+    const SETTLE_LIVE_SECONDARIES_MS = 8_000
     window.setTimeout(() => {
       if (this.loadedPrimaryScene?.entityId !== newScene.entityId) return
+      // Re-assert free locomotion when settle ends (in case worker re-froze mid-grace).
+      this.sceneScript.clearPlayerFocusState()
+      this.player?.releaseSceneFreezeHold('promote-settle-end')
       multi.setSecondaryActivityEnabled(true)
       // Allow live-secondary candidate emit + boots (visuals already on).
       this.aoiVisual.setNeighborActivityEnabled(true)
@@ -3856,7 +3864,7 @@ export class World {
       if (p) this.aoiVisual.update(p.x, p.z, true)
       console.info(
         `[promote] live secondaries re-enabled after ${SETTLE_LIVE_SECONDARIES_MS}ms settle ` +
-          `(primary “${newScene.title}” hydrating alone; sticky demoted stayed resident)`
+          `(primary “${newScene.title}” hydrating alone; sticky demoted stayed resident; freeze re-cleared)`
       )
     }, SETTLE_LIVE_SECONDARIES_MS)
 

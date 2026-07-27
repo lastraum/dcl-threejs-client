@@ -462,6 +462,12 @@ export class SceneScriptSystem {
   }
 
   /**
+   * After multi-scene promote: ignore worker InputModifier.disableAll for this long so
+   * half-hydrated scenes cannot pin feet while the player walks between plazas.
+   */
+  private focusGraceUntilMs = 0
+
+  /**
    * FocusOwner revoke — drop InputModifier freeze + MainCamera→VC so freecam/orbit stay free.
    * Call on demote to secondary and when adopting a half-hydrated secondary as primary if needed.
    */
@@ -475,9 +481,16 @@ export class SceneScriptSystem {
       this.projection.clearVcLiveTransformForUnbind()
       this.lastPlayerFrameMainCameraKey = 'cleared'
       this.playerEditFlightLiveLane = false
+      // Worker may re-send freeze on next player-frame — grace strips disableAll.
+      this.focusGraceUntilMs = performance.now() + 12_000
     } catch {
       /* teardown */
     }
+  }
+
+  /** True while post-promote grace ignores disableAll freezes. */
+  isFocusGraceActive(): boolean {
+    return performance.now() < this.focusGraceUntilMs
   }
 
   /** PE enable / late mount — rebuild interactive DOM even if layout keys match. */
@@ -2937,6 +2950,7 @@ export class SceneScriptSystem {
     msg: Extract<import('../../shim/types').SceneWorkerOutbound, { type: 'player-frame' }>
   ): void {
     if (!this.running) return
+    if (this.focusPolicy === 'secondary') return
     if (msg.frameId <= this.lastPlayerFrameId) return
     this.lastPlayerFrameId = msg.frameId
     const { InputModifier, MainCamera, Transform, VirtualCamera } = this.readComponents
@@ -2945,8 +2959,30 @@ export class SceneScriptSystem {
     const frozenBefore = hadBefore
       ? readLocomotionFromComponents(this.readComponents, PlayerEntity).disableAll
       : false
+    const grace = this.isFocusGraceActive()
     if (msg.inputModifierHas && msg.inputModifier !== undefined) {
-      InputModifier.createOrReplace(PlayerEntity, msg.inputModifier as never)
+      const im = msg.inputModifier as {
+        disableAll?: boolean
+        disableWalk?: boolean
+        disableRun?: boolean
+        disableJog?: boolean
+        disableJump?: boolean
+      }
+      // Post-promote grace: strip freeze bits so dual-scene hydrate cannot pin the player.
+      if (
+        grace &&
+        (im.disableAll || im.disableWalk || im.disableRun || im.disableJog || im.disableJump)
+      ) {
+        InputModifier.deleteFrom(PlayerEntity)
+        if (frozenBefore) {
+          console.info(
+            `[player-frame] focus-grace stripped freeze frameId=${msg.frameId} ` +
+              `(promote walk free while primary hydrates)`
+          )
+        }
+      } else {
+        InputModifier.createOrReplace(PlayerEntity, msg.inputModifier as never)
+      }
     } else {
       // Facade deleteFrom → projection.deleteRenderer (not the unused ECS engine store).
       InputModifier.deleteFrom(PlayerEntity)

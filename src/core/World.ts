@@ -3635,9 +3635,6 @@ export class World {
       y: pos.y,
       z: pos.z + origin.z
     }
-    // COD: freecam must not snap on snow↔CBD handoff (look is player-owned, not scene).
-    const freecamOrbit = this.player.getFreecamOrbit()
-
     const oldPrimary = this.sceneScript
     const oldScene = this.loadedPrimaryScene
     const newScene = handoff.scene
@@ -3830,9 +3827,11 @@ export class World {
 
     // Feet stay put in Genesis space under the NEW origin.
     const ok = this.restoreGenesisFeet(genesis)
-    // Freecam lock AFTER feet + bridge swap — 5s ignore scene VC (look stays player-owned).
+    // Platform camera: freecam orbit is durable player state — rebind VC bridge for the
+    // new primary, clear MainCamera (already in clearPlayerFocusState), snap boom to feet.
+    // Never reseed yaw/pitch/dist from scene VC (that was the "reset mode" snap).
     this.player.setVirtualCameraBridge(this.sceneScript.getVirtualCameraBridge())
-    this.player.restoreFreecamOrbit(freecamOrbit, 5000)
+    this.player.notifySceneFocusHandoff()
     const originAfter = this.comms.getSceneOrigin()
     const feetAfter = this.player.getPosition()
     const baseParts = newScene.baseParcel.split(',').map((s) => Number.parseInt(s.trim(), 10))

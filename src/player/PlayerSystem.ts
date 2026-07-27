@@ -231,14 +231,11 @@ export class PlayerSystem {
   private lastFreezeHoldLogAt = 0
   private lastPhysProbeAt = 0
   private virtualCamera: VirtualCameraBridge | null = null
-  /** Prior frame had an active VirtualCamera — seed freecam yaw/pitch on unbind. */
-  private wasVirtualCameraActive = false
   /**
-   * After multi-scene promote: ignore scene VirtualCamera ownership of the lens and
-   * keep freecam orbit locked until the player looks/zooms (or timer ends).
+   * Prior frame VirtualCamera owned the lens. On release we snap freecam placement
+   * but **never rewrite** camYaw/pitch/dist from the VC (those are durable player state).
    */
-  private suppressVcFreecamReseedUntil = 0
-  private lockedFreecamOrbit: { yaw: number; pitch: number; dist: number } | null = null
+  private wasVirtualCameraActive = false
   /** AvatarModifierArea hide (local mesh). */
   private modifierHidden = false
   /** CameraModeArea force — null when freecam is player-controlled. */
@@ -417,50 +414,19 @@ export class PlayerSystem {
     this.virtualCamera = bridge
   }
 
-  /** Snapshot freecam orbit (multi-scene promote must not snap look). */
-  getFreecamOrbit(): { yaw: number; pitch: number; dist: number } {
-    return { yaw: this.camYaw, pitch: this.camPitch, dist: this.camDistance }
-  }
-
   /**
-   * Restore freecam after promote handoff. For `suppressVcReseedMs`, scene
-   * VirtualCamera / MainCamera must NOT take the lens — look stays where the
-   * player left it (COD multi-scene continuity).
+   * Multi-scene FocusOwner handoff — platform camera continuity:
+   * freecam orbit (yaw/pitch/dist) is **player state**, not scene state. Primary swap
+   * rebinds the VC bridge and clears MainCamera, but must not reset look.
+   * Snap freecam placement to new feet; leave orbit angles untouched.
    */
-  restoreFreecamOrbit(
-    orbit: { yaw: number; pitch: number; dist: number },
-    suppressVcReseedMs = 5000
-  ): void {
-    this.lockedFreecamOrbit = {
-      yaw: orbit.yaw,
-      pitch: orbit.pitch,
-      dist: orbit.dist
-    }
-    this.camYaw = orbit.yaw
-    this.camPitch = orbit.pitch
-    this.camDistance = orbit.dist
+  notifySceneFocusHandoff(): void {
     this.wasVirtualCameraActive = false
-    this.suppressVcFreecamReseedUntil = performance.now() + suppressVcReseedMs
-    // Snap freecam lens immediately (no lerp frame of VC pose).
     try {
       this.syncCamera(true, 1 / 60)
     } catch {
       /* host may be mid-teardown */
     }
-    console.info(
-      `[player] freecam locked across promote yaw=${orbit.yaw.toFixed(2)} pitch=${orbit.pitch.toFixed(2)} dist=${orbit.dist.toFixed(1)} ${suppressVcReseedMs}ms`
-    )
-  }
-
-  private isFreecamPromoteLocked(): boolean {
-    return performance.now() < this.suppressVcFreecamReseedUntil
-  }
-
-  private clearFreecamPromoteLock(reason: string): void {
-    if (!this.lockedFreecamOrbit && this.suppressVcFreecamReseedUntil <= 0) return
-    this.lockedFreecamOrbit = null
-    this.suppressVcFreecamReseedUntil = 0
-    console.info(`[player] freecam promote lock cleared (${reason})`)
   }
 
   async loadAvatar(
@@ -1954,13 +1920,13 @@ export class PlayerSystem {
     })
   }
 
-  /** Scene owns the lens — no freecam orbit/zoom/look (including hydrate lag before isActive). */
+  /**
+   * Scene FocusOwner VirtualCamera owns the lens only when the bridge is **actively**
+   * resolving a VC. MainCamera.virtualCameraEntity alone (hydrate lag) must NOT steal
+   * freecam — that caused "camera reset mode" on multi-scene promote.
+   */
   private isSceneVirtualCameraDriving(): boolean {
-    // Multi-scene promote: player freecam wins until lock ends.
-    if (this.isFreecamPromoteLocked()) return false
-    return (
-      this.virtualCamera?.isActive() === true || this.virtualCamera?.isMainCameraVcBound() === true
-    )
+    return this.virtualCamera?.isActive() === true
   }
 
   private releaseFreecamLookForVirtualCamera(): void {
@@ -1972,9 +1938,9 @@ export class PlayerSystem {
   }
 
   /**
-   * Player main-camera orbit / zoom when MainCamera is not VC-bound.
-   * InputModifier freezes avatar locomotion only — does not gate player look or scene key relay.
-   * When a VC is bound, the lens is scene-driven; do not layer player orbit on top.
+   * Player freecam orbit / zoom when scene VC is not actively driving.
+   * InputModifier freezes avatar locomotion only — does not gate player look.
+   * Freecam yaw/pitch/dist are durable player state (survive FocusOwner handoff).
    */
   private applyCameraInputFromPointer(): void {
     if (!this.input) return
@@ -1991,15 +1957,12 @@ export class PlayerSystem {
       this.camPitch += this.isFirstPerson() ? -pitchDelta : pitchDelta
       const pitchMin = this.isFirstPerson() ? -CAM_PITCH_MAX + 0.05 : CAM_PITCH_MIN
       this.camPitch = clamp(this.camPitch, pitchMin, CAM_PITCH_MAX)
-      // User took control — release promote lock so further look is free.
-      if (this.lockedFreecamOrbit) this.clearFreecamPromoteLock('look')
     }
 
     const zoomDelta = this.input.scrollDelta + this.input.pinchZoomDelta * 3
     if (zoomDelta !== 0 && this.forcedCameraMode === null) {
       this.camDistance += zoomDelta * ZOOM_WHEEL_SPEED
       this.camDistance = clamp(this.camDistance, CAM_DISTANCE_MIN, CAM_DISTANCE_MAX)
-      if (this.lockedFreecamOrbit) this.clearFreecamPromoteLock('zoom')
     } else if (this.forcedCameraMode === 'first_person') {
       this.camDistance = 0
     } else if (this.forcedCameraMode === 'third_person') {
@@ -2012,45 +1975,19 @@ export class PlayerSystem {
   }
 
   private syncCamera(snap: boolean, delta = 0.016): void {
-    // Promote lock: never hand the lens to scene VC / MainCamera — freecam only.
-    if (!this.isFreecamPromoteLocked()) {
-      if (this.virtualCamera?.apply(delta)) {
-        this.wasVirtualCameraActive = true
-        // Keep freecam yaw/pitch aligned so unbind + orbit does not snap 180° from stale freecam state.
-        _forward.set(0, 0, -1).applyQuaternion(this.host.camera.quaternion)
-        if (_forward.lengthSq() > 1e-8) {
-          _forward.normalize()
-          this.camYaw = Math.atan2(-_forward.x, -_forward.z)
-          if (_forward.y <= 0.15) {
-            const lookPitch = Math.asin(THREE.MathUtils.clamp(_forward.y, -1, 1))
-            this.camPitch = clamp(-lookPitch, CAM_PITCH_MIN, CAM_PITCH_MAX)
-          } else {
-            this.camPitch = CAM_PITCH_DEFAULT
-          }
-        }
-        this.avatar?.setBodyVisible(!this.modifierHidden)
-        if (this.nameTag) {
-          this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
-        }
-        return
+    // FocusOwner primary may drive lens via active VirtualCamera only.
+    // Do **not** write freecam orbit from VC — orbit is continuous player state.
+    if (this.virtualCamera?.apply(delta)) {
+      this.wasVirtualCameraActive = true
+      this.avatar?.setBodyVisible(!this.modifierHidden)
+      if (this.nameTag) {
+        this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
       }
-      // MainCamera still points at a VC but bridge inactive — hold last lens pose.
-      if (this.virtualCamera?.isMainCameraVcBound()) {
-        this.wasVirtualCameraActive = true
-        this.avatar?.setBodyVisible(!this.modifierHidden)
-        if (this.nameTag) {
-          this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
-        }
-        return
-      }
-    } else if (this.lockedFreecamOrbit) {
-      // Hold orbit locked every frame until look/zoom or timer ends.
-      this.camYaw = this.lockedFreecamOrbit.yaw
-      this.camPitch = this.lockedFreecamOrbit.pitch
-      this.camDistance = this.lockedFreecamOrbit.dist
-      this.wasVirtualCameraActive = false
+      return
     }
 
+    // VC just released — freecam resumes with existing yaw/pitch/dist (no reseed from VC pose).
+    const vcJustReleased = this.wasVirtualCameraActive
     if (this.wasVirtualCameraActive) {
       this.wasVirtualCameraActive = false
     }
@@ -2061,8 +1998,8 @@ export class PlayerSystem {
       this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible() && !fpv
     }
 
-    // During promote lock always snap (no lerp from VC pose).
-    const hardSnap = snap || this.isFreecamPromoteLocked()
+    // Snap once after VC release or explicit handoff so boom re-seats on feet without lerp ghost.
+    const hardSnap = snap || vcJustReleased
 
     if (fpv) {
       _pivot.copy(this.root.position)

@@ -34,6 +34,7 @@ export class AvatarPreviewMini {
   private avatar: THREE.Group | null = null
   private animations: AvatarAnimations | null = null
   private subjectSize: THREE.Vector3 | null = null
+  private subjectCenterY = 0
   private previewOptions: AvatarPreviewOptions = {}
   private raf = 0
   private lastFrame = 0
@@ -93,10 +94,14 @@ export class AvatarPreviewMini {
     if (!avatar) return false
 
     this.avatar = avatar
-    this.subjectSize = alignPreviewAvatarToGround(avatar, 'dcl')
+    const alignedSize = alignPreviewAvatarToGround(avatar, 'dcl')
+    this.subjectSize = alignedSize
+    this.subjectCenterY = alignedSize.y * 0.5
     this.pivot.add(avatar)
     await this.bindAnimations(avatar, profile, contentUrl, token)
     if (token !== this.showToken) return false
+    // Measure once the idle pose is applied, so the frame matches the render.
+    this.measureRenderedSubject(avatar)
 
     this.resize()
     this.frameCamera()
@@ -148,6 +153,44 @@ export class AvatarPreviewMini {
     }
   }
 
+  /**
+   * Bounds of what is actually drawn. Box3.setFromObject counts hidden meshes —
+   * basemeshes covered by wearables and `collider` proxies both stay in the graph
+   * with visible = false — and reads each skinned mesh's bind-pose box rather than
+   * the posed skeleton. Both inflate the subject by an amount that varies with the
+   * outfit, which framed heavily-covered avatars smaller than lightly-covered ones.
+   */
+  private measureRenderedSubject(avatar: THREE.Group): void {
+    const box = new THREE.Box3()
+    const meshBox = new THREE.Box3()
+    avatar.updateWorldMatrix(true, true)
+    avatar.traverseVisible((obj) => {
+      const mesh = obj as THREE.Mesh
+      if (!mesh.isMesh) return
+      const skinned = mesh as THREE.SkinnedMesh
+      if (skinned.isSkinnedMesh) {
+        // Cached boundingBox is the bind pose — recompute against current bones.
+        skinned.computeBoundingBox()
+        if (!skinned.boundingBox) return
+        meshBox.copy(skinned.boundingBox)
+      } else {
+        if (!mesh.geometry.boundingBox) mesh.geometry.computeBoundingBox()
+        if (!mesh.geometry.boundingBox) return
+        meshBox.copy(mesh.geometry.boundingBox)
+      }
+      meshBox.applyMatrix4(mesh.matrixWorld)
+      box.union(meshBox)
+    })
+    if (box.isEmpty()) return
+
+    const height = box.max.y - box.min.y
+    if (height <= 0) return
+    // The preview spins, so reserve the wider of the two horizontal extents.
+    const horizontal = Math.max(box.max.x - box.min.x, box.max.z - box.min.z, 0.5)
+    this.subjectSize = new THREE.Vector3(horizontal, height, horizontal)
+    this.subjectCenterY = (box.max.y + box.min.y) * 0.5
+  }
+
   clear(): void {
     this.showToken++
     cancelAnimationFrame(this.raf)
@@ -161,6 +204,7 @@ export class AvatarPreviewMini {
       this.avatar = null
     }
     this.subjectSize = null
+    this.subjectCenterY = 0
     this.previewOptions = {}
     this.pivot?.clear()
     this.pivot = null
@@ -195,7 +239,7 @@ export class AvatarPreviewMini {
   private frameCamera(): void {
     if (!this.camera || !this.subjectSize) return
     const size = this.subjectSize
-    const lookY = size.y * 0.5
+    const lookY = this.subjectCenterY
     const fovRad = THREE.MathUtils.degToRad(this.camera.fov)
     const aspect = Math.max(this.camera.aspect, 0.35)
     const zoom = Math.max(0.5, this.previewOptions.zoom ?? 1)

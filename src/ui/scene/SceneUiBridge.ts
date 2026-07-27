@@ -499,16 +499,7 @@ export class SceneUiBridge {
     this.lastView = view
     if (!this.domVisible) {
       // Mount still commits while hidden; revealPlayChrome → setVisible(true) repaints.
-      if (
-        this.workerUiEntitiesKnown &&
-        (this.workerUiEntities?.size ?? 0) > 0 &&
-        typeof location !== 'undefined' &&
-        location.search.includes('sceneuidebug')
-      ) {
-        console.log(
-          `[scene-ui] paint deferred — play chrome not revealed yet (mount=${this.workerUiEntities!.size})`
-        )
-      }
+      // Never log per-frame (was flooding console + main-thread during 60s attach).
       return
     }
     // Phase C: skip full mount/record walk when nothing marked dirty since last paint.

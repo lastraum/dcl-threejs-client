@@ -2237,8 +2237,17 @@ export class World {
       await this.sceneScript.syncRendererFull()
       this.sceneScript.flushSceneGraphMatrices()
       this.sceneScript.refreshAllInstancedTransforms()
-      this.sceneScript.invalidateGltfColliderSyncCache()
-      this.sceneScript.syncCollisionForce()
+      // Prefer budgeted dirty drain (prewarm already extracted most). Full force only if needed.
+      if (this.sceneScript.hasColliderWorkPending()) {
+        for (let i = 0; i < 16; i++) {
+          if (!this.sceneScript.hasColliderWorkPending()) break
+          this.sceneScript.syncCollision()
+          await new Promise<void>((r) => requestAnimationFrame(() => r()))
+        }
+      }
+      if (this.sceneScript.hasColliderWorkPending()) {
+        this.sceneScript.syncCollisionForce()
+      }
 
       // Seal path: cook missing/unsynced only. Do NOT clearGeometryCookCache / clearGltfStaticActors
       // — wiping 475 plaza actors then recooking from partial extract was the soft-init death spiral.
@@ -2291,8 +2300,16 @@ export class World {
       await this.sceneScript.syncRendererFull()
       this.sceneScript.flushSceneGraphMatrices()
       this.sceneScript.refreshAllInstancedTransforms()
-      this.sceneScript.invalidateGltfColliderSyncCache()
-      this.sceneScript.syncCollisionForce()
+      if (this.sceneScript.hasColliderWorkPending()) {
+        for (let i = 0; i < 12; i++) {
+          if (!this.sceneScript.hasColliderWorkPending()) break
+          this.sceneScript.syncCollision()
+          await new Promise<void>((r) => requestAnimationFrame(() => r()))
+        }
+      }
+      if (this.sceneScript.hasColliderWorkPending()) {
+        this.sceneScript.syncCollisionForce()
+      }
       this.reconcileColliderCookQueue()
       this.discoverMissingColliderActors()
       let guard = 0
@@ -2492,7 +2509,7 @@ export class World {
    */
   private async waitForColliderGraphSettle(
     onProgress?: (msg: string) => void,
-    maxMs = 120_000
+    maxMs = 45_000
   ): Promise<void> {
     if (!this.playerMode) return
     const started = performance.now()
@@ -2501,16 +2518,17 @@ export class World {
     const stableNeedMs = 600
     const softStableMs = 2_000
     onProgress?.('Waiting for scene colliders…')
+    // Seed budgeted extract once — do not force full walk every frame.
+    this.sceneScript.markAllGltfCollidersDirtyForExtract()
     while (performance.now() - started < maxMs) {
       await this.sceneScript.yieldForWorkerMessages()
       await this.sceneScript.syncRendererFull()
       this.sceneScript.flushSceneGraphMatrices()
       this.sceneScript.refreshAllInstancedTransforms()
-      // Progressive extract while we wait — so cook starts with a full desc set.
+      // Progressive budgeted extract only — never full-walk force every settle frame
+      // (that re-traversed 700+ GLBs each rAF and froze at 79%).
       if (this.sceneScript.hasColliderWorkPending()) {
         this.sceneScript.syncCollision()
-      } else {
-        this.sceneScript.syncCollisionForce()
       }
       const lite = this.sceneScript.getAttachProgressLite()
       const pending = lite?.pendingMesh ?? 0
@@ -3473,13 +3491,28 @@ export class World {
     this.bootAssetsTimedOut = options.assetsTimedOut ?? false
     this.resetColliderBootState()
 
-    this.sceneScript.setAssetHydrationMode(true)
+    // Leave asset hydration mode so UI stays frozen until prepare seal ends, but allow
+    // progressive collider extract (budgeted) without a second full invalidate walk.
     onProgress?.('Preparing collisions…', World.COLLIDER_COOK_PROGRESS_START)
     await this.sceneScript.syncRendererFull()
     this.sceneScript.flushSceneGraphMatrices()
     this.sceneScript.refreshAllInstancedTransforms()
-    this.sceneScript.invalidateGltfColliderSyncCache()
-    this.sceneScript.syncCollisionForce()
+    // Budgeted structure extract (48/frame) — never syncCollisionForce here (full plaza
+    // walk was the multi-second main-thread spike right at 79% before cook).
+    this.sceneScript.markAllGltfCollidersDirtyForExtract()
+    for (let i = 0; i < 48; i++) {
+      if (!this.sceneScript.hasColliderWorkPending()) break
+      this.sceneScript.syncCollision()
+      onProgress?.(
+        `Extracting colliders… pass ${i + 1}`,
+        World.COLLIDER_COOK_PROGRESS_START + 0.02 * Math.min(i, 10)
+      )
+      await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    }
+    // Final full walk only if dirty remains (covers stragglers).
+    if (this.sceneScript.hasColliderWorkPending()) {
+      this.sceneScript.syncCollisionForce()
+    }
     this.refreshColliderCookStats()
 
     // Progressive cook during prewarm — PhysX fills while UI shows progress.
@@ -3488,7 +3521,7 @@ export class World {
     this.colliderCookQueue.clear()
     this.reconcileColliderCookQueue()
     this.discoverMissingColliderActors()
-    const prewarmBudget = 8
+    const prewarmBudget = 16
     let passes = 0
     while (this.colliderCookQueue.size > 0 && passes < prewarmBudget) {
       await this.drainColliderCookQueue({ mode: 'boot' })

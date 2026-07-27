@@ -57,8 +57,14 @@ const SOFT_HYDRATION_MS = 2_000
  * bad relative paths). Genesis cold still makes progress with inflight>0 so this
  * only fires on a true stall tail — not mid-download.
  */
-/** No attach progress + no downloads → force-ready (was 25s; felt like a hard hang at 79%). */
-const ATTACH_STALL_MS = 12_000
+/**
+ * No attach progress + no downloads → force-ready.
+ * Plaza left ~30 "pending" forever (bad attach accounting); 60s+ hangs at ~79%.
+ */
+const ATTACH_STALL_MS = 6_000
+/** Near-complete attach with idle downloads — don't wait the full stall. */
+const ATTACH_NEAR_COMPLETE_RATIO = 0.94
+const ATTACH_NEAR_COMPLETE_STALL_MS = 2_500
 const ENABLE_ATTACH_STALL_BAILOUT = true
 /** Wait before treating peakGltfEntities===0 as complete when composite may still publish GltfContainer. */
 const ZERO_GLTF_FALLBACK_MS = 12_000
@@ -383,11 +389,22 @@ export async function waitForSceneAssets(
           ENABLE_ATTACH_STALL_BAILOUT &&
           pending > 0 &&
           stats.gltfInflight === 0 &&
-          stats.textureInflight === 0 &&
-          performance.now() - lastProgressAt >= ATTACH_STALL_MS
+          stats.textureInflight === 0
         ) {
-          forceTimeout('Attach stalled')
-          return
+          const idleMs = performance.now() - lastProgressAt
+          const ratio =
+            stats.gltfEntities > 0 ? stats.gltfLoaded / stats.gltfEntities : 0
+          if (
+            idleMs >= ATTACH_STALL_MS ||
+            (ratio >= ATTACH_NEAR_COMPLETE_RATIO && idleMs >= ATTACH_NEAR_COMPLETE_STALL_MS)
+          ) {
+            forceTimeout(
+              ratio >= ATTACH_NEAR_COMPLETE_RATIO
+                ? `Attach near-complete (${(ratio * 100).toFixed(0)}%)`
+                : 'Attach stalled'
+            )
+            return
+          }
         }
 
         if (stats.entityCount !== lastEntityCount) {

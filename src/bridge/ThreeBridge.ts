@@ -231,6 +231,8 @@ export class ThreeBridge {
   private largeAttachDraining = false
   private attachedSceneGltfCount = 0
   private attachedSceneTris = 0
+  /** Entities that successfully attached (clone or instance) — hydration progress authority. */
+  private readonly attachedGltfEntities = new Set<Entity>()
   /**
    * Pending-mesh drain cursor — NEVER full-scan thousands of pending entities per frame.
    * Smoke showed gltfAttach=1/3365 with renderer≈4.7s from O(pending×content) hash walks.
@@ -696,6 +698,7 @@ export class ThreeBridge {
   }
 
   private notifyGltfAttached(entity: Entity): void {
+    this.attachedGltfEntities.add(entity)
     this.setGltfLoadingState(entity, 4 /* FINISHED */)
     // Video screens (and other overrides) often land before/with GltfContainer — re-apply.
     if (this.ecs.GltfNodeModifiers.has(entity)) {
@@ -1109,17 +1112,25 @@ export class ThreeBridge {
         gltfAbandoned++
         continue
       }
-      const obj = this.store.getNode(entity)
-      if (!obj) continue
-      // Attached = src key matches. Instanced props have no private `__mesh_*` child —
-      // requiring meshKey left plaza lamps/pipes "pending" forever → bar stuck ~79%.
-      if (obj.userData.gltfSrcKey !== hash) continue
-      if (obj.userData.dclInstanced || obj.userData.animationRig) {
+      // Authoritative: notifyGltfAttached (clone + GPU instance). Do not require `__mesh_*`
+      // (instances have none) — that left ~70 "pending" forever and hung the bar at ~79%.
+      if (this.attachedGltfEntities.has(entity)) {
         gltfLoaded++
         continue
       }
-      // Cheap attached check — avoid gltfInstanceHasGeometry full traverse on 3k entities.
-      if (obj.getObjectByName(meshKey(entity))) gltfLoaded++
+      const obj = this.store.getNode(entity)
+      if (!obj) continue
+      if (obj.userData.gltfSrcKey === hash) {
+        if (obj.userData.dclInstanced || obj.userData.animationRig) {
+          gltfLoaded++
+          this.attachedGltfEntities.add(entity)
+          continue
+        }
+        if (obj.getObjectByName(meshKey(entity))) {
+          gltfLoaded++
+          this.attachedGltfEntities.add(entity)
+        }
+      }
     }
 
     const assetStats = this.cache.getLoadStats()
@@ -1839,6 +1850,7 @@ export class ThreeBridge {
     if (!this.store.isSceneOwned(entity)) return
     this.pendingMeshEntities.delete(entity)
     this.pendingMaterialEntities.delete(entity)
+    this.attachedGltfEntities.delete(entity)
     this.store.setSpritePool(entity, false)
     this.store.setBillboard(entity, false)
     this.store.setTween(entity, false)
@@ -1862,6 +1874,8 @@ export class ThreeBridge {
     this.audioStreamBridge = null
     this.pendingMeshEntities.clear()
     this.pendingMaterialEntities.clear()
+    this.attachedGltfEntities.clear()
+    this.attachedSceneGltfCount = 0
     this.pendingMeshCursor = 0
     this.largeAttachQueue.length = 0
     this.largeAttachQueued.clear()
@@ -1879,6 +1893,7 @@ export class ThreeBridge {
     const mk = meshKey(entity)
     const attachedTris = (obj.userData.dclAttachedTris as number | undefined) ?? 0
     let removedGltf = false
+    this.attachedGltfEntities.delete(entity)
     if (obj.userData.dclInstanced) {
       this.instancer.detach(entity, obj)
       this.instanceMotionHits.delete(entity)

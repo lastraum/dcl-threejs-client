@@ -1131,6 +1131,25 @@ export class SceneScriptSystem {
     this.gltfColliders?.invalidateColliderSyncCache()
   }
 
+  /**
+   * Queue every GltfContainer for budgeted structure extract (48/tick) — avoids a single
+   * multi-second syncCollisionForce full walk that freezes the bar at ~79%.
+   */
+  markAllGltfCollidersDirtyForExtract(): void {
+    if (!this.bridge) return
+    const { GltfContainer, Transform } = this.readComponents
+    for (const [entity] of this.view.getEntitiesWith(GltfContainer, Transform)) {
+      if (
+        entity === this.view.RootEntity ||
+        entity === this.view.PlayerEntity ||
+        entity === this.view.CameraEntity
+      ) {
+        continue
+      }
+      this.colliderStructureDirty.add(entity)
+    }
+  }
+
   /** Propagate ECS transforms → matrixWorld on the full scene entity graph before collider extract. */
   flushSceneGraphMatrices(): void {
     this.entityStore?.root.updateMatrixWorld(true)
@@ -2831,6 +2850,22 @@ export class SceneScriptSystem {
     // for promote resume — must not fight #scene-ui-root with the new primary).
     if (this.focusPolicy === 'secondary') return
 
+    // Asset hydration: commit mount only — no Yoga/DOM thrash (was flooding "paint deferred"
+    // and stealing main-thread from GLB attach → 60s hang at ~79%).
+    if (this.bridge?.isAssetHydrationMode()) {
+      bridge.applyProjectionChanges(projectionDeletes)
+      if (uiEntities !== undefined) {
+        const nextSet = new Set(uiEntities.map((e) => e as Entity))
+        if (bridge.isMountSetReady(this.view, nextSet)) {
+          bridge.commitMountSet(nextSet)
+          this.pendingUiEntities = undefined
+        } else {
+          this.pendingUiEntities = uiEntities
+        }
+      }
+      return
+    }
+
     bridge.applyProjectionChanges(projectionDeletes)
     // Phase C: any UI CRDT/mount path dirties paint; redundant flushes no-op via epoch.
     bridge.markContentDirty()
@@ -2885,6 +2920,9 @@ export class SceneScriptSystem {
     const mountUpdate = uiEntities ?? this.pendingUiEntities
     this.pendingUiEntities = undefined
 
+    // Hydration: never paint / Yoga — attach bandwidth only.
+    const hydrationFreeze = this.bridge?.isAssetHydrationMode() === true
+
     if (mountUpdate !== undefined) {
       const nextSet = new Set(mountUpdate.map((e) => e as Entity))
       if (!bridge.isMountSetReady(this.view, nextSet)) {
@@ -2894,9 +2932,16 @@ export class SceneScriptSystem {
         this.maybeForceResumeWorkerTicksOnUiLag(nextSet)
         return
       }
+      if (hydrationFreeze) {
+        bridge.commitMountSet(nextSet)
+        this.clearProjectionUiLag()
+        return
+      }
       this.commitAndPaintUiMount(bridge, nextSet)
       return
     }
+
+    if (hydrationFreeze) return
 
     if (!bridge.hasCommittedMountSet()) return
     if (!bridge.isMountSetReady(this.view)) {

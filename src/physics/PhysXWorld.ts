@@ -1376,10 +1376,11 @@ export class PhysXWorld {
 
     if (desc.shapes?.length) {
       const geomFp = desc.fingerprint
-      const poseFp = multiShapePoseFingerprint(desc)
       if (this.staticFp.get(desc.entity) !== geomFp) return false
-      if (this.staticPoseFp.get(desc.entity) !== poseFp) return false
       // Expanded to one actor per shape — every cookable shape must be live.
+      // Do NOT require exact poseFp match: float noise / Animator slides change pose
+      // every frame and left the boot cook queue non-empty forever (stuck ~79% load,
+      // no logs — main thread re-cooking multi-shape hulls).
       let expected = 0
       let live = 0
       for (let i = 0; i < desc.shapes.length; i++) {
@@ -1443,47 +1444,31 @@ export class PhysXWorld {
         }
         const shapeCountOk = expectedShapes > 0 && liveShapes === expectedShapes
 
-        // Children already cooked with matching per-shape fingerprints — never re-expand
-        // just because the parent geom string flapped (uuid thrash / extract order noise).
+        // Children live + parent geom fingerprint matches → keep solids (pose-only drift OK).
+        // Multi-shape parents have no single RigidStatic; only children matter.
+        if (shapeCountOk && prevGeomFp === geomFp) {
+          this.staticPoseFp.set(desc.entity, poseFp)
+          continue
+        }
+
+        // Children live + per-shape geom fps match → adopt new parent geom string without recook
+        // (extract naming noise). Missing child fp (legacy expand) still counts as match if live.
         if (shapeCountOk && expectedShapes > 0) {
           let childFpOk = true
           for (let i = 0; i < desc.shapes.length; i++) {
             const shape = desc.shapes[i]!
             if (!shape.geometry) continue
-            if (this.staticFp.get(multiShapeChildPhysId(desc.entity, i)) !== shape.fingerprint) {
+            const childFp = this.staticFp.get(multiShapeChildPhysId(desc.entity, i))
+            if (childFp !== undefined && childFp !== shape.fingerprint) {
               childFpOk = false
               break
             }
           }
           if (childFpOk) {
-            if (prevGeomFp !== geomFp) this.staticFp.set(desc.entity, geomFp)
+            this.staticFp.set(desc.entity, geomFp)
             this.staticPoseFp.set(desc.entity, poseFp)
             continue
           }
-        }
-
-        // Geom unchanged + all children live → keep solids. Never tear down for pose float
-        // noise (forceRecookOnPoseChange is always true on the play drain and was causing
-        // remove→re-expand floor holes mid-spawn — SpaceRunner freefall after first expand).
-        // Prefer multi-shape pose slide when geom matches and actor is not world-baked.
-        if (prevGeomFp === geomFp && shapeCountOk) {
-          const actor = this.staticActors.get(desc.entity)
-          if (actor && this.staticPoseFp.get(desc.entity) === poseFp) continue
-          const worldBaked = !!(actor && this.actorWorldBaked.get(desc.entity))
-          if (actor && !options?.forceRecookOnPoseChange && !worldBaked) {
-            try {
-              if (this.updateMultiShapeActorPose(actor, desc)) {
-                this.staticPoseFp.set(desc.entity, poseFp)
-                geometryChanged = true
-                continue
-              }
-            } catch (err) {
-              console.warn('[PhysXWorld] multi-shape pose update failed:', desc.entity, err)
-            }
-          }
-          // Keep live solid; pose drift alone is not a recook.
-          this.staticPoseFp.set(desc.entity, poseFp)
-          continue
         }
 
         if (
@@ -2938,6 +2923,9 @@ export class PhysXWorld {
           )
         : this.addStatic(childDesc, persistCook, preferPersistedCook, skipWorkerStream)
       if (!ok) continue
+      // Track per-shape geom fp so thrash guards / isColliderSynced can match children.
+      this.staticFp.set(childId, shapeDesc.fingerprint)
+      this.staticPoseFp.set(childId, multiShapePoseFingerprint(desc))
       attached++
       lastIndex = i
       usedSlots.add(i)

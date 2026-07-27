@@ -401,21 +401,20 @@ export class SceneUiDomRenderer {
     return this.host
   }
 
-  /** Nest under ECS parent shell so z-index / sibling order match react-ecs stacking contexts. */
+  /**
+   * Always paint canvas-absolute under `#scene-ui-root`.
+   *
+   * Nested parent-relative shells + `transform: translate()` double-offset fishing shop
+   * icons when mid-tree parents had wrong yoga boxes / overflow / unusable flags —
+   * every inventory icon, SIZE/WEIGHT tile, and button ends up scattered over the 3D view.
+   * Hit-map already uses canvas-absolute Yoga boxes; DOM must match.
+   * Stacking uses `zIndex` + tree depth on the shell (siblings of the host).
+   */
   private resolveDomParent(transform: PBUiTransform): {
     parent: HTMLElement
     coords: 'canvas' | 'parent'
   } {
-    const parentId = transform.parent ?? CANVAS_ROOT_ENTITY
-    if (parentId === CANVAS_ROOT_ENTITY || parentId === 0) {
-      return { parent: this.host, coords: 'canvas' }
-    }
-    const parentShell = this.nodes.get(parentId as Entity)
-    // 0×0 / unusable parents are not valid containing blocks — paint children with
-    // canvas-absolute Yoga boxes (parent-relative piles every shop icon at one point).
-    if (parentShell?.isConnected && parentShell.dataset.uiUnusable !== '1') {
-      return { parent: parentShell, coords: 'parent' }
-    }
+    void transform
     return { parent: this.host, coords: 'canvas' }
   }
 
@@ -656,10 +655,13 @@ export class SceneUiDomRenderer {
       el.querySelector('.scene-ui-node__select')?.remove()
     }
 
-    // Yoga screen-mapped geometry on shell — nested nodes use parent-relative coords.
+    // Yoga screen-mapped geometry — always canvas-absolute (see resolveDomParent).
     applyYogaLayoutBox(shell, layoutBox, scale, coords, clipShell)
+    // Depth-stable stacking for sibling shells (deeper / higher zIndex paints above).
+    const zBase = (transform.zIndex ?? 0) * 1000 + depth
+    shell.style.zIndex = String(zBase)
 
-    // Hit map uses canvas-absolute Yoga + layoutToScreen (not DOM rects after nested translate).
+    // Hit map uses canvas-absolute Yoga + layoutToScreen (same coords as paint).
     pushLayoutHitRegion(regions, entity, transform, layoutBox, input, depth)
 
     const children = input.forest.get(entity) ?? []

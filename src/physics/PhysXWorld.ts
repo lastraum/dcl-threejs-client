@@ -272,6 +272,13 @@ export class PhysXWorld {
   private controllerManager: any = null
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private controllerFilters: any = null
+  /**
+   * Permanent CCT filter data — PhysX stores a raw pointer (`const PxFilterData*`).
+   * A temporary `new PxFilterData` assigned once can be GC'd → dangling filter → CCT
+   * preFilter sees garbage words → eNONE for every wall while sphere sweeps still work.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private cctFilterData: any = null
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private controller: any = null
   /**
@@ -614,9 +621,11 @@ export class PhysXWorld {
 
   private setupControllerManager(): void {
     this.controllerManager = PHYSX.PxTopLevelFunctions.prototype.CreateControllerManager(this.scene)
-    this.controllerFilters = new PHYSX.PxControllerFilters()
-    this.controllerFilters.mFilterData = new PHYSX.PxFilterData(Layers.player.group, Layers.player.mask, 0, 0)
-    // eSTATIC/eDYNAMIC — hit scene colliders. ePREFILTER — invoke bilateral layer callback below.
+    // Keep filter data alive for the process lifetime — C++ holds a raw pointer only.
+    this.cctFilterData = new PHYSX.PxFilterData(Layers.player.group, Layers.player.mask, 0, 0)
+    this.controllerFilters = new PHYSX.PxControllerFilters(this.cctFilterData)
+    this.controllerFilters.mFilterData = this.cctFilterData
+    // eSTATIC/eDYNAMIC — hit scene colliders. ePREFILTER — solid-layer gate below.
     this.controllerFilters.mFilterFlags = new PHYSX.PxQueryFlags(
       PHYSX.PxQueryFlagEnum.eSTATIC |
         PHYSX.PxQueryFlagEnum.eDYNAMIC |
@@ -628,8 +637,8 @@ export class PhysXWorld {
     this.controllerFilters.mCCTFilterCallback = cctFilterCallback
 
     // CCT move() uses scene queries — must return eBLOCK or the capsule passes through static trimesh.
-    // PhysX preFilter signature: (const PxFilterData& filterData, const PxShape* shape, …)
-    // — first arg is PxFilterData, not PxQueryFilterData (word0/word1 live at the pointer root).
+    // Prefer solid-layer membership over bilateral word tests: dangling/garbage query words
+    // previously returned eNONE for every wall while sphere sweeps (different filter path) worked.
     const envMask =
       Layers.environment.group | Layers.prop.group | Layers.gltfCollider.group
     const filterCallback = new PHYSX.PxQueryFilterCallbackImpl()
@@ -640,20 +649,26 @@ export class PhysXWorld {
       _queryFlags?: number
     ) => {
       try {
-        const filterData = PHYSX.wrapPointer(filterDataPtr, PHYSX.PxFilterData)
         const shape = PHYSX.wrapPointer(shapePtr, PHYSX.PxShape)
         const shapeFilterData = shape.getQueryFilterData()
-        const q0 = filterData.word0 >>> 0
-        const q1 = filterData.word1 >>> 0
         const s0 = shapeFilterData.word0 >>> 0
-        const s1 = shapeFilterData.word1 >>> 0
-        if ((q0 & s1) !== 0 && (s0 & q1) !== 0) {
+        // Triggers are overlap-only — never CCT-block.
+        if ((s0 & Layers.trigger.group) !== 0 && (s0 & envMask) === 0) {
+          return PHYSX.PxQueryHitType.eNONE
+        }
+        // Always block scene solids (env / prop / gltf collider).
+        if ((s0 & envMask) !== 0) {
           return PHYSX.PxQueryHitType.eBLOCK
         }
-        // Wrap/layout failure (all-zero query words) — still block solid scene layers so
-        // plaza walls never become ghost geometry. Triggers stay out of envMask.
-        if (q0 === 0 && q1 === 0 && (s0 & envMask) !== 0) {
-          return PHYSX.PxQueryHitType.eBLOCK
+        // Fallback bilateral when shape layer is unknown/custom.
+        if (filterDataPtr) {
+          const filterData = PHYSX.wrapPointer(filterDataPtr, PHYSX.PxFilterData)
+          const q0 = filterData.word0 >>> 0
+          const q1 = filterData.word1 >>> 0
+          const s1 = shapeFilterData.word1 >>> 0
+          if ((q0 & s1) !== 0 && (s0 & q1) !== 0) {
+            return PHYSX.PxQueryHitType.eBLOCK
+          }
         }
         return PHYSX.PxQueryHitType.eNONE
       } catch {
@@ -1885,6 +1900,10 @@ export class PhysXWorld {
 
     // Always re-assert y=0 floor before any move (scene cook churn must not strand the avatar).
     this.ensureInfiniteGroundPlane()
+    // Re-pin filter data pointer each move — WASM may clear it; GC must never free cctFilterData.
+    if (this.controllerFilters && this.cctFilterData) {
+      this.controllerFilters.mFilterData = this.cctFilterData
+    }
 
     this.pendingCctGroundEntity = null
     this.pendingCctGroundY = Number.NEGATIVE_INFINITY

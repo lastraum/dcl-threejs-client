@@ -1977,10 +1977,23 @@ export class World {
           const probe = this.physics.probeWalkSurfaceFeetY(feet.x, feet.z, feet.y + 2.5, 6, feet.y)
           console.info(
             `[phys] health-soft sweepFeetY=${probe != null ? probe.toFixed(2) : 'MISS'} ` +
+              `sides=${sides ? 'yes' : 'no'} ` +
               `(down 2.5→-3.5 from feet+2.5; MISS = SQ tree cannot hit scene hulls)`
           )
           // One defensive SQ rebuild when soft is observed — heals stale BVH after pose slides.
           this.physics.rebuildStaticSceneQueryTree()
+          // Player fell under deck onto infinite ground (y=0) while scene floor is higher
+          // (probe≈0.2). Lift capsule onto sweep surface so walls at y≥0.2 can block.
+          if (probe != null && probe > feet.y + 0.08 && probe < feet.y + 4) {
+            const lifted = feet.clone()
+            lifted.y = probe
+            this.physics.teleport(lifted)
+            this.physics.invalidateControllerCache()
+            this.player?.getPlayerRoot()?.position.copy(this.physics.positionOut)
+            console.info(
+              `[phys] health-soft lift feet y ${feet.y.toFixed(2)} → ${probe.toFixed(2)} (under-floor recover)`
+            )
+          }
         }
       }
       this.lastLoggedStaticCount = staticN

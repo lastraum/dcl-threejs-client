@@ -407,65 +407,27 @@ export class AoiVisualLayer {
       }
     }
 
-    // --- Already-loaded scenes (any ring): never empty-land candidates ---
-    // Primary, sticky demoted, live secondary/tertiary, composite shells, first-frame samples.
-    const loadedEntityIds = new Set<string>()
-    if (primaryId) loadedEntityIds.add(primaryId)
-    for (const id of this.liveSecondaryIds) loadedEntityIds.add(id)
-    for (const id of this.loadedCompositeIds) loadedEntityIds.add(id)
-    for (const id of this.firstFrameGroups.keys()) loadedEntityIds.add(id)
-
-    const loadedParcelSet = new Set<string>()
-    if (!this.primaryIsEmpty) {
-      for (const p of this.primaryParcelSet) loadedParcelSet.add(p)
-    }
-    for (const p of this.residentParcelSet) loadedParcelSet.add(p)
-    for (const ent of entities) {
-      if (!loadedEntityIds.has(ent.id)) continue
-      for (const p of ent.pointers.length ? ent.pointers : ent.parcels) {
-        if (pointerSet.has(p)) loadedParcelSet.add(p.trim())
-      }
-    }
-
-    // Empty-land = true vacant / catalyst-empty only. Never under a loaded scene graph.
+    // --- Default ground GLB: every non-road parcel in AOI (under scenes is fine — scenes sit on top).
+    // Procedural scatter (trees/rocks): ONLY true vacant / catalyst-empty parcels.
     const vacantKeys: string[] = []
     const groundKeys: string[] = []
-    let skippedLoadedGround = 0
     for (const key of pointers) {
       const k = key.trim()
-      // Already-loaded scene owns this parcel at any ring — never empty fill.
-      if (loadedParcelSet.has(k)) {
-        skippedLoadedGround++
-        continue
-      }
-      const ent = pointerToEntity.get(key) ?? pointerToEntity.get(k)
-      if (ent?.id && loadedEntityIds.has(ent.id)) {
-        skippedLoadedGround++
-        continue
-      }
-      // Real non-empty scene footprint (even before our graph is registered) — not empty land.
-      if (secondaryFootprint.has(k) || secondaryFootprint.has(key)) {
-        skippedLoadedGround++
-        continue
-      }
-      if (ent && isSecondarySceneCandidate(ent) && !isVacantForEmptyLayer(ent)) {
-        skippedLoadedGround++
-        continue
-      }
       // Explorer roads have their own tiles
       if (isExplorerRoadParcel(key) || isExplorerRoadParcel(k)) continue
+      const ent = pointerToEntity.get(key) ?? pointerToEntity.get(k)
       if (ent && isOpenRoadEntity(ent)) continue
-      // Only true vacant / catalyst empty parcels get blank ground + scatter.
-      if (ent && !isVacantForEmptyLayer(ent)) continue
+      // Default parcel ground everywhere (primary, sticky, secondary, vacant).
       groundKeys.push(key)
+      // Scatter only empty land — never under a real scene footprint.
+      if (secondaryFootprint.has(k) || secondaryFootprint.has(key)) continue
+      if (ent && isSecondarySceneCandidate(ent) && !isVacantForEmptyLayer(ent)) continue
+      if (this.primaryParcelSet.has(k) && !this.primaryIsEmpty) continue
+      if (this.residentParcelSet.has(k)) continue
+      if (ent && !isVacantForEmptyLayer(ent)) continue
       vacantKeys.push(key)
     }
-    if (skippedLoadedGround > 0) {
-      console.info(
-        `[aoi] empty-land skip loaded-scene parcels=${skippedLoadedGround} ` +
-          `(loadedEntities=${loadedEntityIds.size} loadedParcels=${loadedParcelSet.size})`
-      )
-    }
+    void primaryId
 
     const blankTiles = groundKeys.map((key) => {
       const sw = parcelSwSceneLocal(key, base)

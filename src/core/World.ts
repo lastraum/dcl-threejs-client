@@ -3760,9 +3760,14 @@ export class World {
       return true
     })
     // FocusOwner swap: media + UI for adopted primary; InputHub primary subscriber.
+    // Clear any mid-boot InputModifier freeze / stale MainCamera from secondary life so freecam
+    // and feet stay free while the new primary hydrates (user must always orbit between scenes).
+    this.sceneScript.clearPlayerFocusState()
     this.sceneScript.setFocusPolicy('primary')
     this.sceneScript.setInputHub(this.inputHub, 'primary')
     this.sceneScript.setSceneUiVisible(true)
+    // Drive freecam from primary bridge only (not demoted sticky).
+    this.player.setVirtualCameraBridge(this.sceneScript.getVirtualCameraBridge())
 
     // Comms / signed-fetch context for new primary.
     this.signedFetchSceneContext = {

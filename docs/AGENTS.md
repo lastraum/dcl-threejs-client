@@ -21,7 +21,8 @@ Treat every multi-scene, performance, and continuity task as **ship-or-iterate A
 | **Tertiary residents** | Only when **leave 16m live ring** or **secondary-cap pressure** (prefer non-sticky). Scripts OFF + LOD. Re-enter → scripts on only (**no GLB reload**). |
 | **Size gate** | `SECONDARY_LIVE_AUTO_MAX_PARCELS` only blocks **cold auto-boot** of plaza-scale neighbors — not sticky demote of the scene you just left. |
 | **Tertiary composites** | Roads / empty / AOI shells fill the world without workers; distance-budgeted. |
-| **No empty-land under loaded scenes** | If a scene graph is already loaded (primary, sticky, live secondary/tertiary, composite, first-frame) its parcels are **never** empty-land candidates at any ring. Only true vacant / catalyst-empty get blank ground + trees. |
+| **Default ground everywhere** | Default parcel GLB on **all** non-road AOI parcels. Procedural trees/rocks **only** on vacant / catalyst-empty. |
+| **Freecam always free** | Only feet-primary FocusOwner applies InputModifier / MainCamera / video / UI. Demoted secondaries never apply player-frame. Clear freeze on demote + promote handoff. |
 | **FPS bar** | Target **30–60 FPS** always; **60 FPS** on high/custom. Cap live scripts; LOD tertiary when far / under cap. Exclusive secondary boot (no chain thrash). |
 
 If a change makes the world go blank on neighbor step, **it is a P0 bug** — reverse or fix before shipping.

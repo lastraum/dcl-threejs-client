@@ -456,6 +456,27 @@ export class SceneScriptSystem {
     if (policy === 'secondary') {
       this.sceneUiDesiredVisible = false
       this.sceneUiBridge?.setVisible(false)
+      // Demoted / muted secondary must never pin freecam or freeze locomotion on the player.
+      this.clearPlayerFocusState()
+    }
+  }
+
+  /**
+   * FocusOwner revoke — drop InputModifier freeze + MainCamera→VC so freecam/orbit stay free.
+   * Call on demote to secondary and when adopting a half-hydrated secondary as primary if needed.
+   */
+  clearPlayerFocusState(): void {
+    try {
+      const { InputModifier, MainCamera } = this.readComponents
+      const { PlayerEntity, CameraEntity } = this.view
+      InputModifier.deleteFrom(PlayerEntity)
+      MainCamera.createOrReplace(CameraEntity, {} as never)
+      this.foldProjectionChanges()
+      this.projection.clearVcLiveTransformForUnbind()
+      this.lastPlayerFrameMainCameraKey = 'cleared'
+      this.playerEditFlightLiveLane = false
+    } catch {
+      /* teardown */
     }
   }
 
@@ -1799,14 +1820,19 @@ export class SceneScriptSystem {
       this.worker.onmessage = (ev: MessageEvent<SceneWorkerOutbound>) => {
         const msg = ev.data
         if (msg?.type === 'vc-bind-hydrate') {
+          // FocusOwner: only primary (and PE) may drive VirtualCamera lens.
+          if (this.focusPolicy === 'secondary') return
           this.applyVcBindHydrate(msg.bind, msg.graphKey)
           return
         }
         if (msg?.type === 'player-frame') {
+          // Secondary must never apply InputModifier / MainCamera (freeze freecam after demote).
+          if (this.focusPolicy === 'secondary') return
           this.applyPlayerFrame(msg)
           return
         }
         if (msg?.type === 'vc-pose-live') {
+          if (this.focusPolicy === 'secondary') return
           this.applyVcPoseLive(msg.entity as Entity, msg.transform as DclTransformValues)
           return
         }

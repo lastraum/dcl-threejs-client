@@ -2235,10 +2235,13 @@ export class AppController {
       onSoftRoute: (x, y) => {
         this.softUpdatePlayRoute({ kind: 'coords', x, y, segment: `${x},${y}` })
         void this.refreshLocationTitleForParcel(x, y)
-        // Pin under-feet only — exclusive pre-boot (never chain-boot every parcel step).
+        // Pin under-feet only. Never force-boot during promote settle (activity off) —
+        // chain boots freeze freecam/main thread while FPS still shows ~30.
         this.multiSceneRuntime.setSecondaryPriorityParcel(x, y)
-        if (!this.multiSceneRuntime.hasLiveSecondaryForParcel(x, y)) {
-          // Fire-and-forget one ensure; manager rejects concurrent boots for other parcels.
+        if (
+          this.multiSceneRuntime.isSecondaryActivityEnabled() &&
+          !this.multiSceneRuntime.hasLiveSecondaryForParcel(x, y)
+        ) {
           void this.multiSceneRuntime.ensureSecondaryForParcel(x, y, 28_000)
         }
       },

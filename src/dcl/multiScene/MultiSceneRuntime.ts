@@ -168,6 +168,11 @@ export class MultiSceneRuntime {
     this.secondaryActivityEnabled = enabled
   }
 
+  /** When false, soft-route must not force-boot neighbors (promote settle). */
+  isSecondaryActivityEnabled(): boolean {
+    return this.secondaryActivityEnabled
+  }
+
   reconcileSecondaries(candidates: SecondaryLiveRequest[]): void {
     if (!this.secondaryActivityEnabled) return
     this.secondary?.reconcile(candidates)

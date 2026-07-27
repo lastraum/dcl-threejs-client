@@ -85,8 +85,14 @@ export function entityUiVisualPaintKey(
     b = c ? `bg${c.r ?? 0},${c.g ?? 0},${c.b ?? 0},${c.a ?? 1}` : 'bg'
     if (bg.texture) b += ':tex'
     if (bg.textureMode != null) b += `:tm${bg.textureMode}`
-    // Atlas sprite rect — lobby buttons share one sheet and differ only by uvs.
-    if (bg.uvs?.length) b += `:uv${bg.uvs.map((n) => Number(n).toFixed(4)).join(',')}`
+    // Atlas sprite rect + animated fill/zone UVs (fishing reeling bars update every tick).
+    if (bg.uvs != null && (bg.uvs as { length?: number }).length) {
+      const u = bg.uvs as ArrayLike<number>
+      const n = Math.min(8, u.length)
+      const parts: string[] = []
+      for (let i = 0; i < n; i++) parts.push(Number(u[i]).toFixed(4))
+      b += `:uv${parts.join(',')}`
+    }
   }
   return `${entity}|d${d}|o${o}|z${z}|pf${pf}|${t}|${b}|pe${pointerKey}`
 }

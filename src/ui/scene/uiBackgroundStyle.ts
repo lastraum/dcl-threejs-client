@@ -429,9 +429,8 @@ export function parseUiBackgroundUvRect(
 }
 
 /**
- * Atlas UV → CSS background-size / background-position (top-left CSS space).
- * More reliable for fishing rarity tags than oversized <img> + overflow clip
- * (percentage positioning on nested absolute shells was clipping mid-glyph).
+ * Small atlas sprites (rarity tags, icons) — background-size/position.
+ * Avoids nested absolute % img clip glitches on equip HUD badges.
  */
 function applyAtlasUvAsBackground(
   el: HTMLElement,
@@ -444,11 +443,9 @@ function applyAtlasUvAsBackground(
 ): void {
   const uSpan = Math.max(1e-6, u1 - u0)
   const vSpan = Math.max(1e-6, v1 - v0)
-  // GL v=0 bottom → CSS y=0 top: sprite top edge is at (1 - v1).
   const cssTop = 1 - v1
   const sizeX = 100 / uSpan
   const sizeY = 100 / vSpan
-  // background-position % is relative to (container - image) when size ≠ 100%.
   const posX = uSpan >= 1 - 1e-6 ? 0 : (u0 / (1 - uSpan)) * 100
   const posY = vSpan >= 1 - 1e-6 ? 0 : (cssTop / (1 - vSpan)) * 100
   const safeUrl = imageUrl.replace(/\\/g, '/').replace(/"/g, '%22')
@@ -472,6 +469,75 @@ function applyAtlasUvAsBackground(
   el.style.borderColor = ''
 }
 
+/**
+ * Full-width / full-height UV strips — fishing reeling bars use **animated** UVs:
+ *   fill:  uvs [0,0, 0,t/100, 1,t/100, 1,0] + height t%
+ *   zone:  uvs [0,k, 0,G, 1,G, 1,k] while zone slides (k,G change every tick)
+ * Explorer maps that UV quad onto the element (stretch). Oversized <img> + overflow
+ * matches mesh UVs; background-position made the lure bar look like a sliding texture.
+ */
+function applyAtlasUvAsImgStrip(
+  el: HTMLElement,
+  imageUrl: string,
+  u0: number,
+  v0: number,
+  u1: number,
+  v1: number,
+  colorAlpha: number
+): void {
+  const img = ensureBgImg(el)
+  assignUiImageSrc(img, imageUrl)
+  const uSpan = Math.max(1e-6, u1 - u0)
+  const vSpan = Math.max(1e-6, v1 - v0)
+
+  el.style.overflow = 'hidden'
+  el.style.backgroundImage = ''
+  el.style.backgroundSize = ''
+  el.style.backgroundPosition = ''
+  el.style.backgroundRepeat = ''
+  el.style.backgroundColor = 'transparent'
+  el.style.backgroundBlendMode = ''
+  el.style.opacity = ''
+  el.style.borderImage = ''
+  el.style.borderImageSource = ''
+  el.style.borderWidth = ''
+  el.style.borderStyle = ''
+  el.style.borderColor = ''
+
+  img.style.position = 'absolute'
+  img.style.pointerEvents = 'none'
+  img.style.opacity = String(clamp01(colorAlpha))
+  img.style.borderRadius = 'inherit'
+  img.style.margin = '0'
+  img.style.padding = '0'
+  img.style.border = 'none'
+  img.style.maxWidth = 'none'
+  img.style.maxHeight = 'none'
+  img.style.objectFit = 'fill'
+  img.style.objectPosition = 'center'
+  img.style.inset = 'unset'
+  img.style.right = 'auto'
+  img.style.bottom = 'auto'
+  // UV quad → element: scale so (uSpan,vSpan) fills parent; offset so (u0, v1) is top-left.
+  img.style.width = `${(100 / uSpan).toFixed(5)}%`
+  img.style.height = `${(100 / vSpan).toFixed(5)}%`
+  img.style.left = `${((-u0 / uSpan) * 100).toFixed(5)}%`
+  img.style.top = `${((-(1 - v1) / vSpan) * 100).toFixed(5)}%`
+}
+
+/** Full-width or full-height UV window = progress/scroll bar, not a tiny atlas icon. */
+function isUvFillOrScrollStrip(u0: number, v0: number, u1: number, v1: number): boolean {
+  const uSpan = u1 - u0
+  const vSpan = v1 - v0
+  // Fishing bars: u covers ~full texture width, v is a moving/growing window.
+  if (u0 <= 0.02 && u1 >= 0.98) return true
+  if (v0 <= 0.02 && v1 >= 0.98) return true
+  // Large span in one axis (fill/zone), small in the other
+  if (uSpan >= 0.85 && vSpan < 0.95) return true
+  if (vSpan >= 0.85 && uSpan < 0.95) return true
+  return false
+}
+
 function applyBgImg(
   el: HTMLElement,
   imageUrl: string,
@@ -481,11 +547,13 @@ function applyBgImg(
 ): void {
   if (getComputedStyle(el).position === 'static') el.style.position = 'relative'
 
-  // Atlas UV crop — background-size/position (not oversized img) so equip HUD rarity
-  // tags / ribbons crop cleanly (img+overflow was mid-slicing COMMON→MON, LEGENDARY→LEGENDAR).
   const rect = parseUiBackgroundUvRect(uvs)
   if (rect) {
-    applyAtlasUvAsBackground(el, imageUrl, rect.u0, rect.v0, rect.u1, rect.v1, colorAlpha)
+    if (isUvFillOrScrollStrip(rect.u0, rect.v0, rect.u1, rect.v1)) {
+      applyAtlasUvAsImgStrip(el, imageUrl, rect.u0, rect.v0, rect.u1, rect.v1, colorAlpha)
+    } else {
+      applyAtlasUvAsBackground(el, imageUrl, rect.u0, rect.v0, rect.u1, rect.v1, colorAlpha)
+    }
     return
   }
 
@@ -495,6 +563,8 @@ function applyBgImg(
   img.style.pointerEvents = 'none'
   img.style.opacity = String(clamp01(colorAlpha))
   img.style.borderRadius = 'inherit'
+  img.style.maxWidth = 'none'
+  img.style.maxHeight = 'none'
   img.style.objectFit = mode === BackgroundTextureMode.CENTER ? 'contain' : 'fill'
   img.style.objectPosition = 'center'
   el.style.overflow = ''
@@ -513,7 +583,6 @@ function applyBgImg(
   el.style.backgroundColor = 'transparent'
   el.style.backgroundBlendMode = ''
   el.style.opacity = ''
-  // Clear nine-slice leftovers so mode switches don't stick.
   el.style.borderImage = ''
   el.style.borderImageSource = ''
   el.style.borderImageSlice = ''

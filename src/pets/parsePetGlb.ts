@@ -68,7 +68,9 @@ function rebuildGlb(json: Record<string, unknown>, bin: Uint8Array): ArrayBuffer
   writeU32(view, o, jsonBytes.length + jsonPad)
   writeU32(view, o + 4, CHUNK_JSON)
   u8.set(jsonBytes, o + 8)
-  // padding already 0
+  // glTF JSON chunk pad must be 0x20 spaces (not 0x00) — null pad makes GLTFLoader
+  // JSON.parse throw "Unexpected non-whitespace character after JSON".
+  for (let i = 0; i < jsonPad; i++) u8[o + 8 + jsonBytes.length + i] = 0x20
   o += 8 + jsonBytes.length + jsonPad
 
   writeU32(view, o, bin.length + binPad)

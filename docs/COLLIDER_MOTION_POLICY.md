@@ -29,7 +29,7 @@ Animator / system part  →  PART follow
     2. force-refresh shape localMatrix from mesh/bone matrixWorld
     3. gate on coarse hull mesh-world fp (toFixed 2 ≈ 1cm) — float noise no-ops
     4. world-cook every entity whose coarse fp changed (geometryCache:false)
-    5. rebuild SQ
+    5. replaceStaticWithCook / addActor + CCT cache invalidate (never forceDynamicTreeRebuild)
     NO cook budget — coarse fp + running-clip gate are the thrash guards
 
 else  →  no PhysX pose work
@@ -83,3 +83,9 @@ No motion destiny at extract. Motion is runtime: Transform dirty | Animator part
 - Shape-local rewrite on Transform-only dirty
 - Scene/asset name checks in PhysX paths
 - Budget-capping PART cooks (skips movers; fp gate is enough)
+- Full static SQ rebuild / reinsert-all after boot (see [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md))
+
+## Static cook-once (COD)
+
+Unmoved scene hulls: cook once via `addActor`, seal freezes thrash, **never**
+`forceDynamicTreeRebuild`. Platform law: [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md).

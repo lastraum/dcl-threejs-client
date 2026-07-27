@@ -100,7 +100,7 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 | Backpack | Wearables/emotes/colors ✅; outfits + marketplace open |
 | Graphics P3/P4 | **P4 bloom/HDR shipped** (`BloomPipeline` emissive extract + depth) · P3 distance culls open · untextured VFX additive glow |
 | PhysicsCombined* | Force + impulse on PE + glider force 1.5× |
-| Scene colliders (CCT) | ROOT cook-once + actor T+R · PART world-cook on hull fp ([COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)) |
+| Scene colliders (CCT) | ROOT cook-once + actor T+R · PART world-cook on hull fp · seal never rebuilds SQ ([COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md)) |
 | GltfNodeModifiers | 🟢 full path + material/shadow overrides; instance promote |
 | NftShape | 🟢 procedural frames + OpenSea proxy |
 | GltfContainerLoadingState, AvatarBase | 🔵 host LWW (done) |

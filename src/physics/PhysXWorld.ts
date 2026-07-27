@@ -278,13 +278,14 @@ export class PhysXWorld {
   /**
    * After collider seal, zero-dt `scene.simulate(0)` during geometry warm can corrupt PhysX WASM
    * when concurrent pose slides run on large scenes (see refreshStaticColliderQueries comment).
-   * Boot/seal may still use full warm; runtime only invalidates the CCT obstacle cache.
+   * Boot may still allow; runtime only invalidates the CCT obstacle cache.
    */
   private allowZeroDtWarmSim = true
   /**
-   * Boot/seal: remove+add static actors after setGlobalPose so SQ AABBs match.
-   * After seal: NEVER reinsert/rebuild — continuous reinsert on plaza (700+ actors) softs
-   * CCT after ~1min (solids work, then walk-through). Kinematic PART uses setKinematicTarget.
+   * Boot only: optional per-actor remove+add after pose slides so SQ AABBs match.
+   * After seal (COD): NEVER bulk reinsert/rebuild — continuous reinsert on plaza softs CCT.
+   * Late first cooks reinsert one actor in addStatic. Kinematic PART uses setKinematicTarget.
+   * See docs/STATIC_COLLIDER_COD.md.
    */
   private allowStaticReinsert = true
 
@@ -1000,7 +1001,7 @@ export class PhysXWorld {
             }
           }
           updated += cooked
-          // No forceDynamicTreeRebuild — PART cooks use replaceStaticWithCook (addActor).
+          // COD: PART cooks use replaceStaticWithCook (addActor) — never forceDynamicTreeRebuild.
           this.invalidateControllerCache()
         }
       } catch (err) {
@@ -1328,31 +1329,19 @@ export class PhysXWorld {
   }
 
   /**
-   * Boot/seal only — full static SQ rebuild. Do **not** call from health ticks or pose slides;
-   * forceDynamicTreeRebuild on 700+ actors corrupts PhysX WASM query state (sweep MISS).
+   * COD no-op — full static SQ rebuild is forbidden (see docs/STATIC_COLLIDER_COD.md).
+   * forceDynamicTreeRebuild corrupts PhysX WASM query state on plaza-scale scenes (MISS).
+   * Callers that need a query refresh should use {@link invalidateControllerCache} only.
    */
   rebuildStaticSceneQueryTree(): void {
-    if (!this.allowStaticReinsert) {
-      this.invalidateControllerCache()
-      return
-    }
-    if (!this.scene) {
-      this.invalidateControllerCache()
-      return
-    }
-    try {
-      // (rebuildStaticStructure, rebuildDynamicStructure)
-      this.scene.forceDynamicTreeRebuild(true, false)
-    } catch (err) {
-      console.warn('[PhysXWorld] forceDynamicTreeRebuild failed:', err)
-    }
     this.invalidateControllerCache()
   }
 
   /**
    * PhysX static actors keep a single SQ bound; setLocalPose on shapes does not expand it.
-   * Remove+add forces the bound to match — **boot/seal only**. After seal this is a no-op
+   * Boot-only remove+add for that actor. After seal this is a no-op
    * (see {@link sealStaticSceneQuery}); thrashing reinsert softs plaza CCT after ~1min.
+   * Late first cooks use a dedicated single reinsert inside {@link addStatic}.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private reinsertStaticActorForSceneQuery(actor: any): void {
@@ -1367,25 +1356,12 @@ export class PhysXWorld {
   }
 
   /**
-   * Boot seal only — remove+add every static actor so SQ bounds match world-baked
-   * multi-shape children. Plaza (~1k actors) needs this after bulk cook; without it
-   * logStaticCollidersNear still lists walls but CCT sweeps MISS (walk-through).
+   * COD no-op — mass remove+add softs plaza CCT (see docs/STATIC_COLLIDER_COD.md).
+   * Never reintroduce a full reinsert-all; late cooks reinsert one actor in addStatic.
    */
   reinsertAllStaticActorsForSceneQuery(): number {
-    if (!this.allowStaticReinsert || !this.scene) return 0
-    let n = 0
-    for (const actor of this.staticActors.values()) {
-      if (!actor) continue
-      try {
-        this.scene.removeActor(actor)
-        this.scene.addActor(actor)
-        n++
-      } catch {
-        /* skip broken actor */
-      }
-    }
     this.invalidateControllerCache()
-    return n
+    return 0
   }
 
   /** True when this geom fingerprint already failed cook (skip re-queue thrash). */
@@ -1645,7 +1621,7 @@ export class PhysXWorld {
   /**
    * Pose-only actor moves — invalidate CCT cache without simulating.
    * simulate(0) during incremental pose slides corrupts WASM state on large scenes.
-   * Prefer rebuildStaticSceneQueryTree() after shape-local (door) pose slides.
+   * COD: never forceDynamicTreeRebuild (docs/STATIC_COLLIDER_COD.md).
    */
   refreshStaticColliderQueries(): void {
     this.invalidateControllerCache()
@@ -1660,36 +1636,24 @@ export class PhysXWorld {
   }
 
   /**
-   * Call once after seal: freezes bulk remove+add reinsert and full tree rebuild.
+   * Call once after boot cook: freezes bulk remove+add reinsert.
    *
-   * CRITICAL (Genesis Plaza / large scenes): forceDynamicTreeRebuild on 700+ statics
-   * corrupts PhysX WASM query state → sweepFeetY=MISS / walk-through while
-   * logStaticCollidersNear still lists walls (map has actors; SQ tree is dead).
-   * Small scenes may still rebuild safely.
+   * COD law (docs/STATIC_COLLIDER_COD.md): **never** forceDynamicTreeRebuild.
+   * Actors already enter SQ via addActor during cook. Full static tree rebuild on
+   * PhysX WASM corrupts query state → sweepFeetY=MISS while near-log still lists walls
+   * (any static count — plaza only made it obvious).
+   *
+   * Late single-actor cooks still reinsert once inside {@link addStatic}.
    */
   sealStaticSceneQuery(): void {
     this.allowZeroDtWarmSim = false
     const n = this.staticActors.size
-    // Plaza-scale: never forceDynamicTreeRebuild — it is the MISS root cause.
-    // Actors already enter SQ via addActor during cook; CCT cache invalidate is enough.
-    const PLAZA_SQ_REBUILD_CAP = 400
-    if (this.scene && n > 0 && n <= PLAZA_SQ_REBUILD_CAP) {
-      try {
-        this.scene.forceDynamicTreeRebuild(true, false)
-      } catch (err) {
-        console.warn('[PhysXWorld] sealStaticSceneQuery rebuild failed:', err)
-      }
-    } else if (n > PLAZA_SQ_REBUILD_CAP) {
-      console.info(
-        `[PhysXWorld] static SQ seal — skip forceDynamicTreeRebuild (static=${n} > ${PLAZA_SQ_REBUILD_CAP}; plaza-safe)`
-      )
-    }
-    // Freeze bulk reinsert thrash, but late single-actor cooks still reinsert (see addStatic).
+    // Freeze bulk reinsert thrash; do not rebuild SQ tree.
     this.allowStaticReinsert = false
     this.ensureInfiniteGroundPlane()
     this.invalidateControllerCache()
     console.info(
-      `[PhysXWorld] static SQ sealed — static=${n} rebuild=${n <= PLAZA_SQ_REBUILD_CAP ? 'yes' : 'skipped'}`
+      `[PhysXWorld] static SQ sealed — static=${n} rebuild=never (COD cook-once; addActor only)`
     )
   }
 
@@ -1706,7 +1670,7 @@ export class PhysXWorld {
 
   /**
    * Runtime-safe refresh after late cooks / road AOI.
-   * Cache invalidate only — full tree rebuild is seal/boot exclusive.
+   * Cache invalidate only — full tree rebuild is forbidden (COD).
    */
   refreshStaticAfterRuntimeGeometryChange(): void {
     this.ensureInfiniteGroundPlane()

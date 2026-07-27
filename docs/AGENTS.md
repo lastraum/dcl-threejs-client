@@ -37,6 +37,7 @@ If a change makes the world go blank on neighbor step, **it is a P0 bug** — re
 2. **[MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md)** — FocusOwner · sticky demote · colliders · AOI (branch `feat/aoi-focus-owner`)  
 3. **[INTEGRATION.md](./INTEGRATION.md)** + **`src/client/dev/integrationRegistry.ts`** — parity matrix  
 3b. **[COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)** — PhysX PART vs ROOT (v1.5)  
+3c. **[STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md)** — cook-once statics · never forceDynamicTreeRebuild · kill-list
 4. **[CLAIMS.yaml](./CLAIMS.yaml)** — who is already working on what  
 5. **[ARCHITECTURE.md](./ARCHITECTURE.md)** — scene I/O model + debt  
 6. **[DEPLOYMENT.md](./DEPLOYMENT.md)** — build / preview / go-live  

@@ -9,7 +9,7 @@
 > **1.x next:** multi-scene FPS hardening under CBD ring load · backpack outfits/marketplace · scene UI text-measure · community voice Bearer · gallery multi-page · graphics P3 distance culls · analytics charts polish · broken-rig wearable fallback (shelved).  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
-> **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **Multi-scene continuity:** [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  
+> **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **Static COD:** [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) · **Multi-scene continuity:** [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) · **Place analytics:** [CREATOR_ANALYTICS.md](./CREATOR_ANALYTICS.md)
 >
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
@@ -41,11 +41,12 @@
 | **Sticky PhysX keep** | 🟢 | Dirty-once + registered-id tracking |
 | **Freecam / FocusOwner** | 🟢 | Durable freecam · primary-only modifiers |
 | **CBD ring FPS** | 🟡 | Cap ≤3 + serial boot; dual live still expensive |
-| **Docs** | 🟢 | [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) |
+| **Docs** | 🟢 | [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) · [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) |
+| **Static COD seal** | 🟢 | Never `forceDynamicTreeRebuild` / reinsert-all; extract once + cook missing; seal freezes thrash |
 
-**QA (branch smoke):** CBD → nested scene → CBD colliders + freecam · soft parcel URL · no tree scatter on plaza · no continuous Missing-actors thrash.
+**QA (branch smoke):** CBD → nested scene → CBD colliders + freecam · soft parcel URL · no tree scatter on plaza · no continuous Missing-actors thrash · plaza `sweepFeetY` not MISS after seal.
 
-**Tip:** Full contract in [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md). Branch: `feat/aoi-focus-owner`.
+**Tip:** Continuity in [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md); static cook-once in [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md). Branch: `feat/aoi-focus-owner`.
 
 ---
 

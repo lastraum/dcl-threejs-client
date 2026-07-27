@@ -186,16 +186,19 @@ After adopting sticky → primary: invalidate secondary-offset actors, extract u
 
 ## Primary load solids (Genesis Plaza)
 
-Cold plaza load cooks hundreds of multi-shape actors. Order (COD):
+Cold plaza load cooks hundreds of multi-shape actors. Full law:
+[STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md). Order (COD):
 
 ```text
 loadScene (worker onStart — scene systems)
 waitForSceneAssets (attach GLBs)
-prewarmPhysicsColliders (extract + progressive cook)
+prewarmPhysicsColliders (extract + progressive cook — does NOT seal)
 spawnLocalPlayer:
   waitForColliderGraphSettle (pendingMesh→0)
-  prepare seal (cook missing only — never wipe all actors)
+  extract once (final matrices)
+  cook missing only — never wipe all actors
   integrity drain
+  sealStaticSceneQuery (freeze reinsert; NEVER forceDynamicTreeRebuild)
   initCapsule
   collidersReady = true
 world.start()
@@ -205,16 +208,19 @@ world.start()
 |---------|--------|
 | Soft at play with walls in probe | Graph settle early-exit (old: 4s + pending>0) → incomplete cook seal |
 | Soft after "cook complete" wipe | `clearGltfStaticActors` + cache clear then recook partial extract |
-| Bounds solid, CCT walk-through | Zero-dt `simulate(0)` after bulk cook (removed) |
+| Bounds solid, CCT walk-through | Zero-dt `simulate(0)` **or** `forceDynamicTreeRebuild` / reinsert-all after bulk cook |
 | Soft after avatar load | Late GLB attaches never cooked before `collidersReady` |
+| Soft after ~1 min idle | Bulk reinsert thrash (now frozen at seal) |
 
 Platform rules:
 
 - **Never** `simulate(0)` / `computeInteractions(0)` to warm statics — only CCT cache invalidate.
+- **Never** `forceDynamicTreeRebuild` / reinsert-all (plaza MISS root cause).
 - Graph settle: wait `pendingMesh===0` (soft only at ≥97% attached + 2s stable).
-- prepare: **seal missing only** — do not wipe all GLTF actors / geometry cache.
+- prepare: **cook missing only** — do not wipe all GLTF actors / geometry cache.
+- Seal = freeze thrash only; actors already in SQ via `addActor`.
 - `ensurePrimaryColliderIntegrity` after prepare + avatar + pre-walk before free walk.
-- Log `[phys] integrity` / `prewarm cook` / `collider graph settle` on collision channel.
+- Log `[phys] integrity` / `prewarm cook` / `collider graph settle` / `static SQ sealed` on collision channel.
 
 ## Open follow-ups
 
@@ -248,5 +254,6 @@ Debug: `?syncdebug=1` logs REQ/RES/CRDT on the sync channel.
 
 - [AGENTS.md](./AGENTS.md) — non-negotiable rules for every change
 - [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) — PART vs ROOT PhysX motion
+- [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) — cook-once statics · never full SQ rebuild
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — scene I/O model
 - [PROGRESS.md](./PROGRESS.md) — milestone log

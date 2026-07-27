@@ -170,8 +170,13 @@ export class SecondaryLiveManager {
   /**
    * Keep outgoing primary **resident** as sticky — never unload into void.
    *
-   * Modest scenes: secondary mode (scripts warm, walk-back resume).
-   * Large multi-parcel (plaza): tertiary mode — scripts off + visual LOD, meshes stay.
+   * Mode policy (NOT parcel-count):
+   * - Promote always steps onto an adjacent/under-feet scene → prior primary is still
+   *   inside the live ring of the new primary → start **secondary** (scripts on, mute).
+   * - Size gate ({@link SECONDARY_LIVE_AUTO_MAX_PARCELS}) is only for **cold auto-boot**
+   *   of distant neighbors as live workers — never for sticky demote of the scene you left.
+   * - Tertiary only later: leave 16m live ring (reconcile) or secondary-cap pressure
+   *   (prefer demoting non-sticky first; sticky last).
    *
    * @param newPrimaryBaseParcel — **incoming** primary SW (required on promote handoff).
    *   Demoted meshes must be offset vs the NEW host origin, not the old one.
@@ -212,9 +217,9 @@ export class SecondaryLiveManager {
 
     const id = scene.entityId
     const parcelCount = scene.parcels?.length || 1
-    // Dual full plaza workers thrash — start tertiary (scripts off, meshes stay).
-    const initialMode: ResidentMode =
-      parcelCount > SECONDARY_LIVE_AUTO_MAX_PARCELS ? 'tertiary' : 'secondary'
+    // Sticky demote is always "still next to you" on parcel walk — secondary scripts.
+    // Cap pressure may demote secondary→tertiary later; leave-ring does too.
+    const initialMode: ResidentMode = 'secondary'
 
     // Host origin is the NEW primary SW after promote — always prefer explicit base.
     const primaryBase =
@@ -244,15 +249,15 @@ export class SecondaryLiveManager {
       }
       this.stickyIds.add(id)
       existing.retargetPrimaryBase(primaryBase)
-      if (initialMode === 'secondary' && existing.residentMode === 'tertiary') {
+      // Always bring sticky prior primary back to secondary while still adjacent.
+      if (existing.residentMode === 'tertiary') {
         existing.setResidentMode('secondary')
       }
       this.emitLiveIds()
       return { entityId: id, primaryPhysIds: [] }
     }
 
-    // Make room — demote/dispose non-sticky first; always keep ≥1 slot for demoted primary.
-    // Never dispose sticky; never dispose the demoted graph we're about to adopt.
+    // Make room for a secondary sticky — demote other non-sticky first (never size-force tertiary).
     this.ensureCapacityForNew(initialMode)
 
     // Collect native primary phys ids before remapping under offset.
@@ -306,11 +311,8 @@ export class SecondaryLiveManager {
     this.stickyIds.add(id)
     this.emitLiveIds()
     console.info(
-      `[multi-scene] demoted “${scene.title}” → sticky ${initialMode} parcels=${parcelCount} ` +
-        `offset vs primary=${primaryBase}` +
-        (initialMode === 'tertiary'
-          ? ' (scripts off, meshes resident, visual LOD)'
-          : ' (scripts full-rate, walk-back resume)')
+      `[multi-scene] demoted “${scene.title}” → sticky secondary parcels=${parcelCount} ` +
+        `offset vs primary=${primaryBase} (still in live ring — size does not force tertiary)`
     )
     return { entityId: id, primaryPhysIds }
   }
@@ -584,11 +586,12 @@ export class SecondaryLiveManager {
     }
 
     const wantSecondary = new Set(inRange.map((c) => c.entityId))
-    // Sticky demoted always wanted as residents (mode assigned below).
+    // Sticky demoted prior primary: secondary while still in live ring (or unknown dist —
+    // just demoted on parcel walk = adjacent). Size / top-N noise must NOT drop them.
     for (const id of this.stickyIds) {
-      // Sticky outside live ring → tertiary; sticky modest in ring can stay secondary.
-      if (!wantSecondary.has(id)) {
-        // keep as tertiary resident — do not put in wantSecondary unless already secondary mode wanted
+      const cand = candidates.find((c) => c.entityId === id)
+      if (!cand || cand.distM <= liveProxM) {
+        wantSecondary.add(id)
       }
     }
 
@@ -603,7 +606,6 @@ export class SecondaryLiveManager {
           // Re-enter live ring: scripts only, no GLB reload.
           slot.setResidentMode('secondary')
         }
-        wantSecondary.add(id)
       } else {
         // Left live ring — tertiary (scripts off), keep meshes.
         if (slot.residentMode === 'secondary') {

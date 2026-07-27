@@ -13,13 +13,14 @@ Treat every multi-scene, performance, and continuity task as **ship-or-iterate A
 | Rule | Detail |
 |------|--------|
 | **No unload on parcel walk** | Promote = handoff + sticky demote only. **Never** `disposeSecondariesOnly` + seamless `jumpIn` for stand-on-parcel promote. |
-| **Prior primary stays resident** | Demote keeps mesh graph (sticky secondary or tertiary). Large estates demote **tertiary** (scripts off + visual LOD), **never** `system.dispose()` into void. |
+| **Prior primary stays resident** | Demote = sticky **secondary** while still in live ring of new primary (parcel walk is always adjacent). **Never** size-force tertiary on demote. **Never** `system.dispose()` into void. |
 | **Secondary scripts 100%** | Live secondary `onUpdate` every frame (`secondaryTickIntervalMs = 0`), hard-capped (≤3). |
 | **Secondary FocusOwner mute** | No video, audio, scene UI, privileged pointers/nav — `FocusPolicy = 'secondary'`. |
 | **Primary FocusOwner** | Only primary owns UI / media / inputs / locomotion. |
-| **Tertiary residents** | Leave live ring → scripts OFF + animator sleep + no cast shadows + frozen matrices. Meshes stay. Re-enter → scripts on only (**no GLB reload**). |
+| **Tertiary residents** | Only when **leave 16m live ring** or **secondary-cap pressure** (prefer non-sticky). Scripts OFF + LOD. Re-enter → scripts on only (**no GLB reload**). |
+| **Size gate** | `SECONDARY_LIVE_AUTO_MAX_PARCELS` only blocks **cold auto-boot** of plaza-scale neighbors — not sticky demote of the scene you just left. |
 | **Tertiary composites** | Roads / empty / AOI shells fill the world without workers; distance-budgeted. |
-| **FPS bar** | Target **30–60 FPS** always; **60 FPS** on high/custom. Cap live scripts; LOD tertiary; never dual-plaza full workers. |
+| **FPS bar** | Target **30–60 FPS** always; **60 FPS** on high/custom. Cap live scripts; LOD tertiary when far / under cap. |
 
 If a change makes the world go blank on neighbor step, **it is a P0 bug** — reverse or fix before shipping.
 

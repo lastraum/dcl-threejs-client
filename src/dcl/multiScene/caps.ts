@@ -88,8 +88,9 @@ export function aoiLiveSecondariesOnly(): boolean {
 
 /**
  * Auto-boot live workers only for modest neighbors (nested hole scenes, buildings).
- * Plaza-scale multi-parcel estates stay as composite meshes unless demoted sticky /
- * under-feet priority. Dual full plaza workers freeze the tab.
+ * Plaza-scale multi-parcel estates stay as composite meshes unless under-feet priority
+ * force-boot (promote path). **Does not apply to sticky demote** of the prior primary —
+ * that always starts secondary while still in the live ring.
  */
 export const SECONDARY_LIVE_AUTO_MAX_PARCELS = 16
 

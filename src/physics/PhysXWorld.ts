@@ -1366,6 +1366,28 @@ export class PhysXWorld {
     }
   }
 
+  /**
+   * Boot seal only — remove+add every static actor so SQ bounds match world-baked
+   * multi-shape children. Plaza (~1k actors) needs this after bulk cook; without it
+   * logStaticCollidersNear still lists walls but CCT sweeps MISS (walk-through).
+   */
+  reinsertAllStaticActorsForSceneQuery(): number {
+    if (!this.allowStaticReinsert || !this.scene) return 0
+    let n = 0
+    for (const actor of this.staticActors.values()) {
+      if (!actor) continue
+      try {
+        this.scene.removeActor(actor)
+        this.scene.addActor(actor)
+        n++
+      } catch {
+        /* skip broken actor */
+      }
+    }
+    this.invalidateControllerCache()
+    return n
+  }
+
   /** True when this geom fingerprint already failed cook (skip re-queue thrash). */
   hasFailedCookFingerprint(fingerprint: string): boolean {
     return this.failedCookFp.has(fingerprint)

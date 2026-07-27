@@ -165,8 +165,14 @@ export class GltfColliderExtractor {
     const obj = entityNodes.get(entity)
     if (!obj) return false
 
+    // GPU instances: marker Group is named `__mesh_*` but has no geometry — use template
+    // collider shapes. Must run before mesh-required extract (plaza lamps/pipes).
+    const instanceShapes = obj.userData[INSTANCE_COLLIDER_SHAPES_KEY] as
+      | InstanceColliderShape[]
+      | undefined
     const gltfMesh = obj.children.find((c) => c.name.startsWith('__mesh_'))
-    if (!gltfMesh) return false
+    const isInstance = !!obj.userData.dclInstanced || !!instanceShapes?.length
+    if (!gltfMesh && !isInstance) return false
 
     const gltfData = GltfContainer.get(entity)
     const invisibleMask = gltfData.invisibleMeshesCollisionMask ?? (ColliderLayer.CL_POINTER | ColliderLayer.CL_PHYSICS)
@@ -186,7 +192,7 @@ export class GltfColliderExtractor {
       stored &&
       prevGeom &&
       prevGeom !== GltfColliderExtractor.emptyFingerprint &&
-      state.mesh === gltfMesh &&
+      (isInstance || state.mesh === gltfMesh) &&
       state.geomKey === prevGeom &&
       state.maskKey === maskKey
     ) {
@@ -194,10 +200,7 @@ export class GltfColliderExtractor {
       return true
     }
 
-    // Instanced GLBs: no mesh graph — use template collider shapes + entity world pose.
-    const instanceShapes = obj.userData[INSTANCE_COLLIDER_SHAPES_KEY] as
-      | InstanceColliderShape[]
-      | undefined
+    // Instanced: template shapes + entity world pose. Clone: traverse __mesh_* tree.
     const desc = instanceShapes?.length
       ? this.extractColliderDescFromInstanceShapes(
           entity,
@@ -206,14 +209,16 @@ export class GltfColliderExtractor {
           hasVisiblePhysics,
           hasInvisiblePhysics
         )
-      : this.extractColliderDesc(entity, gltfMesh, obj, hasVisiblePhysics, hasInvisiblePhysics)
+      : gltfMesh
+        ? this.extractColliderDesc(entity, gltfMesh, obj, hasVisiblePhysics, hasInvisiblePhysics)
+        : null
 
     if (
       !desc &&
       !hasVisiblePhysics &&
       !hasInvisiblePhysics &&
       !instanceShapes?.length &&
-      !hasAnyInvisibleColliderMesh(gltfMesh)
+      (!gltfMesh || !hasAnyInvisibleColliderMesh(gltfMesh))
     ) {
       this.removeColliderEntity(entity)
       return true
@@ -224,9 +229,11 @@ export class GltfColliderExtractor {
       : GltfColliderExtractor.emptyFingerprint
     const geomChanged = prevGeom !== geomKey
 
-    if (geomChanged) {
+    if (geomChanged && gltfMesh) {
       this.fingerprints.set(entity, geomKey)
       this.logEntityOnce(entity, gltfData.src, invisibleMask, visibleMask, desc, gltfMesh)
+    } else if (geomChanged) {
+      this.fingerprints.set(entity, geomKey)
     }
 
     if (desc) {
@@ -234,7 +241,7 @@ export class GltfColliderExtractor {
       this.syncState.set(entity, {
         geomKey,
         maskKey,
-        mesh: gltfMesh,
+        mesh: gltfMesh ?? obj,
         hasVisiblePhysics,
         hasInvisiblePhysics
       })

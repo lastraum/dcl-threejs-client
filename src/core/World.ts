@@ -2212,6 +2212,31 @@ export class World {
   }
 
   /**
+   * Live-matrix collider extract in rAF chunks (plaza: 475+ GLTFs).
+   * Always invalidate sync cache first so mid-hydration poses are not sealed as solids.
+   */
+  private async extractCollidersChunked(
+    onProgress?: (msg: string) => void,
+    label = 'Extracting colliders'
+  ): Promise<void> {
+    this.sceneScript.flushSceneGraphMatrices()
+    this.sceneScript.refreshAllInstancedTransforms()
+    // Drop mid-hydration extracts — world-bake with stale matrixWorld = walk-through plaza.
+    this.sceneScript.invalidateGltfColliderSyncCache()
+    this.sceneScript.markAllGltfCollidersDirtyForExtract()
+    for (let i = 0; i < 64; i++) {
+      if (!this.sceneScript.hasColliderWorkPending()) break
+      this.sceneScript.syncCollision()
+      onProgress?.(`${label}… ${i + 1}`)
+      await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    }
+    if (this.sceneScript.hasColliderWorkPending()) {
+      this.sceneScript.syncCollisionForce()
+    }
+    this.refreshColliderCookStats()
+  }
+
+  /**
    * Single platform prep before floor probe / capsule / walk.
    * settle graph → extract → entity-local cook until empty → seal flag.
    * Replaces boot+seal+integrity+catch-up ladder.
@@ -2235,19 +2260,9 @@ export class World {
     try {
       await this.sceneScript.yieldForWorkerMessages()
       await this.sceneScript.syncRendererFull()
-      this.sceneScript.flushSceneGraphMatrices()
-      this.sceneScript.refreshAllInstancedTransforms()
-      // Prefer budgeted dirty drain (prewarm already extracted most). Full force only if needed.
-      if (this.sceneScript.hasColliderWorkPending()) {
-        for (let i = 0; i < 16; i++) {
-          if (!this.sceneScript.hasColliderWorkPending()) break
-          this.sceneScript.syncCollision()
-          await new Promise<void>((r) => requestAnimationFrame(() => r()))
-        }
-      }
-      if (this.sceneScript.hasColliderWorkPending()) {
-        this.sceneScript.syncCollisionForce()
-      }
+      // Authoritative live extract (chunked). Plaza is the only scene with 400+ multi-shape
+      // hulls + GPU instances — smaller scenes finish in 1–2 budget passes.
+      await this.extractCollidersChunked(onProgress, 'Extracting colliders')
 
       // Seal path: cook missing/unsynced only. Do NOT clearGeometryCookCache / clearGltfStaticActors
       // — wiping 475 plaza actors then recooking from partial extract was the soft-init death spiral.
@@ -2298,18 +2313,7 @@ export class World {
 
       // Final live-matrix pass — catch attaches that landed mid-cook.
       await this.sceneScript.syncRendererFull()
-      this.sceneScript.flushSceneGraphMatrices()
-      this.sceneScript.refreshAllInstancedTransforms()
-      if (this.sceneScript.hasColliderWorkPending()) {
-        for (let i = 0; i < 12; i++) {
-          if (!this.sceneScript.hasColliderWorkPending()) break
-          this.sceneScript.syncCollision()
-          await new Promise<void>((r) => requestAnimationFrame(() => r()))
-        }
-      }
-      if (this.sceneScript.hasColliderWorkPending()) {
-        this.sceneScript.syncCollisionForce()
-      }
+      await this.extractCollidersChunked(onProgress, 'Refreshing colliders')
       this.reconcileColliderCookQueue()
       this.discoverMissingColliderActors()
       let guard = 0
@@ -2323,18 +2327,20 @@ export class World {
       this.pushAllColliderPosesToPhysX()
       // Never zero-dt simulate after plaza cook — that softs CCT while bounds still look solid.
       this.physics.setAllowZeroDtWarmSim(false)
+
+      // Integrity before SQ seal (Genesis soft load).
+      await this.ensurePrimaryColliderIntegrity('prepare-seal', 96)
+
+      this.pushAllColliderPosesToPhysX()
+      // Bulk multi-shape cooks leave SQ bounds stale — reinsert all, then one seal rebuild.
+      // Without reinsert: static=1100 in maps but sweepFeetY=MISS (plaza walk-through only).
+      const reinserted = this.physics.reinsertAllStaticActorsForSceneQuery()
       this.physics.warmStaticScene()
+      this.physics.sealStaticSceneQuery()
 
       this.collidersLoadingComplete = true
       this.spawnColliderSealComplete = true
       this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
-
-      // Integrity: drain any still-missing actors before we claim ready (Genesis soft load).
-      await this.ensurePrimaryColliderIntegrity('prepare-seal', 96)
-
-      // Final pose slide + ONE SQ seal — then freeze reinsert/rebuild (prevents ~1min soft thrash).
-      this.pushAllColliderPosesToPhysX()
-      this.physics.sealStaticSceneQuery()
 
       const staticN = this.physics.staticColliderCount
       const gltfN = this.physics.gltfStaticActorCount
@@ -2342,7 +2348,7 @@ export class World {
       const elapsed = ((performance.now() - started) / 1000).toFixed(1)
       console.info(
         `[phys] colliders ready — static=${staticN} gltf=${gltfN}/${extracted} ` +
-          `pending=${this.colliderCookQueue.size} sealedSQ=true (${elapsed}s)`
+          `pending=${this.colliderCookQueue.size} reinsert=${reinserted} sealedSQ=true (${elapsed}s)`
       )
       this.physics.logStaticCollidersNear(
         this.colliderCookPriority.x,
@@ -3491,32 +3497,15 @@ export class World {
     this.bootAssetsTimedOut = options.assetsTimedOut ?? false
     this.resetColliderBootState()
 
-    // Leave asset hydration mode so UI stays frozen until prepare seal ends, but allow
-    // progressive collider extract (budgeted) without a second full invalidate walk.
+    // Light prewarm only — authoritative extract+seal is prepareCollidersForPlay.
+    // Do not seal SQ here (that froze reinsert before final cook on plaza).
     onProgress?.('Preparing collisions…', World.COLLIDER_COOK_PROGRESS_START)
     await this.sceneScript.syncRendererFull()
-    this.sceneScript.flushSceneGraphMatrices()
-    this.sceneScript.refreshAllInstancedTransforms()
-    // Budgeted structure extract (48/frame) — never syncCollisionForce here (full plaza
-    // walk was the multi-second main-thread spike right at 79% before cook).
-    this.sceneScript.markAllGltfCollidersDirtyForExtract()
-    for (let i = 0; i < 48; i++) {
-      if (!this.sceneScript.hasColliderWorkPending()) break
-      this.sceneScript.syncCollision()
-      onProgress?.(
-        `Extracting colliders… pass ${i + 1}`,
-        World.COLLIDER_COOK_PROGRESS_START + 0.02 * Math.min(i, 10)
-      )
-      await new Promise<void>((r) => requestAnimationFrame(() => r()))
-    }
-    // Final full walk only if dirty remains (covers stragglers).
-    if (this.sceneScript.hasColliderWorkPending()) {
-      this.sceneScript.syncCollisionForce()
-    }
-    this.refreshColliderCookStats()
+    await this.extractCollidersChunked(
+      (msg) => onProgress?.(msg, World.COLLIDER_COOK_PROGRESS_START + 0.05),
+      'Prewarming colliders'
+    )
 
-    // Progressive cook during prewarm — PhysX fills while UI shows progress.
-    // prepareCollidersForPlay still seals (graph settle + missing drain) before capsule.
     this.deferPhysxCooks = false
     this.colliderCookQueue.clear()
     this.reconcileColliderCookQueue()

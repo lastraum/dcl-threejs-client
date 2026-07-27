@@ -184,6 +184,14 @@ export class CrdtEncoder {
     this.lastSerialized.delete(this.key(entity, componentId))
   }
 
+  /**
+   * Force next encode to re-emit a reserved LWW slot (e.g. RealmInfo connect edge for
+   * SDK `isStateSyncronized` / REQ_CRDT_STATE — dirty-only would skip identical reconnects).
+   */
+  invalidateLastSerialized(entity: Entity, componentId: number): void {
+    this.lastSerialized.delete(this.key(entity, componentId))
+  }
+
   private key(entity: Entity, componentId: number): string {
     return `${componentId}:${entity}`
   }

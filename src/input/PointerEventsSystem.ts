@@ -718,6 +718,9 @@ export class PointerEventsSystem {
     const targetEntity = this.resolvePointerResultEntity(hit.entity, button)
     const spec = hit.isSceneUi ? this.uiPointerSpec(targetEntity) : this.deps?.ecs.PointerEvents.getOrNull(targetEntity)
     if (!hasPointerEvent(spec, PointerEventType.PET_DOWN, button)) {
+      // Space/IA_JUMP is locomotion first — many PE targets only register IA_POINTER / IA_PRIMARY.
+      // Do not spam "blocked" as if fishing/cast failed (button=8 is IA_JUMP).
+      if (button === InputAction.IA_JUMP) return
       clientDebugLog.log(
         'pointer',
         `${label} blocked — entity=${targetEntity} missing PET_DOWN button=${button}`,

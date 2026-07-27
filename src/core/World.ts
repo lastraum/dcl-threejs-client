@@ -1005,6 +1005,8 @@ export class World {
         level: 'success',
         alsoConsole: true
       })
+      // SDK network: pulse RealmInfo.isConnectedSceneRoom for fishing/syncEntity.
+      this.sceneScript.pulseSceneNetworkConnected()
       onProgress?.('Receiving peer updates…')
       await this.vrmPeerSync.onSceneConnected()
       return
@@ -1028,6 +1030,7 @@ export class World {
         level: 'success',
         alsoConsole: true
       })
+      this.sceneScript.pulseSceneNetworkConnected()
       onProgress?.('Receiving peer updates…')
       await this.vrmPeerSync.onSceneConnected()
       return

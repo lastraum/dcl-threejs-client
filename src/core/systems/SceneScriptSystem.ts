@@ -1610,10 +1610,75 @@ export class SceneScriptSystem {
   }
 
   private realmInfoProvider: (() => CommsRealmInfo | null) | null = null
+  /** Last isConnectedSceneRoom pushed — detect edge for SDK network REQ_CRDT_STATE. */
+  private lastSceneRoomConnected: boolean | null = null
 
   private refreshRealmInfoFromProvider(): void {
     if (!this.realmInfoProvider) return
-    this.reserved.setRealmInfo(this.realmInfoProvider())
+    const info = this.realmInfoProvider()
+    this.reserved.setRealmInfo(info)
+    const connected = info?.isConnectedSceneRoom === true
+    if (this.lastSceneRoomConnected !== connected) {
+      const prev = this.lastSceneRoomConnected
+      this.lastSceneRoomConnected = connected
+      // Force dirty-only encoder to re-emit RealmInfo so worker SDK RealmInfo.onChange fires
+      // (isStateSyncronized → REQ_CRDT_STATE). Without this, first-true is often never seen.
+      if (this.encoder && this.view) {
+        this.encoder.invalidateLastSerialized(
+          this.view.RootEntity,
+          this.readComponents.RealmInfo.componentId
+        )
+      }
+      if (connected) {
+        clientDebugLog.log(
+          'sync',
+          `scene network room CONNECTED (was ${prev === null ? 'unset' : prev}) — RealmInfo pulse for isStateSyncronized`,
+          { level: 'success', alsoConsole: true }
+        )
+        this.pushRealmInfoToWorkerNow()
+      } else if (prev === true) {
+        clientDebugLog.log('sync', 'scene network room DISCONNECTED — isStateSyncronized will reset', {
+          level: 'warn',
+          alsoConsole: true
+        })
+      }
+    }
+  }
+
+  /**
+   * Immediately deliver RealmInfo (+ reserved poses) to the worker so SDK network
+   * can run requestState / syncEntity without waiting for the next ambient CRDT tick.
+   */
+  private pushRealmInfoToWorkerNow(): void {
+    if (!this.worker || !this.running) return
+    this.refreshClientPosesFromProvider()
+    if (!this.clientPlayerPose || !this.clientCameraPose) {
+      // Poses not ready yet — next syncClientEntities will carry RealmInfo.
+      return
+    }
+    if (this.encoder && this.view) {
+      this.encoder.invalidateLastSerialized(
+        this.view.RootEntity,
+        this.readComponents.RealmInfo.componentId
+      )
+    }
+    this.prepareReservedRoundTrip(this.clientPlayerPose, this.clientCameraPose)
+    const bytes = this.encodeRendererCrdt()
+    if (!bytes?.byteLength) return
+    const copy = bytes.slice()
+    this.worker.postMessage(
+      { type: 'renderer-inbound-deliver', data: [copy] } satisfies MainToWorker,
+      [copy.buffer]
+    )
+  }
+
+  /**
+   * Call after play-ready / scene LiveKit connect — re-pulse RealmInfo so late
+   * `isConnectedSceneRoom=true` always reaches SDK network (fishing / syncEntity).
+   */
+  pulseSceneNetworkConnected(): void {
+    this.lastSceneRoomConnected = null
+    this.refreshRealmInfoFromProvider()
   }
 
   /** Sample latest player/camera right before outbound CRDT (avoids stale rotation between sync frames). */
@@ -4314,6 +4379,8 @@ export class SceneScriptSystem {
     this.setSceneWorkerOnUpdatePaused(false)
     this.setSceneWorkerTicksPaused(false)
     this.avatarShapes?.setPlayReady(true)
+    // Fishing / syncEntity: ensure SDK network saw isConnectedSceneRoom after LiveKit is up.
+    this.pulseSceneNetworkConnected()
     if (this.playReadyNotified) return
     this.playReadyNotified = true
     this.worker?.postMessage({

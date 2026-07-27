@@ -225,6 +225,25 @@ Platform rules:
 
 ---
 
+## Scene multiplayer (fishing rods / syncEntity)
+
+Genesis plaza fishing (and similar) uses `@dcl/sdk/network`:
+
+| Piece | Requirement |
+|-------|-------------|
+| `isStateSyncronized()` | Becomes true after `RealmInfo.isConnectedSceneRoom` + REQ/RES CRDT (or solo timeout) |
+| `syncEntity` | Needs `getUserData().userId` first (`Profile not initialized` if race) |
+| Rods / lines | Network entities + `AvatarAttach` on local/remote skeletons |
+| Cast interact | Usually **E** (`IA_PRIMARY`) or click (`IA_POINTER`) — **Space is `IA_JUMP` (8)**, not cast |
+
+Host must:
+
+1. Connect **scene** LiveKit room (not island-only).
+2. Push `RealmInfo.isConnectedSceneRoom=true` to the worker after connect **and** at play-ready (`pulseSceneNetworkConnected`) so SDK `RealmInfo.onChange` fires REQ_CRDT_STATE.
+3. Route `CommunicationsController.sendBinary` peerData to scene LiveKit (already default).
+
+Debug: `?syncdebug=1` logs REQ/RES/CRDT on the sync channel.
+
 ## Related docs
 
 - [AGENTS.md](./AGENTS.md) — non-negotiable rules for every change

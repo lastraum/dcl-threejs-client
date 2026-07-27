@@ -463,13 +463,18 @@ export class CommsService {
   }
 
   getRealmInfo(): CommsRealmInfo {
+    // SDK `@dcl/sdk/network` isStateSyncronized gates on RealmInfo.isConnectedSceneRoom.
+    // Prefer the **scene** LiveKit room (CRDT multiplayer / fishing rods) — world room alone
+    // is chat/movement for custom worlds, not scene CRDT.
+    const sceneRoom =
+      this.transport === 'livekit'
+        ? this.sceneLiveKit.isConnected() ||
+          (this.isWorldComms() && this.worldLiveKit.isConnected())
+        : this.rfc5.isConnected()
     return {
       ...this.realm,
       room: this.sceneTarget?.pointer ?? this.realm.room,
-      isConnectedSceneRoom:
-        this.transport === 'livekit'
-          ? this.sceneLiveKit.isConnected() || this.worldLiveKit.isConnected()
-          : this.rfc5.isConnected()
+      isConnectedSceneRoom: sceneRoom
     }
   }
 

@@ -1292,25 +1292,22 @@ initSceneEngineScheduler({
     )
   },
   onSceneUiInjectPointerComplete: ({ mountGrew }) => {
-    // Drop pointer session so pointerBlocksEngineTick no longer returns true.
-    // CBD Plaza welcome: nZ(dt) fades Color4.a — systems need continuous eng.update after inject.
+    // Drop pointer session so cooperative react-ecs is not suppressed (Color4.a paint path).
+    // CBD Plaza: nZ(dt) fades Hr; mte() unmounts when Hr<=0 — needs real wall-clock eng.update.
     resetPointerInputSession()
     sceneTicksPaused = false
     workerLog(
       'log',
       `[sceneWorker] sceneUi inject complete — session ended, ticks unpaused (mountGrew=${mountGrew ? 1 : 0})`
     )
-    // After deliver serial ends, request one real-dt tick. Ongoing fade is driven by main
-    // play-frame-tick (~rAF) + scheduler queue drain — not a timed setInterval “boost”.
-    void pointerDeliverSerial.then(() => {
+    // Kick immediately — do not wait for post-tick CRDT flush/ack (that starved fade).
+    const kick = (): void => {
       if (!sceneEngine || sceneTicksPaused || pointerBlocksEngineTick()) return
       requestSceneEngineTick()
-      // One macrotask re-kick if the first request only queued (tick still finishing).
-      setTimeout(() => {
-        if (!sceneEngine || sceneTicksPaused || pointerBlocksEngineTick()) return
-        requestSceneEngineTick()
-      }, 0)
-    })
+    }
+    kick()
+    queueMicrotask(kick)
+    setTimeout(kick, 0)
   }
 })
 
@@ -1325,7 +1322,10 @@ function workerVerboseLog(
 
 /** Hydration keeps engine.update alive for splash/composite — pointer pause must not freeze it. */
 function pointerBlocksEngineTick(): boolean {
-  if (pointerDeliveryInFlight || queuedPointerDeliver || pointerDeliverWorkInFlight) return true
+  // Block only while inject eng.update is mid-flight — not during post-tick CRDT flush/ack
+  // (pointerDeliverWorkInFlight). That flush can take 100ms+ and starved nZ(dt) Color4.a fade
+  // + PE unmount after sceneUi click while main applied mount snapshots.
+  if (pointerDeliveryInFlight || queuedPointerDeliver) return true
   if (sceneOnUpdatePaused) return false
   if (flightPumpBypassPause) return false
   if (isPointerInputSessionActive()) return true

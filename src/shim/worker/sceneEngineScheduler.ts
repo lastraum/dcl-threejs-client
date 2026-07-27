@@ -151,10 +151,12 @@ type WallClockWrappedEngine = IEngine & { __threejsWallClockWrapped?: boolean }
 /**
  * Intercept every engine.update — SDK onUpdate, pointer ticks, cooperative, flight.
  *
- * Explorer-style: positive dt is wall elapsed since the last positive update (capped),
- * not a cumulative “debt ledger” that zeroed timers when concurrent paths raced.
- * dt=0 stays transport-only (TweenState inject, pointer UI).
+ * Explorer-style: positive dt tracks **wall clock between eng.update starts** (capped).
+ * Stamping lastExecutedAt only *after* a long eng.update made scene time advance only by the
+ * idle gap (e.g. 16ms) while the update itself took 100ms+ — CBD welcome nZ(dt) fade
+ * (authored ~1.2s) ran multi-seconds and PE stayed mounted (hand cursor / freecam blocked).
  *
+ * dt=0 stays transport-only (TweenState inject, pointer UI) and does not move the clock.
  * Do NOT substep nativeUpdate: each call runs every scene system + network transport.
  */
 function wrapEngineUpdateWithWallClock(eng: IEngine): void {
@@ -162,9 +164,18 @@ function wrapEngineUpdateWithWallClock(eng: IEngine): void {
   if (wrapped.__threejsWallClockWrapped) return
   const nativeUpdate = eng.update.bind(eng)
   wrapped.update = async (dt: number) => {
-    const applied = dt > 0 ? clampDtToWallClock(dt) : 0
+    if (!(dt > 0)) {
+      await nativeUpdate(0)
+      return
+    }
+    // Wall since last positive tick *start* (or prior stamp).
+    const applied = clampDtToWallClock(dt)
+    // Stamp at START so this frame's eng.update work is not "lost" from scene time.
+    const now = performance.now()
+    if (wallClockOriginMs <= 0) wallClockOriginMs = now
+    lastExecutedAt = now
+    sceneTimeSec += applied
     await nativeUpdate(applied)
-    commitSceneDt(applied)
   }
   wrapped.__threejsWallClockWrapped = true
 }
@@ -338,13 +349,6 @@ function clampDtToWallClock(requested: number): number {
   return Math.min(requested, elapsed, MAX_ENGINE_DT_SEC)
 }
 
-/** Commit scene time after a successful eng.update with dt>0. */
-function commitSceneDt(dt: number): void {
-  if (!(dt > 0)) return
-  sceneTimeSec += dt
-  lastExecutedAt = performance.now()
-}
-
 function resolveIntervalMs(): number {
   const cfg = config!
   return cfg.isHydration() ? cfg.hydrationIntervalMs : cfg.resolvePlayIntervalMs()
@@ -490,7 +494,7 @@ async function runCooperativeEngineTickPhases(engineDt: number): Promise<void> {
   enterCooperativeSchedulerTick()
   try {
     await runSerializedEngineUpdate(async () => {
-      // Wrapped update clamps again + commits sceneTimeSec.
+      // Wrapped update stamps wall clock at tick start + applies clamped dt.
       await eng.update(dt)
     })
   } finally {
@@ -803,10 +807,17 @@ export async function runSceneEnginePointerTick(
   const cfg = config!
   // inject-pointer-click path: skip onUpdate (architecture). sceneUi marks DOM UI vs mesh.
   const injectOnlyUiClick = !!splitPointerInject?.sceneUi
+  let sceneUiInjectCompleteFired = false
+  const fireSceneUiInjectComplete = (mountGrew: boolean): void => {
+    if (!injectOnlyUiClick || sceneUiInjectCompleteFired) return
+    sceneUiInjectCompleteFired = true
+    cfg.onSceneUiInjectPointerComplete?.({ mountGrew })
+  }
   beginPointerPlayerFrameBatch()
   setPointerInteractiveTickActive(true)
   setPointerInteractivePhase('inject')
   const mountBeforeDown = injectOnlyUiClick ? countWorkerUiMount(eng) : 0
+  let mountGrew = false
   try {
     if (splitPointerInject) {
       cfg.log(
@@ -869,7 +880,7 @@ export async function runSceneEnginePointerTick(
         // CBD Plaza welcome splash: onMouseDown only starts a fade (same mount size) —
         // systems update Color4.a every frame; holding react-ecs freezes that alpha on the
         // last paint and leaves a half-visible full-screen PE catcher (pointer stuck).
-        const mountGrew = mountAfterDownUpdate > mountBeforeDown
+        mountGrew = mountAfterDownUpdate > mountBeforeDown
         if (mountGrew) {
           holdCooperativeReactEcs(90)
           cfg.log(
@@ -886,9 +897,8 @@ export async function runSceneEnginePointerTick(
         cfg.onAfterEngineTick?.()
         cfg.log('[sceneWorker] pointer tick — skipping exports.onUpdate (inject path)')
         await runPointerNonUiPhase(eng)
-        // Unblock cooperative eng.update NOW — welcome fade (nZ) needs real dt every frame.
-        // Waiting for main forceResume left isPointerInputSessionActive true and starved systems.
-        cfg.onSceneUiInjectPointerComplete?.({ mountGrew })
+        // Unblock cooperative eng.update NOW — welcome fade (nZ) needs real wall-clock dt.
+        fireSceneUiInjectComplete(mountGrew)
       } else {
         // Mesh inject path continues below for UP + flush + phase-4
         cfg.onAfterEngineTick?.()
@@ -941,6 +951,9 @@ export async function runSceneEnginePointerTick(
   } finally {
     setPointerInteractivePhase('none')
     setPointerInteractiveTickActive(false)
+    // Always end session for sceneUi — preempt/timeout must not leave react-ecs suppressed
+    // (nZ would advance Hr but Color4.a would not paint; PE catcher stuck).
+    fireSceneUiInjectComplete(mountGrew)
   }
   if (injectOnlyUiClick) {
     cfg.onInjectOnlyUiPointerTickDone?.()

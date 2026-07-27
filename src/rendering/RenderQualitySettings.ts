@@ -60,8 +60,11 @@ export type RenderQualityOptions = {
 /** Min/max for Preferences → Scene Distance (AOI neighbor load radius). */
 export const SCENE_LOAD_RADIUS_MIN_M = 0
 export const SCENE_LOAD_RADIUS_MAX_M = 200
-/** Default AOI warm/visual band — ~6 parcels. */
-export const SCENE_LOAD_RADIUS_DEFAULT_M = 100
+/**
+ * Default AOI warm/visual band. 0 = primary scene only (AOI off).
+ * Single-scene CBD perf work uses 0; raise in Preferences or `?aoi` + radius for multi-scene.
+ */
+export const SCENE_LOAD_RADIUS_DEFAULT_M = 0
 
 /** Max ECS LightSource lights active at once (nearest to avatar) — preset defaults. */
 export const LIGHT_LIMITS: Record<RenderQualityTier, number> = {

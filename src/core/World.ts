@@ -30,7 +30,11 @@ import {
   type PortableExperiencesPolicy
 } from '../dcl/multiScene/resolvePortableExperiences'
 import { renderQuality } from '../rendering/RenderQualitySettings'
-import { skipAoiNeighbors, skipSceneAnimators } from '../client/devFlags'
+import {
+  skipAoiNeighbors,
+  skipSceneAnimators,
+  wantAnimatorSampleHud
+} from '../client/devFlags'
 import { AnimatorSampleHud } from '../debug/AnimatorSampleHud'
 import type { PerformanceTier } from '../shim/types'
 import { LandscapeSystem } from './systems/LandscapeSystem'
@@ -771,7 +775,7 @@ export class World {
       this.scenePromote.unbind()
       this.multiScene?.disposeSecondariesOnly()
       console.info(
-        `[aoi] DISABLED (?noaoi) — primary only · base=${scene.baseParcel} parcels=${scene.parcels.length}`
+        `[aoi] DISABLED (default / ?noaoi) — primary only · base=${scene.baseParcel} parcels=${scene.parcels.length} · opt-in ?aoi`
       )
     }
     if (skipSceneAnimators()) {
@@ -780,7 +784,7 @@ export class World {
       )
     } else {
       console.info(
-        '[perf] scene animators ON — fair phase-slice sampling (near every frame, rest time-correct ring)'
+        '[perf] scene animators ON — shared-hash sample + fair ring (in-view target ≥30 Hz, near every frame)'
       )
     }
 
@@ -4096,8 +4100,12 @@ export class World {
     staleOpenOcean?.removeFromParent()
   }
 
-  /** Top-right always-on phase-slice counters (display fps vs sample Hz). */
+  /**
+   * Animator sample HUD — opt-in via `?animatorhud` / `?perf` / localStorage.
+   * Hidden by default so ship builds don't paint debug chrome every frame.
+   */
   private refreshAnimatorSampleHud(frameDt: number): void {
+    if (!wantAnimatorSampleHud()) return
     if (skipSceneAnimators()) {
       this.animatorSampleHud.setDisabled('OFF (?noanim)')
       return

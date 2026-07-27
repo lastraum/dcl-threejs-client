@@ -31,6 +31,34 @@ function removeSpotTarget(parent: THREE.Object3D, key: string): void {
   if (target) parent.remove(target)
 }
 
+function findScene(obj: THREE.Object3D): THREE.Scene | null {
+  let o: THREE.Object3D | null = obj
+  while (o) {
+    if ((o as THREE.Scene).isScene) return o as THREE.Scene
+    o = o.parent
+  }
+  return null
+}
+
+function registerWithLightManager(parent: THREE.Object3D, light: THREE.PointLight | THREE.SpotLight): void {
+  const scene = findScene(parent)
+  const reg = scene?.userData.dclRegisterLight as
+    | ((l: THREE.PointLight | THREE.SpotLight) => void)
+    | undefined
+  reg?.(light)
+}
+
+function unregisterWithLightManager(
+  parent: THREE.Object3D,
+  light: THREE.PointLight | THREE.SpotLight
+): void {
+  const scene = findScene(parent)
+  const unreg = scene?.userData.dclUnregisterLight as
+    | ((l: THREE.PointLight | THREE.SpotLight) => void)
+    | undefined
+  unreg?.(light)
+}
+
 export function syncLightSource(parent: THREE.Object3D, key: string, spec: PBLightSource): void {
   let light = parent.getObjectByName(key) as THREE.Light | undefined
   const active = spec.active !== false
@@ -41,6 +69,9 @@ export function syncLightSource(parent: THREE.Object3D, key: string, spec: PBLig
   const isSpot = spec.type?.$case === 'spot'
   if (light) {
     if ((isSpot && !(light instanceof THREE.SpotLight)) || (!isSpot && !(light instanceof THREE.PointLight))) {
+      if (light instanceof THREE.PointLight || light instanceof THREE.SpotLight) {
+        unregisterWithLightManager(parent, light)
+      }
       disposeLight(light)
       parent.remove(light)
       if (light instanceof THREE.SpotLight) removeSpotTarget(parent, key)
@@ -73,6 +104,7 @@ export function syncLightSource(parent: THREE.Object3D, key: string, spec: PBLig
   if (light instanceof THREE.PointLight || light instanceof THREE.SpotLight) {
     light.distance = distance
     light.decay = 2
+    registerWithLightManager(parent, light)
   }
   // LightManager enables castShadow on up to 3 nearest spot lights when shadow: true.
   light.castShadow = false
@@ -92,6 +124,9 @@ export function syncLightSource(parent: THREE.Object3D, key: string, spec: PBLig
 export function removeLightSource(parent: THREE.Object3D, key: string): void {
   const light = parent.getObjectByName(key)
   if (light) {
+    if (light instanceof THREE.PointLight || light instanceof THREE.SpotLight) {
+      unregisterWithLightManager(parent, light)
+    }
     disposeLight(light as THREE.Light)
     parent.remove(light)
   }

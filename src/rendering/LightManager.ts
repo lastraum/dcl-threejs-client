@@ -23,13 +23,35 @@ export class LightManager {
   private readonly cullDistSq = LIGHT_CULL_DISTANCE_M * LIGHT_CULL_DISTANCE_M
   private activeNearbyCount = 0
   private lastCullAt = 0
-  /** Re-cull when focus moves this far (m²). */
-  private static readonly FOCUS_MOVE_M2 = 0.85 * 0.85
+  /**
+   * Registered ECS lights — avoids full scene.traverse on every walk cull
+   * (CBD ~4k meshes made traverse the silent walk-tax).
+   */
+  private readonly registered = new Set<THREE.PointLight | THREE.SpotLight>()
+  /** Re-cull when focus moves this far (m²). Was 0.85² — walk re-culled constantly. */
+  private static readonly FOCUS_MOVE_M2 = 2.5 * 2.5
   /** Max time between full light culls while standing still (ms). */
-  private static readonly CULL_INTERVAL_MS = 150
+  private static readonly CULL_INTERVAL_MS = 250
 
   constructor(scene: THREE.Scene) {
     this.scene = scene
+    // Bridge LightSourceSync without a hard import cycle.
+    scene.userData.dclRegisterLight = (light: THREE.PointLight | THREE.SpotLight) => {
+      this.registerLight(light)
+    }
+    scene.userData.dclUnregisterLight = (light: THREE.PointLight | THREE.SpotLight) => {
+      this.unregisterLight(light)
+    }
+  }
+
+  /** Call when an ECS LightSource light is created or replaced. */
+  registerLight(light: THREE.PointLight | THREE.SpotLight): void {
+    this.registered.add(light)
+  }
+
+  /** Call when light is removed from the scene graph. */
+  unregisterLight(light: THREE.PointLight | THREE.SpotLight): void {
+    this.registered.delete(light)
   }
 
   /** ECS lights active this frame (within cull distance, nearest tier cap). */
@@ -57,28 +79,42 @@ export class LightManager {
     const shadowsOn = renderQuality.shadowsEnabled()
     const candidates: Candidate[] = []
 
-    this.scene.traverse((obj) => {
-      if (!(obj instanceof THREE.PointLight || obj instanceof THREE.SpotLight)) return
+    // One-time / sparse discovery: seed registry from scene when empty (hydration).
+    if (this.registered.size === 0) {
+      this.scene.traverse((obj) => {
+        if (!(obj instanceof THREE.PointLight || obj instanceof THREE.SpotLight)) return
+        if (!obj.userData.lightSource) return
+        this.registered.add(obj)
+      })
+    }
 
-      const meta = obj.userData.lightSource as LightSourceMeta | undefined
-      if (!meta) return
+    for (const light of [...this.registered]) {
+      if (!light.parent) {
+        this.registered.delete(light)
+        continue
+      }
+      const meta = light.userData.lightSource as LightSourceMeta | undefined
+      if (!meta) {
+        this.registered.delete(light)
+        continue
+      }
 
       if (!meta.ecsActive || maxLights <= 0) {
-        obj.visible = false
-        obj.castShadow = false
-        return
+        light.visible = false
+        light.castShadow = false
+        continue
       }
 
-      obj.getWorldPosition(this.worldPos)
+      light.getWorldPosition(this.worldPos)
       const distSq = this.focusPos.distanceToSquared(this.worldPos)
       if (distSq > this.cullDistSq) {
-        obj.visible = false
-        obj.castShadow = false
-        return
+        light.visible = false
+        light.castShadow = false
+        continue
       }
 
-      candidates.push({ light: obj, distSq, meta })
-    })
+      candidates.push({ light, distSq, meta })
+    }
 
     if (maxLights <= 0) {
       this.activeNearbyCount = 0

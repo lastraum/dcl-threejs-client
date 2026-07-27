@@ -1,19 +1,21 @@
 import type { AnimatorSampleStats } from '../bridge/AnimatorBridge'
 
 /**
- * Always-on top-right counter for scene animator phase-slice stats.
- * Explains display FPS vs sample rate vs time-correct clip speed.
+ * Opt-in bottom-right counter for scene animator phase-slice stats
+ * (`?animatorhud` / `?perf`). Explains display FPS vs sample rate vs share fan-out.
  */
 export class AnimatorSampleHud {
-  private readonly el: HTMLDivElement
+  private el: HTMLDivElement | null = null
   private disposed = false
 
-  constructor() {
-    this.el = document.createElement('div')
-    this.el.id = 'animator-sample-hud'
-    this.el.setAttribute('aria-live', 'polite')
+  private ensureEl(): HTMLDivElement | null {
+    if (this.disposed) return null
+    if (this.el) return this.el
+    const el = document.createElement('div')
+    el.id = 'animator-sample-hud'
+    el.setAttribute('aria-live', 'polite')
     // Bottom-right — do not cover stats.js FPS / debug panel (top-right).
-    this.el.style.cssText = [
+    el.style.cssText = [
       'position:fixed',
       'bottom:12px',
       'right:12px',
@@ -30,13 +32,16 @@ export class AnimatorSampleHud {
       'box-shadow:0 4px 18px rgba(0,0,0,0.35)',
       'white-space:pre'
     ].join(';')
-    this.el.textContent = 'animators…'
-    document.body.appendChild(this.el)
+    el.textContent = 'animators…'
+    document.body.appendChild(el)
+    this.el = el
+    return el
   }
 
   setDisabled(reason = 'OFF (?noanim)'): void {
-    if (this.disposed) return
-    this.el.innerHTML =
+    const el = this.ensureEl()
+    if (!el) return
+    el.innerHTML =
       `<div style="opacity:.85;margin-bottom:2px">animators</div>` +
       `<div style="color:#f6c177">${escapeHtml(reason)}</div>` +
       `<div style="opacity:.65;margin-top:4px;font-size:10px">clips frozen</div>`
@@ -48,10 +53,16 @@ export class AnimatorSampleHud {
       this.setDisabled()
       return
     }
+    const el = this.ensureEl()
+    if (!el) return
     const fps = stats.displayFps > 0 ? stats.displayFps.toFixed(0) : '—'
     const farHz = stats.fair > 0 ? stats.fairSampleHz.toFixed(0) : '—'
     const nearHz = stats.displayFps > 0 ? stats.displayFps.toFixed(0) : '—'
-    this.el.innerHTML = [
+    const shared =
+      stats.sharedGroups != null
+        ? `${stats.sharedGroups}g +${stats.sharedFanout ?? 0}`
+        : '—'
+    el.innerHTML = [
       `<div style="opacity:.9;font-weight:600;margin-bottom:3px">animators</div>`,
       row('display', `${fps} fps`),
       row('bound', String(stats.bound)),
@@ -59,17 +70,19 @@ export class AnimatorSampleHud {
       row('sleep', String(stats.sleeping ?? 0)),
       row('near', `${stats.near} @ ~${nearHz} Hz`),
       row('fair', `${stats.fair} @ ~${farHz} Hz`),
+      row('shared', shared),
       row('sampled', `${stats.sampled} / ${stats.budget}`),
       row('deferred', String(stats.deferred)),
       `<div style="opacity:.55;margin-top:5px;font-size:10px;max-width:200px;white-space:normal">` +
-        `sleep = far props paused. fair Hz = sample rate (1× speed when awake).` +
+        `shared = 1 mixer.update per hash → pose fan-out. fair Hz target ≥30 in view.` +
         `</div>`
     ].join('')
   }
 
   dispose(): void {
     this.disposed = true
-    this.el.remove()
+    this.el?.remove()
+    this.el = null
   }
 }
 

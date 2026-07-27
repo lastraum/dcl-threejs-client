@@ -794,8 +794,12 @@ export class SceneScriptSystem {
   }
 
   /**
-   * Motion sources that may move this frame — O(active tweens/animators/billboards + ground),
-   * not O(all colliders).
+   * Motion sources that may move this frame — O(active tweens / PART doors / billboards + ground),
+   * not O(all colliders) and **not** every bound decorative mixer.
+   *
+   * Walk lag: previously every `getActiveEntities()` with ECS Animator + extracted collider
+   * entered the platform snapshot path every frame while walking — plaza paid walk-surface
+   * baselines for dozens of looping props that never move PhysX hulls.
    */
   collectMotionSnapshotCandidates(groundEcs: Entity | null): Set<Entity> {
     const out = new Set<Entity>()
@@ -809,12 +813,14 @@ export class SceneScriptSystem {
       if (MeshCollider.has(entity) || GltfContainer.has(entity)) out.add(entity)
     }
 
-    for (const entity of this.animatorBridge?.getActiveEntities() ?? []) {
-      if (
-        GltfContainer.has(entity) &&
-        this.gltfColliders?.hasExtractedCollider(entity) &&
-        this.isAnimatedGltfCollider(entity)
-      ) {
+    // PART doors / one-shots only — same set as pushColliderPartPoses (not all mixers).
+    for (const entity of this.animatorBridge?.getActiveMixerEntities() ?? []) {
+      if (GltfContainer.has(entity) && this.gltfColliders?.hasExtractedCollider(entity)) {
+        out.add(entity)
+      }
+    }
+    for (const entity of this.animatorBridge?.pendingShapeMotionEntities() ?? []) {
+      if (GltfContainer.has(entity) && this.gltfColliders?.hasExtractedCollider(entity)) {
         out.add(entity)
       }
     }
@@ -883,9 +889,10 @@ export class SceneScriptSystem {
     for (const entity of this.billboardBridge?.pendingMotionEntities() ?? []) addRoot(entity)
     for (const entity of this.systemTransformDirty) addRoot(entity)
 
-    // Prefer pending shape-motion marks; also include any active mixer (doors after CRDT apply).
+    // PART only for mixers sampled/applied this frame (shape-motion marks).
+    // Do NOT walk every running mixer — decorative loops used to thrash PhysX every frame.
+    // Dirty door apply calls markShapeMotionAfterSample (update(0)) so open/close still lands.
     for (const entity of this.animatorBridge?.pendingShapeMotionEntities() ?? []) addPart(entity)
-    for (const entity of this.animatorBridge?.getActiveMixerEntities() ?? []) addPart(entity)
     for (const entity of this.systemPartColliders) addPart(entity)
 
     return { transformDirty, animatorPart }
@@ -1019,10 +1026,6 @@ export class SceneScriptSystem {
   isAnimatedGltfColliderEntity(entity: Entity): boolean {
     const { Animator, GltfContainer } = this.readComponents
     return GltfContainer.has(entity) && Animator.has(entity)
-  }
-
-  private isAnimatedGltfCollider(entity: Entity): boolean {
-    return this.isAnimatedGltfColliderEntity(entity)
   }
 
   /**

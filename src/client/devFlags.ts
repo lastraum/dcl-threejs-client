@@ -36,12 +36,16 @@ export function usePerfDebug(): boolean {
 
 /**
  * Kill multi-scene AOI: no neighbor visuals, script-warm, live secondaries, or promote.
- * Primary scene only. Use for CBD / mega-scene perf isolation: `?noaoi=1`
+ * Primary scene only — **default ON** for single-scene perf isolation (CBD plaza).
+ *
+ * - Default / `?noaoi` / `?skipaoi` → AOI off
+ * - Opt back in with `?aoi` or `?withaoi` (Preferences Scene Distance still applies)
  */
 export function skipAoiNeighbors(): boolean {
   const params = readSearchParams()
-  if (!params) return false
-  return params.has('noaoi') || params.has('skipaoi')
+  if (params?.has('aoi') || params?.has('withaoi')) return false
+  if (params?.has('noaoi') || params?.has('skipaoi')) return true
+  return true
 }
 
 /**
@@ -49,11 +53,27 @@ export function skipAoiNeighbors(): boolean {
  * PhysX / AOI / tweens unchanged.
  *
  * Default: animators **ON**. Isolate cost with `?noanim=1`.
- * Fair phase-sliced sampling (AnimatorBridge) keeps all clips advancing under budget.
+ * Shared-hash sample + fair ring (AnimatorBridge) keeps in-view clips at ≥30 Hz under budget.
  */
 export function skipSceneAnimators(): boolean {
   const params = readSearchParams()
   if (!params) return false
   if (params.has('anim') || params.has('sceneanim')) return false
   return params.has('noanim') || params.has('skipanim')
+}
+
+/**
+ * Bottom-right animator sample HUD (bound/active/shared/fair Hz).
+ * Opt-in: `?animatorhud` / `?perf` / `?perfdebug` / localStorage `animatorhud=1`.
+ */
+export function wantAnimatorSampleHud(): boolean {
+  const params = readSearchParams()
+  if (params?.has('animatorhud') || params?.has('animhud')) return true
+  if (usePerfDebug()) return true
+  try {
+    if (localStorage.getItem('animatorhud') === '1') return true
+  } catch {
+    /* ignore */
+  }
+  return false
 }

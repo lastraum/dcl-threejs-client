@@ -24,6 +24,18 @@ type AnimEntry = {
   hasSkinned: boolean
   /** Far decorative — paused, not sampled until camera approaches. */
   sleeping: boolean
+  /**
+   * Depth-first node list (includes root) for shared-pose fan-out.
+   * Same-hash SkeletonUtils clones share topology → index-aligned copy is O(nodes).
+   */
+  poseNodes: THREE.Object3D[]
+  /**
+   * All playing clips are looping (decorative). Safe for wall-clock phase + share
+   * when also rigid; PART PhysX is skipped for looping-only even if skinned.
+   */
+  loopingOnly: boolean
+  /** Rigid + loopingOnly — one mixer sample fans out to same-hash clones. */
+  shareableLooping: boolean
 }
 
 /** Sample scheduling context — near camera / frustum bias for fair phase slice. */
@@ -43,13 +55,17 @@ export type AnimatorSampleStats = {
   sleeping: number
   near: number
   fair: number
+  /** Unique shared-pose groups sampled (hash+clip) — one mixer.update per group. */
+  sharedGroups: number
+  /** Entities that received pose via fan-out (no mixer.update). */
+  sharedFanout: number
   sampled: number
   deferred: number
   budget: number
   nearCap: number
   /**
-   * Estimated sample rate for a typical fair-ring mixer (Hz), given current
-   * display frame interval and fair budget share. Time-correct: still 1× speed.
+   * Estimated sample rate for a typical in-view fair mixer (Hz).
+   * With shared groups, this tracks unique-hash sample rate (target ≥30).
    */
   fairSampleHz: number
   /** Wall-clock estimate of main-loop FPS from last frame dt. */
@@ -62,40 +78,102 @@ export type AnimatorSampleStats = {
 /** Always-sample (or 2× fair share) within this radius of the camera. */
 const NEAR_PLAYER_FULL_RATE_M = 16
 /** Sphere radius added around entity root for expanded-frustum tests (turn without pop). */
-const FRUSTUM_EXPAND_M = 6
+const FRUSTUM_EXPAND_M = 8
 /**
- * Beyond this distance, decorative mixers **sleep** (timeScale 0, no sample).
- * Previously only slept off-frustum, so dense plaza kept ~80 "fair" awake in view.
- * Distance-only sleep (except near/PART) is what actually shrinks CBD active set.
+ * Off-frustum decorative mixers sleep beyond this distance (timeScale 0).
+ * In-frustum props stay awake so "everything in view" can animate.
  */
-const SLEEP_BEYOND_M = 28
-/** Hard cap on awake fair-ring mixers (nearest kept). Rest sleep even if in frustum. */
-const MAX_FAIR_AWAKE = 20
+const SLEEP_OFF_FRUSTUM_M = 40
 /**
- * Hard ceiling — adaptive budget is almost always lower.
- * 64 full mixer.update()s per frame was crushing CBD to ~10 FPS (HUD showed
- * sampled 64/64 @ 10 display fps). Fair ring still advances all clips with
- * accumulated dt; we just spend fewer samples when the frame is already long.
+ * Default-autoplay bind distance (promote instanced rest → clone + mixer).
+ * Larger than old 28m so plaza props still start when looking across the square.
  */
-const MAX_SAMPLES_PER_FRAME = 32
+const DEFAULT_AUTOPLAY_BIND_M = 48
+/**
+ * Target sample Hz for in-view (fair) unique groups. Near/PART stay at display rate.
+ * At 60 display fps we may sample every other frame and still hit 30 Hz.
+ */
+const TARGET_VIEW_SAMPLE_HZ = 30
+/**
+ * Hard ceiling on **mixer.update** calls per frame (after shared-hash collapse).
+ * CBD often has 50–80 active entities but only ~8–20 unique GLB hashes — one
+ * update per hash + pose fan-out is the path to 30 Hz without 10 FPS death.
+ */
+const MAX_SAMPLES_PER_FRAME = 48
 /** Near / PART absolute ceiling (adaptive near cap is lower under load). */
-const MAX_NEAR_ALWAYS_PER_FRAME = 12
+const MAX_NEAR_ALWAYS_PER_FRAME = 16
+/**
+ * Default-autoplay promote (instance→clone) budget per frame.
+ * Uncapped bind storms on plaza approach hitch the main thread → adaptive death spiral.
+ */
+const MAX_DEFAULT_BINDS_PER_FRAME = 3
+/** Never let near layer eat the whole budget while fair in-view units exist. */
+const FAIR_BUDGET_RESERVE_MIN = 4
 
 /**
  * Scale sample count from last frame's wall dt so we recover FPS instead of
  * locking into a death spiral (low fps → large dt → expensive samples → lower fps).
+ * Floors are higher than the pre-share era because each sample can cover many entities.
  */
 function adaptiveSampleBudget(frameDt: number): { budget: number; nearCap: number } {
   // ≥100ms (~10 fps): emergency — keep doors/near barely alive
-  if (frameDt >= 0.1) return { budget: 6, nearCap: 3 }
+  if (frameDt >= 0.1) return { budget: 8, nearCap: 4 }
   // ~20 fps
-  if (frameDt >= 0.05) return { budget: 10, nearCap: 4 }
+  if (frameDt >= 0.05) return { budget: 16, nearCap: 6 }
   // ~30 fps
-  if (frameDt >= 0.033) return { budget: 14, nearCap: 6 }
+  if (frameDt >= 0.033) return { budget: 24, nearCap: 8 }
   // ~45–50 fps
-  if (frameDt >= 0.022) return { budget: 20, nearCap: 8 }
+  if (frameDt >= 0.022) return { budget: 36, nearCap: 12 }
   // ≥60 fps headroom
   return { budget: MAX_SAMPLES_PER_FRAME, nearCap: MAX_NEAR_ALWAYS_PER_FRAME }
+}
+
+/** Depth-first list including root — topology-stable for same-hash clones. */
+function collectPoseNodes(root: THREE.Object3D): THREE.Object3D[] {
+  const nodes: THREE.Object3D[] = []
+  root.traverse((o) => {
+    nodes.push(o)
+  })
+  return nodes
+}
+
+let fanOutMismatchLogged = false
+
+/** Copy local TRS by parallel topology index (same-hash clones). */
+function fanOutLocalPose(leaderNodes: THREE.Object3D[], followerNodes: THREE.Object3D[]): void {
+  if (leaderNodes.length !== followerNodes.length) {
+    // Topology mismatch — refuse silent wrong poses (modifiers / partial rebind).
+    if (!fanOutMismatchLogged) {
+      fanOutMismatchLogged = true
+      console.warn(
+        `[animator] shared-pose fan-out skipped (topology mismatch ${leaderNodes.length}≠${followerNodes.length})`
+      )
+    }
+    return
+  }
+  const n = leaderNodes.length
+  for (let i = 0; i < n; i++) {
+    const src = leaderNodes[i]!
+    const dst = followerNodes[i]!
+    if (src === dst) continue
+    dst.position.copy(src.position)
+    dst.quaternion.copy(src.quaternion)
+    dst.scale.copy(src.scale)
+  }
+}
+
+/** Snap looping actions to wall-clock phase so shared leaders stay phase-aligned. */
+function snapLoopingActionsToWallClock(entry: AnimEntry, wallSec: number): void {
+  for (const action of entry.actions.values()) {
+    if (!action.isRunning() && !action.isScheduled()) continue
+    if (action.loop !== THREE.LoopRepeat) continue
+    const dur = action.getClip().duration
+    if (dur <= 1e-3) continue
+    const speed = action.getEffectiveTimeScale()
+    if (Math.abs(speed) < 1e-6) continue
+    // Phase in clip space; speed scales how fast wall maps into the loop.
+    action.time = ((wallSec * speed) % dur + dur) % dur
+  }
 }
 
 const _frustum = new THREE.Frustum()
@@ -143,15 +221,36 @@ function mixerHasActiveWork(entry: AnimEntry): boolean {
 }
 
 /**
- * PART PhysX candidates: clip is **actually advancing** (running/scheduled).
- * Residual weight after clamp/finish must NOT keep entities in PART forever —
- * that + float noise re-cooked hulls every frame (~50 FPS thrash).
+ * Clip is **actually advancing** (running/scheduled).
+ * Residual weight after clamp/finish must NOT count — that re-cooked hulls every frame.
  */
-function hasPartColliderWork(entry: AnimEntry): boolean {
+function hasRunningClip(entry: AnimEntry): boolean {
   for (const action of entry.actions.values()) {
     if (action.isRunning() || action.isScheduled()) return true
   }
   return false
+}
+
+/**
+ * PART PhysX candidates — **doors / one-shots only** (non-loop running clips).
+ *
+ * CBD tax: every decorative looping mixer used to enter PART via getActiveMixerEntities,
+ * forcing collider matrix refresh + fp cook path for hundreds of plaza props.
+ * Looping-only (rigid or skinned decorative) keeps entity-root colliders fixed —
+ * mesh/skeleton decoration does not need PART hull follow every frame.
+ */
+function isPartPhysxCandidate(entry: AnimEntry): boolean {
+  if (entry.sleeping) return false
+  if (!hasRunningClip(entry)) return false
+  // Looping decorative (incl. skinned ambient props) — never PART.
+  if (entry.loopingOnly) return false
+  // One-shots / non-loop / mixed ECS states — PART while running.
+  return true
+}
+
+/** @deprecated name — use hasRunningClip / isPartPhysxCandidate */
+function hasPartColliderWork(entry: AnimEntry): boolean {
+  return isPartPhysxCandidate(entry)
 }
 
 /** One name→node map per bind — per-track traverse was O(tracks × nodes) on huge characters. */
@@ -256,6 +355,8 @@ export class AnimatorBridge {
     sleeping: 0,
     near: 0,
     fair: 0,
+    sharedGroups: 0,
+    sharedFanout: 0,
     sampled: 0,
     deferred: 0,
     budget: MAX_SAMPLES_PER_FRAME,
@@ -327,13 +428,13 @@ export class AnimatorBridge {
   }
 
   /**
-   * PART candidates: mixers with a running/scheduled clip (not residual weight).
+   * PART PhysX candidates only (doors / one-shots / skinned) — never decorative loops.
    * Used by getPhysMotionSets → pushColliderPartPoses.
    */
   getActiveMixerEntities(): Entity[] {
     const out: Entity[] = []
     for (const [entity, entry] of this.entries) {
-      if (hasPartColliderWork(entry)) out.push(entity)
+      if (isPartPhysxCandidate(entry)) out.push(entity)
     }
     return out
   }
@@ -363,13 +464,14 @@ export class AnimatorBridge {
    * covers them next frame. PART doors + skinned need same-frame matrix/skeleton.
    */
   private markShapeMotionAfterSample(entity: Entity, entry: AnimEntry): void {
-    const part = hasPartColliderWork(entry)
+    const part = isPartPhysxCandidate(entry)
     if (entry.hasSkinned) {
       entry.root.traverse((obj) => {
         const sk = obj as THREE.SkinnedMesh
         if (sk.isSkinnedMesh && sk.skeleton) sk.skeleton.update()
       })
     }
+    // Decorative rigid loops: skip forced updateMatrixWorld — scene graph pass is enough.
     if (part || entry.hasSkinned) {
       const entityNode = entry.root.parent
       if (entityNode) entityNode.updateMatrixWorld(true)
@@ -446,6 +548,12 @@ export class AnimatorBridge {
       )
     }
     bound.lastAppliedSignature = stateSignature
+    // Looping-only decorative: no PART; rigid also share one mixer sample across clones.
+    bound.loopingOnly =
+      playingClips.length > 0 &&
+      states.length > 0 &&
+      states.every((s) => s.playing === false || s.loop !== false)
+    bound.shareableLooping = !bound.hasSkinned && bound.loopingOnly
     // Sample current pose immediately so PhysX can track the first open frame.
     if (playingClips.length || mixerHasActiveWork(bound)) {
       bound.mixer.update(0)
@@ -625,7 +733,10 @@ export class AnimatorBridge {
         gltfSrc: src,
         deferredSampleDt: 0,
         hasSkinned,
-        sleeping: false
+        sleeping: false,
+        poseNodes: collectPoseNodes(mesh),
+        loopingOnly: false,
+        shareableLooping: false
       }
       const nodeByName = loaded.animations.length ? buildNodeNameMap(mesh) : undefined
       for (const clip of loaded.animations) {
@@ -686,16 +797,17 @@ export class AnimatorBridge {
   }
 
   /**
-   * Advance mixers with **fair phase-sliced sampling** (all clips keep running).
+   * Advance mixers with **shared-hash sampling + fair phase slice**.
    *
-   * Problem: CBD has hundreds of active mixers. Sampling all every frame kills FPS.
-   * Old hard-cap starved mid-plaza props (first 48 near cam only).
+   * CBD problem: hundreds of active decorative mixers; full sampling → ~10 FPS.
+   * Old distance-sleep + MAX_FAIR_AWAKE froze most in-view props.
    *
-   * Solution — two layers, nothing permanently stopped:
-   * 1) **Near/PART** (≤16m or doors): sample every frame up to {@link MAX_NEAR_ALWAYS_PER_FRAME}.
-   * 2) **Fair ring**: remaining active mixers share leftover budget via a rotating cursor.
-   *    Each sample uses accumulated `deferredSampleDt` so wall-clock is correct
-   *    (2× dt every 2 frames ≈ same motion as 1× dt every frame).
+   * Solution for “everything in view at ≥30 Hz sample, display ≥30 FPS”:
+   * 1) **Near/PART** (≤16m or doors): individual sample every frame (up to nearCap).
+   * 2) **In-view fair**: collapse same-hash looping rigid props → **one** mixer.update
+   *    + local-TRS fan-out to clones (wall-clock phase). Unique hashes phase-slice
+   *    toward {@link TARGET_VIEW_SAMPLE_HZ}.
+   * 3) **Off-frustum + far**: sleep (timeScale 0) until back in view.
    *
    * `delta === 0` (post-bind pose): sample all active work (no cull) so doors get first pose.
    */
@@ -708,6 +820,8 @@ export class AnimatorBridge {
         sleeping: 0,
         near: 0,
         fair: 0,
+        sharedGroups: 0,
+        sharedFanout: 0,
         sampled: 0,
         deferred: 0,
         frameDt: delta,
@@ -717,6 +831,9 @@ export class AnimatorBridge {
       }
       return
     }
+    // PART set is frame-local — only entities sampled/applied this tick.
+    this.shapeMotionEntities.clear()
+
     // Door open/close CRDT often lands between async sync ticks — apply dirty before sample.
     if (view) this.applyDirtyBoundStates(view)
 
@@ -741,10 +858,12 @@ export class AnimatorBridge {
     )
     _frustum.setFromProjectionMatrix(_projScreen)
 
-    // Near-only: promote + bind deferred default autoplay (instanced rest → clone).
+    // Promote + bind deferred default autoplay (amortized — no plaza bind storm).
     this.allowDefaultAutoplayBind = true
-    const nearBindSq = SLEEP_BEYOND_M * SLEEP_BEYOND_M
+    const bindSq = DEFAULT_AUTOPLAY_BIND_M * DEFAULT_AUTOPLAY_BIND_M
+    let bindsThisFrame = 0
     for (const entity of [...this.pendingBind]) {
+      if (bindsThisFrame >= MAX_DEFAULT_BINDS_PER_FRAME) break
       if (this.entries.has(entity)) {
         this.pendingBind.delete(entity)
         continue
@@ -755,18 +874,36 @@ export class AnimatorBridge {
       const dx = _worldPos.x - _camPos.x
       const dy = _worldPos.y - _camPos.y
       const dz = _worldPos.z - _camPos.z
-      if (dx * dx + dy * dy + dz * dz > nearBindSq) continue
+      const distSq = dx * dx + dy * dy + dz * dz
+      // Bind near camera always; also bind farther if roughly in expanded frustum.
+      if (distSq > bindSq) {
+        _sphere.center.copy(_worldPos)
+        _sphere.radius = FRUSTUM_EXPAND_M
+        if (!_frustum.intersectsSphere(_sphere)) continue
+        // Cap far frustum autoplay bind so we don't clone the whole plaza at once.
+        if (distSq > bindSq * 2.25) continue
+      }
       const result = this.bindAndApplyEntity(entity)
-      if (result === 'bound') this.pendingBind.delete(entity)
-      else if (result === 'skip') this.pendingBind.delete(entity)
+      if (result === 'bound') {
+        this.pendingBind.delete(entity)
+        bindsThisFrame++
+      } else if (result === 'skip') {
+        this.pendingBind.delete(entity)
+      }
     }
     this.allowDefaultAutoplayBind = false
 
-    type Cand = { entity: Entity; entry: AnimEntry; priority: number; distSq: number }
+    type Cand = {
+      entity: Entity
+      entry: AnimEntry
+      priority: number
+      distSq: number
+      inFrustum: boolean
+    }
     const near: Cand[] = []
     const fair: Cand[] = []
     let sleeping = 0
-    const sleepSq = SLEEP_BEYOND_M * SLEEP_BEYOND_M
+    const sleepOffSq = SLEEP_OFF_FRUSTUM_M * SLEEP_OFF_FRUSTUM_M
 
     const putToSleep = (entry: AnimEntry): void => {
       if (!entry.sleeping) {
@@ -781,11 +918,8 @@ export class AnimatorBridge {
       entry.sleeping = false
       entry.mixer.timeScale = 1
       entry.deferredSampleDt = 0
-      for (const action of entry.actions.values()) {
-        if (!action.isRunning() && !action.isScheduled()) continue
-        const dur = action.getClip().duration
-        if (dur > 1e-3) action.time = (performance.now() / 1000) % dur
-      }
+      // Wall-clock phase so shared-hash groups rejoin in sync.
+      snapLoopingActionsToWallClock(entry, performance.now() / 1000)
     }
 
     for (const [entity, entry] of this.entries) {
@@ -793,98 +927,235 @@ export class AnimatorBridge {
         entry.deferredSampleDt = 0
         continue
       }
-      const { priority, distSq } = this.samplePriority(entry, sampleCtx!)
+      const { priority, distSq, inFrustum } = this.samplePriority(entry, sampleCtx!)
       const isPart = hasPartColliderWork(entry)
-      // Distance-only sleep (ignore frustum) — dense plaza frustum kept everyone awake.
-      if (!isPart && priority < 2 && distSq > sleepSq) {
+      // Sleep only when off-frustum and far — in-view props stay awake (user goal).
+      if (!isPart && priority < 2 && !inFrustum && distSq > sleepOffSq) {
         putToSleep(entry)
         continue
       }
       wake(entry)
       entry.deferredSampleDt += delta
-      const cand: Cand = { entity, entry, priority, distSq }
+      const cand: Cand = { entity, entry, priority, distSq, inFrustum }
       if (priority >= 2) near.push(cand)
       else fair.push(cand)
     }
 
     // Near: closer / PART first.
     near.sort((a, b) => b.priority - a.priority || a.distSq - b.distSq)
-    // Fair: nearest first, then cap awake count — overflow goes back to sleep.
+    // Fair: nearest first (stable share leaders tend to be near).
     fair.sort((a, b) => a.distSq - b.distSq)
-    if (fair.length > MAX_FAIR_AWAKE) {
-      for (let i = MAX_FAIR_AWAKE; i < fair.length; i++) {
-        const drop = fair[i]!
-        drop.entry.deferredSampleDt = 0
-        putToSleep(drop.entry)
-      }
-      fair.length = MAX_FAIR_AWAKE
-    }
 
     // Budget from *previous* frame length so a hitch this frame doesn't double-dip.
     const { budget, nearCap } = adaptiveSampleBudget(this.prevFrameDt)
     this.prevFrameDt = delta
+    // Reserve sample slots for fair/in-view so near solos cannot starve goal ≥30 Hz.
+    const fairReserve = Math.min(budget, Math.max(FAIR_BUDGET_RESERVE_MIN, Math.ceil(budget * 0.35)))
+    const nearBudget = Math.max(1, budget - fairReserve)
 
     let sampled = 0
     let deferred = 0
     let nearSampled = 0
     let fairSampled = 0
+    let sharedGroups = 0
+    let sharedFanout = 0
+    const wallSec = performance.now() / 1000
 
-    const runSample = (entity: Entity, entry: AnimEntry, layer: 'near' | 'fair'): void => {
+    const runMixerSample = (
+      entity: Entity,
+      entry: AnimEntry,
+      layer: 'near' | 'fair',
+      useWallClock: boolean
+    ): void => {
       const step = entry.deferredSampleDt
       entry.deferredSampleDt = 0
-      // Cap single jump so one hitch doesn't blow a multi-second sample (still time-correct overall).
-      const clamped = Math.min(step, 0.25)
-      if (clamped > 1e-8) entry.mixer.update(clamped)
+      if (useWallClock && entry.shareableLooping) {
+        snapLoopingActionsToWallClock(entry, wallSec)
+        entry.mixer.update(0)
+      } else {
+        const clamped = Math.min(step, 0.25)
+        if (clamped > 1e-8) entry.mixer.update(clamped)
+      }
       sampled++
       if (layer === 'near') nearSampled++
       else fairSampled++
       this.markShapeMotionAfterSample(entity, entry)
     }
 
-    // --- Layer 1: near / PART (smooth view + doors) ---
-    for (const cand of near) {
-      if (sampled >= nearCap) {
-        // Overflow near → fair ring still advances them this or next frames.
-        fair.push(cand)
-        continue
+    // --- Layer 1: near / PART — shareable hashes collapse; PART/skinned stay solo ---
+    {
+      type NearShare = { leader: Cand; followers: Cand[] }
+      const nearShares: NearShare[] = []
+      const nearShareIdx = new Map<string, number>()
+      const nearSolo: Cand[] = []
+      for (const cand of near) {
+        const entry = cand.entry
+        const canShare =
+          entry.shareableLooping &&
+          !entry.hasSkinned &&
+          !hasPartColliderWork(entry) &&
+          entry.lastAppliedSignature != null
+        if (!canShare) {
+          nearSolo.push(cand)
+          continue
+        }
+        const key = `${entry.gltfHash}|${entry.lastAppliedSignature}`
+        const idx = nearShareIdx.get(key)
+        if (idx === undefined) {
+          nearShareIdx.set(key, nearShares.length)
+          nearShares.push({ leader: cand, followers: [] })
+        } else {
+          nearShares[idx]!.followers.push(cand)
+        }
       }
-      if (sampled >= budget) {
-        deferred++
-        continue
+
+      const nearUnits: Array<
+        | { kind: 'share'; group: NearShare }
+        | { kind: 'solo'; cand: Cand }
+      > = [
+        ...nearShares.map((group) => ({ kind: 'share' as const, group })),
+        ...nearSolo.map((cand) => ({ kind: 'solo' as const, cand }))
+      ]
+      // Prefer PART/solo first (nearSolo already at end of shares — re-sort units).
+      nearUnits.sort((a, b) => {
+        const pa = a.kind === 'solo' ? a.cand.priority : a.group.leader.priority
+        const pb = b.kind === 'solo' ? b.cand.priority : b.group.leader.priority
+        const da = a.kind === 'solo' ? a.cand.distSq : a.group.leader.distSq
+        const db = b.kind === 'solo' ? b.cand.distSq : b.group.leader.distSq
+        return pb - pa || da - db
+      })
+
+      for (const unit of nearUnits) {
+        if (sampled >= nearCap || sampled >= nearBudget) {
+          if (unit.kind === 'share') {
+            fair.push(unit.group.leader, ...unit.group.followers)
+          } else {
+            fair.push(unit.cand)
+          }
+          continue
+        }
+        if (unit.kind === 'share') {
+          const { leader, followers } = unit.group
+          runMixerSample(leader.entity, leader.entry, 'near', true)
+          sharedGroups++
+          if (followers.length && leader.entry.poseNodes.length) {
+            for (const f of followers) {
+              f.entry.deferredSampleDt = 0
+              if (f.entry.poseNodes.length) {
+                fanOutLocalPose(leader.entry.poseNodes, f.entry.poseNodes)
+              }
+              sharedFanout++
+            }
+          }
+        } else {
+          runMixerSample(
+            unit.cand.entity,
+            unit.cand.entry,
+            'near',
+            unit.cand.entry.shareableLooping
+          )
+        }
       }
-      runSample(cand.entity, cand.entry, 'near')
     }
 
-    // --- Layer 2: fair phase slice over remaining budget ---
-    const budgetLeft = Math.max(0, budget - sampled)
-    if (fair.length > 0 && budgetLeft > 0) {
-      // Cursor walks the fair ring so every mixer is sampled every ceil(n/budget) frames.
-      const n = fair.length
-      const start = this.fairRingCursor % n
-      this.fairRingCursor = (start + budgetLeft) % n
-      for (let i = 0; i < budgetLeft; i++) {
-        const cand = fair[(start + i) % n]!
-        // Skip if already sampled as near this frame (shouldn't be in fair).
-        if (cand.entry.deferredSampleDt < 1e-8) continue
-        runSample(cand.entity, cand.entry, 'fair')
+    // --- Layer 2: fair ring collapsed by share key (hash + clip signature) ---
+    type ShareGroup = { leader: Cand; followers: Cand[] }
+    const shareGroups: ShareGroup[] = []
+    const shareIndex = new Map<string, number>()
+    const unshared: Cand[] = []
+
+    for (const cand of fair) {
+      // Already sampled as near overflow path may have cleared dt — still OK.
+      const entry = cand.entry
+      const canShare =
+        entry.shareableLooping &&
+        !entry.hasSkinned &&
+        !hasPartColliderWork(entry) &&
+        entry.lastAppliedSignature != null
+      if (!canShare) {
+        unshared.push(cand)
+        continue
       }
-      deferred += Math.max(0, n - budgetLeft)
-    } else if (fair.length) {
-      deferred += fair.length
+      const key = `${entry.gltfHash}|${entry.lastAppliedSignature}`
+      const idx = shareIndex.get(key)
+      if (idx === undefined) {
+        shareIndex.set(key, shareGroups.length)
+        shareGroups.push({ leader: cand, followers: [] })
+      } else {
+        shareGroups[idx]!.followers.push(cand)
+      }
     }
+
+    // Unique sample units: one per share group + each unshared entity.
+    const fairUnits: Array<
+      | { kind: 'share'; group: ShareGroup }
+      | { kind: 'solo'; cand: Cand }
+    > = [
+      ...shareGroups.map((group) => ({ kind: 'share' as const, group })),
+      ...unshared.map((cand) => ({ kind: 'solo' as const, cand }))
+    ]
 
     const displayFps = delta > 1e-6 ? 1 / delta : 0
-    // Each fair mixer is hit every ceil(fairN / fairSamples) frames → Hz = fps / period.
+    // Aim for TARGET_VIEW_SAMPLE_HZ: at 60fps sample ~half the units each frame.
+    const period =
+      displayFps > TARGET_VIEW_SAMPLE_HZ + 1
+        ? Math.max(1, Math.round(displayFps / TARGET_VIEW_SAMPLE_HZ))
+        : 1
+    const unitsPerFrameIdeal =
+      fairUnits.length === 0 ? 0 : Math.ceil(fairUnits.length / period)
+    const budgetLeft = Math.max(0, budget - sampled)
+    const fairQuota = Math.min(budgetLeft, Math.max(unitsPerFrameIdeal, fairUnits.length > 0 ? 1 : 0))
+
+    if (fairUnits.length > 0 && fairQuota > 0) {
+      const n = fairUnits.length
+      const start = this.fairRingCursor % n
+      this.fairRingCursor = (start + fairQuota) % n
+      for (let i = 0; i < fairQuota; i++) {
+        const unit = fairUnits[(start + i) % n]!
+        if (unit.kind === 'share') {
+          const { leader, followers } = unit.group
+          if (leader.entry.deferredSampleDt < 1e-8 && followers.every((f) => f.entry.deferredSampleDt < 1e-8)) {
+            continue
+          }
+          runMixerSample(leader.entity, leader.entry, 'fair', true)
+          sharedGroups++
+          // Fan-out leader local pose to same-hash clones (skip their mixer.update).
+          if (followers.length && leader.entry.poseNodes.length) {
+            for (const f of followers) {
+              f.entry.deferredSampleDt = 0
+              if (f.entry.poseNodes.length) {
+                fanOutLocalPose(leader.entry.poseNodes, f.entry.poseNodes)
+              }
+              sharedFanout++
+              // Followers are decorative rigid — no PART / skinned work.
+            }
+          }
+        } else {
+          if (unit.cand.entry.deferredSampleDt < 1e-8) continue
+          runMixerSample(unit.cand.entity, unit.cand.entry, 'fair', unit.cand.entry.shareableLooping)
+        }
+      }
+      deferred += Math.max(0, n - fairQuota)
+    } else if (fairUnits.length) {
+      deferred += fairUnits.length
+    }
+
+    // fairSampleHz: unique fair units sampled this frame vs unit count.
     const fairN = fair.length
-    const fairPeriod = fairN > 0 && fairSampled > 0 ? Math.max(1, fairN / fairSampled) : 0
-    const fairSampleHz = fairPeriod > 0 ? displayFps / fairPeriod : fairN === 0 ? displayFps : 0
+    const fairUnitsN = fairUnits.length
+    const fairPeriod =
+      fairUnitsN > 0 && fairSampled > 0 ? Math.max(1, fairUnitsN / Math.max(1, fairSampled)) : 0
+    const fairSampleHz =
+      fairPeriod > 0 ? displayFps / fairPeriod : fairUnitsN === 0 ? displayFps : 0
 
     this.lastStats = {
       bound: this.entries.size,
-      active: near.length + fair.length,
+      active: near.length + fairN,
       sleeping,
       near: near.length,
       fair: fairN,
+      sharedGroups,
+      sharedFanout,
       sampled,
       deferred,
       budget,
@@ -897,7 +1168,8 @@ export class AnimatorBridge {
 
     if (!this.verbose) return
     this.logAnimator(
-      `Animator tick — ${this.entries.size} mixers · near=${near.length} fair=${fair.length} ` +
+      `Animator tick — ${this.entries.size} mixers · near=${near.length} fair=${fairN} ` +
+        `units=${fairUnitsN} shared=${sharedGroups}+${sharedFanout} ` +
         `sampled=${sampled} (n=${nearSampled}/f=${fairSampled}) deferred=${deferred} ` +
         `budget=${budget}/${nearCap} fairHz≈${fairSampleHz.toFixed(0)}`,
       { throttleMs: 3000 }
@@ -906,13 +1178,13 @@ export class AnimatorBridge {
 
   /**
    * priority ≥ 2 → try every-frame (near / PART).
-   * priority 1 → frustum (fair ring, slightly prefer via sort if we ever dual-queue).
-   * priority 0 → off-cam fair ring.
+   * priority 1 → frustum (fair / shared-hash).
+   * priority 0 → off-cam fair ring (may sleep if far).
    */
   private samplePriority(
     entry: AnimEntry,
     _ctx: AnimatorSampleContext
-  ): { priority: number; distSq: number } {
+  ): { priority: number; distSq: number; inFrustum: boolean } {
     const anchor = entry.root.parent ?? entry.root
     _worldPos.setFromMatrixPosition(anchor.matrixWorld)
 
@@ -922,16 +1194,17 @@ export class AnimatorBridge {
     const distSq = dx * dx + dy * dy + dz * dz
     const nearSq = NEAR_PLAYER_FULL_RATE_M * NEAR_PLAYER_FULL_RATE_M
 
-    // PART / one-shot doors near camera — highest.
-    if (hasPartColliderWork(entry) && distSq <= nearSq * 2.25) {
-      return { priority: 3, distSq }
-    }
-    if (distSq <= nearSq) return { priority: 2, distSq }
-
     _sphere.center.copy(_worldPos)
     _sphere.radius = FRUSTUM_EXPAND_M
-    if (_frustum.intersectsSphere(_sphere)) return { priority: 1, distSq }
+    const inFrustum = _frustum.intersectsSphere(_sphere)
 
-    return { priority: 0, distSq }
+    // PART / one-shot doors near camera — highest.
+    if (hasPartColliderWork(entry) && distSq <= nearSq * 2.25) {
+      return { priority: 3, distSq, inFrustum: true }
+    }
+    if (distSq <= nearSq) return { priority: 2, distSq, inFrustum: true }
+    if (inFrustum) return { priority: 1, distSq, inFrustum: true }
+
+    return { priority: 0, distSq, inFrustum: false }
   }
 }

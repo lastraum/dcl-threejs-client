@@ -462,6 +462,12 @@ export class SceneWorkerSlot {
   captureRemappedColliders(): PhysicsColliderDesc[] {
     if (this.disposed || this.detached) return this.lastRemappedColliders
     const raw = this.system.getAllPhysicsColliderDescs()
+    // Transient empty extract (hydrate race / secondary tick mid-graph) must NOT wipe
+    // registeredPhysIds — MultiSceneRuntime treats missing ids as PhysX invalidations
+    // (immediate removeStatic) → soft world until recook.
+    if (raw.length === 0 && this.lastRemappedColliders.length > 0) {
+      return this.lastRemappedColliders
+    }
     const out: PhysicsColliderDesc[] = []
     this.registeredPhysIds.clear()
     for (const d of raw) {

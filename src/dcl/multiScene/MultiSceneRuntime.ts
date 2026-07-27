@@ -246,10 +246,15 @@ export class MultiSceneRuntime {
     }
 
     const invalidatePhysIds = this.pe.takePhysInvalidations()
-    // Still-resident remapped ids (even when tertiary returned [] this frame).
+    // Still-resident remapped ids (even when dirty-once returned [] this frame).
+    // Must include PE + secondary registered sets — otherwise dirty-once PE/secondary
+    // colliders look "gone" next frame → invalidateStaticCollider → soft floor holes.
     const next = new Set<number>()
     for (const d of colliders) next.add(d.entity)
     for (const id of this.secondary?.allRegisteredPhysIds() ?? []) {
+      next.add(id)
+    }
+    for (const id of this.pe.allRegisteredPhysIds()) {
       next.add(id)
     }
     for (const id of this.lastMultiPhysIds) {

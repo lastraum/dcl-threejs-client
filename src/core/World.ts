@@ -846,14 +846,25 @@ export class World {
       this.signedFetchSceneContext = {
         sceneId: scene.entityId ?? '',
         parcel: scene.baseParcel,
-        realmName: scene.realm.realmName,
-        isWorld: scene.source.kind === 'world'
+        realmName: scene.realm.realmName || 'main',
+        isWorld: scene.source.kind === 'world',
+        isGuest: this.loginIsGuest,
+        realmHostname:
+          scene.source.kind === 'world'
+            ? undefined
+            : 'realm.decentraland.org'
       }
       this.sceneScript.setSignedFetchHandler(async (body) =>
-        performSignedFetch(body, this.session.getAuthIdentity(), this.signedFetchSceneContext)
+        performSignedFetch(body, this.session.getAuthIdentity(), {
+          ...this.signedFetchSceneContext!,
+          isGuest: this.loginIsGuest
+        })
       )
       this.sceneScript.setSignedFetchGetHeadersHandler(async (body) =>
-        performGetSignedHeaders(body, this.session.getAuthIdentity())
+        performGetSignedHeaders(body, this.session.getAuthIdentity(), {
+          ...this.signedFetchSceneContext!,
+          isGuest: this.loginIsGuest
+        })
       )
       this.sceneScript.setOpenExternalUrlHandler((request) => openExternalUrl(request))
       this.sceneScript.setOpenNftDialogHandler((request) => openNftDialog(request))
@@ -2969,10 +2980,12 @@ export class World {
         maxWaitMs: bootMode ? 0 : 12
       })
 
+      // Play: never force-recook on pose-only drift (slide path). Boot still force-rebuilds.
+      // forceRecook=true on every late-attach queue was soft-window thrash (replaceStatic churn).
       const result = this.physics.syncStaticColliders(toCook, {
         cookBudget: toCook.length,
         freezeRemoval: true,
-        forceRecookOnPoseChange: true,
+        forceRecookOnPoseChange: bootMode,
         geometryCache: true
       })
       for (const desc of toCook) {
@@ -3978,14 +3991,23 @@ export class World {
     this.signedFetchSceneContext = {
       sceneId: newScene.entityId ?? '',
       parcel: newScene.baseParcel,
-      realmName: newScene.realm.realmName,
-      isWorld: newScene.source.kind === 'world'
+      realmName: newScene.realm.realmName || 'main',
+      isWorld: newScene.source.kind === 'world',
+      isGuest: this.loginIsGuest,
+      realmHostname:
+        newScene.source.kind === 'world' ? undefined : 'realm.decentraland.org'
     }
     this.sceneScript.setSignedFetchHandler(async (body) =>
-      performSignedFetch(body, this.session.getAuthIdentity(), this.signedFetchSceneContext)
+      performSignedFetch(body, this.session.getAuthIdentity(), {
+        ...this.signedFetchSceneContext!,
+        isGuest: this.loginIsGuest
+      })
     )
     this.sceneScript.setSignedFetchGetHeadersHandler(async (body) =>
-      performGetSignedHeaders(body, this.session.getAuthIdentity())
+      performGetSignedHeaders(body, this.session.getAuthIdentity(), {
+        ...this.signedFetchSceneContext!,
+        isGuest: this.loginIsGuest
+      })
     )
 
     // P0: rebind scene origin to NEW primary base BEFORE feet restore / soft-route.

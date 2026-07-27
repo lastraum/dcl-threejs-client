@@ -1790,10 +1790,12 @@ export class PhysXWorld {
 
     // freezeRemoval:true is mandatory — syncStaticColliders must not prune actors absent
     // from this road-only list (that would delete every plaza furniture solid).
+    // Cap cook budget so AOI ring refresh cannot stall the frame (was full list every rebuild).
     const result = this.syncStaticColliders(roadOnly, {
       freezeRemoval: true,
       geometryCache: true,
-      cookBudget: roadOnly.length
+      forceRecookOnPoseChange: false,
+      cookBudget: Math.min(24, Math.max(8, roadOnly.length))
     })
     if (result.geometryChanged) {
       // CCT cache only — never zero-dt simulate (that corrupted all actors under load).

@@ -512,6 +512,18 @@ export class PortableExperienceManager {
     return descs
   }
 
+  /**
+   * Phys ids still owned by live PE workers (even when dirty-once returned [] this frame).
+   * MultiSceneRuntime uses this so PE colliders are not invalidated every async tick.
+   */
+  allRegisteredPhysIds(): number[] {
+    const out: number[] = []
+    for (const worker of this.workers.values()) {
+      out.push(...worker.registeredPhysicsEntities())
+    }
+    return out
+  }
+
   dispose(): void {
     this.disposed = true
     for (const w of this.workers.values()) w.dispose()

@@ -402,19 +402,31 @@ export class SceneUiDomRenderer {
   }
 
   /**
-   * Always paint canvas-absolute under `#scene-ui-root`.
+   * Nest under ECS parent shell so overflow:hidden on shop panels clips children.
+   * Flat canvas-absolute (host + abs box) painted every inventory icon over the 3D world
+   * because parents no longer clipped — fishing mash screenshot.
    *
-   * Nested parent-relative shells + `transform: translate()` double-offset fishing shop
-   * icons when mid-tree parents had wrong yoga boxes / overflow / unusable flags —
-   * every inventory icon, SIZE/WEIGHT tile, and button ends up scattered over the 3D view.
-   * Hit-map already uses canvas-absolute Yoga boxes; DOM must match.
-   * Stacking uses `zIndex` + tree depth on the shell (siblings of the host).
+   * Unusable (0×0) parents → canvas-absolute fallback for that node only; never nest under
+   * a collapsed shell (that piled icons at one point).
    */
   private resolveDomParent(transform: PBUiTransform): {
     parent: HTMLElement
     coords: 'canvas' | 'parent'
   } {
-    void transform
+    const parentId = transform.parent ?? CANVAS_ROOT_ENTITY
+    if (parentId === CANVAS_ROOT_ENTITY || parentId === 0) {
+      return { parent: this.host, coords: 'canvas' }
+    }
+    const parentShell = this.nodes.get(parentId as Entity)
+    if (
+      parentShell?.isConnected &&
+      parentShell.dataset.uiUnusable !== '1' &&
+      parentShell.style.display !== 'none'
+    ) {
+      return { parent: parentShell, coords: 'parent' }
+    }
+    // Parent missing/hidden/unusable — do not paint orphans at canvas abs (that scatters
+    // shop icons). Caller still hides 0×0 subtrees; this is for late parent create order.
     return { parent: this.host, coords: 'canvas' }
   }
 
@@ -513,10 +525,13 @@ export class SceneUiDomRenderer {
     }
 
     delete shell.dataset.uiUnusable
+    // Undo applyHiddenDomState — display:none stuck after prior hide left dead shells.
+    shell.style.display = 'block'
+    shell.style.visibility = 'visible'
+    shell.style.pointerEvents = ''
     applyUiTransformContentStyles(el, transform, scale)
     shell.style.opacity = String(Math.min(1, Math.max(0, transform.opacity ?? 1)))
     shell.style.zIndex = String(transform.zIndex ?? 0)
-    shell.style.visibility = 'visible'
     shell.style.backgroundImage = ''
     shell.style.borderImage = ''
     shell.removeAttribute('inert')
@@ -655,13 +670,11 @@ export class SceneUiDomRenderer {
       el.querySelector('.scene-ui-node__select')?.remove()
     }
 
-    // Yoga screen-mapped geometry — always canvas-absolute (see resolveDomParent).
+    // Nested shells: parent-relative; roots: canvas-absolute. Clip large panels (clipShell).
     applyYogaLayoutBox(shell, layoutBox, scale, coords, clipShell)
-    // Depth-stable stacking for sibling shells (deeper / higher zIndex paints above).
-    const zBase = (transform.zIndex ?? 0) * 1000 + depth
-    shell.style.zIndex = String(zBase)
+    shell.style.zIndex = String(transform.zIndex ?? 0)
 
-    // Hit map uses canvas-absolute Yoga + layoutToScreen (same coords as paint).
+    // Hit map always canvas-absolute (not nested DOM rects).
     pushLayoutHitRegion(regions, entity, transform, layoutBox, input, depth)
 
     const children = input.forest.get(entity) ?? []

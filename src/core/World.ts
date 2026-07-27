@@ -209,6 +209,7 @@ export class World {
   private static readonly NEVER_COOKED_SCAN_MS = 1_500
   private lastColliderHealthLogMs = 0
   private lastLoggedStaticCount = -1
+  private lastSoftFloorLiftMs = 0
 
   /** Runtime burst (e.g. theatre composite spawns). */
   private runtimeColliderBurstUntil = 0
@@ -1971,7 +1972,7 @@ export class World {
             }`
         )
         // Soft-world smoking gun: actors exist but CCT never leaves infinite ground.
-        // Always print nearby walls + a short down-sweep when ground is missing/-1.
+        // Do NOT forceDynamicTreeRebuild here — that caused sweepFeetY→MISS after ~1min.
         if (feet && (ground === null || ground === -1)) {
           this.physics.logStaticCollidersNear(feet.x, feet.y, feet.z, 14, 'health-soft')
           const probe = this.physics.probeWalkSurfaceFeetY(feet.x, feet.z, feet.y + 2.5, 6, feet.y)
@@ -1980,11 +1981,16 @@ export class World {
               `sides=${sides ? 'yes' : 'no'} ` +
               `(down 2.5→-3.5 from feet+2.5; MISS = SQ tree cannot hit scene hulls)`
           )
-          // One defensive SQ rebuild when soft is observed — heals stale BVH after pose slides.
-          this.physics.rebuildStaticSceneQueryTree()
-          // Player fell under deck onto infinite ground (y=0) while scene floor is higher
-          // (probe≈0.2). Lift capsule onto sweep surface so walls at y≥0.2 can block.
-          if (probe != null && probe > feet.y + 0.08 && probe < feet.y + 4) {
+          this.physics.invalidateControllerCache()
+          // Throttled under-floor recover (probe higher than feet). Not every 8s spam.
+          const nowLift = performance.now()
+          if (
+            probe != null &&
+            probe > feet.y + 0.08 &&
+            probe < feet.y + 4 &&
+            nowLift - this.lastSoftFloorLiftMs > 5_000
+          ) {
+            this.lastSoftFloorLiftMs = nowLift
             const lifted = feet.clone()
             lifted.y = probe
             this.physics.teleport(lifted)

@@ -1,6 +1,8 @@
 /** Collision layers — subset of Hyperfy `Layers.js` for scene + player. */
 export const Layers = {
-  player: { group: 1 << 1, mask: (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) },
+  // Player CCT must NOT mask trigger bit — trigger volumes are overlap-only.
+  // Including (1<<5) made bilateral CCT filter block/tangle on TriggerArea spheres.
+  player: { group: 1 << 1, mask: (1 << 2) | (1 << 3) | (1 << 4) },
   environment: { group: 1 << 2, mask: (1 << 1) | (1 << 2) | (1 << 3) },
   prop: { group: 1 << 3, mask: (1 << 1) | (1 << 2) | (1 << 3) },
   gltfCollider: { group: 1 << 4, mask: (1 << 1) | (1 << 2) | (1 << 3) },

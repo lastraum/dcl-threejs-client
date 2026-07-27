@@ -625,58 +625,17 @@ export class PhysXWorld {
     this.cctFilterData = new PHYSX.PxFilterData(Layers.player.group, Layers.player.mask, 0, 0)
     this.controllerFilters = new PHYSX.PxControllerFilters(this.cctFilterData)
     this.controllerFilters.mFilterData = this.cctFilterData
-    // eSTATIC/eDYNAMIC — hit scene colliders. ePREFILTER — solid-layer gate below.
+    // No ePREFILTER — custom preFilter was a soft-world footgun (garbage words / wrong eNONE).
+    // Default bilateral filter uses permanent mFilterData vs shape query words (env/prop/gltf).
+    // Triggers use trigger layer mask and do not match player.mask solid bits for blocking.
     this.controllerFilters.mFilterFlags = new PHYSX.PxQueryFlags(
-      PHYSX.PxQueryFlagEnum.eSTATIC |
-        PHYSX.PxQueryFlagEnum.eDYNAMIC |
-        PHYSX.PxQueryFlagEnum.ePREFILTER
+      PHYSX.PxQueryFlagEnum.eSTATIC | PHYSX.PxQueryFlagEnum.eDYNAMIC
     )
+    this.controllerFilters.mFilterCallback = null
 
     const cctFilterCallback = new PHYSX.PxControllerFilterCallbackImpl()
     cctFilterCallback.filter = () => true
     this.controllerFilters.mCCTFilterCallback = cctFilterCallback
-
-    // CCT move() uses scene queries — must return eBLOCK or the capsule passes through static trimesh.
-    // Prefer solid-layer membership over bilateral word tests: dangling/garbage query words
-    // previously returned eNONE for every wall while sphere sweeps (different filter path) worked.
-    const envMask =
-      Layers.environment.group | Layers.prop.group | Layers.gltfCollider.group
-    const filterCallback = new PHYSX.PxQueryFilterCallbackImpl()
-    filterCallback.simplePreFilter = (
-      filterDataPtr: number,
-      shapePtr: number,
-      _actorPtr?: number,
-      _queryFlags?: number
-    ) => {
-      try {
-        const shape = PHYSX.wrapPointer(shapePtr, PHYSX.PxShape)
-        const shapeFilterData = shape.getQueryFilterData()
-        const s0 = shapeFilterData.word0 >>> 0
-        // Triggers are overlap-only — never CCT-block.
-        if ((s0 & Layers.trigger.group) !== 0 && (s0 & envMask) === 0) {
-          return PHYSX.PxQueryHitType.eNONE
-        }
-        // Always block scene solids (env / prop / gltf collider).
-        if ((s0 & envMask) !== 0) {
-          return PHYSX.PxQueryHitType.eBLOCK
-        }
-        // Fallback bilateral when shape layer is unknown/custom.
-        if (filterDataPtr) {
-          const filterData = PHYSX.wrapPointer(filterDataPtr, PHYSX.PxFilterData)
-          const q0 = filterData.word0 >>> 0
-          const q1 = filterData.word1 >>> 0
-          const s1 = shapeFilterData.word1 >>> 0
-          if ((q0 & s1) !== 0 && (s0 & q1) !== 0) {
-            return PHYSX.PxQueryHitType.eBLOCK
-          }
-        }
-        return PHYSX.PxQueryHitType.eNONE
-      } catch {
-        return PHYSX.PxQueryHitType.eBLOCK
-      }
-    }
-    filterCallback.simplePostFilter = () => PHYSX.PxQueryHitType.eBLOCK
-    this.controllerFilters.mFilterCallback = filterCallback
   }
 
   spawnPlayer(position: THREE.Vector3): void {
@@ -1340,20 +1299,18 @@ export class PhysXWorld {
         this.invalidateStaticCollider(desc.entity)
       }
     }
-    // Per-actor reinsert refreshes that actor's SQ bounds. Full static tree rebuild is
-    // still needed for bulk batches / shape-local PART motion (child setLocalPose).
-    if (shapeLocalsChanged || updated > 8) {
-      this.rebuildStaticSceneQueryTree()
-    } else if (updated > 0) {
+    // Prefer per-actor reinsert (already done above) + CCT cache invalidate.
+    // NEVER forceDynamicTreeRebuild on the hot path — plaza-scale rebuild corrupts WASM
+    // scene queries (sphere sweepFeetY flips to MISS; CCT stays soft). Logs proved this.
+    if (updated > 0 || shapeLocalsChanged) {
       this.invalidateControllerCache()
     }
     return updated
   }
 
   /**
-   * After static actor poses move (root setGlobalPose or child setLocalPose), rebuild
-   * the static SQ structure so CCT/scene queries hit current hull bounds.
-   * Cache-invalidate alone is not enough — BVH can keep cook-time AABBs.
+   * Boot/seal only — full static SQ rebuild. Do **not** call from health ticks or pose slides;
+   * forceDynamicTreeRebuild on 700+ actors corrupts PhysX WASM query state (sweep MISS).
    */
   rebuildStaticSceneQueryTree(): void {
     if (!this.scene) {
@@ -1362,7 +1319,7 @@ export class PhysXWorld {
     }
     try {
       // (rebuildStaticStructure, rebuildDynamicStructure)
-      this.scene.forceDynamicTreeRebuild(true, true)
+      this.scene.forceDynamicTreeRebuild(true, false)
     } catch (err) {
       console.warn('[PhysXWorld] forceDynamicTreeRebuild failed:', err)
     }
@@ -1610,8 +1567,8 @@ export class PhysXWorld {
     }
 
     if (geometryChanged) {
-      // New cooks + any pose slides in this batch — rebuild SQ so CCT cannot keep stale AABBs.
-      this.rebuildStaticSceneQueryTree()
+      // New cooks reinsert via addActor; CCT cache is enough — no full tree rebuild.
+      this.invalidateControllerCache()
     }
     return { geometryChanged, pendingCooks }
   }
@@ -1639,25 +1596,23 @@ export class PhysXWorld {
   }
 
   /**
-   * After bulk static registration — rebuild static SQ BVH + CCT cache so move() sees
-   * current hulls. NEVER runs `scene.simulate(0)` (plaza-scale WASM corruption).
+   * After bulk static registration — CCT cache only.
+   * NEVER simulate(0) and NEVER forceDynamicTreeRebuild here (both soft plaza solids).
    */
   warmStaticScene(): void {
     if (!this.scene) return
     this.ensureInfiniteGroundPlane()
-    // allowZeroDtWarmSim kept for callers that still toggle it around boot seal —
-    // intentionally ignored (simulate(0) path removed).
     void this.allowZeroDtWarmSim
-    this.rebuildStaticSceneQueryTree()
+    this.invalidateControllerCache()
   }
 
   /**
-   * Runtime-safe refresh after late cooks / road AOI / heavy main-thread hitch.
-   * Rebuild static SQ + CCT cache — never simulate(0).
+   * Runtime-safe refresh after late cooks / road AOI.
+   * Cache invalidate only — full tree rebuild is seal/boot exclusive.
    */
   refreshStaticAfterRuntimeGeometryChange(): void {
     this.ensureInfiniteGroundPlane()
-    this.rebuildStaticSceneQueryTree()
+    this.invalidateControllerCache()
   }
 
   /**

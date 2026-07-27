@@ -43,7 +43,8 @@ import {
   findUiPointerHandlerEntity,
   hasUiPointerDownOrUp,
   hasUiPointerEvent,
-  isUiEntityBlocking,
+  isUiEntityPointerCapturing,
+  normalizePointerEventsList,
   type UiPointerEventsLookup
 } from './uiPointer'
 import { InputAction, PointerEventType, type PointerEventTypeValue } from '../../input/pointerConstants'
@@ -57,7 +58,6 @@ import {
 import { layoutUiTree, type LayoutBox } from './yogaLayout'
 import { tryRefineAbsoluteLayoutBoxes } from './fastLayoutPatch'
 import { onSceneUiImageLoaded } from './uiImageLoad'
-import { effectiveUiBackgroundAlpha } from './uiBackgroundStyle'
 
 const _camPos = new THREE.Vector3()
 const POINTER_EVENTS_COMPONENT_ID = 1062
@@ -109,8 +109,13 @@ export class SceneUiBridge {
   private domVisible = false
   private readonly unbindImageLoaded: () => void
   private imageRepaintQueued = false
-  /** Latest pointer phase-4 rows — authoritative for DOM hits when projection lags. */
+  /** Latest pointer phase-4 rows — fill-in when projection PE lags (menu open). */
   private mountSnapshotPointerEvents = new Map<Entity, unknown>()
+  /**
+   * Entities that already had PE on the live projection. Once seen, a missing live PE means
+   * deleted — never resurrect from a stale phase-4 snapshot (welcome splash ghost catcher).
+   */
+  private livePointerEventsSeen = new Set<Entity>()
   /** Last pointer position — re-evaluate cursor after Sync/modal DOM swaps. */
   private lastPointerClientX = 0
   private lastPointerClientY = 0
@@ -282,23 +287,37 @@ export class SceneUiBridge {
     this.mountSnapshotPointerEvents.clear()
     for (const row of rows) {
       if (row.componentId !== POINTER_EVENTS_COMPONENT_ID) continue
-      this.mountSnapshotPointerEvents.set(row.entity as Entity, row.value)
+      const entity = row.entity as Entity
+      this.mountSnapshotPointerEvents.set(entity, row.value)
+      // New snapshot may re-open PE on an entity that previously lost it — allow snapshot lead.
+      this.livePointerEventsSeen.delete(entity)
     }
   }
 
   private pointerEventsLookup: UiPointerEventsLookup = (entity) => {
     const ecs = this.mirrorEcs
-    // Prefer phase-4 snapshot (may be ahead of projection fold), then live projection.
-    // Empty snapshot rows fall through — do not mask PE that only exists on the projection.
+    const live = ecs?.PointerEvents.getOrNull(entity) as { pointerEvents?: unknown[] } | null
+    if (normalizePointerEventsList(live).length > 0) {
+      // Live PE wins — drop snapshot so deletes cannot be resurrected later.
+      this.livePointerEventsSeen.add(entity)
+      this.mountSnapshotPointerEvents.delete(entity)
+      return live as ReturnType<UiPointerEventsLookup>
+    }
+    // Projection already owned PE for this entity and now has none → deleted, not lagging.
+    if (this.livePointerEventsSeen.has(entity)) {
+      this.mountSnapshotPointerEvents.delete(entity)
+      return null
+    }
+    // Phase-4 ahead of fold (menu open) — snapshot only when live has never carried PE.
     if (this.isAuthoritativeUiEntity(entity)) {
       const fromSnapshot = this.mountSnapshotPointerEvents.get(entity) as
         | { pointerEvents?: unknown[] }
         | undefined
-      if (fromSnapshot?.pointerEvents?.length) {
+      if (normalizePointerEventsList(fromSnapshot).length > 0) {
         return fromSnapshot as ReturnType<UiPointerEventsLookup>
       }
     }
-    return ecs?.PointerEvents.getOrNull(entity) ?? null
+    return null
   }
 
   /** Projection + phase-4 snapshot — used by pointer flush and DOM interactivity. */
@@ -790,11 +809,19 @@ export class SceneUiBridge {
       this.root.style.cursor = 'default'
       return
     }
-    const under = document.elementFromPoint(x, y)
-    const interactive =
-      under instanceof Element &&
-      !!under.closest('.scene-ui-node--interactive, .scene-ui-node__input, .scene-ui-node__select')
-    const next = interactive ? 'pointer' : 'default'
+    // Hit-map + Color4.a / PE (not stale DOM --interactive class after welcome fade).
+    const capturing = this.pickTopmostUiLayer(x, y)
+    if (!capturing) {
+      const under = document.elementFromPoint(x, y)
+      const field =
+        under instanceof Element &&
+        !!under.closest('.scene-ui-node__input, .scene-ui-node__select')
+      const next = field ? 'text' : 'default'
+      canvas.style.cursor = next
+      this.root.style.cursor = next
+      return
+    }
+    const next = this.input.isFieldEntity(capturing.entity) ? 'text' : 'pointer'
     canvas.style.cursor = next
     this.root.style.cursor = next
   }
@@ -904,12 +931,7 @@ export class SceneUiBridge {
     for (const entity of candidates) {
       if (this.forceDismissedEntities.has(entity)) continue
       if (this.input.isFieldEntity(entity)) return { entity, blocking: true }
-      if (isUiEntityBlocking(ecs, entity, this.pointerEventsLookup)) {
-        // Near-transparent UiBackground PE shells must not block (welcome fade).
-        const bg = ecs.UiBackground.getOrNull(entity) as PBUiBackground | null
-        if (bg && effectiveUiBackgroundAlpha(bg.color) < 0.05) continue
-        const t = ecs.UiTransform.getOrNull(entity)
-        if (t && (t.opacity ?? 1) < 0.05) continue
+      if (isUiEntityPointerCapturing(ecs, entity, this.pointerEventsLookup)) {
         return { entity, blocking: true }
       }
     }
@@ -950,7 +972,7 @@ export class SceneUiBridge {
           this.pointerEventsLookup
         )
         const area = region.width * region.height
-        const blocking = isUiEntityBlocking(ecs, region.entity, this.pointerEventsLookup)
+        const blocking = isUiEntityPointerCapturing(ecs, region.entity, this.pointerEventsLookup)
         console.log(
           `[scene-ui]   region e${region.entity} depth=${region.depth} z=${region.zIndex} ${Math.round(region.width)}×${Math.round(region.height)} area=${Math.round(area)} handler=${handler ?? '—'} block=${blocking ? 1 : 0}`
         )
@@ -978,6 +1000,9 @@ export class SceneUiBridge {
       )
       if (handler !== null) {
         if (this.forceDismissedEntities.has(handler)) continue
+        // Faded Color4.a PE (welcome splash) must not keep ranking as a handler — that left
+        // the cursor locked on a ghost UI entity after the scrim vanished.
+        if (!isUiEntityPointerCapturing(ecs, handler, this.pointerEventsLookup)) continue
         // Rank by the HANDLER's region (card), not the leaf (label) — so a leaf that
         // incorrectly walks to the scrim loses to a real card handler under the same point.
         let area = this.candidatePickArea(handler)
@@ -989,11 +1014,7 @@ export class SceneUiBridge {
         continue
       }
 
-      if (isUiEntityBlocking(ecs, entity, this.pointerEventsLookup)) {
-        const bg = ecs.UiBackground.getOrNull(entity) as PBUiBackground | null
-        if (bg && effectiveUiBackgroundAlpha(bg.color) < 0.05) continue
-        const tr = ecs.UiTransform.getOrNull(entity)
-        if (tr && (tr.opacity ?? 1) < 0.05) continue
+      if (isUiEntityPointerCapturing(ecs, entity, this.pointerEventsLookup)) {
         const area = this.candidatePickArea(entity)
         if (area < blockingArea) {
           blockingArea = area
@@ -1135,6 +1156,8 @@ export class SceneUiBridge {
       this.input.releaseEntity(entity)
       this.lastMountedUiEntities.delete(entity)
       this.clearForceDismiss(entity)
+      this.mountSnapshotPointerEvents.delete(entity)
+      this.livePointerEventsSeen.delete(entity)
     }
   }
 

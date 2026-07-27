@@ -2,6 +2,7 @@ import type { Entity } from '@dcl/ecs'
 import type { MirrorComponents } from '../../bridge/mirrorComponents'
 import type { ProjectionView } from '../../bridge/ProjectionView'
 import type { PBPointerEvents_Entry } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/pointer_events.gen'
+import type { PBUiBackground } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_background.gen'
 export type UiPointerEventsLookup = (
   entity: Entity
 ) => { pointerEvents: ReadonlyArray<PBPointerEvents_Entry> } | null | undefined
@@ -13,6 +14,8 @@ import {
   type PointerEventTypeValue
 } from '../../input/pointerConstants'
 import { normalizePointerFilterMode, PointerFilterMode } from './yogaEnums'
+import { effectiveUiBackgroundAlpha } from './uiBackgroundStyle'
+import { isUiEntityVisible } from './uiVisibility'
 
 function buttonMatches(entryButton: number | undefined, pressed: InputActionValue): boolean {
   const btn = entryButton ?? InputAction.IA_ANY
@@ -89,6 +92,39 @@ export function isUiEntityBlocking(
   if (t && normalizePointerFilterMode(t.pointerFilter) === PointerFilterMode.BLOCK) return true
   const spec = pointerEventsOf?.(entity) ?? ecs.PointerEvents.getOrNull(entity)
   return hasUiPointerDownOrUp(spec)
+}
+
+/**
+ * Near-invisible UiBackground (Color4.a) — CBD Plaza welcome fades a, not UiTransform.opacity.
+ * Below this, PE shells must not capture hits/cursor (ghost catcher after fade).
+ */
+export const UI_POINTER_CAPTURE_MIN_ALPHA = 0.05
+
+/** True when UiBackground.color.a is effectively invisible for pointer capture. */
+export function isUiBackgroundPointerTransparent(
+  bg: PBUiBackground | { color?: { r?: number; g?: number; b?: number; a?: number } } | null | undefined
+): boolean {
+  if (!bg) return false
+  return effectiveUiBackgroundAlpha(bg.color) < UI_POINTER_CAPTURE_MIN_ALPHA
+}
+
+/**
+ * Whether this entity should capture cursor/clicks right now.
+ * Respects scene display/opacity/Color4.a — no client force-dismiss.
+ */
+export function isUiEntityPointerCapturing(
+  ecs: MirrorComponents,
+  entity: Entity,
+  pointerEventsOf?: UiPointerEventsLookup,
+  background?: PBUiBackground | null
+): boolean {
+  const transformOf = (e: Entity) => ecs.UiTransform.getOrNull(e)
+  if (!isUiEntityVisible(entity, transformOf)) return false
+  const t = transformOf(entity)
+  if (t && (t.opacity ?? 1) < UI_POINTER_CAPTURE_MIN_ALPHA) return false
+  const bg = background ?? (ecs.UiBackground.getOrNull(entity) as PBUiBackground | null)
+  if (isUiBackgroundPointerTransparent(bg)) return false
+  return isUiEntityBlocking(ecs, entity, pointerEventsOf)
 }
 
 /** @deprecated Use isUiEntityBlocking — projection-only PointerEvents lookup. */

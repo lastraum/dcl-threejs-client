@@ -5,18 +5,13 @@ import type { PBUiInput } from '@dcl/ecs/dist/components/generated/pb/decentrala
 import type { PBUiText } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_text.gen'
 import type { PBUiTransform } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_transform.gen'
 import type { ResolvedScene } from '../../dcl/content/types'
-import {
-  normalizePointerFilterMode,
-  PointerFilterMode,
-  YGOverflow
-} from './yogaEnums'
+import { YGOverflow } from './yogaEnums'
 import { isUiEntityVisible } from './uiVisibility'
 import type { UiViewport, VirtualCanvasSize, ScreenUiRect } from './virtualCanvas'
 import { layoutToScreen } from './virtualCanvas'
 import {
   applyUiBackgroundStyles,
   BackgroundTextureMode,
-  effectiveUiBackgroundAlpha,
   extractUiTextureSrc,
   hasUiBackgroundTexture,
   hasUiVisualBackground,
@@ -24,7 +19,7 @@ import {
   parseUiBackgroundUvRect,
   resolveUiBackgroundImageUrl
 } from './uiBackgroundStyle'
-import { hasUiPointerDownOrUp, type UiPointerEventsLookup } from './uiPointer'
+import { isUiEntityPointerCapturing, type UiPointerEventsLookup } from './uiPointer'
 import type { MirrorComponents } from '../../bridge/mirrorComponents'
 import type { UiScreenRegion } from './uiHitMap'
 import { CANVAS_ROOT_ENTITY } from './uiTree'
@@ -122,31 +117,16 @@ function pushLayoutHitRegion(
 function isSceneUiNodeInteractive(
   entity: Entity,
   ecs: MirrorComponents,
-  transform: PBUiTransform,
+  _transform: PBUiTransform,
   inputOf: (e: Entity) => PBUiInput | null,
   dropdownOf: (e: Entity) => PBUiDropdown | null,
   pointerEventsOf?: UiPointerEventsLookup,
   background?: PBUiBackground | null
 ): boolean {
-  // Nearly-invisible shells still steal world clicks if PE stays registered (welcome fade).
-  if ((transform.opacity ?? 1) < 0.05) return false
-  // CBD Plaza welcome fades UiBackground.color.a (not UiTransform.opacity). Without this,
-  // a full-screen PE catcher stays pointer-events:auto after the image is gone.
-  if (
-    background &&
-    effectiveUiBackgroundAlpha(background.color) < 0.05 &&
-    !inputOf(entity) &&
-    !dropdownOf(entity)
-  ) {
-    return false
-  }
-  const spec = pointerEventsOf?.(entity) ?? ecs.PointerEvents.getOrNull(entity)
-  return (
-    normalizePointerFilterMode(transform.pointerFilter) === PointerFilterMode.BLOCK ||
-    hasUiPointerDownOrUp(spec) ||
-    !!inputOf(entity) ||
-    !!dropdownOf(entity)
-  )
+  if (inputOf(entity) || dropdownOf(entity)) return true
+  // Fields handled above. PE/BLOCK shells: honor Color4.a + display (welcome fade / ghost PE).
+  // DOM --interactive class must match hit-map pick (isUiEntityPointerCapturing).
+  return isUiEntityPointerCapturing(ecs, entity, pointerEventsOf, background ?? null)
 }
 
 function applySceneUiNodePointerState(

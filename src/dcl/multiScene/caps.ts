@@ -5,11 +5,11 @@ import { renderQuality } from '../../rendering/RenderQualitySettings'
  * Product multi-scene model (FocusOwner + LOD rings):
  * - **Primary** — FocusOwner (UI/audio/video/inputs)
  * - **Live secondaries** — muted workers, scripts every frame, scene-to-scene ≤16m, hard-capped
- * - **Tertiary residents** — loaded graphs with scripts OFF + visual LOD (never unload on demote)
+ * - **Tertiary residents** — scripts OFF + visual LOD when leave ring / under cap (never unload on demote)
  * - **Tertiary composites** — roads / empty / AOI shells over Scene Distance (no worker)
  *
- * Composite-first for plaza shells; live only for modest/nested neighbors.
- * Skip script-warm + first-frame sample thrash (those dual-boot CBD freezes).
+ * Parcel count never refuses secondary boot or picks mode. Budget = radius + cap + serial boot.
+ * Full contract: docs/MULTI_SCENE_CONTINUITY.md
  */
 const AOI_LIVE_SECONDARIES_ONLY = true
 /** Hard cap on concurrent muted live secondary workers (dense Genesis). */

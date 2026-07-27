@@ -43,7 +43,7 @@ export type SceneWorkerSlotOptions = {
    * to secondary privilege + renames entity root.
    */
   existingSystem?: SceneScriptSystem
-  /** Initial resident mode (default secondary). Large demotes often start tertiary. */
+  /** Initial resident mode (default secondary). Sticky demote always starts secondary. */
   initialMode?: ResidentMode
 }
 

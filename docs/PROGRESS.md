@@ -2,19 +2,50 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-23  
-> **Current phase:** **v1.5.0** production beta — collider PART/ROOT · Animator · avatar compose · social/tours; still not full Explorer parity.  
+> **Last updated:** 2026-07-26  
+> **Current phase:** **v1.5.x** multi-scene continuity on `feat/aoi-focus-owner` (FocusOwner · sticky demote · tertiary LOD) + **v1.5.0** production beta base.  
 > **Shipped (1.x):** **v1.5.0 PART/ROOT colliders · Animator hold · avatar compose · tours · cast audio** · **v1.4.0 custom worlds · Worlds map · AOI · shell UI · place analytics** · **v1.3.0 plaza/poker PE · TextShape UV · chat translate** · **v1.2.0 Camera Reel + biomes + backpack hides** · In-World Camera · multi-room chat · nearby voice · P4 bloom · glider.  
 
-> **1.x next:** backpack outfits/marketplace · scene UI text-measure · community voice Bearer · gallery multi-page · graphics P3 distance culls · analytics charts polish · broken-rig wearable fallback (shelved).  
+> **1.x next:** multi-scene FPS hardening under CBD ring load · backpack outfits/marketplace · scene UI text-measure · community voice Bearer · gallery multi-page · graphics P3 distance culls · analytics charts polish · broken-rig wearable fallback (shelved).  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
-> **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  
+> **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **Multi-scene continuity:** [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) · **Place analytics:** [CREATOR_ANALYTICS.md](./CREATOR_ANALYTICS.md)
 >
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## 🚧 Milestone — Multi-scene FocusOwner continuity (`feat/aoi-focus-owner`) (2026-07-26)
+
+**Status: branch in progress** — continuity contract documented + landed; FPS still hardening under dual secondary load.
+
+### What's new (platform)
+
+- **No unload on parcel walk** — promote = handoff + sticky demote only (never dispose + seamless jump for stand-on-parcel)
+- **Resident modes** — primary FocusOwner · secondary muted full scripts · tertiary scripts-off LOD (leave-ring / cap only)
+- **No parcel-size gate** — parcel count never refuses secondary boot or forces tertiary
+- **Sticky colliders kept** — remapped PhysX one-shot; dirty-once + `allRegisteredPhysIds` (no wipe/recook 3fps death spiral)
+- **Origin rebind** — `bindSceneTarget` before feet restore (soft-route warp fixed)
+- **AOI continuity** — default ground everywhere non-road; no scatter on real/resident parcels
+- **Freecam durable** — player orbit survives promote; VC never reseeds freecam
+- **AvatarModifier / CameraMode primary-only** — demote clears hide + forced camera
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Sticky demote** | 🟢 | Always secondary on demote; never dispose prior primary |
+| **Promote handoff** | 🟢 | Live secondary adopt + origin rebind + settle window |
+| **Tertiary LOD** | 🟢 | Ring/cap only — no parcel-size tertiary |
+| **Sticky PhysX keep** | 🟢 | Dirty-once + registered-id tracking |
+| **Freecam / FocusOwner** | 🟢 | Durable freecam · primary-only modifiers |
+| **CBD ring FPS** | 🟡 | Cap ≤3 + serial boot; dual live still expensive |
+| **Docs** | 🟢 | [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) |
+
+**QA (branch smoke):** CBD → nested scene → CBD colliders + freecam · soft parcel URL · no tree scatter on plaza · no continuous Missing-actors thrash.
+
+**Tip:** Full contract in [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md). Branch: `feat/aoi-focus-owner`.
 
 ---
 

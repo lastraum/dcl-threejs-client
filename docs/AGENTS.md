@@ -33,14 +33,15 @@ If a change makes the world go blank on neighbor step, **it is a P0 bug** — re
 
 ## Reading order
 
-1. **[PROGRESS.md](./PROGRESS.md)** — latest release / RC (v1.5.0), what’s next, shipped history  
-2. **[INTEGRATION.md](./INTEGRATION.md)** + **`src/client/dev/integrationRegistry.ts`** — parity matrix  
-2b. **[COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)** — PhysX PART vs ROOT (v1.5)  
-3. **[CLAIMS.yaml](./CLAIMS.yaml)** — who is already working on what  
-4. **[ARCHITECTURE.md](./ARCHITECTURE.md)** — scene I/O model + debt  
-5. **[DEPLOYMENT.md](./DEPLOYMENT.md)** — build / preview / go-live  
-6. **[PR_CHECKLIST.md](./PR_CHECKLIST.md)** — required checks before PR  
-7. **[CONTRIBUTOR_TESTING.md](./CONTRIBUTOR_TESTING.md)** — test matrix  
+1. **[PROGRESS.md](./PROGRESS.md)** — latest release / RC, what’s next, shipped history  
+2. **[MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md)** — FocusOwner · sticky demote · colliders · AOI (branch `feat/aoi-focus-owner`)  
+3. **[INTEGRATION.md](./INTEGRATION.md)** + **`src/client/dev/integrationRegistry.ts`** — parity matrix  
+3b. **[COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)** — PhysX PART vs ROOT (v1.5)  
+4. **[CLAIMS.yaml](./CLAIMS.yaml)** — who is already working on what  
+5. **[ARCHITECTURE.md](./ARCHITECTURE.md)** — scene I/O model + debt  
+6. **[DEPLOYMENT.md](./DEPLOYMENT.md)** — build / preview / go-live  
+7. **[PR_CHECKLIST.md](./PR_CHECKLIST.md)** — required checks before PR  
+8. **[CONTRIBUTOR_TESTING.md](./CONTRIBUTOR_TESTING.md)** — test matrix  
 
 Also: [REPO_MANAGEMENT.md](./REPO_MANAGEMENT.md) (branches/release), [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) (historical phases), [TASKS.yaml](./TASKS.yaml) (re-arch history only).
 

@@ -218,22 +218,46 @@ export class CrdtProjection {
   }
 
   /**
-   * Pointer phase 4 structured mount — store decoded values directly (no wire deserialize).
+   * Pointer phase 4 / cooperative dirty snapshot — store decoded values directly.
    * Call under beginForceWorkerUiPuts; records changes for foldProjectionChanges.
+   *
+   * PE (1062) is put when present on a UI entity. Main must clear PE before re-seed
+   * (SceneScriptSystem clearLwwSlotsForEntities includes 1062) so a missing PE row
+   * after splash click actually drops the catcher — snapshot is PUT-only, not a full
+   * component replace of the entity.
    */
   applyWorkerUiMountSnapshot(
     rows: readonly { entity: Entity; componentId: number; value: unknown }[]
   ): void {
     const tsBase = 1_000_000
     let seq = 0
+    const POINTER_EVENTS_ID = 1062
+    const UI_TRANSFORM_ID = 1050
+    const entitiesWithTransform = new Set<Entity>()
+    const entitiesWithPe = new Set<Entity>()
     for (const row of rows) {
       if (!WORKER_OWNED_UI_COMPONENT_IDS.has(row.componentId)) continue
       if (!this.meta.has(row.componentId)) continue
       this.deletedEntities.delete(row.entity)
+      if (row.componentId === UI_TRANSFORM_ID) entitiesWithTransform.add(row.entity)
+      if (row.componentId === POINTER_EVENTS_ID) entitiesWithPe.add(row.entity)
       // UiBackground (1053) / UiText (1052): force numeric color.a so transparent
       // textures (blood_frame a=0) stay hidden after omit-zero serialization.
       const value = normalizeUiColorFields(row.componentId, row.value)
       this.storeComponentPut(row.entity, row.componentId, tsBase + ++seq, value)
+    }
+    // Belt-and-suspenders: if clearLww skipped PE, drop PE on snapshot UI entities
+    // that no longer ship a PE row (scene removed PointerEvents, entity still mounted).
+    const peMap = this.components.get(POINTER_EVENTS_ID)
+    const peTs = this.timestamps.get(POINTER_EVENTS_ID)
+    if (peMap) {
+      for (const entity of entitiesWithTransform) {
+        if (entitiesWithPe.has(entity)) continue
+        if (!peMap.has(entity)) continue
+        peMap.delete(entity)
+        peTs?.delete(entity)
+        this.changes.push({ entity, componentId: POINTER_EVENTS_ID, kind: 'delete' })
+      }
     }
   }
 

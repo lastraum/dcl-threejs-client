@@ -2459,14 +2459,17 @@ export class SceneScriptSystem {
     try {
       this.prepareRendererOutboundState()
       const projectionDeletes: ProjectionChange[] = []
-      const { UiTransform, UiText, UiBackground, UiInput, UiDropdown } = this.readComponents
-      // Ui* only — PointerEvents is world+UI shared and travels normal CRDT (not UI-strip).
+      const { UiTransform, UiText, UiBackground, UiInput, UiDropdown, PointerEvents } =
+        this.readComponents
+      // Ui* strip path — PointerEvents on UI entities still rides the structured mount
+      // snapshot (not cooperative Ui* strip). World PE without UiTransform is untouched.
       const uiComponentIds = new Set([
         UiTransform.componentId,
         UiText.componentId,
         UiBackground.componentId,
         UiInput.componentId,
-        UiDropdown.componentId
+        UiDropdown.componentId,
+        PointerEvents.componentId
       ])
       let batchTouchesUi = false
       const uiTransformId = UiTransform.componentId
@@ -2483,7 +2486,10 @@ export class SceneScriptSystem {
       const pointerUiMountBatch =
         hasUiMountSnapshot ||
         batch.some((i) => i.uiMountSnapshot !== undefined || (i.uiEntities?.length ?? 0) > 0)
-      // Only clear LWW for entities present in the structured snapshot we are about to re-seed.
+      // Clear LWW for entities present in the structured snapshot we are about to re-seed.
+      // Must include PointerEvents: cooperative UI egress is snapshot-only; if the scene
+      // removes PE after splash click, omitting 1062 left main with a ghost PE catcher
+      // (hand cursor + block=1) forever while Color4.a still faded.
       // Never wipe the full mount on bare uiEntities (no rows) — that left projection at 0/N
       // (mount commit deferred forever → sceneTicksPaused stuck → Flagtag timer + unfreeze die).
       if (latestUiMountSnapshot?.length) {
@@ -2495,7 +2501,8 @@ export class SceneScriptSystem {
             UiText.componentId,
             UiBackground.componentId,
             UiInput.componentId,
-            UiDropdown.componentId
+            UiDropdown.componentId,
+            PointerEvents.componentId
           ])
         }
       }

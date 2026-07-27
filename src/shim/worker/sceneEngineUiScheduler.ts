@@ -365,6 +365,10 @@ function parseFingerprintEntityLines(fingerprint: string): Map<string, string> {
   return lines
 }
 
+function fingerprintLineHasPointerEvents(line: string | undefined): boolean {
+  return !!line && line.includes(':pe')
+}
+
 function touchWorkerUiEntityForCrdt(
   entity: Entity,
   components: {
@@ -374,7 +378,8 @@ function touchWorkerUiEntityForCrdt(
     UiInput: ReturnType<typeof resolveWorkerUiInput>
     UiDropdown: ReturnType<typeof resolveWorkerUiDropdown>
     PointerEvents: ReturnType<typeof generated.PointerEvents>
-  }
+  },
+  opts?: { prevLine?: string; currLine?: string }
 ): number {
   const id = entity as Entity
   let touched = 0
@@ -412,6 +417,13 @@ function touchWorkerUiEntityForCrdt(
       }))
     })
     touched++
+  } else if (
+    fingerprintLineHasPointerEvents(opts?.prevLine) &&
+    !fingerprintLineHasPointerEvents(opts?.currLine)
+  ) {
+    // Entity stayed mounted but scene removed PointerEvents (welcome splash after click).
+    // Without an explicit LWW delete, main kept the old PE catcher forever.
+    if (forceLwwDelete(components.PointerEvents, id, { pointerEvents: [] })) touched++
   }
   return touched
 }
@@ -556,7 +568,10 @@ function touchDirtyWorkerUiComponentsForCrdt(
     if (prevLines.has(key) && !currLines.has(key)) {
       touched += touchRemovedUiEntityForCrdt(entity, components)
     } else {
-      touched += touchWorkerUiEntityForCrdt(entity, components)
+      touched += touchWorkerUiEntityForCrdt(entity, components, {
+        prevLine: prevLines.get(key),
+        currLine: currLines.get(key)
+      })
     }
   }
   return { touched, dirty: [...dirty], fullTouch: false }

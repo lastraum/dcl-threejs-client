@@ -1562,6 +1562,8 @@ export class ThreeBridge {
 
     const key = primitiveMeshKey(spec)
     if (primitive.userData.primitiveMeshKey === key) return
+    // In-place UV for flipbook sprites. Marquee text-along-Y still rebuilds via
+    // syncSpritePlaneVisual — but fishing splash cells must not hit that path every frame.
     if (updatePlaneGeometryUvs(primitive.geometry, planeUvsEarly)) {
       primitive.userData.primitiveMeshKey = key
     }

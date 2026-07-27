@@ -10,7 +10,8 @@ import type { VirtualCanvasSize } from './virtualCanvas'
 /** Transform fields that do not affect Yoga sizing (filtered before cache key). */
 const LAYOUT_STRIP_KEYS = new Set(['opacity', 'zIndex', 'pointerFilter'])
 
-function layoutTransformFingerprint(transform: PBUiTransform): string {
+/** Yoga-relevant transform fingerprint — excludes paint-only opacity/zIndex/pointerFilter. */
+export function layoutTransformFingerprint(transform: PBUiTransform): string {
   const out: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(transform)) {
     if (LAYOUT_STRIP_KEYS.has(key)) continue

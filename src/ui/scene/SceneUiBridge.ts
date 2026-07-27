@@ -50,6 +50,7 @@ import { InputAction, PointerEventType, type PointerEventTypeValue } from '../..
 import {
   computeUiLayoutKey,
   computeUiVisualPaintKey,
+  layoutTransformFingerprint,
   UiLayoutCache,
   visibleLayoutBoxes
 } from './uiLayoutCache'
@@ -94,6 +95,8 @@ export class SceneUiBridge {
   private lastPaintLayoutKey = ''
   private lastPaintVisualKey = ''
   private lastEntityVisualKeys = new Map<Entity, string>()
+  /** Previous frame Yoga-relevant transform fingerprints (position/size — not opacity). */
+  private lastEntityLayoutKeys = new Map<Entity, string>()
   /** Previous frame layout boxes — refine absolute reeling-bar geometry without full Yoga. */
   private lastLayoutBoxMap: Map<Entity, LayoutBox> | null = null
   /**
@@ -328,6 +331,8 @@ export class SceneUiBridge {
     this.lastPaintLayoutKey = ''
     this.lastPaintVisualKey = ''
     this.lastEntityVisualKeys.clear()
+    this.lastEntityLayoutKeys.clear()
+    this.lastLayoutBoxMap = null
     this.paintCount = 0
     this.firstPaintLogged = false
     this.paintedEpoch = -1
@@ -416,6 +421,7 @@ export class SceneUiBridge {
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
       this.lastEntityVisualKeys.clear()
+      this.lastEntityLayoutKeys.clear()
       this.input.pruneStaleEntities(new Set())
     } else if (changed) {
       this.lastMountedUiEntities.clear()
@@ -423,6 +429,7 @@ export class SceneUiBridge {
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
       this.lastEntityVisualKeys.clear()
+      this.lastEntityLayoutKeys.clear()
     }
 
     this.workerUiEntitiesKnown = true
@@ -572,6 +579,7 @@ export class SceneUiBridge {
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
       this.lastEntityVisualKeys.clear()
+      this.lastEntityLayoutKeys.clear()
       this.paintedEpoch = this.contentEpoch
       return
     }
@@ -589,6 +597,7 @@ export class SceneUiBridge {
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
       this.lastEntityVisualKeys.clear()
+      this.lastEntityLayoutKeys.clear()
       this.paintedEpoch = this.contentEpoch
       return
     }
@@ -670,14 +679,35 @@ export class SceneUiBridge {
       this.lastLoggedPaintMount = mountSize
     }
 
-    // Collect visual-dirty entities early (also used for fast absolute re-layout).
+    // Visual dirties (UV/color/text) + layout dirties (position/height). Fishing reeling
+    // moves the lure marker via position.bottom only — visual key stays flat while the
+    // zone UV changes; refine/patch must include pure layout movers or the lure freezes.
     const dirtyEntities: Entity[] = []
+    const dirtySet = new Set<Entity>()
+    const markDirty = (entity: Entity): void => {
+      if (dirtySet.has(entity)) return
+      dirtySet.add(entity)
+      dirtyEntities.push(entity)
+    }
     if (this.lastEntityVisualKeys.size > 0) {
       for (const [entity, key] of entityVisualKeys) {
-        if (this.lastEntityVisualKeys.get(entity) !== key) dirtyEntities.push(entity)
+        if (this.lastEntityVisualKeys.get(entity) !== key) markDirty(entity)
       }
       for (const entity of this.lastEntityVisualKeys.keys()) {
-        if (!entityVisualKeys.has(entity)) dirtyEntities.push(entity)
+        if (!entityVisualKeys.has(entity)) markDirty(entity)
+      }
+    }
+    const entityLayoutKeys = new Map<Entity, string>()
+    for (const { entity, transform } of records) {
+      const lk = layoutTransformFingerprint(transform)
+      entityLayoutKeys.set(entity, lk)
+      if (this.lastEntityLayoutKeys.size > 0 && this.lastEntityLayoutKeys.get(entity) !== lk) {
+        markDirty(entity)
+      }
+    }
+    if (this.lastEntityLayoutKeys.size > 0) {
+      for (const entity of this.lastEntityLayoutKeys.keys()) {
+        if (!entityLayoutKeys.has(entity)) markDirty(entity)
       }
     }
 
@@ -745,7 +775,7 @@ export class SceneUiBridge {
 
     // Layout stable (or refined) + few dirties → patch DOM only (skip full tree walk).
     let usedPatch = false
-    if (layoutCacheHit && this.lastEntityVisualKeys.size > 0 && this.paintCount > 1) {
+    if (layoutCacheHit && this.paintCount > 1) {
       if (
         dirtyEntities.length > 0 &&
         dirtyEntities.length <= 48 &&
@@ -762,6 +792,7 @@ export class SceneUiBridge {
     this.lastPaintLayoutKey = layoutKey
     this.lastPaintVisualKey = visualKey
     this.lastEntityVisualKeys = entityVisualKeys
+    this.lastEntityLayoutKeys = entityLayoutKeys
     this.lastLayoutBoxMap = layoutBoxMap
     this.paintedEpoch = this.contentEpoch
 

@@ -204,6 +204,11 @@ function normalizeNorthPlaneUvs(uvs: readonly number[]): number[] {
  * UVs must already be docs-ordered (BL,BR,TR,TL). Require a full axis swap:
  * bottom edge (BL→BR / local +X) is mostly V, and left edge (BL→TL / local +Y)
  * is mostly U.
+ *
+ * Flipbook sprites (fishing splash sheets, campfire) often use the same axis
+ * swap for a near-square cell — those must stay on the in-place UV path. Full
+ * mesh rebuild every frame clears materials and makes splash look intermittent.
+ * Marquees are long thin strips (U along Y >> V along X).
  */
 function planeUvsMapTextAlongLocalY(uvs: readonly number[]): boolean {
   // BL→BR (local +X)
@@ -212,7 +217,12 @@ function planeUvsMapTextAlongLocalY(uvs: readonly number[]): boolean {
   // BL→TL (local +Y) — docs packing TL is indices 6,7
   const duY = Math.abs((uvs[6] ?? 0) - (uvs[0] ?? 0))
   const dvY = Math.abs((uvs[7] ?? 0) - (uvs[1] ?? 0))
-  return dvX > duX + 1e-5 && duY > dvY + 1e-5
+  // Axis swap: V along local X, U along local Y
+  if (!(dvX > duX + 1e-5 && duY > dvY + 1e-5)) return false
+  // Long text strip vs square flipbook cell (stepU ≈ stepV ≈ 1/N)
+  const textSpan = duY
+  const rowThickness = dvX
+  return textSpan > rowThickness * 2.5 + 1e-5
 }
 
 /**

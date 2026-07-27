@@ -355,6 +355,11 @@ export class TweenBridge {
   private readonly runtime = new Map<Entity, TweenRuntime>()
   /** Entities whose TweenState/Transform changed this frame — scopes CrdtEncoder tween scan. */
   private readonly encodeDirty = new Set<Entity>()
+  /**
+   * Tween finished this frame — worker needs TweenState immediately so
+   * TweenSequence TL_RESTART (bobber float) can queue the next hop without a step.
+   */
+  private completionDeliverUrgent = false
   /** Entities whose scene-graph pose was interpolated this frame (collider pose slide). */
   private readonly transformMotionEntities = new Set<Entity>()
   private readonly verbose = isTweenVerbose()
@@ -443,10 +448,16 @@ export class TweenBridge {
     return this.encodeDirty.size > 0
   }
 
+  /** Finite tween completed this frame — deliver without 100ms throttle (sequence restart). */
+  hasUrgentCompletionDeliver(): boolean {
+    return this.completionDeliverUrgent
+  }
+
   /** Consume and clear encoder dirty set (call before `CrdtEncoder.encode()`). */
   consumeEncodeDirty(): ReadonlySet<Entity> {
     const out = new Set(this.encodeDirty)
     this.encodeDirty.clear()
+    this.completionDeliverUrgent = false
     return out
   }
 
@@ -600,6 +611,7 @@ export class TweenBridge {
           runtime.lastWrittenState = 1
           runtime.lastWrittenProgress = 1
           this.encodeDirty.add(entity)
+          this.completionDeliverUrgent = true
           if (textureMode && isPlazaMarqueeTextureMove(tween)) {
             this.logMarquee(`COMPLETED · ${this.formatTextureMove(tween)}`, {
               entity,
@@ -684,7 +696,11 @@ export class TweenBridge {
       if (stateChanged || progressChanged || completed) {
         runtime.lastWrittenState = state
         runtime.lastWrittenProgress = progress
-        if (reachedEnd) runtime.completedDirtySent = true
+        if (reachedEnd) {
+          runtime.completedDirtySent = true
+          // Sequence loops (bobber bob) need the worker this frame — 100ms throttle steps motion.
+          this.completionDeliverUrgent = true
+        }
         this.encodeDirty.add(entity)
       }
       this.logTweenState(entity, tween, state, progress, continuous)

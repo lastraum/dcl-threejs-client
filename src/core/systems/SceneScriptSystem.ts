@@ -3651,8 +3651,11 @@ export class SceneScriptSystem {
     // Defer ambient push while GLTFs stream — avoid worker tick storms mid-hydration.
     if (this.bridge?.isAssetHydrationMode()) return
     const now = performance.now()
-    const minMs =
-      now <= this.proactiveTweenPushUntil
+    // Bobber float / TweenSequence TL_RESTART must see completion this frame or motion steps.
+    const urgentComplete = this.tweenBridge.hasUrgentCompletionDeliver()
+    const minMs = urgentComplete
+      ? 0
+      : now <= this.proactiveTweenPushUntil
         ? SceneScriptSystem.TWEEN_DELIVER_FAST_MS
         : SceneScriptSystem.TWEEN_DELIVER_MIN_MS
     if (now - this.lastTweenDeliverAt < minMs) return

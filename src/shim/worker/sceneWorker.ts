@@ -1293,39 +1293,23 @@ initSceneEngineScheduler({
   },
   onSceneUiInjectPointerComplete: ({ mountGrew }) => {
     // Drop pointer session so pointerBlocksEngineTick no longer returns true.
-    // CBD Plaza welcome: nZ(dt) fades Color4.a; without eng.update the splash freezes mid-fade.
+    // CBD Plaza welcome: nZ(dt) fades Color4.a — systems need continuous eng.update after inject.
     resetPointerInputSession()
     sceneTicksPaused = false
     workerLog(
       'log',
       `[sceneWorker] sceneUi inject complete — session ended, ticks unpaused (mountGrew=${mountGrew ? 1 : 0})`
     )
-    // Kicks must run AFTER pointer deliver serial finishes: this callback fires mid-batch while
-    // pointerDeliverWorkInFlight still blocks requestSceneEngineTick (only sets tickQueued).
-    // Chaining on pointerDeliverSerial guarantees real-dt eng.update for Color4.a fade.
+    // After deliver serial ends, request one real-dt tick. Ongoing fade is driven by main
+    // play-frame-tick (~rAF) + scheduler queue drain — not a timed setInterval “boost”.
     void pointerDeliverSerial.then(() => {
-      if (!sceneEngine || sceneTicksPaused) return
-      const kick = (): void => {
+      if (!sceneEngine || sceneTicksPaused || pointerBlocksEngineTick()) return
+      requestSceneEngineTick()
+      // One macrotask re-kick if the first request only queued (tick still finishing).
+      setTimeout(() => {
         if (!sceneEngine || sceneTicksPaused || pointerBlocksEngineTick()) return
         requestSceneEngineTick()
-      }
-      kick()
-      if (mountGrew) {
-        // Menu open — short resume only (long boost can thrash react-ecs against hold).
-        for (const ms of [0, 16, 32, 64, 100]) setTimeout(kick, ms)
-        return
-      }
-      // Same mount (welcome fade / Color4.a): sustain ~60Hz eng.update for several seconds.
-      // Plaza systems make each tick heavy; frame-step fades (a -= k) need many ticks.
-      // Wall-clock dt fades still benefit from frequent react-ecs + CRDT paint.
-      const until = performance.now() + 3500
-      const boost = setInterval(() => {
-        if (performance.now() >= until || sceneTicksPaused || !sceneEngine) {
-          clearInterval(boost)
-          return
-        }
-        kick()
-      }, 16)
+      }, 0)
     })
   }
 })

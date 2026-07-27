@@ -65,12 +65,6 @@ export type SceneUiDrawInput = {
   authoritativeEntities: ReadonlySet<Entity>
   /** Yoga layout boxes — sole geometry authority for paint + hit-map (canvas-absolute). */
   layoutBoxes: ReadonlyMap<Entity, LayoutBox>
-  /**
-   * Fullscreen PE shells force-dismissed after welcome-splash click.
-   * Paint must not re-enable display/interactive (was flash: hide→show→hide every alpha tick).
-   * Still paint color.a so the fade is visible; pointer stays off.
-   */
-  forceDismissedEntities?: ReadonlySet<Entity>
 }
 
 /** Yoga canvas-absolute box → client-space hit region (same mapping as DOM paint). */
@@ -118,14 +112,13 @@ function isSceneUiNodeInteractive(
   entity: Entity,
   ecs: MirrorComponents,
   _transform: PBUiTransform,
-  inputOf: (e: Entity) => PBUiInput | null,
-  dropdownOf: (e: Entity) => PBUiDropdown | null,
+  _inputOf: (e: Entity) => PBUiInput | null,
+  _dropdownOf: (e: Entity) => PBUiDropdown | null,
   pointerEventsOf?: UiPointerEventsLookup,
   background?: PBUiBackground | null
 ): boolean {
-  if (inputOf(entity) || dropdownOf(entity)) return true
-  // Fields handled above. PE/BLOCK shells: honor Color4.a + display (welcome fade / ghost PE).
-  // DOM --interactive class must match hit-map pick (isUiEntityPointerCapturing).
+  // Explorer parity: PE / BLOCK / fields while UiTransform chain is visible.
+  // Color4.a is paint-only — do not gate hits (invisible PE catchers over child logos).
   return isUiEntityPointerCapturing(ecs, entity, pointerEventsOf, background ?? null)
 }
 
@@ -289,45 +282,6 @@ export class SceneUiDomRenderer {
 
   getNode(entity: Entity): HTMLElement | null {
     return this.nodes.get(entity) ?? null
-  }
-
-  /**
-   * Immediate client-side dismiss — free pointer while worker fade/unmount lags.
-   * Full-screen PE shells (CBD Plaza welcome) stay mounted mid-fade with PE still on.
-   *
-   * Do **not** set display:none / opacity:0 — that made paint undo hide every alpha tick
-   * (splash vanished, then reappeared, then slow-faded). Keep visible for Color4.a fade;
-   * only kill interactivity so WASD/look work.
-   */
-  forceDismissEntity(entity: Entity): void {
-    const shell = this.nodes.get(entity)
-    if (!shell) return
-    this.applyForceDismissPointerOff(shell)
-  }
-
-  /** Pointer-off only — leave opacity/display for background alpha fade. */
-  applyForceDismissPointerOff(shell: HTMLElement): void {
-    shell.classList.remove('scene-ui-node--interactive')
-    shell.style.pointerEvents = 'none'
-    shell.style.cursor = 'default'
-    shell.setAttribute('inert', '')
-    // Do not set aria-hidden while fading — content still visible.
-  }
-
-  /** Entity or any UiTransform ancestor is force-dismissed (welcome PE + nested logo). */
-  private isForceDismissedLineage(entity: Entity, input: SceneUiDrawInput): boolean {
-    const set = input.forceDismissedEntities
-    if (!set?.size) return false
-    if (set.has(entity)) return true
-    let walk: Entity | null = entity
-    for (let i = 0; i < 12 && walk; i++) {
-      const t = input.transformOf(walk)
-      const parent = (t?.parent ?? 0) as Entity
-      if (!parent || parent === 0 || parent === CANVAS_ROOT_ENTITY) break
-      if (set.has(parent)) return true
-      walk = parent
-    }
-    return false
   }
 
   getFieldDom(entity: Entity): HTMLInputElement | HTMLSelectElement | null {
@@ -584,16 +538,8 @@ export class SceneUiDomRenderer {
     shell.style.backgroundImage = ''
     shell.style.borderImage = ''
     shell.removeAttribute('aria-hidden')
-    // Welcome splash force-dismiss: never re-arm pointer while PE is still mounted.
-    // (Previously undid force-dismiss every paint → flash + re-catcher.)
-    // Also cover children of the PE shell (logo e1103 under catcher e1104).
-    const forceDismissed = this.isForceDismissedLineage(entity, input)
-    if (forceDismissed) {
-      this.applyForceDismissPointerOff(shell)
-    } else {
-      shell.style.pointerEvents = ''
-      shell.removeAttribute('inert')
-    }
+    shell.style.pointerEvents = ''
+    shell.removeAttribute('inert')
 
     // Clip nearly all sized shells — fishing absolute children escape overflow:visible
     // parents and stack every OPEN/EQUIP/wood slot across the modal (and the plaza).
@@ -621,17 +567,15 @@ export class SceneUiDomRenderer {
       el.style.border = 'none'
     }
 
-    const interactive =
-      !forceDismissed &&
-      isSceneUiNodeInteractive(
-        entity,
-        input.ecs,
-        transform,
-        input.inputOf,
-        input.dropdownOf,
-        input.pointerEventsOf,
-        bg
-      )
+    const interactive = isSceneUiNodeInteractive(
+      entity,
+      input.ecs,
+      transform,
+      input.inputOf,
+      input.dropdownOf,
+      input.pointerEventsOf,
+      bg
+    )
 
     const compactControl =
       layoutBox.width < 500 &&
@@ -728,13 +672,9 @@ export class SceneUiDomRenderer {
     // Nested shells: parent-relative; roots: canvas-absolute. Clip large panels (clipShell).
     applyYogaLayoutBox(shell, layoutBox, scale, coords, clipShell)
     shell.style.zIndex = String(transform.zIndex ?? 0)
-    // Re-apply after layout (applyYogaLayoutBox does not touch pointerEvents).
-    if (forceDismissed) this.applyForceDismissPointerOff(shell)
 
     // Hit map always canvas-absolute (not nested DOM rects).
-    if (!forceDismissed) {
-      pushLayoutHitRegion(regions, entity, transform, layoutBox, input, depth)
-    }
+    pushLayoutHitRegion(regions, entity, transform, layoutBox, input, depth)
 
     const children = input.forest.get(entity) ?? []
     for (const child of children) {

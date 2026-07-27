@@ -2,7 +2,6 @@ import type { Entity } from '@dcl/ecs'
 import type { MirrorComponents } from '../../bridge/mirrorComponents'
 import type { ProjectionView } from '../../bridge/ProjectionView'
 import type { PBPointerEvents_Entry } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/pointer_events.gen'
-import type { PBUiBackground } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_background.gen'
 export type UiPointerEventsLookup = (
   entity: Entity
 ) => { pointerEvents: ReadonlyArray<PBPointerEvents_Entry> } | null | undefined
@@ -14,7 +13,6 @@ import {
   type PointerEventTypeValue
 } from '../../input/pointerConstants'
 import { normalizePointerFilterMode, PointerFilterMode } from './yogaEnums'
-import { effectiveUiBackgroundAlpha, hasUiVisualBackground } from './uiBackgroundStyle'
 import { isUiEntityVisible } from './uiVisibility'
 
 function buttonMatches(entryButton: number | undefined, pressed: InputActionValue): boolean {
@@ -95,50 +93,25 @@ export function isUiEntityBlocking(
 }
 
 /**
- * Near-invisible UiBackground (Color4.a) — CBD Plaza welcome fades a, not UiTransform.opacity.
- * Below this, PE shells must not capture hits/cursor (ghost catcher after fade).
- */
-export const UI_POINTER_CAPTURE_MIN_ALPHA = 0.05
-
-/** True when UiBackground.color.a is effectively invisible for pointer capture. */
-export function isUiBackgroundPointerTransparent(
-  bg: PBUiBackground | { color?: { r?: number; g?: number; b?: number; a?: number } } | null | undefined
-): boolean {
-  if (!bg) return false
-  return effectiveUiBackgroundAlpha(bg.color) < UI_POINTER_CAPTURE_MIN_ALPHA
-}
-
-/**
- * Whether this entity should capture cursor/clicks right now.
- * Respects scene display/opacity/Color4.a — no client force-dismiss.
+ * Whether this entity should capture cursor/clicks (Explorer parity).
  *
- * Ghost PE catchers (CBD welcome after dissolve): PE stays mounted with a≈0 or no
- * paintable UiBackground while the logo unmounts — still must free the hand cursor.
+ * Solid rules only:
+ * - UiTransform display + opacity chain (isUiEntityVisible)
+ * - PointerEvents / pointerFilter BLOCK, or UiInput / UiDropdown
+ *
+ * Color4.a is a *paint* channel (welcome fade), not a hit-test gate. Invisible PE
+ * catchers over child logos are valid scene UI — inventing alpha/no-bg capture
+ * rules made CBD splash unclickable.
  */
 export function isUiEntityPointerCapturing(
   ecs: MirrorComponents,
   entity: Entity,
   pointerEventsOf?: UiPointerEventsLookup,
-  background?: PBUiBackground | null
+  _background?: unknown
 ): boolean {
   const transformOf = (e: Entity) => ecs.UiTransform.getOrNull(e)
   if (!isUiEntityVisible(entity, transformOf)) return false
-  const t = transformOf(entity)
-  if (t && (t.opacity ?? 1) < UI_POINTER_CAPTURE_MIN_ALPHA) return false
-
-  const hasInput = !!ecs.UiInput.getOrNull(entity)
-  const hasDropdown = !!ecs.UiDropdown.getOrNull(entity)
-  if (hasInput || hasDropdown) return true
-
-  const bg = background ?? (ecs.UiBackground.getOrNull(entity) as PBUiBackground | null)
-  // Faded Color4.a (welcome scrim) — PE must not keep the hand cursor.
-  if (isUiBackgroundPointerTransparent(bg)) return false
-
-  const hasText = !!(ecs.UiText.getOrNull(entity)?.value?.trim())
-  // PE-only shell with nothing left to paint (a=0, bg removed, logo child gone) —
-  // Explorer would still hit an invisible PE; free pointer when there is no visual.
-  if (!hasText && !hasUiVisualBackground(bg)) return false
-
+  if (ecs.UiInput.getOrNull(entity) || ecs.UiDropdown.getOrNull(entity)) return true
   return isUiEntityBlocking(ecs, entity, pointerEventsOf)
 }
 

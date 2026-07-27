@@ -119,13 +119,6 @@ export class SceneUiBridge {
   /** Last pointer position — re-evaluate cursor after Sync/modal DOM swaps. */
   private lastPointerClientX = 0
   private lastPointerClientY = 0
-  /**
-   * @deprecated Empty forever — force-dismiss was a client hack (flash + desync from scene Color4.a).
-   * Kept only so paint/pick branches compile; never add entities here.
-   */
-  private readonly forceDismissedEntities = new Set<Entity>()
-  private readonly forceDismissPurgeTimers = new Map<Entity, number>()
-
   constructor(
     scene: ResolvedScene | null = null,
     getCanvas: () => HTMLElement | null = () => null,
@@ -232,34 +225,11 @@ export class SceneUiBridge {
   }
 
   /**
-   * @deprecated No-op. Scene owns welcome-splash visuals (Color4.a fade). Client must not
-   * invent display:none / opacity:0 — that flash-desynced from scene alpha and blocked
-   * Explorer parity. Pointer freedom comes from worker ticks + PE session reset after inject.
+   * @deprecated No-op. Scene owns splash visuals; client must not invent dismiss hacks.
+   * Pointer freedom: PE delete / display:none from scene + real eng.update after inject.
    */
   forceDismissAfterSceneUiClick(_entity: Entity): void {
-    /* intentionally empty — see executePointerInjection sceneUi path (no tick pause) */
-  }
-
-  private applyForceDismissDom(entity: Entity): void {
-    this.dom.forceDismissEntity(entity)
-    this.hitMap.removeEntity(entity)
-    this.refreshHoverCursor()
-  }
-
-  private clearForceDismiss(entity: Entity): void {
-    this.forceDismissedEntities.delete(entity)
-    const t = this.forceDismissPurgeTimers.get(entity)
-    if (t != null) {
-      window.clearTimeout(t)
-      this.forceDismissPurgeTimers.delete(entity)
-    }
-  }
-
-  private reapplyForceDismissedAfterPaint(): void {
-    if (!this.forceDismissedEntities.size) return
-    for (const entity of this.forceDismissedEntities) {
-      this.applyForceDismissDom(entity)
-    }
+    /* intentionally empty */
   }
 
   private invalidatePaintCache(): void {
@@ -364,9 +334,6 @@ export class SceneUiBridge {
       this.dom.releaseAll()
       this.hitMap.clear()
       this.lastMountedUiEntities.clear()
-      for (const t of this.forceDismissPurgeTimers.values()) window.clearTimeout(t)
-      this.forceDismissPurgeTimers.clear()
-      this.forceDismissedEntities.clear()
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
       this.lastEntityVisualKeys.clear()
@@ -474,9 +441,6 @@ export class SceneUiBridge {
 
   dispose(): void {
     setSceneUiAuthoritativeEntityCheck(null)
-    for (const t of this.forceDismissPurgeTimers.values()) window.clearTimeout(t)
-    this.forceDismissPurgeTimers.clear()
-    this.forceDismissedEntities.clear()
     this.input.dispose()
     this.dom.dispose()
     this.hitMap.clear()
@@ -484,6 +448,8 @@ export class SceneUiBridge {
     this.workerUiEntitiesKnown = false
     this.lastWorkerUiKey = ''
     this.lastMountedUiEntities.clear()
+    this.livePointerEventsSeen.clear()
+    this.mountSnapshotPointerEvents.clear()
     this.firstPaintLogged = false
     this.lastLoggedPaintMount = 0
     this.mirrorEcs = null
@@ -740,7 +706,6 @@ export class SceneUiBridge {
       mountedEntities: mounted,
       authoritativeEntities: this.workerUiEntities!,
       layoutBoxes: layoutBoxMap,
-      forceDismissedEntities: this.forceDismissedEntities,
       onRegions: (regions: UiScreenRegion[]) => this.hitMap.replace(regions)
     }
 
@@ -792,8 +757,6 @@ export class SceneUiBridge {
       virtual: this.virtual
     })
     reportInputModifierState(ecs, view.PlayerEntity)
-    // Paint can re-enable PE on a force-dismissed splash — re-hide until worker unmounts.
-    this.reapplyForceDismissedAfterPaint()
     // Sync / modal unmount often leaves browser cursor stuck on pointer (node removed mid-hover).
     this.refreshHoverCursor()
   }
@@ -946,7 +909,6 @@ export class SceneUiBridge {
     // Stack order (deepest / smallest first) — first blocking layer wins; no scrim fall-through.
     const candidates = this.collectTopClusterPickCandidates(clientX, clientY, eventTarget)
     for (const entity of candidates) {
-      if (this.forceDismissedEntities.has(entity)) continue
       if (this.input.isFieldEntity(entity)) return { entity, blocking: true }
       if (isUiEntityPointerCapturing(ecs, entity, this.pointerEventsLookup)) {
         return { entity, blocking: true }
@@ -1005,7 +967,6 @@ export class SceneUiBridge {
       // Skip field rows — SceneUiInputController owns them; do not abort the whole pick (search
       // input is an ancestor candidate when clicking LOAD/DEL pills in the presets table).
       if (this.input.isFieldEntity(entity)) continue
-      if (this.forceDismissedEntities.has(entity)) continue
 
       const handler = findUiPointerHandlerEntity(
         ecs,
@@ -1016,9 +977,7 @@ export class SceneUiBridge {
         this.pointerEventsLookup
       )
       if (handler !== null) {
-        if (this.forceDismissedEntities.has(handler)) continue
-        // Faded Color4.a PE (welcome splash) must not keep ranking as a handler — that left
-        // the cursor locked on a ghost UI entity after the scrim vanished.
+        // Handler only if still display-visible + PE (Explorer parity — not Color4.a invent).
         if (!isUiEntityPointerCapturing(ecs, handler, this.pointerEventsLookup)) continue
         // Rank by the HANDLER's region (card), not the leaf (label) — so a leaf that
         // incorrectly walks to the scrim loses to a real card handler under the same point.
@@ -1172,7 +1131,6 @@ export class SceneUiBridge {
     for (const entity of removed) {
       this.input.releaseEntity(entity)
       this.lastMountedUiEntities.delete(entity)
-      this.clearForceDismiss(entity)
       this.mountSnapshotPointerEvents.delete(entity)
       this.livePointerEventsSeen.delete(entity)
     }

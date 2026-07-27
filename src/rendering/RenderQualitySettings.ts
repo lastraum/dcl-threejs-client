@@ -61,10 +61,11 @@ export type RenderQualityOptions = {
 export const SCENE_LOAD_RADIUS_MIN_M = 0
 export const SCENE_LOAD_RADIUS_MAX_M = 200
 /**
- * Default AOI warm/visual band. 0 = primary scene only (AOI off).
- * Single-scene CBD perf work uses 0; raise in Preferences or `?aoi` + radius for multi-scene.
+ * Default AOI warm/visual band (~4 parcels).
+ * 0 = primary only. Live workers stay adjacency-capped (see multiScene/caps).
+ * Isolate single-scene CBD with `?noaoi` or slider 0.
  */
-export const SCENE_LOAD_RADIUS_DEFAULT_M = 0
+export const SCENE_LOAD_RADIUS_DEFAULT_M = 64
 
 /** Max ECS LightSource lights active at once (nearest to avatar) — preset defaults. */
 export const LIGHT_LIMITS: Record<RenderQualityTier, number> = {

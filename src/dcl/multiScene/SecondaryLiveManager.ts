@@ -142,9 +142,12 @@ export class SecondaryLiveManager {
   }
 
   /**
-   * Keep outgoing primary warm as a secondary so walking back can resume without reload.
-   * Large multi-parcel scenes are disposed instead (sticky dual-resident kills CBD) —
-   * plaza ring stays visible via AOI composite tertiary.
+   * Keep outgoing primary **resident** as a sticky secondary — never unload into void.
+   *
+   * Modest scenes: full muted secondary (scripts warm, resume handoff).
+   * Large multi-parcel (plaza): frozen-visual sticky — meshes stay, worker onUpdate paused
+   * so dual full plazas don't thrash. Continuity > dispose-then-composite gap.
+   *
    * Returns phys entity ids that used primary (native) ids — World must invalidate them.
    */
   async adoptDemotedPrimary(
@@ -165,38 +168,31 @@ export class SecondaryLiveManager {
 
     const id = scene.entityId
     const parcelCount = scene.parcels?.length || 1
+    // Dual full plaza workers thrash — freeze scripts, keep meshes (never dispose).
+    const frozenVisual = parcelCount > SECONDARY_LIVE_AUTO_MAX_PARCELS
 
-    // Plaza-scale dual full workers thrash on nested-hole promote (CBD + Spring).
-    // Dispose the **script worker** only — AOI composite tertiary re-draws the ring.
-    // Looks like “scene unloaded” for a few seconds until composite loads (~80 GLBs).
-    if (parcelCount > SECONDARY_LIVE_AUTO_MAX_PARCELS) {
-      const primaryPhysIds = system.getAllPhysicsColliderDescs().map((d) => d.entity)
-      console.info(
-        `[multi-scene] demote dispose large “${scene.title}” parcels=${parcelCount} ` +
-          `(worker off → composite tertiary; not a full /goto unload)`
-      )
-      try {
-        system.dispose()
-      } catch {
-        /* ignore */
-      }
-      return { entityId: id, primaryPhysIds }
-    }
-
-    // Already have this entity as secondary — keep existing, drop demoted system.
+    // Already have this entity as secondary — keep existing resident graph, drop demoted system
+    // only if it's a different system instance (shouldn't double-dispose the live one).
     if (this.slots.has(id)) {
-      console.info(`[multi-scene] demote skip — already secondary “${scene.title}”`)
-      try {
-        system.dispose()
-      } catch {
-        /* ignore */
+      const existing = this.slots.get(id)!
+      console.info(
+        `[multi-scene] demote skip — already secondary “${scene.title}” (keep resident)`
+      )
+      if (existing.system !== system) {
+        try {
+          system.dispose()
+        } catch {
+          /* ignore */
+        }
       }
       this.stickyIds.add(id)
+      this.emitLiveIds()
       return { entityId: id, primaryPhysIds: [] }
     }
 
-    // Make room — prefer evicting non-sticky warm secondaries.
-    this.evictToCapacity(this.maxSlots() - 1)
+    // Make room — never evict sticky; prefer non-sticky warm secondaries.
+    // Always keep ≥1 slot for demoted primary (continuity).
+    this.evictToCapacity(Math.max(0, this.maxSlots() - 1))
 
     // Collect native primary phys ids before remapping under offset.
     const primaryPhysIds = system.getAllPhysicsColliderDescs().map((d) => d.entity)
@@ -217,18 +213,24 @@ export class SecondaryLiveManager {
       poseProvider: this.poseProvider,
       physOffset: secondaryPhysOffset(slotIndex),
       primaryBaseParcel: primaryBase,
-      existingSystem: system
+      existingSystem: system,
+      frozenVisual
     })
     await slot.start()
     if (this.disposed) {
-      slot.dispose()
-      return null
+      // World still owns continuity — do not dispose demoted system if handoff aborted mid-way.
+      this.slots.set(id, slot)
+      this.stickyIds.add(id)
+      return { entityId: id, primaryPhysIds }
     }
     this.slots.set(id, slot)
     this.stickyIds.add(id)
     this.emitLiveIds()
     console.info(
-      `[multi-scene] demoted “${scene.title}” → sticky secondary (walk back = resume handoff)`
+      `[multi-scene] demoted “${scene.title}” → sticky secondary parcels=${parcelCount}` +
+        (frozenVisual
+          ? ' frozen-visual (meshes resident, scripts paused)'
+          : ' warm (walk back = resume handoff)')
     )
     return { entityId: id, primaryPhysIds }
   }
@@ -261,6 +263,17 @@ export class SecondaryLiveManager {
       if (this.disposed || !scene?.mainEntry || !scene.entityId) return false
       if (this.primaryScene?.entityId === scene.entityId) return false
       if (this.slots.has(scene.entityId)) return true
+
+      // Never force-boot plaza-scale estates as live secondaries (dual-resident freezes CBD).
+      // Seamless promote (cold jump) handles walk-on to multi-parcel primaries.
+      const parcelCount = scene.parcels?.length ?? 0
+      if (parcelCount > SECONDARY_LIVE_AUTO_MAX_PARCELS) {
+        console.info(
+          `[multi-scene] refuse force-boot “${scene.title}” parcels=${parcelCount} ` +
+            `(>${SECONDARY_LIVE_AUTO_MAX_PARCELS}) — seamless promote instead`
+        )
+        return false
+      }
 
       this.evictToCapacity(this.maxSlots() - 1)
 
@@ -480,10 +493,33 @@ export class SecondaryLiveManager {
     }
   }
 
+  /**
+   * During post-promote settle (new boots paused), still advance **sticky demoted**
+   * residents so the world never goes void. Frozen-visual slots no-op cheaply.
+   */
+  tickStickySync(player: EntityPose, camera: EntityPose): void {
+    const interval = secondaryTickIntervalMs(this.tier)
+    for (const [id, slot] of this.slots) {
+      if (!this.stickyIds.has(id)) continue
+      slot.tickSync(player, camera, interval)
+    }
+  }
+
   async tickAsync(): Promise<PhysicsColliderDesc[]> {
     if (!this.cache) return []
     const descs: PhysicsColliderDesc[] = []
     for (const slot of this.slots.values()) {
+      descs.push(...(await slot.tickAsync(this.primaryScene, this.cache)))
+    }
+    return descs
+  }
+
+  /** Sticky-only async (settle window) — colliders / frozen remaps for demoted residents. */
+  async tickStickyAsync(): Promise<PhysicsColliderDesc[]> {
+    if (!this.cache) return []
+    const descs: PhysicsColliderDesc[] = []
+    for (const [id, slot] of this.slots) {
+      if (!this.stickyIds.has(id)) continue
       descs.push(...(await slot.tickAsync(this.primaryScene, this.cache)))
     }
     return descs

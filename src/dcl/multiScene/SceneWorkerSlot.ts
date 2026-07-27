@@ -35,6 +35,11 @@ export type SceneWorkerSlotOptions = {
    * to secondary privilege + renames entity root.
    */
   existingSystem?: SceneScriptSystem
+  /**
+   * Large multi-parcel demoted primary: keep **meshes** resident, pause worker scripts
+   * so dual full plazas don't thrash — continuity over dispose-to-void.
+   */
+  frozenVisual?: boolean
 }
 
 /**
@@ -53,6 +58,11 @@ export class SceneWorkerSlot {
   private lastTickAt = 0
   private running = false
   private readonly adopted: boolean
+  /**
+   * Demoted large estate: entity graph stays in the host scene (no unload void);
+   * worker onUpdate / heavy async projection is paused.
+   */
+  readonly frozenVisual: boolean
   /** Phys ids we registered (with offset) — invalidate on dispose. */
   private readonly registeredPhysIds = new Set<number>()
   private primaryBaseParcel: string
@@ -64,6 +74,7 @@ export class SceneWorkerSlot {
     this.scene = opts.scene
     this.physOffset = opts.physOffset
     this.adopted = !!opts.existingSystem
+    this.frozenVisual = !!opts.frozenVisual
     this.system = opts.existingSystem ?? new SceneScriptSystem()
     this.primaryBaseParcel = (opts.primaryBaseParcel ?? '').trim()
   }
@@ -98,7 +109,7 @@ export class SceneWorkerSlot {
     if (this.disposed || this.detached) return
     const { scene, cache, host, performanceTier, poseProvider } = this.opts
 
-    // Demoted primary — already booted; strip privilege and keep scripts warm.
+    // Demoted primary — already booted; strip privilege and keep mesh graph resident.
     if (this.adopted) {
       this.system.setPerformanceTier(performanceTier)
       this.system.setClientPoseProvider(poseProvider)
@@ -111,14 +122,20 @@ export class SceneWorkerSlot {
       this.system.setCollidersRemoveCallback(null)
       const store = this.system.getEntityStore()
       if (store?.root) {
-        store.root.name = `secondary-entities:${this.id.slice(0, 16)}`
+        store.root.name = this.frozenVisual
+          ? `secondary-frozen:${this.id.slice(0, 16)}`
+          : `secondary-entities:${this.id.slice(0, 16)}`
+        // Continuity: never leave demoted content invisible after handoff.
+        store.root.visible = true
       }
       // Was host origin as primary — shift into new primary's frame (or 0 until retarget).
       this.applySceneOriginOffset()
       this.running = true
       this.lastTickAt = performance.now()
       console.info(
-        `[multi-scene] demoted primary → secondary “${scene.title}” id=${this.id.slice(0, 16)}… origin→${this.primaryBaseParcel || 'pending'} (resume-ready)`
+        `[multi-scene] demoted primary → secondary “${scene.title}” id=${this.id.slice(0, 16)}… ` +
+          `origin→${this.primaryBaseParcel || 'pending'}` +
+          (this.frozenVisual ? ' frozen-visual (meshes stay, scripts paused)' : ' resume-ready')
       )
       return
     }
@@ -234,6 +251,11 @@ export class SceneWorkerSlot {
 
   tickSync(player: EntityPose, camera: EntityPose, minIntervalMs: number): boolean {
     if (!this.running || this.disposed || this.detached) return false
+    // Frozen demoted plaza: meshes stay; no worker onUpdate (anti dual-resident thrash).
+    if (this.frozenVisual) {
+      this.lastTickAt = performance.now()
+      return false
+    }
     const now = performance.now()
     if (now - this.lastTickAt < minIntervalMs) return false
     this.lastTickAt = now
@@ -253,6 +275,10 @@ export class SceneWorkerSlot {
     cache: AssetCache
   ): Promise<PhysicsColliderDesc[]> {
     if (!this.running || this.disposed || this.detached) return []
+    // Frozen visual demote: keep last registered colliders; skip projection storm.
+    if (this.frozenVisual) {
+      return this.collectRemappedColliders()
+    }
     cache.setScene(this.scene)
     try {
       await this.system.syncRenderer()

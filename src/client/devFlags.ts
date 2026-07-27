@@ -35,17 +35,18 @@ export function usePerfDebug(): boolean {
 }
 
 /**
- * Kill multi-scene AOI: no neighbor visuals, script-warm, live secondaries, or promote.
- * Primary scene only — **default ON** for single-scene perf isolation (CBD plaza).
+ * Kill multi-scene AOI: no neighbor visuals, live secondaries, or promote.
+ * Primary scene only. Use for CBD isolation: `?noaoi=1`.
  *
- * - Default / `?noaoi` / `?skipaoi` → AOI off
- * - Opt back in with `?aoi` or `?withaoi` (Preferences Scene Distance still applies)
+ * - Default: AOI **ON** (when Scene Distance > 0)
+ * - `?noaoi` / `?skipaoi` → force off
+ * - `?aoi` / `?withaoi` → force on (still needs Scene Distance > 0)
  */
 export function skipAoiNeighbors(): boolean {
   const params = readSearchParams()
   if (params?.has('aoi') || params?.has('withaoi')) return false
   if (params?.has('noaoi') || params?.has('skipaoi')) return true
-  return true
+  return false
 }
 
 /**

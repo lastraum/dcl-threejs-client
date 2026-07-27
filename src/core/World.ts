@@ -775,7 +775,7 @@ export class World {
       this.scenePromote.unbind()
       this.multiScene?.disposeSecondariesOnly()
       console.info(
-        `[aoi] DISABLED (default / ?noaoi) — primary only · base=${scene.baseParcel} parcels=${scene.parcels.length} · opt-in ?aoi`
+        `[aoi] DISABLED (?noaoi) — primary only · base=${scene.baseParcel} parcels=${scene.parcels.length}`
       )
     }
     if (skipSceneAnimators()) {
@@ -3729,8 +3729,8 @@ export class World {
     this.session.setCatalystEndpoints(newScene.realm.contentUrl, newScene.realm.lambdasUrl)
 
     // AOI tertiary (composites) retarget immediately so plaza ring doesn't stay blank.
-    // Live secondary *workers* stay off for a settle window — Spring hydrating + BrandonManus
-    // + Jarod dual boots was the post-promote hitch (shadows/bloom off don't help script+GLB).
+    // New live secondary *boots* stay off for a settle window — sticky demoted prior primary
+    // still ticks via tickStickySync (meshes never unload into void).
     multi.setSecondaryActivityEnabled(false)
     this.aoiVisual.bind({
       scene: newScene,
@@ -3775,7 +3775,7 @@ export class World {
     console.info(
       `[promote] handoff+demote OK “${newScene.title}” base=${newScene.baseParcel}` +
         ` prev=${oldScene?.title ?? 'none'} restoreFeet=${ok}` +
-        ` (large prev disposed→composite; live secondaries pause ${SETTLE_LIVE_SECONDARIES_MS}ms)`
+        ` (prev sticky resident; new boots pause ${SETTLE_LIVE_SECONDARIES_MS}ms)`
     )
     return true
   }

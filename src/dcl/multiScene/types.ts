@@ -1,12 +1,13 @@
 /**
- * Multi-scene worker tiers:
+ * Multi-scene FocusOwner + LOD rings (product model):
  * - primary: parcel under feet — **FocusOwner** (UI, audio, video, inputs, locomotion)
- * - secondary: AOI live scripts in Scene Distance warm band (throttled; no focus media/UI)
- * - tertiary: outer AOI visuals only (no worker — AoiVisualLayer)
+ * - secondary (live): muted workers for **scene-to-scene ≤16m** neighbors (throttled;
+ *   hard-capped; no media/UI). Nested plaza holes always qualify.
+ * - tertiary: Scene Distance disc — roads, empty land, composite shells (no worker)
  * - pe: portable experience / smart wearable (own UI root; arbiter below primary)
  *
- * Warm band = user Scene Distance (`sceneLoadRadiusM`). Live secondaries are
- * still budgeted by tier (see caps.ts) — warm-all ≠ live-all.
+ * Warm/visual band = user Scene Distance (`sceneLoadRadiusM`). Live workers are
+ * NOT scaled with Scene Distance (see caps.ts) — warm-all ≠ live-all.
  */
 
 export type SceneWorkerKind = 'primary' | 'secondary' | 'pe'

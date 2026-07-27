@@ -2,12 +2,38 @@ import type { PerformanceTier } from '../../shim/types'
 import { renderQuality } from '../../rendering/RenderQualitySettings'
 
 /**
- * TEMP (AOI load test on feat/aoi-focus-owner): hard-cap live secondary *workers*.
- * Composite tertiary meshes still load for multi-parcel ring plazas (CBD hole).
- * Skip script-warm + first-frame sample thrash only.
+ * Product multi-scene model (FocusOwner + LOD rings):
+ * - **Primary** — FocusOwner (UI/audio/video/inputs)
+ * - **Live secondaries** — muted workers, scene-to-scene ≤16m, hard-capped
+ * - **Tertiary** — roads / empty / composites (no worker) over Scene Distance
+ *
+ * Composite-first for plaza shells; live only for modest/nested neighbors.
+ * Skip script-warm + first-frame sample thrash (those dual-boot CBD freezes).
  */
 const AOI_LIVE_SECONDARIES_ONLY = true
+/** Hard cap on concurrent muted live secondary workers (dense Genesis). */
 const AOI_LIVE_SECONDARY_HARD_CAP = 3
+
+/**
+ * Road **PhysX** furniture only within this player radius (meters).
+ * Visual roads still cover full Scene Distance — CCT doesn't need 200m of planters.
+ */
+export const ROAD_PHYS_RADIUS_M = 48
+
+/** Max retained composite tertiary entities (LRU by player distance). */
+export const COMPOSITE_MAX_RETAINED = 12
+
+/**
+ * Composite GLB budget by distance from player (scene-local meters).
+ * Near = denser shell; far = silhouette only.
+ */
+export function compositeMaxGltfsForDistance(distM: number, parcelCount: number): number {
+  const multi = parcelCount >= 16
+  if (distM <= 32) return multi ? 80 : 40
+  if (distM <= 64) return multi ? 48 : 24
+  if (distM <= 100) return multi ? 24 : 12
+  return multi ? 12 : 6
+}
 
 /**
  * Live secondary workers: nearest N inside a **live radius** (not full Scene Distance).

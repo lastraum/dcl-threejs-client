@@ -38,7 +38,13 @@ import {
   SecondaryFirstFrameSampler
 } from './SecondaryFirstFrameSampler'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
-import { aoiLiveSecondariesOnly, secondaryLiveRadiusM } from '../multiScene/caps'
+import {
+  aoiLiveSecondariesOnly,
+  COMPOSITE_MAX_RETAINED,
+  compositeMaxGltfsForDistance,
+  ROAD_PHYS_RADIUS_M,
+  secondaryLiveRadiusM
+} from '../multiScene/caps'
 
 /** Visible first-frame secondaries inside the inner radius. */
 const FF_MAX_VISIBLE = 3
@@ -136,20 +142,20 @@ export class AoiVisualLayer {
 
   /**
    * Live secondary workers own these entity ids — hide tertiary first-frame
-   * and composite meshes so we don't double-draw.
+   * and composite meshes so we don't double-draw. **Restores** visibility when
+   * a live worker is evicted (previously only hid, never re-showed).
    */
   setLiveSecondaryIds(ids: ReadonlySet<string>): void {
     this.liveSecondaryIds.clear()
     for (const id of ids) this.liveSecondaryIds.add(id)
-    // Hide static bakes under live workers — first-frame + composite (avoid dual rotators).
     for (const [id, group] of this.firstFrameGroups) {
-      if (this.liveSecondaryIds.has(id)) group.visible = false
+      group.visible = !this.liveSecondaryIds.has(id)
     }
     for (const child of this.compositeRoot.children) {
       const name = child.name
       if (!name.startsWith('aoi-secondary:')) continue
       const id = name.slice('aoi-secondary:'.length)
-      if (this.liveSecondaryIds.has(id)) child.visible = false
+      child.visible = !this.liveSecondaryIds.has(id)
     }
   }
 
@@ -381,7 +387,7 @@ export class AoiVisualLayer {
     }
 
     // --- Classic open-road foundation tiles (only if ownership still maps to the road) ---
-    await this.refreshRoadTiles(entities, pointerToEntity, base, gen, ctx)
+    await this.refreshRoadTiles(entities, pointerToEntity, base, gen, ctx, dclX, dclZ)
     if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
 
     if (!LOAD_AOI_SCENE_VISUALS) {
@@ -407,7 +413,7 @@ export class AoiVisualLayer {
       this.clearFirstFrameGroups()
       this.firstFrameSampler.reset()
       this.emitLiveSecondaryCandidatesOnly(entities, primaryId, base, dclX, dclZ, pointerSet)
-      await this.loadSecondaryComposites(entities, primaryId, base, pointerSet, gen, ctx)
+      await this.loadSecondaryComposites(entities, primaryId, base, pointerSet, gen, ctx, dclX, dclZ)
       if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
       if (gen === this.refreshGen) {
         console.info(
@@ -420,7 +426,7 @@ export class AoiVisualLayer {
     }
 
     // --- Secondary visuals: main.composite (outer) + first-frame sample (inner).
-    await this.loadSecondaryComposites(entities, primaryId, base, pointerSet, gen, ctx)
+    await this.loadSecondaryComposites(entities, primaryId, base, pointerSet, gen, ctx, dclX, dclZ)
     if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
 
     // Script-built neighbors (Angzaar etc.): no composite → first-frame worker sample in inner radius.
@@ -439,6 +445,7 @@ export class AoiVisualLayer {
   /**
    * main.composite tertiary meshes for multi-parcel neighbors (plaza ring, estates).
    * Entity-id dedupe; hide when a live secondary worker owns the same entity.
+   * Distance-banded GLB caps + LRU retain so 200m walks don't unbounded-grow GPU.
    */
   private async loadSecondaryComposites(
     entities: ActiveSceneEntity[],
@@ -446,8 +453,25 @@ export class AoiVisualLayer {
     primaryBase: string,
     pointerSet: Set<string>,
     gen: number,
-    ctx: NonNullable<typeof this.ctx>
+    ctx: NonNullable<typeof this.ctx>,
+    dclX: number,
+    dclZ: number
   ): Promise<void> {
+    const distToEntity = (e: ActiveSceneEntity): number => {
+      const keys = e.pointers.length ? e.pointers : e.parcels
+      let best = Infinity
+      for (const k of keys) {
+        try {
+          const p = parseParcelKey(k.trim())
+          const d = distanceToParcelCenterM(dclX, dclZ, p, primaryBase)
+          if (d < best) best = d
+        } catch {
+          /* bad key */
+        }
+      }
+      return best
+    }
+
     // Never re-load the primary entity as a secondary (full footprint already in primaryParcelSet).
     const compositeCandidates = entities.filter((e) => {
       if (primaryId && e.id === primaryId) return false
@@ -475,26 +499,44 @@ export class AoiVisualLayer {
       }
     }
 
-    // Prefer multi-parcel ring owners first (CBD plaza around nested hole), then denser hits.
+    // Near player first, then multi-parcel ring owners (CBD plaza around nested hole).
     const ranked = [...compositeCandidates].sort((a, b) => {
+      const da = distToEntity(a)
+      const db = distToEntity(b)
+      if (da !== db) return da - db
       const aHit = (a.pointers.length ? a.pointers : a.parcels).filter((p) => pointerSet.has(p)).length
       const bHit = (b.pointers.length ? b.pointers : b.parcels).filter((p) => pointerSet.has(p)).length
       if (bHit !== aHit) return bHit - aHit
       const aParcels = a.parcels.length || a.pointers.length
       const bParcels = b.parcels.length || b.pointers.length
-      // Larger multi-parcel first among equal hits — plaza ring before 1×1 props.
       return bParcels - aParcels
     })
 
-    // CBD density: loading 6×60 GLB clones per refresh freezes main.
-    // Trickle 3 after promote so plaza ring returns faster (still serial per refresh).
-    // Prefer larger maxGltfs for multi-parcel ring so plaza isn't a hollow shell.
-    const toLoad = ranked.filter((c) => !this.loadedCompositeIds.has(c.id)).slice(0, 3)
+    // LRU eviction when over retain cap — drop farthest loaded first.
+    if (this.loadedCompositeIds.size > COMPOSITE_MAX_RETAINED) {
+      const loadedRanked = [...this.loadedCompositeIds]
+        .map((id) => {
+          const ent = compositeCandidates.find((c) => c.id === id)
+          return { id, dist: ent ? distToEntity(ent) : Infinity }
+        })
+        .sort((a, b) => b.dist - a.dist)
+      while (this.loadedCompositeIds.size > COMPOSITE_MAX_RETAINED && loadedRanked.length) {
+        const drop = loadedRanked.shift()!
+        const child = this.compositeRoot.getObjectByName(`aoi-secondary:${drop.id}`)
+        child?.removeFromParent()
+        this.loadedCompositeIds.delete(drop.id)
+      }
+    }
+
+    // CBD density: trickle 2 new composites per refresh (serial) — distance-banded GLB caps.
+    const toLoad = ranked.filter((c) => !this.loadedCompositeIds.has(c.id)).slice(0, 2)
     for (const ent of toLoad) {
+      if (this.loadedCompositeIds.size >= COMPOSITE_MAX_RETAINED) break
       const comp = findCompositeFile(ent.content)
       if (!comp) continue
       const parcels = ent.parcels.length || ent.pointers.length
-      const maxGltfs = parcels >= 16 ? 80 : 40
+      const distM = distToEntity(ent)
+      const maxGltfs = compositeMaxGltfsForDistance(distM, parcels)
       try {
         const group = await buildCompositeVisualGroup({
           cache: ctx.cache,
@@ -513,11 +555,18 @@ export class AoiVisualLayer {
         group.name = `aoi-secondary:${ent.id}`
         // Hide if a live secondary worker owns this entity (avoid double-draw).
         group.visible = !this.liveSecondaryIds.has(ent.id)
+        // No shadows on tertiary — primary keeps the shadow budget.
+        group.traverse((o) => {
+          if ((o as THREE.Mesh).isMesh) {
+            o.castShadow = false
+            o.receiveShadow = true
+          }
+        })
         this.compositeRoot.add(group)
         this.loadedCompositeIds.add(ent.id)
         console.info(
           `[aoi] secondary composite entity=${ent.id.slice(0, 16)}… “${ent.title || ent.base}” ` +
-            `parcels=${parcels} gltfs≈${group.children.length}`
+            `parcels=${parcels} dist≈${distM.toFixed(0)}m gltfs≈${group.children.length}/${maxGltfs}`
         )
       } catch (err) {
         console.warn('[aoi] secondary composite failed', ent.id, err)
@@ -868,7 +917,9 @@ export class AoiVisualLayer {
     ownership: Map<string, ActiveSceneEntity>,
     primaryBase: string,
     gen: number,
-    ctx: AoiVisualLayerContext
+    ctx: AoiVisualLayerContext,
+    dclX: number,
+    dclZ: number
   ): Promise<void> {
     await ensureExplorerRoadsReady()
     if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
@@ -945,8 +996,16 @@ export class AoiVisualLayer {
       this.roadParcelSignature = signature
       this.loadedRoadIds.clear()
       for (const p of placements) this.loadedRoadIds.add(`parcel:${p.parcelKey}`)
+      // Visual roads = full Scene Distance; PhysX furniture only near player (CCT budget).
+      const physR2 = ROAD_PHYS_RADIUS_M * ROAD_PHYS_RADIUS_M
+      const nearColliders = built.colliders.filter((c) => {
+        const e = c.matrix.elements
+        const dx = e[12]! - dclX
+        const dz = e[14]! - dclZ
+        return dx * dx + dz * dz <= physR2
+      })
       // syncAoiRoadColliders replace-keeps live actors and drops orphans — no clear first.
-      ctx.syncRoadColliders?.(built.colliders)
+      ctx.syncRoadColliders?.(nearColliders)
     } catch (err) {
       console.warn('[aoi] instanced roads failed', err)
     }

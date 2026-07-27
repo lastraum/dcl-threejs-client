@@ -211,7 +211,7 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
       items: [
         {
           type: 'slider',
-          // Outer AOI: main.composite GLBs + roads + empty. Inner ~48m warms scripts (fixed).
+          // Warm/visual ring: composites + roads + empty. Live workers = 16m scene adjacency (capped).
           label: 'Scene Distance',
           min: SCENE_LOAD_RADIUS_MIN_M,
           max: SCENE_LOAD_RADIUS_MAX_M,

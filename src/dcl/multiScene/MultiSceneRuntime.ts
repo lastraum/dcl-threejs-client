@@ -168,6 +168,9 @@ export class MultiSceneRuntime {
     this.pe.tickSync(player, camera, frame)
     if (this.secondaryActivityEnabled) {
       this.secondary?.tickSync(player, camera)
+    } else {
+      // Settle window: sticky demoted primaries stay resident (no void).
+      this.secondary?.tickStickySync(player, camera)
     }
   }
 
@@ -183,6 +186,8 @@ export class MultiSceneRuntime {
     colliders.push(...(await this.pe.tickAsync()))
     if (this.secondaryActivityEnabled) {
       colliders.push(...((await this.secondary?.tickAsync()) ?? []))
+    } else {
+      colliders.push(...((await this.secondary?.tickStickyAsync()) ?? []))
     }
 
     if (this.primaryScene && this.cache) {

@@ -561,7 +561,14 @@ export class PhysXWorld {
     this.queryFilterData = new PHYSX.PxQueryFilterData()
     // Zero words = PhysX default "accept all" for scene queries (not a color / not new colliders).
     // Solid shapes still carry group bits; CCT ignores eTRIGGER_SHAPE for blocking.
-    this.sceneQueryFilterWords = new PHYSX.PxFilterData(0, 0, 0, 0)
+    // Non-zero bilateral words required for CCT. word0=word1=0 rejects ALL CCT hits
+    // (sweep may still special-case zero → false “SQ healthy” while player walks through walls).
+    this.sceneQueryFilterWords = new PHYSX.PxFilterData(
+      Layers.player.group,
+      SOLID_FILTER_OPEN,
+      0,
+      0
+    )
     this.queryFilterData.data = this.sceneQueryFilterWords
     try {
       this.sceneQueryFlags = new PHYSX.PxQueryFlags(
@@ -707,9 +714,11 @@ export class PhysXWorld {
 
   private setupControllerManager(): void {
     this.controllerManager = PHYSX.PxTopLevelFunctions.prototype.CreateControllerManager(this.scene)
-    // Keep filter data alive — C++ stores a raw pointer. Zero words = accept all SQ hits
-    // (CCT still ignores eTRIGGER_SHAPE for blocking; fishing volumes stay non-solid).
-    this.cctFilterData = new PHYSX.PxFilterData(0, 0, 0, 0)
+    // Keep filter data alive — C++ stores a raw pointer only (GC free → soft world).
+    // MUST be non-zero bilateral: (player.group & shape.mask) && (shape.group & player.mask).
+    // word0=word1=0 rejects every CCT hit → walk-through while sphere sweeps still hit ground.
+    // SOLID_FILTER_OPEN on mask + solid shape groups; eTRIGGER_SHAPE still ignored by CCT.
+    this.cctFilterData = new PHYSX.PxFilterData(Layers.player.group, SOLID_FILTER_OPEN, 0, 0)
     this.controllerFilters = new PHYSX.PxControllerFilters(this.cctFilterData)
     this.controllerFilters.mFilterData = this.cctFilterData
     // No ePREFILTER — custom preFilter was a soft-world footgun.
@@ -790,6 +799,13 @@ export class PhysXWorld {
     this._v1.set(position.x, position.y + SPAWN_FEET_CLEARANCE_M, position.z)
     this.controller.setFootPosition(this._v1.toPxExtVec3())
     this.syncPlayerTransform()
+    // Re-pin after controller create — seal may have finished before capsule existed.
+    if (this.controllerFilters && this.cctFilterData) {
+      this.cctFilterData.word0 = Layers.player.group
+      this.cctFilterData.word1 = SOLID_FILTER_OPEN
+      this.controllerFilters.mFilterData = this.cctFilterData
+      if (this.cctQueryFlags) this.controllerFilters.mFilterFlags = this.cctQueryFlags
+    }
     this.invalidateControllerCache()
   }
 
@@ -1974,12 +1990,22 @@ export class PhysXWorld {
   }
 
   /**
-   * One-shot heal when SQ was healthy at seal then went dead at play
-   * (late AOI remove+add thrash). Re-add orphans + flush only — no full rebuild.
+   * One-shot heal when SQ was healthy at seal then went dead at play.
+   * 1) re-pin CCT filters  2) re-add orphans  3) flush  4) one tree rebuild if still MISS.
+   * COD: at most once per boot — never thrash from health every 8s.
    */
   tryHealPostSealSceneQuery(x: number, y: number, z: number): boolean {
     if (!this.staticSqSealed || this.postSealSqHealDone || !this.scene) return false
     this.postSealSqHealDone = true
+
+    // Re-pin CCT filter (zero-word regression left capsule ignoring all solids).
+    if (this.controllerFilters && this.cctFilterData) {
+      this.cctFilterData.word0 = Layers.player.group
+      this.cctFilterData.word1 = SOLID_FILTER_OPEN
+      this.controllerFilters.mFilterData = this.cctFilterData
+      if (this.cctQueryFlags) this.controllerFilters.mFilterFlags = this.cctQueryFlags
+    }
+
     let readded = 0
     for (const actor of this.staticActors.values()) {
       if (!actor || this.actorInScene(actor)) continue
@@ -1990,17 +2016,9 @@ export class PhysXWorld {
         /* skip */
       }
     }
-    // Temporarily allow single reinsert for ground only if missing from scene.
-    const ground = this.staticActors.get(INFINITE_GROUND_ENTITY)
-    if (ground && !this.actorInScene(ground)) {
-      try {
-        this.scene.addActor(ground)
-        readded++
-      } catch {
-        /* skip */
-      }
-    }
     this.ensureInfiniteGroundPlane()
+    // Re-stamp solid filters on every shape (late AOI may have written narrow masks).
+    const filters = this.reapplySolidShapeFilters()
     try {
       if (typeof this.scene.flushQueryUpdates === 'function') {
         this.scene.flushQueryUpdates()
@@ -2009,10 +2027,22 @@ export class PhysXWorld {
       /* optional */
     }
     this.invalidateControllerCache()
-    const d = this.diagnoseSceneQueryAt(x, y, z, 'post-seal-heal')
+    let d = this.diagnoseSceneQueryAt(x, y, z, 'post-seal-heal')
+    if (!d.didHit) {
+      try {
+        this.scene.forceDynamicTreeRebuild(true, false)
+        if (typeof this.scene.flushQueryUpdates === 'function') {
+          this.scene.flushQueryUpdates()
+        }
+      } catch (err) {
+        console.warn('[PhysXWorld] post-seal heal rebuild failed', err)
+      }
+      this.invalidateControllerCache()
+      d = this.diagnoseSceneQueryAt(x, y, z, 'post-seal-heal-rebuild')
+    }
     console.warn(
-      `[PhysXWorld] post-seal SQ heal — readded=${readded} didHit=${d.didHit} ` +
-        `(was healthy at seal; thrash after play-ready)`
+      `[PhysXWorld] post-seal SQ heal — readded=${readded} filters=${filters} didHit=${d.didHit} ` +
+        `(CCT filter re-pinned; one rebuild only if still MISS)`
     )
     return d.didHit
   }
@@ -2143,32 +2173,36 @@ export class PhysXWorld {
     }
 
     const next = new Set(roadOnly.map((d) => d.entity))
-    for (const entity of this.aoiRoadEntityIds) {
-      if (next.has(entity)) continue
-      if (!this.isAoiRoadColliderEntity(entity)) {
-        // Corrupt bookkeeping — never removeStatic a primary id.
-        console.warn(`[PhysXWorld] AOI bookkeeping had non-road id e${entity} — ignored`)
-        continue
-      }
-      try {
-        this.removeStatic(entity)
-      } catch (err) {
-        console.warn('[PhysXWorld] aoi road collider remove failed', entity, err)
+    // After primary seal: only ADD new road colliders — never removeStatic thrash.
+    // Mass remove+add on AOI refresh killed plaza SQ (healthy at seal → MISS seconds later).
+    if (!this.staticSqSealed) {
+      for (const entity of this.aoiRoadEntityIds) {
+        if (next.has(entity)) continue
+        if (!this.isAoiRoadColliderEntity(entity)) {
+          console.warn(`[PhysXWorld] AOI bookkeeping had non-road id e${entity} — ignored`)
+          continue
+        }
+        try {
+          this.removeStatic(entity)
+        } catch (err) {
+          console.warn('[PhysXWorld] aoi road collider remove failed', entity, err)
+        }
       }
     }
     this.aoiRoadEntityIds = next
 
-    // freezeRemoval:true is mandatory — syncStaticColliders must not prune actors absent
-    // from this road-only list (that would delete every plaza furniture solid).
-    // Cap cook budget so AOI ring refresh cannot stall the frame (was full list every rebuild).
-    const result = this.syncStaticColliders(roadOnly, {
+    // freezeRemoval:true is mandatory — never prune plaza furniture when road list is partial.
+    // After seal: cook only missing road ids (cap budget).
+    const toCook = this.staticSqSealed
+      ? roadOnly.filter((d) => !this.hasStaticActor(d.entity))
+      : roadOnly
+    const result = this.syncStaticColliders(toCook, {
       freezeRemoval: true,
       geometryCache: true,
       forceRecookOnPoseChange: false,
-      cookBudget: Math.min(24, Math.max(8, roadOnly.length))
+      cookBudget: Math.min(24, Math.max(8, toCook.length || 1))
     })
     if (result.geometryChanged) {
-      // CCT cache only — never zero-dt simulate (that corrupted all actors under load).
       this.refreshStaticAfterRuntimeGeometryChange()
     }
     return result
@@ -2208,20 +2242,26 @@ export class PhysXWorld {
       )
     }
     const next = new Set(only.map((d) => d.entity))
-    for (const entity of this.aoiEmptyLandEntityIds) {
-      if (next.has(entity)) continue
-      if (!this.isAoiEmptyLandColliderEntity(entity)) continue
-      try {
-        this.removeStatic(entity)
-      } catch (err) {
-        console.warn('[PhysXWorld] aoi empty-land collider remove failed', entity, err)
+    // After seal: never remove empty-land colliders on ring refresh (same SQ thrash as roads).
+    if (!this.staticSqSealed) {
+      for (const entity of this.aoiEmptyLandEntityIds) {
+        if (next.has(entity)) continue
+        if (!this.isAoiEmptyLandColliderEntity(entity)) continue
+        try {
+          this.removeStatic(entity)
+        } catch (err) {
+          console.warn('[PhysXWorld] aoi empty-land collider remove failed', entity, err)
+        }
       }
     }
     this.aoiEmptyLandEntityIds = next
-    const result = this.syncStaticColliders(only, {
+    const toCook = this.staticSqSealed
+      ? only.filter((d) => !this.hasStaticActor(d.entity))
+      : only
+    const result = this.syncStaticColliders(toCook, {
       freezeRemoval: true,
       geometryCache: true,
-      cookBudget: only.length
+      cookBudget: Math.min(24, toCook.length || 1)
     })
     if (result.geometryChanged) {
       this.refreshStaticAfterRuntimeGeometryChange()
@@ -3143,13 +3183,14 @@ export class PhysXWorld {
   }
 
   /**
-   * Scene queries. layerMask 0 → zero words (PhysX accept-all).
-   * Camera/trigger pass a non-zero mask for bilateral filtering.
+   * Scene queries — same bilateral contract as CCT.
+   * layerMask 0 → player.group + SOLID_FILTER_OPEN (never zero words — zeros reject CCT/SQ).
+   * Camera/trigger pass a narrower mask.
    * No ePREFILTER (null callback → MISS everything).
    */
   private applySceneQueryFilter(layerMask: number): void {
-    const w0 = layerMask === 0 ? 0 : Layers.player.group
-    const w1 = layerMask === 0 ? 0 : layerMask >>> 0
+    const w0 = Layers.player.group
+    const w1 = layerMask === 0 ? SOLID_FILTER_OPEN : layerMask >>> 0
     if (!this.sceneQueryFilterWords) {
       this.sceneQueryFilterWords = new PHYSX.PxFilterData(w0, w1, 0, 0)
     } else {

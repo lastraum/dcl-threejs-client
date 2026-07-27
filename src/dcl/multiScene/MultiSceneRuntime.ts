@@ -69,6 +69,10 @@ export class MultiSceneRuntime {
     this.secondary?.forceAllResidentsTertiary(reason)
   }
 
+  ensureResidentsVisible(): void {
+    this.secondary?.ensureResidentsVisible()
+  }
+
   get secondaryManager(): SecondaryLiveManager | null {
     return this.secondary
   }

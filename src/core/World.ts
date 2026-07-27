@@ -3855,8 +3855,14 @@ export class World {
       this.aoiVisual.setResidentParcelKeys(multi.residentParcelKeys())
     })
     multi.syncLiveSecondaryVisibility()
-    // CRITICAL: register demoted plaza parcels BEFORE retarget refresh paints empty-land.
-    this.aoiVisual.setResidentParcelKeys(multi.residentParcelKeys())
+    // CRITICAL: register demoted plaza parcels BEFORE retarget refresh paints scatter/empty.
+    // Include prior primary parcels explicitly (sticky demote) so CBD never gets trees.
+    const residentKeys = new Set(multi.residentParcelKeys())
+    if (oldScene?.parcels) {
+      for (const p of oldScene.parcels) if (p) residentKeys.add(p.trim())
+    }
+    if (oldScene?.baseParcel) residentKeys.add(oldScene.baseParcel.trim())
+    this.aoiVisual.setResidentParcelKeys([...residentKeys])
     // Re-assert demoted offsets after origin + primary SW change.
     multi.notifyPrimaryChanged(newScene)
 
@@ -3865,6 +3871,8 @@ export class World {
     multi.setSecondaryActivityEnabled(false)
     // Only new primary runs scripts during settle — sticky/plaza tertiary (meshes stay).
     multi.forceAllResidentsTertiary('promote-settle')
+    // Ensure demoted roots stay visible after tertiary mode (CBD must not look empty).
+    multi.ensureResidentsVisible()
     this.aoiVisual.retargetPrimary(newScene, feetAfter.x, feetAfter.z)
     // retargetPrimary already liveReconcileEnabled=false; visuals neighborActivity on.
     this.scenePromote.bind(newScene)

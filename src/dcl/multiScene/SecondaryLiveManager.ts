@@ -148,6 +148,24 @@ export class SecondaryLiveManager {
     )
   }
 
+  /** After demote/retarget: force every resident root visible + on host (no empty-land look). */
+  ensureResidentsVisible(): void {
+    if (!this.host) return
+    for (const slot of this.slots.values()) {
+      try {
+        const root = slot.system.getEntityStore()?.root
+        if (!root) continue
+        root.visible = true
+        if (root.parent !== this.host.scene) {
+          this.host.scene.add(root)
+        }
+        root.updateMatrixWorld(true)
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
   /** Continuity assert after demote — mesh count + root pose for logs. */
   assertResidentVisible(entityId: string): {
     ok: boolean

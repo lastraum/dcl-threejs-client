@@ -395,37 +395,67 @@ export class AoiVisualLayer {
     const pointerSet = new Set(pointers)
     const primaryId = ctx.scene.entityId?.trim() ?? ''
 
-    // Footprint fill only for parcels actually in the AOI (never whole 400-parcel estates).
-    const secondaryFootprint = new Set<string>()
+    // Real deployed scenes in the ring (not vacant/catalyst-empty) — never scatter trees on these.
+    // Include every in-ring parcel of a multi-parcel deployment if *any* of its parcels are in ring.
+    const realSceneFootprint = new Set<string>()
     for (const ent of entities) {
-      if (!isSecondarySceneCandidate(ent)) continue
       if (ent.id === primaryId) continue
-      for (const p of ent.pointers.length ? ent.pointers : ent.parcels) {
-        if (!pointerSet.has(p)) continue
-        if (this.primaryParcelSet.has(p) && !this.primaryIsEmpty) continue
-        secondaryFootprint.add(p)
+      if (isOpenRoadEntity(ent)) continue
+      if (isVacantForEmptyLayer(ent)) continue
+      if (!isSecondarySceneCandidate(ent) && !ent.main) continue
+      const keys = (ent.pointers.length ? ent.pointers : ent.parcels).map((p) => p.trim())
+      const anyInRing = keys.some((p) => pointerSet.has(p) || pointerSet.has(p.trim()))
+      if (!anyInRing) continue
+      for (const p of keys) {
+        if (pointerSet.has(p) || pointerSet.has(p.trim())) realSceneFootprint.add(p.trim())
+      }
+    }
+    // Sticky demoted / live workers (CBD plaza as tertiary) — never empty-land scatter.
+    for (const p of this.residentParcelSet) realSceneFootprint.add(p)
+    for (const p of this.primaryParcelSet) {
+      if (!this.primaryIsEmpty) realSceneFootprint.add(p)
+    }
+    for (const ent of entities) {
+      if (ent.id && this.liveSecondaryIds.has(ent.id)) {
+        for (const p of ent.pointers.length ? ent.pointers : ent.parcels) {
+          if (pointerSet.has(p.trim())) realSceneFootprint.add(p.trim())
+        }
       }
     }
 
-    // --- Default ground GLB: every non-road parcel in AOI (under scenes is fine — scenes sit on top).
-    // Procedural scatter (trees/rocks): ONLY true vacant / catalyst-empty parcels.
+    // --- Default ground GLB: every non-road parcel (scenes sit on top).
+    // Procedural trees/rocks: ONLY catalyst-empty / true vacant — never real scenes or residents.
     const vacantKeys: string[] = []
     const groundKeys: string[] = []
+    let skippedScatter = 0
     for (const key of pointers) {
       const k = key.trim()
-      // Explorer roads have their own tiles
       if (isExplorerRoadParcel(key) || isExplorerRoadParcel(k)) continue
       const ent = pointerToEntity.get(key) ?? pointerToEntity.get(k)
       if (ent && isOpenRoadEntity(ent)) continue
-      // Default parcel ground everywhere (primary, sticky, secondary, vacant).
       groundKeys.push(key)
-      // Scatter only empty land — never under a real scene footprint.
-      if (secondaryFootprint.has(k) || secondaryFootprint.has(key)) continue
-      if (ent && isSecondarySceneCandidate(ent) && !isVacantForEmptyLayer(ent)) continue
-      if (this.primaryParcelSet.has(k) && !this.primaryIsEmpty) continue
-      if (this.residentParcelSet.has(k)) continue
-      if (ent && !isVacantForEmptyLayer(ent)) continue
+      // Hard ban scatter on any real/resident footprint (CBD-as-empty bug).
+      if (realSceneFootprint.has(k)) {
+        skippedScatter++
+        continue
+      }
+      // Require explicit vacant/catalyst-empty — never scatter on unknown multi-parcel holes.
+      if (!ent) {
+        skippedScatter++
+        continue
+      }
+      if (!isVacantForEmptyLayer(ent)) {
+        skippedScatter++
+        continue
+      }
       vacantKeys.push(key)
+    }
+    if (skippedScatter > 0) {
+      console.info(
+        `[aoi] scatter skip real/resident parcels=${skippedScatter} ` +
+          `vacantScatter=${vacantKeys.length} realFootprint=${realSceneFootprint.size} ` +
+          `residents=${this.residentParcelSet.size}`
+      )
     }
     void primaryId
 
@@ -490,7 +520,7 @@ export class AoiVisualLayer {
       if (gen === this.refreshGen) {
         clientDebugLog.consoleOnly(
           'info',
-          `[aoi] refresh parcels=${pointers.length} vacant=${vacantKeys.length} footprint=${secondaryFootprint.size} roads=${this.loadedRoadIds.size} composites=off firstFrame=off radius=${radiusM}m`
+          `[aoi] refresh parcels=${pointers.length} vacant=${vacantKeys.length} footprint=${realSceneFootprint.size} roads=${this.loadedRoadIds.size} composites=off firstFrame=off radius=${radiusM}m`
         )
       }
       return
@@ -527,7 +557,7 @@ export class AoiVisualLayer {
       for (const g of this.firstFrameGroups.values()) if (g.visible) ffVis++
       clientDebugLog.consoleOnly(
         'info',
-        `[aoi] refresh parcels=${pointers.length} vacant=${vacantKeys.length} footprint=${secondaryFootprint.size} roads=${this.loadedRoadIds.size} composites=${this.loadedCompositeIds.size} firstFrame=${ffVis}/${this.firstFrameGroups.size} radius=${radiusM}m`
+        `[aoi] refresh parcels=${pointers.length} vacant=${vacantKeys.length} footprint=${realSceneFootprint.size} roads=${this.loadedRoadIds.size} composites=${this.loadedCompositeIds.size} firstFrame=${ffVis}/${this.firstFrameGroups.size} radius=${radiusM}m`
       )
     }
   }

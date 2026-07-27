@@ -2357,10 +2357,8 @@ export class World {
       await this.ensurePrimaryColliderIntegrity('prepare-seal', 96)
 
       this.pushAllColliderPosesToPhysX()
-      // COD seal: ONE reinsert-all so world-baked multi-shape SQ AABBs match (plaza MISS
-      // without this: static=1100 maps ok, sweepFeetY=MISS). Then freeze forever.
-      // Never forceDynamicTreeRebuild. Never reinsert-all again from health/runtime.
-      const reinserted = this.physics.reinsertAllStaticActorsForSceneQuery()
+      // COD seal owns: reinsertAll once + forceDynamicTreeRebuild once + freeze thrash.
+      // Without that commit: static=1100 maps ok, sweepFeetY=MISS (plaza walk-through).
       this.physics.warmStaticScene()
       this.physics.sealStaticSceneQuery()
 
@@ -2374,7 +2372,7 @@ export class World {
       const elapsed = ((performance.now() - started) / 1000).toFixed(1)
       console.info(
         `[phys] colliders ready — static=${staticN} gltf=${gltfN}/${extracted} ` +
-          `pending=${this.colliderCookQueue.size} reinsert=${reinserted} sealedSQ=true rebuild=never (${elapsed}s)`
+          `pending=${this.colliderCookQueue.size} sealedSQ=true (${elapsed}s)`
       )
       this.physics.logStaticCollidersNear(
         this.colliderCookPriority.x,
@@ -2383,7 +2381,7 @@ export class World {
         20,
         'pre-play-spawn'
       )
-      // COD soft check: actors in map but CCT MISS = SQ bug (must not rebuild tree).
+      // Must not be MISS after seal — if MISS, SQ commit failed (P0).
       const probe = this.physics.probeWalkSurfaceFeetY(
         this.colliderCookPriority.x,
         this.colliderCookPriority.z,
@@ -2393,7 +2391,7 @@ export class World {
       )
       console.info(
         `[phys] pre-play sweepFeetY=${probe != null ? probe.toFixed(2) : 'MISS'} ` +
-          `(MISS + walls in near-log = SQ query bug; never forceDynamicTreeRebuild)`
+          `(expect hit after seal reinsert+rebuild once; MISS = P0 SQ bug)`
       )
       onProgress?.('Collisions ready')
     } finally {

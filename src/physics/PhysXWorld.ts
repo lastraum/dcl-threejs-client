@@ -288,6 +288,11 @@ export class PhysXWorld {
    * See docs/STATIC_COLLIDER_COD.md.
    */
   private allowStaticReinsert = true
+  /** True after boot seal committed SQ once — blocks any further tree rebuild. */
+  private staticSqSealed = false
+  /** Permanent filter data for scene sweeps — avoid temp wrapPointer drops. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private sceneQueryFilterWords: any = null
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private controllerManager: any = null
@@ -506,11 +511,44 @@ export class PhysXWorld {
     // eSAP — default sweep-and-prune; works for multi-parcel scenes without MBP region setup.
     // eMBP drops actors outside PxBroadPhase regions → "out of broadphase bounds" + fall-through.
     sceneDesc.broadPhaseType = PHYSX.PxBroadPhaseTypeEnum.eSAP
+    // DYNAMIC tree so bulk static addActor lands in SQ without requiring a rebuild every time.
+    // eSTATIC_AABB_TREE needs forceDynamicTreeRebuild after bulk cook or sweeps MISS while
+    // getWorldBounds still looks solid (plaza walk-through).
+    try {
+      sceneDesc.staticStructure = PHYSX.PxPruningStructureTypeEnum.eDYNAMIC_AABB_TREE
+      sceneDesc.dynamicStructure = PHYSX.PxPruningStructureTypeEnum.eDYNAMIC_AABB_TREE
+    } catch {
+      /* optional on older bindings */
+    }
     this.scene = this.physics.createScene(sceneDesc)
+    try {
+      if (typeof this.scene.setSceneQueryUpdateMode === 'function') {
+        this.scene.setSceneQueryUpdateMode(
+          PHYSX.PxSceneQueryUpdateModeEnum.eBUILD_ENABLED_COMMIT_ENABLED
+        )
+      }
+    } catch {
+      /* optional */
+    }
 
     this.sweepPose = new PHYSX.PxTransform(PHYSX.PxIDENTITYEnum.PxIdentity)
     this.sweepResult = new PHYSX.PxSweepResult()
     this.queryFilterData = new PHYSX.PxQueryFilterData()
+    // Permanent words object — assign via set_data so WASM owns stable filter words.
+    this.sceneQueryFilterWords = new PHYSX.PxFilterData(
+      Layers.player.group,
+      Layers.player.mask,
+      0,
+      0
+    )
+    this.queryFilterData.data = this.sceneQueryFilterWords
+    try {
+      this.queryFilterData.flags = new PHYSX.PxQueryFlags(
+        PHYSX.PxQueryFlagEnum.eSTATIC | PHYSX.PxQueryFlagEnum.eDYNAMIC
+      )
+    } catch {
+      /* optional */
+    }
     this._pv2 = new PHYSX.PxVec3()
     const capsuleHalfHeight = (this.capsuleHeight - this.capsuleRadius * 2) / 2
     this.playerCapsuleOverlapGeometry = new PHYSX.PxCapsuleGeometry(this.capsuleRadius, capsuleHalfHeight)
@@ -1330,12 +1368,24 @@ export class PhysXWorld {
 
   /**
    * Runtime no-op after seal. Prefer {@link invalidateControllerCache}.
-   * forceDynamicTreeRebuild is never used (plaza WASM SQ death). Boot uses
-   * {@link reinsertAllStaticActorsForSceneQuery} once before seal instead.
-   * See docs/STATIC_COLLIDER_COD.md.
+   * Boot seal owns the single SQ commit (see {@link sealStaticSceneQuery}).
    */
   rebuildStaticSceneQueryTree(): void {
     this.invalidateControllerCache()
+  }
+
+  /** True when actor is currently attached to our PhysX scene. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private actorInScene(actor: any): boolean {
+    if (!actor || !this.scene) return false
+    try {
+      const s = typeof actor.getScene === 'function' ? actor.getScene() : null
+      if (!s) return false
+      // Pointer equality — both wrappers should share ptr when same scene.
+      return s === this.scene || s?.ptr === this.scene?.ptr
+    } catch {
+      return false
+    }
   }
 
   /**
@@ -1349,7 +1399,9 @@ export class PhysXWorld {
     if (!this.allowStaticReinsert) return
     if (!this.scene || !actor) return
     try {
-      this.scene.removeActor(actor)
+      if (this.actorInScene(actor)) {
+        this.scene.removeActor(actor)
+      }
       this.scene.addActor(actor)
     } catch (err) {
       console.warn('[PhysXWorld] reinsert static actor for SQ failed:', err)
@@ -1357,25 +1409,41 @@ export class PhysXWorld {
   }
 
   /**
-   * **Boot seal only** — remove+add every static so SQ AABBs match world-baked multi-shape
-   * children. Without this once: static=1100+ in maps (getWorldBounds ok) but CCT/sweep
-   * MISS (plaza walk-through). After {@link sealStaticSceneQuery} this is a no-op forever.
-   * Never call from health / pose / PART paths (thrash softs solids after ~1 min).
+   * **Boot seal only** — ensure every static is in the scene + SQ AABB matches world bake.
+   * Safe: if remove succeeded and add failed, we still try add (never leave map-only orphans).
+   * After {@link sealStaticSceneQuery} this is a no-op forever.
    */
   reinsertAllStaticActorsForSceneQuery(): number {
-    if (!this.allowStaticReinsert || !this.scene) return 0
+    if (!this.allowStaticReinsert || !this.scene || this.staticSqSealed) return 0
     let n = 0
+    let readded = 0
+    let missingFromScene = 0
     for (const actor of this.staticActors.values()) {
       if (!actor) continue
       try {
-        this.scene.removeActor(actor)
-        this.scene.addActor(actor)
-        n++
-      } catch {
-        /* skip broken actor */
+        const inScene = this.actorInScene(actor)
+        if (inScene) {
+          this.scene.removeActor(actor)
+          this.scene.addActor(actor)
+          n++
+        } else {
+          // Map has actor but scene lost it (failed prior reinsert) — re-add only.
+          this.scene.addActor(actor)
+          missingFromScene++
+          readded++
+          n++
+        }
+      } catch (err) {
+        // Last chance: try bare add without remove.
+        try {
+          this.scene.addActor(actor)
+          readded++
+          n++
+        } catch {
+          console.warn('[PhysXWorld] reinsertAll failed for actor', err)
+        }
       }
     }
-    // Commit deferred SQ updates without full BVH force-rebuild (safer on plaza WASM).
     try {
       if (typeof this.scene.flushQueryUpdates === 'function') {
         this.scene.flushQueryUpdates()
@@ -1384,6 +1452,14 @@ export class PhysXWorld {
       /* optional API */
     }
     this.invalidateControllerCache()
+    if (missingFromScene > 0) {
+      console.warn(
+        `[PhysXWorld] reinsertAll — ${missingFromScene} actors were missing from scene (re-added)`
+      )
+    }
+    console.info(
+      `[PhysXWorld] reinsertAll — n=${n} readdedOrphans=${readded} map=${this.staticActors.size}`
+    )
     return n
   }
 
@@ -1659,31 +1735,48 @@ export class PhysXWorld {
   }
 
   /**
-   * Call once after boot cook + one-shot reinsert:
-   * freezes bulk remove+add; never forceDynamicTreeRebuild.
+   * Call once after boot cook. COD (docs/STATIC_COLLIDER_COD.md):
    *
-   * COD (docs/STATIC_COLLIDER_COD.md):
-   * - Boot: reinsertAll once so world-baked multi-shape SQ bounds match (required on plaza).
-   * - Seal: freeze thrash forever.
-   * - Never forceDynamicTreeRebuild (WASM SQ death at plaza scale).
-   * - Late single-actor cooks still reinsert once inside {@link addStatic}.
+   * 1. reinsertAll once (SQ AABB / scene membership for world-baked multi-shape)
+   * 2. **one** forceDynamicTreeRebuild(static) — required so bulk-added statics are
+   *    queryable; thrashing this later kills plaza WASM SQ (so we freeze after)
+   * 3. freeze reinsert/rebuild forever
+   *
+   * Late single-actor cooks still reinsert once inside {@link addStatic}.
    */
   sealStaticSceneQuery(): void {
     this.allowZeroDtWarmSim = false
-    const n = this.staticActors.size
-    // Freeze bulk reinsert thrash after the one boot reinsertAll.
-    this.allowStaticReinsert = false
     this.ensureInfiniteGroundPlane()
-    try {
-      if (this.scene && typeof this.scene.flushQueryUpdates === 'function') {
-        this.scene.flushQueryUpdates()
+    const n = this.staticActors.size
+
+    // Boot SQ commit (only if not already sealed).
+    let reinserted = 0
+    let rebuilt = false
+    if (!this.staticSqSealed && this.scene) {
+      reinserted = this.reinsertAllStaticActorsForSceneQuery()
+      try {
+        // (rebuildStaticStructure, rebuildDynamicStructure) — ONE shot for bulk statics.
+        this.scene.forceDynamicTreeRebuild(true, false)
+        rebuilt = true
+      } catch (err) {
+        console.warn('[PhysXWorld] seal forceDynamicTreeRebuild failed:', err)
       }
-    } catch {
-      /* optional */
+      try {
+        if (typeof this.scene.flushQueryUpdates === 'function') {
+          this.scene.flushQueryUpdates()
+        }
+      } catch {
+        /* optional */
+      }
     }
+
+    // Freeze thrash forever after the one commit.
+    this.allowStaticReinsert = false
+    this.staticSqSealed = true
     this.invalidateControllerCache()
     console.info(
-      `[PhysXWorld] static SQ sealed — static=${n} rebuild=never reinsertFrozen=true (COD)`
+      `[PhysXWorld] static SQ sealed — static=${n} reinsert=${reinserted} ` +
+        `rebuild=${rebuilt ? 'once' : 'skipped'} reinsertFrozen=true (COD boot-only)`
     )
   }
 
@@ -2833,9 +2926,15 @@ export class PhysXWorld {
 
   /** Scene queries — bilateral layer test (matches CCT). No ePREFILTER (null callback → MISS). */
   private applySceneQueryFilter(layerMask: number): void {
-    this.queryFilterData.data.word0 = Layers.player.group
-    this.queryFilterData.data.word1 =
-      layerMask === 0 ? Layers.player.mask : layerMask & Layers.player.mask
+    const mask = layerMask === 0 ? Layers.player.mask : layerMask & Layers.player.mask
+    if (!this.sceneQueryFilterWords) {
+      this.sceneQueryFilterWords = new PHYSX.PxFilterData(Layers.player.group, mask, 0, 0)
+    } else {
+      this.sceneQueryFilterWords.word0 = Layers.player.group
+      this.sceneQueryFilterWords.word1 = mask
+    }
+    // Assign permanent object (not a temp wrap) so WASM keeps words.
+    this.queryFilterData.data = this.sceneQueryFilterWords
     try {
       this.queryFilterData.flags = new PHYSX.PxQueryFlags(
         PHYSX.PxQueryFlagEnum.eSTATIC | PHYSX.PxQueryFlagEnum.eDYNAMIC

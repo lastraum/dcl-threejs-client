@@ -21,8 +21,8 @@
 | Phase | Behavior |
 |-------|----------|
 | **Level load** | Cook collision once (`addActor`) |
-| **Seal (once)** | **One** `reinsertAll` so world-baked multi-shape SQ AABBs match + freeze thrash |
-| **Seal never** | `forceDynamicTreeRebuild` (WASM SQ death at plaza scale) |
+| **Seal (once)** | **One** `reinsertAll` + **one** `forceDynamicTreeRebuild(static)` + freeze thrash |
+| **Seal never again** | No second rebuild / reinsert-all at play or health |
 | **Play** | Unmoved statics are never re-touched |
 | **ROOT motion** | Actor global T+R only (entity-local cook) |
 | **PART / movers** | Kinematic or fp-gated world-cook via `replaceStaticWithCook` |
@@ -58,27 +58,24 @@ spawnLocalPlayer:
   extract once (final matrices) // dirty-all only here
   cook missing / unsynced only  // addActor; never wipe all actors
   integrity drain (missing + geom mismatch)
-  reinsertAllStaticActorsForSceneQuery()  // ONCE — SQ AABB commit
-  sealStaticSceneQuery          // freeze reinsert; NO forceDynamicTreeRebuild
+  sealStaticSceneQuery()  // reinsertAll once + forceDynamicTreeRebuild once + freeze
   collidersReady = true
 world.start()
 ```
 
 ### Seal semantics
 
-Before seal, **once**:
+`PhysXWorld.sealStaticSceneQuery()` does the **one** boot SQ commit:
 
-1. `reinsertAllStaticActorsForSceneQuery()` — remove+add every static + `flushQueryUpdates`
-2. Required so world-baked multi-shape SQ bounds match `getWorldBounds`
+1. `reinsertAllStaticActorsForSceneQuery()` — ensure scene membership + SQ AABBs
+2. **One** `forceDynamicTreeRebuild(true, false)` — bulk statics must enter query tree
+3. `flushQueryUpdates` when available
+4. Freeze: `allowStaticReinsert = false`, `staticSqSealed = true` (no second rebuild)
+5. Disable zero-dt warm sim; ensure infinite ground; invalidate CCT cache
 
-`PhysXWorld.sealStaticSceneQuery()`:
+Scene is created with `staticStructure = eDYNAMIC_AABB_TREE` so late single adds stay queryable without thrash rebuilds.
 
-1. Disables zero-dt warm sim (`allowZeroDtWarmSim = false`)
-2. Sets `allowStaticReinsert = false` (bulk reinsert frozen forever)
-3. Ensures infinite ground plane
-4. Optional `flushQueryUpdates`
-5. Invalidates CCT obstacle cache
-6. **Does not** call `scene.forceDynamicTreeRebuild`
+**Forbidden after seal:** any further reinsert-all or forceDynamicTreeRebuild (WASM thrash softs plaza).
 
 ### Late cooks after seal
 
@@ -110,7 +107,7 @@ Unmoved statics: pose-fp match → **no-op** (`force` must not reinsert them).
 
 | API / pattern | Why forbidden |
 |---------------|----------------|
-| `forceDynamicTreeRebuild` anytime | Corrupts WASM SQ at plaza scale → MISS |
+| `forceDynamicTreeRebuild` **after seal** / from health | Second+ rebuild thrash softs plaza WASM SQ |
 | `reinsertAllStaticActorsForSceneQuery` **after seal** / from health | Thrash softs CCT after ~1 min |
 | `rebuildStaticSceneQueryTree` as health/runtime fix | Same class of thrash |
 | `clearGltfStaticActors` / `clearAllSceneStaticActors` on boot seal | Soft hole while recooking |

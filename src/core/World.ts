@@ -106,9 +106,7 @@ import {
   buildPhysxCookPrefetchRequests,
   clearGeometryCookCache,
   disposePhysxCookPool,
-    prefetchPhysxCookStreams,
-  resetGeometryCookCacheStats,
-  resetPhysxCookPoolSession,
+  prefetchPhysxCookStreams,
   startPhysxCookPrefetch
 } from '../physics/geometryToPxMesh'
 import { clearPrimedPhysxCookStreams } from '../physics/physxCookByteCache'
@@ -1917,6 +1915,7 @@ export class World {
     )
 
     onProgress?.('Preparing collisions…')
+    // Wait for GLB graph BEFORE cook (pendingMesh→0). Early 4s soft-exit was sealing incomplete plaza.
     await this.waitForColliderGraphSettle(onProgress)
 
     this.sceneScript.setSceneWorkerTicksPaused(true)
@@ -1928,15 +1927,14 @@ export class World {
       this.sceneScript.invalidateGltfColliderSyncCache()
       this.sceneScript.syncCollisionForce()
 
+      // Seal path: cook missing/unsynced only. Do NOT clearGeometryCookCache / clearGltfStaticActors
+      // — wiping 475 plaza actors then recooking from partial extract was the soft-init death spiral.
       this.deferPhysxCooks = false
-      resetPhysxCookPoolSession()
-      clearPrimedPhysxCookStreams()
-      resetGeometryCookCacheStats()
-      clearGeometryCookCache()
-      this.physics.clearGltfStaticActors()
       this.physics.clearFailedCookCaches()
       this.colliderCookQueue.clear()
       this.reconcileColliderCookQueue()
+      // Ensure every extracted desc is in the queue if not live+synced.
+      this.discoverMissingColliderActors()
 
       const assetsTimedOut = this.bootAssetsTimedOut
       const maxWallMs = assetsTimedOut
@@ -1963,6 +1961,7 @@ export class World {
         if (this.sceneScript.hasColliderWorkPending()) {
           this.sceneScript.syncCollision()
           this.reconcileColliderCookQueue()
+          this.discoverMissingColliderActors()
         }
         await this.drainColliderCookQueue({ mode: 'boot' })
         const gltfCount = this.lastGltfColliderCount
@@ -1982,8 +1981,9 @@ export class World {
       this.sceneScript.invalidateGltfColliderSyncCache()
       this.sceneScript.syncCollisionForce()
       this.reconcileColliderCookQueue()
+      this.discoverMissingColliderActors()
       let guard = 0
-      while (this.colliderCookQueue.size > 0 && guard < 128) {
+      while (this.colliderCookQueue.size > 0 && guard < 256) {
         await this.drainColliderCookQueue({ mode: 'boot' })
         guard++
         await new Promise<void>((r) => requestAnimationFrame(() => r()))
@@ -2000,7 +2000,7 @@ export class World {
       this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
 
       // Integrity: drain any still-missing actors before we claim ready (Genesis soft load).
-      await this.ensurePrimaryColliderIntegrity('prepare-seal', 48)
+      await this.ensurePrimaryColliderIntegrity('prepare-seal', 96)
 
       const staticN = this.physics.staticColliderCount
       const gltfN = this.physics.gltfStaticActorCount
@@ -2111,32 +2111,54 @@ export class World {
   }
 
   /**
-   * Block until GLB attach pressure settles enough that matrixWorld is trustworthy
-   * for PhysX cooks. Pool/disco can attach forever — we only wait for a stable window
-   * or a hard cap, not pendingMesh===0 forever.
+   * Block until GLB attach pressure is low enough that matrixWorld is trustworthy
+   * for PhysX cooks. Genesis plaza used to soft-exit after 4s with hundreds of
+   * pendingMesh still queued — then cook sealed incomplete solids (walk-through).
+   *
+   * Prefer pendingMesh===0. Soft-exit only when almost everything is attached
+   * (attached/entities ≥ 0.97) and the pending count has been stable for 2s.
    */
   private async waitForColliderGraphSettle(
     onProgress?: (msg: string) => void,
-    maxMs = 20_000
+    maxMs = 120_000
   ): Promise<void> {
     if (!this.playerMode) return
     const started = performance.now()
     let lastPending = -1
     let stableSince = 0
     const stableNeedMs = 600
+    const softStableMs = 2_000
     onProgress?.('Waiting for scene colliders…')
     while (performance.now() - started < maxMs) {
       await this.sceneScript.yieldForWorkerMessages()
       await this.sceneScript.syncRendererFull()
       this.sceneScript.flushSceneGraphMatrices()
       this.sceneScript.refreshAllInstancedTransforms()
+      // Progressive extract while we wait — so cook starts with a full desc set.
+      if (this.sceneScript.hasColliderWorkPending()) {
+        this.sceneScript.syncCollision()
+      } else {
+        this.sceneScript.syncCollisionForce()
+      }
       const lite = this.sceneScript.getAttachProgressLite()
       const pending = lite?.pendingMesh ?? 0
+      const attached = lite?.attached ?? 0
+      const hydra = this.sceneScript.getHydrationStats()
+      const entities = Math.max(1, hydra?.gltfEntities ?? attached + pending)
+      const attachRatio = attached / entities
       const now = performance.now()
       if (pending === lastPending) {
         if (stableSince <= 0) stableSince = now
-        // Idle attach queue (or stable non-zero tail) long enough to cook.
-        if (now - stableSince >= stableNeedMs && (pending === 0 || now - started > 4_000)) {
+        const stableFor = now - stableSince
+        // Ideal: nothing left to attach.
+        if (pending === 0 && stableFor >= stableNeedMs) break
+        // Soft: nearly complete attach + pending stuck (infinite pool tails).
+        if (pending > 0 && attachRatio >= 0.97 && stableFor >= softStableMs) {
+          console.warn(
+            `[World] collider graph soft-settle — pendingMesh=${pending} ` +
+              `attached=${attached}/${entities} (${(attachRatio * 100).toFixed(0)}%) ` +
+              `after ${((now - started) / 1000).toFixed(1)}s`
+          )
           break
         }
       } else {
@@ -2145,16 +2167,18 @@ export class World {
       }
       onProgress?.(
         pending > 0
-          ? `Waiting for scene colliders… ${pending} meshes`
+          ? `Waiting for scene colliders… ${attached}/${entities} attached, ${pending} left`
           : 'Waiting for scene colliders…'
       )
       await new Promise<void>((r) => requestAnimationFrame(() => r()))
     }
     const lite = this.sceneScript.getAttachProgressLite()
-    console.info(
+    clientDebugLog.log(
+      'collision',
       `[World] collider graph settle — pendingMesh=${lite?.pendingMesh ?? 0} ` +
         `attached=${lite?.attached ?? '?'} ` +
-        `t=${((performance.now() - started) / 1000).toFixed(1)}s`
+        `t=${((performance.now() - started) / 1000).toFixed(1)}s`,
+      { level: 'info', alsoConsole: true }
     )
   }
 
@@ -3068,8 +3092,9 @@ export class World {
   }
 
   /**
-   * Hydration follow-up: extract colliders from live Three.js poses — PhysX cook deferred to spawn.
-   * Keeps hydration mode on so projection diff cannot drift transforms before the authoritative cook.
+   * After asset hydration: extract colliders and begin progressive PhysX cook so
+   * prepareCollidersForPlay seals a nearly-full set instead of cooking from zero.
+   * Does not set collidersLoadingComplete — that is the prepare seal only.
    */
   async prewarmPhysicsColliders(
     _scene: ResolvedScene,
@@ -3084,13 +3109,44 @@ export class World {
     onProgress?.('Preparing collisions…', World.COLLIDER_COOK_PROGRESS_START)
     await this.sceneScript.syncRendererFull()
     this.sceneScript.flushSceneGraphMatrices()
+    this.sceneScript.refreshAllInstancedTransforms()
     this.sceneScript.invalidateGltfColliderSyncCache()
     this.sceneScript.syncCollisionForce()
     this.refreshColliderCookStats()
+
+    // Progressive cook during prewarm — PhysX fills while UI shows progress.
+    // prepareCollidersForPlay still seals (graph settle + missing drain) before capsule.
+    this.deferPhysxCooks = false
+    this.colliderCookQueue.clear()
+    this.reconcileColliderCookQueue()
+    this.discoverMissingColliderActors()
+    const prewarmBudget = 8
+    let passes = 0
+    while (this.colliderCookQueue.size > 0 && passes < prewarmBudget) {
+      await this.drainColliderCookQueue({ mode: 'boot' })
+      passes++
+      const registered = this.physics.gltfStaticActorCount
+      const extracted = this.lastGltfColliderCount
+      onProgress?.(
+        `Cooking collisions… ${registered}/${extracted}`,
+        World.COLLIDER_COOK_PROGRESS_START +
+          World.COLLIDER_COOK_PROGRESS_RANGE * Math.min(0.85, registered / Math.max(1, extracted))
+      )
+      await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    }
+
     const extracted = this.lastGltfColliderCount
+    const registered = this.physics.gltfStaticActorCount
+    clientDebugLog.log(
+      'collision',
+      `[phys] prewarm cook — gltf=${registered}/${extracted} pending=${this.colliderCookQueue.size}`,
+      { level: 'info', alsoConsole: true }
+    )
     onProgress?.(
-      extracted > 0 ? `Colliders extracted (${extracted} GLTF)…` : 'Preparing collisions…',
-      World.COLLIDER_COOK_PROGRESS_START + World.COLLIDER_COOK_PROGRESS_RANGE * 0.25
+      extracted > 0
+        ? `Colliders cooking (${registered}/${extracted} GLTF)…`
+        : 'Preparing collisions…',
+      World.COLLIDER_COOK_PROGRESS_START + World.COLLIDER_COOK_PROGRESS_RANGE * 0.5
     )
   }
 

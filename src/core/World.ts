@@ -3567,14 +3567,9 @@ export class World {
   }
 
   /**
-   * In-world promote (no World rebuild) — **only** when target is already a live secondary.
-   *
-   * We deliberately do **not** force-boot a cold scene as secondary then hand off:
-   * CBD multi-parcel plazas would load a full second SceneScriptSystem while the old
-   * primary still lives (dual-resident thrash → tab death). Cold promotes fall through
-   * to seamless jumpIn (single resident).
-   *
-   * Modest demoted primaries may become sticky secondaries for walk-back resume.
+   * In-world promote (no World rebuild) — only when target is already a live secondary.
+   * AppController force-boots under-feet first, then calls this. Failure must **not**
+   * seamless-jump (continuity: prior primary stays until handoff succeeds).
    */
   async tryPromoteInWorld(target: { x: number; y: number }): Promise<boolean> {
     const multi = this.multiScene
@@ -3583,7 +3578,7 @@ export class World {
     const handoff = multi.takeSecondaryForPromote(target.x, target.y)
     if (!handoff) {
       console.info(
-        `[promote] no live secondary @ ${target.x},${target.y} — skip force-boot (seamless jump)`
+        `[promote] no live secondary @ ${target.x},${target.y} — wait for force-boot (no unload)`
       )
       return false
     }

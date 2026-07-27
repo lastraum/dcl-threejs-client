@@ -2237,6 +2237,10 @@ export class AppController {
         void this.refreshLocationTitleForParcel(x, y)
         // Prefer live-secondary boot for the parcel under feet (before promote dwell).
         this.multiSceneRuntime.setSecondaryPriorityParcel(x, y)
+        // Pre-boot under-feet scene so promote can handoff+demote (no seamless unload).
+        if (!this.multiSceneRuntime.hasLiveSecondaryForParcel(x, y)) {
+          void this.multiSceneRuntime.ensureSecondaryForParcel(x, y, 28_000)
+        }
       },
       onPrefetch: (x, y) => {
         this.enqueueScriptWarm(x, y)
@@ -3121,9 +3125,10 @@ export class AppController {
   }
 
   /**
-   * Promote stand-on parcel to primary:
-   * 1) in-world handoff (live secondary or force-boot) + demote old primary for resume
-   * 2) else seamless jumpIn (full World rebuild — last resort; no demote across rebuild)
+   * Continuity-first parcel promote (no World rebuild on walk):
+   * 1) pin + force-boot under-feet as live secondary if needed
+   * 2) handoff + sticky demote prior primary (meshes stay)
+   * 3) if handoff fails — stay put (never disposeSecondaries + seamless jump)
    */
   private async promotePrimary(
     target: Extract<RouteTarget, { kind: 'coords' }>,
@@ -3157,73 +3162,65 @@ export class AppController {
     reason: string
   ): Promise<void> {
     const world = this.world
-    if (world) {
-      // Pin under-feet parcel so live secondary boots first (handoff, no loading screen).
-      this.multiSceneRuntime.setSecondaryPriorityParcel(target.x, target.y)
-      try {
-        let handed = await world.tryPromoteInWorld(target)
-        if (!handed) {
-          // Force-boot under-feet scene as secondary (cap used to starve Spring for HEX Club).
-          console.info(
-            `[promote] wait for live secondary @ ${target.x},${target.y} before cold jump…`
-          )
-          const bootPromise = this.multiSceneRuntime.ensureSecondaryForParcel(
-            target.x,
-            target.y,
-            22_000
-          )
-          for (let i = 0; i < 30 && !handed; i++) {
-            await new Promise<void>((r) => setTimeout(r, 400))
-            if (this.world !== world) return
-            handed = await world.tryPromoteInWorld(target)
-            if (handed) break
-            // Bail early if force-boot finished and still missing.
-            if (i > 5 && (await Promise.race([bootPromise.then(() => true), Promise.resolve(false)]))) {
-              handed = await world.tryPromoteInWorld(target)
-              if (!handed && i > 12) break
-            }
-          }
-          await bootPromise.catch(() => false)
-          if (!handed) handed = await world.tryPromoteInWorld(target)
-        }
-        if (handed) {
-          console.info(
-            `[promote] in-world handoff+demote ${target.x},${target.y} (${reason})`
-          )
-          this.multiSceneRuntime.setSecondaryPriorityParcel(target.x, null)
-          this.currentRoute = target
-          // Re-bind PE HUD so scene.json portableExperiences policy refreshes the icon.
-          this.shell?.bindPortableExperiences(this.peManager)
-          const next = world.getLoadedPrimaryScene()
-          if (next) {
-            const title = sceneDisplayTitle(next)
-            this.seedLocationTitleCache(next, title)
-            this.applyLocationTitle(title, `${target.x},${target.y}`)
-          }
-          return
-        }
-      } catch (err) {
-        console.warn('[promote] in-world handoff failed — falling back to seamless jump', err)
-      }
+    if (!world) {
+      console.warn('[promote] no world — cannot handoff')
+      return
     }
-    // Free neighbor workers + warm queue so CBD plaza load isn't dual-resident thrash.
-    this.multiSceneRuntime.disposeSecondariesOnly()
-    this.scriptWarmQueue.length = 0
-    this.scriptWarmQueuedKeys.clear()
-    this.scriptWarmInFlight = 0
-    console.info(
-      `[promote] seamless jump ${target.x},${target.y} (${reason}) — no live secondary after wait`
+
+    // Pin under-feet parcel so live secondary boots first (handoff, no loading screen).
+    this.multiSceneRuntime.setSecondaryPriorityParcel(target.x, target.y)
+    try {
+      let handed = await world.tryPromoteInWorld(target)
+      if (!handed) {
+        // Force-boot under-feet as secondary (any size if priority), wait for handoff.
+        // Continuity: never fall through to disposeSecondaries + seamless jump.
+        console.info(
+          `[promote] wait for live secondary @ ${target.x},${target.y} (handoff only — no unload)…`
+        )
+        const bootPromise = this.multiSceneRuntime.ensureSecondaryForParcel(
+          target.x,
+          target.y,
+          45_000
+        )
+        for (let i = 0; i < 60 && !handed; i++) {
+          await new Promise<void>((r) => setTimeout(r, 400))
+          if (this.world !== world) return
+          handed = await world.tryPromoteInWorld(target)
+          if (handed) break
+          if (i > 3 && (await Promise.race([bootPromise.then(() => true), Promise.resolve(false)]))) {
+            handed = await world.tryPromoteInWorld(target)
+            if (!handed && i > 20) break
+          }
+        }
+        await bootPromise.catch(() => false)
+        if (!handed) handed = await world.tryPromoteInWorld(target)
+      }
+      if (handed) {
+        console.info(
+          `[promote] in-world handoff+demote ${target.x},${target.y} (${reason})`
+        )
+        this.multiSceneRuntime.setSecondaryPriorityParcel(target.x, null)
+        this.currentRoute = target
+        // Re-bind PE HUD so scene.json portableExperiences policy refreshes the icon.
+        this.shell?.bindPortableExperiences(this.peManager)
+        const next = world.getLoadedPrimaryScene()
+        if (next) {
+          const title = sceneDisplayTitle(next)
+          this.seedLocationTitleCache(next, title)
+          this.applyLocationTitle(title, `${target.x},${target.y}`)
+        }
+        return
+      }
+    } catch (err) {
+      console.warn('[promote] in-world handoff failed — keeping current primary (no unload)', err)
+    }
+
+    // Continuity contract: never destroy the world on parcel walk.
+    console.warn(
+      `[promote] ABORT seamless jump @ ${target.x},${target.y} (${reason}) — ` +
+        `no live secondary after wait; prior primary stays resident`
     )
-    await this.jumpInToScene(target, {
-      fastAssets: true,
-      // Keep Genesis feet. No full /goto loading chrome on parcel walk —
-      // scene should already have been loading as a nearby secondary.
-      seamless: true,
-      showSeamlessLoading: false,
-      replace: true,
-      entry: 'teleport',
-      source: 'goto'
-    })
+    this.multiSceneRuntime.setSecondaryPriorityParcel(target.x, null)
   }
 
   /**

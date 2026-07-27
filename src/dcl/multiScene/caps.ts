@@ -97,16 +97,17 @@ export function peLiveCap(tier: PerformanceTier): number {
   return 2
 }
 
-/** Secondary onUpdate throttle — primary always every frame. */
-export function secondaryTickIntervalMs(tier: PerformanceTier): number {
-  if (tier === 'low') return 500
-  if (tier === 'medium') return 250
-  return 150
+/**
+ * Live secondary **scripts** run every frame (same as primary onUpdate rate).
+ * FocusOwner still mutes video / audio / scene UI / privileged input for secondaries.
+ * @see SceneScriptSystem.applyFocusPolicy('secondary')
+ */
+export function secondaryTickIntervalMs(_tier: PerformanceTier): number {
+  return 0
 }
 
 /**
  * PE must run every frame like a primary scene (drone InputModifier, entity remove, etc.).
- * Tier no longer throttles PE — only secondary live workers are duty-cycled.
  */
 export function peTickIntervalMs(_tier: PerformanceTier): number {
   return 0

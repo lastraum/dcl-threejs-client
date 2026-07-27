@@ -229,8 +229,8 @@ export class SecondaryLiveManager {
     console.info(
       `[multi-scene] demoted “${scene.title}” → sticky secondary parcels=${parcelCount}` +
         (frozenVisual
-          ? ' frozen-visual (meshes resident, scripts paused)'
-          : ' warm (walk back = resume handoff)')
+          ? ' large sticky (meshes resident, scripts full-rate, lighter PhysX)'
+          : ' warm sticky (scripts full-rate, walk-back resume)')
     )
     return { entityId: id, primaryPhysIds }
   }
@@ -264,18 +264,24 @@ export class SecondaryLiveManager {
       if (this.primaryScene?.entityId === scene.entityId) return false
       if (this.slots.has(scene.entityId)) return true
 
-      // Never force-boot plaza-scale estates as live secondaries (dual-resident freezes CBD).
-      // Seamless promote (cold jump) handles walk-on to multi-parcel primaries.
+      // Under-feet promote target: always allow force-boot (any parcel count) so handoff
+      // can demote the old primary sticky — never seamless-jump unload.
+      // Non-priority plaza auto-boots stay gated in reconcile.
       const parcelCount = scene.parcels?.length ?? 0
-      if (parcelCount > SECONDARY_LIVE_AUTO_MAX_PARCELS) {
+      const isPriority =
+        this.priorityParcelKey === key ||
+        scene.baseParcel.trim() === this.priorityParcelKey ||
+        scene.parcels.some((p) => p.trim() === this.priorityParcelKey)
+      if (parcelCount > SECONDARY_LIVE_AUTO_MAX_PARCELS && !isPriority) {
         console.info(
           `[multi-scene] refuse force-boot “${scene.title}” parcels=${parcelCount} ` +
-            `(>${SECONDARY_LIVE_AUTO_MAX_PARCELS}) — seamless promote instead`
+            `(not under-feet priority — composite only)`
         )
         return false
       }
 
-      this.evictToCapacity(this.maxSlots() - 1)
+      // Evict non-sticky to make room; sticky demoted never dropped for continuity.
+      this.evictToCapacity(Math.max(0, this.maxSlots() - 1))
 
       const slotIndex = this.nextSlotIndex++
       const slot = new SceneWorkerSlot({

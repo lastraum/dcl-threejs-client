@@ -135,7 +135,9 @@ export class SceneWorkerSlot {
       console.info(
         `[multi-scene] demoted primary → secondary “${scene.title}” id=${this.id.slice(0, 16)}… ` +
           `origin→${this.primaryBaseParcel || 'pending'}` +
-          (this.frozenVisual ? ' frozen-visual (meshes stay, scripts paused)' : ' resume-ready')
+          (this.frozenVisual
+            ? ' sticky large (scripts every frame, lighter PhysX)'
+            : ' sticky warm (scripts every frame)')
       )
       return
     }
@@ -251,11 +253,7 @@ export class SceneWorkerSlot {
 
   tickSync(player: EntityPose, camera: EntityPose, minIntervalMs: number): boolean {
     if (!this.running || this.disposed || this.detached) return false
-    // Frozen demoted plaza: meshes stay; no worker onUpdate (anti dual-resident thrash).
-    if (this.frozenVisual) {
-      this.lastTickAt = performance.now()
-      return false
-    }
+    // Secondary scripts always run (minIntervalMs=0). FocusOwner mutes media/UI only.
     const now = performance.now()
     if (now - this.lastTickAt < minIntervalMs) return false
     this.lastTickAt = now
@@ -263,26 +261,24 @@ export class SceneWorkerSlot {
     if (this.kind === 'pe') {
       this.system.updateTriggerAreas()
     }
+    // Full onUpdate for live + demoted secondaries (no video/UI — FocusPolicy secondary).
     this.system.tickPlayFrame()
     return true
   }
 
   /**
    * Projection + collider extract. Returns remapped PhysX descriptors for World to cook.
+   * Large frozen-visual demotes still project meshes but avoid thrashing cook callbacks.
    */
   async tickAsync(
     primaryScene: ResolvedScene | null,
     cache: AssetCache
   ): Promise<PhysicsColliderDesc[]> {
     if (!this.running || this.disposed || this.detached) return []
-    // Frozen visual demote: keep last registered colliders; skip projection storm.
-    if (this.frozenVisual) {
-      return this.collectRemappedColliders()
-    }
     cache.setScene(this.scene)
     try {
       await this.system.syncRenderer()
-      if (this.system.hasColliderWorkPending()) {
+      if (!this.frozenVisual && this.system.hasColliderWorkPending()) {
         this.system.syncCollision()
       }
       await this.system.syncAsyncBridges()

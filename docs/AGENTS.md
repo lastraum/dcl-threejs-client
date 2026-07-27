@@ -2,6 +2,25 @@
 
 > Read this before touching code. Humans: see [CONTRIBUTING.md](../CONTRIBUTING.md) to claim parity work.
 
+## Execution standard (always)
+
+Treat every multi-scene, performance, and continuity task as **ship-or-iterate AAA quality** — not “good enough for a demo.” Guiding bar:
+
+> Build as if this were a first-person experience at the level of the most recent Call of Duty titles: visually complete, systems coherent, no accidental unload voids, no silent regressions. Prefer fix-until-proven over leave-a-TODO. Fan out investigation, harsh self-critique, measure, then land the continuity path.
+
+### Multi-scene continuity (non-negotiable)
+
+| Rule | Detail |
+|------|--------|
+| **No unload on parcel walk** | Promote = handoff + sticky demote only. **Never** `disposeSecondariesOnly` + seamless `jumpIn` for stand-on-parcel promote. |
+| **Prior primary stays resident** | Demote keeps mesh graph (sticky secondary). Large estates may lighten PhysX, **never** `system.dispose()` into void. |
+| **Secondary scripts 100%** | Live secondary `onUpdate` every frame (`secondaryTickIntervalMs = 0`). |
+| **Secondary FocusOwner mute** | No video, audio, scene UI, privileged pointers/nav — `FocusPolicy = 'secondary'`. |
+| **Primary FocusOwner** | Only primary owns UI / media / inputs / locomotion. |
+| **Tertiary** | Roads / empty / composites fill the world without workers; distance-budgeted. |
+
+If a change makes the world go blank on neighbor step, **it is a P0 bug** — reverse or fix before shipping.
+
 ## Reading order
 
 1. **[PROGRESS.md](./PROGRESS.md)** — latest release / RC (v1.5.0), what’s next, shipped history  

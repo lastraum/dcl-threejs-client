@@ -3777,8 +3777,31 @@ export class World {
     this.sceneScript.setSignedFetchGetHeadersHandler(async (body) =>
       performGetSignedHeaders(body, this.session.getAuthIdentity())
     )
+
+    // P0: rebind scene origin to NEW primary base BEFORE feet restore / soft-route.
+    // applyRealmAbout alone does NOT update sceneOriginMeters — that left feet in old
+    // local space under the new base → soft-route warped (e.g. -141,99 + stale local
+    // → -135,107) and CBD looked unloaded.
+    const originBefore = { ...this.comms.getSceneOrigin() }
     this.comms.applyRealmAbout(newScene.realm, newScene.commsPointer)
+    this.comms.bindSceneTarget(this.buildCommsTarget(newScene))
     this.session.setCatalystEndpoints(newScene.realm.contentUrl, newScene.realm.lambdasUrl)
+
+    // Feet stay put in Genesis space under the NEW origin.
+    const ok = this.restoreGenesisFeet(genesis)
+    const originAfter = this.comms.getSceneOrigin()
+    const feetAfter = this.player.getPosition()
+    const baseParts = newScene.baseParcel.split(',').map((s) => Number.parseInt(s.trim(), 10))
+    const baseX = Number.isFinite(baseParts[0]) ? baseParts[0]! : 0
+    const baseY = Number.isFinite(baseParts[1]) ? baseParts[1]! : 0
+    const softPx = baseX + Math.floor(feetAfter.x / 16)
+    const softPy = baseY + Math.floor(feetAfter.z / 16)
+    console.info(
+      `[promote] origin (${originBefore.x},${originBefore.z})→(${originAfter.x},${originAfter.z}) ` +
+        `feetLocal=(${feetAfter.x.toFixed(1)},${feetAfter.z.toFixed(1)}) ` +
+        `softParcel=${softPx},${softPy} restoreOk=${ok} ` +
+        `genesis=(${genesis.x.toFixed(1)},${genesis.z.toFixed(1)})`
+    )
 
     // Sticky secondaries already retargeted before demote; re-sync live ids + AOI hide.
     multi.setOnLiveSecondaryIds((ids) => {
@@ -3789,23 +3812,25 @@ export class World {
     multi.syncLiveSecondaryVisibility()
     // CRITICAL: register demoted plaza parcels BEFORE retarget refresh paints empty-land.
     this.aoiVisual.setResidentParcelKeys(multi.residentParcelKeys())
-    // Re-assert demoted offsets after comms origin swap (host Three space is continuous;
-    // secondary roots are relative to primary SW which just changed).
+    // Re-assert demoted offsets after origin + primary SW change.
     multi.notifyPrimaryChanged(newScene)
 
-    // AOI: retarget without unbind wipe (bind→unbind cleared CBD plaza into void).
-    // Live worker boots stay off for settle; sticky demoted still ticks; visuals refresh.
+    // AOI: retarget with CORRECTED local feet (after restore) — no unbind wipe.
     multi.setSecondaryActivityEnabled(false)
-    const feetLocal = this.player.getPosition()
-    this.aoiVisual.retargetPrimary(newScene, feetLocal.x, feetLocal.z)
+    this.aoiVisual.retargetPrimary(newScene, feetAfter.x, feetAfter.z)
     this.scenePromote.bind(newScene)
     // Neighbor promote evaluate OK; live secondary auto-boots stay off until settle.
     this.scenePromote.setNeighborActivityEnabled(true)
 
+    // Soft-route URL to feet parcel under new origin (not stale -135,107 warp).
+    this.promoteSoftRoute?.(softPx, softPy)
+    // Archipelago island seed uses genesis from new origin + local feet.
+    this.comms.seedArchipelagoSceneLocal(feetAfter.x, genesis.y, feetAfter.z)
+
     console.info(
       `[promote] HANDOFF OK stickyParcels=${multi.residentParcelKeys().length} ` +
         `liveIds=${multi.secondaryManager?.liveEntityIds().size ?? 0} ` +
-        `newPrimary="${newScene.title}" base=${newScene.baseParcel}`
+        `newPrimary="${newScene.title}" base=${newScene.baseParcel} soft=${softPx},${softPy}`
     )
 
     // Re-cook colliders under primary entity ids.
@@ -3816,8 +3841,6 @@ export class World {
       void this.scheduleColliderCookDrain()
     }
 
-    // Feet stay put in Genesis space.
-    const ok = this.restoreGenesisFeet(genesis)
     const SETTLE_LIVE_SECONDARIES_MS = 5_000
     window.setTimeout(() => {
       if (this.loadedPrimaryScene?.entityId !== newScene.entityId) return

@@ -266,9 +266,11 @@ export class SecondaryLiveManager {
 
     const id = scene.entityId
     const parcelCount = scene.parcels?.length || 1
-    // Sticky demote is always "still next to you" on parcel walk — secondary scripts.
-    // Cap pressure may demote secondary→tertiary later; leave-ring does too.
-    const initialMode: ResidentMode = 'secondary'
+    // Sticky demote: always keep meshes. Large multi-parcel (plaza) starts **tertiary**
+    // (scripts off) so dual full workers cannot freeze the tab. Re-promote unpauses.
+    // Modest neighbors stay secondary (scripts warm for walk-back).
+    const initialMode: ResidentMode =
+      parcelCount > SECONDARY_LIVE_AUTO_MAX_PARCELS ? 'tertiary' : 'secondary'
 
     // Host origin is the NEW primary SW after promote — always prefer explicit base.
     const primaryBase =
@@ -298,9 +300,11 @@ export class SecondaryLiveManager {
       }
       this.stickyIds.add(id)
       existing.retargetPrimaryBase(primaryBase)
-      // Always bring sticky prior primary back to secondary while still adjacent.
-      if (existing.residentMode === 'tertiary') {
+      // Large sticky stays tertiary (scripts off); modest re-enter secondary.
+      if (initialMode === 'secondary' && existing.residentMode === 'tertiary') {
         existing.setResidentMode('secondary')
+      } else if (initialMode === 'tertiary' && existing.residentMode === 'secondary') {
+        existing.setResidentMode('tertiary')
       }
       this.emitLiveIds()
       return { entityId: id, primaryPhysIds: [] }
@@ -361,10 +365,11 @@ export class SecondaryLiveManager {
     this.emitLiveIds()
     const assert = this.assertResidentVisible(id)
     console.info(
-      `[multi-scene] demoted “${scene.title}” → sticky secondary parcels=${parcelCount} ` +
+      `[multi-scene] demoted “${scene.title}” → sticky ${initialMode} parcels=${parcelCount} ` +
         `offset vs primary=${primaryBase} meshes=${assert.meshCount} ` +
         `rootPos=(${assert.rootPos?.x.toFixed(1) ?? '?'},${assert.rootPos?.z.toFixed(1) ?? '?'}) ` +
-        `parented=${assert.parented} ok=${assert.ok}`
+        `parented=${assert.parented} ok=${assert.ok}` +
+        (initialMode === 'tertiary' ? ' (scripts off — dual-worker thrash guard)' : '')
     )
     if (!assert.ok) {
       console.error(

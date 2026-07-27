@@ -41,7 +41,7 @@ import {
   resolveMovePlayerToTargetFeetDcl
 } from './dclPlayerEntity'
 import { clampToWalkBounds, type PlayerWalkBounds } from './SceneBounds'
-import { formatWalkBounds, isPhysicsDiagVerbose, physLog } from '../physics/physicsDiag'
+import { formatWalkBounds, physLog } from '../physics/physicsDiag'
 import { normalizeAngle } from '../network/comms/movementCompressed'
 import {
   dclToThreeVec,
@@ -223,6 +223,10 @@ export class PlayerSystem {
   private lastModeFreezeEscapeAt = 0
   /** DevTools console (not Help panel) — prod mirror may be off. */
   private lastLocomotionBlockedConsoleAt = 0
+  /** Stall detect: keys pressed + free locomotion + no feet move (thrash / pin bug). */
+  private lastStallFeet = new THREE.Vector3()
+  private stallKeysSince = 0
+  private lastStallLogAt = 0
   private lastWalkClampLogAt = 0
   private lastFreezeHoldLogAt = 0
   private lastPhysProbeAt = 0
@@ -505,11 +509,61 @@ export class PlayerSystem {
         `disableAll hold force-clear (${reason}) · lastPin=(${f.x.toFixed(1)},${f.y.toFixed(2)},${f.z.toFixed(1)})`,
         0
       )
+      console.info(
+        `[player] freeze hold force-clear (${reason}) @ (${f.x.toFixed(1)},${f.y.toFixed(2)},${f.z.toFixed(1)})`
+      )
     }
     this.disableAllHoldFeet = null
     this.scenePositionLock = false
     this.moveTask = null
     this.wasLocomotionAllowed = true
+    this.stallKeysSince = 0
+  }
+
+  /**
+   * COD multi-scene: if WASD held and feet don't move while locomotion claims free,
+   * log the stall and auto-clear stale hold/lock (thrash or pin bug).
+   */
+  private detectMovementStall(delta: number): void {
+    if (!this.input) return
+    const keys =
+      this.input.keys.w ||
+      this.input.keys.a ||
+      this.input.keys.s ||
+      this.input.keys.d ||
+      this.input.spacePressed
+    const now = performance.now()
+    if (!keys) {
+      this.stallKeysSince = 0
+      this.lastStallFeet.copy(this.root.position)
+      return
+    }
+    const moved = this.root.position.distanceToSquared(this.lastStallFeet) > 0.01 // ~0.1m
+    if (moved) {
+      this.stallKeysSince = 0
+      this.lastStallFeet.copy(this.root.position)
+      return
+    }
+    if (this.stallKeysSince <= 0) this.stallKeysSince = now
+    const stalledMs = now - this.stallKeysSince
+    if (stalledMs < 800) return
+    // Auto-recover: stale hold / position lock / thrash pin
+    if (this.disableAllHoldFeet || this.scenePositionLock) {
+      console.warn(
+        `[player] STALL RECOVER ${stalledMs.toFixed(0)}ms keys held, feet stuck — clearing hold/lock ` +
+          `(hold=${!!this.disableAllHoldFeet} lock=${this.scenePositionLock} collidersBlock=${this.collidersReadyBlock})`
+      )
+      this.releaseSceneFreezeHold('stall-recover')
+    } else if (now - this.lastStallLogAt > 2000) {
+      this.lastStallLogAt = now
+      const loc = this.getLocomotionConfig()
+      console.warn(
+        `[player] STALL ${stalledMs.toFixed(0)}ms keys held feet stuck but free ` +
+          `disableAll=${loc.disableAll} collidersBlock=${this.collidersReadyBlock} ` +
+          `vc=${this.isSceneVirtualCameraDriving()} delta=${(delta * 1000).toFixed(1)}ms ` +
+          `pos=(${this.root.position.x.toFixed(1)},${this.root.position.y.toFixed(2)},${this.root.position.z.toFixed(1)})`
+      )
+    }
   }
 
   /** Main/World — clear stuck sit mode-freeze when player presses WASD/Space. */
@@ -969,17 +1023,22 @@ export class PlayerSystem {
     delta = Math.min(delta, 1 / 20)
 
     const locomotion = this.getLocomotionConfig()
-    const locomotionAllowed = !this.collidersReadyBlock && canLocomote(locomotion)
+    const imBlocked = !canLocomote(locomotion)
+    const intentionalDisableAll = locomotion.disableAll === true
+    const locomotionAllowed = !this.collidersReadyBlock && !imBlocked
     if (!locomotionAllowed) {
-      // Flagtag / SpaceRunner freezes walk — Help panel + optional console mirror.
+      // COD: always log why we block (prove IM vs colliders vs thrash).
       const blockedMsg =
-        `locomotion blocked — disableAll=${locomotion.disableAll} walk=${locomotion.disableWalk} jog=${locomotion.disableJog} run=${locomotion.disableRun}`
+        `locomotion blocked — collidersReadyBlock=${this.collidersReadyBlock} ` +
+        `disableAll=${locomotion.disableAll} walk=${locomotion.disableWalk} ` +
+        `jog=${locomotion.disableJog} run=${locomotion.disableRun} ` +
+        `holdPin=${!!this.disableAllHoldFeet} vc=${this.isSceneVirtualCameraDriving()}`
       clientDebugLog.log('player', blockedMsg, {
-        throttleMs: 3000,
+        throttleMs: 2000,
         throttleKey: 'locomotion-blocked'
       })
       const nowBlocked = performance.now()
-      if (nowBlocked - this.lastLocomotionBlockedConsoleAt > 3000) {
+      if (nowBlocked - this.lastLocomotionBlockedConsoleAt > 2000) {
         this.lastLocomotionBlockedConsoleAt = nowBlocked
         clientDebugLog.consoleOnly('warn', `[player] ${blockedMsg}`)
       }
@@ -1005,30 +1064,41 @@ export class PlayerSystem {
       _velocity.set(0, 0, 0)
       _externalVelocity.set(0, 0, 0)
       _force.set(0, 0, 0)
-      // Pin authored feet for the whole freeze. Do NOT accept physics.positionOut after
-      // teleport — while map colliders rebuild, CCT can shove the capsule to the walk
-      // bound edge (SpaceRunner fall-reset bounce at x≈96 instead of spawn).
-      if (!this.disableAllHoldFeet) {
-        this.disableAllHoldFeet = this.root.position.clone()
-        const f = this.disableAllHoldFeet
-        physLog(
-          'freeze-hold-arm',
-          `disableAll hold armed · feet three=(${f.x.toFixed(1)},${f.y.toFixed(2)},${f.z.toFixed(1)}) ` +
-            `(scene freeze pad may also exist under spawn until scene xo())`,
-          0
+      // CRITICAL: only pin feet for intentional InputModifier.disableAll (SpaceRunner lobby).
+      // collidersReadyBlock / mode freezes / multi-scene thrash must NOT arm the hold pin —
+      // that was trapping walk-back with keys still logging and feet teleported every frame.
+      if (intentionalDisableAll) {
+        if (!this.disableAllHoldFeet) {
+          this.disableAllHoldFeet = this.root.position.clone()
+          const f = this.disableAllHoldFeet
+          physLog(
+            'freeze-hold-arm',
+            `disableAll hold armed · feet three=(${f.x.toFixed(1)},${f.y.toFixed(2)},${f.z.toFixed(1)}) ` +
+              `(intentional disableAll only)`,
+            0
+          )
+          console.info(
+            `[player] disableAll hold armed @ (${f.x.toFixed(1)},${f.y.toFixed(2)},${f.z.toFixed(1)})`
+          )
+        } else if (performance.now() - this.lastFreezeHoldLogAt > 2000) {
+          this.lastFreezeHoldLogAt = performance.now()
+          const f = this.disableAllHoldFeet
+          physLog(
+            'freeze-hold-pin',
+            `disableAll pinned · feet=(${f.x.toFixed(1)},${f.y.toFixed(2)},${f.z.toFixed(1)})`,
+            2000
+          )
+        }
+        this.root.position.copy(this.disableAllHoldFeet)
+        this.physics.teleport(this.disableAllHoldFeet)
+        this.root.position.copy(this.disableAllHoldFeet)
+      } else if (this.disableAllHoldFeet) {
+        // Stale pin without disableAll — release (multi-scene false freeze trap).
+        console.warn(
+          `[player] releasing stale disableAll hold (imBlocked=${imBlocked} collidersBlock=${this.collidersReadyBlock})`
         )
-      } else if (isPhysicsDiagVerbose() || performance.now() - this.lastFreezeHoldLogAt > 2000) {
-        this.lastFreezeHoldLogAt = performance.now()
-        const f = this.disableAllHoldFeet
-        physLog(
-          'freeze-hold-pin',
-          `disableAll pinned · feet=(${f.x.toFixed(1)},${f.y.toFixed(2)},${f.z.toFixed(1)})`,
-          2000
-        )
+        this.disableAllHoldFeet = null
       }
-      this.root.position.copy(this.disableAllHoldFeet)
-      this.physics.teleport(this.disableAllHoldFeet)
-      this.root.position.copy(this.disableAllHoldFeet)
       this.grounded = true
       this.groundCoyote = 0.12
       this.syncWireYawFromAvatar()
@@ -1044,8 +1114,12 @@ export class PlayerSystem {
         jumping: false,
         doubleJumping: false,
         doubleJumpTriggered: false,
-        falling: false
+        falling: false,
+        gliding: false,
+        moveAxisX: 0,
+        moveAxisZ: 0
       })
+      // Freecam always allowed when not VC-bound (multi-scene walk must orbit).
       this.applyCameraInputFromPointer()
       this.syncCamera(false, delta)
       this.input.endFrame()
@@ -1652,6 +1726,8 @@ export class PlayerSystem {
     this.syncCamera(false, delta)
     this.syncPointerLockAim()
     this.syncCameraModeAndPointerLockEcs()
+    // Multi-scene COD: detect keys-held + free locomotion + zero feet delta.
+    this.detectMovementStall(delta)
     this.input.endFrame()
   }
 

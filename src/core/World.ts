@@ -3825,10 +3825,12 @@ export class World {
     multi.notifyPrimaryChanged(newScene)
 
     // AOI: retarget with CORRECTED local feet (after restore) — no unbind wipe.
+    // Kill live secondary reconcile during settle (dual-worker freeze). Visuals OK.
     multi.setSecondaryActivityEnabled(false)
     this.aoiVisual.retargetPrimary(newScene, feetAfter.x, feetAfter.z)
+    // retargetPrimary already liveReconcileEnabled=false; visuals neighborActivity on.
     this.scenePromote.bind(newScene)
-    // Neighbor promote evaluate OK; live secondary auto-boots stay off until settle.
+    // Promote evaluate OK; soft-route force-boot gated by isSecondaryActivityEnabled().
     this.scenePromote.setNeighborActivityEnabled(true)
 
     // Soft-route URL to feet parcel under new origin (not stale -135,107 warp).

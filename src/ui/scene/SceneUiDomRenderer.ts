@@ -5,7 +5,13 @@ import type { PBUiInput } from '@dcl/ecs/dist/components/generated/pb/decentrala
 import type { PBUiText } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_text.gen'
 import type { PBUiTransform } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_transform.gen'
 import type { ResolvedScene } from '../../dcl/content/types'
-import { normalizePointerFilterMode, PointerFilterMode, YGOverflow } from './yogaEnums'
+import {
+  normalizePointerFilterMode,
+  normalizeYGPositionType,
+  PointerFilterMode,
+  YGOverflow,
+  YGPositionType
+} from './yogaEnums'
 import { isUiEntityVisible } from './uiVisibility'
 import type { UiViewport, VirtualCanvasSize, ScreenUiRect } from './virtualCanvas'
 import { layoutToScreen } from './virtualCanvas'
@@ -511,12 +517,26 @@ export class SceneUiDomRenderer {
 
     // Clip on shell — child UiEntity shells nest under the parent shell (siblings of
     // .scene-ui-node__content), so content-only overflow/radius never rounded the minimap.
+    // Large absolute panels (shop/inventory) without overflow:hidden leak absolute kids
+    // across the screen — treat big backgrounds as clipped unless author set visible.
+    const largePanel =
+      layoutBox.width >= 200 &&
+      layoutBox.height >= 200 &&
+      normalizeYGPositionType(transform.positionType) === YGPositionType.ABSOLUTE
     const clipShell =
-      !!radius || transform.overflow === YGOverflow.HIDDEN || transform.overflow === YGOverflow.SCROLL
-    if (radius) {
-      shell.style.borderRadius = radius
-      el.style.borderRadius = radius
-      el.style.overflow = 'hidden'
+      !!radius ||
+      transform.overflow === YGOverflow.HIDDEN ||
+      transform.overflow === YGOverflow.SCROLL ||
+      (largePanel && transform.overflow !== YGOverflow.VISIBLE)
+    if (radius || clipShell) {
+      if (radius) {
+        shell.style.borderRadius = radius
+        el.style.borderRadius = radius
+      } else {
+        shell.style.borderRadius = ''
+        el.style.borderRadius = ''
+      }
+      el.style.overflow = clipShell ? 'hidden' : ''
     } else {
       shell.style.borderRadius = ''
       el.style.borderRadius = ''

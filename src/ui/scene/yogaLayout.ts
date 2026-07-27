@@ -168,6 +168,108 @@ function applyInputMinSize(node: YogaNode, input: PBUiInput | null | undefined):
   node.setMinHeight(Math.max(28, fontSize * 2.4))
 }
 
+/** True when this edge is not authored (undefined/auto unit). */
+function positionEdgeUnset(unit: number | undefined, _value?: number): boolean {
+  const u = unit ?? YGUnit.UNDEFINED
+  if (u === YGUnit.UNDEFINED || u === YGUnit.AUTO) return true
+  // Explicit 0 with a real unit counts as set (e.g. bottom: 0).
+  return false
+}
+
+function hasConcreteSize(unit: number | undefined, value: number | undefined): boolean {
+  const u = unit ?? YGUnit.UNDEFINED
+  if (u === YGUnit.PERCENT) return true
+  if (u === YGUnit.POINT && (value ?? 0) > 0) return true
+  return false
+}
+
+/**
+ * Fishing / plaza HUD often authors:
+ *   top: '100%' + height  → Yoga places the TOP edge at parent bottom (fully off-screen)
+ *   bottom: '100%' + height → places BOTTOM edge at parent top (fully above canvas)
+ * Explorer/Unity treat these as “flush to that edge”. Map to bottom:0 / top:0.
+ * Same for left/right:100% side drawers.
+ */
+function normalizeAbsoluteEdgeFlush(t: PBUiTransform): {
+  topU: number | undefined
+  topV: number | undefined
+  bottomU: number | undefined
+  bottomV: number | undefined
+  leftU: number | undefined
+  leftV: number | undefined
+  rightU: number | undefined
+  rightV: number | undefined
+} {
+  let topU = t.positionTopUnit
+  let topV = t.positionTop
+  let bottomU = t.positionBottomUnit
+  let bottomV = t.positionBottom
+  let leftU = t.positionLeftUnit
+  let leftV = t.positionLeft
+  let rightU = t.positionRightUnit
+  let rightV = t.positionRight
+
+  if (normalizeYGPositionType(t.positionType) !== YGPositionType.ABSOLUTE) {
+    return { topU, topV, bottomU, bottomV, leftU, leftV, rightU, rightV }
+  }
+
+  const top100 =
+    (topU ?? YGUnit.UNDEFINED) === YGUnit.PERCENT && Math.abs((topV ?? 0) - 100) < 0.01
+  const bottom100 =
+    (bottomU ?? YGUnit.UNDEFINED) === YGUnit.PERCENT && Math.abs((bottomV ?? 0) - 100) < 0.01
+  const left100 =
+    (leftU ?? YGUnit.UNDEFINED) === YGUnit.PERCENT && Math.abs((leftV ?? 0) - 100) < 0.01
+  const right100 =
+    (rightU ?? YGUnit.UNDEFINED) === YGUnit.PERCENT && Math.abs((rightV ?? 0) - 100) < 0.01
+
+  // Footer flush: top 100% alone + has height → bottom: 0
+  if (
+    top100 &&
+    positionEdgeUnset(bottomU, bottomV) &&
+    hasConcreteSize(t.heightUnit, t.height)
+  ) {
+    topU = YGUnit.UNDEFINED
+    topV = 0
+    bottomU = YGUnit.POINT
+    bottomV = 0
+  }
+  // Header flush: bottom 100% alone + has height → top: 0
+  if (
+    bottom100 &&
+    positionEdgeUnset(topU, topV) &&
+    hasConcreteSize(t.heightUnit, t.height)
+  ) {
+    bottomU = YGUnit.UNDEFINED
+    bottomV = 0
+    topU = YGUnit.POINT
+    topV = 0
+  }
+  // Right drawer: left 100% alone + has width → right: 0
+  if (
+    left100 &&
+    positionEdgeUnset(rightU, rightV) &&
+    hasConcreteSize(t.widthUnit, t.width)
+  ) {
+    leftU = YGUnit.UNDEFINED
+    leftV = 0
+    rightU = YGUnit.POINT
+    rightV = 0
+  }
+  // Left drawer: right 100% alone + has width → left: 0
+  if (
+    right100 &&
+    positionEdgeUnset(leftU, leftV) &&
+    hasConcreteSize(t.widthUnit, t.width)
+  ) {
+    rightU = YGUnit.UNDEFINED
+    rightV = 0
+    leftU = YGUnit.POINT
+    leftV = 0
+  }
+
+  return { topU, topV, bottomU, bottomV, leftU, leftV, rightU, rightV }
+}
+
 function applyUiTransform(node: YogaNode, t: PBUiTransform): void {
   const flexDir = normalizeYGFlexDirection(t.flexDirection)
   const justify = normalizeYGJustify(t.justifyContent)
@@ -181,7 +283,9 @@ function applyUiTransform(node: YogaNode, t: PBUiTransform): void {
     node.setAlignContent(ALIGN[t.alignContent] ?? Yoga.ALIGN_FLEX_START)
   }
   node.setFlexWrap(WRAP[t.flexWrap ?? YGWrap.NO_WRAP] ?? Yoga.WRAP_NO_WRAP)
-  node.setOverflow(OVERFLOW[t.overflow] ?? Yoga.OVERFLOW_VISIBLE)
+  // Prefer hidden for absolute full-bleed panels so shop layers don't paint over each other.
+  const overflow = t.overflow ?? YGOverflow.VISIBLE
+  node.setOverflow(OVERFLOW[overflow] ?? Yoga.OVERFLOW_VISIBLE)
   node.setDisplay(isYGDisplayNone(t.display) ? Yoga.DISPLAY_NONE : Yoga.DISPLAY_FLEX)
   // String "absolute" must not fall through to relative (shop HUD piles at wrong origin).
   node.setPositionType(
@@ -191,7 +295,9 @@ function applyUiTransform(node: YogaNode, t: PBUiTransform): void {
   )
 
   if (typeof t.flexGrow === 'number') node.setFlexGrow(t.flexGrow)
+  // Explicit 0 — Yoga default is 0 but leave clear when authored undefined.
   if (typeof t.flexShrink === 'number') node.setFlexShrink(t.flexShrink)
+  else node.setFlexShrink(0)
   applyUnit(
     (n) => node.setFlexBasis(n),
     (n) => node.setFlexBasisPercent(n),
@@ -250,10 +356,12 @@ function applyUiTransform(node: YogaNode, t: PBUiTransform): void {
   applyEdge(node, Yoga.EDGE_TOP, t.paddingTopUnit, t.paddingTop, 'padding')
   applyEdge(node, Yoga.EDGE_RIGHT, t.paddingRightUnit, t.paddingRight, 'padding')
   applyEdge(node, Yoga.EDGE_BOTTOM, t.paddingBottomUnit, t.paddingBottom, 'padding')
-  applyEdge(node, Yoga.EDGE_LEFT, t.positionLeftUnit, t.positionLeft, 'position')
-  applyEdge(node, Yoga.EDGE_TOP, t.positionTopUnit, t.positionTop, 'position')
-  applyEdge(node, Yoga.EDGE_RIGHT, t.positionRightUnit, t.positionRight, 'position')
-  applyEdge(node, Yoga.EDGE_BOTTOM, t.positionBottomUnit, t.positionBottom, 'position')
+
+  const edges = normalizeAbsoluteEdgeFlush(t)
+  applyEdge(node, Yoga.EDGE_LEFT, edges.leftU, edges.leftV, 'position')
+  applyEdge(node, Yoga.EDGE_TOP, edges.topU, edges.topV, 'position')
+  applyEdge(node, Yoga.EDGE_RIGHT, edges.rightU, edges.rightV, 'position')
+  applyEdge(node, Yoga.EDGE_BOTTOM, edges.bottomU, edges.bottomV, 'position')
 }
 
 type YogaTreeNode = {
@@ -294,10 +402,16 @@ export function layoutUiTree(
   const forest = roots.map((e) => build(e))
   const root = Yoga.Node.create()
   allYoga.push(root)
+  // Fixed virtual screen — absolute HUD/shop roots position against this box.
+  // Cap max size so relative roots cannot expand the containing block past the canvas
+  // (that pushed fishing shop columns to x=2736 / y=1300 off-screen).
   root.setWidth(virtualWidth)
   root.setHeight(virtualHeight)
+  root.setMaxWidth(virtualWidth)
+  root.setMaxHeight(virtualHeight)
   root.setDisplay(Yoga.DISPLAY_FLEX)
   root.setFlexDirection(Yoga.FLEX_DIRECTION_COLUMN)
+  root.setOverflow(Yoga.OVERFLOW_HIDDEN)
   forest.forEach((node, index) => root.insertChild(node.yoga, index))
 
   root.calculateLayout(virtualWidth, virtualHeight, Yoga.DIRECTION_LTR)

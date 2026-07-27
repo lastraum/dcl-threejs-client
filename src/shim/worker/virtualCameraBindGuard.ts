@@ -1,7 +1,6 @@
 import type { Entity, IEngine } from '@dcl/ecs'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import { prepareVcForMainCameraBind, type MainCameraBindValue } from '../../virtual-camera/core'
-import { isPointerDeliveryInFlight, isPointerInputSessionActive } from './sceneWorkerInputSession'
 
 const guarded = new WeakSet<IEngine>()
 type MainCameraReplaceFn = (entity: Entity, value?: object) => unknown
@@ -21,27 +20,20 @@ function readBoundVc(engine: IEngine): Entity | null {
   return mainCameraVcEntity(current)
 }
 
-/** Allow RETURN TO PLAYER during pointer deliver; block accidental cooperative-tick clears only. */
-function shouldBlockMainCameraClear(engine: IEngine): boolean {
-  if (isPointerInputSessionActive() || isPointerDeliveryInFlight()) return false
-  return readBoundVc(engine) !== null
-}
-
-function logBlockedClear(engine: IEngine, label: string): void {
-  const now = performance.now()
-  if (now - lastBlockedClearLogAt < 2000) return
-  lastBlockedClearLogAt = now
-  const live = readBoundVc(engine)
-  console.log(
-    `[vc-lens] worker guard — blocked MainCamera clear (${label}) liveVc=${live ?? 'null'}`
-  )
-}
-
-function noteMainCameraWrite(engine: IEngine, entity: Entity, value: unknown): boolean {
-  if (entity !== engine.CameraEntity) return false
-  const vc = mainCameraVcEntity(value)
-  if (vc !== null) return false
-  return shouldBlockMainCameraClear(engine)
+/**
+ * Scene owns MainCamera unbind. Never permanently block clears:
+ * SpaceRunner map flyover ends with getMutable.virtualCameraEntity = null / createOrReplace({})
+ * outside a pointer inject — blocking left the lens stuck on the preview cam (logs:
+ * `blocked MainCamera clear (getMutable.virtualCameraEntity) liveVc=…`).
+ *
+ * VIEW SHOT / transport thrash is handled by reconcileMainCameraCrdtEgress (strip+re-emit
+ * live snapshot), not by refusing intentional scene writes.
+ */
+function noteMainCameraWrite(_engine: IEngine, entity: Entity, value: unknown): boolean {
+  void _engine
+  void entity
+  void value
+  return false
 }
 
 function wrapMainCameraMutable(engine: IEngine, entity: Entity, mutable: Record<string, unknown>): object {
@@ -49,17 +41,21 @@ function wrapMainCameraMutable(engine: IEngine, entity: Entity, mutable: Record<
   return new Proxy(mutable, {
     set(target, prop, value, receiver) {
       if (prop === 'virtualCameraEntity') {
-        if (
-          (value === undefined || value === null) &&
-          shouldBlockMainCameraClear(engine)
-        ) {
-          logBlockedClear(engine, 'getMutable.virtualCameraEntity')
-          return true
-        }
         if (value !== undefined && value !== null) {
           prepareVcForMainCameraBind(engine, entity, {
             virtualCameraEntity: value as Entity
           })
+        } else {
+          const was = readBoundVc(engine)
+          if (was !== null) {
+            const now = performance.now()
+            if (now - lastBlockedClearLogAt >= 500) {
+              lastBlockedClearLogAt = now
+              console.log(
+                `[vc-lens] worker — MainCamera clear (getMutable) was=e${was} → player lens`
+              )
+            }
+          }
         }
       }
       return Reflect.set(target, prop, value, receiver)
@@ -89,8 +85,8 @@ export function ensureMainCameraOnCameraEntity(engine: IEngine): void {
 /**
  * Universal VirtualCamera bind guard — every scene gets ECS-authoritative VC pose
  * before MainCamera.virtualCameraEntity is written (createOrReplace or getMutable).
- * Blocks accidental `{}` clears outside pointer inject sessions (VIEW SHOT snap-back).
- * Stale transport clears are handled by reconcileMainCameraCrdtEgress on egress.
+ * Clears are always allowed (scene owns unbind — flyover / return-to-player).
+ * Stale transport MainCamera thrash is handled by reconcileMainCameraCrdtEgress.
  */
 export function installVirtualCameraBindGuard(engine: IEngine): void {
   if (guarded.has(engine)) return
@@ -113,14 +109,19 @@ export function installVirtualCameraBindGuard(engine: IEngine): void {
       : null
 
   MainCamera.createOrReplace = ((entity: Entity, value?: unknown) => {
-    if (noteMainCameraWrite(engine, entity, value ?? null)) {
-      logBlockedClear(engine, 'createOrReplace')
-      const live = readBoundVc(engine)
-      if (live !== null) {
-        prepareVcForMainCameraBind(engine, entity, { virtualCameraEntity: live })
-        return originalCreateOrReplace(entity, { virtualCameraEntity: live } as never)
+    void noteMainCameraWrite(engine, entity, value ?? null)
+    const vc = mainCameraVcEntity(value ?? null)
+    if (vc === null && entity === engine.CameraEntity) {
+      const was = readBoundVc(engine)
+      if (was !== null) {
+        const now = performance.now()
+        if (now - lastBlockedClearLogAt >= 500) {
+          lastBlockedClearLogAt = now
+          console.log(
+            `[vc-lens] worker — MainCamera clear (createOrReplace) was=e${was} → player lens`
+          )
+        }
       }
-      return originalCreateOrReplace(entity, value as never)
     }
     prepareVcForMainCameraBind(engine, entity, (value ?? null) as MainCameraBindValue | null)
     return originalCreateOrReplace(entity, value as never)

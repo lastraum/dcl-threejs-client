@@ -8,8 +8,13 @@ export type LiveParticle = {
   velocity: THREE.Vector3
   age: number
   lifetime: number
+  /**
+   * World diameter at t=0 / t=1 after baking Explorer startSize × sizeOverLifetime multipliers.
+   * PlaneGeometry(1,1) × size → diameter in meters (matches Unity startSize).
+   */
   startSize: number
   endSize: number
+  /** Baked startColor × colorOverLifetime gradient endpoints. */
   startColor: THREE.Color
   endColor: THREE.Color
   startAlpha: number

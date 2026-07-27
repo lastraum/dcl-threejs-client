@@ -12,6 +12,7 @@ import {
   fetchMemberCommunitiesSigned
 } from '../../../social/socialApi'
 import type { CommunityListRow } from '../../../social/types'
+import { fetchEmoteDisplayCards, type EmoteDisplayCard } from './emoteCards'
 import { fetchWearableDisplayCards, type WearableDisplayCard } from './wearableThumb'
 
 export type ProfilePageData = {
@@ -24,6 +25,7 @@ export type ProfilePageData = {
   description: string | null
   badges: UserBadge[]
   wearables: WearableDisplayCard[]
+  emotes: EmoteDisplayCard[]
   communities: CommunityListRow[]
   profileUrl: string
 }
@@ -60,7 +62,12 @@ export async function loadProfilePageData(
   const displayName = profile
     ? identityFromAvatarProfile(profile, normalized).displayName
     : `${normalized.slice(0, 6)}…${normalized.slice(-4)}`
-  const wearables = profile ? await fetchWearableDisplayCards(profile.wearables, base) : []
+  const [wearables, emotes] = await Promise.all([
+    profile
+      ? fetchWearableDisplayCards(profile.wearables, base)
+      : Promise.resolve<WearableDisplayCard[]>([]),
+    profile ? fetchEmoteDisplayCards(profile.emotes, base) : Promise.resolve<EmoteDisplayCard[]>([])
+  ])
 
   return {
     address: normalized,
@@ -72,6 +79,7 @@ export async function loadProfilePageData(
     description,
     badges,
     wearables,
+    emotes,
     communities: communitiesResult.communities,
     profileUrl: `https://decentraland.org/profile/accounts/${normalized}`
   }

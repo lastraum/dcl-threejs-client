@@ -2,7 +2,13 @@ import * as THREE from 'three'
 import { clone as cloneSkinnedRoot } from 'three/examples/jsm/utils/SkeletonUtils.js'
 import type { CachedGltf } from '../rendering/AssetCache'
 import { repairSkinnedMesh, stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
-import { normalizeBoneName, resolveBoneName, buildBoneNameSet, isEmoteMechanismBone } from './emoteBoneMap'
+import {
+  normalizeBoneName,
+  resolveBoneName,
+  buildBoneNameSet,
+  isEmoteMechanismBone,
+  AvatarTrackSet
+} from './emoteBoneMap'
 
 /** Wearable-preview: player gets retargeted avatar tracks; emote GLB keeps original skeleton + props. */
 export type SplitEmoteClips = {
@@ -152,7 +158,7 @@ export function splitEmoteClips(gltf: CachedGltf, avatarRoot: THREE.Object3D): S
   const avatarBones = buildBoneNameSet(avatarRoot)
   const emoteBones = buildBoneNameSet(gltf.root)
   const clipCount = gltf.animations.length
-  const avatarTracks: THREE.KeyframeTrack[] = []
+  const avatarTracks = new AvatarTrackSet()
   const emoteSkeletonTracks: THREE.KeyframeTrack[] = []
   const propTracks: THREE.KeyframeTrack[] = []
   const propTrackTargets = new Set<string>()
@@ -178,7 +184,7 @@ export function splitEmoteClips(gltf: CachedGltf, avatarRoot: THREE.Object3D): S
         if (boneName) {
           const cloned = track.clone()
           cloned.name = `${boneName}.${property}`
-          avatarTracks.push(cloned)
+          avatarTracks.add(cloned, targetName, boneName)
         }
         if (emoteBones.has(targetName)) {
           emoteSkeletonTracks.push(track.clone())
@@ -190,7 +196,7 @@ export function splitEmoteClips(gltf: CachedGltf, avatarRoot: THREE.Object3D): S
         if (boneName) {
           const cloned = track.clone()
           cloned.name = `${boneName}.${property}`
-          avatarTracks.push(cloned)
+          avatarTracks.add(cloned, targetName, boneName)
         }
         if (emoteBones.has(targetName)) {
           emoteSkeletonTracks.push(track.clone())
@@ -205,8 +211,8 @@ export function splitEmoteClips(gltf: CachedGltf, avatarRoot: THREE.Object3D): S
   const emoteSceneTracks = [...emoteSkeletonTracks, ...propTracks]
 
   return {
-    avatarClip: avatarTracks.length
-      ? new THREE.AnimationClip('emote-avatar', duration, avatarTracks)
+    avatarClip: avatarTracks.size
+      ? new THREE.AnimationClip('emote-avatar', duration, avatarTracks.tracks())
       : null,
     propClip: propTracks.length ? new THREE.AnimationClip('emote-props', duration, propTracks) : null,
     emoteSceneClip: emoteSceneTracks.length

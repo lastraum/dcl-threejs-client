@@ -13,6 +13,7 @@ import { MarketplaceCreditsPanel } from './MarketplaceCreditsPanel'
 import { NotificationsPanel } from './NotificationsPanel'
 import { PortableExperiencePanel } from './PortableExperiencePanel'
 import { FriendsPanel } from './FriendsPanel'
+import { PetsPanel } from './PetsPanel'
 import type { PortableExperienceManager } from '../../../dcl/multiScene/PortableExperienceManager'
 import type { VoiceChatService } from '../../../network/voice/VoiceChatService'
 import type { DebugPanel } from '../DebugPanel'
@@ -37,6 +38,8 @@ export type ClientShellOptions = {
   onTogglePhotoCamera?: () => void
   /** Sidebar Tour Options (flag under Communities). */
   onTourOptions?: () => void
+  /** Pets inventory enable/disable changed — World restores active pet. */
+  onActivePetChange?: () => void | Promise<void>
   onSignOut: () => void | Promise<void>
   onExit: () => void | Promise<void>
 }
@@ -51,6 +54,7 @@ const TOP_BUTTONS: TopButtonConfig[] = [
   { id: 'communities', icon: 'communities', label: 'Communities', shortcut: 'O' },
   { id: 'tour-options', icon: 'tourOptions', label: 'Tour Options' },
   { id: 'backpack', icon: 'backpack', label: 'Backpack', shortcut: 'I' },
+  { id: 'pets', icon: 'pets', label: 'Pets', shortcut: 'P' },
   { id: 'marketplace', icon: 'marketplace', label: 'Marketplace' },
   { id: 'pictures', icon: 'pictures', label: 'Pictures', shortcut: 'K' },
   { id: 'settings', icon: 'settings', label: 'Settings' },
@@ -89,6 +93,7 @@ export class ClientShell {
   private readonly notificationsPanel: NotificationsPanel
   private readonly marketplaceCreditsPanel: MarketplaceCreditsPanel
   private readonly friendsPanel: FriendsPanel
+  private readonly petsPanel: PetsPanel
   private readonly emoteWheel: EmoteWheelPanel
   private readonly buttons = new Map<string, SidebarButton>()
   private unreadPollTimer: ReturnType<typeof setInterval> | null = null
@@ -102,6 +107,7 @@ export class ClientShell {
   private onEmoteSelected: ((emoteId: string) => void) | null = null
   private onTogglePhotoCamera: (() => void) | null = null
   private onTourOptions: (() => void) | null = null
+  private onActivePetChange: (() => void | Promise<void>) | null = null
   private onOpenProfile: ((address: string) => void) | null = null
   private onJumpToFriend: ((address: string) => void) | null = null
   private emoteWheelEnabled = true
@@ -137,6 +143,7 @@ export class ClientShell {
     onEmoteSelected,
     onTogglePhotoCamera,
     onTourOptions,
+    onActivePetChange,
     onSignOut,
     onExit
   }: ClientShellOptions) {
@@ -144,6 +151,7 @@ export class ClientShell {
     this.onEmoteSelected = onEmoteSelected ?? null
     this.onTogglePhotoCamera = onTogglePhotoCamera ?? null
     this.onTourOptions = onTourOptions ?? null
+    this.onActivePetChange = onActivePetChange ?? null
     this.root = document.createElement('aside')
     this.root.id = 'client-shell'
     this.root.className = 'client-shell'
@@ -251,6 +259,13 @@ export class ClientShell {
         this.friendsPanel.hide()
         this.onOpenProfile?.(address)
       }
+    })
+
+    this.petsPanel = new PetsPanel({
+      getSession: () => this.session,
+      anchor: () => this.buttons.get('pets')?.element,
+      onClose: () => this.buttons.get('pets')?.setActive(false),
+      onActivePetChange: () => this.onActivePetChange?.()
     })
 
     this.profileButton = new ProfileSidebarButton('Profile', () => this.profilePopup.toggle())
@@ -449,6 +464,10 @@ export class ClientShell {
     this.onTourOptions = handler
   }
 
+  setActivePetChangeHandler(handler: (() => void | Promise<void>) | null): void {
+    this.onActivePetChange = handler
+  }
+
   /** Tour Options flag icon — only for the active tour leader. */
   setTourOptionsVisible(visible: boolean): void {
     const btn = this.buttons.get('tour-options')
@@ -599,6 +618,7 @@ export class ClientShell {
     this.notificationsPanel.dispose()
     this.marketplaceCreditsPanel.dispose()
     this.friendsPanel.dispose()
+    this.petsPanel.dispose()
     this.pePanel.dispose()
     this.emoteWheel.dispose()
     this.devProgressPanel?.hide()
@@ -792,8 +812,27 @@ export class ClientShell {
         this.buttons.get('marketplace-credits')?.setActive(false)
         this.chatPanel?.hide()
         this.buttons.get('chat')?.setActive(false)
+        this.petsPanel.hide()
+        this.buttons.get('pets')?.setActive(false)
         void this.friendsPanel.toggle()
         this.buttons.get('friend-requests')?.setActive(this.friendsPanel.isVisible())
+      }
+    }
+
+    if (id === 'pets') {
+      return (ev) => {
+        ev.stopPropagation()
+        this.closeMobileDrawerForOverlay()
+        this.notificationsPanel.hide()
+        this.buttons.get('notifications')?.setActive(false)
+        this.marketplaceCreditsPanel.hide()
+        this.buttons.get('marketplace-credits')?.setActive(false)
+        this.chatPanel?.hide()
+        this.buttons.get('chat')?.setActive(false)
+        this.friendsPanel.hide()
+        this.buttons.get('friend-requests')?.setActive(false)
+        void this.petsPanel.toggle()
+        this.buttons.get('pets')?.setActive(this.petsPanel.isVisible())
       }
     }
 

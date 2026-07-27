@@ -49,6 +49,7 @@ import {
 } from './comms/movementCompressed'
 import { encodeRfc4SceneBinaryPacket, Rfc4Router } from './comms/Rfc4Router'
 import { DAV_SCENE_ID } from '../avatar/vrm/dclClientAvatar'
+import { DPET_SCENE_ID } from '../pets/dclClientPet'
 import { Rfc5RoomClient } from './comms/Rfc5RoomClient'
 import { isLiveKitAdapter } from './comms/livekitAdapter'
 import type { ActiveVideoStream } from './comms/livekitVideoStreams'
@@ -141,6 +142,7 @@ export class CommsService {
   private chatHandler: SceneChatHandler | null = null
   private chatMediaHandler: SceneChatMediaHandler | null = null
   private avatarVrmHandler: ((sender: string, data: Uint8Array) => void) | null = null
+  private petHandler: ((sender: string, data: Uint8Array) => void) | null = null
   private topicMessageHandler: ((topic: string, sender: string, payload: Uint8Array) => void) | null = null
   private lastBroadcast = 0
   private pendingTransform: AvatarTransformPayload | null = null
@@ -236,6 +238,9 @@ export class CommsService {
         // Worlds previously dropped SceneRoom packets via shouldAcceptChatTransport, so
         // late joiners never saw peer custom VRM when announce landed on the Cast room.
         this.avatarVrmHandler?.(address, data)
+      },
+      onPeerPet: (address, data, _transport) => {
+        this.petHandler?.(address, data)
       }
     })
 
@@ -355,6 +360,10 @@ export class CommsService {
     this.avatarVrmHandler = handler
   }
 
+  setPetHandler(handler: ((sender: string, data: Uint8Array) => void) | null): void {
+    this.petHandler = handler
+  }
+
   /**
    * DAV v1 — custom VRM P2P on RFC4 Scene `dcl.client.avatar`.
    * @param roomMode `broadcast` = all LiveKit rooms (announce/clear/want only).
@@ -364,6 +373,26 @@ export class CommsService {
   async sendSceneAvatarVrm(
     envelopes: Uint8Array[],
     roomMode: 'broadcast' | 'primary' = 'primary'
+  ): Promise<boolean> {
+    return this.sendSceneChannel(DAV_SCENE_ID, envelopes, roomMode, 'DAV')
+  }
+
+  /**
+   * DPET v1 — client pets on RFC4 Scene `dcl.client.pet` (not scene-worker CRDT).
+   * Same roomMode rules as DAV.
+   */
+  async sendScenePet(
+    envelopes: Uint8Array[],
+    roomMode: 'broadcast' | 'primary' = 'primary'
+  ): Promise<boolean> {
+    return this.sendSceneChannel(DPET_SCENE_ID, envelopes, roomMode, 'DPET')
+  }
+
+  private async sendSceneChannel(
+    sceneId: string,
+    envelopes: Uint8Array[],
+    roomMode: 'broadcast' | 'primary',
+    label: string
   ): Promise<boolean> {
     const sessions =
       roomMode === 'broadcast' ? this.liveKitDavSessions() : this.liveKitChatSessions()
@@ -376,7 +405,7 @@ export class CommsService {
     for (const session of sessions) {
       try {
         for (let i = 0; i < envelopes.length; i++) {
-          const packet = encodeRfc4SceneBinaryPacket(DAV_SCENE_ID, envelopes[i]!)
+          const packet = encodeRfc4SceneBinaryPacket(sceneId, envelopes[i]!)
           await session.publishReliableData(packet)
           if (paceEvery > 0 && i > 0 && i % paceEvery === 0) {
             await new Promise((resolve) => setTimeout(resolve, paceMs))
@@ -385,7 +414,7 @@ export class CommsService {
         sent = true
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
-        clientDebugLog.log('comms', `DAV publish failed: ${msg}`, { level: 'error' })
+        clientDebugLog.log('comms', `${label} publish failed: ${msg}`, { level: 'error' })
       }
     }
     return sent
@@ -1478,8 +1507,21 @@ export class CommsService {
       // so RemoteAvatarManager does not stay empty while voice already sees peers.
       this.notifyHandlersOfCurrentPeers()
       this.announceProfile('connect')
+      // Empty-land path: scene room never connects — DAV/DPET only reach peers after island.
+      // Spawn-time WantAnnounce often ran too early (logs: "scene comms not connected").
+      try {
+        this.onIslandLiveKitReady?.()
+      } catch (err) {
+        clientDebugLog.log('comms', `onIslandLiveKitReady failed: ${String(err)}`, { level: 'warn' })
+      }
     }
   }
+
+  /**
+   * World hook — fired when archipelago island LiveKit is up (parcel multiplayer path).
+   * Use to re-announce custom VRM / pets after early WantAnnounce failed.
+   */
+  onIslandLiveKitReady: (() => void) | null = null
 
   /** Optional hook — World rebinds voice when LiveKit rooms change. */
   onLiveKitRoomsChanged: (() => void) | null = null

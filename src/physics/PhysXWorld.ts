@@ -71,6 +71,13 @@ const MAX_GROUND_CONTACT_VERT = 1.5
 /** Always-on floor at y=0 — large thick static box (PxPlane is unsupported by CCT/sweep queries), no render mesh. */
 const INFINITE_GROUND_ENTITY = -1
 const INFINITE_GROUND_FINGERPRINT = 'infinite-ground-plane'
+/**
+ * Multi-shape GltfContainer parents (phys id = 20_000_000+ecs) expand to one RigidStatic
+ * per shape. Child ids live in this range so CCT hits proven single-mesh actors (multi-shape
+ * single-actor SQ bounds were soft for walk surfaces — SpaceRunner dome freefall).
+ */
+const MULTI_SHAPE_CHILD_BASE = 40_000_000
+const MULTI_SHAPE_SLOT_STRIDE = 512
 /** Half-extent of the ground box in X/Z — effectively "infinite" for genesis multi-parcel. */
 const GROUND_BOX_HALF_EXTENT = 5000
 /**
@@ -188,6 +195,11 @@ export class PhysXWorld {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly staticActors = new Map<number, any>()
+  /**
+   * Parent multi-shape phys id → number of per-shape child actors registered.
+   * Parent has no single RigidStatic; children are MULTI_SHAPE_CHILD_BASE+…
+   */
+  private readonly multiShapeChildCount = new Map<number, number>()
   /** Reverse lookup — platform transfer + CCT grounding probes. */
   private readonly staticEntityByActorPtr = new Map<number, number>()
   /** Last descriptor world position per PhysX entity — tweened platform delta tracking. */
@@ -917,10 +929,6 @@ export class PhysXWorld {
     return bestY
   }
 
-  hasStaticActor(entity: number): boolean {
-    return this.staticActors.has(entity)
-  }
-
   isKinematicActor(entity: number): boolean {
     return this.actorIsKinematic.has(entity)
   }
@@ -1060,8 +1068,15 @@ export class PhysXWorld {
 
   /** Drop all GLTF multi-shape PhysX actors — Help panel force-recook only. */
   clearGltfStaticActors(): void {
+    for (const parentId of [...this.multiShapeChildCount.keys()]) {
+      this.removeMultiShapeChildren(parentId)
+      this.staticFp.delete(parentId)
+      this.staticPoseFp.delete(parentId)
+    }
     for (const entity of [...this.staticActors.keys()]) {
-      if (this.isGltfStaticActor(entity)) this.removeStatic(entity)
+      if (this.isGltfStaticActor(entity) || entity >= MULTI_SHAPE_CHILD_BASE) {
+        this.removeStatic(entity)
+      }
     }
     this.ensureInfiniteGroundPlane()
   }
@@ -1106,12 +1121,14 @@ export class PhysXWorld {
   /** Remove one static actor + sync fingerprints — boot cook always recooks fresh. */
   invalidateStaticCollider(entity: number): void {
     if (entity === INFINITE_GROUND_ENTITY) return
-    if (this.staticActors.has(entity)) this.removeStatic(entity)
-    else {
-      this.staticFp.delete(entity)
-      this.staticPoseFp.delete(entity)
-      this.actorWorldBaked.delete(entity)
+    // Multi-shape parents expand to child actors — drop the whole expansion.
+    if (this.multiShapeChildCount.has(entity) || this.staticFp.get(entity)?.startsWith('gltf-entity:')) {
+      this.removeMultiShapeChildren(entity)
     }
+    if (this.staticActors.has(entity)) this.removeStatic(entity)
+    this.staticFp.delete(entity)
+    this.staticPoseFp.delete(entity)
+    this.actorWorldBaked.delete(entity)
   }
 
   /** True when a cooked actor exists and geometry fingerprint still matches the live desc. */
@@ -1152,7 +1169,12 @@ export class PhysXWorld {
    */
   needsWorldBakedPoseRecook(desc: PhysicsColliderDesc): boolean {
     if (!this.actorWorldBaked.get(desc.entity)) return false
-    if (!this.staticActors.has(desc.entity)) return false
+    // Multi-shape parents have no single actor — children are the solids.
+    if (desc.shapes?.length) {
+      if (!this.hasStaticActor(desc.entity)) return false
+    } else if (!this.staticActors.has(desc.entity)) {
+      return false
+    }
     if (!this.geomFingerprintMatches(desc)) return false
     const poseFp = desc.shapes?.length
       ? multiShapePoseFingerprint(desc)
@@ -1354,21 +1376,27 @@ export class PhysXWorld {
       const geomFp = desc.fingerprint
       const poseFp = multiShapePoseFingerprint(desc)
       if (this.staticFp.get(desc.entity) !== geomFp) return false
-      const actor = this.staticActors.get(desc.entity)
-      if (!actor || this.staticPoseFp.get(desc.entity) !== poseFp) return false
-      // Shape-count mismatch = partial cook; must not report synced (pose slides unsafe).
-      try {
-        if (actor.getNbShapes() !== desc.shapes.length) return false
-      } catch {
-        return false
+      if (this.staticPoseFp.get(desc.entity) !== poseFp) return false
+      // Expanded to one actor per shape — every cookable shape must be live.
+      let expected = 0
+      let live = 0
+      for (let i = 0; i < desc.shapes.length; i++) {
+        if (!desc.shapes[i]!.geometry) continue
+        expected++
+        if (this.staticActors.has(multiShapeChildPhysId(desc.entity, i))) live++
       }
-      return true
+      return expected > 0 && live === expected
     }
 
     const poseFp = matrixFingerprint(desc.matrix)
     if (this.staticFp.get(desc.entity) !== desc.fingerprint) return false
     if (!this.staticActors.has(desc.entity)) return false
     return this.staticPoseFp.get(desc.entity) === poseFp
+  }
+
+  hasStaticActor(entity: number): boolean {
+    if (this.staticActors.has(entity)) return true
+    return (this.multiShapeChildCount.get(entity) ?? 0) > 0
   }
 
   syncStaticColliders(
@@ -1404,40 +1432,49 @@ export class PhysXWorld {
         const geomFp = desc.fingerprint
         const poseFp = multiShapePoseFingerprint(desc)
         const prevGeomFp = this.staticFp.get(desc.entity)
+        let expectedShapes = 0
+        let liveShapes = 0
+        for (let i = 0; i < desc.shapes.length; i++) {
+          if (!desc.shapes[i]!.geometry) continue
+          expectedShapes++
+          if (this.staticActors.has(multiShapeChildPhysId(desc.entity, i))) liveShapes++
+        }
+        const shapeCountOk = expectedShapes > 0 && liveShapes === expectedShapes
 
-        if (prevGeomFp === geomFp) {
+        // Geom unchanged + all children live → keep solids. Never tear down for pose float
+        // noise (forceRecookOnPoseChange is always true on the play drain and was causing
+        // remove→re-expand floor holes mid-spawn — SpaceRunner freefall after first expand).
+        // Prefer multi-shape pose slide when geom matches and actor is not world-baked.
+        if (prevGeomFp === geomFp && shapeCountOk) {
           const actor = this.staticActors.get(desc.entity)
-          // Partial cook (shape count mismatch) — must recook; pose slide is unsafe.
-          const shapeCountOk =
-            !!actor &&
-            !!desc.shapes &&
-            (() => {
-              try {
-                return actor.getNbShapes() === desc.shapes!.length
-              } catch {
-                return false
-              }
-            })()
-          if (actor && shapeCountOk && this.staticPoseFp.get(desc.entity) === poseFp) continue
+          if (actor && this.staticPoseFp.get(desc.entity) === poseFp) continue
           const worldBaked = !!(actor && this.actorWorldBaked.get(desc.entity))
-          if (actor && shapeCountOk && !options?.forceRecookOnPoseChange && !worldBaked) {
+          if (actor && !options?.forceRecookOnPoseChange && !worldBaked) {
             try {
               if (this.updateMultiShapeActorPose(actor, desc)) {
                 this.staticPoseFp.set(desc.entity, poseFp)
                 geometryChanged = true
                 continue
               }
-              // Unsafe slide — fall through to recook.
             } catch (err) {
               console.warn('[PhysXWorld] multi-shape pose update failed:', desc.entity, err)
             }
           }
-          // World-baked: remove→recook is a mid-scene hole (floors vanish). Keep live actor
-          // unless boot/force explicitly demands recook — except partial cooks which never block.
-          if (actor && worldBaked && shapeCountOk && !options?.forceRecookOnPoseChange) {
-            pendingCooks++
-            continue
-          }
+          // Keep live solid; pose drift alone is not a recook.
+          this.staticPoseFp.set(desc.entity, poseFp)
+          continue
+        }
+
+        if (
+          prevGeomFp &&
+          prevGeomFp !== geomFp &&
+          shapeCountOk &&
+          !options?.forceRecookOnPoseChange &&
+          !bootStyleCook
+        ) {
+          // Prefer stale solid over mid-walk hole.
+          pendingCooks++
+          continue
         }
         // Geom fingerprint changed (late GLB attach / re-extract): always fall through to
         // replaceStaticWithCook. Skipping left wrong/empty hulls forever while play mode
@@ -1448,7 +1485,7 @@ export class PhysXWorld {
           this.loggedFailedCookFp.delete(prevGeomFp)
         }
         if (this.failedCookFp.has(geomFp)) {
-          if (this.staticActors.has(desc.entity)) continue
+          if (shapeCountOk) continue
           continue
         }
 
@@ -1458,15 +1495,12 @@ export class PhysXWorld {
         }
 
         try {
-          // Keep live actor until cook succeeds — remove→add holes floors mid-hitch.
-          const ok = this.replaceStaticWithCook(desc.entity, () =>
-            this.addMultiShapeStatic(desc, {
-              geometryCache: !bootStyleCook,
-              persistCook,
-              preferPersistedCook,
-              skipWorkerStream
-            })
-          )
+          // Expand multi-shape → one single-mesh RigidStatic per shape (CCT-solid path).
+          const ok = this.addMultiShapeStatic(desc, {
+            persistCook,
+            preferPersistedCook,
+            skipWorkerStream
+          })
           if (!ok) {
             this.failedCookFp.add(geomFp)
             continue
@@ -1568,7 +1602,8 @@ export class PhysXWorld {
     }
 
     if (geometryChanged) {
-      // New cooks reinsert via addActor; CCT cache is enough — no full tree rebuild.
+      // New cooks reinsert via addActor; full tree rebuild mid-slide can soft the SQ.
+      // Prefer CCT cache invalidate (feat/aoi-focus-owner solids-stay).
       this.invalidateControllerCache()
     }
     return { geometryChanged, pendingCooks }
@@ -2016,7 +2051,7 @@ export class PhysXWorld {
     return this.staticActors.size
   }
 
-  /** GLTF multi-shape static actors successfully registered in PhysX. */
+  /** GLTF multi-shape parents (or legacy single multi-shape actors) registered in PhysX. */
   get gltfStaticActorCount(): number {
     let count = 0
     for (const [entity] of this.staticFp) {
@@ -2028,7 +2063,10 @@ export class PhysXWorld {
   private isGltfStaticActor(entity: number): boolean {
     if (entity === INFINITE_GROUND_ENTITY) return false
     const fp = this.staticFp.get(entity)
-    return !!fp?.startsWith('gltf-entity:') && this.staticActors.has(entity)
+    if (!fp?.startsWith('gltf-entity:')) return false
+    // Expanded multi-shape: parent bookkeeping only; children are the RigidStatics.
+    if ((this.multiShapeChildCount.get(entity) ?? 0) > 0) return true
+    return this.staticActors.has(entity)
   }
 
   get quaternionOut(): THREE.Quaternion {
@@ -2829,6 +2867,12 @@ export class PhysXWorld {
     else console.warn(message, fingerprint)
   }
 
+  /**
+   * Expand multi-shape GltfContainer into **one RigidStatic per shape**, using the same
+   * single-mesh world-bake path as MeshCollider (debug box / boxes that CCT actually hits).
+   * One multi-shape actor was soft for CCT walk surfaces despite correct magenta source tint.
+   * Kinematic PART multi-shape remains on {@link addMultiShapeKinematic}.
+   */
   private addMultiShapeStatic(
     desc: PhysicsColliderDesc,
     options?: {
@@ -2838,105 +2882,104 @@ export class PhysXWorld {
       skipWorkerStream?: boolean
     }
   ): boolean {
-    const geometryCache = options?.geometryCache !== false
+    void options?.geometryCache
     const persistCook = options?.persistCook === true
     const preferPersistedCook = options?.preferPersistedCook === true
     const skipWorkerStream = options?.skipWorkerStream === true
     const shapes = desc.shapes
     if (!shapes?.length || !this.physics || !this.scene) return false
 
-    const handles: PxMeshHandle[] = []
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const pxShapes: any[] = []
+    const _meshWorld = new THREE.Matrix4()
     let attached = 0
-    let actorAtOrigin = false
+    let lastIndex = -1
+    const usedSlots = new Set<number>()
+    const prevSlotCount = this.multiShapeChildCount.get(desc.entity) ?? 0
 
-    for (const shapeDesc of shapes) {
+    for (let i = 0; i < shapes.length; i++) {
+      const shapeDesc = shapes[i]!
       if (!shapeDesc.geometry) continue
-      // Entity-local: bake entityScale × shape localMatrix into verts; actor T+R; shape pose
-      // identity at rest. Animator slides: shape pose = currentLocal * inv(baselineLocal).
-      const result = this.createLocalTrimeshShape(
-        shapeDesc,
-        handles,
-        desc,
-        false,
-        geometryCache,
-        persistCook,
-        preferPersistedCook,
-        skipWorkerStream
-      )
-      if (!result) continue
-      if (result.worldBaked) actorAtOrigin = true
-      pxShapes.push(result.shape)
+      // mesh world = entity world × shape local (entity-relative extract)
+      _meshWorld.copy(desc.matrix).multiply(shapeDesc.localMatrix)
+      if (!this.matrixHasFinitePose(_meshWorld)) continue
+
+      const childId = multiShapeChildPhysId(desc.entity, i)
+      const childDesc: PhysicsColliderDesc = {
+        entity: childId,
+        kind: 'geometry',
+        fingerprint: shapeDesc.fingerprint,
+        matrix: _meshWorld.clone(),
+        geometry: shapeDesc.geometry
+      }
+      // Only hot-swap when a child already exists (geom recook). First cook is plain addStatic.
+      const ok = this.staticActors.has(childId)
+        ? this.replaceStaticWithCook(childId, () =>
+            this.addStatic(childDesc, persistCook, preferPersistedCook, skipWorkerStream)
+          )
+        : this.addStatic(childDesc, persistCook, preferPersistedCook, skipWorkerStream)
+      if (!ok) continue
       attached++
-    }
-
-    if (actorAtOrigin) {
-      this._pos.set(0, 0, 0)
-      this._quat.set(0, 0, 0, 1)
-    } else {
-      desc.matrix.decompose(this._pos, this._quat, this._scale)
-    }
-    this._pos.toPxTransform(this.actorPoseTransform)
-    this._quat.toPxTransform(this.actorPoseTransform)
-
-    const actor = this.physics.createRigidStatic(this.actorPoseTransform)
-    for (const pxShape of pxShapes) {
-      actor.attachShape(pxShape)
+      lastIndex = i
+      usedSlots.add(i)
     }
 
     if (!attached) {
-      try {
-        actor.release?.()
-      } catch {
-        // ignore
-      }
-      for (const handle of handles) {
-        try {
-          handle.release()
-        } catch {
-          // ignore
-        }
-      }
       this.logCookFailedOnce(desc.fingerprint, '[PhysXWorld] multi-shape cook failed — no shapes attached:')
       return false
     }
 
-    this.scene.addActor(actor)
-    this.staticActors.set(desc.entity, actor)
-    this.registerStaticActor(desc.entity, actor)
-    this.pmeshHandles.set(desc.entity, handles)
-    this.actorWorldBaked.set(desc.entity, actorAtOrigin)
-    if (shapes.length) {
-      if (actorAtOrigin) {
-        // World-bake: baseline = full world matrix at cook (entity * local). PART slides via
-        // currentWorld * inv(baselineWorld). Actor stays at origin.
-        this.shapeBaselineLocal.set(
-          desc.entity,
-          shapes.map((shape) => {
-            const w = new THREE.Matrix4().copy(desc.matrix).multiply(shape.localMatrix)
-            return w
-          })
-        )
-        this.actorCookScale.delete(desc.entity)
-      } else {
-        this.shapeBaselineLocal.set(
-          desc.entity,
-          shapes.map((shape) => shape.localMatrix.clone())
-        )
-        desc.matrix.decompose(this._pos, this._quat, this._scale)
-        this.actorCookScale.set(desc.entity, this._scale.clone())
-      }
-    } else {
-      this.actorCookScale.delete(desc.entity)
+    // Drop slots no longer used (shape count shrank) + legacy single multi-shape parent.
+    for (let i = 0; i < prevSlotCount; i++) {
+      if (usedSlots.has(i)) continue
+      const id = multiShapeChildPhysId(desc.entity, i)
+      if (this.staticActors.has(id)) this.removeStatic(id)
     }
+    if (this.staticActors.has(desc.entity)) this.removeStatic(desc.entity)
+
+    this.multiShapeChildCount.set(desc.entity, Math.max(lastIndex + 1, attached))
+    this.staticFp.set(desc.entity, desc.fingerprint)
+    this.staticPoseFp.set(desc.entity, multiShapePoseFingerprint(desc))
+    this.actorWorldBaked.set(desc.entity, true)
+    this.shapeBaselineLocal.set(
+      desc.entity,
+      shapes.map((shape) => new THREE.Matrix4().copy(desc.matrix).multiply(shape.localMatrix))
+    )
+    this.actorCookScale.delete(desc.entity)
+
     if (attached < shapes.length) {
       console.warn(
-        `[PhysXWorld] multi-shape cook partial — entity=${desc.entity} attached=${attached}/${shapes.length} ` +
-          `(triangle-only; failed shapes dropped — check cook logs). fp=${desc.fingerprint.slice(0, 80)}`
+        `[PhysXWorld] multi-shape expand partial — parent=${desc.entity} attached=${attached}/${shapes.length} ` +
+          `(per-shape RigidStatic). fp=${desc.fingerprint.slice(0, 80)}`
+      )
+    } else {
+      console.info(
+        `[PhysXWorld] multi-shape expand — parent=${desc.entity} → ${attached} single-mesh actor(s) (CCT path)`
       )
     }
     return true
+  }
+
+  /** Remove expanded per-shape actors for a multi-shape parent phys id. */
+  private removeMultiShapeChildren(parentPhysId: number): void {
+    const n = this.multiShapeChildCount.get(parentPhysId) ?? 0
+    const limit = Math.max(n, 0)
+    for (let i = 0; i < limit; i++) {
+      const id = multiShapeChildPhysId(parentPhysId, i)
+      if (this.staticActors.has(id)) this.removeStatic(id)
+    }
+    // Also clear any orphan slots if count was stale (boot thrash).
+    if (n === 0) {
+      for (let i = 0; i < MULTI_SHAPE_SLOT_STRIDE; i++) {
+        const id = multiShapeChildPhysId(parentPhysId, i)
+        if (!this.staticActors.has(id)) {
+          if (i > 8) break // no dense block — stop early
+          continue
+        }
+        this.removeStatic(id)
+      }
+    }
+    this.multiShapeChildCount.delete(parentPhysId)
+    this.actorWorldBaked.delete(parentPhysId)
+    this.shapeBaselineLocal.delete(parentPhysId)
   }
 
   private cookBakedGeometryToCache(
@@ -3723,6 +3766,13 @@ function multiShapePoseFingerprint(desc: PhysicsColliderDesc): string {
     parts.push(matrixFingerprint(shape.localMatrix))
   }
   return parts.join('|')
+}
+
+/** Parent multi-shape phys id (20M+ecs) → child actor id for shape slot. */
+function multiShapeChildPhysId(parentPhysId: number, shapeIndex: number): number {
+  // parentPhysId is GLTF_COLLIDER_ENTITY_BASE + ecsEntity (20_000_000 + ecs).
+  const ecs = parentPhysId - 20_000_000
+  return MULTI_SHAPE_CHILD_BASE + ecs * MULTI_SHAPE_SLOT_STRIDE + shapeIndex
 }
 
 function unitPxMeshScale(): unknown {

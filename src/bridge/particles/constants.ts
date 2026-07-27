@@ -1,4 +1,8 @@
-/** DCL scene gravity (m/s²) — ParticleSystem.gravity is a multiplier on this. */
+/**
+ * DCL scene gravity (m/s²).
+ * `ParticleSystem.gravity` multiplies this when set; Explorer default is 0 (no gravity)
+ * when the field is omitted — see PBParticleSystemDefaults.GetGravity.
+ */
 export const DCL_SCENE_GRAVITY = -9.81
 
 /** Explorer caps total live particles per scene; scale rates when exceeded. */

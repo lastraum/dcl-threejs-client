@@ -109,9 +109,9 @@ export class SocialShellTopNav {
     this.applyEnter3dVisibility()
   }
 
-  /** 3D overlay open is wallet-only — hide the control for guests / signed-out. */
+  /** Jump into 3D — guests with catalyst wallet identity have the same rights as wallets. */
   private applyEnter3dVisibility(): void {
-    const canEnter = this.login.kind === 'wallet'
+    const canEnter = this.login.kind === 'wallet' || this.login.kind === 'guest'
     this.enter3dBtn.hidden = !canEnter
     this.enter3dBtn.disabled = !canEnter
     this.enter3dBtn.setAttribute('aria-hidden', canEnter ? 'false' : 'true')

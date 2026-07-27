@@ -100,9 +100,10 @@ export function collectTemplateColliderShapes(
     if (!(node instanceof THREE.Mesh)) return
     if ((node as THREE.SkinnedMesh).isSkinnedMesh) return
 
+    // Ancestry-first (Explorer): `_collider` group children are inv even without leaf `_collider` name.
     let kind: InstanceColliderShape['kind'] | null = null
-    if (isGltfVisibleClassMesh(node)) kind = 'vis'
-    else if (isGltfInvisibleColliderMesh(node, root)) kind = 'inv'
+    if (isGltfInvisibleColliderMesh(node, root)) kind = 'inv'
+    else if (isGltfVisibleClassMesh(node, root)) kind = 'vis'
     else if (node.name.length === 0) kind = 'unnamed'
     else return
 

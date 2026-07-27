@@ -76,6 +76,8 @@ export class VrmPeerSync {
       clearTimeout(this.wantAnnounceReplyTimer)
       this.wantAnnounceReplyTimer = null
     }
+    for (const t of this.loginRetryTimers) clearTimeout(t)
+    this.loginRetryTimers = []
     this.comms?.setAvatarVrmHandler(null)
     this.comms = null
     this.callbacks = null
@@ -188,7 +190,59 @@ export class VrmPeerSync {
     if (!bytes) return
     const entry = await getVrmLibraryEntry(this.equippedHash)
     const format = entry?.format ?? this.equippedFormat
+    // Always force so login WantAnnounce / peer-join never no-ops on publishedHash.
+    this.publishedHash = undefined
     await this.publishAnnounce(this.equippedHash, bytes.byteLength, format, true)
+  }
+
+  /**
+   * After peers are seeded into RemoteAvatarManager, re-apply any DAV equip we already
+   * learned (announce often beats join on login / handoff).
+   */
+  replayAllPeerEquips(
+    remote: {
+      setPeerVrmHash: (
+        addr: string,
+        hash: string | null,
+        format?: CustomAvatarFormat | null
+      ) => void
+      onPeerVrmBytesReady: (addr: string, hash: string, format?: CustomAvatarFormat) => void
+    }
+  ): void {
+    for (const [address, hash] of this.peerEquippedHash) {
+      if (!hash) continue
+      this.syncPeerToRemoteAvatars(address, remote)
+    }
+  }
+
+  private loginRetryTimers: ReturnType<typeof setTimeout>[] = []
+
+  /** Delayed probes — peers that missed the first WantAnnounce after our handler attach. */
+  scheduleLoginWantAnnounceRetries(): void {
+    for (const t of this.loginRetryTimers) clearTimeout(t)
+    this.loginRetryTimers = []
+    const delays = [500, 1500, 3500, 7000]
+    for (const ms of delays) {
+      this.loginRetryTimers.push(
+        setTimeout(() => {
+          if (!this.comms) return
+          void this.requestPeerAnnounces()
+          // Re-push any hashes we already have so DCL interim bodies swap to VRM.
+          if (this.callbacks) {
+            for (const [address, hash] of this.peerEquippedHash) {
+              if (!hash) continue
+              const format = this.peerEquippedFormat.get(address) ?? 'vrm'
+              this.callbacks.onPeerVrmChanged(address, hash, format)
+              if (hasVrmRamBytes(hash)) {
+                this.callbacks.onPeerVrmBytesReady(address, hash, getVrmRamFormat(hash) ?? format)
+              } else {
+                void this.requestPeerVrm(address, hash, true)
+              }
+            }
+          }
+        }, ms)
+      )
+    }
   }
 
   onPeerLeave(address: string): void {
@@ -389,15 +443,19 @@ export class VrmPeerSync {
       return
     }
 
+    // Login / late join: same-hash rebroadcast must still fetch if we never got bytes
+    // (prior attempts may have hit MAX while peer record or room wasn't ready).
+    const needBytes = !hasVrmRamBytes(hash)
+    const forceFetch = !sameEquip || needBytes
     odkNetInfo('peer bytes missing — DAV fetch request', {
       peer: shortAddr(address),
       format: formatTag(format),
       hash: shortHash(hash),
-      force: !sameEquip
+      force: forceFetch,
+      sameEquip,
+      needBytes
     })
-    // Rebroadcast (same hash): don't force a new request if one is already in flight —
-    // dual-room announce used to spam fetch until MAX_FETCH_ATTEMPTS and stall the pill.
-    void this.requestPeerVrm(address, hash, !sameEquip)
+    void this.requestPeerVrm(address, hash, forceFetch)
   }
 
   private onPeerClear(address: string): void {
@@ -411,7 +469,14 @@ export class VrmPeerSync {
   private async requestPeerVrm(provider: string, hash: string, force = false): Promise<void> {
     const reqKey = `${provider}:${hash}`
     if (hasVrmRamBytes(hash)) return
-    if (!force && this.pendingRequests.has(reqKey)) return
+    // Never stack concurrent fetches for the same peer+hash — "busy" storms interrupt the serve
+    // and leave the remote on DCL interim forever.
+    if (this.pendingRequests.has(reqKey)) {
+      if (!force) return
+      // force: only reset attempt budget for a later retry after the in-flight ends
+      this.fetchAttempts.delete(reqKey)
+      return
+    }
 
     const attempts = (this.fetchAttempts.get(reqKey) ?? 0) + 1
     if (attempts > VrmPeerSync.MAX_FETCH_ATTEMPTS) {
@@ -429,7 +494,8 @@ export class VrmPeerSync {
     odkNetInfo('DAV fetch request sent', {
       peer: shortAddr(provider),
       hash: shortHash(hash),
-      attempt: attempts
+      attempt: attempts,
+      force
     })
     clientDebugLog.log('vrm', `DAV fetch request → ${provider.slice(0, 8)}… ${hash.slice(0, 12)}… (#${attempts})`)
   }

@@ -228,6 +228,7 @@ export class AppController {
     window.addEventListener('popstate', this.onPopState)
     window.addEventListener('keydown', this.onPlayChromeHotkey, true)
     this.wireSceneBanDebug()
+    this.wireProfileDebug()
     // Toast + profile "What's new" open the same Dev Progress → Shipped view.
     this.ensureDevProgressPanel()
     bindWhatsNewShippedOpener(() => this.openShippedChangelog())
@@ -2332,17 +2333,20 @@ export class AppController {
         session: world.session,
         debugPanel: this.debugPanel,
         devProgressPanel: this.devProgressPanel,
-        onEmoteSelected: (emoteId) => world.playLocalEmote(emoteId, { loop: false }),
+        // `undefined` keeps the Catalyst loop flag; `false` would force every emote one-shot.
+        onEmoteSelected: (emoteId) => world.playLocalEmote(emoteId, { loop: undefined }),
         onTogglePhotoCamera: () => world.togglePhotoCamera(),
         onTourOptions: () => this.openTourOptionsPopup(),
+        onActivePetChange: () => world.onActivePetInventoryChange(),
         onSignOut: () => this.signOut(),
         onExit: () => this.leavePlayMode()
       })
     } else {
       this.shell.updateWorldBindings(world.session, world.environment)
-      this.shell.setEmoteHandler((emoteId) => world.playLocalEmote(emoteId, { loop: false }))
+      this.shell.setEmoteHandler((emoteId) => world.playLocalEmote(emoteId, { loop: undefined }))
       this.shell.setPhotoCameraHandler(() => world.togglePhotoCamera())
       this.shell.setTourOptionsHandler(() => this.openTourOptionsPopup())
+      this.shell.setActivePetChangeHandler(() => world.onActivePetInventoryChange())
     }
     if (opts.deferPlayChromeReveal) {
       this.hidePlayChrome()
@@ -2645,6 +2649,34 @@ export class AppController {
 
     this.ensureSceneBanMonitor()
     return hydrationTimedOut
+  }
+
+  /**
+   * Dev-only console hook — open any wallet's profile modal without hunting for
+   * a live player to click. `d3jsOpenProfile('0x…')` (no arg = own profile).
+   * Routes exactly like the in-world / 2D shell profile entry points.
+   */
+  private wireProfileDebug(): void {
+    if (!import.meta.env.DEV) return
+    const g = window as typeof window & { d3jsOpenProfile?: (address?: string) => void }
+    g.d3jsOpenProfile = (address?: string) => {
+      const own =
+        this.login?.kind === 'wallet' || this.login?.kind === 'guest'
+          ? this.login.address.toLowerCase()
+          : null
+      const target = address?.trim().toLowerCase() || own
+      if (!target) {
+        console.warn('[dev] d3jsOpenProfile: no address given and no logged-in wallet')
+        return
+      }
+      if (this.appMode === 'play') {
+        this.profileUi?.openProfileForAddress(target)
+        return
+      }
+      this.ensureSocialChatShell()
+      this.socialChat?.openProfileForAddress(target)
+    }
+    console.info('[dev] d3jsOpenProfile(address) available — opens the profile modal for any wallet')
   }
 
   private wireSceneBanDebug(): void {

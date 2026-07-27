@@ -30,6 +30,7 @@ import {
   dampAndClampExternal,
   effectiveGravityDown,
   forceToAcceleration,
+  IMPULSE_LAUNCH_GRACE_SEC,
   integrateForceXZ,
   shouldUngroundFromForce
 } from './externalPhysics'
@@ -78,7 +79,6 @@ const _sceneForce = new THREE.Vector3()
 const _sceneImpulse = new THREE.Vector3()
 const _forceAccel = new THREE.Vector3()
 const _pivot = new THREE.Vector3()
-const _tmpSpawnHold = new THREE.Vector3()
 const _lookAt = new THREE.Vector3()
 const _offset = new THREE.Vector3()
 const _shoulder = new THREE.Vector3()
@@ -162,6 +162,11 @@ export class PlayerSystem {
    * write `eventId: 0` on every bounce (SDK helper uses incrementing eventId ≥ 1).
    */
   private lastImpulseLamport = 0
+  /**
+   * Seconds remaining where CCT may still report grounded under a trampoline after impulse.
+   * Explorer ungrounds on J.y > 0; we only suppress re-stick briefly (not residual drag for seconds).
+   */
+  private impulseLaunchGrace = 0
   /** Optional: CRDT Lamport for PhysicsCombinedImpulse on PlayerEntity. */
   private getImpulseLamport: (() => number) | null = null
   private jumpCount = 0
@@ -232,10 +237,12 @@ export class PlayerSystem {
   private lastPhysProbeAt = 0
   private virtualCamera: VirtualCameraBridge | null = null
   /**
-   * Prior frame VirtualCamera owned the lens. On release we snap freecam placement
-   * but **never rewrite** camYaw/pitch/dist from the VC (those are durable player state).
+   * Prior frame VirtualCamera owned the lens. While active we keep freecam yaw/pitch
+   * roughly aligned for a smooth unbind; seedFreecamFromLastVcLens runs on release.
    */
   private wasVirtualCameraActive = false
+  /** Snap freecam one frame after VC clear so handoff matches last cinematic lens. */
+  private freecamSnapAfterVc = false
   /** AvatarModifierArea hide (local mesh). */
   private modifierHidden = false
   /** CameraModeArea force — null when freecam is player-controlled. */
@@ -246,17 +253,12 @@ export class PlayerSystem {
   /** Tour Focus follower — blocks locomotion + freecam; external controller owns the lens. */
   private tourFocusActive = false
   /**
-   * After spawn when settle finds no solid, briefly hold Y and re-probe while late
-   * collider pose slides land. No synthetic pad — pure authored geometry only.
-   */
-  private spawnHoldFeetY: number | null = null
-  private spawnHoldSecLeft = 0
-  private spawnHoldAuthoredFeetY: number | null = null
-  private spawnHoldReprobeAcc = 0
-  /**
    * Authored scene.json spawn for PlayerEntity/CameraEntity **before** the CCT exists.
    * Without this, clientPoseProvider reports origin (y≈0) during script boot/hydration and
    * Flagtag drown systems false-trigger then movePlayerTo the tower.
+   *
+   * CCT is created only in initCapsule after World seals colliders + waitForSpawnFloorReady.
+   * Air spawns freefall under gravity onto cooked statics — no mid-air soft-hold park.
    */
   private stagedPlayerPose: EntityPose | null = null
   private stagedCameraPose: EntityPose | null = null
@@ -316,12 +318,12 @@ export class PlayerSystem {
     readComponents: MirrorComponents,
     onProgress?: (msg: string) => void,
     /**
-     * Feet from successful pre-spawn floor wait (Three space). Prefer this over raw
-     * scene.json Y so elevated towers (Flagtag) land on the deck instead of hovering
-     * at authored spawn + clearance when re-settle misses.
+     * Unused for placement (kept for call-site compat). Boot only probes that a surface
+     * exists under the column; capsule always starts at authored feet and drops with gravity.
      */
-    provenFeetThree?: THREE.Vector3 | null
+    _floorReadyHint?: THREE.Vector3 | null
   ): Promise<void> {
+    void _floorReadyHint
     this.readComponents = readComponents
     this.walkBounds = walkBounds
     this.resetExternalPhysicsState()
@@ -349,33 +351,13 @@ export class PlayerSystem {
       : spawn.y <= 0.01
         ? DEFAULT_SPAWN_FEET_Y
         : spawn.y
-    const authoredThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
-    // Start CCT near proven deck when available, but band-check always uses authored spawn Y
-    // so a bad high probe cannot re-center the accept band upward (Flagtag roof float).
-    const spawnThree =
-      provenFeetThree && Number.isFinite(provenFeetThree.y)
-        ? new THREE.Vector3(authoredThree.x, provenFeetThree.y, authoredThree.z)
-        : authoredThree
-    // Keep root on spawn while CCT creates — never report origin to the scene.
+    // Authored scene.json feet — no CCT settle; gravity lands on cooked colliders.
+    const spawnThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
     this.root.position.copy(spawnThree)
     this.physics.spawnPlayer(spawnThree)
     this.physics.warmStaticScene()
-    const settleRefY = authoredThree.y
-    const settled = this.physics.settleSpawnOntoFloor(settleRefY)
-    this.grounded = settled
-    this.groundCoyote = settled ? 0.12 : 0
-    if (!settled) {
-      // Parked near probe or lift — short re-probe only; do not long-float at air Y.
-      this.spawnHoldFeetY = this.physics.positionOut.y
-      this.spawnHoldAuthoredFeetY = settleRefY
-      this.spawnHoldSecLeft = settleRefY > 8 ? 6 : 3
-      this.spawnHoldReprobeAcc = 0
-    } else {
-      this.spawnHoldFeetY = null
-      this.spawnHoldAuthoredFeetY = null
-      this.spawnHoldSecLeft = 0
-      this.spawnHoldReprobeAcc = 0
-    }
+    this.grounded = false
+    this.groundCoyote = 0
     this.physics.attachCapsuleDebug(this.root)
     this.enabled = true
     this.host.setOrbitEnabled(false)
@@ -398,10 +380,8 @@ export class PlayerSystem {
     this.clearStagedSpawnPoses()
     const feet = this.physics.positionOut
     console.info(
-      `[player] spawn settled — feet=(${feet.x.toFixed(1)}, ${feet.y.toFixed(2)}, ${feet.z.toFixed(1)})` +
-        ` authoredY=${authoredThree.y.toFixed(2)}` +
-        (provenFeetThree ? ` provenY=${provenFeetThree.y.toFixed(2)}` : '') +
-        ` grounded=${settled}`
+      `[player] spawn drop-in — feet=(${feet.x.toFixed(1)}, ${feet.y.toFixed(2)}, ${feet.z.toFixed(1)})` +
+        ` scene.jsonY=${feetY.toFixed(2)} grounded=false`
     )
     onProgress?.('Player ready')
   }
@@ -943,9 +923,8 @@ export class PlayerSystem {
     if (!reposition || duration <= 0) {
       if (reposition) {
         // Seat snaps: short move + avatarTarget → trust authored feet (no settle).
-        // Fall-reset / map respawn: long jump even with avatarTarget → settle onto floor.
-        // SpaceRunner always passes avatarTarget; without this heuristic respawns never settle
-        // and CCT drifts while map colliders rebuild.
+        // Long elevated (map↔lobby): authored pose + gravity drop after freeze clears.
+        // Ground-level long jumps: one-shot CCT settle when floor already under feet.
         const horiz = Math.hypot(target.x - from.x, target.z - from.z)
         const vert = Math.abs(target.y - from.y)
         const longRespawn = horiz > 2.5 || vert > 2
@@ -957,7 +936,7 @@ export class PlayerSystem {
           `[player] movePlayerTo · dcl=(${reqDcl.x.toFixed(1)},${reqDcl.y.toFixed(2)},${reqDcl.z.toFixed(1)}) ` +
             `→ three=(${target.x.toFixed(1)},${target.y.toFixed(2)},${target.z.toFixed(1)}) ` +
             `tgtDcl=(${tgtDcl.x.toFixed(1)},${tgtDcl.y.toFixed(2)},${tgtDcl.z.toFixed(1)}) ` +
-            `long=${longRespawn} settle=${settle} ` +
+            `long=${longRespawn} settle=${settle} elevatedDrop=${longRespawn && target.y > 8} ` +
             `fromThree=(${from.x.toFixed(1)},${from.y.toFixed(2)},${from.z.toFixed(1)})`
         )
         this.teleportTo(target, settle, longRespawn)
@@ -965,9 +944,8 @@ export class PlayerSystem {
           this.lastLongTeleportFeet = target.clone()
           this.lastLongTeleportAt = performance.now()
         }
-        // Pin feet for disableAll load freezes (map reload after fall).
-        // Prefer authored target — settle may rest on a temporary freeze pad that is deleted
-        // when load-gate clears (SpaceRunner la() MeshCollider).
+        // Pin authored feet while InputModifier.disableAll (map rebuild / load gate).
+        // Scene freeze holds pose; on unfreeze gravity drops onto cooked colliders.
         if (!canLocomote(this.getLocomotionConfig())) {
           this.disableAllHoldFeet = (longRespawn ? target : this.root.position).clone()
           const f = this.disableAllHoldFeet
@@ -1021,6 +999,7 @@ export class PlayerSystem {
     }
     _velocity.set(0, 0, 0)
     _externalVelocity.set(0, 0, 0)
+    this.impulseLaunchGrace = 0
     // Timed path only — holds keys until arrival (docs: transition can be interrupted by move).
     this.scenePositionLock = true
     return true
@@ -1394,74 +1373,6 @@ export class PlayerSystem {
       }
     }
 
-    if (this.spawnHoldSecLeft > 0) {
-      this.spawnHoldSecLeft -= delta
-      this.spawnHoldReprobeAcc += delta
-      if (this.grounded) {
-        this.spawnHoldFeetY = null
-        this.spawnHoldAuthoredFeetY = null
-        this.spawnHoldSecLeft = 0
-        this.spawnHoldReprobeAcc = 0
-      } else if (this.spawnHoldFeetY != null) {
-        // Soft hold until colliders respond — no synthetic pad.
-        // Zero fall velocity so we do not freefall off tower; allow CCT to walk on XZ.
-        if (_velocity.y < 0) _velocity.y = 0
-        if (this.spawnHoldReprobeAcc >= 0.35 && this.spawnHoldAuthoredFeetY != null) {
-          this.spawnHoldReprobeAcc = 0
-          this.physics.warmStaticScene()
-          const holdAuthY = this.spawnHoldAuthoredFeetY
-          if (this.physics.settleSpawnOntoFloor(holdAuthY)) {
-            this.grounded = true
-            this.groundCoyote = 0.12
-            this.spawnHoldFeetY = null
-            this.spawnHoldAuthoredFeetY = null
-            this.spawnHoldSecLeft = 0
-            this.root.position.copy(this.physics.positionOut)
-            console.info(
-              `[player] spawn hold re-probe grounded — feet y=${this.physics.positionOut.y.toFixed(2)}`
-            )
-          } else {
-            // Never pull hold Y up to lift after a failed settle (causes float + later dive).
-            // Track probe deck when available; keep previous hold otherwise.
-            const px = this.physics.positionOut.x
-            const pz = this.physics.positionOut.z
-            const probed = this.physics.probeWalkSurfaceFeetY(
-              px,
-              pz,
-              holdAuthY + 1.2,
-              8,
-              holdAuthY
-            )
-            if (probed != null) {
-              this.spawnHoldFeetY = probed
-              // If still hovering well above deck, ease down to probe (no hard dive snap).
-              const curY = this.physics.positionOut.y
-              if (curY > probed + 0.85) {
-                const eased = curY - Math.min(curY - probed - 0.1, 1.25)
-                _tmpSpawnHold.set(px, eased, pz)
-                this.physics.teleport(_tmpSpawnHold)
-                this.root.position.copy(this.physics.positionOut)
-              }
-            }
-          }
-        }
-        // Only block freefall below hold — do not Y-lock when walking on surface.
-        if (this.spawnHoldFeetY != null && this.physics.positionOut.y < this.spawnHoldFeetY - 0.55) {
-          _tmpSpawnHold.set(
-            this.physics.positionOut.x,
-            this.spawnHoldFeetY,
-            this.physics.positionOut.z
-          )
-          this.physics.teleport(_tmpSpawnHold)
-          this.root.position.copy(this.physics.positionOut)
-        }
-        if (this.spawnHoldSecLeft <= 0) {
-          this.spawnHoldFeetY = null
-          this.spawnHoldAuthoredFeetY = null
-        }
-      }
-    }
-
     if (this.jumping && !this.grounded && _velocity.y <= 0) {
       this.jumping = false
     }
@@ -1494,10 +1405,10 @@ export class PlayerSystem {
     }
 
     // Gravity after glide state is known so force Y uses 1.5× when gliding.
-    // Skip during spawn hold (handled above).
-    if (this.spawnHoldSecLeft <= 0) {
-      // Continuous PE force Y → effective gravity (Unity ApplyExternalForce / ApplyGravity).
-      // XZ force + impulses live on _externalVelocity (see applyScenePhysicsCombined).
+    // Continuous PE force Y → effective gravity (Unity ApplyExternalForce / ApplyGravity).
+    // XZ force + impulses live on _externalVelocity (see applyScenePhysicsCombined).
+    // Air spawns / post-teleport: freefall onto cooked colliders — no mid-air soft-hold.
+    {
       const forceAy = this.sampleSceneForceAccelY(this.gliding)
       if (shouldUngroundFromForce(GRAVITY, forceAy)) {
         this.grounded = false
@@ -1580,9 +1491,11 @@ export class PlayerSystem {
 
     dampAndClampExternal(_externalVelocity, this.grounded, delta)
     _displacement.copy(_velocity).add(_externalVelocity).multiplyScalar(delta)
-    // Horizontal-only when actually grounded — coyote must keep vertical displacement so gravity
-    // can pull the capsule onto stair treads (stripping Y during coyote caused lip stalls).
-    // Do not strip Y when external lift/impulse or continuous pad force is upward.
+    // Grounded: don't apply jump/up velocity into the CCT, but keep a small downward stick so
+    // horizontal move on ramps/stairs follows the surface. Zeroing Y entirely left the capsule
+    // floating as the deck dropped away → grounded flicker → fall/float-down animation.
+    // Coyote (not grounded): keep full vertical so gravity can catch stair lips.
+    // Do not stick when external lift/impulse or continuous pad force is upward.
     if (
       this.grounded &&
       !this.jumping &&
@@ -1592,7 +1505,10 @@ export class PlayerSystem {
       _externalVelocity.y <= 1e-4 &&
       !forceLifting
     ) {
-      _displacement.y = 0
+      const horiz = Math.hypot(_velocity.x, _velocity.z)
+      // ~45° slope follow: need |dY| ≈ horiz * tan(45°) * delta ≈ horiz * delta, plus a base.
+      const stick = Math.max(0.08, horiz * delta * 1.15) + 0.12 * delta
+      _displacement.y = -stick
     }
 
     if (!this.jumping && !this.jumped && !this.airJumpPending && (this.grounded || this.nearGround)) {
@@ -1604,14 +1520,16 @@ export class PlayerSystem {
 
     const moveResult = this.physics.movePlayer(_displacement, delta)
     this.grounded = moveResult.grounded
-    // Pad / impulse still launching — do not re-stick on the trampoline surface mid-boost.
-    // Threshold is intentional: residual drag after a pad (extY decays slowly) must NOT keep
-    // grounded=false forever or jump/fall locomotion anim sticks after landing.
+    if (this.impulseLaunchGrace > 0) {
+      this.impulseLaunchGrace = Math.max(0, this.impulseLaunchGrace - delta)
+    }
+    // Continuous pad force still lifts (effective-g ≤ 0). Brief impulse grace only —
+    // Explorer always zeros ExternalVelocity.y when grounded; do not re-unground for
+    // residual drag (extY>2.5 used to loft 3–6s and made pads feel 2×+ stronger).
     const forceAyLift = this.sampleSceneForceAccelY(this.gliding)
-    const netVy = _velocity.y + _externalVelocity.y
     const stillLifting =
       shouldUngroundFromForce(GRAVITY, forceAyLift) ||
-      (_externalVelocity.y > 2.5 && netVy > 1.0)
+      (this.impulseLaunchGrace > 0 && _externalVelocity.y > 0.5)
     if (this.grounded && stillLifting) {
       this.grounded = false
       this.groundCoyote = 0
@@ -1620,6 +1538,7 @@ export class PlayerSystem {
       if (!this.jumping) _velocity.y = 0
       // Explorer: grounded clears external Y (drag already damped XZ).
       _externalVelocity.y = 0
+      this.impulseLaunchGrace = 0
       // Land — clear voluntary jump state so bounce pads don't leave jump emote on idle.
       this.jumping = false
       this.jumped = false
@@ -1765,6 +1684,7 @@ export class PlayerSystem {
    */
   private resetExternalPhysicsState(consumeCurrentImpulse = false): void {
     _externalVelocity.set(0, 0, 0)
+    this.impulseLaunchGrace = 0
     if (consumeCurrentImpulse) {
       const ecs = this.readComponents
       if (ecs?.PhysicsCombinedImpulse.has(SDK_RESERVED.player)) {
@@ -1805,10 +1725,8 @@ export class PlayerSystem {
     if (!ecs) return
     const pe = SDK_RESERVED.player
 
-    // Soft-hold / freeze pin: never apply bounce impulses (stale pad or re-enter during map rebuild).
-    const holdBlocked =
-      this.disableAllHoldFeet != null ||
-      (this.spawnHoldSecLeft > 0 && this.spawnHoldAuthoredFeetY != null)
+    // Scene freeze pin: never apply bounce impulses (stale pad or re-enter during map rebuild).
+    const holdBlocked = this.disableAllHoldFeet != null
 
     // P2 stale impulse: if component gone, re-arm for next pad.
     if (!ecs.PhysicsCombinedImpulse.has(pe)) {
@@ -1844,6 +1762,7 @@ export class PlayerSystem {
             // Explorer: unground + zero falling gravity velocity so pads beat freefall.
             this.grounded = false
             this.groundCoyote = 0
+            this.impulseLaunchGrace = IMPULSE_LAUNCH_GRACE_SEC
             if (_velocity.y < 0) _velocity.y = 0
             if (rawUp > 0.5) this.gliding = false
           }
@@ -1851,7 +1770,7 @@ export class PlayerSystem {
             'player',
             `PE impulse applied eventId=${eventId} lamport=${lamport} ` +
               `raw=(${(v.x ?? 0).toFixed(1)},${(v.y ?? 0).toFixed(1)},${(v.z ?? 0).toFixed(1)}) ` +
-              `extY=${_externalVelocity.y.toFixed(1)}`,
+              `extY=${_externalVelocity.y.toFixed(1)} grace=${IMPULSE_LAUNCH_GRACE_SEC}`,
             { level: 'info', alsoConsole: true, throttleMs: 200, throttleKey: 'pe-impulse' }
           )
         }
@@ -1974,10 +1893,96 @@ export class PlayerSystem {
     }
   }
 
+  /**
+   * After a cinematic VirtualCamera clears, invert last lens → freecam boom so the
+   * handoff stays at the final flyover pose (near player) instead of snapping to
+   * default distance / stale orbit.
+   *
+   * Freecam model: lens = pivot + boom(yaw, pitch, distance) [+ small shoulder].
+   * We ignore shoulder on invert (small lateral error, stable yaw/pitch/distance).
+   */
+  private seedFreecamFromLastVcLens(): void {
+    const cam = this.host.camera
+    _pivot.copy(this.root.position)
+    _pivot.y += CAM_PIVOT_HEIGHT
+    _offset.copy(cam.position).sub(_pivot)
+    const dist = _offset.length()
+
+    // Prefer boom invert from lens position (matches Space Runner end keyframe).
+    if (dist >= 0.55) {
+      _offset.multiplyScalar(1 / dist)
+      this.camPitch = clamp(
+        Math.asin(THREE.MathUtils.clamp(_offset.y, -1, 1)),
+        CAM_PITCH_MIN,
+        CAM_PITCH_MAX
+      )
+      this.camYaw = Math.atan2(_offset.x, _offset.z)
+      this.camDistance = clamp(dist, CAM_FPV_MAX_DISTANCE + 0.2, CAM_DISTANCE_MAX)
+    } else {
+      // Lens almost on pivot — fall back to look direction + default third-person range.
+      _forward.set(0, 0, -1).applyQuaternion(cam.quaternion)
+      if (_forward.lengthSq() > 1e-8) {
+        _forward.normalize()
+        this.camYaw = Math.atan2(-_forward.x, -_forward.z)
+        if (_forward.y <= 0.15) {
+          const lookPitch = Math.asin(THREE.MathUtils.clamp(_forward.y, -1, 1))
+          this.camPitch = clamp(-lookPitch, CAM_PITCH_MIN, CAM_PITCH_MAX)
+        } else {
+          this.camPitch = CAM_PITCH_DEFAULT
+        }
+      }
+      this.camDistance = CAM_DISTANCE_DEFAULT
+    }
+
+    // Forced camera mode areas still win after seed.
+    if (this.forcedCameraMode === 'first_person') {
+      this.camDistance = 0
+    } else if (this.forcedCameraMode === 'third_person') {
+      this.camDistance = clamp(
+        Math.max(this.camDistance, CAM_FPV_MAX_DISTANCE + 0.15),
+        CAM_FPV_MAX_DISTANCE + 0.15,
+        CAM_DISTANCE_MAX
+      )
+    }
+
+    clientDebugLog.log(
+      'vc-lens',
+      `freecam seed after VC — yaw=${((this.camYaw * 180) / Math.PI).toFixed(0)}° ` +
+        `pitch=${((this.camPitch * 180) / Math.PI).toFixed(0)}° dist=${this.camDistance.toFixed(1)} ` +
+        `lens=(${cam.position.x.toFixed(1)},${cam.position.y.toFixed(1)},${cam.position.z.toFixed(1)}) ` +
+        `pivot=(${_pivot.x.toFixed(1)},${_pivot.y.toFixed(1)},${_pivot.z.toFixed(1)})`,
+      { level: 'info', alsoConsole: true }
+    )
+  }
+
   private syncCamera(snap: boolean, delta = 0.016): void {
     // FocusOwner primary may drive lens via active VirtualCamera only.
     // Do **not** write freecam orbit from VC — orbit is continuous player state.
     if (this.virtualCamera?.apply(delta)) {
+      this.wasVirtualCameraActive = true
+      // Keep freecam yaw/pitch roughly aligned while VC drives (distance seeded on unbind).
+      _forward.set(0, 0, -1).applyQuaternion(this.host.camera.quaternion)
+      if (_forward.lengthSq() > 1e-8) {
+        _forward.normalize()
+        this.camYaw = Math.atan2(-_forward.x, -_forward.z)
+        // freecam camPitch is boom elevation (positive = above); look-down has negative forward.y.
+        // Never seed a looking-up VC into negative boom (under-floor freecam on unbind).
+        if (_forward.y <= 0.15) {
+          const lookPitch = Math.asin(THREE.MathUtils.clamp(_forward.y, -1, 1))
+          this.camPitch = clamp(-lookPitch, CAM_PITCH_MIN, CAM_PITCH_MAX)
+        } else {
+          this.camPitch = CAM_PITCH_DEFAULT
+        }
+      }
+      this.avatar?.setBodyVisible(!this.modifierHidden)
+      if (this.nameTag) {
+        this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
+      }
+      return
+    }
+    // MainCamera still points at a VC but bridge inactive (missing Transform this frame) —
+    // hold last lens pose; do not let freecam/orbit steal the shot.
+    if (this.virtualCamera?.isMainCameraVcBound()) {
       this.wasVirtualCameraActive = true
       this.avatar?.setBodyVisible(!this.modifierHidden)
       if (this.nameTag) {
@@ -1990,16 +1995,19 @@ export class PlayerSystem {
     const vcJustReleased = this.wasVirtualCameraActive
     if (this.wasVirtualCameraActive) {
       this.wasVirtualCameraActive = false
+      this.seedFreecamFromLastVcLens()
+      this.freecamSnapAfterVc = true
     }
+
+    // Snap once after VC release or explicit handoff so boom re-seats on feet without lerp ghost.
+    const hardSnap = snap || this.freecamSnapAfterVc || vcJustReleased
+    if (this.freecamSnapAfterVc) this.freecamSnapAfterVc = false
 
     const fpv = this.isFirstPerson()
     this.avatar?.setBodyVisible(!this.modifierHidden && !fpv)
     if (this.nameTag) {
       this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible() && !fpv
     }
-
-    // Snap once after VC release or explicit handoff so boom re-seats on feet without lerp ghost.
-    const hardSnap = snap || vcJustReleased
 
     if (fpv) {
       _pivot.copy(this.root.position)
@@ -2033,7 +2041,8 @@ export class PlayerSystem {
 
     _camDir.copy(_offset).normalize()
     const maxDist = _offset.length()
-    const safeDist = this.resolveCameraDistance(_pivot, _camDir, maxDist)
+    // First freecam frame after VC: keep cinematic lens — wall occlusion would pull in and pop.
+    const safeDist = hardSnap ? maxDist : this.resolveCameraDistance(_pivot, _camDir, maxDist)
     _offset.setLength(safeDist)
 
     _camPos.copy(_pivot).add(_offset)
@@ -2085,11 +2094,12 @@ export class PlayerSystem {
   }
 
   /**
-   * @param settle — lift + drop onto authored floor (drown-respawn / tower teleports).
-   *   Mid-duration movePlayerTo lerps pass false; seat snaps pass false (trust authored).
-   *   Timed-walk arrival passes true.
-   * @param longRespawn — elevated map restart: keep soft spawn hold even if CCT "grounds"
-   *   on a temporary freeze pad that the scene deletes when load-gate clears.
+   * @param settle — try a one-shot CCT settle onto floor near authored Y (drown-respawn /
+   *   ground snaps). Mid-duration movePlayerTo lerps pass false; seat snaps pass false
+   *   (trust authored). Timed-walk arrival passes true.
+   * @param longRespawn — long elevated jump (map↔lobby / map restart). Stay at authored
+   *   feet and freefall under gravity once scene freeze clears — do not CCT-settle onto a
+   *   temporary freeze-pad MeshCollider and do not soft-hold mid-air.
    */
   private teleportTo(positionThree: THREE.Vector3, settle = true, longRespawn = false): void {
     if (this.walkBounds) {
@@ -2108,25 +2118,15 @@ export class PlayerSystem {
     this.airJumpPending = false
     this.gliding = false
 
-    if (settle) {
+    const elevatedLong = longRespawn && positionThree.y > 8
+    if (settle && !elevatedLong) {
+      // Ground-level / short snaps: optional one-shot CCT settle. Miss → freefall from target.
       this.physics.warmStaticScene()
       const settled = this.physics.settleSpawnOntoFloor(positionThree.y)
       this.grounded = settled
       this.groundCoyote = settled ? 0.12 : 0
-      // Elevated long respawns: always soft-hold. Settle often hits SpaceRunner's temporary
-      // freeze-pad MeshCollider; that pad is removed on load-gate clear and leaves a hole
-      // until map1.glb cooks — without hold the capsule freefalls (looks like wrong teleport).
-      const elevatedLong = longRespawn && positionThree.y > 8
-      if (!settled || elevatedLong) {
-        this.spawnHoldFeetY = this.physics.positionOut.y
-        this.spawnHoldAuthoredFeetY = positionThree.y
-        this.spawnHoldSecLeft = Math.max(this.spawnHoldSecLeft, elevatedLong ? 8 : positionThree.y > 8 ? 6 : 3)
-        this.spawnHoldReprobeAcc = 0
-      } else {
-        this.spawnHoldFeetY = null
-        this.spawnHoldAuthoredFeetY = null
-        this.spawnHoldSecLeft = 0
-        this.spawnHoldReprobeAcc = 0
+      if (!settled) {
+        this.physics.teleport(positionThree)
       }
       // Round-reset teleports must not leave a prior timed-walk lock armed.
       this.scenePositionLock = false
@@ -2139,19 +2139,49 @@ export class PlayerSystem {
         'info',
         `[player] teleport settle — three=(${out.x.toFixed(1)},${out.y.toFixed(2)},${out.z.toFixed(1)}) ` +
           `dcl=(${outDcl.x.toFixed(1)},${outDcl.y.toFixed(2)},${outDcl.z.toFixed(1)}) ` +
-          `targetY=${positionThree.y.toFixed(2)} grounded=${settled} softHold=${!settled || elevatedLong} ` +
+          `targetY=${positionThree.y.toFixed(2)} grounded=${settled} drop=${!settled} ` +
           `lock=cleared locomotion=${locOk ? 'allowed' : 'blocked'} ` +
           `all=${locomotion.disableAll} walk=${locomotion.disableWalk} ` +
           `jog=${locomotion.disableJog} run=${locomotion.disableRun}`
       )
+    } else if (settle && elevatedLong) {
+      // Elevated long (SpaceRunner map↔lobby): authored pose only. Scene disableAll pins
+      // during load; on unfreeze gravity drops onto cooked colliders. Never soft-hold.
+      this.grounded = false
+      this.groundCoyote = 0
+      this.scenePositionLock = false
+      this.moveTask = null
+      const locomotion = this.getLocomotionConfig()
+      const locOk = canLocomote(locomotion)
+      const out = this.physics.positionOut
+      const outDcl = threeToDclVec(out)
+      // Diagnose "spawn not high enough" vs "no lobby floor": probe under authored feet.
+      this.physics.warmStaticScene()
+      const probeUnder = this.physics.probeWalkSurfaceFeetY(
+        out.x,
+        out.z,
+        positionThree.y + 1.2,
+        16,
+        positionThree.y
+      )
+      clientDebugLog.consoleOnly(
+        'info',
+        `[player] teleport elevated drop — three=(${out.x.toFixed(1)},${out.y.toFixed(2)},${out.z.toFixed(1)}) ` +
+          `dcl=(${outDcl.x.toFixed(1)},${outDcl.y.toFixed(2)},${outDcl.z.toFixed(1)}) ` +
+          `targetY=${positionThree.y.toFixed(2)} grounded=false ` +
+          `floorProbe=${probeUnder != null ? probeUnder.toFixed(2) : 'none'} ` +
+          `locomotion=${locOk ? 'allowed' : 'blocked'} ` +
+          `all=${locomotion.disableAll} walk=${locomotion.disableWalk} ` +
+          `jog=${locomotion.disableJog} run=${locomotion.disableRun}`
+      )
+      if (probeUnder == null) {
+        // No walk surface under lobby/map spawn — colliders missing/late, not a feet-offset bug.
+        this.physics.logStaticCollidersNear(out.x, positionThree.y, out.z, 18, 'elevated-drop')
+      }
     } else {
       // Authored seat / mid-lerp — treat as grounded so sit emote doesn't freefall off the bench.
       this.grounded = true
       this.groundCoyote = 0.12
-      this.spawnHoldFeetY = null
-      this.spawnHoldAuthoredFeetY = null
-      this.spawnHoldSecLeft = 0
-      this.spawnHoldReprobeAcc = 0
     }
 
     this.root.position.copy(this.physics.positionOut)

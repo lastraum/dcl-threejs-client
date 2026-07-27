@@ -95,6 +95,37 @@ export function tryOpenPeerContextMenu(clientX: number, clientY: number): boolea
 }
 
 /**
+ * Strict hit on the pill rectangle (plus its Options hint), with none of the
+ * avatar-body or proximity slop `findPeerPillAtPointer` allows. Left-click uses
+ * this so camera orbit still owns the rest of the canvas near a player.
+ */
+export function findPeerPillRectAt(clientX: number, clientY: number): InteractiveNameTagHit | null {
+  for (const element of document.querySelectorAll<HTMLElement>(INTERACTIVE_NAME_TAG_SELECTOR)) {
+    const address = element.dataset.peerAddress?.trim().toLowerCase()
+    if (!address) continue
+    const rect = element.getBoundingClientRect()
+    if (rect.width <= 0 && rect.height <= 0) continue
+    if (
+      clientX >= rect.left - 6 &&
+      clientX <= rect.right + 6 &&
+      clientY >= rect.top - PILL_OPTIONS_HINT_PAD_TOP_PX &&
+      clientY <= rect.bottom + 6
+    ) {
+      return { address, element }
+    }
+  }
+  return null
+}
+
+/** Left-click on the pill / Options hint — the affordance the hint advertises. */
+export function tryOpenPeerContextMenuFromPillRect(clientX: number, clientY: number): boolean {
+  const hit = findPeerPillRectAt(clientX, clientY)
+  if (!hit) return false
+  peerContextMenuHandler?.(hit.address, clientX, clientY)
+  return true
+}
+
+/**
  * Nearest remote name pill at screen coords — CSS2D pill rectangle (+ Options hint slop).
  */
 export function findInteractiveNameTagNear(

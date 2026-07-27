@@ -285,6 +285,14 @@ export class NameTag {
       contextMenuHandler?.(this.address!, e.clientX, e.clientY)
     })
 
+    // The Options hint advertises a click — honour the obvious gesture, not just
+    // right-click. PlayerInput skips this target, so no camera drag competes.
+    this.rootEl.addEventListener('click', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      contextMenuHandler?.(this.address!, e.clientX, e.clientY)
+    })
+
     this.rootEl.addEventListener('pointerdown', blockCameraInput, true)
     this.rootEl.addEventListener('mousedown', blockCameraInput, true)
     this.rootEl.addEventListener('pointerup', blockCameraInput, true)

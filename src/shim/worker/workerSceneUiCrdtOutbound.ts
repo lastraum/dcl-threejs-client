@@ -29,6 +29,17 @@ export const WORKER_AUTHORITATIVE_COMPONENT_IDS = new Set([
 ])
 
 /**
+ * Host grow-only ids applied by `injectRendererGrowOnlyAppendsOnEngine`.
+ * Must not re-apply via CRDT transport after direct inject — double APPEND doubles
+ * TriggerArea onEnter (Space Runner health −2 per pad) and pointer/video handlers.
+ */
+export const RENDERER_HOST_GROW_ONLY_COMPONENT_IDS = new Set([
+  1061, // TriggerAreaResult
+  1044, // VideoEvent
+  1063 // PointerEventsResult
+])
+
+/**
  * Scene UI LWW ids stripped from cooperative CRDT (phase-4 mount snapshot only).
  *
  * Do NOT include PointerEvents (1062) — PE is shared by world props and UI. Stripping
@@ -444,6 +455,33 @@ function filterWorkerAuthoritativeCrdtBytes(data: Uint8Array): Uint8Array {
 /** Remove worker-authoritative PUT/DELETE — inbound during open pointer session. */
 export function stripWorkerAuthoritativeCrdtBytes(data: Uint8Array): Uint8Array {
   return filterWorkerAuthoritativeCrdtBytes(data)
+}
+
+/**
+ * Drop APPEND_VALUE for host grow-only components already applied via direct inject.
+ * LWW (player/camera transforms, etc.) still rides transport.
+ */
+export function stripRendererHostGrowOnlyAppendsBytes(data: Uint8Array): Uint8Array {
+  if (!data.byteLength) return data
+  const out = new ReadWriteByteBuffer()
+  const readBuf = new ReadWriteByteBuffer(data)
+  let wrote = false
+  try {
+    let msg = readMessage(readBuf)
+    while (msg) {
+      const stripGrowOnly =
+        msg.type === CrdtMessageType.APPEND_VALUE &&
+        RENDERER_HOST_GROW_ONLY_COMPONENT_IDS.has(msg.componentId)
+      if (!stripGrowOnly) {
+        rewriteCrdtMessage(msg, out)
+        wrote = true
+      }
+      msg = readMessage(readBuf)
+    }
+  } catch {
+    return new Uint8Array(0)
+  }
+  return wrote ? out.toBinary() : new Uint8Array(0)
 }
 
 const MAIN_CAMERA_COMPONENT_ID = 1075

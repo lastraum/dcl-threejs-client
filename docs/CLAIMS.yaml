@@ -5,10 +5,46 @@
 # Dev panel Community tab renders this as a single workflow table.
 
 schema_version: 2
-updated: 2026-07-24
+updated: 2026-07-27
 source: github
 base_branch: dev-latest
 workflow:
+  - stage: merged
+    integration_ref: pr:53
+    title: make peer name pills clickable again
+    owner: awedjob
+    pr: 53
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/53
+    updated: 2026-07-26
+  - stage: merged
+    integration_ref: pr:52
+    title: photos tabs on the profile page + modal, consistent rarity tiles
+    owner: awedjob
+    pr: 52
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/52
+    updated: 2026-07-26
+  - stage: merged
+    integration_ref: pr:51
+    title: rest DCL shoes on the ground disc instead of clipping through
+    owner: awedjob
+    pr: 51
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/51
+    updated: 2026-07-26
+  - stage: merged
+    integration_ref: pr:50
+    title: drop duplicate bone tracks and honor the Catalyst loop flag
+    owner: awedjob
+    pr: 50
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/50
+    updated: 2026-07-26
+  - stage: merged
+    integration_ref: pr:48
+    title: item provenance in detail panes + clickable filter chips; official exotic
+      color
+    owner: awedjob
+    pr: 48
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/48
+    updated: 2026-07-25
   - stage: merged
     integration_ref: pr:47
     title: export equipped DCL avatar as VRM 0.0
@@ -108,41 +144,6 @@ workflow:
     pr: 25
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/25
     updated: 2026-07-15
-  - stage: merged
-    integration_ref: pr:23
-    title: base-avatars parity — eyes tab + body-shape switching
-    owner: awedjob
-    pr: 23
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/23
-    updated: 2026-07-14
-  - stage: merged
-    integration_ref: pr:24
-    title: avatar color customization — eyes/hair/skin picker + iris tinting
-    owner: awedjob
-    pr: 24
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/24
-    updated: 2026-07-14
-  - stage: merged
-    integration_ref: pr:22
-    title: "default wearable backfill + face texture (PR #20 + review)"
-    owner: lastraum
-    pr: 22
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/22
-    updated: 2026-07-13
-  - stage: merged
-    integration_ref: pr:17
-    title: scene.json skyboxConfig sun/moon settings
-    owner: awedjob
-    pr: 17
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/17
-    updated: 2026-07-13
-  - stage: merged
-    integration_ref: pr:14
-    title: match Windows paths in yoga nbind esbuild filter
-    owner: awedjob
-    pr: 14
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/14
-    updated: 2026-07-11
   - stage: merged
     integration_ref: ecs:TriggerArea
     title: TriggerArea Tier A — volume enter/exit and scene callbacks

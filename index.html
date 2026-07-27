@@ -987,7 +987,7 @@
       .avatar-name-tag--interactive {
         position: relative;
         pointer-events: auto;
-        cursor: context-menu;
+        cursor: pointer;
         overflow: visible;
         z-index: 2;
       }
@@ -2130,6 +2130,199 @@
         }
       }
 
+
+
+      /* Pets panel — same bottom-left HUD slot as friends */
+      .pets-panel-wrap {
+        position: fixed;
+        left: var(--client-safe-left);
+        right: auto;
+        bottom: var(--client-safe-bottom);
+        top: auto;
+        z-index: var(--z-client-hud-raised);
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        pointer-events: auto;
+        width: var(--client-hud-max-w);
+        max-width: calc(100vw - var(--client-safe-left) - var(--client-safe-right) - 48px);
+        height: var(--client-chat-max-h);
+        max-height: var(--client-chat-max-h);
+        overflow: hidden;
+      }
+      .pets-panel-wrap[hidden] {
+        display: none !important;
+        pointer-events: none !important;
+      }
+      .pets-panel {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        border-radius: 16px;
+        background: rgba(28, 20, 16, 0.94);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        color: #fff;
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+        overflow: hidden;
+        font-family: inherit;
+        box-sizing: border-box;
+      }
+      .pets-panel__header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        padding: 12px 12px 8px 14px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        flex-shrink: 0;
+      }
+      .pets-panel__title {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 650;
+        letter-spacing: 0.02em;
+      }
+      .pets-panel__close {
+        appearance: none;
+        border: 0;
+        background: transparent;
+        color: rgba(255,255,255,0.7);
+        font-size: 22px;
+        line-height: 1;
+        cursor: pointer;
+        padding: 2px 6px;
+      }
+      .pets-panel__close:hover { color: #fff; }
+      .pets-panel__upload {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px 12px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+        flex-shrink: 0;
+      }
+      .pets-panel__cat-row {
+        display: flex;
+        gap: 6px;
+      }
+      .pets-panel__cat {
+        flex: 1;
+        appearance: none;
+        border: 1px solid rgba(255,255,255,0.12);
+        background: rgba(255,255,255,0.04);
+        color: rgba(255,255,255,0.75);
+        border-radius: 8px;
+        padding: 6px 8px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .pets-panel__cat.is-active {
+        background: rgba(255, 45, 85, 0.22);
+        border-color: rgba(255, 45, 85, 0.55);
+        color: #fff;
+      }
+      .pets-panel__upload-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 10px;
+        padding: 8px 12px;
+        background: linear-gradient(135deg, #ff2d55, #ff8a3d);
+        color: #fff;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .pets-panel__hint {
+        margin: 0;
+        padding: 8px 14px 0;
+        font-size: 11px;
+        line-height: 1.35;
+        color: rgba(255,255,255,0.55);
+        flex-shrink: 0;
+      }
+      .pets-panel__status {
+        margin: 6px 14px 0;
+        font-size: 12px;
+        color: #ffb4b4;
+        flex-shrink: 0;
+      }
+      .pets-panel__body {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        padding: 8px 10px 12px;
+      }
+      .pets-panel__empty {
+        padding: 24px 12px;
+        text-align: center;
+        color: rgba(255,255,255,0.5);
+        font-size: 13px;
+      }
+      .pets-panel__row {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px;
+        margin-bottom: 8px;
+        border-radius: 12px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.06);
+      }
+      .pets-panel__row.is-active {
+        border-color: rgba(255, 45, 85, 0.45);
+        background: rgba(255, 45, 85, 0.08);
+      }
+      .pets-panel__row-name {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .pets-panel__row-meta {
+        font-size: 11px;
+        color: rgba(255,255,255,0.5);
+        margin-top: 2px;
+      }
+      .pets-panel__row-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+      .pets-panel__select {
+        appearance: none;
+        border-radius: 8px;
+        border: 1px solid rgba(255,255,255,0.12);
+        background: rgba(0,0,0,0.25);
+        color: #fff;
+        font-size: 11px;
+        padding: 5px 8px;
+      }
+      .pets-panel__btn {
+        appearance: none;
+        border: 1px solid rgba(255,255,255,0.14);
+        background: rgba(255,255,255,0.08);
+        color: #fff;
+        border-radius: 8px;
+        padding: 5px 10px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .pets-panel__btn.is-on {
+        background: rgba(255, 45, 85, 0.28);
+        border-color: rgba(255, 45, 85, 0.5);
+      }
+      .pets-panel__btn--ghost {
+        background: transparent;
+        min-width: 32px;
+      }
+      .pets-panel__btn--danger {
+        background: transparent;
+        color: #ff8f8f;
+        border-color: rgba(255,100,100,0.25);
+        min-width: 32px;
+      }
 
       /* Friends panel — same bottom-left HUD slot as .chat-panel-wrap */
       .friends-panel-wrap {
@@ -4182,25 +4375,146 @@
         grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 10px;
       }
-      .user-profile-modal__wearable {
+      .user-profile-modal__count {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 7px;
+        border-radius: 9px;
+        background: rgba(255, 255, 255, 0.12);
+        color: rgba(255, 255, 255, 0.82);
+        font-size: 10px;
+        letter-spacing: 0.04em;
+      }
+      .user-profile-modal__photos {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+      .user-profile-modal__photo {
+        position: relative;
+        display: block;
+        padding: 0;
+        aspect-ratio: 1;
+        border-radius: 10px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(0, 0, 0, 0.35);
+        cursor: pointer;
+      }
+      .user-profile-modal__photo:hover,
+      .user-profile-modal__photo:focus-visible {
+        border-color: rgba(255, 255, 255, 0.42);
+        outline: none;
+      }
+      .user-profile-modal__photo-img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      .user-profile-modal__photo-img.is-broken {
+        visibility: hidden;
+      }
+      .user-profile-modal__photo-private {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: rgba(0, 0, 0, 0.62);
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.82);
+      }
+      .user-profile-modal__photo-date {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        padding: 10px 6px 4px;
+        background: linear-gradient(to top, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0));
+        color: rgba(255, 255, 255, 0.92);
+        font-size: 9px;
+        font-weight: 600;
+        text-align: left;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        opacity: 0;
+        transition: opacity 0.14s ease;
+      }
+      .user-profile-modal__photo:hover .user-profile-modal__photo-date,
+      .user-profile-modal__photo:focus-visible .user-profile-modal__photo-date {
+        opacity: 1;
+      }
+      .user-profile-modal__photo-skeleton {
+        aspect-ratio: 1;
+        border-radius: 10px;
+        background: linear-gradient(
+          100deg,
+          rgba(255, 255, 255, 0.06) 30%,
+          rgba(255, 255, 255, 0.14) 50%,
+          rgba(255, 255, 255, 0.06) 70%
+        );
+        background-size: 200% 100%;
+        animation: user-profile-modal-shimmer 1.2s ease-in-out infinite;
+      }
+      .user-profile-modal__empty kbd {
+        padding: 1px 5px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.14);
+        font-family: inherit;
+        font-size: 12px;
+      }
+
+      /* Shared equipped-item tile — wearables and emotes, profile modal and
+         profile page. Rarity fills the thumbnail plate (same swatches as the
+         backpack); the name/tier footer stays dark so every tier reads. */
+      .rarity-card {
         border-radius: 12px;
         overflow: hidden;
-        background: var(--wearable-rarity-bg, rgba(0, 0, 0, 0.22));
-        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(0, 0, 0, 0.42);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        min-width: 0;
       }
-      .user-profile-modal__wearable-thumb {
+      .rarity-card__tile {
+        position: relative;
         aspect-ratio: 1;
-        background: rgba(0, 0, 0, 0.18);
+        background: var(--rarity-bg, #6b7280);
         display: grid;
         place-items: center;
       }
-      .user-profile-modal__wearable-thumb img {
-        width: 72%;
-        height: 72%;
+      .rarity-card__img {
+        width: 100%;
+        height: 100%;
         object-fit: contain;
+        object-position: center bottom;
+        padding: 6px;
+        display: block;
       }
-      .user-profile-modal__wearable-name {
-        padding: 6px 8px 2px;
+      .rarity-card__badge {
+        position: absolute;
+        top: 5px;
+        right: 5px;
+        min-width: 18px;
+        padding: 1px 5px;
+        border-radius: 9px;
+        background: rgba(0, 0, 0, 0.62);
+        color: #fff;
+        font-size: 10px;
+        font-weight: 800;
+        line-height: 16px;
+        text-align: center;
+      }
+      .rarity-card__meta {
+        display: grid;
+        gap: 2px;
+        padding: 6px 8px 7px;
+        min-width: 0;
+      }
+      .rarity-card__name {
         font-size: 11px;
         font-weight: 700;
         white-space: nowrap;
@@ -4208,12 +4522,12 @@
         text-overflow: ellipsis;
         color: rgba(255, 255, 255, 0.95);
       }
-      .user-profile-modal__wearable-rarity {
-        padding: 0 8px 8px;
-        font-size: 10px;
+      .rarity-card__rarity {
+        font-size: 9px;
         font-weight: 800;
         letter-spacing: 0.08em;
-        color: var(--wearable-rarity-color, rgba(255, 255, 255, 0.55));
+        text-transform: uppercase;
+        color: var(--rarity-color, rgba(255, 255, 255, 0.55));
       }
       @media (max-width: 767px) {
         .user-profile-modal__body {
@@ -16183,6 +16497,139 @@
         min-height: 200px;
         color: rgba(255, 255, 255, 0.55);
       }
+      .profile-page-view__panel--photos {
+        gap: 20px;
+      }
+      .profile-page-view__photos-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .profile-page-view__photos-title {
+        margin: 0;
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.72);
+      }
+      .profile-page-view__photos-count {
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .profile-page-view__photos-month + .profile-page-view__photos-month {
+        margin-top: 24px;
+      }
+      .profile-page-view__photos-month-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 12px;
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.6);
+      }
+      .profile-page-view__photos-month-count {
+        padding: 1px 7px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.1);
+        font-size: 10px;
+        letter-spacing: 0.04em;
+        color: rgba(255, 255, 255, 0.7);
+      }
+      .profile-page-view__photos-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        gap: 14px;
+      }
+      .profile-page-view__photo {
+        position: relative;
+        margin: 0;
+        padding: 0;
+        aspect-ratio: 16 / 10;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 14px;
+        background: rgba(0, 0, 0, 0.22);
+        overflow: hidden;
+        cursor: pointer;
+        font-family: inherit;
+        color: inherit;
+        transition: border-color 0.15s ease, transform 0.15s ease;
+      }
+      .profile-page-view__photo:hover,
+      .profile-page-view__photo:focus-visible {
+        border-color: rgba(255, 45, 85, 0.45);
+        transform: translateY(-2px);
+        outline: none;
+      }
+      .profile-page-view__photo-img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      .profile-page-view__photo-img.is-broken {
+        visibility: hidden;
+      }
+      .profile-page-view__photo-private {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: rgba(0, 0, 0, 0.62);
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.82);
+      }
+      .profile-page-view__photo-date {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        padding: 18px 10px 8px;
+        background: linear-gradient(to top, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0));
+        color: rgba(255, 255, 255, 0.92);
+        font-size: 10px;
+        font-weight: 700;
+        text-align: left;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        opacity: 0;
+        transition: opacity 0.14s ease;
+      }
+      .profile-page-view__photo:hover .profile-page-view__photo-date,
+      .profile-page-view__photo:focus-visible .profile-page-view__photo-date {
+        opacity: 1;
+      }
+      .profile-page-view__photo-skeleton {
+        aspect-ratio: 16 / 10;
+        border-radius: 14px;
+        background: linear-gradient(
+          100deg,
+          rgba(255, 255, 255, 0.05) 30%,
+          rgba(255, 255, 255, 0.12) 50%,
+          rgba(255, 255, 255, 0.05) 70%
+        );
+        background-size: 200% 100%;
+        animation: user-profile-modal-shimmer 1.2s ease-in-out infinite;
+      }
+      .profile-page-view__empty kbd {
+        padding: 1px 5px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.14);
+        font-family: inherit;
+        font-size: 12px;
+      }
       .profile-page-view__block-head {
         display: flex;
         align-items: center;
@@ -16252,39 +16699,7 @@
         gap: 14px;
         margin-top: 12px;
       }
-      .profile-page-view__wearable {
-        padding: 10px;
-        border-radius: 12px;
-        background: var(--wearable-rarity-bg, rgba(255, 255, 255, 0.06));
-        border: 1px solid rgba(255, 255, 255, 0.08);
-      }
-      .profile-page-view__wearable-thumb {
-        aspect-ratio: 1;
-        border-radius: 10px;
-        overflow: hidden;
-        background: rgba(0, 0, 0, 0.25);
-      }
-      .profile-page-view__wearable-thumb img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        display: block;
-      }
-      .profile-page-view__wearable-name {
-        margin-top: 8px;
-        font-size: 11px;
-        font-weight: 700;
-        line-height: 1.25;
-        color: #fff;
-      }
-      .profile-page-view__wearable-rarity {
-        margin-top: 4px;
-        font-size: 9px;
-        font-weight: 800;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: var(--wearable-rarity-color, rgba(255, 255, 255, 0.55));
-      }
+      /* Equipped tiles render through the shared .rarity-card block above. */
       .profile-page-view__guest {
         max-width: 480px;
         margin: 12vh auto 0;

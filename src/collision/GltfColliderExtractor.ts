@@ -61,6 +61,11 @@ export class GltfColliderExtractor {
   private readonly debugRoot: THREE.Group
   private readonly debugMeshes = new Map<string, THREE.Mesh>()
   private debugFingerprint = ''
+  /** Live GLB `_collider` meshes painted for debug — restore materials when toggle off. */
+  private readonly sourceColliderBackup = new Map<
+    THREE.Mesh,
+    { material: THREE.Material | THREE.Material[]; visible: boolean; renderOrder: number }
+  >()
   private readonly unsubscribeDebug: () => void
   private loggedSyncSummary = false
   /** Dedupe per-entity diagnostics — avoids thousands of repeats on hydration / prewarm passes. */
@@ -92,6 +97,7 @@ export class GltfColliderExtractor {
     this.onRemoved = null
     this.unsubscribeDebug()
     this.landscapeRoot = null
+    this.restoreSourceColliderDebug()
     for (const mesh of this.debugMeshes.values()) {
       mesh.geometry.dispose()
       ;(mesh.material as THREE.Material).dispose()
@@ -485,15 +491,19 @@ export class GltfColliderExtractor {
       // Skinned render meshes are unstable hulls; skinned `_collider` names still extract
       // (bind-pose geo + bone matrixWorld after mixer — rigid door panels under bones).
       const skinned = (node as THREE.SkinnedMesh).isSkinnedMesh === true
-      if (skinned && !isGltfInvisibleColliderMesh(node, gltfRoot)) return
-      if (isGltfVisibleClassMesh(node)) {
-        if (hasVisiblePhysics) colliderMeshes.push(node)
-        return
-      }
-      if (isGltfInvisibleColliderMesh(node, gltfRoot)) {
+      const invClass = isGltfInvisibleColliderMesh(node, gltfRoot)
+      if (skinned && !invClass) return
+      // Ancestry-first (Explorer): `_collider` group children are invisible-class even when
+      // the leaf is named `Floor` / `Wall` without `_collider` in its own name.
+      if (invClass) {
         if (hasInvisiblePhysics) colliderMeshes.push(node)
         return
       }
+      if (isGltfVisibleClassMesh(node, gltfRoot)) {
+        if (hasVisiblePhysics) colliderMeshes.push(node)
+        return
+      }
+      // Unnamed non-collider meshes — only when visible mask requests physics.
       if (hasVisiblePhysics && !skinned) colliderMeshes.push(node)
     })
     return colliderMeshes
@@ -910,7 +920,10 @@ export class GltfColliderExtractor {
     return n
   }
 
-  /** Verbose per-entity lines only with `?colliders`; each entity logged at most once per session. */
+  /**
+   * Per-entity extract summary (once). Always console — mask mis-config and missed
+   * ancestry `_collider` floors are otherwise silent (SpaceRunner lobby floors≈0).
+   */
   private logEntityOnce(
     entity: Entity,
     src: string,
@@ -919,34 +932,55 @@ export class GltfColliderExtractor {
     desc: PhysicsColliderDesc | null,
     gltfMesh: THREE.Object3D
   ): void {
-    if (!physxColliderDebug.isGltfCollidersVisible()) return
     if (this.loggedEntities.has(entity)) return
     this.loggedEntities.add(entity)
 
     const shapeCount = desc?.shapes?.length ?? 0
-    const meshNames = collectMeshNames(gltfMesh)
     const invCount = desc?.shapes?.filter((s) => s.fingerprint.includes(':inv:')).length ?? 0
-    clientDebugLog.log(
-      'collision',
-      `[GltfCollider] e${entity} src="${src}" invisibleMask=${invisibleMask} visibleMask=${visibleMask} → ${shapeCount} trimesh (${invCount} invisible _collider)${shapeCount === 0 ? ` meshes=[${meshNames.join(', ')}]` : ''}`,
-      { alsoConsole: true, throttleKey: `gltf-collider:${entity}` }
-    )
+    const visCount = desc?.shapes?.filter((s) => s.fingerprint.includes(':vis:')).length ?? 0
+    let meshTotal = 0
+    let meshInvClass = 0
+    let meshVisClass = 0
+    gltfMesh.traverse((node) => {
+      if (!(node instanceof THREE.Mesh)) return
+      meshTotal++
+      if (isGltfInvisibleColliderMesh(node, gltfMesh)) meshInvClass++
+      else if (isGltfVisibleClassMesh(node, gltfMesh)) meshVisClass++
+    })
+    const shortSrc = src.length > 64 ? `…${src.slice(-48)}` : src
+    const msg =
+      `[GltfCollider] e${entity} src="${shortSrc}" ` +
+      `mask inv=${invisibleMask} vis=${visibleMask} ` +
+      `meshes=${meshTotal} (invClass=${meshInvClass} visClass=${meshVisClass}) ` +
+      `→ shapes=${shapeCount} (inv=${invCount} vis=${visCount})` +
+      (shapeCount === 0 ? ` names=[${collectMeshNames(gltfMesh).slice(0, 12).join(', ')}]` : '')
+    console.info(msg)
+    clientDebugLog.log('collision', msg, {
+      alsoConsole: false,
+      throttleKey: `gltf-collider:${entity}`
+    })
   }
 
   private syncDebugVisibility(): void {
     if (!physxColliderDebug.isGltfCollidersVisible()) {
       this.clearDebugMeshes()
+      this.restoreSourceColliderDebug()
       return
     }
 
     const descs = this.getPhysicsColliders()
-    const fp = descs
-      .flatMap((desc) => debugWireframeEntries(desc).map((e) => `${e.key}:${colliderPoseFp(e.matrix)}`))
-      .join('|')
-    if (fp === this.debugFingerprint && this.debugMeshes.size > 0) return
-
-    this.debugFingerprint = fp
-    this.rebuildDebugMeshes(descs)
+    const solid = physxColliderDebug.isGltfColliderSolids()
+    const fp =
+      `${solid ? 'solid' : 'wire'}|` +
+      descs
+        .flatMap((desc) => debugWireframeEntries(desc).map((e) => `${e.key}:${colliderPoseFp(e.matrix)}`))
+        .join('|')
+    if (fp !== this.debugFingerprint || this.debugMeshes.size === 0) {
+      this.debugFingerprint = fp
+      this.rebuildDebugMeshes(descs, solid)
+    }
+    // Always re-apply source-mesh tint (GLB re-attach can restore materials).
+    this.applySourceColliderDebug()
   }
 
   private clearDebugMeshes(): void {
@@ -960,7 +994,61 @@ export class GltfColliderExtractor {
     this.debugFingerprint = ''
   }
 
-  private rebuildDebugMeshes(descs: PhysicsColliderDesc[]): void {
+  /**
+   * Paint live GLB `_collider` meshes (source graph) so you see authoring, not only cooked PhysX.
+   * Magenta = invisible-class hulls; restores materials when debug is off.
+   */
+  private applySourceColliderDebug(): void {
+    this.restoreSourceColliderDebug()
+    if (!physxColliderDebug.isGltfCollidersVisible()) return
+
+    let painted = 0
+    for (const state of this.syncState.values()) {
+      const root = state.mesh
+      root.traverse((node) => {
+        if (!(node instanceof THREE.Mesh)) return
+        if (!isGltfInvisibleColliderMesh(node, root)) return
+        if (this.sourceColliderBackup.has(node)) return
+        this.sourceColliderBackup.set(node, {
+          material: node.material,
+          visible: node.visible,
+          renderOrder: node.renderOrder
+        })
+        node.visible = true
+        node.renderOrder = 999
+        node.material = new THREE.MeshBasicMaterial({
+          color: 0xff22aa,
+          transparent: true,
+          opacity: 0.55,
+          side: THREE.DoubleSide,
+          depthTest: true,
+          depthWrite: false
+        })
+        painted++
+      })
+    }
+    if (painted > 0) {
+      console.info(
+        `[GltfCollider] debug source tint — painted ${painted} live _collider mesh(es) (magenta)`
+      )
+    }
+  }
+
+  private restoreSourceColliderDebug(): void {
+    for (const [mesh, prev] of this.sourceColliderBackup) {
+      const mat = mesh.material
+      mesh.material = prev.material
+      mesh.visible = prev.visible
+      mesh.renderOrder = prev.renderOrder
+      if (mat && mat !== prev.material) {
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose())
+        else (mat as THREE.Material).dispose()
+      }
+    }
+    this.sourceColliderBackup.clear()
+  }
+
+  private rebuildDebugMeshes(descs: PhysicsColliderDesc[], solid: boolean): void {
     for (const mesh of this.debugMeshes.values()) {
       mesh.geometry.dispose()
       ;(mesh.material as THREE.Material).dispose()
@@ -973,15 +1061,20 @@ export class GltfColliderExtractor {
       return
     }
 
-    const matFor = (fingerprint: string) =>
-      new THREE.MeshBasicMaterial({
-        color: fingerprint.includes(':inv:') ? 0xff44ff : 0x00ffff,
-        wireframe: true,
+    // Solid filled = deeper than wireframe: volume of cooked PhysX hulls.
+    // Magenta = invisible (_collider) class; cyan = visible-mask physics.
+    const matFor = (fingerprint: string) => {
+      const inv = fingerprint.includes(':inv:')
+      return new THREE.MeshBasicMaterial({
+        color: inv ? 0xff22aa : 0x00e5ff,
+        wireframe: !solid,
         transparent: true,
-        opacity: fingerprint.includes(':inv:') ? 0.35 : 0.25,
-        depthTest: false,
+        opacity: solid ? (inv ? 0.4 : 0.3) : inv ? 0.55 : 0.4,
+        side: THREE.DoubleSide,
+        depthTest: true,
         depthWrite: false
       })
+    }
 
     for (const desc of descs) {
       for (const entry of debugWireframeEntries(desc)) {
@@ -989,6 +1082,7 @@ export class GltfColliderExtractor {
           ? bakeTrimeshGeometry(entry.geometry, entry.matrix)
           : new THREE.BoxGeometry(1, 1, 1)
         const mesh = new THREE.Mesh(geo, matFor(entry.fingerprint))
+        mesh.renderOrder = 998
         this.debugRoot.add(mesh)
         this.debugMeshes.set(entry.key, mesh)
       }
@@ -1003,24 +1097,12 @@ export class GltfColliderExtractor {
     hasVisiblePhysics: boolean,
     hasInvisiblePhysics: boolean
   ): PhysicsColliderDesc | null {
-    const colliderMeshes: THREE.Mesh[] = []
-    gltfRoot.traverse((node) => {
-      if (!(node instanceof THREE.Mesh)) return
-      const skinned = (node as THREE.SkinnedMesh).isSkinnedMesh === true
-      // Allow skinned `_collider` hulls (bone-driven doors); skip skinned render meshes.
-      if (skinned && !isGltfInvisibleColliderMesh(node, gltfRoot)) return
-      // Named visible-class meshes (RickRoll Cube) — honor visible mask only, not _collider ancestry.
-      if (isGltfVisibleClassMesh(node)) {
-        if (hasVisiblePhysics) colliderMeshes.push(node)
-        return
-      }
-      if (isGltfInvisibleColliderMesh(node, gltfRoot)) {
-        if (hasInvisiblePhysics) colliderMeshes.push(node)
-        return
-      }
-      // Unnamed visible-category meshes (common in plaza GLBs) — need explicit CL_PHYSICS on visible mask.
-      if (hasVisiblePhysics && !skinned) colliderMeshes.push(node)
-    })
+    // Same classification as collectColliderMeshes (ancestry-first _collider → inv).
+    const colliderMeshes = this.collectColliderMeshes(
+      gltfRoot,
+      hasVisiblePhysics,
+      hasInvisiblePhysics
+    )
 
     if (!colliderMeshes.length) return null
 
@@ -1039,7 +1121,8 @@ export class GltfColliderExtractor {
 
       _worldMatrix.copy(mesh.matrixWorld).premultiply(_entityInv)
 
-      const fp = `gltf:${isGltfInvisibleColliderMesh(mesh, gltfRoot) ? 'inv' : 'vis'}:${entity}:${shapes.length}:${mesh.name}:${sourceGeo.uuid}`
+      const invClass = isGltfInvisibleColliderMesh(mesh, gltfRoot)
+      const fp = `gltf:${invClass ? 'inv' : 'vis'}:${entity}:${shapes.length}:${mesh.name}:${sourceGeo.uuid}`
 
       // Reference shared AssetCache geometry — PhysX cook clones via bakeTrimeshGeometry.
       shapes.push({

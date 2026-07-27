@@ -1164,15 +1164,7 @@ export class World {
     this.sceneScript.refreshAllInstancedTransforms()
     this.pushAllColliderPosesToPhysX()
     // Register any never-cooked attaches that landed during avatar load.
-    this.discoverMissingColliderActors()
-    {
-      let guard = 0
-      while (this.colliderCookQueue.size > 0 && guard < 48) {
-        await this.drainColliderCookQueue({ mode: 'boot' })
-        guard++
-      }
-    }
-    this.pushAllColliderPosesToPhysX()
+    await this.ensurePrimaryColliderIntegrity('post-avatar', 48)
     this.physics.warmStaticScene()
     await this.player.initCapsule(
       scene.spawn,
@@ -1181,6 +1173,9 @@ export class World {
       onProgress,
       provenFeet
     )
+    // Final integrity after capsule teleport/settle (pose slides must stay solid).
+    await this.ensurePrimaryColliderIntegrity('pre-walk', 24)
+    this.physics.warmStaticScene()
     // Platform gate open — solids prepared before free walk.
     this.collidersReady = true
     this.player.setCollidersReady(true)
@@ -1996,13 +1991,16 @@ export class World {
 
       this.recookAnimatedGltfEntityLocal()
       this.pushAllColliderPosesToPhysX()
-      this.physics.setAllowZeroDtWarmSim(true)
-      this.physics.warmStaticScene()
+      // Never zero-dt simulate after plaza cook — that softs CCT while bounds still look solid.
       this.physics.setAllowZeroDtWarmSim(false)
+      this.physics.warmStaticScene()
 
       this.collidersLoadingComplete = true
       this.spawnColliderSealComplete = true
       this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
+
+      // Integrity: drain any still-missing actors before we claim ready (Genesis soft load).
+      await this.ensurePrimaryColliderIntegrity('prepare-seal', 48)
 
       const staticN = this.physics.staticColliderCount
       const gltfN = this.physics.gltfStaticActorCount
@@ -2024,6 +2022,43 @@ export class World {
       this.sceneScript.setSceneWorkerTicksPaused(false)
       this.sceneScript.setAssetHydrationMode(false)
     }
+  }
+
+  /**
+   * Count primary descs without PhysX actors and boot-cook them. Logs mismatch so
+   * "walls in bounds but ghost walk" is diagnosable. Skips AOI road / empty-land bands.
+   */
+  private async ensurePrimaryColliderIntegrity(
+    label: string,
+    maxPasses: number
+  ): Promise<{ missing: number; registered: number; extracted: number }> {
+    this.sceneScript.flushSceneGraphMatrices()
+    this.sceneScript.refreshAllInstancedTransforms()
+    this.discoverMissingColliderActors()
+    let guard = 0
+    while (this.colliderCookQueue.size > 0 && guard < maxPasses) {
+      await this.drainColliderCookQueue({ mode: 'boot' })
+      guard++
+    }
+    this.pushAllColliderPosesToPhysX()
+    this.physics.refreshStaticAfterRuntimeGeometryChange()
+
+    let missing = 0
+    for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+      if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
+      if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
+      if (this.physics.hasStaticActor(desc.entity)) continue
+      missing++
+    }
+    const registered = this.physics.gltfStaticActorCount
+    const extracted = this.lastGltfColliderCount
+    const level = missing > 8 || (extracted > 50 && registered < extracted * 0.5) ? 'warn' : 'info'
+    const msg =
+      `[phys] integrity ${label} — gltf=${registered}/${extracted} missing=${missing} ` +
+      `pending=${this.colliderCookQueue.size} static=${this.physics.staticColliderCount}`
+    if (level === 'warn') console.warn(msg)
+    else console.info(msg)
+    return { missing, registered, extracted }
   }
 
   /**

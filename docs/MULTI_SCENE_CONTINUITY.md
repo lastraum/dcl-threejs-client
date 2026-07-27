@@ -184,6 +184,21 @@ After adopting sticky → primary: invalidate secondary-offset actors, extract u
 
 ---
 
+## Primary load solids (Genesis Plaza)
+
+Cold plaza load cooks hundreds of multi-shape actors. Known failure mode:
+
+| Symptom | Cause |
+|---------|--------|
+| Log shows walls/floors near feet, but walk-through | Zero-dt `scene.simulate(0)` after bulk cook corrupts CCT query state (actors keep bounds, capsule ignores them) |
+| Soft after avatar load | Late GLB attaches never cooked before `collidersReady` |
+
+Platform rules:
+
+- **Never** `simulate(0)` / `computeInteractions(0)` to warm statics — only CCT cache invalidate.
+- `ensurePrimaryColliderIntegrity` after prepare seal + after avatar + pre-walk drains missing actors before free locomotion.
+- Log `[phys] integrity … missing=` — if missing stays high, treat as P0 soft load.
+
 ## Open follow-ups
 
 - Dual full secondary scripts (e.g. plaza + neighbor both secondary) still expensive — budget is cap + radius, not parcel size; measure under real CBD ring load.

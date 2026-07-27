@@ -1606,21 +1606,19 @@ export class PhysXWorld {
   }
 
   /**
-   * After bulk static registration, optionally run a zero-dt sim + CCT interaction pass so
-   * queries see new actors. Runtime (post-seal) only invalidates the CCT obstacle cache.
+   * After bulk static registration — refresh CCT obstacle cache so move() sees new actors.
+   *
+   * NEVER runs `scene.simulate(0)` / `computeInteractions(0)`. Zero-dt warm on plaza-scale
+   * (hundreds of multi-shape actors) corrupts PhysX WASM query state: actors still report
+   * world bounds (logStaticCollidersNear looks "solid") but CCT walks through walls.
+   * Cache invalidate is enough for the capsule to re-query statics.
    */
   warmStaticScene(): void {
     if (!this.scene) return
     this.ensureInfiniteGroundPlane()
-    if (this.allowZeroDtWarmSim) {
-      try {
-        this.scene.simulate(0)
-        this.scene.fetchResults(true)
-        this.controllerManager?.computeInteractions(0)
-      } catch (err) {
-        console.warn('[PhysXWorld] warmStaticScene failed:', err)
-      }
-    }
+    // allowZeroDtWarmSim kept for callers that still toggle it around boot seal —
+    // intentionally ignored (simulate(0) path removed).
+    void this.allowZeroDtWarmSim
     this.invalidateControllerCache()
   }
 

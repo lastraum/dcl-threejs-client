@@ -3666,10 +3666,33 @@ export class World {
         newScene.baseParcel
       )
       if (demoted) {
+        // Platform continuity: remapped colliders under secondary phys offset are already
+        // captured on the sticky slot. Invalidate native primary ids only AFTER we have
+        // the remapped snapshot — then push remapped into PhysX so plaza walk stays solid.
+        const remapped = multi.collectResidentColliders()
         for (const id of demoted.primaryPhysIds) {
           this.physics.invalidateStaticCollider(id)
         }
-        // Demoted re-registers colliders under secondary offset on multi-scene tick.
+        if (remapped.length > 0) {
+          try {
+            this.physics.syncStaticColliders(remapped, {
+              cookBudget: Math.min(64, remapped.length),
+              freezeRemoval: true,
+              forceRecookOnPoseChange: false,
+              geometryCache: true
+            })
+            console.info(
+              `[promote] sticky colliders kept “${oldScene.title}” remapped=${remapped.length} ` +
+                `(invalidated native=${demoted.primaryPhysIds.length})`
+            )
+          } catch (err) {
+            console.warn('[promote] sticky collider keep failed', err)
+          }
+        } else {
+          console.warn(
+            `[promote] sticky colliders EMPTY “${oldScene.title}” — plaza PhysX may void until recook`
+          )
+        }
         console.info(
           `[promote] prior primary sticky resident “${oldScene.title}” parcels=${oldScene.parcels?.length ?? '?'} ` +
             `base=${oldScene.baseParcel} → offset vs ${newScene.baseParcel}`
@@ -3861,8 +3884,24 @@ export class World {
     }
     if (oldScene?.baseParcel) residentKeys.add(oldScene.baseParcel.trim())
     this.aoiVisual.setResidentParcelKeys([...residentKeys])
-    // Re-assert demoted offsets after origin + primary SW change.
+    // Re-assert demoted offsets after origin + primary SW change (also recaptures colliders).
     multi.notifyPrimaryChanged(newScene)
+    // Push retargeted sticky colliders into PhysX again (root moved with new primary SW).
+    {
+      const remapped = multi.collectResidentColliders()
+      if (remapped.length > 0) {
+        try {
+          this.physics.syncStaticColliders(remapped, {
+            cookBudget: Math.min(64, remapped.length),
+            freezeRemoval: true,
+            forceRecookOnPoseChange: true,
+            geometryCache: true
+          })
+        } catch (err) {
+          console.warn('[promote] sticky collider retarget sync failed', err)
+        }
+      }
+    }
 
     // AOI: retarget with CORRECTED local feet (after restore) — no unbind wipe.
     // Kill live secondary reconcile during settle (dual-worker freeze). Visuals OK.
@@ -3888,12 +3927,33 @@ export class World {
         `newPrimary="${newScene.title}" base=${newScene.baseParcel} soft=${softPx},${softPy}`
     )
 
-    // Re-cook colliders under primary entity ids.
+    // Re-cook colliders under primary entity ids (walk-back from sticky tertiary).
+    // Prefer force full extract so Missing-actors queue does not leave 2fps void floors.
     this.colliderCookQueue.clear()
-    this.sceneScript.syncCollisionForce()
+    try {
+      this.sceneScript.syncCollisionForce()
+    } catch (err) {
+      console.warn('[promote] primary syncCollisionForce failed', err)
+    }
     this.reconcileColliderCookQueue()
     if (this.colliderCookQueue.size > 0) {
+      // Drain more aggressively after handoff — plaza recook must not trickle at 2fps.
       void this.scheduleColliderCookDrain()
+      // Immediate extra drain pass if available
+      try {
+        const descs = this.sceneScript.getAllPhysicsColliderDescs?.() ?? []
+        if (descs.length > 0) {
+          this.physics.syncStaticColliders(descs, {
+            cookBudget: Math.min(128, descs.length),
+            freezeRemoval: true,
+            forceRecookOnPoseChange: false,
+            geometryCache: true
+          })
+          console.info(`[promote] primary colliders force-sync n=${descs.length}`)
+        }
+      } catch {
+        /* optional API */
+      }
     }
 
     // Longer settle: dual full workers after walk-back thrash freeze locomotion.

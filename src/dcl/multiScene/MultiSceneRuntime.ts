@@ -73,6 +73,11 @@ export class MultiSceneRuntime {
     this.secondary?.ensureResidentsVisible()
   }
 
+  /** Sticky/live secondary-offset colliders for immediate PhysX keep-alive after demote. */
+  collectResidentColliders(): import('../../physics/PhysXWorld').PhysicsColliderDesc[] {
+    return this.secondary?.collectAllCachedColliders() ?? []
+  }
+
   get secondaryManager(): SecondaryLiveManager | null {
     return this.secondary
   }

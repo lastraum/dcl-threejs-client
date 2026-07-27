@@ -64,8 +64,14 @@ export class SceneWorkerSlot {
   private running = false
   private readonly adopted: boolean
   private mode: ResidentMode
-  /** Phys ids we registered (with offset) — invalidate on dispose. */
+  /** Phys ids we registered (with offset) — invalidate on dispose / promote. */
   private readonly registeredPhysIds = new Set<number>()
+  /**
+   * Last remapped collider snapshot (secondary-offset entity ids).
+   * Tertiary keeps returning this so demote never drops plaza PhysX into the void
+   * (Missing actors + 2fps recook storm on walk-back).
+   */
+  private lastRemappedColliders: PhysicsColliderDesc[] = []
   private primaryBaseParcel: string
   private readonly host: SceneHost
 
@@ -241,14 +247,27 @@ export class SceneWorkerSlot {
       }
       this.running = true
       this.lastTickAt = performance.now()
+      // Capture colliders under secondary phys offset BEFORE tertiary skips recook.
+      // World will invalidate native primary ids next — without this, plaza colliders vanish.
+      try {
+        this.system.syncCollisionForce()
+      } catch {
+        /* optional */
+      }
+      this.captureRemappedColliders()
       // Apply initial mode (large demotes often tertiary for FPS).
       this.setResidentMode(this.mode)
-      // Re-bake origin after mode visuals (descendant freeze must not lose root offset).
+      // Re-bake origin after mode visuals.
       this.applySceneOriginOffset()
+      // Origin change can shift mesh-local colliders — recapture once after offset.
+      if (this.mode !== 'tertiary') {
+        this.captureRemappedColliders()
+      }
       console.info(
         `[multi-scene] demoted primary → resident “${scene.title}” mode=${this.mode} ` +
           `base=${scene.baseParcel} vs primary=${this.primaryBaseParcel || '?'} ` +
-          `rootPos=(${root?.position.x.toFixed(1) ?? '?'},${root?.position.z.toFixed(1) ?? '?'})`
+          `rootPos=(${root?.position.x.toFixed(1) ?? '?'},${root?.position.z.toFixed(1) ?? '?'}) ` +
+          `colliders=${this.lastRemappedColliders.length}`
       )
       return
     }
@@ -381,9 +400,9 @@ export class SceneWorkerSlot {
     cache: AssetCache
   ): Promise<PhysicsColliderDesc[]> {
     if (!this.running || this.disposed || this.detached) return []
-    // Tertiary: no projection thrash; keep last collider map if any.
+    // Tertiary: no projection thrash — return frozen remapped colliders (keep PhysX).
     if (this.mode === 'tertiary') {
-      return this.collectRemappedColliders()
+      return this.lastRemappedColliders
     }
     cache.setScene(this.scene)
     try {
@@ -392,20 +411,21 @@ export class SceneWorkerSlot {
         this.system.syncCollision()
       }
       await this.system.syncAsyncBridges()
-      return this.collectRemappedColliders()
+      return this.captureRemappedColliders()
     } finally {
       if (primaryScene) cache.setScene(primaryScene)
     }
   }
 
-  collectRemappedColliders(): PhysicsColliderDesc[] {
-    if (this.disposed || this.detached) return []
-    if (this.mode === 'tertiary') {
-      // Keep previously registered phys ids; avoid re-cook storm for LOD shells.
-      return []
-    }
+  /**
+   * Build/refresh remapped collider descs under this slot's phys offset.
+   * Always updates {@link lastRemappedColliders} + {@link registeredPhysIds}.
+   */
+  captureRemappedColliders(): PhysicsColliderDesc[] {
+    if (this.disposed || this.detached) return this.lastRemappedColliders
     const raw = this.system.getAllPhysicsColliderDescs()
     const out: PhysicsColliderDesc[] = []
+    this.registeredPhysIds.clear()
     for (const d of raw) {
       const entity = d.entity + this.physOffset
       this.registeredPhysIds.add(entity)
@@ -415,7 +435,19 @@ export class SceneWorkerSlot {
         fingerprint: `ms:${this.kind}:${this.id.slice(0, 12)}:${d.fingerprint}`
       })
     }
+    this.lastRemappedColliders = out
     return out
+  }
+
+  /** @deprecated prefer captureRemappedColliders / lastRemapped snapshot */
+  collectRemappedColliders(): PhysicsColliderDesc[] {
+    if (this.mode === 'tertiary') return this.lastRemappedColliders
+    return this.captureRemappedColliders()
+  }
+
+  /** Cached colliders for immediate World PhysX sync after demote (before next tick). */
+  getCachedRemappedColliders(): readonly PhysicsColliderDesc[] {
+    return this.lastRemappedColliders
   }
 
   registeredPhysicsEntities(): ReadonlySet<number> {

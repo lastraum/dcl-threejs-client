@@ -85,6 +85,14 @@ export class SecondaryLiveManager {
     const base = scene.baseParcel
     for (const slot of this.slots.values()) {
       slot.retargetPrimaryBase(base)
+      // Root offset changed → recapture PhysX descs under secondary namespace
+      // (tertiary freezes scripts but colliders must stay solid).
+      try {
+        slot.system.syncCollisionForce()
+        slot.captureRemappedColliders()
+      } catch {
+        /* optional during teardown */
+      }
     }
   }
 
@@ -164,6 +172,18 @@ export class SecondaryLiveManager {
         /* ignore */
       }
     }
+  }
+
+  /**
+   * All sticky/live remapped colliders for immediate PhysX sync after demote
+   * (must land before World invalidates native primary entity ids).
+   */
+  collectAllCachedColliders(): PhysicsColliderDesc[] {
+    const out: PhysicsColliderDesc[] = []
+    for (const slot of this.slots.values()) {
+      out.push(...slot.getCachedRemappedColliders())
+    }
+    return out
   }
 
   /** Continuity assert after demote — mesh count + root pose for logs. */

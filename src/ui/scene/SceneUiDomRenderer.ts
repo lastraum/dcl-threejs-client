@@ -482,6 +482,8 @@ export class SceneUiDomRenderer {
     const radius = borderRadiusCss(transform, scale)
     const layoutBox = input.layoutBoxes.get(entity)
     if (!layoutBox || layoutBox.width <= 0.5 || layoutBox.height <= 0.5) {
+      // Collapsed yoga box — hide shell AND entire subtree. Painting children as
+      // canvas-absolute orphans scattered fishing shop icons across the 3D view.
       this.applyHiddenDomState(shell)
       shell.dataset.uiUnusable = '1'
       if (
@@ -496,12 +498,18 @@ export class SceneUiDomRenderer {
           console.warn(`[scene-ui] yoga box unusable for mounted entity ${entity} (${size})`)
         }
       }
-      // Children may still have usable canvas-absolute boxes — paint them via host (not
-      // nested under this 0×0 shell). resolveDomParent reads dataset.uiUnusable.
-      const children = input.forest.get(entity) ?? []
-      for (const child of children) {
-        this.renderEntityTree(child, input, alive, visited, depth + 1, regions, scale)
+      const hideSubtree = (e: Entity): void => {
+        for (const child of input.forest.get(e) ?? []) {
+          visited.add(child)
+          const node = this.nodes.get(child)
+          if (node) {
+            this.applyHiddenDomState(node)
+            node.dataset.uiUnusable = '1'
+          }
+          hideSubtree(child)
+        }
       }
+      hideSubtree(entity)
       return
     }
 
@@ -516,9 +524,8 @@ export class SceneUiDomRenderer {
     shell.removeAttribute('aria-hidden')
 
     // Clip on shell — child UiEntity shells nest under the parent shell (siblings of
-    // .scene-ui-node__content), so content-only overflow/radius never rounded the minimap.
-    // Large absolute panels (shop/inventory) without overflow:hidden leak absolute kids
-    // across the screen — treat big backgrounds as clipped unless author set visible.
+    // .scene-ui-node__content). Default overflow is VISIBLE (0); large absolute shop
+    // panels MUST clip or inventory icons paint over the whole 3D view.
     const largePanel =
       layoutBox.width >= 200 &&
       layoutBox.height >= 200 &&
@@ -527,16 +534,10 @@ export class SceneUiDomRenderer {
       !!radius ||
       transform.overflow === YGOverflow.HIDDEN ||
       transform.overflow === YGOverflow.SCROLL ||
-      (largePanel && transform.overflow !== YGOverflow.VISIBLE)
-    if (radius || clipShell) {
-      if (radius) {
-        shell.style.borderRadius = radius
-        el.style.borderRadius = radius
-      } else {
-        shell.style.borderRadius = ''
-        el.style.borderRadius = ''
-      }
-      el.style.overflow = clipShell ? 'hidden' : ''
+      largePanel
+    if (radius) {
+      shell.style.borderRadius = radius
+      el.style.borderRadius = radius
     } else {
       shell.style.borderRadius = ''
       el.style.borderRadius = ''

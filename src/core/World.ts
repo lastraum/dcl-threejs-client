@@ -1213,6 +1213,24 @@ export class World {
           : '') +
         (pos ? ` feet=(${pos.x.toFixed(1)}, ${pos.y.toFixed(1)}, ${pos.z.toFixed(1)})` : '')
     )
+    // Clear auth banner for fishing / SignedFetch debugging.
+    {
+      const addr = this.session.getAddress()
+      const id = this.session.getAuthIdentity()
+      const prof = this.session.getProfile()
+      console.info(
+        `[auth] play-ready address=${addr ? addr.slice(0, 12) + '…' : 'NONE'} ` +
+          `identity=${id ? 'yes' : 'NO'} guest=${this.loginIsGuest} ` +
+          `displayName=${prof?.displayName ?? 'null'} ` +
+          `hasConnectedWeb3=${!!addr && !this.loginIsGuest} ` +
+          `signedFetchCtx=${this.signedFetchSceneContext?.sceneId ? 'yes' : 'NO'}`
+      )
+      if (!id) {
+        console.warn(
+          '[auth] No AuthIdentity — scene SignedFetch will be unsigned; fishing Colyseus auth will fail'
+        )
+      }
+    }
     if (worldFeet) {
       this.physics.logStaticCollidersNear(worldFeet.x, worldFeet.y, worldFeet.z, 16)
       // Follow /goto: island peers often joined before capsule existed (invisible roots).
@@ -1932,10 +1950,17 @@ export class World {
         if (this.physics.isAoiEmptyLandColliderEntity(d.entity)) continue
         if (!this.physics.hasStaticActor(d.entity)) missing++
       }
-      if (missing > 0 || staticN !== this.lastLoggedStaticCount) {
+      const ground = this.physics.getLastGroundPhysEntity()
+      const feet = this.player?.getWorldPosition()
+      if (missing > 0 || staticN !== this.lastLoggedStaticCount || now - this.lastColliderHealthLogMs < 50) {
         console.info(
           `[phys] health static=${staticN} extracted≈${extracted} missing≈${missing} ` +
-            `queue=${this.colliderCookQueue.size} seal=${this.spawnColliderSealComplete}`
+            `queue=${this.colliderCookQueue.size} seal=${this.spawnColliderSealComplete} ` +
+            `groundPhys=${ground ?? 'none'} feet=${
+              feet
+                ? `(${feet.x.toFixed(1)},${feet.y.toFixed(2)},${feet.z.toFixed(1)})`
+                : '?'
+            }`
         )
       }
       this.lastLoggedStaticCount = staticN
@@ -4628,9 +4653,20 @@ export class World {
     return { data: sent }
   }
 
+  private buildUserDataLogged = false
+
   private buildUserData() {
     const address = this.session.getAddress()
     const profile = this.session.getProfile()
+    const identity = this.session.getAuthIdentity()
+    if (!this.buildUserDataLogged) {
+      this.buildUserDataLogged = true
+      console.info(
+        `[auth] getUserData address=${address ? address.slice(0, 12) + '…' : 'NONE'} ` +
+          `identity=${identity ? 'yes' : 'NO'} guest=${this.loginIsGuest} ` +
+          `displayName=${profile?.displayName ?? (address ? 'wallet' : 'Guest')}`
+      )
+    }
     if (!address) {
       const guestId = getOrCreateGuestAddress()
       return {
@@ -4647,7 +4683,8 @@ export class World {
       data: {
         displayName: profile?.displayName ?? shortenAddress(address),
         publicKey: address,
-        hasConnectedWeb3: true,
+        // Guest wallet-less identity still has address but not Web3.
+        hasConnectedWeb3: !this.loginIsGuest,
         userId: address,
         version: 1,
         avatar: profile

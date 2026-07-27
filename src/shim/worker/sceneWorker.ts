@@ -1239,9 +1239,14 @@ initSceneEngineScheduler({
     pointerUiMountEgressPending = true
   },
   postUiMountSnapshot: (snapshot, mountEntityIds) => {
+    // Prefer explicit full mount list — empty is valid (welcome unmount → mount=[]).
+    // Skipping empty left main with ghost PE catchers (hand cursor after visual dissolve).
     const uiEntities =
-      mountEntityIds.length > 0 ? mountEntityIds : extractSnapshotMountEntityIds(snapshot)
-    if (!uiEntities.length && !snapshot.length) return
+      mountEntityIds.length > 0
+        ? mountEntityIds
+        : snapshot.length > 0
+          ? extractSnapshotMountEntityIds(snapshot)
+          : []
     lastOutboundUiEntitiesKey = uiEntities.join(',')
     logSceneUiOutbound(new Uint8Array(0), uiEntities, snapshot.length)
     ctx.postMessage({

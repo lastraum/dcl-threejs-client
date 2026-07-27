@@ -2536,7 +2536,7 @@ export class SceneScriptSystem {
           }
           this.foldProjectionChanges()
         }
-        if (latestUiMountSnapshot?.length) {
+        if (latestUiMountSnapshot !== undefined && latestUiMountSnapshot.length > 0) {
           projectionDeletes.length = 0
           this.projection.changes.length = 0
           this.sceneUiBridge?.ingestMountSnapshot(latestUiMountSnapshot)
@@ -2550,7 +2550,9 @@ export class SceneScriptSystem {
           batchTouchesUi = true
           this.foldProjectionChanges()
         } else if (hasUiMountSnapshot) {
+          // Empty mount snapshot (welcome unmount) — still touch UI so commitMountSet([]) runs.
           projectionDeletes.length = 0
+          this.sceneUiBridge?.ingestMountSnapshot([])
           batchTouchesUi = true
         }
       } finally {
@@ -2791,16 +2793,28 @@ export class SceneScriptSystem {
 
   private purgeProjectionUiOutsideWorkerMount(): void {
     const workerSet = this.sceneUiBridge?.getWorkerUiEntities()
-    if (!workerSet?.size) return
-    const { UiTransform, UiText, UiBackground, UiInput, UiDropdown } = this.readComponents
-    // Never purge PointerEvents here — world props share PE and live outside the UI mount set.
-    this.projection.purgeEntitiesOutsideSet(workerSet, [
+    // null = mount never committed; empty Set = worker has zero UiTransform (welcome unmount).
+    if (workerSet == null) return
+    const { UiTransform, UiText, UiBackground, UiInput, UiDropdown, PointerEvents } =
+      this.readComponents
+    const uiIds = [
       UiTransform.componentId,
       UiText.componentId,
       UiBackground.componentId,
       UiInput.componentId,
       UiDropdown.componentId
-    ])
+    ]
+    // PE only on UI ghosts (had UiTransform, left mount). World mesh PE has no UiTransform
+    // in the UI mount set path — never purge PE globally by "outside mount".
+    const uiGhosts = new Set<Entity>()
+    for (const [entity] of this.view.getEntitiesWith(UiTransform)) {
+      if (!workerSet.has(entity)) uiGhosts.add(entity)
+    }
+    if (uiGhosts.size > 0) {
+      this.projection.clearLwwSlotsForEntities(uiGhosts, [...uiIds, PointerEvents.componentId])
+    }
+    // Drop any remaining Ui* rows outside the worker mount (empty mount → purge all Ui*).
+    this.projection.purgeEntitiesOutsideSet(workerSet, uiIds)
   }
 
   /**

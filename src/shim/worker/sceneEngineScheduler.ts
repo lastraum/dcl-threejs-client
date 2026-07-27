@@ -383,7 +383,8 @@ async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
     : undefined
   const snapshot = collectWorkerUiMountSnapshot(eng, dirtyOnly)
   commitSceneUiCrdtBaseline(eng)
-  if (!mountEntityIds.length && !snapshot.length) return
+  // Always post — including mount=[] + empty rows when react-ecs unmounts the last UI
+  // (CBD welcome: Hr<=0 → return null). Skipping empty left main PE/DOM ghosts.
   const mode = cfg.isHydration() ? 'hydration' : 'play'
   let texSamples = 0
   for (const row of snapshot) {
@@ -394,7 +395,8 @@ async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
   cfg.log(
     `[sceneWorker] ui dirty snapshot — mount=${mountEntityIds.length} rows=${snapshot.length}` +
       `${partial ? ' partial' : ' full'} mode=${mode}` +
-      (texSamples > 0 ? ` bgTextures=${texSamples}` : '')
+      (texSamples > 0 ? ` bgTextures=${texSamples}` : '') +
+      (mountEntityIds.length === 0 ? ' emptyMount' : '')
   )
   if (cfg.postUiMountSnapshot) {
     cfg.postUiMountSnapshot(snapshot, mountEntityIds)

@@ -127,7 +127,7 @@ export class DebugPanel {
         </label>
         <label class="debug-panel__check debug-panel__check--log">
           <input type="checkbox" data-console-mirror />
-          <span>Mirror panel → browser console</span>
+          <span>Mirror → browser console (<code>?consolelogs</code>)</span>
         </label>
         <div class="debug-panel__logs-body" role="log" aria-live="polite"></div>
       </div>

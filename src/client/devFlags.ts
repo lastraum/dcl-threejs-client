@@ -35,6 +35,24 @@ export function usePerfDebug(): boolean {
 }
 
 /**
+ * Force every `clientDebugLog` / `consoleOnly` line into the browser devtools console.
+ * Opt-in for hang diagnosis when Help → Debug mirror is off.
+ *
+ * `?consolelogs` · `?debugconsole` · `?consolelog` · `?logs`
+ * Also: localStorage `dcl.debug.consoleMirror=1` or Help → “Mirror panel → browser console”.
+ */
+export function wantConsoleLogs(): boolean {
+  const params = readSearchParams()
+  if (!params) return false
+  return (
+    params.has('consolelogs') ||
+    params.has('debugconsole') ||
+    params.has('consolelog') ||
+    params.has('logs')
+  )
+}
+
+/**
  * Kill multi-scene AOI: no neighbor visuals, live secondaries, or promote.
  * Primary scene only. Use for CBD isolation: `?noaoi=1`.
  *

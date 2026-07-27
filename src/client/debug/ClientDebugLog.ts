@@ -14,9 +14,8 @@ export type DebugLogOptions = {
   throttleMs?: number
   throttleKey?: string
   /**
-   * Legacy flag — ignored for console output.
-   * Browser console is controlled only by {@link ClientDebugLog.setConsoleMirror}
-   * (Help → Debug checkbox; default on in Vite DEV, off in prod builds).
+   * Force this line to the browser console even when global mirror is off.
+   * Global always-on: `?consolelogs` / Help → “Mirror panel → browser console”.
    */
   alsoConsole?: boolean
 }
@@ -39,11 +38,28 @@ const ALL_CLIENT_LOGS_KEY = 'dcl.debug.allClientLogs'
 const PANEL_RECORD_KEY = 'dcl.debug.panelRecord'
 
 /**
- * Browser console is **opt-in only** (Help → Debug “Browser console logs”).
- * Never default on — verbose paths (voice, FPS, odk-net, compose) must stay quiet
- * until the user enables them; logging itself can tank FPS with many remotes.
+ * Browser console is **opt-in only** unless `?consolelogs` (or aliases) is set.
+ * Verbose paths (voice, FPS, odk-net, compose) stay quiet until the user enables them —
+ * logging itself can tank FPS with many remotes.
  */
+function wantConsoleLogsFromUrl(): boolean {
+  if (typeof window === 'undefined') return false
+  try {
+    const p = new URLSearchParams(window.location.search)
+    return (
+      p.has('consolelogs') ||
+      p.has('debugconsole') ||
+      p.has('consolelog') ||
+      p.has('logs')
+    )
+  } catch {
+    return false
+  }
+}
+
 function defaultConsoleMirror(): boolean {
+  // URL flag wins over quiet defaults — hang diagnosis without Help panel clicks.
+  if (wantConsoleLogsFromUrl()) return true
   return false
 }
 
@@ -121,16 +137,29 @@ export class ClientDebugLog {
 
   constructor() {
     if (this.consoleCapture) this.installConsoleHook()
+    // URL `?consolelogs` also unlocks silenced categories (comms, etc.).
+    if (wantConsoleLogsFromUrl()) {
+      this.allClientLogs = true
+      // One boot breadcrumb so it's obvious the flag took effect.
+      try {
+        console.info(
+          '[debug] ?consolelogs — clientDebugLog → browser console (all categories)'
+        )
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
-  /** Help → Debug “Browser console logs”. Default on in local DEV, off in prod. */
+  /** Help → Debug “Mirror panel → browser console”. Also forced by `?consolelogs`. */
   setConsoleMirror(enabled: boolean): void {
     this.consoleMirror = !!enabled
     writeBoolPref(CONSOLE_MIRROR_KEY, this.consoleMirror)
   }
 
   isConsoleMirror(): boolean {
-    return this.consoleMirror
+    // URL flag always wins for the session (checkbox cannot mute `?consolelogs`).
+    return this.consoleMirror || wantConsoleLogsFromUrl()
   }
 
   /**
@@ -175,11 +204,17 @@ export class ClientDebugLog {
   }
 
   log(category: string, message: string, options: DebugLogOptions = {}): void {
-    // Silenced categories stay out unless “all categories” is on.
-    const silenced = !this.allClientLogs && SILENCED_CATEGORIES.has(category)
+    const mirror = this.isConsoleMirror()
+    // Silenced categories stay out unless “all categories” is on (or URL ?consolelogs).
+    const silenced =
+      !this.allClientLogs && !wantConsoleLogsFromUrl() && SILENCED_CATEGORIES.has(category)
     if (silenced) {
-      // Still allow console mirror for non-panel path when mirror is on and panel is on?
-      return
+      // Still allow alsoConsole force-print for critical paths.
+      if (options.alsoConsole || mirror) {
+        /* fall through after throttle for console-only */
+      } else {
+        return
+      }
     }
 
     const level = options.level ?? 'info'
@@ -193,11 +228,12 @@ export class ClientDebugLog {
     }
 
     // Panel stays empty until user opts in (Record client logs).
-    if (this.panelRecord) {
+    if (this.panelRecord && !silenced) {
       this.pushEntry(category, level, message)
     }
 
-    if (this.consoleMirror) {
+    // Mirror: global flag / Help checkbox, or per-call alsoConsole.
+    if (mirror || options.alsoConsole) {
       this.writingConsole = true
       try {
         const prefix = `[${category}]`
@@ -272,11 +308,11 @@ export class ClientDebugLog {
 
   /**
    * Optional browser-console line (boot/noise). No-ops unless console mirror is on
-   * (default on in local DEV).
+   * (`?consolelogs` / Help checkbox / localStorage).
    * Prefer {@link log} so lines also land in the Help panel.
    */
   consoleOnly(level: 'log' | 'info' | 'warn' | 'error', ...args: unknown[]): void {
-    if (!this.consoleMirror) return
+    if (!this.isConsoleMirror()) return
     if (level === 'warn') console.warn(...args)
     else if (level === 'error') console.error(...args)
     else console.info(...args)

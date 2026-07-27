@@ -1660,22 +1660,37 @@ export class PhysXWorld {
   }
 
   /**
-   * Call once after seal: freezes remove+add SQ reinsert and full tree rebuild.
-   * Pose slides still update actor global pose; CCT cache invalidate is enough for static plaza.
+   * Call once after seal: freezes bulk remove+add reinsert and full tree rebuild.
+   *
+   * CRITICAL (Genesis Plaza / large scenes): forceDynamicTreeRebuild on 700+ statics
+   * corrupts PhysX WASM query state → sweepFeetY=MISS / walk-through while
+   * logStaticCollidersNear still lists walls (map has actors; SQ tree is dead).
+   * Small scenes may still rebuild safely.
    */
   sealStaticSceneQuery(): void {
-    this.allowStaticReinsert = false
     this.allowZeroDtWarmSim = false
-    // One final tree rebuild while SQ is still healthy — then never again.
-    if (this.scene) {
+    const n = this.staticActors.size
+    // Plaza-scale: never forceDynamicTreeRebuild — it is the MISS root cause.
+    // Actors already enter SQ via addActor during cook; CCT cache invalidate is enough.
+    const PLAZA_SQ_REBUILD_CAP = 400
+    if (this.scene && n > 0 && n <= PLAZA_SQ_REBUILD_CAP) {
       try {
         this.scene.forceDynamicTreeRebuild(true, false)
       } catch (err) {
         console.warn('[PhysXWorld] sealStaticSceneQuery rebuild failed:', err)
       }
+    } else if (n > PLAZA_SQ_REBUILD_CAP) {
+      console.info(
+        `[PhysXWorld] static SQ seal — skip forceDynamicTreeRebuild (static=${n} > ${PLAZA_SQ_REBUILD_CAP}; plaza-safe)`
+      )
     }
+    // Freeze bulk reinsert thrash, but late single-actor cooks still reinsert (see addStatic).
+    this.allowStaticReinsert = false
+    this.ensureInfiniteGroundPlane()
     this.invalidateControllerCache()
-    console.info('[PhysXWorld] static SQ sealed — no further reinsert/rebuild (CCT stickiness)')
+    console.info(
+      `[PhysXWorld] static SQ sealed — static=${n} rebuild=${n <= PLAZA_SQ_REBUILD_CAP ? 'yes' : 'skipped'}`
+    )
   }
 
   /**
@@ -3545,6 +3560,17 @@ export class PhysXWorld {
     this.scene.addActor(actor)
     this.staticActors.set(desc.entity, actor)
     this.registerStaticActor(desc.entity, actor)
+    // After seal, allowStaticReinsert is false so reinsertStaticActor no-ops — but a
+    // brand-new actor must still land in SQ. Double-add is a no-op; remove+add once
+    // refreshes bounds without a full tree rebuild (plaza-safe late AOI cooks).
+    if (!this.allowStaticReinsert && this.scene) {
+      try {
+        this.scene.removeActor(actor)
+        this.scene.addActor(actor)
+      } catch {
+        /* already in scene */
+      }
+    }
     return true
   }
 

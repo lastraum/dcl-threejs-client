@@ -2332,9 +2332,8 @@ export class World {
       await this.ensurePrimaryColliderIntegrity('prepare-seal', 96)
 
       this.pushAllColliderPosesToPhysX()
-      // Bulk multi-shape cooks leave SQ bounds stale — reinsert all, then one seal rebuild.
-      // Without reinsert: static=1100 in maps but sweepFeetY=MISS (plaza walk-through only).
-      const reinserted = this.physics.reinsertAllStaticActorsForSceneQuery()
+      // Plaza: do NOT reinsert-all + forceDynamicTreeRebuild (corrupts SQ → MISS).
+      // addActor during cook already registers actors; seal only freezes thrash.
       this.physics.warmStaticScene()
       this.physics.sealStaticSceneQuery()
 
@@ -2348,7 +2347,7 @@ export class World {
       const elapsed = ((performance.now() - started) / 1000).toFixed(1)
       console.info(
         `[phys] colliders ready — static=${staticN} gltf=${gltfN}/${extracted} ` +
-          `pending=${this.colliderCookQueue.size} reinsert=${reinserted} sealedSQ=true (${elapsed}s)`
+          `pending=${this.colliderCookQueue.size} sealedSQ=true (${elapsed}s)`
       )
       this.physics.logStaticCollidersNear(
         this.colliderCookPriority.x,

@@ -257,10 +257,12 @@ export class VideoPlayerBridge {
         now - entry.lastEventAtMs > 1000
       const stateChanged = hardChange || softChange
       const lengthChanged = Math.abs(videoLength - entry.lastLength) > 0.25 && videoLength > 0
+      // Offset-only heartbeats: max ~1Hz. Every 400ms was flooding grow-only CRDT during
+      // fishing cast (renderer-append-deliver videoEvent=1) and stealing frame time.
       const offsetChanged =
-        Math.abs(currentOffset - entry.lastOffset) > 0.5 && now - entry.lastEventAtMs > 400
+        Math.abs(currentOffset - entry.lastOffset) > 1.0 && now - entry.lastEventAtMs > 1000
 
-      if (!hardChange && now - entry.lastEventAtMs < 200) continue
+      if (!hardChange && now - entry.lastEventAtMs < 350) continue
 
       if (!stateChanged && !offsetChanged && !lengthChanged) continue
 

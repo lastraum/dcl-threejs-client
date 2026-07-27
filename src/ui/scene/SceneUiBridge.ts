@@ -54,6 +54,7 @@ import {
   visibleLayoutBoxes
 } from './uiLayoutCache'
 import { layoutUiTree, type LayoutBox } from './yogaLayout'
+import { tryRefineAbsoluteLayoutBoxes } from './fastLayoutPatch'
 import { onSceneUiImageLoaded } from './uiImageLoad'
 import { effectiveUiBackgroundAlpha } from './uiBackgroundStyle'
 
@@ -93,6 +94,8 @@ export class SceneUiBridge {
   private lastPaintLayoutKey = ''
   private lastPaintVisualKey = ''
   private lastEntityVisualKeys = new Map<Entity, string>()
+  /** Previous frame layout boxes — refine absolute reeling-bar geometry without full Yoga. */
+  private lastLayoutBoxMap: Map<Entity, LayoutBox> | null = null
   /**
    * Phase C dirty set — contentEpoch bumps when mount/CRDT/image/size changes.
    * paint() skips record walk when epoch already painted (redundant flushUiFrame).
@@ -667,21 +670,55 @@ export class SceneUiBridge {
       this.lastLoggedPaintMount = mountSize
     }
 
+    // Collect visual-dirty entities early (also used for fast absolute re-layout).
+    const dirtyEntities: Entity[] = []
+    if (this.lastEntityVisualKeys.size > 0) {
+      for (const [entity, key] of entityVisualKeys) {
+        if (this.lastEntityVisualKeys.get(entity) !== key) dirtyEntities.push(entity)
+      }
+      for (const entity of this.lastEntityVisualKeys.keys()) {
+        if (!entityVisualKeys.has(entity)) dirtyEntities.push(entity)
+      }
+    }
+
     let layoutBoxes = this.layoutCache.get(layoutKey)
     let layoutCacheHit = true
     if (!layoutBoxes) {
       layoutCacheHit = false
-      const { boxes, dispose } = layoutUiTree(
-        records,
-        forest,
-        this.virtual.width,
-        this.virtual.height,
-        textOf,
-        inputOf
-      )
-      layoutBoxes = boxes
-      dispose()
-      this.layoutCache.set(layoutKey, layoutBoxes)
+      // Fishing reeling: height% + position + UVs change every tick. Full Yoga on 100+
+      // nodes at 10–15Hz is the cast animation stutter. Prefer refining absolute boxes.
+      if (
+        this.lastLayoutBoxMap &&
+        this.lastLayoutBoxMap.size > 0 &&
+        dirtyEntities.length > 0 &&
+        dirtyEntities.length <= 24 &&
+        dirtyEntities.length < mounted.size * 0.35
+      ) {
+        const refined = tryRefineAbsoluteLayoutBoxes(
+          this.lastLayoutBoxMap,
+          dirtyEntities,
+          transformOf,
+          this.virtual
+        )
+        if (refined) {
+          layoutBoxes = [...refined.values()]
+          layoutCacheHit = true
+          // Don't poison the layout cache with a transient reeling key — keep refining.
+        }
+      }
+      if (!layoutBoxes) {
+        const { boxes, dispose } = layoutUiTree(
+          records,
+          forest,
+          this.virtual.width,
+          this.virtual.height,
+          textOf,
+          inputOf
+        )
+        layoutBoxes = boxes
+        dispose()
+        this.layoutCache.set(layoutKey, layoutBoxes)
+      }
     }
     const layoutBoxMap = new Map<Entity, LayoutBox>(
       visibleLayoutBoxes(layoutBoxes, transformOf).map((box) => [box.entity, box])
@@ -706,21 +743,15 @@ export class SceneUiBridge {
       onRegions: (regions: UiScreenRegion[]) => this.hitMap.replace(regions)
     }
 
-    // Layout stable + few visual-only dirties → patch DOM only (skip full tree walk).
+    // Layout stable (or refined) + few dirties → patch DOM only (skip full tree walk).
     let usedPatch = false
     if (layoutCacheHit && this.lastEntityVisualKeys.size > 0 && this.paintCount > 1) {
-      const dirty: Entity[] = []
-      for (const [entity, key] of entityVisualKeys) {
-        if (this.lastEntityVisualKeys.get(entity) !== key) dirty.push(entity)
-      }
-      for (const entity of this.lastEntityVisualKeys.keys()) {
-        if (!entityVisualKeys.has(entity)) dirty.push(entity)
-      }
-      if (dirty.length > 0 && dirty.length <= 32 && dirty.length < mounted.size * 0.25) {
-        usedPatch = this.dom.patchEntities(dirty, drawInput)
-        if (usedPatch && this.paintCount <= 20) {
-          console.info(`[scene-ui] incremental paint — dirty=${dirty.length} mount=${mounted.size}`)
-        }
+      if (
+        dirtyEntities.length > 0 &&
+        dirtyEntities.length <= 48 &&
+        dirtyEntities.length < mounted.size * 0.4
+      ) {
+        usedPatch = this.dom.patchEntities(dirtyEntities, drawInput)
       }
     }
 
@@ -731,6 +762,7 @@ export class SceneUiBridge {
     this.lastPaintLayoutKey = layoutKey
     this.lastPaintVisualKey = visualKey
     this.lastEntityVisualKeys = entityVisualKeys
+    this.lastLayoutBoxMap = layoutBoxMap
     this.paintedEpoch = this.contentEpoch
 
     this.input.pruneStaleEntities(mounted)

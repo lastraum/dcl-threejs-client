@@ -1802,10 +1802,13 @@ function deliverRendererAppendInbound(chunks: Uint8Array[]): void {
   if (!sceneEngine || !sceneOnStartComplete) return
   const counts = applyRendererInboundChunks(chunks)
   if (counts.triggerAppends === 0 && counts.videoAppends === 0) return
-  workerLog(
-    'log',
-    `[sceneWorker] renderer-append-deliver — trigger=${counts.triggerAppends} videoEvent=${counts.videoAppends}`
-  )
+  // Skip log for lone video-offset heartbeats (was ~2Hz spam during fishing cast).
+  if (counts.triggerAppends > 0 || counts.videoAppends > 1) {
+    workerLog(
+      'log',
+      `[sceneWorker] renderer-append-deliver — trigger=${counts.triggerAppends} videoEvent=${counts.videoAppends}`
+    )
+  }
   // TriggerArea enter must run TriggerAreaResultSystem same-message.
   // requestSceneEngineTick() often no-ops when wall-clock debt is 0 (just after a play-frame
   // tick) — Plaza bounce_parasol then never sees ENTER → never writes PhysicsCombinedImpulse.

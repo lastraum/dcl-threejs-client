@@ -2183,9 +2183,13 @@ export class World {
               `sides=${sides ? 'yes' : 'no'}`
           )
           // Always-visible SQ diagnostic (console.warn so it is not lost in noise).
-          this.physics.diagnoseSceneQueryAt(feet.x, feet.y, feet.z, 'health-soft')
+          const diag = this.physics.diagnoseSceneQueryAt(feet.x, feet.y, feet.z, 'health-soft')
+          // Seal was healthy then play went soft (AOI thrash) — one-shot orphan re-add + flush.
+          if (!diag.didHit) {
+            this.physics.tryHealPostSealSceneQuery(feet.x, feet.y, feet.z)
+          }
           this.physics.invalidateControllerCache()
-          // Bounded recover: enqueue truly missing actors (single-entity cook + single reinsert).
+          // Bounded recover: enqueue truly missing actors (single-entity cook).
           this.discoverMissingColliderActors()
           // At most 2 under-floor lifts per session — spam teleports were unsticking CCT.
           const nowLift = performance.now()

@@ -301,6 +301,11 @@ export class PhysXWorld {
   /** Permanent CCT query flags — must not be a one-shot that GC can free. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private cctQueryFlags: any = null
+  /** Permanent scene-query flags for sweeps (same GC rule as cctQueryFlags). */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private sceneQueryFlags: any = null
+  /** True after we observed SQ healthy at seal then dead at play — one-shot heal. */
+  private postSealSqHealDone = false
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private controllerManager: any = null
@@ -559,9 +564,10 @@ export class PhysXWorld {
     this.sceneQueryFilterWords = new PHYSX.PxFilterData(0, 0, 0, 0)
     this.queryFilterData.data = this.sceneQueryFilterWords
     try {
-      this.queryFilterData.flags = new PHYSX.PxQueryFlags(
+      this.sceneQueryFlags = new PHYSX.PxQueryFlags(
         PHYSX.PxQueryFlagEnum.eSTATIC | PHYSX.PxQueryFlagEnum.eDYNAMIC
       )
+      this.queryFilterData.flags = this.sceneQueryFlags
     } catch {
       /* optional */
     }
@@ -1953,11 +1959,62 @@ export class PhysXWorld {
 
   /**
    * Runtime-safe refresh after late cooks / road AOI.
-   * Cache invalidate only — full tree rebuild is forbidden (COD).
+   * Cache invalidate + optional flush — never remove+add thrash / never tree rebuild.
    */
   refreshStaticAfterRuntimeGeometryChange(): void {
     this.ensureInfiniteGroundPlane()
+    try {
+      if (this.scene && typeof this.scene.flushQueryUpdates === 'function') {
+        this.scene.flushQueryUpdates()
+      }
+    } catch {
+      /* optional */
+    }
     this.invalidateControllerCache()
+  }
+
+  /**
+   * One-shot heal when SQ was healthy at seal then went dead at play
+   * (late AOI remove+add thrash). Re-add orphans + flush only — no full rebuild.
+   */
+  tryHealPostSealSceneQuery(x: number, y: number, z: number): boolean {
+    if (!this.staticSqSealed || this.postSealSqHealDone || !this.scene) return false
+    this.postSealSqHealDone = true
+    let readded = 0
+    for (const actor of this.staticActors.values()) {
+      if (!actor || this.actorInScene(actor)) continue
+      try {
+        this.scene.addActor(actor)
+        readded++
+      } catch {
+        /* skip */
+      }
+    }
+    // Temporarily allow single reinsert for ground only if missing from scene.
+    const ground = this.staticActors.get(INFINITE_GROUND_ENTITY)
+    if (ground && !this.actorInScene(ground)) {
+      try {
+        this.scene.addActor(ground)
+        readded++
+      } catch {
+        /* skip */
+      }
+    }
+    this.ensureInfiniteGroundPlane()
+    try {
+      if (typeof this.scene.flushQueryUpdates === 'function') {
+        this.scene.flushQueryUpdates()
+      }
+    } catch {
+      /* optional */
+    }
+    this.invalidateControllerCache()
+    const d = this.diagnoseSceneQueryAt(x, y, z, 'post-seal-heal')
+    console.warn(
+      `[PhysXWorld] post-seal SQ heal — readded=${readded} didHit=${d.didHit} ` +
+        `(was healthy at seal; thrash after play-ready)`
+    )
+    return d.didHit
   }
 
   /**
@@ -3101,9 +3158,12 @@ export class PhysXWorld {
     }
     this.queryFilterData.data = this.sceneQueryFilterWords
     try {
-      this.queryFilterData.flags = new PHYSX.PxQueryFlags(
-        PHYSX.PxQueryFlagEnum.eSTATIC | PHYSX.PxQueryFlagEnum.eDYNAMIC
-      )
+      if (!this.sceneQueryFlags) {
+        this.sceneQueryFlags = new PHYSX.PxQueryFlags(
+          PHYSX.PxQueryFlagEnum.eSTATIC | PHYSX.PxQueryFlagEnum.eDYNAMIC
+        )
+      }
+      this.queryFilterData.flags = this.sceneQueryFlags
     } catch {
       /* older bindings */
     }
@@ -3825,17 +3885,8 @@ export class PhysXWorld {
     this.scene.addActor(actor)
     this.staticActors.set(desc.entity, actor)
     this.registerStaticActor(desc.entity, actor)
-    // After seal, allowStaticReinsert is false so reinsertStaticActor no-ops — but a
-    // brand-new actor must still land in SQ. Double-add is a no-op; remove+add once
-    // refreshes bounds without a full tree rebuild (plaza-safe late AOI cooks).
-    if (!this.allowStaticReinsert && this.scene) {
-      try {
-        this.scene.removeActor(actor)
-        this.scene.addActor(actor)
-      } catch {
-        /* already in scene */
-      }
-    }
+    // After seal: plain addActor only. NEVER remove+add here — late AOI/road thrash of
+    // remove+add killed plaza SQ (didHit=true at seal, didHit=false a few seconds later).
     return true
   }
 

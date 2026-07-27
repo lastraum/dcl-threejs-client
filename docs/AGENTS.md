@@ -24,6 +24,8 @@ Treat every multi-scene, performance, and continuity task as **ship-or-iterate A
 | **Tertiary composites** | Roads / empty / AOI shells fill the world without workers; distance-budgeted. |
 | **Default ground everywhere** | Default parcel GLB on **all** non-road AOI parcels. Procedural trees/rocks **only** on vacant / catalyst-empty. |
 | **Freecam always free** | Only feet-primary FocusOwner applies InputModifier / MainCamera / video / UI. Demoted secondaries never apply player-frame. Clear freeze on demote + promote handoff. |
+| **AvatarModifier FocusOwner** | Only primary may hide avatars / force CameraMode. Demote clears hide + forced camera; secondary never syncs AvatarModifierArea (prevents “became a vending machine”). |
+| **No matrix freeze on tertiary** | Tertiary = scripts off only; never freeze TRS matrices (sky-GLB bug after retarget). |
 | **FPS bar** | Target **30–60 FPS** always; **60 FPS** on high/custom. Cap live scripts; LOD tertiary when far / under cap. Exclusive secondary boot (no chain thrash). |
 
 If a change makes the world go blank on neighbor step, **it is a P0 bug** — reverse or fix before shipping.

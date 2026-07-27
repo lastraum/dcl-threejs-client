@@ -456,8 +456,16 @@ export class SceneScriptSystem {
     if (policy === 'secondary') {
       this.sceneUiDesiredVisible = false
       this.sceneUiBridge?.setVisible(false)
-      // Demoted / muted secondary must never pin freecam or freeze locomotion on the player.
+      // Demoted / muted secondary must never pin freecam, freeze locomotion, hide avatar,
+      // or drive CameraModeArea / AvatarModifierArea (ice-cream hide / vending-machine look).
       this.clearPlayerFocusState()
+      this.setAvatarModifierProviders(null)
+      // Drop AvatarAttach so demoted scene props cannot stick to the player.
+      try {
+        this.setAvatarAttachTargets(null)
+      } catch {
+        /* optional */
+      }
     }
   }
 
@@ -3438,6 +3446,8 @@ export class SceneScriptSystem {
   private syncTriggerAreas(): void {
     this.flushTriggerStructureIfDirty()
     this.triggerAreas?.sync()
+    // FocusOwner only: secondary/tertiary residents must not hide avatars or force camera.
+    if (this.focusPolicy === 'secondary') return
     this.cameraModeAreas?.sync()
     this.syncAvatarModifiers()
   }
@@ -3457,11 +3467,27 @@ export class SceneScriptSystem {
   }
 
   private syncAvatarModifiers(): void {
+    if (this.focusPolicy === 'secondary') return
     if (!this.avatarModifiers || !this.avatarModifierProviders) return
     const samples = this.avatarModifierProviders.getSamples()
     this.avatarModifiers.sync(samples)
     for (const sample of samples) {
       this.avatarModifierProviders.apply(sample.id, this.avatarModifiers.getEffects(sample.id))
+    }
+  }
+
+  /**
+   * Multi-scene handoff: force-clear AvatarModifier hide effects for all known samples
+   * (local + remotes) so demote/promote never leaves the player invisible / "vending machine".
+   */
+  clearAvatarModifierEffects(): void {
+    if (!this.avatarModifierProviders) return
+    try {
+      for (const sample of this.avatarModifierProviders.getSamples()) {
+        this.avatarModifierProviders.apply(sample.id, { hide: false, disablePassports: false })
+      }
+    } catch {
+      /* ignore */
     }
   }
 

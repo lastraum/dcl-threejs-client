@@ -176,21 +176,21 @@ export class SceneWorkerSlot {
       this.mode === 'tertiary'
         ? `secondary-tertiary:${this.id.slice(0, 16)}`
         : `secondary-entities:${this.id.slice(0, 16)}`
-    // Root MUST keep matrixAutoUpdate so retargetPrimaryBase can re-place demoted
-    // estates after promote. Freezing root made demote offset a no-op → void.
+    // Never freeze matrices on tertiary — demote retarget must re-place the graph without
+    // leaving GLBs in the sky (matrixAutoUpdate false after parent move = wrong world pose).
     root.matrixAutoUpdate = true
     const tertiary = this.mode === 'tertiary'
-    // Tertiary LOD: no shadows, kill local lights, freeze **descendant** matrices.
+    // Tertiary LOD: no cast shadows + hide local lights (GPU). Scripts already paused.
     root.traverse((o) => {
       if (o === root) return
+      o.matrixAutoUpdate = true
       const m = o as THREE.Mesh
       if (m.isMesh) {
         m.castShadow = !tertiary
-        m.receiveShadow = !tertiary
+        m.receiveShadow = true
         m.frustumCulled = true
       }
       if ((o as THREE.Light).isLight) {
-        // Stash prior visibility so secondary resume restores correctly.
         const ud = o.userData as { _tertiaryLightWasVisible?: boolean }
         if (tertiary) {
           if (ud._tertiaryLightWasVisible === undefined) {
@@ -201,12 +201,6 @@ export class SceneWorkerSlot {
           o.visible = ud._tertiaryLightWasVisible
           delete ud._tertiaryLightWasVisible
         }
-      }
-      if (tertiary) {
-        o.updateMatrix()
-        o.matrixAutoUpdate = false
-      } else {
-        o.matrixAutoUpdate = true
       }
     })
     root.updateMatrixWorld(true)

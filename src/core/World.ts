@@ -3653,9 +3653,14 @@ export class World {
     // Demote old primary → sticky secondary (meshes MUST stay — never dispose into void).
     // Do this before wiring new primary so entity roots stay valid.
     if (oldScene?.entityId && oldScene.mainEntry && oldScene.entityId !== newScene.entityId) {
-      // Revoke FocusOwner before sticky adopt (mute/stop media; drop primary InputHub).
+      // Revoke FocusOwner before sticky adopt (mute media/UI; drop InputHub; clear hide/camera).
+      oldPrimary.clearAvatarModifierEffects()
       oldPrimary.setFocusPolicy('secondary')
       oldPrimary.setInputHub(null)
+      oldPrimary.setAvatarModifierProviders(null)
+      // Player must leave demoted scene's AvatarModifier hide + CameraModeArea force.
+      this.player.setModifierHidden(false)
+      this.player.setForcedCameraMode(null)
       const demoted = await multi.demotePrimaryToSecondary(
         oldPrimary,
         oldScene,
@@ -3761,15 +3766,42 @@ export class World {
     })
     // FocusOwner swap: media + UI for adopted primary; InputHub primary subscriber.
     // CRITICAL: rebind player locomotion reads to the NEW primary MirrorComponents.
-    // Without this, walk-back freezes forever on demoted system's stale InputModifier.
     this.player.setReadComponents(this.sceneScript.readComponents)
     this.player.setImpulseLamportProvider(() => this.sceneScript.getPhysicsImpulseLamport())
-    // Clear freeze + arm 12s grace (worker freezes stripped on player-frame).
+    // Clear freeze + arm grace (worker freezes stripped on player-frame).
     this.sceneScript.clearPlayerFocusState()
     this.sceneScript.setFocusPolicy('primary')
     this.sceneScript.setInputHub(this.inputHub, 'primary')
     this.sceneScript.setSceneUiVisible(true)
     this.player.releaseSceneFreezeHold('promote-handoff')
+    // Never leave AvatarModifier hide or CameraModeArea from the previous primary.
+    this.player.setModifierHidden(false)
+    this.player.setForcedCameraMode(null)
+    // Rebind AvatarAttach + AvatarModifierArea to NEW primary only (not demoted sticky).
+    this.bindAvatarAttachTargets()
+    this.sceneScript.setAvatarModifierProviders({
+      getSamples: () => {
+        const samples: { id: string; position: { x: number; y: number; z: number } }[] = []
+        const localPos = this.player?.getPosition()
+        if (localPos) {
+          const localId = this.session.getAddress()?.toLowerCase() ?? ''
+          samples.push({
+            id: localId,
+            position: { x: localPos.x, y: localPos.y, z: localPos.z }
+          })
+        }
+        this.remoteAvatars?.collectModifierSamples(samples)
+        return samples
+      },
+      apply: (id, effects) => {
+        const localId = this.session.getAddress()?.toLowerCase() ?? ''
+        if (!id || id === localId) {
+          this.player?.setModifierHidden(effects.hide)
+          return
+        }
+        this.remoteAvatars?.setModifierHidden(id, effects.hide)
+      }
+    })
     // Drive freecam from primary bridge only (not demoted sticky).
     this.player.setVirtualCameraBridge(this.sceneScript.getVirtualCameraBridge())
 

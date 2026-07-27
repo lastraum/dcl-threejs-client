@@ -7454,16 +7454,25 @@
         overflow: hidden;
       }
       .profile-popup__hero {
-        padding: 22px 20px 16px;
-        text-align: center;
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 18px 18px 16px;
         background: linear-gradient(180deg, rgba(255, 255, 255, 0.04) 0%, transparent 100%);
+      }
+      .profile-popup__meta {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+        min-width: 0;
       }
       .profile-popup__avatar-ring {
         display: inline-flex;
+        flex-shrink: 0;
         padding: 3px;
         border-radius: 50%;
         background: #57e389;
-        margin-bottom: 12px;
       }
       .profile-popup__avatar {
         width: 88px;
@@ -7483,31 +7492,28 @@
       .profile-popup__name-row {
         display: inline-flex;
         align-items: center;
-        justify-content: center;
         gap: 6px;
-        margin-bottom: 14px;
+        max-width: 100%;
       }
+      /* Font size is fitted at open time (ProfilePopup.fitNameToColumn); the
+         ellipsis only shows for a name still too wide at the minimum size. */
       .profile-popup__name {
         font-size: 22px;
         font-weight: 800;
         letter-spacing: 0.01em;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .profile-popup__verified {
         color: #ff6ad5;
         font-size: 14px;
         line-height: 1;
       }
-      .profile-popup__wallet-label {
-        font-size: 10px;
-        font-weight: 700;
-        letter-spacing: 0.14em;
-        color: rgba(255, 255, 255, 0.45);
-        margin-bottom: 6px;
-      }
       .profile-popup__wallet-row {
         display: flex;
         align-items: center;
-        justify-content: center;
         gap: 8px;
       }
       .profile-popup__wallet-value {
@@ -7528,25 +7534,42 @@
       .profile-popup__copy.is-copied {
         color: #57e389;
       }
+      /* Full panel width — too cramped in the column beside the face. */
       .profile-popup__guest-note {
         margin: 0;
+        padding: 0 18px 14px;
         font-size: 13px;
         line-height: 1.45;
         color: rgba(255, 255, 255, 0.62);
       }
+      /* Third row beside the face — negative inset keeps its label on the same
+         left edge as the name and wallet above it. */
       .profile-popup__view-btn {
-        display: block;
-        width: calc(100% - 32px);
-        margin: 0 16px 16px;
-        padding: 12px 16px;
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        border-radius: 12px;
-        background: rgba(255, 255, 255, 0.06);
-        color: #fff;
-        font-size: 12px;
-        font-weight: 700;
-        letter-spacing: 0.12em;
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        margin: 2px 0 0 -10px;
+        padding: 8px 10px;
+        border: 0;
+        border-radius: 10px;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.92);
+        font-size: 14px;
+        text-align: left;
         cursor: pointer;
+      }
+      .profile-popup__view-btn:hover {
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .profile-popup__view-icon {
+        display: inline-flex;
+        width: 18px;
+        height: 18px;
+        flex-shrink: 0;
+      }
+      .profile-popup__view-icon svg {
+        width: 100%;
+        height: 100%;
       }
       .profile-popup__divider {
         height: 1px;

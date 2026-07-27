@@ -64,6 +64,11 @@ export class MultiSceneRuntime {
     return this.secondary?.residentParcelKeys() ?? []
   }
 
+  /** Promote settle: scripts off on all residents (primary alone). */
+  forceAllResidentsTertiary(reason: string): void {
+    this.secondary?.forceAllResidentsTertiary(reason)
+  }
+
   get secondaryManager(): SecondaryLiveManager | null {
     return this.secondary
   }

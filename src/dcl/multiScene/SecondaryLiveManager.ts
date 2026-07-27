@@ -133,6 +133,21 @@ export class SecondaryLiveManager {
     return out
   }
 
+  /**
+   * After promote handoff: put every resident on tertiary (scripts off) so only
+   * the new primary runs full scripts during settle. Meshes stay.
+   */
+  forceAllResidentsTertiary(reason: string): void {
+    for (const slot of this.slots.values()) {
+      if (slot.residentMode === 'secondary') {
+        slot.setResidentMode('tertiary')
+      }
+    }
+    console.info(
+      `[multi-scene] force all residents tertiary (${reason}) slots=${this.slots.size}`
+    )
+  }
+
   /** Continuity assert after demote — mesh count + root pose for logs. */
   assertResidentVisible(entityId: string): {
     ok: boolean
@@ -688,6 +703,19 @@ export class SecondaryLiveManager {
         !!pri &&
         (slot.scene.baseParcel.trim() === pri ||
           slot.scene.parcels.some((p) => p.trim() === pri))
+      const large = (slot.scene.parcels?.length ?? 1) > SECONDARY_LIVE_AUTO_MAX_PARCELS
+      // Sticky plaza shells stay tertiary (scripts off) unless under-feet priority —
+      // dual full CBD+neighbor workers = 12fps freeze. Re-promote unpauses.
+      const stickyLargeKeepTertiary = this.stickyIds.has(id) && large && !isPri
+      if (stickyLargeKeepTertiary) {
+        if (slot.residentMode === 'secondary') {
+          slot.setResidentMode('tertiary')
+          console.info(
+            `[multi-scene] sticky large → tertiary “${slot.scene.title}” (FPS thrash guard)`
+          )
+        }
+        continue
+      }
       if (wantSecondary.has(id) || isPri) {
         if (slot.residentMode === 'tertiary') {
           // Re-enter live ring: scripts only, no GLB reload.

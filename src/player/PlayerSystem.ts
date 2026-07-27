@@ -233,6 +233,11 @@ export class PlayerSystem {
   private virtualCamera: VirtualCameraBridge | null = null
   /** Prior frame had an active VirtualCamera — seed freecam yaw/pitch on unbind. */
   private wasVirtualCameraActive = false
+  /**
+   * After multi-scene promote: do not overwrite freecam yaw/pitch from VC lens
+   * (MainCamera clear was sniping look direction on snow→CBD handoff).
+   */
+  private suppressVcFreecamReseedUntil = 0
   /** AvatarModifierArea hide (local mesh). */
   private modifierHidden = false
   /** CameraModeArea force — null when freecam is player-controlled. */
@@ -409,6 +414,26 @@ export class PlayerSystem {
 
   setVirtualCameraBridge(bridge: VirtualCameraBridge | null): void {
     this.virtualCamera = bridge
+  }
+
+  /** Snapshot freecam orbit (multi-scene promote must not snap look). */
+  getFreecamOrbit(): { yaw: number; pitch: number; dist: number } {
+    return { yaw: this.camYaw, pitch: this.camPitch, dist: this.camDistance }
+  }
+
+  /**
+   * Restore freecam after promote handoff. Suppresses VC→freecam reseed so
+   * MainCamera clear / bridge swap does not reset look for no reason.
+   */
+  restoreFreecamOrbit(
+    orbit: { yaw: number; pitch: number; dist: number },
+    suppressVcReseedMs = 2500
+  ): void {
+    this.camYaw = orbit.yaw
+    this.camPitch = orbit.pitch
+    this.camDistance = orbit.dist
+    this.wasVirtualCameraActive = false
+    this.suppressVcFreecamReseedUntil = performance.now() + suppressVcReseedMs
   }
 
   async loadAvatar(
@@ -1955,31 +1980,37 @@ export class PlayerSystem {
   }
 
   private syncCamera(snap: boolean, delta = 0.016): void {
+    const suppressReseed = performance.now() < this.suppressVcFreecamReseedUntil
     if (this.virtualCamera?.apply(delta)) {
-      this.wasVirtualCameraActive = true
-      // Keep freecam yaw/pitch aligned so unbind + orbit does not snap 180° from stale freecam state.
-      _forward.set(0, 0, -1).applyQuaternion(this.host.camera.quaternion)
-      if (_forward.lengthSq() > 1e-8) {
-        _forward.normalize()
-        this.camYaw = Math.atan2(-_forward.x, -_forward.z)
-        // freecam camPitch is boom elevation (positive = above); look-down has negative forward.y.
-        // Never seed a looking-up VC into negative boom (under-floor freecam on unbind).
-        if (_forward.y <= 0.15) {
-          const lookPitch = Math.asin(THREE.MathUtils.clamp(_forward.y, -1, 1))
-          this.camPitch = clamp(-lookPitch, CAM_PITCH_MIN, CAM_PITCH_MAX)
-        } else {
-          this.camPitch = CAM_PITCH_DEFAULT
+      if (!suppressReseed) {
+        this.wasVirtualCameraActive = true
+        // Keep freecam yaw/pitch aligned so unbind + orbit does not snap 180° from stale freecam state.
+        _forward.set(0, 0, -1).applyQuaternion(this.host.camera.quaternion)
+        if (_forward.lengthSq() > 1e-8) {
+          _forward.normalize()
+          this.camYaw = Math.atan2(-_forward.x, -_forward.z)
+          // freecam camPitch is boom elevation (positive = above); look-down has negative forward.y.
+          // Never seed a looking-up VC into negative boom (under-floor freecam on unbind).
+          if (_forward.y <= 0.15) {
+            const lookPitch = Math.asin(THREE.MathUtils.clamp(_forward.y, -1, 1))
+            this.camPitch = clamp(-lookPitch, CAM_PITCH_MIN, CAM_PITCH_MAX)
+          } else {
+            this.camPitch = CAM_PITCH_DEFAULT
+          }
         }
       }
       this.avatar?.setBodyVisible(!this.modifierHidden)
       if (this.nameTag) {
         this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
       }
-      return
+      // During promote suppress: still apply VC if scene wants it, but keep freecam orbit for unbind.
+      if (!suppressReseed) return
+      // Fall through to freecam if suppress — player keeps look across handoff.
+      if (this.virtualCamera?.isActive()) return
     }
     // MainCamera still points at a VC but bridge inactive (missing Transform this frame) —
     // hold last lens pose; do not let freecam/orbit steal the shot.
-    if (this.virtualCamera?.isMainCameraVcBound()) {
+    if (this.virtualCamera?.isMainCameraVcBound() && !suppressReseed) {
       this.wasVirtualCameraActive = true
       this.avatar?.setBodyVisible(!this.modifierHidden)
       if (this.nameTag) {

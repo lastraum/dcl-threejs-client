@@ -3635,6 +3635,8 @@ export class World {
       y: pos.y,
       z: pos.z + origin.z
     }
+    // COD: freecam must not snap on snow↔CBD handoff (look is player-owned, not scene).
+    const freecamOrbit = this.player.getFreecamOrbit()
 
     const oldPrimary = this.sceneScript
     const oldScene = this.loadedPrimaryScene
@@ -3830,6 +3832,8 @@ export class World {
 
     // Feet stay put in Genesis space under the NEW origin.
     const ok = this.restoreGenesisFeet(genesis)
+    // Restore freecam immediately after feet (before any VC/frame can overwrite look).
+    this.player.restoreFreecamOrbit(freecamOrbit, 3000)
     const originAfter = this.comms.getSceneOrigin()
     const feetAfter = this.player.getPosition()
     const baseParts = newScene.baseParcel.split(',').map((s) => Number.parseInt(s.trim(), 10))
@@ -3859,6 +3863,8 @@ export class World {
     // AOI: retarget with CORRECTED local feet (after restore) — no unbind wipe.
     // Kill live secondary reconcile during settle (dual-worker freeze). Visuals OK.
     multi.setSecondaryActivityEnabled(false)
+    // Only new primary runs scripts during settle — sticky/plaza tertiary (meshes stay).
+    multi.forceAllResidentsTertiary('promote-settle')
     this.aoiVisual.retargetPrimary(newScene, feetAfter.x, feetAfter.z)
     // retargetPrimary already liveReconcileEnabled=false; visuals neighborActivity on.
     this.scenePromote.bind(newScene)

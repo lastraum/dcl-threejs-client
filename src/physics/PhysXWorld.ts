@@ -200,6 +200,8 @@ export class PhysXWorld {
    * Parent has no single RigidStatic; children are MULTI_SHAPE_CHILD_BASE+…
    */
   private readonly multiShapeChildCount = new Map<number, number>()
+  /** Rate-limit multi-shape expand console spam (thrash diagnosis). */
+  private readonly multiShapeExpandLogAt = new Map<number, number>()
   /** Reverse lookup — platform transfer + CCT grounding probes. */
   private readonly staticEntityByActorPtr = new Map<number, number>()
   /** Last descriptor world position per PhysX entity — tweened platform delta tracking. */
@@ -1440,6 +1442,25 @@ export class PhysXWorld {
           if (this.staticActors.has(multiShapeChildPhysId(desc.entity, i))) liveShapes++
         }
         const shapeCountOk = expectedShapes > 0 && liveShapes === expectedShapes
+
+        // Children already cooked with matching per-shape fingerprints — never re-expand
+        // just because the parent geom string flapped (uuid thrash / extract order noise).
+        if (shapeCountOk && expectedShapes > 0) {
+          let childFpOk = true
+          for (let i = 0; i < desc.shapes.length; i++) {
+            const shape = desc.shapes[i]!
+            if (!shape.geometry) continue
+            if (this.staticFp.get(multiShapeChildPhysId(desc.entity, i)) !== shape.fingerprint) {
+              childFpOk = false
+              break
+            }
+          }
+          if (childFpOk) {
+            if (prevGeomFp !== geomFp) this.staticFp.set(desc.entity, geomFp)
+            this.staticPoseFp.set(desc.entity, poseFp)
+            continue
+          }
+        }
 
         // Geom unchanged + all children live → keep solids. Never tear down for pose float
         // noise (forceRecookOnPoseChange is always true on the play drain and was causing
@@ -2951,9 +2972,15 @@ export class PhysXWorld {
           `(per-shape RigidStatic). fp=${desc.fingerprint.slice(0, 80)}`
       )
     } else {
-      console.info(
-        `[PhysXWorld] multi-shape expand — parent=${desc.entity} → ${attached} single-mesh actor(s) (CCT path)`
-      )
+      // Rate-limit: thrash logs made load look 3× slower with no collider gain.
+      const now = performance.now()
+      const last = this.multiShapeExpandLogAt.get(desc.entity) ?? 0
+      if (now - last > 5000) {
+        this.multiShapeExpandLogAt.set(desc.entity, now)
+        console.info(
+          `[PhysXWorld] multi-shape expand — parent=${desc.entity} → ${attached} single-mesh actor(s) (CCT path)`
+        )
+      }
     }
     return true
   }

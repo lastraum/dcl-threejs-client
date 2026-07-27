@@ -584,13 +584,11 @@ export class GltfColliderExtractor {
 
     const colliderMeshes = this.collectColliderMeshes(gltfRoot, hasVisiblePhysics, hasInvisiblePhysics)
     const eligible: THREE.Mesh[] = []
-    const byGeoUuid = new Map<string, THREE.Mesh>()
     const byName = new Map<string, THREE.Mesh>()
     for (const mesh of colliderMeshes) {
       const posAttr = mesh.geometry.getAttribute('position')
       if (!posAttr || posAttr.count < 3) continue
       eligible.push(mesh)
-      byGeoUuid.set(mesh.geometry.uuid, mesh)
       if (mesh.name) byName.set(mesh.name, mesh)
     }
     if (!eligible.length) return false
@@ -599,15 +597,13 @@ export class GltfColliderExtractor {
     let changed = false
     for (let i = 0; i < shapes.length; i++) {
       const shape = shapes[i]!
-      // fingerprint: gltf:inv|vis:entity:idx:meshName:geoUuid  (uuid is always last)
+      // fingerprint: gltf:inv|vis:entity:idx:meshName:vertCount:indexCount
       const parts = shape.fingerprint.split(':')
-      const geoUuid = parts.length >= 6 ? parts[parts.length - 1]! : ''
-      // Mesh name is everything between idx and uuid — may contain ':' rarely; prefer uuid.
-      const meshName = parts.length >= 6 ? parts.slice(4, -1).join(':') : ''
+      // Mesh name sits between idx and the two trailing count tokens.
+      const meshName = parts.length >= 7 ? parts.slice(4, -2).join(':') : ''
       const mesh =
-        (geoUuid && byGeoUuid.get(geoUuid)) ||
         (meshName && byName.get(meshName)) ||
-        // Index fallback: same traverse order as extract (door uuid remount edge cases).
+        // Index fallback: same traverse order as extract (door remount edge cases).
         (i < eligible.length ? eligible[i]! : null)
       if (!mesh) continue
       _worldMatrix.copy(this.colliderMeshWorldMatrix(mesh)).premultiply(_entityInv)
@@ -1122,7 +1118,11 @@ export class GltfColliderExtractor {
       _worldMatrix.copy(mesh.matrixWorld).premultiply(_entityInv)
 
       const invClass = isGltfInvisibleColliderMesh(mesh, gltfRoot)
-      const fp = `gltf:${invClass ? 'inv' : 'vis'}:${entity}:${shapes.length}:${mesh.name}:${sourceGeo.uuid}`
+      // Do NOT key on geometry.uuid — remount/sanitize can mint new UUIDs every frame and
+      // thrash multi-shape expand (console spam + 3× load with no collider gain).
+      const fp =
+        `gltf:${invClass ? 'inv' : 'vis'}:${entity}:${shapes.length}:${mesh.name}:` +
+        `${posAttr.count}:${sourceGeo.index?.count ?? 0}`
 
       // Reference shared AssetCache geometry — PhysX cook clones via bakeTrimeshGeometry.
       shapes.push({

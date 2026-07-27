@@ -19,7 +19,11 @@ import {
   parseUiBackgroundUvRect,
   resolveUiBackgroundImageUrl
 } from './uiBackgroundStyle'
-import { isUiEntityPointerCapturing, type UiPointerEventsLookup } from './uiPointer'
+import {
+  isFullscreenUiPeAllowed,
+  isUiEntityPointerCapturing,
+  type UiPointerEventsLookup
+} from './uiPointer'
 import type { MirrorComponents } from '../../bridge/mirrorComponents'
 import type { UiScreenRegion } from './uiHitMap'
 import { CANVAS_ROOT_ENTITY } from './uiTree'
@@ -118,15 +122,24 @@ function pushLayoutHitRegion(
 function isSceneUiNodeInteractive(
   entity: Entity,
   ecs: MirrorComponents,
-  _transform: PBUiTransform,
+  transform: PBUiTransform,
   _inputOf: (e: Entity) => PBUiInput | null,
   _dropdownOf: (e: Entity) => PBUiDropdown | null,
   pointerEventsOf?: UiPointerEventsLookup,
-  background?: PBUiBackground | null
+  background?: PBUiBackground | null,
+  layoutBox?: LayoutBox | null
 ): boolean {
   // Explorer parity: PE / BLOCK / fields while UiTransform chain is visible.
-  // Color4.a is paint-only — do not gate hits (invisible PE catchers over child logos).
-  return isUiEntityPointerCapturing(ecs, entity, pointerEventsOf, background ?? null)
+  if (!isUiEntityPointerCapturing(ecs, entity, pointerEventsOf, background ?? null)) {
+    return false
+  }
+  // Near-fullscreen transparent PE shells must not get pointer-events:auto — they
+  // steal inventory GLB / world mesh PE. Visible scrim / BLOCK / text still capture.
+  if (layoutBox && layoutBox.width * layoutBox.height >= 1920 * 1080 * 0.45) {
+    return isFullscreenUiPeAllowed(ecs, entity)
+  }
+  void transform
+  return true
 }
 
 function applySceneUiNodePointerState(
@@ -597,7 +610,8 @@ export class SceneUiDomRenderer {
       input.inputOf,
       input.dropdownOf,
       input.pointerEventsOf,
-      bg
+      bg,
+      layoutBox
     )
 
     const compactControl =

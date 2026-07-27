@@ -99,9 +99,13 @@ export function isUiEntityBlocking(
  * - UiTransform display + opacity chain (isUiEntityVisible)
  * - PointerEvents / pointerFilter BLOCK, or UiInput / UiDropdown
  *
- * Color4.a is a *paint* channel (welcome fade), not a hit-test gate. Invisible PE
- * catchers over child logos are valid scene UI — inventing alpha/no-bg capture
- * rules made CBD splash unclickable.
+ * Color4.a is a *paint* channel (welcome fade), not a hit-test gate for small
+ * controls — invisible PE catchers over child logos are valid scene UI.
+ *
+ * Near-fullscreen PE is different: a transparent full-viewport catcher with no
+ * BLOCK / visible paint steals world mesh PE (inventory GLB never opens). Those
+ * only capture when they have BLOCK, a visible background, or text — see
+ * {@link isFullscreenUiPeAllowed}.
  */
 export function isUiEntityPointerCapturing(
   ecs: MirrorComponents,
@@ -113,6 +117,33 @@ export function isUiEntityPointerCapturing(
   if (!isUiEntityVisible(entity, transformOf)) return false
   if (ecs.UiInput.getOrNull(entity) || ecs.UiDropdown.getOrNull(entity)) return true
   return isUiEntityBlocking(ecs, entity, pointerEventsOf)
+}
+
+/**
+ * Near-fullscreen PE may capture only when the scene authored a real scrim:
+ * pointerFilter BLOCK, visible UiBackground (Color4.a ≥ 0.05), or UiText.
+ * Empty transparent full-viewport PE (ghost inventory / dissolved splash) must
+ * not block 3D mesh PE.
+ */
+export function isFullscreenUiPeAllowed(
+  ecs: MirrorComponents,
+  entity: Entity
+): boolean {
+  const t = ecs.UiTransform.getOrNull(entity)
+  if (t && normalizePointerFilterMode(t.pointerFilter) === PointerFilterMode.BLOCK) {
+    return true
+  }
+  const bg = ecs.UiBackground.getOrNull(entity) as
+    | { color?: { a?: number } | null }
+    | null
+    | undefined
+  const a = bg?.color?.a
+  if (a !== undefined && a !== null && a >= 0.05) return true
+  // No color channel — solid default paint is treated as visible scrim.
+  if (bg && (bg.color === undefined || bg.color === null)) return true
+  const text = ecs.UiText.getOrNull(entity) as { value?: string } | null | undefined
+  if (text?.value?.trim()) return true
+  return false
 }
 
 /** @deprecated Use isUiEntityBlocking — projection-only PointerEvents lookup. */

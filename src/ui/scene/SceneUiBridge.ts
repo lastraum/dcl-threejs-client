@@ -43,6 +43,7 @@ import {
   findUiPointerHandlerEntity,
   hasUiPointerDownOrUp,
   hasUiPointerEvent,
+  isFullscreenUiPeAllowed,
   isUiEntityPointerCapturing,
   normalizePointerEventsList,
   type UiPointerEventsLookup
@@ -986,6 +987,17 @@ export class SceneUiBridge {
   }
 
   /**
+   * Near-fullscreen hit region in client px (≥45% of the interactable viewport).
+   * Used to gate empty transparent PE scrims that otherwise steal world mesh clicks.
+   */
+  private isNearFullscreenPickArea(area: number): boolean {
+    if (!Number.isFinite(area) || area <= 0) return false
+    const interactable = readInteractableArea(this.getCanvas())
+    const vpArea = Math.max(1, interactable.width * interactable.height)
+    return area >= vpArea * 0.45
+  }
+
+  /**
    * Hit map + DOM candidates, ranked deepest / smallest-area first.
    * All overlapping hit-map regions are included so label leaves can ancestor-walk to card handlers.
    */
@@ -1047,9 +1059,12 @@ export class SceneUiBridge {
     const candidates = this.collectTopClusterPickCandidates(clientX, clientY, eventTarget)
     for (const entity of candidates) {
       if (this.input.isFieldEntity(entity)) return { entity, blocking: true }
-      if (isUiEntityPointerCapturing(ecs, entity, this.pointerEventsLookup)) {
-        return { entity, blocking: true }
+      if (!isUiEntityPointerCapturing(ecs, entity, this.pointerEventsLookup)) continue
+      const area = this.candidatePickArea(entity)
+      if (this.isNearFullscreenPickArea(area) && !isFullscreenUiPeAllowed(ecs, entity)) {
+        continue
       }
+      return { entity, blocking: true }
     }
     return null
   }
@@ -1120,6 +1135,16 @@ export class SceneUiBridge {
         // incorrectly walks to the scrim loses to a real card handler under the same point.
         let area = this.candidatePickArea(handler)
         if (!Number.isFinite(area)) area = this.candidatePickArea(entity)
+        // Near-fullscreen PE with no real scrim paint must not steal world mesh PE
+        // (inventory GLB open). Small controls + visible/BLOCK scrims still win.
+        if (this.isNearFullscreenPickArea(area) && !isFullscreenUiPeAllowed(ecs, handler)) {
+          if (logPick) {
+            console.log(
+              `[scene-ui]   skip fullscreen empty PE e${handler} area=${Math.round(area)} (world pass-through)`
+            )
+          }
+          continue
+        }
         if (area < bestArea) {
           bestArea = area
           bestHandler = handler
@@ -1129,6 +1154,9 @@ export class SceneUiBridge {
 
       if (isUiEntityPointerCapturing(ecs, entity, this.pointerEventsLookup)) {
         const area = this.candidatePickArea(entity)
+        if (this.isNearFullscreenPickArea(area) && !isFullscreenUiPeAllowed(ecs, entity)) {
+          continue
+        }
         if (area < blockingArea) {
           blockingArea = area
           blockingEntity = entity

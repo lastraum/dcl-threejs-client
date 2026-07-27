@@ -628,6 +628,16 @@ export function requestSceneEngineTick(): void {
       if (sceneEngineTickDue(performance.now())) {
         tickQueued = false
         requestSceneEngineTick()
+      } else {
+        // play-frame-tick can be sparse while eng.update is heavy; ensure the queued
+        // tick still runs when the interval elapses (welcome Color4.a fade, timers).
+        const wait = Math.max(
+          1,
+          resolveIntervalMs() - (performance.now() - lastExecutedAt)
+        )
+        setTimeout(() => {
+          if (tickQueued) drainQueuedSceneEngineTick()
+        }, wait)
       }
     }
   })

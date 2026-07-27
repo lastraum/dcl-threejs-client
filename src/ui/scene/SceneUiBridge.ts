@@ -800,13 +800,11 @@ export class SceneUiBridge {
 
   /** Recompute cursor from element under last pointer — call after DOM mount changes. */
   private refreshHoverCursor(): void {
-    const canvas = this.getCanvas()
-    if (!canvas || typeof document === 'undefined') return
+    if (typeof document === 'undefined') return
     const x = this.lastPointerClientX
     const y = this.lastPointerClientY
     if (!x && !y) {
-      canvas.style.cursor = 'default'
-      this.root.style.cursor = 'default'
+      this.applyHoverCursor('default')
       return
     }
     // Hit-map + Color4.a / PE (not stale DOM --interactive class after welcome fade).
@@ -816,14 +814,10 @@ export class SceneUiBridge {
       const field =
         under instanceof Element &&
         !!under.closest('.scene-ui-node__input, .scene-ui-node__select')
-      const next = field ? 'text' : 'default'
-      canvas.style.cursor = next
-      this.root.style.cursor = next
+      this.applyHoverCursor(field ? 'text' : 'default')
       return
     }
-    const next = this.input.isFieldEntity(capturing.entity) ? 'text' : 'pointer'
-    canvas.style.cursor = next
-    this.root.style.cursor = next
+    this.applyHoverCursor(this.input.isFieldEntity(capturing.entity) ? 'text' : 'pointer')
   }
 
   /**
@@ -837,20 +831,37 @@ export class SceneUiBridge {
   ): PointerHit | null {
     this.lastPointerClientX = clientX
     this.lastPointerClientY = clientY
-    if (!this.domVisible) return null
+    if (!this.domVisible) {
+      this.applyHoverCursor('default')
+      return null
+    }
     // PX dialog above primary (or reverse): do not claim hover / block with our hit-map.
-    if (isForeignUiRootOnTop(this.root.id, clientX, clientY)) return null
+    if (isForeignUiRootOnTop(this.root.id, clientX, clientY)) {
+      this.applyHoverCursor('default')
+      return null
+    }
     const ecs = this.mirrorEcs
     const view = this.lastView
-    if (!ecs || !view) return null
+    if (!ecs || !view) {
+      this.applyHoverCursor('default')
+      return null
+    }
 
     const topmost = this.pickTopmostUiLayer(clientX, clientY)
-    if (topmost === null) return null
+    if (topmost === null) {
+      this.applyHoverCursor('default')
+      return null
+    }
     if (this.input.isFieldEntity(topmost.entity)) {
+      this.applyHoverCursor('text')
       return this.buildDomPointerHit(topmost.entity, camera)
     }
-    if (!topmost.blocking) return null
+    if (!topmost.blocking) {
+      this.applyHoverCursor('default')
+      return null
+    }
 
+    this.applyHoverCursor('pointer')
     const handler =
       findUiPointerHandlerEntity(
         ecs,
@@ -861,6 +872,12 @@ export class SceneUiBridge {
         this.pointerEventsLookup
       ) ?? topmost.entity
     return this.buildDomPointerHit(handler, camera)
+  }
+
+  private applyHoverCursor(next: 'default' | 'pointer' | 'text'): void {
+    const canvas = this.getCanvas()
+    if (canvas) canvas.style.cursor = next
+    this.root.style.cursor = next
   }
 
   private candidatePickArea(entity: Entity): number {

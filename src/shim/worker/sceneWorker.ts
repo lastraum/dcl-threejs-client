@@ -1310,11 +1310,22 @@ initSceneEngineScheduler({
         requestSceneEngineTick()
       }
       kick()
-      // ~1s of ~60Hz boost so frame-step fade systems (a -= k, not a -= k*dt) still finish
-      // near Explorer wall time when play-frame-tick is sparse after inject.
-      for (const ms of [0, 16, 33, 50, 66, 83, 100, 133, 166, 200, 250, 300, 400, 500, 650, 800, 1000]) {
-        setTimeout(kick, ms)
+      if (mountGrew) {
+        // Menu open — short resume only (long boost can thrash react-ecs against hold).
+        for (const ms of [0, 16, 32, 64, 100]) setTimeout(kick, ms)
+        return
       }
+      // Same mount (welcome fade / Color4.a): sustain ~60Hz eng.update for several seconds.
+      // Plaza systems make each tick heavy; frame-step fades (a -= k) need many ticks.
+      // Wall-clock dt fades still benefit from frequent react-ecs + CRDT paint.
+      const until = performance.now() + 3500
+      const boost = setInterval(() => {
+        if (performance.now() >= until || sceneTicksPaused || !sceneEngine) {
+          clearInterval(boost)
+          return
+        }
+        kick()
+      }, 16)
     })
   }
 })

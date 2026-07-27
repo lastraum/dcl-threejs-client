@@ -14,7 +14,7 @@ import {
   type PointerEventTypeValue
 } from '../../input/pointerConstants'
 import { normalizePointerFilterMode, PointerFilterMode } from './yogaEnums'
-import { effectiveUiBackgroundAlpha } from './uiBackgroundStyle'
+import { effectiveUiBackgroundAlpha, hasUiVisualBackground } from './uiBackgroundStyle'
 import { isUiEntityVisible } from './uiVisibility'
 
 function buttonMatches(entryButton: number | undefined, pressed: InputActionValue): boolean {
@@ -111,6 +111,9 @@ export function isUiBackgroundPointerTransparent(
 /**
  * Whether this entity should capture cursor/clicks right now.
  * Respects scene display/opacity/Color4.a — no client force-dismiss.
+ *
+ * Ghost PE catchers (CBD welcome after dissolve): PE stays mounted with a≈0 or no
+ * paintable UiBackground while the logo unmounts — still must free the hand cursor.
  */
 export function isUiEntityPointerCapturing(
   ecs: MirrorComponents,
@@ -122,8 +125,20 @@ export function isUiEntityPointerCapturing(
   if (!isUiEntityVisible(entity, transformOf)) return false
   const t = transformOf(entity)
   if (t && (t.opacity ?? 1) < UI_POINTER_CAPTURE_MIN_ALPHA) return false
+
+  const hasInput = !!ecs.UiInput.getOrNull(entity)
+  const hasDropdown = !!ecs.UiDropdown.getOrNull(entity)
+  if (hasInput || hasDropdown) return true
+
   const bg = background ?? (ecs.UiBackground.getOrNull(entity) as PBUiBackground | null)
+  // Faded Color4.a (welcome scrim) — PE must not keep the hand cursor.
   if (isUiBackgroundPointerTransparent(bg)) return false
+
+  const hasText = !!(ecs.UiText.getOrNull(entity)?.value?.trim())
+  // PE-only shell with nothing left to paint (a=0, bg removed, logo child gone) —
+  // Explorer would still hit an invisible PE; free pointer when there is no visual.
+  if (!hasText && !hasUiVisualBackground(bg)) return false
+
   return isUiEntityBlocking(ecs, entity, pointerEventsOf)
 }
 

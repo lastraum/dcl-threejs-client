@@ -210,6 +210,7 @@ export class World {
   private lastColliderHealthLogMs = 0
   private lastLoggedStaticCount = -1
   private lastSoftFloorLiftMs = 0
+  private softFloorLiftCount = 0
 
   /** Runtime burst (e.g. theatre composite spawns). */
   private runtimeColliderBurstUntil = 0
@@ -316,10 +317,10 @@ export class World {
       const pos = this.player?.getWorldPosition()
       return pos ? pos.clone() : null
     })
-    // Heavy compose hitches can leave CCT obstacle cache / zero-dt warm state stale — soft solids.
+    // Peer avatar compose: CCT cache only — never reinsert/rebuild after seal.
     this.remoteAvatars.setOnComposeSettled(() => {
       if (!this.collidersLoadingComplete) return
-      this.physics.refreshStaticAfterRuntimeGeometryChange()
+      this.physics.invalidateControllerCache()
     })
 
     this.unsubEnvironmentDebug = environmentDebug.subscribe(() => this.applyEnvironmentDebugVisibility())
@@ -1982,22 +1983,25 @@ export class World {
               `(down 2.5→-3.5 from feet+2.5; MISS = SQ tree cannot hit scene hulls)`
           )
           this.physics.invalidateControllerCache()
-          // Throttled under-floor recover (probe higher than feet). Not every 8s spam.
+          // At most 2 under-floor lifts per session — spam teleports were unsticking CCT.
           const nowLift = performance.now()
           if (
             probe != null &&
             probe > feet.y + 0.08 &&
             probe < feet.y + 4 &&
-            nowLift - this.lastSoftFloorLiftMs > 5_000
+            this.softFloorLiftCount < 2 &&
+            nowLift - this.lastSoftFloorLiftMs > 12_000
           ) {
             this.lastSoftFloorLiftMs = nowLift
+            this.softFloorLiftCount++
             const lifted = feet.clone()
             lifted.y = probe
             this.physics.teleport(lifted)
             this.physics.invalidateControllerCache()
             this.player?.getPlayerRoot()?.position.copy(this.physics.positionOut)
             console.info(
-              `[phys] health-soft lift feet y ${feet.y.toFixed(2)} → ${probe.toFixed(2)} (under-floor recover)`
+              `[phys] health-soft lift feet y ${feet.y.toFixed(2)} → ${probe.toFixed(2)} ` +
+                `(under-floor recover #${this.softFloorLiftCount})`
             )
           }
         }
@@ -2110,13 +2114,17 @@ export class World {
       // Integrity: drain any still-missing actors before we claim ready (Genesis soft load).
       await this.ensurePrimaryColliderIntegrity('prepare-seal', 96)
 
+      // Final pose slide + ONE SQ seal — then freeze reinsert/rebuild (prevents ~1min soft thrash).
+      this.pushAllColliderPosesToPhysX()
+      this.physics.sealStaticSceneQuery()
+
       const staticN = this.physics.staticColliderCount
       const gltfN = this.physics.gltfStaticActorCount
       const extracted = this.lastGltfColliderCount
       const elapsed = ((performance.now() - started) / 1000).toFixed(1)
       console.info(
         `[phys] colliders ready — static=${staticN} gltf=${gltfN}/${extracted} ` +
-          `pending=${this.colliderCookQueue.size} (${elapsed}s)`
+          `pending=${this.colliderCookQueue.size} sealedSQ=true (${elapsed}s)`
       )
       this.physics.logStaticCollidersNear(
         this.colliderCookPriority.x,

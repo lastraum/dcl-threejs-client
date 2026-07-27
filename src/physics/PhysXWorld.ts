@@ -267,6 +267,12 @@ export class PhysXWorld {
    * Boot/seal may still use full warm; runtime only invalidates the CCT obstacle cache.
    */
   private allowZeroDtWarmSim = true
+  /**
+   * Boot/seal: remove+add static actors after setGlobalPose so SQ AABBs match.
+   * After seal: NEVER reinsert/rebuild — continuous reinsert on plaza (700+ actors) softs
+   * CCT after ~1min (solids work, then walk-through). Kinematic PART uses setKinematicTarget.
+   */
+  private allowStaticReinsert = true
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private controllerManager: any = null
@@ -984,7 +990,8 @@ export class PhysXWorld {
             }
           }
           updated += cooked
-          this.rebuildStaticSceneQueryTree()
+          // No forceDynamicTreeRebuild — PART cooks use replaceStaticWithCook (addActor).
+          this.invalidateControllerCache()
         }
       } catch (err) {
         console.warn('[PhysXWorld] PART world hull cook failed', err)
@@ -1313,6 +1320,10 @@ export class PhysXWorld {
    * forceDynamicTreeRebuild on 700+ actors corrupts PhysX WASM query state (sweep MISS).
    */
   rebuildStaticSceneQueryTree(): void {
+    if (!this.allowStaticReinsert) {
+      this.invalidateControllerCache()
+      return
+    }
     if (!this.scene) {
       this.invalidateControllerCache()
       return
@@ -1328,10 +1339,12 @@ export class PhysXWorld {
 
   /**
    * PhysX static actors keep a single SQ bound; setLocalPose on shapes does not expand it.
-   * Remove+add forces the bound to match current shape poses so CCT can hit swung doors.
+   * Remove+add forces the bound to match — **boot/seal only**. After seal this is a no-op
+   * (see {@link sealStaticSceneQuery}); thrashing reinsert softs plaza CCT after ~1min.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private reinsertStaticActorForSceneQuery(actor: any): void {
+    if (!this.allowStaticReinsert) return
     if (!this.scene || !actor) return
     try {
       this.scene.removeActor(actor)
@@ -1593,6 +1606,25 @@ export class PhysXWorld {
    */
   setAllowZeroDtWarmSim(allowed: boolean): void {
     this.allowZeroDtWarmSim = allowed
+  }
+
+  /**
+   * Call once after seal: freezes remove+add SQ reinsert and full tree rebuild.
+   * Pose slides still update actor global pose; CCT cache invalidate is enough for static plaza.
+   */
+  sealStaticSceneQuery(): void {
+    this.allowStaticReinsert = false
+    this.allowZeroDtWarmSim = false
+    // One final tree rebuild while SQ is still healthy — then never again.
+    if (this.scene) {
+      try {
+        this.scene.forceDynamicTreeRebuild(true, false)
+      } catch (err) {
+        console.warn('[PhysXWorld] sealStaticSceneQuery rebuild failed:', err)
+      }
+    }
+    this.invalidateControllerCache()
+    console.info('[PhysXWorld] static SQ sealed — no further reinsert/rebuild (CCT stickiness)')
   }
 
   /**

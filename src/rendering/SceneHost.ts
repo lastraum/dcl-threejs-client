@@ -124,7 +124,13 @@ export class SceneHost {
       this.camera.aspect = width / height
       this.camera.updateProjectionMatrix()
     }
-    this.renderer.setSize(width, height, false)
+    // updateStyle=true so canvas CSS matches CSS pixel size (false left a black letterbox
+    // under the WebGL surface when buffer size drifted from element style).
+    this.renderer.setSize(width, height, true)
+    const canvas = this.renderer.domElement
+    canvas.style.width = `${width}px`
+    canvas.style.height = `${height}px`
+    canvas.style.display = 'block'
     this.ensureMsaaTargetSize()
     this.configureBloom(renderQuality.getOptions())
     this.nameTags?.setSize(width, height)

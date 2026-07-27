@@ -159,3 +159,15 @@ export function normalizeYGFlexDirection(value: unknown): number {
   }
   return YGFlexDirection.ROW
 }
+
+/** react-ecs may emit `"absolute"` / `"relative"` strings before protobuf encode. */
+export function normalizeYGPositionType(value: unknown): number {
+  if (value === YGPositionType.ABSOLUTE || value === 1) return YGPositionType.ABSOLUTE
+  if (value === YGPositionType.RELATIVE || value === 0) return YGPositionType.RELATIVE
+  if (typeof value === 'string') {
+    const key = value.toLowerCase()
+    if (key === 'absolute') return YGPositionType.ABSOLUTE
+    if (key === 'relative') return YGPositionType.RELATIVE
+  }
+  return YGPositionType.RELATIVE
+}

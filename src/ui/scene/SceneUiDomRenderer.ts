@@ -17,6 +17,7 @@ import {
   hasUiBackgroundTexture,
   hasUiVisualBackground,
   normalizeBackgroundTextureMode,
+  parseUiBackgroundUvRect,
   resolveUiBackgroundImageUrl
 } from './uiBackgroundStyle'
 import { hasUiPointerDownOrUp, type UiPointerEventsLookup } from './uiPointer'
@@ -443,12 +444,19 @@ export class SceneUiDomRenderer {
 
     const transform = input.transformOf(entity)
     if (!transform || !isUiEntityVisible(entity, input.transformOf)) {
+      // display:none / opacity 0 — hide this shell and the whole subtree (do not paint
+      // children as canvas-absolute orphans; that tiles every shop icon across the screen).
       const hidden = this.nodes.get(entity)
       if (hidden) this.applyHiddenDomState(hidden)
-      const children = input.forest.get(entity) ?? []
-      for (const child of children) {
-        this.renderEntityTree(child, input, alive, visited, depth + 1, regions, scale)
+      const hideSubtree = (e: Entity): void => {
+        for (const child of input.forest.get(e) ?? []) {
+          visited.add(child)
+          const node = this.nodes.get(child)
+          if (node) this.applyHiddenDomState(node)
+          hideSubtree(child)
+        }
       }
+      hideSubtree(entity)
       return
     }
 
@@ -555,14 +563,19 @@ export class SceneUiDomRenderer {
     const rawTexSrc = bg ? extractUiTextureSrc(bg.texture) : null
     const texMode =
       bg && (imageUrl || rawTexSrc)
-        ? normalizeBackgroundTextureMode(bg.textureMode, rawTexSrc, bg.textureSlices)
+        ? normalizeBackgroundTextureMode(bg.textureMode, rawTexSrc, bg.textureSlices, bg.uvs)
         : BackgroundTextureMode.STRETCH
+    // Atlas UV sprites must never take the nine-slice border-image path.
+    const useNineSlice =
+      imageUrl &&
+      texMode === BackgroundTextureMode.NINE_SLICES &&
+      !parseUiBackgroundUvRect(bg?.uvs)
     if (hasBg) {
       if (colorOnlyBg) {
         el.querySelector('.scene-ui-node__bg')?.remove()
         el.querySelector('.scene-ui-node__bg-img')?.remove()
         applyUiBackgroundStyles(el, bg, null, scale)
-      } else if (imageUrl && texMode === BackgroundTextureMode.NINE_SLICES) {
+      } else if (useNineSlice) {
         el.style.backgroundColor = 'transparent'
         el.querySelector('.scene-ui-node__bg-img')?.remove()
         const bgEl = ensureBgLayer(el)

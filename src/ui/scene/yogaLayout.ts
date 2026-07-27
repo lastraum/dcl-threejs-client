@@ -16,7 +16,8 @@ import {
   YGWrap,
   normalizeYGAlign,
   normalizeYGFlexDirection,
-  normalizeYGJustify
+  normalizeYGJustify,
+  normalizeYGPositionType
 } from './yogaEnums'
 
 export type LayoutBox = {
@@ -182,8 +183,9 @@ function applyUiTransform(node: YogaNode, t: PBUiTransform): void {
   node.setFlexWrap(WRAP[t.flexWrap ?? YGWrap.NO_WRAP] ?? Yoga.WRAP_NO_WRAP)
   node.setOverflow(OVERFLOW[t.overflow] ?? Yoga.OVERFLOW_VISIBLE)
   node.setDisplay(isYGDisplayNone(t.display) ? Yoga.DISPLAY_NONE : Yoga.DISPLAY_FLEX)
+  // String "absolute" must not fall through to relative (shop HUD piles at wrong origin).
   node.setPositionType(
-    t.positionType === YGPositionType.ABSOLUTE
+    normalizeYGPositionType(t.positionType) === YGPositionType.ABSOLUTE
       ? Yoga.POSITION_TYPE_ABSOLUTE
       : Yoga.POSITION_TYPE_RELATIVE
   )

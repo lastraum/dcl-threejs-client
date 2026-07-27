@@ -156,18 +156,27 @@ export function hasUiBackgroundTexture(bg: PBUiBackground | null | undefined): b
 /**
  * react-ecs may omit textureMode (CENTER intent). Protobuf enum default is NINE_SLICES (0).
  *
- * Honor nine-slice when:
- *  - mode string is 'nine_slices' / 'nine-slices' (always — even default 1/3 slices), or
- *  - mode is NINE_SLICES (0) and textureSlices is present (object, any fractions incl. 1/3)
+ * Atlas UV rects (non-full uvs) always win → STRETCH so applyBgImg crops the sheet.
+ * Fishing shop icons ship textureMode=0 + default textureSlices + atlas uvs; treating that
+ * as nine-slice painted the whole fish atlas into every cell (full-screen chaos).
  *
- * HTTP/CDN textures are allowed (previously always demoted to stretch — broken panels).
- * Bare mode 0 with **no** textureSlices field → STRETCH (protobuf false-default without slices).
+ * Honor nine-slice when:
+ *  - mode string is 'nine_slices' / 'nine-slices', or
+ *  - mode is NINE_SLICES (0), no atlas UV crop, and textureSlices is present
+ *
+ * Bare mode 0 with **no** textureSlices field → STRETCH.
  */
 export function normalizeBackgroundTextureMode(
   mode: number | string | undefined,
   _src: string | null,
-  textureSlices?: PBUiBackground['textureSlices']
+  textureSlices?: PBUiBackground['textureSlices'],
+  uvs?: number[] | null
 ): number {
+  // Atlas sprite UVs — never nine-slice (would border-image the whole sheet).
+  if (parseUiBackgroundUvRect(uvs)) {
+    return BackgroundTextureMode.STRETCH
+  }
+
   if (typeof mode === 'string') {
     const key = mode.toLowerCase().replace(/-/g, '_')
     if (key === 'stretch') return BackgroundTextureMode.STRETCH
@@ -179,7 +188,7 @@ export function normalizeBackgroundTextureMode(
   }
   const numeric = typeof mode === 'number' ? mode : BackgroundTextureMode.CENTER
   if (numeric === BackgroundTextureMode.NINE_SLICES) {
-    // Slices object present (incl. default 1/3) → real nine-slice. Missing → stretch.
+    // Slices object present (incl. default 1/3) → real nine-slice panel. Missing → stretch.
     if (textureSlices != null && typeof textureSlices === 'object') {
       return BackgroundTextureMode.NINE_SLICES
     }
@@ -408,15 +417,14 @@ function applyBgImg(
   img.style.objectFit = 'fill'
   img.style.objectPosition = 'center'
 
-  // Atlas UV crop (stretch + uvs) — clip sheet sprite into the element box.
-  // Without this, Dead Surge lobby buttons paint the whole HUD_LOBBY2 atlas
-  // squashed into each small rect ("UI scaled wrong").
-  const rect =
-    mode === BackgroundTextureMode.STRETCH ? parseUiBackgroundUvRect(uvs) : null
+  // Atlas UV crop whenever non-full uvs are present (any textureMode).
+  // Previously only STRETCH cropped — CENTER/default mode painted the entire atlas
+  // into every inventory cell (fishing shop full-screen icon chaos).
+  const rect = parseUiBackgroundUvRect(uvs)
   if (rect) {
     const { u0, v0, u1, v1 } = rect
-    const uSpan = u1 - u0
-    const vSpan = v1 - v0
+    const uSpan = Math.max(1e-6, u1 - u0)
+    const vSpan = Math.max(1e-6, v1 - v0)
     // GL v=0 bottom; CSS top=0 top → image top edge is at (1 - v1).
     el.style.overflow = 'hidden'
     img.style.inset = 'unset'
@@ -426,6 +434,7 @@ function applyBgImg(
     img.style.height = `${(100 / vSpan).toFixed(4)}%`
     img.style.left = `${((-u0 / uSpan) * 100).toFixed(4)}%`
     img.style.top = `${((-(1 - v1) / vSpan) * 100).toFixed(4)}%`
+    img.style.objectFit = 'fill'
   } else {
     el.style.overflow = ''
     img.style.inset = '0'
@@ -644,7 +653,7 @@ export function applyUiBackgroundStyles(
   const tint = color4Css(c)
   const rawSrc = extractUiTextureSrc(bg?.texture)
   const mode = imageUrl
-    ? normalizeBackgroundTextureMode(bg?.textureMode, rawSrc, bg?.textureSlices)
+    ? normalizeBackgroundTextureMode(bg?.textureMode, rawSrc, bg?.textureSlices, bg?.uvs)
     : -1
   // Skip full style thrash when paint re-visits stable PE HUD panels every tick.
   // Clearing borderImage / swapping solid→texture every frame is the PX UI flash.

@@ -2382,6 +2382,12 @@ export class World {
         'pre-play-spawn'
       )
       // Must not be MISS after seal — if MISS, SQ commit failed (P0).
+      const diag = this.physics.diagnoseSceneQueryAt(
+        this.colliderCookPriority.x,
+        this.colliderCookPriority.y,
+        this.colliderCookPriority.z,
+        'pre-play'
+      )
       const probe = this.physics.probeWalkSurfaceFeetY(
         this.colliderCookPriority.x,
         this.colliderCookPriority.z,
@@ -2391,7 +2397,8 @@ export class World {
       )
       console.info(
         `[phys] pre-play sweepFeetY=${probe != null ? probe.toFixed(2) : 'MISS'} ` +
-          `(expect hit after seal reinsert+rebuild once; MISS = P0 SQ bug)`
+          `rawDidHit=${diag.didHit} inScene=${diag.inScene}/${diag.map} ` +
+          `(MISS = P0 SQ bug — check seal probe= line)`
       )
       onProgress?.('Collisions ready')
     } finally {

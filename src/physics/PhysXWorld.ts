@@ -7,7 +7,12 @@ import { physxColliderDebug } from '../debug/PhysxColliderDebug'
 import { platformMotionDebug } from '../debug/PlatformMotionDebug'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { extendThreePhysX } from './extendThreePhysX'
-import { CAMERA_QUERY_MASK, Layers, TRIGGER_QUERY_MASK } from './Layers'
+import {
+  CAMERA_QUERY_MASK,
+  Layers,
+  SOLID_FILTER_OPEN,
+  TRIGGER_QUERY_MASK
+} from './Layers'
 import { geometryToPxMesh, type PxMeshHandle } from './geometryToPxMesh'
 import { bakeTrimeshGeometry, isTrimeshGeometryCookable } from './bakeTrimeshGeometry'
 import { bootColliderCookSignature, entityLocalColliderCookSignature } from './physxCookBake'
@@ -293,6 +298,9 @@ export class PhysXWorld {
   /** Permanent filter data for scene sweeps — avoid temp wrapPointer drops. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private sceneQueryFilterWords: any = null
+  /** Permanent CCT query flags — must not be a one-shot that GC can free. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private cctQueryFlags: any = null
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private controllerManager: any = null
@@ -579,7 +587,12 @@ export class PhysXWorld {
     const shape = this.physics.createShape(geometry, this.defaultMaterial, true, shapeFlags)
     PHYSX.destroy(geometry)
 
-    const filterData = new PHYSX.PxFilterData(Layers.environment.group, Layers.environment.mask, 0, 0)
+    const filterData = new PHYSX.PxFilterData(
+      Layers.environment.group,
+      SOLID_FILTER_OPEN,
+      0,
+      0
+    )
     shape.setQueryFilterData(filterData)
     shape.setSimulationFilterData(filterData)
 
@@ -681,15 +694,21 @@ export class PhysXWorld {
   private setupControllerManager(): void {
     this.controllerManager = PHYSX.PxTopLevelFunctions.prototype.CreateControllerManager(this.scene)
     // Keep filter data alive for the process lifetime — C++ holds a raw pointer only.
-    this.cctFilterData = new PHYSX.PxFilterData(Layers.player.group, Layers.player.mask, 0, 0)
+    // Open solid mask (0xffffffff) so bilateral never rejects env/prop/gltf hulls.
+    this.cctFilterData = new PHYSX.PxFilterData(
+      Layers.player.group,
+      SOLID_FILTER_OPEN,
+      0,
+      0
+    )
     this.controllerFilters = new PHYSX.PxControllerFilters(this.cctFilterData)
     this.controllerFilters.mFilterData = this.cctFilterData
     // No ePREFILTER — custom preFilter was a soft-world footgun (garbage words / wrong eNONE).
-    // Default bilateral filter uses permanent mFilterData vs shape query words (env/prop/gltf).
-    // Triggers use trigger layer mask and do not match player.mask solid bits for blocking.
-    this.controllerFilters.mFilterFlags = new PHYSX.PxQueryFlags(
+    // Triggers stay on trigger layer (narrow mask) and do not match open solid blocking.
+    this.cctQueryFlags = new PHYSX.PxQueryFlags(
       PHYSX.PxQueryFlagEnum.eSTATIC | PHYSX.PxQueryFlagEnum.eDYNAMIC
     )
+    this.controllerFilters.mFilterFlags = this.cctQueryFlags
     this.controllerFilters.mFilterCallback = null
 
     const cctFilterCallback = new PHYSX.PxControllerFilterCallbackImpl()
@@ -936,13 +955,18 @@ export class PhysXWorld {
     down.y = -1
     down.z = 0
 
+    const hitFlags =
+      (PHYSX.PxHitFlagEnum.eDEFAULT ?? 0) |
+      (PHYSX.PxHitFlagEnum.ePOSITION ?? 0) |
+      (PHYSX.PxHitFlagEnum.eNORMAL ?? 0) |
+      (PHYSX.PxHitFlagEnum.eMESH_BOTH_SIDES ?? 0)
     const didHit = this.scene.sweep(
       this.cameraSweepGeometry,
       this.sweepPose,
       down,
       maxDrop,
       this.sweepResult,
-      PHYSX.PxHitFlagEnum.eDEFAULT,
+      hitFlags || PHYSX.PxHitFlagEnum.eDEFAULT,
       this.queryFilterData
     )
     if (!didHit) return null
@@ -950,12 +974,17 @@ export class PhysXWorld {
     const nbHits = this.sweepResult.getNbAnyHits?.() ?? 1
     let bestY: number | null = null
     let bestScore = Number.POSITIVE_INFINITY
+    let anyDist: number | null = null
     for (let i = 0; i < nbHits; i++) {
       const hit = this.sweepResult.getAnyHit(i)
-      const ny = hit.normal?.y ?? 0
-      // Walk surface: mostly upward normal
-      if (ny < 0.45) continue
-      const hitY = fromY - hit.distance
+      const dist = hit?.distance
+      if (typeof dist === 'number' && Number.isFinite(dist) && anyDist === null) {
+        anyDist = dist
+      }
+      const ny = hit?.normal?.y
+      // Prefer upward normals; if normal missing (flag not filled), still accept hit.
+      if (typeof ny === 'number' && Number.isFinite(ny) && ny < 0.45) continue
+      const hitY = fromY - (dist ?? 0)
       if (preferNearY != null && Number.isFinite(preferNearY)) {
         if (!isPlausibleSpawnSurfaceY(hitY, preferNearY)) continue
         const score = Math.abs(hitY - preferNearY)
@@ -966,6 +995,10 @@ export class PhysXWorld {
       } else if (bestY === null || hitY > bestY) {
         bestY = hitY
       }
+    }
+    // Fallback: had hits but all failed normal gate — still use nearest distance.
+    if (bestY === null && anyDist != null) {
+      bestY = fromY - anyDist
     }
     return bestY
   }
@@ -1409,39 +1442,25 @@ export class PhysXWorld {
   }
 
   /**
-   * **Boot seal only** — ensure every static is in the scene + SQ AABB matches world bake.
-   * Safe: if remove succeeded and add failed, we still try add (never leave map-only orphans).
+   * **Boot seal only** — re-add actors missing from the PhysX scene (map orphans).
+   * Does **not** remove+add healthy actors (that can leave map-only ghosts on WASM fail).
    * After {@link sealStaticSceneQuery} this is a no-op forever.
    */
   reinsertAllStaticActorsForSceneQuery(): number {
     if (!this.allowStaticReinsert || !this.scene || this.staticSqSealed) return 0
-    let n = 0
+    let inScene = 0
     let readded = 0
-    let missingFromScene = 0
     for (const actor of this.staticActors.values()) {
       if (!actor) continue
+      if (this.actorInScene(actor)) {
+        inScene++
+        continue
+      }
       try {
-        const inScene = this.actorInScene(actor)
-        if (inScene) {
-          this.scene.removeActor(actor)
-          this.scene.addActor(actor)
-          n++
-        } else {
-          // Map has actor but scene lost it (failed prior reinsert) — re-add only.
-          this.scene.addActor(actor)
-          missingFromScene++
-          readded++
-          n++
-        }
+        this.scene.addActor(actor)
+        readded++
       } catch (err) {
-        // Last chance: try bare add without remove.
-        try {
-          this.scene.addActor(actor)
-          readded++
-          n++
-        } catch {
-          console.warn('[PhysXWorld] reinsertAll failed for actor', err)
-        }
+        console.warn('[PhysXWorld] orphan addActor failed', err)
       }
     }
     try {
@@ -1452,15 +1471,143 @@ export class PhysXWorld {
       /* optional API */
     }
     this.invalidateControllerCache()
-    if (missingFromScene > 0) {
-      console.warn(
-        `[PhysXWorld] reinsertAll — ${missingFromScene} actors were missing from scene (re-added)`
-      )
-    }
     console.info(
-      `[PhysXWorld] reinsertAll — n=${n} readdedOrphans=${readded} map=${this.staticActors.size}`
+      `[PhysXWorld] seal membership — inScene=${inScene} orphansReadded=${readded} map=${this.staticActors.size}`
     )
+    return readded
+  }
+
+  /**
+   * Re-apply open solid query/simulation filters on every static shape.
+   * Fixes plaza soft when shapes were cooked under a stale narrow mask.
+   */
+  reapplySolidShapeFilters(): number {
+    if (!this.physics || !this.scene) return 0
+    let n = 0
+    for (const [entity, actor] of this.staticActors) {
+      if (!actor || entity === undefined) continue
+      try {
+        const nb = actor.getNbShapes?.() ?? 0
+        if (nb <= 0) continue
+        const buf = new PHYSX.PxArray_PxShapePtr(nb)
+        actor.getShapes(buf.begin(), nb, 0)
+        // Ground / landscape / GLTF solids — open bilateral. Triggers use a different map.
+        const filterData = new PHYSX.PxFilterData(
+          entity === INFINITE_GROUND_ENTITY ? Layers.environment.group : Layers.prop.group,
+          SOLID_FILTER_OPEN,
+          0,
+          0
+        )
+        for (let i = 0; i < nb; i++) {
+          const shape = buf.get(i)
+          if (!shape) continue
+          shape.setQueryFilterData(filterData)
+          shape.setSimulationFilterData(filterData)
+          n++
+        }
+        try {
+          PHYSX.destroy(buf)
+        } catch {
+          /* ignore */
+        }
+      } catch {
+        /* skip actor */
+      }
+    }
     return n
+  }
+
+  /**
+   * Seal-time SQ diagnostic — raw sweep didHit (no normal gate).
+   * Logs filter-open probe so MISS is diagnosable as SQ-dead vs filter vs normal reject.
+   */
+  diagnoseSceneQueryAt(x: number, y: number, z: number, label = 'sq-diag'): {
+    didHit: boolean
+    distance: number | null
+    normalY: number | null
+    inScene: number
+    map: number
+  } {
+    this.ensureCameraSweepGeometry()
+    let inScene = 0
+    for (const actor of this.staticActors.values()) {
+      if (this.actorInScene(actor)) inScene++
+    }
+    const map = this.staticActors.size
+    if (!this.scene || !this.cameraSweepGeometry) {
+      console.warn(`[phys] ${label} — no scene/sweepGeom map=${map} inScene=${inScene}`)
+      return { didHit: false, distance: null, normalY: null, inScene, map }
+    }
+
+    // Open filter for diagnostic.
+    if (!this.sceneQueryFilterWords) {
+      this.sceneQueryFilterWords = new PHYSX.PxFilterData(
+        Layers.player.group,
+        SOLID_FILTER_OPEN,
+        0,
+        0
+      )
+    } else {
+      this.sceneQueryFilterWords.word0 = Layers.player.group
+      this.sceneQueryFilterWords.word1 = SOLID_FILTER_OPEN
+    }
+    this.queryFilterData.data = this.sceneQueryFilterWords
+    try {
+      this.queryFilterData.flags = new PHYSX.PxQueryFlags(
+        PHYSX.PxQueryFlagEnum.eSTATIC | PHYSX.PxQueryFlagEnum.eDYNAMIC
+      )
+    } catch {
+      /* optional */
+    }
+
+    this._v1.set(x, y + 2.5, z)
+    this._v1.toPxVec3(this.sweepPose.p)
+    // Identity quat for sphere
+    try {
+      this._identityQuat.set(0, 0, 0, 1)
+      this._identityQuat.toPxTransform(this.sweepPose)
+    } catch {
+      /* pose may only expose .p */
+    }
+    const down = this._pv2
+    down.x = 0
+    down.y = -1
+    down.z = 0
+
+    const hitFlags =
+      (PHYSX.PxHitFlagEnum.ePOSITION ?? 0) |
+      (PHYSX.PxHitFlagEnum.eNORMAL ?? 0) |
+      (PHYSX.PxHitFlagEnum.eDEFAULT ?? 0) |
+      (PHYSX.PxHitFlagEnum.eMESH_BOTH_SIDES ?? 0)
+
+    let didHit = false
+    let distance: number | null = null
+    let normalY: number | null = null
+    try {
+      didHit = !!this.scene.sweep(
+        this.cameraSweepGeometry,
+        this.sweepPose,
+        down,
+        8,
+        this.sweepResult,
+        hitFlags || PHYSX.PxHitFlagEnum.eDEFAULT,
+        this.queryFilterData
+      )
+      if (didHit) {
+        const hit = this.sweepResult.getAnyHit(0)
+        distance = hit?.distance ?? null
+        normalY = hit?.normal?.y ?? null
+      }
+    } catch (err) {
+      console.warn(`[phys] ${label} sweep threw`, err)
+    }
+
+    console.info(
+      `[phys] ${label} didHit=${didHit} dist=${distance != null ? distance.toFixed(3) : 'n/a'} ` +
+        `ny=${normalY != null ? normalY.toFixed(2) : 'n/a'} map=${map} inScene=${inScene} ` +
+        `at=(${x.toFixed(1)},${y.toFixed(1)},${z.toFixed(1)})`
+    )
+    return { didHit, distance, normalY, inScene, map }
   }
 
   /** True when this geom fingerprint already failed cook (skip re-queue thrash). */
@@ -1737,10 +1884,11 @@ export class PhysXWorld {
   /**
    * Call once after boot cook. COD (docs/STATIC_COLLIDER_COD.md):
    *
-   * 1. reinsertAll once (SQ AABB / scene membership for world-baked multi-shape)
-   * 2. **one** forceDynamicTreeRebuild(static) — required so bulk-added statics are
-   *    queryable; thrashing this later kills plaza WASM SQ (so we freeze after)
-   * 3. freeze reinsert/rebuild forever
+   * 1. Open solid shape filters (bilateral never rejects hulls)
+   * 2. Re-add scene orphans only (no mass remove+add)
+   * 3. flushQueryUpdates
+   * 4. Probe — if still MISS, **one** forceDynamicTreeRebuild then re-probe
+   * 5. Freeze thrash forever
    *
    * Late single-actor cooks still reinsert once inside {@link addStatic}.
    */
@@ -1749,24 +1897,51 @@ export class PhysXWorld {
     this.ensureInfiniteGroundPlane()
     const n = this.staticActors.size
 
-    // Boot SQ commit (only if not already sealed).
-    let reinserted = 0
+    let orphans = 0
+    let filters = 0
     let rebuilt = false
+    let probeBefore = 'n/a'
+    let probeAfter = 'n/a'
+
     if (!this.staticSqSealed && this.scene) {
-      reinserted = this.reinsertAllStaticActorsForSceneQuery()
-      try {
-        // (rebuildStaticStructure, rebuildDynamicStructure) — ONE shot for bulk statics.
-        this.scene.forceDynamicTreeRebuild(true, false)
-        rebuilt = true
-      } catch (err) {
-        console.warn('[PhysXWorld] seal forceDynamicTreeRebuild failed:', err)
-      }
+      filters = this.reapplySolidShapeFilters()
+      orphans = this.reinsertAllStaticActorsForSceneQuery()
       try {
         if (typeof this.scene.flushQueryUpdates === 'function') {
           this.scene.flushQueryUpdates()
         }
       } catch {
         /* optional */
+      }
+      this.invalidateControllerCache()
+
+      // Spawn-priority probe point (caller may have set controller already or not).
+      const px = this.position?.x ?? 0
+      const py = this.position?.y ?? 0
+      const pz = this.position?.z ?? 0
+      const d0 = this.diagnoseSceneQueryAt(px, py, pz, 'seal-before-rebuild')
+      probeBefore = d0.didHit
+        ? `hit d=${d0.distance?.toFixed(2)} ny=${d0.normalY?.toFixed(2)}`
+        : 'MISS'
+
+      // Only rebuild if SQ still dead — thrashing rebuild softs plaza later.
+      if (!d0.didHit) {
+        try {
+          this.scene.forceDynamicTreeRebuild(true, false)
+          rebuilt = true
+          if (typeof this.scene.flushQueryUpdates === 'function') {
+            this.scene.flushQueryUpdates()
+          }
+        } catch (err) {
+          console.warn('[PhysXWorld] seal forceDynamicTreeRebuild failed:', err)
+        }
+        this.invalidateControllerCache()
+        const d1 = this.diagnoseSceneQueryAt(px, py, pz, 'seal-after-rebuild')
+        probeAfter = d1.didHit
+          ? `hit d=${d1.distance?.toFixed(2)} ny=${d1.normalY?.toFixed(2)}`
+          : 'MISS'
+      } else {
+        probeAfter = probeBefore
       }
     }
 
@@ -1775,8 +1950,8 @@ export class PhysXWorld {
     this.staticSqSealed = true
     this.invalidateControllerCache()
     console.info(
-      `[PhysXWorld] static SQ sealed — static=${n} reinsert=${reinserted} ` +
-        `rebuild=${rebuilt ? 'once' : 'skipped'} reinsertFrozen=true (COD boot-only)`
+      `[PhysXWorld] static SQ sealed — static=${n} filters=${filters} orphans=${orphans} ` +
+        `rebuild=${rebuilt ? 'once' : 'skip'} probe=${probeBefore}→${probeAfter} frozen=true`
     )
   }
 
@@ -2926,7 +3101,8 @@ export class PhysXWorld {
 
   /** Scene queries — bilateral layer test (matches CCT). No ePREFILTER (null callback → MISS). */
   private applySceneQueryFilter(layerMask: number): void {
-    const mask = layerMask === 0 ? Layers.player.mask : layerMask & Layers.player.mask
+    // layerMask 0 → open solid mask. Camera/trigger pass a narrower mask.
+    const mask = layerMask === 0 ? SOLID_FILTER_OPEN : layerMask >>> 0
     if (!this.sceneQueryFilterWords) {
       this.sceneQueryFilterWords = new PHYSX.PxFilterData(Layers.player.group, mask, 0, 0)
     } else {
@@ -3265,8 +3441,8 @@ export class PhysXWorld {
       const shape = this.physics.createShape(pxGeometry, this.defaultMaterial, true, shapeFlags)
       PHYSX.destroy(pxGeometry)
 
-      // Prop layer — same filter path as MeshCollider (proven CCT + scene query blocking).
-      const filterData = new PHYSX.PxFilterData(Layers.prop.group, Layers.prop.mask, 0, 0)
+      // Prop layer + open mask — bilateral never rejects CCT / sweeps.
+      const filterData = new PHYSX.PxFilterData(Layers.prop.group, SOLID_FILTER_OPEN, 0, 0)
       shape.setQueryFilterData(filterData)
       shape.setSimulationFilterData(filterData)
 
@@ -3645,9 +3821,9 @@ export class PhysXWorld {
     PHYSX.destroy(geometry)
 
     const isLandscape = desc.fingerprint.includes(':wall:')
-    // GLTF trimesh colliders use prop layer — same as MeshCollider (proven CCT blocking).
+    // GLTF trimesh colliders use prop/env group + open solid mask (CCT blocking).
     const layer = isLandscape ? Layers.environment : Layers.prop
-    const filterData = new PHYSX.PxFilterData(layer.group, layer.mask, 0, 0)
+    const filterData = new PHYSX.PxFilterData(layer.group, SOLID_FILTER_OPEN, 0, 0)
     shape.setQueryFilterData(filterData)
     shape.setSimulationFilterData(filterData)
 

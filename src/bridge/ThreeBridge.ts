@@ -905,10 +905,13 @@ export class ThreeBridge {
       if (this.emptyGltfHashes.has(hash)) return false
       const cacheKey = this.gltfCacheKey(hash)
       if (this.cache.hasGivenUp(cacheKey)) return false
+      // GPU instances / animation-only rigs set gltfSrcKey but may have no `__mesh_*` child.
+      // Treat as complete so we don't re-queue forever (hydration stuck ~79%).
+      if (obj.userData.gltfSrcKey === hash) {
+        if (obj.userData.dclInstanced || obj.userData.animationRig) return false
+      }
       const mesh = obj.getObjectByName(meshKey(entity))
       if (!mesh || obj.userData.gltfSrcKey !== hash) return true
-      if (obj.userData.animationRig) return false
-      if (obj.userData.dclInstanced) return false
       return !gltfInstanceHasGeometry(mesh)
     }
 
@@ -1108,9 +1111,15 @@ export class ThreeBridge {
       }
       const obj = this.store.getNode(entity)
       if (!obj) continue
+      // Attached = src key matches. Instanced props have no private `__mesh_*` child —
+      // requiring meshKey left plaza lamps/pipes "pending" forever → bar stuck ~79%.
+      if (obj.userData.gltfSrcKey !== hash) continue
+      if (obj.userData.dclInstanced || obj.userData.animationRig) {
+        gltfLoaded++
+        continue
+      }
       // Cheap attached check — avoid gltfInstanceHasGeometry full traverse on 3k entities.
-      const mesh = obj.getObjectByName(meshKey(entity))
-      if (mesh && obj.userData.gltfSrcKey === hash) gltfLoaded++
+      if (obj.getObjectByName(meshKey(entity))) gltfLoaded++
     }
 
     const assetStats = this.cache.getLoadStats()

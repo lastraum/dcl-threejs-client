@@ -57,7 +57,8 @@ const SOFT_HYDRATION_MS = 2_000
  * bad relative paths). Genesis cold still makes progress with inflight>0 so this
  * only fires on a true stall tail — not mid-download.
  */
-const ATTACH_STALL_MS = 25_000
+/** No attach progress + no downloads → force-ready (was 25s; felt like a hard hang at 79%). */
+const ATTACH_STALL_MS = 12_000
 const ENABLE_ATTACH_STALL_BAILOUT = true
 /** Wait before treating peakGltfEntities===0 as complete when composite may still publish GltfContainer. */
 const ZERO_GLTF_FALLBACK_MS = 12_000
@@ -279,8 +280,10 @@ export async function waitForSceneAssets(
           ? `${lastStats.gltfLoaded}/${lastStats.gltfEntities} attached, ${lastStats.gltfPending} pending (${lastStats.gltfAbandoned} abandoned), ${lastStats.gltfInflight} downloading`
           : 'no stats'
       )
-      if (lastStats) onProgress?.(formatTimeout(lastStats))
-      else onProgress?.('Scene assets still loading — continuing in background')
+      // Always advance the bar past the asset phase — string-only status left the UI
+      // stuck at ~79% even after force-ready.
+      if (lastStats) onProgress?.(formatTimeout(lastStats), ASSET_PROGRESS_END, lastStats)
+      else onProgress?.('Scene assets still loading — continuing in background', ASSET_PROGRESS_END)
       finish(true, reason)
     }
 

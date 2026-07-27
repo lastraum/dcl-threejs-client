@@ -181,11 +181,12 @@ export class ThreeBridge {
   /** Runtime attach slots — keep ≤1 heavy unit per play frame (P0 mesh frame law). */
   private static readonly GLTF_BUDGET_PER_FRAME = 1
   private static readonly GLTF_HYDRATION_BUDGET_PER_FRAME = 80
-  private static readonly GLTF_SOFT_HYDRATION_BUDGET_PER_FRAME = 1
+  /** Post-hydration catch-up — was 1 and left remaining assets crawling for minutes. */
+  private static readonly GLTF_SOFT_HYDRATION_BUDGET_PER_FRAME = 8
   private static readonly MESH_PASS_BUDGET_MS = 6
   private static readonly MESH_PASS_HYDRATION_BUDGET_MS = 48
-  private static readonly HYDRATION_ATTACH_PASSES = 6
-  private static readonly HYDRATION_ATTACH_TOTAL_MS = 72
+  private static readonly HYDRATION_ATTACH_PASSES = 8
+  private static readonly HYDRATION_ATTACH_TOTAL_MS = 100
   /**
    * P0 frame law (not streaming): SkeletonUtils.clone of large templates can take seconds.
    * Those attach via a serial idle queue so rAF/UI stay alive. Scene still gets every entity.
@@ -238,10 +239,16 @@ export class ThreeBridge {
   /** Sample size when grouping pending by hash (not a hard full-set walk every frame). */
   private static readonly MESH_DRAIN_HASH_SAMPLE = 512
   private static readonly MESH_DRAIN_HARD_MS = 10
+  /** Hydration: allow a longer drain so many cold kicks + attaches land per tick. */
+  private static readonly MESH_DRAIN_HARD_MS_HYDRATION = 48
   /** Ready instance/clone attaches per drain — tiles share hash and are cheap. */
   private static readonly MESH_DRAIN_MAX_ATTACH = 64
-  /** Unique cold hashes to kick parse on per drain (diversity before mass tiles). */
-  private static readonly MESH_DRAIN_MAX_COLD_HASHES = 4
+  /**
+   * Unique cold hashes to kick parse on per drain.
+   * Was 4 → UI showed ~2–4 assets loading forever. Match AssetCache parse slots + fetch pool.
+   */
+  private static readonly MESH_DRAIN_MAX_COLD_HASHES = 12
+  private static readonly MESH_DRAIN_MAX_COLD_HASHES_HYDRATION = 24
   private readonly instancer: SceneGltfInstancer
 
   constructor(
@@ -1368,7 +1375,12 @@ export class ThreeBridge {
     if (!this.pendingMeshEntities.size) return
 
     const passStart = performance.now()
-    const hardMs = ThreeBridge.MESH_DRAIN_HARD_MS
+    const hardMs = this.hydrationMode
+      ? ThreeBridge.MESH_DRAIN_HARD_MS_HYDRATION
+      : ThreeBridge.MESH_DRAIN_HARD_MS
+    const maxColdHashes = this.hydrationMode
+      ? ThreeBridge.MESH_DRAIN_MAX_COLD_HASHES_HYDRATION
+      : ThreeBridge.MESH_DRAIN_MAX_COLD_HASHES
     const pendingArr = [...this.pendingMeshEntities]
     const n = pendingArr.length
     if (n === 0) return
@@ -1431,7 +1443,7 @@ export class ThreeBridge {
     for (const bucket of buckets) {
       if (performance.now() - passStart >= hardMs) break
       if (bucket.ready) continue
-      if (coldKicks >= ThreeBridge.MESH_DRAIN_MAX_COLD_HASHES) break
+      if (coldKicks >= maxColdHashes) break
       if (
         this.cache.hasCached(bucket.cacheKey) ||
         this.cache.isResolving(bucket.cacheKey) ||

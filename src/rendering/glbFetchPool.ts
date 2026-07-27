@@ -14,9 +14,10 @@ type Pending = {
 
 /** Parallel Catalyst downloads — cold scenes have dozens of GLBs (Genesis ~100+). */
 const POOL_SIZE = (() => {
-  if (typeof navigator === 'undefined') return 6
+  if (typeof navigator === 'undefined') return 10
   const cores = navigator.hardwareConcurrency ?? 4
-  return Math.min(8, Math.max(6, Math.floor(cores * 1.5)))
+  // Was max 8 — pair with AssetCache prefetch 12 + cold hash kicks 12–24.
+  return Math.min(12, Math.max(8, Math.floor(cores * 1.5)))
 })()
 
 let workers: Worker[] | null = null

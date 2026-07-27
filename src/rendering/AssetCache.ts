@@ -111,12 +111,12 @@ export function prefetchSceneManifestAssets(cache: AssetCache, scene: ResolvedSc
         )
         return
       }
-      // Cold: trickle bytes into IDB (concurrency 4) so we don't flood main with 214 ArrayBuffers.
+      // Cold: parallel IDB warm (worker pool is 6–8). Was concurrency=4 → multi-minute plaza loads.
+      const CONCURRENCY = 12
       console.info(
-        `[assets] prefetching ${glbs.length} GLB(s) into IDB (concurrency=4)` +
+        `[assets] prefetching ${glbs.length} GLB(s) into IDB (concurrency=${CONCURRENCY})` +
           (parts.length ? `; ${parts.join(', ')}` : '')
       )
-      const CONCURRENCY = 4
       for (let i = 0; i < glbs.length; i += CONCURRENCY) {
         const batch = glbs.slice(i, i + CONCURRENCY)
         await Promise.all(batch.map(({ url, hash }) => cache.prefetchBytesSettled(url, hash)))
@@ -153,10 +153,13 @@ export class AssetCache {
   private failedUntil = new Map<string, number>()
   private failCount = new Map<string, number>()
   private givenUp = new Set<string>()
-  /** Cap concurrent Three.GLTFLoader.parseAsync — parallel parses freeze the main thread. */
+  /**
+   * Cap concurrent GLB parses. Was 1 → only ~1 asset finished at a time (5+ min plaza).
+   * Loading screen can absorb a few parallel main-thread parses; off-thread uses workers.
+   */
   private parseSlotsInUse = 0
   private readonly parseWaiters: Array<() => void> = []
-  private static readonly MAX_CONCURRENT_PARSES = 1
+  private static readonly MAX_CONCURRENT_PARSES = 4
   private static readonly FAILED_RETRY_MS = 2_000
   private static readonly MAX_LOAD_ATTEMPTS = 5
 

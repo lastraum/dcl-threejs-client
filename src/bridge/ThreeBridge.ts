@@ -81,9 +81,15 @@ function hashFromSrc(src: string, scene: ResolvedScene): string | null {
     hashFromSrcCache.set(scene, map)
   }
   const key = src.trim()
-  if (map.has(key)) return map.get(key)!
+  // Only cache hits — a null from early resolve (empty content map) must not stick forever
+  // (fishing rods: assets/models/pool/beggar_rod.glb stayed unresolved after manifest ready).
+  if (map.has(key)) {
+    const cached = map.get(key)!
+    if (cached) return cached
+  }
   const hash = resolveGltfSrcHash(scene.content, key)
-  map.set(key, hash)
+  if (hash) map.set(key, hash)
+  else map.delete(key)
   return hash
 }
 

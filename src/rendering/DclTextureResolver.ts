@@ -377,19 +377,35 @@ export function findSceneContentHash(content: ContentFile[], ref: string): strin
   const leaf = leafName(trimmed)
   const lower = normalizeContentKey(trimmed)
   const leafLower = normalizeContentKey(leaf)
+  // Trailing path segments: "assets/models/pool/beggar_rod.glb" ↔ "models/pool/beggar_rod.glb"
+  const pathSuffixes: string[] = [lower]
+  {
+    const parts = lower.split('/').filter(Boolean)
+    for (let i = 1; i < parts.length; i++) {
+      pathSuffixes.push(parts.slice(i).join('/'))
+    }
+  }
   for (const entry of content) {
     const entryLeaf = leafName(entry.file)
+    const entryLower = normalizeContentKey(entry.file)
+    const entryLeafLower = normalizeContentKey(entryLeaf)
     if (
       entry.file === trimmed ||
       entry.file.endsWith(`/${trimmed}`) ||
       entryLeaf === trimmed ||
       entryLeaf === leaf ||
-      normalizeContentKey(entry.file) === lower ||
-      normalizeContentKey(entry.file) === leafLower ||
-      normalizeContentKey(entryLeaf) === lower ||
-      normalizeContentKey(entryLeaf) === leafLower
+      entryLower === lower ||
+      entryLower === leafLower ||
+      entryLeafLower === lower ||
+      entryLeafLower === leafLower
     ) {
       return entry.hash
+    }
+    // Suffix match either direction (scene scripts often omit leading folders).
+    for (const suffix of pathSuffixes) {
+      if (!suffix) continue
+      if (entryLower === suffix || entryLower.endsWith(`/${suffix}`)) return entry.hash
+      if (suffix.endsWith(`/${entryLower}`) || suffix === entryLower) return entry.hash
     }
   }
 

@@ -55,7 +55,7 @@ export class ReservedEntitiesSync {
     this.sceneStartMs = performance.now()
     this.frameNumber = 0
     this.tickNumber = 0
-    const { Transform, MainCamera } = this.components
+    const { Transform, MainCamera, CameraMode, PointerLock } = this.components
     const identity = {
       position: { x: 0, y: 0, z: 0 },
       rotation: { x: 0, y: 0, z: 0, w: 1 },
@@ -82,6 +82,14 @@ export class ReservedEntitiesSync {
     this.projection.setRenderer(Transform.componentId, this.reserved.player, playerT)
     this.projection.setRenderer(Transform.componentId, this.reserved.camera, cameraT)
     this.projection.setRenderer(MainCamera.componentId, this.reserved.camera, {})
+    // CameraEntity #2 — plaza fishing / camera systems call PointerLock.get / CameraMode.get
+    // during onStart. Missing components throw Uncaught [getFrom] and abort init (rods never spawn).
+    this.projection.setRenderer(CameraMode.componentId, this.reserved.camera, {
+      mode: 1 // CT_THIRD_PERSON
+    })
+    this.projection.setRenderer(PointerLock.componentId, this.reserved.camera, {
+      isPointerLocked: false
+    })
   }
 
   syncPlayer(pose: EntityPose): void {

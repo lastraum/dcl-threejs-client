@@ -368,10 +368,36 @@ export class AnimatorBridge {
   }
   /** Previous frame wall dt — drives adaptive budget (death-spiral brake). */
   private prevFrameDt = 1 / 60
+  /**
+   * Tertiary resident LOD — force all mixers sleeping (timeScale 0) until
+   * promoted back to secondary/primary. No per-frame sample work.
+   */
+  private forceAllSleeping = false
 
   /** Latest fair phase-slice counters (always updated on scheduled ticks). */
   getSampleStats(): AnimatorSampleStats {
     return { ...this.lastStats }
+  }
+
+  /**
+   * Bulk sleep/wake for multi-scene tertiary residents.
+   * When true: every mixer paused, update() early-outs (zero sample cost).
+   */
+  setAllSleeping(v: boolean): void {
+    this.forceAllSleeping = v
+    for (const entry of this.entries.values()) {
+      if (v) {
+        if (!entry.sleeping) {
+          entry.sleeping = true
+          entry.deferredSampleDt = 0
+          entry.mixer.timeScale = 0
+        }
+      } else if (entry.sleeping) {
+        entry.sleeping = false
+        entry.mixer.timeScale = 1
+        entry.deferredSampleDt = 0
+      }
+    }
   }
 
   constructor(
@@ -818,6 +844,27 @@ export class AnimatorBridge {
         bound: 0,
         active: 0,
         sleeping: 0,
+        near: 0,
+        fair: 0,
+        sharedGroups: 0,
+        sharedFanout: 0,
+        sampled: 0,
+        deferred: 0,
+        frameDt: delta,
+        displayFps: delta > 1e-6 ? 1 / delta : 0,
+        fairSampleHz: 0,
+        disabled: false
+      }
+      return
+    }
+    // Tertiary multi-scene LOD — no sample / no dirty apply (CPU free for primary).
+    if (this.forceAllSleeping) {
+      this.shapeMotionEntities.clear()
+      this.lastStats = {
+        ...this.lastStats,
+        bound: this.entries.size,
+        active: 0,
+        sleeping: this.entries.size,
         near: 0,
         fair: 0,
         sharedGroups: 0,

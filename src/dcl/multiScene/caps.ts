@@ -4,8 +4,9 @@ import { renderQuality } from '../../rendering/RenderQualitySettings'
 /**
  * Product multi-scene model (FocusOwner + LOD rings):
  * - **Primary** — FocusOwner (UI/audio/video/inputs)
- * - **Live secondaries** — muted workers, scene-to-scene ≤16m, hard-capped
- * - **Tertiary** — roads / empty / composites (no worker) over Scene Distance
+ * - **Live secondaries** — muted workers, scripts every frame, scene-to-scene ≤16m, hard-capped
+ * - **Tertiary residents** — loaded graphs with scripts OFF + visual LOD (never unload on demote)
+ * - **Tertiary composites** — roads / empty / AOI shells over Scene Distance (no worker)
  *
  * Composite-first for plaza shells; live only for modest/nested neighbors.
  * Skip script-warm + first-frame sample thrash (those dual-boot CBD freezes).
@@ -13,6 +14,11 @@ import { renderQuality } from '../../rendering/RenderQualitySettings'
 const AOI_LIVE_SECONDARIES_ONLY = true
 /** Hard cap on concurrent muted live secondary workers (dense Genesis). */
 const AOI_LIVE_SECONDARY_HARD_CAP = 3
+/**
+ * Max tertiary residents (scripts-off, meshes stay). Over cap → dispose farthest non-sticky.
+ * Sticky demoted primaries never count against eviction of continuity-critical slots.
+ */
+const TERTIARY_RESIDENT_HARD_CAP = 8
 
 /**
  * Road **PhysX** furniture only within this player radius (meters).
@@ -89,6 +95,14 @@ export const SECONDARY_LIVE_AUTO_MAX_PARCELS = 16
 
 /** Only one secondary full boot at a time — parallel 2MB workers thrash CBD promotes. */
 export const SECONDARY_LIVE_BOOT_CONCURRENCY = 1
+
+/**
+ * Cap on scripts-off tertiary residents (mesh graphs retained after leave-ring / large demote).
+ * Live secondary cap is separate — a slot in secondary mode does not count here.
+ */
+export function tertiaryResidentCap(_tier: PerformanceTier): number {
+  return TERTIARY_RESIDENT_HARD_CAP
+}
 
 /** Concurrent portable-experience workers. */
 export function peLiveCap(tier: PerformanceTier): number {

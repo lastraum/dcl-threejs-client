@@ -11,11 +11,12 @@ import {
   SECONDARY_LIVE_BOOT_CONCURRENCY,
   secondaryLiveCap,
   secondaryLiveRadiusM,
-  secondaryTickIntervalMs
+  secondaryTickIntervalMs,
+  tertiaryResidentCap
 } from './caps'
 import type { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
 import { secondaryPhysOffset } from './physOffsets'
-import { SceneWorkerSlot } from './SceneWorkerSlot'
+import { SceneWorkerSlot, type ResidentMode } from './SceneWorkerSlot'
 import type { SecondaryLiveRequest } from './types'
 
 export type PromoteHandoffPayload = {
@@ -27,12 +28,18 @@ export type PromoteHandoffPayload = {
 }
 
 /**
- * Long-lived secondary workers for nearest inner-ring scenes + demoted primaries.
- * Demoted primaries are sticky (resume without reload when you walk back).
+ * Long-lived secondary **and** tertiary residents.
+ *
+ * Continuity contract (COD bar):
+ * - Never dispose a loaded graph just because it left the 16m live ring.
+ * - Leave ring → tertiary (scripts off + visual LOD, meshes stay).
+ * - Re-enter ring → secondary (scripts on only — no GLB reload).
+ * - Cap pressure: demote secondary→tertiary first; only dispose farthest non-sticky tertiary.
+ * - Sticky demoted primaries always retained.
  */
 export class SecondaryLiveManager {
   private readonly slots = new Map<string, SceneWorkerSlot>()
-  /** Demoted primaries — never auto-evicted by AOI reconcile (only by cap pressure). */
+  /** Demoted primaries — never auto-evicted (only by promote handoff). */
   private readonly stickyIds = new Set<string>()
   private readonly booting = new Set<string>()
   private disposed = false
@@ -84,9 +91,18 @@ export class SecondaryLiveManager {
     this.tier = tier
   }
 
-  /** At least 1 slot so demoted primary can stay warm for resume. */
-  private maxSlots(): number {
+  /** Live secondary script budget (tertiary residents use a separate cap). */
+  private maxSecondarySlots(): number {
     return Math.max(1, secondaryLiveCap(this.tier))
+  }
+
+  private maxTertiarySlots(): number {
+    return Math.max(2, tertiaryResidentCap(this.tier))
+  }
+
+  /** Total resident slots (secondary + tertiary graphs). Sticky always kept. */
+  private maxTotalSlots(): number {
+    return this.maxSecondarySlots() + this.maxTertiarySlots()
   }
 
   liveEntityIds(): Set<string> {
@@ -113,8 +129,17 @@ export class SecondaryLiveManager {
     return null
   }
 
+  private countMode(mode: ResidentMode): number {
+    let n = 0
+    for (const slot of this.slots.values()) {
+      if (slot.residentMode === mode) n++
+    }
+    return n
+  }
+
   /**
-   * If a live secondary covers parcel (x,y), detach it for primary handoff.
+   * If a live secondary/tertiary covers parcel (x,y), detach it for primary handoff.
+   * Tertiary promotes fine — detach unpauses scripts; World becomes FocusOwner.
    */
   takeForPromote(x: number, y: number): PromoteHandoffPayload | null {
     const key = `${x},${y}`
@@ -122,13 +147,14 @@ export class SecondaryLiveManager {
       const parcels = slot.scene.parcels
       const base = slot.scene.baseParcel.trim()
       if (base === key || parcels.some((p) => p.trim() === key)) {
+        const fromMode = slot.residentMode
         this.slots.delete(entityId)
         this.stickyIds.delete(entityId)
         this.emitLiveIds()
         const physIds = [...slot.registeredPhysicsEntities()]
         const system = slot.detachForPromote()
         console.info(
-          `[multi-scene] handoff secondary → primary “${slot.scene.title}” base=${base} parcel=${key}`
+          `[multi-scene] handoff ${fromMode} → primary “${slot.scene.title}” base=${base} parcel=${key}`
         )
         return {
           entityId,
@@ -142,11 +168,10 @@ export class SecondaryLiveManager {
   }
 
   /**
-   * Keep outgoing primary **resident** as a sticky secondary — never unload into void.
+   * Keep outgoing primary **resident** as sticky — never unload into void.
    *
-   * Modest scenes: full muted secondary (scripts warm, resume handoff).
-   * Large multi-parcel (plaza): frozen-visual sticky — meshes stay, worker onUpdate paused
-   * so dual full plazas don't thrash. Continuity > dispose-then-composite gap.
+   * Modest scenes: secondary mode (scripts warm, walk-back resume).
+   * Large multi-parcel (plaza): tertiary mode — scripts off + visual LOD, meshes stay.
    *
    * Returns phys entity ids that used primary (native) ids — World must invalidate them.
    */
@@ -168,15 +193,15 @@ export class SecondaryLiveManager {
 
     const id = scene.entityId
     const parcelCount = scene.parcels?.length || 1
-    // Dual full plaza workers thrash — freeze scripts, keep meshes (never dispose).
-    const frozenVisual = parcelCount > SECONDARY_LIVE_AUTO_MAX_PARCELS
+    // Dual full plaza workers thrash — start tertiary (scripts off, meshes stay).
+    const initialMode: ResidentMode =
+      parcelCount > SECONDARY_LIVE_AUTO_MAX_PARCELS ? 'tertiary' : 'secondary'
 
-    // Already have this entity as secondary — keep existing resident graph, drop demoted system
-    // only if it's a different system instance (shouldn't double-dispose the live one).
+    // Already have this entity as resident — keep graph, drop duplicate system.
     if (this.slots.has(id)) {
       const existing = this.slots.get(id)!
       console.info(
-        `[multi-scene] demote skip — already secondary “${scene.title}” (keep resident)`
+        `[multi-scene] demote skip — already resident “${scene.title}” mode=${existing.residentMode}`
       )
       if (existing.system !== system) {
         try {
@@ -185,14 +210,17 @@ export class SecondaryLiveManager {
           /* ignore */
         }
       }
+      // Ensure sticky + secondary mode if modest (resume scripts for walk-back).
       this.stickyIds.add(id)
+      if (initialMode === 'secondary' && existing.residentMode === 'tertiary') {
+        existing.setResidentMode('secondary')
+      }
       this.emitLiveIds()
       return { entityId: id, primaryPhysIds: [] }
     }
 
-    // Make room — never evict sticky; prefer non-sticky warm secondaries.
-    // Always keep ≥1 slot for demoted primary (continuity).
-    this.evictToCapacity(Math.max(0, this.maxSlots() - 1))
+    // Make room — demote/dispose non-sticky first; always keep ≥1 slot for demoted primary.
+    this.ensureCapacityForNew(initialMode)
 
     // Collect native primary phys ids before remapping under offset.
     const primaryPhysIds = system.getAllPhysicsColliderDescs().map((d) => d.entity)
@@ -200,8 +228,7 @@ export class SecondaryLiveManager {
     const slotIndex = this.nextSlotIndex++
     // Prefer current primary base; handoff may still be mid-swap — notifyPrimaryChanged
     // retargets immediately after if needed.
-    const primaryBase =
-      this.primaryScene?.baseParcel?.trim() || scene.baseParcel
+    const primaryBase = this.primaryScene?.baseParcel?.trim() || scene.baseParcel
     const slot = new SceneWorkerSlot({
       id,
       kind: 'secondary',
@@ -214,7 +241,7 @@ export class SecondaryLiveManager {
       physOffset: secondaryPhysOffset(slotIndex),
       primaryBaseParcel: primaryBase,
       existingSystem: system,
-      frozenVisual
+      initialMode
     })
     await slot.start()
     if (this.disposed) {
@@ -227,18 +254,18 @@ export class SecondaryLiveManager {
     this.stickyIds.add(id)
     this.emitLiveIds()
     console.info(
-      `[multi-scene] demoted “${scene.title}” → sticky secondary parcels=${parcelCount}` +
-        (frozenVisual
-          ? ' large sticky (meshes resident, scripts full-rate, lighter PhysX)'
-          : ' warm sticky (scripts full-rate, walk-back resume)')
+      `[multi-scene] demoted “${scene.title}” → sticky ${initialMode} parcels=${parcelCount}` +
+        (initialMode === 'tertiary'
+          ? ' (scripts off, meshes resident, visual LOD)'
+          : ' (scripts full-rate, walk-back resume)')
     )
     return { entityId: id, primaryPhysIds }
   }
 
   /**
    * Force-boot a secondary for parcel if missing.
-   * Refuses large multi-parcel scenes (use seamless promote instead).
    * Prefer not calling this from promote — cold dual-boot kills CBD.
+   * Under-feet priority always allowed (any parcel count) so handoff can demote prior primary.
    */
   async ensureSecondaryForParcel(
     x: number,
@@ -248,10 +275,17 @@ export class SecondaryLiveManager {
     if (this.disposed || !this.cache || !this.host || !this.arbiter || !this.poseProvider) {
       return false
     }
-    if (this.hasSecondaryForParcel(x, y)) return true
+    const existing = this.findSlotForParcel(x, y)
+    if (existing) {
+      // Promote tertiary→secondary scripts only (no GLB reload).
+      if (existing.residentMode === 'tertiary') {
+        existing.setResidentMode('secondary')
+        this.balanceModes()
+      }
+      return true
+    }
 
     const key = `${x},${y}`
-    // Resolve + boot
     this.booting.add(key)
     try {
       const scene = await resolveSceneFromRoute({
@@ -262,11 +296,16 @@ export class SecondaryLiveManager {
       })
       if (this.disposed || !scene?.mainEntry || !scene.entityId) return false
       if (this.primaryScene?.entityId === scene.entityId) return false
-      if (this.slots.has(scene.entityId)) return true
+      if (this.slots.has(scene.entityId)) {
+        const slot = this.slots.get(scene.entityId)!
+        if (slot.residentMode === 'tertiary') {
+          slot.setResidentMode('secondary')
+          this.balanceModes()
+        }
+        return true
+      }
 
-      // Under-feet promote target: always allow force-boot (any parcel count) so handoff
-      // can demote the old primary sticky — never seamless-jump unload.
-      // Non-priority plaza auto-boots stay gated in reconcile.
+      // Under-feet promote target: always allow force-boot (any parcel count).
       const parcelCount = scene.parcels?.length ?? 0
       const isPriority =
         this.priorityParcelKey === key ||
@@ -280,8 +319,7 @@ export class SecondaryLiveManager {
         return false
       }
 
-      // Evict non-sticky to make room; sticky demoted never dropped for continuity.
-      this.evictToCapacity(Math.max(0, this.maxSlots() - 1))
+      this.ensureCapacityForNew('secondary')
 
       const slotIndex = this.nextSlotIndex++
       const slot = new SceneWorkerSlot({
@@ -294,7 +332,8 @@ export class SecondaryLiveManager {
         arbiter: this.arbiter,
         poseProvider: this.poseProvider,
         physOffset: secondaryPhysOffset(slotIndex),
-        primaryBaseParcel: this.primaryScene?.baseParcel
+        primaryBaseParcel: this.primaryScene?.baseParcel,
+        initialMode: 'secondary'
       })
       const boot = slot.start()
       const timed = await Promise.race([
@@ -321,20 +360,124 @@ export class SecondaryLiveManager {
     }
   }
 
-  /** Evict until slots.size <= keepMax. Sticky last; dispose non-sticky first. */
-  private evictToCapacity(keepMax: number): void {
-    if (keepMax < 0) keepMax = 0
-    while (this.slots.size > keepMax) {
-      const nonSticky = [...this.slots.entries()].filter(([id]) => !this.stickyIds.has(id))
-      const victim = nonSticky[0] ?? [...this.slots.entries()][0]
-      if (!victim) break
-      const [id, slot] = victim
+  /**
+   * Ensure room for one new resident of the given mode.
+   * Prefer demote secondary→tertiary over dispose; only dispose non-sticky tertiary over cap.
+   */
+  private ensureCapacityForNew(mode: ResidentMode): void {
+    if (mode === 'secondary') {
+      // Free a secondary script slot first (demote to tertiary, meshes stay).
+      while (this.countMode('secondary') >= this.maxSecondarySlots()) {
+        if (!this.demoteOneSecondaryToTertiary({ preferNonSticky: true })) break
+      }
+    }
+    // Total graph budget.
+    while (this.slots.size >= this.maxTotalSlots()) {
+      if (this.disposeOneTertiary({ preferNonSticky: true })) continue
+      // Still full — demote a secondary then dispose tertiary.
+      if (this.demoteOneSecondaryToTertiary({ preferNonSticky: true })) {
+        if (this.disposeOneTertiary({ preferNonSticky: true })) continue
+      }
+      // Last resort: dispose any non-sticky (never sticky).
+      if (this.disposeOneAnyNonSticky()) continue
+      break
+    }
+    // Tertiary-only pressure after demotes.
+    while (this.countMode('tertiary') > this.maxTertiarySlots()) {
+      if (!this.disposeOneTertiary({ preferNonSticky: true })) break
+    }
+  }
+
+  /** Demote one secondary-mode slot → tertiary (scripts off). Sticky last. */
+  private demoteOneSecondaryToTertiary(opts: { preferNonSticky: boolean }): boolean {
+    const entries = [...this.slots.entries()].filter(([, s]) => s.residentMode === 'secondary')
+    if (!entries.length) return false
+    entries.sort(([aId], [bId]) => {
+      const as = this.stickyIds.has(aId) ? 1 : 0
+      const bs = this.stickyIds.has(bId) ? 1 : 0
+      if (opts.preferNonSticky && as !== bs) return as - bs
+      return 0
+    })
+    // Never demote under-feet priority if sticky-protected? Priority can demote if not sticky.
+    const pri = this.priorityParcelKey
+    for (const [id, slot] of entries) {
+      if (this.stickyIds.has(id) && opts.preferNonSticky) continue
+      if (
+        pri &&
+        (slot.scene.baseParcel.trim() === pri ||
+          slot.scene.parcels.some((p) => p.trim() === pri))
+      ) {
+        continue // keep under-feet secondary for promote handoff
+      }
+      slot.setResidentMode('tertiary')
+      console.info(
+        `[multi-scene] demote secondary→tertiary “${slot.scene.title}” (scripts off, meshes stay)`
+      )
+      return true
+    }
+    // Fallback: demote non-priority sticky only if nothing else (rare).
+    for (const [, slot] of entries) {
+      if (
+        pri &&
+        (slot.scene.baseParcel.trim() === pri ||
+          slot.scene.parcels.some((p) => p.trim() === pri))
+      ) {
+        continue
+      }
+      slot.setResidentMode('tertiary')
+      console.info(
+        `[multi-scene] demote secondary→tertiary “${slot.scene.title}” (capacity)`
+      )
+      return true
+    }
+    return false
+  }
+
+  /** Dispose one tertiary non-sticky (or any tertiary if allowed). Returns true if disposed. */
+  private disposeOneTertiary(opts: { preferNonSticky: boolean }): boolean {
+    const entries = [...this.slots.entries()].filter(([, s]) => s.residentMode === 'tertiary')
+    if (!entries.length) return false
+    entries.sort(([aId], [bId]) => {
+      const as = this.stickyIds.has(aId) ? 1 : 0
+      const bs = this.stickyIds.has(bId) ? 1 : 0
+      if (opts.preferNonSticky && as !== bs) return as - bs
+      return 0
+    })
+    for (const [id, slot] of entries) {
+      if (this.stickyIds.has(id)) continue // never dispose sticky
       slot.dispose()
       this.slots.delete(id)
-      this.stickyIds.delete(id)
-      console.info(`[multi-scene] secondary evict ${id.slice(0, 12)}… (cap)`)
+      console.info(
+        `[multi-scene] tertiary dispose “${slot.scene.title}” ${id.slice(0, 12)}… (cap)`
+      )
+      this.emitLiveIds()
+      return true
     }
-    this.emitLiveIds()
+    return false
+  }
+
+  private disposeOneAnyNonSticky(): boolean {
+    for (const [id, slot] of this.slots) {
+      if (this.stickyIds.has(id)) continue
+      slot.dispose()
+      this.slots.delete(id)
+      console.info(`[multi-scene] resident dispose ${id.slice(0, 12)}… (cap last-resort)`)
+      this.emitLiveIds()
+      return true
+    }
+    return false
+  }
+
+  /**
+   * After promoting a tertiary→secondary, push excess secondaries back to tertiary.
+   */
+  private balanceModes(): void {
+    while (this.countMode('secondary') > this.maxSecondarySlots()) {
+      if (!this.demoteOneSecondaryToTertiary({ preferNonSticky: true })) break
+    }
+    while (this.countMode('tertiary') > this.maxTertiarySlots()) {
+      if (!this.disposeOneTertiary({ preferNonSticky: true })) break
+    }
   }
 
   private requestCoversParcel(c: SecondaryLiveRequest, key: string | null): boolean {
@@ -347,7 +490,7 @@ export class SecondaryLiveManager {
 
   reconcile(candidates: SecondaryLiveRequest[]): void {
     if (this.disposed || !this.cache || !this.host || !this.arbiter || !this.poseProvider) return
-    const cap = this.maxSlots()
+    const cap = this.maxSecondarySlots()
     const now = performance.now()
     // Faster when under-feet priority is pinned (promote path needs quick boot).
     const minGap = this.priorityParcelKey ? 200 : 800
@@ -382,30 +525,46 @@ export class SecondaryLiveManager {
       inRange.push(c)
     }
 
-    const want = new Set(inRange.map((c) => c.entityId))
-    // Sticky demoted primaries always wanted (resume path).
-    for (const id of this.stickyIds) want.add(id)
-
-    for (const [id, slot] of this.slots) {
-      if (!want.has(id)) {
-        // Never evict the under-feet priority while pinned (promote path).
-        if (pri && (slot.scene.baseParcel.trim() === pri || slot.scene.parcels.some((p) => p.trim() === pri))) {
-          want.add(id)
-          continue
-        }
-        slot.dispose()
-        this.slots.delete(id)
-        this.stickyIds.delete(id)
-        console.info(`[multi-scene] secondary leave ring ${id.slice(0, 12)}…`)
+    const wantSecondary = new Set(inRange.map((c) => c.entityId))
+    // Sticky demoted always wanted as residents (mode assigned below).
+    for (const id of this.stickyIds) {
+      // Sticky outside live ring → tertiary; sticky modest in ring can stay secondary.
+      if (!wantSecondary.has(id)) {
+        // keep as tertiary resident — do not put in wantSecondary unless already secondary mode wanted
       }
     }
+
+    // Mode transitions for existing residents — never dispose on leave ring.
+    for (const [id, slot] of this.slots) {
+      const isPri =
+        !!pri &&
+        (slot.scene.baseParcel.trim() === pri ||
+          slot.scene.parcels.some((p) => p.trim() === pri))
+      if (wantSecondary.has(id) || isPri) {
+        if (slot.residentMode === 'tertiary') {
+          // Re-enter live ring: scripts only, no GLB reload.
+          slot.setResidentMode('secondary')
+        }
+        wantSecondary.add(id)
+      } else {
+        // Left live ring — tertiary (scripts off), keep meshes.
+        if (slot.residentMode === 'secondary') {
+          slot.setResidentMode('tertiary')
+          console.info(
+            `[multi-scene] leave ring → tertiary “${slot.scene.title}” (scripts off, meshes stay)`
+          )
+        }
+      }
+    }
+
+    // Cap secondary scripts after promotes.
+    this.balanceModes()
     this.emitLiveIds()
 
-    // Serial boot — one full secondary worker at a time (parallel boots starve seamless promote).
+    // Serial boot — one full secondary worker at a time.
     if (this.booting.size >= SECONDARY_LIVE_BOOT_CONCURRENCY) return
 
-    // Prefer booting priority parcel first. Evict non-priority to make room if needed.
-    // Skip plaza-scale multi-parcel auto-boots (composite shows them) unless under-feet.
+    // Boot missing live candidates. Skip plaza-scale auto-boots unless under-feet.
     const bootOrder = [...inRange]
     for (const req of bootOrder) {
       if (this.slots.has(req.entityId) || this.booting.has(req.entityId)) continue
@@ -413,11 +572,12 @@ export class SecondaryLiveManager {
       if (parcels > SECONDARY_LIVE_AUTO_MAX_PARCELS && !coversPri(req)) {
         continue
       }
-      if (this.slots.size + this.booting.size >= cap) {
-        // Make room for priority / next candidate — drop non-sticky non-priority.
-        this.evictToCapacity(cap - 1)
-        if (this.slots.size + this.booting.size >= cap) break
+      // Need a secondary script slot.
+      if (this.countMode('secondary') + this.booting.size >= cap) {
+        this.demoteOneSecondaryToTertiary({ preferNonSticky: true })
+        if (this.countMode('secondary') + this.booting.size >= cap) break
       }
+      this.ensureCapacityForNew('secondary')
       void this.bootOne(req, coversPri(req) ? pri : null)
       break // only start one per reconcile
     }
@@ -449,9 +609,19 @@ export class SecondaryLiveManager {
       })
       if (this.disposed || !scene?.mainEntry || !scene.entityId) return
       if (this.primaryScene?.entityId === scene.entityId) return
-      if (this.slots.has(req.entityId)) return
-      // Catalyst may return a different entity id than active-entities list — still slot it.
-      if (this.slots.has(scene.entityId)) return
+      // Already resident (maybe tertiary) — scripts on only.
+      const existing =
+        this.slots.get(req.entityId) ?? this.slots.get(scene.entityId) ?? null
+      if (existing) {
+        if (existing.residentMode === 'tertiary') {
+          existing.setResidentMode('secondary')
+          this.balanceModes()
+          console.info(
+            `[multi-scene] tertiary→secondary “${existing.scene.title}” (scripts on, no GLB reload)`
+          )
+        }
+        return
+      }
 
       const slotIndex = this.nextSlotIndex++
       const slotId = scene.entityId
@@ -465,7 +635,8 @@ export class SecondaryLiveManager {
         arbiter: this.arbiter,
         poseProvider: this.poseProvider,
         physOffset: secondaryPhysOffset(slotIndex),
-        primaryBaseParcel: this.primaryScene?.baseParcel
+        primaryBaseParcel: this.primaryScene?.baseParcel,
+        initialMode: 'secondary'
       })
       await slot.start()
       if (this.disposed) {
@@ -474,6 +645,7 @@ export class SecondaryLiveManager {
       }
       if (this.primaryScene) this.cache.setScene(this.primaryScene)
       this.slots.set(slotId, slot)
+      this.balanceModes()
       this.emitLiveIds()
       console.info(
         `[multi-scene] secondary live “${req.title}” base=${req.base} ` +
@@ -495,13 +667,14 @@ export class SecondaryLiveManager {
   tickSync(player: EntityPose, camera: EntityPose): void {
     const interval = secondaryTickIntervalMs(this.tier)
     for (const slot of this.slots.values()) {
+      // Tertiary tickSync is a no-op (scripts off).
       slot.tickSync(player, camera, interval)
     }
   }
 
   /**
    * During post-promote settle (new boots paused), still advance **sticky demoted**
-   * residents so the world never goes void. Frozen-visual slots no-op cheaply.
+   * residents so the world never goes void. Tertiary sticky no-ops cheaply.
    */
   tickStickySync(player: EntityPose, camera: EntityPose): void {
     const interval = secondaryTickIntervalMs(this.tier)
@@ -520,7 +693,7 @@ export class SecondaryLiveManager {
     return descs
   }
 
-  /** Sticky-only async (settle window) — colliders / frozen remaps for demoted residents. */
+  /** Sticky-only async (settle window) — colliders for demoted residents. */
   async tickStickyAsync(): Promise<PhysicsColliderDesc[]> {
     if (!this.cache) return []
     const descs: PhysicsColliderDesc[] = []

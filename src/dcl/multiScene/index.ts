@@ -15,8 +15,10 @@ export {
   SECONDARY_LIVE_BOOT_CONCURRENCY,
   peLiveCap,
   secondaryTickIntervalMs,
-  peTickIntervalMs
+  peTickIntervalMs,
+  tertiaryResidentCap
 } from './caps'
+export type { ResidentMode } from './SceneWorkerSlot'
 export {
   isModestSceneForSecondary,
   sceneGlbCount,

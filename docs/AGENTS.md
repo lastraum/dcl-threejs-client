@@ -13,11 +13,13 @@ Treat every multi-scene, performance, and continuity task as **ship-or-iterate A
 | Rule | Detail |
 |------|--------|
 | **No unload on parcel walk** | Promote = handoff + sticky demote only. **Never** `disposeSecondariesOnly` + seamless `jumpIn` for stand-on-parcel promote. |
-| **Prior primary stays resident** | Demote keeps mesh graph (sticky secondary). Large estates may lighten PhysX, **never** `system.dispose()` into void. |
-| **Secondary scripts 100%** | Live secondary `onUpdate` every frame (`secondaryTickIntervalMs = 0`). |
+| **Prior primary stays resident** | Demote keeps mesh graph (sticky secondary or tertiary). Large estates demote **tertiary** (scripts off + visual LOD), **never** `system.dispose()` into void. |
+| **Secondary scripts 100%** | Live secondary `onUpdate` every frame (`secondaryTickIntervalMs = 0`), hard-capped (≤3). |
 | **Secondary FocusOwner mute** | No video, audio, scene UI, privileged pointers/nav — `FocusPolicy = 'secondary'`. |
 | **Primary FocusOwner** | Only primary owns UI / media / inputs / locomotion. |
-| **Tertiary** | Roads / empty / composites fill the world without workers; distance-budgeted. |
+| **Tertiary residents** | Leave live ring → scripts OFF + animator sleep + no cast shadows + frozen matrices. Meshes stay. Re-enter → scripts on only (**no GLB reload**). |
+| **Tertiary composites** | Roads / empty / AOI shells fill the world without workers; distance-budgeted. |
+| **FPS bar** | Target **30–60 FPS** always; **60 FPS** on high/custom. Cap live scripts; LOD tertiary; never dual-plaza full workers. |
 
 If a change makes the world go blank on neighbor step, **it is a P0 bug** — reverse or fix before shipping.
 

@@ -4807,6 +4807,14 @@ export class SceneScriptSystem {
   }
 
   /** Phase-slice sample counters for top-right AnimatorSampleHud. */
+  /**
+   * Multi-scene tertiary LOD — pause all Animator mixers (no sample cost).
+   * Secondary/primary resume clears this.
+   */
+  setAnimatorsAllSleeping(sleeping: boolean): void {
+    this.animatorBridge?.setAllSleeping(sleeping)
+  }
+
   getAnimatorSampleStats(): import('../../bridge/AnimatorBridge').AnimatorSampleStats | null {
     return this.animatorBridge?.getSampleStats() ?? null
   }

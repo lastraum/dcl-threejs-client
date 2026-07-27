@@ -12,6 +12,14 @@ import {
   clearSecondarySceneRootOrigin
 } from './secondarySceneOrigin'
 import { SCENE_WORKER_PRIORITY, type SceneWorkerKind } from './types'
+import * as THREE from 'three'
+
+/**
+ * Resident LOD for a loaded multi-scene graph (never unload GLBs on demote):
+ * - secondary: scripts every frame, FocusOwner mute (no video/UI/pointers)
+ * - tertiary: scripts OFF, meshes stay with cheap visual LOD; promote back = scripts only
+ */
+export type ResidentMode = 'secondary' | 'tertiary'
 
 export type SceneWorkerSlotOptions = {
   id: string
@@ -35,16 +43,13 @@ export type SceneWorkerSlotOptions = {
    * to secondary privilege + renames entity root.
    */
   existingSystem?: SceneScriptSystem
-  /**
-   * Large multi-parcel demoted primary: keep **meshes** resident, pause worker scripts
-   * so dual full plazas don't thrash — continuity over dispose-to-void.
-   */
-  frozenVisual?: boolean
+  /** Initial resident mode (default secondary). Large demotes often start tertiary. */
+  initialMode?: ResidentMode
 }
 
 /**
  * One isolated SceneScriptSystem with kind/priority metadata.
- * Full capability surface for PE; secondary is scripts+colliders without nav privilege.
+ * Secondary/tertiary share the same loaded graph; mode only changes scripts + LOD.
  */
 export class SceneWorkerSlot {
   readonly id: string
@@ -58,14 +63,11 @@ export class SceneWorkerSlot {
   private lastTickAt = 0
   private running = false
   private readonly adopted: boolean
-  /**
-   * Demoted large estate: entity graph stays in the host scene (no unload void);
-   * worker onUpdate / heavy async projection is paused.
-   */
-  readonly frozenVisual: boolean
+  private mode: ResidentMode
   /** Phys ids we registered (with offset) — invalidate on dispose. */
   private readonly registeredPhysIds = new Set<number>()
   private primaryBaseParcel: string
+  private readonly host: SceneHost
 
   constructor(private readonly opts: SceneWorkerSlotOptions) {
     this.id = opts.id
@@ -74,9 +76,18 @@ export class SceneWorkerSlot {
     this.scene = opts.scene
     this.physOffset = opts.physOffset
     this.adopted = !!opts.existingSystem
-    this.frozenVisual = !!opts.frozenVisual
+    this.mode = opts.initialMode ?? 'secondary'
     this.system = opts.existingSystem ?? new SceneScriptSystem()
     this.primaryBaseParcel = (opts.primaryBaseParcel ?? '').trim()
+    this.host = opts.host
+  }
+
+  get residentMode(): ResidentMode {
+    return this.mode
+  }
+
+  get isTertiary(): boolean {
+    return this.mode === 'tertiary'
   }
 
   /**
@@ -87,11 +98,12 @@ export class SceneWorkerSlot {
     this.primaryBaseParcel = primaryBaseParcel.trim()
     if (this.kind !== 'secondary' || this.disposed || this.detached) return
     this.applySceneOriginOffset()
-    // World matrices moved — force collider extract so PhysX matches new footprint.
-    try {
-      this.system.syncCollisionForce()
-    } catch {
-      /* ignore during teardown */
+    if (this.mode === 'secondary') {
+      try {
+        this.system.syncCollisionForce()
+      } catch {
+        /* ignore during teardown */
+      }
     }
   }
 
@@ -105,6 +117,99 @@ export class SceneWorkerSlot {
     return this.running && !this.disposed && !this.detached
   }
 
+  /**
+   * Mode switch without GLB reload:
+   * - tertiary: pause scene onUpdate, freeze animators, no cast shadows
+   * - secondary: resume onUpdate, unfreeze animators, FocusOwner mute stays
+   */
+  setResidentMode(mode: ResidentMode): void {
+    if (this.disposed || this.detached || this.kind === 'pe') return
+    if (this.mode === mode) {
+      this.applyModeVisuals()
+      return
+    }
+    const prev = this.mode
+    this.mode = mode
+    if (mode === 'tertiary') {
+      try {
+        // Full worker idle — no engine.update / onUpdate (FPS). Meshes stay on host.
+        this.system.setSceneWorkerOnUpdatePaused(true)
+        this.system.setSceneWorkerTicksPaused(true)
+      } catch {
+        /* ignore */
+      }
+      this.freezeAnimators(true)
+      this.applyModeVisuals()
+      console.info(
+        `[multi-scene] resident “${this.scene.title}” ${prev}→tertiary (scripts off, meshes stay, LOD)`
+      )
+    } else {
+      try {
+        this.system.setSceneWorkerTicksPaused(false)
+        this.system.setSceneWorkerOnUpdatePaused(false)
+      } catch {
+        /* ignore */
+      }
+      this.freezeAnimators(false)
+      this.applyModeVisuals()
+      // Scripts already compiled — just resume ticks (no prepare/start, no GLB reload).
+      console.info(
+        `[multi-scene] resident “${this.scene.title}” ${prev}→secondary (scripts on, no GLB reload)`
+      )
+    }
+  }
+
+  private applyModeVisuals(): void {
+    const root = this.system.getEntityStore()?.root
+    if (!root) return
+    root.visible = true
+    root.name =
+      this.mode === 'tertiary'
+        ? `secondary-tertiary:${this.id.slice(0, 16)}`
+        : `secondary-entities:${this.id.slice(0, 16)}`
+    const tertiary = this.mode === 'tertiary'
+    // Tertiary LOD: no shadows, kill local lights, freeze matrices (static shell).
+    root.traverse((o) => {
+      const m = o as THREE.Mesh
+      if (m.isMesh) {
+        m.castShadow = !tertiary
+        m.receiveShadow = !tertiary
+        m.frustumCulled = true
+      }
+      const light = o as THREE.Light
+      if ((light as THREE.Light).isLight) {
+        // Stash prior visibility so secondary resume restores correctly.
+        const ud = o.userData as { _tertiaryLightWasVisible?: boolean }
+        if (tertiary) {
+          if (ud._tertiaryLightWasVisible === undefined) {
+            ud._tertiaryLightWasVisible = o.visible
+          }
+          o.visible = false
+        } else if (ud._tertiaryLightWasVisible !== undefined) {
+          o.visible = ud._tertiaryLightWasVisible
+          delete ud._tertiaryLightWasVisible
+        }
+      }
+      if (tertiary) {
+        o.updateMatrixWorld(true)
+        o.matrixAutoUpdate = false
+      } else {
+        o.matrixAutoUpdate = true
+      }
+    })
+    if (this.host.scene && root.parent !== this.host.scene) {
+      this.host.scene.add(root)
+    }
+  }
+
+  private freezeAnimators(freeze: boolean): void {
+    try {
+      this.system.setAnimatorsAllSleeping(freeze)
+    } catch {
+      /* optional during teardown */
+    }
+  }
+
   async start(): Promise<void> {
     if (this.disposed || this.detached) return
     const { scene, cache, host, performanceTier, poseProvider } = this.opts
@@ -114,34 +219,18 @@ export class SceneWorkerSlot {
       this.system.setPerformanceTier(performanceTier)
       this.system.setClientPoseProvider(poseProvider)
       this.wireSecondaryHandlers()
-      // FocusOwner: hard mute + video stop + UI off (keeps SceneUiBridge for promote resume).
       this.system.setFocusPolicy('secondary')
-      // Clear primary-only colliders cook hooks (World owns primary cooks only).
       this.system.setCollidersCookCallback(null)
       this.system.setCollidersPoseCallback(null)
       this.system.setCollidersRemoveCallback(null)
-      const store = this.system.getEntityStore()
-      if (store?.root) {
-        store.root.name = this.frozenVisual
-          ? `secondary-frozen:${this.id.slice(0, 16)}`
-          : `secondary-entities:${this.id.slice(0, 16)}`
-        // Continuity: never leave demoted content invisible after handoff.
-        store.root.visible = true
-        // Ensure still parented to host scene (never drop demoted graph).
-        if (host.scene && store.root.parent !== host.scene) {
-          host.scene.add(store.root)
-        }
-      }
-      // Was host origin as primary — shift into new primary's frame (or 0 until retarget).
       this.applySceneOriginOffset()
       this.running = true
       this.lastTickAt = performance.now()
+      // Apply initial mode (large demotes often tertiary for FPS).
+      this.setResidentMode(this.mode)
       console.info(
-        `[multi-scene] demoted primary → secondary “${scene.title}” id=${this.id.slice(0, 16)}… ` +
-          `origin→${this.primaryBaseParcel || 'pending'}` +
-          (this.frozenVisual
-            ? ' sticky large (scripts every frame, lighter PhysX)'
-            : ' sticky warm (scripts every frame)')
+        `[multi-scene] demoted primary → resident “${scene.title}” mode=${this.mode} ` +
+          `origin→${this.primaryBaseParcel || 'pending'}`
       )
       return
     }
@@ -161,17 +250,12 @@ export class SceneWorkerSlot {
     cache.setScene(scene)
     this.system.prepare(scene, cache, host, {
       rootName,
-      // PE gets its own DOM overlay so primary setVisible / paint never steals clicks.
-      // Secondary: detached off-DOM host — never share #scene-ui-root.
       uiRootId: this.kind === 'pe' ? 'pe-ui-root' : `secondary-ui:${this.id.slice(0, 16)}`,
       uiDetached: this.kind === 'secondary',
       focusPolicy: this.kind === 'pe' ? 'pe' : 'secondary'
     })
 
     if (this.kind === 'pe') {
-      // Paint PE UI on first worker mount (not deferred until after start).
-      // Primary waits for play chrome; PE is always "in play" once enabled.
-      // Manager may hide after start if user disabled the UI toggle.
       this.system.setFocusPolicy('pe')
       this.system.setSceneUiVisible(true)
       this.wirePeHandlers()
@@ -183,14 +267,16 @@ export class SceneWorkerSlot {
     const poses = poseProvider()
     this.system.seedRendererEntities(poses.player, poses.camera)
     await this.system.start(scene, cache, host)
-    // Force collider extract so PE/secondary geometry can enter PhysX.
     this.system.syncCollisionForce()
-    // Place neighbor content at Genesis footprint (not on primary origin).
     this.applySceneOriginOffset()
     this.running = true
     this.lastTickAt = performance.now()
+    if (this.kind === 'secondary') {
+      this.setResidentMode(this.mode)
+    }
     console.info(
-      `[multi-scene] started ${this.kind} “${scene.title}” id=${this.id.slice(0, 20)}… physOffset=${this.physOffset}` +
+      `[multi-scene] started ${this.kind} “${scene.title}” id=${this.id.slice(0, 20)}… ` +
+        `mode=${this.mode} physOffset=${this.physOffset}` +
         (this.kind === 'secondary'
           ? ` origin=${this.scene.baseParcel}→${this.primaryBaseParcel || '?'}`
           : '')
@@ -211,7 +297,6 @@ export class SceneWorkerSlot {
       return true
     })
 
-    // teleportTo = global parcel coords (not scene-local movePlayerTo).
     this.system.setTeleportToHandler((request) => {
       arbiter.submit({
         channel: 'teleport',
@@ -223,13 +308,11 @@ export class SceneWorkerSlot {
       return true
     })
 
-    // changeRealm is deprecated — never navigate.
     this.system.setChangeRealmHandler(() => {
       console.info('[pe] changeRealm ignored (deprecated)')
       return false
     })
 
-    // openExternal: confirm + new tab only — no scene reload.
     this.system.setOpenExternalUrlHandler((request) => openExternalUrl(request))
 
     this.system.setTriggerEmoteHandler((request) => {
@@ -257,7 +340,11 @@ export class SceneWorkerSlot {
 
   tickSync(player: EntityPose, camera: EntityPose, minIntervalMs: number): boolean {
     if (!this.running || this.disposed || this.detached) return false
-    // Secondary scripts always run (minIntervalMs=0). FocusOwner mutes media/UI only.
+    // Tertiary: meshes only — no script onUpdate (worker paused + skip local pump).
+    if (this.mode === 'tertiary') {
+      this.lastTickAt = performance.now()
+      return false
+    }
     const now = performance.now()
     if (now - this.lastTickAt < minIntervalMs) return false
     this.lastTickAt = now
@@ -265,24 +352,23 @@ export class SceneWorkerSlot {
     if (this.kind === 'pe') {
       this.system.updateTriggerAreas()
     }
-    // Full onUpdate for live + demoted secondaries (no video/UI — FocusPolicy secondary).
     this.system.tickPlayFrame()
     return true
   }
 
-  /**
-   * Projection + collider extract. Returns remapped PhysX descriptors for World to cook.
-   * Large frozen-visual demotes still project meshes but avoid thrashing cook callbacks.
-   */
   async tickAsync(
     primaryScene: ResolvedScene | null,
     cache: AssetCache
   ): Promise<PhysicsColliderDesc[]> {
     if (!this.running || this.disposed || this.detached) return []
+    // Tertiary: no projection thrash; keep last collider map if any.
+    if (this.mode === 'tertiary') {
+      return this.collectRemappedColliders()
+    }
     cache.setScene(this.scene)
     try {
       await this.system.syncRenderer()
-      if (!this.frozenVisual && this.system.hasColliderWorkPending()) {
+      if (this.system.hasColliderWorkPending()) {
         this.system.syncCollision()
       }
       await this.system.syncAsyncBridges()
@@ -294,6 +380,10 @@ export class SceneWorkerSlot {
 
   collectRemappedColliders(): PhysicsColliderDesc[] {
     if (this.disposed || this.detached) return []
+    if (this.mode === 'tertiary') {
+      // Keep previously registered phys ids; avoid re-cook storm for LOD shells.
+      return []
+    }
     const raw = this.system.getAllPhysicsColliderDescs()
     const out: PhysicsColliderDesc[] = []
     for (const d of raw) {
@@ -319,13 +409,19 @@ export class SceneWorkerSlot {
   detachForPromote(): SceneScriptSystem {
     this.detached = true
     this.running = false
-    // Clear secondary-style handlers; World will rewire full primary handlers.
+    // Ensure scripts unpaused for primary life (was tertiary or secondary).
+    try {
+      this.system.setSceneWorkerTicksPaused(false)
+      this.system.setSceneWorkerOnUpdatePaused(false)
+    } catch {
+      /* ignore */
+    }
+    this.freezeAnimators(false)
     this.system.setMovePlayerHandler(null)
     this.system.setTeleportToHandler(null)
     this.system.setChangeRealmHandler(null)
     this.system.setOpenExternalUrlHandler(null)
     this.system.setTriggerEmoteHandler(null)
-    // Becoming primary — host origin is this scene's SW again.
     clearSecondarySceneRootOrigin(this.system.getEntityStore()?.root)
     return this.system
   }

@@ -1251,12 +1251,12 @@ export class PhysXWorld {
             continue
           }
           // Scale gate: entity-local cooks bake world scale into verts. Sliding T+R after
-          // parent scale settle leaves unit-sized soft walls (plaza "worked then didn't").
+          // parent scale settle leaves unit-sized soft walls. Clear geom fp once so World
+          // can bounded-recook — still slide T+R so we don't freeze the live solid.
           if (!worldBaked && !this.isPoseSlideSafe(actor, desc)) {
-            this.staticFp.delete(desc.entity)
-            this.staticPoseFp.delete(desc.entity)
-            // Keep live actor — World missing/reconcile will recook without a void frame.
-            continue
+            if (this.staticFp.has(desc.entity)) {
+              this.staticFp.delete(desc.entity)
+            }
           }
           try {
             desc.matrix.decompose(this._pos, this._quat, this._scale)
@@ -1360,6 +1360,11 @@ export class PhysXWorld {
     } catch (err) {
       console.warn('[PhysXWorld] reinsert static actor for SQ failed:', err)
     }
+  }
+
+  /** True when this geom fingerprint already failed cook (skip re-queue thrash). */
+  hasFailedCookFingerprint(fingerprint: string): boolean {
+    return this.failedCookFp.has(fingerprint)
   }
 
   isColliderSynced(desc: PhysicsColliderDesc): boolean {

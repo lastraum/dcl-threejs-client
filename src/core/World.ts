@@ -2035,13 +2035,17 @@ export class World {
     this.sceneScript.flushSceneGraphMatrices()
     this.sceneScript.refreshAllInstancedTransforms()
     this.discoverMissingColliderActors()
-    // Also re-cook actors whose geom fingerprint was cleared (scale-drift gate).
+    // Boot seal only: re-cook geom-mismatched actors (scale settle). Pose mismatch = slide.
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
-      if (!this.physics.hasStaticActor(desc.entity)) continue
-      if (this.physics.isColliderSynced(desc)) continue
-      this.colliderCookQueue.add(desc.entity)
+      if (!this.physics.hasStaticActor(desc.entity)) {
+        this.colliderCookQueue.add(desc.entity)
+        continue
+      }
+      if (!this.physics.geomFingerprintMatches(desc)) {
+        this.colliderCookQueue.add(desc.entity)
+      }
     }
     let guard = 0
     while (this.colliderCookQueue.size > 0 && guard < maxPasses) {
@@ -2052,7 +2056,7 @@ export class World {
     this.physics.refreshStaticAfterRuntimeGeometryChange()
 
     let missing = 0
-    let unsynced = 0
+    let geomMismatch = 0
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
@@ -2060,14 +2064,16 @@ export class World {
         missing++
         continue
       }
-      if (!this.physics.isColliderSynced(desc)) unsynced++
+      if (!this.physics.geomFingerprintMatches(desc)) geomMismatch++
     }
     const registered = this.physics.gltfStaticActorCount
     const extracted = this.lastGltfColliderCount
-    const bad = missing > 8 || unsynced > 8 || (extracted > 50 && registered < extracted * 0.5)
+    const bad =
+      missing > 8 || geomMismatch > 8 || (extracted > 50 && registered < extracted * 0.5)
     const msg =
       `[phys] integrity ${label} — gltf=${registered}/${extracted} missing=${missing} ` +
-      `unsynced=${unsynced} pending=${this.colliderCookQueue.size} static=${this.physics.staticColliderCount}`
+      `geomMismatch=${geomMismatch} pending=${this.colliderCookQueue.size} ` +
+      `static=${this.physics.staticColliderCount}`
     clientDebugLog.log('collision', msg, {
       level: bad ? 'warn' : 'success',
       alsoConsole: true
@@ -2087,18 +2093,24 @@ export class World {
     this.discoverMissingColliderActors()
   }
 
+  /**
+   * Enqueue PhysX actors that are truly absent.
+   * Pose / scale drift is NOT "missing" — that used isColliderSynced (exact pose fp) and
+   * permanently re-queued 2 plaza entities every 2s → replaceStatic thrash → solids vanish.
+   * Pose = slide; scale geom mismatch = bounded recook via {@link enqueueScaleDriftRecooks}.
+   */
   private discoverMissingColliderActors(): void {
     let added = 0
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
-      // Missing actor OR scale-drift / fp-cleared (has actor but not synced).
-      if (this.physics.hasStaticActor(desc.entity) && this.physics.isColliderSynced(desc)) {
-        continue
-      }
+      if (this.physics.hasStaticActor(desc.entity)) continue
+      // Permanent cook failure — re-queueing every 2s only thrashes and softs neighbors.
+      if (this.physics.hasFailedCookFingerprint(desc.fingerprint)) continue
       if (!this.colliderCookQueue.has(desc.entity)) added++
       this.colliderCookQueue.add(desc.entity)
     }
+    this.enqueueScaleDriftRecooks()
     this.pendingColliderCooks = this.colliderCookQueue.size
     if (added > 0) {
       clientDebugLog.log(
@@ -2107,6 +2119,26 @@ export class World {
         { level: 'info', throttleMs: 3_000 }
       )
       this.maybeBeginRuntimeColliderBurst(this.colliderCookQueue.size - added)
+    }
+  }
+
+  /** Scale-drift geom recook at most once per entity per cooldown (no perpetual thrash). */
+  private readonly scaleDriftRecookAt = new Map<number, number>()
+  private static readonly SCALE_DRIFT_RECOOK_COOLDOWN_MS = 8_000
+
+  private enqueueScaleDriftRecooks(): void {
+    const now = performance.now()
+    for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+      if (!desc.shapes?.length) continue
+      if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
+      if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
+      if (!this.physics.hasStaticActor(desc.entity)) continue
+      // Geom fingerprint cleared by scale gate — needs recook, not pose-only.
+      if (this.physics.geomFingerprintMatches(desc)) continue
+      const last = this.scaleDriftRecookAt.get(desc.entity) ?? 0
+      if (now - last < World.SCALE_DRIFT_RECOOK_COOLDOWN_MS) continue
+      this.scaleDriftRecookAt.set(desc.entity, now)
+      this.colliderCookQueue.add(desc.entity)
     }
   }
 

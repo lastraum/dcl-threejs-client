@@ -98,6 +98,14 @@ export class SceneWorkerSlot {
     this.primaryBaseParcel = primaryBaseParcel.trim()
     if (this.kind !== 'secondary' || this.disposed || this.detached) return
     this.applySceneOriginOffset()
+    // Ensure demoted tertiary shells stay on host after offset bake.
+    const root = this.system.getEntityStore()?.root
+    if (root) {
+      root.visible = true
+      if (this.host.scene && root.parent !== this.host.scene) {
+        this.host.scene.add(root)
+      }
+    }
     if (this.mode === 'secondary') {
       try {
         this.system.syncCollisionForce()
@@ -162,22 +170,26 @@ export class SceneWorkerSlot {
   private applyModeVisuals(): void {
     const root = this.system.getEntityStore()?.root
     if (!root) return
+    // Continuity: demoted primary must stay visible and parented on the host.
     root.visible = true
     root.name =
       this.mode === 'tertiary'
         ? `secondary-tertiary:${this.id.slice(0, 16)}`
         : `secondary-entities:${this.id.slice(0, 16)}`
+    // Root MUST keep matrixAutoUpdate so retargetPrimaryBase can re-place demoted
+    // estates after promote. Freezing root made demote offset a no-op → void.
+    root.matrixAutoUpdate = true
     const tertiary = this.mode === 'tertiary'
-    // Tertiary LOD: no shadows, kill local lights, freeze matrices (static shell).
+    // Tertiary LOD: no shadows, kill local lights, freeze **descendant** matrices.
     root.traverse((o) => {
+      if (o === root) return
       const m = o as THREE.Mesh
       if (m.isMesh) {
         m.castShadow = !tertiary
         m.receiveShadow = !tertiary
         m.frustumCulled = true
       }
-      const light = o as THREE.Light
-      if ((light as THREE.Light).isLight) {
+      if ((o as THREE.Light).isLight) {
         // Stash prior visibility so secondary resume restores correctly.
         const ud = o.userData as { _tertiaryLightWasVisible?: boolean }
         if (tertiary) {
@@ -191,12 +203,13 @@ export class SceneWorkerSlot {
         }
       }
       if (tertiary) {
-        o.updateMatrixWorld(true)
+        o.updateMatrix()
         o.matrixAutoUpdate = false
       } else {
         o.matrixAutoUpdate = true
       }
     })
+    root.updateMatrixWorld(true)
     if (this.host.scene && root.parent !== this.host.scene) {
       this.host.scene.add(root)
     }
@@ -223,14 +236,25 @@ export class SceneWorkerSlot {
       this.system.setCollidersCookCallback(null)
       this.system.setCollidersPoseCallback(null)
       this.system.setCollidersRemoveCallback(null)
+      // Offset FIRST (while matrices still free), then LOD mode may freeze descendants.
       this.applySceneOriginOffset()
+      const root = this.system.getEntityStore()?.root
+      if (root) {
+        root.visible = true
+        if (this.host.scene && root.parent !== this.host.scene) {
+          this.host.scene.add(root)
+        }
+      }
       this.running = true
       this.lastTickAt = performance.now()
       // Apply initial mode (large demotes often tertiary for FPS).
       this.setResidentMode(this.mode)
+      // Re-bake origin after mode visuals (descendant freeze must not lose root offset).
+      this.applySceneOriginOffset()
       console.info(
         `[multi-scene] demoted primary → resident “${scene.title}” mode=${this.mode} ` +
-          `origin→${this.primaryBaseParcel || 'pending'}`
+          `base=${scene.baseParcel} vs primary=${this.primaryBaseParcel || '?'} ` +
+          `rootPos=(${root?.position.x.toFixed(1) ?? '?'},${root?.position.z.toFixed(1) ?? '?'})`
       )
       return
     }
@@ -247,6 +271,8 @@ export class SceneWorkerSlot {
         ? `pe-entities:${this.id.slice(0, 24)}`
         : `secondary-entities:${this.id.slice(0, 16)}`
 
+    // Secondary/PE boots share AssetCache with primary. configureSceneContent is global —
+    // SecondaryLiveManager restores primary content map in finally after start.
     cache.setScene(scene)
     this.system.prepare(scene, cache, host, {
       rootName,

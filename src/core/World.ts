@@ -1506,6 +1506,11 @@ export class World {
         }
 
         if (this.playerMode && this.player) {
+          // Multi-scene secondary boots flip global content map — reassert primary every frame
+          // so primary asset resolve never sticks on a neighbor's manifest mid-walk.
+          if (this.loadedPrimaryScene) {
+            this.assets.setScene(this.loadedPrimaryScene)
+          }
           // Motion first — PE pose + TriggerArea enter must beat worker onUpdate.
           const platformT0 = performance.now()
           this.syncPlayerMotionFrame(delta, startFrame)
@@ -3638,20 +3643,29 @@ export class World {
       this.physics.invalidateStaticCollider(id)
     }
 
+    // Point multi-scene at NEW primary SW *before* demote so sticky offset is correct.
+    // (Demoted prior primary must leave host origin; host origin becomes new SW.)
+    multi.notifyPrimaryChanged(newScene)
+
     // Demote old primary → sticky secondary (meshes MUST stay — never dispose into void).
     // Do this before wiring new primary so entity roots stay valid.
     if (oldScene?.entityId && oldScene.mainEntry && oldScene.entityId !== newScene.entityId) {
       // Revoke FocusOwner before sticky adopt (mute/stop media; drop primary InputHub).
       oldPrimary.setFocusPolicy('secondary')
       oldPrimary.setInputHub(null)
-      const demoted = await multi.demotePrimaryToSecondary(oldPrimary, oldScene)
+      const demoted = await multi.demotePrimaryToSecondary(
+        oldPrimary,
+        oldScene,
+        newScene.baseParcel
+      )
       if (demoted) {
         for (const id of demoted.primaryPhysIds) {
           this.physics.invalidateStaticCollider(id)
         }
         // Demoted re-registers colliders under secondary offset on multi-scene tick.
         console.info(
-          `[promote] prior primary sticky resident “${oldScene.title}” parcels=${oldScene.parcels?.length ?? '?'}`
+          `[promote] prior primary sticky resident “${oldScene.title}” parcels=${oldScene.parcels?.length ?? '?'} ` +
+            `base=${oldScene.baseParcel} → offset vs ${newScene.baseParcel}`
         )
       } else {
         // Continuity P0: never dispose — leave system muted on host even if slot adopt failed.
@@ -3663,14 +3677,31 @@ export class World {
           if (store?.root) {
             store.root.name = `secondary-orphan:${oldScene.entityId.slice(0, 16)}`
             store.root.visible = true
+            if (store.root.parent !== this.host.scene) {
+              this.host.scene.add(store.root)
+            }
           }
         } catch {
           /* ignore */
         }
       }
     } else if (oldPrimary !== newSystem) {
-      // Same entity or missing identity — only dispose if truly replacing same graph.
-      console.warn('[promote] skip demote (same/missing entity) — not disposing old primary blindly')
+      // Same entity or missing identity — keep old graph on host (never dispose blindly).
+      console.warn(
+        '[promote] skip demote (same/missing entity) — keeping old primary graph resident (no dispose)'
+      )
+      try {
+        const store = oldPrimary.getEntityStore()
+        if (store?.root && oldPrimary !== newSystem) {
+          store.root.visible = true
+          store.root.name = `secondary-orphan:same:${oldScene?.entityId?.slice(0, 12) ?? 'x'}`
+          if (store.root.parent !== this.host.scene) {
+            this.host.scene.add(store.root)
+          }
+        }
+      } catch {
+        /* ignore */
+      }
     }
 
     this.sceneScript = newSystem
@@ -3746,10 +3777,12 @@ export class World {
     this.comms.applyRealmAbout(newScene.realm, newScene.commsPointer)
     this.session.setCatalystEndpoints(newScene.realm.contentUrl, newScene.realm.lambdasUrl)
 
-    // Multi-scene first: retarget sticky secondaries to new primary SW (critical for plaza).
-    multi.notifyPrimaryChanged(newScene)
+    // Sticky secondaries already retargeted before demote; re-sync live ids + AOI hide.
     multi.setOnLiveSecondaryIds((ids) => this.aoiVisual.setLiveSecondaryIds(ids))
     multi.syncLiveSecondaryVisibility()
+    // Re-assert demoted offsets after comms origin swap (host Three space is continuous;
+    // secondary roots are relative to primary SW which just changed).
+    multi.notifyPrimaryChanged(newScene)
 
     // AOI: retarget without unbind wipe (bind→unbind cleared CBD plaza into void).
     // Live worker boots stay off for settle; sticky demoted still ticks; visuals refresh.

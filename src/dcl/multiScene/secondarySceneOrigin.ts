@@ -3,6 +3,17 @@ import { dclToThreePos } from '../../bridge/dclTransform'
 import { neighborOriginOffset } from '../aoi/compositeVisuals'
 
 /**
+ * Force-bake local TRS → matrix even when matrixAutoUpdate is false.
+ * Tertiary LOD freezes auto-update; without this, demote retarget is a no-op and
+ * the prior primary appears to "unload" (stuck at old SW while player is restored
+ * to the new primary footprint).
+ */
+function bakeWorldMatrix(root: Object3D): void {
+  root.updateMatrix()
+  root.updateMatrixWorld(true)
+}
+
+/**
  * Live secondary workers author content in **their** scene-local DCL space
  * (SW of neighbor base = 0,0). The Three host graph uses **primary** SW as
  * origin. Without this offset, every secondary dumps meshes on the primary
@@ -21,17 +32,17 @@ export function applySecondarySceneRootOrigin(
   const p = primaryBase.trim()
   if (!n || !p) {
     root.position.set(0, 0, 0)
-    root.updateMatrixWorld(true)
+    bakeWorldMatrix(root)
     return
   }
   const o = neighborOriginOffset(n, p)
   dclToThreePos(o.x, 0, o.z, root.position)
-  root.updateMatrixWorld(true)
+  bakeWorldMatrix(root)
 }
 
 /** Promote handoff — primary must sit at host origin again. */
 export function clearSecondarySceneRootOrigin(root: Object3D | null | undefined): void {
   if (!root) return
   root.position.set(0, 0, 0)
-  root.updateMatrixWorld(true)
+  bakeWorldMatrix(root)
 }

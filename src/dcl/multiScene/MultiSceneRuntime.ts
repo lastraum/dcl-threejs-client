@@ -135,12 +135,16 @@ export class MultiSceneRuntime {
     return this.secondary?.takeForPromote(x, y) ?? null
   }
 
-  /** Keep outgoing primary warm for walk-back resume. */
+  /**
+   * Keep outgoing primary warm for walk-back resume.
+   * @param newPrimaryBaseParcel — incoming primary SW so demoted meshes offset correctly.
+   */
   async demotePrimaryToSecondary(
     system: import('../../core/systems/SceneScriptSystem').SceneScriptSystem,
-    scene: ResolvedScene
+    scene: ResolvedScene,
+    newPrimaryBaseParcel?: string
   ): Promise<{ entityId: string; primaryPhysIds: number[] } | null> {
-    return this.secondary?.adoptDemotedPrimary(system, scene) ?? null
+    return this.secondary?.adoptDemotedPrimary(system, scene, newPrimaryBaseParcel) ?? null
   }
 
   /** Force-boot secondary for parcel then handoff can succeed. */

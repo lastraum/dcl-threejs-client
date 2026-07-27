@@ -173,18 +173,37 @@ export class SecondaryLiveManager {
    * Modest scenes: secondary mode (scripts warm, walk-back resume).
    * Large multi-parcel (plaza): tertiary mode — scripts off + visual LOD, meshes stay.
    *
+   * @param newPrimaryBaseParcel — **incoming** primary SW (required on promote handoff).
+   *   Demoted meshes must be offset vs the NEW host origin, not the old one.
+   *
    * Returns phys entity ids that used primary (native) ids — World must invalidate them.
    */
   async adoptDemotedPrimary(
     system: SceneScriptSystem,
-    scene: ResolvedScene
+    scene: ResolvedScene,
+    newPrimaryBaseParcel?: string
   ): Promise<{ entityId: string; primaryPhysIds: number[] } | null> {
     if (this.disposed || !this.cache || !this.host || !this.arbiter || !this.poseProvider) {
+      // Continuity P0: never dispose demoted primary if multi-scene is mid-teardown.
+      console.error(
+        `[multi-scene] demote refused (unbound) “${scene.title}” — caller must keep system resident`
+      )
       return null
     }
     if (!scene.entityId || !scene.mainEntry) {
+      // Missing identity — still keep meshes if any (do NOT dispose into void).
+      console.error(
+        `[multi-scene] demote refused (no entityId/main) “${scene.title}” — keeping system (no dispose)`
+      )
       try {
-        system.dispose()
+        const root = system.getEntityStore()?.root
+        if (root) {
+          root.visible = true
+          root.name = `secondary-orphan:noid`
+          if (this.host.scene && root.parent !== this.host.scene) {
+            this.host.scene.add(root)
+          }
+        }
       } catch {
         /* ignore */
       }
@@ -197,6 +216,10 @@ export class SecondaryLiveManager {
     const initialMode: ResidentMode =
       parcelCount > SECONDARY_LIVE_AUTO_MAX_PARCELS ? 'tertiary' : 'secondary'
 
+    // Host origin is the NEW primary SW after promote — always prefer explicit base.
+    const primaryBase =
+      (newPrimaryBaseParcel ?? this.primaryScene?.baseParcel ?? scene.baseParcel).trim()
+
     // Already have this entity as resident — keep graph, drop duplicate system.
     if (this.slots.has(id)) {
       const existing = this.slots.get(id)!
@@ -204,14 +227,23 @@ export class SecondaryLiveManager {
         `[multi-scene] demote skip — already resident “${scene.title}” mode=${existing.residentMode}`
       )
       if (existing.system !== system) {
+        // Keep the graph that is already slotted; orphan the unused system root if different.
         try {
-          system.dispose()
+          const orphanRoot = system.getEntityStore()?.root
+          if (orphanRoot && orphanRoot !== existing.system.getEntityStore()?.root) {
+            orphanRoot.visible = true
+            orphanRoot.name = `secondary-orphan-dup:${id.slice(0, 12)}`
+            if (this.host.scene && orphanRoot.parent !== this.host.scene) {
+              this.host.scene.add(orphanRoot)
+            }
+          }
         } catch {
           /* ignore */
         }
+        // Never dispose demoted primary system on identity collision — void risk.
       }
-      // Ensure sticky + secondary mode if modest (resume scripts for walk-back).
       this.stickyIds.add(id)
+      existing.retargetPrimaryBase(primaryBase)
       if (initialMode === 'secondary' && existing.residentMode === 'tertiary') {
         existing.setResidentMode('secondary')
       }
@@ -220,15 +252,18 @@ export class SecondaryLiveManager {
     }
 
     // Make room — demote/dispose non-sticky first; always keep ≥1 slot for demoted primary.
+    // Never dispose sticky; never dispose the demoted graph we're about to adopt.
     this.ensureCapacityForNew(initialMode)
 
     // Collect native primary phys ids before remapping under offset.
-    const primaryPhysIds = system.getAllPhysicsColliderDescs().map((d) => d.entity)
+    let primaryPhysIds: number[] = []
+    try {
+      primaryPhysIds = system.getAllPhysicsColliderDescs().map((d) => d.entity)
+    } catch {
+      primaryPhysIds = []
+    }
 
     const slotIndex = this.nextSlotIndex++
-    // Prefer current primary base; handoff may still be mid-swap — notifyPrimaryChanged
-    // retargets immediately after if needed.
-    const primaryBase = this.primaryScene?.baseParcel?.trim() || scene.baseParcel
     const slot = new SceneWorkerSlot({
       id,
       kind: 'secondary',
@@ -243,18 +278,36 @@ export class SecondaryLiveManager {
       existingSystem: system,
       initialMode
     })
-    await slot.start()
-    if (this.disposed) {
-      // World still owns continuity — do not dispose demoted system if handoff aborted mid-way.
-      this.slots.set(id, slot)
-      this.stickyIds.add(id)
-      return { entityId: id, primaryPhysIds }
+    try {
+      await slot.start()
+    } catch (err) {
+      // Continuity P0: slot start failed — still keep system + meshes on host.
+      console.error(
+        `[multi-scene] demote slot.start failed “${scene.title}” — keeping orphan resident`,
+        err
+      )
+      try {
+        system.setFocusPolicy('secondary')
+        const root = system.getEntityStore()?.root
+        if (root) {
+          root.visible = true
+          root.name = `secondary-orphan:${id.slice(0, 16)}`
+          if (this.host.scene && root.parent !== this.host.scene) {
+            this.host.scene.add(root)
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      return null
     }
+    // Always retain slot even if manager disposed mid-await — never drop demoted graph.
     this.slots.set(id, slot)
     this.stickyIds.add(id)
     this.emitLiveIds()
     console.info(
-      `[multi-scene] demoted “${scene.title}” → sticky ${initialMode} parcels=${parcelCount}` +
+      `[multi-scene] demoted “${scene.title}” → sticky ${initialMode} parcels=${parcelCount} ` +
+        `offset vs primary=${primaryBase}` +
         (initialMode === 'tertiary'
           ? ' (scripts off, meshes resident, visual LOD)'
           : ' (scripts full-rate, walk-back resume)')
@@ -335,22 +388,27 @@ export class SecondaryLiveManager {
         primaryBaseParcel: this.primaryScene?.baseParcel,
         initialMode: 'secondary'
       })
-      const boot = slot.start()
-      const timed = await Promise.race([
-        boot.then(() => true),
-        new Promise<boolean>((resolve) => window.setTimeout(() => resolve(false), timeoutMs))
-      ])
-      if (!timed || this.disposed) {
-        slot.dispose()
-        return false
+      try {
+        const boot = slot.start()
+        const timed = await Promise.race([
+          boot.then(() => true),
+          new Promise<boolean>((resolve) => window.setTimeout(() => resolve(false), timeoutMs))
+        ])
+        if (!timed || this.disposed) {
+          // Boot timed out — dispose incomplete slot only (never the prior primary).
+          slot.dispose()
+          return false
+        }
+        this.slots.set(scene.entityId, slot)
+        this.emitLiveIds()
+        console.info(
+          `[multi-scene] force-boot secondary for promote “${scene.title}” @ ${key}`
+        )
+        return true
+      } finally {
+        // Always put primary content map back — secondary boot must not starve primary resolve.
+        if (this.primaryScene && this.cache) this.cache.setScene(this.primaryScene)
       }
-      if (this.primaryScene) this.cache.setScene(this.primaryScene)
-      this.slots.set(scene.entityId, slot)
-      this.emitLiveIds()
-      console.info(
-        `[multi-scene] force-boot secondary for promote “${scene.title}” @ ${key}`
-      )
-      return true
     } catch (err) {
       console.warn(`[multi-scene] ensureSecondaryForParcel failed ${key}`, err)
       if (this.primaryScene && this.cache) this.cache.setScene(this.primaryScene)
@@ -638,20 +696,23 @@ export class SecondaryLiveManager {
         primaryBaseParcel: this.primaryScene?.baseParcel,
         initialMode: 'secondary'
       })
-      await slot.start()
-      if (this.disposed) {
-        slot.dispose()
-        return
+      try {
+        await slot.start()
+        if (this.disposed) {
+          slot.dispose()
+          return
+        }
+        this.slots.set(slotId, slot)
+        this.balanceModes()
+        this.emitLiveIds()
+        console.info(
+          `[multi-scene] secondary live “${req.title}” base=${req.base} ` +
+            `sceneDist≈${req.distM.toFixed(0)}m parcels=${req.parcelCount ?? '?'} ` +
+            (preferParcelKey ? `priority=${preferParcelKey}` : '')
+        )
+      } finally {
+        if (this.primaryScene && this.cache) this.cache.setScene(this.primaryScene)
       }
-      if (this.primaryScene) this.cache.setScene(this.primaryScene)
-      this.slots.set(slotId, slot)
-      this.balanceModes()
-      this.emitLiveIds()
-      console.info(
-        `[multi-scene] secondary live “${req.title}” base=${req.base} ` +
-          `sceneDist≈${req.distM.toFixed(0)}m parcels=${req.parcelCount ?? '?'} ` +
-          (preferParcelKey ? `priority=${preferParcelKey}` : '')
-      )
     } catch (err) {
       console.warn(`[multi-scene] secondary boot failed “${req.title}”`, err)
       if (this.primaryScene && this.cache) this.cache.setScene(this.primaryScene)

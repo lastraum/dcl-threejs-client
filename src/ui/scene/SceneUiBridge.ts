@@ -64,6 +64,7 @@ import {
   tryRefineAbsoluteLayoutBoxes
 } from './fastLayoutPatch'
 import { onSceneUiImageLoaded } from './uiImageLoad'
+import { isUiEntityVisible } from './uiVisibility'
 
 const _camPos = new THREE.Vector3()
 const POINTER_EVENTS_COMPONENT_ID = 1062
@@ -761,6 +762,47 @@ export class SceneUiBridge {
     let layoutBoxMap = new Map<Entity, LayoutBox>(
       visibleLayoutBoxes(layoutBoxes, transformOf).map((box) => [box.entity, box])
     )
+
+    // Scale-tween mid-frames (how-to-play page flip, modal pulse) can collapse a full
+    // panel to 6×6 and drop close/pagination children from the visible set. Restore last
+    // good geometry so chrome stays painted while the tween recovers.
+    if (this.lastLayoutBoxMap?.size) {
+      for (const [entity, prev] of this.lastLayoutBoxMap) {
+        if (!mounted.has(entity)) continue
+        if (!isUiEntityVisible(entity, transformOf)) continue
+        if (prev.width < 32 || prev.height < 32) continue
+        const prevArea = prev.width * prev.height
+        if (prevArea < 1500) continue
+
+        const cur = layoutBoxMap.get(entity)
+        if (!cur) {
+          // Was visible last frame; still mounted+visible but missing a box — restore.
+          layoutBoxMap.set(entity, {
+            entity,
+            left: prev.left,
+            top: prev.top,
+            relLeft: prev.relLeft,
+            relTop: prev.relTop,
+            width: prev.width,
+            height: prev.height
+          })
+          continue
+        }
+        const curArea = cur.width * cur.height
+        // Catastrophic shrink (e.g. 564×546 → 6×6) while parent content is tweening scale.
+        if (curArea < 400 && curArea < prevArea * 0.12) {
+          layoutBoxMap.set(entity, {
+            entity,
+            left: prev.left,
+            top: prev.top,
+            relLeft: prev.relLeft,
+            relTop: prev.relTop,
+            width: prev.width,
+            height: prev.height
+          })
+        }
+      }
+    }
 
     // Shop/modal open: display:none → flex brings many nodes into the visible set. Cache/refine
     // from a HUD-only seed leaves them box-less → "yoga box unusable (none)" + hidden inventory.

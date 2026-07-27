@@ -32,7 +32,8 @@ import type { AssetCache } from '../rendering/AssetCache'
 import { yieldToNextFrame } from '../rendering/mainThreadYield'
 import {
   createRemoteAvatarPlaceholder,
-  disposeRemoteAvatarPlaceholder
+  disposeRemoteAvatarPlaceholder,
+  updateRemoteAvatarPlaceholders
 } from '../avatar/remotePlaceholder'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
 import { VrmAvatar } from '../avatar/vrm/VrmAvatar'
@@ -1362,6 +1363,8 @@ export class RemoteAvatarManager {
   } {
     const updateT0 = performance.now()
     const now = updateT0
+    // Neon loading shells — idle clip while Catalyst wearables compose.
+    updateRemoteAvatarPlaceholders(delta)
     let poseSkipped = 0
     let animSkipped = 0
     let nameTagsShown = 0

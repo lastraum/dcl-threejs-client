@@ -2035,6 +2035,14 @@ export class World {
     this.sceneScript.flushSceneGraphMatrices()
     this.sceneScript.refreshAllInstancedTransforms()
     this.discoverMissingColliderActors()
+    // Also re-cook actors whose geom fingerprint was cleared (scale-drift gate).
+    for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+      if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
+      if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
+      if (!this.physics.hasStaticActor(desc.entity)) continue
+      if (this.physics.isColliderSynced(desc)) continue
+      this.colliderCookQueue.add(desc.entity)
+    }
     let guard = 0
     while (this.colliderCookQueue.size > 0 && guard < maxPasses) {
       await this.drainColliderCookQueue({ mode: 'boot' })
@@ -2044,20 +2052,26 @@ export class World {
     this.physics.refreshStaticAfterRuntimeGeometryChange()
 
     let missing = 0
+    let unsynced = 0
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
-      if (this.physics.hasStaticActor(desc.entity)) continue
-      missing++
+      if (!this.physics.hasStaticActor(desc.entity)) {
+        missing++
+        continue
+      }
+      if (!this.physics.isColliderSynced(desc)) unsynced++
     }
     const registered = this.physics.gltfStaticActorCount
     const extracted = this.lastGltfColliderCount
-    const level = missing > 8 || (extracted > 50 && registered < extracted * 0.5) ? 'warn' : 'info'
+    const bad = missing > 8 || unsynced > 8 || (extracted > 50 && registered < extracted * 0.5)
     const msg =
       `[phys] integrity ${label} — gltf=${registered}/${extracted} missing=${missing} ` +
-      `pending=${this.colliderCookQueue.size} static=${this.physics.staticColliderCount}`
-    if (level === 'warn') console.warn(msg)
-    else console.info(msg)
+      `unsynced=${unsynced} pending=${this.colliderCookQueue.size} static=${this.physics.staticColliderCount}`
+    clientDebugLog.log('collision', msg, {
+      level: bad ? 'warn' : 'success',
+      alsoConsole: true
+    })
     return { missing, registered, extracted }
   }
 
@@ -2078,7 +2092,10 @@ export class World {
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
-      if (this.physics.hasStaticActor(desc.entity)) continue
+      // Missing actor OR scale-drift / fp-cleared (has actor but not synced).
+      if (this.physics.hasStaticActor(desc.entity) && this.physics.isColliderSynced(desc)) {
+        continue
+      }
       if (!this.colliderCookQueue.has(desc.entity)) added++
       this.colliderCookQueue.add(desc.entity)
     }

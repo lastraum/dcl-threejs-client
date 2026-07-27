@@ -984,9 +984,12 @@ export class PhysXWorld {
 
     let cooked = 0
     if (worldCook.length) {
-      // Force remove so syncStaticColliders cannot no-op on matching pose fingerprint.
+      // Do NOT invalidate first — that was a mid-walk soft hole (solids vanish until cook
+      // finishes). replaceStaticWithCook keeps the live actor until the new hull succeeds.
+      // Stale geom fingerprints so forceRecook cannot no-op on matching pose fp alone.
       for (const desc of worldCook) {
-        if (this.staticActors.has(desc.entity)) this.invalidateStaticCollider(desc.entity)
+        this.staticFp.delete(desc.entity)
+        this.staticPoseFp.delete(desc.entity)
       }
       try {
         const result = this.syncStaticColliders(worldCook, {
@@ -1245,6 +1248,14 @@ export class PhysXWorld {
           if (!this.matrixHasFinitePose(desc.matrix)) continue
           // Skip no-op when not forced (shape locals stay at cook baseline).
           if (!forceThis && this.staticPoseFp.get(desc.entity) === multiShapePoseFingerprint(desc)) {
+            continue
+          }
+          // Scale gate: entity-local cooks bake world scale into verts. Sliding T+R after
+          // parent scale settle leaves unit-sized soft walls (plaza "worked then didn't").
+          if (!worldBaked && !this.isPoseSlideSafe(actor, desc)) {
+            this.staticFp.delete(desc.entity)
+            this.staticPoseFp.delete(desc.entity)
+            // Keep live actor — World missing/reconcile will recook without a void frame.
             continue
           }
           try {

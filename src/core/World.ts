@@ -206,7 +206,9 @@ export class World {
   private bootAssetsTimedOut = false
   private lastNeverCookedScanMs = 0
   /** Missing-actor scan only (no near-player thrash). */
-  private static readonly NEVER_COOKED_SCAN_MS = 2_000
+  private static readonly NEVER_COOKED_SCAN_MS = 1_500
+  private lastColliderHealthLogMs = 0
+  private lastLoggedStaticCount = -1
 
   /** Runtime burst (e.g. theatre composite spawns). */
   private runtimeColliderBurstUntil = 0
@@ -1913,6 +1915,30 @@ export class World {
     }
     if (this.colliderCookQueue.size > 0) {
       void this.scheduleColliderCookDrain()
+    }
+
+    // Health log when static count drops or every 8s — soft floors are often silent.
+    const now = performance.now()
+    const staticN = this.physics.staticColliderCount
+    if (
+      (this.lastLoggedStaticCount >= 0 && staticN < this.lastLoggedStaticCount - 5) ||
+      now - this.lastColliderHealthLogMs > 8_000
+    ) {
+      this.lastColliderHealthLogMs = now
+      const extracted = this.sceneScript.getAllPhysicsColliderDescs().length
+      let missing = 0
+      for (const d of this.sceneScript.getAllPhysicsColliderDescs()) {
+        if (this.physics.isAoiRoadColliderEntity(d.entity)) continue
+        if (this.physics.isAoiEmptyLandColliderEntity(d.entity)) continue
+        if (!this.physics.hasStaticActor(d.entity)) missing++
+      }
+      if (missing > 0 || staticN !== this.lastLoggedStaticCount) {
+        console.info(
+          `[phys] health static=${staticN} extracted≈${extracted} missing≈${missing} ` +
+            `queue=${this.colliderCookQueue.size} seal=${this.spawnColliderSealComplete}`
+        )
+      }
+      this.lastLoggedStaticCount = staticN
     }
   }
 

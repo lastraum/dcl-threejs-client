@@ -803,14 +803,41 @@ export class AvatarAnimations {
   }
 }
 
+/**
+ * Shared glide.glb load — file is ~3.2MB. Previously every AvatarAnimations.bind()
+ * (local + each remote) hit GLTFLoader again → Network tab stacks of glide.glb
+ * (even 304 revalidation) and multi-second avatar compose stalls.
+ */
+let sharedGlideClip: THREE.AnimationClip | null | undefined
+let sharedGlideClipLoad: Promise<THREE.AnimationClip | null> | null = null
+
 /** Load `Glide_Avatar` from bundled glide.glb (Explorer arms-on-handles body). */
 async function loadGlideAvatarClip(): Promise<THREE.AnimationClip | null> {
-  try {
-    const loader = new GLTFLoader()
-    const gltf = await loader.loadAsync(AVATAR_EMOTE_GLIDE)
-    const named = gltf.animations.find((c) => /glide[_\s-]?avatar/i.test(c.name))
-    return named ?? gltf.animations[0] ?? null
-  } catch {
-    return null
+  if (sharedGlideClip !== undefined) {
+    // Clone so each mixer owns an independent clip instance.
+    return sharedGlideClip ? sharedGlideClip.clone() : null
   }
+  if (!sharedGlideClipLoad) {
+    sharedGlideClipLoad = (async () => {
+      try {
+        const loader = new GLTFLoader()
+        const gltf = await loader.loadAsync(AVATAR_EMOTE_GLIDE)
+        const named = gltf.animations.find((c) => /glide[_\s-]?avatar/i.test(c.name))
+        const clip = named ?? gltf.animations[0] ?? null
+        sharedGlideClip = clip
+        return clip
+      } catch {
+        sharedGlideClip = null
+        return null
+      } finally {
+        // Keep resolved promise; only clear on hard failure path if we want retry.
+      }
+    })().catch(() => {
+      sharedGlideClipLoad = null
+      sharedGlideClip = null
+      return null
+    })
+  }
+  const clip = await sharedGlideClipLoad
+  return clip ? clip.clone() : null
 }

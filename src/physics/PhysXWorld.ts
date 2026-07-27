@@ -1458,17 +1458,10 @@ export class PhysXWorld {
             pendingCooks++
             continue
           }
-        } else if (
-          prevGeomFp &&
-          this.staticActors.has(desc.entity) &&
-          !options?.forceRecookOnPoseChange &&
-          !bootStyleCook
-        ) {
-          // Runtime re-extract often tweaks geom fingerprints while mesh is still solid.
-          // Prefer stale solid over remove→cook hole mid-walk.
-          pendingCooks++
-          continue
         }
+        // Geom fingerprint changed (late GLB attach / re-extract): always fall through to
+        // replaceStaticWithCook. Skipping left wrong/empty hulls forever while play mode
+        // used forceRecookOnPoseChange:false — walk-through furniture with static=700+ still.
 
         if (prevGeomFp && prevGeomFp !== geomFp) {
           this.failedCookFp.delete(prevGeomFp)

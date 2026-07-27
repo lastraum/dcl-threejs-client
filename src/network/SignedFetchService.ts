@@ -220,6 +220,17 @@ export function performGetSignedHeaders(
   return { headers: headersFromSigned(authHeaders) }
 }
 
+function logSignedFetch(
+  phase: 'start' | 'ok' | 'fail',
+  detail: string,
+  extra?: Record<string, unknown>
+): void {
+  // Always console so Network tab users can correlate without ClientDebugLog filters.
+  const tag = `[SignedFetch] ${phase} ${detail}`
+  if (phase === 'fail') console.warn(tag, extra ?? '')
+  else console.info(tag, extra ?? '')
+}
+
 /** Scene `~system/SignedFetch.signedFetch` — signed when wallet/guest identity present. */
 export async function performSignedFetch(
   request: SignedFetchRequest,
@@ -235,6 +246,15 @@ export async function performSignedFetch(
       : init.body != null
         ? String(init.body)
         : undefined
+
+  const urlShort = request.url.length > 100 ? `${request.url.slice(0, 100)}…` : request.url
+  logSignedFetch('start', `${method} ${urlShort}`, {
+    hasIdentity: !!identity,
+    sceneId: sceneContext?.sceneId?.slice(0, 16) ?? null,
+    parcel: sceneContext?.parcel ?? null,
+    isGuest: sceneContext?.isGuest ?? null,
+    bodyBytes: body?.length ?? 0
+  })
 
   try {
     const usePlainFetch = prefersPlainSceneHttpFetch(request.url)
@@ -253,6 +273,10 @@ export async function performSignedFetch(
           : await buildSceneKernelMetadata(sceneContext, body)
         : null
 
+    if (!identity) {
+      logSignedFetch('start', `unsigned (no identity) ${urlShort}`)
+    }
+
     // Prefer same-origin proxy for third-party hosts in dev (CORS).
     // Sign the original URL path; transport via /api/scene-http/...
     const proxyUrl = sceneHttpProxyUrl(request.url)
@@ -268,10 +292,14 @@ export async function performSignedFetch(
       }
       const res = await fetch(proxyUrl, { method, headers, body })
       const text = await res.text()
-      if (!res.ok && import.meta.env.DEV) {
-        console.warn(
-          `[SignedFetch] proxy ${res.status} ${request.url.slice(0, 80)}… body=${text.slice(0, 200)}`
-        )
+      if (res.ok) {
+        logSignedFetch('ok', `proxy ${res.status} ${urlShort}`, {
+          bodyPreview: text.slice(0, 120)
+        })
+      } else {
+        logSignedFetch('fail', `proxy ${res.status} ${urlShort}`, {
+          bodyPreview: text.slice(0, 240)
+        })
       }
       return {
         ok: res.ok,
@@ -298,10 +326,10 @@ export async function performSignedFetch(
         : await fetch(request.url, fetchInit)
 
     const text = await res.text()
-    if (!res.ok && import.meta.env.DEV) {
-      console.warn(
-        `[SignedFetch] ${res.status} ${request.url.slice(0, 80)}… body=${text.slice(0, 200)}`
-      )
+    if (res.ok) {
+      logSignedFetch('ok', `${res.status} ${urlShort}`, { bodyPreview: text.slice(0, 120) })
+    } else {
+      logSignedFetch('fail', `${res.status} ${urlShort}`, { bodyPreview: text.slice(0, 240) })
     }
     return {
       ok: res.ok,
@@ -312,9 +340,7 @@ export async function performSignedFetch(
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    if (import.meta.env.DEV) {
-      console.warn(`[SignedFetch] failed ${request.url.slice(0, 80)}…`, message)
-    }
+    logSignedFetch('fail', `${urlShort}`, { error: message })
     return {
       ok: false,
       status: 0,

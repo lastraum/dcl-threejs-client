@@ -2885,6 +2885,16 @@ function rpcCommsSend(body: { message: string }): Promise<Record<string, never>>
 
 function rpcSignedFetch(body: SignedFetchRequest): Promise<SignedFetchResponse> {
   const id = ++requestId
+  // Visible in worker console + main [sceneWorker] if mirrored — proves scene called ADR SignedFetch.
+  try {
+    const u = typeof body?.url === 'string' ? body.url : ''
+    workerLog(
+      'log',
+      `[SignedFetch] worker→main ${body?.init?.method ?? 'GET'} ${u.slice(0, 120)}`
+    )
+  } catch {
+    /* ignore */
+  }
   return new Promise((resolve) => {
     pendingSignedFetch.set(id, resolve)
     ctx.postMessage({ type: 'signed-fetch', id, body } satisfies SceneWorkerOutbound)

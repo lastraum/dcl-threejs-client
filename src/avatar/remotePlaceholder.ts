@@ -56,9 +56,16 @@ function startNeonPulse(): void {
   pulseRaf = requestAnimationFrame(tick)
 }
 
+/** Target human height for the neon loading shell (meters). */
+const PLACEHOLDER_HEIGHT_M = 1.78
+
 /**
  * Bake BaseMale meshes to static bind-pose geometry in root-local space,
  * feet planted at y=0. Shared across all loading peers.
+ *
+ * BaseMale keeps cm→m on the armature (scale ≈ 0.01). getVertexPosition is
+ * mesh-local after skinning — must apply mesh.matrixWorld before rootInv or
+ * verts stay ~100× too large (giant neon mannequin).
  */
 function bakeBaseMaleGeometries(avatarRoot: THREE.Object3D): THREE.BufferGeometry[] {
   avatarRoot.updateMatrixWorld(true)
@@ -66,27 +73,20 @@ function bakeBaseMaleGeometries(avatarRoot: THREE.Object3D): THREE.BufferGeometr
   const geometries: THREE.BufferGeometry[] = []
 
   avatarRoot.traverse((obj) => {
-    if (!(obj instanceof THREE.Mesh)) return
+    // Display body only — same path as editor mannequin bake.
+    if (!(obj instanceof THREE.SkinnedMesh)) return
     const srcGeo = obj.geometry
     if (!srcGeo?.attributes?.position) return
 
+    obj.skeleton.pose()
     obj.updateMatrixWorld(true)
-    if (obj instanceof THREE.SkinnedMesh) {
-      obj.skeleton.pose()
-      obj.updateMatrixWorld(true)
-    }
 
     const baked = srcGeo.clone()
     const pos = baked.attributes.position as THREE.BufferAttribute
     for (let i = 0; i < pos.count; i++) {
-      if (obj instanceof THREE.SkinnedMesh) {
-        // World-space skinned bind-pose position.
-        obj.getVertexPosition(i, _vertex)
-      } else {
-        _vertex.fromBufferAttribute(pos, i)
-        _vertex.applyMatrix4(obj.matrixWorld)
-      }
-      _vertex.applyMatrix4(rootInv)
+      obj.getVertexPosition(i, _vertex)
+      // Armature scale lives on matrixWorld — required for meter-space verts.
+      _vertex.applyMatrix4(obj.matrixWorld).applyMatrix4(rootInv)
       pos.setXYZ(i, _vertex.x, _vertex.y, _vertex.z)
     }
     baked.computeVertexNormals()
@@ -96,16 +96,36 @@ function bakeBaseMaleGeometries(avatarRoot: THREE.Object3D): THREE.BufferGeometr
   if (geometries.length === 0) return geometries
 
   let minY = Infinity
+  let maxY = -Infinity
   for (const geo of geometries) {
     geo.computeBoundingBox()
-    minY = Math.min(minY, geo.boundingBox?.min.y ?? 0)
+    const bb = geo.boundingBox
+    if (!bb) continue
+    minY = Math.min(minY, bb.min.y)
+    maxY = Math.max(maxY, bb.max.y)
   }
+
+  // Plant feet at y=0.
   if (Number.isFinite(minY) && minY !== 0) {
     for (const geo of geometries) {
       geo.translate(0, -minY, 0)
-      geo.computeBoundingBox()
-      geo.computeBoundingSphere()
     }
+    maxY -= minY
+  }
+
+  // Safety: force human height if hierarchy/bake still leaves cm-scale (or tiny) verts.
+  if (Number.isFinite(maxY) && maxY > 0.01) {
+    const s = PLACEHOLDER_HEIGHT_M / maxY
+    if (Math.abs(s - 1) > 0.05) {
+      for (const geo of geometries) {
+        geo.scale(s, s, s)
+      }
+    }
+  }
+
+  for (const geo of geometries) {
+    geo.computeBoundingBox()
+    geo.computeBoundingSphere()
   }
 
   return geometries

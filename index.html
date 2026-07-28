@@ -7774,6 +7774,12 @@
       .keybinds-overlay__subtitle {
         font-size: 12px;
         color: rgba(255, 255, 255, 0.55);
+        line-height: 1.4;
+        transition: color 0.15s ease;
+      }
+      .keybinds-overlay__subtitle.is-active {
+        color: rgba(160, 210, 255, 0.95);
+        font-weight: 600;
       }
       .keybinds-overlay__close {
         appearance: none;
@@ -7815,17 +7821,6 @@
       .keybinds-note b {
         color: rgba(255, 255, 255, 0.9);
         font-weight: 600;
-      }
-      .keybinds-listen {
-        margin: 0 0 14px;
-        padding: 10px 14px;
-        border-radius: 10px;
-        border: 1px solid rgba(255, 107, 107, 0.45);
-        background: rgba(255, 107, 107, 0.14);
-        color: #fff;
-        font-size: 13px;
-        font-weight: 600;
-        letter-spacing: 0.02em;
       }
       .keybinds-keyboard {
         display: flex;

@@ -82,11 +82,14 @@ const ARROW_CLUSTER: readonly { code: string; label: string }[] = [
 /**
  * Full-screen keyboard remapper (main overlay) — opened from Preferences → Controls.
  */
+const SUBTITLE_IDLE =
+  'Select an action, then click any key on the board (or press it). Esc cancels.'
+
 export class KeybindsPanel {
   readonly root: HTMLElement
   private readonly keyboardEl: HTMLElement
   private readonly bindListEl: HTMLElement
-  private readonly listenHint: HTMLElement
+  private readonly subtitleEl: HTMLElement
   private readonly keyEls = new Map<string, HTMLButtonElement>()
   private readonly bindRowEls = new Map<KeybindId, HTMLElement>()
   private visible = false
@@ -107,7 +110,7 @@ export class KeybindsPanel {
         <header class="keybinds-overlay__header">
           <div class="keybinds-overlay__heading">
             <span class="keybinds-overlay__title">Keyboard</span>
-            <span class="keybinds-overlay__subtitle">Select an action, then click any key on the board (or press it)</span>
+            <span class="keybinds-overlay__subtitle" data-subtitle>${SUBTITLE_IDLE}</span>
           </div>
           <button type="button" class="keybinds-overlay__close" aria-label="Close">&times;</button>
         </header>
@@ -116,7 +119,6 @@ export class KeybindsPanel {
             Every blue key is remappable — even ones Explorer never used (e.g. map <b>Walk → Tab</b>).
             Defaults match Explorer (WASD, <b>Ctrl = Walk</b>). Rebind Walk off Ctrl to avoid browser <b>Ctrl+W</b> closing the tab.
           </p>
-          <div class="keybinds-listen" hidden data-listen></div>
           <div class="keybinds-keyboard" data-keyboard aria-label="Keyboard map"></div>
           <div class="keybinds-list" data-list></div>
           <div class="keybinds-overlay__footer">
@@ -126,7 +128,7 @@ export class KeybindsPanel {
       </div>
     `
 
-    this.listenHint = this.root.querySelector('[data-listen]')!
+    this.subtitleEl = this.root.querySelector('[data-subtitle]')!
     this.keyboardEl = this.root.querySelector('[data-keyboard]')!
     this.bindListEl = this.root.querySelector('[data-list]')!
 
@@ -262,19 +264,22 @@ export class KeybindsPanel {
       this.startListening(existing)
       return
     }
-    this.listenHint.hidden = false
-    this.listenHint.textContent = 'Select an action below first, then click a key (or press it).'
+    this.setSubtitle('Select an action below first, then click a key (or press it).')
   }
 
   private assignCode(id: KeybindId, code: string): void {
     // Exact physical key from the board — Tab, Caps, etc. all valid.
     const ok = keybinds.setBindFromCode(id, code)
     if (!ok) {
-      this.listenHint.hidden = false
-      this.listenHint.textContent = `Can't bind ${formatKeyCodeLabel(code)} — try another key (Esc to cancel)`
+      this.setSubtitle(`Can't bind ${formatKeyCodeLabel(code)} — try another key (Esc to cancel).`)
       return
     }
     this.cancelListening()
+  }
+
+  private setSubtitle(text: string, active = false): void {
+    this.subtitleEl.textContent = text
+    this.subtitleEl.classList.toggle('is-active', active)
   }
 
   private buildBindList(): void {
@@ -334,8 +339,10 @@ export class KeybindsPanel {
     this.cancelListening()
     this.listeningId = id
     const meta = keybinds.meta(id)
-    this.listenHint.hidden = false
-    this.listenHint.textContent = `Click any blue key for ${meta?.label ?? id} — or press it (Esc to cancel)`
+    this.setSubtitle(
+      `Binding ${meta?.label ?? id} — click any blue key or press it. Esc cancels.`,
+      true
+    )
     this.bindRowEls.get(id)?.classList.add('is-listening')
     this.root.classList.add('is-listening')
 
@@ -363,8 +370,7 @@ export class KeybindsPanel {
     }
     this.listeningId = null
     this.root.classList.remove('is-listening')
-    this.listenHint.hidden = true
-    this.listenHint.textContent = ''
+    this.setSubtitle(SUBTITLE_IDLE)
   }
 
   private syncKeybinds(map: KeybindsMap): void {

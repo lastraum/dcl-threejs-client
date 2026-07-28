@@ -9,7 +9,7 @@ updated: 2026-07-28
 source: github
 base_branch: dev-latest
 workflow:
-  - stage: pending_review
+  - stage: merged
     integration_ref: pr:55
     title: foil pack + retriever pet models
     owner: awedjob
@@ -144,13 +144,6 @@ workflow:
     pr: 28
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/28
     updated: 2026-07-20
-  - stage: merged
-    integration_ref: pr:26
-    title: hand-drawn category icon set
-    owner: awedjob
-    pr: 26
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/26
-    updated: 2026-07-17
   - stage: merged
     integration_ref: ecs:TriggerArea
     title: TriggerArea Tier A — volume enter/exit and scene callbacks

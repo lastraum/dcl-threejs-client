@@ -114,6 +114,8 @@ export class SceneUiBridge {
    * Seed for absolute refine + reuse so newly-visible shop subtrees keep their boxes.
    */
   private lastFullLayoutBoxes: LayoutBox[] | null = null
+  /** Last paint forest — fullscreen PE allow-list needs descendant paint (CBD splash). */
+  private lastUiForest: Map<Entity, Entity[]> | null = null
   /** Consecutive paints with stable visible count — enables patch-heavy path (COD no thrash). */
   private stableVisibleStreak = 0
   private lastStableVisibleCount = 0
@@ -866,6 +868,7 @@ export class SceneUiBridge {
       )
     }
 
+    this.lastUiForest = forest
     const drawInput = {
       forest,
       virtual: this.virtual,
@@ -1094,7 +1097,10 @@ export class SceneUiBridge {
       if (this.input.isFieldEntity(entity)) return { entity, blocking: true }
       if (!isUiEntityPointerCapturing(ecs, entity, this.pointerEventsLookup)) continue
       const area = this.candidatePickArea(entity)
-      if (this.isNearFullscreenPickArea(area) && !isFullscreenUiPeAllowed(ecs, entity)) {
+      if (
+        this.isNearFullscreenPickArea(area) &&
+        !isFullscreenUiPeAllowed(ecs, entity, { forest: this.lastUiForest })
+      ) {
         continue
       }
       return { entity, blocking: true }
@@ -1169,8 +1175,11 @@ export class SceneUiBridge {
         let area = this.candidatePickArea(handler)
         if (!Number.isFinite(area)) area = this.candidatePickArea(entity)
         // Near-fullscreen PE with no real scrim paint must not steal world mesh PE
-        // (inventory GLB open). Small controls + visible/BLOCK scrims still win.
-        if (this.isNearFullscreenPickArea(area) && !isFullscreenUiPeAllowed(ecs, handler)) {
+        // (inventory GLB open). Child-panel paint (CBD splash) still wins.
+        if (
+          this.isNearFullscreenPickArea(area) &&
+          !isFullscreenUiPeAllowed(ecs, handler, { forest: this.lastUiForest })
+        ) {
           if (logPick) {
             console.log(
               `[scene-ui]   skip fullscreen empty PE e${handler} area=${Math.round(area)} (world pass-through)`
@@ -1187,7 +1196,10 @@ export class SceneUiBridge {
 
       if (isUiEntityPointerCapturing(ecs, entity, this.pointerEventsLookup)) {
         const area = this.candidatePickArea(entity)
-        if (this.isNearFullscreenPickArea(area) && !isFullscreenUiPeAllowed(ecs, entity)) {
+        if (
+          this.isNearFullscreenPickArea(area) &&
+          !isFullscreenUiPeAllowed(ecs, entity, { forest: this.lastUiForest })
+        ) {
           continue
         }
         if (area < blockingArea) {

@@ -119,30 +119,64 @@ export function isUiEntityPointerCapturing(
   return isUiEntityBlocking(ecs, entity, pointerEventsOf)
 }
 
+/** Visible UiBackground / UiText paint on this entity (not pointerFilter). */
+export function entityHasVisibleUiPaint(ecs: MirrorComponents, entity: Entity): boolean {
+  const bg = ecs.UiBackground.getOrNull(entity) as
+    | { color?: { a?: number } | null; texture?: unknown }
+    | null
+    | undefined
+  if (bg) {
+    const a = bg.color?.a
+    if (a !== undefined && a !== null && a >= 0.05) return true
+    // No color channel — solid default paint is treated as visible scrim.
+    if (bg.color === undefined || bg.color === null) return true
+    // Texture-only backgrounds (splash image, a may be 0 while texture shows).
+    if (bg.texture != null) return true
+  }
+  const text = ecs.UiText.getOrNull(entity) as { value?: string } | null | undefined
+  if (text?.value?.trim()) return true
+  return false
+}
+
+function forestHasVisiblePaintDescendant(
+  ecs: MirrorComponents,
+  root: Entity,
+  forest: Map<Entity, Entity[]>
+): boolean {
+  const stack = [...(forest.get(root) ?? [])]
+  const seen = new Set<number>()
+  while (stack.length) {
+    const c = stack.pop()!
+    const id = c as number
+    if (seen.has(id)) continue
+    seen.add(id)
+    if (entityHasVisibleUiPaint(ecs, c)) return true
+    const kids = forest.get(c)
+    if (kids?.length) stack.push(...kids)
+  }
+  return false
+}
+
 /**
  * Near-fullscreen PE may capture only when the scene authored a real scrim:
- * pointerFilter BLOCK, visible UiBackground (Color4.a ≥ 0.05), or UiText.
+ * pointerFilter BLOCK, visible UiBackground (Color4.a ≥ 0.05 / texture), UiText,
+ * **or a descendant with that paint** (CBD welcome: PE on full shell, image on child).
  * Empty transparent full-viewport PE (ghost inventory / dissolved splash) must
  * not block 3D mesh PE.
  */
 export function isFullscreenUiPeAllowed(
   ecs: MirrorComponents,
-  entity: Entity
+  entity: Entity,
+  options?: { forest?: Map<Entity, Entity[]> | null }
 ): boolean {
   const t = ecs.UiTransform.getOrNull(entity)
   if (t && normalizePointerFilterMode(t.pointerFilter) === PointerFilterMode.BLOCK) {
     return true
   }
-  const bg = ecs.UiBackground.getOrNull(entity) as
-    | { color?: { a?: number } | null }
-    | null
-    | undefined
-  const a = bg?.color?.a
-  if (a !== undefined && a !== null && a >= 0.05) return true
-  // No color channel — solid default paint is treated as visible scrim.
-  if (bg && (bg.color === undefined || bg.color === null)) return true
-  const text = ecs.UiText.getOrNull(entity) as { value?: string } | null | undefined
-  if (text?.value?.trim()) return true
+  if (entityHasVisibleUiPaint(ecs, entity)) return true
+  // Splash / modal pattern: PE catcher is the full shell; paint lives on a child panel.
+  const forest = options?.forest
+  if (forest && forestHasVisiblePaintDescendant(ecs, entity, forest)) return true
   return false
 }
 

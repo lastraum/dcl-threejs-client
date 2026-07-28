@@ -127,16 +127,17 @@ function isSceneUiNodeInteractive(
   _dropdownOf: (e: Entity) => PBUiDropdown | null,
   pointerEventsOf?: UiPointerEventsLookup,
   background?: PBUiBackground | null,
-  layoutBox?: LayoutBox | null
+  layoutBox?: LayoutBox | null,
+  forest?: Map<Entity, Entity[]> | null
 ): boolean {
   // Explorer parity: PE / BLOCK / fields while UiTransform chain is visible.
   if (!isUiEntityPointerCapturing(ecs, entity, pointerEventsOf, background ?? null)) {
     return false
   }
   // Near-fullscreen transparent PE shells must not get pointer-events:auto — they
-  // steal inventory GLB / world mesh PE. Visible scrim / BLOCK / text still capture.
+  // steal inventory GLB / world mesh PE. Visible scrim / BLOCK / text / child paint still capture.
   if (layoutBox && layoutBox.width * layoutBox.height >= 1920 * 1080 * 0.45) {
-    return isFullscreenUiPeAllowed(ecs, entity)
+    return isFullscreenUiPeAllowed(ecs, entity, { forest: forest ?? null })
   }
   void transform
   return true
@@ -611,7 +612,8 @@ export class SceneUiDomRenderer {
       input.dropdownOf,
       input.pointerEventsOf,
       bg,
-      layoutBox
+      layoutBox,
+      input.forest
     )
 
     const compactControl =

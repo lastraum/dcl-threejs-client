@@ -92,6 +92,10 @@ import {
   enrichResolvedScenePublicTitle,
   fetchPublicSceneTitle
 } from '../social/sceneDisplayTitle'
+import { fetchSceneLandingMeta } from '../social/sceneLanding'
+import { LiveToolsSession } from '../social/LiveToolsSession'
+import { placeKeyFromScene } from '../social/liveToolsWire'
+import { LiveToolsUi } from './ui/liveTools/LiveToolsUi'
 import { recordLoginEvent } from '../analytics/recordLogin'
 import {
   startDwellTracking,
@@ -194,6 +198,10 @@ export class AppController {
   /** Tour Focus — follower lens takeover; session-scoped across World rebuilds. */
   private tourFocus: TourFocusController | null = null
   private tourFocusHost: import('../rendering/SceneHost').SceneHost | null = null
+  /** In-scene live polls + Q&A (scene LiveKit topic — not chat). */
+  private liveToolsSession: LiveToolsSession | null = null
+  private liveToolsUi: LiveToolsUi | null = null
+  private unsubLiveToolsTopic: (() => void) | null = null
   /**
    * Follower Esc during Focus: stay on tour, dismiss only this Focus period.
    * Cleared when leader turns Focus off (or tour ends) so the next Focus ON re-enters.
@@ -2677,8 +2685,14 @@ export class AppController {
                 this.minimap?.setVisible(!collapsed)
               }
             }
-          : undefined
+          : undefined,
+        onSceneOptions: (anchor) => {
+          if (document.pointerLockElement) document.exitPointerLock()
+          this.liveToolsUi?.openMenuAt(anchor)
+        }
       })
+      // Live polls / Q&A — bind after card so ⋯ works as soon as owners resolve.
+      void this.setupLiveTools(world, sceneConfig)
       this.lastLocationTitleKey =
         sceneConfig.source.kind === 'coords'
           ? sceneConfig.baseParcel
@@ -3514,6 +3528,7 @@ export class AppController {
     this.mobileHud?.dispose()
     this.mobileHud = null
     this.unbindMinimapLayout()
+    this.disposeLiveTools()
     this.worldLocationCard?.dispose()
     this.worldLocationCard = null
     this.minimap?.dispose()
@@ -3529,6 +3544,88 @@ export class AppController {
     await disconnectAll(this.world, { keepLiveKit: opts?.keepLiveKit === true })
     this.world = null
     if (this.container) this.container.innerHTML = ''
+  }
+
+  /**
+   * Live polls + Q&A for the current place.
+   * Transport: scene LiveKit topic `d3js-live-tools:{placeKey}` (never RFC4 Chat).
+   */
+  private async setupLiveTools(world: World, scene: ResolvedScene): Promise<void> {
+    this.disposeLiveTools()
+    const placeKey = placeKeyFromScene(scene)
+    if (!placeKey) return
+
+    const session = new LiveToolsSession({
+      placeKey,
+      ownerAddresses: [],
+      getLocalWallet: () => {
+        const login = this.login
+        if (login?.kind !== 'wallet') return null
+        const a = login.address.trim().toLowerCase()
+        return /^0x[a-f0-9]{40}$/.test(a) ? a : null
+      },
+      getDisplayName: () => {
+        const profile = world.session.getProfile()
+        const dn = profile?.displayName?.trim()
+        if (dn) return dn
+        const login = this.login
+        if (login?.kind === 'wallet') return login.address.slice(0, 8)
+        return null
+      },
+      publish: (topic, packet) => world.comms.publishRawTopicData(topic, packet, true),
+      onChange: () => this.liveToolsUi?.refresh()
+    })
+    this.liveToolsSession = session
+    this.liveToolsUi = new LiveToolsUi({
+      session,
+      onToast: (message) => {
+        clientDebugLog.log('client', `[live-tools] ${message}`)
+      }
+    })
+    this.unsubLiveToolsTopic = world.comms.addTopicListener((topic, sender, payload) => {
+      session.handleInbound(topic, sender, payload)
+    })
+
+    // Resolve owner wallets (Places + NAME) for host checks.
+    if (scene.source.kind === 'coords' || scene.source.kind === 'world') {
+      try {
+        const route: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }> =
+          scene.source.kind === 'world'
+            ? {
+                kind: 'world',
+                worldName: scene.source.worldName,
+                segment: scene.source.worldName,
+                ...(scene.source.customServer
+                  ? { customServer: scene.source.customServer }
+                  : {})
+              }
+            : {
+                kind: 'coords',
+                x: scene.source.x,
+                y: scene.source.y,
+                segment: `${scene.source.x},${scene.source.y}`
+              }
+        const meta = await fetchSceneLandingMeta(route)
+        if (this.liveToolsSession !== session) return
+        session.setOwnerAddresses(meta.ownerAddresses ?? [])
+      } catch {
+        /* host features stay disabled until owners known */
+      }
+    }
+
+    // After a short delay so LiveKit is more likely connected.
+    window.setTimeout(() => {
+      if (this.liveToolsSession === session) session.start()
+    }, 800)
+  }
+
+  private disposeLiveTools(): void {
+    this.unsubLiveToolsTopic?.()
+    this.unsubLiveToolsTopic = null
+    this.liveToolsUi?.dispose()
+    this.liveToolsUi = null
+    this.liveToolsSession?.dispose()
+    this.liveToolsSession = null
   }
 
   /** End Follow/Tour session when leaving 3D play (session-only product rule). */

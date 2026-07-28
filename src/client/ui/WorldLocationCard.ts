@@ -17,11 +17,21 @@ export type WorldLocationCardOptions = {
     /** Start with map hidden (default false = map open). */
     initiallyCollapsed?: boolean
   }
+  /**
+   * Scene options (⋯) — live polls / Q&A. Called with the options button as anchor.
+   */
+  onSceneOptions?: (anchor: HTMLElement) => void
 }
 
 const EXPAND_SVG = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
   <path d="M8 14l4-4 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
   <path d="M8 10l4-4 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`
+
+const OPTIONS_SVG = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+  <circle cx="12" cy="6.5" r="1.4" fill="currentColor"/>
+  <circle cx="12" cy="12" r="1.4" fill="currentColor"/>
+  <circle cx="12" cy="17.5" r="1.4" fill="currentColor"/>
 </svg>`
 
 /** Top-left HUD location pill — scene/world name + live coordinates. */
@@ -30,6 +40,7 @@ export class WorldLocationCard {
   private readonly titleEl: HTMLElement
   private readonly coordsEl: HTMLElement
   private readonly expandBtn: HTMLButtonElement | null
+  private readonly optionsBtn: HTMLButtonElement | null
   private collapsed = false
   private disposed = false
   private readonly getCoordsLabel: () => string
@@ -42,13 +53,15 @@ export class WorldLocationCard {
     title,
     getCoordsLabel,
     onJumpToGenesis,
-    mapToggle
+    mapToggle,
+    onSceneOptions
   }: WorldLocationCardOptions) {
     this.getCoordsLabel = getCoordsLabel
     this.mapToggle = mapToggle
     this.onMapCollapsedChange = mapToggle?.onCollapsedChange ?? null
     this.showJump = scene.source.kind === 'world' && !!onJumpToGenesis
     const showExpand = this.showJump || !!mapToggle
+    const showOptions = typeof onSceneOptions === 'function'
 
     this.root = document.createElement('div')
     this.root.id = 'world-location-card'
@@ -61,6 +74,22 @@ export class WorldLocationCard {
           ${EXPAND_SVG}
         </button>`
       : ''
+
+    const optionsMarkup = showOptions
+      ? `<div class="world-location-card__actions">
+          <button type="button" class="world-location-card__icon-btn world-location-card__icon-btn--active" aria-label="Scene options" data-scene-options>
+            ${OPTIONS_SVG}
+          </button>
+        </div>`
+      : this.showJump
+        ? `<div class="world-location-card__actions">
+          <button type="button" class="world-location-card__icon-btn" aria-label="Favorite world" disabled>
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 20.5 9.7 18.4C5.4 14.6 3 12.4 3 9.5 3 7.2 4.7 5.5 7 5.5c1.4 0 2.7.7 3.5 1.7.8-1 2.1-1.7 3.5-1.7 2.3 0 4 1.7 4 4 0 2.9-2.4 5.1-6.7 8.9L12 20.5z" stroke="currentColor" stroke-width="1.5"/>
+            </svg>
+          </button>
+        </div>`
+        : ''
 
     this.root.innerHTML = `
       <div class="world-location-card__header">
@@ -83,24 +112,7 @@ export class WorldLocationCard {
             </span>
           </p>
         </div>
-        ${
-          this.showJump
-            ? `<div class="world-location-card__actions">
-          <button type="button" class="world-location-card__icon-btn" aria-label="Favorite world" disabled>
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M12 20.5 9.7 18.4C5.4 14.6 3 12.4 3 9.5 3 7.2 4.7 5.5 7 5.5c1.4 0 2.7.7 3.5 1.7.8-1 2.1-1.7 3.5-1.7 2.3 0 4 1.7 4 4 0 2.9-2.4 5.1-6.7 8.9L12 20.5z" stroke="currentColor" stroke-width="1.5"/>
-            </svg>
-          </button>
-          <button type="button" class="world-location-card__icon-btn" aria-label="World options" disabled>
-            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <circle cx="12" cy="6.5" r="1.4" fill="currentColor"/>
-              <circle cx="12" cy="12" r="1.4" fill="currentColor"/>
-              <circle cx="12" cy="17.5" r="1.4" fill="currentColor"/>
-            </svg>
-          </button>
-        </div>`
-            : ''
-        }
+        ${optionsMarkup}
       </div>
       ${
         this.showJump
@@ -118,6 +130,7 @@ export class WorldLocationCard {
     this.titleEl = this.root.querySelector('.world-location-card__title')!
     this.coordsEl = this.root.querySelector('.world-location-card__coords-text')!
     this.expandBtn = this.root.querySelector('.world-location-card__expand')
+    this.optionsBtn = this.root.querySelector('[data-scene-options]')
 
     this.titleEl.textContent = title
 
@@ -130,6 +143,12 @@ export class WorldLocationCard {
     if (this.showJump) {
       const jumpBtn = this.root.querySelector('.world-location-card__jump') as HTMLButtonElement
       jumpBtn.addEventListener('click', () => onJumpToGenesis!())
+    }
+    if (this.optionsBtn && onSceneOptions) {
+      this.optionsBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation()
+        onSceneOptions(this.optionsBtn!)
+      })
     }
 
     const mountHost = mapToggle?.host ?? document.body

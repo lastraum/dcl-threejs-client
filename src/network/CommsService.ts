@@ -148,6 +148,10 @@ export class CommsService {
   private avatarVrmHandler: ((sender: string, data: Uint8Array) => void) | null = null
   private petHandler: ((sender: string, data: Uint8Array) => void) | null = null
   private topicMessageHandler: ((topic: string, sender: string, payload: Uint8Array) => void) | null = null
+  /** Extra topic listeners (live tools, etc.) — do not replace the primary scene `comms` handler. */
+  private readonly topicListeners = new Set<
+    (topic: string, sender: string, payload: Uint8Array) => void
+  >()
   private lastBroadcast = 0
   private pendingTransform: AvatarTransformPayload | null = null
   private sceneTarget: SceneCommsTarget | null = null
@@ -255,6 +259,13 @@ export class CommsService {
       session.setTopicHandler((topic, address, data) => {
         this.topicService.enqueue(topic, address, data)
         this.topicMessageHandler?.(topic, address, data)
+        for (const listener of this.topicListeners) {
+          try {
+            listener(topic, address, data)
+          } catch {
+            /* ignore listener errors */
+          }
+        }
       })
       session.setPeerHandlers({
         onPeerJoin: (address, transport) => this.trackPeerJoin(address, transport),
@@ -428,6 +439,35 @@ export class CommsService {
     handler: ((topic: string, sender: string, payload: Uint8Array) => void) | null
   ): void {
     this.topicMessageHandler = handler
+  }
+
+  /**
+   * Subscribe to LiveKit data topics (scene room). Used by live tools, etc.
+   * @returns unsubscribe
+   */
+  addTopicListener(
+    listener: (topic: string, sender: string, payload: Uint8Array) => void
+  ): () => void {
+    this.topicListeners.add(listener)
+    return () => {
+      this.topicListeners.delete(listener)
+    }
+  }
+
+  /**
+   * Publish raw bytes on a LiveKit topic across chat-capable rooms.
+   * Must use a non-empty topic so packets never hit RFC4 Chat / scene chat UI.
+   */
+  async publishRawTopicData(topic: string, packet: Uint8Array, reliable = true): Promise<boolean> {
+    const t = topic.trim()
+    if (!t) return false
+    const sessions = this.liveKitChatSessions()
+    if (!sessions.length) return false
+    let sent = false
+    for (const session of sessions) {
+      if (await session.publishTopicData(t, packet, reliable)) sent = true
+    }
+    return sent
   }
 
   async sendSceneChat(text: string): Promise<boolean> {
@@ -1557,6 +1597,7 @@ export class CommsService {
     this.handlers = null
     this.sceneBinaryHandler = null
     this.topicMessageHandler = null
+    this.topicListeners.clear()
     this.chatHandler = null
     this.chatMediaHandler = null
     this.sceneTarget = null

@@ -7735,8 +7735,8 @@
         pointer-events: auto;
       }
       .keybinds-overlay__panel {
-        width: min(960px, 100%);
-        max-height: min(920px, 100%);
+        width: min(1120px, 100%);
+        max-height: min(960px, 100%);
         display: flex;
         flex-direction: column;
         border-radius: 18px;
@@ -7780,6 +7780,47 @@
       .keybinds-overlay__subtitle.is-active {
         color: rgba(160, 210, 255, 0.95);
         font-weight: 600;
+      }
+      .keybinds-overlay__header-right {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-shrink: 0;
+      }
+      .keybinds-layout {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .keybinds-layout__label {
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .keybinds-layout__select {
+        appearance: none;
+        -webkit-appearance: none;
+        min-width: 132px;
+        padding: 6px 28px 6px 10px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.35)
+          url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23fff' d='M3 4.5 6 8l3-3.5'/%3E%3C/svg%3E")
+          no-repeat right 8px center;
+        color: #fff;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        outline: none;
+      }
+      .keybinds-layout__select:hover {
+        border-color: rgba(255, 255, 255, 0.28);
+      }
+      .keybinds-layout__select:focus {
+        border-color: rgba(120, 190, 255, 0.7);
       }
       .keybinds-overlay__close {
         appearance: none;
@@ -7825,49 +7866,64 @@
       .keybinds-keyboard {
         display: flex;
         flex-wrap: wrap;
-        gap: 18px;
-        align-items: flex-end;
+        gap: 14px 18px;
+        align-items: flex-start;
         justify-content: center;
         margin-bottom: 20px;
-        padding: 18px 16px;
+        padding: 16px 14px;
         border-radius: 16px;
         background: rgba(0, 0, 0, 0.32);
         border: 1px solid rgba(255, 255, 255, 0.08);
+        overflow-x: auto;
       }
       .keybinds-keyboard__main {
         display: flex;
         flex-direction: column;
-        gap: 6px;
-        flex: 1 1 520px;
-        max-width: 640px;
+        gap: 5px;
+        flex: 1 1 560px;
+        min-width: min(100%, 520px);
+        max-width: 720px;
+      }
+      .keybinds-keyboard__side {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        flex: 0 0 auto;
+        padding-top: 2px;
       }
       .keybinds-keyboard__row {
         display: flex;
-        gap: 6px;
+        gap: 5px;
         justify-content: flex-start;
       }
       .keybinds-keyboard__row--arrows-up {
         justify-content: center;
       }
+      .keybinds-keyboard__row--numpad {
+        justify-content: flex-start;
+      }
       .keybinds-keyboard__arrows {
         display: flex;
         flex-direction: column;
-        gap: 6px;
-        flex: 0 0 auto;
-        padding-bottom: 2px;
+        gap: 5px;
+      }
+      .keybinds-keyboard__numpad {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
       }
       .keybinds-key {
         appearance: none;
         box-sizing: border-box;
-        min-width: 40px;
-        height: 44px;
-        padding: 2px 6px;
+        min-width: 36px;
+        height: 40px;
+        padding: 2px 4px;
         border: 1px solid rgba(100, 180, 255, 0.4);
-        border-radius: 8px;
+        border-radius: 7px;
         background: rgba(80, 150, 255, 0.18);
         color: rgba(255, 255, 255, 0.92);
         font: inherit;
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 700;
         letter-spacing: 0.02em;
         cursor: pointer;
@@ -7894,12 +7950,24 @@
         50% { box-shadow: 0 0 0 2px rgba(120, 190, 255, 0.45); }
       }
       .keybinds-key--wide {
-        min-width: 58px;
-        font-size: 11px;
+        min-width: 52px;
+        font-size: 10px;
+      }
+      .keybinds-key--wider {
+        min-width: 64px;
+        font-size: 10px;
+      }
+      .keybinds-key--enter {
+        min-width: 68px;
+        font-size: 12px;
+      }
+      .keybinds-key--shift {
+        min-width: 72px;
+        font-size: 10px;
       }
       .keybinds-key--space {
         flex: 1 1 auto;
-        min-width: 160px;
+        min-width: 140px;
       }
       .keybinds-key--locked {
         cursor: default;
@@ -7923,9 +7991,9 @@
         line-height: 1.1;
       }
       .keybinds-key__action {
-        font-size: 8px;
+        font-size: 7px;
         font-weight: 700;
-        letter-spacing: 0.04em;
+        letter-spacing: 0.03em;
         text-transform: uppercase;
         color: rgba(220, 240, 255, 0.9);
         line-height: 1;
@@ -7942,20 +8010,40 @@
         grid-template-columns: 1fr 1fr;
         gap: 16px 20px;
       }
+      @media (max-width: 900px) {
+        .keybinds-keyboard__side {
+          flex-direction: row;
+          flex-wrap: wrap;
+          width: 100%;
+          justify-content: center;
+        }
+      }
       @media (max-width: 720px) {
         .keybinds-list__grid {
           grid-template-columns: 1fr;
         }
+        .keybinds-layout__label {
+          display: none;
+        }
         .keybinds-key {
-          min-width: 32px;
-          height: 34px;
-          font-size: 11px;
+          min-width: 28px;
+          height: 32px;
+          font-size: 10px;
         }
         .keybinds-key--wide {
-          min-width: 46px;
+          min-width: 40px;
+        }
+        .keybinds-key--wider {
+          min-width: 48px;
+        }
+        .keybinds-key--shift {
+          min-width: 52px;
         }
         .keybinds-key--space {
-          min-width: 100px;
+          min-width: 88px;
+        }
+        .keybinds-keyboard__numpad {
+          display: none;
         }
       }
       .keybinds-list__col {

@@ -40,8 +40,14 @@ function normalizeRawPosition(pos: RawPosition | readonly unknown[]): RawPositio
   return pos as RawPosition
 }
 
+function positionKindFromRaw(kind: number): LootBagPosition['kind'] {
+  if (kind === 1) return 'manaPack'
+  if (kind === 2) return 'bundle'
+  return 'nft'
+}
+
 function toPosition(id: number, pos: RawPosition): LootBagPosition {
-  const kind: LootBagPosition['kind'] = Number(pos.kind) === 1 ? 'manaPack' : 'nft'
+  const kind = positionKindFromRaw(Number(pos.kind))
   const base: LootBagPosition = {
     positionId: id,
     kind,
@@ -52,7 +58,7 @@ function toPosition(id: number, pos: RawPosition): LootBagPosition {
     packMana: BigInt(pos.packMana),
     active: Boolean(pos.active)
   }
-  if (kind === 'nft') {
+  if (kind === 'nft' || kind === 'bundle') {
     try {
       const { itemId, issuedId } = decodeCollectionV2TokenId(pos.tokenId)
       base.itemId = itemId
@@ -65,41 +71,133 @@ function toPosition(id: number, pos: RawPosition): LootBagPosition {
   return base
 }
 
+async function loadBundleItems(positionId: number): Promise<LootBagPosition['bundleItems']> {
+  try {
+    const raw = (await polygonPublicClient.readContract({
+      address: ADDRESSES.lootBagPool,
+      abi: lootBagPoolAbi,
+      functionName: 'getBundleItems',
+      args: [BigInt(positionId)]
+    })) as readonly { collection: Address; tokenId: bigint }[]
+    return raw.map((it) => {
+      const item: NonNullable<LootBagPosition['bundleItems']>[number] = {
+        collection: it.collection,
+        tokenId: it.tokenId.toString()
+      }
+      try {
+        const { itemId, issuedId } = decodeCollectionV2TokenId(it.tokenId)
+        item.itemId = itemId
+        item.issuedId = issuedId.toString()
+      } catch {
+        /* ignore */
+      }
+      return item
+    })
+  } catch {
+    return undefined
+  }
+}
+
 /** Attach marketplace names / rarity / thumbs for DCL Collection V2 (best-effort). */
 export async function enrichLootBagPositions(positions: LootBagPosition[]): Promise<void> {
-  const byCollection = new Map<string, LootBagPosition[]>()
+  // Load bundle item lists first
+  await Promise.all(
+    positions.map(async (p) => {
+      if (p.kind !== 'bundle') return
+      p.bundleItems = await loadBundleItems(p.positionId)
+      if (p.bundleItems?.length) {
+        p.name = p.name || `Bundle · ${p.bundleItems.length} items`
+      }
+    })
+  )
+
+  type EnrichTarget = {
+    collection: string
+    itemId: number
+    apply: (name?: string, thumb?: string, rarity?: string) => void
+  }
+  const targets: EnrichTarget[] = []
   for (const p of positions) {
-    if (p.kind !== 'nft') continue
-    if (p.itemId == null) continue
-    const c = p.collection.toLowerCase()
-    if (c === ADDRESSES.mockWearable.toLowerCase()) {
-      // Mock stack has no marketplace metadata — still paint a readable default chrome
-      if (!p.rarity) p.rarity = 'epic'
-      if (!p.name) p.name = `Mock wearable #${p.tokenId}`
-      continue
+    if (p.kind === 'nft') {
+      if (p.itemId == null) continue
+      const c = p.collection.toLowerCase()
+      if (c === ADDRESSES.mockWearable.toLowerCase()) {
+        if (!p.rarity) p.rarity = 'epic'
+        if (!p.name) p.name = `Mock wearable #${p.tokenId}`
+        continue
+      }
+      targets.push({
+        collection: c,
+        itemId: p.itemId,
+        apply: (name, thumb, rarity) => {
+          if (name) p.name = name
+          if (thumb) p.imageUrl = thumb
+          if (rarity) p.rarity = rarity
+        }
+      })
+    } else if (p.kind === 'bundle' && p.bundleItems) {
+      for (const bi of p.bundleItems) {
+        if (bi.itemId == null) continue
+        const c = bi.collection.toLowerCase()
+        if (c === ADDRESSES.mockWearable.toLowerCase()) {
+          if (!bi.rarity) bi.rarity = 'epic'
+          if (!bi.name) bi.name = `Mock wearable #${bi.tokenId}`
+          continue
+        }
+        targets.push({
+          collection: c,
+          itemId: bi.itemId,
+          apply: (name, thumb, rarity) => {
+            if (name) bi.name = name
+            if (thumb) bi.imageUrl = thumb
+            if (rarity) bi.rarity = rarity
+          }
+        })
+      }
+      // Primary card chrome from first enriched item
+      const first = p.bundleItems[0]
+      if (first) {
+        if (first.imageUrl) p.imageUrl = first.imageUrl
+        if (first.rarity) p.rarity = first.rarity
+        if (first.name) p.name = `Bundle · ${p.bundleItems.length} · ${first.name}`
+      }
     }
-    const list = byCollection.get(c) ?? []
-    list.push(p)
-    byCollection.set(c, list)
+  }
+
+  const byCollection = new Map<string, EnrichTarget[]>()
+  for (const t of targets) {
+    const list = byCollection.get(t.collection) ?? []
+    list.push(t)
+    byCollection.set(t.collection, list)
   }
   await Promise.all(
     [...byCollection.entries()].map(async ([contract, list]) => {
       try {
         const items = await fetchCollectionItems(contract, { first: 100 })
         const byItem = new Map(items.map((it) => [it.itemId, it] as const))
-        for (const p of list) {
-          if (p.itemId == null) continue
-          const it = byItem.get(p.itemId)
+        for (const t of list) {
+          const it = byItem.get(t.itemId)
           if (!it) continue
-          if (it.name) p.name = it.name
-          if (it.thumbnail) p.imageUrl = it.thumbnail
-          if (it.rarity) p.rarity = it.rarity.toLowerCase()
+          t.apply(
+            it.name ?? undefined,
+            it.thumbnail ?? undefined,
+            it.rarity ? it.rarity.toLowerCase() : undefined
+          )
         }
       } catch {
         /* keep catalyst URL only */
       }
     })
   )
+  // Re-apply primary chrome after enrichment
+  for (const p of positions) {
+    if (p.kind !== 'bundle' || !p.bundleItems?.length) continue
+    const first = p.bundleItems[0]
+    if (first?.imageUrl) p.imageUrl = first.imageUrl
+    if (first?.rarity) p.rarity = first.rarity
+    const n = p.bundleItems.length
+    p.name = first?.name ? `Bundle · ${n} · ${first.name}` : `Bundle · ${n} items`
+  }
 }
 
 /** @deprecated use enrichLootBagPositions */

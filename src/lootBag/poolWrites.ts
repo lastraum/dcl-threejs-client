@@ -1,5 +1,5 @@
 import { maxUint256, parseEther, type Abi, type Address, type Hex } from 'viem'
-import { ADDRESSES, MAX_STOCK_PER_TX, USE_TEST_FULFILL } from './config'
+import { ADDRESSES, MAX_BUNDLE_ITEMS, MAX_STOCK_PER_TX, USE_TEST_FULFILL } from './config'
 import {
   ensureWalletAddress,
   getManaAllowance,
@@ -205,6 +205,90 @@ export async function runDepositManaPack(args: {
     args: [prize, back],
     from,
     label: 'Deposit MANA pack into Loot Bag'
+  })
+}
+
+/**
+ * Deposit a multi-item bundle (1..MAX_BUNDLE_ITEMS NFTs + optional MANA prize + one backing).
+ * FWA: one bag slot / one fee share regardless of item count.
+ */
+export async function runDepositBundle(args: {
+  sessionAddress?: string | null
+  items: { collection: Address; tokenId: bigint }[]
+  backingMana: string
+  /** Optional prize MANA on Keep (0 / omit = NFTs only) */
+  packPrizeMana?: string
+  api: FlowApi
+}): Promise<Hex> {
+  const from = await ensureWalletAddress(args.sessionAddress)
+  const pool = ADDRESSES.lootBagPool
+  const items = args.items
+  if (!items.length) throw new Error('Bundle needs at least one NFT')
+  if (items.length > MAX_BUNDLE_ITEMS) {
+    throw new Error(`Bundle supports at most ${MAX_BUNDLE_ITEMS} NFTs`)
+  }
+  const backing = parseEther(args.backingMana || '0')
+  if (backing <= 0n) throw new Error('Backing must be greater than 0')
+  const prize = parseEther(args.packPrizeMana || '0')
+  const manaTotal = backing + prize
+
+  const collections = items.map((i) => i.collection.toLowerCase() as Address)
+  const tokenIds = items.map((i) => i.tokenId)
+  for (const c of collections) {
+    if (!/^0x[a-f0-9]{40}$/.test(c)) throw new Error('Invalid collection address in bundle')
+  }
+
+  args.api.note('Checking approvals for bundle…')
+  const needMana = (await getManaAllowance(from, pool)) < manaTotal || (await getManaAllowance(from, pool)) < HIGH_ALLOWANCE
+
+  // Unique collections for setApprovalForAll
+  const uniqueCols = [...new Set(collections)]
+  for (const collection of uniqueCols) {
+    const ok = await isNftApprovedForAll(collection, from, pool)
+    if (!ok) {
+      await sendAndWait(args.api, {
+        address: collection,
+        abi: mockWearableAbi,
+        functionName: 'setApprovalForAll',
+        args: [pool, true],
+        from,
+        label: 'Approve NFTs for Loot Bag',
+        domainOverride: nftMetaTxDomain(collection)
+      })
+    }
+  }
+
+  if (needMana) {
+    await sendAndWait(args.api, {
+      address: ADDRESSES.mockMana,
+      abi: mockManaAbi,
+      functionName: 'approve',
+      args: [pool, MANA_MAX_APPROVAL],
+      from,
+      label: 'Allow Loot Bag to use mMANA'
+    })
+  }
+
+  args.api.note('Waiting for approvals…')
+  for (let i = 0; i < 15; i++) {
+    const a = await getManaAllowance(from, pool)
+    const nftOk = (
+      await Promise.all(uniqueCols.map((c) => isNftApprovedForAll(c, from, pool)))
+    ).every(Boolean)
+    if (nftOk && a >= manaTotal) break
+    if (i === 14) {
+      throw new Error('Approvals are not ready on-chain yet. Wait a moment and try again.')
+    }
+    await sleep(1500)
+  }
+
+  return sendAndWait(args.api, {
+    address: pool,
+    abi: lootBagPoolAbi,
+    functionName: 'depositBundle',
+    args: [collections, tokenIds, backing, prize],
+    from,
+    label: `Deposit bundle (${items.length} NFT${items.length === 1 ? '' : 's'}) into Loot Bag`
   })
 }
 

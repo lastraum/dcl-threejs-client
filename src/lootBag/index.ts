@@ -3,6 +3,7 @@ export * from './types'
 export * from './format'
 export * from './poolReads'
 export * from './poolWrites'
+// runDepositBundle exported via poolWrites star export
 export * from './creatorCollections'
 export * from './walletInventory'
 export {

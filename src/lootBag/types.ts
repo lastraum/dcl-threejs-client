@@ -1,6 +1,16 @@
 import type { Address, Hex } from 'viem'
 
-export type PositionKind = 'nft' | 'manaPack'
+export type PositionKind = 'nft' | 'manaPack' | 'bundle'
+
+export type BundleItemView = {
+  collection: Address
+  tokenId: string
+  name?: string
+  rarity?: string
+  imageUrl?: string
+  issuedId?: string
+  itemId?: number
+}
 
 export type LootBagPosition = {
   positionId: number
@@ -21,6 +31,8 @@ export type LootBagPosition = {
   name?: string
   /** DCL rarity (common…unique) for card chrome */
   rarity?: string
+  /** Multi-item prize payload when kind === 'bundle' */
+  bundleItems?: BundleItemView[]
 }
 
 export type PoolSnapshot = {

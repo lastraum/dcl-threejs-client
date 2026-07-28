@@ -88,6 +88,9 @@ export const MAX_MOCK_WEARABLE_SCAN = 256
 /** Must match GachaPoolUpgradeable.MAX_STOCK_PER_TX */
 export const MAX_STOCK_PER_TX = 40
 
+/** Must match GachaPoolUpgradeable.MAX_BUNDLE_ITEMS */
+export const MAX_BUNDLE_ITEMS = 5
+
 /**
  * Share of position backing paid to the claimer when they **Take MANA** instead of
  * keeping the prize (basis points). Protocol takes the rest via settlement cut.

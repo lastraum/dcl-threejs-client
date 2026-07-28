@@ -6,6 +6,7 @@ import type { LoginResult } from '../../../auth/AuthClient'
 import {
   ADDRESSES,
   EXPLORER_TX,
+  MAX_BUNDLE_ITEMS,
   computeClaimChanceLabels,
   escapeHtml,
   fetchPoolSnapshot,
@@ -16,6 +17,7 @@ import {
   takeTokensNetWei,
   runDepositManaPack,
   runDepositNft,
+  runDepositBundle,
   runStockFromCollection,
   runPull,
   runSettle,
@@ -78,6 +80,11 @@ function walletAddress(login: LoginResult): string | undefined {
 
 function itemLabel(p: LootBagPosition): string {
   if (p.kind === 'manaPack') return 'MANA Pack'
+  if (p.kind === 'bundle') {
+    const n = p.bundleItems?.length ?? 0
+    if (p.name?.trim()) return p.name.trim()
+    return n > 0 ? `Bundle · ${n} items` : 'Bundle'
+  }
   if (p.name?.trim()) return p.name.trim()
   if (p.issuedId) return `Issue #${p.issuedId}`
   return `Token #${p.tokenId}`
@@ -175,6 +182,10 @@ export class LootBagView {
   private stockAvgBacking = DEFAULT_BACKING
   /** Take MANA NFT return / Keep fee credits — prefer collection creator */
   private stockDepositor = ''
+  /** Wallet deposit: multi-NFT as one FWA position (2..MAX_BUNDLE_ITEMS) */
+  private depositAsBundle = false
+  private bundleBacking = DEFAULT_BACKING
+  private bundlePackPrize = ''
   private creatorAbort: AbortController | null = null
   private mode: ViewMode = 'play'
   private busy = false
@@ -889,28 +900,37 @@ export class LootBagView {
   private makeShelfCard(p: LootBagPosition, chanceLabel: string): HTMLElement {
     const el = document.createElement('article')
     const isPack = p.kind === 'manaPack'
+    const isBundle = p.kind === 'bundle'
     const lit = this.highlightPosId === p.positionId
-    const rarity = isPack ? 'legendary' : (p.rarity || 'common').toLowerCase()
-    el.className = `lootbag-vitrine__card${isPack ? ' is-pack' : ''}${lit ? ' is-spotlight' : ''} lootbag-rarity--${rarity}`
+    const rarity = isPack
+      ? 'legendary'
+      : (p.rarity || p.bundleItems?.[0]?.rarity || 'common').toLowerCase()
+    el.className = `lootbag-vitrine__card${isPack ? ' is-pack' : ''}${isBundle ? ' is-bundle' : ''}${lit ? ' is-spotlight' : ''} lootbag-rarity--${rarity}`
     el.dataset.pos = String(p.positionId)
     el.dataset.rarity = rarity
-    const glyph = isPack ? '◈' : '✦'
+    const glyph = isPack ? '◈' : isBundle ? '⧉' : '✦'
     const img = p.imageUrl
       ? `<img class="lootbag-vitrine__card-img" src="${escapeHtml(p.imageUrl)}" alt="" loading="lazy" decoding="async" />`
       : `<div class="lootbag-vitrine__card-glyph" aria-hidden="true">${glyph}</div>`
     const title = itemLabel(p)
-    // Same line stack as wearables: title → detail → rarity → backed by → chance
+    const nBundle = p.bundleItems?.length ?? 0
     const detail = isPack
       ? `Prize ${formatMana(p.packMana)} mMANA`
-      : p.issuedId
-        ? `Issue #${p.issuedId}`
-        : `Token #${p.tokenId}`
-    const rarityLabel = isPack ? 'pack' : rarity
+      : isBundle
+        ? `${nBundle} item${nBundle === 1 ? '' : 's'}${p.packMana > 0n ? ` · +${formatMana(p.packMana)} mMANA` : ''}`
+        : p.issuedId
+          ? `Issue #${p.issuedId}`
+          : `Token #${p.tokenId}`
+    const rarityLabel = isPack ? 'pack' : isBundle ? 'bundle' : rarity
     const backing = `Backed by ${formatMana(p.backing)} mMANA`
     const chance =
       chanceLabel === '—' ? '— chance' : `${escapeHtml(chanceLabel)} chance`
+    const badge =
+      isBundle && nBundle > 1
+        ? `<span class="lootbag-vitrine__bundle-badge">${nBundle}</span>`
+        : ''
     el.innerHTML = `
-      <div class="lootbag-vitrine__card-art lootbag-rarity-bg--${escapeHtml(rarity)}">${img}</div>
+      <div class="lootbag-vitrine__card-art lootbag-rarity-bg--${escapeHtml(rarity)}">${img}${badge}</div>
       <div class="lootbag-vitrine__card-body">
         <div class="lootbag-vitrine__card-line lootbag-vitrine__card-line--title" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
         <div class="lootbag-vitrine__card-line">${escapeHtml(detail)}</div>
@@ -1263,9 +1283,10 @@ export class LootBagView {
             </div>
           </div>
           <div class="lootbag-dep__list lootbag-dep__list--fill">${selRows}</div>
+          ${this.renderBundleModeControls()}
           <div class="lootbag__col-actions">
             <button type="button" class="lootbag__btn lootbag__btn--claim lootbag-dep__confirm" data-dep-confirm ${this.busy || this.selections.length === 0 ? 'disabled' : ''}>
-              <span class="lootbag__claim-label">Confirm deposit${this.selections.length ? ` (${this.selections.length})` : ''}</span>
+              <span class="lootbag__claim-label">${this.depositConfirmLabel()}</span>
             </button>
           </div>
         </section>
@@ -1391,6 +1412,19 @@ export class LootBagView {
     }
     if ('stockDepositor' in input.dataset) {
       this.stockDepositor = input.value.trim()
+      return
+    }
+    if ('bundleMode' in input.dataset) {
+      this.depositAsBundle = (input as HTMLInputElement).checked && this.canDepositAsBundle()
+      this.renderDepositView()
+      return
+    }
+    if ('bundleBacking' in input.dataset) {
+      this.bundleBacking = input.value
+      return
+    }
+    if ('bundlePrize' in input.dataset) {
+      this.bundlePackPrize = input.value
       return
     }
     const prizeId = input.dataset.prizeId
@@ -1577,6 +1611,58 @@ export class LootBagView {
     if (this.mode === 'deposit') this.renderDepositView()
   }
 
+  private nftSelections(): DepositSelection[] {
+    return this.selections.filter((s) => !this.isPackSel(s))
+  }
+
+  private canDepositAsBundle(): boolean {
+    if (this.selections.some((s) => this.isPackSel(s))) return false
+    const n = this.nftSelections().length
+    return n >= 2 && n <= MAX_BUNDLE_ITEMS
+  }
+
+  private depositConfirmLabel(): string {
+    if (this.depositAsBundle && this.canDepositAsBundle()) {
+      const n = this.nftSelections().length
+      return `Deposit bundle (${n} NFTs)`
+    }
+    return `Confirm deposit${this.selections.length ? ` (${this.selections.length})` : ''}`
+  }
+
+  private renderBundleModeControls(): string {
+    if (!this.canDepositAsBundle() && !this.depositAsBundle) return ''
+    if (!this.canDepositAsBundle()) {
+      // Auto-clear invalid mode
+      this.depositAsBundle = false
+      return ''
+    }
+    const on = this.depositAsBundle
+    return `
+      <div class="lootbag-dep__bundle-box">
+        <label class="lootbag-dep__bundle-toggle">
+          <input type="checkbox" data-bundle-mode ${on ? 'checked' : ''} ${this.busy ? 'disabled' : ''} />
+          <span>Deposit as <strong>one bundle</strong> (FWA: one pack slot · one fee share)</span>
+        </label>
+        ${
+          on
+            ? `
+          <div class="lootbag-dep__stock-fields">
+            <label class="lootbag-dep__stock-field">
+              <span>Shared backing</span>
+              <input type="text" inputmode="decimal" data-bundle-backing value="${escapeHtml(this.bundleBacking)}" ${this.busy ? 'disabled' : ''} />
+            </label>
+            <label class="lootbag-dep__stock-field">
+              <span>MANA prize (opt.)</span>
+              <input type="text" inputmode="decimal" data-bundle-prize value="${escapeHtml(this.bundlePackPrize)}" placeholder="0" ${this.busy ? 'disabled' : ''} />
+            </label>
+          </div>
+          <p class="lootbag-dep__stock-hint">Keep → claimer gets all ${this.nftSelections().length} NFTs${this.bundlePackPrize.trim() ? ' + MANA prize' : ''}. Take MANA → assets return to you; claimer gets ~85% of backing.</p>
+        `
+            : `<p class="lootbag-dep__stock-hint">Or leave off to deposit each selected item as its own bag slot.</p>`
+        }
+      </div>`
+  }
+
   private togglePick(id: string): void {
     if (this.busy) return
     const existing = this.selections.find((s) => s.item.id === id)
@@ -1586,14 +1672,21 @@ export class LootBagView {
       const item = this.inventory.find((i) => i.id === id)
       if (!item) return
       if (item.kind === 'pack') {
+        this.depositAsBundle = false
         this.selections = [
           ...this.selections,
           { item, backingMana: DEFAULT_BACKING, packPrizeMana: DEFAULT_PACK_PRIZE }
         ]
       } else {
+        if (this.depositAsBundle && this.nftSelections().length >= MAX_BUNDLE_ITEMS) {
+          this.error = `Bundle supports at most ${MAX_BUNDLE_ITEMS} NFTs`
+          this.renderDepositView()
+          return
+        }
         this.selections = [...this.selections, { item, backingMana: DEFAULT_BACKING }]
       }
     }
+    if (!this.canDepositAsBundle()) this.depositAsBundle = false
     this.renderDepositView()
   }
 
@@ -1604,6 +1697,68 @@ export class LootBagView {
       this.renderDepositView()
       return
     }
+
+    // ── Bundle path (2–5 NFTs, one FWA position) ───────────────────────────
+    if (this.depositAsBundle && this.canDepositAsBundle()) {
+      const nfts = this.nftSelections()
+      const back = Number(this.bundleBacking)
+      if (!Number.isFinite(back) || back <= 0) {
+        this.error = 'Bundle backing must be greater than 0'
+        this.renderDepositView()
+        return
+      }
+      const prizeStr = this.bundlePackPrize.trim()
+      if (prizeStr) {
+        const prize = Number(prizeStr)
+        if (!Number.isFinite(prize) || prize < 0) {
+          this.error = 'Invalid MANA prize'
+          this.renderDepositView()
+          return
+        }
+      }
+      this.setBusy(true)
+      this.error = null
+      this.steps = []
+      this.stepSeq = 0
+      this.status = `Depositing bundle of ${nfts.length}…`
+      this.renderDepositView()
+      try {
+        await runDepositBundle({
+          sessionAddress: this.addr(),
+          items: nfts.map((s) => ({
+            collection: s.item.collection as `0x${string}`,
+            tokenId: BigInt(s.item.tokenId)
+          })),
+          backingMana: this.bundleBacking,
+          packPrizeMana: prizeStr || '0',
+          api: this.flowApi()
+        })
+        const ids = new Set(nfts.map((s) => s.item.id))
+        this.selections = this.selections.filter((s) => !ids.has(s.item.id))
+        this.inventory = this.inventory.filter((it) => !ids.has(it.id))
+        if (this.wallet) {
+          this.wallet = {
+            ...this.wallet,
+            ownedNfts: this.wallet.ownedNfts.filter((n) => !ids.has(n.id))
+          }
+        }
+        this.depositAsBundle = false
+        this.status = 'Bundle locked in'
+        this.steps = []
+        await this.refresh()
+        this.setMode('play')
+        this.status = 'Bundle locked in — Loot Bag refreshed'
+        this.renderStatus()
+      } catch (e) {
+        this.error = e instanceof Error ? e.message : String(e)
+        this.renderDepositView()
+      } finally {
+        this.setBusy(false)
+        if (this.mode === 'deposit') this.renderDepositView()
+      }
+      return
+    }
+
     for (const s of this.selections) {
       const back = Number(s.backingMana)
       if (!Number.isFinite(back) || back <= 0) {
@@ -1803,29 +1958,47 @@ export class LootBagView {
   private renderPackPrize(win: PendingWin): void {
     const p = win.position
     const isPack = p?.kind === 'manaPack'
-    const rarity = normalizeRarityClass(isPack ? 'legendary' : p?.rarity)
+    const isBundle = p?.kind === 'bundle'
+    const rarity = normalizeRarityClass(
+      isPack ? 'legendary' : p?.rarity || p?.bundleItems?.[0]?.rarity
+    )
     const title = p
       ? isPack
         ? 'MANA Pack'
-        : p.name?.trim() || (p.issuedId ? `Issue #${p.issuedId}` : `Token #${p.tokenId}`)
+        : isBundle
+          ? itemLabel(p)
+          : p.name?.trim() || (p.issuedId ? `Issue #${p.issuedId}` : `Token #${p.tokenId}`)
       : `Position #${win.positionId}`
+    const nBundle = p?.bundleItems?.length ?? 0
     const detail = p
       ? isPack
         ? `Prize ${formatMana(p.packMana)} mMANA`
-        : p.issuedId
-          ? `Issue #${p.issuedId}`
-          : `Token #${p.tokenId}`
+        : isBundle
+          ? `${nBundle} wearable${nBundle === 1 ? '' : 's'}${p.packMana > 0n ? ` · +${formatMana(p.packMana)} mMANA` : ''}`
+          : p.issuedId
+            ? `Issue #${p.issuedId}`
+            : `Token #${p.tokenId}`
       : ''
     const backingLabel = p ? `Backed by ${formatMana(p.backing)} mMANA` : ''
     const art =
       p?.imageUrl && !isPack
         ? `<img class="lootbag-pack-stage__prize-img" src="${escapeHtml(p.imageUrl)}" alt="" />`
-        : `<div class="lootbag-pack-stage__prize-glyph" aria-hidden="true">${isPack ? '◈' : '✦'}</div>`
+        : `<div class="lootbag-pack-stage__prize-glyph" aria-hidden="true">${isPack ? '◈' : isBundle ? '⧉' : '✦'}</div>`
+    const list =
+      isBundle && p?.bundleItems?.length
+        ? `<ul class="lootbag-pack-stage__bundle-list">${p.bundleItems
+            .map(
+              (bi) =>
+                `<li>${escapeHtml(bi.name || `Token #${bi.tokenId}`)}${bi.rarity ? ` · ${escapeHtml(bi.rarity)}` : ''}</li>`
+            )
+            .join('')}</ul>`
+        : ''
     this.packPrizeEl.innerHTML = `
       <div class="lootbag-pack-stage__prize-art lootbag-rarity-bg--${escapeHtml(rarity)}" data-rarity="${escapeHtml(rarity)}">${art}</div>
       <div class="lootbag-pack-stage__prize-name">${escapeHtml(title)}</div>
       ${detail ? `<div class="lootbag-pack-stage__prize-detail">${escapeHtml(detail)}</div>` : ''}
-      <div class="lootbag-pack-stage__prize-rarity lootbag-vitrine__card-line--rarity is-${escapeHtml(rarity)}">${escapeHtml(isPack ? 'pack' : rarity)}</div>
+      <div class="lootbag-pack-stage__prize-rarity lootbag-vitrine__card-line--rarity is-${escapeHtml(rarity)}">${escapeHtml(isPack ? 'pack' : isBundle ? 'bundle' : rarity)}</div>
+      ${list}
       ${
         backingLabel
           ? `<div class="lootbag-pack-stage__prize-backing">${escapeHtml(backingLabel)}</div>`
@@ -1838,7 +2011,12 @@ export class LootBagView {
 
   private updateSettleButtonLabels(win: PendingWin | null): void {
     const isPack = win?.position?.kind === 'manaPack'
-    this.settleKeepBtn.textContent = isPack ? 'Keep prize' : 'Keep NFT'
+    const isBundle = win?.position?.kind === 'bundle'
+    this.settleKeepBtn.textContent = isPack
+      ? 'Keep prize'
+      : isBundle
+        ? 'Keep bundle'
+        : 'Keep NFT'
     const takeAmt = this.takeTokensAmount(win)
     const takeLabel =
       takeAmt > 0n

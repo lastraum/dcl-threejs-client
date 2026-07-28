@@ -19755,6 +19755,63 @@
         grid-template-columns: 1fr;
         margin-top: 2px;
       }
+      .lootbag-dep__bundle-box {
+        flex-shrink: 0;
+        margin: 8px 0 4px;
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(251, 191, 36, 0.28);
+        background: rgba(0, 0, 0, 0.28);
+      }
+      .lootbag-dep__bundle-toggle {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        font-size: 12px;
+        line-height: 1.35;
+        color: rgba(255, 255, 255, 0.88);
+        cursor: pointer;
+      }
+      .lootbag-dep__bundle-toggle input {
+        margin-top: 2px;
+        flex-shrink: 0;
+      }
+      .lootbag-dep__bundle-box .lootbag-dep__stock-fields {
+        margin-top: 10px;
+      }
+      .lootbag-vitrine__card-art {
+        position: relative;
+      }
+      .lootbag-vitrine__bundle-badge {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        min-width: 22px;
+        height: 22px;
+        padding: 0 6px;
+        border-radius: 99px;
+        background: rgba(251, 191, 36, 0.95);
+        color: #1a1028;
+        font-size: 11px;
+        font-weight: 800;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+      }
+      .lootbag-vitrine__card.is-bundle {
+        border-color: rgba(251, 191, 36, 0.35);
+      }
+      .lootbag-pack-stage__bundle-list {
+        margin: 4px 0 0;
+        padding: 0 0 0 16px;
+        max-width: 100%;
+        text-align: left;
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.75);
+        max-height: 72px;
+        overflow-y: auto;
+      }
       .lootbag-dep__stock-field {
         display: flex;
         flex-direction: column;

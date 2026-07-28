@@ -121,6 +121,64 @@ export const lootBagPoolAbi = [
   {
     "inputs": [
       {
+        "internalType": "address[]",
+        "name": "collections",
+        "type": "address[]"
+      },
+      {
+        "internalType": "uint256[]",
+        "name": "tokenIds",
+        "type": "uint256[]"
+      },
+      {
+        "internalType": "uint256",
+        "name": "backingAmount",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "packManaAmount",
+        "type": "uint256"
+      }
+    ],
+    "name": "depositBundle",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "positionId",
+        "type": "uint256"
+      }
+    ],
+    "name": "getBundleItems",
+    "outputs": [
+      {
+        "components": [
+          { "internalType": "address", "name": "collection", "type": "address" },
+          { "internalType": "uint256", "name": "tokenId", "type": "uint256" }
+        ],
+        "internalType": "struct IGachaPool.BundleItem[]",
+        "name": "items",
+        "type": "tuple[]"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "MAX_BUNDLE_ITEMS",
+    "outputs": [{ "internalType": "uint256", "name": "", "type": "uint256" }],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
         "internalType": "address",
         "name": "collection",
         "type": "address"

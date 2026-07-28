@@ -28,7 +28,10 @@ const HIGH_ALLOWANCE = parseEther('1000000000')
 export type FlowApi = {
   note: (label: string) => void
   pushStep: (label: string) => string
-  finishStep: (id: string, patch?: { hash?: Hex; detail?: string; error?: boolean }) => void
+  finishStep: (
+    id: string,
+    patch?: { hash?: Hex; detail?: string; error?: boolean; /** stay active (e.g. waiting receipt) */ keepActive?: boolean }
+  ) => void
 }
 
 async function sendAndWait(
@@ -53,7 +56,8 @@ async function sendAndWait(
       from: args.from,
       domainOverride: args.domainOverride
     })
-    api.finishStep(stepId, { hash, detail: 'Waiting for network…' })
+    // Keep step active until receipt — otherwise UI shows Done + "Working…" and sticks
+    api.finishStep(stepId, { hash, detail: 'Waiting for network…', keepActive: true })
     api.note('Waiting for network confirmation…')
     await waitReceipt(hash)
     api.finishStep(stepId, { hash, detail: 'Done' })
@@ -218,6 +222,11 @@ export async function runStockFromCollection(args: {
   itemId: number | bigint
   mintCount: number
   avgBackingMana: string
+  /**
+   * Position depositor (Take MANA NFT return + Keep fee credits).
+   * Empty / zero address → stocker (`from`). Prefer collection creator when stocking as ops.
+   */
+  depositor?: string | null
   api: FlowApi
   /** After any async step, prompt a click before the next eth_signTypedData */
   waitForContinue?: (info: {
@@ -241,8 +250,21 @@ export async function runStockFromCollection(args: {
   const avgBacking = parseEther(args.avgBackingMana || '0')
   if (avgBacking <= 0n) throw new Error('Avg backing must be greater than 0')
 
+  const depRaw = (args.depositor ?? '').trim().toLowerCase()
+  let depositor: Address = '0x0000000000000000000000000000000000000000'
+  if (depRaw) {
+    if (!/^0x[a-f0-9]{40}$/.test(depRaw)) {
+      throw new Error('Invalid depositor wallet address')
+    }
+    depositor = depRaw as Address
+  }
+
   const totalBacking = avgBacking * BigInt(mintCount)
-  args.api.note(`Preparing to stock ${mintCount} items…`)
+  const depLabel =
+    depositor === '0x0000000000000000000000000000000000000000'
+      ? 'you (stocker)'
+      : `${depositor.slice(0, 6)}…${depositor.slice(-4)}`
+  args.api.note(`Preparing to stock ${mintCount} items · depositor ${depLabel}…`)
 
   let minter = await getCollectionMinterStatus(collection, {
     itemId,
@@ -366,7 +388,7 @@ export async function runStockFromCollection(args: {
       address: pool,
       abi: lootBagPoolAbi,
       functionName: 'stockFromCollection',
-      args: [collection, itemId, BigInt(n), avgBacking],
+      args: [collection, itemId, BigInt(n), avgBacking, depositor],
       from,
       label: stepLabel
     })
@@ -424,6 +446,7 @@ export async function runPull(args: {
     label: 'Open Loot Pack'
   })
 
+  // Open step is complete — UI should drop the sign modal before prize scan / pack reveal
   args.api.note('Finding your prize…')
   const win = await findPendingWinForPurchaser(from)
   return {

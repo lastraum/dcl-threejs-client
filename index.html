@@ -18187,6 +18187,15 @@
         overflow-x: hidden;
         height: auto;
         padding: 4px 2px 8px;
+        /* Full scrollable grid — hide scrollbar, keep wheel/touch scroll */
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .lootbag__col .lootbag-dep__track::-webkit-scrollbar,
+      .lootbag__deposit-view .lootbag-dep__track::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
       }
       /* Deposit picks: same fixed geometry as bag shelf cards */
       button.lootbag-vitrine__card.lootbag-dep__pick {
@@ -18806,6 +18815,28 @@
         overflow: hidden;
         box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
         border: 1px solid rgba(255, 255, 255, 0.14);
+        /* Base plate; rarity classes (lootbag-rarity-bg--*) override via !important */
+        background: rgba(0, 0, 0, 0.35);
+      }
+      /* Match shelf card rarity borders on prize art */
+      .lootbag-pack-stage__prize-art.lootbag-rarity-bg--uncommon {
+        border-color: rgba(234, 88, 12, 0.65);
+      }
+      .lootbag-pack-stage__prize-art.lootbag-rarity-bg--rare {
+        border-color: rgba(59, 130, 246, 0.6);
+      }
+      .lootbag-pack-stage__prize-art.lootbag-rarity-bg--epic {
+        border-color: rgba(168, 85, 247, 0.6);
+      }
+      .lootbag-pack-stage__prize-art.lootbag-rarity-bg--legendary {
+        border-color: rgba(234, 179, 8, 0.7);
+      }
+      .lootbag-pack-stage__prize-art.lootbag-rarity-bg--mythic {
+        border-color: rgba(236, 72, 153, 0.6);
+      }
+      .lootbag-pack-stage__prize-art.lootbag-rarity-bg--unique,
+      .lootbag-pack-stage__prize-art.lootbag-rarity-bg--exotic {
+        border-color: rgba(239, 68, 68, 0.6);
       }
       .lootbag-pack-stage__prize-img {
         width: 86%;
@@ -19593,11 +19624,22 @@
         grid-template-columns: 1fr 1fr;
         gap: 10px;
       }
+      .lootbag-dep__stock-fields--depositor {
+        grid-template-columns: 1fr;
+        margin-top: 2px;
+      }
       .lootbag-dep__stock-field {
         display: flex;
         flex-direction: column;
         gap: 5px;
         min-width: 0;
+      }
+      .lootbag-dep__stock-field--depositor input {
+        font-size: 12px;
+        font-weight: 650;
+        text-align: left;
+        letter-spacing: 0.01em;
+        color: #fff;
       }
       .lootbag-dep__stock-field > span {
         font-size: 10px;
@@ -19828,6 +19870,27 @@
       }
       .lootbag-dep__inv-head .lootbag-dep__section-title {
         margin: 0;
+      }
+      .lootbag-dep__up-btn {
+        flex-shrink: 0;
+        height: 32px;
+        padding: 0 12px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .lootbag-dep__up-btn:hover:not(:disabled) {
+        background: rgba(255, 255, 255, 0.14);
+      }
+      .lootbag-dep__up-btn:disabled {
+        opacity: 0.35;
+        cursor: default;
       }
       .lootbag-dep__search-row {
         display: flex;

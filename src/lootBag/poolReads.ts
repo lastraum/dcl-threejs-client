@@ -65,14 +65,19 @@ function toPosition(id: number, pos: RawPosition): LootBagPosition {
   return base
 }
 
-/** Attach marketplace names for unique DCL collections (best-effort). */
-async function enrichPositionNames(positions: LootBagPosition[]): Promise<void> {
+/** Attach marketplace names / rarity / thumbs for DCL Collection V2 (best-effort). */
+export async function enrichLootBagPositions(positions: LootBagPosition[]): Promise<void> {
   const byCollection = new Map<string, LootBagPosition[]>()
   for (const p of positions) {
     if (p.kind !== 'nft') continue
     if (p.itemId == null) continue
     const c = p.collection.toLowerCase()
-    if (c === ADDRESSES.mockWearable.toLowerCase()) continue
+    if (c === ADDRESSES.mockWearable.toLowerCase()) {
+      // Mock stack has no marketplace metadata — still paint a readable default chrome
+      if (!p.rarity) p.rarity = 'epic'
+      if (!p.name) p.name = `Mock wearable #${p.tokenId}`
+      continue
+    }
     const list = byCollection.get(c) ?? []
     list.push(p)
     byCollection.set(c, list)
@@ -95,6 +100,11 @@ async function enrichPositionNames(positions: LootBagPosition[]): Promise<void> 
       }
     })
   )
+}
+
+/** @deprecated use enrichLootBagPositions */
+async function enrichPositionNames(positions: LootBagPosition[]): Promise<void> {
+  return enrichLootBagPositions(positions)
 }
 
 export async function fetchPoolSnapshot(): Promise<PoolSnapshot> {
@@ -351,6 +361,8 @@ export async function findPendingWinForPurchaser(
           args: [BigInt(id)]
         })) as RawPosition
         position = toPosition(id, pos)
+        // Win is often inactive → not on the active shelf; enrich name/rarity here
+        await enrichLootBagPositions([position])
       } catch {
         position = null
       }

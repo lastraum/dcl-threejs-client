@@ -15,6 +15,7 @@ import {
   runStockFromCollection,
   runSettle,
   runWithdrawRewards,
+  getCollectionMinterStatus,
   humanizeStockError,
   hideLootBagSignOverlay,
   requestLootBagSignContinue,
@@ -155,6 +156,8 @@ export class LootBagPanel {
   private stockItem: CreatorCollectionItem | null = null
   private stockMintCount = DEFAULT_STOCK_COUNT
   private stockAvgBacking = DEFAULT_BACKING
+  /** Take MANA NFT return / Keep fee credits — prefer collection creator */
+  private stockDepositor = ''
   private creatorAbort: AbortController | null = null
   private steps: TxStep[] = []
   private status = ''
@@ -210,7 +213,7 @@ export class LootBagPanel {
             <div class="lootbag-panel__pack-frame">
               <img
                 class="lootbag-panel__pack-art"
-                src="/lootbag/lootpack.png?v=5"
+                src="/media/lootbag/lootpack.png?v=5"
                 alt="Loot Pack"
                 width="512"
                 height="768"
@@ -363,9 +366,14 @@ export class LootBagPanel {
       finishStep: (id, patch) => {
         this.steps = this.steps.map((s) => {
           if (s.id !== id) return s
+          const nextStatus = patch?.error
+            ? ('error' as const)
+            : patch?.keepActive
+              ? ('active' as const)
+              : ('done' as const)
           return {
             ...s,
-            status: patch?.error ? ('error' as const) : ('done' as const),
+            status: nextStatus,
             hash: patch?.hash ?? s.hash,
             detail: patch?.detail ?? s.detail
           }
@@ -375,13 +383,23 @@ export class LootBagPanel {
     }
   }
 
+  private dismissSignOverlay(): void {
+    this.steps = []
+    hideLootBagSignOverlay()
+    this.stepsEl.hidden = true
+    this.stepsEl.innerHTML = ''
+  }
+
   private setBusy(on: boolean): void {
     this.busy = on
     this.footerEl.querySelectorAll('button').forEach((b) => {
       ;(b as HTMLButtonElement).disabled = on
     })
     this.element.classList.toggle('is-busy', on)
-    if (!on && this.steps.length === 0) hideLootBagSignOverlay()
+    if (!on) {
+      const inFlight = this.steps.some((s) => s.status === 'active' || s.status === 'error')
+      if (!inFlight) this.dismissSignOverlay()
+    }
     // Keep settle buttons in sync (modal HTML is static after open)
     this.winModal.querySelectorAll<HTMLButtonElement>('[data-settle-keep], [data-settle-take]').forEach((b) => {
       b.disabled = on
@@ -675,6 +693,13 @@ export class LootBagPanel {
               <span>Avg backing</span>
               <input type="text" inputmode="decimal" data-stock-backing value="${escapeHtml(this.stockAvgBacking)}" ${this.busy ? 'disabled' : ''} />
             </label>
+          </div>
+          <div class="lootbag-dep__stock-fields lootbag-dep__stock-fields--depositor">
+            <label class="lootbag-dep__stock-field lootbag-dep__stock-field--depositor">
+              <span>Depositor wallet</span>
+              <input type="text" data-stock-depositor value="${escapeHtml(this.stockDepositor)}" placeholder="0x… (Take MANA returns here)" ${this.busy ? 'disabled' : ''} autocomplete="off" spellcheck="false" />
+            </label>
+            <p class="lootbag-dep__stock-hint">Who receives the NFT if a claimer Takes MANA (and Keep fee credits). Defaults to collection creator. You still pay the mMANA backing.</p>
           </div>
         </div>`
 
@@ -1036,9 +1061,12 @@ export class LootBagPanel {
 
   private renderSteps(): void {
     // Centered viewport overlay for all sign / meta-tx steps (2D + 3D).
-    if (this.steps.length > 0) {
-      const active = this.steps.find((s) => s.status === 'active')
-      const errored = this.steps.find((s) => s.status === 'error')
+    // Only while a step is active or errored — never leave "all Done / Working…".
+    const active = this.steps.find((s) => s.status === 'active')
+    const errored = this.steps.find((s) => s.status === 'error')
+    const showOverlay = this.steps.length > 0 && (active != null || errored != null)
+
+    if (showOverlay) {
       const title =
         this.mode === 'deposit'
           ? this.depositSource === 'creator'
@@ -1051,10 +1079,9 @@ export class LootBagPanel {
               : this.steps.some((s) => /collect your rewards|withdraw/i.test(s.label))
                 ? 'Collect rewards'
                 : 'Loot Bag'
-      // Never surface step labels / contract names as the subtitle
       const statusLine =
         active != null
-          ? 'Confirm in your wallet…'
+          ? active.detail?.trim() || 'Confirm in your wallet…'
           : errored != null
             ? errored.detail?.trim() || 'Something went wrong'
             : 'Working…'
@@ -1141,12 +1168,14 @@ export class LootBagPanel {
       const it = this.creatorItems.find((x) => x.itemId === id)
       if (it) {
         this.stockItem = it
+        void this.defaultStockDepositorFor(it.contractAddress)
         this.renderDepositBody()
       }
       return
     }
     if (t.closest('[data-stock-clear]')) {
       this.stockItem = null
+      this.stockDepositor = ''
       this.renderDepositBody()
       return
     }
@@ -1221,6 +1250,10 @@ export class LootBagPanel {
     }
     if ('stockBacking' in input.dataset) {
       this.stockAvgBacking = input.value
+      return
+    }
+    if ('stockDepositor' in input.dataset) {
+      this.stockDepositor = input.value.trim()
       return
     }
     const prizeId = input.dataset.prizeId
@@ -1301,6 +1334,23 @@ export class LootBagPanel {
     }
   }
 
+  /** Prefill depositor with on-chain collection.creator() when available. */
+  private async defaultStockDepositorFor(collection: string): Promise<void> {
+    const fallback = this.sessionAddress()?.toLowerCase() ?? ''
+    this.stockDepositor = fallback
+    try {
+      const st = await getCollectionMinterStatus(collection, {
+        account: this.sessionAddress()
+      })
+      if (st.creator) this.stockDepositor = st.creator
+    } catch {
+      /* keep wallet fallback */
+    }
+    if (this.mode === 'deposit' && this.depositSource === 'creator' && this.stockItem) {
+      this.renderDepositBody()
+    }
+  }
+
   private async confirmStockFromCollection(): Promise<void> {
     if (this.busy) return
     if (!this.sessionAddress()) {
@@ -1326,6 +1376,12 @@ export class LootBagPanel {
       this.renderDepositBody()
       return
     }
+    const dep = this.stockDepositor.trim()
+    if (dep && !/^0x[a-fA-F0-9]{40}$/.test(dep)) {
+      this.error = 'Depositor must be a valid 0x wallet address'
+      this.renderDepositBody()
+      return
+    }
 
     this.setBusy(true)
     this.error = null
@@ -1340,6 +1396,7 @@ export class LootBagPanel {
         itemId: item.itemId,
         mintCount,
         avgBackingMana: this.stockAvgBacking,
+        depositor: dep || this.sessionAddress(),
         api: this.flowApi(),
         waitForContinue: async ({ label }) => {
           await requestLootBagSignContinue({
@@ -1353,6 +1410,7 @@ export class LootBagPanel {
       this.steps = []
       hideLootBagSignOverlay()
       this.stockItem = null
+      this.stockDepositor = ''
       await this.refresh()
       this.setBusy(false)
       await showLootBagSuccessOverlay({

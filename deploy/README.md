@@ -37,6 +37,44 @@ curl -sS 'https://dev.decentraland.social/api/places/worlds?limit=1' | head -c 8
 
 See [`nginx.conf`](./nginx.conf) for peers, parcels, worlds live-data, texture proxy, and SPA fallback.
 
+### SPA refresh 403 (e.g. `/lootbag/`)
+
+If a static folder shares a route name (e.g. pack art under `public/lootbag/`), nginx
+`try_files $uri $uri/ /index.html` can return **403 Forbidden** on refresh because
+`$uri/` matches the directory and autoindex is off.
+
+Fix (already in the site configs):
+
+1. Do **not** use `$uri/` in SPA fallback: `try_files $uri /index.html;`
+2. Exact-match app routes (`location = /lootbag`, `= /lootbag/`, gacha aliases)
+3. Keep route media under a non-route path (e.g. `public/media/lootbag/`)
+
+```bash
+# After copying the site file from remote/:
+sudo nginx -t && sudo systemctl reload nginx
+curl -sI 'https://decentraland.social/lootbag' | head -5   # expect 200, not 403
+curl -sI 'https://decentraland.social/lootbag/' | head -5  # expect 200, not 403
+```
+
+### Meta-tx POST 405 (Loot Bag approve / claim)
+
+Browser must POST same-origin `/api/meta-tx/v1/transactions` (CORS on
+`transactions.lastslice.co` is broken for custom origins). If the site file on the
+droplet is missing `location /api/meta-tx/`, nginx falls through to the SPA and
+returns **405 Method Not Allowed** on POST.
+
+```bash
+# Prod — install site config + reload
+sudo cp remote/decentraland.social /etc/nginx/sites-available/decentraland.social
+# ensure sites-enabled symlink exists
+sudo nginx -t && sudo systemctl reload nginx
+
+# Smoke (expect JSON from relay, not HTML 405)
+curl -sS -X POST 'https://decentraland.social/api/meta-tx/v1/transactions' \
+  -H 'Content-Type: application/json' -d '{}' | head -c 200
+# e.g. {"ok":false,"message":"Missing transaction data..."}
+```
+
 ## Dev panel suggestions (production)
 
 The client POSTs same-origin `/api/suggestions`. Nginx forwards to a small Node service on the droplet (token stays server-side).

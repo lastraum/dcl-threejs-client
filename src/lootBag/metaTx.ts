@@ -223,7 +223,7 @@ export async function sendContractMetaTx(args: {
   try {
     res = await fetch(META_TX_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify(body)
     })
   } catch (e) {
@@ -233,10 +233,29 @@ export async function sendContractMetaTx(args: {
     )
   }
 
-  const json = (await res.json().catch(() => ({}))) as {
-    ok?: boolean
-    txHash?: string
-    message?: string
+  const raw = await res.text()
+  const contentType = res.headers.get('content-type') || ''
+  const looksHtml =
+    contentType.includes('text/html') ||
+    /^\s*<(!doctype|html)\b/i.test(raw) ||
+    /405 Not Allowed/i.test(raw)
+
+  // SPA fallback catching /api/meta-tx → GET 200 HTML / POST 405 HTML
+  if (looksHtml || res.status === 405) {
+    throw new Error(
+      `Meta-tx proxy missing on this host (HTTP ${res.status} for ${META_TX_URL}). ` +
+        `Nginx must proxy /api/meta-tx/ → https://transactions.lastslice.co/ ` +
+        `(see remote/decentraland.social). Reload nginx after updating the site config.`
+    )
+  }
+
+  let json: { ok?: boolean; txHash?: string; message?: string } = {}
+  try {
+    json = raw ? (JSON.parse(raw) as typeof json) : {}
+  } catch {
+    throw new Error(
+      `Meta-tx relay returned non-JSON HTTP ${res.status}: ${raw.slice(0, 180)}`
+    )
   }
 
   if (!res.ok || json.ok === false || !json.txHash) {

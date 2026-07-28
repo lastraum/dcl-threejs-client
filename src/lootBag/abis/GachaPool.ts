@@ -139,6 +139,11 @@ export const lootBagPoolAbi = [
         "internalType": "uint256",
         "name": "avgBacking",
         "type": "uint256"
+      },
+      {
+        "internalType": "address",
+        "name": "depositor",
+        "type": "address"
       }
     ],
     "name": "stockFromCollection",

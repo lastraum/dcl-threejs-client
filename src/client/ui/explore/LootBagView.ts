@@ -21,6 +21,7 @@ import {
   runSettle,
   runWithdrawRewards,
   shortAddr,
+  getCollectionMinterStatus,
   humanizeStockError,
   hideLootBagSignOverlay,
   requestLootBagSignContinue,
@@ -42,7 +43,6 @@ export type LootBagViewOptions = {
   getLogin?: () => LoginResult
 }
 
-const INV_PAGE_SIZE = 12
 const DEFAULT_BACKING = '10'
 const DEFAULT_PACK_PRIZE = '5'
 const DEFAULT_STOCK_COUNT = '5'
@@ -161,7 +161,6 @@ export class LootBagView {
   private wallet: WalletSnapshot | null = null
   private inventory: InvItem[] = []
   private selections: DepositSelection[] = []
-  private invPage = 0
   /** Wallet inventory search (name / rarity / issue / collection) */
   private invSearch = ''
   private depositSource: DepositSource = 'wallet'
@@ -170,11 +169,12 @@ export class LootBagView {
   private creatorItems: CreatorCollectionItem[] = []
   private creatorLoading = false
   private creatorLoadError: string | null = null
-  private creatorPage = 0
   private selectedCreatorCollection: CreatorCollection | null = null
   private stockItem: CreatorCollectionItem | null = null
   private stockMintCount = DEFAULT_STOCK_COUNT
   private stockAvgBacking = DEFAULT_BACKING
+  /** Take MANA NFT return / Keep fee credits — prefer collection creator */
+  private stockDepositor = ''
   private creatorAbort: AbortController | null = null
   private mode: ViewMode = 'play'
   private busy = false
@@ -385,7 +385,7 @@ export class LootBagView {
         resolve(img)
       }
       img.onerror = () => reject(new Error('Failed to load loot pack art'))
-      img.src = '/lootbag/lootpack.png?v=5'
+      img.src = '/media/lootbag/lootpack.png?v=5'
     })
     return this.packImgReady
   }
@@ -579,9 +579,14 @@ export class LootBagView {
       finishStep: (id, patch) => {
         this.steps = this.steps.map((s) => {
           if (s.id !== id) return s
+          const nextStatus = patch?.error
+            ? ('error' as const)
+            : patch?.keepActive
+              ? ('active' as const)
+              : ('done' as const)
           return {
             ...s,
-            status: patch?.error ? ('error' as const) : ('done' as const),
+            status: nextStatus,
             hash: patch?.hash ?? s.hash,
             detail: patch?.detail ?? s.detail
           }
@@ -589,6 +594,14 @@ export class LootBagView {
         this.renderSteps()
       }
     }
+  }
+
+  /** Force-dismiss claim/sign modal (success path must never leave it up). */
+  private dismissSignOverlay(): void {
+    this.steps = []
+    hideLootBagSignOverlay()
+    this.stepsEl.hidden = true
+    this.stepsEl.innerHTML = ''
   }
 
   private setBusy(on: boolean): void {
@@ -600,7 +613,11 @@ export class LootBagView {
     this.settleKeepBtn.disabled = on
     this.settleTakeBtn.disabled = on
     this.root.classList.toggle('is-busy', on)
-    if (!on && this.steps.length === 0) hideLootBagSignOverlay()
+    // Always drop the overlay when work ends with no in-flight / error steps
+    if (!on) {
+      const inFlight = this.steps.some((s) => s.status === 'active' || s.status === 'error')
+      if (!inFlight) this.dismissSignOverlay()
+    }
     if (this.mode === 'deposit') this.renderDepositView()
     if (!this.feesModalEl.hidden) this.syncFeesModal()
     this.winModal
@@ -630,7 +647,6 @@ export class LootBagView {
     this.syncInventoryFromWallet()
     const owned = new Set(this.inventory.map((i) => i.id))
     this.selections = this.selections.filter((s) => owned.has(s.item.id))
-    this.invPage = 0
     this.invSearch = ''
     this.setMode('deposit')
   }
@@ -912,15 +928,8 @@ export class LootBagView {
     const count = Math.max(0, Math.floor(Number(this.stockMintCount) || 0))
     const avg = Number(this.stockAvgBacking) || 0
     const lockEst = this.stockItem && count > 0 && avg > 0 ? formatManaDisplay(count * avg) : '0'
-    const pageSize = INV_PAGE_SIZE
     const browsingItems = this.creatorBrowse === 'items'
     const gridList = browsingItems ? this.creatorItems : this.creatorCollections
-    const totalPages = Math.max(1, Math.ceil(gridList.length / pageSize))
-    if (this.creatorPage >= totalPages) this.creatorPage = totalPages - 1
-    const start = this.creatorPage * pageSize
-    const pageSlice = gridList.slice(start, start + pageSize)
-    const canPrev = this.creatorPage > 0
-    const canNext = this.creatorPage + 1 < totalPages
 
     const selBlock = !this.stockItem
       ? `<p class="lootbag-dep__empty">Pick a collection, then an item →</p>`
@@ -931,7 +940,7 @@ export class LootBagView {
             <div class="lootbag-dep__stock-thumb lootbag-dep__thumb--${escapeHtml(this.stockItem.rarity)}">
               ${
                 this.stockItem.thumbnail
-                  ? `<img src="${escapeHtml(this.stockItem.thumbnail)}" alt="" loading="lazy" />`
+                  ? `<img src="${escapeHtml(this.stockItem.thumbnail)}" alt="" loading="lazy" decoding="async" />`
                   : 'NFT'
               }
             </div>
@@ -954,6 +963,13 @@ export class LootBagView {
               <input type="text" inputmode="decimal" data-stock-backing value="${escapeHtml(this.stockAvgBacking)}" ${this.busy ? 'disabled' : ''} />
             </label>
           </div>
+          <div class="lootbag-dep__stock-fields lootbag-dep__stock-fields--depositor">
+            <label class="lootbag-dep__stock-field lootbag-dep__stock-field--depositor">
+              <span>Depositor wallet</span>
+              <input type="text" data-stock-depositor value="${escapeHtml(this.stockDepositor)}" placeholder="0x… (Take MANA returns here)" ${this.busy ? 'disabled' : ''} autocomplete="off" spellcheck="false" />
+            </label>
+            <p class="lootbag-dep__stock-hint">Who receives the NFT if a claimer Takes MANA (and Keep fee credits). Defaults to collection creator. You still pay the mMANA backing.</p>
+          </div>
         </div>`
 
     let cells = ''
@@ -967,12 +983,7 @@ export class LootBagView {
         : `<div class="lootbag-dep__empty lootbag-dep__empty--center">No Polygon collections for this wallet<br/><span class="lootbag-dep__creator-note">Indexed via marketplace (published Collection V2)</span></div>`
     } else {
       const parts: string[] = []
-      for (let i = 0; i < pageSize; i++) {
-        const row = pageSlice[i]
-        if (!row) {
-          parts.push(`<div class="lootbag-vitrine__card lootbag-vitrine__card--empty" aria-hidden="true"></div>`)
-          continue
-        }
+      for (const row of gridList) {
         if (browsingItems) {
           const it = row as CreatorCollectionItem
           const on =
@@ -1017,7 +1028,7 @@ export class LootBagView {
       ? `${this.selectedCreatorCollection?.name ?? 'Items'} · ${this.creatorItems.length}`
       : `Your collections · ${this.creatorCollections.length}`
     const upBtn = browsingItems
-      ? `<button type="button" class="lootbag-dep__page-btn" data-creator-up ${this.busy ? 'disabled' : ''} title="Back to collections">↑</button>`
+      ? `<button type="button" class="lootbag-dep__up-btn" data-creator-up ${this.busy ? 'disabled' : ''} title="Back to collections">↑ Collections</button>`
       : ''
 
     // Same shell as play: lootbag__columns · col--bag (2/3) · col--pack (1/3)
@@ -1036,12 +1047,7 @@ export class LootBagView {
           </div>
           <div class="lootbag-dep__inv-head">
             <h3 class="lootbag-dep__section-title">${escapeHtml(invTitle)}</h3>
-            <div class="lootbag-dep__pager">
-              ${upBtn}
-              <button type="button" class="lootbag-dep__page-btn" data-creator-prev ${!canPrev || this.busy || this.creatorLoading ? 'disabled' : ''}>‹</button>
-              <span class="lootbag-dep__page-label">${this.creatorPage + 1} / ${totalPages}</span>
-              <button type="button" class="lootbag-dep__page-btn" data-creator-next ${!canNext || this.busy || this.creatorLoading ? 'disabled' : ''}>›</button>
-            </div>
+            ${upBtn}
           </div>
           <div class="lootbag-vitrine__track lootbag-dep__track">${cells}</div>
           ${
@@ -1091,15 +1097,8 @@ export class LootBagView {
     const nftCount = this.inventory.filter((i) => i.kind === 'nft').length
     const filtered = filterInv(this.inventory, this.invSearch)
     const invTotal = filtered.length
-    const totalPages = Math.max(1, Math.ceil(invTotal / INV_PAGE_SIZE))
-    if (this.invPage >= totalPages) this.invPage = totalPages - 1
-    if (this.invPage < 0) this.invPage = 0
-    const start = this.invPage * INV_PAGE_SIZE
-    const pageItems = filtered.slice(start, start + INV_PAGE_SIZE)
     const selectedIds = new Set(this.selections.map((s) => s.item.id))
     const totalLock = this.totalLockMana()
-    const canPrev = this.invPage > 0
-    const canNext = this.invPage + 1 < totalPages
     const packCount = this.selections.filter((s) => this.isPackSel(s)).length
     const nftSelCount = this.selections.length - packCount
     const selectedLabel =
@@ -1176,14 +1175,9 @@ export class LootBagView {
             })
             .join('')
 
-    // Same card chrome as main Loot Bag shelf (lootbag-vitrine__*)
+    // Same card chrome as main Loot Bag shelf (lootbag-vitrine__*) — full grid, images lazy-load
     const cells: string[] = []
-    for (let i = 0; i < INV_PAGE_SIZE; i++) {
-      const item = pageItems[i]
-      if (!item) {
-        cells.push(`<div class="lootbag-vitrine__card lootbag-vitrine__card--empty" aria-hidden="true"></div>`)
-        continue
-      }
+    for (const item of filtered) {
       const on = selectedIds.has(item.id)
       const isPack = item.kind === 'pack'
       const rarity = isPack ? 'legendary' : (item.rarity || 'common').toLowerCase()
@@ -1224,11 +1218,6 @@ export class LootBagView {
           </div>
           <div class="lootbag-dep__inv-head">
             <h3 class="lootbag-dep__section-title">Inventory · ${escapeHtml(searchLabel)} · A–Z</h3>
-            <div class="lootbag-dep__pager">
-              <button type="button" class="lootbag-dep__page-btn" data-inv-prev ${!canPrev || this.busy ? 'disabled' : ''}>‹</button>
-              <span class="lootbag-dep__page-label">${this.invPage + 1} / ${totalPages}</span>
-              <button type="button" class="lootbag-dep__page-btn" data-inv-next ${!canNext || this.busy ? 'disabled' : ''}>›</button>
-            </div>
           </div>
           <div class="lootbag-dep__search-row">
             <input
@@ -1323,25 +1312,7 @@ export class LootBagView {
       this.creatorBrowse = 'collections'
       this.selectedCreatorCollection = null
       this.creatorItems = []
-      this.creatorPage = 0
       this.renderDepositView()
-      return
-    }
-    if (t.closest('[data-creator-prev]')) {
-      if (this.creatorPage > 0) {
-        this.creatorPage -= 1
-        this.renderDepositView()
-      }
-      return
-    }
-    if (t.closest('[data-creator-next]')) {
-      const n =
-        this.creatorBrowse === 'items' ? this.creatorItems.length : this.creatorCollections.length
-      const totalPages = Math.max(1, Math.ceil(n / INV_PAGE_SIZE))
-      if (this.creatorPage + 1 < totalPages) {
-        this.creatorPage += 1
-        this.renderDepositView()
-      }
       return
     }
     const colBtn = t.closest('[data-creator-col]') as HTMLElement | null
@@ -1355,12 +1326,14 @@ export class LootBagView {
       const it = this.creatorItems.find((x) => x.itemId === id)
       if (it) {
         this.stockItem = it
+        void this.defaultStockDepositorFor(it.contractAddress)
         this.renderDepositView()
       }
       return
     }
     if (t.closest('[data-stock-clear]')) {
       this.stockItem = null
+      this.stockDepositor = ''
       this.renderDepositView()
       return
     }
@@ -1370,26 +1343,7 @@ export class LootBagView {
     }
     if (t.closest('[data-inv-search-clear]')) {
       this.invSearch = ''
-      this.invPage = 0
       this.renderDepositView()
-      return
-    }
-    if (t.closest('[data-inv-prev]')) {
-      if (this.invPage > 0) {
-        this.invPage -= 1
-        this.renderDepositView()
-      }
-      return
-    }
-    if (t.closest('[data-inv-next]')) {
-      const totalPages = Math.max(
-        1,
-        Math.ceil(filterInv(this.inventory, this.invSearch).length / INV_PAGE_SIZE)
-      )
-      if (this.invPage + 1 < totalPages) {
-        this.invPage += 1
-        this.renderDepositView()
-      }
       return
     }
     const remove = t.closest('[data-remove]') as HTMLElement | null
@@ -1412,7 +1366,6 @@ export class LootBagView {
     const input = ev.target as HTMLInputElement
     if ('invSearch' in input.dataset) {
       this.invSearch = input.value
-      this.invPage = 0
       this.renderDepositView()
       const el = this.depositBodyEl.querySelector('[data-inv-search]') as HTMLInputElement | null
       if (el) {
@@ -1434,6 +1387,10 @@ export class LootBagView {
     if ('stockBacking' in input.dataset) {
       this.stockAvgBacking = input.value
       this.updateCreatorLockStat()
+      return
+    }
+    if ('stockDepositor' in input.dataset) {
+      this.stockDepositor = input.value.trim()
       return
     }
     const prizeId = input.dataset.prizeId
@@ -1477,7 +1434,6 @@ export class LootBagView {
     this.creatorBrowse = 'collections'
     this.selectedCreatorCollection = null
     this.creatorItems = []
-    this.creatorPage = 0
     this.renderDepositView()
     try {
       this.creatorCollections = await fetchCreatorCollections(addr, {
@@ -1502,7 +1458,6 @@ export class LootBagView {
     if (!col) return
     this.selectedCreatorCollection = col
     this.creatorBrowse = 'items'
-    this.creatorPage = 0
     this.creatorItems = []
     this.creatorLoading = true
     this.creatorLoadError = null
@@ -1520,6 +1475,21 @@ export class LootBagView {
     } finally {
       this.creatorLoading = false
       if (this.mode === 'deposit' && this.depositSource === 'creator') this.renderDepositView()
+    }
+  }
+
+  /** Prefill depositor with on-chain collection.creator() when available. */
+  private async defaultStockDepositorFor(collection: string): Promise<void> {
+    const fallback = this.addr()?.toLowerCase() ?? ''
+    this.stockDepositor = fallback
+    try {
+      const st = await getCollectionMinterStatus(collection, { account: this.addr() })
+      if (st.creator) this.stockDepositor = st.creator
+    } catch {
+      /* keep wallet fallback */
+    }
+    if (this.mode === 'deposit' && this.depositSource === 'creator' && this.stockItem) {
+      this.renderDepositView()
     }
   }
 
@@ -1548,6 +1518,12 @@ export class LootBagView {
       this.renderDepositView()
       return
     }
+    const dep = this.stockDepositor.trim()
+    if (dep && !/^0x[a-fA-F0-9]{40}$/.test(dep)) {
+      this.error = 'Depositor must be a valid 0x wallet address'
+      this.renderDepositView()
+      return
+    }
 
     this.setBusy(true)
     this.error = null
@@ -1562,6 +1538,7 @@ export class LootBagView {
         itemId: item.itemId,
         mintCount,
         avgBackingMana: this.stockAvgBacking,
+        depositor: dep || this.addr(),
         api: this.flowApi(),
         waitForContinue: async ({ label }) => {
           await requestLootBagSignContinue({
@@ -1575,6 +1552,7 @@ export class LootBagView {
       this.steps = []
       hideLootBagSignOverlay()
       this.stockItem = null
+      this.stockDepositor = ''
       await this.refresh()
       this.setBusy(false)
       await showLootBagSuccessOverlay({
@@ -1710,9 +1688,12 @@ export class LootBagView {
 
   private renderSteps(): void {
     // Centered viewport overlay for sign / meta-tx (2D + 3D).
-    if (this.steps.length > 0) {
-      const active = this.steps.find((s) => s.status === 'active')
-      const errored = this.steps.find((s) => s.status === 'error')
+    // ONLY while a step is active or errored — never leave a "all Done / Working…" corpse.
+    const active = this.steps.find((s) => s.status === 'active')
+    const errored = this.steps.find((s) => s.status === 'error')
+    const showOverlay = this.steps.length > 0 && (active != null || errored != null)
+
+    if (showOverlay) {
       const title =
         this.mode === 'deposit'
           ? this.depositSource === 'creator'
@@ -1727,10 +1708,9 @@ export class LootBagView {
               : this.steps.some((s) => /collect your rewards|withdraw|grab fees|your loot/i.test(s.label))
                 ? 'Collect rewards'
                 : 'Loot Bag'
-      // Never surface step labels / contract names as the subtitle
       const statusLine =
         active != null
-          ? 'Confirm in your wallet…'
+          ? active.detail?.trim() || 'Confirm in your wallet…'
           : errored != null
             ? errored.detail?.trim() || 'Something went wrong'
             : 'Working…'
@@ -1756,27 +1736,19 @@ export class LootBagView {
       hideLootBagSignOverlay()
     }
 
-    if (!this.steps.length) {
+    // Inline list only for play while something is in-flight; deposit uses overlay only.
+    const host = this.depositBodyEl.querySelector('[data-dep-steps]') as HTMLElement | null
+    if (host) {
+      host.hidden = true
+      host.innerHTML = ''
+    }
+    if (!showOverlay) {
       this.stepsEl.hidden = true
       this.stepsEl.innerHTML = ''
-      // Hide inline deposit step hosts — overlay owns progress now.
-      const host = this.depositBodyEl.querySelector('[data-dep-steps]') as HTMLElement | null
-      if (host) {
-        host.hidden = true
-        host.innerHTML = ''
-      }
       return
     }
-    // Keep play-mode inline list as secondary; deposit uses overlay only.
     this.stepsEl.hidden = this.mode !== 'play'
-    this.stepsEl.innerHTML = this.buildStepsHtml()
-    if (this.mode === 'deposit') {
-      const host = this.depositBodyEl.querySelector('[data-dep-steps]') as HTMLElement | null
-      if (host) {
-        host.hidden = true
-        host.innerHTML = ''
-      }
-    }
+    this.stepsEl.innerHTML = this.mode === 'play' ? this.buildStepsHtml() : ''
   }
 
   private closeWinModal(opts: { clearPending: boolean }): void {
@@ -1831,7 +1803,7 @@ export class LootBagView {
   private renderPackPrize(win: PendingWin): void {
     const p = win.position
     const isPack = p?.kind === 'manaPack'
-    const rarity = isPack ? 'legendary' : (p?.rarity || 'common').toLowerCase()
+    const rarity = normalizeRarityClass(isPack ? 'legendary' : p?.rarity)
     const title = p
       ? isPack
         ? 'MANA Pack'
@@ -1850,7 +1822,7 @@ export class LootBagView {
         ? `<img class="lootbag-pack-stage__prize-img" src="${escapeHtml(p.imageUrl)}" alt="" />`
         : `<div class="lootbag-pack-stage__prize-glyph" aria-hidden="true">${isPack ? '◈' : '✦'}</div>`
     this.packPrizeEl.innerHTML = `
-      <div class="lootbag-pack-stage__prize-art lootbag-rarity-bg--${escapeHtml(rarity)}">${art}</div>
+      <div class="lootbag-pack-stage__prize-art lootbag-rarity-bg--${escapeHtml(rarity)}" data-rarity="${escapeHtml(rarity)}">${art}</div>
       <div class="lootbag-pack-stage__prize-name">${escapeHtml(title)}</div>
       ${detail ? `<div class="lootbag-pack-stage__prize-detail">${escapeHtml(detail)}</div>` : ''}
       <div class="lootbag-pack-stage__prize-rarity lootbag-vitrine__card-line--rarity is-${escapeHtml(rarity)}">${escapeHtml(isPack ? 'pack' : rarity)}</div>
@@ -1925,11 +1897,17 @@ export class LootBagView {
     this.settleTakeBtn.hidden = true
 
     try {
+      // Shelf still has marketplace rarity/name for the item about to leave the active pool
+      const shelfBefore = this.pool?.positions ?? []
       const { win } = await runPull({
         sessionAddress: this.addr(),
         acquisitionFee: this.pool.acquisitionFee,
         api: this.flowApi()
       })
+
+      // ALWAYS kill the sign modal the instant open-tx flow returns
+      this.dismissSignOverlay()
+      this.claiming = false
 
       this.highlightPosId = win?.positionId ?? null
       const keepHi = this.highlightPosId
@@ -1945,10 +1923,13 @@ export class LootBagView {
         return
       }
 
-      // Enrich from refreshed shelf when possible
-      const enriched =
-        this.pool?.positions.find((p) => p.positionId === win.positionId) ?? win.position
-      const finalWin: PendingWin = { positionId: win.positionId, position: enriched }
+      // Prefer pre-claim shelf metadata (rarity/name/thumb). After pull the position is
+      // usually inactive and gone from the refreshed active shelf.
+      const fromShelfBefore = shelfBefore.find((p) => p.positionId === win.positionId) ?? null
+      const fromShelfAfter =
+        this.pool?.positions.find((p) => p.positionId === win.positionId) ?? null
+      const merged = mergeWinPosition(win.position, fromShelfBefore, fromShelfAfter)
+      const finalWin: PendingWin = { positionId: win.positionId, position: merged }
       this.pendingWin = finalWin
       this.highlightPosId = win.positionId
 
@@ -1969,9 +1950,16 @@ export class LootBagView {
       this.renderStatus()
       this.resetPackStage()
       this.pendingWin = null
+      // Keep overlay only if a step is in error state; otherwise nuke it
+      const hasError = this.steps.some((s) => s.status === 'error')
+      if (!hasError) this.dismissSignOverlay()
     } finally {
       this.root.classList.remove('is-claiming')
       this.claiming = false
+      // Belt-and-suspenders: never leave a completed claim modal up
+      if (!this.steps.some((s) => s.status === 'active' || s.status === 'error')) {
+        this.dismissSignOverlay()
+      }
       this.setBusy(false)
       this.claimBtn.disabled = false
     }
@@ -2031,6 +2019,7 @@ export class LootBagView {
         manaAmount,
         outcome: keep ? 'keep' : 'take'
       })
+      this.dismissSignOverlay()
       this.closeWinModal({ clearPending: true })
       this.pendingWin = null
       this.highlightPosId = null
@@ -2044,6 +2033,9 @@ export class LootBagView {
       this.renderStatus()
       if (this.pendingWin) this.showSettleActions()
     } finally {
+      if (!this.steps.some((s) => s.status === 'active' || s.status === 'error')) {
+        this.dismissSignOverlay()
+      }
       this.setBusy(false)
     }
   }
@@ -2055,4 +2047,41 @@ function formatManaDisplay(n: number): string {
     return n.toLocaleString(undefined, { maximumFractionDigits: 0 })
   }
   return n.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 0 })
+}
+
+const KNOWN_RARITIES = new Set([
+  'common',
+  'uncommon',
+  'rare',
+  'epic',
+  'legendary',
+  'mythic',
+  'unique',
+  'exotic'
+])
+
+/** CSS suffix for lootbag-rarity-bg--* / is-* classes */
+function normalizeRarityClass(raw?: string | null): string {
+  const r = (raw || 'common').trim().toLowerCase()
+  return KNOWN_RARITIES.has(r) ? r : 'common'
+}
+
+/** Merge chain win position with shelf metadata (rarity/name/image) from before/after pull. */
+function mergeWinPosition(
+  fromChain: LootBagPosition | null,
+  fromShelfBefore: LootBagPosition | null,
+  fromShelfAfter: LootBagPosition | null
+): LootBagPosition | null {
+  if (!fromChain && !fromShelfBefore && !fromShelfAfter) return null
+  const base = fromChain ?? fromShelfBefore ?? fromShelfAfter!
+  const meta = fromShelfBefore ?? fromShelfAfter
+  if (!meta) return base
+  return {
+    ...base,
+    name: base.name?.trim() || meta.name,
+    rarity: base.rarity || meta.rarity,
+    imageUrl: base.imageUrl || meta.imageUrl,
+    itemId: base.itemId ?? meta.itemId,
+    issuedId: base.issuedId ?? meta.issuedId
+  }
 }

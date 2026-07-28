@@ -5,6 +5,15 @@ import { countMappedMaterials, parsePetGlbBytes } from './parsePetGlb'
 import type { PetAnimClipMap, PetAnimState, PetCategory, PetPose } from './types'
 
 const CROSSFADE = 0.2
+/**
+ * Minimum time in a band before another switch is allowed (ms).
+ *
+ * Follow speed is recomputed per frame and jitters across the band thresholds.
+ * Without this, a new crossfade starts every frame, no action ever reaches full
+ * weight, and a skinned mesh with ~zero total influence snaps to its bind pose.
+ * Must exceed CROSSFADE so each fade can finish.
+ */
+const MIN_STATE_DWELL_MS = 260
 /** Re-roll random clip while staying in idle/afk (ms). */
 const IDLE_REROLL_MS = 12_000
 
@@ -177,9 +186,12 @@ export class PetInstance {
     const sameState = this.currentAnim === anim
     const canReroll =
       sameState &&
-      (anim === 'idle' || anim === 'afk') &&
+      (anim === 'idle' || anim === 'afk' || anim === 'sit') &&
       now - this.lastStateEnterMs > IDLE_REROLL_MS
     if (sameState && !canReroll) return
+    // Let the running fade finish before honouring the next band change; the
+    // caller re-asserts the pose every frame, so nothing is lost by waiting.
+    if (!sameState && this.currentAnim && now - this.lastStateEnterMs < MIN_STATE_DWELL_MS) return
 
     const pool = this.resolveClipPool(anim)
     if (!pool.length) return
@@ -236,6 +248,13 @@ export class PetInstance {
     const next = this.actions.get(clipName)
     if (!next) return
     const prev = this.currentClipName ? this.actions.get(this.currentClipName) : null
+    // crossFadeFrom only schedules weights — it never re-arms a stopped action.
+    // An action that is disabled, paused or not running contributes nothing, and
+    // once the outgoing clip has faded out the mesh drops to its bind pose.
+    next.enabled = true
+    next.paused = false
+    next.setEffectiveTimeScale(1)
+    if (!next.isRunning()) next.play()
     if (prev && prev !== next) {
       prev.crossFadeTo(next, CROSSFADE, false)
     } else {
@@ -270,7 +289,7 @@ export class PetInstance {
     const aliases = PET_CATEGORY_CONFIG[this.category].clipAliases[anim] ?? []
     for (const name of aliases) push(name)
 
-    if (!resolved.length && (anim === 'idle' || anim === 'afk')) {
+    if (!resolved.length && (anim === 'idle' || anim === 'afk' || anim === 'sit')) {
       for (const n of this.clipNames) {
         if (/idle|hover|stand|afk|sit|sleep|rest/i.test(n)) push(n)
       }

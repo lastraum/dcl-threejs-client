@@ -18,6 +18,11 @@ const COMFORT_FLY_M = 0.18
 const TELEPORT_M = 14
 const WALK_SPEED = 2.4
 const RUN_SPEED = 7.5
+/**
+ * Smoothing on the reported follow speed (1/s). Raw step/dt swings hard as the
+ * pet closes on its slot, which would flap the gait band across its thresholds.
+ */
+const SPEED_SMOOTH_RATE = 8
 
 const _ownerPos = new THREE.Vector3()
 const _desired = new THREE.Vector3()
@@ -103,7 +108,7 @@ export class PetFollow {
       _move.copy(_delta).multiplyScalar(step / dist)
       this.position.x += _move.x
       this.position.z += _move.z
-      this.horizontalSpeed = step / Math.max(dt, 1e-4)
+      this.horizontalSpeed = damp(this.horizontalSpeed, step / Math.max(dt, 1e-4), SPEED_SMOOTH_RATE, dt)
       // Travel yaw in playerYaw space so Face 180° stays correct while moving.
       const travelYaw = Math.atan2(_move.x, _move.z)
       const moveYaw = travelYaw - AVATAR_YAW_OFFSET

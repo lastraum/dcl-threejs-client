@@ -24,8 +24,15 @@ import {
 import {
   isPetAnimState,
   normalizeAnimClipMap,
-  petAnimStateLabel
+  petAnimStateLabel,
+  PET_ANIM_STATES_BY_CATEGORY
 } from '../../../pets/petCategories'
+import {
+  BUILTIN_PETS,
+  builtinPetToLibraryEntry,
+  ensureBuiltinPetBytes,
+  isBuiltinPetHash
+} from '../../../pets/builtinPets'
 import type { PetAnimClipMap, PetAnimState, PetCategory, PetLibraryEntry } from '../../../pets/types'
 import { PET_ANIM_STATES } from '../../../pets/types'
 
@@ -223,11 +230,28 @@ export class PetsPanel {
     }
   }
 
+  /** Pull a bundled pet's GLB into the local cache. False = surfaced an error. */
+  private async downloadBuiltin(hash: string): Promise<boolean> {
+    if (this.busy) return false
+    this.busy = true
+    this.setStatus('Downloading pet…')
+    try {
+      const ready = await ensureBuiltinPetBytes(hash)
+      this.setStatus(ready ? '' : 'Could not download this pet — check your connection.')
+      return !!ready
+    } finally {
+      this.busy = false
+    }
+  }
+
   private async collectRows(): Promise<PetLibraryEntry[]> {
     const address = this.wallet()
     const library = await listPetLibrary()
     const inv = getPetInventory(address)
     const byHash = new Map<string, PetLibraryEntry>()
+    // Built-ins list before download; a local copy (or the user's own settings
+    // for it) overwrites the shipped defaults below.
+    for (const p of BUILTIN_PETS) byHash.set(p.contentHash, builtinPetToLibraryEntry(p))
     for (const e of library) byHash.set(e.contentHash, e)
     for (const e of inv.owned) {
       const prev = byHash.get(e.contentHash)
@@ -324,6 +348,11 @@ export class PetsPanel {
     const map = normalizeAnimClipMap(entry.animClipMap) ?? {}
     const clipToState = invertClipMap(map, clipNames)
     const label = escapeHtml(entry.nickname || entry.fileName)
+    // Behaviors this pet's category can actually reach, A→Z by display label.
+    const behaviorStates = [...PET_ANIM_STATES_BY_CATEGORY[entry.category]].sort((a, b) =>
+      petAnimStateLabel(a).localeCompare(petAnimStateLabel(b), undefined, { sensitivity: 'base' })
+    )
+    const otherCategoryLabel = entry.category === 'walking' ? 'flying' : 'walking'
 
     const trackRows =
       clipNames.length === 0
@@ -331,12 +360,22 @@ export class PetsPanel {
         : clipNames
             .map((clip) => {
               const bound = clipToState.get(clip) ?? ''
+              // Offer only the bands this category can reach. A mapping left over
+              // from the other category still shows (tagged) so it is visible and
+              // fixable instead of silently reading as unmapped.
+              const states = [...behaviorStates]
+              if (bound && !states.includes(bound as PetAnimState)) {
+                states.push(bound as PetAnimState)
+              }
               const opts = [
                 `<option value="">— unmapped —</option>`,
-                ...PET_ANIM_STATES.map(
-                  (s) =>
-                    `<option value="${s}"${bound === s ? ' selected' : ''}>${petAnimStateLabel(s)}</option>`
-                )
+                ...states.map((s) => {
+                  const stale = !behaviorStates.includes(s)
+                  const label = stale
+                    ? `${petAnimStateLabel(s)} (${otherCategoryLabel})`
+                    : petAnimStateLabel(s)
+                  return `<option value="${s}"${bound === s ? ' selected' : ''}>${escapeHtml(label)}</option>`
+                })
               ].join('')
               return `
                 <div class="pets-panel__track" data-clip="${escapeHtml(clip)}">
@@ -407,6 +446,8 @@ export class PetsPanel {
       const category = t.value === 'flying' ? 'flying' : 'walking'
       setOwnedPetCategory(address, this.editHash, category)
       await updatePetLibraryCategory(this.editHash, category)
+      // Behavior lists are category-specific — rebuild the mapper rows.
+      await this.render()
       if (getActivePetEntry(address)?.contentHash === this.editHash) {
         await this.options.onActivePetChange?.()
       }
@@ -482,6 +523,9 @@ export class PetsPanel {
       if (active?.contentHash === hash) {
         setActivePetHash(address, null)
       } else {
+        // Built-ins are listed before they are downloaded — pull the GLB now, or
+        // enableLocal would throw on missing bytes.
+        if (isBuiltinPetHash(hash) && !(await this.downloadBuiltin(hash))) return
         const rows = await this.collectRows()
         const entry = rows.find((e) => e.contentHash === hash)
         if (entry) upsertOwnedPet(address, entry)
@@ -504,6 +548,8 @@ export class PetsPanel {
     if (play?.dataset.playClip && this.editHash) {
       ev.preventDefault()
       const clip = play.dataset.playClip
+      // Preview needs real bytes even when the pet is not equipped.
+      if (isBuiltinPetHash(this.editHash) && !(await this.downloadBuiltin(this.editHash))) return
       const ok = await this.options.onPlayClipPreview?.(this.editHash, clip)
       if (ok === false) this.setStatus('Could not play clip — enable the pet or wait for load.')
       else this.setStatus(`Playing “${clip}”…`)
@@ -524,7 +570,11 @@ export class PetsPanel {
     const del = t.closest<HTMLElement>('[data-del]')
     if (del?.dataset.del) {
       const hash = del.dataset.del
-      if (!window.confirm('Remove this pet from your inventory?')) return
+      // A built-in ships with the client — trash frees the download, keeps the row.
+      const prompt = isBuiltinPetHash(hash)
+        ? 'Remove the downloaded copy? This pet stays in the list and can be re-enabled.'
+        : 'Remove this pet from your inventory?'
+      if (!window.confirm(prompt)) return
       const wasActive = getActivePetEntry(address)?.contentHash === hash
       removeOwnedPet(address, hash)
       await removePetFromLibrary(hash)

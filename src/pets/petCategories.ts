@@ -32,22 +32,40 @@ export type PetCategoryConfig = {
   clipAliases: Record<PetAnimState, string[]>
 }
 
+// Fallbacks are chosen so a GLB with no trot/sit track behaves exactly as it did
+// before those bands existed: trot → the run clip, sit → the idle clip.
 const LOCO_ALIASES_WALK: Record<PetAnimState, string[]> = {
   idle: ['idle', 'Idle', 'stand', 'Stand'],
   walk: ['walk', 'Walk', 'walking', 'Walking'],
+  trot: ['trot', 'Trot', 'jog', 'Jog', 'run', 'Run'],
   run: ['run', 'Run', 'sprint', 'Sprint'],
   fly: ['walk', 'Walk'],
   flyFast: ['run', 'Run'],
-  afk: ['afk', 'AFK', 'sit', 'Sit', 'sleep', 'Sleep', 'rest', 'Rest', 'idle', 'Idle']
+  sit: ['sit', 'Sit', 'rest', 'Rest', 'idle', 'Idle'],
+  afk: ['afk', 'AFK', 'sleep', 'Sleep', 'sit', 'Sit', 'rest', 'Rest', 'idle', 'Idle']
 }
 
 const LOCO_ALIASES_FLY: Record<PetAnimState, string[]> = {
   idle: ['idle', 'Idle', 'hover', 'Hover'],
   walk: ['fly', 'Fly', 'flap', 'Flap', 'walk', 'Walk'],
+  trot: ['fly', 'Fly', 'flap', 'Flap'],
   run: ['flyFast', 'FlyFast', 'dash', 'Dash', 'run', 'Run', 'fly', 'Fly'],
   fly: ['fly', 'Fly', 'flap', 'Flap', 'walk', 'Walk'],
   flyFast: ['flyFast', 'FlyFast', 'dash', 'Dash', 'run', 'Run', 'fly', 'Fly'],
+  sit: ['perch', 'Perch', 'hover', 'Hover', 'idle', 'Idle'],
   afk: ['afk', 'AFK', 'hover', 'Hover', 'idle', 'Idle', 'sit', 'Sit']
+}
+
+/**
+ * Behaviors the edit panel offers per category — only bands that category's sim
+ * can actually reach, ordered alphabetically by display label.
+ * Walking pets never fly; flying pets never walk/trot.
+ */
+export const PET_ANIM_STATES_BY_CATEGORY: Record<PetCategory, readonly PetAnimState[]> = {
+  // AFK, Idle, Run, Sit, Trot, Walk
+  walking: ['afk', 'idle', 'run', 'sit', 'trot', 'walk'],
+  // AFK, Fly, Fly fast, Idle, Sit
+  flying: ['afk', 'fly', 'flyFast', 'idle', 'sit']
 }
 
 export const PET_CATEGORY_CONFIG: Record<PetCategory, PetCategoryConfig> = {
@@ -72,8 +90,15 @@ export const PET_CATEGORY_CONFIG: Record<PetCategory, PetCategoryConfig> = {
 /** Horizontal speed thresholds for loco clips (m/s). */
 export const PET_IDLE_SPEED = 0.12
 export const PET_WALK_SPEED = 2.2
+/**
+ * Walk → trot → run. Trot splits the old run band rather than the walk band, so
+ * a pet with no trot track keeps its previous gait at every speed (alias → run).
+ * PetFollow cruises at 2.4 m/s beside you and catches up at 7.5.
+ */
+export const PET_TROT_SPEED = 3.6
 
-/** Owner must stay under idle speed this long before AFK clips play. */
+/** Owner must stay under idle speed this long before sit / AFK clips play. */
+export const PET_SIT_IDLE_MS = 25 * 1000
 export const PET_AFK_IDLE_MS = 5 * 60 * 1000
 
 export function resolvePetAnimState(category: PetCategory, horizontalSpeed: number): PetAnimState {
@@ -81,7 +106,8 @@ export function resolvePetAnimState(category: PetCategory, horizontalSpeed: numb
   if (category === 'flying') {
     return horizontalSpeed < PET_WALK_SPEED ? 'fly' : 'flyFast'
   }
-  return horizontalSpeed < PET_WALK_SPEED ? 'walk' : 'run'
+  if (horizontalSpeed < PET_WALK_SPEED) return 'walk'
+  return horizontalSpeed < PET_TROT_SPEED ? 'trot' : 'run'
 }
 
 export function isPetAnimState(value: unknown): value is PetAnimState {
@@ -112,12 +138,16 @@ export function petAnimStateLabel(state: PetAnimState): string {
       return 'Idle'
     case 'walk':
       return 'Walk'
+    case 'trot':
+      return 'Trot'
     case 'run':
       return 'Run'
     case 'fly':
       return 'Fly'
     case 'flyFast':
       return 'Fly fast'
+    case 'sit':
+      return 'Sit'
     case 'afk':
       return 'AFK'
     default:

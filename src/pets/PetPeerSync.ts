@@ -15,6 +15,7 @@ import {
   encodeDpetWantAnnounce,
   tryDecodeDpetMessage
 } from './dclClientPet'
+import { ensureBuiltinPetBytes, isBuiltinPetHash } from './builtinPets'
 import { PET_MAX_BYTES } from './constants'
 import { sha256Hex } from '../avatar/vrm/vrmHash'
 import {
@@ -423,6 +424,19 @@ export class PetPeerSync {
     category: PetCategory,
     force = false
   ): Promise<void> {
+    // Built-in pets ship with every client — load from the bundle instead of
+    // pulling megabytes off the owner's uplink. Hash is verified on fetch, so
+    // the bytes are identical to what the owner would have sent.
+    if (isBuiltinPetHash(hash)) {
+      const ready = await ensureBuiltinPetBytes(hash)
+      if (ready) {
+        const yaw = this.peerMeshYaw.get(provider) ?? 0
+        this.callbacks?.onPeerPetBytesReady(provider, hash, category, yaw)
+        return
+      }
+      // Bundle unreachable — fall through to the normal peer transfer.
+    }
+
     const reqKey = `${provider}:${hash}`
     const fetchKey = `${provider}:${hash}`
     // In-flight assembly — do not stack concurrent serves (causes hash mismatch holes).

@@ -7,6 +7,7 @@ import type { ProjectionView } from '../bridge/ProjectionView'
 import type { ResolvedScene } from '../dcl/content/types'
 import {
   VS_BUFFERING,
+  VS_LOADING,
   VS_NONE,
   VS_PLAYING,
   VS_READY,
@@ -283,6 +284,9 @@ export class VideoPlayerBridge {
     }
   }
 
+  // Note: hard state changes + src-swap LOADING also go through emitVideoEvent / recordAppend
+  // so SceneScriptSystem.flushRendererGrowOnlyAppends delivers them to the worker (onChange).
+
   disposeEntity(entity: Entity): void {
     this.removeDecoder(entity)
   }
@@ -362,6 +366,13 @@ export class VideoPlayerBridge {
     if (srcChanged) {
       entry.lastSrc = src
       entry.lastSpecKey = ''
+      // Explorer videoEventsSystem: fire immediately on source swap so scene onChange /
+      // registerVideoEventsEntity sees LOADING (or NONE) before the next decoder state.
+      entry.lastState = src ? VS_LOADING : VS_NONE
+      entry.lastOffset = -1
+      entry.lastLength = -1
+      entry.lastEventAtMs = 0
+      this.emitVideoEvent(entity, entry, src ? VS_LOADING : VS_NONE, 0, 0)
     }
     // Include live flag so we re-apply when stream-key/Cast starts/stops without ECS src change.
     const specKey = `${liveKitRemoteLive ? '1' : '0'}:${JSON.stringify(spec)}`
@@ -379,6 +390,30 @@ export class VideoPlayerBridge {
     // Rebind materials after src swap / idle black / first frame.
     this.onTextureReady?.(entity)
     return fromUserToggle && (playingChanged || entry.player.isHoldingAtEnd())
+  }
+
+  /** Grow-only VideoEvent APPEND — drives worker videoEventsSystem + VideoEvent.onChange. */
+  private emitVideoEvent(
+    entity: Entity,
+    entry: DecoderEntry,
+    state: VideoStateValue,
+    currentOffset: number,
+    videoLength: number
+  ): void {
+    const { VideoEvent } = this.ecs
+    const event: PBVideoEvent = {
+      timestamp: this.eventTimestamp++,
+      tickNumber: 0,
+      currentOffset,
+      videoLength,
+      state
+    }
+    entry.lastState = state
+    entry.lastOffset = currentOffset
+    entry.lastLength = videoLength
+    entry.lastEventAtMs = performance.now()
+    VideoEvent.addValue(entity, event)
+    this.recordAppend?.(VideoEvent.componentId, entity, event)
   }
 
   private removeDecoder(entity: Entity): void {

@@ -1819,14 +1819,13 @@ function deliverRendererAppendInbound(chunks: Uint8Array[]): void {
       `[sceneWorker] renderer-append-deliver — trigger=${counts.triggerAppends} videoEvent=${counts.videoAppends}`
     )
   }
-  // TriggerArea enter must run TriggerAreaResultSystem same-message.
+  // TriggerArea enter + VideoEvent must run systems same-message (videoEventsSystem / onChange).
   // requestSceneEngineTick() often no-ops when wall-clock debt is 0 (just after a play-frame
-  // tick) — Plaza bounce_parasol then never sees ENTER → never writes PhysicsCombinedImpulse.
-  // dt=0 runs systems without inventing NeonScreen wall time; flush cold CRDT so impulse
-  // reaches main before the next player.update (eventId:0 + vector 0,25,0).
-  if (counts.triggerAppends > 0) {
+  // tick) — Plaza bounce_parasol then never sees ENTER; Admin video src swap never sees LOADING.
+  // dt=0 runs systems without inventing NeonScreen wall time; flush cold CRDT for impulse egress.
+  if (counts.triggerAppends > 0 || counts.videoAppends > 0) {
     void runSceneEngineUpdateNow(0).then(() => {
-      completePlayFrameColdEgress()
+      if (counts.triggerAppends > 0) completePlayFrameColdEgress()
     })
     return
   }

@@ -4,6 +4,7 @@ import {
   sceneInputSnapshotSignature,
   type SceneInputSnapshotBody
 } from '../player/sceneInputSnapshot'
+import { keybinds } from './keybinds'
 import { InputAction, type InputActionValue } from './pointerConstants'
 
 /**
@@ -45,32 +46,13 @@ export const FLIGHT_TICK_ACTIONS: ReadonlySet<InputActionValue> = new Set([
   InputAction.IA_ACTION_6
 ])
 
-/** Explorer parity — WASD / arrows / Space / Shift / Ctrl / E F / 1–4. */
-const CODE_TO_ACTIONS: ReadonlyArray<{ codes: readonly string[]; actions: readonly InputActionValue[] }> = [
-  { codes: ['KeyW', 'ArrowUp'], actions: [InputAction.IA_FORWARD] },
-  { codes: ['KeyS', 'ArrowDown'], actions: [InputAction.IA_BACKWARD] },
-  { codes: ['KeyD', 'ArrowRight'], actions: [InputAction.IA_RIGHT] },
-  { codes: ['KeyA', 'ArrowLeft'], actions: [InputAction.IA_LEFT] },
-  { codes: ['Space'], actions: [InputAction.IA_JUMP] },
-  { codes: ['ShiftLeft', 'ShiftRight'], actions: [InputAction.IA_MODIFIER] },
-  { codes: ['ControlLeft', 'ControlRight'], actions: [InputAction.IA_WALK] },
-  { codes: ['KeyE'], actions: [InputAction.IA_PRIMARY] },
-  { codes: ['KeyF'], actions: [InputAction.IA_SECONDARY] },
-  { codes: ['Digit1', 'Numpad1'], actions: [InputAction.IA_ACTION_3] },
-  { codes: ['Digit2', 'Numpad2'], actions: [InputAction.IA_ACTION_4] },
-  { codes: ['Digit3', 'Numpad3'], actions: [InputAction.IA_ACTION_5] },
-  { codes: ['Digit4', 'Numpad4'], actions: [InputAction.IA_ACTION_6] }
-]
-
-const codeToActions = new Map<string, readonly InputActionValue[]>()
-for (const entry of CODE_TO_ACTIONS) {
-  for (const code of entry.codes) {
-    codeToActions.set(code, entry.actions)
-  }
-}
-
 function isSceneHubAction(action: InputActionValue): boolean {
   return FLIGHT_TICK_ACTIONS.has(action)
+}
+
+/** Resolve KeyboardEvent.code → DCL actions from local keybind store. */
+function actionsForCode(code: string): readonly InputActionValue[] {
+  return keybinds.actionsForCode(code)
 }
 
 export type InputHubOptions = {
@@ -211,7 +193,7 @@ export class InputHub {
       return
     }
 
-    const actions = codeToActions.get(e.code)
+    const actions = actionsForCode(e.code)
     if (!actions?.length) return
 
     const count = this.codeDownCount.get(e.code) ?? 0
@@ -239,7 +221,7 @@ export class InputHub {
 
   private onKeyUp = (e: KeyboardEvent): void => {
     if (!this.opts) return
-    const actions = codeToActions.get(e.code)
+    const actions = actionsForCode(e.code)
     if (!actions?.length) return
 
     const count = this.codeDownCount.get(e.code) ?? 0
@@ -292,9 +274,9 @@ export class InputHub {
   }
 
   private isActionPhysicallyDown(action: InputActionValue): boolean {
-    for (const [code, actions] of codeToActions) {
-      if (!actions.includes(action)) continue
-      if ((this.codeDownCount.get(code) ?? 0) > 0) return true
+    for (const [code, count] of this.codeDownCount) {
+      if (count <= 0) continue
+      if (actionsForCode(code).includes(action)) return true
     }
     return false
   }

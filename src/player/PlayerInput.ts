@@ -5,6 +5,7 @@ import {
 } from '../client/ui/overlayHitTest'
 import { PointerLockReticle } from '../client/ui/PointerLockReticle'
 import { isTextInputFocused } from '../client/ui/textInputFocus'
+import { keybinds } from '../input/keybinds'
 import { clearPointerLockAim } from '../input/pointerLockAim'
 import type { SceneKeyboardSnapshot } from '../input/SceneInputRelay'
 import { isPointerOverSceneUi, isSceneUiInteractiveTarget } from '../ui/scene/sceneUiOverlay'
@@ -145,19 +146,10 @@ export class PlayerInput {
     if (this.isTypingTarget() || this.isOverlayOpen()) return
     if (this.isLocomotionBlocked() && this.isMoveKeyCode(e.code)) return
 
-    if (this.setMoveKey(e.code, true)) e.preventDefault()
-
-    if (e.code === 'Space') {
-      if (!this.keys.space) this.spacePressed = true
-      this.keys.space = true
-      e.preventDefault()
-    }
-    if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') this.keys.shift = true
-    if (e.code === 'ControlLeft' || e.code === 'ControlRight') {
-      this.keys.ctrl = true
-      e.preventDefault()
-    }
-    this.setActionKey(e.code, true)
+    let handled = false
+    if (this.setMoveKey(e.code, true)) handled = true
+    if (this.setBoundKey(e.code, true)) handled = true
+    if (handled) e.preventDefault()
 
     if (e.code === 'Tab') {
       e.preventDefault()
@@ -173,10 +165,7 @@ export class PlayerInput {
     // Always release — keyup is often lost when focus moves to chat/settings or another tab.
     // Ignoring keyup while typing left WASD stuck until a full page reload.
     this.setMoveKey(e.code, false)
-    if (e.code === 'Space') this.keys.space = false
-    if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') this.keys.shift = false
-    if (e.code === 'ControlLeft' || e.code === 'ControlRight') this.keys.ctrl = false
-    this.setActionKey(e.code, false)
+    this.setBoundKey(e.code, false)
   }
 
   private onWindowBlur = (): void => {
@@ -385,35 +374,24 @@ export class PlayerInput {
   }
 
   private isMoveKeyCode(code: string): boolean {
-    return (
-      code === 'KeyW' ||
-      code === 'KeyA' ||
-      code === 'KeyS' ||
-      code === 'KeyD' ||
-      code === 'ArrowUp' ||
-      code === 'ArrowDown' ||
-      code === 'ArrowLeft' ||
-      code === 'ArrowRight'
-    )
+    const id = keybinds.bindIdForCode(code)
+    return id === 'forward' || id === 'backward' || id === 'left' || id === 'right'
   }
 
-  /** WASD + arrow keys → movement vector. Returns true if code is a move key. */
+  /** Keybind-driven move axes → internal wasd flags (names kept for PlayerSystem). */
   private setMoveKey(code: string, down: boolean): boolean {
-    switch (code) {
-      case 'KeyW':
-      case 'ArrowUp':
+    const id = keybinds.bindIdForCode(code)
+    switch (id) {
+      case 'forward':
         this.keys.w = down
         return true
-      case 'KeyS':
-      case 'ArrowDown':
+      case 'backward':
         this.keys.s = down
         return true
-      case 'KeyA':
-      case 'ArrowLeft':
+      case 'left':
         this.keys.a = down
         return true
-      case 'KeyD':
-      case 'ArrowRight':
+      case 'right':
         this.keys.d = down
         return true
       default:
@@ -421,22 +399,30 @@ export class PlayerInput {
     }
   }
 
-  private setActionKey(code: string, down: boolean): boolean {
-    switch (code) {
-      case 'Digit1':
-      case 'Numpad1':
+  /** Jump / walk / sprint / action hotkeys from keybind store. */
+  private setBoundKey(code: string, down: boolean): boolean {
+    const id = keybinds.bindIdForCode(code)
+    switch (id) {
+      case 'jump':
+        if (down && !this.keys.space) this.spacePressed = true
+        this.keys.space = down
+        return true
+      case 'walk':
+        this.keys.ctrl = down
+        return true
+      case 'modifier':
+        this.keys.shift = down
+        return true
+      case 'action3':
         this.actionKeys.digit1 = down
         return true
-      case 'Digit2':
-      case 'Numpad2':
+      case 'action4':
         this.actionKeys.digit2 = down
         return true
-      case 'Digit3':
-      case 'Numpad3':
+      case 'action5':
         this.actionKeys.digit3 = down
         return true
-      case 'Digit4':
-      case 'Numpad4':
+      case 'action6':
         this.actionKeys.digit4 = down
         return true
       default:

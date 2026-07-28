@@ -7685,6 +7685,193 @@
         border-color: rgba(255, 107, 107, 0.45);
       }
 
+      /* ===== Keybinds (Controls tab) ===== */
+      .keybinds-note {
+        margin: 0 0 12px;
+        font-size: 12px;
+        line-height: 1.45;
+        color: rgba(255, 255, 255, 0.62);
+      }
+      .keybinds-note b {
+        color: rgba(255, 255, 255, 0.88);
+        font-weight: 600;
+      }
+      .keybinds-listen {
+        margin: 0 0 12px;
+        padding: 8px 12px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 107, 107, 0.45);
+        background: rgba(255, 107, 107, 0.12);
+        color: #fff;
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+      }
+      .keybinds-keyboard {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: flex-end;
+        margin-bottom: 18px;
+        padding: 12px;
+        border-radius: 12px;
+        background: rgba(0, 0, 0, 0.28);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        overflow-x: auto;
+      }
+      .keybinds-keyboard__main {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: min(100%, 420px);
+        flex: 1 1 280px;
+      }
+      .keybinds-keyboard__row {
+        display: flex;
+        gap: 4px;
+        justify-content: flex-start;
+      }
+      .keybinds-keyboard__row--arrows-up {
+        justify-content: center;
+        margin-bottom: 0;
+      }
+      .keybinds-keyboard__arrows {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        flex: 0 0 auto;
+        padding-bottom: 2px;
+      }
+      .keybinds-key {
+        appearance: none;
+        box-sizing: border-box;
+        min-width: 28px;
+        height: 30px;
+        padding: 0 4px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(255, 255, 255, 0.72);
+        font: inherit;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        cursor: default;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.12s, border-color 0.12s, color 0.12s, box-shadow 0.12s;
+        user-select: none;
+      }
+      .keybinds-key--wide {
+        min-width: 44px;
+        font-size: 9px;
+      }
+      .keybinds-key--space {
+        flex: 1 1 auto;
+        min-width: 120px;
+      }
+      .keybinds-key.is-bound {
+        cursor: pointer;
+        color: #fff;
+        border-color: rgba(255, 255, 255, 0.28);
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .keybinds-key.is-move {
+        border-color: rgba(100, 180, 255, 0.55);
+        background: rgba(80, 150, 255, 0.22);
+        box-shadow: 0 0 0 1px rgba(80, 150, 255, 0.15);
+      }
+      .keybinds-key.is-walk {
+        border-color: rgba(255, 180, 80, 0.65);
+        background: rgba(255, 160, 60, 0.28);
+        box-shadow: 0 0 0 1px rgba(255, 160, 60, 0.2);
+      }
+      .keybinds-key.is-action {
+        border-color: rgba(255, 107, 107, 0.55);
+        background: rgba(255, 107, 107, 0.22);
+        box-shadow: 0 0 0 1px rgba(255, 107, 107, 0.15);
+      }
+      .keybinds-key.is-bound:hover {
+        filter: brightness(1.12);
+      }
+      .keybinds-list {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .keybinds-list__group {
+        margin: 10px 0 4px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .keybinds-list__group:first-child {
+        margin-top: 0;
+      }
+      .keybinds-bind-row {
+        appearance: none;
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 8px 10px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.04);
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+        transition: background 0.12s, border-color 0.12s;
+      }
+      .keybinds-bind-row:hover {
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.16);
+      }
+      .keybinds-bind-row.is-listening {
+        border-color: rgba(255, 107, 107, 0.55);
+        background: rgba(255, 107, 107, 0.12);
+        box-shadow: 0 0 0 1px rgba(255, 107, 107, 0.2);
+      }
+      .keybinds-bind-row__left {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        min-width: 0;
+        flex: 1 1 auto;
+      }
+      .keybinds-bind-row__name {
+        font-size: 13px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.92);
+      }
+      .keybinds-bind-row__desc {
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.48);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .keybinds-bind-row__badge {
+        flex-shrink: 0;
+        min-width: 56px;
+        max-width: 120px;
+        padding: 4px 8px;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.35);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        color: #fff;
+        font-size: 11px;
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        text-align: center;
+        letter-spacing: 0.02em;
+      }
+
       /* ===== Map View (settings overlay — neurolink dcl-map parity) ===== */
       .map-view.dcl-map-page {
         --dcl-map-sidebar-w: min(320px, 38vw);

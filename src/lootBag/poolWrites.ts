@@ -496,10 +496,24 @@ export async function runPull(args: {
   sessionAddress?: string | null
   acquisitionFee: bigint
   api: FlowApi
-}): Promise<{ hash: Hex; win: PendingWin | null }> {
+  /** Optional session hint so we can restore an unsettled win without re-pulling. */
+  hintPositionId?: number | null
+}): Promise<{ hash: Hex | null; win: PendingWin | null; alreadyPending?: boolean }> {
   const from = await ensureWalletAddress(args.sessionAddress)
   const pool = ADDRESSES.lootBagPool
   const maxFee = args.acquisitionFee + parseEther('1')
+
+  // FWA-style guard: never charge another pack fee while a settle is still open.
+  args.api.note('Checking for unsettled prize…')
+  const existing = await findPendingWinForPurchaser(from, undefined, args.hintPositionId)
+  if (existing) {
+    args.api.note(`Unsettled prize found · pos #${existing.positionId}`)
+    return {
+      hash: null,
+      alreadyPending: true,
+      win: { positionId: existing.positionId, position: existing.position }
+    }
+  }
 
   args.api.note('Checking mMANA for pack cost…')
   const allowance = await getManaAllowance(from, pool)
@@ -532,7 +546,7 @@ export async function runPull(args: {
 
   // Open step is complete — UI should drop the sign modal before prize scan / pack reveal
   args.api.note('Finding your prize…')
-  const win = await findPendingWinForPurchaser(from)
+  const win = await findPendingWinForPurchaser(from, undefined, args.hintPositionId)
   return {
     hash,
     win: win ? { positionId: win.positionId, position: win.position } : null

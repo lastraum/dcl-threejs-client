@@ -13,6 +13,7 @@ import {
   fetchWalletSnapshot,
   fetchCreatorCollections,
   fetchCollectionItems,
+  findPendingWinForPurchaser,
   formatMana,
   takeTokensNetWei,
   runDepositManaPack,
@@ -49,6 +50,41 @@ const DEFAULT_BACKING = '10'
 const DEFAULT_PACK_PRIZE = '5'
 const DEFAULT_STOCK_COUNT = '5'
 const MANA_PACK_INV_ID = 'mana-pack'
+
+/** sessionStorage key — survive refresh between pull and Keep/Take (FWA-style). */
+function pendingWinStorageKey(addr: string): string {
+  return `lootbag.pendingWin.${addr.toLowerCase()}`
+}
+
+function readStoredPendingPositionId(addr: string | undefined): number | null {
+  if (!addr || typeof sessionStorage === 'undefined') return null
+  try {
+    const raw = sessionStorage.getItem(pendingWinStorageKey(addr))
+    if (!raw) return null
+    const n = Number(raw)
+    return Number.isFinite(n) && n >= 1 ? n : null
+  } catch {
+    return null
+  }
+}
+
+function writeStoredPendingPositionId(addr: string | undefined, positionId: number): void {
+  if (!addr || typeof sessionStorage === 'undefined') return
+  try {
+    sessionStorage.setItem(pendingWinStorageKey(addr), String(positionId))
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+function clearStoredPendingPositionId(addr: string | undefined): void {
+  if (!addr || typeof sessionStorage === 'undefined') return
+  try {
+    sessionStorage.removeItem(pendingWinStorageKey(addr))
+  } catch {
+    /* ignore */
+  }
+}
 
 type DepositSource = 'wallet' | 'creator'
 
@@ -195,6 +231,8 @@ export class LootBagView {
   private status = ''
   private error: string | null = null
   private pendingWin: PendingWin | null = null
+  /** Avoid re-scanning the whole pool for pending wins every refresh. */
+  private pendingRestoreScannedFor: string | null = null
   private highlightPosId: number | null = null
   private packPhase: 'idle' | 'tearing' | 'revealed' = 'idle'
   private packImg: HTMLImageElement | null = null
@@ -366,7 +404,15 @@ export class LootBagView {
   }
 
   setLogin(login: LoginResult): void {
+    const prev = this.addr()?.toLowerCase() ?? null
     this.login = login
+    const next = this.addr()?.toLowerCase() ?? null
+    if (prev !== next) {
+      // Wallet switched — drop in-memory pending; sessionStorage is per-address.
+      this.pendingWin = null
+      this.pendingRestoreScannedFor = null
+      this.resetPackStage()
+    }
     void this.refresh()
   }
 
@@ -374,7 +420,8 @@ export class LootBagView {
     window.removeEventListener('resize', this.onPackResize)
     if (this.packAnimRaf) cancelAnimationFrame(this.packAnimRaf)
     this.closeFeesModal()
-    this.closeWinModal({ clearPending: true })
+    // Keep sessionStorage pending so remount/refresh can restore Keep/Take
+    this.closeWinModal({ clearPending: false })
     this.winModal.remove()
     this.root.remove()
   }
@@ -691,7 +738,8 @@ export class LootBagView {
 
   async refresh(): Promise<void> {
     this.error = null
-    if (this.mode === 'play') {
+    const hadPending = this.pendingWin != null
+    if (this.mode === 'play' && !hadPending) {
       this.status = ''
       this.renderStatus()
       this.renderShelfLoading()
@@ -709,16 +757,28 @@ export class LootBagView {
         this.wallet = null
       }
       this.syncInventoryFromWallet()
+      // Drop won item from shelf if we still have a local pending settle
+      if (this.pendingWin) {
+        this.removeWonPositionLocally(this.pendingWin.positionId, this.pendingWin.position)
+      }
       this.renderHud()
       if (this.mode === 'play') {
-        this.renderShelf(this.pool.positions, { scrollToEnd: true })
+        this.renderShelf(this.pool.positions, { scrollToEnd: !this.pendingWin })
         this.status =
           this.pool.positions.length > 0 || this.pool.activeCount > 0n
             ? this.pendingWin
-              ? this.status
+              ? this.status ||
+                `Pos #${this.pendingWin.positionId} — Keep NFT or Take tokens`
               : ''
-            : 'Empty Loot Bag — deposit a wearable or MANA pack to fill the Loot Bag'
+            : this.pendingWin
+              ? this.status ||
+                `Pos #${this.pendingWin.positionId} — Keep NFT or Take tokens`
+              : 'Empty Loot Bag — deposit a wearable or MANA pack to fill the Loot Bag'
         this.renderStatus()
+        // Restore unsettled prize after refresh / remount (FWA-style)
+        if (!this.busy && !this.claiming) {
+          await this.restorePendingWinIfAny()
+        }
       } else {
         this.renderDepositView()
       }
@@ -728,6 +788,133 @@ export class LootBagView {
       if (this.mode === 'play') {
         this.shelfEl.innerHTML = `<div class="lootbag__error">${escapeHtml(this.error)}</div>`
       }
+    }
+  }
+
+  /** Wallet balance only — used after claim so bag shelf does not full-reload. */
+  private async refreshWalletOnly(): Promise<void> {
+    const a = this.addr()
+    if (!a || !/^0x[a-fA-F0-9]{40}$/.test(a)) {
+      this.wallet = null
+      this.renderHud()
+      return
+    }
+    try {
+      this.wallet = await fetchWalletSnapshot(a as `0x${string}`)
+    } catch {
+      /* keep previous wallet snapshot */
+    }
+    this.renderHud()
+  }
+
+  /**
+   * Optimistically drop a pulled position from the local shelf.
+   * Chain already removed it from the active pool; we avoid re-fetching all positions.
+   */
+  private removeWonPositionLocally(
+    positionId: number,
+    winPos: LootBagPosition | null
+  ): void {
+    if (!this.pool) return
+    const before =
+      this.pool.positions.find((p) => p.positionId === positionId) ?? winPos
+    if (!this.pool.positions.some((p) => p.positionId === positionId) && !before) {
+      return
+    }
+    const wasOnShelf = this.pool.positions.some((p) => p.positionId === positionId)
+    this.pool = {
+      ...this.pool,
+      positions: this.pool.positions.filter((p) => p.positionId !== positionId),
+      activeCount:
+        wasOnShelf && this.pool.activeCount > 0n
+          ? this.pool.activeCount - 1n
+          : this.pool.activeCount,
+      activeNftCount:
+        wasOnShelf &&
+        before &&
+        (before.kind === 'nft' || before.kind === 'bundle') &&
+        this.pool.activeNftCount > 0n
+          ? this.pool.activeNftCount - 1n
+          : this.pool.activeNftCount,
+      activePackCount:
+        wasOnShelf && before && before.kind === 'manaPack' && this.pool.activePackCount > 0n
+          ? this.pool.activePackCount - 1n
+          : this.pool.activePackCount
+    }
+  }
+
+  private setPendingWin(win: PendingWin | null): void {
+    this.pendingWin = win
+    const a = this.addr()
+    if (win) writeStoredPendingPositionId(a, win.positionId)
+    else clearStoredPendingPositionId(a)
+  }
+
+  /** Reopen Keep/Take if chain (or session hint) still has an unsettled prize. */
+  private async restorePendingWinIfAny(opts?: { forceScan?: boolean }): Promise<boolean> {
+    if (this.mode !== 'play') return false
+    if (this.pendingWin) {
+      this.applyPendingWinUi(this.pendingWin, { animate: false })
+      return true
+    }
+    const a = this.addr()
+    if (!a || !/^0x[a-fA-F0-9]{40}$/.test(a)) return false
+    const me = a.toLowerCase()
+    const hint = readStoredPendingPositionId(a)
+    // Skip expensive full scan on every bag refresh once we've already checked this wallet.
+    if (
+      !opts?.forceScan &&
+      !hint &&
+      this.pendingRestoreScannedFor === me
+    ) {
+      return false
+    }
+    try {
+      const found = await findPendingWinForPurchaser(a as `0x${string}`, undefined, hint)
+      this.pendingRestoreScannedFor = me
+      if (!found) {
+        clearStoredPendingPositionId(a)
+        return false
+      }
+      const fromShelf =
+        this.pool?.positions.find((p) => p.positionId === found.positionId) ?? null
+      const merged = mergeWinPosition(found.position, fromShelf, null)
+      const win: PendingWin = { positionId: found.positionId, position: merged }
+      this.setPendingWin(win)
+      this.removeWonPositionLocally(win.positionId, win.position)
+      this.renderShelf(this.pool?.positions ?? [])
+      this.renderHud()
+      this.applyPendingWinUi(win, { animate: false })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /** Show prize + settle buttons after pull or refresh restore. */
+  private applyPendingWinUi(win: PendingWin, opts: { animate: boolean }): void {
+    this.highlightPosId = null
+    this.marqueeEl.textContent = 'Loot Pack ready to settle'
+    this.status = `Pos #${win.positionId} — Keep NFT or Take tokens`
+    this.renderStatus()
+    this.renderPackPrize(win)
+    if (opts.animate) {
+      void this.playPackTearAnimation().then(() => {
+        this.marqueeEl.textContent = 'Loot Pack ready to settle'
+        this.status = `Pos #${win.positionId} — Keep NFT or Take tokens`
+        this.renderStatus()
+        this.showSettleActions()
+      })
+    } else {
+      if (this.packAnimRaf) {
+        cancelAnimationFrame(this.packAnimRaf)
+        this.packAnimRaf = 0
+      }
+      this.packPhase = 'revealed'
+      this.packStageEl.classList.remove('is-tearing')
+      this.packStageEl.classList.add('is-revealed')
+      this.packPrizeEl.hidden = false
+      this.showSettleActions()
     }
   }
 
@@ -1869,22 +2056,25 @@ export class LootBagView {
           : errored != null
             ? errored.detail?.trim() || 'Something went wrong'
             : 'Working…'
-      const fee = this.pool ? formatMana(this.pool.acquisitionFee) : '—'
-      const bal = this.wallet ? formatMana(this.wallet.mana) : '—'
-      const manaMeta = `Pack cost ${fee} mMANA | Balance ${bal}`
-      const showManaMeta =
+      // Pack cost / balance only for the open-claim flow — irrelevant on settle (Keep/Take).
+      const isSettleFlow =
         this.mode !== 'deposit' &&
+        (this.pendingWin != null ||
+          this.steps.some((s) => /keep your prize|take the mana|settle/i.test(s.label)))
+      const isClaimFlow =
+        this.mode !== 'deposit' &&
+        !isSettleFlow &&
         (this.claiming ||
-          this.pendingWin != null ||
-          this.steps.some((s) =>
-            /open loot pack|claim|pack cost|mMANA for pack|keep your prize|take the mana|settle/i.test(
-              s.label
-            )
-          ))
+          this.steps.some((s) => /open loot pack|claim|pack cost|mMANA for pack/i.test(s.label)))
+      const manaMeta = isClaimFlow
+        ? `Pack cost ${this.pool ? formatMana(this.pool.acquisitionFee) : '—'} mMANA | Balance ${
+            this.wallet ? formatMana(this.wallet.mana) : '—'
+          }`
+        : undefined
       syncLootBagSignOverlay({
         title,
         status: statusLine,
-        meta: showManaMeta ? manaMeta : undefined,
+        meta: manaMeta,
         steps: this.steps
       })
     } else {
@@ -1906,14 +2096,12 @@ export class LootBagView {
     this.stepsEl.innerHTML = this.mode === 'play' ? this.buildStepsHtml() : ''
   }
 
-  private closeWinModal(opts: { clearPending: boolean }): void {
+  private closeWinModal(_opts: { clearPending: boolean }): void {
     this.winModal.hidden = true
     document.documentElement.classList.remove('lootbag-win-open')
     const card = this.winModal.querySelector('[data-win-card]')
     if (card) card.innerHTML = ''
-    if (opts.clearPending) {
-      this.pendingWin = null
-    }
+    // Pending settle lives in pendingWin + sessionStorage until Keep/Take (or setPendingWin(null)).
   }
 
   private async onWinModalClick(ev: MouseEvent): Promise<void> {
@@ -1924,6 +2112,7 @@ export class LootBagView {
       if (this.pendingWin) {
         this.status = `Claim pending settle · pos #${this.pendingWin.positionId} — claim again to reopen`
         this.renderStatus()
+        this.showSettleActions()
       }
       return
     }
@@ -2039,8 +2228,9 @@ export class LootBagView {
 
   private async onClaim(): Promise<void> {
     if (this.busy || this.claiming || this.mode !== 'play') return
-    if (this.packPhase === 'revealed' && this.pendingWin) {
-      this.showSettleActions()
+    // Already mid-settle in this session — just re-show Keep/Take.
+    if (this.pendingWin) {
+      this.applyPendingWinUi(this.pendingWin, { animate: false })
       return
     }
     if (this.packPhase !== 'idle') return
@@ -2050,6 +2240,22 @@ export class LootBagView {
       this.renderStatus()
       return
     }
+
+    // Fast path: session hint / chain may still hold an unsettled prize (refresh / leave).
+    this.setBusy(true)
+    this.claiming = true
+    this.error = null
+    try {
+      const restored = await this.restorePendingWinIfAny({ forceScan: true })
+      if (restored) {
+        this.dismissSignOverlay()
+        return
+      }
+    } finally {
+      this.claiming = false
+      this.setBusy(false)
+    }
+
     if (!this.pool || this.pool.activeCount === 0n || (this.pool.positions?.length ?? 0) === 0) {
       this.error = 'Empty Loot Bag — deposit first'
       this.renderStatus()
@@ -2060,7 +2266,7 @@ export class LootBagView {
     this.claiming = true
     this.error = null
     this.closeWinModal({ clearPending: true })
-    this.pendingWin = null
+    this.setPendingWin(null)
     this.highlightPosId = null
     this.steps = []
     this.stepSeq = 0
@@ -2077,57 +2283,53 @@ export class LootBagView {
     try {
       // Shelf still has marketplace rarity/name for the item about to leave the active pool
       const shelfBefore = this.pool?.positions ?? []
-      const { win } = await runPull({
+      const hint = readStoredPendingPositionId(this.addr())
+      const { win, alreadyPending } = await runPull({
         sessionAddress: this.addr(),
         acquisitionFee: this.pool.acquisitionFee,
-        api: this.flowApi()
+        api: this.flowApi(),
+        hintPositionId: hint
       })
 
       // ALWAYS kill the sign modal the instant open-tx flow returns
       this.dismissSignOverlay()
       this.claiming = false
 
-      this.highlightPosId = win?.positionId ?? null
-      const keepHi = this.highlightPosId
-      await this.refresh()
-      this.highlightPosId = keepHi
-      this.renderShelf(this.pool?.positions ?? [])
-
       if (!win) {
         this.marqueeEl.textContent = 'Loot Bag'
         this.status = 'Claim confirmed'
         this.renderStatus()
         this.resetPackStage()
+        // No prize metadata — fall back to full bag sync
+        await this.refresh()
         return
       }
 
       // Prefer pre-claim shelf metadata (rarity/name/thumb). After pull the position is
-      // usually inactive and gone from the refreshed active shelf.
+      // inactive and should leave the shelf locally — no full bag reload.
       const fromShelfBefore = shelfBefore.find((p) => p.positionId === win.positionId) ?? null
-      const fromShelfAfter =
-        this.pool?.positions.find((p) => p.positionId === win.positionId) ?? null
-      const merged = mergeWinPosition(win.position, fromShelfBefore, fromShelfAfter)
+      const merged = mergeWinPosition(win.position, fromShelfBefore, null)
       const finalWin: PendingWin = { positionId: win.positionId, position: merged }
-      this.pendingWin = finalWin
-      this.highlightPosId = win.positionId
+      this.setPendingWin(finalWin)
+      this.removeWonPositionLocally(win.positionId, finalWin.position)
+      this.highlightPosId = null
+      this.renderShelf(this.pool?.positions ?? [])
+      // Fee was paid — refresh wallet balance only (not the whole bag)
+      if (!alreadyPending) void this.refreshWalletOnly()
 
-      this.marqueeEl.textContent = 'Opening Loot Pack…'
-      this.status = `Selected pos #${win.positionId}`
+      this.marqueeEl.textContent = alreadyPending ? 'Loot Pack ready to settle' : 'Opening Loot Pack…'
+      this.status = alreadyPending
+        ? `Pos #${win.positionId} — Keep NFT or Take tokens`
+        : `Selected pos #${win.positionId}`
       this.renderStatus()
-      this.renderPackPrize(finalWin)
-      await this.playPackTearAnimation()
-
-      this.marqueeEl.textContent = 'Loot Pack ready to settle'
-      this.status = `Pos #${win.positionId} — Keep NFT or Take tokens`
-      this.renderStatus()
-      this.showSettleActions()
+      this.applyPendingWinUi(finalWin, { animate: !alreadyPending })
       // Peer toast waits until Keep prize / Take MANA (runSettle).
     } catch (e) {
       this.marqueeEl.textContent = 'Loot Bag'
       this.error = e instanceof Error ? e.message : String(e)
       this.renderStatus()
       this.resetPackStage()
-      this.pendingWin = null
+      this.setPendingWin(null)
       // Keep overlay only if a step is in error state; otherwise nuke it
       const hasError = this.steps.some((s) => s.status === 'error')
       if (!hasError) this.dismissSignOverlay()
@@ -2199,12 +2401,14 @@ export class LootBagView {
       })
       this.dismissSignOverlay()
       this.closeWinModal({ clearPending: true })
-      this.pendingWin = null
+      this.setPendingWin(null)
+      this.pendingRestoreScannedFor = null
       this.highlightPosId = null
       this.marqueeEl.textContent = 'Loot Bag'
       this.status = keep ? 'Settled — prize is yours' : 'Settled — took the MANA bid'
       this.renderStatus()
       this.resetPackStage()
+      // Full bag + wallet sync only after Keep/Take finishes
       await this.refresh()
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e)

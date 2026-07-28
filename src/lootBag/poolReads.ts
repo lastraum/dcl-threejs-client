@@ -407,12 +407,93 @@ export async function fetchMockWearableIds(address: Address): Promise<number[]> 
   return ownedTokenIds
 }
 
+/** Read `pendingByPosition[id]` without scanning the whole id space. */
+export async function readPendingByPosition(
+  positionId: number
+): Promise<{ purchaser: Address; exists: boolean } | null> {
+  if (!Number.isFinite(positionId) || positionId < 1) return null
+  try {
+    const raw = await polygonPublicClient.readContract({
+      address: ADDRESSES.lootBagPool,
+      abi: lootBagPoolAbi,
+      functionName: 'pendingByPosition',
+      args: [BigInt(positionId)]
+    })
+    if (Array.isArray(raw)) {
+      return { purchaser: raw[0] as Address, exists: Boolean(raw[2]) }
+    }
+    const o = raw as { purchaser: Address; exists: boolean }
+    return { purchaser: o.purchaser, exists: Boolean(o.exists) }
+  } catch {
+    return null
+  }
+}
+
+async function loadPositionForPending(positionId: number): Promise<LootBagPosition | null> {
+  try {
+    const pos = (await polygonPublicClient.readContract({
+      address: ADDRESSES.lootBagPool,
+      abi: lootBagPoolAbi,
+      functionName: 'getPosition',
+      args: [BigInt(positionId)]
+    })) as RawPosition
+    const position = toPosition(positionId, normalizeRawPosition(pos))
+    // Win is often inactive → not on the active shelf; enrich name/rarity here
+    await enrichLootBagPositions([position])
+    return position
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Find an unsettled win for `purchaser`.
+ * Prefer on-chain `pendingPositionOf` (O(1) after upgrade) → session hint → scan fallback.
+ */
 export async function findPendingWinForPurchaser(
   purchaser: Address,
-  maxId?: number
+  maxId?: number,
+  hintPositionId?: number | null
 ): Promise<{ positionId: number; position: LootBagPosition | null } | null> {
   const client = polygonPublicClient
   const pool = ADDRESSES.lootBagPool
+  const me = purchaser.toLowerCase()
+
+  // 1) Hard one-at-a-time index (public mapping auto-getter) — preferred after pool upgrade
+  try {
+    const openId = Number(
+      (await client.readContract({
+        address: pool,
+        abi: lootBagPoolAbi,
+        functionName: 'pendingPositionOf',
+        args: [purchaser]
+      })) as bigint
+    )
+    if (Number.isFinite(openId) && openId >= 1) {
+      const pending = await readPendingByPosition(openId)
+      if (pending?.exists && pending.purchaser.toLowerCase() === me) {
+        return {
+          positionId: openId,
+          position: await loadPositionForPending(openId)
+        }
+      }
+    }
+  } catch {
+    /* pre-upgrade impl may lack pendingPositionOf — fall through */
+  }
+
+  // 2) Session / caller hint
+  if (hintPositionId != null && hintPositionId >= 1) {
+    const hinted = await readPendingByPosition(hintPositionId)
+    if (hinted?.exists && hinted.purchaser.toLowerCase() === me) {
+      return {
+        positionId: hintPositionId,
+        position: await loadPositionForPending(hintPositionId)
+      }
+    }
+  }
+
+  // 3) Legacy scan (pre-upgrade or stale index) — newest → oldest
   let nextId = maxId
   if (nextId == null) {
     nextId = Number(
@@ -423,48 +504,16 @@ export async function findPendingWinForPurchaser(
       })) as bigint
     )
   }
-  const maxScan = Math.min(nextId, MAX_POSITION_SCAN)
-  const me = purchaser.toLowerCase()
+  const lastId = Math.max(0, nextId - 1)
+  if (lastId < 1) return null
+  const scanStart = lastId > MAX_POSITION_SCAN ? lastId - MAX_POSITION_SCAN + 1 : 1
 
-  for (let id = 1; id < maxScan; id++) {
+  for (let id = lastId; id >= scanStart; id--) {
     try {
-      const raw = await client.readContract({
-        address: pool,
-        abi: lootBagPoolAbi,
-        functionName: 'pendingByPosition',
-        args: [BigInt(id)]
-      })
-
-      // viem may return a tuple array or a named object depending on ABI shape
-      let purchaser: Address
-      let exists: boolean
-      if (Array.isArray(raw)) {
-        purchaser = raw[0] as Address
-        exists = Boolean(raw[2])
-      } else {
-        const o = raw as { purchaser: Address; exists: boolean }
-        purchaser = o.purchaser
-        exists = o.exists
-      }
-
-      if (!exists) continue
-      if (purchaser.toLowerCase() !== me) continue
-
-      let position: LootBagPosition | null = null
-      try {
-        const pos = (await client.readContract({
-          address: pool,
-          abi: lootBagPoolAbi,
-          functionName: 'getPosition',
-          args: [BigInt(id)]
-        })) as RawPosition
-        position = toPosition(id, pos)
-        // Win is often inactive → not on the active shelf; enrich name/rarity here
-        await enrichLootBagPositions([position])
-      } catch {
-        position = null
-      }
-      return { positionId: id, position }
+      const pending = await readPendingByPosition(id)
+      if (!pending?.exists) continue
+      if (pending.purchaser.toLowerCase() !== me) continue
+      return { positionId: id, position: await loadPositionForPending(id) }
     } catch {
       /* skip */
     }

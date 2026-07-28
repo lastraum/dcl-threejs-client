@@ -1085,6 +1085,7 @@ export class LootBagPanel {
           : errored != null
             ? errored.detail?.trim() || 'Something went wrong'
             : 'Working…'
+      // Pack cost / balance only for open-claim — irrelevant on settle (Keep/Take).
       const isClaimFlow =
         this.mode !== 'deposit' &&
         this.steps.some((s) => /open loot pack|claim|pack cost|mMANA for pack/i.test(s.label))
@@ -1094,7 +1095,7 @@ export class LootBagPanel {
       syncLootBagSignOverlay({
         title,
         status: statusLine,
-        meta: isClaimFlow || isSettleFlow ? this.manaCostBalance().summary : undefined,
+        meta: isClaimFlow && !isSettleFlow ? this.manaCostBalance().summary : undefined,
         steps: this.steps
       })
     } else {

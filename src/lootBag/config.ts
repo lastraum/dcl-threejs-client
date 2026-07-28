@@ -5,7 +5,7 @@ export const CHAIN_ID = 137 as const
 export const ADDRESSES = {
   /** UUPS proxy — use this for all pool calls / meta-tx verifyingContract */
   lootBagPool: '0xF8fF7d4faD77d73f6D75139B0b20F9b9aB23D4Ac' as const,
-  lootBagPoolImplementation: '0xA4a37e186cf6b45dFcC5acc41cd74D9EFfEaf91B' as const,
+  lootBagPoolImplementation: '0xb4A4f61F6d1fDd6A06756de503BbA0D6c5F4E49c' as const,
   /** Legacy non-upgradeable mock pool (paused wind-down) */
   lootBagPoolLegacyMock: '0xefb08A1917fD0163A7aF261E8D9D33695Ed80424' as const,
   mockMana: '0x36CA9B0BAf0aC2a0ee2ffcdf2e99aA7e556670BF' as const,

@@ -13203,6 +13203,91 @@
         border-color: rgba(56, 189, 248, 0.55);
         color: #e0f2fe;
       }
+      /* Tour leader rejoin — docks next to Tour Options flag icon */
+      .tour-rejoin-panel {
+        position: fixed;
+        z-index: calc(var(--z-client-sidebar, 120) + 20);
+        width: min(280px, calc(100vw - 72px));
+        pointer-events: auto;
+      }
+      .tour-rejoin-panel__card {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 12px 14px 14px;
+        border-radius: 14px;
+        background: linear-gradient(
+          165deg,
+          rgba(55, 28, 90, 0.94) 0%,
+          rgba(28, 16, 48, 0.97) 55%,
+          rgba(18, 12, 32, 0.98) 100%
+        );
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        box-shadow:
+          0 12px 40px rgba(0, 0, 0, 0.5),
+          inset 0 1px 0 rgba(255, 255, 255, 0.08);
+        color: #fff;
+      }
+      .tour-rejoin-panel__kicker {
+        font-size: 10px;
+        font-weight: 750;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(221, 214, 254, 0.72);
+      }
+      .tour-rejoin-panel__title {
+        font-size: 14px;
+        font-weight: 750;
+        letter-spacing: 0.01em;
+      }
+      .tour-rejoin-panel__hint {
+        margin: 0;
+        font-size: 12px;
+        line-height: 1.4;
+        color: rgba(221, 214, 254, 0.72);
+      }
+      .tour-rejoin-panel__hint strong {
+        color: #fde68a;
+        font-weight: 700;
+      }
+      .tour-rejoin-panel__actions {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-top: 4px;
+      }
+      .tour-rejoin-panel__btn {
+        appearance: none;
+        border-radius: 10px;
+        padding: 9px 12px;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+      }
+      .tour-rejoin-panel__btn:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .tour-rejoin-panel__btn--primary {
+        background: linear-gradient(135deg, rgba(139, 92, 246, 0.9), rgba(91, 33, 182, 0.95));
+        border-color: rgba(167, 139, 250, 0.45);
+      }
+      .tour-rejoin-panel__btn--primary:hover:not(:disabled) {
+        filter: brightness(1.08);
+      }
+      .tour-rejoin-panel__btn--ghost {
+        background: transparent;
+        color: rgba(221, 214, 254, 0.85);
+      }
+      .tour-rejoin-panel__btn--ghost:hover:not(:disabled) {
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+      }
+
       .tour-focus-banner {
         position: fixed;
         left: 50%;

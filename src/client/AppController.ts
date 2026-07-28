@@ -48,6 +48,7 @@ import { clientSettings } from '../rendering/ClientSettings'
 import { TourOptionsPopup } from './ui/tour/TourOptionsPopup'
 import { TourEndModal } from './ui/tour/TourEndModal'
 import { TourFlagImageModal } from './ui/tour/TourFlagImageModal'
+import { TourRejoinPanel } from './ui/tour/TourRejoinPanel'
 import {
   deleteTourSessionPhotos,
   getTourLocationPhoto,
@@ -201,6 +202,8 @@ export class AppController {
   private tourOptionsPopup: TourOptionsPopup | null = null
   private tourEndModal: TourEndModal | null = null
   private tourFlagImageModal: TourFlagImageModal | null = null
+  /** Leader reconnect after disconnect — Rejoin / Cancel next to Tour Options icon. */
+  private tourRejoinPanel: TourRejoinPanel | null = null
   /** Locations tab: next Camera Reel shot binds to this location id. */
   private tourPhotoBindLocationId: string | null = null
   /** Re-open this community thread on ChatPanel after a follow jump World rebuild. */
@@ -761,13 +764,50 @@ export class AppController {
       if (ev.kind === 'tour_ended') {
         this.tourFocusOptOut = false
         this.tourFocus?.exit()
+        this.closeTourRejoinPanel()
         this.syncTourUiFromController()
+        return
+      }
+      if (ev.kind === 'leader_away') {
+        this.ensureSocialMobileNotifications()
+        const name =
+          this.world?.social.getCommunities().find((c) => c.id.toLowerCase() === ev.communityId)
+            ?.name ?? 'Community'
+        const mins = Math.max(1, Math.round(ev.forceEndInMs / 60_000))
+        this.socialMobileNotifications?.pushSystemToast({
+          id: `tour-away:${ev.sessionId}`,
+          appName: 'COMMUNITY · TOUR',
+          title: name,
+          sub: `Leader disconnected — tour ends in ~${mins} min if they don't return`,
+          dismissMs: 12_000
+        })
+        return
+      }
+      if (ev.kind === 'leader_back') {
+        this.ensureSocialMobileNotifications()
+        const name =
+          this.world?.social.getCommunities().find((c) => c.id.toLowerCase() === ev.communityId)
+            ?.name ?? 'Community'
+        this.socialMobileNotifications?.pushSystemToast({
+          id: `tour-back:${ev.sessionId}`,
+          appName: 'COMMUNITY · TOUR',
+          title: name,
+          sub: 'Tour leader is back',
+          dismissMs: 6_000
+        })
+        return
+      }
+      if (ev.kind === 'leader_resume_available') {
+        this.openTourRejoinPanel(ev.snapshot.communityId, ev.snapshot.lastTarget)
         return
       }
       if (ev.kind === 'tour_started') {
         // Leader sees own flag immediately; followers apply when they Follow (or via flag_changed).
         if (ev.isLocalLeader && ev.session.flagDataUrl) {
           this.applyFollowFlag(ev.session.leaderAddress, ev.session.flagDataUrl)
+        }
+        if (ev.isLocalLeader) {
+          this.closeTourRejoinPanel()
         }
         this.syncTourOptionsSidebarVisibility()
         if (!ev.isLocalLeader) {
@@ -815,6 +855,58 @@ export class AppController {
       }
     })
     this.syncTourUiFromController()
+    // Offer resume if this wallet was leading before a refresh/disconnect.
+    queueMicrotask(() => this.communityFollow?.checkLeaderResumeOffer())
+  }
+
+  private openTourRejoinPanel(
+    communityId: string,
+    lastTarget: import('../social/communityFollowWire').FollowTarget | null
+  ): void {
+    this.closeTourRejoinPanel()
+    const follow = this.communityFollow
+    if (!follow) return
+    // Show Tour Options icon as an anchor even before they rejoin.
+    this.shell?.setTourOptionsVisible(true)
+    const name =
+      this.world?.social.getCommunities().find((c) => c.id.toLowerCase() === communityId.toLowerCase())
+        ?.name ?? 'Community'
+    this.tourRejoinPanel = new TourRejoinPanel({
+      getState: () => ({
+        communityName: name,
+        lastTarget: follow.getPendingLeaderResume()?.lastTarget ?? lastTarget
+      }),
+      anchor: () => this.shell?.getTourOptionsButtonElement?.() ?? undefined,
+      onRejoin: async () => {
+        const result = await follow.resumeLeadFromSnapshot()
+        this.closeTourRejoinPanel()
+        if (!result.ok) {
+          clientDebugLog.log('social', 'Tour rejoin failed', { level: 'warn', alsoConsole: true })
+          this.syncTourOptionsSidebarVisibility()
+          return
+        }
+        this.syncTourUiFromController()
+        if (result.target) {
+          const route = followTargetToRoute(result.target)
+          if (!this.isAlreadyAtFollowTarget(result.target)) {
+            void this.jumpInToScene(route, { fastAssets: true, source: 'goto' })
+          }
+        }
+      },
+      onCancel: async () => {
+        await follow.cancelLeaderResume()
+        this.closeTourRejoinPanel()
+        this.syncTourUiFromController()
+      },
+      onClose: () => {
+        this.tourRejoinPanel = null
+      }
+    })
+  }
+
+  private closeTourRejoinPanel(): void {
+    this.tourRejoinPanel?.dispose()
+    this.tourRejoinPanel = null
   }
 
   private ensureTourFocusController(world: World): void {
@@ -962,7 +1054,10 @@ export class AppController {
   }
 
   private syncTourOptionsSidebarVisibility(): void {
-    this.shell?.setTourOptionsVisible(Boolean(this.communityFollow?.isLeading()))
+    // Keep the flag icon visible while the rejoin panel is open (anchor).
+    const show =
+      Boolean(this.communityFollow?.isLeading()) || Boolean(this.tourRejoinPanel)
+    this.shell?.setTourOptionsVisible(show)
   }
 
   private syncTourUiFromController(): void {
@@ -3436,6 +3531,7 @@ export class AppController {
     this.tourFocus = null
     this.tourFocusHost = null
     this.tourFocusOptOut = false
+    this.closeTourRejoinPanel()
     this.communityFollow?.dispose()
     this.communityFollow = null
     this.followFlagManager?.dispose()

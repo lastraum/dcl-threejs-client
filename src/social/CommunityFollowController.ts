@@ -7,6 +7,8 @@
  * - Soft parcel walk only updates lastTarget for UI labels (no wire goto, no reload)
  * - Auto-pilot (buffer-follow leader feet) is a separate future mode — not this path
  * - Heartbeats re-announce tour + last stop for late joiners / label sync (no jump)
+ * - Leader disconnect: followers mark leader_away after missed heartbeats; force-end
+ *   after 5 minutes without a leader. Leaders can resume via sessionStorage snapshot.
  */
 
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
@@ -28,9 +30,20 @@ import {
   type FollowWireMsg,
   type TourLocationWire
 } from './communityFollowWire'
+import {
+  clearTourLeaderResume,
+  loadTourLeaderResume,
+  saveTourLeaderResume,
+  type TourLeaderResumeSnapshot
+} from './tourLeaderResumeStore'
 import type { CommunityListRow } from './types'
 
 const HEARTBEAT_MS = 45_000
+/** Soft “leader away” after ~2 missed heartbeats. */
+const LEADER_AWAY_AFTER_MS = 90_000
+/** Hard end tour if leader has not heartbeated for this long. */
+const LEADER_FORCE_END_MS = 5 * 60 * 1000
+const LEASE_TICK_MS = 10_000
 const GOTO_MIN_INTERVAL_MS = 3_000
 /** Leader freecam stream while Tour Focus is on. */
 const CAM_PUBLISH_INTERVAL_MS = 100
@@ -53,6 +66,10 @@ export type CommunityTourSession = {
   locations: TourLocationWire[]
   /** When the current stop started (dwell timer). */
   locationEnteredAt: number | null
+  /** Last time we saw leader start/hb (wall clock). */
+  lastLeaderSeenAt: number
+  /** True after LEADER_AWAY_AFTER_MS without leader heartbeat. */
+  leaderAway: boolean
 }
 
 export type TourRosterEntry = {
@@ -92,6 +109,25 @@ export type CommunityFollowEvent =
       leaderAddress: string
       cam: FollowCamState
     }
+  | {
+      kind: 'leader_away'
+      communityId: string
+      sessionId: string
+      leaderAddress: string
+      /** ms until force-end from last seen. */
+      forceEndInMs: number
+    }
+  | {
+      kind: 'leader_back'
+      communityId: string
+      sessionId: string
+      leaderAddress: string
+    }
+  | {
+      /** Local wallet has a resumable tour after refresh/disconnect. */
+      kind: 'leader_resume_available'
+      snapshot: TourLeaderResumeSnapshot
+    }
   | { kind: 'changed' }
 
 export type CommunityFollowControllerOptions = {
@@ -118,6 +154,7 @@ export class CommunityFollowController {
   private followingSessionId: string | null = null
 
   private heartbeatTimer = 0
+  private leaseTimer = 0
   private lastGotoSentAt = 0
   /** Last hard /goto actually published on the wire (not soft label updates). */
   private lastPublishedGoto: FollowTarget | null = null
@@ -129,11 +166,20 @@ export class CommunityFollowController {
   private lastPublishedCam: FollowCamState | null = null
   private disposed = false
   private readonly listeners = new Set<(ev: CommunityFollowEvent) => void>()
+  private readonly onPageHide = (): void => {
+    this.persistLeaderResumeIfLeading()
+    this.bestEffortFollowerLeave()
+  }
 
   constructor(opts: CommunityFollowControllerOptions) {
     this.publish = opts.publish
     this.getLocalAddress = opts.getLocalAddress
     this.getCommunities = opts.getCommunities
+    this.startLeaseWatch()
+    if (typeof window !== 'undefined') {
+      window.addEventListener('pagehide', this.onPageHide)
+      window.addEventListener('beforeunload', this.onPageHide)
+    }
   }
 
   subscribe(listener: (ev: CommunityFollowEvent) => void): () => void {
@@ -141,10 +187,84 @@ export class CommunityFollowController {
     return () => this.listeners.delete(listener)
   }
 
+  /**
+   * After controller is wired, check sessionStorage for a leader resume prompt.
+   * Emits `leader_resume_available` when a valid snapshot exists for this wallet.
+   */
+  checkLeaderResumeOffer(): TourLeaderResumeSnapshot | null {
+    const snap = loadTourLeaderResume(this.getLocalAddress())
+    if (!snap) return null
+    // Already leading this session — no prompt.
+    if (
+      this.leadingCommunityId === snap.communityId &&
+      this.leadingSessionId === snap.sessionId
+    ) {
+      return null
+    }
+    this.emit({ kind: 'leader_resume_available', snapshot: snap })
+    return snap
+  }
+
+  getPendingLeaderResume(): TourLeaderResumeSnapshot | null {
+    return loadTourLeaderResume(this.getLocalAddress())
+  }
+
+  /**
+   * Leader chose Rejoin — republish start with same session id and resume leading.
+   * Returns lastTarget so the UI can teleport the leader.
+   */
+  async resumeLeadFromSnapshot(): Promise<{
+    ok: boolean
+    target: FollowTarget | null
+    communityId: string | null
+  }> {
+    const snap = loadTourLeaderResume(this.getLocalAddress())
+    if (!snap) return { ok: false, target: null, communityId: null }
+    const ok = await this.startLead(snap.communityId, snap.lastTarget, {
+      resume: snap
+    })
+    if (!ok) return { ok: false, target: null, communityId: snap.communityId }
+    return { ok: true, target: snap.lastTarget, communityId: snap.communityId }
+  }
+
+  /**
+   * Leader chose Cancel on the rejoin panel — end the tour for everyone if we still
+   * can, and drop the resume snapshot.
+   */
+  async cancelLeaderResume(): Promise<void> {
+    const snap = loadTourLeaderResume(this.getLocalAddress())
+    clearTourLeaderResume()
+    if (!snap) return
+    const local = this.getLocalAddress()?.toLowerCase() ?? snap.leaderAddress
+    // Best-effort stop so followers don't wait the full 5 min lease.
+    void this.publish(snap.communityId, {
+      t: 'stop',
+      s: snap.sessionId,
+      l: local,
+      at: Date.now()
+    })
+    // Local cleanup if we still hold this session in memory.
+    const existing = this.sessions.get(snap.communityId)
+    if (existing && existing.sessionId === snap.sessionId) {
+      this.applyStop(snap.communityId, local, snap.sessionId, local)
+    }
+    if (this.leadingSessionId === snap.sessionId) {
+      this.clearLocalLead()
+    }
+    this.emit({ kind: 'changed' })
+  }
+
   dispose(): void {
     this.disposed = true
+    this.persistLeaderResumeIfLeading()
+    this.bestEffortFollowerLeave()
     this.stopHeartbeat()
+    this.stopLeaseWatch()
     this.clearPendingGoto()
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('pagehide', this.onPageHide)
+      window.removeEventListener('beforeunload', this.onPageHide)
+    }
     this.sessions.clear()
     this.toastedSessions.clear()
     this.leadingCommunityId = null
@@ -236,8 +356,13 @@ export class CommunityFollowController {
 
   /**
    * Start a tour (mod/owner). One leader per community — fails if another tour is live.
+   * Pass `resume` to rejoin the same sessionId after a disconnect/refresh.
    */
-  async startLead(communityId: string, initialTarget?: FollowTarget | null): Promise<boolean> {
+  async startLead(
+    communityId: string,
+    initialTarget?: FollowTarget | null,
+    opts?: { resume?: TourLeaderResumeSnapshot }
+  ): Promise<boolean> {
     if (this.disposed) return false
     const id = communityId.trim().toLowerCase()
     const local = this.getLocalAddress()?.toLowerCase() ?? ''
@@ -247,8 +372,13 @@ export class CommunityFollowController {
       return false
     }
 
+    const resume = opts?.resume
+    if (resume && resume.leaderAddress.toLowerCase() !== local) {
+      return false
+    }
+
     const existing = this.sessions.get(id)
-    if (existing && existing.leaderAddress !== local) {
+    if (existing && existing.leaderAddress !== local && existing.sessionId !== resume?.sessionId) {
       clientDebugLog.log('social', 'Follow tour: another leader is active', { level: 'warn' })
       return false
     }
@@ -258,40 +388,48 @@ export class CommunityFollowController {
       await this.stopLead()
     }
 
-    const sessionId = existing?.sessionId && existing.leaderAddress === local
-      ? existing.sessionId
-      : newFollowSessionId()
-    const target = initialTarget ?? existing?.lastTarget ?? null
+    const now = Date.now()
+    const sessionId =
+      resume?.sessionId ||
+      (existing?.sessionId && existing.leaderAddress === local
+        ? existing.sessionId
+        : newFollowSessionId())
+    const target =
+      initialTarget ?? resume?.lastTarget ?? existing?.lastTarget ?? null
+    const sameSession =
+      (existing?.sessionId === sessionId && existing.leaderAddress === local) ||
+      Boolean(resume && resume.sessionId === sessionId)
     const session: CommunityTourSession = {
       communityId: id,
       sessionId,
       leaderAddress: local,
       lastTarget: target,
-      startedAt: Date.now(),
-      flagDataUrl: existing?.leaderAddress === local ? existing.flagDataUrl : null,
+      startedAt: resume?.startedAt ?? (sameSession && existing ? existing.startedAt : now),
+      flagDataUrl:
+        resume?.flagDataUrl ??
+        (existing?.leaderAddress === local ? existing.flagDataUrl : null),
       // New session clears roster; resume same session keeps prior followers if any.
       followerAddresses:
-        existing?.sessionId === sessionId && existing.leaderAddress === local
-          ? [...existing.followerAddresses]
-          : [],
+        sameSession && existing ? [...existing.followerAddresses] : [],
       // Focus does not auto-resume — leader must re-enable after restart.
       focusActive: false,
       lastCam: null,
       locations:
-        existing?.sessionId === sessionId && existing.leaderAddress === local
-          ? [...existing.locations]
-          : [],
-      locationEnteredAt:
-        existing?.sessionId === sessionId && existing.leaderAddress === local
-          ? existing.locationEnteredAt
-          : null
+        resume?.locations?.length
+          ? [...resume.locations]
+          : sameSession && existing
+            ? [...existing.locations]
+            : [],
+      locationEnteredAt: sameSession && existing ? existing.locationEnteredAt : null,
+      lastLeaderSeenAt: now,
+      leaderAway: false
     }
 
     const startMsg: FollowWireMsg = {
       t: 'start',
       s: sessionId,
       l: local,
-      at: Date.now(),
+      at: now,
       ...(target ? { target } : {}),
       ...(session.flagDataUrl ? { flag: session.flagDataUrl } : {}),
       focus: false,
@@ -310,17 +448,18 @@ export class CommunityFollowController {
     }
     this.toastedSessions.add(sessionId)
     this.startHeartbeat()
+    this.persistLeaderResumeIfLeading()
     this.emit({
       kind: 'tour_started',
       communityId: id,
       session,
       isLocalLeader: true,
-      lateJoin: false
+      lateJoin: Boolean(resume)
     })
     this.emit({ kind: 'changed' })
     clientDebugLog.log(
       'social',
-      `Follow tour started · community=${id.slice(0, 8)}… · target=${followTargetLabel(target) || 'none'}`,
+      `Follow tour ${resume ? 'resumed' : 'started'} · community=${id.slice(0, 8)}… · target=${followTargetLabel(target) || 'none'}`,
       { level: 'success', alsoConsole: true }
     )
     return true
@@ -333,11 +472,13 @@ export class CommunityFollowController {
     const local = this.getLocalAddress()?.toLowerCase() ?? ''
     if (!id || !sessionId || !local) {
       this.clearLocalLead()
+      clearTourLeaderResume()
       return false
     }
 
     const ok = await this.publish(id, { t: 'stop', s: sessionId, l: local, at: Date.now() })
     this.clearLocalLead()
+    clearTourLeaderResume()
     const had = this.sessions.get(id)
     if (had && had.sessionId === sessionId) {
       this.sessions.delete(id)
@@ -466,6 +607,7 @@ export class CommunityFollowController {
     }
     session.flagDataUrl = flag
     this.sessions.set(id, session)
+    this.persistLeaderResumeIfLeading()
     const ok = await this.publish(id, {
       t: 'flag',
       s: session.sessionId,
@@ -611,6 +753,7 @@ export class CommunityFollowController {
 
     session.lastTarget = target
     this.sessions.set(id, session)
+    this.persistLeaderResumeIfLeading()
     this.emit({ kind: 'changed' })
   }
 
@@ -644,6 +787,7 @@ export class CommunityFollowController {
     // Always refresh local label.
     session.lastTarget = target
     this.sessions.set(id, session)
+    this.persistLeaderResumeIfLeading()
     this.emit({ kind: 'changed' })
 
     // Skip wire only if we already published this exact hard stop recently.
@@ -846,6 +990,8 @@ export class CommunityFollowController {
         : existing && existing.sessionId === sessionId
           ? existing.locations
           : []
+    const wasAway = Boolean(existing && existing.sessionId === sessionId && existing.leaderAway)
+    const now = Date.now()
     const session: CommunityTourSession = {
       communityId,
       sessionId,
@@ -859,10 +1005,21 @@ export class CommunityFollowController {
       lastCam: existing && existing.sessionId === sessionId ? existing.lastCam : null,
       locations: nextLocations,
       locationEnteredAt:
-        existing && existing.sessionId === sessionId ? existing.locationEnteredAt : null
+        existing && existing.sessionId === sessionId ? existing.locationEnteredAt : null,
+      lastLeaderSeenAt: now,
+      leaderAway: false
     }
     if (target) session.lastTarget = target
     this.sessions.set(communityId, session)
+
+    if (wasAway && !session.leaderAway) {
+      this.emit({
+        kind: 'leader_back',
+        communityId,
+        sessionId,
+        leaderAddress: leader
+      })
+    }
 
     if (nextFlag !== prevFlag) {
       this.emit({
@@ -938,6 +1095,11 @@ export class CommunityFollowController {
     const hadFlag = Boolean(existing.flagDataUrl)
     const hadFocus = Boolean(existing.focusActive)
     this.sessions.delete(communityId)
+    // Drop resume snapshot if this was our tour (remote stop or force-end).
+    const resume = loadTourLeaderResume(local || this.getLocalAddress())
+    if (resume && resume.sessionId === sessionId && resume.communityId === communityId) {
+      clearTourLeaderResume()
+    }
     if (this.leadingCommunityId === communityId) this.clearLocalLead()
     if (this.followingCommunityId === communityId) {
       this.followingCommunityId = null
@@ -977,19 +1139,15 @@ export class CommunityFollowController {
     const session: CommunityTourSession =
       existing && existing.sessionId === sessionId
         ? { ...existing, leaderAddress: leader, flagDataUrl: flag }
-        : {
-            communityId,
-            sessionId,
-            leaderAddress: leader,
+        : softSessionShell(communityId, sessionId, leader, {
             lastTarget: existing?.lastTarget ?? null,
-            startedAt: existing?.startedAt ?? Date.now(),
             flagDataUrl: flag,
             followerAddresses: existing?.followerAddresses ? [...existing.followerAddresses] : [],
             focusActive: existing?.focusActive ?? false,
             lastCam: existing?.lastCam ?? null,
             locations: existing?.locations ? [...existing.locations] : [],
             locationEnteredAt: existing?.locationEnteredAt ?? null
-          }
+          })
     if (existing && existing.leaderAddress !== leader && existing.sessionId !== sessionId) {
       return
     }
@@ -1033,19 +1191,15 @@ export class CommunityFollowController {
             focusActive: on,
             lastCam: on ? existing.lastCam : null
           }
-        : {
-            communityId,
-            sessionId,
-            leaderAddress: leader,
+        : softSessionShell(communityId, sessionId, leader, {
             lastTarget: existing?.lastTarget ?? null,
-            startedAt: existing?.startedAt ?? Date.now(),
             flagDataUrl: existing?.flagDataUrl ?? null,
             followerAddresses: existing?.followerAddresses ? [...existing.followerAddresses] : [],
             focusActive: on,
             lastCam: null,
             locations: existing?.locations ? [...existing.locations] : [],
             locationEnteredAt: existing?.locationEnteredAt ?? null
-          }
+          })
     this.sessions.set(communityId, session)
 
     // Ignore echo of our own leader publish for focus_changed (UI already updated).
@@ -1078,19 +1232,15 @@ export class CommunityFollowController {
     const session: CommunityTourSession =
       existing && existing.sessionId === sessionId
         ? { ...existing, leaderAddress: leader, lastCam: cam, focusActive: true }
-        : {
-            communityId,
-            sessionId,
-            leaderAddress: leader,
+        : softSessionShell(communityId, sessionId, leader, {
             lastTarget: existing?.lastTarget ?? null,
-            startedAt: existing?.startedAt ?? Date.now(),
             flagDataUrl: existing?.flagDataUrl ?? null,
             followerAddresses: existing?.followerAddresses ? [...existing.followerAddresses] : [],
             focusActive: true,
             lastCam: cam,
             locations: existing?.locations ? [...existing.locations] : [],
             locationEnteredAt: existing?.locationEnteredAt ?? null
-          }
+          })
     const focusJustOn = !existing?.focusActive
     this.sessions.set(communityId, session)
 
@@ -1131,20 +1281,22 @@ export class CommunityFollowController {
     const existing = this.sessions.get(communityId)
     // Accept goto even if start was missed — create soft session.
     const session: CommunityTourSession = existing && existing.sessionId === sessionId
-      ? { ...existing, lastTarget: target, leaderAddress: leader }
-      : {
-          communityId,
-          sessionId,
-          leaderAddress: leader,
+      ? {
+          ...existing,
           lastTarget: target,
-          startedAt: Date.now(),
+          leaderAddress: leader,
+          lastLeaderSeenAt: Date.now(),
+          leaderAway: false
+        }
+      : softSessionShell(communityId, sessionId, leader, {
+          lastTarget: target,
           flagDataUrl: existing?.flagDataUrl ?? null,
           followerAddresses: existing?.followerAddresses ? [...existing.followerAddresses] : [],
           focusActive: existing?.focusActive ?? false,
           lastCam: existing?.lastCam ?? null,
           locations: existing?.locations ? [...existing.locations] : [],
           locationEnteredAt: existing?.locationEnteredAt ?? null
-        }
+        })
 
     if (existing && existing.leaderAddress !== leader && existing.sessionId !== sessionId) {
       return
@@ -1189,11 +1341,106 @@ export class CommunityFollowController {
     this.heartbeatTimer = window.setInterval(() => {
       void this.sendHeartbeat()
     }, HEARTBEAT_MS)
+    // Immediate hb so resume/rejoin is visible before the first interval.
+    void this.sendHeartbeat()
   }
 
   private stopHeartbeat(): void {
     if (this.heartbeatTimer) window.clearInterval(this.heartbeatTimer)
     this.heartbeatTimer = 0
+  }
+
+  private startLeaseWatch(): void {
+    this.stopLeaseWatch()
+    this.leaseTimer = window.setInterval(() => this.tickLeaderLease(), LEASE_TICK_MS)
+  }
+
+  private stopLeaseWatch(): void {
+    if (this.leaseTimer) window.clearInterval(this.leaseTimer)
+    this.leaseTimer = 0
+  }
+
+  /**
+   * Follower-side lease: mark leader away after missed heartbeats; force-end after 5 min.
+   */
+  private tickLeaderLease(): void {
+    if (this.disposed) return
+    const now = Date.now()
+    const local = this.getLocalAddress()?.toLowerCase() ?? ''
+    for (const [communityId, session] of [...this.sessions]) {
+      // Local leader is always "seen".
+      if (local && session.leaderAddress === local && this.leadingSessionId === session.sessionId) {
+        session.lastLeaderSeenAt = now
+        session.leaderAway = false
+        this.sessions.set(communityId, session)
+        continue
+      }
+      const silentMs = now - (session.lastLeaderSeenAt || session.startedAt)
+      if (silentMs >= LEADER_FORCE_END_MS) {
+        clientDebugLog.log(
+          'social',
+          `Tour force-ended — no leader for ${Math.round(silentMs / 1000)}s · ${communityId.slice(0, 8)}…`,
+          { level: 'warn', alsoConsole: true }
+        )
+        // Local end (no stop wire from a non-leader). Everyone who times out ends cleanly.
+        this.forceEndSessionLocal(communityId, session, 'leader_timeout')
+        continue
+      }
+      if (silentMs >= LEADER_AWAY_AFTER_MS && !session.leaderAway) {
+        session.leaderAway = true
+        this.sessions.set(communityId, session)
+        this.emit({
+          kind: 'leader_away',
+          communityId,
+          sessionId: session.sessionId,
+          leaderAddress: session.leaderAddress,
+          forceEndInMs: Math.max(0, LEADER_FORCE_END_MS - silentMs)
+        })
+        this.emit({ kind: 'changed' })
+      }
+    }
+  }
+
+  private forceEndSessionLocal(
+    communityId: string,
+    session: CommunityTourSession,
+    _reason: string
+  ): void {
+    const local = this.getLocalAddress()?.toLowerCase() ?? ''
+    this.applyStop(communityId, session.leaderAddress, session.sessionId, local)
+    if (
+      this.leadingCommunityId === communityId &&
+      this.leadingSessionId === session.sessionId
+    ) {
+      this.clearLocalLead()
+      clearTourLeaderResume()
+    }
+  }
+
+  private persistLeaderResumeIfLeading(): void {
+    if (!this.leadingCommunityId || !this.leadingSessionId) return
+    const session = this.sessions.get(this.leadingCommunityId)
+    if (!session || session.sessionId !== this.leadingSessionId) return
+    const local = this.getLocalAddress()?.toLowerCase() ?? session.leaderAddress
+    saveTourLeaderResume({
+      communityId: session.communityId,
+      sessionId: session.sessionId,
+      leaderAddress: local,
+      lastTarget: session.lastTarget,
+      flagDataUrl: session.flagDataUrl,
+      locations: session.locations.slice(0, TOUR_LOCATIONS_WIRE_CAP),
+      startedAt: session.startedAt,
+      savedAt: Date.now()
+    })
+  }
+
+  /** Best-effort leave when the tab closes while following. */
+  private bestEffortFollowerLeave(): void {
+    const id = this.followingCommunityId
+    const sessionId = this.followingSessionId
+    const local = this.getLocalAddress()?.toLowerCase() ?? ''
+    if (!id || !sessionId || !local || !ADDR_RE.test(local)) return
+    void this.publish(id, { t: 'leave', s: sessionId, l: local, at: Date.now() })
   }
 
   private async sendHeartbeat(): Promise<void> {
@@ -1202,6 +1449,10 @@ export class CommunityFollowController {
     const session = this.sessions.get(id)
     if (!session) return
     const local = this.getLocalAddress()?.toLowerCase() ?? session.leaderAddress
+    session.lastLeaderSeenAt = Date.now()
+    session.leaderAway = false
+    this.sessions.set(id, session)
+    this.persistLeaderResumeIfLeading()
     const msg: FollowWireMsg = {
       t: 'hb',
       s: session.sessionId,
@@ -1346,19 +1597,9 @@ export class CommunityFollowController {
           ...existing,
           locations: locations.slice(0, TOUR_LOCATIONS_WIRE_CAP)
         }
-      : {
-          communityId,
-          sessionId,
-          leaderAddress: leader,
-          lastTarget: null,
-          startedAt: Date.now(),
-          flagDataUrl: null,
-          followerAddresses: [],
-          focusActive: false,
-          lastCam: null,
-          locations: locations.slice(0, TOUR_LOCATIONS_WIRE_CAP),
-          locationEnteredAt: null
-        }
+      : softSessionShell(communityId, sessionId, leader, {
+          locations: locations.slice(0, TOUR_LOCATIONS_WIRE_CAP)
+        })
     this.sessions.set(communityId, session)
     this.emit({ kind: 'changed' })
   }
@@ -1375,3 +1616,28 @@ export class CommunityFollowController {
 }
 
 const ADDR_RE = /^0x[a-f0-9]{40}$/
+
+/** Incomplete session created from a late wire message (flag/goto/cam before start). */
+function softSessionShell(
+  communityId: string,
+  sessionId: string,
+  leader: string,
+  partial: Partial<CommunityTourSession> = {}
+): CommunityTourSession {
+  const now = Date.now()
+  return {
+    communityId,
+    sessionId,
+    leaderAddress: leader,
+    lastTarget: partial.lastTarget ?? null,
+    startedAt: partial.startedAt ?? now,
+    flagDataUrl: partial.flagDataUrl ?? null,
+    followerAddresses: partial.followerAddresses ? [...partial.followerAddresses] : [],
+    focusActive: partial.focusActive ?? false,
+    lastCam: partial.lastCam ?? null,
+    locations: partial.locations ? [...partial.locations] : [],
+    locationEnteredAt: partial.locationEnteredAt ?? null,
+    lastLeaderSeenAt: partial.lastLeaderSeenAt ?? now,
+    leaderAway: partial.leaderAway ?? false
+  }
+}

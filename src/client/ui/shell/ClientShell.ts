@@ -511,6 +511,11 @@ export class ClientShell {
     if (!visible) btn.setActive(false)
   }
 
+  /** Anchor for Tour Rejoin panel (next to flag HUD icon). */
+  getTourOptionsButtonElement(): HTMLElement | undefined {
+    return this.buttons.get('tour-options')?.element
+  }
+
   setEmoteWheelProfile(profile: AvatarProfile | null | undefined): void {
     this.emoteWheel.setProfile(profile)
   }

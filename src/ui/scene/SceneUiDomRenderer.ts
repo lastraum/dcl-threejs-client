@@ -582,17 +582,6 @@ export class SceneUiDomRenderer {
       el.style.overflow = 'visible'
     }
 
-    // Clip modal chrome so absolute children don't spill across the plaza.
-    // Slot cells (≈110×110): allow slight overflow for selection rings, but still clip
-    // when the scene authors overflow:hidden. Mid panels (grid, detail ≥120) clip so
-    // NEW banners / icons stay inside their cell stacking context.
-    // Don't force-clip small text-only chrome (title bars / icon buttons).
-    const hasTextOnlyChrome = !!text?.value?.trim() && !bg && !interactive
-    const clipShell =
-      !!radius ||
-      transform.overflow === YGOverflow.HIDDEN ||
-      transform.overflow === YGOverflow.SCROLL ||
-      (layoutBox.width >= 120 && layoutBox.height >= 120 && !hasTextOnlyChrome)
     if (radius) {
       shell.style.borderRadius = radius
       el.style.borderRadius = radius
@@ -623,6 +612,18 @@ export class SceneUiDomRenderer {
       layoutBox,
       input.forest
     )
+
+    // Clip modal chrome so absolute children don't spill across the plaza.
+    // Slot cells (≈110×110): allow slight overflow for selection rings, but still clip
+    // when the scene authors overflow:hidden. Mid panels (grid, detail ≥120) clip so
+    // NEW banners / icons stay inside their cell stacking context.
+    // Don't force-clip small text-only chrome (title bars / icon buttons).
+    const hasTextOnlyChrome = !!text?.value?.trim() && !bg && !interactive
+    const clipShell =
+      !!radius ||
+      transform.overflow === YGOverflow.HIDDEN ||
+      transform.overflow === YGOverflow.SCROLL ||
+      (layoutBox.width >= 120 && layoutBox.height >= 120 && !hasTextOnlyChrome)
 
     const compactControl =
       layoutBox.width < 500 &&

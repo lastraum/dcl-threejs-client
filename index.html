@@ -2206,6 +2206,14 @@
         border-bottom: 1px solid rgba(255, 255, 255, 0.06);
         flex-shrink: 0;
       }
+      /* Details view: hide list chrome (walking/flying + upload + hint) completely */
+      .pets-panel--edit .pets-panel__upload,
+      .pets-panel--edit .pets-panel__hint {
+        display: none !important;
+      }
+      .pets-panel--edit .pets-panel__body {
+        padding-top: 4px;
+      }
       .pets-panel__cat-row {
         display: flex;
         gap: 6px;
@@ -2435,9 +2443,23 @@
         width: fit-content;
       }
       .pets-panel__back:hover { color: #fff; }
+      .pets-panel__edit-title-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
       .pets-panel__edit-title {
         font-size: 15px;
         font-weight: 650;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1;
+      }
+      .pets-panel__btn--rename {
+        flex-shrink: 0;
       }
       .pets-panel__edit-section {
         display: grid;
@@ -2450,11 +2472,6 @@
         gap: 4px;
         font-size: 11px;
         color: rgba(255,255,255,0.55);
-      }
-      .pets-panel__edit-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
       }
       .pets-panel__edit-help {
         margin: 0;

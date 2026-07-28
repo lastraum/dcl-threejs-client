@@ -2,6 +2,7 @@ import type { SessionIdentity } from '../../../network/SessionIdentity'
 import {
   addPetFile,
   ensurePetLibraryClipNames,
+  formatPetByteSize,
   listPetLibrary,
   removePetFromLibrary,
   updatePetLibraryAnimClipMap,
@@ -189,10 +190,15 @@ export class PetsPanel {
   }
 
   private setListChromeVisible(show: boolean): void {
+    const panel = this.element.querySelector('.pets-panel')
+    panel?.classList.toggle('pets-panel--edit', !show)
     const upload = this.element.querySelector<HTMLElement>('[data-upload-block]')
     const hint = this.element.querySelector<HTMLElement>('[data-list-hint]')
     if (upload) upload.hidden = !show
     if (hint) hint.hidden = !show
+    // Title: list = Pets, edit = blank (edit surface owns the title row)
+    const title = this.element.querySelector<HTMLElement>('.pets-panel__title')
+    if (title) title.textContent = show ? 'Pets' : 'Pet settings'
   }
 
   private async handleUpload(file: File): Promise<void> {
@@ -253,11 +259,14 @@ export class PetsPanel {
       .map((e) => {
         const isActive = active?.contentHash === e.contentHash
         const label = escapeHtml(e.nickname || e.fileName)
+        const typeLabel = e.category === 'flying' ? 'Flying' : 'Walking'
+        const meta = `${typeLabel} · ${formatPetByteSize(e.byteSize)}`
         return `
           <article class="pets-panel__row${isActive ? ' is-active' : ''}" data-hash="${e.contentHash}">
             <div class="pets-panel__row-top">
               <div class="pets-panel__row-main">
                 <div class="pets-panel__row-name">${label}</div>
+                <div class="pets-panel__row-meta">${escapeHtml(meta)}</div>
               </div>
               <div class="pets-panel__row-actions">
                 <button
@@ -311,8 +320,6 @@ export class PetsPanel {
       this.setStatus('')
     }
 
-    const active = getActivePetEntry(address)
-    const isActive = active?.contentHash === hash
     const yaw = entry.meshYawOffsetDeg ?? 0
     const map = normalizeAnimClipMap(entry.animClipMap) ?? {}
     const clipToState = invertClipMap(map, clipNames)
@@ -348,7 +355,10 @@ export class PetsPanel {
     this.bodyEl.innerHTML = `
       <div class="pets-panel__edit">
         <button type="button" class="pets-panel__back" data-edit-back>← Back to list</button>
-        <div class="pets-panel__edit-title">${label}</div>
+        <div class="pets-panel__edit-title-row">
+          <div class="pets-panel__edit-title">${label}</div>
+          <button type="button" class="pets-panel__btn pets-panel__btn--ghost pets-panel__btn--rename" data-edit-nick title="Rename">Rename</button>
+        </div>
         <div class="pets-panel__edit-section">
           <label class="pets-panel__field">
             <span>Locomotion</span>
@@ -366,12 +376,6 @@ export class PetsPanel {
               <option value="-90"${yaw === -90 || yaw === 270 ? ' selected' : ''}>Face −90°</option>
             </select>
           </label>
-        </div>
-        <div class="pets-panel__edit-actions">
-          <button type="button" class="pets-panel__btn${isActive ? ' is-on' : ''}" data-edit-toggle>
-            ${isActive ? 'Disable pet' : 'Enable pet'}
-          </button>
-          <button type="button" class="pets-panel__btn pets-panel__btn--ghost" data-edit-nick>Rename</button>
         </div>
         <p class="pets-panel__edit-help">Map each track to a behavior. Multiple tracks on one behavior play randomly. <strong>AFK</strong> plays after 5 minutes of owner idle.</p>
         <div class="pets-panel__tracks-head">
@@ -503,23 +507,6 @@ export class PetsPanel {
       const ok = await this.options.onPlayClipPreview?.(this.editHash, clip)
       if (ok === false) this.setStatus('Could not play clip — enable the pet or wait for load.')
       else this.setStatus(`Playing “${clip}”…`)
-      return
-    }
-
-    if (t.closest('[data-edit-toggle]') && this.editHash) {
-      ev.preventDefault()
-      const hash = this.editHash
-      const active = getActivePetEntry(address)
-      if (active?.contentHash === hash) {
-        setActivePetHash(address, null)
-      } else {
-        const rows = await this.collectRows()
-        const entry = rows.find((e) => e.contentHash === hash)
-        if (entry) upsertOwnedPet(address, entry)
-        setActivePetHash(address, hash)
-      }
-      await this.render()
-      await this.options.onActivePetChange?.()
       return
     }
 

@@ -4021,6 +4021,7 @@ export class World {
     if (document.querySelector('.emote-wheel-overlay:not([hidden])')) return true
     if (document.querySelector('.settings-overlay.is-open')) return true
     if (document.querySelector('.preferences-panel.is-open')) return true
+    if (document.querySelector('.keybinds-overlay.is-open')) return true
     // Primary scene ECS text/select only (not PE HUD buttons / pe-ui-root).
     const ae = document.activeElement
     if (

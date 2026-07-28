@@ -7684,92 +7684,211 @@
         background: rgba(255, 107, 107, 0.2);
         border-color: rgba(255, 107, 107, 0.45);
       }
-
-      /* ===== Keybinds (Controls tab) ===== */
-      .keybinds-note {
-        margin: 0 0 12px;
+      .gfx-settings__action-btn {
+        appearance: none;
+        border: 1px solid rgba(255, 107, 107, 0.45);
+        background: rgba(255, 107, 107, 0.16);
+        color: #fff;
+        font: inherit;
         font-size: 12px;
-        line-height: 1.45;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+        padding: 8px 16px;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease;
+        flex-shrink: 0;
+      }
+      .gfx-settings__action-btn:hover {
+        background: rgba(255, 107, 107, 0.28);
+        border-color: rgba(255, 107, 107, 0.7);
+      }
+      .gfx-settings__action-btn:active {
+        transform: scale(0.98);
+      }
+
+      /* ===== Keybinds full-screen overlay (from Controls → Edit keys) ===== */
+      .keybinds-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: calc(var(--z-client-overlay, 1200) + 20);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px))
+          max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+        background: rgba(4, 6, 14, 0.72);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        color: #fff;
+        opacity: 0;
+        transition: opacity 0.22s ease;
+        pointer-events: none;
+        font-family: system-ui, -apple-system, sans-serif;
+        box-sizing: border-box;
+      }
+      .keybinds-overlay[hidden] {
+        display: none !important;
+      }
+      .keybinds-overlay.is-open {
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .keybinds-overlay__panel {
+        width: min(960px, 100%);
+        max-height: min(920px, 100%);
+        display: flex;
+        flex-direction: column;
+        border-radius: 18px;
+        overflow: hidden;
+        background: linear-gradient(160deg, #2d1b4e 0%, #4a1942 38%, #6b1d5e 72%, #7e2470 100%);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        box-shadow: 0 28px 80px rgba(0, 0, 0, 0.55);
+        transform: translateY(14px) scale(0.98);
+        transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .keybinds-overlay.is-open .keybinds-overlay__panel {
+        transform: translateY(0) scale(1);
+      }
+      .keybinds-overlay__header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 16px 18px 14px;
+        background: rgba(0, 0, 0, 0.28);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        flex-shrink: 0;
+      }
+      .keybinds-overlay__heading {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+      }
+      .keybinds-overlay__title {
+        font-size: 18px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+      }
+      .keybinds-overlay__subtitle {
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .keybinds-overlay__close {
+        appearance: none;
+        width: 36px;
+        height: 36px;
+        border: none;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.85);
+        font-size: 24px;
+        line-height: 1;
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+      .keybinds-overlay__close:hover {
+        background: rgba(255, 255, 255, 0.16);
+        color: #fff;
+      }
+      .keybinds-overlay__body {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        padding: 18px 20px 22px;
+        scrollbar-width: thin;
+      }
+      .keybinds-overlay__footer {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 16px;
+        padding-top: 8px;
+      }
+      .keybinds-note {
+        margin: 0 0 14px;
+        font-size: 13px;
+        line-height: 1.5;
         color: rgba(255, 255, 255, 0.62);
       }
       .keybinds-note b {
-        color: rgba(255, 255, 255, 0.88);
+        color: rgba(255, 255, 255, 0.9);
         font-weight: 600;
       }
       .keybinds-listen {
-        margin: 0 0 12px;
-        padding: 8px 12px;
-        border-radius: 8px;
+        margin: 0 0 14px;
+        padding: 10px 14px;
+        border-radius: 10px;
         border: 1px solid rgba(255, 107, 107, 0.45);
-        background: rgba(255, 107, 107, 0.12);
+        background: rgba(255, 107, 107, 0.14);
         color: #fff;
-        font-size: 12px;
+        font-size: 13px;
         font-weight: 600;
         letter-spacing: 0.02em;
       }
       .keybinds-keyboard {
         display: flex;
         flex-wrap: wrap;
-        gap: 12px;
+        gap: 18px;
         align-items: flex-end;
-        margin-bottom: 18px;
-        padding: 12px;
-        border-radius: 12px;
-        background: rgba(0, 0, 0, 0.28);
+        justify-content: center;
+        margin-bottom: 20px;
+        padding: 18px 16px;
+        border-radius: 16px;
+        background: rgba(0, 0, 0, 0.32);
         border: 1px solid rgba(255, 255, 255, 0.08);
-        overflow-x: auto;
       }
       .keybinds-keyboard__main {
         display: flex;
         flex-direction: column;
-        gap: 4px;
-        min-width: min(100%, 420px);
-        flex: 1 1 280px;
+        gap: 6px;
+        flex: 1 1 520px;
+        max-width: 640px;
       }
       .keybinds-keyboard__row {
         display: flex;
-        gap: 4px;
+        gap: 6px;
         justify-content: flex-start;
       }
       .keybinds-keyboard__row--arrows-up {
         justify-content: center;
-        margin-bottom: 0;
       }
       .keybinds-keyboard__arrows {
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 6px;
         flex: 0 0 auto;
         padding-bottom: 2px;
       }
       .keybinds-key {
         appearance: none;
         box-sizing: border-box;
-        min-width: 28px;
-        height: 30px;
-        padding: 0 4px;
+        min-width: 40px;
+        height: 42px;
+        padding: 0 6px;
         border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 6px;
+        border-radius: 8px;
         background: rgba(255, 255, 255, 0.06);
         color: rgba(255, 255, 255, 0.72);
         font: inherit;
-        font-size: 10px;
-        font-weight: 600;
+        font-size: 12px;
+        font-weight: 700;
         letter-spacing: 0.02em;
         cursor: default;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        transition: background 0.12s, border-color 0.12s, color 0.12s, box-shadow 0.12s;
+        transition: background 0.12s, border-color 0.12s, color 0.12s, box-shadow 0.12s, transform 0.1s;
         user-select: none;
       }
       .keybinds-key--wide {
-        min-width: 44px;
-        font-size: 9px;
+        min-width: 58px;
+        font-size: 11px;
       }
       .keybinds-key--space {
         flex: 1 1 auto;
-        min-width: 120px;
+        min-width: 160px;
       }
       .keybinds-key.is-bound {
         cursor: pointer;
@@ -7779,37 +7898,57 @@
       }
       .keybinds-key.is-move {
         border-color: rgba(100, 180, 255, 0.55);
-        background: rgba(80, 150, 255, 0.22);
-        box-shadow: 0 0 0 1px rgba(80, 150, 255, 0.15);
+        background: rgba(80, 150, 255, 0.24);
+        box-shadow: 0 0 0 1px rgba(80, 150, 255, 0.18);
       }
       .keybinds-key.is-walk {
         border-color: rgba(255, 180, 80, 0.65);
-        background: rgba(255, 160, 60, 0.28);
-        box-shadow: 0 0 0 1px rgba(255, 160, 60, 0.2);
+        background: rgba(255, 160, 60, 0.3);
+        box-shadow: 0 0 0 1px rgba(255, 160, 60, 0.22);
       }
       .keybinds-key.is-action {
         border-color: rgba(255, 107, 107, 0.55);
-        background: rgba(255, 107, 107, 0.22);
-        box-shadow: 0 0 0 1px rgba(255, 107, 107, 0.15);
+        background: rgba(255, 107, 107, 0.24);
+        box-shadow: 0 0 0 1px rgba(255, 107, 107, 0.18);
       }
       .keybinds-key.is-bound:hover {
         filter: brightness(1.12);
+        transform: translateY(-1px);
       }
-      .keybinds-list {
+      .keybinds-list__grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px 20px;
+      }
+      @media (max-width: 720px) {
+        .keybinds-list__grid {
+          grid-template-columns: 1fr;
+        }
+        .keybinds-key {
+          min-width: 32px;
+          height: 34px;
+          font-size: 11px;
+        }
+        .keybinds-key--wide {
+          min-width: 46px;
+        }
+        .keybinds-key--space {
+          min-width: 100px;
+        }
+      }
+      .keybinds-list__col {
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 6px;
+        min-width: 0;
       }
       .keybinds-list__group {
-        margin: 10px 0 4px;
+        margin: 0 0 2px;
         font-size: 11px;
         font-weight: 700;
-        letter-spacing: 0.06em;
+        letter-spacing: 0.08em;
         text-transform: uppercase;
         color: rgba(255, 255, 255, 0.45);
-      }
-      .keybinds-list__group:first-child {
-        margin-top: 0;
       }
       .keybinds-bind-row {
         appearance: none;
@@ -7818,10 +7957,10 @@
         align-items: center;
         justify-content: space-between;
         gap: 12px;
-        padding: 8px 10px;
+        padding: 10px 12px;
         border: 1px solid rgba(255, 255, 255, 0.08);
-        border-radius: 8px;
-        background: rgba(255, 255, 255, 0.04);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.05);
         color: inherit;
         font: inherit;
         text-align: left;
@@ -7829,13 +7968,13 @@
         transition: background 0.12s, border-color 0.12s;
       }
       .keybinds-bind-row:hover {
-        background: rgba(255, 255, 255, 0.08);
-        border-color: rgba(255, 255, 255, 0.16);
+        background: rgba(255, 255, 255, 0.1);
+        border-color: rgba(255, 255, 255, 0.18);
       }
       .keybinds-bind-row.is-listening {
         border-color: rgba(255, 107, 107, 0.55);
-        background: rgba(255, 107, 107, 0.12);
-        box-shadow: 0 0 0 1px rgba(255, 107, 107, 0.2);
+        background: rgba(255, 107, 107, 0.14);
+        box-shadow: 0 0 0 1px rgba(255, 107, 107, 0.22);
       }
       .keybinds-bind-row__left {
         display: flex;
@@ -7845,9 +7984,9 @@
         flex: 1 1 auto;
       }
       .keybinds-bind-row__name {
-        font-size: 13px;
+        font-size: 14px;
         font-weight: 600;
-        color: rgba(255, 255, 255, 0.92);
+        color: rgba(255, 255, 255, 0.94);
       }
       .keybinds-bind-row__desc {
         font-size: 11px;
@@ -7858,14 +7997,14 @@
       }
       .keybinds-bind-row__badge {
         flex-shrink: 0;
-        min-width: 56px;
-        max-width: 120px;
-        padding: 4px 8px;
-        border-radius: 6px;
+        min-width: 64px;
+        max-width: 140px;
+        padding: 6px 10px;
+        border-radius: 8px;
         background: rgba(0, 0, 0, 0.35);
         border: 1px solid rgba(255, 255, 255, 0.14);
         color: #fff;
-        font-size: 11px;
+        font-size: 12px;
         font-weight: 700;
         font-variant-numeric: tabular-nums;
         text-align: center;

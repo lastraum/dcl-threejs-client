@@ -449,6 +449,10 @@ export async function resolveSceneFromRoute(target: RouteTarget): Promise<Resolv
     throw new Error('Profile route does not resolve a network scene')
   }
 
+  if (target.kind === 'lootbag') {
+    throw new Error('Loot Bag route does not resolve a network scene')
+  }
+
   if (target.kind === 'blank') {
     const metadata = { ...BLANK_SCENE_TEMPLATE.metadata, environment: 'none' as const }
     const resolvedEnv = resolveSceneEnvironment(metadata, { kind: 'blank' })

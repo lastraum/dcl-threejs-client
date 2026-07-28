@@ -18,6 +18,13 @@ import {
   tryParseFollowDataPacket,
   type FollowWireMsg
 } from './communityFollowWire'
+import {
+  encodePoolClaimDataPacket,
+  isPoolClaimTopic,
+  POOL_CLAIM_TOPIC,
+  tryParsePoolClaimDataPacket,
+  type PoolClaimWireMsg
+} from './poolClaimWire'
 import { tryDecodeRfc4ChatPacket } from './dclRfc4Chat'
 
 const ETH_ADDRESS_RE = /^0x[a-f0-9]{40}$/
@@ -62,12 +69,18 @@ export type CommunityFollowDataEvent = {
   msg: FollowWireMsg
 }
 
+export type PoolClaimDataEvent = {
+  fromAddress: string
+  msg: PoolClaimWireMsg
+}
+
 /**
  * ADR-208 private chat room — one persistent LiveKit connection for:
  * - 1:1 DMs: RFC4 Chat + `destinationIdentities` + topic = recipient wallet (Explorer wire)
  * - Community group text via **comms-message-sfu**:
  *   dest = message-router-*, topic = `community:{id}`
  * - Community Follow/Tour control (non-chat data, topic `d3js-follow:{id}`)
+ * - Loot Bag claims (non-chat data, topic `d3js-lootbag:claims`)
  *
  * Inbound 1:1 accepts: topic=`0x…` (to me), topic=`private:{me}`, or bare directed Chat.
  *
@@ -86,8 +99,11 @@ class PrivateMessagesServiceImpl {
   private readonly inbound = new Set<(ev: PrivateMessageEvent) => void>()
   private readonly communityInbound = new Set<(ev: CommunityMessageEvent) => void>()
   private readonly followInbound = new Set<(ev: CommunityFollowDataEvent) => void>()
+  private readonly poolClaimInbound = new Set<(ev: PoolClaimDataEvent) => void>()
   /** Dedupe dual-send (directed + topic) and retransmits: key → last unix sec. */
   private readonly recentDmKeys = new Map<string, number>()
+  /** Dedupe pool claim rebroadcasts: claimer|pos|at-bucket */
+  private readonly recentPoolClaimKeys = new Map<string, number>()
 
   /** Call when a SocialService wants the shared PM room (init / open DM). */
   retain(): void {
@@ -120,6 +136,13 @@ class PrivateMessagesServiceImpl {
     this.followInbound.add(listener)
     return () => {
       this.followInbound.delete(listener)
+    }
+  }
+
+  subscribePoolClaim(listener: (ev: PoolClaimDataEvent) => void): () => void {
+    this.poolClaimInbound.add(listener)
+    return () => {
+      this.poolClaimInbound.delete(listener)
     }
   }
 
@@ -239,8 +262,13 @@ class PrivateMessagesServiceImpl {
         const topicTrim = topic?.trim() ?? ''
         const chat = tryDecodeRfc4ChatPacket(payload)
         const isChat = chat.kind === 'chat'
-        // Always log chat / private: / bare; skip noisy non-chat SFU topics.
-        const interesting = isChat || topicTrim.startsWith('private:') || !topicTrim
+        // Always log chat / private: / bare / pool claims; skip noisy non-chat SFU topics.
+        const interesting =
+          isChat ||
+          topicTrim.startsWith('private:') ||
+          !topicTrim ||
+          isPoolClaimTopic(topicTrim) ||
+          topicTrim.startsWith('d3js-')
         if (!interesting) return
         clientDebugLog.log(
           'social',
@@ -324,6 +352,12 @@ class PrivateMessagesServiceImpl {
       return
     }
 
+    // Loot Bag claims — room broadcast, peer toasts (not self).
+    if (isPoolClaimTopic(topic)) {
+      this.handlePoolClaimDataPacket(address, data)
+      return
+    }
+
     const communityId = parseCommunityChatTopic(topic)
     if (!communityId) return
     const chat = tryDecodeRfc4ChatPacket(data)
@@ -351,6 +385,117 @@ class PrivateMessagesServiceImpl {
     if (!msg) return
     const ev: CommunityFollowDataEvent = { communityId, fromAddress: from, msg }
     for (const listener of this.followInbound) listener(ev)
+  }
+
+  private handlePoolClaimDataPacket(address: string, data: Uint8Array): void {
+    if (isMessageRouterIdentity(address)) return
+    const from = address.trim().toLowerCase()
+    const me = this.selfAddress()
+    if (!from) return
+    if (me && from === me) {
+      clientDebugLog.log('social', 'Pool claim rx ignored (self LiveKit identity)', {
+        level: 'info',
+        alsoConsole: true,
+        throttleMs: 3000,
+        throttleKey: 'pool-claim-self-lk'
+      })
+      return
+    }
+    const msg = tryParsePoolClaimDataPacket(data)
+    if (!msg) {
+      clientDebugLog.log('social', 'Pool claim rx ignored (bad packet)', {
+        level: 'warn',
+        alsoConsole: true
+      })
+      return
+    }
+    // Prefer wire address; fall back to LiveKit identity
+    const claimer = (msg.a || from).toLowerCase()
+    if (me && claimer === me) {
+      clientDebugLog.log('social', 'Pool claim rx ignored (self claimer — no local toast)', {
+        level: 'info',
+        alsoConsole: true,
+        throttleMs: 3000,
+        throttleKey: 'pool-claim-self-wire'
+      })
+      return
+    }
+    const bucket = Math.floor(msg.at / 5000)
+    const dedupeKey = `${claimer}|${msg.p}|${bucket}`
+    const now = Date.now()
+    const prev = this.recentPoolClaimKeys.get(dedupeKey)
+    if (prev != null && now - prev < 8000) return
+    this.recentPoolClaimKeys.set(dedupeKey, now)
+    if (this.recentPoolClaimKeys.size > 100) {
+      for (const [k, t] of this.recentPoolClaimKeys) {
+        if (now - t > 60_000) this.recentPoolClaimKeys.delete(k)
+      }
+    }
+    const n = this.poolClaimInbound.size
+    clientDebugLog.log(
+      'social',
+      `Pool claim ← ${claimer.slice(0, 10)}… pos=${msg.p} “${msg.l}” listeners=${n}`,
+      { level: n === 0 ? 'warn' : 'success', alsoConsole: true }
+    )
+    if (n === 0) {
+      clientDebugLog.log(
+        'social',
+        'Pool claim dropped — toast host not subscribed (Jump In disposed notifications?)',
+        { level: 'warn', alsoConsole: true }
+      )
+      return
+    }
+    const ev: PoolClaimDataEvent = {
+      fromAddress: claimer,
+      msg: { ...msg, a: claimer }
+    }
+    for (const listener of this.poolClaimInbound) listener(ev)
+  }
+
+  /**
+   * Loot Bag claim — room-broadcast non-chat data on topic `d3js-lootbag:claims`.
+   * Peers show a toast; local client should not toast self (filtered on receive).
+   */
+  async sendPoolClaim(msg: PoolClaimWireMsg): Promise<boolean> {
+    if (!this.session || !this.isConnected()) {
+      this.lastError = 'private messages room not connected'
+      clientDebugLog.log('social', 'Pool claim publish skipped — PM room not connected', {
+        level: 'warn',
+        alsoConsole: true
+      })
+      return false
+    }
+    const packet = encodePoolClaimDataPacket(msg)
+    const remotes = this.session.getRemoteParticipantIdentities().filter((id) => !isMessageRouterIdentity(id))
+    try {
+      const published = await this.session.publishTopicData(POOL_CLAIM_TOPIC, packet, true)
+      if (!published) {
+        this.lastError = 'LiveKit publishTopicData returned false'
+        clientDebugLog.log('social', 'Pool claim publish failed — room not ready or publish rejected', {
+          level: 'warn',
+          alsoConsole: true
+        })
+        return false
+      }
+      const peerHint =
+        remotes.length === 0
+          ? ' · remotes=0 (no peer will toast — other client must be signed in + PM-connected)'
+          : ` · remotes=${remotes.length}`
+      clientDebugLog.log(
+        'social',
+        `Pool claim → PM room topic=${POOL_CLAIM_TOPIC} pos=${msg.p} demo=${!!msg.demo}${peerHint}`,
+        { level: remotes.length === 0 ? 'warn' : 'success', alsoConsole: true }
+      )
+      return true
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      this.lastError = detail
+      clientDebugLog.log('social', `Pool claim publish failed: ${detail}`, {
+        level: 'warn',
+        alsoConsole: true
+      })
+      return false
+    }
   }
 
   async sendTo(peerAddress: string, text: string): Promise<boolean> {

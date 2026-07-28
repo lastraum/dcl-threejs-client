@@ -109,6 +109,21 @@ export default defineConfig({
         changeOrigin: true,
         secure: true,
         rewrite: (path) => path.replace(/^\/api\/storage/, '')
+      },
+      // Marketplace — never call marketplace-api from the browser (CORS broken)
+      '/api/marketplace': {
+        target: 'https://marketplace-api.decentraland.org',
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/api\/marketplace/, '')
+      },
+      // Loot Bag meta-tx — same-origin (CORS broken on transactions.lastslice.co)
+      // Local self-relayer: change target to http://localhost:5356
+      '/api/meta-tx': {
+        target: 'https://transactions.lastslice.co',
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/api\/meta-tx/, '')
       }
     }
   },

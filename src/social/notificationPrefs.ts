@@ -1,11 +1,18 @@
 const STORAGE_KEY = 'dcl-social-notification-prefs'
 
 export type NotificationPrefsState = {
+  /** Master switch for toast banners (chat, community, pool, system). */
   enabled: boolean
+  /**
+   * Loot Bag claims from peers (PM topic `d3js-lootbag:claims`).
+   * Default on. Does not toast your own claim (local win modal only).
+   */
+  poolClaims: boolean
 }
 
 const DEFAULTS: NotificationPrefsState = {
-  enabled: true
+  enabled: true,
+  poolClaims: true
 }
 
 type Listener = (state: NotificationPrefsState) => void
@@ -27,9 +34,21 @@ class NotificationPrefsStore {
     return this.state.enabled
   }
 
+  /** Master banners on and pool claim peer toasts on. */
+  isPoolClaimsEnabled(): boolean {
+    return this.state.enabled && this.state.poolClaims
+  }
+
   setEnabled(enabled: boolean): void {
     if (enabled === this.state.enabled) return
     this.state = { ...this.state, enabled }
+    this.persist()
+    this.notify()
+  }
+
+  setPoolClaims(poolClaims: boolean): void {
+    if (poolClaims === this.state.poolClaims) return
+    this.state = { ...this.state, poolClaims }
     this.persist()
     this.notify()
   }
@@ -61,6 +80,9 @@ class NotificationPrefsStore {
       const parsed = JSON.parse(raw) as Partial<NotificationPrefsState>
       if (typeof parsed.enabled === 'boolean') {
         this.state.enabled = parsed.enabled
+      }
+      if (typeof parsed.poolClaims === 'boolean') {
+        this.state.poolClaims = parsed.poolClaims
       }
     } catch {
       /* corrupt data */

@@ -263,10 +263,21 @@ export class PetsPanel {
           <article class="pets-panel__row${isActive ? ' is-active' : ''}" data-hash="${e.contentHash}">
             <div class="pets-panel__row-top">
               <div class="pets-panel__row-main">
-                <div class="pets-panel__row-name">${label}${isActive ? ' <span class="pets-panel__badge">Active</span>' : ''}</div>
+                <div class="pets-panel__row-name">${label}</div>
                 <div class="pets-panel__row-meta">${escapeHtml(meta)}</div>
               </div>
               <div class="pets-panel__row-actions">
+                <button
+                  type="button"
+                  class="pets-panel__toggle${isActive ? ' is-on' : ''}"
+                  data-toggle="${e.contentHash}"
+                  role="switch"
+                  aria-checked="${isActive ? 'true' : 'false'}"
+                  title="${isActive ? 'Disable pet' : 'Enable pet'}"
+                  aria-label="${isActive ? 'Disable' : 'Enable'} ${label}"
+                >
+                  <span class="pets-panel__toggle-knob" aria-hidden="true"></span>
+                </button>
                 <button type="button" class="pets-panel__icon-btn" data-settings="${e.contentHash}" title="Settings" aria-label="Pet settings">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                     <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" stroke="currentColor" stroke-width="1.6"/>
@@ -463,6 +474,24 @@ export class PetsPanel {
     if (t.closest('[data-edit-back]')) {
       ev.preventDefault()
       await this.closeEdit()
+      return
+    }
+
+    const toggle = t.closest<HTMLElement>('[data-toggle]')
+    if (toggle?.dataset.toggle) {
+      ev.preventDefault()
+      const hash = toggle.dataset.toggle
+      const active = getActivePetEntry(address)
+      if (active?.contentHash === hash) {
+        setActivePetHash(address, null)
+      } else {
+        const rows = await this.collectRows()
+        const entry = rows.find((e) => e.contentHash === hash)
+        if (entry) upsertOwnedPet(address, entry)
+        setActivePetHash(address, hash)
+      }
+      await this.render()
+      await this.options.onActivePetChange?.()
       return
     }
 

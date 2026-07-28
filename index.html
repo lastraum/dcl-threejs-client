@@ -2321,6 +2321,36 @@
         align-items: center;
         flex-shrink: 0;
       }
+      .pets-panel__toggle {
+        appearance: none;
+        border: 1px solid rgba(255,255,255,0.14);
+        background: rgba(0,0,0,0.28);
+        width: 42px;
+        height: 24px;
+        border-radius: 999px;
+        padding: 2px;
+        cursor: pointer;
+        position: relative;
+        flex-shrink: 0;
+        transition: background 0.15s ease, border-color 0.15s ease;
+      }
+      .pets-panel__toggle-knob {
+        display: block;
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        background: rgba(255,255,255,0.75);
+        transform: translateX(0);
+        transition: transform 0.15s ease, background 0.15s ease;
+      }
+      .pets-panel__toggle.is-on {
+        background: rgba(255, 45, 85, 0.45);
+        border-color: rgba(255, 45, 85, 0.65);
+      }
+      .pets-panel__toggle.is-on .pets-panel__toggle-knob {
+        transform: translateX(18px);
+        background: #fff;
+      }
       .pets-panel__icon-btn {
         appearance: none;
         border: 1px solid rgba(255,255,255,0.12);

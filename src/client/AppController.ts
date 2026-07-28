@@ -934,12 +934,13 @@ export class AppController {
       getLeaderFeet: () => {
         const addr = this.tourFocus?.getLeaderAddress()
         if (!addr) return null
-        return this.world?.getRemoteAvatarManager()?.getPeerRoot(addr) ?? null
+        // Require a real posed peer (not provisional colocate-at-local).
+        return this.world?.getRemoteAvatarManager()?.getPeerRootForTour(addr) ?? null
       },
       setPlayerTourFocusActive: (active) => {
         this.world?.setPlayerTourFocusActive(active)
       },
-      isSceneVirtualCameraDriving: () => Boolean(this.world?.isPhotoCameraActive()),
+      isPhotoCameraActive: () => Boolean(this.world?.isPhotoCameraActive()),
       onLeave: () => {
         // Esc = dismiss this Focus period only (stay on tour). Next Focus ON re-enters.
         this.tourFocusOptOut = true
@@ -953,7 +954,7 @@ export class AppController {
   private bindTourFocusTick(world: World): void {
     this.ensureTourFocusController(world)
     world.setTourFocusTick((delta) => {
-      // Leader: stream freecam + FOV while Focus is on.
+      // Leader: stream freecam + FOV while Focus is on (every frame sample; publish ~10Hz).
       this.communityFollow?.tickLeaderCam(() => {
         const fc = this.world?.getPlayerFreecamState()
         if (!fc) return null
@@ -965,6 +966,7 @@ export class AppController {
           fov: clientSettings.getFov()
         }
       })
+      // Follower lens — after remote pose so leader feet are current.
       this.tourFocus?.update(delta)
     })
   }
@@ -985,8 +987,14 @@ export class AppController {
     if (focusActive) {
       // New Focus period from leader — clear Esc opt-out so we re-enter.
       this.tourFocusOptOut = false
+      // Prefer last cam sample; enter() falls back to a default 3P boom if none yet.
       const cam = this.communityFollow.getLastCam(communityId)
       this.tourFocus?.enter(leaderAddress, cam)
+      clientDebugLog.log(
+        'social',
+        `Tour Focus enter · leader=${leaderAddress.slice(0, 10)}… cam=${cam ? 'yes' : 'default'}`,
+        { level: 'info', alsoConsole: true }
+      )
     } else {
       // Leader ended Focus — ready for the next ON.
       this.tourFocusOptOut = false

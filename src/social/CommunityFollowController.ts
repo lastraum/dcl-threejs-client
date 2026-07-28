@@ -641,6 +641,11 @@ export class CommunityFollowController {
     if (!on) {
       session.lastCam = null
       this.lastPublishedCam = null
+      this.lastCamSentAt = 0
+    } else {
+      // Force an immediate cam sample on the next tick so followers jump ASAP.
+      this.lastPublishedCam = null
+      this.lastCamSentAt = 0
     }
     this.sessions.set(id, session)
     const ok = await this.publish(id, {
@@ -669,6 +674,7 @@ export class CommunityFollowController {
   /**
    * Leader frame tick: publish freecam while Focus is on (~10 Hz).
    * `sample` should read local freecam yaw/pitch/dist/fp + FOV.
+   * First sample after Focus ON is always published (no throttle).
    */
   tickLeaderCam(sample: () => FollowCamState | null): void {
     if (this.disposed || !this.leadingCommunityId || !this.leadingSessionId) return
@@ -676,12 +682,18 @@ export class CommunityFollowController {
     const session = this.sessions.get(id)
     if (!session || !session.focusActive || session.sessionId !== this.leadingSessionId) return
     const now = Date.now()
-    if (now - this.lastCamSentAt < CAM_PUBLISH_INTERVAL_MS) return
+    const firstAfterFocus = this.lastCamSentAt === 0 || this.lastPublishedCam === null
+    if (!firstAfterFocus && now - this.lastCamSentAt < CAM_PUBLISH_INTERVAL_MS) return
     const raw = sample()
     if (!raw) return
     const cam = quantizeFollowCam(raw)
     // Always send first packet after focus-on; then skip identical snapshots.
-    if (this.lastPublishedCam && followCamEqual(this.lastPublishedCam, cam) && now - this.lastCamSentAt < 500) {
+    if (
+      !firstAfterFocus &&
+      this.lastPublishedCam &&
+      followCamEqual(this.lastPublishedCam, cam) &&
+      now - this.lastCamSentAt < 500
+    ) {
       return
     }
     this.lastCamSentAt = now

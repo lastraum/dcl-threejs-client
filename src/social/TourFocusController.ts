@@ -20,6 +20,15 @@ const CAM_LOOK_HEIGHT = 1.15
 const CAM_SHOULDER_OFFSET = 0.3
 const CAM_FPV_MAX_DISTANCE = 0.35
 
+/** Used until the first leader `cam` packet arrives (focus ON can beat first sample). */
+const DEFAULT_CAM: FollowCamState = {
+  fp: false,
+  yaw: 0,
+  pitch: 0.35,
+  dist: 4,
+  fov: 75
+}
+
 const _pivot = new THREE.Vector3()
 const _lookAt = new THREE.Vector3()
 const _offset = new THREE.Vector3()
@@ -29,6 +38,7 @@ const _camQuat = new THREE.Quaternion()
 const _camEuler = new THREE.Euler(0, 0, 0, 'YXZ')
 const _smoothedPos = new THREE.Vector3()
 const _smoothedQuat = new THREE.Quaternion()
+const _feetWorld = new THREE.Vector3()
 const _up = new THREE.Vector3(0, 1, 0)
 const _lookMat = new THREE.Matrix4()
 
@@ -37,8 +47,8 @@ export type TourFocusControllerDeps = {
   /** Leader peer feet root (Three world), or null if not yet posed. */
   getLeaderFeet: () => THREE.Object3D | null
   setPlayerTourFocusActive: (active: boolean) => void
-  /** Scene VirtualCamera owns the lens — do not fight it. */
-  isSceneVirtualCameraDriving?: () => boolean
+  /** Photo mode owns the lens — do not fight it. Tour Focus overrides freecam / scene VC. */
+  isPhotoCameraActive?: () => boolean
   /** Esc while focused → leave tour (unfollow). */
   onLeave: () => void
 }
@@ -81,12 +91,16 @@ export class TourFocusController {
     this.active = true
     this.leaderAddress = addr
     if (cam) this.cam = cam
+    // Never leave cam null — otherwise update() no-ops and the lens stays on the follower.
+    if (!this.cam) this.cam = { ...DEFAULT_CAM, fov: clientSettings.getFov() }
     if (!wasActive) {
       this.restoredFov = this.deps.host.camera.fov
       this.deps.setPlayerTourFocusActive(true)
       this.showBanner()
       window.addEventListener('keydown', this.onKey, true)
       this.hasSmoothed = false
+      // Snap on first frame so we jump to the leader immediately (not stay at local freecam).
+      this.update(1 / 30)
     } else {
       this.refreshBanner()
     }
@@ -94,7 +108,11 @@ export class TourFocusController {
 
   setCam(cam: FollowCamState): void {
     this.cam = cam
-    if (this.active) this.applyFov(cam.fov)
+    if (this.active) {
+      this.applyFov(cam.fov)
+      // First real cam packet after focus — hard snap so we don't ease from defaults.
+      if (!this.hasSmoothed) this.update(1 / 30)
+    }
   }
 
   exit(): void {
@@ -115,31 +133,39 @@ export class TourFocusController {
 
   /**
    * Apply leader freecam each frame after remote avatar pose ticks.
-   * No-op when inactive, missing leader pose, or scene VC owns the lens.
+   * No-op when inactive, missing leader pose, or photo camera owns the lens.
    */
   update(delta: number): void {
-    if (!this.active || !this.cam) return
-    if (this.deps.isSceneVirtualCameraDriving?.()) return
+    if (!this.active) return
+    if (this.deps.isPhotoCameraActive?.()) return
 
     const feet = this.deps.getLeaderFeet()
-    if (!feet) return
+    if (!feet) {
+      this.refreshBannerWaiting(true)
+      return
+    }
+    this.refreshBannerWaiting(false)
 
-    const cam = this.cam
+    const cam = this.cam ?? { ...DEFAULT_CAM, fov: clientSettings.getFov() }
+    this.cam = cam
     this.applyFov(cam.fov)
 
+    // World position — peer roots may sit under a scene parent.
+    feet.updateWorldMatrix(true, false)
+    feet.getWorldPosition(_feetWorld)
+
     const fpv = cam.fp || cam.dist <= CAM_FPV_MAX_DISTANCE
-    const feetPos = feet.position
 
     if (fpv) {
-      _pivot.copy(feetPos)
+      _pivot.copy(_feetWorld)
       _pivot.y += CAM_EYE_HEIGHT + 0.3
       _camEuler.set(cam.pitch, cam.yaw, 0)
       _camQuat.setFromEuler(_camEuler)
       _camPos.copy(_pivot)
     } else {
-      _pivot.copy(feetPos)
+      _pivot.copy(_feetWorld)
       _pivot.y += CAM_PIVOT_HEIGHT
-      _lookAt.copy(feetPos)
+      _lookAt.copy(_feetWorld)
       _lookAt.y += CAM_LOOK_HEIGHT
 
       const cosPitch = Math.cos(cam.pitch)
@@ -159,7 +185,7 @@ export class TourFocusController {
       _camQuat.setFromRotationMatrix(_lookMat)
     }
 
-    const dt = Math.min(delta, 0.05)
+    const dt = Math.min(Math.max(delta, 0), 0.05)
     const alpha = this.hasSmoothed ? 1 - Math.exp(-14 * dt) : 1
     if (!this.hasSmoothed) {
       _smoothedPos.copy(_camPos)
@@ -172,6 +198,7 @@ export class TourFocusController {
 
     this.deps.host.camera.position.copy(_smoothedPos)
     this.deps.host.camera.quaternion.copy(_smoothedQuat)
+    this.deps.host.camera.updateMatrixWorld(true)
   }
 
   private applyFov(fov: number): void {
@@ -198,7 +225,7 @@ export class TourFocusController {
     el.setAttribute('role', 'status')
     el.innerHTML = `
       <span class="tour-focus-banner-icon" aria-hidden="true">◎</span>
-      <span class="tour-focus-banner-text">Tour Focus — watching leader</span>
+      <span class="tour-focus-banner-text" data-focus-text>Tour Focus — watching leader</span>
       <span class="tour-focus-banner-hint">Esc to exit focus</span>
     `
     document.body.appendChild(el)
@@ -206,7 +233,15 @@ export class TourFocusController {
   }
 
   private refreshBanner(): void {
-    // Static copy for now; reserved for leader name later.
+    this.refreshBannerWaiting(false)
+  }
+
+  private refreshBannerWaiting(waiting: boolean): void {
+    const text = this.banner?.querySelector('[data-focus-text]')
+    if (!text) return
+    text.textContent = waiting
+      ? 'Tour Focus — waiting for leader pose…'
+      : 'Tour Focus — watching leader'
   }
 
   private hideBanner(): void {

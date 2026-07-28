@@ -666,6 +666,16 @@ export class RemoteAvatarManager {
     return record.root
   }
 
+  /**
+   * Tour Focus / flag: only when the peer has a real RFC4 pose.
+   * Provisional colocate-at-local roots would pin the follower camera on themselves.
+   */
+  getPeerRootForTour(address: string): THREE.Object3D | null {
+    const record = this.peers.get(address.toLowerCase())
+    if (!record || !record.hasPosition) return null
+    return record.root
+  }
+
   /** Visual body yaw in Three space (includes AVATAR_YAW_OFFSET). */
   getPeerYaw(address: string): number | null {
     const record = this.peers.get(address.toLowerCase())

@@ -29,9 +29,10 @@ export function measureUiText(
 
   const fontPx = Math.max(1, (text.fontSize ?? 10) * scale)
   const family = FONT_FAMILY[text.font ?? 0] ?? FONT_FAMILY[0]
-  const lineHeight = fontPx
-  const padX = 0
-  const padY = 0
+  // Match DOM line-height 1.25 so Yoga minHeight doesn't undersize vs painted text.
+  const lineHeight = fontPx * 1.25
+  const padX = 2
+  const padY = 2
   const plain = stripUiTextMarkup(raw)
   const lines = plain.split('\n')
 

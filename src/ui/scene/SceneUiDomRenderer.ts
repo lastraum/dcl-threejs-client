@@ -576,15 +576,23 @@ export class SceneUiDomRenderer {
     shell.style.pointerEvents = ''
     shell.removeAttribute('inert')
 
+    // Text leaves: don't clip labels that slightly exceed yoga's tight content box
+    // (Admin Tools titles/buttons were shredding under overflow:hidden + padding).
+    if (text?.value?.trim() && !uiInput && !uiDropdown) {
+      el.style.overflow = 'visible'
+    }
+
     // Clip modal chrome so absolute children don't spill across the plaza.
     // Slot cells (≈110×110): allow slight overflow for selection rings, but still clip
     // when the scene authors overflow:hidden. Mid panels (grid, detail ≥120) clip so
     // NEW banners / icons stay inside their cell stacking context.
+    // Don't force-clip small text-only chrome (title bars / icon buttons).
+    const hasTextOnlyChrome = !!text?.value?.trim() && !bg && !interactive
     const clipShell =
       !!radius ||
       transform.overflow === YGOverflow.HIDDEN ||
       transform.overflow === YGOverflow.SCROLL ||
-      (layoutBox.width >= 120 && layoutBox.height >= 120)
+      (layoutBox.width >= 120 && layoutBox.height >= 120 && !hasTextOnlyChrome)
     if (radius) {
       shell.style.borderRadius = radius
       el.style.borderRadius = radius
@@ -698,7 +706,9 @@ export class SceneUiDomRenderer {
         label.dataset.dclUiText = html
         label.innerHTML = html
       }
-      applyUiTextStyles(label, text, scale)
+      // Buttons / compact chrome: keep labels on one line (Admin Tools "Stream", "Play action").
+      const preferSingleLine = compactControl || interactive
+      applyUiTextStyles(label, text, scale, preferSingleLine)
       if (!span) el.appendChild(label)
       el.querySelector('.scene-ui-node__input')?.remove()
       el.querySelector('.scene-ui-node__select')?.remove()

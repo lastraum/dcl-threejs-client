@@ -323,7 +323,16 @@ export function applyUiDropdownStyles(
   select.style.appearance = 'none'
 }
 
-export function applyUiTextStyles(label: HTMLElement, text: PBUiText, scale: UiScreenScale): void {
+export function applyUiTextStyles(
+  label: HTMLElement,
+  text: PBUiText,
+  scale: UiScreenScale,
+  /**
+   * Buttons / compact chrome (Admin Tools, action rows): never mid-word wrap.
+   * `overflow-wrap: anywhere` was shredding "Stream" / "Play action" into clipped lines.
+   */
+  preferSingleLine = false
+): void {
   const align = textAlignCss(text.textAlign)
   const c = text.color ?? { r: 1, g: 1, b: 1, a: 1 }
   const safeColor = (c.a ?? 1) < 0.05 ? { r: 1, g: 1, b: 1, a: 1 } : c
@@ -336,7 +345,15 @@ export function applyUiTextStyles(label: HTMLElement, text: PBUiText, scale: UiS
   label.style.fontFamily = FONT_FAMILY[text.font ?? 0] ?? FONT_FAMILY[0]
   label.style.textAlign = align.textAlign
   // SDK default is TW_WRAP (0). Only TW_NO_WRAP (1) is single-line.
-  const singleLine = text.textWrap === 1
+  // Prefer single-line for interactive/compact controls even when wrap is left default.
+  // Short chrome labels ("Admin tools", "Stream") without authored newlines also stay on one line —
+  // default wrap + anywhere was stacking mid-word and clipping under overflow:hidden.
+  const plainLen = stripUiTextMarkup(text.value ?? '').replace(/\s+/g, ' ').trim().length
+  const hasNewline = (text.value ?? '').includes('\n')
+  const singleLine =
+    preferSingleLine ||
+    text.textWrap === 1 ||
+    (!hasNewline && plainLen > 0 && plainLen <= 48)
   // Fill the UiTransform box and honor TextAlignMode (default TAM_MIDDLE_CENTER).
   // Content root is absolute-filled to the shell — 100% height is valid there.
   label.style.width = '100%'
@@ -344,7 +361,8 @@ export function applyUiTextStyles(label: HTMLElement, text: PBUiText, scale: UiS
   label.style.maxWidth = '100%'
   label.style.minWidth = '0'
   // Never collapse below one line (auto-height Labels without explicit UiTransform height).
-  label.style.minHeight = `${fontPx}px`
+  // Use 1.2× so glyph ascenders/descenders aren't clipped by overflow.
+  label.style.minHeight = `${Math.ceil(fontPx * 1.2)}px`
   label.style.flex = '1 1 auto'
   label.style.alignSelf = 'stretch'
   label.style.margin = '0'
@@ -355,11 +373,15 @@ export function applyUiTextStyles(label: HTMLElement, text: PBUiText, scale: UiS
   // TEXT_ALIGN_MODES: justifyContent = horizontal, alignItems = vertical (row flex).
   label.style.justifyContent = align.justifyContent
   label.style.alignItems = align.alignItems
-  label.style.wordBreak = singleLine ? 'normal' : 'break-word'
-  label.style.overflowWrap = singleLine ? 'normal' : 'anywhere'
+  // Never use overflow-wrap:anywhere — mid-word breaks destroy button labels (Stream → Str\neam).
+  label.style.wordBreak = singleLine ? 'normal' : 'normal'
+  label.style.overflowWrap = singleLine ? 'normal' : 'break-word'
   label.style.whiteSpace = singleLine ? 'nowrap' : 'pre-wrap'
-  label.style.overflow = 'hidden'
-  label.style.lineHeight = singleLine ? `${fontPx}px` : '1.25'
+  // Clip only when intentionally single-line (ellipsis optional); multi-line can grow visually.
+  // Tight line-height + overflow:hidden was clipping Admin Tools titles mid-glyph.
+  label.style.overflow = singleLine ? 'hidden' : 'visible'
+  label.style.textOverflow = singleLine ? 'ellipsis' : ''
+  label.style.lineHeight = '1.25'
   label.style.pointerEvents = 'none'
   label.style.position = 'relative'
   label.style.zIndex = '2'

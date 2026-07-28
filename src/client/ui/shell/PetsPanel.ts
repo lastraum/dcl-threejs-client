@@ -1,6 +1,5 @@
 import type { SessionIdentity } from '../../../network/SessionIdentity'
 import {
-  formatPetByteSize,
   addPetFile,
   ensurePetLibraryClipNames,
   listPetLibrary,
@@ -254,17 +253,11 @@ export class PetsPanel {
       .map((e) => {
         const isActive = active?.contentHash === e.contentHash
         const label = escapeHtml(e.nickname || e.fileName)
-        const yaw = e.meshYawOffsetDeg ?? 0
-        const clips = e.clipNames?.length ?? 0
-        const meta = `${e.category} · yaw ${yaw}° · ${formatPetByteSize(e.byteSize)}${
-          clips ? ` · ${clips} clips` : ''
-        } · ${e.contentHash.slice(0, 8)}…`
         return `
           <article class="pets-panel__row${isActive ? ' is-active' : ''}" data-hash="${e.contentHash}">
             <div class="pets-panel__row-top">
               <div class="pets-panel__row-main">
                 <div class="pets-panel__row-name">${label}</div>
-                <div class="pets-panel__row-meta">${escapeHtml(meta)}</div>
               </div>
               <div class="pets-panel__row-actions">
                 <button

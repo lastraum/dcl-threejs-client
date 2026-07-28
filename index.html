@@ -7865,22 +7865,38 @@
         appearance: none;
         box-sizing: border-box;
         min-width: 40px;
-        height: 42px;
-        padding: 0 6px;
-        border: 1px solid rgba(255, 255, 255, 0.12);
+        height: 44px;
+        padding: 2px 6px;
+        border: 1px solid rgba(100, 180, 255, 0.4);
         border-radius: 8px;
-        background: rgba(255, 255, 255, 0.06);
-        color: rgba(255, 255, 255, 0.72);
+        background: rgba(80, 150, 255, 0.18);
+        color: rgba(255, 255, 255, 0.92);
         font: inherit;
         font-size: 12px;
         font-weight: 700;
         letter-spacing: 0.02em;
-        cursor: default;
+        cursor: pointer;
         display: inline-flex;
+        flex-direction: column;
         align-items: center;
         justify-content: center;
+        gap: 1px;
         transition: background 0.12s, border-color 0.12s, color 0.12s, box-shadow 0.12s, transform 0.1s;
         user-select: none;
+        box-shadow: 0 0 0 1px rgba(80, 150, 255, 0.1);
+      }
+      .keybinds-key--remappable:hover {
+        filter: brightness(1.14);
+        transform: translateY(-1px);
+        border-color: rgba(140, 200, 255, 0.75);
+        background: rgba(90, 160, 255, 0.32);
+      }
+      .keybinds-overlay.is-listening .keybinds-key--remappable {
+        animation: keybinds-pulse 1.2s ease-in-out infinite;
+      }
+      @keyframes keybinds-pulse {
+        0%, 100% { box-shadow: 0 0 0 1px rgba(80, 150, 255, 0.15); }
+        50% { box-shadow: 0 0 0 2px rgba(120, 190, 255, 0.45); }
       }
       .keybinds-key--wide {
         min-width: 58px;
@@ -7890,30 +7906,41 @@
         flex: 1 1 auto;
         min-width: 160px;
       }
+      .keybinds-key--locked {
+        cursor: default;
+        opacity: 0.55;
+        border-color: rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.06);
+        box-shadow: none;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .keybinds-key--locked:hover {
+        filter: none;
+        transform: none;
+      }
       .keybinds-key.is-bound {
-        cursor: pointer;
+        border-color: rgba(140, 210, 255, 0.85);
+        background: rgba(70, 150, 255, 0.42);
+        box-shadow: 0 0 0 1px rgba(100, 180, 255, 0.35), 0 4px 14px rgba(40, 120, 255, 0.25);
         color: #fff;
-        border-color: rgba(255, 255, 255, 0.28);
-        background: rgba(255, 255, 255, 0.12);
       }
-      .keybinds-key.is-move {
-        border-color: rgba(100, 180, 255, 0.55);
-        background: rgba(80, 150, 255, 0.24);
-        box-shadow: 0 0 0 1px rgba(80, 150, 255, 0.18);
+      .keybinds-key__glyph {
+        line-height: 1.1;
       }
-      .keybinds-key.is-walk {
-        border-color: rgba(255, 180, 80, 0.65);
-        background: rgba(255, 160, 60, 0.3);
-        box-shadow: 0 0 0 1px rgba(255, 160, 60, 0.22);
+      .keybinds-key__action {
+        font-size: 8px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(220, 240, 255, 0.9);
+        line-height: 1;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
-      .keybinds-key.is-action {
-        border-color: rgba(255, 107, 107, 0.55);
-        background: rgba(255, 107, 107, 0.24);
-        box-shadow: 0 0 0 1px rgba(255, 107, 107, 0.18);
-      }
-      .keybinds-key.is-bound:hover {
-        filter: brightness(1.12);
-        transform: translateY(-1px);
+      .keybinds-key:not(.is-bound) .keybinds-key__action:empty {
+        display: none;
       }
       .keybinds-list__grid {
         display: grid;

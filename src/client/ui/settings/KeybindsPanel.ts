@@ -107,14 +107,14 @@ export class KeybindsPanel {
         <header class="keybinds-overlay__header">
           <div class="keybinds-overlay__heading">
             <span class="keybinds-overlay__title">Keyboard</span>
-            <span class="keybinds-overlay__subtitle">Click an action or key, then press a new binding</span>
+            <span class="keybinds-overlay__subtitle">Select an action, then click any key on the board (or press it)</span>
           </div>
           <button type="button" class="keybinds-overlay__close" aria-label="Close">&times;</button>
         </header>
         <div class="keybinds-overlay__body">
           <p class="keybinds-note">
-            Defaults match Explorer (WASD, <b>Ctrl = Walk</b>).
-            On Windows/Linux, <b>Ctrl+W</b> closes the browser tab — rebind Walk or Forward if that conflicts.
+            Every blue key is remappable — even ones Explorer never used (e.g. map <b>Walk → Tab</b>).
+            Defaults match Explorer (WASD, <b>Ctrl = Walk</b>). Rebind Walk off Ctrl to avoid browser <b>Ctrl+W</b> closing the tab.
           </p>
           <div class="keybinds-listen" hidden data-listen></div>
           <div class="keybinds-keyboard" data-keyboard aria-label="Keyboard map"></div>
@@ -231,21 +231,50 @@ export class KeybindsPanel {
   ): HTMLButtonElement {
     const btn = document.createElement('button')
     btn.type = 'button'
-    btn.className = 'keybinds-key'
+    btn.className = 'keybinds-key keybinds-key--remappable'
     if (wide === 'wide') btn.classList.add('keybinds-key--wide')
     if (wide === 'space') btn.classList.add('keybinds-key--space')
+    // Escape only cancels rebind — never a bind target.
+    if (code === 'Escape') {
+      btn.classList.remove('keybinds-key--remappable')
+      btn.classList.add('keybinds-key--locked')
+      btn.disabled = true
+      btn.title = 'Esc cancels rebind'
+    }
     btn.dataset.code = code
-    btn.textContent = label
+    btn.innerHTML = `<span class="keybinds-key__glyph">${label}</span><span class="keybinds-key__action" data-role="action"></span>`
     btn.title = code
-    btn.addEventListener('click', () => {
-      const id = keybinds.bindIdForCode(code)
-      if (id) {
-        playUiClick()
-        this.startListening(id)
-      }
-    })
+    btn.addEventListener('click', () => this.onKeyClick(code))
     this.keyEls.set(code, btn)
     return btn
+  }
+
+  /** Action selected → click any key to assign. No selection → click bound key to reselect that action. */
+  private onKeyClick(code: string): void {
+    if (code === 'Escape') return
+    playUiClick()
+    if (this.listeningId) {
+      this.assignCode(this.listeningId, code)
+      return
+    }
+    const existing = keybinds.bindIdForCode(code)
+    if (existing) {
+      this.startListening(existing)
+      return
+    }
+    this.listenHint.hidden = false
+    this.listenHint.textContent = 'Select an action below first, then click a key (or press it).'
+  }
+
+  private assignCode(id: KeybindId, code: string): void {
+    // Exact physical key from the board — Tab, Caps, etc. all valid.
+    const ok = keybinds.setBindFromCode(id, code)
+    if (!ok) {
+      this.listenHint.hidden = false
+      this.listenHint.textContent = `Can't bind ${formatKeyCodeLabel(code)} — try another key (Esc to cancel)`
+      return
+    }
+    this.cancelListening()
   }
 
   private buildBindList(): void {
@@ -306,8 +335,9 @@ export class KeybindsPanel {
     this.listeningId = id
     const meta = keybinds.meta(id)
     this.listenHint.hidden = false
-    this.listenHint.textContent = `Press a key for ${meta?.label ?? id}… (Esc to cancel)`
+    this.listenHint.textContent = `Click any blue key for ${meta?.label ?? id} — or press it (Esc to cancel)`
     this.bindRowEls.get(id)?.classList.add('is-listening')
+    this.root.classList.add('is-listening')
 
     this.listenHandler = (e: KeyboardEvent) => {
       e.preventDefault()
@@ -318,12 +348,7 @@ export class KeybindsPanel {
         this.cancelListening()
         return
       }
-      const ok = keybinds.setBindFromCode(id, e.code)
-      if (!ok) {
-        this.listenHint.textContent = `Can't bind ${formatKeyCodeLabel(e.code)} — try another key (Esc to cancel)`
-        return
-      }
-      this.cancelListening()
+      this.assignCode(id, e.code)
     }
     window.addEventListener('keydown', this.listenHandler, true)
   }
@@ -337,14 +362,18 @@ export class KeybindsPanel {
       this.bindRowEls.get(this.listeningId)?.classList.remove('is-listening')
     }
     this.listeningId = null
+    this.root.classList.remove('is-listening')
     this.listenHint.hidden = true
     this.listenHint.textContent = ''
   }
 
   private syncKeybinds(map: KeybindsMap): void {
     for (const btn of this.keyEls.values()) {
-      btn.classList.remove('is-bound', 'is-walk', 'is-move', 'is-action')
-      btn.title = btn.dataset.code ?? ''
+      btn.classList.remove('is-bound')
+      const actionEl = btn.querySelector('[data-role="action"]')
+      if (actionEl) actionEl.textContent = ''
+      const code = btn.dataset.code ?? ''
+      btn.title = code === 'Escape' ? 'Esc cancels rebind' : `${formatKeyCodeLabel(code)} — click to assign when an action is selected`
     }
 
     for (const meta of KEYBIND_META) {
@@ -353,24 +382,12 @@ export class KeybindsPanel {
       if (badge) badge.textContent = formatKeybindCodes(codes)
 
       for (const code of codes) {
-        const codesToLight = [code]
-        if (code === 'ControlLeft') codesToLight.push('ControlRight')
-        if (code === 'ControlRight') codesToLight.push('ControlLeft')
-        if (code === 'ShiftLeft') codesToLight.push('ShiftRight')
-        if (code === 'ShiftRight') codesToLight.push('ShiftLeft')
-
-        for (const c of codesToLight) {
-          const btn = this.keyEls.get(c)
-          if (!btn) continue
-          btn.classList.add('is-bound')
-          if (meta.group === 'movement') {
-            if (meta.id === 'walk') btn.classList.add('is-walk')
-            else btn.classList.add('is-move')
-          } else {
-            btn.classList.add('is-action')
-          }
-          btn.title = `${formatKeyCodeLabel(c)} → ${meta.label}`
-        }
+        const btn = this.keyEls.get(code)
+        if (!btn) continue
+        btn.classList.add('is-bound')
+        const actionEl = btn.querySelector('[data-role="action"]')
+        if (actionEl) actionEl.textContent = meta.label
+        btn.title = `${formatKeyCodeLabel(code)} → ${meta.label} (click to rebind)`
       }
     }
   }

@@ -334,7 +334,11 @@ class KeybindsStore {
     this.notify()
   }
 
-  /** Bind from a single physical keydown (expands modifier pairs). */
+  /**
+   * Bind from a single physical key (or keyboard-UI click).
+   * Left/Right modifiers still pair so either side works; every other code is exact
+   * (Tab, CapsLock, KeyQ, …) so non-Explorer keys can drive any InputAction.
+   */
   setBindFromCode(id: KeybindId, code: string): boolean {
     if (isForbiddenBindCode(code)) return false
     this.setBind(id, expandBoundCode(code))

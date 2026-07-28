@@ -151,7 +151,8 @@ export class PlayerInput {
     if (this.setBoundKey(e.code, true)) handled = true
     if (handled) e.preventDefault()
 
-    if (e.code === 'Tab') {
+    // Tab defaults to pointer-lock toggle only when not remapped to a DCL action (e.g. Walk).
+    if (e.code === 'Tab' && !keybinds.bindIdForCode('Tab')) {
       e.preventDefault()
       if (!this.isLookBlocked()) this.togglePointerLock()
     }

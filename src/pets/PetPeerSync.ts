@@ -71,6 +71,7 @@ export class PetPeerSync {
   private readonly servingKeys = new Set<string>()
   private readonly fetchAttempts = new Map<string, number>()
   private peerJoinReannounceTimer: ReturnType<typeof setTimeout> | null = null
+  private loginRetryTimers: ReturnType<typeof setTimeout>[] = []
   private lastPoseSendMs = 0
 
   private static readonly MAX_FETCH_ATTEMPTS = 6
@@ -89,6 +90,8 @@ export class PetPeerSync {
       clearTimeout(this.peerJoinReannounceTimer)
       this.peerJoinReannounceTimer = null
     }
+    for (const t of this.loginRetryTimers) clearTimeout(t)
+    this.loginRetryTimers = []
     this.comms?.setPetHandler(null)
     this.comms = null
     this.callbacks = null
@@ -158,15 +161,58 @@ export class PetPeerSync {
 
   async onSceneConnected(): Promise<void> {
     this.publishedHash = undefined
+    // Only re-announce when we already know equip. Never force DPET Clear here —
+    // World may still be restoring inventory; Clear wiped remotes after a later Announce.
     if (this.equippedHash) {
       await this.setLocalEquipped(this.equippedHash, this.equippedCategory, {
         force: true,
         meshYawOffsetDeg: this.equippedMeshYawDeg
       })
-    } else {
-      await this.setLocalEquipped(null, 'walking', { force: true })
     }
-    void this.publish(encodeDpetEnvelopes(encodeDpetWantAnnounce()), 'want-announce')
+    void this.requestPeerAnnounces()
+  }
+
+  /** Probe peers for pet equip (late join / handoff). */
+  async requestPeerAnnounces(): Promise<void> {
+    const sent = await this.publish(encodeDpetEnvelopes(encodeDpetWantAnnounce()), 'want-announce')
+    if (sent) {
+      console.info('[pets] DPET WantAnnounce sent — asking peers to re-announce equip')
+    }
+  }
+
+  /**
+   * Delayed WantAnnounce + local re-announce + re-apply cached peer equips.
+   * Mirrors VrmPeerSync — pets previously only announced once and remotes stayed invisible.
+   */
+  scheduleLoginWantAnnounceRetries(): void {
+    for (const t of this.loginRetryTimers) clearTimeout(t)
+    this.loginRetryTimers = []
+    const delays = [500, 1500, 3500, 7000]
+    for (const ms of delays) {
+      this.loginRetryTimers.push(
+        setTimeout(() => {
+          if (!this.comms) return
+          void this.requestPeerAnnounces()
+          void this.reannounceEquipped()
+          // Re-apply any peer equip we already heard (announce beat peer record / mesh fetch).
+          if (this.callbacks) {
+            for (const [address, hash] of this.peerHash) {
+              if (!hash) continue
+              const category = this.peerCategory.get(address) ?? 'walking'
+              const yaw = this.peerMeshYaw.get(address) ?? 0
+              this.callbacks.onPeerPetChanged(address, hash, category, yaw)
+              void loadPetLibraryBytes(hash).then((bytes) => {
+                if (bytes) {
+                  this.callbacks?.onPeerPetBytesReady(address, hash, category, yaw)
+                } else {
+                  void this.requestPeerPet(address, hash, category, true)
+                }
+              })
+            }
+          }
+        }, ms)
+      )
+    }
   }
 
   async onPeerJoined(_address: string): Promise<void> {
@@ -250,8 +296,14 @@ export class PetPeerSync {
 
   private async publish(envelopes: Uint8Array[], kind: string): Promise<boolean> {
     if (!this.comms || !envelopes.length) return false
+    // FetchRequest must hit every LiveKit room the owner might be on (island vs scene).
+    // Chunk streams stay primary-only so dual-room concurrent serves do not race assembly.
     const roomMode =
-      kind === 'announce' || kind === 'clear' || kind === 'want-announce' || kind === 'pose'
+      kind === 'announce' ||
+      kind === 'clear' ||
+      kind === 'want-announce' ||
+      kind === 'pose' ||
+      kind === 'fetch-request'
         ? 'broadcast'
         : 'primary'
     return this.comms.sendScenePet(envelopes, roomMode)

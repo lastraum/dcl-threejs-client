@@ -349,17 +349,31 @@ export class World {
   private bindIslandLiveKitReady(): void {
     this.comms.onIslandLiveKitReady = () => {
       const addr = this.session.getAddress() ?? null
-      this.vrmPeerSync.setLocalAddress(addr)
-      this.petPeerSync.setLocalAddress(addr)
-      void this.vrmPeerSync.onSceneConnected()
-      void this.petPeerSync.onSceneConnected()
-      if (this.remoteAvatars) {
-        this.vrmPeerSync.replayAllPeerEquips(this.remoteAvatars)
-      }
-      this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
-      void this.petManager.restoreFromInventory(addr)
-      console.info('[pets/vrm] island LiveKit ready — re-announce + WantAnnounce')
+      void this.reannounceDavAndPets(addr, 'island LiveKit ready')
     }
+  }
+
+  /**
+   * Force local DAV + DPET re-announce and probe peers.
+   * Restore pets **before** pet onSceneConnected so we never broadcast a premature Clear.
+   */
+  private async reannounceDavAndPets(
+    address: string | null,
+    reason: string
+  ): Promise<void> {
+    this.vrmPeerSync.setLocalAddress(address)
+    this.petPeerSync.setLocalAddress(address)
+    if (address) this.petManager.setLocalWallet(address)
+    // Inventory first so pet equip is known before onSceneConnected re-announces.
+    await this.petManager.restoreFromInventory(address)
+    await this.vrmPeerSync.onSceneConnected()
+    await this.petPeerSync.onSceneConnected()
+    if (this.remoteAvatars) {
+      this.vrmPeerSync.replayAllPeerEquips(this.remoteAvatars)
+    }
+    this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
+    this.petPeerSync.scheduleLoginWantAnnounceRetries()
+    console.info(`[pets/vrm] ${reason} — re-announce + WantAnnounce retries`)
   }
 
   /**
@@ -373,12 +387,9 @@ export class World {
       if (opts?.isWorld != null) this.comms.pruneUnusedLiveKitForTarget({ isWorld: opts.isWorld })
       // Handoff cleared chat handlers — re-bind 3D SocialService immediately.
       this.social.rewireComms(this.comms)
-      // Same LiveKit instance, but World just attached — re-seed peers + DAV probe.
-      this.vrmPeerSync.setLocalAddress(addr)
-      this.petPeerSync.setLocalAddress(addr)
+      // Same LiveKit instance, but World just attached — re-seed peers + force local equip out.
       this.comms.notifyHandlersOfCurrentPeers()
-      void this.vrmPeerSync.requestPeerAnnounces()
-      this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
+      void this.reannounceDavAndPets(addr, 'adoptComms (same session)')
       return
     }
     this.vrmPeerSync.detach()
@@ -394,16 +405,13 @@ export class World {
     this.social.rewireComms(this.comms)
     this.sceneCommsConnected = this.comms.isLiveKitConnected()
     if (opts?.isWorld != null) this.comms.pruneUnusedLiveKitForTarget({ isWorld: opts.isWorld })
-    this.vrmPeerSync.setLocalAddress(addr)
-    this.petPeerSync.setLocalAddress(addr)
     this.petManager.setLocalWallet(addr)
     this.petManager.attachPeerSync(this.petPeerSync)
     // Peers already in the room never re-fire join — push them into RemoteAvatarManager.
     this.comms.notifyHandlersOfCurrentPeers()
     this.syncVoiceRoom()
-    // Ask everyone for custom VRM equip — landing often missed their first announce.
-    void this.vrmPeerSync.requestPeerAnnounces()
-    this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
+    // Local guest VRM + pet equip often announced before World handlers existed — re-push now.
+    void this.reannounceDavAndPets(addr, 'adoptComms (new session)')
     const counts = this.comms.getLivePeerCounts()
     clientDebugLog.log(
       'network',
@@ -1108,13 +1116,7 @@ export class World {
       // SDK network: pulse RealmInfo.isConnectedSceneRoom for fishing/syncEntity.
       this.sceneScript.pulseSceneNetworkConnected()
       onProgress?.('Receiving peer updates…')
-      await this.vrmPeerSync.onSceneConnected()
-      await this.petPeerSync.onSceneConnected()
-      if (this.remoteAvatars) {
-        this.vrmPeerSync.replayAllPeerEquips(this.remoteAvatars)
-      }
-      this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
-      void this.petManager.restoreFromInventory(address)
+      await this.reannounceDavAndPets(address, 'early scene comms (reuse)')
       return
     }
 
@@ -1138,13 +1140,7 @@ export class World {
       })
       this.sceneScript.pulseSceneNetworkConnected()
       onProgress?.('Receiving peer updates…')
-      await this.vrmPeerSync.onSceneConnected()
-      await this.petPeerSync.onSceneConnected()
-      if (this.remoteAvatars) {
-        this.vrmPeerSync.replayAllPeerEquips(this.remoteAvatars)
-      }
-      this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
-      void this.petManager.restoreFromInventory(address)
+      await this.reannounceDavAndPets(address, 'early scene comms (fresh connect)')
       return
     }
     if (connectResult.reason === 'comms_disabled') {
@@ -1361,18 +1357,9 @@ export class World {
     this.physics.warmStaticScene()
     this.sceneScript.preparePointerRaycast()
     this.sceneScript.refreshPointerTargets()
-    // After capsule exists — re-equip pet from inventory (World rebuild on /goto must not lose equip).
+    // After capsule exists — re-equip + re-announce so late peers see guest VRM / pets.
     if (address) {
-      this.petManager.setLocalWallet(address)
-      this.petPeerSync.setLocalAddress(address)
-      this.vrmPeerSync.setLocalAddress(address)
-      void this.petManager.restoreFromInventory(address)
-      // Peers present before our DAV handler was ready — re-probe custom avatars.
-      if (this.remoteAvatars) {
-        this.vrmPeerSync.replayAllPeerEquips(this.remoteAvatars)
-      }
-      void this.vrmPeerSync.requestPeerAnnounces()
-      this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
+      void this.reannounceDavAndPets(address, 'post-spawn')
     }
     this.startInputHub()
     this.sceneScript.setInputHub(this.inputHub, 'primary')

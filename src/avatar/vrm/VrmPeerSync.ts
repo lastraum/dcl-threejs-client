@@ -329,11 +329,13 @@ export class VrmPeerSync {
       odkNetWarn('DAV publish skipped — no comms or empty envelope', { kind })
       return false
     }
-    // Announce / clear / want → all rooms so late joiners hear equip.
-    // Fetch request + chunk streams → primary only (dual-room concurrent serves
-    // caused incomplete assembly: first FetchEnd before all chunks landed).
+    // Announce / clear / want / fetch-request → all rooms (owner may be island-only).
+    // Chunk streams → primary only (dual-room concurrent serves race FetchEnd).
     const roomMode =
-      kind === 'announce' || kind === 'clear' || kind === 'want-announce'
+      kind === 'announce' ||
+      kind === 'clear' ||
+      kind === 'want-announce' ||
+      kind === 'fetch-request'
         ? 'broadcast'
         : 'primary'
     const sent = await this.comms.sendSceneAvatarVrm(envelopes, roomMode)

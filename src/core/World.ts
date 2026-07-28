@@ -5033,13 +5033,19 @@ export class World {
     const parcel = (scene.baseParcel ?? '').trim()
     const realmName = (scene.realm.realmName || 'main').trim() || 'main'
     const isWorld = scene.source.kind === 'world'
+    // Worlds must send worlds-content-server hostname so gatekeeper treats the place
+    // as a world (owner via Worlds API), not Genesis parcel 0,0 land operators.
+    const realmHostname = isWorld
+      ? `worlds-content-server.decentraland.org/world/${realmName}`
+      : 'realm.decentraland.org'
     this.signedFetchSceneContext = {
       sceneId,
       parcel,
       realmName,
       isWorld,
       isGuest: this.loginIsGuest,
-      realmHostname: isWorld ? undefined : 'realm.decentraland.org'
+      realmHostname,
+      realmProtocol: isWorld ? 'v3' : 'https'
     }
 
     if (!sceneId) {
@@ -5050,7 +5056,8 @@ export class World {
     } else {
       console.warn(
         `[admin-tools] signedFetch context — sceneId=${sceneId.slice(0, 20)}… ` +
-          `parcel=${parcel || '—'} realm=${realmName} world=${isWorld} guest=${this.loginIsGuest}`
+          `parcel=${parcel || '—'} realm=${realmName} world=${isWorld} ` +
+          `hostname=${realmHostname} guest=${this.loginIsGuest}`
       )
     }
 

@@ -194,7 +194,9 @@ export function logSceneAdminAnalysis(
   )
   if (w && !analysis.walletIsAdmin && analysis.adminCount > 0) {
     console.warn(
-      '[admin-tools] wallet not in gatekeeper admin list — UI hidden (owner must be on list, or delegated)'
+      '[admin-tools] wallet not in gatekeeper admin list — UI hidden. ' +
+        'For worlds, realm.hostname must include worlds-content-server (else gatekeeper ' +
+        'resolves Genesis parcel 0,0 land operators instead of the world NAME owner).'
     )
   }
   if (analysis.adminCount === 0) {

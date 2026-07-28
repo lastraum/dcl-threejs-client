@@ -72,18 +72,29 @@ function sceneHttpProxyUrl(absoluteUrl: string): string | null {
 /**
  * Gatekeeper signed-fetch metadata. Must include `realm` (hostname) — without it
  * scene-admin/scene-bans return 401 "no realm".
+ *
+ * Worlds: gatekeeper `listSceneAdmins` uses
+ *   isWorld = hostname.includes('worlds-content-server')
+ * then `getWorldScenePlace(serverName, parcel)` and injects the world NAME owner
+ * into the admin list. If hostname is Genesis (`realm.decentraland.org`), parcel
+ * `0,0` resolves as Genesis City land — wrong admins, world owner never appears.
  */
 function gatekeeperMetadata(context: SignedFetchSceneContext) {
   const realmName = context.realmName || 'main'
+  const isWorld = context.isWorld === true
+  const hostname = isWorld
+    ? (context.realmHostname?.replace(/^https?:\/\//i, '').replace(/\/+$/, '') ||
+        `worlds-content-server.decentraland.org/world/${realmName}`)
+    : (context.realmHostname ?? 'realm.decentraland.org')
   return {
     signer: 'decentraland-kernel-scene',
     sceneId: context.sceneId,
     parcel: context.parcel,
     realmName,
-    isWorld: context.isWorld ?? false,
+    isWorld,
     realm: {
-      hostname: context.realmHostname ?? 'realm.decentraland.org',
-      protocol: context.realmProtocol ?? 'https',
+      hostname,
+      protocol: isWorld ? (context.realmProtocol ?? 'v3') : (context.realmProtocol ?? 'https'),
       serverName: realmName
     }
   }

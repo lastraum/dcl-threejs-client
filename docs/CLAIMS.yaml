@@ -9,7 +9,7 @@ updated: 2026-07-28
 source: github
 base_branch: dev-latest
 workflow:
-  - stage: pending_review
+  - stage: merged
     integration_ref: pr:54
     title: per-category behavior bands + bundled Doggo companion
     owner: awedjob
@@ -144,13 +144,6 @@ workflow:
     pr: 26
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/26
     updated: 2026-07-17
-  - stage: merged
-    integration_ref: pr:25
-    title: handoff LiveKit, stabilize cast video, cut main-thread tax
-    owner: lastraum
-    pr: 25
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/25
-    updated: 2026-07-15
   - stage: merged
     integration_ref: ecs:TriggerArea
     title: TriggerArea Tier A — volume enter/exit and scene callbacks

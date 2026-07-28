@@ -40,7 +40,11 @@ import {
 } from './comms/livekitLimits'
 import { CommsTopicService } from './comms/CommsTopicService'
 import { LiveKitCommsSession } from './comms/LiveKitCommsSession'
-import { clearCastVideoHost, reattachFirstRemoteVideoToHost } from './comms/livekitVideoStreams'
+import {
+  clearCastVideoHost,
+  isNonPlayerLiveKitIdentity,
+  reattachFirstRemoteVideoToHost
+} from './comms/livekitVideoStreams'
 import {
   parseCommsSceneOrigin,
   realmBoundsFromParcels,
@@ -1188,12 +1192,14 @@ export class CommsService {
   }
 
   /**
-   * True when the **scene** LiveKit room has remote video pubs.
-   * Covers DCL stream-key RTMP ingress and DCL Cast speakers (not world-room voice cams).
+   * True when any connected LiveKit room has remote video pubs (stream-key / Cast).
+   * Prefers the scene room but also accepts world-room pubs — some ingress paths
+   * have shown up outside `scene-room` while still publishing video.
    * Separate from VideoPlayer m3u8 / static https sources.
    */
   hasSceneLiveKitVideoLive(): boolean {
-    return this.sceneLiveKit.isConnected() && this.sceneLiveKit.hasRemoteVideoLive()
+    if (this.sceneLiveKit.isConnected() && this.sceneLiveKit.hasRemoteVideoLive()) return true
+    return this.hasRemoteVideoLive()
   }
 
   /** @deprecated use hasSceneLiveKitVideoLive — name was confusing (LiveKit ≠ Cast-only). */
@@ -1202,29 +1208,114 @@ export class CommsService {
   }
 
   /**
+   * Pick the LiveKit session that should feed `livekit-video://current-stream`.
+   * Prefer live scene room → any live room → connected scene → any connected.
+   */
+  private pickLiveKitVideoSession(): LiveKitCommsSession | null {
+    const sessions = this.connectedLiveKitSessions()
+    if (sessions.length === 0) return null
+    const score = (s: LiveKitCommsSession): number => {
+      const scene = s.getRoomName().includes('scene-room') ? 0 : 10
+      const live = s.hasRemoteVideoLive() ? 0 : 100
+      return scene + live
+    }
+    return [...sessions].sort((a, b) => score(a) - score(b))[0] ?? null
+  }
+
+  /**
    * Bind `livekit-video://current-stream` to a scene VideoPlayer element.
-   * Stream-key ingress and Cast both publish on the **scene** room only.
-   * Retries until that room is connected (early hydration used to no-op forever).
+   * Stream-key / Cast usually publish on the **scene** room; we still scan all
+   * connected rooms (parity with companion Cast attach) and rebind when a better
+   * room gains video after OBS goes live.
    */
   bindLiveKitVideoSource(video: HTMLVideoElement, onUpdate?: () => void): () => void {
     let disposed = false
     let innerCleanup: (() => void) | null = null
+    let boundSession: LiveKitCommsSession | null = null
+    let lastWaitLogAt = 0
+    let lastBoundKey = ''
+
+    const sessionKey = (s: LiveKitCommsSession): string =>
+      `${s.getRoomName() || 'room'}|${s.hasRemoteVideoLive() ? 'live' : 'idle'}`
 
     const tryBind = (): void => {
-      if (disposed || innerCleanup) return
-      if (!this.sceneLiveKit.isConnected()) return
-      innerCleanup = this.sceneLiveKit.bindCurrentVideoStream(video, onUpdate)
-      console.log('[livekit-video] current-stream bound to scene room')
+      if (disposed) return
+      const session = this.pickLiveKitVideoSession()
+      if (!session) return
+
+      const key = sessionKey(session)
+      // Keep current bind if same room and still healthy; rebind when a better room appears.
+      if (innerCleanup && boundSession === session) {
+        if (key !== lastBoundKey && session.hasRemoteVideoLive()) {
+          // Room flipped idle→live — attachBest inside bind already polls; just notify.
+          lastBoundKey = key
+          onUpdate?.()
+        }
+        return
+      }
+
+      if (innerCleanup && boundSession && boundSession !== session) {
+        const oldLive = boundSession.hasRemoteVideoLive()
+        const newLive = session.hasRemoteVideoLive()
+        const newIsScene = session.getRoomName().includes('scene-room')
+        const oldIsScene = boundSession.getRoomName().includes('scene-room')
+        // Only rebind when new session is strictly better (live upgrade, or scene+live).
+        const better =
+          (newLive && !oldLive) || (newLive && newIsScene && !oldIsScene) || (!oldLive && newIsScene)
+        if (!better) return
+        innerCleanup()
+        innerCleanup = null
+        boundSession = null
+      }
+
+      if (innerCleanup) return
+
+      innerCleanup = session.bindCurrentVideoStream(video, onUpdate)
+      boundSession = session
+      lastBoundKey = key
+      const snap = session.getRemoteVideoPresenceSnapshot()
+      clientDebugLog.log(
+        'cast',
+        `current-stream bound · room=${session.getRoomName() || '?'} live=${snap.live} remotes=${snap.remoteParticipants} videoPubs=${snap.remoteVideoPubs}`,
+        { level: snap.live ? 'success' : 'info' }
+      )
+      console.log(
+        `[livekit-video] current-stream bound · ${session.getRoomName() || sessionKey(session)} · live=${snap.live} pubs=${snap.remoteVideoPubs}`
+      )
+    }
+
+    const logWait = (): void => {
+      if (disposed) return
+      if (this.hasSceneLiveKitVideoLive()) return
+      const now = performance.now()
+      if (now - lastWaitLogAt < 5000) return
+      lastWaitLogAt = now
+      const parts: string[] = []
+      for (const s of this.connectedLiveKitSessions()) {
+        const snap = s.getRemoteVideoPresenceSnapshot()
+        parts.push(
+          `${s.getRoomName() || '?'}:remotes=${snap.remoteParticipants}/pubs=${snap.remoteVideoPubs}`
+        )
+      }
+      clientDebugLog.log(
+        'cast',
+        `current-stream waiting for remote video · ${parts.join(' · ') || 'no rooms'}`,
+        { level: 'info', throttleMs: 0 }
+      )
     }
 
     tryBind()
-    const poll = window.setInterval(tryBind, 750)
+    const poll = window.setInterval(() => {
+      tryBind()
+      logWait()
+    }, 750)
 
     return () => {
       disposed = true
       window.clearInterval(poll)
       innerCleanup?.()
       innerCleanup = null
+      boundSession = null
     }
   }
 
@@ -1618,6 +1709,9 @@ export class CommsService {
   private trackPeerJoin(address: string, transport: TransportType): void {
     const key = address.toLowerCase()
     if (key === this.localAddress) return
+    // Defense in depth — LiveKit session should already skip these, but never spawn
+    // a blank avatar for RTMP stream-key ingress or Cast presentation bots.
+    if (isNonPlayerLiveKitIdentity(key)) return
     let sources = this.peerTransports.get(key)
     if (!sources) {
       sources = new Set()

@@ -1,5 +1,5 @@
 /**
- * Scene VideoPlayer.src when Admin Tools Activates LiveKit media (or composite/sync sets it).
+ * Scene VideoPlayer.src for LiveKit media (composite, MessageBus, Admin Tools, or sync).
  *
  * **Screen content authority (client):**
  * 1. `main.composite` / CRDT — initial VideoPlayer on the entity

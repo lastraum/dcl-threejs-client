@@ -3387,8 +3387,16 @@ export class SceneScriptSystem {
     this.mapPins?.invalidate()
   }
 
-  setVideoUserGestureUnlocked(unlocked: boolean): void {
-    this.videoPlayerBridge?.setUserGestureUnlocked(unlocked)
+  /**
+   * Unlock media playback after user interaction (or optimistically at World.start).
+   * @param options.allowSound - only true for a real pointer/keyboard gesture so
+   *   video can autoplay muted, then unmute when the user actually interacts.
+   */
+  setVideoUserGestureUnlocked(
+    unlocked: boolean,
+    options?: { allowSound?: boolean }
+  ): void {
+    this.videoPlayerBridge?.setUserGestureUnlocked(unlocked, options)
     this.audioSourceBridge?.setUserGestureUnlocked(unlocked)
     this.audioStreamBridge?.setUserGestureUnlocked(unlocked)
   }

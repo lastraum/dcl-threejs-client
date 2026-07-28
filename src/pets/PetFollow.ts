@@ -84,7 +84,7 @@ export class PetFollow {
       this.yaw = input.ownerYaw
       this.horizontalSpeed = 0
       this.initialized = true
-      return this.toPose(input.category)
+      return this.toPose(input.category, input.ownerHorizontalSpeed)
     }
 
     _delta.set(_desired.x - this.position.x, 0, _desired.z - this.position.z)
@@ -94,7 +94,7 @@ export class PetFollow {
       this.position.set(_desired.x, targetY, _desired.z)
       this.yaw = input.ownerYaw
       this.horizontalSpeed = 0
-      return this.toPose(input.category)
+      return this.toPose(input.category, input.ownerHorizontalSpeed)
     }
 
     // Both categories stick close to their side slot.
@@ -122,17 +122,21 @@ export class PetFollow {
     const yRate = flying ? 5 : 14
     this.position.y = damp(this.position.y, targetY, yRate, dt)
 
-    return this.toPose(input.category)
+    return this.toPose(input.category, input.ownerHorizontalSpeed)
   }
 
-  private toPose(category: PetCategory): PetPose {
+  private toPose(category: PetCategory, ownerHorizontalSpeed = 0): PetPose {
+    // When the pet is already in its side slot, follow speed decays to ~0 even
+    // while the owner walks. Blend owner speed so gait (and remote pose.anim)
+    // stay on walk/run instead of forever idleing beside a moving player.
+    const speed = Math.max(this.horizontalSpeed, ownerHorizontalSpeed)
     return {
       x: this.position.x,
       y: this.position.y,
       z: this.position.z,
       yaw: this.yaw,
-      horizontalSpeed: this.horizontalSpeed,
-      anim: resolvePetAnimState(category, this.horizontalSpeed)
+      horizontalSpeed: speed,
+      anim: resolvePetAnimState(category, speed)
     }
   }
 }

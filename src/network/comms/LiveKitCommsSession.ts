@@ -31,6 +31,7 @@ import { parseLiveKitConnectionString } from './livekitAdapter'
 import {
   collectActiveVideoStreamsFromRoom,
   forceSubscribeRemoteVideo,
+  isNonPlayerLiveKitIdentity,
   pickCurrentStreamVideoTrack,
   reattachFirstRemoteVideoToHost,
   roomHasRemoteVideo,
@@ -299,6 +300,27 @@ export class LiveKitCommsSession {
       return sid
     }
 
+    let loggedReadySid = ''
+
+    const kickPlay = (): void => {
+      video.muted = true
+      video.playsInline = true
+      video.autoplay = true
+      if (video.paused) void video.play().catch(() => {})
+    }
+
+    const reportReady = (): void => {
+      if (!attachedSid || video.videoWidth <= 0) return
+      if (loggedReadySid === attachedSid) return
+      loggedReadySid = attachedSid
+      clientDebugLog.log(
+        'cast',
+        `current-stream frames ready (${this.transport}) · sid=${attachedSid.slice(0, 12)} · ${video.videoWidth}x${video.videoHeight}`,
+        { level: 'success' }
+      )
+      onUpdate?.()
+    }
+
     const attachBest = (): void => {
       if (disposed || !this.room || this.room !== room) return
       if (room.state !== ConnectionState.Connected) return
@@ -306,31 +328,56 @@ export class LiveKitCommsSession {
       const next = pickCurrentStreamVideoTrack(room)
       const nextSid = trackSid(next)
       if (next && nextSid && nextSid === attachedSid && attached) {
-        if (video.paused) void video.play().catch(() => {})
+        kickPlay()
+        reportReady()
+        // Keep pushing texture updates while waiting for first non-zero frame.
+        if (video.videoWidth > 0) onUpdate?.()
         return
       }
       if (next === attached) {
-        if (next && video.paused) void video.play().catch(() => {})
+        if (next) {
+          kickPlay()
+          reportReady()
+        }
         return
       }
       detach()
+      loggedReadySid = ''
       if (!next) {
         onUpdate?.()
         return
       }
       try {
+        // LiveKit MediaStream — leave crossOrigin unset (see SharedLiveKitVideoStream).
+        video.removeAttribute('crossorigin')
         next.attach(video)
-      } catch {
+      } catch (err) {
+        clientDebugLog.log(
+          'cast',
+          `current-stream attach failed (${this.transport}): ${err instanceof Error ? err.message : String(err)}`,
+          { level: 'warn' }
+        )
         onUpdate?.()
         return
       }
       attached = next
       attachedSid = nextSid
-      void video.play().catch(() => {})
+      kickPlay()
+      clientDebugLog.log(
+        'cast',
+        `current-stream track attached (${this.transport}) · sid=${nextSid.slice(0, 12)} · ${video.videoWidth}x${video.videoHeight}${video.videoWidth <= 0 ? ' (waiting frames…)' : ''}`,
+        { level: video.videoWidth > 0 ? 'success' : 'info' }
+      )
       onUpdate?.()
+      reportReady()
     }
 
     const onTrackChange = (): void => attachBest()
+    const onVideoDrawable = (): void => {
+      kickPlay()
+      reportReady()
+      onUpdate?.()
+    }
 
     room.on(RoomEvent.TrackSubscribed, onTrackChange)
     room.on(RoomEvent.TrackUnsubscribed, onTrackChange)
@@ -340,10 +387,15 @@ export class LiveKitCommsSession {
     room.on(RoomEvent.ParticipantDisconnected, onTrackChange)
     room.on(RoomEvent.TrackMuted, onTrackChange)
     room.on(RoomEvent.TrackUnmuted, onTrackChange)
+    video.addEventListener('loadedmetadata', onVideoDrawable)
+    video.addEventListener('loadeddata', onVideoDrawable)
+    video.addEventListener('resize', onVideoDrawable)
+    video.addEventListener('playing', onVideoDrawable)
 
     attachBest()
     // RTMP ingress / Cast speakers can appear after Activate; poll lightly while connected.
-    const poll = window.setInterval(attachBest, 2000)
+    // Faster poll while 0×0 so first frames promote quickly.
+    const poll = window.setInterval(attachBest, 750)
 
     return () => {
       disposed = true
@@ -356,6 +408,10 @@ export class LiveKitCommsSession {
       room.off(RoomEvent.ParticipantDisconnected, onTrackChange)
       room.off(RoomEvent.TrackMuted, onTrackChange)
       room.off(RoomEvent.TrackUnmuted, onTrackChange)
+      video.removeEventListener('loadedmetadata', onVideoDrawable)
+      video.removeEventListener('loadeddata', onVideoDrawable)
+      video.removeEventListener('resize', onVideoDrawable)
+      video.removeEventListener('playing', onVideoDrawable)
       detach()
     }
   }
@@ -441,6 +497,8 @@ export class LiveKitCommsSession {
     const onParticipantConnected = (participant: Participant) => {
       const address = participant.identity?.trim().toLowerCase()
       if (!address || address === this.localAddress) return
+      // Stream-key RTMP ingress / Cast presentation bots publish A/V only — never avatars.
+      if (isNonPlayerLiveKitIdentity(address)) return
       // No per-peer console lines — busy rooms (50+) flood DevTools.
       this.peerHandlers?.onPeerJoin(address, this.transport)
     }
@@ -448,6 +506,7 @@ export class LiveKitCommsSession {
     const onParticipantDisconnected = (participant: Participant) => {
       const address = participant.identity?.trim().toLowerCase()
       if (!address || address === this.localAddress) return
+      if (isNonPlayerLiveKitIdentity(address)) return
       this.peerHandlers?.onPeerLeave(address, this.transport)
     }
 

@@ -39,6 +39,8 @@ type DecoderEntry = {
 export class VideoPlayerBridge {
   private readonly decoders = new Map<Entity, DecoderEntry>()
   private userGestureUnlocked = false
+  /** True after a real pointer/key gesture — new decoders inherit unmuted output. */
+  private soundUnlocked = false
   private eventTimestamp = 1
   private pendingUserVideoToggle = false
   private pendingUserVideoToggleFrames = 0
@@ -86,11 +88,24 @@ export class VideoPlayerBridge {
     this.pendingUserVideoToggleFrames = 12
   }
 
-  setUserGestureUnlocked(unlocked: boolean): void {
-    if (this.userGestureUnlocked === unlocked) return
+  /**
+   * @param unlocked - allow play() attempts
+   * @param options.allowSound - true only for a real user gesture (not World.start)
+   */
+  setUserGestureUnlocked(
+    unlocked: boolean,
+    options?: { allowSound?: boolean }
+  ): void {
+    const allowSound = options?.allowSound === true
+    if (allowSound && unlocked) this.soundUnlocked = true
+    // Always re-apply on real gesture so we unmute + re-issue play even when
+    // World.start already optimistically unlocked playback.
+    if (this.userGestureUnlocked === unlocked && !allowSound) return
     this.userGestureUnlocked = unlocked
     for (const entry of this.decoders.values()) {
-      entry.player.setUserGestureUnlocked(unlocked)
+      entry.player.setUserGestureUnlocked(unlocked, {
+        allowSound: allowSound || this.soundUnlocked
+      })
     }
   }
 
@@ -303,7 +318,10 @@ export class VideoPlayerBridge {
     // Live getter — binder/scene room may appear after the first VideoPlayer entity is seen.
     const player = new WebVideoPlayer(this.scene, () => this.getLiveKitBinder())
     player.setAudioListener(this.listener)
-    player.setUserGestureUnlocked(this.userGestureUnlocked)
+    // New decoders inherit unlock state (sound only after a real gesture).
+    player.setUserGestureUnlocked(this.userGestureUnlocked, {
+      allowSound: this.soundUnlocked
+    })
     player.onFrameReady = () => this.onTextureReady?.(entity)
     player.onNaturalEnd = () => this.syncPlayingToEcs(entity, false)
     player.onReplayStarted = () => this.syncPlayingToEcs(entity, true)

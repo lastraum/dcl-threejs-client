@@ -1404,7 +1404,8 @@ export class World {
       this.remoteAvatars?.setPlayReady(plazaScale)
     }
     this.player.setOnUserGestureUnlock(() => {
-      this.sceneScript.setVideoUserGestureUnlocked(true)
+      // Real pointer/key gesture — unmute scene video + re-issue play().
+      this.sceneScript.setVideoUserGestureUnlocked(true, { allowSound: true })
     })
   }
 
@@ -1699,7 +1700,9 @@ export class World {
   }
 
   start(): void {
-    this.sceneScript.setVideoUserGestureUnlocked(true)
+    // Optimistic play unlock only — stay muted so browser autoplay policy allows
+    // frames. Sound unlocks on the first real pointer/key gesture.
+    this.sceneScript.setVideoUserGestureUnlocked(true, { allowSound: false })
     let startFrame = 0
     this.host.start({
       onSyncFrame: (delta) => {
@@ -1847,7 +1850,14 @@ export class World {
         // Local pet leash (owner feet Y + category height) then remote pet lerp.
         if (this.player) {
           const feet = this.player.getWorldPosition()
-          this.petManager.updateLocal(delta, feet, this.player.getPlayerYaw(), 0)
+          // Real owner speed — pets were hardcoded to 0 so they never left idle
+          // while walking with you (and remotes only ever saw idle pose.anim).
+          this.petManager.updateLocal(
+            delta,
+            feet,
+            this.player.getPlayerYaw(),
+            this.player.getHorizontalSpeed()
+          )
           this.petManager.updateRemotes(delta, feet)
         }
         // Tour flag: spine attach for local or remote leader (after avatar pose ticks).
@@ -2205,11 +2215,18 @@ export class World {
           }
           this.physics.invalidateControllerCache()
           this.discoverMissingColliderActors()
+          // Infinite ground plane (entity -1) is expected when floors≈0 (e.g. neat.dcl.eth).
+          // Do not teleport for a tiny probe delta — that feels like a random in-place "fall".
+          // Only lift when clearly stuck under real mesh (probe well above feet, not near y0 plane).
           const nowLift = performance.now()
-          if (
+          const onInfinitePlane = ground === -1
+          const meaningfulLift =
             probe != null &&
-            probe > feet.y + 0.08 &&
+            probe > feet.y + 0.25 &&
             probe < feet.y + 4 &&
+            !(onInfinitePlane && probe < 0.35 && feet.y > -0.05)
+          if (
+            meaningfulLift &&
             this.softFloorLiftCount < 2 &&
             nowLift - this.lastSoftFloorLiftMs > 12_000
           ) {
@@ -4690,7 +4707,10 @@ export class World {
     this.comms.setCommsProfile(this.session.getCommsProfileEntity())
     this.comms.announceProfile('connect')
     // Equip key + announce identity — session wallet wins over stale ?profile=.
+    this.vrmPeerSync.setLocalAddress(address ?? null)
     await this.vrmPeerSync.onLocalEquipChanged(address)
+    // Comms may still be settling after backpack close — re-push a few times.
+    this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
     // Re-assert third-person body after mesh swap (FPV hide must not stick across equip).
     this.player.forceRefreshBodyVisibility()
   }

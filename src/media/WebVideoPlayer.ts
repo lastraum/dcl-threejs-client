@@ -15,11 +15,7 @@ import { applyDclLocalTransform, type DclTransformValues } from '../bridge/dclTr
 import { resolveSceneMediaUrl } from '../bridge/material/resolveTexture'
 import { unwrapMisroutedMediaUrl } from '../rendering/textureProxy'
 import type { ResolvedScene } from '../dcl/content/types'
-import {
-  isLiveKitCurrentStreamSrc,
-  isLiveKitVideoSrc,
-  LIVEKIT_CURRENT_STREAM_SRC
-} from './livekitVideoSource'
+import { isLiveKitCurrentStreamSrc, isLiveKitVideoSrc } from './livekitVideoSource'
 import { mediaElementGain, spatialAudioGain } from '../rendering/SoundSettings'
 import { ThrottledVideoTexture } from './ThrottledVideoTexture'
 import { getSharedLiveKitVideoStream } from './SharedLiveKitVideoStream'
@@ -83,7 +79,17 @@ export class WebVideoPlayer {
   private loadedSrc = ''
   private liveKitSource = false
   private state: VideoStateValue = VS_NONE
+  /**
+   * Allows calling `video.play()`. Set optimistically at World.start so decode can
+   * begin, and again on real pointer/keyboard gesture.
+   */
   private userGestureUnlocked = false
+  /**
+   * Allows unmuted output. Only set after a real user gesture — browsers block
+   * unmuted autoplay, which left Vimeo/HLS screens black forever when we unmuted
+   * before activation and then no-op'd the real-gesture path (already unlocked).
+   */
+  private soundUnlocked = false
   private visibilityPaused = false
   private budgetPaused = false
   private wantsPlaying = true
@@ -111,12 +117,24 @@ export class WebVideoPlayer {
   onReplayStarted?: () => void
 
   get texture(): THREE.Texture {
-    if (this.usesSharedLiveKit) {
-      // Prefer shared LiveKit canvas when bound; fall back to local black/loading canvas.
+    // LiveKit only paints while VideoPlayer.playing AND remote frames exist.
+    // playing=false / ended / stream-gone → solid black (Explorer parity).
+    if (this.shouldPaintLiveKit()) {
       return getSharedLiveKitVideoStream().getTexture() ?? this.ensureLocalTexture().texture
     }
     // Always create local canvas (constructor clears to black) so idle screens bind a map.
     return this.ensureLocalTexture().texture
+  }
+
+  /** Paint LiveKit frames only when ECS playing=true and the remote stream has drawable data. */
+  private shouldPaintLiveKit(): boolean {
+    return (
+      this.usesSharedLiveKit &&
+      this.wantsPlaying &&
+      !this.isPlaybackBlocked() &&
+      !this.holdingAtEnd &&
+      getSharedLiveKitVideoStream().hasDrawableFrame()
+    )
   }
 
   constructor(
@@ -187,6 +205,9 @@ export class WebVideoPlayer {
       this.setState(VS_PAUSED)
       if (!this.video.loop && !this.liveKitSource) {
         this.holdingAtEnd = true
+        // Explorer: natural end → black screen (not frozen last frame).
+        this.ensureLocalTexture().clearToBlack()
+        this.onFrameReady?.()
         this.onNaturalEnd?.()
       }
     })
@@ -263,7 +284,15 @@ export class WebVideoPlayer {
   }
 
   hasRenderableFrame(): boolean {
-    const video = this.usesSharedLiveKit ? getSharedLiveKitVideoStream().video : this.video
+    if (this.usesSharedLiveKit) {
+      const shared = getSharedLiveKitVideoStream()
+      if (shared.hasDrawableFrame()) {
+        this.hasHadRenderableFrame = true
+        return true
+      }
+      return this.hasHadRenderableFrame && this.state !== VS_ERROR && !!this.loadedSrc
+    }
+    const video = this.video
     if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
       this.hasHadRenderableFrame = true
       return true
@@ -276,10 +305,20 @@ export class WebVideoPlayer {
   }
 
   canAttachTexture(): boolean {
-    const video = this.usesSharedLiveKit ? getSharedLiveKitVideoStream().video : this.video
-    if (!this.loadedSrc || this.state === VS_ERROR) return false
+    // Idle/black map is always attachable (deactivate / pre-frame).
+    if (!this.loadedEcsSrc && !this.loadedSrc) return false
+    if (this.state === VS_ERROR) return false
+    if (this.shouldPaintLiveKit()) return true
+    // Black canvas idle texture for LiveKit deactivated or progressive idle.
+    if (this.usesSharedLiveKit || isLiveKitVideoSrc(this.loadedEcsSrc)) {
+      return !this.wantsPlaying || !getSharedLiveKitVideoStream().hasDrawableFrame()
+    }
+    const video = this.video
     // Require real dimensions — HAVE_METADATA alone can bind a 1×1 canvas forever.
-    if (video.videoWidth <= 0 || video.videoHeight <= 0) return false
+    if (video.videoWidth <= 0 || video.videoHeight <= 0) {
+      // End-of-video / not playing: black placeholder is valid.
+      return !this.wantsPlaying || this.holdingAtEnd
+    }
     return (
       video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA ||
       this.hasHadRenderableFrame ||
@@ -290,9 +329,28 @@ export class WebVideoPlayer {
   /**
    * Per-frame recovery: re-issue play() only after a short pause debounce so we
    * never stack concurrent play() promises (each aborts the previous).
+   * Also recovers shared LiveKit after playing=true / late track attach.
    */
   tickPlayback(): void {
-    if (this.liveKitSource || this.isPlaybackBlocked() || !this.wantsPlaying) return
+    if (this.isPlaybackBlocked() || !this.wantsPlaying) return
+    if (this.usesSharedLiveKit) {
+      const video = getSharedLiveKitVideoStream().video
+      if (!video.paused && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        this.pausedWantingPlaySince = 0
+        return
+      }
+      if (!this.userGestureUnlocked) return
+      const now = performance.now()
+      if (this.pausedWantingPlaySince === 0) {
+        this.pausedWantingPlaySince = now
+        return
+      }
+      if (now - this.pausedWantingPlaySince >= 400) {
+        this.pausedWantingPlaySince = now
+        void this.tryPlayShared(video)
+      }
+      return
+    }
     if (this.holdingAtEnd || this.video.ended) return
     if (!this.video.paused) {
       this.pausedWantingPlaySince = 0
@@ -318,8 +376,8 @@ export class WebVideoPlayer {
   }
 
   replayFromUserClick(): void {
-    if (this.liveKitSource) {
-      if (!this.isPlaybackBlocked()) void this.tryPlay()
+    if (this.liveKitSource || this.usesSharedLiveKit) {
+      if (!this.isPlaybackBlocked()) void this.issuePlay()
       return
     }
     if (!this.isAtEnd() && !this.holdingAtEnd) return
@@ -327,13 +385,34 @@ export class WebVideoPlayer {
     this.restartFromBeginning()
     this.lastEcsPlaying = true
     this.wantsPlaying = true
-    if (!this.isPlaybackBlocked()) void this.tryPlay()
+    if (!this.isPlaybackBlocked()) void this.issuePlay()
     this.onReplayStarted?.()
   }
 
-  setUserGestureUnlocked(unlocked: boolean): void {
+  /**
+   * @param unlocked - allow play() attempts (World.start may set this early)
+   * @param options.allowSound - true only for a real user gesture (pointer/key)
+   */
+  setUserGestureUnlocked(
+    unlocked: boolean,
+    options?: { allowSound?: boolean }
+  ): void {
     this.userGestureUnlocked = unlocked
+    if (unlocked && options?.allowSound) {
+      this.soundUnlocked = true
+      this.applyEffectiveVolume()
+    }
     if (unlocked && this.wantsPlaying && !this.isPlaybackBlocked()) {
+      // Must hit shared LiveKit element after playing becomes true — never the idle local video.
+      void this.issuePlay()
+    }
+  }
+
+  /** Route play() to the active decoder (local progressive/HLS vs shared LiveKit). */
+  private issuePlay(): void {
+    if (this.usesSharedLiveKit) {
+      void this.tryPlayShared(getSharedLiveKitVideoStream().video)
+    } else {
       void this.tryPlay()
     }
   }
@@ -362,10 +441,13 @@ export class WebVideoPlayer {
     const ecsPlaying = spec.playing !== false
     const ecsPlayingChanged =
       this.lastEcsPlaying !== undefined && ecsPlaying !== this.lastEcsPlaying
-    const remoteLive = options?.liveKitRemoteLive === true
+    // Apply play intent before any LiveKit bind so subscribe callbacks see playing state.
+    this.wantsPlaying = ecsPlaying
+    this.lastEcsPlaying = ecsPlaying
 
     if (
       !this.liveKitSource &&
+      !this.usesSharedLiveKit &&
       !options?.fromEcsSync &&
       options?.fromUserToggle &&
       this.isAtEnd() &&
@@ -381,17 +463,9 @@ export class WebVideoPlayer {
     }
 
     const ecsSrc = (spec.src ?? '').trim()
-    // Soft-hold LiveKit only when ECS clears src (empty) while stream-key is still live —
-    // never block an intentional switch to a real URL (mp4 / m3u8 / new LiveKit key).
-    const softHoldLiveKit =
-      this.liveKitSource &&
-      remoteLive &&
-      !ecsSrc &&
-      isLiveKitCurrentStreamSrc(this.loadedEcsSrc || this.loadedSrc)
-
-    const effectiveSrc = softHoldLiveKit
-      ? this.loadedEcsSrc || LIVEKIT_CURRENT_STREAM_SRC
-      : ecsSrc
+    // ECS src is authoritative. Admin Tools "Deactivate" emits src='' (often with playing true);
+    // never soft-hold LiveKit against empty src — that left the stream painting forever.
+    const effectiveSrc = ecsSrc
 
     // Compare ECS-authored src only — resolved CDN URLs must not re-trigger load every frame.
     const srcChanged = effectiveSrc !== this.loadedEcsSrc
@@ -402,10 +476,18 @@ export class WebVideoPlayer {
       )
       this.loadedEcsSrc = effectiveSrc
       if (isLiveKitVideoSrc(effectiveSrc)) {
-        if (isLiveKitCurrentStreamSrc(effectiveSrc)) void this.loadLiveKitSource(effectiveSrc)
-        else {
+        if (isLiveKitCurrentStreamSrc(effectiveSrc)) {
+          // Bind LiveKit only while playing=true — idle stays black.
+          if (ecsPlaying) void this.loadLiveKitSource(effectiveSrc)
+          else {
+            this.liveKitSource = true
+            this.usesSharedLiveKit = false
+            this.loadedSrc = ''
+            this.paintIdleBlack()
+          }
+        } else {
           this.clearMediaSource()
-          this.ensureLocalTexture().clearToBlack()
+          this.paintIdleBlack()
           this.setState(VS_ERROR)
         }
       } else {
@@ -413,22 +495,20 @@ export class WebVideoPlayer {
         if (url) void this.loadSource(url)
         else {
           this.clearMediaSource()
-          this.ensureLocalTexture().clearToBlack()
+          this.paintIdleBlack()
           this.setState(VS_ERROR)
         }
       }
-    } else if (isLiveKitCurrentStreamSrc(effectiveSrc) && this.resolveLiveKitBinder()) {
-      // Retry when binder/scene room appeared after first attempt, or shared bind was torn down.
-      if (!this.usesSharedLiveKit || !this.sharedLiveKitUnsubscribe) {
-        void this.loadLiveKitSource(effectiveSrc)
-      }
     } else if (!effectiveSrc) {
-      if (this.loadedEcsSrc || this.loadedSrc) this.clearMediaSource()
-      this.ensureLocalTexture().clearToBlack()
+      // Empty src = stop (Admin Deactivate for Stream/URL panels).
+      if (this.loadedEcsSrc || this.loadedSrc || this.usesSharedLiveKit) {
+        this.clearMediaSource()
+      }
+      this.paintIdleBlack()
       this.setState(VS_NONE)
     }
 
-    this.video.loop = !this.liveKitSource && spec.loop === true
+    this.video.loop = !this.liveKitSource && !isLiveKitVideoSrc(this.loadedEcsSrc) && spec.loop === true
     this.lastSpecVolume = spec.volume ?? 1
     this.applyEffectiveVolume()
     if (this.spatial) {
@@ -436,35 +516,75 @@ export class WebVideoPlayer {
     }
     this.video.playbackRate = Math.max(spec.playbackRate ?? 1, 0.01)
 
-    if (!this.liveKitSource) {
+    if (!this.liveKitSource && !this.usesSharedLiveKit) {
       this.maybeApplyEcsPosition(spec.position, ecsPlaying, ecsPlayingChanged, options)
     }
 
-    this.wantsPlaying = ecsPlaying
-    this.lastEcsPlaying = ecsPlaying
-
-    if (this.isPlaybackBlocked()) return
+    if (this.isPlaybackBlocked()) {
+      this.paintIdleBlack()
+      return
+    }
 
     if (ecsPlaying) {
       // Only hold when the browser truly finished (video.ended). Never use partial duration.
-      if (!this.liveKitSource && this.video.ended && !ecsPlayingChanged) {
+      if (!this.liveKitSource && !this.usesSharedLiveKit && this.video.ended && !ecsPlayingChanged) {
         this.holdingAtEnd = true
         this.wantsPlaying = false
         this.bumpPlayGeneration()
-        this.ensureLocalTexture().clearToBlack()
+        this.paintIdleBlack()
         return
       }
-      if (this.usesSharedLiveKit) void this.tryPlayShared(getSharedLiveKitVideoStream().video)
-      else void this.tryPlay()
+      // playing flipped true: re-bind LiveKit if we only kept the ECS src key.
+      if (
+        isLiveKitCurrentStreamSrc(this.loadedEcsSrc) &&
+        (!this.usesSharedLiveKit || !this.sharedLiveKitUnsubscribe)
+      ) {
+        void this.loadLiveKitSource(this.loadedEcsSrc)
+      }
+      // Always re-issue play on the correct element (shared LiveKit vs progressive/HLS).
+      void this.issuePlay()
       this.syncThrottledPlayback()
+      // Rebind materials — may switch black idle → live VideoTexture.
+      this.onFrameReady?.()
     } else {
+      // playing=false: stop paint + decode/audio. Explorer black screen.
       this.bumpPlayGeneration()
       this.playInFlight = false
-      if (!this.usesSharedLiveKit) this.video.pause()
+      this.holdingAtEnd = false
+      if (this.usesSharedLiveKit || (this.liveKitSource && isLiveKitCurrentStreamSrc(this.loadedEcsSrc))) {
+        this.detachLiveKitKeepSrc()
+      } else {
+        this.video.pause()
+      }
       this.syncThrottledPlayback()
-      // Idle / not playing — Explorer-like black screen (not last frame / white).
-      this.ensureLocalTexture().clearToBlack()
+      this.paintIdleBlack()
     }
+  }
+
+  /** Solid black screen map + material rebind (deactivate / end / stream gone). */
+  private paintIdleBlack(): void {
+    this.ensureLocalTexture().clearToBlack()
+    this.setState(VS_PAUSED)
+    this.onFrameReady?.()
+  }
+
+  /**
+   * Drop LiveKit subscribe/attach but keep ECS src so playing=true can re-bind without
+   * thrashing soft-hold / defaultURL logic.
+   */
+  private detachLiveKitKeepSrc(): void {
+    const ecsKey = this.loadedEcsSrc
+    this.sharedLiveKitUnsubscribe?.()
+    this.sharedLiveKitUnsubscribe = null
+    this.liveKitCleanup?.()
+    this.liveKitCleanup = null
+    this.usesSharedLiveKit = false
+    this.loadedSrc = ''
+    this.liveKitSource = isLiveKitVideoSrc(ecsKey)
+    this.hasHadRenderableFrame = false
+    this.hasStartedPlayback = false
+    this.playInFlight = false
+    this.pausedWantingPlaySince = 0
   }
 
   /**
@@ -554,15 +674,23 @@ export class WebVideoPlayer {
     if (this.isPlaybackBlocked()) {
       this.bumpPlayGeneration()
       if (this.usesSharedLiveKit) {
-        // Shared decode keeps running for other theatre screens.
+        // Visibility/budget pause: drop paint (other screens may still be subscribed).
+        this.paintIdleBlack()
       } else {
         this.video.pause()
+        this.paintIdleBlack()
       }
       this.syncThrottledPlayback()
     } else if (this.wantsPlaying) {
-      if (this.usesSharedLiveKit) void this.tryPlayShared(getSharedLiveKitVideoStream().video)
-      else void this.tryPlay()
+      if (
+        isLiveKitCurrentStreamSrc(this.loadedEcsSrc) &&
+        (!this.usesSharedLiveKit || !this.sharedLiveKitUnsubscribe)
+      ) {
+        void this.loadLiveKitSource(this.loadedEcsSrc)
+      }
+      void this.issuePlay()
       this.syncThrottledPlayback()
+      this.onFrameReady?.()
     }
   }
 
@@ -577,14 +705,24 @@ export class WebVideoPlayer {
   private applyEffectiveVolume(): void {
     const category = this.resolveVolumeCategory(this.loadedSrc)
     if (this.spatial && this.sound) {
-      const gain = clamp(spatialAudioGain(category, this.lastSpecVolume), 0, 1)
+      // Spatial path always mutes the element (audio via THREE.PositionalAudio).
+      // PositionalAudio still needs a user gesture to start — keep gain 0 until then.
+      const gain = this.soundUnlocked
+        ? clamp(spatialAudioGain(category, this.lastSpecVolume), 0, 1)
+        : 0
       this.video.volume = 0
       this.video.muted = true
       this.sound.setVolume(gain)
     } else {
       const gain = clamp(mediaElementGain(category, this.lastSpecVolume), 0, 1)
-      this.video.muted = false
-      this.video.volume = gain
+      // Stay muted until a real gesture so autoplay is allowed and frames upload.
+      if (!this.soundUnlocked) {
+        this.video.muted = true
+        this.video.volume = 0
+      } else {
+        this.video.muted = false
+        this.video.volume = gain
+      }
       this.sound?.setVolume(0)
     }
   }
@@ -673,12 +811,25 @@ export class WebVideoPlayer {
     const shared = getSharedLiveKitVideoStream()
     const onTrackUpdate = (): void => {
       if (gen !== this.sourceGeneration) return
-      const video = shared.video
-      if (video.videoWidth > 0 || video.readyState >= HTMLMediaElement.HAVE_METADATA) {
-        if (this.state !== VS_ERROR) this.setState(VS_READY)
-        this.onFrameReady?.()
+      // playing=false while bound — paint black, do not promote live texture.
+      if (!this.wantsPlaying || this.isPlaybackBlocked()) {
+        this.paintIdleBlack()
+        return
       }
-      if (this.wantsPlaying && !this.isPlaybackBlocked()) void this.tryPlayShared(video)
+      if (shared.hasDrawableFrame()) {
+        if (this.state !== VS_ERROR) {
+          this.setState(shared.video.paused ? VS_READY : VS_PLAYING)
+        }
+        this.hasHadRenderableFrame = true
+        // Live frames → rebind materials from idle black to VideoTexture.
+        this.onFrameReady?.()
+      } else {
+        // Stream ended / unpublished while still playing=true — black screen.
+        this.hasHadRenderableFrame = false
+        this.paintIdleBlack()
+      }
+      // Track may attach after the first play attempt (OBS/ingress lag).
+      if (this.wantsPlaying && !this.isPlaybackBlocked()) void this.issuePlay()
     }
 
     this.sharedLiveKitUnsubscribe = shared.subscribe(binder, onTrackUpdate)
@@ -759,12 +910,14 @@ export class WebVideoPlayer {
           // Auto-start once levels/audio groups are ready (Vimeo multi-audio).
           hls.on?.('hlsManifestParsed', () => {
             if (gen !== this.sourceGeneration) return
-            if (this.wantsPlaying && !this.isPlaybackBlocked()) void this.tryPlay()
+            if (this.wantsPlaying && !this.isPlaybackBlocked()) void this.issuePlay()
           })
           hls.attachMedia(this.video)
           hls.loadSource(mediaUrl)
           this.hls = hls
           this.ensureLocalTexture().start()
+          // Optimistic play — tickPlayback recovers if blocked until metadata.
+          if (this.wantsPlaying && !this.isPlaybackBlocked()) void this.issuePlay()
           return
         }
       } catch (err) {
@@ -777,6 +930,7 @@ export class WebVideoPlayer {
         this.video.src = mediaUrl
         this.video.load()
         this.ensureLocalTexture().start()
+        if (this.wantsPlaying && !this.isPlaybackBlocked()) void this.issuePlay()
         return
       }
 
@@ -789,6 +943,8 @@ export class WebVideoPlayer {
     this.video.src = mediaUrl
     this.video.load()
     this.ensureLocalTexture().start()
+    // Progressive CDN / mp4 after admin switch — kick play once the element has a src.
+    if (this.wantsPlaying && !this.isPlaybackBlocked()) void this.issuePlay()
   }
 
   private activeVideo(): HTMLVideoElement {
@@ -815,7 +971,16 @@ export class WebVideoPlayer {
     if (!this.userGestureUnlocked || this.isPlaybackBlocked() || !this.wantsPlaying) return
     const gen = ++this.playGeneration
     try {
+      // LiveKit element must stay muted for autoplay; volume is via separate audio track / settings.
+      video.muted = true
+      video.playsInline = true
+      video.autoplay = true
       await video.play()
+      if (video.videoWidth > 0) {
+        this.hasHadRenderableFrame = true
+        this.setState(VS_PLAYING)
+        this.onFrameReady?.()
+      }
     } catch (err) {
       if (gen !== this.playGeneration) return
       if (err instanceof DOMException && err.name === 'AbortError') return
@@ -851,11 +1016,28 @@ export class WebVideoPlayer {
     this.playInFlight = true
     const gen = ++this.playGeneration
     try {
+      // Ensure muted autoplay path when sound is not yet unlocked (Chrome policy).
+      if (!this.soundUnlocked && !this.spatial) {
+        this.video.muted = true
+      }
       await this.video.play()
     } catch (err) {
       if (gen !== this.playGeneration) return
       // AbortError: another pause/load raced — tickPlayback will recover after debounce.
       if (err instanceof DOMException && err.name === 'AbortError') return
+      // Last-ditch: force mute and retry once (covers race where applyEffectiveVolume unmuted).
+      if (err instanceof DOMException && err.name === 'NotAllowedError' && !this.video.muted) {
+        this.video.muted = true
+        try {
+          await this.video.play()
+          return
+        } catch (retryErr) {
+          if (gen !== this.playGeneration) return
+          if (retryErr instanceof DOMException && retryErr.name === 'AbortError') return
+          console.warn('[WebVideoPlayer] play() blocked or failed', retryErr, this.loadedSrc)
+          return
+        }
+      }
       console.warn('[WebVideoPlayer] play() blocked or failed', err, this.loadedSrc)
     } finally {
       if (gen === this.playGeneration) this.playInFlight = false

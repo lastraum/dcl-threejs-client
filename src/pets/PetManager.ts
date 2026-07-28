@@ -90,7 +90,14 @@ export class PetManager {
   }
 
   setLocalWallet(address: string | null): void {
-    this.localWallet = address?.toLowerCase() ?? null
+    const next = address?.toLowerCase() ?? null
+    const prev = this.localWallet
+    this.localWallet = next
+    // If a self-echo remote pet was created before wallet was known, drop it.
+    if (next && next !== prev) {
+      this.removeRemote(next)
+      this.pendingRemotePoses.delete(next)
+    }
   }
 
   getLocalSpec(): ActivePetSpec | null {
@@ -286,6 +293,12 @@ export class PetManager {
     meshYawOffsetDeg = 0
   ): void {
     const key = address.toLowerCase()
+    // Never mount a "remote" for the local wallet (self-echo / late localAddress).
+    if (this.localWallet && key === this.localWallet) {
+      this.removeRemote(key)
+      this.pendingRemotePoses.delete(key)
+      return
+    }
     if (!contentHash) {
       this.removeRemote(key)
       this.pendingRemotePoses.delete(key)
@@ -314,10 +327,16 @@ export class PetManager {
         this.pendingRemotePoses.delete(key)
       }
     } else {
+      // Same hash re-announce — only refresh yaw/category (avoid double mesh load).
+      const sameHash = remote.contentHash === contentHash
       remote.contentHash = contentHash
       remote.category = category ?? remote.category
       remote.meshYawOffsetDeg = meshYawOffsetDeg
       remote.instance.setMeshYawOffsetDeg(meshYawOffsetDeg)
+      if (!sameHash) {
+        // Hash change: clear ready state until bytes reload (prevents stale double mesh).
+        remote.instance.root.visible = false
+      }
     }
   }
 
@@ -328,16 +347,31 @@ export class PetManager {
     meshYawOffsetDeg = 0
   ): Promise<void> {
     const key = address.toLowerCase()
+    if (this.localWallet && key === this.localWallet) return
     let remote = this.remotes.get(key)
     if (!remote) {
       this.onPeerPetChanged(key, contentHash, category, meshYawOffsetDeg)
-      remote = this.remotes.get(key)!
+      remote = this.remotes.get(key)
+      if (!remote) return
+    }
+    // Skip reload when the same mesh is already live (WantAnnounce rebroadcast).
+    if (
+      remote.instance.isReady &&
+      remote.contentHash === contentHash &&
+      remote.category === category
+    ) {
+      remote.meshYawOffsetDeg = meshYawOffsetDeg
+      remote.instance.setMeshYawOffsetDeg(meshYawOffsetDeg)
+      if (!remote.target) this.seedRemoteNearPeer(key, remote)
+      return
     }
     remote.category = category
     remote.contentHash = contentHash
     remote.meshYawOffsetDeg = meshYawOffsetDeg
     const bytes = await loadPetLibraryBytes(contentHash)
     if (!bytes || this.disposed) return
+    // Stale completion after hash change / clear.
+    if (this.remotes.get(key)?.contentHash !== contentHash) return
     remote.instance.setMeshYawOffsetDeg(meshYawOffsetDeg)
     await remote.instance.loadFromBytes(bytes, category)
     remote.instance.setMeshYawOffsetDeg(meshYawOffsetDeg)
@@ -347,6 +381,7 @@ export class PetManager {
 
   onPeerPetPose(address: string, pose: PetPose): void {
     const key = address.toLowerCase()
+    if (this.localWallet && key === this.localWallet) return
     const remote = this.remotes.get(key)
     if (!remote) {
       // Announce may lag pose by a frame or two — buffer.

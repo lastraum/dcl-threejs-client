@@ -37,8 +37,10 @@ export class FollowFlagManager {
     this.cct = cct
     if (!this.prop) {
       this.prop = new FollowFlagProp()
-      if (this.imageDataUrl) this.prop.setImageDataUrl(this.imageDataUrl)
     }
+    // Always re-apply image on (re)bind — World rebuild used to re-parent a prop
+    // whose texture load had already completed, leaving the disc invisible.
+    if (this.imageDataUrl) this.prop.setImageDataUrl(this.imageDataUrl)
     if (this.prop.root.parent !== scene) {
       this.prop.root.removeFromParent()
       scene.add(this.prop.root)
@@ -54,14 +56,25 @@ export class FollowFlagManager {
   /** Active tour leader (wallet). Null clears the flag prop. */
   setLeader(address: string | null): void {
     const next = address?.trim().toLowerCase() || null
-    if (next === this.leaderAddress) return
+    if (next === this.leaderAddress) {
+      // Same leader after World rebuild / re-sync — still refresh visibility.
+      this.syncVisibility()
+      return
+    }
     this.leaderAddress = next
     this.syncVisibility()
   }
 
   setImageDataUrl(dataUrl: string | null): void {
     const next = dataUrl?.trim() || null
-    if (next === this.imageDataUrl) return
+    if (next === this.imageDataUrl) {
+      // Re-assert image after prop recreate / clear race (same data URL).
+      if (next && this.prop && !this.prop.hasImageLoaded()) {
+        this.prop.setImageDataUrl(next)
+      }
+      this.syncVisibility()
+      return
+    }
     this.imageDataUrl = next
     this.prop?.setImageDataUrl(next)
     this.syncVisibility()
@@ -93,7 +106,11 @@ export class FollowFlagManager {
     }
 
     if (!feet) {
-      this.prop.root.visible = false
+      // Peer pose not ready yet — keep prop alive at last position rather than
+      // hard-hiding (that made the flag "never show" for lagging remote leaders).
+      if (!this.prop.hasImageLoaded()) {
+        this.prop.root.visible = false
+      }
       return
     }
 
@@ -121,7 +138,8 @@ export class FollowFlagManager {
 
   private syncVisibility(): void {
     if (!this.prop) return
-    const show = Boolean(this.leaderAddress && this.imageDataUrl)
+    const show = Boolean(this.leaderAddress && this.imageDataUrl && this.prop.hasImageLoaded())
     if (!show) this.prop.root.visible = false
+    else this.prop.root.visible = true
   }
 }

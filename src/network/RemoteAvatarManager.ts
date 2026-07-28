@@ -25,6 +25,7 @@ import { ReservedEntitiesSync } from '../bridge/ReservedEntitiesSync'
 import type { AvatarSkeletonTarget } from '../avatar/AvatarAttachTargets'
 import { avatarEntityFromAddress, type EntityStore } from '../bridge/EntityStore'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
+import { isNonPlayerLiveKitIdentity } from './comms/livekitVideoStreams'
 import { NameTag } from '../client/ui/NameTag'
 import { areSceneNameTagsVisible } from '../client/ui/nameTagVisibility'
 import { resolveProfileEmote, loadResolvedProfileEmote } from '../avatar/profileEmotes'
@@ -658,7 +659,10 @@ export class RemoteAvatarManager {
    */
   getPeerRoot(address: string): THREE.Object3D | null {
     const record = this.peers.get(address.toLowerCase())
-    if (!record || !record.hasPosition) return null
+    if (!record) return null
+    // Prefer a known pose, but still return the root so tour flag / attach can
+    // track the peer as soon as the record exists (before first RFC4 position).
+    if (!record.hasPosition && !record.model && !record.root.parent) return null
     return record.root
   }
 
@@ -929,11 +933,17 @@ export class RemoteAvatarManager {
 
   /**
    * After a custom mesh parse/mount failure — retry up to 3× with backoff, then DCL fallback.
+   * "waiting-for-dav-bytes" is softer: keep polling until RAM has the hash (fetch is async
+   * and often slower than 3 parse attempts). Never wipe vrmContentHash on a wait-timeout.
    * Keeps vrmContentHash so a later successful DAV re-fetch can still win.
    */
   private scheduleCustomMeshRetry(key: string, record: RemotePeerRecord, reason: string): void {
     if (!record.vrmContentHash) return
-    if (record.customMeshAttempts >= RemoteAvatarManager.PEER_MESH_MAX_ATTEMPTS) {
+    const waitingForBytes = reason === 'waiting-for-dav-bytes'
+    if (
+      !waitingForBytes &&
+      record.customMeshAttempts >= RemoteAvatarManager.PEER_MESH_MAX_ATTEMPTS
+    ) {
       odkNetWarn('custom mesh mount gave up after 3 tries — DCL fallback', {
         peer: shortAddr(key),
         hash: shortHash(record.vrmContentHash),
@@ -968,6 +978,13 @@ export class RemoteAvatarManager {
     record.customMeshRetryTimer = setTimeout(() => {
       record.customMeshRetryTimer = null
       if (!this.peers.has(key) || !record.vrmContentHash) return
+      const hash = record.vrmContentHash
+      const ramReady = !!getVrmRamBytes(hash)
+      if (waitingForBytes && !ramReady) {
+        // Still no bytes — soft re-poll (do not burn parse-attempt budget).
+        this.scheduleCustomMeshRetry(key, record, 'waiting-for-dav-bytes')
+        return
+      }
       if (record.hasPosition && !record.placeholder && !record.model) {
         this.attachLoadingPresentation(record)
       }
@@ -1054,6 +1071,8 @@ export class RemoteAvatarManager {
   upsertPeer(address: string, positionDcl?: THREE.Vector3): void {
     const key = address.toLowerCase()
     if (this.isLocalPeer(key)) return
+    // RTMP stream-key ingress / Cast bots — video-only, never a player mesh.
+    if (isNonPlayerLiveKitIdentity(key)) return
     let record = this.peers.get(key)
     if (!record) {
       const entity = avatarEntityFromAddress(key)
@@ -1164,6 +1183,7 @@ export class RemoteAvatarManager {
   applyPeerProfile(address: string, serializedProfile: string): void {
     const key = address.toLowerCase()
     if (this.isLocalPeer(key)) return
+    if (isNonPlayerLiveKitIdentity(key)) return
     const profile = profileFromSerializedEntry(serializedProfile, key)
     if (!profile) return
 
@@ -1228,6 +1248,7 @@ export class RemoteAvatarManager {
   ): void {
     const key = address.toLowerCase()
     if (this.isLocalPeer(key)) return
+    if (isNonPlayerLiveKitIdentity(key)) return
     const position = dclToThreeVec(positionDcl)
     const yaw = dclYawToThreeYaw(yawDcl)
     if (!this.peers.has(key)) {

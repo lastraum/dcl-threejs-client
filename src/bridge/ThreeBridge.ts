@@ -63,10 +63,11 @@ function materialReferencesVideoPlayer(pb: PbMaterial, videoPlayerEntity: Entity
     slots.push(pbr.emissiveTexture, pbr.bumpTexture)
   }
 
+  const want = Number(videoPlayerEntity)
   for (const slot of slots) {
-    if (slot?.tex?.$case === 'videoTexture' && slot.tex.videoTexture.videoPlayerEntity === (videoPlayerEntity as number)) {
-      return true
-    }
+    if (slot?.tex?.$case !== 'videoTexture') continue
+    // Loose numeric compare — CRDT/protobuf sometimes yields float-ish entity ids.
+    if (Number(slot.tex.videoTexture.videoPlayerEntity) === want) return true
   }
   return false
 }
@@ -784,12 +785,15 @@ export class ThreeBridge {
 
   private invalidateMaterialsForVideoPlayer(videoPlayerEntity: Entity): void {
     const { Material, GltfNodeModifiers } = this.ecs
+    let materialHits = 0
+    let nodeModHits = 0
     this.store.forEachSceneEntity((entity) => {
       if (Material.has(entity)) {
         const pb = Material.get(entity) as PbMaterial
         if (materialReferencesVideoPlayer(pb, videoPlayerEntity)) {
           this.materials.clearEntity(entity)
           this.pendingMaterialEntities.add(entity)
+          materialHits++
         }
       }
       // Creator Hub video screens put videoTexture on GltfNodeModifiers, not Material.
@@ -797,9 +801,23 @@ export class ThreeBridge {
         const mods = GltfNodeModifiers.get(entity) as PBGltfNodeModifiers
         if (gltfNodeModifiersReferenceVideo(mods, videoPlayerEntity)) {
           this.pendingGltfNodeModEntities.add(entity)
+          nodeModHits++
         }
       }
     })
+    if (materialHits === 0 && nodeModHits === 0) {
+      clientDebugLog.log(
+        'cast',
+        `video texture ready e${videoPlayerEntity as number} but no Material/GltfNodeModifiers reference it`,
+        { level: 'warn', throttleMs: 5000, throttleKey: `vid-mat-miss:${videoPlayerEntity as number}` }
+      )
+    } else {
+      clientDebugLog.log(
+        'cast',
+        `video texture rebind e${videoPlayerEntity as number} → materials=${materialHits} nodeMods=${nodeModHits}`,
+        { level: 'info', throttleMs: 2000, throttleKey: `vid-mat-rebind:${videoPlayerEntity as number}` }
+      )
+    }
     void this.runMaterialPass(Material)
     void this.runGltfNodeModifiersPass()
   }

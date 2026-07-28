@@ -91,6 +91,16 @@ export class VrmPeerSync {
     this.localAddress = address?.toLowerCase() ?? null
   }
 
+  /**
+   * Force re-announce after a failed first publish (comms not ready yet).
+   * Login retries already call this path via requestPeerAnnounces + reannounce.
+   */
+  async ensureLocalAnnounce(): Promise<void> {
+    if (!this.equippedHash) return
+    this.publishedHash = undefined
+    await this.reannounceEquippedToPeers()
+  }
+
   getPeerEquippedHash(address: string): string | null {
     return this.peerEquippedHash.get(address.toLowerCase()) ?? null
   }
@@ -227,6 +237,8 @@ export class VrmPeerSync {
         setTimeout(() => {
           if (!this.comms) return
           void this.requestPeerAnnounces()
+          // Re-push local equip — first announce often raced LiveKit not-ready.
+          void this.reannounceEquippedToPeers()
           // Re-push any hashes we already have so DCL interim bodies swap to VRM.
           if (this.callbacks) {
             for (const [address, hash] of this.peerEquippedHash) {

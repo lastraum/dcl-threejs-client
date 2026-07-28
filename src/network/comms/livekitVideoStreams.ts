@@ -329,19 +329,43 @@ function ensureCompanionStreamAudioOnHost(
 /** Unity `PRESENTATION_BOT_IDENTITY_PREFIX` — DCL Cast slide/presentation publisher. */
 export const PRESENTATION_BOT_IDENTITY_PREFIX = 'presentation-bot:'
 
+/**
+ * LiveKit RTMP stream-key ingress identity suffix (e.g. `9bc830ea-…-streamer`).
+ * These participants publish screen A/V only — never player avatars.
+ */
+export const STREAMER_IDENTITY_SUFFIX = '-streamer'
+
 export function isPresentationBotIdentity(identity: string | undefined | null): boolean {
   return (identity ?? '').toLowerCase().startsWith(PRESENTATION_BOT_IDENTITY_PREFIX)
 }
 
+/** RTMP / stream-key ingress publisher (OBS → LiveKit). */
+export function isStreamerIngressIdentity(identity: string | undefined | null): boolean {
+  const id = (identity ?? '').trim().toLowerCase()
+  return id.endsWith(STREAMER_IDENTITY_SUFFIX)
+}
+
+/**
+ * LiveKit room members that must not spawn remote avatars or RFC4 peer plumbing.
+ * Still valid for video/audio track attach on `livekit-video://current-stream`.
+ */
+export function isNonPlayerLiveKitIdentity(identity: string | undefined | null): boolean {
+  if (!identity?.trim()) return true
+  return isPresentationBotIdentity(identity) || isStreamerIngressIdentity(identity)
+}
+
 /**
  * Priority for scene `livekit-video://current-stream` (Unity LivekitPlayer.BestInitialVideoKey):
- * presentation bot → screen share → camera → other/ingress (unknown).
+ * stream-key ingress / presentation bot → screen share → camera → other.
+ *
+ * RTMP ingress is often labelled `camera` — without identity boost it ties with real
+ * peer webcams and can attach the wrong (or empty) track.
  */
 function videoSourceTier(source: Track.Source, identity: string): number {
-  if (isPresentationBotIdentity(identity)) return -1
+  if (isStreamerIngressIdentity(identity) || isPresentationBotIdentity(identity)) return -2
   if (source === Track.Source.ScreenShare) return 0
   if (source === Track.Source.Camera) return 1
-  return 2 // unknown / RTMP ingress-style
+  return 2 // unknown / other ingress-style
 }
 
 type RemoteVideoPick = {

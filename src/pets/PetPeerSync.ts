@@ -103,7 +103,16 @@ export class PetPeerSync {
   }
 
   setLocalAddress(address: string | null): void {
-    this.localAddress = address?.toLowerCase() ?? null
+    const next = address?.toLowerCase() ?? null
+    const prev = this.localAddress
+    this.localAddress = next
+    // Packets that arrived before wallet was known used to spawn a remote of self.
+    if (next && next !== prev) {
+      this.peerHash.delete(next)
+      this.peerCategory.delete(next)
+      this.peerMeshYaw.delete(next)
+      this.callbacks?.onPeerPetChanged(next, null, null)
+    }
   }
 
   getPeerEquippedHash(address: string): string | null {
@@ -312,7 +321,9 @@ export class PetPeerSync {
 
   private handlePacket(sender: string, data: Uint8Array): void {
     const from = sender.toLowerCase()
-    if (!from || from === this.localAddress) return
+    // Drop self-echoes (LiveKit can deliver our own broadcast). Without this we
+    // spawn a second "remote" of the local pet on top of the real one.
+    if (!from || (this.localAddress && from === this.localAddress)) return
 
     const msg = tryDecodeDpetMessage(data)
     if (!msg) return

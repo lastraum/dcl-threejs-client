@@ -218,8 +218,10 @@ export class PetInstance {
     if (!resolved) return false
     this.previewClip = resolved
     this.currentAnim = null
-    this.currentClipName = resolved
+    // crossfadeToClip reads currentClipName as the *outgoing* action — set only after.
     this.crossfadeToClip(resolved)
+    this.currentClipName = resolved
+    this.lastStateEnterMs = performance.now()
     return true
   }
 
@@ -254,14 +256,19 @@ export class PetInstance {
     next.enabled = true
     next.paused = false
     next.setEffectiveTimeScale(1)
-    if (!next.isRunning()) next.play()
+    // Always restart the target clip from the beginning for previews / band changes
+    // so a second Play press on a different track is not stuck under a dead weight.
+    next.reset()
+    next.play()
     if (prev && prev !== next) {
       // Let crossFadeTo own weights — do not snap next to full weight immediately
       // (that undoes the blend and double-influences both clips).
+      prev.enabled = true
+      prev.paused = false
       prev.crossFadeTo(next, CROSSFADE, false)
     } else {
       // fadeIn ramps weight from 0 → 1; avoid setEffectiveWeight(1) snap.
-      next.reset().fadeIn(CROSSFADE)
+      next.fadeIn(CROSSFADE)
     }
   }
 

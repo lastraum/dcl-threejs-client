@@ -138,6 +138,11 @@ export class FollowFlagProp {
     this.root.visible = v && this.hasImage
   }
 
+  /** True after texture load (or solid-color fallback) finished. */
+  hasImageLoaded(): boolean {
+    return this.hasImage
+  }
+
   dispose(): void {
     this.disposed = true
     this.disposeTexture()

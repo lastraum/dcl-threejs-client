@@ -842,6 +842,14 @@ export class PlayerSystem {
     return this.playerYaw
   }
 
+  /**
+   * Horizontal locomotion speed (m/s) for leash companions / AFK timers.
+   * Uses the same velocity sample as avatar gait.
+   */
+  getHorizontalSpeed(): number {
+    return Math.hypot(_velocity.x, _velocity.z)
+  }
+
   /** Immediate movement/camera facing for RFC4 — DCL scene yaw, not locally smoothed. */
   getNetworkYaw(): number {
     return normalizeAngle(threeYawToDclYaw(this.networkYaw))

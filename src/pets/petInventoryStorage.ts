@@ -1,6 +1,6 @@
 import { PET_INVENTORY_STORAGE_KEY } from './constants'
-import { normalizePetCategory } from './petCategories'
-import type { PetInventoryState, PetLibraryEntry } from './types'
+import { normalizeAnimClipMap, normalizePetCategory } from './petCategories'
+import type { PetAnimClipMap, PetInventoryState, PetLibraryEntry } from './types'
 
 type StoreMap = Record<string, PetInventoryState>
 
@@ -22,7 +22,21 @@ function normalizeEntry(raw: unknown): PetLibraryEntry | null {
     typeof o.meshYawOffsetDeg === 'number' && Number.isFinite(o.meshYawOffsetDeg)
       ? normalizeMeshYawOffsetDeg(o.meshYawOffsetDeg)
       : undefined
-  return { contentHash, fileName, byteSize, addedAt, category, nickname, meshYawOffsetDeg }
+  const clipNames = Array.isArray(o.clipNames)
+    ? o.clipNames.filter((n): n is string => typeof n === 'string' && n.trim().length > 0)
+    : undefined
+  const animClipMap = normalizeAnimClipMap(o.animClipMap)
+  return {
+    contentHash,
+    fileName,
+    byteSize,
+    addedAt,
+    category,
+    nickname,
+    meshYawOffsetDeg,
+    clipNames: clipNames?.length ? clipNames : undefined,
+    animClipMap
+  }
 }
 
 /** Snap to common export fixes; keep any finite degree value. */
@@ -176,6 +190,38 @@ export function setOwnedPetMeshYawOffset(
     const deg = normalizeMeshYawOffsetDeg(meshYawOffsetDeg)
     if (deg === 0) delete row.meshYawOffsetDeg
     else row.meshYawOffsetDeg = deg
+    setPetInventory(address, state)
+  }
+  return state
+}
+
+export function setOwnedPetAnimClipMap(
+  address: string,
+  contentHash: string,
+  animClipMap: PetAnimClipMap | null
+): PetInventoryState {
+  const state = getPetInventory(address)
+  const hash = contentHash.toLowerCase()
+  const row = state.owned.find((e) => e.contentHash === hash)
+  if (row) {
+    const next = normalizeAnimClipMap(animClipMap)
+    if (next) row.animClipMap = next
+    else delete row.animClipMap
+    setPetInventory(address, state)
+  }
+  return state
+}
+
+export function setOwnedPetClipNames(
+  address: string,
+  contentHash: string,
+  clipNames: string[]
+): PetInventoryState {
+  const state = getPetInventory(address)
+  const hash = contentHash.toLowerCase()
+  const row = state.owned.find((e) => e.contentHash === hash)
+  if (row) {
+    row.clipNames = [...new Set(clipNames.filter((n) => n.trim()))]
     setPetInventory(address, state)
   }
   return state

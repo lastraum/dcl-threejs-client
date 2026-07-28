@@ -2,9 +2,11 @@ import * as THREE from 'three'
 import { syncGltfInstanceRenderState } from '../collision/gltfRenderMeshes'
 import { PET_CATEGORY_CONFIG } from './petCategories'
 import { countMappedMaterials, parsePetGlbBytes } from './parsePetGlb'
-import type { PetAnimState, PetCategory, PetPose } from './types'
+import type { PetAnimClipMap, PetAnimState, PetCategory, PetPose } from './types'
 
 const CROSSFADE = 0.2
+/** Re-roll random clip while staying in idle/afk (ms). */
+const IDLE_REROLL_MS = 12_000
 
 /**
  * Hierarchy:
@@ -20,7 +22,11 @@ export class PetInstance {
   private actions = new Map<string, THREE.AnimationAction>()
   private clipNames: string[] = []
   private currentAnim: PetAnimState | null = null
+  private currentClipName: string | null = null
   private category: PetCategory = 'walking'
+  private animClipMap: PetAnimClipMap | null = null
+  private previewClip: string | null = null
+  private lastStateEnterMs = 0
   /** Extra Y on facePivot (radians) — export fix, not locomotion yaw. */
   private meshYawOffsetRad = 0
   private disposed = false
@@ -38,6 +44,10 @@ export class PetInstance {
     return this.meshReady && !this.disposed
   }
 
+  getClipNames(): string[] {
+    return [...this.clipNames]
+  }
+
   setCategory(category: PetCategory): void {
     this.category = category
   }
@@ -48,11 +58,20 @@ export class PetInstance {
     this.facePivot.rotation.set(0, this.meshYawOffsetRad, 0)
   }
 
+  /** User clip → anim-state pools. Empty / null falls back to default aliases. */
+  setAnimClipMap(map: PetAnimClipMap | null | undefined): void {
+    this.animClipMap = map && Object.keys(map).length ? { ...map } : null
+    // Force re-resolve on next pose so new map applies immediately.
+    this.currentAnim = null
+    this.currentClipName = null
+  }
+
   async loadFromBytes(bytes: ArrayBuffer, category: PetCategory): Promise<void> {
     if (this.disposed) return
     const token = ++this.loadToken
     this.clearMesh()
     this.category = category
+    this.previewClip = null
     // Keep face offset on the pivot across reloads.
     this.facePivot.rotation.set(0, this.meshYawOffsetRad, 0)
 
@@ -129,6 +148,7 @@ export class PetInstance {
       this.meshReady = true
       this.root.visible = true
       this.currentAnim = null
+      this.currentClipName = null
       this.applyAnim('idle')
     } catch (err) {
       console.warn('[pets] failed to load pet GLB', err)
@@ -146,26 +166,57 @@ export class PetInstance {
     this.root.rotation.set(0, pose.yaw, 0)
     // Re-assert every frame so nothing can strip the export fix.
     this.facePivot.rotation.set(0, this.meshYawOffsetRad, 0)
+    // Loco pose cancels edit-panel preview.
+    if (this.previewClip) this.previewClip = null
     this.applyAnim(pose.anim)
   }
 
   applyAnim(anim: PetAnimState): void {
     if (!this.mixer || this.actions.size === 0) return
-    if (this.currentAnim === anim) return
-    const clipName = this.resolveClip(anim)
-    if (!clipName) return
-    const next = this.actions.get(clipName)
-    if (!next) return
+    const now = performance.now()
+    const sameState = this.currentAnim === anim
+    const canReroll =
+      sameState &&
+      (anim === 'idle' || anim === 'afk') &&
+      now - this.lastStateEnterMs > IDLE_REROLL_MS
+    if (sameState && !canReroll) return
 
-    const prevName = this.currentAnim ? this.resolveClip(this.currentAnim) : null
-    const prev = prevName ? this.actions.get(prevName) : null
-    if (prev && prev !== next) {
-      prev.crossFadeTo(next, CROSSFADE, false)
-    } else {
-      next.reset().fadeIn(CROSSFADE)
+    const pool = this.resolveClipPool(anim)
+    if (!pool.length) return
+    let clipName = pool[0]!
+    if (pool.length > 1) {
+      // Avoid immediate re-pick of the same clip when re-rolling idle/afk.
+      const candidates =
+        canReroll && this.currentClipName
+          ? pool.filter((n) => n !== this.currentClipName)
+          : pool
+      const pickFrom = candidates.length ? candidates : pool
+      clipName = pickFrom[Math.floor(Math.random() * pickFrom.length)]!
     }
-    next.setEffectiveWeight(1)
+    this.crossfadeToClip(clipName)
     this.currentAnim = anim
+    this.currentClipName = clipName
+    this.lastStateEnterMs = now
+  }
+
+  /** Play a named clip once for settings preview (local only). */
+  playClipPreview(clipName: string): boolean {
+    if (!this.mixer || this.actions.size === 0) return false
+    const resolved = this.resolveActionName(clipName)
+    if (!resolved) return false
+    this.previewClip = resolved
+    this.currentAnim = null
+    this.currentClipName = resolved
+    this.crossfadeToClip(resolved)
+    return true
+  }
+
+  stopClipPreview(): void {
+    if (!this.previewClip) return
+    this.previewClip = null
+    this.currentAnim = null
+    this.currentClipName = null
+    this.applyAnim('idle')
   }
 
   update(dt: number): void {
@@ -181,20 +232,51 @@ export class PetInstance {
     this.root.removeFromParent()
   }
 
-  private resolveClip(anim: PetAnimState): string | null {
-    const aliases = PET_CATEGORY_CONFIG[this.category].clipAliases[anim] ?? []
-    for (const name of aliases) {
-      if (this.actions.has(name)) return name
+  private crossfadeToClip(clipName: string): void {
+    const next = this.actions.get(clipName)
+    if (!next) return
+    const prev = this.currentClipName ? this.actions.get(this.currentClipName) : null
+    if (prev && prev !== next) {
+      prev.crossFadeTo(next, CROSSFADE, false)
+    } else {
+      next.reset().fadeIn(CROSSFADE)
     }
-    const lowerMap = new Map(this.clipNames.map((n) => [n.toLowerCase(), n]))
-    for (const name of aliases) {
-      const hit = lowerMap.get(name.toLowerCase())
-      if (hit) return hit
-    }
+    next.setEffectiveWeight(1)
+  }
+
+  private resolveActionName(name: string): string | null {
+    if (this.actions.has(name)) return name
+    const lower = name.toLowerCase()
     for (const n of this.clipNames) {
-      if (/idle|hover|stand/i.test(n)) return n
+      if (n.toLowerCase() === lower) return n
     }
-    return this.clipNames[0] ?? null
+    return null
+  }
+
+  /** Clip pool for an anim state — user map first, then default aliases. */
+  private resolveClipPool(anim: PetAnimState): string[] {
+    const resolved: string[] = []
+    const push = (name: string) => {
+      const hit = this.resolveActionName(name)
+      if (hit && !resolved.includes(hit)) resolved.push(hit)
+    }
+
+    const custom = this.animClipMap?.[anim]
+    if (custom?.length) {
+      for (const n of custom) push(n)
+      if (resolved.length) return resolved
+    }
+
+    const aliases = PET_CATEGORY_CONFIG[this.category].clipAliases[anim] ?? []
+    for (const name of aliases) push(name)
+
+    if (!resolved.length && (anim === 'idle' || anim === 'afk')) {
+      for (const n of this.clipNames) {
+        if (/idle|hover|stand|afk|sit|sleep|rest/i.test(n)) push(n)
+      }
+    }
+    if (!resolved.length && this.clipNames[0]) push(this.clipNames[0])
+    return resolved
   }
 
   private clearMesh(): void {
@@ -203,6 +285,8 @@ export class PetInstance {
     this.actions.clear()
     this.clipNames = []
     this.currentAnim = null
+    this.currentClipName = null
+    this.previewClip = null
     this.meshReady = false
     while (this.facePivot.children.length) {
       const child = this.facePivot.children[0]!

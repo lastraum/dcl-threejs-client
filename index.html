@@ -2257,6 +2257,13 @@
         min-height: 0;
         overflow: auto;
         padding: 8px 10px 12px;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .pets-panel__body::-webkit-scrollbar {
+        width: 0;
+        height: 0;
+        display: none;
       }
       .pets-panel__empty {
         padding: 24px 12px;
@@ -2278,9 +2285,29 @@
         border-color: rgba(255, 45, 85, 0.45);
         background: rgba(255, 45, 85, 0.08);
       }
+      .pets-panel__row-top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .pets-panel__row-main {
+        min-width: 0;
+        flex: 1;
+      }
       .pets-panel__row-name {
         font-size: 13px;
         font-weight: 600;
+      }
+      .pets-panel__badge {
+        display: inline-block;
+        margin-left: 6px;
+        font-size: 10px;
+        font-weight: 650;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #ff8aa0;
+        vertical-align: middle;
       }
       .pets-panel__row-meta {
         font-size: 11px;
@@ -2289,9 +2316,36 @@
       }
       .pets-panel__row-actions {
         display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
+        flex-wrap: nowrap;
+        gap: 4px;
         align-items: center;
+        flex-shrink: 0;
+      }
+      .pets-panel__icon-btn {
+        appearance: none;
+        border: 1px solid rgba(255,255,255,0.12);
+        background: rgba(255,255,255,0.06);
+        color: rgba(255,255,255,0.88);
+        border-radius: 10px;
+        width: 34px;
+        height: 34px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        padding: 0;
+      }
+      .pets-panel__icon-btn:hover {
+        background: rgba(255,255,255,0.12);
+        color: #fff;
+      }
+      .pets-panel__icon-btn--danger {
+        color: #ff8f8f;
+        border-color: rgba(255,100,100,0.25);
+        background: transparent;
+      }
+      .pets-panel__icon-btn--danger:hover {
+        background: rgba(255,80,80,0.12);
       }
       .pets-panel__select {
         appearance: none;
@@ -2301,6 +2355,11 @@
         color: #fff;
         font-size: 11px;
         padding: 5px 8px;
+        max-width: 100%;
+      }
+      .pets-panel__select--track {
+        min-width: 0;
+        width: 100%;
       }
       .pets-panel__btn {
         appearance: none;
@@ -2325,6 +2384,85 @@
         color: #ff8f8f;
         border-color: rgba(255,100,100,0.25);
         min-width: 32px;
+      }
+      /* Edit surface — replaces list */
+      .pets-panel__edit {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        min-height: 0;
+      }
+      .pets-panel__back {
+        appearance: none;
+        border: 0;
+        background: transparent;
+        color: rgba(255,255,255,0.7);
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        padding: 0;
+        text-align: left;
+        width: fit-content;
+      }
+      .pets-panel__back:hover { color: #fff; }
+      .pets-panel__edit-title {
+        font-size: 15px;
+        font-weight: 650;
+      }
+      .pets-panel__edit-section {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      .pets-panel__field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 11px;
+        color: rgba(255,255,255,0.55);
+      }
+      .pets-panel__edit-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .pets-panel__edit-help {
+        margin: 0;
+        font-size: 11px;
+        line-height: 1.4;
+        color: rgba(255,255,255,0.5);
+      }
+      .pets-panel__tracks-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 36px;
+        gap: 6px;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: rgba(255,255,255,0.4);
+        padding: 0 2px;
+      }
+      .pets-panel__tracks {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .pets-panel__track {
+        display: grid;
+        grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) 36px;
+        gap: 6px;
+        align-items: center;
+        padding: 6px 8px;
+        border-radius: 10px;
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.06);
+      }
+      .pets-panel__track-name {
+        font-size: 11px;
+        font-weight: 600;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       /* Loot Bag dock — bottom bar, same z as chat, sits to the right of chat (+ rail) */

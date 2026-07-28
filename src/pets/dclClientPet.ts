@@ -31,7 +31,8 @@ const ANIM_WIRE: Record<PetAnimState, number> = {
   walk: 1,
   run: 2,
   fly: 3,
-  flyFast: 4
+  flyFast: 4,
+  afk: 5
 }
 
 function animFromWire(code: number): PetAnimState {
@@ -44,6 +45,8 @@ function animFromWire(code: number): PetAnimState {
       return 'fly'
     case 4:
       return 'flyFast'
+    case 5:
+      return 'afk'
     default:
       return 'idle'
   }

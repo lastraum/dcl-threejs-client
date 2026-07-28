@@ -2419,6 +2419,8 @@ export class AppController {
         onTogglePhotoCamera: () => world.togglePhotoCamera(),
         onTourOptions: () => this.openTourOptionsPopup(),
         onActivePetChange: () => world.onActivePetInventoryChange(),
+        onPlayPetClipPreview: (hash, clip) => world.playPetClipPreview(hash, clip),
+        onStopPetClipPreview: () => world.stopPetClipPreview(),
         onSignOut: () => this.signOut(),
         onExit: () => this.leavePlayMode()
       })
@@ -2428,6 +2430,10 @@ export class AppController {
       this.shell.setPhotoCameraHandler(() => world.togglePhotoCamera())
       this.shell.setTourOptionsHandler(() => this.openTourOptionsPopup())
       this.shell.setActivePetChangeHandler(() => world.onActivePetInventoryChange())
+      this.shell.setPetClipPreviewHandlers(
+        (hash, clip) => world.playPetClipPreview(hash, clip),
+        () => world.stopPetClipPreview()
+      )
     }
     if (opts.deferPlayChromeReveal) {
       this.hidePlayChrome()

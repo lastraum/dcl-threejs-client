@@ -41,6 +41,8 @@ export type ClientShellOptions = {
   onTourOptions?: () => void
   /** Pets inventory enable/disable changed — World restores active pet. */
   onActivePetChange?: () => void | Promise<void>
+  onPlayPetClipPreview?: (contentHash: string, clipName: string) => void | Promise<boolean>
+  onStopPetClipPreview?: () => void
   onSignOut: () => void | Promise<void>
   onExit: () => void | Promise<void>
 }
@@ -111,6 +113,10 @@ export class ClientShell {
   private onTogglePhotoCamera: (() => void) | null = null
   private onTourOptions: (() => void) | null = null
   private onActivePetChange: (() => void | Promise<void>) | null = null
+  private onPlayPetClipPreview:
+    | ((contentHash: string, clipName: string) => void | Promise<boolean>)
+    | null = null
+  private onStopPetClipPreview: (() => void) | null = null
   private onOpenProfile: ((address: string) => void) | null = null
   private onJumpToFriend: ((address: string) => void) | null = null
   private emoteWheelEnabled = true
@@ -147,6 +153,8 @@ export class ClientShell {
     onTogglePhotoCamera,
     onTourOptions,
     onActivePetChange,
+    onPlayPetClipPreview,
+    onStopPetClipPreview,
     onSignOut,
     onExit
   }: ClientShellOptions) {
@@ -155,6 +163,8 @@ export class ClientShell {
     this.onTogglePhotoCamera = onTogglePhotoCamera ?? null
     this.onTourOptions = onTourOptions ?? null
     this.onActivePetChange = onActivePetChange ?? null
+    this.onPlayPetClipPreview = onPlayPetClipPreview ?? null
+    this.onStopPetClipPreview = onStopPetClipPreview ?? null
     this.root = document.createElement('aside')
     this.root.id = 'client-shell'
     this.root.className = 'client-shell'
@@ -268,7 +278,12 @@ export class ClientShell {
       getSession: () => this.session,
       anchor: () => this.buttons.get('pets')?.element,
       onClose: () => this.buttons.get('pets')?.setActive(false),
-      onActivePetChange: () => this.onActivePetChange?.()
+      onActivePetChange: () => this.onActivePetChange?.(),
+      onPlayClipPreview: async (hash, clip) => {
+        const r = await this.onPlayPetClipPreview?.(hash, clip)
+        return r === true
+      },
+      onStopClipPreview: () => this.onStopPetClipPreview?.()
     })
 
     this.lootBagPanel = new LootBagPanel({
@@ -476,6 +491,14 @@ export class ClientShell {
 
   setActivePetChangeHandler(handler: (() => void | Promise<void>) | null): void {
     this.onActivePetChange = handler
+  }
+
+  setPetClipPreviewHandlers(
+    play: ((contentHash: string, clipName: string) => void | Promise<boolean>) | null,
+    stop: (() => void) | null
+  ): void {
+    this.onPlayPetClipPreview = play
+    this.onStopPetClipPreview = stop
   }
 
   /** Tour Options flag icon — only for the active tour leader. */

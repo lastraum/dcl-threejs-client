@@ -1,7 +1,27 @@
 /** Pet locomotion / height class — first-class inventory + network metadata. */
 export type PetCategory = 'walking' | 'flying'
 
-export type PetAnimState = 'idle' | 'walk' | 'run' | 'fly' | 'flyFast'
+/**
+ * Locomotion / behavior animation band.
+ * `afk` plays when the owner is idle ≥5 minutes (local + pose wire).
+ */
+export type PetAnimState = 'idle' | 'walk' | 'run' | 'fly' | 'flyFast' | 'afk'
+
+/**
+ * User-authored clip → anim-state mapping.
+ * Multiple clip names per state → random pick when that state is entered.
+ */
+export type PetAnimClipMap = Partial<Record<PetAnimState, string[]>>
+
+/** All anim states that can appear in the edit panel mapper. */
+export const PET_ANIM_STATES: readonly PetAnimState[] = [
+  'idle',
+  'walk',
+  'run',
+  'fly',
+  'flyFast',
+  'afk'
+] as const
 
 /** Library row for a user-uploaded pet GLB. */
 export type PetLibraryEntry = {
@@ -16,6 +36,10 @@ export type PetLibraryEntry = {
    * Use 180 when the export faces the wrong way relative to movement.
    */
   meshYawOffsetDeg?: number
+  /** Clip names discovered in the GLB (cached at upload / first list). */
+  clipNames?: string[]
+  /** Per-anim-state clip pools (overrides default aliases). */
+  animClipMap?: PetAnimClipMap
 }
 
 /** Per-wallet inventory snapshot in localStorage. */
@@ -41,4 +65,5 @@ export type ActivePetSpec = {
   nickname?: string
   fileName?: string
   meshYawOffsetDeg?: number
+  animClipMap?: PetAnimClipMap
 }

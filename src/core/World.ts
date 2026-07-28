@@ -120,6 +120,7 @@ import { clearVrmRamCache } from '../avatar/vrm/vrmRamCache'
 import { PetManager } from '../pets/PetManager'
 import { PetPeerSync } from '../pets/PetPeerSync'
 import { PetContextMenu } from '../pets/PetContextMenu'
+import { getActivePetEntry } from '../pets/petInventoryStorage'
 import { PhotoCameraController } from '../photo/PhotoCameraController'
 import type { PhotoPersonSample } from '../photo/photoMetadata'
 
@@ -1508,12 +1509,32 @@ export class World {
     this.tourFocusTick = tick
   }
 
-  /** Pets panel enable/disable — restore active pet from local inventory + re-announce DPET. */
+  /** Pets panel enable/disable / settings save — restore active pet + re-announce DPET. */
   async onActivePetInventoryChange(): Promise<void> {
     const address = this.session.getAddress() ?? null
     this.petManager.setLocalWallet(address)
     this.petPeerSync.setLocalAddress(address)
+    // Live settings tweak (clip map / yaw / category) without full GLB reload when possible.
+    const entry = getActivePetEntry(address)
+    const current = this.petManager.getLocalSpec()
+    if (entry && current?.contentHash === entry.contentHash) {
+      this.petManager.setLocalAnimClipMap(entry.animClipMap)
+      this.petManager.setLocalMeshYawOffsetDeg(entry.meshYawOffsetDeg ?? 0)
+      if (entry.category !== current.category) {
+        await this.petManager.setLocalCategory(entry.category)
+      }
+      return
+    }
     await this.petManager.restoreFromInventory(address)
+  }
+
+  /** Settings-panel animation track preview. */
+  playPetClipPreview(contentHash: string, clipName: string): Promise<boolean> {
+    return this.petManager.playClipPreview(contentHash, clipName)
+  }
+
+  stopPetClipPreview(): void {
+    this.petManager.stopClipPreview()
   }
 
   private bindPetContextMenu(): void {

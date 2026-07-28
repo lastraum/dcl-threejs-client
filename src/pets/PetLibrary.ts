@@ -7,9 +7,11 @@ import {
   writePetBytes,
   writePetMetaStore
 } from './petByteCache'
-import { normalizePetCategory } from './petCategories'
+import { normalizeAnimClipMap, normalizePetCategory } from './petCategories'
 import { normalizeMeshYawOffsetDeg } from './petInventoryStorage'
-import type { PetCategory, PetLibraryEntry } from './types'
+import { parsePetGlbBytes } from './parsePetGlb'
+import type { PetAnimClipMap, PetCategory, PetLibraryEntry } from './types'
+import * as THREE from 'three'
 
 type LibraryIndex = PetLibraryEntry[]
 
@@ -29,8 +31,58 @@ async function readIndex(): Promise<LibraryIndex> {
     meshYawOffsetDeg:
       typeof e.meshYawOffsetDeg === 'number'
         ? normalizeMeshYawOffsetDeg(e.meshYawOffsetDeg)
-        : undefined
+        : undefined,
+    clipNames: Array.isArray(e.clipNames)
+      ? e.clipNames.filter((n): n is string => typeof n === 'string' && n.trim().length > 0)
+      : undefined,
+    animClipMap: normalizeAnimClipMap(e.animClipMap)
   }))
+}
+
+/** List animation clip names baked into a stored pet GLB. */
+export async function listPetClipNames(contentHash: string): Promise<string[]> {
+  const bytes = await loadPetLibraryBytes(contentHash)
+  if (!bytes) return []
+  try {
+    const gltf = await parsePetGlbBytes(bytes)
+    const names = (gltf.animations ?? [])
+      .map((c) => c?.name?.trim())
+      .filter((n): n is string => !!n)
+    gltf.scene.traverse((node) => {
+      const mesh = node as THREE.Mesh
+      if (mesh.isMesh) {
+        mesh.geometry?.dispose()
+        const mat = mesh.material
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose())
+        else mat?.dispose()
+      }
+    })
+    return [...new Set(names)]
+  } catch (err) {
+    console.warn('[pets] listPetClipNames failed', err)
+    return []
+  }
+}
+
+async function discoverClipNames(bytes: ArrayBuffer): Promise<string[]> {
+  try {
+    const gltf = await parsePetGlbBytes(bytes)
+    const names = (gltf.animations ?? [])
+      .map((c) => c?.name?.trim())
+      .filter((n): n is string => !!n)
+    gltf.scene.traverse((node) => {
+      const mesh = node as THREE.Mesh
+      if (mesh.isMesh) {
+        mesh.geometry?.dispose()
+        const mat = mesh.material
+        if (Array.isArray(mat)) mat.forEach((m) => m.dispose())
+        else mat?.dispose()
+      }
+    })
+    return [...new Set(names)]
+  } catch {
+    return []
+  }
 }
 
 async function writeIndex(index: LibraryIndex): Promise<void> {
@@ -94,13 +146,15 @@ export async function storePetEntry(
   }
 
   await writePetBytes(contentHash, bytes)
+  const clipNames = await discoverClipNames(bytes)
   const entry: PetLibraryEntry = {
     contentHash,
     fileName,
     byteSize: bytes.byteLength,
     addedAt: Date.now(),
     category: normalizePetCategory(category),
-    nickname: extra?.nickname
+    nickname: extra?.nickname,
+    clipNames: clipNames.length ? clipNames : undefined
   }
   const index = await readIndex()
   index.push(entry)
@@ -168,6 +222,45 @@ export async function updatePetLibraryCategory(
   row.category = normalizePetCategory(category)
   await writeIndex(index)
   return { ...row }
+}
+
+export async function updatePetLibraryAnimClipMap(
+  contentHash: string,
+  animClipMap: PetAnimClipMap | null
+): Promise<PetLibraryEntry | null> {
+  const hash = contentHash.toLowerCase()
+  const index = await readIndex()
+  const row = index.find((e) => e.contentHash === hash)
+  if (!row) return null
+  const next = normalizeAnimClipMap(animClipMap)
+  if (next) row.animClipMap = next
+  else delete row.animClipMap
+  await writeIndex(index)
+  return { ...row }
+}
+
+export async function updatePetLibraryClipNames(
+  contentHash: string,
+  clipNames: string[]
+): Promise<PetLibraryEntry | null> {
+  const hash = contentHash.toLowerCase()
+  const index = await readIndex()
+  const row = index.find((e) => e.contentHash === hash)
+  if (!row) return null
+  row.clipNames = [...new Set(clipNames.filter((n) => n.trim()))]
+  await writeIndex(index)
+  return { ...row }
+}
+
+/** Ensure clipNames is populated (lazy scan for older library rows). */
+export async function ensurePetLibraryClipNames(
+  contentHash: string
+): Promise<string[]> {
+  const entry = await getPetLibraryEntry(contentHash)
+  if (entry?.clipNames?.length) return entry.clipNames
+  const names = await listPetClipNames(contentHash)
+  if (names.length) await updatePetLibraryClipNames(contentHash, names)
+  return names
 }
 
 export async function removePetFromLibrary(contentHash: string): Promise<void> {

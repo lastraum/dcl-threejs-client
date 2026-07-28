@@ -5,13 +5,13 @@ import {
   threeToDclPos,
   threeYawToDclYaw
 } from '../bridge/dclTransform'
-import { PET_CATEGORY_CONFIG } from './petCategories'
+import { PET_AFK_IDLE_MS, PET_CATEGORY_CONFIG, PET_IDLE_SPEED } from './petCategories'
 import { getActivePetEntry, getPetInventory, setActivePetHash } from './petInventoryStorage'
 import { loadPetLibraryBytes } from './PetLibrary'
 import { PetFollow } from './PetFollow'
 import { PetInstance } from './PetInstance'
 import type { PetPeerSync } from './PetPeerSync'
-import type { ActivePetSpec, PetCategory, PetPose } from './types'
+import type { ActivePetSpec, PetAnimClipMap, PetCategory, PetPose } from './types'
 
 const _dcl = new THREE.Vector3()
 const _three = new THREE.Vector3()
@@ -44,6 +44,11 @@ export class PetManager {
   private readonly pendingRemotePoses = new Map<string, PetPose>()
   private disposed = false
   private timeSec = 0
+  /** Last wall-clock when owner moved above idle speed — AFK after PET_AFK_IDLE_MS. */
+  private lastOwnerMoveMs = performance.now()
+  /** Off-screen instance for settings clip preview when pet is not equipped. */
+  private editPreview: PetInstance | null = null
+  private editPreviewHash: string | null = null
   private readonly raycaster = new THREE.Raycaster()
   private readonly ndc = new THREE.Vector2()
   private readonly ownerFeet = new THREE.Vector3()
@@ -107,7 +112,8 @@ export class PetManager {
         category: entry.category,
         nickname: entry.nickname,
         fileName: entry.fileName,
-        meshYawOffsetDeg: entry.meshYawOffsetDeg ?? 0
+        meshYawOffsetDeg: entry.meshYawOffsetDeg ?? 0,
+        animClipMap: entry.animClipMap
       })
     } catch (err) {
       console.warn('[pets] restoreFromInventory failed', err)
@@ -121,6 +127,7 @@ export class PetManager {
     if (!bytes) throw new Error('Pet model not found in library')
 
     if (this.localWallet) setActivePetHash(this.localWallet, hash)
+    this.disposeEditPreview()
 
     if (!this.localInstance) {
       this.localInstance = new PetInstance()
@@ -131,13 +138,73 @@ export class PetManager {
     const meshYaw = spec.meshYawOffsetDeg ?? 0
     this.localSpec = { ...spec, contentHash: hash, meshYawOffsetDeg: meshYaw }
     this.localFollow.reset()
+    this.lastOwnerMoveMs = performance.now()
     this.localInstance.setMeshYawOffsetDeg(meshYaw)
+    this.localInstance.setAnimClipMap(spec.animClipMap)
     await this.localInstance.loadFromBytes(bytes, spec.category)
     this.localInstance.setMeshYawOffsetDeg(meshYaw)
+    this.localInstance.setAnimClipMap(spec.animClipMap)
     await this.peerSync?.setLocalEquipped(hash, spec.category, {
       force: true,
       meshYawOffsetDeg: meshYaw
     })
+  }
+
+  /** Apply updated anim clip map to live local pet (settings save). */
+  setLocalAnimClipMap(map: PetAnimClipMap | null | undefined): void {
+    if (this.localSpec) {
+      this.localSpec = { ...this.localSpec, animClipMap: map ?? undefined }
+    }
+    this.localInstance?.setAnimClipMap(map)
+  }
+
+  /**
+   * Settings-panel clip preview. Uses equipped mesh when hash matches; else a hidden loader.
+   */
+  async playClipPreview(contentHash: string, clipName: string): Promise<boolean> {
+    const hash = contentHash.toLowerCase()
+    if (this.localSpec?.contentHash === hash && this.localInstance?.isReady) {
+      return this.localInstance.playClipPreview(clipName)
+    }
+    const inst = await this.ensureEditPreview(hash)
+    if (!inst) return false
+    return inst.playClipPreview(clipName)
+  }
+
+  stopClipPreview(): void {
+    this.localInstance?.stopClipPreview()
+    this.editPreview?.stopClipPreview()
+  }
+
+  private async ensureEditPreview(hash: string): Promise<PetInstance | null> {
+    if (this.editPreview && this.editPreviewHash === hash && this.editPreview.isReady) {
+      return this.editPreview
+    }
+    this.disposeEditPreview()
+    const entry = getActivePetEntry(this.localWallet)
+    const category =
+      entry?.contentHash === hash
+        ? entry.category
+        : getPetInventory(this.localWallet).owned.find((e) => e.contentHash === hash)?.category ??
+          'walking'
+    const bytes = await loadPetLibraryBytes(hash)
+    if (!bytes || this.disposed) return null
+    const inst = new PetInstance()
+    inst.root.visible = false
+    // Keep off-scene — animation mixer still runs for preview without cluttering the world.
+    await inst.loadFromBytes(bytes, category)
+    const map = getPetInventory(this.localWallet).owned.find((e) => e.contentHash === hash)
+      ?.animClipMap
+    inst.setAnimClipMap(map)
+    this.editPreview = inst
+    this.editPreviewHash = hash
+    return inst
+  }
+
+  private disposeEditPreview(): void {
+    this.editPreview?.dispose()
+    this.editPreview = null
+    this.editPreviewHash = null
   }
 
   /**
@@ -304,9 +371,16 @@ export class PetManager {
     ownerHorizontalSpeed: number
   ): PetPose | null {
     this.timeSec += dt
+    // Edit-panel preview mixer (hidden) when inspecting a non-equipped pet.
+    this.editPreview?.update(dt)
     if (!this.localInstance || !this.localSpec) {
       this.localPose = null
       return null
+    }
+
+    const now = performance.now()
+    if (ownerHorizontalSpeed >= PET_IDLE_SPEED) {
+      this.lastOwnerMoveMs = now
     }
 
     this.ownerFeet.copy(ownerFeetThree)
@@ -319,6 +393,10 @@ export class PetManager {
       dt,
       timeSec: this.timeSec
     })
+    // AFK band: owner idle ≥5 min → play mapped AFK clips (if any resolve).
+    if (now - this.lastOwnerMoveMs >= PET_AFK_IDLE_MS) {
+      pose.anim = 'afk'
+    }
     this.localInstance.applyPose(pose)
     this.localInstance.update(dt)
     this.localPose = pose
@@ -447,6 +525,7 @@ export class PetManager {
 
   dispose(): void {
     this.disposed = true
+    this.disposeEditPreview()
     // Keep activeHash in localStorage so the next World can restore after /goto.
     void this.despawnLocal({ clearEquip: false, announceClear: true })
     for (const key of [...this.remotes.keys()]) this.removeRemote(key)

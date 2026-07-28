@@ -15,7 +15,11 @@ import { applyDclLocalTransform, type DclTransformValues } from '../bridge/dclTr
 import { resolveSceneMediaUrl } from '../bridge/material/resolveTexture'
 import { unwrapMisroutedMediaUrl } from '../rendering/textureProxy'
 import type { ResolvedScene } from '../dcl/content/types'
-import { isLiveKitCurrentStreamSrc, isLiveKitVideoSrc } from './livekitVideoSource'
+import {
+  isLiveKitCurrentStreamSrc,
+  isLiveKitVideoSrc,
+  LIVEKIT_CURRENT_STREAM_SRC
+} from './livekitVideoSource'
 import { mediaElementGain, spatialAudioGain } from '../rendering/SoundSettings'
 import { ThrottledVideoTexture } from './ThrottledVideoTexture'
 import { getSharedLiveKitVideoStream } from './SharedLiveKitVideoStream'
@@ -69,6 +73,13 @@ export class WebVideoPlayer {
 
   private hls: HlsInstance | null = null
   private liveKitCleanup: (() => void) | null = null
+  /**
+   * Last ECS VideoPlayer.src string (as authored — relative path, https, livekit-video://).
+   * Used for change detection. Do NOT compare against resolved CDN URLs or soft-hold
+   * reloads thrash every frame (mp4 ↔ m3u8 ↔ LiveKit never “sticks”).
+   */
+  private loadedEcsSrc = ''
+  /** Resolved decoder URL / livekit key actually bound to the element (logging + volume). */
   private loadedSrc = ''
   private liveKitSource = false
   private state: VideoStateValue = VS_NONE
@@ -369,31 +380,36 @@ export class WebVideoPlayer {
       return
     }
 
-    let src = spec.src.trim()
-    // Authority is ECS VideoPlayer.src (composite + scene/Admin MessageBus; later SyncComponents).
+    const ecsSrc = (spec.src ?? '').trim()
     // Soft-hold LiveKit only when ECS clears src (empty) while stream-key is still live —
     // never block an intentional switch to a real URL (mp4 / m3u8 / new LiveKit key).
-    if (
+    const softHoldLiveKit =
       this.liveKitSource &&
       remoteLive &&
-      !src &&
-      isLiveKitCurrentStreamSrc(this.loadedSrc)
-    ) {
-      src = this.loadedSrc
-    }
+      !ecsSrc &&
+      isLiveKitCurrentStreamSrc(this.loadedEcsSrc || this.loadedSrc)
 
-    // Explicit src transition (mp4 ↔ m3u8 ↔ livekit) — always clear + reload.
-    const srcChanged = src !== this.loadedSrc
-    if (src && srcChanged) {
-      if (isLiveKitVideoSrc(src)) {
-        if (isLiveKitCurrentStreamSrc(src)) void this.loadLiveKitSource(src)
+    const effectiveSrc = softHoldLiveKit
+      ? this.loadedEcsSrc || LIVEKIT_CURRENT_STREAM_SRC
+      : ecsSrc
+
+    // Compare ECS-authored src only — resolved CDN URLs must not re-trigger load every frame.
+    const srcChanged = effectiveSrc !== this.loadedEcsSrc
+    if (effectiveSrc && srcChanged) {
+      const from = this.loadedEcsSrc || '(none)'
+      console.info(
+        `[WebVideoPlayer] src change ${shortSrc(from)} → ${shortSrc(effectiveSrc)}`
+      )
+      this.loadedEcsSrc = effectiveSrc
+      if (isLiveKitVideoSrc(effectiveSrc)) {
+        if (isLiveKitCurrentStreamSrc(effectiveSrc)) void this.loadLiveKitSource(effectiveSrc)
         else {
           this.clearMediaSource()
           this.ensureLocalTexture().clearToBlack()
           this.setState(VS_ERROR)
         }
       } else {
-        const url = resolveSceneMediaUrl(src, this.scene)
+        const url = resolveSceneMediaUrl(effectiveSrc, this.scene)
         if (url) void this.loadSource(url)
         else {
           this.clearMediaSource()
@@ -401,13 +417,13 @@ export class WebVideoPlayer {
           this.setState(VS_ERROR)
         }
       }
-    } else if (isLiveKitCurrentStreamSrc(src) && this.resolveLiveKitBinder()) {
+    } else if (isLiveKitCurrentStreamSrc(effectiveSrc) && this.resolveLiveKitBinder()) {
       // Retry when binder/scene room appeared after first attempt, or shared bind was torn down.
       if (!this.usesSharedLiveKit || !this.sharedLiveKitUnsubscribe) {
-        void this.loadLiveKitSource(src)
+        void this.loadLiveKitSource(effectiveSrc)
       }
-    } else if (!src) {
-      if (this.loadedSrc) this.clearMediaSource()
+    } else if (!effectiveSrc) {
+      if (this.loadedEcsSrc || this.loadedSrc) this.clearMediaSource()
       this.ensureLocalTexture().clearToBlack()
       this.setState(VS_NONE)
     }
@@ -620,9 +636,14 @@ export class WebVideoPlayer {
       this.throttledTexture?.clearToBlack()
     }
     this.loadedSrc = ''
+    this.loadedEcsSrc = ''
     this.liveKitSource = false
     this.usesSharedLiveKit = false
     this.hasHadRenderableFrame = false
+    this.hasStartedPlayback = false
+    this.holdingAtEnd = false
+    this.playInFlight = false
+    this.pausedWantingPlaySince = 0
   }
 
   private async loadLiveKitSource(src: string): Promise<void> {
@@ -630,6 +651,7 @@ export class WebVideoPlayer {
     const binder = this.resolveLiveKitBinder()
     if (!binder) {
       // Allow applySpec to retry once the scene LiveKit binder is ready.
+      // Keep loadedEcsSrc so the next frame with binder retries (do not thrash clear).
       this.loadedSrc = ''
       this.liveKitSource = false
       this.usesSharedLiveKit = false
@@ -637,8 +659,11 @@ export class WebVideoPlayer {
       return
     }
 
+    // Preserve ECS src across clear (clearMediaSource wipes loadedEcsSrc).
+    const ecsKey = src
     this.clearMediaSource()
     if (gen !== this.sourceGeneration) return
+    this.loadedEcsSrc = ecsKey
     this.loadedSrc = src
     this.liveKitSource = true
     this.usesSharedLiveKit = true
@@ -675,8 +700,11 @@ export class WebVideoPlayer {
     if (mediaUrl !== url) {
       console.warn('[WebVideoPlayer] unwrapped texture-proxy media URL', url, '→', mediaUrl)
     }
+    // Preserve ECS key — clearMediaSource resets loadedEcsSrc; applySpec already set it.
+    const ecsKey = this.loadedEcsSrc
     this.clearMediaSource()
     if (gen !== this.sourceGeneration) return
+    this.loadedEcsSrc = ecsKey
     this.loadedSrc = mediaUrl
     this.hasHadRenderableFrame = false
     this.hasStartedPlayback = false
@@ -843,4 +871,9 @@ export class WebVideoPlayer {
     }
     if (this.canAttachTexture()) this.onFrameReady?.()
   }
+}
+
+function shortSrc(src: string): string {
+  if (src.length <= 64) return src
+  return `${src.slice(0, 40)}…${src.slice(-16)}`
 }

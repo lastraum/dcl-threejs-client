@@ -2135,7 +2135,7 @@
 
 
 
-      /* Pets panel — same bottom-left HUD slot as friends */
+      /* Pets panel — Loot Bag purple chrome, same bottom-left HUD slot as friends */
       .pets-panel-wrap {
         position: fixed;
         left: var(--client-safe-left);
@@ -2163,11 +2163,18 @@
         width: 100%;
         height: 100%;
         min-height: 0;
-        border-radius: 16px;
-        background: rgba(28, 20, 16, 0.94);
-        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 18px;
+        background: linear-gradient(
+          165deg,
+          rgba(55, 28, 90, 0.9) 0%,
+          rgba(28, 16, 48, 0.95) 55%,
+          rgba(18, 12, 32, 0.97) 100%
+        );
+        border: 1px solid rgba(255, 255, 255, 0.12);
         color: #fff;
-        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+        box-shadow:
+          0 12px 40px rgba(0, 0, 0, 0.45),
+          inset 0 1px 0 rgba(255, 255, 255, 0.08);
         overflow: hidden;
         font-family: inherit;
         box-sizing: border-box;
@@ -2177,27 +2184,32 @@
         align-items: center;
         justify-content: space-between;
         gap: 8px;
-        padding: 12px 12px 8px 14px;
+        padding: 10px 12px 8px 14px;
         border-bottom: 1px solid rgba(255, 255, 255, 0.08);
         flex-shrink: 0;
+        background: linear-gradient(180deg, rgba(139, 92, 246, 0.16), transparent);
       }
       .pets-panel__title {
         margin: 0;
         font-size: 15px;
-        font-weight: 650;
+        font-weight: 750;
         letter-spacing: 0.02em;
       }
       .pets-panel__close {
         appearance: none;
         border: 0;
         background: transparent;
-        color: rgba(255,255,255,0.7);
-        font-size: 22px;
+        color: rgba(255, 255, 255, 0.55);
+        font-size: 18px;
         line-height: 1;
         cursor: pointer;
-        padding: 2px 6px;
+        padding: 4px 8px;
+        border-radius: 8px;
       }
-      .pets-panel__close:hover { color: #fff; }
+      .pets-panel__close:hover {
+        color: #fff;
+        background: rgba(255, 255, 255, 0.08);
+      }
       .pets-panel__upload {
         display: flex;
         flex-direction: column;
@@ -2221,43 +2233,55 @@
       .pets-panel__cat {
         flex: 1;
         appearance: none;
-        border: 1px solid rgba(255,255,255,0.12);
-        background: rgba(255,255,255,0.04);
-        color: rgba(255,255,255,0.75);
-        border-radius: 8px;
-        padding: 6px 8px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(255, 255, 255, 0.75);
+        border-radius: 999px;
+        padding: 7px 10px;
         font-size: 12px;
+        font-weight: 600;
         cursor: pointer;
+        transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+      }
+      .pets-panel__cat:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: #fff;
       }
       .pets-panel__cat.is-active {
-        background: rgba(255, 45, 85, 0.22);
-        border-color: rgba(255, 45, 85, 0.55);
+        background: linear-gradient(135deg, rgba(139, 92, 246, 0.55), rgba(91, 33, 182, 0.65));
+        border-color: rgba(167, 139, 250, 0.55);
         color: #fff;
+        box-shadow: 0 2px 10px rgba(91, 33, 182, 0.35);
       }
       .pets-panel__upload-btn {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        border-radius: 10px;
-        padding: 8px 12px;
-        background: linear-gradient(135deg, #ff2d55, #ff8a3d);
+        border-radius: 12px;
+        padding: 10px 14px;
+        background: linear-gradient(135deg, rgba(139, 92, 246, 0.9), rgba(91, 33, 182, 0.95));
+        border: 1px solid rgba(167, 139, 250, 0.45);
         color: #fff;
         font-size: 13px;
-        font-weight: 600;
+        font-weight: 700;
         cursor: pointer;
+        transition: filter 0.15s ease;
+      }
+      .pets-panel__upload-btn:hover {
+        filter: brightness(1.08);
       }
       .pets-panel__hint {
         margin: 0;
         padding: 8px 14px 0;
         font-size: 11px;
         line-height: 1.35;
-        color: rgba(255,255,255,0.55);
+        color: rgba(221, 214, 254, 0.62);
         flex-shrink: 0;
       }
       .pets-panel__status {
         margin: 6px 14px 0;
         font-size: 12px;
-        color: #ffb4b4;
+        color: #f0abfc;
         flex-shrink: 0;
       }
       .pets-panel__body {
@@ -2265,18 +2289,20 @@
         min-height: 0;
         overflow: auto;
         padding: 8px 10px 12px;
-        scrollbar-width: none;
-        -ms-overflow-style: none;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(167, 139, 250, 0.35) transparent;
       }
       .pets-panel__body::-webkit-scrollbar {
-        width: 0;
-        height: 0;
-        display: none;
+        width: 6px;
+      }
+      .pets-panel__body::-webkit-scrollbar-thumb {
+        background: rgba(167, 139, 250, 0.35);
+        border-radius: 99px;
       }
       .pets-panel__empty {
         padding: 24px 12px;
         text-align: center;
-        color: rgba(255,255,255,0.5);
+        color: rgba(221, 214, 254, 0.55);
         font-size: 13px;
       }
       .pets-panel__row {
@@ -2286,12 +2312,14 @@
         padding: 10px;
         margin-bottom: 8px;
         border-radius: 12px;
-        background: rgba(255,255,255,0.04);
-        border: 1px solid rgba(255,255,255,0.06);
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        transition: border-color 0.15s ease, background 0.15s ease;
       }
       .pets-panel__row.is-active {
-        border-color: rgba(255, 45, 85, 0.45);
-        background: rgba(255, 45, 85, 0.08);
+        border-color: rgba(167, 139, 250, 0.55);
+        background: rgba(139, 92, 246, 0.12);
+        box-shadow: inset 0 0 0 1px rgba(139, 92, 246, 0.15);
       }
       .pets-panel__row-top {
         display: flex;
@@ -2305,21 +2333,21 @@
       }
       .pets-panel__row-name {
         font-size: 13px;
-        font-weight: 600;
+        font-weight: 650;
       }
       .pets-panel__badge {
         display: inline-block;
         margin-left: 6px;
         font-size: 10px;
-        font-weight: 650;
+        font-weight: 700;
         letter-spacing: 0.04em;
         text-transform: uppercase;
-        color: #ff8aa0;
+        color: #c4b5fd;
         vertical-align: middle;
       }
       .pets-panel__row-meta {
         font-size: 11px;
-        color: rgba(255,255,255,0.5);
+        color: rgba(221, 214, 254, 0.55);
         margin-top: 2px;
       }
       .pets-panel__row-actions {
@@ -2331,8 +2359,8 @@
       }
       .pets-panel__toggle {
         appearance: none;
-        border: 1px solid rgba(255,255,255,0.14);
-        background: rgba(0,0,0,0.28);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(0, 0, 0, 0.28);
         width: 42px;
         height: 24px;
         border-radius: 999px;
@@ -2347,13 +2375,13 @@
         width: 18px;
         height: 18px;
         border-radius: 50%;
-        background: rgba(255,255,255,0.75);
+        background: rgba(255, 255, 255, 0.75);
         transform: translateX(0);
         transition: transform 0.15s ease, background 0.15s ease;
       }
       .pets-panel__toggle.is-on {
-        background: rgba(255, 45, 85, 0.45);
-        border-color: rgba(255, 45, 85, 0.65);
+        background: linear-gradient(135deg, rgba(139, 92, 246, 0.75), rgba(91, 33, 182, 0.85));
+        border-color: rgba(167, 139, 250, 0.65);
       }
       .pets-panel__toggle.is-on .pets-panel__toggle-knob {
         transform: translateX(18px);
@@ -2361,9 +2389,9 @@
       }
       .pets-panel__icon-btn {
         appearance: none;
-        border: 1px solid rgba(255,255,255,0.12);
-        background: rgba(255,255,255,0.06);
-        color: rgba(255,255,255,0.88);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(255, 255, 255, 0.88);
         border-radius: 10px;
         width: 34px;
         height: 34px;
@@ -2372,28 +2400,37 @@
         justify-content: center;
         cursor: pointer;
         padding: 0;
+        transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
       }
       .pets-panel__icon-btn:hover {
-        background: rgba(255,255,255,0.12);
+        background: rgba(139, 92, 246, 0.2);
+        border-color: rgba(167, 139, 250, 0.35);
         color: #fff;
       }
       .pets-panel__icon-btn--danger {
-        color: #ff8f8f;
-        border-color: rgba(255,100,100,0.25);
+        color: #f0abfc;
+        border-color: rgba(232, 121, 249, 0.25);
         background: transparent;
       }
       .pets-panel__icon-btn--danger:hover {
-        background: rgba(255,80,80,0.12);
+        background: rgba(232, 121, 249, 0.12);
+        border-color: rgba(232, 121, 249, 0.4);
+        color: #f5d0fe;
       }
       .pets-panel__select {
         appearance: none;
         border-radius: 8px;
-        border: 1px solid rgba(255,255,255,0.12);
-        background: rgba(0,0,0,0.25);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(0, 0, 0, 0.28);
         color: #fff;
         font-size: 11px;
         padding: 5px 8px;
         max-width: 100%;
+      }
+      .pets-panel__select:focus {
+        outline: none;
+        border-color: rgba(167, 139, 250, 0.55);
+        box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.2);
       }
       .pets-panel__select--track {
         min-width: 0;
@@ -2401,17 +2438,22 @@
       }
       .pets-panel__btn {
         appearance: none;
-        border: 1px solid rgba(255,255,255,0.14);
-        background: rgba(255,255,255,0.08);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.08);
         color: #fff;
-        border-radius: 8px;
+        border-radius: 10px;
         padding: 5px 10px;
         font-size: 12px;
+        font-weight: 600;
         cursor: pointer;
+        transition: background 0.15s ease, border-color 0.15s ease;
+      }
+      .pets-panel__btn:hover {
+        background: rgba(255, 255, 255, 0.14);
       }
       .pets-panel__btn.is-on {
-        background: rgba(255, 45, 85, 0.28);
-        border-color: rgba(255, 45, 85, 0.5);
+        background: rgba(139, 92, 246, 0.28);
+        border-color: rgba(167, 139, 250, 0.5);
       }
       .pets-panel__btn--ghost {
         background: transparent;
@@ -2419,8 +2461,8 @@
       }
       .pets-panel__btn--danger {
         background: transparent;
-        color: #ff8f8f;
-        border-color: rgba(255,100,100,0.25);
+        color: #f0abfc;
+        border-color: rgba(232, 121, 249, 0.25);
         min-width: 32px;
       }
       /* Edit surface — replaces list */
@@ -2434,7 +2476,7 @@
         appearance: none;
         border: 0;
         background: transparent;
-        color: rgba(255,255,255,0.7);
+        color: #c4b5fd;
         font-size: 12px;
         font-weight: 600;
         cursor: pointer;
@@ -2442,7 +2484,7 @@
         text-align: left;
         width: fit-content;
       }
-      .pets-panel__back:hover { color: #fff; }
+      .pets-panel__back:hover { color: #ede9fe; }
       .pets-panel__edit-title-row {
         display: flex;
         align-items: center;
@@ -2451,7 +2493,7 @@
       }
       .pets-panel__edit-title {
         font-size: 15px;
-        font-weight: 650;
+        font-weight: 700;
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -2471,13 +2513,13 @@
         flex-direction: column;
         gap: 4px;
         font-size: 11px;
-        color: rgba(255,255,255,0.55);
+        color: rgba(221, 214, 254, 0.62);
       }
       .pets-panel__edit-help {
         margin: 0;
         font-size: 11px;
         line-height: 1.4;
-        color: rgba(255,255,255,0.5);
+        color: rgba(221, 214, 254, 0.55);
       }
       .pets-panel__tracks-head {
         display: grid;
@@ -2486,7 +2528,7 @@
         font-size: 10px;
         text-transform: uppercase;
         letter-spacing: 0.04em;
-        color: rgba(255,255,255,0.4);
+        color: rgba(221, 214, 254, 0.45);
         padding: 0 2px;
       }
       .pets-panel__tracks {
@@ -2501,8 +2543,8 @@
         align-items: center;
         padding: 6px 8px;
         border-radius: 10px;
-        background: rgba(255,255,255,0.04);
-        border: 1px solid rgba(255,255,255,0.06);
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.08);
       }
       .pets-panel__track-name {
         font-size: 11px;

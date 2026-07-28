@@ -65,6 +65,7 @@ import {
 } from './sceneWorkerInputSession'
 import { resolveSceneEngine } from './resolveSceneEngine'
 import { guardVideoPlayerGetMutable } from './guardVideoPlayerGetMutable'
+import { installAdminToolsVideoPlayerAutoLink } from './adminToolsVideoPlayerAutoLink'
 import { installInputModifierLocomotionGuard } from './inputModifierLocomotionGuard'
 import {
   clearInjectOnlySdkPollEventsDeferred,
@@ -3079,6 +3080,19 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     workerLog(
       'warn',
       `[sceneWorker] VideoPlayer getMutable guard skipped — ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+  try {
+    if (installAdminToolsVideoPlayerAutoLink(sceneEngine)) {
+      workerLog(
+        'log',
+        '[sceneWorker] AdminTools videoPlayers auto-link installed (empty list → discover VideoPlayers)'
+      )
+    }
+  } catch (err) {
+    workerLog(
+      'warn',
+      `[sceneWorker] AdminTools videoPlayers auto-link skipped — ${err instanceof Error ? err.message : String(err)}`
     )
   }
   try {

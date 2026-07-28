@@ -5,7 +5,12 @@ import {
   threeToDclPos,
   threeYawToDclYaw
 } from '../bridge/dclTransform'
-import { PET_AFK_IDLE_MS, PET_CATEGORY_CONFIG, PET_IDLE_SPEED } from './petCategories'
+import {
+  PET_AFK_IDLE_MS,
+  PET_CATEGORY_CONFIG,
+  PET_IDLE_SPEED,
+  PET_SIT_IDLE_MS
+} from './petCategories'
 import { getActivePetEntry, getPetInventory, setActivePetHash } from './petInventoryStorage'
 import { loadPetLibraryBytes } from './PetLibrary'
 import { PetFollow } from './PetFollow'
@@ -393,9 +398,13 @@ export class PetManager {
       dt,
       timeSec: this.timeSec
     })
-    // AFK band: owner idle ≥5 min → play mapped AFK clips (if any resolve).
-    if (now - this.lastOwnerMoveMs >= PET_AFK_IDLE_MS) {
-      pose.anim = 'afk'
+    // Rest bands: owner idle ≥25s → sit, ≥5 min → AFK (if any clips resolve).
+    // Gated on the pet itself having settled, so it never plays a seated clip
+    // while still sliding into its follow slot.
+    if (pose.anim === 'idle') {
+      const ownerIdleMs = now - this.lastOwnerMoveMs
+      if (ownerIdleMs >= PET_AFK_IDLE_MS) pose.anim = 'afk'
+      else if (ownerIdleMs >= PET_SIT_IDLE_MS) pose.anim = 'sit'
     }
     this.localInstance.applyPose(pose)
     this.localInstance.update(dt)

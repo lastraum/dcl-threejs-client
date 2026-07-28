@@ -3,9 +3,9 @@ export type PetCategory = 'walking' | 'flying'
 
 /**
  * Locomotion / behavior animation band.
- * `afk` plays when the owner is idle ≥5 minutes (local + pose wire).
+ * `sit` plays after ~25s of owner idle, `afk` after 5 minutes (local + pose wire).
  */
-export type PetAnimState = 'idle' | 'walk' | 'run' | 'fly' | 'flyFast' | 'afk'
+export type PetAnimState = 'idle' | 'walk' | 'trot' | 'run' | 'fly' | 'flyFast' | 'sit' | 'afk'
 
 /**
  * User-authored clip → anim-state mapping.
@@ -13,13 +13,19 @@ export type PetAnimState = 'idle' | 'walk' | 'run' | 'fly' | 'flyFast' | 'afk'
  */
 export type PetAnimClipMap = Partial<Record<PetAnimState, string[]>>
 
-/** All anim states that can appear in the edit panel mapper. */
+/**
+ * Every anim state, both categories. Storage / clearing / normalization iterate
+ * this; the edit panel offers only the states its category can actually reach
+ * (see PET_ANIM_STATES_BY_CATEGORY).
+ */
 export const PET_ANIM_STATES: readonly PetAnimState[] = [
   'idle',
   'walk',
+  'trot',
   'run',
   'fly',
   'flyFast',
+  'sit',
   'afk'
 ] as const
 

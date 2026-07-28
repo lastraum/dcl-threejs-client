@@ -26,13 +26,17 @@ export const DpetMessageType = {
 
 export type DpetFetchErrorReason = 'not_found' | 'oversize' | 'busy'
 
+// Append-only: codes 0-5 are pinned so older peers keep decoding the original
+// bands. A peer on an older build maps 6/7 to idle (default arm below).
 const ANIM_WIRE: Record<PetAnimState, number> = {
   idle: 0,
   walk: 1,
   run: 2,
   fly: 3,
   flyFast: 4,
-  afk: 5
+  afk: 5,
+  trot: 6,
+  sit: 7
 }
 
 function animFromWire(code: number): PetAnimState {
@@ -47,6 +51,10 @@ function animFromWire(code: number): PetAnimState {
       return 'flyFast'
     case 5:
       return 'afk'
+    case 6:
+      return 'trot'
+    case 7:
+      return 'sit'
     default:
       return 'idle'
   }

@@ -17,6 +17,8 @@ const RAYCAST_RESULT_ID = 1068
 const GLTF_CONTAINER_LOADING_STATE_ID = 1049
 /** `core::VideoPlayer` — renderer syncs `playing` on natural end for scene toggle parity. */
 const VIDEO_PLAYER_ID = 1043
+/** `core::AudioSource` — renderer syncs `playing` on natural end for scene toggle parity. */
+const AUDIO_SOURCE_ID = 1020
 /** `core::UiCanvasInformation` — renderer injects virtual canvas size for scene UI systems. */
 const UI_CANVAS_INFORMATION_ID = 1054
 /** `core::UiInputResult` — renderer writes typed text back to scene systems. */
@@ -29,6 +31,10 @@ const CAMERA_MODE_ID = 1072
 const POINTER_LOCK_ID = 1074
 /** `core::RealmInfo` — renderer injects scene-room connect for SDK network catch-up. */
 const REALM_INFO_ID = 1106
+/** `core::PrimaryPointerInfo` — renderer pointer screen/ray on RootEntity. */
+const PRIMARY_POINTER_INFO_ID = 1209
+/** `core::EngineInfo` — host frame/tick counters on RootEntity (ADR-148). */
+const ENGINE_INFO_ID = 1048
 
 export type RendererLwwInjectCounts = {
   tweenPuts: number
@@ -37,13 +43,35 @@ export type RendererLwwInjectCounts = {
   /** FINISHED / FINISHED_WITH_ERROR / NOT_FOUND — SpaceRunner load-freeze release signal. */
   gltfLoadingStateTerminalPuts: number
   videoPlayerPuts: number
+  audioSourcePuts: number
   uiCanvasPuts: number
   uiInputResultPuts: number
   uiDropdownResultPuts: number
   cameraModePuts: number
   pointerLockPuts: number
   realmInfoPuts: number
+  primaryPointerPuts: number
+  engineInfoPuts: number
   reservedTransformPuts: number
+}
+
+/**
+ * Host LWW that scene systems / Component.onChange listen for (excludes reserved pose spam
+ * and ambient EngineInfo/PrimaryPointer heartbeats — those ride transport + play ticks).
+ */
+export function hasDynamicHostLwwInjects(c: RendererLwwInjectCounts): boolean {
+  return (
+    c.raycastPuts > 0 ||
+    c.videoPlayerPuts > 0 ||
+    c.audioSourcePuts > 0 ||
+    c.gltfLoadingStatePuts > 0 ||
+    c.uiInputResultPuts > 0 ||
+    c.uiDropdownResultPuts > 0 ||
+    c.uiCanvasPuts > 0 ||
+    c.cameraModePuts > 0 ||
+    c.pointerLockPuts > 0 ||
+    c.realmInfoPuts > 0
+  )
 }
 
 /** LoadingState: UNKNOWN=0 LOADING=1 NOT_FOUND=2 FINISHED_WITH_ERROR=3 FINISHED=4 */
@@ -54,7 +82,7 @@ function isTerminalGltfLoadingState(currentState: unknown): boolean {
 
 /**
  * Apply renderer-encoded LWW PUTs for renderer-owned dynamic components directly on the scene worker engine.
- * Mirrors `injectTriggerAreaAppendsOnEngine` — same-tick delivery without waiting for transport LWW.
+ * Covers every host LWW id CrdtEncoder.recordLww / reserved targets emit so Component.onChange fires.
  */
 export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Array[]): RendererLwwInjectCounts {
   preregisterRendererInjectedComponents(engine)
@@ -64,23 +92,29 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
   const RaycastResult = generated.RaycastResult(engine)
   const GltfContainerLoadingState = generated.GltfContainerLoadingState(engine)
   const VideoPlayer = generated.VideoPlayer(engine)
+  const AudioSource = generated.AudioSource(engine)
   const UiCanvasInformation = generated.UiCanvasInformation(engine)
   const UiInputResult = generated.UiInputResult(engine)
   const UiDropdownResult = generated.UiDropdownResult(engine)
   const CameraMode = generated.CameraMode(engine)
   const PointerLock = generated.PointerLock(engine)
   const RealmInfo = generated.RealmInfo(engine)
+  const PrimaryPointerInfo = generated.PrimaryPointerInfo(engine)
+  const EngineInfo = generated.EngineInfo(engine)
   let tweenPuts = 0
   let raycastPuts = 0
   let gltfLoadingStatePuts = 0
   let gltfLoadingStateTerminalPuts = 0
   let videoPlayerPuts = 0
+  let audioSourcePuts = 0
   let uiCanvasPuts = 0
   let uiInputResultPuts = 0
   let uiDropdownResultPuts = 0
   let cameraModePuts = 0
   let pointerLockPuts = 0
   let realmInfoPuts = 0
+  let primaryPointerPuts = 0
+  let engineInfoPuts = 0
   let reservedTransformPuts = 0
 
   for (const chunk of chunks) {
@@ -117,6 +151,11 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
           const value = VideoPlayer.schema.deserialize(valueBuf)
           VideoPlayer.createOrReplace(msg.entityId as Entity, value)
           videoPlayerPuts++
+        } else if (msg.componentId === AUDIO_SOURCE_ID) {
+          const valueBuf = new ReadWriteByteBuffer(msg.data)
+          const value = AudioSource.schema.deserialize(valueBuf)
+          AudioSource.createOrReplace(msg.entityId as Entity, value)
+          audioSourcePuts++
         } else if (msg.componentId === UI_CANVAS_INFORMATION_ID && msg.entityId === 0) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = UiCanvasInformation.schema.deserialize(valueBuf)
@@ -147,6 +186,16 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
           const value = RealmInfo.schema.deserialize(valueBuf)
           RealmInfo.createOrReplace(msg.entityId as Entity, value)
           realmInfoPuts++
+        } else if (msg.componentId === PRIMARY_POINTER_INFO_ID && msg.entityId === 0) {
+          const valueBuf = new ReadWriteByteBuffer(msg.data)
+          const value = PrimaryPointerInfo.schema.deserialize(valueBuf)
+          PrimaryPointerInfo.createOrReplace(msg.entityId as Entity, value)
+          primaryPointerPuts++
+        } else if (msg.componentId === ENGINE_INFO_ID && msg.entityId === 0) {
+          const valueBuf = new ReadWriteByteBuffer(msg.data)
+          const value = EngineInfo.schema.deserialize(valueBuf)
+          EngineInfo.createOrReplace(msg.entityId as Entity, value)
+          engineInfoPuts++
         }
       }
       msg = readMessage(buf)
@@ -159,12 +208,15 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
     gltfLoadingStatePuts,
     gltfLoadingStateTerminalPuts,
     videoPlayerPuts,
+    audioSourcePuts,
     uiCanvasPuts,
     uiInputResultPuts,
     uiDropdownResultPuts,
     cameraModePuts,
     pointerLockPuts,
     realmInfoPuts,
+    primaryPointerPuts,
+    engineInfoPuts,
     reservedTransformPuts
   }
 }

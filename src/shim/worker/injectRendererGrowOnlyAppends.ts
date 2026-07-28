@@ -8,20 +8,38 @@ import { nextWorkerPointerEventTimestamp } from './workerPointerEventTimestamp'
 
 /** `core::TriggerAreaResult` — grow-only trigger events from the renderer. */
 const TRIGGER_AREA_RESULT_ID = 1061
-/** `core::VideoEvent` — grow-only playback events for worker `videoEventsSystem`. */
+/** `core::VideoEvent` — grow-only playback events for worker `videoEventsSystem` / onChange. */
 const VIDEO_EVENT_ID = 1044
 /** `core::PointerEventsResult` — grow-only pointer down/up from the renderer. */
 const POINTER_EVENTS_RESULT_ID = 1063
+/** `core::AudioEvent` — grow-only audio state for worker `AudioEvent.onChange`. */
+const AUDIO_EVENT_ID = 1105
+/** `core::AssetLoadLoadingState` — grow-only AssetLoad progress for scene systems. */
+const ASSET_LOAD_LOADING_STATE_ID = 1214
 
 export type RendererGrowOnlyInjectCounts = {
   triggerAppends: number
   videoAppends: number
   pointerAppends: number
+  audioAppends: number
+  assetLoadAppends: number
+}
+
+/** True when any host grow-only APPEND was applied (any component scenes may onChange). */
+export function hasGrowOnlyInjects(c: RendererGrowOnlyInjectCounts): boolean {
+  return (
+    c.triggerAppends > 0 ||
+    c.videoAppends > 0 ||
+    c.pointerAppends > 0 ||
+    c.audioAppends > 0 ||
+    c.assetLoadAppends > 0
+  )
 }
 
 /**
  * Apply renderer-encoded grow-only APPEND_VALUE ops directly on the scene worker engine.
- * Handles TriggerAreaResult + VideoEvent (and ignores other component ids in mixed batches).
+ * Covers every host grow-only id CrdtEncoder.recordAppend accepts so Component.onChange /
+ * SDK event systems fire after the subsequent engine.update.
  */
 export function injectRendererGrowOnlyAppendsOnEngine(
   engine: IEngine,
@@ -31,9 +49,13 @@ export function injectRendererGrowOnlyAppendsOnEngine(
   const TriggerAreaResult = generated.TriggerAreaResult(engine)
   const VideoEvent = generated.VideoEvent(engine)
   const PointerEventsResult = generated.PointerEventsResult(engine)
+  const AudioEvent = generated.AudioEvent(engine)
+  const AssetLoadLoadingState = generated.AssetLoadLoadingState(engine)
   let triggerAppends = 0
   let videoAppends = 0
   let pointerAppends = 0
+  let audioAppends = 0
+  let assetLoadAppends = 0
 
   for (const chunk of chunks) {
     const buf = new ReadWriteByteBuffer(chunk)
@@ -56,20 +78,29 @@ export function injectRendererGrowOnlyAppendsOnEngine(
           value.timestamp = nextWorkerPointerEventTimestamp()
           PointerEventsResult.addValue(msg.entityId as Entity, value)
           pointerAppends++
+        } else if (msg.componentId === AUDIO_EVENT_ID) {
+          const valueBuf = new ReadWriteByteBuffer(msg.data)
+          const value = AudioEvent.schema.deserialize(valueBuf)
+          AudioEvent.addValue(msg.entityId as Entity, value)
+          audioAppends++
+        } else if (msg.componentId === ASSET_LOAD_LOADING_STATE_ID) {
+          const valueBuf = new ReadWriteByteBuffer(msg.data)
+          const value = AssetLoadLoadingState.schema.deserialize(valueBuf)
+          AssetLoadLoadingState.addValue(msg.entityId as Entity, value)
+          assetLoadAppends++
         }
       }
       msg = readMessage(buf)
     }
   }
 
-  return { triggerAppends, videoAppends, pointerAppends }
+  return { triggerAppends, videoAppends, pointerAppends, audioAppends, assetLoadAppends }
 }
 
 /** @deprecated Use `injectRendererGrowOnlyAppendsOnEngine` — kept for call-site grep stability. */
 export function injectTriggerAreaAppendsOnEngine(engine: IEngine, chunks: Uint8Array[]): number {
-  const { triggerAppends, videoAppends, pointerAppends } = injectRendererGrowOnlyAppendsOnEngine(
-    engine,
-    chunks
+  const c = injectRendererGrowOnlyAppendsOnEngine(engine, chunks)
+  return (
+    c.triggerAppends + c.videoAppends + c.pointerAppends + c.audioAppends + c.assetLoadAppends
   )
-  return triggerAppends + videoAppends + pointerAppends
 }

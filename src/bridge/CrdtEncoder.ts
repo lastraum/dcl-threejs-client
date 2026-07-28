@@ -114,6 +114,8 @@ export class CrdtEncoder {
     this.playerIdentity = components.PlayerIdentityData
     this.avatarBase = components.AvatarBase
     this.avatarEquipped = components.AvatarEquippedData
+    // Host grow-only → worker inject (must match injectRendererGrowOnlyAppends + strip set).
+    // Scenes use Component.onChange / videoEventsSystem / pointer systems on these.
     const growOnly = [
       components.PointerEventsResult,
       components.TriggerAreaResult,
@@ -123,6 +125,8 @@ export class CrdtEncoder {
     ]
     this.growOnlyIds = new Set(growOnly.map((d) => d.componentId))
     this.growOnlyById = new Map(growOnly.map((d) => [d.componentId, d]))
+    // Host dynamic LWW → worker inject (must match injectRendererLwwPuts recordLww path).
+    // Reserved LWW (CameraMode, PrimaryPointerInfo, EngineInfo, …) use reservedTargets.
     const lwwCapture = [
       components.RaycastResult,
       components.VideoPlayer,

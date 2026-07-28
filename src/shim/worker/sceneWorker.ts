@@ -149,10 +149,12 @@ import {
   runSceneEngineBootTick,
   runSceneEnginePointerTick,
   shouldAttachUiMountSnapshot,
+  hostInjectNeedsSceneSystems,
   sceneEngineTickAfterInboundInject,
   sceneEngineTickDue,
   syncSceneEngineHydrationTimer
 } from './sceneEngineScheduler'
+import { hasGrowOnlyInjects } from './injectRendererGrowOnlyAppends'
 const VIDEO_PLAYER_NULL_MUTABLE = /VideoPlayer for null not found/
 
 const ctx = self
@@ -1807,23 +1809,33 @@ function deliverTweenStateInbound(chunks: Uint8Array[]): void {
   void runSceneEngineUpdateNow(0)
 }
 
-/** TriggerAreaResult / VideoEvent — engine tick only; must not pause scene onUpdate (sprite pool). */
+/**
+ * Host grow-only (TriggerArea / VideoEvent / Pointer / AudioEvent / AssetLoad) —
+ * engine tick only; must not pause scene onUpdate (sprite pool).
+ */
 function deliverRendererAppendInbound(chunks: Uint8Array[]): void {
   if (!sceneEngine || !sceneOnStartComplete) return
   const counts = applyRendererInboundChunks(chunks)
-  if (counts.triggerAppends === 0 && counts.videoAppends === 0) return
+  const growOnly = hasGrowOnlyInjects(counts)
+  if (!growOnly && !hostInjectNeedsSceneSystems(counts)) return
   // Skip log for lone video-offset heartbeats (was ~2Hz spam during fishing cast).
-  if (counts.triggerAppends > 0 || counts.videoAppends > 1) {
+  if (
+    counts.triggerAppends > 0 ||
+    counts.videoAppends > 1 ||
+    counts.audioAppends > 0 ||
+    counts.assetLoadAppends > 0 ||
+    counts.pointerAppends > 0
+  ) {
     workerLog(
       'log',
-      `[sceneWorker] renderer-append-deliver — trigger=${counts.triggerAppends} videoEvent=${counts.videoAppends}`
+      `[sceneWorker] renderer-append-deliver — trigger=${counts.triggerAppends} videoEvent=${counts.videoAppends} audio=${counts.audioAppends} assetLoad=${counts.assetLoadAppends} pointer=${counts.pointerAppends}`
     )
   }
-  // TriggerArea enter + VideoEvent must run systems same-message (videoEventsSystem / onChange).
+  // Any host grow-only / LWW scene systems listen for must run same-message (onChange).
   // requestSceneEngineTick() often no-ops when wall-clock debt is 0 (just after a play-frame
   // tick) — Plaza bounce_parasol then never sees ENTER; Admin video src swap never sees LOADING.
   // dt=0 runs systems without inventing NeonScreen wall time; flush cold CRDT for impulse egress.
-  if (counts.triggerAppends > 0 || counts.videoAppends > 0) {
+  if (growOnly || hostInjectNeedsSceneSystems(counts)) {
     void runSceneEngineUpdateNow(0).then(() => {
       if (counts.triggerAppends > 0) completePlayFrameColdEgress()
     })
@@ -2065,12 +2077,15 @@ const EMPTY_RENDERER_INJECT_COUNTS = {
   tweenPuts: 0,
   raycastPuts: 0,
   videoPlayerPuts: 0,
+  audioSourcePuts: 0,
   gltfLoadingStatePuts: 0,
   gltfLoadingStateTerminalPuts: 0,
   reservedTransformPuts: 0,
   triggerAppends: 0,
   videoAppends: 0,
   pointerAppends: 0,
+  audioAppends: 0,
+  assetLoadAppends: 0,
   uiInputResultPuts: 0,
   uiDropdownResultPuts: 0
 }
@@ -2175,24 +2190,30 @@ function applyRendererInboundChunks(chunks: Uint8Array[]): {
   tweenPuts: number
   raycastPuts: number
   videoPlayerPuts: number
+  audioSourcePuts: number
   gltfLoadingStatePuts: number
   gltfLoadingStateTerminalPuts: number
   reservedTransformPuts: number
   triggerAppends: number
   videoAppends: number
   pointerAppends: number
+  audioAppends: number
+  assetLoadAppends: number
   uiInputResultPuts: number
   uiDropdownResultPuts: number
 } {
   let tweenPuts = 0
   let raycastPuts = 0
   let videoPlayerPuts = 0
+  let audioSourcePuts = 0
   let gltfLoadingStatePuts = 0
   let gltfLoadingStateTerminalPuts = 0
   let reservedTransformPuts = 0
   let triggerAppends = 0
   let videoAppends = 0
   let pointerAppends = 0
+  let audioAppends = 0
+  let assetLoadAppends = 0
   let uiInputResultPuts = 0
   let uiDropdownResultPuts = 0
   if (sceneEngine) {
@@ -2201,6 +2222,7 @@ function applyRendererInboundChunks(chunks: Uint8Array[]): {
       tweenPuts = lww.tweenPuts
       raycastPuts = lww.raycastPuts
       videoPlayerPuts = lww.videoPlayerPuts
+      audioSourcePuts = lww.audioSourcePuts
       gltfLoadingStatePuts = lww.gltfLoadingStatePuts
       gltfLoadingStateTerminalPuts = lww.gltfLoadingStateTerminalPuts
       reservedTransformPuts = lww.reservedTransformPuts
@@ -2210,6 +2232,8 @@ function applyRendererInboundChunks(chunks: Uint8Array[]): {
       triggerAppends = growOnly.triggerAppends
       videoAppends = growOnly.videoAppends
       pointerAppends = growOnly.pointerAppends
+      audioAppends = growOnly.audioAppends
+      assetLoadAppends = growOnly.assetLoadAppends
       if (gltfLoadingStatePuts > 0) {
         gltfLoadingStateInjectLogCount++
         if (gltfLoadingStateInjectLogCount <= 32 || gltfLoadingStateInjectLogCount % 40 === 0) {
@@ -2243,12 +2267,15 @@ function applyRendererInboundChunks(chunks: Uint8Array[]): {
     tweenPuts,
     raycastPuts,
     videoPlayerPuts,
+    audioSourcePuts,
     gltfLoadingStatePuts,
     gltfLoadingStateTerminalPuts,
     reservedTransformPuts,
     triggerAppends,
     videoAppends,
     pointerAppends,
+    audioAppends,
+    assetLoadAppends,
     uiInputResultPuts,
     uiDropdownResultPuts
   }
@@ -2269,31 +2296,29 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
     const canDirectInject = !!sceneEngine && sceneOnStartComplete
     try {
       if (canDirectInject) {
+        const counts = applyRendererInboundChunks(chunks)
         const {
           tweenPuts,
           raycastPuts,
           videoPlayerPuts,
+          audioSourcePuts,
           gltfLoadingStatePuts,
           gltfLoadingStateTerminalPuts,
           triggerAppends,
           videoAppends,
           pointerAppends,
+          audioAppends,
+          assetLoadAppends,
           uiInputResultPuts,
           uiDropdownResultPuts
-        } = applyRendererInboundChunks(chunks)
-        const needsTimedSystems =
-          raycastPuts > 0 ||
-          videoPlayerPuts > 0 ||
-          triggerAppends > 0 ||
-          pointerAppends > 0 ||
-          uiInputResultPuts > 0 ||
-          uiDropdownResultPuts > 0
+        } = counts
+        const needsTimedSystems = hostInjectNeedsSceneSystems(counts)
         if (needsTimedSystems) {
           // No sceneTicksPaused — run a one-shot tick; do not open pointer batch lifecycle.
           workerVerboseLog(
             debugPointerDeliver,
             'log',
-            `[sceneWorker] pointer-crdt-deliver — light inject trigger=${triggerAppends} videoEvent=${videoAppends} pointer=${pointerAppends} raycast=${raycastPuts} videoPlayer=${videoPlayerPuts} gltfLoad=${gltfLoadingStatePuts} uiInput=${uiInputResultPuts} uiDropdown=${uiDropdownResultPuts}`
+            `[sceneWorker] pointer-crdt-deliver — light inject trigger=${triggerAppends} videoEvent=${videoAppends} audio=${audioAppends} assetLoad=${assetLoadAppends} pointer=${pointerAppends} raycast=${raycastPuts} videoPlayer=${videoPlayerPuts} audioSrc=${audioSourcePuts} gltfLoad=${gltfLoadingStatePuts} uiInput=${uiInputResultPuts} uiDropdown=${uiDropdownResultPuts}`
           )
           afterHostLwwSystemsReact(
             'pointer-crdt timed systems',

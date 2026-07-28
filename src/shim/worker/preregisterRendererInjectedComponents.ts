@@ -25,11 +25,16 @@ type RendererComponentFactory = (engine: IEngine) => unknown
  * Exported + iterated from the hook so the worker bundle cannot tree-shake
  * registration calls away (empty preregister → "Engine is already sealed" at runtime).
  */
+/**
+ * Every host→worker component that inject* applies via createOrReplace/addValue.
+ * Must stay in sync with CrdtEncoder growOnly/lwwCapture/reserved + inject files.
+ */
 export const RENDERER_PREREGISTER_FACTORIES: readonly RendererComponentFactory[] = [
   (engine) => generated.PointerEventsResult(engine),
   (engine) => generated.TriggerAreaResult(engine),
   (engine) => generated.VideoEvent(engine),
   (engine) => generated.AudioEvent(engine),
+  (engine) => generated.AssetLoadLoadingState(engine),
   (engine) => generated.TweenState(engine),
   (engine) => generated.RaycastResult(engine),
   // Host LWW — GltfContainer load progress (ADR-215); scene systems poll currentState.
@@ -43,7 +48,9 @@ export const RENDERER_PREREGISTER_FACTORIES: readonly RendererComponentFactory[]
   (engine) => generated.UiInputResult(engine),
   (engine) => generated.UiDropdownResult(engine),
   // SDK network listens for isConnectedSceneRoom on RootEntity
-  (engine) => generated.RealmInfo(engine)
+  (engine) => generated.RealmInfo(engine),
+  // ADR-148 host frame counters — scenes may EngineInfo.onChange / read RootEntity
+  (engine) => generated.EngineInfo(engine)
 ]
 
 /**

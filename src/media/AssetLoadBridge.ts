@@ -29,6 +29,8 @@ export class AssetLoadBridge {
   private lastLists = new Map<Entity, string>()
   /** entity|asset → in-flight or finished */
   private seen = new Set<string>()
+  /** Push pending AssetLoadLoadingState appends to the scene worker (onChange). */
+  onAppendFlush?: () => void
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -83,6 +85,8 @@ export class AssetLoadBridge {
       /* grow-only may not exist on projection facade until first define */
     }
     this.recordAppend?.(AssetLoadLoadingState.componentId, entity, event)
+    // Async load completion can land between frames — flush so worker onChange fires promptly.
+    this.onAppendFlush?.()
   }
 
   private async loadOne(entity: Entity, asset: string): Promise<void> {

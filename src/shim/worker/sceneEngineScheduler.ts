@@ -94,12 +94,17 @@ export type RendererInboundInjectCounts = {
   tweenPuts: number
   raycastPuts: number
   videoPlayerPuts: number
+  audioSourcePuts: number
   /** ADR-215 GltfContainerLoadingState — SpaceRunner freezes until FINISHED. */
   gltfLoadingStatePuts: number
   gltfLoadingStateTerminalPuts?: number
+  uiInputResultPuts: number
+  uiDropdownResultPuts: number
   triggerAppends: number
   videoAppends: number
   pointerAppends: number
+  audioAppends: number
+  assetLoadAppends: number
 }
 
 let engine: IEngine | null = null
@@ -691,22 +696,35 @@ export async function runSceneEngineBootTick(eng: IEngine): Promise<void> {
 }
 
 /**
+ * True when host inject includes any component scenes listen to via onChange / SDK systems.
+ * Excludes tween-only (uses dt=0 path) and reserved pose heartbeats.
+ */
+export function hostInjectNeedsSceneSystems(counts: RendererInboundInjectCounts): boolean {
+  return (
+    counts.raycastPuts > 0 ||
+    counts.videoPlayerPuts > 0 ||
+    counts.audioSourcePuts > 0 ||
+    counts.gltfLoadingStatePuts > 0 ||
+    counts.uiInputResultPuts > 0 ||
+    counts.uiDropdownResultPuts > 0 ||
+    counts.triggerAppends > 0 ||
+    counts.pointerAppends > 0 ||
+    counts.videoAppends > 0 ||
+    counts.audioAppends > 0 ||
+    counts.assetLoadAppends > 0
+  )
+}
+
+/**
  * After inbound LWW/append inject — request a real-dt engine tick only when systems need
- * time to advance (raycast/video/trigger/pointer).
+ * time to advance (any host-owned component scene onChange / event systems care about).
  *
  * TweenState inject must NOT request a real-dt tick: NeonScreen (and similar) use wall-clock
  * elapsed in addSystem; extra ticks from ambient tween-state-deliver compressed pauseDuration
  * to near zero. Tween paths use runSceneEngineUpdateNow(0) instead.
  */
 export function sceneEngineTickAfterInboundInject(counts: RendererInboundInjectCounts): void {
-  const needsTimedSystems =
-    counts.raycastPuts > 0 ||
-    counts.videoPlayerPuts > 0 ||
-    counts.gltfLoadingStatePuts > 0 ||
-    counts.triggerAppends > 0 ||
-    counts.pointerAppends > 0 ||
-    counts.videoAppends > 0
-  if (needsTimedSystems) requestSceneEngineTick()
+  if (hostInjectNeedsSceneSystems(counts)) requestSceneEngineTick()
 }
 
 function countWorkerUiMount(eng: IEngine): number {

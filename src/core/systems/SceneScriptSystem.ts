@@ -680,6 +680,7 @@ export class SceneScriptSystem {
       cache,
       this.recordRendererAppend
     )
+    this.assetLoadBridge.onAppendFlush = () => this.flushRendererGrowOnlyAppends()
     this.nftShapeBridge = new NftShapeBridge(this.readComponents, cache, () => this.bridge?.getEntityNodes())
     this.collision = new CollisionSystem(host.scene)
     this.gltfColliders = new GltfColliderExtractor(host.scene)
@@ -4976,6 +4977,9 @@ export class SceneScriptSystem {
     this.videoPlayerBridge?.update(tickNumber, this.view)
     this.audioSourceBridge?.update(tickNumber, this.view)
     this.audioStreamBridge?.update(tickNumber, this.view)
+    // VideoEvent / AudioEvent / AssetLoadLoadingState appends — do not wait solely on
+    // updateTriggerAreas; scenes listening via onChange need same-frame host CRDT.
+    this.flushRendererGrowOnlyAppends()
   }
 
   private flushAvatarAttachTransforms(): void {

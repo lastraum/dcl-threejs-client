@@ -31,12 +31,15 @@ export const WORKER_AUTHORITATIVE_COMPONENT_IDS = new Set([
 /**
  * Host grow-only ids applied by `injectRendererGrowOnlyAppendsOnEngine`.
  * Must not re-apply via CRDT transport after direct inject — double APPEND doubles
- * TriggerArea onEnter (Space Runner health −2 per pad) and pointer/video handlers.
+ * TriggerArea onEnter (Space Runner health −2 per pad) and pointer/video/audio handlers.
+ * Keep in sync with CrdtEncoder growOnly list + injectRendererGrowOnlyAppends.
  */
 export const RENDERER_HOST_GROW_ONLY_COMPONENT_IDS = new Set([
   1061, // TriggerAreaResult
   1044, // VideoEvent
-  1063 // PointerEventsResult
+  1063, // PointerEventsResult
+  1105, // AudioEvent
+  1214 // AssetLoadLoadingState
 ])
 
 /**

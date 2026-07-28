@@ -3,6 +3,7 @@ import { PET_MAX_BYTES } from './constants'
 import {
   cacheRemotePetBytes,
   getPetLibraryEntry,
+  invalidatePetLibraryBytes,
   loadPetLibraryBytes,
   updatePetLibraryAnimClipMap,
   updatePetLibraryClipNames,
@@ -86,11 +87,41 @@ export function builtinPetToLibraryEntry(pet: BuiltinPet): PetLibraryEntry {
 const inflight = new Map<string, Promise<PetLibraryEntry | null>>()
 
 /**
+ * Fill missing library metadata from the shipped manifest without clobbering
+ * user edits (custom clip map, yaw, nickname). Used after a verified cache hit
+ * or a successful download — including rows created via DPET (`remote-pet.glb`).
+ */
+async function seedBuiltinLibraryMetadata(
+  hash: string,
+  pet: BuiltinPet
+): Promise<PetLibraryEntry> {
+  const entry = await getPetLibraryEntry(hash)
+  if (!entry) return builtinPetToLibraryEntry(pet)
+
+  // Face offset: seed only when never set (DPET rows omit it).
+  if (typeof entry.meshYawOffsetDeg !== 'number') {
+    await updatePetLibraryMeshYaw(hash, pet.meshYawOffsetDeg)
+  }
+  if (!entry.clipNames?.length) {
+    await updatePetLibraryClipNames(hash, pet.clipNames)
+  }
+  const mapKeys = entry.animClipMap ? Object.keys(entry.animClipMap) : []
+  if (!mapKeys.length) {
+    await updatePetLibraryAnimClipMap(hash, pet.animClipMap)
+  }
+
+  return (await getPetLibraryEntry(hash)) ?? builtinPetToLibraryEntry(pet)
+}
+
+/**
  * Download a built-in into the local byte cache if it is not already there, and
  * seed its shipped defaults (category / face offset / clip map).
  *
  * Caches bytes only — inventory ownership is the panel's call. Returns null if
  * the fetch fails or the bytes do not match the manifest hash.
+ *
+ * Same-size cache hits are re-hashed (mirrors PetPeerSync.onAnnounce) so a
+ * corrupt/partial IDB entry is never trusted forever.
  */
 export async function ensureBuiltinPetBytes(
   contentHash: string
@@ -101,7 +132,21 @@ export async function ensureBuiltinPetBytes(
 
   const existing = await loadPetLibraryBytes(hash)
   if (existing && existing.byteLength === pet.byteSize) {
-    return (await getPetLibraryEntry(hash)) ?? builtinPetToLibraryEntry(pet)
+    try {
+      const digest = await sha256Hex(existing)
+      if (digest === hash) {
+        return await seedBuiltinLibraryMetadata(hash, pet)
+      }
+      console.warn(
+        `[pets] built-in cache hash mismatch for ${pet.fileName} — re-fetching bundle`
+      )
+    } catch {
+      /* re-fetch */
+    }
+    await invalidatePetLibraryBytes(hash)
+  } else if (existing && existing.byteLength !== pet.byteSize) {
+    // Truncated / wrong-size prior cache.
+    await invalidatePetLibraryBytes(hash)
   }
 
   const pending = inflight.get(hash)
@@ -121,6 +166,7 @@ export async function ensureBuiltinPetBytes(
         throw new Error(`hash mismatch (got ${digest.slice(0, 12)}…)`)
       }
       await cacheRemotePetBytes(hash, bytes, pet.fileName, pet.category)
+      // Fresh bundle: always write shipped face/clips (user may later override).
       await updatePetLibraryMeshYaw(hash, pet.meshYawOffsetDeg)
       await updatePetLibraryClipNames(hash, pet.clipNames)
       await updatePetLibraryAnimClipMap(hash, pet.animClipMap)

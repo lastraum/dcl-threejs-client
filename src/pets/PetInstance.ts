@@ -256,11 +256,13 @@ export class PetInstance {
     next.setEffectiveTimeScale(1)
     if (!next.isRunning()) next.play()
     if (prev && prev !== next) {
+      // Let crossFadeTo own weights — do not snap next to full weight immediately
+      // (that undoes the blend and double-influences both clips).
       prev.crossFadeTo(next, CROSSFADE, false)
     } else {
+      // fadeIn ramps weight from 0 → 1; avoid setEffectiveWeight(1) snap.
       next.reset().fadeIn(CROSSFADE)
     }
-    next.setEffectiveWeight(1)
   }
 
   private resolveActionName(name: string): string | null {

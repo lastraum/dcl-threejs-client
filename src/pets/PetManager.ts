@@ -11,6 +11,7 @@ import {
   PET_IDLE_SPEED,
   PET_SIT_IDLE_MS
 } from './petCategories'
+import { ensureBuiltinPetBytes, getBuiltinPet, isBuiltinPetHash } from './builtinPets'
 import { getActivePetEntry, getPetInventory, setActivePetHash } from './petInventoryStorage'
 import { loadPetLibraryBytes } from './PetLibrary'
 import { PetFollow } from './PetFollow'
@@ -128,7 +129,13 @@ export class PetManager {
   async enableLocal(spec: ActivePetSpec): Promise<void> {
     if (this.disposed) return
     const hash = spec.contentHash.toLowerCase()
-    const bytes = await loadPetLibraryBytes(hash)
+    let bytes = await loadPetLibraryBytes(hash)
+    // Built-ins ship in public/ — rehydrate from the bundle when IDB was wiped
+    // but localStorage still has the pet equipped (quota / private mode / clear).
+    if (!bytes && isBuiltinPetHash(hash)) {
+      await ensureBuiltinPetBytes(hash)
+      bytes = await loadPetLibraryBytes(hash)
+    }
     if (!bytes) throw new Error('Pet model not found in library')
 
     if (this.localWallet) setActivePetHash(this.localWallet, hash)
@@ -140,15 +147,22 @@ export class PetManager {
     } else if (this.scene && this.localInstance.root.parent !== this.scene) {
       this.scene.add(this.localInstance.root)
     }
-    const meshYaw = spec.meshYawOffsetDeg ?? 0
-    this.localSpec = { ...spec, contentHash: hash, meshYawOffsetDeg: meshYaw }
+    const builtin = getBuiltinPet(hash)
+    const meshYaw = spec.meshYawOffsetDeg ?? builtin?.meshYawOffsetDeg ?? 0
+    const animClipMap = spec.animClipMap ?? builtin?.animClipMap
+    this.localSpec = {
+      ...spec,
+      contentHash: hash,
+      meshYawOffsetDeg: meshYaw,
+      animClipMap
+    }
     this.localFollow.reset()
     this.lastOwnerMoveMs = performance.now()
     this.localInstance.setMeshYawOffsetDeg(meshYaw)
-    this.localInstance.setAnimClipMap(spec.animClipMap)
+    this.localInstance.setAnimClipMap(animClipMap)
     await this.localInstance.loadFromBytes(bytes, spec.category)
     this.localInstance.setMeshYawOffsetDeg(meshYaw)
-    this.localInstance.setAnimClipMap(spec.animClipMap)
+    this.localInstance.setAnimClipMap(animClipMap)
     await this.peerSync?.setLocalEquipped(hash, spec.category, {
       force: true,
       meshYawOffsetDeg: meshYaw
@@ -187,20 +201,25 @@ export class PetManager {
     }
     this.disposeEditPreview()
     const entry = getActivePetEntry(this.localWallet)
+    const owned = getPetInventory(this.localWallet).owned.find((e) => e.contentHash === hash)
+    const builtin = getBuiltinPet(hash)
     const category =
       entry?.contentHash === hash
         ? entry.category
-        : getPetInventory(this.localWallet).owned.find((e) => e.contentHash === hash)?.category ??
-          'walking'
-    const bytes = await loadPetLibraryBytes(hash)
+        : owned?.category ?? builtin?.category ?? 'walking'
+    let bytes = await loadPetLibraryBytes(hash)
+    if (!bytes && isBuiltinPetHash(hash)) {
+      await ensureBuiltinPetBytes(hash)
+      bytes = await loadPetLibraryBytes(hash)
+    }
     if (!bytes || this.disposed) return null
     const inst = new PetInstance()
     inst.root.visible = false
     // Keep off-scene — animation mixer still runs for preview without cluttering the world.
     await inst.loadFromBytes(bytes, category)
-    const map = getPetInventory(this.localWallet).owned.find((e) => e.contentHash === hash)
-      ?.animClipMap
+    const map = owned?.animClipMap ?? builtin?.animClipMap
     inst.setAnimClipMap(map)
+    if (builtin) inst.setMeshYawOffsetDeg(owned?.meshYawOffsetDeg ?? builtin.meshYawOffsetDeg)
     this.editPreview = inst
     this.editPreviewHash = hash
     return inst

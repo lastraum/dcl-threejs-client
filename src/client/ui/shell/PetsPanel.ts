@@ -249,13 +249,16 @@ export class PetsPanel {
     const library = await listPetLibrary()
     const inv = getPetInventory(address)
     const byHash = new Map<string, PetLibraryEntry>()
-    // Built-ins list before download; a local copy (or the user's own settings
-    // for it) overwrites the shipped defaults below.
+    // Built-ins list before download; library / inventory merge field-wise so a
+    // thin DPET row (remote-pet.glb, no yaw/map) cannot wipe shipped Face 180°.
     for (const p of BUILTIN_PETS) byHash.set(p.contentHash, builtinPetToLibraryEntry(p))
-    for (const e of library) byHash.set(e.contentHash, e)
+    for (const e of library) {
+      const prev = byHash.get(e.contentHash)
+      byHash.set(e.contentHash, prev ? mergePetRow(prev, e) : e)
+    }
     for (const e of inv.owned) {
       const prev = byHash.get(e.contentHash)
-      byHash.set(e.contentHash, prev ? { ...prev, ...e } : e)
+      byHash.set(e.contentHash, prev ? mergePetRow(prev, e) : e)
     }
     return [...byHash.values()].sort((a, b) =>
       (a.nickname || a.fileName).localeCompare(b.nickname || b.fileName, undefined, {
@@ -597,6 +600,30 @@ function invertClipMap(
     }
   }
   return out
+}
+
+/**
+ * Overlay library/inventory on a base row without letting thin DPET rows wipe
+ * shipped builtin face offset / clip map / real fileName.
+ */
+function mergePetRow(base: PetLibraryEntry, overlay: PetLibraryEntry): PetLibraryEntry {
+  const overlayMapKeys = overlay.animClipMap ? Object.keys(overlay.animClipMap) : []
+  const fileName =
+    overlay.fileName && overlay.fileName !== 'remote-pet.glb'
+      ? overlay.fileName
+      : base.fileName || overlay.fileName
+  return {
+    ...base,
+    ...overlay,
+    fileName,
+    nickname: overlay.nickname?.trim() ? overlay.nickname : base.nickname,
+    meshYawOffsetDeg:
+      typeof overlay.meshYawOffsetDeg === 'number'
+        ? overlay.meshYawOffsetDeg
+        : base.meshYawOffsetDeg,
+    clipNames: overlay.clipNames?.length ? overlay.clipNames : base.clipNames,
+    animClipMap: overlayMapKeys.length ? overlay.animClipMap : base.animClipMap
+  }
 }
 
 function escapeHtml(value: string): string {

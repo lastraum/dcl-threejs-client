@@ -9,6 +9,13 @@ updated: 2026-07-28
 source: github
 base_branch: dev-latest
 workflow:
+  - stage: pending_review
+    integration_ref: pr:55
+    title: foil pack + retriever pet models
+    owner: awedjob
+    pr: 55
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/55
+    updated: 2026-07-28
   - stage: merged
     integration_ref: pr:54
     title: per-category behavior bands + bundled Doggo companion

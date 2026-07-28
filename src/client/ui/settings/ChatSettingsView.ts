@@ -1,3 +1,4 @@
+import { notificationPrefs } from '../../../social/notificationPrefs'
 import {
   chatTranslationSettings,
   LANGUAGE_OPTIONS,
@@ -5,11 +6,12 @@ import {
 } from '../../../social/translation'
 
 /**
- * Preferences → Chat: preferred translation language.
+ * Preferences → Chat: translation + notification banners (incl. Loot Bag claims).
  * Per-channel auto-translate is toggled from the chat header (A 文).
  */
 export class ChatSettingsView {
   readonly root: HTMLElement
+  private unsubPrefs: (() => void) | null = null
 
   constructor() {
     this.root = document.createElement('div')
@@ -19,10 +21,52 @@ export class ChatSettingsView {
 
   private render(): void {
     this.root.innerHTML = ''
+    this.unsubPrefs?.()
+    this.unsubPrefs = null
 
     const scroll = document.createElement('div')
     scroll.className = 'gfx-settings__scroll'
 
+    // ── Notifications ──────────────────────────────────────────────────────
+    const notifSection = document.createElement('section')
+    notifSection.className = 'gfx-settings__section'
+
+    const notifTitle = document.createElement('div')
+    notifTitle.className = 'gfx-settings__section-title'
+    notifTitle.textContent = 'Notifications'
+    notifSection.appendChild(notifTitle)
+
+    const notifGrid = document.createElement('div')
+    notifGrid.className = 'gfx-settings__grid'
+
+    const prefs = notificationPrefs.get()
+
+    notifGrid.appendChild(
+      this.toggleRow(
+        'Show toast banners',
+        'Chat, community, and system toasts at the top of the screen.',
+        prefs.enabled,
+        (on) => notificationPrefs.setEnabled(on)
+      )
+    )
+    notifGrid.appendChild(
+      this.toggleRow(
+        'Loot Bag claims',
+        'When someone else claims a Loot Pack from the Loot Bag, show a toast (uses the social LiveKit room — works across scenes).',
+        prefs.poolClaims,
+        (on) => notificationPrefs.setPoolClaims(on)
+      )
+    )
+    notifSection.appendChild(notifGrid)
+
+    const notifHint = document.createElement('p')
+    notifHint.className = 'chat-settings-hint'
+    notifHint.textContent =
+      'Your own Loot Pack claim still opens the win modal. Peer claim toasts are off when master banners are disabled.'
+    notifSection.appendChild(notifHint)
+    scroll.appendChild(notifSection)
+
+    // ── Translation ────────────────────────────────────────────────────────
     const section = document.createElement('section')
     section.className = 'gfx-settings__section'
 
@@ -74,7 +118,49 @@ export class ChatSettingsView {
     this.root.appendChild(scroll)
   }
 
+  private toggleRow(
+    labelText: string,
+    hint: string,
+    checked: boolean,
+    onChange: (on: boolean) => void
+  ): HTMLElement {
+    const row = document.createElement('div')
+    row.className = 'gfx-settings__row gfx-settings__row--stack'
+
+    const top = document.createElement('div')
+    top.className = 'gfx-settings__row-top'
+    top.style.display = 'flex'
+    top.style.alignItems = 'center'
+    top.style.justifyContent = 'space-between'
+    top.style.gap = '12px'
+    top.style.width = '100%'
+
+    const label = document.createElement('div')
+    label.className = 'gfx-settings__label'
+    label.textContent = labelText
+    top.appendChild(label)
+
+    const toggle = document.createElement('input')
+    toggle.type = 'checkbox'
+    toggle.className = 'gfx-settings__checkbox'
+    toggle.checked = checked
+    toggle.setAttribute('aria-label', labelText)
+    toggle.addEventListener('change', () => onChange(toggle.checked))
+    top.appendChild(toggle)
+    row.appendChild(top)
+
+    const sub = document.createElement('p')
+    sub.className = 'chat-settings-hint'
+    sub.style.margin = '4px 0 0'
+    sub.textContent = hint
+    row.appendChild(sub)
+
+    return row
+  }
+
   dispose(): void {
+    this.unsubPrefs?.()
+    this.unsubPrefs = null
     this.root.remove()
   }
 }

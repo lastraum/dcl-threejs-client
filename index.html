@@ -46,6 +46,9 @@
         --client-safe-bottom: max(16px, env(safe-area-inset-bottom, 0px));
         --client-panel-max-w: min(420px, calc(100vw - var(--client-safe-left) - var(--client-safe-right)));
         --client-hud-max-w: min(324px, calc(100vw - var(--client-safe-left) - var(--client-safe-right) - 16px));
+        /* Chat panel + friend/community rail (see .chat-panel__rail) */
+        --client-chat-rail-w: 52px;
+        --client-chat-slot-w: calc(var(--client-hud-max-w) + var(--client-chat-rail-w));
         --client-chat-max-h: min(580px, calc(100vh - var(--client-safe-top) - var(--client-safe-bottom) - 96px));
         /* 3D mobile chat FAB only (desktop chat is bottom-left; 2D social uses its own FAB). */
         --scene-chat-fab-size: 48px;
@@ -2322,6 +2325,1325 @@
         color: #ff8f8f;
         border-color: rgba(255,100,100,0.25);
         min-width: 32px;
+      }
+
+      /* Loot Bag dock — bottom bar, same z as chat, sits to the right of chat (+ rail) */
+      .lootbag-panel-wrap,
+      .lootbag-panel-wrap--dock {
+        /* Main bag shows ~6 cards; extra items scroll inside the shelf */
+        --lootbag-bag-card-w: 120px;
+        --lootbag-bag-card-gap: 10px;
+        --lootbag-bag-visible-cards: 6;
+        --lootbag-bag-row-w: calc(
+          var(--lootbag-bag-visible-cards) * var(--lootbag-bag-card-w) +
+            (var(--lootbag-bag-visible-cards) - 1) * var(--lootbag-bag-card-gap) +
+            28px
+        );
+        position: fixed;
+        /* Chat column = hud panel + rail; clear it with gap so bag never overlaps */
+        left: calc(var(--client-safe-left) + var(--client-chat-slot-w) + var(--client-ui-gap));
+        /* Fit content on main dock (bag + pack); deposit mode stretches */
+        right: auto;
+        bottom: var(--client-safe-bottom);
+        top: auto;
+        transform: none;
+        z-index: var(--z-client-hud-raised);
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        pointer-events: auto;
+        width: fit-content;
+        max-width: calc(
+          100vw - var(--client-safe-left) - var(--client-chat-slot-w) - var(--client-ui-gap) -
+            var(--client-safe-right)
+        );
+        height: auto;
+        max-height: min(42vh, 360px);
+        overflow: visible;
+      }
+      .lootbag-panel-wrap[hidden] {
+        display: none !important;
+        pointer-events: none !important;
+      }
+      .lootbag-panel,
+      .lootbag-panel--vitrine,
+      .lootbag-panel--dock {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        height: auto;
+        min-height: 0;
+        max-height: min(42vh, 360px);
+        padding: 0;
+        border-radius: 18px;
+        background: transparent;
+        border: 0;
+        color: #fff;
+        box-shadow: none;
+        pointer-events: auto;
+        overflow: visible;
+        font-family: inherit;
+        box-sizing: border-box;
+      }
+      .lootbag-panel__dock {
+        display: flex;
+        flex-direction: row;
+        align-items: stretch;
+        gap: 0;
+        width: 100%;
+        min-height: 0;
+        max-height: min(42vh, 360px);
+      }
+      .lootbag-panel__bag {
+        flex: 0 0 auto;
+        width: var(--lootbag-bag-row-w);
+        max-width: var(--lootbag-bag-row-w);
+        min-width: 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        border-radius: 18px;
+        background: linear-gradient(
+          165deg,
+          rgba(55, 28, 90, 0.9) 0%,
+          rgba(28, 16, 48, 0.95) 55%,
+          rgba(18, 12, 32, 0.97) 100%
+        );
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+        overflow: hidden;
+      }
+      .lootbag-panel__dock-gap {
+        flex: 0 0 16px;
+        width: 16px;
+        min-width: 16px;
+        background: transparent;
+      }
+      .lootbag-panel__pack {
+        flex: 0 0 clamp(148px, 18vw, 200px);
+        width: clamp(148px, 18vw, 200px);
+        min-width: clamp(148px, 18vw, 200px);
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+        padding: 12px;
+        border-radius: 18px;
+        background: linear-gradient(
+          165deg,
+          rgba(55, 28, 90, 0.9) 0%,
+          rgba(28, 16, 48, 0.95) 55%,
+          rgba(18, 12, 32, 0.97) 100%
+        );
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+        box-sizing: border-box;
+      }
+      .lootbag-panel__pack[hidden],
+      .lootbag-panel__dock-gap[hidden] {
+        display: none !important;
+      }
+      .lootbag-panel__pack-frame {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 14px;
+        background: #0a0614;
+        overflow: hidden;
+      }
+      .lootbag-panel__pack-art {
+        width: 100%;
+        height: 100%;
+        max-height: 220px;
+        object-fit: contain;
+        object-position: center;
+        display: block;
+        pointer-events: none;
+        user-select: none;
+      }
+      .lootbag-panel__pack-claim {
+        flex: 0 0 auto;
+        width: 100%;
+        min-height: 44px;
+        padding: 10px 12px;
+        font-size: 12px;
+        font-weight: 800;
+      }
+      .lootbag-panel-wrap.is-deposit-mode {
+        /* Same footprint family as main bag (6-card row) + compact To Deposit side */
+        --lootbag-dep-side-w: 220px;
+        --lootbag-dep-bag-w: calc(var(--lootbag-bag-row-w) + 12px + var(--lootbag-dep-side-w));
+        --lootbag-dep-h: min(70vh, 560px);
+        right: auto;
+        width: fit-content;
+        max-width: calc(
+          100vw - var(--client-safe-left) - var(--client-chat-slot-w) - var(--client-ui-gap) -
+            var(--client-safe-right)
+        );
+        /* Fixed height so multi-select doesn't grow the dock */
+        height: var(--lootbag-dep-h);
+        max-height: var(--lootbag-dep-h);
+      }
+      .lootbag-panel-wrap.is-deposit-mode .lootbag-panel--dock {
+        height: 100%;
+        max-height: 100%;
+        width: auto;
+        min-height: 0;
+      }
+      .lootbag-panel-wrap.is-deposit-mode .lootbag-panel__dock {
+        height: 100%;
+        max-height: 100%;
+        width: auto;
+        min-height: 0;
+      }
+      .lootbag-panel-wrap.is-deposit-mode .lootbag-panel__bag {
+        flex: 0 0 auto;
+        width: min(var(--lootbag-dep-bag-w), 100%);
+        max-width: min(
+          var(--lootbag-dep-bag-w),
+          calc(
+            100vw - var(--client-safe-left) - var(--client-chat-slot-w) - var(--client-ui-gap) -
+              var(--client-safe-right)
+          )
+        );
+        height: 100%;
+        max-height: 100%;
+        min-height: 0;
+        overflow: hidden;
+      }
+      /* Author display:flex beats the UA [hidden] rule — force hide */
+      .lootbag-panel__stats[hidden],
+      .lootbag-panel__header-deposit[hidden],
+      .lootbag-panel-wrap [data-deposit][hidden],
+      .lootbag-panel-wrap.is-deposit-mode .lootbag-panel__stats {
+        display: none !important;
+      }
+      .lootbag-panel__header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px 10px;
+        padding: 8px 10px 8px 12px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        flex-shrink: 0;
+        background: linear-gradient(180deg, rgba(139, 92, 246, 0.16), transparent);
+        min-width: 0;
+      }
+      .lootbag-panel__header-main {
+        min-width: 0;
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px 12px;
+      }
+      .lootbag-panel-wrap:not(.is-deposit-mode) .lootbag-panel__title {
+        margin: 0;
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+      /* Deposit: title + controls share one horizontal row */
+      .lootbag-panel-wrap.is-deposit-mode .lootbag-panel__header-main {
+        flex-direction: row;
+        flex-wrap: nowrap;
+        align-items: center;
+        gap: 8px 12px;
+      }
+      .lootbag-panel-wrap.is-deposit-mode .lootbag-panel__title {
+        margin: 0;
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+      .lootbag-panel__header-deposit {
+        display: none;
+        flex: 1 1 auto;
+        min-width: 0;
+        align-items: center;
+        gap: 8px 10px;
+      }
+      .lootbag-panel-wrap.is-deposit-mode .lootbag-panel__header-deposit {
+        display: flex;
+        flex-wrap: nowrap;
+      }
+      .lootbag-panel__header-deposit .lootbag-dep__toolbar {
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        gap: 6px 8px;
+        width: 100%;
+        min-width: 0;
+        margin: 0;
+      }
+      .lootbag-panel__header-deposit .lootbag-dep__toolbar-left {
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        gap: 6px 8px;
+        min-width: 0;
+        flex: 0 1 auto;
+      }
+      .lootbag-panel__header-deposit .lootbag-dep__toolbar-tools {
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        gap: 6px 8px;
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .lootbag-panel__header-deposit .lootbag-dep__toolbar-center {
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        gap: 6px 8px;
+        flex: 0 0 auto;
+        white-space: nowrap;
+      }
+      .lootbag-panel__header-deposit .lootbag-dep__stat {
+        font-size: 11px;
+        font-weight: 700;
+      }
+      .lootbag-panel .lootbag-dep__side-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px;
+        margin: 0 0 10px;
+        flex-shrink: 0;
+      }
+      .lootbag-panel .lootbag-dep__side-head .lootbag-dep__section-title {
+        margin: 0;
+      }
+      .lootbag-panel .lootbag-dep__side-count {
+        font-size: 11px;
+        font-weight: 700;
+        color: rgba(255, 255, 255, 0.72);
+        white-space: nowrap;
+      }
+      .lootbag-panel__header-deposit .lootbag-dep__search-row--header {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex: 1 1 auto;
+        min-width: 72px;
+        margin: 0;
+      }
+      .lootbag-panel__header-deposit .lootbag-dep__search {
+        flex: 1 1 auto;
+        min-width: 0;
+        width: 100%;
+        height: 28px;
+        padding: 0 8px;
+        font-size: 11px;
+        border-radius: 8px;
+      }
+      .lootbag-panel__header-deposit .lootbag-dep__search-clear {
+        height: 28px;
+        padding: 0 8px;
+        font-size: 10px;
+      }
+      .lootbag-panel__header-deposit .lootbag-dep__pager--header {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        flex: 0 0 auto;
+        margin: 0;
+      }
+      .lootbag-panel__header-deposit .lootbag-dep__page-btn {
+        width: 26px;
+        height: 26px;
+        min-width: 26px;
+        padding: 0;
+        font-size: 14px;
+        line-height: 1;
+      }
+      .lootbag-panel__header-deposit .lootbag-dep__page-label {
+        font-size: 11px;
+        font-weight: 700;
+        color: rgba(255, 255, 255, 0.65);
+        min-width: 2.5em;
+        text-align: center;
+      }
+      .lootbag-panel__title {
+        margin: 0 0 2px;
+        font-size: 15px;
+        font-weight: 750;
+        letter-spacing: 0.02em;
+      }
+      .lootbag-panel__subtitle {
+        margin: 0 0 8px;
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .lootbag-panel__stats {
+        display: inline-flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .lootbag-panel__stats[hidden] {
+        display: none !important;
+      }
+      .lootbag-panel__stat {
+        color: rgba(255, 255, 255, 0.78);
+        white-space: nowrap;
+      }
+      .lootbag-panel__stat-sep {
+        color: rgba(255, 255, 255, 0.35);
+        font-weight: 500;
+        user-select: none;
+      }
+      .lootbag-panel__stat--mana {
+        color: #c4b5fd;
+      }
+      .lootbag-panel__wallet {
+        margin-top: 4px;
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .lootbag-panel__header-actions {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        flex-shrink: 0;
+      }
+      .lootbag-panel__icon-btn,
+      .lootbag-panel__close {
+        border: 0;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.55);
+        font-size: 18px;
+        line-height: 1;
+        cursor: pointer;
+        padding: 4px 8px;
+        border-radius: 8px;
+      }
+      .lootbag-panel__icon-btn:hover,
+      .lootbag-panel__close:hover {
+        color: #fff;
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .lootbag-panel__body {
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        padding: 8px 10px 10px;
+        display: flex;
+        flex-direction: column;
+      }
+      /* Single horizontal bag row */
+      .lootbag-panel__row-shelf {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+        -webkit-overflow-scrolling: touch;
+      }
+      .lootbag-panel__row-shelf::-webkit-scrollbar {
+        height: 6px;
+      }
+      .lootbag-panel__row-shelf::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.22);
+        border-radius: 99px;
+      }
+      .lootbag-panel__row-track {
+        display: flex;
+        flex-direction: row;
+        align-items: stretch;
+        gap: 10px;
+        height: 100%;
+        min-height: 148px;
+        padding: 2px 2px 6px;
+        box-sizing: border-box;
+      }
+      .lootbag-panel__row-track .lootbag-panel__card {
+        flex: 0 0 120px;
+        width: 120px;
+        min-height: 148px;
+        height: auto;
+      }
+      .lootbag-panel__row-empty {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        min-height: 120px;
+        color: rgba(255, 255, 255, 0.65);
+        font-size: 13px;
+        text-align: center;
+      }
+      .lootbag-panel__row-empty p {
+        margin: 0;
+      }
+      .lootbag-panel__btn--sm {
+        flex: 0 0 auto;
+        min-width: 0;
+        padding: 8px 12px;
+        font-size: 12px;
+        font-weight: 750;
+      }
+      .lootbag-panel__loading,
+      .lootbag-panel__empty,
+      .lootbag-panel__hint {
+        margin: 0;
+        color: rgba(255, 255, 255, 0.65);
+        font-size: 13px;
+        text-align: center;
+      }
+      .lootbag-panel__empty {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        min-height: 160px;
+        padding: 16px;
+      }
+      .lootbag-panel__empty-icon {
+        font-size: 36px;
+        line-height: 1;
+        opacity: 0.85;
+      }
+      .lootbag-panel__muted {
+        color: rgba(255, 255, 255, 0.45);
+        font-size: 12px;
+      }
+      .lootbag-panel__muted.mono {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 11px;
+      }
+      .lootbag-panel__error {
+        color: #ff8f8f;
+        font-size: 13px;
+        margin: 12px;
+      }
+      /* Horizontal glass shelf (vitrine) */
+      .lootbag-panel__vitrine {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        border-radius: 14px;
+        overflow: hidden;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.07) 0%, transparent 40%),
+          linear-gradient(180deg, rgba(40, 24, 72, 0.45), rgba(12, 8, 24, 0.55));
+        border: 1px solid rgba(255, 255, 255, 0.12);
+      }
+      .lootbag-panel__vitrine-glass {
+        pointer-events: none;
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+          115deg,
+          rgba(255, 255, 255, 0.08) 0%,
+          transparent 30%,
+          transparent 70%,
+          rgba(255, 255, 255, 0.03) 100%
+        );
+        z-index: 1;
+      }
+      .lootbag-panel__shelf {
+        position: relative;
+        z-index: 0;
+        height: 100%;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .lootbag-panel__shelf::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+      }
+      .lootbag-panel__shelf-track {
+        display: flex;
+        align-items: stretch;
+        gap: 10px;
+        height: 100%;
+        padding: 12px;
+        box-sizing: border-box;
+        min-width: min-content;
+      }
+      .lootbag-panel__card {
+        flex: 0 0 120px;
+        width: 120px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        padding: 10px 8px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        text-align: center;
+        min-height: 0;
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
+      }
+      .lootbag-panel__card.is-pack {
+        border-color: rgba(196, 181, 253, 0.4);
+        background: linear-gradient(180deg, rgba(139, 92, 246, 0.16), rgba(255, 255, 255, 0.05));
+      }
+      .lootbag-panel__card-media {
+        width: 100%;
+        aspect-ratio: 1;
+        max-height: 72px;
+        border-radius: 10px;
+        overflow: hidden;
+        background: rgba(0, 0, 0, 0.28);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .lootbag-panel__card-img {
+        width: 88%;
+        height: 88%;
+        object-fit: contain;
+        filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.35));
+      }
+      .lootbag-panel__card-placeholder {
+        font-size: 26px;
+        opacity: 0.75;
+        color: #ddd6fe;
+      }
+      .lootbag-panel__card-title {
+        font-size: 12px;
+        font-weight: 700;
+        width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .lootbag-panel__card-sub,
+      .lootbag-panel__card-depositor,
+      .lootbag-panel__card-id {
+        font-size: 10px;
+        color: rgba(255, 255, 255, 0.45);
+        width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .lootbag-panel__page-label {
+        margin: 8px 0 0;
+        text-align: center;
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.4);
+        flex-shrink: 0;
+      }
+      .lootbag-panel__steps[hidden],
+      .lootbag-panel__status[hidden],
+      .lootbag-panel__footer[hidden] {
+        display: none !important;
+      }
+
+      /* Centered sign / meta-tx progress — full viewport, above 2D shell + 3D HUD */
+      .lootbag-sign-overlay {
+        position: fixed;
+        inset: 0;
+        z-index: calc(var(--z-top-modal, 10000) + 20);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+          max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+        box-sizing: border-box;
+        pointer-events: auto;
+      }
+      .lootbag-sign-overlay[hidden] {
+        display: none !important;
+      }
+      .lootbag-sign-overlay__backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(8, 4, 20, 0.72);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+      }
+      .lootbag-sign-overlay__card {
+        position: relative;
+        z-index: 1;
+        width: min(420px, 100%);
+        max-height: min(70vh, 520px);
+        overflow: auto;
+        padding: 22px 24px 20px;
+        border-radius: 18px;
+        background: linear-gradient(160deg, rgba(55, 30, 95, 0.98), rgba(28, 16, 52, 0.98));
+        border: 1px solid rgba(196, 181, 253, 0.35);
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.2);
+        color: #fff;
+      }
+      .lootbag-sign-overlay__card--error {
+        border-color: rgba(248, 113, 113, 0.45);
+      }
+      .lootbag-sign-overlay__close {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        width: 36px;
+        height: 36px;
+        border: 0;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.9);
+        font-size: 22px;
+        line-height: 1;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+      }
+      .lootbag-sign-overlay__close:hover {
+        background: rgba(248, 113, 113, 0.25);
+        color: #fff;
+      }
+      .lootbag-sign-overlay__kicker {
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: rgba(196, 181, 253, 0.9);
+        margin-bottom: 6px;
+      }
+      .lootbag-sign-overlay__title {
+        margin: 0 0 8px;
+        font-size: 20px;
+        font-weight: 800;
+        line-height: 1.2;
+      }
+      .lootbag-sign-overlay__meta {
+        margin: 0 0 10px;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.01em;
+        color: #e9d5ff;
+        line-height: 1.35;
+      }
+      .lootbag-sign-overlay__status {
+        margin: 0 0 14px;
+        font-size: 13px;
+        line-height: 1.4;
+        color: rgba(255, 255, 255, 0.78);
+        word-break: break-word;
+      }
+      .lootbag-sign-overlay__list {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .lootbag-sign-overlay__step {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        background: rgba(0, 0, 0, 0.28);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        font-size: 13px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.7);
+      }
+      .lootbag-sign-overlay__step.is-active {
+        color: #bfdbfe;
+        border-color: rgba(147, 197, 253, 0.35);
+        background: rgba(59, 130, 246, 0.12);
+      }
+      .lootbag-sign-overlay__step.is-done {
+        color: #a7f3d0;
+        border-color: rgba(110, 231, 183, 0.25);
+      }
+      .lootbag-sign-overlay__step.is-error {
+        color: #fecaca;
+        border-color: rgba(248, 113, 113, 0.4);
+      }
+      .lootbag-sign-overlay__label {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .lootbag-sign-overlay__detail {
+        width: 100%;
+        font-size: 11px;
+        font-weight: 500;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      .lootbag-sign-overlay__tx {
+        color: #93c5fd;
+        text-decoration: none;
+        font-size: 12px;
+      }
+      .lootbag-sign-overlay__tx:hover {
+        text-decoration: underline;
+      }
+      .lootbag-sign-overlay__spin {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 2px solid rgba(147, 197, 253, 0.25);
+        border-top-color: #93c5fd;
+        animation: lootbag-sign-spin 0.7s linear infinite;
+        flex-shrink: 0;
+      }
+      @keyframes lootbag-sign-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .lootbag-sign-overlay__hint {
+        margin: 14px 0 0;
+        font-size: 11px;
+        line-height: 1.4;
+        color: rgba(255, 255, 255, 0.45);
+        text-align: center;
+      }
+      .lootbag-sign-overlay__continue {
+        display: block;
+        width: 100%;
+        margin-top: 16px;
+        padding: 14px 18px;
+        border: none;
+        border-radius: 12px;
+        background: linear-gradient(135deg, #a78bfa, #7c3aed);
+        color: #fff;
+        font-size: 15px;
+        font-weight: 800;
+        cursor: pointer;
+        box-shadow: 0 8px 24px rgba(124, 58, 237, 0.35);
+      }
+      .lootbag-sign-overlay__continue:hover:not(:disabled) {
+        filter: brightness(1.08);
+      }
+      .lootbag-sign-overlay__continue:disabled {
+        opacity: 0.55;
+        cursor: wait;
+      }
+      .lootbag-sign-overlay__check {
+        color: #6ee7b7;
+        font-weight: 900;
+        flex-shrink: 0;
+      }
+      .lootbag-sign-overlay__card--success {
+        text-align: center;
+      }
+      .lootbag-sign-overlay__success-icon {
+        width: 52px;
+        height: 52px;
+        margin: 4px auto 12px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 28px;
+        font-weight: 900;
+        color: #052e1a;
+        background: linear-gradient(135deg, #6ee7b7, #34d399);
+        box-shadow: 0 8px 24px rgba(52, 211, 153, 0.35);
+      }
+      .lootbag-sign-overlay__card--success .lootbag-sign-overlay__status {
+        margin-bottom: 8px;
+      }
+      .lootbag-sign-overlay__card--success .lootbag-sign-overlay__continue {
+        margin-top: 8px;
+      }
+      html.lootbag-sign-open {
+        overflow: hidden;
+      }
+
+      /* Center win / settle modal (over 2D shell + 3D HUD) */
+      .lootbag-win-modal {
+        position: fixed;
+        inset: 0;
+        z-index: calc(var(--z-top-modal, 10000) + 25);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        box-sizing: border-box;
+        pointer-events: auto;
+      }
+      .lootbag-win-modal[hidden] {
+        display: none !important;
+      }
+      .lootbag-win-modal__backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(8, 4, 18, 0.62);
+        backdrop-filter: blur(4px);
+      }
+      .lootbag-win-modal__card {
+        position: relative;
+        z-index: 1;
+        width: min(380px, 100%);
+        padding: 22px 20px 18px;
+        border-radius: 18px;
+        text-align: center;
+        color: #fff;
+        background: linear-gradient(
+          165deg,
+          rgba(70, 40, 110, 0.97),
+          rgba(24, 14, 42, 0.98)
+        );
+        border: 1px solid rgba(196, 181, 253, 0.4);
+        box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+      }
+      .lootbag-win-modal__x {
+        position: absolute;
+        top: 8px;
+        right: 10px;
+        border: 0;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.55);
+        font-size: 22px;
+        line-height: 1;
+        cursor: pointer;
+        padding: 4px 8px;
+        border-radius: 8px;
+      }
+      .lootbag-win-modal__x:hover {
+        color: #fff;
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .lootbag-win-modal__kicker {
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #c4b5fd;
+        margin-bottom: 10px;
+      }
+      .lootbag-win-modal__art {
+        width: 88px;
+        height: 88px;
+        margin: 0 auto 12px;
+        border-radius: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 40px;
+        background: rgba(0, 0, 0, 0.28);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        color: #ddd6fe;
+        overflow: hidden;
+      }
+      .lootbag-win-modal__art img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        display: block;
+      }
+      .lootbag-win-modal__title {
+        margin: 0 0 6px;
+        font-size: 20px;
+        font-weight: 800;
+      }
+      .lootbag-win-modal__sub {
+        margin: 0 0 4px;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.7);
+      }
+      .lootbag-win-modal__pos {
+        margin: 0 0 12px;
+        font-size: 11px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: rgba(255, 255, 255, 0.4);
+      }
+      .lootbag-win-modal__demo {
+        margin: 0 0 12px;
+        font-size: 11px;
+        color: rgba(251, 191, 36, 0.9);
+      }
+      .lootbag-win-modal__hint {
+        margin: 0 0 14px;
+        font-size: 12px;
+        line-height: 1.4;
+        color: rgba(255, 255, 255, 0.65);
+      }
+      .lootbag-win-modal__actions {
+        display: flex;
+        gap: 10px;
+      }
+      .lootbag-win-modal__actions .lootbag-panel__btn {
+        flex: 1;
+      }
+      .lootbag-panel__form-actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 4px;
+      }
+      /* 3D HUD deposit — same 1/3 · 2/3 inventory as 2D (reuses .lootbag-dep) */
+      .lootbag-panel-wrap.is-deposit-mode .lootbag-panel__body,
+      .lootbag-panel.is-deposit-mode .lootbag-panel__body {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: hidden;
+        padding: 8px 8px 10px;
+      }
+      .lootbag-panel .lootbag-dep--hud {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        min-height: 0;
+        gap: 8px;
+        overflow: hidden;
+      }
+      /* Inventory grid matches main bag (6 cards); side column for selection */
+      .lootbag-panel .lootbag-dep--hud .lootbag-dep__body {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: hidden;
+        grid-template-columns: minmax(0, var(--lootbag-bag-row-w, 1fr)) minmax(160px, var(--lootbag-dep-side-w, 220px));
+        gap: 12px;
+        align-items: stretch;
+      }
+      /* Side panel keeps fixed column height; selection list scrolls */
+      .lootbag-panel .lootbag-dep--hud .lootbag-dep__side {
+        min-height: 0;
+        max-height: 100%;
+        overflow: hidden;
+      }
+      .lootbag-panel .lootbag-dep--hud .lootbag-dep__list {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+      }
+      .lootbag-panel .lootbag-dep--hud .lootbag-dep__main {
+        min-height: 0;
+        overflow: hidden;
+      }
+      .lootbag-panel .lootbag-dep--hud .lootbag-dep__grid--bag {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: auto;
+      }
+      .lootbag-panel .lootbag-dep--hud .lootbag-dep__footer {
+        flex-shrink: 0;
+      }
+      /* Confirm under inventory; send summary aligned under To Deposit column */
+      .lootbag-panel .lootbag-dep--hud .lootbag-dep__footer--inv-row {
+        display: grid;
+        grid-template-columns: minmax(0, var(--lootbag-bag-row-w, 1fr)) minmax(160px, var(--lootbag-dep-side-w, 220px));
+        gap: 12px;
+        align-items: center;
+        padding-top: 4px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .lootbag-panel .lootbag-dep--hud .lootbag-dep__footer-inv {
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+      .lootbag-panel .lootbag-dep--hud .lootbag-dep__footer--inv-row .lootbag-dep__confirm {
+        flex: 1 1 auto;
+        min-width: 0;
+        width: 100%;
+        max-width: none;
+      }
+      .lootbag-panel .lootbag-dep--hud .lootbag-dep__footer-side {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        min-width: 0;
+        padding: 0 2px;
+      }
+      .lootbag-panel .lootbag-dep--hud .lootbag-dep__footer-send {
+        min-width: 0;
+        font-size: 12px;
+        font-weight: 700;
+        color: #fde68a;
+        text-align: right;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .lootbag-panel .lootbag-dep--hud .lootbag-dep__footer-hint--row {
+        margin: 0;
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.5);
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .lootbag-panel .lootbag-dep__header--compact {
+        gap: 6px;
+      }
+      .lootbag-panel .lootbag-dep__header--compact .lootbag-dep__back {
+        min-width: 72px;
+        padding: 8px 10px;
+        font-size: 12px;
+      }
+      .lootbag-panel .lootbag-dep__header-stats {
+        font-size: 11px;
+        gap: 6px 10px;
+      }
+      .lootbag-panel .lootbag-dep__body {
+        gap: 12px;
+        background: transparent;
+      }
+      .lootbag-panel .lootbag-dep__main,
+      .lootbag-panel .lootbag-dep__side,
+      .lootbag-panel .lootbag-dep__left,
+      .lootbag-panel .lootbag-dep__right {
+        padding: 10px;
+        border-radius: 14px;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.06) 0%, transparent 45%),
+          linear-gradient(165deg, rgba(40, 22, 72, 0.95) 0%, rgba(14, 8, 28, 0.98) 100%);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.08),
+          0 8px 22px rgba(0, 0, 0, 0.35);
+      }
+      .lootbag-panel .lootbag-dep__search-row {
+        margin-bottom: 6px;
+      }
+      .lootbag-panel .lootbag-dep__search {
+        height: 32px;
+        font-size: 12px;
+        padding: 0 10px;
+      }
+      .lootbag-panel .lootbag-dep__search-clear {
+        height: 32px;
+        padding: 0 10px;
+        font-size: 11px;
+      }
+      .lootbag-panel .lootbag-dep__grid--hud,
+      .lootbag-panel .lootbag-dep__grid--bag {
+        /* Fixed card width — same footprint as bag row cards */
+        grid-template-columns: repeat(auto-fill, 120px);
+        justify-content: start;
+        gap: 10px;
+        align-content: start;
+      }
+      /* Deposit toolbar lives in the outer header (not a second body row) */
+      .lootbag-panel .lootbag-dep--hud > .lootbag-dep__toolbar {
+        display: none;
+      }
+      .lootbag-panel .lootbag-dep__tabs--header {
+        display: inline-flex;
+        flex-wrap: nowrap;
+        gap: 6px;
+        margin: 0;
+        width: auto;
+      }
+      .lootbag-panel .lootbag-dep__tabs--header .lootbag-dep__tab {
+        flex: 0 0 auto;
+        padding: 6px 10px;
+        font-size: 11px;
+        white-space: nowrap;
+      }
+      .lootbag-panel .lootbag-dep__back {
+        flex: 0 0 auto;
+        width: auto;
+        min-width: 0;
+        padding: 6px 10px;
+        font-size: 11px;
+      }
+      /* Inventory picks = same bag row card geometry */
+      .lootbag-panel button.lootbag-panel__card.lootbag-dep__pick {
+        appearance: none;
+        -webkit-appearance: none;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: flex-start;
+        flex: 0 0 120px;
+        width: 120px;
+        max-width: 120px;
+        min-height: 148px;
+        height: auto;
+        margin: 0;
+        padding: 10px 8px;
+        gap: 4px;
+        text-align: center;
+        cursor: pointer;
+        font: inherit;
+        color: inherit;
+        overflow: hidden;
+      }
+      .lootbag-panel button.lootbag-panel__card.lootbag-dep__pick .lootbag-panel__card-media {
+        flex: 0 0 auto;
+        width: 100%;
+        aspect-ratio: 1;
+        max-height: 72px;
+        height: auto;
+      }
+      .lootbag-panel button.lootbag-panel__card.lootbag-dep__pick .lootbag-panel__card-line {
+        flex: 0 0 auto;
+        text-align: center;
+      }
+      .lootbag-panel button.lootbag-panel__card.lootbag-dep__pick.is-selected {
+        border-color: rgba(255, 45, 85, 0.7);
+        box-shadow:
+          0 0 0 2px rgba(255, 45, 85, 0.28),
+          0 8px 20px rgba(255, 45, 85, 0.2);
+      }
+      .lootbag-panel .lootbag-panel__card--empty {
+        flex: 0 0 120px;
+        width: 120px;
+        max-width: 120px;
+        min-height: 148px;
+        border: 1px dashed rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.02);
+        box-shadow: none;
+        pointer-events: none;
+      }
+      .lootbag-panel .lootbag-dep__cell {
+        min-height: 96px;
+        padding: 8px 6px;
+      }
+      .lootbag-panel .lootbag-dep__cell-thumb {
+        width: 40px;
+        height: 40px;
+        font-size: 10px;
+      }
+      .lootbag-panel .lootbag-dep__row {
+        flex-wrap: wrap;
+      }
+      .lootbag-panel .lootbag-dep__footer {
+        gap: 8px;
+      }
+      .lootbag-panel .lootbag-dep__confirm {
+        min-width: 0;
+      }
+      .lootbag-panel__steps {
+        flex-shrink: 0;
+        max-height: 96px;
+        overflow: auto;
+        padding: 6px 12px;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+      }
+      .lootbag-panel__step-list {
+        margin: 0;
+        padding-left: 18px;
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.65);
+      }
+      .lootbag-panel__step.is-active { color: #93c5fd; }
+      .lootbag-panel__step.is-done { color: rgba(110, 231, 183, 0.9); }
+      .lootbag-panel__step.is-error { color: #ff8f8f; }
+      .lootbag-panel__tx {
+        color: #93c5fd;
+        text-decoration: none;
+      }
+      .lootbag-panel__tx:hover { text-decoration: underline; }
+      .lootbag-panel__status {
+        flex-shrink: 0;
+        margin: 0;
+        padding: 6px 12px 8px;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .lootbag-panel__status.is-error {
+        color: #ff8f8f;
+      }
+      .lootbag-panel__footer {
+        flex-shrink: 0;
+        display: flex;
+        gap: 10px;
+        padding: 10px 12px 12px;
+        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(0, 0, 0, 0.2);
+      }
+      .lootbag-panel__btn {
+        flex: 1;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 650;
+        padding: 11px 12px;
+        cursor: pointer;
+      }
+      .lootbag-panel__btn:hover:not(:disabled) {
+        background: rgba(255, 255, 255, 0.14);
+      }
+      .lootbag-panel__btn:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .lootbag-panel__btn--primary {
+        background: linear-gradient(135deg, rgba(139, 92, 246, 0.9), rgba(91, 33, 182, 0.95));
+        border-color: rgba(167, 139, 250, 0.45);
+      }
+      .lootbag-panel__btn--primary:hover:not(:disabled) {
+        filter: brightness(1.08);
+      }
+      .lootbag-panel__btn--secondary {
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .lootbag-panel.is-busy .lootbag-panel__btn,
+      .lootbag-panel-wrap.is-busy .lootbag-panel__btn {
+        pointer-events: none;
+      }
+      @media (max-width: 767px) {
+        .lootbag-panel-wrap,
+        .lootbag-panel-wrap--dock {
+          /* Clear chat panel + rail; clamp when HUD is wide relative to viewport */
+          left: calc(
+            var(--client-safe-left) + min(var(--client-chat-slot-w), calc(42vw + var(--client-chat-rail-w))) +
+              var(--client-ui-gap)
+          );
+          right: auto;
+          width: fit-content;
+          max-width: calc(
+            100vw - var(--client-safe-left) - min(var(--client-chat-slot-w), calc(42vw + var(--client-chat-rail-w))) -
+              var(--client-ui-gap) - var(--client-safe-right)
+          );
+          max-height: min(48vh, 380px);
+          --lootbag-bag-visible-cards: 4;
+          --lootbag-bag-card-w: 104px;
+        }
+        .lootbag-panel-wrap.is-deposit-mode {
+          right: auto;
+          width: fit-content;
+          --lootbag-dep-side-w: 180px;
+        }
+        .lootbag-panel-wrap.is-deposit-mode .lootbag-panel__header-main {
+          flex-wrap: wrap;
+        }
+        .lootbag-panel__header-deposit .lootbag-dep__toolbar {
+          flex-wrap: wrap;
+        }
+
+        .lootbag-panel__pack {
+          flex-basis: 132px;
+          width: 132px;
+          min-width: 132px;
+          padding: 8px;
+        }
+        .lootbag-panel__dock-gap {
+          flex-basis: 10px;
+          width: 10px;
+          min-width: 10px;
+        }
+        .lootbag-panel__row-track .lootbag-panel__card {
+          flex-basis: 104px;
+          width: 104px;
+        }
       }
 
       /* Friends panel — same bottom-left HUD slot as .chat-panel-wrap */
@@ -13747,12 +15069,14 @@
       body.communities-route,
       body.map-route,
       body.profile-route,
+      body.lootbag-route,
       body.scene-landing-route,
       body.explorer-route #app,
       body.events-route #app,
       body.communities-route #app,
       body.map-route #app,
       body.profile-route #app,
+      body.lootbag-route #app,
       body.scene-landing-route #app,
       body.editor-route #app {
         background-color: var(--dcl-bg-deep);
@@ -13798,6 +15122,7 @@
       body.social-shell-with-chat .communities-page-view__main,
       body.social-shell-with-chat .map-page-view__main,
       body.social-shell-with-chat .profile-page-view__main,
+      body.social-shell-with-chat .lootbag-page-view__main,
       body.social-shell-with-chat .scene-landing-view__main {
         padding-right: var(--social-chat-dock-width);
         box-sizing: border-box;
@@ -13812,6 +15137,7 @@
       .communities-page-view,
       .map-page-view,
       .profile-page-view,
+      .lootbag-page-view,
       .scene-landing-view {
         position: fixed;
         inset: 0;
@@ -14478,6 +15804,7 @@
         body.social-shell-with-chat .communities-page-view__main,
         body.social-shell-with-chat .map-page-view__main,
         body.social-shell-with-chat .profile-page-view__main,
+        body.social-shell-with-chat .lootbag-page-view__main,
         body.social-shell-with-chat .scene-landing-view__main {
           padding-right: max(16px, env(safe-area-inset-right, 0px)) !important;
           padding-left: max(16px, env(safe-area-inset-left, 0px));
@@ -16077,6 +17404,2191 @@
       body.events-route #app {
         overflow: hidden;
       }
+
+      /* ===== 2D Loot Bag (/lootbag) — vertical reel machine ===== */
+      body.lootbag-route,
+      body.lootbag-route #app {
+        overflow: hidden;
+      }
+      /* Match scene landing content width + horizontal padding */
+      .lootbag-page-view__main {
+        --lootbag-page-main-max: min(92vw, 1420px);
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        padding: clamp(12px, 3dvh, 32px) clamp(10px, 2vw, 28px) 40px;
+        box-sizing: border-box;
+        scrollbar-width: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .lootbag-page-view__main::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+      }
+
+      .lootbag {
+        /* Same track width as scene-watch-dest main */
+        --lootbag-body-h: 580px;
+        --lootbag-vitrine-h: 300px;
+        --lootbag-col-gap: clamp(20px, 2.8vw, 40px);
+        position: relative;
+        width: 100%;
+        max-width: var(--lootbag-page-main-max, min(92vw, 1420px));
+        margin: 0 auto;
+        flex-shrink: 0;
+        font-family: inherit;
+        color: #fff;
+      }
+
+      .lootbag__stage {
+        position: relative;
+        z-index: 1;
+      }
+      /*
+       * Layout shell only — NO single outer card.
+       * Bag shelf + lootpack are independent cards on the page.
+       */
+      .lootbag__machine,
+      .lootbag__machine--vitrine {
+        border-radius: 0;
+        padding: 0;
+        background: transparent;
+        border: none;
+        box-shadow: none;
+        backdrop-filter: none;
+      }
+      .lootbag__play,
+      .lootbag__deposit-view {
+        box-sizing: border-box;
+        height: var(--lootbag-body-h);
+        min-height: var(--lootbag-body-h);
+        max-height: var(--lootbag-body-h);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .lootbag__play[hidden],
+      .lootbag__deposit-view[hidden] {
+        display: none !important;
+      }
+      /*
+       * Deposit reuses play columns shell (lootbag__columns + col cards).
+       * Only content differs: 2/3 inventory · 1/3 selected.
+       */
+      .lootbag__deposit-view {
+        border-radius: 0;
+        padding: 0;
+        background: transparent;
+        border: none;
+        box-shadow: none;
+        backdrop-filter: none;
+      }
+      .lootbag__deposit-view .lootbag__columns {
+        height: 100%;
+      }
+      .lootbag__deposit-view .lootbag-dep__list--fill {
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+      .lootbag__deposit-view .lootbag-dep__tabs {
+        flex-shrink: 0;
+        margin: 0;
+      }
+      .lootbag__deposit-view .lootbag-dep__steps {
+        grid-column: 1 / -1;
+      }
+      .lootbag__deposit-view .lootbag-dep__back {
+        flex: 0 0 auto;
+        width: auto;
+        min-width: 0;
+        min-height: 36px;
+        height: 36px;
+        padding: 0 14px;
+      }
+      .lootbag__hud--deposit {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+        align-items: center;
+        gap: 10px;
+      }
+      .lootbag__hud--deposit .lootbag__hud-left {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        justify-self: start;
+        min-width: 0;
+      }
+      .lootbag__hud--deposit .lootbag__hud-center {
+        justify-self: center;
+        text-align: center;
+      }
+      .lootbag__hud--deposit .lootbag__hud-right {
+        justify-self: end;
+        min-width: 0;
+        display: flex;
+        justify-content: flex-end;
+      }
+      .lootbag__hud--deposit .lootbag__title {
+        font-size: clamp(16px, 2vw, 22px);
+      }
+      .lootbag__hud--deposit .lootbag-dep__stat {
+        font-size: 14px;
+        font-weight: 800;
+      }
+      /* Wallet / Creator tabs on header row — compact, not full-width */
+      .lootbag-dep__tabs--header {
+        display: inline-flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin: 0;
+        width: auto;
+        max-width: 100%;
+      }
+      .lootbag-dep__tabs--header .lootbag-dep__tab {
+        flex: 0 0 auto;
+        padding: 8px 12px;
+        white-space: nowrap;
+        font-size: 11px;
+      }
+      /*
+       * Deposit inventory track + pick cards:
+       * Reuse exact Loot Bag shelf card chrome (lootbag-vitrine__*).
+       */
+      .lootbag__col .lootbag-dep__track,
+      .lootbag__deposit-view .lootbag-dep__track {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: hidden;
+        height: auto;
+        padding: 4px 2px 8px;
+      }
+      /* Deposit picks: same fixed geometry as bag shelf cards */
+      button.lootbag-vitrine__card.lootbag-dep__pick {
+        appearance: none;
+        -webkit-appearance: none;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        justify-content: flex-start;
+        width: 100%;
+        min-width: 0;
+        min-height: var(--lootbag-card-min-h, 196px);
+        height: var(--lootbag-card-min-h, 196px);
+        max-height: var(--lootbag-card-min-h, 196px);
+        margin: 0;
+        padding: 0;
+        border-radius: 12px;
+        overflow: hidden;
+        background: rgba(18, 12, 32, 0.95);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.22);
+        color: #fff;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+        box-sizing: border-box;
+        transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+      }
+      button.lootbag-vitrine__card.lootbag-dep__pick.is-pack {
+        border-color: rgba(196, 181, 253, 0.35);
+      }
+      button.lootbag-vitrine__card.lootbag-dep__pick:hover:not(:disabled) {
+        transform: translateY(-2px);
+        border-color: rgba(196, 181, 253, 0.45);
+      }
+      button.lootbag-vitrine__card.lootbag-dep__pick:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+      button.lootbag-vitrine__card.lootbag-dep__pick.is-selected {
+        border-color: rgba(255, 45, 85, 0.7);
+        box-shadow:
+          0 0 0 2px rgba(255, 45, 85, 0.28),
+          0 10px 24px rgba(255, 45, 85, 0.2);
+        transform: translateY(-2px);
+      }
+      button.lootbag-vitrine__card.lootbag-dep__pick .lootbag-vitrine__card-art {
+        flex: 0 0 var(--lootbag-card-art-h, 110px);
+        height: var(--lootbag-card-art-h, 110px);
+        min-height: var(--lootbag-card-art-h, 110px);
+        max-height: var(--lootbag-card-art-h, 110px);
+      }
+      button.lootbag-vitrine__card.lootbag-dep__pick .lootbag-vitrine__card-body {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        justify-content: flex-start;
+        gap: 2px;
+        padding: 10px 10px 12px;
+        flex: 1 1 auto;
+        min-height: 0;
+        background: rgba(12, 8, 24, 0.98);
+        text-align: left;
+      }
+      .lootbag-vitrine__card--empty {
+        min-height: var(--lootbag-card-min-h, 196px);
+        height: var(--lootbag-card-min-h, 196px);
+        border: 1px dashed rgba(255, 255, 255, 0.08);
+        background: rgba(255, 255, 255, 0.02);
+        box-shadow: none;
+        pointer-events: none;
+      }
+      .lootbag-vitrine__track {
+        align-items: stretch;
+      }
+      @media (max-width: 720px) {
+        .lootbag__hud--deposit {
+          grid-template-columns: 1fr;
+          gap: 8px;
+        }
+        .lootbag__hud--deposit .lootbag__hud-center,
+        .lootbag__hud--deposit .lootbag__hud-right {
+          justify-self: start;
+        }
+      }
+
+      .lootbag__header {
+        margin-bottom: 14px;
+        text-align: left;
+        padding: 0 2px;
+      }
+      /* Title lives inside left card HUD (next to In bag) */
+      .lootbag__title {
+        margin: 0;
+        flex: 0 0 auto;
+        font-size: clamp(18px, 2.2vw, 24px);
+        font-weight: 800;
+        letter-spacing: 0.02em;
+        color: #fff;
+        text-transform: none;
+        background: none;
+        -webkit-background-clip: unset;
+        background-clip: unset;
+        animation: none;
+        line-height: 1.15;
+        white-space: nowrap;
+      }
+      .lootbag__tagline {
+        margin: 6px 0 0;
+        font-size: 12px;
+        letter-spacing: 0.04em;
+        text-transform: none;
+        color: rgba(255, 255, 255, 0.5);
+      }
+
+      /* ── Play: 2 columns (2/3 bag | 1/3 lootpack). Each column is its own bg card. ── */
+      .lootbag__columns {
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        gap: var(--lootbag-col-gap);
+        flex: 1 1 auto;
+        min-height: 0;
+        height: 100%;
+        align-items: stretch;
+      }
+      .lootbag__col {
+        min-width: 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 16px;
+        border-radius: 22px;
+        background: linear-gradient(
+          165deg,
+          rgba(55, 28, 90, 0.78) 0%,
+          rgba(28, 16, 48, 0.88) 50%,
+          rgba(18, 12, 32, 0.92) 100%
+        );
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        box-shadow:
+          0 0 0 1px rgba(168, 85, 247, 0.1) inset,
+          0 16px 40px rgba(0, 0, 0, 0.35);
+        backdrop-filter: blur(12px);
+        box-sizing: border-box;
+      }
+      .lootbag__col--pack {
+        gap: 14px;
+      }
+      /* Pack cost — flat text, no pill / container bg */
+      .lootbag__pack-cost {
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        padding: 4px 0 2px;
+        background: transparent;
+        border: 0;
+        box-shadow: none;
+      }
+      .lootbag__pack-cost-label {
+        font-size: 11px;
+        font-weight: 750;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      .lootbag__pack-cost-row {
+        display: inline-flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: center;
+        gap: 0 8px;
+      }
+      .lootbag__pack-cost-value {
+        font-size: 20px;
+        font-weight: 800;
+        color: #fde68a;
+        line-height: 1.15;
+      }
+      .lootbag__pack-cost-bal {
+        font-size: 13px;
+        font-weight: 650;
+        color: rgba(233, 213, 255, 0.72);
+        line-height: 1.15;
+      }
+      .lootbag__pack-cost-bal:empty {
+        display: none;
+      }
+      .lootbag__col-actions {
+        flex-shrink: 0;
+        display: flex;
+        gap: 10px;
+        margin-top: auto;
+      }
+      .lootbag__col-actions .lootbag__btn {
+        width: 100%;
+      }
+      .lootbag__col-actions .lootbag__btn--claim {
+        flex: 1;
+        width: 100%;
+      }
+
+      .lootbag__hud {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: stretch;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 0;
+        flex-shrink: 0;
+      }
+      .lootbag__hud-stats {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px 12px;
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .lootbag__hud-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: stretch;
+        gap: 8px;
+        flex: 0 0 auto;
+        margin-left: auto;
+      }
+      /* Rewards — solid CTA; amount only in centered modal */
+      .lootbag__btn--rewards {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 40px;
+        min-width: 108px;
+        padding: 10px 18px;
+        border-radius: 12px;
+        border: 1px solid rgba(52, 211, 153, 0.55);
+        background: linear-gradient(145deg, rgba(52, 211, 153, 0.95), rgba(16, 185, 129, 0.92));
+        box-shadow: 0 8px 20px rgba(6, 95, 70, 0.4);
+        color: #042f2e;
+        font-size: 14px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+        text-align: center;
+        cursor: pointer;
+        backdrop-filter: none;
+      }
+      .lootbag__btn--rewards:hover:not(:disabled) {
+        filter: brightness(1.06);
+        transform: translateY(-1px);
+      }
+      .lootbag__btn--rewards:disabled {
+        opacity: 0.5;
+        cursor: default;
+        transform: none;
+      }
+      .lootbag__btn--rewards.has-balance {
+        box-shadow:
+          0 0 0 1px rgba(167, 243, 208, 0.35) inset,
+          0 8px 22px rgba(6, 95, 70, 0.5);
+      }
+      /* Small Add Loot — same control height as refresh, full pill chrome */
+      .lootbag__btn.lootbag__btn--add-loot {
+        box-sizing: border-box;
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: auto;
+        min-width: 0;
+        height: 36px;
+        min-height: 36px;
+        max-height: 36px;
+        padding: 0 14px;
+        margin: 0;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        background: rgba(255, 255, 255, 0.12);
+        box-shadow: none;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+        color: #fff;
+        font: inherit;
+        font-size: 12px;
+        font-weight: 750;
+        letter-spacing: 0.02em;
+        line-height: 1;
+        white-space: nowrap;
+        overflow: visible;
+      }
+      .lootbag__btn.lootbag__btn--add-loot:hover:not(:disabled) {
+        background: rgba(255, 255, 255, 0.18);
+        border-color: rgba(255, 255, 255, 0.32);
+        filter: none;
+        transform: none;
+      }
+      .lootbag__btn.lootbag__btn--add-loot:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .lootbag__chip {
+        flex: 1 1 88px;
+        min-width: 0;
+        padding: 8px 10px;
+        border-radius: 12px;
+        background: rgba(22, 12, 42, 0.72);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
+        backdrop-filter: blur(10px);
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      /* Count · refresh · Add Loot — same row, no container bg */
+      .lootbag__in-bag {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        flex: 0 0 auto;
+        min-width: 0;
+        padding: 0;
+        background: transparent;
+        border: 0;
+        box-shadow: none;
+      }
+      .lootbag__in-bag-count {
+        font-size: 14px;
+        font-weight: 750;
+        color: rgba(255, 255, 255, 0.88);
+        white-space: nowrap;
+        line-height: 1;
+      }
+      .lootbag__chip-refresh {
+        box-sizing: border-box;
+        flex-shrink: 0;
+        width: 36px;
+        height: 36px;
+        min-width: 36px;
+        min-height: 36px;
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.12);
+        color: #fff;
+        font-size: 18px;
+        line-height: 1;
+        cursor: pointer;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: none;
+        padding: 0;
+      }
+      .lootbag__chip-refresh:hover:not(:disabled) {
+        color: #fff;
+        background: rgba(255, 255, 255, 0.16);
+      }
+      .lootbag__chip-refresh:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      .lootbag__chip-sub {
+        font-weight: 650;
+        letter-spacing: 0.02em;
+        text-transform: none;
+        color: rgba(233, 213, 255, 0.72);
+        margin-left: 4px;
+      }
+      .lootbag__chip-sub:empty {
+        display: none;
+      }
+      .lootbag__chip--gold {
+        border-color: rgba(196, 181, 253, 0.35);
+        background: rgba(139, 92, 246, 0.12);
+      }
+      .lootbag__chip--claimable {
+        flex: 1 1 88px;
+        min-width: 0;
+        padding: 8px 10px;
+        border-radius: 12px;
+        border: 1px solid rgba(110, 231, 183, 0.35);
+        background: rgba(12, 40, 34, 0.78);
+        box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
+        backdrop-filter: blur(10px);
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        text-align: left;
+        cursor: pointer;
+        color: inherit;
+        font: inherit;
+        transition: border-color 0.15s ease, background 0.15s ease, transform 0.12s ease;
+      }
+      .lootbag__chip--claimable:hover {
+        border-color: rgba(110, 231, 183, 0.55);
+        background: rgba(16, 185, 129, 0.16);
+        transform: translateY(-1px);
+      }
+      .lootbag__chip--claimable.has-balance {
+        border-color: rgba(52, 211, 153, 0.55);
+        box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.12) inset;
+      }
+      .lootbag__chip--claimable .lootbag__chip-value {
+        color: #a7f3d0;
+      }
+      .lootbag__chip--dim {
+        flex: 1.2 1 140px;
+      }
+      .lootbag__chip-label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .lootbag__chip-value {
+        font-size: 15px;
+        font-weight: 800;
+        color: #fff;
+      }
+      .lootbag__chip--gold .lootbag__chip-value {
+        color: #e9d5ff;
+      }
+
+      /* Claimable grab fees modal */
+      .lootbag-fees-modal {
+        position: fixed;
+        inset: 0;
+        z-index: calc(var(--z-top-modal, 10000) + 15);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+          max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+        box-sizing: border-box;
+      }
+      .lootbag-fees-modal[hidden] {
+        display: none !important;
+      }
+      .lootbag-fees-modal__backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(8, 4, 20, 0.72);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+      }
+      .lootbag-fees-modal__card {
+        position: relative;
+        z-index: 1;
+        width: min(420px, 100%);
+        padding: 22px 24px 20px;
+        border-radius: 18px;
+        background: linear-gradient(160deg, rgba(55, 30, 95, 0.98), rgba(28, 16, 52, 0.98));
+        border: 1px solid rgba(110, 231, 183, 0.35);
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+        color: #fff;
+      }
+      .lootbag-fees-modal__x {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        width: 36px;
+        height: 36px;
+        border: 0;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.9);
+        font-size: 22px;
+        line-height: 1;
+        cursor: pointer;
+      }
+      .lootbag-fees-modal__x:hover {
+        background: rgba(255, 255, 255, 0.14);
+      }
+      .lootbag-fees-modal__kicker {
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: rgba(167, 243, 208, 0.9);
+        margin-bottom: 6px;
+      }
+      .lootbag-fees-modal__title {
+        margin: 0 0 8px;
+        font-size: 20px;
+        font-weight: 800;
+        line-height: 1.2;
+      }
+      .lootbag-fees-modal__amount {
+        margin: 0 0 14px;
+        font-size: 22px;
+        font-weight: 800;
+        color: #a7f3d0;
+      }
+      .lootbag-fees-modal__body {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin-bottom: 16px;
+      }
+      .lootbag-fees-modal__body p {
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.45;
+        color: rgba(255, 255, 255, 0.78);
+      }
+      .lootbag-fees-modal__body strong {
+        color: #fff;
+        font-weight: 700;
+      }
+      .lootbag-fees-modal__error {
+        margin: 0 0 12px;
+        font-size: 13px;
+        color: #fecaca;
+        line-height: 1.35;
+      }
+      .lootbag-fees-modal__withdraw {
+        width: 100%;
+      }
+      .lootbag-fees-modal__withdraw:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .lootbag__chip-value--sm {
+        font-size: 12px;
+        font-weight: 650;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .lootbag__icon-btn {
+        width: 46px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 14px;
+        background: rgba(22, 12, 42, 0.72);
+        box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
+        backdrop-filter: blur(10px);
+        color: #fff;
+        font-size: 18px;
+        cursor: pointer;
+      }
+      .lootbag__icon-btn:hover:not(:disabled) {
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .lootbag__icon-btn:disabled {
+        opacity: 0.4;
+      }
+
+      /* Bag shelf — inset surface inside left column card */
+      .lootbag__vitrine {
+        position: relative;
+        flex: 1 1 auto;
+        min-height: var(--lootbag-vitrine-h);
+        height: auto;
+        overflow: hidden;
+        border-radius: 16px;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.06) 0%, transparent 42%),
+          linear-gradient(165deg, rgba(28, 14, 52, 0.9) 0%, rgba(12, 6, 28, 0.95) 100%);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+        isolation: isolate;
+      }
+      /* Pack stage: canvas unzip (opaque foil) over prize HTML */
+      .lootbag-pack-stage {
+        position: relative;
+        flex: 1 1 auto;
+        min-height: 0;
+        width: 100%;
+        border-radius: 16px;
+        overflow: hidden;
+        background: #0a0614;
+        border: 1px solid rgba(196, 181, 253, 0.28);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        isolation: isolate;
+      }
+      .lootbag-pack-stage__canvas {
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+        width: 100%;
+        height: 100%;
+        display: block;
+        pointer-events: none;
+      }
+      .lootbag-pack-stage__canvas[hidden] {
+        display: none !important;
+      }
+      .lootbag-pack-stage__prize {
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 16px 14px;
+        box-sizing: border-box;
+        opacity: 0;
+        transform: scale(0.94);
+        transition: opacity 0.28s ease, transform 0.35s cubic-bezier(0.2, 0.9, 0.2, 1);
+      }
+      .lootbag-pack-stage.is-revealed .lootbag-pack-stage__prize {
+        opacity: 1;
+        transform: scale(1);
+      }
+      .lootbag-pack-stage__prize[hidden] {
+        display: none !important;
+      }
+      .lootbag-pack-stage__prize-art {
+        width: min(72%, 160px);
+        aspect-ratio: 1;
+        border-radius: 14px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+      }
+      .lootbag-pack-stage__prize-img {
+        width: 86%;
+        height: 86%;
+        object-fit: contain;
+        filter: drop-shadow(0 4px 12px rgba(0, 0, 0, 0.4));
+      }
+      .lootbag-pack-stage__prize-glyph {
+        font-size: 42px;
+        line-height: 1;
+        color: rgba(255, 255, 255, 0.92);
+      }
+      .lootbag-pack-stage__prize-name {
+        font-size: 15px;
+        font-weight: 800;
+        color: #fff;
+        text-align: center;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .lootbag-pack-stage__prize-detail {
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.7);
+        text-align: center;
+      }
+      .lootbag-pack-stage__prize-rarity {
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .lootbag-pack-stage__prize-backing {
+        margin-top: 2px;
+        font-size: 12px;
+        font-weight: 750;
+        color: #fde68a;
+        text-align: center;
+      }
+
+      .lootbag__col-actions {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .lootbag__col--pack .lootbag__col-actions {
+        flex-direction: column;
+      }
+      .lootbag__btn--keep,
+      .lootbag__btn--take {
+        width: 100%;
+        min-height: 48px;
+        font-weight: 800;
+      }
+      .lootbag__btn--keep {
+        border: 1px solid rgba(52, 211, 153, 0.5);
+        background: linear-gradient(145deg, rgba(52, 211, 153, 0.95), rgba(16, 185, 129, 0.9));
+        color: #042f2e;
+        box-shadow: 0 8px 20px rgba(6, 95, 70, 0.35);
+      }
+      .lootbag__btn--take {
+        border: 1px solid rgba(251, 191, 36, 0.45);
+        background: linear-gradient(145deg, rgba(251, 191, 36, 0.92), rgba(217, 119, 6, 0.88));
+        color: #1c1005;
+        box-shadow: 0 8px 20px rgba(180, 83, 9, 0.3);
+      }
+      .lootbag__btn--keep:hover:not(:disabled),
+      .lootbag__btn--take:hover:not(:disabled) {
+        filter: brightness(1.05);
+      }
+      .lootbag__btn[hidden] {
+        display: none !important;
+      }
+      .lootbag__vitrine-glass {
+        pointer-events: none;
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+          115deg,
+          rgba(255, 255, 255, 0.1) 0%,
+          transparent 28%,
+          transparent 60%,
+          rgba(255, 255, 255, 0.04) 100%
+        );
+        z-index: 2;
+      }
+      .lootbag__vitrine-ledge {
+        pointer-events: none;
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        height: 28%;
+        background: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.35));
+        z-index: 1;
+      }
+      .lootbag__shelf {
+        position: relative;
+        z-index: 0;
+        height: 100%;
+        overflow-x: hidden;
+        overflow-y: auto;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
+      }
+      .lootbag__shelf::-webkit-scrollbar {
+        width: 6px;
+      }
+      .lootbag__shelf::-webkit-scrollbar-thumb {
+        background: rgba(255, 255, 255, 0.22);
+        border-radius: 99px;
+      }
+      /* 4-column vertical grid of bag items */
+      .lootbag-vitrine__track {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        align-content: start;
+        height: auto;
+        min-height: 100%;
+        padding: 12px;
+        box-sizing: border-box;
+      }
+      .lootbag-vitrine__card {
+        /* Shared fixed card size — bag shelf + deposit inventory */
+        --lootbag-card-art-h: 110px;
+        --lootbag-card-min-h: 196px;
+        width: auto;
+        min-width: 0;
+        min-height: var(--lootbag-card-min-h);
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        border-radius: 12px;
+        overflow: hidden;
+        background: rgba(18, 12, 32, 0.95);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.22);
+        transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+        box-sizing: border-box;
+      }
+      .lootbag-vitrine__card:hover {
+        transform: translateY(-2px);
+        border-color: rgba(196, 181, 253, 0.45);
+      }
+      .lootbag-vitrine__card.is-pack {
+        border-color: rgba(196, 181, 253, 0.35);
+        background: linear-gradient(180deg, rgba(139, 92, 246, 0.18), rgba(255, 255, 255, 0.05));
+      }
+      .lootbag-vitrine__card.is-spotlight {
+        border-color: rgba(167, 139, 250, 0.9);
+        box-shadow:
+          0 0 0 2px rgba(167, 139, 250, 0.35),
+          0 12px 32px rgba(139, 92, 246, 0.35);
+        transform: translateY(-4px) scale(1.03);
+        z-index: 1;
+      }
+      .lootbag-vitrine__card-art {
+        height: var(--lootbag-card-art-h, 110px);
+        min-height: var(--lootbag-card-art-h, 110px);
+        max-height: var(--lootbag-card-art-h, 110px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.28);
+        flex: 0 0 var(--lootbag-card-art-h, 110px);
+      }
+      .lootbag-vitrine__card-img {
+        width: 86%;
+        height: 86%;
+        object-fit: contain;
+        filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.4));
+      }
+      /* Rarity-tinted art plate (behind wearable thumb) — DCL-ish: uncommon = orange */
+      .lootbag-rarity-bg--common {
+        background: linear-gradient(160deg, #9ca3af 0%, #4b5563 55%, #374151 100%) !important;
+      }
+      .lootbag-rarity-bg--uncommon {
+        background: linear-gradient(160deg, #fdba74 0%, #ea580c 50%, #9a3412 100%) !important;
+      }
+      .lootbag-rarity-bg--rare {
+        background: linear-gradient(160deg, #93c5fd 0%, #2563eb 50%, #1e3a8a 100%) !important;
+      }
+      .lootbag-rarity-bg--epic {
+        background: linear-gradient(160deg, #d8b4fe 0%, #9333ea 50%, #581c87 100%) !important;
+      }
+      .lootbag-rarity-bg--legendary {
+        background: linear-gradient(160deg, #fde68a 0%, #eab308 45%, #a16207 100%) !important;
+      }
+      .lootbag-rarity-bg--mythic {
+        background: linear-gradient(160deg, #f9a8d4 0%, #db2777 50%, #9d174d 100%) !important;
+      }
+      .lootbag-rarity-bg--unique,
+      .lootbag-rarity-bg--exotic {
+        background: linear-gradient(160deg, #fca5a5 0%, #ef4444 45%, #7f1d1d 100%) !important;
+      }
+      .lootbag-rarity--common { border-color: rgba(156, 163, 175, 0.4); }
+      .lootbag-rarity--uncommon { border-color: rgba(234, 88, 12, 0.55); }
+      .lootbag-rarity--rare { border-color: rgba(59, 130, 246, 0.5); }
+      .lootbag-rarity--epic { border-color: rgba(168, 85, 247, 0.5); }
+      .lootbag-rarity--legendary { border-color: rgba(234, 179, 8, 0.55); }
+      .lootbag-rarity--mythic { border-color: rgba(236, 72, 153, 0.5); }
+      .lootbag-rarity--unique,
+      .lootbag-rarity--exotic { border-color: rgba(239, 68, 68, 0.5); }
+      .lootbag-vitrine__card-body {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        padding: 10px 10px 12px;
+        flex: 1 1 auto;
+        min-height: 0;
+        background: rgba(12, 8, 24, 0.98);
+        box-sizing: border-box;
+      }
+      .lootbag-vitrine__card-line {
+        font-size: 10px;
+        line-height: 1.3;
+        color: rgba(255, 255, 255, 0.72);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .lootbag-vitrine__card-line--title {
+        font-size: 12px;
+        font-weight: 750;
+        color: #fff;
+      }
+      .lootbag-vitrine__card-line--rarity {
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .lootbag-vitrine__card-line--rarity.is-common { color: #d1d5db; }
+      .lootbag-vitrine__card-line--rarity.is-uncommon { color: #fdba74; }
+      .lootbag-vitrine__card-line--rarity.is-rare { color: #93c5fd; }
+      .lootbag-vitrine__card-line--rarity.is-epic { color: #d8b4fe; }
+      .lootbag-vitrine__card-line--rarity.is-legendary { color: #fde68a; }
+      .lootbag-vitrine__card-line--rarity.is-mythic { color: #f9a8d4; }
+      .lootbag-vitrine__card-line--rarity.is-unique,
+      .lootbag-vitrine__card-line--rarity.is-exotic { color: #fca5a5; }
+      .lootbag-vitrine__card-line--chance {
+        font-size: 11px;
+        font-weight: 750;
+        color: #fde68a;
+      }
+      .lootbag-panel__card-line {
+        font-size: 10px;
+        line-height: 1.25;
+        color: rgba(255, 255, 255, 0.7);
+        width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .lootbag-panel__card-line--title {
+        font-size: 12px;
+        font-weight: 750;
+        color: #fff;
+      }
+      .lootbag-panel__card-line--rarity {
+        font-size: 9px;
+        font-weight: 800;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+      }
+      .lootbag-panel__card-line--rarity.is-uncommon { color: #fdba74; }
+      .lootbag-panel__card-line--rarity.is-rare { color: #93c5fd; }
+      .lootbag-panel__card-line--rarity.is-epic { color: #d8b4fe; }
+      .lootbag-panel__card-line--rarity.is-legendary { color: #fde68a; }
+      .lootbag-panel__card-line--rarity.is-mythic { color: #f9a8d4; }
+      .lootbag-panel__card-line--rarity.is-common { color: #d1d5db; }
+      .lootbag-panel__card-line--rarity.is-unique,
+      .lootbag-panel__card-line--rarity.is-exotic { color: #fca5a5; }
+      .lootbag-panel__card-line--chance {
+        font-size: 10px;
+        font-weight: 750;
+        color: #fde68a;
+      }
+      .lootbag-vitrine__card-glyph {
+        font-size: 36px;
+        color: rgba(221, 214, 254, 0.9);
+        line-height: 1;
+      }
+      /* body rules live above with fixed card geometry */
+      .lootbag-vitrine__card-title {
+        font-size: 13px;
+        font-weight: 750;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .lootbag-vitrine__card-meta {
+        font-size: 11px;
+        color: rgba(221, 214, 254, 0.85);
+        font-weight: 650;
+      }
+      .lootbag-vitrine__card-foot {
+        margin-top: auto;
+        display: flex;
+        justify-content: space-between;
+        gap: 6px;
+        font-size: 10px;
+        color: rgba(255, 255, 255, 0.4);
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .lootbag-vitrine__empty {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        color: rgba(255, 255, 255, 0.55);
+        text-align: center;
+        padding: 24px;
+      }
+      .lootbag-vitrine__empty-icon {
+        font-size: 40px;
+        opacity: 0.55;
+        color: #c4b5fd;
+      }
+      .lootbag-vitrine__empty-title {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 700;
+        color: rgba(255, 255, 255, 0.88);
+      }
+      .lootbag-vitrine__empty-hint {
+        margin: 0;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.38);
+        max-width: 280px;
+        line-height: 1.4;
+      }
+      .lootbag-vitrine__empty-hint--soft {
+        color: rgba(255, 255, 255, 0.28);
+        font-size: 11px;
+      }
+
+      /* Loot Bag shelf loading (status only — no skeleton cards) */
+      .lootbag-shelf-skel {
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        justify-content: center;
+        gap: 16px;
+        padding: 12px 8px 8px;
+        box-sizing: border-box;
+      }
+      .lootbag-shelf-skel--panel {
+        min-height: 148px;
+        padding: 8px 4px 4px;
+      }
+      .lootbag-shelf-skel--text-only {
+        align-items: center;
+        justify-content: center;
+        gap: 0;
+        min-height: 148px;
+      }
+      .lootbag-shelf-skel--text-only .lootbag-shelf-skel__footer {
+        padding: 0;
+      }
+      .lootbag-shelf-skel__track {
+        display: flex;
+        gap: 12px;
+        overflow: hidden;
+        justify-content: flex-start;
+        padding: 4px 8px;
+      }
+      .lootbag-shelf-skel__card {
+        flex: 0 0 148px;
+        width: 148px;
+        border-radius: 14px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.04);
+        animation: lootbag-skel-pulse 1.4s ease-in-out infinite;
+      }
+      .lootbag-shelf-skel__card--panel {
+        flex: 0 0 112px;
+        width: 112px;
+        border-radius: 12px;
+      }
+      .lootbag-shelf-skel__art {
+        height: 110px;
+        background: linear-gradient(
+          110deg,
+          rgba(139, 92, 246, 0.12) 0%,
+          rgba(196, 181, 253, 0.28) 40%,
+          rgba(139, 92, 246, 0.12) 80%
+        );
+        background-size: 200% 100%;
+        animation: lootbag-skel-shimmer 1.6s linear infinite;
+      }
+      .lootbag-shelf-skel__card--panel .lootbag-shelf-skel__art {
+        height: 84px;
+      }
+      .lootbag-shelf-skel__lines {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px;
+      }
+      .lootbag-shelf-skel__line {
+        height: 10px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.1);
+        width: 88%;
+      }
+      .lootbag-shelf-skel__line--title {
+        height: 12px;
+        width: 72%;
+        background: rgba(255, 255, 255, 0.16);
+      }
+      .lootbag-shelf-skel__line--short {
+        width: 42%;
+        background: rgba(253, 230, 138, 0.18);
+      }
+      .lootbag-shelf-skel__footer {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding-bottom: 4px;
+      }
+      .lootbag-shelf-skel__label {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 600;
+        color: rgba(221, 214, 254, 0.9);
+        letter-spacing: 0.01em;
+      }
+      .lootbag-shelf-skel__spin {
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        border: 2px solid rgba(196, 181, 253, 0.25);
+        border-top-color: #c4b5fd;
+        animation: lootbag-skel-spin 0.7s linear infinite;
+      }
+      @keyframes lootbag-skel-shimmer {
+        0% { background-position: 100% 0; }
+        100% { background-position: -100% 0; }
+      }
+      @keyframes lootbag-skel-pulse {
+        0%, 100% { opacity: 0.72; }
+        50% { opacity: 1; }
+      }
+      @keyframes lootbag-skel-spin {
+        to { transform: rotate(360deg); }
+      }
+      .lootbag__hud,
+      .lootbag__col-actions,
+      .lootbag__disclaimer,
+      .lootbag__status {
+        flex-shrink: 0;
+      }
+
+      .lootbag__result {
+        margin-top: 12px;
+      }
+      .lootbag__win-banner {
+        padding: 14px 16px;
+        border-radius: 14px;
+        background: linear-gradient(135deg, rgba(139, 92, 246, 0.28), rgba(255, 255, 255, 0.06));
+        border: 1px solid rgba(196, 181, 253, 0.4);
+        text-align: center;
+      }
+      .lootbag__win-banner--pool {
+        margin-top: 10px;
+      }
+      .lootbag__win-title {
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #c4b5fd;
+      }
+      .lootbag__win-name {
+        margin-top: 4px;
+        font-size: 18px;
+        font-weight: 900;
+      }
+      .lootbag__win-hint {
+        margin: 6px 0 12px;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .lootbag__win-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        justify-content: center;
+      }
+
+      /* Deposit content helpers (when not using main column shell) */
+      .lootbag-dep {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        height: 100%;
+        min-height: 0;
+        box-sizing: border-box;
+      }
+      /* Deposit on main play shell: keep grid columns, not flex stack */
+      .lootbag__columns.lootbag-dep {
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        gap: var(--lootbag-col-gap);
+        height: 100%;
+      }
+      .lootbag-dep__header {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        flex-shrink: 0;
+      }
+      .lootbag-dep__back {
+        min-width: 100px;
+      }
+      .lootbag-dep__header-stats {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px 16px;
+        justify-content: flex-end;
+        font-size: 12px;
+        font-weight: 700;
+      }
+      .lootbag-dep__stat {
+        color: rgba(255, 255, 255, 0.75);
+      }
+      .lootbag-dep__stat--ok {
+        color: #6ee7b7;
+      }
+      .lootbag-dep__stat--gold {
+        color: #fbbf24;
+      }
+      .lootbag-dep__tabs {
+        display: flex;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .lootbag-dep__tab {
+        flex: 1;
+        padding: 8px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(0, 0, 0, 0.28);
+        color: rgba(255, 255, 255, 0.72);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        cursor: pointer;
+      }
+      .lootbag-dep__tab:hover:not(:disabled) {
+        border-color: rgba(167, 139, 250, 0.45);
+        color: #fff;
+      }
+      .lootbag-dep__tab.is-active {
+        background: linear-gradient(135deg, rgba(124, 58, 237, 0.45), rgba(91, 33, 182, 0.35));
+        border-color: rgba(196, 181, 253, 0.55);
+        color: #f5f3ff;
+      }
+      .lootbag-dep__tab:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+      .lootbag-dep__creator {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 4px 2px 8px;
+      }
+      .lootbag-dep__creator-lead {
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.45;
+        color: rgba(255, 255, 255, 0.82);
+      }
+      .lootbag-dep__creator-steps {
+        margin: 0;
+        padding-left: 1.25rem;
+        font-size: 12px;
+        line-height: 1.5;
+        color: rgba(255, 255, 255, 0.68);
+      }
+      .lootbag-dep__creator-steps code {
+        font-size: 11px;
+        color: #c4b5fd;
+        word-break: break-all;
+      }
+      .lootbag-dep__field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .lootbag-dep__field input {
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(0, 0, 0, 0.35);
+        color: #fff;
+        font-size: 13px;
+        font-weight: 600;
+        text-transform: none;
+        letter-spacing: 0;
+      }
+      .lootbag-dep__field input:focus {
+        outline: none;
+        border-color: rgba(167, 139, 250, 0.65);
+      }
+      .lootbag-dep__field-row {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+      @media (max-width: 640px) {
+        .lootbag-dep__field-row {
+          grid-template-columns: 1fr;
+        }
+      }
+      .lootbag-dep__creator-note {
+        margin: 0;
+        font-size: 11px;
+        line-height: 1.4;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      .lootbag-dep__cell-img,
+      .lootbag-dep__thumb img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        border-radius: inherit;
+        display: block;
+      }
+      .lootbag-dep__cell-thumb {
+        overflow: hidden;
+      }
+      /* Creator “To stock” card — vertical, not a crammed row */
+      .lootbag-dep__stock-card {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 12px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        box-sizing: border-box;
+      }
+      .lootbag-dep__stock-clear {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        width: 28px;
+        height: 28px;
+        border: none;
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.35);
+        color: rgba(255, 255, 255, 0.75);
+        font-size: 18px;
+        line-height: 1;
+        cursor: pointer;
+        z-index: 1;
+      }
+      .lootbag-dep__stock-clear:hover:not(:disabled) {
+        background: rgba(239, 68, 68, 0.35);
+        color: #fff;
+      }
+      /* Row 1: thumb + name · Row 2: pills under image (full width) */
+      .lootbag-dep__stock-top {
+        display: grid;
+        grid-template-columns: 64px minmax(0, 1fr);
+        column-gap: 12px;
+        row-gap: 8px;
+        align-items: start;
+        padding-right: 28px;
+        min-width: 0;
+      }
+      .lootbag-dep__stock-thumb {
+        grid-column: 1;
+        grid-row: 1;
+        width: 64px;
+        height: 64px;
+        border-radius: 12px;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 11px;
+        font-weight: 800;
+        color: #fff;
+      }
+      .lootbag-dep__stock-thumb img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      /* Children (name / tags / addr) participate in stock-top grid */
+      .lootbag-dep__stock-meta {
+        display: contents;
+      }
+      .lootbag-dep__stock-name {
+        grid-column: 2;
+        grid-row: 1;
+        align-self: center;
+        min-width: 0;
+        font-size: 14px;
+        font-weight: 800;
+        color: #fff;
+        line-height: 1.25;
+        overflow: hidden;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        word-break: break-word;
+      }
+      .lootbag-dep__stock-tags {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .lootbag-dep__stock-addr {
+        grid-column: 1 / -1;
+        grid-row: 3;
+      }
+      .lootbag-dep__pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        background: rgba(255, 255, 255, 0.1);
+        color: rgba(255, 255, 255, 0.8);
+      }
+      .lootbag-dep__pill--common { background: rgba(107, 114, 128, 0.45); }
+      .lootbag-dep__pill--uncommon { background: rgba(234, 88, 12, 0.4); color: #fed7aa; }
+      .lootbag-dep__pill--rare { background: rgba(59, 130, 246, 0.4); color: #bfdbfe; }
+      .lootbag-dep__pill--epic { background: rgba(168, 85, 247, 0.4); color: #e9d5ff; }
+      .lootbag-dep__pill--legendary { background: rgba(245, 158, 11, 0.4); color: #fde68a; }
+      .lootbag-dep__pill--mythic { background: rgba(236, 72, 153, 0.4); color: #fbcfe8; }
+      a.lootbag-dep__pill--view {
+        text-decoration: none;
+        color: #bfdbfe;
+        background: rgba(59, 130, 246, 0.28);
+        border: 1px solid rgba(147, 197, 253, 0.35);
+        cursor: pointer;
+        transition: background 0.12s ease, border-color 0.12s ease;
+      }
+      a.lootbag-dep__pill--view:hover {
+        background: rgba(59, 130, 246, 0.42);
+        border-color: rgba(147, 197, 253, 0.55);
+        color: #eff6ff;
+      }
+      .lootbag-dep__stock-addr {
+        font-size: 11px;
+        font-weight: 600;
+        font-variant-numeric: tabular-nums;
+        color: rgba(255, 255, 255, 0.45);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .lootbag-dep__stock-fields {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+      .lootbag-dep__stock-field {
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+        min-width: 0;
+      }
+      .lootbag-dep__stock-field > span {
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      .lootbag-dep__stock-field input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(251, 191, 36, 0.35);
+        background: rgba(0, 0, 0, 0.4);
+        color: #fde68a;
+        font-size: 15px;
+        font-weight: 800;
+        text-align: center;
+      }
+      .lootbag-dep__stock-field input:focus {
+        outline: none;
+        border-color: rgba(251, 191, 36, 0.75);
+        box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.15);
+      }
+      .lootbag-dep__stock-hint {
+        margin: 0;
+        font-size: 10px;
+        line-height: 1.4;
+        color: rgba(255, 255, 255, 0.42);
+        word-break: break-word;
+      }
+      .lootbag-dep__stock-hint--ok {
+        color: rgba(110, 231, 183, 0.9);
+      }
+      .lootbag-dep__stock-warn {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px;
+        border-radius: 10px;
+        background: rgba(251, 191, 36, 0.1);
+        border: 1px solid rgba(251, 191, 36, 0.3);
+      }
+      .lootbag-dep__stock-warn > p {
+        margin: 0;
+        font-size: 12px;
+        line-height: 1.4;
+        color: #fde68a;
+      }
+      .lootbag-dep__auth-minter {
+        width: 100%;
+        justify-content: center;
+      }
+      /* Legacy body split (3D panel still uses left/right in places) */
+      .lootbag-dep__body {
+        display: grid;
+        grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+        gap: var(--lootbag-col-gap, 20px);
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: hidden;
+        background: transparent;
+        border: none;
+        box-shadow: none;
+        padding: 0;
+      }
+      .lootbag-dep__main,
+      .lootbag-dep__side,
+      .lootbag-dep__left,
+      .lootbag-dep__right {
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        min-width: 0;
+        border-radius: 20px;
+        padding: 14px 14px 12px;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.07) 0%, transparent 40%),
+          linear-gradient(165deg, rgba(48, 26, 82, 0.94) 0%, rgba(18, 10, 36, 0.96) 100%);
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        box-shadow:
+          inset 0 1px 0 rgba(255, 255, 255, 0.1),
+          0 16px 40px rgba(0, 0, 0, 0.4);
+        backdrop-filter: blur(10px);
+        isolation: isolate;
+      }
+      /* When nested inside main play columns, drop double card chrome */
+      .lootbag__col .lootbag-dep__main,
+      .lootbag__col .lootbag-dep__side,
+      .lootbag__col .lootbag-dep__left,
+      .lootbag__col .lootbag-dep__right {
+        background: transparent;
+        border: none;
+        box-shadow: none;
+        padding: 0;
+        border-radius: 0;
+        backdrop-filter: none;
+      }
+      .lootbag-dep__section-title {
+        margin: 0 0 10px;
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      .lootbag-dep__list {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        /* Invisible scrollbar — still scrollable (wheel / trackpad / touch) */
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .lootbag-dep__list::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+      }
+      .lootbag-dep__empty {
+        margin: 12px 0;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.4);
+        text-align: center;
+      }
+      .lootbag-dep__empty--center {
+        margin-top: 24px;
+      }
+      .lootbag-dep__row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .lootbag-dep__thumb,
+      .lootbag-dep__cell-thumb {
+        width: 48px;
+        height: 48px;
+        flex-shrink: 0;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        color: #fff;
+        background: rgba(120, 80, 200, 0.7);
+      }
+      .lootbag-dep__thumb--common,
+      .lootbag-dep__cell-thumb.lootbag-dep__thumb--common { background: #6b7280; }
+      .lootbag-dep__thumb--uncommon,
+      .lootbag-dep__cell-thumb.lootbag-dep__thumb--uncommon { background: #ea580c; }
+      .lootbag-dep__thumb--rare,
+      .lootbag-dep__cell-thumb.lootbag-dep__thumb--rare { background: #3b82f6; }
+      .lootbag-dep__thumb--epic,
+      .lootbag-dep__cell-thumb.lootbag-dep__thumb--epic { background: #a855f7; }
+      .lootbag-dep__thumb--legendary,
+      .lootbag-dep__cell-thumb.lootbag-dep__thumb--legendary { background: #f59e0b; }
+      .lootbag-dep__thumb--mythic,
+      .lootbag-dep__cell-thumb.lootbag-dep__thumb--mythic { background: #db2777; }
+      .lootbag-dep__thumb--unique,
+      .lootbag-dep__thumb--exotic,
+      .lootbag-dep__cell-thumb.lootbag-dep__thumb--unique,
+      .lootbag-dep__cell-thumb.lootbag-dep__thumb--exotic { background: #ef4444; }
+      .lootbag-dep__row-meta {
+        flex: 1;
+        min-width: 0;
+      }
+      .lootbag-dep__row-name {
+        font-size: 12px;
+        font-weight: 750;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .lootbag-dep__row-sub {
+        font-size: 10px;
+        color: rgba(255, 255, 255, 0.45);
+        text-transform: uppercase;
+      }
+      .lootbag-dep__backing {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        font-size: 9px;
+        color: rgba(255, 255, 255, 0.45);
+        flex-shrink: 0;
+      }
+      .lootbag-dep__backing input {
+        width: 72px;
+        border: 1px solid rgba(251, 191, 36, 0.35);
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.4);
+        color: #fbbf24;
+        padding: 6px 8px;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 700;
+      }
+      .lootbag-dep__remove {
+        width: 32px;
+        height: 32px;
+        flex-shrink: 0;
+        border: none;
+        border-radius: 8px;
+        background: rgba(255, 80, 80, 0.25);
+        color: #ffb4b4;
+        font-size: 14px;
+        cursor: pointer;
+      }
+      .lootbag-dep__remove:hover:not(:disabled) {
+        background: rgba(255, 80, 80, 0.4);
+      }
+      .lootbag-dep__inv-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-bottom: 4px;
+      }
+      .lootbag-dep__inv-head .lootbag-dep__section-title {
+        margin: 0;
+      }
+      .lootbag-dep__search-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 8px;
+        flex-shrink: 0;
+      }
+      .lootbag-dep__search {
+        flex: 1;
+        min-width: 0;
+        height: 36px;
+        padding: 0 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(0, 0, 0, 0.35);
+        color: #fff;
+        font: inherit;
+        font-size: 13px;
+        outline: none;
+      }
+      .lootbag-dep__search::placeholder {
+        color: rgba(255, 255, 255, 0.4);
+      }
+      .lootbag-dep__search:focus {
+        border-color: rgba(251, 191, 36, 0.55);
+        box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.15);
+      }
+      .lootbag-dep__search:disabled {
+        opacity: 0.5;
+      }
+      .lootbag-dep__search-clear {
+        flex-shrink: 0;
+        height: 36px;
+        padding: 0 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.85);
+        font: inherit;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .lootbag-dep__search-clear:hover:not(:disabled) {
+        background: rgba(255, 255, 255, 0.14);
+      }
+      .lootbag-dep__search-clear:disabled {
+        opacity: 0.4;
+        cursor: default;
+      }
+      .lootbag-dep__pager {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .lootbag-dep__page-btn {
+        width: 32px;
+        height: 32px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+        font-size: 18px;
+        cursor: pointer;
+      }
+      .lootbag-dep__page-btn:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+      .lootbag-dep__page-label {
+        font-size: 12px;
+        font-weight: 700;
+        min-width: 48px;
+        text-align: center;
+      }
+      .lootbag-dep__grid {
+        flex: 1;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+        overflow-y: auto;
+        align-content: start;
+        /* Invisible scrollbar — still scrollable (wheel / trackpad / touch) */
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .lootbag-dep__grid::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+      }
+      .lootbag-dep__cell {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        padding: 10px 8px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.05);
+        color: #fff;
+        font: inherit;
+        cursor: pointer;
+        text-align: center;
+        min-height: 120px;
+      }
+      .lootbag-dep__cell:hover:not(:disabled) {
+        border-color: rgba(251, 191, 36, 0.4);
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .lootbag-dep__cell.is-selected {
+        border-color: rgba(255, 45, 85, 0.65);
+        background: rgba(255, 45, 85, 0.15);
+        box-shadow: 0 0 16px rgba(255, 45, 85, 0.2);
+      }
+      .lootbag-dep__cell.is-pack {
+        border-color: rgba(251, 191, 36, 0.45);
+        background: linear-gradient(180deg, rgba(251, 191, 36, 0.12), rgba(255, 255, 255, 0.04));
+      }
+      .lootbag-dep__cell.is-pack.is-selected {
+        border-color: rgba(251, 191, 36, 0.85);
+        background: rgba(251, 191, 36, 0.18);
+        box-shadow: 0 0 18px rgba(251, 191, 36, 0.25);
+      }
+      .lootbag-dep__thumb--pack,
+      .lootbag-dep__cell-thumb.lootbag-dep__thumb--pack {
+        background: linear-gradient(135deg, #fbbf24, #f59e0b);
+        color: #1a0a08;
+        font-size: 18px;
+      }
+      .lootbag-dep__stock-card--pack {
+        border-color: rgba(251, 191, 36, 0.35);
+        background: linear-gradient(160deg, rgba(251, 191, 36, 0.12), rgba(0, 0, 0, 0.2));
+      }
+      .lootbag-dep__stock-card--pack .lootbag-dep__stock-field input {
+        border-color: rgba(251, 191, 36, 0.4);
+        color: #fde68a;
+      }
+      .lootbag-dep__stock-fields--single {
+        grid-template-columns: 1fr;
+      }
+      .lootbag-dep__list .lootbag-dep__stock-card {
+        flex-shrink: 0;
+      }
+      .lootbag-dep__cell--empty {
+        min-height: 120px;
+        border-radius: 12px;
+        border: 1px dashed rgba(255, 255, 255, 0.06);
+        background: transparent;
+        pointer-events: none;
+      }
+      .lootbag-dep__cell-thumb {
+        width: 56px;
+        height: 56px;
+        font-size: 11px;
+      }
+      .lootbag-dep__cell-name {
+        font-size: 11px;
+        font-weight: 750;
+        width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .lootbag-dep__cell-sub {
+        font-size: 9px;
+        color: rgba(255, 255, 255, 0.45);
+        text-transform: uppercase;
+      }
+      .lootbag-dep__footer {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding-top: 4px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+        flex-shrink: 0;
+      }
+      .lootbag-dep__footer-hint {
+        margin: 0;
+        flex: 1;
+        min-width: 160px;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .lootbag-dep__confirm {
+        min-width: 180px;
+        padding: 12px 18px;
+      }
+      .lootbag-dep__steps {
+        margin-top: 0;
+      }
+      @media (max-width: 720px) {
+        .lootbag-dep__body {
+          grid-template-columns: 1fr;
+        }
+        .lootbag-dep__side,
+        .lootbag-dep__left {
+          max-height: 220px;
+          order: 2;
+        }
+        .lootbag-dep__main,
+        .lootbag-dep__right {
+          order: 1;
+        }
+        .lootbag-dep__grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      .lootbag__steps {
+        margin-top: 10px;
+        max-height: 100px;
+        overflow: auto;
+        padding: 8px 12px;
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.3);
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.65);
+      }
+      .lootbag__step-list {
+        margin: 0;
+        padding-left: 18px;
+      }
+      .lootbag__step-list .is-active { color: #93c5fd; }
+      .lootbag__step-list .is-done { color: #6ee7b7; }
+      .lootbag__step-list .is-error { color: #ff8f8f; }
+      .lootbag__step-list a {
+        color: #93c5fd;
+      }
+
+      .lootbag__status {
+        margin: 0;
+        min-height: 1.1em;
+        text-align: left;
+        font-size: 13px;
+        color: rgba(255, 255, 255, 0.55);
+        flex-shrink: 0;
+      }
+      .lootbag__status.is-error {
+        color: #ff8f8f;
+      }
+      .lootbag__error {
+        padding: 24px;
+        text-align: center;
+        color: #ff8f8f;
+        grid-column: 1 / -1;
+      }
+
+      .lootbag__btn {
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 14px;
+        background: rgba(22, 12, 42, 0.72);
+        box-shadow: 0 8px 22px rgba(0, 0, 0, 0.22);
+        backdrop-filter: blur(10px);
+        color: #fff;
+        font: inherit;
+        font-weight: 750;
+        cursor: pointer;
+        padding: 12px 16px;
+      }
+      .lootbag__btn:hover:not(:disabled) {
+        filter: brightness(1.08);
+      }
+      .lootbag__btn:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .lootbag__btn--ghost {
+        flex: 1;
+        min-width: 0;
+        min-height: 52px;
+      }
+      .lootbag__btn--ghost.is-active {
+        border-color: rgba(251, 191, 36, 0.5);
+        background: rgba(251, 191, 36, 0.12);
+      }
+      .lootbag__btn--gold {
+        background: linear-gradient(135deg, #a78bfa, #8b5cf6);
+        color: #fff;
+        border-color: rgba(167, 139, 250, 0.55);
+      }
+      .lootbag__btn--claim {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 2px;
+        min-height: 52px;
+        padding: 12px 18px;
+        border: 1px solid rgba(196, 181, 253, 0.45);
+        border-radius: 16px;
+        background: linear-gradient(145deg, rgba(139, 92, 246, 0.92), rgba(91, 33, 182, 0.95));
+        box-shadow: 0 12px 28px rgba(91, 33, 182, 0.4);
+        color: #fff;
+        backdrop-filter: none;
+      }
+      .lootbag__btn--claim:hover:not(:disabled) {
+        filter: brightness(1.06);
+      }
+      .lootbag__claim-label {
+        font-size: 15px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+      }
+      .lootbag__claim-sub {
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        opacity: 0.8;
+      }
+      .lootbag.is-claiming .lootbag__col--pack {
+        border-color: rgba(196, 181, 253, 0.45);
+        box-shadow:
+          0 0 0 1px rgba(168, 85, 247, 0.2) inset,
+          0 16px 40px rgba(91, 33, 182, 0.35);
+      }
+      .lootbag.is-claiming .lootbag__vitrine {
+        box-shadow: inset 0 0 40px rgba(139, 92, 246, 0.25);
+      }
+      .lootbag.is-claiming .lootbag-pack-stage {
+        border-color: rgba(196, 181, 253, 0.55);
+        box-shadow: inset 0 0 28px rgba(139, 92, 246, 0.28);
+      }
+      .lootbag__disclaimer {
+        margin: 14px 0 0;
+        text-align: center;
+        font-size: 10px;
+        letter-spacing: 0.04em;
+        color: rgba(255, 255, 255, 0.28);
+      }
+
+      @media (max-width: 900px) {
+        .lootbag-vitrine__track {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+      }
+      @media (max-width: 720px) {
+        .lootbag-vitrine__track {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        .lootbag {
+          --lootbag-body-h: auto;
+          --lootbag-vitrine-h: 200px;
+        }
+        .lootbag__play {
+          height: auto;
+          min-height: 0;
+          max-height: none;
+        }
+        .lootbag__columns {
+          grid-template-columns: 1fr;
+          height: auto;
+          gap: 16px;
+        }
+        .lootbag__col {
+          padding: 14px;
+        }
+        .lootbag__hud {
+          flex-direction: column;
+        }
+        .lootbag__hud-actions {
+          margin-left: 0;
+          width: 100%;
+        }
+        .lootbag__hud-actions .lootbag__btn {
+          flex: 1;
+        }
+        .lootbag__vitrine {
+          min-height: 200px;
+          height: 260px;
+        }
+        .lootbag__pack-panel {
+          min-height: 200px;
+          height: 220px;
+          flex: none;
+        }
+      }
+
       .communities-page-view__main {
         flex: 1;
         min-height: 0;
@@ -17426,6 +20938,14 @@
         background: rgba(255, 255, 255, 0.12);
         color: #fff;
       }
+      .social-shell-topnav__link--lootbag {
+        color: #fbbf24;
+      }
+      .social-shell-topnav__link--lootbag.social-shell-topnav__link--active {
+        background: linear-gradient(135deg, rgba(255, 45, 85, 0.55), rgba(251, 191, 36, 0.35));
+        color: #fff;
+        box-shadow: 0 0 18px rgba(255, 45, 85, 0.35);
+      }
       .social-shell-topnav__account,
       .scene-landing-view__account {
         display: flex;
@@ -17731,6 +21251,104 @@
         backdrop-filter: blur(18px) saturate(1.4);
         -webkit-backdrop-filter: blur(18px) saturate(1.4);
         overflow: hidden;
+      }
+      /* Loot Bag peer-claim toast — same purple chrome as 3D bag panel */
+      .social-mobile-notif__card--loot {
+        background: linear-gradient(
+          165deg,
+          rgba(55, 28, 90, 0.94) 0%,
+          rgba(28, 16, 48, 0.97) 55%,
+          rgba(18, 12, 32, 0.98) 100%
+        );
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        box-shadow:
+          0 12px 40px rgba(0, 0, 0, 0.5),
+          inset 0 1px 0 rgba(255, 255, 255, 0.08);
+      }
+      .social-mobile-notif__header--loot {
+        color: rgba(221, 214, 254, 0.72);
+      }
+      .social-mobile-notif__app-icon--loot {
+        background: linear-gradient(135deg, rgba(139, 92, 246, 0.95), rgba(91, 33, 182, 0.95));
+        font-size: 11px;
+      }
+      .social-mobile-notif__body--loot {
+        align-items: stretch;
+        gap: 12px;
+      }
+      .social-mobile-notif__loot-media {
+        flex: 0 0 56px;
+        width: 56px;
+        height: 56px;
+        border-radius: 12px;
+        overflow: hidden;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+      }
+      .social-mobile-notif__loot-img {
+        width: 88%;
+        height: 88%;
+        object-fit: contain;
+        filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.35));
+      }
+      .social-mobile-notif__loot-fallback {
+        font-size: 22px;
+        color: #ddd6fe;
+        line-height: 1;
+      }
+      .social-mobile-notif__loot-meta {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px 8px;
+        margin-top: 2px;
+      }
+      .social-mobile-notif__loot-rarity {
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: #d1d5db;
+      }
+      .social-mobile-notif__loot-rarity.is-uncommon { color: #fdba74; }
+      .social-mobile-notif__loot-rarity.is-rare { color: #93c5fd; }
+      .social-mobile-notif__loot-rarity.is-epic { color: #d8b4fe; }
+      .social-mobile-notif__loot-rarity.is-legendary,
+      .social-mobile-notif__loot-rarity.is-pack { color: #fde68a; }
+      .social-mobile-notif__loot-rarity.is-mythic { color: #f9a8d4; }
+      .social-mobile-notif__loot-rarity.is-unique,
+      .social-mobile-notif__loot-rarity.is-exotic { color: #fca5a5; }
+      .social-mobile-notif__loot-issue {
+        font-size: 11px;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .social-mobile-notif__loot-issue--mana {
+        font-weight: 750;
+        color: #fde68a;
+      }
+      .social-mobile-notif--loot .social-mobile-notif__text {
+        gap: 3px;
+      }
+      .social-mobile-notif--loot .social-mobile-notif__sub {
+        margin: 0;
+        order: 0;
+        font-size: 11px;
+        color: rgba(221, 214, 254, 0.72);
+        white-space: normal;
+        line-height: 1.3;
+      }
+      .social-mobile-notif--loot .social-mobile-notif__title {
+        order: 1;
+        font-size: 14px;
+        font-weight: 750;
+      }
+      .social-mobile-notif--loot .social-mobile-notif__loot-meta {
+        order: 2;
+        margin-top: 1px;
       }
       .social-mobile-notif__header {
         display: flex;

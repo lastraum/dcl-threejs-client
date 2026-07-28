@@ -813,12 +813,18 @@ export class LiveKitCommsSession {
     await this.safePublishData(packet, true)
   }
 
-  async publishTopicData(topic: string, packet: Uint8Array, reliable = true): Promise<void> {
-    if (!this.room || this.room.state !== ConnectionState.Connected) return
+  /**
+   * Publish data on a LiveKit topic.
+   * @returns true when the SFU accepted the packet; false if room was down or publish threw.
+   */
+  async publishTopicData(topic: string, packet: Uint8Array, reliable = true): Promise<boolean> {
+    if (!this.room || this.room.state !== ConnectionState.Connected) return false
     try {
       await this.room.localParticipant.publishData(packet, { reliable, topic })
+      return true
     } catch {
       /* room tore down mid-publish — ignore PC manager closed */
+      return false
     }
   }
 

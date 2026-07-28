@@ -1593,6 +1593,11 @@ export class SceneScriptSystem {
     this.reserved.setPlayerIdentity(identity)
   }
 
+  /** Host-seeded PlayerIdentityData for Admin Tools / getPlayer parity checks. */
+  getPlayerIdentity(): import('../../bridge/playerMirrorIdentity').PlayerMirrorIdentity | null {
+    return this.reserved.getPlayerIdentity()
+  }
+
   /**
    * Mirror a remote peer as host-owned PlayerIdentityData + AvatarBase + AvatarEquippedData
    * on the synthetic avatar entity (same path Unity uses for other players in-scene).

@@ -35,6 +35,11 @@ export class ReservedEntitiesSync {
     if (identity) this.applyPlayerIdentity()
   }
 
+  /** Host-seeded local player mirror (Admin Tools getPlayer / identity parity). */
+  getPlayerIdentity(): PlayerMirrorIdentity | null {
+    return this.playerIdentity
+  }
+
   /** Seed / refresh `core::RealmInfo` on RootEntity for SDK `@dcl/sdk/network`. */
   setRealmInfo(info: CommsRealmInfo | null): void {
     this.realmInfo = info

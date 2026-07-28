@@ -87,6 +87,11 @@ import {
   performSignedFetch,
   type SignedFetchSceneContext
 } from '../network/SignedFetchService'
+import {
+  logAdminToolsIdentitySnapshot,
+  maybeLogLiveSceneAdminSignedFetch,
+  probeSceneAdminForAdminTools
+} from '../network/gatekeeper/adminToolsDiagnostics'
 import { shortenAddress } from '../avatar/displayName'
 import { buildPlayerMirrorIdentity, getOrCreateGuestAddress } from '../bridge/playerMirrorIdentity'
 import type { AvatarAttachTargetResolver } from '../avatar/AvatarAttachTargets'
@@ -936,29 +941,7 @@ export class World {
         consumeMessages: async (body) => this.comms.consumeMessages(body.topic),
         getActiveVideoStreams: async () => this.comms.getActiveVideoStreams()
       })
-      this.signedFetchSceneContext = {
-        sceneId: scene.entityId ?? '',
-        parcel: scene.baseParcel,
-        realmName: scene.realm.realmName || 'main',
-        isWorld: scene.source.kind === 'world',
-        isGuest: this.loginIsGuest,
-        realmHostname:
-          scene.source.kind === 'world'
-            ? undefined
-            : 'realm.decentraland.org'
-      }
-      this.sceneScript.setSignedFetchHandler(async (body) =>
-        performSignedFetch(body, this.session.getAuthIdentity(), {
-          ...this.signedFetchSceneContext!,
-          isGuest: this.loginIsGuest
-        })
-      )
-      this.sceneScript.setSignedFetchGetHeadersHandler(async (body) =>
-        performGetSignedHeaders(body, this.session.getAuthIdentity(), {
-          ...this.signedFetchSceneContext!,
-          isGuest: this.loginIsGuest
-        })
-      )
+      this.applySignedFetchSceneContext(scene)
       this.sceneScript.setOpenExternalUrlHandler((request) => openExternalUrl(request))
       this.sceneScript.setOpenNftDialogHandler((request) => openNftDialog(request))
       this.sceneScript.setCopyToClipboardHandler((request) => copyToClipboard(request))
@@ -1340,6 +1323,8 @@ export class World {
             'gatekeeper scene-admin 401 is separate (not fishing).'
         )
       }
+      // Admin Tools smart-item: wallet ∈ gatekeeper scene-admin (not Places ownerAddresses).
+      this.runAdminToolsDiagnostics('play-ready')
     }
     if (worldFeet) {
       this.physics.logStaticCollidersNear(worldFeet.x, worldFeet.y, worldFeet.z, 16)
@@ -4431,28 +4416,9 @@ export class World {
       }
     })
 
-    // Comms / signed-fetch context for new primary.
-    this.signedFetchSceneContext = {
-      sceneId: newScene.entityId ?? '',
-      parcel: newScene.baseParcel,
-      realmName: newScene.realm.realmName || 'main',
-      isWorld: newScene.source.kind === 'world',
-      isGuest: this.loginIsGuest,
-      realmHostname:
-        newScene.source.kind === 'world' ? undefined : 'realm.decentraland.org'
-    }
-    this.sceneScript.setSignedFetchHandler(async (body) =>
-      performSignedFetch(body, this.session.getAuthIdentity(), {
-        ...this.signedFetchSceneContext!,
-        isGuest: this.loginIsGuest
-      })
-    )
-    this.sceneScript.setSignedFetchGetHeadersHandler(async (body) =>
-      performGetSignedHeaders(body, this.session.getAuthIdentity(), {
-        ...this.signedFetchSceneContext!,
-        isGuest: this.loginIsGuest
-      })
-    )
+    // Comms / signed-fetch context for new primary (Admin Tools gatekeeper scope).
+    this.applySignedFetchSceneContext(newScene)
+    this.runAdminToolsDiagnostics('primary-promote')
 
     // P0: rebind scene origin to NEW primary base BEFORE feet restore / soft-route.
     // applyRealmAbout alone does NOT update sceneOriginMeters — that left feet in old
@@ -5053,8 +5019,109 @@ export class World {
 
   private buildUserDataLogged = false
 
+  /**
+   * Bind signed-fetch scene scope to the loaded scene root.
+   * Admin Tools / scene-bans / stream-access all key off this identity.
+   */
+  private applySignedFetchSceneContext(scene: {
+    entityId?: string | null
+    baseParcel: string
+    realm: { realmName?: string }
+    source: { kind: string }
+  }): void {
+    const sceneId = (scene.entityId ?? '').trim()
+    const parcel = (scene.baseParcel ?? '').trim()
+    const realmName = (scene.realm.realmName || 'main').trim() || 'main'
+    const isWorld = scene.source.kind === 'world'
+    this.signedFetchSceneContext = {
+      sceneId,
+      parcel,
+      realmName,
+      isWorld,
+      isGuest: this.loginIsGuest,
+      realmHostname: isWorld ? undefined : 'realm.decentraland.org'
+    }
+
+    if (!sceneId) {
+      console.warn(
+        `[admin-tools] signedFetch context EMPTY sceneId parcel=${parcel || '—'} realm=${realmName} — ` +
+          `GET /scene-admin will not scope to a place; Admin Tools UI will stay hidden`
+      )
+    } else {
+      console.warn(
+        `[admin-tools] signedFetch context — sceneId=${sceneId.slice(0, 20)}… ` +
+          `parcel=${parcel || '—'} realm=${realmName} world=${isWorld} guest=${this.loginIsGuest}`
+      )
+    }
+
+    this.sceneScript.setSignedFetchHandler(async (body) => {
+      const res = await performSignedFetch(body, this.session.getAuthIdentity(), {
+        ...this.signedFetchSceneContext!,
+        isGuest: this.loginIsGuest
+      })
+      maybeLogLiveSceneAdminSignedFetch(
+        body.url,
+        res.status,
+        res.ok,
+        res.body ?? '',
+        this.session.getAddress() ?? null
+      )
+      return res
+    })
+    this.sceneScript.setSignedFetchGetHeadersHandler(async (body) =>
+      performGetSignedHeaders(body, this.session.getAuthIdentity(), {
+        ...this.signedFetchSceneContext!,
+        isGuest: this.loginIsGuest
+      })
+    )
+  }
+
+  /**
+   * COD: getUserData.userId, PlayerIdentityData.address, and session wallet must match
+   * (lowercased). Then probe gatekeeper scene-admin the same way Admin Tools does.
+   */
+  private runAdminToolsDiagnostics(label: string): void {
+    const wallet = this.session.getAddress()?.trim().toLowerCase() || null
+    const userData = this.buildUserData()
+    const userId =
+      typeof userData.data?.userId === 'string'
+        ? userData.data.userId.trim().toLowerCase()
+        : null
+    const pid =
+      this.sceneScript.getPlayerIdentity()?.address?.trim().toLowerCase() ?? null
+    const realm = this.comms.getRealmInfo()
+    const ctx = this.signedFetchSceneContext
+
+    logAdminToolsIdentitySnapshot(
+      {
+        wallet,
+        userId,
+        playerIdentityAddress: pid,
+        isGuest: this.loginIsGuest,
+        hasAuthIdentity: !!this.session.getAuthIdentity(),
+        isPreview: realm.isPreview === true,
+        sceneId: ctx?.sceneId ?? '',
+        parcel: ctx?.parcel ?? '',
+        realmName: ctx?.realmName ?? realm.realmName ?? '',
+        isWorld: ctx?.isWorld ?? false
+      },
+      label
+    )
+
+    void probeSceneAdminForAdminTools({
+      identity: this.session.getAuthIdentity(),
+      sceneContext: this.signedFetchSceneContext
+        ? { ...this.signedFetchSceneContext, isGuest: this.loginIsGuest }
+        : null,
+      wallet,
+      isPreview: realm.isPreview === true
+    })
+  }
+
   private buildUserData() {
-    const address = this.session.getAddress()
+    // COD: always lowercase — asset-packs compares userId.toLowerCase() to admin list.
+    const addressRaw = this.session.getAddress()
+    const address = addressRaw?.trim().toLowerCase() || null
     const profile = this.session.getProfile()
     const identity = this.session.getAuthIdentity()
     if (!this.buildUserDataLogged) {
@@ -5066,7 +5133,7 @@ export class World {
       )
     }
     if (!address) {
-      const guestId = getOrCreateGuestAddress()
+      const guestId = getOrCreateGuestAddress().trim().toLowerCase()
       return {
         data: {
           displayName: 'Guest',

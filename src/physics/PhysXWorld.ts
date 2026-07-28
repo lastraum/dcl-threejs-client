@@ -287,13 +287,12 @@ export class PhysXWorld {
    */
   private allowZeroDtWarmSim = true
   /**
-   * Boot only: optional per-actor remove+add after pose slides so SQ AABBs match.
-   * After seal (COD): NEVER bulk reinsert/rebuild — continuous reinsert on plaza softs CCT.
-   * Late first cooks reinsert one actor in addStatic. Kinematic PART uses setKinematicTarget.
-   * See docs/STATIC_COLLIDER_COD.md.
+   * Boot only: bulk reinsert-all + per-actor remove+add after pose slides.
+   * After seal (COD): NEVER reinsert thrash — mass remove+add softs plaza SQ
+   * (healthy → MISS within seconds). See docs/STATIC_COLLIDER_COD.md.
    */
   private allowStaticReinsert = true
-  /** True after boot seal committed SQ once — blocks any further tree rebuild. */
+  /** True after boot seal committed SQ once — blocks bulk reinsert / thrash rebuilds. */
   private staticSqSealed = false
   /** Permanent filter data for scene sweeps — avoid temp wrapPointer drops. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -301,12 +300,20 @@ export class PhysXWorld {
   /** Permanent CCT query flags — must not be a one-shot that GC can free. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private cctQueryFlags: any = null
+  /**
+   * Permanent CCT bilateral filter — open solid mask.
+   * null mFilterData was unreliable on this WASM (SQ healthy while CCT sides=no).
+   * Zero words reject all CCT hits; open non-zero words collide-all solids.
+   */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private cctFilterData: any = null
   /** Permanent scene-query flags for sweeps (same GC rule as cctQueryFlags). */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private sceneQueryFlags: any = null
-  /** Last post-seal SQ heal (rebuild) time — throttle, not once-forever. */
+  /** Last post-seal SQ heal (rebuild) time — throttle while soft (fast recover). */
   private lastPostSealSqHealMs = 0
-  private static readonly POST_SEAL_SQ_HEAL_COOLDOWN_MS = 12_000
+  /** Soft windows were 8s+; keep heals responsive without rebuild-every-frame thrash. */
+  private static readonly POST_SEAL_SQ_HEAL_COOLDOWN_MS = 1_000
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private controllerManager: any = null
@@ -708,16 +715,12 @@ export class PhysXWorld {
 
   private setupControllerManager(): void {
     this.controllerManager = PHYSX.PxTopLevelFunctions.prototype.CreateControllerManager(this.scene)
-    // Collide with ALL static/dynamic shapes. PhysX: null mFilterData = no bilateral filter.
-    // Bilateral word filters kept failing CCT (sides=no) while sphere sweeps still hit.
+    // Open bilateral CCT filter (permanent object — never GC, never zero words).
+    // null mFilterData looked correct in docs but left plaza CCT soft while sphere SQ hit.
     // eTRIGGER_SHAPE is still ignored by the controller for blocking.
     this.controllerFilters = new PHYSX.PxControllerFilters()
-    // Explicit null — never leave a dangling filter pointer that rejects all solids.
-    try {
-      this.controllerFilters.mFilterData = null
-    } catch {
-      /* some bindings omit null setter */
-    }
+    this.cctFilterData = new PHYSX.PxFilterData(Layers.player.group, SOLID_FILTER_OPEN, 0, 0)
+    this.controllerFilters.mFilterData = this.cctFilterData
     // No ePREFILTER — custom preFilter was a soft-world footgun.
     this.cctQueryFlags = new PHYSX.PxQueryFlags(
       PHYSX.PxQueryFlagEnum.eSTATIC | PHYSX.PxQueryFlagEnum.eDYNAMIC
@@ -728,6 +731,27 @@ export class PhysXWorld {
     const cctFilterCallback = new PHYSX.PxControllerFilterCallbackImpl()
     cctFilterCallback.filter = () => true
     this.controllerFilters.mCCTFilterCallback = cctFilterCallback
+  }
+
+  /** Re-pin CCT open filter each move / heal — WASM can drop dangling filter pointers. */
+  private pinCctFilters(): void {
+    if (!this.controllerFilters || !this.cctQueryFlags) return
+    this.controllerFilters.mFilterFlags = this.cctQueryFlags
+    if (!this.cctFilterData) {
+      this.cctFilterData = new PHYSX.PxFilterData(Layers.player.group, SOLID_FILTER_OPEN, 0, 0)
+    } else {
+      try {
+        this.cctFilterData.word0 = Layers.player.group
+        this.cctFilterData.word1 = SOLID_FILTER_OPEN
+      } catch {
+        this.cctFilterData = new PHYSX.PxFilterData(Layers.player.group, SOLID_FILTER_OPEN, 0, 0)
+      }
+    }
+    try {
+      this.controllerFilters.mFilterData = this.cctFilterData
+    } catch {
+      /* omit */
+    }
   }
 
   spawnPlayer(position: THREE.Vector3): void {
@@ -796,15 +820,7 @@ export class PhysXWorld {
     this._v1.set(position.x, position.y + SPAWN_FEET_CLEARANCE_M, position.z)
     this.controller.setFootPosition(this._v1.toPxExtVec3())
     this.syncPlayerTransform()
-    // Keep flags pinned; mFilterData stays null (collide-all) — do not re-assign bilateral words.
-    if (this.controllerFilters && this.cctQueryFlags) {
-      this.controllerFilters.mFilterFlags = this.cctQueryFlags
-      try {
-        this.controllerFilters.mFilterData = null
-      } catch {
-        /* omit */
-      }
-    }
+    this.pinCctFilters()
     this.invalidateControllerCache()
   }
 
@@ -1359,7 +1375,9 @@ export class PhysXWorld {
             this._pos.toPxTransform(this.actorPoseTransform)
             this._quat.toPxTransform(this.actorPoseTransform)
             actor.setGlobalPose(this.actorPoseTransform)
-            // No reinsert — static already in SQ from cook. Seal does one tree rebuild.
+            // After seal: no reinsert — mass remove+add thrash softs plaza SQ.
+            // Boot only: reinsertStaticActorForSceneQuery is gated by allowStaticReinsert.
+            this.reinsertStaticActorForSceneQuery(actor)
             this.staticPoseFp.set(desc.entity, poseFp)
             updated++
           } catch (err) {
@@ -1408,7 +1426,8 @@ export class PhysXWorld {
         this._pos.toPxTransform(this.actorPoseTransform)
         this._quat.toPxTransform(this.actorPoseTransform)
         actor.setGlobalPose(this.actorPoseTransform)
-        // No reinsert for static primitives — already in SQ from cook.
+        // Boot-only reinsert (allowStaticReinsert). After seal: pose only — no thrash.
+        this.reinsertStaticActorForSceneQuery(actor)
         this.staticPoseFp.set(desc.entity, poseFp)
         updated++
       } catch (err) {
@@ -1445,10 +1464,8 @@ export class PhysXWorld {
   }
 
   /**
-   * PhysX static actors keep a single SQ bound; setLocalPose on shapes does not expand it.
-   * Boot-only remove+add for that actor. After seal this is a no-op
-   * (see {@link sealStaticSceneQuery}); thrashing reinsert softs plaza CCT after ~1min.
-   * Late first cooks use a dedicated single reinsert inside {@link addStatic}.
+   * Boot-only remove+add so SQ AABBs match after pose slides.
+   * After seal this is a no-op — continuous reinsert softs plaza SQ (didHit flip loop).
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private reinsertStaticActorForSceneQuery(actor: any): void {
@@ -1543,14 +1560,22 @@ export class PhysXWorld {
   /**
    * Seal-time SQ diagnostic — raw sweep didHit (no normal gate).
    * Logs filter-open probe so MISS is diagnosable as SQ-dead vs filter vs normal reject.
+   * Pass `quiet: true` for the mid-play watchdog (no console spam every 500ms).
    */
-  diagnoseSceneQueryAt(x: number, y: number, z: number, label = 'sq-diag'): {
+  diagnoseSceneQueryAt(
+    x: number,
+    y: number,
+    z: number,
+    label = 'sq-diag',
+    options?: { quiet?: boolean }
+  ): {
     didHit: boolean
     distance: number | null
     normalY: number | null
     inScene: number
     map: number
   } {
+    const quiet = options?.quiet === true
     this.ensureCameraSweepGeometry()
     let inScene = 0
     for (const actor of this.staticActors.values()) {
@@ -1558,11 +1583,13 @@ export class PhysXWorld {
     }
     const map = this.staticActors.size
     if (!this.scene || !this.cameraSweepGeometry) {
-      console.warn(`[phys] ${label} — no scene/sweepGeom map=${map} inScene=${inScene}`)
+      if (!quiet) {
+        console.warn(`[phys] ${label} — no scene/sweepGeom map=${map} inScene=${inScene}`)
+      }
       return { didHit: false, distance: null, normalY: null, inScene, map }
     }
 
-    // Zero filter words = accept all (diagnostic).
+    // Open bilateral filter (never zero words).
     this.applySceneQueryFilter(0)
 
     this._v1.set(x, y + 2.5, z)
@@ -1603,16 +1630,18 @@ export class PhysXWorld {
         normalY = typeof hit?.normal?.y === 'number' ? hit.normal.y : null
       }
     } catch (err) {
-      console.warn(`[phys] ${label} sweep threw`, err)
+      if (!quiet) console.warn(`[phys] ${label} sweep threw`, err)
     }
 
-    // warn = always visible in client log panel
-    console.warn(
-      `[phys] ${label} didHit=${didHit} dist=${distance != null ? distance.toFixed(3) : 'n/a'} ` +
-        `ny=${normalY != null ? normalY.toFixed(2) : 'n/a'} map=${map} inScene=${inScene} ` +
-        `buf=${this.sweepResult?.__class__?.name ?? typeof this.sweepResult} ` +
-        `at=(${x.toFixed(1)},${y.toFixed(1)},${z.toFixed(1)})`
-    )
+    // warn only when logging is wanted (seal/health); quiet watchdog stays silent on healthy hits.
+    if (!quiet) {
+      console.warn(
+        `[phys] ${label} didHit=${didHit} dist=${distance != null ? distance.toFixed(3) : 'n/a'} ` +
+          `ny=${normalY != null ? normalY.toFixed(2) : 'n/a'} map=${map} inScene=${inScene} ` +
+          `buf=${this.sweepResult?.__class__?.name ?? typeof this.sweepResult} ` +
+          `at=(${x.toFixed(1)},${y.toFixed(1)},${z.toFixed(1)})`
+      )
+    }
     return { didHit, distance, normalY, inScene, map }
   }
 
@@ -1791,7 +1820,8 @@ export class PhysXWorld {
             this._pos.toPxTransform(this.actorPoseTransform)
             this._quat.toPxTransform(this.actorPoseTransform)
             actor.setGlobalPose(this.actorPoseTransform)
-            // No reinsert — static already in SQ from cook; pose slide only.
+            // Boot-only reinsert (gated). After seal: pose slide only.
+            this.reinsertStaticActorForSceneQuery(actor)
             this.staticPoseFp.set(desc.entity, poseFp)
             geometryChanged = true
             continue
@@ -1951,10 +1981,34 @@ export class PhysXWorld {
     // Freeze thrash forever after the one commit.
     this.allowStaticReinsert = false
     this.staticSqSealed = true
+    // Freeze progressive SQ tree mutation. Plaza logs: healthy seal → MISS within seconds
+    // while map/inScene stay 1100 — progressive rebuild corrupts the tree mid-play.
+    // Late adds still use addActor; emergency heal may forceDynamicTreeRebuild.
+    try {
+      if (this.scene && typeof this.scene.setDynamicTreeRebuildRateHint === 'function') {
+        this.scene.setDynamicTreeRebuildRateHint(1_000_000)
+      }
+    } catch {
+      /* optional */
+    }
+    try {
+      if (
+        this.scene &&
+        typeof this.scene.setSceneQueryUpdateMode === 'function' &&
+        PHYSX.PxSceneQueryUpdateModeEnum?.eBUILD_DISABLED_COMMIT_DISABLED != null
+      ) {
+        this.scene.setSceneQueryUpdateMode(
+          PHYSX.PxSceneQueryUpdateModeEnum.eBUILD_DISABLED_COMMIT_DISABLED
+        )
+      }
+    } catch {
+      /* optional */
+    }
+    this.pinCctFilters()
     this.invalidateControllerCache()
     console.warn(
       `[PhysXWorld] static SQ sealed — static=${n} filters=${filters} orphans=${orphans} ` +
-        `rebuild=${rebuilt ? 'once' : 'skip'} probe=${probeBefore}→${probeAfter} frozen=true`
+        `rebuild=${rebuilt ? 'once' : 'skip'} probe=${probeBefore}→${probeAfter} frozen=true sqUpdates=disabled`
     )
   }
 
@@ -1986,8 +2040,8 @@ export class PhysXWorld {
   }
 
   /**
-   * Heal when SQ dies after play (healthy at seal). Throttled rebuild — not every health tick.
-   * COD: rare emergency commit, not thrash.
+   * Heal when SQ dies after play (healthy at seal). 1s throttle while soft so the
+   * didHit flip loop recovers in under a second instead of an 8–12s ghost walk.
    */
   tryHealPostSealSceneQuery(x: number, y: number, z: number): boolean {
     if (!this.staticSqSealed || !this.scene) return false
@@ -1995,14 +2049,7 @@ export class PhysXWorld {
     if (now - this.lastPostSealSqHealMs < PhysXWorld.POST_SEAL_SQ_HEAL_COOLDOWN_MS) return false
     this.lastPostSealSqHealMs = now
 
-    if (this.controllerFilters && this.cctQueryFlags) {
-      this.controllerFilters.mFilterFlags = this.cctQueryFlags
-      try {
-        this.controllerFilters.mFilterData = null
-      } catch {
-        /* omit */
-      }
-    }
+    this.pinCctFilters()
 
     let readded = 0
     for (const actor of this.staticActors.values()) {
@@ -2015,6 +2062,19 @@ export class PhysXWorld {
       }
     }
     this.ensureInfiniteGroundPlane()
+    // Temporarily allow build so forceDynamicTreeRebuild can rewrite a dead tree.
+    try {
+      if (
+        typeof this.scene.setSceneQueryUpdateMode === 'function' &&
+        PHYSX.PxSceneQueryUpdateModeEnum?.eBUILD_ENABLED_COMMIT_ENABLED != null
+      ) {
+        this.scene.setSceneQueryUpdateMode(
+          PHYSX.PxSceneQueryUpdateModeEnum.eBUILD_ENABLED_COMMIT_ENABLED
+        )
+      }
+    } catch {
+      /* optional */
+    }
     try {
       if (typeof this.scene.flushQueryUpdates === 'function') {
         this.scene.flushQueryUpdates()
@@ -2022,7 +2082,6 @@ export class PhysXWorld {
     } catch {
       /* optional */
     }
-    // Rebuild is the only thing that restored didHit=true after mid-play SQ death.
     try {
       this.scene.forceDynamicTreeRebuild(true, false)
     } catch (err) {
@@ -2035,6 +2094,20 @@ export class PhysXWorld {
     } catch {
       /* optional */
     }
+    // Re-freeze progressive mutation after emergency rebuild.
+    try {
+      if (
+        typeof this.scene.setSceneQueryUpdateMode === 'function' &&
+        PHYSX.PxSceneQueryUpdateModeEnum?.eBUILD_DISABLED_COMMIT_DISABLED != null
+      ) {
+        this.scene.setSceneQueryUpdateMode(
+          PHYSX.PxSceneQueryUpdateModeEnum.eBUILD_DISABLED_COMMIT_DISABLED
+        )
+      }
+    } catch {
+      /* optional */
+    }
+    this.pinCctFilters()
     this.invalidateControllerCache()
     const d = this.diagnoseSceneQueryAt(x, y, z, 'post-seal-heal')
     console.warn(
@@ -2044,33 +2117,65 @@ export class PhysXWorld {
   }
 
   /**
-   * Call once after capsule spawn: commit static SQ so CCT and sweeps share a live tree.
-   * Plaza: seal probe can be healthy then die after integrity/AOI — commit again post-capsule.
+   * Call once after capsule spawn: pin CCT filters and re-commit SQ only if soft.
+   * Always-rebuild here used to thrash a healthy tree right before free walk.
    */
   commitStaticSceneQueryAfterCapsule(): void {
     if (!this.scene || !this.staticSqSealed) return
-    try {
-      this.scene.forceDynamicTreeRebuild(true, false)
-    } catch (err) {
-      console.warn('[PhysXWorld] post-capsule SQ rebuild failed', err)
-    }
-    try {
-      if (typeof this.scene.flushQueryUpdates === 'function') {
-        this.scene.flushQueryUpdates()
-      }
-    } catch {
-      /* optional */
-    }
-    if (this.controllerFilters && this.cctQueryFlags) {
-      this.controllerFilters.mFilterFlags = this.cctQueryFlags
+    this.pinCctFilters()
+    const px = this.position?.x ?? 0
+    const py = this.position?.y ?? 0
+    const pz = this.position?.z ?? 0
+    const before = this.diagnoseSceneQueryAt(px, py, pz, 'post-capsule-before')
+    let rebuilt = false
+    if (!before.didHit) {
       try {
-        this.controllerFilters.mFilterData = null
+        if (
+          typeof this.scene.setSceneQueryUpdateMode === 'function' &&
+          PHYSX.PxSceneQueryUpdateModeEnum?.eBUILD_ENABLED_COMMIT_ENABLED != null
+        ) {
+          this.scene.setSceneQueryUpdateMode(
+            PHYSX.PxSceneQueryUpdateModeEnum.eBUILD_ENABLED_COMMIT_ENABLED
+          )
+        }
       } catch {
-        /* omit */
+        /* optional */
+      }
+      try {
+        this.scene.forceDynamicTreeRebuild(true, false)
+        rebuilt = true
+      } catch (err) {
+        console.warn('[PhysXWorld] post-capsule SQ rebuild failed', err)
+      }
+      try {
+        if (typeof this.scene.flushQueryUpdates === 'function') {
+          this.scene.flushQueryUpdates()
+        }
+      } catch {
+        /* optional */
+      }
+      try {
+        if (
+          typeof this.scene.setSceneQueryUpdateMode === 'function' &&
+          PHYSX.PxSceneQueryUpdateModeEnum?.eBUILD_DISABLED_COMMIT_DISABLED != null
+        ) {
+          this.scene.setSceneQueryUpdateMode(
+            PHYSX.PxSceneQueryUpdateModeEnum.eBUILD_DISABLED_COMMIT_DISABLED
+          )
+        }
+      } catch {
+        /* optional */
       }
     }
+    this.pinCctFilters()
     this.invalidateControllerCache()
-    console.warn('[PhysXWorld] post-capsule SQ commit — rebuild=once filter=null (collide-all CCT)')
+    const after = rebuilt
+      ? this.diagnoseSceneQueryAt(px, py, pz, 'post-capsule-after')
+      : before
+    console.warn(
+      `[PhysXWorld] post-capsule SQ commit — rebuild=${rebuilt ? 'once' : 'skip-healthy'} ` +
+        `didHit=${after.didHit} cctFilter=open`
+    )
   }
 
   /**
@@ -2323,10 +2428,8 @@ export class PhysXWorld {
 
     // Always re-assert y=0 floor before any move (scene cook churn must not strand the avatar).
     this.ensureInfiniteGroundPlane()
-    // Re-pin flags each move; keep mFilterData null (collide-all). Never re-apply bilateral words.
-    if (this.controllerFilters && this.cctQueryFlags) {
-      this.controllerFilters.mFilterFlags = this.cctQueryFlags
-    }
+    // Re-pin open CCT filter each move (permanent object — not null, not zero words).
+    this.pinCctFilters()
 
     this.pendingCctGroundEntity = null
     this.pendingCctGroundY = Number.NEGATIVE_INFINITY

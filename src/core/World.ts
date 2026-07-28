@@ -220,6 +220,8 @@ export class World {
   private static readonly NEVER_COOKED_SCAN_MS = 1_500
   private lastColliderHealthLogMs = 0
   private lastLoggedStaticCount = -1
+  /** Fast SQ soft watchdog (~500ms) — separate from the 8s health log. */
+  private lastSqSoftWatchMs = 0
   private lastSoftFloorLiftMs = 0
   private softFloorLiftCount = 0
 
@@ -2147,6 +2149,24 @@ export class World {
       void this.scheduleColliderCookDrain()
     }
 
+    // Fast SQ soft watchdog — heal only on raw didHit=false (not spawn-probe false negatives).
+    // Spawn probe can MISS while SQ is healthy → was force-rebuilding a good tree every 1s.
+    if (this.spawnColliderSealComplete && this.collidersReady) {
+      const nowWatch = performance.now()
+      if (nowWatch - this.lastSqSoftWatchMs > 500) {
+        this.lastSqSoftWatchMs = nowWatch
+        const feetW = this.player?.getWorldPosition()
+        if (feetW) {
+          const sq = this.physics.diagnoseSceneQueryAt(feetW.x, feetW.y, feetW.z, 'sq-watch', {
+            quiet: true
+          })
+          if (!sq.didHit) {
+            this.physics.tryHealPostSealSceneQuery(feetW.x, feetW.y, feetW.z)
+          }
+        }
+      }
+    }
+
     // Health log when static count drops or every 8s — soft floors are often silent.
     const now = performance.now()
     const staticN = this.physics.staticColliderCount
@@ -2175,8 +2195,7 @@ export class World {
                 : '?'
             }`
         )
-        // Soft-world smoking gun: actors exist but CCT never leaves infinite ground.
-        // COD: never forceDynamicTreeRebuild / reinsert-all at runtime (seal did one boot reinsert).
+        // Soft-world: actors exist but CCT only hits infinite ground / nothing.
         if (feet && (ground === null || ground === -1)) {
           this.physics.logStaticCollidersNear(feet.x, feet.y, feet.z, 14, 'health-soft')
           const probe = this.physics.probeWalkSurfaceFeetY(feet.x, feet.z, feet.y + 2.5, 6, feet.y)
@@ -2184,16 +2203,15 @@ export class World {
             `[phys] health-soft sweepFeetY=${probe != null ? probe.toFixed(2) : 'MISS'} ` +
               `sides=${sides ? 'yes' : 'no'}`
           )
-          // Always-visible SQ diagnostic (console.warn so it is not lost in noise).
           const diag = this.physics.diagnoseSceneQueryAt(feet.x, feet.y, feet.z, 'health-soft')
-          // Seal was healthy then play went soft (AOI thrash) — one-shot orphan re-add + flush.
           if (!diag.didHit) {
             this.physics.tryHealPostSealSceneQuery(feet.x, feet.y, feet.z)
+          } else {
+            // SQ alive, CCT soft — re-pin open filter + cache (not tree thrash).
+            this.physics.invalidateControllerCache()
           }
           this.physics.invalidateControllerCache()
-          // Bounded recover: enqueue truly missing actors (single-entity cook).
           this.discoverMissingColliderActors()
-          // At most 2 under-floor lifts per session — spam teleports were unsticking CCT.
           const nowLift = performance.now()
           if (
             probe != null &&
@@ -2792,6 +2810,9 @@ export class World {
    * NEVER re-extract shape local matrices + relative-slide against cook baselines
    * (that double-transformed plaza solids → soft world / toggle).
    * Play-time PART movers use pushColliderPartPoses (kinematic); ROOT uses pushColliderRootPoses.
+   *
+   * After seal: still allowed once (post-avatar settle) but pose-fp gates no-ops;
+   * each real setGlobalPose reinserts that one actor for SQ (PhysXWorld).
    */
   private pushAllColliderPosesToPhysX(): void {
     if (!this.playerMode) return
@@ -2847,13 +2868,18 @@ export class World {
 
     while (performance.now() - started < maxWaitMs) {
       attempt++
-      await this.sceneScript.yieldForWorkerMessages()
-      this.sceneScript.flushSceneGraphMatrices()
-      this.pushAllColliderPosesToPhysX()
-      this.reconcileColliderCookQueue()
-      await this.drainPendingColliderCooksInitialOnly()
-      this.pushAllColliderPosesToPhysX()
-      this.physics.warmStaticScene()
+      // COD: after seal the SQ tree is already committed. Mass pose-push + cook-drain
+      // during this wait killed plaza SQ within ~2s (probe=0.20 → MISS while map=1100).
+      // Unsealed path may still settle cooks; sealed path is probe-only.
+      if (!this.spawnColliderSealComplete) {
+        await this.sceneScript.yieldForWorkerMessages()
+        this.sceneScript.flushSceneGraphMatrices()
+        this.pushAllColliderPosesToPhysX()
+        this.reconcileColliderCookQueue()
+        await this.drainPendingColliderCooksInitialOnly()
+        this.pushAllColliderPosesToPhysX()
+        this.physics.warmStaticScene()
+      }
 
       // Prefer deck near authored Y — never the highest roof/arch hit.
       const probed = this.physics.probeWalkSurfaceFeetY(
@@ -2874,9 +2900,20 @@ export class World {
         probeOkSince = 0
       }
 
+      // Sealed: one solid probe is enough — pre-play already proved SQ at this column.
+      if (this.spawnColliderSealComplete && probeOk && lastProbeY != null) {
+        const elapsed = ((now - started) / 1000).toFixed(1)
+        console.info(
+          `[World] spawn floor ready — sealed probe after ${elapsed}s (attempts=${attempt}` +
+            `, probeY=${lastProbeY.toFixed(2)}, place authoredY=${spawnThree.y.toFixed(2)})`
+        )
+        onProgress?.('Floor ready')
+        return spawnThree.clone()
+      }
+
       // Surface under column is enough — place at authored Y and drop (no CCT snap).
       if (
-        this.spawnColliderSealComplete &&
+        !this.spawnColliderSealComplete &&
         lastProbeY != null &&
         probeOkStreak >= 3 &&
         probeOkSince > 0 &&
@@ -2891,8 +2928,8 @@ export class World {
         return spawnThree.clone()
       }
 
-      // Early exit when seal complete and first solid probe (elevated drop-in scenes).
-      if (this.spawnColliderSealComplete && probeOk && lastProbeY != null && elevated) {
+      // Early exit when first solid probe (elevated drop-in scenes, unsealed path).
+      if (!this.spawnColliderSealComplete && probeOk && lastProbeY != null && elevated) {
         const elapsed = ((now - started) / 1000).toFixed(1)
         console.info(
           `[World] spawn floor ready — elevated probe after ${elapsed}s` +

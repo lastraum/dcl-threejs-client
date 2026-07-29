@@ -490,19 +490,14 @@ export class SceneUiDomRenderer {
     const borders = borderCss(transform, scale)
     const radius = borderRadiusCss(transform, scale)
     const layoutBox = input.layoutBoxes.get(entity)
-    // Completely / mostly outside the virtual canvas — hide.
-    // Dual shop roots park a second full inventory at left≈1500 (e.g. 1846@1920) while the
-    // on-screen panel sits at ~346; painting the parked twin wastes DOM and confuses icons.
+    // Fully outside the virtual canvas — hide (parked HUD / dual shop twin past the edge).
+    // Do NOT use a soft "mostly off" threshold: first modal frame often sits at left≈1500
+    // then tweens on-screen; hiding the contentful twin left an empty shell (ghost slots).
     const vw = input.virtual.width
     const vh = input.virtual.height
-    const mostlyOffCanvas =
-      !!layoutBox &&
-      layoutBox.width >= 400 &&
-      (layoutBox.left >= vw * 0.75 || layoutBox.left + layoutBox.width <= vw * 0.25)
     if (
       layoutBox &&
-      (mostlyOffCanvas ||
-        layoutBox.left >= vw - 1 ||
+      (layoutBox.left >= vw - 1 ||
         layoutBox.top >= vh - 1 ||
         layoutBox.left + layoutBox.width <= 1 ||
         layoutBox.top + layoutBox.height <= 1)

@@ -129,6 +129,9 @@ export class SceneUiBridge {
   private domVisible = false
   private readonly unbindImageLoaded: () => void
   private imageRepaintQueued = false
+  /** One-shot recovery when Forest paint leaves far fewer DOM nodes than Yoga boxes. */
+  private underPaintRecoveryQueued = false
+  private underPaintRecoveryAttempts = 0
   /** Latest pointer phase-4 rows — fill-in when projection PE lags (menu open). */
   private mountSnapshotPointerEvents = new Map<Entity, unknown>()
   /**
@@ -268,7 +271,39 @@ export class SceneUiBridge {
     this.paintCount = 0
     this.firstPaintLogged = false
     this.paintedEpoch = -1
+    this.underPaintRecoveryAttempts = 0
     this.markContentDirty()
+  }
+
+  /**
+   * First shop open: Yoga may report hundreds of boxes while Forest only creates a shell
+   * (children still 0×0 / off-canvas for one frame). Schedule one layout-invalidating repaint
+   * so grids fill without waiting on slow cooperative fingerprint drips.
+   */
+  private scheduleUnderPaintRecovery(visibleYoga: number, pooled: number): void {
+    if (visibleYoga < 32) {
+      this.underPaintRecoveryAttempts = 0
+      return
+    }
+    if (pooled >= visibleYoga * 0.45) {
+      this.underPaintRecoveryAttempts = 0
+      return
+    }
+    if (this.underPaintRecoveryQueued || this.underPaintRecoveryAttempts >= 2) return
+    if (!this.lastView || !this.domVisible) return
+    this.underPaintRecoveryQueued = true
+    this.underPaintRecoveryAttempts++
+    window.setTimeout(() => {
+      this.underPaintRecoveryQueued = false
+      if (!this.lastView || !this.domVisible) return
+      this.layoutCache.clear()
+      this.lastPaintLayoutKey = ''
+      this.lastFullLayoutBoxes = null
+      this.lastLayoutBoxMap = null
+      this.stableVisibleStreak = 0
+      this.markContentDirty()
+      this.paint(this.lastView)
+    }, 32)
   }
 
   isVisible(): boolean {
@@ -392,6 +427,7 @@ export class SceneUiBridge {
       this.lastFullLayoutBoxes = null
       this.stableVisibleStreak = 0
       this.lastStableVisibleCount = 0
+      this.underPaintRecoveryAttempts = 0
       // Any mount set change recycles entity ids — PE tombstones must not stick (SCENE_UI_COD).
       this.livePointerEventsSeen.clear()
       // Large remount: force full forest path (preferPatch needs paintCount > 1).
@@ -936,6 +972,9 @@ export class SceneUiBridge {
       this.dom.render(drawInput)
       usedPatch = false
     }
+
+    const pooledAfter = this.dom.getPooledNodeCount()
+    this.scheduleUnderPaintRecovery(layoutBoxMap.size, pooledAfter)
 
     this.lastPaintLayoutKey = layoutKey
     this.lastPaintVisualKey = visualKey

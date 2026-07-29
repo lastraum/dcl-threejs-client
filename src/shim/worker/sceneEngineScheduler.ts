@@ -961,16 +961,21 @@ export async function runSceneEnginePointerTick(
         cfg.onAfterEngineTick?.()
 
         setPointerInteractivePhase('flush')
-        // Mesh/getClick (vending, world PE): seed fingerprint after UP so a no-op shop
-        // open exits in 1 pass instead of 3× eng.update(0) + 828-row snapshot thrash.
+        // Mesh/getClick (vending, world PE): seed fingerprint after UP.
+        // Large modal opens (fishing shop ~700) need ≥2 stable passes — a single seed match
+        // after UP ships half-settled layout (empty grids / ghost twin for several seconds).
         const meshSeedFp = computeWorkerUiFingerprint(eng)
+        const meshMount = countWorkerUiMount(eng)
+        const largeModal = meshMount >= 100
         cfg.log(
-          `[sceneWorker] pointer ui flush — post-UP react-ecs fingerprint seed=${meshSeedFp.length}B`
+          `[sceneWorker] pointer ui flush — post-UP react-ecs fingerprint seed=${meshSeedFp.length}B ` +
+            `mount=${meshMount}${largeModal ? ' largeModal' : ''}`
         )
         await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
-          maxPasses: POINTER_UI_MESH_FLUSH_MAX_PASSES,
+          maxPasses: largeModal ? 8 : POINTER_UI_MESH_FLUSH_MAX_PASSES,
           seedFp: meshSeedFp,
-          stableNeeded: POINTER_UI_MESH_STABLE_NEEDED
+          // Large mount: never exit on first seed match alone (stableNeeded ≥ 2).
+          stableNeeded: largeModal ? 2 : POINTER_UI_MESH_STABLE_NEEDED
         })
 
         if (isRefuseFreezeWrites()) {

@@ -129,6 +129,9 @@ export class SceneUiBridge {
   private domVisible = false
   private readonly unbindImageLoaded: () => void
   private imageRepaintQueued = false
+  /** One-shot re-layout after shop open while many flex icon cells stay 0×0. */
+  private collapseRepaintQueued = false
+  private collapseRepaintAttempts = 0
   /** Latest pointer phase-4 rows — fill-in when projection PE lags (menu open). */
   private mountSnapshotPointerEvents = new Map<Entity, unknown>()
   /**
@@ -268,7 +271,35 @@ export class SceneUiBridge {
     this.paintCount = 0
     this.firstPaintLogged = false
     this.paintedEpoch = -1
+    this.collapseRepaintAttempts = 0
     this.markContentDirty()
+  }
+
+  /**
+   * Progressive shop open: first Yoga often leaves dozens of icon cells 0×0 while flex
+   * fills. Schedule one full re-layout so inventory/vending icons appear without close→reopen.
+   */
+  private scheduleCollapseRelayout(collapsedVisible: number): void {
+    if (collapsedVisible <= 8) {
+      this.collapseRepaintAttempts = 0
+      return
+    }
+    if (this.collapseRepaintQueued || this.collapseRepaintAttempts >= 3) return
+    if (!this.lastView || !this.domVisible) return
+    this.collapseRepaintQueued = true
+    this.collapseRepaintAttempts++
+    window.setTimeout(() => {
+      this.collapseRepaintQueued = false
+      if (!this.lastView || !this.domVisible) return
+      // Drop poisoned layout cache of 0×0 flex cells so the next paint re-runs Yoga.
+      this.layoutCache.clear()
+      this.lastPaintLayoutKey = ''
+      this.lastFullLayoutBoxes = null
+      this.lastLayoutBoxMap = null
+      this.stableVisibleStreak = 0
+      this.markContentDirty()
+      this.paint(this.lastView)
+    }, 48)
   }
 
   isVisible(): boolean {
@@ -282,13 +313,18 @@ export class SceneUiBridge {
   /** Pointer phase-4 structured mount — feed DOM paint + hit tests before projection fold. */
   ingestMountSnapshot(rows: readonly WorkerUiMountSnapshotRow[]): void {
     this.mountSnapshotPointerEvents.clear()
+    // Fresh mount snapshot is authoritative for PE lag — drop prior "seen live then deleted"
+    // so reopen (recycled entity ids) can use snapshot PE again before projection fold.
+    this.livePointerEventsSeen.clear()
+    let peRows = 0
     for (const row of rows) {
       if (row.componentId !== POINTER_EVENTS_COMPONENT_ID) continue
       const entity = row.entity as Entity
       this.mountSnapshotPointerEvents.set(entity, row.value)
-      // New snapshot may re-open PE on an entity that previously lost it — allow snapshot lead.
-      this.livePointerEventsSeen.delete(entity)
+      peRows++
     }
+    // Always repaint after a PE-bearing snapshot so interactive classes attach on 2nd open.
+    if (peRows > 0 || rows.length === 0) this.markContentDirty()
   }
 
   private pointerEventsLookup: UiPointerEventsLookup = (entity) => {
@@ -300,12 +336,8 @@ export class SceneUiBridge {
       this.mountSnapshotPointerEvents.delete(entity)
       return live as ReturnType<UiPointerEventsLookup>
     }
-    // Projection already owned PE for this entity and now has none → deleted, not lagging.
-    if (this.livePointerEventsSeen.has(entity)) {
-      this.mountSnapshotPointerEvents.delete(entity)
-      return null
-    }
-    // Phase-4 ahead of fold (menu open) — snapshot only when live has never carried PE.
+    // Phase-4 / reopen: snapshot PE leads when live is empty (fold lag after clearLww).
+    // Prefer snapshot over liveSeen tombstone — second shop open recycles entity ids.
     if (this.isAuthoritativeUiEntity(entity)) {
       const fromSnapshot = this.mountSnapshotPointerEvents.get(entity) as
         | { pointerEvents?: unknown[] }
@@ -313,6 +345,10 @@ export class SceneUiBridge {
       if (normalizePointerEventsList(fromSnapshot).length > 0) {
         return fromSnapshot as ReturnType<UiPointerEventsLookup>
       }
+    }
+    // Projection owned PE and both live + snapshot empty → deleted (not lagging).
+    if (this.livePointerEventsSeen.has(entity)) {
+      return null
     }
     return null
   }
@@ -331,10 +367,13 @@ export class SceneUiBridge {
   commitMountSet(next: ReadonlySet<Entity>): boolean {
     const uiKey = [...next].sort((a, b) => (a as number) - (b as number)).join(',')
     const changed = !this.workerUiEntitiesKnown || uiKey !== this.lastWorkerUiKey
+    const prevSize = this.workerUiEntitiesKnown ? (this.workerUiEntities?.size ?? 0) : 0
+    // Large remount (shop/vending second open): treat as full dirty — PE + layout + pool.
+    const largeRemount =
+      changed && next.size >= 100 && (prevSize === 0 || next.size >= prevSize + 80)
     if (changed) this.markContentDirty()
 
     if (this.workerUiEntitiesKnown && this.workerUiEntities) {
-      const prevSize = this.workerUiEntities.size
       const removed = new Set<Entity>()
       const survivors = new Set<Entity>()
       for (const entity of this.workerUiEntities) {
@@ -369,6 +408,8 @@ export class SceneUiBridge {
       this.lastFullLayoutBoxes = null
       this.stableVisibleStreak = 0
       this.lastStableVisibleCount = 0
+      this.livePointerEventsSeen.clear()
+      this.mountSnapshotPointerEvents.clear()
       this.input.pruneStaleEntities(new Set())
     } else if (changed) {
       this.lastMountedUiEntities.clear()
@@ -382,6 +423,14 @@ export class SceneUiBridge {
       this.lastFullLayoutBoxes = null
       this.stableVisibleStreak = 0
       this.lastStableVisibleCount = 0
+      this.collapseRepaintAttempts = 0
+      // Second modal open reuses entity ids; clear PE tombstones so snapshot/live PE can lead.
+      // Also reset paintCount so preferPatch cannot under-paint chrome (close X) after reopen.
+      if (largeRemount || next.size >= 100) {
+        this.livePointerEventsSeen.clear()
+        this.paintCount = 0
+        this.firstPaintLogged = false
+      }
     }
 
     this.workerUiEntitiesKnown = true
@@ -702,18 +751,32 @@ export class SceneUiBridge {
     const patchBudget = mounted.size >= 200 ? 96 : 48
 
     let layoutBoxes = this.layoutCache.get(layoutKey)
-    let layoutCacheHit = true
+    let layoutCacheHit = !!layoutBoxes
     let usedFullYoga = false
+    // Never reuse a layout that left many 0×0 cells (empty vending icons on first open).
+    if (layoutBoxes && countCollapsedLayoutBoxes(layoutBoxes) > 8) {
+      layoutBoxes = null
+      layoutCacheHit = false
+    }
     if (!layoutBoxes) {
       layoutCacheHit = false
       // UV/color/text only — reuse last *full* Yoga boxes (COD: no thrash on reeling UV ticks).
-      if (layoutDirtyEntities.length === 0 && this.lastFullLayoutBoxes?.length) {
+      // Skip reuse when the seed itself is still heavily collapsed (first shop open).
+      const seedCollapsed = this.lastFullLayoutBoxes
+        ? countCollapsedLayoutBoxes(this.lastFullLayoutBoxes)
+        : 0
+      if (
+        layoutDirtyEntities.length === 0 &&
+        this.lastFullLayoutBoxes?.length &&
+        seedCollapsed <= 8
+      ) {
         layoutBoxes = this.lastFullLayoutBoxes
         layoutCacheHit = true
       } else if (
         layoutDirtyEntities.length > 0 &&
         layoutDirtyEntities.length <= refineBudget &&
-        layoutDirtyEntities.length < mounted.size * 0.4
+        layoutDirtyEntities.length < mounted.size * 0.4 &&
+        seedCollapsed <= 8
       ) {
         // Fishing reeling + inventory slot absolute tweaks: refine only those.
         const seed = fullSeedMap()
@@ -897,6 +960,13 @@ export class SceneUiBridge {
 
     if (!usedPatch) {
       this.dom.render(drawInput)
+    } else if (
+      // Safety: patch left far fewer nodes than visible Yoga boxes (reopen under-paint).
+      this.dom.getPooledNodeCount() < layoutBoxMap.size * 0.45 &&
+      layoutBoxMap.size >= 32
+    ) {
+      this.dom.render(drawInput)
+      usedPatch = false
     }
 
     this.lastPaintLayoutKey = layoutKey
@@ -905,6 +975,9 @@ export class SceneUiBridge {
     this.lastEntityLayoutKeys = entityLayoutKeys
     this.lastLayoutBoxMap = layoutBoxMap
     this.paintedEpoch = this.contentEpoch
+
+    // First open: many 0×0 icon cells after Yoga — re-layout shortly so grids fill without reopen.
+    this.scheduleCollapseRelayout(collapsedVisible)
 
     this.input.pruneStaleEntities(mounted)
     this.input.releaseAllIfNothingMounted(mounted)

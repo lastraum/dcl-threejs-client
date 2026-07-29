@@ -188,12 +188,6 @@ export class World {
   private photoSceneTitle = 'Scene'
   private playerMode = !useOrbitMode()
   private editorPreviewMode = false
-  /** AppController HUD — remote avatar compose progress toast. */
-  private remoteAvatarProgressHandler:
-    | ((progress: { total: number; loaded: number; pending: number }) => void)
-    | null = null
-  private lastRemoteProgressKey = ''
-  private remoteProgressReportAt = 0
   /** AppController — RestrictedActions teleportTo / changeRealm. */
   private navigateHandler:
     | ((target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>) => void)
@@ -330,12 +324,6 @@ export class World {
       camera: this.player!.getCameraEntityPose()
     }))
     this.remoteAvatars = new RemoteAvatarManager(this.host.scene)
-    // Island peers often join before first Movement packet — show placeholder near local feet.
-    this.remoteAvatars.setProvisionalPositionProvider(() => {
-      // Three.js world feet (same space as remote avatar roots).
-      const pos = this.player?.getWorldPosition()
-      return pos ? pos.clone() : null
-    })
     // Peer avatar compose: CCT cache only — never reinsert/rebuild after seal.
     this.remoteAvatars.setOnComposeSettled(() => {
       if (!this.collidersLoadingComplete) return
@@ -701,6 +689,8 @@ export class World {
     this.session.setCatalystEndpoints(scene.realm.contentUrl, scene.realm.lambdasUrl)
     this.remoteAvatars?.setCatalystEndpoints(scene.realm.contentUrl, scene.realm.lambdasUrl)
     this.remoteAvatars?.setAssetCache(this.assets)
+    // Join-without-pose remotes park at scene spawn (Three feet), never at local player.
+    this.remoteAvatars?.setProvisionalSpawnPosition(this.seedPosesFromSpawn(scene.spawn).feetThree)
 
     const bounds = sceneWorldBounds(scene.parcels, scene.baseParcel)
     this.host.configureViewDistance(bounds)
@@ -1329,7 +1319,9 @@ export class World {
     }
     if (worldFeet) {
       this.physics.logStaticCollidersNear(worldFeet.x, worldFeet.y, worldFeet.z, 16)
-      // Follow /goto: island peers often joined before capsule existed (invisible roots).
+      // Follow /goto: island peers may have joined before capsule existed.
+      // Re-affirm spawn provisional + local feet; real poses still come from RFC4 Movement.
+      this.remoteAvatars?.setProvisionalSpawnPosition(this.seedPosesFromSpawn(scene.spawn).feetThree)
       this.remoteAvatars?.setCameraPosition(worldFeet)
       this.remoteAvatars?.backfillProvisionalPeers()
       this.comms.notifyHandlersOfCurrentPeers()
@@ -1830,7 +1822,6 @@ export class World {
           // Always tick remote pose (skipping frames made peers look choppy).
           // LOD inside RemoteAvatarManager already throttles far anim work.
           const remoteTick = this.remoteAvatars?.update(delta)
-          this.reportRemoteAvatarProgress()
           if (this.remoteAvatars) {
             perfSetRemoteStats({
               visible: this.remoteAvatars.visiblePeerCount,
@@ -4619,27 +4610,6 @@ export class World {
     firstPerson: boolean
   } | null {
     return this.player?.getFreecamState() ?? null
-  }
-
-  /** HUD toast while many remotes compose (community-style banner). */
-  setRemoteAvatarProgressHandler(
-    handler: ((progress: { total: number; loaded: number; pending: number }) => void) | null
-  ): void {
-    this.remoteAvatarProgressHandler = handler
-    this.lastRemoteProgressKey = ''
-  }
-
-  private reportRemoteAvatarProgress(): void {
-    if (!this.remoteAvatarProgressHandler || !this.remoteAvatars) return
-    const now = performance.now()
-    // Throttle UI updates — compose finishes are bursty.
-    if (now - this.remoteProgressReportAt < 250) return
-    this.remoteProgressReportAt = now
-    const p = this.remoteAvatars.getComposeProgress()
-    const key = `${p.total}:${p.loaded}:${p.pending}`
-    if (key === this.lastRemoteProgressKey) return
-    this.lastRemoteProgressKey = key
-    this.remoteAvatarProgressHandler(p)
   }
 
   canPlayVoluntaryEmote(): boolean {

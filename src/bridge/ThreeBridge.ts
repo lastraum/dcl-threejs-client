@@ -9,7 +9,7 @@ import {
   primitiveMeshKey,
   updatePlaneGeometryUvs
 } from './primitiveShapes'
-import { MaterialApplier, type PbMaterial } from './material/MaterialApplier'
+import { MaterialApplier, mirrorGeometryUInPlace, type PbMaterial } from './material/MaterialApplier'
 import type { AssetCache } from '../rendering/AssetCache'
 import { prefetchSceneManifestAssets } from '../rendering/AssetCache'
 import type { ResolvedScene } from '../dcl/content/types'
@@ -957,7 +957,8 @@ export class ThreeBridge {
     if (TextShape.has(entity)) {
       const textMesh = obj.getObjectByName(textKey(entity)) as THREE.Mesh | undefined
       if (!textMesh) return true
-      if (textMesh.userData.textShapeSignature !== textShapeSignature(TextShape.get(entity))) {
+      const ws = this.textShapeWorldScale(entity)
+      if (textMesh.userData.textShapeSignature !== textShapeSignature(TextShape.get(entity), ws)) {
         return true
       }
     }
@@ -1304,9 +1305,9 @@ export class ThreeBridge {
 
     this.primeSpritePoolSlotsFromDiff(diff, view, MeshRenderer)
 
-    const filteredTween = tweenRefresh.filter(
-      (entity) => !AvatarAttach.has(entity) && !this.skipTransformApply?.(entity)
-    )
+    // Keep transform-tween entities in the refresh set so parent re-links still run;
+    // skipTransformApply only skips local TRS (TweenBridge owns pose while Tween is present).
+    const filteredTween = tweenRefresh.filter((entity) => !AvatarAttach.has(entity))
 
     const applied = applySceneDiff(
       this.store,
@@ -1337,7 +1338,16 @@ export class ThreeBridge {
         const pb = Material.get(entity) as PbMaterial
         const obj = this.store.nodes.get(entity)
         const visual = obj ? this.entityVisualRoot(entity, obj) : null
-        if (visual && this.materials.needsReapply(entity, pb, visual)) this.pendingMaterialEntities.add(entity)
+        if (visual && this.materials.needsReapply(entity, pb, visual)) {
+          // Scalar-only color materials (plaza blackMask fade) must apply this frame —
+          // deferred budget can leave opacity stuck at the first fadeFactor=0 put.
+          if (!this.materials.texturesPending(pb, visual)) {
+            this.materials.applyScalarsToObject3D(visual, entity, pb)
+          }
+          if (this.materials.needsReapply(entity, pb, visual)) {
+            this.pendingMaterialEntities.add(entity)
+          }
+        }
       }
       if (GltfNodeModifiers.has(entity)) {
         this.pendingGltfNodeModEntities.add(entity)
@@ -1616,6 +1626,10 @@ export class ThreeBridge {
     // syncSpritePlaneVisual — but fishing splash cells must not hit that path every frame.
     if (updatePlaneGeometryUvs(primitive.geometry, planeUvsEarly)) {
       primitive.userData.primitiveMeshKey = key
+      // Scene rewrite of flipbook UVs drops geometry U-mirror — re-apply for board-facing planes.
+      if (primitive.userData.dclViewUFlip) {
+        mirrorGeometryUInPlace(primitive)
+      }
     }
   }
 
@@ -2258,13 +2272,30 @@ export class ThreeBridge {
    * mirror TextShape canvas vs docs-order UVs — caller flips map U to compensate.
    */
   private textShapeWorldMirrorX(entity: Entity): boolean {
+    return this.textShapeParentScaleXY(entity).sx < 0
+  }
+
+  /**
+   * Geometric mean of |scale.x|×|scale.y| along the Transform parent chain.
+   * Plaza event cards use scale (5,5,1) — TextShape must raster denser so glyphs stay sharp.
+   */
+  private textShapeWorldScale(entity: Entity): number {
+    const { sx, sy } = this.textShapeParentScaleXY(entity)
+    const ax = Math.abs(sx) || 1
+    const ay = Math.abs(sy) || 1
+    return Math.sqrt(ax * ay)
+  }
+
+  private textShapeParentScaleXY(entity: Entity): { sx: number; sy: number } {
     const { Transform } = this.ecs
     let sx = 1
+    let sy = 1
     let walk: Entity | undefined = entity
     for (let i = 0; i < 32 && walk !== undefined; i++) {
       if (!Transform.has(walk)) break
       const t = Transform.get(walk) as DclTransformValues
       sx *= t.scale?.x ?? 1
+      sy *= t.scale?.y ?? 1
       const parent = t.parent as Entity | undefined
       if (
         parent === undefined ||
@@ -2276,7 +2307,7 @@ export class ThreeBridge {
       }
       walk = parent
     }
-    return sx < 0
+    return { sx, sy }
   }
 
   /**
@@ -2295,6 +2326,7 @@ export class ThreeBridge {
 
     if (TextShape.has(entity)) {
       const spec = TextShape.get(entity)
+      const worldScale = this.textShapeWorldScale(entity)
       let textMesh = obj.getObjectByName(tk) as THREE.Mesh | undefined
       if (!textMesh) {
         const stale = obj.getObjectByName(mk)
@@ -2302,12 +2334,12 @@ export class ThreeBridge {
           disposeOwnedObject3D(stale)
           obj.remove(stale)
         }
-        textMesh = buildTextShapeMesh(spec)
+        textMesh = buildTextShapeMesh(spec, worldScale)
         textMesh.name = tk
         obj.add(textMesh)
         this.notifyMeshComponent(entity, TextShape.componentId)
       } else {
-        updateTextShapeMesh(textMesh, spec)
+        updateTextShapeMesh(textMesh, spec, worldScale)
         this.notifyMeshComponent(entity, TextShape.componentId)
       }
       // Poker Night casual board uses scale.x=-1 so Unity text faces the wall; compensate map U.

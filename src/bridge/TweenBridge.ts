@@ -5,6 +5,7 @@ import type { PBTween } from '@dcl/ecs/dist/components/generated/pb/decentraland
 import {
   applyDclLocalTransform,
   dclYawToThreeYaw,
+  resolveTransformParent,
   threeToDclQuat,
   type DclTransformValues
 } from './dclTransform'
@@ -12,6 +13,7 @@ import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import type { EntityStore } from './EntityStore'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionView } from './ProjectionView'
+import type { CrdtProjection } from './CrdtProjection'
 import { isMarqueeVerbose, isTweenVerbose } from './tweenConfig'
 import { isInBlimpSubtree, isMotionFocusActive } from './motionFocus'
 
@@ -150,11 +152,23 @@ function vec2Key(v?: { x?: number; y?: number } | null): { x: number; y: number 
   return { x: r4(v.x) ?? 0, y: r4(v.y) ?? 0 }
 }
 
+function vec3Key(v?: { x?: number; y?: number; z?: number } | null): unknown {
+  if (!v) return null
+  return { x: r4(v.x) ?? 0, y: r4(v.y) ?? 0, z: r4(v.z) ?? 0 }
+}
+
+function quatKey(q?: { x?: number; y?: number; z?: number; w?: number } | null): unknown {
+  if (!q) return null
+  return { x: r4(q.x) ?? 0, y: r4(q.y) ?? 0, z: r4(q.z) ?? 0, w: r4(q.w) ?? 1 }
+}
+
 function tweenSignature(tween: PBTween): string {
   // Do NOT include `playing` — false→true during pause must not wipe progress/completed.
   // Normalize mode + round floats so CRDT identity/noise cannot thrash the signature.
+  // Scale/Rotate MUST include start/end — otherwise plaza page flip reuses a parked
+  // completed runtime (1→0.001) and the next card never scales back in.
   const mode = tween.mode
-  let modeKey: unknown = mode
+  let modeKey: unknown = mode?.$case ?? null
   if (mode?.$case === 'textureMove' && mode.textureMove) {
     const tm = mode.textureMove
     modeKey = {
@@ -171,12 +185,136 @@ function tweenSignature(tween: PBTween): string {
       speed: r4(tm.speed),
       movementType: tm.movementType ?? 0
     }
+  } else if (mode?.$case === 'scale' && mode.scale) {
+    modeKey = {
+      $case: 'scale',
+      start: vec3Key(mode.scale.start),
+      end: vec3Key(mode.scale.end)
+    }
+  } else if (mode?.$case === 'rotate' && mode.rotate) {
+    modeKey = {
+      $case: 'rotate',
+      start: quatKey(mode.rotate.start),
+      end: quatKey(mode.rotate.end)
+    }
+  } else if (mode?.$case === 'move' && mode.move) {
+    modeKey = {
+      $case: 'move',
+      start: vec3Key(mode.move.start),
+      end: vec3Key(mode.move.end),
+      faceDirection: !!mode.move.faceDirection
+    }
+  } else if (mode?.$case === 'moveRotateScale' && mode.moveRotateScale) {
+    const m = mode.moveRotateScale
+    modeKey = {
+      $case: 'moveRotateScale',
+      positionStart: vec3Key(m.positionStart),
+      positionEnd: vec3Key(m.positionEnd),
+      rotationStart: quatKey(m.rotationStart),
+      rotationEnd: quatKey(m.rotationEnd),
+      scaleStart: vec3Key(m.scaleStart),
+      scaleEnd: vec3Key(m.scaleEnd)
+    }
+  } else if (mode?.$case === 'moveContinuous' && mode.moveContinuous) {
+    modeKey = {
+      $case: 'moveContinuous',
+      direction: vec3Key(mode.moveContinuous.direction),
+      speed: r4(mode.moveContinuous.speed)
+    }
+  } else if (mode?.$case === 'rotateContinuous' && mode.rotateContinuous) {
+    modeKey = {
+      $case: 'rotateContinuous',
+      direction: quatKey(mode.rotateContinuous.direction),
+      speed: r4(mode.rotateContinuous.speed)
+    }
   }
   return JSON.stringify({
     duration: r4(tween.duration) ?? 0,
     easingFunction: tween.easingFunction ?? 0,
     mode: modeKey
   })
+}
+
+/**
+ * True when ECS Tween owns local TRS (Move/Scale/Rotate…). TextureMove does not.
+ * While this is true, inbound worker Transform must not overwrite renderer-interpolated pose
+ * (plaza event page scalePivot hide, board open Move → otherwise both buffers stay visible /
+ * board snaps back onto the building).
+ */
+export function isTransformTweenOwned(
+  entity: Entity,
+  Tween: { has(entity: Entity): boolean; get(entity: Entity): PBTween }
+): boolean {
+  if (!Tween.has(entity)) return false
+  const kind = Tween.get(entity).mode?.$case
+  return (
+    kind === 'move' ||
+    kind === 'rotate' ||
+    kind === 'scale' ||
+    kind === 'moveRotateScale' ||
+    kind === 'moveContinuous' ||
+    kind === 'rotateContinuous'
+  )
+}
+
+/**
+ * Same-signature dirty restart — **this entity only** (never parents/siblings).
+ *
+ * • Move: never (board open under child VC).
+ * • Scale / Rotate: restart when completed + dirty **and** Transform is not already at
+ *   the tween end. Page hide (at scale 1, end 0.001) restarts; board settle (at 0.5)
+ *   CRDT echo does not; already-hidden page (at 0.001) stays put.
+ */
+function shouldSameSignatureDirtyRestart(
+  entity: Entity,
+  tween: PBTween,
+  prev: TweenRuntime,
+  Transform: { get(entity: Entity): DclTransformValues; has?(entity: Entity): boolean }
+): boolean {
+  if (tween.playing === false) return false
+  if (!prev.completed) return false
+  const mode = tween.mode?.$case
+  if (mode !== 'scale' && mode !== 'rotate') return false
+  // Already at end → CRDT echo, not a new flip.
+  if (transformAtTweenEnd(entity, tween, Transform)) return false
+  return true
+}
+
+function near3(
+  a: { x: number; y: number; z: number },
+  b: { x: number; y: number; z: number },
+  eps = 0.02
+): boolean {
+  return (
+    Math.abs(a.x - b.x) <= eps && Math.abs(a.y - b.y) <= eps && Math.abs(a.z - b.z) <= eps
+  )
+}
+
+function nearQ(
+  a: { x: number; y: number; z: number; w: number },
+  b: { x: number; y: number; z: number; w: number },
+  eps = 0.02
+): boolean {
+  const d = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w
+  return Math.abs(Math.abs(d) - 1) <= eps
+}
+
+function transformAtTweenEnd(
+  entity: Entity,
+  tween: PBTween,
+  Transform: { get(entity: Entity): DclTransformValues }
+): boolean {
+  let tr: DclTransformValues
+  try {
+    tr = Transform.get(entity)
+  } catch {
+    return false
+  }
+  const mode = tween.mode
+  if (!mode) return false
+  if (mode.$case === 'scale' && mode.scale.end) return near3(tr.scale, mode.scale.end)
+  if (mode.$case === 'rotate' && mode.rotate.end) return nearQ(tr.rotation, mode.rotate.end)
+  return false
 }
 
 function isContinuousMode(mode: PBTween['mode']): boolean {
@@ -371,7 +509,9 @@ export class TweenBridge {
 
   constructor(
     private readonly ecs: MirrorComponents,
-    private readonly store: EntityStore
+    private readonly store: EntityStore,
+    /** Optional: high-LWW Transform writes so VC parent-chain resolution follows tweens. */
+    private readonly projection: CrdtProjection | null = null
   ) {
     // Intentionally no boot console blast — logging only after meshes exist (see logMarquee).
   }
@@ -473,9 +613,14 @@ export class TweenBridge {
     return [...this.runtime.keys()]
   }
 
-  sync(view: ProjectionView): void {
+  /**
+   * @param dirtyTweenEntities — entities with a Tween PUT this CRDT frame.
+   *   Same-signature restart is **only that entity** (never ancestors/siblings).
+   *   Restarts only when completed and Transform is no longer on the tween end pose.
+   */
+  sync(view: ProjectionView, dirtyTweenEntities?: ReadonlySet<Entity>): void {
     this.motionFocusView = view
-    const { Tween } = this.ecs
+    const { Tween, Transform } = this.ecs
     const active = new Set<Entity>()
 
     for (const [entity] of view.getEntitiesWith(Tween)) {
@@ -484,8 +629,25 @@ export class TweenBridge {
       const tween = Tween.get(entity)
       const signature = tweenSignature(tween)
       const prev = this.runtime.get(entity)
-      if (!prev || prev.signature !== signature) {
-        const node = this.store.getNode(entity)
+      // Per-entity only — dirty.has(entity), no tree walk.
+      const sceneRestart =
+        !!prev &&
+        !!dirtyTweenEntities?.has(entity) &&
+        shouldSameSignatureDirtyRestart(entity, tween, prev, Transform)
+      if (!prev || prev.signature !== signature || sceneRestart) {
+        let node = this.store.getNode(entity)
+        if (!node && Transform.has(entity) && !isTextureMode(tween.mode)) {
+          node = this.store.getOrCreateNode(entity)
+          const tr = Transform.get(entity) as DclTransformValues
+          const parent = resolveTransformParent(
+            tr.parent as Entity | undefined,
+            view,
+            this.store.nodes,
+            this.store.root
+          )
+          if (node.parent !== parent) parent.add(node)
+          applyDclLocalTransform(node, tr)
+        }
         const keptTargets =
           prev?.textureTargets && node && textureTargetsLive(node, prev.textureTargets)
             ? prev.textureTargets
@@ -505,8 +667,22 @@ export class TweenBridge {
           lastLoggedState: undefined,
           lastProgressMilestone: undefined
         })
+        // Snap transform to tween start immediately (plaza page scalePivot is often 0,0,0;
+        // waiting a frame leaves the incoming card invisible if something parks the tween).
+        if (node && Transform.has(entity) && !isTextureMode(tween.mode) && tween.playing !== false) {
+          this.applyTransformTween(
+            entity,
+            tween,
+            Transform.get(entity) as DclTransformValues,
+            node,
+            0,
+            true,
+            0
+          )
+          node.updateMatrixWorld(true)
+        }
         this.logTween(
-          `Tween reset — entity ${entity} · ${tweenModeLabel(tween)} · duration ${tween.duration}ms · playing ${tween.playing !== false}`,
+          `Tween reset — entity ${entity} · ${tweenModeLabel(tween)} · duration ${tween.duration}ms · playing ${tween.playing !== false}${sceneRestart ? ' · scene-restart' : ''}`,
           { entity }
         )
         // Discrete textureMove row steps only after mesh maps exist (never during hydration targets=0).
@@ -582,13 +758,29 @@ export class TweenBridge {
         continue
       }
 
-      const node = this.store.getNode(entity)
-      // Never log no-node during attach storms (Genesis: thousands of tweens).
-
       const playing = tween.playing !== false
       const continuous = isContinuousMode(tween.mode)
       const textureMode = isTextureMode(tween.mode)
       const durationSec = Math.max(tween.duration / 1000, 0)
+
+      // Transform-only pivots (plaza event page scalePivot starts at 0,0,0) must still
+      // get a store node or Scale/Rotate tweens never apply — page flip loses the card.
+      let node = this.store.getNode(entity)
+      if (!node && Transform.has(entity) && !textureMode) {
+        node = this.store.getOrCreateNode(entity)
+        const tr = Transform.get(entity) as DclTransformValues
+        const view = this.motionFocusView
+        if (view) {
+          const parent = resolveTransformParent(
+            tr.parent as Entity | undefined,
+            view,
+            this.store.nodes,
+            this.store.root
+          )
+          if (node.parent !== parent) parent.add(node)
+        }
+        applyDclLocalTransform(node, tr)
+      }
 
       // Paused and already wrote TweenState=2 — no per-frame work until playing/signature changes.
       if (
@@ -604,6 +796,19 @@ export class TweenBridge {
       if (runtime.completed) {
         if (node && textureMode && !runtime.completedDirtySent) {
           this.applyTextureTween(node, tween, runtime, 0, 1, true)
+        }
+        // Pin transform end pose even if the node was missing mid-tween (page scale 0→1).
+        if (node && Transform.has(entity) && !textureMode && !runtime.completedDirtySent) {
+          this.applyTransformTween(
+            entity,
+            tween,
+            Transform.get(entity),
+            node,
+            1,
+            true,
+            0
+          )
+          node.updateMatrixWorld(true)
         }
         TweenState.createOrReplace(entity, { state: 1, currentTime: 1 })
         if (!runtime.completedDirtySent) {
@@ -671,6 +876,18 @@ export class TweenBridge {
             playing,
             delta
           )
+          // Force world bake after any transform tween:
+          // - scale/rotate: page scalePivot 0→1 (event cards)
+          // - move: board root inactive→active (plaza focus — children + VC parent chain)
+          if (
+            applied &&
+            (tween.mode?.$case === 'scale' ||
+              tween.mode?.$case === 'rotate' ||
+              tween.mode?.$case === 'move' ||
+              tween.mode?.$case === 'moveRotateScale')
+          ) {
+            node.updateMatrixWorld(true)
+          }
         }
       } else if (textureMode) {
         this.logMarquee(`SCROLL no node · ${this.formatTextureMove(tween)}`, {
@@ -948,13 +1165,20 @@ export class TweenBridge {
 
     if (!applied) return false
 
-    this.ecs.Transform.createOrReplace(entity, {
+    const nextTransform = {
       position: { ..._scratchTransform.position },
       rotation: { ..._scratchTransform.rotation },
       scale: { ..._scratchTransform.scale },
       parent: _scratchTransform.parent
-    })
-    applyDclLocalTransform(node, _scratchTransform)
+    }
+    // High-priority LWW so worker Transform cannot snap board/page pivots back mid-tween
+    // (VirtualCameraBridge reads ECS chains, not Three matrixWorld).
+    if (this.projection) {
+      this.projection.setTweenOwnedTransform(entity, nextTransform)
+    } else {
+      this.ecs.Transform.createOrReplace(entity, nextTransform)
+    }
+    applyDclLocalTransform(node, nextTransform)
     this.transformMotionEntities.add(entity)
     return true
   }

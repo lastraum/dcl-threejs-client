@@ -99,17 +99,65 @@ function normalizeColor3(c?: Color3): Color3 | undefined {
   return { r: round4(c.r), g: round4(c.g), b: round4(c.b) }
 }
 
-/** Accept SDK TextureUnion and legacy `{ src }` shapes from composite JSON. */
-function coerceTextureUnion(u?: TextureUnion | { src?: string; wrapMode?: number; filterMode?: number }): TextureUnion | undefined {
-  if (!u) return undefined
-  if ('tex' in u && u.tex) {
-    // Creator Hub composites can emit texture slots with an empty src — treat as absent.
-    if (u.tex.$case === 'texture' && !u.tex.texture.src?.trim()) return undefined
+/**
+ * Accept SDK TextureUnion and legacy / CRDT-drift shapes.
+ * Plaza event posters must not go missing when the wire omits `tex.$case` or nests Texture.
+ */
+function coerceTextureUnion(
+  u?: TextureUnion | { src?: string; wrapMode?: number; filterMode?: number } | Record<string, unknown>
+): TextureUnion | undefined {
+  if (!u || typeof u !== 'object') return undefined
+
+  // Canonical: { tex: { $case: 'texture', texture: { src } } }
+  if ('tex' in u && (u as TextureUnion).tex) {
+    const tex = (u as TextureUnion).tex!
+    if (tex.$case === 'texture' && !tex.texture.src?.trim()) return undefined
+    // Missing $case but has texture payload (some CRDT / JSON paths).
+    const anyTex = tex as { $case?: string; texture?: TextureDef; src?: string }
+    if (!tex.$case && anyTex.texture?.src?.trim()) {
+      return {
+        tex: {
+          $case: 'texture',
+          texture: anyTex.texture
+        }
+      }
+    }
+    if (!tex.$case && anyTex.src?.trim()) {
+      return {
+        tex: {
+          $case: 'texture',
+          texture: {
+            src: anyTex.src,
+            wrapMode: (anyTex as TextureDef).wrapMode,
+            filterMode: (anyTex as TextureDef).filterMode
+          }
+        }
+      }
+    }
     return u as TextureUnion
   }
+
+  // Oneof value without wrapper: { $case: 'texture', texture: { src } }
+  const asCase = u as { $case?: string; texture?: TextureDef }
+  if (asCase.$case === 'texture' && asCase.texture?.src?.trim()) {
+    return { tex: { $case: 'texture', texture: asCase.texture } }
+  }
+
+  // Nested Texture only: { texture: { src } } (common partial decode)
+  const nested = u as { texture?: TextureDef & { src?: string } }
+  if (nested.texture?.src?.trim()) {
+    return { tex: { $case: 'texture', texture: nested.texture } }
+  }
+
+  // Flat Texture: { src }
   const flat = u as { src?: string; wrapMode?: number; filterMode?: number }
   if (flat.src?.trim()) {
-    return { tex: { $case: 'texture', texture: { src: flat.src, wrapMode: flat.wrapMode, filterMode: flat.filterMode } } }
+    return {
+      tex: {
+        $case: 'texture',
+        texture: { src: flat.src, wrapMode: flat.wrapMode, filterMode: flat.filterMode }
+      }
+    }
   }
   return undefined
 }
@@ -233,6 +281,20 @@ function materialTextureSlots(pb: PbMaterial): TextureUnion[] {
 
 function materialHasTextureSlots(pb: PbMaterial): boolean {
   return materialTextureSlots(pb).length > 0
+}
+
+/**
+ * Color-only PBR with alpha < 1 (or explicit blend) — plaza event blackMask fades
+ * albedoColor.a every frame with no texture/transparencyMode. Must not stay on lit PBR.
+ */
+function isColorOnlyTranslucent(pb: PbMaterial): boolean {
+  if (materialHasTextureSlots(pb)) return false
+  if (pb.material?.$case !== 'pbr') return false
+  const pbr = pb.material.pbr
+  const mode = pbr.transparencyMode
+  if (mode === MTM_ALPHA_BLEND || mode === MTM_ALPHA_TEST_AND_ALPHA_BLEND) return true
+  const a = pbr.albedoColor?.a
+  return typeof a === 'number' && a < 0.999
 }
 
 function meshHasTextureMaps(mesh: THREE.Mesh, pb: PbMaterial): boolean {
@@ -370,7 +432,10 @@ export class MaterialApplier {
           : undefined
     if (!inner) return
 
-    const needsUnlit = !isPbr
+    // Color-only translucent PBR (plaza event blackMask / pool glass): MeshBasicMaterial is
+    // reliable for alpha dim planes — MeshPhysicalMaterial + lights often reads as invisible.
+    const colorOnlyAlpha = isColorOnlyTranslucent(pb)
+    const needsUnlit = !isPbr || colorOnlyAlpha
     const current = mesh.material
     const reuse =
       (needsUnlit && current instanceof THREE.MeshBasicMaterial) ||
@@ -407,9 +472,15 @@ export class MaterialApplier {
         pbr.transparencyMode
       )
     } else {
-      const diffuse = (inner as UnlitMaterial).diffuseColor
-      if (diffuse) {
-        m.color.setRGB(diffuse.r ?? 1, diffuse.g ?? 1, diffuse.b ?? 1)
+      // Unlit path — also color-only translucent PBR remapped to MeshBasicMaterial.
+      if (isPbr && colorOnlyAlpha) {
+        const ac = (inner as PbrMaterial).albedoColor
+        m.color.setRGB(ac?.r ?? 0, ac?.g ?? 0, ac?.b ?? 0)
+      } else {
+        // Plaza event thumbnails omit diffuseColor — always white so map is not crushed
+        // by a leftover tint from a prior material apply on a reused MeshBasicMaterial.
+        const diffuse = (inner as UnlitMaterial).diffuseColor
+        m.color.setRGB(diffuse?.r ?? 1, diffuse?.g ?? 1, diffuse?.b ?? 1)
       }
     }
 
@@ -418,15 +489,31 @@ export class MaterialApplier {
     // Dedicated alphaMap only — do not treat albedo map as AUTO cutout (Unity parity).
     const hasAlphaMap =
       !!(m as THREE.MeshPhysicalMaterial).alphaMap || !!(m as THREE.MeshBasicMaterial).alphaMap
-    applyTransparency(
-      m,
-      alpha,
-      inner.alphaTest,
-      isPbr ? (inner as PbrMaterial).transparencyMode : MTM_AUTO,
-      hasAlphaMap
-    )
+    // Color-only masks omit transparencyMode (plaza GQe blackMask) — force blend.
+    const transparencyMode =
+      isPbr && colorOnlyAlpha
+        ? MTM_ALPHA_BLEND
+        : isPbr
+          ? (inner as PbrMaterial).transparencyMode
+          : MTM_AUTO
+    applyTransparency(m, alpha, inner.alphaTest, transparencyMode, hasAlphaMap)
+    if (colorOnlyAlpha) {
+      // Dim mask planes: draw *behind* opaque event cards. depthWrite off + low renderOrder
+      // so transparent sort does not paint the mask over thumbnails/JUMP IN.
+      m.depthWrite = false
+      m.depthTest = true
+      m.toneMapped = false
+      mesh.renderOrder = -10
+      mesh.frustumCulled = false
+      m.transparent = true
+      m.opacity = Math.max(0, Math.min(1, alpha))
+      m.polygonOffset = true
+      m.polygonOffsetFactor = 1
+      m.polygonOffsetUnits = 1
+    }
     // Scalar-only path is terminal for color materials — honor castShadows here too.
     applyMaterialCastShadows(mesh, inner.castShadows)
+    m.side = mesh.userData.primitiveDoubleSided === true ? THREE.DoubleSide : THREE.FrontSide
     m.needsUpdate = true
   }
 
@@ -446,23 +533,31 @@ export class MaterialApplier {
     // so TextureMove Y + atlas row order match Explorer.
     const geo = mesh.geometry as THREE.BufferGeometry | undefined
     const marqueeAtlas = !!geo?.userData?.dclTextAlongYBasis
-    const flipY = mesh.userData.primitiveMeshKey != null && !marqueeAtlas
-    // Plaza event cards: thumbnail GLB UVs are LH-mirrored; bottom (JUMP IN) UVs are normal.
-    // Parent Transform.scale.x = −1 is common. Flip map U when UV-mirror XOR scale-mirror.
-    // MeshRenderer planes with scale.x < 0 also need the flip (no UV-mirror bit).
-    const worldMirror = objectWorldMirrorX(mesh)
-    const uvMirror = meshUvMapsUMirroredOnX(mesh)
-    const flipMapU = !marqueeAtlas && (
-      options?.gltfNodeModifier
-        ? uvMirror !== worldMirror
-        : mesh.userData.primitiveMeshKey != null && worldMirror
-    )
+    const isPrimitive = mesh.userData.primitiveMeshKey != null
+    const isGltfMod = options?.gltfNodeModifier === true
+    // Map / content orientation:
+    //
+    // • MeshRenderer JUMP IN (wide atlas): content-flip mesh.scale.x (not tall arrows).
+    // • GltfNodeModifiers: no mesh U flip. flipY depends on texture source (below).
+    if (!marqueeAtlas && isPrimitive && !isGltfMod) {
+      const tallAtlas = meshAtlasUvIsTall(mesh)
+      ensureMeshContentFlipX(mesh, !tallAtlas)
+    } else if (isGltfMod && mesh.userData.dclPlaneContentFlipX) {
+      ensureMeshContentFlipX(mesh, false)
+    }
 
     let texturesOk = true
     let alphaTex: THREE.Texture | null = null
     /** Scene set alphaTexture (including same-src as albedo). Drives AUTO cutout. */
     let hasAlphaTextureSlot = false
     const mainUnion = coerceTextureUnion(inner.texture)
+    // flipY: MeshRenderer planes = true (TextureLoader). Scene-content on GLB = false (glTF UV).
+    // External https posters (events-assets webp) are TextureLoader/fetch images — use flipY
+    // true so WebGL upload matches decoder; false left many plaza event cards blank/black.
+    const mainSrc = getTextureDef(mainUnion)?.src?.trim() ?? ''
+    const externalHttpPoster = isGltfMod && /^https?:\/\//i.test(mainSrc)
+    const flipY =
+      externalHttpPoster || (isPrimitive && !marqueeAtlas && !isGltfMod)
     if (mainUnion) {
       const prev = m.map
       const mainTex = await this.loadUnionTexture(mainUnion, { flipY })
@@ -470,7 +565,6 @@ export class MaterialApplier {
       if (!mainTex) texturesOk = false
       else {
         this.applyUvTransform(mainTex, getTextureDef(mainUnion), prev, mesh)
-        if (flipMapU && mainUnion.tex?.$case === 'texture') flipTextureU(mainTex)
       }
     }
     const alphaUnion = coerceTextureUnion(inner.alphaTexture)
@@ -490,7 +584,6 @@ export class MaterialApplier {
         if (!alphaTex) texturesOk = false
         else {
           this.applyUvTransform(alphaTex, getTextureDef(alphaUnion), prev, mesh)
-          if (flipMapU && alphaUnion.tex?.$case === 'texture') flipTextureU(alphaTex)
         }
       }
     }
@@ -512,7 +605,6 @@ export class MaterialApplier {
           if (!emissiveTex) texturesOk = false
           else if (emissiveTex !== m.map) {
             this.applyUvTransform(emissiveTex, getTextureDef(emissiveUnion), prev, mesh)
-            if (flipMapU && emissiveUnion.tex?.$case === 'texture') flipTextureU(emissiveTex)
           }
         }
       }
@@ -525,7 +617,6 @@ export class MaterialApplier {
         else {
           bumpTex.colorSpace = THREE.LinearSRGBColorSpace
           this.applyUvTransform(bumpTex, getTextureDef(bumpUnion), prev, mesh)
-          if (flipMapU && bumpUnion.tex?.$case === 'texture') flipTextureU(bumpTex)
         }
       }
       // Re-apply after maps land — emissiveIntensity drives flame brightness when albedoColor is absent.
@@ -539,20 +630,75 @@ export class MaterialApplier {
       )
     }
 
-    const transparencyMode = isPbr ? (inner as PbrMaterial).transparencyMode : MTM_AUTO
+    const colorOnlyAlpha = isColorOnlyTranslucent(pb)
+    const transparencyMode =
+      isPbr && colorOnlyAlpha
+        ? MTM_ALPHA_BLEND
+        : isPbr
+          ? (inner as PbrMaterial).transparencyMode
+          : MTM_AUTO
     const alpha =
       (isPbr ? (inner as PbrMaterial).albedoColor?.a : (inner as UnlitMaterial).diffuseColor?.a) ?? 1
     // AUTO cutout when scene provided alphaTexture (dedicated map, or same-src PNG alpha).
-    // Bare albedo PNG without alphaTexture stays opaque (Explorer parity).
+    // Bare albedo PNG without alphaTexture stays opaque (Explorer parity) — except GltfNodeModifiers
+    // UI chips (close_button) that sample atlas PNGs with transparency.
+    const hasAlpha =
+      hasAlphaTextureSlot || !!alphaTex || !!m.alphaMap
     applyTransparency(
       m,
       alpha,
       inner.alphaTest,
       transparencyMode,
-      hasAlphaTextureSlot || !!alphaTex || !!m.alphaMap
+      hasAlpha
     )
+    // Atlas UI (JUMP IN / arrows): same-src alphaTexture under AUTO is cutout-only in
+    // applyTransparency (no blend). Dual-face + content flip leaves opaque “bg” scraps.
+    // Always force cutout+blend for unlit same-src alpha atlas planes (not only when flipped).
+    if (
+      !isPbr &&
+      m.map &&
+      hasAlphaTextureSlot &&
+      (transparencyMode === MTM_AUTO || transparencyMode === undefined) &&
+      isPrimitive
+    ) {
+      m.transparent = true
+      m.alphaTest = Math.min(m.alphaTest || 0.5, 0.15)
+      m.depthWrite = false
+    }
+    // Close X only (button_atlas / close_button) — NOT event thumbnails.
+    // Applying alphaTest to all GltfNodeModifiers unlit maps blanked plaza event photos
+    // (thumbnails also have no alphaTexture slot).
+    const modTexSrc = getTextureDef(mainUnion)?.src ?? ''
+    const isCloseUiChip =
+      options?.gltfNodeModifier === true &&
+      !isPbr &&
+      !!m.map &&
+      !hasAlphaTextureSlot &&
+      (transparencyMode === MTM_AUTO || transparencyMode === undefined) &&
+      /button_atlas|close_button|closeButton/i.test(modTexSrc)
+    if (isCloseUiChip) {
+      m.transparent = true
+      m.alphaTest = 0.5
+      m.depthWrite = false
+      m.depthTest = true
+      m.side = THREE.DoubleSide
+      mesh.renderOrder = Math.max(mesh.renderOrder, 5)
+      mesh.frustumCulled = false
+    }
     if (transparencyMode === MTM_ALPHA_BLEND || transparencyMode === MTM_ALPHA_TEST_AND_ALPHA_BLEND) {
       m.depthWrite = false
+    }
+    if (colorOnlyAlpha) {
+      m.depthWrite = false
+      m.depthTest = true
+      m.toneMapped = false
+      mesh.renderOrder = -10
+      mesh.frustumCulled = false
+      m.transparent = true
+      m.opacity = Math.max(0, Math.min(1, alpha))
+      m.polygonOffset = true
+      m.polygonOffsetFactor = 1
+      m.polygonOffsetUnits = 1
     }
 
     // Material.castShadows → mesh.castShadow (see applyMaterialCastShadows).
@@ -573,7 +719,37 @@ export class MaterialApplier {
       m.blending = THREE.NormalBlending
       m.toneMapped = false
     }
-    m.side = mesh.userData.primitiveDoubleSided === true ? THREE.DoubleSide : THREE.FrontSide
+    // Event-card thumbnails (GltfNodeModifiers unlit): always DoubleSide — FrontSide alone
+    // culls the board face under dclToThree + board yaw (poster reads pure black).
+    // Close chip also needs DoubleSide (set above). Video screens set primitiveDoubleSided.
+    if (options?.gltfNodeModifier === true) {
+      m.side = THREE.DoubleSide
+    } else {
+      m.side =
+        mesh.userData.primitiveDoubleSided === true ? THREE.DoubleSide : THREE.FrontSide
+    }
+    // Event photos / unlit node maps: full albedo visibility (no leftover alphaTest/tint).
+    if (
+      options?.gltfNodeModifier === true &&
+      !isPbr &&
+      !isCloseUiChip
+    ) {
+      // Plaza thumbnails omit diffuseColor — keep white multiply so map is not crushed.
+      if (!hasAlphaTextureSlot) {
+        m.color.setRGB(1, 1, 1)
+        m.transparent = false
+        m.alphaTest = 0
+        m.depthWrite = true
+        m.opacity = 1
+      }
+      if (m.map) {
+        m.map.colorSpace = THREE.SRGBColorSpace
+        m.map.needsUpdate = true
+      }
+      // In front of dim blackMask (renderOrder -10).
+      mesh.renderOrder = Math.max(mesh.renderOrder, 2)
+      mesh.frustumCulled = false
+    }
     m.needsUpdate = true
     return texturesOk && meshHasTextureMaps(mesh, pb)
   }
@@ -771,61 +947,66 @@ function getTextureDef(union?: TextureUnion): TextureDef | undefined {
   return coerced?.tex?.$case === 'texture' ? coerced.tex.texture : undefined
 }
 
+/** Flip mesh local X so atlas UVs stay on-sheet while content reads L→R. */
+function ensureMeshContentFlipX(mesh: THREE.Mesh, wantFlip: boolean): void {
+  const has = !!mesh.userData.dclPlaneContentFlipX
+  if (has === wantFlip) return
+  // Always flip relative to +1 base so re-applies are stable.
+  const mag = Math.abs(mesh.scale.x) < 1e-8 ? 1 : Math.abs(mesh.scale.x)
+  mesh.scale.x = wantFlip ? -mag : mag
+  mesh.userData.dclPlaneContentFlipX = wantFlip
+}
+
+/** Tall atlas cells (e.g. 64×128 event_menu_arrow) vs wide buttons (JUMP IN). */
+function meshAtlasUvIsTall(mesh: THREE.Mesh): boolean {
+  const uv = mesh.geometry?.getAttribute('uv') as THREE.BufferAttribute | undefined
+  if (!uv || uv.count < 4) return false
+  let umin = Infinity
+  let umax = -Infinity
+  let vmin = Infinity
+  let vmax = -Infinity
+  // North face first (first 4 verts of dual DCL plane).
+  const n = Math.min(4, uv.count)
+  for (let i = 0; i < n; i++) {
+    const u = uv.getX(i)
+    const v = uv.getY(i)
+    if (u < umin) umin = u
+    if (u > umax) umax = u
+    if (v < vmin) vmin = v
+    if (v > vmax) vmax = v
+  }
+  const du = umax - umin
+  const dv = vmax - vmin
+  if (du < 1e-6) return false
+  return dv > du * 1.2
+}
+
 /**
- * True when mesh UVs map spatial −X → higher U than +X (L–R mirrored vs reading order).
- * Plaza `event_card_thumbnail.glb` is authored this way for Unity LH; Three RH needs a map U flip
- * unless parent scale.x is already negative (then they cancel).
+ * Mirror geometry U within the attribute’s current [umin,umax] span (preserves atlas sub-rects).
  */
-function meshUvMapsUMirroredOnX(mesh: THREE.Mesh): boolean {
-  const pos = mesh.geometry?.getAttribute('position')
-  const uv = mesh.geometry?.getAttribute('uv')
-  if (!pos || !uv || pos.count < 2 || uv.count < 2) return false
-  let minX = Infinity
-  let maxX = -Infinity
-  let uAtMin = 0
-  let uAtMax = 0
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i)
-    if (x < minX) {
-      minX = x
-      uAtMin = uv.getX(i)
-    }
-    if (x > maxX) {
-      maxX = x
-      uAtMax = uv.getX(i)
-    }
+export function mirrorGeometryUInPlace(mesh: THREE.Mesh): void {
+  let geo = mesh.geometry as THREE.BufferGeometry
+  if (!geo?.getAttribute) return
+  if (!geo.userData?.dclUniqueUv) {
+    geo = geo.clone()
+    geo.userData = { ...(mesh.geometry as THREE.BufferGeometry).userData, dclUniqueUv: true }
+    mesh.geometry = geo
   }
-  if (!(maxX - minX > 1e-5)) return false
-  return uAtMin > uAtMax + 1e-5
-}
-
-/** Product of local scale.x up the parent chain (DCL boards often use scale.x = −1). */
-function objectWorldMirrorX(obj: THREE.Object3D): boolean {
-  obj.updateWorldMatrix(true, false)
-  let sx = 1
-  let o: THREE.Object3D | null = obj
-  for (let i = 0; i < 48 && o; i++) {
-    sx *= o.scale.x
-    o = o.parent
+  const uv = geo.getAttribute('uv') as THREE.BufferAttribute | undefined
+  if (!uv || uv.count < 2) return
+  let umin = Infinity
+  let umax = -Infinity
+  for (let i = 0; i < uv.count; i++) {
+    const u = uv.getX(i)
+    if (u < umin) umin = u
+    if (u > umax) umax = u
   }
-  // Odd negative scales (reflection) — det < 0 also catches multi-axis flips.
-  if (sx < 0) return true
-  try {
-    return obj.matrixWorld.determinant() < 0
-  } catch {
-    return false
+  if (!(umax - umin > 1e-8)) return
+  const sum = umin + umax
+  for (let i = 0; i < uv.count; i++) {
+    uv.setX(i, sum - uv.getX(i))
   }
-}
-
-/** Flip texture U after authored offset/tiling: sample' = 1 − sample. Fresh clones only. */
-function flipTextureU(tex: THREE.Texture): void {
-  if (tex.userData.dclMapUFlipped) return
-  const rep = tex.repeat.x
-  const off = tex.offset.x
-  tex.repeat.x = -rep
-  tex.offset.x = 1 - off
-  tex.userData.dclMapUFlipped = true
-  tex.needsUpdate = true
+  uv.needsUpdate = true
 }
 
 function textureUnionSameSrc(a?: TextureUnion, b?: TextureUnion): boolean {
@@ -874,8 +1055,10 @@ function applyTransparency(
     m.alphaTest = alphaTest ?? 0.5
     return
   }
+  // Color-only alpha (plaza blackMask fade) — blend without writing depth.
   if (alpha < 0.999) {
     m.transparent = true
     m.opacity = alpha
+    m.depthWrite = false
   }
 }

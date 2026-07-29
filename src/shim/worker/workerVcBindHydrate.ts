@@ -137,7 +137,57 @@ export function collectVcBindHydratePackage(engine: IEngine): PlayerFrameBoundVc
     }
   }
 
-  // Locked / cinematic / select stage — worker world pose is authoritative on main.
+  // Stage-parented cinematic VC (Genesis Plaza eventCam under the events board):
+  // keep local hierarchy so main resolves world pose as the board Tween moves the parent.
+  // World-flattening froze the lens at bind-time inactive pose while the board tweened
+  // to active — card slid past the camera.
+  const parentId = parent as number | undefined
+  if (
+    parentId !== undefined &&
+    parentId !== null &&
+    !isReserved(engine, parentId) &&
+    Transform.has(parentId as Entity)
+  ) {
+    const anchors: PlayerFrameBoundVc['anchors'] = []
+    // Ship pure-transform ancestors so main has parent Transform rows without waiting CRDT.
+    let walk: number | undefined = parentId
+    const seen = new Set<number>()
+    for (let depth = 0; depth < 24 && walk !== undefined; depth++) {
+      if (seen.has(walk) || isReserved(engine, walk)) break
+      seen.add(walk)
+      if (!Transform.has(walk as Entity)) break
+      if (GltfContainer.has(walk as Entity) || MeshRenderer.has(walk as Entity)) {
+        // Mesh-bearing parent: still need its Transform for hierarchy; local is enough.
+      }
+      const atr = Transform.get(walk as Entity)
+      anchors.push({ entity: walk, transform: cloneTransform(atr) })
+      const next = atr.parent as number | undefined
+      if (next === undefined || next === null || next === walk || isReserved(engine, next)) break
+      walk = next
+    }
+    if (
+      lookAt !== undefined &&
+      lookAt !== null &&
+      lookAt !== vcId &&
+      !isReserved(engine, lookAt) &&
+      Transform.has(lookAt as Entity) &&
+      !seen.has(lookAt)
+    ) {
+      anchors.push({
+        entity: lookAt,
+        transform: cloneTransform(Transform.get(lookAt as Entity))
+      })
+    }
+    return {
+      entity: vcId,
+      virtualCamera,
+      transform: cloneTransform(tr),
+      anchors,
+      worldFlattened: false
+    }
+  }
+
+  // Root-level locked / select stage — worker world pose under Root (no moving parent).
   const anchors: PlayerFrameBoundVc['anchors'] = []
   if (
     lookAt !== undefined &&

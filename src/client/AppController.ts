@@ -949,7 +949,7 @@ export class AppController {
       getLeaderFeet: () => {
         const addr = this.tourFocus?.getLeaderAddress()
         if (!addr) return null
-        // Require a real posed peer (not provisional colocate-at-local).
+        // Require a real posed peer (not join-only / no RFC4 Movement yet).
         return this.world?.getRemoteAvatarManager()?.getPeerRootForTour(addr) ?? null
       },
       setPlayerTourFocusActive: (active) => {
@@ -2467,27 +2467,6 @@ export class AppController {
         this.enqueueScriptWarm(x, y)
       }
     })
-    // Community-style toast when plaza has many remotes still composing.
-    this.ensureSocialMobileNotifications()
-    world.setRemoteAvatarProgressHandler((p) => {
-      const notif = this.socialMobileNotifications
-      if (!notif) return
-      const TOAST_ID = 'remote-avatar-load'
-      // Force 3D HUD placement (top-center) — not 2D shell top-right.
-      notif.host.classList.add('social-mobile-notif-host--in-world-center')
-      if (p.total > 5 && p.pending > 0) {
-        notif.pushSystemToast({
-          id: TOAST_ID,
-          appName: 'DECENTRALAND · AVATARS',
-          title: `Loading remote avatars ${p.loaded}/${p.total}`,
-          sub: 'Please wait…',
-          dismissMs: 0
-        })
-      } else {
-        notif.dismissSystemToast(TOAST_ID)
-      }
-    })
-
     this.profileUi?.dispose()
     this.profileUi = new ProfileUiController({
       session: world.session,

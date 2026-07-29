@@ -26,7 +26,7 @@ import { BillboardBridge } from '../../bridge/BillboardBridge'
 import { VirtualCameraBridge } from '../../camera/VirtualCameraBridge'
 import type { EntityWorldTransformDeps } from '../../transform/entityWorldTransform'
 import { AnimatorBridge } from '../../bridge/AnimatorBridge'
-import { TweenBridge } from '../../bridge/TweenBridge'
+import { TweenBridge, isTransformTweenOwned } from '../../bridge/TweenBridge'
 import { ParticleSystemBridge } from '../../bridge/ParticleSystemBridge'
 import { fetchProfileFaceUrl } from '../../avatar/peerApi'
 import { isTweenVerbose } from '../../bridge/tweenConfig'
@@ -266,6 +266,8 @@ export class SceneScriptSystem {
   private virtualCameraCameraPose: (() => EntityPose) | null = null
   private animatorBridge: AnimatorBridge | null = null
   private tweenBridge: TweenBridge | null = null
+  /** Tween PUTs since last pumpMotionBridges — restarts same-signature page Scale flips. */
+  private dirtyTweenEntities = new Set<Entity>()
   private particleBridge: ParticleSystemBridge | null = null
   private sceneUiBridge: SceneUiBridge | null = null
   /** `#scene-ui-root` (primary) or `#pe-ui-root` (portable experience). */
@@ -584,7 +586,7 @@ export class SceneScriptSystem {
       () => this.bridge?.getEntityNodes(),
       (entity) => this.bridge?.ensureCloneMeshForAnimator(entity) ?? null
     )
-    this.tweenBridge = new TweenBridge(this.readComponents, this.entityStore)
+    this.tweenBridge = new TweenBridge(this.readComponents, this.entityStore, this.projection)
     this.particleBridge = new ParticleSystemBridge(
       this.readComponents,
       cache,
@@ -637,7 +639,12 @@ export class SceneScriptSystem {
       this.projection,
       () => this.bridge?.getEntityNodes()
     )
-    this.bridge.setSkipTransformApply((entity) => this.avatarAttachBridge!.isAttachDriven(entity))
+    this.bridge.setSkipTransformApply((entity) => {
+      if (this.avatarAttachBridge!.isAttachDriven(entity)) return true
+      // TweenBridge owns TRS while Move/Scale/Rotate Tween is present (plaza page buffers +
+      // board open/close). Worker Transform LWW would snap poses back and stack both pages.
+      return isTransformTweenOwned(entity, this.readComponents.Tween)
+    })
     this.videoPlayerBridge = new VideoPlayerBridge(
       this.readComponents,
       scene,
@@ -2511,24 +2518,27 @@ export class SceneScriptSystem {
       const pointerUiMountBatch =
         hasUiMountSnapshot ||
         batch.some((i) => i.uiMountSnapshot !== undefined || (i.uiEntities?.length ?? 0) > 0)
-      // Clear LWW for entities present in the structured snapshot we are about to re-seed.
-      // Must include PointerEvents: cooperative UI egress is snapshot-only; if the scene
-      // removes PE after splash click, omitting 1062 left main with a ghost PE catcher
-      // (hand cursor + block=1) forever while Color4.a still faded.
+      // Clear LWW only for (entity, component) pairs present in the snapshot we re-seed.
+      // Partial dirty snapshots must not wipe PointerEvents on an entity that only ships
+      // UiBackground (inventory fill) — that dropped the close-X PE on second shop open.
+      // Full open still re-seeds PE rows; PE removal is handled by applyWorkerUiMountSnapshot
+      // belt-and-suspenders when a transform row ships without PE.
       // Never wipe the full mount on bare uiEntities (no rows) — that left projection at 0/N
       // (mount commit deferred forever → sceneTicksPaused stuck → Flagtag timer + unfreeze die).
       if (latestUiMountSnapshot?.length) {
-        const snapEntities = new Set<Entity>()
-        for (const row of latestUiMountSnapshot) snapEntities.add(row.entity as Entity)
-        if (snapEntities.size > 0) {
-          this.projection.clearLwwSlotsForEntities(snapEntities, [
-            UiTransform.componentId,
-            UiText.componentId,
-            UiBackground.componentId,
-            UiInput.componentId,
-            UiDropdown.componentId,
-            PointerEvents.componentId
-          ])
+        const byComponent = new Map<number, Set<Entity>>()
+        for (const row of latestUiMountSnapshot) {
+          let set = byComponent.get(row.componentId)
+          if (!set) {
+            set = new Set()
+            byComponent.set(row.componentId, set)
+          }
+          set.add(row.entity as Entity)
+        }
+        for (const [componentId, entities] of byComponent) {
+          if (entities.size > 0) {
+            this.projection.clearLwwSlotsForEntities(entities, [componentId])
+          }
         }
       }
       if (pointerUiMountBatch) this.projection.beginForceWorkerUiPuts()
@@ -3182,13 +3192,16 @@ export class SceneScriptSystem {
     graphKey: string
   ): void {
     if (!this.running) return
-    const { VirtualCamera } = this.readComponents
-    // Live-lane Transform so cold CRDT cannot overwrite with incomplete local hierarchy mid-frame.
-    const putLiveTransform = (
+    const { VirtualCamera, Transform } = this.readComponents
+    // VC entity: live-lane so cold CRDT cannot overwrite local offset mid-bind.
+    // Ancestors (stage parents): structural put only — NOT vc-live. Live-locking parents
+    // fought TweenBridge board Move/Scale and re-yanked parented VirtualCameras when a later
+    // pointer tick re-delivered transforms (page flip). Tween LWW owns parent motion.
+    const putStructuralTransform = (
       entity: number,
       tr: import('../../shim/types').PlayerFrameBoundVcTransform
     ): void => {
-      this.projection.setVcLiveTransform(entity as never, {
+      Transform.createOrReplace(entity as never, {
         position: tr.position,
         rotation: tr.rotation,
         scale: tr.scale,
@@ -3196,9 +3209,14 @@ export class SceneScriptSystem {
       })
     }
     for (const anchor of bound.anchors) {
-      putLiveTransform(anchor.entity, anchor.transform)
+      putStructuralTransform(anchor.entity, anchor.transform)
     }
-    putLiveTransform(bound.entity, bound.transform)
+    this.projection.setVcLiveTransform(bound.entity as never, {
+      position: bound.transform.position,
+      rotation: bound.transform.rotation,
+      scale: bound.transform.scale,
+      parent: bound.transform.parent as never
+    })
     VirtualCamera.createOrReplace(bound.entity as never, (bound.virtualCamera ?? {}) as never)
     this.vcBindHydratePullPending = false
     if (graphKey !== this.lastVcBindHydrateLogKey) {
@@ -3265,7 +3283,8 @@ export class SceneScriptSystem {
       Transform,
       Billboard,
       MainCamera,
-      InputModifier
+      InputModifier,
+      Tween
     } = this.readComponents
 
     for (const change of this.projection.changes) {
@@ -3331,6 +3350,10 @@ export class SceneScriptSystem {
 
       if (change.componentId === Billboard.componentId) {
         this.entityStore?.setBillboard(change.entity, change.kind !== 'delete')
+      }
+
+      if (change.kind === 'put' && change.componentId === Tween.componentId) {
+        this.dirtyTweenEntities.add(change.entity)
       }
 
       let comps = this.pendingDiff.get(change.entity)
@@ -4230,7 +4253,10 @@ export class SceneScriptSystem {
     const { Tween } = this.readComponents
     let tweenCount = 0
     for (const _ of this.view.getEntitiesWith(Tween)) tweenCount++
-    this.tweenBridge.sync(this.view)
+    // Pass any Tween PUTs not yet drained by pumpMotion (encode path mid-batch).
+    const tweenDirtied = this.dirtyTweenEntities
+    this.dirtyTweenEntities = new Set()
+    this.tweenBridge.sync(this.view, tweenDirtied)
     // Encode progress accumulated by pumpMotionBridges — do not advance again here.
     this.tweenBridge.update(0, this.view)
     if (isTweenVerbose() && tweenCount > 0) {
@@ -4752,7 +4778,7 @@ export class SceneScriptSystem {
     if (!this.running || !this.bridge || !this.entityStore || !this.pendingDiff.size) return
     if (!this.bridge.canConsumeDiff()) return
 
-    const { Transform, AvatarAttach } = this.readComponents
+    const { Transform, AvatarAttach, Tween } = this.readComponents
     const transformDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
     for (const [entity, comps] of this.pendingDiff) {
       const transformKind = comps.get(Transform.componentId)
@@ -4766,7 +4792,8 @@ export class SceneScriptSystem {
     )
     const transformEntities = [...transformDiff.keys()]
     applySceneDiff(this.entityStore, transformDiff, this.view, this.readComponents, tweenRefresh, {
-      skipTransformApply: (entity) => AvatarAttach.has(entity),
+      skipTransformApply: (entity) =>
+        AvatarAttach.has(entity) || isTransformTweenOwned(entity, Tween),
       onReservedParent: (entity, parent, view) => {
         this.bridge?.noteReservedParentedEntity(entity, parent, view)
       }
@@ -4957,7 +4984,9 @@ export class SceneScriptSystem {
     this.systemTransformDirty.clear()
     this.physMotionSnapshot = null
     // Phase C: always sync to pick up new Tween signatures; update only when live.
-    this.tweenBridge?.sync(this.view)
+    const tweenDirtied = this.dirtyTweenEntities
+    this.dirtyTweenEntities = new Set()
+    this.tweenBridge?.sync(this.view, tweenDirtied)
     if (this.tweenBridge?.hasLiveTweens()) {
       this.tweenBridge.update(delta, this.view)
       this.markTweenColliderPosesDirty()

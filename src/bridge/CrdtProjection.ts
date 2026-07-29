@@ -120,6 +120,13 @@ interface ComponentMeta {
 
 /** Live VC pose lane — outranks async worker CRDT during MOVE CAMERA flight. */
 const VC_LIVE_TS_BASE = 10_000_000_000
+/**
+ * Tween-owned Transform lane — outranks worker CRDT while Move/Scale/Rotate is live.
+ * Below VC_LIVE so MOVE CAMERA still wins. VirtualCameraBridge resolves world pose from
+ * ECS Transform parent chains (not Three matrixWorld); setRenderer(+1) lost to worker LWW
+ * and left plaza eventCam frozen on the wall while the board tweened away.
+ */
+const TWEEN_TRANSFORM_TS_BASE = 5_000_000_000
 
 export class CrdtProjection {
   /** componentId → (entity → latest decoded value). */
@@ -127,6 +134,7 @@ export class CrdtProjection {
   /** componentId → (entity → last applied Lamport timestamp). */
   private readonly timestamps = new Map<number, Map<Entity, number>>()
   private vcLiveSeq = 0
+  private tweenTransformSeq = 0
   /** Entities holding live Transform priority (bound VC + lookAt/parent follow rig). */
   private readonly vcLiveEntities = new Set<Entity>()
   private readonly meta = new Map<number, ComponentMeta>()
@@ -135,6 +143,7 @@ export class CrdtProjection {
   readonly changes: ProjectionChange[] = []
 
   private readonly transformId: number
+  private readonly tweenComponentId: number | null
   /** Network-entity book-keeping component ids (so we replicate `fixTransformParent`). */
   private readonly networkEntityId: number | null
   private readonly networkParentId: number | null
@@ -165,6 +174,7 @@ export class CrdtProjection {
       this.timestamps.set(id, new Map())
     }
     this.transformId = components.Transform.componentId
+    this.tweenComponentId = components.Tween?.componentId ?? null
     this.networkEntityId = network?.networkEntity?.componentId ?? null
     this.networkParentId = network?.networkParent?.componentId ?? null
     this.reservedEntities = reservedEntities ?? new Set()
@@ -290,6 +300,7 @@ export class CrdtProjection {
     this.deletedEntities.delete(entity)
     if (componentId === this.transformId && this.reservedEntities.has(entity)) return
     if (this.shouldRejectStaleInboundVcTransform(entity, componentId, timestamp)) return
+    if (this.shouldRejectStaleInboundTweenTransform(entity, componentId, timestamp)) return
     const meta = this.meta.get(componentId)
     if (!meta) return
 
@@ -593,6 +604,45 @@ export class CrdtProjection {
     if (this.vcLiveEntities.has(entity)) return true
     const liveTs = this.timestamps.get(this.transformId)?.get(entity) ?? 0
     return liveTs >= VC_LIVE_TS_BASE
+  }
+
+  /**
+   * While Tween still owns Move/Scale/Rotate on this entity, reject worker Transform
+   * below the tween lane so eventCam ECS chains track the interpolated board pose.
+   */
+  private shouldRejectStaleInboundTweenTransform(
+    entity: Entity,
+    componentId: number,
+    timestamp: number
+  ): boolean {
+    if (componentId !== this.transformId) return false
+    const liveTs = this.timestamps.get(this.transformId)?.get(entity) ?? 0
+    if (liveTs < TWEEN_TRANSFORM_TS_BASE || liveTs >= VC_LIVE_TS_BASE) return false
+    if (timestamp >= liveTs) return false
+    if (this.tweenComponentId === null) return true
+    return this.components.get(this.tweenComponentId)?.has(entity) === true
+  }
+
+  /**
+   * TweenBridge → projection Transform with LWW priority over worker scene puts.
+   * Required so VirtualCamera parent-chain resolution follows board open Move / page Scale.
+   * Clears VC-live membership so a hydrate anchor put cannot keep the entity forever
+   * exclusive while still allowing tween writes to own the pose.
+   */
+  setTweenOwnedTransform(entity: Entity, value: unknown): void {
+    if (this.deletedEntities.has(entity)) return
+    const map = this.components.get(this.transformId)
+    if (!map) return
+    const tsMap = this.timestamps.get(this.transformId)!
+    // Stay below VC_LIVE_TS_BASE so MOVE-CAMERA / PE-follow live can still win when needed,
+    // but drop vcLiveEntities so shouldRejectStaleInboundVcTransform does not block the
+    // world forever after a one-shot hydrate put parents on the live set.
+    if (this.vcLiveEntities.has(entity)) {
+      this.vcLiveEntities.delete(entity)
+    }
+    const ts = TWEEN_TRANSFORM_TS_BASE + ++this.tweenTransformSeq
+    tsMap.set(entity, ts)
+    map.set(entity, value)
   }
 
   setRenderer(componentId: number, entity: Entity, value: unknown): void {

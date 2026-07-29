@@ -51,7 +51,8 @@ const DCL_PLANE_NORTH_CORNER_TO_THREE = [2, 3, 1, 0]
 const DCL_PLANE_SOUTH_CORNER_TO_THREE = [3, 2, 0, 1]
 
 /** Bump when plane topology/UV layout changes — busts primitiveMeshKey mesh cache. */
-const PLANE_GEOMETRY_REVISION = 'v21'
+/** v22: south-face atlas U flip is span-relative (JUMP IN button). */
+const PLANE_GEOMETRY_REVISION = 'v22'
 
 /**
  * userData: marquee atlas plane. MaterialApplier: flipY=false, FrontSide only.
@@ -226,8 +227,12 @@ function planeUvsMapTextAlongLocalY(uvs: readonly number[]): boolean {
 }
 
 /**
- * Build south-face UVs (BR, BL, TL, TR) from north (BL, BR, TR, TL) with U mirrored.
- * Matches DEFAULT_DCL_PLANE_UVS south packing: full-tile north → 1,0, 0,0, 0,1, 1,1.
+ * Build south-face UVs (BR, BL, TL, TR) from north (BL, BR, TR, TL) with U mirrored
+ * **within the north U span**.
+ *
+ * Full-tile north (0–1) → south 1,0, 0,0, 0,1, 1,1 (DEFAULT_DCL_PLANE_UVS).
+ * Atlas sub-rects (JUMP IN `jump_in_btn.png` in a sheet) must NOT use absolute `1−u`
+ * — that samples the opposite side of the atlas (solid “bg” + mirrored glyphs).
  */
 function mirrorSouthPlaneUvs(north: readonly number[]): number[] {
   const blU = north[0] ?? 0
@@ -238,8 +243,20 @@ function mirrorSouthPlaneUvs(north: readonly number[]): number[] {
   const trV = north[5] ?? 0
   const tlU = north[6] ?? 0
   const tlV = north[7] ?? 0
-  // South corner order BR, BL, TL, TR — U mirrored so both faces read correctly.
-  return [1 - blU, blV, 1 - brU, brV, 1 - trU, trV, 1 - tlU, tlV]
+  const umin = Math.min(blU, brU, trU, tlU)
+  const umax = Math.max(blU, brU, trU, tlU)
+  const flipU = (u: number) => umin + umax - u
+  // South corner order BR, BL, TL, TR — U mirrored in-span so both faces read L→R.
+  return [
+    flipU(blU),
+    blV,
+    flipU(brU),
+    brV,
+    flipU(trU),
+    trV,
+    flipU(tlU),
+    tlV
+  ]
 }
 
 /**

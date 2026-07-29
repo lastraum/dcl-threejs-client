@@ -1151,13 +1151,37 @@ function publishVcPoseLiveIfBound(): void {
   const vcEntity = vc as Entity
   const follow = isBoundVcPeFollowRig(eng)
 
-  if (!follow) {
-    // Locked / select / cinematic — worker world pose under Root (main hierarchy is incomplete).
+  const tr = Transform.getOrNull(vcEntity)
+  const parentId = tr?.parent as number | undefined
+  const stageParented =
+    !follow &&
+    parentId !== undefined &&
+    parentId !== null &&
+    parentId !== 0 &&
+    parentId !== (eng.RootEntity as number) &&
+    parentId !== (eng.PlayerEntity as number) &&
+    parentId !== (eng.CameraEntity as number)
+
+  if (stageParented && tr) {
+    // Plaza eventCam under events board — keep VC local+parent only.
+    // Do NOT live-overwrite board ancestors: main TweenBridge owns board move/scale; parent
+    // live-puts fought that and jumped the lens when pages flipped (next arrow).
+    maybePost(vcEntity, {
+      position: { x: tr.position.x, y: tr.position.y, z: tr.position.z },
+      rotation: { x: tr.rotation.x, y: tr.rotation.y, z: tr.rotation.z, w: tr.rotation.w },
+      scale: {
+        x: tr.scale?.x ?? 1,
+        y: tr.scale?.y ?? 1,
+        z: tr.scale?.z ?? 1
+      },
+      parent: parentId
+    })
+  } else if (!follow) {
+    // Root-level locked / select — worker world pose under Root.
     const flat = worldFlattenedVcTransform(eng, vcEntity)
     maybePost(vcEntity, flat)
   } else {
     // PE-follow — keep local hierarchy; pure-transform anchors only (never mesh lookAt).
-    const tr = Transform.getOrNull(vcEntity)
     if (tr) {
       maybePost(vcEntity, {
         position: { x: tr.position.x, y: tr.position.y, z: tr.position.z },

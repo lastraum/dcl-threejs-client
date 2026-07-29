@@ -1,4 +1,5 @@
 import type { Entity } from '@dcl/ecs'
+import type * as THREE from 'three'
 import type { EntityStore } from './EntityStore'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionChangeKind } from './CrdtProjection'
@@ -211,21 +212,69 @@ export function applySceneDiff(
     const t = Transform.get(entity)
     const parentId = t.parent as Entity | undefined
     onReservedParent?.(entity, parentId, view)
+    const objBefore = store.getNode(entity)
+    const prevSx = objBefore ? Math.abs(objBefore.scale.x) : 1
+    const prevSy = objBefore ? Math.abs(objBefore.scale.y) : 1
+    const skipLocal = skipTransformApply?.(entity) === true
     applyEntityLocalTransform(
       store,
       entity,
       view,
       Transform,
       reservedAnchors,
-      skipTransformApply?.(entity) === true
+      skipLocal
     )
 
     const obj = store.getNode(entity)
     if (!obj) continue
 
-    obj.visible = VisibilityComponent.has(entity)
+    const nextVisible = VisibilityComponent.has(entity)
       ? VisibilityComponent.get(entity).visible !== false
       : true
+    const wasVisible = obj.visible
+    obj.visible = nextVisible
+    // Static GLTF hosts freeze matrixAutoUpdate — when a hidden chip becomes visible
+    // (plaza event close X), unfreeze + force mesh leaves visible + world bake.
+    // One-shot bake when scale leaves zero (plaza blackMask 0,0,1 → 64×32 on event open).
+    const sx = Math.abs(obj.scale.x)
+    const sy = Math.abs(obj.scale.y)
+    const scaleLeftZero =
+      !skipLocal && (prevSx <= 1e-3 || prevSy <= 1e-3) && sx > 1e-3 && sy > 1e-3
+    if (nextVisible && !wasVisible) {
+      // Close button / UI chips: frozen static GLB leaves can stay invisible if attach
+      // ran while host was hidden; re-enable non-collider meshes and live matrices.
+      obj.matrixAutoUpdate = true
+      obj.traverse((child) => {
+        child.matrixAutoUpdate = true
+        if ((child as THREE.Mesh).isMesh && !/collider/i.test(child.name)) {
+          child.visible = true
+        }
+      })
+      obj.updateMatrix()
+      obj.updateMatrixWorld(true)
+      // Re-queue materials / node mods so blackMask alpha + close atlas apply on first show
+      // (open often toggles Visibility before scale/material settle).
+      if (components.Material.has(entity)) {
+        store.notifyComponentChange(entity, components.Material.componentId, 'put')
+      }
+      if (components.GltfNodeModifiers.has(entity)) {
+        store.notifyComponentChange(entity, components.GltfNodeModifiers.componentId, 'put')
+      }
+      if (components.MeshRenderer.has(entity)) {
+        store.notifyComponentChange(entity, components.MeshRenderer.componentId, 'put')
+      }
+    } else if (nextVisible && scaleLeftZero) {
+      if (!obj.matrixAutoUpdate) obj.updateMatrix()
+      obj.updateMatrixWorld(true)
+      // blackMask qQe: scale 0,0,1 → 64×32 — force material pass so dim is not stuck at opacity 0
+      // without a mesh/material rebind.
+      if (components.Material.has(entity)) {
+        store.notifyComponentChange(entity, components.Material.componentId, 'put')
+      }
+      if (components.MeshRenderer.has(entity)) {
+        store.notifyComponentChange(entity, components.MeshRenderer.componentId, 'put')
+      }
+    }
 
     // core-schema::Name — debug / tooling label on the Three.js group (Explorer entity name).
     if (Name.has(entity)) {

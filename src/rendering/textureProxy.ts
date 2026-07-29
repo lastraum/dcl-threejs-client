@@ -134,6 +134,9 @@ export function preferFetchTextureLoad(url: string): boolean {
   if (/\.arweave\.net\//i.test(url) || /^https?:\/\/arweave\.net\//i.test(url)) return true
   // Event posters are often .webp with Content-Type: application/octet-stream — fetch + typed blob.
   if (/\.webp(\?|#|$)/i.test(url)) return true
+  // Genesis Plaza / events API CDN hosts (extension-less or odd MIME).
+  if (/events-assets[^/]*\.decentraland\.org\//i.test(url)) return true
+  if (/^https?:\/\/events\.decentraland\.org\//i.test(url)) return true
   // Scene content CDN: `/content/contents/<cid>` (no extension) + octet-stream + nosniff.
   // TextureLoader/Image() refuses; fetch + magic-byte MIME is required (Jump Zone board art).
   if (/\/content\/contents\//i.test(url)) return true

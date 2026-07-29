@@ -69,8 +69,12 @@ function applyTextShapeMeshOffset(mesh: THREE.Mesh, layout: TextLayout): void {
   mesh.position.set(-layout.meshX, layout.meshY, 0)
 }
 
-export function buildTextShapeMesh(spec: PBTextShape): THREE.Mesh {
-  const layout = layoutTextShape(spec)
+/**
+ * @param worldScale Abs geometric mean of parent XY scale (plaza event cards use 5).
+ *   Canvas pixel density scales with this so text stays sharp when Transform.scale enlarges the entity.
+ */
+export function buildTextShapeMesh(spec: PBTextShape, worldScale = 1): THREE.Mesh {
+  const layout = layoutTextShape(spec, worldScale)
 
   const canvas = document.createElement('canvas')
   canvas.width = layout.canvasW
@@ -95,17 +99,19 @@ export function buildTextShapeMesh(spec: PBTextShape): THREE.Mesh {
 
   const mesh = new THREE.Mesh(geometry, material)
   applyTextShapeMeshOffset(mesh, layout)
-  mesh.userData.textShapeSignature = textShapeSignature(spec)
+  mesh.userData.textShapeSignature = textShapeSignature(spec, worldScale)
+  mesh.userData.textShapeWorldScale = worldScale
   mesh.userData.textShapeCanvas = canvas
   return mesh
 }
 
-export function updateTextShapeMesh(mesh: THREE.Mesh, spec: PBTextShape): void {
-  const sig = textShapeSignature(spec)
+export function updateTextShapeMesh(mesh: THREE.Mesh, spec: PBTextShape, worldScale = 1): void {
+  const sig = textShapeSignature(spec, worldScale)
   if (mesh.userData.textShapeSignature === sig) return
   mesh.userData.textShapeSignature = sig
+  mesh.userData.textShapeWorldScale = worldScale
 
-  const layout = layoutTextShape(spec)
+  const layout = layoutTextShape(spec, worldScale)
 
   const mat = mesh.material as THREE.MeshBasicMaterial
   let map = mat.map as THREE.CanvasTexture | null
@@ -177,8 +183,15 @@ function disposeMat(m: THREE.Material): void {
  * Layout text at authored fontSize (world meters = fontSize * 0.1).
  * Non-wrap / wrap-without-height: content-sized plane + textAlign as entity pivot.
  * Wrap with authored height: full auth plane, align painted inside.
+ *
+ * @param worldScale Parent XY scale product (geom mean). Plaza event cards use scale 5 —
+ *   without denser canvas, glyphs are ~9px then blown up soft.
  */
-function layoutTextShape(spec: PBTextShape): TextLayout {
+function layoutTextShape(spec: PBTextShape, worldScale = 1): TextLayout {
+  // Cap density so huge scaled props don't allocate multi‑MB canvases.
+  const resScale = Math.min(8, Math.max(1, Math.abs(worldScale) || 1))
+  const ppm = PIXELS_PER_METER * resScale
+
   const widthAuthored = spec.width != null && Number.isFinite(spec.width)
   const heightAuthored = spec.height != null && Number.isFinite(spec.height)
   const authW = Math.max(PLANE_MIN, widthAuthored ? (spec.width as number) : 1)
@@ -190,14 +203,14 @@ function layoutTextShape(spec: PBTextShape): TextLayout {
   const align = alignFromSpec(spec)
   const plain = stripTextShapeMarkup(spec.text ?? '')
 
-  const boxW = Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.round(authW * PIXELS_PER_METER)))
+  const boxW = Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.round(authW * ppm)))
   // When height is omitted, start from a generous measure box then shrink to content.
   const measureH = heightAuthored
     ? authH
     : Math.max(authH, 4)
   const boxH = Math.min(
     CANVAS_MAX,
-    Math.max(CANVAS_MIN, Math.round(measureH * PIXELS_PER_METER))
+    Math.max(CANVAS_MIN, Math.round(measureH * ppm))
   )
 
   const padL0 = Math.max(0, (spec.paddingLeft ?? 0) * boxW * 0.5)
@@ -207,9 +220,9 @@ function layoutTextShape(spec: PBTextShape): TextLayout {
   const innerW0 = Math.max(1, boxW - padL0 - padR0)
   const innerH0 = Math.max(1, boxH - padT0 - padB0)
 
-  // fontSize N → N/10 m → N * 16 px at PIXELS_PER_METER
+  // fontSize N → N/10 m local → denser px when parent scale enlarges the entity in world.
   const fontSizeSpec = spec.fontSize ?? 10
-  let fontPx = Math.max(4, fontSizeSpec * FONT_SIZE_TO_METERS * PIXELS_PER_METER)
+  let fontPx = Math.max(4, fontSizeSpec * FONT_SIZE_TO_METERS * ppm)
 
   const mcanvas = document.createElement('canvas')
   mcanvas.width = 4
@@ -268,8 +281,9 @@ function layoutTextShape(spec: PBTextShape): TextLayout {
       : Math.max(CANVAS_MIN, Math.ceil(blockH + padY))
     canvasW = Math.min(CANVAS_MAX, contentWpx)
     canvasH = Math.min(CANVAS_MAX, contentHpx)
-    planeW = Math.max(PLANE_MIN, canvasW / PIXELS_PER_METER)
-    planeH = Math.max(PLANE_MIN, canvasH / PIXELS_PER_METER)
+    // Plane stays in local meters (independent of resScale); denser canvas only.
+    planeW = Math.max(PLANE_MIN, canvasW / ppm)
+    planeH = Math.max(PLANE_MIN, canvasH / ppm)
 
     // textAlign = pivot on entity origin (not placement inside a huge default 1 m box).
     // Plane geometry is centered on mesh local 0 — shift so the align edge hits origin.
@@ -372,7 +386,10 @@ function paintLaidOutText(
   }
 }
 
-export function textShapeSignature(spec: PBTextShape): string {
+export function textShapeSignature(spec: PBTextShape, worldScale = 1): string {
+  // Quantize scale so tiny matrix jitter does not thrash re-raster.
+  const resScale = Math.min(8, Math.max(1, Math.abs(worldScale) || 1))
+  const scaleKey = Math.round(resScale * 4) / 4
   return JSON.stringify({
     text: spec.text,
     fontSize: spec.fontSize,
@@ -394,7 +411,8 @@ export function textShapeSignature(spec: PBTextShape): string {
     paddingRight: spec.paddingRight,
     paddingBottom: spec.paddingBottom,
     paddingLeft: spec.paddingLeft,
-    font: spec.font
+    font: spec.font,
+    worldScale: scaleKey
   })
 }
 

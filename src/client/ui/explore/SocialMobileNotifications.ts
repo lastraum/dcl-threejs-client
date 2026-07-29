@@ -566,7 +566,7 @@ export class SocialMobileNotifications {
 
   /**
    * In-world system toast (same card as community announcements).
-   * Use a stable `id` to replace an existing banner (e.g. remote avatar progress).
+   * Use a stable `id` to replace an existing banner.
    */
   pushSystemToast(opts: {
     id: string

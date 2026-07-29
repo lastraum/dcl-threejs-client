@@ -77,6 +77,26 @@ export class VirtualCameraBridge {
   /** Last target we applied — distinguishes teleport (accept) from single-frame CRDT spikes (hold). */
   private readonly lastAppliedTargetPos = new THREE.Vector3()
   private hasAppliedTarget = false
+  /**
+   * Settled cinematic hold (stage / locked shots, not PE-follow).
+   *
+   * During VirtualCamera.defaultTransition we retarget from live ECS (board open Move).
+   * When that transition finishes we **capture world pose once** and hold until unbind.
+   * Page-flip Tweens on cousin pivots (and CRDT thrash on the board root) must not
+   * re-pull the lens. PE-follow stays live every frame.
+   */
+  private settleHoldEntity: Entity | null = null
+  private readonly settleHeldPos = new THREE.Vector3()
+  private readonly settleHeldQuat = new THREE.Quaternion()
+  private readonly settleHeldLookAt = new THREE.Vector3()
+  private settleHeldHasLookAt = false
+  private hasSettleHold = false
+  /**
+   * After defaultTransition ends, keep following live ECS briefly so parent stage Tweens
+   * (often ~1s Move while cam transition is 0.8s) can finish, then hard-hold.
+   */
+  private postTransitionLiveRemainS = 0
+  private static readonly POST_TRANSITION_LIVE_S = 0.4
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -149,11 +169,13 @@ export class VirtualCameraBridge {
         this.transition = null
         this.parityFramesAfterBind = 0
         this.hasAppliedTarget = false
+        this.clearSettleHold()
       }
       return false
     }
 
-    const target = this.computeTargetPose(virtualEntity)
+    const peFollow = this.isPeFollowVirtualCamera(virtualEntity)
+    let target = this.computeTargetPose(virtualEntity)
     if (!target) {
       this.logApplyDiag(resolved, virtualEntity, 'computeTargetPose-failed')
       if (vcDebugVerbose()) {
@@ -171,12 +193,16 @@ export class VirtualCameraBridge {
     const bindChanged = this.activeEntity !== virtualEntity
 
     if (bindChanged) {
-      // SDK parity: only VirtualCamera.defaultTransition drives motion (time / speed).
+      this.clearSettleHold()
+      // SDK parity: only VirtualCamera.defaultTransition drives bind motion (time / speed).
+      // While transitioning, retarget `to` from live ECS each frame so parent Tweens track.
       this.beginTransition(camera, virtualEntity, target)
       if (!this.transition) {
         this.applyLensPose(camera, target.position, target.rotation, target.lookAtPoint)
         this.lastAppliedTargetPos.copy(target.position)
         this.hasAppliedTarget = true
+        // Instant bind (no transition): settle immediately unless PE-follow.
+        if (!peFollow) this.armSettleHold(virtualEntity, target)
       } else {
         this.hasAppliedTarget = false
       }
@@ -187,9 +213,13 @@ export class VirtualCameraBridge {
         const look = target.lookAtPoint
           ? `lookAt=(${target.lookAtPoint.x.toFixed(1)},${target.lookAtPoint.y.toFixed(1)},${target.lookAtPoint.z.toFixed(1)})`
           : 'lookAt=entity-quat'
+        const tr = describeDefaultTransition(
+          (this.ecs.VirtualCamera.getOrNull(virtualEntity) as PBVirtualCamera | null)?.defaultTransition,
+          camera.position.distanceTo(target.position)
+        )
         clientDebugLog.log(
           'vc-lens',
-          `bind e${virtualEntity} pos=(${target.position.x.toFixed(1)},${target.position.y.toFixed(1)},${target.position.z.toFixed(1)}) ${look}`
+          `bind e${virtualEntity} pos=(${target.position.x.toFixed(1)},${target.position.y.toFixed(1)},${target.position.z.toFixed(1)}) ${look} ${tr}`
         )
       }
       if (vcDebugVerbose()) {
@@ -198,8 +228,27 @@ export class VirtualCameraBridge {
       }
     }
 
+    // Hard settle hold: ignore all later ECS thrash (page flip, board CRDT re-PUT).
+    if (
+      !peFollow &&
+      this.hasSettleHold &&
+      this.settleHoldEntity === virtualEntity &&
+      !this.transition
+    ) {
+      target = {
+        position: this.settleHeldPos,
+        rotation: this.settleHeldQuat,
+        lookAtPoint: this.settleHeldHasLookAt ? this.settleHeldLookAt : undefined
+      }
+      this.applyLensPose(camera, target.position, target.rotation, target.lookAtPoint)
+      this.lastAppliedTargetPos.copy(target.position)
+      this.hasAppliedTarget = true
+      return true
+    }
+
     if (this.transition) {
-      // Retarget end pose each frame (follow / player moves).
+      // Retarget end pose every frame — VC parents may Tween Move/Scale during bind
+      // (SDK: transition *into* the camera while the entity may itself move).
       this.transition.toPos.copy(target.position)
       this.transition.toQuat.copy(target.rotation)
       if (this.transition.useLookAt && target.lookAtPoint) {
@@ -229,6 +278,27 @@ export class VirtualCameraBridge {
         this.transition = null
         this.lastAppliedTargetPos.copy(target.position)
         this.hasAppliedTarget = true
+        // Keep live briefly so parent stage Tweens can finish, then hard-hold.
+        if (!peFollow) {
+          this.postTransitionLiveRemainS = VirtualCameraBridge.POST_TRANSITION_LIVE_S
+        }
+      }
+    } else if (
+      !peFollow &&
+      this.postTransitionLiveRemainS > 0 &&
+      this.settleHoldEntity !== virtualEntity
+    ) {
+      this.postTransitionLiveRemainS -= delta
+      this.applyLensPose(camera, target.position, target.rotation, target.lookAtPoint)
+      this.lastAppliedTargetPos.copy(target.position)
+      this.hasAppliedTarget = true
+      if (this.postTransitionLiveRemainS <= 0) {
+        this.armSettleHold(virtualEntity, target)
+        clientDebugLog.log(
+          'vc-lens',
+          `settle hold e${virtualEntity} pos=(${target.position.x.toFixed(1)},${target.position.y.toFixed(1)},${target.position.z.toFixed(1)})`,
+          { throttleMs: 0 }
+        )
       }
     } else {
       // World-flat VC: suppress single-frame CRDT spikes only (not teleports).
@@ -248,19 +318,31 @@ export class VirtualCameraBridge {
       this.applyLensPose(camera, target.position, target.rotation, target.lookAtPoint)
       this.lastAppliedTargetPos.copy(target.position)
       this.hasAppliedTarget = true
+      if (!peFollow && !this.hasSettleHold) {
+        this.armSettleHold(virtualEntity, target)
+      }
     }
 
     if (vcDebugVerbose()) {
       this.debugElapsed += delta
-      if (this.parityFramesAfterBind > 0) {
-        this.parityFramesAfterBind--
-        if (this.debugElapsed >= 0.25) {
-          this.debugElapsed = 0
-          this.emitParityReport('post-bind tick', virtualEntity, resolved, false)
-        }
-      } else if (this.debugElapsed >= 0.5) {
+      if (this.parityFramesAfterBind > 0) this.parityFramesAfterBind--
+      const tickInterval = this.parityFramesAfterBind > 0 ? 0.25 : 0.5
+      if (this.debugElapsed >= tickInterval) {
         this.debugElapsed = 0
-        this.emitParityReport('vcdebug', virtualEntity, resolved, false)
+        this.emitParityReport(
+          this.parityFramesAfterBind > 0 ? 'post-bind tick' : 'vcdebug',
+          virtualEntity,
+          resolved,
+          false
+        )
+        if (this.transition) {
+          const tr = this.transition
+          const u = Math.min(1, tr.elapsed / Math.max(tr.duration, 1e-6))
+          console.info(
+            `[vc-lens] transition u=${u.toFixed(2)} duration=${tr.duration.toFixed(2)}s ` +
+              `to=(${tr.toPos.x.toFixed(1)},${tr.toPos.y.toFixed(1)},${tr.toPos.z.toFixed(1)}) vc=e${virtualEntity}`
+          )
+        }
       }
     }
 
@@ -426,19 +508,36 @@ export class VirtualCameraBridge {
     }
   }
 
-  private computeTargetPose(virtualEntity: Entity): TargetPose | null {
-    const spec = this.ecs.VirtualCamera.get(virtualEntity) as PBVirtualCamera
-    const local = this.ecs.Transform.getOrNull(virtualEntity) as DclTransformValues | null
-    if (!local) return null
+  private clearSettleHold(): void {
+    this.settleHoldEntity = null
+    this.hasSettleHold = false
+    this.settleHeldHasLookAt = false
+    this.postTransitionLiveRemainS = 0
+  }
 
+  private armSettleHold(virtualEntity: Entity, target: TargetPose): void {
+    this.settleHoldEntity = virtualEntity
+    this.settleHeldPos.copy(target.position)
+    this.settleHeldQuat.copy(target.rotation)
+    if (target.lookAtPoint) {
+      this.settleHeldLookAt.copy(target.lookAtPoint)
+      this.settleHeldHasLookAt = true
+    } else {
+      this.settleHeldHasLookAt = false
+    }
+    this.hasSettleHold = true
+    this.postTransitionLiveRemainS = 0
+  }
+
+  /** Classic CameraFollow: parent === lookAtEntity (non-reserved) — must stay live. */
+  private isPeFollowVirtualCamera(virtualEntity: Entity): boolean {
+    const spec = this.ecs.VirtualCamera.getOrNull(virtualEntity) as PBVirtualCamera | null
+    const local = this.ecs.Transform.getOrNull(virtualEntity) as DclTransformValues | null
+    if (!spec || !local) return false
     const lookAt = spec.lookAtEntity
     const parent = local.parent as number | undefined
     const { RootEntity, PlayerEntity, CameraEntity } = this.view
-
-    // Classic CameraFollow third-person: parent === lookAtEntity === cameraParent (not reserved).
-    // Parent is driven toward the player by the scene; use live PE + local offset so the lens
-    // does not hitch on lagging cameraParent CRDT (Planet Angzaar / gameplay follow).
-    const isPeFollowShape =
+    return (
       lookAt !== undefined &&
       lookAt !== null &&
       parent !== undefined &&
@@ -450,8 +549,22 @@ export class VirtualCameraBridge {
       (parent as number) === (lookAt as number) &&
       lookAt !== (virtualEntity as number) &&
       lookAt !== (CameraEntity as number)
+    )
+  }
 
-    if (isPeFollowShape) {
+  private computeTargetPose(virtualEntity: Entity): TargetPose | null {
+    const spec = this.ecs.VirtualCamera.get(virtualEntity) as PBVirtualCamera
+    const local = this.ecs.Transform.getOrNull(virtualEntity) as DclTransformValues | null
+    if (!local) return null
+
+    const lookAt = spec.lookAtEntity
+    const parent = local.parent as number | undefined
+    const { CameraEntity } = this.view
+
+    // Classic CameraFollow third-person: parent === lookAtEntity === cameraParent (not reserved).
+    // Parent is driven toward the player by the scene; use live PE + local offset so the lens
+    // does not hitch on lagging cameraParent CRDT (Planet Angzaar / gameplay follow).
+    if (this.isPeFollowVirtualCamera(virtualEntity)) {
       const player = this.playerPose()
       const wx = player.position.x + local.position.x
       const wy = player.position.y + local.position.y
@@ -520,9 +633,15 @@ export class VirtualCameraBridge {
 
   private beginTransition(camera: THREE.Camera, virtualEntity: Entity, target: TargetPose): void {
     const spec = this.ecs.VirtualCamera.get(virtualEntity) as PBVirtualCamera
+    const jumpM = camera.position.distanceTo(target.position)
     const duration = resolveTransitionDuration(spec.defaultTransition, camera.position, target.position)
     if (duration <= 0) {
       this.transition = null
+      if (vcDebugVerbose()) {
+        console.info(
+          `[vc-lens] bind transition vc=e${virtualEntity} ${describeDefaultTransition(spec.defaultTransition, jumpM)} instant jump=${jumpM.toFixed(1)}m`
+        )
+      }
       return
     }
 
@@ -547,11 +666,11 @@ export class VirtualCameraBridge {
       duration,
       elapsed: 0
     }
-    if (vcDebugVerbose()) {
-      console.info(
-        `[vc-lens] bind transition vc=e${virtualEntity} duration=${duration.toFixed(2)}s jump=${camera.position.distanceTo(target.position).toFixed(1)}m lookAt=${useLookAt}`
-      )
-    }
+    // Always log bind transition once (throttled path is separate) — Time/Speed parity.
+    console.info(
+      `[vc-lens] bind transition vc=e${virtualEntity} ${describeDefaultTransition(spec.defaultTransition, jumpM)} ` +
+        `duration=${duration.toFixed(2)}s jump=${jumpM.toFixed(1)}m lookAt=${useLookAt}`
+    )
   }
 }
 
@@ -588,6 +707,11 @@ function cameraLookAtQuat(
   return true
 }
 
+/**
+ * SDK Camera transitions: Time = fixed seconds; Speed = meters per second
+ * (https://docs.decentraland.org/creator/scenes-sdk7/3d-content-essentials/camera.md).
+ * Distance is lens-space meters (Three display after dclToThree — same scale as DCL meters).
+ */
 function resolveTransitionDuration(
   transition: CameraTransition | undefined,
   from: THREE.Vector3,
@@ -601,4 +725,22 @@ function resolveTransitionDuration(
     return from.distanceTo(to) / speed
   }
   return 0
+}
+
+/** Human-readable transition mode for bind logs / ?vcdebug (any scene). */
+function describeDefaultTransition(
+  transition: CameraTransition | undefined,
+  jumpM: number
+): string {
+  const mode = transition?.transitionMode
+  if (!mode) return 'transition=none'
+  if (mode.$case === 'time') {
+    return `transition=time(${mode.time}s)`
+  }
+  if (mode.$case === 'speed') {
+    const speed = Math.max(1e-6, mode.speed)
+    const dur = jumpM / speed
+    return `transition=speed(${mode.speed}m/s→${dur.toFixed(2)}s@${jumpM.toFixed(1)}m)`
+  }
+  return 'transition=unknown'
 }

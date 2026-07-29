@@ -198,6 +198,7 @@ export function repairCollapsedLayoutBoxes(
       pb.width >= 24 && pb.height >= 24 && pb.width <= 200 && pb.height <= 200
     const widthUnit = t.widthUnit ?? YGUnit.UNDEFINED
     const heightUnit = t.heightUnit ?? YGUnit.UNDEFINED
+    const isAbs = normalizeYGPositionType(t.positionType) === YGPositionType.ABSOLUTE
     if (parentIsSlotCell) {
       if ((w == null || w <= 0.5) && widthUnit === YGUnit.PERCENT && (t.width ?? 0) >= 90) {
         w = (pb.width * (t.width ?? 100)) / 100
@@ -205,13 +206,26 @@ export function repairCollapsedLayoutBoxes(
       if ((h == null || h <= 0.5) && heightUnit === YGUnit.PERCENT && (t.height ?? 0) >= 90) {
         h = (pb.height * (t.height ?? 100)) / 100
       }
+      // Absolute icon leaves under a fixed slot with AUTO/undefined size collapse to 0×0
+      // (Yoga has no image measure). Fill the slot — badges with explicit POINT size skip this.
+      if (isAbs) {
+        const widthAuto =
+          widthUnit === YGUnit.AUTO ||
+          widthUnit === YGUnit.UNDEFINED ||
+          ((t.width ?? 0) <= 0 && widthUnit !== YGUnit.PERCENT)
+        const heightAuto =
+          heightUnit === YGUnit.AUTO ||
+          heightUnit === YGUnit.UNDEFINED ||
+          ((t.height ?? 0) <= 0 && heightUnit !== YGUnit.PERCENT)
+        if ((w == null || w <= 0.5) && widthAuto) w = pb.width
+        if ((h == null || h <= 0.5) && heightAuto) h = pb.height
+      }
     }
 
     // Corner badges / NEW ribbons: single-edge pin + AUTO size — leave for text measure.
-    // Do NOT fill parent.
+    // Do NOT fill parent (except slot absolute icons above).
     if (w == null || h == null || w <= 0.5 || h <= 0.5) return false
 
-    const isAbs = normalizeYGPositionType(t.positionType) === YGPositionType.ABSOLUTE
     let relLeft = box.relLeft
     let relTop = box.relTop
     if (leftEdge != null) relLeft = leftEdge

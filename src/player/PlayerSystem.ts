@@ -237,11 +237,16 @@ export class PlayerSystem {
   private lastPhysProbeAt = 0
   private virtualCamera: VirtualCameraBridge | null = null
   /**
-   * Prior frame VirtualCamera owned the lens. While active we keep freecam yaw/pitch
-   * roughly aligned for a smooth unbind; seedFreecamFromLastVcLens runs on release.
+   * Prior frame VirtualCamera owned the lens.
+   * On release restore freecam yaw/pitch/distance saved at bind (not the cinematic lens).
    */
   private wasVirtualCameraActive = false
-  /** Snap freecam one frame after VC clear so handoff matches last cinematic lens. */
+  /** Player freecam orbit before scene VC takeover — restored on MainCamera clear. */
+  private preVcCamYaw = 0
+  private preVcCamPitch = CAM_PITCH_DEFAULT
+  private preVcCamDistance = CAM_DISTANCE_DEFAULT
+  private preVcFreecamSaved = false
+  /** Snap freecam one frame after VC clear so boom re-seats without lerp ghost. */
   private freecamSnapAfterVc = false
   /** AvatarModifierArea hide (local mesh). */
   private modifierHidden = false
@@ -1967,21 +1972,16 @@ export class PlayerSystem {
     // FocusOwner primary may drive lens via active VirtualCamera only.
     // Do **not** write freecam orbit from VC — orbit is continuous player state.
     if (this.virtualCamera?.apply(delta)) {
-      this.wasVirtualCameraActive = true
-      // Keep freecam yaw/pitch roughly aligned while VC drives (distance seeded on unbind).
-      _forward.set(0, 0, -1).applyQuaternion(this.host.camera.quaternion)
-      if (_forward.lengthSq() > 1e-8) {
-        _forward.normalize()
-        this.camYaw = Math.atan2(-_forward.x, -_forward.z)
-        // freecam camPitch is boom elevation (positive = above); look-down has negative forward.y.
-        // Never seed a looking-up VC into negative boom (under-floor freecam on unbind).
-        if (_forward.y <= 0.15) {
-          const lookPitch = Math.asin(THREE.MathUtils.clamp(_forward.y, -1, 1))
-          this.camPitch = clamp(-lookPitch, CAM_PITCH_MIN, CAM_PITCH_MAX)
-        } else {
-          this.camPitch = CAM_PITCH_DEFAULT
-        }
+      // First frame of VC ownership — stash freecam orbit for exit restore.
+      if (!this.wasVirtualCameraActive) {
+        this.preVcCamYaw = this.camYaw
+        this.preVcCamPitch = this.camPitch
+        this.preVcCamDistance = this.camDistance
+        this.preVcFreecamSaved = true
       }
+      this.wasVirtualCameraActive = true
+      // Do NOT overwrite freecam yaw/pitch from the cinematic lens — exit must restore
+      // whatever the player had before VIEW LIVE EVENTS / similar VC takeover.
       this.avatar?.setBodyVisible(!this.modifierHidden)
       if (this.nameTag) {
         this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
@@ -1991,6 +1991,12 @@ export class PlayerSystem {
     // MainCamera still points at a VC but bridge inactive (missing Transform this frame) —
     // hold last lens pose; do not let freecam/orbit steal the shot.
     if (this.virtualCamera?.isMainCameraVcBound()) {
+      if (!this.wasVirtualCameraActive) {
+        this.preVcCamYaw = this.camYaw
+        this.preVcCamPitch = this.camPitch
+        this.preVcCamDistance = this.camDistance
+        this.preVcFreecamSaved = true
+      }
       this.wasVirtualCameraActive = true
       this.avatar?.setBodyVisible(!this.modifierHidden)
       if (this.nameTag) {
@@ -1999,11 +2005,25 @@ export class PlayerSystem {
       return
     }
 
-    // VC just released — freecam resumes with existing yaw/pitch/dist (no reseed from VC pose).
+    // VC just released — restore freecam orbit from before takeover (not VC lens pose).
     const vcJustReleased = this.wasVirtualCameraActive
     if (this.wasVirtualCameraActive) {
       this.wasVirtualCameraActive = false
-      this.seedFreecamFromLastVcLens()
+      if (this.preVcFreecamSaved) {
+        this.camYaw = this.preVcCamYaw
+        this.camPitch = this.preVcCamPitch
+        this.camDistance = this.preVcCamDistance
+        this.preVcFreecamSaved = false
+        clientDebugLog.log(
+          'vc-lens',
+          `freecam restore after VC — yaw=${((this.camYaw * 180) / Math.PI).toFixed(0)}° ` +
+            `pitch=${((this.camPitch * 180) / Math.PI).toFixed(0)}° dist=${this.camDistance.toFixed(1)}`,
+          { level: 'info', alsoConsole: true }
+        )
+      } else {
+        // Fallback: no pre-VC sample (rare) — invert last lens toward player.
+        this.seedFreecamFromLastVcLens()
+      }
       this.freecamSnapAfterVc = true
     }
 

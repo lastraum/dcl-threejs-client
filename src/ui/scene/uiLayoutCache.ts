@@ -3,6 +3,7 @@ import type { PBUiInput } from '@dcl/ecs/dist/components/generated/pb/decentrala
 import type { PBUiText } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_text.gen'
 import type { PBUiTransform } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_transform.gen'
 import type { LayoutBox } from './yogaLayout'
+import { extractUiTextureSrc } from './uiBackgroundStyle'
 import { isUiEntityVisible } from './uiVisibility'
 import type { UiEntityRecord } from './uiTree'
 import type { VirtualCanvasSize } from './virtualCanvas'
@@ -84,7 +85,11 @@ export function entityUiVisualPaintKey(
   if (bg) {
     const c = bg.color
     b = c ? `bg${c.r ?? 0},${c.g ?? 0},${c.b ?? 0},${c.a ?? 1}` : 'bg'
-    if (bg.texture) b += ':tex'
+    // Must include texture src — bare `:tex` early-outs when icons resolve after first paint
+    // (vending/inventory grids stay empty until a remount forces a new visual key).
+    const texSrc = extractUiTextureSrc(bg.texture)
+    if (texSrc) b += `:tex${texSrc}`
+    else if (bg.texture) b += ':tex'
     if (bg.textureMode != null) b += `:tm${bg.textureMode}`
     // Atlas sprite rect + animated fill/zone UVs (fishing reeling bars update every tick).
     // Support number[], TypedArray, and post-JSON `{0:u0,…}` object form (no .length).

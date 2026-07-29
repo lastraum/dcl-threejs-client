@@ -90,8 +90,7 @@ export async function applyGltfNodeModifiersToEntity(
   materials: MaterialApplier,
   opts?: { logPathMiss?: boolean; entity?: Entity }
 ): Promise<boolean> {
-  // Include per-mesh UV mirror + world scale.x reflection so plaza event cards re-apply
-  // after Transform.scale.x = −1 lands (first paint often runs at scale +1).
+  // Re-apply when world scale.x reflection changes (first paint often lands before scale.x = −1).
   const sig = gltfNodeModifiersApplyKey(entityRoot, mods)
   if (entityRoot.userData[APPLIED_SIG_KEY] === sig && !modifiersNeedVideoRetry(mods, materials)) {
     return true
@@ -129,8 +128,8 @@ export async function applyGltfNodeModifiersToEntity(
           mesh.userData.primitiveDoubleSided = true
         }
 
-        // gltfNodeModifier: static maps may need U flip on LH-mirrored GLB UVs (event boards).
-        // Material apply also sets mesh.castShadow from Material.castShadows — path override below wins.
+        // gltfNodeModifier: scale.x < 0 may need map U flip; LH-mirrored event-card UVs do not
+        // (see MaterialApplier). Material apply also sets mesh.castShadow — path override below wins.
         const ok = await materials.applyToMesh(mesh, pb, { gltfNodeModifier: true })
         if (!ok) allOk = false
       }

@@ -749,10 +749,19 @@ function sampleWorkerUiTexts(eng: IEngine, limit = 10): string {
 
 /** Extra react-ecs passes after inject — exit on stable UI fingerprint, not mount heuristics. */
 const POINTER_UI_FINGERPRINT_FLUSH_MAX_PASSES = 12
-/** Mesh path: UI rarely thrash-toggles; one stable pass after seeded UP is enough. */
+/** Mesh path: small UI toggles settle fast with dt=0. */
 const POINTER_UI_MESH_FLUSH_MAX_PASSES = 4
 const POINTER_UI_MESH_STABLE_NEEDED = 1
 const POINTER_UI_SCENEU_STABLE_NEEDED = 2
+/**
+ * Large modal open (fishing shop ~700): UiTransform open tweens need wall-clock dt.
+ * eng.update(0) freezes park positions (content left≥1920) forever in phase-4 snapshot.
+ * Fingerprint includes position — stay in flush until open animation stops changing.
+ */
+const POINTER_UI_LARGE_MODAL_FLUSH_MAX_PASSES = 24
+const POINTER_UI_LARGE_MODAL_STABLE_NEEDED = 3
+/** ~50ms sim step — enough for open tweens without multi-second pointer stall. */
+const POINTER_UI_LARGE_MODAL_DT = 1 / 20
 
 async function flushReactEcsForUiSnapshot(
   eng: IEngine,
@@ -763,22 +772,29 @@ async function flushReactEcsForUiSnapshot(
     /** Fingerprint after PET_UP — first matching pass can exit without 2× idle thrash. */
     seedFp?: string
     stableNeeded?: number
+    /**
+     * Engine dt per flush pass. 0 = structural reconcile only (default).
+     * Positive = allow UiTransform open tweens to advance (large modal COD root).
+     */
+    dt?: number
   }
 ): Promise<void> {
   if (!interactive) return
   const maxPasses = options?.maxPasses ?? POINTER_UI_FINGERPRINT_FLUSH_MAX_PASSES
   const stableNeeded = options?.stableNeeded ?? POINTER_UI_SCENEU_STABLE_NEEDED
+  const dt = options?.dt ?? 0
   let prevFp = options?.seedFp ?? ''
   let stablePasses = 0
   for (let pass = 0; pass < maxPasses; pass++) {
     await runSerializedEngineUpdate(async () => {
-      await eng.update(0)
+      await eng.update(dt)
     })
-    // Do not bump lastExecutedAt on dt=0 — preserves wall-clock for NeonScreen etc.
+    // dt=0: do not treat as wall-clock frame. Positive dt advances modal open systems.
     const mount = countWorkerUiMount(eng)
     const fp = computeWorkerUiFingerprint(eng)
     log(
-      `[sceneWorker] pointer ui react-ecs flush pass=${pass + 1} mount=${mount} fp=${fp.length}B`
+      `[sceneWorker] pointer ui react-ecs flush pass=${pass + 1} mount=${mount} ` +
+        `fp=${fp.length}B dt=${dt.toFixed(3)}`
     )
     if (prevFp && fp === prevFp) {
       stablePasses++
@@ -962,8 +978,8 @@ export async function runSceneEnginePointerTick(
 
         setPointerInteractivePhase('flush')
         // Mesh/getClick (vending, world PE): seed fingerprint after UP.
-        // Large modal opens (fishing shop ~700) need ≥2 stable passes — a single seed match
-        // after UP ships half-settled layout (empty grids / ghost twin for several seconds).
+        // Large modal: positive dt + fingerprint stability (includes position) so open
+        // tweens leave park (left≥1920) before phase-4 snapshot — not client pose invent.
         const meshSeedFp = computeWorkerUiFingerprint(eng)
         const meshMount = countWorkerUiMount(eng)
         const largeModal = meshMount >= 100
@@ -972,10 +988,14 @@ export async function runSceneEnginePointerTick(
             `mount=${meshMount}${largeModal ? ' largeModal' : ''}`
         )
         await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
-          maxPasses: largeModal ? 8 : POINTER_UI_MESH_FLUSH_MAX_PASSES,
+          maxPasses: largeModal
+            ? POINTER_UI_LARGE_MODAL_FLUSH_MAX_PASSES
+            : POINTER_UI_MESH_FLUSH_MAX_PASSES,
           seedFp: meshSeedFp,
-          // Large mount: never exit on first seed match alone (stableNeeded ≥ 2).
-          stableNeeded: largeModal ? 2 : POINTER_UI_MESH_STABLE_NEEDED
+          stableNeeded: largeModal
+            ? POINTER_UI_LARGE_MODAL_STABLE_NEEDED
+            : POINTER_UI_MESH_STABLE_NEEDED,
+          dt: largeModal ? POINTER_UI_LARGE_MODAL_DT : 0
         })
 
         if (isRefuseFreezeWrites()) {

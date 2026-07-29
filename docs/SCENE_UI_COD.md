@@ -12,7 +12,8 @@
 > **Worker react-ecs authors UI. Main Yoga is the sole layout authority. DOM paints Yoga boxes. Hit-map is Yoga geometry.**  
 > No second layout invents sizes except explicit **measure** (text, background fill-intent under slots).  
 > No PE authority except **live projection**, with **same-frame mount-snapshot fill** only while live lags.  
-> Full Yoga on topology change; refine absolute dirties only with a healthy seed; patch only when collapsed≈0.
+> Full Yoga on topology change; refine absolute dirties only with a healthy seed; patch only when collapsed≈0.  
+> **No client pose invent. No second clocks. Modal open settles on the worker before snapshot.**
 
 ---
 
@@ -30,56 +31,62 @@ PointerEvents             →     hit-map + --interactive
 | Layer | Authority | Not |
 |-------|-----------|-----|
 | Authoring | Worker react-ecs | Main inventing widgets |
-| Layout math | Yoga on main from `UiTransform` | CSS flex dual-semantics, pure React re-host |
-| Paint | DOM shells nested by ECS parent | Canvas UI (optional future) |
-| Hits | Yoga `LayoutBox` → screen | `getBoundingClientRect` as primary |
-| PE | Live projection; snapshot lag-fill | Forever-live snapshot after live seen |
+| Layout math | Yoga from `UiTransform` | CSS dual-semantics · client `dx/dy` twin align |
+| Open animation | Worker systems + **positive dt** during large-modal flush | Main setTimeout re-layout · pose snap |
+| Hits | Yoga boxes → screen | `getBoundingClientRect` as primary |
+| PE | Live + snapshot lag-fill | Forever-live snapshot |
 
-**Reject:** main-thread React re-host · dual Yoga+CSS max-box · per-scene layout branches.
+**Reject:** pure React re-host · dual Yoga+CSS · per-scene branches · invent parked-panel pose.
 
 ---
 
-## Phase model (seal like static colliders)
+## Phase model
 
 | Phase | Behavior |
 |-------|----------|
-| **Hydration** | Commit mount only — **no** Yoga/DOM thrash |
-| **Pointer open (UI PE)** | Full touch + full snapshot → clearLww **per (entity,component)** → commitMount → full Yoga + Forest |
-| **Pointer open (mesh PE, large mount)** | ≥2 stable react-ecs passes (not 1 seed-match) before snapshot — fishing shop ~700 |
-| **Cooperative dirty** | Fingerprint delta → partial snapshot → paint if content epoch dirty |
+| **Hydration** | Commit mount only — no Yoga/DOM thrash |
+| **Pointer open (UI PE)** | Full touch + snapshot after fingerprint stable |
+| **Pointer open (mesh PE, mount ≥ 100)** | Flush with **dt≈1/20**, max ~24 passes, **stableNeeded=3** (fingerprint includes position — open tweens must finish) |
+| **Pointer open (mesh PE, small)** | dt=0, few passes, stableNeeded=1 |
+| **Cooperative dirty** | Fingerprint delta → partial snapshot → paint if dirty |
 | **Steady** | LayoutMode Reuse/RefineAbsolute; PaintMode Patch when collapsed≈0 |
-| **Remount / empty** | Invalidate layout+visual+PE tombstones; full path next paint |
-| **Under-paint recovery** | At most **2** layout-invalidating repaints if `pooled ≪ visibleYoga` (first-open shell only) |
+| **Remount** | Invalidate layout+visual+PE tombstones |
 
-### LayoutMode / PaintMode
+### Why positive dt on large mesh modals (root, not bandaid)
 
-| LayoutMode | When |
-|------------|------|
-| `Full` | Mount/layoutKey miss, missing boxes, unhealthy collapsed seed |
-| `RefineAbsolute` | Absolute dirties only, budget OK, healthy seed |
-| `Reuse` | layoutKey hit or visual-only with last full boxes |
-
-| PaintMode | When |
-|-----------|------|
-| `Forest` | Default after Full; growth/shrink; collapsed>4 |
-| `Patch` | Steady + few dirties + collapsed≈0 + repaired=0 |
-
-Debug: `?sceneuidebug` → `layoutMode=` / `paintMode=` / `repaired=` / `collapsed=`.
+Shop open parks content at `left≥virtualWidth` and tweens to center.  
+`eng.update(0)` freezes those tweens → phase-4 snapshot freezes empty shell @346 + content @2146.  
+Main must not invent `dx` to merge twins. **Worker advances time until fingerprint (incl. position) is stable**, then snapshot.
 
 ---
 
-## PE lead law (single helper)
+## LayoutMode / PaintMode
+
+| LayoutMode | When |
+|------------|------|
+| `Full` | Mount/layoutKey miss, missing boxes, unhealthy seed |
+| `RefineAbsolute` | Absolute dirties, budget OK, healthy seed |
+| `Reuse` | layoutKey hit or visual-only + last full boxes |
+
+| PaintMode | When |
+|-----------|------|
+| `Forest` | After Full; growth/shrink; collapsed>4 |
+| `Patch` | Steady + few dirties + collapsed≈0 + repaired=0 |
+
+---
+
+## PE lead law
 
 ```text
-1. live non-empty     → live wins; mark seen; drop snapshot for entity
+1. live non-empty     → live wins; mark seen; drop snapshot
 2. live empty + mounted + snapshot PE → snapshot (fold lag)
-3. live empty + seen + no snapshot    → deleted (splash)
+3. live empty + seen + no snapshot    → deleted
 4. else                               → none
 ```
 
-- **clearLww:** only components **present in snapshot rows** (never wipe PE on bg-only dirty).  
-- **Still-mounted PE delete:** `applyWorkerUiMountSnapshot` belt when transform row ships without PE.  
-- **Any** mount set change + **any** `ingestMountSnapshot` → clear `liveSeen`.
+clearLww only for **components present in snapshot rows**.  
+Still-mounted PE delete: `applyWorkerUiMountSnapshot` when transform without PE.  
+Any mount change + any `ingestMountSnapshot` → clear liveSeen.
 
 ---
 
@@ -87,38 +94,26 @@ Debug: `?sceneuidebug` → `layoutMode=` / `paintMode=` / `repaired=` / `collaps
 
 | Path | Role |
 |------|------|
-| `applyTextMinSize` / `applyInputMinSize` | Yoga measure for text/fields |
-| `applyBackgroundMinSize` + one expand re-layout | Full-bleed AUTO icons under POINT slot parents; **never** corner-pinned badges |
-| `repairCollapsedLayoutBoxes` | **Authored only:** POINT/%, opposite edges, slot %≥90 — **no AUTO invent** |
+| Text / input minSize | Yoga measure |
+| `applyBackgroundMinSize` + expand | Full-bleed AUTO icons under POINT slots; never corner-pinned badges |
+| `repairCollapsed` | Authored POINT/%, opposite edges, slot %≥90 only — **no AUTO invent** |
 
 ---
 
-## Kill-list (status)
+## Kill-list (COD complete — no bandaids)
 
 1. ~~Visual key texture src~~ ✅  
-2. ~~clearLww per-component rows~~ ✅  
-3. ~~Yoga bg minSize + expand (badge-safe)~~ ✅  
-4. ~~Remove collapse re-layout thrash~~ ✅ (under-paint recovery capped ≤2)  
-5. ~~LayoutMode / PaintMode named~~ ✅  
-6. ~~liveSeen on any mount change~~ ✅  
-7. ~~repairCollapsed: no AUTO slot-fill~~ ✅  
-8. ~~Scale-tween geometry restore deleted~~ ✅  
-9. ~~Fingerprint unit tests~~ ✅ `npm run test:scene-ui`  
-10. ~~Mesh large-modal ≥2 stable react-ecs passes~~ ✅  
-11. ~~Pixel atlas UV when natural size known~~ ✅  
-
-### Dual modal roots (platform fix)
-
-Fishing shop ships **two** large absolute roots: empty chrome shell at center + contentful twin parked at `left≥virtualWidth` (e.g. 2146). Off-canvas hide discarded the content tree → empty grids + stuck half-open chrome.
-
-**`alignParkedModalTwinBoxes`:** shift richer parked subtree onto on-screen shell origin; collapse lean empty shell. Debug: `twinAlign=N`.
-
-### Remaining watch
-
-| Item | Note |
-|------|------|
-| Click selection animation | Scene-owned; verify after dual-modal align |
-| `repaired=` in debug | Spike on open ok for %/edges; AUTO invent is gone |
+2. ~~clearLww per-component~~ ✅  
+3. ~~Yoga bg minSize (badge-safe)~~ ✅  
+4. ~~repair AUTO invent removed~~ ✅  
+5. ~~Scale-tween geometry restore deleted~~ ✅  
+6. ~~LayoutMode / PaintMode~~ ✅  
+7. ~~liveSeen on mount change~~ ✅  
+8. ~~Fingerprint unit tests~~ ✅ `npm run test:scene-ui`  
+9. ~~Pixel atlas UV~~ ✅  
+10. ~~Mesh large-modal: positive dt + fingerprint-stable flush~~ ✅  
+11. ~~**Deleted** `alignParkedModalTwinBoxes` (client pose invent)~~ ✅  
+12. ~~**Deleted** under-paint `setTimeout` recovery (second clock)~~ ✅  
 
 ---
 
@@ -126,17 +121,16 @@ Fishing shop ships **two** large absolute roots: empty chrome shell at center + 
 
 | Action | Expect |
 |--------|--------|
-| Fishing shop mesh open | Grids + X on first paint (or ≤~100ms recovery); not empty shell for seconds |
-| Close → open | Icons + X still present |
-| Reeling bars | `layoutMode=Reuse` or `RefineAbsolute` on UV ticks |
-| CBD splash PE | Click removes catcher |
-| Secondary FocusOwner | No scene UI paint |
+| Fishing vending mesh open | Log `largeModal` + flush `dt=0.050`; content on-screen in **first** paint (grids + X + UV) |
+| Close → open | Settles again; no stuck mid-chrome |
+| Reeling bars | Reuse/RefineAbsolute, not Full every UV tick |
+| CBD splash | PE deletes cleanly |
 
 ---
 
 ## Non-goals
 
 - Pure React layout on main  
-- CSS flex as dual authority  
-- Canvas UI rewrite for v1.x  
-- Plaza-only / fishing-only branches  
+- CSS flex dual authority  
+- Client twin-merge / pose invent  
+- setTimeout re-layout as product law  

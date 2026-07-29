@@ -110,6 +110,14 @@ export class SocialChatController {
   }
 
   /**
+   * Primary landing LiveKit room (chat + live tools topic data).
+   * Transferred to World on Jump In — do not disconnect while landing is active.
+   */
+  getComms(): CommsService {
+    return this.comms
+  }
+
+  /**
    * Watch for remote LiveKit video (Cast / stream keys). Returns unsubscribe.
    * Dynamically tracks world + scene rooms and keeps polling after OBS goes live.
    */

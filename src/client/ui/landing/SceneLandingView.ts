@@ -58,6 +58,11 @@ export type SceneLandingViewOptions = SocialShellChromeHandlers & {
     onUpdate?: (attached: boolean) => void,
     opts?: { muted?: boolean; volume?: number }
   ) => Promise<() => void>
+  /**
+   * Live tools (poll / Q&A / trivia) — same menu as in-world location card ⋯.
+   * Anchor is the options button for menu positioning.
+   */
+  onLiveToolsMenu?: (anchor: HTMLElement) => void
 }
 
 function escapeHtml(value: string): string {
@@ -78,6 +83,7 @@ export class SceneLandingView {
   private readonly onJumpIn: () => void
   private readonly onNavigate: (tab: SocialShellTab) => void
   private readonly getLoginLive: (() => LoginResult) | null
+  private readonly onLiveToolsMenu: ((anchor: HTMLElement) => void) | null
   private readonly topNav: SocialShellTopNav
   private readonly mainEl: HTMLElement
   private readonly eventModal: EventModal
@@ -135,6 +141,7 @@ export class SceneLandingView {
     this.onJumpIn = opts.onJumpIn
     this.onNavigate = opts.onNavigate
     this.getLoginLive = opts.getLogin ?? null
+    this.onLiveToolsMenu = opts.onLiveToolsMenu ?? null
     this.startCastWatch = opts.startCastWatch
     this.playSessionReady = opts.playSessionReady === true
     this.login = opts.getLogin?.() ?? opts.login
@@ -684,6 +691,11 @@ export class SceneLandingView {
     })
     this.root.querySelector('[data-scene-stats]')?.addEventListener('click', () => {
       this.openPlaceStatsModal()
+    })
+    this.root.querySelector('[data-live-tools]')?.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const btn = e.currentTarget as HTMLElement
+      this.onLiveToolsMenu?.(btn)
     })
     this.syncOwnerSettingsVisibility()
     this.renderJoinLiveMenu()
@@ -1548,6 +1560,23 @@ export class SceneLandingView {
                                     stroke-linecap="round"
                                     stroke-linejoin="round"
                                   />
+                                </svg>
+                              </button>`
+                                  : ''
+                              }
+                              ${
+                                this.onLiveToolsMenu
+                                  ? `<button
+                                type="button"
+                                class="scene-watch-live-tools-btn"
+                                data-live-tools
+                                aria-label="Live tools — poll, Q&A, trivia"
+                                title="Live tools"
+                              >
+                                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" aria-hidden>
+                                  <circle cx="12" cy="6.5" r="1.5" fill="currentColor"/>
+                                  <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
+                                  <circle cx="12" cy="17.5" r="1.5" fill="currentColor"/>
                                 </svg>
                               </button>`
                                   : ''

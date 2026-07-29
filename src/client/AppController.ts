@@ -1671,6 +1671,8 @@ export class AppController {
     }
     this.castWatchRoom?.disconnect()
     this.castWatchRoom = null
+    // Leave 2D live tools when leaving landing (play will re-bind on Jump In).
+    if (this.appMode !== 'play') this.disposeLiveTools()
     this.sceneLandingView?.dispose()
     this.sceneLandingView = null
   }
@@ -1743,6 +1745,14 @@ export class AppController {
       },
       onOpenUserProfile: (address) => this.socialChat?.openProfileForAddress(address),
       startCastWatch: (host, onUpdate, castOpts) => this.startLandingCastWatch(target, host, onUpdate, castOpts),
+      onLiveToolsMenu: (anchor) => {
+        if (!this.liveToolsUi) {
+          // LiveKit may still be connecting — start session now and open menu.
+          void this.setupLandingLiveTools(target).then(() => this.liveToolsUi?.openMenuAt(anchor))
+          return
+        }
+        this.liveToolsUi.openMenuAt(anchor)
+      },
       ...this.socialShellLoginHandlers()
     })
     this.sceneLandingView.mount(this.container)
@@ -1806,6 +1816,8 @@ export class AppController {
         this.sceneLandingView?.setCastLive(live)
       })
       this.sceneLandingView?.setCastLive(this.socialChat.hasRemoteVideoLive())
+      // Live tools share the landing scene LiveKit room (same topic as 3D).
+      void this.setupLandingLiveTools(target)
       // Jump-in unlock retries (separate from cast presence poll inside the watcher).
       for (const ms of [800, 2000, 5000]) {
         window.setTimeout(() => {
@@ -1819,6 +1831,8 @@ export class AppController {
       }
     } else if (chatBlockedByScene || guestSession || jumpInReady) {
       this.sceneLandingView?.setCastRoomReady(true)
+      // Guests can still open UI; publish no-ops until LiveKit is up.
+      void this.setupLandingLiveTools(target)
     }
   }
 
@@ -3559,58 +3573,30 @@ export class AppController {
   }
 
   /**
-   * Live polls + Q&A for the current place.
+   * Live polls + Q&A + trivia for the current place (3D play).
    * Transport: scene LiveKit topic `d3js-live-tools:{placeKey}` (never RFC4 Chat).
    */
   private async setupLiveTools(world: World, scene: ResolvedScene): Promise<void> {
-    this.disposeLiveTools()
     const placeKey = placeKeyFromScene(scene)
     if (!placeKey) return
-
-    const session = new LiveToolsSession({
+    await this.bindLiveToolsSession({
       placeKey,
-      ownerAddresses: [],
-      // Wallet or stable guest (both have 0x addresses for LiveKit / vote dedupe).
+      publish: (topic, packet) => world.comms.publishRawTopicData(topic, packet, true),
+      addTopicListener: (fn) => world.comms.addTopicListener(fn),
       getLocalWallet: () => {
         const fromSession = world.session.getAddress()?.trim().toLowerCase()
         if (fromSession && /^0x[a-f0-9]{40}$/.test(fromSession)) return fromSession
-        const login = this.login
-        if (login?.kind === 'wallet' || login?.kind === 'guest') {
-          const a = login.address.trim().toLowerCase()
-          if (/^0x[a-f0-9]{40}$/.test(a)) return a
-        }
-        return null
+        return this.sessionParticipantAddress()
       },
       getDisplayName: () => {
         const profile = world.session.getProfile()
         const dn = profile?.displayName?.trim()
         if (dn) return dn
-        const login = this.login
-        if (login?.kind === 'wallet') return login.address.slice(0, 8)
-        if (login?.kind === 'guest') {
-          return login.displayName?.trim() || `Guest-${login.address.slice(2, 6)}`
-        }
-        return null
+        return this.sessionDisplayName()
       },
-      publish: (topic, packet) => world.comms.publishRawTopicData(topic, packet, true),
-      onChange: () => this.liveToolsUi?.refresh()
-    })
-    this.liveToolsSession = session
-    this.liveToolsUi = new LiveToolsUi({
-      session,
-      onToast: (message) => {
-        clientDebugLog.log('client', `[live-tools] ${message}`)
-      }
-    })
-    this.unsubLiveToolsTopic = world.comms.addTopicListener((topic, sender, payload) => {
-      session.handleInbound(topic, sender, payload)
-    })
-
-    // Resolve owner wallets (Places + NAME) for host checks.
-    if (scene.source.kind === 'coords' || scene.source.kind === 'world') {
-      try {
-        const route: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }> =
-          scene.source.kind === 'world'
+      ownerRoute:
+        scene.source.kind === 'world' || scene.source.kind === 'coords'
+          ? scene.source.kind === 'world'
             ? {
                 kind: 'world',
                 worldName: scene.source.worldName,
@@ -3625,7 +3611,85 @@ export class AppController {
                 y: scene.source.y,
                 segment: `${scene.source.x},${scene.source.y}`
               }
-        const meta = await fetchSceneLandingMeta(route)
+          : null
+    })
+  }
+
+  /**
+   * Live tools on 2D scene landing — same UI panels as 3D, same LiveKit topic.
+   */
+  private async setupLandingLiveTools(
+    route: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
+  ): Promise<void> {
+    const comms = this.socialChat?.getComms()
+    if (!comms) return
+    const placeKey =
+      route.kind === 'world'
+        ? route.worldName.trim().toLowerCase()
+        : `${route.x},${route.y}`
+    if (!placeKey) return
+    await this.bindLiveToolsSession({
+      placeKey,
+      publish: (topic, packet) => comms.publishRawTopicData(topic, packet, true),
+      addTopicListener: (fn) => comms.addTopicListener(fn),
+      getLocalWallet: () => this.sessionParticipantAddress(),
+      getDisplayName: () => this.sessionDisplayName(),
+      ownerRoute: route
+    })
+  }
+
+  private sessionParticipantAddress(): string | null {
+    const login = this.login
+    if (login?.kind === 'wallet' || login?.kind === 'guest') {
+      const a = login.address.trim().toLowerCase()
+      if (/^0x[a-f0-9]{40}$/.test(a)) return a
+    }
+    return null
+  }
+
+  private sessionDisplayName(): string | null {
+    const login = this.login
+    if (login?.kind === 'wallet') return login.address.slice(0, 8)
+    if (login?.kind === 'guest') {
+      return login.displayName?.trim() || `Guest-${login.address.slice(2, 6)}`
+    }
+    return null
+  }
+
+  private async bindLiveToolsSession(opts: {
+    placeKey: string
+    publish: (topic: string, packet: Uint8Array) => Promise<boolean>
+    addTopicListener: (
+      fn: (topic: string, sender: string, payload: Uint8Array) => void
+    ) => () => void
+    getLocalWallet: () => string | null
+    getDisplayName: () => string | null
+    ownerRoute: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }> | null
+  }): Promise<void> {
+    // Always rebuild so publish/listen hit the current LiveKit room (landing vs World).
+    this.disposeLiveTools()
+    const session = new LiveToolsSession({
+      placeKey: opts.placeKey,
+      ownerAddresses: [],
+      getLocalWallet: opts.getLocalWallet,
+      getDisplayName: opts.getDisplayName,
+      publish: opts.publish,
+      onChange: () => this.liveToolsUi?.refresh()
+    })
+    this.liveToolsSession = session
+    this.liveToolsUi = new LiveToolsUi({
+      session,
+      onToast: (message) => {
+        clientDebugLog.log('client', `[live-tools] ${message}`)
+      }
+    })
+    this.unsubLiveToolsTopic = opts.addTopicListener((topic, sender, payload) => {
+      session.handleInbound(topic, sender, payload)
+    })
+
+    if (opts.ownerRoute) {
+      try {
+        const meta = await fetchSceneLandingMeta(opts.ownerRoute)
         if (this.liveToolsSession !== session) return
         session.setOwnerAddresses(meta.ownerAddresses ?? [])
       } catch {
@@ -3633,7 +3697,6 @@ export class AppController {
       }
     }
 
-    // After a short delay so LiveKit is more likely connected.
     window.setTimeout(() => {
       if (this.liveToolsSession === session) session.start()
     }, 800)

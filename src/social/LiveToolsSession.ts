@@ -62,6 +62,8 @@ export class LiveToolsSession {
   private readonly onChange?: () => void
 
   private poll: LivePollState | null = null
+  /** Closed / ended polls kept for host CSV stats this session. */
+  private pollHistory: LivePollState[] = []
   private projected: LiveProjectedQuestion = null
   private qaActive = false
   private qaInbox: LiveQaItem[] = []
@@ -173,6 +175,8 @@ export class LiveToolsSession {
     if (opts.length < LIVE_TOOLS_POLL_OPTIONS_MIN) {
       return { ok: false, error: `Need at least ${LIVE_TOOLS_POLL_OPTIONS_MIN} options` }
     }
+    // Archive prior poll so multi-poll sessions still show up in CSV.
+    if (this.poll) this.archivePoll(this.poll)
     const id = newLiveToolsId()
     const at = Date.now()
     this.poll = {
@@ -210,9 +214,66 @@ export class LiveToolsSession {
 
   async clearPoll(): Promise<void> {
     if (!this.isHost()) return
+    if (this.poll) this.archivePoll(this.poll)
     this.poll = null
     this.emit()
     await this.send({ t: 'poll_sync', poll: null, at: Date.now() })
+  }
+
+  /**
+   * Host: close (if needed), archive, clear for everyone.
+   * Stats remain in pollHistory for CSV until next session dispose.
+   */
+  async endPoll(): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (!this.isHost()) return { ok: false, error: 'Scene owner only' }
+    if (!this.poll && this.pollHistory.length === 0) {
+      return { ok: false, error: 'No poll to end' }
+    }
+    if (this.poll?.open) {
+      const closed = await this.closePoll()
+      if (!closed.ok) return closed
+    }
+    if (this.poll) this.archivePoll(this.poll)
+    this.poll = null
+    this.emit()
+    const sent = await this.send({ t: 'poll_sync', poll: null, at: Date.now() })
+    if (!sent) return { ok: false, error: 'Comms not connected' }
+    return { ok: true }
+  }
+
+  /** CSV of all polls this host session (history + current). */
+  buildPollStatsCsv(): string {
+    const rows = this.pollStatsRows()
+    const header = [
+      'poll_id',
+      'question',
+      'option_index',
+      'option',
+      'votes',
+      'open',
+      'asked_at_iso'
+    ].join(',')
+    const lines = [header]
+    for (const p of rows) {
+      const total = p.counts.reduce((a, b) => a + b, 0)
+      for (let i = 0; i < p.options.length; i++) {
+        lines.push(
+          [
+            csvEsc(p.id),
+            csvEsc(p.question),
+            String(i + 1),
+            csvEsc(p.options[i] ?? ''),
+            String(p.counts[i] ?? 0),
+            p.open ? 'yes' : 'no',
+            csvEsc(new Date(p.at).toISOString())
+          ].join(',')
+        )
+      }
+      lines.push(
+        [csvEsc(p.id), csvEsc(p.question), 'TOTAL', '', String(total), '', ''].join(',')
+      )
+    }
+    return lines.join('\n')
   }
 
   async startQaSession(): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -224,14 +285,90 @@ export class LiveToolsSession {
     return { ok: true }
   }
 
+  /**
+   * Host: end Q&A for the room.
+   * Callers should download CSV **before** this — inbox is wiped on success.
+   */
   async stopQaSession(): Promise<{ ok: true } | { ok: false; error: string }> {
     if (!this.isHost()) return { ok: false, error: 'Scene owner only' }
     this.qaActive = false
     this.projected = null
-    this.emit()
     const sent = await this.send({ t: 'qa_session', on: false, at: Date.now() })
-    if (!sent) return { ok: false, error: 'Comms not connected' }
+    if (!sent) {
+      // Keep inbox so host can retry end / download.
+      this.emit()
+      return { ok: false, error: 'Comms not connected' }
+    }
+    // Drop all Q&A cache after successful end (export already done by UI).
+    this.qaInbox = []
+    this.emit()
     return { ok: true }
+  }
+
+  /** CSV of Q&A questions + host answers (live inbox only — download before End). */
+  buildQaStatsCsv(): string {
+    const rows = this.qaInbox
+    const header = [
+      'question_id',
+      'question',
+      'from_address',
+      'from_name',
+      'asked_at_iso',
+      'answer',
+      'answered_at_iso',
+      'answered_by',
+      'answered_name',
+      'dismissed'
+    ].join(',')
+    const lines = [header]
+    for (const q of rows) {
+      lines.push(
+        [
+          csvEsc(q.id),
+          csvEsc(q.text),
+          csvEsc(q.from),
+          csvEsc(q.name ?? ''),
+          csvEsc(new Date(q.at).toISOString()),
+          csvEsc(q.answer ?? ''),
+          q.answeredAt ? csvEsc(new Date(q.answeredAt).toISOString()) : '',
+          csvEsc(q.answeredBy ?? ''),
+          csvEsc(q.answeredName ?? ''),
+          q.dismissed ? 'yes' : 'no'
+        ].join(',')
+      )
+    }
+    return lines.join('\n')
+  }
+
+  private pollStatsRows(): LivePollState[] {
+    const out = [...this.pollHistory]
+    if (this.poll && !out.some((p) => p.id === this.poll!.id)) {
+      out.push(this.clonePollForWire(this.poll))
+    }
+    return out
+  }
+
+  private archivePoll(poll: LivePollState): void {
+    if (this.pollHistory.some((p) => p.id === poll.id)) {
+      // Update tallies in place if same id re-archived.
+      const i = this.pollHistory.findIndex((p) => p.id === poll.id)
+      this.pollHistory[i] = {
+        ...poll,
+        options: [...poll.options],
+        counts: [...poll.counts],
+        voters: poll.voters ? [...poll.voters] : undefined,
+        open: false
+      }
+      return
+    }
+    this.pollHistory.push({
+      ...poll,
+      options: [...poll.options],
+      counts: [...poll.counts],
+      voters: poll.voters ? [...poll.voters] : undefined,
+      open: false
+    })
+    if (this.pollHistory.length > 50) this.pollHistory.shift()
   }
 
   async projectQuestion(item: LiveQaItem | null): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -381,17 +518,29 @@ export class LiveToolsSession {
     return { ok: true }
   }
 
+  /**
+   * Host: end trivia for the room.
+   * Callers should download CSV **before** this — history is wiped on success.
+   */
   async endTrivia(): Promise<{ ok: true } | { ok: false; error: string }> {
     if (!this.isHost()) return { ok: false, error: 'Scene owner only' }
-    // Archive open question into history for stats.
+    // Archive current into history so a last-moment CSV already taken includes it;
+    // then wipe everything after successful broadcast.
     if (this.triviaCurrent) {
       this.archiveTriviaCurrent()
     }
     this.triviaActive = false
     this.triviaCurrent = null
-    this.emit()
     const sent = await this.send({ t: 'trivia_session', on: false, at: Date.now() })
-    if (!sent) return { ok: false, error: 'Comms not connected' }
+    if (!sent) {
+      this.emit()
+      return { ok: false, error: 'Comms not connected' }
+    }
+    // Drop all trivia cache after successful end (export already done by UI).
+    this.triviaHistory = []
+    this.triviaQuestionSeq = 0
+    this.triviaStartedAt = null
+    this.emit()
     return { ok: true }
   }
 
@@ -580,6 +729,7 @@ export class LiveToolsSession {
       this.helloTimer = null
     }
     this.poll = null
+    this.pollHistory = []
     this.projected = null
     this.qaActive = false
     this.qaInbox = []
@@ -672,7 +822,11 @@ export class LiveToolsSession {
       case 'qa_session': {
         if (!fromHost) return
         this.qaActive = msg.on
-        if (!msg.on) this.projected = null
+        if (!msg.on) {
+          this.projected = null
+          // Host ended Q&A — clear local queue for everyone (stats already exported on host).
+          this.qaInbox = []
+        }
         this.emit()
         return
       }
@@ -730,7 +884,11 @@ export class LiveToolsSession {
         if (msg.on) {
           if (!this.triviaStartedAt) this.triviaStartedAt = msg.at
         } else {
+          // Host ended trivia — clear local state for everyone.
           this.triviaCurrent = null
+          this.triviaHistory = []
+          this.triviaQuestionSeq = 0
+          this.triviaStartedAt = null
         }
         this.emit()
         return

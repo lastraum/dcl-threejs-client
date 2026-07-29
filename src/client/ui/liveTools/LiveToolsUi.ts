@@ -73,20 +73,33 @@ export class LiveToolsUi {
     const items: Array<{ label: string; action: () => void; disabled?: boolean }> = []
 
     if (host) {
-      items.push({
-        label: hasOpenPoll || hasClosedPoll ? 'Open poll…' : 'Start live poll…',
-        action: () => {
-          this.closeModal()
-          if (hasOpenPoll || hasClosedPoll) {
+      if (hasOpenPoll || hasClosedPoll) {
+        items.push({
+          label: 'Open poll…',
+          action: () => {
+            this.closeModal()
             this.pollComposing = false
             this.syncPollPanel()
-          } else {
+          }
+        })
+        items.push({
+          label: 'End Poll…',
+          action: () => {
+            this.closeModal()
+            this.openEndSessionModal('poll')
+          }
+        })
+      } else {
+        items.push({
+          label: 'Start live poll…',
+          action: () => {
+            this.closeModal()
             this.pollComposing = true
             this.optionCount = 2
             this.syncPollPanel()
           }
-        }
-      })
+        })
+      }
       if (snap.qaActive) {
         items.push({
           label: 'Open Live Q&A…',
@@ -96,14 +109,10 @@ export class LiveToolsUi {
           }
         })
         items.push({
-          label: 'End Q&A',
+          label: 'End Q&A…',
           action: () => {
             this.closeModal()
-            void this.session.stopQaSession().then((r) => {
-              if (!r.ok) this.onToast?.(r.error)
-              else this.onToast?.('Q&A ended')
-              this.refresh()
-            })
+            this.openEndSessionModal('qa')
           }
         })
       } else {
@@ -134,7 +143,7 @@ export class LiveToolsUi {
           label: 'End Trivia…',
           action: () => {
             this.closeModal()
-            this.openEndTriviaModal()
+            this.openEndSessionModal('trivia')
           }
         })
       } else {
@@ -345,9 +354,9 @@ export class LiveToolsUi {
               ${
                 poll.open
                   ? `<button type="button" class="live-tools-btn live-tools-btn--primary" data-close-poll>Close poll</button>`
-                  : `<button type="button" class="live-tools-btn live-tools-btn--ghost" data-clear-poll>Clear</button>
-                     <button type="button" class="live-tools-btn live-tools-btn--primary" data-new-poll>New poll</button>`
+                  : `<button type="button" class="live-tools-btn live-tools-btn--ghost" data-new-poll>New poll</button>`
               }
+              <button type="button" class="live-tools-btn live-tools-btn--ghost" data-end-poll>End poll…</button>
             </div>`
           : ''
       }
@@ -358,18 +367,15 @@ export class LiveToolsUi {
         this.refresh()
       })
     })
-    this.pollPanel.querySelector('[data-clear-poll]')?.addEventListener('click', () => {
-      void this.session.clearPoll().then(() => {
-        this.pollComposing = false
-        this.refresh()
-      })
-    })
     this.pollPanel.querySelector('[data-new-poll]')?.addEventListener('click', () => {
       void this.session.clearPoll().then(() => {
         this.pollComposing = true
         this.optionCount = 2
         this.refresh()
       })
+    })
+    this.pollPanel.querySelector('[data-end-poll]')?.addEventListener('click', () => {
+      this.openEndSessionModal('poll')
     })
   }
 
@@ -555,6 +561,7 @@ export class LiveToolsUi {
       <div class="live-tools-trivia__row">
         <button type="button" class="live-tools-btn live-tools-btn--primary" data-triv-reveal>Show results</button>
         <button type="button" class="live-tools-btn live-tools-btn--ghost" data-triv-next>Next question</button>
+        <button type="button" class="live-tools-btn live-tools-btn--ghost" data-triv-end>End…</button>
       </div>
     `
     this.bindTriviaHostActions()
@@ -577,6 +584,7 @@ export class LiveToolsUi {
       <div class="live-tools-results">${this.renderTriviaBars(tq, total)}</div>
       <div class="live-tools-trivia__row">
         <button type="button" class="live-tools-btn live-tools-btn--primary" data-triv-next>Next question</button>
+        <button type="button" class="live-tools-btn live-tools-btn--ghost" data-triv-end>End…</button>
       </div>
     `
     this.bindTriviaHostActions()
@@ -689,6 +697,9 @@ export class LiveToolsUi {
         this.refresh()
       })
     })
+    this.triviaPanel?.querySelector('[data-triv-end]')?.addEventListener('click', () => {
+      this.openEndSessionModal('trivia')
+    })
   }
 
   private async submitTriviaAsk(): Promise<void> {
@@ -737,19 +748,32 @@ export class LiveToolsUi {
     this.refresh()
   }
 
-  openEndTriviaModal(): void {
+  /**
+   * Center modal: End session · Download stats · Cancel
+   * Used for poll, Q&A, and trivia.
+   */
+  openEndSessionModal(kind: 'poll' | 'qa' | 'trivia'): void {
     this.closeModal()
+    const title =
+      kind === 'poll' ? 'End Poll' : kind === 'qa' ? 'End Q&A' : 'End Trivia'
+    const hint =
+      kind === 'poll'
+        ? 'Close the poll for everyone, download vote tallies (CSV), or cancel.'
+        : kind === 'qa'
+          ? 'End Q&A for everyone, download questions + answers (CSV), or cancel.'
+          : 'End trivia for everyone, download question tallies (CSV), or cancel.'
+    const endLabel =
+      kind === 'poll' ? 'End Poll' : kind === 'qa' ? 'End Q&A' : 'End Trivia'
+
     this.modalHost = this.mountSheet(`
-      <div class="live-tools-sheet" data-live-tools-panel="trivia-end" role="dialog" aria-label="End Trivia">
+      <div class="live-tools-sheet" data-live-tools-panel="session-end" role="dialog" aria-label="${escapeHtml(title)}">
         <header class="live-tools-sheet__header">
-          <h2 class="live-tools-sheet__title">End Trivia</h2>
+          <h2 class="live-tools-sheet__title">${escapeHtml(title)}</h2>
           <button type="button" class="live-tools-sheet__close" data-close aria-label="Close">×</button>
         </header>
-        <p class="live-tools-sheet__hint">
-          End the session for everyone, download a CSV of question tallies, or cancel.
-        </p>
+        <p class="live-tools-sheet__hint">${escapeHtml(hint)}</p>
         <div class="live-tools-sheet__row live-tools-sheet__row--stack">
-          <button type="button" class="live-tools-btn live-tools-btn--primary" data-end-trivia>End Trivia</button>
+          <button type="button" class="live-tools-btn live-tools-btn--primary" data-end-session>${escapeHtml(endLabel)}</button>
           <button type="button" class="live-tools-btn live-tools-btn--ghost" data-dl-stats>Download stats</button>
           <button type="button" class="live-tools-btn live-tools-btn--ghost" data-cancel-end>Cancel</button>
         </div>
@@ -758,27 +782,50 @@ export class LiveToolsUi {
     this.modalHost.querySelector('[data-close]')?.addEventListener('click', () => this.closeModal())
     this.modalHost.querySelector('[data-cancel-end]')?.addEventListener('click', () => this.closeModal())
     this.modalHost.querySelector('[data-dl-stats]')?.addEventListener('click', () => {
-      this.downloadTriviaStats()
+      this.downloadSessionStats(kind)
     })
-    this.modalHost.querySelector('[data-end-trivia]')?.addEventListener('click', () => {
-      void this.session.endTrivia().then((r) => {
-        if (!r.ok) this.onToast?.(r.error)
-        else {
-          this.onToast?.('Trivia ended')
-          this.closeModal()
-          this.refresh()
-        }
-      })
+    this.modalHost.querySelector('[data-end-session]')?.addEventListener('click', () => {
+      void this.confirmEndSession(kind)
     })
   }
 
-  private downloadTriviaStats(): void {
-    const csv = this.session.buildTriviaStatsCsv()
+  private async confirmEndSession(kind: 'poll' | 'qa' | 'trivia'): Promise<void> {
+    // Always download first — Q&A / trivia wipe memory on successful end.
+    this.downloadSessionStats(kind)
+    let r: { ok: true } | { ok: false; error: string }
+    if (kind === 'poll') r = await this.session.endPoll()
+    else if (kind === 'qa') r = await this.session.stopQaSession()
+    else r = await this.session.endTrivia()
+    if (!r.ok) {
+      this.onToast?.(r.error)
+      return
+    }
+    // Poll history intentionally kept until live-tools dispose.
+    // Q&A + trivia lists are already cleared inside stopQaSession / endTrivia.
+    this.onToast?.(
+      kind === 'poll'
+        ? 'Poll ended'
+        : kind === 'qa'
+          ? 'Q&A ended · stats cleared'
+          : 'Trivia ended · stats cleared'
+    )
+    this.pollComposing = false
+    this.closeModal()
+    this.refresh()
+  }
+
+  private downloadSessionStats(kind: 'poll' | 'qa' | 'trivia'): void {
+    const csv =
+      kind === 'poll'
+        ? this.session.buildPollStatsCsv()
+        : kind === 'qa'
+          ? this.session.buildQaStatsCsv()
+          : this.session.buildTriviaStatsCsv()
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
     a.href = url
-    a.download = `trivia-stats-${Date.now()}.csv`
+    a.download = `${kind}-stats-${Date.now()}.csv`
     a.click()
     URL.revokeObjectURL(url)
     this.onToast?.('Stats downloaded')
@@ -854,7 +901,7 @@ export class LiveToolsUi {
         <div class="live-tools-qa-drawer__header-actions">
           ${
             host
-              ? `<button type="button" class="live-tools-btn live-tools-btn--ghost live-tools-btn--sm" data-end-qa>End</button>`
+              ? `<button type="button" class="live-tools-btn live-tools-btn--ghost live-tools-btn--sm" data-end-qa>End…</button>`
               : ''
           }
           <button type="button" class="live-tools-sheet__close" data-close-drawer aria-label="Close">×</button>
@@ -878,11 +925,7 @@ export class LiveToolsUi {
 
     this.qaDrawer.querySelector('[data-close-drawer]')?.addEventListener('click', () => this.closeQaDrawer())
     this.qaDrawer.querySelector('[data-end-qa]')?.addEventListener('click', () => {
-      void this.session.stopQaSession().then((r) => {
-        if (!r.ok) this.onToast?.(r.error)
-        else this.onToast?.('Q&A ended')
-        this.refresh()
-      })
+      this.openEndSessionModal('qa')
     })
     const sendAsk = () => void this.submitDrawerAsk()
     this.qaDrawer.querySelector('[data-ask-send]')?.addEventListener('click', sendAsk)

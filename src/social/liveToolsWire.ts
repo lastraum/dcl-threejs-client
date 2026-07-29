@@ -15,6 +15,8 @@ export const LIVE_TOOLS_QA_TEXT_MAX = 280
 export const LIVE_TOOLS_POLL_OPTIONS_MIN = 2
 export const LIVE_TOOLS_POLL_OPTIONS_MAX = 6
 export const LIVE_TOOLS_QUESTION_MAX = 200
+export const LIVE_TOOLS_TRIVIA_OPTIONS_MIN = 2
+export const LIVE_TOOLS_TRIVIA_OPTIONS_MAX = 6
 
 export type LivePollState = {
   id: string
@@ -28,6 +30,37 @@ export type LivePollState = {
   at: number
 }
 
+/** One multi-choice trivia question within a live trivia session. */
+export type LiveTriviaQuestion = {
+  id: string
+  index: number
+  question: string
+  options: string[]
+  counts: number[]
+  /** Host-only on authority; omitted on peer wire. */
+  voters?: string[]
+  /**
+   * Index of the correct option.
+   * Shared only after reveal (or always for host UI); peers get null until revealed.
+   */
+  correctIndex: number | null
+  /** Accepting votes. */
+  open: boolean
+  /** Results revealed to everyone. */
+  revealed: boolean
+  at: number
+  closedAt?: number
+}
+
+export type LiveTriviaSessionState = {
+  active: boolean
+  startedAt: number
+  /** Current question (null while host composes next). */
+  current: LiveTriviaQuestion | null
+  /** Closed / archived questions for stats (host keeps full history). */
+  history: LiveTriviaQuestion[]
+}
+
 export type LiveQaItem = {
   id: string
   text: string
@@ -35,6 +68,11 @@ export type LiveQaItem = {
   name?: string
   at: number
   dismissed?: boolean
+  /** Host answer (shown under the question in the Live Q&A list). */
+  answer?: string
+  answeredAt?: number
+  answeredBy?: string
+  answeredName?: string
 }
 
 export type LiveProjectedQuestion = {
@@ -70,10 +108,23 @@ export type LiveToolsWireMsg =
       at: number
     }
   | {
+      t: 'qa_session'
+      on: boolean
+      at: number
+    }
+  | {
       t: 'qa_ask'
       id: string
       text: string
       a: string
+      n?: string
+      at: number
+    }
+  | {
+      t: 'qa_answer'
+      id: string
+      text: string
+      a?: string
       n?: string
       at: number
     }
@@ -91,6 +142,41 @@ export type LiveToolsWireMsg =
       at: number
     }
   | {
+      t: 'trivia_session'
+      on: boolean
+      at: number
+    }
+  | {
+      t: 'trivia_ask'
+      id: string
+      index: number
+      q: string
+      opts: string[]
+      /** Correct option index — peers ignore until reveal. */
+      ci?: number
+      at: number
+    }
+  | {
+      t: 'trivia_vote'
+      id: string
+      i: number
+      a: string
+    }
+  | {
+      t: 'trivia_sync'
+      /** Full current question + tallies (no voters list). */
+      current: LiveTriviaQuestion | null
+      at: number
+    }
+  | {
+      t: 'trivia_reveal'
+      id: string
+      counts: number[]
+      /** Correct option index (broadcast on reveal). */
+      ci?: number
+      at: number
+    }
+  | {
       t: 'session_hello'
       at: number
     }
@@ -98,8 +184,13 @@ export type LiveToolsWireMsg =
       t: 'session_sync'
       poll: LivePollState | null
       projected: LiveProjectedQuestion
-      /** Owner may include recent non-dismissed Qs for host rejoin — peers ignore if not host. */
+      /** Live Q&A session open (host-authoritative). */
+      qaOn?: boolean
+      /** Shared question list for all peers while Q&A is live. */
       qa?: LiveQaItem[]
+      /** Trivia live. */
+      triviaOn?: boolean
+      triviaCurrent?: LiveTriviaQuestion | null
       at: number
     }
 
@@ -195,6 +286,38 @@ function parsePollState(o: unknown): LivePollState | null {
   }
 }
 
+function parseTriviaQuestion(o: unknown): LiveTriviaQuestion | null {
+  if (!o || typeof o !== 'object') return null
+  const r = o as Record<string, unknown>
+  const id = asString(r.id)?.trim()
+  const question = asString(r.question)?.trim()
+  if (!id || !question) return null
+  const options = Array.isArray(r.options)
+    ? r.options.filter((x): x is string => typeof x === 'string').map((s) => s.trim()).filter(Boolean)
+    : []
+  if (options.length < LIVE_TOOLS_TRIVIA_OPTIONS_MIN) return null
+  const counts = Array.isArray(r.counts)
+    ? r.counts.map((n) => (typeof n === 'number' && Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0))
+    : options.map(() => 0)
+  while (counts.length < options.length) counts.push(0)
+  const index = asNumber(r.index)
+  const ci = asNumber(r.correctIndex)
+  const correctIndex =
+    ci != null && ci >= 0 && ci < options.length ? Math.floor(ci) : null
+  return {
+    id,
+    index: index != null && index >= 0 ? Math.floor(index) : 0,
+    question: question.slice(0, LIVE_TOOLS_QUESTION_MAX),
+    options: options.slice(0, LIVE_TOOLS_TRIVIA_OPTIONS_MAX).map((s) => s.slice(0, 80)),
+    counts: counts.slice(0, options.length),
+    correctIndex,
+    open: r.open === true,
+    revealed: r.revealed === true,
+    at: asNumber(r.at) ?? Date.now(),
+    closedAt: asNumber(r.closedAt) ?? undefined
+  }
+}
+
 function parseProjected(o: unknown): LiveProjectedQuestion {
   if (o == null) return null
   if (typeof o !== 'object') return null
@@ -217,13 +340,18 @@ function parseQaItem(o: unknown): LiveQaItem | null {
   const text = asString(r.text)?.trim()
   const from = asString(r.from)?.trim().toLowerCase()
   if (!id || !text || !from) return null
+  const answer = asString(r.answer)?.trim()
   return {
     id,
     text: text.slice(0, LIVE_TOOLS_QA_TEXT_MAX),
     from,
     name: asString(r.name)?.trim() || undefined,
     at: asNumber(r.at) ?? Date.now(),
-    dismissed: r.dismissed === true
+    dismissed: r.dismissed === true,
+    answer: answer ? answer.slice(0, LIVE_TOOLS_QA_TEXT_MAX) : undefined,
+    answeredAt: asNumber(r.answeredAt) ?? undefined,
+    answeredBy: asString(r.answeredBy)?.trim().toLowerCase() || undefined,
+    answeredName: asString(r.answeredName)?.trim() || undefined
   }
 }
 
@@ -267,6 +395,9 @@ function parseLiveToolsObject(o: Record<string, unknown>): LiveToolsWireMsg | nu
       const poll = o.poll == null ? null : parsePollState(o.poll)
       return { t: 'poll_sync', poll, at }
     }
+    case 'qa_session': {
+      return { t: 'qa_session', on: o.on === true, at }
+    }
     case 'qa_ask': {
       const id = asString(o.id)?.trim()
       const text = asString(o.text)?.trim()
@@ -277,6 +408,19 @@ function parseLiveToolsObject(o: Record<string, unknown>): LiveToolsWireMsg | nu
         id,
         text: text.slice(0, LIVE_TOOLS_QA_TEXT_MAX),
         a,
+        n: asString(o.n)?.trim() || undefined,
+        at
+      }
+    }
+    case 'qa_answer': {
+      const id = asString(o.id)?.trim()
+      const text = asString(o.text)?.trim()
+      if (!id || !text) return null
+      return {
+        t: 'qa_answer',
+        id,
+        text: text.slice(0, LIVE_TOOLS_QA_TEXT_MAX),
+        a: asString(o.a)?.trim().toLowerCase() || undefined,
         n: asString(o.n)?.trim() || undefined,
         at
       }
@@ -301,6 +445,54 @@ function parseLiveToolsObject(o: Record<string, unknown>): LiveToolsWireMsg | nu
       if (!id) return null
       return { t: 'qa_dismiss', id, at }
     }
+    case 'trivia_session':
+      return { t: 'trivia_session', on: o.on === true, at }
+    case 'trivia_ask': {
+      const id = asString(o.id)?.trim()
+      const q = asString(o.q)?.trim()
+      const opts = Array.isArray(o.opts)
+        ? o.opts.filter((x): x is string => typeof x === 'string').map((s) => s.trim()).filter(Boolean)
+        : []
+      const index = asNumber(o.index)
+      if (!id || !q || opts.length < LIVE_TOOLS_TRIVIA_OPTIONS_MIN || index == null) return null
+      const ci = asNumber(o.ci)
+      return {
+        t: 'trivia_ask',
+        id,
+        index: Math.max(0, Math.floor(index)),
+        q: q.slice(0, LIVE_TOOLS_QUESTION_MAX),
+        opts: opts.slice(0, LIVE_TOOLS_TRIVIA_OPTIONS_MAX).map((s) => s.slice(0, 80)),
+        ci:
+          ci != null && ci >= 0 && ci < opts.length ? Math.floor(ci) : undefined,
+        at
+      }
+    }
+    case 'trivia_vote': {
+      const id = asString(o.id)?.trim()
+      const a = asString(o.a)?.trim().toLowerCase()
+      const i = asNumber(o.i)
+      if (!id || !a || i == null || i < 0) return null
+      return { t: 'trivia_vote', id, i: Math.floor(i), a }
+    }
+    case 'trivia_sync': {
+      const current = o.current == null ? null : parseTriviaQuestion(o.current)
+      return { t: 'trivia_sync', current, at }
+    }
+    case 'trivia_reveal': {
+      const id = asString(o.id)?.trim()
+      if (!id) return null
+      const counts = Array.isArray(o.counts)
+        ? o.counts.map((n) => (typeof n === 'number' && Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0))
+        : []
+      const ci = asNumber(o.ci)
+      return {
+        t: 'trivia_reveal',
+        id,
+        counts,
+        ci: ci != null && ci >= 0 ? Math.floor(ci) : undefined,
+        at
+      }
+    }
     case 'session_hello':
       return { t: 'session_hello', at }
     case 'session_sync': {
@@ -309,7 +501,15 @@ function parseLiveToolsObject(o: Record<string, unknown>): LiveToolsWireMsg | nu
       const qa = Array.isArray(o.qa)
         ? o.qa.map(parseQaItem).filter((x): x is LiveQaItem => x != null).slice(0, 50)
         : undefined
-      return { t: 'session_sync', poll, projected, qa, at }
+      const qaOn = typeof o.qaOn === 'boolean' ? o.qaOn : undefined
+      const triviaOn = typeof o.triviaOn === 'boolean' ? o.triviaOn : undefined
+      const triviaCurrent =
+        o.triviaCurrent === undefined
+          ? undefined
+          : o.triviaCurrent == null
+            ? null
+            : parseTriviaQuestion(o.triviaCurrent)
+      return { t: 'session_sync', poll, projected, qaOn, qa, triviaOn, triviaCurrent, at }
     }
     default:
       return null

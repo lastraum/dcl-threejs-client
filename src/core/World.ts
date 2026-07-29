@@ -121,7 +121,7 @@ import { skipRemoteAvatars } from '../client/devFlags'
 import { InputHub } from '../input/InputHub'
 import { initMainThreadPerfFromUrl, recordMainThreadPerf } from '../debug/MainThreadPerf'
 import { VrmPeerSync } from '../avatar/vrm/VrmPeerSync'
-import { clearVrmRamCache } from '../avatar/vrm/vrmRamCache'
+
 import { PetManager } from '../pets/PetManager'
 import { PetPeerSync } from '../pets/PetPeerSync'
 import { PetContextMenu } from '../pets/PetContextMenu'
@@ -745,6 +745,7 @@ export class World {
           | import('../environment/DesertAtmosphere').DesertAtmosphere
           | undefined) ?? null
       if (this.landscape.state.landscapeRoot) {
+        this.landscape.state.landscapeRoot.visible = true
         this.host.scene.add(this.landscape.state.landscapeRoot)
       }
       // Mountains atmospheric haze (exp2 fog).
@@ -4993,7 +4994,8 @@ export class World {
     this.unbindPetContextMenu()
     this.petContextMenu?.dispose()
     this.petContextMenu = null
-    clearVrmRamCache()
+    // Do NOT clearVrmRamCache() here — tour / follow /goto rebuilds World and must
+    // remount remote custom VRMs from session RAM. AppController clears on leave-play.
     this.voice.setInPlay(false)
     this.voice.dispose()
     this.comms.dispose()

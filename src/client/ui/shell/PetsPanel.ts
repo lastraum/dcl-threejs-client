@@ -57,10 +57,12 @@ export class PetsPanel {
   private uploadCategory: PetCategory = 'walking'
   /** When set, body shows edit surface for this pet instead of the list. */
   private editHash: string | null = null
+  /** Clip currently previewing via ▶ (colorize play button; no status text). */
+  private previewingClip: string | null = null
+  private previewUiTimer: ReturnType<typeof setTimeout> | null = null
   private readonly bodyEl: HTMLElement
   private readonly statusEl: HTMLElement
   private readonly onKeyDown: (ev: KeyboardEvent) => void
-  private readonly onDocClick: (ev: MouseEvent) => void
   private readonly onResize: () => void
 
   constructor(private readonly options: PetsPanelOptions) {
@@ -73,20 +75,17 @@ export class PetsPanel {
     this.element.innerHTML = `
       <div class="pets-panel">
         <header class="pets-panel__header">
+          <button type="button" class="pets-panel__back" data-header-back hidden aria-label="Back to list">← Back</button>
           <h2 class="pets-panel__title">Pets</h2>
           <button type="button" class="pets-panel__close" data-close aria-label="Close">×</button>
         </header>
         <div class="pets-panel__upload" data-upload-block>
-          <div class="pets-panel__cat-row" role="group" aria-label="Upload category">
-            <button type="button" class="pets-panel__cat is-active" data-upload-cat="walking">Walking</button>
-            <button type="button" class="pets-panel__cat" data-upload-cat="flying">Flying</button>
-          </div>
           <label class="pets-panel__upload-btn">
             Upload GLB
             <input type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" hidden data-file />
           </label>
         </div>
-        <p class="pets-panel__hint" data-list-hint>One active pet. Settings maps animation tracks (incl. AFK after 5 min idle). Models sync to nearby peers.</p>
+        <p class="pets-panel__hint" data-list-hint>One active pet. Set Walking/Flying in Settings. Models sync to nearby peers.</p>
         <p class="pets-panel__status" data-status hidden></p>
         <div class="pets-panel__body" data-body></div>
       </div>
@@ -95,16 +94,12 @@ export class PetsPanel {
     this.statusEl = this.element.querySelector('[data-status]')!
 
     this.element.querySelector('[data-close]')!.addEventListener('click', () => this.hide())
-
-    this.element.querySelectorAll<HTMLButtonElement>('[data-upload-cat]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const cat = btn.dataset.uploadCat === 'flying' ? 'flying' : 'walking'
-        this.uploadCategory = cat
-        this.element.querySelectorAll('[data-upload-cat]').forEach((b) => {
-          b.classList.toggle('is-active', (b as HTMLElement).dataset.uploadCat === cat)
-        })
-      })
+    this.element.querySelector('[data-header-back]')!.addEventListener('click', () => {
+      void this.closeEdit()
     })
+
+    // Upload defaults to walking; change locomotion under pet Settings after equip.
+    this.uploadCategory = 'walking'
 
     const fileInput = this.element.querySelector<HTMLInputElement>('[data-file]')!
     fileInput.addEventListener('change', () => {
@@ -116,6 +111,8 @@ export class PetsPanel {
     this.bodyEl.addEventListener('click', (ev) => void this.onBodyClick(ev))
     this.bodyEl.addEventListener('change', (ev) => void this.onBodyChange(ev))
 
+    // Sticky until × / Escape / toolbar toggle — no outside-click dismiss
+    // (users map clips and need the panel to stay open while walking).
     this.onKeyDown = (ev) => {
       if (ev.key === 'Escape' && this.visible) {
         if (this.editHash) {
@@ -124,14 +121,6 @@ export class PetsPanel {
         }
         this.hide()
       }
-    }
-    this.onDocClick = (ev) => {
-      if (!this.visible) return
-      const t = ev.target as Node
-      if (this.element.contains(t)) return
-      const anchor = this.options.anchor?.()
-      if (anchor?.contains(t)) return
-      this.hide()
     }
     this.onResize = () => {
       if (this.visible) this.positionPanel()
@@ -142,10 +131,10 @@ export class PetsPanel {
 
   dispose(): void {
     this.hide()
+    this.clearPreviewUi()
     this.element.remove()
     window.removeEventListener('keydown', this.onKeyDown)
     window.removeEventListener('resize', this.onResize)
-    document.removeEventListener('click', this.onDocClick, true)
   }
 
   isVisible(): boolean {
@@ -163,7 +152,6 @@ export class PetsPanel {
     this.positionPanel()
     window.addEventListener('keydown', this.onKeyDown)
     window.addEventListener('resize', this.onResize)
-    setTimeout(() => document.addEventListener('click', this.onDocClick, true), 0)
     await this.render()
   }
 
@@ -171,11 +159,11 @@ export class PetsPanel {
     if (!this.visible) return
     this.visible = false
     this.editHash = null
+    this.clearPreviewUi()
     this.options.onStopClipPreview?.()
     this.element.hidden = true
     window.removeEventListener('keydown', this.onKeyDown)
     window.removeEventListener('resize', this.onResize)
-    document.removeEventListener('click', this.onDocClick, true)
     this.options.onClose?.()
   }
 
@@ -201,9 +189,11 @@ export class PetsPanel {
     panel?.classList.toggle('pets-panel--edit', !show)
     const upload = this.element.querySelector<HTMLElement>('[data-upload-block]')
     const hint = this.element.querySelector<HTMLElement>('[data-list-hint]')
+    const back = this.element.querySelector<HTMLElement>('[data-header-back]')
     if (upload) upload.hidden = !show
     if (hint) hint.hidden = !show
-    // Title: list = Pets, edit = blank (edit surface owns the title row)
+    // List: title only + ×. Details: ← Back | Pet settings | ×
+    if (back) back.hidden = show
     const title = this.element.querySelector<HTMLElement>('.pets-panel__title')
     if (title) title.textContent = show ? 'Pets' : 'Pet settings'
   }
@@ -386,7 +376,11 @@ export class PetsPanel {
                   <select class="pets-panel__select pets-panel__select--track" data-map-clip="${escapeHtml(clip)}" aria-label="Map ${escapeHtml(clip)}">
                     ${opts}
                   </select>
-                  <button type="button" class="pets-panel__icon-btn" data-play-clip="${escapeHtml(clip)}" title="Play locally" aria-label="Play ${escapeHtml(clip)}">
+                  <button type="button" class="pets-panel__icon-btn${
+                    this.previewingClip === clip ? ' is-playing' : ''
+                  }" data-play-clip="${escapeHtml(clip)}" title="Play locally" aria-label="Play ${escapeHtml(clip)}" aria-pressed="${
+                    this.previewingClip === clip ? 'true' : 'false'
+                  }">
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7L8 5Z"/></svg>
                   </button>
                 </div>
@@ -396,7 +390,6 @@ export class PetsPanel {
 
     this.bodyEl.innerHTML = `
       <div class="pets-panel__edit">
-        <button type="button" class="pets-panel__back" data-edit-back>← Back to list</button>
         <div class="pets-panel__edit-title-row">
           <div class="pets-panel__edit-title">${label}</div>
           <button type="button" class="pets-panel__btn pets-panel__btn--ghost pets-panel__btn--rename" data-edit-nick title="Rename">Rename</button>
@@ -432,8 +425,42 @@ export class PetsPanel {
 
   private async closeEdit(): Promise<void> {
     this.editHash = null
+    this.clearPreviewUi()
     this.options.onStopClipPreview?.()
     await this.render()
+  }
+
+  /** Highlight ▶ for the clip under preview; clear status-line “Playing…”. */
+  private setPreviewPlaying(clip: string | null, holdMs = 8_000): void {
+    this.previewingClip = clip
+    if (this.previewUiTimer) {
+      clearTimeout(this.previewUiTimer)
+      this.previewUiTimer = null
+    }
+    this.bodyEl.querySelectorAll<HTMLElement>('[data-play-clip]').forEach((btn) => {
+      const name = btn.getAttribute('data-play-clip')
+      const on = !!clip && name === clip
+      btn.classList.toggle('is-playing', on)
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false')
+    })
+    if (clip) {
+      this.previewUiTimer = setTimeout(() => {
+        this.previewUiTimer = null
+        if (this.previewingClip === clip) this.setPreviewPlaying(null)
+      }, holdMs)
+    }
+  }
+
+  private clearPreviewUi(): void {
+    if (this.previewUiTimer) {
+      clearTimeout(this.previewUiTimer)
+      this.previewUiTimer = null
+    }
+    this.previewingClip = null
+    this.bodyEl.querySelectorAll<HTMLElement>('[data-play-clip]').forEach((btn) => {
+      btn.classList.remove('is-playing')
+      btn.setAttribute('aria-pressed', 'false')
+    })
   }
 
   private async onBodyChange(ev: Event): Promise<void> {
@@ -512,12 +539,6 @@ export class PetsPanel {
       return
     }
 
-    if (t.closest('[data-edit-back]')) {
-      ev.preventDefault()
-      await this.closeEdit()
-      return
-    }
-
     const toggle = t.closest<HTMLElement>('[data-toggle]')
     if (toggle?.dataset.toggle) {
       ev.preventDefault()
@@ -553,9 +574,19 @@ export class PetsPanel {
       const clip = play.dataset.playClip
       // Preview needs real bytes even when the pet is not equipped.
       if (isBuiltinPetHash(this.editHash) && !(await this.downloadBuiltin(this.editHash))) return
+      // Toggle off if same clip is already highlighted.
+      if (this.previewingClip === clip) {
+        this.clearPreviewUi()
+        this.options.onStopClipPreview?.()
+        return
+      }
+      this.setStatus('')
+      this.setPreviewPlaying(clip)
       const ok = await this.options.onPlayClipPreview?.(this.editHash, clip)
-      if (ok === false) this.setStatus('Could not play clip — enable the pet or wait for load.')
-      else this.setStatus(`Playing “${clip}”…`)
+      if (ok === false) {
+        this.clearPreviewUi()
+        this.setStatus('Could not play clip — enable the pet or wait for load.')
+      }
       return
     }
 

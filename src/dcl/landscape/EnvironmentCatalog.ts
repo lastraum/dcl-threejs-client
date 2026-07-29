@@ -83,8 +83,9 @@ export const LANDSCAPE_ENVIRONMENTS: Record<LandscapeEnvironmentKind, LandscapeE
     grass: []
   },
   /**
-   * Default for Genesis City parcels — Genesis sky dome + sun/moon, no void sky,
-   * **no** empty-land ground.glb (physics uses y=0 infinite plane only).
+   * Default when scene.json has no `environment` (worlds + Genesis parcels).
+   * Genesis sky dome + sun/moon, no void sky. FloorBase empty-land ground.glb is
+   * instanced on every scene parcel (skipped only for city plaza 0,0 art).
    */
   genesis: {
     kind: 'genesis',

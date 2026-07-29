@@ -117,19 +117,30 @@ export class TourRejoinPanel {
   private position(): void {
     if (this.disposed) return
     const anchor = this.opts.anchor()
-    const rect = anchor?.getBoundingClientRect()
-    if (rect && rect.width > 0) {
-      const top = Math.max(8, rect.top)
-      const left = rect.right + 10
+    // Hidden tour-options button still has a layout box once setTourOptionsVisible(true).
+    const rect = anchor && !anchor.hidden ? anchor.getBoundingClientRect() : null
+    if (rect && rect.width > 0 && rect.height > 0) {
+      const gap = 10
+      const panelW = this.root.offsetWidth || 280
+      const panelH = this.root.offsetHeight || 180
+      // Prefer to the right of the flag icon; flip left if near viewport edge.
+      let left = rect.right + gap
+      if (left + panelW > window.innerWidth - 8) {
+        left = Math.max(8, rect.left - gap - panelW)
+      }
+      let top = rect.top
+      if (top + panelH > window.innerHeight - 8) {
+        top = Math.max(8, window.innerHeight - panelH - 8)
+      }
       this.root.style.top = `${top}px`
       this.root.style.left = `${left}px`
       this.root.style.right = 'auto'
       this.root.classList.remove('tour-rejoin-panel--fallback')
       return
     }
-    // Fallback: near left HUD rail.
-    this.root.style.top = '72px'
-    this.root.style.left = 'calc(var(--client-safe-left, 56px) + 8px)'
+    // Fallback: dock just right of the left client rail (same row as tour-options).
+    this.root.style.top = 'max(72px, calc(var(--client-safe-top, 12px) + 48px))'
+    this.root.style.left = 'calc(var(--client-safe-left, 56px) + 12px)'
     this.root.style.right = 'auto'
     this.root.classList.add('tour-rejoin-panel--fallback')
   }

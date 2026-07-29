@@ -15,6 +15,7 @@ import { PortableExperienceManager } from '../dcl/multiScene/PortableExperienceM
 import { resolvePortableExperiencesPolicy } from '../dcl/multiScene/resolvePortableExperiences'
 import { readSceneDevQueryKey } from '../environment/fftOcean/readFftOceanOverride'
 import { disconnectAll } from '../network/SessionConnections'
+import { clearVrmRamCache } from '../avatar/vrm/vrmRamCache'
 import { SessionIdentity } from '../network/SessionIdentity'
 import { ClientShell } from './ui/shell/ClientShell'
 import { isTextInputFocused } from './ui/textInputFocus'
@@ -439,7 +440,7 @@ export class AppController {
     this.appMode = 'explorer'
     this.clearSceneBanWatch()
 
-    await this.teardownScene()
+    await this.teardownScene({ clearVrmCache: true })
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
@@ -874,42 +875,48 @@ export class AppController {
     this.closeTourRejoinPanel()
     const follow = this.communityFollow
     if (!follow) return
-    // Show Tour Options icon as an anchor even before they rejoin.
+    // Show Tour Options (flag) icon first so the panel can dock next to it.
     this.shell?.setTourOptionsVisible(true)
+    this.syncTourOptionsSidebarVisibility()
     const name =
       this.world?.social.getCommunities().find((c) => c.id.toLowerCase() === communityId.toLowerCase())
         ?.name ?? 'Community'
-    this.tourRejoinPanel = new TourRejoinPanel({
-      getState: () => ({
-        communityName: name,
-        lastTarget: follow.getPendingLeaderResume()?.lastTarget ?? lastTarget
-      }),
-      anchor: () => this.shell?.getTourOptionsButtonElement?.() ?? undefined,
-      onRejoin: async () => {
-        const result = await follow.resumeLeadFromSnapshot()
-        this.closeTourRejoinPanel()
-        if (!result.ok) {
-          clientDebugLog.log('social', 'Tour rejoin failed', { level: 'warn', alsoConsole: true })
-          this.syncTourOptionsSidebarVisibility()
-          return
-        }
-        this.syncTourUiFromController()
-        if (result.target) {
-          const route = followTargetToRoute(result.target)
-          if (!this.isAlreadyAtFollowTarget(result.target)) {
-            void this.jumpInToScene(route, { fastAssets: true, source: 'goto' })
+    const open = (): void => {
+      if (this.tourRejoinPanel) return
+      this.tourRejoinPanel = new TourRejoinPanel({
+        getState: () => ({
+          communityName: name,
+          lastTarget: follow.getPendingLeaderResume()?.lastTarget ?? lastTarget
+        }),
+        anchor: () => this.shell?.getTourOptionsButtonElement?.() ?? undefined,
+        onRejoin: async () => {
+          const result = await follow.resumeLeadFromSnapshot()
+          this.closeTourRejoinPanel()
+          if (!result.ok) {
+            clientDebugLog.log('social', 'Tour rejoin failed', { level: 'warn', alsoConsole: true })
+            this.syncTourOptionsSidebarVisibility()
+            return
           }
+          this.syncTourUiFromController()
+          if (result.target) {
+            const route = followTargetToRoute(result.target)
+            if (!this.isAlreadyAtFollowTarget(result.target)) {
+              void this.jumpInToScene(route, { fastAssets: true, source: 'goto' })
+            }
+          }
+        },
+        onCancel: async () => {
+          await follow.cancelLeaderResume()
+          this.closeTourRejoinPanel()
+          this.syncTourUiFromController()
+        },
+        onClose: () => {
+          this.tourRejoinPanel = null
         }
-      },
-      onCancel: async () => {
-        await follow.cancelLeaderResume()
-        this.closeTourRejoinPanel()
-        this.syncTourUiFromController()
-      },
-      onClose: () => {
-        this.tourRejoinPanel = null
-      }
-    })
+      })
+    }
+    // Wait a frame so the flag button is laid out before anchoring.
+    requestAnimationFrame(() => requestAnimationFrame(open))
   }
 
   private closeTourRejoinPanel(): void {
@@ -1070,9 +1077,11 @@ export class AppController {
   }
 
   private syncTourOptionsSidebarVisibility(): void {
-    // Keep the flag icon visible while the rejoin panel is open (anchor).
+    // Keep the flag icon visible while leading, rejoin panel open, or resume available.
     const show =
-      Boolean(this.communityFollow?.isLeading()) || Boolean(this.tourRejoinPanel)
+      Boolean(this.communityFollow?.isLeading()) ||
+      Boolean(this.tourRejoinPanel) ||
+      Boolean(this.communityFollow?.getPendingLeaderResume())
     this.shell?.setTourOptionsVisible(show)
   }
 
@@ -1360,7 +1369,7 @@ export class AppController {
     this.clearSceneBanWatch()
     this.disposeCommunityFollow()
 
-    await this.teardownScene()
+    await this.teardownScene({ clearVrmCache: true })
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
@@ -1398,7 +1407,7 @@ export class AppController {
 
     if (this.appMode === 'play') {
       this.disposeCommunityFollow()
-      await this.teardownScene()
+      await this.teardownScene({ clearVrmCache: true })
     }
 
     if (!opts.fromHistory) {
@@ -1454,7 +1463,7 @@ export class AppController {
     if (this.appMode === 'play') {
       stopDwellTracking('shell')
       this.disposeCommunityFollow()
-      await this.teardownScene()
+      await this.teardownScene({ clearVrmCache: true })
     }
 
     if (!opts.fromHistory) {
@@ -1499,7 +1508,7 @@ export class AppController {
     if (this.appMode === 'play') {
       stopDwellTracking('shell')
       this.disposeCommunityFollow()
-      await this.teardownScene()
+      await this.teardownScene({ clearVrmCache: true })
     }
 
     if (!opts.fromHistory) {
@@ -1538,7 +1547,7 @@ export class AppController {
     if (this.appMode === 'play') {
       stopDwellTracking('shell')
       this.disposeCommunityFollow()
-      await this.teardownScene()
+      await this.teardownScene({ clearVrmCache: true })
     }
 
     if (!opts.fromHistory) {
@@ -1584,7 +1593,7 @@ export class AppController {
     if (this.appMode === 'play') {
       stopDwellTracking('shell')
       this.disposeCommunityFollow()
-      await this.teardownScene()
+      await this.teardownScene({ clearVrmCache: true })
     }
 
     if (!opts.fromHistory) {
@@ -1683,7 +1692,7 @@ export class AppController {
     if (this.appMode === 'play') {
       stopDwellTracking('landing')
       this.disposeCommunityFollow()
-      await this.teardownScene()
+      await this.teardownScene({ clearVrmCache: true })
     }
 
     if (!opts.fromHistory) {
@@ -2342,6 +2351,8 @@ export class AppController {
     if (this.appMode !== 'play' || !this.currentRoute) return
     if (this.currentRoute.kind !== 'coords' && this.currentRoute.kind !== 'world') return
     this.disposeCommunityFollow()
+    // Leaving 3D entirely — free multi‑MB peer VRM RAM (kept across in-play teleports).
+    clearVrmRamCache()
     await this.showSceneLanding(this.currentRoute, { replace: true })
   }
 
@@ -2385,7 +2396,7 @@ export class AppController {
     // Landing → Jump In: keep shell LiveKit alive so handoff can transfer the same room.
     // disconnectLiveKit() was killing the landing scene room (global session registry),
     // forcing a reconnect with a new participant id — voice/presence looked "different".
-    await this.teardownScene({ keepLiveKit: opts.handoffShellComms === true })
+    await this.teardownScene({ keepLiveKit: opts.handoffShellComms === true, clearVrmCache: false })
 
     opts.onProgress?.('Resolving destination…')
     let sceneConfig = await resolveSceneFromRoute(route)
@@ -3509,10 +3520,9 @@ export class AppController {
     }
   }
 
-  private async teardownScene(opts?: { keepLiveKit?: boolean }): Promise<void> {
+  private async teardownScene(opts?: { keepLiveKit?: boolean; clearVrmCache?: boolean }): Promise<void> {
     // Dwell is ended explicitly (leave play / teleport / error / pagehide) — not here.
     // teardownScene runs mid jump-in load and would kill a fresh play_session_id.
-    void opts
     this.unsubVoiceUi?.()
     this.unsubVoiceUi = null
     this.unsubVoiceSpeaking?.()
@@ -3543,6 +3553,8 @@ export class AppController {
     this.unsubCommunityFollow = null
     await disconnectAll(this.world, { keepLiveKit: opts?.keepLiveKit === true })
     this.world = null
+    // Default: keep peer VRM RAM across tour teleports. Explicit clear when leaving 3D shell.
+    if (opts?.clearVrmCache) clearVrmRamCache()
     if (this.container) this.container.innerHTML = ''
   }
 
@@ -3558,11 +3570,16 @@ export class AppController {
     const session = new LiveToolsSession({
       placeKey,
       ownerAddresses: [],
+      // Wallet or stable guest (both have 0x addresses for LiveKit / vote dedupe).
       getLocalWallet: () => {
+        const fromSession = world.session.getAddress()?.trim().toLowerCase()
+        if (fromSession && /^0x[a-f0-9]{40}$/.test(fromSession)) return fromSession
         const login = this.login
-        if (login?.kind !== 'wallet') return null
-        const a = login.address.trim().toLowerCase()
-        return /^0x[a-f0-9]{40}$/.test(a) ? a : null
+        if (login?.kind === 'wallet' || login?.kind === 'guest') {
+          const a = login.address.trim().toLowerCase()
+          if (/^0x[a-f0-9]{40}$/.test(a)) return a
+        }
+        return null
       },
       getDisplayName: () => {
         const profile = world.session.getProfile()
@@ -3570,6 +3587,9 @@ export class AppController {
         if (dn) return dn
         const login = this.login
         if (login?.kind === 'wallet') return login.address.slice(0, 8)
+        if (login?.kind === 'guest') {
+          return login.displayName?.trim() || `Guest-${login.address.slice(2, 6)}`
+        }
         return null
       },
       publish: (topic, packet) => world.comms.publishRawTopicData(topic, packet, true),
@@ -3709,7 +3729,7 @@ export class AppController {
     this.teardownExplorer()
     this.teardownLanding()
     this.clearSceneBanWatch()
-    await this.teardownScene()
+    await this.teardownScene({ clearVrmCache: true })
     disposeSessionAssetCache()
 
     clearStoredIdentity()

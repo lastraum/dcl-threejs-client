@@ -559,12 +559,14 @@ export class MaterialApplier {
     applyMaterialCastShadows(mesh, inner.castShadows)
     // Marquees face inward (FrontSide). Dual-face DCL plane geometry already has both
     // normals — FrontSide shows both. DoubleSide only when author marks primitiveDoubleSided.
-    // Glow sprites: keep alpha blend, no depth write (re-assert after applyTransparency).
+    // Glow sprites: alpha-blend cards with high emissive only (firepit / LED sheets).
+    // Opaque floors that share albedo as emissiveMap must stay tone-mapped + depth-write.
     const glowSprite =
       m instanceof THREE.MeshPhysicalMaterial &&
       (transparencyMode === MTM_ALPHA_BLEND || transparencyMode === MTM_ALPHA_TEST_AND_ALPHA_BLEND) &&
       (m.emissiveIntensity ?? 1) >= 1.5 &&
-      !!m.emissiveMap
+      !!m.emissiveMap &&
+      !(m.map && m.emissiveMap === m.map && !m.transparent)
     if (glowSprite) {
       m.transparent = true
       m.depthWrite = false

@@ -15,7 +15,11 @@ import { applyDclLocalTransform, type DclTransformValues } from '../bridge/dclTr
 import { resolveSceneMediaUrl } from '../bridge/material/resolveTexture'
 import { unwrapMisroutedMediaUrl } from '../rendering/textureProxy'
 import type { ResolvedScene } from '../dcl/content/types'
-import { isLiveKitCurrentStreamSrc, isLiveKitVideoSrc } from './livekitVideoSource'
+import {
+  isLiveKitCurrentStreamSrc,
+  isLiveKitVideoSrc,
+  LIVEKIT_CURRENT_STREAM_SRC
+} from './livekitVideoSource'
 import { mediaElementGain, spatialAudioGain } from '../rendering/SoundSettings'
 import { ThrottledVideoTexture } from './ThrottledVideoTexture'
 import { getSharedLiveKitVideoStream } from './SharedLiveKitVideoStream'
@@ -462,17 +466,27 @@ export class WebVideoPlayer {
       return
     }
 
+    const remoteLive = options?.liveKitRemoteLive === true
     const ecsSrc = (spec.src ?? '').trim()
-    // ECS src is authoritative. Admin Tools "Deactivate" emits src='' (often with playing true);
-    // never soft-hold LiveKit against empty src — that left the stream painting forever.
-    const effectiveSrc = ecsSrc
+    // Empty src is always authoritative (Admin Deactivate). While a LiveKit remote
+    // is live, refuse non-empty VOD/defaultURL overwrites of an already-activated
+    // current-stream — late CRDT / MessageBus defaultURL thrash otherwise blacks
+    // guests mid-stream. Never auto-promote non-LiveKit screens onto LiveKit.
+    const softHoldLiveKit =
+      (this.liveKitSource || this.usesSharedLiveKit || isLiveKitCurrentStreamSrc(this.loadedEcsSrc)) &&
+      remoteLive &&
+      !!ecsSrc &&
+      !isLiveKitVideoSrc(ecsSrc)
+    const effectiveSrc = softHoldLiveKit
+      ? this.loadedEcsSrc || LIVEKIT_CURRENT_STREAM_SRC
+      : ecsSrc
 
-    // Compare ECS-authored src only — resolved CDN URLs must not re-trigger load every frame.
+    // Compare ECS-authored effective src only — resolved CDN URLs must not re-trigger load every frame.
     const srcChanged = effectiveSrc !== this.loadedEcsSrc
     if (effectiveSrc && srcChanged) {
       const from = this.loadedEcsSrc || '(none)'
       console.info(
-        `[WebVideoPlayer] src change ${shortSrc(from)} → ${shortSrc(effectiveSrc)}`
+        `[WebVideoPlayer] src change ${shortSrc(from)} → ${shortSrc(effectiveSrc)}${softHoldLiveKit ? ' (soft-hold live)' : ''}`
       )
       this.loadedEcsSrc = effectiveSrc
       if (isLiveKitVideoSrc(effectiveSrc)) {
@@ -788,12 +802,13 @@ export class WebVideoPlayer {
     const gen = ++this.sourceGeneration
     const binder = this.resolveLiveKitBinder()
     if (!binder) {
-      // Allow applySpec to retry once the scene LiveKit binder is ready.
-      // Keep loadedEcsSrc so the next frame with binder retries (do not thrash clear).
+      // Binder / scene room often appears after the first VideoPlayer apply (guest
+      // late join, landing→play handoff). Stay in LOADING and keep loadedEcsSrc so
+      // the next ecsPlaying pass retries — VS_ERROR made screens look permanently dead.
       this.loadedSrc = ''
-      this.liveKitSource = false
+      this.liveKitSource = true
       this.usesSharedLiveKit = false
-      this.setState(VS_ERROR)
+      this.setState(VS_LOADING)
       return
     }
 

@@ -35,6 +35,9 @@ export class PetInstance {
   private category: PetCategory = 'walking'
   private animClipMap: PetAnimClipMap | null = null
   private previewClip: string | null = null
+  /** Wall-clock when settings preview must release the mixer back to loco. */
+  private previewUntilMs = 0
+  private previewTimer: ReturnType<typeof setTimeout> | null = null
   private lastStateEnterMs = 0
   /** Extra Y on facePivot (radians) — export fix, not locomotion yaw. */
   private meshYawOffsetRad = 0
@@ -51,6 +54,11 @@ export class PetInstance {
 
   get isReady(): boolean {
     return this.meshReady && !this.disposed
+  }
+
+  /** True while settings Play owns the AnimationMixer. */
+  isPreviewLocked(): boolean {
+    return !!this.previewClip && performance.now() < this.previewUntilMs
   }
 
   getClipNames(): string[] {
@@ -71,8 +79,11 @@ export class PetInstance {
   setAnimClipMap(map: PetAnimClipMap | null | undefined): void {
     this.animClipMap = map && Object.keys(map).length ? { ...map } : null
     // Force re-resolve on next pose so new map applies immediately.
-    this.currentAnim = null
-    this.currentClipName = null
+    // Do not touch an active settings preview lock.
+    if (!this.isPreviewLocked()) {
+      this.currentAnim = null
+      this.currentClipName = null
+    }
   }
 
   async loadFromBytes(bytes: ArrayBuffer, category: PetCategory): Promise<void> {
@@ -175,23 +186,39 @@ export class PetInstance {
     this.root.rotation.set(0, pose.yaw, 0)
     // Re-assert every frame so nothing can strip the export fix.
     this.facePivot.rotation.set(0, this.meshYawOffsetRad, 0)
-    // Loco pose cancels edit-panel preview.
-    if (this.previewClip) this.previewClip = null
+    // Settings Play owns the mixer — follow must not overwrite weights mid-preview.
+    if (this.isPreviewLocked()) return
+    if (this.previewClip) this.stopClipPreview()
     this.applyAnim(pose.anim)
   }
 
   applyAnim(anim: PetAnimState): void {
     if (!this.mixer || this.actions.size === 0) return
+    if (this.isPreviewLocked()) return
     const now = performance.now()
     const sameState = this.currentAnim === anim
     const canReroll =
       sameState &&
       (anim === 'idle' || anim === 'afk' || anim === 'sit') &&
       now - this.lastStateEnterMs > IDLE_REROLL_MS
-    if (sameState && !canReroll) return
+    if (sameState && !canReroll) {
+      // Heal dead mixer stuck on the same band after thrash / exclusive handoff.
+      // Without this, early-return leaves weight ~0 forever → bind pose in "real mode".
+      if (this.isCurrentClipHealthy()) return
+      // Still mid-fade from a recent re-arm — don't restart every frame.
+      if (now - this.lastStateEnterMs < CROSSFADE * 1000 + 120) return
+    }
     // Let the running fade finish before honouring the next band change; the
     // caller re-asserts the pose every frame, so nothing is lost by waiting.
-    if (!sameState && this.currentAnim && now - this.lastStateEnterMs < MIN_STATE_DWELL_MS) return
+    // Skip dwell when healing a dead clip so we can re-arm immediately.
+    if (
+      !sameState &&
+      this.currentAnim &&
+      this.isCurrentClipHealthy() &&
+      now - this.lastStateEnterMs < MIN_STATE_DWELL_MS
+    ) {
+      return
+    }
 
     const pool = this.resolveClipPool(anim)
     if (!pool.length) return
@@ -211,29 +238,65 @@ export class PetInstance {
     this.lastStateEnterMs = now
   }
 
-  /** Play a named clip once for settings preview (local only). */
+  /**
+   * Settings-panel track preview — hard-locks the mixer so follow/loco cannot
+   * steal weights until the clip finishes (or stopClipPreview).
+   */
   playClipPreview(clipName: string): boolean {
-    if (!this.mixer || this.actions.size === 0) return false
+    if (!this.mixer || this.actions.size === 0 || this.disposed) return false
     const resolved = this.resolveActionName(clipName)
-    if (!resolved) return false
+    if (!resolved) {
+      console.warn(`[pets] preview clip not found · “${clipName}” (have ${this.clipNames.length})`)
+      return false
+    }
+    if (this.previewTimer) {
+      clearTimeout(this.previewTimer)
+      this.previewTimer = null
+    }
+    const clip = this.actions.get(resolved)?.getClip()
+    const ms = Math.min(Math.max((clip?.duration ?? 2) * 1000, 1200), 10_000)
     this.previewClip = resolved
+    this.previewUntilMs = performance.now() + ms
     this.currentAnim = null
-    // crossfadeToClip reads currentClipName as the *outgoing* action — set only after.
-    this.crossfadeToClip(resolved)
     this.currentClipName = resolved
     this.lastStateEnterMs = performance.now()
+    // Hard takeover — no crossfade. fadeIn left total weight near 0 under follow thrash.
+    this.playClipExclusive(resolved)
+    this.root.visible = true
+    this.previewTimer = setTimeout(() => {
+      this.previewTimer = null
+      if (this.previewClip === resolved) this.stopClipPreview()
+    }, ms)
     return true
   }
 
   stopClipPreview(): void {
-    if (!this.previewClip) return
+    if (this.previewTimer) {
+      clearTimeout(this.previewTimer)
+      this.previewTimer = null
+    }
+    if (!this.previewClip && this.previewUntilMs === 0) return
     this.previewClip = null
+    this.previewUntilMs = 0
     this.currentAnim = null
     this.currentClipName = null
-    this.applyAnim('idle')
+    // Exclusive re-arm — crossfade after playClipExclusive often left total weight ~0.
+    if (!this.disposed && this.mixer) {
+      const pool = this.resolveClipPool('idle')
+      const clip = pool[0]
+      if (clip) {
+        this.playClipExclusive(clip)
+        this.currentAnim = 'idle'
+        this.currentClipName = clip
+        this.lastStateEnterMs = performance.now()
+      }
+    }
   }
 
   update(dt: number): void {
+    if (this.previewClip && performance.now() >= this.previewUntilMs) {
+      this.stopClipPreview()
+    }
     this.mixer?.update(dt)
     // Mixer may write tracks on the GLB root; export offset lives on facePivot only.
     this.facePivot.rotation.set(0, this.meshYawOffsetRad, 0)
@@ -242,34 +305,105 @@ export class PetInstance {
   dispose(): void {
     this.disposed = true
     this.loadToken++
+    if (this.previewTimer) {
+      clearTimeout(this.previewTimer)
+      this.previewTimer = null
+    }
+    this.previewClip = null
+    this.previewUntilMs = 0
     this.clearMesh()
     this.root.removeFromParent()
   }
 
+  /**
+   * Exclusive clip: stop every other action, snap target to full weight.
+   * Used by settings preview so the skin never sits in a half-faded bind pose.
+   */
+  private playClipExclusive(clipName: string): void {
+    const next = this.actions.get(clipName)
+    if (!next || !this.mixer) return
+    for (const [name, action] of this.actions) {
+      if (name === clipName) continue
+      action.stop()
+      action.enabled = false
+      action.setEffectiveWeight(0)
+    }
+    next.enabled = true
+    next.paused = false
+    next.reset()
+    next.setEffectiveTimeScale(1)
+    next.setEffectiveWeight(1)
+    next.play()
+    // Apply first frame immediately so the pose isn't empty until the next tick.
+    this.mixer.update(0)
+  }
+
+  /** True when the active loco clip is actually driving the skin. */
+  private isCurrentClipHealthy(): boolean {
+    if (!this.currentClipName) return false
+    const action = this.actions.get(this.currentClipName)
+    if (!action) return false
+    return action.enabled && !action.paused && action.isRunning() && action.getEffectiveWeight() > 0.5
+  }
+
+  private totalActiveWeight(exceptClip?: string): number {
+    let w = 0
+    for (const [name, action] of this.actions) {
+      if (exceptClip && name === exceptClip) continue
+      w += Math.max(0, action.getEffectiveWeight())
+    }
+    return w
+  }
+
   private crossfadeToClip(clipName: string): void {
     const next = this.actions.get(clipName)
-    if (!next) return
-    const prev = this.currentClipName ? this.actions.get(this.currentClipName) : null
-    // crossFadeFrom only schedules weights — it never re-arms a stopped action.
-    // An action that is disabled, paused or not running contributes nothing, and
-    // once the outgoing clip has faded out the mesh drops to its bind pose.
+    if (!next || !this.mixer) return
+
+    // Already solidly on this clip — don't restart (would flash bind pose).
+    if (
+      this.currentClipName === clipName &&
+      next.enabled &&
+      !next.paused &&
+      next.isRunning() &&
+      next.getEffectiveWeight() > 0.85
+    ) {
+      return
+    }
+
+    const others = this.totalActiveWeight(clipName)
+    const selfW = next.getEffectiveWeight()
+    // Cold mixer / post-preview residue → hard snap (same path as settings Play).
+    // fadeIn from 0 with nothing else contributing left skinned pets in bind pose.
+    if (others < 0.08 && selfW < 0.08) {
+      this.playClipExclusive(clipName)
+      return
+    }
+
+    // Fade every non-target action out. Relying only on currentClipName left
+    // stale weights after setAnimClipMap / preview (currentClipName cleared) so
+    // total influence stayed ~0 → bind pose forever ("local animations dead").
+    for (const [name, action] of this.actions) {
+      if (name === clipName) continue
+      if (action.getEffectiveWeight() > 0.001 || action.isRunning()) {
+        action.enabled = true
+        action.paused = false
+        action.fadeOut(CROSSFADE)
+      } else {
+        action.stop()
+        action.enabled = false
+        action.setEffectiveWeight(0)
+      }
+    }
     next.enabled = true
     next.paused = false
     next.setEffectiveTimeScale(1)
-    // Always restart the target clip from the beginning for previews / band changes
-    // so a second Play press on a different track is not stuck under a dead weight.
+    // Restart from the beginning so band changes re-arm the clip.
     next.reset()
+    next.setEffectiveWeight(0)
     next.play()
-    if (prev && prev !== next) {
-      // Let crossFadeTo own weights — do not snap next to full weight immediately
-      // (that undoes the blend and double-influences both clips).
-      prev.enabled = true
-      prev.paused = false
-      prev.crossFadeTo(next, CROSSFADE, false)
-    } else {
-      // fadeIn ramps weight from 0 → 1; avoid setEffectiveWeight(1) snap.
-      next.fadeIn(CROSSFADE)
-    }
+    next.fadeIn(CROSSFADE)
+    // First skin sample this frame (avoid one-frame bind pose).
+    this.mixer.update(0)
   }
 
   private resolveActionName(name: string): string | null {

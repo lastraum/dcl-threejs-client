@@ -6,5 +6,6 @@ export type AppMode =
   | 'events'
   | 'profile'
   | 'lootbag'
+  | 'marketplace'
   | 'landing'
   | 'play'

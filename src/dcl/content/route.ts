@@ -23,6 +23,7 @@ const ROUTE_SEGMENT_DENY = new Set(
     'profile',
     'lootbag',
     'gacha', // legacy path alias for lootbag
+    'marketplace',
     'chat',
     'favicon.ico',
     'robots.txt',
@@ -41,6 +42,25 @@ export type RouteTarget =
   | { kind: 'communities' }
   | { kind: 'profile' }
   | { kind: 'lootbag' }
+  /**
+   * Marketplace 2D shell:
+   * - home sections: overview | collectibles | land | names | my-assets | my-lists
+   * - item detail: `/marketplace/contracts/…/items/…`
+   */
+  | { kind: 'marketplace'; view: 'home'; section: MarketplaceSectionId }
+  | {
+      kind: 'marketplace'
+      view: 'item'
+      contractAddress: string
+      itemId: string
+    }
+  /** Land NFT detail — DCL-compatible `/marketplace/contracts/…/tokens/…` */
+  | {
+      kind: 'marketplace'
+      view: 'land'
+      contractAddress: string
+      tokenId: string
+    }
   | { kind: 'editor' }
   | {
       kind: 'world'
@@ -64,6 +84,32 @@ const PROFILE_ROUTE_SEGMENT = 'profile'
 const LOOTBAG_ROUTE_SEGMENT = 'lootbag'
 /** Previous path — still parsed so old links work. */
 const LOOTBAG_ROUTE_SEGMENT_LEGACY = 'gacha'
+/** Canonical URL path for the 2D Marketplace page. */
+const MARKETPLACE_ROUTE_SEGMENT = 'marketplace'
+
+/** Marketplace section tabs (under shell Marketplace). */
+export type MarketplaceSectionId =
+  | 'overview'
+  | 'collectibles'
+  | 'land'
+  | 'names'
+  | 'my-assets'
+  | 'my-lists'
+
+const MARKETPLACE_SECTIONS: readonly MarketplaceSectionId[] = [
+  'overview',
+  'collectibles',
+  'land',
+  'names',
+  'my-assets',
+  'my-lists'
+]
+
+const MARKETPLACE_SECTION_SET = new Set<string>(MARKETPLACE_SECTIONS)
+
+export function isMarketplaceSectionId(value: string): value is MarketplaceSectionId {
+  return MARKETPLACE_SECTION_SET.has(value)
+}
 
 const APP_ROUTE_SEGMENTS = new Set([
   EVENTS_ROUTE_SEGMENT,
@@ -71,7 +117,8 @@ const APP_ROUTE_SEGMENTS = new Set([
   MAP_ROUTE_SEGMENT,
   PROFILE_ROUTE_SEGMENT,
   LOOTBAG_ROUTE_SEGMENT,
-  LOOTBAG_ROUTE_SEGMENT_LEGACY
+  LOOTBAG_ROUTE_SEGMENT_LEGACY,
+  MARKETPLACE_ROUTE_SEGMENT
 ])
 
 const EDITOR_ROUTE_SEGMENT = 'editor'
@@ -105,6 +152,83 @@ export function readRouteSegmentFromPath(pathname = window.location.pathname): s
   return segment.trim()
 }
 
+const MARKETPLACE_ITEM_PATH_RE =
+  /^\/marketplace\/contracts\/(0x[a-fA-F0-9]{40})\/items\/([^/]+)\/?$/i
+
+const MARKETPLACE_LAND_PATH_RE =
+  /^\/marketplace\/contracts\/(0x[a-fA-F0-9]{40})\/tokens\/([^/]+)\/?$/i
+
+const MARKETPLACE_SECTION_PATH_RE = /^\/marketplace\/([^/]+)\/?$/i
+
+/** Multi-segment marketplace paths (sections + item/land detail). */
+export function parseMarketplacePath(pathname = window.location.pathname): RouteTarget | null {
+  const path = pathname.replace(/\/$/, '') || '/'
+  const lower = path.toLowerCase()
+  if (lower === '/marketplace' || lower === '/marketplace/overview') {
+    return { kind: 'marketplace', view: 'home', section: 'overview' }
+  }
+  // Legacy alias
+  if (lower === '/marketplace/discover') {
+    return { kind: 'marketplace', view: 'home', section: 'overview' }
+  }
+
+  const itemMatch = MARKETPLACE_ITEM_PATH_RE.exec(path)
+  if (itemMatch?.[1] && itemMatch[2] != null && itemMatch[2] !== '') {
+    let itemId = itemMatch[2]
+    try {
+      itemId = decodeURIComponent(itemId)
+    } catch {
+      /* keep raw */
+    }
+    return {
+      kind: 'marketplace',
+      view: 'item',
+      contractAddress: itemMatch[1].toLowerCase(),
+      itemId
+    }
+  }
+
+  const landMatch = MARKETPLACE_LAND_PATH_RE.exec(path)
+  if (landMatch?.[1] && landMatch[2] != null && landMatch[2] !== '') {
+    let tokenId = landMatch[2]
+    try {
+      tokenId = decodeURIComponent(tokenId)
+    } catch {
+      /* keep raw */
+    }
+    return {
+      kind: 'marketplace',
+      view: 'land',
+      contractAddress: landMatch[1].toLowerCase(),
+      tokenId
+    }
+  }
+
+  const secMatch = MARKETPLACE_SECTION_PATH_RE.exec(lower)
+  if (secMatch?.[1] && isMarketplaceSectionId(secMatch[1])) {
+    return { kind: 'marketplace', view: 'home', section: secMatch[1] }
+  }
+
+  return null
+}
+
+export function marketplaceHomePath(section: MarketplaceSectionId = 'overview'): string {
+  if (section === 'overview') return '/marketplace'
+  return `/marketplace/${section}`
+}
+
+export function marketplaceItemPath(contractAddress: string, itemId: string): string {
+  const c = contractAddress.trim().toLowerCase()
+  const id = encodeURIComponent(itemId.trim())
+  return `/marketplace/contracts/${c}/items/${id}`
+}
+
+export function marketplaceLandPath(contractAddress: string, tokenId: string): string {
+  const c = contractAddress.trim().toLowerCase()
+  const id = encodeURIComponent(tokenId.trim())
+  return `/marketplace/contracts/${c}/tokens/${id}`
+}
+
 /**
  * Parse `/:segment` as parcel coords (`80,-1`) or ENS world (`name.dcl.eth`).
  * Bare names (`rickroll`) normalize to `rickroll.dcl.eth`.
@@ -123,6 +247,9 @@ export function parseRouteTarget(segment: string | null): RouteTarget {
     segment.toLowerCase() === LOOTBAG_ROUTE_SEGMENT_LEGACY
   ) {
     return { kind: 'lootbag' }
+  }
+  if (segment.toLowerCase() === MARKETPLACE_ROUTE_SEGMENT) {
+    return { kind: 'marketplace', view: 'home', section: 'overview' }
   }
 
   const coordMatch = /^(-?\d+)\s*,\s*(-?\d+)$/.exec(segment)
@@ -178,7 +305,11 @@ export function resolveRouteTarget(): RouteTarget {
     if (parsed) return worldTargetFromCustom(parsed.customServer, parsed.worldName)
   }
 
-  // 2) Path segment (official worlds / parcels / app shells)
+  // 2) Multi-segment marketplace (discover + item detail)
+  const marketplacePath = parseMarketplacePath()
+  if (marketplacePath) return marketplacePath
+
+  // 3) Path segment (official worlds / parcels / app shells)
   const fromPath = parseRouteTarget(readRouteSegmentFromPath())
   if (fromPath.kind === 'world' && realmRaw) {
     // Path world name with realm host override
@@ -187,14 +318,14 @@ export function resolveRouteTarget(): RouteTarget {
   }
   if (fromPath.kind !== 'blank') return fromPath
 
-  // 3) Explorer `?position=x,y`
+  // 4) Explorer `?position=x,y`
   const position = params.get('position')?.trim()
   if (position) {
     const t = parseRouteTarget(position)
     if (t.kind === 'coords') return t
   }
 
-  // 4) Legacy customServer + worldName (realm host aliases)
+  // 5) Legacy customServer + worldName (realm host aliases)
   const legacyServer = normalizeCustomServerUrl(
     params.get('customServer') ?? params.get('server') ?? params.get('worldServer')
   )
@@ -202,7 +333,7 @@ export function resolveRouteTarget(): RouteTarget {
     return worldTargetFromCustom(legacyServer, worldNameQ)
   }
 
-  // 5) worldName alone → official worlds content server
+  // 6) worldName alone → official worlds content server
   if (worldNameQ && !realmRaw) {
     const t = parseRouteTarget(worldNameQ)
     if (t.kind !== 'blank') return t
@@ -222,6 +353,15 @@ export function routePathForTarget(target: RouteTarget): string {
   if (target.kind === 'map') return '/map'
   if (target.kind === 'profile') return '/profile'
   if (target.kind === 'lootbag') return '/lootbag'
+  if (target.kind === 'marketplace') {
+    if (target.view === 'item') {
+      return marketplaceItemPath(target.contractAddress, target.itemId)
+    }
+    if (target.view === 'land') {
+      return marketplaceLandPath(target.contractAddress, target.tokenId)
+    }
+    return marketplaceHomePath(target.section)
+  }
   if (target.kind === 'editor') return '/editor'
   if (target.kind === 'coords') return `/${encodeURIComponent(`${target.x},${target.y}`)}`
   // Custom server worlds: `/` + `?realm=host&worldName=Name`.
@@ -258,6 +398,22 @@ export function routeEquals(a: RouteTarget, b: RouteTarget): boolean {
     a.kind === 'lootbag'
   ) {
     return true
+  }
+  if (a.kind === 'marketplace' && b.kind === 'marketplace') {
+    if (a.view === 'home' && b.view === 'home') return a.section === b.section
+    if (a.view === 'item' && b.view === 'item') {
+      return (
+        a.contractAddress.toLowerCase() === b.contractAddress.toLowerCase() &&
+        a.itemId === b.itemId
+      )
+    }
+    if (a.view === 'land' && b.view === 'land') {
+      return (
+        a.contractAddress.toLowerCase() === b.contractAddress.toLowerCase() &&
+        a.tokenId === b.tokenId
+      )
+    }
+    return false
   }
   if (a.kind === 'coords' && b.kind === 'coords') return a.x === b.x && a.y === b.y
   if (a.kind === 'world' && b.kind === 'world') {

@@ -35,9 +35,19 @@ export function placeFieldsFromRoute(target: RouteTarget | null | undefined): Pl
     target.kind === 'communities' ||
     target.kind === 'profile' ||
     target.kind === 'lootbag' ||
+    target.kind === 'marketplace' ||
     target.kind === 'editor'
   ) {
-    const name = target.kind === 'blank' ? 'explore' : target.kind
+    let name = target.kind === 'blank' ? 'explore' : target.kind
+    if (target.kind === 'marketplace') {
+      if (target.view === 'item') {
+        name = `marketplace-item:${target.contractAddress}:${target.itemId}`
+      } else if (target.view === 'land') {
+        name = `marketplace-land:${target.contractAddress}:${target.tokenId}`
+      } else {
+        name = `marketplace:${target.section}`
+      }
+    }
     return {
       place_kind: 'shell',
       place_key: `shell:${name}`

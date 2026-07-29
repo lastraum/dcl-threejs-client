@@ -16612,6 +16612,7 @@
       body.map-route,
       body.profile-route,
       body.lootbag-route,
+      body.marketplace-route,
       body.scene-landing-route,
       body.explorer-route #app,
       body.events-route #app,
@@ -16619,6 +16620,7 @@
       body.map-route #app,
       body.profile-route #app,
       body.lootbag-route #app,
+      body.marketplace-route #app,
       body.scene-landing-route #app,
       body.editor-route #app {
         background-color: var(--dcl-bg-deep);
@@ -16666,6 +16668,7 @@
       body.social-shell-with-chat .map-page-view__main,
       body.social-shell-with-chat .profile-page-view__main,
       body.social-shell-with-chat .lootbag-page-view__main,
+      body.social-shell-with-chat .marketplace-page-view__main,
       body.social-shell-with-chat .scene-landing-view__main {
         /* Chat dock is on the LEFT — reserve space so content does not sit under it. */
         padding-left: var(--social-chat-dock-width);
@@ -16683,6 +16686,7 @@
       .map-page-view,
       .profile-page-view,
       .lootbag-page-view,
+      .marketplace-page-view,
       .scene-landing-view {
         position: fixed;
         inset: 0;
@@ -17353,6 +17357,7 @@
         body.social-shell-with-chat .map-page-view__main,
         body.social-shell-with-chat .profile-page-view__main,
         body.social-shell-with-chat .lootbag-page-view__main,
+        body.social-shell-with-chat .marketplace-page-view__main,
         body.social-shell-with-chat .scene-landing-view__main {
           padding-right: max(16px, env(safe-area-inset-right, 0px)) !important;
           padding-left: max(16px, env(safe-area-inset-left, 0px));
@@ -18976,6 +18981,2081 @@
         display: none;
         width: 0;
         height: 0;
+      }
+
+      /* ===== 2D Marketplace Discover (/marketplace) ===== */
+      body.marketplace-route,
+      body.marketplace-route #app {
+        overflow: hidden;
+      }
+      /* Marketplace section tabs (Overview / Collectibles / …) */
+      .marketplace-section-tabs {
+        display: flex;
+        flex-wrap: nowrap;
+        gap: 4px;
+        flex-shrink: 0;
+        padding: 0 max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(safe-area-inset-left, 0px));
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(0, 0, 0, 0.22);
+        overflow-x: auto;
+        scrollbar-width: none;
+      }
+      .marketplace-section-tabs::-webkit-scrollbar {
+        display: none;
+      }
+      .marketplace-section-tabs__tab {
+        appearance: none;
+        border: none;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.5);
+        font: inherit;
+        font-weight: 700;
+        font-size: 0.9rem;
+        padding: 14px 16px 12px;
+        cursor: pointer;
+        white-space: nowrap;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+        transition: color 0.12s ease, border-color 0.12s ease;
+      }
+      .marketplace-section-tabs__tab:hover {
+        color: rgba(255, 255, 255, 0.85);
+      }
+      .marketplace-section-tabs__tab--active {
+        color: #fff;
+        border-bottom-color: #ff2d55;
+      }
+      .marketplace-page-view--detail .marketplace-section-tabs {
+        display: none;
+      }
+
+      .marketplace-page-view__main {
+        --marketplace-page-main-max: min(96vw, 1280px);
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        padding: clamp(12px, 2.5dvh, 28px) clamp(12px, 2vw, 28px) 48px;
+        box-sizing: border-box;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(192, 132, 252, 0.35) transparent;
+      }
+
+      .marketplace-section-placeholder {
+        width: 100%;
+        max-width: var(--marketplace-page-main-max);
+        margin: 0 auto;
+        padding: 24px 0;
+      }
+      .marketplace-section-placeholder__card {
+        padding: 36px 28px;
+        border-radius: 20px;
+        background: linear-gradient(155deg, rgba(28, 18, 48, 0.9), rgba(12, 10, 24, 0.92));
+        border: 1px solid rgba(232, 121, 249, 0.2);
+        text-align: center;
+      }
+      .marketplace-section-placeholder__title {
+        margin: 0 0 10px;
+        font-size: 1.4rem;
+        font-weight: 800;
+        background: linear-gradient(110deg, #fff, #e879f9);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .marketplace-section-placeholder__text {
+        margin: 0;
+        color: rgba(255, 255, 255, 0.6);
+        line-height: 1.5;
+      }
+
+      /* Collectibles browse */
+      .collectibles-view {
+        width: 100%;
+        max-width: min(96vw, 1400px);
+        margin: 0 auto;
+        display: grid;
+        grid-template-columns: minmax(200px, 240px) minmax(0, 1fr);
+        gap: clamp(14px, 2vw, 24px);
+        align-items: start;
+      }
+      .collectibles-view__sidebar {
+        position: sticky;
+        top: 8px;
+        padding: 14px 12px;
+        border-radius: 18px;
+        background: rgba(16, 12, 28, 0.92);
+        border: 1px solid rgba(232, 121, 249, 0.16);
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+      }
+      .collectibles-view__sidebar-label {
+        margin: 0 0 10px;
+        padding: 0 8px;
+        font-size: 0.68rem;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.4);
+      }
+      .collectibles-view__nav {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        margin-bottom: 16px;
+        max-height: min(52vh, 420px);
+        overflow-y: auto;
+        scrollbar-width: thin;
+      }
+      .collectibles-view__nav-children {
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+        margin: 2px 0 8px;
+        padding-left: 6px;
+        border-left: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .collectibles-view__nav-btn {
+        appearance: none;
+        border: none;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.72);
+        font: inherit;
+        font-weight: 700;
+        font-size: 0.9rem;
+        text-align: left;
+        padding: 9px 10px;
+        border-radius: 10px;
+        cursor: pointer;
+      }
+      .collectibles-view__nav-btn--child {
+        font-weight: 600;
+        font-size: 0.82rem;
+        color: rgba(255, 255, 255, 0.55);
+        padding: 7px 10px;
+      }
+      .collectibles-view__nav-btn:hover {
+        background: rgba(255, 255, 255, 0.06);
+        color: #fff;
+      }
+      .collectibles-view__nav-btn--active {
+        background: linear-gradient(135deg, rgba(255, 45, 85, 0.28), rgba(168, 85, 247, 0.22));
+        color: #fff;
+        box-shadow: inset 0 0 0 1px rgba(232, 121, 249, 0.25);
+      }
+      .collectibles-view__filters {
+        padding-top: 8px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .collectibles-view__toggle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 8px 8px;
+        font-size: 0.88rem;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.75);
+        cursor: pointer;
+      }
+      .collectibles-view__toggle input {
+        accent-color: #ff2d55;
+        width: 16px;
+        height: 16px;
+      }
+      .collectibles-view__main {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      .collectibles-view__toolbar {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .collectibles-view__search-wrap {
+        position: relative;
+        display: flex;
+        align-items: center;
+      }
+      .collectibles-view__search-icon {
+        position: absolute;
+        left: 14px;
+        color: rgba(255, 255, 255, 0.35);
+        font-size: 1rem;
+        pointer-events: none;
+      }
+      .collectibles-view__search {
+        width: 100%;
+        box-sizing: border-box;
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(0, 0, 0, 0.28);
+        color: #fff;
+        font: inherit;
+        font-size: 0.95rem;
+        padding: 12px 14px 12px 36px;
+        border-radius: 14px;
+        outline: none;
+      }
+      .collectibles-view__search:focus {
+        border-color: rgba(232, 121, 249, 0.45);
+        box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.15);
+      }
+      .collectibles-view__toolbar-meta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      .collectibles-view__count {
+        font-size: 0.88rem;
+        font-weight: 700;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .collectibles-view__sort {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.85rem;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .collectibles-view__sort select {
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(0, 0, 0, 0.28);
+        color: #f5d0fe;
+        font: inherit;
+        font-weight: 700;
+        font-size: 0.85rem;
+        padding: 8px 28px 8px 12px;
+        border-radius: 10px;
+        cursor: pointer;
+        background-image: linear-gradient(45deg, transparent 50%, #e879f9 50%),
+          linear-gradient(135deg, #e879f9 50%, transparent 50%);
+        background-position: calc(100% - 14px) calc(50% - 2px), calc(100% - 9px) calc(50% - 2px);
+        background-size: 5px 5px, 5px 5px;
+        background-repeat: no-repeat;
+      }
+      .collectibles-view__status {
+        margin: 0;
+        padding: 10px 14px;
+        border-radius: 12px;
+        font-size: 0.9rem;
+      }
+      .collectibles-view__status--error {
+        background: rgba(248, 113, 113, 0.12);
+        border: 1px solid rgba(248, 113, 113, 0.35);
+        color: #fecaca;
+      }
+      .collectibles-view__grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        gap: 14px;
+      }
+      .collectibles-view__grid .marketplace-item-card {
+        flex: none;
+        width: 100%;
+      }
+      .collectibles-view__empty {
+        grid-column: 1 / -1;
+        margin: 24px 0;
+        text-align: center;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .collectibles-view__footer {
+        display: flex;
+        justify-content: center;
+        padding: 8px 0 16px;
+      }
+      .collectibles-view__load-more {
+        appearance: none;
+        border: 1px solid rgba(232, 121, 249, 0.35);
+        background: rgba(168, 85, 247, 0.15);
+        color: #f5d0fe;
+        font: inherit;
+        font-weight: 800;
+        font-size: 0.9rem;
+        padding: 12px 28px;
+        border-radius: 999px;
+        cursor: pointer;
+      }
+      .collectibles-view__load-more:hover:not(:disabled) {
+        filter: brightness(1.1);
+      }
+      .collectibles-view__load-more:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+
+      @media (max-width: 900px) {
+        .collectibles-view {
+          grid-template-columns: 1fr;
+        }
+        .collectibles-view__sidebar {
+          position: static;
+        }
+        .collectibles-view__nav {
+          max-height: none;
+          flex-direction: row;
+          flex-wrap: wrap;
+        }
+        .collectibles-view__nav-children {
+          flex-direction: row;
+          flex-wrap: wrap;
+          border-left: none;
+          padding-left: 0;
+          width: 100%;
+        }
+      }
+
+      /* ===== Land section (catalog + map) ===== */
+      .land-view {
+        width: 100%;
+        max-width: min(96vw, 1400px);
+        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      .land-view__toolbar-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px 14px;
+        flex-shrink: 0;
+      }
+      .land-view__mode-tabs {
+        display: flex;
+        gap: 6px;
+        flex-shrink: 0;
+      }
+      .land-view__mode-tab {
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.04);
+        color: rgba(255, 255, 255, 0.65);
+        font: inherit;
+        font-weight: 800;
+        font-size: 0.88rem;
+        padding: 10px 18px;
+        border-radius: 999px;
+        cursor: pointer;
+      }
+      .land-view__mode-tab--active {
+        color: #fff;
+        border-color: transparent;
+        background: linear-gradient(135deg, rgba(34, 211, 238, 0.35), rgba(168, 85, 247, 0.35));
+        box-shadow: 0 0 18px rgba(34, 211, 238, 0.2);
+      }
+      .land-view__toolbar-row .land-view__search-wrap {
+        flex: 1 1 200px;
+        min-width: 160px;
+        max-width: 420px;
+      }
+      .land-view__toolbar-meta {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-left: auto;
+        flex-shrink: 0;
+      }
+      .land-view__body {
+        min-height: 0;
+      }
+      .land-view__body--catalog,
+      .land-view__body--map {
+        display: grid;
+        grid-template-columns: minmax(200px, 250px) minmax(0, 1fr);
+        gap: clamp(14px, 2vw, 24px);
+        align-items: start;
+      }
+      .land-view__sidebar {
+        position: sticky;
+        top: 8px;
+        padding: 14px 12px;
+        border-radius: 18px;
+        background: rgba(16, 12, 28, 0.92);
+        border: 1px solid rgba(34, 211, 238, 0.18);
+      }
+      .land-view__sidebar-label {
+        margin: 0 0 10px;
+        padding: 0 8px;
+        font-size: 0.68rem;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.4);
+      }
+      .land-view__nav {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+        margin-bottom: 14px;
+      }
+      .land-view__nav-btn {
+        appearance: none;
+        border: none;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.72);
+        font: inherit;
+        font-weight: 700;
+        font-size: 0.9rem;
+        text-align: left;
+        padding: 9px 10px;
+        border-radius: 10px;
+        cursor: pointer;
+      }
+      .land-view__nav-btn:hover {
+        background: rgba(255, 255, 255, 0.06);
+        color: #fff;
+      }
+      .land-view__nav-btn--active {
+        background: linear-gradient(135deg, rgba(34, 211, 238, 0.25), rgba(168, 85, 247, 0.2));
+        color: #fff;
+      }
+      .land-view__filters {
+        padding-top: 8px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .land-view__toggle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 8px;
+        font-size: 0.88rem;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.75);
+        cursor: pointer;
+      }
+      .land-view__toggle input {
+        accent-color: #22d3ee;
+      }
+      .land-view__main {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      .land-view__search-wrap {
+        position: relative;
+        display: flex;
+        align-items: center;
+      }
+      .land-view__search-icon {
+        position: absolute;
+        left: 14px;
+        color: rgba(255, 255, 255, 0.35);
+        pointer-events: none;
+      }
+      .land-view__search {
+        width: 100%;
+        box-sizing: border-box;
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(0, 0, 0, 0.28);
+        color: #fff;
+        font: inherit;
+        padding: 12px 14px 12px 36px;
+        border-radius: 14px;
+        outline: none;
+      }
+      .land-view__search:focus {
+        border-color: rgba(34, 211, 238, 0.45);
+      }
+      .land-view__count {
+        font-size: 0.88rem;
+        font-weight: 700;
+        color: rgba(255, 255, 255, 0.55);
+        white-space: nowrap;
+      }
+      .land-view__sort {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 0.85rem;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .land-view__sort select {
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(0, 0, 0, 0.28);
+        color: #a5f3fc;
+        font: inherit;
+        font-weight: 700;
+        padding: 8px 28px 8px 12px;
+        border-radius: 10px;
+        cursor: pointer;
+      }
+      .land-view__status {
+        margin: 0;
+        padding: 10px 14px;
+        border-radius: 12px;
+      }
+      .land-view__status--error {
+        background: rgba(248, 113, 113, 0.12);
+        border: 1px solid rgba(248, 113, 113, 0.35);
+        color: #fecaca;
+      }
+      .land-view__grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 14px;
+      }
+      .land-view__empty {
+        grid-column: 1 / -1;
+        text-align: center;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .land-view__footer {
+        display: flex;
+        justify-content: center;
+        padding: 8px 0 16px;
+      }
+      .land-view__load-more {
+        appearance: none;
+        border: 1px solid rgba(34, 211, 238, 0.35);
+        background: rgba(34, 211, 238, 0.12);
+        color: #a5f3fc;
+        font: inherit;
+        font-weight: 800;
+        padding: 12px 28px;
+        border-radius: 999px;
+        cursor: pointer;
+      }
+      .land-card {
+        border-radius: 16px;
+        overflow: hidden;
+        background: rgba(18, 14, 32, 0.9);
+        border: 1px solid rgba(34, 211, 238, 0.15);
+        cursor: pointer;
+        transition: border-color 0.15s ease, transform 0.15s ease;
+      }
+      .land-card:hover {
+        border-color: rgba(34, 211, 238, 0.45);
+        transform: translateY(-2px);
+      }
+      .land-card--skeleton {
+        height: 240px;
+        background: linear-gradient(110deg, rgba(255,255,255,0.04) 25%, rgba(255,255,255,0.08) 37%, rgba(255,255,255,0.04) 63%);
+        background-size: 200% 100%;
+        animation: marketplace-shimmer 1.2s ease-in-out infinite;
+      }
+      .land-card__media {
+        position: relative;
+        aspect-ratio: 16 / 11;
+        background: #0c1020;
+      }
+      .land-card__img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      .land-card__img--ph {
+        background: radial-gradient(circle at 50% 40%, rgba(34, 211, 238, 0.2), #0c1020 70%);
+      }
+      .land-card__kind {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+        font-size: 0.65rem;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        padding: 4px 8px;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.55);
+        color: #a5f3fc;
+      }
+      .land-card__body {
+        padding: 10px 12px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .land-card__name {
+        margin: 0;
+        font-size: 0.92rem;
+        font-weight: 800;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .land-card__coords {
+        margin: 0;
+        font-size: 0.78rem;
+        color: rgba(255, 255, 255, 0.45);
+        font-variant-numeric: tabular-nums;
+      }
+      .land-card__row {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 8px;
+        margin-top: 4px;
+      }
+      .land-card__price {
+        font-weight: 900;
+        color: #67e8f9;
+        font-size: 1rem;
+      }
+      .land-card__price small {
+        font-size: 0.65rem;
+        font-weight: 700;
+        color: rgba(165, 243, 252, 0.7);
+      }
+      .land-card__owner {
+        font-size: 0.72rem;
+        color: rgba(255, 255, 255, 0.4);
+      }
+      .land-card__actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .land-card__btn {
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.06);
+        color: #fff;
+        font: inherit;
+        font-weight: 700;
+        font-size: 0.75rem;
+        padding: 7px 12px;
+        border-radius: 999px;
+        cursor: pointer;
+        flex: 1;
+      }
+      .land-card__btn--primary {
+        border-color: transparent;
+        background: linear-gradient(135deg, #22d3ee, #a855f7);
+        color: #fff;
+      }
+
+      /* Map mode — left sidebar + full-width map */
+      .land-view__map-stage {
+        min-height: min(70vh, 640px);
+        height: min(70vh, 640px);
+        border-radius: 18px;
+        overflow: hidden;
+        border: 1px solid rgba(34, 211, 238, 0.2);
+        background: #05060c;
+      }
+      .land-view__map-panel {
+        margin-top: 14px;
+        padding-top: 12px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .land-map {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        min-height: min(70vh, 640px);
+        display: flex;
+        flex-direction: column;
+      }
+      .land-map__viewport {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+        cursor: grab;
+        touch-action: none;
+      }
+      .land-map__viewport:active {
+        cursor: grabbing;
+      }
+      .land-map__tiles,
+      .land-map__sales {
+        position: absolute;
+        inset: 0;
+        overflow: hidden;
+      }
+      .land-map__tile {
+        position: absolute;
+        display: block;
+        pointer-events: none;
+        user-select: none;
+      }
+      .land-map__sale {
+        position: absolute;
+        box-sizing: border-box;
+        background: rgba(34, 211, 238, 0.42);
+        border: 1px solid rgba(165, 243, 252, 0.85);
+        box-shadow: 0 0 8px rgba(34, 211, 238, 0.45);
+        pointer-events: none;
+      }
+      .land-map__sale--estate {
+        background: rgba(56, 189, 248, 0.38);
+        border-color: rgba(125, 211, 252, 0.9);
+      }
+      .land-map__sale--selected {
+        background: rgba(250, 204, 21, 0.45);
+        border-color: #fde047;
+        box-shadow: 0 0 12px rgba(250, 204, 21, 0.55);
+        z-index: 2;
+      }
+      .land-map__hud {
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 8px 12px;
+        background: rgba(0, 0, 0, 0.55);
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+        font-size: 0.78rem;
+        color: rgba(255, 255, 255, 0.65);
+      }
+      .land-map__zoom {
+        display: flex;
+        gap: 6px;
+      }
+      .land-map__zoom button {
+        width: 32px;
+        height: 32px;
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+        font-size: 1.1rem;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .land-view__map-hint {
+        margin: 0 0 10px;
+        font-size: 0.82rem;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      .land-view__map-selected {
+        padding: 12px;
+        border-radius: 12px;
+        background: rgba(34, 211, 238, 0.08);
+        border: 1px solid rgba(34, 211, 238, 0.22);
+        margin-top: 12px;
+      }
+      .land-view__selected-name {
+        margin: 0 0 4px;
+        font-size: 1rem;
+        font-weight: 800;
+      }
+      .land-view__selected-meta,
+      .land-view__selected-owner {
+        margin: 0 0 4px;
+        font-size: 0.8rem;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      .land-view__selected-price {
+        margin: 0 0 10px;
+        font-size: 1.25rem;
+        font-weight: 900;
+        color: #67e8f9;
+      }
+      .land-view__map-legend {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        font-size: 0.78rem;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .land-view__swatch {
+        display: inline-block;
+        width: 12px;
+        height: 12px;
+        border-radius: 3px;
+        margin-right: 8px;
+        vertical-align: middle;
+      }
+      .land-view__swatch--parcel {
+        background: rgba(34, 211, 238, 0.55);
+        box-shadow: 0 0 0 1px rgba(165, 243, 252, 0.8);
+      }
+      .land-view__swatch--estate {
+        background: rgba(56, 189, 248, 0.5);
+        box-shadow: 0 0 0 1px rgba(125, 211, 252, 0.9);
+      }
+      .land-view__swatch--selected {
+        background: rgba(250, 204, 21, 0.55);
+        box-shadow: 0 0 0 1px #fde047;
+      }
+
+      /* Land detail — full-bleed Genesis map in left stage card */
+      .land-detail__stage {
+        position: relative;
+        background: #0a1220;
+        padding: 0;
+      }
+      .land-detail__stage .marketplace-item-stage__main,
+      .land-detail__map-host {
+        display: block;
+        position: absolute;
+        inset: 0;
+        min-height: 0;
+        padding: 0;
+        place-items: unset;
+        overflow: hidden;
+        border-radius: inherit;
+        background: #0a1220;
+      }
+      .land-detail__stage .land-map,
+      .land-detail__stage .land-map--preview {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        border-radius: inherit;
+      }
+      .land-detail__stage .land-map__viewport {
+        border-radius: inherit;
+      }
+      .land-detail__stage .land-map__hud {
+        position: absolute;
+        left: 10px;
+        right: 10px;
+        bottom: 10px;
+        z-index: 4;
+        pointer-events: none;
+      }
+      .land-detail__stage .land-map__hud .land-map__zoom {
+        pointer-events: auto;
+      }
+      .land-detail__stage .land-map__hud [data-hud] {
+        font-size: 0.72rem;
+        opacity: 0.85;
+        text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+      }
+      .land-map--preview {
+        min-height: 0;
+        display: block;
+      }
+      .land-map--preview .land-map__viewport {
+        position: absolute;
+        inset: 0;
+        flex: none;
+      }
+      .land-map--preview .land-map__hud {
+        position: absolute;
+        left: 10px;
+        right: 10px;
+        bottom: 10px;
+        z-index: 4;
+        padding: 6px 8px;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(0, 0, 0, 0.55);
+        backdrop-filter: blur(8px);
+        pointer-events: none;
+      }
+      .land-map--preview .land-map__zoom {
+        pointer-events: auto;
+      }
+      .land-detail__stage-coords {
+        position: absolute;
+        bottom: 48px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 5;
+        margin: 0;
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-size: 0.8rem;
+        font-weight: 800;
+        font-variant-numeric: tabular-nums;
+        color: #a5f3fc;
+        background: rgba(0, 0, 0, 0.55);
+        border: 1px solid rgba(34, 211, 238, 0.3);
+        pointer-events: none;
+      }
+      .land-detail__mini-btn {
+        appearance: none;
+        border: 1px solid rgba(34, 211, 238, 0.35);
+        background: rgba(34, 211, 238, 0.12);
+        color: #a5f3fc;
+        font: inherit;
+        font-size: 0.72rem;
+        font-weight: 700;
+        padding: 4px 10px;
+        border-radius: 999px;
+        cursor: pointer;
+      }
+      .land-detail__nearby {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .land-detail__nearby-card {
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(0, 0, 0, 0.25);
+        color: #fff;
+        text-align: left;
+        padding: 10px 12px;
+        border-radius: 12px;
+        cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .land-detail__nearby-card:hover {
+        border-color: rgba(34, 211, 238, 0.4);
+      }
+      .land-detail__nearby-name {
+        font-weight: 800;
+        font-size: 0.88rem;
+      }
+      .land-detail__nearby-meta {
+        font-size: 0.78rem;
+        color: rgba(165, 243, 252, 0.85);
+      }
+
+      @media (max-width: 900px) {
+        .land-view__body--catalog,
+        .land-view__body--map {
+          grid-template-columns: 1fr;
+        }
+        .land-view__map-stage,
+        .land-map {
+          min-height: 420px;
+          height: 420px;
+        }
+        .land-view__toolbar-row .land-view__search-wrap {
+          max-width: none;
+          flex: 1 1 100%;
+        }
+      }
+      /* Item detail: fill shell, no page scroll */
+      .marketplace-page-view__main:has(.marketplace-item-detail) {
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        padding-bottom: 12px;
+      }
+      .marketplace-page-view__main::-webkit-scrollbar {
+        width: 8px;
+      }
+      .marketplace-page-view__main::-webkit-scrollbar-thumb {
+        background: rgba(192, 132, 252, 0.35);
+        border-radius: 8px;
+      }
+
+      .discover-view {
+        width: 100%;
+        max-width: var(--marketplace-page-main-max, min(96vw, 1280px));
+        margin: 0 auto;
+        color: #f5f3ff;
+        font-family: inherit;
+      }
+      .discover-view__layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+        gap: clamp(16px, 2vw, 28px);
+        align-items: start;
+      }
+      .discover-view__main {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 22px;
+      }
+      .discover-view__status {
+        margin: 0;
+        padding: 12px 16px;
+        border-radius: 12px;
+        font-size: 0.92rem;
+        line-height: 1.4;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      .discover-view__status--info {
+        border-color: rgba(192, 132, 252, 0.35);
+        color: #e9d5ff;
+      }
+      .discover-view__status--error {
+        border-color: rgba(248, 113, 113, 0.45);
+        color: #fecaca;
+      }
+
+      /* Hero */
+      .marketplace-hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1.1fr) minmax(180px, 0.9fr);
+        gap: 20px;
+        align-items: center;
+        padding: clamp(18px, 3vw, 32px);
+        border-radius: 20px;
+        background:
+          radial-gradient(ellipse 80% 120% at 85% 40%, rgba(255, 45, 85, 0.22), transparent 55%),
+          radial-gradient(ellipse 60% 80% at 20% 80%, rgba(168, 85, 247, 0.18), transparent 50%),
+          linear-gradient(145deg, rgba(24, 16, 40, 0.92), rgba(12, 10, 22, 0.88));
+        border: 1px solid rgba(232, 121, 249, 0.22);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        overflow: hidden;
+        min-height: 220px;
+      }
+      .marketplace-hero__eyebrow {
+        margin: 0 0 8px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: #e879f9;
+      }
+      .marketplace-hero__title {
+        margin: 0 0 12px;
+        font-size: clamp(1.55rem, 3.2vw, 2.35rem);
+        font-weight: 800;
+        line-height: 1.1;
+        letter-spacing: -0.02em;
+        background: linear-gradient(110deg, #fff 20%, #e879f9 55%, #ff2d55 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .marketplace-hero__sub,
+      .marketplace-hero__drop {
+        margin: 0 0 12px;
+        color: rgba(237, 233, 254, 0.85);
+        font-size: 0.95rem;
+        line-height: 1.45;
+      }
+      .marketplace-hero__drop-label {
+        display: inline-block;
+        margin-right: 8px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 0.7rem;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        background: rgba(255, 45, 85, 0.25);
+        color: #fda4af;
+      }
+      .marketplace-hero__drop-name {
+        font-weight: 700;
+        color: #fff;
+      }
+      .marketplace-hero__meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 16px;
+      }
+      .marketplace-hero__price {
+        font-weight: 700;
+        color: #f5d0fe;
+      }
+      .marketplace-hero__cta {
+        appearance: none;
+        border: none;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 700;
+        padding: 10px 18px;
+        border-radius: 999px;
+        color: #fff;
+        background: linear-gradient(135deg, #ff2d55, #a855f7);
+        box-shadow: 0 4px 20px rgba(255, 45, 85, 0.35);
+      }
+      .marketplace-hero__cta:hover {
+        filter: brightness(1.08);
+      }
+      .marketplace-hero__stage {
+        position: relative;
+        min-height: 180px;
+        display: grid;
+        place-items: center;
+      }
+      .marketplace-hero__glow {
+        position: absolute;
+        width: 70%;
+        height: 70%;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(232, 121, 249, 0.45), transparent 70%);
+        filter: blur(8px);
+      }
+      .marketplace-hero__pedestal {
+        position: absolute;
+        bottom: 12%;
+        width: 55%;
+        height: 18px;
+        border-radius: 50%;
+        background: radial-gradient(ellipse, rgba(232, 121, 249, 0.55), transparent 70%);
+        box-shadow: 0 0 40px rgba(168, 85, 247, 0.5);
+      }
+      .marketplace-hero__art {
+        position: relative;
+        z-index: 1;
+        max-width: min(220px, 100%);
+        max-height: 200px;
+        object-fit: contain;
+        filter: drop-shadow(0 12px 28px rgba(168, 85, 247, 0.45));
+      }
+      .marketplace-hero__art-ph,
+      .marketplace-hero__stage--skeleton,
+      .marketplace-hero__stage--empty {
+        position: relative;
+        z-index: 1;
+        width: min(180px, 70%);
+        height: 160px;
+        border-radius: 16px;
+        background: linear-gradient(135deg, rgba(168, 85, 247, 0.2), rgba(255, 45, 85, 0.12));
+        border: 1px solid rgba(232, 121, 249, 0.2);
+      }
+
+      /* Category chips */
+      .marketplace-category-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .marketplace-category-chips__chip {
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.05);
+        color: rgba(255, 255, 255, 0.78);
+        font: inherit;
+        font-weight: 600;
+        font-size: 0.9rem;
+        padding: 10px 18px;
+        border-radius: 999px;
+        cursor: pointer;
+        transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+      }
+      .marketplace-category-chips__chip:hover {
+        background: rgba(255, 255, 255, 0.1);
+        color: #fff;
+      }
+      .marketplace-category-chips__chip--active {
+        background: linear-gradient(135deg, #ff2d55, #c026d3);
+        border-color: transparent;
+        color: #fff;
+        box-shadow: 0 4px 18px rgba(255, 45, 85, 0.35);
+      }
+
+      /* Rails */
+      .marketplace-rail {
+        min-width: 0;
+      }
+      .marketplace-rail__head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        margin-bottom: 12px;
+      }
+      .marketplace-rail__title {
+        margin: 0;
+        font-size: 1.05rem;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        color: #f5d0fe;
+      }
+      .marketplace-rail__track {
+        display: flex;
+        gap: 14px;
+        overflow-x: auto;
+        padding-bottom: 8px;
+        scroll-snap-type: x mandatory;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(192, 132, 252, 0.3) transparent;
+      }
+      .marketplace-rail__empty {
+        margin: 0;
+        padding: 24px 16px;
+        color: rgba(255, 255, 255, 0.5);
+        font-size: 0.9rem;
+      }
+
+      /* Item card */
+      .marketplace-item-card {
+        flex: 0 0 200px;
+        scroll-snap-align: start;
+        display: flex;
+        flex-direction: column;
+        border-radius: 16px;
+        background: rgba(18, 14, 32, 0.88);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+        cursor: pointer;
+        transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+      }
+      .marketplace-item-card:hover,
+      .marketplace-item-card:focus-visible {
+        border-color: rgba(232, 121, 249, 0.45);
+        box-shadow: 0 8px 28px rgba(168, 85, 247, 0.25);
+        transform: translateY(-2px);
+        outline: none;
+      }
+      .marketplace-item-card--selected {
+        border-color: #e879f9;
+        box-shadow: 0 0 0 1px rgba(232, 121, 249, 0.5), 0 8px 28px rgba(168, 85, 247, 0.3);
+      }
+      .marketplace-item-card--skeleton {
+        height: 260px;
+        background: linear-gradient(
+          110deg,
+          rgba(255, 255, 255, 0.04) 25%,
+          rgba(255, 255, 255, 0.08) 37%,
+          rgba(255, 255, 255, 0.04) 63%
+        );
+        background-size: 200% 100%;
+        animation: marketplace-shimmer 1.2s ease-in-out infinite;
+        pointer-events: none;
+      }
+      @keyframes marketplace-shimmer {
+        0% { background-position: 100% 0; }
+        100% { background-position: -100% 0; }
+      }
+      .marketplace-item-card__thumb {
+        position: relative;
+        aspect-ratio: 1;
+        background:
+          radial-gradient(circle at 50% 40%, rgba(168, 85, 247, 0.2), transparent 65%),
+          #12101c;
+        display: grid;
+        place-items: center;
+      }
+      .marketplace-item-card__thumb-img {
+        width: 78%;
+        height: 78%;
+        object-fit: contain;
+      }
+      .marketplace-item-card__thumb-ph {
+        width: 48%;
+        height: 48%;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .marketplace-item-card__rarity,
+      .marketplace-hero__rarity,
+      .marketplace-rank-list__rarity {
+        text-transform: uppercase;
+        font-size: 0.65rem;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        padding: 3px 7px;
+        border-radius: 6px;
+        background: rgba(0, 0, 0, 0.45);
+        color: #e9d5ff;
+      }
+      .marketplace-item-card__rarity {
+        position: absolute;
+        top: 8px;
+        left: 8px;
+      }
+      .marketplace-item-card__rarity.rarity-legendary,
+      .marketplace-hero__rarity.rarity-legendary,
+      .marketplace-rank-list__rarity.rarity-legendary {
+        color: #fde68a;
+        background: rgba(234, 179, 8, 0.25);
+      }
+      .marketplace-item-card__rarity.rarity-mythic,
+      .marketplace-item-card__rarity.rarity-unique,
+      .marketplace-hero__rarity.rarity-mythic,
+      .marketplace-hero__rarity.rarity-unique {
+        color: #fbcfe8;
+        background: rgba(236, 72, 153, 0.28);
+      }
+      .marketplace-item-card__rarity.rarity-epic,
+      .marketplace-hero__rarity.rarity-epic,
+      .marketplace-rank-list__rarity.rarity-epic {
+        color: #e9d5ff;
+        background: rgba(168, 85, 247, 0.28);
+      }
+      .marketplace-item-card__rarity.rarity-rare,
+      .marketplace-hero__rarity.rarity-rare,
+      .marketplace-rank-list__rarity.rarity-rare {
+        color: #bfdbfe;
+        background: rgba(59, 130, 246, 0.28);
+      }
+      .marketplace-item-card__body {
+        padding: 10px 12px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        flex: 1;
+      }
+      .marketplace-item-card__name {
+        margin: 0;
+        font-size: 0.88rem;
+        font-weight: 700;
+        line-height: 1.25;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .marketplace-item-card__creator {
+        font-size: 0.72rem;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .marketplace-item-card__row {
+        margin-top: auto;
+        padding-top: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .marketplace-item-card__price {
+        font-weight: 800;
+        font-size: 0.88rem;
+        color: #f5d0fe;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .marketplace-item-card__mana-icon {
+        color: #ff2d55;
+        font-size: 0.75rem;
+      }
+      .marketplace-item-card__mana-label {
+        font-size: 0.65rem;
+        font-weight: 600;
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .marketplace-item-card__buy {
+        appearance: none;
+        border: none;
+        cursor: pointer;
+        font: inherit;
+        font-size: 0.75rem;
+        font-weight: 700;
+        padding: 6px 12px;
+        border-radius: 999px;
+        color: #fff;
+        background: linear-gradient(135deg, #ff2d55, #a855f7);
+      }
+      .marketplace-item-card__buy:hover {
+        filter: brightness(1.1);
+      }
+
+      /* Rank list sidebar */
+      .marketplace-rank-list {
+        position: sticky;
+        top: 8px;
+        padding: 14px;
+        border-radius: 18px;
+        background: rgba(16, 12, 28, 0.9);
+        border: 1px solid rgba(232, 121, 249, 0.18);
+        box-shadow: 0 10px 32px rgba(0, 0, 0, 0.3);
+      }
+      .marketplace-rank-list__head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+      }
+      .marketplace-rank-list__title {
+        margin: 0;
+        font-size: 0.95rem;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #f5d0fe;
+      }
+      .marketplace-rank-list__badge {
+        font-size: 0.65rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: rgba(255, 45, 85, 0.25);
+        color: #fda4af;
+      }
+      .marketplace-rank-list__ol {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .marketplace-rank-list__row {
+        display: grid;
+        grid-template-columns: 28px 40px minmax(0, 1fr);
+        gap: 8px;
+        align-items: center;
+        padding: 8px;
+        border-radius: 12px;
+        cursor: pointer;
+        border: 1px solid transparent;
+        transition: background 0.12s ease, border-color 0.12s ease;
+      }
+      .marketplace-rank-list__row:hover,
+      .marketplace-rank-list__row:focus-visible {
+        background: rgba(255, 255, 255, 0.06);
+        outline: none;
+      }
+      .marketplace-rank-list__row--selected {
+        border-color: rgba(232, 121, 249, 0.5);
+        background: rgba(168, 85, 247, 0.12);
+      }
+      .marketplace-rank-list__row--skeleton {
+        height: 52px;
+        background: rgba(255, 255, 255, 0.04);
+        animation: marketplace-shimmer 1.2s ease-in-out infinite;
+        pointer-events: none;
+      }
+      .marketplace-rank-list__rank {
+        font-size: 0.78rem;
+        font-weight: 800;
+        color: rgba(255, 255, 255, 0.45);
+        text-align: center;
+      }
+      .marketplace-rank-list__thumb {
+        width: 40px;
+        height: 40px;
+        border-radius: 10px;
+        overflow: hidden;
+        background: #1a1528;
+        display: grid;
+        place-items: center;
+      }
+      .marketplace-rank-list__thumb img {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+      }
+      .marketplace-rank-list__ph {
+        width: 55%;
+        height: 55%;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .marketplace-rank-list__meta {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .marketplace-rank-list__name {
+        font-size: 0.8rem;
+        font-weight: 700;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .marketplace-rank-list__sub {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 0.7rem;
+      }
+      .marketplace-rank-list__price {
+        color: #f5d0fe;
+        font-weight: 700;
+      }
+      .marketplace-rank-list__empty {
+        padding: 16px 8px;
+        color: rgba(255, 255, 255, 0.45);
+        font-size: 0.85rem;
+      }
+
+      @media (max-width: 900px) {
+        .discover-view__layout {
+          grid-template-columns: 1fr;
+        }
+        .marketplace-rank-list {
+          position: static;
+        }
+        .marketplace-hero {
+          grid-template-columns: 1fr;
+        }
+        .marketplace-hero__stage {
+          order: -1;
+          min-height: 140px;
+        }
+      }
+
+      /* ===== Marketplace item detail — mockup #1 hero layout ===== */
+      .marketplace-item-detail {
+        width: 100%;
+        max-width: var(--marketplace-page-main-max, min(96vw, 1280px));
+        margin: 0 auto;
+        flex: 1;
+        min-height: 0;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        overflow: hidden;
+      }
+      .marketplace-item-detail__content {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        overflow: hidden;
+      }
+      .marketplace-item-detail__back {
+        appearance: none;
+        border: none;
+        background: transparent;
+        color: rgba(245, 208, 254, 0.85);
+        font: inherit;
+        font-weight: 700;
+        font-size: 0.9rem;
+        cursor: pointer;
+        padding: 2px 0;
+        align-self: flex-start;
+        flex-shrink: 0;
+      }
+      .marketplace-item-detail__back:hover {
+        color: #fff;
+      }
+
+      /* Stage | side (buy card + info card) */
+      .marketplace-item-detail__hero {
+        flex: 1;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.85fr);
+        gap: clamp(14px, 2vw, 24px);
+        align-items: stretch;
+        height: 100%;
+        overflow: hidden;
+      }
+      .marketplace-item-detail__side {
+        min-height: 0;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        overflow: hidden;
+      }
+      .marketplace-item-detail__hero--loading .marketplace-item-stage--skeleton,
+      .marketplace-item-detail__hero--loading .marketplace-item-panel--skeleton,
+      .marketplace-item-detail__hero--loading .marketplace-item-info--skeleton {
+        min-height: 0;
+        border-radius: 22px;
+        background: linear-gradient(
+          110deg,
+          rgba(255, 255, 255, 0.04) 25%,
+          rgba(255, 255, 255, 0.09) 37%,
+          rgba(255, 255, 255, 0.04) 63%
+        );
+        background-size: 200% 100%;
+        animation: marketplace-shimmer 1.2s ease-in-out infinite;
+      }
+      .marketplace-item-detail__hero--loading .marketplace-item-stage--skeleton {
+        height: 100%;
+      }
+      .marketplace-item-detail__hero--loading .marketplace-item-panel--skeleton {
+        flex: 0 0 42%;
+      }
+      .marketplace-item-detail__hero--loading .marketplace-item-info--skeleton {
+        flex: 1;
+      }
+      .marketplace-item-detail__error {
+        padding: 40px 24px;
+        text-align: center;
+        border-radius: 20px;
+        background: rgba(18, 14, 32, 0.9);
+        border: 1px solid rgba(248, 113, 113, 0.3);
+      }
+      .marketplace-item-detail__error-title {
+        margin: 0 0 8px;
+        font-size: 1.25rem;
+        font-weight: 800;
+      }
+      .marketplace-item-detail__error-body {
+        margin: 0 0 20px;
+        color: rgba(255, 255, 255, 0.6);
+      }
+
+      /* Full-height runway stage + bottom collection strip */
+      .marketplace-item-stage {
+        position: relative;
+        height: 100%;
+        min-height: 0;
+        border-radius: 24px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        background:
+          radial-gradient(ellipse 80% 50% at 50% 100%, rgba(255, 45, 85, 0.2), transparent 55%),
+          radial-gradient(ellipse 60% 70% at 50% 35%, rgba(192, 132, 252, 0.35), transparent 60%),
+          linear-gradient(180deg, #1a0a28 0%, #0a0614 45%, #12081c 100%);
+        border: 1px solid rgba(232, 121, 249, 0.3);
+        box-shadow:
+          0 24px 60px rgba(0, 0, 0, 0.5),
+          inset 0 0 100px rgba(168, 85, 247, 0.1);
+      }
+      .marketplace-item-stage__main {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+      }
+      .marketplace-item-stage__glow {
+        position: absolute;
+        width: 70%;
+        height: 60%;
+        top: 12%;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(232, 121, 249, 0.55), transparent 68%);
+        filter: blur(16px);
+        pointer-events: none;
+      }
+      .marketplace-item-stage__beams {
+        position: absolute;
+        inset: 0;
+        background:
+          linear-gradient(105deg, transparent 40%, rgba(255, 45, 85, 0.08) 50%, transparent 60%),
+          linear-gradient(-105deg, transparent 40%, rgba(168, 85, 247, 0.1) 50%, transparent 60%);
+        pointer-events: none;
+      }
+      .marketplace-item-stage__pedestal {
+        position: absolute;
+        bottom: 8%;
+        width: 52%;
+        height: 28px;
+        border-radius: 50%;
+        background: radial-gradient(ellipse, rgba(255, 45, 85, 0.5), transparent 70%);
+        box-shadow: 0 0 60px rgba(192, 132, 252, 0.55);
+        pointer-events: none;
+      }
+      .marketplace-item-stage__art {
+        position: relative;
+        z-index: 1;
+        max-width: min(360px, 78%);
+        max-height: min(52vh, 380px);
+        object-fit: contain;
+        filter: drop-shadow(0 20px 40px rgba(192, 132, 252, 0.55));
+      }
+      .marketplace-item-stage__art-ph {
+        position: relative;
+        z-index: 1;
+        width: min(200px, 48%);
+        height: 200px;
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.06);
+        border: 1px solid rgba(232, 121, 249, 0.2);
+      }
+      .marketplace-item-stage__collection {
+        flex-shrink: 0;
+        z-index: 2;
+        padding: 10px 12px 12px;
+        background: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.55) 28%);
+        border-top: 1px solid rgba(232, 121, 249, 0.15);
+      }
+      /* Compact collection rail inside stage */
+      .marketplace-rail--stage-footer {
+        gap: 0;
+      }
+      .marketplace-rail--stage-footer .marketplace-rail__head {
+        margin-bottom: 8px;
+      }
+      .marketplace-rail--stage-footer .marketplace-rail__title {
+        font-size: 0.72rem;
+        letter-spacing: 0.1em;
+        color: rgba(245, 208, 254, 0.75);
+      }
+      .marketplace-rail--stage-footer .marketplace-rail__track {
+        gap: 10px;
+        padding-bottom: 2px;
+      }
+      .marketplace-rail--stage-footer .marketplace-item-card {
+        flex: 0 0 132px;
+        border-radius: 12px;
+        background: rgba(12, 8, 24, 0.85);
+      }
+      .marketplace-rail--stage-footer .marketplace-item-card__body {
+        padding: 6px 8px 8px;
+        gap: 2px;
+      }
+      .marketplace-rail--stage-footer .marketplace-item-card__name {
+        font-size: 0.72rem;
+        -webkit-line-clamp: 1;
+      }
+      .marketplace-rail--stage-footer .marketplace-item-card__creator {
+        display: none;
+      }
+      .marketplace-rail--stage-footer .marketplace-item-card__price {
+        font-size: 0.72rem;
+      }
+      .marketplace-rail--stage-footer .marketplace-item-card__buy {
+        display: none;
+      }
+      .marketplace-rail--stage-footer .marketplace-item-card__rarity {
+        font-size: 0.55rem;
+        padding: 2px 5px;
+      }
+      .marketplace-rail--stage-footer .marketplace-rail__empty {
+        padding: 8px;
+        font-size: 0.78rem;
+      }
+
+      /* Glass purchase card (top of side column) */
+      .marketplace-item-panel {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        flex: 0 0 auto;
+        min-height: 0;
+        padding: clamp(16px, 2vw, 22px) clamp(16px, 2vw, 24px);
+        border-radius: 24px;
+        background:
+          linear-gradient(160deg, rgba(36, 22, 58, 0.96) 0%, rgba(14, 10, 28, 0.97) 100%);
+        border: 1px solid rgba(232, 121, 249, 0.28);
+        box-shadow:
+          0 20px 50px rgba(0, 0, 0, 0.45),
+          inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        overflow: hidden;
+      }
+      .marketplace-item-panel__title {
+        margin: 0;
+        font-size: clamp(1.4rem, 2.6vw, 1.95rem);
+        font-weight: 800;
+        line-height: 1.12;
+        letter-spacing: -0.02em;
+        background: linear-gradient(110deg, #fff 10%, #e879f9 55%, #ff2d55 100%);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .marketplace-item-panel__by {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .marketplace-item-panel__avatar {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        display: grid;
+        place-items: center;
+        font-size: 0.65rem;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+        color: #fff;
+        background: linear-gradient(
+          135deg,
+          hsl(var(--avatar-hue, 300), 70%, 48%),
+          hsl(calc(var(--avatar-hue, 300) + 40), 80%, 38%)
+        );
+        border: 1.5px solid rgba(255, 255, 255, 0.2);
+        box-shadow: 0 0 12px hsla(var(--avatar-hue, 300), 80%, 50%, 0.35);
+      }
+      .marketplace-item-panel__avatar--empty {
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .marketplace-item-panel__creator {
+        margin: 0;
+        font-size: 0.9rem;
+        color: rgba(255, 255, 255, 0.5);
+      }
+      .marketplace-item-panel__creator span {
+        color: #f5d0fe;
+        font-weight: 700;
+      }
+      .marketplace-item-panel__rarity-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+      }
+      .marketplace-item-panel__rarity {
+        text-transform: uppercase;
+        font-size: 0.78rem;
+        font-weight: 900;
+        letter-spacing: 0.1em;
+        padding: 8px 16px;
+        border-radius: 999px;
+        background: linear-gradient(135deg, rgba(168, 85, 247, 0.35), rgba(255, 45, 85, 0.2));
+        color: #e9d5ff;
+        box-shadow: 0 0 20px rgba(168, 85, 247, 0.3);
+      }
+      .marketplace-item-panel__rarity.rarity-legendary {
+        color: #fef3c7;
+        background: linear-gradient(135deg, #b45309 0%, #eab308 45%, #f59e0b 100%);
+        box-shadow: 0 0 24px rgba(234, 179, 8, 0.45);
+        text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+      }
+      .marketplace-item-panel__rarity.rarity-mythic,
+      .marketplace-item-panel__rarity.rarity-unique {
+        color: #fbcfe8;
+        background: linear-gradient(135deg, rgba(236, 72, 153, 0.5), rgba(168, 85, 247, 0.4));
+      }
+      .marketplace-item-panel__rarity.rarity-epic {
+        color: #f3e8ff;
+        background: linear-gradient(135deg, rgba(126, 34, 206, 0.55), rgba(168, 85, 247, 0.4));
+      }
+      .marketplace-item-panel__chip {
+        font-size: 0.75rem;
+        font-weight: 700;
+        padding: 7px 12px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(255, 255, 255, 0.8);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+      }
+      .marketplace-item-panel__price-block {
+        display: flex;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 2px;
+      }
+      .marketplace-item-panel__price {
+        margin: 0;
+        font-size: clamp(2.6rem, 6vw, 3.75rem);
+        font-weight: 900;
+        line-height: 1;
+        color: #67e8f9;
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        text-shadow: 0 0 36px rgba(34, 211, 238, 0.5);
+        letter-spacing: -0.03em;
+      }
+      .marketplace-item-panel__mana-icon {
+        color: #ff2d55;
+        font-size: 0.65em;
+      }
+      .marketplace-item-panel__mana-unit {
+        font-size: 1rem;
+        font-weight: 800;
+        color: #a5f3fc;
+        letter-spacing: 0.08em;
+      }
+      .marketplace-item-panel__stock {
+        font-size: 0.85rem;
+        font-weight: 700;
+        color: #fda4af;
+        padding-bottom: 6px;
+      }
+      .marketplace-item-panel__actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 2px;
+      }
+      .marketplace-item-panel__actions .marketplace-item-detail__cta {
+        flex: 1 1 120px;
+      }
+      .marketplace-item-detail__cta {
+        appearance: none;
+        border: none;
+        cursor: pointer;
+        font: inherit;
+        font-weight: 800;
+        font-size: 0.95rem;
+        padding: 14px 18px;
+        border-radius: 999px;
+        transition: filter 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+      }
+      .marketplace-item-detail__cta:hover {
+        filter: brightness(1.08);
+        transform: translateY(-1px);
+      }
+      .marketplace-item-detail__cta--primary {
+        color: #fff;
+        background: linear-gradient(135deg, #ff2d55 0%, #d946ef 50%, #a855f7 100%);
+        box-shadow: 0 8px 28px rgba(255, 45, 85, 0.45);
+      }
+      .marketplace-item-detail__cta--ghost {
+        color: #f5d0fe;
+        background: rgba(168, 85, 247, 0.2);
+        border: 1px solid rgba(232, 121, 249, 0.45);
+        box-shadow: 0 0 20px rgba(168, 85, 247, 0.15);
+      }
+
+      /* Info card under buy card — description + market tabs */
+      .marketplace-item-info {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        border-radius: 24px;
+        background:
+          linear-gradient(160deg, rgba(28, 18, 48, 0.96) 0%, rgba(12, 10, 24, 0.97) 100%);
+        border: 1px solid rgba(232, 121, 249, 0.22);
+        box-shadow:
+          0 16px 40px rgba(0, 0, 0, 0.35),
+          inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        overflow: hidden;
+      }
+      .marketplace-item-info__tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0;
+        padding: 0 10px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        flex-shrink: 0;
+        background: rgba(0, 0, 0, 0.18);
+      }
+      .marketplace-item-info__tab {
+        appearance: none;
+        border: none;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.45);
+        font: inherit;
+        font-weight: 700;
+        font-size: 0.78rem;
+        padding: 12px 10px;
+        cursor: pointer;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+        white-space: nowrap;
+      }
+      .marketplace-item-info__tab span {
+        display: inline-block;
+        margin-left: 4px;
+        padding: 1px 6px;
+        border-radius: 999px;
+        font-size: 0.65rem;
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.6);
+      }
+      .marketplace-item-info__tab--active {
+        color: #fff;
+        border-bottom-color: #e879f9;
+      }
+      .marketplace-item-info__tab--active span {
+        background: rgba(232, 121, 249, 0.28);
+        color: #f5d0fe;
+      }
+      .marketplace-item-info__body {
+        flex: 1;
+        min-height: 0;
+        padding: 14px clamp(12px, 2vw, 18px) 16px;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .marketplace-item-info__desc {
+        margin: 0;
+        font-size: 0.92rem;
+        line-height: 1.55;
+        color: rgba(237, 233, 254, 0.9);
+      }
+      .marketplace-item-info__desc--muted {
+        color: rgba(255, 255, 255, 0.45);
+      }
+      .marketplace-item-info__empty {
+        margin: 16px 4px;
+        text-align: center;
+        color: rgba(255, 255, 255, 0.45);
+        font-size: 0.88rem;
+      }
+      .marketplace-item-info__scroll {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(192, 132, 252, 0.35) transparent;
+      }
+      .marketplace-item-info__table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.78rem;
+      }
+      .marketplace-item-info__table th {
+        text-align: left;
+        font-size: 0.65rem;
+        font-weight: 800;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: rgba(255, 255, 255, 0.4);
+        padding: 6px 6px 8px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        position: sticky;
+        top: 0;
+        background: rgba(18, 12, 36, 0.96);
+        z-index: 1;
+      }
+      .marketplace-item-info__table td {
+        padding: 9px 6px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        color: rgba(255, 255, 255, 0.85);
+        vertical-align: middle;
+      }
+      .marketplace-item-info__table tr:hover td {
+        background: rgba(168, 85, 247, 0.08);
+      }
+      .marketplace-item-info__td-price {
+        font-weight: 800;
+        color: #67e8f9;
+        white-space: nowrap;
+      }
+      .marketplace-item-info__mono {
+        font-variant-numeric: tabular-nums;
+        color: #e9d5ff;
+      }
+      .marketplace-item-info__pill {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 0.65rem;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        background: rgba(255, 45, 85, 0.22);
+        color: #fda4af;
+      }
+
+      @media (max-width: 960px) {
+        /* Allow the main column to scroll the full detail stack */
+        .marketplace-page-view__main:has(.marketplace-item-detail) {
+          overflow-x: hidden;
+          overflow-y: auto !important;
+          -webkit-overflow-scrolling: touch;
+          overscroll-behavior-y: contain;
+          display: block;
+          padding-bottom: max(28px, env(safe-area-inset-bottom, 0px));
+        }
+        .marketplace-item-detail {
+          height: auto;
+          flex: none;
+          min-height: 0;
+          overflow: visible;
+        }
+        .marketplace-item-detail__content {
+          height: auto;
+          flex: none;
+          min-height: 0;
+          overflow: visible;
+        }
+        .marketplace-item-detail__hero {
+          grid-template-columns: 1fr;
+          flex: none;
+          height: auto;
+          overflow: visible;
+        }
+        .marketplace-item-detail__side {
+          height: auto;
+          overflow: visible;
+        }
+        .marketplace-item-stage {
+          min-height: 360px;
+          height: auto;
+        }
+        .marketplace-item-panel {
+          height: auto;
+        }
+        .marketplace-item-info {
+          min-height: 240px;
+          /* Tables can still scroll inside the info card if tall */
+          max-height: none;
+        }
+        .marketplace-item-info__body {
+          overflow: visible;
+        }
+        .marketplace-item-info__scroll {
+          max-height: 280px;
+        }
       }
 
       .lootbag {
@@ -22605,6 +24685,14 @@
       .scene-landing-view__navlink--active {
         background: rgba(255, 255, 255, 0.12);
         color: #fff;
+      }
+      .social-shell-topnav__link--marketplace {
+        color: #e879f9;
+      }
+      .social-shell-topnav__link--marketplace.social-shell-topnav__link--active {
+        background: linear-gradient(135deg, rgba(255, 45, 85, 0.5), rgba(168, 85, 247, 0.4));
+        color: #fff;
+        box-shadow: 0 0 18px rgba(192, 132, 252, 0.35);
       }
       .social-shell-topnav__link--lootbag {
         color: #fbbf24;

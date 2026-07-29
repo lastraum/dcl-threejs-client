@@ -373,6 +373,11 @@ export class DevProgressPanel {
     if (route.kind === 'communities') return 'communities'
     if (route.kind === 'profile') return 'profile'
     if (route.kind === 'lootbag') return 'lootbag'
+    if (route.kind === 'marketplace') {
+      if (route.view === 'item') return `marketplace item ${route.itemId}`
+      if (route.view === 'land') return `marketplace land ${route.tokenId.slice(0, 12)}…`
+      return `marketplace ${route.section}`
+    }
     if (route.kind === 'editor') return 'editor'
     return undefined
   }

@@ -85,6 +85,7 @@ import { ExplorerView } from './ui/explore/ExplorerView'
 import { LootBagPageView } from './ui/explore/LootBagPageView'
 import { MapPageView } from './ui/explore/MapPageView'
 import { ProfilePageView } from './ui/explore/ProfilePageView'
+import { MarketplacePageView } from './ui/marketplace/MarketplacePageView'
 import type { SocialShellTab } from './ui/explore/SocialShellTopNav'
 import { SocialMobileNotifications } from './ui/explore/SocialMobileNotifications'
 import { SceneLandingView } from './ui/landing/SceneLandingView'
@@ -182,6 +183,7 @@ export class AppController {
   private mapPageView: MapPageView | null = null
   private eventsPageView: EventsPageView | null = null
   private lootBagPageView: LootBagPageView | null = null
+  private marketplacePageView: MarketplacePageView | null = null
   private communitiesPageView: CommunitiesPageView | null = null
   private profilePageView: ProfilePageView | null = null
   private sceneLandingView: SceneLandingView | null = null
@@ -275,6 +277,11 @@ export class AppController {
 
     if (postLoginRoute.kind === 'lootbag') {
       await this.showLootBagPage({ replace: true })
+      return
+    }
+
+    if (postLoginRoute.kind === 'marketplace') {
+      await this.showMarketplacePage({ replace: true, route: postLoginRoute })
       return
     }
 
@@ -373,6 +380,20 @@ export class AppController {
       return
     }
 
+    if (target.kind === 'marketplace') {
+      this.navigating = true
+      try {
+        await this.showMarketplacePage({
+          fromHistory: opts.fromHistory,
+          replace: opts.replace,
+          route: target
+        })
+      } finally {
+        this.navigating = false
+      }
+      return
+    }
+
     if (target.kind === 'map') {
       this.navigating = true
       try {
@@ -425,6 +446,8 @@ export class AppController {
     if (tab === 'explore') void this.navigateTo({ kind: 'blank' })
     else if (tab === 'map') void this.navigateTo({ kind: 'map' })
     else if (tab === 'communities') void this.navigateTo({ kind: 'communities' })
+    else if (tab === 'marketplace')
+      void this.navigateTo({ kind: 'marketplace', view: 'home', section: 'overview' })
     else if (tab === 'lootbag') void this.navigateTo({ kind: 'lootbag' })
     else if (tab === 'editor') void this.navigateTo({ kind: 'editor' })
     else void this.navigateTo({ kind: 'events' })
@@ -445,6 +468,7 @@ export class AppController {
     this.teardownMapPage()
     this.teardownEventsPage()
     this.teardownLootBagPage()
+    this.teardownMarketplacePage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
     this.teardownExplorer()
@@ -1374,6 +1398,7 @@ export class AppController {
     this.teardownMapPage()
     this.teardownEventsPage()
     this.teardownLootBagPage()
+    this.teardownMarketplacePage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -1422,6 +1447,7 @@ export class AppController {
     this.teardownMapPage()
     this.teardownEventsPage()
     this.teardownLootBagPage()
+    this.teardownMarketplacePage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -1478,6 +1504,7 @@ export class AppController {
     this.teardownMapPage()
     this.teardownEventsPage()
     this.teardownLootBagPage()
+    this.teardownMarketplacePage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -1523,6 +1550,7 @@ export class AppController {
     this.teardownMapPage()
     this.teardownEventsPage()
     this.teardownLootBagPage()
+    this.teardownMarketplacePage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -1537,6 +1565,78 @@ export class AppController {
       ...this.socialShellLoginHandlers()
     })
     this.lootBagPageView.mount(this.container)
+    this.ensureSocialChatShell()
+    this.collapseSocialChatThread()
+  }
+
+  private async showMarketplacePage(
+    opts: {
+      fromHistory?: boolean
+      replace?: boolean
+      route?: Extract<RouteTarget, { kind: 'marketplace' }>
+    } = {}
+  ): Promise<void> {
+    const route: Extract<RouteTarget, { kind: 'marketplace' }> =
+      opts.route ??
+      (this.currentRoute?.kind === 'marketplace'
+        ? this.currentRoute
+        : { kind: 'marketplace', view: 'home', section: 'overview' })
+
+    // Already on marketplace shell — swap discover/detail without full remount.
+    if (this.appMode === 'marketplace' && this.marketplacePageView) {
+      if (!opts.fromHistory) {
+        applyRouteToHistory(route, opts.replace ?? false)
+      }
+      this.currentRoute = route
+      this.marketplacePageView.setRoute(route)
+      return
+    }
+
+    if (this.appMode === 'play') {
+      stopDwellTracking('shell')
+      this.disposeCommunityFollow()
+      await this.teardownScene({ clearVrmCache: true })
+    }
+
+    if (!opts.fromHistory) {
+      applyRouteToHistory(route, opts.replace ?? false)
+    }
+    this.currentRoute = route
+    this.appMode = 'marketplace'
+    this.clearSceneBanWatch()
+
+    this.teardownExplorer()
+    this.teardownLanding()
+    this.teardownMapPage()
+    this.teardownEventsPage()
+    this.teardownLootBagPage()
+    this.teardownMarketplacePage()
+    this.teardownCommunitiesPage()
+    this.teardownProfilePage()
+
+    if (!this.container || !this.login) return
+
+    const hudEl = document.getElementById('hud')
+    if (hudEl) hudEl.hidden = true
+
+    this.marketplacePageView = new MarketplacePageView({
+      login: this.login,
+      route,
+      onNavigate: (tab) => this.navigateSocialShell(tab),
+      onMarketplaceRoute: (next) => {
+        void this.navigateTo(next)
+      },
+      onJumpInParcel: (px, py) => {
+        void this.navigateTo({
+          kind: 'coords',
+          x: px,
+          y: py,
+          segment: `${px},${py}`
+        })
+      },
+      ...this.socialShellLoginHandlers()
+    })
+    this.marketplacePageView.mount(this.container)
     this.ensureSocialChatShell()
     this.collapseSocialChatThread()
   }
@@ -1562,6 +1662,7 @@ export class AppController {
     this.teardownMapPage()
     this.teardownEventsPage()
     this.teardownLootBagPage()
+    this.teardownMarketplacePage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -1608,6 +1709,7 @@ export class AppController {
     this.teardownMapPage()
     this.teardownEventsPage()
     this.teardownLootBagPage()
+    this.teardownMarketplacePage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -1648,6 +1750,11 @@ export class AppController {
   private teardownLootBagPage(): void {
     this.lootBagPageView?.dispose()
     this.lootBagPageView = null
+  }
+
+  private teardownMarketplacePage(): void {
+    this.marketplacePageView?.dispose()
+    this.marketplacePageView = null
   }
 
   private teardownCommunitiesPage(): void {
@@ -1719,6 +1826,7 @@ export class AppController {
     this.teardownMapPage()
     this.teardownEventsPage()
     this.teardownLootBagPage()
+    this.teardownMarketplacePage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
 
@@ -3761,6 +3869,7 @@ export class AppController {
     this.mapPageView?.setLogin(login)
     this.eventsPageView?.setLogin(login)
     this.lootBagPageView?.setLogin(login)
+    this.marketplacePageView?.setLogin(login)
     this.communitiesPageView?.setLogin(login)
     this.profilePageView?.setLogin(login)
     this.sceneLandingView?.setLogin(login)

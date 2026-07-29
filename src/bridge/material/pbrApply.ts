@@ -58,6 +58,10 @@ export function applyPbrColors(
  *
  * Only apply once emissiveMap is bound — black with no maps is an invisible plane
  * (sprite pool can re-touch scalars before textures land).
+ *
+ * Opaque floors/walls that stamp the same texture into albedo + emissiveTexture must
+ * NOT take the sprite path — black albedo + toneMapped=false + bloom washes tiles white
+ * (threejs.dcl.eth HexagonFloor / Creator Hub asset packs).
  */
 export function configureEmissiveRendering(
   material: THREE.MeshPhysicalMaterial,
@@ -67,7 +71,20 @@ export function configureEmissiveRendering(
   transparencyMode?: number
 ): void {
   const intensity = emissiveIntensity ?? 1
-  const glowSprite = !!hasEmissiveMap && intensity >= 1.5
+  const alphaBlend = transparencyMode === 2 || transparencyMode === 3
+  const sharedAlbedoEmissive = !!(
+    hasEmissiveMap &&
+    material.map &&
+    material.emissiveMap &&
+    material.map === material.emissiveMap
+  )
+  // Flame/LED sprites: high intensity + emissive map + alpha blend (or map-less emissive).
+  // Opaque shared albedo/emissive = floor/wall bake — never sprite.
+  const glowSprite =
+    !!hasEmissiveMap &&
+    intensity >= 1.5 &&
+    (alphaBlend || !material.map || (sharedAlbedoEmissive && material.transparent))
+
   if (glowSprite) {
     material.color.setRGB(0, 0, 0)
     material.metalness = 0
@@ -79,7 +96,7 @@ export function configureEmissiveRendering(
     }
     // Scene author intensity (fire ~6). Slight bump so HDR tone-map still reads hot.
     material.emissiveIntensity = Math.max(intensity, intensity * 1.15)
-    if (transparencyMode === 2 || transparencyMode === 3) {
+    if (alphaBlend) {
       material.transparent = true
       material.depthWrite = false
     }
@@ -87,6 +104,23 @@ export function configureEmissiveRendering(
     applyDirectIntensity(material, 0)
     return
   }
+
+  // Opaque shared albedo+emissive (asset-pack floors): lit diffuse is primary;
+  // keep a soft bake only — full intensity on both channels washes + blooms out.
+  if (sharedAlbedoEmissive && !alphaBlend) {
+    if (material.emissive.r + material.emissive.g + material.emissive.b < 1e-4) {
+      material.emissive.setRGB(1, 1, 1)
+    }
+    // Cap bake so outdoor sun + emissiveMap don't overexpose tiles.
+    const bake = Math.min(Math.max(intensity, 0), 2) * 0.22
+    material.emissiveIntensity = bake
+    material.toneMapped = true
+    if (material.blending !== THREE.NormalBlending) {
+      material.blending = THREE.NormalBlending
+    }
+    return
+  }
+
   material.toneMapped = intensity <= 1.5
   if (material.blending !== THREE.NormalBlending) {
     material.blending = THREE.NormalBlending

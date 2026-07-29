@@ -69,7 +69,7 @@ export class SocialChatDock {
   private mounted = false
   private threadOpen = false
   private listExpanded = false
-  /** Desktop + mobile: dock expanded from the bottom-right chat FAB. */
+  /** Desktop + mobile: dock expanded from the bottom-left chat FAB. */
   private panelOpen = false
   private unsubChat: (() => void) | null = null
   private unsubChannel: (() => void) | null = null
@@ -112,7 +112,7 @@ export class SocialChatDock {
     this.guestCloseBtn.type = 'button'
     this.guestCloseBtn.className = 'social-chat-dock__guest-close'
     this.guestCloseBtn.setAttribute('aria-label', 'Close chat')
-    this.guestCloseBtn.textContent = '›'
+    this.guestCloseBtn.textContent = '‹'
     this.guestCloseBtn.hidden = true
     this.guestCloseBtn.addEventListener('click', () => this.closeChatPanel())
 
@@ -1022,7 +1022,8 @@ export class SocialChatDock {
       const rect = btn.getBoundingClientRect()
       this.pillTipFloatEl.textContent = label
       this.pillTipFloatEl.style.top = `${Math.round(rect.top + rect.height / 2)}px`
-      this.pillTipFloatEl.style.left = `${Math.round(rect.left - 10)}px`
+      // Dock is on the left — tip sits to the right of the rail chip.
+      this.pillTipFloatEl.style.left = `${Math.round(rect.right + 10)}px`
       this.pillTipFloatEl.hidden = false
     }
     const hide = (): void => this.hidePillTip()

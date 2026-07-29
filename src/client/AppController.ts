@@ -15,6 +15,7 @@ import { PortableExperienceManager } from '../dcl/multiScene/PortableExperienceM
 import { resolvePortableExperiencesPolicy } from '../dcl/multiScene/resolvePortableExperiences'
 import { readSceneDevQueryKey } from '../environment/fftOcean/readFftOceanOverride'
 import { disconnectAll } from '../network/SessionConnections'
+import { clearVrmRamCache } from '../avatar/vrm/vrmRamCache'
 import { SessionIdentity } from '../network/SessionIdentity'
 import { ClientShell } from './ui/shell/ClientShell'
 import { isTextInputFocused } from './ui/textInputFocus'
@@ -92,6 +93,10 @@ import {
   enrichResolvedScenePublicTitle,
   fetchPublicSceneTitle
 } from '../social/sceneDisplayTitle'
+import { fetchSceneLandingMeta } from '../social/sceneLanding'
+import { LiveToolsSession } from '../social/LiveToolsSession'
+import { placeKeyFromScene } from '../social/liveToolsWire'
+import { LiveToolsUi } from './ui/liveTools/LiveToolsUi'
 import { recordLoginEvent } from '../analytics/recordLogin'
 import {
   startDwellTracking,
@@ -194,6 +199,10 @@ export class AppController {
   /** Tour Focus — follower lens takeover; session-scoped across World rebuilds. */
   private tourFocus: TourFocusController | null = null
   private tourFocusHost: import('../rendering/SceneHost').SceneHost | null = null
+  /** In-scene live polls + Q&A (scene LiveKit topic — not chat). */
+  private liveToolsSession: LiveToolsSession | null = null
+  private liveToolsUi: LiveToolsUi | null = null
+  private unsubLiveToolsTopic: (() => void) | null = null
   /**
    * Follower Esc during Focus: stay on tour, dismiss only this Focus period.
    * Cleared when leader turns Focus off (or tour ends) so the next Focus ON re-enters.
@@ -431,7 +440,7 @@ export class AppController {
     this.appMode = 'explorer'
     this.clearSceneBanWatch()
 
-    await this.teardownScene()
+    await this.teardownScene({ clearVrmCache: true })
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
@@ -866,42 +875,48 @@ export class AppController {
     this.closeTourRejoinPanel()
     const follow = this.communityFollow
     if (!follow) return
-    // Show Tour Options icon as an anchor even before they rejoin.
+    // Show Tour Options (flag) icon first so the panel can dock next to it.
     this.shell?.setTourOptionsVisible(true)
+    this.syncTourOptionsSidebarVisibility()
     const name =
       this.world?.social.getCommunities().find((c) => c.id.toLowerCase() === communityId.toLowerCase())
         ?.name ?? 'Community'
-    this.tourRejoinPanel = new TourRejoinPanel({
-      getState: () => ({
-        communityName: name,
-        lastTarget: follow.getPendingLeaderResume()?.lastTarget ?? lastTarget
-      }),
-      anchor: () => this.shell?.getTourOptionsButtonElement?.() ?? undefined,
-      onRejoin: async () => {
-        const result = await follow.resumeLeadFromSnapshot()
-        this.closeTourRejoinPanel()
-        if (!result.ok) {
-          clientDebugLog.log('social', 'Tour rejoin failed', { level: 'warn', alsoConsole: true })
-          this.syncTourOptionsSidebarVisibility()
-          return
-        }
-        this.syncTourUiFromController()
-        if (result.target) {
-          const route = followTargetToRoute(result.target)
-          if (!this.isAlreadyAtFollowTarget(result.target)) {
-            void this.jumpInToScene(route, { fastAssets: true, source: 'goto' })
+    const open = (): void => {
+      if (this.tourRejoinPanel) return
+      this.tourRejoinPanel = new TourRejoinPanel({
+        getState: () => ({
+          communityName: name,
+          lastTarget: follow.getPendingLeaderResume()?.lastTarget ?? lastTarget
+        }),
+        anchor: () => this.shell?.getTourOptionsButtonElement?.() ?? undefined,
+        onRejoin: async () => {
+          const result = await follow.resumeLeadFromSnapshot()
+          this.closeTourRejoinPanel()
+          if (!result.ok) {
+            clientDebugLog.log('social', 'Tour rejoin failed', { level: 'warn', alsoConsole: true })
+            this.syncTourOptionsSidebarVisibility()
+            return
           }
+          this.syncTourUiFromController()
+          if (result.target) {
+            const route = followTargetToRoute(result.target)
+            if (!this.isAlreadyAtFollowTarget(result.target)) {
+              void this.jumpInToScene(route, { fastAssets: true, source: 'goto' })
+            }
+          }
+        },
+        onCancel: async () => {
+          await follow.cancelLeaderResume()
+          this.closeTourRejoinPanel()
+          this.syncTourUiFromController()
+        },
+        onClose: () => {
+          this.tourRejoinPanel = null
         }
-      },
-      onCancel: async () => {
-        await follow.cancelLeaderResume()
-        this.closeTourRejoinPanel()
-        this.syncTourUiFromController()
-      },
-      onClose: () => {
-        this.tourRejoinPanel = null
-      }
-    })
+      })
+    }
+    // Wait a frame so the flag button is laid out before anchoring.
+    requestAnimationFrame(() => requestAnimationFrame(open))
   }
 
   private closeTourRejoinPanel(): void {
@@ -1062,9 +1077,11 @@ export class AppController {
   }
 
   private syncTourOptionsSidebarVisibility(): void {
-    // Keep the flag icon visible while the rejoin panel is open (anchor).
+    // Keep the flag icon visible while leading, rejoin panel open, or resume available.
     const show =
-      Boolean(this.communityFollow?.isLeading()) || Boolean(this.tourRejoinPanel)
+      Boolean(this.communityFollow?.isLeading()) ||
+      Boolean(this.tourRejoinPanel) ||
+      Boolean(this.communityFollow?.getPendingLeaderResume())
     this.shell?.setTourOptionsVisible(show)
   }
 
@@ -1352,7 +1369,7 @@ export class AppController {
     this.clearSceneBanWatch()
     this.disposeCommunityFollow()
 
-    await this.teardownScene()
+    await this.teardownScene({ clearVrmCache: true })
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
@@ -1390,7 +1407,7 @@ export class AppController {
 
     if (this.appMode === 'play') {
       this.disposeCommunityFollow()
-      await this.teardownScene()
+      await this.teardownScene({ clearVrmCache: true })
     }
 
     if (!opts.fromHistory) {
@@ -1446,7 +1463,7 @@ export class AppController {
     if (this.appMode === 'play') {
       stopDwellTracking('shell')
       this.disposeCommunityFollow()
-      await this.teardownScene()
+      await this.teardownScene({ clearVrmCache: true })
     }
 
     if (!opts.fromHistory) {
@@ -1491,7 +1508,7 @@ export class AppController {
     if (this.appMode === 'play') {
       stopDwellTracking('shell')
       this.disposeCommunityFollow()
-      await this.teardownScene()
+      await this.teardownScene({ clearVrmCache: true })
     }
 
     if (!opts.fromHistory) {
@@ -1530,7 +1547,7 @@ export class AppController {
     if (this.appMode === 'play') {
       stopDwellTracking('shell')
       this.disposeCommunityFollow()
-      await this.teardownScene()
+      await this.teardownScene({ clearVrmCache: true })
     }
 
     if (!opts.fromHistory) {
@@ -1576,7 +1593,7 @@ export class AppController {
     if (this.appMode === 'play') {
       stopDwellTracking('shell')
       this.disposeCommunityFollow()
-      await this.teardownScene()
+      await this.teardownScene({ clearVrmCache: true })
     }
 
     if (!opts.fromHistory) {
@@ -1654,6 +1671,8 @@ export class AppController {
     }
     this.castWatchRoom?.disconnect()
     this.castWatchRoom = null
+    // Leave 2D live tools when leaving landing (play will re-bind on Jump In).
+    if (this.appMode !== 'play') this.disposeLiveTools()
     this.sceneLandingView?.dispose()
     this.sceneLandingView = null
   }
@@ -1675,7 +1694,7 @@ export class AppController {
     if (this.appMode === 'play') {
       stopDwellTracking('landing')
       this.disposeCommunityFollow()
-      await this.teardownScene()
+      await this.teardownScene({ clearVrmCache: true })
     }
 
     if (!opts.fromHistory) {
@@ -1726,6 +1745,14 @@ export class AppController {
       },
       onOpenUserProfile: (address) => this.socialChat?.openProfileForAddress(address),
       startCastWatch: (host, onUpdate, castOpts) => this.startLandingCastWatch(target, host, onUpdate, castOpts),
+      onLiveToolsMenu: (anchor) => {
+        if (!this.liveToolsUi) {
+          // LiveKit may still be connecting — start session now and open menu.
+          void this.setupLandingLiveTools(target).then(() => this.liveToolsUi?.openMenuAt(anchor))
+          return
+        }
+        this.liveToolsUi.openMenuAt(anchor)
+      },
       ...this.socialShellLoginHandlers()
     })
     this.sceneLandingView.mount(this.container)
@@ -1789,6 +1816,8 @@ export class AppController {
         this.sceneLandingView?.setCastLive(live)
       })
       this.sceneLandingView?.setCastLive(this.socialChat.hasRemoteVideoLive())
+      // Live tools share the landing scene LiveKit room (same topic as 3D).
+      void this.setupLandingLiveTools(target)
       // Jump-in unlock retries (separate from cast presence poll inside the watcher).
       for (const ms of [800, 2000, 5000]) {
         window.setTimeout(() => {
@@ -1802,6 +1831,8 @@ export class AppController {
       }
     } else if (chatBlockedByScene || guestSession || jumpInReady) {
       this.sceneLandingView?.setCastRoomReady(true)
+      // Guests can still open UI; publish no-ops until LiveKit is up.
+      void this.setupLandingLiveTools(target)
     }
   }
 
@@ -2334,6 +2365,8 @@ export class AppController {
     if (this.appMode !== 'play' || !this.currentRoute) return
     if (this.currentRoute.kind !== 'coords' && this.currentRoute.kind !== 'world') return
     this.disposeCommunityFollow()
+    // Leaving 3D entirely — free multi‑MB peer VRM RAM (kept across in-play teleports).
+    clearVrmRamCache()
     await this.showSceneLanding(this.currentRoute, { replace: true })
   }
 
@@ -2377,7 +2410,7 @@ export class AppController {
     // Landing → Jump In: keep shell LiveKit alive so handoff can transfer the same room.
     // disconnectLiveKit() was killing the landing scene room (global session registry),
     // forcing a reconnect with a new participant id — voice/presence looked "different".
-    await this.teardownScene({ keepLiveKit: opts.handoffShellComms === true })
+    await this.teardownScene({ keepLiveKit: opts.handoffShellComms === true, clearVrmCache: false })
 
     opts.onProgress?.('Resolving destination…')
     let sceneConfig = await resolveSceneFromRoute(route)
@@ -2677,8 +2710,14 @@ export class AppController {
                 this.minimap?.setVisible(!collapsed)
               }
             }
-          : undefined
+          : undefined,
+        onSceneOptions: (anchor) => {
+          if (document.pointerLockElement) document.exitPointerLock()
+          this.liveToolsUi?.openMenuAt(anchor)
+        }
       })
+      // Live polls / Q&A — bind after card so ⋯ works as soon as owners resolve.
+      void this.setupLiveTools(world, sceneConfig)
       this.lastLocationTitleKey =
         sceneConfig.source.kind === 'coords'
           ? sceneConfig.baseParcel
@@ -3495,10 +3534,9 @@ export class AppController {
     }
   }
 
-  private async teardownScene(opts?: { keepLiveKit?: boolean }): Promise<void> {
+  private async teardownScene(opts?: { keepLiveKit?: boolean; clearVrmCache?: boolean }): Promise<void> {
     // Dwell is ended explicitly (leave play / teleport / error / pagehide) — not here.
     // teardownScene runs mid jump-in load and would kill a fresh play_session_id.
-    void opts
     this.unsubVoiceUi?.()
     this.unsubVoiceUi = null
     this.unsubVoiceSpeaking?.()
@@ -3514,6 +3552,7 @@ export class AppController {
     this.mobileHud?.dispose()
     this.mobileHud = null
     this.unbindMinimapLayout()
+    this.disposeLiveTools()
     this.worldLocationCard?.dispose()
     this.worldLocationCard = null
     this.minimap?.dispose()
@@ -3528,7 +3567,148 @@ export class AppController {
     this.unsubCommunityFollow = null
     await disconnectAll(this.world, { keepLiveKit: opts?.keepLiveKit === true })
     this.world = null
+    // Default: keep peer VRM RAM across tour teleports. Explicit clear when leaving 3D shell.
+    if (opts?.clearVrmCache) clearVrmRamCache()
     if (this.container) this.container.innerHTML = ''
+  }
+
+  /**
+   * Live polls + Q&A + trivia for the current place (3D play).
+   * Transport: scene LiveKit topic `d3js-live-tools:{placeKey}` (never RFC4 Chat).
+   */
+  private async setupLiveTools(world: World, scene: ResolvedScene): Promise<void> {
+    const placeKey = placeKeyFromScene(scene)
+    if (!placeKey) return
+    await this.bindLiveToolsSession({
+      placeKey,
+      publish: (topic, packet) => world.comms.publishRawTopicData(topic, packet, true),
+      addTopicListener: (fn) => world.comms.addTopicListener(fn),
+      getLocalWallet: () => {
+        const fromSession = world.session.getAddress()?.trim().toLowerCase()
+        if (fromSession && /^0x[a-f0-9]{40}$/.test(fromSession)) return fromSession
+        return this.sessionParticipantAddress()
+      },
+      getDisplayName: () => {
+        const profile = world.session.getProfile()
+        const dn = profile?.displayName?.trim()
+        if (dn) return dn
+        return this.sessionDisplayName()
+      },
+      ownerRoute:
+        scene.source.kind === 'world' || scene.source.kind === 'coords'
+          ? scene.source.kind === 'world'
+            ? {
+                kind: 'world',
+                worldName: scene.source.worldName,
+                segment: scene.source.worldName,
+                ...(scene.source.customServer
+                  ? { customServer: scene.source.customServer }
+                  : {})
+              }
+            : {
+                kind: 'coords',
+                x: scene.source.x,
+                y: scene.source.y,
+                segment: `${scene.source.x},${scene.source.y}`
+              }
+          : null
+    })
+  }
+
+  /**
+   * Live tools on 2D scene landing — same UI panels as 3D, same LiveKit topic.
+   */
+  private async setupLandingLiveTools(
+    route: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
+  ): Promise<void> {
+    const comms = this.socialChat?.getComms()
+    if (!comms) return
+    const placeKey =
+      route.kind === 'world'
+        ? route.worldName.trim().toLowerCase()
+        : `${route.x},${route.y}`
+    if (!placeKey) return
+    await this.bindLiveToolsSession({
+      placeKey,
+      publish: (topic, packet) => comms.publishRawTopicData(topic, packet, true),
+      addTopicListener: (fn) => comms.addTopicListener(fn),
+      getLocalWallet: () => this.sessionParticipantAddress(),
+      getDisplayName: () => this.sessionDisplayName(),
+      ownerRoute: route
+    })
+  }
+
+  private sessionParticipantAddress(): string | null {
+    const login = this.login
+    if (login?.kind === 'wallet' || login?.kind === 'guest') {
+      const a = login.address.trim().toLowerCase()
+      if (/^0x[a-f0-9]{40}$/.test(a)) return a
+    }
+    return null
+  }
+
+  private sessionDisplayName(): string | null {
+    const login = this.login
+    if (login?.kind === 'wallet') return login.address.slice(0, 8)
+    if (login?.kind === 'guest') {
+      return login.displayName?.trim() || `Guest-${login.address.slice(2, 6)}`
+    }
+    return null
+  }
+
+  private async bindLiveToolsSession(opts: {
+    placeKey: string
+    publish: (topic: string, packet: Uint8Array) => Promise<boolean>
+    addTopicListener: (
+      fn: (topic: string, sender: string, payload: Uint8Array) => void
+    ) => () => void
+    getLocalWallet: () => string | null
+    getDisplayName: () => string | null
+    ownerRoute: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }> | null
+  }): Promise<void> {
+    // Always rebuild so publish/listen hit the current LiveKit room (landing vs World).
+    this.disposeLiveTools()
+    const session = new LiveToolsSession({
+      placeKey: opts.placeKey,
+      ownerAddresses: [],
+      getLocalWallet: opts.getLocalWallet,
+      getDisplayName: opts.getDisplayName,
+      publish: opts.publish,
+      onChange: () => this.liveToolsUi?.refresh()
+    })
+    this.liveToolsSession = session
+    this.liveToolsUi = new LiveToolsUi({
+      session,
+      onToast: (message) => {
+        clientDebugLog.log('client', `[live-tools] ${message}`)
+      }
+    })
+    this.unsubLiveToolsTopic = opts.addTopicListener((topic, sender, payload) => {
+      session.handleInbound(topic, sender, payload)
+    })
+
+    if (opts.ownerRoute) {
+      try {
+        const meta = await fetchSceneLandingMeta(opts.ownerRoute)
+        if (this.liveToolsSession !== session) return
+        session.setOwnerAddresses(meta.ownerAddresses ?? [])
+      } catch {
+        /* host features stay disabled until owners known */
+      }
+    }
+
+    window.setTimeout(() => {
+      if (this.liveToolsSession === session) session.start()
+    }, 800)
+  }
+
+  private disposeLiveTools(): void {
+    this.unsubLiveToolsTopic?.()
+    this.unsubLiveToolsTopic = null
+    this.liveToolsUi?.dispose()
+    this.liveToolsUi = null
+    this.liveToolsSession?.dispose()
+    this.liveToolsSession = null
   }
 
   /** End Follow/Tour session when leaving 3D play (session-only product rule). */
@@ -3612,7 +3792,7 @@ export class AppController {
     this.teardownExplorer()
     this.teardownLanding()
     this.clearSceneBanWatch()
-    await this.teardownScene()
+    await this.teardownScene({ clearVrmCache: true })
     disposeSessionAssetCache()
 
     clearStoredIdentity()

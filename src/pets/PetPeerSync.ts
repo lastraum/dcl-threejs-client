@@ -71,14 +71,38 @@ export class PetPeerSync {
   private readonly pendingRequests = new Set<string>()
   private readonly servingKeys = new Set<string>()
   private readonly fetchAttempts = new Map<string, number>()
+  /** Last outbound fetch-request time per provider:hash — spam throttle. */
+  private readonly lastFetchRequestAt = new Map<string, number>()
+  /** Last time we began serving a requester (any hash). */
+  private readonly lastServeAt = new Map<string, number>()
   private peerJoinReannounceTimer: ReturnType<typeof setTimeout> | null = null
   private loginRetryTimers: ReturnType<typeof setTimeout>[] = []
   private lastPoseSendMs = 0
+  /** Debounce rapid local equip/clear toggles into one wire publish. */
+  private equipPublishTimer: ReturnType<typeof setTimeout> | null = null
+  private pendingEquipPublish: {
+    hash: string | null
+    category: PetCategory
+    meshYawOffsetDeg: number
+    force: boolean
+  } | null = null
+  /** Bumps on clear / equip change — aborts in-flight multi‑MB serves. */
+  private serveGeneration = 0
+  private wantAnnounceReplyTimer: ReturnType<typeof setTimeout> | null = null
 
-  private static readonly MAX_FETCH_ATTEMPTS = 6
+  private static readonly MAX_FETCH_ATTEMPTS = 4
   private static readonly PEER_JOIN_REANNOUNCE_MS = 400
   private static readonly POSE_MOVING_MS = 80
   private static readonly POSE_IDLE_MS = 800
+  /** Coalesce rapid toggle → one Announce/Clear on the wire. */
+  private static readonly EQUIP_PUBLISH_DEBOUNCE_MS = 280
+  /** Min gap between fetch-requests for the same provider+hash. */
+  private static readonly FETCH_REQUEST_MIN_MS = 2_500
+  /** Min gap between serving the same requester (any hash). */
+  private static readonly SERVE_MIN_MS = 1_200
+  /** Max concurrent outbound serves (all requesters). */
+  private static readonly MAX_CONCURRENT_SERVES = 2
+  private static readonly WANT_ANNOUNCE_REPLY_MS = 200
 
   attach(comms: CommsService, callbacks: PetPeerSyncCallbacks): void {
     this.comms = comms
@@ -91,6 +115,16 @@ export class PetPeerSync {
       clearTimeout(this.peerJoinReannounceTimer)
       this.peerJoinReannounceTimer = null
     }
+    if (this.equipPublishTimer) {
+      clearTimeout(this.equipPublishTimer)
+      this.equipPublishTimer = null
+    }
+    if (this.wantAnnounceReplyTimer) {
+      clearTimeout(this.wantAnnounceReplyTimer)
+      this.wantAnnounceReplyTimer = null
+    }
+    this.pendingEquipPublish = null
+    this.serveGeneration++
     for (const t of this.loginRetryTimers) clearTimeout(t)
     this.loginRetryTimers = []
     this.comms?.setPetHandler(null)
@@ -100,6 +134,8 @@ export class PetPeerSync {
     this.pendingRequests.clear()
     this.servingKeys.clear()
     this.fetchAttempts.clear()
+    this.lastFetchRequestAt.clear()
+    this.lastServeAt.clear()
   }
 
   setLocalAddress(address: string | null): void {
@@ -133,39 +169,116 @@ export class PetPeerSync {
     options?: { force?: boolean; meshYawOffsetDeg?: number }
   ): Promise<void> {
     const normalized = hash?.toLowerCase() ?? null
+    const force = options?.force === true
     this.equippedHash = normalized
     this.equippedCategory = category
     if (options?.meshYawOffsetDeg != null) {
       this.equippedMeshYawDeg = options.meshYawOffsetDeg
     }
 
+    // Abort any in-flight serve immediately when equip is cleared or swapped.
+    this.serveGeneration++
+
     if (!normalized) {
-      if (!options?.force && this.publishedHash === null) return
-      const sent = await this.publish(encodeDpetEnvelopes(encodeDpetClear()), 'clear')
-      if (sent) this.publishedHash = null
+      if (!force && this.publishedHash === null && !this.pendingEquipPublish) return
+      // Debounce clear with announce so rapid toggle off→on does not spam Clear+Announce.
+      this.queueEquipPublish({
+        hash: null,
+        category: 'walking',
+        meshYawOffsetDeg: this.equippedMeshYawDeg,
+        force
+      })
       return
     }
 
-    if (!options?.force && this.publishedHash === normalized) return
+    if (!force && this.publishedHash === normalized && !this.pendingEquipPublish) return
 
     const bytes = await loadPetLibraryBytes(normalized)
     if (!bytes) {
       console.warn('[pets] announce skipped — hash not in library', normalized.slice(0, 12))
       return
     }
+    // User may have toggled off while we awaited IDB.
+    if (this.equippedHash !== normalized) return
     const entry = await getPetLibraryEntry(normalized)
+    if (this.equippedHash !== normalized) return
     this.equippedCategory = entry?.category ?? category
     if (options?.meshYawOffsetDeg == null && entry?.meshYawOffsetDeg != null) {
       this.equippedMeshYawDeg = entry.meshYawOffsetDeg
     }
+    this.queueEquipPublish({
+      hash: normalized,
+      category: this.equippedCategory,
+      meshYawOffsetDeg: this.equippedMeshYawDeg,
+      force
+    })
+  }
+
+  /**
+   * Collapse rapid enable/disable into a single wire publish after a short quiet period.
+   * Final state wins — peers never see intermediate spam.
+   */
+  private queueEquipPublish(next: {
+    hash: string | null
+    category: PetCategory
+    meshYawOffsetDeg: number
+    force: boolean
+  }): void {
+    this.pendingEquipPublish = next
+    if (this.equipPublishTimer) clearTimeout(this.equipPublishTimer)
+    // force (scene connect / peer join) still debounces slightly so a burst collapses.
+    const delay = next.force ? 80 : PetPeerSync.EQUIP_PUBLISH_DEBOUNCE_MS
+    this.equipPublishTimer = setTimeout(() => {
+      this.equipPublishTimer = null
+      const pending = this.pendingEquipPublish
+      this.pendingEquipPublish = null
+      if (!pending) return
+      void this.flushEquipPublish(pending)
+    }, delay)
+  }
+
+  private async flushEquipPublish(pending: {
+    hash: string | null
+    category: PetCategory
+    meshYawOffsetDeg: number
+    force: boolean
+  }): Promise<void> {
+    // Use live equip state (may have changed again after timer was set).
+    const hash = this.equippedHash
+    if (!hash) {
+      if (this.publishedHash === null) return
+      const sent = await this.publish(encodeDpetEnvelopes(encodeDpetClear()), 'clear')
+      if (sent) {
+        this.publishedHash = null
+        console.info('[pets] DPET clear (equip off)')
+      }
+      return
+    }
+    if (!pending.force && this.publishedHash === hash) return
+    const bytes = await loadPetLibraryBytes(hash)
+    if (!bytes || this.equippedHash !== hash) return
+    // Pet A → pet B: send Clear first so remotes drop A before mounting B.
+    // Clear also aborts mid-fetch of the old hash when the owner swaps quickly.
+    if (this.publishedHash && this.publishedHash !== hash) {
+      const prev = this.publishedHash
+      const cleared = await this.publish(encodeDpetEnvelopes(encodeDpetClear()), 'clear')
+      if (cleared) {
+        this.publishedHash = null
+        console.info(
+          `[pets] DPET clear (switch) · was ${prev.slice(0, 12)}… → ${hash.slice(0, 12)}…`
+        )
+      }
+      // Brief gap so remotes process Clear before Announce (same reliable channel).
+      await new Promise((r) => setTimeout(r, 40))
+      if (this.equippedHash !== hash) return
+    }
     await this.publishAnnounce(
-      normalized,
+      hash,
       bytes.byteLength,
       this.equippedCategory,
       this.equippedMeshYawDeg,
-      options?.force
+      true
     )
-    // Next pose send is immediate so peers get a snapshot right after announce.
     this.lastPoseSendMs = 0
   }
 
@@ -306,8 +419,9 @@ export class PetPeerSync {
 
   private async publish(envelopes: Uint8Array[], kind: string): Promise<boolean> {
     if (!this.comms || !envelopes.length) return false
-    // FetchRequest must hit every LiveKit room the owner might be on (island vs scene).
-    // Chunk streams stay primary-only so dual-room concurrent serves do not race assembly.
+    // Announce / clear / want / pose / fetch-request → all rooms (owner may be island-only).
+    // Chunk streams → primary only. Dual-room concurrent serves interleave FetchBegin/End
+    // and remounted the wrong hash on remotes (toggling horse made every pet a horse).
     const roomMode =
       kind === 'announce' ||
       kind === 'clear' ||
@@ -336,19 +450,28 @@ export class PetPeerSync {
         this.peerHash.set(from, null)
         this.peerCategory.delete(from)
         this.peerMeshYaw.delete(from)
+        // Dump partial downloads — peer toggled off; re-enable will re-announce and
+        // hit library cache if we already finished a prior transfer of that hash.
+        this.clearPeerFetchState(from)
         this.callbacks?.onPeerPetChanged(from, null, null)
         break
       case DpetMessageType.WantAnnounce:
-        // Late joiner probe — always force re-announce (same as DAV).
-        void this.reannounceEquipped()
+        // Coalesce many late joiners into one re-announce.
+        this.scheduleWantAnnounceReply()
         break
       case DpetMessageType.FetchRequest:
         void this.serveFetch(from, msg.hash)
         break
-      case DpetMessageType.FetchBegin:
-        // New stream always resets chunks — concurrent restarts used to leave holes → hash fail.
-        this.beginFetch(from, msg.hash, msg.totalSize, this.peerCategory.get(from), true)
+      case DpetMessageType.FetchBegin: {
+        // Only accept streams we asked for and that still match peer's announced equip.
+        const h = msg.hash.toLowerCase()
+        const reqKey = `${from}:${h}`
+        const announced = this.peerHash.get(from)
+        if (!announced || announced !== h) return
+        if (!this.pendingRequests.has(reqKey)) return
+        this.beginFetch(from, h, msg.totalSize, this.peerCategory.get(from), true)
         break
+      }
       case DpetMessageType.FetchChunk:
         this.addChunk(from, msg.hash, msg.offset, msg.data)
         break
@@ -360,15 +483,27 @@ export class PetPeerSync {
         // Soft retry after busy — do not stampede the server.
         if (msg.reason === 'busy' || msg.reason === 'not_found') {
           const cat = this.peerCategory.get(from) ?? 'walking'
+          const want = this.peerHash.get(from)
+          if (!want || want !== msg.hash.toLowerCase()) break
           window.setTimeout(() => {
+            if (this.peerHash.get(from) !== msg.hash.toLowerCase()) return
             void this.requestPeerPet(from, msg.hash, cat, true)
-          }, msg.reason === 'busy' ? 1500 : 800)
+          }, msg.reason === 'busy' ? 2_000 : 1_200)
         }
         break
       case DpetMessageType.Pose:
         this.callbacks?.onPeerPetPose(from, msg.pose)
         break
     }
+  }
+
+  private scheduleWantAnnounceReply(): void {
+    if (!this.equippedHash) return
+    if (this.wantAnnounceReplyTimer) return
+    this.wantAnnounceReplyTimer = setTimeout(() => {
+      this.wantAnnounceReplyTimer = null
+      void this.reannounceEquipped()
+    }, PetPeerSync.WANT_ANNOUNCE_REPLY_MS)
   }
 
   private async onAnnounce(
@@ -391,23 +526,37 @@ export class PetPeerSync {
 
     if (byteSize > PET_MAX_BYTES) return
 
+    // Same hash re-announce (toggle off→on or WantAnnounce): prefer local cache —
+    // never re-pull multi‑MB if we already verified this hash.
     const existing = await loadPetLibraryBytes(h)
-    if (existing && existing.byteLength === byteSize) {
+    // Peer may have cleared while we awaited IDB.
+    if (this.peerHash.get(from) !== h) return
+    if (existing) {
       try {
-        const digest = await sha256Hex(existing)
-        if (digest === h) {
-          this.callbacks?.onPeerPetBytesReady(from, h, category, meshYawOffsetDeg)
-          return
+        // Size match is enough when re-enabling; full hash only when size differs.
+        if (existing.byteLength === byteSize || prev === h) {
+          if (existing.byteLength === byteSize) {
+            const digest = await sha256Hex(existing)
+            if (this.peerHash.get(from) !== h) return
+            if (digest === h) {
+              this.callbacks?.onPeerPetBytesReady(from, h, category, meshYawOffsetDeg)
+              return
+            }
+            console.warn(
+              `[pets] local cache hash mismatch for ${h.slice(0, 12)}… — re-fetch from peer`
+            )
+            await invalidatePetLibraryBytes(h)
+          } else if (prev === h && existing.byteLength > 0) {
+            // Re-equip same pet: trust verified library row even if wire size drifted.
+            this.callbacks?.onPeerPetBytesReady(from, h, category, meshYawOffsetDeg)
+            return
+          }
         }
-        console.warn(
-          `[pets] local cache hash mismatch for ${h.slice(0, 12)}… — re-fetch from peer`
-        )
-        await invalidatePetLibraryBytes(h)
       } catch {
         await invalidatePetLibraryBytes(h)
       }
     }
-    // New hash or re-fetch after miss / corrupt cache.
+    // New hash — cancel any partial for old hash on this peer.
     if (prev && prev !== h) this.clearPeerFetchState(from)
     void this.requestPeerPet(from, h, category, false)
   }
@@ -435,29 +584,49 @@ export class PetPeerSync {
     category: PetCategory,
     force = false
   ): Promise<void> {
+    const p = provider.toLowerCase()
+    const h = hash.toLowerCase()
+    // Peer cleared or re-equipped something else — never chase stale hashes.
+    if (this.peerHash.get(p) !== h) return
+
     // Built-in pets ship with every client — load from the bundle instead of
     // pulling megabytes off the owner's uplink. Hash is verified on fetch, so
     // the bytes are identical to what the owner would have sent.
-    if (isBuiltinPetHash(hash)) {
-      const ready = await ensureBuiltinPetBytes(hash)
+    if (isBuiltinPetHash(h)) {
+      const ready = await ensureBuiltinPetBytes(h)
       if (ready) {
-        const yaw = this.peerMeshYaw.get(provider) ?? 0
-        this.callbacks?.onPeerPetBytesReady(provider, hash, category, yaw)
+        if (this.peerHash.get(p) !== h) return
+        const yaw = this.peerMeshYaw.get(p) ?? 0
+        this.callbacks?.onPeerPetBytesReady(p, h, category, yaw)
         return
       }
       // Bundle unreachable — fall through to the normal peer transfer.
     }
 
-    const reqKey = `${provider}:${hash}`
-    const fetchKey = `${provider}:${hash}`
-    // In-flight assembly — do not stack concurrent serves (causes hash mismatch holes).
+    // Already in library (toggle off→on after a prior complete transfer).
+    const cached = await loadPetLibraryBytes(h)
+    if (cached && this.peerHash.get(p) === h) {
+      this.callbacks?.onPeerPetBytesReady(p, h, category, this.peerMeshYaw.get(p) ?? 0)
+      return
+    }
+    if (this.peerHash.get(p) !== h) return
+
+    const reqKey = `${p}:${h}`
+    const fetchKey = `${p}:${h}`
+    // In-flight assembly — do not stack concurrent requests (causes incomplete storms).
     const inflight = this.incomingFetches.get(fetchKey)
     if (inflight && inflight.totalSize > 0 && Date.now() - inflight.startedAt < 90_000) {
       if (!force) return
       // Only force-restart if the stream looks stuck (no progress for a while).
-      if (Date.now() - inflight.startedAt < 15_000) return
+      if (Date.now() - inflight.startedAt < 12_000) return
     }
     if (!force && this.pendingRequests.has(reqKey)) return
+
+    // Rate-limit spam from flaky incomplete retries / dual-room echoes.
+    const now = Date.now()
+    const lastReq = this.lastFetchRequestAt.get(reqKey) ?? 0
+    if (!force && now - lastReq < PetPeerSync.FETCH_REQUEST_MIN_MS) return
+    if (force && now - lastReq < 800) return
 
     if (force) {
       this.fetchAttempts.delete(reqKey)
@@ -468,16 +637,17 @@ export class PetPeerSync {
     const attempts = (this.fetchAttempts.get(reqKey) ?? 0) + 1
     this.fetchAttempts.set(reqKey, attempts)
     if (attempts > PetPeerSync.MAX_FETCH_ATTEMPTS) {
-      console.warn(`[pets] DPET fetch gave up · ${hash.slice(0, 12)}… after ${attempts} tries`)
+      console.warn(`[pets] DPET fetch gave up · ${h.slice(0, 12)}… after ${attempts} tries`)
       return
     }
     this.pendingRequests.add(reqKey)
+    this.lastFetchRequestAt.set(reqKey, now)
     // Placeholder until FetchBegin (generation 0 — Begin will reset cleanly).
-    this.beginFetch(provider, hash, 0, category, true)
+    this.beginFetch(p, h, 0, category, true)
     console.info(
-      `[pets] DPET fetch request · ${hash.slice(0, 12)}… → ${provider.slice(0, 10)}… (#${attempts})`
+      `[pets] DPET fetch request · ${h.slice(0, 12)}… → ${p.slice(0, 10)}… (#${attempts})`
     )
-    await this.publish(encodeDpetEnvelopes(encodeDpetFetchRequest(hash)), 'fetch-request')
+    await this.publish(encodeDpetEnvelopes(encodeDpetFetchRequest(h)), 'fetch-request')
   }
 
   /**
@@ -556,13 +726,24 @@ export class PetPeerSync {
         `[pets] DPET incomplete · ${hash.slice(0, 12)}… covered ${written}/${fetch.totalSize} chunks=${fetch.chunks.size}`
       )
       this.incomingFetches.delete(key)
+      // Only retry if peer still claims this hash (not cleared mid-transfer).
       window.setTimeout(() => {
+        if (this.peerHash.get(provider) !== hash.toLowerCase()) return
         void this.requestPeerPet(provider, hash, fetch.category, true)
-      }, 800)
+      }, 1_500)
       return
     }
 
     this.incomingFetches.delete(key)
+
+    // Peer may have re-announced a different pet while this stream was in flight.
+    const stillWanted = this.peerHash.get(provider)
+    if (!stillWanted || stillWanted !== hash.toLowerCase()) {
+      console.info(
+        `[pets] DPET drop stale/cancelled stream · ${hash.slice(0, 12)}… peer=${stillWanted?.slice(0, 12) ?? 'off'}`
+      )
+      return
+    }
 
     const exact = out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength)
     try {
@@ -572,13 +753,17 @@ export class PetPeerSync {
           `[pets] DPET hash mismatch · want ${hash.slice(0, 12)}… got ${digest.slice(0, 12)}… size=${exact.byteLength} — retry`
         )
         window.setTimeout(() => {
+          if (this.peerHash.get(provider) !== hash.toLowerCase()) return
           void this.requestPeerPet(provider, hash, fetch.category, true)
-        }, 1200)
+        }, 1_500)
         return
       }
       const meshYaw = this.peerMeshYaw.get(provider) ?? 0
       await cacheRemotePetBytes(hash, exact, 'remote-pet.glb', fetch.category)
       console.info(`[pets] DPET fetch complete · ${hash.slice(0, 12)}… (${exact.byteLength} B)`)
+      // Re-check after async cache — peer equip may have changed.
+      if (this.peerHash.get(provider) !== hash.toLowerCase()) return
+      this.fetchAttempts.delete(key)
       this.callbacks?.onPeerPetBytesReady(provider, hash, fetch.category, meshYaw)
     } catch (err) {
       console.warn('[pets] failed to cache remote pet', err)
@@ -587,13 +772,34 @@ export class PetPeerSync {
 
   private async serveFetch(requester: string, hash: string): Promise<void> {
     const h = hash.toLowerCase()
-    const serveKey = `${requester}:${h}`
+    const req = requester.toLowerCase()
+    // Only the owner of this equip should serve multi‑MB GLBs — never re-serve a
+    // peer's pet we merely cached (that caused hash storms and wrong remounts).
+    if (this.equippedHash !== h) {
+      // Quiet not_found when we just cleared — avoid error spam during toggle.
+      return
+    }
+    const serveKey = `${req}:${h}`
     if (this.servingKeys.has(serveKey)) return
+    if (this.servingKeys.size >= PetPeerSync.MAX_CONCURRENT_SERVES) {
+      await this.publish(encodeDpetEnvelopes(encodeDpetFetchError(h, 'busy')), 'fetch-error')
+      return
+    }
+    const now = Date.now()
+    const last = this.lastServeAt.get(req) ?? 0
+    if (now - last < PetPeerSync.SERVE_MIN_MS) {
+      await this.publish(encodeDpetEnvelopes(encodeDpetFetchError(h, 'busy')), 'fetch-error')
+      return
+    }
+
     this.servingKeys.add(serveKey)
+    this.lastServeAt.set(req, now)
+    const gen = this.serveGeneration
     try {
       const bytes = await loadPetLibraryBytes(h)
+      if (gen !== this.serveGeneration || this.equippedHash !== h) return
       if (!bytes) {
-        console.warn(`[pets] DPET fetch miss · ${h.slice(0, 12)}… for ${requester.slice(0, 10)}…`)
+        console.warn(`[pets] DPET fetch miss · ${h.slice(0, 12)}… for ${req.slice(0, 10)}…`)
         await this.publish(
           encodeDpetEnvelopes(encodeDpetFetchError(h, 'not_found')),
           'fetch-error'
@@ -608,17 +814,28 @@ export class PetPeerSync {
         return
       }
       console.info(
-        `[pets] DPET serve · ${h.slice(0, 12)}… (${bytes.byteLength} B) → ${requester.slice(0, 10)}…`
+        `[pets] DPET serve · ${h.slice(0, 12)}… (${bytes.byteLength} B) → ${req.slice(0, 10)}…`
       )
       const stream = encodeDpetGlbChunkStream(h, bytes)
-      await this.publish(stream, 'fetch-stream')
+      // Pace chunks and abort if owner clears/swaps mid-serve (rapid toggle).
+      for (let i = 0; i < stream.length; i++) {
+        if (gen !== this.serveGeneration || this.equippedHash !== h) {
+          console.info(`[pets] DPET serve aborted · ${h.slice(0, 12)}… (equip changed)`)
+          return
+        }
+        const ok = await this.publish([stream[i]!], 'fetch-stream')
+        if (!ok) return
+        if (i > 0 && i % 8 === 0) {
+          await new Promise((r) => setTimeout(r, 6))
+        }
+      }
     } finally {
       this.servingKeys.delete(serveKey)
     }
   }
 
   private clearPeerFetchState(peer: string): void {
-    const prefix = `${peer}:`
+    const prefix = `${peer.toLowerCase()}:`
     for (const k of [...this.incomingFetches.keys()]) {
       if (k.startsWith(prefix)) this.incomingFetches.delete(k)
     }
@@ -627,6 +844,9 @@ export class PetPeerSync {
     }
     for (const k of [...this.fetchAttempts.keys()]) {
       if (k.startsWith(prefix)) this.fetchAttempts.delete(k)
+    }
+    for (const k of [...this.lastFetchRequestAt.keys()]) {
+      if (k.startsWith(prefix)) this.lastFetchRequestAt.delete(k)
     }
   }
 }

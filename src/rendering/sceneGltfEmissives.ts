@@ -37,10 +37,21 @@ function emissiveLuma(mat: PbrMeshMaterial): number {
   return mat.emissive.r + mat.emissive.g + mat.emissive.b
 }
 
+/** Opaque surface with albedo reused as emissiveMap — Creator Hub floor/wall bake, not a sprite. */
+function isOpaqueSharedAlbedoEmissive(mat: PbrMeshMaterial): boolean {
+  if (!mat.map || mat.map !== mat.emissiveMap) return false
+  if (mat.transparent || mat.opacity < 0.98) return false
+  if ((mat.alphaTest ?? 0) > 0) return false
+  return true
+}
+
 /** Baked lighting often uses emissiveTexture + low factor — not neon strips. */
 function isBakedEmissiveMaterial(mat: PbrMeshMaterial): boolean {
   const name = mat.name.toLowerCase()
   if (BAKED_EMISSIVE_NAME.test(name)) return true
+  // HexagonFloor / asset-pack tiles: albedo slot == emissiveTexture on opaque mesh.
+  // Must not enter neon/glow (toneMapped=false + bloom → washed white floors).
+  if (isOpaqueSharedAlbedoEmissive(mat)) return true
 
   const intensity = mat.emissiveIntensity ?? 1
   if (!mat.emissiveMap || intensity > 1) return false
@@ -51,12 +62,19 @@ function isBakedEmissiveMaterial(mat: PbrMeshMaterial): boolean {
   return true
 }
 
-/** Shared map + emissiveMap at high intensity — flame/LED sprites (not textured facades). */
+/**
+ * Shared map + emissiveMap at high intensity — flame/LED sprites only.
+ * Opaque floors/walls that reuse albedo as emissiveTexture are baked (not sprites).
+ */
 function isGlowSpriteMaterial(mat: PbrMeshMaterial): boolean {
   const intensity = mat.emissiveIntensity ?? 1
   if (intensity < 1.5 || !mat.emissiveMap) return false
   if (!mat.map) return true
-  return mat.map === mat.emissiveMap
+  if (mat.map !== mat.emissiveMap) return false
+  // Transparent / cutout cards (firepit, LED sheets) — glow sprite.
+  // Opaque shared map (HexagonFloor tiles) — never.
+  if (isOpaqueSharedAlbedoEmissive(mat)) return false
+  return mat.transparent || mat.opacity < 0.98 || (mat.alphaTest ?? 0) > 0
 }
 
 /**
@@ -280,6 +298,26 @@ function tuneNeonMaterial(mat: PbrMeshMaterial): THREE.Material {
 }
 
 /**
+ * Soft bake for opaque floors/walls that reuse albedo as emissiveMap.
+ * Leaves material as standard PBR (tone-mapped) with a small self-lit contribution.
+ */
+function softBakeOpaqueSharedEmissive(mat: PbrMeshMaterial): void {
+  const ud = mat.userData as Record<string, unknown>
+  if (ud.dclOpaqueSharedBake) return
+  const intensity = mat.emissiveIntensity ?? 1
+  if (emissiveLuma(mat) < 1e-4) {
+    mat.emissive.setRGB(1, 1, 1)
+  }
+  // KHR strength can be 5–80 on asset-pack tiles — clamp so sun + bake don't wash out.
+  const bake = Math.min(Math.max(intensity, 0), 2) * 0.22
+  mat.emissiveIntensity = bake
+  mat.toneMapped = true
+  if (mat.blending !== THREE.NormalBlending) mat.blending = THREE.NormalBlending
+  ud.dclOpaqueSharedBake = true
+  mat.needsUpdate = true
+}
+
+/**
  * Apply DCL emissive parity to materials on a loaded GLB.
  * Driven by glTF material properties (emissiveFactor, maps, KHR strength) — not scene-specific names.
  * ECS Material / GltfNodeModifiers go through MaterialApplier separately.
@@ -294,6 +332,11 @@ export function applySceneGltfEmissives(root: THREE.Object3D): void {
         return retuneUntexturedGlow(mat)
       }
       if (!isPbrMeshMaterial(mat)) return mat
+      // Floor tiles: always soft-bake shared albedo/emissive (even if not "neon").
+      if (isOpaqueSharedAlbedoEmissive(mat)) {
+        softBakeOpaqueSharedEmissive(mat)
+        return mat
+      }
       if (!isNeonEmissiveMaterial(mat)) return mat
       return tuneNeonMaterial(mat)
     }

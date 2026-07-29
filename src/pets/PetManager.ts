@@ -28,7 +28,10 @@ const POSE_FOLLOW_RATE = 12
 type RemotePet = {
   instance: PetInstance
   category: PetCategory
+  /** Desired equip hash from DPET Announce (may differ from loaded mesh mid-switch). */
   contentHash: string
+  /** Hash currently loaded into `instance` — null until first successful mesh load. */
+  loadedHash: string | null
   meshYawOffsetDeg: number
   target: PetPose | null
   current: PetPose | null
@@ -115,8 +118,11 @@ export class PetManager {
     if (wallet) this.localWallet = wallet.toLowerCase()
     const entry = getActivePetEntry(wallet)
     if (!entry) {
-      // No equipped pet — despawn only; do not wipe inventory prefs.
-      await this.despawnLocal({ clearEquip: false, announceClear: false })
+      // No equipped pet. If we had a live mesh, tell peers (panel Disable sets
+      // activeHash=null then restore — must DPET Clear, not silently despawn).
+      // Cold start with nothing equipped: no Clear spam.
+      const hadLive = !!(this.localSpec || this.localInstance)
+      await this.despawnLocal({ clearEquip: false, announceClear: hadLive })
       return
     }
     try {
@@ -185,21 +191,54 @@ export class PetManager {
   }
 
   /**
-   * Settings-panel clip preview. Uses equipped mesh when hash matches; else a hidden loader.
+   * Settings-panel clip preview.
+   * Prefer the live equipped mesh (visible). Otherwise mount a temporary mesh
+   * at the owner's feet so the animation is actually on-screen.
    */
   async playClipPreview(contentHash: string, clipName: string): Promise<boolean> {
     const hash = contentHash.toLowerCase()
+    // Equipped pet — take over its mixer lock.
     if (this.localSpec?.contentHash === hash && this.localInstance?.isReady) {
-      return this.localInstance.playClipPreview(clipName)
+      this.hideEditPreview()
+      const ok = this.localInstance.playClipPreview(clipName)
+      if (ok) console.info(`[pets] preview · equipped “${clipName}”`)
+      return ok
     }
     const inst = await this.ensureEditPreview(hash)
     if (!inst) return false
-    return inst.playClipPreview(clipName)
+    // Place next to player so the user can see the track (not an off-scene mixer).
+    this.placeEditPreviewNearOwner(inst)
+    const ok = inst.playClipPreview(clipName)
+    if (ok) console.info(`[pets] preview · temp mesh “${clipName}”`)
+    return ok
   }
 
   stopClipPreview(): void {
     this.localInstance?.stopClipPreview()
     this.editPreview?.stopClipPreview()
+    this.hideEditPreview()
+  }
+
+  private placeEditPreviewNearOwner(inst: PetInstance): void {
+    if (!this.scene) return
+    if (inst.root.parent !== this.scene) this.scene.add(inst.root)
+    const feet = this.ownerFeet
+    const yaw = this.localPose?.yaw ?? 0
+    // Slightly to the side of the owner so it doesn't clip the avatar.
+    const side = 0.9
+    inst.root.position.set(
+      feet.x + Math.sin(yaw) * side,
+      feet.y + 0.05,
+      feet.z + Math.cos(yaw) * side
+    )
+    inst.root.rotation.set(0, yaw, 0)
+    inst.root.visible = true
+  }
+
+  private hideEditPreview(): void {
+    if (!this.editPreview) return
+    this.editPreview.root.visible = false
+    this.editPreview.root.removeFromParent()
   }
 
   private async ensureEditPreview(hash: string): Promise<PetInstance | null> {
@@ -221,12 +260,11 @@ export class PetManager {
     }
     if (!bytes || this.disposed) return null
     const inst = new PetInstance()
-    inst.root.visible = false
-    // Keep off-scene — animation mixer still runs for preview without cluttering the world.
     await inst.loadFromBytes(bytes, category)
     const map = owned?.animClipMap ?? builtin?.animClipMap
     inst.setAnimClipMap(map)
-    if (builtin) inst.setMeshYawOffsetDeg(owned?.meshYawOffsetDeg ?? builtin.meshYawOffsetDeg)
+    const yaw = owned?.meshYawOffsetDeg ?? builtin?.meshYawOffsetDeg ?? 0
+    inst.setMeshYawOffsetDeg(yaw)
     this.editPreview = inst
     this.editPreviewHash = hash
     return inst
@@ -312,6 +350,7 @@ export class PetManager {
         instance,
         category: category ?? 'walking',
         contentHash,
+        loadedHash: null,
         meshYawOffsetDeg,
         target: null,
         current: null
@@ -327,14 +366,15 @@ export class PetManager {
         this.pendingRemotePoses.delete(key)
       }
     } else {
-      // Same hash re-announce — only refresh yaw/category (avoid double mesh load).
-      const sameHash = remote.contentHash === contentHash
+      // Same desired hash re-announce — only refresh yaw/category.
+      const sameDesired = remote.contentHash === contentHash
       remote.contentHash = contentHash
       remote.category = category ?? remote.category
       remote.meshYawOffsetDeg = meshYawOffsetDeg
       remote.instance.setMeshYawOffsetDeg(meshYawOffsetDeg)
-      if (!sameHash) {
-        // Hash change: clear ready state until bytes reload (prevents stale double mesh).
+      if (!sameDesired) {
+        // Equip switch: mesh is still the old pet until bytes load — must remount.
+        remote.loadedHash = null
         remote.instance.root.visible = false
       }
     }
@@ -354,15 +394,27 @@ export class PetManager {
       remote = this.remotes.get(key)
       if (!remote) return
     }
-    // Skip reload when the same mesh is already live (WantAnnounce rebroadcast).
+    // Skip only when this exact mesh is already mounted (WantAnnounce rebroadcast).
+    // Do NOT use contentHash alone — equip switch sets contentHash before load, and
+    // isReady stays true on the *old* mesh, which left remotes stuck on pet A.
     if (
       remote.instance.isReady &&
-      remote.contentHash === contentHash &&
+      remote.loadedHash === contentHash &&
       remote.category === category
     ) {
       remote.meshYawOffsetDeg = meshYawOffsetDeg
       remote.instance.setMeshYawOffsetDeg(meshYawOffsetDeg)
+      remote.instance.root.visible = true
       if (!remote.target) this.seedRemoteNearPeer(key, remote)
+      return
+    }
+    // Never remount a peer with a hash they are not currently announced for
+    // (stale dual-room DPET streams used to turn every remote into the local pet).
+    const announced = this.peerSync?.getPeerEquippedHash(key)
+    if (announced && announced !== contentHash) {
+      console.info(
+        `[pets] skip stale bytes · ${key.slice(0, 10)}… got ${contentHash.slice(0, 12)}… want ${announced.slice(0, 12)}…`
+      )
       return
     }
     remote.category = category
@@ -372,9 +424,15 @@ export class PetManager {
     if (!bytes || this.disposed) return
     // Stale completion after hash change / clear.
     if (this.remotes.get(key)?.contentHash !== contentHash) return
+    const stillAnnounced = this.peerSync?.getPeerEquippedHash(key)
+    if (stillAnnounced && stillAnnounced !== contentHash) return
     remote.instance.setMeshYawOffsetDeg(meshYawOffsetDeg)
     await remote.instance.loadFromBytes(bytes, category)
+    // Another equip may have won while parse ran.
+    if (this.remotes.get(key)?.contentHash !== contentHash) return
+    remote.loadedHash = contentHash
     remote.instance.setMeshYawOffsetDeg(meshYawOffsetDeg)
+    remote.instance.root.visible = true
     if (!remote.target) this.seedRemoteNearPeer(key, remote)
     console.info(`[pets] remote mesh ready · ${key.slice(0, 10)}… ${contentHash.slice(0, 12)}…`)
   }
@@ -430,8 +488,14 @@ export class PetManager {
     ownerHorizontalSpeed: number
   ): PetPose | null {
     this.timeSec += dt
-    // Edit-panel preview mixer (hidden) when inspecting a non-equipped pet.
-    this.editPreview?.update(dt)
+    this.ownerFeet.copy(ownerFeetThree)
+    // Temp settings-preview mesh (non-equipped pet) — keep mixer running + beside player.
+    if (this.editPreview?.isPreviewLocked()) {
+      this.placeEditPreviewNearOwner(this.editPreview)
+      this.editPreview.update(dt)
+    } else if (this.editPreview) {
+      this.editPreview.update(dt)
+    }
     if (!this.localInstance || !this.localSpec) {
       this.localPose = null
       return null
@@ -442,7 +506,6 @@ export class PetManager {
       this.lastOwnerMoveMs = now
     }
 
-    this.ownerFeet.copy(ownerFeetThree)
     // Follow works in Three space (matches render + owner feet root).
     const pose = this.localFollow.tick({
       ownerFeet: this.ownerFeet,
@@ -455,11 +518,12 @@ export class PetManager {
     // Rest bands: owner idle ≥25s → sit, ≥5 min → AFK (if any clips resolve).
     // Gated on the pet itself having settled, so it never plays a seated clip
     // while still sliding into its follow slot.
-    if (pose.anim === 'idle') {
+    if (pose.anim === 'idle' && !this.localInstance.isPreviewLocked()) {
       const ownerIdleMs = now - this.lastOwnerMoveMs
       if (ownerIdleMs >= PET_AFK_IDLE_MS) pose.anim = 'afk'
       else if (ownerIdleMs >= PET_SIT_IDLE_MS) pose.anim = 'sit'
     }
+    // While preview is locked, still update leash transform but not loco clip.
     this.localInstance.applyPose(pose)
     this.localInstance.update(dt)
     this.localPose = pose

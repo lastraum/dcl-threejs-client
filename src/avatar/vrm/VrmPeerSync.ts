@@ -15,11 +15,15 @@ import { VRM_MAX_BYTES, type CustomAvatarFormat } from './constants'
 import { getEquippedCustomAvatar } from './vrmEquipStorage'
 import { getVrmLibraryEntry, loadVrmLibraryBytes } from './VrmLibrary'
 import {
+  clearSessionPeerVrmEquip,
+  forEachSessionPeerVrmEquip,
   getVrmRamBytes,
   getVrmRamFormat,
   hasVrmRamBytes,
-  putVrmRamBytes
+  putVrmRamBytes,
+  setSessionPeerVrmEquip
 } from './vrmRamCache'
+import { sha256Hex } from './vrmHash'
 import { formatTag, odkNetInfo, odkNetWarn, shortAddr, shortHash } from '../odk/odkNetLog'
 
 export type VrmPeerSyncCallbacks = {
@@ -65,6 +69,26 @@ export class VrmPeerSync {
     this.comms = comms
     this.callbacks = callbacks
     comms.setAvatarVrmHandler((sender, data) => this.handlePacket(sender, data))
+    // Tour /goto rebuilds World + this sync object — restore peer equips from session
+    // so remotes remount from RAM without waiting for a fresh WantAnnounce round-trip.
+    this.hydrateFromSessionPeerEquips()
+  }
+
+  /**
+   * After World rebuild: seed in-memory peer maps from session equip registry
+   * (bytes may already be in RAM from before the teleport).
+   */
+  private hydrateFromSessionPeerEquips(): void {
+    let n = 0
+    forEachSessionPeerVrmEquip((address, hash, format) => {
+      if (this.localAddress && address === this.localAddress) return
+      this.peerEquippedHash.set(address, hash)
+      this.peerEquippedFormat.set(address, format)
+      n += 1
+    })
+    if (n > 0) {
+      odkNetInfo('hydrated peer DAV equips from session (post-teleport)', { peers: n })
+    }
   }
 
   detach(): void {
@@ -261,6 +285,7 @@ export class VrmPeerSync {
     const key = address.toLowerCase()
     this.peerEquippedHash.delete(key)
     this.peerEquippedFormat.delete(key)
+    // Keep session equip + RAM — peer may reappear after tour teleport to same island.
     this.clearPeerFetchState(key)
   }
 
@@ -341,8 +366,8 @@ export class VrmPeerSync {
       odkNetWarn('DAV publish skipped — no comms or empty envelope', { kind })
       return false
     }
-    // Announce / clear / want / fetch-request → all rooms (owner may be island-only).
-    // Chunk streams → primary only (dual-room concurrent serves race FetchEnd).
+    // Announce / clear / want / fetch-request → all rooms (reach island-only peers).
+    // Chunk streams → primary only (dual concurrent serves race assembly / wrong mesh).
     const roomMode =
       kind === 'announce' ||
       kind === 'clear' ||
@@ -441,6 +466,8 @@ export class VrmPeerSync {
         ramReady: hasVrmRamBytes(hash)
       })
     }
+    // Session registry survives World.dispose — remount after tour teleports.
+    setSessionPeerVrmEquip(address, hash, format)
     this.callbacks?.onPeerVrmChanged(address, hash, format)
 
     if (hasVrmRamBytes(hash)) {
@@ -476,6 +503,7 @@ export class VrmPeerSync {
     if (!this.peerEquippedHash.has(address)) return
     this.peerEquippedHash.set(address, null)
     this.peerEquippedFormat.delete(address)
+    clearSessionPeerVrmEquip(address)
     odkNetInfo('peer DAV clear', { peer: shortAddr(address) })
     this.callbacks?.onPeerVrmChanged(address, null, null)
   }
@@ -689,20 +717,9 @@ export class VrmPeerSync {
         this.incomingFetches.delete(key)
         this.fetchAttempts.delete(key)
         const buffer = out.buffer.slice(out.byteOffset, out.byteOffset + out.byteLength) as ArrayBuffer
-        const format = this.peerEquippedFormat.get(provider) ?? 'vrm'
-        putVrmRamBytes(hash, buffer, format)
-        odkNetInfo('DAV fetch complete — mounting remote avatar', {
-          peer: shortAddr(provider),
-          format: formatTag(format),
-          hash: shortHash(hash),
-          bytes: buffer.byteLength
-        })
-        clientDebugLog.log(
-          'vrm',
-          `DAV received · ${format} ${provider.slice(0, 8)}… ${hash.slice(0, 12)}… (${buffer.byteLength} B)`,
-          { level: 'success' }
-        )
-        this.callbacks?.onPeerVrmBytesReady(provider, hash, format)
+        // Verify content hash — corrupt/gapped assembly used to mount and then
+        // thrash WantAnnounce forever without remounting a valid mesh.
+        void this.finishVerifiedFetch(provider, hash, buffer)
       } catch (err) {
         this.failFetchAssembly(provider, hash, 'error', {
           message: err instanceof Error ? err.message : String(err)
@@ -711,6 +728,46 @@ export class VrmPeerSync {
     }
 
     tryComplete(true)
+  }
+
+  private async finishVerifiedFetch(
+    provider: string,
+    hash: string,
+    buffer: ArrayBuffer
+  ): Promise<void> {
+    try {
+      const digest = await sha256Hex(buffer)
+      if (digest !== hash.toLowerCase()) {
+        this.failFetchAssembly(provider, hash, 'hash_mismatch', {
+          expected: shortHash(hash),
+          got: shortHash(digest),
+          bytes: buffer.byteLength
+        })
+        return
+      }
+    } catch (err) {
+      // Subtle crypto unavailable — still mount (better than dropping good bytes).
+      odkNetWarn('DAV hash verify skipped', {
+        peer: shortAddr(provider),
+        hash: shortHash(hash),
+        message: err instanceof Error ? err.message : String(err)
+      })
+    }
+    if (this.peerEquippedHash.get(provider) !== hash) return
+    const format = this.peerEquippedFormat.get(provider) ?? 'vrm'
+    putVrmRamBytes(hash, buffer, format)
+    odkNetInfo('DAV fetch complete — mounting remote avatar', {
+      peer: shortAddr(provider),
+      format: formatTag(format),
+      hash: shortHash(hash),
+      bytes: buffer.byteLength
+    })
+    clientDebugLog.log(
+      'vrm',
+      `DAV received · ${format} ${provider.slice(0, 8)}… ${hash.slice(0, 12)}… (${buffer.byteLength} B)`,
+      { level: 'success' }
+    )
+    this.callbacks?.onPeerVrmBytesReady(provider, hash, format)
   }
 
   private onFetchError(provider: string, hash: string, reason: string): void {

@@ -6,7 +6,11 @@ import type { AssetCache } from '../../../rendering/AssetCache'
 import { catalystAssetUrl } from '../Data/EmptyLandCatalog'
 import type { LandscapeEnvironmentProfile } from '../EnvironmentCatalog'
 import { landscapeProfileForResolvedScene } from '../resolveLandscapeEnvironment'
-import { EMPTY_LAND_GROUND_OFFSET, parcelWorldOrigin } from '../Utils/SceneSpace'
+import {
+  dclSceneToLandscapeThree,
+  EMPTY_LAND_GROUND_OFFSET,
+  parcelWorldOrigin
+} from '../Utils/SceneSpace'
 import { decorateParcel, type DecorateDensityOpts } from '../ParcelDecorator'
 import { resolveDesertSettings } from '../../../environment/desertDefaults'
 import { resolveMountainsSettings } from '../../../environment/mountainsDefaults'
@@ -32,16 +36,53 @@ import { readEnvironmentWindShader } from '../readEnvironmentWindShader'
 import { hashParcelCoords } from '../Utils/SeededRandom'
 
 /**
- * Genesis Plaza deploy (coords around 0,0). Plaza ships full ground meshes; client
- * default FloorBase underlays z-fight the red carpet / show empty-land grid.
+ * Genesis Plaza deploy (Genesis City coords around 0,0). Plaza ships full ground
+ * meshes; client default FloorBase underlays z-fight the red carpet.
+ *
+ * **Not** for worlds — most worlds base at `0,0` but still need the default
+ * empty-land FloorBase GLB when scene.json has no `environment` (genesis default).
  */
 function isGenesisPlazaScene(scene: ResolvedScene): boolean {
+  // Worlds / local / blank / PE never use the plaza ground skip.
+  if (scene.source.kind !== 'coords') return false
   const base = (scene.baseParcel ?? '').trim()
   if (base === '0,0') return true
   for (const p of scene.parcels) {
     if (p.trim() === '0,0') return true
   }
   return false
+}
+
+/**
+ * Solid-color plane covering all scene parcels — only if catalyst FloorBase GLB fails.
+ * Uses same X reflection as landscape tiles.
+ */
+function buildFallbackGroundPlane(parcelKeys: string[], baseParcel: string): THREE.Group {
+  const group = new THREE.Group()
+  group.name = 'landscape:scene-default-floor-fallback'
+  const base = parseParcelKey(baseParcel)
+  const half = 8
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x3d5c3a,
+    roughness: 0.92,
+    metalness: 0.05
+  })
+  for (const key of parcelKeys) {
+    const parcel = parseParcelKey(key)
+    const origin = parcelWorldOrigin(parcel, base)
+    // Tile center in DCL scene space, then landscape three.
+    const dclCx = origin.x + half
+    const dclCz = origin.z + half
+    const p = dclSceneToLandscapeThree(dclCx, dclCz, base)
+    const geo = new THREE.PlaneGeometry(16, 16)
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.rotation.x = -Math.PI / 2
+    mesh.position.set(p.x, EMPTY_LAND_GROUND_OFFSET.y, p.z)
+    mesh.receiveShadow = true
+    mesh.frustumCulled = false
+    group.add(mesh)
+  }
+  return group
 }
 
 /**
@@ -79,18 +120,25 @@ export async function buildParcelLandscape(
         landscape.userData.windShader = windShader
       }
     }
-    // Genesis City: EMPTY_LAND.ground (FloorBase / red-grass) on **every deployed parcel**.
-    // Same GLB as empty-land tiles — InstancedMesh, Y=-0.02. Not canvas / not a plane paint.
-    // Skip when author terrain, or Genesis Plaza (0,0) which ships full ground art.
-    if (profile.kind === 'genesis' && !authorTerrain && !isGenesisPlazaScene(scene)) {
+    // genesis (default when scene.json has no `environment`): EMPTY_LAND.ground
+    // FloorBase on every deployed parcel (worlds always; Genesis parcels except plaza 0,0).
+    // Worlds base at 0,0 — must never use the plaza skip.
+    const worldName =
+      scene.source.kind === 'world' ? scene.source.worldName : null
+    const isWorld = worldName != null
+    const wantsDefaultFloor =
+      profile.kind === 'genesis' &&
+      !authorTerrain &&
+      (isWorld || !isGenesisPlazaScene(scene))
+    if (wantsDefaultFloor) {
       const base = parseParcelKey(scene.baseParcel)
       const groundHash = profile.sceneGround
-      const n = scene.parcels.length
-      onProgress?.(`Default floor GLB (instanced) on ${n} scene parcel(s)…`)
-      // Preload so mesh templates always resolve (genesis path used to skip preload).
+      const parcelKeys = scene.parcels.length ? scene.parcels : [scene.baseParcel || '0,0']
+      const n = parcelKeys.length
+      const place = isWorld ? `world ${worldName}` : `${n} scene parcel(s)`
+      onProgress?.(`Default floor GLB (instanced) on ${place}…`)
       await cache.preload([{ url: catalystAssetUrl(groundHash), hash: groundHash }])
-      // SW corners in scene-local DCL meters (same as InfiniteGround / AOI blanks).
-      const tiles = scene.parcels.map((key) => {
+      const tiles = parcelKeys.map((key) => {
         const parcel = parseParcelKey(key)
         const origin = parcelWorldOrigin(parcel, base)
         return { x: origin.x, z: origin.z }
@@ -102,24 +150,32 @@ export async function buildParcelLandscape(
         'landscape:scene-default-floor',
         base
       )
-      // Large multi-parcel footprints can sit outside a bad sphere before instances settle.
       floors.traverse((o) => {
         if (o instanceof THREE.Mesh) {
           o.frustumCulled = false
           o.receiveShadow = true
+          o.visible = true
         }
       })
-      const meshCount = floors.children.length
-      landscape.add(floors)
-      console.info(
-        `[landscape] genesis default floor GLB ×${n} parcels @ y=${EMPTY_LAND_GROUND_OFFSET.y}` +
-          ` instancedMeshes=${meshCount} hash=${groundHash.slice(0, 12)}…`
-      )
+      let meshCount = floors.children.length
+      // If catalyst GLB fails, still put something under the avatar for worlds.
       if (meshCount === 0) {
         console.warn(
-          `[landscape] default floor produced 0 meshes — EMPTY_LAND ground failed to load (${groundHash})`
+          `[landscape] EMPTY_LAND ground GLB empty — fallback plane (${groundHash})`
         )
+        const fallback = buildFallbackGroundPlane(parcelKeys, scene.baseParcel)
+        landscape.add(fallback)
+        meshCount = 1
+      } else {
+        landscape.add(floors)
       }
+      landscape.visible = true
+      console.info(
+        `[landscape] genesis default floor ×${n} parcels` +
+          `${isWorld ? ` world=${worldName}` : ''}` +
+          ` @ y=${EMPTY_LAND_GROUND_OFFSET.y}` +
+          ` meshes=${meshCount} hash=${groundHash.slice(0, 12)}…`
+      )
     } else if (profile.kind === 'genesis' && isGenesisPlazaScene(scene) && !authorTerrain) {
       onProgress?.('Landscape: genesis plaza — skip default floor GLB (scene art owns ground)')
     } else if (profile.kind === 'genesis' && authorTerrain) {

@@ -1,4 +1,5 @@
 import type { Entity } from '@dcl/ecs'
+import type { PBUiBackground } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_background.gen'
 import type { PBUiInput } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_input.gen'
 import type { PBUiText } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_text.gen'
 import type { PBUiTransform } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_transform.gen'
@@ -166,6 +167,52 @@ function applyInputMinSize(node: YogaNode, input: PBUiInput | null | undefined):
   const fontSize = input.fontSize ?? 10
   node.setMinWidth(120)
   node.setMinHeight(Math.max(28, fontSize * 2.4))
+}
+
+/** True when width/height unit is AUTO or undefined (Yoga content-sized). */
+function sizeAxisAuto(unit: number | undefined, value: number | undefined): boolean {
+  const u = unit ?? YGUnit.UNDEFINED
+  if (u === YGUnit.AUTO || u === YGUnit.UNDEFINED) return true
+  if (u === YGUnit.POINT && (value ?? 0) <= 0) return true
+  return false
+}
+
+/**
+ * Icon leaves with UiBackground + AUTO size collapse to 0×0 (Yoga has no image measure).
+ * When the parent transform authors a concrete POINT size in the slot range, fill the leaf
+ * inside Yoga so inventory/vending icons layout on first open without post-pass invent.
+ *
+ * Skips text-bearing nodes (text measure owns size) and explicit POINT/% sizes (badges).
+ */
+function applyBackgroundMinSize(
+  node: YogaNode,
+  transform: PBUiTransform,
+  parentTransform: PBUiTransform | null | undefined,
+  background: PBUiBackground | null | undefined,
+  text: PBUiText | null | undefined
+): void {
+  if (!background) return
+  if (text?.value?.trim()) return
+
+  const wAuto = sizeAxisAuto(transform.widthUnit, transform.width)
+  const hAuto = sizeAxisAuto(transform.heightUnit, transform.height)
+  if (!wAuto && !hAuto) return
+
+  // Parent must author a concrete slot-sized POINT box — never fill under modal panels.
+  if (!parentTransform) return
+  const pwUnit = parentTransform.widthUnit ?? YGUnit.UNDEFINED
+  const phUnit = parentTransform.heightUnit ?? YGUnit.UNDEFINED
+  const pw = parentTransform.width ?? 0
+  const ph = parentTransform.height ?? 0
+  if (pwUnit !== YGUnit.POINT || phUnit !== YGUnit.POINT) return
+  if (pw < 24 || ph < 24 || pw > 200 || ph > 200) return
+
+  const isAbs = normalizeYGPositionType(transform.positionType) === YGPositionType.ABSOLUTE
+  // Absolute icon wrappers and relative full-bleed children under fixed slots.
+  if (!isAbs && !(wAuto && hAuto)) return
+
+  if (wAuto) node.setWidth(pw)
+  if (hAuto) node.setHeight(ph)
 }
 
 /** True when this edge is not authored (undefined/auto unit). */
@@ -355,7 +402,8 @@ export function layoutUiTree(
   virtualWidth: number,
   virtualHeight: number,
   textOf?: (entity: Entity) => PBUiText | null,
-  inputOf?: (entity: Entity) => PBUiInput | null
+  inputOf?: (entity: Entity) => PBUiInput | null,
+  backgroundOf?: (entity: Entity) => PBUiBackground | null
 ): { boxes: LayoutBox[]; dispose: () => void } {
   const transformOf = new Map<Entity, PBUiTransform>()
   for (const r of records) transformOf.set(r.entity, r.transform)
@@ -369,8 +417,18 @@ export function layoutUiTree(
     yogaOf.set(entity, yoga)
     const transform = transformOf.get(entity)!
     applyUiTransform(yoga, transform)
-    if (textOf) applyTextMinSize(yoga, textOf(entity), transform)
+    const text = textOf?.(entity) ?? null
+    if (textOf) applyTextMinSize(yoga, text, transform)
     if (inputOf) applyInputMinSize(yoga, inputOf(entity))
+    // Background minSize after text so labels still own size when both present.
+    if (backgroundOf) {
+      const parentId = (transform.parent ?? CANVAS_ROOT_ENTITY) as Entity
+      const parentT =
+        parentId === CANVAS_ROOT_ENTITY || (parentId as number) === 0
+          ? null
+          : transformOf.get(parentId) ?? null
+      applyBackgroundMinSize(yoga, transform, parentT, backgroundOf(entity), text)
+    }
     const childEntities = childrenOf.get(entity) ?? []
     const children = childEntities.map((c) => build(c))
     children.forEach((child, index) => yoga.insertChild(child.yoga, index))
@@ -394,6 +452,48 @@ export function layoutUiTree(
   forest.forEach((node, index) => root.insertChild(node.yoga, index))
 
   root.calculateLayout(virtualWidth, virtualHeight, Yoga.DIRECTION_LTR)
+
+  // Second pass inside Yoga: parent may be flex-sized (no POINT on transform) so first
+  // applyBackgroundMinSize could not fill. Expand 0×0 AUTO bg leaves under computed
+  // slot parents, then re-layout once (COD: still Yoga authority, not DOM invent).
+  if (backgroundOf) {
+    let expanded = 0
+    const expandWalk = (node: YogaTreeNode, parentW: number, parentH: number): void => {
+      const y = node.yoga
+      let w = y.getComputedWidth()
+      let h = y.getComputedHeight()
+      const t = transformOf.get(node.entity)
+      if (t && (w <= 0.5 || h <= 0.5) && parentW >= 24 && parentH >= 24 && parentW <= 200 && parentH <= 200) {
+        const text = textOf?.(node.entity) ?? null
+        const bg = backgroundOf(node.entity)
+        if (bg && !text?.value?.trim()) {
+          const wAuto = sizeAxisAuto(t.widthUnit, t.width)
+          const hAuto = sizeAxisAuto(t.heightUnit, t.height)
+          const isAbs = normalizeYGPositionType(t.positionType) === YGPositionType.ABSOLUTE
+          if ((isAbs || (wAuto && hAuto)) && (wAuto || hAuto)) {
+            if (wAuto && w <= 0.5) {
+              y.setWidth(parentW)
+              w = parentW
+              expanded++
+            }
+            if (hAuto && h <= 0.5) {
+              y.setHeight(parentH)
+              h = parentH
+              expanded++
+            }
+          }
+        }
+      }
+      // Prefer computed size; fall back to parent so nested 0×0 stacks expand before re-layout.
+      const cw = w > 0.5 ? w : parentW
+      const ch = h > 0.5 ? h : parentH
+      for (const child of node.children) expandWalk(child, cw, ch)
+    }
+    for (const node of forest) expandWalk(node, virtualWidth, virtualHeight)
+    if (expanded > 0) {
+      root.calculateLayout(virtualWidth, virtualHeight, Yoga.DIRECTION_LTR)
+    }
+  }
 
   const boxes: LayoutBox[] = []
   const walk = (node: YogaTreeNode, offsetLeft: number, offsetTop: number): void => {

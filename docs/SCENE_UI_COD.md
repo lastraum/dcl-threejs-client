@@ -180,12 +180,13 @@ Debug: `?sceneuidebug` — `fullYoga` / `repaired` / `collapsed` / `patchEligibl
 
 1. ~~Visual key texture src~~ ✅  
 2. ~~clearLww per-component rows (not wipe PE on bg-only dirty)~~ ✅  
-3. **Image / AUTO minSize in Yoga** → drop slot-fill repair  
-4. **Remove `scheduleCollapseRelayout`** after (3) + QA  
-5. **LayoutMode / PaintMode enum** — collapse gate soup  
-6. **liveSeen clear on any mount set change** (not only largeRemount)  
-7. Revisit scale-tween restore; delete if unused  
-8. Fingerprint unit tests (layout + visual)  
+3. ~~Image / AUTO minSize in Yoga (build + one expand re-layout)~~ ✅  
+4. ~~Remove `scheduleCollapseRelayout`~~ ✅  
+5. ~~LayoutMode / PaintMode named selection~~ ✅ (debug: `layoutMode=` / `paintMode=`)  
+6. ~~liveSeen clear on any mount set change~~ ✅  
+7. Shrink `repairCollapsed` slot-fill further once QA proves Yoga expand enough  
+8. Revisit scale-tween restore; delete if unused  
+9. Fingerprint unit tests (layout + visual)  
 
 ---
 

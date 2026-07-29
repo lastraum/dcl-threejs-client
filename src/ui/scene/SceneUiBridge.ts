@@ -129,9 +129,6 @@ export class SceneUiBridge {
   private domVisible = false
   private readonly unbindImageLoaded: () => void
   private imageRepaintQueued = false
-  /** One-shot re-layout after shop open while many flex icon cells stay 0×0. */
-  private collapseRepaintQueued = false
-  private collapseRepaintAttempts = 0
   /** Latest pointer phase-4 rows — fill-in when projection PE lags (menu open). */
   private mountSnapshotPointerEvents = new Map<Entity, unknown>()
   /**
@@ -271,35 +268,7 @@ export class SceneUiBridge {
     this.paintCount = 0
     this.firstPaintLogged = false
     this.paintedEpoch = -1
-    this.collapseRepaintAttempts = 0
     this.markContentDirty()
-  }
-
-  /**
-   * Progressive shop open: first Yoga often leaves dozens of icon cells 0×0 while flex
-   * fills. Schedule one full re-layout so inventory/vending icons appear without close→reopen.
-   */
-  private scheduleCollapseRelayout(collapsedVisible: number): void {
-    if (collapsedVisible <= 8) {
-      this.collapseRepaintAttempts = 0
-      return
-    }
-    if (this.collapseRepaintQueued || this.collapseRepaintAttempts >= 3) return
-    if (!this.lastView || !this.domVisible) return
-    this.collapseRepaintQueued = true
-    this.collapseRepaintAttempts++
-    window.setTimeout(() => {
-      this.collapseRepaintQueued = false
-      if (!this.lastView || !this.domVisible) return
-      // Drop poisoned layout cache of 0×0 flex cells so the next paint re-runs Yoga.
-      this.layoutCache.clear()
-      this.lastPaintLayoutKey = ''
-      this.lastFullLayoutBoxes = null
-      this.lastLayoutBoxMap = null
-      this.stableVisibleStreak = 0
-      this.markContentDirty()
-      this.paint(this.lastView)
-    }, 48)
   }
 
   isVisible(): boolean {
@@ -423,11 +392,10 @@ export class SceneUiBridge {
       this.lastFullLayoutBoxes = null
       this.stableVisibleStreak = 0
       this.lastStableVisibleCount = 0
-      this.collapseRepaintAttempts = 0
-      // Second modal open reuses entity ids; clear PE tombstones so snapshot/live PE can lead.
-      // Also reset paintCount so preferPatch cannot under-paint chrome (close X) after reopen.
+      // Any mount set change recycles entity ids — PE tombstones must not stick (SCENE_UI_COD).
+      this.livePointerEventsSeen.clear()
+      // Large remount: force full forest path (preferPatch needs paintCount > 1).
       if (largeRemount || next.size >= 100) {
-        this.livePointerEventsSeen.clear()
         this.paintCount = 0
         this.firstPaintLogged = false
       }
@@ -728,7 +696,8 @@ export class SceneUiBridge {
         this.virtual.width,
         this.virtual.height,
         textOf,
-        inputOf
+        inputOf,
+        backgroundOf
       )
       dispose()
       this.layoutCache.set(layoutKey, boxes)
@@ -745,11 +714,12 @@ export class SceneUiBridge {
       return null
     }
 
-    // COD: large modal mounts (inventory ~700+) still refine absolute dirties aggressively
-    // so reeling / slot tweaks never re-Yoga the whole tree every tick.
+    // SCENE_UI_COD LayoutMode: Full | RefineAbsolute | Reuse
+    // Large modals still refine absolute dirties so reeling never fullYoga every tick.
     const refineBudget = mounted.size >= 200 ? 64 : 32
     const patchBudget = mounted.size >= 200 ? 96 : 48
-
+    type LayoutMode = 'Full' | 'RefineAbsolute' | 'Reuse'
+    let layoutMode: LayoutMode = 'Full'
     let layoutBoxes = this.layoutCache.get(layoutKey)
     let layoutCacheHit = !!layoutBoxes
     let usedFullYoga = false
@@ -758,13 +728,15 @@ export class SceneUiBridge {
       layoutBoxes = null
       layoutCacheHit = false
     }
-    if (!layoutBoxes) {
+    if (layoutBoxes) {
+      layoutMode = 'Reuse'
+      this.lastFullLayoutBoxes = layoutBoxes
+    } else {
       layoutCacheHit = false
-      // UV/color/text only — reuse last *full* Yoga boxes (COD: no thrash on reeling UV ticks).
-      // Skip reuse when the seed itself is still heavily collapsed (first shop open).
       const seedCollapsed = this.lastFullLayoutBoxes
         ? countCollapsedLayoutBoxes(this.lastFullLayoutBoxes)
         : 0
+      // Reuse: UV/color/text only with healthy last full boxes (COD: no thrash on reeling).
       if (
         layoutDirtyEntities.length === 0 &&
         this.lastFullLayoutBoxes?.length &&
@@ -772,13 +744,14 @@ export class SceneUiBridge {
       ) {
         layoutBoxes = this.lastFullLayoutBoxes
         layoutCacheHit = true
+        layoutMode = 'Reuse'
       } else if (
         layoutDirtyEntities.length > 0 &&
         layoutDirtyEntities.length <= refineBudget &&
         layoutDirtyEntities.length < mounted.size * 0.4 &&
         seedCollapsed <= 8
       ) {
-        // Fishing reeling + inventory slot absolute tweaks: refine only those.
+        // RefineAbsolute: fishing reeling + inventory slot absolute tweaks.
         const seed = fullSeedMap()
         if (seed?.size) {
           const refined = tryRefineAbsoluteLayoutBoxes(
@@ -791,27 +764,23 @@ export class SceneUiBridge {
             layoutBoxes = [...refined.values()]
             this.lastFullLayoutBoxes = layoutBoxes
             layoutCacheHit = true
-            // Don't poison the layout cache with a transient reeling key — keep refining.
+            layoutMode = 'RefineAbsolute'
           }
         }
       }
       if (!layoutBoxes) {
         layoutBoxes = runFullYoga()
         usedFullYoga = true
+        layoutMode = 'Full'
       }
-    } else {
-      this.lastFullLayoutBoxes = layoutBoxes
     }
 
-    // Repair 0×0 icon wrappers (vending/inventory) before visibility filter + paint.
-    // Must run on the full box list so parent→child multi-pass can unlock stacks.
-    // Cache repaired geometry under layoutKey so we do not thrash fullYoga every frame
-    // (logs showed repaired=53 every click → brutal animation stutter).
+    // Legacy repair for non-bg collapses (opposite edges / %); bg AUTO icons handled in Yoga.
+    // Cache repaired geometry so we do not thrash fullYoga every frame.
     const repairedCollapsed = repairCollapsedLayoutBoxes(layoutBoxes, transformOf, this.virtual)
     if (repairedCollapsed > 0) {
       this.lastFullLayoutBoxes = layoutBoxes
       this.layoutCache.set(layoutKey, layoutBoxes)
-      // Prefer patch after repair when possible — geometry is now known.
       layoutCacheHit = true
     }
 
@@ -875,6 +844,7 @@ export class SceneUiBridge {
       }
       layoutBoxes = runFullYoga()
       usedFullYoga = true
+      layoutMode = 'Full'
       layoutCacheHit = false
       repairCollapsedLayoutBoxes(layoutBoxes, transformOf, this.virtual)
       this.lastFullLayoutBoxes = layoutBoxes
@@ -897,12 +867,10 @@ export class SceneUiBridge {
       this.stableVisibleStreak = 0
       this.lastStableVisibleCount = layoutBoxMap.size
     }
-    // Do not declare modal stable while many 0×0 icon cells remain (empty vendor after reopen).
     const modalStable =
       this.stableVisibleStreak >= 2 && layoutBoxMap.size >= 32 && collapsedVisible <= 4
 
-    // Prefer patch when: layout reused/refined, OR full Yoga but modal already open and few dirties.
-    // Never patch while collapsed icon cells remain — full forest walk after repair.
+    // SCENE_UI_COD PaintMode: Patch | Forest
     const preferPatch =
       this.paintCount > 1 &&
       !visibleSetGrew &&
@@ -913,21 +881,21 @@ export class SceneUiBridge {
       dirtyEntities.length <= patchBudget &&
       dirtyEntities.length < mounted.size * 0.4 &&
       (layoutCacheHit || (usedFullYoga && modalStable))
+    const paintMode: 'Patch' | 'Forest' = preferPatch ? 'Patch' : 'Forest'
 
     if (
       (visibleSetGrew ||
         missingVisible.length > 0 ||
         repairedCollapsed > 0 ||
         collapsedVisible > 4 ||
-        (usedFullYoga && !preferPatch)) &&
+        (usedFullYoga && paintMode === 'Forest')) &&
       typeof location !== 'undefined' &&
       location.search.includes('sceneuidebug')
     ) {
       console.log(
         `[scene-ui] layout paint — visibleYoga=${layoutBoxMap.size} prevVisible=${prevVisibleCount} ` +
-          `fullYoga=${usedFullYoga ? 1 : 0} missingWas=${missingVisible.length} ` +
-          `repaired=${repairedCollapsed} collapsed=${collapsedVisible} ` +
-          `patchEligible=${preferPatch ? 1 : 0} stable=${this.stableVisibleStreak}`
+          `layoutMode=${layoutMode} paintMode=${paintMode} missingWas=${missingVisible.length} ` +
+          `repaired=${repairedCollapsed} collapsed=${collapsedVisible} stable=${this.stableVisibleStreak}`
       )
     }
 
@@ -975,9 +943,6 @@ export class SceneUiBridge {
     this.lastEntityLayoutKeys = entityLayoutKeys
     this.lastLayoutBoxMap = layoutBoxMap
     this.paintedEpoch = this.contentEpoch
-
-    // First open: many 0×0 icon cells after Yoga — re-layout shortly so grids fill without reopen.
-    this.scheduleCollapseRelayout(collapsedVisible)
 
     this.input.pruneStaleEntities(mounted)
     this.input.releaseAllIfNothingMounted(mounted)

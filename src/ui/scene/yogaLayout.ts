@@ -177,12 +177,40 @@ function sizeAxisAuto(unit: number | undefined, value: number | undefined): bool
   return false
 }
 
+/** True when this edge is not authored (undefined/auto unit). */
+function positionEdgeUnset(unit: number | undefined, _value?: number): boolean {
+  const u = unit ?? YGUnit.UNDEFINED
+  if (u === YGUnit.UNDEFINED || u === YGUnit.AUTO) return true
+  // Explicit 0 with a real unit counts as set (e.g. bottom: 0).
+  return false
+}
+
+/**
+ * Corner badges / NEW ribbons / SOLD OUT chips: single-corner pin + AUTO size.
+ * Must NOT fill the parent slot (that stretched atlas UVs into diagonal mash on first open).
+ *
+ * Full-bleed icons: no edges, or opposite edges (left+right / top+bottom), or % size.
+ */
+function isCornerPinnedAutoBadge(t: PBUiTransform): boolean {
+  const left = !positionEdgeUnset(t.positionLeftUnit, t.positionLeft)
+  const right = !positionEdgeUnset(t.positionRightUnit, t.positionRight)
+  const top = !positionEdgeUnset(t.positionTopUnit, t.positionTop)
+  const bottom = !positionEdgeUnset(t.positionBottomUnit, t.positionBottom)
+  // Opposite edges define a fill box — not a badge.
+  if (left && right) return false
+  if (top && bottom) return false
+  const edgeCount = (left ? 1 : 0) + (right ? 1 : 0) + (top ? 1 : 0) + (bottom ? 1 : 0)
+  // 1–2 edges without an opposite pair = corner/edge pin (badge / ribbon).
+  return edgeCount >= 1 && edgeCount <= 2
+}
+
 /**
  * Icon leaves with UiBackground + AUTO size collapse to 0×0 (Yoga has no image measure).
- * When the parent transform authors a concrete POINT size in the slot range, fill the leaf
- * inside Yoga so inventory/vending icons layout on first open without post-pass invent.
+ * When the parent transform authors a concrete POINT size in the slot range, fill **only
+ * full-bleed** leaves inside Yoga (inventory/vending icons).
  *
- * Skips text-bearing nodes (text measure owns size) and explicit POINT/% sizes (badges).
+ * Never fill corner-pinned AUTO badges — that ballooned rarity/SOLD-OUT atlas cells to the
+ * full 110×110 slot (wrong UV crop / diagonal mash on first shop open).
  */
 function applyBackgroundMinSize(
   node: YogaNode,
@@ -208,19 +236,11 @@ function applyBackgroundMinSize(
   if (pw < 24 || ph < 24 || pw > 200 || ph > 200) return
 
   const isAbs = normalizeYGPositionType(transform.positionType) === YGPositionType.ABSOLUTE
-  // Absolute icon wrappers and relative full-bleed children under fixed slots.
   if (!isAbs && !(wAuto && hAuto)) return
+  if (isAbs && isCornerPinnedAutoBadge(transform)) return
 
   if (wAuto) node.setWidth(pw)
   if (hAuto) node.setHeight(ph)
-}
-
-/** True when this edge is not authored (undefined/auto unit). */
-function positionEdgeUnset(unit: number | undefined, _value?: number): boolean {
-  const u = unit ?? YGUnit.UNDEFINED
-  if (u === YGUnit.UNDEFINED || u === YGUnit.AUTO) return true
-  // Explicit 0 with a real unit counts as set (e.g. bottom: 0).
-  return false
 }
 
 function hasConcreteSize(unit: number | undefined, value: number | undefined): boolean {
@@ -470,7 +490,10 @@ export function layoutUiTree(
           const wAuto = sizeAxisAuto(t.widthUnit, t.width)
           const hAuto = sizeAxisAuto(t.heightUnit, t.height)
           const isAbs = normalizeYGPositionType(t.positionType) === YGPositionType.ABSOLUTE
-          if ((isAbs || (wAuto && hAuto)) && (wAuto || hAuto)) {
+          // Never expand corner badges (NEW / SOLD OUT) — only full-bleed icon leaves.
+          if (isAbs && isCornerPinnedAutoBadge(t)) {
+            /* skip */
+          } else if ((isAbs || (wAuto && hAuto)) && (wAuto || hAuto)) {
             if (wAuto && w <= 0.5) {
               y.setWidth(parentW)
               w = parentW

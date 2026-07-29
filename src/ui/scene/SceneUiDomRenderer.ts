@@ -490,13 +490,19 @@ export class SceneUiDomRenderer {
     const borders = borderCss(transform, scale)
     const radius = borderRadiusCss(transform, scale)
     const layoutBox = input.layoutBoxes.get(entity)
-    // Completely outside the virtual canvas (e.g. e4857@x=2146 on 1920 design) — hide.
-    // Dual off-canvas shop roots were painting a second full inventory over the plaza.
+    // Completely / mostly outside the virtual canvas — hide.
+    // Dual shop roots park a second full inventory at left≈1500 (e.g. 1846@1920) while the
+    // on-screen panel sits at ~346; painting the parked twin wastes DOM and confuses icons.
     const vw = input.virtual.width
     const vh = input.virtual.height
+    const mostlyOffCanvas =
+      !!layoutBox &&
+      layoutBox.width >= 400 &&
+      (layoutBox.left >= vw * 0.75 || layoutBox.left + layoutBox.width <= vw * 0.25)
     if (
       layoutBox &&
-      (layoutBox.left >= vw - 1 ||
+      (mostlyOffCanvas ||
+        layoutBox.left >= vw - 1 ||
         layoutBox.top >= vh - 1 ||
         layoutBox.left + layoutBox.width <= 1 ||
         layoutBox.top + layoutBox.height <= 1)

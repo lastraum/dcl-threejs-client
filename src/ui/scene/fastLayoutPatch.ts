@@ -206,19 +206,37 @@ export function repairCollapsedLayoutBoxes(
       if ((h == null || h <= 0.5) && heightUnit === YGUnit.PERCENT && (t.height ?? 0) >= 90) {
         h = (pb.height * (t.height ?? 100)) / 100
       }
-      // Absolute icon leaves under a fixed slot with AUTO/undefined size collapse to 0×0
-      // (Yoga has no image measure). Fill the slot — badges with explicit POINT size skip this.
+      // Absolute full-bleed icons under a slot: AUTO size → fill. Corner-pinned badges
+      // (top/left only) must NOT fill — that stretched atlas UVs into diagonal mash.
       if (isAbs) {
-        const widthAuto =
-          widthUnit === YGUnit.AUTO ||
-          widthUnit === YGUnit.UNDEFINED ||
-          ((t.width ?? 0) <= 0 && widthUnit !== YGUnit.PERCENT)
-        const heightAuto =
-          heightUnit === YGUnit.AUTO ||
-          heightUnit === YGUnit.UNDEFINED ||
-          ((t.height ?? 0) <= 0 && heightUnit !== YGUnit.PERCENT)
-        if ((w == null || w <= 0.5) && widthAuto) w = pb.width
-        if ((h == null || h <= 0.5) && heightAuto) h = pb.height
+        const leftSet =
+          (t.positionLeftUnit ?? YGUnit.UNDEFINED) !== YGUnit.UNDEFINED &&
+          (t.positionLeftUnit ?? YGUnit.UNDEFINED) !== YGUnit.AUTO
+        const rightSet =
+          (t.positionRightUnit ?? YGUnit.UNDEFINED) !== YGUnit.UNDEFINED &&
+          (t.positionRightUnit ?? YGUnit.UNDEFINED) !== YGUnit.AUTO
+        const topSet =
+          (t.positionTopUnit ?? YGUnit.UNDEFINED) !== YGUnit.UNDEFINED &&
+          (t.positionTopUnit ?? YGUnit.UNDEFINED) !== YGUnit.AUTO
+        const bottomSet =
+          (t.positionBottomUnit ?? YGUnit.UNDEFINED) !== YGUnit.UNDEFINED &&
+          (t.positionBottomUnit ?? YGUnit.UNDEFINED) !== YGUnit.AUTO
+        const oppositeFill = (leftSet && rightSet) || (topSet && bottomSet)
+        const edgeCount =
+          (leftSet ? 1 : 0) + (rightSet ? 1 : 0) + (topSet ? 1 : 0) + (bottomSet ? 1 : 0)
+        const cornerBadge = !oppositeFill && edgeCount >= 1 && edgeCount <= 2
+        if (!cornerBadge) {
+          const widthAuto =
+            widthUnit === YGUnit.AUTO ||
+            widthUnit === YGUnit.UNDEFINED ||
+            ((t.width ?? 0) <= 0 && widthUnit !== YGUnit.PERCENT)
+          const heightAuto =
+            heightUnit === YGUnit.AUTO ||
+            heightUnit === YGUnit.UNDEFINED ||
+            ((t.height ?? 0) <= 0 && heightUnit !== YGUnit.PERCENT)
+          if ((w == null || w <= 0.5) && widthAuto) w = pb.width
+          if ((h == null || h <= 0.5) && heightAuto) h = pb.height
+        }
       }
     }
 

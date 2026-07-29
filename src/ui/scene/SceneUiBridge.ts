@@ -59,6 +59,7 @@ import {
 } from './uiLayoutCache'
 import { layoutUiTree, type LayoutBox } from './yogaLayout'
 import {
+  alignParkedModalTwinBoxes,
   countCollapsedLayoutBoxes,
   repairCollapsedLayoutBoxes,
   tryRefineAbsoluteLayoutBoxes
@@ -818,7 +819,18 @@ export class SceneUiBridge {
     // Legacy repair for non-bg collapses (opposite edges / %); bg AUTO icons handled in Yoga.
     // Cache repaired geometry so we do not thrash fullYoga every frame.
     const repairedCollapsed = repairCollapsedLayoutBoxes(layoutBoxes, transformOf, this.virtual)
-    if (repairedCollapsed > 0) {
+
+    // Dual-root shop: empty shell @ center + content twin @ left≥1920 → align content on shell
+    // so first open is not empty grids (off-canvas hide discarded the contentful tree).
+    const twinAligned = alignParkedModalTwinBoxes(
+      layoutBoxes,
+      forest,
+      transformOf,
+      backgroundOf,
+      this.virtual
+    )
+
+    if (repairedCollapsed > 0 || twinAligned > 0) {
       this.lastFullLayoutBoxes = layoutBoxes
       this.layoutCache.set(layoutKey, layoutBoxes)
       layoutCacheHit = true
@@ -849,6 +861,7 @@ export class SceneUiBridge {
       layoutMode = 'Full'
       layoutCacheHit = false
       repairCollapsedLayoutBoxes(layoutBoxes, transformOf, this.virtual)
+      alignParkedModalTwinBoxes(layoutBoxes, forest, transformOf, backgroundOf, this.virtual)
       this.lastFullLayoutBoxes = layoutBoxes
       layoutBoxMap = new Map<Entity, LayoutBox>(
         visibleLayoutBoxes(layoutBoxes, transformOf).map((box) => [box.entity, box])
@@ -897,7 +910,8 @@ export class SceneUiBridge {
       console.log(
         `[scene-ui] layout paint — visibleYoga=${layoutBoxMap.size} prevVisible=${prevVisibleCount} ` +
           `layoutMode=${layoutMode} paintMode=${paintMode} missingWas=${missingVisible.length} ` +
-          `repaired=${repairedCollapsed} collapsed=${collapsedVisible} stable=${this.stableVisibleStreak}`
+          `repaired=${repairedCollapsed} twinAlign=${twinAligned} collapsed=${collapsedVisible} ` +
+          `stable=${this.stableVisibleStreak}`
       )
     }
 

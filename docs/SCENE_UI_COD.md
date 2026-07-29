@@ -107,13 +107,18 @@ Debug: `?sceneuidebug` → `layoutMode=` / `paintMode=` / `repaired=` / `collaps
 10. ~~Mesh large-modal ≥2 stable react-ecs passes~~ ✅  
 11. ~~Pixel atlas UV when natural size known~~ ✅  
 
-### Remaining watch (not thrash layers)
+### Dual modal roots (platform fix)
+
+Fishing shop ships **two** large absolute roots: empty chrome shell at center + contentful twin parked at `left≥virtualWidth` (e.g. 2146). Off-canvas hide discarded the content tree → empty grids + stuck half-open chrome.
+
+**`alignParkedModalTwinBoxes`:** shift richer parked subtree onto on-screen shell origin; collapse lean empty shell. Debug: `twinAlign=N`.
+
+### Remaining watch
 
 | Item | Note |
 |------|------|
-| Dual shop roots | Scene parks twin panel; paint both when both on-screen → ghost. Prefer scene settling + mesh multi-pass; do not invent client merge. |
-| Click selection animation | Scene-owned; ensure visual key covers selection dirties if still broken after open settles. |
-| `repaired=` in debug | Should trend down after Yoga measure; spike on open is ok for %/edges. |
+| Click selection animation | Scene-owned; verify after dual-modal align |
+| `repaired=` in debug | Spike on open ok for %/edges; AUTO invent is gone |
 
 ---
 

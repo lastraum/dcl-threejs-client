@@ -252,3 +252,112 @@ export function countCollapsedLayoutBoxes(boxes: Iterable<LayoutBox>): number {
   }
   return n
 }
+
+/**
+ * Fishing shop (and similar) open with **two** large absolute roots:
+ *   - empty chrome shell already at center (left≈346)
+ *   - contentful twin parked fully off-canvas right (left≥1920 / 2146…)
+ * Painting only the shell yields empty grids; hiding the twin (off-canvas) makes it worse.
+ *
+ * Shift the richer off-canvas subtree onto the on-screen shell's origin and collapse the
+ * empty shell subtree so icons/X paint in the visible panel (SCENE_UI_COD: one visible modal).
+ *
+ * Returns how many boxes were translated (0 = no dual-modal pair).
+ */
+export function alignParkedModalTwinBoxes(
+  boxes: LayoutBox[],
+  forest: ReadonlyMap<Entity, Entity[]>,
+  transformOf: (e: Entity) => PBUiTransform | null,
+  backgroundOf: ((e: Entity) => unknown) | null | undefined,
+  virtual: VirtualCanvasSize
+): number {
+  if (!boxes.length) return 0
+  const byEntity = new Map<Entity, LayoutBox>()
+  for (const b of boxes) byEntity.set(b.entity, b)
+
+  const roots = forest.get(CANVAS_ROOT_ENTITY as Entity) ?? forest.get(0 as Entity) ?? []
+  type RootInfo = {
+    entity: Entity
+    box: LayoutBox
+    bgCount: number
+    ids: Set<Entity>
+  }
+  const large: RootInfo[] = []
+
+  const collectSubtree = (entity: Entity, ids: Set<Entity>): number => {
+    ids.add(entity)
+    let bg = backgroundOf?.(entity) ? 1 : 0
+    for (const child of forest.get(entity) ?? []) {
+      bg += collectSubtree(child, ids)
+    }
+    return bg
+  }
+
+  for (const root of roots) {
+    const box = byEntity.get(root)
+    if (!box || box.width < 800 || box.height < 400) continue
+    const t = transformOf(root)
+    if (!t) continue
+    // Only absolute modal roots (shop panel), not full-screen scrims that fill the canvas.
+    if (normalizeYGPositionType(t.positionType) !== YGPositionType.ABSOLUTE) continue
+    if (box.width >= virtual.width * 0.95 && box.height >= virtual.height * 0.95) continue
+    const ids = new Set<Entity>()
+    const bgCount = collectSubtree(root, ids)
+    large.push({ entity: root, box, bgCount, ids })
+  }
+  if (large.length < 2) return 0
+
+  const vw = virtual.width
+  const onScreen = large.filter(
+    (r) => r.box.left >= -40 && r.box.left < vw - 80 && r.box.top < virtual.height - 40
+  )
+  const offRight = large.filter((r) => r.box.left >= vw - 1)
+
+  let moved = 0
+  let content: RootInfo | null = null
+  let shell: RootInfo | null = null
+
+  if (onScreen.length && offRight.length) {
+    // Parked content twin fully off right + shell at center.
+    content = [...offRight].sort((a, b) => b.bgCount - a.bgCount)[0]!
+    shell = [...onScreen].sort((a, b) => a.bgCount - b.bgCount || a.box.left - b.box.left)[0]!
+  } else if (onScreen.length >= 2) {
+    // Both already on-screen (mid/end open) — collapse lean empty chrome twin.
+    const sorted = [...onScreen].sort((a, b) => b.bgCount - a.bgCount)
+    content = sorted[0]!
+    shell = sorted[1]!
+    const overlap =
+      Math.abs(content.box.left - shell.box.left) < 120 &&
+      Math.abs(content.box.top - shell.box.top) < 120
+    if (!overlap) return 0
+  } else {
+    return 0
+  }
+
+  // Content must clearly dominate (full shop vs empty chrome).
+  if (content.bgCount < 30) return 0
+  if (content.bgCount < shell.bgCount + 15) return 0
+
+  const dx = shell.box.left - content.box.left
+  const dy = shell.box.top - content.box.top
+  if (Math.abs(dx) >= 8 || Math.abs(dy) >= 8) {
+    for (const b of boxes) {
+      if (!content.ids.has(b.entity)) continue
+      b.left += dx
+      b.top += dy
+      moved++
+    }
+  }
+
+  // Collapse empty shell subtree so dual chrome doesn't ghost over the content.
+  if (shell.bgCount < content.bgCount * 0.35) {
+    for (const b of boxes) {
+      if (!shell.ids.has(b.entity)) continue
+      b.width = 0
+      b.height = 0
+    }
+    moved = Math.max(moved, 1)
+  }
+
+  return moved
+}

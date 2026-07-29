@@ -9,6 +9,13 @@ updated: 2026-07-29
 source: github
 base_branch: dev-latest
 workflow:
+  - stage: pending_review
+    integration_ref: pr:56
+    title: re-add foil pack and retriever, compressed (1.1 MB total)
+    owner: awedjob
+    pr: 56
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/56
+    updated: 2026-07-29
   - stage: merged
     integration_ref: pr:55
     title: foil pack + retriever pet models

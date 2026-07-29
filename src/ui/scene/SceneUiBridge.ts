@@ -64,7 +64,6 @@ import {
   tryRefineAbsoluteLayoutBoxes
 } from './fastLayoutPatch'
 import { onSceneUiImageLoaded } from './uiImageLoad'
-import { isUiEntityVisible } from './uiVisibility'
 
 const _camPos = new THREE.Vector3()
 const POINTER_EVENTS_COMPONENT_ID = 1062
@@ -314,11 +313,12 @@ export class SceneUiBridge {
     this.writeback = writeback
   }
 
-  /** Pointer phase-4 structured mount — feed DOM paint + hit tests before projection fold. */
+  /**
+   * Pointer phase-4 structured mount — feed DOM paint + hit tests before projection fold.
+   * SCENE_UI_COD PE law: any fresh snapshot clears liveSeen (reopen / recycled ids).
+   */
   ingestMountSnapshot(rows: readonly WorkerUiMountSnapshotRow[]): void {
     this.mountSnapshotPointerEvents.clear()
-    // Fresh mount snapshot is authoritative for PE lag — drop prior "seen live then deleted"
-    // so reopen (recycled entity ids) can use snapshot PE again before projection fold.
     this.livePointerEventsSeen.clear()
     let peRows = 0
     for (const row of rows) {
@@ -331,17 +331,22 @@ export class SceneUiBridge {
     if (peRows > 0 || rows.length === 0) this.markContentDirty()
   }
 
+  /**
+   * SCENE_UI_COD PE lead law (single authority):
+   *  1. Live non-empty → live wins; mark seen; drop snapshot for that entity
+   *  2. Live empty + authoritative + snapshot non-empty → snapshot (fold lag)
+   *  3. Live empty + seen + no snapshot → deleted (splash PE drop)
+   *  4. Else → none
+   * PE delete for still-mounted entities without PE row: applyWorkerUiMountSnapshot only.
+   */
   private pointerEventsLookup: UiPointerEventsLookup = (entity) => {
     const ecs = this.mirrorEcs
     const live = ecs?.PointerEvents.getOrNull(entity) as { pointerEvents?: unknown[] } | null
     if (normalizePointerEventsList(live).length > 0) {
-      // Live PE wins — drop snapshot so deletes cannot be resurrected later.
       this.livePointerEventsSeen.add(entity)
       this.mountSnapshotPointerEvents.delete(entity)
       return live as ReturnType<UiPointerEventsLookup>
     }
-    // Phase-4 / reopen: snapshot PE leads when live is empty (fold lag after clearLww).
-    // Prefer snapshot over liveSeen tombstone — second shop open recycles entity ids.
     if (this.isAuthoritativeUiEntity(entity)) {
       const fromSnapshot = this.mountSnapshotPointerEvents.get(entity) as
         | { pointerEvents?: unknown[] }
@@ -350,7 +355,6 @@ export class SceneUiBridge {
         return fromSnapshot as ReturnType<UiPointerEventsLookup>
       }
     }
-    // Projection owned PE and both live + snapshot empty → deleted (not lagging).
     if (this.livePointerEventsSeen.has(entity)) {
       return null
     }
@@ -824,46 +828,8 @@ export class SceneUiBridge {
       visibleLayoutBoxes(layoutBoxes, transformOf).map((box) => [box.entity, box])
     )
 
-    // Scale-tween mid-frames (how-to-play page flip, modal pulse) can collapse a full
-    // panel to 6×6 and drop close/pagination children from the visible set. Restore last
-    // good geometry so chrome stays painted while the tween recovers.
-    if (this.lastLayoutBoxMap?.size) {
-      for (const [entity, prev] of this.lastLayoutBoxMap) {
-        if (!mounted.has(entity)) continue
-        if (!isUiEntityVisible(entity, transformOf)) continue
-        if (prev.width < 32 || prev.height < 32) continue
-        const prevArea = prev.width * prev.height
-        if (prevArea < 1500) continue
-
-        const cur = layoutBoxMap.get(entity)
-        if (!cur) {
-          // Was visible last frame; still mounted+visible but missing a box — restore.
-          layoutBoxMap.set(entity, {
-            entity,
-            left: prev.left,
-            top: prev.top,
-            relLeft: prev.relLeft,
-            relTop: prev.relTop,
-            width: prev.width,
-            height: prev.height
-          })
-          continue
-        }
-        const curArea = cur.width * cur.height
-        // Catastrophic shrink (e.g. 564×546 → 6×6) while parent content is tweening scale.
-        if (curArea < 400 && curArea < prevArea * 0.12) {
-          layoutBoxMap.set(entity, {
-            entity,
-            left: prev.left,
-            top: prev.top,
-            relLeft: prev.relLeft,
-            relTop: prev.relTop,
-            width: prev.width,
-            height: prev.height
-          })
-        }
-      }
-    }
+    // SCENE_UI_COD: no scale-tween geometry invent — Yoga + missingVisible→Full is authority.
+    // (Prior catastrophic-shrink restore hid real layout bugs and dual-panel ghosts.)
 
     // Shop/modal open: display:none → flex brings many nodes into the visible set. Cache/refine
     // from a HUD-only seed leaves them box-less → "yoga box unusable (none)" + hidden inventory.

@@ -128,19 +128,17 @@ function resolveEdge(
 }
 
 /**
- * Repair 0×0 boxes **only** when the transform authors a resolvable size against a
- * known parent — never invent "fill parent" for AUTO absolute nodes.
+ * Repair 0×0 boxes **only** from authored resolvable geometry (SCENE_UI_COD).
  *
- * Aggressive fill-parent (previous) stretched NEW badges / rarity tags to the full
- * 110×110 slot (wrong UV, wrong layering) and even modal-sized absolute children
- * to the full inventory panel (UI looked tiny/wrong).
+ * Yoga owns AUTO icon measure (`applyBackgroundMinSize` + expand pass). This post-pass
+ * must NOT invent fill-parent for AUTO leaves (that ballooned NEW/SOLD-OUT badges).
  *
  * Safe cases only:
  *  1. Explicit POINT / PERCENT width×height
  *  2. Opposite edges (left+right / top+bottom) define the box
- *  3. PERCENT ≥ 90 on an axis under a *slot-sized* parent (icon full-bleed 100%)
+ *  3. PERCENT ≥ 90 on an axis under a *slot-sized* parent (authored full-bleed %)
  *
- * Multi-pass so parent repairs unlock child % sizes (vending icon stacks).
+ * Multi-pass so parent repairs unlock child % sizes.
  */
 export function repairCollapsedLayoutBoxes(
   boxes: LayoutBox[],
@@ -193,7 +191,7 @@ export function repairCollapsedLayoutBoxes(
       h = Math.max(0, pb.height - topEdge - bottomEdge)
     }
 
-    // 100%-ish under a slot cell only — never under a modal/panel (that ballooned NEW badges).
+    // Authored % ≥ 90 under a slot cell only — never AUTO invent, never under modal panels.
     const parentIsSlotCell =
       pb.width >= 24 && pb.height >= 24 && pb.width <= 200 && pb.height <= 200
     const widthUnit = t.widthUnit ?? YGUnit.UNDEFINED
@@ -206,42 +204,9 @@ export function repairCollapsedLayoutBoxes(
       if ((h == null || h <= 0.5) && heightUnit === YGUnit.PERCENT && (t.height ?? 0) >= 90) {
         h = (pb.height * (t.height ?? 100)) / 100
       }
-      // Absolute full-bleed icons under a slot: AUTO size → fill. Corner-pinned badges
-      // (top/left only) must NOT fill — that stretched atlas UVs into diagonal mash.
-      if (isAbs) {
-        const leftSet =
-          (t.positionLeftUnit ?? YGUnit.UNDEFINED) !== YGUnit.UNDEFINED &&
-          (t.positionLeftUnit ?? YGUnit.UNDEFINED) !== YGUnit.AUTO
-        const rightSet =
-          (t.positionRightUnit ?? YGUnit.UNDEFINED) !== YGUnit.UNDEFINED &&
-          (t.positionRightUnit ?? YGUnit.UNDEFINED) !== YGUnit.AUTO
-        const topSet =
-          (t.positionTopUnit ?? YGUnit.UNDEFINED) !== YGUnit.UNDEFINED &&
-          (t.positionTopUnit ?? YGUnit.UNDEFINED) !== YGUnit.AUTO
-        const bottomSet =
-          (t.positionBottomUnit ?? YGUnit.UNDEFINED) !== YGUnit.UNDEFINED &&
-          (t.positionBottomUnit ?? YGUnit.UNDEFINED) !== YGUnit.AUTO
-        const oppositeFill = (leftSet && rightSet) || (topSet && bottomSet)
-        const edgeCount =
-          (leftSet ? 1 : 0) + (rightSet ? 1 : 0) + (topSet ? 1 : 0) + (bottomSet ? 1 : 0)
-        const cornerBadge = !oppositeFill && edgeCount >= 1 && edgeCount <= 2
-        if (!cornerBadge) {
-          const widthAuto =
-            widthUnit === YGUnit.AUTO ||
-            widthUnit === YGUnit.UNDEFINED ||
-            ((t.width ?? 0) <= 0 && widthUnit !== YGUnit.PERCENT)
-          const heightAuto =
-            heightUnit === YGUnit.AUTO ||
-            heightUnit === YGUnit.UNDEFINED ||
-            ((t.height ?? 0) <= 0 && heightUnit !== YGUnit.PERCENT)
-          if ((w == null || w <= 0.5) && widthAuto) w = pb.width
-          if ((h == null || h <= 0.5) && heightAuto) h = pb.height
-        }
-      }
     }
 
-    // Corner badges / NEW ribbons: single-edge pin + AUTO size — leave for text measure.
-    // Do NOT fill parent (except slot absolute icons above).
+    // AUTO absolute leaves: leave for Yoga measure — do not fill parent here.
     if (w == null || h == null || w <= 0.5 || h <= 0.5) return false
 
     let relLeft = box.relLeft
@@ -249,7 +214,6 @@ export function repairCollapsedLayoutBoxes(
     if (leftEdge != null) relLeft = leftEdge
     else if (rightEdge != null) relLeft = pb.width - rightEdge - w
     else if (isAbs && (widthUnit === YGUnit.PERCENT || (leftEdge == null && rightEdge == null))) {
-      // Keep yoga's rel when present; only zero when still at collapsed origin.
       if (box.width <= 0.5 && box.height <= 0.5 && Math.abs(box.relLeft) < 0.5) relLeft = 0
     }
 

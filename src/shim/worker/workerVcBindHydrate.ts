@@ -215,22 +215,29 @@ export function collectVcBindHydratePackage(engine: IEngine): PlayerFrameBoundVc
 }
 
 /**
- * Hydrate only when *structure* changes.
+ * Hydrate only when *structure* changes — not continuous motion.
+ *
  * Follow: ignore moving anchor poses (CameraFollow) — those ride vc-pose-live / PE-follow.
- * Locked (worldFlattened): include world pose so select cuts re-hydrate when the shot moves.
+ * Hierarchy (flat=0): entity ids + local offset only (not cameraParent world pose).
+ * World-flattened (flat=1): **structure only** (vc id + lookAt + parent). Continuous
+ * cinematic motion must ride vc-pose-live (`publishVcPoseLiveIfBound` world-flat branch).
+ *
+ * Dead Surge tutorial Start Mission: VC e1401 flat root-level shot lerps every frame with
+ * lookAt=∅. Including world pose in the graph key re-fired vc-bind-hydrate every tick
+ * (FPS death, lens thrash, UI starve). Select cuts change MainCamera→VC entity or lookAt
+ * (still in the key); same-entity lerp is live pose only.
  */
 export function vcBindGraphKey(pkg: PlayerFrameBoundVc | null): string {
   if (!pkg) return 'cleared'
   const lookAt = (pkg.virtualCamera as { lookAtEntity?: number } | null)?.lookAtEntity ?? 0
   const parent = pkg.transform.parent ?? 0
   if (pkg.worldFlattened) {
-    return [
-      `vc=${pkg.entity}`,
-      `lookAt=${lookAt}`,
-      'flat=1',
-      `tr=${transformKey(pkg.transform)}`,
-      ...pkg.anchors.map((a) => `a${a.entity}=${transformKey(a.transform)}`)
-    ].join('|')
+    // Structure only — pose updates via vc-pose-live. Anchor *ids* matter if lookAt target set.
+    const anchorIds = pkg.anchors
+      .map((a) => a.entity)
+      .sort((a, b) => a - b)
+      .join(',')
+    return [`vc=${pkg.entity}`, `lookAt=${lookAt}`, 'flat=1', `anchors=${anchorIds}`].join('|')
   }
   // Follow / hierarchy: entity ids + VC local offset only (not cameraParent world pose).
   return [

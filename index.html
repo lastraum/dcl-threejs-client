@@ -2977,25 +2977,6 @@
       .pets-panel__header .pets-panel__back[hidden] {
         display: none !important;
       }
-      .pets-panel__barn-btn {
-        flex-shrink: 0;
-        margin-left: auto;
-        margin-right: 4px;
-        padding: 4px 10px;
-        border-radius: 999px;
-        border: 1px solid rgba(255, 255, 255, 0.18);
-        background: rgba(180, 120, 255, 0.22);
-        color: #f3e8ff;
-        font-size: 12px;
-        font-weight: 600;
-        cursor: pointer;
-      }
-      .pets-panel__barn-btn:hover {
-        background: rgba(180, 120, 255, 0.38);
-      }
-      .pets-panel__barn-btn[hidden] {
-        display: none !important;
-      }
       .pets-panel__title {
         margin: 0;
         flex: 1;
@@ -3031,6 +3012,16 @@
         padding: 10px 12px;
         border-bottom: 1px solid rgba(255, 255, 255, 0.06);
         flex-shrink: 0;
+      }
+      .pets-panel__actions-row {
+        display: flex;
+        gap: 8px;
+        align-items: stretch;
+      }
+      .pets-panel__actions-row .pets-panel__upload-btn {
+        flex: 1 1 0;
+        min-width: 0;
+        box-sizing: border-box;
       }
       /* Details view: hide list chrome (walking/flying + upload + hint) completely */
       .pets-panel--edit .pets-panel__upload,
@@ -3080,9 +3071,17 @@
         font-weight: 700;
         cursor: pointer;
         transition: filter 0.15s ease;
+        appearance: none;
+        font-family: inherit;
+        line-height: 1.2;
+        text-align: center;
       }
       .pets-panel__upload-btn:hover {
         filter: brightness(1.08);
+      }
+      button.pets-panel__upload-btn.pets-panel__barn-btn {
+        /* Match upload label sizing; slight variant so both read as equal peers */
+        margin: 0;
       }
       .pets-panel__hint {
         margin: 0;

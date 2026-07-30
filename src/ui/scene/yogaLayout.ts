@@ -474,8 +474,11 @@ export function layoutUiTree(
   root.calculateLayout(virtualWidth, virtualHeight, Yoga.DIRECTION_LTR)
 
   // Second pass inside Yoga: parent may be flex-sized (no POINT on transform) so first
-  // applyBackgroundMinSize could not fill. Expand 0×0 AUTO bg leaves under computed
-  // slot parents, then re-layout once (COD: still Yoga authority, not DOM invent).
+  // applyBackgroundMinSize could not fill. Expand collapsed/undersized AUTO bg leaves under
+  // computed slot parents, then re-layout once (COD: Yoga measure authority, not DOM invent).
+  //
+  // Critical: only treating w≤0.5 left fishing icons at 3×3–10×4 inside 110×98 slots
+  // (yoga content-size without image measure). Undersized vs slot parent must expand too.
   if (backgroundOf) {
     let expanded = 0
     const expandWalk = (node: YogaTreeNode, parentW: number, parentH: number): void => {
@@ -483,23 +486,33 @@ export function layoutUiTree(
       let w = y.getComputedWidth()
       let h = y.getComputedHeight()
       const t = transformOf.get(node.entity)
-      if (t && (w <= 0.5 || h <= 0.5) && parentW >= 24 && parentH >= 24 && parentW <= 200 && parentH <= 200) {
+      const parentIsSlot =
+        parentW >= 24 && parentH >= 24 && parentW <= 200 && parentH <= 200
+      if (t && parentIsSlot) {
         const text = textOf?.(node.entity) ?? null
         const bg = backgroundOf(node.entity)
         if (bg && !text?.value?.trim()) {
+          const wUnit = t.widthUnit ?? YGUnit.UNDEFINED
+          const hUnit = t.heightUnit ?? YGUnit.UNDEFINED
           const wAuto = sizeAxisAuto(t.widthUnit, t.width)
           const hAuto = sizeAxisAuto(t.heightUnit, t.height)
+          // 100% of a 0-parent first pass collapses; treat like fill intent.
+          const wFillPct = wUnit === YGUnit.PERCENT && (t.width ?? 0) >= 90
+          const hFillPct = hUnit === YGUnit.PERCENT && (t.height ?? 0) >= 90
           const isAbs = normalizeYGPositionType(t.positionType) === YGPositionType.ABSOLUTE
-          // Never expand corner badges (NEW / SOLD OUT) — only full-bleed icon leaves.
+          // Never expand corner badges (NEW / SOLD OUT with pin + small explicit size).
           if (isAbs && isCornerPinnedAutoBadge(t)) {
             /* skip */
-          } else if ((isAbs || (wAuto && hAuto)) && (wAuto || hAuto)) {
-            if (wAuto && w <= 0.5) {
+          } else {
+            // Collapsed or tiny vs slot (no image measure → 3×3 speck icons in 110×98).
+            const wUndersized = w <= 0.5 || (w < parentW * 0.4 && w < 28)
+            const hUndersized = h <= 0.5 || (h < parentH * 0.4 && h < 28)
+            if (wUndersized && (wAuto || wFillPct)) {
               y.setWidth(parentW)
               w = parentW
               expanded++
             }
-            if (hAuto && h <= 0.5) {
+            if (hUndersized && (hAuto || hFillPct)) {
               y.setHeight(parentH)
               h = parentH
               expanded++
@@ -507,7 +520,7 @@ export function layoutUiTree(
           }
         }
       }
-      // Prefer computed size; fall back to parent so nested 0×0 stacks expand before re-layout.
+      // Prefer computed size; fall back to parent so nested stacks expand before re-layout.
       const cw = w > 0.5 ? w : parentW
       const ch = h > 0.5 ? h : parentH
       for (const child of node.children) expandWalk(child, cw, ch)

@@ -292,15 +292,23 @@ export class SceneUiBridge {
   ingestMountSnapshot(rows: readonly WorkerUiMountSnapshotRow[]): void {
     this.mountSnapshotPointerEvents.clear()
     this.livePointerEventsSeen.clear()
-    let peRows = 0
     for (const row of rows) {
       if (row.componentId !== POINTER_EVENTS_COMPONENT_ID) continue
       const entity = row.entity as Entity
       this.mountSnapshotPointerEvents.set(entity, row.value)
-      peRows++
     }
-    // Always repaint after a PE-bearing snapshot so interactive classes attach on 2nd open.
-    if (peRows > 0 || rows.length === 0) this.markContentDirty()
+    // Pointer phase-4 always forces a full paint path — same mount entity set (tutorial
+    // already open but invisible / paginate) early-out on lastPaint* keys and never shows.
+    this.lastPaintLayoutKey = ''
+    this.lastPaintVisualKey = ''
+    this.lastEntityVisualKeys.clear()
+    this.lastEntityLayoutKeys.clear()
+    this.lastLayoutBoxMap = null
+    this.lastFullLayoutBoxes = null
+    this.layoutCache.clear()
+    this.paintCount = 0
+    this.firstPaintLogged = false
+    this.markContentDirty()
   }
 
   /**
@@ -868,12 +876,22 @@ export class SceneUiBridge {
         }
       }
     }
+    // PE chrome (X / pagination) often co-changes with page content; patching only a
+    // content seed left chrome display:none after page flip.
+    let peChromeDirty = false
+    for (const e of dirtySeeds) {
+      if (hasUiPointerDownOrUp(this.pointerEventsLookup(e))) {
+        peChromeDirty = true
+        break
+      }
+    }
     const localDirty =
       dirtyEntities.length > 0 && dirtyEntities.length < mounted.size * 0.45
     const preferPatch =
       this.paintCount > 1 &&
       localDirty &&
       !scaleExpand &&
+      !peChromeDirty &&
       dirtyEntities.length <= patchBudget &&
       collapsedVisible <= 8 &&
       missingVisible.length === 0 &&

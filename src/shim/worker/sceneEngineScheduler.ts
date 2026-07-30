@@ -1085,21 +1085,23 @@ export async function runSceneEnginePointerTick(
         // (scale, dual-root slide). No menu classification. Early-exit when stable.
         const meshSeedFp = computeWorkerUiFingerprint(eng)
         const meshMount = countWorkerUiMount(eng)
-        // Mount grew ⇒ menu open (tutorial, shop, …). Need wall-clock settle so scale
-        // popups are not snapshotted at ~6px (invisible). Not a menu-type classifier —
-        // only "did the UI tree grow on this click?".
+        // Open settle when mount grew OR a substantial UI is already mounted (tutorial
+        // re-click: 121→121 was already in ECS but invisible — short flush never showed it).
         const mountGrewMesh = meshMount > mountBeforeDown + 8
+        const substantialUi = meshMount >= 60
+        const needOpenSettle = mountGrewMesh || substantialUi
         cfg.log(
           `[sceneWorker] pointer ui flush — post-UP seed=${meshSeedFp.length}B ` +
-            `mount=${mountBeforeDown}→${meshMount}${mountGrewMesh ? ' open' : ''}`
+            `mount=${mountBeforeDown}→${meshMount}` +
+            `${mountGrewMesh ? ' grew' : ''}${substantialUi && !mountGrewMesh ? ' reshow' : ''}`
         )
         await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
-          maxPasses: mountGrewMesh ? 16 : POINTER_UI_OPEN_FLUSH_MAX_PASSES,
+          maxPasses: needOpenSettle ? 20 : POINTER_UI_OPEN_FLUSH_MAX_PASSES,
           seedFp: meshSeedFp,
           stableNeeded: POINTER_UI_OPEN_STABLE_NEEDED,
           dt: POINTER_UI_OPEN_DT,
-          minPasses: mountGrewMesh ? 4 : 1,
-          minWallMs: mountGrewMesh ? 250 : 0
+          minPasses: needOpenSettle ? 6 : 1,
+          minWallMs: needOpenSettle ? 400 : 0
         })
 
         if (isRefuseFreezeWrites()) {

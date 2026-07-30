@@ -825,6 +825,69 @@ function uiOpenPoseStillMicro(eng: IEngine): boolean {
   return micro > 0 && full === 0
 }
 
+/**
+ * True when a modal-sized abs panel exists but none is on the virtual canvas.
+ * Covers: left≥1920 park (shop content), opacity 0, display none — without twinAlign invent.
+ * Log showed first paint mount=121 with PE but user saw nothing: flush exited while
+ * all modals were still off-canvas / hidden.
+ */
+function uiOpenPoseNoVisibleModal(eng: IEngine): boolean {
+  const UiTransform = resolveWorkerUiTransform(eng)
+  let modalCount = 0
+  let visibleModal = 0
+  for (const [_entity] of eng.getEntitiesWith(UiTransform)) {
+    const t = UiTransform.getOrNull(_entity) as {
+      positionType?: number
+      display?: unknown
+      opacity?: number
+      width?: number
+      height?: number
+      widthUnit?: number
+      heightUnit?: number
+      positionLeft?: number
+      positionTop?: number
+      positionLeftUnit?: number
+      positionTopUnit?: number
+      position?: { left?: number; top?: number }
+    } | null
+    if (!t) continue
+    if ((t.positionType ?? 0) !== 1 /* ABSOLUTE */) continue
+    const wUnit = t.widthUnit ?? 0
+    const hUnit = t.heightUnit ?? 0
+    if (wUnit !== 1 && wUnit !== 0) continue
+    if (hUnit !== 1 && hUnit !== 0) continue
+    const w = t.width ?? 0
+    const h = t.height ?? 0
+    // Modal-ish: how-to-play ~696×672, shop ~1460×670 — not full-screen scrims.
+    if (w < 200 || h < 150 || w >= 1800) continue
+    modalCount++
+    // display none / invisible
+    const disp = t.display
+    if (disp === 1 || disp === 'none' || disp === 'YG_DISPLAY_NONE') continue
+    if ((t.opacity ?? 1) < 0.05) continue
+    const leftU = t.positionLeftUnit ?? 0
+    const topU = t.positionTopUnit ?? 0
+    // Percent parks (letterbox etc.) — skip as "visible modal"
+    if (leftU === 2 || topU === 2) continue
+    const left = t.positionLeft ?? t.position?.left ?? 0
+    const top = t.positionTop ?? t.position?.top ?? 0
+    // On virtual 1920×1080 canvas with some margin
+    if (left >= -40 && left < 1720 && top >= -40 && top < 1000 && left + w > 40 && top + h > 40) {
+      visibleModal++
+    }
+  }
+  return modalCount > 0 && visibleModal === 0
+}
+
+/** Pose gates for open settle — no menu kinds. */
+function uiOpenPoseBlocked(eng: IEngine): boolean {
+  return (
+    largeModalContentStillParked(eng) ||
+    uiOpenPoseStillMicro(eng) ||
+    uiOpenPoseNoVisibleModal(eng)
+  )
+}
+
 async function flushReactEcsForUiSnapshot(
   eng: IEngine,
   log: (message: string) => void,
@@ -865,21 +928,21 @@ async function flushReactEcsForUiSnapshot(
     const wall = performance.now() - t0
     const parked = largeModalContentStillParked(eng)
     const micro = uiOpenPoseStillMicro(eng)
+    const offCanvas = uiOpenPoseNoVisibleModal(eng)
+    const poseBlocked = parked || micro || offCanvas
     log(
       `[sceneWorker] pointer ui react-ecs flush pass=${pass + 1}/${maxPasses} mount=${mount} ` +
         `fp=${fp.length}B dt=${dt.toFixed(3)} wall=${wall.toFixed(0)}ms` +
-        `${parked ? ' parked' : ''}${micro ? ' micro' : ''}`
+        `${parked ? ' parked' : ''}${micro ? ' micro' : ''}${offCanvas ? ' offCanvas' : ''}`
     )
     if (prevFp && fp === prevFp) {
       stablePasses++
-      // Pose not ready: keep simulating even if fingerprint bytes look stable
-      // (scale/slide driven by wall-clock / systems that lag the fingerprint).
+      // Pose not ready: keep simulating even if fingerprint bytes look stable.
       if (
         stablePasses >= stableNeeded &&
         pass + 1 >= minPasses &&
         wall >= minWallMs &&
-        !parked &&
-        !micro
+        !poseBlocked
       ) {
         return
       }
@@ -1090,8 +1153,7 @@ export async function runSceneEnginePointerTick(
         // (no wall tax once pose ready).
         const mountGrewMesh = meshMount > mountBeforeDown + 8
         const substantialUi = meshMount >= 60
-        const poseNotReady =
-          largeModalContentStillParked(eng) || uiOpenPoseStillMicro(eng)
+        const poseNotReady = uiOpenPoseBlocked(eng)
         const needOpenSettle = mountGrewMesh || substantialUi || poseNotReady
         cfg.log(
           `[sceneWorker] pointer ui flush — post-UP seed=${meshSeedFp.length}B ` +
@@ -1100,14 +1162,15 @@ export async function runSceneEnginePointerTick(
             `${substantialUi && !mountGrewMesh ? ' reshow' : ''}` +
             `${poseNotReady ? ' poseWait' : ''}`
         )
+        // Grow/reshow: always run enough wall-clock + dt so open tween can finish.
+        // Exit early only when fingerprint stable AND a modal is on-canvas (not offCanvas/micro).
         await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
-          maxPasses: needOpenSettle ? 20 : 4,
+          maxPasses: needOpenSettle ? 24 : 4,
           seedFp: meshSeedFp,
           stableNeeded: needOpenSettle ? POINTER_UI_OPEN_STABLE_NEEDED : 1,
           dt: needOpenSettle ? POINTER_UI_OPEN_DT : 0,
-          // Only force multi-pass when pose not ready; otherwise fingerprint can early-exit.
-          minPasses: poseNotReady ? 4 : needOpenSettle ? 2 : 1,
-          minWallMs: poseNotReady ? 200 : 0
+          minPasses: needOpenSettle ? 6 : 1,
+          minWallMs: needOpenSettle ? 350 : 0
         })
 
         if (isRefuseFreezeWrites()) {

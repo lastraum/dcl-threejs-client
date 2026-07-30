@@ -971,6 +971,40 @@ export class SceneUiBridge {
       usedPatch = false
     }
 
+    // Oracle: open UI with PE but nothing on-canvas → log once (tutorial invisible root cause).
+    if (this.paintCount <= 3) {
+      let peOn = 0
+      let peOff = 0
+      let peTiny = 0
+      const vw = this.virtual.width
+      const vh = this.virtual.height
+      for (const e of mounted) {
+        if (!hasUiPointerDownOrUp(this.pointerEventsLookup(e))) continue
+        const b = layoutBoxMap.get(e)
+        if (!b) {
+          peOff++
+          continue
+        }
+        if (b.width < 8 || b.height < 8) {
+          peTiny++
+          continue
+        }
+        const on =
+          b.left < vw - 1 &&
+          b.top < vh - 1 &&
+          b.left + b.width > 1 &&
+          b.top + b.height > 1
+        if (on) peOn++
+        else peOff++
+      }
+      if (peOn + peOff + peTiny > 2) {
+        clientDebugLog.log(
+          'scene-ui',
+          `pe-layout peOn=${peOn} peOff=${peOff} peTiny=${peTiny} paintMode=${paintMode}`
+        )
+      }
+    }
+
     this.lastPaintLayoutKey = layoutKey
     this.lastPaintVisualKey = visualKey
     this.lastEntityVisualKeys = entityVisualKeys

@@ -873,20 +873,36 @@ export class SceneUiBridge {
     }
 
     // SCENE_UI_COD PaintMode: Patch local dirties (entity∪descendants). Cousins untouched.
-    // Forest only: first paint / remount, no seeds, dirty dominates mount, or layout missing boxes.
-    // Scale swing on one panel expands into dirtyEntities via layout seeds + descendants —
-    // patch walks that subtree (unhide kids). Do NOT force full canvas Forest for cousins.
+    // Forest when: first paint / remount, no seeds, dirty dominates mount, missing boxes,
+    // or a dirty seed's box grew from micro (~scale open) so kids must leave display:none.
+    let scaleExpand = false
+    if (this.lastLayoutBoxMap?.size && dirtySeeds.length > 0) {
+      for (const e of dirtySeeds) {
+        const prev = this.lastLayoutBoxMap.get(e)
+        const next = layoutBoxMap.get(e)
+        if (!prev || !next) continue
+        const prevMicro = prev.width <= 48 && prev.height <= 48
+        const nextFull = next.width >= 120 && next.height >= 120
+        if (prevMicro && nextFull) {
+          scaleExpand = true
+          break
+        }
+      }
+    }
     const localDirty =
       dirtyEntities.length > 0 && dirtyEntities.length < mounted.size * 0.45
     const preferPatch =
       this.paintCount > 1 &&
       localDirty &&
+      !scaleExpand &&
       dirtyEntities.length <= patchBudget &&
       collapsedVisible <= 8 &&
       missingVisible.length === 0 &&
       (layoutMode === 'Reuse' ||
         layoutMode === 'RefineAbsolute' ||
-        (layoutMode === 'Full' && layoutDirtyEntities.length > 0 && layoutDirtyEntities.length < mounted.size * 0.45))
+        (layoutMode === 'Full' &&
+          layoutDirtyEntities.length > 0 &&
+          layoutDirtyEntities.length < mounted.size * 0.45))
     const paintMode: 'Patch' | 'Forest' = preferPatch ? 'Patch' : 'Forest'
 
     if (

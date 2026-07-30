@@ -754,15 +754,19 @@ const POINTER_UI_MESH_FLUSH_MAX_PASSES = 4
 const POINTER_UI_MESH_STABLE_NEEDED = 1
 const POINTER_UI_SCENEU_STABLE_NEEDED = 2
 /**
- * Large modal open (fishing shop ~700): UiTransform open tweens need wall-clock dt.
- * eng.update(0) freezes park positions (content left≥1920) forever in phase-4 snapshot.
- * Fingerprint includes position — stay in flush until open animation stops changing.
+ * Fishing shop (~700): dual-root park. How-to-play (~120): scale from ~6px.
+ * NEVER treat mount≥100 alone as shop — that stalled how-to-play for seconds and
+ * snapshotted mid-scale (pagination/X missing on reopen).
  */
-/** Wall-clock + sim dt both advance open tweens (many scenes use Date.now() not only eng dt). */
-const POINTER_UI_LARGE_MODAL_FLUSH_MAX_PASSES = 32
-const POINTER_UI_LARGE_MODAL_STABLE_NEEDED = 3
-/** ~50ms sim step — enough for open tweens without multi-second pointer stall. */
-const POINTER_UI_LARGE_MODAL_DT = 1 / 20
+const POINTER_UI_SHOP_FLUSH_MAX_PASSES = 20
+const POINTER_UI_SHOP_STABLE_NEEDED = 3
+const POINTER_UI_SCALE_FLUSH_MAX_PASSES = 12
+const POINTER_UI_SCALE_STABLE_NEEDED = 2
+/** ~50ms sim step — open tweens without multi-second pointer stall. */
+const POINTER_UI_MODAL_DT = 1 / 20
+const POINTER_UI_SHOP_MOUNT_MIN = 400
+const POINTER_UI_SCALE_MOUNT_MIN = 60
+
 
 /**
  * Dual large absolute canvas roots: one on-screen (shell) + one parked right (content).
@@ -810,6 +814,44 @@ function largeModalContentStillParked(eng: IEngine): boolean {
   return onScreen > 0 && offRight > 0
 }
 
+type ModalOpenKind = 'shop' | 'scale' | 'small'
+
+function classifyModalOpen(eng: IEngine, mount: number): ModalOpenKind {
+  if (largeModalContentStillParked(eng) || mount >= POINTER_UI_SHOP_MOUNT_MIN) return 'shop'
+  if (mount >= POINTER_UI_SCALE_MOUNT_MIN) return 'scale'
+  return 'small'
+}
+
+/**
+ * How-to-play scales a panel ~6×6 → ~700×600. Snapshot at micro size hides pagination/X.
+ * Refuse early flush exit while only micro absolute panels exist (no full-size panel yet).
+ */
+function modalOpenScaleIncomplete(eng: IEngine): boolean {
+  const UiTransform = resolveWorkerUiTransform(eng)
+  let micro = 0
+  let full = 0
+  for (const [_entity] of eng.getEntitiesWith(UiTransform)) {
+    const t = UiTransform.getOrNull(_entity) as {
+      positionType?: number
+      width?: number
+      height?: number
+      widthUnit?: number
+      heightUnit?: number
+    } | null
+    if (!t) continue
+    if ((t.positionType ?? 0) !== 1 /* ABSOLUTE */) continue
+    const wUnit = t.widthUnit ?? 0
+    const hUnit = t.heightUnit ?? 0
+    if (wUnit !== 1 && wUnit !== 0) continue
+    if (hUnit !== 1 && hUnit !== 0) continue
+    const w = t.width ?? 0
+    const h = t.height ?? 0
+    if (w >= 4 && h >= 4 && w <= 48 && h <= 48) micro++
+    else if (w >= 200 && h >= 200 && w < 1800) full++
+  }
+  return micro > 0 && full === 0
+}
+
 async function flushReactEcsForUiSnapshot(
   eng: IEngine,
   log: (message: string) => void,
@@ -821,11 +863,13 @@ async function flushReactEcsForUiSnapshot(
     stableNeeded?: number
     /**
      * Engine dt per flush pass. 0 = structural reconcile only (default).
-     * Positive = allow UiTransform open tweens to advance (large modal COD root).
+     * Positive = allow UiTransform open tweens to advance (modal COD root).
      */
     dt?: number
-    /** Large modal: refuse early exit while a content twin is still parked off-canvas right. */
+    /** Shop dual-root: refuse exit while content twin still parked off-right. */
     requireModalUnparked?: boolean
+    /** How-to-play scale: refuse exit while only micro (~6px) panels exist. */
+    requireScaleComplete?: boolean
   }
 ): Promise<void> {
   if (!interactive) return
@@ -833,24 +877,26 @@ async function flushReactEcsForUiSnapshot(
   const stableNeeded = options?.stableNeeded ?? POINTER_UI_SCENEU_STABLE_NEEDED
   const dt = options?.dt ?? 0
   const requireUnparked = options?.requireModalUnparked === true
+  const requireScale = options?.requireScaleComplete === true
   let prevFp = options?.seedFp ?? ''
   let stablePasses = 0
   for (let pass = 0; pass < maxPasses; pass++) {
     await runSerializedEngineUpdate(async () => {
       await eng.update(dt)
     })
-    // dt=0: do not treat as wall-clock frame. Positive dt advances modal open systems.
     const mount = countWorkerUiMount(eng)
     const fp = computeWorkerUiFingerprint(eng)
     const parked = requireUnparked && largeModalContentStillParked(eng)
+    const scaling = requireScale && modalOpenScaleIncomplete(eng)
+    const wait = parked || scaling
     log(
       `[sceneWorker] pointer ui react-ecs flush pass=${pass + 1} mount=${mount} ` +
-        `fp=${fp.length}B dt=${dt.toFixed(3)}${parked ? ' parkedModal' : ''}`
+        `fp=${fp.length}B dt=${dt.toFixed(3)}` +
+        `${parked ? ' parkedModal' : ''}${scaling ? ' scaleOpen' : ''}`
     )
     if (prevFp && fp === prevFp) {
       stablePasses++
-      // Fingerprint stable but content still parked → keep simulating open tween.
-      if (stablePasses >= stableNeeded && !parked) return
+      if (stablePasses >= stableNeeded && !wait) return
     } else {
       stablePasses = 0
     }
@@ -859,6 +905,10 @@ async function flushReactEcsForUiSnapshot(
   if (requireUnparked && largeModalContentStillParked(eng)) {
     log(
       `[sceneWorker] pointer ui flush — maxPasses with modal still parked; snapshoting current pose`
+    )
+  } else if (requireScale && modalOpenScaleIncomplete(eng)) {
+    log(
+      `[sceneWorker] pointer ui flush — maxPasses with scale still micro; snapshoting current pose`
     )
   }
 }
@@ -998,18 +1048,29 @@ export async function runSceneEnginePointerTick(
           cfg.log(
             `[sceneWorker] pointer sceneUi selection settle — mount=${mountAfterUp} seed=${selectSeed.length}B`
           )
-        } else if (mountGrew && mountAfterUp >= 100) {
+        } else if (mountGrew && mountAfterUp >= POINTER_UI_SCALE_MOUNT_MIN) {
           const openSeed = computeWorkerUiFingerprint(eng)
+          const kind = classifyModalOpen(eng, mountAfterUp)
           cfg.log(
-            `[sceneWorker] pointer sceneUi largeModal open flush — mount=${mountAfterUp} seed=${openSeed.length}B`
+            `[sceneWorker] pointer sceneUi open flush — mount=${mountAfterUp} kind=${kind} seed=${openSeed.length}B`
           )
-          await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
-            maxPasses: POINTER_UI_LARGE_MODAL_FLUSH_MAX_PASSES,
-            seedFp: openSeed,
-            stableNeeded: POINTER_UI_LARGE_MODAL_STABLE_NEEDED,
-            dt: POINTER_UI_LARGE_MODAL_DT,
-            requireModalUnparked: true
-          })
+          if (kind === 'shop') {
+            await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
+              maxPasses: POINTER_UI_SHOP_FLUSH_MAX_PASSES,
+              seedFp: openSeed,
+              stableNeeded: POINTER_UI_SHOP_STABLE_NEEDED,
+              dt: POINTER_UI_MODAL_DT,
+              requireModalUnparked: true
+            })
+          } else {
+            await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
+              maxPasses: POINTER_UI_SCALE_FLUSH_MAX_PASSES,
+              seedFp: openSeed,
+              stableNeeded: POINTER_UI_SCALE_STABLE_NEEDED,
+              dt: POINTER_UI_MODAL_DT,
+              requireScaleComplete: true
+            })
+          }
         }
         runPointerUiPhase4Egress(eng)
         // Hold cooperative react-ecs ONLY when a menu actually opened (mount grew).
@@ -1019,10 +1080,13 @@ export async function runSceneEnginePointerTick(
         // last paint and leaves a half-visible full-screen PE catcher (pointer stuck).
         // Short hold (menu open only) — long holds froze tutorial scale / page-pulse tweens.
         if (mountGrew) {
-          holdCooperativeReactEcs(12)
+          // Neurolink thrash needs a short hold; how-to-play scale must keep reconciling
+          // after phase-4 or pagination/X never re-dirty after micro snapshot.
+          const holdTicks = mountAfterUp >= POINTER_UI_SHOP_MOUNT_MIN ? 12 : 4
+          holdCooperativeReactEcs(holdTicks)
           cfg.log(
-            `[sceneWorker] pointer phase-4 hold — mount=${countWorkerUiMount(eng)} ` +
-              `texts=[${sampleWorkerUiTexts(eng)}] (menu open; short hold then tween UI)`
+            `[sceneWorker] pointer phase-4 hold — mount=${countWorkerUiMount(eng)} hold=${holdTicks} ` +
+              `texts=[${sampleWorkerUiTexts(eng)}] (menu open)`
           )
         } else {
           cfg.log(
@@ -1055,22 +1119,36 @@ export async function runSceneEnginePointerTick(
         // tweens leave park (left≥1920) before phase-4 snapshot — not client pose invent.
         const meshSeedFp = computeWorkerUiFingerprint(eng)
         const meshMount = countWorkerUiMount(eng)
-        const largeModal = meshMount >= 100
+        const kind = classifyModalOpen(eng, meshMount)
         cfg.log(
           `[sceneWorker] pointer ui flush — post-UP react-ecs fingerprint seed=${meshSeedFp.length}B ` +
-            `mount=${meshMount}${largeModal ? ' largeModal' : ''}`
+            `mount=${meshMount} kind=${kind}`
         )
-        await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
-          maxPasses: largeModal
-            ? POINTER_UI_LARGE_MODAL_FLUSH_MAX_PASSES
-            : POINTER_UI_MESH_FLUSH_MAX_PASSES,
-          seedFp: meshSeedFp,
-          stableNeeded: largeModal
-            ? POINTER_UI_LARGE_MODAL_STABLE_NEEDED
-            : POINTER_UI_MESH_STABLE_NEEDED,
-          dt: largeModal ? POINTER_UI_LARGE_MODAL_DT : 0,
-          requireModalUnparked: largeModal
-        })
+        if (kind === 'shop') {
+          await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
+            maxPasses: POINTER_UI_SHOP_FLUSH_MAX_PASSES,
+            seedFp: meshSeedFp,
+            stableNeeded: POINTER_UI_SHOP_STABLE_NEEDED,
+            dt: POINTER_UI_MODAL_DT,
+            requireModalUnparked: true
+          })
+        } else if (kind === 'scale') {
+          // How-to-play: settle scale 6→full before snapshot (not 32-pass shop path).
+          await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
+            maxPasses: POINTER_UI_SCALE_FLUSH_MAX_PASSES,
+            seedFp: meshSeedFp,
+            stableNeeded: POINTER_UI_SCALE_STABLE_NEEDED,
+            dt: POINTER_UI_MODAL_DT,
+            requireScaleComplete: true
+          })
+        } else {
+          await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
+            maxPasses: POINTER_UI_MESH_FLUSH_MAX_PASSES,
+            seedFp: meshSeedFp,
+            stableNeeded: POINTER_UI_MESH_STABLE_NEEDED,
+            dt: 0
+          })
+        }
 
         if (isRefuseFreezeWrites()) {
           const n = rewriteStopMoveCameraUiLabels(eng)
@@ -1080,14 +1158,13 @@ export async function runSceneEnginePointerTick(
         }
 
         runPointerUiPhase4Egress(eng)
-        // Large modal mesh open (how-to-play scale, shop dual-root): hold cooperative
-        // react-ecs briefly so residual ticks cannot snap scale back to 0 / remount-close
-        // (logs: first paint full → repaint collapses to 6×6 → pagination/close vanish).
-        if (largeModal) {
-          holdCooperativeReactEcs(16)
+        // Shop only: brief hold. How-to-play MUST keep cooperative react-ecs so scale/pages
+        // keep dirty-updating — hold froze mid-scale and left pagination/X invisible.
+        if (kind === 'shop') {
+          holdCooperativeReactEcs(8)
           cfg.log(
-            `[sceneWorker] pointer mesh largeModal hold — mount=${countWorkerUiMount(eng)} ` +
-              `(stabilize open scale/pose before cooperative reconcile)`
+            `[sceneWorker] pointer mesh shop hold — mount=${countWorkerUiMount(eng)} ` +
+              `(dual-root settle; scale panels use no hold)`
           )
         }
         await runPointerNonUiPhase(eng)

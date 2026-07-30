@@ -343,11 +343,16 @@ export class SceneUiBridge {
     const uiKey = [...next].sort((a, b) => (a as number) - (b as number)).join(',')
     const changed = !this.workerUiEntitiesKnown || uiKey !== this.lastWorkerUiKey
     const prevSize = this.workerUiEntitiesKnown ? (this.workerUiEntities?.size ?? 0) : 0
-    // Large remount (shop/vending second open): treat as full dirty — PE + layout + pool.
-    const largeRemount =
-      changed && next.size >= 100 && (prevSize === 0 || next.size >= prevSize + 80)
+    // Remount growth (how-to-play 52→121, shop reopen): full dirty — PE + layout + pool.
+    // Prior threshold (next >= prev+80) missed 52→121 and left stale visual/patch keys so
+    // pagination/close painted as PE-only on second open.
+    const remountGrowth =
+      changed && next.size >= 40 && (prevSize === 0 || next.size >= prevSize + 24)
+    const remountShrink =
+      changed && prevSize >= 40 && next.size + 24 <= prevSize
     if (changed) this.markContentDirty()
 
+    let removedCount = 0
     if (this.workerUiEntitiesKnown && this.workerUiEntities) {
       const removed = new Set<Entity>()
       const survivors = new Set<Entity>()
@@ -355,6 +360,7 @@ export class SceneUiBridge {
         if (!next.has(entity)) removed.add(entity)
         else survivors.add(entity)
       }
+      removedCount = removed.size
       if (removed.size > 0) {
         if (typeof location !== 'undefined' && location.search.includes('sceneuidebug')) {
           console.log(
@@ -400,8 +406,8 @@ export class SceneUiBridge {
       this.lastStableVisibleCount = 0
       // Any mount set change recycles entity ids — PE tombstones must not stick (SCENE_UI_COD).
       this.livePointerEventsSeen.clear()
-      // Large remount: force full forest path (preferPatch needs paintCount > 1).
-      if (largeRemount || next.size >= 100) {
+      // Force full forest path (preferPatch needs paintCount > 1). Any meaningful remount.
+      if (remountGrowth || remountShrink || next.size >= 80 || removedCount >= 24) {
         this.paintCount = 0
         this.firstPaintLogged = false
       }
@@ -855,10 +861,16 @@ export class SceneUiBridge {
       this.stableVisibleStreak >= 2 && layoutBoxMap.size >= 32 && collapsedVisible <= 4
 
     // SCENE_UI_COD PaintMode: Patch | Forest
+    // Scale-open modals (how-to-play): visible set swings 18↔37; never patch across that —
+    // patch left display:none children from the collapsed frame (pagination/close PE-only).
+    const scaleSwing =
+      (visibleSetGrew || visibleSetShrank) &&
+      (prevVisibleCount <= 24 || layoutBoxMap.size <= 24 || Math.abs(layoutBoxMap.size - prevVisibleCount) >= 8)
     const preferPatch =
       this.paintCount > 1 &&
       !visibleSetGrew &&
       !visibleSetShrank &&
+      !scaleSwing &&
       collapsedVisible <= 4 &&
       repairedCollapsed === 0 &&
       dirtyEntities.length > 0 &&

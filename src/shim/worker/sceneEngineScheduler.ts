@@ -1080,6 +1080,16 @@ export async function runSceneEnginePointerTick(
         }
 
         runPointerUiPhase4Egress(eng)
+        // Large modal mesh open (how-to-play scale, shop dual-root): hold cooperative
+        // react-ecs briefly so residual ticks cannot snap scale back to 0 / remount-close
+        // (logs: first paint full → repaint collapses to 6×6 → pagination/close vanish).
+        if (largeModal) {
+          holdCooperativeReactEcs(16)
+          cfg.log(
+            `[sceneWorker] pointer mesh largeModal hold — mount=${countWorkerUiMount(eng)} ` +
+              `(stabilize open scale/pose before cooperative reconcile)`
+          )
+        }
         await runPointerNonUiPhase(eng)
       }
     } else {

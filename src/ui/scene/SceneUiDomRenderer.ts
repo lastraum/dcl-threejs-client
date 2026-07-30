@@ -564,8 +564,10 @@ export class SceneUiDomRenderer {
 
     // Recovered a real box — clear progressive 0×0 streak so reopen doesn't false-sticky.
     yogaZeroBoxStreak.delete(entity as number)
+    const wasUnusable = shell.dataset.uiUnusable === '1'
     delete shell.dataset.uiUnusable
-    // Undo applyHiddenDomState — display:none stuck after prior hide left dead shells.
+    // Undo applyHiddenDomState — display:none stuck after prior hide left dead shells
+    // (how-to-play scale 6×6 → full: pagination/close stayed hidden without this).
     shell.style.display = 'block'
     shell.style.visibility = 'visible'
     applyUiTransformContentStyles(el, transform, scale)
@@ -576,6 +578,15 @@ export class SceneUiDomRenderer {
     shell.removeAttribute('aria-hidden')
     shell.style.pointerEvents = ''
     shell.removeAttribute('inert')
+    // Scale reopen: force texture re-apply (bg sig early-out left blank pagination/close icons).
+    if (wasUnusable) {
+      delete el.dataset.dclUiBgSig
+      el.querySelectorAll('[data-dcl-ui-bg-sig], .scene-ui-node__bg, .scene-ui-node__bg-img').forEach(
+        (node) => {
+          if (node instanceof HTMLElement) delete node.dataset.dclUiBgSig
+        }
+      )
+    }
 
     // Text leaves: don't clip labels that slightly exceed yoga's tight content box
     // (Admin Tools titles/buttons were shredding under overflow:hidden + padding).

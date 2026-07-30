@@ -314,48 +314,63 @@ export function alignParkedModalTwinBoxes(
   )
   const offRight = large.filter((r) => r.box.left >= vw - 1)
 
-  let content: Info | null = null
-  let shell: Info | null = null
+  let n = 0
 
   if (onScreen.length && offRight.length) {
-    content = [...offRight].sort((a, b) => b.tex - a.tex)[0]!
-    shell = [...onScreen].sort((a, b) => a.tex - b.tex || a.box.left - b.box.left)[0]!
-  } else if (onScreen.length >= 2) {
+    // Parked content twin(s) + on-screen shell. Move *all* texture-bearing off-right
+    // panels with one shared dx/dy (inventory + vending may be separate large abs roots —
+    // per-panel dx stacked them on the shell and left "half shop" / missing icons).
+    const shell = [...onScreen].sort((a, b) => a.tex - b.tex || a.box.left - b.box.left)[0]!
+    const richOff = offRight.filter((r) => r.tex >= 8)
+    if (!richOff.length) return 0
+    const maxOffTex = Math.max(...richOff.map((r) => r.tex))
+    if (maxOffTex < shell.tex + 5 && shell.tex > 3) return 0
+
+    const primary = [...richOff].sort((a, b) => b.tex - a.tex)[0]!
+    const dx = shell.box.left - primary.box.left
+    const dy = shell.box.top - primary.box.top
+    if (Math.abs(dx) >= 8 || Math.abs(dy) >= 8) {
+      for (const panel of richOff) {
+        for (const b of boxes) {
+          if (!panel.ids.has(b.entity)) continue
+          b.left += dx
+          b.top += dy
+          n++
+        }
+      }
+    }
+
+    // Collapse lean shell so empty chrome / PE ghost cannot cover content.
+    if (shell.tex < maxOffTex * 0.5 || shell.tex <= 3) {
+      for (const b of boxes) {
+        if (!shell.ids.has(b.entity)) continue
+        b.width = 0
+        b.height = 0
+        n++
+      }
+    }
+    return n
+  }
+
+  if (onScreen.length >= 2) {
     // Both unparked / overlapping — keep texture-rich, collapse lean chrome.
+    // Require heavy overlap so side-by-side inventory|vending columns are never collapsed.
     const sorted = [...onScreen].sort((a, b) => b.tex - a.tex)
-    content = sorted[0]!
-    shell = sorted[1]!
+    const content = sorted[0]!
+    const shell = sorted[1]!
     const overlap =
       Math.abs(content.box.left - shell.box.left) < 120 &&
       Math.abs(content.box.top - shell.box.top) < 120
     if (!overlap) return 0
-  } else {
-    return 0
-  }
-
-  // Content must clearly win on *textures* (icons), not purple slot color fills.
-  if (content.tex < 8) return 0
-  if (content.tex < shell.tex + 5) return 0
-
-  let n = 0
-  const dx = shell.box.left - content.box.left
-  const dy = shell.box.top - content.box.top
-  if (Math.abs(dx) >= 8 || Math.abs(dy) >= 8) {
-    for (const b of boxes) {
-      if (!content.ids.has(b.entity)) continue
-      b.left += dx
-      b.top += dy
-      n++
-    }
-  }
-
-  // Collapse empty/lean shell so dual chrome + PE ghost cannot cover content.
-  if (shell.tex < content.tex * 0.5 || shell.tex <= 3) {
-    for (const b of boxes) {
-      if (!shell.ids.has(b.entity)) continue
-      b.width = 0
-      b.height = 0
-      n++
+    if (content.tex < 8) return 0
+    if (content.tex < shell.tex + 5) return 0
+    if (shell.tex < content.tex * 0.5 || shell.tex <= 3) {
+      for (const b of boxes) {
+        if (!shell.ids.has(b.entity)) continue
+        b.width = 0
+        b.height = 0
+        n++
+      }
     }
   }
   return n

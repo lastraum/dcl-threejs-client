@@ -44,6 +44,8 @@ export type PetsPanelOptions = {
   onPlayClipPreview?: (contentHash: string, clipName: string) => void | Promise<boolean>
   onStopClipPreview?: () => void
   onClose?: () => void
+  /** Open Pet Barn marketplace shop. */
+  onOpenPetBarn?: () => void
   anchor?: () => HTMLElement | undefined
 }
 
@@ -80,10 +82,15 @@ export class PetsPanel {
           <button type="button" class="pets-panel__close" data-close aria-label="Close">×</button>
         </header>
         <div class="pets-panel__upload" data-upload-block>
-          <label class="pets-panel__upload-btn">
-            Upload GLB
-            <input type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" hidden data-file />
-          </label>
+          <div class="pets-panel__actions-row">
+            <label class="pets-panel__upload-btn">
+              Upload GLB
+              <input type="file" accept=".glb,.gltf,model/gltf-binary,model/gltf+json" hidden data-file />
+            </label>
+            <button type="button" class="pets-panel__upload-btn pets-panel__barn-btn" data-open-barn title="Pet Barn marketplace">
+              Barn
+            </button>
+          </div>
         </div>
         <p class="pets-panel__hint" data-list-hint>One active pet. Set Walking/Flying in Settings. Models sync to nearby peers.</p>
         <p class="pets-panel__status" data-status hidden></p>
@@ -94,6 +101,9 @@ export class PetsPanel {
     this.statusEl = this.element.querySelector('[data-status]')!
 
     this.element.querySelector('[data-close]')!.addEventListener('click', () => this.hide())
+    this.element.querySelector('[data-open-barn]')!.addEventListener('click', () => {
+      this.options.onOpenPetBarn?.()
+    })
     this.element.querySelector('[data-header-back]')!.addEventListener('click', () => {
       void this.closeEdit()
     })
@@ -192,7 +202,7 @@ export class PetsPanel {
     const back = this.element.querySelector<HTMLElement>('[data-header-back]')
     if (upload) upload.hidden = !show
     if (hint) hint.hidden = !show
-    // List: title only + ×. Details: ← Back | Pet settings | ×
+    // List: title + × + action row. Details: ← Back | Pet settings | ×
     if (back) back.hidden = show
     const title = this.element.querySelector<HTMLElement>('.pets-panel__title')
     if (title) title.textContent = show ? 'Pets' : 'Pet settings'

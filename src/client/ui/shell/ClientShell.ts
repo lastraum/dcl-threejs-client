@@ -14,6 +14,7 @@ import { NotificationsPanel } from './NotificationsPanel'
 import { PortableExperiencePanel } from './PortableExperiencePanel'
 import { FriendsPanel } from './FriendsPanel'
 import { PetsPanel } from './PetsPanel'
+import { PetBarnPanel } from './PetBarnPanel'
 import { LootBagPanel } from './LootBagPanel'
 import type { PortableExperienceManager } from '../../../dcl/multiScene/PortableExperienceManager'
 import type { VoiceChatService } from '../../../network/voice/VoiceChatService'
@@ -98,6 +99,7 @@ export class ClientShell {
   private readonly marketplaceCreditsPanel: MarketplaceCreditsPanel
   private readonly friendsPanel: FriendsPanel
   private readonly petsPanel: PetsPanel
+  private readonly petBarnPanel: PetBarnPanel
   private readonly lootBagPanel: LootBagPanel
   private readonly emoteWheel: EmoteWheelPanel
   private readonly buttons = new Map<string, SidebarButton>()
@@ -274,10 +276,46 @@ export class ClientShell {
       }
     })
 
+    this.petBarnPanel = new PetBarnPanel({
+      getSession: () => this.session,
+      onClose: () => {
+        if (!this.petsPanel.isVisible()) this.buttons.get('pets')?.setActive(false)
+      },
+      onOpenMyPets: () => {
+        if (this.petBarnPanel.isPublishLocked()) return
+        void this.petsPanel.show()
+        this.petBarnPanel.hide()
+        this.buttons.get('pets')?.setActive(true)
+      },
+      onAddedToLibrary: async () => {
+        await this.petsPanel.refresh()
+        await this.onActivePetChange?.()
+      },
+      onPublishLockChange: (locked) => {
+        const petsBtn = this.buttons.get('pets')
+        if (!petsBtn) return
+        petsBtn.element.classList.toggle('is-publish-locked', locked)
+        petsBtn.element.setAttribute('aria-busy', locked ? 'true' : 'false')
+        if (locked) {
+          petsBtn.element.title = 'Publishing pet — please wait'
+        } else {
+          petsBtn.element.removeAttribute('title')
+        }
+      }
+    })
+
     this.petsPanel = new PetsPanel({
       getSession: () => this.session,
       anchor: () => this.buttons.get('pets')?.element,
-      onClose: () => this.buttons.get('pets')?.setActive(false),
+      onClose: () => {
+        if (!this.petBarnPanel.isVisible()) this.buttons.get('pets')?.setActive(false)
+      },
+      onOpenPetBarn: () => {
+        // Show barn first so petsPanel onClose does not clear the pets sidebar active state.
+        void this.petBarnPanel.show()
+        this.petsPanel.hide()
+        this.buttons.get('pets')?.setActive(true)
+      },
       onActivePetChange: () => this.onActivePetChange?.(),
       onPlayClipPreview: async (hash, clip) => {
         const r = await this.onPlayPetClipPreview?.(hash, clip)
@@ -657,6 +695,7 @@ export class ClientShell {
     this.marketplaceCreditsPanel.dispose()
     this.friendsPanel.dispose()
     this.petsPanel.dispose()
+    this.petBarnPanel.dispose()
     this.lootBagPanel.dispose()
     this.pePanel.dispose()
     this.emoteWheel.dispose()
@@ -723,6 +762,7 @@ export class ClientShell {
         this.friendsPanel.hide()
         this.buttons.get('friend-requests')?.setActive(false)
         this.petsPanel.hide()
+        this.petBarnPanel.hide()
         this.buttons.get('pets')?.setActive(false)
         // Loot Bag dock stays open alongside chat (sits to the right of chat)
         if (!this.chatPanel) return
@@ -855,6 +895,7 @@ export class ClientShell {
         this.chatPanel?.hide()
         this.buttons.get('chat')?.setActive(false)
         this.petsPanel.hide()
+        this.petBarnPanel.hide()
         this.buttons.get('pets')?.setActive(false)
         this.lootBagPanel.hide()
         this.buttons.get('lootbag')?.setActive(false)
@@ -866,6 +907,8 @@ export class ClientShell {
     if (id === 'pets') {
       return (ev) => {
         ev.stopPropagation()
+        // Block HUD toggle during Pet Barn publish round-trip.
+        if (this.petBarnPanel.isPublishLocked()) return
         this.closeMobileDrawerForOverlay()
         this.notificationsPanel.hide()
         this.buttons.get('notifications')?.setActive(false)
@@ -877,8 +920,15 @@ export class ClientShell {
         this.buttons.get('friend-requests')?.setActive(false)
         this.lootBagPanel.hide()
         this.buttons.get('lootbag')?.setActive(false)
-        void this.petsPanel.toggle()
-        this.buttons.get('pets')?.setActive(this.petsPanel.isVisible())
+        // Toggle: if barn open, close both; else toggle my pets.
+        if (this.petBarnPanel.isVisible()) {
+          this.petBarnPanel.hide()
+          this.petsPanel.hide()
+          this.buttons.get('pets')?.setActive(false)
+        } else {
+          void this.petsPanel.toggle()
+          this.buttons.get('pets')?.setActive(this.petsPanel.isVisible())
+        }
       }
     }
 
@@ -894,6 +944,7 @@ export class ClientShell {
         this.friendsPanel.hide()
         this.buttons.get('friend-requests')?.setActive(false)
         this.petsPanel.hide()
+        this.petBarnPanel.hide()
         this.buttons.get('pets')?.setActive(false)
         void this.lootBagPanel.toggle()
         this.buttons.get('lootbag')?.setActive(this.lootBagPanel.isVisible())

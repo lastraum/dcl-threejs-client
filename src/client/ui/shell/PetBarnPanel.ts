@@ -233,12 +233,6 @@ export class PetBarnPanel {
     this.setStatus('')
   }
 
-  private setOverlayMessage(text: string, title = 'Publishing…'): void {
-    if (this.overlayMode !== 'loading') return
-    this.overlayTitleEl.textContent = title
-    this.overlayTextEl.textContent = text
-  }
-
   private dismissOverlay(): void {
     this.clearOverlay()
   }

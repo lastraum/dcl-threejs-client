@@ -358,6 +358,12 @@ export class PetBarnPanel {
 
   private renderPublish(): void {
     const creatorDefault = escapeHtml(this.displayName())
+    const glbLabel = this.glbFile
+      ? `${this.glbFile.name} · ${formatPetByteSize(this.glbFile.size)}`
+      : 'Drop .glb here or click to browse'
+    const thumbLabel = this.thumbFile
+      ? `${this.thumbFile.name} · ${formatPetByteSize(this.thumbFile.size)}`
+      : 'Drop image here or click to browse'
     this.bodyEl.innerHTML = `
       <div class="petbarn-publish-head">
         <button type="button" class="petbarn-back-catalog" data-back-catalog>← Catalog</button>
@@ -378,18 +384,171 @@ export class PetBarnPanel {
             <button type="button" class="petbarn-filter${this.publishType === 'flying' ? ' is-active' : ''}" data-pub-type="flying">Flying</button>
           </div>
         </div>
-        <label class="petbarn-field">
-          <span>GLB (max ${formatPetByteSize(PETBARN_MAX_GLB_BYTES)})</span>
-          <input type="file" name="glb" accept=".glb,model/gltf-binary" required data-glb />
-        </label>
-        <label class="petbarn-field">
-          <span>Thumbnail (compressed to ≤ ${formatPetByteSize(PETBARN_MAX_THUMB_BYTES)})</span>
-          <input type="file" name="thumb" accept="image/*" required data-thumb />
-        </label>
+        <div class="petbarn-field">
+          <span>3D model · max ${formatPetByteSize(PETBARN_MAX_GLB_BYTES)}</span>
+          <div
+            class="petbarn-dropzone${this.glbFile ? ' has-file' : ''}"
+            data-dropzone="glb"
+            tabindex="0"
+            role="button"
+            aria-label="Upload GLB model"
+          >
+            <input type="file" name="glb" accept=".glb,model/gltf-binary" hidden data-glb />
+            <div class="petbarn-dropzone__icon" aria-hidden="true">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                <path d="M12 3v10m0 0 3.5-3.5M12 13 8.5 9.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+                <path d="M5 16.5V18a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-1.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+              </svg>
+            </div>
+            <div class="petbarn-dropzone__title">GLB model</div>
+            <div class="petbarn-dropzone__hint" data-glb-label>${escapeHtml(glbLabel)}</div>
+          </div>
+        </div>
+        <div class="petbarn-field">
+          <span>Thumbnail · compressed to ≤ ${formatPetByteSize(PETBARN_MAX_THUMB_BYTES)}</span>
+          <div
+            class="petbarn-dropzone petbarn-dropzone--thumb${this.thumbFile ? ' has-file' : ''}"
+            data-dropzone="thumb"
+            tabindex="0"
+            role="button"
+            aria-label="Upload thumbnail image"
+          >
+            <input type="file" name="thumb" accept="image/*" hidden data-thumb />
+            <div class="petbarn-dropzone__preview" data-thumb-preview hidden></div>
+            <div class="petbarn-dropzone__icon" data-thumb-icon aria-hidden="true">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                <rect x="3.5" y="5" width="17" height="14" rx="2.5" stroke="currentColor" stroke-width="1.7"/>
+                <circle cx="9" cy="10.5" r="1.6" fill="currentColor"/>
+                <path d="M5.5 17.5 10 13l3 3 2.5-2.5 3 3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </div>
+            <div class="petbarn-dropzone__title">Thumbnail</div>
+            <div class="petbarn-dropzone__hint" data-thumb-label>${escapeHtml(thumbLabel)}</div>
+          </div>
+        </div>
         <p class="petbarn-footnote">Open publish — deploys to petbarn.dcl.eth after CI. No approval step.</p>
         <button type="submit" class="petbarn-publish-btn" data-publish-submit>Publish to Pet Barn</button>
       </form>
     `
+    this.bindDropzones()
+    void this.refreshThumbPreview()
+  }
+
+  private bindDropzones(): void {
+    for (const zone of this.bodyEl.querySelectorAll<HTMLElement>('[data-dropzone]')) {
+      const kind = zone.dataset.dropzone as 'glb' | 'thumb'
+      const input = zone.querySelector<HTMLInputElement>(
+        kind === 'glb' ? '[data-glb]' : '[data-thumb]'
+      )
+      if (!input) continue
+
+      const openPicker = () => {
+        if (this.publishLocked) return
+        input.click()
+      }
+
+      zone.addEventListener('click', (ev) => {
+        if ((ev.target as HTMLElement).closest('input')) return
+        openPicker()
+      })
+      zone.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault()
+          openPicker()
+        }
+      })
+
+      zone.addEventListener('dragenter', (ev) => {
+        ev.preventDefault()
+        zone.classList.add('is-dragover')
+      })
+      zone.addEventListener('dragover', (ev) => {
+        ev.preventDefault()
+        zone.classList.add('is-dragover')
+      })
+      zone.addEventListener('dragleave', (ev) => {
+        if (!zone.contains(ev.relatedTarget as Node)) {
+          zone.classList.remove('is-dragover')
+        }
+      })
+      zone.addEventListener('drop', (ev) => {
+        ev.preventDefault()
+        zone.classList.remove('is-dragover')
+        if (this.publishLocked) return
+        const file = ev.dataTransfer?.files?.[0]
+        if (!file) return
+        void this.applyPublishFile(kind, file)
+      })
+    }
+  }
+
+  private async applyPublishFile(kind: 'glb' | 'thumb', file: File): Promise<void> {
+    if (kind === 'glb') {
+      const name = file.name.toLowerCase()
+      if (!name.endsWith('.glb') && !name.endsWith('.gltf')) {
+        this.setStatus('Model must be a .glb file')
+        return
+      }
+      if (file.size > PETBARN_MAX_GLB_BYTES) {
+        this.setStatus(`GLB must be ≤ ${formatPetByteSize(PETBARN_MAX_GLB_BYTES)}`)
+        return
+      }
+      this.glbFile = file
+      this.setStatus('')
+      this.updateGlbDropzoneUi()
+      return
+    }
+
+    if (!file.type.startsWith('image/') && !/\.(png|jpe?g|webp|gif)$/i.test(file.name)) {
+      this.setStatus('Thumbnail must be an image')
+      return
+    }
+    this.thumbFile = file
+    this.setStatus('')
+    this.updateThumbDropzoneUi()
+    await this.refreshThumbPreview()
+  }
+
+  private updateGlbDropzoneUi(): void {
+    const zone = this.bodyEl.querySelector<HTMLElement>('[data-dropzone="glb"]')
+    const label = this.bodyEl.querySelector<HTMLElement>('[data-glb-label]')
+    if (!zone || !label) return
+    zone.classList.toggle('has-file', !!this.glbFile)
+    label.textContent = this.glbFile
+      ? `${this.glbFile.name} · ${formatPetByteSize(this.glbFile.size)}`
+      : 'Drop .glb here or click to browse'
+  }
+
+  private updateThumbDropzoneUi(): void {
+    const zone = this.bodyEl.querySelector<HTMLElement>('[data-dropzone="thumb"]')
+    const label = this.bodyEl.querySelector<HTMLElement>('[data-thumb-label]')
+    if (!zone || !label) return
+    zone.classList.toggle('has-file', !!this.thumbFile)
+    label.textContent = this.thumbFile
+      ? `${this.thumbFile.name} · ${formatPetByteSize(this.thumbFile.size)}`
+      : 'Drop image here or click to browse'
+  }
+
+  private async refreshThumbPreview(): Promise<void> {
+    const preview = this.bodyEl.querySelector<HTMLElement>('[data-thumb-preview]')
+    const icon = this.bodyEl.querySelector<HTMLElement>('[data-thumb-icon]')
+    if (!preview) return
+    preview.replaceChildren()
+    if (!this.thumbFile) {
+      preview.hidden = true
+      if (icon) icon.hidden = false
+      return
+    }
+    const url = URL.createObjectURL(this.thumbFile)
+    const img = document.createElement('img')
+    img.className = 'petbarn-dropzone__preview-img'
+    img.alt = ''
+    img.src = url
+    img.onload = () => URL.revokeObjectURL(url)
+    img.onerror = () => URL.revokeObjectURL(url)
+    preview.appendChild(img)
+    preview.hidden = false
+    if (icon) icon.hidden = true
   }
 
   private onBodyInput(ev: Event): void {
@@ -425,10 +584,22 @@ export class PetBarnPanel {
   private onBodyChange(ev: Event): void {
     const t = ev.target as HTMLInputElement
     if (t.matches?.('[data-glb]')) {
-      this.glbFile = t.files?.[0] ?? null
+      const file = t.files?.[0]
+      if (file) void this.applyPublishFile('glb', file)
+      else {
+        this.glbFile = null
+        this.updateGlbDropzoneUi()
+      }
+      return
     }
     if (t.matches?.('[data-thumb]')) {
-      this.thumbFile = t.files?.[0] ?? null
+      const file = t.files?.[0]
+      if (file) void this.applyPublishFile('thumb', file)
+      else {
+        this.thumbFile = null
+        this.updateThumbDropzoneUi()
+        void this.refreshThumbPreview()
+      }
     }
   }
 

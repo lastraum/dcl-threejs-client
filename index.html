@@ -3598,8 +3598,7 @@
         font-size: 11px;
         color: rgba(221, 214, 254, 0.7);
       }
-      .petbarn-field input[type='text'],
-      .petbarn-field input[type='file'] {
+      .petbarn-field input[type='text'] {
         width: 100%;
         box-sizing: border-box;
         border-radius: 10px;
@@ -3609,20 +3608,130 @@
         padding: 8px 10px;
         font-size: 13px;
       }
+      .petbarn-field input[type='text']:focus {
+        outline: none;
+        border-color: rgba(167, 139, 250, 0.55);
+      }
+      .petbarn-dropzone {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        min-height: 104px;
+        padding: 14px 12px;
+        box-sizing: border-box;
+        border-radius: 14px;
+        border: 1.5px dashed rgba(167, 139, 250, 0.45);
+        background:
+          linear-gradient(165deg, rgba(139, 92, 246, 0.18) 0%, rgba(55, 28, 90, 0.35) 55%, rgba(28, 16, 48, 0.55) 100%);
+        color: #e9d5ff;
+        cursor: pointer;
+        text-align: center;
+        transition:
+          border-color 0.15s ease,
+          background 0.15s ease,
+          box-shadow 0.15s ease,
+          transform 0.12s ease;
+        outline: none;
+      }
+      .petbarn-dropzone:hover,
+      .petbarn-dropzone:focus-visible {
+        border-color: rgba(196, 181, 253, 0.85);
+        background:
+          linear-gradient(165deg, rgba(139, 92, 246, 0.28) 0%, rgba(76, 29, 149, 0.4) 55%, rgba(40, 20, 70, 0.65) 100%);
+        box-shadow:
+          0 0 0 1px rgba(167, 139, 250, 0.2),
+          0 8px 22px rgba(91, 33, 182, 0.25);
+      }
+      .petbarn-dropzone.is-dragover {
+        border-color: #c4b5fd;
+        border-style: solid;
+        background:
+          linear-gradient(165deg, rgba(167, 139, 250, 0.4) 0%, rgba(109, 40, 217, 0.45) 100%);
+        box-shadow: 0 0 0 2px rgba(196, 181, 253, 0.35);
+        transform: scale(1.01);
+      }
+      .petbarn-dropzone.has-file {
+        border-style: solid;
+        border-color: rgba(167, 139, 250, 0.65);
+        background:
+          linear-gradient(165deg, rgba(139, 92, 246, 0.32) 0%, rgba(76, 29, 149, 0.42) 100%);
+      }
+      .petbarn-dropzone__icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        background: rgba(139, 92, 246, 0.28);
+        border: 1px solid rgba(196, 181, 253, 0.35);
+        color: #ddd6fe;
+      }
+      .petbarn-dropzone__title {
+        font-size: 13px;
+        font-weight: 750;
+        color: #f5f3ff;
+        letter-spacing: 0.01em;
+      }
+      .petbarn-dropzone__hint {
+        font-size: 11px;
+        line-height: 1.35;
+        color: rgba(221, 214, 254, 0.72);
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        padding: 0 4px;
+      }
+      .petbarn-dropzone.has-file .petbarn-dropzone__hint {
+        color: #e9d5ff;
+        font-weight: 600;
+        white-space: normal;
+      }
+      .petbarn-dropzone--thumb {
+        min-height: 120px;
+      }
+      .petbarn-dropzone__preview {
+        width: 56px;
+        height: 56px;
+        border-radius: 12px;
+        overflow: hidden;
+        border: 1px solid rgba(196, 181, 253, 0.4);
+        background: rgba(0, 0, 0, 0.25);
+        flex-shrink: 0;
+      }
+      .petbarn-dropzone__preview[hidden] {
+        display: none !important;
+      }
+      .petbarn-dropzone__preview-img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
       .petbarn-publish-btn {
         appearance: none;
         border: 1px solid rgba(167, 139, 250, 0.55);
-        background: linear-gradient(180deg, rgba(139, 92, 246, 0.55), rgba(109, 40, 217, 0.55));
+        background: linear-gradient(135deg, rgba(139, 92, 246, 0.95), rgba(91, 33, 182, 0.95));
         color: #fff;
         border-radius: 12px;
-        padding: 10px 12px;
+        padding: 12px 14px;
         font-size: 13px;
         font-weight: 750;
         cursor: pointer;
+        font-family: inherit;
+        box-shadow: 0 8px 20px rgba(91, 33, 182, 0.28);
+      }
+      .petbarn-publish-btn:hover {
+        filter: brightness(1.06);
       }
       .petbarn-publish-btn:disabled {
         opacity: 0.55;
         cursor: default;
+        filter: none;
       }
 
       /* Loot Bag dock — bottom bar, same z as chat, sits to the right of chat (+ rail) */

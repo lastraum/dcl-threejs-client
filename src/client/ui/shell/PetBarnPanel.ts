@@ -65,8 +65,8 @@ export class PetBarnPanel {
   private readonly closeBtn: HTMLButtonElement
   private readonly myPetsBtn: HTMLButtonElement
   private readonly onKeyDown: (ev: KeyboardEvent) => void
-  /** Center overlay: loading (blocks UI) or error (dismissible). */
-  private overlayMode: 'none' | 'loading' | 'error' = 'none'
+  /** Center overlay: loading (blocks UI) or result (dismissible). */
+  private overlayMode: 'none' | 'loading' | 'error' | 'success' = 'none'
 
   constructor(private readonly options: PetBarnPanelOptions) {
     this.element = document.createElement('div')
@@ -127,7 +127,7 @@ export class PetBarnPanel {
         ev.stopPropagation()
         return
       }
-      if (this.overlayMode === 'error') {
+      if (this.overlayMode === 'error' || this.overlayMode === 'success') {
         ev.preventDefault()
         this.dismissOverlay()
         return
@@ -184,7 +184,7 @@ export class PetBarnPanel {
   hide(): void {
     if (!this.visible) return
     if (this.publishLocked) return
-    if (this.overlayMode === 'error') this.dismissOverlay()
+    if (this.overlayMode === 'error' || this.overlayMode === 'success') this.dismissOverlay()
     this.visible = false
     this.element.hidden = true
     window.removeEventListener('keydown', this.onKeyDown)
@@ -206,8 +206,8 @@ export class PetBarnPanel {
   private showLoadingOverlay(text: string, title = 'Publishing…'): void {
     this.overlayMode = 'loading'
     this.overlayEl.hidden = false
-    this.overlayEl.classList.remove('is-error')
-    this.overlayCardEl.classList.remove('is-error')
+    this.overlayEl.classList.remove('is-error', 'is-success')
+    this.overlayCardEl.classList.remove('is-error', 'is-success')
     this.overlaySpinnerEl.hidden = false
     const errIcon = this.overlayEl.querySelector<HTMLElement>('[data-overlay-error-icon]')
     if (errIcon) errIcon.hidden = true
@@ -221,11 +221,14 @@ export class PetBarnPanel {
     this.overlayMode = 'error'
     this.overlayEl.hidden = false
     this.overlayEl.classList.add('is-error')
+    this.overlayEl.classList.remove('is-success')
     this.overlayCardEl.classList.add('is-error')
+    this.overlayCardEl.classList.remove('is-success')
     this.overlaySpinnerEl.hidden = true
     const errIcon = this.overlayEl.querySelector<HTMLElement>('[data-overlay-error-icon]')
     if (errIcon) errIcon.hidden = false
     this.overlayDismissEl.hidden = false
+    this.overlayDismissEl.textContent = 'Dismiss'
     this.overlayTitleEl.textContent = title
     this.overlayTextEl.textContent = message
     // Unlock HUD / nav so user can leave; overlay stays until dismiss
@@ -233,19 +236,49 @@ export class PetBarnPanel {
     this.setStatus('')
   }
 
+  private showSuccessOverlay(
+    message = 'Queued for Worlds deploy. Catalog updates after GitHub Action finishes.',
+    title = 'Published'
+  ): void {
+    this.overlayMode = 'success'
+    this.overlayEl.hidden = false
+    this.overlayEl.classList.add('is-success')
+    this.overlayEl.classList.remove('is-error')
+    this.overlayCardEl.classList.add('is-success')
+    this.overlayCardEl.classList.remove('is-error')
+    this.overlaySpinnerEl.hidden = true
+    const errIcon = this.overlayEl.querySelector<HTMLElement>('[data-overlay-error-icon]')
+    if (errIcon) errIcon.hidden = true
+    this.overlayDismissEl.hidden = false
+    this.overlayDismissEl.textContent = 'Done'
+    this.overlayTitleEl.textContent = title
+    this.overlayTextEl.textContent = message
+    this.setPublishLocked(false)
+    this.setStatus('')
+  }
+
   private dismissOverlay(): void {
+    const wasSuccess = this.overlayMode === 'success'
     this.clearOverlay()
+    if (wasSuccess && this.view === 'publish') {
+      this.view = 'catalog'
+      void this.refreshCatalog().then(() => {
+        this.lastUpdatedAt = this.catalog?.updatedAt ?? this.lastUpdatedAt
+        if (this.visible) this.renderCatalog()
+      })
+    }
   }
 
   private clearOverlay(): void {
     this.overlayMode = 'none'
     this.overlayEl.hidden = true
-    this.overlayEl.classList.remove('is-error')
-    this.overlayCardEl.classList.remove('is-error')
+    this.overlayEl.classList.remove('is-error', 'is-success')
+    this.overlayCardEl.classList.remove('is-error', 'is-success')
     this.overlaySpinnerEl.hidden = false
     const errIcon = this.overlayEl.querySelector<HTMLElement>('[data-overlay-error-icon]')
     if (errIcon) errIcon.hidden = true
     this.overlayDismissEl.hidden = true
+    this.overlayDismissEl.textContent = 'Dismiss'
     this.setPublishLocked(false)
   }
 
@@ -511,7 +544,6 @@ export class PetBarnPanel {
             <div class="petbarn-dropzone__hint" data-thumb-label>${escapeHtml(thumbLabel)}</div>
           </div>
         </div>
-        <p class="petbarn-footnote">Open publish — deploys to petbarn.dcl.eth after CI. No approval step.</p>
         <button type="submit" class="petbarn-publish-btn" data-publish-submit>Publish to Pet Barn</button>
       </form>
     `
@@ -820,18 +852,10 @@ export class PetBarnPanel {
       // Success = Worker accepted the queue (GitHub commit). Worlds deploy is async CI.
       this.glbFile = null
       this.thumbFile = null
-      this.clearOverlay()
-      this.setStatus(
-        result.message ||
-          `Queued ${result.id}. It will show in the barn after deploy (~1–3 min).`
+      this.showSuccessOverlay(
+        'Queued for Worlds deploy. Catalog updates after GitHub Action finishes.',
+        'Published'
       )
-      this.view = 'catalog'
-      this.searchQuery = ''
-      // Don't force-clear type filter — user may want it; reset search only
-      void this.refreshCatalog().then(() => {
-        this.lastUpdatedAt = this.catalog?.updatedAt ?? this.lastUpdatedAt
-        if (this.view === 'catalog' && this.visible) this.renderCatalog()
-      })
     } catch (err) {
       this.showErrorOverlay(err instanceof Error ? err.message : 'Publish failed', 'Publish failed')
     } finally {

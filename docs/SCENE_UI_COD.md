@@ -121,7 +121,7 @@ Any mount change + any `ingestMountSnapshot` → clear liveSeen.
 7. ~~liveSeen on mount change~~ ✅  
 8. ~~Fingerprint unit tests~~ ✅ `npm run test:scene-ui`  
 9. ~~Pixel atlas UV~~ ✅  
-10. ~~Mesh / sceneUi open: fingerprint-stable flush + wall min; refuse exit while parked/micro~~ ✅  
+10. ~~Mesh / sceneUi open: fingerprint-stable flush + wall min; refuse exit while parked/micro (incl. relative 6×6 under full shell)~~ ✅  
 11. ~~**Deleted** `alignParkedModalTwinBoxes` (client pose invent) — stay deleted~~ ✅  
 12. ~~**Deleted** under-paint `setTimeout` recovery (second clock)~~ ✅  
 13. ~~**Deleted** off-canvas large-modal paint exception~~ ✅  
@@ -143,7 +143,7 @@ Then phase-4 snapshot. Cooperative dirty after that — cousins independent.
 
 | Action | Expect |
 |--------|--------|
-| Tutorial mesh open | `grew` or `reshow` + flush `dt=0.050` until no `parked`/`micro` → snapshot → **first paint** Forest → UI visible same second |
+| Tutorial mesh open | short flush → phase-4 mid-open (may be ~7×7) → **early Tween+UI egress** → open-scale loop (TweenState + eng.update until !micro or ~2.4s) → **second full paint** → `peOnModal≥1`. Logs: `open-scale early egress`, `open-scale progress`, `open-scale finish`. |
 | Tutorial re-click mount 121→121 | `reshow` settle + full paint; not minutes of blank |
 | Paginate how-to-play | selection settle `dt=0.000`; X + page dots stay; PE remain |
 | Vending mesh open | content on-screen first paint (no twinAlign); not tutorial-only |

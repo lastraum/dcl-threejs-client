@@ -710,24 +710,25 @@ async function runPointerEngineTickSync(
   setPointerDeliveryInFlight(true)
   pointerDeliveryStartedAt = performance.now()
   let timedOut = false
+  // Interrupt stuck main CRDT only — do NOT Promise.race-abandon the tick.
+  // Racing away before phase-4 left how-to-play with no ui egress + no Tween CRDT
+  // (scale stuck at ~7×7 forever, no first paint). Always await work to completion.
   const abortTimer = setTimeout(() => {
     timedOut = true
     workerLog(
       'error',
-      `[sceneWorker] ${label} — pointer engine tick exceeded ${POINTER_ENGINE_TICK_ABORT_MS}ms; interrupting pending CRDT`
+      `[sceneWorker] ${label} — pointer engine tick exceeded ${POINTER_ENGINE_TICK_ABORT_MS}ms; interrupting pending CRDT (still awaiting phase-4)`
     )
     interruptPendingCrdtRoundTrips()
   }, POINTER_ENGINE_TICK_ABORT_MS)
 
   try {
-    await Promise.race([
-      runPointerEngineTickWork(label),
-      new Promise<void>((resolve) => {
-        setTimeout(resolve, POINTER_ENGINE_TICK_ABORT_MS)
-      })
-    ])
+    await runPointerEngineTickWork(label)
     if (timedOut) {
-      workerLog('warn', `[sceneWorker] ${label} — pointer engine tick finished after abort (partial)`)
+      workerLog(
+        'warn',
+        `[sceneWorker] ${label} — pointer engine tick finished after CRDT interrupt (phase-4 should still have run)`
+      )
     }
   } catch (err) {
     workerLog(
@@ -1279,7 +1280,8 @@ initSceneEngineScheduler({
     // Phase-4 open/reshow — main Forest paints once (cooperative dirty does not set this).
     pointerUiMountFullPaint = true
   },
-  postUiMountSnapshot: (snapshot, mountEntityIds) => {
+  flushPointerDeferredOutboundsNow: () => flushPointerDeferredOutboundsAsync(),
+  postUiMountSnapshot: (snapshot, mountEntityIds, forceFullPaint) => {
     // Prefer explicit full mount list — empty is valid (welcome unmount → mount=[]).
     // Skipping empty left main with ghost PE catchers (hand cursor after visual dissolve).
     const uiEntities =
@@ -1290,12 +1292,13 @@ initSceneEngineScheduler({
           : []
     lastOutboundUiEntitiesKey = uiEntities.join(',')
     logSceneUiOutbound(new Uint8Array(0), uiEntities, snapshot.length)
-    // Cooperative dirty: no uiMountFullPaint — steady Patch must not Forest every tick.
+    // Steady cooperative: Patch. Open-scale growth / dual-root unpark: Forest (forceFullPaint).
     ctx.postMessage({
       type: 'crdt-outbound',
       data: new Uint8Array(0),
       uiEntities,
-      uiMountSnapshot: snapshot
+      uiMountSnapshot: snapshot,
+      ...(forceFullPaint ? { uiMountFullPaint: true } : {})
     } satisfies SceneWorkerOutbound)
   },
   onStuckRecover: () => {
@@ -1355,6 +1358,19 @@ initSceneEngineScheduler({
     kick()
     queueMicrotask(kick)
     setTimeout(kick, 0)
+  },
+  runOpenSettleSceneFrame: async (dt) => {
+    // Fishing/plaza how-to-play scale often advances in exports.onUpdate (not only addSystem).
+    // Mesh inject skips onUpdate entirely — open settle must drive it with pollEvents deferred
+    // so the click is not re-polled (would toggle closed).
+    if (!sceneOnUpdate) return
+    markDeferSdkPollEventsAfterInjectUiClick()
+    try {
+      await Promise.resolve(sceneOnUpdate(dt))
+    } finally {
+      // Ensure one-shot defer does not stick if onUpdate never read it (no poll path).
+      clearInjectOnlySdkPollEventsDeferred()
+    }
   }
 })
 

@@ -971,18 +971,23 @@ export class SceneUiBridge {
       usedPatch = false
     }
 
-    // Oracle: open UI with PE but nothing on-canvas → log once (tutorial invisible root cause).
-    if (this.paintCount <= 3) {
+    // Oracle: open UI with PE but nothing usable on-canvas.
+    if (this.paintCount <= 4) {
       let peOn = 0
       let peOff = 0
       let peTiny = 0
+      let peOnModal = 0
+      let peOnScrim = 0
+      const samples: string[] = []
       const vw = this.virtual.width
       const vh = this.virtual.height
+      const canvasArea = vw * vh
       for (const e of mounted) {
         if (!hasUiPointerDownOrUp(this.pointerEventsLookup(e))) continue
         const b = layoutBoxMap.get(e)
         if (!b) {
           peOff++
+          if (samples.length < 4) samples.push(`e${e as number}:none`)
           continue
         }
         if (b.width < 8 || b.height < 8) {
@@ -994,13 +999,26 @@ export class SceneUiBridge {
           b.top < vh - 1 &&
           b.left + b.width > 1 &&
           b.top + b.height > 1
-        if (on) peOn++
-        else peOff++
+        if (on) {
+          peOn++
+          const area = b.width * b.height
+          if (area >= canvasArea * 0.4) peOnScrim++
+          else if (b.width >= 120 && b.height >= 80) peOnModal++
+        } else {
+          peOff++
+          if (samples.length < 4) {
+            samples.push(
+              `e${e as number}:${Math.round(b.left)},${Math.round(b.top)} ${Math.round(b.width)}×${Math.round(b.height)}`
+            )
+          }
+        }
       }
       if (peOn + peOff + peTiny > 2) {
         clientDebugLog.log(
           'scene-ui',
-          `pe-layout peOn=${peOn} peOff=${peOff} peTiny=${peTiny} paintMode=${paintMode}`
+          `pe-layout peOn=${peOn} peOnModal=${peOnModal} peOnScrim=${peOnScrim} ` +
+            `peOff=${peOff} peTiny=${peTiny} paintMode=${paintMode}` +
+            (samples.length ? ` off=[${samples.join('; ')}]` : '')
         )
       }
     }

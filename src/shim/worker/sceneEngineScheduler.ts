@@ -72,7 +72,9 @@ export type SceneEngineSchedulerConfig = {
    */
   postUiMountSnapshot?: (
     snapshot: WorkerUiMountSnapshotRow[],
-    mountEntityIds: number[]
+    mountEntityIds: number[],
+    /** Force Forest paint (open scale growth mid-flight). */
+    forceFullPaint?: boolean
   ) => void
   onStuckRecover: () => void
   onAfterEngineTick?: () => void
@@ -88,6 +90,17 @@ export type SceneEngineSchedulerConfig = {
    * so fade systems (CBD Plaza welcome nZ) get real dt without waiting for main resume.
    */
   onSceneUiInjectPointerComplete?: (info: { mountGrew: boolean }) => void
+  /**
+   * Open settle only: run exports.onUpdate(dt) with pollEvents deferred so plaza/fishing
+   * scale timers in onUpdate can advance. eng.update alone left how-to-play stuck at 6×6
+   * (fp frozen for 48 micro passes). Must not pollEvents mid-batch (replays click).
+   */
+  runOpenSettleSceneFrame?: (dt: number) => Promise<void>
+  /**
+   * Flush deferred pointer non-UI CRDT + queued UI mount now (before deliver-done).
+   * Required so main receives Tween + first snapshot while we wait for scale growth.
+   */
+  flushPointerDeferredOutboundsNow?: () => Promise<void>
 }
 
 export type RendererInboundInjectCounts = {
@@ -404,7 +417,9 @@ async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
       (mountEntityIds.length === 0 ? ' emptyMount' : '')
   )
   if (cfg.postUiMountSnapshot) {
-    cfg.postUiMountSnapshot(snapshot, mountEntityIds)
+    // Mid-open scale (how-to-play ~7×7→696): force Forest so main unhides uiUnusable subtrees.
+    const fullPaint = uiOpenPoseStillMicro(eng) || largeModalContentStillParked(eng)
+    cfg.postUiMountSnapshot(snapshot, mountEntityIds, fullPaint)
     return
   }
   attachUiMountSnapshot = true
@@ -756,9 +771,19 @@ const POINTER_UI_SCENEU_STABLE_NEEDED = 2
  * Cap maxPasses so we never multi-second stall; early-exit when stable.
  * Overhead: only until stable (typically 2–4 frames); not ongoing cost.
  */
-const POINTER_UI_OPEN_FLUSH_MAX_PASSES = 12
+/**
+ * Open settle budget — must finish well under pointer deliver path so phase-4
+ * (UI snapshot + Tween CRDT) always posts. 48 passes + onUpdate burned ~4.4s and
+ * raced past phase-4 → no first paint, scale stuck at ~7×7 (696×0.01).
+ * Dual-root / scale finish on cooperative ticks after phase-4 when still mid-open.
+ */
+const POINTER_UI_OPEN_FLUSH_MAX_PASSES = 16
 const POINTER_UI_OPEN_STABLE_NEEDED = 2
 const POINTER_UI_OPEN_DT = 1 / 20
+/** Hard wall cap inside open flush — leave headroom for phase-4 + deferred egress. */
+const POINTER_UI_OPEN_MAX_WALL_MS = 1800
+/** If fp unchanged this many stable passes while pose blocked, stop waiting (can't invent scale). */
+const POINTER_UI_OPEN_FROZEN_POSE_STABLE = 4
 
 /**
  * Dual large absolute roots: shell on-screen + content left≥1800 (fishing shop).
@@ -798,48 +823,28 @@ function largeModalContentStillParked(eng: IEngine): boolean {
   return onScreen > 0 && offRight > 0
 }
 
-/** True while open pose is only micro absolute panels (scale-from-zero still in flight). */
-function uiOpenPoseStillMicro(eng: IEngine): boolean {
-  const UiTransform = resolveWorkerUiTransform(eng)
-  let micro = 0
-  let full = 0
-  for (const [_entity] of eng.getEntitiesWith(UiTransform)) {
-    const t = UiTransform.getOrNull(_entity) as {
-      positionType?: number
-      width?: number
-      height?: number
-      widthUnit?: number
-      heightUnit?: number
-    } | null
-    if (!t) continue
-    if ((t.positionType ?? 0) !== 1 /* ABSOLUTE */) continue
-    const wUnit = t.widthUnit ?? 0
-    const hUnit = t.heightUnit ?? 0
-    if (wUnit !== 1 && wUnit !== 0) continue
-    if (hUnit !== 1 && hUnit !== 0) continue
-    const w = t.width ?? 0
-    const h = t.height ?? 0
-    if (w >= 4 && h >= 4 && w <= 48 && h <= 48) micro++
-    else if (w >= 200 && h >= 200 && w < 1800) full++
-  }
-  return micro > 0 && full === 0
+type UiPoseRow = {
+  w: number
+  h: number
+  parent: number
+  abs: boolean
+  left: number
+  top: number
+  display: unknown
+  opacity: number
 }
 
-/**
- * True when a modal-sized abs panel exists but none is on the virtual canvas.
- * Covers: left≥1920 park (shop content), opacity 0, display none — without twinAlign invent.
- * Log showed first paint mount=121 with PE but user saw nothing: flush exited while
- * all modals were still off-canvas / hidden.
- */
-function uiOpenPoseNoVisibleModal(eng: IEngine): boolean {
+function collectUiPoseRows(eng: IEngine): Map<number, UiPoseRow> {
   const UiTransform = resolveWorkerUiTransform(eng)
-  let modalCount = 0
-  let visibleModal = 0
-  for (const [_entity] of eng.getEntitiesWith(UiTransform)) {
-    const t = UiTransform.getOrNull(_entity) as {
+  const VW = 1920
+  const VH = 1080
+  const byId = new Map<number, UiPoseRow>()
+  for (const [entity] of eng.getEntitiesWith(UiTransform)) {
+    const t = UiTransform.getOrNull(entity) as {
       positionType?: number
       display?: unknown
       opacity?: number
+      parent?: number
       width?: number
       height?: number
       widthUnit?: number
@@ -851,32 +856,208 @@ function uiOpenPoseNoVisibleModal(eng: IEngine): boolean {
       position?: { left?: number; top?: number }
     } | null
     if (!t) continue
-    if ((t.positionType ?? 0) !== 1 /* ABSOLUTE */) continue
-    const wUnit = t.widthUnit ?? 0
-    const hUnit = t.heightUnit ?? 0
-    if (wUnit !== 1 && wUnit !== 0) continue
-    if (hUnit !== 1 && hUnit !== 0) continue
-    const w = t.width ?? 0
-    const h = t.height ?? 0
-    // Modal-ish: how-to-play ~696×672, shop ~1460×670 — not full-screen scrims.
-    if (w < 200 || h < 150 || w >= 1800) continue
-    modalCount++
-    // display none / invisible
-    const disp = t.display
-    if (disp === 1 || disp === 'none' || disp === 'YG_DISPLAY_NONE') continue
-    if ((t.opacity ?? 1) < 0.05) continue
+    const wU = t.widthUnit ?? 0
+    const hU = t.heightUnit ?? 0
+    const wRaw = t.width ?? 0
+    const hRaw = t.height ?? 0
+    // POINT (1) / default (0) / PERCENT (2) — skip auto/undefined axes
+    const w =
+      wU === 2 ? (wRaw / 100) * VW : wU === 1 || wU === 0 ? wRaw : 0
+    const h =
+      hU === 2 ? (hRaw / 100) * VH : hU === 1 || hU === 0 ? hRaw : 0
+    if (w < 1 || h < 1) continue
     const leftU = t.positionLeftUnit ?? 0
     const topU = t.positionTopUnit ?? 0
-    // Percent parks (letterbox etc.) — skip as "visible modal"
-    if (leftU === 2 || topU === 2) continue
-    const left = t.positionLeft ?? t.position?.left ?? 0
-    const top = t.positionTop ?? t.position?.top ?? 0
-    // On virtual 1920×1080 canvas with some margin
-    if (left >= -40 && left < 1720 && top >= -40 && top < 1000 && left + w > 40 && top + h > 40) {
-      visibleModal++
+    const leftRaw = t.positionLeft ?? t.position?.left ?? 0
+    const topRaw = t.positionTop ?? t.position?.top ?? 0
+    const left = leftU === 2 ? (leftRaw / 100) * VW : leftRaw
+    const top = topU === 2 ? (topRaw / 100) * VH : topRaw
+    byId.set(entity as number, {
+      w,
+      h,
+      parent: (t.parent ?? 0) as number,
+      abs: (t.positionType ?? 0) === 1 /* ABSOLUTE */,
+      left,
+      top,
+      display: t.display,
+      opacity: t.opacity ?? 1
+    })
+  }
+  return byId
+}
+
+function uiPoseHidden(r: UiPoseRow): boolean {
+  const d = r.display
+  if (d === 1 || d === 'none' || d === 'YG_DISPLAY_NONE') return true
+  return r.opacity < 0.05
+}
+
+/** Classic micro abs panel (mid-open before any full sibling). */
+function uiPoseIsMicro(r: UiPoseRow): boolean {
+  return r.w >= 4 && r.h >= 4 && r.w <= 48 && r.h <= 48
+}
+
+/**
+ * Scale-from-zero seed only (how-to-play content starts ~6×6).
+ * Must NOT match permanent chrome under an open modal (page dots 36×36, close ~54).
+ */
+function uiPoseIsScaleSeed(r: UiPoseRow): boolean {
+  return r.w >= 2 && r.h >= 2 && r.w <= 20 && r.h <= 20
+}
+
+function uiPoseIsModal(r: UiPoseRow): boolean {
+  // Modal panel (how-to-play ~696×672, shop content) — not pin dots / full-bleed scrim
+  if (r.w < 180 || r.h < 120) return false
+  return r.w * r.h < 1920 * 1080 * 0.45
+}
+
+function uiPoseHasModalAncestor(byId: Map<number, UiPoseRow>, startParent: number): boolean {
+  let p = startParent
+  for (let guard = 0; p && p !== 0 && guard < 16; guard++) {
+    const pr = byId.get(p)
+    if (!pr) break
+    if (!uiPoseHidden(pr) && uiPoseIsModal(pr)) return true
+    p = pr.parent
+  }
+  return false
+}
+
+function uiPoseChildCount(byId: Map<number, UiPoseRow>, id: number): number {
+  let n = 0
+  for (const r of byId.values()) {
+    if (r.parent === id) n++
+  }
+  return n
+}
+
+/**
+ * True while scale-from-zero open is still in flight.
+ *
+ * Proven how-to-play (sceneuidebug): content is **relative** 6×6 under a full ~696×672
+ * shell while the shell may already be modal-sized. Absolute-only micro checks returned
+ * false (shell counted as full) → flush exited @~350ms → peOn=1 peOff=21 (invisible).
+ *
+ * Oracle (2026-07-29): flush tagged micro 48× with **fp frozen** at 17331B — scale not
+ * advancing on eng.update alone; still must not false-positive page-dot chrome forever.
+ *
+ * Rules (facts only, no menu kinds):
+ * - Open **content root**: under modal ancestor, has ≥2 children, size still below modal
+ *   (w<180 or h<120) — covers 6×6 seed through mid-scale (~100) without matching 36×36 dots.
+ * - Scale seed ≤20 abs near canvas center (popup without sized parent yet).
+ * - Classic: abs micro (≤48) with no abs full panel.
+ */
+function uiOpenPoseStillMicro(eng: IEngine): boolean {
+  const byId = collectUiPoseRows(eng)
+  const VW = 1920
+  const VH = 1080
+  let scaleMicro = 0
+  let microAbsLoose = 0
+  let fullAbs = 0
+  for (const [id, r] of byId) {
+    if (uiPoseHidden(r)) continue
+    const kids = uiPoseChildCount(byId, id)
+    // Content-root still opening: container under modal, not yet modal-sized, not a thin bar.
+    // Page dots 36×36: 0–1 child. Footer 696×46: aspect≫4. Body 6×6→mid: kids≥2, aspect~1.
+    const aspect = Math.max(r.w, r.h) / Math.max(1, Math.min(r.w, r.h))
+    if (
+      kids >= 2 &&
+      !uiPoseIsModal(r) &&
+      aspect < 4 &&
+      r.w >= 2 &&
+      r.h >= 2 &&
+      r.w < 500 &&
+      r.h < 500 &&
+      uiPoseHasModalAncestor(byId, r.parent)
+    ) {
+      scaleMicro++
+      continue
+    }
+    if (uiPoseIsScaleSeed(r) && r.abs) {
+      const cx = r.left + r.w / 2
+      const cy = r.top + r.h / 2
+      // Centered popup seed (e.g. 6×6 @ ~957,537) even without modal-sized parent yet
+      if (Math.abs(cx - VW / 2) < 480 && Math.abs(cy - VH / 2) < 360 && kids >= 1) {
+        scaleMicro++
+        continue
+      }
+    }
+    if (r.abs && uiPoseIsMicro(r) && !uiPoseIsScaleSeed(r)) {
+      microAbsLoose++
+    } else if (r.abs && uiPoseIsModal(r)) {
+      fullAbs++
     }
   }
-  return modalCount > 0 && visibleModal === 0
+  if (scaleMicro > 0) return true
+  return microAbsLoose > 0 && fullAbs === 0
+}
+
+/** QA sample: which containers keep open settle in micro (size + child count). */
+function sampleOpenPoseMicroSeeds(eng: IEngine, limit = 4): string {
+  const byId = collectUiPoseRows(eng)
+  const samples: string[] = []
+  for (const [id, r] of byId) {
+    if (uiPoseHidden(r)) continue
+    const kids = uiPoseChildCount(byId, id)
+    const aspect = Math.max(r.w, r.h) / Math.max(1, Math.min(r.w, r.h))
+    if (
+      kids >= 2 &&
+      !uiPoseIsModal(r) &&
+      aspect < 4 &&
+      r.w >= 2 &&
+      r.h >= 2 &&
+      r.w < 500 &&
+      r.h < 500 &&
+      uiPoseHasModalAncestor(byId, r.parent)
+    ) {
+      samples.push(
+        `e${id}:${Math.round(r.w)}×${Math.round(r.h)} kids=${kids}${r.abs ? ' abs' : ' rel'}`
+      )
+      if (samples.length >= limit) break
+    }
+  }
+  return samples.length ? samples.join('; ') : '(none)'
+}
+
+/**
+ * True when mount has modal-scale UI but nothing paint-visible on the virtual canvas.
+ *
+ * Oracle: first paint mount=121 pe=23 but peOn=1 peOff=21 — flush exited without
+ * offCanvas because relative micro content / display:none panels were skipped.
+ *
+ * Rules (facts only):
+ * - Modal-scale panels (abs or relative under abs tree) with POINT/PERCENT size.
+ * - "Shown" = display not none, opacity > 0.05.
+ * - Absolute on-canvas: edges vs 1920×1080.
+ * - Relative modal: count as on-canvas only when not micro (ancestor walk already in micro gate).
+ * - Blocked when modalish exists but none shown on-canvas, OR all still display:none.
+ */
+function uiOpenPoseNoVisibleModal(eng: IEngine): boolean {
+  const byId = collectUiPoseRows(eng)
+  const VW = 1920
+  const VH = 1080
+  let modalish = 0
+  let shown = 0
+  let onCanvas = 0
+  for (const r of byId.values()) {
+    if (!uiPoseIsModal(r)) continue
+    // Skip full-tree roots that are only flex containers with no abs placement intent
+    // when they are relative micro-scale parents already handled by stillMicro.
+    modalish++
+    if (uiPoseHidden(r)) continue
+    shown++
+    if (r.abs) {
+      if (r.left < VW - 8 && r.top < VH - 8 && r.left + r.w > 8 && r.top + r.h > 8) {
+        onCanvas++
+      }
+    } else {
+      // Relative modal content (how-to-play body under full-bleed abs): on-canvas once
+      // not micro — Yoga places it inside the shell; raw left/top are often 0.
+      onCanvas++
+    }
+  }
+  if (modalish === 0) return false
+  if (shown === 0) return true
+  return onCanvas === 0
 }
 
 /** Pose gates for open settle — no menu kinds. */
@@ -908,6 +1089,14 @@ async function flushReactEcsForUiSnapshot(
      * Date.now() / Transform tweens — synthetic dt alone is not enough if we exit in 1 frame.
      */
     minWallMs?: number
+    /**
+     * When true and pose still blocked after eng.update, also run open-settle scene frame
+     * (onUpdate with poll deferred). Prefer false for mesh open — onUpdate every pass
+     * burned 4s+ without advancing scale (scale needs Tween CRDT to main first).
+     */
+    driveSceneOnUpdate?: boolean
+    /** Hard wall-ms exit even if pose blocked (phase-4 must run; cooperative finishes scale). */
+    maxWallMs?: number
   }
 ): Promise<void> {
   if (!interactive) return
@@ -916,13 +1105,32 @@ async function flushReactEcsForUiSnapshot(
   const dt = options?.dt ?? 0
   const minPasses = Math.max(1, options?.minPasses ?? 1)
   const minWallMs = Math.max(0, options?.minWallMs ?? 0)
+  const maxWallMs = Math.max(
+    minWallMs,
+    options?.maxWallMs ?? (dt > 0 ? POINTER_UI_OPEN_MAX_WALL_MS : 0)
+  )
+  const driveScene = options?.driveSceneOnUpdate === true && dt > 0
   const t0 = performance.now()
   let prevFp = options?.seedFp ?? ''
   let stablePasses = 0
+  let sceneFrames = 0
   for (let pass = 0; pass < maxPasses; pass++) {
     await runSerializedEngineUpdate(async () => {
       await eng.update(dt)
     })
+    // Optional onUpdate — not the primary scale path (Tween CRDT to main is).
+    if (driveScene && config?.runOpenSettleSceneFrame && uiOpenPoseBlocked(eng)) {
+      try {
+        await config.runOpenSettleSceneFrame(dt)
+        sceneFrames++
+      } catch (err) {
+        log(
+          `[sceneWorker] open-settle onUpdate failed — ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
+      }
+    }
     const mount = countWorkerUiMount(eng)
     const fp = computeWorkerUiFingerprint(eng)
     const wall = performance.now() - t0
@@ -930,14 +1138,28 @@ async function flushReactEcsForUiSnapshot(
     const micro = uiOpenPoseStillMicro(eng)
     const offCanvas = uiOpenPoseNoVisibleModal(eng)
     const poseBlocked = parked || micro || offCanvas
-    log(
-      `[sceneWorker] pointer ui react-ecs flush pass=${pass + 1}/${maxPasses} mount=${mount} ` +
-        `fp=${fp.length}B dt=${dt.toFixed(3)} wall=${wall.toFixed(0)}ms` +
-        `${parked ? ' parked' : ''}${micro ? ' micro' : ''}${offCanvas ? ' offCanvas' : ''}`
-    )
+    const logThis =
+      pass < 6 || pass % 4 === 0 || pass + 1 === maxPasses || !poseBlocked
+    if (logThis) {
+      log(
+        `[sceneWorker] pointer ui react-ecs flush pass=${pass + 1}/${maxPasses} mount=${mount} ` +
+          `fp=${fp.length}B dt=${dt.toFixed(3)} wall=${wall.toFixed(0)}ms` +
+          `${parked ? ' parked' : ''}${micro ? ' micro' : ''}${offCanvas ? ' offCanvas' : ''}` +
+          `${sceneFrames > 0 ? ` onUp=${sceneFrames}` : ''}` +
+          `${micro && pass === 0 ? ` seeds=[${sampleOpenPoseMicroSeeds(eng)}]` : ''}`
+      )
+    }
+    // Hard wall — always leave time for phase-4 + Tween/UI deferred egress.
+    if (maxWallMs > 0 && wall >= maxWallMs) {
+      log(
+        `[sceneWorker] pointer ui react-ecs flush WALL cap ${maxWallMs}ms ` +
+          `poseBlocked=${poseBlocked} seeds=[${sampleOpenPoseMicroSeeds(eng)}] → phase-4`
+      )
+      return
+    }
     if (prevFp && fp === prevFp) {
       stablePasses++
-      // Pose not ready: keep simulating even if fingerprint bytes look stable.
+      // Pose ready: exit.
       if (
         stablePasses >= stableNeeded &&
         pass + 1 >= minPasses &&
@@ -946,11 +1168,86 @@ async function flushReactEcsForUiSnapshot(
       ) {
         return
       }
+      // Pose blocked but fp frozen — scale cannot invent itself here (needs main Tween).
+      // Exit so phase-4 ships mount + Tween CRDT; cooperative finishes open.
+      if (
+        poseBlocked &&
+        stablePasses >= POINTER_UI_OPEN_FROZEN_POSE_STABLE &&
+        pass + 1 >= minPasses
+      ) {
+        log(
+          `[sceneWorker] pointer ui react-ecs flush FROZEN fp while pose blocked ` +
+            `stable=${stablePasses} seeds=[${sampleOpenPoseMicroSeeds(eng)}] → phase-4 (tween via main)`
+        )
+        return
+      }
     } else {
       stablePasses = 0
     }
     prevFp = fp
   }
+  if (uiOpenPoseBlocked(eng)) {
+    log(
+      `[sceneWorker] pointer ui react-ecs flush END pose still blocked ` +
+        `parked=${largeModalContentStillParked(eng)} micro=${uiOpenPoseStillMicro(eng)} ` +
+        `offCanvas=${uiOpenPoseNoVisibleModal(eng)} mount=${countWorkerUiMount(eng)} ` +
+        `wall=${(performance.now() - t0).toFixed(0)}ms onUp=${sceneFrames} ` +
+        `seeds=[${sampleOpenPoseMicroSeeds(eng)}] (phase-4 mid-open; cooperative continues)`
+    )
+  }
+}
+
+/**
+ * After first phase-4 mid-open (content still ~7×7): ship Tween CRDT to main, then
+ * pump eng.update + yield for TweenState inject until scale leaves micro (or timeout).
+ * Oracle 22:19:47 — phase-4 painted mount=124 peOnModal=0 (7×7); no later fp growth.
+ * Scale is Transform.scale via main Tween; without this loop it never leaves seed size.
+ */
+async function finishOpenScaleAfterPhase4(
+  eng: IEngine,
+  log: (message: string) => void
+): Promise<void> {
+  if (!uiOpenPoseBlocked(eng)) return
+  const cfg = config!
+  if (cfg.flushPointerDeferredOutboundsNow) {
+    await cfg.flushPointerDeferredOutboundsNow()
+    log(
+      `[sceneWorker] open-scale early egress — Tween+UI shipped seeds=[${sampleOpenPoseMicroSeeds(eng)}]`
+    )
+  }
+  const t0 = performance.now()
+  const maxMs = 2400
+  let prevFp = computeWorkerUiFingerprint(eng)
+  let progressPasses = 0
+  setPointerInteractiveTickActive(true)
+  setPointerInteractivePhase('flush')
+  for (let i = 0; i < 48; i++) {
+    if (performance.now() - t0 > maxMs) break
+    if (!uiOpenPoseBlocked(eng)) break
+    await runSerializedEngineUpdate(async () => {
+      await eng.update(POINTER_UI_OPEN_DT)
+    })
+    // Yield so main TweenState messages (tween-state-deliver) can inject on this worker.
+    await new Promise<void>((resolve) => setTimeout(resolve, 20))
+    const fp = computeWorkerUiFingerprint(eng)
+    if (fp !== prevFp) {
+      progressPasses++
+      prevFp = fp
+      if (progressPasses <= 4 || i % 4 === 0) {
+        log(
+          `[sceneWorker] open-scale progress pass=${i + 1} fp=${fp.length}B ` +
+            `seeds=[${sampleOpenPoseMicroSeeds(eng)}]`
+        )
+      }
+    }
+  }
+  // Re-snapshot at grown (or best-effort final) pose with full paint.
+  runPointerUiPhase4Egress(eng)
+  log(
+    `[sceneWorker] open-scale finish — blocked=${uiOpenPoseBlocked(eng)} ` +
+      `progress=${progressPasses} wall=${(performance.now() - t0).toFixed(0)}ms ` +
+      `seeds=[${sampleOpenPoseMicroSeeds(eng)}] mount=${countWorkerUiMount(eng)}`
+  )
 }
 
 /**
@@ -1105,19 +1402,32 @@ export async function runSceneEnginePointerTick(
             stableNeeded: POINTER_UI_OPEN_STABLE_NEEDED,
             dt: POINTER_UI_OPEN_DT,
             minPasses: 3,
-            minWallMs: 200
+            minWallMs: 150,
+            maxWallMs: POINTER_UI_OPEN_MAX_WALL_MS,
+            // Don't thrash onUpdate — phase-4 + cooperative own scale completion.
+            driveSceneOnUpdate: false
           })
         }
         runPointerUiPhase4Egress(eng)
+        if (mountGrew && uiOpenPoseBlocked(eng)) {
+          await finishOpenScaleAfterPhase4(eng, cfg.log)
+        }
         // Neurolink: short hold only so residual PE cannot toggle closed. Keep short so
-        // scale/fade systems still run (long hold froze tutorial / welcome).
+        // scale/fade systems still run (long holds freeze tutorial / welcome).
         if (mountGrew) {
-          // Tiny hold only for Neurolink toggle thrash — long holds freeze scale/open.
-          holdCooperativeReactEcs(2)
-          cfg.log(
-            `[sceneWorker] pointer phase-4 hold — mount=${countWorkerUiMount(eng)} hold=2 ` +
-              `texts=[${sampleWorkerUiTexts(eng)}] (menu open)`
-          )
+          const stillOpen = uiOpenPoseBlocked(eng)
+          if (stillOpen) {
+            cfg.log(
+              `[sceneWorker] pointer phase-4 no-hold — mount=${countWorkerUiMount(eng)} ` +
+                `pose still open seeds=[${sampleOpenPoseMicroSeeds(eng)}] (allow scale/tween)`
+            )
+          } else {
+            holdCooperativeReactEcs(2)
+            cfg.log(
+              `[sceneWorker] pointer phase-4 hold — mount=${countWorkerUiMount(eng)} hold=2 ` +
+                `texts=[${sampleWorkerUiTexts(eng)}] (menu open settled)`
+            )
+          }
         } else {
           cfg.log(
             `[sceneWorker] pointer phase-4 no-hold — mount=${countWorkerUiMount(eng)} ` +
@@ -1162,15 +1472,18 @@ export async function runSceneEnginePointerTick(
             `${substantialUi && !mountGrewMesh ? ' reshow' : ''}` +
             `${poseNotReady ? ' poseWait' : ''}`
         )
-        // Grow/reshow: always run enough wall-clock + dt so open tween can finish.
-        // Exit early only when fingerprint stable AND a modal is on-canvas (not offCanvas/micro).
+        // Grow/reshow: short settle then phase-4. Scale 6→700 needs main Tween + cooperative
+        // after egress — waiting 48× micro froze fp and raced past phase-4 (no first paint).
         await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
-          maxPasses: needOpenSettle ? 24 : 4,
+          maxPasses: needOpenSettle ? POINTER_UI_OPEN_FLUSH_MAX_PASSES : 4,
           seedFp: meshSeedFp,
           stableNeeded: needOpenSettle ? POINTER_UI_OPEN_STABLE_NEEDED : 1,
           dt: needOpenSettle ? POINTER_UI_OPEN_DT : 0,
-          minPasses: needOpenSettle ? 6 : 1,
-          minWallMs: needOpenSettle ? 350 : 0
+          minPasses: needOpenSettle ? 3 : 1,
+          minWallMs: needOpenSettle ? 100 : 0,
+          maxWallMs: needOpenSettle ? POINTER_UI_OPEN_MAX_WALL_MS : 0,
+          // Scale is Transform.scale via main Tween — needs phase-4 CRDT first, not onUpdate thrash.
+          driveSceneOnUpdate: false
         })
 
         if (isRefuseFreezeWrites()) {
@@ -1181,6 +1494,13 @@ export async function runSceneEnginePointerTick(
         }
 
         runPointerUiPhase4Egress(eng)
+        if (needOpenSettle && uiOpenPoseBlocked(eng)) {
+          cfg.log(
+            `[sceneWorker] pointer mesh phase-4 mid-open — mount=${countWorkerUiMount(eng)} ` +
+              `seeds=[${sampleOpenPoseMicroSeeds(eng)}] → open-scale finish loop`
+          )
+          await finishOpenScaleAfterPhase4(eng, cfg.log)
+        }
         // No mesh hold — cooperative dirty must keep advancing scale / dual-root after snapshot.
         await runPointerNonUiPhase(eng)
       }

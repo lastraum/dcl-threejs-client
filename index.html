@@ -3423,6 +3423,52 @@
         font-size: 12px;
         line-height: 1.4;
         color: rgba(221, 214, 254, 0.78);
+        max-height: 9em;
+        overflow: auto;
+        word-break: break-word;
+      }
+      .petbarn-overlay__error-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        background: rgba(244, 63, 94, 0.2);
+        border: 1px solid rgba(251, 113, 133, 0.55);
+        color: #fda4af;
+        font-size: 20px;
+        font-weight: 800;
+        line-height: 1;
+      }
+      .petbarn-overlay__error-icon[hidden] {
+        display: none !important;
+      }
+      .petbarn-overlay__card.is-error {
+        border-color: rgba(251, 113, 133, 0.45);
+        background: rgba(60, 20, 40, 0.92);
+      }
+      .petbarn-overlay.is-error {
+        background: rgba(18, 8, 16, 0.82);
+      }
+      .petbarn-overlay__dismiss {
+        appearance: none;
+        margin-top: 4px;
+        border: 1px solid rgba(196, 181, 253, 0.45);
+        background: rgba(139, 92, 246, 0.35);
+        color: #fff;
+        border-radius: 10px;
+        padding: 8px 16px;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .petbarn-overlay__dismiss:hover {
+        filter: brightness(1.08);
+      }
+      .petbarn-overlay__dismiss[hidden] {
+        display: none !important;
       }
       .petbarn-panel.is-publish-locked .pets-panel__close,
       .petbarn-panel.is-publish-locked .pets-panel__back {

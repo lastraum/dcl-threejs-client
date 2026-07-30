@@ -99,7 +99,8 @@ export async function submitPetBarnListing(
       }
     }
     if (!res.ok) {
-      return { ok: false, error: body.error || `Publish failed (${res.status})` }
+      const raw = body.error || `Publish failed (${res.status})`
+      return { ok: false, error: friendlyPublishError(raw, res.status) }
     }
     if (!body.id) {
       return { ok: false, error: 'Publish succeeded but no id returned' }
@@ -116,4 +117,32 @@ export async function submitPetBarnListing(
       error: err instanceof Error ? err.message : 'Network error'
     }
   }
+}
+
+function friendlyPublishError(raw: string, status: number): string {
+  const msg = raw.trim() || `Publish failed (${status})`
+  const lower = msg.toLowerCase()
+  if (
+    status === 401 ||
+    lower.includes('bad credentials') ||
+    lower.includes('requires authentication')
+  ) {
+    return (
+      'GitHub rejected the publish token (Bad credentials). ' +
+      'In Cloudflare → Worker → Settings → Secrets, set PETBARN_GITHUB_TOKEN to a valid ' +
+      'fine-grained PAT with Contents: Read/Write on lastraum/petbarn, then redeploy the Worker.'
+    )
+  }
+  if (status === 403 || lower.includes('resource not accessible') || lower.includes('forbidden')) {
+    return (
+      'GitHub denied write access. Check that PETBARN_GITHUB_TOKEN can write to ' +
+      'lastraum/petbarn (Contents: Read and write) and that the secret name is exact.'
+    )
+  }
+  if (status === 503 || lower.includes('petbarn_github_token secret not set')) {
+    return (
+      'Publish Worker is missing PETBARN_GITHUB_TOKEN. Add it under Cloudflare Worker secrets and redeploy.'
+    )
+  }
+  return msg
 }

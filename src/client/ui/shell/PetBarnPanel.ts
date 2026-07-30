@@ -63,10 +63,16 @@ export class PetBarnPanel {
   private readonly bodyEl: HTMLElement
   private readonly statusEl: HTMLElement
   private readonly overlayEl: HTMLElement
+  private readonly overlayCardEl: HTMLElement
+  private readonly overlaySpinnerEl: HTMLElement
+  private readonly overlayTitleEl: HTMLElement
   private readonly overlayTextEl: HTMLElement
+  private readonly overlayDismissEl: HTMLButtonElement
   private readonly closeBtn: HTMLButtonElement
   private readonly myPetsBtn: HTMLButtonElement
   private readonly onKeyDown: (ev: KeyboardEvent) => void
+  /** Center overlay: loading (blocks UI) or error (dismissible). */
+  private overlayMode: 'none' | 'loading' | 'error' = 'none'
 
   constructor(private readonly options: PetBarnPanelOptions) {
     this.element = document.createElement('div')
@@ -85,10 +91,14 @@ export class PetBarnPanel {
         <p class="pets-panel__status" data-status hidden></p>
         <div class="pets-panel__body petbarn-body" data-body></div>
         <div class="petbarn-overlay" data-publish-overlay hidden>
-          <div class="petbarn-overlay__card" role="status" aria-live="polite">
-            <div class="petbarn-overlay__spinner" aria-hidden="true"></div>
+          <div class="petbarn-overlay__card" role="status" aria-live="polite" data-overlay-card>
+            <div class="petbarn-overlay__spinner" data-overlay-spinner aria-hidden="true"></div>
+            <div class="petbarn-overlay__error-icon" data-overlay-error-icon hidden aria-hidden="true">!</div>
             <p class="petbarn-overlay__title" data-overlay-title>Publishing…</p>
             <p class="petbarn-overlay__text" data-overlay-text>Please wait</p>
+            <button type="button" class="petbarn-overlay__dismiss" data-overlay-dismiss hidden>
+              Dismiss
+            </button>
           </div>
         </div>
       </div>
@@ -97,7 +107,11 @@ export class PetBarnPanel {
     this.bodyEl = this.element.querySelector('[data-body]')!
     this.statusEl = this.element.querySelector('[data-status]')!
     this.overlayEl = this.element.querySelector('[data-publish-overlay]')!
+    this.overlayCardEl = this.element.querySelector('[data-overlay-card]')!
+    this.overlaySpinnerEl = this.element.querySelector('[data-overlay-spinner]')!
+    this.overlayTitleEl = this.element.querySelector('[data-overlay-title]')!
     this.overlayTextEl = this.element.querySelector('[data-overlay-text]')!
+    this.overlayDismissEl = this.element.querySelector('[data-overlay-dismiss]')!
     this.closeBtn = this.element.querySelector('[data-close]')!
     this.myPetsBtn = this.element.querySelector('[data-my-pets]')!
 
@@ -107,15 +121,21 @@ export class PetBarnPanel {
       this.hide()
       this.options.onOpenMyPets?.()
     })
+    this.overlayDismissEl.addEventListener('click', () => this.dismissOverlay())
     this.bodyEl.addEventListener('click', (ev) => void this.onBodyClick(ev))
     this.bodyEl.addEventListener('change', (ev) => this.onBodyChange(ev))
     this.bodyEl.addEventListener('input', (ev) => this.onBodyInput(ev))
 
     this.onKeyDown = (ev) => {
       if (ev.key !== 'Escape' || !this.visible) return
-      if (this.publishLocked) {
+      if (this.overlayMode === 'loading') {
         ev.preventDefault()
         ev.stopPropagation()
+        return
+      }
+      if (this.overlayMode === 'error') {
+        ev.preventDefault()
+        this.dismissOverlay()
         return
       }
       if (this.view === 'publish') {
@@ -137,7 +157,7 @@ export class PetBarnPanel {
   }
 
   dispose(): void {
-    this.setPublishLocked(false)
+    this.clearOverlay()
     this.hide()
     this.element.remove()
   }
@@ -170,6 +190,7 @@ export class PetBarnPanel {
   hide(): void {
     if (!this.visible) return
     if (this.publishLocked) return
+    if (this.overlayMode === 'error') this.dismissOverlay()
     this.visible = false
     this.element.hidden = true
     window.removeEventListener('keydown', this.onKeyDown)
@@ -177,27 +198,67 @@ export class PetBarnPanel {
     this.options.onClose?.()
   }
 
-  private setPublishLocked(locked: boolean, overlayText?: string): void {
+  private setPublishLocked(locked: boolean): void {
     const was = this.publishLocked
     this.publishLocked = locked
     this.panelEl.classList.toggle('is-publish-locked', locked)
-    this.overlayEl.hidden = !locked
     this.closeBtn.disabled = locked
     this.myPetsBtn.disabled = locked
     this.closeBtn.setAttribute('aria-disabled', locked ? 'true' : 'false')
     this.myPetsBtn.setAttribute('aria-disabled', locked ? 'true' : 'false')
-    if (locked && overlayText) this.setOverlayMessage(overlayText)
-    if (!locked) {
-      const title = this.overlayEl.querySelector<HTMLElement>('[data-overlay-title]')
-      if (title) title.textContent = 'Publishing…'
-    }
     if (was !== locked) this.options.onPublishLockChange?.(locked)
   }
 
-  private setOverlayMessage(text: string, title = 'Publishing…'): void {
-    const titleEl = this.overlayEl.querySelector<HTMLElement>('[data-overlay-title]')
-    if (titleEl) titleEl.textContent = title
+  private showLoadingOverlay(text: string, title = 'Publishing…'): void {
+    this.overlayMode = 'loading'
+    this.overlayEl.hidden = false
+    this.overlayEl.classList.remove('is-error')
+    this.overlayCardEl.classList.remove('is-error')
+    this.overlaySpinnerEl.hidden = false
+    const errIcon = this.overlayEl.querySelector<HTMLElement>('[data-overlay-error-icon]')
+    if (errIcon) errIcon.hidden = true
+    this.overlayDismissEl.hidden = true
+    this.overlayTitleEl.textContent = title
     this.overlayTextEl.textContent = text
+    this.setPublishLocked(true)
+  }
+
+  private showErrorOverlay(message: string, title = 'Publish failed'): void {
+    this.overlayMode = 'error'
+    this.overlayEl.hidden = false
+    this.overlayEl.classList.add('is-error')
+    this.overlayCardEl.classList.add('is-error')
+    this.overlaySpinnerEl.hidden = true
+    const errIcon = this.overlayEl.querySelector<HTMLElement>('[data-overlay-error-icon]')
+    if (errIcon) errIcon.hidden = false
+    this.overlayDismissEl.hidden = false
+    this.overlayTitleEl.textContent = title
+    this.overlayTextEl.textContent = message
+    // Unlock HUD / nav so user can leave; overlay stays until dismiss
+    this.setPublishLocked(false)
+    this.setStatus('')
+  }
+
+  private setOverlayMessage(text: string, title = 'Publishing…'): void {
+    if (this.overlayMode !== 'loading') return
+    this.overlayTitleEl.textContent = title
+    this.overlayTextEl.textContent = text
+  }
+
+  private dismissOverlay(): void {
+    this.clearOverlay()
+  }
+
+  private clearOverlay(): void {
+    this.overlayMode = 'none'
+    this.overlayEl.hidden = true
+    this.overlayEl.classList.remove('is-error')
+    this.overlayCardEl.classList.remove('is-error')
+    this.overlaySpinnerEl.hidden = false
+    const errIcon = this.overlayEl.querySelector<HTMLElement>('[data-overlay-error-icon]')
+    if (errIcon) errIcon.hidden = true
+    this.overlayDismissEl.hidden = true
+    this.setPublishLocked(false)
   }
 
   private startPoll(): void {
@@ -692,13 +753,17 @@ export class PetBarnPanel {
     const thumb =
       this.thumbFile ||
       (form.querySelector<HTMLInputElement>('[data-thumb]')?.files?.[0] ?? null)
+    if (!petName.trim() || !creatorName.trim()) {
+      this.showErrorOverlay('Pet name and creator name are required.', 'Missing info')
+      return
+    }
     if (!glb || !thumb) {
-      this.setStatus('GLB and thumbnail are required')
+      this.showErrorOverlay('Add a GLB model and a thumbnail image before publishing.', 'Missing files')
       return
     }
 
     this.busy = true
-    this.setPublishLocked(true, 'Compressing thumbnail & uploading…')
+    this.showLoadingOverlay('Compressing thumbnail & uploading…')
     const submitBtn = form.querySelector<HTMLButtonElement>('[data-publish-submit]')
     if (submitBtn) submitBtn.disabled = true
 
@@ -712,8 +777,7 @@ export class PetBarnPanel {
         wallet: this.wallet() || undefined
       })
       if (!result.ok) {
-        this.setPublishLocked(false)
-        this.setStatus(result.error)
+        this.showErrorOverlay(result.error, 'Publish failed')
         return
       }
 
@@ -727,8 +791,8 @@ export class PetBarnPanel {
 
       const listed = await this.waitForCatalogListing(result.id)
       if (listed) {
+        this.clearOverlay()
         this.setStatus(`${listed.petName} is live in the Pet Barn.`)
-        this.setPublishLocked(false)
         this.view = 'catalog'
         this.searchQuery = ''
         this.filter = 'all'
@@ -739,7 +803,7 @@ export class PetBarnPanel {
       }
 
       // Timeout — still unlock; pet may appear on next poll
-      this.setPublishLocked(false)
+      this.clearOverlay()
       this.setStatus(
         `Queued ${result.id}, but catalog is still updating. Stay open or check back in a minute.`
       )
@@ -747,8 +811,7 @@ export class PetBarnPanel {
       await this.refreshCatalog()
       this.renderCatalog()
     } catch (err) {
-      this.setPublishLocked(false)
-      this.setStatus(err instanceof Error ? err.message : 'Publish failed')
+      this.showErrorOverlay(err instanceof Error ? err.message : 'Publish failed', 'Publish failed')
     } finally {
       this.busy = false
       if (submitBtn) submitBtn.disabled = false

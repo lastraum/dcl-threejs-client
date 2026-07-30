@@ -317,16 +317,22 @@ export function alignParkedModalTwinBoxes(
   let n = 0
 
   if (onScreen.length && offRight.length) {
-    // Parked content twin(s) + on-screen shell. Move *all* texture-bearing off-right
-    // panels with one shared dx/dy (inventory + vending may be separate large abs roots —
-    // per-panel dx stacked them on the shell and left "half shop" / missing icons).
-    const shell = [...onScreen].sort((a, b) => a.tex - b.tex || a.box.left - b.box.left)[0]!
+    // Parked content + on-screen shell. Pick shell by similar size to content (shop≈1460),
+    // not the global leanest on-screen panel — a tutorial (~700) on-screen must not become
+    // the shell (that aligned shop onto tutorial and hid vending).
     const richOff = offRight.filter((r) => r.tex >= 8)
     if (!richOff.length) return 0
+    const primary = [...richOff].sort((a, b) => b.tex - a.tex)[0]!
+    const sizeOk = (s: (typeof onScreen)[0]) =>
+      s.box.width >= primary.box.width * 0.55 &&
+      s.box.width <= primary.box.width * 1.45 &&
+      s.box.height >= primary.box.height * 0.45
+    const shellCandidates = onScreen.filter(sizeOk)
+    if (!shellCandidates.length) return 0
+    const shell = [...shellCandidates].sort((a, b) => a.tex - b.tex || a.box.left - b.box.left)[0]!
     const maxOffTex = Math.max(...richOff.map((r) => r.tex))
     if (maxOffTex < shell.tex + 5 && shell.tex > 3) return 0
 
-    const primary = [...richOff].sort((a, b) => b.tex - a.tex)[0]!
     const dx = shell.box.left - primary.box.left
     const dy = shell.box.top - primary.box.top
     if (Math.abs(dx) >= 8 || Math.abs(dy) >= 8) {

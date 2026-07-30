@@ -798,6 +798,33 @@ function largeModalContentStillParked(eng: IEngine): boolean {
   return onScreen > 0 && offRight > 0
 }
 
+/** True while open pose is only micro absolute panels (scale-from-zero still in flight). */
+function uiOpenPoseStillMicro(eng: IEngine): boolean {
+  const UiTransform = resolveWorkerUiTransform(eng)
+  let micro = 0
+  let full = 0
+  for (const [_entity] of eng.getEntitiesWith(UiTransform)) {
+    const t = UiTransform.getOrNull(_entity) as {
+      positionType?: number
+      width?: number
+      height?: number
+      widthUnit?: number
+      heightUnit?: number
+    } | null
+    if (!t) continue
+    if ((t.positionType ?? 0) !== 1 /* ABSOLUTE */) continue
+    const wUnit = t.widthUnit ?? 0
+    const hUnit = t.heightUnit ?? 0
+    if (wUnit !== 1 && wUnit !== 0) continue
+    if (hUnit !== 1 && hUnit !== 0) continue
+    const w = t.width ?? 0
+    const h = t.height ?? 0
+    if (w >= 4 && h >= 4 && w <= 48 && h <= 48) micro++
+    else if (w >= 200 && h >= 200 && w < 1800) full++
+  }
+  return micro > 0 && full === 0
+}
+
 async function flushReactEcsForUiSnapshot(
   eng: IEngine,
   log: (message: string) => void,
@@ -836,17 +863,23 @@ async function flushReactEcsForUiSnapshot(
     const mount = countWorkerUiMount(eng)
     const fp = computeWorkerUiFingerprint(eng)
     const wall = performance.now() - t0
+    const parked = largeModalContentStillParked(eng)
+    const micro = uiOpenPoseStillMicro(eng)
     log(
       `[sceneWorker] pointer ui react-ecs flush pass=${pass + 1}/${maxPasses} mount=${mount} ` +
         `fp=${fp.length}B dt=${dt.toFixed(3)} wall=${wall.toFixed(0)}ms` +
-        `${largeModalContentStillParked(eng) ? ' parkedHint' : ''}`
+        `${parked ? ' parked' : ''}${micro ? ' micro' : ''}`
     )
     if (prevFp && fp === prevFp) {
       stablePasses++
+      // Pose not ready: keep simulating even if fingerprint bytes look stable
+      // (scale/slide driven by wall-clock / systems that lag the fingerprint).
       if (
         stablePasses >= stableNeeded &&
         pass + 1 >= minPasses &&
-        wall >= minWallMs
+        wall >= minWallMs &&
+        !parked &&
+        !micro
       ) {
         return
       }
@@ -984,15 +1017,15 @@ export async function runSceneEnginePointerTick(
         const mountShrunk = mountAfterUp < mountAfterDownUpdate
         setPointerInteractiveTickActive(true)
         if (!mountGrew && !mountShrunk) {
-          // Inventory slot select / scale-pop: need positive dt or the click scale never plays.
+          // Selection only: one/two reconcile passes, dt=0. Positive-dt multipass advanced
+          // scene time and collapsed open menus (797→728) when clicking in-UI chrome.
+          // Slot scale animation continues on cooperative ticks after inject complete.
           const selectSeed = computeWorkerUiFingerprint(eng)
           await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
-            maxPasses: 6,
+            maxPasses: 2,
             seedFp: selectSeed,
             stableNeeded: 1,
-            dt: POINTER_UI_OPEN_DT,
-            minPasses: 2,
-            minWallMs: 80
+            dt: 0
           })
           cfg.log(
             `[sceneWorker] pointer sceneUi selection settle — mount=${mountAfterUp} seed=${selectSeed.length}B`
@@ -1016,9 +1049,10 @@ export async function runSceneEnginePointerTick(
         // Neurolink: short hold only so residual PE cannot toggle closed. Keep short so
         // scale/fade systems still run (long hold froze tutorial / welcome).
         if (mountGrew) {
-          holdCooperativeReactEcs(4)
+          // Tiny hold only for Neurolink toggle thrash — long holds freeze scale/open.
+          holdCooperativeReactEcs(2)
           cfg.log(
-            `[sceneWorker] pointer phase-4 hold — mount=${countWorkerUiMount(eng)} hold=4 ` +
+            `[sceneWorker] pointer phase-4 hold — mount=${countWorkerUiMount(eng)} hold=2 ` +
               `texts=[${sampleWorkerUiTexts(eng)}] (menu open)`
           )
         } else {
@@ -1060,7 +1094,7 @@ export async function runSceneEnginePointerTick(
             `mount=${mountBeforeDown}→${meshMount}${mountGrewMesh ? ' open' : ''}`
         )
         await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
-          maxPasses: POINTER_UI_OPEN_FLUSH_MAX_PASSES,
+          maxPasses: mountGrewMesh ? 16 : POINTER_UI_OPEN_FLUSH_MAX_PASSES,
           seedFp: meshSeedFp,
           stableNeeded: POINTER_UI_OPEN_STABLE_NEEDED,
           dt: POINTER_UI_OPEN_DT,

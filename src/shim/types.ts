@@ -85,6 +85,11 @@ export type SceneWorkerCrdtOutbound = {
   uiEntities?: number[]
   /** Pointer mount batch — plain component values; bypasses CRDT wire deserialize on main. */
   uiMountSnapshot?: WorkerUiMountSnapshotRow[]
+  /**
+   * True for pointer phase-4 full open/reshow snapshots only.
+   * Cooperative dirty snapshots omit this — steady Patch must not Forest every dirty tick.
+   */
+  uiMountFullPaint?: boolean
 }
 
 export type SceneWorkerReady = {

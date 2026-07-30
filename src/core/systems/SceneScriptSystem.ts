@@ -230,6 +230,7 @@ export class SceneScriptSystem {
     data: Uint8Array
     uiEntities?: number[]
     uiMountSnapshot?: WorkerUiMountSnapshotRow[]
+    uiMountFullPaint?: boolean
   }[] = []
   private crdtOutboundFlushQueued = false
   readonly reserved = new ReservedEntitiesSync(this.projection, this.readComponents, SDK_RESERVED)
@@ -405,6 +406,7 @@ export class SceneScriptSystem {
     data: Uint8Array
     uiEntities?: number[]
     uiMountSnapshot?: WorkerUiMountSnapshotRow[]
+    uiMountFullPaint?: boolean
   }[] = []
   /** setUiRenderer virtual canvas — may arrive before SceneUiBridge exists. */
   private pendingVirtualCanvas: { width: number; height: number } | null = null
@@ -2324,7 +2326,8 @@ export class SceneScriptSystem {
         id: msg.id,
         data: msg.data,
         uiEntities: msg.uiEntities,
-        uiMountSnapshot: msg.uiMountSnapshot
+        uiMountSnapshot: msg.uiMountSnapshot,
+        uiMountFullPaint: msg.uiMountFullPaint
       })
       return
     }
@@ -2376,6 +2379,7 @@ export class SceneScriptSystem {
     data: Uint8Array
     uiEntities?: number[]
     uiMountSnapshot?: WorkerUiMountSnapshotRow[]
+    uiMountFullPaint?: boolean
   }): void {
     // Hold non-UI pointer chunks until the atomic uiEntities egress arrives.
     if (this.pointerAwaitingWorkerApply && item.uiEntities === undefined) {
@@ -2432,6 +2436,7 @@ export class SceneScriptSystem {
       data: Uint8Array
       uiEntities?: number[]
       uiMountSnapshot?: WorkerUiMountSnapshotRow[]
+      uiMountFullPaint?: boolean
     }[]
   ): Promise<void> {
     const ackIds = batch.map((item) => item.id).filter((id): id is number => id !== undefined)
@@ -2485,6 +2490,7 @@ export class SceneScriptSystem {
       data: Uint8Array
       uiEntities?: number[]
       uiMountSnapshot?: WorkerUiMountSnapshotRow[]
+      uiMountFullPaint?: boolean
     }[]
   ): Promise<Uint8Array[]> {
     const hasPayload = batch.some((item) => item.data?.byteLength > 0)
@@ -2505,9 +2511,11 @@ export class SceneScriptSystem {
       ])
       let batchTouchesUi = false
       const uiTransformId = UiTransform.componentId
-      const latestUiMountSnapshot = [...batch]
+      const latestUiMountItem = [...batch]
         .reverse()
-        .find((item) => item.uiMountSnapshot !== undefined)?.uiMountSnapshot
+        .find((item) => item.uiMountSnapshot !== undefined)
+      const latestUiMountSnapshot = latestUiMountItem?.uiMountSnapshot
+      const uiMountFullPaint = latestUiMountItem?.uiMountFullPaint === true
       const hasUiMountSnapshot = latestUiMountSnapshot !== undefined
       /** Mount authority: structured snapshot, or hydration wire emit — never bare uiEntities metadata on play batches. */
       const latestUiEntities = this.resolveOutboundBatchMountEntities(batch, hasUiMountSnapshot)
@@ -2574,7 +2582,9 @@ export class SceneScriptSystem {
         if (latestUiMountSnapshot !== undefined && latestUiMountSnapshot.length > 0) {
           projectionDeletes.length = 0
           this.projection.changes.length = 0
-          this.sceneUiBridge?.ingestMountSnapshot(latestUiMountSnapshot)
+          this.sceneUiBridge?.ingestMountSnapshot(latestUiMountSnapshot, {
+            forceFullPaint: uiMountFullPaint
+          })
           this.projection.applyWorkerUiMountSnapshot(
             latestUiMountSnapshot.map((row) => ({
               entity: row.entity as Entity,
@@ -2587,7 +2597,7 @@ export class SceneScriptSystem {
         } else if (hasUiMountSnapshot) {
           // Empty mount snapshot (welcome unmount) — still touch UI so commitMountSet([]) runs.
           projectionDeletes.length = 0
-          this.sceneUiBridge?.ingestMountSnapshot([])
+          this.sceneUiBridge?.ingestMountSnapshot([], { forceFullPaint: true })
           batchTouchesUi = true
         }
       } finally {

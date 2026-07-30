@@ -1085,23 +1085,29 @@ export async function runSceneEnginePointerTick(
         // (scale, dual-root slide). No menu classification. Early-exit when stable.
         const meshSeedFp = computeWorkerUiFingerprint(eng)
         const meshMount = countWorkerUiMount(eng)
-        // Open settle when mount grew OR a substantial UI is already mounted (tutorial
-        // re-click: 121→121 was already in ECS but invisible — short flush never showed it).
+        // Open settle when mount grew, substantial UI present (reshow), or pose not ready.
+        // Facts only — no shop/tutorial kinds. Exit as soon as fp stable + !parked + !micro
+        // (no wall tax once pose ready).
         const mountGrewMesh = meshMount > mountBeforeDown + 8
         const substantialUi = meshMount >= 60
-        const needOpenSettle = mountGrewMesh || substantialUi
+        const poseNotReady =
+          largeModalContentStillParked(eng) || uiOpenPoseStillMicro(eng)
+        const needOpenSettle = mountGrewMesh || substantialUi || poseNotReady
         cfg.log(
           `[sceneWorker] pointer ui flush — post-UP seed=${meshSeedFp.length}B ` +
             `mount=${mountBeforeDown}→${meshMount}` +
-            `${mountGrewMesh ? ' grew' : ''}${substantialUi && !mountGrewMesh ? ' reshow' : ''}`
+            `${mountGrewMesh ? ' grew' : ''}` +
+            `${substantialUi && !mountGrewMesh ? ' reshow' : ''}` +
+            `${poseNotReady ? ' poseWait' : ''}`
         )
         await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
-          maxPasses: needOpenSettle ? 20 : POINTER_UI_OPEN_FLUSH_MAX_PASSES,
+          maxPasses: needOpenSettle ? 20 : 4,
           seedFp: meshSeedFp,
-          stableNeeded: POINTER_UI_OPEN_STABLE_NEEDED,
-          dt: POINTER_UI_OPEN_DT,
-          minPasses: needOpenSettle ? 6 : 1,
-          minWallMs: needOpenSettle ? 400 : 0
+          stableNeeded: needOpenSettle ? POINTER_UI_OPEN_STABLE_NEEDED : 1,
+          dt: needOpenSettle ? POINTER_UI_OPEN_DT : 0,
+          // Only force multi-pass when pose not ready; otherwise fingerprint can early-exit.
+          minPasses: poseNotReady ? 4 : needOpenSettle ? 2 : 1,
+          minWallMs: poseNotReady ? 200 : 0
         })
 
         if (isRefuseFreezeWrites()) {

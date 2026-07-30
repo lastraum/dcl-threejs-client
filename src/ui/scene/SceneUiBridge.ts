@@ -286,28 +286,39 @@ export class SceneUiBridge {
   }
 
   /**
-   * Pointer phase-4 structured mount — feed DOM paint + hit tests before projection fold.
-   * SCENE_UI_COD PE law: any fresh snapshot clears liveSeen (reopen / recycled ids).
+   * Structured mount snapshot — PE lag-fill + optional full paint invalidate.
+   * COD: clear liveSeen on any ingest. Full Forest only for pointer phase-4 / empty unmount
+   * (`forceFullPaint`). Cooperative dirty must NOT wipe layout/visual keys (steady Patch).
    */
-  ingestMountSnapshot(rows: readonly WorkerUiMountSnapshotRow[]): void {
-    this.mountSnapshotPointerEvents.clear()
+  ingestMountSnapshot(
+    rows: readonly WorkerUiMountSnapshotRow[],
+    opts?: { forceFullPaint?: boolean }
+  ): void {
+    const forceFull = opts?.forceFullPaint === true
+    if (forceFull || rows.length === 0) {
+      this.mountSnapshotPointerEvents.clear()
+    }
     this.livePointerEventsSeen.clear()
     for (const row of rows) {
       if (row.componentId !== POINTER_EVENTS_COMPONENT_ID) continue
       const entity = row.entity as Entity
       this.mountSnapshotPointerEvents.set(entity, row.value)
     }
-    // Pointer phase-4 always forces a full paint path — same mount entity set (tutorial
-    // already open but invisible / paginate) early-out on lastPaint* keys and never shows.
-    this.lastPaintLayoutKey = ''
-    this.lastPaintVisualKey = ''
-    this.lastEntityVisualKeys.clear()
-    this.lastEntityLayoutKeys.clear()
-    this.lastLayoutBoxMap = null
-    this.lastFullLayoutBoxes = null
-    this.layoutCache.clear()
-    this.paintCount = 0
-    this.firstPaintLogged = false
+    if (forceFull) {
+      // Phase-4 open/reshow — same mount entity set must still Forest (no key early-out).
+      this.lastPaintLayoutKey = ''
+      this.lastPaintVisualKey = ''
+      this.lastEntityVisualKeys.clear()
+      this.lastEntityLayoutKeys.clear()
+      this.lastLayoutBoxMap = null
+      this.lastFullLayoutBoxes = null
+      this.layoutCache.clear()
+      this.paintCount = 0
+      this.firstPaintLogged = false
+      this.paintedEpoch = -1
+      this.stableVisibleStreak = 0
+      this.lastStableVisibleCount = 0
+    }
     this.markContentDirty()
   }
 
@@ -876,12 +887,19 @@ export class SceneUiBridge {
         }
       }
     }
-    // PE chrome (X / pagination) often co-changes with page content; patching only a
-    // content seed left chrome display:none after page flip.
-    let peChromeDirty = false
-    for (const e of dirtySeeds) {
-      if (hasUiPointerDownOrUp(this.pointerEventsLookup(e))) {
-        peChromeDirty = true
+    // Sticky hide recovery: PE chrome still has ECS PE + good Yoga box but DOM left
+    // display:none/uiUnusable after scale-open or cousin Patch skip → force Forest.
+    let peChromeStickyHidden = false
+    for (const e of mounted) {
+      if (!hasUiPointerDownOrUp(this.pointerEventsLookup(e))) continue
+      const box = layoutBoxMap.get(e)
+      if (!box || box.width < 8 || box.height < 8) continue
+      const node = this.dom.getNode(e)
+      if (
+        node &&
+        (node.dataset.uiUnusable === '1' || node.style.display === 'none')
+      ) {
+        peChromeStickyHidden = true
         break
       }
     }
@@ -891,7 +909,7 @@ export class SceneUiBridge {
       this.paintCount > 1 &&
       localDirty &&
       !scaleExpand &&
-      !peChromeDirty &&
+      !peChromeStickyHidden &&
       dirtyEntities.length <= patchBudget &&
       collapsedVisible <= 8 &&
       missingVisible.length === 0 &&

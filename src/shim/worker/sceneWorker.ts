@@ -275,6 +275,8 @@ const pointerDeferredNonUi: Uint8Array[] = []
 /** Structured UI mount from pointer phase 4 — flushed atomically with uiEntities. */
 let pointerUiMountSnapshot: import('./workerSceneUiCrdtOutbound').WorkerUiMountSnapshotRow[] | null = null
 let pointerUiMountEgressPending = false
+/** Phase-4 pointer open/reshow only — main must Forest-paint (not cooperative thrash). */
+let pointerUiMountFullPaint = false
 /** After scene-play-ready, main rAF posts play-frame-tick (interval only drains queues). */
 let playFrameTickMainDriven = false
 /**
@@ -463,6 +465,7 @@ function clearPointerEgressBuffers(): void {
   pointerDeferredNonUi.length = 0
   pointerUiMountSnapshot = null
   pointerUiMountEgressPending = false
+  pointerUiMountFullPaint = false
 }
 
 function endPointerInputSessionAfterMountResume(): void {
@@ -563,8 +566,10 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
   }
   const uiSnapshot = pointerUiMountSnapshot
   const uiMountPending = pointerUiMountEgressPending
+  const uiFullPaint = pointerUiMountFullPaint
   pointerUiMountSnapshot = null
   pointerUiMountEgressPending = false
+  pointerUiMountFullPaint = false
   const snapshotMountIds =
     uiSnapshot?.length ? extractSnapshotMountEntityIds(uiSnapshot) : []
   const uiEntities = snapshotMountIds.length ? snapshotMountIds : collectWorkerUiEntityIds()
@@ -573,7 +578,11 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
 
   const postOutbound = (
     data: Uint8Array,
-    attachUi?: { uiEntities: number[]; uiMountSnapshot?: typeof uiSnapshot }
+    attachUi?: {
+      uiEntities: number[]
+      uiMountSnapshot?: typeof uiSnapshot
+      uiMountFullPaint?: boolean
+    }
   ): void => {
     const id = ++outboundAckId
     ackWaits.push(
@@ -595,7 +604,8 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
           id,
           data,
           uiEntities: attachUi.uiEntities,
-          ...(attachUi.uiMountSnapshot?.length ? { uiMountSnapshot: attachUi.uiMountSnapshot } : {})
+          ...(attachUi.uiMountSnapshot?.length ? { uiMountSnapshot: attachUi.uiMountSnapshot } : {}),
+          ...(attachUi.uiMountFullPaint ? { uiMountFullPaint: true } : {})
         } satisfies SceneWorkerOutbound)
       : ({ type: 'crdt-outbound', id, data } satisfies SceneWorkerOutbound)
     logSceneUiOutbound(data, attachUi?.uiEntities, attachUi?.uiMountSnapshot?.length ?? 0)
@@ -611,7 +621,8 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
     lastOutboundUiEntitiesKey = uiKey
     postOutbound(new Uint8Array(0), {
       uiEntities,
-      uiMountSnapshot: uiSnapshot ?? []
+      uiMountSnapshot: uiSnapshot ?? [],
+      uiMountFullPaint: uiFullPaint
     })
     workerLog(
       'log',
@@ -1265,6 +1276,8 @@ initSceneEngineScheduler({
   queuePointerUiEgress: (snapshot) => {
     pointerUiMountSnapshot = snapshot
     pointerUiMountEgressPending = true
+    // Phase-4 open/reshow — main Forest paints once (cooperative dirty does not set this).
+    pointerUiMountFullPaint = true
   },
   postUiMountSnapshot: (snapshot, mountEntityIds) => {
     // Prefer explicit full mount list — empty is valid (welcome unmount → mount=[]).
@@ -1277,6 +1290,7 @@ initSceneEngineScheduler({
           : []
     lastOutboundUiEntitiesKey = uiEntities.join(',')
     logSceneUiOutbound(new Uint8Array(0), uiEntities, snapshot.length)
+    // Cooperative dirty: no uiMountFullPaint — steady Patch must not Forest every tick.
     ctx.postMessage({
       type: 'crdt-outbound',
       data: new Uint8Array(0),

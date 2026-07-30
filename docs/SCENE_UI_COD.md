@@ -45,12 +45,13 @@ PointerEvents             →     hit-map + --interactive
 | Phase | Behavior |
 |-------|----------|
 | **Hydration** | Commit mount only — no Yoga/DOM thrash |
-| **Pointer open (UI PE)** | Full touch + snapshot after fingerprint stable |
-| **Pointer open (mesh PE, mount ≥ 100)** | Flush with **dt≈1/20**, max ~24 passes, **stableNeeded=3** (fingerprint includes position — open tweens must finish) |
-| **Pointer open (mesh PE, small)** | dt=0, few passes, stableNeeded=1 |
-| **Cooperative dirty** | Fingerprint delta → partial snapshot → paint if dirty |
+| **Pointer open (sceneUi, mount grew)** | Flush dt≈1/20 until fingerprint stable + !parked + !micro; phase-4 **full paint** flag |
+| **Pointer open (mesh, grew / mount≥60 / poseWait)** | Same settle; phase-4 **uiMountFullPaint** → main Forest once |
+| **Pointer open (mesh, small)** | dt=0, ≤4 passes, stableNeeded=1 |
+| **Pointer selection (same mount)** | dt=0, ≤2 passes — never open multipass (collapses menus) |
+| **Cooperative dirty** | Fingerprint delta → partial snapshot → **no** full paint invalidate → steady Patch |
 | **Steady** | LayoutMode Reuse/RefineAbsolute; PaintMode Patch when collapsed≈0 |
-| **Remount** | Invalidate layout+visual+PE tombstones |
+| **Remount / phase-4** | Invalidate layout+visual+PE; Forest first paint |
 
 ### Why positive dt on large mesh modals (root, not bandaid)
 
@@ -142,10 +143,11 @@ Then phase-4 snapshot. Cooperative dirty after that — cousins independent.
 
 | Action | Expect |
 |--------|--------|
-| Fishing vending mesh open | Log `largeModal` + flush `dt=0.050`; content on-screen in **first** paint (grids + icons + X + UV) |
-| Inventory bag sceneUi open | Log `sceneUi largeModal open flush`; same first-paint bar |
-| Close → open | Settles again; no PE-only blocker, no blank icons |
-| Reeling bars | Reuse/RefineAbsolute, not Full every UV tick |
+| Tutorial mesh open | `grew` or `reshow` + flush `dt=0.050` until no `parked`/`micro` → snapshot → **first paint** Forest → UI visible same second |
+| Tutorial re-click mount 121→121 | `reshow` settle + full paint; not minutes of blank |
+| Paginate how-to-play | selection settle `dt=0.000`; X + page dots stay; PE remain |
+| Vending mesh open | content on-screen first paint (no twinAlign); not tutorial-only |
+| Reeling bars | Patch/RefineAbsolute, not Forest every UV tick |
 | CBD splash | PE deletes cleanly |
 
 ---

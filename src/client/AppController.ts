@@ -2544,6 +2544,9 @@ export class AppController {
 
     this.ensureDevProgressPanel()
 
+    // Warm Pet Barn catalog early so Pets → Barn is ready (and picks up new deploys).
+    void import('../pets/petBarn').then((m) => m.preloadPetBarnCatalog()).catch(() => {})
+
     if (!this.shell) {
       this.shell = new ClientShell({
         environment: world.environment,

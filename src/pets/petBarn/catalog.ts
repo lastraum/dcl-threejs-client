@@ -2,6 +2,12 @@ import { petBarnCatalogUrl } from './config'
 import type { PetBarnCatalog, PetBarnListing } from './types'
 import { normalizePetCategory } from '../petCategories'
 
+type CatalogListener = (catalog: PetBarnCatalog | null) => void
+
+let cachedCatalog: PetBarnCatalog | null = null
+let inflight: Promise<PetBarnCatalog> | null = null
+const listeners = new Set<CatalogListener>()
+
 function normalizeListing(raw: Record<string, unknown>): PetBarnListing | null {
   const id = String(raw.id ?? '').trim()
   const glbCid = String(raw.glbCid ?? '').trim()
@@ -32,20 +38,7 @@ function normalizeListing(raw: Record<string, unknown>): PetBarnListing | null {
   }
 }
 
-export async function fetchPetBarnCatalog(signal?: AbortSignal): Promise<PetBarnCatalog> {
-  const url = petBarnCatalogUrl()
-  // Cache-bust: raw.githubusercontent.com can lag; query helps some caches.
-  const sep = url.includes('?') ? '&' : '?'
-  const res = await fetch(`${url}${sep}t=${Date.now()}`, {
-    method: 'GET',
-    signal,
-    headers: { Accept: 'application/json' },
-    cache: 'no-store'
-  })
-  if (!res.ok) {
-    throw new Error(`Catalog fetch failed (${res.status})`)
-  }
-  const json = (await res.json()) as Record<string, unknown>
+function parseCatalog(json: Record<string, unknown>): PetBarnCatalog {
   const petsRaw = Array.isArray(json.pets) ? json.pets : []
   const pets: PetBarnListing[] = []
   for (const row of petsRaw) {
@@ -67,4 +60,65 @@ export async function fetchPetBarnCatalog(signal?: AbortSignal): Promise<PetBarn
     },
     pets
   }
+}
+
+function setCache(catalog: PetBarnCatalog | null): void {
+  cachedCatalog = catalog
+  for (const fn of listeners) {
+    try {
+      fn(catalog)
+    } catch (err) {
+      console.warn('[petBarn] catalog listener failed', err)
+    }
+  }
+}
+
+/** Last successfully fetched catalog (may be null before first load). */
+export function getCachedPetBarnCatalog(): PetBarnCatalog | null {
+  return cachedCatalog
+}
+
+export function subscribePetBarnCatalog(listener: CatalogListener): () => void {
+  listeners.add(listener)
+  return () => listeners.delete(listener)
+}
+
+/**
+ * Network fetch with cache-bust. Updates in-memory cache on success.
+ * Concurrent callers share one in-flight request.
+ */
+export async function fetchPetBarnCatalog(signal?: AbortSignal): Promise<PetBarnCatalog> {
+  if (inflight) return inflight
+
+  const run = (async () => {
+    const url = petBarnCatalogUrl()
+    const sep = url.includes('?') ? '&' : '?'
+    const res = await fetch(`${url}${sep}t=${Date.now()}`, {
+      method: 'GET',
+      signal,
+      headers: { Accept: 'application/json' },
+      cache: 'no-store'
+    })
+    if (!res.ok) {
+      throw new Error(`Catalog fetch failed (${res.status})`)
+    }
+    const json = (await res.json()) as Record<string, unknown>
+    const catalog = parseCatalog(json)
+    setCache(catalog)
+    return catalog
+  })()
+
+  inflight = run
+  try {
+    return await run
+  } finally {
+    if (inflight === run) inflight = null
+  }
+}
+
+/** Fire-and-forget warm on client boot. Safe to call multiple times. */
+export function preloadPetBarnCatalog(): void {
+  void fetchPetBarnCatalog().catch((err) => {
+    console.warn('[petBarn] preload catalog failed', err)
+  })
 }

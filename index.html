@@ -3494,6 +3494,12 @@
         gap: 8px;
         margin-bottom: 8px;
       }
+      .petbarn-toolbar__actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-shrink: 0;
+      }
       .petbarn-filters,
       .petbarn-type-row {
         display: flex;
@@ -3517,7 +3523,8 @@
         background: rgba(139, 92, 246, 0.35);
         border-color: rgba(167, 139, 250, 0.5);
       }
-      .petbarn-publish-chip {
+      .petbarn-publish-chip,
+      .petbarn-refresh-chip {
         flex-shrink: 0;
         appearance: none;
         border: 1px solid rgba(167, 139, 250, 0.5);
@@ -3531,8 +3538,29 @@
         font-family: inherit;
         line-height: 1.2;
       }
-      .petbarn-publish-chip:hover {
+      .petbarn-refresh-chip {
+        width: 30px;
+        height: 28px;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 15px;
+        background: rgba(139, 92, 246, 0.28);
+        border-color: rgba(167, 139, 250, 0.4);
+      }
+      .petbarn-publish-chip:hover,
+      .petbarn-refresh-chip:hover {
         filter: brightness(1.08);
+      }
+      .petbarn-refresh-chip.is-busy {
+        animation: petbarn-spin 0.8s linear infinite;
+        pointer-events: none;
+        opacity: 0.75;
+      }
+      .petbarn-refresh-chip:disabled {
+        opacity: 0.55;
+        cursor: default;
       }
       .petbarn-search-wrap {
         margin-bottom: 10px;

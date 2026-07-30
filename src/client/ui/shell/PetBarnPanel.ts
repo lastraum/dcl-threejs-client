@@ -5,6 +5,7 @@ import {
   PETBARN_POLL_MS,
   addPetFromBarn,
   fetchPetBarnCatalog,
+  getCachedPetBarnCatalog,
   isPetBarnAdded,
   petBarnContentUrl,
   submitPetBarnListing,
@@ -53,6 +54,7 @@ export class PetBarnPanel {
   private publishType: PetCategory = 'walking'
   private glbFile: File | null = null
   private thumbFile: File | null = null
+  private refreshing = false
   private readonly panelEl: HTMLElement
   private readonly bodyEl: HTMLElement
   private readonly statusEl: HTMLElement
@@ -177,6 +179,13 @@ export class PetBarnPanel {
     this.element.hidden = false
     window.addEventListener('keydown', this.onKeyDown)
     this.startPoll()
+    // Paint cached catalog immediately if warm from client boot.
+    const cached = getCachedPetBarnCatalog()
+    if (cached) {
+      this.catalog = cached
+      this.lastUpdatedAt = cached.updatedAt
+      await this.render()
+    }
     await this.refreshCatalog()
     await this.render()
   }
@@ -319,16 +328,36 @@ export class PetBarnPanel {
     return addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : ''
   }
 
-  private async refreshCatalog(): Promise<void> {
+  private async refreshCatalog(opts?: { manual?: boolean }): Promise<void> {
+    const manual = opts?.manual === true
+    if (manual) {
+      if (this.refreshing) return
+      this.refreshing = true
+      this.syncRefreshButton()
+    }
     try {
       this.catalog = await fetchPetBarnCatalog()
-      if (!this.lastUpdatedAt) this.lastUpdatedAt = this.catalog.updatedAt
+      this.lastUpdatedAt = this.catalog.updatedAt
+      if (manual) this.setStatus('')
     } catch (err) {
       console.warn('[petBarn] catalog fetch failed', err)
-      if (!this.catalog) {
-        this.setStatus(err instanceof Error ? err.message : 'Failed to load catalog')
+      const msg = err instanceof Error ? err.message : 'Failed to load catalog'
+      if (!this.catalog || manual) this.setStatus(msg)
+    } finally {
+      if (manual) {
+        this.refreshing = false
+        this.syncRefreshButton()
       }
     }
+  }
+
+  private syncRefreshButton(): void {
+    const btn = this.bodyEl.querySelector<HTMLButtonElement>('[data-refresh-catalog]')
+    if (!btn) return
+    btn.disabled = this.refreshing || this.publishLocked
+    btn.classList.toggle('is-busy', this.refreshing)
+    btn.setAttribute('aria-busy', this.refreshing ? 'true' : 'false')
+    btn.title = this.refreshing ? 'Refreshing…' : 'Refresh catalog'
   }
 
   private async render(): Promise<void> {
@@ -341,6 +370,8 @@ export class PetBarnPanel {
 
   private toolbarHtml(): string {
     const q = escapeHtml(this.searchQuery)
+    const refreshBusy = this.refreshing ? ' is-busy' : ''
+    const refreshDisabled = this.refreshing || this.publishLocked ? ' disabled' : ''
     return `
       <div class="petbarn-toolbar">
         <div class="petbarn-filters">
@@ -348,7 +379,18 @@ export class PetBarnPanel {
           <button type="button" class="petbarn-filter${this.filter === 'walking' ? ' is-active' : ''}" data-filter="walking">Walking</button>
           <button type="button" class="petbarn-filter${this.filter === 'flying' ? ' is-active' : ''}" data-filter="flying">Flying</button>
         </div>
-        <button type="button" class="petbarn-publish-chip" data-open-publish>Publish</button>
+        <div class="petbarn-toolbar__actions">
+          <button
+            type="button"
+            class="petbarn-refresh-chip${refreshBusy}"
+            data-refresh-catalog
+            title="${this.refreshing ? 'Refreshing…' : 'Refresh catalog'}"
+            aria-label="Refresh catalog"
+            aria-busy="${this.refreshing ? 'true' : 'false'}"
+            ${refreshDisabled}
+          >↻</button>
+          <button type="button" class="petbarn-publish-chip" data-open-publish>Publish</button>
+        </div>
       </div>
       <div class="petbarn-search-wrap">
         <input
@@ -725,6 +767,11 @@ export class PetBarnPanel {
 
     if (this.publishLocked) return
 
+    if (t.closest('[data-refresh-catalog]')) {
+      void this.handleManualRefresh()
+      return
+    }
+
     if (t.closest('[data-open-publish]')) {
       this.view = 'publish'
       void this.render()
@@ -777,6 +824,14 @@ export class PetBarnPanel {
       const id = addBtn.dataset.add
       if (id) await this.handleAdd(id, addBtn)
       return
+    }
+  }
+
+  private async handleManualRefresh(): Promise<void> {
+    if (this.refreshing || this.publishLocked) return
+    await this.refreshCatalog({ manual: true })
+    if (this.view === 'catalog' && this.visible) {
+      this.renderCatalogPreservingSearchFocus()
     }
   }
 

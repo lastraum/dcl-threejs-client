@@ -3,8 +3,6 @@ import {
   PETBARN_MAX_GLB_BYTES,
   PETBARN_MAX_THUMB_BYTES,
   PETBARN_POLL_MS,
-  PETBARN_PUBLISH_POLL_MS,
-  PETBARN_PUBLISH_TIMEOUT_MS,
   addPetFromBarn,
   fetchPetBarnCatalog,
   isPetBarnAdded,
@@ -35,10 +33,6 @@ function escapeHtml(s: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 /**
@@ -781,64 +775,26 @@ export class PetBarnPanel {
         return
       }
 
+      // Success = Worker accepted the queue (GitHub commit). Worlds deploy is async CI.
       this.glbFile = null
       this.thumbFile = null
-      this.setOverlayMessage(
-        `Queued as ${result.id}. Waiting for Worlds deploy…`,
-        'Almost there…'
-      )
-      this.setStatus('')
-
-      const listed = await this.waitForCatalogListing(result.id)
-      if (listed) {
-        this.clearOverlay()
-        this.setStatus(`${listed.petName} is live in the Pet Barn.`)
-        this.view = 'catalog'
-        this.searchQuery = ''
-        this.filter = 'all'
-        await this.refreshCatalog()
-        this.lastUpdatedAt = this.catalog?.updatedAt ?? this.lastUpdatedAt
-        this.renderCatalog()
-        return
-      }
-
-      // Timeout — still unlock; pet may appear on next poll
       this.clearOverlay()
       this.setStatus(
-        `Queued ${result.id}, but catalog is still updating. Stay open or check back in a minute.`
+        result.message ||
+          `Queued ${result.id}. It will show in the barn after deploy (~1–3 min).`
       )
       this.view = 'catalog'
-      await this.refreshCatalog()
-      this.renderCatalog()
+      this.searchQuery = ''
+      // Don't force-clear type filter — user may want it; reset search only
+      void this.refreshCatalog().then(() => {
+        this.lastUpdatedAt = this.catalog?.updatedAt ?? this.lastUpdatedAt
+        if (this.view === 'catalog' && this.visible) this.renderCatalog()
+      })
     } catch (err) {
       this.showErrorOverlay(err instanceof Error ? err.message : 'Publish failed', 'Publish failed')
     } finally {
       this.busy = false
       if (submitBtn) submitBtn.disabled = false
     }
-  }
-
-  /** Poll until barn id appears in catalog, or timeout. */
-  private async waitForCatalogListing(id: string): Promise<PetBarnListing | null> {
-    const deadline = Date.now() + PETBARN_PUBLISH_TIMEOUT_MS
-    let attempt = 0
-    while (Date.now() < deadline && this.visible && this.publishLocked) {
-      attempt += 1
-      try {
-        const catalog = await fetchPetBarnCatalog()
-        this.catalog = catalog
-        const hit = catalog.pets.find((p) => p.id === id)
-        if (hit) return hit
-      } catch (err) {
-        console.warn('[petBarn] publish wait catalog poll failed', err)
-      }
-      const leftSec = Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
-      this.setOverlayMessage(
-        `Deploying to petbarn.dcl.eth… (check ${attempt}, ~${leftSec}s left)`,
-        'Deploying…'
-      )
-      await sleep(PETBARN_PUBLISH_POLL_MS)
-    }
-    return null
   }
 }

@@ -15,13 +15,7 @@ export const PETBARN_WORKER_URL_DEFAULT =
 export const PETBARN_CONTENT_BASE_DEFAULT =
   'https://worlds-content-server.decentraland.org/contents/'
 
-/** Poll while Pet Barn shop is open. */
+/** Poll while Pet Barn shop is open (picks up CI deploys without blocking publish UI). */
 export const PETBARN_POLL_MS = 30_000
-
-/** Poll catalog after publish until the new listing appears. */
-export const PETBARN_PUBLISH_POLL_MS = 5_000
-
-/** Give up waiting for catalog after Worker success (Action + CDN lag). */
-export const PETBARN_PUBLISH_TIMEOUT_MS = 6 * 60 * 1000
 
 export const PETBARN_ADDED_STORAGE_KEY = 'dcl-client-petbarn-added'

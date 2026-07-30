@@ -394,7 +394,7 @@ export class PetBarnPanel {
         <div class="petbarn-card__info">
           <div class="petbarn-card__name">${escapeHtml(p.petName)}</div>
           <div class="petbarn-card__meta">${escapeHtml(p.creatorName)} · ${typeLabel}</div>
-          <div class="petbarn-card__meta">${anims} anim${anims === 1 ? '' : 's'} · ${formatPetByteSize(p.sizeBytes || 0)}</div>
+          <div class="petbarn-card__meta">${anims} anim${anims === 1 ? '' : 's'}</div>
         </div>
         <button
           type="button"

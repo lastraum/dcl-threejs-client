@@ -3,6 +3,8 @@ import {
   PETBARN_MAX_GLB_BYTES,
   PETBARN_MAX_THUMB_BYTES,
   PETBARN_POLL_MS,
+  PETBARN_PUBLISH_POLL_MS,
+  PETBARN_PUBLISH_TIMEOUT_MS,
   addPetFromBarn,
   fetchPetBarnCatalog,
   isPetBarnAdded,
@@ -21,6 +23,8 @@ export type PetBarnPanelOptions = {
   onAddedToLibrary?: () => void | Promise<void>
   /** Switch back to My Pets panel */
   onOpenMyPets?: () => void
+  /** Publish round-trip lock started/ended (block pets HUD toggle, etc.). */
+  onPublishLockChange?: (locked: boolean) => void
 }
 
 type View = 'catalog' | 'publish'
@@ -33,6 +37,10 @@ function escapeHtml(s: string): string {
     .replace(/"/g, '&quot;')
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 /**
  * Pet Barn marketplace — catalog + thumbnails only until Add.
  */
@@ -40,6 +48,8 @@ export class PetBarnPanel {
   readonly element: HTMLDivElement
   private visible = false
   private busy = false
+  /** True from publish submit until catalog lists the new pet (or timeout/error). */
+  private publishLocked = false
   private view: View = 'catalog'
   private catalog: PetBarnCatalog | null = null
   private pollTimer: ReturnType<typeof setInterval> | null = null
@@ -49,8 +59,13 @@ export class PetBarnPanel {
   private publishType: PetCategory = 'walking'
   private glbFile: File | null = null
   private thumbFile: File | null = null
+  private readonly panelEl: HTMLElement
   private readonly bodyEl: HTMLElement
   private readonly statusEl: HTMLElement
+  private readonly overlayEl: HTMLElement
+  private readonly overlayTextEl: HTMLElement
+  private readonly closeBtn: HTMLButtonElement
+  private readonly myPetsBtn: HTMLButtonElement
   private readonly onKeyDown: (ev: KeyboardEvent) => void
 
   constructor(private readonly options: PetBarnPanelOptions) {
@@ -69,13 +84,26 @@ export class PetBarnPanel {
         </header>
         <p class="pets-panel__status" data-status hidden></p>
         <div class="pets-panel__body petbarn-body" data-body></div>
+        <div class="petbarn-overlay" data-publish-overlay hidden>
+          <div class="petbarn-overlay__card" role="status" aria-live="polite">
+            <div class="petbarn-overlay__spinner" aria-hidden="true"></div>
+            <p class="petbarn-overlay__title" data-overlay-title>Publishing…</p>
+            <p class="petbarn-overlay__text" data-overlay-text>Please wait</p>
+          </div>
+        </div>
       </div>
     `
+    this.panelEl = this.element.querySelector('.petbarn-panel')!
     this.bodyEl = this.element.querySelector('[data-body]')!
     this.statusEl = this.element.querySelector('[data-status]')!
+    this.overlayEl = this.element.querySelector('[data-publish-overlay]')!
+    this.overlayTextEl = this.element.querySelector('[data-overlay-text]')!
+    this.closeBtn = this.element.querySelector('[data-close]')!
+    this.myPetsBtn = this.element.querySelector('[data-my-pets]')!
 
-    this.element.querySelector('[data-close]')!.addEventListener('click', () => this.hide())
-    this.element.querySelector('[data-my-pets]')!.addEventListener('click', () => {
+    this.closeBtn.addEventListener('click', () => this.hide())
+    this.myPetsBtn.addEventListener('click', () => {
+      if (this.publishLocked) return
       this.hide()
       this.options.onOpenMyPets?.()
     })
@@ -84,14 +112,18 @@ export class PetBarnPanel {
     this.bodyEl.addEventListener('input', (ev) => this.onBodyInput(ev))
 
     this.onKeyDown = (ev) => {
-      if (ev.key === 'Escape' && this.visible) {
-        if (this.view === 'publish') {
-          this.view = 'catalog'
-          void this.render()
-          return
-        }
-        this.hide()
+      if (ev.key !== 'Escape' || !this.visible) return
+      if (this.publishLocked) {
+        ev.preventDefault()
+        ev.stopPropagation()
+        return
       }
+      if (this.view === 'publish') {
+        this.view = 'catalog'
+        void this.render()
+        return
+      }
+      this.hide()
     }
 
     this.bodyEl.addEventListener('submit', (ev) => {
@@ -105,6 +137,7 @@ export class PetBarnPanel {
   }
 
   dispose(): void {
+    this.setPublishLocked(false)
     this.hide()
     this.element.remove()
   }
@@ -113,14 +146,20 @@ export class PetBarnPanel {
     return this.visible
   }
 
+  /** True while upload + Worlds deploy round-trip is in progress. */
+  isPublishLocked(): boolean {
+    return this.publishLocked
+  }
+
   toggle(): void {
+    if (this.publishLocked) return
     if (this.visible) this.hide()
     else void this.show()
   }
 
   async show(): Promise<void> {
     this.visible = true
-    this.view = 'catalog'
+    if (!this.publishLocked) this.view = 'catalog'
     this.element.hidden = false
     window.addEventListener('keydown', this.onKeyDown)
     this.startPoll()
@@ -130,11 +169,35 @@ export class PetBarnPanel {
 
   hide(): void {
     if (!this.visible) return
+    if (this.publishLocked) return
     this.visible = false
     this.element.hidden = true
     window.removeEventListener('keydown', this.onKeyDown)
     this.stopPoll()
     this.options.onClose?.()
+  }
+
+  private setPublishLocked(locked: boolean, overlayText?: string): void {
+    const was = this.publishLocked
+    this.publishLocked = locked
+    this.panelEl.classList.toggle('is-publish-locked', locked)
+    this.overlayEl.hidden = !locked
+    this.closeBtn.disabled = locked
+    this.myPetsBtn.disabled = locked
+    this.closeBtn.setAttribute('aria-disabled', locked ? 'true' : 'false')
+    this.myPetsBtn.setAttribute('aria-disabled', locked ? 'true' : 'false')
+    if (locked && overlayText) this.setOverlayMessage(overlayText)
+    if (!locked) {
+      const title = this.overlayEl.querySelector<HTMLElement>('[data-overlay-title]')
+      if (title) title.textContent = 'Publishing…'
+    }
+    if (was !== locked) this.options.onPublishLockChange?.(locked)
+  }
+
+  private setOverlayMessage(text: string, title = 'Publishing…'): void {
+    const titleEl = this.overlayEl.querySelector<HTMLElement>('[data-overlay-title]')
+    if (titleEl) titleEl.textContent = title
+    this.overlayTextEl.textContent = text
   }
 
   private startPoll(): void {
@@ -372,6 +435,8 @@ export class PetBarnPanel {
   private async onBodyClick(ev: MouseEvent): Promise<void> {
     const t = ev.target as HTMLElement
 
+    if (this.publishLocked) return
+
     if (t.closest('[data-open-publish]')) {
       this.view = 'publish'
       void this.render()
@@ -446,7 +511,7 @@ export class PetBarnPanel {
   }
 
   private async handlePublish(form: HTMLFormElement): Promise<void> {
-    if (this.busy) return
+    if (this.busy || this.publishLocked) return
     const fd = new FormData(form)
     const petName = String(fd.get('petName') || '')
     const creatorName = String(fd.get('creatorName') || '')
@@ -460,10 +525,12 @@ export class PetBarnPanel {
       this.setStatus('GLB and thumbnail are required')
       return
     }
+
     this.busy = true
-    this.setStatus('Compressing thumbnail & publishing…')
+    this.setPublishLocked(true, 'Compressing thumbnail & uploading…')
     const submitBtn = form.querySelector<HTMLButtonElement>('[data-publish-submit]')
     if (submitBtn) submitBtn.disabled = true
+
     try {
       const result = await submitPetBarnListing({
         petName,
@@ -474,21 +541,70 @@ export class PetBarnPanel {
         wallet: this.wallet() || undefined
       })
       if (!result.ok) {
+        this.setPublishLocked(false)
         this.setStatus(result.error)
         return
       }
-      this.setStatus(
-        result.message ||
-          `Queued ${result.id}. It will appear in the barn after deploy (~1–3 min).`
-      )
+
       this.glbFile = null
       this.thumbFile = null
-      form.reset()
-      const creator = form.querySelector<HTMLInputElement>('input[name="creatorName"]')
-      if (creator) creator.value = this.displayName()
+      this.setOverlayMessage(
+        `Queued as ${result.id}. Waiting for Worlds deploy…`,
+        'Almost there…'
+      )
+      this.setStatus('')
+
+      const listed = await this.waitForCatalogListing(result.id)
+      if (listed) {
+        this.setStatus(`${listed.petName} is live in the Pet Barn.`)
+        this.setPublishLocked(false)
+        this.view = 'catalog'
+        this.searchQuery = ''
+        this.filter = 'all'
+        await this.refreshCatalog()
+        this.lastUpdatedAt = this.catalog?.updatedAt ?? this.lastUpdatedAt
+        this.renderCatalog()
+        return
+      }
+
+      // Timeout — still unlock; pet may appear on next poll
+      this.setPublishLocked(false)
+      this.setStatus(
+        `Queued ${result.id}, but catalog is still updating. Stay open or check back in a minute.`
+      )
+      this.view = 'catalog'
+      await this.refreshCatalog()
+      this.renderCatalog()
+    } catch (err) {
+      this.setPublishLocked(false)
+      this.setStatus(err instanceof Error ? err.message : 'Publish failed')
     } finally {
       this.busy = false
       if (submitBtn) submitBtn.disabled = false
     }
+  }
+
+  /** Poll until barn id appears in catalog, or timeout. */
+  private async waitForCatalogListing(id: string): Promise<PetBarnListing | null> {
+    const deadline = Date.now() + PETBARN_PUBLISH_TIMEOUT_MS
+    let attempt = 0
+    while (Date.now() < deadline && this.visible && this.publishLocked) {
+      attempt += 1
+      try {
+        const catalog = await fetchPetBarnCatalog()
+        this.catalog = catalog
+        const hit = catalog.pets.find((p) => p.id === id)
+        if (hit) return hit
+      } catch (err) {
+        console.warn('[petBarn] publish wait catalog poll failed', err)
+      }
+      const leftSec = Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
+      this.setOverlayMessage(
+        `Deploying to petbarn.dcl.eth… (check ${attempt}, ~${leftSec}s left)`,
+        'Deploying…'
+      )
+      await sleep(PETBARN_PUBLISH_POLL_MS)
+    }
+    return null
   }
 }

@@ -282,6 +282,7 @@ export class ClientShell {
         if (!this.petsPanel.isVisible()) this.buttons.get('pets')?.setActive(false)
       },
       onOpenMyPets: () => {
+        if (this.petBarnPanel.isPublishLocked()) return
         void this.petsPanel.show()
         this.petBarnPanel.hide()
         this.buttons.get('pets')?.setActive(true)
@@ -289,6 +290,17 @@ export class ClientShell {
       onAddedToLibrary: async () => {
         await this.petsPanel.refresh()
         await this.onActivePetChange?.()
+      },
+      onPublishLockChange: (locked) => {
+        const petsBtn = this.buttons.get('pets')
+        if (!petsBtn) return
+        petsBtn.element.classList.toggle('is-publish-locked', locked)
+        petsBtn.element.setAttribute('aria-busy', locked ? 'true' : 'false')
+        if (locked) {
+          petsBtn.element.title = 'Publishing pet — please wait'
+        } else {
+          petsBtn.element.removeAttribute('title')
+        }
       }
     })
 
@@ -895,6 +907,8 @@ export class ClientShell {
     if (id === 'pets') {
       return (ev) => {
         ev.stopPropagation()
+        // Block HUD toggle during Pet Barn publish round-trip.
+        if (this.petBarnPanel.isPublishLocked()) return
         this.closeMobileDrawerForOverlay()
         this.notificationsPanel.hide()
         this.buttons.get('notifications')?.setActive(false)

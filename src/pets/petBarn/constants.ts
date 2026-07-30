@@ -18,4 +18,10 @@ export const PETBARN_CONTENT_BASE_DEFAULT =
 /** Poll while Pet Barn shop is open. */
 export const PETBARN_POLL_MS = 30_000
 
+/** Poll catalog after publish until the new listing appears. */
+export const PETBARN_PUBLISH_POLL_MS = 5_000
+
+/** Give up waiting for catalog after Worker success (Action + CDN lag). */
+export const PETBARN_PUBLISH_TIMEOUT_MS = 6 * 60 * 1000
+
 export const PETBARN_ADDED_STORAGE_KEY = 'dcl-client-petbarn-added'

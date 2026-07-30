@@ -44,6 +44,8 @@ export type PetsPanelOptions = {
   onPlayClipPreview?: (contentHash: string, clipName: string) => void | Promise<boolean>
   onStopClipPreview?: () => void
   onClose?: () => void
+  /** Open Pet Barn marketplace shop. */
+  onOpenPetBarn?: () => void
   anchor?: () => HTMLElement | undefined
 }
 
@@ -77,6 +79,7 @@ export class PetsPanel {
         <header class="pets-panel__header">
           <button type="button" class="pets-panel__back" data-header-back hidden aria-label="Back to list">← Back</button>
           <h2 class="pets-panel__title">Pets</h2>
+          <button type="button" class="pets-panel__barn-btn" data-open-barn title="Pet Barn marketplace">Barn</button>
           <button type="button" class="pets-panel__close" data-close aria-label="Close">×</button>
         </header>
         <div class="pets-panel__upload" data-upload-block>
@@ -94,6 +97,9 @@ export class PetsPanel {
     this.statusEl = this.element.querySelector('[data-status]')!
 
     this.element.querySelector('[data-close]')!.addEventListener('click', () => this.hide())
+    this.element.querySelector('[data-open-barn]')!.addEventListener('click', () => {
+      this.options.onOpenPetBarn?.()
+    })
     this.element.querySelector('[data-header-back]')!.addEventListener('click', () => {
       void this.closeEdit()
     })
@@ -190,10 +196,12 @@ export class PetsPanel {
     const upload = this.element.querySelector<HTMLElement>('[data-upload-block]')
     const hint = this.element.querySelector<HTMLElement>('[data-list-hint]')
     const back = this.element.querySelector<HTMLElement>('[data-header-back]')
+    const barn = this.element.querySelector<HTMLElement>('[data-open-barn]')
     if (upload) upload.hidden = !show
     if (hint) hint.hidden = !show
-    // List: title only + ×. Details: ← Back | Pet settings | ×
+    // List: title only + Barn + ×. Details: ← Back | Pet settings | ×
     if (back) back.hidden = show
+    if (barn) barn.hidden = !show
     const title = this.element.querySelector<HTMLElement>('.pets-panel__title')
     if (title) title.textContent = show ? 'Pets' : 'Pet settings'
   }

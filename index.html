@@ -2977,6 +2977,25 @@
       .pets-panel__header .pets-panel__back[hidden] {
         display: none !important;
       }
+      .pets-panel__barn-btn {
+        flex-shrink: 0;
+        margin-left: auto;
+        margin-right: 4px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: rgba(180, 120, 255, 0.22);
+        color: #f3e8ff;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .pets-panel__barn-btn:hover {
+        background: rgba(180, 120, 255, 0.38);
+      }
+      .pets-panel__barn-btn[hidden] {
+        display: none !important;
+      }
       .pets-panel__title {
         margin: 0;
         flex: 1;
@@ -3346,6 +3365,157 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+
+      /* Pet Barn shop (same shell as Pets) */
+      .petbarn-tabs {
+        display: flex;
+        gap: 6px;
+        padding: 0 12px 8px;
+        flex-shrink: 0;
+      }
+      .petbarn-tab {
+        flex: 1;
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.05);
+        color: rgba(243, 232, 255, 0.85);
+        border-radius: 10px;
+        padding: 6px 8px;
+        font-size: 12px;
+        font-weight: 650;
+        cursor: pointer;
+      }
+      .petbarn-tab.is-active {
+        background: rgba(139, 92, 246, 0.35);
+        border-color: rgba(167, 139, 250, 0.55);
+        color: #fff;
+      }
+      .petbarn-filters,
+      .petbarn-type-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 10px;
+      }
+      .petbarn-filter {
+        appearance: none;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(243, 232, 255, 0.9);
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .petbarn-filter.is-active {
+        background: rgba(139, 92, 246, 0.35);
+        border-color: rgba(167, 139, 250, 0.5);
+      }
+      .petbarn-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .petbarn-card {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 8px;
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        min-width: 0;
+      }
+      .petbarn-card.is-added {
+        border-color: rgba(167, 139, 250, 0.45);
+      }
+      .petbarn-card__thumb-wrap {
+        aspect-ratio: 1;
+        border-radius: 10px;
+        overflow: hidden;
+        background: rgba(0, 0, 0, 0.25);
+      }
+      .petbarn-card__thumb {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      .petbarn-card__name {
+        font-size: 13px;
+        font-weight: 700;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .petbarn-card__meta {
+        font-size: 10px;
+        color: rgba(221, 214, 254, 0.62);
+        line-height: 1.35;
+      }
+      .petbarn-card__add {
+        appearance: none;
+        margin-top: 2px;
+        border: 1px solid rgba(167, 139, 250, 0.45);
+        background: rgba(139, 92, 246, 0.28);
+        color: #fff;
+        border-radius: 10px;
+        padding: 6px 8px;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .petbarn-card__add:disabled {
+        opacity: 0.65;
+        cursor: default;
+        background: rgba(255, 255, 255, 0.08);
+        border-color: rgba(255, 255, 255, 0.12);
+      }
+      .petbarn-footnote {
+        margin: 10px 0 0;
+        font-size: 10px;
+        color: rgba(221, 214, 254, 0.5);
+        line-height: 1.4;
+      }
+      .petbarn-publish {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .petbarn-field {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 11px;
+        color: rgba(221, 214, 254, 0.7);
+      }
+      .petbarn-field input[type='text'],
+      .petbarn-field input[type='file'] {
+        width: 100%;
+        box-sizing: border-box;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(0, 0, 0, 0.25);
+        color: #fff;
+        padding: 8px 10px;
+        font-size: 13px;
+      }
+      .petbarn-publish-btn {
+        appearance: none;
+        border: 1px solid rgba(167, 139, 250, 0.55);
+        background: linear-gradient(180deg, rgba(139, 92, 246, 0.55), rgba(109, 40, 217, 0.55));
+        color: #fff;
+        border-radius: 12px;
+        padding: 10px 12px;
+        font-size: 13px;
+        font-weight: 750;
+        cursor: pointer;
+      }
+      .petbarn-publish-btn:disabled {
+        opacity: 0.55;
+        cursor: default;
       }
 
       /* Loot Bag dock — bottom bar, same z as chat, sits to the right of chat (+ rail) */

@@ -2,6 +2,10 @@
 
 interface ImportMetaEnv {
   readonly VITE_SUGGESTION_DISPATCH_URL?: string
+  /** Pet Barn catalog JSON (default raw.githubusercontent.com/lastraum/petbarn/main/catalog.json) */
+  readonly VITE_PETBARN_CATALOG_URL?: string
+  /** Pet Barn publish worker (default dcl-petbarn-dispatch.lastraum.workers.dev). "0" disables. */
+  readonly VITE_PETBARN_DISPATCH_URL?: string
   /** Meta-tx endpoint (default same-origin /api/meta-tx/v1/transactions) */
   readonly VITE_META_TX_URL?: string
   /** Polygon HTTP RPC for Loot Bag eth_call / receipts */

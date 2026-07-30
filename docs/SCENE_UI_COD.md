@@ -9,11 +9,11 @@
 
 ## One-line law
 
-> **Worker react-ecs authors UI. Main Yoga is the sole layout authority. DOM paints Yoga boxes. Hit-map is Yoga geometry.**  
-> No second layout invents sizes except explicit **measure** (text, background fill-intent under slots).  
-> No PE authority except **live projection**, with **same-frame mount-snapshot fill** only while live lags.  
-> Full Yoga on topology change; refine absolute dirties only with a healthy seed; patch only when collapsed≈0.  
-> **No client pose invent. No second clocks. Modal open settles on the worker before snapshot.**
+> **Worker react-ecs authors UI. Main Yoga is the sole layout authority (flexbox math). DOM paints Yoga boxes. Hit-map is Yoga geometry.**  
+> **Dirty = entity ∪ descendants** on any Ui* change (transform, background, UV, text, PE, …).  
+> **Cousins never dirty each other** — multiple panels under one `#scene-ui-root` / canvas `0` stay independent unless the scene state writes both.  
+> Full Yoga / Forest paint only on topology remount or dirty dominating the mount; steady = Reuse/RefineAbsolute + Patch seeds.  
+> No second layout invents sizes except explicit **measure**. PE: live + same-frame snapshot lag-fill only.
 
 ---
 
@@ -60,18 +60,27 @@ Main must not invent `dx` to merge twins. **Worker advances time until fingerpri
 
 ---
 
-## LayoutMode / PaintMode
+## Dirty scope (platform law)
+
+```text
+seed = entities whose visual key OR layout transform fingerprint changed (or left mount)
+paintDirty = expand(seed → entity ∪ descendants)   // cousins excluded
+layoutDirty = expandLayoutBranch(layoutSeeds)
+  // absolute: entity ∪ descendants
+  // flex: also parent ∪ its descendants (sibling reflow) — still not cousin roots
+Patch paints dirty *seeds* only; renderEntityTree walks each seed's descendants.
+```
 
 | LayoutMode | When |
 |------------|------|
-| `Full` | Mount/layoutKey miss, missing boxes, unhealthy seed |
-| `RefineAbsolute` | Absolute dirties, budget OK, healthy seed |
-| `Reuse` | layoutKey hit or visual-only + last full boxes |
+| `Full` | Mount/layoutKey miss, missing boxes, layoutDirty too large for refine |
+| `RefineAbsolute` | Local absolute layout dirties, budget OK, healthy seed |
+| `Reuse` | layoutKey hit or visual-only (no layout seeds) + last full boxes |
 
 | PaintMode | When |
 |-----------|------|
-| `Forest` | After Full; growth/shrink; collapsed>4 |
-| `Patch` | Steady + few dirties + collapsed≈0 + repaired=0 |
+| `Forest` | First paint / remount; no seeds; dirty ≥ ~45% mount; missing visible boxes |
+| `Patch` | Local dirty seeds + descendants only — **not** full canvas because another panel changed |
 
 ---
 

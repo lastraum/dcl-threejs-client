@@ -81,3 +81,52 @@ export function buildUiForest(
   }
   return ordered
 }
+
+/**
+ * COD dirty scope: any Ui* change on E dirties E ∪ descendants(E).
+ * Cousin panels under the same canvas root do not enter this set.
+ */
+export function expandDirtyWithDescendants(
+  seeds: readonly Entity[],
+  forest: ReadonlyMap<Entity, Entity[]>
+): Entity[] {
+  if (!seeds.length) return []
+  const out: Entity[] = []
+  const seen = new Set<Entity>()
+  const stack = [...seeds]
+  while (stack.length) {
+    const e = stack.pop()!
+    if (seen.has(e)) continue
+    seen.add(e)
+    out.push(e)
+    const kids = forest.get(e)
+    if (kids?.length) {
+      for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]!)
+    }
+  }
+  return out
+}
+
+/**
+ * Layout-affecting dirties: entity ∪ descendants; if not absolute-only, also the
+ * flex parent subtree (siblings reflow). Still does not touch cousin canvas roots.
+ */
+export function expandLayoutDirtyBranch(
+  seeds: readonly Entity[],
+  forest: ReadonlyMap<Entity, Entity[]>,
+  transformOf: (e: Entity) => PBUiTransform | null,
+  isAbsolute: (t: PBUiTransform) => boolean
+): Entity[] {
+  if (!seeds.length) return []
+  const branchSeeds = new Set<Entity>()
+  for (const e of seeds) {
+    branchSeeds.add(e)
+    const t = transformOf(e)
+    if (!t || isAbsolute(t)) continue
+    const parent = (t.parent ?? CANVAS_ROOT_ENTITY) as Entity
+    if (parent !== CANVAS_ROOT_ENTITY && (parent as number) !== 0) {
+      branchSeeds.add(parent)
+    }
+  }
+  return expandDirtyWithDescendants([...branchSeeds], forest)
+}

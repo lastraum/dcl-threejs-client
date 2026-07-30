@@ -12,7 +12,14 @@ import type { WorkerUiMountSnapshotRow } from '../../shim/types'
 import type { MirrorComponents } from '../../bridge/mirrorComponents'
 import type { ResolvedScene } from '../../dcl/content/types'
 import type { PointerHit } from '../../input/PointerEventsSystem'
-import { buildUiForest, filterMountedUiRecords, type UiEntityRecord } from './uiTree'
+import {
+  buildUiForest,
+  expandDirtyWithDescendants,
+  expandLayoutDirtyBranch,
+  filterMountedUiRecords,
+  type UiEntityRecord
+} from './uiTree'
+import { YGPositionType, normalizeYGPositionType } from './yogaEnums'
 import { SceneUiDomRenderer, ensureSceneUiRoot } from './SceneUiDomRenderer'
 import { SceneUiInputController } from './SceneUiInputController'
 import {
@@ -655,22 +662,22 @@ export class SceneUiBridge {
       this.lastLoggedPaintMount = mountSize
     }
 
-    // Visual dirties (UV/color/text) + layout dirties (position/height). Fishing reeling
-    // moves the lure marker via position.bottom only — visual key stays flat while the
-    // zone UV changes; refine/patch must include pure layout movers or the lure freezes.
-    const dirtyEntities: Entity[] = []
-    const dirtySet = new Set<Entity>()
-    const markDirty = (entity: Entity): void => {
-      if (dirtySet.has(entity)) return
-      dirtySet.add(entity)
-      dirtyEntities.push(entity)
+    // COD dirty law: ANY Ui* change on E → paint dirty E ∪ descendants(E).
+    // Cousins (sibling panel trees under canvas 0) never enter unless they themselves changed.
+    // Seeds = entities whose visual or layout fingerprint changed (or left the mount).
+    const dirtySeeds: Entity[] = []
+    const seedSet = new Set<Entity>()
+    const markSeed = (entity: Entity): void => {
+      if (seedSet.has(entity)) return
+      seedSet.add(entity)
+      dirtySeeds.push(entity)
     }
     if (this.lastEntityVisualKeys.size > 0) {
       for (const [entity, key] of entityVisualKeys) {
-        if (this.lastEntityVisualKeys.get(entity) !== key) markDirty(entity)
+        if (this.lastEntityVisualKeys.get(entity) !== key) markSeed(entity)
       }
       for (const entity of this.lastEntityVisualKeys.keys()) {
-        if (!entityVisualKeys.has(entity)) markDirty(entity)
+        if (!entityVisualKeys.has(entity)) markSeed(entity)
       }
     }
     const entityLayoutKeys = new Map<Entity, string>()
@@ -678,28 +685,40 @@ export class SceneUiBridge {
       const lk = layoutTransformFingerprint(transform)
       entityLayoutKeys.set(entity, lk)
       if (this.lastEntityLayoutKeys.size > 0 && this.lastEntityLayoutKeys.get(entity) !== lk) {
-        markDirty(entity)
+        markSeed(entity)
       }
     }
     if (this.lastEntityLayoutKeys.size > 0) {
       for (const entity of this.lastEntityLayoutKeys.keys()) {
-        if (!entityLayoutKeys.has(entity)) markDirty(entity)
+        if (!entityLayoutKeys.has(entity)) markSeed(entity)
       }
     }
 
-    // Layout-only dirties (position/size) — UV/text-only frames must not re-run Yoga.
-    const layoutDirtyEntities: Entity[] = []
+    // Paint set: seeds + descendants only (not cousins).
+    const dirtyEntities =
+      this.lastEntityVisualKeys.size > 0 || this.lastEntityLayoutKeys.size > 0
+        ? expandDirtyWithDescendants(dirtySeeds, forest)
+        : []
+
+    // Layout seeds: transform fingerprint only (UV/text must not re-Yoga).
+    const layoutSeeds: Entity[] = []
     if (this.lastEntityLayoutKeys.size > 0) {
       for (const [entity, lk] of entityLayoutKeys) {
-        if (this.lastEntityLayoutKeys.get(entity) !== lk) layoutDirtyEntities.push(entity)
+        if (this.lastEntityLayoutKeys.get(entity) !== lk) layoutSeeds.push(entity)
       }
       for (const entity of this.lastEntityLayoutKeys.keys()) {
-        if (!entityLayoutKeys.has(entity)) layoutDirtyEntities.push(entity)
+        if (!entityLayoutKeys.has(entity)) layoutSeeds.push(entity)
       }
-    } else if (dirtyEntities.length > 0 && this.lastLayoutBoxMap) {
-      // First dirty after mount — treat all dirties as layout until baseline is set.
-      layoutDirtyEntities.push(...dirtyEntities)
+    } else if (dirtySeeds.length > 0 && this.lastLayoutBoxMap) {
+      // First dirty after mount baseline — layout until we have a layout key baseline.
+      layoutSeeds.push(...dirtySeeds)
     }
+    const layoutDirtyEntities = expandLayoutDirtyBranch(
+      layoutSeeds,
+      forest,
+      transformOf,
+      (t) => normalizeYGPositionType(t.positionType) === YGPositionType.ABSOLUTE
+    )
 
     const runFullYoga = (): LayoutBox[] => {
       const { boxes, dispose } = layoutUiTree(
@@ -845,11 +864,6 @@ export class SceneUiBridge {
 
     const collapsedVisible = countCollapsedLayoutBoxes(layoutBoxMap.values())
     const prevVisibleCount = this.lastLayoutBoxMap?.size ?? 0
-    // Visible set growth forces full forest walk (new modal children). Full Yoga alone does NOT —
-    // same visible count after flex reflow can still patch dirty entities (COD: inventory fill).
-    const visibleSetGrew =
-      layoutBoxMap.size > prevVisibleCount + 2 || missingVisible.length > 0
-    const visibleSetShrank = layoutBoxMap.size + 2 < prevVisibleCount
     const visibleDelta = Math.abs(layoutBoxMap.size - this.lastStableVisibleCount)
     if (visibleDelta <= 2 && layoutBoxMap.size > 0 && collapsedVisible <= 4) {
       this.stableVisibleStreak++
@@ -857,41 +871,34 @@ export class SceneUiBridge {
       this.stableVisibleStreak = 0
       this.lastStableVisibleCount = layoutBoxMap.size
     }
-    const modalStable =
-      this.stableVisibleStreak >= 2 && layoutBoxMap.size >= 32 && collapsedVisible <= 4
 
-    // SCENE_UI_COD PaintMode: Patch | Forest
-    // Scale-open modals (how-to-play): visible set swings 18↔37; never patch across that —
-    // patch left display:none children from the collapsed frame (pagination/close PE-only).
-    const scaleSwing =
-      (visibleSetGrew || visibleSetShrank) &&
-      (prevVisibleCount <= 24 || layoutBoxMap.size <= 24 || Math.abs(layoutBoxMap.size - prevVisibleCount) >= 8)
+    // SCENE_UI_COD PaintMode: Patch local dirties (entity∪descendants). Cousins untouched.
+    // Forest only: first paint / remount, no seeds, dirty dominates mount, or layout missing boxes.
+    // Scale swing on one panel expands into dirtyEntities via layout seeds + descendants —
+    // patch walks that subtree (unhide kids). Do NOT force full canvas Forest for cousins.
+    const localDirty =
+      dirtyEntities.length > 0 && dirtyEntities.length < mounted.size * 0.45
     const preferPatch =
       this.paintCount > 1 &&
-      !visibleSetGrew &&
-      !visibleSetShrank &&
-      !scaleSwing &&
-      collapsedVisible <= 4 &&
-      repairedCollapsed === 0 &&
-      dirtyEntities.length > 0 &&
+      localDirty &&
       dirtyEntities.length <= patchBudget &&
-      dirtyEntities.length < mounted.size * 0.4 &&
-      (layoutCacheHit || (usedFullYoga && modalStable))
+      collapsedVisible <= 8 &&
+      missingVisible.length === 0 &&
+      (layoutMode === 'Reuse' ||
+        layoutMode === 'RefineAbsolute' ||
+        (layoutMode === 'Full' && layoutDirtyEntities.length > 0 && layoutDirtyEntities.length < mounted.size * 0.45))
     const paintMode: 'Patch' | 'Forest' = preferPatch ? 'Patch' : 'Forest'
 
     if (
-      (visibleSetGrew ||
-        missingVisible.length > 0 ||
-        repairedCollapsed > 0 ||
-        collapsedVisible > 4 ||
-        (usedFullYoga && paintMode === 'Forest')) &&
       typeof location !== 'undefined' &&
-      location.search.includes('sceneuidebug')
+      location.search.includes('sceneuidebug') &&
+      (paintMode === 'Forest' || dirtySeeds.length > 0 || usedFullYoga)
     ) {
       console.log(
         `[scene-ui] layout paint — visibleYoga=${layoutBoxMap.size} prevVisible=${prevVisibleCount} ` +
-          `layoutMode=${layoutMode} paintMode=${paintMode} missingWas=${missingVisible.length} ` +
-          `repaired=${repairedCollapsed} collapsed=${collapsedVisible} stable=${this.stableVisibleStreak}`
+          `layoutMode=${layoutMode} paintMode=${paintMode} seeds=${dirtySeeds.length} ` +
+          `dirty=${dirtyEntities.length} layoutDirty=${layoutDirtyEntities.length} ` +
+          `missingWas=${missingVisible.length} repaired=${repairedCollapsed} collapsed=${collapsedVisible}`
       )
     }
 
@@ -915,11 +922,11 @@ export class SceneUiBridge {
       onRegions: (regions: UiScreenRegion[]) => this.hitMap.replace(regions)
     }
 
-    // Layout stable (or refined) + few dirties → patch DOM only (skip full tree walk).
-    // Never patch when a menu just became visible — children need a full forest walk.
+    // Patch only dirty *seeds* — renderEntityTree walks each seed's descendants.
+    // Expanded dirtyEntities is for budgets / logging; cousins never in either set.
     let usedPatch = false
     if (preferPatch) {
-      usedPatch = this.dom.patchEntities(dirtyEntities, drawInput)
+      usedPatch = this.dom.patchEntities(dirtySeeds, drawInput)
     }
 
     if (!usedPatch) {

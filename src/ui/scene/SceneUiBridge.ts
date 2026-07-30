@@ -65,6 +65,7 @@ import {
   tryRefineAbsoluteLayoutBoxes
 } from './fastLayoutPatch'
 import { onSceneUiImageLoaded } from './uiImageLoad'
+import { extractUiTextureSrc } from './uiBackgroundStyle'
 
 const _camPos = new THREE.Vector3()
 const POINTER_EVENTS_COMPONENT_ID = 1062
@@ -789,7 +790,14 @@ export class SceneUiBridge {
       forest,
       transformOf,
       backgroundOf,
-      this.virtual
+      this.virtual,
+      (bg) => {
+        if (!bg) return false
+        // Textured only — empty purple slots also carry UiBackground color.
+        return !!extractUiTextureSrc(
+          (bg as { texture?: unknown }).texture
+        )
+      }
     )
     if (repairedCollapsed > 0 || suppressedShell > 0) {
       this.lastFullLayoutBoxes = layoutBoxes

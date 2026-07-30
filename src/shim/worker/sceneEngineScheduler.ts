@@ -766,6 +766,9 @@ const POINTER_UI_LARGE_MODAL_DT = 1 / 20
 /**
  * Dual large absolute canvas roots: one on-screen (shell) + one parked right (content).
  * Open tweens must move the parked root before phase-4 snapshot (COD: no client pose invent).
+ *
+ * Note: SDK often leaves positionLeftUnit=UNDEFINED with a large POINT-like left value;
+ * Yoga still places at that px (applyUnit treats UNDEFINED+nonzero as points).
  */
 function largeModalContentStillParked(eng: IEngine): boolean {
   const UiTransform = resolveWorkerUiTransform(eng)
@@ -784,14 +787,19 @@ function largeModalContentStillParked(eng: IEngine): boolean {
     } | null
     if (!t) continue
     if ((t.parent ?? 0) !== 0) continue
-    // Absolute + modal-sized POINT box (shop panel ≈1460×670).
+    // Absolute + modal-sized box (shop panel ≈1460×670).
     if ((t.positionType ?? 0) !== 1 /* ABSOLUTE */) continue
-    if ((t.widthUnit ?? 0) !== 1 /* POINT */ || (t.heightUnit ?? 0) !== 1) continue
+    const wUnit = t.widthUnit ?? 0
+    const hUnit = t.heightUnit ?? 0
+    // POINT or UNDEFINED+nonzero (Yoga treats as points).
+    if (wUnit !== 1 && wUnit !== 0) continue
+    if (hUnit !== 1 && hUnit !== 0) continue
     const w = t.width ?? 0
     const h = t.height ?? 0
     if (w < 800 || h < 400) continue
-    // Only POINT left parks (percent parks are plaza letterbox etc.).
-    if ((t.positionLeftUnit ?? 0) !== 1 /* POINT */) continue
+    const leftU = t.positionLeftUnit ?? 0
+    // Skip pure percent parks (plaza letterbox uses % edges).
+    if (leftU === 2 /* PERCENT */) continue
     const left = t.positionLeft ?? 0
     if (left >= 1800) offRight++
     else if (left >= 0 && left < 1200) onScreen++

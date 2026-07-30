@@ -255,26 +255,31 @@ export function countCollapsedLayoutBoxes(boxes: Iterable<LayoutBox>): number {
 
 /**
  * When a lean empty modal shell sits on-screen and a richer content twin is still
- * parked off-canvas right, suppress the shell subtree (zero boxes) so we do not paint
- * empty grids. Content keeps its ECS pose (may be off-screen until open tween finishes).
- * COD: no pose invent — only hide the empty twin.
+ * parked off-canvas right (or both overlap on-screen), suppress the shell subtree.
+ *
+ * Count **textured** backgrounds only — empty purple slots also have UiBackground color,
+ * so raw bg counts made shell≈content and never suppressed (blank inventory forever).
+ * COD: no pose invent — content keeps ECS left; we only hide the empty twin.
  */
 export function suppressLeanParkedModalShell(
   boxes: LayoutBox[],
   forest: ReadonlyMap<Entity, Entity[]>,
   transformOf: (e: Entity) => PBUiTransform | null,
-  backgroundOf: ((e: Entity) => unknown) | null | undefined,
-  virtual: VirtualCanvasSize
+  backgroundOf: ((e: Entity) => { texture?: unknown } | null | undefined) | null | undefined,
+  virtual: VirtualCanvasSize,
+  hasTexture?: (bg: { texture?: unknown } | null | undefined) => boolean
 ): number {
   if (!boxes.length) return 0
+  const texOf = hasTexture ?? ((bg) => !!(bg && bg.texture))
   const byEntity = new Map<Entity, LayoutBox>()
   for (const b of boxes) byEntity.set(b.entity, b)
   const roots = forest.get(CANVAS_ROOT_ENTITY as Entity) ?? []
-  type Info = { entity: Entity; box: LayoutBox; bg: number; ids: Set<Entity> }
+  type Info = { entity: Entity; box: LayoutBox; tex: number; ids: Set<Entity> }
   const large: Info[] = []
   const walk = (e: Entity, ids: Set<Entity>): number => {
     ids.add(e)
-    let n = backgroundOf?.(e) ? 1 : 0
+    const bg = backgroundOf?.(e) ?? null
+    let n = texOf(bg) ? 1 : 0
     for (const c of forest.get(e) ?? []) n += walk(c, ids)
     return n
   }
@@ -285,17 +290,36 @@ export function suppressLeanParkedModalShell(
     if (!t || normalizeYGPositionType(t.positionType) !== YGPositionType.ABSOLUTE) continue
     if (box.width >= virtual.width * 0.95) continue
     const ids = new Set<Entity>()
-    large.push({ entity: r, box, bg: walk(r, ids), ids })
+    large.push({ entity: r, box, tex: walk(r, ids), ids })
   }
   if (large.length < 2) return 0
   const vw = virtual.width
   const on = large.filter((x) => x.box.left >= -40 && x.box.left < vw - 80)
   const off = large.filter((x) => x.box.left >= vw - 1)
-  if (!on.length || !off.length) return 0
-  const content = [...off].sort((a, b) => b.bg - a.bg)[0]!
-  const shell = [...on].sort((a, b) => a.bg - b.bg)[0]!
-  if (content.bg < 30 || content.bg < shell.bg + 15) return 0
-  if (shell.bg >= content.bg * 0.35) return 0
+
+  let content: Info | null = null
+  let shell: Info | null = null
+  if (on.length && off.length) {
+    content = [...off].sort((a, b) => b.tex - a.tex)[0]!
+    shell = [...on].sort((a, b) => a.tex - b.tex)[0]!
+  } else if (on.length >= 2) {
+    // Both unparked / overlapping — collapse texture-poor twin (empty chrome).
+    const sorted = [...on].sort((a, b) => b.tex - a.tex)
+    content = sorted[0]!
+    shell = sorted[1]!
+    const overlap =
+      Math.abs(content.box.left - shell.box.left) < 120 &&
+      Math.abs(content.box.top - shell.box.top) < 120
+    if (!overlap) return 0
+  } else {
+    return 0
+  }
+
+  // Content must clearly win on *textures* (icons), not purple slot color fills.
+  if (content.tex < 8) return 0
+  if (content.tex < shell.tex + 5) return 0
+  if (shell.tex >= content.tex * 0.5 && shell.tex > 3) return 0
+
   let n = 0
   for (const b of boxes) {
     if (!shell.ids.has(b.entity)) continue

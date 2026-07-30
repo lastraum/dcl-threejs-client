@@ -906,6 +906,10 @@ export class PlayerSystem {
    * DCL `RestrictedActions.movePlayerTo` — `newRelativePosition` is **feet** (not PE chest).
    * Docs: Vector3.create(1, 0, 1) stands on y=0. Flagtag drown-respawn uses tower feet Y.
    */
+  /** Skip no-op movePlayerTo re-teleports (Dead Surge Start Mission spam every frame). */
+  private lastMovePlayerToTargetKey = ''
+  private lastMovePlayerToAtMs = 0
+
   movePlayerTo(request: MovePlayerToRequest): boolean {
     if (!this.enabled || !this.walkBounds) return false
 
@@ -932,6 +936,19 @@ export class PlayerSystem {
     const avatarTarget = request.avatarTarget
     const from = this.root.position.clone()
     const duration = request.duration ?? 0
+    // Identical target within 50ms — accept without re-settle (scene spam).
+    const targetKey = `${target.x.toFixed(2)},${target.y.toFixed(2)},${target.z.toFixed(2)}`
+    const nowMs = performance.now()
+    if (
+      !reposition &&
+      duration <= 0 &&
+      targetKey === this.lastMovePlayerToTargetKey &&
+      nowMs - this.lastMovePlayerToAtMs < 50
+    ) {
+      return true
+    }
+    this.lastMovePlayerToTargetKey = targetKey
+    this.lastMovePlayerToAtMs = nowMs
 
     if (!reposition || duration <= 0) {
       if (reposition) {

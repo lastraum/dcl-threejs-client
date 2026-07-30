@@ -975,6 +975,7 @@ export class World {
         const ok = this.player!.movePlayerTo(request)
         // Round-reset teleports often land while InputModifier is frozen / ticks held after UI.
         // Nudge worker play so scene systems can clear freeze and advance reset timers.
+        // Dead Surge Start Mission spams movePlayerTo every frame — throttle resume noise.
         this.sceneScript.nudgePlayAfterSceneTeleport()
         // SpaceRunner map↔lobby: lobby/map GLBs re-attach after teleport. Kick a missing-actor
         // cook burst so gravity can land on real floors once the scene freeze clears.

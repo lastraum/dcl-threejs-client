@@ -201,8 +201,11 @@ export class VirtualCameraBridge {
         this.applyLensPose(camera, target.position, target.rotation, target.lookAtPoint)
         this.lastAppliedTargetPos.copy(target.position)
         this.hasAppliedTarget = true
-        // Instant bind (no transition): settle immediately unless PE-follow.
-        if (!peFollow) this.armSettleHold(virtualEntity, target)
+        // Instant bind: settle-hold only for stage-parented boards (CRDT thrash).
+        // Root-level cinematics (Dead Surge Start Mission) must stay live every frame.
+        if (!peFollow && this.isStageParentedVirtualCamera(virtualEntity)) {
+          this.armSettleHold(virtualEntity, target)
+        }
       } else {
         this.hasAppliedTarget = false
       }
@@ -228,12 +231,14 @@ export class VirtualCameraBridge {
       }
     }
 
-    // Hard settle hold: ignore all later ECS thrash (page flip, board CRDT re-PUT).
+    // Hard settle hold: ignore board/page CRDT thrash — stage-parented only.
+    // Never freeze root-flat cinematics (Dead Surge: empty floor + missing player in frustum).
     if (
       !peFollow &&
       this.hasSettleHold &&
       this.settleHoldEntity === virtualEntity &&
-      !this.transition
+      !this.transition &&
+      this.isStageParentedVirtualCamera(virtualEntity)
     ) {
       target = {
         position: this.settleHeldPos,
@@ -244,6 +249,14 @@ export class VirtualCameraBridge {
       this.lastAppliedTargetPos.copy(target.position)
       this.hasAppliedTarget = true
       return true
+    }
+    // Drop a stale settle hold if this VC is no longer stage-parented (or was armed wrongly).
+    if (
+      this.hasSettleHold &&
+      this.settleHoldEntity === virtualEntity &&
+      !this.isStageParentedVirtualCamera(virtualEntity)
+    ) {
+      this.clearSettleHold()
     }
 
     if (this.transition) {
@@ -278,15 +291,17 @@ export class VirtualCameraBridge {
         this.transition = null
         this.lastAppliedTargetPos.copy(target.position)
         this.hasAppliedTarget = true
-        // Keep live briefly so parent stage Tweens can finish, then hard-hold.
-        if (!peFollow) {
+        // Stage boards only: brief live window then hard-hold against CRDT thrash.
+        // Root cinematics stay live forever via vc-pose-live.
+        if (!peFollow && this.isStageParentedVirtualCamera(virtualEntity)) {
           this.postTransitionLiveRemainS = VirtualCameraBridge.POST_TRANSITION_LIVE_S
         }
       }
     } else if (
       !peFollow &&
       this.postTransitionLiveRemainS > 0 &&
-      this.settleHoldEntity !== virtualEntity
+      this.settleHoldEntity !== virtualEntity &&
+      this.isStageParentedVirtualCamera(virtualEntity)
     ) {
       this.postTransitionLiveRemainS -= delta
       this.applyLensPose(camera, target.position, target.rotation, target.lookAtPoint)
@@ -318,7 +333,12 @@ export class VirtualCameraBridge {
       this.applyLensPose(camera, target.position, target.rotation, target.lookAtPoint)
       this.lastAppliedTargetPos.copy(target.position)
       this.hasAppliedTarget = true
-      if (!peFollow && !this.hasSettleHold) {
+      // Never auto-arm settle hold on root-flat shots — freezes Dead Surge intro forever.
+      if (
+        !peFollow &&
+        !this.hasSettleHold &&
+        this.isStageParentedVirtualCamera(virtualEntity)
+      ) {
         this.armSettleHold(virtualEntity, target)
       }
     }
@@ -549,6 +569,26 @@ export class VirtualCameraBridge {
       (parent as number) === (lookAt as number) &&
       lookAt !== (virtualEntity as number) &&
       lookAt !== (CameraEntity as number)
+    )
+  }
+
+  /**
+   * VC under a scene stage parent (events board, etc.) — CRDT thrash can yank the lens;
+   * settle-hold freezes the shot after bind. Root-level / world-flat cinematics are NOT
+   * stage-parented and must stay live (Tween/lerp every frame).
+   */
+  private isStageParentedVirtualCamera(virtualEntity: Entity): boolean {
+    const local = this.ecs.Transform.getOrNull(virtualEntity) as { parent?: number } | null
+    if (!local) return false
+    const parent = local.parent as number | undefined
+    const { RootEntity, PlayerEntity, CameraEntity } = this.view
+    return (
+      parent !== undefined &&
+      parent !== null &&
+      parent !== 0 &&
+      parent !== (RootEntity as number) &&
+      parent !== (PlayerEntity as number) &&
+      parent !== (CameraEntity as number)
     )
   }
 

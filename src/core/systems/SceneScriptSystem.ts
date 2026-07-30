@@ -1504,6 +1504,9 @@ export class SceneScriptSystem {
     this.copyToClipboardHandler = handler
   }
 
+  /** Throttle move-player-to resume spam (Dead Surge calls movePlayerTo every frame). */
+  private lastMovePlayerToNudgeMs = 0
+
   /**
    * After RestrictedActions.movePlayerTo (Flagtag drown / round reset) — ensure worker
    * cooperative ticks are not left paused by a prior UI mount lag, so scene systems can
@@ -1511,8 +1514,18 @@ export class SceneScriptSystem {
    */
   nudgePlayAfterSceneTeleport(): void {
     if (!this.running || !this.worker) return
+    const now = performance.now()
+    // Always clear lag flags; only spam resume logs / tick kicks at most ~10Hz.
     this.pendingUiEntities = undefined
     this.clearProjectionUiLag()
+    if (now - this.lastMovePlayerToNudgeMs < 100) {
+      // Still resume ticks if held — without log thrash or extra tickPlayFrame storms.
+      if (this.pointerHoldTicksUntilMount) {
+        this.forceResumeWorkerSceneTicks('move-player-to')
+      }
+      return
+    }
+    this.lastMovePlayerToNudgeMs = now
     this.forceResumeWorkerSceneTicks('move-player-to')
     // Drive one play frame immediately so PE pose + systems advance this rAF.
     this.tickPlayFrame()

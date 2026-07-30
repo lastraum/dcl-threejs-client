@@ -808,12 +808,25 @@ async function flushReactEcsForUiSnapshot(
     stableNeeded?: number
     /** 0 = structural only; positive advances open tweens. */
     dt?: number
+    /**
+     * Minimum eng.update passes before early-exit (open/selection animations).
+     * Fingerprint can look "stable" while wall-clock scale tweens still have work.
+     */
+    minPasses?: number
+    /**
+     * Minimum wall-clock ms before early-exit. Plaza how-to-play / popup scale reads
+     * Date.now() / Transform tweens — synthetic dt alone is not enough if we exit in 1 frame.
+     */
+    minWallMs?: number
   }
 ): Promise<void> {
   if (!interactive) return
   const maxPasses = options?.maxPasses ?? POINTER_UI_FINGERPRINT_FLUSH_MAX_PASSES
   const stableNeeded = options?.stableNeeded ?? POINTER_UI_SCENEU_STABLE_NEEDED
   const dt = options?.dt ?? 0
+  const minPasses = Math.max(1, options?.minPasses ?? 1)
+  const minWallMs = Math.max(0, options?.minWallMs ?? 0)
+  const t0 = performance.now()
   let prevFp = options?.seedFp ?? ''
   let stablePasses = 0
   for (let pass = 0; pass < maxPasses; pass++) {
@@ -822,14 +835,21 @@ async function flushReactEcsForUiSnapshot(
     })
     const mount = countWorkerUiMount(eng)
     const fp = computeWorkerUiFingerprint(eng)
+    const wall = performance.now() - t0
     log(
       `[sceneWorker] pointer ui react-ecs flush pass=${pass + 1}/${maxPasses} mount=${mount} ` +
-        `fp=${fp.length}B dt=${dt.toFixed(3)}` +
+        `fp=${fp.length}B dt=${dt.toFixed(3)} wall=${wall.toFixed(0)}ms` +
         `${largeModalContentStillParked(eng) ? ' parkedHint' : ''}`
     )
     if (prevFp && fp === prevFp) {
       stablePasses++
-      if (stablePasses >= stableNeeded) return
+      if (
+        stablePasses >= stableNeeded &&
+        pass + 1 >= minPasses &&
+        wall >= minWallMs
+      ) {
+        return
+      }
     } else {
       stablePasses = 0
     }
@@ -894,7 +914,8 @@ export async function runSceneEnginePointerTick(
   beginPointerPlayerFrameBatch()
   setPointerInteractiveTickActive(true)
   setPointerInteractivePhase('inject')
-  const mountBeforeDown = injectOnlyUiClick ? countWorkerUiMount(eng) : 0
+  // Always count — mesh open settle uses mount growth (not menu kind).
+  const mountBeforeDown = countWorkerUiMount(eng)
   let mountGrew = false
   try {
     if (splitPointerInject) {
@@ -963,11 +984,15 @@ export async function runSceneEnginePointerTick(
         const mountShrunk = mountAfterUp < mountAfterDownUpdate
         setPointerInteractiveTickActive(true)
         if (!mountGrew && !mountShrunk) {
+          // Inventory slot select / scale-pop: need positive dt or the click scale never plays.
           const selectSeed = computeWorkerUiFingerprint(eng)
           await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
-            maxPasses: 2,
+            maxPasses: 6,
             seedFp: selectSeed,
-            stableNeeded: 1
+            stableNeeded: 1,
+            dt: POINTER_UI_OPEN_DT,
+            minPasses: 2,
+            minWallMs: 80
           })
           cfg.log(
             `[sceneWorker] pointer sceneUi selection settle — mount=${mountAfterUp} seed=${selectSeed.length}B`
@@ -982,7 +1007,9 @@ export async function runSceneEnginePointerTick(
             maxPasses: POINTER_UI_OPEN_FLUSH_MAX_PASSES,
             seedFp: openSeed,
             stableNeeded: POINTER_UI_OPEN_STABLE_NEEDED,
-            dt: POINTER_UI_OPEN_DT
+            dt: POINTER_UI_OPEN_DT,
+            minPasses: 3,
+            minWallMs: 200
           })
         }
         runPointerUiPhase4Egress(eng)
@@ -1024,16 +1051,21 @@ export async function runSceneEnginePointerTick(
         // (scale, dual-root slide). No menu classification. Early-exit when stable.
         const meshSeedFp = computeWorkerUiFingerprint(eng)
         const meshMount = countWorkerUiMount(eng)
-        // One path for all mesh UI clicks: settle until fingerprint stable (early exit).
-        // dt lets scale/slide finish; maxPasses is a safety cap only.
+        // Mount grew ⇒ menu open (tutorial, shop, …). Need wall-clock settle so scale
+        // popups are not snapshotted at ~6px (invisible). Not a menu-type classifier —
+        // only "did the UI tree grow on this click?".
+        const mountGrewMesh = meshMount > mountBeforeDown + 8
         cfg.log(
-          `[sceneWorker] pointer ui flush — post-UP seed=${meshSeedFp.length}B mount=${meshMount}`
+          `[sceneWorker] pointer ui flush — post-UP seed=${meshSeedFp.length}B ` +
+            `mount=${mountBeforeDown}→${meshMount}${mountGrewMesh ? ' open' : ''}`
         )
         await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
           maxPasses: POINTER_UI_OPEN_FLUSH_MAX_PASSES,
           seedFp: meshSeedFp,
           stableNeeded: POINTER_UI_OPEN_STABLE_NEEDED,
-          dt: POINTER_UI_OPEN_DT
+          dt: POINTER_UI_OPEN_DT,
+          minPasses: mountGrewMesh ? 4 : 1,
+          minWallMs: mountGrewMesh ? 250 : 0
         })
 
         if (isRefuseFreezeWrites()) {

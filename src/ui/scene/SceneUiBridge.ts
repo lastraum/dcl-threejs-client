@@ -61,7 +61,7 @@ import { layoutUiTree, type LayoutBox } from './yogaLayout'
 import {
   countCollapsedLayoutBoxes,
   repairCollapsedLayoutBoxes,
-  suppressLeanParkedModalShell,
+  suppressEmptyOverlappingModalTwin,
   tryRefineAbsoluteLayoutBoxes
 } from './fastLayoutPatch'
 import { onSceneUiImageLoaded } from './uiImageLoad'
@@ -783,9 +783,9 @@ export class SceneUiBridge {
 
     // Authored-only collapse repair (POINT/%/edges). AUTO icons measured in Yoga.
     const repairedCollapsed = repairCollapsedLayoutBoxes(layoutBoxes, transformOf, this.virtual)
-    // Hide empty on-screen shell while richer content twin is still parked off-right
-    // (no pose invent — content keeps ECS left until worker open tween finishes).
-    const suppressedShell = suppressLeanParkedModalShell(
+    // After worker unpark: hide empty color-only shell when it overlaps texture-rich content.
+    // Never suppress while content is still parked (that blanked inventory + PE-only reopen).
+    const suppressedShell = suppressEmptyOverlappingModalTwin(
       layoutBoxes,
       forest,
       transformOf,

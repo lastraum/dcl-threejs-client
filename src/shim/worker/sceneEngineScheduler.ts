@@ -758,7 +758,8 @@ const POINTER_UI_SCENEU_STABLE_NEEDED = 2
  * eng.update(0) freezes park positions (content left≥1920) forever in phase-4 snapshot.
  * Fingerprint includes position — stay in flush until open animation stops changing.
  */
-const POINTER_UI_LARGE_MODAL_FLUSH_MAX_PASSES = 24
+/** Wall-clock + sim dt both advance open tweens (many scenes use Date.now() not only eng dt). */
+const POINTER_UI_LARGE_MODAL_FLUSH_MAX_PASSES = 32
 const POINTER_UI_LARGE_MODAL_STABLE_NEEDED = 3
 /** ~50ms sim step — enough for open tweens without multi-second pointer stall. */
 const POINTER_UI_LARGE_MODAL_DT = 1 / 20
@@ -978,10 +979,14 @@ export async function runSceneEnginePointerTick(
         // In-menu selection (inventory slot): mount does not grow, but react-ecs must
         // reconcile selection highlight after UP. One seeded pass — not full multipass
         // (that thrash-closed Neurolink). Skip for open/close (mountGrew) and pure fades.
+        //
+        // Large modal OPEN via sceneUi (inventory bag / shop HUD): same COD settle as mesh —
+        // positive dt + fingerprint stable + refuse exit while content twin still parked.
+        // Skipping this left dual-root shell@346 + content@2146 frozen → blank icons / PE ghost.
         mountGrew = mountAfterDownUpdate > mountBeforeDown
         const mountShrunk = mountAfterUp < mountAfterDownUpdate
+        setPointerInteractiveTickActive(true)
         if (!mountGrew && !mountShrunk) {
-          setPointerInteractiveTickActive(true)
           const selectSeed = computeWorkerUiFingerprint(eng)
           await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
             maxPasses: 2,
@@ -991,6 +996,18 @@ export async function runSceneEnginePointerTick(
           cfg.log(
             `[sceneWorker] pointer sceneUi selection settle — mount=${mountAfterUp} seed=${selectSeed.length}B`
           )
+        } else if (mountGrew && mountAfterUp >= 100) {
+          const openSeed = computeWorkerUiFingerprint(eng)
+          cfg.log(
+            `[sceneWorker] pointer sceneUi largeModal open flush — mount=${mountAfterUp} seed=${openSeed.length}B`
+          )
+          await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
+            maxPasses: POINTER_UI_LARGE_MODAL_FLUSH_MAX_PASSES,
+            seedFp: openSeed,
+            stableNeeded: POINTER_UI_LARGE_MODAL_STABLE_NEEDED,
+            dt: POINTER_UI_LARGE_MODAL_DT,
+            requireModalUnparked: true
+          })
         }
         runPointerUiPhase4Egress(eng)
         // Hold cooperative react-ecs ONLY when a menu actually opened (mount grew).

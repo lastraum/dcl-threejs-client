@@ -111,9 +111,24 @@ Any mount change + any `ingestMountSnapshot` → clear liveSeen.
 7. ~~liveSeen on mount change~~ ✅  
 8. ~~Fingerprint unit tests~~ ✅ `npm run test:scene-ui`  
 9. ~~Pixel atlas UV~~ ✅  
-10. ~~Mesh large-modal: positive dt + fingerprint-stable flush~~ ✅  
+10. ~~Mesh **and sceneUi** large-modal open: positive dt + fingerprint-stable + refuse exit while parked~~ ✅  
 11. ~~**Deleted** `alignParkedModalTwinBoxes` (client pose invent)~~ ✅  
 12. ~~**Deleted** under-paint `setTimeout` recovery (second clock)~~ ✅  
+13. ~~**Deleted** off-canvas large-modal paint exception~~ ✅  
+14. ~~**Deleted** suppress shell while content parked~~ ✅ — only zero lean twin when **both** on-screen + texture-rich content wins  
+
+---
+
+## Dual-root shop (fishing inventory / vending)
+
+```text
+Open: shell@left≈346 (color chrome) + content@left≥1920 (icons) until open tween finishes.
+Main MUST NOT invent dx to merge twins.
+Worker flush (mesh PE or sceneUi bag open, mount≥100) advances eng.update(dt≈1/20)
+until fingerprint stable AND no dual park remains, then phase-4 snapshot.
+Main paints on-canvas ECS pose only. If both roots still overlap on-screen after settle,
+suppressEmptyOverlappingModalTwin zeros the texture-poor shell (not pose invent).
+```
 
 ---
 
@@ -121,8 +136,9 @@ Any mount change + any `ingestMountSnapshot` → clear liveSeen.
 
 | Action | Expect |
 |--------|--------|
-| Fishing vending mesh open | Log `largeModal` + flush `dt=0.050`; content on-screen in **first** paint (grids + X + UV) |
-| Close → open | Settles again; no stuck mid-chrome |
+| Fishing vending mesh open | Log `largeModal` + flush `dt=0.050`; content on-screen in **first** paint (grids + icons + X + UV) |
+| Inventory bag sceneUi open | Log `sceneUi largeModal open flush`; same first-paint bar |
+| Close → open | Settles again; no PE-only blocker, no blank icons |
 | Reeling bars | Reuse/RefineAbsolute, not Full every UV tick |
 | CBD splash | PE deletes cleanly |
 

@@ -490,20 +490,18 @@ export class SceneUiDomRenderer {
     const borders = borderCss(transform, scale)
     const radius = borderRadiusCss(transform, scale)
     const layoutBox = input.layoutBoxes.get(entity)
-    // Fully outside the virtual canvas — hide small HUD parks (letterbox / confetti).
-    // Large modal panels (shop ≈1460×670) that open from left≥1920 must still paint so the
-    // slide-in is visible; hiding them left only the empty center shell (COD: paint ECS pose).
+    // Fully outside the virtual canvas — hide (HUD parks + dual-root content still at left≥1920).
+    // COD: paint ECS pose only when on-canvas. Worker large-modal flush unparks before snapshot;
+    // do not special-case "paint off-canvas modals" (that + shell-suppress blanked inventory).
     const vw = input.virtual.width
     const vh = input.virtual.height
-    const largeModalPanel =
-      !!layoutBox && layoutBox.width >= 800 && layoutBox.height >= 400
     const fullyOff =
       !!layoutBox &&
       (layoutBox.left >= vw - 1 ||
         layoutBox.top >= vh - 1 ||
         layoutBox.left + layoutBox.width <= 1 ||
         layoutBox.top + layoutBox.height <= 1)
-    if (layoutBox && fullyOff && !largeModalPanel) {
+    if (layoutBox && fullyOff) {
       this.applyHiddenDomState(shell)
       shell.dataset.uiUnusable = '1'
       const hideOff = (e: Entity): void => {

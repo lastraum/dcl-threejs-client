@@ -361,14 +361,15 @@ export class PetBarnPanel {
 
     const cards = pets
       .slice()
-      .sort((a, b) => (b.deployedAt || '').localeCompare(a.deployedAt || ''))
+      .sort((a, b) =>
+        a.petName.localeCompare(b.petName, undefined, { sensitivity: 'base' })
+      )
       .map((p) => this.cardHtml(p, base))
       .join('')
 
     this.bodyEl.innerHTML = `
       ${toolbar}
       <div class="petbarn-grid">${cards}</div>
-      <p class="petbarn-footnote">Thumbnails only — GLB downloads when you Add.</p>
     `
   }
 
@@ -401,8 +402,43 @@ export class PetBarnPanel {
           data-add="${escapeHtml(p.id)}"
           ${added ? 'disabled' : ''}
         >${added ? 'Added' : 'Add'}</button>
+        <div class="petbarn-card__overlay" data-card-overlay hidden>
+          <div class="petbarn-card__overlay-inner">
+            <div class="petbarn-card__spinner" data-card-spinner aria-hidden="true"></div>
+            <p class="petbarn-card__overlay-msg" data-card-overlay-msg></p>
+            <button type="button" class="petbarn-card__overlay-close" data-card-overlay-close hidden>
+              Close
+            </button>
+          </div>
+        </div>
       </article>
     `
+  }
+
+  private setCardOverlay(
+    card: HTMLElement,
+    state: 'loading' | 'success' | 'error',
+    message: string
+  ): void {
+    const overlay = card.querySelector<HTMLElement>('[data-card-overlay]')
+    const spinner = card.querySelector<HTMLElement>('[data-card-spinner]')
+    const msg = card.querySelector<HTMLElement>('[data-card-overlay-msg]')
+    const close = card.querySelector<HTMLButtonElement>('[data-card-overlay-close]')
+    if (!overlay || !msg) return
+    overlay.hidden = false
+    card.classList.add('has-overlay')
+    overlay.dataset.state = state
+    msg.textContent = message
+    if (spinner) spinner.hidden = state !== 'loading'
+    if (close) close.hidden = state === 'loading'
+  }
+
+  private clearCardOverlay(card: HTMLElement): void {
+    const overlay = card.querySelector<HTMLElement>('[data-card-overlay]')
+    if (!overlay) return
+    overlay.hidden = true
+    delete overlay.dataset.state
+    card.classList.remove('has-overlay')
   }
 
   private renderPublish(): void {
@@ -689,6 +725,21 @@ export class PetBarnPanel {
       return
     }
 
+    const closeOverlay = t.closest<HTMLElement>('[data-card-overlay-close]')
+    if (closeOverlay) {
+      const card = closeOverlay.closest<HTMLElement>('.petbarn-card')
+      if (card) {
+        this.clearCardOverlay(card)
+        const addBtn = card.querySelector<HTMLButtonElement>('[data-add]')
+        if (addBtn && isPetBarnAdded(card.dataset.barnId || '')) {
+          addBtn.disabled = true
+          addBtn.textContent = 'Added'
+          card.classList.add('is-added')
+        }
+      }
+      return
+    }
+
     const addBtn = t.closest<HTMLElement>('[data-add]')
     if (addBtn) {
       const id = addBtn.dataset.add
@@ -700,31 +751,28 @@ export class PetBarnPanel {
   private async handleAdd(barnId: string, btn: HTMLElement): Promise<void> {
     if (this.busy) return
     const listing = this.catalog?.pets.find((p) => p.id === barnId)
+    const card = btn.closest<HTMLElement>('.petbarn-card')
     if (!listing || !this.catalog) {
-      this.setStatus('Listing not found in catalog')
+      if (card) this.setCardOverlay(card, 'error', 'Listing not found in catalog')
       return
     }
     this.busy = true
     btn.setAttribute('disabled', 'true')
-    const prev = btn.textContent
-    btn.textContent = '…'
-    this.setStatus(`Downloading ${listing.petName}…`)
+    if (card) this.setCardOverlay(card, 'loading', 'Adding…')
     try {
       const result = await addPetFromBarn(listing, this.catalog.contentBaseUrl, this.wallet())
       if (!result.ok) {
-        this.setStatus(result.error)
-        btn.textContent = prev
+        if (card) this.setCardOverlay(card, 'error', result.error)
+        else this.setStatus(result.error)
         btn.removeAttribute('disabled')
         return
       }
-      this.setStatus(
-        result.alreadyAdded
-          ? `${listing.petName} already in your library.`
-          : `Added ${listing.petName} to your pets.`
-      )
+      const msg = result.alreadyAdded
+        ? `${listing.petName} is already in your pets.`
+        : `Added ${listing.petName} to your pets.`
+      if (card) this.setCardOverlay(card, 'success', msg)
       btn.textContent = 'Added'
       await this.options.onAddedToLibrary?.()
-      if (this.view === 'catalog') this.renderCatalogPreservingSearchFocus()
     } finally {
       this.busy = false
     }

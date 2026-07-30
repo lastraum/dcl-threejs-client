@@ -3566,12 +3566,23 @@
       .petbarn-back-catalog:hover {
         color: #ede9fe;
       }
+      /* Catalog body: 2-col grid scrolls inside panel; hide scrollbar */
+      .petbarn-panel .pets-panel__body {
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      .petbarn-panel .pets-panel__body::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+      }
       .petbarn-grid {
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 10px;
       }
       .petbarn-card {
+        position: relative;
         display: flex;
         flex-direction: column;
         gap: 6px;
@@ -3580,6 +3591,7 @@
         background: rgba(255, 255, 255, 0.05);
         border: 1px solid rgba(255, 255, 255, 0.08);
         min-width: 0;
+        overflow: hidden;
       }
       .petbarn-card.is-added {
         border-color: rgba(167, 139, 250, 0.45);
@@ -3619,6 +3631,7 @@
         font-size: 12px;
         font-weight: 700;
         cursor: pointer;
+        font-family: inherit;
       }
       .petbarn-card__add:disabled {
         opacity: 0.65;
@@ -3626,11 +3639,73 @@
         background: rgba(255, 255, 255, 0.08);
         border-color: rgba(255, 255, 255, 0.12);
       }
-      .petbarn-footnote {
-        margin: 10px 0 0;
-        font-size: 10px;
-        color: rgba(221, 214, 254, 0.5);
-        line-height: 1.4;
+      .petbarn-card__overlay {
+        position: absolute;
+        inset: 0;
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 10px;
+        box-sizing: border-box;
+        background: rgba(18, 10, 36, 0.88);
+        backdrop-filter: blur(3px);
+        border-radius: inherit;
+      }
+      .petbarn-card__overlay[hidden] {
+        display: none !important;
+      }
+      .petbarn-card__overlay-inner {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        text-align: center;
+        max-width: 100%;
+      }
+      .petbarn-card__spinner {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        border: 2.5px solid rgba(255, 255, 255, 0.15);
+        border-top-color: #c4b5fd;
+        animation: petbarn-spin 0.8s linear infinite;
+        flex-shrink: 0;
+      }
+      .petbarn-card__spinner[hidden] {
+        display: none !important;
+      }
+      .petbarn-card__overlay-msg {
+        margin: 0;
+        font-size: 11px;
+        font-weight: 650;
+        line-height: 1.35;
+        color: #f5f3ff;
+        word-break: break-word;
+      }
+      .petbarn-card__overlay[data-state='success'] .petbarn-card__overlay-msg {
+        color: #e9d5ff;
+      }
+      .petbarn-card__overlay[data-state='error'] .petbarn-card__overlay-msg {
+        color: #fda4af;
+      }
+      .petbarn-card__overlay-close {
+        appearance: none;
+        border: 1px solid rgba(167, 139, 250, 0.5);
+        background: rgba(139, 92, 246, 0.4);
+        color: #fff;
+        border-radius: 8px;
+        padding: 5px 12px;
+        font-size: 11px;
+        font-weight: 700;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .petbarn-card__overlay-close:hover {
+        filter: brightness(1.08);
+      }
+      .petbarn-card__overlay-close[hidden] {
+        display: none !important;
       }
       .petbarn-publish {
         display: flex;

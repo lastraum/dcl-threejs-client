@@ -66,13 +66,11 @@ import {
 } from './uiLayoutCache'
 import { layoutUiTree, type LayoutBox } from './yogaLayout'
 import {
-  alignParkedModalTwinBoxes,
   countCollapsedLayoutBoxes,
   repairCollapsedLayoutBoxes,
   tryRefineAbsoluteLayoutBoxes
 } from './fastLayoutPatch'
 import { onSceneUiImageLoaded } from './uiImageLoad'
-import { extractUiTextureSrc } from './uiBackgroundStyle'
 
 const _camPos = new THREE.Vector3()
 const POINTER_EVENTS_COMPONENT_ID = 1062
@@ -807,27 +805,9 @@ export class SceneUiBridge {
     }
 
     // Authored-only collapse repair (POINT/%/edges). AUTO icons measured in Yoga.
+    // COD: no twinAlign / client pose invent — paint ECS Yoga boxes only.
     const repairedCollapsed = repairCollapsedLayoutBoxes(layoutBoxes, transformOf, this.virtual)
-    // Dual-root shop: shell@center + content@left≥1920 (inject skips onUpdate open tween).
-    // Align content boxes onto shell + collapse lean chrome so first paint shows icons/X.
-    const texOf = (bg: { texture?: unknown } | null | undefined) =>
-      !!bg && !!extractUiTextureSrc((bg as { texture?: unknown }).texture)
-    const twinAligned = alignParkedModalTwinBoxes(
-      layoutBoxes,
-      forest,
-      transformOf,
-      backgroundOf,
-      this.virtual,
-      texOf
-    )
-    if (
-      twinAligned > 0 &&
-      typeof location !== 'undefined' &&
-      location.search.includes('sceneuidebug')
-    ) {
-      console.log(`[scene-ui] twinAlign=${twinAligned} (dual modal → one visible panel)`)
-    }
-    if (repairedCollapsed > 0 || twinAligned > 0) {
+    if (repairedCollapsed > 0) {
       this.lastFullLayoutBoxes = layoutBoxes
       this.layoutCache.set(layoutKey, layoutBoxes)
       layoutCacheHit = true
@@ -855,7 +835,6 @@ export class SceneUiBridge {
       layoutMode = 'Full'
       layoutCacheHit = false
       repairCollapsedLayoutBoxes(layoutBoxes, transformOf, this.virtual)
-      alignParkedModalTwinBoxes(layoutBoxes, forest, transformOf, backgroundOf, this.virtual, texOf)
       this.lastFullLayoutBoxes = layoutBoxes
       layoutBoxMap = new Map<Entity, LayoutBox>(
         visibleLayoutBoxes(layoutBoxes, transformOf).map((box) => [box.entity, box])

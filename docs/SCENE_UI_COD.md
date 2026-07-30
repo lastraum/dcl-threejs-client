@@ -120,25 +120,20 @@ Any mount change + any `ingestMountSnapshot` → clear liveSeen.
 7. ~~liveSeen on mount change~~ ✅  
 8. ~~Fingerprint unit tests~~ ✅ `npm run test:scene-ui`  
 9. ~~Pixel atlas UV~~ ✅  
-10. ~~Mesh **and sceneUi** large-modal open: positive dt + fingerprint-stable + refuse exit while parked~~ ✅  
-11. ~~**Deleted** `alignParkedModalTwinBoxes` (client pose invent)~~ ✅  
+10. ~~Mesh / sceneUi open: fingerprint-stable flush + wall min; refuse exit while parked/micro~~ ✅  
+11. ~~**Deleted** `alignParkedModalTwinBoxes` (client pose invent) — stay deleted~~ ✅  
 12. ~~**Deleted** under-paint `setTimeout` recovery (second clock)~~ ✅  
 13. ~~**Deleted** off-canvas large-modal paint exception~~ ✅  
-14. ~~alignParkedModalTwinBoxes (texture-aware)~~ ✅ — dual ECS panels → one paint modal when inject freezes park  
 
 ---
 
 ## Dual-root shop (fishing inventory / vending)
 
 ```text
-Open: shell@left≈346 (color chrome + PE) + content@left≥1920 (icons/X) in the same mount.
-Inject path skips exports.onUpdate → open tweens often never leave park during pointer flush
-(eng.update(dt) alone freezes dual pose → empty PE shell, content fully-off-hidden).
-
-Worker still runs large-modal flush (mesh + sceneUi mount≥100) with positive dt.
-Main Yoga paint resolves dual ECS panels into **one visible modal**:
-  alignParkedModalTwinBoxes — translate texture-rich subtree onto shell origin (layout boxes
-  only; ECS pose unchanged) and collapse lean shell. Texture count, not color fills.
+Open: shell@left≈346 + content@left≥1920 until open tween finishes.
+Main does NOT invent dx (no twinAlign). Paint ECS Yoga boxes only; fully-off stays hidden.
+Worker flush advances eng.update(dt) until fingerprint stable AND not dual-parked / micro.
+Then phase-4 snapshot. Cooperative dirty after that — cousins independent.
 ```
 
 ---

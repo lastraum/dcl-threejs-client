@@ -78,6 +78,24 @@ export type SceneUiDrawInput = {
   layoutBoxes: ReadonlyMap<Entity, LayoutBox>
 }
 
+/**
+ * Stack rank for paint + hits.
+ * - Authored `zIndex` is a coarse band (scene can still force layers).
+ * - `paintSeq` is DFS order (parent before children, siblings left→right): later in the tree
+ *   paints higher — dim scrim first, tutorial modal after → modal on top.
+ * Nested entity shells get +NESTED_FLOOR so they always sit above the parent's content layer (z=0).
+ */
+const UI_STACK_AUTHORED_BAND = 1_000_000
+const UI_STACK_NESTED_FLOOR = 1_000
+
+function computeUiStackZ(authoredZ: number, paintSeq: number, nested: boolean): number {
+  return (
+    Math.max(0, authoredZ) * UI_STACK_AUTHORED_BAND +
+    (nested ? UI_STACK_NESTED_FLOOR : 0) +
+    paintSeq
+  )
+}
+
 /** Yoga canvas-absolute box → client-space hit region (same mapping as DOM paint). */
 function pushLayoutHitRegion(
   regions: UiScreenRegion[],
@@ -85,7 +103,8 @@ function pushLayoutHitRegion(
   transform: PBUiTransform,
   layoutBox: LayoutBox,
   input: Pick<SceneUiDrawInput, 'interactable' | 'viewport' | 'virtual'>,
-  depth: number
+  depth: number,
+  stackZ?: number
 ): void {
   if (layoutBox.width <= 0.5 || layoutBox.height <= 0.5) return
   // Skip off-virtual-canvas hit regions (second shop root at x=2146, etc.).
@@ -114,7 +133,7 @@ function pushLayoutHitRegion(
     top: screen.top,
     width: screen.width,
     height: screen.height,
-    zIndex: transform.zIndex ?? 0,
+    zIndex: stackZ ?? transform.zIndex ?? 0,
     depth
   })
 }
@@ -164,7 +183,10 @@ function ensureContentRoot(shell: HTMLElement): HTMLElement {
   if (!content) {
     content = document.createElement('div')
     content.className = 'scene-ui-node__content'
-    shell.appendChild(content)
+    // Always first under the shell so entity-child shells stack above bg/text content.
+    shell.insertBefore(content, shell.firstChild)
+  } else if (shell.firstElementChild !== content) {
+    shell.insertBefore(content, shell.firstChild)
   }
   // Fill the yoga shell so UiText height:100% / flex center resolve against a real box.
   // Without this, Label entities without explicit height (CREATOR MODE, titles, ✕) collapse:
@@ -194,12 +216,26 @@ function ensureBgLayer(el: HTMLElement): HTMLElement {
   return bg
 }
 
-/** Reparent only when needed; preserve focus if the active field lives inside the node. */
-function adoptNode(parent: HTMLElement, node: HTMLElement): void {
-  if (node.parentElement === parent) return
+/**
+ * Reparent / reorder under `parent`. When `before` is set, insert before that node so forest
+ * sibling order is preserved (later siblings stay later in DOM → stack above when z ties).
+ * Content layer (`.scene-ui-node__content`) must stay first under a shell.
+ */
+function adoptNode(parent: HTMLElement, node: HTMLElement, before: HTMLElement | null = null): void {
+  if (node.parentElement === parent) {
+    if (before === null) {
+      if (parent.lastElementChild === node) return
+    } else if (node.nextSibling === before) {
+      return
+    }
+  }
   const active = document.activeElement
   const focusInside = active instanceof HTMLElement && node.contains(active)
-  parent.appendChild(node)
+  if (before && before.parentElement === parent) {
+    parent.insertBefore(node, before)
+  } else {
+    parent.appendChild(node)
+  }
   if (focusInside && active instanceof HTMLElement && active.isConnected) {
     active.focus({ preventScroll: true })
   }
@@ -228,6 +264,8 @@ export class SceneUiDomRenderer {
   private readonly callbacks: SceneUiDomCallbacks
   private readonly boundInputs = new WeakSet<HTMLInputElement>()
   private readonly boundSelects = new WeakSet<HTMLSelectElement>()
+  /** Monotonic DFS paint order for the current full/patch pass (tree-order stacking). */
+  private paintSeq = 0
 
   constructor(host: HTMLElement, callbacks: SceneUiDomCallbacks = {}) {
     this.host = host
@@ -323,6 +361,8 @@ export class SceneUiDomRenderer {
     const regions: UiScreenRegion[] = []
     const scale = uiScreenScaleFromViewport(input.viewport)
     this.ensureLayoutHost()
+    // Reset DFS stack order each full paint — later in tree = higher z (scrim → modal).
+    this.paintSeq = 0
 
     const roots = input.forest.get(CANVAS_ROOT_ENTITY) ?? []
     for (const root of roots) {
@@ -354,6 +394,25 @@ export class SceneUiDomRenderer {
   patchEntities(dirty: readonly Entity[], input: SceneUiDrawInput): boolean {
     const scale = uiScreenScaleFromViewport(input.viewport)
     const alive = new Set<Entity>(input.mountedEntities)
+    // Patch re-styles leaves but must re-apply tree stack z so scrim/modal order stays correct.
+    this.paintSeq = 0
+    const stackWalk = (entity: Entity): void => {
+      const shell = this.nodes.get(entity)
+      const transform = input.transformOf(entity)
+      if (shell && transform && isUiEntityVisible(entity, input.transformOf)) {
+        const nested =
+          (transform.parent ?? CANVAS_ROOT_ENTITY) !== CANVAS_ROOT_ENTITY &&
+          (transform.parent as number) !== 0
+        const stackZ = computeUiStackZ(transform.zIndex ?? 0, ++this.paintSeq, nested)
+        shell.style.zIndex = String(stackZ)
+        shell.dataset.uiStackZ = String(stackZ)
+      } else {
+        this.paintSeq++
+      }
+      for (const child of input.forest.get(entity) ?? []) stackWalk(child)
+    }
+    for (const root of input.forest.get(CANVAS_ROOT_ENTITY) ?? []) stackWalk(root)
+
     for (const entity of dirty) {
       if (!alive.has(entity)) {
         const el = this.nodes.get(entity)
@@ -363,8 +422,8 @@ export class SceneUiDomRenderer {
       if (!this.nodes.has(entity) && isUiEntityVisible(entity, input.transformOf)) {
         return false
       }
-      // depth ignored for patch (regions rebuilt below)
-      this.renderEntityTree(entity, input, alive, new Set(), 0, [], scale)
+      // depth ignored for patch (regions rebuilt below); stack z already applied above
+      this.renderEntityTree(entity, input, alive, new Set(), 0, [], scale, true)
     }
     const regions: UiScreenRegion[] = []
     this.collectHitRegionsFromForest(input, regions)
@@ -382,7 +441,13 @@ export class SceneUiDomRenderer {
       const transform = input.transformOf(entity)
       if (transform && isUiEntityVisible(entity, input.transformOf)) {
         const layoutBox = input.layoutBoxes.get(entity)
-        if (layoutBox) pushLayoutHitRegion(regions, entity, transform, layoutBox, input, depth)
+        if (layoutBox) {
+          const shell = this.nodes.get(entity)
+          const stackZ = shell?.dataset.uiStackZ
+            ? Number(shell.dataset.uiStackZ)
+            : transform.zIndex ?? 0
+          pushLayoutHitRegion(regions, entity, transform, layoutBox, input, depth, stackZ)
+        }
       }
       for (const child of input.forest.get(entity) ?? []) walk(child, depth + 1)
     }
@@ -454,7 +519,9 @@ export class SceneUiDomRenderer {
     visited: Set<Entity>,
     depth: number,
     regions: UiScreenRegion[],
-    scale: UiScreenScale
+    scale: UiScreenScale,
+    /** Patch path already assigned stack z — do not re-bump paintSeq per dirty seed. */
+    stackZAlreadyAssigned = false
   ): void {
     if (!input.mountedEntities.has(entity) || !alive.has(entity)) return
     visited.add(entity)
@@ -479,8 +546,36 @@ export class SceneUiDomRenderer {
 
     const { parent: domParent, coords } = this.resolveDomParent(transform)
     const shell = this.getOrCreateNode(entity)
-    adoptNode(domParent, shell)
-    const el = ensureContentRoot(shell)
+    // Keep entity shells after content layer; later siblings after earlier ones.
+    const contentEl = ensureContentRoot(shell)
+    // When adopting under parent shell, place after existing content, in forest sibling order.
+    if (coords === 'parent' && domParent !== this.host) {
+      const siblings = input.forest.get((transform.parent ?? CANVAS_ROOT_ENTITY) as Entity) ?? []
+      const idx = siblings.indexOf(entity)
+      let before: HTMLElement | null = null
+      for (let i = idx + 1; i < siblings.length; i++) {
+        const nextShell = this.nodes.get(siblings[i]!)
+        if (nextShell?.parentElement === domParent) {
+          before = nextShell
+          break
+        }
+      }
+      adoptNode(domParent, shell, before)
+    } else {
+      // Canvas roots: forest order among host children.
+      const roots = input.forest.get(CANVAS_ROOT_ENTITY) ?? []
+      const idx = roots.indexOf(entity)
+      let before: HTMLElement | null = null
+      for (let i = idx + 1; i < roots.length; i++) {
+        const nextShell = this.nodes.get(roots[i]!)
+        if (nextShell?.parentElement === this.host) {
+          before = nextShell
+          break
+        }
+      }
+      adoptNode(domParent, shell, before)
+    }
+    const el = contentEl
 
     const text = input.textOf(entity)
     const bg = input.backgroundOf(entity)
@@ -572,7 +667,16 @@ export class SceneUiDomRenderer {
     shell.style.visibility = 'visible'
     applyUiTransformContentStyles(el, transform, scale)
     shell.style.opacity = String(Math.min(1, Math.max(0, transform.opacity ?? 1)))
-    shell.style.zIndex = String(transform.zIndex ?? 0)
+    // Tree-order stack: later DFS = higher. Nested shells above parent content (z=0).
+    const nested = coords === 'parent'
+    let stackZ: number
+    if (stackZAlreadyAssigned && shell.dataset.uiStackZ) {
+      stackZ = Number(shell.dataset.uiStackZ)
+    } else {
+      stackZ = computeUiStackZ(transform.zIndex ?? 0, ++this.paintSeq, nested)
+      shell.dataset.uiStackZ = String(stackZ)
+    }
+    shell.style.zIndex = String(stackZ)
     shell.style.backgroundImage = ''
     shell.style.borderImage = ''
     shell.removeAttribute('aria-hidden')
@@ -733,14 +837,25 @@ export class SceneUiDomRenderer {
 
     // Nested shells: parent-relative; roots: canvas-absolute. Clip large panels (clipShell).
     applyYogaLayoutBox(shell, layoutBox, scale, coords, clipShell)
-    shell.style.zIndex = String(transform.zIndex ?? 0)
+    // Keep stack z (already set above); do not clobber with raw authored zIndex alone.
+    shell.style.zIndex = shell.dataset.uiStackZ ?? shell.style.zIndex
 
-    // Hit map always canvas-absolute (not nested DOM rects).
-    pushLayoutHitRegion(regions, entity, transform, layoutBox, input, depth)
+    // Hit map always canvas-absolute (not nested DOM rects); same stack rank as paint.
+    const hitStackZ = Number(shell.dataset.uiStackZ ?? transform.zIndex ?? 0)
+    pushLayoutHitRegion(regions, entity, transform, layoutBox, input, depth, hitStackZ)
 
     const children = input.forest.get(entity) ?? []
     for (const child of children) {
-      this.renderEntityTree(child, input, alive, visited, depth + 1, regions, scale)
+      this.renderEntityTree(
+        child,
+        input,
+        alive,
+        visited,
+        depth + 1,
+        regions,
+        scale,
+        stackZAlreadyAssigned
+      )
     }
   }
 

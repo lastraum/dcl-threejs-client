@@ -223,12 +223,22 @@ export default {
       return json({ error: 'Method not allowed — POST only' }, 405)
     }
 
-    const token = env.PETBARN_GITHUB_TOKEN
+    // Trim: dashboard paste sometimes includes trailing newline/space → GitHub 401 Bad credentials
+    const token = String(env.PETBARN_GITHUB_TOKEN || '').trim()
     if (!token) {
       return json(
         {
           error: 'PETBARN_GITHUB_TOKEN secret not set',
-          hint: 'Worker Settings → Variables and Secrets → Add secret'
+          hint: 'Worker Settings → Variables and Secrets → Add secret PETBARN_GITHUB_TOKEN, then Deploy'
+        },
+        503
+      )
+    }
+    if (!token.startsWith('github_pat_') && !token.startsWith('ghp_')) {
+      return json(
+        {
+          error:
+            'PETBARN_GITHUB_TOKEN does not look like a GitHub PAT (expected github_pat_… or ghp_…). Re-create the secret and redeploy.'
         },
         503
       )

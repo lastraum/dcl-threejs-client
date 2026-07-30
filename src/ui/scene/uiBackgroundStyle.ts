@@ -466,22 +466,15 @@ function applyAtlasUvAsBackground(
   el.style.overflow = 'hidden'
   el.style.backgroundImage = `url("${safeUrl}")`
   el.style.backgroundRepeat = 'no-repeat'
-  // Prefer pixel crop when natural size is known — % position is fragile on first paint
-  // before the image decodes (shop icons looked like diagonal atlas mash until reopen).
-  const natural = probeImageNaturalSize(imageUrl)
-  if (natural && natural.w > 0 && natural.h > 0) {
-    const sizeW = natural.w / uSpan
-    const sizeH = natural.h / vSpan
-    el.style.backgroundSize = `${sizeW}px ${sizeH}px`
-    el.style.backgroundPosition = `${(-u0 * sizeW).toFixed(2)}px ${(-cssTop * sizeH).toFixed(2)}px`
-  } else {
-    const sizeX = 100 / uSpan
-    const sizeY = 100 / vSpan
-    const posX = uSpan >= 1 - 1e-6 ? 0 : (u0 / (1 - uSpan)) * 100
-    const posY = vSpan >= 1 - 1e-6 ? 0 : (cssTop / (1 - vSpan)) * 100
-    el.style.backgroundSize = `${sizeX.toFixed(4)}% ${sizeY.toFixed(4)}%`
-    el.style.backgroundPosition = `${posX.toFixed(4)}% ${posY.toFixed(4)}%`
-  }
+  // Always use % crop (Explorer-proven). Pixel size after natural decode flipped the cast
+  // helper / tooltip UV after ~20s when image-loaded repainted with a different formula.
+  void probeImageNaturalSize(imageUrl) // still warm cache for nine-slice paths
+  const sizeX = 100 / uSpan
+  const sizeY = 100 / vSpan
+  const posX = uSpan >= 1 - 1e-6 ? 0 : (u0 / (1 - uSpan)) * 100
+  const posY = vSpan >= 1 - 1e-6 ? 0 : (cssTop / (1 - vSpan)) * 100
+  el.style.backgroundSize = `${sizeX.toFixed(4)}% ${sizeY.toFixed(4)}%`
+  el.style.backgroundPosition = `${posX.toFixed(4)}% ${posY.toFixed(4)}%`
   el.style.backgroundColor = 'transparent'
   el.style.backgroundBlendMode = ''
   el.style.opacity = String(clamp01(colorAlpha))

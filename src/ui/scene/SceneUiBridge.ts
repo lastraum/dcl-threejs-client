@@ -61,6 +61,7 @@ import { layoutUiTree, type LayoutBox } from './yogaLayout'
 import {
   countCollapsedLayoutBoxes,
   repairCollapsedLayoutBoxes,
+  suppressLeanParkedModalShell,
   tryRefineAbsoluteLayoutBoxes
 } from './fastLayoutPatch'
 import { onSceneUiImageLoaded } from './uiImageLoad'
@@ -781,7 +782,16 @@ export class SceneUiBridge {
 
     // Authored-only collapse repair (POINT/%/edges). AUTO icons measured in Yoga.
     const repairedCollapsed = repairCollapsedLayoutBoxes(layoutBoxes, transformOf, this.virtual)
-    if (repairedCollapsed > 0) {
+    // Hide empty on-screen shell while richer content twin is still parked off-right
+    // (no pose invent — content keeps ECS left until worker open tween finishes).
+    const suppressedShell = suppressLeanParkedModalShell(
+      layoutBoxes,
+      forest,
+      transformOf,
+      backgroundOf,
+      this.virtual
+    )
+    if (repairedCollapsed > 0 || suppressedShell > 0) {
       this.lastFullLayoutBoxes = layoutBoxes
       this.layoutCache.set(layoutKey, layoutBoxes)
       layoutCacheHit = true

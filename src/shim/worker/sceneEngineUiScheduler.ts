@@ -340,19 +340,54 @@ export function computeWorkerUiFingerprint(engine: IEngine): string {
       justifyContent?: unknown
       alignItems?: unknown
       positionType?: number
+      // SDK PB flat edges (Yoga authority) — NOT only nested position/margin objects.
+      positionTop?: number
+      positionTopUnit?: number
+      positionRight?: number
+      positionRightUnit?: number
+      positionBottom?: number
+      positionBottomUnit?: number
+      positionLeft?: number
+      positionLeftUnit?: number
+      marginTop?: number
+      marginRight?: number
+      marginBottom?: number
+      marginLeft?: number
+      paddingTop?: number
+      paddingRight?: number
+      paddingBottom?: number
+      paddingLeft?: number
       position?: { top?: number; right?: number; bottom?: number; left?: number }
       margin?: { top?: number; right?: number; bottom?: number; left?: number }
       padding?: { top?: number; right?: number; bottom?: number; left?: number }
     }
+    // Prefer flat PB fields (what layoutUiTree reads). Nested position.* alone missed open
+    // tweens → fingerprint "stable" while content stayed parked at left≥1920.
+    const posT = tr.positionTop ?? tr.position?.top ?? ''
+    const posR = tr.positionRight ?? tr.position?.right ?? ''
+    const posB = tr.positionBottom ?? tr.position?.bottom ?? ''
+    const posL = tr.positionLeft ?? tr.position?.left ?? ''
+    const posTU = tr.positionTopUnit ?? ''
+    const posRU = tr.positionRightUnit ?? ''
+    const posBU = tr.positionBottomUnit ?? ''
+    const posLU = tr.positionLeftUnit ?? ''
+    const mT = tr.marginTop ?? tr.margin?.top ?? ''
+    const mR = tr.marginRight ?? tr.margin?.right ?? ''
+    const mB = tr.marginBottom ?? tr.margin?.bottom ?? ''
+    const mL = tr.marginLeft ?? tr.margin?.left ?? ''
+    const pT = tr.paddingTop ?? tr.padding?.top ?? ''
+    const pR = tr.paddingRight ?? tr.padding?.right ?? ''
+    const pB = tr.paddingBottom ?? tr.padding?.bottom ?? ''
+    const pL = tr.paddingLeft ?? tr.padding?.left ?? ''
     let line =
       `${entity}:d${normalizeYGDisplay(tr.display)}:o${tr.opacity ?? 1}:p${tr.parent ?? 0}` +
       `:pf${normalizePointerFilterMode(tr.pointerFilter)}` +
       `:w${tr.width ?? 0}:${tr.widthUnit ?? 0}:h${tr.height ?? 0}:${tr.heightUnit ?? 0}` +
       `:fd${tr.flexDirection ?? 0}:j${tr.justifyContent ?? 0}:ai${tr.alignItems ?? 0}` +
       `:pt${tr.positionType ?? 0}` +
-      `:pos${tr.position?.top ?? ''},${tr.position?.right ?? ''},${tr.position?.bottom ?? ''},${tr.position?.left ?? ''}` +
-      `:m${tr.margin?.top ?? ''},${tr.margin?.right ?? ''},${tr.margin?.bottom ?? ''},${tr.margin?.left ?? ''}` +
-      `:pad${tr.padding?.top ?? ''},${tr.padding?.right ?? ''},${tr.padding?.bottom ?? ''},${tr.padding?.left ?? ''}`
+      `:pos${posT},${posR},${posB},${posL}:pu${posTU},${posRU},${posBU},${posLU}` +
+      `:m${mT},${mR},${mB},${mL}` +
+      `:pad${pT},${pR},${pB},${pL}`
     const bg = UiBackground.getOrNull(entity)
     if (bg) {
       // Include atlas UVs — without them tutoE/tutoF crop never invalidates the fingerprint

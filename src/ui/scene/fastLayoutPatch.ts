@@ -252,3 +252,56 @@ export function countCollapsedLayoutBoxes(boxes: Iterable<LayoutBox>): number {
   }
   return n
 }
+
+/**
+ * When a lean empty modal shell sits on-screen and a richer content twin is still
+ * parked off-canvas right, suppress the shell subtree (zero boxes) so we do not paint
+ * empty grids. Content keeps its ECS pose (may be off-screen until open tween finishes).
+ * COD: no pose invent — only hide the empty twin.
+ */
+export function suppressLeanParkedModalShell(
+  boxes: LayoutBox[],
+  forest: ReadonlyMap<Entity, Entity[]>,
+  transformOf: (e: Entity) => PBUiTransform | null,
+  backgroundOf: ((e: Entity) => unknown) | null | undefined,
+  virtual: VirtualCanvasSize
+): number {
+  if (!boxes.length) return 0
+  const byEntity = new Map<Entity, LayoutBox>()
+  for (const b of boxes) byEntity.set(b.entity, b)
+  const roots = forest.get(CANVAS_ROOT_ENTITY as Entity) ?? []
+  type Info = { entity: Entity; box: LayoutBox; bg: number; ids: Set<Entity> }
+  const large: Info[] = []
+  const walk = (e: Entity, ids: Set<Entity>): number => {
+    ids.add(e)
+    let n = backgroundOf?.(e) ? 1 : 0
+    for (const c of forest.get(e) ?? []) n += walk(c, ids)
+    return n
+  }
+  for (const r of roots) {
+    const box = byEntity.get(r)
+    if (!box || box.width < 800 || box.height < 400) continue
+    const t = transformOf(r)
+    if (!t || normalizeYGPositionType(t.positionType) !== YGPositionType.ABSOLUTE) continue
+    if (box.width >= virtual.width * 0.95) continue
+    const ids = new Set<Entity>()
+    large.push({ entity: r, box, bg: walk(r, ids), ids })
+  }
+  if (large.length < 2) return 0
+  const vw = virtual.width
+  const on = large.filter((x) => x.box.left >= -40 && x.box.left < vw - 80)
+  const off = large.filter((x) => x.box.left >= vw - 1)
+  if (!on.length || !off.length) return 0
+  const content = [...off].sort((a, b) => b.bg - a.bg)[0]!
+  const shell = [...on].sort((a, b) => a.bg - b.bg)[0]!
+  if (content.bg < 30 || content.bg < shell.bg + 15) return 0
+  if (shell.bg >= content.bg * 0.35) return 0
+  let n = 0
+  for (const b of boxes) {
+    if (!shell.ids.has(b.entity)) continue
+    b.width = 0
+    b.height = 0
+    n++
+  }
+  return n
+}

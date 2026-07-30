@@ -763,6 +763,42 @@ const POINTER_UI_LARGE_MODAL_STABLE_NEEDED = 3
 /** ~50ms sim step — enough for open tweens without multi-second pointer stall. */
 const POINTER_UI_LARGE_MODAL_DT = 1 / 20
 
+/**
+ * Dual large absolute canvas roots: one on-screen (shell) + one parked right (content).
+ * Open tweens must move the parked root before phase-4 snapshot (COD: no client pose invent).
+ */
+function largeModalContentStillParked(eng: IEngine): boolean {
+  const UiTransform = resolveWorkerUiTransform(eng)
+  let onScreen = 0
+  let offRight = 0
+  for (const [entity] of eng.getEntitiesWith(UiTransform)) {
+    const t = UiTransform.getOrNull(entity) as {
+      parent?: number
+      positionType?: number
+      width?: number
+      height?: number
+      widthUnit?: number
+      heightUnit?: number
+      positionLeft?: number
+      positionLeftUnit?: number
+    } | null
+    if (!t) continue
+    if ((t.parent ?? 0) !== 0) continue
+    // Absolute + modal-sized POINT box (shop panel ≈1460×670).
+    if ((t.positionType ?? 0) !== 1 /* ABSOLUTE */) continue
+    if ((t.widthUnit ?? 0) !== 1 /* POINT */ || (t.heightUnit ?? 0) !== 1) continue
+    const w = t.width ?? 0
+    const h = t.height ?? 0
+    if (w < 800 || h < 400) continue
+    // Only POINT left parks (percent parks are plaza letterbox etc.).
+    if ((t.positionLeftUnit ?? 0) !== 1 /* POINT */) continue
+    const left = t.positionLeft ?? 0
+    if (left >= 1800) offRight++
+    else if (left >= 0 && left < 1200) onScreen++
+  }
+  return onScreen > 0 && offRight > 0
+}
+
 async function flushReactEcsForUiSnapshot(
   eng: IEngine,
   log: (message: string) => void,
@@ -777,12 +813,15 @@ async function flushReactEcsForUiSnapshot(
      * Positive = allow UiTransform open tweens to advance (large modal COD root).
      */
     dt?: number
+    /** Large modal: refuse early exit while a content twin is still parked off-canvas right. */
+    requireModalUnparked?: boolean
   }
 ): Promise<void> {
   if (!interactive) return
   const maxPasses = options?.maxPasses ?? POINTER_UI_FINGERPRINT_FLUSH_MAX_PASSES
   const stableNeeded = options?.stableNeeded ?? POINTER_UI_SCENEU_STABLE_NEEDED
   const dt = options?.dt ?? 0
+  const requireUnparked = options?.requireModalUnparked === true
   let prevFp = options?.seedFp ?? ''
   let stablePasses = 0
   for (let pass = 0; pass < maxPasses; pass++) {
@@ -792,17 +831,24 @@ async function flushReactEcsForUiSnapshot(
     // dt=0: do not treat as wall-clock frame. Positive dt advances modal open systems.
     const mount = countWorkerUiMount(eng)
     const fp = computeWorkerUiFingerprint(eng)
+    const parked = requireUnparked && largeModalContentStillParked(eng)
     log(
       `[sceneWorker] pointer ui react-ecs flush pass=${pass + 1} mount=${mount} ` +
-        `fp=${fp.length}B dt=${dt.toFixed(3)}`
+        `fp=${fp.length}B dt=${dt.toFixed(3)}${parked ? ' parkedModal' : ''}`
     )
     if (prevFp && fp === prevFp) {
       stablePasses++
-      if (stablePasses >= stableNeeded) return
+      // Fingerprint stable but content still parked → keep simulating open tween.
+      if (stablePasses >= stableNeeded && !parked) return
     } else {
       stablePasses = 0
     }
     prevFp = fp
+  }
+  if (requireUnparked && largeModalContentStillParked(eng)) {
+    log(
+      `[sceneWorker] pointer ui flush — maxPasses with modal still parked; snapshoting current pose`
+    )
   }
 }
 
@@ -995,7 +1041,8 @@ export async function runSceneEnginePointerTick(
           stableNeeded: largeModal
             ? POINTER_UI_LARGE_MODAL_STABLE_NEEDED
             : POINTER_UI_MESH_STABLE_NEEDED,
-          dt: largeModal ? POINTER_UI_LARGE_MODAL_DT : 0
+          dt: largeModal ? POINTER_UI_LARGE_MODAL_DT : 0,
+          requireModalUnparked: largeModal
         })
 
         if (isRefuseFreezeWrites()) {

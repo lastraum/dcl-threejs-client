@@ -490,18 +490,20 @@ export class SceneUiDomRenderer {
     const borders = borderCss(transform, scale)
     const radius = borderRadiusCss(transform, scale)
     const layoutBox = input.layoutBoxes.get(entity)
-    // Fully outside the virtual canvas — hide (parked HUD / dual shop twin past the edge).
-    // Do NOT use a soft "mostly off" threshold: first modal frame often sits at left≈1500
-    // then tweens on-screen; hiding the contentful twin left an empty shell (ghost slots).
+    // Fully outside the virtual canvas — hide small HUD parks (letterbox / confetti).
+    // Large modal panels (shop ≈1460×670) that open from left≥1920 must still paint so the
+    // slide-in is visible; hiding them left only the empty center shell (COD: paint ECS pose).
     const vw = input.virtual.width
     const vh = input.virtual.height
-    if (
-      layoutBox &&
+    const largeModalPanel =
+      !!layoutBox && layoutBox.width >= 800 && layoutBox.height >= 400
+    const fullyOff =
+      !!layoutBox &&
       (layoutBox.left >= vw - 1 ||
         layoutBox.top >= vh - 1 ||
         layoutBox.left + layoutBox.width <= 1 ||
         layoutBox.top + layoutBox.height <= 1)
-    ) {
+    if (layoutBox && fullyOff && !largeModalPanel) {
       this.applyHiddenDomState(shell)
       shell.dataset.uiUnusable = '1'
       const hideOff = (e: Entity): void => {

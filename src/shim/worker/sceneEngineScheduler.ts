@@ -775,8 +775,8 @@ function largeModalContentStillParked(eng: IEngine): boolean {
   const UiTransform = resolveWorkerUiTransform(eng)
   let onScreen = 0
   let offRight = 0
-  for (const [entity] of eng.getEntitiesWith(UiTransform)) {
-    const t = UiTransform.getOrNull(entity) as {
+  for (const [_entity] of eng.getEntitiesWith(UiTransform)) {
+    const t = UiTransform.getOrNull(_entity) as {
       parent?: number
       positionType?: number
       width?: number
@@ -785,10 +785,11 @@ function largeModalContentStillParked(eng: IEngine): boolean {
       heightUnit?: number
       positionLeft?: number
       positionLeftUnit?: number
+      position?: { left?: number; leftUnit?: number }
     } | null
     if (!t) continue
-    if ((t.parent ?? 0) !== 0) continue
-    // Absolute + modal-sized box (shop panel ≈1460×670).
+    // Absolute + modal-sized box (shop panel ≈1460×670). Any depth — content often
+    // nests under an intermediate parent (not only canvas roots).
     if ((t.positionType ?? 0) !== 1 /* ABSOLUTE */) continue
     const wUnit = t.widthUnit ?? 0
     const hUnit = t.heightUnit ?? 0
@@ -798,10 +799,11 @@ function largeModalContentStillParked(eng: IEngine): boolean {
     const w = t.width ?? 0
     const h = t.height ?? 0
     if (w < 800 || h < 400) continue
-    const leftU = t.positionLeftUnit ?? 0
+    if (w >= 1800) continue // near-fullscreen scrim, not shop panel
+    const leftU = t.positionLeftUnit ?? t.position?.leftUnit ?? 0
     // Skip pure percent parks (plaza letterbox uses % edges).
     if (leftU === 2 /* PERCENT */) continue
-    const left = t.positionLeft ?? 0
+    const left = t.positionLeft ?? t.position?.left ?? 0
     if (left >= 1800) offRight++
     else if (left >= 0 && left < 1200) onScreen++
   }

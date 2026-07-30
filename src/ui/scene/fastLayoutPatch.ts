@@ -254,16 +254,22 @@ export function countCollapsedLayoutBoxes(boxes: Iterable<LayoutBox>): number {
 }
 
 /**
- * After worker open settle, two large absolute modal roots can overlap on-screen:
- * empty color-only shell + texture-rich content. Zero the lean twin so icons paint.
+ * Fishing shop dual absolute modal panels (and similar):
+ *   - empty chrome shell already on-screen (left≈346, color slots, PE block)
+ *   - texture-rich content twin still at left≥1920 (icons / X / grids)
  *
- * COD:
- * - Never suppress while a twin is still parked off-right (that blanked the only
- *   visible shell and left PE-only ghosts on second open).
- * - No pose invent — content keeps ECS left; worker flush unparks before snapshot.
- * - Texture count only (purple slots also have UiBackground color).
+ * Inject path skips exports.onUpdate, so open tweens often never leave park during
+ * mesh/sceneUi flush — eng.update(dt) alone freezes dual pose. Yoga then fully-off-hides
+ * content and paints an empty PE shell ("open does nothing").
+ *
+ * Resolve **one visible modal** for paint+hit-map:
+ *   1. Translate contentful subtree onto shell origin (layout boxes only — ECS unchanged)
+ *   2. Collapse lean shell so it cannot ghost over icons
+ *
+ * Texture count only (purple slots have UiBackground color without icons).
+ * Scans all large absolute boxes (content may nest under an intermediate parent).
  */
-export function suppressEmptyOverlappingModalTwin(
+export function alignParkedModalTwinBoxes(
   boxes: LayoutBox[],
   forest: ReadonlyMap<Entity, Entity[]>,
   transformOf: (e: Entity) => PBUiTransform | null,
@@ -275,9 +281,8 @@ export function suppressEmptyOverlappingModalTwin(
   const texOf = hasTexture ?? ((bg) => !!(bg && bg.texture))
   const byEntity = new Map<Entity, LayoutBox>()
   for (const b of boxes) byEntity.set(b.entity, b)
-  const roots = forest.get(CANVAS_ROOT_ENTITY as Entity) ?? []
+
   type Info = { entity: Entity; box: LayoutBox; tex: number; ids: Set<Entity> }
-  const large: Info[] = []
   const walk = (e: Entity, ids: Set<Entity>): number => {
     ids.add(e)
     const bg = backgroundOf?.(e) ?? null
@@ -285,39 +290,73 @@ export function suppressEmptyOverlappingModalTwin(
     for (const c of forest.get(e) ?? []) n += walk(c, ids)
     return n
   }
-  for (const r of roots) {
-    const box = byEntity.get(r)
-    if (!box || box.width < 800 || box.height < 400) continue
-    const t = transformOf(r)
-    if (!t || normalizeYGPositionType(t.positionType) !== YGPositionType.ABSOLUTE) continue
+
+  const large: Info[] = []
+  const seen = new Set<Entity>()
+  for (const box of boxes) {
+    if (box.width < 800 || box.height < 400) continue
+    // Skip near-fullscreen scrims (they are not shop panels).
     if (box.width >= virtual.width * 0.95) continue
+    if (seen.has(box.entity)) continue
+    const t = transformOf(box.entity)
+    if (!t || normalizeYGPositionType(t.positionType) !== YGPositionType.ABSOLUTE) continue
     const ids = new Set<Entity>()
-    large.push({ entity: r, box, tex: walk(r, ids), ids })
+    const tex = walk(box.entity, ids)
+    for (const id of ids) seen.add(id)
+    large.push({ entity: box.entity, box, tex, ids })
   }
   if (large.length < 2) return 0
+
   const vw = virtual.width
-  // Content still parked off-right → do nothing (shell must stay paint/hit until unpark).
-  if (large.some((x) => x.box.left >= vw - 1)) return 0
-  const on = large.filter((x) => x.box.left >= -40 && x.box.left < vw - 80)
-  if (on.length < 2) return 0
-  const sorted = [...on].sort((a, b) => b.tex - a.tex)
-  const content = sorted[0]!
-  const shell = sorted[1]!
-  const overlap =
-    Math.abs(content.box.left - shell.box.left) < 120 &&
-    Math.abs(content.box.top - shell.box.top) < 120
-  if (!overlap) return 0
+  const vh = virtual.height
+  const onScreen = large.filter(
+    (r) => r.box.left >= -40 && r.box.left < vw - 80 && r.box.top < vh - 40
+  )
+  const offRight = large.filter((r) => r.box.left >= vw - 1)
+
+  let content: Info | null = null
+  let shell: Info | null = null
+
+  if (onScreen.length && offRight.length) {
+    content = [...offRight].sort((a, b) => b.tex - a.tex)[0]!
+    shell = [...onScreen].sort((a, b) => a.tex - b.tex || a.box.left - b.box.left)[0]!
+  } else if (onScreen.length >= 2) {
+    // Both unparked / overlapping — keep texture-rich, collapse lean chrome.
+    const sorted = [...onScreen].sort((a, b) => b.tex - a.tex)
+    content = sorted[0]!
+    shell = sorted[1]!
+    const overlap =
+      Math.abs(content.box.left - shell.box.left) < 120 &&
+      Math.abs(content.box.top - shell.box.top) < 120
+    if (!overlap) return 0
+  } else {
+    return 0
+  }
+
   // Content must clearly win on *textures* (icons), not purple slot color fills.
   if (content.tex < 8) return 0
   if (content.tex < shell.tex + 5) return 0
-  if (shell.tex >= content.tex * 0.5 && shell.tex > 3) return 0
 
   let n = 0
-  for (const b of boxes) {
-    if (!shell.ids.has(b.entity)) continue
-    b.width = 0
-    b.height = 0
-    n++
+  const dx = shell.box.left - content.box.left
+  const dy = shell.box.top - content.box.top
+  if (Math.abs(dx) >= 8 || Math.abs(dy) >= 8) {
+    for (const b of boxes) {
+      if (!content.ids.has(b.entity)) continue
+      b.left += dx
+      b.top += dy
+      n++
+    }
+  }
+
+  // Collapse empty/lean shell so dual chrome + PE ghost cannot cover content.
+  if (shell.tex < content.tex * 0.5 || shell.tex <= 3) {
+    for (const b of boxes) {
+      if (!shell.ids.has(b.entity)) continue
+      b.width = 0
+      b.height = 0
+      n++
+    }
   }
   return n
 }

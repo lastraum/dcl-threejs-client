@@ -115,19 +115,21 @@ Any mount change + any `ingestMountSnapshot` → clear liveSeen.
 11. ~~**Deleted** `alignParkedModalTwinBoxes` (client pose invent)~~ ✅  
 12. ~~**Deleted** under-paint `setTimeout` recovery (second clock)~~ ✅  
 13. ~~**Deleted** off-canvas large-modal paint exception~~ ✅  
-14. ~~**Deleted** suppress shell while content parked~~ ✅ — only zero lean twin when **both** on-screen + texture-rich content wins  
+14. ~~alignParkedModalTwinBoxes (texture-aware)~~ ✅ — dual ECS panels → one paint modal when inject freezes park  
 
 ---
 
 ## Dual-root shop (fishing inventory / vending)
 
 ```text
-Open: shell@left≈346 (color chrome) + content@left≥1920 (icons) until open tween finishes.
-Main MUST NOT invent dx to merge twins.
-Worker flush (mesh PE or sceneUi bag open, mount≥100) advances eng.update(dt≈1/20)
-until fingerprint stable AND no dual park remains, then phase-4 snapshot.
-Main paints on-canvas ECS pose only. If both roots still overlap on-screen after settle,
-suppressEmptyOverlappingModalTwin zeros the texture-poor shell (not pose invent).
+Open: shell@left≈346 (color chrome + PE) + content@left≥1920 (icons/X) in the same mount.
+Inject path skips exports.onUpdate → open tweens often never leave park during pointer flush
+(eng.update(dt) alone freezes dual pose → empty PE shell, content fully-off-hidden).
+
+Worker still runs large-modal flush (mesh + sceneUi mount≥100) with positive dt.
+Main Yoga paint resolves dual ECS panels into **one visible modal**:
+  alignParkedModalTwinBoxes — translate texture-rich subtree onto shell origin (layout boxes
+  only; ECS pose unchanged) and collapse lean shell. Texture count, not color fills.
 ```
 
 ---

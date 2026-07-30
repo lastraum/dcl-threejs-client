@@ -59,9 +59,9 @@ import {
 } from './uiLayoutCache'
 import { layoutUiTree, type LayoutBox } from './yogaLayout'
 import {
+  alignParkedModalTwinBoxes,
   countCollapsedLayoutBoxes,
   repairCollapsedLayoutBoxes,
-  suppressEmptyOverlappingModalTwin,
   tryRefineAbsoluteLayoutBoxes
 } from './fastLayoutPatch'
 import { onSceneUiImageLoaded } from './uiImageLoad'
@@ -783,23 +783,26 @@ export class SceneUiBridge {
 
     // Authored-only collapse repair (POINT/%/edges). AUTO icons measured in Yoga.
     const repairedCollapsed = repairCollapsedLayoutBoxes(layoutBoxes, transformOf, this.virtual)
-    // After worker unpark: hide empty color-only shell when it overlaps texture-rich content.
-    // Never suppress while content is still parked (that blanked inventory + PE-only reopen).
-    const suppressedShell = suppressEmptyOverlappingModalTwin(
+    // Dual-root shop: shell@center + content@left≥1920 (inject skips onUpdate open tween).
+    // Align content boxes onto shell + collapse lean chrome so first paint shows icons/X.
+    const texOf = (bg: { texture?: unknown } | null | undefined) =>
+      !!bg && !!extractUiTextureSrc((bg as { texture?: unknown }).texture)
+    const twinAligned = alignParkedModalTwinBoxes(
       layoutBoxes,
       forest,
       transformOf,
       backgroundOf,
       this.virtual,
-      (bg) => {
-        if (!bg) return false
-        // Textured only — empty purple slots also carry UiBackground color.
-        return !!extractUiTextureSrc(
-          (bg as { texture?: unknown }).texture
-        )
-      }
+      texOf
     )
-    if (repairedCollapsed > 0 || suppressedShell > 0) {
+    if (
+      twinAligned > 0 &&
+      typeof location !== 'undefined' &&
+      location.search.includes('sceneuidebug')
+    ) {
+      console.log(`[scene-ui] twinAlign=${twinAligned} (dual modal → one visible panel)`)
+    }
+    if (repairedCollapsed > 0 || twinAligned > 0) {
       this.lastFullLayoutBoxes = layoutBoxes
       this.layoutCache.set(layoutKey, layoutBoxes)
       layoutCacheHit = true
@@ -827,6 +830,7 @@ export class SceneUiBridge {
       layoutMode = 'Full'
       layoutCacheHit = false
       repairCollapsedLayoutBoxes(layoutBoxes, transformOf, this.virtual)
+      alignParkedModalTwinBoxes(layoutBoxes, forest, transformOf, backgroundOf, this.virtual, texOf)
       this.lastFullLayoutBoxes = layoutBoxes
       layoutBoxMap = new Map<Entity, LayoutBox>(
         visibleLayoutBoxes(layoutBoxes, transformOf).map((box) => [box.entity, box])

@@ -23,7 +23,7 @@ export type PetBarnPanelOptions = {
   onOpenMyPets?: () => void
 }
 
-type View = 'shop' | 'publish'
+type View = 'catalog' | 'publish'
 
 function escapeHtml(s: string): string {
   return s
@@ -34,17 +34,18 @@ function escapeHtml(s: string): string {
 }
 
 /**
- * Pet Barn marketplace shop — catalog + thumbnails only until Add.
+ * Pet Barn marketplace — catalog + thumbnails only until Add.
  */
 export class PetBarnPanel {
   readonly element: HTMLDivElement
   private visible = false
   private busy = false
-  private view: View = 'shop'
+  private view: View = 'catalog'
   private catalog: PetBarnCatalog | null = null
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private lastUpdatedAt = ''
   private filter: 'all' | PetCategory = 'all'
+  private searchQuery = ''
   private publishType: PetCategory = 'walking'
   private glbFile: File | null = null
   private thumbFile: File | null = null
@@ -66,10 +67,6 @@ export class PetBarnPanel {
           <h2 class="pets-panel__title">Pet Barn</h2>
           <button type="button" class="pets-panel__close" data-close aria-label="Close">×</button>
         </header>
-        <div class="petbarn-tabs" data-tabs>
-          <button type="button" class="petbarn-tab is-active" data-view="shop">Shop</button>
-          <button type="button" class="petbarn-tab" data-view="publish">Publish</button>
-        </div>
         <p class="pets-panel__status" data-status hidden></p>
         <div class="pets-panel__body petbarn-body" data-body></div>
       </div>
@@ -82,21 +79,19 @@ export class PetBarnPanel {
       this.hide()
       this.options.onOpenMyPets?.()
     })
-    this.element.querySelector('[data-tabs]')!.addEventListener('click', (ev) => {
-      const btn = (ev.target as HTMLElement).closest<HTMLElement>('[data-view]')
-      if (!btn) return
-      const v = btn.dataset.view as View
-      if (v === 'shop' || v === 'publish') {
-        this.view = v
-        this.syncTabs()
-        void this.render()
-      }
-    })
     this.bodyEl.addEventListener('click', (ev) => void this.onBodyClick(ev))
     this.bodyEl.addEventListener('change', (ev) => this.onBodyChange(ev))
+    this.bodyEl.addEventListener('input', (ev) => this.onBodyInput(ev))
 
     this.onKeyDown = (ev) => {
-      if (ev.key === 'Escape' && this.visible) this.hide()
+      if (ev.key === 'Escape' && this.visible) {
+        if (this.view === 'publish') {
+          this.view = 'catalog'
+          void this.render()
+          return
+        }
+        this.hide()
+      }
     }
 
     this.bodyEl.addEventListener('submit', (ev) => {
@@ -125,6 +120,7 @@ export class PetBarnPanel {
 
   async show(): Promise<void> {
     this.visible = true
+    this.view = 'catalog'
     this.element.hidden = false
     window.addEventListener('keydown', this.onKeyDown)
     this.startPoll()
@@ -144,7 +140,7 @@ export class PetBarnPanel {
   private startPoll(): void {
     this.stopPoll()
     this.pollTimer = setInterval(() => {
-      if (!this.visible || this.view !== 'shop') return
+      if (!this.visible || this.view !== 'catalog') return
       void this.refreshCatalog().then(() => {
         if (this.catalog && this.catalog.updatedAt !== this.lastUpdatedAt) {
           this.lastUpdatedAt = this.catalog.updatedAt
@@ -158,12 +154,6 @@ export class PetBarnPanel {
     if (this.pollTimer) {
       clearInterval(this.pollTimer)
       this.pollTimer = null
-    }
-  }
-
-  private syncTabs(): void {
-    for (const el of this.element.querySelectorAll<HTMLElement>('.petbarn-tab')) {
-      el.classList.toggle('is-active', el.dataset.view === this.view)
     }
   }
 
@@ -197,34 +187,63 @@ export class PetBarnPanel {
   }
 
   private async render(): Promise<void> {
-    this.syncTabs()
     if (this.view === 'publish') {
       this.renderPublish()
       return
     }
-    this.renderShop()
+    this.renderCatalog()
   }
 
-  private renderShop(): void {
-    const pets = (this.catalog?.pets ?? []).filter((p) =>
-      this.filter === 'all' ? true : p.type === this.filter
-    )
-    const base = this.catalog?.contentBaseUrl ?? ''
-
-    const filters = `
-      <div class="petbarn-filters">
-        <button type="button" class="petbarn-filter${this.filter === 'all' ? ' is-active' : ''}" data-filter="all">All</button>
-        <button type="button" class="petbarn-filter${this.filter === 'walking' ? ' is-active' : ''}" data-filter="walking">Walking</button>
-        <button type="button" class="petbarn-filter${this.filter === 'flying' ? ' is-active' : ''}" data-filter="flying">Flying</button>
+  private toolbarHtml(): string {
+    const q = escapeHtml(this.searchQuery)
+    return `
+      <div class="petbarn-toolbar">
+        <div class="petbarn-filters">
+          <button type="button" class="petbarn-filter${this.filter === 'all' ? ' is-active' : ''}" data-filter="all">All</button>
+          <button type="button" class="petbarn-filter${this.filter === 'walking' ? ' is-active' : ''}" data-filter="walking">Walking</button>
+          <button type="button" class="petbarn-filter${this.filter === 'flying' ? ' is-active' : ''}" data-filter="flying">Flying</button>
+        </div>
+        <button type="button" class="petbarn-publish-chip" data-open-publish>Publish</button>
+      </div>
+      <div class="petbarn-search-wrap">
+        <input
+          type="search"
+          class="petbarn-search"
+          data-search
+          placeholder="Search pets or creators…"
+          value="${q}"
+          autocomplete="off"
+          spellcheck="false"
+        />
       </div>
     `
+  }
+
+  private filteredPets(): PetBarnListing[] {
+    const q = this.searchQuery.trim().toLowerCase()
+    return (this.catalog?.pets ?? []).filter((p) => {
+      if (this.filter !== 'all' && p.type !== this.filter) return false
+      if (!q) return true
+      const hay = `${p.petName} ${p.creatorName}`.toLowerCase()
+      return hay.includes(q)
+    })
+  }
+
+  private renderCatalog(): void {
+    const toolbar = this.toolbarHtml()
+    const base = this.catalog?.contentBaseUrl ?? ''
+    const pets = this.filteredPets()
 
     if (!this.catalog) {
-      this.bodyEl.innerHTML = `${filters}<div class="pets-panel__empty">Loading catalog…</div>`
+      this.bodyEl.innerHTML = `${toolbar}<div class="pets-panel__empty">Loading catalog…</div>`
+      return
+    }
+    if (!(this.catalog.pets ?? []).length) {
+      this.bodyEl.innerHTML = `${toolbar}<div class="pets-panel__empty">No pets in the barn yet. Be the first to Publish.</div>`
       return
     }
     if (!pets.length) {
-      this.bodyEl.innerHTML = `${filters}<div class="pets-panel__empty">No pets in the barn yet. Be the first to Publish.</div>`
+      this.bodyEl.innerHTML = `${toolbar}<div class="pets-panel__empty">No pets match your filters.</div>`
       return
     }
 
@@ -235,7 +254,7 @@ export class PetBarnPanel {
       .join('')
 
     this.bodyEl.innerHTML = `
-      ${filters}
+      ${toolbar}
       <div class="petbarn-grid">${cards}</div>
       <p class="petbarn-footnote">Thumbnails only — GLB downloads when you Add.</p>
     `
@@ -277,6 +296,9 @@ export class PetBarnPanel {
   private renderPublish(): void {
     const creatorDefault = escapeHtml(this.displayName())
     this.bodyEl.innerHTML = `
+      <div class="petbarn-publish-head">
+        <button type="button" class="petbarn-back-catalog" data-back-catalog>← Catalog</button>
+      </div>
       <form class="petbarn-publish" data-publish-form>
         <label class="petbarn-field">
           <span>Pet name</span>
@@ -307,6 +329,36 @@ export class PetBarnPanel {
     `
   }
 
+  private onBodyInput(ev: Event): void {
+    const t = ev.target as HTMLInputElement
+    if (t.matches?.('[data-search]')) {
+      this.searchQuery = t.value
+      // Re-filter without full remount of search (keep focus): rebuild grid only
+      this.renderCatalogPreservingSearchFocus()
+    }
+  }
+
+  private renderCatalogPreservingSearchFocus(): void {
+    const active = document.activeElement
+    const wasSearch = active?.matches?.('[data-search]')
+    const selStart = wasSearch ? (active as HTMLInputElement).selectionStart : null
+    const selEnd = wasSearch ? (active as HTMLInputElement).selectionEnd : null
+    this.renderCatalog()
+    if (wasSearch) {
+      const input = this.bodyEl.querySelector<HTMLInputElement>('[data-search]')
+      if (input) {
+        input.focus()
+        if (selStart != null && selEnd != null) {
+          try {
+            input.setSelectionRange(selStart, selEnd)
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    }
+  }
+
   private onBodyChange(ev: Event): void {
     const t = ev.target as HTMLInputElement
     if (t.matches?.('[data-glb]')) {
@@ -320,12 +372,24 @@ export class PetBarnPanel {
   private async onBodyClick(ev: MouseEvent): Promise<void> {
     const t = ev.target as HTMLElement
 
+    if (t.closest('[data-open-publish]')) {
+      this.view = 'publish'
+      void this.render()
+      return
+    }
+
+    if (t.closest('[data-back-catalog]')) {
+      this.view = 'catalog'
+      void this.render()
+      return
+    }
+
     const filterBtn = t.closest<HTMLElement>('[data-filter]')
     if (filterBtn) {
       const f = filterBtn.dataset.filter as 'all' | PetCategory
       if (f === 'all' || f === 'walking' || f === 'flying') {
         this.filter = f
-        this.renderShop()
+        this.renderCatalogPreservingSearchFocus()
       }
       return
     }
@@ -375,8 +439,7 @@ export class PetBarnPanel {
       )
       btn.textContent = 'Added'
       await this.options.onAddedToLibrary?.()
-      // re-render card state
-      if (this.view === 'shop') this.renderShop()
+      if (this.view === 'catalog') this.renderCatalogPreservingSearchFocus()
     } finally {
       this.busy = false
     }
@@ -416,12 +479,11 @@ export class PetBarnPanel {
       }
       this.setStatus(
         result.message ||
-          `Queued ${result.id}. It will appear in Shop after deploy (~1–3 min).`
+          `Queued ${result.id}. It will appear in the barn after deploy (~1–3 min).`
       )
       this.glbFile = null
       this.thumbFile = null
       form.reset()
-      // Prefill creator again
       const creator = form.querySelector<HTMLInputElement>('input[name="creatorName"]')
       if (creator) creator.value = this.displayName()
     } finally {

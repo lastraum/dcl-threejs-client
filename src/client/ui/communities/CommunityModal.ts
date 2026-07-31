@@ -9,6 +9,7 @@ import {
   type CommunityVoiceParticipant,
   type CommunityVoiceSessionState
 } from '../../../social/CommunityVoiceSession'
+import { communityVoiceUpdatesBus } from '../../../social/communityVoiceUpdatesBus'
 import { ChatPeerProfiles } from '../../../social/ChatPeerProfiles'
 import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 import {
@@ -131,6 +132,7 @@ export class CommunityModal {
   private unsubFollow: (() => void) | null = null
   private unsubVoice: (() => void) | null = null
   private unsubVoiceProfiles: (() => void) | null = null
+  private unsubVoiceBus: (() => void) | null = null
   private voiceState: CommunityVoiceSessionState | null = null
   /** Catalyst profiles for voice roster (name + face). */
   private readonly voiceProfiles = new ChatPeerProfiles()
@@ -204,6 +206,8 @@ export class CommunityModal {
     this.unsubVoice = null
     this.unsubVoiceProfiles?.()
     this.unsubVoiceProfiles = null
+    this.unsubVoiceBus?.()
+    this.unsubVoiceBus = null
     this.voiceState = null
     this.voiceProfileFetchGen++
     this.root.hidden = true
@@ -223,6 +227,7 @@ export class CommunityModal {
   private wireVoiceSession(): void {
     this.unsubVoice?.()
     this.unsubVoiceProfiles?.()
+    this.unsubVoiceBus?.()
     this.unsubVoiceProfiles = this.voiceProfiles.onUpdate(() => {
       if (this.disposed || this.root.hidden) return
       this.refreshVoicePanel()
@@ -231,6 +236,24 @@ export class CommunityModal {
       if (this.disposed || this.root.hidden) return
       this.voiceState = state
       void this.ensureVoiceProfiles(state.participants)
+      this.refreshVoicePanel()
+    })
+    // Social WS bus — live STARTED/ENDED so members see Join without reopening the modal.
+    const identity = this.getAuthIdentity?.() ?? null
+    communityVoiceUpdatesBus.ensureStarted(identity)
+    if (this.current) {
+      const live = communityVoiceUpdatesBus.isActive(this.current.id)
+      if (live !== (this.current.voiceChatActive === true)) {
+        this.current = { ...this.current, voiceChatActive: live }
+        this.refreshVoicePanel()
+      }
+    }
+    this.unsubVoiceBus = communityVoiceUpdatesBus.subscribe((ev) => {
+      if (this.disposed || this.root.hidden || !this.current) return
+      if (ev.communityId.trim().toLowerCase() !== this.current.id.trim().toLowerCase()) return
+      const next = ev.status === 'started'
+      if (this.current.voiceChatActive === next) return
+      this.current = { ...this.current, voiceChatActive: next }
       this.refreshVoicePanel()
     })
   }
@@ -716,6 +739,9 @@ export class CommunityModal {
     if (voice.isActive() && voice.getCommunityId() === merged.id) {
       await voice.leave()
     }
+    if (result.ok) {
+      communityVoiceUpdatesBus.notifyLocalEnded(merged.id)
+    }
     if (this.current?.id === merged.id) {
       this.current = { ...this.current, voiceChatActive: false }
       this.paint({ loading: false })
@@ -749,6 +775,8 @@ export class CommunityModal {
           const ended = await endCommunityVoiceChatViaSocialRpc(identity, merged.id)
           if (!ended.ok) {
             console.warn('[community-voice] end on last-mod leave failed', ended.error)
+          } else {
+            communityVoiceUpdatesBus.notifyLocalEnded(merged.id)
           }
         }
       }
@@ -793,6 +821,11 @@ export class CommunityModal {
     if (this.current?.id === merged.id) {
       if (result.ok) {
         this.current = { ...this.current, voiceChatActive: true }
+        // Instant local fan-out — browse / other tabs don't wait for WS echo.
+        communityVoiceUpdatesBus.notifyLocalStarted(merged.id, {
+          communityName: merged.name,
+          communityImage: communityDisplayImageUrl(merged.id, merged.thumbnails) ?? undefined
+        })
         this.paint({ loading: false })
         this.wireVoiceSession()
       } else if (btn) {

@@ -310,7 +310,14 @@ export class SocialMobileNotifications {
   }
 
   private syncCommunityWatcher(): void {
-    if (this.login.kind !== 'wallet' || !notificationPrefs.isEnabled()) {
+    // Wallet or guest with signed AuthIdentity — same social rails as PM room.
+    // Voice discovery is Social WS (communityVoiceUpdatesBus), not REST polling.
+    if (!notificationPrefs.isEnabled()) {
+      this.communityWatcher?.stop()
+      return
+    }
+    const identity = this.getAuthIdentity?.() ?? null
+    if (!identity || (this.login.kind !== 'wallet' && this.login.kind !== 'guest')) {
       this.communityWatcher?.stop()
       return
     }

@@ -1,22 +1,18 @@
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
-import { fetchActiveCommunityVoiceChats } from '../../../network/gatekeeper/communityVoice'
 import { getCommunityVoiceSession } from '../../../social/CommunityVoiceSession'
+import {
+  communityVoiceUpdatesBus,
+  type CommunityVoiceLiveEvent
+} from '../../../social/communityVoiceUpdatesBus'
 import {
   fetchCommunityPosts,
   fetchMemberCommunitiesSigned
 } from '../../../social/socialApi'
-import {
-  CommunityVoiceChatStatus,
-  consumeCommunityVoiceChatUpdates
-} from '../../../social/socialServiceV2'
 import type { CommunityListRow } from '../../../social/types'
 import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 
 /** Companion: poll member community posts ~90s (no Social realtime post stream). */
 const ANNOUNCEMENT_POLL_MS = 90_000
-/** REST fallback if Social WS stream is unavailable. */
-const VOICE_POLL_MS = 45_000
-const VOICE_STREAM_RETRY_MS = 4_000
 const INTER_COMMUNITY_DELAY_MS = 80
 const MAX_SEEN_POST_IDS = 120
 const VOICE_TOAST_DEDUPE_MS = 45_000
@@ -56,8 +52,8 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * Client HUD toasts for community announcements + newly live voice streams.
- * - announcements: poll posts (seed first)
- * - voice: Social v2 SubscribeToCommunityVoiceChatUpdates (instant) + REST poll fallback
+ * - announcements: poll posts (seed first) — Social has no post push stream
+ * - voice: shared Social WS bus (`communityVoiceUpdatesBus`) — no REST polling
  */
 export class CommunityHudToastWatcher {
   private readonly getAuthIdentity: CommunityHudToastWatcherOptions['getAuthIdentity']
@@ -69,20 +65,14 @@ export class CommunityHudToastWatcher {
 
   private disposed = false
   private announceTimer = 0
-  private voicePollTimer = 0
   private announceBusy = false
-  private voicePollBusy = false
-  private voiceStreamAbort: AbortController | null = null
-  private voiceStreamLoop = 0
+  private unsubVoiceBus: (() => void) | null = null
 
   private readonly seenPostsByCommunity = new Map<string, Set<string>>()
   private readonly bootstrappedPosts = new Set<string>()
   private readonly knownActiveVoice = new Set<string>()
-  private voiceBootstrapped = false
   private readonly lastVoiceToastAt = new Map<string, number>()
   private memberCache: CommunityListRow[] = []
-  /** Prefer WS stream; use REST poll only as seed/fallback. */
-  private voiceStreamHealthy = false
 
   constructor(opts: CommunityHudToastWatcherOptions) {
     this.getAuthIdentity = opts.getAuthIdentity
@@ -95,12 +85,11 @@ export class CommunityHudToastWatcher {
 
   start(): void {
     this.stopTimers()
-    if (!this.getAuthIdentity()) return
+    const identity = this.getAuthIdentity()
+    if (!identity) return
     void this.pollAnnouncements()
-    void this.seedVoiceFromRest()
     this.announceTimer = window.setInterval(() => void this.pollAnnouncements(), ANNOUNCEMENT_POLL_MS)
-    this.voicePollTimer = window.setInterval(() => void this.pollVoiceFallback(), VOICE_POLL_MS)
-    this.startVoiceStreamLoop()
+    this.wireVoiceBus(identity)
   }
 
   stop(): void {
@@ -115,22 +104,84 @@ export class CommunityHudToastWatcher {
 
   private stopTimers(): void {
     if (this.announceTimer) window.clearInterval(this.announceTimer)
-    if (this.voicePollTimer) window.clearInterval(this.voicePollTimer)
     this.announceTimer = 0
-    this.voicePollTimer = 0
-    this.voiceStreamAbort?.abort()
-    this.voiceStreamAbort = null
-    this.voiceStreamLoop++
+    this.unsubVoiceBus?.()
+    this.unsubVoiceBus = null
   }
 
   private resetState(): void {
     this.seenPostsByCommunity.clear()
     this.bootstrappedPosts.clear()
     this.knownActiveVoice.clear()
-    this.voiceBootstrapped = false
-    this.voiceStreamHealthy = false
     this.lastVoiceToastAt.clear()
     this.memberCache = []
+  }
+
+  private wireVoiceBus(identity: AuthIdentity): void {
+    this.unsubVoiceBus?.()
+    communityVoiceUpdatesBus.ensureStarted(identity)
+    // Seed known set from bus (one-time REST seed inside bus) without toasting.
+    for (const row of communityVoiceUpdatesBus.getActive()) {
+      const k = row.communityId.trim().toLowerCase()
+      if (k) this.knownActiveVoice.add(k)
+    }
+    this.unsubVoiceBus = communityVoiceUpdatesBus.subscribe((ev) => {
+      if (this.disposed) return
+      void this.handleVoiceEvent(ev)
+    })
+  }
+
+  private async handleVoiceEvent(ev: CommunityVoiceLiveEvent): Promise<void> {
+    const id = ev.communityId.trim()
+    const idKey = id.toLowerCase()
+    if (!id) return
+    if (ev.isMember === false) return
+
+    if (ev.status === 'ended') {
+      this.knownActiveVoice.delete(idKey)
+      return
+    }
+
+    if (ev.status !== 'started') return
+
+    // Seed events only fill the known set (already live when we connected).
+    if (ev.source === 'seed') {
+      this.knownActiveVoice.add(idKey)
+      return
+    }
+
+    if (this.knownActiveVoice.has(idKey)) return
+    this.knownActiveVoice.add(idKey)
+
+    // Don't toast for rooms we ourselves just joined/started.
+    const session = getCommunityVoiceSession()
+    const connectedId = session.isActive()
+      ? session.getCommunityId()?.trim().toLowerCase() ?? ''
+      : ''
+    if (connectedId && connectedId === idKey) return
+    if (ev.source === 'local') return
+    if (this.isSuppressed?.(id, 'voice')) return
+
+    const now = Date.now()
+    const prev = this.lastVoiceToastAt.get(idKey) ?? 0
+    if (now - prev < VOICE_TOAST_DEDUPE_MS) return
+    this.lastVoiceToastAt.set(idKey, now)
+
+    const identity = this.getAuthIdentity()
+    const members = identity
+      ? await this.resolveMembers(identity)
+      : this.getMemberCommunities?.() ?? this.memberCache
+    const row = members.find((c) => c.id.trim().toLowerCase() === idKey)
+    const displayName =
+      String(ev.communityName ?? '').trim() || row?.name?.trim() || 'Community'
+
+    this.onVoiceStarted({
+      communityId: id,
+      communityDisplayName: displayName,
+      imageUrl:
+        ev.communityImage?.trim() ||
+        (row ? communityDisplayImageUrl(id, row.thumbnails) : null)
+    })
   }
 
   private async resolveMembers(identity: AuthIdentity): Promise<CommunityListRow[]> {
@@ -209,163 +260,6 @@ export class CommunityHudToastWatcher {
       }
     } finally {
       this.announceBusy = false
-    }
-  }
-
-  private startVoiceStreamLoop(): void {
-    const loopId = ++this.voiceStreamLoop
-    this.voiceStreamAbort?.abort()
-    const ac = new AbortController()
-    this.voiceStreamAbort = ac
-
-    void (async () => {
-      while (!this.disposed && loopId === this.voiceStreamLoop && !ac.signal.aborted) {
-        const identity = this.getAuthIdentity()
-        if (!identity) {
-          await sleep(VOICE_STREAM_RETRY_MS)
-          continue
-        }
-        try {
-          await consumeCommunityVoiceChatUpdates(
-            identity,
-            (update) => {
-              void this.handleVoiceStreamUpdate(update)
-            },
-            ac.signal
-          )
-          this.voiceStreamHealthy = false
-        } catch {
-          this.voiceStreamHealthy = false
-          if (this.disposed || ac.signal.aborted || loopId !== this.voiceStreamLoop) return
-          await sleep(VOICE_STREAM_RETRY_MS)
-        }
-      }
-    })()
-  }
-
-  private async handleVoiceStreamUpdate(update: {
-    communityId?: string
-    communityName?: string
-    status?: CommunityVoiceChatStatus
-    isMember?: boolean
-  }): Promise<void> {
-    this.voiceStreamHealthy = true
-    const id = String(update.communityId ?? '').trim()
-    const idKey = id.toLowerCase()
-    if (!id || update.isMember === false) return
-
-    if (update.status === CommunityVoiceChatStatus.COMMUNITY_VOICE_CHAT_ENDED) {
-      this.knownActiveVoice.delete(idKey)
-      return
-    }
-
-    if (update.status !== CommunityVoiceChatStatus.COMMUNITY_VOICE_CHAT_STARTED) return
-
-    // First events after connect may include already-live rooms — seed without toasting
-    // until REST seed finished once.
-    if (!this.voiceBootstrapped) {
-      this.knownActiveVoice.add(idKey)
-      return
-    }
-
-    if (this.knownActiveVoice.has(idKey)) return
-    this.knownActiveVoice.add(idKey)
-
-    const session = getCommunityVoiceSession()
-    const connectedId = session.isActive()
-      ? session.getCommunityId()?.trim().toLowerCase() ?? ''
-      : ''
-    if (connectedId && connectedId === idKey) return
-    if (this.isSuppressed?.(id, 'voice')) return
-
-    const now = Date.now()
-    const prev = this.lastVoiceToastAt.get(idKey) ?? 0
-    if (now - prev < VOICE_TOAST_DEDUPE_MS) return
-    this.lastVoiceToastAt.set(idKey, now)
-
-    const members = this.getMemberCommunities?.() ?? this.memberCache
-    const row = members.find((c) => c.id.trim().toLowerCase() === idKey)
-    const displayName =
-      String(update.communityName ?? '').trim() || row?.name?.trim() || 'Community'
-
-    this.onVoiceStarted({
-      communityId: id,
-      communityDisplayName: displayName,
-      imageUrl: row ? communityDisplayImageUrl(id, row.thumbnails) : null
-    })
-  }
-
-  private async seedVoiceFromRest(): Promise<void> {
-    const identity = this.getAuthIdentity()
-    if (!identity) return
-    try {
-      const active = await fetchActiveCommunityVoiceChats(identity)
-      for (const c of active) {
-        const k = c.communityId.trim().toLowerCase()
-        if (k) this.knownActiveVoice.add(k)
-      }
-      this.voiceBootstrapped = true
-    } catch {
-      this.voiceBootstrapped = true
-    }
-  }
-
-  /** Fallback when WS is down — same REST poll as before. */
-  private async pollVoiceFallback(): Promise<void> {
-    if (this.disposed || this.voicePollBusy || this.voiceStreamHealthy) return
-    const identity = this.getAuthIdentity()
-    if (!identity) return
-
-    this.voicePollBusy = true
-    try {
-      const active = await fetchActiveCommunityVoiceChats(identity)
-      if (this.disposed) return
-
-      const nextIds = new Set(
-        active.map((c) => c.communityId.trim().toLowerCase()).filter(Boolean)
-      )
-
-      if (!this.voiceBootstrapped) {
-        for (const id of nextIds) this.knownActiveVoice.add(id)
-        this.voiceBootstrapped = true
-        return
-      }
-
-      const members = await this.resolveMembers(identity)
-      const nameById = new Map(members.map((c) => [c.id.trim().toLowerCase(), c] as const))
-      const session = getCommunityVoiceSession()
-      const connectedId = session.isActive()
-        ? session.getCommunityId()?.trim().toLowerCase() ?? ''
-        : ''
-
-      for (const chat of active) {
-        const id = chat.communityId.trim()
-        const idKey = id.toLowerCase()
-        if (!idKey || this.knownActiveVoice.has(idKey)) continue
-        this.knownActiveVoice.add(idKey)
-        if (connectedId && connectedId === idKey) continue
-        if (this.isSuppressed?.(id, 'voice')) continue
-
-        const now = Date.now()
-        const prev = this.lastVoiceToastAt.get(idKey) ?? 0
-        if (now - prev < VOICE_TOAST_DEDUPE_MS) continue
-        this.lastVoiceToastAt.set(idKey, now)
-
-        const row = nameById.get(idKey)
-        this.onVoiceStarted({
-          communityId: id,
-          communityDisplayName: chat.communityName?.trim() || row?.name?.trim() || 'Community',
-          imageUrl:
-            chat.communityImage?.trim() ||
-            (row ? communityDisplayImageUrl(id, row.thumbnails) : null)
-        })
-      }
-
-      for (const id of [...this.knownActiveVoice]) {
-        if (!nextIds.has(id)) this.knownActiveVoice.delete(id)
-      }
-    } finally {
-      this.voicePollBusy = false
     }
   }
 }

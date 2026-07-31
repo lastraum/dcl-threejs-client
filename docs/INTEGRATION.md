@@ -195,7 +195,7 @@ DOM overlay — not in-scene `UiTransform`.
 | SignedFetch, Catalyst content, wallet + guest session | 🟢 |
 | ECS NetworkEntity scene sync | 🟢 P0–P3 host path |
 | Community text / PM router | 🟢 | **1:1 DMs** + **community group text** on ADR-208 private-messages LiveKit room (topic `dcl.community.chat:{id}`, fan-out to members) |
-| Community voice | 🟢 | Social v2 start/join/request-to-speak/promote/reject/demote/end · listener default mic-off · LiveKit permission promote · gatekeeper signed-fetch fallback · WS toasts |
+| Community voice | 🟢 | Social v2 start/join/speak/promote/end · LiveKit media room · discovery via shared Social WS bus (no active-stream poll) · local start/end fan-out · guest+wallet toasts |
 | Spatial voice (3D falloff) | 🟢 | `PositionalAudio` on remote avatar roots (ref 6 m / max 45 m); one source per peer |
 | Elevated / tower spawn floor | 🟢 | Stage PE spawn before script; wait CCT ground; probe preferNear authored Y; reject roof false-grounds |
 

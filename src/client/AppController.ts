@@ -2556,15 +2556,11 @@ export class AppController {
       onSoftRoute: (x, y) => {
         this.softUpdatePlayRoute({ kind: 'coords', x, y, segment: `${x},${y}` })
         void this.refreshLocationTitleForParcel(x, y)
-        // Pin under-feet only. Never force-boot during promote settle (activity off) —
-        // chain boots freeze freecam/main thread while FPS still shows ~30.
+        // Pin under-feet for promote preference only.
+        // NEVER force-boot a secondary worker on every parcel step — that was the
+        // 1-step thrash (resolveScene + full SceneWorkerSlot.start mid-walk).
+        // Dwell promote / live-candidate reconcile boots serially when needed.
         this.multiSceneRuntime.setSecondaryPriorityParcel(x, y)
-        if (
-          this.multiSceneRuntime.isSecondaryActivityEnabled() &&
-          !this.multiSceneRuntime.hasLiveSecondaryForParcel(x, y)
-        ) {
-          void this.multiSceneRuntime.ensureSecondaryForParcel(x, y, 28_000)
-        }
       },
       onPrefetch: (x, y) => {
         this.enqueueScriptWarm(x, y)

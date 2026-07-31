@@ -2413,6 +2413,25 @@ export class PhysXWorld {
     this.invalidateControllerCache()
   }
 
+  /**
+   * Force-remove specific empty-land AOI colliders (sticky scatter purge at >1km).
+   * Unlike ring refresh, purge may run after SQ seal — still remove actors.
+   */
+  purgeAoiEmptyLandColliders(entityIds: Iterable<number>): void {
+    let n = 0
+    for (const entity of entityIds) {
+      if (!this.isAoiEmptyLandColliderEntity(entity)) continue
+      try {
+        this.removeStatic(entity)
+        n++
+      } catch {
+        /* ignore */
+      }
+      this.aoiEmptyLandEntityIds.delete(entity)
+    }
+    if (n > 0) this.invalidateControllerCache()
+  }
+
   /** PhysX scene step — call after `movePlayer`. */
   step(delta: number): void {
     if (!this.scene) return

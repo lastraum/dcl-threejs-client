@@ -96,6 +96,11 @@ class PrivateMessagesServiceImpl {
   private localAddress: string | null = null
   /** How many SocialService instances currently want the shared room. */
   private holders = 0
+  /**
+   * AppController play-session hold — keeps PM LiveKit across World rebuilds
+   * (teleport / /goto). Released only when leaving 3D play entirely.
+   */
+  private playSessionHeld = false
   private readonly inbound = new Set<(ev: PrivateMessageEvent) => void>()
   private readonly communityInbound = new Set<(ev: CommunityMessageEvent) => void>()
   private readonly followInbound = new Set<(ev: CommunityFollowDataEvent) => void>()
@@ -116,6 +121,33 @@ class PrivateMessagesServiceImpl {
     if (this.holders === 0) {
       this.forceDisconnect()
     }
+  }
+
+  /**
+   * Keep the shared PM room alive for the whole 3D play session.
+   * Survives World.dispose on teleports; pair with {@link releasePlaySession}.
+   */
+  retainPlaySession(): void {
+    if (this.playSessionHeld) return
+    this.playSessionHeld = true
+    this.holders++
+  }
+
+  /** Leave 3D play / sign-out — allow PM LiveKit to drop when no SocialService holds it. */
+  releasePlaySession(): void {
+    if (!this.playSessionHeld) return
+    this.playSessionHeld = false
+    this.release()
+  }
+
+  /** True when AppController is holding PM across teleports. */
+  isPlaySessionHeld(): boolean {
+    return this.playSessionHeld
+  }
+
+  /** Debug — active retain count (SocialServices + optional play-session hold). */
+  getHolderCount(): number {
+    return this.holders
   }
 
   subscribe(listener: (ev: PrivateMessageEvent) => void): () => void {

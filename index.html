@@ -13743,6 +13743,7 @@
         margin: 8px 0 0;
         font-size: 0.8rem;
         color: rgba(255, 255, 255, 0.55);
+        flex-shrink: 0;
       }
       .community-modal-status-hint--error {
         color: #ffb4b4;
@@ -13752,8 +13753,10 @@
         font-size: 0.88rem;
         line-height: 1.5;
         color: rgba(255, 255, 255, 0.78);
-        max-height: 5.5em;
-        overflow-y: auto;
+        /* Full description always visible — list scroll lives in .community-modal-tab-body */
+        flex-shrink: 0;
+        max-height: none;
+        overflow: visible;
       }
       .community-modal-desc p {
         margin: 0 0 0.55em;

@@ -36,6 +36,7 @@ import { ExplorerAuthPanel } from './ui/explore/ExplorerAuthPanel'
 import { ChatPanel } from './ui/chat/ChatPanel'
 import { SocialChatController } from './ui/chat/SocialChatController'
 import { SocialChatDock } from './ui/chat/SocialChatDock'
+import { getPrivateMessagesService } from '../social/PrivateMessagesService'
 import { CommunityFollowController } from '../social/CommunityFollowController'
 import { FollowFlagManager } from '../social/FollowFlagManager'
 import { TourFocusController } from '../social/TourFocusController'
@@ -194,6 +195,11 @@ export class AppController {
    */
   private communityFollow: CommunityFollowController | null = null
   private unsubCommunityFollow: (() => void) | null = null
+  /**
+   * PM LiveKit play-session hold — AppController retains so World.dispose on
+   * teleport does not drop holders to 0 (same pattern as communityFollow).
+   */
+  private pmPlaySessionHeld = false
   /** Tour leader flag (circular badge above nametag) — session-scoped across World rebuilds. */
   private followFlagManager: FollowFlagManager | null = null
   /** Tour Focus — follower lens takeover; session-scoped across World rebuilds. */
@@ -1694,6 +1700,7 @@ export class AppController {
     if (this.appMode === 'play') {
       stopDwellTracking('landing')
       this.disposeCommunityFollow()
+      // clearVrmCache also releases PM play-session hold (see teardownScene).
       await this.teardownScene({ clearVrmCache: true })
     }
 
@@ -2155,6 +2162,12 @@ export class AppController {
       }
     }
 
+    // Hold PM LiveKit for the whole play session (before World teardown on teleport).
+    // Without this, World.social.dispose() drops holders→0 and force-disconnects DMs.
+    if (target.kind === 'coords' || target.kind === 'world') {
+      this.retainPmPlaySession()
+    }
+
     const devQueryKey = readSceneDevQueryKey()
     // Soft URL updates track feet parcel without loading — do NOT treat that as
     // "already on this primary". Seamless promote must always run the load.
@@ -2367,7 +2380,34 @@ export class AppController {
     this.disposeCommunityFollow()
     // Leaving 3D entirely — free multi‑MB peer VRM RAM (kept across in-play teleports).
     clearVrmRamCache()
+    // Drop play-session PM hold after World teardown (inside showSceneLanding).
     await this.showSceneLanding(this.currentRoute, { replace: true })
+  }
+
+  /**
+   * Keep private-messages LiveKit across World rebuilds (teleport / /goto).
+   * Released only when leaving 3D play entirely.
+   */
+  private retainPmPlaySession(): void {
+    if (this.pmPlaySessionHeld) return
+    getPrivateMessagesService().retainPlaySession()
+    this.pmPlaySessionHeld = true
+    clientDebugLog.log(
+      'social',
+      `PM play-session retain · holders=${getPrivateMessagesService().getHolderCount()}`,
+      { level: 'info', alsoConsole: true }
+    )
+  }
+
+  private releasePmPlaySession(): void {
+    if (!this.pmPlaySessionHeld) return
+    getPrivateMessagesService().releasePlaySession()
+    this.pmPlaySessionHeld = false
+    clientDebugLog.log(
+      'social',
+      `PM play-session release · holders=${getPrivateMessagesService().getHolderCount()}`,
+      { level: 'info', alsoConsole: true }
+    )
   }
 
   private async loadRoute(
@@ -2410,6 +2450,7 @@ export class AppController {
     // Landing → Jump In: keep shell LiveKit alive so handoff can transfer the same room.
     // disconnectLiveKit() was killing the landing scene room (global session registry),
     // forcing a reconnect with a new participant id — voice/presence looked "different".
+    // clearVrmCache: false — keep peer VRM RAM + PM play-session hold across rebuild.
     await this.teardownScene({ keepLiveKit: opts.handoffShellComms === true, clearVrmCache: false })
 
     opts.onProgress?.('Resolving destination…')
@@ -3571,7 +3612,11 @@ export class AppController {
     await disconnectAll(this.world, { keepLiveKit: opts?.keepLiveKit === true })
     this.world = null
     // Default: keep peer VRM RAM across tour teleports. Explicit clear when leaving 3D shell.
-    if (opts?.clearVrmCache) clearVrmRamCache()
+    // clearVrmCache also ends PM play-session hold (teleports pass clearVrmCache: false).
+    if (opts?.clearVrmCache) {
+      clearVrmRamCache()
+      this.releasePmPlaySession()
+    }
     if (this.container) this.container.innerHTML = ''
   }
 

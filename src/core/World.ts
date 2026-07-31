@@ -1778,6 +1778,9 @@ export class World {
           this.multiScene?.tickSync(playerPose, cameraPose, startFrame)
           // PE tween/billboard/attach motion + reserved-parent meshes (same as primary pump).
           this.pumpPeMotionBridges(delta, startFrame)
+          // Live secondaries: scripts tick above, but host Animator mixers need delta
+          // (was frozen mid-clip without this — COD gap for sticky/demoted plaza).
+          this.pumpSecondaryMotionBridges(delta, startFrame)
           // After PE player-frame may have bound VC this tick — re-select before next freecam frame.
           this.selectActiveVirtualCameraBridge()
           // Mirror PE player-affecting state onto primary (InputModifier, forces) — not MainCamera ids.
@@ -4079,6 +4082,20 @@ export class World {
         sys.pumpMotionBridges(delta, frame)
       } catch (err) {
         console.warn('[pe] pumpMotionBridges failed', err)
+      }
+    }
+  }
+
+  /**
+   * Live secondary Animator/Tween advance (≤3 graphs). Tertiary is intentionally frozen.
+   * Without this, sticky demoted scenes keep scripts but clips freeze mid-pose.
+   */
+  private pumpSecondaryMotionBridges(delta: number, frame: number): void {
+    for (const sys of this.multiScene?.getSecondaryMotionSystems() ?? []) {
+      try {
+        sys.pumpMotionBridges(delta, frame)
+      } catch (err) {
+        console.warn('[multi-scene] secondary pumpMotionBridges failed', err)
       }
     }
   }

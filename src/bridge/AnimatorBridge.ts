@@ -75,38 +75,44 @@ export type AnimatorSampleStats = {
   disabled: boolean
 }
 
+/**
+ * Primary scene: every bound mixer advances **every frame** with full scene `delta`.
+ * No distance sleep, no fair-phase skip, no adaptive sample budget.
+ * (Multi-scene tertiary still uses {@link AnimatorBridge.setAllSleeping}.)
+ */
+const PRIMARY_FULL_RATE_ANIMATORS = true
 /** Always-sample (or 2× fair share) within this radius of the camera. */
 const NEAR_PLAYER_FULL_RATE_M = 16
 /** Sphere radius added around entity root for expanded-frustum tests (turn without pop). */
 const FRUSTUM_EXPAND_M = 8
 /**
  * Off-frustum decorative mixers sleep beyond this distance (timeScale 0).
- * In-frustum props stay awake so "everything in view" can animate.
+ * Unused when {@link PRIMARY_FULL_RATE_ANIMATORS} is true.
  */
 const SLEEP_OFF_FRUSTUM_M = 40
 /**
  * Default-autoplay bind distance (promote instanced rest → clone + mixer).
- * Larger than old 28m so plaza props still start when looking across the square.
+ * Full-rate mode still uses this for *first bind*; once bound, always ticks.
  */
 const DEFAULT_AUTOPLAY_BIND_M = 48
 /**
  * Target sample Hz for in-view (fair) unique groups. Near/PART stay at display rate.
- * At 60 display fps we may sample every other frame and still hit 30 Hz.
+ * Unused when {@link PRIMARY_FULL_RATE_ANIMATORS} is true.
  */
 const TARGET_VIEW_SAMPLE_HZ = 30
 /**
  * Hard ceiling on **mixer.update** calls per frame (after shared-hash collapse).
- * CBD often has 50–80 active entities but only ~8–20 unique GLB hashes — one
- * update per hash + pose fan-out is the path to 30 Hz without 10 FPS death.
+ * Unused when {@link PRIMARY_FULL_RATE_ANIMATORS} is true (all active mixers sample).
  */
 const MAX_SAMPLES_PER_FRAME = 48
 /** Near / PART absolute ceiling (adaptive near cap is lower under load). */
 const MAX_NEAR_ALWAYS_PER_FRAME = 16
 /**
  * Default-autoplay promote (instance→clone) budget per frame.
- * Uncapped bind storms on plaza approach hitch the main thread → adaptive death spiral.
+ * Full-rate mode uses a higher cap so more props start animating sooner.
  */
 const MAX_DEFAULT_BINDS_PER_FRAME = 3
+const MAX_DEFAULT_BINDS_FULL_RATE = 12
 /** Never let near layer eat the whole budget while fair in-view units exist. */
 const FAIR_BUDGET_RESERVE_MIN = 4
 
@@ -855,19 +861,15 @@ export class AnimatorBridge {
   }
 
   /**
-   * Advance mixers with **shared-hash sampling + fair phase slice**.
+   * Advance mixers for the **primary** scene.
    *
-   * CBD problem: hundreds of active decorative mixers; full sampling → ~10 FPS.
-   * Old distance-sleep + MAX_FAIR_AWAKE froze most in-view props.
+   * When {@link PRIMARY_FULL_RATE_ANIMATORS}: every bound mixer with active work
+   * gets full `delta` every frame (no distance sleep / fair skip / adaptive budget).
    *
-   * Solution for “everything in view at ≥30 Hz sample, display ≥30 FPS”:
-   * 1) **Near/PART** (≤16m or doors): individual sample every frame (up to nearCap).
-   * 2) **In-view fair**: collapse same-hash looping rigid props → **one** mixer.update
-   *    + local-TRS fan-out to clones (wall-clock phase). Unique hashes phase-slice
-   *    toward {@link TARGET_VIEW_SAMPLE_HZ}.
-   * 3) **Off-frustum + far**: sleep (timeScale 0) until back in view.
+   * Legacy path (flag off): shared-hash + fair phase + off-frustum sleep for CBD FPS.
    *
-   * `delta === 0` (post-bind pose): sample all active work (no cull) so doors get first pose.
+   * `delta === 0` (post-bind pose): sample active work so doors get first pose.
+   * Tertiary multi-scene still uses {@link setAllSleeping} (force freeze).
    */
   update(delta: number, view?: ProjectionView, sampleCtx?: AnimatorSampleContext): void {
     if (!this.entries.size) {
@@ -919,11 +921,10 @@ export class AnimatorBridge {
     this.sampleFrame++
     const schedule = delta > 1e-8 && sampleCtx != null
 
-    // delta=0 pose pass after async bind — budget so plaza can't spend multi-seconds
-    // mixer.update(0) on every decorative clip (was bridges=5s+ spikes).
+    // delta=0 pose pass after async bind.
     if (!schedule) {
       let poseN = 0
-      const POSE_BUDGET = 24
+      const POSE_BUDGET = PRIMARY_FULL_RATE_ANIMATORS ? 128 : 24
       for (const [entity, entry] of this.entries) {
         if (!mixerHasActiveWork(entry)) continue
         if (poseN >= POSE_BUDGET) break
@@ -945,9 +946,12 @@ export class AnimatorBridge {
     // Promote + bind deferred default autoplay (amortized — no plaza bind storm).
     this.allowDefaultAutoplayBind = true
     const bindSq = DEFAULT_AUTOPLAY_BIND_M * DEFAULT_AUTOPLAY_BIND_M
+    const bindCap = PRIMARY_FULL_RATE_ANIMATORS
+      ? MAX_DEFAULT_BINDS_FULL_RATE
+      : MAX_DEFAULT_BINDS_PER_FRAME
     let bindsThisFrame = 0
     for (const entity of [...this.pendingBind]) {
-      if (bindsThisFrame >= MAX_DEFAULT_BINDS_PER_FRAME) break
+      if (bindsThisFrame >= bindCap) break
       if (this.entries.has(entity)) {
         this.pendingBind.delete(entity)
         continue
@@ -976,6 +980,50 @@ export class AnimatorBridge {
       }
     }
     this.allowDefaultAutoplayBind = false
+
+    // --- Full-rate primary path: every active mixer, every frame, full delta ---
+    if (PRIMARY_FULL_RATE_ANIMATORS) {
+      let sampled = 0
+      let active = 0
+      for (const [entity, entry] of this.entries) {
+        if (entry.sleeping) {
+          entry.sleeping = false
+          entry.mixer.timeScale = 1
+          entry.deferredSampleDt = 0
+        }
+        if (!mixerHasActiveWork(entry)) {
+          entry.deferredSampleDt = 0
+          continue
+        }
+        active++
+        entry.deferredSampleDt = 0
+        if (delta > 1e-8) {
+          entry.mixer.update(delta)
+          sampled++
+          this.markShapeMotionAfterSample(entity, entry)
+        }
+      }
+      this.prevFrameDt = delta
+      const displayFps = delta > 1e-6 ? 1 / delta : 0
+      this.lastStats = {
+        bound: this.entries.size,
+        active,
+        sleeping: 0,
+        near: active,
+        fair: 0,
+        sharedGroups: 0,
+        sharedFanout: 0,
+        sampled,
+        deferred: 0,
+        budget: sampled,
+        nearCap: sampled,
+        fairSampleHz: displayFps,
+        displayFps,
+        frameDt: delta,
+        disabled: false
+      }
+      return
+    }
 
     type Cand = {
       entity: Entity

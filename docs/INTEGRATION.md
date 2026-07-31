@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-31 (**v1.6.x** — EnvironmentApi + Testing ~system modules closed; see [PROGRESS.md](./PROGRESS.md))
+> **Last updated:** 2026-07-31 (**v1.6.x** — EnvironmentApi/Testing + AudioAnalysis host fill; see [PROGRESS.md](./PROGRESS.md))
 
 ---
 
@@ -98,7 +98,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | AudioSource | 1020 | 🟢 | `AudioSourceBridge` — buffer clips; in-world + player-parent emote gain |
 | AudioEvent | 1105 | 🔵 | Grow-only MediaState events → worker |
 | AudioStream | 1021 | 🟢 | `AudioStreamBridge` — HTTP/HLS; voice-chat volume category |
-| AudioAnalysis | 1212 | 🔵 | Spectrum / analysis data for scenes — write path TBD |
+| AudioAnalysis | 1212 | 🔵 | Host LWW fill — same entity as AudioSource/Stream/VideoPlayer; RAW + LOG (gain defaults 5 / 0.05); HLS/LiveKit zeros (Explorer); parallel pre-panner AnalyserNode |
 
 ### Avatars (Phase 4)
 

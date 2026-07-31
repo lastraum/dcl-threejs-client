@@ -75,6 +75,15 @@ export class SceneAudioStreamPlayer {
     return this.state
   }
 
+  /** THREE.Audio for AudioAnalysis analyser tap. */
+  getThreeAudio(): THREE.Audio {
+    return this.sound
+  }
+
+  isPlayingForAnalysis(): boolean {
+    return this.state === MS_PLAYING && !this.audio.paused && !this.audio.ended
+  }
+
   setUserGestureUnlocked(unlocked: boolean): void {
     this.userGestureUnlocked = unlocked
     if (unlocked && this.wantsPlaying && !this.visibilityPaused) {

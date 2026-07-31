@@ -18,6 +18,27 @@
 
 ---
 
+## ✅ Milestone — AudioAnalysis host fill (1212) (2026-07-31)
+
+**Status: landed** — last incomplete non-UI ECS write path closed.
+
+### What's new
+
+- **`AudioAnalysisBridge`** — same-entity as AudioSource / AudioStream / VideoPlayer
+- Parallel **WebAudio AnalyserNode** on `THREE.Audio.gain` (pre-panner; audible path unchanged)
+- **MODE_RAW** + **MODE_LOGARITHMIC** with docs gains (5 / 0.05); quantize + dirty-only LWW
+- **HLS / LiveKit video → zeros** (Explorer parity)
+- Cap **8** active analysers; FocusOwner media mute clears taps
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **AudioSource / Stream** | 🟢 | FFT while PLAYING |
+| **Progressive Video** | 🟢 | Spatial or analysis WebAudio graph |
+| **HLS / LiveKit** | 🟢 | zeros (Explorer) |
+| **Encoder + inject 1212** | 🟢 | Host LWW path |
+
+---
+
 ## ✅ Milestone — ~system EnvironmentApi + Testing (2026-07-31)
 
 **Status: landed on `yoga-revamp`** — closes the last two backburner `~system` modules.

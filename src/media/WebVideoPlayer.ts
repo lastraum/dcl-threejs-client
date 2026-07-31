@@ -114,6 +114,13 @@ export class WebVideoPlayer {
   private spatialMax = 60
   private sound: THREE.Audio | null = null
   private listener: THREE.AudioListener | null = null
+  /**
+   * Non-spatial progressive: WebAudio graph for AudioAnalysis only.
+   * createMediaElementSource can only run once — routes element through THREE.Audio
+   * while keeping element muted (same pattern as spatial).
+   */
+  private analysisSound: THREE.Audio | null = null
+  private analysisMediaBound = false
   /** performance.now() when we last observed pause while wanting play. */
   private pausedWantingPlaySince = 0
   onFrameReady?: () => void
@@ -220,12 +227,44 @@ export class WebVideoPlayer {
   setAudioListener(listener: THREE.AudioListener | null): void {
     if (this.listener === listener) return
     this.disposeSpatialSound()
+    this.disposeAnalysisSound()
     this.listener = listener
     if (this.spatial && listener) {
       this.sound = this.createSpatialSound(this.spatialMin, this.spatialMax)
       this.bindSpatialMedia()
       this.applyEffectiveVolume()
     }
+  }
+
+  /**
+   * Explorer parity: progressive / spatial WebAudio paths can feed AudioAnalysis.
+   * HLS + LiveKit → false (host writes zeros).
+   */
+  canProvideAudioAnalysis(): boolean {
+    if (this.liveKitSource || this.usesSharedLiveKit) return false
+    if (isLiveKitVideoSrc(this.loadedEcsSrc) || isLiveKitVideoSrc(this.loadedSrc)) return false
+    if (isHlsUrl(this.loadedEcsSrc) || isHlsUrl(this.loadedSrc)) return false
+    return true
+  }
+
+  isPlayingForAnalysis(): boolean {
+    return (
+      this.state === VS_PLAYING &&
+      this.wantsPlaying &&
+      !this.video.paused &&
+      !this.video.ended &&
+      !this.isPlaybackBlocked()
+    )
+  }
+
+  /**
+   * THREE.Audio for analyser tap. Spatial uses existing PositionalAudio;
+   * non-spatial progressive lazily builds a gain graph so MediaElementSource exists.
+   */
+  getThreeAudioForAnalysis(): THREE.Audio | null {
+    if (!this.canProvideAudioAnalysis()) return null
+    if (this.sound) return this.sound
+    return this.ensureAnalysisSound()
   }
 
   setSpatialAudio(
@@ -250,9 +289,15 @@ export class WebVideoPlayer {
     this.spatialMax = spatialMaxDistance
 
     if (spatial && this.listener) {
-      this.sound = this.createSpatialSound(spatialMinDistance, spatialMaxDistance)
-      if (parent) this.attachSpatialSound(parent, localTransform)
-      this.bindSpatialMedia()
+      // MediaElementSource is once-per-element — if analysis already bound, keep that graph
+      // (non-positional) rather than throwing on a second setMediaElementSource.
+      if (this.analysisMediaBound) {
+        this.sound = null
+      } else {
+        this.sound = this.createSpatialSound(spatialMinDistance, spatialMaxDistance)
+        if (parent) this.attachSpatialSound(parent, localTransform)
+        this.bindSpatialMedia()
+      }
     }
 
     this.applyEffectiveVolume()
@@ -649,6 +694,7 @@ export class WebVideoPlayer {
     this.sourceGeneration++
     this.clearMediaSource()
     this.disposeSpatialSound()
+    this.disposeAnalysisSound()
     this.throttledTexture?.dispose()
     this.throttledTexture = null
     this.video.remove()
@@ -727,6 +773,16 @@ export class WebVideoPlayer {
       this.video.volume = 0
       this.video.muted = true
       this.sound.setVolume(gain)
+      this.analysisSound?.setVolume(0)
+    } else if (this.analysisSound && this.analysisMediaBound) {
+      // Non-spatial analysis path — element muted; gain on THREE.Audio.
+      const gain = this.soundUnlocked
+        ? clamp(mediaElementGain(category, this.lastSpecVolume), 0, 1)
+        : 0
+      this.video.volume = 0
+      this.video.muted = true
+      this.analysisSound.setVolume(gain)
+      this.sound?.setVolume(0)
     } else {
       const gain = clamp(mediaElementGain(category, this.lastSpecVolume), 0, 1)
       // Stay muted until a real gesture so autoplay is allowed and frames upload.
@@ -738,6 +794,7 @@ export class WebVideoPlayer {
         this.video.volume = gain
       }
       this.sound?.setVolume(0)
+      this.analysisSound?.setVolume(0)
     }
   }
 
@@ -764,6 +821,35 @@ export class WebVideoPlayer {
     this.sound.parent?.remove(this.sound)
     this.sound.disconnect()
     this.sound = null
+  }
+
+  private ensureAnalysisSound(): THREE.Audio | null {
+    if (!this.listener) return null
+    if (this.analysisSound) return this.analysisSound
+    try {
+      const audio = new THREE.Audio(this.listener)
+      // First MediaElementSource wins — only when spatial sound is absent.
+      if (!this.analysisMediaBound && !this.sound) {
+        audio.setMediaElementSource(this.video)
+        this.analysisMediaBound = true
+        // Element no longer drives speakers; THREE gain does (match spatial mute pattern).
+        this.video.muted = true
+        this.video.volume = 0
+      }
+      this.analysisSound = audio
+      this.applyEffectiveVolume()
+      return audio
+    } catch (err) {
+      console.warn('[WebVideoPlayer] analysis audio bind failed', err)
+      return null
+    }
+  }
+
+  private disposeAnalysisSound(): void {
+    if (!this.analysisSound) return
+    this.analysisSound.disconnect()
+    this.analysisSound = null
+    // analysisMediaBound stays true for this element lifetime (MediaElementSource once).
   }
 
   private setState(next: VideoStateValue): void {

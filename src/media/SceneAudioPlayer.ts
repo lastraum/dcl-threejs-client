@@ -62,6 +62,16 @@ export class SceneAudioPlayer {
     return this.sound.isPlaying
   }
 
+  /** THREE.Audio for AudioAnalysis analyser tap (pre-panner gain). */
+  getThreeAudio(): THREE.Audio {
+    return this.sound
+  }
+
+  /** True while the clip is audibly advancing (analysis host fill). */
+  isPlayingForAnalysis(): boolean {
+    return this.state === MS_PLAYING && this.sound.isPlaying
+  }
+
   isHoldingAtEnd(): boolean {
     return this.holdingAtEnd
   }

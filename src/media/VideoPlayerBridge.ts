@@ -302,6 +302,11 @@ export class VideoPlayerBridge {
   // Note: hard state changes + src-swap LOADING also go through emitVideoEvent / recordAppend
   // so SceneScriptSystem.flushRendererGrowOnlyAppends delivers them to the worker (onChange).
 
+  /** AudioAnalysis same-entity resolve. */
+  getPlayer(entity: Entity): WebVideoPlayer | null {
+    return this.decoders.get(entity)?.player ?? null
+  }
+
   disposeEntity(entity: Entity): void {
     this.removeDecoder(entity)
   }

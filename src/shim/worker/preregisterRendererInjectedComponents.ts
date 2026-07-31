@@ -41,6 +41,8 @@ export const RENDERER_PREREGISTER_FACTORIES: readonly RendererComponentFactory[]
   (engine) => generated.GltfContainerLoadingState(engine),
   (engine) => generated.VideoPlayer(engine),
   (engine) => generated.AudioSource(engine),
+  // Host LWW — amplitude + 8 bands for @dcl/sdk AudioAnalysis visualizers
+  (engine) => generated.AudioAnalysis(engine),
   (engine) => generated.PrimaryPointerInfo(engine),
   (engine) => generated.CameraMode(engine),
   (engine) => generated.PointerLock(engine),

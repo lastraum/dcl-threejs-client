@@ -101,6 +101,11 @@ export class AudioSourceBridge {
     return this.mediaEnabled
   }
 
+  /** AudioAnalysis same-entity resolve. */
+  getPlayer(entity: Entity): SceneAudioPlayer | null {
+    return this.players.get(entity)?.player ?? null
+  }
+
   sync(view: ProjectionView): void {
     if (!this.mediaEnabled) {
       if (this.players.size) {

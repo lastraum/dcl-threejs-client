@@ -59,7 +59,13 @@ export const DCL_ECS_COMPONENTS: EcsComponentEntry[] = [
   { name: 'AudioSource', coreId: 1020, phase: 3, status: 'render', category: 'media' },
   { name: 'AudioStream', coreId: 1021, phase: 3, status: 'render', category: 'media' },
   { name: 'AudioEvent', coreId: 1105, phase: 3, status: 'render', category: 'media' },
-  { name: 'AudioAnalysis', coreId: 1212, phase: 3, status: 'client-only', category: 'media' },
+  {
+    name: 'AudioAnalysis',
+    coreId: 1212,
+    phase: 3,
+    status: 'client-only',
+    category: 'media'
+  },
   { name: 'VideoPlayer', coreId: 1043, phase: 3, status: 'render', category: 'media' },
   { name: 'VideoEvent', coreId: 1044, phase: 3, status: 'client-only', category: 'media' },
   { name: 'Tween', coreId: 1102, phase: 3, status: 'render', category: 'motion' },

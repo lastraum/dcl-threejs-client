@@ -149,17 +149,30 @@ Collect once per frame from **registry layers** (secondary ignored for player cl
 
 ---
 
+## Exclusive host channels (one controller)
+
+Some host resources can only be **active once**. Layers **claim**; host **assigns** a single owner each frame (priority primary 100 > px 50).
+
+| Channel | One owner | Loser |
+|---------|-----------|--------|
+| **VirtualCamera lens** | Winning MainCamera bind | Unbound freecam / other layer VC idle |
+| **movePlayer / teleport** | Arbiter winner that frame | Silent if primary already moved |
+| **Force / impulse on capsule** | Highest priority / lamport claim | Not applied |
+| **WASD / freecam** | **Always host** (not a claim) | — |
+| **Scene UI pointer inject** | Root under click (`#pe-ui-root` vs `#scene-ui-root`) | Foreign root must not inject |
+
+Virtual camera is the template: **not** “both drive the lens.” Same idea for any single-owner host effect.
+
 ## Claim / tick order (hard — not optional)
 
 ```text
 1. All layer workers complete engine.update for the frame (or publish claim snapshots)
 2. PlayerClaimMerger merges once
-3. PlayerHost applies HostPoseMode + capsule + lens + modifiers
-4. ReservedEntitiesSync injects host→workers (skip layer-owned poses on layer_drive)
+3. PlayerHost applies claims (camera owner, forces, primary freeze only)
+4. Host injects reserved Player/Camera to **all** workers (scene-authored moves rebroadcast extra)
 ```
 
-**Never** permanently apply claims **after** `PlayerSystem.update` (1-frame freeze lag is P0).  
-C (unify tick) is **mandatory after B** freeze claims.
+**Never** permanently apply claims **after** `PlayerSystem.update` (1-frame freeze lag is P0).
 
 ---
 

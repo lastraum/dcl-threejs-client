@@ -77,6 +77,8 @@ export type SceneEngineSchedulerConfig = {
   isHydration: () => boolean
   resolvePlayIntervalMs: () => number
   pointerBlocksTick: () => boolean
+  /** PX worker — open-pose law must not use plaza noVisibleModal (permanent HUD chrome). */
+  isPortableExperience?: () => boolean
   /**
    * Queue phase-4 structured UI mount for flushPointerDeferredOutboundsAsync.
    * fullPaint=true → main Forest once (remount/open); false → soft dirty / Patch growth.
@@ -853,7 +855,7 @@ let openScaleNeedReadyPaint = false
 
 /** Re-arm cooperative fullPaint window while dual-root/micro still mid-open (after inject complete). */
 export function rearmOpenScaleFollowupIfStillMidOpen(eng: IEngine): boolean {
-  if (!isOpenPoseBlockedFromRows(collectUiPoseRows(eng))) return false
+  if (!isOpenPoseBlockedFromRows(collectUiPoseRows(eng), openPoseOpts())) return false
   openScaleFollowupFullUntil = performance.now() + POINTER_UI_OPEN_SCALE_FOLLOWUP_MS
   openScaleNeedReadyPaint = true
   return true
@@ -898,9 +900,13 @@ function collectUiPoseRows(eng: IEngine): Map<number, UiPoseRow> {
   return byId
 }
 
-/** COD single blocked gate — dual-park | scale seed | no visible modal. */
+function openPoseOpts(): { portableExperience?: boolean } {
+  return config?.isPortableExperience?.() ? { portableExperience: true } : {}
+}
+
+/** COD single blocked gate — dual-park | scale seed | (primary) no visible modal. */
 function uiOpenPoseBlocked(eng: IEngine): boolean {
-  return isOpenPoseBlockedFromRows(collectUiPoseRows(eng))
+  return isOpenPoseBlockedFromRows(collectUiPoseRows(eng), openPoseOpts())
 }
 
 function largeModalContentStillParked(eng: IEngine): boolean {
@@ -1084,7 +1090,7 @@ async function finishOpenScaleAfterPhase4(
     }
     log(
       `[sceneWorker] open-scale skip — mount=${countWorkerUiMount(eng)} ` +
-        `poseReady flags=${sampleOpenPoseBlockedFlags(collectUiPoseRows(eng))}`
+        `poseReady flags=${sampleOpenPoseBlockedFlags(collectUiPoseRows(eng), openPoseOpts())}`
     )
     return
   }
@@ -1173,7 +1179,7 @@ async function finishOpenScaleAfterPhase4(
         log(
           `[sceneWorker] open-scale progress pass=${i + 1} fp=${fp.length}B ` +
             `seeds=[${sampleOpenPoseMicroSeeds(eng)}] ` +
-            `flags=${sampleOpenPoseBlockedFlags(collectUiPoseRows(eng))}`
+            `flags=${sampleOpenPoseBlockedFlags(collectUiPoseRows(eng), openPoseOpts())}`
         )
       }
     } else {
@@ -1208,7 +1214,7 @@ async function finishOpenScaleAfterPhase4(
   log(
     `[sceneWorker] open-scale finish — blocked=${finalBlocked} ` +
       `parked=${finalParked} micro=${finalMicro} ` +
-      `flags=${sampleOpenPoseBlockedFlags(collectUiPoseRows(eng))} ` +
+      `flags=${sampleOpenPoseBlockedFlags(collectUiPoseRows(eng), openPoseOpts())} ` +
       `progress=${progressPasses} wall=${(performance.now() - t0).toFixed(0)}ms ` +
       `seeds=[${sampleOpenPoseMicroSeeds(eng)}] mount=${countWorkerUiMount(eng)}` +
       ` finalFull` +
@@ -1361,14 +1367,14 @@ export async function runSceneEnginePointerTick(
           cfg.log(
             `[sceneWorker] pointer sceneUi selection settle — mount=${mountAfterUp} seed=${selectSeed.length}B` +
               `${mountShrunk ? ' shrink' : ''} tweenSettle` +
-              ` flags=${sampleOpenPoseBlockedFlags(collectUiPoseRows(eng))}`
+              ` flags=${sampleOpenPoseBlockedFlags(collectUiPoseRows(eng), openPoseOpts())}`
           )
         } else if (mountGrew || poseNeedsOpen) {
           const openSeed = computeWorkerUiFingerprint(eng)
           cfg.log(
             `[sceneWorker] pointer sceneUi open flush — mount=${mountAfterUp} seed=${openSeed.length}B` +
               `${mountGrew ? ' grew' : ''}` +
-              ` flags=${sampleOpenPoseBlockedFlags(collectUiPoseRows(eng))}`
+              ` flags=${sampleOpenPoseBlockedFlags(collectUiPoseRows(eng), openPoseOpts())}`
           )
           await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
             maxPasses: POINTER_UI_OPEN_FLUSH_MAX_PASSES,
@@ -1385,7 +1391,8 @@ export async function runSceneEnginePointerTick(
         // Open-scale when still blocked after flush (hard dual-park / micro).
         const needsOpenScale = needsOpenScaleFromRows(
           mountGrew,
-          collectUiPoseRows(eng)
+          collectUiPoseRows(eng),
+          openPoseOpts()
         )
         if (needsOpenScale) {
           cfg.log(
@@ -1447,7 +1454,7 @@ export async function runSceneEnginePointerTick(
           `[sceneWorker] pointer ui flush — post-UP seed=${meshSeedFp.length}B ` +
             `mount=${mountBeforeDown}→${meshMount}` +
             `${mountGrewMesh ? ' grew' : ''}` +
-            ` flags=${sampleOpenPoseBlockedFlags(collectUiPoseRows(eng))}`
+            ` flags=${sampleOpenPoseBlockedFlags(collectUiPoseRows(eng), openPoseOpts())}`
         )
         await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
           maxPasses: needOpenSettle ? POINTER_UI_OPEN_FLUSH_MAX_PASSES : 4,
@@ -1471,7 +1478,8 @@ export async function runSceneEnginePointerTick(
         // "pose ready" while dual-root content remains left≥virtualWidth.
         const needsOpenScale = needsOpenScaleFromRows(
           needOpenSettle,
-          collectUiPoseRows(eng)
+          collectUiPoseRows(eng),
+          openPoseOpts()
         )
         if (needsOpenScale) {
           cfg.log(
@@ -1484,7 +1492,7 @@ export async function runSceneEnginePointerTick(
           // True poseReady only — no followupFull safety net on this branch.
           cfg.log(
             `[sceneWorker] pointer mesh phase-4 — mount=${countWorkerUiMount(eng)} ` +
-              `open-scale skip poseReady flags=${sampleOpenPoseBlockedFlags(collectUiPoseRows(eng))}`
+              `open-scale skip poseReady flags=${sampleOpenPoseBlockedFlags(collectUiPoseRows(eng), openPoseOpts())}`
           )
         } else {
           await briefUiTweenSettle(eng, cfg.log, 'mesh-tween')

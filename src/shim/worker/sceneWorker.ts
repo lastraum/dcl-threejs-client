@@ -1299,6 +1299,7 @@ initSceneEngineScheduler({
   isHydration: () => sceneOnUpdatePaused,
   resolvePlayIntervalMs: () => engineTickIntervalMs,
   pointerBlocksTick: () => pointerBlocksEngineTick(),
+  isPortableExperience: () => portableExperienceWorker,
   queuePointerUiEgress: (snapshot, fullPaint = true) => {
     pointerUiMountSnapshot = snapshot
     pointerUiMountEgressPending = true

@@ -338,14 +338,26 @@ export function isModalShellOnCanvas(
   return false
 }
 
+export type OpenPoseBlockedOptions = {
+  /**
+   * Portable experience (PX) workers: permanent off-canvas HUD chrome is normal.
+   * Do **not** use plaza `isNoVisibleModalOnCanvas` — it keeps Neurolink "still mid-open"
+   * forever and leaves menu PE handlers display:none / unclickable after icon inject.
+   */
+  portableExperience?: boolean
+}
+
 /**
- * Open pose blocked (mid-open): dual-park OR scale seed OR no visible modal when modalish.
+ * Open pose blocked (mid-open): dual-park OR scale seed OR (primary only) no visible modal.
  * Used for needsOpenScale / flush refuse-exit / cooperative midOpen.
  */
-export function isOpenPoseBlocked(byId: Map<number, UiPoseRow>): boolean {
-  return (
-    isDualRootParked(byId) || isScaleSeedOpen(byId) || isNoVisibleModalOnCanvas(byId)
-  )
+export function isOpenPoseBlocked(
+  byId: Map<number, UiPoseRow>,
+  opts?: OpenPoseBlockedOptions
+): boolean {
+  if (isDualRootParked(byId) || isScaleSeedOpen(byId)) return true
+  if (opts?.portableExperience) return false
+  return isNoVisibleModalOnCanvas(byId)
 }
 
 export type OpenPoseReadyOptions = {
@@ -369,26 +381,32 @@ export type OpenPoseReadyOptions = {
  */
 export function isOpenPoseReady(
   byId: Map<number, UiPoseRow>,
-  opts?: OpenPoseReadyOptions
+  opts?: OpenPoseReadyOptions & OpenPoseBlockedOptions
 ): boolean {
   if (opts?.fingerprintStable === false) return false
-  return !isOpenPoseBlocked(byId)
+  return !isOpenPoseBlocked(byId, opts)
 }
 
 /** needsOpenScale := needOpenSettle AND NOT poseReady (fail closed). */
 export function needsOpenScale(
   needOpenSettle: boolean,
-  byId: Map<number, UiPoseRow>
+  byId: Map<number, UiPoseRow>,
+  opts?: OpenPoseBlockedOptions
 ): boolean {
-  return needOpenSettle && isOpenPoseBlocked(byId)
+  return needOpenSettle && isOpenPoseBlocked(byId, opts)
 }
 
 /** QA sample for logs. */
-export function sampleOpenPoseBlockedFlags(byId: Map<number, UiPoseRow>): string {
+export function sampleOpenPoseBlockedFlags(
+  byId: Map<number, UiPoseRow>,
+  opts?: OpenPoseBlockedOptions
+): string {
   const parts: string[] = []
   if (isDualRootParked(byId)) parts.push('dualRootParked')
   if (isScaleSeedOpen(byId)) parts.push('micro')
-  if (isNoVisibleModalOnCanvas(byId)) parts.push('noVisibleModal')
+  if (!opts?.portableExperience && isNoVisibleModalOnCanvas(byId)) {
+    parts.push('noVisibleModal')
+  }
   return parts.length ? parts.join('+') : 'ready'
 }
 

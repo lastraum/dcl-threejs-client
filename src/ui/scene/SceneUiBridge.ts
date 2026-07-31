@@ -539,7 +539,13 @@ export class SceneUiBridge {
   }
 
   dispose(): void {
-    setSceneUiAuthoritativeEntityCheck(null)
+    // Clear only this root's auth registry — PE dispose must not wipe primary (and reverse).
+    const isPeRoot = this.root.id === 'pe-ui-root'
+    if (isPeRoot) {
+      setPeUiAuthoritativeEntityCheck(null)
+    } else {
+      setSceneUiAuthoritativeEntityCheck(null)
+    }
     this.input.dispose()
     this.dom.dispose()
     this.hitMap.clear()
@@ -555,7 +561,14 @@ export class SceneUiBridge {
     this.lastView = null
     disposeSceneUiDebug()
     this.unbindImageLoaded()
-    this.root.remove()
+    // Do not remove shared #pe-ui-root if another PE might remount; only detach children.
+    // Primary scene-ui-root is recreated by ensureSceneUiRoot on next prepare.
+    if (isPeRoot) {
+      this.root.replaceChildren()
+      this.root.hidden = true
+    } else {
+      this.root.remove()
+    }
   }
 
   /** Yoga layout → DOM paint for the committed worker mount set. */

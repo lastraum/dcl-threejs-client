@@ -158,19 +158,24 @@ export function canvasAbsOrigin(
 }
 
 /**
- * Content still parked off the virtual canvas (fail closed for open-scale).
+ * Dual-root **open** still mid-flight: on-canvas shell + off-canvas content twin.
  *
  * Uses **canvas-accumulated** abs origin (parent chain), not local top/left alone.
- * - Dual-root twin: canvas left ≥ VW (shop @2146)
- * - Below-fold slots: canvas top ≥ VH (inventory @y=1227)
+ * Shop pattern: shell on canvas + twin at left ≥ VW (e.g. @2146).
  *
- * Excludes full-bleed HUD (w≥VW) and canvas-covering scrims.
+ * **Not** dual-root open (do not block settle / PE UI forever):
+ * - Permanent below-fold HUD chrome (inventory @y=1227) alone — Neurolink/PX peOff strips
+ * - Full-bleed HUD strips (w≥VW)
+ * - Near-fullscreen scrims
  */
 export function isDualRootParked(
   byId: Map<number, UiPoseRow>,
   vw = VIRTUAL_UI_WIDTH,
   vh = VIRTUAL_UI_HEIGHT
 ): boolean {
+  let hasParkedTwin = false
+  let hasOnCanvasShell = false
+
   for (const [id, r] of byId) {
     if (uiPoseHidden(r)) continue
     // Full-bleed HUD strips (1920×86) — not open content.
@@ -187,12 +192,27 @@ export function isDualRootParked(
       origin.top + r.h > vh * 0.85
     if (coversCanvas) continue
 
-    if (origin.left >= vw - DUAL_ROOT_EDGE_EPS) return true
-    if (origin.top >= vh - DUAL_ROOT_EDGE_EPS) return true
-    if (origin.left + r.w <= DUAL_ROOT_EDGE_EPS) return true
-    if (origin.top + r.h <= DUAL_ROOT_EDGE_EPS) return true
+    const intersectsCanvas =
+      origin.left < vw - 8 &&
+      origin.top < vh - 8 &&
+      origin.left + r.w > 8 &&
+      origin.top + r.h > 8
+
+    // On-canvas modal / large panel = open shell candidate.
+    if (
+      intersectsCanvas &&
+      (uiPoseIsModal(r, vw, vh) || (r.w >= 200 && r.h >= 160))
+    ) {
+      hasOnCanvasShell = true
+    }
+
+    // Shop dual-root twin: parked to the **side** of the virtual canvas (not pure below-fold).
+    // Pure below-fold (top ≥ VH) is permanent inventory chrome — Neurolink/PX peOff @y=1227.
+    if (origin.left >= vw - DUAL_ROOT_EDGE_EPS) hasParkedTwin = true
+    if (origin.left + r.w <= DUAL_ROOT_EDGE_EPS) hasParkedTwin = true
   }
-  return false
+
+  return hasParkedTwin && hasOnCanvasShell
 }
 
 /**

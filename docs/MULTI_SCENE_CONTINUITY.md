@@ -13,8 +13,13 @@ Quick rules for agents: [AGENTS.md § Multi-scene continuity](./AGENTS.md#multi-
 
 ```text
 PRIMARY (feet)
-  FocusOwner — UI, media, privileged input, locomotion modifiers, AvatarModifier/CameraMode
+  Parcel FocusOwner — UI, media, privileged input, AvatarModifier/CameraMode
   Full scene worker + scripts
+
+PORTABLE EXPERIENCE (when running)
+  Second full scene worker — no parcel bounds; media/UI on (#pe-ui-root)
+  Player effects via claims (priority 50) — see PORTABLE_EXPERIENCE_COD.md
+  Never demotes primary; never secondary-mute
 
 SECONDARY (live ring / sticky demote)
   Same loaded graph — scripts every frame, FocusOwner MUTE
@@ -84,17 +89,19 @@ COMPOSITE / AOI shells
 
 ## FocusOwner surfaces
 
-| Surface | Primary | Secondary / demoted |
-|---------|---------|---------------------|
-| Scene UI / video / audio | on | muted |
-| InputHub privileged | primary subscriber | none |
-| InputModifier / freeze | primary only | never apply player-frame |
-| AvatarModifierArea hide | primary only | demote clears hide |
-| CameraModeArea force | primary only | demote clears force |
-| VirtualCamera | drives lens only while `isActive()` | not freecam orbit owner |
-| Freecam yaw/pitch/dist | durable on player across promote | handoff snaps boom to feet only |
+| Surface | Primary | Portable experience (running) | Secondary / demoted |
+|---------|---------|-------------------------------|---------------------|
+| Scene UI / video / audio | on (`#scene-ui-root`) | on (`#pe-ui-root` / PE media) | muted |
+| InputHub | primary subscriber | `pe:<offset>` subscriber | none |
+| InputModifier / freeze | claims prio 100 | claims prio 50; **freeze ≠ pin** | never player-frame |
+| AvatarModifierArea hide | primary only | **never** (primary-only) | demote clears hide |
+| CameraModeArea force | primary only | **never** (primary-only) | demote clears force |
+| VirtualCamera | claim contest | claim contest; no entity-id mirror onto primary | never |
+| Freecam yaw/pitch/dist | durable player state | may drive lens via claim; must not trash freecam orbit ownership | handoff snaps boom to feet only |
+| Parcel bounds | yes | **none** | neighbor offset |
 
-`disableAllHoldFeet` arms **only** for intentional `InputModifier.disableAll` — never for colliders-ready thrash.
+Portable experiences: [PORTABLE_EXPERIENCE_COD.md](./PORTABLE_EXPERIENCE_COD.md).  
+`disableAllHoldFeet` arms **only** for intentional load-gate **`host_pin`** / primary pin helper — never for colliders-ready thrash; PE free-flight uses `layer_drive` (freeze + explicit poseDrive), not pin.
 
 ---
 

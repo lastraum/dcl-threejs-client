@@ -1,7 +1,7 @@
 # COD prompt — execution standard (always)
 
 **Status:** platform law for every evaluation and multi-step task  
-**Also:** [AGENTS.md](./AGENTS.md) · [SCENE_UI_COD.md](./SCENE_UI_COD.md) · [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md)
+**Also:** [AGENTS.md](./AGENTS.md) · [SCENE_UI_COD.md](./SCENE_UI_COD.md) · [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) · [PORTABLE_EXPERIENCE_COD.md](./PORTABLE_EXPERIENCE_COD.md)
 
 ---
 
@@ -31,7 +31,7 @@ Utter AAA quality — textures, physics, layout, input, continuity — anything 
 1. **Fan out** — sub-agents (or parallel deep reads) own distinct slices: root-cause, fix, visual/QA critique.
 2. **/loop** on each item — implement → verify → harsh critic → iterate until the critic would pick this client in a blind side-by-side vs Explorer / AAA bar for that slice.
 3. **Harsh critic** — separate pass that assumes failure: logs, paint modes, PE on/off, edge cases (second open, pagination, wrap). If not triple-A for the slice, keep going.
-4. **Ultracode** — small, law-aligned diffs; no plaza-only hacks; no dual layout invent; COD dirty/PE/layout laws hold.
+4. **Ultracode** — small, law-aligned diffs; no plaza-only hacks; no dual layout invent; COD dirty / PointerEvents lead / layout laws hold; portable experiences use PORTABLE_EXPERIENCE_COD.
 5. **Don't stop** until the slice is proven in logs or types + reasoned oracle, not “probably fine.”
 
 ---
@@ -45,6 +45,19 @@ See [SCENE_UI_COD.md](./SCENE_UI_COD.md):
 - Open settle: positive dt only for true open; selection = dt=0
 - No invent parked pose; no Forest thrash on every dual-root tick
 - **Park ≠ unmount** — off-canvas transform stays mounted under root; unmount only when entity leaves mount set
+
+---
+
+## Portable experience reminder (when PE / dual-scene is in scope)
+
+See [PORTABLE_EXPERIENCE_COD.md](./PORTABLE_EXPERIENCE_COD.md) · phases [SCENE_LAYERS_PLAN.md](./SCENE_LAYERS_PLAN.md):
+
+- **PE is a second full scene** when loaded — same features as primary, **no parcel bounds**
+- PE is **not** secondary (media/UI on); PE is **not** primary (never demotes genesis FocusOwner)
+- Layers → **claims** → one PlayerHost; freeze ≠ pin; free-flight = `layer_drive`
+- UI: same Yoga COD under `#pe-ui-root` only — no dual layout invent
+- Phys: namespaced late cook / invalidate-only ([STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md))
+- Kill PE-only hacks (`PeMainThreadMirror`, `runPeVehicleInputPump`) via A→D — do not merge old PE WIP
 
 ---
 

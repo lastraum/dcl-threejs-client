@@ -92,7 +92,8 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 
 | Area | Status |
 |------|--------|
-| Scene UI | Yoga COD on `yoga-revamp` ([SCENE_UI_COD.md](./SCENE_UI_COD.md)) · text-measure / PE open polish remain |
+| Scene UI | Yoga COD on `yoga-revamp` ([SCENE_UI_COD.md](./SCENE_UI_COD.md)) · text-measure / open polish remain |
+| Portable experiences | Second full scene layer (no parcel bounds) — law [PORTABLE_EXPERIENCE_COD.md](./PORTABLE_EXPERIENCE_COD.md) · plan [SCENE_LAYERS_PLAN.md](./SCENE_LAYERS_PLAN.md) · claims/HostPoseMode **not landed** (mirror + PE pump debt) |
 | Social | Multi-room + cast ✅; 2D chat FAB dock ✅; community toasts/mod gates ✅; nearby voice + spatial audio ✅; DMs ✅; **community voice** start/join/speak/promote/demote/kick/end · dual-path discovery · 2D/3D UI · Jump In keep ✅ · create/invites open |
 | Live tools | Scene **polls** · **Q&A** · **trivia** from location card · end-session **CSV** stats ✅ (v1.7) |
 | Pets / Pet Barn | Multiplayer companions · Barn marketplace catalog/publish ✅ (v1.7) |
@@ -121,7 +122,7 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 
 ## Suggested next engineering order (post v1.7.0)
 
-1. Product **1.8**: scene UI text-measure / Yoga · portable experiences · backpack outfits · **create-community / invites**.  
+1. Product **1.8** on `yoga-revamp`: scene UI text-measure / Yoga COD finish · **PE layers A→D** ([PORTABLE_EXPERIENCE_COD.md](./PORTABLE_EXPERIENCE_COD.md)) · backpack outfits · **create-community / invites**.  
 2. Optional: harden Social RPC long-lived streams (friend connectivity / voice WS still flap; PM dual-path covers voice discovery).  
 3. Optional: graphics **P3** distance culls; MSAA+bloom concurrent; SyncEntities auth-host; CBD multi-scene FPS.  
 4. Mesh frame-law / instancing follow-through (motion promote already covers dynamic props).  

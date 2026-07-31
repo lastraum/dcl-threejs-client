@@ -13,7 +13,7 @@
 > **Dirty = entity ∪ descendants** on any Ui* change (transform, background, UV, text, PE, …).  
 > **Cousins never dirty each other** — multiple panels under one `#scene-ui-root` / canvas `0` stay independent unless the scene state writes both.  
 > Full Yoga / Forest paint only on topology remount or dirty dominating the mount; steady = Reuse/RefineAbsolute + Patch seeds.  
-> No second layout invents sizes except explicit **measure**. PE: live + same-frame snapshot lag-fill only.
+> No second layout invents sizes except explicit **measure**. **PointerEvents** lead: live + same-frame snapshot lag-fill only (not portable experiences).
 
 ---
 
@@ -34,7 +34,7 @@ PointerEvents             →     hit-map + --interactive
 | Layout math | Yoga from `UiTransform` | CSS dual-semantics · client `dx/dy` twin align |
 | Open animation | Worker systems + **positive dt** during large-modal flush | Main setTimeout re-layout · pose snap |
 | Hits | Yoga boxes → screen | `getBoundingClientRect` as primary |
-| PE | Live + snapshot lag-fill | Forever-live snapshot |
+| PointerEvents lead | Live + snapshot lag-fill | Forever-live snapshot |
 | UiText wrap | Authored `textWrap` (default **TW_WRAP**) | Invent `nowrap` from char count / PE |
 
 **Reject:** pure React re-host · dual Yoga+CSS · per-scene branches · invent parked-panel pose · `plainLen≤48` single-line invent.
@@ -97,17 +97,19 @@ Patch paints dirty *seeds* only; renderEntityTree walks each seed's descendants.
 
 ---
 
-## PE lead law
+## PointerEvents lead law (not portable experiences)
+
+> **Never abbreviate as “PE” in new prose** — use **PointerEvents** / **UiPointer**. Portable experiences are [PORTABLE_EXPERIENCE_COD.md](./PORTABLE_EXPERIENCE_COD.md).
 
 ```text
 1. live non-empty     → live wins; mark seen; drop snapshot
-2. live empty + mounted + snapshot PE → snapshot (fold lag)
+2. live empty + mounted + snapshot PointerEvents → snapshot (fold lag)
 3. live empty + seen + no snapshot    → deleted
 4. else                               → none
 ```
 
 clearLww only for **components present in snapshot rows**.  
-Still-mounted PE delete: `applyWorkerUiMountSnapshot` when transform without PE.  
+Still-mounted PointerEvents delete: `applyWorkerUiMountSnapshot` when transform without PointerEvents.  
 Any mount change + any `ingestMountSnapshot` → clear liveSeen.
 
 ---

@@ -1,10 +1,11 @@
 /**
  * Multi-scene FocusOwner + LOD rings (product model):
- * - primary: parcel under feet — **FocusOwner** (UI, audio, video, inputs, locomotion)
+ * - primary: parcel under feet — **parcel FocusOwner** (place UI/media; AvatarModifier/CameraMode)
+ * - pe: portable experience / smart wearable — **second full scene** (media/UI on, no parcel
+ *   bounds; player claims priority 50). See docs/PORTABLE_EXPERIENCE_COD.md
  * - secondary (live): muted workers for **scene-to-scene ≤16m** neighbors (throttled;
  *   hard-capped; no media/UI). Nested plaza holes always qualify.
  * - tertiary: Scene Distance disc — roads, empty land, composite shells (no worker)
- * - pe: portable experience / smart wearable (own UI root; arbiter below primary)
  *
  * Warm/visual band = user Scene Distance (`sceneLoadRadiusM`). Live workers are
  * NOT scaled with Scene Distance (see caps.ts) — warm-all ≠ live-all.

@@ -1,0 +1,17 @@
+---
+description: COD AAA execution standard — read docs/cod_prompt.md on every evaluation
+alwaysApply: true
+---
+
+# COD prompt (always)
+
+Before evaluating, planning, or implementing **any** multi-step task in this repo:
+
+1. **Read** `docs/cod_prompt.md` (and domain COD if UI/physics/multi-scene).
+2. Treat the bar as recent **Call of Duty–level AAA**: fix until proven, no silent regressions.
+3. **Fan out** sub-agents / deep parallel investigation per slice.
+4. **/loop** with a **harsh critic** pass; iterate until that critic would pick this client side-by-side for the slice.
+5. Prefer small law-aligned diffs; no scene-specific bandaids that break other scenes.
+
+Scene UI work must also honor `docs/SCENE_UI_COD.md`.  
+Portable experience / dual-scene work must also honor `docs/PORTABLE_EXPERIENCE_COD.md` and `docs/SCENE_LAYERS_PLAN.md`.

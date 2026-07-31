@@ -4,7 +4,9 @@
 
 ## Execution standard (always)
 
-Treat every multi-scene, performance, and continuity task as **ship-or-iterate AAA quality** — not “good enough for a demo.” Guiding bar:
+**Every evaluation / plan / implement: read [cod_prompt.md](./cod_prompt.md) first.**
+
+Treat every multi-scene, performance, and continuity task as **ship-or-iterate AAA quality** — not “good enough for a demo.” Guiding bar (full text in `cod_prompt.md`):
 
 > Build as if this were a first-person experience at the level of the most recent Call of Duty titles: visually complete, systems coherent, no accidental unload voids, no silent regressions. Prefer fix-until-proven over leave-a-TODO. Fan out investigation, harsh self-critique, measure, then land the continuity path.
 
@@ -33,6 +35,7 @@ If a change makes the world go blank on neighbor step, **it is a P0 bug** — re
 
 ## Reading order
 
+0. **[cod_prompt.md](./cod_prompt.md)** — **mandatory every evaluation** (AAA / fan-out / loop / harsh critic)  
 1. **[PROGRESS.md](./PROGRESS.md)** — latest release / RC, what’s next, shipped history  
 2. **[MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md)** — FocusOwner · sticky demote · colliders · AOI (branch `feat/aoi-focus-owner`)  
 3. **[INTEGRATION.md](./INTEGRATION.md)** + **`src/client/dev/integrationRegistry.ts`** — parity matrix  

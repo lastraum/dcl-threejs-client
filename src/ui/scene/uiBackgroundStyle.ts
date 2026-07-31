@@ -811,7 +811,6 @@ export function applyUiBackgroundStyles(
     ? normalizeBackgroundTextureMode(bg?.textureMode, rawSrc, bg?.textureSlices, bg?.uvs)
     : -1
   // Skip full style thrash when paint re-visits stable PE HUD panels every tick.
-  // Clearing borderImage / swapping solid→texture every frame is the PX UI flash.
   // uvs may be number[] or post-JSON `{0:…}` — never rely on .length alone.
   let uvsKey = ''
   const rectForSig = parseUiBackgroundUvRect(bg?.uvs as ArrayLike<number> | null | undefined)
@@ -819,8 +818,7 @@ export function applyUiBackgroundStyles(
     uvsKey = `${rectForSig.u0.toFixed(4)},${rectForSig.v0.toFixed(4)},${rectForSig.u1.toFixed(4)},${rectForSig.v1.toFixed(4)}`
   }
   // Final signature only after texture is actually applied. Pending color×texture bake
-  // uses `|pending` so image-loaded → repaint re-enters and upgrades solid → texture
-  // (COD: no permanent empty shop/detail icons after first paint).
+  // uses `|pending` so bake completion re-enters (imageUrl+mode+tint same, status changes).
   const sig = `${imageUrl ?? ''}|${mode}|${tint}|${uvsKey}`
   const pendingSig = `${sig}|pending`
   if (el.dataset.dclUiBgSig === sig) return
@@ -847,7 +845,7 @@ export function applyUiBackgroundStyles(
     el.style.borderWidth = ''
     el.style.borderStyle = ''
     el.style.borderColor = ''
-    // Missing/failed texture — fall back to color tint (Explorer parity).
+    // Missing texture URL — color tint (Explorer parity). No special-case seals.
     el.style.backgroundColor = tint === 'transparent' ? 'transparent' : tint
     el.dataset.dclUiBgSig = sig
     return

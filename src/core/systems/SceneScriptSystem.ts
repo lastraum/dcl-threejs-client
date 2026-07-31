@@ -2458,6 +2458,8 @@ export class SceneScriptSystem {
       if (!this.running) return
       inbound = await this.processWorkerOutboundCrdtBatch(batch)
       if (this.pointerAwaitingWorkerApply) {
+        // TweenState already force-pushed inside processWorkerOutbound (before encode
+        // consumes encodeDirty). Defer remaining renderer inbound until deliver-done.
         if (inbound.length) this.pendingInboundAfterUiMount = inbound
       } else {
         this.postRendererInboundDeliver(inbound)
@@ -2541,9 +2543,9 @@ export class SceneScriptSystem {
         batch.some((i) => i.uiMountSnapshot !== undefined || (i.uiEntities?.length ?? 0) > 0)
       // Clear LWW only for (entity, component) pairs present in the snapshot we re-seed.
       // Partial dirty snapshots must not wipe PointerEvents on an entity that only ships
-      // UiBackground (inventory fill) — that dropped the close-X PE on second shop open.
-      // Full open still re-seeds PE rows; PE removal is handled by applyWorkerUiMountSnapshot
-      // belt-and-suspenders when a transform row ships without PE.
+      // UiBackground / UiTransform (inventory fill, scale) — that dropped the close-X PE.
+      // Full open re-seeds PE; PE removal only when applyWorkerUiMountSnapshot pruneMissingPe
+      // (uiMountFullPaint) sees transform without PE.
       // Never wipe the full mount on bare uiEntities (no rows) — that left projection at 0/N
       // (mount commit deferred forever → sceneTicksPaused stuck → Flagtag timer + unfreeze die).
       if (latestUiMountSnapshot?.length) {
@@ -2603,7 +2605,10 @@ export class SceneScriptSystem {
               entity: row.entity as Entity,
               componentId: row.componentId,
               value: row.value
-            }))
+            })),
+            // Full open/reshow re-seeds PE; partial dirty must not drop PE on transform-only rows
+            // (that deleted close-X / page-dot PE → "no exit button").
+            { pruneMissingPe: uiMountFullPaint === true }
           )
           batchTouchesUi = true
           this.foldProjectionChanges()
@@ -2678,6 +2683,12 @@ export class SceneScriptSystem {
       this.syncTriggerAreas()
       this.syncRaycasts()
       this.syncTweenBeforeEncode()
+      // COD dual-root open-scale RTT: push TweenState NOW (before encodeRendererCrdt
+      // consumeEncodeDirty). Deferring all inbound until deliver-done left open-scale at
+      // progress=0 dualRootParked (vending grid icons blank on first open).
+      if (this.pointerAwaitingWorkerApply) {
+        this.deliverTweenStateToWorker({ force: true })
+      }
       this.crdtTick++
 
       this.prepareRendererOutboundState()
@@ -3535,7 +3546,15 @@ export class SceneScriptSystem {
       isSceneUiFieldEntity: (entity) => this.sceneUiBridge?.isFieldEntity(entity) ?? false,
       isSceneUiTypingActive: () => this.sceneUiBridge?.isTypingActive() ?? false,
       pickUiRegionHit: (clientX, clientY) =>
-        this.sceneUiBridge?.pickUiRegionHit(clientX, clientY, this.host!.camera) ?? null
+        this.sceneUiBridge?.pickUiRegionHit(clientX, clientY, this.host!.camera) ?? null,
+      pickUiHoverHit: (clientX, clientY) =>
+        this.sceneUiBridge?.pickUiHoverHit(
+          clientX,
+          clientY,
+          this.readComponents,
+          this.view,
+          this.host!.camera
+        ) ?? null
     })
     let pointerEntities = 0
     for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {
@@ -3770,20 +3789,27 @@ export class SceneScriptSystem {
    * Push renderer-owned `TweenState` to the worker (throttled, lightweight message).
    * Ambient textureMove needs this for tweenCompleted → scene pauseDuration → next row;
    * play-mode cold CRDT is fire-and-forget and too sparse. Uses encodeTweenStateOnly.
+   *
+   * COD open-scale dual-root: MUST deliver during pointerAwaitingWorkerApply. Deferring
+   * TweenState until deliver-done left open-scale progress=0 (vending icons parked @left≥1920).
+   * Only skip mid pointerFlushInFlight (encode batch race).
    */
-  private deliverTweenStateToWorker(): void {
+  private deliverTweenStateToWorker(opts?: { force?: boolean }): void {
     if (!this.worker || !this.running || !this.tweenBridge?.hasEncodeDirty()) return
-    if (this.pointerAwaitingWorkerApply || this.pointerFlushInFlight) return
+    if (this.pointerFlushInFlight) return
     // Defer ambient push while GLTFs stream — avoid worker tick storms mid-hydration.
-    if (this.bridge?.isAssetHydrationMode()) return
+    // force=true: post-processWorkerOutbound open RTT may still need TweenState mid-hydration.
+    if (!opts?.force && this.bridge?.isAssetHydrationMode()) return
     const now = performance.now()
     // Bobber float / TweenSequence TL_RESTART must see completion this frame or motion steps.
+    // Open-scale dual-root RTT: force bypasses throttle so worker sees unpark same frame as Tween apply.
     const urgentComplete = this.tweenBridge.hasUrgentCompletionDeliver()
-    const minMs = urgentComplete
-      ? 0
-      : now <= this.proactiveTweenPushUntil
-        ? SceneScriptSystem.TWEEN_DELIVER_FAST_MS
-        : SceneScriptSystem.TWEEN_DELIVER_MIN_MS
+    const minMs =
+      opts?.force || urgentComplete
+        ? 0
+        : now <= this.proactiveTweenPushUntil
+          ? SceneScriptSystem.TWEEN_DELIVER_FAST_MS
+          : SceneScriptSystem.TWEEN_DELIVER_MIN_MS
     if (now - this.lastTweenDeliverAt < minMs) return
     this.lastTweenDeliverAt = now
 
@@ -3795,7 +3821,8 @@ export class SceneScriptSystem {
     if (isTweenVerbose()) {
       clientDebugLog.log(
         'motion',
-        `TweenState push — ${tweenDirty.size} entity(s) [${[...tweenDirty].join(', ')}]`,
+        `TweenState push — ${tweenDirty.size} entity(s) [${[...tweenDirty].join(', ')}]` +
+          `${opts?.force ? ' force' : ''}${this.pointerAwaitingWorkerApply ? ' pointerOpen' : ''}`,
         { throttleMs: 300, alsoConsole: true }
       )
     }

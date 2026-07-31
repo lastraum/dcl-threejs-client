@@ -143,6 +143,7 @@ import {
   isEngineUpdateInFlight,
   isSceneEngineTickInFlight,
   preemptSceneEngineTick,
+  rearmOpenScaleFollowupIfStillMidOpen,
   requestSceneEngineTick,
   runSceneEngineUpdateNow,
   resetSceneEngineDiagCount,
@@ -475,6 +476,14 @@ function endPointerInputSessionAfterMountResume(): void {
 }
 
 function postPointerDeliverDone(label: string): void {
+  // Mesh dual-root residual: re-arm forceFull window now that ticks unpause (ack wait
+  // often outlived the original open-scale followup → blank shop icons on first open).
+  if (sceneEngine && rearmOpenScaleFollowupIfStillMidOpen(sceneEngine)) {
+    workerLog(
+      'log',
+      `[sceneWorker] ${label} — re-armed open-scale followup on deliver-done (still mid-open)`
+    )
+  }
   ctx.postMessage({ type: 'pointer-deliver-done' } satisfies SceneWorkerOutbound)
   workerVerboseLog(debugPointerDeliver, 'log', `[sceneWorker] ${label} — pointer-deliver-done posted to main`)
 }
@@ -541,8 +550,11 @@ function shouldDeferPointerOutbound(): boolean {
   return pointerDeliverBatchOpen || pointerDeliveryInFlight || isPointerInputSessionActive()
 }
 
-/** Post non-UI chunks first, then one atomic UI snapshot with uiEntities — await acks before deliver-done. */
-async function flushPointerDeferredOutboundsAsync(): Promise<void> {
+/**
+ * Post non-UI chunks first, then one atomic UI snapshot with uiEntities.
+ * @param awaitAcks when false, fire-and-forget (open-scale must not block 4s on acks).
+ */
+async function flushPointerDeferredOutboundsAsync(awaitAcks = true): Promise<void> {
   let nonUiChunks = coalesceCrdtChunksLww(pointerDeferredNonUi.splice(0))
   const eng = sceneEngine
   if (eng) {
@@ -585,19 +597,21 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
     }
   ): void => {
     const id = ++outboundAckId
-    ackWaits.push(
-      new Promise<void>((resolve) => {
-        let settled = false
-        const finish = (): void => {
-          if (settled) return
-          settled = true
-          pendingOutboundAck.delete(id)
-          resolve()
-        }
-        pendingOutboundAck.set(id, finish)
-        setTimeout(finish, OUTBOUND_ACK_TIMEOUT_MS)
-      })
-    )
+    if (awaitAcks) {
+      ackWaits.push(
+        new Promise<void>((resolve) => {
+          let settled = false
+          const finish = (): void => {
+            if (settled) return
+            settled = true
+            pendingOutboundAck.delete(id)
+            resolve()
+          }
+          pendingOutboundAck.set(id, finish)
+          setTimeout(finish, OUTBOUND_ACK_TIMEOUT_MS)
+        })
+      )
+    }
     const msg = attachUi
       ? ({
           type: 'crdt-outbound',
@@ -626,11 +640,16 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
     })
     workerLog(
       'log',
-      `[sceneWorker] pointer ui egress — snapshotRows=${uiSnapshot?.length ?? 0} mount=${uiEntities.length} nonUiChunks=${nonUiChunks.length}`
+      `[sceneWorker] pointer ui egress — snapshotRows=${uiSnapshot?.length ?? 0} mount=${uiEntities.length} nonUiChunks=${nonUiChunks.length}` +
+        `${awaitAcks ? '' : ' fireAndForget'}`
     )
   }
 
-  if (ackWaits.length) await Promise.all(ackWaits)
+  if (awaitAcks && ackWaits.length) await Promise.all(ackWaits)
+}
+
+function flushPointerDeferredOutboundsFireAndForget(): void {
+  void flushPointerDeferredOutboundsAsync(false)
 }
 
 function forceRecoverStuckPointerDelivery(reason: string): void {
@@ -1274,13 +1293,14 @@ initSceneEngineScheduler({
   isHydration: () => sceneOnUpdatePaused,
   resolvePlayIntervalMs: () => engineTickIntervalMs,
   pointerBlocksTick: () => pointerBlocksEngineTick(),
-  queuePointerUiEgress: (snapshot) => {
+  queuePointerUiEgress: (snapshot, fullPaint = true) => {
     pointerUiMountSnapshot = snapshot
     pointerUiMountEgressPending = true
-    // Phase-4 open/reshow — main Forest paints once (cooperative dirty does not set this).
-    pointerUiMountFullPaint = true
+    // Elevate to full paint only — never clear mid-batch (seed full + mid soft + final).
+    if (fullPaint) pointerUiMountFullPaint = true
   },
-  flushPointerDeferredOutboundsNow: () => flushPointerDeferredOutboundsAsync(),
+  flushPointerDeferredOutboundsNow: () => flushPointerDeferredOutboundsAsync(true),
+  flushPointerDeferredOutboundsFireAndForget: () => flushPointerDeferredOutboundsFireAndForget(),
   postUiMountSnapshot: (snapshot, mountEntityIds, forceFullPaint) => {
     // Prefer explicit full mount list — empty is valid (welcome unmount → mount=[]).
     // Skipping empty left main with ghost PE catchers (hand cursor after visual dissolve).
@@ -1292,7 +1312,7 @@ initSceneEngineScheduler({
           : []
     lastOutboundUiEntitiesKey = uiEntities.join(',')
     logSceneUiOutbound(new Uint8Array(0), uiEntities, snapshot.length)
-    // Steady cooperative: Patch. Open-scale growth / dual-root unpark: Forest (forceFullPaint).
+    // COD P1: cooperative always Patch (forceFullPaint false). Phase-4 sets fullPaint.
     ctx.postMessage({
       type: 'crdt-outbound',
       data: new Uint8Array(0),
@@ -1346,6 +1366,14 @@ initSceneEngineScheduler({
     // CBD Plaza: nZ(dt) fades Hr; mte() unmounts when Hr<=0 — needs real wall-clock eng.update.
     resetPointerInputSession()
     sceneTicksPaused = false
+    // Dual-root residual: re-arm cooperative forceFull after open-scale so unpark after
+    // inject-complete still Forests (oracle: followup expired before deliver-done).
+    if (sceneEngine && rearmOpenScaleFollowupIfStillMidOpen(sceneEngine)) {
+      workerLog(
+        'log',
+        '[sceneWorker] sceneUi inject complete — re-armed open-scale followup (still mid-open)'
+      )
+    }
     workerLog(
       'log',
       `[sceneWorker] sceneUi inject complete — session ended, ticks unpaused (mountGrew=${mountGrew ? 1 : 0})`

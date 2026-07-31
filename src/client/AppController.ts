@@ -2675,13 +2675,16 @@ export class AppController {
         onJumpToGenesis:
           sceneConfig.source.kind === 'world'
             ? () => {
+                // Same path as chat `/goto 0,0` — in-world teleport, not 2D scene landing.
                 if (document.pointerLockElement) document.exitPointerLock()
-                void this.navigateTo({
-                  kind: 'coords',
-                  x: 0,
-                  y: 0,
-                  segment: '0,0'
-                })
+                void this.jumpInToScene(
+                  { kind: 'coords', x: 0, y: 0, segment: '0,0' },
+                  {
+                    fastAssets: true,
+                    entry: 'teleport',
+                    source: 'goto'
+                  }
+                )
               }
             : undefined,
         mapToggle: this.locationMapStack

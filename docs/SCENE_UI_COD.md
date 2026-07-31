@@ -1,9 +1,9 @@
 # Scene UI — COD / AAA layout + paint policy
 
 **Status:** platform law on `yoga-revamp`  
-**Bar:** [AGENTS.md](./AGENTS.md) COD · [ARCHITECTURE.md](./ARCHITECTURE.md)  
+**Bar:** [cod_prompt.md](./cod_prompt.md) (read every evaluation) · [AGENTS.md](./AGENTS.md) · [ARCHITECTURE.md](./ARCHITECTURE.md)  
 **Related:** hit-map from Yoga boxes · structured mount snapshot · FocusOwner primary-only UI  
-**Last updated:** 2026-07-29  
+**Last updated:** 2026-07-30 (hide / park / unmount law)  
 
 ---
 
@@ -35,8 +35,9 @@ PointerEvents             →     hit-map + --interactive
 | Open animation | Worker systems + **positive dt** during large-modal flush | Main setTimeout re-layout · pose snap |
 | Hits | Yoga boxes → screen | `getBoundingClientRect` as primary |
 | PE | Live + snapshot lag-fill | Forever-live snapshot |
+| UiText wrap | Authored `textWrap` (default **TW_WRAP**) | Invent `nowrap` from char count / PE |
 
-**Reject:** pure React re-host · dual Yoga+CSS · per-scene branches · invent parked-panel pose.
+**Reject:** pure React re-host · dual Yoga+CSS · per-scene branches · invent parked-panel pose · `plainLen≤48` single-line invent.
 
 ---
 
@@ -46,12 +47,23 @@ PointerEvents             →     hit-map + --interactive
 |-------|----------|
 | **Hydration** | Commit mount only — no Yoga/DOM thrash |
 | **Pointer open (sceneUi, mount grew)** | Flush dt≈1/20 until fingerprint stable + !parked + !micro; phase-4 **full paint** flag |
-| **Pointer open (mesh, grew / mount≥60 / poseWait)** | Same settle; phase-4 **uiMountFullPaint** → main Forest once |
-| **Pointer open (mesh, small)** | dt=0, ≤4 passes, stableNeeded=1 |
-| **Pointer selection (same mount)** | dt=0, ≤2 passes — never open multipass (collapses menus) |
-| **Cooperative dirty** | Fingerprint delta → partial snapshot → **no** full paint invalidate → steady Patch |
+| **Pointer open (mesh)** | grow **or** dual-park **or** scale-seed **or** no modal on-canvas → open settle; else brief tween settle. No mount-count bands. |
+| **Pointer selection / close (same mount)** | dt=0 reconcile + **brief positive-dt tween settle (any UI size)** — wall + fp-stable exit |
+| **Cooperative dirty** | Fingerprint delta → partial snapshot → **`forceFullPaint=false` always** → steady Patch |
 | **Steady** | LayoutMode Reuse/RefineAbsolute; PaintMode Patch when collapsed≈0 |
-| **Remount / phase-4** | Invalidate layout+visual+PE; Forest first paint |
+| **Remount / phase-4** | Topology membership change → Forest once; phase-4 `fullPaint` once per open burst (~400ms throttle) |
+| **Open-scale** | ≤3 UI snapshots (seed full → mid soft → final); seed+final fire-and-forget under pointer; micro wall **~500ms**; **dual-park wall ~1.6s** + wall-clock yields (Tween RTT); cooperative **followup fullPaint** while micro/park (**~5s**, re-armed on inject-complete / deliver-done if still mid-open). Main **force-pushes TweenState during pointerAwaiting** so open-scale can unpark (never defer TweenState until deliver-done). |
+
+### Explorer-close pipeline (COD speed law)
+
+```text
+click → short settle → phase-4 Forest ONCE (remount)
+     → open-scale: Tween RTT, coalesce snapshots (not N Forests)
+     → cooperative: partial + Patch only
+     → unpark: sticky (on-canvas Yoga + data-ui-parked) → one Forest if needed
+```
+
+**Reject:** cooperative forceFull every dual-root tick · open-scale fullPaint every pass · mount-count policy.
 
 ### Why positive dt on large mesh modals (root, not bandaid)
 
@@ -128,14 +140,61 @@ Any mount change + any `ingestMountSnapshot` → clear liveSeen.
 
 ---
 
+## Hide vs park vs unmount (platform law)
+
+Three different “gone” states. **Never conflate them.**
+
+| State | Worker | Mount set | DOM under root | Hits |
+|-------|--------|-----------|----------------|------|
+| **Hide** | `display: none` / opacity≈0 | **Still mounted** | Node may stay; `display:none` | Off |
+| **Park** | Transform off virtual canvas (`left≥1920`, below fold, etc.) | **Still mounted** | **Held under `#scene-ui-root` / ECS parent** with Yoga pose stored; `display:none` + inert + `data-ui-parked` (must not steal canvas orbit/click) | Off |
+| **Unmount** | react-ecs removed entity | **Not mounted** | **releaseNode / purge** (recycle-safe) | None |
+
+```text
+UNMOUNT  = entity left the worker mount set only.
+PARK     = same entity, different pose (dual-root open tween, HUD park).
+HIDE     = same entity, display/opacity authoring.
+```
+
+**Rules:**
+
+1. **Park ≠ unmount.** Off-screen transform never drops the entity from the root tree.
+2. **Park keeps Yoga geometry** on the shell; unpark is style/pose update, not invent pose.
+3. **Park must use `display:none` + no PE** — never leave interactive descendants that steal WebGL orbit/click (`pointer-events:auto` under `pe:none` parent still hits).
+4. **Do not materialize full off-canvas subtrees every paint** — freezes main thread (same symptom as dead pointer).
+5. **Unmount only** when id leaves mount → DOM purge required (anti ghost PE / id recycle).
+6. **No client twinAlign** — parked pose comes from ECS only.
+7. Worker open settle may wait on dual-root park for snapshot readiness; that is **pose readiness**, not “entity unmounted.”
+
+---
+
 ## Dual-root shop (fishing inventory / vending)
 
 ```text
 Open: shell@left≈346 + content@left≥1920 until open tween finishes.
-Main does NOT invent dx (no twinAlign). Paint ECS Yoga boxes only; fully-off stays hidden.
-Worker flush advances eng.update(dt) until fingerprint stable AND not dual-parked / micro.
+Main does NOT invent dx (no twinAlign). Content twin is PARKED under root (held + Yoga pose), not unmounted.
+Worker flush advances eng.update(dt) until fingerprint stable AND not dual-parked / true micro.
 Then phase-4 snapshot. Cooperative dirty after that — cousins independent.
 ```
+
+### Single poseReady law (`uiOpenPose.ts`)
+
+```text
+isDualParked  := non-hidden content off virtual canvas using **chain-sum abs origin**
+                  (parent.left+child.left, not local top alone):
+                  canvasLeft ≥ VW  (shop twin @2146)
+                  OR canvasTop ≥ VH (nested slots parent@200+child@1027 → y=1227)
+                  skip: full-bleed HUD (w≥VW), canvas-covering scrim, w|h < 48
+isScaleSeed   := canvas-fraction micro / relative seed under modal
+poseReady     := fpStable AND NOT dualParked AND NOT scaleSeed AND NOT noVisibleModal
+                 (poseReady ≡ !blocked when fp stable)
+
+needsOpenScale := needOpenSettle AND blocked   // fail closed
+// NEVER log "pose ready" / skip open-scale while dualParked
+// followupFull ONLY while still mid-open after open-scale wall
+```
+
+Tests: `npm run test:ui-open-pose` (pure geometry + PE-path state machine).
 
 ---
 
@@ -145,8 +204,8 @@ Then phase-4 snapshot. Cooperative dirty after that — cousins independent.
 |--------|--------|
 | Tutorial mesh open | short flush → phase-4 mid-open (may be ~7×7) → **early Tween+UI egress** → open-scale loop (TweenState + eng.update until !micro or ~2.4s) → **second full paint** → `peOnModal≥1`. Logs: `open-scale early egress`, `open-scale progress`, `open-scale finish`. |
 | Tutorial re-click mount 121→121 | `reshow` settle + full paint; not minutes of blank |
-| Paginate how-to-play | selection settle `dt=0.000`; X + page dots stay; PE remain |
-| Vending mesh open | content on-screen first paint (no twinAlign); not tutorial-only |
+| Paginate / close any modal | selection: dt=0 reconcile + `tween settle` (any mount size); X + page dots stay; close anim finishes |
+| Vending mesh open | content on-screen first paint (no twinAlign); open-scale progress>0 or followup unpark; peOnModal≥1; not blank grid icons |
 | Reeling bars | Patch/RefineAbsolute, not Forest every UV tick |
 | CBD splash | PE deletes cleanly |
 

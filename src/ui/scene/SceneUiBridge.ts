@@ -55,6 +55,7 @@ import {
   normalizePointerEventsList,
   type UiPointerEventsLookup
 } from './uiPointer'
+import { isUiEntityVisible } from './uiVisibility'
 import { InputAction, PointerEventType, type PointerEventTypeValue } from '../../input/pointerConstants'
 import {
   computeUiLayoutKey,
@@ -103,6 +104,8 @@ export class SceneUiBridge {
   private lastMountedUiEntities = new Set<Entity>()
   private firstPaintLogged = false
   private paintCount = 0
+  /** One-shot Forest after phase-4 / mid-open forceFull (unpark dual-root) without paintCount thrash. */
+  private forceNextForest = false
   private lastLoggedPaintMount = 0
   /** Skip full paint when layout + visual fingerprints match previous frame. */
   private lastPaintLayoutKey = ''
@@ -210,8 +213,8 @@ export class SceneUiBridge {
     this.imageRepaintQueued = true
     window.setTimeout(() => {
       this.imageRepaintQueued = false
-      // Visual fingerprint does not include bake completion — without this, paint early-outs
-      // and color×texture upgrades never replace solid placeholders (empty detail icons).
+      // Bake completion is not in visual fingerprint — invalidate so paint re-runs.
+      // Pending bg sig (`|pending`) upgrades to final when bake is ready (no global sig wipe).
       this.lastPaintVisualKey = ''
       this.lastEntityVisualKeys.clear()
       this.markContentDirty()
@@ -273,6 +276,7 @@ export class SceneUiBridge {
     this.lastStableVisibleCount = 0
     this.paintCount = 0
     this.firstPaintLogged = false
+    this.forceNextForest = true
     this.paintedEpoch = -1
     this.markContentDirty()
   }
@@ -287,8 +291,9 @@ export class SceneUiBridge {
 
   /**
    * Structured mount snapshot — PE lag-fill + optional full paint invalidate.
-   * COD: clear liveSeen on any ingest. Full Forest only for pointer phase-4 / empty unmount
-   * (`forceFullPaint`). Cooperative dirty must NOT wipe layout/visual keys (steady Patch).
+   * COD P1: Full Forest at most once per open burst (~400ms). Mid open-scale / dual-root
+   * resnapshots soft-invalidate so Patch can grow 7×7→modal (Explorer-like dirty, not N Forests).
+   * Cooperative always forceFull=false. Unpark: sticky in paint().
    */
   ingestMountSnapshot(
     rows: readonly WorkerUiMountSnapshotRow[],
@@ -305,7 +310,8 @@ export class SceneUiBridge {
       this.mountSnapshotPointerEvents.set(entity, row.value)
     }
     if (forceFull) {
-      // Phase-4 open/reshow — same mount entity set must still Forest (no key early-out).
+      // Always hard invalidate + Forest. Soft throttle left layout keys stale so 6×6→696
+      // growth never Forest'd PE kids (2nd click required). Followup forceFull is dirty-only.
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
       this.lastEntityVisualKeys.clear()
@@ -313,11 +319,11 @@ export class SceneUiBridge {
       this.lastLayoutBoxMap = null
       this.lastFullLayoutBoxes = null
       this.layoutCache.clear()
-      this.paintCount = 0
-      this.firstPaintLogged = false
       this.paintedEpoch = -1
       this.stableVisibleStreak = 0
       this.lastStableVisibleCount = 0
+      this.firstPaintLogged = false
+      this.forceNextForest = true
     }
     this.markContentDirty()
   }
@@ -335,6 +341,7 @@ export class SceneUiBridge {
     const live = ecs?.PointerEvents.getOrNull(entity) as { pointerEvents?: unknown[] } | null
     if (normalizePointerEventsList(live).length > 0) {
       this.livePointerEventsSeen.add(entity)
+      // SCENE_UI_COD PE lead: live non-empty → live wins; drop snapshot lag-fill for entity.
       this.mountSnapshotPointerEvents.delete(entity)
       return live as ReturnType<UiPointerEventsLookup>
     }
@@ -367,22 +374,19 @@ export class SceneUiBridge {
     const uiKey = [...next].sort((a, b) => (a as number) - (b as number)).join(',')
     const changed = !this.workerUiEntitiesKnown || uiKey !== this.lastWorkerUiKey
     const prevSize = this.workerUiEntitiesKnown ? (this.workerUiEntities?.size ?? 0) : 0
-    // Remount growth (how-to-play 52→121, shop reopen): full dirty — PE + layout + pool.
-    // Prior threshold (next >= prev+80) missed 52→121 and left stale visual/patch keys so
-    // pagination/close painted as PE-only on second open.
-    const remountGrowth =
-      changed && next.size >= 40 && (prevSize === 0 || next.size >= prevSize + 24)
-    const remountShrink =
-      changed && prevSize >= 40 && next.size + 24 <= prevSize
     if (changed) this.markContentDirty()
 
     let removedCount = 0
+    let addedCount = 0
     if (this.workerUiEntitiesKnown && this.workerUiEntities) {
       const removed = new Set<Entity>()
       const survivors = new Set<Entity>()
       for (const entity of this.workerUiEntities) {
         if (!next.has(entity)) removed.add(entity)
         else survivors.add(entity)
+      }
+      for (const entity of next) {
+        if (!this.workerUiEntities.has(entity)) addedCount++
       }
       removedCount = removed.size
       if (removed.size > 0) {
@@ -399,6 +403,8 @@ export class SceneUiBridge {
         }
         this.releaseUiEntities(removed)
       }
+    } else if (changed) {
+      addedCount = next.size
     }
 
     if (next.size === 0) {
@@ -430,10 +436,14 @@ export class SceneUiBridge {
       this.lastStableVisibleCount = 0
       // Any mount set change recycles entity ids — PE tombstones must not stick (SCENE_UI_COD).
       this.livePointerEventsSeen.clear()
-      // Force full forest path (preferPatch needs paintCount > 1). Any meaningful remount.
-      if (remountGrowth || remountShrink || next.size >= 80 || removedCount >= 24) {
+      // Topology truth: any membership churn → next paint is Forest. No +24 / ≥40 size bands.
+      // Tiny in-place churn (1–2 ids) still invalidates keys above; Forest only when set actually
+      // gained/lost members (addedCount|removedCount > 0 is always true if changed, but same-size
+      // replace of many ids still needs Forest).
+      if (addedCount > 0 || removedCount > 0 || prevSize === 0) {
         this.paintCount = 0
         this.firstPaintLogged = false
+        this.forceNextForest = true
       }
     }
 
@@ -872,40 +882,90 @@ export class SceneUiBridge {
 
     // SCENE_UI_COD PaintMode: Patch local dirties (entity∪descendants). Cousins untouched.
     // Forest when: first paint / remount, no seeds, dirty dominates mount, missing boxes,
-    // or a dirty seed's box grew from micro (~scale open) so kids must leave display:none.
+    // or any box grew from micro (~scale open) so kids must leave display:none.
     let scaleExpand = false
-    if (this.lastLayoutBoxMap?.size && dirtySeeds.length > 0) {
-      for (const e of dirtySeeds) {
+    if (this.lastLayoutBoxMap?.size) {
+      const edge = Math.min(this.virtual.width, this.virtual.height) * 0.045
+      const seedArea = edge * edge
+      // Prefer dirty seeds; also scan all visible boxes (open-scale growth often has no seeds
+      // when soft invalidate left lastEntityLayoutKeys matching until forceFull hard wipe).
+      const candidates =
+        dirtySeeds.length > 0
+          ? dirtySeeds
+          : [...layoutBoxMap.keys()]
+      for (const e of candidates) {
         const prev = this.lastLayoutBoxMap.get(e)
         const next = layoutBoxMap.get(e)
         if (!prev || !next) continue
-        const prevMicro = prev.width <= 48 && prev.height <= 48
-        const nextFull = next.width >= 120 && next.height >= 120
-        if (prevMicro && nextFull) {
+        const prevArea = Math.max(0, prev.width * prev.height)
+        const nextArea = Math.max(0, next.width * next.height)
+        const prevSeedish = prevArea > 0 && prevArea <= seedArea * 4
+        const grew =
+          prevArea > 1 &&
+          nextArea >= prevArea * 1.35 &&
+          nextArea > prevArea + 64
+        if (
+          (prevSeedish && grew) ||
+          (grew && nextArea >= prevArea * 2) ||
+          (prevArea > 1 && nextArea >= prevArea * 4)
+        ) {
           scaleExpand = true
           break
         }
       }
     }
-    // Sticky hide recovery: PE chrome still has ECS PE + good Yoga box but DOM left
-    // display:none/uiUnusable after scale-open or cousin Patch skip → force Forest.
+    // Sticky recovery (COD): ECS-visible + usable on-canvas Yoga box + DOM still dead.
+    // - Parked (data-ui-parked / off-canvas box) is pose, not sticky-hide.
+    // - Intentional ECS display:none is not sticky (isUiEntityVisible false).
+    // - Unpark: on-canvas Yoga + still data-ui-parked → force Forest once.
+    const vw = this.virtual.width
+    const vh = this.virtual.height
     let peChromeStickyHidden = false
     for (const e of mounted) {
-      if (!hasUiPointerDownOrUp(this.pointerEventsLookup(e))) continue
+      if (!isUiEntityVisible(e, transformOf)) continue
       const box = layoutBoxMap.get(e)
       if (!box || box.width < 8 || box.height < 8) continue
+      const offCanvas =
+        box.left >= vw - 1 ||
+        box.top >= vh - 1 ||
+        box.left + box.width <= 1 ||
+        box.top + box.height <= 1
       const node = this.dom.getNode(e)
-      if (
-        node &&
-        (node.dataset.uiUnusable === '1' || node.style.display === 'none')
-      ) {
+      if (!node) continue
+      // Unpark: Yoga is on-canvas but DOM still parked → Forest recovery.
+      if (!offCanvas && node.dataset.uiParked === '1') {
         peChromeStickyHidden = true
         break
       }
+      if (offCanvas || node.dataset.uiParked === '1') continue
+      // On-canvas, ECS-visible, DOM still collapsed/unusable after prior hide.
+      if (node.dataset.uiUnusable === '1' || node.style.display === 'none') {
+        peChromeStickyHidden = true
+        break
+      }
+      // Parent usable + child DOM dead while child ECS-visible → Forest subtree unhide.
+      if (box.width < 16 || box.height < 16) continue
+      const kids = forest.get(e) ?? []
+      for (const kid of kids) {
+        if (!isUiEntityVisible(kid, transformOf)) continue
+        const kn = this.dom.getNode(kid)
+        if (
+          kn &&
+          kn.dataset.uiParked !== '1' &&
+          (kn.dataset.uiUnusable === '1' || kn.style.display === 'none')
+        ) {
+          peChromeStickyHidden = true
+          break
+        }
+      }
+      if (peChromeStickyHidden) break
     }
     const localDirty =
       dirtyEntities.length > 0 && dirtyEntities.length < mounted.size * 0.45
+    const forceForest = this.forceNextForest
+    this.forceNextForest = false
     const preferPatch =
+      !forceForest &&
       this.paintCount > 1 &&
       localDirty &&
       !scaleExpand &&
@@ -972,12 +1032,14 @@ export class SceneUiBridge {
     }
 
     // Oracle: open UI with PE but nothing usable on-canvas.
-    if (this.paintCount <= 4) {
+    // Keep logging past first paints while peOff dominates (inventory icons @y=1227).
+    {
       let peOn = 0
       let peOff = 0
       let peTiny = 0
       let peOnModal = 0
       let peOnScrim = 0
+      let peBelowFold = 0
       const samples: string[] = []
       const vw = this.virtual.width
       const vh = this.virtual.height
@@ -1006,6 +1068,7 @@ export class SceneUiBridge {
           else if (b.width >= 120 && b.height >= 80) peOnModal++
         } else {
           peOff++
+          if (b.top >= vh - 1) peBelowFold++
           if (samples.length < 4) {
             samples.push(
               `e${e as number}:${Math.round(b.left)},${Math.round(b.top)} ${Math.round(b.width)}×${Math.round(b.height)}`
@@ -1013,11 +1076,16 @@ export class SceneUiBridge {
           }
         }
       }
-      if (peOn + peOff + peTiny > 2) {
+      const shouldLog =
+        this.paintCount <= 4 ||
+        (peOff > peOn && peOff > 2) ||
+        peBelowFold > 0 ||
+        (this.paintCount <= 16 && peOnModal === 0 && peOn + peOff > 4)
+      if (shouldLog && peOn + peOff + peTiny > 2) {
         clientDebugLog.log(
           'scene-ui',
           `pe-layout peOn=${peOn} peOnModal=${peOnModal} peOnScrim=${peOnScrim} ` +
-            `peOff=${peOff} peTiny=${peTiny} paintMode=${paintMode}` +
+            `peOff=${peOff} peBelowFold=${peBelowFold} peTiny=${peTiny} paintMode=${paintMode}` +
             (samples.length ? ` off=[${samples.join('; ')}]` : '')
         )
       }
@@ -1144,6 +1212,51 @@ export class SceneUiBridge {
   private candidatePickArea(entity: Entity): number {
     const region = this.hitMap.regionFor(entity)
     return region ? region.width * region.height : Number.POSITIVE_INFINITY
+  }
+
+  /**
+   * Fallback when Yoga hit-map is sparse after open (regions≪mount). Walk DOM from
+   * elementFromPoint for .scene-ui-node--interactive and resolve PE handler.
+   */
+  private resolveHandlerFromDomUnderPoint(
+    clientX: number,
+    clientY: number,
+    state: PointerEventTypeValue,
+    ecs: MirrorComponents,
+    view: ProjectionView
+  ): Entity | null {
+    if (typeof document === 'undefined') return null
+    const stack =
+      typeof document.elementsFromPoint === 'function'
+        ? document.elementsFromPoint(clientX, clientY)
+        : [document.elementFromPoint(clientX, clientY)].filter(Boolean)
+    for (const el of stack) {
+      if (!(el instanceof Element)) continue
+      if (!this.root.contains(el)) continue
+      const node = el.closest('.scene-ui-node--interactive') as HTMLElement | null
+      if (!node || !this.root.contains(node)) continue
+      const id = Number(node.dataset.entity)
+      if (!Number.isFinite(id)) continue
+      const entity = id as Entity
+      if (!this.isAuthoritativeUiEntity(entity)) continue
+      const handler = findUiPointerHandlerEntity(
+        ecs,
+        view,
+        entity,
+        InputAction.IA_POINTER,
+        state,
+        this.pointerEventsLookup
+      )
+      if (handler !== null && isUiEntityPointerCapturing(ecs, handler, this.pointerEventsLookup)) {
+        if (state === PointerEventType.PET_DOWN) {
+          console.info(
+            `[scene-ui] pick → DOM fallback handler e${handler} (hit-map sparse) (${clientX},${clientY})`
+          )
+        }
+        return handler
+      }
+    }
+    return null
   }
 
   /**
@@ -1278,6 +1391,9 @@ export class SceneUiBridge {
     let blockingEntity: Entity | null = null
     let blockingArea = Number.POSITIVE_INFINITY
 
+    const isHoverState =
+      state === PointerEventType.PET_HOVER_ENTER || state === PointerEventType.PET_HOVER_LEAVE
+
     for (const entity of candidates) {
       // Skip field rows — SceneUiInputController owns them; do not abort the whole pick (search
       // input is an ancestor candidate when clicking LOAD/DEL pills in the presets table).
@@ -1292,14 +1408,27 @@ export class SceneUiBridge {
         this.pointerEventsLookup
       )
       if (handler !== null) {
-        // Handler only if still display-visible + PE (Explorer parity — not Color4.a invent).
-        if (!isUiEntityPointerCapturing(ecs, handler, this.pointerEventsLookup)) continue
+        // Click/BLOCK: must be pointer-capturing. Hover: visible + HOVER PE is enough
+        // (react-ecs onMouseEnter does not require onPointerDown / BLOCK).
+        if (isHoverState) {
+          if (!isUiEntityVisible(handler, (e) => ecs.UiTransform.getOrNull(e))) continue
+          const hSpec = this.pointerEventsLookup(handler)
+          if (
+            !hasUiPointerEvent(hSpec, PointerEventType.PET_HOVER_ENTER, InputAction.IA_POINTER) &&
+            !hasUiPointerEvent(hSpec, state, InputAction.IA_POINTER)
+          ) {
+            continue
+          }
+        } else if (!isUiEntityPointerCapturing(ecs, handler, this.pointerEventsLookup)) {
+          continue
+        }
         // Rank by the HANDLER's region (card), not the leaf (label) — so a leaf that
         // incorrectly walks to the scrim loses to a real card handler under the same point.
         let area = this.candidatePickArea(handler)
         if (!Number.isFinite(area)) area = this.candidatePickArea(entity)
         // Near-fullscreen PE with no real scrim paint must not steal world mesh PE
         // (inventory GLB open). Child-panel paint (CBD splash) still wins.
+        // Hover-only fullscreen is never a world block — still skip empty fullscreen PE.
         if (
           this.isNearFullscreenPickArea(area) &&
           !isFullscreenUiPeAllowed(ecs, handler, { forest: this.lastUiForest })
@@ -1317,6 +1446,8 @@ export class SceneUiBridge {
         }
         continue
       }
+
+      if (isHoverState) continue
 
       if (isUiEntityPointerCapturing(ecs, entity, this.pointerEventsLookup)) {
         const area = this.candidatePickArea(entity)
@@ -1344,6 +1475,12 @@ export class SceneUiBridge {
         )
       }
       return bestHandler
+    }
+
+    // Sparse hit-map only (regions≪mount): DOM --interactive fallback. Hit-map is authority.
+    if (candidates.length <= 6) {
+      const domHandler = this.resolveHandlerFromDomUnderPoint(clientX, clientY, state, ecs, view)
+      if (domHandler !== null) return domHandler
     }
 
     if (blockingEntity !== null) {
@@ -1388,7 +1525,10 @@ export class SceneUiBridge {
     const spec = this.pointerEventsLookup(handlerEntity)
     const hasDown = hasUiPointerEvent(spec, PointerEventType.PET_DOWN, button)
     const hasState = hasUiPointerEvent(spec, state, button)
-    if (!hasState && !(state === PointerEventType.PET_UP && hasDown)) {
+    const isHover =
+      state === PointerEventType.PET_HOVER_ENTER || state === PointerEventType.PET_HOVER_LEAVE
+    // Hover: only HOVER PE. Click: DOWN/UP (UP allowed if DOWN present).
+    if (!hasState && !(state === PointerEventType.PET_UP && hasDown) && !isHover) {
       if (typeof location !== 'undefined' && location.search.includes('sceneuidebug')) {
         console.warn(
           `[scene-ui] ui hit handler=e${handlerEntity} spec=${spec?.pointerEvents?.length ?? 0}`
@@ -1396,8 +1536,32 @@ export class SceneUiBridge {
       }
       return null
     }
+    if (isHover && !hasState) return null
 
     return this.buildDomPointerHit(handlerEntity, camera)
+  }
+
+  /**
+   * UI hover target under cursor (PET_HOVER_ENTER). Hit-map Yoga regions; does not
+   * expand world-block beyond click/BLOCK capturing layers (see pickUiRegionHit).
+   */
+  pickUiHoverHit(
+    clientX: number,
+    clientY: number,
+    ecs: MirrorComponents,
+    view: ProjectionView,
+    camera: THREE.Camera,
+    eventTarget?: EventTarget | null
+  ): PointerHit | null {
+    return this.pickUiPointerHit(
+      clientX,
+      clientY,
+      ecs,
+      view,
+      camera,
+      PointerEventType.PET_HOVER_ENTER,
+      eventTarget
+    )
   }
 
   private buildDomPointerHit(entity: Entity, camera: THREE.Camera): PointerHit {

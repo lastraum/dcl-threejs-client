@@ -77,6 +77,11 @@ type PointerDeps = {
   /** Interactive scene UI at coords — blocks 3D raycast when over the DOM overlay. */
   pickUiRegionHit?: (clientX: number, clientY: number) => PointerHit | null
   /**
+   * UI entity with PET_HOVER_ENTER under cursor (hit-map). Does not expand world-block;
+   * use alongside pickUiRegionHit for hover enter/leave CRDT.
+   */
+  pickUiHoverHit?: (clientX: number, clientY: number) => PointerHit | null
+  /**
    * Host root this system paints (`scene-ui-root` | `pe-ui-root`).
    * Required so primary does not inject under a PX dialog (dual window listeners).
    */
@@ -794,6 +799,23 @@ export class PointerEventsSystem {
     if (isPointerOverSceneUi(this.screenX, this.screenY)) {
       const uiRegionHit = this.deps.pickUiRegionHit?.(this.screenX, this.screenY)
       if (uiRegionHit) return uiRegionHit
+      // Blocking layer absent but hover PE may still exist under the point (rare).
+      const uiHover = this.deps.pickUiHoverHit?.(this.screenX, this.screenY)
+      if (uiHover) return uiHover
+    } else {
+      // Hit-map hover PE without interactive DOM (hover-only, no BLOCK/down) — do not block world.
+      // Still emit hover when a hover handler is under the cursor via Yoga regions.
+      const uiHover = this.deps.pickUiHoverHit?.(this.screenX, this.screenY)
+      if (uiHover) {
+        // Prefer world if also under a mesh PE; only return UI hover when not over canvas mesh path.
+        // Caller resolveHoverEntity will emit; for PrimaryPointerInfo keep world priority.
+        // Store as lastHit only if world miss:
+        const world = this.pickWorldHitAtPointer()
+        if (!world) return uiHover
+        // World wins for primary; hover still needs UI if pointer is over UI regions.
+        // When both exist and UI is pass-through, mesh hover wins (Explorer 3D priority under PE:none).
+        return world
+      }
     }
     return this.pickWorldHitAtPointer()
   }
@@ -814,6 +836,12 @@ export class PointerEventsSystem {
     const button = InputAction.IA_POINTER
     const state = PointerEventType.PET_HOVER_ENTER
     if (hit.isSceneUi) {
+      // Prefer dedicated hover pick (onMouseEnter) when available — may differ from click handler.
+      const hoverHit = this.deps.pickUiHoverHit?.(this.screenX, this.screenY)
+      if (hoverHit?.isSceneUi) {
+        const hoverSpec = this.uiPointerSpec(hoverHit.entity)
+        if (hasUiPointerEvent(hoverSpec, state, button)) return hoverHit.entity
+      }
       const target = resolveUiPointerResultEntity(
         ecs,
         view,
@@ -824,6 +852,12 @@ export class PointerEventsSystem {
       )
       const spec = this.uiPointerSpec(target)
       return hasUiPointerEvent(spec, state, button) ? target : null
+    }
+    // World hit: still check UI hover on top (Yoga region under cursor) for dual-stack.
+    const uiHover = this.deps.pickUiHoverHit?.(this.screenX, this.screenY)
+    if (uiHover?.isSceneUi) {
+      const hoverSpec = this.uiPointerSpec(uiHover.entity)
+      if (hasUiPointerEvent(hoverSpec, state, button)) return uiHover.entity
     }
     const target = this.resolvePointerResultEntity(hit.entity, button, state)
     const spec = ecs.PointerEvents.getOrNull(target)

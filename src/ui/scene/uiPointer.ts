@@ -77,6 +77,21 @@ export function hasUiPointerDownOrUp(
   })
 }
 
+/** react-ecs onMouseEnter / onMouseLeave — PET_HOVER_ENTER or PET_HOVER_LEAVE. */
+export function hasUiPointerHover(
+  spec: { pointerEvents?: unknown } | null | undefined
+): boolean {
+  const list = normalizePointerEventsList(spec)
+  if (!list.length) return false
+  return list.some((entry) => {
+    const t = entryEventType(entry)
+    return (
+      (t === PointerEventType.PET_HOVER_ENTER || t === PointerEventType.PET_HOVER_LEAVE) &&
+      entryInteractionType(entry) === InteractionType.CURSOR
+    )
+  })
+}
+
 /**
  * Entity blocks scene pointer raycast — pointerFilter BLOCK or onPointerDown/onPointerUp.
  * Hover-only PointerEvents do not block. Optional lookup covers phase-4 mount snapshot lag.

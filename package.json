@@ -14,6 +14,7 @@
     "test:locomotion": "node scripts/test-locomotion-input-modifier.mjs",
     "test:wearable-urns": "node scripts/test-wearable-urns.mjs",
     "test:scene-ui": "node scripts/test-scene-ui-fingerprint.mjs",
+    "test:ui-open-pose": "node scripts/test-ui-open-pose.mjs && node scripts/test-ui-open-pose-ecs.mjs",
     "bump": "npm version patch --no-git-tag-version",
     "release": "node scripts/release.mjs",
     "analytics:server": "node server/analytics.mjs",

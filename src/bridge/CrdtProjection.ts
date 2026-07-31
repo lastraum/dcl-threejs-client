@@ -235,9 +235,14 @@ export class CrdtProjection {
    * (SceneScriptSystem clearLwwSlotsForEntities includes 1062) so a missing PE row
    * after splash click actually drops the catcher — snapshot is PUT-only, not a full
    * component replace of the entity.
+   *
+   * @param opts.pruneMissingPe Only on **full** mount snapshots. Dirty/cooperative rows
+   * often ship UiTransform (scale) without PE (PE unchanged). Treating that as "PE removed"
+   * deleted the close-X / pagination PE → no exit button / dead clicks (oracle 19:46).
    */
   applyWorkerUiMountSnapshot(
-    rows: readonly { entity: Entity; componentId: number; value: unknown }[]
+    rows: readonly { entity: Entity; componentId: number; value: unknown }[],
+    opts?: { pruneMissingPe?: boolean }
   ): void {
     const tsBase = 1_000_000
     let seq = 0
@@ -256,8 +261,9 @@ export class CrdtProjection {
       const value = normalizeUiColorFields(row.componentId, row.value)
       this.storeComponentPut(row.entity, row.componentId, tsBase + ++seq, value)
     }
-    // Belt-and-suspenders: if clearLww skipped PE, drop PE on snapshot UI entities
-    // that no longer ship a PE row (scene removed PointerEvents, entity still mounted).
+    // Full mount only: drop PE when transform is present but PE row is absent (splash dismiss).
+    // Never on partial dirty — that wiped close-X PE while scale/transform kept shipping.
+    if (opts?.pruneMissingPe !== true) return
     const peMap = this.components.get(POINTER_EVENTS_ID)
     const peTs = this.timestamps.get(POINTER_EVENTS_ID)
     if (peMap) {

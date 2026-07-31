@@ -349,6 +349,8 @@ export class MaterialApplier {
 
   needsReapply(entity: number, pb: PbMaterial, root?: THREE.Object3D): boolean {
     if (this.texturesPending(pb, root)) return true
+    // Parent scale.x often lands after first material paint (plaza JUMP IN boards).
+    if (root && primitivePlaneContentFlipStale(root)) return true
     const fp = materialFingerprint(pb)
     if (this.applied.get(entity) === fp) return false
     // Scalar-only materials are fully applied once color/transparency is set.
@@ -380,7 +382,8 @@ export class MaterialApplier {
     }
   }
 
-  private isMaterialApplied(entity: number, pb: PbMaterial): boolean {
+  private isMaterialApplied(entity: number, pb: PbMaterial, root?: THREE.Object3D): boolean {
+    if (root && primitivePlaneContentFlipStale(root)) return false
     const fp = materialFingerprint(pb)
     const stored = this.applied.get(entity)
     if (stored === fp) return true
@@ -394,7 +397,7 @@ export class MaterialApplier {
     const pendingAvatar = this.hasUnresolvedAvatar(pb)
     const pendingTexture = this.hasUnresolvedStaticTexture(pb)
     if (
-      this.isMaterialApplied(entity, pb) &&
+      this.isMaterialApplied(entity, pb, root) &&
       !pendingVideo &&
       !pendingAvatar &&
       !pendingTexture &&
@@ -535,16 +538,26 @@ export class MaterialApplier {
     const marqueeAtlas = !!geo?.userData?.dclTextAlongYBasis
     const isPrimitive = mesh.userData.primitiveMeshKey != null
     const isGltfMod = options?.gltfNodeModifier === true
-    // Map / content orientation:
+    // Content orientation law (all scenes):
     //
-    // • MeshRenderer JUMP IN (wide atlas): content-flip mesh.scale.x (not tall arrows).
-    // • GltfNodeModifiers: no mesh U flip. flipY depends on texture source (below).
+    // • Full-tile MeshRenderer textures (Dead Surge BACK/NEXT pills, UV≈0–1) read L→R
+    //   with docs-order UVs — never content-flip those.
+    // • Plaza JUMP IN is a *wide partial atlas cell* in a sheet; after dclToThree + dual-face
+    //   plane it reads mirrored unless we content-flip mesh.scale.x (atlas-safe). flipTextureU
+    //   is absolute 1−u and samples the wrong atlas column — never use it for primitives.
+    // • Parent scale.x = −1 boards also need content-flip (odd X product on ancestors).
+    // • Tall atlas cells (event arrows) stay unflipped.
+    // • GltfNodeModifiers (full event posters): flipTextureU when UV-mirror XOR world-mirror.
     if (!marqueeAtlas && isPrimitive && !isGltfMod) {
-      const tallAtlas = meshAtlasUvIsTall(mesh)
-      ensureMeshContentFlipX(mesh, !tallAtlas)
-    } else if (isGltfMod && mesh.userData.dclPlaneContentFlipX) {
-      ensureMeshContentFlipX(mesh, false)
+      const wantFlip =
+        objectParentMirrorX(mesh) || meshAtlasUvNeedsContentFlipX(mesh)
+      ensureMeshContentFlipX(mesh, wantFlip)
+    } else if (mesh.userData.dclPlaneContentFlipX) {
+      clearMeshContentFlipX(mesh)
     }
+    const worldMirror = objectWorldMirrorX(mesh)
+    const uvMirror = meshUvMapsUMirroredOnX(mesh)
+    const flipMapU = !marqueeAtlas && isGltfMod && uvMirror !== worldMirror
 
     let texturesOk = true
     let alphaTex: THREE.Texture | null = null
@@ -565,6 +578,7 @@ export class MaterialApplier {
       if (!mainTex) texturesOk = false
       else {
         this.applyUvTransform(mainTex, getTextureDef(mainUnion), prev, mesh)
+        if (flipMapU && mainUnion.tex?.$case === 'texture') flipTextureU(mainTex)
       }
     }
     const alphaUnion = coerceTextureUnion(inner.alphaTexture)
@@ -584,6 +598,7 @@ export class MaterialApplier {
         if (!alphaTex) texturesOk = false
         else {
           this.applyUvTransform(alphaTex, getTextureDef(alphaUnion), prev, mesh)
+          if (flipMapU && alphaUnion.tex?.$case === 'texture') flipTextureU(alphaTex)
         }
       }
     }
@@ -605,6 +620,7 @@ export class MaterialApplier {
           if (!emissiveTex) texturesOk = false
           else if (emissiveTex !== m.map) {
             this.applyUvTransform(emissiveTex, getTextureDef(emissiveUnion), prev, mesh)
+            if (flipMapU && emissiveUnion.tex?.$case === 'texture') flipTextureU(emissiveTex)
           }
         }
       }
@@ -617,6 +633,7 @@ export class MaterialApplier {
         else {
           bumpTex.colorSpace = THREE.LinearSRGBColorSpace
           this.applyUvTransform(bumpTex, getTextureDef(bumpUnion), prev, mesh)
+          if (flipMapU && bumpUnion.tex?.$case === 'texture') flipTextureU(bumpTex)
         }
       }
       // Re-apply after maps land — emissiveIntensity drives flame brightness when albedoColor is absent.
@@ -788,6 +805,8 @@ export class MaterialApplier {
   ): THREE.Texture {
     // Clone so wrap/offset/tiling/tween UV never mutate the AssetCache entry.
     const tex = base.clone()
+    // Clone can inherit userData from a previously flipped instance — start clean.
+    if (tex.userData?.dclMapUFlipped) delete tex.userData.dclMapUFlipped
     tex.wrapS = wrapMode(opts.wrapMode)
     tex.wrapT = wrapMode(opts.wrapMode)
     tex.minFilter =
@@ -947,25 +966,82 @@ function getTextureDef(union?: TextureUnion): TextureDef | undefined {
   return coerced?.tex?.$case === 'texture' ? coerced.tex.texture : undefined
 }
 
-/** Flip mesh local X so atlas UVs stay on-sheet while content reads L→R. */
+/**
+ * Content-flip mesh local X so parent scale.x = −1 cancels for L→R reading while
+ * atlas UV cells stay on-sheet (unlike absolute flipTextureU).
+ */
 function ensureMeshContentFlipX(mesh: THREE.Mesh, wantFlip: boolean): void {
   const has = !!mesh.userData.dclPlaneContentFlipX
   if (has === wantFlip) return
-  // Always flip relative to +1 base so re-applies are stable.
   const mag = Math.abs(mesh.scale.x) < 1e-8 ? 1 : Math.abs(mesh.scale.x)
   mesh.scale.x = wantFlip ? -mag : mag
   mesh.userData.dclPlaneContentFlipX = wantFlip
 }
 
-/** Tall atlas cells (e.g. 64×128 event_menu_arrow) vs wide buttons (JUMP IN). */
-function meshAtlasUvIsTall(mesh: THREE.Mesh): boolean {
+function clearMeshContentFlipX(mesh: THREE.Mesh): void {
+  if (!mesh.userData.dclPlaneContentFlipX) return
+  const mag = Math.abs(mesh.scale.x) < 1e-8 ? 1 : Math.abs(mesh.scale.x)
+  mesh.scale.x = mag
+  mesh.userData.dclPlaneContentFlipX = false
+}
+
+/**
+ * Parent-chain X reflection only (excludes this mesh). Used to decide content-flip so the
+ * mesh's own flip does not oscillate worldMirror detection.
+ * Includes matrixWorld det on the parent so odd reflections without scale.x &lt; 0 still count.
+ */
+function objectParentMirrorX(obj: THREE.Object3D): boolean {
+  let sx = 1
+  let o: THREE.Object3D | null = obj.parent
+  for (let i = 0; i < 48 && o; i++) {
+    sx *= o.scale.x
+    o = o.parent
+  }
+  if (sx < 0) return true
+  const parent = obj.parent
+  if (!parent) return false
+  parent.updateWorldMatrix(true, false)
+  try {
+    return parent.matrixWorld.determinant() < 0
+  } catch {
+    return false
+  }
+}
+
+/**
+ * True when a MeshRenderer plane's content-flip does not match parent mirror / atlas rule.
+ * Transform often lands scale.x = −1 after the first material paint (plaza JUMP IN).
+ */
+export function primitivePlaneContentFlipStale(root: THREE.Object3D): boolean {
+  let stale = false
+  root.traverse((child) => {
+    if (stale || !(child as THREE.Mesh).isMesh) return
+    const mesh = child as THREE.Mesh
+    if (mesh.userData.primitiveMeshKey == null) return
+    if ((mesh.geometry as THREE.BufferGeometry | undefined)?.userData?.dclTextAlongYBasis) return
+    const want =
+      objectParentMirrorX(mesh) || meshAtlasUvNeedsContentFlipX(mesh)
+    const has = !!mesh.userData.dclPlaneContentFlipX
+    if (want !== has) stale = true
+  })
+  return stale
+}
+
+/**
+ * North-face UV spans for dual DCL planes (first 4 verts).
+ * Full-tile buttons (du≈1,dv≈1) must NOT content-flip (Dead Surge BACK/NEXT).
+ * Wide partial atlas cells (JUMP IN in a sheet) need content-flip for L→R.
+ * Tall partial cells (menu arrows) stay unflipped.
+ */
+function meshNorthFaceUvSpans(
+  mesh: THREE.Mesh
+): { du: number; dv: number } | null {
   const uv = mesh.geometry?.getAttribute('uv') as THREE.BufferAttribute | undefined
-  if (!uv || uv.count < 4) return false
+  if (!uv || uv.count < 4) return null
   let umin = Infinity
   let umax = -Infinity
   let vmin = Infinity
   let vmax = -Infinity
-  // North face first (first 4 verts of dual DCL plane).
   const n = Math.min(4, uv.count)
   for (let i = 0; i < n; i++) {
     const u = uv.getX(i)
@@ -977,8 +1053,92 @@ function meshAtlasUvIsTall(mesh: THREE.Mesh): boolean {
   }
   const du = umax - umin
   const dv = vmax - vmin
-  if (du < 1e-6) return false
-  return dv > du * 1.2
+  if (du < 1e-6 && dv < 1e-6) return null
+  return { du, dv }
+}
+
+/** Tall atlas cells (e.g. 64×128 event_menu_arrow). */
+function meshAtlasUvIsTall(mesh: THREE.Mesh): boolean {
+  const spans = meshNorthFaceUvSpans(mesh)
+  if (!spans) return false
+  if (spans.du < 1e-6) return false
+  return spans.dv > spans.du * 1.2
+}
+
+/**
+ * Wide partial atlas cell → content-flip (plaza JUMP IN).
+ * Near-full U and V spans → full texture tile → no flip (Dead Surge pills).
+ */
+function meshAtlasUvNeedsContentFlipX(mesh: THREE.Mesh): boolean {
+  const spans = meshNorthFaceUvSpans(mesh)
+  if (!spans) return false
+  const { du, dv } = spans
+  // Full / near-full texture (both axes) — Dead Surge BACK/NEXT style.
+  if (du >= 0.85 && dv >= 0.85) return false
+  // Tall thin cells (arrows) — never flip.
+  if (meshAtlasUvIsTall(mesh)) return false
+  // Partial atlas on at least one axis, and not tall: JUMP IN / wide buttons in a sheet.
+  if (du >= 0.04 && du < 0.92 && dv >= 0.04) return true
+  return false
+}
+
+/**
+ * True when mesh UVs map spatial −X → higher U than +X (L–R mirrored vs reading order).
+ * Plaza `event_card_thumbnail.glb` is authored this way for Unity LH; Three RH needs a map U flip
+ * unless parent scale.x is already negative (then they cancel).
+ */
+function meshUvMapsUMirroredOnX(mesh: THREE.Mesh): boolean {
+  const pos = mesh.geometry?.getAttribute('position')
+  const uv = mesh.geometry?.getAttribute('uv')
+  if (!pos || !uv || pos.count < 2 || uv.count < 2) return false
+  let minX = Infinity
+  let maxX = -Infinity
+  let uAtMin = 0
+  let uAtMax = 0
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i)
+    if (x < minX) {
+      minX = x
+      uAtMin = uv.getX(i)
+    }
+    if (x > maxX) {
+      maxX = x
+      uAtMax = uv.getX(i)
+    }
+  }
+  if (!(maxX - minX > 1e-5)) return false
+  return uAtMin > uAtMax + 1e-5
+}
+
+/**
+ * Product of local scale.x up the chain including self (for GltfNodeModifiers XOR).
+ * Content-flip flag on primitives is not used on that path.
+ */
+function objectWorldMirrorX(obj: THREE.Object3D): boolean {
+  obj.updateWorldMatrix(true, false)
+  let sx = 1
+  let o: THREE.Object3D | null = obj
+  for (let i = 0; i < 48 && o; i++) {
+    sx *= o.scale.x
+    o = o.parent
+  }
+  if (sx < 0) return true
+  try {
+    return obj.matrixWorld.determinant() < 0
+  } catch {
+    return false
+  }
+}
+
+/** Flip texture U after authored offset/tiling: sample' = 1 − sample. Full textures only. */
+function flipTextureU(tex: THREE.Texture): void {
+  if (tex.userData.dclMapUFlipped) return
+  const rep = tex.repeat.x
+  const off = tex.offset.x
+  tex.repeat.x = -rep
+  tex.offset.x = 1 - off
+  tex.userData.dclMapUFlipped = true
+  tex.needsUpdate = true
 }
 
 /**

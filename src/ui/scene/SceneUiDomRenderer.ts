@@ -384,6 +384,13 @@ export class SceneUiDomRenderer {
     this.purgeStaleDomTreeInternal(input.authoritativeEntities)
     this.purgeDisconnectedNodes()
     this.purgeOrphanHostChildren()
+    // Safety: nothing parked may keep pointer-events (orbit/click steal).
+    for (const el of this.host.querySelectorAll('.scene-ui-node[data-ui-parked="1"]')) {
+      if (!(el instanceof HTMLElement)) continue
+      el.classList.remove('scene-ui-node--interactive')
+      el.style.display = 'none'
+      el.style.pointerEvents = 'none'
+    }
     input.onRegions?.(regions)
   }
 
@@ -481,15 +488,20 @@ export class SceneUiDomRenderer {
       return { parent: this.host, coords: 'canvas' }
     }
     const parentShell = this.nodes.get(parentId as Entity)
-    if (
-      parentShell?.isConnected &&
-      parentShell.dataset.uiUnusable !== '1' &&
-      parentShell.style.display !== 'none'
-    ) {
-      return { parent: parentShell, coords: 'parent' }
+    if (parentShell?.isConnected) {
+      // Parked parents still own kids even with display:none (held under root; park ≠ unmount).
+      if (parentShell.dataset.uiParked === '1') {
+        return { parent: parentShell, coords: 'parent' }
+      }
+      // Live parents only — refuse collapsed/unusable/hidden (prevents icon scatter).
+      if (
+        parentShell.style.display !== 'none' &&
+        parentShell.dataset.uiUnusable !== '1'
+      ) {
+        return { parent: parentShell, coords: 'parent' }
+      }
     }
-    // Parent missing/hidden/unusable — do not paint orphans at canvas abs (that scatters
-    // shop icons). Caller still hides 0×0 subtrees; this is for late parent create order.
+    // Parent missing / true collapse — do not paint orphans at canvas abs (scatters shop icons).
     return { parent: this.host, coords: 'canvas' }
   }
 
@@ -585,9 +597,9 @@ export class SceneUiDomRenderer {
     const borders = borderCss(transform, scale)
     const radius = borderRadiusCss(transform, scale)
     const layoutBox = input.layoutBoxes.get(entity)
-    // Fully outside the virtual canvas — hide (HUD parks + dual-root content still at left≥1920).
-    // COD: paint ECS pose only when on-canvas. Worker large-modal flush unparks before snapshot;
-    // do not special-case "paint off-canvas modals" (that + shell-suppress blanked inventory).
+    // Fully outside the virtual canvas — PARK (pose), not unmount.
+    // Dual-root shop content @ left≥1920 / HUD parks: still mounted, still under #scene-ui-root
+    // (or ECS parent). Keep Yoga geometry; no PE hits; never releaseNode.
     const vw = input.virtual.width
     const vh = input.virtual.height
     const fullyOff =
@@ -597,20 +609,13 @@ export class SceneUiDomRenderer {
         layoutBox.left + layoutBox.width <= 1 ||
         layoutBox.top + layoutBox.height <= 1)
     if (layoutBox && fullyOff) {
-      this.applyHiddenDomState(shell)
-      shell.dataset.uiUnusable = '1'
-      const hideOff = (e: Entity): void => {
-        for (const child of input.forest.get(e) ?? []) {
-          visited.add(child)
-          const node = this.nodes.get(child)
-          if (node) {
-            this.applyHiddenDomState(node)
-            node.dataset.uiUnusable = '1'
-          }
-          hideOff(child)
-        }
-      }
-      hideOff(entity)
+      // Park ≠ unmount. Off virtual canvas (dual-root / below fold / HUD) — hold pose, no PE.
+      // Worker open-settle must refuse ready until content is on-canvas (uiOpenPose).
+      // Main does not invent on-canvas paint for off-canvas Yoga boxes.
+      applyYogaLayoutBox(shell, layoutBox, scale, coords, false)
+      applyUiTransformContentStyles(el, transform, scale)
+      this.applyParkedDomState(shell)
+      this.inertParkedDescendants(entity, input, alive, visited)
       return
     }
     if (!layoutBox || layoutBox.width <= 0.5 || layoutBox.height <= 0.5) {
@@ -660,8 +665,10 @@ export class SceneUiDomRenderer {
     // Recovered a real box — clear progressive 0×0 streak so reopen doesn't false-sticky.
     yogaZeroBoxStreak.delete(entity as number)
     const wasUnusable = shell.dataset.uiUnusable === '1'
+    const wasParked = shell.dataset.uiParked === '1'
     delete shell.dataset.uiUnusable
-    // Undo applyHiddenDomState — display:none stuck after prior hide left dead shells
+    delete shell.dataset.uiParked
+    // Undo hide/park — display:none stuck after prior hide left dead shells
     // (how-to-play scale 6×6 → full: pagination/close stayed hidden without this).
     shell.style.display = 'block'
     shell.style.visibility = 'visible'
@@ -682,8 +689,9 @@ export class SceneUiDomRenderer {
     shell.removeAttribute('aria-hidden')
     shell.style.pointerEvents = ''
     shell.removeAttribute('inert')
-    // Scale reopen: force texture re-apply (bg sig early-out left blank pagination/close icons).
-    if (wasUnusable) {
+    // Scale reopen / unpark: force texture re-apply (bg sig early-out left blank icons).
+    // Page-flip blank cells: applyUiBackgroundStyles stale-seal recovery (sig + no paint surface).
+    if (wasUnusable || wasParked) {
       delete el.dataset.dclUiBgSig
       el.querySelectorAll('[data-dcl-ui-bg-sig], .scene-ui-node__bg, .scene-ui-node__bg-img').forEach(
         (node) => {
@@ -729,24 +737,14 @@ export class SceneUiDomRenderer {
       input.forest
     )
 
-    // Clip modal chrome so absolute children don't spill across the plaza.
-    // Slot cells (≈110×110): allow slight overflow for selection rings, but still clip
-    // when the scene authors overflow:hidden. Mid panels (grid, detail ≥120) clip so
-    // NEW banners / icons stay inside their cell stacking context.
-    // Don't force-clip small text-only chrome (title bars / icon buttons).
-    const hasTextOnlyChrome = !!text?.value?.trim() && !bg && !interactive
+    // Clip only from authored overflow + radius (COD — no invent clip from panel size).
     const clipShell =
       !!radius ||
       transform.overflow === YGOverflow.HIDDEN ||
-      transform.overflow === YGOverflow.SCROLL ||
-      (layoutBox.width >= 120 && layoutBox.height >= 120 && !hasTextOnlyChrome)
+      transform.overflow === YGOverflow.SCROLL
 
-    const compactControl =
-      layoutBox.width < 500 &&
-      layoutBox.height < 160 &&
-      (!!bg || interactive || borders.width !== '')
     if (text?.value?.trim()) {
-      if (compactControl || interactive) {
+      if (interactive) {
         el.style.alignItems = flex.alignItems
         el.style.justifyContent = flex.justifyContent
       } else {
@@ -823,9 +821,9 @@ export class SceneUiDomRenderer {
         label.dataset.dclUiText = html
         label.innerHTML = html
       }
-      // Buttons / compact chrome: keep labels on one line (Admin Tools "Stream", "Play action").
-      const preferSingleLine = compactControl || interactive
-      applyUiTextStyles(label, text, scale, preferSingleLine)
+      // COD: wrap from authored textWrap only (default TW_WRAP). Never invent nowrap from
+      // char count / panel size (plainLen / compactControl kill-list).
+      applyUiTextStyles(label, text, scale, false)
       if (!span) el.appendChild(label)
       el.querySelector('.scene-ui-node__input')?.remove()
       el.querySelector('.scene-ui-node__select')?.remove()
@@ -986,6 +984,10 @@ export class SceneUiDomRenderer {
     }
   }
 
+  /**
+   * ECS display:none / opacity hide — still mounted, node may remain in pool.
+   * Clears transform (no pose to hold). Not for dual-root park (use applyParkedDomState).
+   */
   private applyHiddenDomState(shell: HTMLElement): void {
     shell.classList.remove('scene-ui-node--interactive')
     shell.style.display = 'none'
@@ -995,6 +997,56 @@ export class SceneUiDomRenderer {
     shell.style.transform = ''
     shell.setAttribute('inert', '')
     shell.setAttribute('aria-hidden', 'true')
+    delete shell.dataset.uiParked
+  }
+
+  /**
+   * Off-canvas PARK — entity stays mounted under root/parent (park ≠ unmount).
+   * Yoga pose is applied by caller first, then we inert the shell.
+   *
+   * MUST use display:none (not visibility:hidden alone): children with
+   * pointer-events:auto under a pe:none parent still steal canvas orbit/click.
+   * Nodes remain in the DOM tree under their ECS parent — held, not released.
+   */
+  private applyParkedDomState(shell: HTMLElement): void {
+    shell.classList.remove('scene-ui-node--interactive')
+    shell.style.display = 'none'
+    shell.style.visibility = 'hidden'
+    shell.style.pointerEvents = 'none'
+    shell.style.cursor = ''
+    shell.setAttribute('inert', '')
+    shell.setAttribute('aria-hidden', 'true')
+    // Park ≠ unusable: unusable is missing/0×0 Yoga only. Sticky recovery must not
+    // treat dual-root park as collapsed chrome (COD hide/park/unmount split).
+    shell.dataset.uiParked = '1'
+    delete shell.dataset.uiUnusable
+    // Prior paint may have left --interactive descendants; force inert whole subtree.
+    for (const node of shell.querySelectorAll('.scene-ui-node')) {
+      if (!(node instanceof HTMLElement)) continue
+      node.classList.remove('scene-ui-node--interactive')
+      node.style.pointerEvents = 'none'
+      node.style.cursor = ''
+      if (node.dataset.uiParked === '1') delete node.dataset.uiUnusable
+    }
+  }
+
+  /**
+   * Mark parked descendants visited + inert any existing DOM. Never getOrCreate here —
+   * materializing full off-canvas trees froze the main thread (no click/orbit).
+   */
+  private inertParkedDescendants(
+    entity: Entity,
+    input: SceneUiDrawInput,
+    alive: ReadonlySet<Entity>,
+    visited: Set<Entity>
+  ): void {
+    for (const child of input.forest.get(entity) ?? []) {
+      if (!alive.has(child) || !input.mountedEntities.has(child)) continue
+      visited.add(child)
+      const node = this.nodes.get(child)
+      if (node) this.applyParkedDomState(node)
+      this.inertParkedDescendants(child, input, alive, visited)
+    }
   }
 
   /**

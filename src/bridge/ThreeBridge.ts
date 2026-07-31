@@ -9,7 +9,12 @@ import {
   primitiveMeshKey,
   updatePlaneGeometryUvs
 } from './primitiveShapes'
-import { MaterialApplier, mirrorGeometryUInPlace, type PbMaterial } from './material/MaterialApplier'
+import {
+  MaterialApplier,
+  mirrorGeometryUInPlace,
+  primitivePlaneContentFlipStale,
+  type PbMaterial
+} from './material/MaterialApplier'
 import type { AssetCache } from '../rendering/AssetCache'
 import { prefetchSceneManifestAssets } from '../rendering/AssetCache'
 import type { ResolvedScene } from '../dcl/content/types'
@@ -1353,17 +1358,21 @@ export class ThreeBridge {
         this.pendingGltfNodeModEntities.add(entity)
       }
     }
-    // Re-apply event-card materials when Transform.scale.x lands after first paint
-    // (JUMP IN / thumbnails otherwise stay L–R mirrored).
+    // Re-apply materials when Transform.scale.x lands after first paint
+    // (plaza JUMP IN MeshRenderer + GltfNodeModifiers event cards).
+    //
+    // Critical: board root often gets scale.x = −1 while JUMP IN is a *child*
+    // MeshRenderer. Only checking the upserted entity missed the button forever.
     for (const entity of applied.upserts) {
-      if (!GltfNodeModifiers.has(entity)) continue
-      if (this.pendingGltfNodeModEntities.has(entity)) continue
       const obj = this.store.nodes.get(entity)
       if (!obj) continue
-      const mods = GltfNodeModifiers.get(entity) as PBGltfNodeModifiers
-      if (gltfNodeModifiersMirrorStale(obj, mods)) {
-        this.pendingGltfNodeModEntities.add(entity)
+      if (GltfNodeModifiers.has(entity) && !this.pendingGltfNodeModEntities.has(entity)) {
+        const mods = GltfNodeModifiers.get(entity) as PBGltfNodeModifiers
+        if (gltfNodeModifiersMirrorStale(obj, mods)) {
+          this.pendingGltfNodeModEntities.add(entity)
+        }
       }
+      this.queueStalePlaneContentFlipUnder(obj)
     }
 
     // Cap UV pass — mass meshDirty (3k+) must not walk every entity every frame.
@@ -1672,6 +1681,29 @@ export class ThreeBridge {
   /** Queue GltfNodeModifiers apply (called from projection diff / video ready). */
   queueGltfNodeModifiers(entity: Entity): void {
     this.pendingGltfNodeModEntities.add(entity)
+  }
+
+  /**
+   * Parent board Transform.scale.x = −1 often lands on an ancestor after JUMP IN materials
+   * already painted. Walk the upserted node subtree for MeshRenderer primitives and
+   * re-queue material when content-flip is stale.
+   */
+  private queueStalePlaneContentFlipUnder(root: THREE.Object3D): void {
+    const { Material, MeshRenderer } = this.ecs
+    root.traverse((child) => {
+      if (!(child as THREE.Mesh).isMesh) return
+      const mesh = child as THREE.Mesh
+      if (mesh.userData.primitiveMeshKey == null) return
+      const name = mesh.name
+      if (typeof name !== 'string' || !name.startsWith('__mesh_')) return
+      const id = Number(name.slice('__mesh_'.length))
+      if (!Number.isFinite(id)) return
+      const entity = id as Entity
+      if (!Material.has(entity) || !MeshRenderer.has(entity)) return
+      if (this.pendingMaterialEntities.has(entity)) return
+      if (!primitivePlaneContentFlipStale(mesh)) return
+      this.pendingMaterialEntities.add(entity)
+    })
   }
 
   private async runGltfNodeModifiersPass(

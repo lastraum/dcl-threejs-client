@@ -13,9 +13,9 @@ import {
 import type { CommunityDetail, CommunityListRow } from '../../../social/types'
 import type { CommunityFollowController } from '../../../social/CommunityFollowController'
 import {
-  fetchActiveCommunityVoiceChats,
-  type ActiveCommunityVoiceChat
-} from '../../../network/gatekeeper/communityVoice'
+  communityVoiceUpdatesBus,
+  type CommunityVoiceActiveEntry
+} from '../../../social/communityVoiceUpdatesBus'
 import { followTargetLabel } from '../../../social/communityFollowWire'
 import type { RouteTarget } from '../../../dcl/content/route'
 
@@ -33,7 +33,6 @@ export type CommunitiesBrowseViewOptions = {
 }
 
 const SEARCH_DEBOUNCE_MS = 280
-const ACTIVE_VOICE_POLL_MS = 45_000
 
 function escapeHtml(value: string): string {
   return value
@@ -88,6 +87,7 @@ export class CommunitiesBrowseView {
   private readonly activeToursRow: HTMLElement
   private readonly communityModal: CommunityModal
   private readonly getAuthIdentity?: () => AuthIdentity | null
+  private readonly getUserAddress?: () => string | null
   private readonly getFollow?: () => CommunityFollowController | null
   private readonly onBrowseCount?: (total: number) => void
   private readonly onJoinedCommunity?: (community: CommunityListRow) => void
@@ -97,15 +97,16 @@ export class CommunitiesBrowseView {
   private searchQuery = ''
   private searchDebounced = ''
   private searchTimer = 0
-  private voicePollTimer = 0
   private loadGen = 0
   private disposed = false
   private joiningId: string | null = null
   private unsubFollow: (() => void) | null = null
-  private activeVoice: ActiveCommunityVoiceChat[] = []
+  private unsubVoiceBus: (() => void) | null = null
+  private activeVoice: CommunityVoiceActiveEntry[] = []
 
   constructor(opts: CommunitiesBrowseViewOptions = {}) {
     this.getAuthIdentity = opts.getAuthIdentity
+    this.getUserAddress = opts.getUserAddress
     this.getFollow = opts.getFollow
     this.onBrowseCount = opts.onBrowseCount
     this.onJoinedCommunity = opts.onJoinedCommunity
@@ -201,8 +202,7 @@ export class CommunitiesBrowseView {
     this.communityModal.mount()
     void this.loadMine()
     void this.loadBrowse()
-    void this.refreshActiveVoice()
-    this.voicePollTimer = window.setInterval(() => void this.refreshActiveVoice(), ACTIVE_VOICE_POLL_MS)
+    this.wireVoiceLive()
     this.wireFollowLive()
     this.renderActiveTours()
   }
@@ -210,12 +210,27 @@ export class CommunitiesBrowseView {
   dispose(): void {
     this.disposed = true
     window.clearTimeout(this.searchTimer)
-    if (this.voicePollTimer) window.clearInterval(this.voicePollTimer)
-    this.voicePollTimer = 0
+    this.unsubVoiceBus?.()
+    this.unsubVoiceBus = null
     this.unsubFollow?.()
     this.unsubFollow = null
     this.communityModal.dispose()
     this.root.remove()
+  }
+
+  /** Social WS + PM LiveKit bus — no REST polling. Seed once; live STARTED/ENDED after. */
+  private wireVoiceLive(): void {
+    this.unsubVoiceBus?.()
+    const identity = this.getAuthIdentity?.() ?? null
+    const wallet = this.getUserAddress?.() ?? null
+    communityVoiceUpdatesBus.ensureStarted(identity, wallet)
+    this.activeVoice = communityVoiceUpdatesBus.getActive()
+    this.renderActiveVoice()
+    this.unsubVoiceBus = communityVoiceUpdatesBus.subscribe(() => {
+      if (this.disposed) return
+      this.activeVoice = communityVoiceUpdatesBus.getActive()
+      this.renderActiveVoice()
+    })
   }
 
   private wireFollowLive(): void {
@@ -309,22 +324,6 @@ export class CommunitiesBrowseView {
     }
   }
 
-  private async refreshActiveVoice(): Promise<void> {
-    const identity = this.getAuthIdentity?.() ?? null
-    if (!identity) {
-      this.activeVoice = []
-      this.renderActiveVoice()
-      return
-    }
-    try {
-      this.activeVoice = await fetchActiveCommunityVoiceChats(identity)
-    } catch {
-      this.activeVoice = []
-    }
-    if (this.disposed) return
-    this.renderActiveVoice()
-  }
-
   private renderActiveVoice(): void {
     if (this.activeVoice.length === 0) {
       this.activeVoiceSection.hidden = true
@@ -348,7 +347,7 @@ export class CommunitiesBrowseView {
         const people = v.participantCount > 0 ? `${v.participantCount} live` : 'Live'
         return `
           <button type="button" class="communities-browse-view__live-chip" role="listitem"
-            data-live-voice-id="${escapeHtml(v.communityId)}" title="Open ${escapeHtml(name)}">
+            data-live-voice-id="${escapeHtml(v.communityId)}" title="Open ${escapeHtml(name)} voice">
             <span class="communities-browse-view__live-chip-media">
               ${
                 thumb

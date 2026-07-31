@@ -2,9 +2,8 @@ import * as THREE from 'three'
 import type { AssetCache } from '../../rendering/AssetCache'
 import { renderQuality } from '../../rendering/RenderQualitySettings'
 import type { ResolvedScene } from '../content/types'
-import { EMPTY_LAND } from '../landscape/Data/EmptyLandCatalog'
-import { buildInstancedGroundTiles } from '../landscape/gltfInstancing'
 import { parseParcelKey } from '../content/parseParcel'
+import { buildGenesisCityEmptyPlane } from './genesisEmptyPlane'
 import { buildCompositeVisualGroup } from './compositeVisuals'
 import {
   buildPointerOwnershipMap,
@@ -18,8 +17,7 @@ import {
   distanceToParcelCenterM,
   minSceneFootprintDistanceM,
   parcelsInLoadRadius,
-  parcelsNearFootprint,
-  parcelSwSceneLocal
+  parcelsNearFootprint
 } from './parcelAoi'
 import type { PhysicsColliderDesc } from '../../physics/PhysXWorld'
 import {
@@ -42,7 +40,9 @@ import {
   aoiLiveSecondariesOnly,
   COMPOSITE_MAX_RETAINED,
   compositeMaxGltfsForDistance,
+  EMPTY_LAND_PHYS_RADIUS_M,
   ROAD_PHYS_RADIUS_M,
+  secondaryLiveCap,
   secondaryLiveRadiusM
 } from '../multiScene/caps'
 
@@ -54,6 +54,52 @@ const FF_MAX_VISIBLE = 3
  * Oldest hidden groups are disposed when over this cap.
  */
 const FF_MAX_RETAINED = 6
+
+/**
+ * Empty prop scatter (trees/rocks/grass) is **sticky**:
+ * - Load vacant parcels inside Scene Distance on initial / prewarm load.
+ * - Walking only **adds** newly entered vacant parcels (never remesh old ones).
+ * - Leave-ring → **hide** (LOD), not dispose.
+ * - Dispose mesh + PhysX only when player is > SCATTER_PURGE_M away.
+ */
+/** Hide scatter layers beyond this (keep in memory + PhysX until purge). */
+const SCATTER_LOD_HIDE_M = 160
+/** Hard unload mesh + colliders — huge walk / teleport only. */
+const SCATTER_PURGE_M = 1000
+/** Cap new parcels meshed per drain tick (first ring fill is uncapped). */
+const SCATTER_ADD_PER_REFRESH = 48
+/**
+ * Coalesce multi-parcel sprints. Full rediscover only when the warm ring
+ * actually needs new work — not every 16m step.
+ */
+const REFRESH_DEBOUNCE_MS = 600
+/**
+ * Min player move (meters) since last full discover before walking can re-discover.
+ * ~8 parcels — brief walks must not re-scan 500 pointers.
+ */
+const DISCOVER_MIN_MOVE_M = 128
+/** Composites to load per drain tick (true settle only). */
+const COMPOSITE_LOAD_PER_DRAIN = 1
+/** Skip composite shells farther than this (was loading Grill Master @ 200m+ mid-walk). */
+const COMPOSITE_MAX_DIST_M = 80
+/** Feet move (m²) that counts as locomotion. */
+const WALK_MOVE_EPS2 = 0.04 // ~0.2m
+/**
+ * True settle: no feet motion for this long before ANY heavy AOI work
+ * (scatter drain, composite GLB, live-secondary emit). 350ms was too short —
+ * brief walk pauses set walk=0 and thrashed discover+drain.
+ */
+const WALK_IDLE_MS = 2000
+
+type StickyScatterLayer = {
+  id: number
+  root: THREE.Group
+  colliders: PhysicsColliderDesc[]
+  parcelKeys: string[]
+  /** DCL scene-local meters (for distance LOD / purge). */
+  centerX: number
+  centerZ: number
+}
 
 /**
  * Neighbor scene meshes (composite GLBs + first-frame) + live-secondary candidates.
@@ -71,6 +117,8 @@ export type AoiVisualLayerContext = {
   /** Sync empty-land tree/rock simple box colliders into PhysX. */
   syncEmptyLandColliders?: (descs: PhysicsColliderDesc[]) => void
   clearEmptyLandColliders?: () => void
+  /** Force-remove sticky scatter colliders after >1km purge (works post-seal). */
+  purgeEmptyLandColliders?: (entityIds: number[]) => void
   /**
    * Inner-ring secondary candidates for live workers (MultiSceneRuntime).
    * Called after each AOI refresh; does not start workers itself.
@@ -91,7 +139,8 @@ export type AoiVisualLayerContext = {
 
 /**
  * Phase A2+ — coords-only AOI (radius = user Scene Distance warm band):
- * - Empty layer: instanced blank ground + trees/bushes on vacant parcels
+ * - Empty layer: **one Genesis City empty plane** + **sticky** trees/rocks/grass
+ *   (load once in Scene Distance, add on walk, hide LOD, purge only >1km)
  * - Genesis roads via **Explorer catalog + OriginalAssets FBX** (tile + street
  *   furniture), not runtime SDK6 game.js
  * - Neighbor main.composite GLBs (render-only, no colliders / anim) — **tertiary**
@@ -102,7 +151,21 @@ export type AoiVisualLayerContext = {
 export class AoiVisualLayer {
   private root = new THREE.Group()
   private blankRoot: THREE.Object3D | null = null
-  private scatterRoot: THREE.Object3D | null = null
+  /** Primary base the city empty plane is centered on — rebuild on retarget. */
+  private blankPlaneBase = ''
+  /** Parent for sticky scatter layers (never rebuilt as a whole). */
+  private readonly scatterRoot = new THREE.Group()
+  private readonly scatterLayers: StickyScatterLayer[] = []
+  /** Vacant parcels already meshed — never rebuild, only hide/purge. */
+  private readonly loadedScatterParcels = new Set<string>()
+  /**
+   * Outstanding vacant parcels still needing scatter mesh.
+   * Stand-still only runs work while this (or composite queue) is non-empty.
+   */
+  private readonly pendingScatterParcels = new Set<string>()
+  private scatterLayerSeq = 0
+  /** Entity ids with composite wanted but not yet loaded (drain while standing). */
+  private readonly pendingCompositeIds = new Set<string>()
   private compositeRoot = new THREE.Group()
   private roadRoot = new THREE.Group()
   private firstFrameRoot = new THREE.Group()
@@ -112,11 +175,41 @@ export class AoiVisualLayer {
   private refreshGen = 0
   private lastParcelKey = ''
   private lastRadius = -1
-  private lastRefreshAt = 0
+  /** Player feet at last full ring discover (DCL scene-local). */
+  private lastDiscoverFeet = { x: Number.NaN, z: Number.NaN }
+  private lastDiscoverRadius = -1
+  /** True after first successful full discover for this bind. */
+  private hasDiscoveredOnce = false
+  /** Pending debounced full refresh while walking across parcels. */
+  private refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null
+  private pendingRefresh: { dclX: number; dclZ: number; radiusM: number } | null = null
+  private lastDrainAt = 0
+  private drainInFlight = false
+  private lastFeetSample = { x: Number.NaN, z: Number.NaN }
+  private lastFeetMoveAt = 0
+  /** Empty-land PhysX ids currently registered (near-player subset only). */
+  private lastNearEmptyLandIds = new Set<number>()
+  private lastEmptyLandPhysFeet = { x: Number.NaN, z: Number.NaN }
+  /**
+   * Background prewarm drain (forceUncapped) — MUST stop at play-ready.
+   * Leaving this true was the “still draining while I walk” bug: load continued
+   * after Jump In and ignored the settle gate.
+   */
+  private prewarmActive = false
+  private prewarmGen = 0
+  /** One-shot drain permission for force refresh (promote), not continuous. */
+  private allowDrainOnce = false
   private readonly loadedCompositeIds = new Set<string>()
   private readonly loadedRoadIds = new Set<string>()
   /** Sorted parcel keys currently baked into the instanced road layer. */
   private roadParcelSignature = ''
+  /** Last live-secondary candidate id list (avoid spam + reconcile churn when identical). */
+  private lastLiveCandidateSignature = ''
+  /** Cached after last discovery — composite drain without re-fetch. */
+  private cachedEntities: ActiveSceneEntity[] = []
+  private cachedPrimaryId = ''
+  private cachedPrimaryBase = ''
+  private cachedPointerSet = new Set<string>()
   /** entityId → first-frame visual group (may be hidden for LOD retain). */
   private readonly firstFrameGroups = new Map<string, THREE.Group>()
   /** Last time the group was wanted in the inner ring (LRU for eviction). */
@@ -145,9 +238,11 @@ export class AoiVisualLayer {
 
   constructor() {
     this.root.name = 'aoi-visual-layer'
+    this.scatterRoot.name = 'aoi-empty-scatter-sticky'
     this.compositeRoot.name = 'aoi-composite-secondaries'
     this.roadRoot.name = 'aoi-road-tiles'
     this.firstFrameRoot.name = 'aoi-first-frame-secondaries'
+    this.root.add(this.scatterRoot)
     this.root.add(this.roadRoot)
     this.root.add(this.compositeRoot)
     this.root.add(this.firstFrameRoot)
@@ -201,30 +296,99 @@ export class AoiVisualLayer {
     this.liveReconcileEnabled = enabled
     if (enabled) {
       console.info('[aoi] neighbor activity ON (primary play-ready — visuals + live)')
-      // Force refresh next update so ring fills after boot gate lifts.
-      this.lastParcelKey = ''
-      this.lastRefreshAt = 0
+      // Kill background prewarm force-drain — it was still meshing after Jump In.
+      this.cancelPrewarm('play-ready')
+      // Prefer re-emit from prewarm cache (no 550-parcel rediscover hitch at unlock).
+      if (this.hasDiscoveredOnce && this.cachedEntities.length > 0) {
+        this.emitLiveSecondaryCandidatesOnly(
+          this.cachedEntities,
+          this.cachedPrimaryId,
+          this.cachedPrimaryBase || this.ctx?.scene.baseParcel || '0,0',
+          this.lastDiscoverFeet.x || 0,
+          this.lastDiscoverFeet.z || 0,
+          this.cachedPointerSet
+        )
+      } else {
+        this.hasDiscoveredOnce = false
+        this.lastParcelKey = ''
+      }
     } else {
       console.info('[aoi] neighbor activity OFF (primary booting)')
     }
   }
 
+  /** Abort in-flight prewarm drain loop (play-ready / unbind / dispose). */
+  private cancelPrewarm(reason: string): void {
+    if (!this.prewarmActive && this.prewarmGen === 0) return
+    const was = this.prewarmActive
+    this.prewarmGen++
+    this.prewarmActive = false
+    if (was) {
+      console.info(
+        `[aoi] prewarm cancelled (${reason}) — no more force-drain; ` +
+          `pendingScatter=${this.pendingScatterParcels.size} pendingComposite=${this.pendingCompositeIds.size}`
+      )
+    }
+  }
+
   /**
-   * Loading-phase warm: fill default ground + roads + empty scatter + composites
-   * for Scene Distance **before** play-ready. Live secondary workers stay off
-   * until {@link setNeighborActivityEnabled}(true).
+   * Loading-phase warm: city plane + full warm-band scatter + composite shells
+   * **before** play-ready. Live secondary **workers** stay off (capped + expensive).
+   * Awaits until scatter queue is empty so play does not drain trees mid-walk.
    */
   prewarmVisuals(dclX: number, dclZ: number): void {
     if (this.disposed || !this.enabled || !this.ctx) return
     this.neighborActivityEnabled = true
     this.liveReconcileEnabled = false
     this.lastParcelKey = ''
-    this.lastRefreshAt = 0
+    const radius = renderQuality.getSceneLoadRadiusM()
+    const gen = ++this.prewarmGen
+    this.prewarmActive = true
     console.info(
       `[aoi] prewarm visuals @ feet=(${dclX.toFixed(1)},${dclZ.toFixed(1)}) ` +
-        `radius=${renderQuality.getSceneLoadRadiusM()}m (live workers still gated)`
+        `radius=${radius}m (live workers gated — drain only while prewarmActive)`
     )
-    void this.refresh(dclX, dclZ, renderQuality.getSceneLoadRadiusM())
+    void this.runPrewarm(dclX, dclZ, radius, gen)
+  }
+
+  private async runPrewarm(
+    dclX: number,
+    dclZ: number,
+    radiusM: number,
+    gen: number
+  ): Promise<void> {
+    if (!this.prewarmActive || gen !== this.prewarmGen) return
+    this.allowDrainOnce = true
+    await this.refresh(dclX, dclZ, radiusM, 'full')
+    if (!this.prewarmActive || gen !== this.prewarmGen || this.disposed) return
+
+    // Drain only while still in loading (prewarmActive). Play-ready cancels this.
+    let guard = 0
+    while (
+      this.prewarmActive &&
+      gen === this.prewarmGen &&
+      !this.disposed &&
+      this.ctx &&
+      (this.pendingScatterParcels.size > 0 || this.pendingCompositeIds.size > 0) &&
+      guard++ < 80
+    ) {
+      await this.drainOutstandingWork(
+        dclX,
+        dclZ,
+        this.refreshGen,
+        /*forceUncapped*/ true,
+        /*allow*/ true
+      )
+    }
+
+    if (gen !== this.prewarmGen) return // cancelled mid-loop
+    this.prewarmActive = false
+    console.info(
+      `[aoi] prewarm complete scatter=${this.loadedScatterParcels.size} ` +
+        `pendingScatter=${this.pendingScatterParcels.size} ` +
+        `composites=${this.loadedCompositeIds.size} ` +
+        `pendingComposite=${this.pendingCompositeIds.size}`
+    )
   }
 
   /**
@@ -245,10 +409,10 @@ export class AoiVisualLayer {
     this.primaryIsEmpty = !scene.entityId?.trim() && !scene.mainEntry?.trim()
     this.primaryParcelSet.clear()
     for (const p of scene.parcels) this.primaryParcelSet.add(p)
-    // Keep composites/roads/scatter; force refresh under new primary + feet.
+    // Keep composites/roads; force full rediscover under new primary + feet.
     this.lastParcelKey = ''
     this.lastRadius = -1
-    this.lastRefreshAt = 0
+    this.hasDiscoveredOnce = false
     this.neighborActivityEnabled = true
     // Live worker reconcile stays off until settle (caller enables via setNeighborActivityEnabled).
     this.liveReconcileEnabled = false
@@ -259,7 +423,11 @@ export class AoiVisualLayer {
       `[aoi] retarget primary “${scene.title}” base=${scene.baseParcel} ` +
         `(preserve tertiary — no unbind wipe)`
     )
-    void this.refresh(dclX, dclZ, renderQuality.getSceneLoadRadiusM())
+    // Base parcel moved — city plane + scatter must re-anchor.
+    this.blankPlaneBase = ''
+    this.clearScatter()
+    this.lastLiveCandidateSignature = ''
+    void this.refresh(dclX, dclZ, renderQuality.getSceneLoadRadiusM(), 'full')
   }
 
   /** Call after primary scene is known — coords only. */
@@ -298,6 +466,7 @@ export class AoiVisualLayer {
 
   unbind(): void {
     this.refreshGen++
+    this.clearRefreshDebounce()
     this.clearBlank()
     this.clearScatter()
     this.compositeRoot.clear()
@@ -306,6 +475,23 @@ export class AoiVisualLayer {
     this.loadedCompositeIds.clear()
     this.loadedRoadIds.clear()
     this.roadParcelSignature = ''
+    this.lastLiveCandidateSignature = ''
+    this.pendingScatterParcels.clear()
+    this.pendingCompositeIds.clear()
+    this.cachedEntities = []
+    this.cachedPointerSet.clear()
+    this.hasDiscoveredOnce = false
+    this.lastDiscoverFeet = { x: Number.NaN, z: Number.NaN }
+    this.lastDiscoverRadius = -1
+    this.lastFeetSample = { x: Number.NaN, z: Number.NaN }
+    this.lastFeetMoveAt = 0
+    this.drainInFlight = false
+    this.cancelPrewarm('unbind')
+    this.allowDrainOnce = false
+    this.neighborActivityEnabled = false
+    this.liveReconcileEnabled = false
+    this.lastParcelKey = ''
+    this.lastRadius = -1
     this.liveSecondaryIds.clear()
     this.residentParcelSet.clear()
     this.primaryParcelSet.clear()
@@ -323,26 +509,31 @@ export class AoiVisualLayer {
   }
 
   /**
-   * Throttled refresh from player feet (scene-local DCL meters).
-   * No-op for worlds / radius 0 / until neighbor activity enabled.
+   * AOI tick from player feet (scene-local DCL meters).
+   *
+   * Heavy work (discover drain / composites / live-secondary emit) only after
+   * **true settle** ({@link WALK_IDLE_MS} with no feet motion). Walking is LOD-only.
    */
   update(dclX: number, dclZ: number, force = false): void {
     if (this.disposed || !this.enabled || !this.ctx) return
     if (!this.neighborActivityEnabled && !force) return
     const radius = renderQuality.getSceneLoadRadiusM()
+
     if (radius <= 0) {
+      this.clearRefreshDebounce()
       if (this.lastRadius !== 0) {
         this.clearBlank()
         this.clearScatter()
-            this.compositeRoot.clear()
+        this.compositeRoot.clear()
         this.clearRoads()
         this.clearFirstFrameGroups()
         this.loadedCompositeIds.clear()
         this.loadedRoadIds.clear()
         this.roadParcelSignature = ''
+        this.pendingCompositeIds.clear()
         this.firstFrameSampler.reset()
         this.lastRadius = 0
-        // Empty primary still needs local blank+scatter even at radius 0.
+        this.hasDiscoveredOnce = false
         if (this.primaryIsEmpty) void this.refreshEmptyPrimaryOnly()
       } else if (this.primaryIsEmpty && !this.blankRoot) {
         void this.refreshEmptyPrimaryOnly()
@@ -359,19 +550,189 @@ export class AoiVisualLayer {
     const now = performance.now()
     const movedParcel = parcelKey !== this.lastParcelKey
     const radiusChanged = radius !== this.lastRadius
-    // 5s stand-still throttle — pointer cache absorbs most work; still refresh on parcel change.
-    if (!force && !movedParcel && !radiusChanged && now - this.lastRefreshAt < 5000) return
 
-    this.lastParcelKey = parcelKey
-    this.lastRadius = radius
-    this.lastRefreshAt = now
-    void this.refresh(dclX, dclZ, radius)
+    // Track locomotion — any real feet motion arms the settle timer.
+    if (!Number.isFinite(this.lastFeetSample.x)) {
+      this.lastFeetSample = { x: dclX, z: dclZ }
+      this.lastFeetMoveAt = now
+    } else {
+      const fdx = dclX - this.lastFeetSample.x
+      const fdz = dclZ - this.lastFeetSample.z
+      if (fdx * fdx + fdz * fdz > WALK_MOVE_EPS2) {
+        this.lastFeetSample = { x: dclX, z: dclZ }
+        this.lastFeetMoveAt = now
+      }
+    }
+
+    if (force) {
+      this.clearRefreshDebounce()
+      this.lastParcelKey = parcelKey
+      this.lastRadius = radius
+      // One-shot drain only if something is still pending after load — not continuous.
+      this.allowDrainOnce = this.hasOutstandingWork()
+      void this.refresh(dclX, dclZ, radius, 'full')
+      return
+    }
+
+    if (radiusChanged) {
+      this.lastParcelKey = parcelKey
+      this.lastRadius = radius
+      // Radius change is rare — allow discover but still settle-gated for drain.
+      this.scheduleDiscover(dclX, dclZ, radius)
+      return
+    }
+
+    if (movedParcel) {
+      this.lastParcelKey = parcelKey
+      this.lastRadius = radius
+      this.updateStickyScatterLod(dclX, dclZ)
+      // Tree/rock PhysX follows feet (visual scatter stays sticky / full warm band).
+      this.maybeSyncNearEmptyLandPhys(dclX, dclZ)
+      // Only schedule ring rediscover after a long walk; never on 1-parcel steps.
+      if (this.shouldFullDiscover(dclX, dclZ, radius)) {
+        this.scheduleDiscover(dclX, dclZ, radius)
+      }
+      return
+    }
+
+    // Settled on same parcel: LOD + deferred heavy work.
+    this.updateStickyScatterLod(dclX, dclZ)
+    this.maybeSyncNearEmptyLandPhys(dclX, dclZ)
+    if (!this.isPlayerSettled(now)) return
+
+    // True idle: live list + drain queues.
+    if (
+      this.liveReconcileEnabled &&
+      this.cachedEntities.length > 0 &&
+      LOAD_AOI_SCENE_VISUALS &&
+      aoiLiveSecondariesOnly()
+    ) {
+      this.emitLiveSecondaryCandidatesOnly(
+        this.cachedEntities,
+        this.cachedPrimaryId,
+        this.cachedPrimaryBase || base,
+        dclX,
+        dclZ,
+        this.cachedPointerSet
+      )
+    }
+
+    if (!this.hasOutstandingWork()) return
+    if (this.drainInFlight) return
+    if (now - this.lastDrainAt < 400) return
+    this.lastDrainAt = now
+    void this.drainOutstandingWork(dclX, dclZ)
   }
 
-  private async refresh(dclX: number, dclZ: number, radiusM: number): Promise<void> {
+  /** No feet motion for {@link WALK_IDLE_MS} — safe for main-thread mesh work. */
+  private isPlayerSettled(now = performance.now()): boolean {
+    if (this.prewarmActive) return true
+    if (!Number.isFinite(this.lastFeetMoveAt) || this.lastFeetMoveAt <= 0) {
+      // Unknown / never moved — do NOT treat as settled after play (was auto-drain bug).
+      return false
+    }
+    return now - this.lastFeetMoveAt >= WALK_IDLE_MS
+  }
+
+  /**
+   * Dev budget line: how big the warm ring is vs how many scripts we might run.
+   * - warmParcels = player Scene Distance disc (+ primary collar)
+   * - uniqueEntities = catalyst deployments returned for that pointer set
+   * - liveEligible = scene-to-scene ≤16m from **primary footprint** (not player)
+   * - liveRunning = currently loaded secondary workers (cap is separate)
+   */
+  private logAoiBudget(opts: {
+    warmParcels: number
+    playerParcels: number
+    primaryAdjacentParcels: number
+    uniqueEntities: number
+    radiusM: number
+    primaryId: string
+    entities: ActiveSceneEntity[]
+    pointerSet: Set<string>
+  }): void {
+    const liveProxM = secondaryLiveRadiusM()
+    const liveCap = secondaryLiveCap('high')
+    const primaryParcels = [...this.primaryParcelSet]
+    let scriptableInWarm = 0
+    let liveEligible = 0
+    for (const e of opts.entities) {
+      if (opts.primaryId && e.id === opts.primaryId) continue
+      if (isOpenRoadEntity(e)) continue
+      if (!isSecondarySceneCandidate(e)) continue
+      const keys = (e.pointers.length ? e.pointers : e.parcels).map((p) => p.trim())
+      if (!keys.some((p) => opts.pointerSet.has(p))) continue
+      scriptableInWarm++
+      if (liveProxM <= 0 || !primaryParcels.length) continue
+      const dist = minSceneFootprintDistanceM(primaryParcels, keys)
+      if (Number.isFinite(dist) && dist <= liveProxM) liveEligible++
+    }
+    console.info(
+      `[aoi] budget warmParcels=${opts.warmParcels} (playerDisc=${opts.playerParcels}` +
+        ` +primaryCollar=${opts.primaryAdjacentParcels}) ` +
+        `uniqueEntities=${opts.uniqueEntities} scriptableInWarm=${scriptableInWarm} ` +
+        `liveEligible=${liveEligible} liveRunning=${this.liveSecondaryIds.size} liveCap=${liveCap} ` +
+        `sceneDist=${opts.radiusM}m liveProx=${liveProxM}m ` +
+        `composites=${this.loadedCompositeIds.size} ` +
+        `(warm=from player feet · live=scene-to-scene vs primary)`
+    )
+  }
+
+  private hasOutstandingWork(): boolean {
+    if (this.pendingScatterParcels.size > 0) return true
+    if (
+      this.pendingCompositeIds.size > 0 &&
+      this.loadedCompositeIds.size < COMPOSITE_MAX_RETAINED
+    ) {
+      return true
+    }
+    return false
+  }
+
+  /** True when we need a full warm-ring rediscover (not every parcel step). */
+  private shouldFullDiscover(dclX: number, dclZ: number, radiusM: number): boolean {
+    if (!this.hasDiscoveredOnce) return true
+    if (this.lastDiscoverRadius !== radiusM) return true
+    if (!Number.isFinite(this.lastDiscoverFeet.x)) return true
+    const dx = dclX - this.lastDiscoverFeet.x
+    const dz = dclZ - this.lastDiscoverFeet.z
+    return dx * dx + dz * dz >= DISCOVER_MIN_MOVE_M * DISCOVER_MIN_MOVE_M
+  }
+
+  private clearRefreshDebounce(): void {
+    if (this.refreshDebounceTimer != null) {
+      clearTimeout(this.refreshDebounceTimer)
+      this.refreshDebounceTimer = null
+    }
+    this.pendingRefresh = null
+  }
+
+  private scheduleDiscover(dclX: number, dclZ: number, radiusM: number): void {
+    this.pendingRefresh = { dclX, dclZ, radiusM }
+    if (this.refreshDebounceTimer != null) return
+    this.refreshDebounceTimer = setTimeout(() => {
+      this.refreshDebounceTimer = null
+      const p = this.pendingRefresh
+      this.pendingRefresh = null
+      if (!p || this.disposed || !this.ctx) return
+      // Re-sample settle at fire time — if still walking, enqueue-only path.
+      void this.refresh(p.dclX, p.dclZ, p.radiusM, 'full')
+    }, REFRESH_DEBOUNCE_MS)
+  }
+
+  /**
+   * @param mode `full` = scatter/roads/composites; `light` = entities (cache) + live candidates only.
+   */
+  private async refresh(
+    dclX: number,
+    dclZ: number,
+    radiusM: number,
+    mode: 'full' | 'light' = 'full'
+  ): Promise<void> {
     const ctx = this.ctx
     if (!ctx || this.disposed) return
-    const gen = ++this.refreshGen
+    // Light path must not cancel an in-flight full refresh (gen thrash).
+    const gen = mode === 'full' ? ++this.refreshGen : this.refreshGen
     const base = ctx.scene.baseParcel
     // Player warm band (composites/roads) ∪ primary-footprint + live proximity
     // so nested hole scenes are always discovered regardless of where you stand.
@@ -385,16 +746,47 @@ export class AoiVisualLayer {
     if (!pointers.length) return
 
     // Warm Explorer road catalog early so vacant layer can skip road parcels.
-    await ensureExplorerRoadsReady()
-    if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
+    if (mode === 'full') {
+      await ensureExplorerRoadsReady()
+      if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
+    }
 
     const entities = await fetchActiveEntitiesForPointers(ctx.scene.realm.contentUrl, pointers)
-    if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
+    if (mode === 'full' && (gen !== this.refreshGen || this.disposed || this.ctx !== ctx)) return
+    if (this.disposed || this.ctx !== ctx) return
 
     // Prefer multi-parcel scenes over classic roads when claims collide.
     const pointerToEntity = buildPointerOwnershipMap(entities)
     const pointerSet = new Set(pointers)
     const primaryId = ctx.scene.entityId?.trim() ?? ''
+
+    // Cache for standstill drain (no re-fetch while outstanding work remains).
+    this.cachedEntities = entities
+    this.cachedPrimaryId = primaryId
+    this.cachedPrimaryBase = base
+    this.cachedPointerSet = pointerSet
+
+    // Budget snapshot: warm ring vs live-script band (always log on discover).
+    this.logAoiBudget({
+      warmParcels: pointers.length,
+      playerParcels: playerPointers.length,
+      primaryAdjacentParcels: primaryAdjacent.length,
+      uniqueEntities: entities.length,
+      radiusM,
+      primaryId,
+      entities,
+      pointerSet
+    })
+
+    // Live secondary list only when truly settled (not brief pause mid-walk).
+    const settled = this.isPlayerSettled()
+    const mayDrainThisRefresh =
+      this.prewarmActive || this.allowDrainOnce || settled
+    if (LOAD_AOI_SCENE_VISUALS && aoiLiveSecondariesOnly() && settled) {
+      this.emitLiveSecondaryCandidatesOnly(entities, primaryId, base, dclX, dclZ, pointerSet)
+    }
+
+    if (mode === 'light') return
 
     // Real deployed scenes in the ring (not vacant/catalyst-empty) — never scatter trees on these.
     // Include every in-ring parcel of a multi-parcel deployment if *any* of its parcels are in ring.
@@ -424,24 +816,17 @@ export class AoiVisualLayer {
       }
     }
 
-    // --- Default ground GLB: every non-road parcel (scenes sit on top).
-    // Procedural trees/rocks: ONLY catalyst-empty / true vacant — never real scenes or residents.
+    // --- Genesis City empty plane + sticky vacant scatter (add-only, LOD hide, purge >1km).
+    // Load every vacant parcel in Scene Distance once; walking only appends newly entered parcels.
     const vacantKeys: string[] = []
-    const groundKeys: string[] = []
     let skippedScatter = 0
     for (const key of pointers) {
       const k = key.trim()
       if (isExplorerRoadParcel(key) || isExplorerRoadParcel(k)) continue
       const ent = pointerToEntity.get(key) ?? pointerToEntity.get(k)
       if (ent && isOpenRoadEntity(ent)) continue
-      groundKeys.push(key)
-      // Hard ban scatter on any real/resident footprint (CBD-as-empty bug).
-      if (realSceneFootprint.has(k)) {
-        skippedScatter++
-        continue
-      }
-      // Require explicit vacant/catalyst-empty — never scatter on unknown multi-parcel holes.
-      if (!ent) {
+      // Never scatter under primary / sticky residents / live secondaries / real scenes.
+      if (realSceneFootprint.has(k) || realSceneFootprint.has(key)) {
         skippedScatter++
         continue
       }
@@ -451,103 +836,75 @@ export class AoiVisualLayer {
       }
       vacantKeys.push(key)
     }
-    if (skippedScatter > 0) {
-      console.info(
-        `[aoi] scatter skip real/resident parcels=${skippedScatter} ` +
-          `vacantScatter=${vacantKeys.length} realFootprint=${realSceneFootprint.size} ` +
-          `residents=${this.residentParcelSet.size}`
-      )
-    }
-    void primaryId
 
-    const blankTiles = groundKeys.map((key) => {
-      const sw = parcelSwSceneLocal(key, base)
-      return { x: sw.x, z: sw.z }
-    })
-
-    try {
-      // Pass base so tiles use dclSceneToLandscapeThree (X reflection) like InfiniteGround.
-      const blankGroup = await buildInstancedGroundTiles(
-        ctx.cache,
-        EMPTY_LAND.ground,
-        blankTiles,
-        'aoi-blank-ground',
-        parseParcelKey(base)
-      )
-      if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) {
-        blankGroup.traverse((o) => {
-          if (o instanceof THREE.Mesh) {
-            o.geometry?.dispose()
-          }
-        })
-        return
-      }
-      this.clearBlank()
-      this.blankRoot = blankGroup
-      this.root.add(blankGroup)
-    } catch (err) {
-      console.warn('[aoi] blank ground failed', err)
-    }
-
-    try {
-      const { root: scatter, colliders } = await buildEmptyParcelScatter({
-        cache: ctx.cache,
-        parcelKeys: vacantKeys,
-        primaryBase: base
-      })
-      if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) {
-        scatter.clear()
-        return
-      }
-      this.clearScatter()
-      this.scatterRoot = scatter
-      this.root.add(scatter)
-      ctx.syncEmptyLandColliders?.(colliders)
-    } catch (err) {
-      console.warn('[aoi] empty scatter failed', err)
-    }
-
-    // --- Classic open-road foundation tiles (only if ownership still maps to the road) ---
-    await this.refreshRoadTiles(entities, pointerToEntity, base, gen, ctx, dclX, dclZ)
+    // Sticky city plane — only rebuild when primary base changes (promote retarget).
+    await this.ensureGenesisEmptyPlane(ctx, gen, base)
     if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
 
+    // Enqueue vacant parcels not yet meshed — drain pulls from this queue only.
+    for (const key of vacantKeys) {
+      const k = key.trim()
+      if (!this.loadedScatterParcels.has(k)) this.pendingScatterParcels.add(k)
+    }
+    // Drop pending that are no longer vacant in this ring (real scene claimed, etc.).
+    for (const k of [...this.pendingScatterParcels]) {
+      if (this.loadedScatterParcels.has(k)) {
+        this.pendingScatterParcels.delete(k)
+        continue
+      }
+      // Keep pending outside current ring — may re-enter; only drop if now real footprint.
+      if (realSceneFootprint.has(k)) this.pendingScatterParcels.delete(k)
+    }
+
+    // --- Classic open-road foundation tiles (catalog + ownership, full Scene Distance) ---
+    await this.refreshRoadTiles(entities, pointerToEntity, base, gen, ctx, dclX, dclZ, pointers)
+    if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
+
+    this.lastDiscoverFeet = { x: dclX, z: dclZ }
+    this.lastDiscoverRadius = radiusM
+    this.hasDiscoveredOnce = true
+
+    // Enqueue-only unless prewarm / true settle / one-shot force. Never background-drain mid-play.
     if (!LOAD_AOI_SCENE_VISUALS) {
-      // Hotfix: roads + empty only — clear any prior scene bakes, no secondary workers.
       this.compositeRoot.clear()
       this.loadedCompositeIds.clear()
+      this.pendingCompositeIds.clear()
       this.clearFirstFrameGroups()
       this.firstFrameSampler.reset()
       ctx.onSecondaryCandidates?.([])
-      if (gen === this.refreshGen) {
-        clientDebugLog.consoleOnly(
-          'info',
-          `[aoi] refresh parcels=${pointers.length} vacant=${vacantKeys.length} footprint=${realSceneFootprint.size} roads=${this.loadedRoadIds.size} composites=off firstFrame=off radius=${radiusM}m`
-        )
+      if (mayDrainThisRefresh) {
+        await this.drainOutstandingWork(dclX, dclZ, gen, this.prewarmActive, mayDrainThisRefresh)
       }
+      this.allowDrainOnce = false
       return
     }
 
     // TEMP: hard-cap live workers + skip first-frame/script-warm thrash.
-    // Still load multi-parcel composites so CBD plaza ring stays visible when nested
-    // hole scenes (Spring in the Snow @ -142,99) are primary.
     if (aoiLiveSecondariesOnly()) {
       this.clearFirstFrameGroups()
       this.firstFrameSampler.reset()
-      this.emitLiveSecondaryCandidatesOnly(entities, primaryId, base, dclX, dclZ, pointerSet)
-      await this.loadSecondaryComposites(entities, primaryId, base, pointerSet, gen, ctx, dclX, dclZ)
+      this.enqueueCompositeWork(entities, primaryId, pointerSet, dclX, dclZ, base)
+      if (mayDrainThisRefresh) {
+        await this.drainOutstandingWork(dclX, dclZ, gen, this.prewarmActive, mayDrainThisRefresh)
+      }
+      this.allowDrainOnce = false
       if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
       if (gen === this.refreshGen) {
         console.info(
-          `[aoi] refresh LIVE+COMPOSITE parcels=${pointers.length} roads=${this.loadedRoadIds.size} ` +
-            `composites=${this.loadedCompositeIds.size} liveRadius=${secondaryLiveRadiusM()}m ` +
-            `(no first-frame/script-warm — plaza ring via composite)`
+          `[aoi] discover parcels=${pointers.length} vacantWarm=${vacantKeys.length} ` +
+            `roads=${this.loadedRoadIds.size} composites=${this.loadedCompositeIds.size} ` +
+            `pending={scatter:${this.pendingScatterParcels.size} composite:${this.pendingCompositeIds.size}} ` +
+            `liveRadius=${secondaryLiveRadiusM()}m settled=${settled ? '1' : '0'} prewarm=${this.prewarmActive ? '1' : '0'}`
         )
       }
       return
     }
 
-    // --- Secondary visuals: main.composite (outer) + first-frame sample (inner).
-    await this.loadSecondaryComposites(entities, primaryId, base, pointerSet, gen, ctx, dclX, dclZ)
+    this.enqueueCompositeWork(entities, primaryId, pointerSet, dclX, dclZ, base)
+    if (mayDrainThisRefresh) {
+      await this.drainOutstandingWork(dclX, dclZ, gen, this.prewarmActive, mayDrainThisRefresh)
+    }
+    this.allowDrainOnce = false
     if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
 
     // Script-built neighbors (Angzaar etc.): no composite → first-frame worker sample in inner radius.
@@ -558,8 +915,105 @@ export class AoiVisualLayer {
       for (const g of this.firstFrameGroups.values()) if (g.visible) ffVis++
       clientDebugLog.consoleOnly(
         'info',
-        `[aoi] refresh parcels=${pointers.length} vacant=${vacantKeys.length} footprint=${realSceneFootprint.size} roads=${this.loadedRoadIds.size} composites=${this.loadedCompositeIds.size} firstFrame=${ffVis}/${this.firstFrameGroups.size} radius=${radiusM}m`
+        `[aoi] refresh parcels=${pointers.length} vacant=${vacantKeys.length} footprint=${realSceneFootprint.size} roads=${this.loadedRoadIds.size} composites=${this.loadedCompositeIds.size} firstFrame=${ffVis}/${this.firstFrameGroups.size} pendingScatter=${this.pendingScatterParcels.size} radius=${radiusM}m`
       )
+    }
+  }
+
+  /**
+   * Complete outstanding scatter / composite work from queues.
+   * Prewarm always; otherwise only when {@link isPlayerSettled}.
+   */
+  private async drainOutstandingWork(
+    dclX: number,
+    dclZ: number,
+    genHint?: number,
+    forceUncappedScatter = false,
+    /** Caller already decided drain is OK (prewarm / one-shot / settled). */
+    allow = false
+  ): Promise<void> {
+    const ctx = this.ctx
+    if (!ctx || this.disposed || this.drainInFlight) return
+    // Force-uncapped is ONLY legal during active prewarm.
+    if (forceUncappedScatter && !this.prewarmActive) {
+      return
+    }
+    if (!forceUncappedScatter && !allow && !this.isPlayerSettled()) return
+    this.drainInFlight = true
+    const gen = genHint ?? this.refreshGen
+    try {
+      const uncapped =
+        (forceUncappedScatter && this.prewarmActive) || this.loadedScatterParcels.size === 0
+      if (this.pendingScatterParcels.size > 0) {
+        await this.drainPendingScatter(
+          ctx,
+          gen,
+          this.cachedPrimaryBase || ctx.scene.baseParcel,
+          dclX,
+          dclZ,
+          uncapped
+        )
+      }
+      if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
+
+      this.updateStickyScatterLod(dclX, dclZ)
+      this.purgeFarScatterLayers(ctx, dclX, dclZ)
+      // After mesh drain, (re)register only near-player tree/rock boxes.
+      this.syncNearEmptyLandPhys(ctx, dclX, dclZ, /*force*/ true)
+
+      if (
+        this.pendingCompositeIds.size > 0 &&
+        LOAD_AOI_SCENE_VISUALS &&
+        (this.prewarmActive || allow || this.isPlayerSettled())
+      ) {
+        await this.drainPendingComposites(ctx, gen, dclX, dclZ)
+      }
+    } finally {
+      this.drainInFlight = false
+    }
+  }
+
+  /**
+   * Mark composite candidates as outstanding (add-only).
+   * Skips shells farther than {@link COMPOSITE_MAX_DIST_M} (far estates thrash GPU).
+   */
+  private enqueueCompositeWork(
+    entities: ActiveSceneEntity[],
+    primaryId: string,
+    pointerSet: Set<string>,
+    dclX: number,
+    dclZ: number,
+    primaryBase: string
+  ): void {
+    for (const e of entities) {
+      if (primaryId && e.id === primaryId) continue
+      if (!isSecondarySceneCandidate(e) || !findCompositeFile(e.content)) continue
+      if (this.loadedCompositeIds.has(e.id)) {
+        this.pendingCompositeIds.delete(e.id)
+        continue
+      }
+      const keys = e.pointers.length ? e.pointers : e.parcels
+      const inRing = keys.filter((p) => pointerSet.has(p.trim()))
+      if (
+        inRing.length > 0 &&
+        inRing.every((p) => this.primaryParcelSet.has(p.trim())) &&
+        !this.primaryIsEmpty
+      ) {
+        continue
+      }
+      if (!keys.some((p) => pointerSet.has(p.trim()))) continue
+      // Distance gate — multi-parcel rank used to load 200m shells mid-walk.
+      let best = Infinity
+      for (const k of keys) {
+        try {
+          const d = distanceToParcelCenterM(dclX, dclZ, parseParcelKey(k.trim()), primaryBase)
+          if (d < best) best = d
+        } catch {
+          /* skip */
+        }
+      }
+      if (Number.isFinite(best) && best > COMPOSITE_MAX_DIST_M) continue
+      this.pendingCompositeIds.add(e.id)
     }
   }
 
@@ -660,12 +1114,22 @@ export class AoiVisualLayer {
       }
     }
 
-    // Prefer plaza shells: load up to 3/refresh, mega-parcel first (ranked above).
-    const toLoad = ranked.filter((c) => !this.loadedCompositeIds.has(c.id)).slice(0, 3)
-    for (const ent of toLoad) {
+    // Prefer plaza shells: load a small batch per drain tick (outstanding queue continues).
+    const toLoad = ranked
+      .filter((c) => !this.loadedCompositeIds.has(c.id) && this.pendingCompositeIds.has(c.id))
+      .slice(0, COMPOSITE_LOAD_PER_DRAIN)
+    // Fallback: if pending set empty but ranked has work (first call before enqueue), load ranked.
+    const batch =
+      toLoad.length > 0
+        ? toLoad
+        : ranked.filter((c) => !this.loadedCompositeIds.has(c.id)).slice(0, COMPOSITE_LOAD_PER_DRAIN)
+    for (const ent of batch) {
       if (this.loadedCompositeIds.size >= COMPOSITE_MAX_RETAINED) break
       const comp = findCompositeFile(ent.content)
-      if (!comp) continue
+      if (!comp) {
+        this.pendingCompositeIds.delete(ent.id)
+        continue
+      }
       const parcels = ent.parcels.length || ent.pointers.length
       const distM = distToEntity(ent)
       const maxGltfs = compositeMaxGltfsForDistance(distM, parcels)
@@ -683,7 +1147,10 @@ export class AoiVisualLayer {
           group.clear()
           return
         }
-        if (this.loadedCompositeIds.has(ent.id)) continue
+        if (this.loadedCompositeIds.has(ent.id)) {
+          this.pendingCompositeIds.delete(ent.id)
+          continue
+        }
         group.name = `aoi-secondary:${ent.id}`
         // Hide if a live secondary worker owns this entity (avoid double-draw).
         group.visible = !this.liveSecondaryIds.has(ent.id)
@@ -696,12 +1163,15 @@ export class AoiVisualLayer {
         })
         this.compositeRoot.add(group)
         this.loadedCompositeIds.add(ent.id)
+        this.pendingCompositeIds.delete(ent.id)
         console.info(
           `[aoi] secondary composite entity=${ent.id.slice(0, 16)}… “${ent.title || ent.base}” ` +
             `parcels=${parcels} dist≈${distM.toFixed(0)}m gltfs≈${group.children.length}/${maxGltfs}`
         )
       } catch (err) {
         console.warn('[aoi] secondary composite failed', ent.id, err)
+        // Leave in pending to retry once; avoid infinite fail loop on bad entity.
+        this.pendingCompositeIds.delete(ent.id)
       }
     }
   }
@@ -725,13 +1195,13 @@ export class AoiVisualLayer {
     }
     const liveProxM = secondaryLiveRadiusM()
     if (liveProxM <= 0) {
-      this.ctx?.onSecondaryCandidates?.([])
+      this.emitLiveCandidatesIfChanged([])
       return
     }
 
     const primaryParcels = [...this.primaryParcelSet]
     if (!primaryParcels.length) {
-      this.ctx?.onSecondaryCandidates?.([])
+      this.emitLiveCandidatesIfChanged([])
       return
     }
 
@@ -793,8 +1263,27 @@ export class AoiVisualLayer {
         /* skip */
       }
     }
+    this.emitLiveCandidatesIfChanged(liveCandidates, liveProxM)
+  }
+
+  private emitLiveCandidatesIfChanged(
+    liveCandidates: Array<{
+      entityId: string
+      title: string
+      base: string
+      resolveX: number
+      resolveY: number
+      distM: number
+      parcelCount: number
+      parcels: string[]
+    }>,
+    liveProxM?: number
+  ): void {
+    const sig = liveCandidates.map((c) => c.entityId).join('|')
+    if (sig === this.lastLiveCandidateSignature) return
+    this.lastLiveCandidateSignature = sig
     this.ctx?.onSecondaryCandidates?.(liveCandidates)
-    if (liveCandidates.length) {
+    if (liveCandidates.length && liveProxM != null) {
       console.info(
         `[aoi] live-secondary (scene-prox≤${liveProxM}m) n=${liveCandidates.length} nearest=${liveCandidates
           .slice(0, 5)
@@ -1005,46 +1494,350 @@ export class AoiVisualLayer {
     this.firstFrameRoot.clear()
   }
 
-  /** Radius 0 but empty primary — still show local blank + trees. */
+  /**
+   * Sticky Genesis-wide empty plane under the whole city.
+   * Coords AOI only (bind already gates worlds). Rebuilds only when primary base changes.
+   */
+  private async ensureGenesisEmptyPlane(
+    ctx: NonNullable<typeof this.ctx>,
+    gen: number,
+    primaryBase: string
+  ): Promise<void> {
+    const baseKey = primaryBase.trim()
+    if (this.blankRoot && this.blankPlaneBase === baseKey) return
+    try {
+      const plane = await buildGenesisCityEmptyPlane(ctx.cache, baseKey)
+      if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) {
+        plane.traverse((o) => {
+          if (o instanceof THREE.Mesh) {
+            o.geometry?.dispose()
+            const mats = Array.isArray(o.material) ? o.material : [o.material]
+            for (const m of mats) m?.dispose?.()
+          }
+        })
+        return
+      }
+      this.clearBlank()
+      this.blankRoot = plane
+      this.blankPlaneBase = baseKey
+      this.root.add(plane)
+      const ud = plane.userData as {
+        parcels?: { w?: number; d?: number }
+        sizeM?: { x?: number; z?: number }
+      }
+      console.info(
+        `[aoi] genesis empty plane ` +
+          `${ud.parcels?.w ?? '?'}×${ud.parcels?.d ?? '?'} parcels ` +
+          `(${((ud.sizeM?.x ?? 0) / 16).toFixed(0)}×${((ud.sizeM?.z ?? 0) / 16).toFixed(0)} @ 16m) ` +
+          `base=${baseKey}`
+      )
+    } catch (err) {
+      console.warn('[aoi] genesis empty plane failed', err)
+    }
+  }
+
+  /** Radius 0 but empty primary — still show city plane + sticky local trees. */
   private async refreshEmptyPrimaryOnly(): Promise<void> {
     const ctx = this.ctx
     if (!ctx || this.disposed || !this.primaryIsEmpty) return
     const gen = ++this.refreshGen
     const base = ctx.scene.baseParcel
-    const vacantKeys = [...this.primaryParcelSet]
-    const blankTiles = vacantKeys.map((key) => {
-      const sw = parcelSwSceneLocal(key, base)
-      return { x: sw.x, z: sw.z }
-    })
+    for (const k of this.primaryParcelSet) {
+      if (!this.loadedScatterParcels.has(k)) this.pendingScatterParcels.add(k)
+    }
     try {
-      const blankGroup = await buildInstancedGroundTiles(
-        ctx.cache,
-        EMPTY_LAND.ground,
-        blankTiles,
-        'aoi-blank-ground',
-        parseParcelKey(base)
-      )
+      await this.ensureGenesisEmptyPlane(ctx, gen, base)
       if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
-      this.clearBlank()
-      this.blankRoot = blankGroup
-      this.root.add(blankGroup)
-
-      const { root: scatter, colliders } = await buildEmptyParcelScatter({
-        cache: ctx.cache,
-        parcelKeys: vacantKeys,
-        primaryBase: base
-      })
-      if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
-      this.clearScatter()
-      this.scatterRoot = scatter
-      this.root.add(scatter)
-      ctx.syncEmptyLandColliders?.(colliders)
-      console.info(
-        `[aoi] empty primary fill parcels=${vacantKeys.length} colliders=${colliders.length}`
-      )
+      this.cachedPrimaryBase = base
+      await this.drainOutstandingWork(8, 8, gen)
     } catch (err) {
       console.warn('[aoi] empty primary fill failed', err)
     }
+  }
+
+  /**
+   * Drain {@link pendingScatterParcels} into sticky 4×4 chunks.
+   * Already-meshed parcels are never rebuilt. Cap per tick unless uncapped first fill.
+   */
+  private async drainPendingScatter(
+    ctx: NonNullable<typeof this.ctx>,
+    gen: number,
+    primaryBase: string,
+    dclX: number,
+    dclZ: number,
+    uncapped: boolean
+  ): Promise<void> {
+    // Drop anything already loaded.
+    for (const k of [...this.pendingScatterParcels]) {
+      if (this.loadedScatterParcels.has(k)) this.pendingScatterParcels.delete(k)
+    }
+    if (!this.pendingScatterParcels.size) return
+
+    const fresh = [...this.pendingScatterParcels]
+    let toLoad = fresh
+    if (!uncapped && fresh.length > SCATTER_ADD_PER_REFRESH) {
+      toLoad = [...fresh]
+        .map((key) => {
+          try {
+            const p = parseParcelKey(key.trim())
+            return { key, d: distanceToParcelCenterM(dclX, dclZ, p, primaryBase) }
+          } catch {
+            return { key, d: Infinity }
+          }
+        })
+        .sort((a, b) => a.d - b.d)
+        .slice(0, SCATTER_ADD_PER_REFRESH)
+        .map((x) => x.key)
+    }
+
+    // 4×4 parcel chunks (~64m) — LOD/purge by chunk center, not one giant blob.
+    const CHUNK = 4
+    const byChunk = new Map<string, string[]>()
+    for (const key of toLoad) {
+      try {
+        const p = parseParcelKey(key.trim())
+        const ck = `${Math.floor(p.x / CHUNK)},${Math.floor(p.y / CHUNK)}`
+        let list = byChunk.get(ck)
+        if (!list) {
+          list = []
+          byChunk.set(ck, list)
+        }
+        list.push(key.trim())
+      } catch {
+        /* skip bad key */
+      }
+    }
+    if (!byChunk.size) return
+
+    const baseCoord = parseParcelKey(primaryBase)
+    const t0 = performance.now()
+    let addedParcels = 0
+    let addedColliders = 0
+    let addedLayers = 0
+
+    for (const [, chunkKeys] of byChunk) {
+      if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
+      try {
+        const { root, colliders } = await buildEmptyParcelScatter({
+          cache: ctx.cache,
+          parcelKeys: chunkKeys,
+          primaryBase
+        })
+        if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) {
+          root.traverse((o) => {
+            if (o instanceof THREE.InstancedMesh) o.geometry?.dispose()
+          })
+          root.clear()
+          return
+        }
+
+        let cx = 0
+        let cz = 0
+        let n = 0
+        for (const key of chunkKeys) {
+          try {
+            const p = parseParcelKey(key)
+            cx += (p.x - baseCoord.x) * 16 + 8
+            cz += (p.y - baseCoord.y) * 16 + 8
+            n++
+          } catch {
+            /* skip */
+          }
+          this.loadedScatterParcels.add(key)
+          this.pendingScatterParcels.delete(key)
+        }
+        if (n > 0) {
+          cx /= n
+          cz /= n
+        } else {
+          cx = dclX
+          cz = dclZ
+        }
+
+        root.name = `aoi-scatter-layer:${this.scatterLayerSeq}`
+        const layer: StickyScatterLayer = {
+          id: this.scatterLayerSeq++,
+          root,
+          colliders,
+          parcelKeys: chunkKeys,
+          centerX: cx,
+          centerZ: cz
+        }
+        this.scatterLayers.push(layer)
+        this.scatterRoot.add(root)
+        addedParcels += chunkKeys.length
+        addedColliders += colliders.length
+        addedLayers++
+      } catch (err) {
+        console.warn('[aoi] sticky scatter chunk failed', err)
+      }
+    }
+
+    if (addedLayers > 0) {
+      // Descs stored on layers; PhysX only for near-player trees/rocks.
+      this.syncNearEmptyLandPhys(ctx, dclX, dclZ, /*force*/ true)
+      console.info(
+        `[aoi] scatter drain +${addedParcels} parcels / ${addedLayers} chunks ` +
+          `(loaded=${this.loadedScatterParcels.size} pending=${this.pendingScatterParcels.size} ` +
+          `layers=${this.scatterLayers.length}) collidersDesc+${addedColliders} ` +
+          `physNear≤${EMPTY_LAND_PHYS_RADIUS_M}m ` +
+          `${(performance.now() - t0).toFixed(0)}ms`
+      )
+    }
+  }
+
+  /** Load up to COMPOSITE_LOAD_PER_DRAIN outstanding composites from cached entities. */
+  private async drainPendingComposites(
+    ctx: NonNullable<typeof this.ctx>,
+    gen: number,
+    dclX: number,
+    dclZ: number
+  ): Promise<void> {
+    if (!this.pendingCompositeIds.size || !this.cachedEntities.length) return
+    const primaryBase = this.cachedPrimaryBase || ctx.scene.baseParcel
+    const primaryId = this.cachedPrimaryId
+    const pointerSet = this.cachedPointerSet
+
+    // Reuse existing loader — it already caps per call; then sync pending set.
+    await this.loadSecondaryComposites(
+      this.cachedEntities,
+      primaryId,
+      primaryBase,
+      pointerSet,
+      gen,
+      ctx,
+      dclX,
+      dclZ
+    )
+    if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
+
+    // Clear pending for anything now loaded; drop ids no longer in cache.
+    const cacheIds = new Set(this.cachedEntities.map((e) => e.id))
+    for (const id of [...this.pendingCompositeIds]) {
+      if (this.loadedCompositeIds.has(id) || !cacheIds.has(id)) {
+        this.pendingCompositeIds.delete(id)
+      }
+    }
+  }
+
+  /**
+   * Hide far scatter **meshes** (LOD). PhysX is separate — near-player only
+   * ({@link EMPTY_LAND_PHYS_RADIUS_M}); grass never had colliders.
+   */
+  private updateStickyScatterLod(dclX: number, dclZ: number): void {
+    const hideR2 = SCATTER_LOD_HIDE_M * SCATTER_LOD_HIDE_M
+    for (const layer of this.scatterLayers) {
+      const dx = layer.centerX - dclX
+      const dz = layer.centerZ - dclZ
+      layer.root.visible = dx * dx + dz * dz <= hideR2
+    }
+  }
+
+  /** Dispose only when player is very far (teleport / cross-city walk). */
+  private purgeFarScatterLayers(
+    ctx: NonNullable<typeof this.ctx>,
+    dclX: number,
+    dclZ: number
+  ): void {
+    const purgeR2 = SCATTER_PURGE_M * SCATTER_PURGE_M
+    const dropEntities: number[] = []
+    let purged = 0
+    for (let i = this.scatterLayers.length - 1; i >= 0; i--) {
+      const layer = this.scatterLayers[i]!
+      const dx = layer.centerX - dclX
+      const dz = layer.centerZ - dclZ
+      if (dx * dx + dz * dz <= purgeR2) continue
+      for (const c of layer.colliders) dropEntities.push(c.entity)
+      layer.root.removeFromParent()
+      layer.root.traverse((o) => {
+        if (o instanceof THREE.InstancedMesh) o.geometry?.dispose()
+      })
+      layer.root.clear()
+      for (const k of layer.parcelKeys) this.loadedScatterParcels.delete(k)
+      this.scatterLayers.splice(i, 1)
+      purged++
+    }
+    if (purged > 0) {
+      ctx.purgeEmptyLandColliders?.(dropEntities)
+      for (const id of dropEntities) this.lastNearEmptyLandIds.delete(id)
+      this.syncNearEmptyLandPhys(ctx, dclX, dclZ, /*force*/ true)
+      console.info(
+        `[aoi] scatter purge >${SCATTER_PURGE_M}m layers=${purged} remain=${this.scatterLayers.length}`
+      )
+    }
+  }
+
+  /**
+   * Throttled near-phys refresh while walking (parcel step or ~½ phys radius move).
+   */
+  private maybeSyncNearEmptyLandPhys(dclX: number, dclZ: number): void {
+    const ctx = this.ctx
+    if (!ctx || !this.scatterLayers.length) return
+    const step = EMPTY_LAND_PHYS_RADIUS_M * 0.5
+    const step2 = step * step
+    if (Number.isFinite(this.lastEmptyLandPhysFeet.x)) {
+      const dx = dclX - this.lastEmptyLandPhysFeet.x
+      const dz = dclZ - this.lastEmptyLandPhysFeet.z
+      if (dx * dx + dz * dz < step2) return
+    }
+    this.syncNearEmptyLandPhys(ctx, dclX, dclZ, /*force*/ false)
+  }
+
+  /**
+   * Visual scatter can cover the full warm band; PhysX tree/rock boxes only near feet
+   * (same idea as road furniture {@link ROAD_PHYS_RADIUS_M}).
+   * Collider matrices are landscape-three (x = −dclX, z = dclZ).
+   */
+  private syncNearEmptyLandPhys(
+    ctx: NonNullable<typeof this.ctx>,
+    dclX: number,
+    dclZ: number,
+    force: boolean
+  ): void {
+    const r2 = EMPTY_LAND_PHYS_RADIUS_M * EMPTY_LAND_PHYS_RADIUS_M
+    const near: PhysicsColliderDesc[] = []
+    const nearIds = new Set<number>()
+    for (const layer of this.scatterLayers) {
+      for (const c of layer.colliders) {
+        const e = c.matrix.elements
+        // three.x = −sceneX → sceneX = −e[12]; compare in scene-local feet space.
+        const dx = -e[12]! - dclX
+        const dz = e[14]! - dclZ
+        if (dx * dx + dz * dz <= r2) {
+          near.push(c)
+          nearIds.add(c.entity)
+        }
+      }
+    }
+
+    const drop: number[] = []
+    for (const id of this.lastNearEmptyLandIds) {
+      if (!nearIds.has(id)) drop.push(id)
+    }
+    if (drop.length) {
+      ctx.purgeEmptyLandColliders?.(drop)
+    }
+
+    // Skip no-op sync (same near set) unless forced after mesh drain.
+    if (!force && drop.length === 0 && nearIds.size === this.lastNearEmptyLandIds.size) {
+      let same = true
+      for (const id of nearIds) {
+        if (!this.lastNearEmptyLandIds.has(id)) {
+          same = false
+          break
+        }
+      }
+      if (same) return
+    }
+
+    this.lastNearEmptyLandIds = nearIds
+    this.lastEmptyLandPhysFeet = { x: dclX, z: dclZ }
+
+    if (near.length === 0) {
+      // Nothing near — tracking already purged far ids above.
+      return
+    }
+    ctx.syncEmptyLandColliders?.(near)
   }
 
   /**
@@ -1058,7 +1851,9 @@ export class AoiVisualLayer {
     gen: number,
     ctx: AoiVisualLayerContext,
     dclX: number,
-    dclZ: number
+    dclZ: number,
+    /** Full Scene Distance pointer ring — catalog roads may have no catalyst entity. */
+    aoiPointers: string[]
   ): Promise<void> {
     await ensureExplorerRoadsReady()
     if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
@@ -1066,24 +1861,37 @@ export class AoiVisualLayer {
     // Parcels in AOI that are Genesis roads (catalog) and not owned by a secondary scene.
     const roadParcels = new Map<string, ActiveSceneEntity | null>()
     for (const ent of entities) {
-      const parcel = (ent.parcels[0] ?? ent.pointers[0] ?? ent.base).trim()
-      if (!parcel || this.primaryParcelSet.has(parcel)) continue
-      const owner = ownership.get(parcel)
-      if (owner && isSecondarySceneCandidate(owner) && !isExplorerRoadParcel(parcel)) {
-        continue
-      }
-      if (isExplorerRoadParcel(parcel) || isClassicOpenRoadEntity(ent)) {
-        roadParcels.set(parcel, ent)
+      const keys = (ent.parcels.length ? ent.parcels : ent.pointers).map((p) => p.trim())
+      const isClassicRoad = isClassicOpenRoadEntity(ent)
+      for (const parcel of keys.length ? keys : [ent.base.trim()]) {
+        if (!parcel || this.primaryParcelSet.has(parcel)) continue
+        const owner = ownership.get(parcel)
+        if (owner && isSecondarySceneCandidate(owner) && !isExplorerRoadParcel(parcel)) {
+          continue
+        }
+        if (isExplorerRoadParcel(parcel) || isClassicRoad) {
+          roadParcels.set(parcel, ent)
+        }
       }
     }
-    // Catalog-only: entity list may omit some roads; use ownership keys in AOI
+    // Ownership keys in AOI (catalyst may list road entities not first in entity walk).
     for (const key of ownership.keys()) {
       if (this.primaryParcelSet.has(key)) continue
       if (!isExplorerRoadParcel(key)) continue
       if (roadParcels.has(key)) continue
       const owner = ownership.get(key)
-      if (owner && isSecondarySceneCandidate(owner)) continue
+      if (owner && isSecondarySceneCandidate(owner) && !isOpenRoadEntity(owner)) continue
       roadParcels.set(key, owner ?? null)
+    }
+    // Full radius catalog pass: Explorer roads with no catalyst entity still load tiles.
+    for (const key of aoiPointers) {
+      const k = key.trim()
+      if (!k || this.primaryParcelSet.has(k) || this.primaryParcelSet.has(key)) continue
+      if (!isExplorerRoadParcel(k) && !isExplorerRoadParcel(key)) continue
+      if (roadParcels.has(k) || roadParcels.has(key)) continue
+      const owner = ownership.get(k) ?? ownership.get(key)
+      if (owner && isSecondarySceneCandidate(owner) && !isOpenRoadEntity(owner)) continue
+      roadParcels.set(k, owner ?? null)
     }
 
     const signature = [...roadParcels.keys()].sort().join('|')
@@ -1162,22 +1970,41 @@ export class AoiVisualLayer {
     if (!this.blankRoot) return
     this.blankRoot.removeFromParent()
     this.blankRoot.traverse((o) => {
-      if (o instanceof THREE.InstancedMesh) {
+      if (o instanceof THREE.Mesh) {
         o.geometry?.dispose()
+        // City plane owns cloned materials/maps; InstancedMesh ground shared mats carefully.
+        if (this.blankRoot?.userData?.genesisEmptyPlane) {
+          const mats = Array.isArray(o.material) ? o.material : [o.material]
+          for (const m of mats) {
+            if (!m) continue
+            if ('map' in m && m.map instanceof THREE.Texture) {
+              // Cloned map from EMPTY_LAND — dispose clone only.
+              m.map.dispose()
+            }
+            m.dispose()
+          }
+        }
       }
     })
     this.blankRoot = null
+    this.blankPlaneBase = ''
   }
 
   private clearScatter(): void {
-    if (!this.scatterRoot) return
-    this.scatterRoot.removeFromParent()
-    this.scatterRoot.traverse((o) => {
-      if (o instanceof THREE.InstancedMesh) {
-        o.geometry?.dispose()
-      }
-    })
-    this.scatterRoot = null
+    for (const layer of this.scatterLayers) {
+      layer.root.removeFromParent()
+      layer.root.traverse((o) => {
+        if (o instanceof THREE.InstancedMesh) o.geometry?.dispose()
+      })
+      layer.root.clear()
+    }
+    this.scatterLayers.length = 0
+    this.loadedScatterParcels.clear()
+    this.pendingScatterParcels.clear()
+    this.lastNearEmptyLandIds.clear()
+    this.lastEmptyLandPhysFeet = { x: Number.NaN, z: Number.NaN }
+    this.scatterRoot.clear()
+    // scatterRoot stays attached under this.root for sticky adds.
     this.ctx?.clearEmptyLandColliders?.()
   }
 }

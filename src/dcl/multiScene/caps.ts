@@ -26,6 +26,13 @@ const TERTIARY_RESIDENT_HARD_CAP = 8
  */
 export const ROAD_PHYS_RADIUS_M = 48
 
+/**
+ * Empty-land tree/rock **PhysX** boxes only within this player radius.
+ * Visual scatter (trees/rocks/grass instancing) stays sticky across the warm band;
+ * far props are decoration until you walk near them.
+ */
+export const EMPTY_LAND_PHYS_RADIUS_M = 48
+
 /** Max retained composite tertiary entities (LRU; multi-parcel shells preferred). */
 export const COMPOSITE_MAX_RETAINED = 16
 

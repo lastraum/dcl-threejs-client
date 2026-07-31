@@ -2,12 +2,12 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-26  
-> **Current phase:** **v1.5.x** multi-scene continuity on `feat/aoi-focus-owner` (FocusOwner · sticky demote · tertiary LOD) + **v1.5.0** production beta base.  
-> **Shipped (1.x):** **v1.5.0 PART/ROOT colliders · Animator hold · avatar compose · tours · cast audio** · **v1.4.0 custom worlds · Worlds map · AOI · shell UI · place analytics** · **v1.3.0 plaza/poker PE · TextShape UV · chat translate** · **v1.2.0 Camera Reel + biomes + backpack hides** · In-World Camera · multi-room chat · nearby voice · P4 bloom · glider.  
+> **Last updated:** 2026-07-31  
+> **Current phase:** **v1.7.0** on `main` · active branch **`yoga-revamp`** (1.7 base + scene-ui Yoga COD) — next: PE layers + scene UI text-measure for **1.8**.  
+> **Shipped (1.x):** **v1.7.0** community voice · live polls/Q&A/trivia + CSV · pets/Pet Barn · loot bag · multi-scene AOI anim · AudioAnalysis · EnvironmentApi/Testing · **v1.6.0** tour photos / Camera Reel · admin tools · scene UI fixes · **v1.5.0** PART/ROOT colliders · Animator · tours · cast · **v1.4.0** custom worlds · Worlds map · AOI · shell UI.  
 
-> **1.x next:** multi-scene FPS hardening under CBD ring load · backpack outfits/marketplace · scene UI text-measure · community voice Bearer · gallery multi-page · graphics P3 distance culls · analytics charts polish · broken-rig wearable fallback (shelved).  
-> **Note:** in-world `/goto` via 3D chat is wired (full scene reload). **EnvironmentApi / Testing ~system modules shipped** (2026-07-31).  
+> **1.x next (1.8+):** scene UI Yoga COD finish / text-measure · **portable experiences (layers plan)** · backpack outfits/marketplace · create-community / invites · gallery multi-page · graphics P3 distance culls · CBD multi-scene FPS hardening · Social WS transport reliability (PM LiveKit dual-path mitigates voice discovery).  
+> **Note:** in-world `/goto` via 3D chat is wired (full scene reload). PM LiveKit survives teleports. Community voice LiveKit survives Jump In.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
 > **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **Static COD:** [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) · **Multi-scene continuity:** [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) · **Place analytics:** [CREATOR_ANALYTICS.md](./CREATOR_ANALYTICS.md)
@@ -18,9 +18,94 @@
 
 ---
 
+## 🎉 Milestone — v1.7.0 release (Community voice · live tools · pets · AOI) (2026-07-31)
+
+**Status: release cut** — `dev-latest` → `main` · tag `v1.7.0`.
+
+Explorer **parity** + ThreejsClient **parity+** since **v1.6.0**. Tour photos / Camera Reel already shipped in **1.6** (not re-listed as new).
+
+### What's new
+
+- **Community voice chat** — start / join muted / request to speak / promote / demote / reject / kick / end
+- **Last-mod leave ends** the voice room for everyone
+- **Realtime voice discovery** — PM LiveKit topic + Social WS (no REST poll); gatekeeper fallback
+- **Jump In keeps community voice**; **PM LiveKit kept across teleports**
+- **Live polls** — place-owner host opens multi-choice polls in-world; guests vote from the place
+- **Live Q&A** — host runs an open question inbox; guests ask from the scene
+- **Live trivia** — host runs multi-question trivia rounds with guest answers
+- **CSV download logs** when ending any live-tools session (`poll-stats` / `qa-stats` / `trivia-stats`)
+- **Multiplayer pets** + **Pet Barn marketplace** — walk/fly follow, catalog, publish dispatch
+- **Loot Bag** — deposit grid, multi-item NFT bundles, 3D pack model
+- **`~system/EnvironmentApi`** + **`~system/Testing`** — real modules (no empty Proxy)
+- **AudioAnalysis (1212)** — host FFT for AudioSource / Stream / progressive video
+- **Multi-scene FocusOwner continuity** — promote handoff + sticky demote; secondary Animator pump
+- **Primary full-rate animators** (+ Graphics Advanced toggle) · **AOI warm band** polish
+- **Tour** leader keep-alive, force-end, rejoin, Focus camera snap
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Community voice** | 🟢 | Social v2 + gatekeeper · dual-path discovery · 2D pill + in-play card |
+| **Live tools** | 🟢 | Polls · Q&A · trivia · end-session CSV |
+| **Pets / Pet Barn** | 🟢 | MP companions · marketplace · publish Worker |
+| **Loot Bag** | 🟢 | Deposits · bundles · 3D pack |
+| **EnvironmentApi / Testing** | 🟢 | Last ~system gaps closed |
+| **AudioAnalysis** | 🟢 | Host FFT 1212 |
+| **AOI / multi-scene anim** | 🟢 | Continuity + full-rate primary + secondary pump |
+| **Tour photos / gallery** | 🟢 | Already in **v1.6.0** |
+
+**QA (release smoke):** community voice start/join/promote/Jump In keep · live poll vote + end CSV · Q&A + trivia session · pets + Pet Barn catalog · loot bag claim · Genesis walk secondary anim · plaza solids.
+
+**Tip:** `v1.7.0` on `main`. **1.8** targets scene UI + PE polish.
+
+---
+
+## ✅ Milestone — Community voice parity → `dev-latest` (2026-07-31)
+
+**Status: merged `feat/community-voice-parity` → `dev-latest`** (`6be3a9d`) — Explorer-aligned community voice end-to-end.
+
+### What's new
+
+- **Join as listener** — Social v2 + gatekeeper; everyone joins **muted** (unmute from UI)
+- **Request to speak / lower hand** · **Mods: Accept / Reject / Promote / Demote / Kick**
+- **Start / End for everyone** · **last remaining mod Leave ends stream** (even if non-mod listeners remain)
+- **Realtime discovery (no active-stream poll)** — dual path:
+  1. **PM LiveKit** topic `d3js-community-voice` (guest + wallet; same room as pool claims)
+  2. **Social WS** `SubscribeToCommunityVoiceChatUpdates` (best-effort; reconnect on dead transport)
+- **Instant fan-out** — toast · ACTIVE VOICE row · modal Join without REST polling
+- **2D floating pill** — bottom-anchored mute / volume / leave · participant roster popup with mod actions
+- **In-play voice card** — independent purple card above chat (pets chrome); accordion Speakers/Listeners horizontal avatars; chat height shrinks; rail = chat only
+- **Jump In keeps session** — community voice LiveKit is separate from World; pill hidden in 3D; controls on chat card
+- **PM LiveKit across teleports** — play-session retain (earlier on branch)
+- **Loading overlay** above all scene UI + voice chrome
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Social v2 RPCs** | 🟢 | start · join · request · promote · demote · reject · kick · mute · end |
+| **PM dual-path discovery** | 🟢 | wire `communityVoiceWire` · bus publish/retransmit |
+| **Social WS bus** | 🟢 | shared singleton; invalidate zombie RPC on drop |
+| **Gatekeeper fallback** | 🟢 | signed-fetch create/join + speak/speaker/kick REST |
+| **2D UI** | 🟢 | floating bar · communities browse ACTIVE VOICE · modal roster |
+| **3D UI** | 🟢 | `ChatPanel` voice card (purple) · mute-on-join |
+| **Teleport / Jump In** | 🟢 | PM retain · community voice keep · bar hide in-play |
+
+### Remaining community / voice gaps (not this ship)
+
+| Gap | Notes |
+| --- | ----- |
+| **Create community / invites** | Shell CTAs still “coming soon” |
+| **Social WS long-lived streams** | Still flaps (`RPC Transport closed`); PM dual-path covers voice **discovery**; friend connectivity retries |
+| **Service Bearer gatekeeper** | OpenAPI lists Bearer for some GK routes; client uses signed-fetch + Social RPC (working path) |
+| **Spatial community voice** | Nearby voice is spatial; community voice is flat LiveKit media room (Explorer-like) |
+
+**QA:** Two clients (wallet + guest) → start voice → other sees toast + ACTIVE VOICE → Join listener muted → promote → last-mod Leave ends for all → Jump In keeps audio · open chat for in-play card.
+
+**Tip:** `6be3a9d` on `dev-latest`.
+
+---
+
 ## ✅ Milestone — AudioAnalysis host fill (1212) (2026-07-31)
 
-**Status: landed** — last incomplete non-UI ECS write path closed.
+**Status: landed on `dev-latest`** — last incomplete non-UI ECS write path closed.
 
 ### What's new
 
@@ -41,7 +126,7 @@
 
 ## ✅ Milestone — ~system EnvironmentApi + Testing (2026-07-31)
 
-**Status: landed on `yoga-revamp`** — closes the last two backburner `~system` modules.
+**Status: landed on `dev-latest`** — closes the last two backburner `~system` modules.
 
 ### What's new
 
@@ -58,9 +143,9 @@
 
 ---
 
-## 🚧 Milestone — Multi-scene FocusOwner continuity (`feat/aoi-focus-owner`) (2026-07-26)
+## ✅ Milestone — Multi-scene FocusOwner continuity → `dev-latest` (2026-07-26)
 
-**Status: branch in progress** — continuity contract documented + landed; FPS still hardening under dual secondary load.
+**Status: merged `feat/aoi-focus-owner` → `dev-latest`** — continuity contract landed; FPS still hardening under dual secondary load. Shipped in **v1.7.0**.
 
 ### What's new (platform)
 

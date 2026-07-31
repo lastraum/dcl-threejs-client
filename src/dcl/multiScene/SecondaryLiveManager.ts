@@ -117,6 +117,19 @@ export class SecondaryLiveManager {
   }
 
   /**
+   * Scene graphs that should advance host Animator/Tween this frame.
+   * Live **secondary** only — tertiary keeps mixers sleeping by design.
+   */
+  getSecondaryMotionSystems(): SceneScriptSystem[] {
+    const out: SceneScriptSystem[] = []
+    for (const slot of this.slots.values()) {
+      if (slot.residentMode !== 'secondary') continue
+      out.push(slot.system)
+    }
+    return out
+  }
+
+  /**
    * Absolute parcel keys for every resident graph (secondary + tertiary sticky).
    * AOI must skip empty-land ground under these — otherwise demoted CBD becomes red void.
    */

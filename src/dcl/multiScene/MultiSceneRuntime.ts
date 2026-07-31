@@ -221,6 +221,14 @@ export class MultiSceneRuntime {
   }
 
   /**
+   * Live secondary systems whose host Animator/Tween must advance (not tertiary).
+   * World pumps these after tickSync — scripts alone do not advance mixers.
+   */
+  getSecondaryMotionSystems(): import('../../core/systems/SceneScriptSystem').SceneScriptSystem[] {
+    return this.secondary?.getSecondaryMotionSystems() ?? []
+  }
+
+  /**
    * Async projection + collider descs for PE/secondary.
    * World cooks these into PhysX with namespaced entity ids.
    *

@@ -25,6 +25,13 @@ import {
   tryParsePoolClaimDataPacket,
   type PoolClaimWireMsg
 } from './poolClaimWire'
+import {
+  COMMUNITY_VOICE_SIGNAL_TOPIC,
+  encodeCommunityVoiceSignalPacket,
+  isCommunityVoiceSignalTopic,
+  tryParseCommunityVoiceSignalPacket,
+  type CommunityVoiceSignalMsg
+} from './communityVoiceWire'
 import { tryDecodeRfc4ChatPacket } from './dclRfc4Chat'
 
 const ETH_ADDRESS_RE = /^0x[a-f0-9]{40}$/
@@ -74,6 +81,11 @@ export type PoolClaimDataEvent = {
   msg: PoolClaimWireMsg
 }
 
+export type CommunityVoiceSignalEvent = {
+  fromAddress: string
+  msg: CommunityVoiceSignalMsg
+}
+
 /**
  * ADR-208 private chat room — one persistent LiveKit connection for:
  * - 1:1 DMs: RFC4 Chat + `destinationIdentities` + topic = recipient wallet (Explorer wire)
@@ -81,6 +93,7 @@ export type PoolClaimDataEvent = {
  *   dest = message-router-*, topic = `community:{id}`
  * - Community Follow/Tour control (non-chat data, topic `d3js-follow:{id}`)
  * - Loot Bag claims (non-chat data, topic `d3js-lootbag:claims`)
+ * - Community voice started/ended (non-chat data, topic `d3js-community-voice`)
  *
  * Inbound 1:1 accepts: topic=`0x…` (to me), topic=`private:{me}`, or bare directed Chat.
  *
@@ -96,14 +109,22 @@ class PrivateMessagesServiceImpl {
   private localAddress: string | null = null
   /** How many SocialService instances currently want the shared room. */
   private holders = 0
+  /**
+   * AppController play-session hold — keeps PM LiveKit across World rebuilds
+   * (teleport / /goto). Released only when leaving 3D play entirely.
+   */
+  private playSessionHeld = false
   private readonly inbound = new Set<(ev: PrivateMessageEvent) => void>()
   private readonly communityInbound = new Set<(ev: CommunityMessageEvent) => void>()
   private readonly followInbound = new Set<(ev: CommunityFollowDataEvent) => void>()
   private readonly poolClaimInbound = new Set<(ev: PoolClaimDataEvent) => void>()
+  private readonly voiceSignalInbound = new Set<(ev: CommunityVoiceSignalEvent) => void>()
   /** Dedupe dual-send (directed + topic) and retransmits: key → last unix sec. */
   private readonly recentDmKeys = new Map<string, number>()
   /** Dedupe pool claim rebroadcasts: claimer|pos|at-bucket */
   private readonly recentPoolClaimKeys = new Map<string, number>()
+  /** Dedupe voice signals: community|status|at-bucket */
+  private readonly recentVoiceSignalKeys = new Map<string, number>()
 
   /** Call when a SocialService wants the shared PM room (init / open DM). */
   retain(): void {
@@ -116,6 +137,33 @@ class PrivateMessagesServiceImpl {
     if (this.holders === 0) {
       this.forceDisconnect()
     }
+  }
+
+  /**
+   * Keep the shared PM room alive for the whole 3D play session.
+   * Survives World.dispose on teleports; pair with {@link releasePlaySession}.
+   */
+  retainPlaySession(): void {
+    if (this.playSessionHeld) return
+    this.playSessionHeld = true
+    this.holders++
+  }
+
+  /** Leave 3D play / sign-out — allow PM LiveKit to drop when no SocialService holds it. */
+  releasePlaySession(): void {
+    if (!this.playSessionHeld) return
+    this.playSessionHeld = false
+    this.release()
+  }
+
+  /** True when AppController is holding PM across teleports. */
+  isPlaySessionHeld(): boolean {
+    return this.playSessionHeld
+  }
+
+  /** Debug — active retain count (SocialServices + optional play-session hold). */
+  getHolderCount(): number {
+    return this.holders
   }
 
   subscribe(listener: (ev: PrivateMessageEvent) => void): () => void {
@@ -146,6 +194,13 @@ class PrivateMessagesServiceImpl {
     }
   }
 
+  subscribeCommunityVoiceSignal(listener: (ev: CommunityVoiceSignalEvent) => void): () => void {
+    this.voiceSignalInbound.add(listener)
+    return () => {
+      this.voiceSignalInbound.delete(listener)
+    }
+  }
+
   isConnected(): boolean {
     // LiveKit session can drop while our flag stays true — trust the room state.
     return this.connected && !!this.session?.isConnected()
@@ -171,8 +226,10 @@ class PrivateMessagesServiceImpl {
 
   async connect(identity: AuthIdentity, localAddress: string): Promise<boolean> {
     this.identity = identity
-    this.localAddress = localAddress.toLowerCase()
+    // Never clobber a live room's localAddress with a caller's ephemeral key.
+    // Room identity (token) is authoritative once connected.
     if (this.isConnected()) return true
+    this.localAddress = localAddress.toLowerCase()
     // Stale flag after room drop — tear down before reconnect.
     if (this.connected || this.session) {
       this.session?.disconnect()
@@ -268,6 +325,7 @@ class PrivateMessagesServiceImpl {
           topicTrim.startsWith('private:') ||
           !topicTrim ||
           isPoolClaimTopic(topicTrim) ||
+          isCommunityVoiceSignalTopic(topicTrim) ||
           topicTrim.startsWith('d3js-')
         if (!interesting) return
         clientDebugLog.log(
@@ -355,6 +413,12 @@ class PrivateMessagesServiceImpl {
     // Loot Bag claims — room broadcast, peer toasts (not self).
     if (isPoolClaimTopic(topic)) {
       this.handlePoolClaimDataPacket(address, data)
+      return
+    }
+
+    // Community voice started/ended — room broadcast (Social WS fallback).
+    if (isCommunityVoiceSignalTopic(topic)) {
+      this.handleVoiceSignalPacket(address, data)
       return
     }
 
@@ -450,6 +514,87 @@ class PrivateMessagesServiceImpl {
       msg: { ...msg, a: claimer }
     }
     for (const listener of this.poolClaimInbound) listener(ev)
+  }
+
+  /**
+   * Community voice started/ended — room-broadcast on `d3js-community-voice`.
+   * Peers update browse/modal/toasts instantly even when Social WS is flapping.
+   */
+  async sendCommunityVoiceSignal(msg: CommunityVoiceSignalMsg): Promise<boolean> {
+    if (!this.session || !this.isConnected()) {
+      this.lastError = 'private messages room not connected'
+      clientDebugLog.log('social', 'Community voice signal skipped — PM room not connected', {
+        level: 'warn',
+        alsoConsole: true
+      })
+      return false
+    }
+    const packet = encodeCommunityVoiceSignalPacket(msg)
+    try {
+      const published = await this.session.publishTopicData(COMMUNITY_VOICE_SIGNAL_TOPIC, packet, true)
+      if (!published) {
+        this.lastError = 'LiveKit publishTopicData returned false'
+        clientDebugLog.log('social', 'Community voice signal publish failed', {
+          level: 'warn',
+          alsoConsole: true
+        })
+        return false
+      }
+      const remotes = this.session
+        .getRemoteParticipantIdentities()
+        .filter((id) => !isMessageRouterIdentity(id))
+      clientDebugLog.log(
+        'social',
+        `Community voice signal → ${msg.s} id=${msg.c.slice(0, 12)}… remotes=${remotes.length}`,
+        { level: remotes.length === 0 ? 'warn' : 'success', alsoConsole: true }
+      )
+      return true
+    } catch (err) {
+      this.lastError = err instanceof Error ? err.message : String(err)
+      clientDebugLog.log(
+        'social',
+        `Community voice signal publish error — ${this.lastError}`,
+        { level: 'error', alsoConsole: true }
+      )
+      return false
+    }
+  }
+
+  private handleVoiceSignalPacket(address: string, data: Uint8Array): void {
+    if (isMessageRouterIdentity(address)) return
+    const from = address.trim().toLowerCase()
+    const me = this.selfAddress()
+    if (!from) return
+    if (me && from === me) return
+    const msg = tryParseCommunityVoiceSignalPacket(data)
+    if (!msg) return
+    const bucket = Math.floor(msg.at / 3000)
+    const dedupeKey = `${msg.c.toLowerCase()}|${msg.s}|${bucket}|${from}`
+    const now = Date.now()
+    const prev = this.recentVoiceSignalKeys.get(dedupeKey)
+    if (prev != null && now - prev < 5000) return
+    this.recentVoiceSignalKeys.set(dedupeKey, now)
+    if (this.recentVoiceSignalKeys.size > 80) {
+      for (const [k, t] of this.recentVoiceSignalKeys) {
+        if (now - t > 60_000) this.recentVoiceSignalKeys.delete(k)
+      }
+    }
+    const n = this.voiceSignalInbound.size
+    clientDebugLog.log(
+      'social',
+      `Community voice signal ← ${msg.s} id=${msg.c.slice(0, 12)}… from=${from.slice(0, 10)}… listeners=${n}`,
+      { level: n === 0 ? 'warn' : 'success', alsoConsole: true }
+    )
+    if (n === 0) {
+      clientDebugLog.log(
+        'social',
+        'Community voice signal dropped — bus not subscribed (ensureStarted / HMR?)',
+        { level: 'warn', alsoConsole: true }
+      )
+      return
+    }
+    const ev: CommunityVoiceSignalEvent = { fromAddress: from, msg }
+    for (const listener of this.voiceSignalInbound) listener(ev)
   }
 
   /**

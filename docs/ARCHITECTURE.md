@@ -92,19 +92,23 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 
 | Area | Status |
 |------|--------|
-| Scene UI | Partial — Creator modal / hit-map polish |
-| Social | Multi-room + cast ✅; 2D chat FAB dock ✅; community toasts/mod gates ✅; nearby voice + spatial audio ✅; DMs ✅; community voice Bearer parity · create/invites open |
+| Scene UI | Yoga COD on `yoga-revamp` ([SCENE_UI_COD.md](./SCENE_UI_COD.md)) · text-measure / PE open polish remain |
+| Social | Multi-room + cast ✅; 2D chat FAB dock ✅; community toasts/mod gates ✅; nearby voice + spatial audio ✅; DMs ✅; **community voice** start/join/speak/promote/demote/kick/end · dual-path discovery · 2D/3D UI · Jump In keep ✅ · create/invites open |
+| Live tools | Scene **polls** · **Q&A** · **trivia** from location card · end-session **CSV** stats ✅ (v1.7) |
+| Pets / Pet Barn | Multiplayer companions · Barn marketplace catalog/publish ✅ (v1.7) |
+| Loot Bag | Deposit grid · multi-item bundles · 3D pack ✅ (v1.7) |
 | Play HUD | Location pill + circular Genesis minimap (parcels) ✅; worlds pill-only |
-| In-World Camera / Gallery | Photo fly mode (C) + Camera Reel save/list/detail ✅; gallery multi-page open |
+| In-World Camera / Gallery | Photo fly mode (C) + Camera Reel save/list/detail ✅ (v1.6); gallery multi-page open |
 | Spawn / physics | Elevated deck settle + PE stage-before-script ✅; PhysicsCombined force/impulse ✅; hold-Space glider ✅; **PART/ROOT collider motion (v1.5)** ✅ |
 | Backpack | Wearables/emotes/colors ✅; outfits + marketplace open |
-| Graphics P3/P4 | **P4 bloom/HDR shipped** (`BloomPipeline` emissive extract + depth) · P3 distance culls open · untextured VFX additive glow |
+| Graphics P3/P4 | **P4 bloom/HDR shipped** (`BloomPipeline` emissive extract + depth) · P3 distance culls open · untextured VFX additive glow · full-rate primary animators Advanced ✅ (v1.7) |
 | PhysicsCombined* | Force + impulse on PE + glider force 1.5× |
 | Scene colliders (CCT) | ROOT cook-once + actor T+R · PART world-cook on hull fp · seal never rebuilds SQ ([COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md)) |
+| Multi-scene / AOI | FocusOwner continuity · sticky demote · secondary Animator pump · warm-band AOI ✅ (v1.7); CBD ring FPS still 🟡 |
 | GltfNodeModifiers | 🟢 full path + material/shadow overrides; instance promote |
 | NftShape | 🟢 procedural frames + OpenSea proxy |
 | GltfContainerLoadingState, AvatarBase | 🔵 host LWW (done) |
-| Social / tours | Follow tours · Focus POV · cast landing audio ✅ (v1.5 RC) |
+| Social / tours | Follow tours · Focus POV · cast landing audio · tour rejoin/keep-alive ✅ |
 | Avatar crowd | Stagger · compose path · jump mesh pin ✅ (v1.5 RC) |
 
 ### P3 — Hygiene
@@ -115,13 +119,13 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 
 ---
 
-## Suggested next engineering order (post-v1.5 RC)
+## Suggested next engineering order (post v1.7.0)
 
-1. **Cut v1.5.0** — bump version, tag, `dev-latest` → `main` after smoke matrix in PROGRESS.  
-2. Product **1.x**: backpack outfits · scene UI text-measure · community voice Bearer parity · create-community / invites.  
-3. Optional: graphics **P3** distance culls; MSAA+bloom concurrent; SyncEntities auth-host.  
+1. Product **1.8**: scene UI text-measure / Yoga · portable experiences · backpack outfits · **create-community / invites**.  
+2. Optional: harden Social RPC long-lived streams (friend connectivity / voice WS still flap; PM dual-path covers voice discovery).  
+3. Optional: graphics **P3** distance culls; MSAA+bloom concurrent; SyncEntities auth-host; CBD multi-scene FPS.  
 4. Mesh frame-law / instancing follow-through (motion promote already covers dynamic props).  
-5. ~~EnvironmentApi/Testing~~ — **shipped** (SDK6-compat + `@dcl/sdk/testing`).  
+5. ~~EnvironmentApi/Testing~~ · ~~AudioAnalysis~~ · ~~community voice~~ · ~~live tools~~ · ~~pets/Pet Barn~~ · ~~loot bag~~ · ~~AOI anim ship~~ — **shipped v1.7.0** (2026-07-31).  
 6. Keep INTEGRATION registry + PROGRESS updated on each ship.
 
 ---

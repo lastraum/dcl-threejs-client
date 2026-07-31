@@ -220,10 +220,8 @@ export class World {
   private static readonly NEVER_COOKED_SCAN_MS = 1_500
   private lastColliderHealthLogMs = 0
   private lastLoggedStaticCount = -1
-  /** Fast SQ soft watchdog (~500ms) — separate from the 8s health log. */
+  /** SQ soft watchdog interval (probe-only; not full O(static) diag). */
   private lastSqSoftWatchMs = 0
-  private lastSoftFloorLiftMs = 0
-  private softFloorLiftCount = 0
 
   /** Runtime burst (e.g. theatre composite spawns). */
   private runtimeColliderBurstUntil = 0
@@ -853,6 +851,9 @@ export class World {
           this.physics.syncAoiEmptyLandColliders(descs)
         },
         clearEmptyLandColliders: () => this.physics.clearAoiEmptyLandColliders(),
+        purgeEmptyLandColliders: (entityIds) => {
+          this.physics.purgeAoiEmptyLandColliders(entityIds)
+        },
         onSecondaryCandidates: (candidates) => {
           this.multiScene?.reconcileSecondaries(candidates)
         }
@@ -1770,6 +1771,9 @@ export class World {
           this.multiScene?.tickSync(playerPose, cameraPose, startFrame)
           // PE tween/billboard/attach motion + reserved-parent meshes (same as primary pump).
           this.pumpPeMotionBridges(delta, startFrame)
+          // Live secondaries: scripts tick above, but host Animator mixers need delta
+          // (was frozen mid-clip without this — COD gap for sticky/demoted plaza).
+          this.pumpSecondaryMotionBridges(delta, startFrame)
           // After PE player-frame may have bound VC this tick — re-select before next freecam frame.
           this.selectActiveVirtualCameraBridge()
           // Mirror PE player-affecting state onto primary (InputModifier, forces) — not MainCamera ids.
@@ -2148,35 +2152,41 @@ export class World {
       void this.scheduleColliderCookDrain()
     }
 
-    // Fast SQ soft watchdog — heal only on raw didHit=false (not spawn-probe false negatives).
-    // Spawn probe can MISS while SQ is healthy → was force-rebuilding a good tree every 1s.
+    // Fast SQ soft watchdog — sweep only (no O(static) membership scan every 500ms).
+    // Full diagnoseSceneQueryAt walks ~3k+ WASM actors and was a continuous walk tax.
     if (this.spawnColliderSealComplete && this.collidersReady) {
       const nowWatch = performance.now()
-      if (nowWatch - this.lastSqSoftWatchMs > 500) {
+      if (nowWatch - this.lastSqSoftWatchMs > 1500) {
         this.lastSqSoftWatchMs = nowWatch
         const feetW = this.player?.getWorldPosition()
         if (feetW) {
-          const sq = this.physics.diagnoseSceneQueryAt(feetW.x, feetW.y, feetW.z, 'sq-watch', {
-            quiet: true
-          })
-          if (!sq.didHit) {
+          const probe = this.physics.probeWalkSurfaceFeetY(
+            feetW.x,
+            feetW.z,
+            feetW.y + 2.5,
+            6,
+            feetW.y
+          )
+          // Heal only when SQ truly misses (probe null), not when CCT stands on infinite ground.
+          if (probe == null) {
             this.physics.tryHealPostSealSceneQuery(feetW.x, feetW.y, feetW.z)
           }
         }
       }
     }
 
-    // Health log when static count drops or every 8s — soft floors are often silent.
+    // Health log: static count drop or rare summary — NOT O(n) soft diagnostics every 8s
+    // while standing on infinite ground (expected on Genesis roads / empty land).
     const now = performance.now()
     const staticN = this.physics.staticColliderCount
-    if (
-      (this.lastLoggedStaticCount >= 0 && staticN < this.lastLoggedStaticCount - 5) ||
-      now - this.lastColliderHealthLogMs > 8_000
-    ) {
+    const staticDropped =
+      this.lastLoggedStaticCount >= 0 && staticN < this.lastLoggedStaticCount - 5
+    if (staticDropped || now - this.lastColliderHealthLogMs > 30_000) {
       this.lastColliderHealthLogMs = now
-      const extracted = this.sceneScript.getAllPhysicsColliderDescs().length
+      const descs = this.sceneScript.getAllPhysicsColliderDescs()
+      const extracted = descs.length
       let missing = 0
-      for (const d of this.sceneScript.getAllPhysicsColliderDescs()) {
+      for (const d of descs) {
         if (this.physics.isAoiRoadColliderEntity(d.entity)) continue
         if (this.physics.isAoiEmptyLandColliderEntity(d.entity)) continue
         if (!this.physics.hasStaticActor(d.entity)) missing++
@@ -2184,7 +2194,8 @@ export class World {
       const ground = this.physics.getLastGroundPhysEntity()
       const feet = this.player?.getWorldPosition()
       const sides = this.physics.getLastCctHitSides()
-      if (missing > 0 || staticN !== this.lastLoggedStaticCount || now - this.lastColliderHealthLogMs < 50) {
+      // Only log when something is wrong or count changed — skip spam on healthy infinite ground.
+      if (missing > 0 || staticDropped || staticN !== this.lastLoggedStaticCount) {
         console.info(
           `[phys] health static=${staticN} extracted≈${extracted} missing≈${missing} ` +
             `queue=${this.colliderCookQueue.size} seal=${this.spawnColliderSealComplete} ` +
@@ -2194,51 +2205,15 @@ export class World {
                 : '?'
             }`
         )
-        // Soft-world: actors exist but CCT only hits infinite ground / nothing.
-        if (feet && (ground === null || ground === -1)) {
-          this.physics.logStaticCollidersNear(feet.x, feet.y, feet.z, 14, 'health-soft')
-          const probe = this.physics.probeWalkSurfaceFeetY(feet.x, feet.z, feet.y + 2.5, 6, feet.y)
-          console.info(
-            `[phys] health-soft sweepFeetY=${probe != null ? probe.toFixed(2) : 'MISS'} ` +
-              `sides=${sides ? 'yes' : 'no'}`
-          )
-          const diag = this.physics.diagnoseSceneQueryAt(feet.x, feet.y, feet.z, 'health-soft')
-          if (!diag.didHit) {
-            this.physics.tryHealPostSealSceneQuery(feet.x, feet.y, feet.z)
-          } else {
-            // SQ alive, CCT soft — re-pin open filter + cache (not tree thrash).
-            this.physics.invalidateControllerCache()
-          }
-          this.physics.invalidateControllerCache()
-          this.discoverMissingColliderActors()
-          // Infinite ground plane (entity -1) is expected when floors≈0 (e.g. neat.dcl.eth).
-          // Do not teleport for a tiny probe delta — that feels like a random in-place "fall".
-          // Only lift when clearly stuck under real mesh (probe well above feet, not near y0 plane).
-          const nowLift = performance.now()
-          const onInfinitePlane = ground === -1
-          const meaningfulLift =
-            probe != null &&
-            probe > feet.y + 0.25 &&
-            probe < feet.y + 4 &&
-            !(onInfinitePlane && probe < 0.35 && feet.y > -0.05)
-          if (
-            meaningfulLift &&
-            this.softFloorLiftCount < 2 &&
-            nowLift - this.lastSoftFloorLiftMs > 12_000
-          ) {
-            this.lastSoftFloorLiftMs = nowLift
-            this.softFloorLiftCount++
-            const lifted = feet.clone()
-            lifted.y = probe
-            this.physics.teleport(lifted)
-            this.physics.invalidateControllerCache()
-            this.player?.getPlayerRoot()?.position.copy(this.physics.positionOut)
-            console.info(
-              `[phys] health-soft lift feet y ${feet.y.toFixed(2)} → ${probe.toFixed(2)} ` +
-                `(under-floor recover #${this.softFloorLiftCount})`
-            )
-          }
+      }
+      // Soft recovery only when actors are missing or SQ truly fails — NOT when
+      // groundPhys=-1 (infinite plane is normal on roads/empty Genesis parcels).
+      if (feet && missing > 0) {
+        const probe = this.physics.probeWalkSurfaceFeetY(feet.x, feet.z, feet.y + 2.5, 6, feet.y)
+        if (probe == null) {
+          this.physics.tryHealPostSealSceneQuery(feet.x, feet.y, feet.z)
         }
+        this.discoverMissingColliderActors()
       }
       this.lastLoggedStaticCount = staticN
     }
@@ -4099,6 +4074,20 @@ export class World {
         sys.pumpMotionBridges(delta, frame)
       } catch (err) {
         console.warn('[pe] pumpMotionBridges failed', err)
+      }
+    }
+  }
+
+  /**
+   * Live secondary Animator/Tween advance (≤3 graphs). Tertiary is intentionally frozen.
+   * Without this, sticky demoted scenes keep scripts but clips freeze mid-pose.
+   */
+  private pumpSecondaryMotionBridges(delta: number, frame: number): void {
+    for (const sys of this.multiScene?.getSecondaryMotionSystems() ?? []) {
+      try {
+        sys.pumpMotionBridges(delta, frame)
+      } catch (err) {
+        console.warn('[multi-scene] secondary pumpMotionBridges failed', err)
       }
     }
   }

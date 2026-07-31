@@ -188,6 +188,18 @@ export async function demoteSpeakerGatekeeper(
   return signedAction(identity, url, 'DELETE', communityId)
 }
 
+/** DELETE …/users/{addr} — kick from community voice */
+export async function kickPlayerGatekeeper(
+  identity: AuthIdentity,
+  communityId: string,
+  userAddress: string,
+  gatekeeperUrl = GATEKEEPER_URL
+): Promise<CommunityVoiceActionResult> {
+  const base = gatekeeperUrl.replace(/\/$/, '')
+  const url = `${base}/community-voice-chat/${encodeURIComponent(communityId)}/users/${encodeURIComponent(userAddress.toLowerCase())}`
+  return signedAction(identity, url, 'DELETE', communityId)
+}
+
 async function signedAction(
   identity: AuthIdentity,
   url: string,

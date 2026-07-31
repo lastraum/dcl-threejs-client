@@ -87,6 +87,7 @@ export class CommunitiesBrowseView {
   private readonly activeToursRow: HTMLElement
   private readonly communityModal: CommunityModal
   private readonly getAuthIdentity?: () => AuthIdentity | null
+  private readonly getUserAddress?: () => string | null
   private readonly getFollow?: () => CommunityFollowController | null
   private readonly onBrowseCount?: (total: number) => void
   private readonly onJoinedCommunity?: (community: CommunityListRow) => void
@@ -105,6 +106,7 @@ export class CommunitiesBrowseView {
 
   constructor(opts: CommunitiesBrowseViewOptions = {}) {
     this.getAuthIdentity = opts.getAuthIdentity
+    this.getUserAddress = opts.getUserAddress
     this.getFollow = opts.getFollow
     this.onBrowseCount = opts.onBrowseCount
     this.onJoinedCommunity = opts.onJoinedCommunity
@@ -216,11 +218,12 @@ export class CommunitiesBrowseView {
     this.root.remove()
   }
 
-  /** Social WS bus — no REST polling. Seed once when bus starts; live STARTED/ENDED after. */
+  /** Social WS + PM LiveKit bus — no REST polling. Seed once; live STARTED/ENDED after. */
   private wireVoiceLive(): void {
     this.unsubVoiceBus?.()
     const identity = this.getAuthIdentity?.() ?? null
-    communityVoiceUpdatesBus.ensureStarted(identity)
+    const wallet = this.getUserAddress?.() ?? null
+    communityVoiceUpdatesBus.ensureStarted(identity, wallet)
     this.activeVoice = communityVoiceUpdatesBus.getActive()
     this.renderActiveVoice()
     this.unsubVoiceBus = communityVoiceUpdatesBus.subscribe(() => {
@@ -344,7 +347,7 @@ export class CommunitiesBrowseView {
         const people = v.participantCount > 0 ? `${v.participantCount} live` : 'Live'
         return `
           <button type="button" class="communities-browse-view__live-chip" role="listitem"
-            data-live-voice-id="${escapeHtml(v.communityId)}" title="Open ${escapeHtml(name)}">
+            data-live-voice-id="${escapeHtml(v.communityId)}" title="Open ${escapeHtml(name)} voice">
             <span class="communities-browse-view__live-chip-media">
               ${
                 thumb

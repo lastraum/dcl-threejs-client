@@ -15,6 +15,7 @@ import { parseLiveKitConnectionString } from '../network/comms/livekitAdapter'
 import {
   demoteSpeakerGatekeeper,
   joinCommunityVoiceChat,
+  kickPlayerGatekeeper,
   promoteSpeakerGatekeeper,
   rejectSpeakRequestGatekeeper,
   requestToSpeakGatekeeper
@@ -22,12 +23,15 @@ import {
 import { voiceChatVolumeMultiplier, volumeToGain, soundSettings } from '../rendering/SoundSettings'
 import {
   demoteSpeakerInCommunityVoiceChatViaSocialRpc,
+  endCommunityVoiceChatViaSocialRpc,
   joinCommunityVoiceChatViaSocialRpc,
+  kickPlayerFromCommunityVoiceChatViaSocialRpc,
   promoteSpeakerInCommunityVoiceChatViaSocialRpc,
   rejectSpeakRequestInCommunityVoiceChatViaSocialRpc,
   requestToSpeakInCommunityVoiceChatViaSocialRpc,
   startCommunityVoiceChatViaSocialRpc
 } from './socialServiceV2'
+import { communityVoiceUpdatesBus } from './communityVoiceUpdatesBus'
 
 export type CommunityVoiceRole = 'speaker' | 'listener'
 
@@ -52,6 +56,8 @@ export type CommunityVoiceParticipant = {
 export type CommunityVoiceSessionState = {
   active: boolean
   communityId: string | null
+  communityName: string | null
+  communityImage: string | null
   role: CommunityVoiceRole
   handRaised: boolean
   canPublish: boolean
@@ -72,6 +78,8 @@ type StateListener = (state: CommunityVoiceSessionState) => void
 export class CommunityVoiceSession {
   private room: Room | null = null
   private communityId: string | null = null
+  private communityName: string | null = null
+  private communityImage: string | null = null
   private role: CommunityVoiceRole = 'listener'
   private handRaised = false
   private identity: AuthIdentity | null = null
@@ -96,6 +104,8 @@ export class CommunityVoiceSession {
     return {
       active: this.isActive(),
       communityId: this.communityId,
+      communityName: this.communityName,
+      communityImage: this.communityImage,
       role: this.role,
       handRaised: this.handRaised,
       canPublish: this.localCanPublish(),
@@ -112,6 +122,19 @@ export class CommunityVoiceSession {
     return this.communityId
   }
 
+  /** Display meta for floating bar / toasts (survives modal close). */
+  setDisplayMeta(meta: { communityName?: string | null; communityImage?: string | null }): void {
+    if (meta.communityName !== undefined) {
+      const n = meta.communityName?.trim() || null
+      if (n) this.communityName = n
+    }
+    if (meta.communityImage !== undefined) {
+      const img = meta.communityImage?.trim() || null
+      if (img) this.communityImage = img
+    }
+    if (this.isActive()) this.emit()
+  }
+
   getRole(): CommunityVoiceRole {
     return this.role
   }
@@ -123,14 +146,13 @@ export class CommunityVoiceSession {
   /**
    * True when the local user is a community owner/mod and no *other* mod is
    * still in the LiveKit room (by published communityRole metadata).
-   * Used so the last remaining mod ends the voice chat on leave.
+   * Non-mod listeners still in the room do **not** count — last mod leave ends
+   * the stream for everyone (Explorer parity).
    */
   isSoleRemainingMod(): boolean {
     if (!this.isActive()) return false
     if (!isCommunityVoiceModRole(this.communityRole)) return false
-    const others = this.collectParticipants().filter(
-      (p) => !p.isLocal && p.isMod
-    )
+    const others = this.collectParticipants().filter((p) => !p.isLocal && p.isMod)
     return others.length === 0
   }
 
@@ -147,7 +169,27 @@ export class CommunityVoiceSession {
     displayName?: string
     /** Community role for gatekeeper fallback */
     userRole?: string | null
+    communityName?: string | null
+    communityImage?: string | null
   }): Promise<{ ok: true } | { ok: false; error: string }> {
+    const communityId = options.communityId.trim()
+    if (!communityId) return { ok: false, error: 'community_id_required' }
+
+    // Already connected to this community — keep LiveKit session (re-open details / Active Voice).
+    if (
+      this.isActive() &&
+      this.communityId &&
+      this.communityId.toLowerCase() === communityId.toLowerCase()
+    ) {
+      this.setDisplayMeta({
+        communityName: options.communityName,
+        communityImage: options.communityImage
+      })
+      if (options.userRole) this.communityRole = options.userRole
+      this.emit()
+      return { ok: true }
+    }
+
     await this.leave()
 
     const action = options.action ?? 'join'
@@ -155,45 +197,97 @@ export class CommunityVoiceSession {
     let connectionUrl = ''
 
     if (action === 'create') {
-      const rpc = await startCommunityVoiceChatViaSocialRpc(options.identity, options.communityId)
+      const rpc = await startCommunityVoiceChatViaSocialRpc(options.identity, communityId)
       if (rpc.ok) {
         connectionUrl = rpc.value.connectionUrl
+        clientDebugLog.log('social', `Community voice create via social-rpc · ${communityId.slice(0, 12)}…`, {
+          level: 'success',
+          alsoConsole: true
+        })
       } else {
+        clientDebugLog.log(
+          'social',
+          `Community voice create social-rpc failed — ${rpc.error}; trying gatekeeper`,
+          { level: 'warn', alsoConsole: true }
+        )
         const gk = await joinCommunityVoiceChat(options.identity, {
-          communityId: options.communityId,
+          communityId,
           userAddress: options.userAddress,
           action: 'create',
           userRole: options.userRole,
           profileName: options.displayName
         })
-        if (!gk.ok) return { ok: false, error: rpc.error || gk.error }
+        if (!gk.ok) {
+          return {
+            ok: false,
+            error: `create failed · rpc: ${rpc.error} · gatekeeper: ${gk.error}`
+          }
+        }
         connectionUrl = gk.connectionUrl
+        clientDebugLog.log('social', `Community voice create via gatekeeper · ${communityId.slice(0, 12)}…`, {
+          level: 'success',
+          alsoConsole: true
+        })
       }
     } else {
-      const rpc = await joinCommunityVoiceChatViaSocialRpc(options.identity, options.communityId)
+      // Listener join via Social RPC (client path). Reconnects if the shared socket
+      // died after SubscribeToCommunityVoiceChatUpdates ("RPC Transport closed").
+      // Gatekeeper is service-Bearer oriented — keep as last-resort signed-fetch fallback.
+      const rpc = await joinCommunityVoiceChatViaSocialRpc(options.identity, communityId)
       if (rpc.ok) {
         connectionUrl = rpc.value.connectionUrl
+        clientDebugLog.log('social', `Community voice join via social-rpc · ${communityId.slice(0, 12)}…`, {
+          level: 'success',
+          alsoConsole: true
+        })
       } else {
+        clientDebugLog.log(
+          'social',
+          `Community voice join social-rpc failed — ${rpc.error}; trying gatekeeper`,
+          { level: 'warn', alsoConsole: true }
+        )
         const gk = await joinCommunityVoiceChat(options.identity, {
-          communityId: options.communityId,
+          communityId,
           userAddress: options.userAddress,
           action: 'join',
           userRole: options.userRole,
           profileName: options.displayName
         })
-        if (!gk.ok) return { ok: false, error: rpc.error || gk.error }
+        if (!gk.ok) {
+          return {
+            ok: false,
+            error: `join failed · rpc: ${rpc.error} · gatekeeper: ${gk.error}`
+          }
+        }
         connectionUrl = gk.connectionUrl
+        clientDebugLog.log('social', `Community voice join via gatekeeper · ${communityId.slice(0, 12)}…`, {
+          level: 'success',
+          alsoConsole: true
+        })
       }
     }
 
-    return this.connectRoom({
+    const connected = await this.connectRoom({
       connectionUrl,
-      communityId: options.communityId,
+      communityId,
       identity: options.identity,
       userAddress: options.userAddress,
       userRole: options.userRole ?? null,
-      asSpeaker
+      asSpeaker,
+      communityName: options.communityName ?? null,
+      communityImage: options.communityImage ?? null
     })
+    // Fan-out discovery on successful *create* (PM LiveKit). Modal also notifies with name/image;
+    // bus dedupes + retransmits — this covers any non-modal start path.
+    if (connected.ok && action === 'create') {
+      communityVoiceUpdatesBus.ensureStarted(options.identity, options.userAddress)
+      communityVoiceUpdatesBus.notifyLocalStarted(communityId, {
+        starterAddress: options.userAddress,
+        communityName: options.communityName ?? undefined,
+        communityImage: options.communityImage ?? undefined
+      })
+    }
+    return connected
   }
 
   /** Raise or lower hand (request to speak). */
@@ -288,6 +382,35 @@ export class CommunityVoiceSession {
     return { ok: true }
   }
 
+  /** Moderator: kick player out of the voice room. */
+  async kickPlayer(userAddress: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (!this.identity || !this.communityId) return { ok: false, error: 'not_in_voice' }
+    const addr = userAddress.trim().toLowerCase()
+    if (!addr) return { ok: false, error: 'user_required' }
+    if (addr === this.userAddress?.toLowerCase()) return { ok: false, error: 'cannot_kick_self' }
+
+    const rpc = await kickPlayerFromCommunityVoiceChatViaSocialRpc(
+      this.identity,
+      this.communityId,
+      addr
+    )
+    if (!rpc.ok) {
+      const gk = await kickPlayerGatekeeper(this.identity, this.communityId, addr)
+      if (!gk.ok) return { ok: false, error: rpc.error || gk.error }
+    }
+    clientDebugLog.log('social', `Community voice kick → ${addr.slice(0, 10)}…`, {
+      level: 'success',
+      alsoConsole: true
+    })
+    this.emit()
+    return { ok: true }
+  }
+
+  /** True when the local user is community owner/mod/admin (from join metadata). */
+  isLocalMod(): boolean {
+    return isCommunityVoiceModRole(this.communityRole)
+  }
+
   async setMicEnabled(enabled: boolean): Promise<void> {
     if (!this.room) return
     if (enabled && !this.localCanPublish() && this.role !== 'speaker') {
@@ -309,7 +432,41 @@ export class CommunityVoiceSession {
     this.emit()
   }
 
-  async leave(): Promise<void> {
+  /**
+   * Leave the community voice LiveKit room.
+   * When the local user is the last remaining mod, ends the voice chat for
+   * everyone (even if non-mod listeners remain) and fans out ENDED over PM.
+   *
+   * @param opts.endIfSoleMod default true — set false for dispose / silent teardown.
+   */
+  async leave(opts?: { endIfSoleMod?: boolean }): Promise<void> {
+    const endIfSoleMod = opts?.endIfSoleMod !== false
+    const identity = this.identity
+    const communityId = this.communityId
+    const starterAddress = this.userAddress
+    const shouldEndForEveryone =
+      endIfSoleMod && this.isActive() && this.isSoleRemainingMod() && !!identity && !!communityId
+
+    if (shouldEndForEveryone && identity && communityId) {
+      const ended = await endCommunityVoiceChatViaSocialRpc(identity, communityId)
+      if (ended.ok) {
+        communityVoiceUpdatesBus.notifyLocalEnded(communityId, {
+          starterAddress: starterAddress ?? undefined
+        })
+        clientDebugLog.log(
+          'social',
+          `Community voice ended on last-mod leave · ${communityId.slice(0, 12)}…`,
+          { level: 'success', alsoConsole: true }
+        )
+      } else {
+        clientDebugLog.log(
+          'social',
+          `Community voice end on last-mod leave failed — ${ended.error}`,
+          { level: 'warn', alsoConsole: true }
+        )
+      }
+    }
+
     this.clearRemotes()
     if (this.room) {
       try {
@@ -322,6 +479,8 @@ export class CommunityVoiceSession {
       this.room = null
     }
     this.communityId = null
+    this.communityName = null
+    this.communityImage = null
     this.role = 'listener'
     this.handRaised = false
     this.identity = null
@@ -331,7 +490,7 @@ export class CommunityVoiceSession {
   }
 
   dispose(): void {
-    void this.leave()
+    void this.leave({ endIfSoleMod: false })
     this.unsubSound?.()
     this.unsubSound = null
     this.listeners.clear()
@@ -346,6 +505,8 @@ export class CommunityVoiceSession {
     userAddress: string
     userRole: string | null
     asSpeaker: boolean
+    communityName?: string | null
+    communityImage?: string | null
   }): Promise<{ ok: true } | { ok: false; error: string }> {
     let url: string
     let token: string
@@ -377,6 +538,8 @@ export class CommunityVoiceSession {
     room.on(RoomEvent.Disconnected, () => {
       this.clearRemotes()
       this.communityId = null
+      this.communityName = null
+      this.communityImage = null
       this.room = null
       this.role = 'listener'
       this.handRaised = false
@@ -393,6 +556,8 @@ export class CommunityVoiceSession {
 
     this.room = room
     this.communityId = opts.communityId
+    this.communityName = opts.communityName?.trim() || null
+    this.communityImage = opts.communityImage?.trim() || null
     this.identity = opts.identity
     this.userAddress = opts.userAddress.toLowerCase()
     this.communityRole = opts.userRole
@@ -401,15 +566,11 @@ export class CommunityVoiceSession {
 
     await this.publishLocalMetadata()
 
-    // Listeners stay muted; starters / token speakers get mic.
-    if (this.role === 'speaker') {
-      await this.tryEnableMic()
-    } else {
-      try {
-        await room.localParticipant.setMicrophoneEnabled(false)
-      } catch {
-        /* ignore */
-      }
+    // Everyone joins muted (speakers + listeners). User unmutes from the voice UI.
+    try {
+      await room.localParticipant.setMicrophoneEnabled(false)
+    } catch {
+      /* ignore */
     }
 
     for (const p of room.remoteParticipants.values()) {

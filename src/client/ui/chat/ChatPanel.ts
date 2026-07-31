@@ -32,6 +32,15 @@ import { isChatImageLine, type ChatChannelChoice, type ChatLine } from '../../..
 import { wireChatImageExpand } from './chatImageLightbox'
 import { ChatChannelMenu } from './ChatChannelMenu'
 import { appendTranslateControls } from './chatTranslateUi'
+import {
+  getCommunityVoiceSession,
+  walletFromIdentity,
+  type CommunityVoiceParticipant,
+  type CommunityVoiceSessionState
+} from '../../../social/CommunityVoiceSession'
+import { ChatPeerProfiles } from '../../../social/ChatPeerProfiles'
+import { shortenAddress } from '../../../avatar/displayName'
+import { soundSettings, VOLUME_MAX, VOLUME_MIN } from '../../../rendering/SoundSettings'
 
 export type ChatPanelOptions = {
   social: SocialService
@@ -98,6 +107,20 @@ export class ChatPanel {
   private readonly followFlagBtn: HTMLButtonElement
   private readonly followFlagInput: HTMLInputElement
   private readonly followFlagThumb: HTMLImageElement
+  /**
+   * Separate community-voice card stacked above the chat panel (Explorer-style).
+   * Accordion + Speakers / Listeners tabs with horizontal avatar scroll.
+   */
+  private readonly voiceCardEl: HTMLElement
+  private readonly panelStackEl: HTMLElement
+  private readonly panelRowEl: HTMLElement
+  private unsubCommunityVoice: (() => void) | null = null
+  private unsubVoiceSound: (() => void) | null = null
+  private unsubVoiceProfiles: (() => void) | null = null
+  private communityVoiceState: CommunityVoiceSessionState | null = null
+  private voiceAccordionOpen = false
+  private voiceRosterTab: 'speakers' | 'listeners' = 'speakers'
+  private readonly voiceProfiles = new ChatPeerProfiles()
 
   constructor({ social, onVisibilityChange, onGoto, onOpenProfile }: ChatPanelOptions) {
     this.social = social
@@ -111,6 +134,46 @@ export class ChatPanel {
     this.root.id = 'chat-panel-wrap'
     this.root.className = 'chat-panel-wrap'
     this.root.hidden = true
+
+    this.panelStackEl = document.createElement('div')
+    this.panelStackEl.className = 'chat-panel-stack'
+
+    this.voiceCardEl = document.createElement('div')
+    this.voiceCardEl.className = 'chat-voice-card'
+    this.voiceCardEl.hidden = true
+    this.voiceCardEl.setAttribute('role', 'region')
+    this.voiceCardEl.setAttribute('aria-label', 'Community voice')
+    this.voiceCardEl.innerHTML = `
+      <div class="chat-voice-card__head">
+        <button type="button" class="chat-voice-card__toggle" data-voice-accordion aria-expanded="false">
+          <span class="chat-voice-card__live" aria-hidden="true"></span>
+          <span class="chat-voice-card__kicker">Community voice</span>
+          <span class="chat-voice-card__role" data-voice-role></span>
+          <span class="chat-voice-card__chevron" data-voice-chevron aria-hidden="true">▸</span>
+        </button>
+        <div class="chat-voice-card__info-row">
+          <span class="chat-voice-card__title" data-voice-title>Voice chat</span>
+          <span class="chat-voice-card__counts" data-voice-meta></span>
+        </div>
+        <div class="chat-voice-card__controls">
+          <button type="button" class="chat-voice-card__btn" data-voice-hand hidden title="Request to speak">Speak</button>
+          <button type="button" class="chat-voice-card__btn" data-voice-mic hidden title="Mute">Mute</button>
+          <label class="chat-voice-card__vol" title="Voice volume">
+            <span aria-hidden="true">🔊</span>
+            <input type="range" class="chat-voice-card__slider" data-voice-volume
+              min="${VOLUME_MIN}" max="${VOLUME_MAX}" step="1" />
+          </label>
+          <button type="button" class="chat-voice-card__btn chat-voice-card__btn--leave" data-voice-leave title="Leave voice">Leave</button>
+        </div>
+      </div>
+      <div class="chat-voice-card__body" data-voice-body hidden>
+        <div class="chat-voice-card__tabs" role="tablist">
+          <button type="button" class="chat-voice-card__tab is-active" role="tab" data-voice-tab="speakers" aria-selected="true">Speakers</button>
+          <button type="button" class="chat-voice-card__tab" role="tab" data-voice-tab="listeners" aria-selected="false">Listeners</button>
+        </div>
+        <div class="chat-voice-card__scroll" data-voice-people role="list"></div>
+      </div>
+    `
 
     this.panelEl = document.createElement('aside')
     this.panelEl.className = 'chat-panel'
@@ -156,8 +219,14 @@ export class ChatPanel {
     this.railScrollEl.className = 'chat-panel__rail-scroll'
     this.railEl.appendChild(this.railScrollEl)
 
-    this.root.appendChild(this.panelEl)
-    this.root.appendChild(this.railEl)
+    // Voice card above; rail only next to the chat panel (not full stack height).
+    this.panelRowEl = document.createElement('div')
+    this.panelRowEl.className = 'chat-panel-row'
+    this.panelRowEl.appendChild(this.panelEl)
+    this.panelRowEl.appendChild(this.railEl)
+    this.panelStackEl.appendChild(this.voiceCardEl)
+    this.panelStackEl.appendChild(this.panelRowEl)
+    this.root.appendChild(this.panelStackEl)
 
     this.headerTitle = this.panelEl.querySelector('.chat-panel__title')!
     this.headerSubtitle = this.panelEl.querySelector('.chat-panel__subtitle')!
@@ -180,6 +249,7 @@ export class ChatPanel {
     this.followFlagThumb = this.panelEl.querySelector(
       '[data-follow-flag-thumb]'
     ) as HTMLImageElement
+    this.wireCommunityVoiceCard()
 
     this.channelMenu = new ChatChannelMenu({
       getChannelKey: () => socialChannelKey(this.social.getChannel()),
@@ -432,6 +502,13 @@ export class ChatPanel {
   dispose(): void {
     window.removeEventListener('keydown', this.onGlobalKeyDown, true)
     this.sceneCanvas?.removeEventListener('mousedown', this.onScenePointerDown)
+    this.unsubCommunityVoice?.()
+    this.unsubCommunityVoice = null
+    this.unsubVoiceSound?.()
+    this.unsubVoiceSound = null
+    this.unsubVoiceProfiles?.()
+    this.unsubVoiceProfiles = null
+    this.voiceProfiles.clear()
     this.hide()
     this.channelMenu.dispose()
     if (this.mounted) this.root.remove()
@@ -550,6 +627,7 @@ export class ChatPanel {
     this.headerSubtitle.hidden = !subtitle.trim()
     this.syncAutoTranslateIndicator()
     this.updateUsersButton()
+    this.renderCommunityVoiceCard()
     this.renderFollowBar()
     this.renderRail()
     if (this.bodyMode === 'users') this.renderUsersList()
@@ -577,6 +655,199 @@ export class ChatPanel {
       }
     }
     this.updateComposerDropUi()
+  }
+
+  /**
+   * Separate card above the chat panel. Accordion + Speakers/Listeners tabs
+   * with horizontal avatar + name scroll (Explorer-style).
+   */
+  private wireCommunityVoiceCard(): void {
+    this.unsubCommunityVoice?.()
+    this.unsubVoiceSound?.()
+    this.unsubVoiceProfiles?.()
+    const voice = getCommunityVoiceSession()
+    this.unsubCommunityVoice = voice.subscribe((state) => {
+      this.communityVoiceState = state
+      void this.ensureVoiceFaces(state.participants)
+      this.renderCommunityVoiceCard()
+    })
+    this.unsubVoiceProfiles = this.voiceProfiles.onUpdate(() => {
+      if (this.communityVoiceState?.active) this.renderCommunityVoiceCard()
+    })
+    this.unsubVoiceSound = soundSettings.subscribe(() => {
+      if (!this.communityVoiceState?.active) return
+      const slider = this.voiceCardEl.querySelector<HTMLInputElement>('[data-voice-volume]')
+      if (slider) {
+        slider.value = String(soundSettings.get().voiceChatVolume)
+        this.setVoiceSliderPct(slider)
+      }
+    })
+
+    this.voiceCardEl.querySelector('[data-voice-accordion]')?.addEventListener('click', () => {
+      this.voiceAccordionOpen = !this.voiceAccordionOpen
+      this.renderCommunityVoiceCard()
+    })
+    this.voiceCardEl.querySelector('[data-voice-mic]')?.addEventListener('click', (ev) => {
+      ev.stopPropagation()
+      const v = getCommunityVoiceSession()
+      if (!v.isActive()) return
+      void v.setMicEnabled(!v.getState().micEnabled)
+    })
+    this.voiceCardEl.querySelector('[data-voice-hand]')?.addEventListener('click', (ev) => {
+      ev.stopPropagation()
+      const v = getCommunityVoiceSession()
+      if (!v.isActive()) return
+      void v.setHandRaised(!v.isHandRaised())
+    })
+    this.voiceCardEl.querySelector('[data-voice-leave]')?.addEventListener('click', (ev) => {
+      ev.stopPropagation()
+      void getCommunityVoiceSession().leave()
+    })
+    for (const tab of this.voiceCardEl.querySelectorAll<HTMLButtonElement>('[data-voice-tab]')) {
+      tab.addEventListener('click', (ev) => {
+        ev.stopPropagation()
+        const t = tab.dataset.voiceTab
+        if (t === 'speakers' || t === 'listeners') {
+          this.voiceRosterTab = t
+          this.renderCommunityVoiceCard()
+        }
+      })
+    }
+    const slider = this.voiceCardEl.querySelector<HTMLInputElement>('[data-voice-volume]')
+    slider?.addEventListener('input', (ev) => {
+      ev.stopPropagation()
+      const n = Number(slider.value)
+      if (Number.isFinite(n)) soundSettings.set({ voiceChatVolume: n })
+      this.setVoiceSliderPct(slider)
+    })
+    if (slider) {
+      slider.value = String(soundSettings.get().voiceChatVolume)
+      this.setVoiceSliderPct(slider)
+    }
+  }
+
+  private async ensureVoiceFaces(participants: CommunityVoiceParticipant[]): Promise<void> {
+    const wallets = participants
+      .map((p) => p.wallet ?? walletFromIdentity(p.identity))
+      .filter((w): w is string => !!w)
+    await Promise.all(wallets.map((w) => this.voiceProfiles.ensurePeer(w, { fast: true })))
+  }
+
+  private renderCommunityVoiceCard(): void {
+    const state = this.communityVoiceState ?? getCommunityVoiceSession().getState()
+    this.communityVoiceState = state
+    if (!state.active || !state.communityId) {
+      this.voiceCardEl.hidden = true
+      this.root.classList.remove('has-community-voice')
+      return
+    }
+    this.voiceCardEl.hidden = false
+    this.root.classList.add('has-community-voice')
+    this.voiceCardEl.classList.toggle('is-expanded', this.voiceAccordionOpen)
+
+    const name = (state.communityName || 'Community').trim()
+    const speakers = state.participants.filter((p) => p.isSpeaker)
+    const listeners = state.participants.filter((p) => !p.isSpeaker)
+    const role =
+      state.role === 'speaker' ? 'Speaker' : state.handRaised ? 'Hand raised' : 'Listening'
+    const titleEl = this.voiceCardEl.querySelector('[data-voice-title]')
+    const metaEl = this.voiceCardEl.querySelector('[data-voice-meta]')
+    const roleEl = this.voiceCardEl.querySelector('[data-voice-role]')
+    if (titleEl) titleEl.textContent = name
+    if (roleEl) roleEl.textContent = role
+    if (metaEl) {
+      metaEl.textContent = `${speakers.length} speaker${speakers.length === 1 ? '' : 's'} · ${listeners.length} listener${listeners.length === 1 ? '' : 's'}`
+    }
+
+    const toggle = this.voiceCardEl.querySelector<HTMLButtonElement>('[data-voice-accordion]')
+    const chevron = this.voiceCardEl.querySelector('[data-voice-chevron]')
+    const body = this.voiceCardEl.querySelector<HTMLElement>('[data-voice-body]')
+    if (toggle) toggle.setAttribute('aria-expanded', this.voiceAccordionOpen ? 'true' : 'false')
+    if (chevron) chevron.textContent = this.voiceAccordionOpen ? '▾' : '▸'
+    if (body) body.hidden = !this.voiceAccordionOpen
+
+    const canMic = state.role === 'speaker' || state.canPublish
+    const micBtn = this.voiceCardEl.querySelector<HTMLButtonElement>('[data-voice-mic]')
+    const handBtn = this.voiceCardEl.querySelector<HTMLButtonElement>('[data-voice-hand]')
+    if (micBtn) {
+      micBtn.hidden = !canMic
+      micBtn.textContent = state.micEnabled ? 'Mute' : 'Unmute'
+      micBtn.title = state.micEnabled ? 'Mute microphone' : 'Unmute microphone'
+      micBtn.classList.toggle('is-off', !state.micEnabled)
+    }
+    if (handBtn) {
+      handBtn.hidden = canMic
+      handBtn.textContent = state.handRaised ? 'Lower' : 'Speak'
+      handBtn.title = state.handRaised ? 'Lower hand' : 'Request to speak'
+      handBtn.classList.toggle('is-raised', state.handRaised)
+    }
+    const slider = this.voiceCardEl.querySelector<HTMLInputElement>('[data-voice-volume]')
+    if (slider) {
+      slider.value = String(soundSettings.get().voiceChatVolume)
+      this.setVoiceSliderPct(slider)
+    }
+
+    for (const tab of this.voiceCardEl.querySelectorAll<HTMLButtonElement>('[data-voice-tab]')) {
+      const active = tab.dataset.voiceTab === this.voiceRosterTab
+      tab.classList.toggle('is-active', active)
+      tab.setAttribute('aria-selected', active ? 'true' : 'false')
+      if (tab.dataset.voiceTab === 'speakers') {
+        tab.textContent = `Speakers (${speakers.length})`
+      } else {
+        tab.textContent = `Listeners (${listeners.length})`
+      }
+    }
+
+    const list = this.voiceRosterTab === 'speakers' ? speakers : listeners
+    const peopleEl = this.voiceCardEl.querySelector('[data-voice-people]')
+    if (peopleEl) {
+      if (list.length === 0) {
+        peopleEl.innerHTML = `<div class="chat-voice-card__empty">No ${this.voiceRosterTab} yet</div>`
+      } else {
+        peopleEl.innerHTML = list.map((p) => this.renderVoicePersonChip(p)).join('')
+        for (const chip of peopleEl.querySelectorAll<HTMLButtonElement>('[data-voice-profile]')) {
+          chip.addEventListener('click', () => {
+            const addr = chip.dataset.voiceProfile
+            if (addr) this.onOpenProfile?.(addr)
+          })
+        }
+      }
+    }
+  }
+
+  private renderVoicePersonChip(p: CommunityVoiceParticipant): string {
+    const wallet = p.wallet ?? walletFromIdentity(p.identity)
+    const profile = wallet ? this.voiceProfiles.get(wallet) : null
+    const displayName =
+      profile?.displayName?.trim() ||
+      p.name?.trim() ||
+      (wallet ? shortenAddress(wallet) : p.identity.slice(0, 10))
+    const initial = displayName.charAt(0).toUpperCase() || '?'
+    const face = profile?.faceUrl
+      ? `<img src="${escapeHtmlAttr(profile.faceUrl)}" alt="" class="chat-voice-card__face" loading="lazy" decoding="async" />`
+      : `<span class="chat-voice-card__face chat-voice-card__face--fallback" aria-hidden="true">${escapeHtmlText(initial)}</span>`
+    const tags: string[] = []
+    if (p.isLocal) tags.push('you')
+    if (p.isMod) tags.push('mod')
+    if (p.handRaised) tags.push('✋')
+    if (p.isSpeaking) tags.push('🎙')
+    const tagHtml = tags.length
+      ? `<span class="chat-voice-card__chip-tags">${tags.map((t) => escapeHtmlText(t)).join(' · ')}</span>`
+      : ''
+    const clickable = wallet ? `type="button" data-voice-profile="${escapeHtmlAttr(wallet)}"` : 'type="button" disabled'
+    return `<button ${clickable} class="chat-voice-card__chip${p.isSpeaking ? ' is-speaking' : ''}${p.isLocal ? ' is-you' : ''}" role="listitem" title="${escapeHtmlAttr(displayName)}">
+      ${face}
+      <span class="chat-voice-card__chip-name">${escapeHtmlText(displayName)}</span>
+      ${tagHtml}
+    </button>`
+  }
+
+  private setVoiceSliderPct(slider: HTMLInputElement): void {
+    const min = Number(slider.min) || 0
+    const max = Number(slider.max) || 100
+    const val = Number(slider.value)
+    const pct = max > min ? ((val - min) / (max - min)) * 100 : 0
+    slider.style.setProperty('--pct', `${pct}%`)
   }
 
   /** Sticky Follow / Tour row under community chat title (in-world only). */
@@ -1452,4 +1723,16 @@ export class ChatPanel {
     this.mentionHighlight = 0
     this.updateComposerUi()
   }
+}
+
+function escapeHtmlText(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function escapeHtmlAttr(value: string): string {
+  return escapeHtmlText(value).replace(/'/g, '&#39;')
 }

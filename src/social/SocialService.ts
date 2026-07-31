@@ -34,7 +34,7 @@ import {
   storedLinesToChat,
   upsertDmLocalThread
 } from './dmLocalStore'
-import { consumeFriendConnectivityUpdates } from './socialServiceV2'
+import { consumeFriendConnectivityUpdates, invalidateSocialV2Transport } from './socialServiceV2'
 import {
   isChatImageLine,
   type ChatChannelChoice,
@@ -1042,6 +1042,10 @@ export class SocialService {
       } catch (err) {
         if (abort.signal.aborted) return
         const msg = err instanceof Error ? err.message : String(err)
+        // Drop zombie social-rpc client so retry / voice join reconnects cleanly.
+        if (/rpc transport closed|rpc transport failed/i.test(msg)) {
+          invalidateSocialV2Transport()
+        }
         clientDebugLog.log('social', `Friend connectivity stream ended: ${msg}`, {
           level: 'warn',
           alsoConsole: true

@@ -88,6 +88,8 @@ import { MapPageView } from './ui/explore/MapPageView'
 import { ProfilePageView } from './ui/explore/ProfilePageView'
 import type { SocialShellTab } from './ui/explore/SocialShellTopNav'
 import { SocialMobileNotifications } from './ui/explore/SocialMobileNotifications'
+import { CommunityVoiceFloatingBar } from './ui/communities/CommunityVoiceFloatingBar'
+import { getCommunityVoiceSession } from '../social/CommunityVoiceSession'
 import { SceneLandingView } from './ui/landing/SceneLandingView'
 import type { DclEvent } from '../social/dclEvents'
 import {
@@ -190,6 +192,11 @@ export class AppController {
   private socialChatDock: SocialChatDock | null = null
   private socialMobileNotifications: SocialMobileNotifications | null = null
   /**
+   * 2D companion-style community voice bar — session is module-singleton;
+   * bar only shows outside 3D play and must not leave voice on nav.
+   */
+  private communityVoiceBar: CommunityVoiceFloatingBar | null = null
+  /**
    * Community Follow/Tour — survives World rebuild on /goto so follow opt-in
    * and lead session stay alive across teleports.
    */
@@ -265,6 +272,7 @@ export class AppController {
       if (hudEl) hudEl.hidden = true
       this.currentRoute = postLoginRoute
       this.appMode = 'explorer'
+      this.syncCommunityVoiceBarVisibility()
       await this.startEditorApp({ replace: true })
       return
     }
@@ -434,6 +442,7 @@ export class AppController {
     else if (tab === 'lootbag') void this.navigateTo({ kind: 'lootbag' })
     else if (tab === 'editor') void this.navigateTo({ kind: 'editor' })
     else void this.navigateTo({ kind: 'events' })
+    // Mode change is async via navigateTo — bar visibility refreshed when each show* sets appMode.
   }
 
   private async startEditorApp(
@@ -444,6 +453,7 @@ export class AppController {
     }
     this.currentRoute = { kind: 'editor' }
     this.appMode = 'explorer'
+    this.syncCommunityVoiceBarVisibility()
     this.clearSceneBanWatch()
 
     await this.teardownScene({ clearVrmCache: true })
@@ -1372,6 +1382,7 @@ export class AppController {
     }
     this.currentRoute = { kind: 'blank' }
     this.appMode = 'explorer'
+    this.syncCommunityVoiceBarVisibility()
     this.clearSceneBanWatch()
     this.disposeCommunityFollow()
 
@@ -1421,6 +1432,7 @@ export class AppController {
     }
     this.currentRoute = { kind: 'map' }
     this.appMode = 'map'
+    this.syncCommunityVoiceBarVisibility()
     this.clearSceneBanWatch()
 
     this.teardownExplorer()
@@ -1477,6 +1489,7 @@ export class AppController {
     }
     this.currentRoute = { kind: 'events' }
     this.appMode = 'events'
+    this.syncCommunityVoiceBarVisibility()
     this.clearSceneBanWatch()
 
     this.teardownExplorer()
@@ -1522,6 +1535,7 @@ export class AppController {
     }
     this.currentRoute = { kind: 'lootbag' }
     this.appMode = 'lootbag'
+    this.syncCommunityVoiceBarVisibility()
     this.clearSceneBanWatch()
 
     this.teardownExplorer()
@@ -1561,6 +1575,7 @@ export class AppController {
     }
     this.currentRoute = { kind: 'communities' }
     this.appMode = 'communities'
+    this.syncCommunityVoiceBarVisibility()
     this.clearSceneBanWatch()
 
     this.teardownExplorer()
@@ -1591,6 +1606,7 @@ export class AppController {
     this.communitiesPageView.mount(this.container)
     this.ensureSocialChatShell()
     this.collapseSocialChatThread()
+    this.ensureCommunityVoiceBar()
   }
 
   private async showProfilePage(
@@ -1607,6 +1623,7 @@ export class AppController {
     }
     this.currentRoute = { kind: 'profile' }
     this.appMode = 'profile'
+    this.syncCommunityVoiceBarVisibility()
     this.clearSceneBanWatch()
 
     this.teardownExplorer()
@@ -1709,6 +1726,7 @@ export class AppController {
     }
     this.currentRoute = target
     this.appMode = 'landing'
+    this.syncCommunityVoiceBarVisibility()
 
     // Soft-refresh within 30s for same place: track() returns false — no extra landing_view.
     track('landing_view', {
@@ -2032,6 +2050,39 @@ export class AppController {
       }
     })
     this.socialMobileNotifications.mount()
+    this.ensureCommunityVoiceBar()
+  }
+
+  /**
+   * Floating community voice controls for the 2D shell.
+   * LiveKit session is a module singleton — survives tab/landing remounts;
+   * this bar is the control surface when community details is closed.
+   */
+  private ensureCommunityVoiceBar(): void {
+    if (this.communityVoiceBar) {
+      this.communityVoiceBar.refreshVisibility()
+      return
+    }
+    this.communityVoiceBar = new CommunityVoiceFloatingBar({
+      // 2D shell only. In-play uses ChatPanel community-voice strip (Explorer-style).
+      // Session is NOT left on Jump In — only the pill is hidden.
+      shouldShow: () =>
+        this.appMode !== 'play' && !document.body.classList.contains('client-loading')
+    })
+  }
+
+  private disposeCommunityVoiceBar(): void {
+    this.communityVoiceBar?.dispose()
+    this.communityVoiceBar = null
+  }
+
+  /** Leave community voice LiveKit (sign-out / full teardown). */
+  private leaveCommunityVoiceSession(): void {
+    void getCommunityVoiceSession().leave()
+  }
+
+  private syncCommunityVoiceBarVisibility(): void {
+    this.communityVoiceBar?.refreshVisibility()
   }
 
   /** HUD community toast click → Settings → Communities → modal (+ join voice when live). */
@@ -2299,6 +2350,17 @@ export class AppController {
         onHydrationFinish: (result) => loading?.noteHydrationComplete(result)
       })
       this.appMode = 'play'
+      // Community voice LiveKit room is independent of World — keep session, hide 2D pill.
+      // In-play controls live on ChatPanel voice strip (wired when shell chat mounts).
+      this.ensureCommunityVoiceBar()
+      this.syncCommunityVoiceBarVisibility()
+      if (getCommunityVoiceSession().isActive()) {
+        clientDebugLog.log(
+          'social',
+          `Community voice kept across Jump In · ${getCommunityVoiceSession().getCommunityId()?.slice(0, 12) ?? '?'}… · use chat panel voice strip`,
+          { level: 'info', alsoConsole: true }
+        )
+      }
       track('scene_enter', {
         route: target,
         play_session_id: playId,
@@ -3782,6 +3844,8 @@ export class AppController {
   /** Sign out wallet → fall back to stable browser guest (same machine keeps guest key). */
   private async signOutFrom2dShell(): Promise<void> {
     clearStoredIdentity()
+    this.leaveCommunityVoiceSession()
+    this.disposeCommunityVoiceBar()
     this.socialChat?.signOut()
     this.teardownSocialChatShell(true)
     this.disposeSocialMobileNotifications()
@@ -3816,6 +3880,8 @@ export class AppController {
 
   async signOut(): Promise<void> {
     window.removeEventListener('popstate', this.onPopState)
+    this.leaveCommunityVoiceSession()
+    this.disposeCommunityVoiceBar()
     this.disposeCommunityFollow()
     this.profileUi?.dispose()
     this.profileUi = null

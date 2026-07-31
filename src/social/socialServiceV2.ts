@@ -15,6 +15,7 @@ import {
   GetFriendsPayload,
   GetFriendshipRequestsPayload,
   JoinCommunityVoiceChatPayload,
+  KickPlayerFromCommunityVoiceChatPayload,
   MuteSpeakerFromCommunityVoiceChatPayload,
   PromoteSpeakerInCommunityVoiceChatPayload,
   RejectSpeakRequestInCommunityVoiceChatPayload,
@@ -30,6 +31,7 @@ import {
   type FriendProfile,
   type FriendshipRequestResponse,
   type JoinCommunityVoiceChatResponse,
+  type KickPlayerFromCommunityVoiceChatResponse,
   type MuteSpeakerFromCommunityVoiceChatResponse,
   type PaginatedFriendshipRequestsResponse,
   type PaginatedFriendsProfilesResponse,
@@ -74,19 +76,23 @@ const signHeader = signedHeaderFactory()
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SocialServiceClient = any
 
-let transport: ReturnType<typeof createWebSocketsTransport> | null = null
+type SocialWsTransport = ReturnType<typeof createWebSocketsTransport> & {
+  isConnected?: boolean
+}
+
+let transport: SocialWsTransport | null = null
 let port: RpcClientPort | null = null
 let loadedService: SocialServiceClient | null = null
 let connectPromise: Promise<SocialServiceClient> | null = null
 let lastIdentityKey: string | null = null
 
+/**
+ * Session key for the shared Social RPC socket.
+ * Address-only: including ephemeral expiry caused reconnect storms that killed
+ * long-lived streams (voice updates, friend connectivity) with "RPC Transport closed".
+ */
 function identityKey(id: AuthIdentity): string {
-  const addr = String(id.ephemeralIdentity?.address ?? '').toLowerCase()
-  const exp =
-    id.expiration instanceof Date
-      ? id.expiration.getTime()
-      : new Date(id.expiration as unknown as string | number).getTime()
-  return `${addr}::${Number.isFinite(exp) ? exp : 0}`
+  return String(id.ephemeralIdentity?.address ?? '').toLowerCase()
 }
 
 function socialRpcWsUrl(): string {
@@ -97,6 +103,21 @@ function socialRpcWsUrl(): string {
 function errorDetail(err: unknown): string {
   if (err instanceof Error && err.message) return err.message
   return String(err ?? '')
+}
+
+function isTransportAlive(): boolean {
+  return !!(transport && transport.isConnected)
+}
+
+function isTransportDeadError(err: unknown): boolean {
+  const m = errorDetail(err).toLowerCase()
+  return (
+    m.includes('rpc transport closed') ||
+    m.includes('rpc transport failed') ||
+    m.includes('connection_closed') ||
+    m.includes('socket_error') ||
+    m.includes('websocket')
+  )
 }
 
 /** Social v2 community-voice oneof — shared error mapping. */
@@ -147,15 +168,27 @@ export type CommunityVoiceCredentialsOk = {
 function credentialsFromOk(ok: unknown): CommunityVoiceCredentialsOk {
   if (!ok || typeof ok !== 'object') throw new Error('social_rpc: missing credentials')
   const o = ok as {
-    credentials?: { connectionUrl?: string }
+    credentials?: { connectionUrl?: string; connection_url?: string }
     voiceChatId?: string
+    voice_chat_id?: string
+    connectionUrl?: string
+    connection_url?: string
   }
-  const url = o.credentials?.connectionUrl?.trim() ?? ''
-  if (!url) throw new Error('social_rpc: empty connection_url')
-  return {
-    connectionUrl: url,
-    voiceChatId: typeof o.voiceChatId === 'string' ? o.voiceChatId : undefined
-  }
+  const creds = o.credentials
+  const url =
+    (typeof creds?.connectionUrl === 'string' ? creds.connectionUrl : '') ||
+    (typeof creds?.connection_url === 'string' ? creds.connection_url : '') ||
+    (typeof o.connectionUrl === 'string' ? o.connectionUrl : '') ||
+    (typeof o.connection_url === 'string' ? o.connection_url : '')
+  const trimmed = url.trim()
+  if (!trimmed) throw new Error('social_rpc: empty connection_url')
+  const voiceChatId =
+    typeof o.voiceChatId === 'string'
+      ? o.voiceChatId
+      : typeof o.voice_chat_id === 'string'
+        ? o.voice_chat_id
+        : undefined
+  return { connectionUrl: trimmed, voiceChatId }
 }
 
 function communityVoiceResult<T>(
@@ -167,6 +200,29 @@ function communityVoiceResult<T>(
       ok: false as const,
       error: err instanceof Error ? err.message : String(err)
     }))
+}
+
+/**
+ * Run a social-rpc voice op; if the shared socket is dead, reconnect once and retry.
+ * Prevents "RPC Transport closed" from leaving a zombie loadedService forever.
+ */
+async function communityVoiceResultWithReconnect<T>(
+  identity: AuthIdentity,
+  run: () => Promise<T>
+): Promise<{ ok: true; value: T } | { ok: false; error: string }> {
+  const first = await communityVoiceResult(run)
+  if (first.ok) return first
+  if (!isTransportDeadError(first.error) && isTransportAlive()) return first
+  disconnect()
+  try {
+    await ensureSocialV2ServiceConnected(identity)
+  } catch (err) {
+    return {
+      ok: false,
+      error: `social_rpc reconnect failed — ${errorDetail(err)} · prior: ${first.error}`
+    }
+  }
+  return communityVoiceResult(run)
 }
 
 function disconnect(): void {
@@ -190,8 +246,22 @@ function disconnect(): void {
   }
 }
 
+/** Invalidate cached client when the shared WebSocket dies after connect. */
+function attachTransportLifecycle(ws: SocialWsTransport): void {
+  ws.on('close', () => {
+    if (transport !== ws) return
+    lastIdentityKey = null
+    loadedService = null
+    port = null
+    transport = null
+  })
+  ws.on('error', () => {
+    /* close handler will clear when socket dies */
+  })
+}
+
 async function connectWithUrl(wsUrl: string, id: AuthIdentity): Promise<SocialServiceClient> {
-  const webSocketsTransport = createWebSocketsTransport(wsUrl)
+  const webSocketsTransport = createWebSocketsTransport(wsUrl) as SocialWsTransport
   transport = webSocketsTransport
 
   const signedHeaders = signHeader(id as Parameters<typeof signHeader>[0], 'GET', '/', {})
@@ -237,6 +307,8 @@ async function connectWithUrl(wsUrl: string, id: AuthIdentity): Promise<SocialSe
     const loaded = loadService(p, SocialServiceDefinition as never) as SocialServiceClient
     loadedService = loaded
     connectPhase = false
+    // After connect succeeds, keep listening so we drop the zombie cache on later close.
+    attachTransportLifecycle(webSocketsTransport)
     return loaded
   } catch (e) {
     connectPhase = false
@@ -246,7 +318,10 @@ async function connectWithUrl(wsUrl: string, id: AuthIdentity): Promise<SocialSe
 
 export async function ensureSocialV2ServiceConnected(identity: AuthIdentity): Promise<SocialServiceClient> {
   const key = identityKey(identity)
-  if (loadedService && lastIdentityKey === key) return loadedService
+  // Never return a zombie client after "RPC Transport closed".
+  if (loadedService && lastIdentityKey === key && isTransportAlive()) {
+    return loadedService
+  }
   if (connectPromise) return connectPromise
 
   if (loadedService || port || transport) disconnect()
@@ -268,6 +343,11 @@ export async function ensureSocialV2ServiceConnected(identity: AuthIdentity): Pr
   } finally {
     connectPromise = null
   }
+}
+
+/** Force-drop shared social RPC so the next call reconnects (stream death). */
+export function invalidateSocialV2Transport(): void {
+  disconnect()
 }
 
 function normalizeAddr(value: unknown): string | null {
@@ -454,7 +534,7 @@ export async function startCommunityVoiceChatViaSocialRpc(
 ): Promise<{ ok: true; value: CommunityVoiceCredentialsOk } | { ok: false; error: string }> {
   const id = communityId.trim()
   if (!id) return { ok: false, error: 'community_id_required' }
-  return communityVoiceResult(async () => {
+  return communityVoiceResultWithReconnect(identity, async () => {
     const svc = await ensureSocialV2ServiceConnected(identity)
     const res = (await svc.startCommunityVoiceChat(
       StartCommunityVoiceChatPayload.create({ communityId: id })
@@ -471,7 +551,7 @@ export async function joinCommunityVoiceChatViaSocialRpc(
 ): Promise<{ ok: true; value: CommunityVoiceCredentialsOk } | { ok: false; error: string }> {
   const id = communityId.trim()
   if (!id) return { ok: false, error: 'community_id_required' }
-  return communityVoiceResult(async () => {
+  return communityVoiceResultWithReconnect(identity, async () => {
     const svc = await ensureSocialV2ServiceConnected(identity)
     const res = (await svc.joinCommunityVoiceChat(
       JoinCommunityVoiceChatPayload.create({ communityId: id })
@@ -552,6 +632,24 @@ export async function rejectSpeakRequestInCommunityVoiceChatViaSocialRpc(
       RejectSpeakRequestInCommunityVoiceChatPayload.create({ communityId: id, userAddress: addr })
     )) as RejectSpeakRequestInCommunityVoiceChatResponse
     unwrapCommunityVoiceResponse(res as { response?: { $case: string } }, 'reject_speak_request')
+  }).then((r) => (r.ok ? { ok: true as const } : r))
+}
+
+/** Moderator: kick player out of the community voice room. */
+export async function kickPlayerFromCommunityVoiceChatViaSocialRpc(
+  identity: AuthIdentity,
+  communityId: string,
+  userAddress: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const id = communityId.trim()
+  const addr = userAddress.trim().toLowerCase()
+  if (!id || !addr) return { ok: false, error: 'community_id_and_user_required' }
+  return communityVoiceResult(async () => {
+    const svc = await ensureSocialV2ServiceConnected(identity)
+    const res = (await svc.kickPlayerFromCommunityVoiceChat(
+      KickPlayerFromCommunityVoiceChatPayload.create({ communityId: id, userAddress: addr })
+    )) as KickPlayerFromCommunityVoiceChatResponse
+    unwrapCommunityVoiceResponse(res as { response?: { $case: string } }, 'kick_player')
   }).then((r) => (r.ok ? { ok: true as const } : r))
 }
 

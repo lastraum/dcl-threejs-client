@@ -119,7 +119,8 @@ export class CommunityHudToastWatcher {
 
   private wireVoiceBus(identity: AuthIdentity): void {
     this.unsubVoiceBus?.()
-    communityVoiceUpdatesBus.ensureStarted(identity)
+    const wallet = this.getUserAddress()?.trim().toLowerCase() ?? null
+    communityVoiceUpdatesBus.ensureStarted(identity, wallet)
     // Seed known set from bus (one-time REST seed inside bus) without toasting.
     for (const row of communityVoiceUpdatesBus.getActive()) {
       const k = row.communityId.trim().toLowerCase()
@@ -160,6 +161,7 @@ export class CommunityHudToastWatcher {
       : ''
     if (connectedId && connectedId === idKey) return
     if (ev.source === 'local') return
+    // LiveKit PM fan-out + Social WS both fire — toast once.
     if (this.isSuppressed?.(id, 'voice')) return
 
     const now = Date.now()

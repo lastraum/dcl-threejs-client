@@ -1,4 +1,5 @@
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
+import { clientDebugLog } from '../../debug/ClientDebugLog'
 import {
   canManageCommunityVoice,
   canPostCommunityAnnouncements
@@ -238,9 +239,10 @@ export class CommunityModal {
       void this.ensureVoiceProfiles(state.participants)
       this.refreshVoicePanel()
     })
-    // Social WS bus — live STARTED/ENDED so members see Join without reopening the modal.
+    // Voice bus (PM LiveKit + Social WS) — live STARTED/ENDED so members see Join without reopening.
     const identity = this.getAuthIdentity?.() ?? null
-    communityVoiceUpdatesBus.ensureStarted(identity)
+    const wallet = this.getUserAddress?.() ?? null
+    communityVoiceUpdatesBus.ensureStarted(identity, wallet)
     if (this.current) {
       const live = communityVoiceUpdatesBus.isActive(this.current.id)
       if (live !== (this.current.voiceChatActive === true)) {
@@ -614,8 +616,25 @@ export class CommunityModal {
     this.renderActiveTab()
   }
 
-  /** Public: join live voice (toast click / auto-join). */
+  /**
+   * Public: join live voice (toast / Active Voice chip / auto-join).
+   * If already connected to this community, keep the LiveKit session — only open UI.
+   */
   async joinCommunityVoice(merged: CommunityDetail): Promise<void> {
+    const voice = getCommunityVoiceSession()
+    const id = merged.id.trim().toLowerCase()
+    if (voice.isActive() && voice.getCommunityId()?.trim().toLowerCase() === id) {
+      voice.setDisplayMeta({
+        communityName: merged.name,
+        communityImage: communityDisplayImageUrl(merged.id, merged.thumbnails)
+      })
+      if (this.current?.id === merged.id) {
+        this.current = { ...this.current, voiceChatActive: true }
+        this.paint({ loading: false })
+        this.wireVoiceSession()
+      }
+      return
+    }
     const live = { ...merged, voiceChatActive: true }
     await this.toggleCommunityVoice(live)
   }
@@ -649,6 +668,12 @@ export class CommunityModal {
       btn.addEventListener('click', () => {
         const addr = btn.dataset.voiceDemote
         if (addr) void this.modDemote(addr, btn)
+      })
+    }
+    for (const btn of this.root.querySelectorAll<HTMLButtonElement>('[data-voice-kick]')) {
+      btn.addEventListener('click', () => {
+        const addr = btn.dataset.voiceKick
+        if (addr) void this.modKick(addr, btn)
       })
     }
     for (const btn of this.root.querySelectorAll<HTMLButtonElement>('[data-voice-copy-wallet]')) {
@@ -726,6 +751,15 @@ export class CommunityModal {
     }
   }
 
+  private async modKick(addr: string, btn: HTMLButtonElement): Promise<void> {
+    btn.disabled = true
+    const result = await getCommunityVoiceSession().kickPlayer(addr)
+    if (!result.ok) {
+      btn.disabled = false
+      btn.title = result.error
+    }
+  }
+
   private async endCommunityVoiceForEveryone(merged: CommunityDetail): Promise<void> {
     const identity = this.getAuthIdentity?.() ?? null
     if (!identity || !this.canStartVoice(merged)) return
@@ -767,23 +801,14 @@ export class CommunityModal {
         btn.disabled = true
         btn.textContent = 'LEAVING…'
       }
-      // Last remaining owner/mod leaving → end voice for everyone (Explorer parity).
-      // Server also tracks moderatorCount; we enforce on leave so the room doesn't orphan.
-      if (this.canStartVoice(merged) && voice.isSoleRemainingMod()) {
-        const identity = this.getAuthIdentity?.() ?? null
-        if (identity) {
-          const ended = await endCommunityVoiceChatViaSocialRpc(identity, merged.id)
-          if (!ended.ok) {
-            console.warn('[community-voice] end on last-mod leave failed', ended.error)
-          } else {
-            communityVoiceUpdatesBus.notifyLocalEnded(merged.id)
-          }
-        }
-      }
+      // Session.leave ends the stream when local is sole remaining mod
+      // (even if non-mod listeners remain) — shared with floating bar Leave.
       await voice.leave()
       if (this.current?.id === merged.id) {
-        if (this.canStartVoice(merged)) {
-          this.current = { ...this.current, voiceChatActive: false }
+        // After last-mod end, room is gone for everyone.
+        this.current = {
+          ...this.current,
+          voiceChatActive: communityVoiceUpdatesBus.isActive(merged.id)
         }
         this.paint({ loading: false })
         this.wireVoiceSession()
@@ -810,34 +835,42 @@ export class CommunityModal {
       btn.disabled = true
       btn.textContent = action === 'join' ? 'JOINING…' : 'STARTING…'
     }
+    const communityImage = communityDisplayImageUrl(merged.id, merged.thumbnails) ?? undefined
     const result = await voice.join({
       identity,
       communityId: merged.id,
       userAddress: address,
       action,
       userRole: merged.role,
-      displayName: undefined
+      displayName: undefined,
+      communityName: merged.name,
+      communityImage
     })
     if (this.current?.id === merged.id) {
       if (result.ok) {
         this.current = { ...this.current, voiceChatActive: true }
         // Instant local fan-out — browse / other tabs don't wait for WS echo.
-        communityVoiceUpdatesBus.notifyLocalStarted(merged.id, {
-          communityName: merged.name,
-          communityImage: communityDisplayImageUrl(merged.id, merged.thumbnails) ?? undefined
-        })
+        // (Session also notifies on create; bus retransmit/dedupe handles doubles.)
+        if (action === 'create') {
+          communityVoiceUpdatesBus.notifyLocalStarted(merged.id, {
+            communityName: merged.name,
+            communityImage,
+            starterAddress: address
+          })
+        }
         this.paint({ loading: false })
         this.wireVoiceSession()
       } else if (btn) {
         btn.disabled = false
-        btn.textContent =
-          result.error.includes('401') ||
-          result.error.includes('403') ||
-          result.error.includes('Unauthorized') ||
-          result.error.includes('Forbidden')
-            ? 'Voice unavailable'
-            : 'Voice failed'
-        btn.title = result.error
+        const err = result.error || 'unknown'
+        const forbidden =
+          /401|403|unauthorized|forbidden|not.?a.?member|not_member/i.test(err)
+        btn.textContent = forbidden ? 'Members only' : 'Join failed'
+        btn.title = err
+        clientDebugLog.log('social', `Community voice UI join failed — ${err}`, {
+          level: 'warn',
+          alsoConsole: true
+        })
       }
     }
   }
@@ -948,22 +981,35 @@ export class CommunityModal {
         let actions = ''
         if (isMod && !p.isLocal) {
           const target = wallet || p.identity
+          const parts: string[] = []
           if (p.handRaised && !p.isSpeaker) {
-            actions = `<span class="community-modal-voice-actions">
-              <button type="button" class="community-modal-voice-mini" data-voice-promote="${escapeHtml(
+            parts.push(
+              `<button type="button" class="community-modal-voice-mini" data-voice-promote="${escapeHtml(
                 target
-              )}" title="Accept speak request">Accept</button>
-              <button type="button" class="community-modal-voice-mini community-modal-voice-mini--danger" data-voice-reject="${escapeHtml(
+              )}" title="Accept speak request">Accept</button>`,
+              `<button type="button" class="community-modal-voice-mini community-modal-voice-mini--muted" data-voice-reject="${escapeHtml(
                 target
-              )}" title="Reject speak request">Reject</button>
-            </span>`
+              )}" title="Reject speak request">Reject</button>`
+            )
           } else if (p.isSpeaker) {
-            actions = `<span class="community-modal-voice-actions">
-              <button type="button" class="community-modal-voice-mini" data-voice-demote="${escapeHtml(
+            parts.push(
+              `<button type="button" class="community-modal-voice-mini" data-voice-demote="${escapeHtml(
                 target
-              )}" title="Demote to listener">Demote</button>
-            </span>`
+              )}" title="Demote to listener">Demote</button>`
+            )
+          } else {
+            parts.push(
+              `<button type="button" class="community-modal-voice-mini" data-voice-promote="${escapeHtml(
+                target
+              )}" title="Promote to speaker">Promote</button>`
+            )
           }
+          parts.push(
+            `<button type="button" class="community-modal-voice-mini community-modal-voice-mini--danger" data-voice-kick="${escapeHtml(
+              target
+            )}" title="Kick from voice">Kick</button>`
+          )
+          actions = `<span class="community-modal-voice-actions">${parts.join('')}</span>`
         }
         return `<div class="community-modal-voice-row">
           <div class="community-modal-voice-row-main">

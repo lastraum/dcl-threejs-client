@@ -32,7 +32,10 @@ import {
 export type CommunityVoiceRole = 'speaker' | 'listener'
 
 export type CommunityVoiceParticipant = {
+  /** LiveKit participant identity (usually wallet address). */
   identity: string
+  /** Normalized 0x wallet when parseable. */
+  wallet: string | null
   name: string
   isLocal: boolean
   /** LiveKit canPublish or metadata role=speaker */
@@ -40,6 +43,10 @@ export type CommunityVoiceParticipant = {
   handRaised: boolean
   isSpeaking: boolean
   isMuted: boolean
+  /** Community role from metadata (owner / moderator / member). */
+  communityRole: string | null
+  /** True if this peer can manage voice (owner/mod/admin). */
+  isMod: boolean
 }
 
 export type CommunityVoiceSessionState = {
@@ -111,6 +118,20 @@ export class CommunityVoiceSession {
 
   isHandRaised(): boolean {
     return this.handRaised
+  }
+
+  /**
+   * True when the local user is a community owner/mod and no *other* mod is
+   * still in the LiveKit room (by published communityRole metadata).
+   * Used so the last remaining mod ends the voice chat on leave.
+   */
+  isSoleRemainingMod(): boolean {
+    if (!this.isActive()) return false
+    if (!isCommunityVoiceModRole(this.communityRole)) return false
+    const others = this.collectParticipants().filter(
+      (p) => !p.isLocal && p.isMod
+    )
+    return others.length === 0
   }
 
   /**
@@ -457,11 +478,12 @@ export class CommunityVoiceSession {
 
   private async publishLocalMetadata(): Promise<void> {
     if (!this.room) return
+    const roleNorm = (this.communityRole ?? '').trim().toLowerCase()
     const meta = JSON.stringify({
       role: this.role,
       isRequestingToSpeak: this.handRaised,
       handRaised: this.handRaised,
-      communityRole: this.communityRole ?? ''
+      communityRole: roleNorm
     })
     try {
       await this.room.localParticipant.setMetadata(meta)
@@ -472,7 +494,8 @@ export class CommunityVoiceSession {
       await this.room.localParticipant.setAttributes({
         role: this.role,
         isRequestingToSpeak: this.handRaised ? 'true' : 'false',
-        handRaised: this.handRaised ? 'true' : 'false'
+        handRaised: this.handRaised ? 'true' : 'false',
+        communityRole: roleNorm
       })
     } catch {
       /* ignore */
@@ -485,20 +508,27 @@ export class CommunityVoiceSession {
 
     const push = (p: Participant, isLocal: boolean) => {
       const parsed = parseParticipantMeta(p)
+      const wallet = walletFromIdentity(isLocal ? this.userAddress ?? p.identity : p.identity)
+      const communityRole = isLocal
+        ? (this.communityRole ?? '').trim().toLowerCase() || null
+        : parsed.communityRole
       const isSpeaker =
         isLocal
           ? this.role === 'speaker' || this.localCanPublish()
           : parsed.isSpeaker || p.permissions?.canPublish === true
       out.push({
         identity: p.identity,
-        name: p.name?.trim() || shortAddr(p.identity),
+        wallet,
+        name: p.name?.trim() || (wallet ? shortAddr(wallet) : shortAddr(p.identity)),
         isLocal,
         isSpeaker,
         handRaised: isLocal ? this.handRaised : parsed.handRaised,
         isSpeaking: p.isSpeaking,
         isMuted: isLocal
           ? !this.room!.localParticipant.isMicrophoneEnabled
-          : ![...p.audioTrackPublications.values()].some((pub) => !pub.isMuted && pub.track)
+          : ![...p.audioTrackPublications.values()].some((pub) => !pub.isMuted && pub.track),
+        communityRole,
+        isMod: isCommunityVoiceModRole(communityRole)
       })
     }
 
@@ -578,28 +608,54 @@ export class CommunityVoiceSession {
   }
 }
 
-function parseParticipantMeta(p: Participant): { isSpeaker: boolean; handRaised: boolean } {
+function parseParticipantMeta(p: Participant): {
+  isSpeaker: boolean
+  handRaised: boolean
+  communityRole: string | null
+} {
   let isSpeaker = false
   let handRaised = false
+  let communityRole: string | null = null
   const attrs = p.attributes ?? {}
   if (attrs.role === 'speaker' || attrs.isSpeaker === 'true') isSpeaker = true
   if (attrs.handRaised === 'true' || attrs.isRequestingToSpeak === 'true') handRaised = true
+  if (typeof attrs.communityRole === 'string' && attrs.communityRole.trim()) {
+    communityRole = attrs.communityRole.trim().toLowerCase()
+  }
   const raw = p.metadata?.trim()
   if (raw) {
     try {
       const o = JSON.parse(raw) as Record<string, unknown>
       if (o.role === 'speaker' || o.isSpeaker === true) isSpeaker = true
       if (o.handRaised === true || o.isRequestingToSpeak === true) handRaised = true
+      if (typeof o.communityRole === 'string' && o.communityRole.trim()) {
+        communityRole = o.communityRole.trim().toLowerCase()
+      }
     } catch {
       /* ignore */
     }
   }
-  return { isSpeaker, handRaised }
+  return { isSpeaker, handRaised, communityRole }
+}
+
+export function isCommunityVoiceModRole(role: string | null | undefined): boolean {
+  const r = (role ?? '').trim().toLowerCase()
+  return r === 'owner' || r === 'moderator' || r === 'mod' || r === 'admin'
+}
+
+/** Extract 0x wallet from LiveKit identity (raw address or prefixed). */
+export function walletFromIdentity(identity: string | null | undefined): string | null {
+  if (!identity) return null
+  const t = identity.trim().toLowerCase()
+  if (/^0x[a-f0-9]{40}$/.test(t)) return t
+  const m = t.match(/0x[a-f0-9]{40}/)
+  return m ? m[0] : null
 }
 
 function shortAddr(id: string): string {
   const t = id.trim()
-  if (/^0x[a-fA-F0-9]{40}$/.test(t)) return `${t.slice(0, 6)}…${t.slice(-4)}`
+  const w = walletFromIdentity(t)
+  if (w) return `${w.slice(0, 6)}…${w.slice(-4)}`
   return t.length > 16 ? `${t.slice(0, 12)}…` : t
 }
 

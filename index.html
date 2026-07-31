@@ -14150,14 +14150,63 @@
       }
       .community-modal-voice-row-main {
         display: flex;
-        flex-wrap: wrap;
         align-items: center;
-        gap: 6px;
+        gap: 8px;
+        min-width: 0;
+      }
+      .community-modal-voice-avatar {
+        flex: 0 0 32px;
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        object-fit: cover;
+        display: block;
+        background: rgba(0, 0, 0, 0.35);
+      }
+      .community-modal-voice-avatar--fallback {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.85rem;
+        font-weight: 800;
+        color: rgba(255, 255, 255, 0.75);
+        background: linear-gradient(145deg, #6b2a9e, #1a0c28);
+      }
+      .community-modal-voice-identity {
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
       }
       .community-modal-voice-name {
-        font-size: 0.78rem;
-        font-weight: 600;
-        color: rgba(255, 255, 255, 0.88);
+        font-size: 0.8rem;
+        font-weight: 700;
+        color: rgba(255, 255, 255, 0.92);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .community-modal-voice-copy {
+        flex: 0 0 auto;
+        width: 28px;
+        height: 28px;
+        border: none;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 0.95rem;
+        line-height: 1;
+        cursor: pointer;
+        font-family: inherit;
+      }
+      .community-modal-voice-copy:hover {
+        background: rgba(255, 255, 255, 0.14);
+        color: #fff;
+      }
+      .community-modal-voice-copy.is-copied {
+        color: #86efac;
+        background: rgba(34, 197, 94, 0.18);
       }
       .community-modal-voice-badges {
         display: inline-flex;

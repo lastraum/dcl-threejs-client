@@ -5,9 +5,11 @@ import {
 } from '../../../social/communityPermissions'
 import {
   getCommunityVoiceSession,
+  walletFromIdentity,
   type CommunityVoiceParticipant,
   type CommunityVoiceSessionState
 } from '../../../social/CommunityVoiceSession'
+import { ChatPeerProfiles } from '../../../social/ChatPeerProfiles'
 import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 import {
   createCommunityPostSigned,
@@ -21,6 +23,7 @@ import {
   type CommunityPost
 } from '../../../social/socialApi'
 import { endCommunityVoiceChatViaSocialRpc } from '../../../social/socialServiceV2'
+import { shortenAddress } from '../../../avatar/displayName'
 import type { CommunityDetail, CommunityListRow } from '../../../social/types'
 import type { CommunityFollowController } from '../../../social/CommunityFollowController'
 import type { RouteTarget } from '../../../dcl/content/route'
@@ -127,7 +130,11 @@ export class CommunityModal {
   private tabLoading = false
   private unsubFollow: (() => void) | null = null
   private unsubVoice: (() => void) | null = null
+  private unsubVoiceProfiles: (() => void) | null = null
   private voiceState: CommunityVoiceSessionState | null = null
+  /** Catalyst profiles for voice roster (name + face). */
+  private readonly voiceProfiles = new ChatPeerProfiles()
+  private voiceProfileFetchGen = 0
 
   private sessionAddress(): string | null {
     return this.getUserAddress?.()?.trim().toLowerCase() || null
@@ -195,7 +202,10 @@ export class CommunityModal {
     this.unsubFollow = null
     this.unsubVoice?.()
     this.unsubVoice = null
+    this.unsubVoiceProfiles?.()
+    this.unsubVoiceProfiles = null
     this.voiceState = null
+    this.voiceProfileFetchGen++
     this.root.hidden = true
     this.root.innerHTML = ''
     this.current = null
@@ -206,16 +216,33 @@ export class CommunityModal {
   dispose(): void {
     this.disposed = true
     this.close()
+    this.voiceProfiles.clear()
     this.root.remove()
   }
 
   private wireVoiceSession(): void {
     this.unsubVoice?.()
+    this.unsubVoiceProfiles?.()
+    this.unsubVoiceProfiles = this.voiceProfiles.onUpdate(() => {
+      if (this.disposed || this.root.hidden) return
+      this.refreshVoicePanel()
+    })
     this.unsubVoice = getCommunityVoiceSession().subscribe((state) => {
       if (this.disposed || this.root.hidden) return
       this.voiceState = state
+      void this.ensureVoiceProfiles(state.participants)
       this.refreshVoicePanel()
     })
+  }
+
+  private async ensureVoiceProfiles(participants: CommunityVoiceParticipant[]): Promise<void> {
+    const gen = ++this.voiceProfileFetchGen
+    const wallets = participants
+      .map((p) => p.wallet ?? walletFromIdentity(p.identity))
+      .filter((w): w is string => !!w)
+    await Promise.all(wallets.map((w) => this.voiceProfiles.ensurePeer(w, { fast: true })))
+    if (gen !== this.voiceProfileFetchGen || this.disposed) return
+    this.refreshVoicePanel()
   }
 
   private refreshVoicePanel(): void {
@@ -601,6 +628,26 @@ export class CommunityModal {
         if (addr) void this.modDemote(addr, btn)
       })
     }
+    for (const btn of this.root.querySelectorAll<HTMLButtonElement>('[data-voice-copy-wallet]')) {
+      btn.addEventListener('click', (ev) => {
+        ev.stopPropagation()
+        const addr = btn.dataset.voiceCopyWallet
+        if (!addr) return
+        void navigator.clipboard?.writeText(addr).then(
+          () => {
+            btn.classList.add('is-copied')
+            btn.title = 'Copied!'
+            window.setTimeout(() => {
+              btn.classList.remove('is-copied')
+              btn.title = 'Copy wallet'
+            }, 1400)
+          },
+          () => {
+            btn.title = 'Copy failed'
+          }
+        )
+      })
+    }
   }
 
   private async toggleHandRaise(): Promise<void> {
@@ -694,8 +741,22 @@ export class CommunityModal {
         btn.disabled = true
         btn.textContent = 'LEAVING…'
       }
+      // Last remaining owner/mod leaving → end voice for everyone (Explorer parity).
+      // Server also tracks moderatorCount; we enforce on leave so the room doesn't orphan.
+      if (this.canStartVoice(merged) && voice.isSoleRemainingMod()) {
+        const identity = this.getAuthIdentity?.() ?? null
+        if (identity) {
+          const ended = await endCommunityVoiceChatViaSocialRpc(identity, merged.id)
+          if (!ended.ok) {
+            console.warn('[community-voice] end on last-mod leave failed', ended.error)
+          }
+        }
+      }
       await voice.leave()
       if (this.current?.id === merged.id) {
+        if (this.canStartVoice(merged)) {
+          this.current = { ...this.current, voiceChatActive: false }
+        }
         this.paint({ loading: false })
         this.wireVoiceSession()
       }
@@ -821,8 +882,20 @@ export class CommunityModal {
     }
     const rows = participants
       .map((p) => {
+        const wallet = p.wallet ?? walletFromIdentity(p.identity)
+        const profile = wallet ? this.voiceProfiles.get(wallet) : null
+        const displayName =
+          profile?.displayName?.trim() ||
+          p.name?.trim() ||
+          (wallet ? shortenAddress(wallet) : shortIdentity(p.identity))
+        const face = profile?.faceUrl
+          ? `<img src="${escapeHtml(profile.faceUrl)}" alt="" class="community-modal-voice-avatar" />`
+          : `<span class="community-modal-voice-avatar community-modal-voice-avatar--fallback">${escapeHtml(
+              displayName.charAt(0).toUpperCase() || '?'
+            )}</span>`
         const badges: string[] = []
         if (p.isLocal) badges.push('you')
+        if (p.isMod) badges.push('mod')
         if (p.isSpeaker) badges.push('speaker')
         else badges.push('listener')
         if (p.handRaised) badges.push('✋')
@@ -830,36 +903,50 @@ export class CommunityModal {
         const badgeHtml = badges
           .map((b) => `<span class="community-modal-voice-badge">${escapeHtml(b)}</span>`)
           .join('')
+        const copyBtn = wallet
+          ? `<button
+              type="button"
+              class="community-modal-voice-copy"
+              data-voice-copy-wallet="${escapeHtml(wallet)}"
+              title="Copy wallet"
+              aria-label="Copy wallet address"
+            >⧉</button>`
+          : ''
         let actions = ''
         if (isMod && !p.isLocal) {
+          const target = wallet || p.identity
           if (p.handRaised && !p.isSpeaker) {
             actions = `<span class="community-modal-voice-actions">
               <button type="button" class="community-modal-voice-mini" data-voice-promote="${escapeHtml(
-                p.identity
+                target
               )}" title="Accept speak request">Accept</button>
               <button type="button" class="community-modal-voice-mini community-modal-voice-mini--danger" data-voice-reject="${escapeHtml(
-                p.identity
+                target
               )}" title="Reject speak request">Reject</button>
             </span>`
           } else if (p.isSpeaker) {
             actions = `<span class="community-modal-voice-actions">
               <button type="button" class="community-modal-voice-mini" data-voice-demote="${escapeHtml(
-                p.identity
+                target
               )}" title="Demote to listener">Demote</button>
             </span>`
           }
         }
         return `<div class="community-modal-voice-row">
           <div class="community-modal-voice-row-main">
-            <span class="community-modal-voice-name">${escapeHtml(p.name)}</span>
-            <span class="community-modal-voice-badges">${badgeHtml}</span>
+            ${face}
+            <div class="community-modal-voice-identity">
+              <span class="community-modal-voice-name">${escapeHtml(displayName)}</span>
+              <span class="community-modal-voice-badges">${badgeHtml}</span>
+            </div>
+            ${copyBtn}
           </div>
           ${actions}
         </div>`
       })
       .join('')
     return `<div class="community-modal-voice-roster">
-      <h4 class="community-modal-voice-roster-title">In stream (${participants.length})</h4>
+      <h4 class="community-modal-voice-roster-title">Voice Chat (${participants.length})</h4>
       ${rows}
     </div>`
   }
@@ -1073,4 +1160,10 @@ function voiceBtnHtml(inVoice: boolean, active: boolean, canStart: boolean): str
   if (active) return '◉ JOIN AS LISTENER'
   if (canStart) return '◉ START VOICE STREAM'
   return '◉ VOICE STREAM'
+}
+
+function shortIdentity(id: string): string {
+  const t = id.trim()
+  if (t.length <= 14) return t
+  return `${t.slice(0, 8)}…${t.slice(-4)}`
 }

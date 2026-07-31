@@ -8,6 +8,10 @@ import type { OpenNftDialogRequest, OpenNftDialogResponse } from '../../player/o
 import type { TeleportToRequest, TeleportToResponse } from '../../player/teleportTo'
 import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../../player/triggerEmote'
 import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../../player/triggerSceneEmote'
+import type {
+  SetCameraTransformRequest,
+  SetCameraTransformResponse
+} from '../../player/setCameraTransform'
 import type { CommsRpcHandler, SceneWorkerBoot, SignedFetchGetHeadersResponse, SignedFetchRequest, SignedFetchResponse } from '../types'
 import type { EngineApiEventState } from '../engine/EngineApiEventState'
 
@@ -22,6 +26,7 @@ type RpcHandler = {
   triggerSceneEmote: (body: TriggerSceneEmoteRequest) => Promise<TriggerSceneEmoteResponse>
   openExternalUrl: (body: OpenExternalUrlRequest) => Promise<OpenExternalUrlResponse>
   openNftDialog: (body: OpenNftDialogRequest) => Promise<OpenNftDialogResponse>
+  setCameraTransform: (body: SetCameraTransformRequest) => Promise<SetCameraTransformResponse>
   commsSend: (body: { message: string }) => Promise<Record<string, never>>
   comms: CommsRpcHandler
   signedFetch: (body: SignedFetchRequest) => Promise<SignedFetchResponse>
@@ -168,6 +173,88 @@ export function createSystemStubs(
         await rpc.changeRealm({ realm: dest })
         return {}
       }
+    },
+    /**
+     * SDK6-compat environment surface (deprecated upstream in favor of Runtime).
+     * @see decentraland/kernel/apis/environment_api.proto
+     */
+    '~system/EnvironmentApi': {
+      getBootstrapData: async () => ({
+        id: boot.entityId ?? '',
+        baseUrl: contentBaseUrl(boot),
+        entity: {
+          content: boot.content.map((entry) => ({ file: entry.file, hash: entry.hash })),
+          metadataJson: boot.metadataJson
+        },
+        useFPSThrottling: false
+      }),
+      isPreviewMode: async () => {
+        const res = await rpc.comms.getRealm()
+        return { isPreview: res.realmInfo?.isPreview ?? true }
+      },
+      getPlatform: async () => ({ platform: 'web' }),
+      /** Web client already proxies scene fetch; allow non-Catalyst URLs like Explorer preview. */
+      areUnsafeRequestAllowed: async () => ({ status: true }),
+      getCurrentRealm: async () => {
+        const res = await rpc.comms.getRealm()
+        const info = res.realmInfo
+        if (!info) return { currentRealm: undefined }
+        return {
+          currentRealm: {
+            domain: info.baseUrl || boot.contentsBaseUrl || '',
+            layer: '',
+            room: info.room ?? '',
+            serverName: info.realmName || boot.worldName || 'local',
+            displayName: info.realmName || boot.worldName || 'local',
+            protocol: 'v3'
+          }
+        }
+      },
+      getExplorerConfiguration: async () => ({
+        clientUri: 'https://decentraland.org',
+        configurations: {
+          agent: 'Decentraland/ThreejsClient',
+          platform: 'web'
+        }
+      }),
+      getDecentralandTime: async () => ({ seconds: Math.floor(Date.now() / 1000) })
+    },
+    /**
+     * Scene unit-test runner (`@dcl/sdk/testing`). DEBUG scenes require a real module
+     * (not the empty Proxy fallback) so plan / logTestResult / setCameraTransform work.
+     * @see decentraland/kernel/apis/testing.proto
+     */
+    '~system/Testing': {
+      logTestResult: async (body: {
+        name?: string
+        ok?: boolean
+        error?: string
+        stack?: string
+        totalFrames?: number
+        totalTime?: number
+      }) => {
+        const name = body.name ?? '(unnamed)'
+        const frames = body.totalFrames ?? 0
+        const time = body.totalTime ?? 0
+        if (body.ok) {
+          console.log(`🧪 ✅ ${name} · frames=${frames} time=${time.toFixed?.(3) ?? time}s`)
+        } else {
+          console.error(`🧪 ❌ ${name} · frames=${frames} time=${time.toFixed?.(3) ?? time}s`)
+          if (body.error) console.error(`   ${body.error}`)
+          if (body.stack) console.error(body.stack)
+        }
+        return {}
+      },
+      plan: async (body: { tests?: Array<{ name?: string }> }) => {
+        const names = (body.tests ?? []).map((t) => t.name ?? '(unnamed)')
+        console.log(`🧪 test plan (${names.length}): ${names.join(' · ') || '(empty)'}`)
+        return {}
+      },
+      setCameraTransform: async (body: SetCameraTransformRequest) => rpc.setCameraTransform(body),
+      /** @internal visual regression — not wired; report missing baseline. */
+      takeAndCompareScreenshot: async (_body?: unknown) => ({
+        storedSnapshotFound: false
+      })
     },
     '@lastslice/virtual-camera': virtualCameraCore,
     '@lastslice/virtual-camera/core': virtualCameraCore,

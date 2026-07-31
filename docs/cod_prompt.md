@@ -30,8 +30,8 @@ Utter AAA quality — textures, physics, layout, input, continuity — anything 
 
 1. **Fan out** — sub-agents (or parallel deep reads) own distinct slices: root-cause, fix, visual/QA critique.
 2. **/loop** on each item — implement → verify → harsh critic → iterate until the critic would pick this client in a blind side-by-side vs Explorer / AAA bar for that slice.
-3. **Harsh critic** — separate pass that assumes failure: logs, paint modes, PE on/off, edge cases (second open, pagination, wrap). If not triple-A for the slice, keep going.
-4. **Ultracode** — small, law-aligned diffs; no plaza-only hacks; no dual layout invent; COD dirty / PointerEvents lead / layout laws hold; portable experiences use PORTABLE_EXPERIENCE_COD.
+3. **Harsh critic** — separate pass that assumes failure: logs, paint modes, PX on/off, edge cases (second open, pagination, wrap). If not triple-A for the slice, keep going.
+4. **Ultracode** — small, law-aligned diffs; no plaza-only hacks; no dual layout invent; COD dirty / PointerEvents lead / layout laws hold; portable experiences (**PX**) use PORTABLE_EXPERIENCE_COD.
 5. **Don't stop** until the slice is proven in logs or types + reasoned oracle, not “probably fine.”
 
 ---
@@ -48,16 +48,18 @@ See [SCENE_UI_COD.md](./SCENE_UI_COD.md):
 
 ---
 
-## Portable experience reminder (when PE / dual-scene is in scope)
+## Portable experience (PX) reminder (when dual-scene is in scope)
+
+> **PX** = portable experience. **PE** = PointerEvents only ([SCENE_UI_COD.md](./SCENE_UI_COD.md)).
 
 See [PORTABLE_EXPERIENCE_COD.md](./PORTABLE_EXPERIENCE_COD.md) · phases [SCENE_LAYERS_PLAN.md](./SCENE_LAYERS_PLAN.md):
 
-- **PE is a second full scene** when loaded — same features as primary, **no parcel bounds**
-- PE is **not** secondary (media/UI on); PE is **not** primary (never demotes genesis FocusOwner)
+- **PX is a second full scene** when loaded — **everything a scene can do**, **no parcel bounds**
+- PX is **not** secondary (media/UI on); PX does **not** demote genesis parcel FocusOwner
 - Layers → **claims** → one PlayerHost; freeze ≠ pin; free-flight = `layer_drive`
 - UI: same Yoga COD under `#pe-ui-root` only — no dual layout invent
 - Phys: namespaced late cook / invalidate-only ([STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md))
-- Kill PE-only hacks (`PeMainThreadMirror`, `runPeVehicleInputPump`) via A→D — do not merge old PE WIP
+- Kill PX-only hacks (`PeMainThreadMirror`, `runPeVehicleInputPump`) via A→E — do not merge old PX WIP
 
 ---
 

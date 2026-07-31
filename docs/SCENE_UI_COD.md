@@ -99,7 +99,8 @@ Patch paints dirty *seeds* only; renderEntityTree walks each seed's descendants.
 
 ## PointerEvents lead law (not portable experiences)
 
-> **Never abbreviate as “PE” in new prose** — use **PointerEvents** / **UiPointer**. Portable experiences are [PORTABLE_EXPERIENCE_COD.md](./PORTABLE_EXPERIENCE_COD.md).
+> **PE** in this file = **PointerEvents** only. Prefer **PointerEvents** / **UiPointer** in new prose.  
+> Portable experiences = **PX** — see [PORTABLE_EXPERIENCE_COD.md](./PORTABLE_EXPERIENCE_COD.md).
 
 ```text
 1. live non-empty     → live wins; mark seen; drop snapshot

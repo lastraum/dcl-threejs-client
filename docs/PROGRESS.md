@@ -3,10 +3,10 @@
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-07-31  
-> **Current phase:** **v1.7.0** on `main` · active branch **`yoga-revamp`** (1.7 base + scene-ui Yoga COD) — **1.8:** PE = second full scene ([PORTABLE_EXPERIENCE_COD.md](./PORTABLE_EXPERIENCE_COD.md) · [SCENE_LAYERS_PLAN.md](./SCENE_LAYERS_PLAN.md)) + scene UI text-measure.  
+> **Current phase:** **v1.7.0** on `main` · active branch **`yoga-revamp`** (1.7 base + scene-ui Yoga COD) — **1.8:** **PX** (portable experience) = second full scene, all scene features ([PORTABLE_EXPERIENCE_COD.md](./PORTABLE_EXPERIENCE_COD.md) · [SCENE_LAYERS_PLAN.md](./SCENE_LAYERS_PLAN.md)) + scene UI text-measure. **PE** = PointerEvents.  
 > **Shipped (1.x):** **v1.7.0** community voice · live polls/Q&A/trivia + CSV · pets/Pet Barn · loot bag · multi-scene AOI anim · AudioAnalysis · EnvironmentApi/Testing · **v1.6.0** tour photos / Camera Reel · admin tools · scene UI fixes · **v1.5.0** PART/ROOT colliders · Animator · tours · cast · **v1.4.0** custom worlds · Worlds map · AOI · shell UI.  
 
-> **1.x next (1.8+):** scene UI Yoga COD finish / text-measure · **PE layers A→D** (registry → claims → unify tick → HostPoseMode; double scene, no bounds) · backpack outfits/marketplace · create-community / invites · gallery multi-page · graphics P3 distance culls · CBD multi-scene FPS hardening · Social WS transport reliability (PM LiveKit dual-path mitigates voice discovery).  
+> **1.x next (1.8+):** scene UI Yoga COD finish / text-measure · **PX layers A→E** (registry → claims → unify tick → HostPoseMode → parity; double scene, all features, no bounds) · backpack outfits/marketplace · create-community / invites · gallery multi-page · graphics P3 distance culls · CBD multi-scene FPS hardening · Social WS transport reliability (PM LiveKit dual-path mitigates voice discovery).  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). PM LiveKit survives teleports. Community voice LiveKit survives Jump In.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
 > **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **Static COD:** [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) · **Multi-scene continuity:** [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  

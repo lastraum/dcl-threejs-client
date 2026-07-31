@@ -20,12 +20,12 @@ Treat every multi-scene, performance, and continuity task as **ship-or-iterate A
 | **Freeze hold pin** | `disableAllHoldFeet` only for intentional `InputModifier.disableAll`. Never pin for colliders-ready or multi-scene thrash. Stall auto-recover if keys held + free + feet stuck. |
 | **Secondary scripts 100%** | Live secondary `onUpdate` every frame (`secondaryTickIntervalMs = 0`), hard-capped (≤3). |
 | **Secondary FocusOwner mute** | No video, audio, scene UI, privileged pointers/nav — `FocusPolicy = 'secondary'`. |
-| **Primary FocusOwner** | Parcel UI / media / inputs for the **place**. **Portable experiences** are a parallel full scene layer (media/UI on, no parcel bounds) — claims at priority 50 — see [PORTABLE_EXPERIENCE_COD.md](./PORTABLE_EXPERIENCE_COD.md). Not a secondary mute; not a primary swap. |
+| **Primary FocusOwner** | Parcel UI / media / inputs for the **place**. **PX (portable experiences)** are a parallel full scene layer — **full scene feature set**, no parcel bounds — claims at priority 50 — see [PORTABLE_EXPERIENCE_COD.md](./PORTABLE_EXPERIENCE_COD.md). Not a secondary mute; not a primary swap. **PE** in other docs means PointerEvents, not PX. |
 | **Tertiary residents** | Only when **leave 16m live ring** or **secondary-cap pressure** (prefer non-sticky). Scripts OFF + LOD. Re-enter → scripts on only (**no GLB reload**). |
 | **No parcel-size gate** | Parcel count never refuses secondary boot or picks tertiary. Budget = live radius + hard secondary cap + boot concurrency. |
 | **Tertiary composites** | Roads / empty / AOI shells fill the world without workers; distance-budgeted. |
 | **Default ground everywhere** | Default parcel GLB on **all** non-road AOI parcels. Procedural trees/rocks **only** on vacant / catalyst-empty. |
-| **Freecam always free** | Demoted **secondary** never applies player-frame. **Primary** owns parcel FocusOwner. **Running PE** may affect locomotion / camera / UI / media only through **PlayerHost claims** (priority 50). Freecam yaw/pitch/dist are durable player state. Clear secondary freeze on demote + promote handoff. |
+| **Freecam always free** | Demoted **secondary** never applies player-frame. **Primary** owns parcel FocusOwner. **Running PX** may affect locomotion / camera / UI / media / AvatarModifier / CameraMode through **PlayerHost claims** (priority 50; primary wins ties). Freecam yaw/pitch/dist are durable player state. Clear secondary freeze on demote + promote handoff. |
 | **Camera FocusOwner (platform)** | Freecam yaw/pitch/dist are **player state** (survive primary swap). Scene VirtualCamera drives the lens only while `isActive()` — not MainCamera bind lag. VC must never rewrite freecam orbit; handoff snaps boom to feet only. |
 | **AvatarModifier FocusOwner** | Only primary may hide avatars / force CameraMode. Demote clears hide + forced camera; secondary never syncs AvatarModifierArea (prevents “became a vending machine”). |
 | **No matrix freeze on tertiary** | Tertiary = scripts off only; never freeze TRS matrices (sky-GLB bug after retarget). |
@@ -42,8 +42,8 @@ If a change makes the world go blank on neighbor step, **it is a P0 bug** — re
 3b. **[COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)** — PhysX PART vs ROOT (v1.5)  
 3c. **[STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md)** — cook-once statics · never forceDynamicTreeRebuild · kill-list  
 3d. **[SCENE_UI_COD.md](./SCENE_UI_COD.md)** — Yoga sole layout · PointerEvents lead law · no repair thrash  
-3e. **[PORTABLE_EXPERIENCE_COD.md](./PORTABLE_EXPERIENCE_COD.md)** — PE = second full scene · claims · freeze ≠ pin · no bounds  
-3f. **[SCENE_LAYERS_PLAN.md](./SCENE_LAYERS_PLAN.md)** — PE layers A→D implementation plan  
+3e. **[PORTABLE_EXPERIENCE_COD.md](./PORTABLE_EXPERIENCE_COD.md)** — **PX** = second full scene (all scene features) · claims · freeze ≠ pin · no bounds  
+3f. **[SCENE_LAYERS_PLAN.md](./SCENE_LAYERS_PLAN.md)** — PX layers A→E implementation plan  
 4. **[CLAIMS.yaml](./CLAIMS.yaml)** — who is already working on what  
 5. **[ARCHITECTURE.md](./ARCHITECTURE.md)** — scene I/O model + debt  
 6. **[DEPLOYMENT.md](./DEPLOYMENT.md)** — build / preview / go-live  

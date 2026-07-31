@@ -13,5 +13,5 @@ Before evaluating, planning, or implementing **any** multi-step task in this rep
 4. **/loop** with a **harsh critic** pass; iterate until that critic would pick this client side-by-side for the slice.
 5. Prefer small law-aligned diffs; no scene-specific bandaids that break other scenes.
 
-Scene UI work must also honor `docs/SCENE_UI_COD.md`.  
-Portable experience / dual-scene work must also honor `docs/PORTABLE_EXPERIENCE_COD.md` and `docs/SCENE_LAYERS_PLAN.md`.
+Scene UI work must also honor `docs/SCENE_UI_COD.md` (PE = PointerEvents).  
+Portable experience (**PX**) / dual-scene work must honor `docs/PORTABLE_EXPERIENCE_COD.md` and `docs/SCENE_LAYERS_PLAN.md`.

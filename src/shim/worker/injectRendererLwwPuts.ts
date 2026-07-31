@@ -19,6 +19,8 @@ const GLTF_CONTAINER_LOADING_STATE_ID = 1049
 const VIDEO_PLAYER_ID = 1043
 /** `core::AudioSource` — renderer syncs `playing` on natural end for scene toggle parity. */
 const AUDIO_SOURCE_ID = 1020
+/** `core::AudioAnalysis` — renderer fills amplitude + 8 frequency bands. */
+const AUDIO_ANALYSIS_ID = 1212
 /** `core::UiCanvasInformation` — renderer injects virtual canvas size for scene UI systems. */
 const UI_CANVAS_INFORMATION_ID = 1054
 /** `core::UiInputResult` — renderer writes typed text back to scene systems. */
@@ -44,6 +46,7 @@ export type RendererLwwInjectCounts = {
   gltfLoadingStateTerminalPuts: number
   videoPlayerPuts: number
   audioSourcePuts: number
+  audioAnalysisPuts: number
   uiCanvasPuts: number
   uiInputResultPuts: number
   uiDropdownResultPuts: number
@@ -64,6 +67,7 @@ export function hasDynamicHostLwwInjects(c: RendererLwwInjectCounts): boolean {
     c.raycastPuts > 0 ||
     c.videoPlayerPuts > 0 ||
     c.audioSourcePuts > 0 ||
+    c.audioAnalysisPuts > 0 ||
     c.gltfLoadingStatePuts > 0 ||
     c.uiInputResultPuts > 0 ||
     c.uiDropdownResultPuts > 0 ||
@@ -93,6 +97,7 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
   const GltfContainerLoadingState = generated.GltfContainerLoadingState(engine)
   const VideoPlayer = generated.VideoPlayer(engine)
   const AudioSource = generated.AudioSource(engine)
+  const AudioAnalysis = generated.AudioAnalysis(engine)
   const UiCanvasInformation = generated.UiCanvasInformation(engine)
   const UiInputResult = generated.UiInputResult(engine)
   const UiDropdownResult = generated.UiDropdownResult(engine)
@@ -107,6 +112,7 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
   let gltfLoadingStateTerminalPuts = 0
   let videoPlayerPuts = 0
   let audioSourcePuts = 0
+  let audioAnalysisPuts = 0
   let uiCanvasPuts = 0
   let uiInputResultPuts = 0
   let uiDropdownResultPuts = 0
@@ -156,6 +162,11 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
           const value = AudioSource.schema.deserialize(valueBuf)
           AudioSource.createOrReplace(msg.entityId as Entity, value)
           audioSourcePuts++
+        } else if (msg.componentId === AUDIO_ANALYSIS_ID) {
+          const valueBuf = new ReadWriteByteBuffer(msg.data)
+          const value = AudioAnalysis.schema.deserialize(valueBuf)
+          AudioAnalysis.createOrReplace(msg.entityId as Entity, value)
+          audioAnalysisPuts++
         } else if (msg.componentId === UI_CANVAS_INFORMATION_ID && msg.entityId === 0) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = UiCanvasInformation.schema.deserialize(valueBuf)
@@ -209,6 +220,7 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
     gltfLoadingStateTerminalPuts,
     videoPlayerPuts,
     audioSourcePuts,
+    audioAnalysisPuts,
     uiCanvasPuts,
     uiInputResultPuts,
     uiDropdownResultPuts,

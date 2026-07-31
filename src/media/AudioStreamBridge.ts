@@ -126,6 +126,11 @@ export class AudioStreamBridge {
     }
   }
 
+  /** AudioAnalysis same-entity resolve. */
+  getPlayer(entity: Entity): SceneAudioStreamPlayer | null {
+    return this.streams.get(entity)?.player ?? null
+  }
+
   update(_tickNumber: number, view: ProjectionView): void {
     if (!this.mediaEnabled) return
     const { AudioStream, AudioEvent } = this.ecs

@@ -35,6 +35,7 @@ import { AvatarAttachBridge } from '../../bridge/AvatarAttachBridge'
 import type { AvatarAttachTargetResolver } from '../../avatar/AvatarAttachTargets'
 import { AudioSourceBridge } from '../../media/AudioSourceBridge'
 import { AudioStreamBridge } from '../../media/AudioStreamBridge'
+import { AudioAnalysisBridge } from '../../media/AudioAnalysisBridge'
 import type { SpatialAudioAnchors } from '../../media/spatialAudioParent'
 import { VideoPlayerBridge } from '../../media/VideoPlayerBridge'
 import { AssetLoadBridge } from '../../media/AssetLoadBridge'
@@ -291,6 +292,7 @@ export class SceneScriptSystem {
   private videoPlayerBridge: VideoPlayerBridge | null = null
   private audioSourceBridge: AudioSourceBridge | null = null
   private audioStreamBridge: AudioStreamBridge | null = null
+  private audioAnalysisBridge: AudioAnalysisBridge | null = null
   private assetLoadBridge: AssetLoadBridge | null = null
   private host: SceneHost | null = null
   private worker: Worker | null = null
@@ -463,6 +465,7 @@ export class SceneScriptSystem {
     this.videoPlayerBridge?.setMediaEnabled(mediaOn)
     this.audioSourceBridge?.setMediaEnabled(mediaOn)
     this.audioStreamBridge?.setMediaEnabled(mediaOn)
+    this.audioAnalysisBridge?.setMediaEnabled(mediaOn)
     if (policy === 'secondary') {
       this.sceneUiDesiredVisible = false
       this.sceneUiBridge?.setVisible(false)
@@ -687,6 +690,14 @@ export class SceneScriptSystem {
       this.recordRendererAppend
     )
     this.bridge.setAudioStreamBridge(this.audioStreamBridge)
+    this.audioAnalysisBridge = new AudioAnalysisBridge(
+      this.readComponents,
+      () => this.audioSourceBridge,
+      () => this.audioStreamBridge,
+      () => this.videoPlayerBridge,
+      this.recordRendererLww
+    )
+    this.audioAnalysisBridge.onLwwFlush = () => this.flushRendererLwwToWorker()
     // Apply FocusOwner after bridges exist (secondary = hard mute / video stop).
     this.applyFocusPolicy(this.focusPolicy)
     this.assetLoadBridge = new AssetLoadBridge(
@@ -5090,6 +5101,8 @@ export class SceneScriptSystem {
     this.videoPlayerBridge?.update(tickNumber, this.view)
     this.audioSourceBridge?.update(tickNumber, this.view)
     this.audioStreamBridge?.update(tickNumber, this.view)
+    // Spectrum after media players are synced/playing — host LWW → worker readIntoView.
+    this.audioAnalysisBridge?.update(this.view)
     // VideoEvent / AudioEvent / AssetLoadLoadingState appends — do not wait solely on
     // updateTriggerAreas; scenes listening via onChange need same-frame host CRDT.
     this.flushRendererGrowOnlyAppends()
@@ -5241,6 +5254,8 @@ export class SceneScriptSystem {
     this.audioSourceBridge = null
     this.audioStreamBridge?.dispose()
     this.audioStreamBridge = null
+    this.audioAnalysisBridge?.dispose()
+    this.audioAnalysisBridge = null
     this.assetLoadBridge?.dispose()
     this.assetLoadBridge = null
     this.collision?.dispose()

@@ -75,6 +75,8 @@ export type MirrorComponents = {
   AudioSource: ReturnType<typeof generated.AudioSource>
   AudioStream: ReturnType<typeof generated.AudioStream>
   AudioEvent: ReturnType<typeof generated.AudioEvent>
+  /** Host fills amplitude + band0..7; scene authors mode/gains (same entity as media). */
+  AudioAnalysis: ReturnType<typeof generated.AudioAnalysis>
   ParticleSystem: ReturnType<typeof generated.ParticleSystem>
   UiTransform: ReturnType<typeof generated.UiTransform>
   UiText: ReturnType<typeof generated.UiText>
@@ -148,6 +150,7 @@ export function registerMirrorComponents(engine: IEngine): MirrorComponents {
     AudioSource: generated.AudioSource(engine),
     AudioStream: generated.AudioStream(engine),
     AudioEvent: generated.AudioEvent(engine),
+    AudioAnalysis: generated.AudioAnalysis(engine),
     ParticleSystem: generated.ParticleSystem(engine),
     UiTransform: generated.UiTransform(engine),
     UiText: generated.UiText(engine),

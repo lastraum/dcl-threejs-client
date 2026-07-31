@@ -3,6 +3,7 @@ import type { Entity } from '@dcl/ecs'
 import type { ResolvedScene } from '../dcl/content/types'
 import type { AssetCache } from '../rendering/AssetCache'
 import { resolveGltfSrcHash } from '../rendering/DclTextureResolver'
+import { renderQuality } from '../rendering/RenderQualitySettings'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionView } from './ProjectionView'
@@ -75,19 +76,13 @@ export type AnimatorSampleStats = {
   disabled: boolean
 }
 
-/**
- * Primary scene: every bound mixer advances **every frame** with full scene `delta`.
- * No distance sleep, no fair-phase skip, no adaptive sample budget.
- * (Multi-scene tertiary still uses {@link AnimatorBridge.setAllSleeping}.)
- */
-const PRIMARY_FULL_RATE_ANIMATORS = true
 /** Always-sample (or 2× fair share) within this radius of the camera. */
 const NEAR_PLAYER_FULL_RATE_M = 16
 /** Sphere radius added around entity root for expanded-frustum tests (turn without pop). */
 const FRUSTUM_EXPAND_M = 8
 /**
  * Off-frustum decorative mixers sleep beyond this distance (timeScale 0).
- * Unused when {@link PRIMARY_FULL_RATE_ANIMATORS} is true.
+ * Unused when Preferences → Advanced → Full-rate scene animators is on.
  */
 const SLEEP_OFF_FRUSTUM_M = 40
 /**
@@ -97,12 +92,12 @@ const SLEEP_OFF_FRUSTUM_M = 40
 const DEFAULT_AUTOPLAY_BIND_M = 48
 /**
  * Target sample Hz for in-view (fair) unique groups. Near/PART stay at display rate.
- * Unused when {@link PRIMARY_FULL_RATE_ANIMATORS} is true.
+ * Unused when full-rate primary animators is on.
  */
 const TARGET_VIEW_SAMPLE_HZ = 30
 /**
  * Hard ceiling on **mixer.update** calls per frame (after shared-hash collapse).
- * Unused when {@link PRIMARY_FULL_RATE_ANIMATORS} is true (all active mixers sample).
+ * Unused when full-rate primary animators is on (all active mixers sample).
  */
 const MAX_SAMPLES_PER_FRAME = 48
 /** Near / PART absolute ceiling (adaptive near cap is lower under load). */
@@ -115,6 +110,11 @@ const MAX_DEFAULT_BINDS_PER_FRAME = 3
 const MAX_DEFAULT_BINDS_FULL_RATE = 12
 /** Never let near layer eat the whole budget while fair in-view units exist. */
 const FAIR_BUDGET_RESERVE_MIN = 4
+
+/** Graphics Advanced: full scene-tick sampling for primary (default on). */
+function primaryFullRateAnimators(): boolean {
+  return renderQuality.getPrimaryFullRateAnimators()
+}
 
 /**
  * Scale sample count from last frame's wall dt so we recover FPS instead of
@@ -924,7 +924,8 @@ export class AnimatorBridge {
     // delta=0 pose pass after async bind.
     if (!schedule) {
       let poseN = 0
-      const POSE_BUDGET = PRIMARY_FULL_RATE_ANIMATORS ? 128 : 24
+      const fullRate = primaryFullRateAnimators()
+      const POSE_BUDGET = fullRate ? 128 : 24
       for (const [entity, entry] of this.entries) {
         if (!mixerHasActiveWork(entry)) continue
         if (poseN >= POSE_BUDGET) break
@@ -943,12 +944,12 @@ export class AnimatorBridge {
     )
     _frustum.setFromProjectionMatrix(_projScreen)
 
+    const fullRate = primaryFullRateAnimators()
+
     // Promote + bind deferred default autoplay (amortized — no plaza bind storm).
     this.allowDefaultAutoplayBind = true
     const bindSq = DEFAULT_AUTOPLAY_BIND_M * DEFAULT_AUTOPLAY_BIND_M
-    const bindCap = PRIMARY_FULL_RATE_ANIMATORS
-      ? MAX_DEFAULT_BINDS_FULL_RATE
-      : MAX_DEFAULT_BINDS_PER_FRAME
+    const bindCap = fullRate ? MAX_DEFAULT_BINDS_FULL_RATE : MAX_DEFAULT_BINDS_PER_FRAME
     let bindsThisFrame = 0
     for (const entity of [...this.pendingBind]) {
       if (bindsThisFrame >= bindCap) break
@@ -982,7 +983,7 @@ export class AnimatorBridge {
     this.allowDefaultAutoplayBind = false
 
     // --- Full-rate primary path: every active mixer, every frame, full delta ---
-    if (PRIMARY_FULL_RATE_ANIMATORS) {
+    if (fullRate) {
       let sampled = 0
       let active = 0
       for (const [entity, entry] of this.entries) {

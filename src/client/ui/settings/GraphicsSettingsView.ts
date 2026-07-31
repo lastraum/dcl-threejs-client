@@ -266,6 +266,19 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
       ]
     },
     {
+      title: 'Advanced',
+      items: [
+        {
+          type: 'toggle',
+          // On: every bound primary clip advances every frame (smooth plaza).
+          // Off: distance sleep + fair sampling (cheaper CBD, can freeze mid-pose far/off-screen).
+          label: 'Full-rate scene animators',
+          defaultOn: rq.primaryFullRateAnimators ?? true,
+          onChange: (on) => renderQuality.setPrimaryFullRateAnimators(on)
+        }
+      ]
+    },
+    {
       title: 'Physics',
       items: [
         { type: 'toggle', label: 'Jiggle Bones', defaultOn: false, stub: true }
@@ -430,6 +443,11 @@ export class GraphicsSettingsView {
               control.input.value = String(opts.sceneLoadRadiusM)
               control.label.textContent = `${opts.sceneLoadRadiusM}${control.suffix ?? ''}`
               this.setSliderPct(control.input, control.min, control.max)
+            }
+            break
+          case 'Full-rate scene animators':
+            if (control.kind === 'toggle') {
+              control.input.checked = opts.primaryFullRateAnimators ?? true
             }
             break
         }

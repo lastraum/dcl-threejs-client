@@ -55,6 +55,11 @@ export type RenderQualityOptions = {
    * stay as the ceiling and are what Preferences shows.
    */
   adaptiveQualityEnabled: boolean
+  /**
+   * Primary scene Animator: every bound mixer advances every frame (full scene tick).
+   * Off = distance sleep + fair-phase sampling (cheaper CBD). Independent of presets.
+   */
+  primaryFullRateAnimators: boolean
 }
 
 /** Min/max for Preferences → Scene Distance (AOI neighbor load radius). */
@@ -108,10 +113,14 @@ export const TONE_MAPPING_EXPOSURE: Record<RenderQualityTier, number> = {
 
 type PresetId = Exclude<GraphicsPreset, 'custom'>
 
-/** Graphics preset fields — AOI / toon / adaptive are user-owned, not preset-bundled. */
+/** Graphics preset fields — AOI / toon / adaptive / animators are user-owned, not preset-bundled. */
 type PresetBundle = Omit<
   RenderQualityOptions,
-  'preset' | 'sceneLoadRadiusM' | 'avatarToonEnabled' | 'adaptiveQualityEnabled'
+  | 'preset'
+  | 'sceneLoadRadiusM'
+  | 'avatarToonEnabled'
+  | 'adaptiveQualityEnabled'
+  | 'primaryFullRateAnimators'
 >
 
 const PRESET_BUNDLES: Record<PresetId, PresetBundle> = {
@@ -175,7 +184,9 @@ const DEFAULT_OPTIONS: RenderQualityOptions = {
   avatarToonEnabled: false,
   sceneLoadRadiusM: SCENE_LOAD_RADIUS_DEFAULT_M,
   /** On by default — steps down only under load; never raises above user settings. */
-  adaptiveQualityEnabled: true
+  adaptiveQualityEnabled: true,
+  /** On by default — full-rate primary clips; turn off for cheaper CBD. */
+  primaryFullRateAnimators: true
 }
 
 /** Shadow ladder low → high (adaptive steps down toward index 0). */
@@ -424,7 +435,16 @@ class RenderQualityStore {
     this.patch({ sceneLoadRadiusM: clampSceneLoadRadiusM(sceneLoadRadiusM) })
   }
 
-  /** Apply a named preset bundle (not custom). Preserves toon + AOI radius + adaptive toggle. */
+  getPrimaryFullRateAnimators(): boolean {
+    return this.options.primaryFullRateAnimators
+  }
+
+  /** Primary Animator: full scene-tick sampling vs distance/fair LOD. */
+  setPrimaryFullRateAnimators(primaryFullRateAnimators: boolean): void {
+    this.patch({ primaryFullRateAnimators: !!primaryFullRateAnimators })
+  }
+
+  /** Apply a named preset bundle (not custom). Preserves toon + AOI radius + adaptive + animators. */
   applyPreset(preset: PresetId): void {
     const bundle = PRESET_BUNDLES[preset]
     this.commit({
@@ -432,7 +452,8 @@ class RenderQualityStore {
       ...bundle,
       avatarToonEnabled: this.options.avatarToonEnabled,
       sceneLoadRadiusM: this.options.sceneLoadRadiusM,
-      adaptiveQualityEnabled: this.options.adaptiveQualityEnabled
+      adaptiveQualityEnabled: this.options.adaptiveQualityEnabled,
+      primaryFullRateAnimators: this.options.primaryFullRateAnimators
     })
     // New ceiling — drop temporary overrides so the preset is what you get.
     this.clearAdaptiveOverrides()
@@ -529,6 +550,9 @@ class RenderQualityStore {
     if (typeof next.adaptiveQualityEnabled !== 'boolean') {
       next.adaptiveQualityEnabled = this.options.adaptiveQualityEnabled
     }
+    if (typeof next.primaryFullRateAnimators !== 'boolean') {
+      next.primaryFullRateAnimators = this.options.primaryFullRateAnimators
+    }
 
     if (partial.preset === undefined || partial.preset === 'custom') {
       next.preset = this.inferPreset(next)
@@ -575,7 +599,8 @@ class RenderQualityStore {
       a.hdrEnabled === b.hdrEnabled &&
       a.avatarToonEnabled === b.avatarToonEnabled &&
       a.sceneLoadRadiusM === b.sceneLoadRadiusM &&
-      a.adaptiveQualityEnabled === b.adaptiveQualityEnabled
+      a.adaptiveQualityEnabled === b.adaptiveQualityEnabled &&
+      a.primaryFullRateAnimators === b.primaryFullRateAnimators
     )
   }
 
@@ -621,6 +646,9 @@ class RenderQualityStore {
       if (typeof parsed.avatarToonEnabled === 'boolean') next.avatarToonEnabled = parsed.avatarToonEnabled
       if (typeof parsed.adaptiveQualityEnabled === 'boolean') {
         next.adaptiveQualityEnabled = parsed.adaptiveQualityEnabled
+      }
+      if (typeof parsed.primaryFullRateAnimators === 'boolean') {
+        next.primaryFullRateAnimators = parsed.primaryFullRateAnimators
       }
       if (typeof parsed.sceneLoadRadiusM === 'number') {
         next.sceneLoadRadiusM = clampSceneLoadRadiusM(parsed.sceneLoadRadiusM)

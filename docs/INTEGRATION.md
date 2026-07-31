@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-31 (**v1.6.x** — EnvironmentApi/Testing + AudioAnalysis + community voice parity on `dev-latest`; see [PROGRESS.md](./PROGRESS.md))
+> **Last updated:** 2026-07-31 (**v1.7.0** — community voice · live tools · pets/Pet Barn · loot bag · AOI anim · EnvironmentApi/Testing · AudioAnalysis; see [PROGRESS.md](./PROGRESS.md))
 
 ---
 
@@ -178,6 +178,9 @@ DOM overlay — not in-scene `UiTransform`.
 | Community HUD toasts | 🟢 | Top-center · posts poll · voice via bus (PM LiveKit + Social WS) · guest+wallet |
 | In-scene ECS UI | 🟡 | Yoga + DOM · hit-map 🟢 · UiBackground nine-slice + **Color4×texture multiply** 🟢 · instant solid tint · text-measure polish remain |
 | Voice / mic UI | 🟢 | Nearby voice panel · Speak / hold T · mute-in-bg · name-tag bars · **3D PositionalAudio** · community voice 2D pill + in-play chat card |
+| **Live tools** (polls / Q&A / trivia) | 🟢 | Location-card host menu · scene LiveKit · end-session **CSV** stats |
+| Pets panel + Pet Barn | 🟢 | Multiplayer companions · Barn catalog/publish · purple chrome |
+| Loot Bag | 🟢 | Deposit grid · multi-item NFT bundles · 3D pack model |
 
 ---
 

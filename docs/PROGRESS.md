@@ -3,10 +3,10 @@
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-07-31  
-> **Current phase:** **v1.6.x** on `dev-latest` — EnvironmentApi/Testing · AudioAnalysis host fill · **community voice parity**.  
-> **Shipped (1.x):** **Community voice full path** · **AudioAnalysis 1212** · **~system EnvironmentApi + Testing** · **v1.5.0 PART/ROOT colliders · Animator hold · avatar compose · tours · cast audio** · **v1.4.0 custom worlds · Worlds map · AOI · shell UI · place analytics** · multi-room chat · nearby voice · P4 bloom · glider.  
+> **Current phase:** **v1.7.0** on `main` — community voice · live tools · pets/Pet Barn · loot bag · AOI anim ship · EnvironmentApi/Testing · AudioAnalysis.  
+> **Shipped (1.x):** **v1.7.0** community voice · live polls/Q&A/trivia + CSV · pets/Pet Barn · loot bag · multi-scene AOI anim · AudioAnalysis · EnvironmentApi/Testing · **v1.6.0** tour photos / Camera Reel · admin tools · scene UI fixes · **v1.5.0** PART/ROOT colliders · Animator · tours · cast · **v1.4.0** custom worlds · Worlds map · AOI · shell UI.  
 
-> **1.x next:** multi-scene FPS hardening under CBD ring load · backpack outfits/marketplace · scene UI text-measure · gallery multi-page · graphics P3 distance culls · analytics charts polish · **create-community / invites** · Social WS transport reliability (PM LiveKit dual-path mitigates voice discovery).  
+> **1.x next (1.8+):** scene UI text-measure / Yoga polish · portable experiences · backpack outfits/marketplace · create-community / invites · gallery multi-page · graphics P3 distance culls · CBD multi-scene FPS hardening · Social WS transport reliability (PM LiveKit dual-path mitigates voice discovery).  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). PM LiveKit survives teleports. Community voice LiveKit survives Jump In.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
 > **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **Static COD:** [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) · **Multi-scene continuity:** [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  
@@ -15,6 +15,47 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## 🎉 Milestone — v1.7.0 release (Community voice · live tools · pets · AOI) (2026-07-31)
+
+**Status: release cut** — `dev-latest` → `main` · tag `v1.7.0`.
+
+Explorer **parity** + ThreejsClient **parity+** since **v1.6.0**. Tour photos / Camera Reel already shipped in **1.6** (not re-listed as new).
+
+### What's new
+
+- **Community voice chat** — start / join muted / request to speak / promote / demote / reject / kick / end
+- **Last-mod leave ends** the voice room for everyone
+- **Realtime voice discovery** — PM LiveKit topic + Social WS (no REST poll); gatekeeper fallback
+- **Jump In keeps community voice**; **PM LiveKit kept across teleports**
+- **Live polls** — place-owner host opens multi-choice polls in-world; guests vote from the place
+- **Live Q&A** — host runs an open question inbox; guests ask from the scene
+- **Live trivia** — host runs multi-question trivia rounds with guest answers
+- **CSV download logs** when ending any live-tools session (`poll-stats` / `qa-stats` / `trivia-stats`)
+- **Multiplayer pets** + **Pet Barn marketplace** — walk/fly follow, catalog, publish dispatch
+- **Loot Bag** — deposit grid, multi-item NFT bundles, 3D pack model
+- **`~system/EnvironmentApi`** + **`~system/Testing`** — real modules (no empty Proxy)
+- **AudioAnalysis (1212)** — host FFT for AudioSource / Stream / progressive video
+- **Multi-scene FocusOwner continuity** — promote handoff + sticky demote; secondary Animator pump
+- **Primary full-rate animators** (+ Graphics Advanced toggle) · **AOI warm band** polish
+- **Tour** leader keep-alive, force-end, rejoin, Focus camera snap
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Community voice** | 🟢 | Social v2 + gatekeeper · dual-path discovery · 2D pill + in-play card |
+| **Live tools** | 🟢 | Polls · Q&A · trivia · end-session CSV |
+| **Pets / Pet Barn** | 🟢 | MP companions · marketplace · publish Worker |
+| **Loot Bag** | 🟢 | Deposits · bundles · 3D pack |
+| **EnvironmentApi / Testing** | 🟢 | Last ~system gaps closed |
+| **AudioAnalysis** | 🟢 | Host FFT 1212 |
+| **AOI / multi-scene anim** | 🟢 | Continuity + full-rate primary + secondary pump |
+| **Tour photos / gallery** | 🟢 | Already in **v1.6.0** |
+
+**QA (release smoke):** community voice start/join/promote/Jump In keep · live poll vote + end CSV · Q&A + trivia session · pets + Pet Barn catalog · loot bag claim · Genesis walk secondary anim · plaza solids.
+
+**Tip:** `v1.7.0` on `main`. **1.8** targets scene UI + PE polish.
 
 ---
 
@@ -102,9 +143,9 @@
 
 ---
 
-## 🚧 Milestone — Multi-scene FocusOwner continuity (`feat/aoi-focus-owner`) (2026-07-26)
+## ✅ Milestone — Multi-scene FocusOwner continuity → `dev-latest` (2026-07-26)
 
-**Status: branch in progress** — continuity contract documented + landed; FPS still hardening under dual secondary load.
+**Status: merged `feat/aoi-focus-owner` → `dev-latest`** — continuity contract landed; FPS still hardening under dual secondary load. Shipped in **v1.7.0**.
 
 ### What's new (platform)
 

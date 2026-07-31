@@ -2,7 +2,7 @@
 
 > Browser-native Decentraland client: load deployed Worlds/scenes, shim SDK7 runtime, mirror ECS → Three.js, expand to open world.
 
-**Status:** **v1.6.x** on `dev-latest` ✅ (still not full Explorer parity). Community voice parity · AudioAnalysis · EnvironmentApi/Testing · v1.5 PART/ROOT colliders · tours · cast · worlds map · AOI. **1.x after:** outfits/marketplace · scene UI text-measure · create-community/invites (see [`PROGRESS.md`](./PROGRESS.md)).  
+**Status:** **v1.7.0** on `main` ✅ (still not full Explorer parity). Community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AOI anim · AudioAnalysis · EnvironmentApi/Testing · v1.5 PART/ROOT · tours · cast · worlds map. **1.8+:** scene UI text-measure · PE polish · outfits/marketplace · create-community/invites (see [`PROGRESS.md`](./PROGRESS.md)).  
 **ECS reference:** [`INTEGRATION.md`](./INTEGRATION.md)  
 **Note:** Historical phase plan. Prefer [PROGRESS.md](./PROGRESS.md) + [ARCHITECTURE.md](./ARCHITECTURE.md) + [INTEGRATION.md](./INTEGRATION.md) + [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) for current work.
 

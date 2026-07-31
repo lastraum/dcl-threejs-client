@@ -121,7 +121,7 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 2. Product **1.x**: backpack outfits · scene UI text-measure · community voice Bearer parity · create-community / invites.  
 3. Optional: graphics **P3** distance culls; MSAA+bloom concurrent; SyncEntities auth-host.  
 4. Mesh frame-law / instancing follow-through (motion promote already covers dynamic props).  
-5. EnvironmentApi/Testing only if scenes need them.  
+5. ~~EnvironmentApi/Testing~~ — **shipped** (SDK6-compat + `@dcl/sdk/testing`).  
 6. Keep INTEGRATION registry + PROGRESS updated on each ship.
 
 ---

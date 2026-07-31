@@ -7,7 +7,7 @@
 > **Shipped (1.x):** **v1.5.0 PART/ROOT colliders · Animator hold · avatar compose · tours · cast audio** · **v1.4.0 custom worlds · Worlds map · AOI · shell UI · place analytics** · **v1.3.0 plaza/poker PE · TextShape UV · chat translate** · **v1.2.0 Camera Reel + biomes + backpack hides** · In-World Camera · multi-room chat · nearby voice · P4 bloom · glider.  
 
 > **1.x next:** multi-scene FPS hardening under CBD ring load · backpack outfits/marketplace · scene UI text-measure · community voice Bearer · gallery multi-page · graphics P3 distance culls · analytics charts polish · broken-rig wearable fallback (shelved).  
-> **Note:** in-world `/goto` via 3D chat is wired (full scene reload). EnvironmentApi / Testing backburner.  
+> **Note:** in-world `/goto` via 3D chat is wired (full scene reload). **EnvironmentApi / Testing ~system modules shipped** (2026-07-31).  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
 > **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **Static COD:** [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) · **Multi-scene continuity:** [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) · **Place analytics:** [CREATOR_ANALYTICS.md](./CREATOR_ANALYTICS.md)
@@ -15,6 +15,25 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## ✅ Milestone — ~system EnvironmentApi + Testing (2026-07-31)
+
+**Status: landed on `yoga-revamp`** — closes the last two backburner `~system` modules.
+
+### What's new
+
+- **`~system/EnvironmentApi`** (SDK6-compat) — `getBootstrapData`, `isPreviewMode`, `getPlatform`, `areUnsafeRequestAllowed`, `getCurrentRealm`, `getExplorerConfiguration`, `getDecentralandTime` from scene boot + realm RPC
+- **`~system/Testing`** — real module for `@dcl/sdk/testing`: `plan`, `logTestResult` (console), `setCameraTransform` host RPC + freecam hold + reserved CameraEntity inject; `takeAndCompareScreenshot` stub (`storedSnapshotFound: false`)
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **EnvironmentApi** | 🟢 | No longer empty Proxy fallback |
+| **Testing** | 🟢 | Screenshot compare deferred (no baseline store) |
+| **Registry** | 🟢 | `sys:environment-api` / `sys:testing` → render |
+
+**Tip:** Integration matrix — zero `~system` gaps.
 
 ---
 

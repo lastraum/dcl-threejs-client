@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-23 (**v1.5.0 RC** — PART/ROOT colliders · Animator hold · avatar/social train; see [PROGRESS.md](./PROGRESS.md))
+> **Last updated:** 2026-07-31 (**v1.6.x** — EnvironmentApi + Testing ~system modules closed; see [PROGRESS.md](./PROGRESS.md))
 
 ---
 
@@ -32,7 +32,7 @@
 | Networking | see `integrationRegistry.ts` | | | | |
 | Performance | see `integrationRegistry.ts` | | | | |
 | Environment | 4 | 4 | 0 | 0 | — |
-| ~system modules | 9 | 7 | 0 | 2 | — |
+| ~system modules | 9 | 9 | 0 | 0 | — |
 
 *ECS counts from `src/dcl/ecs/registry.ts`. **Without full parity** = ⬜ + 🟡 = **7**. Client-only (🔵) is intentional renderer→scene ownership, not a missing feature — e.g. AssetLoadLoadingState, GltfContainerLoadingState, TweenState, EngineInfo. **Tags** + `getEntitiesByTag()` are 🟢.*
 
@@ -146,7 +146,8 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | UserIdentity | 🟢 | getUserData + mirror ECS |
 | SignedFetch | 🟢 | ADR-44 via worker RPC |
 | CommsApi | 🟢 | getActiveVideoStreams · subscribeToTopic · unsubscribeFromTopic · publishData · consumeMessages |
-| EnvironmentApi / Testing | ⬜ | |
+| EnvironmentApi | 🟢 | SDK6-compat: bootstrap · preview · platform · unsafe · realm · explorer config · time |
+| Testing | 🟢 | plan · logTestResult · setCameraTransform; screenshot compare stub |
 
 ---
 

@@ -8,6 +8,10 @@ import type { OpenNftDialogRequest, OpenNftDialogResponse } from '../player/open
 import type { TeleportToRequest, TeleportToResponse } from '../player/teleportTo'
 import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../player/triggerEmote'
 import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../player/triggerSceneEmote'
+import type {
+  SetCameraTransformRequest,
+  SetCameraTransformResponse
+} from '../player/setCameraTransform'
 import type { InjectPointerClickBody } from '../player/injectPointerClick'
 
 export type AvatarAttachTransformEntry = {
@@ -151,6 +155,12 @@ export type SceneWorkerOpenExternalUrl = {
   body: OpenExternalUrlRequest
 }
 
+export type SceneWorkerSetCameraTransform = {
+  type: 'set-camera-transform'
+  id: number
+  body: SetCameraTransformRequest
+}
+
 export type SceneWorkerOpenNftDialog = {
   type: 'open-nft-dialog'
   id: number
@@ -267,6 +277,7 @@ export type SceneWorkerOutbound =
   | SceneWorkerTriggerSceneEmote
   | SceneWorkerOpenExternalUrl
   | SceneWorkerOpenNftDialog
+  | SceneWorkerSetCameraTransform
   | SceneWorkerSetCommsAdapter
   | SceneWorkerSendBinary
   | SceneWorkerCommsSend
@@ -323,6 +334,7 @@ export type MainToWorker =
   | { type: 'trigger-scene-emote-response'; id: number; body: TriggerSceneEmoteResponse }
   | { type: 'open-external-url-response'; id: number; body: OpenExternalUrlResponse }
   | { type: 'open-nft-dialog-response'; id: number; body: OpenNftDialogResponse }
+  | { type: 'set-camera-transform-response'; id: number; body: SetCameraTransformResponse }
   | { type: 'set-comms-adapter-response'; id: number; body: { success: boolean } }
   | { type: 'comms-send-binary-response'; id: number; body: SendBinaryResponse }
   | { type: 'get-user-data-response'; id: number; body: UserDataResponse }

@@ -311,8 +311,23 @@ export const SYSTEM_MODULES_INTEGRATION: IntegrationEntry[] = [
   { id: 'sys:user-identity', name: '~system/UserIdentity', status: 'render', category: 'system-modules', phase: 5 },
   { id: 'sys:comms-api', name: '~system/CommsApi', status: 'render', category: 'system-modules', phase: 5, notes: 'getActiveVideoStreams + topics subscribe/publish/consume' },
   { id: 'sys:signed-fetch', name: '~system/SignedFetch', status: 'render', category: 'system-modules', phase: 3 },
-  { id: 'sys:environment-api', name: '~system/EnvironmentApi', status: 'none', category: 'system-modules', phase: 1 },
-  { id: 'sys:testing', name: '~system/Testing', status: 'none', category: 'system-modules' }
+  {
+    id: 'sys:environment-api',
+    name: '~system/EnvironmentApi',
+    status: 'render',
+    category: 'system-modules',
+    phase: 1,
+    notes:
+      'SDK6-compat: getBootstrapData · isPreviewMode · getPlatform · areUnsafeRequestAllowed · getCurrentRealm · getExplorerConfiguration · getDecentralandTime (Runtime is preferred for SDK7)'
+  },
+  {
+    id: 'sys:testing',
+    name: '~system/Testing',
+    status: 'render',
+    category: 'system-modules',
+    notes:
+      'logTestResult · plan · setCameraTransform (host RPC + freecam hold); takeAndCompareScreenshot stub (no baseline store)'
+  }
 ]
 
 export const INTEGRATION_CATEGORIES: IntegrationCategory[] = [

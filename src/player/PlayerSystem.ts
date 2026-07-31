@@ -44,7 +44,10 @@ import {
 import { clampToWalkBounds, type PlayerWalkBounds } from './SceneBounds'
 import { formatWalkBounds, physLog } from '../physics/physicsDiag'
 import { normalizeAngle } from '../network/comms/movementCompressed'
+import type { SetCameraTransformRequest } from './setCameraTransform'
 import {
+  dclToThreePos,
+  dclToThreeQuat,
   dclToThreeVec,
   threeToDclQuat,
   threeToDclVec,
@@ -139,6 +142,11 @@ export class PlayerSystem {
   /** Wire-facing yaw — no turn smoothing (DCL reads this while moving). */
   private networkYaw = 0
   private camDistance = CAM_DISTANCE_DEFAULT
+  /**
+   * ~system/Testing.setCameraTransform — hold freecam from overwriting the authored lens
+   * for a few frames so SDK test runners can assert CameraEntity Transform after nextTick.
+   */
+  private testingCameraHoldFrames = 0
 
   private grounded = false
   private groundedLastFrame = false
@@ -1043,6 +1051,25 @@ export class PlayerSystem {
       }
     }
     return ReservedEntitiesSync.cameraPose(this.host.camera)
+  }
+
+  /**
+   * ~system/Testing.setCameraTransform — place host camera at the given DCL CameraEntity pose
+   * and hold freecam briefly so reserved sync / nextTick assertions see the same transform.
+   */
+  setTestingCameraTransform(request: SetCameraTransformRequest): boolean {
+    const pos = request.position
+    const rot = request.rotation
+    if (!pos || !rot) return false
+    dclToThreePos(pos.x ?? 0, pos.y ?? 0, pos.z ?? 0, this.host.camera.position)
+    dclToThreeQuat(rot.x ?? 0, rot.y ?? 0, rot.z ?? 0, rot.w ?? 1, this.host.camera.quaternion)
+    this.host.camera.updateMatrixWorld(true)
+    // Align freecam orbit so release of the hold does not hard-snap.
+    _camEuler.setFromQuaternion(this.host.camera.quaternion, 'YXZ')
+    this.camYaw = normalizeAngle(_camEuler.y)
+    this.camPitch = clamp(_camEuler.x, CAM_PITCH_MIN, CAM_PITCH_MAX)
+    this.testingCameraHoldFrames = 4
+    return true
   }
 
   update(delta: number): void {
@@ -1986,6 +2013,15 @@ export class PlayerSystem {
   }
 
   private syncCamera(snap: boolean, delta = 0.016): void {
+    // Testing hold: keep the authored Testing.setCameraTransform lens for a few frames.
+    if (this.testingCameraHoldFrames > 0) {
+      this.testingCameraHoldFrames--
+      this.avatar?.setBodyVisible(!this.modifierHidden)
+      if (this.nameTag) {
+        this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
+      }
+      return
+    }
     // FocusOwner primary may drive lens via active VirtualCamera only.
     // Do **not** write freecam orbit from VC — orbit is continuous player state.
     if (this.virtualCamera?.apply(delta)) {

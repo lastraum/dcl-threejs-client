@@ -31,6 +31,10 @@ import type { OpenNftDialogRequest, OpenNftDialogResponse } from '../../player/o
 import type { TeleportToRequest, TeleportToResponse } from '../../player/teleportTo'
 import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../../player/triggerEmote'
 import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../../player/triggerSceneEmote'
+import type {
+  SetCameraTransformRequest,
+  SetCameraTransformResponse
+} from '../../player/setCameraTransform'
 import {
   installPointerEventColliderChecker,
   patchSceneBundle,
@@ -172,6 +176,7 @@ const pendingTriggerEmote = new Map<number, (body: TriggerEmoteResponse) => void
 const pendingTriggerSceneEmote = new Map<number, (body: TriggerSceneEmoteResponse) => void>()
 const pendingOpenExternalUrl = new Map<number, (body: OpenExternalUrlResponse) => void>()
 const pendingOpenNftDialog = new Map<number, (body: OpenNftDialogResponse) => void>()
+const pendingSetCameraTransform = new Map<number, (body: SetCameraTransformResponse) => void>()
 const pendingCommsAdapter = new Map<number, (body: { success: boolean }) => void>()
 const pendingSendBinary = new Map<number, (body: SendBinaryResponse) => void>()
 const pendingUserData = new Map<number, (body: UserDataResponse) => void>()
@@ -2928,6 +2933,14 @@ function rpcOpenNftDialog(body: OpenNftDialogRequest): Promise<OpenNftDialogResp
   })
 }
 
+function rpcSetCameraTransform(body: SetCameraTransformRequest): Promise<SetCameraTransformResponse> {
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingSetCameraTransform.set(id, resolve)
+    ctx.postMessage({ type: 'set-camera-transform', id, body } satisfies SceneWorkerOutbound)
+  })
+}
+
 function rpcCommsAdapter(body: CommsAdapterRequest): Promise<{ success: boolean }> {
   const id = ++requestId
   return new Promise((resolve) => {
@@ -3421,6 +3434,11 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     pendingOpenNftDialog.delete(msg.id)
     return
   }
+  if (msg.type === 'set-camera-transform-response') {
+    pendingSetCameraTransform.get(msg.id)?.(msg.body)
+    pendingSetCameraTransform.delete(msg.id)
+    return
+  }
   if (msg.type === 'set-comms-adapter-response') {
     pendingCommsAdapter.get(msg.id)?.(msg.body)
     pendingCommsAdapter.delete(msg.id)
@@ -3627,6 +3645,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       triggerSceneEmote: rpcTriggerSceneEmote,
       openExternalUrl: rpcOpenExternalUrl,
       openNftDialog: rpcOpenNftDialog,
+      setCameraTransform: rpcSetCameraTransform,
       commsSend: rpcCommsSend,
       comms: {
         setCommunicationsAdapter: rpcCommsAdapter,

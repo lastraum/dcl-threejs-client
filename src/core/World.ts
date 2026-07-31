@@ -982,6 +982,9 @@ export class World {
         if (ok) this.kickPostTeleportColliderCatchup()
         return ok
       })
+      this.sceneScript.setSetCameraTransformHandler((request) =>
+        this.player!.setTestingCameraTransform(request)
+      )
       this.player.setModeFreezeEscapeHandler(() => {
         this.sceneScript.requestForceLocomotionClear('wasd-mode-freeze-escape')
       })
@@ -4381,6 +4384,9 @@ export class World {
       if (ok) this.kickPostTeleportColliderCatchup()
       return ok
     })
+    this.sceneScript.setSetCameraTransformHandler((request) =>
+      this.player!.setTestingCameraTransform(request)
+    )
     this.sceneScript.setTriggerEmoteHandler((request) => {
       const emote = request.predefinedEmote?.trim()
       if (!emote) return false

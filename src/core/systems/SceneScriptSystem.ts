@@ -70,6 +70,10 @@ import type { OpenNftDialogRequest, OpenNftDialogResponse } from '../../player/o
 import type { TeleportToRequest, TeleportToResponse } from '../../player/teleportTo'
 import type { TriggerEmoteRequest, TriggerEmoteResponse } from '../../player/triggerEmote'
 import type { TriggerSceneEmoteRequest, TriggerSceneEmoteResponse } from '../../player/triggerSceneEmote'
+import type {
+  SetCameraTransformRequest,
+  SetCameraTransformResponse
+} from '../../player/setCameraTransform'
 import type { AssetCache } from '../../rendering/AssetCache'
 import type { SceneHost } from '../../rendering/SceneHost'
 import type { PlayerMirrorIdentity } from '../../bridge/playerMirrorIdentity'
@@ -108,6 +112,7 @@ type TriggerEmoteHandler = (request: TriggerEmoteRequest) => boolean
 type TriggerSceneEmoteHandler = (request: TriggerSceneEmoteRequest) => boolean
 type OpenExternalUrlHandler = (request: OpenExternalUrlRequest) => boolean | Promise<boolean>
 type OpenNftDialogHandler = (request: OpenNftDialogRequest) => boolean | Promise<boolean>
+type SetCameraTransformHandler = (request: SetCameraTransformRequest) => boolean
 
 /** Async bridge ECS sync (Animator / AvatarShape load paths) — playback still runs every sync frame. */
 const BRIDGE_ECS_SYNC_RUNTIME = 12
@@ -310,6 +315,7 @@ export class SceneScriptSystem {
   private triggerSceneEmoteHandler: TriggerSceneEmoteHandler | null = null
   private openExternalUrlHandler: OpenExternalUrlHandler | null = null
   private openNftDialogHandler: OpenNftDialogHandler | null = null
+  private setCameraTransformHandler: SetCameraTransformHandler | null = null
   private nftShapeBridge: NftShapeBridge | null = null
   private commsHandler: CommsRpcHandler | null = null
   /** World — enqueue/drain per-entity PhysX cooks (`entity` = GLB just attached; omit = drain queue). */
@@ -1492,6 +1498,10 @@ export class SceneScriptSystem {
     this.movePlayerHandler = handler
   }
 
+  setSetCameraTransformHandler(handler: SetCameraTransformHandler | null): void {
+    this.setCameraTransformHandler = handler
+  }
+
   setTeleportToHandler(handler: TeleportToHandler | null): void {
     this.teleportToHandler = handler
   }
@@ -2212,6 +2222,17 @@ export class SceneScriptSystem {
         type: 'open-nft-dialog-response',
         id: msg.id,
         body: { success } satisfies OpenNftDialogResponse
+      } satisfies MainToWorker)
+      return
+    }
+    if (msg.type === 'set-camera-transform') {
+      this.setCameraTransformHandler?.(msg.body)
+      this.refreshClientPosesFromProvider()
+      this.pushReservedTransformsToWorker()
+      this.worker?.postMessage({
+        type: 'set-camera-transform-response',
+        id: msg.id,
+        body: {} satisfies SetCameraTransformResponse
       } satisfies MainToWorker)
       return
     }

@@ -6,7 +6,7 @@
 > **Current phase:** **v1.5.x** multi-scene continuity on `feat/aoi-focus-owner` (FocusOwner · sticky demote · tertiary LOD) + **v1.5.0** production beta base.  
 > **Shipped (1.x):** **v1.5.0 PART/ROOT colliders · Animator hold · avatar compose · tours · cast audio** · **v1.4.0 custom worlds · Worlds map · AOI · shell UI · place analytics** · **v1.3.0 plaza/poker PE · TextShape UV · chat translate** · **v1.2.0 Camera Reel + biomes + backpack hides** · In-World Camera · multi-room chat · nearby voice · P4 bloom · glider.  
 
-> **1.x next:** multi-scene FPS hardening under CBD ring load · backpack outfits/marketplace · scene UI text-measure · community voice Bearer · gallery multi-page · graphics P3 distance culls · analytics charts polish · broken-rig wearable fallback (shelved).  
+> **1.x next:** multi-scene FPS hardening under CBD ring load · backpack outfits/marketplace · scene UI text-measure · gallery multi-page · graphics P3 distance culls · analytics charts polish · broken-rig wearable fallback (shelved). **Community voice speak/promote shipped** (`feat/community-voice-parity`).  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). **EnvironmentApi / Testing ~system modules shipped** (2026-07-31).  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
 > **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **Static COD:** [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) · **Multi-scene continuity:** [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  
@@ -15,6 +15,26 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## ✅ Milestone — Community voice listener / speak / promote (2026-07-31)
+
+**Status: branch `feat/community-voice-parity`** — Explorer Social Service v2 path.
+
+### What's new
+
+- **Join as listener** — mic off by default (was always enabling mic)
+- **Request to speak / lower hand** — Social v2 + gatekeeper fallback
+- **Mods: Accept (promote) / Reject / Demote** — roster in community modal
+- **Start / End for everyone** — Social v2 start credentials; end unchanged
+- **LiveKit** — `ParticipantPermissionsChanged` auto-promotes local role + mic
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Social v2 RPCs** | 🟢 | start · join · request · promote · demote · reject · mute · end |
+| **Gatekeeper fallback** | 🟢 | signed-fetch create/join + speak-request/speaker REST |
+| **Modal UI** | 🟢 | role · hand · mic · roster actions |
 
 ---
 

@@ -10,19 +10,33 @@ import { Empty } from '@dcl/protocol/out-ts/google/protobuf/empty.gen'
 import {
   CommunityVoiceChatStatus,
   ConnectivityStatus,
+  DemoteSpeakerInCommunityVoiceChatPayload,
   EndCommunityVoiceChatPayload,
   GetFriendsPayload,
   GetFriendshipRequestsPayload,
+  JoinCommunityVoiceChatPayload,
+  MuteSpeakerFromCommunityVoiceChatPayload,
+  PromoteSpeakerInCommunityVoiceChatPayload,
+  RejectSpeakRequestInCommunityVoiceChatPayload,
+  RequestToSpeakInCommunityVoiceChatPayload,
   SocialServiceDefinition,
+  StartCommunityVoiceChatPayload,
   UpsertFriendshipPayload,
   User,
   type CommunityVoiceChatUpdate,
+  type DemoteSpeakerInCommunityVoiceChatResponse,
   type EndCommunityVoiceChatResponse,
   type FriendConnectivityUpdate,
   type FriendProfile,
   type FriendshipRequestResponse,
+  type JoinCommunityVoiceChatResponse,
+  type MuteSpeakerFromCommunityVoiceChatResponse,
   type PaginatedFriendshipRequestsResponse,
   type PaginatedFriendsProfilesResponse,
+  type PromoteSpeakerInCommunityVoiceChatResponse,
+  type RejectSpeakRequestInCommunityVoiceChatResponse,
+  type RequestToSpeakInCommunityVoiceChatResponse,
+  type StartCommunityVoiceChatResponse,
   type UpsertFriendshipResponse
 } from '@dcl/protocol/out-ts/decentraland/social_service/v2/social_service_v2.gen'
 import { createWebSocketsTransport } from '@dcl/social-rpc-client/dist/transport'
@@ -85,23 +99,74 @@ function errorDetail(err: unknown): string {
   return String(err ?? '')
 }
 
-function unwrapEnd(res: EndCommunityVoiceChatResponse): void {
+/** Social v2 community-voice oneof — shared error mapping. */
+function unwrapCommunityVoiceResponse(
+  res: { response?: { $case: string; [k: string]: unknown } | undefined },
+  op: string
+): unknown {
   const r = res.response
-  if (!r) throw new Error('social_rpc: end_community_voice_empty_response')
+  if (!r) throw new Error(`social_rpc: ${op}_empty_response`)
   switch (r.$case) {
     case 'ok':
-      return
-    case 'invalidRequest':
-      throw new Error(`social_rpc: invalid_request — ${r.invalidRequest.message ?? ''}`)
-    case 'forbiddenError':
-      throw new Error(`social_rpc: forbidden — ${r.forbiddenError.message ?? ''}`)
-    case 'notFoundError':
-      throw new Error(`social_rpc: not_found — ${r.notFoundError.message ?? ''}`)
-    case 'internalServerError':
-      throw new Error(`social_rpc: internal — ${r.internalServerError.message ?? ''}`)
+      return (r as unknown as { ok: unknown }).ok
+    case 'invalidRequest': {
+      const m = (r as unknown as { invalidRequest?: { message?: string } }).invalidRequest?.message ?? ''
+      throw new Error(`social_rpc: invalid_request — ${m}`)
+    }
+    case 'forbiddenError': {
+      const m = (r as unknown as { forbiddenError?: { message?: string } }).forbiddenError?.message ?? ''
+      throw new Error(`social_rpc: forbidden — ${m}`)
+    }
+    case 'notFoundError': {
+      const m = (r as unknown as { notFoundError?: { message?: string } }).notFoundError?.message ?? ''
+      throw new Error(`social_rpc: not_found — ${m}`)
+    }
+    case 'conflictingError': {
+      const m = (r as unknown as { conflictingError?: { message?: string } }).conflictingError?.message ?? ''
+      throw new Error(`social_rpc: conflicting — ${m}`)
+    }
+    case 'internalServerError': {
+      const m =
+        (r as unknown as { internalServerError?: { message?: string } }).internalServerError?.message ?? ''
+      throw new Error(`social_rpc: internal — ${m}`)
+    }
     default:
-      throw new Error('social_rpc: end_community_voice_unknown_response')
+      throw new Error(`social_rpc: ${op}_unknown_response`)
   }
+}
+
+function unwrapEnd(res: EndCommunityVoiceChatResponse): void {
+  unwrapCommunityVoiceResponse(res as { response?: { $case: string } }, 'end_community_voice')
+}
+
+export type CommunityVoiceCredentialsOk = {
+  connectionUrl: string
+  voiceChatId?: string
+}
+
+function credentialsFromOk(ok: unknown): CommunityVoiceCredentialsOk {
+  if (!ok || typeof ok !== 'object') throw new Error('social_rpc: missing credentials')
+  const o = ok as {
+    credentials?: { connectionUrl?: string }
+    voiceChatId?: string
+  }
+  const url = o.credentials?.connectionUrl?.trim() ?? ''
+  if (!url) throw new Error('social_rpc: empty connection_url')
+  return {
+    connectionUrl: url,
+    voiceChatId: typeof o.voiceChatId === 'string' ? o.voiceChatId : undefined
+  }
+}
+
+function communityVoiceResult<T>(
+  run: () => Promise<T>
+): Promise<{ ok: true; value: T } | { ok: false; error: string }> {
+  return run()
+    .then((value) => ({ ok: true as const, value }))
+    .catch((err) => ({
+      ok: false as const,
+      error: err instanceof Error ? err.message : String(err)
+    }))
 }
 
 function disconnect(): void {
@@ -380,6 +445,143 @@ export async function upsertFriendshipViaSocialRpc(
     default:
       throw new Error('Friendship update failed')
   }
+}
+
+/** Owner/moderator: start community voice — returns LiveKit connection_url. */
+export async function startCommunityVoiceChatViaSocialRpc(
+  identity: AuthIdentity,
+  communityId: string
+): Promise<{ ok: true; value: CommunityVoiceCredentialsOk } | { ok: false; error: string }> {
+  const id = communityId.trim()
+  if (!id) return { ok: false, error: 'community_id_required' }
+  return communityVoiceResult(async () => {
+    const svc = await ensureSocialV2ServiceConnected(identity)
+    const res = (await svc.startCommunityVoiceChat(
+      StartCommunityVoiceChatPayload.create({ communityId: id })
+    )) as StartCommunityVoiceChatResponse
+    const ok = unwrapCommunityVoiceResponse(res as { response?: { $case: string } }, 'start_community_voice')
+    return credentialsFromOk(ok)
+  })
+}
+
+/** Join live community voice as listener (or whatever role the server token grants). */
+export async function joinCommunityVoiceChatViaSocialRpc(
+  identity: AuthIdentity,
+  communityId: string
+): Promise<{ ok: true; value: CommunityVoiceCredentialsOk } | { ok: false; error: string }> {
+  const id = communityId.trim()
+  if (!id) return { ok: false, error: 'community_id_required' }
+  return communityVoiceResult(async () => {
+    const svc = await ensureSocialV2ServiceConnected(identity)
+    const res = (await svc.joinCommunityVoiceChat(
+      JoinCommunityVoiceChatPayload.create({ communityId: id })
+    )) as JoinCommunityVoiceChatResponse
+    const ok = unwrapCommunityVoiceResponse(res as { response?: { $case: string } }, 'join_community_voice')
+    return credentialsFromOk(ok)
+  })
+}
+
+/** Raise/lower hand (request to speak). */
+export async function requestToSpeakInCommunityVoiceChatViaSocialRpc(
+  identity: AuthIdentity,
+  communityId: string,
+  isRaisingHand: boolean
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const id = communityId.trim()
+  if (!id) return { ok: false, error: 'community_id_required' }
+  return communityVoiceResult(async () => {
+    const svc = await ensureSocialV2ServiceConnected(identity)
+    const res = (await svc.requestToSpeakInCommunityVoiceChat(
+      RequestToSpeakInCommunityVoiceChatPayload.create({
+        communityId: id,
+        isRaisingHand
+      })
+    )) as RequestToSpeakInCommunityVoiceChatResponse
+    unwrapCommunityVoiceResponse(res as { response?: { $case: string } }, 'request_to_speak')
+  }).then((r) => (r.ok ? { ok: true as const } : r))
+}
+
+/** Moderator: promote listener → speaker (accept speak request). */
+export async function promoteSpeakerInCommunityVoiceChatViaSocialRpc(
+  identity: AuthIdentity,
+  communityId: string,
+  userAddress: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const id = communityId.trim()
+  const addr = userAddress.trim().toLowerCase()
+  if (!id || !addr) return { ok: false, error: 'community_id_and_user_required' }
+  return communityVoiceResult(async () => {
+    const svc = await ensureSocialV2ServiceConnected(identity)
+    const res = (await svc.promoteSpeakerInCommunityVoiceChat(
+      PromoteSpeakerInCommunityVoiceChatPayload.create({ communityId: id, userAddress: addr })
+    )) as PromoteSpeakerInCommunityVoiceChatResponse
+    unwrapCommunityVoiceResponse(res as { response?: { $case: string } }, 'promote_speaker')
+  }).then((r) => (r.ok ? { ok: true as const } : r))
+}
+
+/** Moderator: demote speaker → listener. */
+export async function demoteSpeakerInCommunityVoiceChatViaSocialRpc(
+  identity: AuthIdentity,
+  communityId: string,
+  userAddress: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const id = communityId.trim()
+  const addr = userAddress.trim().toLowerCase()
+  if (!id || !addr) return { ok: false, error: 'community_id_and_user_required' }
+  return communityVoiceResult(async () => {
+    const svc = await ensureSocialV2ServiceConnected(identity)
+    const res = (await svc.demoteSpeakerInCommunityVoiceChat(
+      DemoteSpeakerInCommunityVoiceChatPayload.create({ communityId: id, userAddress: addr })
+    )) as DemoteSpeakerInCommunityVoiceChatResponse
+    unwrapCommunityVoiceResponse(res as { response?: { $case: string } }, 'demote_speaker')
+  }).then((r) => (r.ok ? { ok: true as const } : r))
+}
+
+/** Moderator: reject speak request (lower hand). */
+export async function rejectSpeakRequestInCommunityVoiceChatViaSocialRpc(
+  identity: AuthIdentity,
+  communityId: string,
+  userAddress: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const id = communityId.trim()
+  const addr = userAddress.trim().toLowerCase()
+  if (!id || !addr) return { ok: false, error: 'community_id_and_user_required' }
+  return communityVoiceResult(async () => {
+    const svc = await ensureSocialV2ServiceConnected(identity)
+    const res = (await svc.rejectSpeakRequestInCommunityVoiceChat(
+      RejectSpeakRequestInCommunityVoiceChatPayload.create({ communityId: id, userAddress: addr })
+    )) as RejectSpeakRequestInCommunityVoiceChatResponse
+    unwrapCommunityVoiceResponse(res as { response?: { $case: string } }, 'reject_speak_request')
+  }).then((r) => (r.ok ? { ok: true as const } : r))
+}
+
+/** Moderator: mute/unmute a speaker's published audio. */
+export async function muteSpeakerInCommunityVoiceChatViaSocialRpc(
+  identity: AuthIdentity,
+  communityId: string,
+  userAddress: string,
+  muted: boolean
+): Promise<{ ok: true; muted: boolean } | { ok: false; error: string }> {
+  const id = communityId.trim()
+  const addr = userAddress.trim().toLowerCase()
+  if (!id || !addr) return { ok: false, error: 'community_id_and_user_required' }
+  return communityVoiceResult(async () => {
+    const svc = await ensureSocialV2ServiceConnected(identity)
+    const res = (await svc.muteSpeakerFromCommunityVoiceChat(
+      MuteSpeakerFromCommunityVoiceChatPayload.create({
+        communityId: id,
+        userAddress: addr,
+        muted
+      })
+    )) as MuteSpeakerFromCommunityVoiceChatResponse
+    const ok = unwrapCommunityVoiceResponse(
+      res as { response?: { $case: string } },
+      'mute_speaker'
+    ) as { muted?: boolean }
+    return { muted: ok?.muted === true }
+  }).then((r) =>
+    r.ok ? { ok: true as const, muted: r.value.muted } : r
+  )
 }
 
 /** Owner/moderator: end community voice for everyone. */

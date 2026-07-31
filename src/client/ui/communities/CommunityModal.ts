@@ -3,7 +3,11 @@ import {
   canManageCommunityVoice,
   canPostCommunityAnnouncements
 } from '../../../social/communityPermissions'
-import { getCommunityVoiceSession } from '../../../social/CommunityVoiceSession'
+import {
+  getCommunityVoiceSession,
+  type CommunityVoiceParticipant,
+  type CommunityVoiceSessionState
+} from '../../../social/CommunityVoiceSession'
 import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 import {
   createCommunityPostSigned,
@@ -122,6 +126,8 @@ export class CommunityModal {
   private placeIds: string[] = []
   private tabLoading = false
   private unsubFollow: (() => void) | null = null
+  private unsubVoice: (() => void) | null = null
+  private voiceState: CommunityVoiceSessionState | null = null
 
   private sessionAddress(): string | null {
     return this.getUserAddress?.()?.trim().toLowerCase() || null
@@ -187,6 +193,9 @@ export class CommunityModal {
     this.openGen++
     this.unsubFollow?.()
     this.unsubFollow = null
+    this.unsubVoice?.()
+    this.unsubVoice = null
+    this.voiceState = null
     this.root.hidden = true
     this.root.innerHTML = ''
     this.current = null
@@ -198,6 +207,22 @@ export class CommunityModal {
     this.disposed = true
     this.close()
     this.root.remove()
+  }
+
+  private wireVoiceSession(): void {
+    this.unsubVoice?.()
+    this.unsubVoice = getCommunityVoiceSession().subscribe((state) => {
+      if (this.disposed || this.root.hidden) return
+      this.voiceState = state
+      this.refreshVoicePanel()
+    })
+  }
+
+  private refreshVoicePanel(): void {
+    const host = this.root.querySelector('[data-community-voice-panel]') as HTMLElement | null
+    if (!host || !this.current) return
+    host.innerHTML = this.renderVoicePanel(this.current)
+    this.bindVoicePanel(this.current)
   }
 
   /** Refresh tour CTA if follow state changes while modal is open. */
@@ -246,6 +271,7 @@ export class CommunityModal {
 
     this.current = mergePreviewAndDetail(preview, detail)
     this.paint({ loading: false, detailError })
+    this.wireVoiceSession()
     void this.loadTabData(gen)
 
     // Voice toast / live CTA — join even if detail flag is slightly stale.
@@ -308,12 +334,7 @@ export class CommunityModal {
         void navigator.clipboard?.writeText(communityShareUrl(merged.id))
       }
     })
-    this.root.querySelector('[data-community-voice]')?.addEventListener('click', () => {
-      void this.toggleCommunityVoice(merged)
-    })
-    this.root.querySelector('[data-community-voice-end]')?.addEventListener('click', () => {
-      void this.endCommunityVoiceForEveryone(merged)
-    })
+    this.bindVoicePanel(merged)
     this.bindTourCta()
     this.wireFollowUi()
     for (const tabBtn of this.root.querySelectorAll<HTMLElement>('[data-tab]')) {
@@ -549,6 +570,92 @@ export class CommunityModal {
     await this.toggleCommunityVoice(live)
   }
 
+  private bindVoicePanel(merged: CommunityDetail): void {
+    this.root.querySelector('[data-community-voice]')?.addEventListener('click', () => {
+      void this.toggleCommunityVoice(merged)
+    })
+    this.root.querySelector('[data-community-voice-end]')?.addEventListener('click', () => {
+      void this.endCommunityVoiceForEveryone(merged)
+    })
+    this.root.querySelector('[data-community-voice-hand]')?.addEventListener('click', () => {
+      void this.toggleHandRaise()
+    })
+    this.root.querySelector('[data-community-voice-mic]')?.addEventListener('click', () => {
+      void this.toggleLocalMic()
+    })
+    for (const btn of this.root.querySelectorAll<HTMLButtonElement>('[data-voice-promote]')) {
+      btn.addEventListener('click', () => {
+        const addr = btn.dataset.voicePromote
+        if (addr) void this.modPromote(addr, btn)
+      })
+    }
+    for (const btn of this.root.querySelectorAll<HTMLButtonElement>('[data-voice-reject]')) {
+      btn.addEventListener('click', () => {
+        const addr = btn.dataset.voiceReject
+        if (addr) void this.modReject(addr, btn)
+      })
+    }
+    for (const btn of this.root.querySelectorAll<HTMLButtonElement>('[data-voice-demote]')) {
+      btn.addEventListener('click', () => {
+        const addr = btn.dataset.voiceDemote
+        if (addr) void this.modDemote(addr, btn)
+      })
+    }
+  }
+
+  private async toggleHandRaise(): Promise<void> {
+    const voice = getCommunityVoiceSession()
+    if (!voice.isActive()) return
+    const next = !voice.isHandRaised()
+    const btn = this.root.querySelector<HTMLButtonElement>('[data-community-voice-hand]')
+    if (btn) {
+      btn.disabled = true
+      btn.textContent = next ? 'REQUESTING…' : 'LOWERING…'
+    }
+    const result = await voice.setHandRaised(next)
+    if (btn) {
+      btn.disabled = false
+      if (!result.ok) {
+        btn.title = result.error
+        btn.textContent = 'Request failed'
+      }
+    }
+  }
+
+  private async toggleLocalMic(): Promise<void> {
+    const voice = getCommunityVoiceSession()
+    if (!voice.isActive()) return
+    const state = voice.getState()
+    await voice.setMicEnabled(!state.micEnabled)
+  }
+
+  private async modPromote(addr: string, btn: HTMLButtonElement): Promise<void> {
+    btn.disabled = true
+    const result = await getCommunityVoiceSession().promoteSpeaker(addr)
+    if (!result.ok) {
+      btn.disabled = false
+      btn.title = result.error
+    }
+  }
+
+  private async modReject(addr: string, btn: HTMLButtonElement): Promise<void> {
+    btn.disabled = true
+    const result = await getCommunityVoiceSession().rejectSpeakRequest(addr)
+    if (!result.ok) {
+      btn.disabled = false
+      btn.title = result.error
+    }
+  }
+
+  private async modDemote(addr: string, btn: HTMLButtonElement): Promise<void> {
+    btn.disabled = true
+    const result = await getCommunityVoiceSession().demoteSpeaker(addr)
+    if (!result.ok) {
+      btn.disabled = false
+      btn.title = result.error
+    }
+  }
+
   private async endCommunityVoiceForEveryone(merged: CommunityDetail): Promise<void> {
     const identity = this.getAuthIdentity?.() ?? null
     if (!identity || !this.canStartVoice(merged)) return
@@ -565,6 +672,7 @@ export class CommunityModal {
     if (this.current?.id === merged.id) {
       this.current = { ...this.current, voiceChatActive: false }
       this.paint({ loading: false })
+      this.wireVoiceSession()
     }
     if (!result.ok && endBtn) {
       endBtn.disabled = false
@@ -587,12 +695,10 @@ export class CommunityModal {
         btn.textContent = 'LEAVING…'
       }
       await voice.leave()
-      if (btn && this.current?.id === merged.id) {
-        btn.disabled = false
-        btn.innerHTML = voiceBtnHtml(false, this.current.voiceChatActive === true, canStart)
-        btn.classList.remove('is-live')
+      if (this.current?.id === merged.id) {
+        this.paint({ loading: false })
+        this.wireVoiceSession()
       }
-      this.paint({ loading: false })
       return
     }
 
@@ -601,7 +707,7 @@ export class CommunityModal {
       return
     }
 
-    // Create is mod-only; join is open when a stream is already live.
+    // Create is mod-only; join as listener when a stream is already live.
     const action = voiceLive ? 'join' : 'create'
     if (action === 'create' && !canStart) {
       if (btn) {
@@ -619,16 +725,17 @@ export class CommunityModal {
       identity,
       communityId: merged.id,
       userAddress: address,
-      action
+      action,
+      userRole: merged.role,
+      displayName: undefined
     })
-    if (btn && this.current?.id === merged.id) {
-      btn.disabled = false
+    if (this.current?.id === merged.id) {
       if (result.ok) {
-        if (this.current) this.current = { ...this.current, voiceChatActive: true }
-        btn.innerHTML = voiceBtnHtml(true, true, canStart)
-        btn.classList.add('is-live')
+        this.current = { ...this.current, voiceChatActive: true }
         this.paint({ loading: false })
-      } else {
+        this.wireVoiceSession()
+      } else if (btn) {
+        btn.disabled = false
         btn.textContent =
           result.error.includes('401') ||
           result.error.includes('403') ||
@@ -639,6 +746,122 @@ export class CommunityModal {
         btn.title = result.error
       }
     }
+  }
+
+  private renderVoicePanel(merged: CommunityDetail): string {
+    const voice = getCommunityVoiceSession()
+    const state = this.voiceState ?? voice.getState()
+    const inVoice = state.active && state.communityId === merged.id
+    const signedIn = Boolean(this.getAuthIdentity?.())
+    const canStart = this.canStartVoice(merged)
+    const voiceLive = merged.voiceChatActive === true || inVoice
+    const showVoiceCta = inVoice || voiceLive || canStart
+    const voiceCtaEnabled = signedIn && (inVoice || voiceLive || canStart)
+
+    const primary =
+      showVoiceCta
+        ? `<button
+                  type="button"
+                  class="community-modal-voice-cta${inVoice ? ' is-live' : ''}"
+                  data-community-voice
+                  ${voiceCtaEnabled ? '' : 'disabled'}
+                  title="${
+                    inVoice
+                      ? 'Leave this voice stream'
+                      : voiceLive
+                        ? 'Join as listener (request to speak after)'
+                        : 'Start a voice stream for members (owners and moderators)'
+                  }"
+                >${voiceBtnHtml(inVoice, voiceLive, canStart)}</button>`
+        : `<p class="community-modal-voice-hint">No active stream. Owners and moderators can start one.</p>`
+
+    const endBtn =
+      canStart && (inVoice || voiceLive)
+        ? `<button
+                  type="button"
+                  class="community-modal-voice-end"
+                  data-community-voice-end
+                  title="End voice for all participants (moderator)"
+                >END FOR EVERYONE</button>`
+        : ''
+
+    let controls = ''
+    if (inVoice) {
+      const handLabel = state.handRaised ? '▼ LOWER HAND' : '✋ REQUEST TO SPEAK'
+      const showHand = state.role === 'listener'
+      const showMic = state.role === 'speaker' || state.canPublish
+      const micLabel = state.micEnabled ? '🔇 MUTE MIC' : '🎤 UNMUTE MIC'
+      controls = `<div class="community-modal-voice-controls">
+        <p class="community-modal-voice-role">You are a <strong>${
+          state.role === 'speaker' ? 'speaker' : 'listener'
+        }</strong>${state.handRaised ? ' · hand raised' : ''}</p>
+        ${
+          showHand
+            ? `<button type="button" class="community-modal-voice-secondary${
+                state.handRaised ? ' is-raised' : ''
+              }" data-community-voice-hand>${handLabel}</button>`
+            : ''
+        }
+        ${
+          showMic
+            ? `<button type="button" class="community-modal-voice-secondary" data-community-voice-mic>${micLabel}</button>`
+            : ''
+        }
+      </div>`
+    }
+
+    const roster = inVoice ? this.renderVoiceRoster(state.participants, canStart) : ''
+
+    return `${primary}${controls}${endBtn}${roster}`
+  }
+
+  private renderVoiceRoster(participants: CommunityVoiceParticipant[], isMod: boolean): string {
+    if (!participants.length) {
+      return `<p class="community-modal-voice-hint">No participants yet.</p>`
+    }
+    const rows = participants
+      .map((p) => {
+        const badges: string[] = []
+        if (p.isLocal) badges.push('you')
+        if (p.isSpeaker) badges.push('speaker')
+        else badges.push('listener')
+        if (p.handRaised) badges.push('✋')
+        if (p.isSpeaking) badges.push('🎙')
+        const badgeHtml = badges
+          .map((b) => `<span class="community-modal-voice-badge">${escapeHtml(b)}</span>`)
+          .join('')
+        let actions = ''
+        if (isMod && !p.isLocal) {
+          if (p.handRaised && !p.isSpeaker) {
+            actions = `<span class="community-modal-voice-actions">
+              <button type="button" class="community-modal-voice-mini" data-voice-promote="${escapeHtml(
+                p.identity
+              )}" title="Accept speak request">Accept</button>
+              <button type="button" class="community-modal-voice-mini community-modal-voice-mini--danger" data-voice-reject="${escapeHtml(
+                p.identity
+              )}" title="Reject speak request">Reject</button>
+            </span>`
+          } else if (p.isSpeaker) {
+            actions = `<span class="community-modal-voice-actions">
+              <button type="button" class="community-modal-voice-mini" data-voice-demote="${escapeHtml(
+                p.identity
+              )}" title="Demote to listener">Demote</button>
+            </span>`
+          }
+        }
+        return `<div class="community-modal-voice-row">
+          <div class="community-modal-voice-row-main">
+            <span class="community-modal-voice-name">${escapeHtml(p.name)}</span>
+            <span class="community-modal-voice-badges">${badgeHtml}</span>
+          </div>
+          ${actions}
+        </div>`
+      })
+      .join('')
+    return `<div class="community-modal-voice-roster">
+      <h4 class="community-modal-voice-roster-title">In stream (${participants.length})</h4>
+      ${rows}
+    </div>`
   }
 
   private renderAnnouncements(): string {
@@ -755,14 +978,6 @@ export class CommunityModal {
     const thumb = communityDisplayImageUrl(merged.id, merged.thumbnails)
     const visibility = merged.isPrivate === true ? 'Private' : 'Public'
     const members = formatMemberCount(merged.memberCount)
-    const voice = getCommunityVoiceSession()
-    const inVoice = voice.isActive() && voice.getCommunityId() === merged.id
-    const signedIn = Boolean(this.getAuthIdentity?.())
-    const canStart = this.canStartVoice(merged)
-    const voiceLive = merged.voiceChatActive === true
-    // Start = mods only; Join / Leave available to signed-in users when live/connected.
-    const showVoiceCta = inVoice || voiceLive || canStart
-    const voiceCtaEnabled = signedIn && (inVoice || voiceLive || canStart)
     const desc = (merged.description || '').trim()
     const statusHint = opts.loading
       ? `<p class="community-modal-status-hint">Loading details…</p>`
@@ -830,33 +1045,7 @@ export class CommunityModal {
             <aside class="community-modal-rail">
               <section class="community-modal-rail-card">
                 <h3 class="community-modal-rail-title">Voice Stream</h3>
-                ${
-                  showVoiceCta
-                    ? `<button
-                  type="button"
-                  class="community-modal-voice-cta${inVoice ? ' is-live' : ''}"
-                  data-community-voice
-                  ${voiceCtaEnabled ? '' : 'disabled'}
-                  title="${
-                    inVoice
-                      ? 'Leave this voice stream'
-                      : voiceLive
-                        ? 'Join the live voice stream'
-                        : 'Start a voice stream for members (owners and moderators)'
-                  }"
-                >${voiceBtnHtml(inVoice, voiceLive, canStart)}</button>`
-                    : `<p class="community-modal-voice-hint">No active stream. Owners and moderators can start one.</p>`
-                }
-                ${
-                  canStart && (inVoice || voiceLive)
-                    ? `<button
-                  type="button"
-                  class="community-modal-voice-end"
-                  data-community-voice-end
-                  title="End voice for all participants (moderator)"
-                >END FOR EVERYONE</button>`
-                    : ''
-                }
+                <div data-community-voice-panel>${this.renderVoicePanel(merged)}</div>
                 <div class="community-modal-tour-slot" data-community-tour-slot>
                   ${this.renderTourCta(merged)}
                 </div>
@@ -880,8 +1069,8 @@ export class CommunityModal {
 }
 
 function voiceBtnHtml(inVoice: boolean, active: boolean, canStart: boolean): string {
-  if (inVoice) return '● LEAVE VOICE STREAM'
-  if (active) return '◉ JOIN VOICE STREAM'
+  if (inVoice) return '● LEAVE VOICE'
+  if (active) return '◉ JOIN AS LISTENER'
   if (canStart) return '◉ START VOICE STREAM'
   return '◉ VOICE STREAM'
 }

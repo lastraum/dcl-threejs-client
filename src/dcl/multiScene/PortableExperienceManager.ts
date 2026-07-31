@@ -11,17 +11,18 @@ import { pePhysOffset } from './physOffsets'
 import { discoverEquippedPortableExperiences } from './resolveSmartWearablePe'
 import type { PortableExperiencesPolicy } from './resolvePortableExperiences'
 import { PE_SCENE_OVERRIDE_MESSAGE } from './resolvePortableExperiences'
+import type { SceneLayerRegistry } from './SceneLayerRegistry'
 import { SceneWorkerSlot } from './SceneWorkerSlot'
 import type { PeCandidate, PeSlotState } from './types'
 
 export type PeManagerListener = (slots: PeSlotState[]) => void
 
 /**
- * Session-scoped PE / smart-wearable manager.
+ * Session-scoped PX / smart-wearable manager (code: PE).
  * - Does not auto-start; consent popup + HUD enable only.
  * - wantEnabled survives World rebuild (/goto); workers rebind to new host.
  * - Disable = full unload of worker + meshes.
- * - Per-PE UI toggle independent of enable.
+ * - Per-PX UI toggle independent of enable.
  */
 export class PortableExperienceManager {
   private readonly slots = new Map<string, PeSlotState>()
@@ -47,6 +48,8 @@ export class PortableExperienceManager {
   private nextPeIndex = 0
   /** Phys ids to invalidate when a PE is fully unloaded. */
   private readonly pendingPhysInvalidation: number[] = []
+  /** Phase A — register/unregister PX layers. */
+  private layerRegistry: SceneLayerRegistry | null = null
   /** World wires player identity + pointer after PE boot (UI clicks / getPlayer). physOffset for collider remove. */
   private onPeWorkerReady:
     | ((
@@ -54,6 +57,10 @@ export class PortableExperienceManager {
         physOffset: number
       ) => void)
     | null = null
+
+  setLayerRegistry(registry: SceneLayerRegistry | null): void {
+    this.layerRegistry = registry
+  }
 
   subscribe(fn: PeManagerListener): () => void {
     this.listeners.add(fn)
@@ -151,6 +158,7 @@ export class PortableExperienceManager {
   detachWorld(): void {
     for (const [id, worker] of this.workers) {
       this.pendingPhysInvalidation.push(...worker.registeredPhysicsEntities())
+      this.layerRegistry?.unregister(id)
       worker.dispose()
       this.workers.delete(id)
       const slot = this.slots.get(id)
@@ -325,6 +333,12 @@ export class PortableExperienceManager {
       // re-clears background/border-image (visible HUD flash). setUiVisible + normal
       // mount snapshots already paint when UI arrives from the worker.
       this.workers.set(id, worker)
+      this.layerRegistry?.register({
+        id,
+        kind: 'pe',
+        system: worker.system,
+        physOffset: worker.physOffset
+      })
       slot.status = 'running'
       slot.wantEnabled = true
       if (this.primaryScene) this.cache.setScene(this.primaryScene)
@@ -350,6 +364,7 @@ export class PortableExperienceManager {
     const worker = this.workers.get(id)
     if (worker) {
       this.pendingPhysInvalidation.push(...worker.registeredPhysicsEntities())
+      this.layerRegistry?.unregister(id)
       worker.dispose()
       this.workers.delete(id)
     }
@@ -391,6 +406,7 @@ export class PortableExperienceManager {
       const worker = this.workers.get(id)
       if (worker) {
         this.pendingPhysInvalidation.push(...worker.registeredPhysicsEntities())
+        this.layerRegistry?.unregister(id)
         worker.dispose()
       }
       this.workers.delete(id)

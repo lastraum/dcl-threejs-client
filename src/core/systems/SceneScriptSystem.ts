@@ -1754,11 +1754,23 @@ export class SceneScriptSystem {
     this.clientPoseProvider = provider
   }
 
+  /**
+   * COD layer_drive: when true, skip host Player/Camera Transform stomps into this worker
+   * so free-flight systems can author reserved poses.
+   */
+  private skipHostReservedPoses = false
+
+  setSkipHostReservedPoses(skip: boolean): void {
+    this.skipHostReservedPoses = skip
+  }
+
   /** EngineInfo + poses + RealmInfo before a renderer→worker CRDT deliver. */
   private prepareReservedRoundTrip(player: EntityPose, camera: EntityPose): void {
     this.engineFrame++
     this.reserved.setEngineCounters(this.engineFrame, this.crdtTick)
-    this.reserved.prepareRendererRoundTrip(player, camera)
+    this.reserved.prepareRendererRoundTrip(player, camera, {
+      skipPoses: this.skipHostReservedPoses
+    })
   }
 
   /** Push player/camera into the mirror before the worker calls crdtGetState at boot. */
@@ -3977,8 +3989,9 @@ export class SceneScriptSystem {
     if (this.clientPlayerPose && this.clientCameraPose) {
       this.prepareReservedRoundTrip(this.clientPlayerPose, this.clientCameraPose)
     }
-    const player = this.clientPlayerPose
-    const camera = this.clientCameraPose
+    // COD layer_drive: do not embed host feet/camera into the worker play-frame (PX free-flight).
+    const player = this.skipHostReservedPoses ? null : this.clientPlayerPose
+    const camera = this.skipHostReservedPoses ? null : this.clientCameraPose
     this.worker.postMessage({
       type: 'play-frame-tick',
       ...(player

@@ -16,6 +16,7 @@ import {
 } from './caps'
 import type { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
 import { secondaryPhysOffset } from './physOffsets'
+import type { SceneLayerRegistry } from './SceneLayerRegistry'
 import { SceneWorkerSlot, type ResidentMode } from './SceneWorkerSlot'
 import type { SecondaryLiveRequest } from './types'
 
@@ -57,6 +58,11 @@ export class SecondaryLiveManager {
    * so walk-on promote can hand off without a cold /goto loading screen.
    */
   private priorityParcelKey: string | null = null
+  private layerRegistry: SceneLayerRegistry | null = null
+
+  setLayerRegistry(registry: SceneLayerRegistry | null): void {
+    this.layerRegistry = registry
+  }
 
   bind(opts: {
     primaryScene: ResolvedScene
@@ -268,6 +274,7 @@ export class SecondaryLiveManager {
       const base = slot.scene.baseParcel.trim()
       if (base === key || parcels.some((p) => p.trim() === key)) {
         const fromMode = slot.residentMode
+        this.layerRegistry?.unregister(entityId)
         this.slots.delete(entityId)
         this.stickyIds.delete(entityId)
         this.emitLiveIds()
@@ -426,6 +433,12 @@ export class SecondaryLiveManager {
     // Always retain slot even if manager disposed mid-await — never drop demoted graph.
     this.slots.set(id, slot)
     this.stickyIds.add(id)
+    this.layerRegistry?.register({
+      id,
+      kind: 'secondary',
+      system: slot.system,
+      physOffset: slot.physOffset
+    })
     this.emitLiveIds()
     const assert = this.assertResidentVisible(id)
     console.info(
@@ -538,6 +551,12 @@ export class SecondaryLiveManager {
           return false
         }
         this.slots.set(scene.entityId, slot)
+        this.layerRegistry?.register({
+          id: scene.entityId,
+          kind: 'secondary',
+          system: slot.system,
+          physOffset: slot.physOffset
+        })
         this.emitLiveIds()
         console.info(
           `[multi-scene] force-boot secondary for promote “${scene.title}” @ ${key}`
@@ -641,6 +660,7 @@ export class SecondaryLiveManager {
     })
     for (const [id, slot] of entries) {
       if (this.stickyIds.has(id)) continue // never dispose sticky
+      this.layerRegistry?.unregister(id)
       slot.dispose()
       this.slots.delete(id)
       console.info(
@@ -655,6 +675,7 @@ export class SecondaryLiveManager {
   private disposeOneAnyNonSticky(): boolean {
     for (const [id, slot] of this.slots) {
       if (this.stickyIds.has(id)) continue
+      this.layerRegistry?.unregister(id)
       slot.dispose()
       this.slots.delete(id)
       console.info(`[multi-scene] resident dispose ${id.slice(0, 12)}… (cap last-resort)`)
@@ -841,6 +862,12 @@ export class SecondaryLiveManager {
           return
         }
         this.slots.set(slotId, slot)
+        this.layerRegistry?.register({
+          id: slotId,
+          kind: 'secondary',
+          system: slot.system,
+          physOffset: slot.physOffset
+        })
         this.balanceModes()
         this.emitLiveIds()
         console.info(
@@ -935,7 +962,10 @@ export class SecondaryLiveManager {
 
   dispose(): void {
     this.disposed = true
-    for (const slot of this.slots.values()) slot.dispose()
+    for (const [id, slot] of this.slots) {
+      this.layerRegistry?.unregister(id)
+      slot.dispose()
+    }
     this.slots.clear()
     this.stickyIds.clear()
     this.booting.clear()

@@ -155,6 +155,40 @@ function applyInputModifier(config: LocomotionConfig, std: {
   if (std.disableGliding) config.disableGliding = true
 }
 
+/** True when InputModifier fully or walk+jog+run blocks avatar locomotion. */
+export function freezesAvatarFromModifier(mod: unknown): boolean {
+  if (!mod || typeof mod !== 'object') return false
+  const mode = (
+    mod as {
+      mode?: {
+        $case?: string
+        standard?: {
+          disableAll?: boolean
+          disableWalk?: boolean
+          disableJog?: boolean
+          disableRun?: boolean
+        }
+      }
+    }
+  ).mode
+  const std = mode?.$case === 'standard' ? mode.standard : undefined
+  if (!std) return false
+  if (std.disableAll) return true
+  return !!(std.disableWalk && std.disableJog && std.disableRun)
+}
+
+/** Build locomotion config from a raw InputModifier value (PX claim override). */
+export function locomotionConfigFromInputModifier(mod: unknown): LocomotionConfig {
+  const config = defaultLocomotionConfig()
+  if (!mod || typeof mod !== 'object') return config
+  const mode = (
+    mod as { mode?: { $case?: string; standard?: Parameters<typeof applyInputModifier>[1] } }
+  ).mode
+  const std = mode?.$case === 'standard' ? mode.standard : undefined
+  if (std) applyInputModifier(config, std)
+  return config
+}
+
 export function readLocomotionFromComponents(components: MirrorComponents, player: Entity): LocomotionConfig {
   const config = defaultLocomotionConfig()
 

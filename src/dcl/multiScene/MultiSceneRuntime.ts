@@ -1,4 +1,5 @@
 import type { EntityPose } from '../../bridge/ReservedEntitiesSync'
+import type { SceneScriptSystem } from '../../core/systems/SceneScriptSystem'
 import type { AssetCache } from '../../rendering/AssetCache'
 import type { SceneHost } from '../../rendering/SceneHost'
 import type { PhysicsColliderDesc } from '../../physics/PhysXWorld'
@@ -14,6 +15,10 @@ import {
   SecondaryLiveManager,
   type PromoteHandoffPayload
 } from './SecondaryLiveManager'
+import {
+  PRIMARY_LAYER_ID,
+  SceneLayerRegistry
+} from './SceneLayerRegistry'
 import type { SecondaryLiveRequest } from './types'
 
 export type MultiSceneRuntimeOptions = {
@@ -22,14 +27,17 @@ export type MultiSceneRuntimeOptions = {
 }
 
 /**
- * World-attached multi-scene runtime: secondary live workers + PE tick hooks.
+ * World-attached multi-scene runtime: secondary live workers + PX tick hooks.
  * Primary remains World.sceneScript (not managed here) until promote handoff.
  *
- * Priority: primary (World) > PE > secondary > tertiary (AOI, no workers).
+ * Priority: primary (World) > PX > secondary > tertiary (AOI, no workers).
+ * Layer registry: docs/SCENE_LAYERS_PLAN.md Phase A.
  */
 export class MultiSceneRuntime {
   readonly arbiter = new PrivilegedIntentArbiter()
   readonly pe: PortableExperienceManager
+  /** Phase A — primary / PX / secondary registration. */
+  readonly layers = new SceneLayerRegistry()
 
   private secondary: SecondaryLiveManager | null = null
   private primaryScene: ResolvedScene | null = null
@@ -44,6 +52,21 @@ export class MultiSceneRuntime {
   constructor(opts: MultiSceneRuntimeOptions) {
     this.pe = opts.peManager
     this.onLiveSecondaryIds = opts.onLiveSecondaryIds ?? null
+    this.pe.setLayerRegistry(this.layers)
+  }
+
+  /** Register primary FocusOwner system (call after load / promote). */
+  registerPrimary(system: SceneScriptSystem): void {
+    this.layers.register({
+      id: PRIMARY_LAYER_ID,
+      kind: 'primary',
+      system,
+      physOffset: 0
+    })
+  }
+
+  unregisterPrimary(): void {
+    this.layers.unregister(PRIMARY_LAYER_ID)
   }
 
   setOnLiveSecondaryIds(fn: ((ids: ReadonlySet<string>) => void) | null): void {
@@ -105,6 +128,7 @@ export class MultiSceneRuntime {
 
     this.secondary?.dispose()
     this.secondary = new SecondaryLiveManager()
+    this.secondary.setLayerRegistry(this.layers)
     this.secondary.bind({
       primaryScene: opts.primaryScene,
       cache: opts.cache,
@@ -146,6 +170,7 @@ export class MultiSceneRuntime {
     this.secondary = null
     this.pe.detachWorld()
     this.arbiter.clear()
+    this.layers.clear()
     this.primaryScene = null
     this.cache = null
     this.lastMultiPhysIds.clear()

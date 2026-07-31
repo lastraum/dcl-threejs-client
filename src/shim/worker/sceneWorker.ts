@@ -910,9 +910,10 @@ function applyCoalescedKeyboardSnapshot(body: SceneInputSnapshotBody): void {
     scheduleSceneInputEngineTick({ flightPump: true })
     return
   }
-  // PE drone/vehicle: pump immediately on key edges (and holds via forceRepublish).
+  // PX continuous: same requestSceneEngineTick path (bypass residual pointer session).
   if (portableExperienceWorker && (changed || body.pressed.length > 0)) {
-    void runPeVehicleInputPump()
+    flightPumpBypassPause = true
+    requestSceneEngineTick()
     return
   }
   if (!changed) return
@@ -1478,69 +1479,7 @@ function reassertPressedKeysOnEngine(): void {
   }
 }
 
-/** PE vehicle/drone — engine.update even when residual pointer session would block primary ticks. */
-let lastPeInputPumpAt = 0
-
-async function runPeVehicleInputPump(): Promise<void> {
-  if (!sceneEngine || !portableExperienceWorker || sceneOnUpdatePaused) return
-  // Never interleave with pointer UI (menu open thrash) or mid-deliver batches.
-  if (
-    pointerDeliveryInFlight ||
-    pointerDeliverWorkInFlight ||
-    pointerDeliverBatchOpen ||
-    queuedPointerDeliver ||
-    pendingInjectPointer ||
-    isPointerInputSessionActive() ||
-    sceneTicksPaused
-  ) {
-    return
-  }
-  // Post-click hold: still run eng.update (systems/dt) but react-ecs is deferred via
-  // shouldDeferCooperativeReactEcs wall-clock hold — keeps open menu ECS mount stable.
-  if (sceneUpdateInFlight || sceneUpdatePromiseActive) return
-
-  const now = performance.now()
-  if (lastPeInputPumpAt > 0 && now - lastPeInputPumpAt < SCENE_FLIGHT_TICK_MIN_MS) return
-  const dt =
-    lastPeInputPumpAt > 0
-      ? Math.min((now - lastPeInputPumpAt) / 1000, 0.1)
-      : SCENE_FLIGHT_TICK_MIN_MS / 1000
-  lastPeInputPumpAt = now
-
-  reassertPressedKeysOnEngine()
-
-  if (now - lastFlightPumpLogAt > 500 && workerSnapshotPressed.size > 0) {
-    lastFlightPumpLogAt = now
-    const pressed = [...workerSnapshotPressed].join(',')
-    const player = sceneEngine.PlayerEntity as Entity
-    const isFwd = isSceneInputPressedOnPlayer(sceneEngine, player, InputAction.IA_FORWARD)
-    workerLog(
-      'log',
-      `[sceneWorker] pe-input pump — pressed=[${pressed}] isPressed F=${isFwd ? 1 : 0} dt=${dt.toFixed(3)}`
-    )
-  }
-
-  // Reuse flight bypass so pointerBlocksEngineTick does not starve PE systems mid-menu residual.
-  flightPumpBypassPause = true
-  sceneUpdateInFlight = true
-  sceneUpdatePromiseActive = true
-  sceneUpdateStartedAt = now
-  armSceneUpdateAbortTimer()
-  try {
-    await runSceneEngineUpdateNow(dt)
-    completePlayFrameColdEgress()
-  } catch (err) {
-    workerLog(
-      'error',
-      `[sceneWorker] pe-input pump failed — ${err instanceof Error ? err.message : String(err)}`
-    )
-  } finally {
-    clearSceneUpdateAbortTimer()
-    flightPumpBypassPause = false
-    sceneUpdateInFlight = false
-    sceneUpdatePromiseActive = false
-  }
-}
+// COD: former runPeVehicleInputPump deleted — PX uses requestSceneEngineTick + flightPumpBypassPause.
 
 /** Selected creator VC for shim flight — green emissive body (camera-operator SELECTED_COLOR). */
 let shimFlightVcEntity: number | null = null
@@ -3344,11 +3283,20 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     // Reassert level keys every play frame so pollEvents cannot drop isPressed mid-hold
     // AND so isTriggered(PET_DOWN) edges fire every tick (Neurolink drone latches).
     reassertPressedKeysOnEngine()
-    // PE drone/vehicle: residual pointer session after PE UI must not starve engine systems.
-    // Dedicated pump bypasses pointer session while still avoiding mid-inject races.
+    // COD PX: same tick class as primary — reassert + requestSceneEngineTick.
+    // PX workers use flightPumpBypass so residual PE-UI pointer sessions do not starve systems.
     if (portableExperienceWorker && sceneEngine && !sceneOnUpdatePaused) {
-      void runPeVehicleInputPump()
-      return
+      flightPumpBypassPause = true
+      try {
+        requestSceneEngineTick()
+      } finally {
+        // requestSceneEngineTick may queue async update; keep bypass until pump path below.
+        // Clear on next non-PX path; continuous PX frames re-set each tick.
+        if (!sceneUpdateInFlight && !sceneUpdatePromiseActive) {
+          flightPumpBypassPause = false
+        }
+      }
+      // Fall through only when request deferred — still hydrate VC if blocked.
     }
     // Do not gate on sceneTicksPaused: pointer UI hold must not freeze CameraFollow forever
     // (left the gameplay VC stuck at cameraParent spawn near world origin).
@@ -3357,7 +3305,13 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     // can clear InputModifier while onStart awaits movePlayerTo.
     // Do not gate on sceneUpdateInFlight — pollEvents runs outside eng.update flight now.
     // Gating left welcome Color4.a / timers starved whenever plaza onUpdate was slow.
-    if (sceneEngine && !sceneOnUpdatePaused && !pointerDeliverBatchOpen && !pendingInjectPointer) {
+    if (
+      sceneEngine &&
+      !sceneOnUpdatePaused &&
+      !portableExperienceWorker &&
+      !pointerDeliverBatchOpen &&
+      !pendingInjectPointer
+    ) {
       // Always request — requestSceneEngineTick rate-limits via resolveDt / tickInFlight.
       requestSceneEngineTick()
     } else if (sceneEngine && !sceneOnUpdatePaused) {
@@ -3538,11 +3492,13 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
   }
   if (msg.type === 'pump-scene-engine-tick') {
     // flightPump only for MOVE CAMERA (freeze + unbound). Bound VC + freeze = fixed shot.
-    // PE drone: dedicated pump so residual pointer session cannot drop isTriggered edges.
+    // PX: same continuous tick as primary with pointer residual bypass.
     if (isEditFlightMode()) {
       scheduleSceneInputEngineTick({ flightPump: true })
     } else if (portableExperienceWorker) {
-      void runPeVehicleInputPump()
+      reassertPressedKeysOnEngine()
+      flightPumpBypassPause = true
+      requestSceneEngineTick()
     } else {
       reassertPressedKeysOnEngine()
       scheduleSceneInputEngineTick()

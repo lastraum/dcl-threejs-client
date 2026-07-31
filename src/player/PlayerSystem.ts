@@ -494,9 +494,49 @@ export class PlayerSystem {
     this.avatar?.setLocomotionVfxScene(scene)
   }
 
+  /**
+   * PX free-flight InputModifier when primary has **no** InputModifier component.
+   * Primary IM always wins if present (PlayerClaimMerger).
+   */
+  private pxLocomotionOverride: LocomotionConfig | null = null
+  /**
+   * PX free-flight / vehicle: scene systems own PlayerEntity Transform via worker.
+   * When true, disableAll must NOT pin feet (fights WASD drone motion every frame).
+   */
+  private allowSceneOwnedMotion = false
+
   getLocomotionConfig(): LocomotionConfig {
-    if (!this.readComponents) return defaultLocomotionConfig()
+    if (!this.readComponents) return this.pxLocomotionOverride ?? defaultLocomotionConfig()
+    // Primary has InputModifier → primary wins (never use PX override).
+    if (this.readComponents.InputModifier.has(SDK_RESERVED.player)) {
+      return readLocomotionFromComponents(this.readComponents, SDK_RESERVED.player)
+    }
+    if (this.pxLocomotionOverride) return this.pxLocomotionOverride
     return readLocomotionFromComponents(this.readComponents, SDK_RESERVED.player)
+  }
+
+  /** Layer claim bus: PX InputModifier when primary has none. */
+  setPxLocomotionOverride(config: LocomotionConfig | null): void {
+    this.pxLocomotionOverride = config
+  }
+
+  /**
+   * PX drone/vehicle free-flight — InputModifier freezes avatar WASD but scene systems
+   * drive Player/Camera. Pinning feet would cancel worker motion every update.
+   */
+  setAllowSceneOwnedMotion(allow: boolean): void {
+    if (this.allowSceneOwnedMotion === allow) return
+    this.allowSceneOwnedMotion = allow
+    if (allow) {
+      this.disableAllHoldFeet = null
+      console.info('[player] scene-owned motion ON — disableAll foot pin released (PX free-flight)')
+    } else {
+      console.info('[player] scene-owned motion OFF — normal disableAll pin resume')
+    }
+  }
+
+  isAllowSceneOwnedMotion(): boolean {
+    return this.allowSceneOwnedMotion
   }
 
   /**
@@ -1078,7 +1118,9 @@ export class PlayerSystem {
 
     const locomotion = this.getLocomotionConfig()
     const imBlocked = !canLocomote(locomotion)
-    const intentionalDisableAll = locomotion.disableAll === true
+    // COD: freeze ≠ pin. PX free-flight (layer_drive) freezes WASD without foot pin.
+    const intentionalDisableAll =
+      locomotion.disableAll === true && !this.allowSceneOwnedMotion
     const locomotionAllowed = !this.collidersReadyBlock && !imBlocked
     if (!locomotionAllowed) {
       // COD: always log why we block (prove IM vs colliders vs thrash).
@@ -1128,7 +1170,7 @@ export class PlayerSystem {
           physLog(
             'freeze-hold-arm',
             `disableAll hold armed · feet three=(${f.x.toFixed(1)},${f.y.toFixed(2)},${f.z.toFixed(1)}) ` +
-              `(intentional disableAll only)`,
+              `(intentional disableAll only; not PX layer_drive)`,
             0
           )
           console.info(
@@ -1146,6 +1188,9 @@ export class PlayerSystem {
         this.root.position.copy(this.disableAllHoldFeet)
         this.physics.teleport(this.disableAllHoldFeet)
         this.root.position.copy(this.disableAllHoldFeet)
+      } else if (this.allowSceneOwnedMotion && this.disableAllHoldFeet) {
+        // PX free-flight: never keep pin.
+        this.disableAllHoldFeet = null
       } else if (this.disableAllHoldFeet) {
         // Stale pin without disableAll — release (multi-scene false freeze trap).
         console.warn(

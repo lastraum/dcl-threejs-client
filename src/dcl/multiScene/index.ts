@@ -29,7 +29,21 @@ export { SceneWorkerSlot } from './SceneWorkerSlot'
 export { SecondaryLiveManager, type PromoteHandoffPayload } from './SecondaryLiveManager'
 export { PortableExperienceManager } from './PortableExperienceManager'
 export { MultiSceneRuntime } from './MultiSceneRuntime'
-export { PeMainThreadMirror } from './PeMainThreadMirror'
+export {
+  SceneLayerRegistry,
+  PRIMARY_LAYER_ID,
+  type SceneLayer
+} from './SceneLayerRegistry'
+export {
+  collectPlayerClaims,
+  PlayerClaimApplier,
+  type PlayerHostClaims
+} from './PlayerClaimMerger'
+export {
+  hostPoseModeFromClaims,
+  hostPoseModeLabel,
+  type HostPoseMode
+} from './HostPoseMode'
 export { secondaryPhysOffset, pePhysOffset, SECONDARY_PHYS_BASE, PE_PHYS_BASE } from './physOffsets'
 export {
   resolvePortableExperiencesPolicy,

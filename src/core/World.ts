@@ -24,7 +24,8 @@ import { genesisCityWalkBounds } from '../player/genesisCityBounds'
 import { AoiVisualLayer } from '../dcl/aoi/AoiVisualLayer'
 import { ScenePromoteController } from '../dcl/aoi/ScenePromoteController'
 import type { MultiSceneRuntime } from '../dcl/multiScene/MultiSceneRuntime'
-import { PeMainThreadMirror } from '../dcl/multiScene/PeMainThreadMirror'
+import { PlayerClaimApplier } from '../dcl/multiScene/PlayerClaimMerger'
+import { collectPlayerClaims } from '../dcl/multiScene/PlayerClaimMerger'
 import {
   resolvePortableExperiencesPolicy,
   type PortableExperiencesPolicy
@@ -251,7 +252,8 @@ export class World {
    * so PE preferences survive World rebuild on /goto.
    */
   private multiScene: MultiSceneRuntime | null = null
-  private readonly peMirror = new PeMainThreadMirror()
+  /** Phase B — continuous layer claims (replaces PeMainThreadMirror). */
+  private readonly claimApplier = new PlayerClaimApplier()
   /**
    * Single keyboard bus — primary scene + PE workers subscribe; hardware owned once.
    * Sync once per play frame (not per SceneScriptSystem).
@@ -1391,6 +1393,8 @@ export class World {
       plazaScale,
       engineTickIntervalMs: resolveEngineTickIntervalMs(this.sceneScript.getPerformanceTier())
     })
+    // Phase A — primary is a layer
+    this.multiScene?.registerPrimary(this.sceneScript)
     // AOI warm/live/visuals only after primary is play-ready — dual-boot kills CBD.
     // Honor ?noaoi so neighbors never start.
     if (!skipAoiNeighbors()) {
@@ -1739,13 +1743,23 @@ export class World {
           if (this.loadedPrimaryScene) {
             this.assets.setScene(this.loadedPrimaryScene)
           }
-          // Motion first — PE pose + TriggerArea enter must beat worker onUpdate.
+          // COD PX claim order: layers tick → merge claims → PlayerHost (capsule/lens).
           const platformT0 = performance.now()
           this.syncPlayerMotionFrame(delta, startFrame)
-          // PE owns VirtualCamera / MainCamera (drone, vehicle) — drive lens from PE bridge,
-          // never from a MainCamera entity id mirrored onto empty primary ECS.
-          this.selectActiveVirtualCameraBridge()
           const platformMs = performance.now() - platformT0
+          // Prior-frame poses for worker reserved inject (players move after claims below).
+          let playerPose = this.player.getEntityPose()
+          let cameraPose = this.player.getCameraEntityPose()
+          // Keyboard bus first — PX/primary onUpdate this frame sees isPressed for drone WASD.
+          this.inputHub.sync(startFrame)
+          this.sceneScript.syncClientEntities(playerPose, cameraPose)
+          this.sceneScript.updateTriggerAreas()
+          this.sceneScript.tickPlayFrame()
+          this.multiScene?.tickSync(playerPose, cameraPose, startFrame)
+          this.pumpPeMotionBridges(delta, startFrame)
+          this.pumpSecondaryMotionBridges(delta, startFrame)
+          // Phase B: continuous claims (locomotion / camera / poseDrive / force) before capsule.
+          this.applyLayerPlayerClaims()
           const playerT0 = performance.now()
           this.player.update(delta)
           if (this.photoCamera?.isActive()) {
@@ -1758,26 +1772,8 @@ export class World {
             this.lastVoluntaryEmoteAllowed = emoteAllowed
             this.onVoluntaryEmoteAllowedChange?.(emoteAllowed)
           }
-          const playerPose = this.player.getEntityPose()
-          const cameraPose = this.player.getCameraEntityPose()
-          // Keyboard bus first — PE/primary onUpdate this frame sees isPressed for drone WASD.
-          this.inputHub.sync(startFrame)
-          this.sceneScript.syncClientEntities(playerPose, cameraPose)
-          // Detect enter/exit with post-move CCT feet, then flush PE+TriggerAreaResult to worker.
-          this.sceneScript.updateTriggerAreas()
-          // Worker onUpdate with current PE (bounce parasols read Transform.get(PlayerEntity)).
-          this.sceneScript.tickPlayFrame()
-          // Portable experiences + live secondaries (primary already ticked — primary wins intents).
-          this.multiScene?.tickSync(playerPose, cameraPose, startFrame)
-          // PE tween/billboard/attach motion + reserved-parent meshes (same as primary pump).
-          this.pumpPeMotionBridges(delta, startFrame)
-          // Live secondaries: scripts tick above, but host Animator mixers need delta
-          // (was frozen mid-clip without this — COD gap for sticky/demoted plaza).
-          this.pumpSecondaryMotionBridges(delta, startFrame)
-          // After PE player-frame may have bound VC this tick — re-select before next freecam frame.
-          this.selectActiveVirtualCameraBridge()
-          // Mirror PE player-affecting state onto primary (InputModifier, forces) — not MainCamera ids.
-          this.applyPeMainThreadMirror()
+          playerPose = this.player.getEntityPose()
+          cameraPose = this.player.getCameraEntityPose()
 
           const pos = this.player.getPosition()
           // AOI tertiary visuals — scene-local DCL feet (throttled inside layer).
@@ -3856,11 +3852,15 @@ export class World {
     runtime.pe.setOnPeWorkerReady((system, physOffset) => {
       this.wirePeWorkerToMainThread(system, physOffset)
     })
-    // Impulse Lamport = max(primary, all PE) so PE bounce pads / thrusters fire once.
+    // Impulse Lamport = max(primary, all PX) so bounce pads / thrusters fire once.
     this.player?.setImpulseLamportProvider(() => {
       if (!this.multiScene) return this.sceneScript.getPhysicsImpulseLamport()
-      return this.peMirror.impulseLamportAcross(this.sceneScript, this.multiScene.pe)
+      return this.claimApplier.impulseLamportAcross(
+        this.multiScene.layers.list(),
+        this.sceneScript
+      )
     })
+    runtime.registerPrimary(this.sceneScript)
     const pePolicy: PortableExperiencesPolicy =
       this.loadedPrimaryScene.portableExperiencesPolicy ??
       resolvePortableExperiencesPolicy(this.loadedPrimaryScene.metadata)
@@ -3945,12 +3945,10 @@ export class World {
       {
         // Hub global block covers chat/settings; PE worker still receives keys while frozen.
         isRelayBlocked: () => this.isInputHubBlocked(),
-        isLocomotionBlocked: () =>
-          this.multiScene?.pe.isAvatarLocomotionFrozenByPe() === true ||
-          (this.player?.isLocomotionBlocked() ?? false),
+        isLocomotionBlocked: () => this.player?.isLocomotionBlocked() ?? false,
         clearPlayerMoveKeys: () => this.player?.clearMoveKeys(),
-        // PE drone freeze — republish every hub.sync so worker isPressed stays live.
-        forceRepublishSnapshot: () => this.multiScene?.pe.isAvatarLocomotionFrozenByPe() === true
+        // PX free-flight — republish every hub.sync so worker isPressed stays live.
+        forceRepublishSnapshot: () => this.player?.isAllowSceneOwnedMotion() === true
       },
       (mode) => this.player?.setForcedCameraMode(mode)
     )
@@ -4019,9 +4017,7 @@ export class World {
   private startInputHub(): void {
     this.inputHub.start({
       isBlocked: () => this.isInputHubBlocked(),
-      isLocomotionBlocked: () =>
-        this.multiScene?.pe.isAvatarLocomotionFrozenByPe() === true ||
-        (this.player?.isLocomotionBlocked() ?? false),
+      isLocomotionBlocked: () => this.player?.isLocomotionBlocked() ?? false,
       clearPlayerMoveKeys: () => this.player?.clearMoveKeys()
     })
   }
@@ -4108,14 +4104,32 @@ export class World {
     this.physics.invalidateControllerCache()
   }
 
-  /** PE worker → primary projection + player (InputModifier, forces, intents). */
-  private applyPeMainThreadMirror(): void {
-    if (!this.multiScene) return
-    this.peMirror.apply({
-      pe: this.multiScene.pe,
+  /**
+   * Phase B — collect layer claims and apply to PlayerHost (locomotion/camera/pose/force).
+   * Replaces PeMainThreadMirror. Secondary layers ignored for player claims.
+   */
+  private applyLayerPlayerClaims(): void {
+    if (!this.multiScene || !this.player) {
+      // No multi-scene — still drain nothing; primary-only.
+      return
+    }
+    // Ensure primary is registered (promote / attach races).
+    if (!this.multiScene.layers.has('primary')) {
+      this.multiScene.registerPrimary(this.sceneScript)
+    }
+    const layers = this.multiScene.layers.list()
+    const claims = collectPlayerClaims(layers)
+    this.claimApplier.apply(claims, {
       primary: this.sceneScript,
       player: this.player,
-      drainPrivilegedIntents: () => this.drainPePrivilegedIntents()
+      setVirtualCameraBridge: (bridge) => {
+        this.player?.setVirtualCameraBridge(
+          bridge ?? this.sceneScript.getVirtualCameraBridge()
+        )
+      },
+      primaryVirtualCameraBridge: () => this.sceneScript.getVirtualCameraBridge(),
+      drainPrivilegedIntents: () => this.drainPePrivilegedIntents(),
+      layers
     })
   }
 
@@ -4329,6 +4343,7 @@ export class World {
     this.sceneScript = newSystem
     this.loadedPrimaryScene = newScene
     this.assets.setScene(newScene)
+    this.multiScene?.registerPrimary(newSystem)
 
     // Pose + player identity on the adopted worker.
     this.sceneScript.setClientPoseProvider(() => ({
@@ -4926,7 +4941,7 @@ export class World {
       this.multiScene.unbindWorld()
       this.multiScene = null
     }
-    this.peMirror.reset()
+    this.claimApplier.reset()
     this.inputHub.dispose()
 
     // Scene systems first — CameraModeArea / pointer dispose still call into player.

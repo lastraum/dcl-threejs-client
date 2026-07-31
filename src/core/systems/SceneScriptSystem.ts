@@ -4401,8 +4401,11 @@ export class SceneScriptSystem {
     this.prepareReservedRoundTrip(player, camera)
   }
 
-  /** After movePlayerTo — sync worker PlayerEntity before the scene reads it again. */
-  private pushReservedTransformsToWorker(): void {
+  /**
+   * After scene-authored player moves (movePlayerTo) or host rebroadcast:
+   * push reserved Player/Camera CRDT into this worker now.
+   */
+  pushReservedTransformsToWorker(): void {
     if (!this.worker || !this.running) return
     this.refreshClientPosesFromProvider()
     if (!this.clientPlayerPose || !this.clientCameraPose) return

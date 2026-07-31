@@ -1,16 +1,18 @@
 /**
- * Phase B — continuous player claims from scene layers (PX + primary).
- * Secondary never wins locomotion / camera / poseDrive.
- * @see docs/PORTABLE_EXPERIENCE_COD.md · docs/SCENE_LAYERS_PLAN.md
+ * Continuous player claims from scene layers (PX + primary).
+ *
+ * Product law (host-owned input):
+ * - WASD / freecam always host capsule — PX InputModifier never freezes the body.
+ * - Scene-authored moves (movePlayerTo, force/impulse) apply on host then rebroadcast.
+ * - Camera / force claims still merge by priority.
+ *
+ * @see docs/PORTABLE_EXPERIENCE_COD.md
  */
 import type { Entity } from '@dcl/ecs'
 import type { VirtualCameraBridge } from '../../camera/VirtualCameraBridge'
 import type { SceneScriptSystem } from '../../core/systems/SceneScriptSystem'
 import type { PlayerSystem } from '../../player/PlayerSystem'
-import {
-  freezesAvatarFromModifier,
-  locomotionConfigFromInputModifier
-} from '../../player/locomotion'
+import { freezesAvatarFromModifier } from '../../player/locomotion'
 import type { SceneLayer } from './SceneLayerRegistry'
 import type { SceneWorkerKind } from './types'
 
@@ -34,13 +36,6 @@ export type CameraClaim = {
   mainCameraBound: boolean
 }
 
-export type PoseDriveClaim = {
-  layerId: string
-  kind: SceneWorkerKind
-  priority: number
-  system: SceneScriptSystem
-}
-
 export type ForceClaim = {
   layerId: string
   kind: SceneWorkerKind
@@ -51,9 +46,9 @@ export type ForceClaim = {
 }
 
 export type PlayerHostClaims = {
+  /** Primary InputModifier only — host owns walk; PX never freezes capsule via IM. */
   locomotion: LocomotionClaim | null
   camera: CameraClaim | null
-  poseDrive: PoseDriveClaim | null
   force: ForceClaim | null
 }
 
@@ -71,9 +66,7 @@ function cloneJson<T>(value: T): T {
  */
 export function collectPlayerClaims(layers: readonly SceneLayer[]): PlayerHostClaims {
   let primaryLocomotion: LocomotionClaim | null = null
-  let pxLocomotion: LocomotionClaim | null = null
   let camera: CameraClaim | null = null
-  let poseDrive: PoseDriveClaim | null = null
   let force: ForceClaim | null = null
 
   for (const layer of layers) {
@@ -86,25 +79,16 @@ export function collectPlayerClaims(layers: readonly SceneLayer[]): PlayerHostCl
       const { InputModifier, MainCamera, PhysicsCombinedForce, PhysicsCombinedImpulse } =
         sys.readComponents
 
-      if (InputModifier.has(playerEnt)) {
+      // Locomotion freeze: **primary only**. Host WASD always; PX never freezes the capsule.
+      if (layer.kind === 'primary' && InputModifier.has(playerEnt)) {
         const mod = InputModifier.get(playerEnt)
-        const freezes = freezesAvatarFromModifier(mod)
-        const claim: LocomotionClaim = {
+        primaryLocomotion = {
           layerId: layer.id,
           kind: layer.kind,
           priority: layer.priority,
           inputModifier: mod,
-          freezesAvatar: freezes,
-          primaryHasComponent: layer.kind === 'primary'
-        }
-        if (layer.kind === 'primary') {
-          primaryLocomotion = claim
-        } else if (
-          !pxLocomotion ||
-          (freezes && !pxLocomotion.freezesAvatar) ||
-          (freezes === pxLocomotion.freezesAvatar && claim.priority > pxLocomotion.priority)
-        ) {
-          pxLocomotion = claim
+          freezesAvatar: freezesAvatarFromModifier(mod),
+          primaryHasComponent: true
         }
       }
 
@@ -133,6 +117,7 @@ export function collectPlayerClaims(layers: readonly SceneLayer[]): PlayerHostCl
         }
       }
 
+      // Scene-authored physics on the player (pads, thrusters) — not input.
       let f: unknown | null = null
       let imp: unknown | null = null
       let lamport = 0
@@ -163,27 +148,7 @@ export function collectPlayerClaims(layers: readonly SceneLayer[]): PlayerHostCl
     }
   }
 
-  const locomotion = primaryLocomotion ?? pxLocomotion
-
-  // poseDrive (COD free-flight): PX wins locomotion + disableAll-style full freeze
-  // (not mode-only sit freeze). Explicit transitional signal until scenes publish poseDrive.
-  if (locomotion?.kind === 'pe' && locomotion.freezesAvatar) {
-    const cfg = locomotionConfigFromInputModifier(locomotion.inputModifier)
-    if (cfg.disableAll) {
-      for (const layer of layers) {
-        if (layer.id !== locomotion.layerId) continue
-        poseDrive = {
-          layerId: layer.id,
-          kind: 'pe',
-          priority: layer.priority,
-          system: layer.system
-        }
-        break
-      }
-    }
-  }
-
-  return { locomotion, camera, poseDrive, force }
+  return { locomotion: primaryLocomotion, camera, force }
 }
 
 export type ApplyPlayerClaimsContext = {
@@ -192,32 +157,42 @@ export type ApplyPlayerClaimsContext = {
   setVirtualCameraBridge: (bridge: VirtualCameraBridge | null) => void
   primaryVirtualCameraBridge: () => VirtualCameraBridge | null
   drainPrivilegedIntents: () => void
-  /** All registered layers — used to clear skipHostReservedPoses on non-drive layers. */
+  /** Ensure every layer receives host feet after scene-authored moves. */
+  rebroadcastHostPoses: () => void
   layers: readonly SceneLayer[]
 }
 
 /**
- * Apply merged claims onto host. Does not write PX InputModifier onto primary ECS
- * when primary has no IM (uses PlayerSystem override instead).
+ * Apply merged claims onto host.
+ * Locomotion freeze = primary only. PX force/impulse = scene-authored motion on capsule.
+ * movePlayerTo intents drain via World (host adopt + rebroadcast).
  */
 export class PlayerClaimApplier {
-  private pxOverrideActive = false
   private forceMirrored = false
   private impulseMirrored = false
   private lastCameraLayerId = ''
-  private lastPoseDriveId = ''
   private lastLocomotionKey = ''
-  private lastPoseMode = ''
 
   apply(claims: PlayerHostClaims, ctx: ApplyPlayerClaimsContext): void {
-    this.applyLocomotion(claims.locomotion, ctx)
+    // Always clear any legacy PX locomotion override / layer_drive flags.
+    ctx.player?.setPxLocomotionOverride(null)
+    ctx.player?.setAllowSceneOwnedMotion(false)
+    for (const layer of ctx.layers) {
+      try {
+        layer.system.setSkipHostReservedPoses(false)
+      } catch {
+        /* ignore */
+      }
+    }
+
+    this.applyPrimaryLocomotion(claims.locomotion, ctx)
     this.applyCamera(claims.camera, ctx)
-    this.applyPoseDrive(claims.poseDrive, ctx)
     this.applyForce(claims.force, ctx)
+    // movePlayerTo / teleport / emote from PX (and primary-silent channels)
     ctx.drainPrivilegedIntents()
   }
 
-  /** Max impulse Lamport across primary + all registered PE layers. */
+  /** Max impulse Lamport across primary + all registered PX layers. */
   impulseLamportAcross(layers: readonly SceneLayer[], primary: SceneScriptSystem): number {
     let max = primary.getPhysicsImpulseLamport()
     for (const layer of layers) {
@@ -232,49 +207,28 @@ export class PlayerClaimApplier {
   }
 
   reset(): void {
-    this.pxOverrideActive = false
     this.forceMirrored = false
     this.impulseMirrored = false
     this.lastCameraLayerId = ''
-    this.lastPoseDriveId = ''
     this.lastLocomotionKey = ''
-    this.lastPoseMode = ''
   }
 
-  private applyLocomotion(claim: LocomotionClaim | null, ctx: ApplyPlayerClaimsContext): void {
+  private applyPrimaryLocomotion(
+    claim: LocomotionClaim | null,
+    ctx: ApplyPlayerClaimsContext
+  ): void {
     const key = claim
       ? `${claim.kind}:${claim.layerId}:${claim.freezesAvatar ? 1 : 0}`
       : ''
-
     if (claim?.kind === 'primary') {
-      if (this.pxOverrideActive) {
-        ctx.player?.setPxLocomotionOverride(null)
-        this.pxOverrideActive = false
-        console.info('[layers] locomotion → primary InputModifier (overrides PX)')
-      }
       if (claim.freezesAvatar) ctx.player?.clearMoveKeys()
-      this.lastLocomotionKey = key
-      return
-    }
-
-    if (claim?.kind === 'pe') {
-      const config = locomotionConfigFromInputModifier(claim.inputModifier)
-      ctx.player?.setPxLocomotionOverride(config)
-      if (!this.pxOverrideActive || key !== this.lastLocomotionKey) {
-        this.pxOverrideActive = true
-        console.info(
-          `[layers] locomotion → PX InputModifier layer=${claim.layerId.slice(0, 28)} freeze=${claim.freezesAvatar ? 1 : 0}`
-        )
+      if (key !== this.lastLocomotionKey) {
+        this.lastLocomotionKey = key
+        if (claim.freezesAvatar) {
+          console.info('[layers] locomotion freeze → primary InputModifier')
+        }
       }
-      this.lastLocomotionKey = key
-      if (claim.freezesAvatar) ctx.player?.clearMoveKeys()
       return
-    }
-
-    if (this.pxOverrideActive) {
-      ctx.player?.setPxLocomotionOverride(null)
-      this.pxOverrideActive = false
-      console.info('[layers] locomotion claim cleared — no primary/PX InputModifier')
     }
     this.lastLocomotionKey = ''
   }
@@ -292,31 +246,6 @@ export class PlayerClaimApplier {
     }
     ctx.setVirtualCameraBridge(ctx.primaryVirtualCameraBridge())
     this.lastCameraLayerId = ''
-  }
-
-  private applyPoseDrive(claim: PoseDriveClaim | null, ctx: ApplyPlayerClaimsContext): void {
-    const drive = claim?.kind === 'pe'
-    ctx.player?.setAllowSceneOwnedMotion(!!drive)
-    // COD layer_drive: only the winning PX layer skips host reserved pose stomp.
-    for (const layer of ctx.layers) {
-      const skip = drive && claim !== null && layer.id === claim.layerId
-      try {
-        layer.system.setSkipHostReservedPoses(skip)
-      } catch {
-        /* ignore */
-      }
-    }
-    const mode = drive ? 'layer_drive' : 'host_feet'
-    if (mode !== this.lastPoseMode) {
-      this.lastPoseMode = mode
-      console.info(`[layers] HostPoseMode → ${mode}`)
-    }
-    if (drive && claim && claim.layerId !== this.lastPoseDriveId) {
-      this.lastPoseDriveId = claim.layerId
-      console.info(`[layers] poseDrive → layer=${claim.layerId.slice(0, 28)}`)
-    } else if (!drive) {
-      this.lastPoseDriveId = ''
-    }
   }
 
   private applyForce(claim: ForceClaim | null, ctx: ApplyPlayerClaimsContext): void {

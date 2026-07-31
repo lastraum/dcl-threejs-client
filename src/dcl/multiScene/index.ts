@@ -39,11 +39,7 @@ export {
   PlayerClaimApplier,
   type PlayerHostClaims
 } from './PlayerClaimMerger'
-export {
-  hostPoseModeFromClaims,
-  hostPoseModeLabel,
-  type HostPoseMode
-} from './HostPoseMode'
+export { hostPoseModeLabel, type HostPoseMode } from './HostPoseMode'
 export { secondaryPhysOffset, pePhysOffset, SECONDARY_PHYS_BASE, PE_PHYS_BASE } from './physOffsets'
 export {
   resolvePortableExperiencesPolicy,

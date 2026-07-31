@@ -976,13 +976,12 @@ export class World {
 
       this.sceneScript.setMovePlayerHandler((request) => {
         const ok = this.player!.movePlayerTo(request)
-        // Round-reset teleports often land while InputModifier is frozen / ticks held after UI.
-        // Nudge worker play so scene systems can clear freeze and advance reset timers.
-        // Dead Surge Start Mission spams movePlayerTo every frame — throttle resume noise.
-        this.sceneScript.nudgePlayAfterSceneTeleport()
-        // SpaceRunner map↔lobby: lobby/map GLBs re-attach after teleport. Kick a missing-actor
-        // cook burst so gravity can land on real floors once the scene freeze clears.
-        if (ok) this.kickPostTeleportColliderCatchup()
+        // Scene code moved the player (not WASD) — host capsule is truth; rebroadcast to all workers.
+        if (ok) {
+          this.rebroadcastHostPosesToAllLayers()
+          this.sceneScript.nudgePlayAfterSceneTeleport()
+          this.kickPostTeleportColliderCatchup()
+        }
         return ok
       })
       this.sceneScript.setSetCameraTransformHandler((request) =>
@@ -3947,8 +3946,8 @@ export class World {
         isRelayBlocked: () => this.isInputHubBlocked(),
         isLocomotionBlocked: () => this.player?.isLocomotionBlocked() ?? false,
         clearPlayerMoveKeys: () => this.player?.clearMoveKeys(),
-        // PX free-flight — republish every hub.sync so worker isPressed stays live.
-        forceRepublishSnapshot: () => this.player?.isAllowSceneOwnedMotion() === true
+        // Keys always fan out; no force-republish special case for PX freeze (host owns WASD).
+        forceRepublishSnapshot: () => false
       },
       (mode) => this.player?.setForcedCameraMode(mode)
     )
@@ -4105,15 +4104,11 @@ export class World {
   }
 
   /**
-   * Phase B — collect layer claims and apply to PlayerHost (locomotion/camera/pose/force).
-   * Replaces PeMainThreadMirror. Secondary layers ignored for player claims.
+   * Collect layer claims → host (camera / force / primary freeze).
+   * PX never freezes WASD; scene-authored moves use movePlayerTo → host → rebroadcast.
    */
   private applyLayerPlayerClaims(): void {
-    if (!this.multiScene || !this.player) {
-      // No multi-scene — still drain nothing; primary-only.
-      return
-    }
-    // Ensure primary is registered (promote / attach races).
+    if (!this.multiScene || !this.player) return
     if (!this.multiScene.layers.has('primary')) {
       this.multiScene.registerPrimary(this.sceneScript)
     }
@@ -4129,8 +4124,37 @@ export class World {
       },
       primaryVirtualCameraBridge: () => this.sceneScript.getVirtualCameraBridge(),
       drainPrivilegedIntents: () => this.drainPePrivilegedIntents(),
+      rebroadcastHostPoses: () => this.rebroadcastHostPosesToAllLayers(),
       layers
     })
+  }
+
+  /**
+   * After scene-authored player moves (movePlayerTo / forces applied on capsule):
+   * host already has the new feet — push to every layer worker (primary + PX + secondary).
+   * This is NOT input; scene code moved the player.
+   */
+  private rebroadcastHostPosesToAllLayers(): void {
+    if (!this.player) return
+    const player = this.player.getEntityPose()
+    const camera = this.player.getCameraEntityPose()
+    this.sceneScript.syncClientEntities(player, camera)
+    this.sceneScript.pushReservedTransformsToWorker()
+    for (const sys of this.multiScene?.pe.getRunningSystems() ?? []) {
+      try {
+        sys.syncClientEntities(player, camera)
+        sys.pushReservedTransformsToWorker()
+      } catch {
+        /* ignore */
+      }
+    }
+    for (const sys of this.multiScene?.getSecondaryMotionSystems() ?? []) {
+      try {
+        sys.syncClientEntities(player, camera)
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   getLoadedPrimaryScene(): ResolvedScene | null {
@@ -4151,12 +4175,18 @@ export class World {
   private drainPePrivilegedIntents(): void {
     const arbiter = this.multiScene?.arbiter
     if (!arbiter || !this.player) return
+    let sceneMovedPlayer = false
 
     const move = arbiter.take('movePlayer')
     if (move && move.kind === 'pe') {
       try {
-        this.player.movePlayerTo(move.payload as Parameters<PlayerSystem['movePlayerTo']>[0])
-        this.sceneScript.nudgePlayAfterSceneTeleport()
+        const ok = this.player.movePlayerTo(
+          move.payload as Parameters<PlayerSystem['movePlayerTo']>[0]
+        )
+        if (ok) {
+          sceneMovedPlayer = true
+          this.sceneScript.nudgePlayAfterSceneTeleport()
+        }
       } catch (err) {
         console.warn('[pe] movePlayer apply failed', err)
       }
@@ -4191,6 +4221,9 @@ export class World {
     arbiter.take('changeRealm')
     arbiter.take('camera')
     arbiter.take('locomotionClear')
+
+    // PX/primary scene code moved the player — host is truth; rebroadcast to all workers.
+    if (sceneMovedPlayer) this.rebroadcastHostPosesToAllLayers()
   }
 
   /**

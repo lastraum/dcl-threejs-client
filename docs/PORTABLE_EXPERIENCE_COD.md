@@ -26,7 +26,7 @@ Code still uses historical identifiers (`pe`, `PortableExperience*`, `pe-ui-root
 > It can do **everything a scene can** (UI, media, InputModifier, VirtualCamera, AvatarModifier, CameraMode, forces, attach, signedFetch, …) via the same host surface class.  
 > It **never** demotes genesis parcel continuity (PX is not a promote/demote of the place). Locomotion / camera / pose / modifiers merge via **claims** into **one PlayerHost** (priority primary 100 > px 50 > secondary 10).  
 > **UI:** same Yoga COD as primary — only the DOM root differs (`#pe-ui-root` today).  
-> **Freeze ≠ pin.** Free-flight requires explicit `poseDrive` + freeze → `layer_drive`. Load-gate pin is `host_pin` only. `disableAll` alone never pins and never enters `layer_drive`.
+> **Host owns WASD.** Scene code moves the player (`movePlayerTo`, force/impulse) → host capsule adopts → **rebroadcast** reserved poses to all workers. There is **no layer_drive**. Load-gate pin is `host_pin` only (SpaceRunner), not PX free-flight.
 
 ### Explicit exceptions only (everything else is required parity)
 
@@ -63,10 +63,10 @@ Code still uses historical identifiers (`pe`, `PortableExperience*`, `pe-ui-root
                           ▼
               ONE capsule · ONE lens · ONE network pose
 
-   HostPoseMode:
-     host_feet   — walk; host writes reserved Player/Camera to all layers
-     host_pin    — load-gate / fall-reset pin (SpaceRunner) — claim/helper only
-     layer_drive — winning layer owns Player/Camera Transform; host follows
+   Host pose:
+     host_feet — WASD + host inject Player/Camera to all workers every frame
+     host_pin  — load-gate only (SpaceRunner); not PX free-flight
+     Scene movePlayerTo / forces → host adopts → rebroadcast to all workers
 ```
 
 ### Layer table
@@ -111,24 +111,23 @@ On unload PX: clear any AvatarModifier / CameraMode / freeze / attach that this 
 
 ---
 
-## Pose ownership law (critical)
+## Pose ownership law (critical) — host-owned input
 
-| Mode | When | Capsule | Reserved Transform inject |
-|------|------|---------|---------------------------|
-| `host_feet` | Normal walk | Host CCT | Host → all workers every frame |
-| `host_pin` | Load-gate / fall-reset (SpaceRunner) | **Pin feet** | Host inject |
-| `layer_drive` | PX free-flight / vehicle (`poseDrive` + freeze) | Host follows layer feet | **Skip** host stomp of layer-owned poses |
+| Mode | When | Capsule | Workers |
+|------|------|---------|---------|
+| `host_feet` | Default | WASD moves CCT | Host injects Player/Camera every frame |
+| `host_pin` | Load-gate only (SpaceRunner) | Pin feet | Host inject |
+| **Scene-authored move** | `movePlayerTo` / force / impulse from any layer | Host adopts pose | **Rebroadcast** to all workers |
 
 **Hard rules**
 
-1. **`InputModifier.disableAll` alone does not imply `host_pin` and does not enter `layer_drive`.**  
-2. **`layer_drive` only when** winning layer publishes an **explicit `poseDrive` claim** **and** a locomotion freeze claim.  
-3. SpaceRunner map load pin = primary load-gate helper → **`host_pin`**.  
-4. Mode-only freeze (walk+jog+run without disableAll) blocks locomo **without** pin; still escapeable.  
-5. Never pin for colliders-ready or multi-scene thrash ([AGENTS.md](./AGENTS.md)).  
+1. **WASD always host** — PX InputModifier does **not** freeze the capsule (keys still fan out to PX workers for systems).  
+2. **Primary** InputModifier may still freeze walk (place menus / load-gate).  
+3. **`disableAll` alone does not imply `host_pin`** — pin is load-gate helper only.  
+4. When **scene code** moves the player (not input): host `movePlayerTo` / apply force → **`rebroadcastHostPosesToAllLayers`**.  
+5. There is **no `layer_drive`** (old idea: PX owns feet / skip host inject — **rejected**).  
 6. **Camera claim:** PX bound MainCamera **beats** unbound primary freecam.  
-7. **`layer_drive` always follows layer PlayerEntity feet** (attach correctness); VC still drives lens when bound.  
-8. Freecam yaw/pitch/dist remain durable player state across PX VC bind/unbind (MULTI_SCENE camera law).
+7. Freecam yaw/pitch/dist remain durable player state across PX VC bind/unbind.
 
 ---
 
@@ -138,13 +137,10 @@ Collect once per frame from **registry layers** (secondary ignored for player cl
 
 | Claim | Source | Host applies |
 |-------|--------|--------------|
-| `locomotion` | `InputModifier` on layer PlayerEntity | freeze/clear capsule keys; **not** auto pin |
+| `locomotion` | **Primary** InputModifier only | freeze/clear host WASD when place freezes |
 | `camera` | MainCamera VC bound on layer | active `VirtualCameraBridge` = winner |
-| `poseDrive` | **explicit** free-flight / vehicle claim | required for `layer_drive` (with freeze) |
-| `avatarModifier` | AvatarModifierArea on layer | hide / related — full scene power at prio 50 |
-| `cameraMode` | CameraModeArea on layer | force FP/TP — full scene power at prio 50 |
-| `force` / `impulse` | PhysicsCombined* | claim-shaped; Lamport across layers |
-| discrete | movePlayer / teleport / emote | keep `PrivilegedIntentArbiter` |
+| `force` / `impulse` | PhysicsCombined* (any layer) | scene-authored motion on capsule |
+| discrete | movePlayer / teleport / emote | arbiter → host adopt → **rebroadcast** |
 
 **Merge:** higher `SCENE_WORKER_PRIORITY` wins; same priority → latest timestamp; among PX prefer freeze.  
 **Multi-PX locomotion:** freeze wins over non-freeze; else higher priority / latest.

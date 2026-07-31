@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-31 (**v1.6.x** — EnvironmentApi/Testing + AudioAnalysis host fill; see [PROGRESS.md](./PROGRESS.md))
+> **Last updated:** 2026-07-31 (**v1.6.x** — EnvironmentApi/Testing + AudioAnalysis + community voice parity on `dev-latest`; see [PROGRESS.md](./PROGRESS.md))
 
 ---
 
@@ -174,10 +174,10 @@ DOM overlay — not in-scene `UiTransform`.
 | Preferences panel (P / ⚙): Graphics preset/shadows/lights/res/FPS + lighting | 🟢 |
 | Preferences → Sounds volume sliders | 🟢 |
 | Preferences: Controls, Chat tabs | 🟡 | Mouse sensitivity live; chat translate prefs 🟢 · keybinds pending |
-| Settings: Communities | 🟢 | Browse + modal · announce/start-voice **owner/mod/admin** · voice join/end-all · community chat open into dock |
-| Community HUD toasts | 🟢 | Top-center in-world · posts poll + Social WS voice · companion-aligned copy |
+| Settings: Communities | 🟢 | Browse + ACTIVE VOICE · modal roster (promote/demote/kick) · announce/start-voice **owner/mod/admin** · end-all · community chat into dock |
+| Community HUD toasts | 🟢 | Top-center · posts poll · voice via bus (PM LiveKit + Social WS) · guest+wallet |
 | In-scene ECS UI | 🟡 | Yoga + DOM · hit-map 🟢 · UiBackground nine-slice + **Color4×texture multiply** 🟢 · instant solid tint · text-measure polish remain |
-| Voice / mic UI | 🟢 | Nearby voice panel · Speak / hold T · mute-in-bg · name-tag bars · **3D PositionalAudio** |
+| Voice / mic UI | 🟢 | Nearby voice panel · Speak / hold T · mute-in-bg · name-tag bars · **3D PositionalAudio** · community voice 2D pill + in-play chat card |
 
 ---
 
@@ -195,7 +195,7 @@ DOM overlay — not in-scene `UiTransform`.
 | SignedFetch, Catalyst content, wallet + guest session | 🟢 |
 | ECS NetworkEntity scene sync | 🟢 P0–P3 host path |
 | Community text / PM router | 🟢 | **1:1 DMs** + **community group text** on ADR-208 private-messages LiveKit room (topic `dcl.community.chat:{id}`, fan-out to members) |
-| Community voice | 🟢 | Social v2 start/join/speak/promote/end · LiveKit media room · discovery via shared Social WS bus (no active-stream poll) · local start/end fan-out · guest+wallet toasts |
+| Community voice | 🟢 | Social v2 start/join/speak/promote/demote/reject/kick/end · LiveKit media · dual-path discovery (PM `d3js-community-voice` + Social WS) · mute-on-join · last-mod end · session keeps across Jump In · 2D pill + in-play purple card |
 | Spatial voice (3D falloff) | 🟢 | `PositionalAudio` on remote avatar roots (ref 6 m / max 45 m); one source per peer |
 | Elevated / tower spawn floor | 🟢 | Stage PE spawn before script; wait CCT ground; probe preferNear authored Y; reject roof false-grounds |
 

@@ -2,12 +2,12 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-26  
-> **Current phase:** **v1.5.x** multi-scene continuity on `feat/aoi-focus-owner` (FocusOwner · sticky demote · tertiary LOD) + **v1.5.0** production beta base.  
-> **Shipped (1.x):** **v1.5.0 PART/ROOT colliders · Animator hold · avatar compose · tours · cast audio** · **v1.4.0 custom worlds · Worlds map · AOI · shell UI · place analytics** · **v1.3.0 plaza/poker PE · TextShape UV · chat translate** · **v1.2.0 Camera Reel + biomes + backpack hides** · In-World Camera · multi-room chat · nearby voice · P4 bloom · glider.  
+> **Last updated:** 2026-07-31  
+> **Current phase:** **v1.6.x** on `dev-latest` — EnvironmentApi/Testing · AudioAnalysis host fill · **community voice parity**.  
+> **Shipped (1.x):** **Community voice full path** · **AudioAnalysis 1212** · **~system EnvironmentApi + Testing** · **v1.5.0 PART/ROOT colliders · Animator hold · avatar compose · tours · cast audio** · **v1.4.0 custom worlds · Worlds map · AOI · shell UI · place analytics** · multi-room chat · nearby voice · P4 bloom · glider.  
 
-> **1.x next:** multi-scene FPS hardening under CBD ring load · backpack outfits/marketplace · scene UI text-measure · gallery multi-page · graphics P3 distance culls · analytics charts polish · broken-rig wearable fallback (shelved). **Community voice speak/promote shipped** (`feat/community-voice-parity`).  
-> **Note:** in-world `/goto` via 3D chat is wired (full scene reload). **EnvironmentApi / Testing ~system modules shipped** (2026-07-31).  
+> **1.x next:** multi-scene FPS hardening under CBD ring load · backpack outfits/marketplace · scene UI text-measure · gallery multi-page · graphics P3 distance culls · analytics charts polish · **create-community / invites** · Social WS transport reliability (PM LiveKit dual-path mitigates voice discovery).  
+> **Note:** in-world `/goto` via 3D chat is wired (full scene reload). PM LiveKit survives teleports. Community voice LiveKit survives Jump In.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
 > **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **Static COD:** [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) · **Multi-scene continuity:** [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) · **Place analytics:** [CREATOR_ANALYTICS.md](./CREATOR_ANALYTICS.md)
@@ -18,29 +18,53 @@
 
 ---
 
-## ✅ Milestone — Community voice listener / speak / promote (2026-07-31)
+## ✅ Milestone — Community voice parity → `dev-latest` (2026-07-31)
 
-**Status: branch `feat/community-voice-parity`** — Explorer Social Service v2 path.
+**Status: merged `feat/community-voice-parity` → `dev-latest`** (`6be3a9d`) — Explorer-aligned community voice end-to-end.
 
 ### What's new
 
-- **Join as listener** — mic off by default (was always enabling mic)
-- **Request to speak / lower hand** — Social v2 + gatekeeper fallback
-- **Mods: Accept (promote) / Reject / Demote** — roster in community modal
-- **Start / End for everyone** — Social v2 start credentials; end unchanged
-- **LiveKit** — `ParticipantPermissionsChanged` auto-promotes local role + mic
+- **Join as listener** — Social v2 + gatekeeper; everyone joins **muted** (unmute from UI)
+- **Request to speak / lower hand** · **Mods: Accept / Reject / Promote / Demote / Kick**
+- **Start / End for everyone** · **last remaining mod Leave ends stream** (even if non-mod listeners remain)
+- **Realtime discovery (no active-stream poll)** — dual path:
+  1. **PM LiveKit** topic `d3js-community-voice` (guest + wallet; same room as pool claims)
+  2. **Social WS** `SubscribeToCommunityVoiceChatUpdates` (best-effort; reconnect on dead transport)
+- **Instant fan-out** — toast · ACTIVE VOICE row · modal Join without REST polling
+- **2D floating pill** — bottom-anchored mute / volume / leave · participant roster popup with mod actions
+- **In-play voice card** — independent purple card above chat (pets chrome); accordion Speakers/Listeners horizontal avatars; chat height shrinks; rail = chat only
+- **Jump In keeps session** — community voice LiveKit is separate from World; pill hidden in 3D; controls on chat card
+- **PM LiveKit across teleports** — play-session retain (earlier on branch)
+- **Loading overlay** above all scene UI + voice chrome
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
-| **Social v2 RPCs** | 🟢 | start · join · request · promote · demote · reject · mute · end |
-| **Gatekeeper fallback** | 🟢 | signed-fetch create/join + speak-request/speaker REST |
-| **Modal UI** | 🟢 | role · hand · mic · roster actions |
+| **Social v2 RPCs** | 🟢 | start · join · request · promote · demote · reject · kick · mute · end |
+| **PM dual-path discovery** | 🟢 | wire `communityVoiceWire` · bus publish/retransmit |
+| **Social WS bus** | 🟢 | shared singleton; invalidate zombie RPC on drop |
+| **Gatekeeper fallback** | 🟢 | signed-fetch create/join + speak/speaker/kick REST |
+| **2D UI** | 🟢 | floating bar · communities browse ACTIVE VOICE · modal roster |
+| **3D UI** | 🟢 | `ChatPanel` voice card (purple) · mute-on-join |
+| **Teleport / Jump In** | 🟢 | PM retain · community voice keep · bar hide in-play |
+
+### Remaining community / voice gaps (not this ship)
+
+| Gap | Notes |
+| --- | ----- |
+| **Create community / invites** | Shell CTAs still “coming soon” |
+| **Social WS long-lived streams** | Still flaps (`RPC Transport closed`); PM dual-path covers voice **discovery**; friend connectivity retries |
+| **Service Bearer gatekeeper** | OpenAPI lists Bearer for some GK routes; client uses signed-fetch + Social RPC (working path) |
+| **Spatial community voice** | Nearby voice is spatial; community voice is flat LiveKit media room (Explorer-like) |
+
+**QA:** Two clients (wallet + guest) → start voice → other sees toast + ACTIVE VOICE → Join listener muted → promote → last-mod Leave ends for all → Jump In keeps audio · open chat for in-play card.
+
+**Tip:** `6be3a9d` on `dev-latest`.
 
 ---
 
 ## ✅ Milestone — AudioAnalysis host fill (1212) (2026-07-31)
 
-**Status: landed** — last incomplete non-UI ECS write path closed.
+**Status: landed on `dev-latest`** — last incomplete non-UI ECS write path closed.
 
 ### What's new
 
@@ -61,7 +85,7 @@
 
 ## ✅ Milestone — ~system EnvironmentApi + Testing (2026-07-31)
 
-**Status: landed on `yoga-revamp`** — closes the last two backburner `~system` modules.
+**Status: landed on `dev-latest`** — closes the last two backburner `~system` modules.
 
 ### What's new
 

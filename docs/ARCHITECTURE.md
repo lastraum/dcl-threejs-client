@@ -93,7 +93,7 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 | Area | Status |
 |------|--------|
 | Scene UI | Partial — Creator modal / hit-map polish |
-| Social | Multi-room + cast ✅; 2D chat FAB dock ✅; community toasts/mod gates ✅; nearby voice + spatial audio ✅; DMs ✅; community voice start/join/speak/promote/end ✅ · create/invites open |
+| Social | Multi-room + cast ✅; 2D chat FAB dock ✅; community toasts/mod gates ✅; nearby voice + spatial audio ✅; DMs ✅; **community voice** start/join/speak/promote/demote/kick/end · dual-path discovery · 2D/3D UI · Jump In keep ✅ · create/invites open |
 | Play HUD | Location pill + circular Genesis minimap (parcels) ✅; worlds pill-only |
 | In-World Camera / Gallery | Photo fly mode (C) + Camera Reel save/list/detail ✅; gallery multi-page open |
 | Spawn / physics | Elevated deck settle + PE stage-before-script ✅; PhysicsCombined force/impulse ✅; hold-Space glider ✅; **PART/ROOT collider motion (v1.5)** ✅ |
@@ -115,13 +115,13 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 
 ---
 
-## Suggested next engineering order (post-v1.5 RC)
+## Suggested next engineering order (post community-voice on `dev-latest`)
 
-1. **Cut v1.5.0** — bump version, tag, `dev-latest` → `main` after smoke matrix in PROGRESS.  
-2. Product **1.x**: backpack outfits · scene UI text-measure · create-community / invites.  
+1. Product **1.x**: backpack outfits · scene UI text-measure · **create-community / invites**.  
+2. Optional: harden Social RPC long-lived streams (friend connectivity / voice WS still flap; PM dual-path covers voice discovery).  
 3. Optional: graphics **P3** distance culls; MSAA+bloom concurrent; SyncEntities auth-host.  
 4. Mesh frame-law / instancing follow-through (motion promote already covers dynamic props).  
-5. ~~EnvironmentApi/Testing~~ — **shipped** (SDK6-compat + `@dcl/sdk/testing`).  
+5. ~~EnvironmentApi/Testing~~ · ~~AudioAnalysis~~ · ~~community voice path~~ — **shipped** on `dev-latest` (2026-07-31).  
 6. Keep INTEGRATION registry + PROGRESS updated on each ship.
 
 ---

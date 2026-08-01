@@ -55,6 +55,8 @@ export class LiveDirectoryView {
   private worlds: WorldOption[] = []
   private worldsLoaded = false
   private accessBusy = false
+  /** Last minted OBS credentials — kept for reliable copy (not re-read from DOM attrs). */
+  private credentials: SceneStreamCredentials | null = null
 
   constructor(private readonly options: LiveDirectoryViewOptions) {
     this.root = document.createElement('div')
@@ -357,6 +359,7 @@ export class LiveDirectoryView {
         this.showFormError('No stream credentials returned (are you the world owner?)')
         return
       }
+      this.credentials = credentials
       this.renderCredentials(credentials)
 
       const media: GlobalLiveMedia = { type: 'dcl-cast', worldName }
@@ -365,7 +368,7 @@ export class LiveDirectoryView {
         this.showFormError(result.error)
         return
       }
-      // Keep modal open briefly so OBS keys remain visible; user can close.
+      // Keep modal open so OBS URL + key stay visible and copyable.
       btn.textContent = 'Live — keys below'
       this.syncBroadcastUi()
     } catch (e) {
@@ -385,29 +388,92 @@ export class LiveDirectoryView {
   private renderCredentials(c: SceneStreamCredentials): void {
     const box = this.modal.querySelector('[data-ssa-creds]') as HTMLElement
     box.hidden = false
-    const lines: string[] = []
+    const parts: string[] = [
+      `<div class="live-go-modal__creds-head">OBS credentials</div>`,
+      `<p class="live-dir__hint live-dir__hint--tight">Copy URL and stream key into OBS. You are already live in the directory.</p>`
+    ]
     if (c.streamingUrl) {
-      lines.push(
-        `<p class="live-go-modal__cred"><span>RTMP URL</span><button type="button" class="live-go-modal__copy" data-copy="${escapeHtml(c.streamingUrl)}">${escapeHtml(c.streamingUrl)}</button></p>`
-      )
+      parts.push(`
+        <div class="live-go-modal__cred-row">
+          <span class="live-go-modal__cred-label">Server URL (RTMP)</span>
+          <code class="live-go-modal__cred-value" data-cred-url></code>
+          <button type="button" class="live-dir__btn live-go-modal__copy-btn" data-copy-field="url">Copy URL</button>
+        </div>`)
     }
     if (c.streamingKey) {
-      lines.push(
-        `<p class="live-go-modal__cred"><span>Stream key</span><button type="button" class="live-go-modal__copy" data-copy="${escapeHtml(c.streamingKey)}">${escapeHtml(c.streamingKey)}</button></p>`
-      )
+      parts.push(`
+        <div class="live-go-modal__cred-row">
+          <span class="live-go-modal__cred-label">Stream key</span>
+          <code class="live-go-modal__cred-value live-go-modal__cred-value--key" data-cred-key></code>
+          <button type="button" class="live-dir__btn live-go-modal__copy-btn" data-copy-field="key">Copy key</button>
+        </div>`)
     }
-    lines.push(
-      `<p class="live-dir__hint">Paste URL + key into OBS. You are already live in the directory — viewers watch via this world's Cast/LiveKit.</p>`
-    )
-    box.innerHTML = lines.join('')
-    box.querySelectorAll<HTMLButtonElement>('[data-copy]').forEach((el) => {
-      el.addEventListener('click', () => {
-        const v = el.dataset.copy ?? ''
-        void navigator.clipboard?.writeText(v).catch(() => {})
-        el.classList.add('is-copied')
-        window.setTimeout(() => el.classList.remove('is-copied'), 800)
-      })
+    if (c.ingressId) {
+      parts.push(`
+        <div class="live-go-modal__cred-row">
+          <span class="live-go-modal__cred-label">Ingress id</span>
+          <code class="live-go-modal__cred-value" data-cred-ingress></code>
+          <button type="button" class="live-dir__btn live-go-modal__copy-btn" data-copy-field="ingress">Copy</button>
+        </div>`)
+    }
+    box.innerHTML = parts.join('')
+    const urlEl = box.querySelector('[data-cred-url]') as HTMLElement | null
+    const keyEl = box.querySelector('[data-cred-key]') as HTMLElement | null
+    const ingressEl = box.querySelector('[data-cred-ingress]') as HTMLElement | null
+    if (urlEl) urlEl.textContent = c.streamingUrl
+    if (keyEl) keyEl.textContent = c.streamingKey
+    if (ingressEl) ingressEl.textContent = c.ingressId
+    box.querySelectorAll<HTMLButtonElement>('[data-copy-field]').forEach((el) => {
+      el.addEventListener('click', () => void this.copyCredentialField(el))
     })
+  }
+
+  private async copyCredentialField(btn: HTMLButtonElement): Promise<void> {
+    const field = btn.dataset.copyField
+    const c = this.credentials
+    if (!c || !field) return
+    const value =
+      field === 'url'
+        ? c.streamingUrl
+        : field === 'key'
+          ? c.streamingKey
+          : field === 'ingress'
+            ? c.ingressId
+            : ''
+    if (!value) return
+    const ok = await this.copyText(value)
+    const prev = btn.textContent
+    btn.textContent = ok ? 'Copied!' : 'Copy failed'
+    btn.classList.toggle('is-copied', ok)
+    window.setTimeout(() => {
+      btn.textContent = prev
+      btn.classList.remove('is-copied')
+    }, 1200)
+  }
+
+  private async copyText(text: string): Promise<boolean> {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text)
+        return true
+      }
+    } catch {
+      /* fall through */
+    }
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.setAttribute('readonly', '')
+      ta.style.position = 'fixed'
+      ta.style.left = '-9999px'
+      document.body.appendChild(ta)
+      ta.select()
+      const ok = document.execCommand('copy')
+      ta.remove()
+      return ok
+    } catch {
+      return false
+    }
   }
 
   private async onEndLive(): Promise<void> {

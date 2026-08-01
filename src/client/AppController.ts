@@ -1757,8 +1757,9 @@ export class AppController {
     this.ensureSocialChatShell()
     const social = this.socialChat?.getSocial()
     if (!social) return
-    // initShell already warms PM; directory attaches on ensurePrivateMessagesConnected.
-    this.wireLiveSessionEnded(social.getLiveDirectory())
+    // Await PM + directory so LiveDirectoryView.subscribe is attached before GO LIVE.
+    const dir = await social.ensureLiveReady()
+    this.wireLiveSessionEnded(dir)
   }
 
   private openLivePip(session: LiveSession): void {

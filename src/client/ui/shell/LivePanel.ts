@@ -47,6 +47,10 @@ export class LivePanel {
     this.visible = true
     this.element.hidden = false
     this.view.remountDirectory()
+    // Re-bind shortly after open so a late getLiveDirectory() still attaches.
+    window.setTimeout(() => {
+      if (this.visible) this.view.remountDirectory()
+    }, 400)
     this.position()
   }
 

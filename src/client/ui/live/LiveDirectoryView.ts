@@ -58,6 +58,7 @@ export class LiveDirectoryView {
   private worldsLoaded = false
   private accessBusy = false
   private credentials: SceneStreamCredentials | null = null
+  private bindRetryTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(private readonly options: LiveDirectoryViewOptions) {
     this.root = document.createElement('div')
@@ -163,6 +164,10 @@ export class LiveDirectoryView {
   }
 
   dispose(): void {
+    if (this.bindRetryTimer) {
+      clearTimeout(this.bindRetryTimer)
+      this.bindRetryTimer = null
+    }
     this.unsub?.()
     this.unsub = null
     this.closeModal()
@@ -172,24 +177,50 @@ export class LiveDirectoryView {
   private bindDirectory(): void {
     this.unsub?.()
     this.unsub = null
+    if (this.bindRetryTimer) {
+      clearTimeout(this.bindRetryTimer)
+      this.bindRetryTimer = null
+    }
     const dir = this.options.getDirectory()
     if (!dir) {
       this.render([])
       this.statusEl.textContent = 'Connect with a wallet to see live streams'
+      // Directory is created when PM/social warms — retry so we don't miss go-live emits.
+      this.bindRetryTimer = setTimeout(() => this.bindDirectory(), 500)
       return
     }
     this.unsub = dir.subscribe((sessions) => this.render(sessions))
     this.syncBroadcastUi()
   }
 
+  /** Force UI from controller state (after GO LIVE if subscribe raced). */
+  private refreshFromDirectory(): void {
+    const dir = this.options.getDirectory()
+    if (!dir) {
+      this.render([])
+      return
+    }
+    if (!this.unsub) {
+      this.unsub = dir.subscribe((sessions) => this.render(sessions))
+    } else {
+      this.render(dir.list())
+    }
+    this.syncBroadcastUi()
+  }
+
   private render(sessions: readonly LiveSession[]): void {
     this.listEl.innerHTML = ''
-    const others = sessions.filter((s) => !s.isSelf)
-    const self = sessions.find((s) => s.isSelf) ?? null
+    const dir = this.options.getDirectory()
+    // Prefer explicit isSelf; fall back to local broadcasting session (subscribe race).
+    const self =
+      sessions.find((s) => s.isSelf) ??
+      dir?.getBroadcasting() ??
+      null
+    const others = sessions.filter((s) => !s.isSelf && s.sessionId !== self?.sessionId)
 
-    this.statusEl.textContent =
-      sessions.length === 0 ? '' : `${sessions.length} live`
-    this.emptyEl.hidden = sessions.length > 0
+    const total = others.length + (self ? 1 : 0)
+    this.statusEl.textContent = total === 0 ? '' : `${total} live`
+    this.emptyEl.hidden = total > 0
 
     this.renderSelfCard(self)
 
@@ -220,9 +251,11 @@ export class LiveDirectoryView {
   private renderSelfCard(self: LiveSession | null): void {
     if (!self) {
       this.selfCard.hidden = true
+      this.selfCard.setAttribute('hidden', '')
       return
     }
     this.selfCard.hidden = false
+    this.selfCard.removeAttribute('hidden')
     const statusEl = this.selfCard.querySelector('[data-self-status]') as HTMLElement
     statusEl.textContent = 'Waiting for stream…'
     const titleEl = this.selfCard.querySelector('[data-self-title]') as HTMLElement
@@ -235,17 +268,24 @@ export class LiveDirectoryView {
     if (this.credentials && (this.credentials.streamingUrl || this.credentials.streamingKey)) {
       this.fillCredentialsBox(credsBox, this.credentials)
       credsBox.hidden = false
+      credsBox.removeAttribute('hidden')
     } else {
       credsBox.hidden = true
+      credsBox.setAttribute('hidden', '')
       credsBox.innerHTML = ''
     }
   }
 
   private syncBroadcastUi(): void {
     const dir = this.options.getDirectory()
-    const live = dir?.isBroadcasting() === true
+    const live = dir?.isBroadcasting() === true || !!dir?.getBroadcasting()
     this.goLiveBtn.hidden = live
     this.endLiveBtn.hidden = !live
+    if (live && this.goLiveBtn.hidden) {
+      // Ensure self card is on screen even if list emit was missed.
+      const self = dir?.getBroadcasting() ?? null
+      if (self && this.selfCard.hidden) this.renderSelfCard(self)
+    }
   }
 
   private openModal(): void {
@@ -357,7 +397,7 @@ export class LiveDirectoryView {
       return
     }
     this.closeModal()
-    this.syncBroadcastUi()
+    this.refreshFromDirectory()
   }
 
   private resetDclKeysUi(): void {
@@ -468,9 +508,10 @@ export class LiveDirectoryView {
         return
       }
       this.closeModal()
-      this.syncBroadcastUi()
+      // Force self card even if subscribe raced (directory created after first mount).
+      this.refreshFromDirectory()
     } finally {
-      goBtn.disabled = !this.credentials
+      goBtn.disabled = !this.credentials || !!this.options.getDirectory()?.isBroadcasting()
       goBtn.textContent = 'GO LIVE'
     }
   }

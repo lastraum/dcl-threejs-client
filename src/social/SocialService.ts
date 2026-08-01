@@ -193,8 +193,23 @@ export class SocialService {
     return this.communityFollow
   }
 
-  /** Global Live directory (PM `d3js-live`) — null before social identity / PM warm. */
+  /**
+   * Global Live directory (PM `d3js-live`).
+   * Creates the controller as soon as we have identity so UI can subscribe even
+   * before the PM room finishes connecting (publish still needs the room).
+   */
   getLiveDirectory(): LiveDirectoryController | null {
+    if (!this.liveDirectory && this.authIdentity && this.localAddress) {
+      this.ensureLiveDirectory()
+    }
+    return this.liveDirectory
+  }
+
+  /** Warm PM + Live directory for Live tab / panel (await before binding UI). */
+  async ensureLiveReady(): Promise<LiveDirectoryController | null> {
+    if (!this.authIdentity || !this.localAddress) return null
+    this.ensureLiveDirectory()
+    await this.ensurePrivateMessagesConnected()
     return this.liveDirectory
   }
 

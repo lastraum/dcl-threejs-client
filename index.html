@@ -5892,6 +5892,102 @@
         line-height: 1.45;
         color: rgba(255, 255, 255, 0.55);
       }
+      .live-dir__broadcast-row {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .live-dir__hint--tight { margin-top: 6px; margin-bottom: 0; }
+      .live-dir__select { appearance: auto; cursor: pointer; }
+
+      .live-go-modal {
+        position: fixed;
+        inset: 0;
+        z-index: calc(var(--z-client-hud-raised) + 40);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        pointer-events: auto;
+      }
+      .live-go-modal[hidden] { display: none !important; }
+      .live-go-modal__backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.55);
+      }
+      .live-go-modal__sheet {
+        position: relative;
+        z-index: 1;
+        width: min(420px, 100%);
+        max-height: min(85vh, 640px);
+        overflow: auto;
+        border-radius: 14px;
+        background: rgba(22, 22, 28, 0.98);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        box-shadow: 0 20px 56px rgba(0, 0, 0, 0.55);
+        padding: 16px 16px 18px;
+        color: #fff;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .live-go-modal__head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .live-go-modal__title {
+        margin: 0;
+        font-size: 15px;
+        font-weight: 700;
+      }
+      .live-go-modal__x {
+        border: none;
+        background: transparent;
+        color: rgba(255, 255, 255, 0.8);
+        font-size: 16px;
+        cursor: pointer;
+        padding: 4px 8px;
+        border-radius: 6px;
+      }
+      .live-go-modal__x:hover { background: rgba(255, 255, 255, 0.08); }
+      .live-go-modal__creds {
+        margin-top: 4px;
+        padding: 10px;
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.35);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .live-go-modal__cred {
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 11px;
+        color: rgba(255, 255, 255, 0.55);
+      }
+      .live-go-modal__copy {
+        text-align: left;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.06);
+        color: #fff;
+        border-radius: 8px;
+        padding: 8px 10px;
+        font-size: 11px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        word-break: break-all;
+        cursor: pointer;
+      }
+      .live-go-modal__copy.is-copied {
+        border-color: rgba(255, 45, 85, 0.55);
+      }
+
       .live-dir__form { display: flex; flex-direction: column; gap: 8px; }
       .live-dir__label {
         display: flex;

@@ -28,11 +28,13 @@ export const GLOBAL_LIVE_SWEEP_MS = 4_000
 /**
  * Viewer-facing media pointer.
  * - `hls` / `http`: absolute https URL (playable in DOM video)
+ * - `dcl-cast`: DCL world/parcel OBS ingress — viewers join scene LiveKit for that place
  * - Publish RTMP keys stay local to the broadcaster — never on the wire.
  */
 export type GlobalLiveMedia =
   | { type: 'hls'; url: string }
   | { type: 'http'; url: string }
+  | { type: 'dcl-cast'; worldName: string }
 
 export type GlobalLiveWireMsg =
   | {
@@ -135,6 +137,21 @@ function parseMediaField(raw: unknown): GlobalLiveMedia | null {
   if (!raw || typeof raw !== 'object') return null
   const m = raw as Record<string, unknown>
   const type = m.type
+  if (type === 'dcl-cast') {
+    const worldName =
+      typeof m.worldName === 'string'
+        ? m.worldName.trim()
+        : typeof m.w === 'string'
+          ? m.w.trim()
+          : ''
+    if (!worldName || worldName.length > 128) return null
+    // Normalize bare labels to .dcl.eth (parcels like "0,0" stay as-is).
+    if (/^-?\d+\s*,\s*-?\d+$/.test(worldName)) {
+      return { type: 'dcl-cast', worldName: worldName.replace(/\s+/g, '') }
+    }
+    const name = worldName.includes('.') ? worldName : `${worldName}.dcl.eth`
+    return { type: 'dcl-cast', worldName: name.toLowerCase() }
+  }
   const url = typeof m.url === 'string' ? m.url.trim() : ''
   if (!url || url.length > 1024) return null
   if (type === 'hls' || type === 'http') {
@@ -146,7 +163,6 @@ function parseMediaField(raw: unknown): GlobalLiveMedia | null {
       return null
     }
   }
-  // Fallback: treat bare url string as auto-detect
   return null
 }
 

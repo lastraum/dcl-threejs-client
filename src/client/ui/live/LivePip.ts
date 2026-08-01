@@ -10,6 +10,16 @@ import type { GlobalLiveMedia, LiveSession } from '../../../social/LiveDirectory
 
 export type LivePipOptions = {
   onClose?: (sessionId: string) => void
+  /**
+   * Attach DCL cast (scene LiveKit remote video) into the PiP body host.
+   * Returns a cleanup function.
+   */
+  onCastAttach?: (
+    host: HTMLElement,
+    worldName: string,
+    onUpdate: (attached: boolean) => void,
+    opts: { muted: boolean }
+  ) => Promise<() => void>
 }
 
 export class LivePip {
@@ -22,6 +32,7 @@ export class LivePip {
   private collapsed = false
   private drag: { ox: number; oy: number; sx: number; sy: number } | null = null
   private muted = true
+  private castCleanup: (() => void) | null = null
 
   constructor(private readonly options: LivePipOptions = {}) {
     this.element = document.createElement('div')
@@ -138,6 +149,29 @@ export class LivePip {
 
   private async loadMedia(media: GlobalLiveMedia): Promise<void> {
     this.stopMedia(false)
+    if (media.type === 'dcl-cast') {
+      this.video.hidden = true
+      this.setStatus(`Connecting to ${media.worldName}…`)
+      if (!this.options.onCastAttach) {
+        this.setStatus(`DCL cast: ${media.worldName} (watch unavailable)`)
+        return
+      }
+      try {
+        this.castCleanup = await this.options.onCastAttach(
+          this.bodyEl,
+          media.worldName,
+          (attached) => {
+            if (attached) this.setStatus('')
+            else this.setStatus(`Waiting for stream on ${media.worldName}…`)
+          },
+          { muted: this.muted }
+        )
+      } catch (e) {
+        this.setStatus(e instanceof Error ? e.message : 'Cast connect failed')
+      }
+      return
+    }
+    this.video.hidden = false
     const url = media.url
     try {
       if (media.type === 'hls' || url.toLowerCase().includes('.m3u8')) {
@@ -184,6 +218,12 @@ export class LivePip {
   }
 
   private stopMedia(clearSrc = true): void {
+    try {
+      this.castCleanup?.()
+    } catch {
+      /* ignore */
+    }
+    this.castCleanup = null
     try {
       this.hls?.destroy()
     } catch {

@@ -1,3 +1,4 @@
+import type { LoginResult } from '../../../auth/AuthClient'
 import type { LiveDirectoryController } from '../../../social/LiveDirectoryController'
 import type { LiveSession } from '../../../social/globalLiveWire'
 import { LiveDirectoryView } from '../live/LiveDirectoryView'
@@ -5,6 +6,7 @@ import { LiveDirectoryView } from '../live/LiveDirectoryView'
 export type LivePanelOptions = {
   anchor: () => HTMLElement | undefined
   getDirectory: () => LiveDirectoryController | null
+  getLogin?: () => LoginResult | null
   onWatch: (session: LiveSession) => void
   onClose?: () => void
 }
@@ -25,6 +27,7 @@ export class LivePanel {
     `
     this.view = new LiveDirectoryView({
       getDirectory: () => this.options.getDirectory(),
+      getLogin: () => this.options.getLogin?.() ?? null,
       onWatch: (s) => {
         this.options.onWatch(s)
         // Keep panel open so user can open another stream or end live.

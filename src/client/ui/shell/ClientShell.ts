@@ -48,6 +48,7 @@ export type ClientShellOptions = {
   onStopPetClipPreview?: () => void
   /** Open Live PiP for a directory session (shell or 2D page). */
   onWatchLive?: (session: LiveSession) => void
+  getLogin?: () => import('../../../auth/AuthClient').LoginResult | null
   onSignOut: () => void | Promise<void>
   onExit: () => void | Promise<void>
 }
@@ -126,6 +127,7 @@ export class ClientShell {
     | null = null
   private onStopPetClipPreview: (() => void) | null = null
   private onWatchLive: ((session: LiveSession) => void) | null = null
+  private getLogin: (() => import('../../../auth/AuthClient').LoginResult | null) | null = null
   private onOpenProfile: ((address: string) => void) | null = null
   private onJumpToFriend: ((address: string) => void) | null = null
   private emoteWheelEnabled = true
@@ -165,6 +167,7 @@ export class ClientShell {
     onPlayPetClipPreview,
     onStopPetClipPreview,
     onWatchLive,
+    getLogin,
     onSignOut,
     onExit
   }: ClientShellOptions) {
@@ -176,6 +179,7 @@ export class ClientShell {
     this.onPlayPetClipPreview = onPlayPetClipPreview ?? null
     this.onStopPetClipPreview = onStopPetClipPreview ?? null
     this.onWatchLive = onWatchLive ?? null
+    this.getLogin = getLogin ?? null
     this.root = document.createElement('aside')
     this.root.id = 'client-shell'
     this.root.className = 'client-shell'
@@ -249,6 +253,7 @@ export class ClientShell {
     this.livePanel = new LivePanel({
       anchor: () => this.buttons.get('live')?.element,
       getDirectory: () => this.social?.getLiveDirectory() ?? null,
+      getLogin: () => this.getLogin?.() ?? null,
       onWatch: (session) => this.onWatchLive?.(session),
       onClose: () => this.buttons.get('live')?.setActive(false)
     })

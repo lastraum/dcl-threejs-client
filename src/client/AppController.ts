@@ -1583,6 +1583,7 @@ export class AppController {
       login: this.login,
       onNavigate: (tab) => this.navigateSocialShell(tab),
       getDirectory: () => this.socialChat?.getSocial()?.getLiveDirectory() ?? null,
+      getLogin: () => this.login,
       onWatch: (session) => this.openLivePip(session),
       ...this.socialShellLoginHandlers()
     })
@@ -1765,6 +1766,16 @@ export class AppController {
       this.livePip = new LivePip({
         onClose: () => {
           /* user closed */
+        },
+        onCastAttach: async (host, worldName, onUpdate, opts) => {
+          const target = {
+            kind: 'world' as const,
+            worldName,
+            segment: worldName
+          }
+          return this.startLandingCastWatch(target, host, onUpdate, {
+            muted: opts.muted
+          })
         }
       })
     }
@@ -2775,6 +2786,7 @@ export class AppController {
         onPlayPetClipPreview: (hash, clip) => world.playPetClipPreview(hash, clip),
         onStopPetClipPreview: () => world.stopPetClipPreview(),
         onWatchLive: (session) => this.openLivePip(session),
+        getLogin: () => this.login,
         onSignOut: () => this.signOut(),
         onExit: () => this.leavePlayMode()
       })

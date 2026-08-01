@@ -88,15 +88,10 @@ export class LiveDirectoryController {
   }
 
   /**
-   * Go Live with a playable stream URL (HLS or progressive https).
-   * Publish keys for OBS stay out of band — paste only what viewers can open.
+   * Go Live with a playable URL (HLS / progressive https).
+   * Publish keys for OBS stay out of band.
    */
   async goLive(playUrl: string, title?: string): Promise<{ ok: true } | { ok: false; error: string }> {
-    if (this.disposed) return { ok: false, error: 'Live directory disposed' }
-    const address = this.opts.getLocalAddress()?.trim().toLowerCase() ?? ''
-    if (!/^0x[a-f0-9]{40}$/.test(address)) {
-      return { ok: false, error: 'Sign in with a wallet to go live' }
-    }
     const media = parseMediaFromPlayUrl(playUrl)
     if (!media) {
       return {
@@ -104,16 +99,35 @@ export class LiveDirectoryController {
         error: 'Enter a playable https stream URL (HLS .m3u8 or progressive video)'
       }
     }
+    return this.goLiveWithMedia(media, title)
+  }
+
+  /**
+   * Go Live with an already-resolved media pointer (HLS/http or DCL world cast).
+   */
+  async goLiveWithMedia(
+    media: GlobalLiveMedia,
+    title?: string
+  ): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (this.disposed) return { ok: false, error: 'Live directory disposed' }
+    const address = this.opts.getLocalAddress()?.trim().toLowerCase() ?? ''
+    if (!/^0x[a-f0-9]{40}$/.test(address)) {
+      return { ok: false, error: 'Sign in with a wallet to go live' }
+    }
     if (this.broadcasting) await this.endLive()
 
     const sessionId = newSessionId()
     const displayName = this.opts.getDisplayName().trim().slice(0, 48) || shortAddr(address)
     const cleanTitle = title?.trim().slice(0, 80) || undefined
+    const defaultTitle =
+      media.type === 'dcl-cast'
+        ? `${displayName} · ${media.worldName}`
+        : `${displayName}'s stream`
     const session: LiveSession = {
       sessionId,
       hostAddress: address,
       displayName,
-      title: cleanTitle ?? `${displayName}'s stream`,
+      title: cleanTitle ?? defaultTitle,
       media,
       lastSeenAt: Date.now(),
       isSelf: true
@@ -136,7 +150,9 @@ export class LiveDirectoryController {
       return { ok: false, error: 'Could not publish to live directory (PM room not ready)' }
     }
     this.startHeartbeat()
-    clientDebugLog.log('social', `Live goLive session=${sessionId.slice(0, 8)} media=${media.type}`, {
+    const mediaLabel =
+      media.type === 'dcl-cast' ? `dcl-cast:${media.worldName}` : media.type
+    clientDebugLog.log('social', `Live goLive session=${sessionId.slice(0, 8)} media=${mediaLabel}`, {
       level: 'success',
       alsoConsole: true
     })

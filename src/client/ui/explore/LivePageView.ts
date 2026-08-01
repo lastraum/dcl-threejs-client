@@ -8,6 +8,7 @@ export type LivePageViewOptions = SocialShellChromeHandlers & {
   login: LoginResult
   onNavigate: (tab: SocialShellTab) => void
   getDirectory: () => LiveDirectoryController | null
+  getLogin?: () => LoginResult | null
   onWatch: (session: LiveSession) => void
 }
 
@@ -36,6 +37,7 @@ export class LivePageView {
 
     this.view = new LiveDirectoryView({
       getDirectory: opts.getDirectory,
+      getLogin: opts.getLogin ?? (() => opts.login),
       onWatch: opts.onWatch,
       compact: false
     })

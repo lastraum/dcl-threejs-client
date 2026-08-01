@@ -30,6 +30,7 @@ import {
   resolvePortableExperiencesPolicy,
   type PortableExperiencesPolicy
 } from '../dcl/multiScene/resolvePortableExperiences'
+import { peSoftHydrationMs } from '../dcl/multiScene/caps'
 import { renderQuality } from '../rendering/RenderQualitySettings'
 import {
   skipAoiNeighbors,
@@ -1742,11 +1743,9 @@ export class World {
           if (this.loadedPrimaryScene) {
             this.assets.setScene(this.loadedPrimaryScene)
           }
-          // COD PX claim order: layers tick → merge claims → PlayerHost (capsule/lens).
-          const platformT0 = performance.now()
-          this.syncPlayerMotionFrame(delta, startFrame)
-          const platformMs = performance.now() - platformT0
-          // Prior-frame poses for worker reserved inject (players move after claims below).
+          // COD PX tick order (PORTABLE_EXPERIENCE_COD):
+          //   input → inject prior feet → layer workers → claims → platform ROOT+Δ → PlayerHost
+          // PE free-flight needs claims + PE tick BEFORE PE MeshCollider slide/ride scope.
           let playerPose = this.player.getEntityPose()
           let cameraPose = this.player.getCameraEntityPose()
           // Keyboard bus first — PX/primary onUpdate this frame sees isPressed for drone WASD.
@@ -1757,8 +1756,11 @@ export class World {
           this.multiScene?.tickSync(playerPose, cameraPose, startFrame)
           this.pumpPeMotionBridges(delta, startFrame)
           this.pumpSecondaryMotionBridges(delta, startFrame)
-          // Phase B: continuous claims (locomotion / camera / poseDrive / force) before capsule.
+          // Continuous claims before platform frame so free-flight forceRide is same-frame.
           this.applyLayerPlayerClaims()
+          const platformT0 = performance.now()
+          this.syncPlayerMotionFrame(delta, startFrame)
+          const platformMs = performance.now() - platformT0
           const playerT0 = performance.now()
           this.player.update(delta)
           if (this.photoCamera?.isActive()) {
@@ -1969,14 +1971,36 @@ export class World {
   }
 
   /**
-   * Platform motion frame — two pipelines (see platformMotion.ts):
+   * Platform motion frame — two pipelines (see platformMotion.ts / COLLIDER_MOTION_POLICY):
    * 1. Pose sync: meshMotion → slide PhysX colliders (incl. distant animated props).
    * 2. Riding transfer: Δ only for CCT-grounded actor → PlayerSystem capsule += Δ before move().
+   *
+   * PE free-flight: same pipeline with remapped PE MeshColliders (drone deck/walls) as ROOT movers.
    */
   private syncPlayerMotionFrame(delta: number, startFrame: number): void {
     const feet = this.player?.getWorldPosition()
+    const freeFlight = this.player?.isAllowSceneOwnedMotion() === true
+    // Clear free-flight ride caps unless PE path re-arms them (avoids sticky looser plaza transfer).
+    if (!freeFlight) this.physics.setFreeFlightRiding(false)
+
+    // PE platforms first when free-flight so ride scope can be a PE phys id (COD: one host PhysX).
+    // Runs after claims + PE tick (World onSyncFrame) so forceRide sees this frame's freeze.
+    let peDescs: PhysicsColliderDesc[] = []
+    if (freeFlight && this.multiScene && this.collidersLoadingComplete && !this.deferPhysxCooks) {
+      try {
+        peDescs = this.multiScene.pe.captureLivePlatformColliders()
+        this.ensurePePlatformActorsCooked(peDescs)
+      } catch (err) {
+        console.warn('[pe] platform capture failed', err)
+      }
+    }
+
     const groundPhysEntity = this.physics.getLastGroundPhysEntity()
-    const standPhysEntity = this.sceneScript.resolveStandSurfacePhysEntity(feet, groundPhysEntity)
+    let standPhysEntity = this.sceneScript.resolveStandSurfacePhysEntity(feet, groundPhysEntity)
+    if (freeFlight && feet && peDescs.length) {
+      const peStand = this.pickPePlatformNearFeet(feet, peDescs)
+      if (peStand !== null) standPhysEntity = peStand
+    }
     this.physics.beginPlatformMotionFrame(standPhysEntity)
     this.sceneScript.consumeSyncFrameTransforms()
 
@@ -2101,6 +2125,10 @@ export class World {
       }
       this.physics.cullInsignificantPlatformMotionDeltas()
     }
+
+    // PE platforms (drone deck + leash walls): same ROOT slide + ride transfer as primary.
+    this.syncPePlatformColliders(feet, peDescs.length ? peDescs : undefined)
+
     if (platformMotionDebug.isEnabled() && !this.loggedPlatformMotionDebugHint) {
       this.loggedPlatformMotionDebugHint = true
       clientDebugLog.log(
@@ -2121,6 +2149,139 @@ export class World {
       })
     }
   }
+
+  /**
+   * PE MeshColliders → host PhysX ROOT follow + ride transfer (COLLIDER_MOTION_POLICY).
+   * Same stack as primary: cook-once, applyStaticColliderPoseUpdates, applyMeshColliderPoseDeltas.
+   * No average-Δ teleport. Ride uses platformMotionScope (CCT ground or PE deck near feet).
+   */
+  private syncPePlatformColliders(
+    feet: THREE.Vector3 | null | undefined,
+    peDescsIn?: PhysicsColliderDesc[]
+  ): void {
+    if (!this.multiScene || !this.playerMode) return
+    if (!this.collidersLoadingComplete || this.deferPhysxCooks) return
+    let peDescs = peDescsIn
+    if (!peDescs) {
+      try {
+        peDescs = this.multiScene.pe.captureLivePlatformColliders()
+        this.ensurePePlatformActorsCooked(peDescs)
+      } catch (err) {
+        console.warn('[pe] platform capture failed', err)
+        return
+      }
+    }
+    if (!peDescs.length) return
+
+    const freeFlight = this.player?.isAllowSceneOwnedMotion() === true
+    this.physics.setFreeFlightRiding(freeFlight)
+    const slideDescs: PhysicsColliderDesc[] = []
+    for (const desc of peDescs) {
+      this.peColliderDescByPhysId.set(desc.entity, desc)
+      if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
+      if (!this.physics.hasStaticActor(desc.entity)) continue
+      slideDescs.push(desc)
+    }
+    if (!slideDescs.length) {
+      if (!freeFlight) this.physics.setFreeFlightRiding(false)
+      return
+    }
+
+    // Expand ride scope to PE deck under feet when free-flight (CCT may report -1 on thin deck).
+    let forceRide: number | null = null
+    if (freeFlight && feet) {
+      forceRide =
+        this.pickPePlatformNearFeet(feet, slideDescs) ??
+        this.physics.getPlatformMotionScopeEntity()
+      if (forceRide !== null) this.physics.setPlatformMotionScopeEntity(forceRide)
+    }
+
+    // ROOT follow (COD): actor T+R only.
+    this.physics.applyStaticColliderPoseUpdates(slideDescs, {
+      force: false,
+      actorRootOnly: true
+    })
+    // Same mesh-delta → riding map as primary platforms.
+    this.physics.applyMeshColliderPoseDeltas(slideDescs, { forceRideEntity: forceRide })
+    this.physics.cullInsignificantPlatformMotionDeltas()
+  }
+
+  /**
+   * Cook PE remapped MeshColliders once (geom only; never pose thrash).
+   * Also recooks when geom fingerprint changes (e.g. plane xy-zthick-v2 fix) while actor live.
+   */
+  private ensurePePlatformActorsCooked(peDescs: PhysicsColliderDesc[]): void {
+    const toCook: PhysicsColliderDesc[] = []
+    for (const desc of peDescs) {
+      this.peColliderDescByPhysId.set(desc.entity, desc)
+      if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
+      // Missing actor OR geom fp mismatch (plane axis fix, mask change) — not pose drift.
+      if (!this.physics.hasStaticActor(desc.entity) || !this.physics.isColliderSynced(desc)) {
+        toCook.push(desc)
+      }
+    }
+    if (!toCook.length) return
+    try {
+      this.physics.syncStaticColliders(toCook, {
+        freezeRemoval: true,
+        cookBudget: Math.min(24, toCook.length),
+        forceRecookOnPoseChange: false
+      })
+      let live = 0
+      for (const d of toCook) if (this.physics.hasStaticActor(d.entity) && this.physics.isColliderSynced(d)) live++
+      if (live > 0 && !this.pePlatformCookLogged) {
+        this.pePlatformCookLogged = true
+        console.info(
+          `[pe] platform colliders cooked live=${live}/${toCook.length} (drone deck/walls — cook-once)`
+        )
+        this.physics.warmStaticScene()
+      } else if (live > 0) {
+        // Geom revision recook (not first enable) — still warm CCT.
+        this.physics.warmStaticScene()
+      }
+    } catch (err) {
+      console.warn('[pe] platform cook failed', err)
+    }
+  }
+
+  /**
+   * PE ride scope under feet — prefer walk deck over leash walls.
+   * Score: large plane footprint, small XZ, small |dy| (walls are tall/thin + higher score loss).
+   */
+  private pickPePlatformNearFeet(
+    feet: THREE.Vector3,
+    peDescs: readonly PhysicsColliderDesc[]
+  ): number | null {
+    let best: number | null = null
+    let bestScore = Number.NEGATIVE_INFINITY
+    const maxHorizSq = 4.5 * 4.5
+    for (const desc of peDescs) {
+      if (!this.physics.hasStaticActor(desc.entity)) continue
+      desc.matrix.decompose(this._pePlatPos, this._pePlatQuat, this._pePlatScale)
+      const dx = this._pePlatPos.x - feet.x
+      const dz = this._pePlatPos.z - feet.z
+      const horizSq = dx * dx + dz * dz
+      if (horizSq > maxHorizSq) continue
+      const dy = Math.abs(this._pePlatPos.y - feet.y)
+      if (dy >= 3.5) continue
+      // MeshCollider planes use local XY extent (deck 5×5, leash walls edge×0.5).
+      const footprint = Math.abs(this._pePlatScale.x * this._pePlatScale.y)
+      // Deck wins over knee walls: footprint dominates; proximity breaks ties.
+      const score = footprint * 12 - Math.sqrt(horizSq) - dy * 2.5
+      if (score > bestScore) {
+        bestScore = score
+        best = desc.entity
+      }
+    }
+    return best
+  }
+
+  /** PE remapped collider descs (phys id → desc). */
+  private readonly peColliderDescByPhysId = new Map<number, PhysicsColliderDesc>()
+  private readonly _pePlatPos = new THREE.Vector3()
+  private readonly _pePlatQuat = new THREE.Quaternion()
+  private readonly _pePlatScale = new THREE.Vector3()
+  private pePlatformCookLogged = false
 
   /** Runtime pose-drift recook — off unless `?colliderrecook` or Help debug toggle. Boot + manual recook bypass. */
 
@@ -2722,10 +2883,19 @@ export class World {
     this.applyColliderPoseSlidesForPhysIds(physIds)
   }
 
+  /** Primary scene descs or PE remapped cache (phys ids ≥ PE_PHYS_BASE). */
+  private resolvePhysicsColliderDesc(physId: number): PhysicsColliderDesc | null {
+    return (
+      this.sceneScript.getPhysicsColliderDesc(physId) ??
+      this.peColliderDescByPhysId.get(physId) ??
+      null
+    )
+  }
+
   private collectColliderDescs(physIds: number[]): PhysicsColliderDesc[] {
     const descs: PhysicsColliderDesc[] = []
     for (const physId of physIds) {
-      const desc = this.sceneScript.getPhysicsColliderDesc(physId)
+      const desc = this.resolvePhysicsColliderDesc(physId)
       if (desc) descs.push(desc)
     }
     return descs
@@ -3357,7 +3527,7 @@ export class World {
       : this.sortedColliderCookQueue()
     for (const physId of queueOrder) {
       if (toCook.length >= budget) break
-      const desc = this.sceneScript.getPhysicsColliderDesc(physId)
+      const desc = this.resolvePhysicsColliderDesc(physId)
       if (!desc) {
         this.colliderCookQueue.delete(physId)
         continue
@@ -3368,8 +3538,11 @@ export class World {
         continue
       }
       this.sceneScript.flushSceneGraphMatrices()
-      this.sceneScript.refreshColliderBeforeCook(physId)
-      const fresh = this.sceneScript.getPhysicsColliderDesc(physId)
+      // PE remapped ids skip primary refresh — use cached remapped desc.
+      if (!this.peColliderDescByPhysId.has(physId)) {
+        this.sceneScript.refreshColliderBeforeCook(physId)
+      }
+      const fresh = this.resolvePhysicsColliderDesc(physId)
       if (!fresh) continue
       if (playMode && this.physics.isColliderSynced(fresh)) {
         this.colliderCookQueue.delete(physId)
@@ -3913,6 +4086,34 @@ export class World {
       })
     )
     system.setRealmInfo(this.comms.getRealmInfo())
+    // PE must have UserIdentity/getUserData — @dcl/sdk message-bus fetchProfile throws
+    // "Couldn't fetch profile data" when data.userId is missing (was always {} without this).
+    system.setCommsHandler({
+      setCommunicationsAdapter: async (body) => ({
+        success: await this.comms.connectAdapter(body.connectionString)
+      }),
+      sendBinary: async (body) => this.handleSendBinary(body),
+      send: async (body) => {
+        await this.comms.publishCommsMessage(body.message)
+        return {}
+      },
+      getUserData: async () => this.buildUserData(),
+      getRealm: async () => ({ realmInfo: this.comms.getRealmInfo() }),
+      subscribeToTopic: async (body) => {
+        this.comms.subscribeToTopic(body.topic)
+        return {}
+      },
+      unsubscribeFromTopic: async (body) => {
+        this.comms.unsubscribeFromTopic(body.topic)
+        return {}
+      },
+      publishData: async (body) => {
+        await this.comms.publishTopicData(body.topic, body.data)
+        return {}
+      },
+      consumeMessages: async (body) => this.comms.consumeMessages(body.topic),
+      getActiveVideoStreams: async () => this.comms.getActiveVideoStreams()
+    })
     system.setClientPoseProvider(() => ({
       player: this.player!.getEntityPose(),
       camera: this.player!.getCameraEntityPose()
@@ -3925,15 +4126,33 @@ export class World {
     system.setCollidersRemoveCallback((entity) => {
       this.onColliderEntityRemovedWithOffset(entity, physOffset)
     })
-    system.setCollidersPoseCallback((entities) => {
-      // Pose slides use remapped phys ids in multi-scene tick; skip primary-only slide path.
-      void entities
+    // Pose slides run sync-frame via syncPePlatformColliders (drone platforms).
+    // Structure cooks still arrive via multiScene.tickAsync remapped descs.
+    system.setCollidersPoseCallback((_entities) => {
+      /* syncPePlatformColliders */
     })
-    // PE is a full scene runtime — play-ready so engine ticks match primary.
+    system.setCollidersCookCallback((entity) => {
+      // Enqueue PE colliders with phys offset; remapped descs filled by captureLivePlatformColliders.
+      if (entity === undefined) return
+      try {
+        for (const localPhysId of system.collectPhysCookTargets(entity)) {
+          this.colliderCookQueue.add((localPhysId as number) + physOffset)
+        }
+      } catch {
+        /* PE not ready */
+      }
+    })
+    // PE is a full scene runtime — play-ready so engine ticks match primary (~16ms high).
+    // Cap at 33ms: PE onUpdate timers (drone spawn) must not sit on boot 100ms forever.
+    const peTickMs = Math.min(33, resolveEngineTickIntervalMs(this.performanceTier))
     system.notifyPlayReady({
-      engineTickIntervalMs: resolveEngineTickIntervalMs(this.performanceTier),
+      engineTickIntervalMs: peTickMs,
       portableExperience: true
     })
+    // Soft attach budget (not play-mode 1/frame) until PE GLBs land — drone/vehicles.
+    // Prefetch also runs in PortableExperienceManager.enablePe; this covers restore wire.
+    system.extendSoftHydration(peSoftHydrationMs(this.performanceTier))
+    system.prefetchGltfs()
     this.startInputHub()
     // Same keyboard bus as primary — subscribe as pe:<physOffset>, no second window listener.
     system.setInputHub(this.inputHub, `pe:${physOffset}`)
@@ -4062,11 +4281,17 @@ export class World {
     return false
   }
 
-  /** PE tweens / billboards / animators — same motion pump as primary. */
+  /**
+   * PE motion + deferred materials — same class as primary.
+   * Without tickDeferredMaterials, PE MeshRenderer planes (Neurolink rotors) stay white
+   * forever: textures queued in pendingMaterialEntities never drain on the PE bridge.
+   */
   private pumpPeMotionBridges(delta: number, frame: number): void {
     for (const sys of this.multiScene?.pe.getRunningSystems() ?? []) {
       try {
         sys.pumpMotionBridges(delta, frame)
+        sys.syncAnimatedSprites()
+        sys.tickDeferredMaterials()
       } catch (err) {
         console.warn('[pe] pumpMotionBridges failed', err)
       }
@@ -4104,8 +4329,9 @@ export class World {
   }
 
   /**
-   * Collect layer claims → host (camera / force / primary freeze).
-   * PX never freezes WASD; scene-authored moves use movePlayerTo → host → rebroadcast.
+   * Collect layer claims → host (camera / force / locomotion freeze).
+   * Primary freeze wins; else PE freeze locks WASD (Neurolink drone).
+   * Scene-authored moves use movePlayerTo → host → rebroadcast.
    */
   private applyLayerPlayerClaims(): void {
     if (!this.multiScene || !this.player) return

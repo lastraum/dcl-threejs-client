@@ -40,11 +40,7 @@ import {
   rewriteStopMoveCameraUiLabels
 } from './workerPlayerFrameEgress'
 import {
-  isDualRootParked,
-  isModalShellOnCanvas,
-  isNoVisibleModalOnCanvas,
   isOpenPoseBlocked as isOpenPoseBlockedFromRows,
-  isScaleSeedOpen,
   needsOpenScale as needsOpenScaleFromRows,
   resolveUiPoseRow,
   sampleOpenPoseBlockedFlags,
@@ -77,7 +73,7 @@ export type SceneEngineSchedulerConfig = {
   isHydration: () => boolean
   resolvePlayIntervalMs: () => number
   pointerBlocksTick: () => boolean
-  /** PX worker — open-pose law must not use plaza noVisibleModal (permanent HUD chrome). */
+  /** PX worker flag (logging / soft hydrate). Size-based open gates are dead for all scenes. */
   isPortableExperience?: () => boolean
   /**
    * Queue phase-4 structured UI mount for flushPointerDeferredOutboundsAsync.
@@ -212,11 +208,26 @@ function wrapEngineUpdateWithWallClock(eng: IEngine): void {
       return
     }
     // Wall since last positive tick *start* (or prior stamp).
-    const applied = clampDtToWallClock(dt)
-    // Stamp at START so this frame's eng.update work is not "lost" from scene time.
     const now = performance.now()
     if (wallClockOriginMs <= 0) wallClockOriginMs = now
-    lastExecutedAt = now
+    const wallElapsedSec =
+      lastExecutedAt > 0 ? Math.max(0, (now - lastExecutedAt) / 1000) : dt
+    const applied = clampDtToWallClock(dt)
+    /**
+     * Stamp policy (utils.timers / @dcl/ecs/timers use `+= 1000*dt`):
+     * - Full wall consumed → stamp `now` so a long eng.update is not double-counted next frame
+     *   (CBD welcome fade used to run multi-seconds when we stamped only after work).
+     * - Clamped hitch (applied << wall) → advance lastExecutedAt by `applied` only so the
+     *   remainder stays available. Always stamping `now` after a 0.25s cap permanently
+     *   burned PE delays (Neurolink 3s drone took 30s+ when PE ticks were sparse).
+     */
+    if (lastExecutedAt <= 0) {
+      lastExecutedAt = now
+    } else if (applied + 1e-4 >= wallElapsedSec) {
+      lastExecutedAt = now
+    } else {
+      lastExecutedAt = Math.min(now, lastExecutedAt + applied * 1000)
+    }
     sceneTimeSec += applied
     await nativeUpdate(applied)
   }
@@ -442,8 +453,7 @@ async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
       (mountEntityIds.length === 0 ? ' emptyMount' : '')
   )
   if (cfg.postUiMountSnapshot) {
-    // Steady: Patch only. Brief post-open followup: fullPaint while micro/parked/off, then one
-    // ready paint when dual-root slide / scale finishes (vending @2146 → on-canvas).
+    // Steady: Patch only. Brief post-open followup fullPaint while settle window open.
     const now = performance.now()
     const inWindow =
       openScaleFollowupFullUntil > 0 && now < openScaleFollowupFullUntil
@@ -823,37 +833,17 @@ const POINTER_UI_OPEN_STABLE_NEEDED = 2
 const POINTER_UI_OPEN_DT = 1 / 20
 /** Hard wall cap inside open flush — leave headroom for phase-4 + open-scale. */
 const POINTER_UI_OPEN_MAX_WALL_MS = 450
-/**
- * Open-scale under pointer deliver — micro/shell path stays SHORT.
- * Oracle 19:12: no open-scale finish log + deliver-done +5s — onUpdate hung open-scale.
- * Cap onUpdate per pass; exit when modal shell on-canvas even if content still 6×6 seed.
- */
-const POINTER_UI_OPEN_SCALE_MAX_WALL_MS = 500
-/**
- * Dual-root shop (vending/inventory) parks content at left≥VW until Tween RTT unparks.
- * Oracle 21:33: dualRootParked progress=0 wall=591ms stillMid → blank grid icons on first open.
- * Need wall-clock for main to apply Tween CRDT + push TweenState mid open-scale (not only after
- * deliver-done). Micro-only wall stays short; dual-park uses this longer budget.
- */
-const POINTER_UI_OPEN_SCALE_DUAL_PARK_MAX_WALL_MS = 1600
-/** Wall-clock yield between dual-park passes so main rAF can advance Tween + deliver TweenState. */
-const POINTER_UI_OPEN_SCALE_DUAL_PARK_YIELD_MS = 48
-/** Per-pass cap for exports.onUpdate during open-scale (must not block deliver). */
-const POINTER_UI_OPEN_SCALE_ONUPDATE_CAP_MS = 32
-/**
- * After open-scale, cooperative forceFull while micro/parked + one ready paint.
- * Covers deliver-done latency (~ack wait) so dual-root unpark after open-scale still Forests.
- */
+/** Brief cooperative fullPaint window after pointer open (fingerprint/tween only). */
 const POINTER_UI_OPEN_SCALE_FOLLOWUP_MS = 5000
-/** If fp unchanged this many stable passes while pose blocked, stop waiting (can't invent scale). */
+/** If fp unchanged this many stable passes while pose blocked, stop waiting. */
 const POINTER_UI_OPEN_FROZEN_POSE_STABLE = 2
 
 /** Wall-clock until which cooperative may forceFull for mid-open scale/unpark. */
 let openScaleFollowupFullUntil = 0
-/** One more fullPaint after micro clears so main paints usable peOnModal without a second click. */
+/** One more fullPaint after open settle so main paints without a second click. */
 let openScaleNeedReadyPaint = false
 
-/** Re-arm cooperative fullPaint window while dual-root/micro still mid-open (after inject complete). */
+/** Re-arm cooperative fullPaint — size mid-open always false; rarely arms. */
 export function rearmOpenScaleFollowupIfStillMidOpen(eng: IEngine): boolean {
   if (!isOpenPoseBlockedFromRows(collectUiPoseRows(eng), openPoseOpts())) return false
   openScaleFollowupFullUntil = performance.now() + POINTER_UI_OPEN_SCALE_FOLLOWUP_MS
@@ -904,41 +894,13 @@ function openPoseOpts(): { portableExperience?: boolean } {
   return config?.isPortableExperience?.() ? { portableExperience: true } : {}
 }
 
-/** COD single blocked gate — dual-park | scale seed | (primary) no visible modal. */
+/** Open mid-flight — always false (size geometry gates removed). */
 function uiOpenPoseBlocked(eng: IEngine): boolean {
   return isOpenPoseBlockedFromRows(collectUiPoseRows(eng), openPoseOpts())
 }
 
-function largeModalContentStillParked(eng: IEngine): boolean {
-  return isDualRootParked(collectUiPoseRows(eng))
-}
-
-function uiOpenPoseStillMicro(eng: IEngine): boolean {
-  return isScaleSeedOpen(collectUiPoseRows(eng))
-}
-
-/** @deprecated prefer uiOpenPoseBlocked — kept for log field labels only */
-function uiOpenPoseNoVisibleModal(eng: IEngine): boolean {
-  return isNoVisibleModalOnCanvas(collectUiPoseRows(eng))
-}
-
 function sampleOpenPoseMicroSeeds(eng: IEngine, limit = 4): string {
   return sampleOpenPoseMicroSeedsFromRows(collectUiPoseRows(eng), limit)
-}
-
-function uiOpenModalShellOnCanvas(eng: IEngine): boolean {
-  return isModalShellOnCanvas(collectUiPoseRows(eng))
-}
-
-async function runOpenSettleOnUpdateCapped(
-  cfg: SceneEngineSchedulerConfig,
-  dt: number
-): Promise<void> {
-  if (!cfg.runOpenSettleSceneFrame) return
-  await Promise.race([
-    cfg.runOpenSettleSceneFrame(dt).catch(() => undefined),
-    new Promise<void>((resolve) => setTimeout(resolve, POINTER_UI_OPEN_SCALE_ONUPDATE_CAP_MS))
-  ])
 }
 
 async function flushReactEcsForUiSnapshot(
@@ -1006,20 +968,16 @@ async function flushReactEcsForUiSnapshot(
     const mount = countWorkerUiMount(eng)
     const fp = computeWorkerUiFingerprint(eng)
     const wall = performance.now() - t0
-    const parked = largeModalContentStillParked(eng)
-    const micro = uiOpenPoseStillMicro(eng)
-    const offCanvas = uiOpenPoseNoVisibleModal(eng)
-    // One pose-ready law everywhere: park + true scale seed + modal not on-canvas.
-    const poseBlocked = parked || micro || offCanvas
+    // Size-based mid-open removed — exit on fingerprint stability only.
+    const poseBlocked = uiOpenPoseBlocked(eng)
     const logThis =
       pass < 6 || pass % 4 === 0 || pass + 1 === maxPasses || !poseBlocked
     if (logThis) {
       log(
         `[sceneWorker] pointer ui react-ecs flush pass=${pass + 1}/${maxPasses} mount=${mount} ` +
           `fp=${fp.length}B dt=${dt.toFixed(3)} wall=${wall.toFixed(0)}ms` +
-          `${parked ? ' parked' : ''}${micro ? ' micro' : ''}${offCanvas ? ' offCanvas' : ''}` +
-          `${sceneFrames > 0 ? ` onUp=${sceneFrames}` : ''}` +
-          `${micro && pass === 0 ? ` seeds=[${sampleOpenPoseMicroSeeds(eng)}]` : ''}`
+          `${poseBlocked ? '' : ' ready'}` +
+          `${sceneFrames > 0 ? ` onUp=${sceneFrames}` : ''}`
       )
     }
     // Hard wall — always leave time for phase-4 + Tween/UI deferred egress.
@@ -1062,163 +1020,28 @@ async function flushReactEcsForUiSnapshot(
   if (uiOpenPoseBlocked(eng)) {
     log(
       `[sceneWorker] pointer ui react-ecs flush END pose still blocked ` +
-        `parked=${largeModalContentStillParked(eng)} micro=${uiOpenPoseStillMicro(eng)} ` +
-        `offCanvas=${uiOpenPoseNoVisibleModal(eng)} mount=${countWorkerUiMount(eng)} ` +
-        `wall=${(performance.now() - t0).toFixed(0)}ms onUp=${sceneFrames} ` +
-        `seeds=[${sampleOpenPoseMicroSeeds(eng)}] (phase-4 mid-open; cooperative continues)`
+        `mount=${countWorkerUiMount(eng)} wall=${(performance.now() - t0).toFixed(0)}ms ` +
+        `onUp=${sceneFrames} (phase-4; cooperative continues)`
     )
   }
 }
 
 /**
- * Mid-open after phase-4: ship Tween+UI, pump eng.update until COD poseReady
- * (NOT dualParked, NOT scaleSeed, modal body on-canvas). Fail closed — never log
- * "pose ready" while dual-root content is still left≥virtualWidth.
- *
- * Dual-root: longer wall + wall-clock yields so main can apply Tween + push TweenState
- * (open-scale RTT). followupFull only when exiting still mid-open (cooperative residual).
+ * Post phase-4 open settle: ship Tween+UI, pump eng.update on fingerprint only.
+ * Size-based off-canvas / micro / modal gates removed — one panel off-screen is scene pose.
  */
 async function finishOpenScaleAfterPhase4(
   eng: IEngine,
   log: (message: string) => void
 ): Promise<void> {
   const cfg = config!
-  // True skip only when NOT blocked (poseReady ≡ !blocked when fp stable).
-  if (!uiOpenPoseBlocked(eng)) {
-    if (cfg.flushPointerDeferredOutboundsNow) {
-      await cfg.flushPointerDeferredOutboundsNow()
-    }
-    log(
-      `[sceneWorker] open-scale skip — mount=${countWorkerUiMount(eng)} ` +
-        `poseReady flags=${sampleOpenPoseBlockedFlags(collectUiPoseRows(eng), openPoseOpts())}`
-    )
-    return
-  }
-  const micro0 = uiOpenPoseStillMicro(eng)
-  const parked0 = largeModalContentStillParked(eng)
-  const offCanvas0 = uiOpenPoseNoVisibleModal(eng)
-  // Snapshot #1 seed Forest — fire-and-forget (no multi-second ack wait under pointer).
-  // Main must apply Tween CRDT + force-push TweenState during pointerAwaiting (SceneScriptSystem).
-  runPointerUiPhase4Egress(eng, { fullPaint: true })
-  if (cfg.flushPointerDeferredOutboundsFireAndForget) {
-    cfg.flushPointerDeferredOutboundsFireAndForget()
-  } else if (cfg.flushPointerDeferredOutboundsNow) {
-    void cfg.flushPointerDeferredOutboundsNow()
+  // Size mid-open always false → fingerprint flush already ran; ship deferred egress only.
+  if (cfg.flushPointerDeferredOutboundsNow) {
+    await cfg.flushPointerDeferredOutboundsNow()
   }
   log(
-    `[sceneWorker] open-scale early egress — Tween+UI shipped seeds=[${sampleOpenPoseMicroSeeds(eng)}]` +
-      `${micro0 ? ' micro' : ''}${parked0 ? ' dualParked' : ''}${offCanvas0 && !parked0 ? ' offCanvas' : ''}`
-  )
-  const t0 = performance.now()
-  // Dual-park needs main RTT + wall-clock; micro-only stays short.
-  let maxMs = parked0
-    ? POINTER_UI_OPEN_SCALE_DUAL_PARK_MAX_WALL_MS
-    : POINTER_UI_OPEN_SCALE_MAX_WALL_MS
-  const maxPasses = parked0 ? 28 : 12
-  let prevFp = computeWorkerUiFingerprint(eng)
-  let progressPasses = 0
-  let frozenStreak = 0
-  let midGrowthShipped = false
-  let lastMidEgressAt = 0
-  setPointerInteractiveTickActive(true)
-  setPointerInteractivePhase('flush')
-  for (let i = 0; i < maxPasses; i++) {
-    if (performance.now() - t0 > maxMs) break
-    const stillBlocked = uiOpenPoseBlocked(eng)
-    const stillMicro = uiOpenPoseStillMicro(eng)
-    const stillParked = largeModalContentStillParked(eng)
-    // Extend budget if dual-park appears mid-loop (seed had only micro).
-    if (stillParked && maxMs < POINTER_UI_OPEN_SCALE_DUAL_PARK_MAX_WALL_MS) {
-      maxMs = POINTER_UI_OPEN_SCALE_DUAL_PARK_MAX_WALL_MS
-    }
-    // Shell-ready only when dual-park is CLEAR and only micro content remains
-    // (tutorial body 6×6 under full shell). NEVER when dual-root still parked.
-    if (
-      !stillParked &&
-      stillMicro &&
-      uiOpenModalShellOnCanvas(eng) &&
-      i >= 2
-    ) {
-      log(
-        `[sceneWorker] open-scale shell-ready after ${i + 1} passes — content micro → cooperative`
-      )
-      break
-    }
-    if (!stillBlocked) break
-
-    await runSerializedEngineUpdate(async () => {
-      await eng.update(POINTER_UI_OPEN_DT)
-    })
-    await runOpenSettleOnUpdateCapped(cfg, POINTER_UI_OPEN_DT)
-    // Dual-park: longer wall yield so main rAF applies Tween + tween-state-deliver.
-    // Micro: short yield (synthetic dt drives scale).
-    const yieldMs = stillParked
-      ? POINTER_UI_OPEN_SCALE_DUAL_PARK_YIELD_MS
-      : stillMicro
-        ? 8
-        : 4
-    await new Promise<void>((resolve) => setTimeout(resolve, yieldMs))
-
-    const fp = computeWorkerUiFingerprint(eng)
-    if (fp !== prevFp) {
-      progressPasses++
-      frozenStreak = 0
-      prevFp = fp
-      const now = performance.now()
-      // Mid soft: first progress, then throttle re-egress while dual-park slides (not every pass).
-      const shouldMidEgress =
-        !midGrowthShipped ||
-        (stillParked && now - lastMidEgressAt >= 120)
-      if (shouldMidEgress) {
-        midGrowthShipped = true
-        lastMidEgressAt = now
-        runPointerUiPhase4Egress(eng, { fullPaint: false })
-        cfg.flushPointerDeferredOutboundsFireAndForget?.()
-      }
-      if (progressPasses <= 4 || i % 3 === 0) {
-        log(
-          `[sceneWorker] open-scale progress pass=${i + 1} fp=${fp.length}B ` +
-            `seeds=[${sampleOpenPoseMicroSeeds(eng)}] ` +
-            `flags=${sampleOpenPoseBlockedFlags(collectUiPoseRows(eng), openPoseOpts())}`
-        )
-      }
-    } else {
-      frozenStreak++
-      // Frozen fp while still blocked: keep pumping until wall (do not claim ready).
-      if (frozenStreak >= 3 && !stillBlocked) {
-        log(
-          `[sceneWorker] open-scale frozen fp after ${i + 1} passes → phase-4 poseReady`
-        )
-        break
-      }
-    }
-  }
-  // Snapshot #3 final full — fire-and-forget.
-  const finalBlocked = uiOpenPoseBlocked(eng)
-  const finalParked = largeModalContentStillParked(eng)
-  const finalMicro = uiOpenPoseStillMicro(eng)
-  runPointerUiPhase4Egress(eng, { fullPaint: true })
-  if (cfg.flushPointerDeferredOutboundsFireAndForget) {
-    cfg.flushPointerDeferredOutboundsFireAndForget()
-  } else if (cfg.flushPointerDeferredOutboundsNow) {
-    void cfg.flushPointerDeferredOutboundsNow()
-  }
-  // followupFull ONLY while still mid-open — never after true poseReady.
-  if (finalBlocked) {
-    openScaleFollowupFullUntil = performance.now() + POINTER_UI_OPEN_SCALE_FOLLOWUP_MS
-    openScaleNeedReadyPaint = true
-  } else {
-    openScaleFollowupFullUntil = 0
-    openScaleNeedReadyPaint = false
-  }
-  log(
-    `[sceneWorker] open-scale finish — blocked=${finalBlocked} ` +
-      `parked=${finalParked} micro=${finalMicro} ` +
-      `flags=${sampleOpenPoseBlockedFlags(collectUiPoseRows(eng), openPoseOpts())} ` +
-      `progress=${progressPasses} wall=${(performance.now() - t0).toFixed(0)}ms ` +
-      `seeds=[${sampleOpenPoseMicroSeeds(eng)}] mount=${countWorkerUiMount(eng)}` +
-      ` finalFull` +
-      `${finalBlocked ? ' followupFull stillMid' : ' poseReady'}`
+    `[sceneWorker] open-scale skip — mount=${countWorkerUiMount(eng)} ` +
+      `poseReady flags=${sampleOpenPoseBlockedFlags(collectUiPoseRows(eng), openPoseOpts())}`
   )
 }
 
@@ -1342,13 +1165,10 @@ export async function runSceneEnginePointerTick(
         // reconcile selection highlight after UP. One seeded pass — not full multipass
         // (that thrash-closed Neurolink). Skip for open/close (mountGrew) and pure fades.
         //
-        // Large modal OPEN via sceneUi (inventory bag / shop HUD): same COD settle as mesh —
-        // positive dt + fingerprint stable + refuse exit while content twin still parked.
-        // Skipping this left dual-root shell@346 + content@2146 frozen → blank icons / PE ghost.
+        // Open settle: fingerprint + brief positive dt only (no size mid-open gates).
         mountGrew = mountAfterDownUpdate > mountBeforeDown
         const mountShrunk = mountAfterUp < mountAfterDownUpdate
         setPointerInteractiveTickActive(true)
-        // COD single gate: dual-park | scale seed | no visible modal.
         const poseNeedsOpen = uiOpenPoseBlocked(eng)
         if ((!mountGrew && !mountShrunk && !poseNeedsOpen) || mountShrunk) {
           // Selection / page / close — any mount size.
@@ -1474,8 +1294,7 @@ export async function runSceneEnginePointerTick(
           }
         }
 
-        // After flush: open-scale iff still blocked (hard dual-park / micro). Never skip as
-        // "pose ready" while dual-root content remains left≥virtualWidth.
+        // After flush: open-scale only if pose still blocked (always false now).
         const needsOpenScale = needsOpenScaleFromRows(
           needOpenSettle,
           collectUiPoseRows(eng),
@@ -1498,7 +1317,7 @@ export async function runSceneEnginePointerTick(
           await briefUiTweenSettle(eng, cfg.log, 'mesh-tween')
           runPointerUiPhase4Egress(eng, { fullPaint: true })
         }
-        // No mesh hold — cooperative dirty must keep advancing scale / dual-root after snapshot.
+        // No mesh hold — cooperative dirty keeps advancing open tweens after snapshot.
         await runPointerNonUiPhase(eng)
       }
     } else {

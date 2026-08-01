@@ -155,23 +155,50 @@ function applyInputModifier(config: LocomotionConfig, std: {
   if (std.disableGliding) config.disableGliding = true
 }
 
+type StandardInputFlags = {
+  disableAll?: boolean
+  disableWalk?: boolean
+  disableJog?: boolean
+  disableRun?: boolean
+  disableJump?: boolean
+  disableEmote?: boolean
+  disableDoubleJump?: boolean
+  disableGliding?: boolean
+}
+
+/**
+ * Read StandardInput from InputModifier — tolerate $case / nested / flat shapes
+ * (CRDT mirror, player-frame JSON, PE get()).
+ */
+export function readStandardInputFromModifier(mod: unknown): StandardInputFlags | null {
+  if (!mod || typeof mod !== 'object') return null
+  const root = mod as {
+    mode?: { $case?: string; standard?: StandardInputFlags } & StandardInputFlags
+    $case?: string
+    standard?: StandardInputFlags
+  }
+  const mode = root.mode
+  if (mode) {
+    if (mode.$case === 'standard' && mode.standard) return mode.standard
+    if (mode.standard) return mode.standard
+    // Some mirrors flatten standard fields onto mode
+    if (
+      typeof mode.disableAll === 'boolean' ||
+      typeof mode.disableWalk === 'boolean' ||
+      typeof mode.disableJog === 'boolean' ||
+      typeof mode.disableRun === 'boolean'
+    ) {
+      return mode
+    }
+  }
+  if (root.$case === 'standard' && root.standard) return root.standard
+  if (root.standard && typeof root.standard === 'object') return root.standard
+  return null
+}
+
 /** True when InputModifier fully or walk+jog+run blocks avatar locomotion. */
 export function freezesAvatarFromModifier(mod: unknown): boolean {
-  if (!mod || typeof mod !== 'object') return false
-  const mode = (
-    mod as {
-      mode?: {
-        $case?: string
-        standard?: {
-          disableAll?: boolean
-          disableWalk?: boolean
-          disableJog?: boolean
-          disableRun?: boolean
-        }
-      }
-    }
-  ).mode
-  const std = mode?.$case === 'standard' ? mode.standard : undefined
+  const std = readStandardInputFromModifier(mod)
   if (!std) return false
   if (std.disableAll) return true
   return !!(std.disableWalk && std.disableJog && std.disableRun)
@@ -180,11 +207,7 @@ export function freezesAvatarFromModifier(mod: unknown): boolean {
 /** Build locomotion config from a raw InputModifier value (PX claim override). */
 export function locomotionConfigFromInputModifier(mod: unknown): LocomotionConfig {
   const config = defaultLocomotionConfig()
-  if (!mod || typeof mod !== 'object') return config
-  const mode = (
-    mod as { mode?: { $case?: string; standard?: Parameters<typeof applyInputModifier>[1] } }
-  ).mode
-  const std = mode?.$case === 'standard' ? mode.standard : undefined
+  const std = readStandardInputFromModifier(mod)
   if (std) applyInputModifier(config, std)
   return config
 }
@@ -210,8 +233,7 @@ export function readLocomotionFromComponents(components: MirrorComponents, playe
   }
 
   if (components.InputModifier.has(player)) {
-    const mod = components.InputModifier.get(player)
-    const std = mod.mode?.$case === 'standard' ? mod.mode.standard : undefined
+    const std = readStandardInputFromModifier(components.InputModifier.get(player))
     if (std) applyInputModifier(config, std)
   }
 

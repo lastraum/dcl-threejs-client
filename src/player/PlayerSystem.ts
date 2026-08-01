@@ -507,15 +507,13 @@ export class PlayerSystem {
 
   getLocomotionConfig(): LocomotionConfig {
     if (!this.readComponents) return this.pxLocomotionOverride ?? defaultLocomotionConfig()
-    // Primary has InputModifier → primary wins (never use PX override).
-    if (this.readComponents.InputModifier.has(SDK_RESERVED.player)) {
-      return readLocomotionFromComponents(this.readComponents, SDK_RESERVED.player)
-    }
+    // PE freeze override from PlayerClaimMerger (set only when PE freezes and primary does not).
+    // Must win over a non-freezing primary InputModifier component if both exist.
     if (this.pxLocomotionOverride) return this.pxLocomotionOverride
     return readLocomotionFromComponents(this.readComponents, SDK_RESERVED.player)
   }
 
-  /** Layer claim bus: PX InputModifier when primary has none. */
+  /** Layer claim bus: PE freeze / free-flight InputModifier when primary does not freeze. */
   setPxLocomotionOverride(config: LocomotionConfig | null): void {
     this.pxLocomotionOverride = config
   }
@@ -951,6 +949,34 @@ export class PlayerSystem {
   }
 
   /**
+   * PX free-flight (Neurolink drone): PE worker authored PlayerEntity Transform.
+   * Snap host capsule to scene feet pose — no floor settle (continuous pilot follow).
+   * Requires {@link setAllowSceneOwnedMotion}(true) from PE freeze claim.
+   */
+  adoptSceneAuthoredPlayerEntityPose(
+    positionDcl: { x: number; y: number; z: number },
+    rotationDcl?: { x: number; y: number; z: number; w: number }
+  ): void {
+    if (!this.allowSceneOwnedMotion) return
+    const feetThree = dclToThreeVec(
+      new THREE.Vector3(positionDcl.x, positionDcl.y, positionDcl.z)
+    )
+    this.teleportTo(feetThree, false, false)
+    if (rotationDcl) {
+      const q = dclToThreeQuat(
+        rotationDcl.x,
+        rotationDcl.y,
+        rotationDcl.z,
+        rotationDcl.w
+      )
+      const euler = new THREE.Euler().setFromQuaternion(q, 'YXZ')
+      this.playerYaw = normalizeAngle(euler.y)
+      this.networkYaw = this.playerYaw
+      this.avatar?.setYaw(this.playerYaw)
+    }
+  }
+
+  /**
    * DCL `RestrictedActions.movePlayerTo` — `newRelativePosition` is **feet** (not PE chest).
    * Docs: Vector3.create(1, 0, 1) stands on y=0. Flagtag drown-respawn uses tower feet Y.
    */
@@ -1118,10 +1144,14 @@ export class PlayerSystem {
 
     const locomotion = this.getLocomotionConfig()
     const imBlocked = !canLocomote(locomotion)
-    // COD: freeze ≠ pin. PX free-flight (layer_drive) freezes WASD without foot pin.
+    // COD: freeze ≠ pin. PX free-flight freezes WASD without foot pin.
+    // Critical: free-flight must NOT early-return — CCT still needs gravity + platform
+    // transfer so drone deck/walls can carry the capsule (Neurolink basket).
+    const freeFlightRide = this.allowSceneOwnedMotion && imBlocked
     const intentionalDisableAll =
       locomotion.disableAll === true && !this.allowSceneOwnedMotion
-    const locomotionAllowed = !this.collidersReadyBlock && !imBlocked
+    const locomotionAllowed =
+      !this.collidersReadyBlock && (!imBlocked || freeFlightRide)
     if (!locomotionAllowed) {
       // COD: always log why we block (prove IM vs colliders vs thrash).
       const blockedMsg =
@@ -1188,9 +1218,6 @@ export class PlayerSystem {
         this.root.position.copy(this.disableAllHoldFeet)
         this.physics.teleport(this.disableAllHoldFeet)
         this.root.position.copy(this.disableAllHoldFeet)
-      } else if (this.allowSceneOwnedMotion && this.disableAllHoldFeet) {
-        // PX free-flight: never keep pin.
-        this.disableAllHoldFeet = null
       } else if (this.disableAllHoldFeet) {
         // Stale pin without disableAll — release (multi-scene false freeze trap).
         console.warn(
@@ -1224,7 +1251,17 @@ export class PlayerSystem {
       this.input.endFrame()
       this.wasLocomotionAllowed = false
       return
-    } else if (!this.wasLocomotionAllowed) {
+    }
+
+    // PE free-flight: clear capsule WASD (drone reads keys on PE worker) but keep physics.
+    if (freeFlightRide) {
+      this.input.clearMovementKeys()
+      _velocity.x = 0
+      _velocity.z = 0
+      if (this.disableAllHoldFeet) this.disableAllHoldFeet = null
+    }
+
+    if (!this.wasLocomotionAllowed && locomotionAllowed && !freeFlightRide) {
       // Scene just unfroze (Flagtag join / map load FINISHED) — release freeze pin, but
       // re-seat long respawns: freeze pad under spawn is often deleted the same frame,
       // and map GLTF colliders may still be cooking → freefall / wrong XZ without re-teleport.
@@ -1613,15 +1650,35 @@ export class PlayerSystem {
       _displacement.y = -stick
     }
 
-    if (!this.jumping && !this.jumped && !this.airJumpPending && (this.grounded || this.nearGround)) {
+    // COD platform ride: transfer when CCT grounded OR PE free-flight (thin PE deck often
+    // reports groundPhys=-1; scope is set to PE plane near feet in World.syncPlayerMotionFrame).
+    const freeFlightRideTransfer = this.allowSceneOwnedMotion && imBlocked
+    if (
+      !this.jumping &&
+      !this.jumped &&
+      !this.airJumpPending &&
+      (this.grounded || this.nearGround || freeFlightRideTransfer)
+    ) {
       // CCT is kinematic — standing surface moved Δ this frame, so capsule += Δ before move().
       this.physics.applyPlatformVelocityTransfer()
-    } else if (!this.grounded && !this.nearGround) {
+    } else if (!this.grounded && !this.nearGround && !freeFlightRideTransfer) {
       this.physics.clearStandingPlatform()
+    }
+
+    // Free-flight: kill downward gravity into infinite ground — deck carry is the solid.
+    // Without this, CCT tunnels bad/thin PE planes and sticks to y=0 while the drone leaves.
+    if (freeFlightRideTransfer && _displacement.y < 0) {
+      _displacement.y = Math.max(_displacement.y, -0.02)
+      if (_velocity.y < 0) _velocity.y = 0
     }
 
     const moveResult = this.physics.movePlayer(_displacement, delta)
     this.grounded = moveResult.grounded
+    if (freeFlightRideTransfer && this.physics.stickFeetToFreeFlightPlatform()) {
+      this.grounded = true
+      this.groundCoyote = GROUND_COYOTE_SECONDS
+      _velocity.y = 0
+    }
     if (this.impulseLaunchGrace > 0) {
       this.impulseLaunchGrace = Math.max(0, this.impulseLaunchGrace - delta)
     }
@@ -1680,7 +1737,9 @@ export class PlayerSystem {
     }
 
     this.root.position.copy(this.physics.positionOut)
-    if (this.walkBounds) {
+    // COD: PE free-flight rides MeshColliders past parcel soft walls — clamp would snap pilot
+    // off the drone deck every frame once the rig leaves the primary walk bounds.
+    if (this.walkBounds && !this.allowSceneOwnedMotion) {
       const dclPos = threeToDclVec(this.root.position)
       const beforeX = dclPos.x
       const beforeZ = dclPos.z
@@ -2228,7 +2287,8 @@ export class PlayerSystem {
    *   temporary freeze-pad MeshCollider and do not soft-hold mid-air.
    */
   private teleportTo(positionThree: THREE.Vector3, settle = true, longRespawn = false): void {
-    if (this.walkBounds) {
+    // Free-flight movePlayerTo (drone enable/exit) must not parcel-clamp off the rig.
+    if (this.walkBounds && !this.allowSceneOwnedMotion) {
       const dclPos = threeToDclVec(positionThree)
       clampToWalkBounds(dclPos, this.walkBounds)
       positionThree.copy(dclToThreeVec(dclPos))

@@ -598,8 +598,8 @@ export class SceneUiDomRenderer {
     const radius = borderRadiusCss(transform, scale)
     const layoutBox = input.layoutBoxes.get(entity)
     // Fully outside the virtual canvas — PARK (pose), not unmount.
-    // Dual-root shop content @ left≥1920 / HUD parks: still mounted, still under #scene-ui-root
-    // (or ECS parent). Keep Yoga geometry; no PE hits; never releaseNode.
+    // Scene parks a panel off-screen (left≥1920 / below fold) then tweens on — same entity.
+    // Hold Yoga pose; no PE hits; never releaseNode. Not a size-based “mid-open” gate.
     const vw = input.virtual.width
     const vh = input.virtual.height
     const fullyOff =
@@ -609,9 +609,6 @@ export class SceneUiDomRenderer {
         layoutBox.left + layoutBox.width <= 1 ||
         layoutBox.top + layoutBox.height <= 1)
     if (layoutBox && fullyOff) {
-      // Park ≠ unmount. Off virtual canvas (dual-root / below fold / HUD) — hold pose, no PE.
-      // Worker open-settle must refuse ready until content is on-canvas (uiOpenPose).
-      // Main does not invent on-canvas paint for off-canvas Yoga boxes.
       applyYogaLayoutBox(shell, layoutBox, scale, coords, false)
       applyUiTransformContentStyles(el, transform, scale)
       this.applyParkedDomState(shell)
@@ -986,7 +983,7 @@ export class SceneUiDomRenderer {
 
   /**
    * ECS display:none / opacity hide — still mounted, node may remain in pool.
-   * Clears transform (no pose to hold). Not for dual-root park (use applyParkedDomState).
+   * Clears transform (no pose to hold). Not for off-canvas park (use applyParkedDomState).
    */
   private applyHiddenDomState(shell: HTMLElement): void {
     shell.classList.remove('scene-ui-node--interactive')
@@ -1017,7 +1014,7 @@ export class SceneUiDomRenderer {
     shell.setAttribute('inert', '')
     shell.setAttribute('aria-hidden', 'true')
     // Park ≠ unusable: unusable is missing/0×0 Yoga only. Sticky recovery must not
-    // treat dual-root park as collapsed chrome (COD hide/park/unmount split).
+    // treat off-canvas park as collapsed chrome (COD hide/park/unmount split).
     shell.dataset.uiParked = '1'
     delete shell.dataset.uiUnusable
     // Prior paint may have left --interactive descendants; force inert whole subtree.

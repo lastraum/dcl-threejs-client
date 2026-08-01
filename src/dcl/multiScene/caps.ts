@@ -126,3 +126,14 @@ export function secondaryTickIntervalMs(_tier: PerformanceTier): number {
 export function peTickIntervalMs(_tier: PerformanceTier): number {
   return 0
 }
+
+/**
+ * After PE enable: soft GLTF attach window (ThreeBridge soft budget 16/frame) so
+ * drone/vehicle GLBs do not crawl at play-mode 1/frame. Manifest byte prefetch
+ * runs separately on discover + enable.
+ */
+export function peSoftHydrationMs(tier: PerformanceTier): number {
+  if (tier === 'low') return 12_000
+  if (tier === 'medium') return 18_000
+  return 25_000
+}

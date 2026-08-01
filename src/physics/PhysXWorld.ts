@@ -18,7 +18,13 @@ import { bakeTrimeshGeometry, isTrimeshGeometryCookable } from './bakeTrimeshGeo
 import { bootColliderCookSignature, entityLocalColliderCookSignature } from './physxCookBake'
 import { ensureIndexedForCook } from './colliderGeometryPrep'
 import { loadPhysX } from './loadPhysX'
-import { isSignificantPlatformDelta, MAX_RIDING_DELTA_HORIZ } from './platformMotion'
+import {
+  isSignificantPlatformDelta,
+  MAX_FREE_FLIGHT_RIDING_DELTA_HORIZ,
+  MAX_FREE_FLIGHT_RIDING_DELTA_TOTAL,
+  MAX_FREE_FLIGHT_RIDING_DELTA_VERT,
+  MAX_RIDING_DELTA_HORIZ
+} from './platformMotion'
 import {
   ROAD_AOI_COLLIDER_ENTITY_BASE,
   ROAD_AOI_COLLIDER_ID_SPAN
@@ -220,6 +226,11 @@ export class PhysXWorld {
   private readonly poseMotionDelta = new Map<number, THREE.Vector3>()
   /** CCT-grounded PhysX entity at frame start — gates riding transfer recording. */
   private platformMotionScopeEntity: number | null = null
+  /**
+   * PE free-flight: looser riding Δ caps (drone ROOT slides reject under plaza bobbing limits).
+   * Set by World.syncPePlatformColliders when allowSceneOwnedMotion.
+   */
+  private freeFlightRiding = false
   private readonly platformTransferDisp = new THREE.Vector3()
   /** Platform we are riding — always the grounded actor when transfer applies. */
   private standingPlatformEntity: number | null = null
@@ -1670,10 +1681,11 @@ export class PhysXWorld {
       return expected > 0 && live === expected
     }
 
-    const poseFp = matrixFingerprint(desc.matrix)
+    // Single-mesh (MeshCollider planes/boxes): geom + live actor only.
+    // Pose drift is ROOT follow (applyStaticColliderPoseUpdates) — requiring poseFp
+    // match made every moving platform look "unsynced" and recooked every frame (FPS death).
     if (this.staticFp.get(desc.entity) !== desc.fingerprint) return false
-    if (!this.staticActors.has(desc.entity)) return false
-    return this.staticPoseFp.get(desc.entity) === poseFp
+    return this.staticActors.has(desc.entity)
   }
 
   hasStaticActor(entity: number): boolean {
@@ -2680,6 +2692,14 @@ export class PhysXWorld {
   }
 
   private isPlausiblePlatformDelta(delta: THREE.Vector3): boolean {
+    if (this.freeFlightRiding) {
+      const horizSq = delta.x * delta.x + delta.z * delta.z
+      if (horizSq > MAX_FREE_FLIGHT_RIDING_DELTA_HORIZ * MAX_FREE_FLIGHT_RIDING_DELTA_HORIZ) {
+        return false
+      }
+      if (Math.abs(delta.y) > MAX_FREE_FLIGHT_RIDING_DELTA_VERT) return false
+      return delta.lengthSq() <= MAX_FREE_FLIGHT_RIDING_DELTA_TOTAL * MAX_FREE_FLIGHT_RIDING_DELTA_TOTAL
+    }
     const horizSq = delta.x * delta.x + delta.z * delta.z
     if (horizSq > MAX_PLATFORM_DELTA_HORIZ * MAX_PLATFORM_DELTA_HORIZ) return false
     if (Math.abs(delta.y) > MAX_GROUND_CONTACT_VERT) return false
@@ -2688,6 +2708,7 @@ export class PhysXWorld {
 
   /** Stricter cap for capsule riding — rejects actor-root glitches that pass pose-sync bounds. */
   private isPlausibleRidingDelta(delta: THREE.Vector3): boolean {
+    if (this.freeFlightRiding) return this.isPlausiblePlatformDelta(delta)
     const horizSq = delta.x * delta.x + delta.z * delta.z
     if (horizSq > MAX_RIDING_DELTA_HORIZ * MAX_RIDING_DELTA_HORIZ) return false
     return this.isPlausiblePlatformDelta(delta)
@@ -3080,12 +3101,28 @@ export class PhysXWorld {
     }
   }
 
-  /** MeshCollider / landscape tweens — GLTF uses walk-surface Δ from GltfColliderExtractor. */
-  applyMeshColliderPoseDeltas(descs: PhysicsColliderDesc[]): void {
-    const scope = this.platformMotionScopeEntity
+  /**
+   * MeshCollider / landscape tweens — GLTF uses walk-surface Δ from GltfColliderExtractor.
+   * @param forceRideEntity when set (PE free-flight), treat this phys id as ride scope so
+   *   CCT need not already report groundPhys on the PE plane (thin deck first frames).
+   */
+  applyMeshColliderPoseDeltas(
+    descs: PhysicsColliderDesc[],
+    options?: { forceRideEntity?: number | null }
+  ): void {
+    const scope = options?.forceRideEntity ?? this.platformMotionScopeEntity
     for (const desc of descs) {
       if (desc.fingerprint.startsWith('gltf-entity:')) continue
       this.colliderWalkSurfaceAnchor(desc, this._pos)
+      // Free-flight deck: always refresh walk-surface anchor so stick/snap works even when Δ=0.
+      if (scope !== null && desc.entity === scope) {
+        let walk = this.platformWalkSurfacePos.get(desc.entity)
+        if (!walk) {
+          walk = new THREE.Vector3()
+          this.platformWalkSurfacePos.set(desc.entity, walk)
+        }
+        walk.copy(this._pos)
+      }
       const prev = this.colliderLastWorldPos.get(desc.entity)
       if (!prev) {
         this.colliderLastWorldPos.set(desc.entity, this._pos.clone())
@@ -3103,6 +3140,24 @@ export class PhysXWorld {
       }
       prev.copy(this._pos)
     }
+  }
+
+  /** Temporarily expand ride scope (PE free-flight deck under feet). */
+  setPlatformMotionScopeEntity(entity: number | null): void {
+    this.platformMotionScopeEntity = entity
+  }
+
+  getPlatformMotionScopeEntity(): number | null {
+    return this.platformMotionScopeEntity
+  }
+
+  /** PE free-flight: accept larger per-frame ride Δ (drone ROOT, not plaza bob). */
+  setFreeFlightRiding(enabled: boolean): void {
+    this.freeFlightRiding = enabled
+  }
+
+  isFreeFlightRiding(): boolean {
+    return this.freeFlightRiding
   }
 
   clearStandingPlatform(): void {
@@ -3147,6 +3202,37 @@ export class PhysXWorld {
     const targetFeetY = surface.y - CONTROLLER_CONTACT_OFFSET * 0.25
     const gap = targetFeetY - this.position.y
     if (gap <= 0.02 || gap > PLATFORM_OVERHEAD_CATCH) return false
+    this._v1.set(this.position.x, targetFeetY, this.position.z)
+    this.teleport(this._v1)
+    this.lastGroundPhysEntity = entity
+    this.invalidateControllerCache()
+    return true
+  }
+
+  /**
+   * PE free-flight stick — re-seat capsule on ride deck after gravity/CCT tunnels thin planes
+   * or lag frames leave feet on infinite ground (y=0) while the drone flies away.
+   * COD: not continuous PlayerEntity teleport; walk-surface of the scoped PE solid only.
+   */
+  stickFeetToFreeFlightPlatform(): boolean {
+    if (!this.freeFlightRiding) return false
+    const entity = this.platformMotionScopeEntity
+    if (entity === null || entity === INFINITE_GROUND_ENTITY) return false
+    const surface = this.platformWalkSurfacePos.get(entity)
+    if (!surface) return false
+    const dx = this.position.x - surface.x
+    const dz = this.position.z - surface.z
+    // Outside deck+leash footprint — do not pull pilot back (force-exit / fall off).
+    if (dx * dx + dz * dz > 4.5 * 4.5) return false
+    const targetFeetY = surface.y - CONTROLLER_CONTACT_OFFSET * 0.25
+    const gap = targetFeetY - this.position.y
+    // Below deck (fall-through) up to ~4m, or slightly above sit height — re-seat.
+    // Large positive gap = pilot intentionally above (jump) — leave alone.
+    if (gap < -0.4 || gap > 4.0) return false
+    if (Math.abs(gap) <= 0.02) {
+      this.lastGroundPhysEntity = entity
+      return true
+    }
     this._v1.set(this.position.x, targetFeetY, this.position.z)
     this.teleport(this._v1)
     this.lastGroundPhysEntity = entity
@@ -4040,7 +4126,15 @@ export class PhysXWorld {
       const halfHeight = 0.5 * this._scale.y
       geometry = new PHYSX.PxCapsuleGeometry(Math.max(rt, rb), halfHeight)
     } else if (kind === 'plane') {
-      geometry = new PHYSX.PxBoxGeometry(0.5 * this._scale.x, 0.05, 0.5 * this._scale.z)
+      // DCL MeshCollider plane = unit square in local XY (normal +Z), same as MeshRenderer.
+      // Thickness along local Z. Deck with rotX(90°)+scale(5,5,1) → horizontal 5×5 floor
+      // with world-Y thickness. Old formula used Y-thick + Z-extent so rotX(90°) decks
+      // became a thin X-strip — pilot fell through onto infinite ground (Neurolink).
+      const halfX = Math.max(0.5 * Math.abs(this._scale.x), 1e-4)
+      const halfY = Math.max(0.5 * Math.abs(this._scale.y), 1e-4)
+      // 0.08 half → 0.16m thick — enough for CCT contact without looking like a box.
+      const halfThick = 0.08
+      geometry = new PHYSX.PxBoxGeometry(halfX, halfY, halfThick)
     } else {
       geometry = new PHYSX.PxBoxGeometry(0.5 * this._scale.x, 0.5 * this._scale.y, 0.5 * this._scale.z)
     }

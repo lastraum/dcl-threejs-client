@@ -187,8 +187,11 @@ export class ThreeBridge {
   /** Runtime attach slots — keep ≤1 heavy unit per play frame (P0 mesh frame law). */
   private static readonly GLTF_BUDGET_PER_FRAME = 1
   private static readonly GLTF_HYDRATION_BUDGET_PER_FRAME = 80
-  /** Post-hydration catch-up — was 1 and left remaining assets crawling for minutes. */
-  private static readonly GLTF_SOFT_HYDRATION_BUDGET_PER_FRAME = 8
+  /**
+   * Post-hydration + PE enable catch-up — was 1 (minutes of crawl).
+   * PE uses this window after enable so drone/vehicle GLBs attach at ~16/frame not 1.
+   */
+  private static readonly GLTF_SOFT_HYDRATION_BUDGET_PER_FRAME = 16
   private static readonly MESH_PASS_BUDGET_MS = 6
   private static readonly MESH_PASS_HYDRATION_BUDGET_MS = 48
   private static readonly HYDRATION_ATTACH_PASSES = 8
@@ -1006,10 +1009,12 @@ export class ThreeBridge {
           this.loadScheduled.delete(cacheKey)
         })
     }
+    // Prefer ASAP kick — idle timeout 2000ms left PE drones on "Loading…" for many seconds
+    // while the scene timer waited on GltfContainerLoadingState FINISHED.
     const ric = (globalThis as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void })
       .requestIdleCallback
-    if (typeof ric === 'function') ric(kick, { timeout: 2000 })
-    else setTimeout(kick, 48)
+    if (typeof ric === 'function') ric(kick, { timeout: 32 })
+    else setTimeout(kick, 0)
   }
 
   private gltfAttachPriority(entity: Entity): 'ready' | 'waiting' | 'blocked' | 'other' {
@@ -2418,8 +2423,6 @@ export class ThreeBridge {
         // In-flight / re-src — scene can poll LOADING until FINISHED.
         this.setGltfLoadingState(entity, 1 /* LOADING */)
 
-        if (this.gltfBudgetRemaining <= 0) return
-
         const template = this.cache.peekCached(cacheKey)
         const templateTris = template
           ? ((template.root.userData.dclTriCount as number | undefined) ??
@@ -2430,14 +2433,15 @@ export class ThreeBridge {
             })())
           : 0
 
-        // Cold: schedule parse off the frame path — never await load() here.
+        // Cold: ALWAYS kick parse (timer-gated loaders / "Loading drone..." wait FINISHED).
+        // Budget only limits attaches this frame — never leave LOADING without a scheduled load.
         if (!template) {
-          if (this.gltfBudgetRemaining > 0) {
-            this.gltfBudgetRemaining--
-            this.scheduleBackgroundLoad(url, isLocal ? url : hash, cacheKey)
-          }
+          this.scheduleBackgroundLoad(url, isLocal ? url : hash, cacheKey)
           return
         }
+
+        // Attach budget only (template already warm).
+        if (this.gltfBudgetRemaining <= 0) return
 
         // Large *clones* off the attach pass. Static instancable templates stay on-path
         // (matrix write only — mountains / tiles must not wait behind SkeletonUtils).

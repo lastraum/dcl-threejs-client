@@ -544,17 +544,20 @@ function applyAtlasUvAsImgStrip(
 }
 
 /**
- * True only for animated fill/scroll windows (reeling bars), never shop atlas cells.
- * Small cells (both spans < 0.55) always use background-position crop.
+ * True only for animated fill/scroll windows (fishing reeling bars).
+ * Small cells and large menu panels (Neurolink bgPanel ~0.42×0.95 of atlas) use
+ * background-position crop — the old `vSpan>=0.85 && uSpan<0.95` rule mis-routed
+ * tall panel regions through img-strip and mashed the atlas frame.
  */
 function isUvFillOrScrollStrip(u0: number, v0: number, u1: number, v1: number): boolean {
   const uSpan = u1 - u0
   const vSpan = v1 - v0
-  // Shop icons / rarity tags / tuto tiles — both axes are small atlas cells.
+  // Shop icons / rarity tags / tuto tiles / button pills — both axes are small cells.
   if (uSpan < 0.55 && vSpan < 0.55) return false
-  // Reeling bars: full width + partial height window (or full height + partial width).
+  // Horizontal reeling bar: nearly full atlas width + partial height (animates 0→~1).
   if (uSpan >= 0.85 && vSpan > 0.02 && vSpan < 0.95) return true
-  if (vSpan >= 0.85 && uSpan > 0.02 && uSpan < 0.95) return true
+  // Vertical thin strip only (narrow width) — not wide menu panels (~0.4 atlas width).
+  if (vSpan >= 0.85 && uSpan > 0.02 && uSpan < 0.35) return true
   return false
 }
 
@@ -870,13 +873,13 @@ export function applyUiBackgroundStyles(
   if (c && needsTextureColorMultiply(c)) {
     const baked = resolveColorMultipliedImageUrl(imageUrl, c)
     if (!baked) {
-      // Dark tint bake in flight — solid tint, not raw white sheet.
-      // (White RGB never enters this branch; see needsTextureColorMultiply.)
-      clearBgImg(el)
-      el.style.backgroundImage = ''
-      el.style.backgroundColor = tint === 'transparent' ? 'transparent' : tint
-      el.style.opacity = '1'
+      // Bake in flight: show **raw texture + UV crop**, not solid tint.
+      // Solid cyan forever was Neurolink menu buttons when multiply bake was slow/stuck
+      // (user: "not doing UV mapping at all").
+      el.style.backgroundColor = 'transparent'
+      el.style.opacity = ''
       el.style.borderRadius = el.style.borderRadius || '10px'
+      applyBgImg(el, imageUrl, mode, imgAlpha, bg?.uvs)
       el.dataset.dclUiBgSig = pendingSig
       return
     }

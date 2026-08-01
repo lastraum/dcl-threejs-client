@@ -29,10 +29,27 @@ function resolveSceneAssetUrl(
   const hash = findSceneContentHash(scene.content, trimmed)
   if (hash) return scene.assetUrl(hash)
 
+  // PE / smart-wearable packs often use `male/ui/foo.png` while content keys differ by case
+  // or only match the leaf. Retry leaf + case-insensitive full path against the manifest.
+  const leaf = leafName(trimmed)
+  if (leaf && leaf !== trimmed) {
+    const byLeaf = findSceneContentHash(scene.content, leaf)
+    if (byLeaf) return scene.assetUrl(byLeaf)
+  }
+  const lower = trimmed.replace(/\\/g, '/').toLowerCase()
+  const leafLower = leaf.toLowerCase()
+  for (const entry of scene.content) {
+    if (!entry?.hash || !entry.file) continue
+    const f = entry.file.replace(/\\/g, '/').toLowerCase()
+    if (f === lower || f.endsWith('/' + lower) || f.endsWith('/' + leafLower) || f === leafLower) {
+      return scene.assetUrl(entry.hash)
+    }
+  }
+
   const shared =
-    DCL_SHARED_TEXTURES[leafName(trimmed)] ??
+    DCL_SHARED_TEXTURES[leaf] ??
     DCL_SHARED_TEXTURES[trimmed] ??
-    Object.entries(DCL_SHARED_TEXTURES).find(([key]) => key.toLowerCase() === leafName(trimmed).toLowerCase())?.[1]
+    Object.entries(DCL_SHARED_TEXTURES).find(([key]) => key.toLowerCase() === leafLower)?.[1]
   if (shared) return scene.assetUrl(shared)
 
   const resolved = resolveDclAssetUrl(trimmed)

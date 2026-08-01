@@ -435,16 +435,20 @@ export class SceneWorkerSlot {
     cache.setScene(this.scene)
     try {
       await this.system.syncRenderer()
-      let structureOrPoseChanged = false
+      // Structure vs pose split (COD / free-flight FPS):
+      // - Structure dirty → extract + remapped stream into host PhysX (cook-once / missing).
+      // - Pose dirty alone → syncCollision refreshes matrices; do NOT re-stream to PhysX.
+      //   PE drone ROOT slides run sync-frame via captureLivePlatformColliders.
+      const structureDirty = this.system.hasColliderStructureWorkPending()
       if (this.system.hasColliderWorkPending()) {
         this.system.syncCollision()
-        structureOrPoseChanged = true
       }
       await this.system.syncAsyncBridges()
 
       // Dirty-once PhysX stream — re-capturing + syncStaticColliders every frame for
       // every secondary was multi-second "bridges=" death (hundreds of actors × N neighbors).
-      if (structureOrPoseChanged) {
+      // Pose-only PE free-flight was the same class of thrash (double ROOT + CCT warm).
+      if (structureDirty) {
         this.captureRemappedColliders()
       }
       if (!this.collidersDirty || this.lastRemappedColliders.length === 0) return []

@@ -167,37 +167,28 @@ HIDE     = same entity, display/opacity authoring.
 4. **Do not materialize full off-canvas subtrees every paint** — freezes main thread (same symptom as dead pointer).
 5. **Unmount only** when id leaves mount → DOM purge required (anti ghost PE / id recycle).
 6. **No client twinAlign** — parked pose comes from ECS only.
-7. Worker open settle may wait on dual-root park for snapshot readiness; that is **pose readiness**, not “entity unmounted.”
+7. Off-canvas park is DOM/hit only (no PE steal). Worker open settle must **not** size-gate on panel area.
 
 ---
 
-## Dual-root shop (fishing inventory / vending)
+## Off-canvas panel open (park pose — NOT “dual-root”)
 
 ```text
-Open: shell@left≈346 + content@left≥1920 until open tween finishes.
-Main does NOT invent dx (no twinAlign). Content twin is PARKED under root (held + Yoga pose), not unmounted.
-Worker flush advances eng.update(dt) until fingerprint stable AND not dual-parked / true micro.
-Then phase-4 snapshot. Cooperative dirty after that — cousins independent.
+Scene authors ONE panel: position off virtual canvas, then tween on.
+Client does NOT invent a second copy / shell+twin from panel sizes.
+Main does NOT invent dx (no twinAlign). Off-canvas = PARK (held + Yoga pose), not unmount.
+Worker flush: fingerprint stable only — panel size must not block inject/open.
 ```
 
-### Single poseReady law (`uiOpenPose.ts`)
+### poseReady law (`uiOpenPose.ts`)
 
 ```text
-isDualParked  := non-hidden content off virtual canvas using **chain-sum abs origin**
-                  (parent.left+child.left, not local top alone):
-                  canvasLeft ≥ VW  (shop twin @2146)
-                  OR canvasTop ≥ VH (nested slots parent@200+child@1027 → y=1227)
-                  skip: full-bleed HUD (w≥VW), canvas-covering scrim, w|h < 48
-isScaleSeed   := canvas-fraction micro / relative seed under modal
-poseReady     := fpStable AND NOT dualParked AND NOT scaleSeed AND NOT noVisibleModal
-                 (poseReady ≡ !blocked when fp stable)
-
-needsOpenScale := needOpenSettle AND blocked   // fail closed
-// NEVER log "pose ready" / skip open-scale while dualParked
-// followupFull ONLY while still mid-open after open-scale wall
+isOpenPoseBlocked := always false  (size gates killed)
+poseReady         := fingerprintStable only
+needsOpenScale    := always false
 ```
 
-Tests: `npm run test:ui-open-pose` (pure geometry + PE-path state machine).
+Tests: `npm run test:ui-open-pose` (may need update after size-gate kill).
 
 ---
 

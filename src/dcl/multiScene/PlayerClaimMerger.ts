@@ -1,10 +1,12 @@
 /**
  * Continuous player claims from scene layers (PX + primary).
  *
- * Product law (host-owned input):
- * - WASD / freecam always host capsule — PX InputModifier never freezes the body.
+ * Product law:
+ * - Host owns WASD when **not** frozen by a layer.
+ * - Primary InputModifier freeze locks host (plaza load gates).
+ * - PE InputModifier freeze also locks host (Neurolink drone sit/lock) via pxLocomotionOverride
+ *   when PE freezes and primary does not.
  * - Scene-authored moves (movePlayerTo, force/impulse) apply on host then rebroadcast.
- * - Camera / force claims still merge by priority.
  *
  * @see docs/PORTABLE_EXPERIENCE_COD.md
  */
@@ -12,7 +14,10 @@ import type { Entity } from '@dcl/ecs'
 import type { VirtualCameraBridge } from '../../camera/VirtualCameraBridge'
 import type { SceneScriptSystem } from '../../core/systems/SceneScriptSystem'
 import type { PlayerSystem } from '../../player/PlayerSystem'
-import { freezesAvatarFromModifier } from '../../player/locomotion'
+import {
+  freezesAvatarFromModifier,
+  locomotionConfigFromInputModifier
+} from '../../player/locomotion'
 import type { SceneLayer } from './SceneLayerRegistry'
 import type { SceneWorkerKind } from './types'
 
@@ -46,7 +51,7 @@ export type ForceClaim = {
 }
 
 export type PlayerHostClaims = {
-  /** Primary InputModifier only — host owns walk; PX never freezes capsule via IM. */
+  /** Primary IM freeze wins; else PE freeze if any (drone / vehicle lock). */
   locomotion: LocomotionClaim | null
   camera: CameraClaim | null
   force: ForceClaim | null
@@ -62,10 +67,11 @@ function cloneJson<T>(value: T): T {
 
 /**
  * Collect continuous claims from all layers.
- * Policy: primary IM present → primary wins locomotion; else PX wins if any.
+ * Locomotion: primary freeze wins; else PE freeze; else primary IM (if any).
  */
 export function collectPlayerClaims(layers: readonly SceneLayer[]): PlayerHostClaims {
   let primaryLocomotion: LocomotionClaim | null = null
+  let peFreeze: LocomotionClaim | null = null
   let camera: CameraClaim | null = null
   let force: ForceClaim | null = null
 
@@ -79,7 +85,6 @@ export function collectPlayerClaims(layers: readonly SceneLayer[]): PlayerHostCl
       const { InputModifier, MainCamera, PhysicsCombinedForce, PhysicsCombinedImpulse } =
         sys.readComponents
 
-      // Locomotion freeze: **primary only**. Host WASD always; PX never freezes the capsule.
       if (layer.kind === 'primary' && InputModifier.has(playerEnt)) {
         const mod = InputModifier.get(playerEnt)
         primaryLocomotion = {
@@ -89,6 +94,23 @@ export function collectPlayerClaims(layers: readonly SceneLayer[]): PlayerHostCl
           inputModifier: mod,
           freezesAvatar: freezesAvatarFromModifier(mod),
           primaryHasComponent: true
+        }
+      }
+
+      // PE freeze (drone / vehicle) — host must lock when PE freezes and primary does not.
+      if (layer.kind === 'pe' && InputModifier.has(playerEnt)) {
+        const mod = InputModifier.get(playerEnt)
+        if (freezesAvatarFromModifier(mod)) {
+          if (!peFreeze || layer.priority >= peFreeze.priority) {
+            peFreeze = {
+              layerId: layer.id,
+              kind: layer.kind,
+              priority: layer.priority,
+              inputModifier: mod,
+              freezesAvatar: true,
+              primaryHasComponent: false
+            }
+          }
         }
       }
 
@@ -148,7 +170,13 @@ export function collectPlayerClaims(layers: readonly SceneLayer[]): PlayerHostCl
     }
   }
 
-  return { locomotion: primaryLocomotion, camera, force }
+  // Primary freeze wins; else PE freeze (Neurolink drone lock); else primary IM if present.
+  const locomotion =
+    primaryLocomotion?.freezesAvatar === true
+      ? primaryLocomotion
+      : peFreeze ?? primaryLocomotion
+
+  return { locomotion, camera, force }
 }
 
 export type ApplyPlayerClaimsContext = {
@@ -164,7 +192,8 @@ export type ApplyPlayerClaimsContext = {
 
 /**
  * Apply merged claims onto host.
- * Locomotion freeze = primary only. PX force/impulse = scene-authored motion on capsule.
+ * Locomotion: primary freeze via primary IM; PE freeze via pxLocomotionOverride.
+ * PX force/impulse = scene-authored motion on capsule.
  * movePlayerTo intents drain via World (host adopt + rebroadcast).
  */
 export class PlayerClaimApplier {
@@ -174,9 +203,8 @@ export class PlayerClaimApplier {
   private lastLocomotionKey = ''
 
   apply(claims: PlayerHostClaims, ctx: ApplyPlayerClaimsContext): void {
-    // Always clear any legacy PX locomotion override / layer_drive flags.
-    ctx.player?.setPxLocomotionOverride(null)
-    ctx.player?.setAllowSceneOwnedMotion(false)
+    // Default: host injects Player/Camera into every layer.
+    // PE free-flight (below) opts that PE out of host stomps so scene can author pilot pose.
     for (const layer of ctx.layers) {
       try {
         layer.system.setSkipHostReservedPoses(false)
@@ -185,7 +213,7 @@ export class PlayerClaimApplier {
       }
     }
 
-    this.applyPrimaryLocomotion(claims.locomotion, ctx)
+    this.applyLocomotion(claims.locomotion, ctx)
     this.applyCamera(claims.camera, ctx)
     this.applyForce(claims.force, ctx)
     // movePlayerTo / teleport / emote from PX (and primary-silent channels)
@@ -213,14 +241,22 @@ export class PlayerClaimApplier {
     this.lastLocomotionKey = ''
   }
 
-  private applyPrimaryLocomotion(
-    claim: LocomotionClaim | null,
-    ctx: ApplyPlayerClaimsContext
-  ): void {
+  private applyLocomotion(claim: LocomotionClaim | null, ctx: ApplyPlayerClaimsContext): void {
     const key = claim
       ? `${claim.kind}:${claim.layerId}:${claim.freezesAvatar ? 1 : 0}`
       : ''
-    if (claim?.kind === 'primary') {
+
+    if (!claim) {
+      ctx.player?.setPxLocomotionOverride(null)
+      ctx.player?.setAllowSceneOwnedMotion(false)
+      this.lastLocomotionKey = ''
+      return
+    }
+
+    if (claim.kind === 'primary') {
+      // Host reads primary MirrorComponents InputModifier — no PX override.
+      ctx.player?.setPxLocomotionOverride(null)
+      ctx.player?.setAllowSceneOwnedMotion(false)
       if (claim.freezesAvatar) ctx.player?.clearMoveKeys()
       if (key !== this.lastLocomotionKey) {
         this.lastLocomotionKey = key
@@ -230,6 +266,28 @@ export class PlayerClaimApplier {
       }
       return
     }
+
+    // PE freeze — primary does not freeze (collectPlayerClaims prefers primary freeze first).
+    // Neurolink drone: block host WASD; keys still fan out to PE worker; no foot pin.
+    // COD: host still injects feet to all workers after ride (no layer_drive / skip inject).
+    // Capsule rides PE MeshColliders via host PhysX ROOT+transfer — same as a scene platform.
+    if (claim.freezesAvatar) {
+      const config = locomotionConfigFromInputModifier(claim.inputModifier)
+      ctx.player?.setPxLocomotionOverride(config)
+      ctx.player?.setAllowSceneOwnedMotion(true)
+      ctx.player?.clearMoveKeys()
+      // Host inject stays ON for all layers (COD rebroadcast host_feet after ride).
+      if (key !== this.lastLocomotionKey) {
+        this.lastLocomotionKey = key
+        console.info(
+          `[layers] locomotion freeze → PE free-flight (WASD block, host ride PE solids) layer=${claim.layerId.slice(0, 28)}`
+        )
+      }
+      return
+    }
+
+    ctx.player?.setPxLocomotionOverride(null)
+    ctx.player?.setAllowSceneOwnedMotion(false)
     this.lastLocomotionKey = ''
   }
 

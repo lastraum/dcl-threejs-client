@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * COD open-pose readiness unit tests (mirrors src/shim/worker/uiOpenPose.ts).
- * Pure geometry law — dual-root park, scale seed, poseReady / needsOpenScale.
+ * Open settle: size mid-open gates dead — poseReady always when fingerprint stable.
  *
  * Run: npm run test:ui-open-pose
  */
@@ -96,108 +96,21 @@ function canvasAbsOrigin(byId, startId) {
   return { left, top }
 }
 
-function isDualRootParked(byId, vw = VW, vh = VH) {
-  for (const [id, r] of byId) {
-    if (uiPoseHidden(r)) continue
-    if (r.w >= vw - 20) continue
-    if (r.w < 48 || r.h < 48) continue
-    const origin = canvasAbsOrigin(byId, id)
-    const coversCanvas =
-      origin.left < vw * 0.15 &&
-      origin.top < vh * 0.15 &&
-      origin.left + r.w > vw * 0.85 &&
-      origin.top + r.h > vh * 0.85
-    if (coversCanvas) continue
-    if (origin.left >= vw - DUAL_ROOT_EDGE_EPS) return true
-    if (origin.top >= vh - DUAL_ROOT_EDGE_EPS) return true
-    if (origin.left + r.w <= DUAL_ROOT_EDGE_EPS) return true
-    if (origin.top + r.h <= DUAL_ROOT_EDGE_EPS) return true
-  }
+/** Size mid-open gates killed — mirror uiOpenPose.ts. */
+function isDualRootParked(_byId, _vw = VW, _vh = VH) {
   return false
 }
 
-function isScaleSeedOpen(byId, vw = VW, vh = VH) {
-  let scaleMicro = 0
-  let microAbsLoose = 0
-  let fullAbs = 0
-  for (const [id, r] of byId) {
-    if (uiPoseHidden(r)) continue
-    const kids = uiPoseChildCount(byId, id)
-    const aspect = Math.max(r.w, r.h) / Math.max(1, Math.min(r.w, r.h))
-    if (
-      !r.abs &&
-      kids >= 2 &&
-      !uiPoseIsModal(r, vw, vh) &&
-      aspect < 4 &&
-      r.w >= 2 &&
-      r.h >= 2 &&
-      uiPoseHasModalAncestor(byId, r.parent)
-    ) {
-      let p = r.parent
-      let parentRow
-      for (let g = 0; p && g < 16; g++) {
-        parentRow = byId.get(p)
-        if (!parentRow) break
-        if (!uiPoseHidden(parentRow) && uiPoseIsModal(parentRow, vw, vh)) break
-        p = parentRow.parent
-        parentRow = undefined
-      }
-      if (parentRow) {
-        const fracW = r.w / Math.max(1, parentRow.w)
-        const fracH = r.h / Math.max(1, parentRow.h)
-        if (fracW < 0.08 && fracH < 0.08) {
-          scaleMicro++
-          continue
-        }
-      }
-    }
-    if (uiPoseIsScaleSeed(r, vw, vh) && r.abs) {
-      const cx = r.left + r.w / 2
-      const cy = r.top + r.h / 2
-      if (Math.abs(cx - vw / 2) < vw * 0.25 && Math.abs(cy - vh / 2) < vh * 0.33 && kids >= 1) {
-        scaleMicro++
-        continue
-      }
-    }
-    if (r.abs && uiPoseIsMicro(r, vw, vh) && !uiPoseIsScaleSeed(r, vw, vh)) {
-      microAbsLoose++
-    } else if (r.abs && uiPoseIsModal(r, vw, vh)) {
-      fullAbs++
-    }
-  }
-  if (scaleMicro > 0) return true
-  return microAbsLoose > 0 && fullAbs === 0
-}
-
-function hasOnCanvasModalBody(byId, vw = VW, vh = VH) {
-  for (const r of byId.values()) {
-    if (uiPoseHidden(r)) continue
-    if (!uiPoseIsModal(r, vw, vh)) continue
-    if (r.abs) {
-      if (r.left < vw - 8 && r.top < vh - 8 && r.left + r.w > 8 && r.top + r.h > 8) return true
-    } else {
-      return true
-    }
-  }
+function isScaleSeedOpen(_byId, _vw = VW, _vh = VH) {
   return false
 }
 
-function isNoVisibleModalOnCanvas(byId, vw = VW, vh = VH) {
-  let modalish = 0
-  let shown = 0
-  for (const r of byId.values()) {
-    if (!uiPoseIsModal(r, vw, vh)) continue
-    modalish++
-    if (uiPoseHidden(r)) continue
-    shown++
-  }
-  if (modalish === 0) return false
-  if (shown === 0) return true
-  return !hasOnCanvasModalBody(byId, vw, vh)
+function isNoVisibleModalOnCanvas(_byId, _vw = VW, _vh = VH) {
+  return false
 }
 
-function isOpenPoseBlocked(byId) {
-  return isDualRootParked(byId) || isScaleSeedOpen(byId) || isNoVisibleModalOnCanvas(byId)
+function isOpenPoseBlocked(_byId) {
+  return false
 }
 
 function isOpenPoseReady(byId, opts = {}) {
@@ -205,8 +118,8 @@ function isOpenPoseReady(byId, opts = {}) {
   return !isOpenPoseBlocked(byId)
 }
 
-function needsOpenScale(needOpenSettle, byId) {
-  return needOpenSettle && isOpenPoseBlocked(byId)
+function needsOpenScale(_needOpenSettle, _byId) {
+  return false
 }
 
 function mapFrom(entries) {
@@ -256,15 +169,15 @@ function assert(cond, msg) {
       }
     ]
   ])
-  assert(isDualRootParked(rows) === true, '20:07 dual-root content@2146 is dualParked')
-  assert(isOpenPoseBlocked(rows) === true, '20:07 open pose blocked while dual-parked')
-  assert(isOpenPoseReady(rows, { fingerprintStable: true }) === false, '20:07 NOT poseReady')
+  assert(isDualRootParked(rows) === false, 'size gate dead: off-canvas panel is NOT mid-open')
+  assert(isOpenPoseBlocked(rows) === false, 'size gate dead: never blocked')
+  assert(isOpenPoseReady(rows, { fingerprintStable: true }) === true, 'size gate dead: 20:07 poseReady')
   assert(
-    isOpenPoseReady(rows, { fingerprintStable: true, mountJustGrew: true }) === false,
-    '20:07 mount grew still not poseReady (must open-scale)'
+    isOpenPoseReady(rows, { fingerprintStable: true, mountJustGrew: true }) === true,
+    'size gate dead: mount grew still poseReady'
   )
   // needsOpenScale simulation: needOpenSettle && blocked
-  assert(needsOpenScale(true, rows) === true, '20:07 needsOpenScale must be true (refuse skip)')
+  assert(needsOpenScale(true, rows) === false, 'size gate dead: 20:07 no needsOpenScale')
   assert(isOpenPoseReady(rows) === !isOpenPoseBlocked(rows), 'poseReady ≡ !blocked')
 }
 
@@ -296,8 +209,8 @@ function assert(cond, msg) {
       }
     ]
   ])
-  assert(isDualRootParked(rows) === true, 'percent-size twin at left=2146 still dualParked')
-  assert(isOpenPoseBlocked(rows) === true, 'percent twin blocks open')
+  assert(isDualRootParked(rows) === false, 'size gate dead: percent off-canvas not dualParked')
+  assert(isOpenPoseBlocked(rows) === false, 'size gate dead: percent off-canvas not blocked')
 }
 
 // --- after dual-root slide complete ---
@@ -365,9 +278,9 @@ function assert(cond, msg) {
     [12, { positionType: 0, width: 3, height: 3, widthUnit: 1, heightUnit: 1, parent: 11 }],
     [13, { positionType: 0, width: 3, height: 3, widthUnit: 1, heightUnit: 1, parent: 11 }]
   ])
-  assert(isScaleSeedOpen(rows) === true, 'tutorial relative 7×7 under modal is scale seed')
-  assert(isOpenPoseBlocked(rows) === true, 'tutorial seed blocks open')
-  assert(isOpenPoseReady(rows, { fingerprintStable: true }) === false, 'tutorial seed not poseReady')
+  assert(isScaleSeedOpen(rows) === false, 'size gate dead: micro is not scale seed')
+  assert(isOpenPoseBlocked(rows) === false, 'size gate dead: micro seed not blocked')
+  assert(isOpenPoseReady(rows, { fingerprintStable: true }) === true, 'size gate dead: tutorial seed poseReady')
 }
 
 // --- selection flat mount (no open) ---
@@ -467,10 +380,10 @@ function assert(cond, msg) {
       }
     ]
   ])
-  assert(isDualRootParked(rows) === true, '21:25 nested slots canvas y=1227 dualParked')
-  assert(isOpenPoseBlocked(rows) === true, '21:25 open blocked while nested below fold')
-  assert(isOpenPoseReady(rows) === false, '21:25 NOT poseReady — refuse open-scale skip')
-  assert(needsOpenScale(true, rows) === true, '21:25 needsOpenScale (not flags=ready)')
+  assert(isDualRootParked(rows) === false, 'size gate dead: nested below-fold not dualParked')
+  assert(isOpenPoseBlocked(rows) === false, 'size gate dead: nested below-fold not blocked')
+  assert(isOpenPoseReady(rows) === true, 'size gate dead: nested below-fold is poseReady')
+  assert(needsOpenScale(true, rows) === false, 'size gate dead: no open-scale from below-fold')
   // Local-only would have said ready — prove chain accumulation is required
   assert(rows.get(2).top < 1080, 'local top alone is on-canvas (1027); chain detects park')
 }
@@ -538,8 +451,8 @@ function assert(cond, msg) {
   const mountGrew = true
   const needOpenSettle = mountGrew || isOpenPoseBlocked(afterMeshOpen)
   assert(needOpenSettle === true, 'PE sim: need open settle after grow')
-  assert(needsOpenScale(needOpenSettle, afterMeshOpen) === true, 'PE sim: needs open-scale (not pose-ready skip)')
-  assert(isOpenPoseReady(afterMeshOpen) === false, 'PE sim: refuse poseReady while slots@left≥1920')
+  assert(needsOpenScale(needOpenSettle, afterMeshOpen) === false, 'size gate dead: PE mesh open no geometry open-scale')
+  assert(isOpenPoseReady(afterMeshOpen) === true, 'size gate dead: PE off-canvas slots still poseReady')
   assert(isOpenPoseReady(afterMeshOpen) === !isOpenPoseBlocked(afterMeshOpen), 'PE sim: ready≡!blocked')
 }
 

@@ -38,6 +38,7 @@ import type {
 import {
   installPointerEventColliderChecker,
   patchSceneBundle,
+  patchSceneBundleCaptureOnly,
   patchSceneBundleWithCheckerStrip
 } from './pointerEventColliderCheckerPatch'
 
@@ -3677,8 +3678,14 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       }
     }
     try {
-      // Prefer patched; only fall back on failure (avoids 2–3× full compile of multi-MB deadsurg-scale bundles).
+      // Prefer full patch; on SyntaxError try capture-only (engine bind) before raw original.
+      // Raw original has no addTransport capture → FATAL sceneEngine null on PE wearables.
       let compiled = compileBundle(compositePatched, 'compiled capture-patched bundle')
+      if (!compiled) {
+        reportCompileProgress('compile fallback — capture-only (addTransport)')
+        const captureOnly = patchSceneBundleCaptureOnly(code, logPatchStep)
+        compiled = compileBundle(captureOnly, 'compiled capture-only bundle')
+      }
       if (!compiled) {
         reportCompileProgress('compile fallback — original bundle')
         compiled = compileBundle(code, 'compiled original bundle')

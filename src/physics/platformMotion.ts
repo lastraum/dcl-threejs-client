@@ -27,6 +27,13 @@ export const STAND_SURFACE_MAX_BELOW_TREAD = 1.4
 export const STAND_SURFACE_CONTACT_TOLERANCE = 0.08
 /** Max horizontal riding Δ per frame — bobbing Animator treads; wider pose-sync limits stay separate. */
 export const MAX_RIDING_DELTA_HORIZ = 0.45
+/**
+ * PE free-flight (Neurolink drone ~14 m/s + hitch frames): plaza bobbing caps reject legitimate ROOT Δ.
+ * Keep pose-sync bounds separate; only riding transfer uses these when freeFlightRiding is on.
+ */
+export const MAX_FREE_FLIGHT_RIDING_DELTA_HORIZ = 2.0
+export const MAX_FREE_FLIGHT_RIDING_DELTA_VERT = 2.5
+export const MAX_FREE_FLIGHT_RIDING_DELTA_TOTAL = 3.5
 
 /** Ignore sub-mm PhysX/probe jitter on static floors (~8 mm). */
 export const MIN_PLATFORM_TRANSFER_LEN_SQ = 6.25e-5

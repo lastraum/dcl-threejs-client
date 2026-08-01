@@ -1,19 +1,17 @@
 /**
- * Scene UI open pose readiness — pure geometry law (SCENE_UI_COD + cod_prompt).
+ * Scene UI open settle — fingerprint / tween only.
  *
- * Single authority for: flush exit, needsOpenScale, open-scale finish, cooperative mid-open.
- * No menu kinds, no timestamp oracles, no twinAlign.
+ * **Killed:** size-based “dual-root / shell+twin / huge panel off-side” open gates.
+ * Scenes park **one** panel off virtual canvas and tween it on — not two copies.
+ * Panel size must not invent mid-open or block inject.
  *
- * poseReady :=
- *   NOT dualParkedAbsLeftPastVirtualWidth
- *   AND NOT trueScaleSeed
- *   AND (if mountJustGrew: some modal body intersects virtual canvas OR no modalish at all)
+ * poseReady := fingerprintStable (caller) — isOpenPoseBlocked is always false.
  */
 
 export const VIRTUAL_UI_WIDTH = 1920
 export const VIRTUAL_UI_HEIGHT = 1080
 
-/** Epsilon for virtual-edge dual-root (1px — not a product strip policy). */
+/** @deprecated Off-canvas park is DOM/hit only — not an open-pose size gate. */
 export const DUAL_ROOT_EDGE_EPS = 1
 
 export type UiPoseRow = {
@@ -158,121 +156,26 @@ export function canvasAbsOrigin(
 }
 
 /**
- * Dual-root **open** still mid-flight: on-canvas shell + off-canvas content twin.
- *
- * Uses **canvas-accumulated** abs origin (parent chain), not local top/left alone.
- * Shop pattern: shell on canvas + twin at left ≥ VW (e.g. @2146).
- *
- * **Not** dual-root open (do not block settle / PE UI forever):
- * - Permanent below-fold HUD chrome (inventory @y=1227) alone — Neurolink/PX peOff strips
- * - Full-bleed HUD strips (w≥VW)
- * - Near-fullscreen scrims
+ * @deprecated Always false. Size-based “shell on canvas + panel off side” mid-open is dead.
+ * Scenes use one panel off-screen → tween on. Panel area must not gate inject/open settle.
  */
 export function isDualRootParked(
-  byId: Map<number, UiPoseRow>,
-  vw = VIRTUAL_UI_WIDTH,
-  vh = VIRTUAL_UI_HEIGHT
+  _byId: Map<number, UiPoseRow>,
+  _vw = VIRTUAL_UI_WIDTH,
+  _vh = VIRTUAL_UI_HEIGHT
 ): boolean {
-  let hasParkedTwin = false
-  let hasOnCanvasShell = false
-
-  for (const [id, r] of byId) {
-    if (uiPoseHidden(r)) continue
-    // Full-bleed HUD strips (1920×86) — not open content.
-    if (r.w >= vw - 20) continue
-    // Ignore pin dots / tiny chrome; keep inventory slots (~110) and shop twins.
-    if (r.w < 48 || r.h < 48) continue
-
-    const origin = canvasAbsOrigin(byId, id)
-    // Near-fullscreen scrim covering the virtual canvas (not an off-canvas twin).
-    const coversCanvas =
-      origin.left < vw * 0.15 &&
-      origin.top < vh * 0.15 &&
-      origin.left + r.w > vw * 0.85 &&
-      origin.top + r.h > vh * 0.85
-    if (coversCanvas) continue
-
-    const intersectsCanvas =
-      origin.left < vw - 8 &&
-      origin.top < vh - 8 &&
-      origin.left + r.w > 8 &&
-      origin.top + r.h > 8
-
-    // On-canvas modal / large panel = open shell candidate.
-    if (
-      intersectsCanvas &&
-      (uiPoseIsModal(r, vw, vh) || (r.w >= 200 && r.h >= 160))
-    ) {
-      hasOnCanvasShell = true
-    }
-
-    // Shop dual-root twin: parked to the **side** of the virtual canvas (not pure below-fold).
-    // Pure below-fold (top ≥ VH) is permanent inventory chrome — Neurolink/PX peOff @y=1227.
-    if (origin.left >= vw - DUAL_ROOT_EDGE_EPS) hasParkedTwin = true
-    if (origin.left + r.w <= DUAL_ROOT_EDGE_EPS) hasParkedTwin = true
-  }
-
-  return hasParkedTwin && hasOnCanvasShell
+  return false
 }
 
 /**
- * True while scale-from-zero open is in flight (canvas-fraction geometry only).
+ * @deprecated Always false. Micro / scale-seed size heuristics must not block open settle.
  */
 export function isScaleSeedOpen(
-  byId: Map<number, UiPoseRow>,
-  vw = VIRTUAL_UI_WIDTH,
-  vh = VIRTUAL_UI_HEIGHT
+  _byId: Map<number, UiPoseRow>,
+  _vw = VIRTUAL_UI_WIDTH,
+  _vh = VIRTUAL_UI_HEIGHT
 ): boolean {
-  let scaleMicro = 0
-  let microAbsLoose = 0
-  let fullAbs = 0
-  for (const [id, r] of byId) {
-    if (uiPoseHidden(r)) continue
-    const kids = uiPoseChildCount(byId, id)
-    const aspect = Math.max(r.w, r.h) / Math.max(1, Math.min(r.w, r.h))
-    if (
-      !r.abs &&
-      kids >= 2 &&
-      !uiPoseIsModal(r, vw, vh) &&
-      aspect < 4 &&
-      r.w >= 2 &&
-      r.h >= 2 &&
-      uiPoseHasModalAncestor(byId, r.parent)
-    ) {
-      let p = r.parent
-      let parentRow: UiPoseRow | undefined
-      for (let g = 0; p && g < 16; g++) {
-        parentRow = byId.get(p)
-        if (!parentRow) break
-        if (!uiPoseHidden(parentRow) && uiPoseIsModal(parentRow, vw, vh)) break
-        p = parentRow.parent
-        parentRow = undefined
-      }
-      if (parentRow) {
-        const fracW = r.w / Math.max(1, parentRow.w)
-        const fracH = r.h / Math.max(1, parentRow.h)
-        if (fracW < 0.08 && fracH < 0.08) {
-          scaleMicro++
-          continue
-        }
-      }
-    }
-    if (uiPoseIsScaleSeed(r, vw, vh) && r.abs) {
-      const cx = r.left + r.w / 2
-      const cy = r.top + r.h / 2
-      if (Math.abs(cx - vw / 2) < vw * 0.25 && Math.abs(cy - vh / 2) < vh * 0.33 && kids >= 1) {
-        scaleMicro++
-        continue
-      }
-    }
-    if (r.abs && uiPoseIsMicro(r, vw, vh) && !uiPoseIsScaleSeed(r, vw, vh)) {
-      microAbsLoose++
-    } else if (r.abs && uiPoseIsModal(r, vw, vh)) {
-      fullAbs++
-    }
-  }
-  if (scaleMicro > 0) return true
-  return microAbsLoose > 0 && fullAbs === 0
+  return false
 }
 
 /** Some modal-scale body intersects the virtual canvas (or relative under on-canvas tree). */
@@ -297,25 +200,14 @@ export function hasOnCanvasModalBody(
 }
 
 /**
- * Modalish panels exist but none are paint-visible on the virtual canvas.
- * (Complement of hasOnCanvasModalBody when modalish > 0.)
+ * @deprecated Always false. Modal area heuristics must not block open settle.
  */
 export function isNoVisibleModalOnCanvas(
-  byId: Map<number, UiPoseRow>,
-  vw = VIRTUAL_UI_WIDTH,
-  vh = VIRTUAL_UI_HEIGHT
+  _byId: Map<number, UiPoseRow>,
+  _vw = VIRTUAL_UI_WIDTH,
+  _vh = VIRTUAL_UI_HEIGHT
 ): boolean {
-  let modalish = 0
-  let shown = 0
-  for (const r of byId.values()) {
-    if (!uiPoseIsModal(r, vw, vh)) continue
-    modalish++
-    if (uiPoseHidden(r)) continue
-    shown++
-  }
-  if (modalish === 0) return false
-  if (shown === 0) return true
-  return !hasOnCanvasModalBody(byId, vw, vh)
+  return false
 }
 
 /** Modal-sized panel already on virtual canvas (shell-ready for micro content coop). */
@@ -339,45 +231,29 @@ export function isModalShellOnCanvas(
 }
 
 export type OpenPoseBlockedOptions = {
-  /**
-   * Portable experience (PX) workers: permanent off-canvas HUD chrome is normal.
-   * Do **not** use plaza `isNoVisibleModalOnCanvas` — it keeps Neurolink "still mid-open"
-   * forever and leaves menu PE handlers display:none / unclickable after icon inject.
-   */
+  /** @deprecated Ignored — size/PX open gates removed. */
   portableExperience?: boolean
 }
 
 /**
- * Open pose blocked (mid-open): dual-park OR scale seed OR (primary only) no visible modal.
- * Used for needsOpenScale / flush refuse-exit / cooperative midOpen.
+ * Size-based mid-open is dead. Always false — flush/open-scale must not wait on panel area.
  */
 export function isOpenPoseBlocked(
-  byId: Map<number, UiPoseRow>,
-  opts?: OpenPoseBlockedOptions
+  _byId: Map<number, UiPoseRow>,
+  _opts?: OpenPoseBlockedOptions
 ): boolean {
-  if (isDualRootParked(byId) || isScaleSeedOpen(byId)) return true
-  if (opts?.portableExperience) return false
-  return isNoVisibleModalOnCanvas(byId)
+  return false
 }
 
 export type OpenPoseReadyOptions = {
   /** Fingerprint stable for N passes — when false, never ready. */
   fingerprintStable?: boolean
-  /**
-   * @deprecated Ignored — poseReady is exact complement of isOpenPoseBlocked when
-   * fingerprint is stable. Kept so call sites compile during migration.
-   */
+  /** @deprecated Ignored. */
   mountJustGrew?: boolean
 }
 
 /**
- * SINGLE open-pose-ready law (fail closed).
- *
- * poseReady := fingerprintStable AND NOT isOpenPoseBlocked
- * (blocked = dualParked | scaleSeed | noVisibleModal)
- *
- * Exact complement of isOpenPoseBlocked when fingerprintStable !== false —
- * one surface for flush skip, needsOpenScale, open-scale finish.
+ * poseReady := fingerprintStable only (no size geometry).
  */
 export function isOpenPoseReady(
   byId: Map<number, UiPoseRow>,
@@ -387,65 +263,26 @@ export function isOpenPoseReady(
   return !isOpenPoseBlocked(byId, opts)
 }
 
-/** needsOpenScale := needOpenSettle AND NOT poseReady (fail closed). */
+/** needsOpenScale — always false; size geometry no longer drives open-scale. */
 export function needsOpenScale(
-  needOpenSettle: boolean,
-  byId: Map<number, UiPoseRow>,
-  opts?: OpenPoseBlockedOptions
+  _needOpenSettle: boolean,
+  _byId: Map<number, UiPoseRow>,
+  _opts?: OpenPoseBlockedOptions
 ): boolean {
-  return needOpenSettle && isOpenPoseBlocked(byId, opts)
+  return false
 }
 
 /** QA sample for logs. */
 export function sampleOpenPoseBlockedFlags(
-  byId: Map<number, UiPoseRow>,
-  opts?: OpenPoseBlockedOptions
+  _byId: Map<number, UiPoseRow>,
+  _opts?: OpenPoseBlockedOptions
 ): string {
-  const parts: string[] = []
-  if (isDualRootParked(byId)) parts.push('dualRootParked')
-  if (isScaleSeedOpen(byId)) parts.push('micro')
-  if (!opts?.portableExperience && isNoVisibleModalOnCanvas(byId)) {
-    parts.push('noVisibleModal')
-  }
-  return parts.length ? parts.join('+') : 'ready'
+  return 'ready'
 }
 
 export function sampleOpenPoseMicroSeeds(
-  byId: Map<number, UiPoseRow>,
-  limit = 4
+  _byId: Map<number, UiPoseRow>,
+  _limit = 4
 ): string {
-  const vw = VIRTUAL_UI_WIDTH
-  const vh = VIRTUAL_UI_HEIGHT
-  const samples: string[] = []
-  for (const [id, r] of byId) {
-    if (uiPoseHidden(r)) continue
-    const kids = uiPoseChildCount(byId, id)
-    if (
-      !r.abs &&
-      kids >= 2 &&
-      !uiPoseIsModal(r, vw, vh) &&
-      uiPoseHasModalAncestor(byId, r.parent)
-    ) {
-      let p = r.parent
-      let parentRow: UiPoseRow | undefined
-      for (let g = 0; p && g < 16; g++) {
-        parentRow = byId.get(p)
-        if (!parentRow) break
-        if (!uiPoseHidden(parentRow) && uiPoseIsModal(parentRow, vw, vh)) break
-        p = parentRow.parent
-        parentRow = undefined
-      }
-      if (
-        parentRow &&
-        r.w / Math.max(1, parentRow.w) < 0.08 &&
-        r.h / Math.max(1, parentRow.h) < 0.08
-      ) {
-        samples.push(`e${id}:${Math.round(r.w)}×${Math.round(r.h)} kids=${kids} relSeed`)
-        if (samples.length >= limit) break
-      }
-    }
-  }
-  if (samples.length < limit && isDualRootParked(byId)) samples.push('dualRootParked')
-  if (samples.length < limit && isNoVisibleModalOnCanvas(byId)) samples.push('noVisibleModal')
-  return samples.length ? samples.join('; ') : '(none)'
+  return '(none)'
 }

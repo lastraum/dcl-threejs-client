@@ -16,6 +16,7 @@ export {
   peLiveCap,
   secondaryTickIntervalMs,
   peTickIntervalMs,
+  peSoftHydrationMs,
   tertiaryResidentCap
 } from './caps'
 export type { ResidentMode } from './SceneWorkerSlot'

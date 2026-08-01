@@ -1046,6 +1046,8 @@ export class ClientShell {
     }
     const syncSmartWearableBtn = () => {
       if (!btn) return
+      // No count badge on the PX HUD icon — running state is the active highlight only.
+      btn.setBadge(null)
       // scene.json featureToggles.portableExperiences = disabled
       // → icon stays visible but restricted; hover explains scene override; panel closed.
       if (!manager.isPeAllowed()) {
@@ -1054,14 +1056,10 @@ export class ClientShell {
           'This scene is overriding portable experiences'
         )
         this.pePanel.hide()
-        btn.setBadge(null)
         return
       }
       btn.setRestricted(false)
-      const slots = manager.listSlots()
-      const n = slots.filter((s) => s.status === 'running').length
-      const available = slots.length
-      btn.setBadge(n > 0 ? n : available > 0 ? available : null)
+      const n = manager.listSlots().filter((s) => s.status === 'running').length
       if (!this.pePanel.isVisible()) {
         btn.setActive(n > 0)
       }

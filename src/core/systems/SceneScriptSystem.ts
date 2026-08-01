@@ -1211,6 +1211,15 @@ export class SceneScriptSystem {
     )
   }
 
+  /**
+   * Structure-only dirty (new/removed MeshCollider / Gltf / full walk) — multi-scene
+   * async PhysX re-stream. Pose dirty alone must NOT re-stream (PE free-flight ROOT slides
+   * handle pose on the sync frame via captureLivePlatformColliders).
+   */
+  hasColliderStructureWorkPending(): boolean {
+    return this.colliderFullWalkRequested || this.colliderStructureDirty.size > 0
+  }
+
   /** Whether syncCollision already ran incremental PhysX pose slides this async pass. */
   hadColliderPoseSyncThisPass(): boolean {
     return this.colliderPosesSyncedThisPass
@@ -3224,20 +3233,23 @@ export class SceneScriptSystem {
     this.foldProjectionChanges()
     const mainCam = MainCamera.getOrNull(CameraEntity) as { virtualCameraEntity?: number } | null
     const locomotion = readLocomotionFromComponents(this.readComponents, PlayerEntity)
-    // Diagnose freeze transitions only — `!imHas` is normal free play and was logging every frame.
-    if (frozenBefore || locomotion.disableAll) {
+    // Log freeze *transitions* only — continuous freeze spam flooded drone free-flight.
+    const afterFrozen = locomotion.disableAll
+    if (frozenBefore !== afterFrozen) {
       const hadAfter = InputModifier.has(PlayerEntity)
       console.info(
         `[player-frame] frameId=${msg.frameId} imHas=${msg.inputModifierHas} ` +
-          `beforeFrozen=${frozenBefore} afterFrozen=${locomotion.disableAll} afterHas=${hadAfter} ` +
+          `beforeFrozen=${frozenBefore} afterFrozen=${afterFrozen} afterHas=${hadAfter} ` +
           `locomotion=${canLocomote(locomotion) ? 'allowed' : 'blocked'}`
       )
     }
     const vcUnbound =
       mainCam?.virtualCameraEntity === undefined || mainCam?.virtualCameraEntity === null
-    // MOVE CAMERA: frozen locomotion — accept vc-pose-live whether lens is bound or not.
-    // (Bound = preview through the VC being flown; unbound = free edit flight.)
-    this.playerEditFlightLiveLane = !canLocomote(locomotion)
+    // MOVE CAMERA edit-flight only on primary plaza freezes.
+    // PE freeze is vehicle/menu (drone) — must NOT open edit-flight live lane or host
+    // camera flashes against PE follow-cam / freecam.
+    this.playerEditFlightLiveLane =
+      this.focusPolicy === 'primary' && !canLocomote(locomotion)
     if (vcUnbound && canLocomote(locomotion)) {
       this.projection.clearVcLiveTransformForUnbind()
       this.vcBindHydratePullPending = false
@@ -5196,9 +5208,13 @@ export class SceneScriptSystem {
     this.bridge?.syncAnimatedPlaneUvs()
   }
 
-  /** Budgeted material texture retries on the render thread — not tied to projection diff drain. */
+  /**
+   * Budgeted material texture retries on the render thread — not tied to projection diff drain.
+   * PE rotors / MeshRenderer planes must call this every rAF (World.pumpPeMotionBridges).
+   */
   tickDeferredMaterials(): void {
-    this.bridge?.tickDeferredMaterials()
+    // Slightly higher PE-friendly budget so board/rotor PNGs land same frame as spawn.
+    this.bridge?.tickDeferredMaterials(16, 12)
   }
 
   async update(delta: number): Promise<void> {

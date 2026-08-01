@@ -304,8 +304,12 @@ export class CollisionSystem {
     return out
   }
 
-  /** Stable geometry id — pose tracked separately in PhysX (staticPoseFp). */
+  /**
+   * Stable geometry id — pose tracked separately in PhysX (staticPoseFp).
+   * Plane v2: XY face + Z thickness (was wrong Y-thick box; broke rotX decks).
+   */
   private physicsGeomFingerprint(entity: Entity, kind: string, collisionMask: number): string {
+    if (kind === 'plane') return `mesh:${entity}:plane:xy-zthick-v2:${collisionMask}`
     return `mesh:${entity}:${kind}:${collisionMask}`
   }
 

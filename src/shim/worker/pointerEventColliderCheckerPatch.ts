@@ -8,6 +8,7 @@ import { patchProjectileSweptHits } from './patchProjectileSweptHits'
 import { patchSdkOnUpdatePollEventsBoundary } from './patchSdkOnUpdatePollEvents'
 import { patchPhotoMuralOptionalChain } from './photoMuralPatch'
 import { patchTheatreSkip } from './theatreSkipPatch'
+import { patchTimersCallbackSafety } from './patchTimersCallbackSafety'
 
 const STOCK_CHECKER_RE = /Missing MeshCollider component on entity/
 
@@ -404,6 +405,24 @@ function patchUiVirtualCanvasHooks(code: string): string {
   return out
 }
 
+/**
+ * Minimal patch — composite alias + addTransport engine capture only.
+ * Used when the full patch stack produces a SyntaxError so PE still binds sceneEngine
+ * (full-stack failure previously fell back to raw source → FATAL sceneEngine null).
+ */
+export function patchSceneBundleCaptureOnly(code: string, onStep?: PatchSceneBundleStepLog): string {
+  const runStep = (label: string, fn: () => string): string => {
+    onStep?.(`begin ${label}`, -1)
+    const stepAt = performance.now()
+    const out = fn()
+    onStep?.(label, performance.now() - stepAt)
+    return out
+  }
+  let out = runStep('capture-only composite alias', () => patchCompositeSrcAlias(code))
+  out = runStep('capture-only addTransport', () => wrapAddTransportCalls(out, ADD_TRANSPORT_WRAP_LIMIT))
+  return out
+}
+
 /** Default bundle patch — composite alias + safe engine capture (no checker strip). */
 export function patchSceneBundle(code: string, onStep?: PatchSceneBundleStepLog): string {
   const runStep = (label: string, fn: () => string): string => {
@@ -471,6 +490,17 @@ export function patchSceneBundle(code: string, onStep?: PatchSceneBundleStepLog)
   out = runStep('photo mural optional-chain', () => {
     const r = patchPhotoMuralOptionalChain(out)
     if (r.applied) onStep?.(`photo mural optional-chain (${r.replacements})`, 0)
+    return r.code
+  })
+
+  out = runStep('timers callback safety', () => {
+    const r = patchTimersCallbackSafety(out)
+    onStep?.(
+      r.patched > 0
+        ? `timers callback safety (patched ${r.patched})`
+        : 'timers callback safety (missed)',
+      0
+    )
     return r.code
   })
 

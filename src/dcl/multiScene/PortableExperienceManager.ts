@@ -1,11 +1,14 @@
 import type { EntityPose } from '../../bridge/ReservedEntitiesSync'
-import type { AssetCache } from '../../rendering/AssetCache'
+import {
+  prefetchSceneManifestAssets,
+  type AssetCache
+} from '../../rendering/AssetCache'
 import type { SceneHost } from '../../rendering/SceneHost'
 import type { PerformanceTier } from '../../shim/types'
 import type { ResolvedScene } from '../content/types'
 import { showPeConsentModal } from './peConsentModal'
 import type { PhysicsColliderDesc } from '../../physics/PhysXWorld'
-import { peLiveCap, peTickIntervalMs } from './caps'
+import { peLiveCap, peSoftHydrationMs, peTickIntervalMs } from './caps'
 import type { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
 import { pePhysOffset } from './physOffsets'
 import { discoverEquippedPortableExperiences } from './resolveSmartWearablePe'
@@ -190,7 +193,11 @@ export class PortableExperienceManager {
         peerUrl,
         { bodyShape: opts?.bodyShape }
       )
-      for (const [id, scene] of scenes) this.scenes.set(id, scene)
+      for (const [id, scene] of scenes) {
+        this.scenes.set(id, scene)
+        // Warm PE GLB bytes as soon as wearables resolve (before consent / enable).
+        if (this.cache) prefetchSceneManifestAssets(this.cache, scene)
+      }
 
       const seen = new Set(candidates.map((c) => c.id))
       // Drop unequipped (not running restore targets that vanished).
@@ -307,6 +314,11 @@ export class PortableExperienceManager {
 
     this.booting.add(id)
     try {
+      // Cold PE GLBs were only kicked on first GltfContainer attach at play budget 1/frame.
+      // Prefetch manifest bytes now (IDB / network) so drone parse is not cold on first open.
+      prefetchSceneManifestAssets(this.cache, scene)
+      this.cache.setScene(scene)
+
       const peIndex = this.nextPeIndex++
       const worker = new SceneWorkerSlot({
         id,
@@ -326,6 +338,16 @@ export class PortableExperienceManager {
       }
       // Wire pointer + player identity so PE UI clicks and getPlayer() work.
       this.onPeWorkerReady?.(worker.system, worker.physOffset)
+      // Soft hydrate: attach budget 16/frame (not play-mode 1) so drone/vehicles land after onStart.
+      // Re-arm after first ready paint so late GltfContainer spawns (timer-gated drone) still get budget.
+      const softMs = peSoftHydrationMs(this.tier)
+      worker.system.extendSoftHydration(softMs)
+      worker.system.prefetchGltfs()
+      window.setTimeout(() => {
+        if (this.disposed || !this.workers.has(id)) return
+        worker.system.extendSoftHydration(softMs)
+        worker.system.prefetchGltfs()
+      }, 1500)
       // UI: user pref AND scene policy. (PE start already revealed UI for first mount paint.)
       const uiOn = slot.uiEnabled && this.pePolicy.uiAllowed
       worker.setUiVisible(uiOn)
@@ -343,7 +365,8 @@ export class PortableExperienceManager {
       slot.wantEnabled = true
       if (this.primaryScene) this.cache.setScene(this.primaryScene)
       console.info(
-        `[pe] enabled “${slot.candidate.title}”${opts?.fromRestore ? ' (restored after travel)' : ''} ui=${uiOn}`
+        `[pe] enabled “${slot.candidate.title}”${opts?.fromRestore ? ' (restored after travel)' : ''} ` +
+          `ui=${uiOn} glbPrefetch softHydration=${softMs}ms`
       )
       this.emit()
       return true
@@ -510,11 +533,16 @@ export class PortableExperienceManager {
     for (const worker of this.workers.values()) {
       // Keyboard is InputHub → PE subscriber (World.inputHub.sync once per frame).
       worker.tickSync(player, camera, interval)
-      // PE UI pointer inject (clicks) — primary loop alone never ticks PE PointerEventsSystem.
+      // Hover / PrimaryPointerInfo only. NEVER processPendingDown/Up here:
+      // that writes PET_DOWN onto the main PE encoder every rAF before UI flush,
+      // grow-only delivers it (renderer-append-deliver pointer=1) → EventSystem
+      // fires once, then inject-pointer-click fires PET_DOWN again → toggle open+close
+      // (Neurolink icon stuck at mount 1203 closed). Clicks are owned by
+      // PointerEventsSystem → flushPointerCrdt → inject-pointer-click only.
       worker.system.updatePointerEvents(frame)
       worker.system.syncPointerInput(frame, {
-        processPendingDown: true,
-        processPendingUp: true
+        processPendingDown: false,
+        processPendingUp: false
       })
     }
   }
@@ -526,6 +554,55 @@ export class PortableExperienceManager {
       descs.push(...(await worker.tickAsync(this.primaryScene, this.cache)))
     }
     return descs
+  }
+
+  /**
+   * Sync-frame PE platform colliders (Neurolink drone deck/walls).
+   *
+   * Worker systems move MeshCollider parents; main has last-applied CRDT poses on the PE
+   * SceneScriptSystem. Refresh extract matrices, remap phys ids, and return descs so World
+   * can ROOT-slide PhysX + ride transfer — same class as a primary scene platform.
+   *
+   * Pose-only: marks colliders synced so async dirty-once cook does not re-stream every frame.
+   */
+  captureLivePlatformColliders(): PhysicsColliderDesc[] {
+    const out: PhysicsColliderDesc[] = []
+    for (const worker of this.workers.values()) {
+      if (!worker.isRunning) continue
+      try {
+        const sys = worker.system
+        // Structure extract only when dirty or first bootstrap (empty extracts + MeshColliders).
+        // Do NOT force full walk every frame — that tanks FPS.
+        const extracts = sys.getAllPhysicsColliderDescs().length
+        if (sys.hasColliderWorkPending()) {
+          sys.syncCollision()
+        } else if (extracts === 0) {
+          let meshColliderCount = 0
+          try {
+            const { MeshCollider, Transform } = sys.readComponents
+            for (const _ of sys.view.getEntitiesWith(MeshCollider, Transform)) {
+              meshColliderCount++
+              if (meshColliderCount > 0) break
+            }
+          } catch {
+            /* components not ready */
+          }
+          if (meshColliderCount > 0) sys.syncCollisionForce()
+          else sys.syncCollisionPoses()
+        } else {
+          // Matrices only — drone rig moves every PE tick.
+          sys.syncCollisionPoses()
+        }
+        const remapped = worker.captureRemappedColliders()
+        if (remapped.length) {
+          out.push(...remapped)
+          worker.markCollidersSynced()
+        }
+      } catch (err) {
+        console.warn('[pe] captureLivePlatformColliders failed', err)
+      }
+    }
+    return out
   }
 
   /**

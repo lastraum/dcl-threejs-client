@@ -619,6 +619,11 @@ export function collectPlayerFrameSnapshot(engine: IEngine): PlayerFrameSnapshot
     MainCamera.createOrReplace(camera, {})
   }
   const mainCamera = MainCamera.getOrNull(camera) ?? {}
+
+  // Do NOT stream PlayerEntity Transform every freeze frame.
+  // Neurolink drone rides MeshColliders (deck/walls); continuous teleport adopt fought
+  // platform physics and flashed the camera (pe≠host feet). Discrete movePlayerTo uses RPC.
+
   const key = stableSnapshotKey(inputModifierHas, inputModifier, mainCamera)
   if (key === lastSnapshotKey) return null
   lastSnapshotKey = key

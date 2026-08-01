@@ -127,6 +127,8 @@ export function createSystemStubs(
       changeRealm: async (body: ChangeRealmRequest) => rpc.changeRealm(body),
       triggerEmote: async (body: TriggerEmoteRequest) => rpc.triggerEmote(body),
       triggerSceneEmote: async (body: TriggerSceneEmoteRequest) => rpc.triggerSceneEmote(body),
+      /** Scenes/utils call stopEmote from timer callbacks — not in all protocol stubs; no-op OK. */
+      stopEmote: async (_body?: unknown) => ({ success: true }),
       openExternalUrl: async (body: OpenExternalUrlRequest) => rpc.openExternalUrl(body),
       openNftDialog: async (body: OpenNftDialogRequest) => rpc.openNftDialog(body),
       copyToClipboard: async (body: CopyToClipboardRequest) => rpc.copyToClipboard(body),

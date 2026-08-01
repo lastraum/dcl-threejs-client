@@ -1787,7 +1787,9 @@ export class AppController {
 
   /**
    * Live directory / PiP cast watch — always join the target world's scene LiveKit.
-   * Do not reuse social-chat room (often Genesis / wrong place with no OBS ingress).
+   * Uses an independent CastLiveKitRoom (NOT this.castWatchRoom) so Explorer/landing
+   * teardown does not kill an open PiP when navigating away from /live.
+   * Stream-consumer only; no chat room reuse.
    */
   private async startLiveDirectoryCastWatch(
     worldName: string,
@@ -1795,14 +1797,89 @@ export class AppController {
     onUpdate?: (attached: boolean) => void,
     opts?: { muted?: boolean; volume?: number }
   ): Promise<() => void> {
+    if (!loginHasCommsIdentity(this.login)) {
+      try {
+        const guest = await ensureGuestSession()
+        this.login = guest
+        this.playSessionReady = true
+        this.applyLoginToSocialShellViews(guest)
+        this.ensureSocialChatShell()
+        this.socialChat?.applyLogin(guest)
+      } catch {
+        /* fall through */
+      }
+    }
+    if (!loginHasCommsIdentity(this.login)) {
+      throw new Error('Could not start a guest session to watch the live stream. Try signing in.')
+    }
+    const identity = this.login.identity
     const target = {
       kind: 'world' as const,
       worldName,
       segment: worldName
     }
-    return this.startLandingCastWatch(target, host, onUpdate, opts, {
-      preferExistingSceneRoom: false
+
+    const { resolveSceneFromRoute } = await import('../dcl/content/resolveScene')
+    const { getSceneAdapter } = await import('../network/gatekeeper/GatekeeperClient')
+    const { CastLiveKitRoom } = await import('../network/comms/CastLiveKitRoom')
+    const { parseLiveKitConnectionString } = await import('../network/comms/livekitAdapter')
+    const { isParcelPointer, normalizePointer } = await import('../network/catalyst/pointer')
+
+    const scene = await resolveSceneFromRoute(target)
+    const sceneId = scene.entityId?.trim()
+    if (!sceneId) {
+      throw new Error('Could not resolve scene deployment id for this place.')
+    }
+
+    const isWorld = scene.source.kind === 'world'
+    const pointer = normalizePointer(scene.commsPointer)
+    const parcel = isWorld ? '0,0' : isParcelPointer(pointer) ? pointer : scene.baseParcel
+    const realmName = isWorld
+      ? pointer.toLowerCase()
+      : scene.realm.realmName?.trim() || 'main'
+
+    const adapterResult = await getSceneAdapter(identity, {
+      sceneId,
+      parcel,
+      realmName,
+      isWorld
     })
+    if (!adapterResult.ok) {
+      clientDebugLog.log(
+        'social',
+        `Live cast watch adapter failed world=${realmName} ${adapterResult.error} (${adapterResult.status})`,
+        { level: 'warn', alsoConsole: true }
+      )
+      throw new Error(
+        `Could not join scene LiveKit for stream: ${adapterResult.error} (HTTP ${adapterResult.status})`
+      )
+    }
+
+    let url: string
+    let token: string
+    try {
+      ;({ url, token } = parseLiveKitConnectionString(adapterResult.adapter))
+    } catch {
+      throw new Error('Gatekeeper returned an invalid LiveKit adapter for this scene.')
+    }
+
+    // Independent of landing castWatchRoom — survives Explorer/Map/etc. navigation.
+    const room = new CastLiveKitRoom()
+    const ok = await room.connect(url, token)
+    if (!ok) {
+      throw new Error('Could not connect to scene LiveKit room for stream video.')
+    }
+    clientDebugLog.log(
+      'social',
+      `Live directory cast connected realm=${realmName} (pip/preview — independent of landing)`,
+      { alsoConsole: true }
+    )
+
+    const unbind = room.bindVideoToHost(host, onUpdate, opts)
+    return () => {
+      unbind()
+      room.disconnect()
+    }
   }
 
   private wireLiveSessionEnded(
@@ -2010,15 +2087,14 @@ export class AppController {
    * Fresh get-scene-adapter join so we attach to the same room as in-world livekit-video://current-stream.
    * Wallet **or guest** identity can watch (signed gatekeeper + LiveKit).
    */
+  /** Landing Join Live only — uses castWatchRoom (torn down with landing). */
   private async startLandingCastWatch(
     target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>,
     host: HTMLElement,
     onUpdate?: (attached: boolean) => void,
-    opts?: { muted?: boolean; volume?: number },
-    castOpts?: { preferExistingSceneRoom?: boolean }
+    opts?: { muted?: boolean; volume?: number }
   ): Promise<() => void> {
     if (!loginHasCommsIdentity(this.login)) {
-      // Edge case: no session yet — mint browser guest so Cast works without a wallet.
       try {
         const guest = await ensureGuestSession()
         this.login = guest
@@ -2052,17 +2128,13 @@ export class AppController {
     const isWorld = scene.source.kind === 'world'
     const pointer = normalizePointer(scene.commsPointer)
     const parcel = isWorld ? '0,0' : isParcelPointer(pointer) ? pointer : scene.baseParcel
-    // Must match buildCommsTarget / scene-stream-access realm (lowercase world id).
     const realmName = isWorld
       ? pointer.toLowerCase()
       : scene.realm.realmName?.trim() || 'main'
 
-    // Landing Join Live may reuse chat room. Live directory PiP must NOT — chat is often
-    // a different place (Genesis) with no OBS ingress for the stream world.
-    const preferExisting = castOpts?.preferExistingSceneRoom !== false
-    if (preferExisting && this.socialChat?.isLiveKitConnected()) {
+    // Prefer existing scene-room session first (already joined for chat on landing).
+    if (this.socialChat?.isLiveKitConnected()) {
       const unbindExisting = this.socialChat.bindRemoteCastVideoToHost(host, onUpdate, opts)
-      // Give existing room a moment; if video attaches, keep it.
       await new Promise((r) => setTimeout(r, 600))
       if (host.querySelector('video')) {
         return unbindExisting
@@ -2077,11 +2149,6 @@ export class AppController {
       isWorld
     })
     if (!adapterResult.ok) {
-      clientDebugLog.log(
-        'social',
-        `Live cast watch adapter failed world=${realmName} ${adapterResult.error} (${adapterResult.status})`,
-        { level: 'warn', alsoConsole: true }
-      )
       throw new Error(
         `Could not join scene LiveKit for stream keys: ${adapterResult.error} (HTTP ${adapterResult.status})`
       )
@@ -2103,11 +2170,6 @@ export class AppController {
       this.castWatchRoom = null
       throw new Error('Could not connect to scene LiveKit room for stream-key video.')
     }
-    clientDebugLog.log(
-      'social',
-      `Live cast watch connected realm=${realmName} — waiting for OBS/-streamer video`,
-      { alsoConsole: true }
-    )
 
     const unbind = room.bindVideoToHost(host, (attached) => {
       if (attached) this.sceneLandingView?.setCastLive(true)

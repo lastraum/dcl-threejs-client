@@ -8,6 +8,11 @@ export type LivePanelOptions = {
   getDirectory: () => LiveDirectoryController | null
   getLogin?: () => LoginResult | null
   onWatch: (session: LiveSession) => void
+  onCastPreview?: (
+    host: HTMLElement,
+    worldName: string,
+    onUpdate: (attached: boolean) => void
+  ) => Promise<() => void>
   onClose?: () => void
 }
 
@@ -32,6 +37,9 @@ export class LivePanel {
         this.options.onWatch(s)
         // Keep panel open so user can open another stream or end live.
       },
+      onCastPreview: (host, world, onUpdate) =>
+        this.options.onCastPreview?.(host, world, onUpdate) ??
+        Promise.resolve(() => {}),
       compact: true
     })
     this.element.querySelector('[data-body]')!.appendChild(this.view.root)

@@ -1585,6 +1585,8 @@ export class AppController {
       getDirectory: () => this.socialChat?.getSocial()?.getLiveDirectory() ?? null,
       getLogin: () => this.login,
       onWatch: (session) => this.openLivePip(session),
+      onCastPreview: (host, worldName, onUpdate) =>
+        this.startLiveDirectoryCastWatch(worldName, host, onUpdate, { muted: true }),
       ...this.socialShellLoginHandlers()
     })
     this.livePageView.mount(this.container)
@@ -1769,12 +1771,7 @@ export class AppController {
           /* user closed */
         },
         onCastAttach: async (host, worldName, onUpdate, opts) => {
-          const target = {
-            kind: 'world' as const,
-            worldName,
-            segment: worldName
-          }
-          return this.startLandingCastWatch(target, host, onUpdate, {
+          return this.startLiveDirectoryCastWatch(worldName, host, onUpdate, {
             muted: opts.muted
           })
         }
@@ -1786,6 +1783,26 @@ export class AppController {
         this.world?.social.getLiveDirectory() ??
         null
     )
+  }
+
+  /**
+   * Live directory / PiP cast watch — always join the target world's scene LiveKit.
+   * Do not reuse social-chat room (often Genesis / wrong place with no OBS ingress).
+   */
+  private async startLiveDirectoryCastWatch(
+    worldName: string,
+    host: HTMLElement,
+    onUpdate?: (attached: boolean) => void,
+    opts?: { muted?: boolean; volume?: number }
+  ): Promise<() => void> {
+    const target = {
+      kind: 'world' as const,
+      worldName,
+      segment: worldName
+    }
+    return this.startLandingCastWatch(target, host, onUpdate, opts, {
+      preferExistingSceneRoom: false
+    })
   }
 
   private wireLiveSessionEnded(
@@ -1997,7 +2014,8 @@ export class AppController {
     target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>,
     host: HTMLElement,
     onUpdate?: (attached: boolean) => void,
-    opts?: { muted?: boolean; volume?: number }
+    opts?: { muted?: boolean; volume?: number },
+    castOpts?: { preferExistingSceneRoom?: boolean }
   ): Promise<() => void> {
     if (!loginHasCommsIdentity(this.login)) {
       // Edge case: no session yet — mint browser guest so Cast works without a wallet.
@@ -2039,8 +2057,10 @@ export class AppController {
       ? pointer.toLowerCase()
       : scene.realm.realmName?.trim() || 'main'
 
-    // Prefer existing scene-room session first (already joined for chat).
-    if (this.socialChat?.isLiveKitConnected()) {
+    // Landing Join Live may reuse chat room. Live directory PiP must NOT — chat is often
+    // a different place (Genesis) with no OBS ingress for the stream world.
+    const preferExisting = castOpts?.preferExistingSceneRoom !== false
+    if (preferExisting && this.socialChat?.isLiveKitConnected()) {
       const unbindExisting = this.socialChat.bindRemoteCastVideoToHost(host, onUpdate, opts)
       // Give existing room a moment; if video attaches, keep it.
       await new Promise((r) => setTimeout(r, 600))
@@ -2057,6 +2077,11 @@ export class AppController {
       isWorld
     })
     if (!adapterResult.ok) {
+      clientDebugLog.log(
+        'social',
+        `Live cast watch adapter failed world=${realmName} ${adapterResult.error} (${adapterResult.status})`,
+        { level: 'warn', alsoConsole: true }
+      )
       throw new Error(
         `Could not join scene LiveKit for stream keys: ${adapterResult.error} (HTTP ${adapterResult.status})`
       )
@@ -2078,6 +2103,11 @@ export class AppController {
       this.castWatchRoom = null
       throw new Error('Could not connect to scene LiveKit room for stream-key video.')
     }
+    clientDebugLog.log(
+      'social',
+      `Live cast watch connected realm=${realmName} — waiting for OBS/-streamer video`,
+      { alsoConsole: true }
+    )
 
     const unbind = room.bindVideoToHost(host, (attached) => {
       if (attached) this.sceneLandingView?.setCastLive(true)
@@ -2787,6 +2817,8 @@ export class AppController {
         onPlayPetClipPreview: (hash, clip) => world.playPetClipPreview(hash, clip),
         onStopPetClipPreview: () => world.stopPetClipPreview(),
         onWatchLive: (session) => this.openLivePip(session),
+        onLiveCastPreview: (host, worldName, onUpdate) =>
+          this.startLiveDirectoryCastWatch(worldName, host, onUpdate, { muted: true }),
         getLogin: () => this.login,
         onSignOut: () => this.signOut(),
         onExit: () => this.leavePlayMode()

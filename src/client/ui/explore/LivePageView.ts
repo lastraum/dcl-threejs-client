@@ -10,6 +10,11 @@ export type LivePageViewOptions = SocialShellChromeHandlers & {
   getDirectory: () => LiveDirectoryController | null
   getLogin?: () => LoginResult | null
   onWatch: (session: LiveSession) => void
+  onCastPreview?: (
+    host: HTMLElement,
+    worldName: string,
+    onUpdate: (attached: boolean) => void
+  ) => Promise<() => void>
 }
 
 /** Full-page Live directory at `/live`. */
@@ -39,6 +44,7 @@ export class LivePageView {
       getDirectory: opts.getDirectory,
       getLogin: opts.getLogin ?? (() => opts.login),
       onWatch: opts.onWatch,
+      onCastPreview: opts.onCastPreview,
       compact: false
     })
 

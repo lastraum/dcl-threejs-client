@@ -120,8 +120,9 @@ export class LiveDirectoryView {
             <label class="live-dir__label">Or type world name
               <input class="live-dir__input" data-world-manual type="text" placeholder="myworld.dcl.eth" autocomplete="off" />
             </label>
-            <button type="button" class="live-dir__go-live live-dir__go-live--modal" data-ssa-get>GO LIVE</button>
+            <button type="button" class="live-dir__btn live-dir__btn--secondary live-dir__get-keys" data-get-keys>Get keys</button>
             <div class="live-go-modal__creds" data-ssa-creds hidden></div>
+            <button type="button" class="live-dir__go-live live-dir__go-live--modal" data-dcl-go-live disabled>GO LIVE</button>
           </div>
           <p class="live-dir__error" data-form-error hidden></p>
         </div>
@@ -146,7 +147,11 @@ export class LiveDirectoryView {
       if (this.mode === 'dcl-world' && !this.worldsLoaded) void this.loadWorlds()
     })
     this.modal.querySelector('[data-confirm-m3u8]')?.addEventListener('click', () => void this.confirmM3u8())
-    this.modal.querySelector('[data-ssa-get]')?.addEventListener('click', () => void this.getStreamAccessAndGoLive())
+    this.modal.querySelector('[data-get-keys]')?.addEventListener('click', () => void this.getKeys())
+    this.modal.querySelector('[data-dcl-go-live]')?.addEventListener('click', () => void this.goLiveDcl())
+    // Changing world invalidates keys until Get keys again.
+    this.modal.querySelector('[data-world-select]')?.addEventListener('change', () => this.resetDclKeysUi())
+    this.modal.querySelector('[data-world-manual]')?.addEventListener('input', () => this.resetDclKeysUi())
   }
 
   mount(): void {
@@ -355,12 +360,24 @@ export class LiveDirectoryView {
     this.syncBroadcastUi()
   }
 
-  private async getStreamAccessAndGoLive(): Promise<void> {
+  private resetDclKeysUi(): void {
+    // Keep credentials if user is already broadcasting; only clear pre-go-live mint UI.
+    if (this.options.getDirectory()?.isBroadcasting()) return
+    this.credentials = null
+    const modalCreds = this.modal.querySelector('[data-ssa-creds]') as HTMLElement
+    modalCreds.hidden = true
+    modalCreds.innerHTML = ''
+    const go = this.modal.querySelector('[data-dcl-go-live]') as HTMLButtonElement
+    go.disabled = true
+  }
+
+  /** Mint / list OBS URL + key and show them — does NOT start heartbeat yet. */
+  private async getKeys(): Promise<void> {
     this.clearFormError()
     if (this.accessBusy) return
     const login = this.options.getLogin?.() ?? null
     if (!login || login.kind !== 'wallet' || !login.identity) {
-      this.showFormError('Wallet required for DCL stream access')
+      this.showFormError('Wallet required for stream keys')
       return
     }
     const worldName = this.selectedWorldName()
@@ -368,17 +385,14 @@ export class LiveDirectoryView {
       this.showFormError('Pick or type a world name')
       return
     }
-    const dir = this.options.getDirectory()
-    if (!dir) {
-      this.showFormError('Sign in to go live')
-      return
-    }
 
     this.accessBusy = true
-    const btn = this.modal.querySelector('[data-ssa-get]') as HTMLButtonElement
+    const btn = this.modal.querySelector('[data-get-keys]') as HTMLButtonElement
+    const goBtn = this.modal.querySelector('[data-dcl-go-live]') as HTMLButtonElement
     btn.disabled = true
+    goBtn.disabled = true
     const prevLabel = btn.textContent
-    btn.textContent = 'Starting…'
+    btn.textContent = 'Getting keys…'
     try {
       const route = {
         kind: 'world' as const,
@@ -404,20 +418,11 @@ export class LiveDirectoryView {
         return
       }
       this.credentials = credentials
-
-      // Show keys in modal briefly, then announce live + self card.
       const modalCreds = this.modal.querySelector('[data-ssa-creds]') as HTMLElement
       this.fillCredentialsBox(modalCreds, credentials)
       modalCreds.hidden = false
-
-      const media: GlobalLiveMedia = { type: 'dcl-cast', worldName }
-      const result = await dir.goLiveWithMedia(media, worldName)
-      if (!result.ok) {
-        this.showFormError(result.error)
-        return
-      }
-      this.closeModal()
-      this.syncBroadcastUi()
+      goBtn.disabled = false
+      btn.textContent = 'Refresh keys'
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       this.showFormError(
@@ -425,10 +430,48 @@ export class LiveDirectoryView {
           ? 'Could not resolve scene for this world (is it deployed?).'
           : msg
       )
+      btn.textContent = prevLabel || 'Get keys'
     } finally {
       this.accessBusy = false
       btn.disabled = false
-      btn.textContent = prevLabel || 'GO LIVE'
+      if (btn.textContent === 'Getting keys…') btn.textContent = prevLabel || 'Get keys'
+    }
+  }
+
+  /** Start heartbeat + Live now tile after keys are shown. */
+  private async goLiveDcl(): Promise<void> {
+    this.clearFormError()
+    const dir = this.options.getDirectory()
+    if (!dir) {
+      this.showFormError('Sign in to go live')
+      return
+    }
+    const worldName = this.selectedWorldName()
+    if (!worldName) {
+      this.showFormError('Pick or type a world name')
+      return
+    }
+    if (!this.credentials) {
+      this.showFormError('Get keys first')
+      return
+    }
+    const goBtn = this.modal.querySelector('[data-dcl-go-live]') as HTMLButtonElement
+    goBtn.disabled = true
+    goBtn.textContent = 'Starting…'
+    try {
+      const media: GlobalLiveMedia = { type: 'dcl-cast', worldName }
+      const result = await dir.goLiveWithMedia(media, worldName)
+      if (!result.ok) {
+        this.showFormError(result.error)
+        goBtn.disabled = false
+        goBtn.textContent = 'GO LIVE'
+        return
+      }
+      this.closeModal()
+      this.syncBroadcastUi()
+    } finally {
+      goBtn.disabled = !this.credentials
+      goBtn.textContent = 'GO LIVE'
     }
   }
 

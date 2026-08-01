@@ -5892,11 +5892,141 @@
         line-height: 1.45;
         color: rgba(255, 255, 255, 0.55);
       }
-      .live-dir__broadcast-row {
+      .live-dir__broadcast {
         display: flex;
-        gap: 8px;
-        flex-wrap: wrap;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .live-dir__go-live {
+        display: flex;
         align-items: center;
+        justify-content: center;
+        gap: 10px;
+        width: 100%;
+        border: none;
+        border-radius: 12px;
+        padding: 14px 18px;
+        font-size: 15px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        color: #fff;
+        background: linear-gradient(135deg, #ff2d55 0%, #ff4d6d 55%, #e11d48 100%);
+        box-shadow: 0 8px 24px rgba(255, 45, 85, 0.35);
+        cursor: pointer;
+      }
+      .live-dir__go-live:hover {
+        filter: brightness(1.06);
+      }
+      .live-dir__go-live:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+        filter: none;
+      }
+      .live-dir__go-live--modal {
+        margin-top: 6px;
+      }
+      .live-dir__go-live-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #fff;
+        box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.25);
+        animation: live-dir-pulse 1.2s ease-in-out infinite;
+      }
+      @keyframes live-dir-pulse {
+        0%, 100% { opacity: 1; transform: scale(1); }
+        50% { opacity: 0.55; transform: scale(0.85); }
+      }
+      .live-dir__btn--end {
+        width: 100%;
+        border-color: rgba(255, 255, 255, 0.2);
+      }
+      .live-dir__self-card {
+        border-radius: 12px;
+        border: 1px solid rgba(255, 45, 85, 0.45);
+        background: rgba(255, 45, 85, 0.08);
+        padding: 12px 12px 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .live-dir__self-card[hidden] { display: none !important; }
+      .live-dir__self-card-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .live-dir__self-card-badge {
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: #ff2d55;
+        color: #fff;
+      }
+      .live-dir__self-card-status {
+        font-size: 13px;
+        font-weight: 700;
+        color: rgba(255, 255, 255, 0.95);
+      }
+      .live-dir__self-card-title {
+        margin: 0;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.6);
+      }
+      .live-dir__self-creds {
+        margin: 0;
+        padding: 8px;
+      }
+      .live-cred-line {
+        display: grid;
+        grid-template-columns: 52px minmax(0, 1fr) 32px;
+        align-items: center;
+        gap: 6px;
+      }
+      .live-cred-line + .live-cred-line { margin-top: 8px; }
+      .live-cred-line__label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        color: rgba(255, 255, 255, 0.5);
+        text-transform: uppercase;
+      }
+      .live-cred-line__value {
+        min-width: 0;
+        padding: 6px 8px;
+        border-radius: 6px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(0, 0, 0, 0.35);
+        color: #fff;
+        font-size: 11px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        user-select: all;
+      }
+      .live-cred-line__copy {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(255, 255, 255, 0.9);
+        cursor: pointer;
+        padding: 0;
+        flex-shrink: 0;
+      }
+      .live-cred-line__copy:hover {
+        background: rgba(255, 255, 255, 0.12);
+      }
+      .live-cred-line__copy.is-copied {
+        border-color: rgba(255, 45, 85, 0.55);
+        color: #ff6b8a;
       }
       .live-dir__hint--tight { margin-top: 6px; margin-bottom: 0; }
       .live-dir__select { appearance: auto; cursor: pointer; }

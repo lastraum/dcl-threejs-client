@@ -12,6 +12,13 @@ export const SIDEBAR_ICONS = {
   smartWearable: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <path d="M13 2 4 14h7l-1 8 10-13h-7l0-7z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
   </svg>`,
+  live: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <circle cx="12" cy="12" r="3" fill="currentColor"/>
+    <path d="M12 5a7 7 0 0 1 7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M12 5a7 7 0 0 0-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M12 2a10 10 0 0 0-10 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  </svg>`,
   skybox: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.5"/>
     <path d="M12 3.5a8.5 8.5 0 0 1 0 17" stroke="currentColor" stroke-width="1.5"/>

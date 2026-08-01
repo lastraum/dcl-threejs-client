@@ -12,6 +12,8 @@ import { NearbyVoicePanel } from './NearbyVoicePanel'
 import { MarketplaceCreditsPanel } from './MarketplaceCreditsPanel'
 import { NotificationsPanel } from './NotificationsPanel'
 import { PortableExperiencePanel } from './PortableExperiencePanel'
+import { LivePanel } from './LivePanel'
+import type { LiveSession } from '../../../social/globalLiveWire'
 import { FriendsPanel } from './FriendsPanel'
 import { PetsPanel } from './PetsPanel'
 import { PetBarnPanel } from './PetBarnPanel'
@@ -44,6 +46,8 @@ export type ClientShellOptions = {
   onActivePetChange?: () => void | Promise<void>
   onPlayPetClipPreview?: (contentHash: string, clipName: string) => void | Promise<boolean>
   onStopPetClipPreview?: () => void
+  /** Open Live PiP for a directory session (shell or 2D page). */
+  onWatchLive?: (session: LiveSession) => void
   onSignOut: () => void | Promise<void>
   onExit: () => void | Promise<void>
 }
@@ -74,6 +78,7 @@ const BOTTOM_BUTTONS: SidebarButtonConfig[] = [
     label: 'Nearby voice',
     statusDot: 'off'
   },
+  { id: 'live', icon: 'live', label: 'Live' },
   { id: 'smart-wearable', icon: 'smartWearable', label: 'Smart wearables' },
   { id: 'skybox', icon: 'skybox', label: 'Skybox overrides' },
   { id: 'camera', icon: 'camera', label: 'Camera mode', shortcut: 'C' },
@@ -95,6 +100,7 @@ export class ClientShell {
   private readonly skyboxPanel: SkyboxPanel
   private readonly nearbyVoicePanel: NearbyVoicePanel
   private readonly pePanel: PortableExperiencePanel
+  private readonly livePanel: LivePanel
   private readonly notificationsPanel: NotificationsPanel
   private readonly marketplaceCreditsPanel: MarketplaceCreditsPanel
   private readonly friendsPanel: FriendsPanel
@@ -119,6 +125,7 @@ export class ClientShell {
     | ((contentHash: string, clipName: string) => void | Promise<boolean>)
     | null = null
   private onStopPetClipPreview: (() => void) | null = null
+  private onWatchLive: ((session: LiveSession) => void) | null = null
   private onOpenProfile: ((address: string) => void) | null = null
   private onJumpToFriend: ((address: string) => void) | null = null
   private emoteWheelEnabled = true
@@ -157,6 +164,7 @@ export class ClientShell {
     onActivePetChange,
     onPlayPetClipPreview,
     onStopPetClipPreview,
+    onWatchLive,
     onSignOut,
     onExit
   }: ClientShellOptions) {
@@ -167,6 +175,7 @@ export class ClientShell {
     this.onActivePetChange = onActivePetChange ?? null
     this.onPlayPetClipPreview = onPlayPetClipPreview ?? null
     this.onStopPetClipPreview = onStopPetClipPreview ?? null
+    this.onWatchLive = onWatchLive ?? null
     this.root = document.createElement('aside')
     this.root.id = 'client-shell'
     this.root.className = 'client-shell'
@@ -235,6 +244,13 @@ export class ClientShell {
     this.pePanel = new PortableExperiencePanel({
       anchor: () => this.buttons.get('smart-wearable')?.element,
       onClose: () => this.buttons.get('smart-wearable')?.setActive(false)
+    })
+
+    this.livePanel = new LivePanel({
+      anchor: () => this.buttons.get('live')?.element,
+      getDirectory: () => this.social?.getLiveDirectory() ?? null,
+      onWatch: (session) => this.onWatchLive?.(session),
+      onClose: () => this.buttons.get('live')?.setActive(false)
     })
 
     this.notificationsPanel = new NotificationsPanel({
@@ -455,6 +471,8 @@ export class ClientShell {
     this.buttons.get('skybox')?.setActive(false)
     this.nearbyVoicePanel.hide()
     this.buttons.get('nearby-voice')?.setActive(false)
+    this.livePanel.hide()
+    this.buttons.get('live')?.setActive(false)
     this.emoteWheel.hide()
     this.buttons.get('emotes')?.setActive(false)
     this.profilePopup.hide()
@@ -698,6 +716,7 @@ export class ClientShell {
     this.petBarnPanel.dispose()
     this.lootBagPanel.dispose()
     this.pePanel.dispose()
+    this.livePanel.dispose()
     this.emoteWheel.dispose()
     this.devProgressPanel?.hide()
     this.chatPanel?.dispose()
@@ -810,6 +829,30 @@ export class ClientShell {
       }
     }
 
+    if (id === 'live') {
+      return (ev) => {
+        ev.stopPropagation()
+        this.closeMobileDrawerForOverlay()
+        this.livePanel.toggle()
+        this.buttons.get('live')?.setActive(this.livePanel.isVisible())
+        if (this.livePanel.isVisible()) {
+          this.skyboxPanel.hide()
+          this.nearbyVoicePanel.hide()
+          this.pePanel.hide()
+          this.chatPanel?.hide()
+          this.emoteWheel.hide()
+          this.debugPanel.hide()
+          this.devProgressPanel?.hide()
+          this.buttons.get('skybox')?.setActive(false)
+          this.buttons.get('nearby-voice')?.setActive(false)
+          this.buttons.get('smart-wearable')?.setActive(false)
+          this.buttons.get('chat')?.setActive(false)
+          this.buttons.get('help')?.setActive(false)
+          this.buttons.get('dev')?.setActive(false)
+        }
+      }
+    }
+
     if (id === 'smart-wearable') {
       return (ev) => {
         ev.stopPropagation()
@@ -822,12 +865,14 @@ export class ClientShell {
         if (this.pePanel.isVisible()) {
           this.skyboxPanel.hide()
           this.nearbyVoicePanel.hide()
+          this.livePanel.hide()
           this.chatPanel?.hide()
           this.emoteWheel.hide()
           this.debugPanel.hide()
           this.devProgressPanel?.hide()
           this.buttons.get('skybox')?.setActive(false)
           this.buttons.get('nearby-voice')?.setActive(false)
+          this.buttons.get('live')?.setActive(false)
           this.buttons.get('chat')?.setActive(false)
           this.buttons.get('help')?.setActive(false)
           this.buttons.get('dev')?.setActive(false)

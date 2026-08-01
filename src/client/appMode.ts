@@ -4,6 +4,7 @@ export type AppMode =
   | 'map'
   | 'communities'
   | 'events'
+  | 'live'
   | 'profile'
   | 'lootbag'
   | 'landing'

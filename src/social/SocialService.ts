@@ -27,6 +27,7 @@ import { isSceneChatEmoteWireText } from './dclRfc4Chat'
 import { getPrivateMessagesService } from './PrivateMessagesService'
 import type { CommunityFollowController } from './CommunityFollowController'
 import { tryParseFollowWire, type FollowWireMsg } from './communityFollowWire'
+import { LiveDirectoryController } from './LiveDirectoryController'
 import {
   loadDmLocalThreads,
   removeDmLocalThread,
@@ -161,11 +162,14 @@ export class SocialService {
   private unsubPrivateMessages: (() => void) | null = null
   private unsubCommunityMessages: (() => void) | null = null
   private unsubCommunityFollowData: (() => void) | null = null
+  private unsubGlobalLiveData: (() => void) | null = null
   /**
    * Session-scoped Follow/Tour controller (owned by AppController so it survives
    * World rebuild on /goto). Optional until play wires it.
    */
   private communityFollow: CommunityFollowController | null = null
+  /** Global Live directory — always-on with PM room (2D + 3D). */
+  private liveDirectory: LiveDirectoryController | null = null
 
   /** Wire multi-room publish (pool / controller). Falls back to primary CommsService. */
   setSceneChatTransport(options: {
@@ -187,6 +191,11 @@ export class SocialService {
   /** In-world community Follow / Tour session controller (may be null before play wire). */
   getFollow(): CommunityFollowController | null {
     return this.communityFollow
+  }
+
+  /** Global Live directory (PM `d3js-live`) — null before social identity / PM warm. */
+  getLiveDirectory(): LiveDirectoryController | null {
+    return this.liveDirectory
   }
 
   /** Mark a scene chat room live or offline (multi-room pool + primary). */
@@ -1281,12 +1290,27 @@ export class SocialService {
         this.communityFollow?.handleRemote(ev.communityId, ev.fromAddress, ev.msg)
       })
     }
+    this.ensureLiveDirectory()
+    if (!this.unsubGlobalLiveData) {
+      this.unsubGlobalLiveData = this.privateMessages.subscribeGlobalLive((ev) => {
+        this.liveDirectory?.handleRemote(ev.fromAddress, ev.msg)
+      })
+    }
     if (this.privateMessages.isConnected()) {
       this.notifyChannelChange()
       return
     }
     await this.privateMessages.connect(this.authIdentity, this.localAddress)
     this.notifyChannelChange()
+  }
+
+  private ensureLiveDirectory(): void {
+    if (this.liveDirectory) return
+    this.liveDirectory = new LiveDirectoryController({
+      publish: (msg) => this.privateMessages.sendGlobalLive(msg),
+      getLocalAddress: () => this.localAddress,
+      getDisplayName: () => this.displayName || 'You'
+    })
   }
 
   private retainPrivateMessages(): void {
@@ -1302,6 +1326,10 @@ export class SocialService {
     this.unsubCommunityMessages = null
     this.unsubCommunityFollowData?.()
     this.unsubCommunityFollowData = null
+    this.unsubGlobalLiveData?.()
+    this.unsubGlobalLiveData = null
+    this.liveDirectory?.dispose()
+    this.liveDirectory = null
     // Shared room: release holder; only the last SocialService tears down LiveKit.
     if (this.privateMessagesRetained) {
       this.privateMessages.release()

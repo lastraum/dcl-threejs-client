@@ -38,6 +38,8 @@ import { SocialChatController } from './ui/chat/SocialChatController'
 import { SocialChatDock } from './ui/chat/SocialChatDock'
 import { getPrivateMessagesService } from '../social/PrivateMessagesService'
 import { CommunityFollowController } from '../social/CommunityFollowController'
+import { LivePip } from './ui/live/LivePip'
+import type { LiveSession } from '../social/globalLiveWire'
 import { FollowFlagManager } from '../social/FollowFlagManager'
 import { TourFocusController } from '../social/TourFocusController'
 import {
@@ -83,6 +85,7 @@ import { bindWhatsNewShippedOpener, openWhatsNewFromMenu } from './whatsNew/What
 import { CommunitiesPageView } from './ui/explore/CommunitiesPageView'
 import { EventsPageView } from './ui/explore/EventsPageView'
 import { ExplorerView } from './ui/explore/ExplorerView'
+import { LivePageView } from './ui/explore/LivePageView'
 import { LootBagPageView } from './ui/explore/LootBagPageView'
 import { MapPageView } from './ui/explore/MapPageView'
 import { ProfilePageView } from './ui/explore/ProfilePageView'
@@ -184,6 +187,9 @@ export class AppController {
   private explorerView: ExplorerView | null = null
   private mapPageView: MapPageView | null = null
   private eventsPageView: EventsPageView | null = null
+  private livePageView: LivePageView | null = null
+  private livePip: LivePip | null = null
+  private unsubLiveSessionEnded: (() => void) | null = null
   private lootBagPageView: LootBagPageView | null = null
   private communitiesPageView: CommunitiesPageView | null = null
   private profilePageView: ProfilePageView | null = null
@@ -287,6 +293,11 @@ export class AppController {
       return
     }
 
+    if (postLoginRoute.kind === 'live') {
+      await this.showLivePage({ replace: true })
+      return
+    }
+
     if (postLoginRoute.kind === 'lootbag') {
       await this.showLootBagPage({ replace: true })
       return
@@ -377,6 +388,16 @@ export class AppController {
       return
     }
 
+    if (target.kind === 'live') {
+      this.navigating = true
+      try {
+        await this.showLivePage({ fromHistory: opts.fromHistory, replace: opts.replace })
+      } finally {
+        this.navigating = false
+      }
+      return
+    }
+
     if (target.kind === 'lootbag') {
       this.navigating = true
       try {
@@ -439,6 +460,7 @@ export class AppController {
     if (tab === 'explore') void this.navigateTo({ kind: 'blank' })
     else if (tab === 'map') void this.navigateTo({ kind: 'map' })
     else if (tab === 'communities') void this.navigateTo({ kind: 'communities' })
+    else if (tab === 'live') void this.navigateTo({ kind: 'live' })
     else if (tab === 'lootbag') void this.navigateTo({ kind: 'lootbag' })
     else if (tab === 'editor') void this.navigateTo({ kind: 'editor' })
     else void this.navigateTo({ kind: 'events' })
@@ -460,6 +482,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownLivePage()
     this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
@@ -1390,6 +1413,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownLivePage()
     this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
@@ -1439,6 +1463,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownLivePage()
     this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
@@ -1496,6 +1521,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownLivePage()
     this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
@@ -1521,6 +1547,50 @@ export class AppController {
     this.collapseSocialChatThread()
   }
 
+  private async showLivePage(
+    opts: { fromHistory?: boolean; replace?: boolean } = {}
+  ): Promise<void> {
+    if (this.appMode === 'play') {
+      stopDwellTracking('shell')
+      this.disposeCommunityFollow()
+      await this.teardownScene({ clearVrmCache: true })
+    }
+
+    if (!opts.fromHistory) {
+      applyRouteToHistory({ kind: 'live' }, opts.replace ?? false)
+    }
+    this.currentRoute = { kind: 'live' }
+    this.appMode = 'live'
+    this.syncCommunityVoiceBarVisibility()
+    this.clearSceneBanWatch()
+
+    this.teardownExplorer()
+    this.teardownLanding()
+    this.teardownMapPage()
+    this.teardownEventsPage()
+    this.teardownLivePage()
+    this.teardownLootBagPage()
+    this.teardownCommunitiesPage()
+    this.teardownProfilePage()
+
+    if (!this.container || !this.login) return
+
+    const hudEl = document.getElementById('hud')
+    if (hudEl) hudEl.hidden = true
+
+    await this.ensureSocialForLiveShell()
+    this.livePageView = new LivePageView({
+      login: this.login,
+      onNavigate: (tab) => this.navigateSocialShell(tab),
+      getDirectory: () => this.socialChat?.getSocial()?.getLiveDirectory() ?? null,
+      onWatch: (session) => this.openLivePip(session),
+      ...this.socialShellLoginHandlers()
+    })
+    this.livePageView.mount(this.container)
+    this.ensureSocialChatShell()
+    this.collapseSocialChatThread()
+  }
+
   private async showLootBagPage(
     opts: { fromHistory?: boolean; replace?: boolean } = {}
   ): Promise<void> {
@@ -1542,6 +1612,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownLivePage()
     this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
@@ -1582,6 +1653,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownLivePage()
     this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
@@ -1630,6 +1702,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownLivePage()
     this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
@@ -1668,9 +1741,50 @@ export class AppController {
     this.eventsPageView = null
   }
 
+  private teardownLivePage(): void {
+    this.livePageView?.dispose()
+    this.livePageView = null
+  }
+
   private teardownLootBagPage(): void {
     this.lootBagPageView?.dispose()
     this.lootBagPageView = null
+  }
+
+  /** Warm PM + Live directory for 2D Live tab (same rails as chat shell). */
+  private async ensureSocialForLiveShell(): Promise<void> {
+    this.ensureSocialChatShell()
+    const social = this.socialChat?.getSocial()
+    if (!social) return
+    // initShell already warms PM; directory attaches on ensurePrivateMessagesConnected.
+    this.wireLiveSessionEnded(social.getLiveDirectory())
+  }
+
+  private openLivePip(session: LiveSession): void {
+    if (!this.livePip) {
+      this.livePip = new LivePip({
+        onClose: () => {
+          /* user closed */
+        }
+      })
+    }
+    this.livePip.open(session)
+    this.wireLiveSessionEnded(
+      this.socialChat?.getSocial()?.getLiveDirectory() ??
+        this.world?.social.getLiveDirectory() ??
+        null
+    )
+  }
+
+  private wireLiveSessionEnded(
+    dir: import('../social/LiveDirectoryController').LiveDirectoryController | null
+  ): void {
+    this.unsubLiveSessionEnded?.()
+    this.unsubLiveSessionEnded = null
+    if (!dir) return
+    this.unsubLiveSessionEnded = dir.onSessionEnded((sessionId) => {
+      this.livePip?.endIfSession(sessionId)
+    })
   }
 
   private teardownCommunitiesPage(): void {
@@ -1743,6 +1857,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownLivePage()
     this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
@@ -2659,11 +2774,14 @@ export class AppController {
         onActivePetChange: () => world.onActivePetInventoryChange(),
         onPlayPetClipPreview: (hash, clip) => world.playPetClipPreview(hash, clip),
         onStopPetClipPreview: () => world.stopPetClipPreview(),
+        onWatchLive: (session) => this.openLivePip(session),
         onSignOut: () => this.signOut(),
         onExit: () => this.leavePlayMode()
       })
+      this.wireLiveSessionEnded(world.social.getLiveDirectory())
     } else {
       this.shell.updateWorldBindings(world.session, world.environment)
+      this.wireLiveSessionEnded(world.social.getLiveDirectory())
       this.shell.setEmoteHandler((emoteId) => world.playLocalEmote(emoteId, { loop: undefined }))
       this.shell.setPhotoCameraHandler(() => world.togglePhotoCamera())
       this.shell.setTourOptionsHandler(() => this.openTourOptionsPopup())
@@ -3868,6 +3986,7 @@ export class AppController {
     this.explorerView?.setLogin(login)
     this.mapPageView?.setLogin(login)
     this.eventsPageView?.setLogin(login)
+    this.livePageView?.setLogin(login)
     this.lootBagPageView?.setLogin(login)
     this.communitiesPageView?.setLogin(login)
     this.profilePageView?.setLogin(login)

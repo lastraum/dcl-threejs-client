@@ -2,7 +2,14 @@ import type { LoginResult } from '../../../auth/AuthClient'
 import type { SocialService } from '../../../social/SocialService'
 import { SocialProfileMenu } from './SocialProfileMenu'
 
-export type SocialShellTab = 'explore' | 'map' | 'communities' | 'events' | 'lootbag' | 'editor'
+export type SocialShellTab =
+  | 'explore'
+  | 'map'
+  | 'communities'
+  | 'events'
+  | 'live'
+  | 'lootbag'
+  | 'editor'
 
 export type SocialShellChromeHandlers = {
   onLoginChange?: (login: LoginResult) => void
@@ -33,11 +40,12 @@ const SHELL_TABS: readonly SocialShellTab[] = [
   'map',
   'communities',
   'events',
+  'live',
   'lootbag',
   'editor'
 ]
 
-/** Shared 2D shell nav — Explore · Map · Communities · Events · Loot Bag · Terrain + account chrome. */
+/** Shared 2D shell nav — Explore · Map · Communities · Events · Live · Loot Bag · Terrain + account chrome. */
 export class SocialShellTopNav {
   readonly el: HTMLElement
 
@@ -64,6 +72,7 @@ export class SocialShellTopNav {
         <button type="button" class="social-shell-topnav__link" data-shell-tab="map">Map</button>
         <button type="button" class="social-shell-topnav__link" data-shell-tab="communities">Communities</button>
         <button type="button" class="social-shell-topnav__link" data-shell-tab="events">Events</button>
+        <button type="button" class="social-shell-topnav__link" data-shell-tab="live">Live</button>
         <button type="button" class="social-shell-topnav__link social-shell-topnav__link--lootbag" data-shell-tab="lootbag">Loot Bag</button>
         <button type="button" class="social-shell-topnav__link" data-shell-tab="editor" aria-label="Terrain editor">Terrain</button>
       </nav>

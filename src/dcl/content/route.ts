@@ -18,6 +18,7 @@ const ROUTE_SEGMENT_DENY = new Set(
     'backpack',
     'community',
     'events',
+    'live',
     'communities',
     'map',
     'profile',
@@ -38,6 +39,7 @@ export type RouteTarget =
   | { kind: 'blank' }
   | { kind: 'map' }
   | { kind: 'events' }
+  | { kind: 'live' }
   | { kind: 'communities' }
   | { kind: 'profile' }
   | { kind: 'lootbag' }
@@ -57,6 +59,7 @@ export type RouteTarget =
   | { kind: 'coords'; x: number; y: number; segment: string }
 
 const EVENTS_ROUTE_SEGMENT = 'events'
+const LIVE_ROUTE_SEGMENT = 'live'
 const COMMUNITIES_ROUTE_SEGMENT = 'communities'
 const MAP_ROUTE_SEGMENT = 'map'
 const PROFILE_ROUTE_SEGMENT = 'profile'
@@ -67,6 +70,7 @@ const LOOTBAG_ROUTE_SEGMENT_LEGACY = 'gacha'
 
 const APP_ROUTE_SEGMENTS = new Set([
   EVENTS_ROUTE_SEGMENT,
+  LIVE_ROUTE_SEGMENT,
   COMMUNITIES_ROUTE_SEGMENT,
   MAP_ROUTE_SEGMENT,
   PROFILE_ROUTE_SEGMENT,
@@ -115,6 +119,7 @@ export function parseRouteTarget(segment: string | null): RouteTarget {
 
   if (segment.toLowerCase() === EDITOR_ROUTE_SEGMENT) return { kind: 'editor' }
   if (segment.toLowerCase() === EVENTS_ROUTE_SEGMENT) return { kind: 'events' }
+  if (segment.toLowerCase() === LIVE_ROUTE_SEGMENT) return { kind: 'live' }
   if (segment.toLowerCase() === COMMUNITIES_ROUTE_SEGMENT) return { kind: 'communities' }
   if (segment.toLowerCase() === MAP_ROUTE_SEGMENT) return { kind: 'map' }
   if (segment.toLowerCase() === PROFILE_ROUTE_SEGMENT) return { kind: 'profile' }
@@ -218,6 +223,7 @@ export function routePathForWorld(worldName: string): string {
 export function routePathForTarget(target: RouteTarget): string {
   if (target.kind === 'blank') return '/'
   if (target.kind === 'events') return '/events'
+  if (target.kind === 'live') return '/live'
   if (target.kind === 'communities') return '/communities'
   if (target.kind === 'map') return '/map'
   if (target.kind === 'profile') return '/profile'

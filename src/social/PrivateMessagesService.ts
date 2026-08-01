@@ -32,6 +32,13 @@ import {
   tryParseCommunityVoiceSignalPacket,
   type CommunityVoiceSignalMsg
 } from './communityVoiceWire'
+import {
+  encodeGlobalLiveDataPacket,
+  GLOBAL_LIVE_TOPIC,
+  isGlobalLiveTopic,
+  tryParseGlobalLiveDataPacket,
+  type GlobalLiveWireMsg
+} from './globalLiveWire'
 import { tryDecodeRfc4ChatPacket } from './dclRfc4Chat'
 
 const ETH_ADDRESS_RE = /^0x[a-f0-9]{40}$/
@@ -86,6 +93,11 @@ export type CommunityVoiceSignalEvent = {
   msg: CommunityVoiceSignalMsg
 }
 
+export type GlobalLiveDataEvent = {
+  fromAddress: string
+  msg: GlobalLiveWireMsg
+}
+
 /**
  * ADR-208 private chat room — one persistent LiveKit connection for:
  * - 1:1 DMs: RFC4 Chat + `destinationIdentities` + topic = recipient wallet (Explorer wire)
@@ -94,6 +106,7 @@ export type CommunityVoiceSignalEvent = {
  * - Community Follow/Tour control (non-chat data, topic `d3js-follow:{id}`)
  * - Loot Bag claims (non-chat data, topic `d3js-lootbag:claims`)
  * - Community voice started/ended (non-chat data, topic `d3js-community-voice`)
+ * - Global Live directory (non-chat data, topic `d3js-live`)
  *
  * Inbound 1:1 accepts: topic=`0x…` (to me), topic=`private:{me}`, or bare directed Chat.
  *
@@ -119,6 +132,7 @@ class PrivateMessagesServiceImpl {
   private readonly followInbound = new Set<(ev: CommunityFollowDataEvent) => void>()
   private readonly poolClaimInbound = new Set<(ev: PoolClaimDataEvent) => void>()
   private readonly voiceSignalInbound = new Set<(ev: CommunityVoiceSignalEvent) => void>()
+  private readonly globalLiveInbound = new Set<(ev: GlobalLiveDataEvent) => void>()
   /** Dedupe dual-send (directed + topic) and retransmits: key → last unix sec. */
   private readonly recentDmKeys = new Map<string, number>()
   /** Dedupe pool claim rebroadcasts: claimer|pos|at-bucket */
@@ -198,6 +212,13 @@ class PrivateMessagesServiceImpl {
     this.voiceSignalInbound.add(listener)
     return () => {
       this.voiceSignalInbound.delete(listener)
+    }
+  }
+
+  subscribeGlobalLive(listener: (ev: GlobalLiveDataEvent) => void): () => void {
+    this.globalLiveInbound.add(listener)
+    return () => {
+      this.globalLiveInbound.delete(listener)
     }
   }
 
@@ -422,6 +443,12 @@ class PrivateMessagesServiceImpl {
       return
     }
 
+    // Global Live directory — room broadcast (who is live + playable media).
+    if (isGlobalLiveTopic(topic)) {
+      this.handleGlobalLivePacket(address, data)
+      return
+    }
+
     const communityId = parseCommunityChatTopic(topic)
     if (!communityId) return
     const chat = tryDecodeRfc4ChatPacket(data)
@@ -449,6 +476,39 @@ class PrivateMessagesServiceImpl {
     if (!msg) return
     const ev: CommunityFollowDataEvent = { communityId, fromAddress: from, msg }
     for (const listener of this.followInbound) listener(ev)
+  }
+
+  private handleGlobalLivePacket(address: string, data: Uint8Array): void {
+    if (isMessageRouterIdentity(address)) return
+    const from = address.trim().toLowerCase()
+    if (!from) return
+    const msg = tryParseGlobalLiveDataPacket(data)
+    if (!msg) return
+    // Deliver self echoes too (multi-tab) — controller ignores local host loops.
+    const ev: GlobalLiveDataEvent = { fromAddress: from, msg }
+    for (const listener of this.globalLiveInbound) listener(ev)
+  }
+
+  /**
+   * Global Live directory — room-broadcast non-chat data on topic `d3js-live`.
+   */
+  async sendGlobalLive(msg: GlobalLiveWireMsg): Promise<boolean> {
+    if (!this.session || !this.isConnected()) {
+      this.lastError = 'private messages room not connected'
+      return false
+    }
+    const packet = encodeGlobalLiveDataPacket(msg)
+    try {
+      const published = await this.session.publishTopicData(GLOBAL_LIVE_TOPIC, packet, true)
+      if (!published) {
+        this.lastError = 'LiveKit publishTopicData returned false'
+        return false
+      }
+      return true
+    } catch (err) {
+      this.lastError = err instanceof Error ? err.message : String(err)
+      return false
+    }
   }
 
   private handlePoolClaimDataPacket(address: string, data: Uint8Array): void {

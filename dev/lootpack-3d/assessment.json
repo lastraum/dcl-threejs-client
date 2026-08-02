@@ -1,0 +1,196 @@
+{
+  "targetName": "LootPack",
+  "sourceImage": "/Users/lastraum/Desktop/Programming/Decentraland/LastSlice/sdk7/ThreejsClient/public/media/lootbag/lootpack.png",
+  "preSpecAssessment": {
+    "objectClass": {
+      "primaryType": "soft-package",
+      "primaryDomain": "object",
+      "formLanguage": [
+        "soft-body-pouch",
+        "rectangular-sachet",
+        "heat-sealed-edges"
+      ],
+      "structureKind": [
+        "macro-body",
+        "edge-seals",
+        "surface-graphic"
+      ],
+      "motionPotential": [
+        "tear-open-top",
+        "fall-away",
+        "idle-bob",
+        "foil-shimmer"
+      ],
+      "materialFamilies": [
+        "metallic-foil-film",
+        "flat-print-graphic"
+      ],
+      "notes": "Retail-style sealed foil sachet, front-lit on black. Identity = metallic sunset gradient + geometric twin-sun mountain logo + thick heat-seal ridges."
+    },
+    "complexity": {
+      "tier": "moderate",
+      "scores": {
+        "silhouetteComplexity": 0.35,
+        "componentCount": 0.45,
+        "hierarchyDepth": 0.4,
+        "repetitionDensity": 0.15,
+        "materialLayerCount": 0.55,
+        "localDetailDensity": 0.5,
+        "occlusionRisk": 0.2,
+        "actionReadinessNeed": 0.85
+      },
+      "estimatedCounts": {
+        "macroComponents": 2,
+        "mesoComponents": 5,
+        "microFeatureGroups": 3,
+        "materialLayers": 2,
+        "repetitionSystems": 0
+      },
+      "reasoning": [
+        "Single continuous soft pouch body with distinct top/bottom seals and side crimps.",
+        "Primary visual identity is foil gradient + center logo graphic.",
+        "Claim UX requires action-ready tear/open and fall pivots."
+      ]
+    },
+    "specDepthDecision": {
+      "requiredDepth": "moderate",
+      "minimumComponentLevels": [
+        "macro",
+        "meso",
+        "micro"
+      ],
+      "needsRepetitionSystems": false,
+      "needsMaterialLocalOverrides": true,
+      "needsMultipleReviewViews": true,
+      "needsActionReadyHierarchy": true,
+      "rationale": "Moderate product package; hierarchy needed for claim animation (seal tear, body fall)."
+    },
+    "unknownsToResolveBeforeImplementation": [
+      "Back face not visible \u2014 mirror front foil finish (no rear graphic assumed).",
+      "Exact film thickness and internal volume inferred from soft specular banding.",
+      "Side thickness inferred \u2014 pack is thin sachet, not a hard box."
+    ],
+    "detailInventory": {
+      "scanMethod": "agent-vision+grid-3x3",
+      "targetMinDetails": 8,
+      "details": [
+        {
+          "id": "foil-gradient",
+          "kind": "finish",
+          "description": "Horizontal sunset foil: warm copper-orange left \u2192 magenta-pink right with anisotropic specular streaks",
+          "scale": "macro",
+          "affects": "material",
+          "mapsTo": {
+            "type": "material",
+            "ref": "foilFilm"
+          },
+          "confidence": 0.95
+        },
+        {
+          "id": "top-heat-seal",
+          "kind": "geometry",
+          "description": "Thick horizontal heat-seal ridge along top edge, slightly irregular soft thickness",
+          "scale": "meso",
+          "affects": "geometry",
+          "mapsTo": {
+            "type": "component",
+            "ref": "topSeal"
+          },
+          "confidence": 0.95
+        },
+        {
+          "id": "bottom-heat-seal",
+          "kind": "geometry",
+          "description": "Matching thick heat-seal ridge along bottom edge",
+          "scale": "meso",
+          "affects": "geometry",
+          "mapsTo": {
+            "type": "component",
+            "ref": "bottomSeal"
+          },
+          "confidence": 0.95
+        },
+        {
+          "id": "side-crimps",
+          "kind": "geometry",
+          "description": "Left/right vertical edge crimps with soft fold thickness",
+          "scale": "meso",
+          "affects": "geometry",
+          "mapsTo": {
+            "type": "component",
+            "ref": "sideCrimps"
+          },
+          "confidence": 0.9
+        },
+        {
+          "id": "soft-pillow-volume",
+          "kind": "geometry",
+          "description": "Center face pillow bulge \u2014 not a flat plane; soft rounded Z volume",
+          "scale": "macro",
+          "affects": "geometry",
+          "mapsTo": {
+            "type": "component",
+            "ref": "bodyFront"
+          },
+          "confidence": 0.9
+        },
+        {
+          "id": "twin-sun-logo",
+          "kind": "graphic",
+          "description": "Two flat yellow circles (suns) behind mountain triangles",
+          "scale": "meso",
+          "affects": "surface",
+          "mapsTo": {
+            "type": "component",
+            "ref": "logoSuns"
+          },
+          "confidence": 0.98
+        },
+        {
+          "id": "mountain-triangles",
+          "kind": "graphic",
+          "description": "Left large purple/magenta split triangle; right smaller purple/magenta split triangle overlapping",
+          "scale": "meso",
+          "affects": "surface",
+          "mapsTo": {
+            "type": "component",
+            "ref": "logoMountains"
+          },
+          "confidence": 0.98
+        },
+        {
+          "id": "specular-banding",
+          "kind": "finish",
+          "description": "Soft vertical-ish specular bands from studio lighting on foil \u2014 live env response preferred over baked",
+          "scale": "micro",
+          "affects": "material",
+          "mapsTo": {
+            "type": "material",
+            "ref": "foilFilm"
+          },
+          "confidence": 0.85
+        }
+      ]
+    },
+    "anatomy": {
+      "applies": false
+    }
+  },
+  "qualityContract": {
+    "qualityBar": "moderate",
+    "definitionOfDone": [
+      "Front silhouette reads as sealed foil sachet with thick top/bottom seals.",
+      "Foil gradient copper-orange \u2192 magenta-pink with metallic clearcoat response.",
+      "Center logo: twin yellow suns + two split-color mountain triangles.",
+      "Runtime exposes tear/open and fall pivots for Loot Bag claim animation."
+    ],
+    "minimumSpecDepth": {
+      "macroComponents": 2,
+      "mesoComponents": 5,
+      "microFeatureGroups": 2,
+      "materialLayers": 2,
+      "repetitionSystems": 0,
+      "reviewViewpoints": 2
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "admitted": true,
+  "reasons": [],
+  "provenance": {
+    "viewpoint": "reference",
+    "sourcePath": "/Users/lastraum/Desktop/Programming/Decentraland/LastSlice/sdk7/ThreejsClient/public/media/lootbag/lootpack.png",
+    "width": 1024,
+    "height": 1024,
+    "foregroundCoverage": 0.5571,
+    "largestComponentFraction": 1.0,
+    "pHash": 18136456054058826408,
+    "duplicateOfHash": null
+  }
+}

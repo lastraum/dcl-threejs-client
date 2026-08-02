@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Loot Pack 3D Preview</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #050308; color: #eee; font-family: system-ui, sans-serif; }
+      #hud {
+        position: fixed; left: 12px; top: 12px; z-index: 2;
+        display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      }
+      button {
+        background: #1a1028; color: #f3e8ff; border: 1px solid #6b3fa0;
+        border-radius: 8px; padding: 8px 12px; cursor: pointer; font-size: 14px;
+      }
+      button:hover { background: #2a1840; }
+      #note { opacity: 0.75; font-size: 12px; max-width: 48ch; line-height: 1.35; }
+      #status { position: fixed; left: 12px; bottom: 12px; font-size: 12px; opacity: 0.6; }
+      canvas { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div id="hud">
+      <button type="button" id="claim">Play claim (tear → fall)</button>
+      <button type="button" id="reset">Reset sealed</button>
+      <span id="note">
+        Open <b>/dev/lootpack-3d/preview.html</b> only (not site root).
+        Drag orbit · scroll zoom · front uses real lootpack.png
+      </span>
+    </div>
+    <div id="status">Loading reference…</div>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.175.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.175.0/examples/jsm/"
+        }
+      }
+    </script>
+    <script type="module">
+      import * as THREE from 'three'
+      import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+      import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js'
+
+      const statusEl = document.getElementById('status')
+      const PACK_H = 1.0
+      const PACK_D = 0.085
+      const SEAL_H = 0.055
+      const FALLBACK_ASPECT = 0.72
+
+      function contentCrop(image, threshold = 14) {
+        const w = image.width, h = image.height
+        const canvas = document.createElement('canvas')
+        canvas.width = w; canvas.height = h
+        const ctx = canvas.getContext('2d', { willReadFrequently: true })
+        ctx.drawImage(image, 0, 0)
+        const { data } = ctx.getImageData(0, 0, w, h)
+        let minX = w, minY = h, maxX = 0, maxY = 0
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const i = (y * w + x) * 4
+            const lum = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]
+            if (lum > threshold) {
+              if (x < minX) minX = x
+              if (y < minY) minY = y
+              if (x > maxX) maxX = x
+              if (y > maxY) maxY = y
+            }
+          }
+        }
+        if (maxX <= minX || maxY <= minY) return { x: 0.18, y: 0.08, w: 0.64, h: 0.84 }
+        const pad = Math.round(Math.min(w, h) * 0.008)
+        minX = Math.max(0, minX - pad)
+        minY = Math.max(0, minY - pad)
+        maxX = Math.min(w - 1, maxX + pad)
+        maxY = Math.min(h - 1, maxY + pad)
+        return { x: minX / w, y: minY / h, w: (maxX - minX + 1) / w, h: (maxY - minY + 1) / h }
+      }
+
+      function makePackAlbedoTexture(image) {
+        const crop = contentCrop(image)
+        const sw = Math.max(1, Math.round(crop.w * image.width))
+        const sh = Math.max(1, Math.round(crop.h * image.height))
+        const sx = Math.round(crop.x * image.width)
+        const sy = Math.round(crop.y * image.height)
+        const canvas = document.createElement('canvas')
+        canvas.width = sw; canvas.height = sh
+        const ctx = canvas.getContext('2d', { willReadFrequently: true })
+        ctx.drawImage(image, sx, sy, sw, sh, 0, 0, sw, sh)
+        const imgData = ctx.getImageData(0, 0, sw, sh)
+        const d = imgData.data
+        for (let i = 0; i < d.length; i += 4) {
+          const lum = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]
+          if (lum < 10) d[i + 3] = 0
+          else if (lum < 28) d[i + 3] = Math.round(((lum - 10) / 18) * 255)
+        }
+        ctx.putImageData(imgData, 0, 0)
+        const texture = new THREE.CanvasTexture(canvas)
+        texture.colorSpace = THREE.SRGBColorSpace
+        texture.anisotropy = 8
+        texture.needsUpdate = true
+        return { texture, aspect: sw / sh }
+      }
+
+      function applyPillowBulge(geo, amount) {
+        const pos = geo.attributes.position
+        for (let i = 0; i < pos.count; i++) {
+          const x = pos.getX(i), y = pos.getY(i)
+          const nx = x / (geo.parameters.width * 0.5)
+          const ny = y / (geo.parameters.height * 0.5)
+          const r = Math.min(1, Math.sqrt(nx * nx + ny * ny))
+          pos.setZ(i, amount * Math.max(0, Math.cos(r * Math.PI * 0.5)))
+        }
+        pos.needsUpdate = true
+        geo.computeVertexNormals()
+      }
+
+      function foilMat(color, map = null) {
+        return new THREE.MeshPhysicalMaterial({
+          color: map ? 0xffffff : color,
+          map,
+          metalness: map ? 0.55 : 0.9,
+          roughness: map ? 0.32 : 0.24,
+          clearcoat: map ? 0.35 : 0.5,
+          clearcoatRoughness: 0.22,
+          envMapIntensity: map ? 0.85 : 1.1,
+          transparent: !!map,
+          alphaTest: map ? 0.04 : 0,
+          side: THREE.DoubleSide,
+        })
+      }
+
+      function buildPack(photo) {
+        const aspect = photo?.aspect ?? FALLBACK_ASPECT
+        const H = PACK_H, W = H * aspect, D = PACK_D
+        const root = new THREE.Group()
+        const fallRoot = new THREE.Group(); root.add(fallRoot)
+        const bodyPivot = new THREE.Group(); fallRoot.add(bodyPivot)
+
+        const frontMat = foilMat(0xe85aaa, photo?.texture ?? null)
+        const sideMat = foilMat(0xe85aaa)
+        const backMat = foilMat(0xf08a45)
+        const sealMat = foilMat(0xd45ec8)
+        sealMat.roughness = 0.34
+
+        const frontGeo = new THREE.PlaneGeometry(W, H, 48, 64)
+        applyPillowBulge(frontGeo, D * 0.55)
+        const front = new THREE.Mesh(frontGeo, frontMat)
+        front.position.z = D * 0.15
+        front.castShadow = true
+        bodyPivot.add(front)
+
+        const backGeo = new THREE.PlaneGeometry(W * 0.98, H * 0.98, 24, 32)
+        applyPillowBulge(backGeo, D * 0.4)
+        const back = new THREE.Mesh(backGeo, backMat)
+        back.rotation.y = Math.PI
+        back.position.z = -D * 0.15
+        bodyPivot.add(back)
+
+        const rim = new THREE.Mesh(new THREE.BoxGeometry(W * 0.97, H * 0.97, D * 0.7), sideMat)
+        bodyPivot.add(rim)
+
+        const tearPivot = new THREE.Group()
+        tearPivot.position.set(0, H * 0.5 - SEAL_H * 0.35, D * 0.05)
+        bodyPivot.add(tearPivot)
+        const topSeal = new THREE.Mesh(new THREE.BoxGeometry(W * 0.99, SEAL_H, D * 0.95), sealMat)
+        topSeal.position.set(0, SEAL_H * 0.15, 0)
+        tearPivot.add(topSeal)
+        const tearLip = new THREE.Mesh(new THREE.BoxGeometry(W * 0.96, 0.01, D * 1.05), sealMat)
+        tearLip.position.set(0, -SEAL_H * 0.2, D * 0.08)
+        tearPivot.add(tearLip)
+
+        const bottomSeal = new THREE.Mesh(new THREE.BoxGeometry(W * 0.99, SEAL_H, D * 0.95), sealMat)
+        bottomSeal.position.set(0, -H * 0.5 + SEAL_H * 0.45, 0)
+        bodyPivot.add(bottomSeal)
+
+        const baseRough = frontMat.roughness
+        const baseEnv = frontMat.envMapIntensity
+        const animation = {
+          openTear(t) {
+            const k = THREE.MathUtils.clamp(t, 0, 1)
+            tearPivot.rotation.x = -k * Math.PI * 0.65
+            tearPivot.position.z = D * 0.05 + k * 0.05
+            tearLip.scale.y = 1 + k * 3
+          },
+          fallAway(t) {
+            const k = THREE.MathUtils.clamp(t, 0, 1)
+            const ease = k * k * (3 - 2 * k)
+            fallRoot.position.y = -ease * 1.4
+            fallRoot.rotation.z = ease * 0.2
+            fallRoot.rotation.x = ease * 0.1
+            fallRoot.scale.setScalar(1 - ease * 0.06)
+            const opacity = 1 - ease * 0.2
+            for (const m of [frontMat, sideMat, backMat, sealMat]) {
+              m.transparent = true
+              m.opacity = opacity
+            }
+          },
+          idleTick(elapsed) {
+            bodyPivot.position.y = Math.sin(elapsed * 1.35) * 0.01
+            bodyPivot.rotation.y = Math.sin(elapsed * 0.65) * 0.035
+            frontMat.roughness = baseRough + Math.sin(elapsed * 2.1) * 0.025
+            frontMat.envMapIntensity = baseEnv + Math.sin(elapsed * 1.5) * 0.08
+          },
+          reset() {
+            tearPivot.rotation.set(0, 0, 0)
+            tearPivot.position.set(0, H * 0.5 - SEAL_H * 0.35, D * 0.05)
+            tearLip.scale.set(1, 1, 1)
+            fallRoot.position.set(0, 0, 0)
+            fallRoot.rotation.set(0, 0, 0)
+            fallRoot.scale.setScalar(1)
+            bodyPivot.position.set(0, 0, 0)
+            bodyPivot.rotation.set(0, 0, 0)
+            for (const m of [frontMat, sideMat, backMat, sealMat]) {
+              m.opacity = 1
+              m.transparent = m === frontMat && !!photo
+            }
+            frontMat.roughness = baseRough
+            frontMat.envMapIntensity = baseEnv
+          },
+        }
+
+        root.userData.sculptRuntime = { animation, phase: 'idle' }
+        root.userData.tick = (_dt, elapsed) => {
+          if (root.userData.sculptRuntime.phase === 'idle') animation.idleTick(elapsed)
+        }
+        return root
+      }
+
+      function loadImage(url) {
+        return new Promise((resolve, reject) => {
+          const img = new Image()
+          img.crossOrigin = 'anonymous'
+          img.onload = () => resolve(img)
+          img.onerror = () => reject(new Error(url))
+          img.src = url
+        })
+      }
+
+      async function loadPackPhoto() {
+        const candidates = [
+          '/public/media/lootbag/lootpack.png',
+          '/media/lootbag/lootpack.png',
+          '../../public/media/lootbag/lootpack.png',
+        ]
+        for (const url of candidates) {
+          try {
+            const img = await loadImage(url)
+            statusEl.textContent = `Reference: ${url}`
+            return makePackAlbedoTexture(img)
+          } catch {
+            // next
+          }
+        }
+        statusEl.textContent = 'Reference image not found — procedural foil only'
+        return null
+      }
+
+      async function playClaim(root) {
+        const rt = root.userData.sculptRuntime
+        const anim = rt.animation
+        anim.reset(); rt.phase = 'tearing'
+        const tearMs = 480, fallMs = 1050
+        await new Promise((resolve) => {
+          const t0 = performance.now()
+          const frame = (now) => {
+            const e = now - t0
+            if (e < tearMs) { anim.openTear(e / tearMs); requestAnimationFrame(frame); return }
+            if (e < tearMs + fallMs) {
+              rt.phase = 'falling'; anim.openTear(1); anim.fallAway((e - tearMs) / fallMs)
+              requestAnimationFrame(frame); return
+            }
+            anim.openTear(1); anim.fallAway(1); rt.phase = 'revealed'; resolve()
+          }
+          requestAnimationFrame(frame)
+        })
+      }
+
+      // Scene
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false })
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
+      renderer.setSize(innerWidth, innerHeight)
+      renderer.outputColorSpace = THREE.SRGBColorSpace
+      renderer.toneMapping = THREE.ACESFilmicToneMapping
+      renderer.toneMappingExposure = 1.0
+      document.body.appendChild(renderer.domElement)
+
+      const scene = new THREE.Scene()
+      scene.background = new THREE.Color(0x050308)
+      const pmrem = new THREE.PMREMGenerator(renderer)
+      scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture
+
+      const camera = new THREE.PerspectiveCamera(32, innerWidth / innerHeight, 0.05, 50)
+      camera.position.set(0.25, 0.05, 2.15)
+      const controls = new OrbitControls(camera, renderer.domElement)
+      controls.enableDamping = true
+      controls.target.set(0, 0, 0)
+
+      scene.add(new THREE.AmbientLight(0xffe8ff, 0.4))
+      const key = new THREE.DirectionalLight(0xffffff, 1.05)
+      key.position.set(2.2, 3.2, 4)
+      scene.add(key)
+      const fill = new THREE.DirectionalLight(0xff88cc, 0.3)
+      fill.position.set(-3, 1, -2)
+      scene.add(fill)
+
+      const photo = await loadPackPhoto()
+      const pack = buildPack(photo)
+      scene.add(pack)
+
+      let claiming = false
+      document.getElementById('claim').onclick = async () => {
+        if (claiming) return
+        claiming = true
+        await playClaim(pack)
+        claiming = false
+      }
+      document.getElementById('reset').onclick = () => {
+        pack.userData.sculptRuntime.animation.reset()
+        pack.userData.sculptRuntime.phase = 'idle'
+      }
+
+      const clock = new THREE.Clock()
+      function frame() {
+        const dt = clock.getDelta()
+        pack.userData.tick?.(dt, clock.elapsedTime)
+        controls.update()
+        renderer.render(scene, camera)
+        requestAnimationFrame(frame)
+      }
+      frame()
+
+      addEventListener('resize', () => {
+        camera.aspect = innerWidth / innerHeight
+        camera.updateProjectionMatrix()
+        renderer.setSize(innerWidth, innerHeight)
+      })
+    </script>
+  </body>
+</html>

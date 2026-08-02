@@ -10,14 +10,9 @@ export type LivePageViewOptions = SocialShellChromeHandlers & {
   getDirectory: () => LiveDirectoryController | null
   getLogin?: () => LoginResult | null
   onWatch: (session: LiveSession) => void
-  onCastPreview?: (
-    host: HTMLElement,
-    worldName: string,
-    onUpdate: (attached: boolean) => void
-  ) => Promise<() => void>
 }
 
-/** Full-page Live directory at `/live`. */
+/** Full-page Live directory at `/live`. Cards are static; stream video only in PiP. */
 export class LivePageView {
   readonly root: HTMLElement
   private readonly topNav: SocialShellTopNav
@@ -44,7 +39,6 @@ export class LivePageView {
       getDirectory: opts.getDirectory,
       getLogin: opts.getLogin ?? (() => opts.login),
       onWatch: opts.onWatch,
-      onCastPreview: opts.onCastPreview,
       compact: false
     })
 

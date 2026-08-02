@@ -14,6 +14,7 @@ import { NotificationsPanel } from './NotificationsPanel'
 import { PortableExperiencePanel } from './PortableExperiencePanel'
 import { LivePanel } from './LivePanel'
 import type { LiveSession } from '../../../social/globalLiveWire'
+import { getSharedLiveDirectory } from '../../../social/LiveDirectoryController'
 import { FriendsPanel } from './FriendsPanel'
 import { PetsPanel } from './PetsPanel'
 import { PetBarnPanel } from './PetBarnPanel'
@@ -48,11 +49,6 @@ export type ClientShellOptions = {
   onStopPetClipPreview?: () => void
   /** Open Live PiP for a directory session (shell or 2D page). */
   onWatchLive?: (session: LiveSession) => void
-  onLiveCastPreview?: (
-    host: HTMLElement,
-    worldName: string,
-    onUpdate: (attached: boolean) => void
-  ) => Promise<() => void>
   getLogin?: () => import('../../../auth/AuthClient').LoginResult | null
   onSignOut: () => void | Promise<void>
   onExit: () => void | Promise<void>
@@ -132,13 +128,6 @@ export class ClientShell {
     | null = null
   private onStopPetClipPreview: (() => void) | null = null
   private onWatchLive: ((session: LiveSession) => void) | null = null
-  private onLiveCastPreview:
-    | ((
-        host: HTMLElement,
-        worldName: string,
-        onUpdate: (attached: boolean) => void
-      ) => Promise<() => void>)
-    | null = null
   private getLogin: (() => import('../../../auth/AuthClient').LoginResult | null) | null = null
   private onOpenProfile: ((address: string) => void) | null = null
   private onJumpToFriend: ((address: string) => void) | null = null
@@ -179,7 +168,6 @@ export class ClientShell {
     onPlayPetClipPreview,
     onStopPetClipPreview,
     onWatchLive,
-    onLiveCastPreview,
     getLogin,
     onSignOut,
     onExit
@@ -192,7 +180,6 @@ export class ClientShell {
     this.onPlayPetClipPreview = onPlayPetClipPreview ?? null
     this.onStopPetClipPreview = onStopPetClipPreview ?? null
     this.onWatchLive = onWatchLive ?? null
-    this.onLiveCastPreview = onLiveCastPreview ?? null
     this.getLogin = getLogin ?? null
     this.root = document.createElement('aside')
     this.root.id = 'client-shell'
@@ -265,12 +252,15 @@ export class ClientShell {
     })
 
     this.livePanel = new LivePanel({
-      anchor: () => this.buttons.get('live')?.element,
-      getDirectory: () => this.social?.getLiveDirectory() ?? null,
+      getDirectory: () => {
+        const fromSocial = this.social?.getLiveDirectory() ?? null
+        if (fromSocial) return fromSocial
+        // Mid 2D→3D handoff: SocialService not attached yet, but GO LIVE may still be active.
+        const shared = getSharedLiveDirectory()
+        return shared.isBroadcasting() || shared.list().length > 0 ? shared : null
+      },
       getLogin: () => this.getLogin?.() ?? null,
       onWatch: (session) => this.onWatchLive?.(session),
-      onCastPreview: (host, world, onUpdate) =>
-        this.onLiveCastPreview?.(host, world, onUpdate) ?? Promise.resolve(() => {}),
       onClose: () => this.buttons.get('live')?.setActive(false)
     })
 

@@ -23,6 +23,18 @@ const MIN_H = 160
 const DEFAULT_W = 400
 const DEFAULT_H = 260
 
+type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se'
+
+type ResizeState = {
+  ox: number
+  oy: number
+  sw: number
+  sh: number
+  left: number
+  top: number
+  corner: ResizeCorner
+}
+
 export class LivePip {
   readonly element: HTMLDivElement
   private readonly titleEl: HTMLElement
@@ -30,13 +42,13 @@ export class LivePip {
   private readonly videoHost: HTMLElement
   private readonly statusEl: HTMLElement
   private readonly video: HTMLVideoElement
-  private readonly resizeHandle: HTMLElement
+  private readonly resizeHandles: HTMLElement[]
   private hls: Hls | null = null
   private session: LiveSession | null = null
   private collapsed = false
   private fullscreen = false
   private drag: { ox: number; oy: number; sx: number; sy: number } | null = null
-  private resize: { ox: number; oy: number; sw: number; sh: number } | null = null
+  private resize: ResizeState | null = null
   private muted = true
   private castCleanup: (() => void) | null = null
   private disposed = false
@@ -61,21 +73,28 @@ export class LivePip {
         </div>
         <p class="live-pip__status" data-status></p>
       </div>
-      <div class="live-pip__resize" data-resize title="Resize" aria-label="Resize"></div>
+      <div class="live-pip__resize live-pip__resize--nw" data-resize="nw" title="Resize" aria-label="Resize from top-left"></div>
+      <div class="live-pip__resize live-pip__resize--ne" data-resize="ne" title="Resize" aria-label="Resize from top-right"></div>
+      <div class="live-pip__resize live-pip__resize--sw" data-resize="sw" title="Resize" aria-label="Resize from bottom-left"></div>
+      <div class="live-pip__resize live-pip__resize--se" data-resize="se" title="Resize" aria-label="Resize from bottom-right"></div>
     `
     this.titleEl = this.element.querySelector('[data-title]')!
     this.bodyEl = this.element.querySelector('[data-body]')!
     this.videoHost = this.element.querySelector('[data-video-host]')!
     this.statusEl = this.element.querySelector('[data-status]')!
     this.video = this.element.querySelector('video')!
-    this.resizeHandle = this.element.querySelector('[data-resize]')!
+    this.resizeHandles = [
+      ...this.element.querySelectorAll<HTMLElement>('[data-resize]')
+    ]
     this.video.muted = true
     this.video.playsInline = true
     this.video.autoplay = true
 
     const bar = this.element.querySelector('[data-bar]') as HTMLElement
     bar.addEventListener('pointerdown', (ev) => this.onBarPointerDown(ev))
-    this.resizeHandle.addEventListener('pointerdown', (ev) => this.onResizePointerDown(ev))
+    for (const handle of this.resizeHandles) {
+      handle.addEventListener('pointerdown', (ev) => this.onResizePointerDown(ev, handle))
+    }
     window.addEventListener('pointermove', this.onPointerMove)
     window.addEventListener('pointerup', this.onPointerUp)
     document.addEventListener('fullscreenchange', this.onFullscreenChange)
@@ -154,12 +173,20 @@ export class LivePip {
     this.collapsed = on
     this.element.classList.toggle('is-collapsed', on)
     this.bodyEl.hidden = on
-    this.resizeHandle.hidden = on || this.fullscreen
+    this.setResizeHandlesVisible(!on && !this.fullscreen)
     const btn = this.element.querySelector('[data-collapse]') as HTMLButtonElement | null
     if (btn) {
       btn.textContent = on ? '▸' : '▾'
       btn.setAttribute('aria-label', on ? 'Expand stream' : 'Collapse stream')
       btn.title = on ? 'Expand' : 'Collapse'
+    }
+  }
+
+  private setResizeHandlesVisible(visible: boolean): void {
+    for (const h of this.resizeHandles) {
+      h.hidden = !visible
+      if (visible) h.removeAttribute('hidden')
+      else h.setAttribute('hidden', '')
     }
   }
 
@@ -218,7 +245,7 @@ export class LivePip {
   private onFullscreenChange = (): void => {
     this.fullscreen = document.fullscreenElement === this.element
     this.element.classList.toggle('is-fullscreen', this.fullscreen)
-    this.resizeHandle.hidden = this.fullscreen || this.collapsed
+    this.setResizeHandlesVisible(!this.fullscreen && !this.collapsed)
     const btn = this.element.querySelector('[data-fs]') as HTMLButtonElement | null
     if (btn) {
       btn.textContent = this.fullscreen ? '⛶' : '⛶'
@@ -356,16 +383,25 @@ export class LivePip {
     }
   }
 
-  private onResizePointerDown = (ev: PointerEvent): void => {
+  private onResizePointerDown = (ev: PointerEvent, handle: HTMLElement): void => {
     if (this.fullscreen || this.collapsed) return
     ev.preventDefault()
     ev.stopPropagation()
+    const corner = (handle.dataset.resize as ResizeCorner | undefined) ?? 'se'
     const rect = this.element.getBoundingClientRect()
-    this.resize = { ox: ev.clientX, oy: ev.clientY, sw: rect.width, sh: rect.height }
+    this.resize = {
+      ox: ev.clientX,
+      oy: ev.clientY,
+      sw: rect.width,
+      sh: rect.height,
+      left: rect.left,
+      top: rect.top,
+      corner
+    }
     this.drag = null
     this.element.classList.add('is-resizing')
     try {
-      this.resizeHandle.setPointerCapture(ev.pointerId)
+      handle.setPointerCapture(ev.pointerId)
     } catch {
       /* ignore */
     }
@@ -382,10 +418,41 @@ export class LivePip {
       return
     }
     if (this.resize) {
-      const dw = ev.clientX - this.resize.ox
-      const dh = ev.clientY - this.resize.oy
-      this.pipW = Math.min(window.innerWidth - 24, Math.max(MIN_W, this.resize.sw + dw))
-      this.pipH = Math.min(window.innerHeight - 24, Math.max(MIN_H, this.resize.sh + dh))
+      const { ox, oy, sw, sh, left, top, corner } = this.resize
+      const dx = ev.clientX - ox
+      const dy = ev.clientY - oy
+      const maxW = window.innerWidth - 24
+      const maxH = window.innerHeight - 24
+
+      let nextW = sw
+      let nextH = sh
+      let nextLeft = left
+      let nextTop = top
+
+      if (corner === 'se' || corner === 'ne') {
+        nextW = Math.min(maxW, Math.max(MIN_W, sw + dx))
+      } else {
+        // nw / sw — grow leftward; keep right edge fixed
+        nextW = Math.min(maxW, Math.max(MIN_W, sw - dx))
+        nextLeft = left + (sw - nextW)
+      }
+
+      if (corner === 'se' || corner === 'sw') {
+        nextH = Math.min(maxH, Math.max(MIN_H, sh + dy))
+      } else {
+        // nw / ne — grow upward; keep bottom edge fixed
+        nextH = Math.min(maxH, Math.max(MIN_H, sh - dy))
+        nextTop = top + (sh - nextH)
+      }
+
+      // Keep box on-screen
+      nextLeft = Math.min(window.innerWidth - 80, Math.max(0, nextLeft))
+      nextTop = Math.min(window.innerHeight - 40, Math.max(0, nextTop))
+
+      this.pipW = nextW
+      this.pipH = nextH
+      this.element.style.left = `${nextLeft}px`
+      this.element.style.top = `${nextTop}px`
       this.applySize()
     }
   }

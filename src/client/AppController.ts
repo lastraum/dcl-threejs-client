@@ -37,6 +37,10 @@ import { ChatPanel } from './ui/chat/ChatPanel'
 import { SocialChatController } from './ui/chat/SocialChatController'
 import { SocialChatDock } from './ui/chat/SocialChatDock'
 import { getPrivateMessagesService } from '../social/PrivateMessagesService'
+import {
+  getSharedLiveDirectory,
+  resetSharedLiveDirectory
+} from '../social/LiveDirectoryController'
 import { CommunityFollowController } from '../social/CommunityFollowController'
 import { LivePip } from './ui/live/LivePip'
 import type { LiveSession } from '../social/globalLiveWire'
@@ -1582,11 +1586,9 @@ export class AppController {
     this.livePageView = new LivePageView({
       login: this.login,
       onNavigate: (tab) => this.navigateSocialShell(tab),
-      getDirectory: () => this.socialChat?.getSocial()?.getLiveDirectory() ?? null,
+      getDirectory: () => this.resolveLiveDirectory(),
       getLogin: () => this.login,
       onWatch: (session) => this.openLivePip(session),
-      onCastPreview: (host, worldName, onUpdate) =>
-        this.startLiveDirectoryCastWatch(worldName, host, onUpdate, { muted: true }),
       ...this.socialShellLoginHandlers()
     })
     this.livePageView.mount(this.container)
@@ -1778,10 +1780,22 @@ export class AppController {
       })
     }
     this.livePip.open(session)
-    this.wireLiveSessionEnded(
+    this.wireLiveSessionEnded(this.resolveLiveDirectory())
+  }
+
+  /**
+   * Shared Live directory (process singleton) — prefer whichever SocialService
+   * is warm, fall back to the singleton when a broadcast is already active
+   * mid 2D→3D handoff.
+   */
+  private resolveLiveDirectory(): import('../social/LiveDirectoryController').LiveDirectoryController | null {
+    return (
+      this.world?.social.getLiveDirectory() ??
       this.socialChat?.getSocial()?.getLiveDirectory() ??
-        this.world?.social.getLiveDirectory() ??
-        null
+      (() => {
+        const shared = getSharedLiveDirectory()
+        return shared.isBroadcasting() || shared.list().length > 0 ? shared : null
+      })()
     )
   }
 
@@ -2879,16 +2893,15 @@ export class AppController {
         onPlayPetClipPreview: (hash, clip) => world.playPetClipPreview(hash, clip),
         onStopPetClipPreview: () => world.stopPetClipPreview(),
         onWatchLive: (session) => this.openLivePip(session),
-        onLiveCastPreview: (host, worldName, onUpdate) =>
-          this.startLiveDirectoryCastWatch(worldName, host, onUpdate, { muted: true }),
         getLogin: () => this.login,
         onSignOut: () => this.signOut(),
         onExit: () => this.leavePlayMode()
       })
-      this.wireLiveSessionEnded(world.social.getLiveDirectory())
+      // Rebind shared Live directory identity for 3D (keeps GO LIVE / hb from 2D).
+      void world.social.ensureLiveReady().then((dir) => this.wireLiveSessionEnded(dir))
     } else {
       this.shell.updateWorldBindings(world.session, world.environment)
-      this.wireLiveSessionEnded(world.social.getLiveDirectory())
+      void world.social.ensureLiveReady().then((dir) => this.wireLiveSessionEnded(dir))
       this.shell.setEmoteHandler((emoteId) => world.playLocalEmote(emoteId, { loop: undefined }))
       this.shell.setPhotoCameraHandler(() => world.togglePhotoCamera())
       this.shell.setTourOptionsHandler(() => this.openTourOptionsPopup())
@@ -4067,6 +4080,9 @@ export class AppController {
     clearStoredIdentity()
     this.leaveCommunityVoiceSession()
     this.disposeCommunityVoiceBar()
+    // End GO LIVE + clear directory so the next account does not inherit it.
+    resetSharedLiveDirectory()
+    this.livePip?.close()
     this.socialChat?.signOut()
     this.teardownSocialChatShell(true)
     this.disposeSocialMobileNotifications()
@@ -4105,6 +4121,8 @@ export class AppController {
     this.leaveCommunityVoiceSession()
     this.disposeCommunityVoiceBar()
     this.disposeCommunityFollow()
+    resetSharedLiveDirectory()
+    this.livePip?.close()
     this.profileUi?.dispose()
     this.profileUi = null
     this.chatPanel?.dispose()

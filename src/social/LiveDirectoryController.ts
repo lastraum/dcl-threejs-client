@@ -4,6 +4,8 @@
  * - Always-on receive when PM is connected
  * - Local Go Live → start/hb/stop on `d3js-live`
  * - TTL sweep removes dead sessions; listeners teardown PiP
+ * - Process singleton (like PrivateMessagesService) so GO LIVE / heartbeats
+ *   survive 2D shell → 3D World SocialService swaps
  */
 
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
@@ -25,6 +27,52 @@ export type LiveDirectoryControllerOpts = {
   publish: LiveDirectoryPublish
   getLocalAddress: () => string | null
   getDisplayName: () => string
+}
+
+/** Mutable identity/publish binding for the process-wide directory. */
+const sharedBinding: LiveDirectoryControllerOpts = {
+  publish: async () => false,
+  getLocalAddress: () => null,
+  getDisplayName: () => 'You'
+}
+
+let sharedLiveDirectory: LiveDirectoryController | null = null
+
+/**
+ * Process-wide Live directory (one per browser tab).
+ * Survives SocialService dispose when jumping 2D → 3D.
+ */
+export function getSharedLiveDirectory(): LiveDirectoryController {
+  if (!sharedLiveDirectory) {
+    sharedLiveDirectory = new LiveDirectoryController({
+      publish: (msg) => sharedBinding.publish(msg),
+      getLocalAddress: () => sharedBinding.getLocalAddress(),
+      getDisplayName: () => sharedBinding.getDisplayName()
+    })
+  }
+  return sharedLiveDirectory
+}
+
+/** Rebind publish + identity after a SocialService (re)connects. */
+export function bindSharedLiveDirectory(opts: LiveDirectoryControllerOpts): LiveDirectoryController {
+  sharedBinding.publish = opts.publish
+  sharedBinding.getLocalAddress = opts.getLocalAddress
+  sharedBinding.getDisplayName = opts.getDisplayName
+  return getSharedLiveDirectory()
+}
+
+/**
+ * Hard reset (sign-out / full teardown). Ends local broadcast and clears sessions.
+ * Does not remove the singleton — next bind reuses a fresh controller.
+ */
+export function resetSharedLiveDirectory(): void {
+  if (sharedLiveDirectory) {
+    sharedLiveDirectory.dispose()
+    sharedLiveDirectory = null
+  }
+  sharedBinding.publish = async () => false
+  sharedBinding.getLocalAddress = () => null
+  sharedBinding.getDisplayName = () => 'You'
 }
 
 function newSessionId(): string {

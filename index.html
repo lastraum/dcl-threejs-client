@@ -5850,41 +5850,124 @@
         transform: translateX(16px);
       }
 
-      /* Live directory panel (3D HUD) */
+      /* Live directory — full-screen overlay in 3D (Loot Bag / Pets purple chrome) */
       .live-panel {
         position: fixed;
+        inset: 0;
         z-index: var(--z-client-hud-raised);
-        width: min(340px, var(--client-panel-max-w));
-        max-height: min(78vh, 560px);
-        overflow: auto;
-        scrollbar-width: none;
-        padding: 14px 14px 12px;
-        border-radius: 14px;
-        background: rgba(22, 22, 28, 0.97);
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        display: flex;
+        flex-direction: column;
+        width: auto;
+        max-height: none;
+        overflow: hidden;
+        padding: 0;
+        border-radius: 0;
+        /* Same gradient family as .pets-panel / lootbag purple chrome */
+        background: linear-gradient(
+          165deg,
+          rgba(55, 28, 90, 0.96) 0%,
+          rgba(28, 16, 48, 0.98) 55%,
+          rgba(18, 12, 32, 0.99) 100%
+        );
+        border: none;
         color: #fff;
-        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
         pointer-events: auto;
         user-select: none;
       }
-      .live-panel::-webkit-scrollbar { display: none; width: 0; height: 0; }
-      .live-panel__header {
-        margin: 0 0 10px;
-        font-size: 11px;
-        font-weight: 700;
-        letter-spacing: 0.14em;
-        color: rgba(255, 255, 255, 0.92);
+      .live-panel[hidden] { display: none !important; }
+      .live-panel__shell {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        max-width: 920px;
+        margin: 0 auto;
       }
-      .live-panel__body { min-height: 0; }
+      .live-panel__header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-shrink: 0;
+        margin: 0;
+        padding: 14px clamp(16px, 3vw, 40px) 10px;
+        font-size: inherit;
+        font-weight: inherit;
+        letter-spacing: normal;
+        color: #fff;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        background: linear-gradient(180deg, rgba(139, 92, 246, 0.16), transparent);
+      }
+      .live-panel__header-left {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+      .live-panel__live-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #ff2d55;
+        box-shadow: 0 0 0 3px rgba(255, 45, 85, 0.28);
+        flex-shrink: 0;
+      }
+      .live-panel__title {
+        margin: 0;
+        font-size: 22px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+      }
+      .live-panel__close {
+        width: 36px;
+        height: 36px;
+        border: none;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.9);
+        font-size: 16px;
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+      .live-panel__close:hover {
+        background: rgba(255, 255, 255, 0.14);
+      }
+      .live-panel__body {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        padding: 12px clamp(16px, 3vw, 40px) 40px;
+        box-sizing: border-box;
+        scrollbar-width: thin;
+      }
+      .live-panel__body::-webkit-scrollbar {
+        width: 6px;
+      }
+      .live-panel__body::-webkit-scrollbar-thumb {
+        background: rgba(167, 139, 250, 0.35);
+        border-radius: 999px;
+      }
+      body.live-panel-open #client-shell {
+        /* Keep shell clickable for close via Live button toggle */
+        pointer-events: auto;
+      }
 
       /* Live directory (shared 2D page + 3D panel) */
       .live-dir { display: flex; flex-direction: column; gap: 16px; }
       .live-dir__h {
         margin: 0 0 6px;
+        font-size: 15px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+        color: #ff5c7a;
+      }
+      .live-dir__empty {
+        margin: 12px 0 0;
         font-size: 13px;
-        font-weight: 700;
-        letter-spacing: 0.04em;
-        color: rgba(255, 255, 255, 0.95);
+        color: rgba(255, 255, 255, 0.5);
       }
       .live-dir__hint {
         margin: 0 0 10px;
@@ -5917,7 +6000,6 @@
       /* Author display:flex beats UA [hidden] — force hide when live. */
       .live-dir__go-live[hidden],
       .live-dir__btn--end[hidden],
-      .live-dir .live-session-card__creds[hidden],
       .live-go-modal[hidden] {
         display: none !important;
       }
@@ -5972,96 +6054,101 @@
         filter: none;
         box-shadow: none;
       }
-      .live-dir__grid {
-        margin-top: 12px;
-      }
-      .live-dir--compact .live-dir__grid.places-view__carousel--live {
-        grid-template-columns: 1fr;
-        gap: 12px;
-      }
-      .live-session-card {
-        background: rgba(18, 8, 36, 0.55);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        overflow: hidden;
-      }
-      .live-session-card--self {
-        border-color: rgba(255, 45, 85, 0.45);
-        box-shadow: 0 0 0 1px rgba(255, 45, 85, 0.15);
-      }
-      .live-session-card__media {
-        position: relative;
-      }
-      .live-session-card__placeholder {
-        background:
-          radial-gradient(circle at 30% 40%, rgba(255, 45, 85, 0.35), transparent 55%),
-          radial-gradient(circle at 70% 60%, rgba(124, 58, 237, 0.4), transparent 50%),
-          rgba(18, 8, 36, 0.95);
-      }
-      .live-session-card__media-badges {
-        position: absolute;
-        top: 10px;
-        left: 10px;
-        right: 10px;
+      /* Live session pills — name + View → PiP */
+      .live-dir__pills {
         display: flex;
         flex-wrap: wrap;
-        gap: 6px;
-        z-index: 1;
+        gap: 12px;
+        margin-top: 14px;
+        min-height: 0;
       }
-      .live-session-card__badge {
-        font-size: 10px;
+      .live-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        min-width: min(320px, 100%);
+        max-width: 100%;
+        margin: 0;
+        padding: 14px 14px 14px 18px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.06);
+        color: #fff;
+        font: inherit;
+        font-size: 16px;
+        font-weight: 650;
+        line-height: 1.2;
+        cursor: pointer;
+        box-sizing: border-box;
+        transition: background 0.12s ease, border-color 0.12s ease, transform 0.12s ease;
+      }
+      .live-pill:hover {
+        background: rgba(255, 255, 255, 0.11);
+        border-color: rgba(255, 45, 85, 0.45);
+      }
+      .live-pill:active {
+        transform: scale(0.99);
+      }
+      .live-pill--self {
+        border-color: rgba(255, 45, 85, 0.55);
+        background: rgba(255, 45, 85, 0.14);
+        box-shadow: 0 0 0 1px rgba(255, 45, 85, 0.12);
+      }
+      .live-pill--self:hover {
+        background: rgba(255, 45, 85, 0.22);
+      }
+      .live-pill__dot {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #ff2d55;
+        box-shadow: 0 0 0 4px rgba(255, 45, 85, 0.22);
+        flex-shrink: 0;
+        animation: live-dir-pulse 1.2s ease-in-out infinite;
+      }
+      .live-pill__name {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 22ch;
+        font-size: 17px;
+        font-weight: 700;
+      }
+      .live-pill__tag {
+        flex-shrink: 0;
+        font-size: 11px;
         font-weight: 800;
         letter-spacing: 0.06em;
-        padding: 4px 8px;
-        border-radius: 6px;
-        text-transform: uppercase;
-      }
-      .live-session-card__badge--you,
-      .live-session-card__badge--live {
+        padding: 5px 9px;
+        border-radius: 999px;
         background: #ff2d55;
         color: #fff;
       }
-      .live-session-card__badge--wait {
-        background: rgba(0, 0, 0, 0.55);
-        color: rgba(255, 255, 255, 0.92);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        text-transform: none;
+      .live-pill__spacer {
+        flex: 1 1 auto;
+        min-width: 12px;
+      }
+      .live-pill__view {
+        flex-shrink: 0;
+        margin: 0;
+        padding: 10px 18px;
+        border: none;
+        border-radius: 999px;
+        background: #fff;
+        color: #1a1a1f;
+        font: inherit;
+        font-size: 14px;
+        font-weight: 800;
         letter-spacing: 0.02em;
-        font-weight: 700;
+        cursor: pointer;
+        line-height: 1;
       }
-      .live-session-card__creds {
-        padding: 10px 12px 12px;
-        background: rgba(12, 6, 24, 0.96);
-        border-top: 1px solid rgba(255, 255, 255, 0.08);
+      .live-pill__view:hover {
+        filter: brightness(0.96);
       }
-      .live-session-card__video-host {
-        position: absolute;
-        inset: 0;
-        z-index: 0;
-        background: #000;
-      }
-      .live-session-card__video-host video,
-      .live-session-card__video-host .scene-watch-cast-stage__video {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        display: block;
-        background: #000;
-      }
-      .live-session-card__placeholder {
-        z-index: 1;
-        pointer-events: none;
-      }
-      .live-session-card__placeholder.is-hidden {
-        opacity: 0;
-        visibility: hidden;
-      }
-      .live-session-card__media-badges {
-        z-index: 2;
-        pointer-events: none;
-      }
-      .live-dir:not(.live-dir--compact) .live-dir__grid.places-view__carousel--live {
-        grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-        max-width: 100%;
+      .live-pill--self .live-pill__view {
+        background: #fff;
+        color: #1a1a1f;
       }
       .live-cred-line {
         display: grid;
@@ -6354,6 +6441,9 @@
       .live-pip.is-fullscreen .live-pip__resize {
         display: none !important;
       }
+      .live-pip__resize[hidden] {
+        display: none !important;
+      }
       .live-pip__bar {
         display: flex;
         align-items: center;
@@ -6417,19 +6507,46 @@
         pointer-events: none;
       }
       .live-pip__status[hidden] { display: none !important; }
+      /* Corner resize grips — all four corners */
       .live-pip__resize {
         position: absolute;
+        width: 18px;
+        height: 18px;
+        z-index: 4;
+        touch-action: none;
+      }
+      .live-pip__resize--nw {
+        top: 0;
+        left: 0;
+        cursor: nwse-resize;
+        background:
+          linear-gradient(135deg, rgba(255, 255, 255, 0.5) 0 2px, transparent 2px) 2px 2px / 10px 10px no-repeat,
+          linear-gradient(135deg, rgba(255, 255, 255, 0.35) 0 2px, transparent 2px) 5px 5px / 8px 8px no-repeat;
+      }
+      .live-pip__resize--ne {
+        top: 0;
+        right: 0;
+        cursor: nesw-resize;
+        background:
+          linear-gradient(225deg, rgba(255, 255, 255, 0.5) 0 2px, transparent 2px) calc(100% - 2px) 2px / 10px 10px no-repeat,
+          linear-gradient(225deg, rgba(255, 255, 255, 0.35) 0 2px, transparent 2px) calc(100% - 5px) 5px / 8px 8px no-repeat;
+      }
+      .live-pip__resize--sw {
+        bottom: 0;
+        left: 0;
+        cursor: nesw-resize;
+        background:
+          linear-gradient(45deg, rgba(255, 255, 255, 0.5) 0 2px, transparent 2px) 2px calc(100% - 2px) / 10px 10px no-repeat,
+          linear-gradient(45deg, rgba(255, 255, 255, 0.35) 0 2px, transparent 2px) 5px calc(100% - 5px) / 8px 8px no-repeat;
+      }
+      .live-pip__resize--se {
         right: 0;
         bottom: 0;
-        width: 16px;
-        height: 16px;
         cursor: nwse-resize;
-        z-index: 3;
         background:
-          linear-gradient(135deg, transparent 50%, rgba(255, 255, 255, 0.45) 50%, rgba(255, 255, 255, 0.45) 60%, transparent 60%),
+          linear-gradient(135deg, transparent 50%, rgba(255, 255, 255, 0.5) 50%, rgba(255, 255, 255, 0.5) 60%, transparent 60%),
           linear-gradient(135deg, transparent 70%, rgba(255, 255, 255, 0.35) 70%, rgba(255, 255, 255, 0.35) 80%, transparent 80%);
       }
-      .live-pip__resize[hidden] { display: none !important; }
       @media (max-width: 767px) {
         .live-pip__resize { display: none !important; }
       }

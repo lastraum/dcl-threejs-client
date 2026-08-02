@@ -1,6 +1,9 @@
 /**
  * Shared Live list + Go Live (single CTA → modal with m3u8 / DCL world).
  * Cards mirror Explorer live tiles (places-view__card--live-tile).
+ *
+ * Cards are static (no per-card LiveKit/HLS decode) — open PiP via onWatch for video.
+ * Embedding streams on every card would thrash bandwidth and can steal PiP's cast room.
  */
 
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
@@ -21,15 +24,6 @@ export type LiveDirectoryViewOptions = {
   onWatch: (session: LiveSession) => void
   getLogin?: () => LoginResult | null
   compact?: boolean
-  /**
-   * Attach OBS/LiveKit video for a dcl-cast world into a host (self preview + reliability).
-   * Returns cleanup. Called when self card mounts after GO LIVE.
-   */
-  onCastPreview?: (
-    host: HTMLElement,
-    worldName: string,
-    onUpdate: (attached: boolean) => void
-  ) => Promise<() => void>
 }
 
 type SourceMode = 'm3u8' | 'dcl-world'
@@ -69,20 +63,15 @@ export class LiveDirectoryView {
   private worlds: WorldOption[] = []
   private worldsLoaded = false
   private accessBusy = false
+  /** Modal-only OBS keys — never shown on the live list after the modal closes. */
   private credentials: SceneStreamCredentials | null = null
   private bindRetryTimer: ReturnType<typeof setTimeout> | null = null
-  private previewCleanup: (() => void) | null = null
-  private previewWorld: string | null = null
-  private previewAttached = false
-  /** Stable self-card node so heartbeat re-renders don't tear down LiveKit preview. */
-  private selfCardEl: HTMLElement | null = null
-  private selfCardSessionId: string | null = null
 
   constructor(private readonly options: LiveDirectoryViewOptions) {
     this.root = document.createElement('div')
     this.root.className = options.compact
-      ? 'live-dir live-dir--compact places-view places-view--explorer'
-      : 'live-dir places-view places-view--explorer'
+      ? 'live-dir live-dir--compact'
+      : 'live-dir'
     this.root.innerHTML = `
       <section class="live-dir__broadcast" data-broadcast>
         <button type="button" class="live-dir__go-live" data-go>
@@ -94,11 +83,11 @@ export class LiveDirectoryView {
 
       <section class="live-dir__list-wrap">
         <div class="live-dir__list-head">
-          <h2 class="live-dir__h places-view__spotlight-title places-view__spotlight-title--live">Live now</h2>
+          <h2 class="live-dir__h">Live now</h2>
           <p class="live-dir__status" data-status></p>
         </div>
-        <div class="live-dir__grid places-view__carousel places-view__carousel--live" data-list role="list"></div>
-        <p class="live-dir__empty places-view__spotlight-muted" data-empty>No one is live yet — be the first.</p>
+        <div class="live-dir__pills" data-list role="list"></div>
+        <p class="live-dir__empty" data-empty>No one is live yet — be the first.</p>
       </section>
 
       <div class="live-go-modal" data-modal hidden>
@@ -177,24 +166,10 @@ export class LiveDirectoryView {
       clearTimeout(this.bindRetryTimer)
       this.bindRetryTimer = null
     }
-    this.stopSelfPreview()
     this.unsub?.()
     this.unsub = null
     this.closeModal()
     this.root.remove()
-  }
-
-  private stopSelfPreview(): void {
-    try {
-      this.previewCleanup?.()
-    } catch {
-      /* ignore */
-    }
-    this.previewCleanup = null
-    this.previewWorld = null
-    this.previewAttached = false
-    this.selfCardEl = null
-    this.selfCardSessionId = null
   }
 
   private bindDirectory(): void {
@@ -239,188 +214,44 @@ export class LiveDirectoryView {
     this.statusEl.textContent = total === 0 ? '' : `${total} live`
     this.emptyEl.hidden = total > 0
 
-    // Keep self card DOM stable so LiveKit preview is not torn down every heartbeat.
-    if (!self) {
-      this.stopSelfPreview()
-      this.listEl.innerHTML = ''
-    } else if (
-      this.selfCardEl &&
-      this.selfCardSessionId === self.sessionId &&
-      this.selfCardEl.isConnected
-    ) {
-      // Only rebuild others
-      this.listEl.querySelectorAll('[data-other-session]').forEach((n) => n.remove())
-      if (this.selfCardEl.parentElement !== this.listEl) {
-        this.listEl.prepend(this.selfCardEl)
-      }
-      this.updateSelfCardChrome(self)
-    } else {
-      this.stopSelfPreview()
-      this.listEl.innerHTML = ''
-      this.selfCardEl = this.buildSessionCard(self, true)
-      this.selfCardSessionId = self.sessionId
-      this.listEl.appendChild(this.selfCardEl)
-      if (self.media.type === 'dcl-cast' && this.options.onCastPreview) {
-        void this.ensureSelfPreview(self.media.worldName)
-      }
-    }
-
+    this.listEl.replaceChildren()
+    if (self) this.listEl.appendChild(this.buildSessionPill(self, true))
     for (const s of others) {
-      this.listEl.appendChild(this.buildSessionCard(s, false))
+      this.listEl.appendChild(this.buildSessionPill(s, false))
     }
     this.syncBroadcastUi()
   }
 
-  private updateSelfCardChrome(session: LiveSession): void {
-    if (!this.selfCardEl) return
-    const wait = this.selfCardEl.querySelector('[data-self-wait]') as HTMLElement | null
-    if (wait && !this.previewAttached) {
-      wait.textContent = 'Waiting for stream…'
-    }
-    const loc = this.selfCardEl.querySelector('.places-view__card-location') as HTMLElement | null
-    if (loc && session.media.type === 'dcl-cast') {
-      loc.textContent = session.media.worldName
-    }
-    const credsBox = this.selfCardEl.querySelector('[data-card-creds]') as HTMLElement | null
-    if (
-      credsBox &&
-      this.credentials &&
-      (this.credentials.streamingUrl || this.credentials.streamingKey) &&
-      !credsBox.querySelector('.live-cred-line')
-    ) {
-      this.fillCredentialsBox(credsBox, this.credentials)
-      credsBox.hidden = false
-      credsBox.removeAttribute('hidden')
-    }
-  }
-
-  private async ensureSelfPreview(worldName: string): Promise<void> {
-    if (!this.options.onCastPreview || !this.selfCardEl) return
-    // Dedicated host so LiveKit reattach replaceChildren() does not wipe badges.
-    const videoHost = this.selfCardEl.querySelector(
-      '[data-video-host]'
-    ) as HTMLElement | null
-    const waitBadge = this.selfCardEl.querySelector('[data-self-wait]') as HTMLElement | null
-    if (!videoHost) return
-    if (this.previewWorld === worldName && this.previewCleanup) return
-
-    try {
-      this.previewCleanup?.()
-    } catch {
-      /* ignore */
-    }
-    this.previewCleanup = null
-    this.previewAttached = false
-    this.previewWorld = worldName
-    try {
-      const ph = this.selfCardEl.querySelector('.live-session-card__placeholder')
-      this.previewCleanup = await this.options.onCastPreview(videoHost, worldName, (attached) => {
-        this.previewAttached = attached
-        if (waitBadge) {
-          waitBadge.textContent = attached ? 'LIVE' : 'Waiting for stream…'
-          waitBadge.classList.toggle('live-session-card__badge--live', attached)
-          waitBadge.classList.toggle('live-session-card__badge--wait', !attached)
-        }
-        if (attached) {
-          ph?.classList.add('is-hidden')
-        } else {
-          ph?.classList.remove('is-hidden')
-        }
-      })
-    } catch (e) {
-      if (waitBadge) {
-        waitBadge.textContent =
-          e instanceof Error ? e.message.slice(0, 48) : 'Preview failed'
-      }
-    }
-  }
-
-  private buildSessionCard(session: LiveSession, isSelf: boolean): HTMLElement {
-    const article = document.createElement('article')
-    article.className = 'places-view__card places-view__card--live-tile live-session-card'
-    if (isSelf) article.classList.add('live-session-card--self')
-    else article.dataset.otherSession = session.sessionId
-    article.setAttribute('role', 'listitem')
-
-    const placeLabel =
+  /** Name pill + View — stream only opens in PiP (no embedded decode). */
+  private buildSessionPill(session: LiveSession, isSelf: boolean): HTMLElement {
+    const row = document.createElement('div')
+    row.className = isSelf ? 'live-pill live-pill--self' : 'live-pill'
+    row.setAttribute('role', 'listitem')
+    const name = isSelf
+      ? session.displayName || 'You'
+      : session.displayName || shortAddr(session.hostAddress)
+    const place =
       session.media.type === 'dcl-cast'
         ? session.media.worldName
         : session.media.type === 'hls' || session.media.type === 'http'
-          ? 'Custom stream'
-          : 'Live'
-
-    const title = isSelf
-      ? session.displayName || 'You'
-      : session.displayName || shortAddr(session.hostAddress)
-
-    const statusLine = isSelf
-      ? this.previewAttached
-        ? 'LIVE'
-        : 'Waiting for stream…'
-      : 'LIVE'
-
-    article.innerHTML = `
-      <div class="places-view__card-media live-session-card__media">
-        <div class="live-session-card__video-host" data-video-host></div>
-        <div class="places-view__card-placeholder live-session-card__placeholder" aria-hidden></div>
-        <div class="live-session-card__media-badges">
-          ${
-            isSelf
-              ? `<span class="live-session-card__badge live-session-card__badge--you">YOU</span>
-                 <span class="live-session-card__badge ${this.previewAttached ? 'live-session-card__badge--live' : 'live-session-card__badge--wait'}" data-self-wait>${escapeHtml(statusLine)}</span>`
-              : `<span class="live-session-card__badge live-session-card__badge--live">LIVE</span>`
-          }
-        </div>
-      </div>
-      <div class="places-view__card-body places-view__card-body--live">
-        <div class="places-view__card-action">
-          <div class="places-view__card-info places-view__card-info--live">
-            <h3 class="places-view__card-title"></h3>
-            <span class="places-view__card-location"></span>
-          </div>
-          ${
-            isSelf
-              ? `<button type="button" class="places-view__card-visit live-session-card__end" data-end-card>End</button>`
-              : `<button type="button" class="places-view__card-visit" data-watch>Watch</button>`
-          }
-        </div>
-      </div>
-      ${
-        isSelf
-          ? `<div class="live-session-card__creds" data-card-creds hidden></div>`
-          : ''
-      }
+          ? 'stream'
+          : 'live'
+    row.title = isSelf ? `${name} · ${place}` : `Watch ${name}`
+    row.innerHTML = `
+      <span class="live-pill__dot" aria-hidden="true"></span>
+      <span class="live-pill__name"></span>
+      ${isSelf ? `<span class="live-pill__tag">YOU</span>` : ''}
+      <span class="live-pill__spacer" aria-hidden="true"></span>
+      <button type="button" class="live-pill__view" data-view>View</button>
     `
-
-    article.querySelector('.places-view__card-title')!.textContent = title
-    const loc = article.querySelector('.places-view__card-location') as HTMLElement
-    loc.textContent = placeLabel
-    loc.title = placeLabel
-
-    if (isSelf) {
-      const credsBox = article.querySelector('[data-card-creds]') as HTMLElement
-      if (this.credentials && (this.credentials.streamingUrl || this.credentials.streamingKey)) {
-        this.fillCredentialsBox(credsBox, this.credentials)
-        credsBox.hidden = false
-        credsBox.removeAttribute('hidden')
-      }
-      article.querySelector('[data-end-card]')?.addEventListener('click', (ev) => {
-        ev.stopPropagation()
-        void this.onEndLive()
-      })
-      // Click media / card → PiP for self preview full size
-      article.querySelector('.live-session-card__media')?.addEventListener('click', () => {
-        this.options.onWatch(session)
-      })
-    } else {
-      article.querySelector('[data-watch]')?.addEventListener('click', (ev) => {
-        ev.stopPropagation()
-        this.options.onWatch(session)
-      })
-      article.addEventListener('click', () => this.options.onWatch(session))
-    }
-
-    return article
+    row.querySelector('.live-pill__name')!.textContent = name
+    const open = (): void => this.options.onWatch(session)
+    row.querySelector('[data-view]')!.addEventListener('click', (ev) => {
+      ev.stopPropagation()
+      open()
+    })
+    row.addEventListener('click', open)
+    return row
   }
 
   private syncBroadcastUi(): void {
@@ -755,7 +586,6 @@ export class LiveDirectoryView {
     const dir = this.options.getDirectory()
     await dir?.endLive()
     this.credentials = null
-    this.stopSelfPreview()
     this.refreshFromDirectory()
     this.closeModal()
   }

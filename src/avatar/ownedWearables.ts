@@ -20,11 +20,14 @@ export function expandOwnedWearableRows(raw: OwnedWearableApiRow[]): OwnedWearab
     const individuals = Array.isArray(row.individualData) ? row.individualData : []
     if (individuals.length) {
       for (const ind of individuals) {
+        // Prefer full item URN (id), else asset+tokenId, else asset+issued id suffix.
+        const tokenPart =
+          ind.tokenId != null && String(ind.tokenId).length > 0
+            ? String(ind.tokenId)
+            : null
         const full =
           ind.id?.trim() ||
-          (assetUrn && ind.tokenId != null && String(ind.tokenId).length
-            ? `${assetUrn}:${String(ind.tokenId)}`
-            : '')
+          (assetUrn && tokenPart ? `${assetUrn}:${tokenPart}` : '')
         if (full) out.push({ urn: full, amount: 1 })
       }
       continue

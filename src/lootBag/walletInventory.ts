@@ -90,7 +90,8 @@ export async function fetchWalletDepositNfts(
     const urn = entry.urn?.trim()
     if (!urn) continue
     const parsed = parseCollectionsV2Urn(urn)
-    if (!parsed || !parsed.tokenId) continue
+    // Deposit requires a concrete ERC-721 token id (edition). Asset-only URNs cannot be deposited.
+    if (!parsed?.tokenId) continue
 
     const key = `${parsed.collection}:${parsed.tokenId}`
     if (seen.has(key)) continue
@@ -98,6 +99,7 @@ export async function fetchWalletDepositNfts(
 
     const assetUrn = assetUrnFromCompleteUrn(urn).toLowerCase()
     const meta = metaByAsset.get(assetUrn)
+    // issuedId is the edition within the item design; full tokenId may be encode(itemId, issuedId).
     const issuedId =
       parsed.tokenId.length < 20 && /^\d+$/.test(parsed.tokenId)
         ? parsed.tokenId

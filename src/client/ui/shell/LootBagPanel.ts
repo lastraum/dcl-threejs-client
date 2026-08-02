@@ -41,8 +41,8 @@ type PanelMode = 'main' | 'deposit'
 /** Wallet inventory deposit vs creator Collection V2 stock */
 type DepositSource = 'wallet' | 'creator'
 
-/** Match main bag row (~6 cards wide) for 3D deposit grid pages */
-const INV_PAGE_SIZE = 6
+/** Deposit inventory grid — denser page so wallets with many wearables feel complete */
+const INV_PAGE_SIZE = 18
 const DEFAULT_BACKING = '10'
 const DEFAULT_PACK_PRIZE = '5'
 const DEFAULT_STOCK_COUNT = '5'
@@ -569,12 +569,29 @@ export class LootBagPanel {
     }
     this.error = null
     this.depositSource = 'wallet'
-    this.syncInventory()
-    const owned = new Set(this.inventory.map((i) => i.id))
-    this.selections = this.selections.filter((s) => owned.has(s.item.id))
     this.invPage = 0
     this.invSearch = ''
     this.setMode('deposit')
+    // Re-fetch wallet NFTs when opening Add Loot (stale snapshot was dropping items)
+    void this.refreshWalletInventoryForDeposit()
+  }
+
+  /** Pull full Catalyst + mock inventory before showing deposit grid. */
+  private async refreshWalletInventoryForDeposit(): Promise<void> {
+    const addr = this.sessionAddress()
+    if (!addr || !/^0x[a-fA-F0-9]{40}$/.test(addr)) return
+    this.bodyEl.innerHTML = shelfLoadingHtml('Loading your wearables…')
+    try {
+      this.wallet = await fetchWalletSnapshot(addr as `0x${string}`)
+    } catch (e) {
+      this.error = e instanceof Error ? e.message : String(e)
+    }
+    this.syncInventory()
+    const owned = new Set(this.inventory.map((i) => i.id))
+    this.selections = this.selections.filter((s) => owned.has(s.item.id))
+    this.renderHeader()
+    if (this.mode === 'deposit') this.renderDepositBody()
+    if (this.error) this.renderStatus()
   }
 
   private closeDeposit(): void {
@@ -948,7 +965,7 @@ export class LootBagPanel {
       pagerHtml: `
         <div class="lootbag-dep__pager lootbag-dep__pager--header">
           <button type="button" class="lootbag-dep__page-btn" data-inv-prev ${!canPrev || this.busy ? 'disabled' : ''}>‹</button>
-          <span class="lootbag-dep__page-label">${this.invPage + 1}/${totalPages}</span>
+          <span class="lootbag-dep__page-label" title="${invTotal} depositable item${invTotal === 1 ? '' : 's'}">${this.invPage + 1}/${totalPages} · ${invTotal}</span>
           <button type="button" class="lootbag-dep__page-btn" data-inv-next ${!canNext || this.busy ? 'disabled' : ''}>›</button>
         </div>`
     })

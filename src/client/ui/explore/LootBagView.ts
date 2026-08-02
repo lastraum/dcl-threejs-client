@@ -14,8 +14,10 @@ import {
   fetchCreatorCollections,
   fetchCollectionItems,
   findPendingWinForPurchaser,
+  formatIssueLabel,
   formatMana,
   takeTokensNetWei,
+  resolveIssuedId,
   runDepositManaPack,
   runDepositNft,
   runDepositBundle,
@@ -114,6 +116,20 @@ function walletAddress(login: LoginResult): string | undefined {
   return undefined
 }
 
+function posIssueLabel(p: Pick<LootBagPosition, 'tokenId' | 'collection' | 'issuedId'>): string {
+  return formatIssueLabel(p.tokenId, {
+    collection: p.collection,
+    knownIssuedId: p.issuedId
+  })
+}
+
+function invIssueLabel(item: { tokenId: string; collection: string; issuedId?: string }): string {
+  return formatIssueLabel(item.tokenId, {
+    collection: item.collection,
+    knownIssuedId: item.issuedId
+  })
+}
+
 function itemLabel(p: LootBagPosition): string {
   if (p.kind === 'manaPack') return 'MANA Pack'
   if (p.kind === 'bundle') {
@@ -122,8 +138,7 @@ function itemLabel(p: LootBagPosition): string {
     return n > 0 ? `Bundle · ${n} items` : 'Bundle'
   }
   if (p.name?.trim()) return p.name.trim()
-  if (p.issuedId) return `Issue #${p.issuedId}`
-  return `Token #${p.tokenId}`
+  return posIssueLabel(p)
 }
 
 function manaPackInvItem(): InvItem {
@@ -148,7 +163,9 @@ function walletNftsToInventory(
     rarity: n.rarity || 'common',
     collection: n.collection,
     imageUrl: n.imageUrl,
-    issuedId: n.issuedId
+    issuedId:
+      resolveIssuedId(n.tokenId, { collection: n.collection, knownIssuedId: n.issuedId }) ??
+      undefined
   }))
   // A–Z by name (pack stays pinned first in filterInv)
   items.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
@@ -1105,9 +1122,7 @@ export class LootBagView {
       ? `Prize ${formatMana(p.packMana)} mMANA`
       : isBundle
         ? `${nBundle} item${nBundle === 1 ? '' : 's'}${p.packMana > 0n ? ` · +${formatMana(p.packMana)} mMANA` : ''}`
-        : p.issuedId
-          ? `Issue #${p.issuedId}`
-          : `Token #${p.tokenId}`
+        : posIssueLabel(p)
     const rarityLabel = isPack ? 'pack' : isBundle ? 'bundle' : rarity
     const backing = `Backed by ${formatMana(p.backing)} mMANA`
     const chance =
@@ -1355,9 +1370,8 @@ export class LootBagView {
                 ? `<img src="${escapeHtml(sel.item.imageUrl)}" alt="" loading="lazy" />`
                 : 'NFT'
               const marketUrl = `https://market.decentraland.org/contracts/${encodeURIComponent(sel.item.collection)}/tokens/${encodeURIComponent(sel.item.tokenId)}`
-              const issuePill = sel.item.issuedId
-                ? `<span class="lootbag-dep__pill">Issue #${escapeHtml(sel.item.issuedId)}</span>`
-                : ''
+              const issueLabel = invIssueLabel(sel.item)
+              const issuePill = `<span class="lootbag-dep__pill">${escapeHtml(issueLabel)}</span>`
               return `
         <div class="lootbag-dep__stock-card lootbag-dep__stock-card--nft" data-sel-id="${escapeHtml(sel.item.id)}">
           <button type="button" class="lootbag-dep__stock-clear" data-remove="${escapeHtml(sel.item.id)}" aria-label="Remove" ${this.busy ? 'disabled' : ''}>×</button>
@@ -1368,7 +1382,7 @@ export class LootBagView {
               <div class="lootbag-dep__stock-tags">
                 <span class="lootbag-dep__pill lootbag-dep__pill--${escapeHtml(sel.item.rarity)}">${escapeHtml(sel.item.rarity)}</span>
                 ${issuePill}
-                <a class="lootbag-dep__pill lootbag-dep__pill--view" href="${escapeHtml(marketUrl)}" target="_blank" rel="noopener noreferrer" title="Token #${escapeHtml(sel.item.tokenId)}">View</a>
+                <a class="lootbag-dep__pill lootbag-dep__pill--view" href="${escapeHtml(marketUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(issueLabel)}">View</a>
               </div>
             </div>
           </div>
@@ -1394,9 +1408,7 @@ export class LootBagView {
         : `<div class="lootbag-vitrine__card-glyph" aria-hidden="true">${glyph}</div>`
       const detail = isPack
         ? 'Always available'
-        : item.issuedId
-          ? `Issue #${escapeHtml(item.issuedId)}`
-          : `Token #${escapeHtml(item.tokenId)}`
+        : escapeHtml(invIssueLabel(item))
       const rarityLabel = isPack ? 'pack' : rarity
       cells.push(`
         <button type="button" class="lootbag-vitrine__card lootbag-dep__pick${on ? ' is-selected' : ''}${isPack ? ' is-pack' : ''} lootbag-rarity--${escapeHtml(rarity)}" data-pick="${escapeHtml(item.id)}" ${this.busy ? 'disabled' : ''}>
@@ -2156,7 +2168,7 @@ export class LootBagView {
         ? 'MANA Pack'
         : isBundle
           ? itemLabel(p)
-          : p.name?.trim() || (p.issuedId ? `Issue #${p.issuedId}` : `Token #${p.tokenId}`)
+          : p.name?.trim() || posIssueLabel(p)
       : `Position #${win.positionId}`
     const nBundle = p?.bundleItems?.length ?? 0
     const detail = p
@@ -2164,9 +2176,7 @@ export class LootBagView {
         ? `Prize ${formatMana(p.packMana)} mMANA`
         : isBundle
           ? `${nBundle} wearable${nBundle === 1 ? '' : 's'}${p.packMana > 0n ? ` · +${formatMana(p.packMana)} mMANA` : ''}`
-          : p.issuedId
-            ? `Issue #${p.issuedId}`
-            : `Token #${p.tokenId}`
+          : posIssueLabel(p)
       : ''
     const backingLabel = p ? `Backed by ${formatMana(p.backing)} mMANA` : ''
     const art =
@@ -2176,10 +2186,15 @@ export class LootBagView {
     const list =
       isBundle && p?.bundleItems?.length
         ? `<ul class="lootbag-pack-stage__bundle-list">${p.bundleItems
-            .map(
-              (bi) =>
-                `<li>${escapeHtml(bi.name || `Token #${bi.tokenId}`)}${bi.rarity ? ` · ${escapeHtml(bi.rarity)}` : ''}</li>`
-            )
+            .map((bi) => {
+              const biLabel =
+                bi.name?.trim() ||
+                formatIssueLabel(bi.tokenId, {
+                  collection: bi.collection,
+                  knownIssuedId: bi.issuedId
+                })
+              return `<li>${escapeHtml(biLabel)}${bi.rarity ? ` · ${escapeHtml(bi.rarity)}` : ''}</li>`
+            })
             .join('')}</ul>`
         : ''
     this.packPrizeEl.innerHTML = `
@@ -2381,7 +2396,7 @@ export class LootBagView {
             ? manaAmount
               ? `MANA Pack · ${manaAmount} mMANA`
               : 'MANA Pack'
-            : p.name?.trim() || (p.issuedId ? `Issue #${p.issuedId}` : `Token #${p.tokenId}`)
+            : p.name?.trim() || posIssueLabel(p)
           : `pos ${settled.positionId}`
       const displayName = this.login.kind === 'guest' ? this.login.displayName : null
       void publishPoolClaim({
@@ -2393,7 +2408,14 @@ export class LootBagView {
         demo: false,
         imageUrl: p?.imageUrl ?? null,
         rarity: isPack ? 'legendary' : (p?.rarity ?? null),
-        issueId: isPack ? null : (p?.issuedId ?? null),
+        issueId: isPack
+          ? null
+          : p
+            ? resolveIssuedId(p.tokenId, {
+                collection: p.collection,
+                knownIssuedId: p.issuedId
+              })
+            : null,
         itemName: isPack ? 'MANA Pack' : (p?.name?.trim() || null),
         kind: isPack ? 'pack' : 'nft',
         manaAmount,
@@ -2457,13 +2479,24 @@ function mergeWinPosition(
   if (!fromChain && !fromShelfBefore && !fromShelfAfter) return null
   const base = fromChain ?? fromShelfBefore ?? fromShelfAfter!
   const meta = fromShelfBefore ?? fromShelfAfter
-  if (!meta) return base
+  if (!meta) {
+    const issue = resolveIssuedId(base.tokenId, {
+      collection: base.collection,
+      knownIssuedId: base.issuedId
+    })
+    return issue != null ? { ...base, issuedId: issue } : base
+  }
+  const issuedId =
+    resolveIssuedId(base.tokenId, {
+      collection: base.collection,
+      knownIssuedId: base.issuedId ?? meta.issuedId
+    }) ?? undefined
   return {
     ...base,
     name: base.name?.trim() || meta.name,
     rarity: base.rarity || meta.rarity,
     imageUrl: base.imageUrl || meta.imageUrl,
     itemId: base.itemId ?? meta.itemId,
-    issuedId: base.issuedId ?? meta.issuedId
+    issuedId
   }
 }

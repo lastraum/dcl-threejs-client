@@ -10,6 +10,7 @@ import {
 } from '../client/ui/settings/backpackWearables'
 import { collectionItemThumbnailUrl } from './creatorCollections'
 import { ADDRESSES } from './config'
+import { resolveIssuedId } from './resolvePositionMedia'
 import type { Address } from 'viem'
 
 export type WalletNftItem = {
@@ -99,11 +100,9 @@ export async function fetchWalletDepositNfts(
 
     const assetUrn = assetUrnFromCompleteUrn(urn).toLowerCase()
     const meta = metaByAsset.get(assetUrn)
-    // issuedId is the edition within the item design; full tokenId may be encode(itemId, issuedId).
+    // Collection V2 packs itemId in high bits — never display the full marketplace token id as the issue #.
     const issuedId =
-      parsed.tokenId.length < 20 && /^\d+$/.test(parsed.tokenId)
-        ? parsed.tokenId
-        : undefined
+      resolveIssuedId(parsed.tokenId, { collection: parsed.collection }) ?? undefined
 
     out.push({
       id: key,

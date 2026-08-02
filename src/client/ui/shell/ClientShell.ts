@@ -19,6 +19,7 @@ import { FriendsPanel } from './FriendsPanel'
 import { PetsPanel } from './PetsPanel'
 import { PetBarnPanel } from './PetBarnPanel'
 import { LootBagPanel } from './LootBagPanel'
+import { LabsMenuPanel, type LabsMenuItemId } from './LabsMenuPanel'
 import type { PortableExperienceManager } from '../../../dcl/multiScene/PortableExperienceManager'
 import type { VoiceChatService } from '../../../network/voice/VoiceChatService'
 import type { DebugPanel } from '../DebugPanel'
@@ -64,13 +65,20 @@ const TOP_BUTTONS: TopButtonConfig[] = [
   { id: 'communities', icon: 'communities', label: 'Communities', shortcut: 'O' },
   { id: 'tour-options', icon: 'tourOptions', label: 'Tour Options' },
   { id: 'backpack', icon: 'backpack', label: 'Backpack', shortcut: 'I' },
-  { id: 'pets', icon: 'pets', label: 'Pets', shortcut: 'P' },
-  { id: 'lootbag', icon: 'lootbag', label: 'Loot Bag' },
   { id: 'marketplace', icon: 'marketplace', label: 'Marketplace' },
   { id: 'pictures', icon: 'pictures', label: 'Pictures', shortcut: 'K' },
   { id: 'settings', icon: 'settings', label: 'Settings' },
+  // Parity+ extras — Live, Pets, Loot Bag, Help, Dev (not Preferences)
+  { id: 'labs', icon: 'labs', label: 'Labs' }
+]
+
+/** Not on the rail — opened from Labs menu; kept for setActive / anchors. */
+const LABS_MENU_SIDEBAR_IDS: SidebarButtonConfig[] = [
+  { id: 'pets', icon: 'pets', label: 'Pets' },
+  { id: 'lootbag', icon: 'lootbag', label: 'Loot Bag' },
+  { id: 'live', icon: 'live', label: 'Live' },
   { id: 'help', icon: 'help', label: 'Help' },
-  { id: 'dev', icon: 'dev', label: 'Dev progress' }
+  { id: 'dev', icon: 'dev', label: 'Dev' }
 ]
 
 const BOTTOM_BUTTONS: SidebarButtonConfig[] = [
@@ -80,7 +88,6 @@ const BOTTOM_BUTTONS: SidebarButtonConfig[] = [
     label: 'Nearby voice',
     statusDot: 'off'
   },
-  { id: 'live', icon: 'live', label: 'Live' },
   { id: 'smart-wearable', icon: 'smartWearable', label: 'Smart wearables' },
   { id: 'skybox', icon: 'skybox', label: 'Skybox overrides' },
   { id: 'camera', icon: 'camera', label: 'Camera mode', shortcut: 'C' },
@@ -109,6 +116,7 @@ export class ClientShell {
   private readonly petsPanel: PetsPanel
   private readonly petBarnPanel: PetBarnPanel
   private readonly lootBagPanel: LootBagPanel
+  private readonly labsMenu: LabsMenuPanel
   private readonly emoteWheel: EmoteWheelPanel
   private readonly buttons = new Map<string, SidebarButton>()
   private unreadPollTimer: ReturnType<typeof setInterval> | null = null
@@ -216,12 +224,13 @@ export class ClientShell {
         if (visible) {
           this.debugPanel.hide()
           this.devProgressPanel?.hide()
+          this.labsMenu.hide()
           this.skyboxPanel.hide()
           this.nearbyVoicePanel.hide()
           this.pePanel.hide()
           this.chatPanel?.hide()
           this.buttons.get('help')?.setActive(false)
-          this.buttons.get('dev')?.setActive(false)
+          this.buttons.get('labs')?.setActive(false)
           this.buttons.get('skybox')?.setActive(false)
           this.buttons.get('nearby-voice')?.setActive(false)
           this.buttons.get('smart-wearable')?.setActive(false)
@@ -261,7 +270,10 @@ export class ClientShell {
       },
       getLogin: () => this.getLogin?.() ?? null,
       onWatch: (session) => this.onWatchLive?.(session),
-      onClose: () => this.buttons.get('live')?.setActive(false)
+      onClose: () => {
+        this.buttons.get('live')?.setActive(false)
+        this.labsMenu.setItemActive('live', false)
+      }
     })
 
     this.notificationsPanel = new NotificationsPanel({
@@ -306,13 +318,17 @@ export class ClientShell {
     this.petBarnPanel = new PetBarnPanel({
       getSession: () => this.session,
       onClose: () => {
-        if (!this.petsPanel.isVisible()) this.buttons.get('pets')?.setActive(false)
+        if (!this.petsPanel.isVisible()) {
+          this.buttons.get('pets')?.setActive(false)
+          this.labsMenu.setItemActive('pets', false)
+        }
       },
       onOpenMyPets: () => {
         if (this.petBarnPanel.isPublishLocked()) return
         void this.petsPanel.show()
         this.petBarnPanel.hide()
         this.buttons.get('pets')?.setActive(true)
+        this.labsMenu.setItemActive('pets', true)
       },
       onAddedToLibrary: async () => {
         await this.petsPanel.refresh()
@@ -333,15 +349,22 @@ export class ClientShell {
 
     this.petsPanel = new PetsPanel({
       getSession: () => this.session,
-      anchor: () => this.buttons.get('pets')?.element,
+      // Pets is under Labs — anchor flyouts to Labs rail icon
+      anchor: () => this.buttons.get('labs')?.element ?? this.buttons.get('pets')?.element,
       onClose: () => {
-        if (!this.petBarnPanel.isVisible()) this.buttons.get('pets')?.setActive(false)
+        if (!this.petBarnPanel.isVisible()) {
+          this.buttons.get('pets')?.setActive(false)
+          this.labsMenu.setItemActive('pets', false)
+          this.syncLabsRailActive()
+        }
       },
       onOpenPetBarn: () => {
-        // Show barn first so petsPanel onClose does not clear the pets sidebar active state.
+        // Show barn first so petsPanel onClose does not clear the pets active state.
         void this.petBarnPanel.show()
         this.petsPanel.hide()
         this.buttons.get('pets')?.setActive(true)
+        this.labsMenu.setItemActive('pets', true)
+        this.buttons.get('labs')?.setActive(true)
       },
       onActivePetChange: () => this.onActivePetChange?.(),
       onPlayClipPreview: async (hash, clip) => {
@@ -353,7 +376,24 @@ export class ClientShell {
 
     this.lootBagPanel = new LootBagPanel({
       getSession: () => this.session,
-      onClose: () => this.buttons.get('lootbag')?.setActive(false)
+      onClose: () => {
+        this.buttons.get('lootbag')?.setActive(false)
+        this.labsMenu.setItemActive('lootbag', false)
+        this.syncLabsRailActive()
+      }
+    })
+
+    this.labsMenu = new LabsMenuPanel({
+      anchor: () => this.buttons.get('labs')?.element,
+      items: [
+        { id: 'live', icon: 'live', label: 'Live' },
+        { id: 'pets', icon: 'pets', label: 'Pets' },
+        { id: 'lootbag', icon: 'lootbag', label: 'Loot Bag' },
+        { id: 'help', icon: 'help', label: 'Help' },
+        { id: 'dev', icon: 'dev', label: 'Dev' }
+      ],
+      onSelect: (id) => this.onLabsMenuSelect(id),
+      onClose: () => this.syncLabsRailActive()
     })
 
     this.profileButton = new ProfileSidebarButton('Profile', () => this.profilePopup.toggle())
@@ -376,6 +416,12 @@ export class ClientShell {
       if (cfg.id === 'tour-options') btn.element.hidden = true
       top.appendChild(btn.element)
       if (cfg.dividerAfter) top.appendChild(createSidebarDivider())
+    }
+
+    // Virtual rail buttons (under Labs menu only) — still track active state
+    for (const cfg of LABS_MENU_SIDEBAR_IDS) {
+      const btn = new SidebarButton({ ...cfg, onClick: (ev) => this.actionHandler(cfg.id)(ev) })
+      this.buttons.set(cfg.id, btn)
     }
 
     for (const cfg of BOTTOM_BUTTONS) {
@@ -490,7 +536,8 @@ export class ClientShell {
     this.debugPanel.hide()
     this.buttons.get('help')?.setActive(false)
     this.devProgressPanel?.hide()
-    this.buttons.get('dev')?.setActive(false)
+    this.labsMenu.hide()
+    this.buttons.get('labs')?.setActive(false)
     this.chatPanel?.hide()
     this.buttons.get('chat')?.setActive(false)
     this.friendsPanel.hide()
@@ -728,6 +775,7 @@ export class ClientShell {
     this.lootBagPanel.dispose()
     this.pePanel.dispose()
     this.livePanel.dispose()
+    this.labsMenu.dispose()
     this.emoteWheel.dispose()
     this.devProgressPanel?.hide()
     this.chatPanel?.dispose()
@@ -753,17 +801,7 @@ export class ClientShell {
         ev.preventDefault()
         ev.stopPropagation()
         this.closeMobileDrawerForOverlay()
-        const open = this.debugPanel.toggle()
-        this.buttons.get('help')?.setActive(open)
-        if (open) {
-          this.devProgressPanel?.hide()
-          this.buttons.get('dev')?.setActive(false)
-          this.skyboxPanel.hide()
-          this.chatPanel?.hide()
-          this.emoteWheel.hide()
-          this.buttons.get('skybox')?.setActive(false)
-          this.buttons.get('chat')?.setActive(false)
-        }
+        this.openHelpFromMenu()
       }
     }
     if (id === 'dev') {
@@ -771,18 +809,7 @@ export class ClientShell {
         ev.preventDefault()
         ev.stopPropagation()
         this.closeMobileDrawerForOverlay()
-        if (!this.devProgressPanel) return
-        const open = this.devProgressPanel.toggle()
-        this.buttons.get('dev')?.setActive(open)
-        if (open) {
-          this.debugPanel.hide()
-          this.buttons.get('help')?.setActive(false)
-          this.skyboxPanel.hide()
-          this.chatPanel?.hide()
-          this.emoteWheel.hide()
-          this.buttons.get('skybox')?.setActive(false)
-          this.buttons.get('chat')?.setActive(false)
-        }
+        this.openDevFromMenu()
       }
     }
     if (id === 'chat') {
@@ -801,10 +828,10 @@ export class ClientShell {
         if (open) {
           this.debugPanel.hide()
           this.devProgressPanel?.hide()
+          this.labsMenu.hide()
           this.skyboxPanel.hide()
           this.emoteWheel.hide()
           this.buttons.get('help')?.setActive(false)
-          this.buttons.get('dev')?.setActive(false)
           this.buttons.get('skybox')?.setActive(false)
         }
       }
@@ -831,11 +858,11 @@ export class ClientShell {
           this.emoteWheel.hide()
           this.debugPanel.hide()
           this.devProgressPanel?.hide()
+          this.labsMenu.hide()
           this.buttons.get('skybox')?.setActive(false)
           this.buttons.get('smart-wearable')?.setActive(false)
           this.buttons.get('chat')?.setActive(false)
           this.buttons.get('help')?.setActive(false)
-          this.buttons.get('dev')?.setActive(false)
         }
       }
     }
@@ -844,23 +871,7 @@ export class ClientShell {
       return (ev) => {
         ev.stopPropagation()
         this.closeMobileDrawerForOverlay()
-        this.livePanel.toggle()
-        this.buttons.get('live')?.setActive(this.livePanel.isVisible())
-        if (this.livePanel.isVisible()) {
-          this.skyboxPanel.hide()
-          this.nearbyVoicePanel.hide()
-          this.pePanel.hide()
-          this.chatPanel?.hide()
-          this.emoteWheel.hide()
-          this.debugPanel.hide()
-          this.devProgressPanel?.hide()
-          this.buttons.get('skybox')?.setActive(false)
-          this.buttons.get('nearby-voice')?.setActive(false)
-          this.buttons.get('smart-wearable')?.setActive(false)
-          this.buttons.get('chat')?.setActive(false)
-          this.buttons.get('help')?.setActive(false)
-          this.buttons.get('dev')?.setActive(false)
-        }
+        this.openLiveFromMenu()
       }
     }
 
@@ -881,12 +892,13 @@ export class ClientShell {
           this.emoteWheel.hide()
           this.debugPanel.hide()
           this.devProgressPanel?.hide()
+          this.labsMenu.hide()
           this.buttons.get('skybox')?.setActive(false)
           this.buttons.get('nearby-voice')?.setActive(false)
           this.buttons.get('live')?.setActive(false)
+          this.labsMenu.setItemActive('live', false)
           this.buttons.get('chat')?.setActive(false)
           this.buttons.get('help')?.setActive(false)
-          this.buttons.get('dev')?.setActive(false)
         }
       }
     }
@@ -895,8 +907,20 @@ export class ClientShell {
       return (ev) => {
         ev.stopPropagation()
         this.closeMobileDrawerForOverlay()
+        this.labsMenu.hide()
         this.preferencesPanel?.toggle('graphics')
         this.buttons.get('settings')?.setActive(this.preferencesPanel?.isVisible() ?? false)
+      }
+    }
+
+    if (id === 'labs') {
+      return (ev) => {
+        ev.stopPropagation()
+        this.closeMobileDrawerForOverlay()
+        this.labsMenu.toggle()
+        this.buttons.get('labs')?.setActive(
+          this.labsMenu.isVisible() || this.isAnyLabsPanelOpen()
+        )
       }
     }
 
@@ -963,28 +987,8 @@ export class ClientShell {
     if (id === 'pets') {
       return (ev) => {
         ev.stopPropagation()
-        // Block HUD toggle during Pet Barn publish round-trip.
-        if (this.petBarnPanel.isPublishLocked()) return
         this.closeMobileDrawerForOverlay()
-        this.notificationsPanel.hide()
-        this.buttons.get('notifications')?.setActive(false)
-        this.marketplaceCreditsPanel.hide()
-        this.buttons.get('marketplace-credits')?.setActive(false)
-        this.chatPanel?.hide()
-        this.buttons.get('chat')?.setActive(false)
-        this.friendsPanel.hide()
-        this.buttons.get('friend-requests')?.setActive(false)
-        this.lootBagPanel.hide()
-        this.buttons.get('lootbag')?.setActive(false)
-        // Toggle: if barn open, close both; else toggle my pets.
-        if (this.petBarnPanel.isVisible()) {
-          this.petBarnPanel.hide()
-          this.petsPanel.hide()
-          this.buttons.get('pets')?.setActive(false)
-        } else {
-          void this.petsPanel.toggle()
-          this.buttons.get('pets')?.setActive(this.petsPanel.isVisible())
-        }
+        this.openPetsFromMenu()
       }
     }
 
@@ -992,18 +996,7 @@ export class ClientShell {
       return (ev) => {
         ev.stopPropagation()
         this.closeMobileDrawerForOverlay()
-        this.notificationsPanel.hide()
-        this.buttons.get('notifications')?.setActive(false)
-        this.marketplaceCreditsPanel.hide()
-        this.buttons.get('marketplace-credits')?.setActive(false)
-        // Keep chat open — dock is padded to the right of the chat slot
-        this.friendsPanel.hide()
-        this.buttons.get('friend-requests')?.setActive(false)
-        this.petsPanel.hide()
-        this.petBarnPanel.hide()
-        this.buttons.get('pets')?.setActive(false)
-        void this.lootBagPanel.toggle()
-        this.buttons.get('lootbag')?.setActive(this.lootBagPanel.isVisible())
+        this.openLootBagFromMenu()
       }
     }
 
@@ -1025,15 +1018,183 @@ export class ClientShell {
     }
 
     const labels: Record<string, string> = {
-      marketplace: 'Marketplace',
-      help: 'Help',
-      dev: 'Dev progress'
+      marketplace: 'Marketplace'
     }
     return (ev) => {
       ev.stopPropagation()
       if (this.isMobileLayout()) this.setMobileDrawerOpen(false)
       this.stub(labels[id] ?? id)
     }
+  }
+
+  private onLabsMenuSelect(id: LabsMenuItemId): void {
+    this.closeMobileDrawerForOverlay()
+    switch (id) {
+      case 'live':
+        this.openLiveFromMenu()
+        break
+      case 'pets':
+        this.openPetsFromMenu()
+        break
+      case 'lootbag':
+        this.openLootBagFromMenu()
+        break
+      case 'help':
+        this.openHelpFromMenu()
+        break
+      case 'dev':
+        this.openDevFromMenu()
+        break
+    }
+  }
+
+  private isAnyLabsPanelOpen(): boolean {
+    return (
+      this.livePanel.isVisible() ||
+      this.petsPanel.isVisible() ||
+      this.petBarnPanel.isVisible() ||
+      this.lootBagPanel.isVisible() ||
+      !!this.devProgressPanel?.isVisible() ||
+      this.debugPanel.isVisible()
+    )
+  }
+
+  private syncLabsRailActive(): void {
+    this.buttons.get('labs')?.setActive(this.labsMenu.isVisible() || this.isAnyLabsPanelOpen())
+  }
+
+  private openLiveFromMenu(): void {
+    this.livePanel.toggle()
+    const open = this.livePanel.isVisible()
+    this.buttons.get('live')?.setActive(open)
+    this.labsMenu.setItemActive('live', open)
+    if (open) {
+      this.skyboxPanel.hide()
+      this.nearbyVoicePanel.hide()
+      this.pePanel.hide()
+      this.chatPanel?.hide()
+      this.emoteWheel.hide()
+      this.debugPanel.hide()
+      this.devProgressPanel?.hide()
+      this.petsPanel.hide()
+      this.petBarnPanel.hide()
+      this.lootBagPanel.hide()
+      this.buttons.get('skybox')?.setActive(false)
+      this.buttons.get('nearby-voice')?.setActive(false)
+      this.buttons.get('smart-wearable')?.setActive(false)
+      this.buttons.get('chat')?.setActive(false)
+      this.buttons.get('pets')?.setActive(false)
+      this.buttons.get('lootbag')?.setActive(false)
+      this.labsMenu.setItemActive('pets', false)
+      this.labsMenu.setItemActive('lootbag', false)
+      this.labsMenu.setItemActive('help', false)
+      this.labsMenu.setItemActive('dev', false)
+    }
+    this.syncLabsRailActive()
+  }
+
+  private openPetsFromMenu(): void {
+    if (this.petBarnPanel.isPublishLocked()) return
+    this.notificationsPanel.hide()
+    this.buttons.get('notifications')?.setActive(false)
+    this.marketplaceCreditsPanel.hide()
+    this.buttons.get('marketplace-credits')?.setActive(false)
+    this.chatPanel?.hide()
+    this.buttons.get('chat')?.setActive(false)
+    this.friendsPanel.hide()
+    this.buttons.get('friend-requests')?.setActive(false)
+    this.lootBagPanel.hide()
+    this.buttons.get('lootbag')?.setActive(false)
+    this.labsMenu.setItemActive('lootbag', false)
+    this.livePanel.hide()
+    this.buttons.get('live')?.setActive(false)
+    this.labsMenu.setItemActive('live', false)
+    if (this.petBarnPanel.isVisible()) {
+      this.petBarnPanel.hide()
+      this.petsPanel.hide()
+      this.buttons.get('pets')?.setActive(false)
+      this.labsMenu.setItemActive('pets', false)
+    } else {
+      void this.petsPanel.toggle()
+      const open = this.petsPanel.isVisible()
+      this.buttons.get('pets')?.setActive(open)
+      this.labsMenu.setItemActive('pets', open)
+    }
+    this.syncLabsRailActive()
+  }
+
+  private openLootBagFromMenu(): void {
+    this.notificationsPanel.hide()
+    this.buttons.get('notifications')?.setActive(false)
+    this.marketplaceCreditsPanel.hide()
+    this.buttons.get('marketplace-credits')?.setActive(false)
+    this.friendsPanel.hide()
+    this.buttons.get('friend-requests')?.setActive(false)
+    this.petsPanel.hide()
+    this.petBarnPanel.hide()
+    this.buttons.get('pets')?.setActive(false)
+    this.labsMenu.setItemActive('pets', false)
+    this.livePanel.hide()
+    this.buttons.get('live')?.setActive(false)
+    this.labsMenu.setItemActive('live', false)
+    void this.lootBagPanel.toggle()
+    const open = this.lootBagPanel.isVisible()
+    this.buttons.get('lootbag')?.setActive(open)
+    this.labsMenu.setItemActive('lootbag', open)
+    this.syncLabsRailActive()
+  }
+
+  /** Help = Debug tools panel (floating). */
+  private openHelpFromMenu(): void {
+    this.labsMenu.hide()
+    this.skyboxPanel.hide()
+    this.chatPanel?.hide()
+    this.emoteWheel.hide()
+    this.devProgressPanel?.hide()
+    this.buttons.get('skybox')?.setActive(false)
+    this.buttons.get('chat')?.setActive(false)
+    this.buttons.get('dev')?.setActive(false)
+    this.labsMenu.setItemActive('dev', false)
+    // Ensure not stuck embedded from an old combined session
+    if (this.debugPanel.isEmbedded()) this.debugPanel.detach()
+    const open = this.debugPanel.toggle()
+    this.setHelpActive(open)
+  }
+
+  /** Dev = progress / community / parity matrix modal. */
+  private openDevFromMenu(): void {
+    this.labsMenu.hide()
+    this.skyboxPanel.hide()
+    this.chatPanel?.hide()
+    this.emoteWheel.hide()
+    this.debugPanel.hide()
+    this.buttons.get('skybox')?.setActive(false)
+    this.buttons.get('chat')?.setActive(false)
+    this.buttons.get('help')?.setActive(false)
+    this.labsMenu.setItemActive('help', false)
+    if (!this.devProgressPanel) return
+    const open = this.devProgressPanel.toggle()
+    this.setDevActive(open)
+  }
+
+  setHelpActive(active: boolean): void {
+    this.buttons.get('help')?.setActive(active)
+    this.labsMenu.setItemActive('help', active)
+    if (active) {
+      this.buttons.get('dev')?.setActive(false)
+      this.labsMenu.setItemActive('dev', false)
+    }
+    this.syncLabsRailActive()
+  }
+
+  setDevActive(active: boolean): void {
+    this.buttons.get('dev')?.setActive(active)
+    this.labsMenu.setItemActive('dev', active)
+    if (active) {
+      this.buttons.get('help')?.setActive(false)
+      this.labsMenu.setItemActive('help', false)
+    }
+    this.syncLabsRailActive()
   }
 
   private closeMobileDrawerForOverlay(): void {

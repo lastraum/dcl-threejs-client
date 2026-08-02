@@ -271,6 +271,24 @@
       .debug-panel.is-open {
         display: flex;
       }
+      /* Embedded inside Help & Dev modal Debug tab */
+      .debug-panel--embedded {
+        position: relative !important;
+        top: auto !important;
+        right: auto !important;
+        left: auto !important;
+        width: 100% !important;
+        max-height: none !important;
+        max-width: none !important;
+        border: none;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+        padding: 0;
+      }
+      .debug-panel--embedded.is-open {
+        display: flex;
+      }
       .debug-panel__header {
         font-size: 11px;
         font-weight: 700;
@@ -2035,6 +2053,82 @@
       }
       .client-sidebar__status--off {
         background: rgba(255, 255, 255, 0.25);
+      }
+
+      /* Labs flyout — parity+ extras (Live, Pets, Loot Bag, Help & Dev) */
+      .labs-menu {
+        position: fixed;
+        z-index: var(--z-client-hud-raised);
+        width: min(220px, calc(100vw - 24px));
+        padding: 10px 8px 8px;
+        border-radius: 14px;
+        background: rgba(22, 22, 28, 0.97);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        color: #fff;
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+        pointer-events: auto;
+        user-select: none;
+      }
+      .labs-menu__header {
+        margin: 0 6px 8px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        color: rgba(255, 255, 255, 0.72);
+      }
+      .labs-menu__list {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .labs-menu__item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+        margin: 0;
+        padding: 10px 10px;
+        border: none;
+        border-radius: 10px;
+        background: transparent;
+        color: #fff;
+        font: inherit;
+        font-size: 13px;
+        font-weight: 600;
+        text-align: left;
+        cursor: pointer;
+      }
+      .labs-menu__item:hover {
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .labs-menu__item.is-active {
+        background: rgba(139, 92, 246, 0.22);
+        box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.35);
+      }
+      .labs-menu__icon {
+        display: grid;
+        place-items: center;
+        width: 20px;
+        height: 20px;
+        flex-shrink: 0;
+        opacity: 0.92;
+      }
+      .labs-menu__icon svg {
+        width: 18px;
+        height: 18px;
+      }
+      .labs-menu__label {
+        flex: 1 1 auto;
+        min-width: 0;
+      }
+      .labs-menu__kbd {
+        flex-shrink: 0;
+        padding: 2px 6px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.08);
+        font-size: 11px;
+        font-weight: 700;
+        color: rgba(255, 255, 255, 0.55);
       }
 
       /* Nearby voice popover — Explorer NEARBY VOICE panel */
@@ -8653,6 +8747,12 @@
         min-height: 0;
         overflow: auto;
         padding: 0 18px 12px;
+      }
+      .dev-progress__body--debug {
+        display: flex;
+        flex-direction: column;
+        padding-bottom: 18px;
+        overflow: auto;
       }
       .dev-progress__section {
         margin-bottom: 18px;

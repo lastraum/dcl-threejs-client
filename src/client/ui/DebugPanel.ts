@@ -29,7 +29,7 @@ export type DebugPanelOptions = {
   getCrowdCount?: () => { count: number; target: number; busy: boolean }
 }
 
-/** Top-right debug overlay — toggled from the Help sidebar button. */
+/** Debug tools HUD — standalone top-right, or embedded in Help & Dev modal. */
 export class DebugPanel {
   readonly root: HTMLDivElement
   private readonly physxSceneToggle: HTMLInputElement
@@ -52,6 +52,8 @@ export class DebugPanel {
   private readonly getSceneOrigin?: () => DebugPanelSceneOrigin
   private visible = false
   private ignoreOutsideClick = false
+  /** When true, panel lives inside Help & Dev body (no fixed float / outside-click). */
+  private embedded = false
   private positionRafId = 0
   private unsubscribeLogs: (() => void) | null = null
   private unsubscribePhysxDebug: (() => void) | null = null
@@ -62,6 +64,7 @@ export class DebugPanel {
   private getCrowdCount: (() => { count: number; target: number; busy: boolean }) | null = null
   private crowdStatusEl: HTMLDivElement | null = null
   private readonly onDocumentClick = (ev: MouseEvent) => {
+    if (this.embedded) return
     if (this.ignoreOutsideClick) {
       this.ignoreOutsideClick = false
       return
@@ -345,6 +348,27 @@ export class DebugPanel {
 
   isVisible(): boolean {
     return this.visible
+  }
+
+  /** Mount inside Help & Dev Debug tab (layout becomes in-flow). */
+  attachTo(host: HTMLElement): void {
+    this.embedded = true
+    this.root.classList.add('debug-panel--embedded')
+    host.appendChild(this.root)
+    this.show()
+  }
+
+  /** Return to body-level floating panel. */
+  detach(): void {
+    if (!this.embedded) return
+    this.embedded = false
+    this.root.classList.remove('debug-panel--embedded')
+    document.body.appendChild(this.root)
+    this.hide()
+  }
+
+  isEmbedded(): boolean {
+    return this.embedded
   }
 
   dispose(): void {

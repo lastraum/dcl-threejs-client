@@ -7,6 +7,13 @@ export * from './poolWrites'
 export * from './creatorCollections'
 export * from './walletInventory'
 export {
+  decodeCollectionV2TokenId,
+  formatIssueLabel,
+  formatPositionTokenLabel,
+  resolveIssuedId,
+  resolvePositionMedia
+} from './resolvePositionMedia'
+export {
   authorizePoolAsCollectionMinter,
   getCollectionMinterStatus,
   humanizeStockError,

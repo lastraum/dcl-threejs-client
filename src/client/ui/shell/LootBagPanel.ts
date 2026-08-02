@@ -2,6 +2,7 @@ import type { SessionIdentity } from '../../../network/SessionIdentity'
 import {
   ADDRESSES,
   computeClaimChanceLabels,
+  formatIssueLabel,
   formatMana,
   takeTokensNetWei,
   shortAddr,
@@ -10,9 +11,12 @@ import {
   fetchWalletSnapshot,
   fetchCreatorCollections,
   fetchCollectionItems,
+  findPendingWinForPurchaser,
+  resolveIssuedId,
   runDepositManaPack,
   runDepositNft,
   runStockFromCollection,
+  runPull,
   runSettle,
   runWithdrawRewards,
   getCollectionMinterStatus,
@@ -48,6 +52,69 @@ const DEFAULT_PACK_PRIZE = '5'
 const DEFAULT_STOCK_COUNT = '5'
 const MANA_PACK_INV_ID = 'mana-pack'
 
+/** sessionStorage — survive refresh between pull and Keep/Take (same as 2D). */
+function pendingWinStorageKey(addr: string): string {
+  return `lootbag.pendingWin.${addr.toLowerCase()}`
+}
+
+function readStoredPendingPositionId(addr: string | undefined): number | null {
+  if (!addr || typeof sessionStorage === 'undefined') return null
+  try {
+    const raw = sessionStorage.getItem(pendingWinStorageKey(addr))
+    if (!raw) return null
+    const n = Number(raw)
+    return Number.isFinite(n) && n >= 1 ? n : null
+  } catch {
+    return null
+  }
+}
+
+function writeStoredPendingPositionId(addr: string | undefined, positionId: number): void {
+  if (!addr || typeof sessionStorage === 'undefined') return
+  try {
+    sessionStorage.setItem(pendingWinStorageKey(addr), String(positionId))
+  } catch {
+    /* quota / private mode */
+  }
+}
+
+function clearStoredPendingPositionId(addr: string | undefined): void {
+  if (!addr || typeof sessionStorage === 'undefined') return
+  try {
+    sessionStorage.removeItem(pendingWinStorageKey(addr))
+  } catch {
+    /* ignore */
+  }
+}
+
+function mergeWinPosition(
+  fromChain: LootBagPosition | null,
+  fromShelf: LootBagPosition | null
+): LootBagPosition | null {
+  if (!fromChain && !fromShelf) return null
+  const base = fromChain ?? fromShelf!
+  if (!fromShelf) {
+    const issue = resolveIssuedId(base.tokenId, {
+      collection: base.collection,
+      knownIssuedId: base.issuedId
+    })
+    return issue != null ? { ...base, issuedId: issue } : base
+  }
+  const issuedId =
+    resolveIssuedId(base.tokenId, {
+      collection: base.collection,
+      knownIssuedId: base.issuedId ?? fromShelf.issuedId
+    }) ?? undefined
+  return {
+    ...base,
+    name: base.name?.trim() || fromShelf.name,
+    rarity: base.rarity || fromShelf.rarity,
+    imageUrl: base.imageUrl || fromShelf.imageUrl,
+    itemId: base.itemId ?? fromShelf.itemId,
+    issuedId
+  }
+}
+
 type InvKind = 'nft' | 'pack'
 
 type InvItem = {
@@ -78,6 +145,20 @@ function manaPackInvItem(): InvItem {
   }
 }
 
+function invIssueLabel(item: { tokenId: string; collection: string; issuedId?: string }): string {
+  return formatIssueLabel(item.tokenId, {
+    collection: item.collection,
+    knownIssuedId: item.issuedId
+  })
+}
+
+function posIssueLabel(p: LootBagPosition): string {
+  return formatIssueLabel(p.tokenId, {
+    collection: p.collection,
+    knownIssuedId: p.issuedId
+  })
+}
+
 function walletNftsToInventory(
   nfts: { id: string; collection: string; tokenId: string; name: string; rarity: string; imageUrl?: string; issuedId?: string }[]
 ): InvItem[] {
@@ -89,7 +170,9 @@ function walletNftsToInventory(
     rarity: n.rarity || 'common',
     collection: n.collection,
     imageUrl: n.imageUrl,
-    issuedId: n.issuedId
+    issuedId:
+      resolveIssuedId(n.tokenId, { collection: n.collection, knownIssuedId: n.issuedId }) ??
+      undefined
   }))
   // A–Z by name (pack stays pinned first in filterInv)
   items.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
@@ -163,9 +246,8 @@ export class LootBagPanel {
   private status = ''
   private error: string | null = null
   private pendingWin: PendingWin | null = null
-  /** True when pending win is a 3D simulated claim (no chain settle). */
-  private pendingWinIsFake = false
   private stepSeq = 0
+  private claiming = false
 
   private readonly titleEl: HTMLElement
   private readonly feeEl: HTMLElement
@@ -294,6 +376,8 @@ export class LootBagPanel {
     window.addEventListener('keydown', this.onKeyDown)
     this.renderShelfLoading()
     await this.refresh()
+    // Reopen Keep/Take if chain still holds an unsettled prize
+    await this.restorePendingWinIfAny()
   }
 
   hide(): void {
@@ -313,13 +397,13 @@ export class LootBagPanel {
     this.selections = []
     this.invPage = 0
     this.invSearch = ''
-    this.pendingWin = null
-    this.pendingWinIsFake = false
+    // Keep pendingWin until settle — restorePendingWinIfAny reopens modal after refresh
     this.steps = []
     this.stepSeq = 0
     this.error = null
     this.status = ''
     this.busy = false
+    this.claiming = false
     this.element.classList.remove('is-deposit-mode', 'is-busy')
     this.footerEl.hidden = true
     const packCol = this.element.querySelector('[data-pack-col]') as HTMLElement | null
@@ -327,7 +411,7 @@ export class LootBagPanel {
     const gap = this.element.querySelector('.lootbag-panel__dock-gap') as HTMLElement | null
     if (gap) gap.hidden = false
     this.titleEl.textContent = 'Loot Bag'
-    this.closeWinModal({ clearPending: true })
+    this.closeWinModal({ clearPending: false })
     this.stepsEl.hidden = true
     this.stepsEl.innerHTML = ''
     this.statusEl.hidden = true
@@ -634,19 +718,16 @@ export class LootBagPanel {
   private shelfCardHtml(p: LootBagPosition, chanceLabel: string): string {
     const isPack = p.kind === 'manaPack'
     const rarity = isPack ? 'legendary' : (p.rarity || 'common').toLowerCase()
+    const issueLabel = posIssueLabel(p)
     const title = isPack
       ? 'MANA Pack'
       : p.name?.trim()
         ? escapeHtml(p.name.trim())
-        : p.issuedId
-          ? `Issue #${escapeHtml(p.issuedId)}`
-          : `Token #${escapeHtml(p.tokenId)}`
+        : escapeHtml(issueLabel)
     // Same line stack as wearables: title → detail → rarity → backed by → chance
     const detail = isPack
       ? `Prize ${formatMana(p.packMana)} mMANA`
-      : p.issuedId
-        ? `Issue #${escapeHtml(p.issuedId)}`
-        : `Token #${escapeHtml(p.tokenId)}`
+      : escapeHtml(issueLabel)
     // Wearables with a real name show issue under title; title-only issue tokens skip the duplicate
     const detailHtml = isPack || p.name?.trim()
       ? `<div class="lootbag-panel__card-line">${detail}</div>`
@@ -885,9 +966,8 @@ export class LootBagPanel {
                 ? `<img src="${escapeHtml(sel.item.imageUrl)}" alt="" loading="lazy" />`
                 : 'NFT'
               const marketUrl = `https://market.decentraland.org/contracts/${encodeURIComponent(sel.item.collection)}/tokens/${encodeURIComponent(sel.item.tokenId)}`
-              const issuePill = sel.item.issuedId
-                ? `<span class="lootbag-dep__pill">Issue #${escapeHtml(sel.item.issuedId)}</span>`
-                : ''
+              const issueLabel = invIssueLabel(sel.item)
+              const issuePill = `<span class="lootbag-dep__pill">${escapeHtml(issueLabel)}</span>`
               return `
         <div class="lootbag-dep__stock-card lootbag-dep__stock-card--nft" data-sel-id="${escapeHtml(sel.item.id)}">
           <button type="button" class="lootbag-dep__stock-clear" data-remove="${escapeHtml(sel.item.id)}" aria-label="Remove" ${this.busy ? 'disabled' : ''}>×</button>
@@ -898,7 +978,7 @@ export class LootBagPanel {
               <div class="lootbag-dep__stock-tags">
                 <span class="lootbag-dep__pill lootbag-dep__pill--${escapeHtml(sel.item.rarity)}">${escapeHtml(sel.item.rarity)}</span>
                 ${issuePill}
-                <a class="lootbag-dep__pill lootbag-dep__pill--view" href="${escapeHtml(marketUrl)}" target="_blank" rel="noopener noreferrer" title="Token #${escapeHtml(sel.item.tokenId)}">View</a>
+                <a class="lootbag-dep__pill lootbag-dep__pill--view" href="${escapeHtml(marketUrl)}" target="_blank" rel="noopener noreferrer" title="${escapeHtml(issueLabel)}">View</a>
               </div>
             </div>
           </div>
@@ -928,9 +1008,7 @@ export class LootBagPanel {
         : `<div class="lootbag-panel__card-placeholder" aria-hidden="true">${isPack ? '◈' : '✦'}</div>`
       const detail = isPack
         ? 'Always available'
-        : item.issuedId
-          ? `Issue #${escapeHtml(item.issuedId)}`
-          : `Token #${escapeHtml(item.tokenId)}`
+        : escapeHtml(invIssueLabel(item))
       const rarityLabel = isPack ? 'pack' : rarity
       cells.push(`
         <button type="button" class="lootbag-panel__card lootbag-dep__pick${on ? ' is-selected' : ''}${isPack ? ' is-pack' : ''} lootbag-rarity--${escapeHtml(rarity)}" data-pick="${escapeHtml(item.id)}" ${this.busy ? 'disabled' : ''}>
@@ -1015,15 +1093,15 @@ export class LootBagPanel {
     `
   }
 
-  private openWinModal(win: PendingWin, isFake: boolean): void {
+  private openWinModal(win: PendingWin): void {
     this.pendingWin = win
-    this.pendingWinIsFake = isFake
+    writeStoredPendingPositionId(this.sessionAddress(), win.positionId)
     const p = win.position
     const isPack = p?.kind === 'manaPack'
     const title = p
       ? isPack
         ? 'MANA Pack'
-        : `Token #${escapeHtml(p.tokenId)}`
+        : escapeHtml(p.name?.trim() || posIssueLabel(p))
       : `Position #${win.positionId}`
     const netTake =
       p && p.backing > 0n
@@ -1037,12 +1115,9 @@ export class LootBagPanel {
     const bidPct = Math.round((this.pool?.depositorBidRateBps ?? 8500) / 100)
     const takeHint =
       netTake > 0n
-        ? `<p class="lootbag-win-modal__hint">Take MANA nets ${formatMana(netTake)} mMANA (${bidPct}% of backing after protocol cut).</p>`
+        ? `<p class="lootbag-win-modal__hint">Take MANA nets ${formatMana(netTake)} mMANA (${bidPct}% of backing; protocol keeps the rest).</p>`
         : ''
     const glyph = isPack ? '◈' : '✦'
-    const demo = isFake
-      ? `<p class="lootbag-win-modal__demo">Demo mode — no chain. Tap Keep or Take to preview settle.</p>`
-      : ''
     // Always enable settle on open; setBusy() toggles disabled while a settle runs.
     const card = this.winModal.querySelector('[data-win-card]')!
     card.innerHTML = `
@@ -1053,7 +1128,6 @@ export class LootBagPanel {
       <p class="lootbag-win-modal__sub">${sub}</p>
       <p class="lootbag-win-modal__pos">pos ${win.positionId}</p>
       ${takeHint}
-      ${demo}
       <div class="lootbag-win-modal__actions">
         <button type="button" class="lootbag-panel__btn lootbag-panel__btn--primary" data-settle-keep>Keep prize</button>
         <button type="button" class="lootbag-panel__btn lootbag-panel__btn--secondary" data-settle-take>${
@@ -1072,7 +1146,60 @@ export class LootBagPanel {
     if (card) card.innerHTML = ''
     if (opts.clearPending) {
       this.pendingWin = null
-      this.pendingWinIsFake = false
+      clearStoredPendingPositionId(this.sessionAddress())
+    }
+  }
+
+  /** Drop won item from local shelf without full bag reload (FWA-style). */
+  private removeWonPositionLocally(positionId: number): void {
+    if (!this.pool) return
+    const next = this.pool.positions.filter((p) => p.positionId !== positionId)
+    if (next.length === this.pool.positions.length) return
+    const dropped = this.pool.positions.length - next.length
+    this.pool = {
+      ...this.pool,
+      positions: next,
+      activeCount:
+        this.pool.activeCount > BigInt(dropped)
+          ? this.pool.activeCount - BigInt(dropped)
+          : 0n
+    }
+    if (this.mode === 'main') this.renderMainBody()
+  }
+
+  /**
+   * Reopen Keep/Take if the wallet already paid for a pack and never settled.
+   * @returns true when a pending win was shown
+   */
+  private async restorePendingWinIfAny(): Promise<boolean> {
+    const addr = this.sessionAddress()
+    if (!addr || !/^0x[a-fA-F0-9]{40}$/.test(addr)) return false
+    if (this.pendingWin && !this.winModal.hidden) return true
+    try {
+      const hint = readStoredPendingPositionId(addr)
+      const found = await findPendingWinForPurchaser(
+        addr as `0x${string}`,
+        undefined,
+        hint ?? undefined
+      )
+      if (!found) {
+        if (hint != null) clearStoredPendingPositionId(addr)
+        return false
+      }
+      const fromShelf =
+        this.pool?.positions.find((p) => p.positionId === found.positionId) ?? null
+      const merged = mergeWinPosition(found.position, fromShelf)
+      const win: PendingWin = {
+        positionId: found.positionId,
+        position: merged
+      }
+      this.removeWonPositionLocally(found.positionId)
+      this.openWinModal(win)
+      this.status = `Pos #${found.positionId} — Keep NFT or Take tokens`
+      this.renderStatus()
+      return true
+    } catch {
+      return false
     }
   }
 
@@ -1550,44 +1677,107 @@ export class LootBagPanel {
   }
 
   private async onClaimClick(): Promise<void> {
-    if (this.busy || this.mode !== 'main') return
-    // 3D HUD always simulates claim (no chain pull) so peers can toast the prize.
+    if (this.busy || this.claiming || this.mode !== 'main') return
+    // Already mid-settle — just re-show Keep/Take (same as 2D).
+    if (this.pendingWin) {
+      this.openWinModal(this.pendingWin)
+      return
+    }
     if (!this.sessionAddress()) {
       this.error = 'Connect a wallet to claim'
       this.renderStatus()
       return
     }
-    if (!this.pool || this.pool.positions.length === 0) {
+
+    // Fast path: chain may still hold an unsettled prize (refresh / leave).
+    this.setBusy(true)
+    this.claiming = true
+    this.error = null
+    try {
+      const restored = await this.restorePendingWinIfAny()
+      if (restored) {
+        this.dismissSignOverlay()
+        return
+      }
+    } finally {
+      this.claiming = false
+      this.setBusy(false)
+    }
+
+    if (!this.pool || this.pool.positions.length === 0 || this.pool.activeCount === 0n) {
       this.error = 'Loot Bag is empty — deposit first'
       this.renderStatus()
       return
     }
 
     this.setBusy(true)
+    this.claiming = true
     this.error = null
-    this.pendingWin = null
-    this.pendingWinIsFake = false
     this.steps = []
     this.stepSeq = 0
     this.closeWinModal({ clearPending: true })
     this.renderSteps()
-    this.status = ''
+    this.status = 'Claiming from Loot Bag…'
     this.renderStatus()
+    this.element.classList.add('is-claiming')
 
     try {
-      // Simulated open — pick a random bag item, no wallet tx.
-      await new Promise((r) => setTimeout(r, 650))
-      const pick =
-        this.pool.positions[Math.floor(Math.random() * this.pool.positions.length)] ?? null
-      if (!pick) throw new Error('No positions to preview')
-      const win: PendingWin = { positionId: pick.positionId, position: pick }
+      // Shelf metadata for the item about to leave the active pool
+      const shelfBefore = this.pool?.positions ?? []
+      const hint = readStoredPendingPositionId(this.sessionAddress())
+      const { win, alreadyPending } = await runPull({
+        sessionAddress: this.sessionAddress(),
+        acquisitionFee: this.pool.acquisitionFee,
+        api: this.flowApi(),
+        hintPositionId: hint
+      })
 
-      // Do not broadcast yet — wait until Keep prize / Take MANA.
-      this.setBusy(false)
-      this.openWinModal(win, true)
+      this.dismissSignOverlay()
+      this.claiming = false
+
+      if (!win) {
+        this.status = 'Claim confirmed'
+        this.renderStatus()
+        await this.refresh()
+        return
+      }
+
+      const fromShelfBefore =
+        shelfBefore.find((p) => p.positionId === win.positionId) ?? null
+      const merged = mergeWinPosition(win.position, fromShelfBefore)
+      const finalWin: PendingWin = { positionId: win.positionId, position: merged }
+      this.removeWonPositionLocally(win.positionId)
+      // Fee paid — refresh wallet balance only (not whole bag)
+      if (!alreadyPending) {
+        const addr = this.sessionAddress()
+        if (addr && /^0x[a-fA-F0-9]{40}$/.test(addr)) {
+          try {
+            this.wallet = await fetchWalletSnapshot(addr as `0x${string}`)
+            this.renderHeader()
+          } catch {
+            /* ignore balance refresh failures */
+          }
+        }
+      }
+
+      this.status = alreadyPending
+        ? `Pos #${win.positionId} — Keep NFT or Take tokens`
+        : `Selected pos #${win.positionId}`
+      this.renderStatus()
+      // Peer toast waits until Keep / Take (runSettle).
+      this.openWinModal(finalWin)
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e)
       this.renderStatus()
+      // Timeout after fee paid: keep storage hint if any; do not invent a fake win
+      const hasError = this.steps.some((s) => s.status === 'error')
+      if (!hasError) this.dismissSignOverlay()
+    } finally {
+      this.element.classList.remove('is-claiming')
+      this.claiming = false
+      if (!this.steps.some((s) => s.status === 'active' || s.status === 'error')) {
+        this.dismissSignOverlay()
+      }
       this.setBusy(false)
     }
   }
@@ -1621,8 +1811,7 @@ export class LootBagPanel {
           ? manaAmount
             ? `MANA Pack · ${manaAmount} mMANA`
             : 'MANA Pack'
-          : p.name?.trim() ||
-            (p.issuedId ? `Issue #${p.issuedId}` : `Token #${p.tokenId}`)
+          : p.name?.trim() || posIssueLabel(p)
         : `pos ${win.positionId}`
     const profile = session.getProfile()
     const displayName = profile?.displayName?.trim() || null
@@ -1635,7 +1824,14 @@ export class LootBagPanel {
       demo,
       imageUrl: p?.imageUrl ?? null,
       rarity: isPack ? 'legendary' : (p?.rarity ?? null),
-      issueId: isPack ? null : (p?.issuedId ?? null),
+      issueId: isPack
+        ? null
+        : p
+          ? resolveIssuedId(p.tokenId, {
+              collection: p.collection,
+              knownIssuedId: p.issuedId
+            })
+          : null,
       itemName: isPack ? 'MANA Pack' : (p?.name?.trim() || null),
       kind: isPack ? 'pack' : 'nft',
       manaAmount,
@@ -1661,30 +1857,6 @@ export class LootBagPanel {
     this.stepSeq = 0
     this.renderSteps()
     try {
-      if (this.pendingWinIsFake) {
-        const settled = this.pendingWin
-        const card = this.winModal.querySelector('[data-win-card]')
-        if (card) {
-          card.innerHTML = `
-            <div class="lootbag-win-modal__kicker">Demo settle</div>
-            <div class="lootbag-win-modal__art" aria-hidden="true">✓</div>
-            <h3 class="lootbag-win-modal__title">${keepPrize ? 'Kept prize' : 'Took MANA'}</h3>
-            <p class="lootbag-win-modal__sub">UI preview only — no chain transaction.</p>
-            <div class="lootbag-win-modal__actions">
-              <button type="button" class="lootbag-panel__btn lootbag-panel__btn--primary" data-win-close>Done</button>
-            </div>
-          `
-        }
-        // Peer toast only after Keep / Take
-        void this.broadcastClaim(settled, true, keepPrize)
-        await new Promise((r) => setTimeout(r, 900))
-        this.pendingWin = null
-        this.pendingWinIsFake = false
-        this.closeWinModal({ clearPending: true })
-        this.renderStatus()
-        return
-      }
-
       const settled = this.pendingWin
       await runSettle({
         sessionAddress: this.sessionAddress(),
@@ -1692,17 +1864,20 @@ export class LootBagPanel {
         keepPrize,
         api: this.flowApi()
       })
+      // Peer toast only after Keep / Take succeeds (real chain settle)
       void this.broadcastClaim(settled, false, keepPrize)
-      this.pendingWin = null
-      this.pendingWinIsFake = false
       this.closeWinModal({ clearPending: true })
+      this.status = keepPrize ? 'Settled — prize is yours' : 'Settled — took the MANA bid'
       this.renderStatus()
       await this.refresh()
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e)
       this.renderStatus()
-      if (this.pendingWin) this.openWinModal(this.pendingWin, this.pendingWinIsFake)
+      if (this.pendingWin) this.openWinModal(this.pendingWin)
     } finally {
+      if (!this.steps.some((s) => s.status === 'active' || s.status === 'error')) {
+        this.dismissSignOverlay()
+      }
       this.setBusy(false)
     }
   }

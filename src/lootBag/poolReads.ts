@@ -6,7 +6,11 @@ import { mockWearableAbi } from './abis/MockWearable'
 import { polygonPublicClient } from './polygonClient'
 import type { LootBagPosition, PoolSnapshot, WalletOwnedNft, WalletSnapshot } from './types'
 import { fetchWalletDepositNfts } from './walletInventory'
-import { decodeCollectionV2TokenId, resolvePositionMedia } from './resolvePositionMedia'
+import {
+  decodeCollectionV2TokenId,
+  resolveIssuedId,
+  resolvePositionMedia
+} from './resolvePositionMedia'
 import { fetchCollectionItems } from './creatorCollections'
 
 const ZERO = '0x0000000000000000000000000000000000000000'
@@ -60,9 +64,10 @@ function toPosition(id: number, pos: RawPosition): LootBagPosition {
   }
   if (kind === 'nft' || kind === 'bundle') {
     try {
-      const { itemId, issuedId } = decodeCollectionV2TokenId(pos.tokenId)
+      const { itemId } = decodeCollectionV2TokenId(pos.tokenId)
       base.itemId = itemId
-      base.issuedId = issuedId.toString()
+      const issue = resolveIssuedId(pos.tokenId, { collection: pos.collection })
+      if (issue != null) base.issuedId = issue
     } catch {
       /* ignore */
     }
@@ -85,9 +90,10 @@ async function loadBundleItems(positionId: number): Promise<LootBagPosition['bun
         tokenId: it.tokenId.toString()
       }
       try {
-        const { itemId, issuedId } = decodeCollectionV2TokenId(it.tokenId)
+        const { itemId } = decodeCollectionV2TokenId(it.tokenId)
         item.itemId = itemId
-        item.issuedId = issuedId.toString()
+        const issue = resolveIssuedId(it.tokenId, { collection: it.collection })
+        if (issue != null) item.issuedId = issue
       } catch {
         /* ignore */
       }

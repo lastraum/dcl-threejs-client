@@ -2834,9 +2834,12 @@ export class AppController {
 
     if (!this.debugPanel) {
       this.debugPanel = new DebugPanel({
-        anchor: () => this.shell?.getButton('help')?.element,
+        // Help (debug tools) lives under Labs
+        anchor: () => this.shell?.getButton('labs')?.element,
         renderStats: world.host.renderStats,
-        onVisibilityChange: (visible) => this.shell?.getButton('help')?.setActive(visible),
+        onVisibilityChange: (visible) => {
+          this.shell?.setHelpActive(visible)
+        },
         getPlayerPosition: () => this.world?.getPlayerPosition() ?? null,
         getSceneOrigin: () => this.world?.comms.getSceneOrigin() ?? { x: 0, z: 0 },
         onRecookColliders: () => this.world?.recookPhysicsColliders({ force: true }),
@@ -3523,7 +3526,10 @@ export class AppController {
   private ensureDevProgressPanel(): DevProgressPanel {
     if (!this.devProgressPanel) {
       this.devProgressPanel = new DevProgressPanel({
-        getSession: () => this.world?.session ?? this.shellSession ?? null
+        getSession: () => this.world?.session ?? this.shellSession ?? null,
+        onVisibilityChange: (visible) => {
+          this.shell?.setDevActive(visible)
+        }
       })
     }
     return this.devProgressPanel

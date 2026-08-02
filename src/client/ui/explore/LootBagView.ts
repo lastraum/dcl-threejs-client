@@ -116,6 +116,10 @@ function walletAddress(login: LoginResult): string | undefined {
   return undefined
 }
 
+function isGuestLogin(login: LoginResult): boolean {
+  return login.kind === 'guest'
+}
+
 function posIssueLabel(p: Pick<LootBagPosition, 'tokenId' | 'collection' | 'issuedId'>): string {
   return formatIssueLabel(p.tokenId, {
     collection: p.collection,
@@ -1018,6 +1022,7 @@ export class LootBagView {
     try {
       await runWithdrawRewards({
         sessionAddress: this.addr(),
+        isGuest: isGuestLogin(this.login),
         api: this.flowApi()
       })
       this.steps = []
@@ -1767,6 +1772,7 @@ export class LootBagView {
     try {
       await runStockFromCollection({
         sessionAddress: this.addr(),
+        isGuest: isGuestLogin(this.login),
         collection: item.contractAddress,
         itemId: item.itemId,
         mintCount,
@@ -1924,6 +1930,7 @@ export class LootBagView {
       try {
         await runDepositBundle({
           sessionAddress: this.addr(),
+          isGuest: isGuestLogin(this.login),
           items: nfts.map((s) => ({
             collection: s.item.collection as `0x${string}`,
             tokenId: BigInt(s.item.tokenId)
@@ -1988,6 +1995,7 @@ export class LootBagView {
         if (this.isPackSel(sel)) {
           await runDepositManaPack({
             sessionAddress: this.addr(),
+            isGuest: isGuestLogin(this.login),
             packPrizeMana: sel.packPrizeMana || DEFAULT_PACK_PRIZE,
             backingMana: sel.backingMana,
             api: this.flowApi()
@@ -1996,6 +2004,7 @@ export class LootBagView {
         } else {
           await runDepositNft({
             sessionAddress: this.addr(),
+            isGuest: isGuestLogin(this.login),
             collection: sel.item.collection as `0x${string}`,
             tokenId: BigInt(sel.item.tokenId),
             backingMana: sel.backingMana,
@@ -2276,6 +2285,14 @@ export class LootBagView {
       this.renderStatus()
       return
     }
+    // UI pre-check (authoritative check is on-chain inside runPull)
+    const fee = this.pool.acquisitionFee
+    const bal = this.wallet?.mana ?? 0n
+    if (fee > 0n && bal < fee) {
+      this.error = `Not enough mMANA — need ${formatMana(fee)} for pack cost, balance ${formatMana(bal)}`
+      this.renderStatus()
+      return
+    }
 
     this.setBusy(true)
     this.claiming = true
@@ -2301,6 +2318,7 @@ export class LootBagView {
       const hint = readStoredPendingPositionId(this.addr())
       const { win, alreadyPending } = await runPull({
         sessionAddress: this.addr(),
+        isGuest: isGuestLogin(this.login),
         acquisitionFee: this.pool.acquisitionFee,
         api: this.flowApi(),
         hintPositionId: hint
@@ -2371,6 +2389,7 @@ export class LootBagView {
       const settled = this.pendingWin
       await runSettle({
         sessionAddress: this.addr(),
+        isGuest: isGuestLogin(this.login),
         positionId: settled.positionId,
         keepPrize: keep,
         api: this.flowApi()

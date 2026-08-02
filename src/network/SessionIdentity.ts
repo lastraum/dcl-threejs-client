@@ -19,6 +19,8 @@ export class SessionIdentity {
   private profile: AvatarProfile | null = null
   private commsProfile: CommsProfileEntity | null = null
   private identity: AuthIdentity | null = null
+  /** Guest login uses a browser-only key; Polygon loot bag meta-tx still needs MetaMask. */
+  private guest = false
   private contentUrl = PEER_URL
   private lambdasUrl = `${PEER_URL}/lambdas`
 
@@ -37,6 +39,7 @@ export class SessionIdentity {
     if (!choice) {
       this.address = undefined
       this.identity = null
+      this.guest = false
       this.profile = null
       this.commsProfile = null
       return
@@ -44,6 +47,7 @@ export class SessionIdentity {
     // Wallet or stable guest both carry address + AuthIdentity for LiveKit / Catalyst.
     this.address = choice.address.toLowerCase()
     this.identity = choice.identity
+    this.guest = choice.kind === 'guest'
     persistProfileAddress(this.address)
     this.profile = null
     this.commsProfile = null
@@ -59,6 +63,11 @@ export class SessionIdentity {
 
   getAddress(): string | undefined {
     return this.address
+  }
+
+  /** True when logged in as browser guest (not MetaMask). */
+  isGuest(): boolean {
+    return this.guest
   }
 
   getAuthIdentity(): AuthIdentity | null {

@@ -268,19 +268,38 @@ export async function sendContractMetaTx(args: {
   return json.txHash as Hex
 }
 
-export async function ensureWalletAddress(preferred?: string | null): Promise<Address> {
-  if (preferred && /^0x[a-fA-F0-9]{40}$/.test(preferred)) {
-    // Still ensure provider is unlocked / accounts match when possible
-    try {
-      const connected = await requestAccounts()
-      if (connected.toLowerCase() === preferred.toLowerCase()) return connected
-      // Prefer session wallet only if provider has it; otherwise use connected
-      return connected
-    } catch {
-      return preferred.toLowerCase() as Address
-    }
+/**
+ * Resolve the address that will sign meta-tx (MetaMask / injected wallet).
+ *
+ * Guest login has a browser-only key for DCL identity — it does **not** sign
+ * Polygon loot bag txs. Meta-tx always uses the injected wallet. We therefore:
+ * - reject guest sessions for paid pool writes (caller should pass isGuest)
+ * - require MetaMask account === session wallet when a preferred address is set
+ *   (never silently use a different connected account)
+ */
+export async function ensureWalletAddress(
+  preferred?: string | null,
+  opts?: { isGuest?: boolean }
+): Promise<Address> {
+  if (opts?.isGuest) {
+    throw new Error(
+      'Guest accounts cannot claim or deposit on Loot Bag. ' +
+        'Log in with MetaMask (wallet) — guest identity is for chat/avatar only and has no Polygon mMANA. ' +
+        'If MetaMask popped up while you were a guest, the tx was signed by that MetaMask account, not Guest.'
+    )
   }
-  return requestAccounts()
+
+  const connected = await requestAccounts()
+  if (preferred && /^0x[a-fA-F0-9]{40}$/.test(preferred)) {
+    const want = preferred.toLowerCase() as Address
+    if (connected.toLowerCase() === want) return connected
+    throw new Error(
+      `Wrong wallet in MetaMask. This session is ${want.slice(0, 6)}…${want.slice(-4)} ` +
+        `but the connected account is ${connected.slice(0, 6)}…${connected.slice(-4)}. ` +
+        `Switch MetaMask to the session account, or log out of Guest and log in with that wallet.`
+    )
+  }
+  return connected
 }
 
 export async function getManaAllowance(owner: Address, spender: Address): Promise<bigint> {
@@ -289,6 +308,16 @@ export async function getManaAllowance(owner: Address, spender: Address): Promis
     abi: mockManaAbi,
     functionName: 'allowance',
     args: [owner, spender]
+  }) as Promise<bigint>
+}
+
+/** Wallet mMANA balance (wei). Always re-read before paid pulls — UI snapshot can be stale/0. */
+export async function getManaBalance(owner: Address): Promise<bigint> {
+  return polygonPublicClient.readContract({
+    address: ADDRESSES.mockMana,
+    abi: mockManaAbi,
+    functionName: 'balanceOf',
+    args: [owner]
   }) as Promise<bigint>
 }
 

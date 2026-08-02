@@ -3,6 +3,7 @@ import { ADDRESSES, MAX_BUNDLE_ITEMS, MAX_STOCK_PER_TX } from './config'
 import {
   ensureWalletAddress,
   getManaAllowance,
+  getManaBalance,
   getNftApproved,
   isNftApprovedForAll,
   nftMetaTxDomain,
@@ -14,6 +15,8 @@ import {
   mockManaAbi,
   mockWearableAbi
 } from './metaTx'
+import { polygonPublicClient } from './polygonClient'
+import { formatMana } from './format'
 import {
   collectionV2MinterAbi,
   getCollectionMinterStatus,
@@ -75,13 +78,14 @@ async function sleep(ms: number): Promise<void> {
 
 export async function runDepositNft(args: {
   sessionAddress?: string | null
+  isGuest?: boolean
   /** ERC721 collection (DCL Collection V2 or mock) */
   collection: Address
   tokenId: bigint
   backingMana: string
   api: FlowApi
 }): Promise<Hex> {
-  const from = await ensureWalletAddress(args.sessionAddress)
+  const from = await ensureWalletAddress(args.sessionAddress, { isGuest: args.isGuest })
   const pool = ADDRESSES.lootBagPool
   const collection = args.collection.toLowerCase() as Address
   const amount = parseEther(args.backingMana || '0')
@@ -161,11 +165,12 @@ export async function runDepositNft(args: {
  */
 export async function runDepositManaPack(args: {
   sessionAddress?: string | null
+  isGuest?: boolean
   packPrizeMana: string
   backingMana: string
   api: FlowApi
 }): Promise<Hex> {
-  const from = await ensureWalletAddress(args.sessionAddress)
+  const from = await ensureWalletAddress(args.sessionAddress, { isGuest: args.isGuest })
   const pool = ADDRESSES.lootBagPool
   const prize = parseEther(args.packPrizeMana || '0')
   const back = parseEther(args.backingMana || '0')
@@ -214,13 +219,14 @@ export async function runDepositManaPack(args: {
  */
 export async function runDepositBundle(args: {
   sessionAddress?: string | null
+  isGuest?: boolean
   items: { collection: Address; tokenId: bigint }[]
   backingMana: string
   /** Optional prize MANA on Keep (0 / omit = NFTs only) */
   packPrizeMana?: string
   api: FlowApi
 }): Promise<Hex> {
-  const from = await ensureWalletAddress(args.sessionAddress)
+  const from = await ensureWalletAddress(args.sessionAddress, { isGuest: args.isGuest })
   const pool = ADDRESSES.lootBagPool
   const items = args.items
   if (!items.length) throw new Error('Bundle needs at least one NFT')
@@ -302,6 +308,7 @@ export async function runDepositBundle(args: {
  */
 export async function runStockFromCollection(args: {
   sessionAddress?: string | null
+  isGuest?: boolean
   collection: string
   itemId: number | bigint
   mintCount: number
@@ -319,7 +326,7 @@ export async function runStockFromCollection(args: {
     label: string
   }) => Promise<void>
 }): Promise<Hex[]> {
-  const from = await ensureWalletAddress(args.sessionAddress)
+  const from = await ensureWalletAddress(args.sessionAddress, { isGuest: args.isGuest })
   const pool = ADDRESSES.lootBagPool
   const collection = args.collection.trim().toLowerCase() as Address
   if (!/^0x[a-f0-9]{40}$/.test(collection)) {
@@ -494,20 +501,24 @@ export async function runStockFromCollection(args: {
 
 export async function runPull(args: {
   sessionAddress?: string | null
+  /** Guest login — cannot pay Polygon fees via meta-tx. */
+  isGuest?: boolean
   acquisitionFee: bigint
   api: FlowApi
   /** Optional session hint so we can restore an unsettled win without re-pulling. */
   hintPositionId?: number | null
 }): Promise<{ hash: Hex | null; win: PendingWin | null; alreadyPending?: boolean }> {
-  const from = await ensureWalletAddress(args.sessionAddress)
+  const from = await ensureWalletAddress(args.sessionAddress, { isGuest: args.isGuest })
   const pool = ADDRESSES.lootBagPool
-  const maxFee = args.acquisitionFee + parseEther('1')
 
   // FWA-style guard: never charge another pack fee while a settle is still open.
+  // This path does NOT take mMANA — it only reopens Keep/Take for a fee already paid.
   args.api.note('Checking for unsettled prize…')
   const existing = await findPendingWinForPurchaser(from, undefined, args.hintPositionId)
   if (existing) {
-    args.api.note(`Unsettled prize found · pos #${existing.positionId}`)
+    args.api.note(
+      `Unsettled prize found · pos #${existing.positionId} — no new pack fee (already paid)`
+    )
     return {
       hash: null,
       alreadyPending: true,
@@ -515,9 +526,41 @@ export async function runPull(args: {
     }
   }
 
-  args.api.note('Checking mMANA for pack cost…')
+  // Live on-chain fee + bag size (UI snapshot can show items/fee while chain is empty).
+  args.api.note('Checking pack cost and mMANA balance…')
+  const [liveFee, activeCount, balance] = await Promise.all([
+    polygonPublicClient.readContract({
+      address: pool,
+      abi: lootBagPoolAbi,
+      functionName: 'getAcquisitionFee'
+    }) as Promise<bigint>,
+    polygonPublicClient.readContract({
+      address: pool,
+      abi: lootBagPoolAbi,
+      functionName: 'activeCount'
+    }) as Promise<bigint>,
+    getManaBalance(from)
+  ])
+
+  if (activeCount === 0n || liveFee === 0n) {
+    throw new Error('Loot Bag is empty — deposit loot before claiming a pack')
+  }
+
+  // Prefer live fee; allow slight UI lag but never underpay maxFee below chain fee.
+  const fee = liveFee > 0n ? liveFee : args.acquisitionFee
+  if (fee <= 0n) {
+    throw new Error('Pack cost is 0 on-chain — cannot claim (empty or unweighted bag)')
+  }
+  const maxFee = fee + parseEther('1')
+
+  if (balance < fee) {
+    throw new Error(
+      `Not enough mMANA for pack cost. Need ${formatMana(fee)} mMANA, wallet has ${formatMana(balance)} mMANA (${from.slice(0, 6)}…${from.slice(-4)}). Mint or get mMANA first.`
+    )
+  }
+
   const allowance = await getManaAllowance(from, pool)
-  if (allowance < maxFee || allowance < HIGH_ALLOWANCE) {
+  if (allowance < fee || allowance < HIGH_ALLOWANCE) {
     await sendAndWait(args.api, {
       address: ADDRESSES.mockMana,
       abi: mockManaAbi,
@@ -530,9 +573,17 @@ export async function runPull(args: {
     args.api.note('mMANA already allowed — skip')
   }
 
+  // Double-check balance after approve (approve does not spend mMANA, but UI may race).
+  const balanceAfter = await getManaBalance(from)
+  if (balanceAfter < fee) {
+    throw new Error(
+      `Not enough mMANA for pack cost after approve. Need ${formatMana(fee)} mMANA, have ${formatMana(balanceAfter)} mMANA.`
+    )
+  }
+
   // Always: request → RandomCoordinator (forge-tx fulfiller) → pending settle → Keep/Take.
   // Never client-supplied randomWord / requestAndFulfillForTest.
-  args.api.note('Requesting Loot Pack (waiting for random)…')
+  args.api.note(`Requesting Loot Pack (${formatMana(fee)} mMANA)…`)
   const hash = await sendAndWait(args.api, {
     address: pool,
     abi: lootBagPoolAbi,
@@ -573,11 +624,12 @@ async function waitForPendingWin(
 
 export async function runSettle(args: {
   sessionAddress?: string | null
+  isGuest?: boolean
   positionId: number
   keepPrize: boolean
   api: FlowApi
 }): Promise<Hex> {
-  const from = await ensureWalletAddress(args.sessionAddress)
+  const from = await ensureWalletAddress(args.sessionAddress, { isGuest: args.isGuest })
   return sendAndWait(args.api, {
     address: ADDRESSES.lootBagPool,
     abi: lootBagPoolAbi,
@@ -590,9 +642,10 @@ export async function runSettle(args: {
 
 export async function runWithdrawRewards(args: {
   sessionAddress?: string | null
+  isGuest?: boolean
   api: FlowApi
 }): Promise<Hex> {
-  const from = await ensureWalletAddress(args.sessionAddress)
+  const from = await ensureWalletAddress(args.sessionAddress, { isGuest: args.isGuest })
   return sendAndWait(args.api, {
     address: ADDRESSES.lootBagPool,
     abi: lootBagPoolAbi,

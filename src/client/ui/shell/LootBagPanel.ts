@@ -1537,6 +1537,7 @@ export class LootBagPanel {
     try {
       await runStockFromCollection({
         sessionAddress: this.sessionAddress(),
+        isGuest: this.options.getSession().isGuest(),
         collection: item.contractAddress,
         itemId: item.itemId,
         mintCount,
@@ -1637,6 +1638,7 @@ export class LootBagPanel {
         if (this.isPackSel(sel)) {
           await runDepositManaPack({
             sessionAddress: this.sessionAddress(),
+            isGuest: this.options.getSession().isGuest(),
             packPrizeMana: sel.packPrizeMana || DEFAULT_PACK_PRIZE,
             backingMana: sel.backingMana,
             api: this.flowApi()
@@ -1645,6 +1647,7 @@ export class LootBagPanel {
         } else {
           await runDepositNft({
             sessionAddress: this.sessionAddress(),
+            isGuest: this.options.getSession().isGuest(),
             collection: sel.item.collection as `0x${string}`,
             tokenId: BigInt(sel.item.tokenId),
             backingMana: sel.backingMana,
@@ -1709,6 +1712,14 @@ export class LootBagPanel {
       this.renderStatus()
       return
     }
+    // UI pre-check (authoritative check is on-chain inside runPull)
+    const fee = this.pool.acquisitionFee
+    const bal = this.wallet?.mana ?? 0n
+    if (fee > 0n && bal < fee) {
+      this.error = `Not enough mMANA — need ${formatMana(fee)} for pack cost, balance ${formatMana(bal)}`
+      this.renderStatus()
+      return
+    }
 
     this.setBusy(true)
     this.claiming = true
@@ -1727,6 +1738,7 @@ export class LootBagPanel {
       const hint = readStoredPendingPositionId(this.sessionAddress())
       const { win, alreadyPending } = await runPull({
         sessionAddress: this.sessionAddress(),
+        isGuest: this.options.getSession().isGuest(),
         acquisitionFee: this.pool.acquisitionFee,
         api: this.flowApi(),
         hintPositionId: hint
@@ -1860,6 +1872,7 @@ export class LootBagPanel {
       const settled = this.pendingWin
       await runSettle({
         sessionAddress: this.sessionAddress(),
+        isGuest: this.options.getSession().isGuest(),
         positionId: settled.positionId,
         keepPrize,
         api: this.flowApi()
@@ -1890,6 +1903,7 @@ export class LootBagPanel {
     try {
       await runWithdrawRewards({
         sessionAddress: this.sessionAddress(),
+        isGuest: this.options.getSession().isGuest(),
         api: this.flowApi()
       })
       await this.refresh()

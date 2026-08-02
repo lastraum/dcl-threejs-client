@@ -1,5 +1,5 @@
 import { maxUint256, parseEther, type Abi, type Address, type Hex } from 'viem'
-import { ADDRESSES, MAX_BUNDLE_ITEMS, MAX_STOCK_PER_TX, USE_TEST_FULFILL } from './config'
+import { ADDRESSES, MAX_BUNDLE_ITEMS, MAX_STOCK_PER_TX } from './config'
 import {
   ensureWalletAddress,
   getManaAllowance,
@@ -530,27 +530,45 @@ export async function runPull(args: {
     args.api.note('mMANA already allowed — skip')
   }
 
-  if (!USE_TEST_FULFILL) {
-    throw new Error('Loot Pack claims are not available on this network yet.')
-  }
-
-  const rand = BigInt(Math.floor(Math.random() * 1e12))
+  // Always: request → RandomCoordinator (forge-tx fulfiller) → pending settle → Keep/Take.
+  // Never client-supplied randomWord / requestAndFulfillForTest.
+  args.api.note('Requesting Loot Pack (waiting for random)…')
   const hash = await sendAndWait(args.api, {
     address: pool,
     abi: lootBagPoolAbi,
-    functionName: 'requestAndFulfillForTest',
-    args: [maxFee, rand],
+    functionName: 'requestAcquisition',
+    args: [maxFee],
     from,
-    label: 'Open Loot Pack'
+    label: 'Request Loot Pack'
   })
 
-  // Open step is complete — UI should drop the sign modal before prize scan / pack reveal
-  args.api.note('Finding your prize…')
-  const win = await findPendingWinForPurchaser(from, undefined, args.hintPositionId)
+  args.api.note('Waiting for random fulfill…')
+  const win = await waitForPendingWin(from, args.hintPositionId, args.api)
   return {
     hash,
     win: win ? { positionId: win.positionId, position: win.position } : null
   }
+}
+
+/** Poll until forge fulfiller + coordinator callback open settle (or timeout). */
+async function waitForPendingWin(
+  purchaser: Address,
+  hintPositionId: number | null | undefined,
+  api: FlowApi,
+  opts?: { timeoutMs?: number; intervalMs?: number }
+): Promise<PendingWin | null> {
+  const timeoutMs = opts?.timeoutMs ?? 120_000
+  const intervalMs = opts?.intervalMs ?? 2_500
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    const win = await findPendingWinForPurchaser(purchaser, undefined, hintPositionId)
+    if (win) return win
+    api.note('Waiting for random…')
+    await new Promise((r) => setTimeout(r, intervalMs))
+  }
+  throw new Error(
+    'Timed out waiting for random fulfill. Your fee was paid — keep this tab open or refresh; settle will appear when the fulfiller lands.'
+  )
 }
 
 export async function runSettle(args: {

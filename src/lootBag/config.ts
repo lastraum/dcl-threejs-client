@@ -5,7 +5,7 @@ export const CHAIN_ID = 137 as const
 export const ADDRESSES = {
   /** UUPS proxy — use this for all pool calls / meta-tx verifyingContract */
   lootBagPool: '0xF8fF7d4faD77d73f6D75139B0b20F9b9aB23D4Ac' as const,
-  lootBagPoolImplementation: '0xb4A4f61F6d1fDd6A06756de503BbA0D6c5F4E49c' as const,
+  lootBagPoolImplementation: '0x0610C9Da3348d9f7baFc9fAedAa7Eba62F4Bb439' as const,
   /** Legacy non-upgradeable mock pool (paused wind-down) */
   lootBagPoolLegacyMock: '0xefb08A1917fD0163A7aF261E8D9D33695Ed80424' as const,
   mockMana: '0x36CA9B0BAf0aC2a0ee2ffcdf2e99aA7e556670BF' as const,
@@ -65,8 +65,10 @@ export const POLYGON_RPC_FALLBACKS: readonly string[] = [
   'https://1rpc.io/matic'
 ]
 
-/** Mock pool: same-tx pull without Chainlink VRF */
-export const USE_TEST_FULFILL = true
+/**
+ * Client always uses RandomCoordinator (requestAcquisition → forge fulfill).
+ * No client-side randomWord / requestAndFulfillForTest path.
+ */
 
 /**
  * Client-side fake claim (no chain) for local UI prototyping only.

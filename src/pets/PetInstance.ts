@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { applyAvatarToonShading } from '../avatar/materials'
 import { syncGltfInstanceRenderState } from '../collision/gltfRenderMeshes'
 import { PET_CATEGORY_CONFIG } from './petCategories'
 import { countMappedMaterials, parsePetGlbBytes } from './parsePetGlb'
@@ -169,6 +170,11 @@ export class PetInstance {
       // Rendered footprint — PetFollow widens the side slot for big pets so an
       // elephant's ear doesn't share space with the owner's arm.
       this.halfExtentXZ = (Math.max(size.x, size.z) / 2) * capScale
+
+      // Pets live beside toon-shaded avatars in a flat-lit world; raw PBR
+      // renders them muddy-dark by comparison. Same banded matte treatment
+      // as avatars (honors the same quality toggle / URL flags).
+      applyAvatarToonShading(scene)
 
       this.facePivot.add(scene)
       this.mixer = new THREE.AnimationMixer(scene)

@@ -15,7 +15,7 @@ workflow:
     owner: awedjob
     pr: 58
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/58
-    updated: 2026-08-02
+    updated: 2026-08-04
   - stage: pending_review
     integration_ref: pr:56
     title: re-add foil pack and retriever, compressed (1.1 MB total)

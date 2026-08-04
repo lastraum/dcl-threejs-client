@@ -10,19 +10,19 @@ source: github
 base_branch: dev-latest
 workflow:
   - stage: pending_review
-    integration_ref: pr:58
-    title: update/delete actions in dispatch Worker
-    owner: awedjob
-    pr: 58
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/58
-    updated: 2026-08-04
-  - stage: pending_review
     integration_ref: pr:56
     title: re-add foil pack and retriever, compressed (1.1 MB total)
     owner: awedjob
     pr: 56
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/56
     updated: 2026-07-29
+  - stage: merged
+    integration_ref: pr:58
+    title: update/delete actions in dispatch Worker
+    owner: awedjob
+    pr: 58
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/58
+    updated: 2026-08-04
   - stage: merged
     integration_ref: pr:59
     title: skinned-bounds grounding/size cap + barn added-flag sync on delete
@@ -114,13 +114,6 @@ workflow:
     owner: awedjob
     pr: 45
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/45
-    updated: 2026-07-22
-  - stage: merged
-    integration_ref: pr:44
-    title: overlay/backpack redesign, 2D↔3D toggle, and cross-tab consistency
-    owner: awedjob
-    pr: 44
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/44
     updated: 2026-07-22
   - stage: merged
     integration_ref: pr:43

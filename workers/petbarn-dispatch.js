@@ -11,12 +11,28 @@
  * POST multipart/form-data:
  *   petName, creatorName, type (walking|flying), file (glb ≤2MB), thumb (image ≤500KB)
  *   optional: wallet, clientVersion
+ *
+ * Update / delete (existing listings):
+ *   action = update | delete (default create), targetId = listing id,
+ *   signature, timestampMs, glbSha256 (update only) — personal_sign over
+ *   `petbarn:v1:<action>:<targetId>:<glbSha256|none>:<timestampMs>`.
+ *   update also takes file + thumb (+ petName/creatorName/type for the
+ *   refreshed listing); delete takes no files.
+ *   The Worker validates shape + timestamp freshness and forwards meta.auth —
+ *   signature verification runs in the repo's deploy Action
+ *   (scripts/verify-action.mjs), so this file stays dependency-free.
+ *
+ * Vars (optional):
+ *   PETBARN_AUTH_MAX_AGE_MS — max |now − timestampMs| for update/delete
+ *     (default 600000 = 10 minutes). Deploy Action should enforce the same.
  */
 
 const DEFAULT_REPO = 'lastraum/petbarn'
 const DEFAULT_BRANCH = 'main'
 const MAX_GLB = 2 * 1024 * 1024
 const MAX_THUMB = 500 * 1024
+/** Default window for signed update/delete requests (ms). */
+const DEFAULT_AUTH_MAX_AGE_MS = 10 * 60 * 1000
 const VALID_TYPES = new Set(['walking', 'flying'])
 
 const CORS = {
@@ -68,6 +84,24 @@ function thumbExt(file) {
   if (t.includes('png')) return 'png'
   if (t.includes('jpeg') || t.includes('jpg')) return 'jpg'
   return 'webp'
+}
+
+/**
+ * Reject stale or far-future signed timestamps (replay / clock skew).
+ * @returns {string|null} error message, or null if ok
+ */
+function authTimestampFreshnessError(timestampMs, maxAgeMs) {
+  if (!Number.isFinite(timestampMs) || timestampMs <= 0) {
+    return 'timestampMs must be a positive number'
+  }
+  const now = Date.now()
+  const skew = Math.abs(now - timestampMs)
+  if (skew > maxAgeMs) {
+    const ageSec = Math.round(skew / 1000)
+    const maxSec = Math.round(maxAgeMs / 1000)
+    return `timestampMs is outside the allowed window (±${maxSec}s; skew ${ageSec}s) — re-sign and retry`
+  }
+  return null
 }
 
 async function gh(token, path, init = {}) {
@@ -181,17 +215,24 @@ async function commitFiles(token, repo, branch, message, files) {
 }
 
 async function createAuditIssue(token, repo, meta, paths) {
-  const title = `[pet] ${meta.petName} by ${meta.creatorName}`.slice(0, 256)
+  const action = meta.action || 'create'
+  const title = (
+    action === 'create'
+      ? `[pet] ${meta.petName} by ${meta.creatorName}`
+      : `[pet-${action}] ${meta.targetId}${meta.petName ? ` → ${meta.petName}` : ''}`
+  ).slice(0, 256)
   const body = [
-    '### Pet Barn submission',
+    `### Pet Barn ${action === 'create' ? 'submission' : action}`,
     '',
     `- **id:** \`${meta.id}\``,
-    `- **petName:** ${meta.petName}`,
-    `- **creatorName:** ${meta.creatorName}`,
-    `- **type:** ${meta.type}`,
-    `- **glb:** ${meta.sizeBytes} bytes`,
-    `- **thumb:** ${meta.thumbnailSizeBytes} bytes`,
+    meta.targetId ? `- **target listing:** \`${meta.targetId}\`` : null,
+    meta.petName ? `- **petName:** ${meta.petName}` : null,
+    meta.creatorName ? `- **creatorName:** ${meta.creatorName}` : null,
+    meta.type ? `- **type:** ${meta.type}` : null,
+    meta.sizeBytes ? `- **glb:** ${meta.sizeBytes} bytes` : null,
+    meta.thumbnailSizeBytes ? `- **thumb:** ${meta.thumbnailSizeBytes} bytes` : null,
     meta.wallet ? `- **wallet:** \`${meta.wallet}\`` : null,
+    meta.auth ? `- **auth:** signed, ts ${meta.auth.timestampMs} (verified by deploy Action)` : null,
     meta.clientVersion ? `- **client:** \`${meta.clientVersion}\`` : null,
     '',
     '### Queue paths',
@@ -246,6 +287,11 @@ export default {
 
     const repo = String(env.PETBARN_REPO || DEFAULT_REPO).trim()
     const branch = String(env.PETBARN_BRANCH || DEFAULT_BRANCH).trim() || 'main'
+    const authMaxAgeMs = (() => {
+      const raw = Number(env.PETBARN_AUTH_MAX_AGE_MS)
+      if (Number.isFinite(raw) && raw >= 30_000 && raw <= 24 * 60 * 60 * 1000) return raw
+      return DEFAULT_AUTH_MAX_AGE_MS
+    })()
 
     let form
     try {
@@ -262,77 +308,124 @@ export default {
     const glb = form.get('file')
     const thumb = form.get('thumb')
 
-    if (petName.length < 1 || petName.length > 64) {
-      return json({ error: 'petName must be 1–64 characters' }, 400)
-    }
-    if (creatorName.length < 1 || creatorName.length > 64) {
-      return json({ error: 'creatorName must be 1–64 characters' }, 400)
-    }
-    if (!VALID_TYPES.has(type)) {
-      return json({ error: 'type must be walking or flying' }, 400)
-    }
-    if (!(glb instanceof File) || glb.size <= 0) {
-      return json({ error: 'file (GLB) is required' }, 400)
-    }
-    if (glb.size > MAX_GLB) {
-      return json({ error: `GLB must be ≤ ${MAX_GLB} bytes (got ${glb.size})` }, 400)
-    }
-    const glbName = (glb.name || '').toLowerCase()
-    if (!glbName.endsWith('.glb') && !glbName.endsWith('.gltf')) {
-      return json({ error: 'file must be a .glb' }, 400)
-    }
-    if (!(thumb instanceof File) || thumb.size <= 0) {
-      return json({ error: 'thumb (image) is required' }, 400)
-    }
-    if (thumb.size > MAX_THUMB) {
-      return json({ error: `Thumbnail must be ≤ ${MAX_THUMB} bytes (got ${thumb.size})` }, 400)
-    }
-    const tType = (thumb.type || '').toLowerCase()
-    if (tType && !tType.startsWith('image/')) {
-      return json({ error: 'thumb must be an image' }, 400)
+    const action = String(form.get('action') || 'create').trim().toLowerCase()
+    if (!['create', 'update', 'delete'].includes(action)) {
+      return json({ error: 'action must be create, update or delete' }, 400)
     }
 
-    const id = `${todayStamp()}-${slugify(petName)}-${rand4()}`
-    const ext = thumbExt(thumb)
+    // --- auth shape + freshness for update/delete (crypto verified by deploy Action) ---
+    let targetId
+    let auth
+    if (action !== 'create') {
+      targetId = String(form.get('targetId') || '').trim()
+      if (!/^[a-z0-9][a-z0-9-]{2,80}$/i.test(targetId)) {
+        return json({ error: `${action} requires a valid targetId` }, 400)
+      }
+      const signature = String(form.get('signature') || '').trim()
+      if (!/^0x[0-9a-fA-F]{130}$/.test(signature)) {
+        return json({ error: `${action} requires signature (0x + 65 bytes hex)` }, 400)
+      }
+      const timestampMs = Number(form.get('timestampMs'))
+      if (!Number.isFinite(timestampMs) || timestampMs <= 0) {
+        return json({ error: `${action} requires numeric timestampMs` }, 400)
+      }
+      const freshnessErr = authTimestampFreshnessError(timestampMs, authMaxAgeMs)
+      if (freshnessErr) {
+        return json({ error: freshnessErr }, 400)
+      }
+      const glbSha256 = String(form.get('glbSha256') || '').trim().toLowerCase()
+      if (action === 'update' && !/^[0-9a-f]{64}$/.test(glbSha256)) {
+        return json({ error: 'update requires glbSha256 (hex sha256 of the GLB)' }, 400)
+      }
+      auth = {
+        signature,
+        timestampMs,
+        glbSha256: action === 'update' ? glbSha256 : 'none'
+      }
+    }
+
+    if (action !== 'delete') {
+      if (petName.length < 1 || petName.length > 64) {
+        return json({ error: 'petName must be 1–64 characters' }, 400)
+      }
+      if (creatorName.length < 1 || creatorName.length > 64) {
+        return json({ error: 'creatorName must be 1–64 characters' }, 400)
+      }
+      if (!VALID_TYPES.has(type)) {
+        return json({ error: 'type must be walking or flying' }, 400)
+      }
+      if (!(glb instanceof File) || glb.size <= 0) {
+        return json({ error: 'file (GLB) is required' }, 400)
+      }
+      if (glb.size > MAX_GLB) {
+        return json({ error: `GLB must be ≤ ${MAX_GLB} bytes (got ${glb.size})` }, 400)
+      }
+      const glbName = (glb.name || '').toLowerCase()
+      if (!glbName.endsWith('.glb') && !glbName.endsWith('.gltf')) {
+        return json({ error: 'file must be a .glb' }, 400)
+      }
+      if (!(thumb instanceof File) || thumb.size <= 0) {
+        return json({ error: 'thumb (image) is required' }, 400)
+      }
+      if (thumb.size > MAX_THUMB) {
+        return json({ error: `Thumbnail must be ≤ ${MAX_THUMB} bytes (got ${thumb.size})` }, 400)
+      }
+      const tType = (thumb.type || '').toLowerCase()
+      if (tType && !tType.startsWith('image/')) {
+        return json({ error: 'thumb must be an image' }, 400)
+      }
+    }
+
+    const slug = action === 'delete' ? `del-${slugify(targetId)}` : slugify(petName)
+    const id = `${todayStamp()}-${slug}-${rand4()}`
     const base = `pets/queue/${id}`
     const meta = {
       id,
-      petName,
-      creatorName,
-      type,
+      ...(action !== 'create' ? { action, targetId, auth } : {}),
+      ...(action !== 'delete'
+        ? {
+            petName,
+            creatorName,
+            type,
+            sizeBytes: glb.size,
+            thumbnailSizeBytes: thumb.size
+          }
+        : {}),
       submittedAt: new Date().toISOString(),
-      sizeBytes: glb.size,
-      thumbnailSizeBytes: thumb.size,
       wallet,
       clientVersion
     }
 
-    const glbBytes = new Uint8Array(await glb.arrayBuffer())
-    const thumbBytes = new Uint8Array(await thumb.arrayBuffer())
+    const files = []
+    const paths = []
+    if (action !== 'delete') {
+      const glbBytes = new Uint8Array(await glb.arrayBuffer())
+      const thumbBytes = new Uint8Array(await thumb.arrayBuffer())
 
-    // basic glb magic: "glTF"
-    if (glbBytes.length >= 4) {
-      const magic = String.fromCharCode(glbBytes[0], glbBytes[1], glbBytes[2], glbBytes[3])
-      if (magic !== 'glTF') {
-        return json({ error: 'file does not look like a binary GLB (missing glTF header)' }, 400)
-      }
-    }
-
-    const paths = [
-      `${base}/pet.glb`,
-      `${base}/thumb.${ext}`,
-      `${base}/meta.json`
-    ]
-
-    try {
-      await commitFiles(token, repo, branch, `petbarn: queue ${id} (${petName})`, [
-        { path: paths[0], contentBase64: bytesToBase64(glbBytes) },
-        { path: paths[1], contentBase64: bytesToBase64(thumbBytes) },
-        {
-          path: paths[2],
-          contentBase64: bytesToBase64(new TextEncoder().encode(JSON.stringify(meta, null, 2) + '\n'))
+      // basic glb magic: "glTF"
+      if (glbBytes.length >= 4) {
+        const magic = String.fromCharCode(glbBytes[0], glbBytes[1], glbBytes[2], glbBytes[3])
+        if (magic !== 'glTF') {
+          return json({ error: 'file does not look like a binary GLB (missing glTF header)' }, 400)
         }
-      ])
+      }
+      const ext = thumbExt(thumb)
+      paths.push(`${base}/pet.glb`, `${base}/thumb.${ext}`)
+      files.push(
+        { path: `${base}/pet.glb`, contentBase64: bytesToBase64(glbBytes) },
+        { path: `${base}/thumb.${ext}`, contentBase64: bytesToBase64(thumbBytes) }
+      )
+    }
+    paths.push(`${base}/meta.json`)
+    files.push({
+      path: `${base}/meta.json`,
+      contentBase64: bytesToBase64(new TextEncoder().encode(JSON.stringify(meta, null, 2) + '\n'))
+    })
+
+    const commitLabel =
+      action === 'create' ? `queue ${id} (${petName})` : `queue ${id} (${action} ${targetId})`
+    try {
+      await commitFiles(token, repo, branch, `petbarn: ${commitLabel}`, files)
     } catch (err) {
       const status = err?.status || 502
       return json(

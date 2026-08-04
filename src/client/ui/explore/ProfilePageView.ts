@@ -653,32 +653,52 @@ export class ProfilePageView {
   private async ensureAvatarPreview(token: number): Promise<void> {
     const data = this.loaded
     const stage = this.contentEl.querySelector('[data-avatar-stage]') as HTMLElement | null
-    if (!stage || !data?.profile) {
-      stage?.classList.add('profile-page-view__avatar-stage--loading')
+    if (!stage) return
+    if (!data?.profile) {
+      // No profile to compose — a spinner that never stops reads as a hang.
+      this.setAvatarStageState(stage, 'empty')
       return
     }
 
     const key = data.address
     if (this.avatarAddress === key && this.preview) {
-      stage.classList.remove('profile-page-view__avatar-stage--loading')
+      this.setAvatarStageState(stage, 'ready')
       return
     }
 
-    stage.classList.add('profile-page-view__avatar-stage--loading')
+    this.setAvatarStageState(stage, 'loading')
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
     if (token !== this.loadToken) return
 
     this.preview?.dispose()
-    this.preview = new AvatarPreviewMini(stage)
+    const preview = new AvatarPreviewMini(stage)
+    this.preview = preview
     this.avatarAddress = key
     const peerUrl = this.catalystUrl.replace(/\/$/, '') || 'https://peer.decentraland.org'
+    let shown = false
     try {
-      await this.preview.showProfile(data.profile, peerUrl, { zoom: 2 })
+      shown = await preview.showProfile(data.profile, peerUrl)
     } finally {
-      if (token === this.loadToken) {
-        stage.classList.remove('profile-page-view__avatar-stage--loading')
+      if (this.preview === preview) {
+        if (!shown) this.avatarAddress = null
+        this.setAvatarStageState(stage, shown ? 'ready' : 'empty')
       }
     }
+  }
+
+  /** Spinner, avatar, or "unavailable" — the stage always leaves the loading state. */
+  private setAvatarStageState(stage: HTMLElement, state: 'loading' | 'ready' | 'empty'): void {
+    stage.classList.toggle('profile-page-view__avatar-stage--loading', state === 'loading')
+    const note = stage.querySelector('.profile-page-view__avatar-empty')
+    if (state !== 'empty') {
+      note?.remove()
+      return
+    }
+    if (note) return
+    const el = document.createElement('p')
+    el.className = 'profile-page-view__avatar-empty'
+    el.textContent = 'Avatar preview unavailable'
+    stage.appendChild(el)
   }
 
   private wireHero(shell: HTMLElement, data: ProfilePageData): void {

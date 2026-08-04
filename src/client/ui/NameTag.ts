@@ -279,21 +279,29 @@ export class NameTag {
       e.stopPropagation()
     }
 
+    // Open from `pointerdown`, not the derived `click` / `contextmenu` events.
+    // `click` only fires when down and up land on the same element, and the pill
+    // tracks a moving avatar — it slips out from under the cursor between the
+    // two. `contextmenu` is worse: Opera's mouse gestures (on by default) claim
+    // the right button and never dispatch it. pointerdown fires in every engine.
+    this.rootEl.addEventListener(
+      'pointerdown',
+      (e) => {
+        e.stopPropagation()
+        // Primary and secondary only — middle-click stays a browser gesture.
+        if (e.button !== 0 && e.button !== 2) return
+        e.preventDefault()
+        contextMenuHandler?.(this.address!, e.clientX, e.clientY)
+      },
+      true
+    )
+
+    // Right-click already opened the menu above; keep the native menu suppressed.
     this.rootEl.addEventListener('contextmenu', (e) => {
       e.preventDefault()
       e.stopPropagation()
-      contextMenuHandler?.(this.address!, e.clientX, e.clientY)
     })
 
-    // The Options hint advertises a click — honour the obvious gesture, not just
-    // right-click. PlayerInput skips this target, so no camera drag competes.
-    this.rootEl.addEventListener('click', (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      contextMenuHandler?.(this.address!, e.clientX, e.clientY)
-    })
-
-    this.rootEl.addEventListener('pointerdown', blockCameraInput, true)
     this.rootEl.addEventListener('mousedown', blockCameraInput, true)
     this.rootEl.addEventListener('pointerup', blockCameraInput, true)
   }

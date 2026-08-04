@@ -122,6 +122,18 @@ export class PetFollow {
       _move.copy(_delta).multiplyScalar(step / dist)
       this.position.x += _move.x
       this.position.z += _move.z
+      // Owner exclusion zone: catch-up steering aims at the slot point, and
+      // the shortest path can pass straight through the player (a buck's head
+      // in your chest). Push the pet radially out of the keep-clear circle.
+      const clear = Math.max(0.5, (input.petHalfExtent ?? 0) + 0.35)
+      const ex = this.position.x - _ownerPos.x
+      const ez = this.position.z - _ownerPos.z
+      const eDist = Math.hypot(ex, ez)
+      if (eDist > 1e-4 && eDist < clear) {
+        const push = clear / eDist
+        this.position.x = _ownerPos.x + ex * push
+        this.position.z = _ownerPos.z + ez * push
+      }
       this.horizontalSpeed = damp(this.horizontalSpeed, step / Math.max(dt, 1e-4), SPEED_SMOOTH_RATE, dt)
       // Travel yaw in playerYaw space so Face 180° stays correct while moving.
       const travelYaw = Math.atan2(_move.x, _move.z)

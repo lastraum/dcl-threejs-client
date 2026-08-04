@@ -720,11 +720,19 @@ export class SceneScriptSystem {
       // skips mixer bind (only skipped update + async sync from d35596f).
       if (skipSceneAnimators()) return
       // Explicit Animator: bind immediately (doors / grow / scripted clips).
-      // Default auto-play (no Animator): also try bind-on-attach now that animated GLBs are
-      // private clones (not GPU rest-pose). Budgeted pendingBind still covers far/deferred.
-      this.bridgeDirty = true
-      this.animatorBridge?.markDirty(entity)
-      this.animatorBridge?.syncEntityAllowDefaultAutoplay(entity, this.view)
+      // Default auto-play only when the GLB has embedded clips — never promote static GPU
+      // instances (terrain/plaza) or colliders extract 0 meshes from empty markers.
+      const { Animator } = this.readComponents
+      if (Animator.has(entity)) {
+        this.bridgeDirty = true
+        this.animatorBridge?.markDirty(entity)
+        this.animatorBridge?.syncEntity(entity, this.view)
+      } else if (this.bridge?.entityGltfHasAnimations(entity)) {
+        this.bridgeDirty = true
+        this.animatorBridge?.markDirty(entity)
+        this.animatorBridge?.syncEntityAllowDefaultAutoplay(entity, this.view)
+      }
+      // else: static terrain/props stay GPU-instanced with INSTANCE_COLLIDER_SHAPES intact
     })
     this.bridge.setRecordLww(this.recordRendererLww)
     this.bindSceneUiViewportSync(host)

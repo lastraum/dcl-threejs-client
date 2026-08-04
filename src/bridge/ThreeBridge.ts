@@ -42,7 +42,11 @@ import { disposeOwnedObject3D } from '../rendering/sharedAsset'
 import { enableSceneGltfVertexColors } from '../rendering/LandscapeAssetSanitizer'
 import { applySceneGltfEmissives } from '../rendering/sceneGltfEmissives'
 import { cloneGltfInstance } from '../rendering/skinnedMeshInstance'
-import { SceneGltfInstancer, templateIsInstancable } from '../rendering/SceneGltfInstancer'
+import {
+  INSTANCE_COLLIDER_SHAPES_KEY,
+  SceneGltfInstancer,
+  templateIsInstancable
+} from '../rendering/SceneGltfInstancer'
 import {
   applyGltfNodeModifiersToEntity,
   gltfNodeModifiersMirrorStale,
@@ -2442,20 +2446,55 @@ export class ThreeBridge {
   }
 
   /**
+   * True when the entity's GltfContainer template has embedded clips (default autoplay candidates).
+   * Used to avoid bind-on-attach / instance-promote storms for static plaza props.
+   */
+  entityGltfHasAnimations(entity: Entity): boolean {
+    if (!this.ecs.GltfContainer.has(entity)) return false
+    const { src } = this.ecs.GltfContainer.get(entity)
+    const trimmed = src?.trim() ?? ''
+    if (!trimmed) return false
+    const hash =
+      /^(bafy|bafkre|Qm)/i.test(trimmed)
+        ? trimmed
+        : resolveGltfSrcHash(this.sceneConfig.content, trimmed)
+    if (!hash) return false
+    const template =
+      this.cache.peekCached(hash) ?? this.cache.peekCached(this.sceneConfig.assetUrl(hash))
+    return (template?.animations?.length ?? 0) > 0
+  }
+
+  /** Drop orphan `__mesh_*` instance markers (detach used to leave them on the entity). */
+  private removeMeshSlot(obj: THREE.Object3D, mk: string): void {
+    // Multiple stale markers can stack if promote failed mid-way — clear all matches.
+    const doomed: THREE.Object3D[] = []
+    for (const child of obj.children) {
+      if (child.name === mk || child.userData.dclInstanceMarker) doomed.push(child)
+    }
+    for (const child of doomed) {
+      obj.remove(child)
+      disposeOwnedObject3D(child)
+    }
+  }
+
+  /**
    * Sync promote InstancedMesh → private clone so AnimationMixer can bind.
    * Used when a rest-pose instance starts default autoplay near the camera.
+   * Never promote static no-clip instances — that orphaned markers and wiped colliders.
    */
   ensureCloneMeshForAnimator(entity: Entity): THREE.Object3D | null {
     const obj = this.store.nodes.get(entity)
     if (!obj) return null
     const mk = `__mesh_${entity}`
-    if (!obj.userData.dclInstanced) {
-      // Already a private clone — still unfreeze; attach may have frozen static rest.
-      const existing = obj.getObjectByName(mk) ?? null
-      if (existing) {
-        obj.matrixAutoUpdate = true
-        unfreezeObject3D(existing)
-      }
+    const existing = obj.getObjectByName(mk) ?? null
+    // Live private clone (real geometry, not GPU instance marker).
+    if (
+      existing &&
+      !obj.userData.dclInstanced &&
+      !existing.userData.dclInstanceMarker
+    ) {
+      obj.matrixAutoUpdate = true
+      unfreezeObject3D(existing)
       return existing
     }
     if (!this.ecs.GltfContainer.has(entity)) return null
@@ -2469,12 +2508,23 @@ export class ThreeBridge {
       this.cache.peekCached(hash) ?? this.cache.peekCached(this.sceneConfig.assetUrl(hash))
     if (!template) return null
 
+    // Only promote when the template actually has clips — never for static instances.
+    if (!template.animations.length && !this.ecs.Animator.has(entity)) {
+      return null
+    }
+
     const prevTris = (obj.userData.dclAttachedTris as number | undefined) ?? 0
-    this.instancer.detach(entity, obj)
-    this.instanceMotionHits.delete(entity)
+    if (obj.userData.dclInstanced) {
+      this.instancer.detach(entity, obj)
+      this.instanceMotionHits.delete(entity)
+    }
     delete obj.userData.dclInstanced
     delete obj.userData.gltfSrcKey
+    delete obj.userData[INSTANCE_COLLIDER_SHAPES_KEY]
     obj.userData.dclForceCloneAttach = true
+    // Critical: detach used to leave an empty marker named __mesh_* — getObjectByName
+    // then preferred the marker over the real clone → 0 collider meshes / dead fire.
+    this.removeMeshSlot(obj, mk)
     if (prevTris > 0) this.attachedSceneTris = Math.max(0, this.attachedSceneTris - prevTris)
 
     const templateTris =
@@ -2490,6 +2540,10 @@ export class ThreeBridge {
     // Mixer needs live matrices.
     obj.matrixAutoUpdate = true
     const mesh = obj.getObjectByName(mk) ?? null
+    if (mesh?.userData.dclInstanceMarker) {
+      // Instance path re-won (shouldn't with forceClone) — refuse marker for mixer.
+      return null
+    }
     if (mesh) unfreezeObject3D(mesh)
     return mesh
   }

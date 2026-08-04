@@ -274,6 +274,18 @@ export class SceneGltfInstancer {
     if (entityObj) {
       delete entityObj.userData.dclInstanced
       delete entityObj.userData[INSTANCE_COLLIDER_SHAPES_KEY]
+      // Remove empty instance marker so __mesh_* can be rebuilt as a real clone.
+      // Leaving the marker made getObjectByName prefer an empty Group → 0 colliders.
+      const doomed: THREE.Object3D[] = []
+      for (const child of entityObj.children) {
+        if (child.userData.dclInstanceMarker || child.name.startsWith('__mesh_')) {
+          doomed.push(child)
+        }
+      }
+      for (const child of doomed) {
+        entityObj.remove(child)
+        // Marker is an empty Group — no shared geometry/materials to dispose.
+      }
     }
     const hash = this.entityHash.get(entity)
     if (!hash) return

@@ -27,6 +27,8 @@ export class PetInstance {
   readonly root = new THREE.Group()
   /** Holds export face offset so AnimationMixer / loco never overwrite it. */
   private readonly facePivot = new THREE.Group()
+  /** Rendered XZ half-extent (m), scale cap applied — sizes the follow slot. */
+  halfExtentXZ = 0.3
   private mixer: THREE.AnimationMixer | null = null
   private actions = new Map<string, THREE.AnimationAction>()
   private clipNames: string[] = []
@@ -159,10 +161,14 @@ export class PetInstance {
 
       // Soft scale cap so huge uploads don't fill the plaza.
       const maxDim = Math.max(size.x, size.y, size.z, 0.01)
+      let capScale = 1
       if (maxDim > 2.5) {
-        const s = 2.5 / maxDim
-        scene.scale.multiplyScalar(s)
+        capScale = 2.5 / maxDim
+        scene.scale.multiplyScalar(capScale)
       }
+      // Rendered footprint — PetFollow widens the side slot for big pets so an
+      // elephant's ear doesn't share space with the owner's arm.
+      this.halfExtentXZ = (Math.max(size.x, size.z) / 2) * capScale
 
       this.facePivot.add(scene)
       this.mixer = new THREE.AnimationMixer(scene)

@@ -512,6 +512,7 @@ export class PetManager {
       ownerYaw: ownerYawThree,
       ownerHorizontalSpeed,
       category: this.localSpec.category,
+      petHalfExtent: this.localInstance.halfExtentXZ,
       dt,
       timeSec: this.timeSec
     })

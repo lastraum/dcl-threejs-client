@@ -4,6 +4,7 @@ import {
   AVATAR_EMOTE_DOUBLE_JUMP,
   AVATAR_EMOTE_GLIDE,
   AVATAR_EMOTE_IDLE,
+  AVATAR_EMOTE_JOG,
   AVATAR_EMOTE_JUMP,
   AVATAR_EMOTE_RUN,
   AVATAR_EMOTE_WALK
@@ -66,6 +67,8 @@ export class AvatarAnimations {
   private locomotionVfx: AvatarLocomotionVfx | null = null
   private idleAction: THREE.AnimationAction | null = null
   private walkAction: THREE.AnimationAction | null = null
+  /** Dedicated Explorer Jog clip; null → jog falls back to runAction slowed. */
+  private jogAction: THREE.AnimationAction | null = null
   private runAction: THREE.AnimationAction | null = null
   private jumpAction: THREE.AnimationAction | null = null
   private doubleJumpAction: THREE.AnimationAction | null = null
@@ -83,6 +86,7 @@ export class AvatarAnimations {
   private doubleJumpPlaying = false
   private readonly twirl = new DoubleJumpTwirl()
   private walkBlend = 0
+  private jogBlend = 0
   private runBlend = 0
   private jumpBlend = 0
   private glideBlend = 0
@@ -144,11 +148,13 @@ export class AvatarAnimations {
           ? AVATAR_EMOTE_IDLE
           : slug === 'walk'
             ? AVATAR_EMOTE_WALK
-            : slug === 'run'
-              ? AVATAR_EMOTE_RUN
-              : slug === 'double_jump'
-                ? AVATAR_EMOTE_DOUBLE_JUMP
-                : AVATAR_EMOTE_JUMP
+            : slug === 'jog'
+              ? AVATAR_EMOTE_JOG
+              : slug === 'run'
+                ? AVATAR_EMOTE_RUN
+                : slug === 'double_jump'
+                  ? AVATAR_EMOTE_DOUBLE_JUMP
+                  : AVATAR_EMOTE_JUMP
       try {
         const loader = new GLTFLoader()
         const gltf = await loader.loadAsync(path)
@@ -167,15 +173,17 @@ export class AvatarAnimations {
       return null
     }
 
-    const [idleClip, walkClip, runClip, jumpClip, doubleJumpClip, glideClip] = await Promise.all([
-      loadSlug('idle'),
-      loadSlug('walk'),
-      loadSlug('run'),
-      loadSlug('jump'),
-      // Dedicated clip only — missing file → procedural twirl (Explorer hard-coded keyframe).
-      loadSlug('double_jump', { allowJumpFallback: false }),
-      loadGlideAvatarClip()
-    ])
+    const [idleClip, walkClip, jogClip, runClip, jumpClip, doubleJumpClip, glideClip] =
+      await Promise.all([
+        loadSlug('idle'),
+        loadSlug('walk'),
+        loadSlug('jog'),
+        loadSlug('run'),
+        loadSlug('jump'),
+        // Dedicated clip only — missing file → procedural twirl (Explorer hard-coded keyframe).
+        loadSlug('double_jump', { allowJumpFallback: false }),
+        loadGlideAvatarClip()
+      ])
 
     if (generation !== this.bindGeneration || !this.mixer) return
 
@@ -183,9 +191,18 @@ export class AvatarAnimations {
       throw new Error('locomotion idle emote unavailable')
     }
 
-    this.idleAction = this.playLoop(idleClip, animationRoot, bodyShape, 1)
-    this.walkAction = this.playLoop(walkClip ?? undefined, animationRoot, bodyShape, 0)
-    this.runAction = this.playLoop(runClip ?? undefined, animationRoot, bodyShape, 0)
+    // Grounded gaits keep the authored hip bob; air clips stay position-stripped
+    // (physics owns vertical travel there and clip offsets would fight the capsule).
+    this.idleAction = this.playLoop(idleClip, animationRoot, bodyShape, 1, { keepHipBob: true })
+    this.walkAction = this.playLoop(walkClip ?? undefined, animationRoot, bodyShape, 0, {
+      keepHipBob: true
+    })
+    this.jogAction = this.playLoop(jogClip ?? undefined, animationRoot, bodyShape, 0, {
+      keepHipBob: true
+    })
+    this.runAction = this.playLoop(runClip ?? undefined, animationRoot, bodyShape, 0, {
+      keepHipBob: true
+    })
     this.jumpAction = this.playLoop(jumpClip ?? undefined, animationRoot, bodyShape, 0)
     this.hasDedicatedDoubleJumpClip = Boolean(doubleJumpClip)
     this.doubleJumpAction = doubleJumpClip
@@ -196,9 +213,10 @@ export class AvatarAnimations {
       ? this.playHold(glideClip, animationRoot, bodyShape)
       : null
 
-    if (!this.walkAction || !this.runAction || !this.jumpAction) {
+    if (!this.walkAction || !this.runAction || !this.jumpAction || !this.jogAction) {
       console.warn('[avatar] locomotion bind:', {
         walk: !!this.walkAction,
+        jog: !!this.jogAction,
         run: !!this.runAction,
         jump: !!this.jumpAction,
         doubleJumpClip: this.hasDedicatedDoubleJumpClip,
@@ -492,6 +510,7 @@ export class AvatarAnimations {
     if (!state.gliding && (this.doubleJumpPlaying || twirling)) {
       this.idleAction?.setEffectiveWeight(0)
       this.walkAction?.setEffectiveWeight(0)
+      this.jogAction?.setEffectiveWeight(0)
       this.runAction?.setEffectiveWeight(0)
       if (this.hasDedicatedDoubleJumpClip && this.doubleJumpAction) {
         this.jumpAction?.setEffectiveWeight(0)
@@ -511,6 +530,7 @@ export class AvatarAnimations {
     const blendToward = (cur: number, target: number): number =>
       cur + (target - cur) * (target < cur - 1e-4 ? kOut : kIn)
     let targetWalk = 0
+    let targetJog = 0
     let targetRun = 0
     let targetJump = 0
     let targetGlide = 0
@@ -541,6 +561,8 @@ export class AvatarAnimations {
     } else if (state.horizontalSpeed > 0.05) {
       if (state.locomotionMode === 'walk' && this.walkAction) {
         targetWalk = Math.min(1, state.horizontalSpeed / DCL_LOCOMOTION_DEFAULTS.walkSpeed)
+      } else if (state.locomotionMode === 'jog' && this.jogAction) {
+        targetJog = Math.min(1, state.horizontalSpeed / DCL_LOCOMOTION_DEFAULTS.jogSpeed)
       } else if (this.runAction) {
         const ref =
           state.locomotionMode === 'run'
@@ -553,28 +575,37 @@ export class AvatarAnimations {
     if (state.gliding) {
       // Snap loco blends off so residual walk/run weight cannot pull arms down.
       this.walkBlend = 0
+      this.jogBlend = 0
       this.runBlend = 0
       this.jumpBlend = targetJump
       this.glideBlend = blendToward(this.glideBlend, targetGlide)
     } else {
       this.walkBlend = blendToward(this.walkBlend, targetWalk)
+      this.jogBlend = blendToward(this.jogBlend, targetJog)
       this.runBlend = blendToward(this.runBlend, targetRun)
       this.jumpBlend = blendToward(this.jumpBlend, targetJump)
       this.glideBlend = blendToward(this.glideBlend, targetGlide)
       // Snap residual walk when fully stopped — avoids multi-second moonwalk after remote halt.
-      if (targetWalk === 0 && targetRun === 0 && this.walkBlend + this.runBlend < 0.06) {
+      if (
+        targetWalk === 0 &&
+        targetJog === 0 &&
+        targetRun === 0 &&
+        this.walkBlend + this.jogBlend + this.runBlend < 0.06
+      ) {
         this.walkBlend = 0
+        this.jogBlend = 0
         this.runBlend = 0
       }
     }
 
     const airBlend = Math.max(this.jumpBlend, this.glideBlend)
-    const locomotion = Math.max(this.walkBlend, this.runBlend)
+    const locomotion = Math.max(this.walkBlend, this.jogBlend, this.runBlend)
     const idleWeight = Math.max(0, 1 - locomotion - airBlend)
 
     if (state.gliding && this.glideAction) {
       this.idleAction?.setEffectiveWeight(0)
       this.walkAction?.setEffectiveWeight(0)
+      this.jogAction?.setEffectiveWeight(0)
       this.runAction?.setEffectiveWeight(0)
       this.jumpAction?.setEffectiveWeight(0)
       this.glideAction.setEffectiveWeight(1)
@@ -582,6 +613,7 @@ export class AvatarAnimations {
     } else {
       this.idleAction?.setEffectiveWeight(idleWeight)
       this.walkAction?.setEffectiveWeight(this.walkBlend)
+      this.jogAction?.setEffectiveWeight(this.jogBlend)
       this.runAction?.setEffectiveWeight(this.runBlend)
       this.jumpAction?.setEffectiveWeight(this.jumpBlend)
       this.glideAction?.setEffectiveWeight(this.glideBlend)
@@ -592,16 +624,20 @@ export class AvatarAnimations {
       const ref = Math.max(DCL_LOCOMOTION_DEFAULTS.walkSpeed, 0.001)
       this.walkAction.setEffectiveTimeScale(Math.max(0.35, state.horizontalSpeed / ref))
     }
+    if (this.jogAction && state.locomotionMode === 'jog' && !state.gliding) {
+      // Dedicated Explorer Jog clip — authored cadence at full jog speed.
+      const ref = Math.max(DCL_LOCOMOTION_DEFAULTS.jogSpeed, 0.001)
+      this.jogAction.setEffectiveTimeScale(Math.max(0.6, state.horizontalSpeed / ref))
+    }
     if (this.runAction && !state.gliding) {
       if (state.locomotionMode === 'run') {
         const ref = Math.max(DCL_LOCOMOTION_DEFAULTS.runSpeed, 0.001)
-        // 1.5× base run cadence so foot cycles match faster perceived travel.
-        this.runAction.setEffectiveTimeScale(
-          Math.max(1.575, (state.horizontalSpeed / ref) * 1.65)
-        )
-      } else if (state.locomotionMode === 'jog') {
+        // Desktop parity: unity-explorer never scales animator speed by velocity —
+        // Run.anim plays at 1× at full run speed (blend value expresses speed instead).
+        this.runAction.setEffectiveTimeScale(Math.max(0.6, state.horizontalSpeed / ref))
+      } else if (state.locomotionMode === 'jog' && !this.jogAction) {
         const ref = Math.max(DCL_LOCOMOTION_DEFAULTS.jogSpeed, 0.001)
-        // Explorer jog (blend tier 2) uses run.glb slowed — not walk.glb sped up.
+        // Fallback when jog.glb is unavailable: run.glb slowed — not walk.glb sped up.
         this.runAction.setEffectiveTimeScale(Math.max(0.78, (state.horizontalSpeed / ref) * 0.88))
       }
     }
@@ -651,6 +687,7 @@ export class AvatarAnimations {
     this.attachParent = null
     this.idleAction = null
     this.walkAction = null
+    this.jogAction = null
     this.runAction = null
     this.jumpAction = null
     this.doubleJumpAction = null
@@ -659,6 +696,7 @@ export class AvatarAnimations {
     this.activeProfileEmoteKey = null
     this.doubleJumpPlaying = false
     this.walkBlend = 0
+    this.jogBlend = 0
     this.runBlend = 0
     this.jumpBlend = 0
     this.glideBlend = 0
@@ -720,6 +758,7 @@ export class AvatarAnimations {
     const hasPropTrack = !!this.propAction
     this.idleAction?.setEffectiveWeight(hasAvatarTrack ? 0 : 1)
     this.walkAction?.setEffectiveWeight(0)
+    this.jogAction?.setEffectiveWeight(0)
     this.runAction?.setEffectiveWeight(0)
     this.jumpAction?.setEffectiveWeight(0)
     this.doubleJumpAction?.setEffectiveWeight(0)
@@ -731,6 +770,7 @@ export class AvatarAnimations {
   private restoreLocomotionWeights(): void {
     this.idleAction?.setEffectiveWeight(1)
     this.walkAction?.setEffectiveWeight(0)
+    this.jogAction?.setEffectiveWeight(0)
     this.runAction?.setEffectiveWeight(0)
     this.jumpAction?.setEffectiveWeight(0)
     this.doubleJumpAction?.setEffectiveWeight(0)
@@ -738,6 +778,7 @@ export class AvatarAnimations {
     this.glideBlend = 0
     this.idleAction?.play()
     this.walkAction?.play()
+    this.jogAction?.play()
     this.runAction?.play()
     this.jumpAction?.play()
     this.doubleJumpAction?.play()
@@ -749,9 +790,10 @@ export class AvatarAnimations {
     clip: THREE.AnimationClip | undefined,
     avatarRoot: THREE.Object3D,
     bodyShape: BodyShape,
-    weight = 1
+    weight = 1,
+    options?: { keepHipBob?: boolean }
   ): THREE.AnimationAction | null {
-    const remapped = getRemappedLocomotionClip(clip, avatarRoot, bodyShape)
+    const remapped = getRemappedLocomotionClip(clip, avatarRoot, bodyShape, options)
     if (!remapped || !this.mixer) return null
     const action = this.mixer.clipAction(remapped)
     action.setLoop(THREE.LoopRepeat, Infinity)

@@ -15,6 +15,8 @@ export const EMISSIVE_INTENSITY = 12
 /** Official DCL wearable-preview emotes — Avatar_ bone rig. */
 export const AVATAR_EMOTE_IDLE = '/avatar/emotes/idle.glb'
 export const AVATAR_EMOTE_WALK = '/avatar/emotes/walk.glb'
+/** Explorer Jog clip (unity-explorer Jog.anim converted to the Avatar_ rig). */
+export const AVATAR_EMOTE_JOG = '/avatar/emotes/jog.glb'
 export const AVATAR_EMOTE_RUN = '/avatar/emotes/run.glb'
 export const AVATAR_EMOTE_JUMP = '/avatar/emotes/jump.glb'
 /**

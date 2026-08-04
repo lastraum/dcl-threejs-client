@@ -107,6 +107,7 @@ const EMOTE_LABELS: Record<string, string> = {
 const BUNDLED_EMOTE_FILES: Record<string, string> = {
   idle: 'idle.glb',
   walk: 'walk.glb',
+  jog: 'jog.glb',
   run: 'run.glb',
   jump: 'jump.glb',
   wave: 'wave.glb',
@@ -305,7 +306,7 @@ function normalizeWheelSlot(slot: number): number | null {
  * Labels from EMOTE_LABELS; ids are slugs accepted by resolveProfileEmote.
  */
 export function listBaseEmoteCatalog(): Array<{ id: string; label: string; urn: string }> {
-  const locomotionOnly = new Set(['idle', 'walk', 'run', 'jump', 'double_jump'])
+  const locomotionOnly = new Set(['idle', 'walk', 'jog', 'run', 'jump', 'double_jump'])
   const seen = new Set<string>()
   const out: Array<{ id: string; label: string; urn: string }> = []
 
@@ -676,7 +677,7 @@ export async function loadResolvedProfileEmote(
   return cache.load(resolved.url, undefined, { emote: true, quiet: true })
 }
 
-export type LocomotionEmoteSlug = 'idle' | 'walk' | 'run' | 'jump' | 'double_jump'
+export type LocomotionEmoteSlug = 'idle' | 'walk' | 'jog' | 'run' | 'jump' | 'double_jump'
 
 /** Idle/walk/run/jump — bundled Avatar_ rig first; Catalyst only when bundled is unavailable. */
 export async function loadLocomotionEmoteGltf(

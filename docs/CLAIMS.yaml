@@ -17,13 +17,6 @@ workflow:
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/61
     updated: 2026-08-04
   - stage: pending_review
-    integration_ref: pr:60
-    title: desktop-parity jog clip, hip bob, and run cadence
-    owner: awedjob
-    pr: 60
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/60
-    updated: 2026-08-04
-  - stage: pending_review
     integration_ref: pr:59
     title: skinned-bounds grounding/size cap + barn added-flag sync on delete
     owner: awedjob
@@ -44,6 +37,13 @@ workflow:
     pr: 56
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/56
     updated: 2026-07-29
+  - stage: merged
+    integration_ref: pr:60
+    title: desktop-parity jog clip, hip bob, and run cadence
+    owner: awedjob
+    pr: 60
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/60
+    updated: 2026-08-04
   - stage: merged
     integration_ref: pr:55
     title: foil pack + retriever pet models
@@ -170,14 +170,6 @@ workflow:
     owner: awedjob
     pr: 29
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/29
-    updated: 2026-07-20
-  - stage: merged
-    integration_ref: pr:28
-    title: skeleton-named display meshes pruned invisible + hides-driven base shell
-      hiding
-    owner: awedjob
-    pr: 28
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/28
     updated: 2026-07-20
   - stage: merged
     integration_ref: ecs:TriggerArea

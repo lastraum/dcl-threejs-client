@@ -10,6 +10,13 @@ source: github
 base_branch: dev-latest
 workflow:
   - stage: pending_review
+    integration_ref: pr:61
+    title: fill the preview stage, stop the stuck spinner, pointerdown peer options
+    owner: awedjob
+    pr: 61
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/61
+    updated: 2026-08-04
+  - stage: pending_review
     integration_ref: pr:60
     title: desktop-parity jog clip, hip bob, and run cadence
     owner: awedjob

@@ -48,6 +48,23 @@ export type SubmitPetBarnInput = {
   wallet?: string
 }
 
+/** Replace an existing listing (same parcel / id on the Action side). */
+export type UpdatePetBarnInput = SubmitPetBarnInput & {
+  targetId: string
+  /** 0x personal_sign of petbarn:v1:update:… */
+  signature: string
+  timestampMs: number
+  /** Lowercase hex sha256 of the GLB bytes (must match signature payload). */
+  glbSha256: string
+}
+
+export type DeletePetBarnInput = {
+  targetId: string
+  signature: string
+  timestampMs: number
+  wallet?: string
+}
+
 export type SubmitPetBarnResult =
   | { ok: true; id: string; issueUrl?: string; message?: string }
   | { ok: false; error: string }

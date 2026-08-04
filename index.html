@@ -3679,6 +3679,9 @@
         border-color: rgba(167, 139, 250, 0.55);
       }
       .petbarn-publish-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
         margin-bottom: 8px;
       }
       .petbarn-back-catalog {
@@ -3749,9 +3752,16 @@
         color: rgba(221, 214, 254, 0.62);
         line-height: 1.35;
       }
+      .petbarn-card__actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin-top: 2px;
+      }
       .petbarn-card__add {
         appearance: none;
-        margin-top: 2px;
+        flex: 1;
+        min-width: 0;
         border: 1px solid rgba(167, 139, 250, 0.45);
         background: rgba(139, 92, 246, 0.28);
         color: #fff;
@@ -3767,6 +3777,44 @@
         cursor: default;
         background: rgba(255, 255, 255, 0.08);
         border-color: rgba(255, 255, 255, 0.12);
+      }
+      .petbarn-card__icon-btn {
+        appearance: none;
+        flex: 0 0 auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        padding: 0;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        background: rgba(255, 255, 255, 0.06);
+        color: rgba(255, 255, 255, 0.9);
+        cursor: pointer;
+      }
+      .petbarn-card__icon-btn:hover {
+        background: rgba(255, 255, 255, 0.12);
+        border-color: rgba(167, 139, 250, 0.5);
+      }
+      .petbarn-card__icon-btn--danger:hover {
+        background: rgba(248, 113, 113, 0.2);
+        border-color: rgba(248, 113, 113, 0.55);
+        color: #fecaca;
+      }
+      .petbarn-publish-head__title {
+        font-size: 13px;
+        font-weight: 700;
+        color: rgba(255, 255, 255, 0.88);
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .petbarn-update-hint {
+        margin: 0 0 10px;
+        font-size: 12px;
+        line-height: 1.4;
+        color: rgba(221, 214, 254, 0.7);
       }
       .petbarn-card__overlay {
         position: absolute;

@@ -10,13 +10,6 @@ source: github
 base_branch: dev-latest
 workflow:
   - stage: pending_review
-    integration_ref: pr:59
-    title: skinned-bounds grounding/size cap + barn added-flag sync on delete
-    owner: awedjob
-    pr: 59
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/59
-    updated: 2026-08-04
-  - stage: pending_review
     integration_ref: pr:58
     title: update/delete actions in dispatch Worker
     owner: awedjob
@@ -30,6 +23,13 @@ workflow:
     pr: 56
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/56
     updated: 2026-07-29
+  - stage: merged
+    integration_ref: pr:59
+    title: skinned-bounds grounding/size cap + barn added-flag sync on delete
+    owner: awedjob
+    pr: 59
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/59
+    updated: 2026-08-04
   - stage: merged
     integration_ref: pr:61
     title: fill the preview stage, stop the stuck spinner, pointerdown peer options
@@ -156,13 +156,6 @@ workflow:
     owner: lastraum
     pr: 41
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/41
-    updated: 2026-07-21
-  - stage: merged
-    integration_ref: pr:34
-    title: official DCL rarity colors + sort by rarity
-    owner: awedjob
-    pr: 34
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/34
     updated: 2026-07-21
   - stage: merged
     integration_ref: ecs:TriggerArea

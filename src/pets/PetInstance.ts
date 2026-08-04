@@ -128,9 +128,21 @@ export class PetInstance {
       scene.traverse((obj) => {
         const mesh = obj as THREE.Mesh
         if (!mesh.isMesh || !mesh.visible || !mesh.geometry) return
-        mesh.geometry.computeBoundingBox()
-        if (!mesh.geometry.boundingBox) return
-        const b = mesh.geometry.boundingBox.clone()
+        // Skinned meshes: raw geometry bounds lie whenever the rig carries the
+        // real transform (0.01-unit exports) or the positions are quantized
+        // (KHR_mesh_quantization folds dequant into the IBMs). The skeleton-
+        // aware SkinnedMesh.computeBoundingBox() reports true posed bounds.
+        const skinned = mesh as THREE.SkinnedMesh
+        let b: THREE.Box3
+        if (skinned.isSkinnedMesh) {
+          skinned.computeBoundingBox()
+          if (!skinned.boundingBox) return
+          b = skinned.boundingBox.clone()
+        } else {
+          mesh.geometry.computeBoundingBox()
+          if (!mesh.geometry.boundingBox) return
+          b = mesh.geometry.boundingBox.clone()
+        }
         b.applyMatrix4(mesh.matrixWorld)
         box.union(b)
       })

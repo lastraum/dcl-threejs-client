@@ -35,6 +35,24 @@ export function isPetBarnAdded(barnId: string): boolean {
   return !!getPetBarnAdded(barnId)
 }
 
+/**
+ * Clear the added flag for any listing whose bytes match `contentHash` — called
+ * when a pet is deleted from the local library so the Barn card offers Add
+ * again instead of stranding a disabled "Added" button.
+ */
+export function removePetBarnAddedByContentHash(contentHash: string): void {
+  const hash = contentHash.toLowerCase()
+  const map = readMap()
+  let changed = false
+  for (const [barnId, entry] of Object.entries(map)) {
+    if ((entry.contentHash || '').toLowerCase() === hash) {
+      delete map[barnId]
+      changed = true
+    }
+  }
+  if (changed) writeMap(map)
+}
+
 export function markPetBarnAdded(entry: {
   barnId: string
   contentHash: string

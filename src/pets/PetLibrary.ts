@@ -8,6 +8,9 @@ import {
   writePetMetaStore
 } from './petByteCache'
 import { normalizeAnimClipMap, normalizePetCategory } from './petCategories'
+// Direct file import (not the petBarn barrel) — the barrel pulls addFromBarn,
+// which imports this module back.
+import { removePetBarnAddedByContentHash } from './petBarn/addedStore'
 import { normalizeMeshYawOffsetDeg } from './petInventoryStorage'
 import { parsePetGlbBytes } from './parsePetGlb'
 import type { PetAnimClipMap, PetCategory, PetLibraryEntry } from './types'
@@ -273,6 +276,8 @@ export async function removePetFromLibrary(contentHash: string): Promise<void> {
   } catch {
     /* ignore */
   }
+  // Keep the Barn shop in sync: a deleted pet should be re-addable.
+  removePetBarnAddedByContentHash(hash)
 }
 
 /** Drop corrupt/partial cached bytes so the next peer fetch can replace them. */

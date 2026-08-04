@@ -773,9 +773,25 @@ export class AnimatorBridge {
       return 'skip'
     }
 
-    // Instanced rest-pose → private clone so mixer can bind.
+    // Instanced rest-pose → private clone only when we will actually play clips.
+    // Never force-promote static instances during probe (that orphaned markers and
+    // wiped INSTANCE_COLLIDER_SHAPES → terrain/plaza colliders disappeared).
     let mesh = node.getObjectByName(`__mesh_${entity}`) as THREE.Object3D | null
-    if (node.userData.dclInstanced || !mesh || mesh.userData.dclInstanceMarker) {
+    const needsPrivateClone =
+      !!node.userData.dclInstanced || !mesh || !!mesh.userData.dclInstanceMarker
+    if (needsPrivateClone) {
+      // Peek: only promote when template has clips or ECS Animator is present.
+      if (!hasExplicitAnimator) {
+        const template =
+          this.cache.peekCached(hash) ??
+          this.cache.peekCached(this.sceneConfig.assetUrl(hash))
+        if (!template?.animations.length) {
+          // Static GPU instance / orphan marker — never promote. Promoting wiped
+          // INSTANCE_COLLIDER_SHAPES and left empty __mesh_* → 0 terrain colliders.
+          this.staticGltfNoClips.add(entity)
+          return 'skip'
+        }
+      }
       mesh = this.ensureCloneMesh?.(entity) ?? mesh
     }
     if (!mesh || mesh.userData.dclInstanceMarker || node.userData.dclInstanced) {

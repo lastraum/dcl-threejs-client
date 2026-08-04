@@ -171,6 +171,13 @@ export class GltfColliderExtractor {
       | InstanceColliderShape[]
       | undefined
     const gltfMesh = obj.children.find((c) => c.name.startsWith('__mesh_'))
+    // Orphan marker (promote wiped shapes but left empty Group) — not a real mesh tree.
+    // Treat as not-ready so we don't cook 0 shapes and seal forever with floors≈0.
+    const orphanMarker =
+      !!gltfMesh?.userData.dclInstanceMarker &&
+      !obj.userData.dclInstanced &&
+      !(instanceShapes?.length)
+    if (orphanMarker) return false
     const isInstance = !!obj.userData.dclInstanced || !!instanceShapes?.length
     if (!gltfMesh && !isInstance) return false
 

@@ -18,15 +18,21 @@
  *   `petbarn:v1:<action>:<targetId>:<glbSha256|none>:<timestampMs>`.
  *   update also takes file + thumb (+ petName/creatorName/type for the
  *   refreshed listing); delete takes no files.
- *   The Worker only validates shape and forwards meta.auth — signature
- *   verification runs in the repo's deploy Action (scripts/verify-action.mjs),
- *   so this file stays dependency-free.
+ *   The Worker validates shape + timestamp freshness and forwards meta.auth —
+ *   signature verification runs in the repo's deploy Action
+ *   (scripts/verify-action.mjs), so this file stays dependency-free.
+ *
+ * Vars (optional):
+ *   PETBARN_AUTH_MAX_AGE_MS — max |now − timestampMs| for update/delete
+ *     (default 600000 = 10 minutes). Deploy Action should enforce the same.
  */
 
 const DEFAULT_REPO = 'lastraum/petbarn'
 const DEFAULT_BRANCH = 'main'
 const MAX_GLB = 2 * 1024 * 1024
 const MAX_THUMB = 500 * 1024
+/** Default window for signed update/delete requests (ms). */
+const DEFAULT_AUTH_MAX_AGE_MS = 10 * 60 * 1000
 const VALID_TYPES = new Set(['walking', 'flying'])
 
 const CORS = {
@@ -78,6 +84,24 @@ function thumbExt(file) {
   if (t.includes('png')) return 'png'
   if (t.includes('jpeg') || t.includes('jpg')) return 'jpg'
   return 'webp'
+}
+
+/**
+ * Reject stale or far-future signed timestamps (replay / clock skew).
+ * @returns {string|null} error message, or null if ok
+ */
+function authTimestampFreshnessError(timestampMs, maxAgeMs) {
+  if (!Number.isFinite(timestampMs) || timestampMs <= 0) {
+    return 'timestampMs must be a positive number'
+  }
+  const now = Date.now()
+  const skew = Math.abs(now - timestampMs)
+  if (skew > maxAgeMs) {
+    const ageSec = Math.round(skew / 1000)
+    const maxSec = Math.round(maxAgeMs / 1000)
+    return `timestampMs is outside the allowed window (±${maxSec}s; skew ${ageSec}s) — re-sign and retry`
+  }
+  return null
 }
 
 async function gh(token, path, init = {}) {
@@ -263,6 +287,11 @@ export default {
 
     const repo = String(env.PETBARN_REPO || DEFAULT_REPO).trim()
     const branch = String(env.PETBARN_BRANCH || DEFAULT_BRANCH).trim() || 'main'
+    const authMaxAgeMs = (() => {
+      const raw = Number(env.PETBARN_AUTH_MAX_AGE_MS)
+      if (Number.isFinite(raw) && raw >= 30_000 && raw <= 24 * 60 * 60 * 1000) return raw
+      return DEFAULT_AUTH_MAX_AGE_MS
+    })()
 
     let form
     try {
@@ -284,7 +313,7 @@ export default {
       return json({ error: 'action must be create, update or delete' }, 400)
     }
 
-    // --- auth shape for update/delete (verified by the deploy Action) ---
+    // --- auth shape + freshness for update/delete (crypto verified by deploy Action) ---
     let targetId
     let auth
     if (action !== 'create') {
@@ -299,6 +328,10 @@ export default {
       const timestampMs = Number(form.get('timestampMs'))
       if (!Number.isFinite(timestampMs) || timestampMs <= 0) {
         return json({ error: `${action} requires numeric timestampMs` }, 400)
+      }
+      const freshnessErr = authTimestampFreshnessError(timestampMs, authMaxAgeMs)
+      if (freshnessErr) {
+        return json({ error: freshnessErr }, 400)
       }
       const glbSha256 = String(form.get('glbSha256') || '').trim().toLowerCase()
       if (action === 'update' && !/^[0-9a-f]{64}$/.test(glbSha256)) {

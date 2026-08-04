@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { applyAvatarToonShading } from '../avatar/materials'
 import { syncGltfInstanceRenderState } from '../collision/gltfRenderMeshes'
 import { PET_CATEGORY_CONFIG } from './petCategories'
 import { countMappedMaterials, parsePetGlbBytes } from './parsePetGlb'
@@ -27,6 +28,8 @@ export class PetInstance {
   readonly root = new THREE.Group()
   /** Holds export face offset so AnimationMixer / loco never overwrite it. */
   private readonly facePivot = new THREE.Group()
+  /** Rendered XZ half-extent (m), scale cap applied — sizes the follow slot. */
+  halfExtentXZ = 0.3
   private mixer: THREE.AnimationMixer | null = null
   private actions = new Map<string, THREE.AnimationAction>()
   private clipNames: string[] = []
@@ -128,9 +131,21 @@ export class PetInstance {
       scene.traverse((obj) => {
         const mesh = obj as THREE.Mesh
         if (!mesh.isMesh || !mesh.visible || !mesh.geometry) return
-        mesh.geometry.computeBoundingBox()
-        if (!mesh.geometry.boundingBox) return
-        const b = mesh.geometry.boundingBox.clone()
+        // Skinned meshes: raw geometry bounds lie whenever the rig carries the
+        // real transform (0.01-unit exports) or the positions are quantized
+        // (KHR_mesh_quantization folds dequant into the IBMs). The skeleton-
+        // aware SkinnedMesh.computeBoundingBox() reports true posed bounds.
+        const skinned = mesh as THREE.SkinnedMesh
+        let b: THREE.Box3
+        if (skinned.isSkinnedMesh) {
+          skinned.computeBoundingBox()
+          if (!skinned.boundingBox) return
+          b = skinned.boundingBox.clone()
+        } else {
+          mesh.geometry.computeBoundingBox()
+          if (!mesh.geometry.boundingBox) return
+          b = mesh.geometry.boundingBox.clone()
+        }
         b.applyMatrix4(mesh.matrixWorld)
         box.union(b)
       })
@@ -147,10 +162,19 @@ export class PetInstance {
 
       // Soft scale cap so huge uploads don't fill the plaza.
       const maxDim = Math.max(size.x, size.y, size.z, 0.01)
+      let capScale = 1
       if (maxDim > 2.5) {
-        const s = 2.5 / maxDim
-        scene.scale.multiplyScalar(s)
+        capScale = 2.5 / maxDim
+        scene.scale.multiplyScalar(capScale)
       }
+      // Rendered footprint — PetFollow widens the side slot for big pets so an
+      // elephant's ear doesn't share space with the owner's arm.
+      this.halfExtentXZ = (Math.max(size.x, size.z) / 2) * capScale
+
+      // Pets live beside toon-shaded avatars in a flat-lit world; raw PBR
+      // renders them muddy-dark by comparison. Same banded matte treatment
+      // as avatars (honors the same quality toggle / URL flags).
+      applyAvatarToonShading(scene)
 
       this.facePivot.add(scene)
       this.mixer = new THREE.AnimationMixer(scene)

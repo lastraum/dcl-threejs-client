@@ -209,8 +209,8 @@ type AnimatorStateView = Readonly<{
   shouldReset?: boolean
 }>
 
-/** Highlight blimp / propeller assets in verbose logs (`?animatorverbose`). */
-const ANIMATOR_FOCUS_SRC = /blimp|propeller|prop_/i
+/** Highlight blimp / fire / propeller assets in verbose logs (`?animatorverbose`). */
+const ANIMATOR_FOCUS_SRC = /blimp|propeller|prop_|fireparticle|fire_particle|campfire/i
 
 function isAnimatorFocusSrc(src: string): boolean {
   return ANIMATOR_FOCUS_SRC.test(src)
@@ -559,7 +559,9 @@ export class AnimatorBridge {
       if (state.playing !== false) {
         // One-shots (Spring flower mesh scale tracks, doors): always start at t=0 even when
         // shouldReset is omitted — otherwise re-bind can sit at clamp end (rest scale ~0.003).
-        if (state.shouldReset || !loop) action.reset()
+        // Default autoplay loops also reset on first apply so fire/FX don't sit on a dead
+        // keyframe after a deferred near-camera bind (ABC fireparticles rest scale ~0.001).
+        if (state.shouldReset || !loop || usingDefaultAutoPlay) action.reset()
         action.play()
         playingClips.push(clipName)
       }
@@ -597,13 +599,16 @@ export class AnimatorBridge {
     message: string,
     options: { level?: 'info' | 'warn' | 'success'; throttleMs?: number; entity?: Entity } = {}
   ): void {
-    if (!this.verbose) return
+    // Quiet by default — enable with `?animatorverbose` / localStorage, then Help →
+    // “Mirror → browser console” (or `?consolelogs`) to print.
+    if (!this.verbose && options.level !== 'warn') return
     if (
       isMotionFocusActive() &&
       options.entity !== undefined &&
       this.motionFocusView &&
       !isInBlimpSubtree(options.entity, this.ecs, this.motionFocusView) &&
-      !matchesMotionFocusSrc(message)
+      !matchesMotionFocusSrc(message) &&
+      !isAnimatorFocusSrc(message)
     ) {
       return
     }
@@ -611,8 +616,7 @@ export class AnimatorBridge {
     clientDebugLog.log('animator', message, {
       level: options.level ?? 'info',
       throttleKey: key,
-      throttleMs: options.throttleMs,
-      alsoConsole: true
+      throttleMs: options.throttleMs
     })
   }
 
@@ -636,6 +640,20 @@ export class AnimatorBridge {
     this.dirtyReplay.delete(entity)
     this.pendingBind.delete(entity)
     return false
+  }
+
+  /**
+   * Attach-time bind that also allows DCL default first-clip autoplay (no ECS Animator).
+   * Used for fireparticles / decorative loops that only ship embedded clips.
+   */
+  syncEntityAllowDefaultAutoplay(entity: Entity, view: ProjectionView): boolean {
+    const prev = this.allowDefaultAutoplayBind
+    this.allowDefaultAutoplayBind = true
+    try {
+      return this.syncEntity(entity, view)
+    } finally {
+      this.allowDefaultAutoplayBind = prev
+    }
   }
 
   /**
@@ -757,16 +775,22 @@ export class AnimatorBridge {
 
     // Instanced rest-pose → private clone so mixer can bind.
     let mesh = node.getObjectByName(`__mesh_${entity}`) as THREE.Object3D | null
-    if (node.userData.dclInstanced || !mesh) {
+    if (node.userData.dclInstanced || !mesh || mesh.userData.dclInstanceMarker) {
       mesh = this.ensureCloneMesh?.(entity) ?? mesh
     }
-    if (!mesh) {
-      this.logAnimator(`Animator wait mesh — entity ${entity} · ${src} (no __mesh_${entity} yet)`, {
-        entity,
-        throttleMs: 2000
-      })
+    if (!mesh || mesh.userData.dclInstanceMarker || node.userData.dclInstanced) {
+      this.logAnimator(
+        `Animator wait mesh — entity ${entity} · ${src} (need private clone; inst=${node.userData.dclInstanced ? 1 : 0} marker=${mesh?.userData.dclInstanceMarker ? 1 : 0})`,
+        { entity, throttleMs: 2000, level: 'warn' }
+      )
       return 'waiting'
     }
+    // Mixer writes position/quaternion/scale — frozen leaves (matrixAutoUpdate=false)
+    // never rebuild matrices, so fire/FX rest-pose stays invisible (scale tracks ~0.001).
+    node.matrixAutoUpdate = true
+    mesh.traverse((o) => {
+      o.matrixAutoUpdate = true
+    })
 
     let entry = this.entries.get(entity)
     const rebinding = !entry || entry.gltfHash !== hash || entry.root !== mesh
@@ -803,9 +827,17 @@ export class AnimatorBridge {
         shareableLooping: false
       }
       const nodeByName = loaded.animations.length ? buildNodeNameMap(mesh) : undefined
+      let retargetedTracks = 0
       for (const clip of loaded.animations) {
         const instanceClip = retargetAnimationClip(clip, mesh, nodeByName)
+        retargetedTracks += instanceClip.tracks.length
         entry.actions.set(clip.name, entry.mixer.clipAction(instanceClip, mesh))
+      }
+      if (clipNames.length > 0 && retargetedTracks === 0) {
+        this.logAnimator(
+          `Animator retarget empty — entity ${entity} · ${src} · clips [${clipNames.join(', ')}] but 0 tracks bound (node names mismatch?)`,
+          { entity, level: 'warn' }
+        )
       }
       if (!hasExplicitAnimator && !clipNames.length) {
         this.staticGltfNoClips.add(entity)
@@ -959,6 +991,9 @@ export class AnimatorBridge {
       }
       const node = this.getNodes()?.get(entity)
       if (!node) continue
+      // Frozen/instanced roots may have stale matrixWorld until the render walk —
+      // force one update so near-camera tests match the live scene pose.
+      node.updateMatrixWorld(true)
       _worldPos.setFromMatrixPosition(node.matrixWorld)
       const dx = _worldPos.x - _camPos.x
       const dy = _worldPos.y - _camPos.y

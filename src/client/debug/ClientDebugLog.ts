@@ -14,8 +14,10 @@ export type DebugLogOptions = {
   throttleMs?: number
   throttleKey?: string
   /**
-   * Force this line to the browser console even when global mirror is off.
-   * Global always-on: `?consolelogs` / Help → “Mirror panel → browser console”.
+   * Prefer this line when console mirror is on (and still record to the panel when
+   * recording). Does **not** bypass the opt-in gate — browser console stays quiet
+   * until Help → “Mirror → browser console” (localStorage `dcl.debug.consoleMirror`)
+   * or `?consolelogs`.
    */
   alsoConsole?: boolean
 }
@@ -108,7 +110,7 @@ export class ClientDebugLog {
   private throttleAt = new Map<string, number>()
   /**
    * When false, never print to browser console — Help panel only.
-   * Default: on in local DEV, off in prod (unless checkbox / localStorage).
+   * Default: **off** (unless `?consolelogs` or localStorage `dcl.debug.consoleMirror=1`).
    */
   private consoleMirror = readBoolPref(CONSOLE_MIRROR_KEY, defaultConsoleMirror())
   /**
@@ -208,14 +210,8 @@ export class ClientDebugLog {
     // Silenced categories stay out unless “all categories” is on (or URL ?consolelogs).
     const silenced =
       !this.allClientLogs && !wantConsoleLogsFromUrl() && SILENCED_CATEGORIES.has(category)
-    if (silenced) {
-      // Still allow alsoConsole force-print for critical paths.
-      if (options.alsoConsole || mirror) {
-        /* fall through after throttle for console-only */
-      } else {
-        return
-      }
-    }
+    // Drop completely when silenced and user has no sinks enabled.
+    if (silenced && !this.panelRecord && !mirror) return
 
     const level = options.level ?? 'info'
     const key = options.throttleKey ?? `${category}:${level}`
@@ -227,13 +223,15 @@ export class ClientDebugLog {
       this.throttleAt.set(key, now)
     }
 
-    // Panel stays empty until user opts in (Record client logs).
-    if (this.panelRecord && !silenced) {
+    // Panel: opt-in via Help → “Record client logs” (localStorage `dcl.debug.panelRecord`).
+    if (this.panelRecord && (!silenced || this.allClientLogs || options.alsoConsole)) {
       this.pushEntry(category, level, message)
     }
 
-    // Mirror: global flag / Help checkbox, or per-call alsoConsole.
-    if (mirror || options.alsoConsole) {
+    // Browser console: opt-in via Help → “Mirror → browser console”
+    // (localStorage `dcl.debug.consoleMirror`) or `?consolelogs`.
+    // alsoConsole never bypasses this gate.
+    if (mirror && (!silenced || this.allClientLogs || options.alsoConsole)) {
       this.writingConsole = true
       try {
         const prefix = `[${category}]`

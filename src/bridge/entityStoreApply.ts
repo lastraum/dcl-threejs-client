@@ -86,6 +86,11 @@ function applyEntityLocalTransform(
   skipLocal: boolean
 ): void {
   const obj = store.getOrCreateNode(entity)
+  // AvatarAttach (and similar) owns world pose on the renderer. Do not reparent under
+  // PlayerEntity→chest attach (+0.88m) or overwrite TRS — that parks bone-world coords as
+  // local under the elevated root (plaza fishing rod / line huge offset).
+  if (skipLocal) return
+
   const t = Transform.get(entity)
   const parentId = t.parent as Entity | undefined
   const desiredParent = resolveTransformParent(
@@ -96,9 +101,7 @@ function applyEntityLocalTransform(
     reservedAnchors
   )
   if (obj.parent !== desiredParent) desiredParent.add(obj)
-  if (!skipLocal) {
-    applyDclLocalTransform(obj, t)
-  }
+  applyDclLocalTransform(obj, t)
 }
 
 /**

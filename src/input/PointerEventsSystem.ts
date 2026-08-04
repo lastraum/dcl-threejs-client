@@ -121,6 +121,21 @@ export class PointerEventsSystem {
   private readonly uiPointerButtons = new Set<InputActionValue>()
 
   private lastPrimaryInfoKey = ''
+  /**
+   * PPI diagnostic lines — **off by default** (alsoConsole spam tanked FPS at clubhouse).
+   * Enable with `?ppidiag=1` for fishing aim debugging only.
+   */
+  private lastPpiDiagAt = 0
+  private static readonly PPI_DIAG_MS = 1000
+  private static readonly ppiDiagEnabled =
+    typeof window !== 'undefined' &&
+    (() => {
+      try {
+        return new URLSearchParams(window.location.search).has('ppidiag')
+      } catch {
+        return false
+      }
+    })()
 
   /** Capture phase so pointer clicks run before PlayerInput sets camera-orbit state. */
   private static readonly captureMouse = { capture: true } as const
@@ -290,6 +305,11 @@ export class PointerEventsSystem {
     this.tickNumber = tickNumber
     this.rebuildPointerCacheIfNeeded()
 
+    // Always refresh `_ray` before hit tests / PrimaryPointerInfo. Scene systems (plaza
+    // fishing bobber aim) read worldRayDirection every tick — early UI/no-target returns
+    // in computeCurrentHit must not leave a stale direction.
+    this.refreshPointerRay(camera)
+
     const hit = this.computeCurrentHit()
     this.lastHit = hit
 
@@ -326,6 +346,11 @@ export class PointerEventsSystem {
     }
   }
 
+  /** Update module `_ray` from current screen / pointer-lock aim. */
+  private refreshPointerRay(camera: THREE.Camera): void {
+    this.computePointerRay(camera)
+  }
+
   private computeCurrentHit(): PointerHit | null {
     if (!this.deps) return null
 
@@ -334,6 +359,7 @@ export class PointerEventsSystem {
       if (uiRegionHit) return uiRegionHit
       // Interactive UI under cursor belongs to another root (e.g. PX above primary).
       // Never fall through to world mesh PointerEvents — that is click-through.
+      // `_ray` was already refreshed in syncInput for PrimaryPointerInfo.
       return null
     }
 
@@ -342,15 +368,7 @@ export class PointerEventsSystem {
     this.rebuildPointerCacheIfNeeded()
     const { collision, camera, getPlayerPosition } = this.deps
 
-    const pointerLocked = document.pointerLockElement === this.canvas
-    if (!pointerLocked || this.pointerDirty) {
-      const ray = this.computePointerRay(camera)
-      _ray.copy(ray)
-    } else {
-      this.raycaster.setFromCamera(_ndc.set(0, 0), camera)
-      _ray.copy(this.raycaster.ray)
-    }
-
+    // `_ray` set by refreshPointerRay in syncInput (pointer-lock aim included).
     camera.getWorldPosition(_camPos)
     const playerPos = getPlayerPosition()
     if (playerPos) _playerPos.copy(playerPos)
@@ -411,9 +429,14 @@ export class PointerEventsSystem {
         /* scene has no PointerEvents or right-click near a remote player — expected noise */
       } else {
         this.rebuildPointerCacheIfNeeded()
+        const last = this.lastHit
+        const lastHint = last
+          ? ` lastHit=e${last.entity as number} cam=${last.cameraDistance.toFixed(1)}m`
+          : ' lastHit=none'
         clientDebugLog.log(
           'pointer',
-          `${mouseInteractLabel(button, e.button)} — no in-range target (entities=${this.pointerEntitySet.size} meshes=${this.pointerTargets.length})`,
+          `${mouseInteractLabel(button, e.button)} — no in-range target ` +
+            `(entities=${this.pointerEntitySet.size} meshes=${this.pointerTargets.length}${lastHint})`,
           { level: 'warn', alsoConsole: true }
         )
       }
@@ -623,7 +646,10 @@ export class PointerEventsSystem {
     if (!this.deps) return
 
     let activeHit = preferredHit ?? this.pickAtPointer()
-    if (!activeHit) activeHit = this.pickProximityTarget(button)
+    // Proximity is E/F-style interact only — never for left-click (phantom theater/NPC hits).
+    if (!activeHit && this.allowsProximityFallback(button)) {
+      activeHit = this.pickProximityTarget(button)
+    }
     if (!activeHit) return
 
     // Scene UI pick already resolved the onMouseDown leaf — do not re-walk ancestors
@@ -649,10 +675,34 @@ export class PointerEventsSystem {
     this.writeResult(this.deps.ecs, targetEntity, activeHit, PointerEventType.PET_DOWN, button)
   }
 
+  /**
+   * Spatial proximity grab (nearest PE in range, not under cursor) — E/F only.
+   * Left-click must not grab plaza theater helpers when the ray misses.
+   */
+  private allowsProximityFallback(button: InputActionValue): boolean {
+    return button !== InputAction.IA_POINTER
+  }
+
+  /**
+   * Re-use last hover hit for left-click when the fresh ray misses (thin water PE / pond
+   * Cast Line). Only if that same entity still has PET_DOWN in range — not a free proximity grab.
+   */
+  private lastHoverPointerDownIfValid(button: InputActionValue): PointerHit | null {
+    if (button !== InputAction.IA_POINTER) return null
+    const last = this.lastHit
+    if (!last || last.isSceneUi) return null
+    if (!this.canQueuePointerDown(button, last)) return null
+    return last
+  }
+
   /** Crosshair hit — fall back to proximity / last frame when the center ray misses. */
   private resolveInteractHit(button: InputActionValue): PointerHit | null {
     const fresh = this.pickAtPointer()
     if (fresh && this.canQueuePointerDown(button, fresh)) return fresh
+    // Left-click: sticky hover PE (fishing Cast Line) before giving up — not proximity.
+    if (!this.allowsProximityFallback(button)) {
+      return this.lastHoverPointerDownIfValid(button) ?? fresh
+    }
     const proximity = this.pickProximityTarget(button)
     if (proximity && this.canQueuePointerDown(button, proximity)) {
       clientDebugLog.log('pointer', `proximity target entity=${proximity.entity} player=${proximity.playerDistance.toFixed(1)}m`, {
@@ -673,6 +723,19 @@ export class PointerEventsSystem {
   private resolveWorldInteractHit(button: InputActionValue): PointerHit | null {
     const fresh = this.pickWorldHitAtPointer()
     if (fresh && this.canQueuePointerDown(button, fresh)) return fresh
+    // Left-click: sticky hover PE (fishing Cast Line on thin water) before giving up.
+    if (!this.allowsProximityFallback(button)) {
+      const sticky = this.lastHoverPointerDownIfValid(button)
+      if (sticky) {
+        clientDebugLog.log(
+          'pointer',
+          `click sticky-hover → e${sticky.entity as number} cam=${sticky.cameraDistance.toFixed(1)}m`,
+          { alsoConsole: true, throttleMs: 400, throttleKey: 'click-sticky-hover' }
+        )
+        return sticky
+      }
+      return fresh
+    }
     const proximity = this.pickProximityTarget(button)
     if (proximity && this.canQueuePointerDown(button, proximity)) {
       clientDebugLog.log('pointer', `proximity target entity=${proximity.entity} player=${proximity.playerDistance.toFixed(1)}m`, {
@@ -1342,21 +1405,141 @@ export class PointerEventsSystem {
     if (!this.deps) return
     const { ecs, view } = this.deps
 
-    const worldDir = _ray.direction.clone()
-    const dclDir = threeToDclVec(worldDir)
+    const info = this.buildPrimaryPointerInfo()
 
-    const info = {
-      pointerType: 1,
-      screenCoordinates: { x: this.screenX, y: this.screenY },
-      screenDelta: { x: this.screenDx, y: this.screenDy },
-      worldRayDirection: { x: dclDir.x, y: dclDir.y, z: dclDir.z }
-    }
-
-    const key = `${info.screenCoordinates.x}|${info.screenCoordinates.y}|${info.screenDelta.x}|${info.screenDelta.y}|${hit?.entity ?? ''}`
+    // Include quantized world ray — under pointer-lock, screen coords stay fixed while the
+    // camera (and thus aim ray) turns. Plaza fishing bobber systems read worldRayDirection.
+    const d = info.worldRayDirection
+    const key =
+      `${info.screenCoordinates.x.toFixed(1)}|${info.screenCoordinates.y.toFixed(1)}|` +
+      `${info.screenDelta.x}|${info.screenDelta.y}|${hit?.entity ?? ''}|` +
+      `${d.x.toFixed(3)}|${d.y.toFixed(3)}|${d.z.toFixed(3)}`
     if (key === this.lastPrimaryInfoKey) return
     this.lastPrimaryInfoKey = key
 
     ecs.PrimaryPointerInfo.createOrReplace(view.RootEntity, info)
+    // Per-frame deltas — Explorer reports movement since last sample, not cumulative.
+    this.screenDx = 0
+    this.screenDy = 0
+  }
+
+  /**
+   * Live PPI fields from current `_ray` + virtual canvas screen coords.
+   * Always builds from the ray — do not depend on projection read-back for play-frame embed.
+   */
+  private buildPrimaryPointerInfo(): {
+    pointerType: number
+    screenCoordinates: { x: number; y: number }
+    screenDelta: { x: number; y: number }
+    worldRayDirection: { x: number; y: number; z: number }
+  } {
+    const worldDir = _ray.direction.clone()
+    const dclDir = threeToDclVec(worldDir)
+    // Virtual canvas space (default 1920×1080) — matches UiCanvasInformation so scene
+    // systems that rebuild rays from screenCoordinates + canvas size stay consistent.
+    const screen = this.screenCoordinatesInVirtualCanvas()
+    return {
+      pointerType: 1,
+      screenCoordinates: { x: screen.x, y: screen.y },
+      screenDelta: { x: this.screenDx, y: this.screenDy },
+      worldRayDirection: { x: dclDir.x, y: dclDir.y, z: dclDir.z }
+    }
+  }
+
+  /**
+   * Map document client coords → virtual UI canvas pixels (stretch-fill canvas rect).
+   * Same mapping as scene UI layout (virtual 1920×1080 → WebGL canvas box).
+   */
+  private screenCoordinatesInVirtualCanvas(): { x: number; y: number } {
+    const rect = this.canvas.getBoundingClientRect()
+    const w = Math.max(1, rect.width)
+    const h = Math.max(1, rect.height)
+    // Prefer live UiCanvasInformation when present; fall back to Explorer default.
+    let vw = 1920
+    let vh = 1080
+    const canvasInfo = this.deps?.ecs.UiCanvasInformation?.getOrNull?.(
+      this.deps.view.RootEntity
+    ) as { width?: number; height?: number } | null | undefined
+    if (canvasInfo?.width && canvasInfo.width > 0) vw = canvasInfo.width
+    if (canvasInfo?.height && canvasInfo.height > 0) vh = canvasInfo.height
+
+    const nx = (this.screenX - rect.left) / w
+    const ny = (this.screenY - rect.top) / h
+    return {
+      x: Math.min(vw, Math.max(0, nx * vw)),
+      y: Math.min(vh, Math.max(0, ny * vh))
+    }
+  }
+
+  /**
+   * Snapshot for play-frame-tick embed — always current ray, never null when bound.
+   * Previously read projection after dirty-key skip and could drop worldRayDirection,
+   * which left the worker with stale/missing PPI (plaza fishing bobber aim).
+   */
+  getPrimaryPointerSnapshot(): {
+    pointerType: number
+    screenCoordinates: { x: number; y: number }
+    screenDelta: { x: number; y: number }
+    worldRayDirection: { x: number; y: number; z: number }
+  } | null {
+    if (!this.deps) return null
+    // Ensure _ray + projection LWW are fresh for this rAF even when no CRDT outbound ran.
+    this.refreshPointerRay(this.deps.camera)
+    this.syncPrimaryPointerInfo(this.deps.camera, this.lastHit)
+    // Always build from live ray — projection read-back is optional bookkeeping only.
+    const info = this.buildPrimaryPointerInfo()
+    this.maybeLogPrimaryPointer(info)
+    return info
+  }
+
+  /**
+   * Throttled diagnostic for fishing bobber aim (~2 Hz).
+   * Includes DCL camera origin + estimated water-plane (y=1.2) aim point so we can
+   * verify scene setBobberPosition should land in the pond.
+   */
+  private maybeLogPrimaryPointer(info: {
+    screenCoordinates: { x: number; y: number }
+    worldRayDirection: { x: number; y: number; z: number }
+  }): void {
+    if (!PointerEventsSystem.ppiDiagEnabled) return
+    const now = performance.now()
+    if (now - this.lastPpiDiagAt < PointerEventsSystem.PPI_DIAG_MS) return
+    this.lastPpiDiagAt = now
+    const d = info.worldRayDirection
+    const s = info.screenCoordinates
+    const locked = document.pointerLockElement === this.canvas
+    const hit = this.lastHit
+    const hitLabel = hit
+      ? `hit=e${hit.entity as number} cam=${hit.cameraDistance.toFixed(1)}m`
+      : 'hit=none'
+
+    // Ray origin = live Three camera → DCL (same path as reserved CameraEntity pose).
+    let originLabel = 'cam=?'
+    let aimLabel = 'aim=?'
+    if (this.deps) {
+      this.deps.camera.getWorldPosition(_camPos)
+      const camDcl = threeToDclVec(_camPos)
+      originLabel = `cam=(${camDcl.x.toFixed(1)},${camDcl.y.toFixed(1)},${camDcl.z.toFixed(1)})`
+      // Plaza pond water ≈ y=1.2 — scene bobber systems intersect this plane.
+      const waterY = 1.2
+      if (Math.abs(d.y) > 1e-4) {
+        const t = (waterY - camDcl.y) / d.y
+        if (t > 0 && t < 80) {
+          aimLabel = `aim=(${(camDcl.x + d.x * t).toFixed(1)},${waterY.toFixed(1)},${(camDcl.z + d.z * t).toFixed(1)}) t=${t.toFixed(1)}`
+        } else {
+          aimLabel = `aim=miss(t=${t.toFixed(1)})`
+        }
+      } else {
+        aimLabel = 'aim=parallel'
+      }
+    }
+
+    clientDebugLog.log(
+      'pointer',
+      `PPI screen=(${s.x.toFixed(0)},${s.y.toFixed(0)}) ray=(${d.x.toFixed(3)},${d.y.toFixed(3)},${d.z.toFixed(3)}) ` +
+        `${originLabel} ${aimLabel} lock=${locked ? 1 : 0} ${hitLabel}`,
+      { alsoConsole: true, throttleMs: PointerEventsSystem.PPI_DIAG_MS, throttleKey: 'ppi-diag' }
+    )
   }
 
   /** Crosshair over UiInput / UiDropdown — never route E/F/etc. as ECS pointer keys. */

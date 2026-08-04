@@ -8,6 +8,13 @@ const BM_X = 1
 const BM_Y = 2
 const YAW_EPS = 1e-5
 
+const _worldPos = new THREE.Vector3()
+const _worldUp = new THREE.Vector3(0, 1, 0)
+const _lookMat = new THREE.Matrix4()
+const _worldQuat = new THREE.Quaternion()
+const _parentWorldQuat = new THREE.Quaternion()
+const _prevLocalQuat = new THREE.Quaternion()
+
 /** Y-axis / full billboarding for TextShape and signs. */
 export class BillboardBridge {
   private readonly lastYaw = new Map<Entity, number>()
@@ -61,27 +68,47 @@ export class BillboardBridge {
       const mode = Billboard.get(entity).billboardMode ?? 7
       if (mode === 0) continue
 
-      let nextYaw = obj.rotation.y
+      // World-space facing — press_e / bite prompts are often parented under the bobber.
+      // Using local obj.position vs camera world pos made planes edge-on / invisible.
+      obj.updateWorldMatrix(true, false)
+      obj.getWorldPosition(_worldPos)
+
+      let nextYaw: number
       if (mode === BM_Y || mode === (BM_X | BM_Y)) {
-        const dx = camPos.x - obj.position.x
-        const dz = camPos.z - obj.position.z
+        const dx = camPos.x - _worldPos.x
+        const dz = camPos.z - _worldPos.z
         nextYaw = Math.atan2(dx, dz)
         const prev = this.lastYaw.get(entity)
         if (prev !== undefined && Math.abs(nextYaw - prev) <= YAW_EPS) continue
-        obj.rotation.y = nextYaw
+        _worldQuat.setFromAxisAngle(_worldUp, nextYaw)
+        this.applyWorldQuaternionAsLocal(obj, _worldQuat)
       } else {
-        const prevQuat = obj.quaternion.clone()
-        obj.lookAt(camPos)
-        const nextQuat = obj.quaternion.clone()
-        obj.quaternion.copy(prevQuat)
-        if (prevQuat.angleTo(nextQuat) <= YAW_EPS) continue
-        obj.quaternion.copy(nextQuat)
+        _prevLocalQuat.copy(obj.quaternion)
+        _lookMat.lookAt(_worldPos, camPos, _worldUp)
+        _worldQuat.setFromRotationMatrix(_lookMat)
+        this.applyWorldQuaternionAsLocal(obj, _worldQuat)
+        if (_prevLocalQuat.angleTo(obj.quaternion) <= YAW_EPS) {
+          obj.quaternion.copy(_prevLocalQuat)
+          continue
+        }
         nextYaw = obj.rotation.y
       }
 
+      if (!obj.matrixAutoUpdate) obj.updateMatrix()
       obj.updateMatrixWorld(true)
       this.lastYaw.set(entity, nextYaw)
       this.motionEntities.add(entity)
+    }
+  }
+
+  /** Convert a world-space facing quaternion into parent-local rotation. */
+  private applyWorldQuaternionAsLocal(obj: THREE.Object3D, worldQuat: THREE.Quaternion): void {
+    const parent = obj.parent
+    if (parent) {
+      parent.getWorldQuaternion(_parentWorldQuat)
+      obj.quaternion.copy(_parentWorldQuat).invert().multiply(worldQuat)
+    } else {
+      obj.quaternion.copy(worldQuat)
     }
   }
 }

@@ -147,5 +147,15 @@ export const TO_ODK: Record<string, string> = {
 
 export function resolveOdkBoneName(mixamoTrackBone: string): string | undefined {
   const normalized = normalizeMixamoBoneName(mixamoTrackBone)
-  return TO_ODK[normalized] ?? TO_ODK[mixamoTrackBone]
+  const direct = TO_ODK[normalized] ?? TO_ODK[mixamoTrackBone]
+  if (direct) return direct
+
+  // DCL scene emotes (fishing cast/idle, sit, …) use Avatar_* deform bones.
+  let core = normalized
+  if (core.startsWith('CTRL_FK_Avatar_')) core = core.slice('CTRL_FK_Avatar_'.length)
+  else if (core.startsWith('CTRL_Avatar_')) core = core.slice('CTRL_Avatar_'.length)
+  else if (core.startsWith('Avatar_')) core = core.slice('Avatar_'.length)
+  else return undefined
+
+  return TO_ODK[core]
 }

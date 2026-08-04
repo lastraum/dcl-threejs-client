@@ -387,6 +387,17 @@ export type MainToWorker =
         position: { x: number; y: number; z: number }
         rotation: { x: number; y: number; z: number; w: number }
       }
+      /**
+       * Host PrimaryPointerInfo for this frame (plaza fishing bobber aim).
+       * Applied before engine.update so systems see a live ray even when CRDT
+       * dirty-only outbound is delayed by a long scene tick.
+       */
+      primaryPointer?: {
+        pointerType: number
+        screenCoordinates: { x: number; y: number }
+        screenDelta: { x: number; y: number }
+        worldRayDirection: { x: number; y: number; z: number }
+      }
     }
   /** Level keyboard state — authoritative worker input path (phase 2). */
   | { type: 'scene-input-snapshot'; body: import('../player/sceneInputSnapshot').SceneInputSnapshotBody }

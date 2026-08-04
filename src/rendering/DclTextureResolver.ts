@@ -14,11 +14,16 @@ export const DCL_SHARED_TEXTURES: Record<string, string> = {
   'file1.png': 'bafkreiao3j5vpvbwnod5nak5e736ldkngmmymeypxih45febzoes3k6rhi',
   'PiratesPack_TX.png': 'bafkreibtlcu5xu4u7qloyhi6s36e722qu7y7ths2xaspwqgqynpnl5aukq',
   'PiratesPack_TX.png.png': 'bafkreibtlcu5xu4u7qloyhi6s36e722qu7y7ths2xaspwqgqynpnl5aukq',
-  // Builder Sci-Fi pack — lives on builder S3, not the peer content CDN
-  'SciFiPack_TX.png':
-    'https://builder-assetpacks-prd-bf9fae6.s3.amazonaws.com/contents/QmbQt5kjT5u8Y6TzGXiHwyqMn1FxF7UMEXoxt8opTsciby',
-  'SciFiPack_TX.png.png':
-    'https://builder-assetpacks-prd-bf9fae6.s3.amazonaws.com/contents/QmbQt5kjT5u8Y6TzGXiHwyqMn1FxF7UMEXoxt8opTsciby'
+  // Builder Sci-Fi pack — catalyst hashes from @dcl/asset-packs/catalog.json
+  // (GLB embeds bare filenames; without these, peer /contents/SciFiPack*.png 404s).
+  'SciFiPack_TX.png': 'bafkreiav3zyb6vody64gtpgax5uezxw5pqusqcbnisvp6t5rmlswickogy',
+  'SciFiPack_TX.png.png': 'bafkreiav3zyb6vody64gtpgax5uezxw5pqusqcbnisvp6t5rmlswickogy',
+  'SciFiPackTransp_TX.png': 'bafkreiesjrl7mp4ae3s6y5xwnvpmhpjxr44sjbri2q6q73rwmem36hz3fy',
+  'SciFiPackTransp_TX.png.png': 'bafkreiesjrl7mp4ae3s6y5xwnvpmhpjxr44sjbri2q6q73rwmem36hz3fy',
+  'SciFiPack_UI01_TX.png': 'bafkreigm6aspqcl7nchxwojqhtfvpeuyp22xdn56r453bw4utggfzm3ypa',
+  'SciFiPack_UI01_TX.png.png': 'bafkreigm6aspqcl7nchxwojqhtfvpeuyp22xdn56r453bw4utggfzm3ypa',
+  'SciFiPack_UI02_Transp_TX.png': 'bafkreiejgnh722gxewn6zjfj67t5m5klqy3a7kz26vbf7el3376auxrw4i',
+  'SciFiPack_UI02_Transp_TX.png.png': 'bafkreiejgnh722gxewn6zjfj67t5m5klqy3a7kz26vbf7el3376auxrw4i'
 }
 
 export function sharedTextureHashes(): string[] {

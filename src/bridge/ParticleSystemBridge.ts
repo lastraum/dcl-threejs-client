@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
 import type { ResolvedScene } from '../dcl/content/types'
 import type { AssetCache } from '../rendering/AssetCache'
+import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { resolveSceneTextureUrl } from './material/resolveTexture'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionView } from './ProjectionView'
@@ -51,6 +52,9 @@ type ParticleRuntime = {
 /** ECS ParticleSystem → GPU-instanced billboard sprites (Explorer parity). */
 export class ParticleSystemBridge {
   private readonly runtimes = new Map<Entity, ParticleRuntime>()
+  private lastDiagAt = 0
+  private loggedCreates = 0
+  private syncInFlight = false
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -60,6 +64,16 @@ export class ParticleSystemBridge {
   ) {}
 
   async sync(view: ProjectionView): Promise<void> {
+    if (this.syncInFlight) return
+    this.syncInFlight = true
+    try {
+      await this.syncInner(view)
+    } finally {
+      this.syncInFlight = false
+    }
+  }
+
+  private async syncInner(view: ProjectionView): Promise<void> {
     const { ParticleSystem, Transform } = this.ecs
     const nodes = this.getNodes()
     if (!nodes) return
@@ -71,12 +85,17 @@ export class ParticleSystemBridge {
     }
 
     const active = new Set<Entity>()
-    // Cap new particle runtime creates per async tick (texture load + GPU mesh).
-    let createsLeft = 2
+    // Create all pending particle systems this sync (was 2/tick — clubhouse fire could wait forever
+    // behind async bridge cadence). Texture load is still async per create.
+    let pendingCreates = 0
+    let missingNode = 0
     for (const [entity] of view.getEntitiesWith(ParticleSystem)) {
       if (!Transform.has(entity)) continue
       const parent = nodes.get(entity)
-      if (!parent) continue
+      if (!parent) {
+        missingNode++
+        continue
+      }
 
       active.add(entity)
       const spec = ParticleSystem.get(entity) as ParticleSpec
@@ -84,15 +103,27 @@ export class ParticleSystemBridge {
       let runtime = this.runtimes.get(entity)
 
       if (!runtime || runtime.specSig !== sig) {
-        if (createsLeft <= 0) continue
         if (runtime) this.disposeRuntime(entity, parent)
         const created = await this.createRuntime(spec, sig)
-        if (!created) continue
-        createsLeft--
+        if (!created) {
+          pendingCreates++
+          continue
+        }
         created.gpu.mesh.name = particleKey(entity)
         parent.add(created.gpu.mesh)
         this.runtimes.set(entity, created)
         runtime = created
+        this.loggedCreates++
+        if (this.loggedCreates <= 12) {
+          const tex = spec.texture?.src?.trim() || '(none)'
+          clientDebugLog.log(
+            'scene',
+            `particles create e${entity as number} tex=${tex} rate=${spec.rate ?? 10} ` +
+              `max=${spec.maxParticles ?? 1000} state=${spec.playbackState ?? 0} ` +
+              `active=${spec.active !== false} loop=${spec.loop !== false}`,
+            { alsoConsole: true }
+          )
+        }
       } else {
         runtime.spec = spec
         updateParticleGpuUniforms(runtime.gpu, spec)
@@ -118,6 +149,22 @@ export class ParticleSystemBridge {
       if (parent) this.disposeRuntime(entity, parent)
       else disposeParticleGpuMesh(runtime.gpu)
       this.runtimes.delete(entity)
+    }
+
+    const now = performance.now()
+    if (now - this.lastDiagAt > 3000) {
+      this.lastDiagAt = now
+      const ecsCount = [...view.getEntitiesWith(ParticleSystem)].length
+      // Always log once we have *any* signal — including ecs=0 so we know fire is not ParticleSystem.
+      let live = 0
+      for (const r of this.runtimes.values()) live += r.live.length
+      clientDebugLog.log(
+        'scene',
+        `particles sync ecs=${ecsCount} runtimes=${this.runtimes.size} live=${live}` +
+          (missingNode ? ` missingNode=${missingNode}` : '') +
+          (pendingCreates ? ` createFail=${pendingCreates}` : ''),
+        { alsoConsole: true, throttleMs: 3000, throttleKey: 'particles-sync-diag' }
+      )
     }
   }
 
@@ -215,9 +262,21 @@ export class ParticleSystemBridge {
       try {
         const tex = await this.cache.loadTexture(textureUrl)
         applyParticleTexture(gpu, tex, spec)
-      } catch {
+      } catch (err) {
+        clientDebugLog.log(
+          'scene',
+          `particles texture load failed src=${spec.texture?.src} url=${textureUrl} ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+          { level: 'warn', alsoConsole: true }
+        )
         applyParticleTexture(gpu, null, spec)
       }
+    } else if (spec.texture?.src) {
+      clientDebugLog.log(
+        'scene',
+        `particles texture URL unresolved — src=${spec.texture.src}`,
+        { level: 'warn', alsoConsole: true }
+      )
     }
 
     return {

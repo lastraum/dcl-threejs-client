@@ -78,6 +78,8 @@ export class AvatarAnimations {
   private profileActive = false
   private profileEmoteLoop = false
   private activeProfileEmoteKey: string | null = null
+  /** Fired when a one-shot profile emote finishes (cast → Fishing_Idle queue). */
+  private onOneShotFinished: (() => void) | null = null
   private doubleJumpPlaying = false
   private readonly twirl = new DoubleJumpTwirl()
   private walkBlend = 0
@@ -94,6 +96,10 @@ export class AvatarAnimations {
       this.locomotionVfx = new AvatarLocomotionVfx()
       this.locomotionVfx.bind(this.avatarRoot, scene)
     }
+  }
+
+  setOnOneShotFinished(handler: (() => void) | null): void {
+    this.onOneShotFinished = handler
   }
 
   async bind(
@@ -438,9 +444,13 @@ export class AvatarAnimations {
     return true
   }
 
-  stopProfileEmote(): void {
+  stopProfileEmote(opts?: { silent?: boolean }): void {
+    const wasOneShot = this.profileActive && !this.profileEmoteLoop
     this.teardownProfileEmotePlayback()
     this.finishProfileEmoteStop()
+    if (wasOneShot && !opts?.silent) {
+      this.onOneShotFinished?.()
+    }
   }
 
   isProfileEmoteActive(): boolean {
@@ -632,7 +642,8 @@ export class AvatarAnimations {
       this.mixer.removeEventListener('finished', this.onMixerFinished)
       this.mixer.stopAllAction()
     }
-    this.stopProfileEmote()
+    this.onOneShotFinished = null
+    this.stopProfileEmote({ silent: true })
     this.locomotionVfx?.dispose()
     this.locomotionVfx = null
     this.mixer = null
@@ -669,6 +680,7 @@ export class AvatarAnimations {
       if (event.action === this.profileAction && this.propAction.isRunning()) return
       if (event.action === this.propAction && this.profileAction.isRunning()) return
     }
+    // SDK one-shots end and release — queue may re-fire Fishing_Idle via onOneShotFinished.
     this.stopProfileEmote()
   }
 

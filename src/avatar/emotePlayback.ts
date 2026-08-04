@@ -154,6 +154,30 @@ export function emoteNeedsPropScene(gltf: CachedGltf, propTrackTargets: Set<stri
   return found
 }
 
+/** Cloned prop armature + clip for VRM/ODK (and any non-DCL body path). */
+export type EmotePropAttachment = {
+  root: THREE.Object3D
+  clip: THREE.AnimationClip | null
+}
+
+/**
+ * Build the watering-can / particle / sit-prop scene from an emote GLB.
+ * Body tracks stay on the host skeleton (retarget); props keep their native Armature_Prop.
+ * Returns null when the GLB is body-only (e.g. fishing idle).
+ */
+export function buildEmotePropAttachment(gltf: CachedGltf): EmotePropAttachment | null {
+  // Empty root: we only need prop tracks / meshes — body is retargeted separately.
+  const probe = new THREE.Object3D()
+  const { propClip, propTrackTargets } = splitEmoteClips(gltf, probe)
+  if (!propClip && !emoteNeedsPropScene(gltf, propTrackTargets)) return null
+
+  const root = cloneEmotePropRoots(gltf.root)
+  bindEmoteParticleMeshes(root)
+  prepareEmotePropRoot(root, propTrackTargets)
+  stabilizeSkinnedMeshes(root)
+  return { root, clip: propClip }
+}
+
 export function splitEmoteClips(gltf: CachedGltf, avatarRoot: THREE.Object3D): SplitEmoteClips {
   const avatarBones = buildBoneNameSet(avatarRoot)
   const emoteBones = buildBoneNameSet(gltf.root)

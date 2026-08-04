@@ -486,6 +486,10 @@ export class MaterialApplier {
       } else {
         const prev = m.alphaMap
         alphaTex = await this.loadUnionTexture(alphaUnion, { flipY })
+        // Dedicated alpha masks (plaza press_e_alpha, soft cutouts) may store the mask in
+        // the PNG alpha channel with black RGB — green would be 0 → fully invisible plane.
+        // Bake max(R,G,B,A) into green so both grayscale RGB and alpha-only masks work.
+        if (alphaTex) bakeAlphaMapGreenChannel(alphaTex)
         m.alphaMap = alphaTex
         if (!alphaTex) texturesOk = false
         else {
@@ -832,6 +836,56 @@ function textureUnionSameSrc(a?: TextureUnion, b?: TextureUnion): boolean {
   const aSrc = getTextureDef(coerceTextureUnion(a))?.src?.trim()
   const bSrc = getTextureDef(coerceTextureUnion(b))?.src?.trim()
   return !!aSrc && aSrc === bSrc
+}
+
+/**
+ * Three.js `alphaMap` reads the **green** channel only. DCL dedicated alphaTextures are often
+ * (1) grayscale RGB masks or (2) white/black with the silhouette only in PNG alpha.
+ * Without baking, case (2) is fully transparent (press_e over fishing bobber).
+ */
+function bakeAlphaMapGreenChannel(tex: THREE.Texture): void {
+  if (tex.userData.dclAlphaMapGreenBaked) return
+  const image = tex.image as CanvasImageSource | undefined
+  if (!image) return
+  const w =
+    'naturalWidth' in image && (image as HTMLImageElement).naturalWidth
+      ? (image as HTMLImageElement).naturalWidth
+      : (image as { width?: number }).width ?? 0
+  const h =
+    'naturalHeight' in image && (image as HTMLImageElement).naturalHeight
+      ? (image as HTMLImageElement).naturalHeight
+      : (image as { height?: number }).height ?? 0
+  if (!w || !h) return
+
+  try {
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
+    if (!ctx) return
+    ctx.drawImage(image, 0, 0, w, h)
+    const data = ctx.getImageData(0, 0, w, h)
+    const px = data.data
+    for (let i = 0; i < px.length; i += 4) {
+      const r = px[i] ?? 0
+      const g = px[i + 1] ?? 0
+      const b = px[i + 2] ?? 0
+      const a = px[i + 3] ?? 0
+      const green = Math.max(r, g, b, a)
+      px[i] = green
+      px[i + 1] = green
+      px[i + 2] = green
+      px[i + 3] = 255
+    }
+    ctx.putImageData(data, 0, 0)
+    tex.image = canvas
+    // Alpha masks must not go through sRGB transfer (would darken mid-grays vs alphaTest).
+    tex.colorSpace = THREE.NoColorSpace
+    tex.userData.dclAlphaMapGreenBaked = true
+    tex.needsUpdate = true
+  } catch {
+    // Cross-origin / tainted canvas — leave texture as-is.
+  }
 }
 
 function applyTransparency(

@@ -997,6 +997,14 @@ export class World {
       )
       this.player.setModeFreezeEscapeHandler(() => {
         this.sceneScript.requestForceLocomotionClear('wasd-mode-freeze-escape')
+        // Sit + stuck theater: also drop MainCamera→VC so freecam returns.
+        if (this.player?.isSceneVirtualCameraBoundOrDriving()) {
+          this.sceneScript.requestForceVirtualCameraClear('wasd-mode-freeze-escape')
+        }
+      })
+      this.player.setVirtualCameraEscapeHandler(() => {
+        this.sceneScript.requestForceVirtualCameraClear('escape-key')
+        this.sceneScript.requestForceLocomotionClear('escape-vc')
       })
       this.sceneScript.setTriggerEmoteHandler((request) => {
         const emote = request.predefinedEmote?.trim()

@@ -31,7 +31,13 @@ import type { AudioStreamBridge } from '../media/AudioStreamBridge'
 import type { VideoPlayerBridge } from '../media/VideoPlayerBridge'
 import type { EntityStore } from './EntityStore'
 import { applySceneDiff, type ApplySceneDiffOptions } from './entityStoreApply'
-import { applyDclLocalTransform, resolveTransformParent, type DclTransformValues } from './dclTransform'
+import {
+  applyDclLocalTransform,
+  resolveTransformParent,
+  threeToDclVec,
+  type DclTransformValues
+} from './dclTransform'
+import { SDK_RESERVED } from './reservedEntities'
 import { disposeOwnedObject3D } from '../rendering/sharedAsset'
 import { enableSceneGltfVertexColors } from '../rendering/LandscapeAssetSanitizer'
 import { applySceneGltfEmissives } from '../rendering/sceneGltfEmissives'
@@ -45,6 +51,7 @@ import {
 } from './GltfNodeModifiersSync'
 import type { PBGltfNodeModifiers } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/gltf_node_modifiers.gen'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
+
 import { gltfLoadingStateLabel, isGltfLoadingStateVerbose } from './gltfLoadingStateConfig'
 
 function materialReferencesVideoPlayer(pb: PbMaterial, videoPlayerEntity: Entity): boolean {
@@ -116,6 +123,55 @@ function hideGltfRenderMeshes(root: THREE.Object3D): void {
     }
   })
 }
+
+/**
+ * Plaza fishing props move every frame (bobber float, line, cast arc, rod attach).
+ * Must never sit on GPU InstancedMesh — matrices lag / zero-scale hide.
+ * Also match pool/ paths that aren't disco/star decoration.
+ */
+function isFishingMotionGltfSrc(src: string): boolean {
+  const s = src.trim().toLowerCase()
+  if (!s) return false
+  // assets/models/pool/bobber.glb, fishing_line.glb, *_rod.glb, lure, etc.
+  if (s.includes('bobber') || s.includes('fishing_line') || s.includes('fishing-line')) return true
+  if (s.includes('lure') || s.includes('hook') || s.includes('_rod') || s.includes('/rod')) return true
+  if (s.includes('float') || s.includes('cork') || s.includes('bait_') || s.includes('/bait')) return true
+  if (/pool\/.*(rod|line|bobber|float|lure|hook)/i.test(s)) return true
+  // Broader: any pool GLB that is not known decorative VFX (still force-clone + log).
+  if (s.includes('models/pool/') || s.includes('models\\pool\\') || s.includes('/pool/')) {
+    if (
+      s.includes('disco') ||
+      s.includes('star') ||
+      s.includes('splat') ||
+      s.includes('drop') ||
+      s.includes('cloud') ||
+      s.includes('crab') ||
+      s.includes('portal') ||
+      s.includes('theatre') ||
+      s.includes('door') ||
+      s.includes('grid_dance') ||
+      s.includes('tobor')
+    ) {
+      return false
+    }
+    // Remaining pool props (bobber/line/rod under unknown names) — treat as motion.
+    return true
+  }
+  return false
+}
+
+const _fishLogWorld = new THREE.Vector3()
+
+/** Fishing mesh attach/xform logs — off unless ?ppidiag (attach still priority). */
+const FISH_GLTF_DIAG =
+  typeof window !== 'undefined' &&
+  (() => {
+    try {
+      return new URLSearchParams(window.location.search).has('ppidiag')
+    } catch {
+      return false
+    }
+  })()
 
 function meshKey(entity: Entity): string {
   return `__mesh_${entity}`
@@ -282,10 +338,29 @@ export class ThreeBridge {
         this.instanceMotionHits.delete(entity)
         continue
       }
-      // Active scale squash (bounce parasol) — clone now so elastic scale is visible this frame.
+      // Fishing bobber/line — promote immediately if somehow instanced.
+      if (
+        this.ecs.GltfContainer.has(entity) &&
+        isFishingMotionGltfSrc(this.ecs.GltfContainer.get(entity).src?.trim() ?? '')
+      ) {
+        const obj = this.store.nodes.get(entity)
+        if (obj) this.promoteInstancedForMotion(entity, obj)
+        continue
+      }
+      // Active scale/move tweens (bounce parasol, fishing bobber float) — clone now so motion
+      // is visible this frame (GPU instance matrices lag / zero-scale hide).
       if (this.ecs.Tween.has(entity)) {
         const mode = this.ecs.Tween.get(entity).mode?.$case
-        if (mode === 'scale' || mode === 'moveRotateScale' || mode === 'textureMove' || mode === 'textureMoveContinuous') {
+        if (
+          mode === 'scale' ||
+          mode === 'moveRotateScale' ||
+          mode === 'textureMove' ||
+          mode === 'textureMoveContinuous' ||
+          mode === 'move' ||
+          mode === 'moveContinuous' ||
+          mode === 'rotate' ||
+          mode === 'rotateContinuous'
+        ) {
           const obj = this.store.nodes.get(entity)
           if (obj) this.promoteInstancedForMotion(entity, obj)
           continue
@@ -306,8 +381,12 @@ export class ThreeBridge {
   }
 
   /**
-   * Drop InstancedMesh slot and re-queue as SkeletonUtils clone — motion-driven props
-   * (collectible bob/spin, flying projectiles) need hierarchy tracking, not static instances.
+   * Drop InstancedMesh slot and re-attach as SkeletonUtils clone — motion-driven props
+   * (collectible bob/spin, flying projectiles, fishing line/bobber) need hierarchy tracking.
+   *
+   * Prefer **sync** re-attach when the GLB template is already cached so we do not leave a
+   * multi-frame invisible gap (detach → pendingMeshEntities → budget drain). Plaza fishing
+   * line/bobber looked missing for seconds while stuck in that queue under load.
    */
   private promoteInstancedForMotion(entity: Entity, obj: THREE.Group): void {
     this.instancer.detach(entity, obj)
@@ -316,6 +395,53 @@ export class ThreeBridge {
     delete obj.userData.gltfSrcKey
     delete obj.userData.dclForceIdleAttach
     obj.userData.dclForceCloneAttach = true
+
+    // Marker group from instancer may remain — clear so attach path can rebuild.
+    const mk = meshKey(entity)
+    const marker = obj.getObjectByName(mk)
+    if (marker) {
+      obj.remove(marker)
+      disposeOwnedObject3D(marker)
+    }
+
+    if (this.ecs.GltfContainer.has(entity)) {
+      const { src } = this.ecs.GltfContainer.get(entity)
+      const trimmed = src?.trim() ?? ''
+      const hash =
+        /^(bafy|bafkre|Qm)/i.test(trimmed)
+          ? trimmed
+          : resolveGltfSrcHash(this.sceneConfig.content, trimmed)
+      if (hash && !hash.startsWith(GLTF_LOCAL_PREFIX)) {
+        const template =
+          this.cache.peekCached(hash) ?? this.cache.peekCached(this.sceneConfig.assetUrl(hash))
+        if (template) {
+          const templateTris =
+            (template.root.userData.dclTriCount as number | undefined) ??
+            (() => {
+              const t = countObjectTriangles(template.root)
+              template.root.userData.dclTriCount = t
+              return t
+            })()
+          const ok = this.attachCachedGltf(
+            entity,
+            obj,
+            mk,
+            trimmed,
+            hash,
+            hash,
+            template,
+            templateTris
+          )
+          if (ok) {
+            obj.matrixAutoUpdate = true
+            const mesh = obj.getObjectByName(mk)
+            if (mesh) unfreezeObject3D(mesh)
+            this.pendingMeshEntities.delete(entity)
+            return
+          }
+        }
+      }
+    }
     this.pendingMeshEntities.add(entity)
   }
 
@@ -364,6 +490,11 @@ export class ThreeBridge {
         this.reservedParentedEntities.delete(entity)
         continue
       }
+      // AvatarAttach owns absolute bone world pose — never reparent under PE chest root.
+      if (this.skipTransformApply?.(entity)) {
+        this.reservedParentedEntities.delete(entity)
+        continue
+      }
       const t = Transform.get(entity) as DclTransformValues
       const parent = t.parent as Entity | undefined
       if (parent !== PlayerEntity && parent !== CameraEntity) {
@@ -384,9 +515,7 @@ export class ThreeBridge {
         reparented++
         needChildFix.push(entity)
       }
-      if (!this.skipTransformApply?.(entity)) {
-        applyDclLocalTransform(obj, t)
-      }
+      applyDclLocalTransform(obj, t)
     }
 
     // Holster children (gun model under gun root) — only after a real PE reparent, not every rescan
@@ -701,6 +830,7 @@ export class ThreeBridge {
   private notifyGltfAttached(entity: Entity): void {
     this.attachedGltfEntities.add(entity)
     this.setGltfLoadingState(entity, 4 /* FINISHED */)
+    this.logFishingGltfAttach(entity)
     // Video screens (and other overrides) often land before/with GltfContainer — re-apply.
     if (this.ecs.GltfNodeModifiers.has(entity)) {
       this.pendingGltfNodeModEntities.add(entity)
@@ -1322,6 +1452,20 @@ export class ThreeBridge {
       if (Billboard.has(entity)) this.store.setBillboard(entity, true)
     }
 
+    // AvatarAttach put this frame — promote self (+ Transform children) off GPU instances.
+    if (AvatarAttach) {
+      const attachTouched: Entity[] = []
+      for (const [entity, comps] of diff) {
+        if (comps.has(AvatarAttach.componentId) && AvatarAttach.has(entity)) {
+          attachTouched.push(entity)
+        }
+      }
+      if (attachTouched.length) this.promoteAvatarAttachGltfs(attachTouched)
+    }
+
+    // After cast, setBobberPosition moves fishing GLBs — log pose so we can match scene coords.
+    this.logFishingTransformUpserts(applied.upserts)
+
     for (const entity of applied.removals) {
       if (this.isSpritePoolEntity(entity) || (this.store.isSpritePool(entity) && this.store.isSuspended(entity))) {
         this.suspendSpriteSlot(entity)
@@ -1400,6 +1544,39 @@ export class ThreeBridge {
   }
 
   /**
+   * Attach fishing bobber/line/rod pending meshes immediately (bypass ring sample + budget).
+   * Cast must not wait for thousands of pool VFX cells to drain.
+   */
+  private drainFishingPendingMeshes(
+    meshEcs: Pick<MirrorComponents, 'MeshRenderer' | 'Material' | 'GltfContainer' | 'TextShape'>
+  ): void {
+    const { GltfContainer } = this.ecs
+    const fish: Entity[] = []
+    for (const entity of this.pendingMeshEntities) {
+      if (!GltfContainer.has(entity)) continue
+      const src = GltfContainer.get(entity).src?.trim() ?? ''
+      if (isFishingMotionGltfSrc(src)) fish.push(entity)
+    }
+    if (!fish.length) return
+    // Temporarily ensure budget for fishing attaches.
+    const saved = this.gltfBudgetRemaining
+    this.gltfBudgetRemaining = Math.max(this.gltfBudgetRemaining, fish.length + 2)
+    for (const entity of fish) {
+      const obj = this.store.nodes.get(entity)
+      if (!obj) {
+        this.pendingMeshEntities.delete(entity)
+        continue
+      }
+      obj.userData.dclForceCloneAttach = true
+      this.syncMeshSync(entity, obj, meshEcs, true)
+      if (!this.entityNeedsMeshWork(entity, obj, { includeMaterial: false })) {
+        this.pendingMeshEntities.delete(entity)
+      }
+    }
+    this.gltfBudgetRemaining = saved
+  }
+
+  /**
    * Budgeted attach pass — group pending by content hash (structural, not product priority).
    *
    * Only invents: (1) sample + time budget, (2) at most one cold kick **per hash** (so 2k
@@ -1411,6 +1588,9 @@ export class ThreeBridge {
     _deferMaterials: boolean
   ): Promise<void> {
     if (!this.pendingMeshEntities.size) return
+
+    // Fishing bobber/line/rod first — never starve behind plaza disco_cell drain.
+    this.drainFishingPendingMeshes(meshEcs)
 
     const passStart = performance.now()
     const hardMs = this.hydrationMode
@@ -2059,29 +2239,128 @@ export class ThreeBridge {
     scheduleNext(pump)
   }
 
-  /** Prefer GPU InstancedMesh for static same-hash GLBs; clone for skinned / ECS Animator / morphs. */
+  private lastFishXformLogAt = 0
+
+  /** Log transform upserts for fishing GLBs (bobber aim / cast landing). */
+  private logFishingTransformUpserts(entities: Iterable<Entity>): void {
+    if (!FISH_GLTF_DIAG) return
+    const now = performance.now()
+    if (now - this.lastFishXformLogAt < 200) return
+    const { GltfContainer, Transform, VisibilityComponent } = this.ecs
+    for (const entity of entities) {
+      if (!GltfContainer.has(entity) || !Transform.has(entity)) continue
+      const src = GltfContainer.get(entity).src?.trim() ?? ''
+      if (!isFishingMotionGltfSrc(src)) continue
+      this.lastFishXformLogAt = now
+      const obj = this.store.nodes.get(entity)
+      if (!obj) {
+        clientDebugLog.log(
+          'pointer',
+          `fish-xform e${entity as number} NO node src=${src.split('/').pop()}`,
+          { level: 'warn', alsoConsole: true }
+        )
+        continue
+      }
+      obj.updateWorldMatrix(true, false)
+      obj.getWorldPosition(_fishLogWorld)
+      const dcl = threeToDclVec(_fishLogWorld)
+      const t = Transform.get(entity) as DclTransformValues
+      const vis =
+        VisibilityComponent.has(entity) ? VisibilityComponent.get(entity).visible !== false : true
+      const mk = meshKey(entity)
+      const mesh = obj.getObjectByName(mk)
+      clientDebugLog.log(
+        'pointer',
+        `fish-xform e${entity as number} src=${src.split('/').pop()} ` +
+          `world=(${dcl.x.toFixed(2)},${dcl.y.toFixed(2)},${dcl.z.toFixed(2)}) ` +
+          `local=(${t.position.x.toFixed(2)},${t.position.y.toFixed(2)},${t.position.z.toFixed(2)}) ` +
+          `parent=${t.parent ?? 0} vis=${vis ? 1 : 0} mesh=${mesh ? 1 : 0} ` +
+          `inst=${obj.userData.dclInstanced ? 1 : 0} groupVis=${obj.visible ? 1 : 0}`,
+        { alsoConsole: true, throttleMs: 200, throttleKey: `fish-xform-${entity}` }
+      )
+    }
+  }
+
+  /** Plaza fishing bobber/line/rod — log attach pose so we can match setBobberPosition. */
+  private logFishingGltfAttach(entity: Entity): void {
+    if (!FISH_GLTF_DIAG) return
+    if (!this.ecs.GltfContainer.has(entity)) return
+    const src = this.ecs.GltfContainer.get(entity).src?.trim() ?? ''
+    if (!isFishingMotionGltfSrc(src)) return
+    const obj = this.store.nodes.get(entity)
+    if (!obj) {
+      clientDebugLog.log(
+        'pointer',
+        `fish-gltf e${entity as number} attach NO node src=${src}`,
+        { level: 'warn', alsoConsole: true }
+      )
+      return
+    }
+    obj.updateWorldMatrix(true, false)
+    obj.getWorldPosition(_fishLogWorld)
+    const dcl = threeToDclVec(_fishLogWorld)
+    const vis = obj.visible
+    const inst = !!obj.userData.dclInstanced
+    const clone = !!obj.userData.dclForceCloneAttach
+    const attach = this.isAvatarAttachDriven(entity)
+    const mk = meshKey(entity)
+    const mesh = obj.getObjectByName(mk)
+    let meshCount = 0
+    mesh?.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh && o.visible) meshCount++
+    })
+    const scale = obj.scale
+    clientDebugLog.log(
+      'pointer',
+      `fish-gltf e${entity as number} src=${src.split('/').pop()} ` +
+        `pos=(${dcl.x.toFixed(2)},${dcl.y.toFixed(2)},${dcl.z.toFixed(2)}) ` +
+        `scale=(${scale.x.toFixed(2)},${scale.y.toFixed(2)},${scale.z.toFixed(2)}) ` +
+        `vis=${vis ? 1 : 0} inst=${inst ? 1 : 0} forceClone=${clone ? 1 : 0} ` +
+        `avatarAttach=${attach ? 1 : 0} meshes=${meshCount}`,
+      { alsoConsole: true }
+    )
+  }
+
+  /**
+   * Prefer GPU InstancedMesh for static same-hash GLBs; clone for anything that can
+   * animate / follow independently (AvatarAttach props, Animator, motion tweens).
+   *
+   * AvatarAttach is the primary promote signal: rods, held props, and Transform
+   * children of attach entities need a private hierarchy so bone-follow + local
+   * animation are not shared InstancedMesh slots.
+   */
   private canInstanceAttach(
     entity: Entity,
     template: { root: THREE.Group; animations: THREE.AnimationClip[] }
   ): boolean {
-    // Prior motion promote — stay on private clone (collectible bob, projectiles).
+    // Prior motion / attach promote — stay on private clone.
     const existing = this.store.nodes.get(entity)
     if (existing?.userData.dclForceCloneAttach) return false
+    // AvatarAttach (or child of attach) — always clone (fishing rod/line hierarchy).
+    if (this.isAvatarAttachDriven(entity)) return false
     // Explicit ECS Animator needs a private hierarchy for the mixer.
     if (this.ecs.Animator.has(entity)) return false
-    // Rigid GLBs with embedded clips MAY instance as rest-pose (huge CBD win).
-    // templateIsInstancable rejects skinned/morph. AnimatorBridge promotes to clone
-    // when default autoplay actually needs to run (near camera).
-    void template.animations
-    // TextureMove writes material UVs; scale squash (plaza bounce parasols) needs hierarchy
-    // TRS on a private clone — GPU instance slots lag / hide short 800ms elastic scales.
+    // Embedded clips need a private hierarchy for default first-clip autoplay (DCL
+    // explorer). GPU-instancing these as rest-pose left ABC fireparticles (scale~0.001
+    // rest) invisible — promote/bind often never rebuilt a real node tree for the mixer.
+    if (template.animations.length > 0) return false
+    // Plaza fishing bobber/line/rod — always private clone (never GPU instance lag).
+    if (this.ecs.GltfContainer.has(entity)) {
+      const src = this.ecs.GltfContainer.get(entity).src?.trim() ?? ''
+      if (isFishingMotionGltfSrc(src)) return false
+    }
+    // TextureMove / scale / move tweens need private hierarchy (bounce, bobber float).
     if (this.ecs.Tween.has(entity)) {
       const mode = this.ecs.Tween.get(entity).mode?.$case
       if (
         mode === 'textureMove' ||
         mode === 'textureMoveContinuous' ||
         mode === 'scale' ||
-        mode === 'moveRotateScale'
+        mode === 'moveRotateScale' ||
+        mode === 'move' ||
+        mode === 'moveContinuous' ||
+        mode === 'rotate' ||
+        mode === 'rotateContinuous'
       ) {
         return false
       }
@@ -2096,6 +2375,73 @@ export class ThreeBridge {
   }
 
   /**
+   * True when entity has AvatarAttach, or walks Transform parents into one that does.
+   * Held props + line/children of the rod must not share GPU instance slots.
+   */
+  private isAvatarAttachDriven(entity: Entity): boolean {
+    const { AvatarAttach, Transform } = this.ecs
+    if (!AvatarAttach) return false
+    if (AvatarAttach.has(entity)) return true
+    let current: Entity | undefined = entity
+    const seen = new Set<Entity>()
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current)
+      if (AvatarAttach.has(current)) return true
+      if (!Transform.has(current)) break
+      const parent = Transform.get(current).parent as Entity | undefined
+      if (parent === undefined || parent === 0 || parent === (SDK_RESERVED.root as Entity)) break
+      // Reserved PE/Camera parents are not avatar bone-attach anchors.
+      if (parent === (SDK_RESERVED.player as Entity) || parent === (SDK_RESERVED.camera as Entity)) {
+        break
+      }
+      current = parent
+    }
+    return false
+  }
+
+  /**
+   * When AvatarAttach is added/updated, promote any GPU-instanced self + Transform
+   * children to private clones so they can track bones / animate independently.
+   */
+  promoteAvatarAttachGltfs(entities: Iterable<Entity>): void {
+    const { Transform, GltfContainer } = this.ecs
+    const queue: Entity[] = []
+    const seen = new Set<Entity>()
+    for (const e of entities) {
+      if (!seen.has(e)) {
+        seen.add(e)
+        queue.push(e)
+      }
+    }
+    // One-level fan-out: children whose parent is in the seed set (rod → line, etc.).
+    if (Transform) {
+      for (const [child] of this.store.nodes) {
+        if (seen.has(child)) continue
+        if (!Transform.has(child)) continue
+        const parent = Transform.get(child).parent as Entity | undefined
+        if (parent !== undefined && seen.has(parent)) {
+          seen.add(child)
+          queue.push(child)
+        }
+      }
+    }
+    for (const entity of queue) {
+      if (!GltfContainer.has(entity)) continue
+      const obj = this.store.nodes.get(entity)
+      if (!obj) continue
+      if (obj.userData.dclInstanced) {
+        this.promoteInstancedForMotion(entity, obj)
+      } else if (!obj.userData.dclForceCloneAttach) {
+        // Not yet attached or already a clone — force clone on next attach.
+        obj.userData.dclForceCloneAttach = true
+        if (this.entityNeedsMeshWork(entity, obj, { includeMaterial: false })) {
+          this.pendingMeshEntities.add(entity)
+        }
+      }
+    }
+  }
+
+  /**
    * Sync promote InstancedMesh → private clone so AnimationMixer can bind.
    * Used when a rest-pose instance starts default autoplay near the camera.
    */
@@ -2104,7 +2450,13 @@ export class ThreeBridge {
     if (!obj) return null
     const mk = `__mesh_${entity}`
     if (!obj.userData.dclInstanced) {
-      return obj.getObjectByName(mk) ?? null
+      // Already a private clone — still unfreeze; attach may have frozen static rest.
+      const existing = obj.getObjectByName(mk) ?? null
+      if (existing) {
+        obj.matrixAutoUpdate = true
+        unfreezeObject3D(existing)
+      }
+      return existing
     }
     if (!this.ecs.GltfContainer.has(entity)) return null
     const { src } = this.ecs.GltfContainer.get(entity)
@@ -2231,10 +2583,14 @@ export class ThreeBridge {
       }
       // Static rest / no ECS Animator: freeze leaf matrices (scene graph of 3k+ meshes
       // was rebuilding every frame). Animator promote re-enables autoUpdate.
-      if (!this.ecs.Animator.has(entity)) {
+      // Embedded clips (ABC fireparticles, plaza props) need live matrices for default
+      // first-clip autoplay — freezing them leaves mixer TRS writes off-screen.
+      if (!this.ecs.Animator.has(entity) && template.animations.length === 0) {
         freezeStaticObject3D(clone)
         obj.matrixAutoUpdate = false
         obj.updateMatrix()
+      } else {
+        obj.matrixAutoUpdate = true
       }
       obj.add(clone)
       this.notifyMeshComponent(entity, this.ecs.GltfContainer.componentId)
@@ -2323,12 +2679,22 @@ export class ThreeBridge {
 
     if (GltfContainer.has(entity)) {
       const { src } = GltfContainer.get(entity)
+      const fishingMotion = isFishingMotionGltfSrc(src)
+      // Fishing bobber/line/rod — never instance; attach this frame even under play budget=1.
+      if (fishingMotion) obj.userData.dclForceCloneAttach = true
       const hash = hashFromSrc(src, this.sceneConfig)
       const srcKey = hash ?? src.trim()
       let mesh = obj.getObjectByName(mk) as THREE.Object3D | undefined
 
       if (!hash) {
         this.setGltfLoadingState(entity, 2 /* NOT_FOUND */)
+        if (fishingMotion || /pool\//i.test(src)) {
+          clientDebugLog.log(
+            'pointer',
+            `fish-gltf e${entity as number} NOT_FOUND hash — src=${src}`,
+            { level: 'warn', alsoConsole: true }
+          )
+        }
         return
       }
 
@@ -2348,13 +2714,21 @@ export class ThreeBridge {
 
         if (this.cache.hasGivenUp(cacheKey) || this.emptyGltfHashes.has(hash)) {
           this.setGltfLoadingState(entity, 3 /* FINISHED_WITH_ERROR */)
+          if (fishingMotion) {
+            clientDebugLog.log(
+              'pointer',
+              `fish-gltf e${entity as number} GIVEN_UP/EMPTY — src=${src}`,
+              { level: 'warn', alsoConsole: true }
+            )
+          }
           return
         }
 
         // In-flight / re-src — scene can poll LOADING until FINISHED.
         this.setGltfLoadingState(entity, 1 /* LOADING */)
 
-        if (this.gltfBudgetRemaining <= 0) return
+        // Non-fishing: respect per-frame budget. Fishing: always proceed (cast must show bobber).
+        if (!fishingMotion && this.gltfBudgetRemaining <= 0) return
 
         const template = this.cache.peekCached(cacheKey)
         const templateTris = template
@@ -2368,16 +2742,24 @@ export class ThreeBridge {
 
         // Cold: schedule parse off the frame path — never await load() here.
         if (!template) {
-          if (this.gltfBudgetRemaining > 0) {
-            this.gltfBudgetRemaining--
+          // Fishing: always schedule load even if budget exhausted.
+          if (fishingMotion || this.gltfBudgetRemaining > 0) {
+            if (!fishingMotion) this.gltfBudgetRemaining--
             this.scheduleBackgroundLoad(url, isLocal ? url : hash, cacheKey)
+            if (fishingMotion) {
+              clientDebugLog.log(
+                'pointer',
+                `fish-gltf e${entity as number} COLD load scheduled — src=${src.split('/').pop()}`,
+                { alsoConsole: true, throttleMs: 500, throttleKey: `fish-cold-${entity}` }
+              )
+            }
           }
           return
         }
 
-        // Large *clones* off the attach pass. Static instancable templates stay on-path
-        // (matrix write only — mountains / tiles must not wait behind SkeletonUtils).
+        // Large *clones* off the attach pass — except fishing (must not wait behind disco queue).
         if (
+          !fishingMotion &&
           !obj.userData.dclForceIdleAttach &&
           templateTris >= ThreeBridge.LARGE_TEMPLATE_TRIS &&
           !this.canInstanceAttach(entity, template)
@@ -2386,8 +2768,15 @@ export class ThreeBridge {
           return
         }
 
-        this.gltfBudgetRemaining--
+        if (!fishingMotion) this.gltfBudgetRemaining--
         if (!this.attachCachedGltf(entity, obj, mk, src, srcKey, hash, template, templateTris)) {
+          if (fishingMotion) {
+            clientDebugLog.log(
+              'pointer',
+              `fish-gltf e${entity as number} attachCached FAILED — src=${src}`,
+              { level: 'warn', alsoConsole: true }
+            )
+          }
           return
         }
         mesh = obj.getObjectByName(mk) as THREE.Object3D | undefined

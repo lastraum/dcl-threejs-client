@@ -834,17 +834,19 @@ export class SceneUiBridge {
       this.stableVisibleStreak = 0
       this.lastStableVisibleCount = layoutBoxMap.size
     }
-    // Do not declare modal stable while many 0×0 icon cells remain (empty vendor after reopen).
+    // Do not declare modal stable while any 0×0 icon cells remain (empty vendor / rod-bait dock).
     const modalStable =
-      this.stableVisibleStreak >= 2 && layoutBoxMap.size >= 32 && collapsedVisible <= 4
+      this.stableVisibleStreak >= 2 && layoutBoxMap.size >= 32 && collapsedVisible === 0
 
     // Prefer patch when: layout reused/refined, OR full Yoga but modal already open and few dirties.
-    // Never patch while collapsed icon cells remain — full forest walk after repair.
+    // Never patch while any collapsed icon cells remain — fishing rod/bait dock is only 2
+    // cells; `collapsedVisible <= 4` used to leave them 0×0 forever until vendor open forced
+    // a full forest walk.
     const preferPatch =
       this.paintCount > 1 &&
       !visibleSetGrew &&
       !visibleSetShrank &&
-      collapsedVisible <= 4 &&
+      collapsedVisible === 0 &&
       repairedCollapsed === 0 &&
       dirtyEntities.length > 0 &&
       dirtyEntities.length <= patchBudget &&

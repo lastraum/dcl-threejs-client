@@ -44,7 +44,9 @@ export class AvatarAttachBridge {
   constructor(
     private readonly ecs: MirrorComponents,
     private readonly projection: CrdtProjection,
-    private readonly getNodes: () => Map<Entity, THREE.Group> | undefined
+    private readonly getNodes: () => Map<Entity, THREE.Group> | undefined,
+    /** Scene EntityStore root — attach meshes stay here (Godot-style global pose). */
+    private readonly getSceneRoot?: () => THREE.Object3D | null | undefined
   ) {}
 
   setTargets(resolver: AvatarAttachTargetResolver | null): void {
@@ -110,10 +112,20 @@ export class AvatarAttachBridge {
       this.projection.setRenderer(Transform.componentId, entity, relativeWithParent)
 
       // Mesh optional — lights / VC-adjacent attach entities may have no store node yet.
+      // Godot explorer sets global_transform = anchor every frame and keeps scale.
+      // We apply absolute bone world pose under the scene root — never under PE chest
+      // attach (+0.88). Reparenting relative (feet) coords under that root offsets the rod.
       const node = nodes.get(entity)
       if (node) {
+        const sceneRoot = this.getSceneRoot?.()
+        if (sceneRoot && node.parent !== sceneRoot) {
+          sceneRoot.add(node)
+        }
         const world = composeAvatarAttachedWorldTransform(playerTransform, relativeWithParent)
+        // Preserve scene-authored scale (proto: Transform overridden except scale via children).
+        const scale = relativeWithParent.scale
         applyWorldDclTransformToObject(node, world)
+        node.scale.set(scale.x, scale.y, scale.z)
       }
 
       workerBatch.push({

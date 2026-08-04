@@ -536,12 +536,20 @@ function pickRepresentation(reps: EmoteRepresentation[], bodyShape: BodyShape): 
   return hit ?? reps[0] ?? null
 }
 
+/** True for emote mesh files Catalyst ships as `.glb` or (Emotes 2.0) `.gltf`. */
+function isEmoteMeshFile(file: string): boolean {
+  return /\.(glb|gltf)$/i.test(file)
+}
+
 function emoteGlbUrl(entity: CatalystEmoteEntity, rep: EmoteRepresentation, peerUrl: string): string | null {
   const main = entity.content.find((entry) => entry.file === rep.mainFile)
-  if (main?.hash && /\.glb$/i.test(main.file)) {
+  // Prefer authored mainFile (glb or gltf). Pixie Immelmann and other ADR-74 emotes ship .gltf only.
+  if (main?.hash && isEmoteMeshFile(main.file)) {
     return catalystAssetUrl(peerUrl, main.hash)
   }
-  const fallback = entity.content.find((entry) => /\.glb$/i.test(entry.file))
+  const fallback =
+    entity.content.find((entry) => /\.glb$/i.test(entry.file)) ??
+    entity.content.find((entry) => /\.gltf$/i.test(entry.file))
   if (fallback?.hash) return catalystAssetUrl(peerUrl, fallback.hash)
   return main?.hash ? catalystAssetUrl(peerUrl, main.hash) : null
 }

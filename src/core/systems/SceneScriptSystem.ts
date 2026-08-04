@@ -644,7 +644,8 @@ export class SceneScriptSystem {
     this.avatarAttachBridge = new AvatarAttachBridge(
       this.readComponents,
       this.projection,
-      () => this.bridge?.getEntityNodes()
+      () => this.bridge?.getEntityNodes(),
+      () => this.bridge?.getEntityStore()?.root ?? null
     )
     this.bridge.setSkipTransformApply((entity) => this.avatarAttachBridge!.isAttachDriven(entity))
     this.videoPlayerBridge = new VideoPlayerBridge(
@@ -719,14 +720,11 @@ export class SceneScriptSystem {
       // skips mixer bind (only skipped update + async sync from d35596f).
       if (skipSceneAnimators()) return
       // Explicit Animator: bind immediately (doors / grow / scripted clips).
-      // Default auto-play (no Animator component): mark dirty only — budgeted in async sync
-      // so plaza attach does not create thousands of full-rate mixers in one frame.
+      // Default auto-play (no Animator): also try bind-on-attach now that animated GLBs are
+      // private clones (not GPU rest-pose). Budgeted pendingBind still covers far/deferred.
       this.bridgeDirty = true
-      const { Animator } = this.readComponents
       this.animatorBridge?.markDirty(entity)
-      if (Animator.has(entity)) {
-        this.animatorBridge?.syncEntity(entity, this.view)
-      }
+      this.animatorBridge?.syncEntityAllowDefaultAutoplay(entity, this.view)
     })
     this.bridge.setRecordLww(this.recordRendererLww)
     this.bindSceneUiViewportSync(host)
@@ -1321,12 +1319,17 @@ export class SceneScriptSystem {
       this.triggerStructureDirty = true
     }
 
+    const ParticleSystem = this.readComponents.ParticleSystem
     if (
       componentId === GltfContainer.componentId ||
       componentId === Animator.componentId ||
       componentId === AvatarShape.componentId ||
+      componentId === ParticleSystem.componentId ||
       (componentId === Transform.componentId &&
-        (Animator.has(entity) || AvatarShape.has(entity) || GltfContainer.has(entity)))
+        (Animator.has(entity) ||
+          AvatarShape.has(entity) ||
+          GltfContainer.has(entity) ||
+          ParticleSystem.has(entity)))
     ) {
       this.bridgeDirty = true
       // Animator dirty-only bind — NOT Transform. Transform/tween motion is a different path.
@@ -1537,6 +1540,40 @@ export class SceneScriptSystem {
       type: 'force-locomotion-clear',
       reason
     } satisfies MainToWorker)
+  }
+
+  /**
+   * Host-side stuck VirtualCamera / theater shot exit (Escape or WASD when VC owns lens).
+   * Scene player-frame keeps re-emitting MainCamera→VC until the scene unbinds; suppress
+   * inbound binds until the worker snapshot is clear so the player can free-look again.
+   */
+  private hostVcBindSuppress = false
+
+  requestForceVirtualCameraClear(reason = 'escape-vc'): void {
+    if (!this.running) return
+    const { MainCamera } = this.readComponents
+    const { CameraEntity } = this.view
+    const main = MainCamera.getOrNull(CameraEntity) as { virtualCameraEntity?: number } | null
+    const was = main?.virtualCameraEntity
+    this.hostVcBindSuppress = true
+    MainCamera.createOrReplace(CameraEntity, {} as never)
+    this.projection.clearVcLiveTransformForUnbind()
+    this.lastPlayerFrameMainCameraKey = 'cleared'
+    this.vcBindHydratePullPending = false
+    this.worker?.postMessage({
+      type: 'force-locomotion-clear',
+      reason: `vc-clear:${reason}`
+    } satisfies MainToWorker)
+    clientDebugLog.log(
+      'vc-lens',
+      `force clear MainCamera (was=${was != null ? `e${was}` : 'none'}) — ${reason}`,
+      { alsoConsole: true }
+    )
+    console.info(`[vc-lens] force clear MainCamera (was=${was != null ? `e${was}` : 'none'}) — ${reason}`)
+  }
+
+  isHostVirtualCameraSuppressed(): boolean {
+    return this.hostVcBindSuppress
   }
 
   setTriggerEmoteHandler(handler: TriggerEmoteHandler | null): void {
@@ -3164,7 +3201,22 @@ export class SceneScriptSystem {
       // Facade deleteFrom → projection.deleteRenderer (not the unused ECS engine store).
       InputModifier.deleteFrom(PlayerEntity)
     }
-    MainCamera.createOrReplace(CameraEntity, (msg.mainCamera ?? {}) as never)
+    // Stuck theater / VIEW SHOT: host Escape suppress strips scene re-bind until worker clears.
+    const inboundMain = (msg.mainCamera ?? {}) as { virtualCameraEntity?: number | null }
+    const inboundVc =
+      inboundMain.virtualCameraEntity === undefined || inboundMain.virtualCameraEntity === null
+        ? null
+        : inboundMain.virtualCameraEntity
+    if (this.hostVcBindSuppress) {
+      if (inboundVc === null) {
+        this.hostVcBindSuppress = false
+        MainCamera.createOrReplace(CameraEntity, (msg.mainCamera ?? {}) as never)
+      } else {
+        MainCamera.createOrReplace(CameraEntity, {} as never)
+      }
+    } else {
+      MainCamera.createOrReplace(CameraEntity, (msg.mainCamera ?? {}) as never)
+    }
     this.foldProjectionChanges()
     const mainCam = MainCamera.getOrNull(CameraEntity) as { virtualCameraEntity?: number } | null
     const locomotion = readLocomotionFromComponents(this.readComponents, PlayerEntity)
@@ -3904,8 +3956,13 @@ export class SceneScriptSystem {
     if (this.clientPlayerPose && this.clientCameraPose) {
       this.prepareReservedRoundTrip(this.clientPlayerPose, this.clientCameraPose)
     }
+    // Hover/PPI every main frame — fishing bobber aim must not wait for crdt-outbound.
+    this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
+    this.crdtTick++
+    const primaryPointer = this.pointerEvents?.getPrimaryPointerSnapshot() ?? undefined
     const player = this.clientPlayerPose
     const camera = this.clientCameraPose
+    // Quiet by default — enable with ?ppidiag (same as PointerEventsSystem PPI spam).
     this.worker.postMessage({
       type: 'play-frame-tick',
       ...(player
@@ -3941,7 +3998,9 @@ export class SceneScriptSystem {
               }
             }
           }
-        : {})
+        : {}),
+      // Always embed when snapshot exists — worker applies before engine.update for bobber aim.
+      ...(primaryPointer ? { primaryPointer } : {})
     } satisfies MainToWorker)
   }
 
@@ -5011,8 +5070,19 @@ export class SceneScriptSystem {
       this.bridge.restoreGltfDistanceCull()
     }
     this.particleBridge?.update(delta)
+    // Particles need create/sync even when Animator/Gltf is quiet — don't wait for 12-frame cadence only.
+    // sync is async (texture load); throttle so we don't pile concurrent creates.
+    if (this.bridgeSyncTick % 8 === 0) {
+      void this.particleBridge?.sync(this.view)
+    }
     this.avatarAttachBridge?.update(this.view)
-    this.flushAvatarAttachTransforms()
+    // AvatarAttach → private GLB clone (never GPU instance): rod/held props + Transform children
+    // can animate independently while following bones.
+    const attachBatch = this.avatarAttachBridge?.consumeWorkerBatch() ?? []
+    if (attachBatch.length) {
+      this.bridge.promoteAvatarAttachGltfs(attachBatch.map((e) => e.entity as Entity))
+      this.flushAvatarAttachTransformsFromBatch(attachBatch)
+    }
     // PlayerEntity-parented scene meshes (Dead Surge path arrow) — re-parent each frame.
     this.bridge.syncReservedParentedTransforms(this.view)
     this.billboardBridge?.sync(this.view)
@@ -5029,9 +5099,10 @@ export class SceneScriptSystem {
     this.flushRendererGrowOnlyAppends()
   }
 
-  private flushAvatarAttachTransforms(): void {
-    const batch = this.avatarAttachBridge?.consumeWorkerBatch()
-    if (!batch?.length || !this.worker) return
+  private flushAvatarAttachTransformsFromBatch(
+    batch: import('../../bridge/AvatarAttachBridge').AvatarAttachWorkerEntry[]
+  ): void {
+    if (!batch.length || !this.worker) return
     this.worker.postMessage({ type: 'avatar-attach-transforms', entries: batch } satisfies MainToWorker)
   }
 

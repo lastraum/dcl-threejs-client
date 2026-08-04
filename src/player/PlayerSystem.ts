@@ -7,6 +7,29 @@ import { SDK_RESERVED } from '../bridge/reservedEntities'
 import { ReservedEntitiesSync, type EntityPose } from '../bridge/ReservedEntitiesSync'
 import { NameTag } from '../client/ui/NameTag'
 import { areSceneNameTagsVisible } from '../client/ui/nameTagVisibility'
+import { isTextInputFocused } from '../client/ui/textInputFocus'
+
+/** Module latch — Escape is not an IA_* action on the hub. */
+let virtualCameraEscapeLatched = false
+if (typeof window !== 'undefined') {
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      if (e.code === 'Escape' || e.key === 'Escape') virtualCameraEscapeLatched = true
+    },
+    true
+  )
+  window.addEventListener(
+    'keyup',
+    (e) => {
+      if (e.code === 'Escape' || e.key === 'Escape') virtualCameraEscapeLatched = false
+    },
+    true
+  )
+  window.addEventListener('blur', () => {
+    virtualCameraEscapeLatched = false
+  })
+}
 import { cameraCollisionDebug } from '../debug/CameraCollisionDebug'
 import type { PhysXWorld } from '../physics/PhysXWorld'
 import type { SceneHost } from '../rendering/SceneHost'
@@ -234,6 +257,10 @@ export class PlayerSystem {
    */
   private modeFreezeEscapeHandler: (() => void) | null = null
   private lastModeFreezeEscapeAt = 0
+  /** Escape (or host request) — force-clear stuck MainCamera→VirtualCamera theater/VIEW SHOT. */
+  private virtualCameraEscapeHandler: (() => void) | null = null
+  private lastVirtualCameraEscapeAt = 0
+  private virtualCameraEscapeKeyDown = false
   /** DevTools console (not Help panel) — prod mirror may be off. */
   private lastLocomotionBlockedConsoleAt = 0
   /** Stall detect: keys pressed + free locomotion + no feet move (thrash / pin bug). */
@@ -575,6 +602,11 @@ export class PlayerSystem {
   /** Main/World — clear stuck sit mode-freeze when player presses WASD/Space. */
   setModeFreezeEscapeHandler(handler: (() => void) | null): void {
     this.modeFreezeEscapeHandler = handler
+  }
+
+  /** Main/World — Escape exits stuck plaza theater / VIEW SHOT VirtualCamera. */
+  setVirtualCameraEscapeHandler(handler: (() => void) | null): void {
+    this.virtualCameraEscapeHandler = handler
   }
 
   canPlayVoluntaryEmote(): boolean {
@@ -1053,6 +1085,9 @@ export class PlayerSystem {
   update(delta: number): void {
     if (!this.enabled || !this.input) return
     delta = Math.min(delta, 1 / 20)
+
+    // Escape while MainCamera→VC is bound (plaza theater stuck, VIEW SHOT hang).
+    this.pollVirtualCameraEscape()
 
     const locomotion = this.getLocomotionConfig()
     const imBlocked = !canLocomote(locomotion)
@@ -1881,6 +1916,33 @@ export class PlayerSystem {
    */
   private isSceneVirtualCameraDriving(): boolean {
     return this.virtualCamera?.isActive() === true
+  }
+
+  /** True while MainCamera→VC is bound or the bridge is actively driving the lens. */
+  isSceneVirtualCameraBoundOrDriving(): boolean {
+    return this.isSceneVirtualCameraDriving() || this.virtualCamera?.isMainCameraVcBound() === true
+  }
+
+  private pollVirtualCameraEscape(): void {
+    if (!this.virtualCameraEscapeHandler) return
+    if (!this.isSceneVirtualCameraBoundOrDriving()) {
+      this.virtualCameraEscapeKeyDown = false
+      return
+    }
+    if (isTextInputFocused()) return
+    const down = this.isEscapeKeyPhysicallyDown()
+    if (down && !this.virtualCameraEscapeKeyDown) {
+      const now = performance.now()
+      if (now - this.lastVirtualCameraEscapeAt > 400) {
+        this.lastVirtualCameraEscapeAt = now
+        this.virtualCameraEscapeHandler()
+      }
+    }
+    this.virtualCameraEscapeKeyDown = down
+  }
+
+  private isEscapeKeyPhysicallyDown(): boolean {
+    return virtualCameraEscapeLatched
   }
 
   private releaseFreecamLookForVirtualCamera(): void {

@@ -1042,6 +1042,19 @@ function ensurePlayerEntityTransform(engine: import('@dcl/ecs').IEngine): void {
   })
 }
 
+/** Worker PPI apply logs — off unless `?ppidiag` (spam was a major FPS tax). */
+let lastWorkerPpiLogAt = 0
+const WORKER_PPI_LOG_MS = 1000
+let lastWorkerPpiMissingLogAt = 0
+const workerPpiDiagEnabled = (() => {
+  try {
+    // Worker has no location; main posts debug flags on boot — default off.
+    return false
+  } catch {
+    return false
+  }
+})()
+
 /** Same-tick PlayerEntity / CameraEntity for scene systems (CameraFollowSystem, etc.). */
 function applyPlayFrameReservedPoses(
   player?: {
@@ -1051,6 +1064,12 @@ function applyPlayFrameReservedPoses(
   camera?: {
     position: { x: number; y: number; z: number }
     rotation: { x: number; y: number; z: number; w: number }
+  },
+  primaryPointer?: {
+    pointerType: number
+    screenCoordinates: { x: number; y: number }
+    screenDelta: { x: number; y: number }
+    worldRayDirection: { x: number; y: number; z: number }
   }
 ): void {
   if (!sceneEngine) return
@@ -1074,6 +1093,37 @@ function applyPlayFrameReservedPoses(
   ensurePlayerEntityTransform(sceneEngine)
   if (player) write(sceneEngine.PlayerEntity as Entity, player)
   if (camera) write(sceneEngine.CameraEntity as Entity, camera)
+  // Live cursor ray before systems — fishing bobber aim reads PrimaryPointerInfo each tick.
+  if (primaryPointer) {
+    preregisterRendererInjectedComponents(sceneEngine)
+    const PrimaryPointerInfo = generated.PrimaryPointerInfo(sceneEngine)
+    PrimaryPointerInfo.createOrReplace(sceneEngine.RootEntity as Entity, {
+      pointerType: primaryPointer.pointerType,
+      screenCoordinates: primaryPointer.screenCoordinates,
+      screenDelta: primaryPointer.screenDelta,
+      worldRayDirection: primaryPointer.worldRayDirection
+    })
+    // Intentional silence — enable only if we re-wire ppidiag to the worker boot flags.
+    if (workerPpiDiagEnabled) {
+      const now = performance.now()
+      if (now - lastWorkerPpiLogAt >= WORKER_PPI_LOG_MS) {
+        lastWorkerPpiLogAt = now
+        const d = primaryPointer.worldRayDirection
+        const s = primaryPointer.screenCoordinates
+        workerLog(
+          'log',
+          `[sceneWorker] PPI apply screen=(${s.x.toFixed(0)},${s.y.toFixed(0)}) ` +
+            `ray=(${d.x.toFixed(3)},${d.y.toFixed(3)},${d.z.toFixed(3)})`
+        )
+      }
+    }
+  } else if (workerPpiDiagEnabled) {
+    const now = performance.now()
+    if (now - lastWorkerPpiMissingLogAt >= 2000) {
+      lastWorkerPpiMissingLogAt = now
+      workerLog('warn', '[sceneWorker] PPI missing on play-frame-tick — bobber aim may stall')
+    }
+  }
 }
 
 /**
@@ -3224,6 +3274,19 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       if (ok) {
         workerLog('log', `[sceneWorker] force-locomotion-clear — ${msg.reason ?? 'escape'}`)
       }
+      // Escape from stuck VIEW SHOT / theater VirtualCamera (host suppress pairs with this).
+      if (msg.reason?.includes('vc-clear') || msg.reason?.includes('escape-vc')) {
+        try {
+          const MainCamera = generated.MainCamera(sceneEngine)
+          MainCamera.createOrReplace(sceneEngine.CameraEntity, {})
+          workerLog('log', `[sceneWorker] force MainCamera clear — ${msg.reason}`)
+        } catch (err) {
+          workerLog(
+            'warn',
+            `[sceneWorker] force MainCamera clear failed — ${err instanceof Error ? err.message : String(err)}`
+          )
+        }
+      }
     }
     return
   }
@@ -3253,9 +3316,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       playFrameTickMainDriven = true
       workerLog('log', '[sceneWorker] first play-frame-tick — main now drives engine ticks')
     }
-    // Reserved poses first — same message as the tick so CameraFollowSystem sees live PE.
-    if (sceneEngine && (msg.player || msg.camera)) {
-      applyPlayFrameReservedPoses(msg.player, msg.camera)
+    // Reserved poses + pointer first — same message as the tick so CameraFollow /
+    // fishing bobber systems see live PE + PrimaryPointerInfo before engine.update.
+    if (sceneEngine && (msg.player || msg.camera || msg.primaryPointer)) {
+      applyPlayFrameReservedPoses(msg.player, msg.camera, msg.primaryPointer)
     }
     // Snap active PE-follow anchors even when UI holds engine.update (pointer select / menus).
     snapBoundPeFollowAnchorIfNearPlayer()

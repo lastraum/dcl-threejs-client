@@ -41,6 +41,7 @@ import { VrmAvatar } from '../avatar/vrm/VrmAvatar'
 import { VrmLocomotionAnimations } from '../avatar/vrm/VrmLocomotionAnimations'
 import { disposeVrmRoot, prepareCustomAvatarScene } from '../avatar/vrm/VrmLoader'
 import { applyVrmPivotOffset } from '../avatar/vrm/vrmFeetAlign'
+import { buildEmotePropAttachment } from '../avatar/emotePlayback'
 import { retargetGltfClipToVrm } from '../avatar/vrm/mixamoRetarget'
 import { getVrmRamBytes, getVrmRamFormat } from '../avatar/vrm/vrmRamCache'
 import type { CustomAvatarFormat } from '../avatar/vrm/constants'
@@ -1057,6 +1058,7 @@ export class RemoteAvatarManager {
   playPeerEmote(address: string, emoteRef: string, incrementalId: number): void {
     const key = address.toLowerCase()
     const record = this.peers.get(key)
+    // lastEmoteId starts at -1 so Explorer/Unity packets with incrementalId=0 are accepted.
     if (!record || incrementalId <= record.lastEmoteId) return
     record.lastEmoteId = incrementalId
 
@@ -1121,7 +1123,7 @@ export class RemoteAvatarManager {
         hasPosition: false,
         modifierHidden: false,
         pendingProfile: null,
-        lastEmoteId: 0,
+        lastEmoteId: -1,
         activeEmoteUrn: null,
         pendingEmote: null,
         profileSignature: null,
@@ -1592,7 +1594,9 @@ export class RemoteAvatarManager {
           const speed = record.smoothedSpeed
           // Local player cancels emotes on WASD; remotes must cancel when wire speed shows walk/run
           // or they keep sit loops while sliding (mauhetti-style glitch after hitch).
-          if (emoteActive && speed > 0.45) {
+          // Threshold matches applyPeerEmote start gate — lower values cancelled looping sits
+          // (Cute and Coy / Sexy Sit) on position jitter while still seated.
+          if (emoteActive && speed > 0.85) {
             this.stopPeerProfileEmote(record)
             emoteActive = false
           }
@@ -2250,23 +2254,59 @@ export class RemoteAvatarManager {
     }
 
     const peerUrl = this.contentUrl || PEER_URL
+    const short = record.address.slice(0, 10)
     const resolved = await resolveProfileEmote(emoteRef, record.bodyShape, peerUrl)
-    if (!resolved) return
+    if (!resolved) {
+      clientDebugLog.log(
+        'emote',
+        `remote emote resolve failed · peer=${short}… ref=${emoteRef.slice(0, 72)} body=${record.bodyShape}`,
+        { level: 'warn', throttleMs: 4000, throttleKey: `emote-resolve:${short}` }
+      )
+      return
+    }
 
     try {
       const cached = this.assetCache ? await loadResolvedProfileEmote(this.assetCache, resolved) : null
-      if (!cached?.animations.length) return
+      if (!cached?.animations.length) {
+        clientDebugLog.log(
+          'emote',
+          `remote emote GLB empty · peer=${short}… urn=${resolved.urn.slice(0, 64)} clips=0 loop=${resolved.loop}`,
+          { level: 'warn', throttleMs: 4000, throttleKey: `emote-empty:${short}` }
+        )
+        return
+      }
 
       // Peer may have started walking while the emote GLB was loading.
-      if (record.smoothedSpeed > 0.45 || record.horizontalSpeed > 0.45) {
+      // Looping sits/poses (Cute and Coy, dances) still apply under light jitter —
+      // only hard-cancel when clearly walking/running.
+      if (record.smoothedSpeed > 0.85 || record.horizontalSpeed > 0.85) {
+        clientDebugLog.log(
+          'emote',
+          `remote emote skipped (moving) · peer=${short}… speed=${record.smoothedSpeed.toFixed(2)}/${record.horizontalSpeed.toFixed(2)} loop=${resolved.loop}`,
+          { throttleMs: 3000, throttleKey: `emote-moving:${short}` }
+        )
         return
       }
 
       if (record.renderMode === 'vrm' && record.vrmAvatar && record.vrmLocomotion) {
         const clip = retargetGltfClipToVrm(cached.animations[0]!, cached.root, record.vrmAvatar.vrm)
-        if (clip.tracks.length === 0) return
-        if (record.vrmLocomotion.playProfileEmote(clip, resolved.loop)) {
+        if (clip.tracks.length === 0) {
+          clientDebugLog.log(
+            'emote',
+            `remote emote VRM retarget empty · peer=${short}… clip=${cached.animations[0]?.name ?? '?'}`,
+            { level: 'warn', throttleMs: 4000, throttleKey: `emote-vrm:${short}` }
+          )
+          return
+        }
+        const propAtt = buildEmotePropAttachment(cached)
+        const props = propAtt ? { ...propAtt, attachParent: record.pivot } : null
+        if (record.vrmLocomotion.playProfileEmote(clip, resolved.loop, props)) {
           record.activeEmoteUrn = resolved.urn.trim().toLowerCase()
+          clientDebugLog.log(
+            'emote',
+            `remote emote play · peer=${short}… mode=vrm loop=${resolved.loop} urn=${resolved.urn.slice(0, 56)} props=${props ? 1 : 0}`,
+            { throttleMs: 2000, throttleKey: `emote-play:${short}` }
+          )
         }
         return
       }
@@ -2279,19 +2319,48 @@ export class RemoteAvatarManager {
         )
         const restCorrection = record.odkLocomotion.getRestCorrection()
         if (restCorrection) applyOdkRestCorrection(clip, restCorrection)
-        if (clip.tracks.length === 0) return
-        if (record.odkLocomotion.playProfileEmote(clip, resolved.loop)) {
+        if (clip.tracks.length === 0) {
+          clientDebugLog.log(
+            'emote',
+            `remote emote ODK retarget empty · peer=${short}… clip=${cached.animations[0]?.name ?? '?'}`,
+            { level: 'warn', throttleMs: 4000, throttleKey: `emote-odk:${short}` }
+          )
+          return
+        }
+        const propAtt = buildEmotePropAttachment(cached)
+        const props = propAtt ? { ...propAtt, attachParent: record.pivot } : null
+        if (record.odkLocomotion.playProfileEmote(clip, resolved.loop, props)) {
           record.activeEmoteUrn = resolved.urn.trim().toLowerCase()
+          clientDebugLog.log(
+            'emote',
+            `remote emote play · peer=${short}… mode=odk loop=${resolved.loop} urn=${resolved.urn.slice(0, 56)} props=${props ? 1 : 0}`,
+            { throttleMs: 2000, throttleKey: `emote-play:${short}` }
+          )
         }
         return
       }
 
       if (!record.animations) return
-      if (record.animations.playProfileEmoteFromGltf(cached, resolved.loop)) {
+      if (record.animations.playProfileEmoteFromGltf(cached, resolved.loop, resolved.urn)) {
         record.activeEmoteUrn = resolved.urn.trim().toLowerCase()
+        clientDebugLog.log(
+          'emote',
+          `remote emote play · peer=${short}… mode=dcl loop=${resolved.loop} clips=${cached.animations.map((c) => c.name).join(',')} urn=${resolved.urn.slice(0, 56)}`,
+          { throttleMs: 2000, throttleKey: `emote-play:${short}` }
+        )
+      } else {
+        clientDebugLog.log(
+          'emote',
+          `remote emote play failed · peer=${short}… mode=dcl clips=${cached.animations.map((c) => c.name).join(',')} (no avatar/prop tracks?)`,
+          { level: 'warn', throttleMs: 4000, throttleKey: `emote-fail:${short}` }
+        )
       }
-    } catch {
-      /* scene / profile emote load failures are expected when assets are unavailable */
+    } catch (err) {
+      clientDebugLog.log(
+        'emote',
+        `remote emote error · peer=${short}… ${err instanceof Error ? err.message : String(err)}`,
+        { level: 'warn', throttleMs: 4000, throttleKey: `emote-err:${short}` }
+      )
     }
   }
 

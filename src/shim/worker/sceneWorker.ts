@@ -517,7 +517,8 @@ function installAuthSeedHolderRepair(eng: {
    * Was 4 waves × 2.5s gap — felt as 3–5s paint lag while live paintDelta waited behind storms.
    */
   const FORCE_RESYNC_MIN_MESH = 500
-  const FORCE_CHUNK = 1_200
+  /** Smaller chunks so engine.update stays under abort budget during one-shot repair. */
+  const FORCE_CHUNK = 400
   const FORCE_WAVE_MAX = 1
   const FORCE_WAVE_GAP_MS = 0
 
@@ -525,65 +526,67 @@ function installAuthSeedHolderRepair(eng: {
     ticks++
     if (ticks > MAX_TICKS) return
 
+    // Pixelwars-only work. Plaza / fishing must not pay for mesh+mat scans or force-resync
+    // (FORCE_RESYNC at ≥500 MeshRenderers froze Genesis with 5s engine ticks).
     const SeedHolder = eng.getComponentOrNull?.('maze::seed-holder')
+    if (!SeedHolder || typeof SeedHolder.get !== 'function') return
+
     let bestSeed = 0
     const holders: number[] = []
-    if (SeedHolder && typeof SeedHolder.get === 'function') {
+    try {
+      for (const row of eng.getEntitiesWith!(SeedHolder)) {
+        const entity = row[0] as number
+        holders.push(entity)
+        const v = SeedHolder.get!(entity)
+        const s = typeof v?.seed === 'number' ? v.seed : 0
+        if (s !== 0) bestSeed = s
+      }
+    } catch {
+      /* ignore */
+    }
+
+    // Also scan NetworkEntity enum 3000 (pixelwars SeedHolder sync id) if orphan-only.
+    const NetworkEntity = eng.getComponentOrNull?.('core-schema::Network-Entity') as
+      | { get?: (e: number) => { networkId?: number; entityId?: number } | null }
+      | null
+      | undefined
+    if (NetworkEntity && bestSeed === 0) {
       try {
-        for (const row of eng.getEntitiesWith!(SeedHolder)) {
+        for (const row of eng.getEntitiesWith!(NetworkEntity)) {
           const entity = row[0] as number
-          holders.push(entity)
-          const v = SeedHolder.get!(entity)
-          const s = typeof v?.seed === 'number' ? v.seed : 0
-          if (s !== 0) bestSeed = s
+          const net = NetworkEntity.get?.(entity)
+          if (net && Number(net.networkId) === 0 && Number(net.entityId) === 3000) {
+            if (SeedHolder.has?.(entity)) {
+              const v = SeedHolder.get!(entity)
+              const s = typeof v?.seed === 'number' ? v.seed : 0
+              if (s !== 0) bestSeed = s
+            }
+          }
         }
       } catch {
         /* ignore */
       }
+    }
 
-      // Also scan NetworkEntity enum 3000 (pixelwars SeedHolder sync id) if orphan-only.
-      const NetworkEntity = eng.getComponentOrNull?.('core-schema::Network-Entity') as
-        | { get?: (e: number) => { networkId?: number; entityId?: number } | null }
-        | null
-        | undefined
-      if (NetworkEntity && bestSeed === 0) {
-        try {
-          for (const row of eng.getEntitiesWith!(NetworkEntity)) {
-            const entity = row[0] as number
-            const net = NetworkEntity.get?.(entity)
-            if (net && Number(net.networkId) === 0 && Number(net.entityId) === 3000) {
-              if (SeedHolder.has?.(entity)) {
-                const v = SeedHolder.get!(entity)
-                const s = typeof v?.seed === 'number' ? v.seed : 0
-                if (s !== 0) bestSeed = s
-              }
-            }
+    if (bestSeed !== 0 && typeof SeedHolder.createOrReplace === 'function') {
+      let repaired = 0
+      for (const entity of holders) {
+        const cur = SeedHolder.get!(entity)?.seed ?? 0
+        if (cur !== bestSeed) {
+          try {
+            SeedHolder.createOrReplace!(entity, { seed: bestSeed })
+            repaired++
+          } catch {
+            /* ignore */
           }
-        } catch {
-          /* ignore */
         }
       }
-
-      if (bestSeed !== 0 && typeof SeedHolder.createOrReplace === 'function') {
-        let repaired = 0
-        for (const entity of holders) {
-          const cur = SeedHolder.get!(entity)?.seed ?? 0
-          if (cur !== bestSeed) {
-            try {
-              SeedHolder.createOrReplace!(entity, { seed: bestSeed })
-              repaired++
-            } catch {
-              /* ignore */
-            }
-          }
-        }
-        if (repaired > 0 || (bestSeed !== lastLoggedSeed && ticks < 120)) {
-          lastLoggedSeed = bestSeed
-          workerLog(
-            'log',
-            `[sceneWorker] seed-holder repair — seed=${bestSeed} holders=${holders.length} repaired=${repaired}`
-          )
-        }
+      if (repaired > 0 || (bestSeed !== lastLoggedSeed && ticks < 120)) {
+        lastLoggedSeed = bestSeed
+        workerLog(
+          'log',
+          `[sceneWorker] seed-holder repair — seed=${bestSeed} holders=${holders.length} repaired=${repaired}`
+        )
       }
     }
 

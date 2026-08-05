@@ -616,7 +616,7 @@ export class MaterialApplier {
       if (!mainTex) texturesOk = false
       else {
         this.applyUvTransform(mainTex, getTextureDef(mainUnion), prev, mesh)
-        if (flipMapU && mainUnion.tex?.$case === 'texture') flipTextureU(mainTex)
+        if (mainUnion.tex?.$case === 'texture') flipTextureU(mainTex, flipMapU)
       }
     }
     const alphaUnion = coerceTextureUnion(inner.alphaTexture)
@@ -640,7 +640,7 @@ export class MaterialApplier {
         if (!alphaTex) texturesOk = false
         else {
           this.applyUvTransform(alphaTex, getTextureDef(alphaUnion), prev, mesh)
-          if (flipMapU && alphaUnion.tex?.$case === 'texture') flipTextureU(alphaTex)
+          if (alphaUnion.tex?.$case === 'texture') flipTextureU(alphaTex, flipMapU)
         }
       }
     }
@@ -662,7 +662,7 @@ export class MaterialApplier {
           if (!emissiveTex) texturesOk = false
           else if (emissiveTex !== m.map) {
             this.applyUvTransform(emissiveTex, getTextureDef(emissiveUnion), prev, mesh)
-            if (flipMapU && emissiveUnion.tex?.$case === 'texture') flipTextureU(emissiveTex)
+            if (emissiveUnion.tex?.$case === 'texture') flipTextureU(emissiveTex, flipMapU)
           }
         }
       }
@@ -675,7 +675,7 @@ export class MaterialApplier {
         else {
           bumpTex.colorSpace = THREE.LinearSRGBColorSpace
           this.applyUvTransform(bumpTex, getTextureDef(bumpUnion), prev, mesh)
-          if (flipMapU && bumpUnion.tex?.$case === 'texture') flipTextureU(bumpTex)
+          if (bumpUnion.tex?.$case === 'texture') flipTextureU(bumpTex, flipMapU)
         }
       }
       // Re-apply after maps land — emissiveIntensity drives flame brightness when albedoColor is absent.
@@ -967,14 +967,19 @@ function objectWorldMirrorX(obj: THREE.Object3D): boolean {
   }
 }
 
-/** Flip texture U after authored offset/tiling: sample' = 1 − sample. Fresh clones only. */
-function flipTextureU(tex: THREE.Texture): void {
-  if (tex.userData.dclMapUFlipped) return
+/**
+ * Flip or un-flip texture U so sample' = 1 − sample when wantFlip.
+ * Must support both directions: first paint often runs before scale.x = −1, then re-apply
+ * when the board flips (event-card JUMP IN otherwise stays L–R mirrored).
+ */
+function flipTextureU(tex: THREE.Texture, wantFlip = true): void {
+  const isFlipped = !!tex.userData.dclMapUFlipped
+  if (wantFlip === isFlipped) return
   const rep = tex.repeat.x
   const off = tex.offset.x
   tex.repeat.x = -rep
   tex.offset.x = 1 - off
-  tex.userData.dclMapUFlipped = true
+  tex.userData.dclMapUFlipped = wantFlip
   tex.needsUpdate = true
 }
 

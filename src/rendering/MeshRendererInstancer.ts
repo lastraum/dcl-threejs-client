@@ -193,9 +193,18 @@ export class MeshRendererInstancer {
     if (index === undefined) return
     bucket.entityIndex.delete(entity)
     bucket.free.push(index)
+    // Hide slot + reset color so round-reset / entity recycle cannot leave painted tiles.
     _mat.makeScale(0, 0, 0)
     bucket.mesh.setMatrixAt(index, _mat)
     bucket.mesh.instanceMatrix.needsUpdate = true
+    if (bucket.useInstanceColor) {
+      _color.setRGB(1, 1, 1)
+      bucket.mesh.setColorAt(index, _color)
+      if (bucket.mesh.instanceColor) {
+        bucket.mesh.instanceColor.needsUpdate = true
+        bucket.mesh.instanceColor.version++
+      }
+    }
     if (bucket.entityIndex.size === 0) this.disposeBucket(key)
   }
 

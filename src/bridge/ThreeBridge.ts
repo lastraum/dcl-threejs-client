@@ -60,7 +60,6 @@ import {
 } from '../rendering/SceneGltfInstancer'
 import {
   applyGltfNodeModifiersToEntity,
-  gltfNodeModifiersMirrorStale,
   gltfNodeModifiersReferenceVideo,
   restoreGltfNodeModifierOriginals
 } from './GltfNodeModifiersSync'
@@ -1556,19 +1555,38 @@ export class ThreeBridge {
         const pb = Material.get(entity) as PbMaterial
         // GPU-instanced GLTF (pixelwars tile-*.glb boards): color via instanceColor.
         // Marker Group has no Mesh — private applyScalars was a silent no-op.
+        // Textured materials return false → stay pending for full map apply.
         if (obj && this.applyInstancedGltfMaterialNow(entity, obj, pb)) {
           this.pendingMaterialEntities.delete(entity)
           continue
         }
-        // MeshRenderer planes: private scalars (GPU instance gated off).
+        // Instanced + textured Material: private-clone once so maps load (press-E, cards).
+        // Never re-promote every meshDirty — that froze plaza (5s engine ticks).
+        if (
+          obj &&
+          (obj.userData.dclInstanced || this.instancer.has(entity)) &&
+          !materialIsScalarOnly(pb)
+        ) {
+          if (!obj.userData.dclPromotedForTextureMat) {
+            obj.userData.dclPromotedForTextureMat = true
+            this.promoteInstancedForMotion(entity, obj)
+          }
+          this.pendingMaterialEntities.add(entity)
+          continue
+        }
+        // MeshRenderer planes: instanceColor for scalar; textured stay private + deferred maps.
         if (obj && MeshRenderer.has(entity) && this.applyMeshRendererMaterialNow(entity, obj)) {
           if (
             this.meshRendererInstancer.has(entity) ||
             !this.entityNeedsMeshWork(entity, obj, { includeMaterial: false })
           ) {
-            this.pendingMeshEntities.delete(entity)
+            if (materialIsScalarOnly(pb) || !this.pendingMaterialEntities.has(entity)) {
+              this.pendingMeshEntities.delete(entity)
+            }
           }
-          this.pendingMaterialEntities.delete(entity)
+          if (materialIsScalarOnly(pb)) {
+            this.pendingMaterialEntities.delete(entity)
+          }
           continue
         }
         const visual = obj ? this.entityVisualRoot(entity, obj) : null
@@ -1583,28 +1601,23 @@ export class ThreeBridge {
           this.pendingMaterialEntities.add(entity)
         }
       }
-      if (GltfNodeModifiers.has(entity)) {
-        const obj = this.store.nodes.get(entity)
-        // Same-frame tint on GPU instances — do not wait for deferred 48/frame budget.
-        if (!obj || !this.applyInstancedGltfNodeModifiersNow(entity, obj)) {
+      // GltfNodeModifiers: apply once when the *component* is in this diff (put/delete).
+      // Mesh attach also queues via notifyGltfAttached. Never re-scan on Transform streams.
+      const entityComps = diff.get(entity)
+      if (entityComps?.has(GltfNodeModifiers.componentId)) {
+        if (GltfNodeModifiers.has(entity)) {
+          const obj = this.store.nodes.get(entity)
+          if (!obj || !this.applyInstancedGltfNodeModifiersNow(entity, obj)) {
+            this.pendingGltfNodeModEntities.add(entity)
+          }
+        } else {
+          // Delete — runGltfNodeModifiersPass restores original GLB materials.
           this.pendingGltfNodeModEntities.add(entity)
         }
       }
     }
     // Motion components → unfreeze MeshRenderer roots (static boards stay frozen).
     this.unfreezeMeshRenderersFromDiff(diff)
-    // Re-apply event-card materials when Transform.scale.x lands after first paint
-    // (JUMP IN / thumbnails otherwise stay L–R mirrored).
-    for (const entity of applied.upserts) {
-      if (!GltfNodeModifiers.has(entity)) continue
-      if (this.pendingGltfNodeModEntities.has(entity)) continue
-      const obj = this.store.nodes.get(entity)
-      if (!obj) continue
-      const mods = GltfNodeModifiers.get(entity) as PBGltfNodeModifiers
-      if (gltfNodeModifiersMirrorStale(obj, mods)) {
-        this.pendingGltfNodeModEntities.add(entity)
-      }
-    }
 
     // Cap UV pass — mass meshDirty (3k+) must not walk every entity every frame.
     const uvBudgetEnd = consumeStart + 4
@@ -1869,8 +1882,11 @@ export class ThreeBridge {
 
   /**
    * Material / albedo tint on a GPU-instanced GltfContainer → instanceColor (no private clone).
-   * Pixelwars land tiles are tile-*.glb instances with per-entity recolors.
-   * Also tints when material has a shared texture (instanceColor multiplies the map).
+   * Pixelwars land tiles are tile-*.glb instances with per-entity **scalar** recolors.
+   *
+   * Textured / video / avatar materials must NOT use this path: InstancedMesh cannot bind
+   * unique maps, and clearing pending here starved plaza event cards + fishing press-E
+   * textures (looked like blank billboards / frozen reels).
    */
   private applyInstancedGltfMaterialNow(
     entity: Entity,
@@ -1878,7 +1894,9 @@ export class ThreeBridge {
     pb: PbMaterial
   ): boolean {
     if (!obj.userData.dclInstanced && !this.instancer.has(entity)) return false
-    // InstancedMesh cannot bind video/avatar maps — tint albedo only, never thrash deferred queue.
+    // Textured materials need a private mesh (or promote). Returning false keeps them in
+    // pendingMaterialEntities / meshDirty so runMaterialPass can full-apply maps + U flip.
+    if (!materialIsScalarOnly(pb)) return false
     const rgb = materialAlbedoRgb(pb)
     // Always write color (ignore material fingerprint) — step-on boards recolor often and
     // fingerprint false-negatives left tiles stuck until a later idle drain.
@@ -2185,10 +2203,13 @@ export class ThreeBridge {
     if (deferTextures) return
     if (!this.pendingMaterialEntities.size && !this.pendingGltfNodeModEntities.size) return
     this.materialTickBusy = true
+    // Slightly higher budget when GltfNodeModifiers pending (plaza event cards / fishing E).
+    const nodeModBoost = this.pendingGltfNodeModEntities.size > 0 ? 12 : 0
+    const entityBoost = this.pendingGltfNodeModEntities.size > 0 ? 16 : 0
     // Fire-and-forget — must not be awaited from the async frame path.
     void Promise.all([
-      this.runMaterialPass(this.ecs.Material, budgetMs, maxEntities, false),
-      this.runGltfNodeModifiersPass(budgetMs, maxEntities)
+      this.runMaterialPass(this.ecs.Material, budgetMs + nodeModBoost, maxEntities + entityBoost, false),
+      this.runGltfNodeModifiersPass(budgetMs + nodeModBoost, maxEntities + entityBoost)
     ])
       .catch((err) => console.warn('[ThreeBridge] deferred material pass failed', err))
       .finally(() => {
@@ -2359,8 +2380,17 @@ export class ThreeBridge {
     const passStart = performance.now()
     let processed = 0
 
-    // FIFO — avoid O(n log n) mesh traversals in the sort comparator every drain pass.
-    const ordered = [...this.pendingMaterialEntities]
+    // Prefer textured materials first without O(n log n) sort (plaza stall under load).
+    const textured: Entity[] = []
+    const scalar: Entity[] = []
+    for (const entity of this.pendingMaterialEntities) {
+      if (Material.has(entity) && !materialIsScalarOnly(Material.get(entity) as PbMaterial)) {
+        textured.push(entity)
+      } else {
+        scalar.push(entity)
+      }
+    }
+    const ordered = textured.length ? textured.concat(scalar) : scalar
 
     const { MeshRenderer } = this.ecs
     for (const entity of ordered) {
@@ -2562,6 +2592,16 @@ export class ThreeBridge {
     const lk = lightKey(entity)
     const pk = particleKey(entity)
     this.clearGltfVisual(entity, obj)
+    // MeshRenderer GPU instances only have a marker Group — not a private Mesh.
+    // Must detach or round-reset / tile teardown leaves colored instances visible forever
+    // (pixelwars paint cells stay painted after game end).
+    if (
+      this.meshRendererInstancer.has(entity) ||
+      obj.userData.dclMeshRendererInstanced ||
+      obj.userData[MESH_RENDERER_INSTANCE_MARKER]
+    ) {
+      this.meshRendererInstancer.detach(entity, obj)
+    }
     for (const name of [tk, pk]) {
       const child = obj.getObjectByName(name)
       if (!child) continue
@@ -2576,17 +2616,21 @@ export class ThreeBridge {
       obj.remove(child)
     }
     // Primitive MeshRenderer mesh (not glTF) — clearGltfVisual leaves these alone.
+    // Also strip instancer markers left under __mesh_* if detach missed them.
     const primitive = obj.getObjectByName(mk)
-    if (
-      primitive &&
-      (primitive as THREE.Mesh).isMesh &&
-      (primitive.userData.primitiveKind !== undefined ||
-        primitive.userData.primitiveMeshKey !== undefined)
-    ) {
-      const mesh = primitive as THREE.Mesh
-      releasePrimitiveGeometry(mesh.geometry)
-      disposeMeshMaterials(mesh)
-      obj.remove(mesh)
+    if (primitive) {
+      if (primitive.userData[MESH_RENDERER_INSTANCE_MARKER] || primitive.userData.dclInstanceMarker) {
+        obj.remove(primitive)
+      } else if (
+        (primitive as THREE.Mesh).isMesh &&
+        (primitive.userData.primitiveKind !== undefined ||
+          primitive.userData.primitiveMeshKey !== undefined)
+      ) {
+        const mesh = primitive as THREE.Mesh
+        releasePrimitiveGeometry(mesh.geometry)
+        disposeMeshMaterials(mesh)
+        obj.remove(mesh)
+      }
     }
     removeLightSource(obj, lk)
   }

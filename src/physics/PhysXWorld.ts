@@ -1250,7 +1250,28 @@ export class PhysXWorld {
   }
 
   isWorldBakedStatic(entity: number): boolean {
-    return this.actorWorldBaked.get(entity) === true && this.staticActors.has(entity)
+    // Multi-shape GLTF expands to child actors only — parent still owns actorWorldBaked.
+    return this.actorWorldBaked.get(entity) === true && this.hasStaticActor(entity)
+  }
+
+  /**
+   * Entity world scale baked into verts at cook (entity-local or world-baked multi-shape).
+   * Pose slides are T+R only — scale grow (pixelwars tile tween 1e-3→2) must recook.
+   */
+  hasCookScaleDrift(desc: PhysicsColliderDesc, relTol = 0.04): boolean {
+    const cookScale = this.actorCookScale.get(desc.entity)
+    if (!cookScale) return false
+    if (!this.matrixHasFinitePose(desc.matrix)) return false
+    desc.matrix.decompose(this._pos, this._quat, this._scale)
+    const rel = (a: number, b: number) => {
+      const den = Math.max(Math.abs(a), Math.abs(b), 1e-4)
+      return Math.abs(a - b) / den
+    }
+    return (
+      rel(this._scale.x, cookScale.x) > relTol ||
+      rel(this._scale.y, cookScale.y) > relTol ||
+      rel(this._scale.z, cookScale.z) > relTol
+    )
   }
 
   /** Entity-local multi-shape cooks store baselines for relative door/lift slides. */
@@ -1365,10 +1386,17 @@ export class PhysXWorld {
           // Plaza static ROOT — skip if pose unchanged (force does not reinsert unmoved).
           if (!this.matrixHasFinitePose(desc.matrix)) continue
           if (this.staticPoseFp.get(desc.entity) === poseFp) continue
+          // Scale drift cannot be fixed by T+R slide — leave geom unsynced for recook queue.
+          if (!worldBaked && this.hasCookScaleDrift(desc)) {
+            if (this.staticFp.has(desc.entity)) this.staticFp.delete(desc.entity)
+            continue
+          }
           if (!worldBaked && !this.isPoseSlideSafe(actor, desc)) {
             if (this.staticFp.has(desc.entity)) {
               this.staticFp.delete(desc.entity)
             }
+            // Do not ack poseFp — caller must recook (unsafe slide left soft furniture).
+            continue
           }
           try {
             desc.matrix.decompose(this._pos, this._quat, this._scale)
@@ -1652,6 +1680,9 @@ export class PhysXWorld {
 
   isColliderSynced(desc: PhysicsColliderDesc): boolean {
     if (this.failedCookFp.has(desc.fingerprint)) return false
+    // Cook-scale mismatch = unsynced even when geom fp + children look live
+    // (world-baked multi-shape tile grow left tiny hulls while isColliderSynced stayed true).
+    if (this.hasCookScaleDrift(desc)) return false
 
     if (desc.shapes?.length) {
       const geomFp = desc.fingerprint
@@ -1723,16 +1754,21 @@ export class PhysXWorld {
         }
         const shapeCountOk = expectedShapes > 0 && liveShapes === expectedShapes
 
+        // Scale grow (tile tween) bakes into world-space verts — geom fp stays identical while
+        // hull stays at cook-time scale. Must fall through to replaceStatic, not pose-ack.
+        const scaleDrift = this.hasCookScaleDrift(desc)
+
         // Children live + parent geom fingerprint matches → keep solids (pose-only drift OK).
         // Multi-shape parents have no single RigidStatic; only children matter.
-        if (shapeCountOk && prevGeomFp === geomFp) {
+        if (shapeCountOk && prevGeomFp === geomFp && !scaleDrift) {
           this.staticPoseFp.set(desc.entity, poseFp)
           continue
         }
 
         // Children live + per-shape geom fps match → adopt new parent geom string without recook
         // (extract naming noise). Missing child fp (legacy expand) still counts as match if live.
-        if (shapeCountOk && expectedShapes > 0) {
+        // NEVER re-adopt when cook scale drifted — that left pixelwars tiles at 0.001 hulls.
+        if (shapeCountOk && expectedShapes > 0 && !scaleDrift) {
           let childFpOk = true
           for (let i = 0; i < desc.shapes.length; i++) {
             const shape = desc.shapes[i]!
@@ -3502,7 +3538,10 @@ export class PhysXWorld {
       desc.entity,
       shapes.map((shape) => new THREE.Matrix4().copy(desc.matrix).multiply(shape.localMatrix))
     )
-    this.actorCookScale.delete(desc.entity)
+    // World-bake embeds full mesh world matrix (incl. scale). Track cook scale so
+    // Transform/Tween scale grow can force recook (pose slides cannot resize hulls).
+    desc.matrix.decompose(this._pos, this._quat, this._scale)
+    this.actorCookScale.set(desc.entity, this._scale.clone())
 
     if (attached < shapes.length) {
       console.warn(

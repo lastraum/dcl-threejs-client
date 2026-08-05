@@ -1097,13 +1097,25 @@ export class AnimatorBridge {
       }
       sleeping++
     }
-    const wake = (entry: AnimEntry): void => {
+    /**
+     * Become-near / become-live: snap visual from wall clock or ECS — do not replay
+     * skipped frames. Land color is Material CRDT (always applied); this is Animator only.
+     */
+    const wake = (entity: Entity, entry: AnimEntry): void => {
       if (!entry.sleeping) return
       entry.sleeping = false
       entry.mixer.timeScale = 1
       entry.deferredSampleDt = 0
-      // Wall-clock phase so shared-hash groups rejoin in sync.
+      // Looping decorative clips: wall-clock phase (shared-hash groups rejoin in sync).
       snapLoopingActionsToWallClock(entry, performance.now() / 1000)
+      // One-shots / doors: re-apply ECS Animator so end pose is correct after sleep.
+      if (!entry.shareableLooping && this.ecs.Animator.has(entity)) {
+        const states = (this.ecs.Animator.get(entity).states ?? []) as readonly AnimatorStateView[]
+        this.applyStatesToEntry(entity, entry, states, entry.gltfSrc, false, true)
+        entry.mixer.update(0)
+      } else {
+        entry.mixer.update(0)
+      }
     }
 
     for (const [entity, entry] of this.entries) {
@@ -1118,7 +1130,7 @@ export class AnimatorBridge {
         putToSleep(entry)
         continue
       }
-      wake(entry)
+      wake(entity, entry)
       entry.deferredSampleDt += delta
       const cand: Cand = { entity, entry, priority, distSq, inFrustum }
       if (priority >= 2) near.push(cand)

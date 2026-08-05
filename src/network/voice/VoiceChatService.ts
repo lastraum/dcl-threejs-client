@@ -272,6 +272,13 @@ export class VoiceChatService {
   async unlockRemotePlayback(reason = 'unlock'): Promise<void> {
     if (!this.canHear()) return
     this.refreshRooms()
+    // No remotes and rooms already unlocked — skip startAudio/rescan storm (pixelwars click spam).
+    if (this.remoteCount === 0 && reason === 'user-gesture') {
+      const rooms = this.liveRooms()
+      if (rooms.length > 0 && rooms.every((r) => r.canPlaybackAudio)) {
+        return
+      }
+    }
     const rooms = this.liveRooms()
     for (const room of rooms) {
       try {
@@ -285,9 +292,12 @@ export class VoiceChatService {
     await this.kickAllRemotePlayback(reason)
     const paused = [...this.remotes.values()].filter((e) => e.element.paused).length
     const playback = rooms.map((r) => `${shortName(r.name)}:canPlay=${String(r.canPlaybackAudio)}`).join(' ')
-    voiceLog(
-      `unlockRemotePlayback (${reason}) remotes=${this.remoteCount} paused=${paused} ${playback || 'no-rooms'}`
-    )
+    // Throttle success logs — was every click with remotes=0 and tanked FPS with debug capture on.
+    if (this.remoteCount > 0 || reason !== 'user-gesture') {
+      voiceLog(
+        `unlockRemotePlayback (${reason}) remotes=${this.remoteCount} paused=${paused} ${playback || 'no-rooms'}`
+      )
+    }
     this.notify()
   }
 

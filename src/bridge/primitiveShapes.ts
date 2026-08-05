@@ -80,6 +80,10 @@ function uvsFingerprint(uvs?: number[]): string {
   return uvs.join(',')
 }
 
+/**
+ * Build a **private** geometry (caller owns dispose). Prefer {@link acquirePrimitiveGeometry}
+ * for static MeshRenderers so 10k+ boards share one BufferGeometry per key.
+ */
 export function buildPrimitiveGeometry(spec: PrimitiveMeshSpec): THREE.BufferGeometry {
   const kind = spec.mesh?.$case ?? 'box'
 
@@ -105,6 +109,57 @@ export function buildPrimitiveGeometry(spec: PrimitiveMeshSpec): THREE.BufferGeo
   const uvs = spec.mesh?.$case === 'box' ? spec.mesh.box?.uvs : undefined
   if (uvs?.length) applyBoxUvs(geometry, uvs)
   return geometry
+}
+
+const PRIMITIVE_GEO_POOL_KEY = 'dclPrimitiveGeoPoolKey'
+const primitiveGeoPool = new Map<string, { geo: THREE.BufferGeometry; refs: number }>()
+
+/**
+ * Shared geometry for static MeshRenderers with stable UVs.
+ * Animated UV sprites (flipbooks) always get a private geo — they mutate UV attrs in place.
+ */
+export function acquirePrimitiveGeometry(spec: PrimitiveMeshSpec): THREE.BufferGeometry {
+  // In-place UV animation must not share geometry across entities.
+  if (hasAnimatedPlaneUvs(spec)) {
+    const geo = buildPrimitiveGeometry(spec)
+    geo.userData[PRIMITIVE_GEO_POOL_KEY] = ''
+    return geo
+  }
+  const key = primitiveMeshKey(spec)
+  let entry = primitiveGeoPool.get(key)
+  if (!entry) {
+    const geo = buildPrimitiveGeometry(spec)
+    geo.userData[PRIMITIVE_GEO_POOL_KEY] = key
+    entry = { geo, refs: 0 }
+    primitiveGeoPool.set(key, entry)
+  }
+  entry.refs++
+  return entry.geo
+}
+
+/** Release a geometry from {@link acquirePrimitiveGeometry}. No-op-safe for foreign geos. */
+export function releasePrimitiveGeometry(geometry: THREE.BufferGeometry | null | undefined): void {
+  if (!geometry) return
+  const key = geometry.userData[PRIMITIVE_GEO_POOL_KEY] as string | undefined
+  if (key === undefined) {
+    geometry.dispose()
+    return
+  }
+  // Private non-pooled (animated UV): marked with empty key.
+  if (key === '') {
+    geometry.dispose()
+    return
+  }
+  const entry = primitiveGeoPool.get(key)
+  if (!entry || entry.geo !== geometry) {
+    geometry.dispose()
+    return
+  }
+  entry.refs = Math.max(0, entry.refs - 1)
+  if (entry.refs === 0) {
+    primitiveGeoPool.delete(key)
+    entry.geo.dispose()
+  }
 }
 
 /** Plane with custom MeshRenderer UVs — campfire sprite pool + billboards. */

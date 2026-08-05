@@ -1103,9 +1103,12 @@ export class SocialService {
       }
     }
     void run()
+    // Retries every ~5–8s on stream end — log once (was spamming pixelwars idle FPS + debug capture).
     clientDebugLog.log('social', 'Subscribed to friend connectivity updates', {
       level: 'success',
-      alsoConsole: true
+      alsoConsole: true,
+      throttleMs: 30_000,
+      throttleKey: 'social-friend-connectivity-sub'
     })
   }
 

@@ -1083,8 +1083,12 @@ export class RemoteAvatarManager {
   upsertPeer(address: string, positionDcl?: THREE.Vector3): void {
     const key = address.toLowerCase()
     if (this.isLocalPeer(key)) return
-    // RTMP stream-key ingress / Cast bots — video-only, never a player mesh.
-    if (isNonPlayerLiveKitIdentity(key)) return
+    // RTMP stream-key ingress / Cast bots / auth-server — never a player mesh.
+    if (isNonPlayerLiveKitIdentity(key)) {
+      // Drop a mistaken prior spawn (e.g. before identity filter covered auth-server).
+      if (this.peers.has(key)) this.removePeer(key)
+      return
+    }
     let record = this.peers.get(key)
     if (!record) {
       const entity = avatarEntityFromAddress(key)
@@ -1260,7 +1264,10 @@ export class RemoteAvatarManager {
   ): void {
     const key = address.toLowerCase()
     if (this.isLocalPeer(key)) return
-    if (isNonPlayerLiveKitIdentity(key)) return
+    if (isNonPlayerLiveKitIdentity(key)) {
+      if (this.peers.has(key)) this.removePeer(key)
+      return
+    }
     const position = dclToThreeVec(positionDcl)
     const yaw = dclYawToThreeYaw(yawDcl)
     if (!this.peers.has(key)) {

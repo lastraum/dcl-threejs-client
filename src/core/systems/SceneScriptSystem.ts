@@ -728,9 +728,18 @@ export class SceneScriptSystem {
         this.animatorBridge?.markDirty(entity)
         this.animatorBridge?.syncEntity(entity, this.view)
       } else if (this.bridge?.entityGltfHasAnimations(entity)) {
-        this.bridgeDirty = true
-        this.animatorBridge?.markDirty(entity)
-        this.animatorBridge?.syncEntityAllowDefaultAutoplay(entity, this.view)
+        // GPU-instanced boards (pixelwars tiles with unused export clips) have no private
+        // hierarchy — skip default autoplay so we do not force clone / mixers × N.
+        const nodes = this.bridge.getEntityNodes()
+        const obj = nodes.get(entity)
+        if (obj?.userData.dclInstanced) {
+          // Rest pose on GPU instance — keep INSTANCE_COLLIDER_SHAPES + 1 draw.
+        } else {
+          // Includes fishing bobber float clips — rest-pose scale can hide until bind.
+          this.bridgeDirty = true
+          this.animatorBridge?.markDirty(entity)
+          this.animatorBridge?.syncEntityAllowDefaultAutoplay(entity, this.view)
+        }
       }
       // else: static terrain/props stay GPU-instanced with INSTANCE_COLLIDER_SHAPES intact
     })
@@ -1703,6 +1712,23 @@ export class SceneScriptSystem {
   private realmInfoProvider: (() => CommsRealmInfo | null) | null = null
   /** Last isConnectedSceneRoom pushed — detect edge for SDK network REQ_CRDT_STATE. */
   private lastSceneRoomConnected: boolean | null = null
+  /**
+   * Release LiveKit scene-binary hold after worker main/syncEntity settled.
+   * Wired from World → CommsService.setSceneBinaryIngressHold(false).
+   */
+  private sceneBinaryIngressRelease: (() => void) | null = null
+
+  setSceneBinaryIngressRelease(handler: (() => void) | null): void {
+    this.sceneBinaryIngressRelease = handler
+  }
+
+  private releaseSceneBinaryIngressAfterMain(): void {
+    try {
+      this.sceneBinaryIngressRelease?.()
+    } catch {
+      /* ignore */
+    }
+  }
 
   private refreshRealmInfoFromProvider(): void {
     if (!this.realmInfoProvider) return
@@ -1770,6 +1796,69 @@ export class SceneScriptSystem {
   pulseSceneNetworkConnected(): void {
     this.lastSceneRoomConnected = null
     this.refreshRealmInfoFromProvider()
+  }
+
+  private authServerResyncAt = 0
+
+  /**
+   * Auth-server scenes (pixelwars paint, Flagtag): SDK sets isRoomReady only when
+   * RES_CRDT_STATE is processed **while** RootEntity RealmInfo exists. If RES wins the
+   * race (stateIsSyncronized=true, isRoomReady still false), joinRoster / paintTick stay
+   * queued forever → no teamAssigned → no Material recolors (crdt-outbound bytes=0).
+   *
+   * Pulse isConnectedSceneRoom false→true so RealmInfo.onChange re-runs requestState and
+   * a later RES can open the room. Debounced (once per 8s).
+   */
+  resyncAuthServerNetworkRoom(): void {
+    if (!this.worker || !this.running) return
+    if (!this.realmInfoProvider) return
+    const now = performance.now()
+    // Was 8s — still saw AUTH_RES storms every ~4s from SDK retries + ready pulse.
+    // Keep this rare: each false→true pulse clears stateIsSyncronized and re-fetches RES.
+    if (now - this.authServerResyncAt < 30_000) return
+    this.authServerResyncAt = now
+
+    const live = this.realmInfoProvider()
+    if (!live?.isConnectedSceneRoom) return
+
+    clientDebugLog.log(
+      'sync',
+      'auth-server present — re-pulsing RealmInfo isConnectedSceneRoom for isRoomReady / teamAssigned',
+      { level: 'info', alsoConsole: true }
+    )
+
+    const provider = this.realmInfoProvider
+    const deliverRealm = (connected: boolean): void => {
+      const base = provider?.() ?? live
+      this.reserved.setRealmInfo({ ...base, isConnectedSceneRoom: connected })
+      if (this.encoder && this.view) {
+        this.encoder.invalidateLastSerialized(
+          this.view.RootEntity,
+          this.readComponents.RealmInfo.componentId
+        )
+      }
+      this.refreshClientPosesFromProvider()
+      if (!this.clientPlayerPose || !this.clientCameraPose) return
+      this.prepareReservedRoundTrip(this.clientPlayerPose, this.clientCameraPose)
+      const bytes = this.encodeRendererCrdt()
+      if (!bytes?.byteLength) return
+      const copy = bytes.slice()
+      this.worker?.postMessage(
+        { type: 'renderer-inbound-deliver', data: [copy] } satisfies MainToWorker,
+        [copy.buffer]
+      )
+    }
+
+    // Drop connected so SDK clears isRoomReady + stateIsSyncronized.
+    this.lastSceneRoomConnected = false
+    deliverRealm(false)
+
+    // Re-assert after worker applies the false pulse (next frames + engine tick).
+    window.setTimeout(() => {
+      this.lastSceneRoomConnected = false
+      deliverRealm(true)
+      this.lastSceneRoomConnected = true
+    }, 120)
   }
 
   /** Sample latest player/camera right before outbound CRDT (avoids stale rotation between sync frames). */
@@ -2114,6 +2203,18 @@ export class SceneScriptSystem {
         else this.flushUiFrame()
       })
       clientDebugLog.log('scene', 'Scene worker ready (main thread)', { level: 'success' })
+      // Worker waited for main/syncEntity — release LiveKit AUTH_RES / CRDT into the scene.
+      // Buffering AUTH_RES until now prevents orphan SeedHolder (syncEntity "already in use")
+      // which left paint cell ids mismatched (HUD % up, white tiles, crdt Material bytes=0).
+      this.releaseSceneBinaryIngressAfterMain()
+      // Ensure SDK network sees connected edge after main settled (requestState if needed).
+      this.pulseSceneNetworkConnected()
+      // One deferred resync only if auth-server peer is already present (joinRoster / isRoomReady).
+      // Avoid hammering AUTH_RES every few seconds — that starved Material cold CRDT under load.
+      window.setTimeout(() => {
+        if (!this.running) return
+        this.resyncAuthServerNetworkRoom()
+      }, 600)
       onReady()
       return
     }
@@ -2466,6 +2567,14 @@ export class SceneScriptSystem {
         })
       return
     }
+    // Gameplay CRDT (Material paint boards, meshes, transforms) — jump ahead of empty UI
+    // fingerprint nudges sitting in the pending array (otherwise multi-second recolor lag).
+    const hasGameplayPayload = (item.data?.byteLength ?? 0) > 0 && item.uiEntities === undefined
+    if (hasGameplayPayload) {
+      this.crdtOutboundPending.unshift(item)
+      this.flushCrdtOutboundPendingSynchronously()
+      return
+    }
     this.crdtOutboundPending.push(item)
     // Hydration / menu open with uiEntities — must land before pointer-deliver-done.
     if (item.uiEntities !== undefined) {
@@ -2660,6 +2769,12 @@ export class SceneScriptSystem {
       } finally {
         if (pointerUiMountBatch) this.projection.endForceWorkerUiPuts()
       }
+
+      // Pixelwars paint: Material PUTs ride play-mode cold CRDT (fire-and-forget). Waiting for
+      // the async-frame syncRenderer left boards white while Explorer already showed recolors
+      // (paintTick works — only local Material visual lagged/dropped). Apply MeshRenderer
+      // materials immediately from pendingDiff before the next rAF.
+      if (hasPayload) this.flushMeshRendererMaterialsFromPendingDiff()
 
       if (latestUiEntities !== undefined) this.lastOutboundUiEntitiesKey = uiKey
       if (hasPayload || batchTouchesUi || projectionDeletes.length > 0 || mountChanged) {
@@ -3347,6 +3462,55 @@ export class SceneScriptSystem {
     this.projection.clearVcLiveTransformForUnbind()
   }
 
+  /**
+   * Same-batch paint recolors. instanceColor is O(1) — allow large batches so a paintDelta
+   * of hundreds of cells lands in one frame (was 512, left multi-batch lag).
+   */
+  private static readonly MESH_RENDERER_MATERIAL_FLUSH_CAP = 4096
+
+  /**
+   * Same-batch MeshRenderer Material recolor after worker cold CRDT applyIncoming.
+   * Prefer GPU instanceColor (O(1) per entity). Does not remove from pendingDiff —
+   * syncRenderer still handles first attach / mesh work.
+   */
+  private flushMeshRendererMaterialsFromPendingDiff(): void {
+    if (!this.bridge || !this.pendingDiff.size) return
+    const { Material, MeshRenderer } = this.readComponents
+    const matId = Material.componentId
+    const hardMs = 12 // O(1) instanceColor — match paint-storm budget
+    const t0 = performance.now()
+    let applied = 0
+    let seen = 0
+    let missingMesh = 0
+    const cleared: Entity[] = []
+    for (const [entity, comps] of this.pendingDiff) {
+      if (comps.get(matId) !== 'put') continue
+      if (!Material.has(entity)) continue
+      if (!MeshRenderer.has(entity)) {
+        missingMesh++
+        continue
+      }
+      seen++
+      if (applied >= SceneScriptSystem.MESH_RENDERER_MATERIAL_FLUSH_CAP) break
+      if (performance.now() - t0 >= hardMs && applied > 0) break
+      if (this.bridge.forceApplyMeshRendererMaterial(entity)) {
+        applied++
+        // Drop Material put so force-wave leftovers don't starve new paintDelta entities
+        // at the head of pendingDiff on the next flush.
+        comps.delete(matId)
+        if (comps.size === 0) cleared.push(entity)
+      }
+    }
+    for (const entity of cleared) this.pendingDiff.delete(entity)
+    if (applied > 0 || seen > 0 || missingMesh > 0) {
+      clientDebugLog.log(
+        'collision',
+        `mesh-renderer material flush — applied=${applied}/${seen} missingMesh=${missingMesh} pendingDiff=${this.pendingDiff.size}`,
+        { level: 'info', alsoConsole: true, throttleMs: 1_000, throttleKey: 'mr-mat-flush' }
+      )
+    }
+  }
+
   private foldProjectionChanges(): void {
     const { PlayerEntity, CameraEntity, RootEntity } = this.view
     const {
@@ -3563,6 +3727,10 @@ export class SceneScriptSystem {
         void this.flushPendingPointerCrdt()
       },
       prepareRaycast: () => this.preparePointerRaycast(),
+      resolveMeshRendererInstanceHit: (mesh, instanceId) =>
+        this.bridge?.resolveMeshRendererInstanceEntity(mesh, instanceId) ?? null,
+      getMeshRendererInstancePointerMeshes: () =>
+        this.bridge?.getMeshRendererInstancePointerMeshes() ?? [],
       recordAppend: this.recordRendererAppend,
       // Primary vs PX — gate blocks hit-map pierce under the other root's dialog.
       uiRootId: this.uiRootId,
@@ -5210,6 +5378,8 @@ export class SceneScriptSystem {
   }
 
   dispose(): void {
+    // Next scene load re-arms hold via World.prepare; clear release hook so stale ready cannot open early.
+    this.sceneBinaryIngressRelease = null
     resetBlimpPivotCache()
     this.motionFocusDumped = false
     this.motionFocusDumpTicks = 0

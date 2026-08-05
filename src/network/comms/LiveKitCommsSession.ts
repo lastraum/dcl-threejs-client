@@ -644,6 +644,8 @@ export class LiveKitCommsSession {
     }
     for (const address of addresses) {
       if (address === this.localAddress) continue
+      // Gatekeeper participant lists can include auth-server / streamers — never avatar them.
+      if (isNonPlayerLiveKitIdentity(address)) continue
       this.peerHandlers?.onPeerJoin(address, this.transport)
     }
   }

@@ -346,12 +346,27 @@ export function isStreamerIngressIdentity(identity: string | undefined | null): 
 }
 
 /**
+ * Auth-server SDK peer (`@dcl/sdk/network`) — runs paint/combat state in the scene room.
+ * Identity is literally `authoritative-server` (see CommsService AUTH_SERVER_PEER_IDENTITY).
+ * Must never spawn a remote avatar or name tag.
+ */
+export const AUTH_SERVER_LIVEKIT_IDENTITY = 'authoritative-server'
+
+export function isAuthServerLiveKitIdentity(identity: string | undefined | null): boolean {
+  return (identity ?? '').trim().toLowerCase() === AUTH_SERVER_LIVEKIT_IDENTITY
+}
+
+/**
  * LiveKit room members that must not spawn remote avatars or RFC4 peer plumbing.
  * Still valid for video/audio track attach on `livekit-video://current-stream`.
  */
 export function isNonPlayerLiveKitIdentity(identity: string | undefined | null): boolean {
   if (!identity?.trim()) return true
-  return isPresentationBotIdentity(identity) || isStreamerIngressIdentity(identity)
+  return (
+    isPresentationBotIdentity(identity) ||
+    isStreamerIngressIdentity(identity) ||
+    isAuthServerLiveKitIdentity(identity)
+  )
 }
 
 /**

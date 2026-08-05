@@ -325,6 +325,359 @@ function engineHasSdkStartupSystem(eng: {
   return false
 }
 
+/**
+ * SDK entry-points schedule `main()` as Infinity-priority system and do **not** await the
+ * promise. Pixelwars `setupClient` hits `await import` then `syncEntity(SeedHolder, 3000)`.
+ * Host must wait until that settles before releasing LiveKit AUTH_RES (orphan NetworkEntity race).
+ *
+ * Signal: any `core-schema::Network-Entity` (syncEntity attached), or timeout for non-network scenes.
+ *
+ * Never short-circuit under ~500ms — even when NetworkEntity component is missing/empty, async
+ * main must get time to finish setupClient before ingress is released.
+ */
+async function waitForSdkMainSettled(eng: {
+  getComponentOrNull?: (name: string) => unknown
+  getEntitiesWith?: (...components: unknown[]) => Iterable<unknown>
+}): Promise<{ networkEntities: number; waitedMs: number; reason: string }> {
+  const start = performance.now()
+  const timeoutMs = 5_000
+  const minWaitMs = 500
+  // Let the first await inside main() (dynamic import) resolve.
+  await new Promise<void>((r) => setTimeout(r, 0))
+
+  const countNetwork = (): number => {
+    const NetworkEntity = eng.getComponentOrNull?.('core-schema::Network-Entity')
+    if (!NetworkEntity || typeof eng.getEntitiesWith !== 'function') return 0
+    let n = 0
+    try {
+      for (const _ of eng.getEntitiesWith!(NetworkEntity)) n++
+    } catch {
+      /* ignore */
+    }
+    return n
+  }
+
+  // setupClient may take a few hundred ms (import + systems); poll until syncEntity attaches.
+  while (performance.now() - start < timeoutMs) {
+    const n = countNetwork()
+    const waited = performance.now() - start
+    if (n > 0 && waited >= minWaitMs) {
+      // Second syncEntity (leaderboard etc.) often follows in the same async function.
+      await new Promise<void>((r) => setTimeout(r, 50))
+      const n2 = countNetwork()
+      return {
+        networkEntities: n2,
+        waitedMs: Math.round(performance.now() - start),
+        reason: 'syncEntity-network'
+      }
+    }
+    await new Promise<void>((r) => setTimeout(r, 40))
+  }
+  return {
+    networkEntities: countNetwork(),
+    waitedMs: Math.round(performance.now() - start),
+    reason: countNetwork() > 0 ? 'syncEntity-network-late' : 'timeout'
+  }
+}
+
+/**
+ * Pixelwars / auth-server seed race repair.
+ *
+ * If AUTH_RES landed before `syncEntity(seedHolder, 3000)`, SDK creates an **orphan** entity
+ * with NetworkEntity(0,3000) + SeedHolder{seed:N}, then syncEntity throws "already in use".
+ * Local `seedHolder` stays seed=0 → wrong/no maze cells vs paintDelta ids → white tiles +
+ * rising HUD (serverCoverage / cellEntity.size still drive %).
+ *
+ * Propagate any non-zero `maze::seed-holder` seed onto every entity that has that component
+ * so the scene's seed watcher rebuilds the correct maze.
+ */
+type LwwComponentLike = {
+  has?: (entity: number) => boolean
+  get?: (entity: number) => unknown
+  getOrNull?: (entity: number) => unknown
+  createOrReplace?: (entity: number, value: unknown) => void
+  create?: (entity: number, value?: unknown) => void
+  deleteFrom?: (entity: number, markAsDirty?: boolean) => unknown
+}
+
+/**
+ * Deep-ish clone for Material / MeshRenderer values so createOrReplace is a new object.
+ * Avoids accidental shared references; JSON is fine for plain protobuf-like structs.
+ */
+function cloneComponentValue<T>(value: T): T {
+  try {
+    return structuredClone(value)
+  } catch {
+    return JSON.parse(JSON.stringify(value)) as T
+  }
+}
+
+/**
+ * Force Material (and MeshRenderer) CRDT re-egress for dense paint boards.
+ *
+ * ECS LWW `lastSentData` is updated when a dirty PUT is *yielded* to transports — not when
+ * main actually applies it. If a huge cold CRDT batch is buffered/dropped/failed, lastSent
+ * still holds the painted colors. paintDelta then early-returns (same team) or createOrReplace
+ * dirties but getCrdtUpdates **skips** (bytes equal lastSent) → permanent white tiles while
+ * worker still has MeshRenderer=10k + Material=10k (paint-board diag).
+ *
+ * deleteFrom clears lastSentData; recreate yields a fresh PUT to the renderer transport.
+ * Chunked via `offset` so we never freeze the worker on 10k deletes in one tick.
+ */
+function forceResyncMeshMaterialBoardChunk(
+  eng: {
+    getComponentOrNull?: (name: string) => LwwComponentLike | null
+    getEntitiesWith?: (...components: unknown[]) => Iterable<[number, ...unknown[]]>
+  },
+  entities: number[],
+  offset: number,
+  chunkSize: number,
+  includeMeshRenderer: boolean
+): { forced: number; nextOffset: number; done: boolean } {
+  const Material = eng.getComponentOrNull?.('core::Material') as LwwComponentLike | null | undefined
+  const MeshRenderer = eng.getComponentOrNull?.(
+    'core::MeshRenderer'
+  ) as LwwComponentLike | null | undefined
+  if (!Material?.get || !MeshRenderer) {
+    return { forced: 0, nextOffset: entities.length, done: true }
+  }
+  let forced = 0
+  const end = Math.min(entities.length, offset + chunkSize)
+  for (let i = offset; i < end; i++) {
+    const entity = entities[i]!
+    try {
+      const matVal = Material.get?.(entity) ?? Material.getOrNull?.(entity)
+      if (matVal == null) continue
+      const matClone = cloneComponentValue(matVal)
+      Material.deleteFrom?.(entity, true)
+      if (typeof Material.create === 'function') Material.create(entity, matClone)
+      else Material.createOrReplace?.(entity, matClone)
+
+      if (includeMeshRenderer && MeshRenderer.get) {
+        const meshVal = MeshRenderer.get(entity) ?? MeshRenderer.getOrNull?.(entity)
+        if (meshVal != null) {
+          const meshClone = cloneComponentValue(meshVal)
+          MeshRenderer.deleteFrom?.(entity, true)
+          if (typeof MeshRenderer.create === 'function') MeshRenderer.create(entity, meshClone)
+          else MeshRenderer.createOrReplace?.(entity, meshClone)
+        }
+      }
+      forced++
+    } catch {
+      /* skip one entity */
+    }
+  }
+  return { forced, nextOffset: end, done: end >= entities.length }
+}
+
+function collectMeshMaterialEntities(eng: {
+  getComponentOrNull?: (name: string) => LwwComponentLike | null
+  getEntitiesWith?: (...components: unknown[]) => Iterable<[number, ...unknown[]]>
+}): number[] {
+  const Material = eng.getComponentOrNull?.('core::Material') as LwwComponentLike | null | undefined
+  const MeshRenderer = eng.getComponentOrNull?.(
+    'core::MeshRenderer'
+  ) as LwwComponentLike | null | undefined
+  if (!Material?.has || !MeshRenderer || typeof eng.getEntitiesWith !== 'function') return []
+  const out: number[] = []
+  try {
+    for (const row of eng.getEntitiesWith!(MeshRenderer)) {
+      const entity = row[0] as number
+      if (Material.has(entity)) out.push(entity)
+    }
+  } catch {
+    return []
+  }
+  return out
+}
+
+function installAuthSeedHolderRepair(eng: {
+  getComponentOrNull?: (name: string) => {
+    has?: (entity: number) => boolean
+    get?: (entity: number) => { seed?: number } | null
+    createOrReplace?: (entity: number, value: { seed: number }) => void
+  } | null
+  getEntitiesWith?: (...components: unknown[]) => Iterable<[number, ...unknown[]]>
+  addSystem?: (fn: (dt: number) => void, priority?: number) => void
+}): void {
+  if (typeof eng.addSystem !== 'function' || typeof eng.getEntitiesWith !== 'function') return
+
+  let ticks = 0
+  let lastLoggedSeed = 0
+  let lastDiagAt = 0
+  let forceWave = 0
+  let forceQueue: number[] = []
+  let forceOffset = 0
+  let forceIncludeMesh = true
+  let forceWaveForced = 0
+  let nextForceWaveAt = 0
+  const MAX_TICKS = 60 * 90 // ~90s of repair window
+  /**
+   * Dense boards: one force re-push after spawn clears lastSent if main never applied.
+   * Was 4 waves × 2.5s gap — felt as 3–5s paint lag while live paintDelta waited behind storms.
+   */
+  const FORCE_RESYNC_MIN_MESH = 500
+  const FORCE_CHUNK = 1_200
+  const FORCE_WAVE_MAX = 1
+  const FORCE_WAVE_GAP_MS = 0
+
+  eng.addSystem(() => {
+    ticks++
+    if (ticks > MAX_TICKS) return
+
+    const SeedHolder = eng.getComponentOrNull?.('maze::seed-holder')
+    let bestSeed = 0
+    const holders: number[] = []
+    if (SeedHolder && typeof SeedHolder.get === 'function') {
+      try {
+        for (const row of eng.getEntitiesWith!(SeedHolder)) {
+          const entity = row[0] as number
+          holders.push(entity)
+          const v = SeedHolder.get!(entity)
+          const s = typeof v?.seed === 'number' ? v.seed : 0
+          if (s !== 0) bestSeed = s
+        }
+      } catch {
+        /* ignore */
+      }
+
+      // Also scan NetworkEntity enum 3000 (pixelwars SeedHolder sync id) if orphan-only.
+      const NetworkEntity = eng.getComponentOrNull?.('core-schema::Network-Entity') as
+        | { get?: (e: number) => { networkId?: number; entityId?: number } | null }
+        | null
+        | undefined
+      if (NetworkEntity && bestSeed === 0) {
+        try {
+          for (const row of eng.getEntitiesWith!(NetworkEntity)) {
+            const entity = row[0] as number
+            const net = NetworkEntity.get?.(entity)
+            if (net && Number(net.networkId) === 0 && Number(net.entityId) === 3000) {
+              if (SeedHolder.has?.(entity)) {
+                const v = SeedHolder.get!(entity)
+                const s = typeof v?.seed === 'number' ? v.seed : 0
+                if (s !== 0) bestSeed = s
+              }
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+
+      if (bestSeed !== 0 && typeof SeedHolder.createOrReplace === 'function') {
+        let repaired = 0
+        for (const entity of holders) {
+          const cur = SeedHolder.get!(entity)?.seed ?? 0
+          if (cur !== bestSeed) {
+            try {
+              SeedHolder.createOrReplace!(entity, { seed: bestSeed })
+              repaired++
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+        if (repaired > 0 || (bestSeed !== lastLoggedSeed && ticks < 120)) {
+          lastLoggedSeed = bestSeed
+          workerLog(
+            'log',
+            `[sceneWorker] seed-holder repair — seed=${bestSeed} holders=${holders.length} repaired=${repaired}`
+          )
+        }
+      }
+    }
+
+    const now = performance.now()
+
+    // In-progress force-resync wave: chunk Material/MeshRenderer delete+create (clear lastSent).
+    const engLww = eng as {
+      getComponentOrNull?: (name: string) => LwwComponentLike | null
+      getEntitiesWith?: (...components: unknown[]) => Iterable<[number, ...unknown[]]>
+    }
+    if (forceQueue.length > 0 && forceOffset < forceQueue.length) {
+      const { forced, nextOffset, done } = forceResyncMeshMaterialBoardChunk(
+        engLww,
+        forceQueue,
+        forceOffset,
+        FORCE_CHUNK,
+        forceIncludeMesh
+      )
+      forceOffset = nextOffset
+      forceWaveForced += forced
+      if (done) {
+        workerLog(
+          'log',
+          `[sceneWorker] paint-board force-resync wave #${forceWave} done — forced=${forceWaveForced}/${forceQueue.length} ` +
+            `includeMesh=${forceIncludeMesh ? 1 : 0}`
+        )
+        forceQueue = []
+        forceOffset = 0
+        forceWaveForced = 0
+        nextForceWaveAt = now + FORCE_WAVE_GAP_MS
+      }
+    } else if (
+      forceWave < FORCE_WAVE_MAX &&
+      forceQueue.length === 0 &&
+      now >= nextForceWaveAt
+    ) {
+      // Start a new wave once the board is dense enough (spawn finished).
+      const entities = collectMeshMaterialEntities(engLww)
+      if (entities.length >= FORCE_RESYNC_MIN_MESH) {
+        forceWave++
+        forceQueue = entities
+        forceOffset = 0
+        forceWaveForced = 0
+        // Single wave: mesh+mat so planes exist and colors land; live paintDelta uses hot Material path.
+        forceIncludeMesh = true
+        workerLog(
+          'log',
+          `[sceneWorker] paint-board force-resync wave #${forceWave} start — entities=${entities.length} ` +
+            `includeMesh=${forceIncludeMesh ? 1 : 0}`
+        )
+      } else if (entities.length > 0 && forceWave === 0) {
+        // Small board: single wave then stop.
+        forceWave = FORCE_WAVE_MAX
+        forceQueue = entities
+        forceOffset = 0
+        forceIncludeMesh = true
+      } else {
+        nextForceWaveAt = now + 1_000
+      }
+    }
+
+    // Periodic paint-board diag (throttled).
+    if (now - lastDiagAt < 5_000) return
+    lastDiagAt = now
+    try {
+      const MeshRenderer = eng.getComponentOrNull?.('core::MeshRenderer') as
+        | object
+        | null
+        | undefined
+      const Material = eng.getComponentOrNull?.('core::Material') as object | null | undefined
+      let meshN = 0
+      let matN = 0
+      let bothN = 0
+      if (MeshRenderer) {
+        for (const row of eng.getEntitiesWith!(MeshRenderer)) {
+          meshN++
+          const e = row[0] as number
+          if (Material && (Material as { has?: (id: number) => boolean }).has?.(e)) bothN++
+        }
+      }
+      if (Material) {
+        for (const _ of eng.getEntitiesWith!(Material)) matN++
+      }
+      workerLog(
+        'log',
+        `[sceneWorker] paint-board diag — seedHolders=${holders.length} bestSeed=${bestSeed} ` +
+          `MeshRenderer=${meshN} Material=${matN} mesh+mat=${bothN} forceWave=${forceWave}/${FORCE_WAVE_MAX}`
+      )
+    } catch {
+      /* ignore */
+    }
+  }, 1)
+}
+
 async function invokeSceneMainBootstrap(
   exports: import('../system/createSystemStubs').SceneBundleExports,
   options?: { skipMain?: boolean }
@@ -345,9 +698,18 @@ async function invokeSceneMainBootstrap(
     }
   }
   if (options?.skipMain) {
+    // Boot tick already started main() fire-and-forget — wait for syncEntity / settle.
+    const settled = await waitForSdkMainSettled(
+      sceneEngine as {
+        getComponentOrNull?: (name: string) => unknown
+        getEntitiesWith?: (...components: unknown[]) => Iterable<unknown>
+      }
+    )
     workerLog(
       'log',
-      `[sceneWorker] scene main() owned by SDK startup system — UiTransform=${collectWorkerUiEntityIds().length}`
+      `[sceneWorker] scene main() owned by SDK startup — settled reason=${settled.reason} ` +
+        `networkEntities=${settled.networkEntities} waited=${settled.waitedMs}ms ` +
+        `UiTransform=${collectWorkerUiEntityIds().length}`
     )
     return
   }
@@ -908,8 +1270,13 @@ function postPlayModeColdCrdtFireAndForget(data: Uint8Array): void {
 
 /** core::PhysicsCombinedImpulse / Force — pad/bounce must not wait cold-frame batching. */
 const PHYSICS_COMBINED_COMPONENT_IDS = new Set([1215, 1216])
+/**
+ * core::Material (1017) + core::MeshRenderer (1018) — dense paint boards (pixelwars).
+ * Must not sit in cold CRDT buffer until end-of-frame / serial UI queue (felt as 3–5s lag).
+ */
+const PAINT_BOARD_HOT_COMPONENT_IDS = new Set([1017, 1018])
 
-function crdtChunkHasPhysicsCombined(data: Uint8Array): boolean {
+function crdtChunkHasComponentIds(data: Uint8Array, ids: ReadonlySet<number>): boolean {
   if (!data.byteLength) return false
   try {
     const buf = new ReadWriteByteBuffer(data)
@@ -917,8 +1284,11 @@ function crdtChunkHasPhysicsCombined(data: Uint8Array): boolean {
     while (msg) {
       if (
         (msg.type === CrdtMessageType.PUT_COMPONENT ||
-          msg.type === CrdtMessageType.PUT_COMPONENT_NETWORK) &&
-        PHYSICS_COMBINED_COMPONENT_IDS.has(msg.componentId)
+          msg.type === CrdtMessageType.PUT_COMPONENT_NETWORK ||
+          msg.type === CrdtMessageType.DELETE_COMPONENT ||
+          msg.type === CrdtMessageType.DELETE_COMPONENT_NETWORK) &&
+        'componentId' in msg &&
+        ids.has(msg.componentId)
       ) {
         return true
       }
@@ -928,6 +1298,14 @@ function crdtChunkHasPhysicsCombined(data: Uint8Array): boolean {
     return false
   }
   return false
+}
+
+function crdtChunkHasPhysicsCombined(data: Uint8Array): boolean {
+  return crdtChunkHasComponentIds(data, PHYSICS_COMBINED_COMPONENT_IDS)
+}
+
+function crdtChunkHasPaintBoardMaterial(data: Uint8Array): boolean {
+  return crdtChunkHasComponentIds(data, PAINT_BOARD_HOT_COMPONENT_IDS)
 }
 
 /** Phase 3 — coalesced cold CRDT + VC hydrate + player-frame after pollEvents (play mode). */
@@ -2766,10 +3144,12 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
       return Promise.resolve([])
     }
     // Phase 3 — play mode cold CRDT batched per unified frame (no ack).
-    // Physics force/impulse must not wait for the next cooperative tick — pad/bounce
-    // enter→impulse is written mid-frame and main reads it on the following player.update.
+    // Physics force/impulse + Material/MeshRenderer paint boards must not wait for the
+    // next cooperative tick / empty UI serial queue (pixelwars felt 3–5s recolor lag).
     if (!sceneOnUpdatePaused) {
-      if (crdtChunkHasPhysicsCombined(copy)) {
+      if (crdtChunkHasPhysicsCombined(copy) || crdtChunkHasPaintBoardMaterial(copy)) {
+        // Preserve order: flush any buffered cold CRDT first, then this hot chunk now.
+        flushPlayModeColdCrdtEgress(postPlayModeColdCrdtFireAndForget)
         postPlayModeColdCrdtFireAndForget(copy)
         return Promise.resolve([])
       }
@@ -3212,6 +3592,26 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     )
   }
   await invokeSceneMainBootstrap(exports, { skipMain: sdkStartupOwnsMain })
+  // Pixelwars: heal SeedHolder orphan after AUTH_RES↔syncEntity race (white tiles / rising HUD).
+  try {
+    installAuthSeedHolderRepair(
+      sceneEngine as {
+        getComponentOrNull?: (name: string) => {
+          has?: (entity: number) => boolean
+          get?: (entity: number) => { seed?: number } | null
+          createOrReplace?: (entity: number, value: { seed: number }) => void
+        } | null
+        getEntitiesWith?: (...components: unknown[]) => Iterable<[number, ...unknown[]]>
+        addSystem?: (fn: (dt: number) => void, priority?: number) => void
+      }
+    )
+    workerLog('log', '[sceneWorker] auth seed-holder repair system installed')
+  } catch (err) {
+    workerLog(
+      'warn',
+      `[sceneWorker] seed-holder repair install failed — ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
   // Scene main() often creates VC entities; ensure CameraEntity hosts MainCamera so systems that
   // gate on MainCamera.has(CameraEntity) can assign virtualCameraEntity on first tick.
   ensureMainCameraOnCameraEntity(sceneEngine)

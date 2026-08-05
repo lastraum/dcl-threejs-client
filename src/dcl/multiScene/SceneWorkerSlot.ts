@@ -188,12 +188,14 @@ export class SceneWorkerSlot {
     root.matrixAutoUpdate = true
     const tertiary = this.mode === 'tertiary'
     // Tertiary LOD: no cast shadows + hide local lights (GPU). Scripts already paused.
+    // Never force castShadow=true for secondary. Never force matrixAutoUpdate=true on every
+    // leaf — that undid MeshRenderer freeze for 10k-tile boards. Only ensure root can move.
+    root.matrixAutoUpdate = true
     root.traverse((o) => {
       if (o === root) return
-      o.matrixAutoUpdate = true
       const m = o as THREE.Mesh
       if (m.isMesh) {
-        m.castShadow = !tertiary
+        if (tertiary) m.castShadow = false
         m.receiveShadow = true
         m.frustumCulled = true
       }

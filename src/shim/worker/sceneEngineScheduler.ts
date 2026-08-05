@@ -40,6 +40,8 @@ import {
   rewriteStopMoveCameraUiLabels
 } from './workerPlayerFrameEgress'
 
+let lastUiDirtySnapshotLogAt = 0
+
 /**
  * Single worker entry for sceneEngine.update — boot, hydration, play, inbound, pointer.
  *
@@ -397,12 +399,21 @@ async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
     const src = extractUiTextureSrcFromSnapshot(row.value)
     if (src) texSamples++
   }
-  cfg.log(
-    `[sceneWorker] ui dirty snapshot — mount=${mountEntityIds.length} rows=${snapshot.length}` +
-      `${partial ? ' partial' : ' full'} mode=${mode}` +
-      (texSamples > 0 ? ` bgTextures=${texSamples}` : '') +
-      (mountEntityIds.length === 0 ? ' emptyMount' : '')
-  )
+  // Throttle — pixelwars timer dirties 2×/s; logging every flush tanked FPS with debug capture.
+  const nowLog = performance.now()
+  const isFull = !partial || mountEntityIds.length === 0 || texSamples > 0
+  if (
+    isFull ||
+    nowLog - lastUiDirtySnapshotLogAt >= 2000
+  ) {
+    lastUiDirtySnapshotLogAt = nowLog
+    cfg.log(
+      `[sceneWorker] ui dirty snapshot — mount=${mountEntityIds.length} rows=${snapshot.length}` +
+        `${partial ? ' partial' : ' full'} mode=${mode}` +
+        (texSamples > 0 ? ` bgTextures=${texSamples}` : '') +
+        (mountEntityIds.length === 0 ? ' emptyMount' : '')
+    )
+  }
   if (cfg.postUiMountSnapshot) {
     cfg.postUiMountSnapshot(snapshot, mountEntityIds)
     return

@@ -146,7 +146,7 @@ function normalizeTextureUnion(u?: TextureUnion): unknown {
 }
 
 /** Stable hash of ECS material fields — avoids protobuf/JSON key-order drift across projection reads. */
-function materialFingerprint(pb: PbMaterial): string {
+export function materialFingerprint(pb: PbMaterial): string {
   const materialCase = pb.material?.$case
   if (!materialCase) return ''
   const inner =
@@ -200,15 +200,29 @@ function materialInner(pb: PbMaterial): PbrMaterial | UnlitMaterial | undefined 
 /**
  * SDK7 `Material.castShadows` → Three `mesh.castShadow` (not a Three material flag).
  * Proto default is true; authors set false to force off. MeshRenderer has no cast field.
- * Quality gate: only high/ultra cast (Genesis MeshRenderer flood); false always wins.
+ *
+ * Quality gate (pixelwars / board games stamp 10k+ MeshRenderers with default cast):
+ * - ultra: SDK default (cast when castShadows !== false)
+ * - high: only when author sets castShadows === true (avoid 12k-caster FPS death)
+ * - medium/low/off: never cast from materials
+ * Explicit false always wins.
  */
 export function applyMaterialCastShadows(
   mesh: THREE.Mesh,
   castShadows: boolean | undefined
 ): void {
   const q = renderQuality.getShadowQuality()
-  const tierCasts = q === 'high' || q === 'ultra'
-  mesh.castShadow = tierCasts && castShadows !== false
+  let cast = false
+  if (castShadows === false) {
+    cast = false
+  } else if (q === 'ultra') {
+    // SDK default: cast when not explicitly false
+    cast = true
+  } else if (q === 'high') {
+    // Explicit true only — 10k+ MeshRenderer boards default-true and kill FPS
+    cast = castShadows === true
+  }
+  mesh.castShadow = cast
   mesh.receiveShadow = true
 }
 
@@ -233,6 +247,123 @@ function materialTextureSlots(pb: PbMaterial): TextureUnion[] {
 
 function materialHasTextureSlots(pb: PbMaterial): boolean {
   return materialTextureSlots(pb).length > 0
+}
+
+/** True when material is color-only (safe for MeshRenderer instancing + instanceColor). */
+export function materialIsScalarOnly(pb: PbMaterial): boolean {
+  return !materialHasTextureSlots(pb) && !hasVideoOrAvatarSlot(pb)
+}
+
+function hasVideoOrAvatarSlot(pb: PbMaterial): boolean {
+  for (const slot of materialTextureSlots(pb)) {
+    if (slot?.tex?.$case === 'videoTexture' || slot?.tex?.$case === 'avatarTexture') return true
+  }
+  return false
+}
+
+/** Normalize a color channel — DCL is usually 0–1; some content still emits 0–255. */
+function normChannel(v: number | undefined, fallback: number): number {
+  if (v === undefined || Number.isNaN(v)) return fallback
+  if (v > 1) return Math.min(1, v / 255)
+  return Math.max(0, v)
+}
+
+/** RGB 0–1 for instanceColor / palette (unlit diffuse or pbr albedo). */
+export function materialAlbedoRgb(pb: PbMaterial): { r: number; g: number; b: number } {
+  const materialCase = pb.material?.$case
+  if (materialCase === 'unlit') {
+    const d = pb.material!.unlit.diffuseColor
+    return {
+      r: normChannel(d?.r, 1),
+      g: normChannel(d?.g, 1),
+      b: normChannel(d?.b, 1)
+    }
+  }
+  if (materialCase === 'pbr') {
+    const a = pb.material!.pbr.albedoColor
+    // Prefer albedo; if absent/white-ish and emissive is set, land FX may use emissive only.
+    if (a) {
+      return {
+        r: normChannel(a.r, 1),
+        g: normChannel(a.g, 1),
+        b: normChannel(a.b, 1)
+      }
+    }
+    const e = pb.material!.pbr.emissiveColor
+    if (e) {
+      return {
+        r: normChannel(e.r, 0),
+        g: normChannel(e.g, 0),
+        b: normChannel(e.b, 0)
+      }
+    }
+  }
+  return { r: 1, g: 1, b: 1 }
+}
+
+/** Alpha 0–1 from unlit/pbr color. */
+export function materialAlbedoAlpha(pb: PbMaterial): number {
+  const materialCase = pb.material?.$case
+  if (materialCase === 'unlit') {
+    return normChannel(pb.material!.unlit.diffuseColor?.a, 1)
+  }
+  if (materialCase === 'pbr') {
+    return normChannel(pb.material!.pbr.albedoColor?.a, 1)
+  }
+  return 1
+}
+
+/** Shared Three materials for scalar MeshRenderers (refcounted by fingerprint). */
+const scalarMaterialPool = new Map<string, { mat: THREE.Material; refs: number }>()
+
+export function acquireScalarMaterial(pb: PbMaterial): THREE.Material {
+  const fp = materialFingerprint(pb)
+  let entry = scalarMaterialPool.get(fp)
+  if (!entry) {
+    const materialCase = pb.material?.$case
+    const isUnlit = materialCase === 'unlit'
+    const mat = isUnlit
+      ? new THREE.MeshBasicMaterial({ color: 0xffffff })
+      : new THREE.MeshPhysicalMaterial({ color: 0xffffff })
+    // Apply colors onto a temp mesh path — use white base; instanceColor multiplies.
+    const rgb = materialAlbedoRgb(pb)
+    if ('color' in mat) (mat as THREE.MeshBasicMaterial).color.setRGB(rgb.r, rgb.g, rgb.b)
+    const alpha =
+      materialCase === 'pbr'
+        ? (pb.material!.pbr.albedoColor?.a ?? 1)
+        : materialCase === 'unlit'
+          ? (pb.material!.unlit.diffuseColor?.a ?? 1)
+          : 1
+    if (alpha < 0.999) {
+      mat.transparent = true
+      mat.opacity = alpha
+      mat.depthWrite = alpha > 0.95
+    }
+    mat.userData.dclScalarMaterialFp = fp
+    entry = { mat, refs: 0 }
+    scalarMaterialPool.set(fp, entry)
+  }
+  entry.refs++
+  return entry.mat
+}
+
+export function releaseScalarMaterial(mat: THREE.Material | null | undefined): void {
+  if (!mat) return
+  const fp = mat.userData.dclScalarMaterialFp as string | undefined
+  if (!fp) {
+    if (!isSharedAssetResource(mat)) mat.dispose()
+    return
+  }
+  const entry = scalarMaterialPool.get(fp)
+  if (!entry || entry.mat !== mat) {
+    if (!isSharedAssetResource(mat)) mat.dispose()
+    return
+  }
+  entry.refs = Math.max(0, entry.refs - 1)
+  if (entry.refs === 0) {
+    scalarMaterialPool.delete(fp)
+    entry.mat.dispose()
+  }
 }
 
 function meshHasTextureMaps(mesh: THREE.Mesh, pb: PbMaterial): boolean {
@@ -292,6 +423,21 @@ export class MaterialApplier {
     // Scalar-only materials are fully applied once color/transparency is set.
     if (!materialHasTextureSlots(pb) && this.applied.get(entity) === `scalar:${fp}`) return false
     return true
+  }
+
+  /**
+   * Mark scalar Material as applied without walking meshes.
+   * Used for InstancedMesh boards (color lives in instanceColor, not a private Mesh material).
+   */
+  markScalarApplied(entity: number, pb: PbMaterial): void {
+    if (
+      materialHasTextureSlots(pb) ||
+      this.hasUnresolvedVideo(pb) ||
+      this.hasUnresolvedAvatar(pb)
+    ) {
+      return
+    }
+    this.applied.set(entity, `scalar:${materialFingerprint(pb)}`)
   }
 
   objectTexturesSatisfied(root: THREE.Object3D, pb: PbMaterial): boolean {

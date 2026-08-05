@@ -81,6 +81,10 @@ type PointerDeps = {
    * Required so primary does not inject under a PX dialog (dual window listeners).
    */
   uiRootId?: string
+  /** Dense MeshRenderer InstancedMesh → entity (instanceId from raycast). */
+  resolveMeshRendererInstanceHit?: (mesh: THREE.Object3D, instanceId: number) => Entity | null
+  /** Unique InstancedMeshes that host PointerEvents entities (raycast targets). */
+  getMeshRendererInstancePointerMeshes?: () => THREE.Object3D[]
 }
 
 const _ray = new THREE.Ray()
@@ -975,7 +979,15 @@ export class PointerEventsSystem {
         const hits = this.raycaster.intersectObjects(this.pointerTargets, true)
 
         for (const hit of hits) {
-          const hitEntity = hit.object.userData.entity as Entity | undefined
+          let hitEntity = hit.object.userData.entity as Entity | undefined
+          if (
+            hitEntity === undefined &&
+            hit.instanceId !== undefined &&
+            this.deps.resolveMeshRendererInstanceHit
+          ) {
+            hitEntity =
+              this.deps.resolveMeshRendererInstanceHit(hit.object, hit.instanceId) ?? undefined
+          }
           if (hitEntity === undefined) continue
           const entity = this.resolveColliderPointerEntity(hitEntity) ?? hitEntity
           if (!this.pointerEntitySet.has(entity)) continue
@@ -1126,15 +1138,25 @@ export class PointerEventsSystem {
     for (const entity of this.pointerEntitySet) {
       if (ecs.GltfContainer.has(entity)) {
         const obj = nodes.get(entity)
-        const gltfRoot = obj?.children.find((c) => c.name.startsWith('__mesh_'))
-        if (!gltfRoot) continue
-        collectGltfPointerTargetMeshes(
-          gltfRoot,
-          ecs.GltfContainer.get(entity),
-          entity,
-          true,
-          this.pointerTargets
-        )
+        // GPU-instanced GLTF: empty marker only — InstancedMeshes added below for raycast.
+        if (!obj?.userData.dclInstanced) {
+          const gltfRoot = obj?.children.find((c) => c.name.startsWith('__mesh_'))
+          if (gltfRoot) {
+            collectGltfPointerTargetMeshes(
+              gltfRoot,
+              ecs.GltfContainer.get(entity),
+              entity,
+              true,
+              this.pointerTargets
+            )
+          }
+        }
+        // Same entity may also have MeshCollider (pointer layer) for PE.
+        if (ecs.MeshCollider.has(entity)) {
+          const mesh = this.deps.collision.getColliderMesh(entity)
+          if (mesh) this.pointerTargets.push(mesh)
+        }
+        this.collectDescendantPointerTargets(entity, ecs, nodes)
         continue
       }
 
@@ -1151,9 +1173,29 @@ export class PointerEventsSystem {
           primitive.userData.entity = entity
           this.pointerTargets.push(primitive)
         }
+        // Instanced board tiles — marker Group only; GPU mesh is shared InstancedMesh.
       }
 
       this.collectDescendantPointerTargets(entity, ecs, nodes)
+    }
+
+    // Only pull GPU InstancedMeshes when a PE entity is actually instanced.
+    // Unconditionally adding every board InstancedMesh (10k+ tile slots × leaves)
+    // made every WASD/click raycast the entire land grid → main-thread freezes.
+    // Step-on boards (pixelwars) do not need PE on each tile.
+    let needInstanceRaycast = false
+    for (const entity of this.pointerEntitySet) {
+      const obj = nodes.get(entity)
+      if (obj?.userData.dclInstanced || obj?.userData.dclMeshRendererInstanced) {
+        needInstanceRaycast = true
+        break
+      }
+    }
+    if (needInstanceRaycast) {
+      const instMeshes = this.deps.getMeshRendererInstancePointerMeshes?.() ?? []
+      for (const mesh of instMeshes) {
+        this.pointerTargets.push(mesh)
+      }
     }
   }
 

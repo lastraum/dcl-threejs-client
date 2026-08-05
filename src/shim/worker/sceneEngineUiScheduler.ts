@@ -628,6 +628,12 @@ export type PlanSceneUiCrdtEmitOptions = {
  * Phase 2 of a scheduler tick — touch dirty Ui* when fingerprint changed.
  * Caller runs engine.update(0) for transport emit, then commitSceneUiCrdtBaseline.
  */
+/** Coalesce timer/score UiText thrash (pixelwars HUD) — still snappy, not 2×/frame. */
+let lastTextOnlyUiFlushAt = 0
+const TEXT_ONLY_UI_FLUSH_MIN_MS = 120
+let lastUiFlushLogAt = 0
+const UI_FLUSH_LOG_MIN_MS = 2000
+
 export function planSceneUiCrdtEmit(
   engine: IEngine,
   log?: (message: string) => void,
@@ -664,12 +670,43 @@ export function planSceneUiCrdtEmit(
     )
     return false
   }
+
+  // Pure text dirties (countdown / % stats) — rate-limit CRDT + main paint thrash.
+  // Layout/bg/mount growth always flushes immediately.
+  if (!fullTouch && dirty.length > 0 && dirty.length <= 4 && !opts?.pointerTick) {
+    const prevLines = parseFingerprintEntityLines(lastWorkerUiFingerprint)
+    const currLines = parseFingerprintEntityLines(fingerprint)
+    let textOnly = true
+    for (const entity of dirty) {
+      const key = String(entity)
+      const prev = prevLines.get(key) ?? ''
+      const curr = currLines.get(key) ?? ''
+      // Strip text payload; if remainder matches, only UiText value changed.
+      const stripTx = (line: string) => line.replace(/:tx\d+:[^:]*/g, '')
+      if (stripTx(prev) !== stripTx(curr)) {
+        textOnly = false
+        break
+      }
+    }
+    if (textOnly) {
+      const now = performance.now()
+      if (now - lastTextOnlyUiFlushAt < TEXT_ONLY_UI_FLUSH_MIN_MS) {
+        return false
+      }
+      lastTextOnlyUiFlushAt = now
+    }
+  }
+
   lastPlannedUiDirtyEntities = dirty
   lastPlannedUiFullTouch = fullTouch
-  log?.(
-    `[sceneWorker] ui fingerprint flush — touched=${touched} dirtyEntities=${dirty.length || 'all'} ` +
-      `fp=${prevLen}→${fingerprint.length}B${fullTouch ? ' full' : ''}`
-  )
+  const now = performance.now()
+  if (now - lastUiFlushLogAt >= UI_FLUSH_LOG_MIN_MS) {
+    lastUiFlushLogAt = now
+    log?.(
+      `[sceneWorker] ui fingerprint flush — touched=${touched} dirtyEntities=${dirty.length || 'all'} ` +
+        `fp=${prevLen}→${fingerprint.length}B${fullTouch ? ' full' : ''}`
+    )
+  }
   return true
 }
 

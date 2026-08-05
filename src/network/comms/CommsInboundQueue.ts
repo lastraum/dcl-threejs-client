@@ -30,9 +30,22 @@ export const CommsWireMessageType = {
  * LiveKit carries SDK `craftCommsMessage` bytes: `[messageType:u8][payload…]`.
  * Worker BinaryMessageBus expects `encodeCommsBinaryMessage` envelopes:
  * `[senderLen][sender][messageType][payload…]`.
+ *
+ * **Ingress hold:** auth-server scenes (`pixelwars`, Flagtag) call `syncEntity(enumId)`
+ * at the end of async `main()` / `setupClient`. SDK schedules `main()` fire-and-forget
+ * (first await yields before `syncEntity`). If AUTH_RES / CRDT is drained into the
+ * worker during that gap, `findOrCreateNetworkEntity` creates an **orphan** for enum
+ * ids (e.g. SeedHolder=3000), then `syncEntity` throws "already in use". Seed stays
+ * on the orphan while `SeedHolder.get(seedHolder)` remains 0 → wrong/no maze, paint
+ * cell ids never match, HUD % climbs from paintDelta, tiles stay white.
+ *
+ * Hold drains until the host releases after scene main has settled (syncEntity ran).
  */
 export class CommsInboundQueue {
   private readonly pending: Uint8Array[] = []
+  /** When true, push still accepts but drain returns [] (keeps FIFO for later). */
+  private holdDrain = true
+  private holdLogged = false
 
   /**
    * @param craftedPayload — RFC4 scene-binary body = SDK craftCommsMessage
@@ -56,7 +69,34 @@ export class CommsInboundQueue {
     this.pending.push(encodeCommsBinaryMessage(sender, messageType, payload))
   }
 
+  /**
+   * Hold/release inbound delivery to the scene worker.
+   * Default hold=true so early LiveKit AUTH_RES cannot race async main/syncEntity.
+   */
+  setHoldDrain(hold: boolean): void {
+    this.holdDrain = hold
+    if (hold) this.holdLogged = false
+  }
+
+  isHoldDrain(): boolean {
+    return this.holdDrain
+  }
+
+  pendingCount(): number {
+    return this.pending.length
+  }
+
   drain(): Uint8Array[] {
+    if (this.holdDrain) {
+      if (this.pending.length > 0 && !this.holdLogged) {
+        this.holdLogged = true
+        // One-shot: avoid spam while main() is still settling.
+        console.info(
+          `[sync] inbound held — ${this.pending.length} packet(s) waiting for scene main/syncEntity`
+        )
+      }
+      return []
+    }
     if (!this.pending.length) return []
     const out = this.pending.slice()
     this.pending.length = 0

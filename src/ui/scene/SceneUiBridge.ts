@@ -202,6 +202,8 @@ export class SceneUiBridge {
     // Many UiBackground textures finish in a burst (menus / character UI) — one paint, not N full Yoga passes.
     if (this.imageRepaintQueued) return
     this.imageRepaintQueued = true
+    // Keep short — fishing rod/bait dock icons were blank for seconds while 80ms+
+    // batches waited behind plaza disco/collider thrash.
     window.setTimeout(() => {
       this.imageRepaintQueued = false
       // Visual fingerprint does not include bake completion — without this, paint early-outs
@@ -210,7 +212,7 @@ export class SceneUiBridge {
       this.lastEntityVisualKeys.clear()
       this.markContentDirty()
       if (this.lastView) this.paint(this.lastView)
-    }, 80)
+    }, 16)
   }
 
   /** Phase C — mark UI content dirty (CRDT put, mount, image, size). */
@@ -575,6 +577,56 @@ export class SceneUiBridge {
     ) {
       this.paintedEpoch = this.contentEpoch
       return
+    }
+
+    // P2 text-only fast path: layout transforms unchanged, only UiText visual keys dirty.
+    // Skip full Yoga + hit-map rebuild — patch label text on existing DOM nodes.
+    if (
+      this.paintCount > 0 &&
+      layoutKey === this.lastPaintLayoutKey &&
+      this.lastLayoutBoxMap &&
+      this.lastEntityLayoutKeys.size > 0
+    ) {
+      const textOnlyDirty: Entity[] = []
+      let layoutStable = true
+      for (const { entity, transform } of records) {
+        const lk = layoutTransformFingerprint(transform)
+        if (this.lastEntityLayoutKeys.get(entity) !== lk) {
+          layoutStable = false
+          break
+        }
+      }
+      if (layoutStable) {
+        for (const [entity, key] of entityVisualKeys) {
+          if (this.lastEntityVisualKeys.get(entity) !== key) textOnlyDirty.push(entity)
+        }
+        if (textOnlyDirty.length > 0 && textOnlyDirty.length <= 16 && this.lastUiForest) {
+          const drawInput = {
+            forest: this.lastUiForest,
+            virtual: this.virtual,
+            interactable,
+            viewport,
+            scene: this.scene,
+            ecs,
+            pointerEventsOf: this.pointerEventsLookup,
+            transformOf,
+            textOf,
+            inputOf,
+            dropdownOf,
+            backgroundOf,
+            mountedEntities: mounted,
+            authoritativeEntities: this.workerUiEntities!,
+            layoutBoxes: this.lastLayoutBoxMap,
+            onRegions: (regions: UiScreenRegion[]) => this.hitMap.replace(regions)
+          }
+          if (this.dom.patchEntities(textOnlyDirty, drawInput)) {
+            this.lastPaintVisualKey = visualKey
+            this.lastEntityVisualKeys = entityVisualKeys
+            this.paintedEpoch = this.contentEpoch
+            return
+          }
+        }
+      }
     }
 
     this.paintCount++

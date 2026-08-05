@@ -47,11 +47,14 @@ type Bucket = {
   /** high-water used slots (not compact) */
   used: number
   root: THREE.Group
+  /** Per-instance RGB tint enabled (Material / scalar GltfNodeModifiers on boards). */
+  instanceColorsReady: boolean
 }
 
 const _entityWorld = new THREE.Matrix4()
 const _instance = new THREE.Matrix4()
 const _shapeLocal = new THREE.Matrix4()
+const _color = new THREE.Color()
 
 function geometryHasMorphTargets(geometry: THREE.BufferGeometry | undefined): boolean {
   if (!geometry?.morphAttributes) return false
@@ -312,9 +315,76 @@ export class SceneGltfInstancer {
     return this.entityHash.get(entity)
   }
 
+  /**
+   * Per-instance albedo tint (pixelwars tile boards, land flippers).
+   * Scalar Material / color-only GltfNodeModifiers use this — do not promote to private clone.
+   * Multiplies mesh material.color (whitened once when colors are first used).
+   */
+  setInstanceColor(entity: Entity, r: number, g: number, b: number): boolean {
+    const hash = this.entityHash.get(entity)
+    if (!hash) return false
+    const bucket = this.buckets.get(hash)
+    if (!bucket) return false
+    const index = bucket.entityIndex.get(entity)
+    if (index === undefined) return false
+
+    this.ensureInstanceColors(bucket)
+    _color.setRGB(r, g, b)
+    for (const mesh of bucket.meshes) {
+      mesh.setColorAt(index, _color)
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+    }
+    return true
+  }
+
+  /** Map InstancedMesh + instanceId → entity (pointer raycast). */
+  entityFromInstanceHit(mesh: THREE.Object3D, instanceId: number): Entity | null {
+    for (const bucket of this.buckets.values()) {
+      for (const im of bucket.meshes) {
+        if (im !== mesh) continue
+        for (const [entity, index] of bucket.entityIndex) {
+          if (index === instanceId) return entity
+        }
+        return null
+      }
+    }
+    return null
+  }
+
+  /** All InstancedMeshes (PE raycast targets). */
+  getAllInstanceMeshes(): THREE.InstancedMesh[] {
+    const out: THREE.InstancedMesh[] = []
+    for (const bucket of this.buckets.values()) out.push(...bucket.meshes)
+    return out
+  }
+
   dispose(): void {
     for (const hash of [...this.buckets.keys()]) this.disposeBucket(hash)
     this.entityHash.clear()
+  }
+
+  /**
+   * Lazy-enable instanceColor buffers. Whitens leaf materials so tint is the ECS albedo
+   * (otherwise template gray × tint looks muddy).
+   */
+  private ensureInstanceColors(bucket: Bucket): void {
+    if (bucket.instanceColorsReady) return
+    bucket.instanceColorsReady = true
+    for (const mesh of bucket.meshes) {
+      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+      for (const m of mats) {
+        if (m && 'color' in m && (m as THREE.MeshStandardMaterial).color) {
+          ;(m as THREE.MeshStandardMaterial).color.setRGB(1, 1, 1)
+        }
+      }
+      for (let s = 0; s < bucket.capacity; s++) {
+        mesh.setColorAt(s, _color.setRGB(1, 1, 1))
+      }
+      if (mesh.instanceColor) {
+        mesh.instanceColor.setUsage(THREE.DynamicDrawUsage)
+        mesh.instanceColor.needsUpdate = true
+      }
+    }
   }
 
   private createBucket(
@@ -331,7 +401,11 @@ export class SceneGltfInstancer {
     const meshes: THREE.InstancedMesh[] = []
     for (let i = 0; i < leaves.length; i++) {
       const leaf = leaves[i]!
-      const mesh = new THREE.InstancedMesh(leaf.geometry, leaf.material, capacity)
+      // Clone materials so whitening for instanceColor never mutates the AssetCache template.
+      const mat = Array.isArray(leaf.material)
+        ? leaf.material.map((m) => m.clone())
+        : leaf.material.clone()
+      const mesh = new THREE.InstancedMesh(leaf.geometry, mat, capacity)
       mesh.name = `inst:${i}`
       mesh.count = 0
       // Never cast from GPU InstancedMesh — N× leaf geometry into the sun/spot shadow
@@ -339,7 +413,9 @@ export class SceneGltfInstancer {
       // on private clones still control cast. Matches landscape gltfInstancing.
       mesh.castShadow = false
       mesh.receiveShadow = true
-      mesh.frustumCulled = true
+      // Dense boards span the whole scene — geometry-only sphere at origin culls far tiles.
+      mesh.frustumCulled = false
+      mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 1e6)
       // Zero all slots initially
       _instance.makeScale(0, 0, 0)
       for (let s = 0; s < capacity; s++) mesh.setMatrixAt(s, _instance)
@@ -357,7 +433,8 @@ export class SceneGltfInstancer {
       free: [],
       capacity,
       used: 0,
-      root
+      root,
+      instanceColorsReady: false
     }
   }
 
@@ -388,12 +465,14 @@ export class SceneGltfInstancer {
     for (let i = 0; i < bucket.leaves.length; i++) {
       const leaf = bucket.leaves[i]!
       const old = bucket.meshes[i]!
-      const mesh = new THREE.InstancedMesh(leaf.geometry, leaf.material, nextCap)
+      // Keep the (possibly whitened) material already on the old mesh.
+      const mesh = new THREE.InstancedMesh(leaf.geometry, old.material, nextCap)
       mesh.name = old.name
       mesh.count = bucket.used
       mesh.castShadow = old.castShadow
       mesh.receiveShadow = old.receiveShadow
-      mesh.frustumCulled = true
+      mesh.frustumCulled = false
+      mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 1e6)
       _instance.makeScale(0, 0, 0)
       for (let s = 0; s < nextCap; s++) {
         if (s < bucket.capacity) {
@@ -402,6 +481,20 @@ export class SceneGltfInstancer {
         } else {
           _instance.makeScale(0, 0, 0)
           mesh.setMatrixAt(s, _instance)
+        }
+      }
+      if (bucket.instanceColorsReady) {
+        for (let s = 0; s < nextCap; s++) {
+          if (s < bucket.capacity && old.instanceColor) {
+            old.getColorAt(s, _color)
+            mesh.setColorAt(s, _color)
+          } else {
+            mesh.setColorAt(s, _color.setRGB(1, 1, 1))
+          }
+        }
+        if (mesh.instanceColor) {
+          mesh.instanceColor.setUsage(THREE.DynamicDrawUsage)
+          mesh.instanceColor.needsUpdate = true
         }
       }
       mesh.instanceMatrix.needsUpdate = true
@@ -439,7 +532,8 @@ export class SceneGltfInstancer {
       _instance.multiply(_entityWorld).multiply(leaf.localMatrix)
       mesh.setMatrixAt(index, _instance)
       mesh.instanceMatrix.needsUpdate = true
-      mesh.computeBoundingSphere()
+      // Do NOT computeBoundingSphere per write — O(instances×leaves) on boards and
+      // starved Material/instanceColor apply while walking (flips only catch up when idle).
     }
   }
 

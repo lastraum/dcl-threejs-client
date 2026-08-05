@@ -24,6 +24,7 @@ import { ArchipelagoClient } from './comms/ArchipelagoClient'
 import { CommsInboundQueue, CommsWireMessageType } from './comms/CommsInboundQueue'
 import {
   isReliableCommsWireType,
+  isReqCrdtStateType,
   logSyncDirectedFallback,
   logSyncDirectedPublish,
   logSyncOversizedSkip,
@@ -536,14 +537,17 @@ export class CommsService {
   }
 
   getRealmInfo(): CommsRealmInfo {
-    // SDK `@dcl/sdk/network` isStateSyncronized gates on RealmInfo.isConnectedSceneRoom.
-    // Prefer the **scene** LiveKit room (CRDT multiplayer / fishing rods) — world room alone
-    // is chat/movement for custom worlds, not scene CRDT.
+    // SDK `@dcl/sdk/network` isStateSyncronized / isRoomReady gates on RealmInfo.isConnectedSceneRoom.
+    // Auth-server scenes (pixelwars paint, Flagtag combat) fire REQ_CRDT_STATE on this edge and only
+    // become room-ready after RES from peer identity `authoritative-server`.
+    //
+    // Must track the **scene** LiveKit room — not the world chat room. ORing worldLiveKit made
+    // isConnectedSceneRoom true as soon as world connected; the SDK edge fired once, REQ went out
+    // before (or on) the wrong session, and when the Cast/scene room later connected there was no
+    // false→true edge to re-pulse. joinRoster then stayed queued forever → no teamAssigned →
+    // paint never writes Material (crdt-outbound bytes=0 while walking).
     const sceneRoom =
-      this.transport === 'livekit'
-        ? this.sceneLiveKit.isConnected() ||
-          (this.isWorldComms() && this.worldLiveKit.isConnected())
-        : this.rfc5.isConnected()
+      this.transport === 'livekit' ? this.sceneLiveKit.isConnected() : this.rfc5.isConnected()
     return {
       ...this.realm,
       room: this.sceneTarget?.pointer ?? this.realm.room,
@@ -600,6 +604,8 @@ export class CommsService {
 
   private async connectSceneRoomExclusive(target: SceneCommsTarget): Promise<SceneCommsConnectResult> {
     this.sceneRoomConnectInFlight = true
+    // Re-arm hold for each scene join — early AUTH_RES must not race async main/syncEntity.
+    this.setSceneBinaryIngressHold(true)
     try {
       return await this.connectSceneRoomImpl(target)
     } finally {
@@ -1120,6 +1126,35 @@ export class CommsService {
     this.pendingTransform = null
   }
 
+  /**
+   * Hold scene-binary ingress until async scene `main()` / `syncEntity` settles.
+   * Prevents AUTH_RES orphan NetworkEntity race (pixelwars seed → white paint tiles).
+   * Default is held; release after worker signals main complete / ready.
+   */
+  setSceneBinaryIngressHold(hold: boolean): void {
+    const wasHeld = this.inboundQueue.isHoldDrain()
+    this.inboundQueue.setHoldDrain(hold)
+    if (wasHeld && !hold) {
+      const n = this.inboundQueue.pendingCount()
+      clientDebugLog.log(
+        'sync',
+        n > 0
+          ? `scene-binary ingress released — ${n} buffered packet(s) will drain on next sendBinary`
+          : 'scene-binary ingress released (queue empty)',
+        { level: 'info', alsoConsole: true }
+      )
+    } else if (!wasHeld && hold) {
+      clientDebugLog.log('sync', 'scene-binary ingress held (await scene main/syncEntity)', {
+        level: 'info',
+        alsoConsole: false
+      })
+    }
+  }
+
+  isSceneBinaryIngressHeld(): boolean {
+    return this.inboundQueue.isHoldDrain()
+  }
+
   async sendBinary(data: Uint8Array[], addresses: string[] = []): Promise<Uint8Array[]> {
     if (this.transport !== 'livekit' || !this.sceneId) {
       // RFC5 has no directed peer targeting — broadcast only (rare fallback path).
@@ -1133,12 +1168,15 @@ export class CommsService {
     if (!session) return this.inboundQueue.drain()
 
     // Directed peerData → LiveKit destinationIdentities. Empty addresses = room broadcast
-    // (unless CUSTOM_EVENT can be pinned to the authoritative-server peer below).
+    // (unless CUSTOM_EVENT / REQ can be pinned to the authoritative-server peer below).
     let dest =
       addresses.length > 0 ? session.resolveDestinationIdentities(addresses) : undefined
     if (addresses.length) {
       logSyncDirectedPublish(addresses, dest ?? [])
     }
+
+    // Throttled hint: auth-server games never paint without this peer.
+    this.maybeLogMissingAuthServer(session)
 
     for (const chunk of data) {
       // Parity with @dcl/ecs LIVEKIT_MAX_SIZE — SDK chunks; refuse runaway single blobs.
@@ -1160,12 +1198,15 @@ export class CommsService {
         continue
       }
       const unwrapped = unwrapCraftedCommsMessage(chunk)
-      // Auth-server scenes: client CUSTOM_EVENT is only handled by the server peer.
-      // Prefer directed reliable publish so shot/hit/lobby requests are not lossy-broadcast.
+      // Auth-server scenes: client CUSTOM_EVENT + REQ_CRDT_STATE are only handled by the
+      // server peer. Prefer directed reliable publish so joinRoster / paintTick / state
+      // sync are not lossy-broadcast (and reach the server when it is present).
       let chunkDest = dest
       if (
         (!chunkDest || chunkDest.length === 0) &&
-        unwrapped?.messageType === CommsWireMessageType.CUSTOM_EVENT
+        unwrapped &&
+        (unwrapped.messageType === CommsWireMessageType.CUSTOM_EVENT ||
+          isReqCrdtStateType(unwrapped.messageType))
       ) {
         const authDest = session.resolveDestinationIdentities([AUTH_SERVER_PEER_IDENTITY])
         if (authDest.length > 0 && session.hasRemoteIdentity(AUTH_SERVER_PEER_IDENTITY)) {
@@ -1183,6 +1224,66 @@ export class CommsService {
       })
     }
     return this.inboundQueue.drain()
+  }
+
+  private lastMissingAuthServerLogMs = 0
+  private authServerSeen = false
+  private onAuthServerPresent: (() => void) | null = null
+
+  /**
+   * True when peer identity `authoritative-server` is in the **scene** LiveKit room.
+   * Pixelwars paint / Flagtag combat require this peer for isRoomReady + teamAssigned.
+   */
+  hasAuthServerPeer(): boolean {
+    if (!this.sceneLiveKit.isConnected()) return false
+    return this.sceneLiveKit.hasRemoteIdentity(AUTH_SERVER_PEER_IDENTITY)
+  }
+
+  /**
+   * Fired once when auth-server first appears in the scene room (or immediately if already present).
+   * Host uses this to re-pulse RealmInfo so SDK requestState / isRoomReady cannot stay stuck.
+   */
+  setAuthServerPresentHandler(handler: (() => void) | null): void {
+    this.onAuthServerPresent = handler
+    if (handler && this.hasAuthServerPeer()) {
+      this.authServerSeen = true
+      try {
+        handler()
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  /** Once per 15s while scene room is live but auth-server peer is absent. */
+  private maybeLogMissingAuthServer(session: LiveKitCommsSession): void {
+    if (!this.sceneLiveKit.isConnected()) return
+    if (session.hasRemoteIdentity(AUTH_SERVER_PEER_IDENTITY)) {
+      if (!this.authServerSeen) {
+        this.authServerSeen = true
+        clientDebugLog.log(
+          'sync',
+          `authoritative-server present in scene room — remotes=${session.getRemotePeerAddresses().length}`,
+          { level: 'success', alsoConsole: true }
+        )
+        try {
+          this.onAuthServerPresent?.()
+        } catch {
+          /* ignore */
+        }
+      }
+      return
+    }
+    const now = performance.now()
+    if (now - this.lastMissingAuthServerLogMs < 15_000) return
+    this.lastMissingAuthServerLogMs = now
+    clientDebugLog.log(
+      'sync',
+      'authoritative-server peer not in scene LiveKit room — auth-server games ' +
+        '(pixelwars paint/team, Flagtag) will not isRoomReady / teamAssigned until it joins. ' +
+        `remotes=${session.getRemotePeerAddresses().length} sceneId=${this.sceneId.slice(0, 16)}…`,
+      { level: 'warn', alsoConsole: true }
+    )
   }
 
   subscribeToTopic(topic: string): void {
@@ -1604,6 +1705,8 @@ export class CommsService {
     this.peerTransports.clear()
     this.topicService.clear()
     this.inboundQueue.clear()
+    // Next scene join re-holds; default-safe so a late packet cannot race a new load.
+    this.inboundQueue.setHoldDrain(true)
   }
 
   private connectArchipelago(url: string): void {

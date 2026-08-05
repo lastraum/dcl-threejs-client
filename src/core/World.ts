@@ -917,6 +917,17 @@ export class World {
       this.sceneScript.setCollidersPoseCallback((entities) => this.applyColliderPoseSlides(entities))
       this.sceneScript.setCollidersRemoveCallback((entity) => this.onColliderEntityRemoved(entity))
       this.sceneScript.setRealmInfoProvider(() => this.comms.getRealmInfo())
+      // Pixelwars / Flagtag: when authoritative-server joins, re-pulse RealmInfo so
+      // SDK isRoomReady + joinRoster cannot stay stuck (no team → no paint Materials).
+      this.comms.setAuthServerPresentHandler(() => {
+        this.sceneScript.resyncAuthServerNetworkRoom()
+      })
+      // AUTH_RES before async main/syncEntity creates orphan SeedHolder → white paint tiles.
+      // Hold ingress until worker ready (main settled); re-arm on each scene prepare.
+      this.comms.setSceneBinaryIngressHold(true)
+      this.sceneScript.setSceneBinaryIngressRelease(() => {
+        this.comms.setSceneBinaryIngressHold(false)
+      })
       this.sceneScript.setCommsHandler({
         setCommunicationsAdapter: async (body) => ({
           success: await this.comms.connectAdapter(body.connectionString)
@@ -2532,26 +2543,47 @@ export class World {
   }
 
   /**
-   * Scale-drift geom recook at most once per entity per cooldown (COD allowed exception).
-   * Only when geom fingerprint no longer matches a live actor — never pose-only, never tree rebuild.
+   * Scale-drift recook (COD allowed exception).
+   * - Geom fingerprint cleared by scale gate (entity-local)
+   * - Cook-scale drift with identical geom fp (world-baked multi-shape tile grow:
+   *   pixelwars Scale tween 1e-3→TILE_SCALE left 0.001 hulls forever because sync
+   *   re-acked pose without replaceStatic)
+   * Short cooldown for cook-scale (tween settle); longer for geom-string thrash.
    */
   private readonly scaleDriftRecookAt = new Map<number, number>()
   private static readonly SCALE_DRIFT_RECOOK_COOLDOWN_MS = 8_000
+  /** Tile grow tween is ~500ms — recook shortly after scale moves, not every frame. */
+  private static readonly COOK_SCALE_DRIFT_RECOOK_COOLDOWN_MS = 280
 
   private enqueueScaleDriftRecooks(): void {
     if (!this.collidersLoadingComplete) return
     const now = performance.now()
+    let scaleQueued = 0
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (!desc.shapes?.length) continue
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
       if (!this.physics.hasStaticActor(desc.entity)) continue
-      // Geom fingerprint cleared by scale gate — needs recook, not pose-only.
-      if (this.physics.geomFingerprintMatches(desc)) continue
+      const geomMatch = this.physics.geomFingerprintMatches(desc)
+      const scaleDrift = this.physics.hasCookScaleDrift(desc)
+      // Pose-only drift is slide path; only geom wipe or bake-scale mismatch recooks.
+      if (geomMatch && !scaleDrift) continue
       const last = this.scaleDriftRecookAt.get(desc.entity) ?? 0
-      if (now - last < World.SCALE_DRIFT_RECOOK_COOLDOWN_MS) continue
+      const cooldown = scaleDrift
+        ? World.COOK_SCALE_DRIFT_RECOOK_COOLDOWN_MS
+        : World.SCALE_DRIFT_RECOOK_COOLDOWN_MS
+      if (now - last < cooldown) continue
       this.scaleDriftRecookAt.set(desc.entity, now)
       this.colliderCookQueue.add(desc.entity)
+      if (scaleDrift) scaleQueued++
+    }
+    if (scaleQueued > 0) {
+      this.maybeBeginRuntimeColliderBurst(this.colliderCookQueue.size - scaleQueued)
+      clientDebugLog.log(
+        'collision',
+        `Scale-drift recook — +${scaleQueued} (queue=${this.colliderCookQueue.size})`,
+        { level: 'info', alsoConsole: true, throttleMs: 2_000 }
+      )
     }
   }
 
@@ -2765,9 +2797,16 @@ export class World {
     }
     const descs = this.collectColliderDescs(physIds)
     const slideDescs: PhysicsColliderDesc[] = []
+    let scaleDriftQueued = 0
     for (const desc of descs) {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
+      // Scale grow bakes into verts — must recook (not T+R slide).
+      if (this.physics.hasCookScaleDrift(desc)) {
+        this.colliderCookQueue.add(desc.entity)
+        scaleDriftQueued++
+        continue
+      }
       if (
         this.physics.isWorldBakedStatic(desc.entity) ||
         this.physics.needsWorldBakedPoseRecook(desc)
@@ -2781,6 +2820,9 @@ export class World {
         continue
       }
       slideDescs.push(desc)
+    }
+    if (scaleDriftQueued > 0) {
+      this.maybeBeginRuntimeColliderBurst(this.colliderCookQueue.size - scaleDriftQueued)
     }
     const updated = this.physics.applyStaticColliderPoseUpdates(slideDescs)
     if (updated > 0) this.physics.refreshStaticColliderQueries()

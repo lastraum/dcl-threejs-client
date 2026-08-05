@@ -77,6 +77,23 @@
 
 ---
 
+### 3b. Dense MeshRenderer boards (any scene)
+
+**Problem:** Scenes may stamp **≥12k MeshRenderer** planes (land flippers, grids). 1:1 mesh+geo+mat+unfrozen matrices + mass cast kills FPS while GPU draws stay low.
+
+**Policy:** Scene-agnostic tiers (T0 culled → T1 instance → T2 pooled freeze → T3 live). ECS always authoritative; far animators snap on near. See **[MESH_RENDERER_SCALE.md](./MESH_RENDERER_SCALE.md)**.
+
+| Item | Idea | Priority |
+| ---- | ---- | -------- |
+| **3b.1 Shared primitive geo** | Pool by `primitiveMeshKey` (not animated UV sprites) | P0 |
+| **3b.2 Freeze static MeshRenderer** | `matrixAutoUpdate=false` until Tween/Billboard/Animator/AvatarAttach | P0 |
+| **3b.3 Scalar Material same frame** | Color recolor not stuck behind 8/frame deferred queue | P0 |
+| **3b.4 Cast density** | high=explicit cast only; ultra=SDK default; never mass-enable on graphs | P0 |
+| **3b.5 InstancedMesh buckets** | Eligible static scalar boards | P1 |
+| **3b.6 Fair anim + snap-on-near** | Budgeted sample; re-apply ECS pose when becoming live | P1 |
+
+---
+
 ### 4. Network & asset stalls
 
 **Problem:** Hung HTTP/content streams stall load and leave the client “busy forever.”

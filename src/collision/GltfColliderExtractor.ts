@@ -957,6 +957,15 @@ export class GltfColliderExtractor {
       if (isGltfInvisibleColliderMesh(node, gltfMesh)) meshInvClass++
       else if (isGltfVisibleClassMesh(node, gltfMesh)) meshVisClass++
     })
+    // Decorative pool VFX (disco_cell, star, drop) — inv mask set but only visible-class
+    // meshes → expected shapes=0. Logging hundreds of these froze the fishing dock UI.
+    if (
+      shapeCount === 0 &&
+      meshInvClass === 0 &&
+      !hasColliderLayer(visibleMask, ColliderLayer.CL_PHYSICS)
+    ) {
+      return
+    }
     const shortSrc = src.length > 64 ? `…${src.slice(-48)}` : src
     const msg =
       `[GltfCollider] e${entity} src="${shortSrc}" ` +

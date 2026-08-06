@@ -817,6 +817,41 @@ export type WorkerUiMountSnapshotRow = {
 
 export const UI_TRANSFORM_COMPONENT_ID = 1050
 
+/**
+ * Content-aware UI mount snapshot fingerprint (worker post dedupe + main reseed skip).
+ * Must include UiText.value and layout width/height — entity:componentId alone made
+ * timer/score updates look identical and get dropped after the first post.
+ */
+export function uiMountSnapshotContentFp(
+  snapshot: readonly WorkerUiMountSnapshotRow[]
+): string {
+  if (!snapshot.length) return '0'
+  const parts: string[] = []
+  const n = Math.min(snapshot.length, 96)
+  for (let i = 0; i < n; i++) {
+    const r = snapshot[i]!
+    const v = r.value
+    let payload = ''
+    if (v && typeof v === 'object') {
+      const o = v as Record<string, unknown>
+      // UiText (1052)
+      if (typeof o.value === 'string') payload = `t${o.value}`
+      // UiTransform width/height (HP bars grow without entity churn)
+      else if (o.width !== undefined || o.height !== undefined) {
+        payload = `wh${o.width ?? ''},${o.height ?? ''}`
+      }
+      // UiBackground color alpha (fades)
+      else if (o.color && typeof o.color === 'object') {
+        const c = o.color as { r?: number; g?: number; b?: number; a?: number }
+        payload = `c${c.r ?? 0},${c.g ?? 0},${c.b ?? 0},${c.a ?? 0}`
+      }
+    }
+    parts.push(`${r.entity}:${r.componentId}:${payload}`)
+  }
+  if (snapshot.length > n) parts.push(`#${snapshot.length}`)
+  return parts.join('|')
+}
+
 /** Mount set authority — UiTransform row entity ids from the snapshot (not a separate collect). */
 export function extractSnapshotMountEntityIds(snapshot: readonly WorkerUiMountSnapshotRow[]): number[] {
   const out: number[] = []

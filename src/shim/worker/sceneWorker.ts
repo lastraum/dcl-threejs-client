@@ -113,7 +113,8 @@ import {
   resetWorkerSceneUiCrdtLamport,
   stripRendererHostGrowOnlyAppendsBytes,
   stripSceneUiCrdtBytes,
-  stripWorkerAuthoritativeCrdtBytes
+  stripWorkerAuthoritativeCrdtBytes,
+  uiMountSnapshotContentFp
 } from './workerSceneUiCrdtOutbound'
 import {
   collectPlayerFrameSnapshot,
@@ -1700,7 +1701,7 @@ initSceneEngineScheduler({
     const uiKey = uiEntities.join(',')
     // Content-aware fingerprint — entity:componentId alone dropped timer/score UiText
     // updates forever (same rows, new values → fpKey match → silent skip → clock skips).
-    const snapFp = uiMountSnapshotContentFp(snapshot)
+    const snapFp = uiMountSnapshotContentFp(snapshot) // shared content fp (workerSceneUiCrdtOutbound)
     const fpKey = `${uiKey}@@${snapFp}`
     if (fpKey === lastUiMountSnapshotFp) {
       return false
@@ -2347,40 +2348,7 @@ function flushDeferredRendererInbound(opts?: { applyOnly?: boolean }): void {
   }
 }
 
-/**
- * Content-aware UI mount snapshot fingerprint.
- * Must include UiText.value (and layout width for HP bars) — id:componentId alone made
- * timer/score updates look identical and get dropped after the first post.
- */
-function uiMountSnapshotContentFp(
-  snapshot: import('./workerSceneUiCrdtOutbound').WorkerUiMountSnapshotRow[]
-): string {
-  if (!snapshot.length) return '0'
-  const parts: string[] = []
-  const n = Math.min(snapshot.length, 96)
-  for (let i = 0; i < n; i++) {
-    const r = snapshot[i]!
-    const v = r.value
-    let payload = ''
-    if (v && typeof v === 'object') {
-      const o = v as Record<string, unknown>
-      // UiText (1052)
-      if (typeof o.value === 'string') payload = `t${o.value}`
-      // UiTransform width/height (HP bars grow without entity churn)
-      else if (o.width !== undefined || o.height !== undefined) {
-        payload = `wh${o.width ?? ''},${o.height ?? ''}`
-      }
-      // UiBackground color alpha (fades)
-      else if (o.color && typeof o.color === 'object') {
-        const c = o.color as { r?: number; g?: number; b?: number; a?: number }
-        payload = `c${c.r ?? 0},${c.g ?? 0},${c.b ?? 0},${c.a ?? 0}`
-      }
-    }
-    parts.push(`${r.entity}:${r.componentId}:${payload}`)
-  }
-  if (snapshot.length > n) parts.push(`#${snapshot.length}`)
-  return parts.join('|')
-}
+
 
 function logSceneUiOutbound(data: Uint8Array, uiEntities?: number[], snapshotRows = 0): void {
   sceneUiOutboundLogCount++

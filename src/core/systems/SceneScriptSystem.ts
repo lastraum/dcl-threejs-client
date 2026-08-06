@@ -111,7 +111,8 @@ import {
   extractSnapshotMountEntityIds,
   stripEntityDeletesFromCrdtBytes,
   stripSceneUiCrdtBytes,
-  stripWorkerAuthoritativeCrdtBytes
+  stripWorkerAuthoritativeCrdtBytes,
+  uiMountSnapshotContentFp
 } from '../../shim/worker/workerSceneUiCrdtOutbound'
 type MovePlayerHandler = (request: MovePlayerToRequest) => boolean
 type TeleportToHandler = (request: TeleportToRequest) => boolean | Promise<boolean>
@@ -2570,8 +2571,12 @@ export class SceneScriptSystem {
   }
 
   private lastOutboundUiEntitiesKey = ''
-  /** Skip identical empty UI mount re-seed (react-ecs partial dirty thrash). */
-  private lastEmptyUiMountSnapFp = ''
+  /**
+   * Content-aware fp of last *applied* mount snapshot (not structure-only).
+   * Skip clear+reseed only when content matches — structure-only skip left
+   * timer/score rows stuck and paired badly with clear-before-skip.
+   */
+  private lastAppliedUiMountContentFp = ''
 
   private enqueueCrdtOutbound(item: {
     id?: number
@@ -2728,80 +2733,78 @@ export class SceneScriptSystem {
       const pointerUiMountBatch =
         hasUiMountSnapshot ||
         batch.some((i) => i.uiMountSnapshot !== undefined || (i.uiEntities?.length ?? 0) > 0)
-      // Clear LWW for entities present in the structured snapshot we are about to re-seed.
-      // Must include PointerEvents: cooperative UI egress is snapshot-only; if the scene
-      // removes PE after splash click, omitting 1062 left main with a ghost PE catcher
-      // (hand cursor + block=1) forever while Color4.a still faded.
-      // Never wipe the full mount on bare uiEntities (no rows) — that left projection at 0/N
-      // (mount commit deferred forever → sceneTicksPaused stuck → Flagtag timer + unfreeze die).
-      if (latestUiMountSnapshot?.length) {
-        const snapEntities = new Set<Entity>()
-        for (const row of latestUiMountSnapshot) snapEntities.add(row.entity as Entity)
-        if (snapEntities.size > 0) {
-          this.projection.clearLwwSlotsForEntities(snapEntities, [
-            UiTransform.componentId,
-            UiText.componentId,
-            UiBackground.componentId,
-            UiInput.componentId,
-            UiDropdown.componentId,
-            PointerEvents.componentId
-          ])
+      // Decide UI reseed skip BEFORE any LWW clear. The 0a950a4 thrash guard cleared
+      // always then skipped reseed on structure-only fp → permanent UiTransform=0/N
+      // (mount commit deferred + force-resume lag death spiral).
+      // Content-aware fp: timer/score UiText must still reseed when values change.
+      let skipUiMountReseed = false
+      if (hasUiMountSnapshot && latestUiMountSnapshot !== undefined && !mountChanged) {
+        const contentFp = uiMountSnapshotContentFp(latestUiMountSnapshot)
+        if (contentFp === this.lastAppliedUiMountContentFp && latestUiMountSnapshot.length > 0) {
+          skipUiMountReseed = true
         }
       }
-      // Identical empty UI mount — skip LWW clear + re-seed (DecentraCraft thrash).
-      // Still flush materials/tweens from backlog.
-      let skipUiMountReseed = false
-      if (
-        !hasPayload &&
-        hasUiMountSnapshot &&
-        latestUiMountSnapshot &&
-        latestUiMountSnapshot.length > 0 &&
-        !mountChanged
-      ) {
-        const snapFp = latestUiMountSnapshot
-          .map((r) => `${r.entity}:${r.componentId}`)
-          .join('|')
-        if (snapFp === this.lastEmptyUiMountSnapFp) {
-          skipUiMountReseed = true
-        } else {
-          this.lastEmptyUiMountSnapFp = snapFp
+      // Self-heal: prior clear-without-reseed (or purge race) left mount without transforms.
+      if (skipUiMountReseed && latestUiEntities?.length) {
+        let withTx = 0
+        for (const id of latestUiEntities) {
+          if (this.view.components.UiTransform.has(id as Entity)) withTx++
         }
-      } else if (hasUiMountSnapshot && latestUiMountSnapshot) {
-        this.lastEmptyUiMountSnapFp = latestUiMountSnapshot
-          .map((r) => `${r.entity}:${r.componentId}`)
-          .join('|')
+        if (withTx === 0 || withTx * 2 < latestUiEntities.length) {
+          skipUiMountReseed = false
+        }
       }
 
-      if (!skipUiMountReseed) {
-        if (pointerUiMountBatch) this.projection.beginForceWorkerUiPuts()
-        try {
-          // Phases 1–3 non-UI first — snapshot last so deferred CRDT cannot clobber UI rows.
-          const frozenMountIds = !hasUiMountSnapshot
-            ? this.resolveFrozenWorkerMountIds(latestUiEntities)
-            : null
-          for (const item of batch) {
-            if (item.uiMountSnapshot !== undefined) continue
-            let data = item.data
-            if (!data?.byteLength) continue
-            const mayCarryInboundUi =
-              item.uiEntities !== undefined && item.uiMountSnapshot === undefined
-            if (!mayCarryInboundUi) {
-              data = stripSceneUiCrdtBytes(data)
-              if (frozenMountIds?.size) {
-                data = stripEntityDeletesFromCrdtBytes(data, frozenMountIds)
-              }
-              if (!data.byteLength) continue
+      // Non-UI CRDT always applies (even when UI reseed is skipped).
+      if (pointerUiMountBatch) this.projection.beginForceWorkerUiPuts()
+      try {
+        // Phases 1–3 non-UI first — snapshot last so deferred CRDT cannot clobber UI rows.
+        const frozenMountIds = !hasUiMountSnapshot
+          ? this.resolveFrozenWorkerMountIds(latestUiEntities)
+          : null
+        for (const item of batch) {
+          if (item.uiMountSnapshot !== undefined) continue
+          let data = item.data
+          if (!data?.byteLength) continue
+          const mayCarryInboundUi =
+            item.uiEntities !== undefined && item.uiMountSnapshot === undefined
+          if (!mayCarryInboundUi) {
+            data = stripSceneUiCrdtBytes(data)
+            if (frozenMountIds?.size) {
+              data = stripEntityDeletesFromCrdtBytes(data, frozenMountIds)
             }
-            this.projection.applyIncoming(data)
-            for (const change of this.projection.changes) {
-              if (change.kind === 'delete' && change.componentId === uiTransformId) {
-                projectionDeletes.push(change)
-              }
-              if (uiComponentIds.has(change.componentId)) {
-                batchTouchesUi = true
-              }
+            if (!data.byteLength) continue
+          }
+          this.projection.applyIncoming(data)
+          for (const change of this.projection.changes) {
+            if (change.kind === 'delete' && change.componentId === uiTransformId) {
+              projectionDeletes.push(change)
             }
-            this.foldProjectionChanges()
+            if (uiComponentIds.has(change.componentId)) {
+              batchTouchesUi = true
+            }
+          }
+          this.foldProjectionChanges()
+        }
+
+        if (!skipUiMountReseed) {
+          // Clear LWW only when we are about to re-seed the same entities.
+          // Must include PointerEvents: cooperative UI egress is snapshot-only; if the scene
+          // removes PE after splash click, omitting 1062 left main with a ghost PE catcher.
+          // Never wipe on bare uiEntities (no rows) — that left projection at 0/N.
+          if (latestUiMountSnapshot?.length) {
+            const snapEntities = new Set<Entity>()
+            for (const row of latestUiMountSnapshot) snapEntities.add(row.entity as Entity)
+            if (snapEntities.size > 0) {
+              this.projection.clearLwwSlotsForEntities(snapEntities, [
+                UiTransform.componentId,
+                UiText.componentId,
+                UiBackground.componentId,
+                UiInput.componentId,
+                UiDropdown.componentId,
+                PointerEvents.componentId
+              ])
+            }
           }
           if (latestUiMountSnapshot !== undefined && latestUiMountSnapshot.length > 0) {
             projectionDeletes.length = 0
@@ -2817,16 +2820,18 @@ export class SceneScriptSystem {
             perfNoteUiMountPost()
             batchTouchesUi = true
             this.foldProjectionChanges()
+            this.lastAppliedUiMountContentFp = uiMountSnapshotContentFp(latestUiMountSnapshot)
           } else if (hasUiMountSnapshot) {
             // Empty mount snapshot (welcome unmount) — still touch UI so commitMountSet([]) runs.
             projectionDeletes.length = 0
             this.sceneUiBridge?.ingestMountSnapshot([])
             perfNoteUiMountPost()
             batchTouchesUi = true
+            this.lastAppliedUiMountContentFp = '0'
           }
-        } finally {
-          if (pointerUiMountBatch) this.projection.endForceWorkerUiPuts()
         }
+      } finally {
+        if (pointerUiMountBatch) this.projection.endForceWorkerUiPuts()
       }
 
       // Pixelwars paint + PE click-move: Material/Tween must not wait on empty-UI serial.
@@ -5841,6 +5846,8 @@ export class SceneScriptSystem {
     this.projectionLagPendingUi = false
     this.projectionLagSinceMs = 0
     this.projectionLagLoggedAt = 0
+    this.lastAppliedUiMountContentFp = ''
+    this.lastOutboundUiEntitiesKey = ''
     this.nftShapeBridge?.dispose()
     this.nftShapeBridge = null
     this.avatarAttachBridge?.dispose()

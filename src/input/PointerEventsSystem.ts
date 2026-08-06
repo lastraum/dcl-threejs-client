@@ -50,6 +50,12 @@ export type PointerHit = {
   inRange: boolean
   /** Screen-space ECS UI — skip 3D distance checks. */
   isSceneUi?: boolean
+  /**
+   * Global IA_POINTER edge on PlayerEntity when no PE mesh is in range.
+   * Updates inputSystem.isPressed / isTriggered only — does NOT invent a ground-plane
+   * hit.position (scenes aim via PrimaryPointerInfo.worldRayDirection × CameraEntity).
+   */
+  isLevelState?: boolean
 }
 
 type PointerDeps = {
@@ -85,6 +91,11 @@ type PointerDeps = {
   resolveMeshRendererInstanceHit?: (mesh: THREE.Object3D, instanceId: number) => Entity | null
   /** Unique InstancedMeshes that host PointerEvents entities (raycast targets). */
   getMeshRendererInstancePointerMeshes?: () => THREE.Object3D[]
+  /**
+   * Promote PE MeshRenderer/GLTF instances to private leaves before target collect.
+   * Shared by hover tooltips and click (same raycast path).
+   */
+  ensurePointerMeshes?: () => void
 }
 
 const _ray = new THREE.Ray()
@@ -113,6 +124,11 @@ export class PointerEventsSystem {
   private primaryKeyDown = false
   private readonly pendingPointerDown = new Map<InputActionValue, PointerHit | null>()
   private readonly pendingPointerUp = new Set<InputActionValue>()
+  /**
+   * Buttons whose PET_DOWN was level-state on PlayerEntity (no PE mesh).
+   * Must pair PET_UP without requiring a PointerEvents component on PlayerEntity.
+   */
+  private readonly levelStateButtons = new Set<InputActionValue>()
 
   private hoverEntity: Entity | null = null
   private lastHit: PointerHit | null = null
@@ -172,6 +188,10 @@ export class PointerEventsSystem {
     this.deps = null
     this.pointerTargets.length = 0
     this.pointerEntitySet.clear()
+    this.levelStateButtons.clear()
+    this.pendingPointerDown.clear()
+    this.pendingPointerUp.clear()
+    this.downEntityByButton.clear()
   }
 
   bind(deps: PointerDeps): void {
@@ -186,6 +206,8 @@ export class PointerEventsSystem {
 
   private rebuildPointerCacheIfNeeded(): void {
     if (!this.pointerCacheDirty || !this.deps) return
+    // Hover tooltips + click share this cache — ensure PE leaves exist first.
+    this.deps.ensurePointerMeshes?.()
     this.rebuildPointerEntitySet()
     this.rebuildChildrenByParent()
     this.collectPointerTargets()
@@ -241,8 +263,8 @@ export class PointerEventsSystem {
     const needsRaycast = this.needsRaycastPrepare(tickNumber)
     if (!needsRaycast && this.lastHit) {
       this.applyHoverFromHit(this.lastHit)
-      this.screenDx = 0
-      this.screenDy = 0
+      // Do NOT clear screenDx/Dy here — PrimaryPointerInfo.screenDelta is consumed only
+      // in getPrimaryPointerSnapshot / syncPrimaryPointerInfo (worker pan needs live delta).
       return
     }
 
@@ -252,15 +274,11 @@ export class PointerEventsSystem {
     if (!hit) {
       this.hoverFeedback.hide()
       this.highlightFeedback.clear()
-      this.screenDx = 0
-      this.screenDy = 0
       this.pointerDirty = false
       return
     }
 
     this.applyHoverFromHit(hit)
-    this.screenDx = 0
-    this.screenDy = 0
     this.pointerDirty = false
   }
 
@@ -361,10 +379,9 @@ export class PointerEventsSystem {
     if (isPointerOverSceneUi(this.screenX, this.screenY)) {
       const uiRegionHit = this.deps.pickUiRegionHit?.(this.screenX, this.screenY)
       if (uiRegionHit) return uiRegionHit
-      // Interactive UI under cursor belongs to another root (e.g. PX above primary).
-      // Never fall through to world mesh PointerEvents — that is click-through.
-      // `_ray` was already refreshed in syncInput for PrimaryPointerInfo.
-      return null
+      // DOM has an interactive node under the cursor but hit-map did not claim a BLOCK
+      // shell (selection HUD / transparent PE after DecentraCraft unit select). Fall
+      // through to world PE so click-to-move and hover tooltips still work.
     }
 
     if (!this.pointerEntitySet.size) return null
@@ -372,7 +389,8 @@ export class PointerEventsSystem {
     this.rebuildPointerCacheIfNeeded()
     const { collision, camera, getPlayerPosition } = this.deps
 
-    // `_ray` set by refreshPointerRay in syncInput (pointer-lock aim included).
+    // Always refresh ray from the live camera (VC lens may have moved this frame).
+    this.refreshPointerRay(camera)
     camera.getWorldPosition(_camPos)
     const playerPos = getPlayerPosition()
     if (playerPos) _playerPos.copy(playerPos)
@@ -388,8 +406,20 @@ export class PointerEventsSystem {
     this.pointerDirty = true
   }
 
+  /**
+   * Track cursor for PrimaryPointerInfo even over scene UI / chat overlays.
+   * Edge-pan systems read screenCoordinates every tick — if we only update on canvas
+   * mousemove, the left/top screen edges under HUD never refresh (left pan dead).
+   * Delta: only accumulate when not over the canvas (canvas mousemove already counts).
+   */
   private onDocumentPointerMove = (e: PointerEvent): void => {
-    if (!isSceneUiDomTarget(e.target)) return
+    const overCanvas =
+      e.target === this.canvas ||
+      (e.target instanceof Node && this.canvas.contains(e.target))
+    if (!overCanvas && (e.movementX || e.movementY)) {
+      this.screenDx += e.movementX
+      this.screenDy += e.movementY
+    }
     this.screenX = e.clientX
     this.screenY = e.clientY
     this.pointerDirty = true
@@ -404,8 +434,11 @@ export class PointerEventsSystem {
     this.screenX = e.clientX
     this.screenY = e.clientY
     this.pointerDirty = true
-    // PX / scene UI overlay above canvas — never raycast world through a dialog.
-    if (isUiOverlayPointerEvent(e) || isPointerOverSceneUi(e.clientX, e.clientY)) {
+    // Canvas is the event target → DOM already passed through UI (pointer-events:none).
+    // Always world-raycast; do NOT call pickUiRegionHit (that blocked DecentraCraft
+    // click-to-move after unit select when selection HUD hit-map still claimed the point).
+    // Full-screen PX dialogs use isUiOverlayPointerEvent / non-canvas targets.
+    if (isUiOverlayPointerEvent(e)) {
       e.stopPropagation()
       return
     }
@@ -426,7 +459,26 @@ export class PointerEventsSystem {
     const button = mouseButtonToInputAction(e.button)
     const coords = this.pointerClientCoords(e.clientX, e.clientY)
     const hit = this.resolveWorldInteractHit(button)
+    // Real PE / UI when in range. On IA_POINTER miss/OOR: level-state PET on PlayerEntity so
+    // inputSystem.isPressed / isTriggered work (Explorer global button). Aim stays PPI ×
+    // CameraEntity in the scene — never invent a y=0 ground PE hit.position.
     if (!this.canQueuePointerDown(button, hit)) {
+      if (button === InputAction.IA_POINTER) {
+        const levelHit = this.buildLevelStatePointerHit()
+        if (levelHit) {
+          const player = this.deps.view.PlayerEntity
+          this.levelStateButtons.add(button)
+          this.downEntityByButton.set(button, player)
+          this.pendingPointerDown.set(button, levelHit)
+          clientDebugLog.log(
+            'pointer',
+            `click → level-state PlayerEntity (no PE in range; entities=${this.pointerEntitySet.size} meshes=${this.pointerTargets.length})`,
+            { alsoConsole: true }
+          )
+          this.deps.flushPointerCrdt?.()
+          return
+        }
+      }
       if (hit) {
         this.logInteractBlocked(mouseInteractLabel(button, e.button), button, hit)
       } else if (!this.shouldLogNoTarget(button, coords.x, coords.y)) {
@@ -437,15 +489,26 @@ export class PointerEventsSystem {
         const lastHint = last
           ? ` lastHit=e${last.entity as number} cam=${last.cameraDistance.toFixed(1)}m`
           : ' lastHit=none'
+        // Sample PE entity ids so we can see if craft clickables are in the 3D set.
+        let sample = ''
+        let n = 0
+        for (const ent of this.pointerEntitySet) {
+          if (n >= 4) break
+          sample += (sample ? ',' : '') + `e${ent as number}`
+          n++
+        }
         clientDebugLog.log(
           'pointer',
           `${mouseInteractLabel(button, e.button)} — no in-range target ` +
-            `(entities=${this.pointerEntitySet.size} meshes=${this.pointerTargets.length}${lastHint})`,
+            `(entities=${this.pointerEntitySet.size} meshes=${this.pointerTargets.length}${lastHint}` +
+            (sample ? ` sample=[${sample}]` : '') +
+            `)`,
           { level: 'warn', alsoConsole: true }
         )
       }
       return
     }
+    this.levelStateButtons.delete(button)
     const targetEntity = this.resolvePointerResultEntity(hit!.entity, button)
     this.downEntityByButton.set(button, targetEntity)
     this.pendingPointerDown.set(button, hit)
@@ -456,6 +519,9 @@ export class PointerEventsSystem {
           : `click → entity ${targetEntity}`
       clientDebugLog.log('pointer', label, { alsoConsole: true })
     }
+    // Universal Explorer press edge: flush PET_DOWN immediately (world + UI + level-state).
+    // Same-tick DOWN+UP on mouseup alone never leaves multi-frame isPressed for any scene.
+    this.deps.flushPointerCrdt?.()
   }
 
   private onPointerUp = (e: PointerEvent): void => {
@@ -527,6 +593,8 @@ export class PointerEventsSystem {
         { alsoConsole: true }
       )
     }
+    // Universal press edge: PET_DOWN on mousedown for scene UI too (onMouseDown this edge).
+    this.deps.flushPointerCrdt?.()
   }
 
   private onWindowUiPointerUp = (e: PointerEvent): void => {
@@ -562,6 +630,19 @@ export class PointerEventsSystem {
     if (!binding) return
 
     const { action, label, preventDefault } = binding
+    // Locomotion / modifier keys are level-state via SceneInputRelay — not PE interact.
+    // Wasd was spamming "no in-range target" and competing with left-click PE flushes.
+    if (
+      action === InputAction.IA_FORWARD ||
+      action === InputAction.IA_BACKWARD ||
+      action === InputAction.IA_LEFT ||
+      action === InputAction.IA_RIGHT ||
+      action === InputAction.IA_JUMP ||
+      action === InputAction.IA_WALK ||
+      action === InputAction.IA_MODIFIER
+    ) {
+      return
+    }
     if (preventDefault) e.preventDefault()
 
     const coords = this.pointerClientCoords()
@@ -605,10 +686,24 @@ export class PointerEventsSystem {
   }
 
   hasPendingInput(): boolean {
-    return this.pendingPointerDown.size > 0 || this.pendingPointerUp.size > 0
+    return (
+      this.pendingPointerDown.size > 0 ||
+      this.pendingPointerUp.size > 0 ||
+      this.pendingInjectPayload !== null
+    )
   }
 
-  /** True after syncInput PET_UP — direct worker inject will carry the click. */
+  /** Queued browser pointerdown not yet written to PET / inject. */
+  hasPendingDown(): boolean {
+    return this.pendingPointerDown.size > 0
+  }
+
+  /** Queued browser pointerup not yet written to PET / inject. */
+  hasPendingUp(): boolean {
+    return this.pendingPointerUp.size > 0
+  }
+
+  /** True after syncInput PET edge — direct worker inject will carry the click. */
   hasPendingInjectPayload(): boolean {
     return this.pendingInjectPayload !== null
   }
@@ -649,6 +744,15 @@ export class PointerEventsSystem {
   private tryWritePointerDown(button: InputActionValue, preferredHit: PointerHit | null = null): void {
     if (!this.deps) return
 
+    // Global IA_POINTER on PlayerEntity — no PE component required (same as keyboard PETs).
+    if (preferredHit?.isLevelState) {
+      const player = this.deps.view.PlayerEntity
+      this.levelStateButtons.add(button)
+      this.downEntityByButton.set(button, player)
+      this.writeResult(this.deps.ecs, player, preferredHit, PointerEventType.PET_DOWN, button)
+      return
+    }
+
     let activeHit = preferredHit ?? this.pickAtPointer()
     // Proximity is E/F-style interact only — never for left-click (phantom theater/NPC hits).
     if (!activeHit && this.allowsProximityFallback(button)) {
@@ -675,6 +779,7 @@ export class PointerEventsSystem {
     }
     if (!this.hitAllowsPointerDown(spec, button, activeHit)) return
 
+    this.levelStateButtons.delete(button)
     this.downEntityByButton.set(button, targetEntity)
     this.writeResult(this.deps.ecs, targetEntity, activeHit, PointerEventType.PET_DOWN, button)
   }
@@ -755,6 +860,8 @@ export class PointerEventsSystem {
 
   private canQueuePointerDown(button: InputActionValue, hit: PointerHit | null): boolean {
     if (!this.deps || !hit) return false
+    // Level-state IA_POINTER on PlayerEntity — no PE mesh required.
+    if (hit.isLevelState) return button === InputAction.IA_POINTER
     const targetEntity = this.resolvePointerResultEntity(hit.entity, button)
     if (hit.isSceneUi) {
       const spec = this.uiPointerSpec(targetEntity)
@@ -764,6 +871,30 @@ export class PointerEventsSystem {
     const spec = this.deps.ecs.PointerEvents.getOrNull(targetEntity)
     if (!hasPointerEvent(spec, PointerEventType.PET_DOWN, button)) return false
     return pointerEventInRange(spec, PointerEventType.PET_DOWN, button, hit)
+  }
+
+  /**
+   * Global pointer edge when no PE mesh is under the cursor / in range.
+   * Hit geometry is intentionally empty (camera origin) — scenes must not treat this as a
+   * ground pick. Ground aim uses PrimaryPointerInfo.worldRayDirection × CameraEntity.
+   * Mirrors keyboard injectSceneKey (PlayerEntity PET with zero hit).
+   */
+  private buildLevelStatePointerHit(): PointerHit | null {
+    if (!this.deps) return null
+    this.deps.camera.updateMatrixWorld(true)
+    this.refreshPointerRay(this.deps.camera)
+    this.deps.camera.getWorldPosition(_camPos)
+    return {
+      entity: this.deps.view.PlayerEntity,
+      point: _camPos.clone(),
+      distance: 0,
+      normal: new THREE.Vector3(0, 1, 0),
+      priority: -1,
+      cameraDistance: 0,
+      playerDistance: 0,
+      inRange: true,
+      isLevelState: true
+    }
   }
 
   private hitAllowsPointerDown(
@@ -810,6 +941,29 @@ export class PointerEventsSystem {
     if (downEntity === undefined) return false
 
     this.deps.camera.getWorldPosition(_camPos)
+
+    // Level-state PET_DOWN had no PointerEvents on PlayerEntity — always pair PET_UP.
+    if (this.levelStateButtons.has(button) || preferredHit?.isLevelState) {
+      this.levelStateButtons.delete(button)
+      const upHit: PointerHit =
+        preferredHit?.isLevelState
+          ? preferredHit
+          : this.buildLevelStatePointerHit() ?? {
+              entity: downEntity,
+              point: _camPos.clone(),
+              distance: 0,
+              normal: new THREE.Vector3(0, 1, 0),
+              priority: -1,
+              cameraDistance: 0,
+              playerDistance: 0,
+              inRange: true,
+              isLevelState: true
+            }
+      upHit.isLevelState = true
+      upHit.entity = downEntity
+      this.writeResult(this.deps.ecs, downEntity, upHit, PointerEventType.PET_UP, button)
+      return true
+    }
 
     const isSceneUi = this.deps.ecs.UiTransform.has(downEntity)
     const spec = isSceneUi ? this.uiPointerSpec(downEntity) : this.deps.ecs.PointerEvents.getOrNull(downEntity)
@@ -898,6 +1052,8 @@ export class PointerEventsSystem {
   }
 
   private computePointerRay(camera: THREE.Camera): THREE.Ray {
+    // VC lens moves every frame — matrixWorld must be current for setFromCamera.
+    camera.updateMatrixWorld(true)
     const pointerLocked = document.pointerLockElement === this.canvas
     if (pointerLocked) {
       // Fixed elevated aim (same as reticle) — not screen center / not world-tracked.
@@ -907,9 +1063,15 @@ export class PointerEventsSystem {
       )
     } else {
       const rect = this.canvas.getBoundingClientRect()
-      _ndc.x = ((this.screenX - rect.left) / rect.width) * 2 - 1
-      _ndc.y = -((this.screenY - rect.top) / rect.height) * 2 + 1
+      const w = Math.max(1, rect.width)
+      const h = Math.max(1, rect.height)
+      _ndc.x = ((this.screenX - rect.left) / w) * 2 - 1
+      _ndc.y = -((this.screenY - rect.top) / h) * 2 + 1
     }
+    // Elevated top-down VC can sit 25–80m above the board; default far is Infinity but
+    // near plane can still clip if camera was reconfigured. Keep a long PE range.
+    this.raycaster.near = 0
+    this.raycaster.far = 500
     this.raycaster.setFromCamera(_ndc, camera)
     return _ray.copy(this.raycaster.ray)
   }
@@ -940,6 +1102,10 @@ export class PointerEventsSystem {
       if (entity === Root || entity === Player || entity === Camera) {
         continue
       }
+      // Screen UI PE is handled via DOM pickUiHit — keep them out of 3D raycast.
+      // Mixing 200+ UI PE entities into world targets caused DecentraCraft miss spam
+      // (entities=90 meshes=70 lastHit=none while craft meshes never got priority).
+      if (ecs.UiTransform?.has(entity)) continue
       this.pointerEntitySet.add(entity)
     }
   }
@@ -1169,7 +1335,9 @@ export class PointerEventsSystem {
         const obj = nodes.get(entity)
         const mk = `__mesh_${entity}`
         const primitive = obj?.getObjectByName(mk)
-        if (primitive instanceof THREE.Mesh) {
+        // Private MeshRenderer (textured / PE) — direct raycast target.
+        // Marker-only instanced leaves use dclMeshRendererInstance (GPU InstancedMesh below).
+        if (primitive instanceof THREE.Mesh && !primitive.userData.dclMeshRendererInstance) {
           primitive.userData.entity = entity
           this.pointerTargets.push(primitive)
         }
@@ -1235,7 +1403,7 @@ export class PointerEventsSystem {
       if (ecs.MeshRenderer.has(child)) {
         const obj = nodes.get(child)
         const primitive = obj?.getObjectByName(`__mesh_${child}`)
-        if (primitive instanceof THREE.Mesh) {
+        if (primitive instanceof THREE.Mesh && !primitive.userData.dclMeshRendererInstance) {
           primitive.userData.entity = child
           this.pointerTargets.push(primitive)
         }
@@ -1387,11 +1555,17 @@ export class PointerEventsSystem {
       hit: buildRaycastHit(hit),
       analog: undefined
     }
-    const bubbleFrom = hit.isSceneUi ? hit.entity : targetEntity
-    let targets = this.collectPointerResultTargets(bubbleFrom, button, state)
-    // react-ecs onMouseDown registers on the resolved leaf — never bubble UI inject to scrim ancestors.
-    if (hit.isSceneUi) {
+    let targets: Entity[]
+    // Level-state / reserved player: single target (no PE bubble walk).
+    if (hit.isLevelState) {
       targets = [targetEntity]
+    } else {
+      const bubbleFrom = hit.isSceneUi ? hit.entity : targetEntity
+      targets = this.collectPointerResultTargets(bubbleFrom, button, state)
+      // react-ecs onMouseDown registers on the resolved leaf — never bubble UI inject to scrim ancestors.
+      if (hit.isSceneUi) {
+        targets = [targetEntity]
+      }
     }
     for (const entity of targets) {
       ecs.PointerEventsResult.addValue(entity, result)
@@ -1400,6 +1574,41 @@ export class PointerEventsSystem {
     if (state === PointerEventType.PET_DOWN) {
       this.downTimestampByButton.set(button, result.timestamp)
       this.pendingInjectDownEntities = [...targets]
+      const dclPoint = threeToDclVec(hit.point)
+      const dclNormal = threeToDclVec(hit.normal)
+      const isSceneUi =
+        hit.isSceneUi === true ||
+        targets.some((id) => this.deps?.ecs.UiTransform.has(id as Entity)) ||
+        (this.deps?.ecs.UiTransform.has(targetEntity) ?? false)
+      // Every scene: DOWN edge inject so isPressed sticks until UP (Explorer press lifecycle).
+      // Attach PPI so worker edge tick has live screen/ray (UI chrome gate + ground ray).
+      // Ray origin/direction required for Explorer-parity RaycastHit (click VFX placement).
+      const ppi = this.buildPrimaryPointerInfo(false)
+      const dclOrigin = threeToDclVec(_ray.origin)
+      this.pendingInjectPayload = {
+        entity: targetEntity,
+        entities: [...targets],
+        downEntities: [...targets],
+        upEntities: [...targets],
+        hitEntity: hit.entity,
+        button,
+        tickNumber: this.tickNumber,
+        downTimestamp: result.timestamp,
+        upTimestamp: result.timestamp,
+        hitPosition: { x: dclPoint.x, y: dclPoint.y, z: dclPoint.z },
+        hitNormal: { x: dclNormal.x, y: dclNormal.y, z: dclNormal.z },
+        hitDistance: hit.distance,
+        hitOrigin: { x: dclOrigin.x, y: dclOrigin.y, z: dclOrigin.z },
+        hitDirection: {
+          x: ppi.worldRayDirection.x,
+          y: ppi.worldRayDirection.y,
+          z: ppi.worldRayDirection.z
+        },
+        meshName: hit.meshName,
+        sceneUi: isSceneUi,
+        phase: 'down',
+        primaryPointer: ppi
+      }
     } else if (state === PointerEventType.PET_UP) {
       const downTs = this.downTimestampByButton.get(button)
       if (downTs !== undefined) {
@@ -1408,6 +1617,12 @@ export class PointerEventsSystem {
         const dclNormal = threeToDclVec(hit.normal)
         const downEntities = this.pendingInjectDownEntities ?? [...targets]
         this.pendingInjectDownEntities = null
+        const isSceneUi =
+          hit.isSceneUi === true ||
+          downEntities.some((id) => this.deps?.ecs.UiTransform.has(id as Entity)) ||
+          (this.deps?.ecs.UiTransform.has(targetEntity) ?? false)
+        const ppi = this.buildPrimaryPointerInfo(false)
+        const dclOrigin = threeToDclVec(_ray.origin)
         this.pendingInjectPayload = {
           entity: targetEntity,
           entities: [...targets],
@@ -1421,12 +1636,16 @@ export class PointerEventsSystem {
           hitPosition: { x: dclPoint.x, y: dclPoint.y, z: dclPoint.z },
           hitNormal: { x: dclNormal.x, y: dclNormal.y, z: dclNormal.z },
           hitDistance: hit.distance,
+          hitOrigin: { x: dclOrigin.x, y: dclOrigin.y, z: dclOrigin.z },
+          hitDirection: {
+            x: ppi.worldRayDirection.x,
+            y: ppi.worldRayDirection.y,
+            z: ppi.worldRayDirection.z
+          },
           meshName: hit.meshName,
-          // DOM UI: worker routes PET_UP to PlayerEntity only (onMouseDown already ran).
-          sceneUi:
-            hit.isSceneUi === true ||
-            downEntities.some((id) => this.deps?.ecs.UiTransform.has(id as Entity)) ||
-            (this.deps?.ecs.UiTransform.has(targetEntity) ?? false)
+          sceneUi: isSceneUi,
+          phase: 'up',
+          primaryPointer: ppi
         }
       }
     }
@@ -1443,11 +1662,21 @@ export class PointerEventsSystem {
     }
   }
 
-  private syncPrimaryPointerInfo(_camera: THREE.Camera, hit: PointerHit | null): void {
+  /**
+   * Write PrimaryPointerInfo to the projection ECS.
+   * @param consumeDelta — true clears screenDx/Dy after capture (only once per frame).
+   *   tickPlayFrame calls syncInput (consume=false) then getPrimaryPointerSnapshot (true)
+   *   so the worker embed sees real screenDelta for VC drag/edge pan.
+   */
+  private syncPrimaryPointerInfo(
+    _camera: THREE.Camera,
+    hit: PointerHit | null,
+    consumeDelta = false
+  ): void {
     if (!this.deps) return
     const { ecs, view } = this.deps
 
-    const info = this.buildPrimaryPointerInfo()
+    const info = this.buildPrimaryPointerInfo(consumeDelta)
 
     // Include quantized world ray — under pointer-lock, screen coords stay fixed while the
     // camera (and thus aim ray) turns. Plaza fishing bobber systems read worldRayDirection.
@@ -1460,16 +1689,14 @@ export class PointerEventsSystem {
     this.lastPrimaryInfoKey = key
 
     ecs.PrimaryPointerInfo.createOrReplace(view.RootEntity, info)
-    // Per-frame deltas — Explorer reports movement since last sample, not cumulative.
-    this.screenDx = 0
-    this.screenDy = 0
   }
 
   /**
    * Live PPI fields from current `_ray` + virtual canvas screen coords.
    * Always builds from the ray — do not depend on projection read-back for play-frame embed.
+   * @param consumeDelta clear movement accumulators after reading (Explorer per-sample delta).
    */
-  private buildPrimaryPointerInfo(): {
+  private buildPrimaryPointerInfo(consumeDelta = false): {
     pointerType: number
     screenCoordinates: { x: number; y: number }
     screenDelta: { x: number; y: number }
@@ -1480,17 +1707,27 @@ export class PointerEventsSystem {
     // Virtual canvas space (default 1920×1080) — matches UiCanvasInformation so scene
     // systems that rebuild rays from screenCoordinates + canvas size stay consistent.
     const screen = this.screenCoordinatesInVirtualCanvas()
+    // Explorer/Unity: +screenDelta.y = cursor moved toward top of screen.
+    // DOM movementY is opposite (positive = move down) — invert for parity.
+    const deltaX = this.screenDx
+    const deltaY = -this.screenDy
+    if (consumeDelta) {
+      this.screenDx = 0
+      this.screenDy = 0
+    }
     return {
       pointerType: 1,
       screenCoordinates: { x: screen.x, y: screen.y },
-      screenDelta: { x: this.screenDx, y: this.screenDy },
+      screenDelta: { x: deltaX, y: deltaY },
       worldRayDirection: { x: dclDir.x, y: dclDir.y, z: dclDir.z }
     }
   }
 
   /**
    * Map document client coords → virtual UI canvas pixels (stretch-fill canvas rect).
-   * Same mapping as scene UI layout (virtual 1920×1080 → WebGL canvas box).
+   * **Y origin is bottom-left** (Unity / DCL Explorer PrimaryPointerInfo), not DOM top-left.
+   * Clamp to [0, vw]×[0, vh]. Cursor slightly outside the canvas (HUD over edge) still
+   * reports edge pixels so edge-pan (x≈0 left, x≈vw right) keeps working.
    */
   private screenCoordinatesInVirtualCanvas(): { x: number; y: number } {
     const rect = this.canvas.getBoundingClientRect()
@@ -1506,11 +1743,17 @@ export class PointerEventsSystem {
     if (canvasInfo?.height && canvasInfo.height > 0) vh = canvasInfo.height
 
     const nx = (this.screenX - rect.left) / w
-    const ny = (this.screenY - rect.top) / h
-    return {
-      x: Math.min(vw, Math.max(0, nx * vw)),
-      y: Math.min(vh, Math.max(0, ny * vh))
+    // DOM: ny=0 at top. Explorer PrimaryPointerInfo: y=0 at bottom.
+    const nyTop = (this.screenY - rect.top) / h
+    const nyBottom = 1 - nyTop
+    // Keep a 1px interior when exactly 0,0 — some scenes treat (0,0) as "no cursor".
+    let x = Math.min(vw, Math.max(0, nx * vw))
+    let y = Math.min(vh, Math.max(0, nyBottom * vh))
+    if (x === 0 && y === 0) {
+      x = 1
+      y = 1
     }
+    return { x, y }
   }
 
   /**
@@ -1525,11 +1768,21 @@ export class PointerEventsSystem {
     worldRayDirection: { x: number; y: number; z: number }
   } | null {
     if (!this.deps) return null
-    // Ensure _ray + projection LWW are fresh for this rAF even when no CRDT outbound ran.
+    // Ensure _ray is fresh for this rAF even when no CRDT outbound ran.
     this.refreshPointerRay(this.deps.camera)
-    this.syncPrimaryPointerInfo(this.deps.camera, this.lastHit)
-    // Always build from live ray — projection read-back is optional bookkeeping only.
-    const info = this.buildPrimaryPointerInfo()
+    // Consume deltas here (once per play frame) so worker embed gets non-zero screenDelta
+    // for DecentraCraft VC drag/edge pan. syncInput earlier this frame uses consume=false.
+    const info = this.buildPrimaryPointerInfo(true)
+    const { ecs, view } = this.deps
+    const d = info.worldRayDirection
+    const key =
+      `${info.screenCoordinates.x.toFixed(1)}|${info.screenCoordinates.y.toFixed(1)}|` +
+      `${info.screenDelta.x}|${info.screenDelta.y}|${this.lastHit?.entity ?? ''}|` +
+      `${d.x.toFixed(3)}|${d.y.toFixed(3)}|${d.z.toFixed(3)}`
+    if (key !== this.lastPrimaryInfoKey) {
+      this.lastPrimaryInfoKey = key
+      ecs.PrimaryPointerInfo.createOrReplace(view.RootEntity, info)
+    }
     this.maybeLogPrimaryPointer(info)
     return info
   }
@@ -1790,7 +2043,12 @@ function buildSyntheticProximityHit(
   }
 }
 
-/** Camera maxDistance on the entry first; if that fails, player distance (maxPlayerDistance or same maxDistance). */
+/**
+ * Camera maxDistance first; then player distance.
+ * Top-down / VirtualCamera strategy games (DecentraCraft y≈26 lens) make cameraDistance
+ * far larger than maxDistance (often 10) while the avatar is still next to the unit —
+ * prefer playerDistance when the lens is clearly elevated above the player.
+ */
 function entryPassesDistance(
   entry: Readonly<PBPointerEvents_Entry>,
   cameraDistance: number,
@@ -1803,7 +2061,12 @@ function entryPassesDistance(
     if (cameraDistance <= maxDistance) return true
     const playerLimit =
       maxPlayerDistance !== undefined && maxPlayerDistance > 0 ? maxPlayerDistance : maxDistance
-    return playerDistance <= playerLimit
+    if (playerDistance <= playerLimit) return true
+    // Elevated lens: camera is high above feet — treat as top-down and use player range only.
+    if (cameraDistance > playerDistance + 8 && playerDistance <= Math.max(playerLimit, 16)) {
+      return true
+    }
+    return false
   }
 
   if (maxPlayerDistance !== undefined && maxPlayerDistance > 0) {

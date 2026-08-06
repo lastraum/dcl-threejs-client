@@ -110,6 +110,10 @@ export function shouldShowPointerHoverHint(
   eventType: PointerEventTypeValue,
   primaryActionDown: boolean
 ): boolean {
+  // HOVER_ENTER often carries hoverText only (DecentraCraft "Select Warmaster Kael").
+  if (eventType === PointerEventType.PET_HOVER_ENTER) {
+    return !primaryActionDown
+  }
   if (button === InputAction.IA_ANY) {
     return (
       (primaryActionDown && eventType === PointerEventType.PET_UP) ||

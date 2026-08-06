@@ -190,6 +190,43 @@ function meshKey(entity: Entity): string {
   return `__mesh_${entity}`
 }
 
+/** Safe MeshRenderer read — StoreComponents.get throws if missing (aborts whole CRDT batch). */
+function meshRendererGetOrNull(
+  MeshRenderer: MirrorComponents['MeshRenderer'],
+  entity: Entity
+): ReturnType<MirrorComponents['MeshRenderer']['get']> | null {
+  if (!MeshRenderer.has(entity)) return null
+  const withNull = MeshRenderer as MirrorComponents['MeshRenderer'] & {
+    getOrNull?: (e: Entity) => ReturnType<MirrorComponents['MeshRenderer']['get']> | null
+  }
+  if (typeof withNull.getOrNull === 'function') {
+    return withNull.getOrNull(entity)
+  }
+  try {
+    return MeshRenderer.get(entity)
+  } catch {
+    return null
+  }
+}
+
+function materialGetOrNull(
+  Material: MirrorComponents['Material'],
+  entity: Entity
+): PbMaterial | null {
+  if (!Material.has(entity)) return null
+  const withNull = Material as MirrorComponents['Material'] & {
+    getOrNull?: (e: Entity) => PbMaterial | null
+  }
+  if (typeof withNull.getOrNull === 'function') {
+    return withNull.getOrNull(entity)
+  }
+  try {
+    return Material.get(entity) as PbMaterial
+  } catch {
+    return null
+  }
+}
+
 function lightKey(entity: Entity): string {
   return `__light_${entity}`
 }
@@ -254,11 +291,14 @@ function disposeMeshMaterials(mesh: THREE.Mesh): void {
 
 /** Sync mirror ECS state → Three.js scene graph (Phase 1 + 1b render components). */
 export class ThreeBridge {
-  /** Runtime attach slots — keep ≤1 heavy unit per play frame (P0 mesh frame law). */
-  private static readonly GLTF_BUDGET_PER_FRAME = 1
+  /**
+   * Runtime attach slots per play frame. Was 1 and, combined with PE material-only
+   * pendingDiff peels, left DecentraCraft prop/unit/building GLBs invisible for ages.
+   */
+  private static readonly GLTF_BUDGET_PER_FRAME = 4
   private static readonly GLTF_HYDRATION_BUDGET_PER_FRAME = 80
-  /** Post-hydration catch-up — was 1 and left remaining assets crawling for minutes. */
-  private static readonly GLTF_SOFT_HYDRATION_BUDGET_PER_FRAME = 8
+  /** Post-hydration catch-up after loading screen. */
+  private static readonly GLTF_SOFT_HYDRATION_BUDGET_PER_FRAME = 12
   private static readonly MESH_PASS_BUDGET_MS = 6
   private static readonly MESH_PASS_HYDRATION_BUDGET_MS = 48
   private static readonly HYDRATION_ATTACH_PASSES = 8
@@ -379,8 +419,26 @@ export class ThreeBridge {
 
   /** After Transform apply — refresh GPU instance matrices for instanced GltfContainers. */
   syncInstancedTransforms(entities: Iterable<Entity>): void {
-    // MeshRenderer board instances (land tiles) — O(dirty) matrix rewrite.
-    this.meshRendererInstancer.updateEntities(entities, this.store.nodes)
+    // MeshRenderer: PE / Tween / parented hierarchy leave GPU instancing.
+    const meshRendererUpdate: Entity[] = []
+    for (const entity of entities) {
+      if (!this.meshRendererInstancer.has(entity)) continue
+      const obj = this.store.nodes.get(entity)
+      if (!obj) continue
+      if (
+        this.ecs.PointerEvents?.has(entity) ||
+        this.ecs.Tween?.has(entity) ||
+        !this.meshRendererIsInstanceEligible(entity)
+      ) {
+        // Re-check eligibility (e.g. parented temple parts) and promote off GPU instance.
+        this.promoteMeshRendererForPointerOrMotion(entity, obj)
+        continue
+      }
+      meshRendererUpdate.push(entity)
+    }
+    if (meshRendererUpdate.length) {
+      this.meshRendererInstancer.updateEntities(meshRendererUpdate, this.store.nodes)
+    }
 
     const toUpdate: Entity[] = []
     for (const entity of entities) {
@@ -710,7 +768,8 @@ export class ThreeBridge {
    */
   private isSpritePoolEntity(entity: Entity): boolean {
     const { MeshRenderer, PointerEvents, MeshCollider } = this.ecs
-    if (!MeshRenderer.has(entity) || !hasAnimatedPlaneUvs(MeshRenderer.get(entity))) return false
+    const spec = meshRendererGetOrNull(MeshRenderer, entity)
+    if (!spec || !hasAnimatedPlaneUvs(spec)) return false
     return !PointerEvents.has(entity) && !MeshCollider.has(entity)
   }
 
@@ -949,18 +1008,95 @@ export class ThreeBridge {
   }
 
   /**
-   * Asset-pack Triggers register `PointerEvents` after GltfContainer attach. GPU
-   * InstancedMesh slots have no private `__mesh_*` for pointer raycasts — promote to a
-   * private clone so `PointerEventsSystem.collectPointerTargets` can hit the entity.
-   * Same path as GltfNodeModifiers promote.
+   * Asset-pack Triggers / DecentraCraft clickables register `PointerEvents` after mesh attach.
+   * GPU InstancedMesh slots have no private raycast leaf — promote:
+   * - GltfContainer instances → private GLB clone
+   * - MeshRenderer instances → private primitive mesh (click-move / crystal pick)
    */
   ensurePointerMeshClone(entity: Entity): boolean {
     if (this.isAnimatedSpriteSlot(entity)) return false
-    const obj = this.store.nodes.get(entity)
-    if (!obj?.userData.dclInstanced) return false
     if (!this.ecs.PointerEvents.has(entity) && !this.ecs.MeshCollider.has(entity)) return false
+    const obj = this.store.nodes.get(entity) ?? this.store.getOrCreateNode(entity, 'scene')
+    // MeshRenderer GPU board instances — detach + private mesh for PE/Tween.
+    if (
+      this.ecs.MeshRenderer.has(entity) &&
+      (obj.userData.dclMeshRendererInstanced || this.meshRendererInstancer.has(entity))
+    ) {
+      this.promoteMeshRendererForPointerOrMotion(entity, obj)
+      return true
+    }
+    if (!obj.userData.dclInstanced && !this.instancer.has(entity)) return false
     this.promoteInstancedGltfForModifiers(entity, obj)
     return true
+  }
+
+  /**
+   * MeshRenderer leave GPU InstancedMesh → private mesh (PE raycast + Tween move/scale).
+   * Instance matrix updates alone leave PE with marker-only groups and miss click targets
+   * after the first hit (DecentraCraft move-on-click).
+   */
+  private promoteMeshRendererForPointerOrMotion(entity: Entity, obj: THREE.Group): void {
+    if (this.meshRendererInstancer.has(entity) || obj.userData.dclMeshRendererInstanced) {
+      this.meshRendererInstancer.detach(entity, obj)
+      delete obj.userData.dclMeshRendererInstanced
+    }
+    // Force private path (eligibility already excludes PE/Tween; re-attach rebuilds leaf).
+    this.attachOrUpdateMeshRenderer(entity, obj, meshKey(entity), true)
+    obj.matrixAutoUpdate = true
+    unfreezeObject3D(obj)
+    const visual = this.entityVisualRoot(entity, obj)
+    if (visual) unfreezeObject3D(visual)
+    this.pendingMeshEntities.delete(entity)
+  }
+
+  /**
+   * Public: ensure MeshRenderer entities with active Tween are private meshes so
+   * TweenBridge local TRS is visible (not stuck on a stale instance matrix).
+   */
+  ensureMeshRendererTweenVisual(entity: Entity): void {
+    if (!this.ecs.MeshRenderer.has(entity)) return
+    if (!this.ecs.Tween.has(entity)) return
+    const obj = this.store.nodes.get(entity)
+    if (!obj) return
+    if (this.meshRendererInstancer.has(entity) || obj.userData.dclMeshRendererInstanced) {
+      this.promoteMeshRendererForPointerOrMotion(entity, obj)
+    } else if (!this.entityVisualRoot(entity, obj)) {
+      this.attachOrUpdateMeshRenderer(entity, obj, meshKey(entity), true)
+    }
+  }
+
+  /**
+   * Before PE raycast: every PointerEvents entity with MeshRenderer must have a private
+   * (or instance-raycastable) leaf. Runs cheap checks; promotes only when needed.
+   */
+  ensurePointerMeshesReady(entities: Iterable<Entity>): number {
+    let fixed = 0
+    const { MeshRenderer, PointerEvents, GltfContainer, MeshCollider } = this.ecs
+    for (const entity of entities) {
+      if (!PointerEvents.has(entity)) continue
+      // DOM UI PE — not 3D.
+      if (this.ecs.UiTransform?.has(entity)) continue
+      if (MeshCollider?.has(entity)) continue // PhysX path covers these
+      if (MeshRenderer.has(entity)) {
+        const obj = this.store.nodes.get(entity) ?? this.store.getOrCreateNode(entity, 'scene')
+        const visual = this.entityVisualRoot(entity, obj)
+        const isPrivateMesh =
+          visual instanceof THREE.Mesh && !visual.userData[MESH_RENDERER_INSTANCE_MARKER]
+        if (
+          this.meshRendererInstancer.has(entity) ||
+          obj.userData.dclMeshRendererInstanced ||
+          !isPrivateMesh
+        ) {
+          this.promoteMeshRendererForPointerOrMotion(entity, obj)
+          fixed++
+        }
+        continue
+      }
+      if (GltfContainer.has(entity) && (this.instancer.has(entity) || this.store.nodes.get(entity)?.userData.dclInstanced)) {
+        if (this.ensurePointerMeshClone(entity)) fixed++
+      }
+    }
+    return fixed
   }
 
   private invalidateMaterialsForVideoPlayer(videoPlayerEntity: Entity): void {
@@ -1066,18 +1202,19 @@ export class ThreeBridge {
 
   private entityNeedsMaterialWork(entity: Entity, obj: THREE.Group): boolean {
     const { Material, MeshRenderer } = this.ecs
-    if (!Material.has(entity)) return false
+    const pb = materialGetOrNull(Material, entity)
+    if (!pb) return false
     // Instanced MeshRenderer boards: color lives on InstancedMesh.instanceColor — the
     // entity host only has a marker Group (no Mesh). Still re-apply when albedo changes.
     if (
       MeshRenderer?.has(entity) &&
       (obj.userData.dclMeshRendererInstanced || this.meshRendererInstancer.has(entity))
     ) {
-      return this.materials.needsReapply(entity, Material.get(entity) as PbMaterial)
+      return this.materials.needsReapply(entity, pb)
     }
     const visual = this.entityVisualRoot(entity, obj)
     if (!visual) return false
-    return this.materials.needsReapply(entity, Material.get(entity) as PbMaterial, visual)
+    return this.materials.needsReapply(entity, pb, visual)
   }
 
   /**
@@ -1156,17 +1293,17 @@ export class ThreeBridge {
       // after first paint (pixelwars paintDelta / step-on flips stayed white).
       if (obj.userData.dclMeshRendererInstanced || this.meshRendererInstancer.has(entity)) {
         if (!this.meshRendererIsInstanceEligible(entity)) return true
-        if (includeMaterial && this.ecs.Material.has(entity)) {
-          return this.materials.needsReapply(
-            entity,
-            this.ecs.Material.get(entity) as PbMaterial
-          )
+        const matPb = materialGetOrNull(this.ecs.Material, entity)
+        if (includeMaterial && matPb) {
+          return this.materials.needsReapply(entity, matPb)
         }
         return false
       }
       const mk = meshKey(entity)
       const primitive = obj.getObjectByName(mk)
-      const key = primitiveMeshKey(MeshRenderer.get(entity))
+      const spec = meshRendererGetOrNull(MeshRenderer, entity)
+      if (!spec) return false
+      const key = primitiveMeshKey(spec)
       if (!(primitive instanceof THREE.Mesh) || primitive.userData.primitiveMeshKey !== key) return true
     }
 
@@ -1281,6 +1418,11 @@ export class ThreeBridge {
       // per-attach PhysX cook blocked the attach burst on multi-shape trimesh cooks.
       if (attached === 0 && pass > 0) break
     }
+  }
+
+  /** G2 — MeshRenderer GPU instancing density (boards / dense scalars). */
+  getMeshRendererInstanceStats(): { instances: number; buckets: number } {
+    return this.meshRendererInstancer.stats()
   }
 
   getHydrationStats(view: ProjectionView): SceneHydrationStats {
@@ -1484,11 +1626,40 @@ export class ThreeBridge {
    */
   /** Drain deferred mesh work when the projection diff is empty — materials use sync-frame tickDeferredMaterials. */
   async drainPendingWork(): Promise<void> {
+    // One-shot promote parented MeshRenderers that were GPU-instanced before hierarchy gate
+    // (DecentraCraft multi-part temples/barracks invisible under env GLBs).
+    this.promoteParentedMeshRendererInstances()
     if (!this.pendingMeshEntities.size) return
     const { MeshRenderer, Material, GltfContainer, TextShape } = this.ecs
     const meshEcs = { MeshRenderer, Material, GltfContainer, TextShape }
     const deferMaterials = this.shouldDeferMaterials()
     await this.runDiffMeshPass(meshEcs, deferMaterials)
+  }
+
+  /** Leave GPU InstancedMesh when Transform.parent is set (private hierarchy TRS). */
+  private promoteParentedMeshRendererInstances(): void {
+    const { Transform, MeshRenderer } = this.ecs
+    if (!Transform || !MeshRenderer) return
+    const doomed: Entity[] = []
+    for (const entity of this.meshRendererInstancer.entities()) {
+      if (!MeshRenderer.has(entity) || !Transform.has(entity)) continue
+      const parent = (Transform.get(entity) as DclTransformValues).parent
+      if (parent == null || Number(parent) <= 0) continue
+      doomed.push(entity)
+    }
+    for (const entity of doomed) {
+      const obj = this.store.nodes.get(entity)
+      if (!obj) {
+        this.meshRendererInstancer.detach(entity)
+        continue
+      }
+      this.promoteMeshRendererForPointerOrMotion(entity, obj)
+    }
+    if (doomed.length) {
+      console.info(
+        `[ThreeBridge] promoted ${doomed.length} parented MeshRenderer(s) off GPU instance (hierarchy)`
+      )
+    }
   }
 
   async consumeDiff(
@@ -1616,8 +1787,10 @@ export class ThreeBridge {
         }
       }
     }
-    // Motion components → unfreeze MeshRenderer roots (static boards stay frozen).
+    // Motion components + continuous Transform (temple spin/orbit) → unfreeze private leaves.
     this.unfreezeMeshRenderersFromDiff(diff)
+    // Multi-part buildings (parented MeshRenderers) must stay private before instance matrix pass.
+    this.promoteParentedMeshRendererInstances()
 
     // Cap UV pass — mass meshDirty (3k+) must not walk every entity every frame.
     const uvBudgetEnd = consumeStart + 4
@@ -1629,6 +1802,7 @@ export class ThreeBridge {
     }
 
     // Instanced GltfContainers + MeshRenderer boards — refresh matrices after pose apply.
+    // (Parented / motion MeshRenderers already promoted off the instancer above.)
     this.instancer.updateEntities(applied.upserts, this.store.nodes)
     this.meshRendererInstancer.updateEntities(applied.upserts, this.store.nodes)
 
@@ -1919,44 +2093,181 @@ export class ThreeBridge {
     return true
   }
 
+  /** True when MeshRenderer already has a private mesh or GPU instance leaf. */
+  hasMeshRendererLeaf(entity: Entity): boolean {
+    if (!this.ecs.MeshRenderer.has(entity)) return false
+    if (this.meshRendererInstancer.has(entity)) return true
+    const obj = this.store.nodes.get(entity)
+    if (!obj) return false
+    if (obj.userData.dclMeshRendererInstanced) return true
+    const existing = obj.getObjectByName(meshKey(entity))
+    return (
+      existing instanceof THREE.Mesh &&
+      existing.userData.primitiveMeshKey != null &&
+      !existing.userData[MESH_RENDERER_INSTANCE_MARKER]
+    )
+  }
+
+  /**
+   * Platform law: MeshRenderer always has a blank primitive leaf even without Material.
+   * Click VFX / fog-of-war / markers must not wait for a Material put that races structure drain.
+   */
+  ensureMeshRendererLeaf(entity: Entity): boolean {
+    const { MeshRenderer, Material } = this.ecs
+    const spec = meshRendererGetOrNull(MeshRenderer, entity)
+    if (!spec) return false
+    if (this.hasMeshRendererLeaf(entity) && this.meshRendererIsInstanceEligible(entity)) {
+      return true
+    }
+    if (this.hasMeshRendererLeaf(entity)) return true
+    const obj = this.store.getOrCreateNode(entity, 'scene')
+    this.attachOrUpdateMeshRenderer(entity, obj, meshKey(entity), Material.has(entity))
+    return this.hasMeshRendererLeaf(entity)
+  }
+
+  /**
+   * Drain missing MeshRenderer leaves (new VFX / fog planes) up to `cap`.
+   * Prioritizes pendingMeshEntities, then optional extra scan list.
+   */
+  flushMissingMeshRendererLeaves(cap = 64, prefer: Iterable<Entity> = []): number {
+    let n = 0
+    const tryOne = (entity: Entity): void => {
+      if (n >= cap) return
+      if (!this.ecs.MeshRenderer.has(entity)) return
+      if (this.ecs.GltfContainer?.has(entity)) return
+      if (this.ensureMeshRendererLeaf(entity)) {
+        n++
+        this.pendingMeshEntities.delete(entity)
+        // Color if Material already present.
+        if (this.ecs.Material.has(entity)) {
+          this.forceApplyMeshRendererMaterial(entity)
+        }
+      }
+    }
+    for (const entity of prefer) {
+      tryOne(entity)
+      if (n >= cap) return n
+    }
+    for (const entity of [...this.pendingMeshEntities]) {
+      tryOne(entity)
+      if (n >= cap) return n
+    }
+    return n
+  }
+
   /**
    * Public entry for same-frame Material recolor (worker cold CRDT path).
    * Prefer O(1) instanceColor — never walk private mesh trees on paint storms.
+   *
+   * Also first-attach: Material put often lands in pendingDiff before applySceneDiff
+   * creates the store node / mesh (DecentraCraft applied=0 + white default materials).
+   * getOrCreateNode + attach so textured props are not stuck waiting for rAF drain.
+   *
+   * MeshRenderer without Material: still builds a blank plane (ensureMeshRendererLeaf).
    */
   forceApplyMeshRendererMaterial(entity: Entity): boolean {
     const { MeshRenderer, Material } = this.ecs
-    if (!MeshRenderer.has(entity) || !Material.has(entity)) return false
-    const pb = Material.get(entity) as PbMaterial
-    // Fast path: already instanced → only rewrite instanceColor.
-    if (this.meshRendererInstancer.has(entity) && materialIsScalarOnly(pb)) {
-      const rgb = materialAlbedoRgb(pb)
-      if (this.meshRendererInstancer.setInstanceColor(entity, rgb.r, rgb.g, rgb.b)) {
-        this.materials.markScalarApplied(entity, pb)
-        this.pendingMaterialEntities.delete(entity)
+    const pb = materialGetOrNull(Material, entity)
+    const spec = meshRendererGetOrNull(MeshRenderer, entity)
+    if (!spec) return false
+    // No Material yet — blank leaf is still required (click markers / fog tiles).
+    if (!pb) {
+      return this.ensureMeshRendererLeaf(entity)
+    }
+    try {
+      const obj = this.store.getOrCreateNode(entity, 'scene')
+      // PE / Tween / ineligible — never stay on GPU instance (marker-only leaf breaks PE).
+      if (
+        this.meshRendererInstancer.has(entity) &&
+        (this.ecs.PointerEvents?.has(entity) ||
+          this.ecs.Tween?.has(entity) ||
+          !this.meshRendererIsInstanceEligible(entity))
+      ) {
+        this.promoteMeshRendererForPointerOrMotion(entity, obj)
+      }
+      // Fast path: already instanced → only rewrite instanceColor.
+      if (this.meshRendererInstancer.has(entity) && materialIsScalarOnly(pb)) {
+        const rgb = materialAlbedoRgb(pb)
+        if (this.meshRendererInstancer.setInstanceColor(entity, rgb.r, rgb.g, rgb.b)) {
+          this.materials.markScalarApplied(entity, pb)
+          this.pendingMaterialEntities.delete(entity)
+          return true
+        }
+      }
+      if (this.applyMeshRendererMaterialNow(entity, obj)) {
+        this.kickTexturedMaterialApply(entity, obj, pb)
         return true
       }
-    }
-    const obj = this.store.nodes.get(entity)
-    if (!obj) {
-      this.pendingMaterialEntities.add(entity)
+      // Nuclear fallback: always leave a private Mesh so pendingDiff Material put clears
+      // and PE can raycast (DecentraCraft applied=0 left white + unclickable props).
+      this.meshRendererInstancer.detach(entity, obj)
+      delete obj.userData.dclMeshRendererInstanced
+      const mk = meshKey(entity)
+      let primitive = obj.getObjectByName(mk) as THREE.Mesh | undefined
+      if (primitive?.userData[MESH_RENDERER_INSTANCE_MARKER] || primitive?.userData.dclInstanceMarker) {
+        obj.remove(primitive)
+        primitive = undefined
+      }
+      if (!(primitive instanceof THREE.Mesh)) {
+        // Re-check after detach — network entities can drop MeshRenderer mid-batch.
+        const liveSpec = meshRendererGetOrNull(MeshRenderer, entity)
+        if (!liveSpec) return false
+        primitive = this.replacePrimitiveMesh(obj, mk, primitive, liveSpec, entity)
+        this.notifyMeshComponent(entity, MeshRenderer.componentId)
+      }
+      this.materials.applyScalarsToObject3D(primitive, entity, pb)
+      if (this.materials.needsReapply(entity, pb, primitive)) {
+        this.pendingMaterialEntities.add(entity)
+        // Terrain planes: do not wait for idle budget — start texture load now.
+        this.kickTexturedMaterialApply(entity, obj, pb)
+      } else {
+        this.pendingMaterialEntities.delete(entity)
+      }
+      return true
+    } catch (err) {
+      console.warn(
+        `[mr-mat] forceApply e${entity as number} threw — ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
       return false
     }
-    return this.applyMeshRendererMaterialNow(entity, obj)
+  }
+
+  /** Fire-and-forget full texture maps for MeshRenderer (PE/Tween private meshes). */
+  private kickTexturedMaterialApply(entity: Entity, obj: THREE.Group, pb: PbMaterial): void {
+    if (materialIsScalarOnly(pb)) return
+    const visual = this.entityVisualRoot(entity, obj)
+    if (!visual || !(visual as THREE.Mesh).isMesh) return
+    if (visual.userData[MESH_RENDERER_INSTANCE_MARKER]) return
+    if (this.meshRendererInstancer.has(entity)) {
+      this.promoteMeshRendererForPointerOrMotion(entity, obj)
+    }
+    const mesh = this.entityVisualRoot(entity, obj)
+    if (!mesh || !(mesh as THREE.Mesh).isMesh) return
+    void this.materials.applyToObject3D(mesh, entity, pb).then(() => {
+      if (!this.materials.needsReapply(entity, pb, mesh)) {
+        this.pendingMaterialEntities.delete(entity)
+      } else {
+        this.pendingMaterialEntities.add(entity)
+      }
+    })
   }
 
   /**
    * Same-frame Material visual for MeshRenderer entities (any scene).
    * Instanced boards: instanceColor. Else private mesh scalars / attach-to-instance.
+   * Material often lands before mesh drain — attach so PE raycast + click VFX are not white.
    */
   private applyMeshRendererMaterialNow(entity: Entity, obj: THREE.Group): boolean {
     const { MeshRenderer, Material } = this.ecs
-    if (!MeshRenderer.has(entity) || !Material.has(entity)) return false
+    const pb = materialGetOrNull(Material, entity)
+    if (!meshRendererGetOrNull(MeshRenderer, entity) || !pb) return false
     if (this.meshRendererInstancer.has(entity) && !this.meshRendererIsInstanceEligible(entity)) {
       this.meshRendererInstancer.detach(entity, obj)
       delete obj.userData.dclMeshRendererInstanced
     }
 
-    const pb = Material.get(entity) as PbMaterial
     if (this.meshRendererInstancer.has(entity) && materialIsScalarOnly(pb)) {
       const rgb = materialAlbedoRgb(pb)
       if (!this.meshRendererInstancer.setInstanceColor(entity, rgb.r, rgb.g, rgb.b)) {
@@ -1968,15 +2279,33 @@ export class ThreeBridge {
     }
 
     // Eligible but not yet instanced (Material landed with mesh) — attach now.
+    // Only clear pending for scalar-only instanceColor (textured must stay pending for maps).
     if (this.meshRendererIsInstanceEligible(entity)) {
       this.attachOrUpdateMeshRenderer(entity, obj, meshKey(entity), true)
-      if (this.meshRendererInstancer.has(entity)) {
+      if (this.meshRendererInstancer.has(entity) && materialIsScalarOnly(pb)) {
         this.pendingMaterialEntities.delete(entity)
         return true
       }
     }
 
-    const visual = this.entityVisualRoot(entity, obj)
+    // Private path (textured / PE / motion): ensure mesh exists, then scalars (+ queue maps).
+    let visual = this.entityVisualRoot(entity, obj)
+    if (
+      !visual ||
+      !(visual as THREE.Mesh).isMesh ||
+      visual.userData[MESH_RENDERER_INSTANCE_MARKER]
+    ) {
+      this.attachOrUpdateMeshRenderer(entity, obj, meshKey(entity), true)
+      if (this.meshRendererInstancer.has(entity) && materialIsScalarOnly(pb)) {
+        this.pendingMaterialEntities.delete(entity)
+        return true
+      }
+      // Instanced by mistake while textured — promote so maps can load.
+      if (this.meshRendererInstancer.has(entity) && !materialIsScalarOnly(pb)) {
+        this.promoteMeshRendererForPointerOrMotion(entity, obj)
+      }
+      visual = this.entityVisualRoot(entity, obj)
+    }
     if (
       visual &&
       (visual as THREE.Mesh).isMesh &&
@@ -1989,6 +2318,7 @@ export class ThreeBridge {
         this.pendingMaterialEntities.delete(entity)
         return true
       }
+      // Mesh + scalars on; maps finish in runMaterialPass (async texture load).
       this.pendingMaterialEntities.add(entity)
       return true
     }
@@ -2000,7 +2330,7 @@ export class ThreeBridge {
    * local matrices every frame. Never freeze physics/GLTF hosts (collider poses need live MW).
    */
   private meshRendererShouldFreeze(entity: Entity): boolean {
-    const { MeshRenderer, MeshCollider, GltfContainer, Animator, Billboard, Tween, AvatarAttach } =
+    const { MeshRenderer, MeshCollider, GltfContainer, Animator, Billboard, Tween, AvatarAttach, Transform } =
       this.ecs
     if (!MeshRenderer.has(entity)) return false
     if (MeshCollider?.has(entity)) return false
@@ -2010,7 +2340,21 @@ export class ThreeBridge {
     if (Tween?.has(entity)) return false
     if (AvatarAttach?.has(entity)) return false
     if (this.isAvatarAttachDriven(entity)) return false
-    if (hasAnimatedPlaneUvs(MeshRenderer.get(entity))) return false
+    // Parent hierarchy (DecentraCraft multi-part temples / race props): parts animate
+    // every tick via parent-local TRS (spin/orbit/pulse getMutable) — never freeze.
+    if (Transform?.has(entity)) {
+      const parent = (Transform.get(entity) as DclTransformValues).parent
+      if (parent != null && Number(parent) > 0) return false
+    }
+    // Boxes/spheres/cylinders with scalar Material are often race architecture pieces;
+    // freezing blocks later parent re-link + script motion if parent CRDT arrives after mesh.
+    const freezeSpec = meshRendererGetOrNull(MeshRenderer, entity)
+    if (freezeSpec) {
+      if (hasAnimatedPlaneUvs(freezeSpec)) return false
+      const kind = primitiveKind(freezeSpec)
+      // primitiveKind returns "cylinder:rTop:rBot" for cylinders.
+      if (kind === 'box' || kind === 'sphere' || kind.startsWith('cylinder')) return false
+    }
     return true
   }
 
@@ -2020,31 +2364,67 @@ export class ThreeBridge {
    */
   private meshRendererIsInstanceEligible(entity: Entity): boolean {
     if (!ThreeBridge.MESH_RENDERER_GPU_INSTANCE) return false
-    const { MeshRenderer, Material, Animator, Billboard, Tween, AvatarAttach, GltfNodeModifiers, MeshCollider } =
-      this.ecs
-    if (!MeshRenderer.has(entity)) return false
+    const {
+      MeshRenderer,
+      Material,
+      Animator,
+      Billboard,
+      Tween,
+      AvatarAttach,
+      GltfNodeModifiers,
+      MeshCollider,
+      PointerEvents,
+      Transform
+    } = this.ecs
+    const spec = meshRendererGetOrNull(MeshRenderer, entity)
+    if (!spec) return false
     if (MeshCollider?.has(entity)) return false
+    // PE targets need a private mesh (or MeshCollider) — instancing drops the leaf mesh and
+    // made DecentraCraft crystal clicks miss / freeze under spam when only instance raycast ran.
+    if (PointerEvents?.has(entity)) return false
     if (Animator?.has(entity)) return false
     if (Billboard?.has(entity)) return false
     if (AvatarAttach?.has(entity)) return false
     if (this.isAvatarAttachDriven(entity)) return false
     if (Tween?.has(entity)) return false
     if (GltfNodeModifiers?.has(entity)) return false
-    if (hasAnimatedPlaneUvs(MeshRenderer.get(entity))) return false
+    if (hasAnimatedPlaneUvs(spec)) return false
+    // Hierarchical multi-part buildings (temple/barracks race meshes): GPU InstancedMesh
+    // lives under the scene root, not under Transform.parent — parts vanished while
+    // environment root GLBs still showed.
+    if (Transform?.has(entity)) {
+      const parent = (Transform.get(entity) as DclTransformValues).parent
+      if (parent != null && Number(parent) > 0) return false
+    }
     // Scalar Material required — instanceColor needs a color; textured stay private.
-    if (!Material.has(entity)) return false
-    if (!materialIsScalarOnly(Material.get(entity) as PbMaterial)) return false
+    const pb = materialGetOrNull(Material, entity)
+    if (!pb || !materialIsScalarOnly(pb)) return false
+    // Transparent / emissive markers (DecentraCraft ground click ring: alpha 0.75,
+    // emissiveIntensity 1.6, ALPHA_BLEND) must stay private MeshPhysical — GPU
+    // InstancedMesh uses MeshBasicMaterial which ignores emissive and often fails
+    // depth-sort under fog-of-war planes (marker "exists" but is invisible).
+    const alpha = materialAlbedoAlpha(pb)
+    if (alpha < 0.999) return false
+    const pbr = pb.material?.$case === 'pbr' ? pb.material.pbr : undefined
+    if (pbr) {
+      const mode = pbr.transparencyMode
+      if (mode === 2 || mode === 3) return false // ALPHA_BLEND / TEST+BLEND
+      if ((pbr.emissiveIntensity ?? 0) > 1.01) return false
+      const e = pbr.emissiveColor
+      if (e && (e.r ?? 0) + (e.g ?? 0) + (e.b ?? 0) > 0.05) return false
+    }
     return true
   }
 
   private meshRendererInstanceBucketKey(entity: Entity): string {
     const { MeshRenderer, Material } = this.ecs
-    const geoKey = primitiveMeshKey(MeshRenderer.get(entity))
+    const spec = meshRendererGetOrNull(MeshRenderer, entity)
+    if (!spec) return 'missing'
+    const geoKey = primitiveMeshKey(spec)
     // Color via instanceColor — bucket key ignores albedo so recolors never rebucket.
-    const matCase = Material.has(entity)
-      ? (Material.get(entity) as PbMaterial).material?.$case ?? 'none'
-      : 'none'
-    const double = primitiveDoubleSided(MeshRenderer.get(entity)) ? '2s' : '1s'
+    const pb = materialGetOrNull(Material, entity)
+    const matCase = pb?.material?.$case ?? 'none'
+    const double = primitiveDoubleSided(spec) ? '2s' : '1s'
     return `${geoKey}|ic|${matCase}|${double}`
   }
 
@@ -2054,17 +2434,26 @@ export class ThreeBridge {
   }
 
   private unfreezeMeshRenderersFromDiff(diff: Map<Entity, Map<number, ProjectionChangeKind>>): void {
-    const { MeshRenderer, Animator, Billboard, Tween, AvatarAttach } = this.ecs
+    const { MeshRenderer, Animator, Billboard, Tween, AvatarAttach, Transform } = this.ecs
     for (const [entity, comps] of diff) {
       if (!MeshRenderer.has(entity)) continue
+      // Continuous script motion (DecentraCraft temple spin/orbit/pulse) mutates Transform
+      // every tick via getMutable — not Tween/Animator. Transform put must unfreeze too.
       const motion =
+        comps.has(Transform.componentId) ||
         (Animator && comps.has(Animator.componentId)) ||
         (Billboard && comps.has(Billboard.componentId)) ||
         (Tween && comps.has(Tween.componentId)) ||
         (AvatarAttach && comps.has(AvatarAttach.componentId))
       if (!motion) continue
       const obj = this.store.nodes.get(entity)
-      if (obj) unfreezeObject3D(obj)
+      if (!obj) continue
+      unfreezeObject3D(obj)
+      // Promote only while still on GPU InstancedMesh — never re-attach private leaves every
+      // frame (that rebuilt temple dishes each tick and killed spin/orbit motion).
+      if (this.meshRendererInstancer.has(entity) || obj.userData.dclMeshRendererInstanced) {
+        this.promoteMeshRendererForPointerOrMotion(entity, obj)
+      }
     }
   }
 
@@ -2072,7 +2461,8 @@ export class ThreeBridge {
     obj: THREE.Group,
     mk: string,
     existing: THREE.Mesh | undefined,
-    spec: ReturnType<MirrorComponents['MeshRenderer']['get']>
+    spec: ReturnType<MirrorComponents['MeshRenderer']['get']>,
+    entity?: Entity
   ): THREE.Mesh {
     if (existing) {
       releasePrimitiveGeometry(existing.geometry)
@@ -2082,21 +2472,64 @@ export class ThreeBridge {
     const geo = acquirePrimitiveGeometry(spec)
     const doubleSided = primitiveDoubleSided(spec)
     const key = primitiveMeshKey(spec)
-    const primitive = new THREE.Mesh(
-      geo,
-      new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        side: doubleSided ? THREE.DoubleSide : THREE.FrontSide
-      })
-    )
+    // Physical (not Standard) so MaterialApplier PBR path reuses without dispose thrash
+    // (DecentraCraft multi-part temples set metallic/roughness/emissive on every part).
+    const mat = new THREE.MeshPhysicalMaterial({
+      color: 0xffffff,
+      side: doubleSided ? THREE.DoubleSide : THREE.FrontSide,
+      metalness: 0.2,
+      roughness: 0.65
+    })
+    this.applyPlaneDepthBias(mat, spec, entity)
+    const primitive = new THREE.Mesh(geo, mat)
     primitive.name = mk
     primitive.userData.primitiveMeshKey = key
     primitive.userData.primitiveDoubleSided = doubleSided
-    primitive.userData.primitiveKind = primitiveKind(spec)
-    primitive.castShadow = false
+    if (entity !== undefined) primitive.userData.entity = entity
+    const kind = primitiveKind(spec)
+    primitive.userData.primitiveKind = kind
+    // Solid architecture casts; dense ground planes stay non-casting (perf).
+    primitive.castShadow = kind !== 'plane' && !kind.startsWith('plane')
     primitive.receiveShadow = true
     obj.add(primitive)
     return primitive
+  }
+
+  /**
+   * GPU depth bias for small coplanar MeshRenderer plates (rocks under units).
+   * Does not move meshes — Transform / Y from the scene are law.
+   *
+   * Large planes (fog-of-war cover, map hides) must NOT use polygonOffset: from a
+   * top-down VirtualCamera the bias punches holes and the cover fails to hide the map.
+   */
+  private applyPlaneDepthBias(
+    mat: THREE.Material,
+    spec: ReturnType<MirrorComponents['MeshRenderer']['get']>,
+    entity?: Entity
+  ): void {
+    if (primitiveKind(spec) !== 'plane') return
+    if (entity != null && this.ecs.Transform?.has(entity)) {
+      try {
+        const s = (this.ecs.Transform.get(entity) as { scale?: { x?: number; y?: number; z?: number } })
+          .scale
+        const maxScale = Math.max(
+          Math.abs(s?.x ?? 1),
+          Math.abs(s?.y ?? 1),
+          Math.abs(s?.z ?? 1)
+        )
+        // Fog-of-war / map cover tiles are large uniform planes (scale ≫ unit markers).
+        if (maxScale >= 3.5) {
+          mat.polygonOffset = false
+          return
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    mat.polygonOffset = true
+    // Pull slightly toward camera so coplanar stacks resolve stably under top-down VC.
+    mat.polygonOffsetFactor = 1
+    mat.polygonOffsetUnits = 1
   }
 
   /** Register sprite slots before applySceneDiff so DELETE_ENTITY skips collider/pointer notifies. */
@@ -2156,8 +2589,8 @@ export class ThreeBridge {
 
   private applyAnimatedPlaneUvs(entity: Entity): void {
     const { MeshRenderer } = this.ecs
-    if (!MeshRenderer.has(entity)) return
-    const spec = MeshRenderer.get(entity)
+    const spec = meshRendererGetOrNull(MeshRenderer, entity)
+    if (!spec) return
     const planeUvsEarly = spec.mesh?.$case === 'plane' ? spec.mesh.plane?.uvs : undefined
     if (!planeUvsEarly || planeUvsEarly.length < 8) return
     const obj = this.store.nodes.get(entity)
@@ -2203,12 +2636,21 @@ export class ThreeBridge {
     if (deferTextures) return
     if (!this.pendingMaterialEntities.size && !this.pendingGltfNodeModEntities.size) return
     this.materialTickBusy = true
-    // Slightly higher budget when GltfNodeModifiers pending (plaza event cards / fishing E).
+    // Prefer finishing textured MeshRenderer planes (ground/walls) under load.
+    const texturedPending = this.pendingMaterialEntities.size
     const nodeModBoost = this.pendingGltfNodeModEntities.size > 0 ? 12 : 0
-    const entityBoost = this.pendingGltfNodeModEntities.size > 0 ? 16 : 0
+    const entityBoost =
+      (this.pendingGltfNodeModEntities.size > 0 ? 16 : 0) +
+      (texturedPending > 32 ? 32 : 0)
+    const msBoost = texturedPending > 32 ? 24 : 0
     // Fire-and-forget — must not be awaited from the async frame path.
     void Promise.all([
-      this.runMaterialPass(this.ecs.Material, budgetMs + nodeModBoost, maxEntities + entityBoost, false),
+      this.runMaterialPass(
+        this.ecs.Material,
+        budgetMs + nodeModBoost + msBoost,
+        maxEntities + entityBoost,
+        false
+      ),
       this.runGltfNodeModifiersPass(budgetMs + nodeModBoost, maxEntities + entityBoost)
     ])
       .catch((err) => console.warn('[ThreeBridge] deferred material pass failed', err))
@@ -2407,7 +2849,44 @@ export class ThreeBridge {
         processed++
         continue
       }
-      if (MeshRenderer.has(entity) && this.applyMeshRendererMaterialNow(entity, obj)) {
+      // MeshRenderer: scalars-only attach must not skip textured maps. Previously
+      // applyMeshRendererMaterialNow returned true after queue-pending and we
+      // `continue`d without ever awaiting applyToObject3D — ground/wall planes stayed
+      // on default white scalar forever (textured PE/click props never landed).
+      if (MeshRenderer.has(entity)) {
+        const attached = this.applyMeshRendererMaterialNow(entity, obj)
+        if (!attached) {
+          processed++
+          continue
+        }
+        if (materialIsScalarOnly(pb)) {
+          processed++
+          continue
+        }
+        if (this.meshRendererInstancer.has(entity)) {
+          // Textured must not stay GPU-instanced (no map path).
+          this.promoteMeshRendererForPointerOrMotion(entity, obj)
+        }
+        const visual = this.entityVisualRoot(entity, obj)
+        if (
+          visual &&
+          (visual as THREE.Mesh).isMesh &&
+          !visual.userData[MESH_RENDERER_INSTANCE_MARKER]
+        ) {
+          if (deferTextures) {
+            this.materials.applyScalarsToObject3D(visual, entity, pb)
+            processed++
+            continue
+          }
+          await this.materials.applyToObject3D(visual, entity, pb)
+          this.notifyMeshComponent(entity, Material.componentId)
+          if (!this.materials.needsReapply(entity, pb, visual)) {
+            this.pendingMaterialEntities.delete(entity)
+          } else {
+            // Texture URL failed or pending — keep in set, kick async retry.
+            this.kickTexturedMaterialApply(entity, obj, pb)
+          }
+        }
         processed++
         continue
       }
@@ -2449,11 +2928,11 @@ export class ThreeBridge {
     touchMaterials: boolean
   ): void {
     const { MeshRenderer } = this.ecs
-    if (!MeshRenderer.has(entity)) return
+    const spec = meshRendererGetOrNull(MeshRenderer, entity)
+    if (!spec) return
     const obj = this.store.getNode(entity)
     if (!obj) return
 
-    const spec = MeshRenderer.get(entity)
     const mk = meshKey(entity)
     const key = primitiveMeshKey(spec)
     const planeUvs = spec.mesh?.$case === 'plane' ? spec.mesh.plane?.uvs : undefined
@@ -2469,8 +2948,7 @@ export class ThreeBridge {
     ) {
       primitive.userData.primitiveMeshKey = key
     } else if (!primitive?.isMesh || primitive.userData.primitiveMeshKey !== key) {
-      primitive = this.replacePrimitiveMesh(obj, mk, primitive, spec)
-      primitive.userData.entity = entity
+      primitive = this.replacePrimitiveMesh(obj, mk, primitive, spec, entity)
       this.notifyMeshComponent(entity, MeshRenderer.componentId)
       rebuilt = true
       this.materials.clearEntity(entity)
@@ -3477,7 +3955,8 @@ export class ThreeBridge {
     touchMaterials: boolean
   ): void {
     const { MeshRenderer, Material } = this.ecs
-    const spec = MeshRenderer.get(entity)
+    const spec = meshRendererGetOrNull(MeshRenderer, entity)
+    if (!spec) return
     this.trackSpritePoolEntity(entity)
 
     // Promote out of instance when no longer eligible.
@@ -3494,7 +3973,13 @@ export class ThreeBridge {
         disposeMeshMaterials(existing)
         obj.remove(existing)
       }
-      const pb = Material.get(entity) as PbMaterial
+      const pb = materialGetOrNull(Material, entity)
+      // No Material yet — fall through to private white mesh so the leaf exists for PE/VFX.
+      // Returning here left click markers with MeshRenderer-only stuck invisible until a
+      // later Material put that never re-attached (pendingDiff peel races).
+      if (!pb) {
+        /* private path below */
+      } else {
       const geo = acquirePrimitiveGeometry(spec)
       const rgb = materialAlbedoRgb(pb)
       const alpha = materialAlbedoAlpha(pb)
@@ -3505,10 +3990,13 @@ export class ThreeBridge {
         side: doubleSided ? THREE.DoubleSide : THREE.FrontSide
       })
       baseMat.userData.dclInstanceBase = true
+      // Coplanar ground tiles: depth bias only — never change scene Transform (author law).
+      this.applyPlaneDepthBias(baseMat, spec, entity)
       if (alpha < 0.999) {
         baseMat.transparent = true
         baseMat.opacity = alpha
-        baseMat.depthWrite = alpha > 0.95
+        // Fog cover (explored ~0.45) needs depthWrite or moon ground punches through VC.
+        baseMat.depthWrite = alpha > 0.4
       }
       const bucketKey = this.meshRendererInstanceBucketKey(entity)
       // Geo/matCase bucket only — leave if already in this bucket (color stays instanceColor).
@@ -3536,6 +4024,7 @@ export class ThreeBridge {
         this.meshRendererInstancer.update(entity, obj)
         return
       }
+      } // end else (has Material for instance path)
     }
 
     // T2/T3 private mesh path.
@@ -3565,16 +4054,15 @@ export class ThreeBridge {
         obj.remove(primitive)
         primitive = undefined
       }
-      primitive = this.replacePrimitiveMesh(obj, mk, primitive, spec)
-      primitive.userData.entity = entity
+      primitive = this.replacePrimitiveMesh(obj, mk, primitive, spec, entity)
       this.notifyMeshComponent(entity, MeshRenderer.componentId)
       rebuilt = true
       this.materials.clearEntity(entity)
     }
 
-    if (touchMaterials && Material.has(entity) && primitive) {
-      const pb = Material.get(entity) as PbMaterial
-      if (rebuilt || this.materials.needsReapply(entity, pb, primitive)) {
+    if (touchMaterials && primitive) {
+      const pb = materialGetOrNull(Material, entity)
+      if (pb && (rebuilt || this.materials.needsReapply(entity, pb, primitive))) {
         this.materials.applyScalarsToObject3D(primitive, entity, pb)
         if (this.materials.needsReapply(entity, pb, primitive)) {
           this.pendingMaterialEntities.add(entity)

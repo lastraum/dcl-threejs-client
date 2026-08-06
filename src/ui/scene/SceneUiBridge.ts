@@ -403,8 +403,8 @@ export class SceneUiBridge {
 
   /**
    * Worker mount ids should have UiTransform before commit+paint.
-   * Allow one missing id on large trees (race on last PUT) so Flagtag timer/HUD is not
-   * deferred forever when a single shell entity lacks transform.
+   * Large trees may race a couple of shell rows — allow a small absolute miss
+   * (not a ratio heuristic) so open menus paint when nearly complete.
    */
   isMountSetReady(view: ProjectionView, mountSet?: ReadonlySet<Entity>): boolean {
     const target = mountSet ?? this.workerUiEntities
@@ -415,8 +415,9 @@ export class SceneUiBridge {
       if (ecs.UiTransform.has(entity)) withTransform++
     }
     const missing = target.size - withTransform
-    const ready =
-      missing === 0 || (target.size >= 8 && withTransform > 0 && missing <= 1)
+    // Absolute miss budget scales gently with tree size (platform race, not scene-tuned %).
+    const missBudget = target.size >= 64 ? 3 : target.size >= 8 ? 1 : 0
+    const ready = missing === 0 || (withTransform > 0 && missing <= missBudget)
     if (
       !ready &&
       typeof location !== 'undefined' &&

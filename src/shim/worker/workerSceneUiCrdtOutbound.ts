@@ -817,6 +817,120 @@ export type WorkerUiMountSnapshotRow = {
 
 export const UI_TRANSFORM_COMPONENT_ID = 1050
 
+/**
+ * Content-aware UI mount snapshot fingerprint (worker post dedupe + main reseed skip).
+ * Must track real paint-affecting fields — entity:componentId alone made timer/score
+ * (and display/opacity/input) look identical and get dropped after the first post.
+ * Keep worker + main on this single helper (COD C3).
+ */
+export function uiMountSnapshotContentFp(
+  snapshot: readonly WorkerUiMountSnapshotRow[]
+): string {
+  if (!snapshot.length) return '0'
+  const parts: string[] = []
+  // Hash all rows (no 96-row false-match tail). Large HUDs still cheap (short payloads).
+  const n = snapshot.length
+  for (let i = 0; i < n; i++) {
+    const r = snapshot[i]!
+    const v = r.value
+    let payload = ''
+    if (v && typeof v === 'object') {
+      const o = v as Record<string, unknown>
+      const cid = r.componentId
+      // UiText (1052) — value + color (timer/score/style thrash)
+      if (cid === 1052 || typeof o.value === 'string') {
+        const c = o.color as { r?: number; g?: number; b?: number; a?: number } | undefined
+        const col =
+          c && typeof c === 'object'
+            ? `${c.r ?? 0},${c.g ?? 0},${c.b ?? 0},${c.a ?? 0}`
+            : ''
+        payload = `t${typeof o.value === 'string' ? o.value : ''}|c${col}|fs${o.fontSize ?? ''}`
+      }
+      // UiInput (1093)
+      else if (cid === 1093) {
+        payload = `in${typeof o.value === 'string' ? o.value : ''}`
+      }
+      // UiDropdown (1094)
+      else if (cid === 1094) {
+        payload = `dd${o.selectedIndex ?? o.value ?? ''}`
+      }
+      // UiBackground (1053) — color + texture src + atlas UV sample
+      else if (cid === 1053) {
+        const c = o.color as { r?: number; g?: number; b?: number; a?: number } | undefined
+        const col =
+          c && typeof c === 'object'
+            ? `${c.r ?? 0},${c.g ?? 0},${c.b ?? 0},${c.a ?? 0}`
+            : ''
+        let src = ''
+        const t = o.texture as Record<string, unknown> | string | undefined
+        if (typeof t === 'string') src = t
+        else if (t && typeof t === 'object') {
+          if (typeof t.src === 'string') src = t.src
+          else {
+            const nested = t.tex as { texture?: { src?: string } } | undefined
+            if (typeof nested?.texture?.src === 'string') src = nested.texture.src
+            else {
+              const tex = t.texture as { src?: string } | undefined
+              if (typeof tex?.src === 'string') src = tex.src
+            }
+          }
+        }
+        const uvs = o.uvs as number[] | undefined
+        const uv =
+          Array.isArray(uvs) && uvs.length
+            ? uvs
+                .slice(0, 8)
+                .map((n) => (typeof n === 'number' ? n.toFixed(3) : ''))
+                .join(',')
+            : ''
+        payload = `bg${col}|${src}|uv${uv}`
+      }
+      // UiTransform (1050) — layout + visibility + yoga edges (display/opacity/parent/size/pos)
+      else if (cid === 1050 || o.width !== undefined || o.height !== undefined || o.display !== undefined) {
+        const pos = o.position as Record<string, unknown> | undefined
+        payload = [
+          `d${o.display ?? ''}`,
+          `o${o.opacity ?? ''}`,
+          `p${o.parent ?? ''}`,
+          `wh${o.width ?? ''},${o.height ?? ''}`,
+          `wu${o.widthUnit ?? ''},${o.heightUnit ?? ''}`,
+          `fd${o.flexDirection ?? ''}`,
+          `jc${o.justifyContent ?? ''}`,
+          `ai${o.alignItems ?? ''}`,
+          `pt${o.positionType ?? ''}`,
+          `xy${pos?.x ?? o.positionX ?? ''},${pos?.y ?? o.positionY ?? ''}`,
+          `trbl${pos?.top ?? ''},${pos?.right ?? ''},${pos?.bottom ?? ''},${pos?.left ?? ''}`
+        ].join(',')
+      }
+      // PointerEvents (1062) — eventType.interactionType keys (not count-only)
+      else if (cid === 1062) {
+        const pe = o.pointerEvents
+        if (Array.isArray(pe)) {
+          const keys = pe
+            .map((ev) => {
+              const e = ev as {
+                eventType?: number
+                eventInfo?: { button?: number; hoverText?: string }
+                interactionType?: number
+              }
+              const t = e.eventType ?? e.interactionType ?? ''
+              const b = e.eventInfo?.button ?? ''
+              const h = e.eventInfo?.hoverText ?? ''
+              return `${t}.${b}.${h}`
+            })
+            .sort()
+            .join(';')
+          payload = `pe${keys}`
+        } else {
+          payload = `pe${pe ? 1 : 0}`
+        }
+      }
+    }
+    parts.push(`${r.entity}:${r.componentId}:${payload}`)
+  }
+  return parts.join('|')
+}
+
 /** Mount set authority — UiTransform row entity ids from the snapshot (not a separate collect). */
 export function extractSnapshotMountEntityIds(snapshot: readonly WorkerUiMountSnapshotRow[]): number[] {
   const out: number[] = []

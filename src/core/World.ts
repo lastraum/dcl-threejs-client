@@ -50,7 +50,12 @@ import {
   type FftOceanSettings
 } from '../environment/fftOcean/readFftOceanOverride'
 import type { OceanPerfInfo } from '../client/ui/RenderStats'
-import { perfSetRemoteStats } from '../util/perfCounters'
+import {
+  perfNoteSyncRendererMs,
+  perfSetMeshRendererInstanceStats,
+  perfSetPhysxSeal,
+  perfSetRemoteStats
+} from '../util/perfCounters'
 import type { OutdoorLightingSnapshot } from '../environment/OutdoorLighting'
 import type { IslandShoreMaterial } from '../dcl/landscape/IslandShoreMaterial'
 import {
@@ -257,6 +262,12 @@ export class World {
    * so PE preferences survive World rebuild on /goto.
    */
   private multiScene: MultiSceneRuntime | null = null
+  /**
+   * COD F2 — consecutive async frames where primary peel+multi exceeded budget.
+   * After 3, live secondary motion pumps at ~20 Hz (every 3rd frame) to protect FPS.
+   */
+  private primaryAsyncOverBudgetStreak = 0
+  private secondaryMotionLodFrame = 0
   private readonly peMirror = new PeMainThreadMirror()
   /**
    * Single keyboard bus — primary scene + PE workers subscribe; hardware owned once.
@@ -1919,8 +1930,11 @@ export class World {
         if (this.editorPreviewMode) return
 
         const t0 = performance.now()
-        await this.sceneScript.syncRenderer()
+        // COD AAA — primary owns a hard frame pie (motion+material+structure), not free-run.
+        await this.sceneScript.syncRenderer({ deadlineMs: 18 })
         const rendererMs = performance.now() - t0
+        // Frame budget: async CRDT apply wall time (?perfdebug [frame] line).
+        perfNoteSyncRendererMs(rendererMs)
 
         // Async pointer prepare only when dirty — full flush already ran on sync if needed.
         if (this.playerMode && this.player) {
@@ -1958,10 +1972,18 @@ export class World {
         }
         const bridgesOnlyMs = performance.now() - t2
         // PE + secondary async projection + multi-scene colliders into PhysX.
+        // COD F1 — honest residual: fullWork only when remainder ≥ MIN_FULL_MS (no 0.5 floor lie).
         const t3 = performance.now()
         let multiMs = 0
         if (this.multiScene) {
-          const { colliders, invalidatePhysIds } = await this.multiScene.tickAsync()
+          const ASYNC_MULTI_BUDGET_MS = 8
+          const MIN_FULL_MS = 2
+          const primarySpent = t3 - t0
+          const remainder = ASYNC_MULTI_BUDGET_MS - primarySpent
+          const applyBudgetMs = remainder >= MIN_FULL_MS ? remainder : 0
+          const { colliders, invalidatePhysIds } = await this.multiScene.tickAsync({
+            applyBudgetMs
+          })
           for (const id of invalidatePhysIds) {
             this.physics.invalidateStaticCollider(id)
           }
@@ -1981,6 +2003,18 @@ export class World {
           multiMs = performance.now() - t3
         }
         const totalMs = performance.now() - t0
+        // COD E1 / G2 health — seal + MeshRenderer GPU density for ?perfdebug.
+        perfSetPhysxSeal({
+          sealed: this.physics.isStaticSqSealed(),
+          postSealRebuild: this.physics.getPostSealRebuildCount()
+        })
+        const mrStats = this.sceneScript.getMeshRendererInstanceStats()
+        if (mrStats) {
+          perfSetMeshRendererInstanceStats(mrStats)
+        }
+        // COD F2 — track primary async pressure for secondary anim LOD (~12ms soft budget).
+        if (totalMs > 12) this.primaryAsyncOverBudgetStreak++
+        else this.primaryAsyncOverBudgetStreak = 0
         // Diagnose multi-second async frames (was ~3300ms = cold GLB parse await / 3k pending walk).
         // bridges = primary Animator/Avatar/Particle only; multi = PE+secondary async + cook.
         if (totalMs > 100) {
@@ -3224,6 +3258,9 @@ export class World {
    * All runtime cooks use freezeRemoval:true so orphans never leave the scene otherwise
    * (SpaceRunner lobby walls/dome stayed solid after HF entity deletes).
    */
+  private orphanStaticRemoveLogBudget = 0
+  private orphanStaticRemoveLogAt = 0
+
   private onColliderEntityRemoved(ecsEntity: Entity): void {
     const meshId = ecsEntity as number
     const gltfId = GLTF_COLLIDER_ENTITY_BASE + ecsEntity
@@ -3235,11 +3272,21 @@ export class World {
     this.colliderCookQueue.delete(gltfId)
     if (hadMesh || hadGltf) {
       this.physics.invalidateControllerCache()
-      console.info(
-        `[phys] removed orphan static ecs=e${ecsEntity}` +
-          (hadMesh ? ` mesh=e${meshId}` : '') +
-          (hadGltf ? ` gltf=${gltfId}` : '')
-      )
+      // Burst orphan removes on select/reset must not flood console (was multi-ms hitch).
+      const now = performance.now()
+      if (now - this.orphanStaticRemoveLogAt > 1000) {
+        this.orphanStaticRemoveLogAt = now
+        this.orphanStaticRemoveLogBudget = 4
+      }
+      if (this.orphanStaticRemoveLogBudget > 0) {
+        this.orphanStaticRemoveLogBudget--
+        console.info(
+          `[phys] removed orphan static ecs=e${ecsEntity}` +
+            (hadMesh ? ` mesh=e${meshId}` : '') +
+            (hadGltf ? ` gltf=${gltfId}` : '') +
+            (this.orphanStaticRemoveLogBudget === 0 ? ' (+more throttled)' : '')
+        )
+      }
     }
   }
 
@@ -4139,11 +4186,31 @@ export class World {
   /**
    * Live secondary Animator/Tween advance (≤3 graphs). Tertiary is intentionally frozen.
    * Without this, sticky demoted scenes keep scripts but clips freeze mid-pose.
+   *
+   * COD F2 — under primary async pressure (3+ frames over budget), sample secondaries
+   * every 3rd frame (~20 Hz at 60) so plaza neighbors cannot tank the primary rAF.
+   * Accumulated delta keeps clip time correct when frames are skipped.
    */
+  private secondaryMotionHeldDelta = 0
   private pumpSecondaryMotionBridges(delta: number, frame: number): void {
-    for (const sys of this.multiScene?.getSecondaryMotionSystems() ?? []) {
+    const systems = this.multiScene?.getSecondaryMotionSystems() ?? []
+    if (!systems.length) {
+      this.secondaryMotionHeldDelta = 0
+      return
+    }
+    this.secondaryMotionHeldDelta += delta
+    const lodActive = this.primaryAsyncOverBudgetStreak >= 3
+    if (lodActive) {
+      this.secondaryMotionLodFrame++
+      if (this.secondaryMotionLodFrame % 3 !== 0) return
+    } else {
+      this.secondaryMotionLodFrame = 0
+    }
+    const step = this.secondaryMotionHeldDelta
+    this.secondaryMotionHeldDelta = 0
+    for (const sys of systems) {
       try {
-        sys.pumpMotionBridges(delta, frame)
+        sys.pumpMotionBridges(step, frame)
       } catch (err) {
         console.warn('[multi-scene] secondary pumpMotionBridges failed', err)
       }

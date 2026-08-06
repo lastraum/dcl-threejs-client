@@ -294,6 +294,10 @@ export class PhysXWorld {
   private allowStaticReinsert = true
   /** True after boot seal committed SQ once — blocks bulk reinsert / thrash rebuilds. */
   private staticSqSealed = false
+  /** Seal-time forceDynamicTreeRebuild count (0 or 1). Post-seal must stay 0. */
+  private sealRebuildCount = 0
+  /** Runtime rebuild attempts after seal — COD E1 law: must remain 0. */
+  private postSealRebuildCount = 0
   /** Permanent filter data for scene sweeps — avoid temp wrapPointer drops. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private sceneQueryFilterWords: any = null
@@ -1959,8 +1963,8 @@ export class PhysXWorld {
    * 1. Open solid shape filters (bilateral never rejects hulls)
    * 2. Re-add scene orphans only (no mass remove+add)
    * 3. flushQueryUpdates
-   * 4. Probe — if still MISS, **one** forceDynamicTreeRebuild then re-probe
-   * 5. Freeze thrash forever
+   * 4. **One** forceDynamicTreeRebuild at seal only (always — commit SQ tree)
+   * 5. Freeze thrash forever — post-seal heal must never rebuild (COD E1)
    *
    * Late single-actor cooks still reinsert once inside {@link addStatic}.
    */
@@ -2001,6 +2005,7 @@ export class PhysXWorld {
       try {
         this.scene.forceDynamicTreeRebuild(true, false)
         rebuilt = true
+        this.sealRebuildCount = 1
         if (typeof this.scene.flushQueryUpdates === 'function') {
           this.scene.flushQueryUpdates()
         }
@@ -2019,7 +2024,7 @@ export class PhysXWorld {
     this.staticSqSealed = true
     // Freeze progressive SQ tree mutation. Plaza logs: healthy seal → MISS within seconds
     // while map/inScene stay 1100 — progressive rebuild corrupts the tree mid-play.
-    // Late adds still use addActor; emergency heal may forceDynamicTreeRebuild.
+    // Late adds still use addActor; post-seal heal must NEVER forceDynamicTreeRebuild (COD E1).
     try {
       if (this.scene && typeof this.scene.setDynamicTreeRebuildRateHint === 'function') {
         this.scene.setDynamicTreeRebuildRateHint(1_000_000)
@@ -2075,9 +2080,26 @@ export class PhysXWorld {
     this.invalidateControllerCache()
   }
 
+  /** COD E1 metrics — sealed once; post-seal rebuilds must stay 0. */
+  isStaticSqSealed(): boolean {
+    return this.staticSqSealed
+  }
+
+  getSealRebuildCount(): number {
+    return this.sealRebuildCount
+  }
+
+  getPostSealRebuildCount(): number {
+    return this.postSealRebuildCount
+  }
+
   /**
-   * Heal when SQ dies after play (healthy at seal). 1s throttle while soft so the
-   * didHit flip loop recovers in under a second instead of an 8–12s ghost walk.
+   * COD E1 — post-seal soft recovery without tree thrash.
+   *
+   * Law (docs/STATIC_COLLIDER_COD.md): after sealStaticSceneQuery, never
+   * forceDynamicTreeRebuild / reinsert-all. Heal may only re-add map orphans
+   * missing from the PhysX scene + pin CCT filters + flush if available.
+   * MISS with all actors present is a per-entity cook bug, not a rebuild trigger.
    */
   tryHealPostSealSceneQuery(x: number, y: number, z: number): boolean {
     if (!this.staticSqSealed || !this.scene) return false
@@ -2098,47 +2120,9 @@ export class PhysXWorld {
       }
     }
     this.ensureInfiniteGroundPlane()
-    // Temporarily allow build so forceDynamicTreeRebuild can rewrite a dead tree.
-    try {
-      if (
-        typeof this.scene.setSceneQueryUpdateMode === 'function' &&
-        PHYSX.PxSceneQueryUpdateModeEnum?.eBUILD_ENABLED_COMMIT_ENABLED != null
-      ) {
-        this.scene.setSceneQueryUpdateMode(
-          PHYSX.PxSceneQueryUpdateModeEnum.eBUILD_ENABLED_COMMIT_ENABLED
-        )
-      }
-    } catch {
-      /* optional */
-    }
     try {
       if (typeof this.scene.flushQueryUpdates === 'function') {
         this.scene.flushQueryUpdates()
-      }
-    } catch {
-      /* optional */
-    }
-    try {
-      this.scene.forceDynamicTreeRebuild(true, false)
-    } catch (err) {
-      console.warn('[PhysXWorld] post-seal heal rebuild failed', err)
-    }
-    try {
-      if (typeof this.scene.flushQueryUpdates === 'function') {
-        this.scene.flushQueryUpdates()
-      }
-    } catch {
-      /* optional */
-    }
-    // Re-freeze progressive mutation after emergency rebuild.
-    try {
-      if (
-        typeof this.scene.setSceneQueryUpdateMode === 'function' &&
-        PHYSX.PxSceneQueryUpdateModeEnum?.eBUILD_DISABLED_COMMIT_DISABLED != null
-      ) {
-        this.scene.setSceneQueryUpdateMode(
-          PHYSX.PxSceneQueryUpdateModeEnum.eBUILD_DISABLED_COMMIT_DISABLED
-        )
       }
     } catch {
       /* optional */
@@ -2146,15 +2130,19 @@ export class PhysXWorld {
     this.pinCctFilters()
     this.invalidateControllerCache()
     const d = this.diagnoseSceneQueryAt(x, y, z, 'post-seal-heal')
-    console.warn(
-      `[PhysXWorld] post-seal SQ heal — readded=${readded} didHit=${d.didHit} rebuild=once cooldown=${PhysXWorld.POST_SEAL_SQ_HEAL_COOLDOWN_MS}ms`
-    )
+    // Throttle console — heal can fire every cooldown while soft; never claim rebuild.
+    if (readded > 0 || !d.didHit) {
+      console.warn(
+        `[PhysXWorld] post-seal SQ heal — readded=${readded} didHit=${d.didHit} rebuild=forbidden ` +
+          `cooldown=${PhysXWorld.POST_SEAL_SQ_HEAL_COOLDOWN_MS}ms`
+      )
+    }
     return d.didHit
   }
 
   /**
-   * Call once after capsule spawn: pin CCT filters and re-commit SQ only if soft.
-   * Always-rebuild here used to thrash a healthy tree right before free walk.
+   * Call once after capsule spawn: pin CCT filters + orphan re-add only.
+   * COD E1: no second forceDynamicTreeRebuild after seal (was thrashing healthy plaza SQ).
    */
   commitStaticSceneQueryAfterCapsule(): void {
     if (!this.scene || !this.staticSqSealed) return
@@ -2163,25 +2151,16 @@ export class PhysXWorld {
     const py = this.position?.y ?? 0
     const pz = this.position?.z ?? 0
     const before = this.diagnoseSceneQueryAt(px, py, pz, 'post-capsule-before')
-    let rebuilt = false
+    let readded = 0
     if (!before.didHit) {
-      try {
-        if (
-          typeof this.scene.setSceneQueryUpdateMode === 'function' &&
-          PHYSX.PxSceneQueryUpdateModeEnum?.eBUILD_ENABLED_COMMIT_ENABLED != null
-        ) {
-          this.scene.setSceneQueryUpdateMode(
-            PHYSX.PxSceneQueryUpdateModeEnum.eBUILD_ENABLED_COMMIT_ENABLED
-          )
+      for (const actor of this.staticActors.values()) {
+        if (!actor || this.actorInScene(actor)) continue
+        try {
+          this.scene.addActor(actor)
+          readded++
+        } catch {
+          /* skip */
         }
-      } catch {
-        /* optional */
-      }
-      try {
-        this.scene.forceDynamicTreeRebuild(true, false)
-        rebuilt = true
-      } catch (err) {
-        console.warn('[PhysXWorld] post-capsule SQ rebuild failed', err)
       }
       try {
         if (typeof this.scene.flushQueryUpdates === 'function') {
@@ -2190,26 +2169,13 @@ export class PhysXWorld {
       } catch {
         /* optional */
       }
-      try {
-        if (
-          typeof this.scene.setSceneQueryUpdateMode === 'function' &&
-          PHYSX.PxSceneQueryUpdateModeEnum?.eBUILD_DISABLED_COMMIT_DISABLED != null
-        ) {
-          this.scene.setSceneQueryUpdateMode(
-            PHYSX.PxSceneQueryUpdateModeEnum.eBUILD_DISABLED_COMMIT_DISABLED
-          )
-        }
-      } catch {
-        /* optional */
-      }
     }
     this.pinCctFilters()
     this.invalidateControllerCache()
-    const after = rebuilt
-      ? this.diagnoseSceneQueryAt(px, py, pz, 'post-capsule-after')
-      : before
+    const after =
+      readded > 0 ? this.diagnoseSceneQueryAt(px, py, pz, 'post-capsule-after') : before
     console.warn(
-      `[PhysXWorld] post-capsule SQ commit — rebuild=${rebuilt ? 'once' : 'skip-healthy'} ` +
+      `[PhysXWorld] post-capsule SQ commit — rebuild=forbidden readded=${readded} ` +
         `didHit=${after.didHit} cctFilter=open`
     )
   }

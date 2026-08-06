@@ -236,15 +236,25 @@ export class MultiSceneRuntime {
    * They still own remapped entity ids — only invalidate when a slot actually drops
    * its registered set (dispose / promote detach). Treating "not streamed this frame"
    * as removal was the CBD→scene→CBD 3fps death spiral (wipe→Missing actors→recook).
+   *
+   * COD F1 — `applyBudgetMs` is wall remainder after primary full apply.
+   * PE spends first; secondaries get leftover (or dirty-only if exhausted).
    */
-  async tickAsync(): Promise<{
+  async tickAsync(opts?: { applyBudgetMs?: number }): Promise<{
     colliders: PhysicsColliderDesc[]
     invalidatePhysIds: number[]
   }> {
     const colliders: PhysicsColliderDesc[] = []
-    colliders.push(...(await this.pe.tickAsync()))
+    const budgetMs = opts?.applyBudgetMs
+    const t0 = performance.now()
+    colliders.push(...(await this.pe.tickAsync({ applyBudgetMs: budgetMs })))
+    const peSpent = performance.now() - t0
+    const secondaryBudget =
+      budgetMs === undefined ? undefined : Math.max(0, budgetMs - peSpent)
     if (this.secondaryActivityEnabled) {
-      colliders.push(...((await this.secondary?.tickAsync()) ?? []))
+      colliders.push(
+        ...((await this.secondary?.tickAsync({ applyBudgetMs: secondaryBudget })) ?? [])
+      )
     } else {
       colliders.push(...((await this.secondary?.tickStickyAsync()) ?? []))
     }

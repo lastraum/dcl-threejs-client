@@ -38,18 +38,40 @@ export function applyPbrColors(
     emissiveIntensity?: number
   }
 ): void {
+  const ec = pbr.emissiveColor
+  const er = ec?.r ?? 0
+  const eg = ec?.g ?? 0
+  const eb = ec?.b ?? 0
+  const emissiveLum = (er + eg + eb) / 3
+  const intensity = pbr.emissiveIntensity ?? 1
+
   if (pbr.albedoColor) {
+    const ar = pbr.albedoColor.r ?? 1
+    const ag = pbr.albedoColor.g ?? 1
+    const ab = pbr.albedoColor.b ?? 1
+    const albedoLum = (ar + ag + ab) / 3
+    // Selection rings / click VFX: white albedo + colored emissive reads as washed white under
+    // ACES if we keep full albedo. Drive the surface with emissive color (Explorer glow discs).
+    if (albedoLum > 0.88 && emissiveLum > 0.12 && !material.map) {
+      material.color.setRGB(Math.min(er, 1), Math.min(eg, 1), Math.min(eb, 1))
+      material.emissive.setRGB(Math.min(er, 1), Math.min(eg, 1), Math.min(eb, 1))
+      material.emissiveIntensity = Math.max(intensity, 1.35)
+      material.metalness = 0
+      material.roughness = 1
+      material.toneMapped = false
+      material.envMapIntensity = 0
+      return
+    }
     applyHdrAlbedoAndEmissive(material, pbr.albedoColor, pbr.emissiveColor, pbr.emissiveIntensity)
     return
   }
 
-  const ec = pbr.emissiveColor
   if (ec) {
-    material.emissive.setRGB(ec.r ?? 0, ec.g ?? 0, ec.b ?? 0)
+    material.emissive.setRGB(er, eg, eb)
   } else {
     material.emissive.setRGB(0, 0, 0)
   }
-  material.emissiveIntensity = pbr.emissiveIntensity ?? 1
+  material.emissiveIntensity = intensity
 }
 
 /**
@@ -78,29 +100,47 @@ export function configureEmissiveRendering(
     material.emissiveMap &&
     material.map === material.emissiveMap
   )
-  // Flame/LED sprites: high intensity + emissive map + alpha blend (or map-less emissive).
-  // Opaque shared albedo/emissive = floor/wall bake — never sprite.
-  const glowSprite =
+  // Glow markers (narrow) — never promote ordinary floors/fog into this path:
+  // 1) Map-less ALPHA_BLEND click rings (DecentraCraft Vf: alpha 0.75, emissive 1.6)
+  // 2) Flame/LED sheets driven by emissiveMap (not opaque shared albedo+emissive bake)
+  // Prior over-broad rule (any intensity≥1.5 + !map) washed textured ground during load.
+  const emissiveLum =
+    material.emissive.r + material.emissive.g + material.emissive.b
+  const mapLessClickRing =
+    alphaBlend &&
+    !hasEmissiveMap &&
+    !material.map &&
+    intensity >= 1.5 &&
+    emissiveLum > 0.05
+  const flameOrLedSprite =
     !!hasEmissiveMap &&
     intensity >= 1.5 &&
-    (alphaBlend || !material.map || (sharedAlbedoEmissive && material.transparent))
+    !sharedAlbedoEmissive &&
+    (alphaBlend || material.transparent || !material.map)
+  const glowSprite = mapLessClickRing || flameOrLedSprite
 
   if (glowSprite) {
-    material.color.setRGB(0, 0, 0)
+    // Keep tinted albedo for solid-color rings (map-less); black only when emissiveMap drives.
+    if (hasEmissiveMap) {
+      material.color.setRGB(0, 0, 0)
+    }
     material.metalness = 0
     material.roughness = 1
     material.envMapIntensity = 0
     material.toneMapped = false
-    if (material.emissive.r + material.emissive.g + material.emissive.b < 1e-4) {
+    if (emissiveLum < 1e-4) {
       material.emissive.setRGB(1, 1, 1)
     }
     // Scene author intensity (fire ~6). Slight bump so HDR tone-map still reads hot.
     material.emissiveIntensity = Math.max(intensity, intensity * 1.15)
-    if (alphaBlend) {
+    if (alphaBlend || mapLessClickRing) {
       material.transparent = true
+      // Rings must not write depth or fog/cover planes hide them under top-down VC.
       material.depthWrite = false
     }
     material.blending = THREE.NormalBlending
+    // Draw after terrain/fog so ALPHA_BLEND discs stay visible.
+    material.depthTest = true
     applyDirectIntensity(material, 0)
     return
   }

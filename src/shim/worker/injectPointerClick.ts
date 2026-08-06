@@ -7,11 +7,22 @@ import { nextWorkerPointerEventTimestamp } from './workerPointerEventTimestamp'
 import { resolveWorkerUiTransform } from './resolveBundledUiComponents'
 
 function buildPointerHit(body: InjectPointerClickBody) {
+  // Prefer explicit ray fields; fall back to PPI world ray + estimate origin from hit.
+  const dir = body.hitDirection ?? body.primaryPointer?.worldRayDirection
+  const origin =
+    body.hitOrigin ??
+    (dir
+      ? {
+          x: body.hitPosition.x - dir.x * body.hitDistance,
+          y: body.hitPosition.y - dir.y * body.hitDistance,
+          z: body.hitPosition.z - dir.z * body.hitDistance
+        }
+      : undefined)
   return {
     entityId: body.hitEntity,
     position: { ...body.hitPosition },
-    globalOrigin: undefined,
-    direction: undefined,
+    globalOrigin: origin ? { ...origin } : undefined,
+    direction: dir ? { ...dir } : undefined,
     normalHit: { ...body.hitNormal },
     length: body.hitDistance,
     meshName: body.meshName ?? ''
@@ -79,6 +90,8 @@ export function injectPointerClickDownOnEngine(engine: IEngine, body: InjectPoin
     hit,
     analog: undefined
   }
+  // Targets come from main: real PE mesh chain, scene UI leaf, or level-state PlayerEntity
+  // (global isPressed when no PE in range). Do not invent extra targets here.
   for (const entity of pointerDownTargets(body)) {
     PointerEventsResult.addValue(entity as Entity, down)
   }

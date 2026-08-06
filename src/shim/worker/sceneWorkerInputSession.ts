@@ -1,4 +1,5 @@
 import type { SceneInputSnapshotBody } from '../../player/sceneInputSnapshot'
+import type { InputActionValue } from '../../input/pointerConstants'
 
 /**
  * Worker input session — while a pointer deliver batch is open, keyboard snapshots
@@ -7,6 +8,11 @@ import type { SceneInputSnapshotBody } from '../../player/sceneInputSnapshot'
  */
 let pointerInputSessionDepth = 0
 let coalescedKeyboardSnapshot: SceneInputSnapshotBody | null = null
+/**
+ * Buttons held from split pointer edges (phase=down until phase=up).
+ * Shared so cooperative react-ecs can stay live during drag (selection marquee, etc.).
+ */
+const pointerButtonsHeld = new Set<InputActionValue>()
 /** True during runSceneEnginePointerTick — react-ecs must run inside pointer phases 1/3. */
 let pointerInteractiveTickActive = false
 /**
@@ -54,9 +60,28 @@ export function coalesceKeyboardSnapshotDuringPointerSession(body: SceneInputSna
 export function resetPointerInputSession(): void {
   pointerInputSessionDepth = 0
   coalescedKeyboardSnapshot = null
+  pointerButtonsHeld.clear()
   pointerInteractiveTickActive = false
   pointerInteractivePhase = 'none'
   pointerDeliveryInFlightFlag = false
+}
+
+export function setWorkerPointerButtonHeld(button: InputActionValue, held: boolean): void {
+  if (held) pointerButtonsHeld.add(button)
+  else pointerButtonsHeld.delete(button)
+}
+
+export function clearWorkerPointerButtonsHeld(): void {
+  pointerButtonsHeld.clear()
+}
+
+/** True while any pointer button is held (Explorer press lifecycle). */
+export function isWorkerPointerButtonHeld(): boolean {
+  return pointerButtonsHeld.size > 0
+}
+
+export function workerPointerButtonsHeldList(): InputActionValue[] {
+  return [...pointerButtonsHeld]
 }
 
 export function setPointerInteractiveTickActive(active: boolean): void {

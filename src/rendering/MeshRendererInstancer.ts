@@ -50,6 +50,11 @@ export class MeshRendererInstancer {
     return this.entityBucket.has(entity)
   }
 
+  /** All entities currently in a GPU instance bucket. */
+  entities(): Iterable<Entity> {
+    return this.entityBucket.keys()
+  }
+
   bucketKey(entity: Entity): string | undefined {
     return this.entityBucket.get(entity)
   }

@@ -98,7 +98,13 @@ export class RenderStats {
       `remotes: vis=${perf.remoteVisible} loaded=${perf.remoteLoaded} poseSkip=${perf.remotePoseSkipped} animSkip=${perf.remoteAnimSkipped}`,
       `remote ms: ${perf.remoteUpdateMs.toFixed(1)} (anim ${perf.remoteAnimMs.toFixed(1)})  lod n/m/f=${perf.lodNear}/${perf.lodMid}/${perf.lodFar}`,
       `compose: q=${perf.remoteComposePending} active=${perf.remoteComposeActive} last=${perf.lastComposeMs.toFixed(0)}ms  tags=${perf.nameTagsShown}`,
-      `move out: ${perf.movementSentPerSec.toFixed(1)}/s  idle skip: ${perf.movementSkippedPerSec.toFixed(1)}/s`
+      `move out: ${perf.movementSentPerSec.toFixed(1)}/s  idle skip: ${perf.movementSkippedPerSec.toFixed(1)}/s`,
+      // COD frame-budget pipeline (A1)
+      `pipeline: pendingDiff=${perf.pendingDiffSize} age=${perf.pendingDiffAgeMaxMs.toFixed(0)}ms syncR=${perf.syncRendererMs.toFixed(1)}`,
+      `peel: m${perf.peelMaterialMs.toFixed(1)}/t${perf.peelTransformMs.toFixed(1)}/g${perf.peelGltfMs.toFixed(1)} e${perf.peelEntities} ptr=${perf.pointerEdgeMs.toFixed(1)} dump=${perf.pointerFullDump}`,
+      `uiMount/s=${perf.uiMountPostsPerSec.toFixed(1)} drop/s=${perf.uiMountDropsPerSec.toFixed(1)} skip/s=${perf.uiMountReseedSkipsPerSec.toFixed(1)}`,
+      `vcHydrate/s=${perf.vcHydratePerSec.toFixed(1)} poseLive/s=${perf.vcPoseLivePerSec.toFixed(1)} seal=${perf.physxStaticSealed} postReb=${perf.physxPostSealRebuild}`,
+      `mrInst=${perf.meshRendererInstances} buckets=${perf.meshRendererBuckets}`
     )
     this.extra.textContent = lines.join('\n')
   }

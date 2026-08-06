@@ -7,6 +7,7 @@ import { preregisterRendererInjectedComponents } from './preregisterRendererInje
 import { ensureWorkerLocomotionFreezePersisted } from './workerPlayerFrameEgress'
 import {
   isPointerInteractiveTickActive,
+  isWorkerPointerButtonHeld,
   shouldSuppressCooperativeReactEcs as shouldSuppressPointerSessionReactEcs
 } from './sceneWorkerInputSession'
 import {
@@ -147,10 +148,14 @@ export function shouldDeferCooperativeReactEcs(): boolean {
   if (isPointerInteractiveTickActive()) return false
   // Tween-driven UI (tutorial scale, letterbox, cake/confetti slide) — full 60Hz reconcile.
   if (workerHasUiDrivingTween(boundWorkerEngine)) return false
+  // Drag marquee / hold UI: scene module state (screen corners) changes without ECS puts.
+  // Must re-run react-ecs every tick while pointer is held (all scenes, not one game).
+  if (isWorkerPointerButtonHeld()) return false
   if (shouldSuppressPointerSessionReactEcs()) return true
   // Wall-clock hold after PE/sceneUi phase-4 — suppress even when not in cooperative depth
   // (PE vehicle pump uses runSceneEngineUpdateNow without enterCooperativeSchedulerTick).
   // But never freeze scale animations mid-hold if a tween is live (checked above).
+  // Exception: pointer still held (marquee) — never suppress (checked above).
   if (performance.now() < cooperativeReactEcsHoldUntilMs) return true
   if (cooperativeSchedulerTickDepth > 0) {
     if (cooperativeReactEcsHoldTicks > 0) {
@@ -628,9 +633,14 @@ export type PlanSceneUiCrdtEmitOptions = {
  * Phase 2 of a scheduler tick — touch dirty Ui* when fingerprint changed.
  * Caller runs engine.update(0) for transport emit, then commitSceneUiCrdtBaseline.
  */
-/** Coalesce timer/score UiText thrash (pixelwars HUD) — still snappy, not 2×/frame. */
+/**
+ * Coalesce pure UiText thrash (pixelwars score spam) without starving 1 Hz clocks.
+ * DecentraCraft match timer updates once per second — 120ms was fine; content-blind
+ * main dedupe was the real skip. Keep a short floor so multi-text-frame score spam
+ * does not flood, but always allow after the floor when plan re-runs with new text.
+ */
 let lastTextOnlyUiFlushAt = 0
-const TEXT_ONLY_UI_FLUSH_MIN_MS = 120
+const TEXT_ONLY_UI_FLUSH_MIN_MS = 50
 let lastUiFlushLogAt = 0
 const UI_FLUSH_LOG_MIN_MS = 2000
 

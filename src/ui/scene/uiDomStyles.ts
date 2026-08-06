@@ -235,8 +235,9 @@ export function applyYogaLayoutBox(
   el.style.minHeight = ''
   el.style.maxWidth = ''
   el.style.maxHeight = ''
-  // Positioning context for .scene-ui-node__content (absolute fill) and nested shells.
-  el.style.isolation = 'isolate'
+  // Only isolate when clipping — isolation on every shell traps descendant zIndex so
+  // author zIndex cannot stack a tooltip above a sibling HUD root (Explorer uses free stack).
+  el.style.isolation = clipOverflow ? 'isolate' : 'auto'
 }
 
 const TEXT_ALIGN_MODES = {

@@ -80,6 +80,15 @@ import type { SceneHost } from '../../rendering/SceneHost'
 import type { PlayerMirrorIdentity } from '../../bridge/playerMirrorIdentity'
 import type { CommsRealmInfo } from '../../network/comms/types'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
+import {
+  perfNotePeels,
+  perfNotePointerEdge,
+  perfNoteUiMountPost,
+  perfNoteUiMountReseedSkip,
+  perfNoteVcHydrate,
+  perfNoteVcPoseLive,
+  perfSetPendingDiff
+} from '../../util/perfCounters'
 import { skipSceneAnimators, skipTheatreSceneScript } from '../../client/devFlags'
 import { mirrorSceneBundle } from '../../dev/mirrorSceneBundle'
 import { PointerEventsSystem } from '../../input/PointerEventsSystem'
@@ -103,7 +112,8 @@ import {
   extractSnapshotMountEntityIds,
   stripEntityDeletesFromCrdtBytes,
   stripSceneUiCrdtBytes,
-  stripWorkerAuthoritativeCrdtBytes
+  stripWorkerAuthoritativeCrdtBytes,
+  uiMountSnapshotContentFp
 } from '../../shim/worker/workerSceneUiCrdtOutbound'
 type MovePlayerHandler = (request: MovePlayerToRequest) => boolean
 type TeleportToHandler = (request: TeleportToRequest) => boolean | Promise<boolean>
@@ -181,6 +191,29 @@ export class SceneScriptSystem {
   )
   /** Phase 2 — diff accumulated across worker ticks, drained (swapped out) by the render frame. */
   private pendingDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
+  /** Wall time when pendingDiff became non-empty (age for frame-budget SLO). */
+  private pendingDiffOldestAt = 0
+  /** Per-entity first dirty wall time — true ageMax (not “map non-empty since”). */
+  private readonly pendingDiffFirstDirtyAt = new Map<Entity, number>()
+  /**
+   * COD AAA frame pie — platform law (not scene-tuned heuristics).
+   * One ordered drain: Motion → Materials → Structure. No dual peels.
+   */
+  private static readonly FRAME = {
+    /** Transform/Tween/Animator apply budget (ms). */
+    MOTION_MS: 4,
+    MOTION_ENTITIES: 256,
+    /** Scalar Material / instanceColor budget (ms). */
+    MATERIAL_MS: 6,
+    MATERIAL_ENTITIES: 256,
+    /** Gltf attach / Mesh create entity cap + soft ms. */
+    STRUCTURE_ENTITIES: 48,
+    STRUCTURE_MS: 8,
+    /** Pointer-edge budgets (same lanes, tighter). */
+    POINTER_MOTION_MS: 4,
+    POINTER_MATERIAL_MS: 4,
+    POINTER_STRUCTURE_ENTITIES: 16
+  } as const
   private projectionDiffActive = false
   /** Phase 3: encoder is the primary source for renderer-owned outbound CRDT (reserved, tween, pointer/video results). Always on. */
   private readonly encoder = new CrdtEncoder(SDK_RESERVED, this.projection, this.componentHost.components)
@@ -1319,12 +1352,18 @@ export class SceneScriptSystem {
       this.pointerStructureDirty = true
     }
 
-    // Late PE (asset-pack on_click) after GPU instance attach — private mesh for raycast.
+    // Late PE / MeshCollider after GPU instance attach — private mesh for raycast.
+    // Also when Tween lands on a MeshRenderer instance (click-move must leave GPU slots).
     if (
       change.kind === 'put' &&
-      (componentId === PointerEvents.componentId || componentId === MeshCollider.componentId)
+      (componentId === PointerEvents.componentId ||
+        componentId === MeshCollider.componentId ||
+        componentId === this.readComponents.Tween.componentId)
     ) {
       this.bridge?.ensurePointerMeshClone(entity)
+      if (componentId === this.readComponents.Tween.componentId) {
+        this.bridge?.ensureMeshRendererTweenVisual(entity)
+      }
     }
 
     // Only TriggerArea structure / pose — do NOT dirty on every GltfContainer put
@@ -2541,6 +2580,12 @@ export class SceneScriptSystem {
   }
 
   private lastOutboundUiEntitiesKey = ''
+  /**
+   * Content-aware fp of last *applied* mount snapshot (not structure-only).
+   * Skip clear+reseed only when content matches — structure-only skip left
+   * timer/score rows stuck and paired badly with clear-before-skip.
+   */
+  private lastAppliedUiMountContentFp = ''
 
   private enqueueCrdtOutbound(item: {
     id?: number
@@ -2690,6 +2735,8 @@ export class SceneScriptSystem {
       const hasUiMountSnapshot = latestUiMountSnapshot !== undefined
       /** Mount authority: structured snapshot, or hydration wire emit — never bare uiEntities metadata on play batches. */
       const latestUiEntities = this.resolveOutboundBatchMountEntities(batch, hasUiMountSnapshot)
+      /** May be cleared when a partial dirty snapshot must not force a full mount commit. */
+      let mountEntitiesForFrame = latestUiEntities
       const uiKey = latestUiEntities?.join(',') ?? ''
       const prevMountKey = this.lastOutboundUiEntitiesKey
       const mountChanged =
@@ -2697,26 +2744,30 @@ export class SceneScriptSystem {
       const pointerUiMountBatch =
         hasUiMountSnapshot ||
         batch.some((i) => i.uiMountSnapshot !== undefined || (i.uiEntities?.length ?? 0) > 0)
-      // Clear LWW for entities present in the structured snapshot we are about to re-seed.
-      // Must include PointerEvents: cooperative UI egress is snapshot-only; if the scene
-      // removes PE after splash click, omitting 1062 left main with a ghost PE catcher
-      // (hand cursor + block=1) forever while Color4.a still faded.
-      // Never wipe the full mount on bare uiEntities (no rows) — that left projection at 0/N
-      // (mount commit deferred forever → sceneTicksPaused stuck → Flagtag timer + unfreeze die).
-      if (latestUiMountSnapshot?.length) {
-        const snapEntities = new Set<Entity>()
-        for (const row of latestUiMountSnapshot) snapEntities.add(row.entity as Entity)
-        if (snapEntities.size > 0) {
-          this.projection.clearLwwSlotsForEntities(snapEntities, [
-            UiTransform.componentId,
-            UiText.componentId,
-            UiBackground.componentId,
-            UiInput.componentId,
-            UiDropdown.componentId,
-            PointerEvents.componentId
-          ])
+      // Decide UI reseed skip BEFORE any LWW clear. The 0a950a4 thrash guard cleared
+      // always then skipped reseed on structure-only fp → permanent UiTransform=0/N
+      // (mount commit deferred + force-resume lag death spiral).
+      // Content-aware fp: timer/score UiText must still reseed when values change.
+      let skipUiMountReseed = false
+      if (hasUiMountSnapshot && latestUiMountSnapshot !== undefined && !mountChanged) {
+        const contentFp = uiMountSnapshotContentFp(latestUiMountSnapshot)
+        if (contentFp === this.lastAppliedUiMountContentFp && latestUiMountSnapshot.length > 0) {
+          skipUiMountReseed = true
         }
       }
+      // Integrity only: if mount ids have zero UiTransform, reseed (not a ratio heuristic).
+      if (skipUiMountReseed && latestUiEntities?.length) {
+        let withTx = 0
+        for (const id of latestUiEntities) {
+          if (this.view.components.UiTransform.has(id as Entity)) withTx++
+        }
+        if (withTx === 0) skipUiMountReseed = false
+      }
+      if (skipUiMountReseed) {
+        perfNoteUiMountReseedSkip()
+      }
+
+      // Non-UI CRDT always applies (even when UI reseed is skipped).
       if (pointerUiMountBatch) this.projection.beginForceWorkerUiPuts()
       try {
         // Phases 1–3 non-UI first — snapshot last so deferred CRDT cannot clobber UI rows.
@@ -2747,36 +2798,82 @@ export class SceneScriptSystem {
           }
           this.foldProjectionChanges()
         }
-        if (latestUiMountSnapshot !== undefined && latestUiMountSnapshot.length > 0) {
-          projectionDeletes.length = 0
-          this.projection.changes.length = 0
-          this.sceneUiBridge?.ingestMountSnapshot(latestUiMountSnapshot)
-          this.projection.applyWorkerUiMountSnapshot(
-            latestUiMountSnapshot.map((row) => ({
-              entity: row.entity as Entity,
-              componentId: row.componentId,
-              value: row.value
-            }))
-          )
-          batchTouchesUi = true
-          this.foldProjectionChanges()
-        } else if (hasUiMountSnapshot) {
-          // Empty mount snapshot (welcome unmount) — still touch UI so commitMountSet([]) runs.
-          projectionDeletes.length = 0
-          this.sceneUiBridge?.ingestMountSnapshot([])
-          batchTouchesUi = true
+
+        if (!skipUiMountReseed) {
+          // Clear LWW only when we are about to re-seed.
+          // COD C3 — PE clear only on full-mount / mount-set change. Partial dirty reseeds
+          // (timer text) must not wipe PE LWW then re-put (ghost/hand-cursor thrash).
+          if (latestUiMountSnapshot !== undefined && latestUiMountSnapshot.length > 0) {
+            const snapEntities = new Set<Entity>()
+            const snapTx = new Set<number>()
+            for (const row of latestUiMountSnapshot) {
+              snapEntities.add(row.entity as Entity)
+              if (row.componentId === UiTransform.componentId) snapTx.add(row.entity)
+            }
+            const mountIds = latestUiEntities ?? []
+            // Full mount = every listed mount id has a UiTransform row in this snapshot.
+            // Partial dirty (timer) = few rows for a large mount list.
+            const fullMount =
+              mountIds.length > 0 && mountIds.every((id) => snapTx.has(id))
+            // Partial dirty: clear only row entities we reseed (no PE wipe).
+            // Full mount: do NOT wipe all LWW then re-put (was O(mount×components) hitch on
+            // every select open — 180 entities × 5 comps). Force-puts overwrite; PE strip
+            // drops removed catchers without a full clear.
+            if (snapEntities.size > 0 && !fullMount) {
+              this.projection.clearLwwSlotsForEntities(snapEntities, [
+                UiTransform.componentId,
+                UiText.componentId,
+                UiBackground.componentId,
+                UiInput.componentId,
+                UiDropdown.componentId
+              ])
+            }
+            projectionDeletes.length = 0
+            this.projection.changes.length = 0
+            this.sceneUiBridge?.ingestMountSnapshot(latestUiMountSnapshot)
+            this.projection.applyWorkerUiMountSnapshot(
+              latestUiMountSnapshot.map((row) => ({
+                entity: row.entity as Entity,
+                componentId: row.componentId,
+                value: row.value
+              })),
+              { stripMissingPe: fullMount || mountChanged }
+            )
+            // Full mount: drop UiText/Bg/Input/Dropdown on snap entities when the snapshot
+            // no longer ships that component (no blanket pre-clear).
+            if (fullMount && latestUiMountSnapshot.length > 0) {
+              this.pruneUiComponentsMissingFromSnapshot(latestUiMountSnapshot)
+            }
+            perfNoteUiMountPost()
+            batchTouchesUi = true
+            this.foldProjectionChanges()
+            this.lastAppliedUiMountContentFp = uiMountSnapshotContentFp(latestUiMountSnapshot)
+            // Partial snapshot must not force commit of a larger mount set (163 ids / 10 rows).
+            // That left projection 10/163 and deferred paint forever.
+            if (!fullMount && mountChanged && latestUiEntities?.length) {
+              const readyIds = latestUiEntities.filter((id) =>
+                this.view.components.UiTransform.has(id as Entity)
+              )
+              if (readyIds.length < latestUiEntities.length) {
+                mountEntitiesForFrame = undefined
+              }
+            }
+          } else if (hasUiMountSnapshot) {
+            // Empty mount snapshot (welcome unmount) — still touch UI so commitMountSet([]) runs.
+            projectionDeletes.length = 0
+            this.sceneUiBridge?.ingestMountSnapshot([])
+            perfNoteUiMountPost()
+            batchTouchesUi = true
+            this.lastAppliedUiMountContentFp = '0'
+          }
         }
       } finally {
         if (pointerUiMountBatch) this.projection.endForceWorkerUiPuts()
       }
 
-      // Pixelwars paint: Material PUTs ride play-mode cold CRDT (fire-and-forget). Waiting for
-      // the async-frame syncRenderer left boards white while Explorer already showed recolors
-      // (paintTick works — only local Material visual lagged/dropped). Apply MeshRenderer
-      // materials immediately from pendingDiff before the next rAF.
-      if (hasPayload) this.flushMeshRendererMaterialsFromPendingDiff()
-
-      if (latestUiEntities !== undefined) this.lastOutboundUiEntitiesKey = uiKey
+      // COD C2 — mount commit + paint BEFORE structure/material peels so select HUD /
+      // menus never wait behind a large pendingDiff drain on the same outbound batch.
+      if (mountEntitiesForFrame !== undefined) this.lastOutboundUiEntitiesKey = uiKey
       if (hasPayload || batchTouchesUi || projectionDeletes.length > 0 || mountChanged) {
         if (SCENE_UI_LOG && (hasPayload || hasUiMountSnapshot)) {
           let snapshotUiTransform = 0
@@ -2791,12 +2888,13 @@ export class SceneScriptSystem {
               else if (row.componentId === uiBackgroundId) snapshotUiBackground++
             }
           }
-          const mountSize = latestUiEntities?.length ?? 0
+          const mountSize = mountEntitiesForFrame?.length ?? latestUiEntities?.length ?? 0
           let projectionUiTransform = 0
           let projectionUiText = 0
           let projectionUiBackground = 0
-          if (mountSize) {
-            for (const entity of latestUiEntities!) {
+          const idsForLog = mountEntitiesForFrame ?? latestUiEntities
+          if (idsForLog?.length) {
+            for (const entity of idsForLog) {
               const id = entity as Entity
               if (this.view.components.UiTransform.has(id)) projectionUiTransform++
               if (this.view.components.UiText.has(id)) projectionUiText++
@@ -2814,14 +2912,31 @@ export class SceneScriptSystem {
           )
         }
         // Never defer DOM paint during pointer delivery when this batch touched UI (modal open/close).
-        if (latestUiEntities !== undefined || !this.pointerHoldTicksUntilMount || batchTouchesUi) {
-          this.applyUiFrame(projectionDeletes, latestUiEntities)
+        if (mountEntitiesForFrame !== undefined || !this.pointerHoldTicksUntilMount || batchTouchesUi) {
+          this.applyUiFrame(projectionDeletes, mountEntitiesForFrame)
         }
       } else if (this.projectionLagPendingUi && batchTouchesUi) {
         this.flushUiFrame()
       }
       if (this.pendingUiEntities !== undefined && (hasUiMountSnapshot || batchTouchesUi)) {
         this.flushUiFrame()
+      }
+
+      // COD AAA — one ordered lane drain after UI (not triple peels).
+      // Motion/material/structure share FRAME pie; remainder stays queued for syncRenderer.
+      if (hasPayload || this.pendingDiff.size > 0) {
+        try {
+          void this.drainPendingDiffLanes({
+            deadlineMs:
+              SceneScriptSystem.FRAME.MOTION_MS +
+              SceneScriptSystem.FRAME.MATERIAL_MS +
+              SceneScriptSystem.FRAME.STRUCTURE_MS
+          })
+        } catch (err) {
+          console.warn(
+            `[scene] lane drain aborted — ${err instanceof Error ? err.message : String(err)}`
+          )
+        }
       }
 
       if (this.pointerAwaitingWorkerApply) {
@@ -3165,17 +3280,65 @@ export class SceneScriptSystem {
   ): void {
     const mountChanged = bridge.commitMountSet(nextSet)
     this.purgeProjectionUiOutsideWorkerMount()
-    // commitMountSet already clears layout/visual keys when the set changes — paint() is
-    // enough. forceRepaint() zeroed paintCount and thrashed the whole PE HUD (flash).
-    bridge.paint(this.view)
-    this.clearProjectionUiLag()
-    this.logSceneUiRepaintIfEnabled()
+    // Large mount growth (select HUD 160–200 nodes): commit now, Yoga/DOM next frame so
+    // pointer edge / deliver-done are not blocked ~1s by a full tree layout.
+    const heavyPaint = nextSet.size >= 64 && mountChanged
+    if (heavyPaint) {
+      bridge.markContentDirty()
+      this.clearProjectionUiLag()
+      const view = this.view
+      queueMicrotask(() => {
+        if (!this.sceneUiBridge || this.sceneUiBridge !== bridge) return
+        bridge.paint(view)
+        this.logSceneUiRepaintIfEnabled()
+      })
+    } else {
+      bridge.paint(this.view)
+      this.clearProjectionUiLag()
+      this.logSceneUiRepaintIfEnabled()
+    }
     if (mountChanged) {
       this.pointerStructureDirty = true
       this.flushPointerStructureIfDirty()
     }
     if (!this.pointerAwaitingWorkerApply) {
       this.resumeWorkerSceneTicksAfterMountIfHeld()
+    }
+  }
+
+  /**
+   * After full-mount force-puts, drop Ui* components no longer in the snapshot for each
+   * entity (without a pre-clear of the whole tree).
+   */
+  private pruneUiComponentsMissingFromSnapshot(
+    rows: readonly { entity: number; componentId: number; value: unknown }[]
+  ): void {
+    const { UiText, UiBackground, UiInput, UiDropdown } = this.readComponents
+    const present = new Map<number, Set<number>>()
+    for (const row of rows) {
+      let set = present.get(row.entity)
+      if (!set) {
+        set = new Set()
+        present.set(row.entity, set)
+      }
+      set.add(row.componentId)
+    }
+    const optional = [
+      UiText.componentId,
+      UiBackground.componentId,
+      UiInput.componentId,
+      UiDropdown.componentId
+    ]
+    for (const [entityNum, comps] of present) {
+      const entity = entityNum as Entity
+      const drop: number[] = []
+      for (const cid of optional) {
+        if (comps.has(cid)) continue
+        if (this.projection.componentMap(cid)?.has(entity)) drop.push(cid)
+      }
+      if (drop.length) {
+        this.projection.clearLwwSlotsForEntities(new Set([entity]), drop)
+      }
     }
   }
 
@@ -3372,8 +3535,26 @@ export class SceneScriptSystem {
         `player-frame MainCamera → ${vcKey}` +
           (vcUnbound ? '' : ` transform=${hasTr} virtualCamera=${hasVc}`)
       )
-      if (!vcUnbound && (!hasTr || !hasVc)) {
-        this.requestVcBindHydrateOnce()
+      if (!vcUnbound && vcEnt != null) {
+        // COD D2 — if Transform already on projection, claim live lane immediately so
+        // cold CRDT cannot clobber before first hydrate/pose-live arrives.
+        if (hasTr) {
+          const tr = Transform.get(vcEnt as never) as {
+            position: { x: number; y: number; z: number }
+            rotation: { x: number; y: number; z: number; w: number }
+            scale?: { x: number; y: number; z: number }
+            parent?: number
+          }
+          this.projection.setVcLiveTransform(vcEnt as never, {
+            position: tr.position,
+            rotation: tr.rotation,
+            scale: tr.scale ?? { x: 1, y: 1, z: 1 },
+            parent: tr.parent
+          })
+        }
+        if (!hasTr || !hasVc) {
+          this.requestVcBindHydrateOnce()
+        }
       }
     } else if (!vcUnbound) {
       const vcEnt = mainCam!.virtualCameraEntity!
@@ -3408,6 +3589,8 @@ export class SceneScriptSystem {
     putLiveTransform(bound.entity, bound.transform)
     VirtualCamera.createOrReplace(bound.entity as never, (bound.virtualCamera ?? {}) as never)
     this.vcBindHydratePullPending = false
+    perfNoteVcHydrate()
+    // Structure-only key (pose rides vc-pose-live) — log once per structure change.
     if (graphKey !== this.lastVcBindHydrateLogKey) {
       this.lastVcBindHydrateLogKey = graphKey
       const lookAt = (bound.virtualCamera as { lookAtEntity?: number } | null)?.lookAtEntity
@@ -3415,7 +3598,8 @@ export class SceneScriptSystem {
         'vc-lens',
         `vc-bind-hydrate e${bound.entity} anchors=${bound.anchors.length} ` +
           `flat=${bound.worldFlattened === true} parent=${bound.transform.parent ?? '∅'} lookAt=${lookAt ?? '∅'} ` +
-          `pos=(${bound.transform.position.x.toFixed(1)},${bound.transform.position.y.toFixed(1)},${bound.transform.position.z.toFixed(1)})`
+          `pos=(${bound.transform.position.x.toFixed(1)},${bound.transform.position.y.toFixed(1)},${bound.transform.position.z.toFixed(1)}) ` +
+          `key=${graphKey}`
       )
     }
   }
@@ -3432,6 +3616,7 @@ export class SceneScriptSystem {
    */
   private applyVcPoseLive(entity: Entity, transform: DclTransformValues): void {
     if (!this.running || !this.entityStore || !this.bridge) return
+    perfNoteVcPoseLive()
     const { MainCamera, Transform } = this.readComponents
     const { CameraEntity } = this.view
     const main = MainCamera.getOrNull(CameraEntity) as { virtualCameraEntity?: number } | null
@@ -3463,49 +3648,226 @@ export class SceneScriptSystem {
   }
 
   /**
-   * Same-batch paint recolors. instanceColor is O(1) — allow large batches so a paintDelta
-   * of hundreds of cells lands in one frame (was 512, left multi-batch lag).
+   * COD AAA — single ordered lane drain (Motion → Materials → Structure).
+   * Replaces dual peels on CRDT/PE/syncRenderer. One apply path per lane per call.
+   * Structure is awaited (no fire-and-forget Gltf attach).
    */
-  private static readonly MESH_RENDERER_MATERIAL_FLUSH_CAP = 4096
+  private async drainPendingDiffLanes(opts?: {
+    pointerEdge?: boolean
+    deadlineMs?: number
+  }): Promise<void> {
+    if (!this.bridge || !this.entityStore) return
+    if (!this.bridge.canConsumeDiff() || !this.pendingDiff.size) return
+    const view = this.view
+    const F = SceneScriptSystem.FRAME
+    const edge = opts?.pointerEdge === true
+    const wallDeadline =
+      opts?.deadlineMs !== undefined && Number.isFinite(opts.deadlineMs)
+        ? performance.now() + Math.max(0, opts.deadlineMs)
+        : Infinity
+
+    // --- Motion lane (Transform/Tween/Animator…) — oldest dirty first ---
+    if (performance.now() < wallDeadline) {
+      const motionCap = edge ? Math.min(F.MOTION_ENTITIES, 64) : F.MOTION_ENTITIES
+      const motionSlice = this.takePendingDiffSlice(new Set(['motion']), motionCap)
+      if (motionSlice.size) {
+        const t0 = performance.now()
+        const { Transform, Tween } = this.readComponents
+        const transformId = Transform.componentId
+        const tweenId = Tween.componentId
+        const poseDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
+        const otherMotion = new Map<Entity, Map<number, ProjectionChangeKind>>()
+        const tweenEntities: Entity[] = []
+        for (const [entity, comps] of motionSlice) {
+          const pose = new Map<number, ProjectionChangeKind>()
+          const rest = new Map<number, ProjectionChangeKind>()
+          for (const [cid, kind] of comps) {
+            if (cid === transformId || cid === tweenId) {
+              pose.set(cid, kind)
+              if (cid === tweenId) tweenEntities.push(entity)
+            } else {
+              rest.set(cid, kind)
+            }
+          }
+          if (pose.size) poseDiff.set(entity, pose)
+          if (rest.size) otherMotion.set(entity, rest)
+        }
+        if (poseDiff.size) {
+          const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+          applySceneDiff(this.entityStore, poseDiff, view, this.readComponents, tweenRefresh, {
+            skipTransformApply: (entity) =>
+              this.readComponents.AvatarAttach.has(entity) ||
+              this.projection.isVcLiveTransformEntity(entity),
+            onReservedParent: (entity, parent, v) => {
+              this.bridge?.noteReservedParentedEntity(entity, parent, v)
+            }
+          })
+          this.bridge.syncInstancedTransforms([...poseDiff.keys()])
+          for (const entity of tweenEntities) {
+            this.bridge.ensureMeshRendererTweenVisual(entity)
+          }
+          this.tweenBridge?.sync(view)
+          this.pointerStructureDirty = true
+        }
+        if (otherMotion.size && performance.now() < wallDeadline) {
+          const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+          await this.bridge.consumeDiff(otherMotion, view, tweenRefresh)
+        }
+        perfNotePeels({
+          transformMs: performance.now() - t0,
+          entities: motionSlice.size
+        })
+      }
+    }
+
+    // --- Materials lane (specialized instanceColor / scalar) ---
+    if (performance.now() < wallDeadline) {
+      this.flushMeshRendererMaterialsFromPendingDiff({
+        pointerEdge: edge,
+        hardMs: edge ? F.POINTER_MATERIAL_MS : F.MATERIAL_MS,
+        entityCap: F.MATERIAL_ENTITIES
+      })
+    }
+
+    // --- Structure lane — never on pointer edge (motion/material only; structure is async).
+    // PE click was draining structure mid-edge (g29ms + orphan cascade) and freezing frames.
+    if (!edge && performance.now() < wallDeadline) {
+      const structureSlice = this.takePendingDiffSlice(
+        new Set(['structure', 'other', 'material']),
+        F.STRUCTURE_ENTITIES
+      )
+      if (structureSlice.size) {
+        const t0 = performance.now()
+        const { spriteDiff, sceneDiff } = this.bridge.partitionSpriteDiff(structureSlice, view)
+        if (spriteDiff.size) this.bridge.consumeSpriteDiff(spriteDiff, view)
+        const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+        if (sceneDiff.size) await this.bridge.consumeDiff(sceneDiff, view, tweenRefresh)
+        else await this.bridge.drainPendingWork()
+        this.bridge.reconcileBillboardFlags()
+        this.flushPointerStructureIfDirty()
+        perfNotePeels({
+          gltfMs: performance.now() - t0,
+          entities: structureSlice.size
+        })
+      }
+    }
+
+    this.publishPendingDiffPerf()
+  }
 
   /**
-   * Same-batch MeshRenderer Material recolor after worker cold CRDT applyIncoming.
-   * Prefer GPU instanceColor (O(1) per entity). Does not remove from pendingDiff —
-   * syncRenderer still handles first attach / mesh work.
+   * @deprecated Prefer drainPendingDiffLanes — kept for sync-frame platform Transform path.
+   * Narrow: Transform/Tween only, age-ordered, for CCT platform motion same-frame.
    */
-  private flushMeshRendererMaterialsFromPendingDiff(): void {
+  private flushTweenAndTransformFromPendingDiff(opts?: { pointerEdge?: boolean; hardMs?: number }): void {
+    if (!this.bridge || !this.entityStore || !this.pendingDiff.size) return
+    if (!this.bridge.canConsumeDiff()) return
+    const t0 = performance.now()
+    const hardMs =
+      opts?.hardMs ??
+      (opts?.pointerEdge
+        ? SceneScriptSystem.FRAME.POINTER_MOTION_MS
+        : SceneScriptSystem.FRAME.MOTION_MS)
+    const cap = opts?.pointerEdge ? 64 : SceneScriptSystem.FRAME.MOTION_ENTITIES
+    const motionSlice = this.takePendingDiffSlice(new Set(['motion']), cap)
+    if (!motionSlice.size) return
+    const { Transform, Tween } = this.readComponents
+    const transformId = Transform.componentId
+    const tweenId = Tween.componentId
+    const transformDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
+    const tweenEntities: Entity[] = []
+    for (const [entity, comps] of motionSlice) {
+      if (performance.now() - t0 >= hardMs && transformDiff.size > 0) break
+      const sub = new Map<number, ProjectionChangeKind>()
+      const tk = comps.get(transformId)
+      if (tk !== undefined) sub.set(transformId, tk)
+      const tw = comps.get(tweenId)
+      if (tw !== undefined) {
+        sub.set(tweenId, tw)
+        tweenEntities.push(entity)
+      }
+      if (sub.size) transformDiff.set(entity, sub)
+    }
+    if (!transformDiff.size) return
+    const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+    applySceneDiff(this.entityStore, transformDiff, this.view, this.readComponents, tweenRefresh, {
+      skipTransformApply: (entity) =>
+        this.readComponents.AvatarAttach.has(entity) || this.projection.isVcLiveTransformEntity(entity),
+      onReservedParent: (entity, parent, view) => {
+        this.bridge?.noteReservedParentedEntity(entity, parent, view)
+      }
+    })
+    const moved = [...transformDiff.keys()]
+    this.bridge.syncInstancedTransforms(moved)
+    for (const entity of tweenEntities) {
+      this.bridge.ensureMeshRendererTweenVisual(entity)
+    }
+    this.tweenBridge?.sync(this.view)
+    this.pointerStructureDirty = true
+    this.publishPendingDiffPerf()
+    perfNotePeels({
+      transformMs: performance.now() - t0,
+      entities: moved.length
+    })
+  }
+
+  /**
+   * Same-batch MeshRenderer Material after worker cold CRDT applyIncoming.
+   * Prefer GPU instanceColor (O(1)). Also first-attaches private meshes when Material
+   * arrives before mesh drain (textured props / DecentraCraft white-until-idle).
+   * Clears Material put from pendingDiff on success; mesh/Transform work may remain.
+   */
+  private flushMeshRendererMaterialsFromPendingDiff(opts?: {
+    pointerEdge?: boolean
+    hardMs?: number
+    entityCap?: number
+  }): void {
     if (!this.bridge || !this.pendingDiff.size) return
     const { Material, MeshRenderer } = this.readComponents
     const matId = Material.componentId
-    const hardMs = 12 // O(1) instanceColor — match paint-storm budget
+    const hardMs =
+      opts?.hardMs ??
+      (opts?.pointerEdge
+        ? SceneScriptSystem.FRAME.POINTER_MATERIAL_MS
+        : SceneScriptSystem.FRAME.MATERIAL_MS)
+    const entityCap = opts?.entityCap ?? SceneScriptSystem.FRAME.MATERIAL_ENTITIES
     const t0 = performance.now()
     let applied = 0
     let seen = 0
     let missingMesh = 0
-    const cleared: Entity[] = []
-    for (const [entity, comps] of this.pendingDiff) {
-      if (comps.get(matId) !== 'put') continue
+    let failed = 0
+    // Age-ordered material entities.
+    const ordered = [...this.pendingDiff.keys()].sort(
+      (a, b) =>
+        (this.pendingDiffFirstDirtyAt.get(a) ?? 0) - (this.pendingDiffFirstDirtyAt.get(b) ?? 0)
+    )
+    for (const entity of ordered) {
+      const comps = this.pendingDiff.get(entity)
+      if (!comps || comps.get(matId) !== 'put') continue
       if (!Material.has(entity)) continue
       if (!MeshRenderer.has(entity)) {
         missingMesh++
         continue
       }
       seen++
-      if (applied >= SceneScriptSystem.MESH_RENDERER_MATERIAL_FLUSH_CAP) break
+      if (applied >= entityCap) break
       if (performance.now() - t0 >= hardMs && applied > 0) break
       if (this.bridge.forceApplyMeshRendererMaterial(entity)) {
         applied++
-        // Drop Material put so force-wave leftovers don't starve new paintDelta entities
-        // at the head of pendingDiff on the next flush.
         comps.delete(matId)
-        if (comps.size === 0) cleared.push(entity)
+        this.clearPendingEntityIfEmpty(entity)
+      } else {
+        failed++
       }
     }
-    for (const entity of cleared) this.pendingDiff.delete(entity)
+    if (applied > 0 || seen > 0) {
+      this.publishPendingDiffPerf()
+      perfNotePeels({ materialMs: performance.now() - t0, entities: applied })
+    }
     if (applied > 0 || seen > 0 || missingMesh > 0) {
       clientDebugLog.log(
         'collision',
-        `mesh-renderer material flush — applied=${applied}/${seen} missingMesh=${missingMesh} pendingDiff=${this.pendingDiff.size}`,
+        `mesh-renderer material flush v3 — applied=${applied}/${seen} failed=${failed} missingMesh=${missingMesh} pendingDiff=${this.pendingDiff.size}`,
         { level: 'info', alsoConsole: true, throttleMs: 1_000, throttleKey: 'mr-mat-flush' }
       )
     }
@@ -3592,10 +3954,116 @@ export class SceneScriptSystem {
       let comps = this.pendingDiff.get(change.entity)
       if (!comps) {
         comps = new Map()
+        const now = performance.now()
+        if (this.pendingDiff.size === 0) this.pendingDiffOldestAt = now
+        this.pendingDiffFirstDirtyAt.set(change.entity, now)
         this.pendingDiff.set(change.entity, comps)
       }
       comps.set(change.componentId, change.kind)
     }
+    this.publishPendingDiffPerf()
+  }
+
+  /** Frame-budget counters for `?perfdebug` / RenderStats. */
+  private publishPendingDiffPerf(): void {
+    const size = this.pendingDiff.size
+    const now = performance.now()
+    let age = 0
+    if (size > 0) {
+      // True max entity age — not “time since map was last empty”.
+      for (const entity of this.pendingDiff.keys()) {
+        const t0 = this.pendingDiffFirstDirtyAt.get(entity) ?? this.pendingDiffOldestAt
+        if (t0 > 0) age = Math.max(age, now - t0)
+      }
+    } else {
+      this.pendingDiffOldestAt = 0
+      this.pendingDiffFirstDirtyAt.clear()
+    }
+    perfSetPendingDiff(size, age)
+  }
+
+  private clearPendingEntityIfEmpty(entity: Entity): void {
+    const pending = this.pendingDiff.get(entity)
+    if (pending && pending.size === 0) {
+      this.pendingDiff.delete(entity)
+      this.pendingDiffFirstDirtyAt.delete(entity)
+    } else if (!pending) {
+      this.pendingDiffFirstDirtyAt.delete(entity)
+    }
+  }
+
+  /**
+   * Classify a component put into a drain lane (COD A2).
+   * Motion = every-frame correctness; Material = scalar-fast; Structure = rare/expensive.
+   */
+  private pendingDiffLaneOf(componentId: number): 'motion' | 'material' | 'structure' | 'other' {
+    const c = this.readComponents
+    if (
+      componentId === c.Transform.componentId ||
+      componentId === c.Tween.componentId ||
+      componentId === c.TweenSequence.componentId ||
+      componentId === c.TweenState.componentId ||
+      componentId === c.Animator.componentId ||
+      componentId === c.Billboard.componentId ||
+      componentId === c.VisibilityComponent.componentId
+    ) {
+      return 'motion'
+    }
+    if (componentId === c.Material.componentId) return 'material'
+    if (
+      componentId === c.GltfContainer.componentId ||
+      componentId === c.MeshRenderer.componentId ||
+      componentId === c.MeshCollider.componentId ||
+      componentId === c.GltfNodeModifiers.componentId ||
+      componentId === c.TextShape.componentId ||
+      componentId === c.NftShape.componentId ||
+      componentId === c.AvatarShape.componentId ||
+      componentId === c.AvatarAttach.componentId
+    ) {
+      return 'structure'
+    }
+    return 'other'
+  }
+
+  /**
+   * Peel up to `cap` entities that have any component in `lanes` from pendingDiff.
+   * Does **not** empty the whole map — structure backlog drains across frames.
+   */
+  private takePendingDiffSlice(
+    lanes: ReadonlySet<'motion' | 'material' | 'structure' | 'other'>,
+    cap: number
+  ): Map<Entity, Map<number, ProjectionChangeKind>> {
+    const out = new Map<Entity, Map<number, ProjectionChangeKind>>()
+    if (!this.pendingDiff.size || cap <= 0) return out
+    // Age-order only for moderate backlogs. Sorting 1000+ keys every peel was a multi-ms
+    // hitch on PE click (pendingDiff=1400 → peel 65ms). Large backlog: FIFO Map order.
+    let ordered: Entity[]
+    if (this.pendingDiff.size <= 128) {
+      ordered = [...this.pendingDiff.keys()].sort(
+        (a, b) =>
+          (this.pendingDiffFirstDirtyAt.get(a) ?? 0) - (this.pendingDiffFirstDirtyAt.get(b) ?? 0)
+      )
+    } else {
+      ordered = [...this.pendingDiff.keys()]
+    }
+    for (const entity of ordered) {
+      if (out.size >= cap) break
+      const comps = this.pendingDiff.get(entity)
+      if (!comps?.size) continue
+      const sub = new Map<number, ProjectionChangeKind>()
+      for (const [cid, kind] of comps) {
+        if (lanes.has(this.pendingDiffLaneOf(cid))) sub.set(cid, kind)
+      }
+      if (!sub.size) continue
+      out.set(entity, sub)
+      for (const cid of sub.keys()) comps.delete(cid)
+      if (comps.size === 0) {
+        this.pendingDiff.delete(entity)
+        this.pendingDiffFirstDirtyAt.delete(entity)
+      }
+    }
+    this.publishPendingDiffPerf()
+    return out
   }
 
   private flushPointerStructureIfDirty(): void {
@@ -3629,6 +4097,29 @@ export class SceneScriptSystem {
       return
     }
     this.consumeSyncFrameTransforms()
+    // Drain PE-related Transform/Tween stuck in pendingDiff before raycast (click-move).
+    if (this.pendingDiff.size) this.flushTweenAndTransformFromPendingDiff()
+    // Only re-promote PE leaves when structure is dirty — every-raycast promote thrashed
+    // MeshRenderer/GLB attach and competed with GltfContainer drain.
+    if (this.pointerStructureDirty && this.bridge && this.pointerEvents) {
+      const pe: Entity[] = []
+      for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {
+        if (
+          entity === this.view.RootEntity ||
+          entity === this.view.PlayerEntity ||
+          entity === this.view.CameraEntity
+        ) {
+          continue
+        }
+        if (this.readComponents.UiTransform.has(entity)) continue
+        pe.push(entity)
+      }
+      if (pe.length) {
+        const fixed = this.bridge.ensurePointerMeshesReady(pe)
+        if (fixed > 0) this.pointerStructureDirty = true
+      }
+    }
+    this.flushPointerStructureIfDirty()
     this.flushSceneGraphMatrices()
     // Full syncCollision runs on the async frame (World.applyPhysicsColliders) — not here.
     this.syncPointerCollisionPoses()
@@ -3721,7 +4212,9 @@ export class SceneScriptSystem {
       getWorldTransformDeps: () => this.getWorldTransformDeps(),
       camera: this.host.camera,
       getPlayerPosition,
-      isPointerBlocked: () => isPointerBlocked() || this.pointerDeliverAwaitingAck,
+      // Do not block world pointer while awaiting split-press ack (was freezing DecentraCraft
+      // input for the full multi-second pointer-deliver batch). UI still uses full batch.
+      isPointerBlocked: () => isPointerBlocked(),
       pointerEventsOf: (entity) => this.sceneUiBridge?.pointerEventsOf(entity) ?? null,
       flushPointerCrdt: () => {
         void this.flushPendingPointerCrdt()
@@ -3731,6 +4224,22 @@ export class SceneScriptSystem {
         this.bridge?.resolveMeshRendererInstanceEntity(mesh, instanceId) ?? null,
       getMeshRendererInstancePointerMeshes: () =>
         this.bridge?.getMeshRendererInstancePointerMeshes() ?? [],
+      ensurePointerMeshes: () => {
+        if (!this.bridge) return
+        const pe: Entity[] = []
+        for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {
+          if (
+            entity === this.view.RootEntity ||
+            entity === this.view.PlayerEntity ||
+            entity === this.view.CameraEntity
+          ) {
+            continue
+          }
+          if (this.readComponents.UiTransform.has(entity)) continue
+          pe.push(entity)
+        }
+        if (pe.length) this.bridge.ensurePointerMeshesReady(pe)
+      },
       recordAppend: this.recordRendererAppend,
       // Primary vs PX — gate blocks hit-map pierce under the other root's dialog.
       uiRootId: this.uiRootId,
@@ -4222,7 +4731,14 @@ export class SceneScriptSystem {
     })
   }
 
-  /** Push pointer CRDT to worker via inject + pointer-crdt-deliver. */
+  /**
+   * Push pointer edge to worker via inject-pointer-click only.
+   *
+   * Platform law: inject is the only authoritative PE edge. Main-encoded
+   * PointerEventsResult CRDT must never open the deliver-done session — the
+   * worker light path for pointer-crdt-deliver does not post deliver-done, so
+   * arming the 2s watchdog on CRDT-only freezes clicks indefinitely.
+   */
   async flushPendingPointerCrdt(): Promise<void> {
     if (!this.pointerEvents) {
       this.logPointerFlushSkipped('pointer system not bound')
@@ -4233,7 +4749,9 @@ export class SceneScriptSystem {
       return
     }
     if (this.pointerFlushInFlight) {
-      this.logPointerFlushSkipped('flush already in flight')
+      // Do not drop the edge — retry after the in-flight flush finishes.
+      this.pointerFlushCoalesceRequested = true
+      this.logPointer('pointer flush coalesced — flush already in flight')
       return
     }
     if (this.pointerDeliverAwaitingAck) {
@@ -4241,8 +4759,8 @@ export class SceneScriptSystem {
       this.logPointer('pointer flush coalesced — awaiting pointer-deliver-done')
       return
     }
-    if (!this.pointerEvents.hasPendingInput()) {
-      this.logPointerFlushSkipped('no pending pointer down/up')
+    if (!this.pointerEvents.hasPendingInput() && !this.pointerEvents.hasPendingInjectPayload()) {
+      this.logPointerFlushSkipped('no pending pointer down/up/inject')
       return
     }
 
@@ -4252,17 +4770,26 @@ export class SceneScriptSystem {
       clientDebugLog.log('pointer', `flush pending input tick=${this.crdtTick}`, {
         alsoConsole: POINTER_VERBOSE
       })
-      this.syncPointerInput(this.crdtTick, { processPendingDown: true, processPendingUp: true })
-      this.crdtTick++
+      // Explorer press lifecycle: one edge per flush. Processing DOWN+UP in the same
+      // flush overwrote inject payload with UP only → worker sceneUi ignores UP and
+      // world PE never saw PET_DOWN (no getClick / click VFX).
+      const hasDown = this.pointerEvents.hasPendingDown()
+      const hasUp = this.pointerEvents.hasPendingUp()
+      if (hasDown || hasUp) {
+        this.syncPointerInput(this.crdtTick, {
+          processPendingDown: hasDown,
+          processPendingUp: !hasDown && hasUp
+        })
+        this.crdtTick++
+      }
 
-      // inject-pointer-click is authoritative on the worker — skip main-encoded pointer appends.
-      // Must also discard recorded PointerEventsResult (1063): inject-only used to leave them
-      // queued, then flushRendererGrowOnlyAppends re-delivered them after deliver-done with
-      // *main* timestamps > worker previousFrameMax → EventSystem re-fired CAM toggle and
-      // closed home on the worker while main still painted mount=23 (ghost CREATOR clicks).
-      const directInject = this.pointerEvents.hasPendingInjectPayload()
-      if (directInject) {
-        this.pointerResponseStash.length = 0
+      // Capture inject immediately after the edge write — never re-read after encode/discard.
+      const inject = this.pointerEvents.consumeInjectPayload()
+
+      // inject-pointer-click is authoritative — drop main PE Result appends so a later
+      // grow-only flush cannot re-fire EventSystem (ghost CAM toggle / menu close).
+      // Also drop hover leftovers so we never open a CRDT-only deliver-done session.
+      if (inject || hasDown || hasUp) {
         const dropped = this.encoder.discardRecordedAppends(
           this.readComponents.PointerEventsResult.componentId
         )
@@ -4272,91 +4799,84 @@ export class SceneScriptSystem {
             `inject-only — discarded ${dropped} main PointerEventsResult append(s) (worker inject is authoritative)`
           )
         }
-      } else {
-        const pendingAppends = this.encoder.pendingAppendCount
-        const appendBytes = this.encoder.encodeAppendsOnly()
-        if (appendBytes) {
-          this.pointerResponseStash.length = 0
-          this.pointerResponseStash.push(appendBytes.slice())
-        } else {
-          console.warn(
-            '[pointer]',
-            `pointer flush — encoder append encode empty (pendingAppends=${pendingAppends})`
-          )
-          this.pointerResponseStash.length = 0
-        }
       }
-      this.consolidatePointerStash()
-      const stashedBytes = this.pointerResponseStash.reduce((n, c) => n + c.byteLength, 0)
-      const flushMsg = `pointer flush — stashed ${this.pointerResponseStash.length} chunk(s), ${stashedBytes} bytes; delivering to worker`
-      if (stashedBytes > 0) this.logPointer(flushMsg)
-      else console.warn('[pointer]', flushMsg)
-      clientDebugLog.log('pointer', flushMsg, {
-        alsoConsole: false,
-        level: stashedBytes ? 'success' : 'warn'
-      })
+      this.pointerResponseStash.length = 0
+
+      if (!inject) {
+        // Edge write failed or orphan empty flush — never arm deliver-done watchdog.
+        console.warn(
+          '[pointer]',
+          `pointer flush — no inject after edge (down=${hasDown ? 1 : 0} up=${hasUp ? 1 : 0}); not awaiting worker`
+        )
+        if (
+          this.pointerEvents.hasPendingUp() ||
+          this.pointerEvents.hasPendingDown() ||
+          this.pointerFlushCoalesceRequested
+        ) {
+          this.pointerFlushCoalesceRequested = false
+          queueMicrotask(() => void this.flushPendingPointerCrdt())
+        }
+        return
+      }
+
       this.pointerAwaitingWorkerApply = true
-      this.deliverPointerToWorker()
+      this.deliverInjectToWorker(inject)
+      // If we only sent DOWN, flush UP after deliver-done (same user click, correct order).
+      if (hasDown && this.pointerEvents.hasPendingUp()) {
+        this.pointerFlushCoalesceRequested = true
+      }
     } finally {
       this.pointerFlushInFlight = false
+      // In-flight coalesce: another press landed while we held the lock.
+      if (this.pointerFlushCoalesceRequested && !this.pointerDeliverAwaitingAck) {
+        this.pointerFlushCoalesceRequested = false
+        queueMicrotask(() => void this.flushPendingPointerCrdt())
+      }
     }
   }
 
-  /** Deliver pointer to worker — inject first (priority lane), then CRDT; pause after queue. */
-  private deliverPointerToWorker(): void {
+  /**
+   * Post inject-pointer-click and arm deliver-done. Inject-only — never pairs with
+   * pointer-crdt-deliver (worker light CRDT path does not ack).
+   */
+  private deliverInjectToWorker(inject: import('../../player/injectPointerClick').InjectPointerClickBody): void {
     if (!this.worker) {
       console.warn('[pointer]', 'pointer deliver skipped — worker missing')
+      this.pointerAwaitingWorkerApply = false
       return
     }
-    const inject = this.pointerEvents?.consumeInjectPayload()
+
+    // Universal edge inject: deliver-done is near-instant; never hold cooperative ticks
+    // for mouse-hold duration (all scenes need isPressed + live particles/VC/tweens).
     this.pointerDeliverAwaitingAck = true
-    // Mesh open-panel: hold ticks until mount commits.
-    // Scene DOM UI (react-ecs onMouseDown, CBD Plaza welcome splash): already mounted —
-    // holding pause freezes engine systems that animate fade alpha with real dt (nZ).
-    this.pointerHoldTicksUntilMount = inject?.sceneUi !== true
-    this.armPointerDeliverWatchdog()
+    this.pointerHoldTicksUntilMount = false
+    this.armPointerDeliverWatchdog(2000)
 
-    const pointerChunks = this.pointerResponseStash.filter((c) => c.byteLength > 0)
-    const injectOnly = pointerChunks.length === 0
-    if (inject) {
-      const injectLine =
-        `posting inject-pointer-click entity=${inject.entity} button=${inject.button} ` +
-        `ts=${inject.downTimestamp}/${inject.upTimestamp}` +
-        `${injectOnly ? ' (inject-only)' : ''}` +
-        ` sceneUi=${inject.sceneUi ? 1 : 0}` +
-        ` down=[${(inject.downEntities ?? inject.entities).join(',')}]`
-      this.logPointer(injectLine)
-      clientDebugLog.consoleOnly('info', `[pointer] ${injectLine}`)
-      this.worker.postMessage({
-        type: 'inject-pointer-click',
-        body: inject,
-        injectOnly
-      } satisfies MainToWorker)
-      // Scene owns splash visuals (Color4.a fade). Do not force-dismiss / display:none —
-      // that was a client hack and caused flash + desync from scene alpha.
-    } else {
-      console.warn('[pointer]', 'inject payload missing — direct CRDT only')
-      this.logPointer('inject payload missing — direct CRDT only')
-    }
-
-    this.deliverPointerCrdtDirect()
-    // Worker sets sceneTicksPaused during inject/deliver; do not pause from main mid-flight —
-    // it raced post-onUpdate engine.update CRDT (Tween sync) before deliver-done.
-  }
-
-  /** Post pre-encoded pointer CRDT directly to worker (parallel to inject). */
-  private deliverPointerCrdtDirect(): void {
-    if (!this.worker) return
-    const chunks = this.pointerResponseStash.filter((c) => c.byteLength > 0)
-    if (!chunks.length) {
-      this.logPointer('pointer-crdt-deliver skipped — stash empty')
-      return
-    }
-    const bytes = chunks.reduce((n, c) => n + c.byteLength, 0)
-    this.logPointer(`posting pointer-crdt-deliver — ${chunks.length} chunk(s), ${bytes} bytes`)
-    const copies = chunks.map((c) => c.slice())
-    const transfer = copies.map((c) => c.buffer)
-    this.worker.postMessage({ type: 'pointer-crdt-deliver', data: copies } satisfies MainToWorker, transfer)
+    // Refresh PPI at post time (writeResult may be a few ms earlier; edge tick must
+    // see the click's screen/ray for UI chrome gates + ground rays).
+    const ppi =
+      this.pointerEvents?.getPrimaryPointerSnapshot() ?? inject.primaryPointer ?? undefined
+    if (ppi) inject.primaryPointer = ppi
+    const sc = inject.primaryPointer?.screenCoordinates
+    const ray = inject.primaryPointer?.worldRayDirection
+    const injectLine =
+      `posting inject-pointer-click entity=${inject.entity} button=${inject.button} ` +
+      `ts=${inject.downTimestamp}/${inject.upTimestamp} (inject-only)` +
+      ` sceneUi=${inject.sceneUi ? 1 : 0}` +
+      ` phase=${inject.phase ?? 'click'}` +
+      ` down=[${(inject.downEntities ?? inject.entities).join(',')}]` +
+      (sc
+        ? ` ppi=(${sc.x.toFixed(0)},${sc.y.toFixed(0)})` +
+          (ray ? ` ray=(${ray.x.toFixed(2)},${ray.y.toFixed(2)},${ray.z.toFixed(2)})` : '')
+        : ' ppi=missing')
+    // Always console — match PET_DOWN visibility for edge diagnosis.
+    console.log('[pointer]', injectLine)
+    this.logPointer(injectLine)
+    this.worker.postMessage({
+      type: 'inject-pointer-click',
+      body: inject,
+      injectOnly: true
+    } satisfies MainToWorker)
   }
 
   private onPointerDeliverDone(): void {
@@ -4376,6 +4896,188 @@ export class SceneScriptSystem {
     await this.finishPointerDeliveryAsync('pointer-deliver-done', { afterOutboundBatch: true })
   }
 
+  /**
+   * Same-edge click VFX: Transform + MeshRenderer + Material for click markers.
+   * Prioritize entities that still need a mesh leaf (new markers) over recoloring
+   * fog-of-war planes already attached — pendingDiff storms (3k+) used to starve VFX.
+   */
+  private async flushPointerClickVisualStructure(): Promise<void> {
+    if (!this.bridge || !this.entityStore) return
+    if (!this.bridge.canConsumeDiff()) return
+    const { MeshRenderer, GltfNodeModifiers, Material, Transform, VisibilityComponent } =
+      this.readComponents
+    const visualIds = new Set([
+      MeshRenderer.componentId,
+      GltfNodeModifiers.componentId,
+      Material.componentId
+    ])
+    const withVisual = new Set([
+      ...visualIds,
+      Transform.componentId,
+      VisibilityComponent.componentId
+    ])
+
+    type Cand = {
+      entity: Entity
+      comps: Map<number, ProjectionChangeKind>
+      missingLeaf: boolean
+      /** ALPHA_BLEND + emissive click discs (DecentraCraft Vf) beat fog recolors. */
+      glowMarker: boolean
+    }
+    const candidates: Cand[] = []
+    for (const [entity, comps] of this.pendingDiff) {
+      const hasVisual = [...visualIds].some((id) => comps.has(id))
+      if (!hasVisual) continue
+      if (comps.has(this.readComponents.GltfContainer.componentId)) continue
+      const sub = new Map<number, ProjectionChangeKind>()
+      for (const [cid, kind] of comps) {
+        if (withVisual.has(cid)) sub.set(cid, kind)
+      }
+      if (!sub.size) continue
+      // Missing leaf = click marker / new fog tile — must win over recolor of 200 attached planes.
+      const missingLeaf =
+        MeshRenderer.has(entity) && !this.bridgeHasMeshRendererLeaf(entity)
+      const glowMarker = this.isPointerClickGlowMarker(entity)
+      candidates.push({ entity, comps: sub, missingLeaf, glowMarker })
+    }
+    candidates.sort((a, b) => {
+      if (a.glowMarker !== b.glowMarker) return Number(b.glowMarker) - Number(a.glowMarker)
+      return Number(b.missingLeaf) - Number(a.missingLeaf)
+    })
+
+    const slice = new Map<Entity, Map<number, ProjectionChangeKind>>()
+    const matEntities: Entity[] = []
+    const CAP = 96
+    for (const c of candidates) {
+      if (slice.size >= CAP) break
+      slice.set(c.entity, c.comps)
+      if (c.comps.has(Material.componentId) || c.comps.has(MeshRenderer.componentId)) {
+        matEntities.push(c.entity)
+      }
+      const pending = this.pendingDiff.get(c.entity)
+      if (pending) {
+        for (const cid of c.comps.keys()) pending.delete(cid)
+        this.clearPendingEntityIfEmpty(c.entity)
+      }
+    }
+
+    if (slice.size) {
+      const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+      await this.bridge.consumeDiff(slice, this.view, tweenRefresh)
+    }
+    // Always ensure leaves for VFX entities + any pending MeshRenderer without geometry.
+    this.bridge.flushMissingMeshRendererLeaves(96, matEntities)
+    for (const entity of matEntities) {
+      this.bridge.forceApplyMeshRendererMaterial(entity)
+    }
+    this.publishPendingDiffPerf()
+  }
+
+  /** True when entity already has a MeshRenderer primitive or GPU instance leaf. */
+  private bridgeHasMeshRendererLeaf(entity: Entity): boolean {
+    return this.bridge?.hasMeshRendererLeaf(entity) === true
+  }
+
+  /**
+   * Click-move ground ring (and similar): MeshRenderer + PBR ALPHA_BLEND + high emissive,
+   * no texture maps. Prefer these over fog Material recolors in the pointer-edge peel.
+   */
+  private isPointerClickGlowMarker(entity: Entity): boolean {
+    const { MeshRenderer, Material } = this.readComponents
+    if (!MeshRenderer.has(entity) || !Material.has(entity)) return false
+    const pb = Material.get(entity) as {
+      material?: {
+        $case?: string
+        pbr?: {
+          transparencyMode?: number
+          emissiveIntensity?: number
+          emissiveColor?: { r?: number; g?: number; b?: number }
+          texture?: unknown
+          emissiveTexture?: unknown
+        }
+      }
+    } | null
+    if (!pb || pb.material?.$case !== 'pbr') return false
+    const pbr = pb.material.pbr
+    if (!pbr) return false
+    if (pbr.texture || pbr.emissiveTexture) return false
+    const mode = pbr.transparencyMode
+    if (mode !== 2 && mode !== 3) return false
+    const intensity = pbr.emissiveIntensity ?? 1
+    if (intensity < 1.5) return false
+    const e = pbr.emissiveColor
+    const elum = (e?.r ?? 0) + (e?.g ?? 0) + (e?.b ?? 0)
+    return elum > 0.05
+  }
+
+  /**
+   * After PE click inject: motion + click-marker structure + material, then particles.
+   * Never full pendingDiff dump. Gltf structure stays on async frames.
+   */
+  private applyPostPointerMotion(): void {
+    if (!this.bridge || !this.entityStore) return
+    const t0 = performance.now()
+    const F = SceneScriptSystem.FRAME
+    // 1) Transforms first (unit move + click-marker pose) — sync.
+    this.flushTweenAndTransformFromPendingDiff({
+      pointerEdge: true,
+      hardMs: F.POINTER_MOTION_MS
+    })
+    // 2–3) MeshRenderer attach (prefer missing leaves) then materials.
+    void this.flushPointerClickVisualStructure()
+      .then(() => {
+        this.flushMeshRendererMaterialsFromPendingDiff({
+          pointerEdge: true,
+          hardMs: F.POINTER_MATERIAL_MS,
+          entityCap: 64
+        })
+        // Residual motion/material (async). Structure for MeshRenderer leaves is above.
+        return this.drainPendingDiffLanes({
+          pointerEdge: true,
+          deadlineMs: F.POINTER_MOTION_MS + F.POINTER_MATERIAL_MS
+        })
+      })
+      .then(() => {
+        // One more leaf pass — CRDT may land a frame after deliver-done.
+        this.bridge?.flushMissingMeshRendererLeaves(48)
+        perfNotePointerEdge(performance.now() - t0, false)
+      })
+      .catch((err) => {
+        console.warn(
+          '[pointer]',
+          `post-pointer VFX drain failed — ${err instanceof Error ? err.message : String(err)}`
+        )
+      })
+    // Click VFX / select rings: light time advance — cooperative frames own backlog.
+    this.tweenBridge?.sync(this.view)
+    if (this.tweenBridge?.hasLiveTweens()) {
+      this.tweenBridge.update(1 / 30, this.view)
+      this.markTweenColliderPosesDirty()
+    }
+    void this.particleBridge?.sync(this.view)
+    this.particleBridge?.update(1 / 30)
+    if (this.pointerStructureDirty) {
+      const pe: Entity[] = []
+      for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {
+        if (
+          entity === this.view.RootEntity ||
+          entity === this.view.PlayerEntity ||
+          entity === this.view.CameraEntity
+        ) {
+          continue
+        }
+        if (this.readComponents.UiTransform.has(entity)) continue
+        pe.push(entity)
+      }
+      if (pe.length) {
+        const fixed = this.bridge.ensurePointerMeshesReady(pe)
+        if (fixed > 0) this.pointerStructureDirty = true
+      }
+      this.flushPointerStructureIfDirty()
+    }
+    this.flushSceneGraphMatrices()
+  }
+
   /** Worker ticks resume only after mount set committed and projection UiTransform caught up. */
   private canResumeWorkerSceneTicksAfterPointer(): boolean {
     if (this.projectionLagPendingUi) return false
@@ -4391,12 +5093,13 @@ export class SceneScriptSystem {
     if (!opts?.afterOutboundBatch) {
       await this.crdtOutboundSerial
     }
-    const bridge = this.bridge
-    const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
-    if (bridge?.canConsumeDiff() && this.pendingDiff.size) {
-      const diff = this.pendingDiff
-      this.pendingDiff = new Map()
-      await bridge.consumeDiff(diff, this.view, tweenRefresh)
+    // COD A3: one pointer-budgeted lane drain — never fullDump map swap.
+    if (this.bridge?.canConsumeDiff() && this.pendingDiff.size) {
+      const F = SceneScriptSystem.FRAME
+      await this.drainPendingDiffLanes({
+        pointerEdge: true,
+        deadlineMs: F.POINTER_MOTION_MS + F.POINTER_MATERIAL_MS + F.STRUCTURE_MS
+      })
     } else {
       this.consumeSyncFrameTransforms()
     }
@@ -4424,27 +5127,34 @@ export class SceneScriptSystem {
     this.pointerAwaitingWorkerApply = false
     this.pointerOutboundDeferBuffer = []
     this.clearPointerDeliverWatchdog()
-    if (!opts?.afterOutboundBatch) {
-      await this.crdtOutboundSerial
-    }
-    this.flushUiFrame()
-    await this.reconcilePointerCollisionAfterDelivery(opts)
-    this.proactiveTweenPushUntil = performance.now() + SceneScriptSystem.PROACTIVE_TWEEN_PUSH_MS
-    // Always unpause worker after pointer ack. Gating on projection UiTransform catch-up
-    // left sceneTicksPaused stuck while CBD Plaza welcome fade (and similar systems) need
-    // real dt — splash stayed opaque white forever after PET_DOWN/UP on the scrim.
-    // Mount paint lag is handled by flushUiFrame / maybeForceResumeWorkerTicksOnUiLag.
+    // Resume worker ticks FIRST — never leave the scene frozen while main paints Yoga
+    // or awaits crdtOutboundSerial (that was an indefinite click freeze).
     this.forceResumeWorkerSceneTicks(source)
-    if (this.pointerFlushCoalesceRequested && this.pointerEvents?.hasPendingInput()) {
+    try {
+      if (!opts?.afterOutboundBatch) {
+        await this.crdtOutboundSerial
+      }
+      this.flushUiFrame()
+      await this.reconcilePointerCollisionAfterDelivery(opts)
+      // Click-move / select anim: apply Tween+Transform from the inject CRDT now.
+      this.applyPostPointerMotion()
+      this.proactiveTweenPushUntil = performance.now() + SceneScriptSystem.PROACTIVE_TWEEN_PUSH_MS
+    } catch (err) {
+      console.error(
+        '[pointer]',
+        `post-deliver apply failed — ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
+    // Mount paint lag is handled by flushUiFrame / maybeForceResumeWorkerTicksOnUiLag.
+    if (
+      this.pointerFlushCoalesceRequested &&
+      (this.pointerEvents?.hasPendingInput() || this.pointerEvents?.hasPendingInjectPayload())
+    ) {
       this.pointerFlushCoalesceRequested = false
       void this.flushPendingPointerCrdt()
     } else {
       this.pointerFlushCoalesceRequested = false
     }
-  }
-
-  private finishPointerDelivery(source: string): void {
-    void this.finishPointerDeliveryAsync(source)
   }
 
   /** Worker path failed — surface loudly; scene triggers/tweens did not run. */
@@ -4455,18 +5165,20 @@ export class SceneScriptSystem {
     clientDebugLog.log('pointer', message, { level: 'error', alsoConsole: true })
     this.pointerHoldTicksUntilMount = false
     this.pointerOutboundDeferBuffer = []
-    this.finishPointerDelivery('pointer-delivery-failed')
+    // finishPointerDeliveryAsync resumes ticks before any paint await — no indefinite freeze.
+    void this.finishPointerDeliveryAsync('pointer-delivery-failed')
   }
 
-  private armPointerDeliverWatchdog(): void {
+  private armPointerDeliverWatchdog(timeoutMs?: number): void {
     if (this.pointerDeliverFailWatchdog) {
       clearTimeout(this.pointerDeliverFailWatchdog)
       this.pointerDeliverFailWatchdog = null
     }
+    const ms = timeoutMs ?? SceneScriptSystem.POINTER_DELIVER_FAIL_MS
     this.pointerDeliverFailWatchdog = setTimeout(() => {
       if (!this.pointerDeliverAwaitingAck) return
       this.failPointerDelivery('no worker pointer-deliver-done')
-    }, SceneScriptSystem.POINTER_DELIVER_FAIL_MS)
+    }, ms)
   }
 
   private clearPointerDeliverWatchdog(): void {
@@ -4475,20 +5187,6 @@ export class SceneScriptSystem {
       this.pointerDeliverFailWatchdog = null
     }
     this.pointerDeliverAwaitingAck = false
-  }
-
-  /** Merge multiple stashed CRDT blobs into one append-only chunk. */
-  private consolidatePointerStash(): void {
-    if (this.pointerResponseStash.length <= 1) return
-    const total = this.pointerResponseStash.reduce((n, c) => n + c.byteLength, 0)
-    const merged = new Uint8Array(total)
-    let offset = 0
-    for (const chunk of this.pointerResponseStash) {
-      merged.set(chunk, offset)
-      offset += chunk.byteLength
-    }
-    this.pointerResponseStash.length = 0
-    this.pointerResponseStash.push(merged)
   }
 
   /** Advance tweens after inbound CRDT (scene may have just added Tween on worker). */
@@ -4648,16 +5346,29 @@ export class SceneScriptSystem {
     )
   }
 
-  /** ECS projection → Three.js — runs during hydration before the worker loop is marked running. */
-  async syncRenderer(): Promise<void> {
+  /**
+   * COD AAA — single ordered lane drain for play (Motion → Materials → Structure).
+   * Optional deadlineMs for multi-worker residual fullWork (F1).
+   * Never swaps the entire pendingDiff map (fullDump thrash).
+   */
+  async syncRenderer(opts?: { deadlineMs?: number }): Promise<void> {
     if (!this.bridge) return
     const view = this.view
+    const F = SceneScriptSystem.FRAME
+    const framePieMs = F.MOTION_MS + F.MATERIAL_MS + F.STRUCTURE_MS
+    const deadlineMs =
+      opts?.deadlineMs !== undefined && Number.isFinite(opts.deadlineMs)
+        ? Math.max(0, opts.deadlineMs)
+        : framePieMs
 
     // Diff consumer at runtime; full walk only while asset hydration is active.
     if (this.bridge.canConsumeDiff()) {
-      const diff = this.pendingDiff
-      this.pendingDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
-      if (!diff.size) {
+      // COD C2 — UI paint independent of structure backlog.
+      if (this.projectionLagPendingUi || this.pendingUiEntities !== undefined) {
+        this.flushUiFrame()
+      }
+
+      if (!this.pendingDiff.size) {
         await this.bridge.drainPendingWork()
         this.syncSceneUiAfterRenderer()
         return
@@ -4669,14 +5380,10 @@ export class SceneScriptSystem {
           alsoConsole: true
         })
       }
-      const { spriteDiff, sceneDiff } = this.bridge.partitionSpriteDiff(diff, view)
-      if (spriteDiff.size) this.bridge.consumeSpriteDiff(spriteDiff, view)
-      const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
-      if (sceneDiff.size) await this.bridge.consumeDiff(sceneDiff, view, tweenRefresh)
-      else await this.bridge.drainPendingWork()
-      this.bridge.reconcileBillboardFlags()
-      this.flushPointerStructureIfDirty()
-      this.syncSceneUiAfterRenderer(sceneDiff)
+
+      await this.drainPendingDiffLanes({ deadlineMs })
+      this.syncSceneUiAfterRenderer()
+      this.publishPendingDiffPerf()
       return
     }
 
@@ -4684,6 +5391,7 @@ export class SceneScriptSystem {
 
     // Hydration — full walk reconciles everything; discard accumulated diff.
     this.pendingDiff.clear()
+    this.pendingDiffOldestAt = 0
     this.pointerStructureDirty = true
     await this.bridge.sync(view)
     this.flushPointerStructureIfDirty()
@@ -5033,7 +5741,9 @@ export class SceneScriptSystem {
     )
     const transformEntities = [...transformDiff.keys()]
     applySceneDiff(this.entityStore, transformDiff, this.view, this.readComponents, tweenRefresh, {
-      skipTransformApply: (entity) => AvatarAttach.has(entity),
+      // COD D2 — skip AvatarAttach + VC live-lane entities (pose rides vc-pose-live).
+      skipTransformApply: (entity) =>
+        AvatarAttach.has(entity) || this.projection.isVcLiveTransformEntity(entity),
       onReservedParent: (entity, parent, view) => {
         this.bridge?.noteReservedParentedEntity(entity, parent, view)
       }
@@ -5364,6 +6074,11 @@ export class SceneScriptSystem {
     return this.bridge.getHydrationStats(this.view)
   }
 
+  /** G2 — MeshRenderer GPU instancing live density. */
+  getMeshRendererInstanceStats(): { instances: number; buckets: number } | null {
+    return this.bridge?.getMeshRendererInstanceStats() ?? null
+  }
+
   /** Cheap mesh-queue counters for fps diagnostics (no full projection walk). */
   getAttachProgressLite(): { attached: number; pendingMesh: number; sceneTris: number } | null {
     return this.bridge?.getAttachProgressLite() ?? null
@@ -5415,6 +6130,8 @@ export class SceneScriptSystem {
     this.projectionLagPendingUi = false
     this.projectionLagSinceMs = 0
     this.projectionLagLoggedAt = 0
+    this.lastAppliedUiMountContentFp = ''
+    this.lastOutboundUiEntitiesKey = ''
     this.nftShapeBridge?.dispose()
     this.nftShapeBridge = null
     this.avatarAttachBridge?.dispose()

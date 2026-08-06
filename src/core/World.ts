@@ -257,6 +257,12 @@ export class World {
    * so PE preferences survive World rebuild on /goto.
    */
   private multiScene: MultiSceneRuntime | null = null
+  /**
+   * COD F2 — consecutive async frames where primary peel+multi exceeded budget.
+   * After 3, live secondary motion pumps at ~20 Hz (every 3rd frame) to protect FPS.
+   */
+  private primaryAsyncOverBudgetStreak = 0
+  private secondaryMotionLodFrame = 0
   private readonly peMirror = new PeMainThreadMirror()
   /**
    * Single keyboard bus — primary scene + PE workers subscribe; hardware owned once.
@@ -1990,6 +1996,9 @@ export class World {
           multiMs = performance.now() - t3
         }
         const totalMs = performance.now() - t0
+        // COD F2 — track primary async pressure for secondary anim LOD (~12ms soft budget).
+        if (totalMs > 12) this.primaryAsyncOverBudgetStreak++
+        else this.primaryAsyncOverBudgetStreak = 0
         // Diagnose multi-second async frames (was ~3300ms = cold GLB parse await / 3k pending walk).
         // bridges = primary Animator/Avatar/Particle only; multi = PE+secondary async + cook.
         if (totalMs > 100) {
@@ -4148,11 +4157,31 @@ export class World {
   /**
    * Live secondary Animator/Tween advance (≤3 graphs). Tertiary is intentionally frozen.
    * Without this, sticky demoted scenes keep scripts but clips freeze mid-pose.
+   *
+   * COD F2 — under primary async pressure (3+ frames over budget), sample secondaries
+   * every 3rd frame (~20 Hz at 60) so plaza neighbors cannot tank the primary rAF.
+   * Accumulated delta keeps clip time correct when frames are skipped.
    */
+  private secondaryMotionHeldDelta = 0
   private pumpSecondaryMotionBridges(delta: number, frame: number): void {
-    for (const sys of this.multiScene?.getSecondaryMotionSystems() ?? []) {
+    const systems = this.multiScene?.getSecondaryMotionSystems() ?? []
+    if (!systems.length) {
+      this.secondaryMotionHeldDelta = 0
+      return
+    }
+    this.secondaryMotionHeldDelta += delta
+    const lodActive = this.primaryAsyncOverBudgetStreak >= 3
+    if (lodActive) {
+      this.secondaryMotionLodFrame++
+      if (this.secondaryMotionLodFrame % 3 !== 0) return
+    } else {
+      this.secondaryMotionLodFrame = 0
+    }
+    const step = this.secondaryMotionHeldDelta
+    this.secondaryMotionHeldDelta = 0
+    for (const sys of systems) {
       try {
-        sys.pumpMotionBridges(delta, frame)
+        sys.pumpMotionBridges(step, frame)
       } catch (err) {
         console.warn('[multi-scene] secondary pumpMotionBridges failed', err)
       }

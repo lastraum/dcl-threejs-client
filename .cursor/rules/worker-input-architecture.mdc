@@ -43,23 +43,27 @@ No gap force-flush, no shrink skip, no mid-tick Ui emit.
 
 ## Pointer interactive tick (Explorer press lifecycle — all scenes)
 
-**One universal edge pipeline** — no per-scene / per-genre branches. Browser is source of truth:
+**Two universal pipelines** (no per-scene forks; branch on `sceneUi` flag only):
 
 ```text
-pointerdown → inject phase=down → eng.update(0) → deliver-done
-  (isPressed sticky; cooperative play frames keep running)
-pointerup   → inject phase=up   → eng.update(0) → deliver-done
-  (getClick / onPointerUp this frame)
+WORLD mesh:
+  pointerdown → inject phase=down → eng.update(0) → phase-4 if HUD dirty → deliver-done
+  pointerup   → inject phase=up   → eng.update(0) → phase-4 if dirty → deliver-done
+  (isPressed sticky across play frames until UP)
+
+SCENE UI (react-ecs onMouseDown):
+  pointerdown → DOWN eng.update(0) → UP (react-ecs OFF) same job → phase-4 open mount → deliver-done
+  pointerup   → ignored (isPressed already cleared; avoids toggle thrash)
 ```
 
 `runSceneEnginePointerTick` + `executePointerEdge` (worker):
 
-1. Apply **PrimaryPointerInfo** from inject body (live screen/ray for this edge) on RootEntity
-2. Inject **one** PET edge (`down` or `up`) immediately before `engine.update(0)`
-3. **Never** `exports.onUpdate` / pollEvents on the inject path (replays UI toggles / flight off)
-4. If UI fingerprint dirty **or** `sceneUi`: bounded fingerprint settle (≤2 passes) + `runPointerUiPhase4Egress` (structured mount only). **World PE must also phase-4** — unit/building select mutates react-ecs HUD without `sceneUi=true`
-5. Non-Ui light phase; **immediate** `pointer-deliver-done` — no multi-second CRDT-ack freeze for holds
-6. Cooperative ticks **must keep running while the mouse is held** (`isPressed` needs play frames)
+1. Apply **PrimaryPointerInfo** from inject body on RootEntity
+2. **World:** one PET edge per browser edge. **Scene UI:** DOWN batch = DOWN+UP same job (toggle-safe)
+3. **Never** `exports.onUpdate` / pollEvents on inject path
+4. **Never** multi-pass react-ecs flush after sceneUi DOWN (re-opens then closes menus)
+5. World PE phase-4 when selection HUD fingerprint dirty (`sceneUi=false` is fine)
+6. Cooperative ticks keep running; sceneUi hold reassert cleared after DOWN batch
 
 **PPI on edges:** many scenes gate select/move on `PrimaryPointerInfo` (UI chrome hit-test, ground ray from `worldRayDirection`). Play-frame-tick alone is not enough when edges run between play frames — main must attach `primaryPointer` on every `inject-pointer-click`.
 

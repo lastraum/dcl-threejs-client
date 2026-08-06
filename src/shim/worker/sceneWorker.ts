@@ -2528,9 +2528,11 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
     endPointerInputSessionAfterMountResume()
   }
   // Level-state hold before eng.update so this edge + reassert share the same press story.
-  if (phase === 'down') {
+  // sceneUi DOWN batch injects UP same job — clear held after tick so reassert does not
+  // re-fire PET_DOWN every play frame (browser UP is ignored for sceneUi).
+  if (phase === 'down' && !body.sceneUi) {
     setWorkerPointerButtonHeld(button, true)
-  } else if (phase === 'up' || phase === 'click') {
+  } else if (phase === 'up' || phase === 'click' || body.sceneUi) {
     setWorkerPointerButtonHeld(button, false)
   }
   const ppi = body.primaryPointer
@@ -2570,6 +2572,8 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
       `[sceneWorker] ${label} failed — ${err instanceof Error ? err.message : String(err)}`
     )
   } finally {
+    // sceneUi DOWN batch already injected UP — ensure hold flag never sticks.
+    if (body.sceneUi) setWorkerPointerButtonHeld(button, false)
     pointerDeliveryInFlight = false
     setPointerDeliveryInFlight(false)
     sceneTicksPaused = false

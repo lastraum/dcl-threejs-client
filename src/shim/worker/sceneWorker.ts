@@ -104,6 +104,7 @@ import {
 } from './workerSceneUiSync'
 import {
   coalesceCrdtChunksLww,
+  collectWorkerUiMountEntityIds,
   collectWorkerUiMountSnapshot,
   extractSnapshotMountEntityIds,
   reconcileInputModifierCrdtEgress,
@@ -944,7 +945,6 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
   const snapshotMountIds =
     uiSnapshot?.length ? extractSnapshotMountEntityIds(uiSnapshot) : []
   const uiEntities = snapshotMountIds.length ? snapshotMountIds : collectWorkerUiEntityIds()
-  const uiKey = uiEntities.join(',')
   const ackWaits: Promise<void>[] = []
 
   const postOutbound = (
@@ -984,14 +984,24 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
   }
 
   if (uiMountPending) {
-    lastOutboundUiEntitiesKey = uiKey
+    // Prefer full mount id list from worker engine (not only entities present in this snap)
+    // so main commitMountSet matches phase-4 authority even if a row is briefly missing.
+    const fullMountIds =
+      sceneEngine && uiSnapshot?.length
+        ? collectWorkerUiMountEntityIds(sceneEngine)
+        : uiEntities
+    const mountIds = fullMountIds.length > 0 ? fullMountIds : uiEntities
+    lastOutboundUiEntitiesKey = mountIds.join(',')
+    // Content fp so cooperative postUiMountSnapshot does not drop as "identical" forever.
+    const snapFp = uiMountSnapshotContentFp(uiSnapshot ?? [])
+    lastUiMountSnapshotFp = `${lastOutboundUiEntitiesKey}@@${snapFp}`
     postOutbound(new Uint8Array(0), {
-      uiEntities,
+      uiEntities: mountIds,
       uiMountSnapshot: uiSnapshot ?? []
     })
     workerLog(
       'log',
-      `[sceneWorker] pointer ui egress — snapshotRows=${uiSnapshot?.length ?? 0} mount=${uiEntities.length} nonUiChunks=${nonUiChunks.length}`
+      `[sceneWorker] pointer ui egress — snapshotRows=${uiSnapshot?.length ?? 0} mount=${mountIds.length} nonUiChunks=${nonUiChunks.length}`
     )
   }
 
@@ -2527,11 +2537,21 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
     // No exports.onUpdate mid-edge (pollEvents re-fires UI). Hold reassert on play-frame-tick
     // keeps isPressed true across cooperative frames for every scene.
     await runSceneEnginePointerTick(sceneEngine, async () => {}, body)
+    // Platform law: phase-4 queues structured UI mount via queuePointerUiEgress.
+    // Inject path used to skip flush (only CRDT deliver path flushed) → main never got
+    // the open-menu snapshot (mount 110→159) and only saw later partial dirty posts
+    // (snapshotRows=10 for uiEntities=163) → mount commit deferred / blank select UI.
+    await flushPointerDeferredOutboundsAsync()
   } catch (err) {
     workerLog(
       'error',
       `[sceneWorker] ${label} failed — ${err instanceof Error ? err.message : String(err)}`
     )
+    try {
+      await flushPointerDeferredOutboundsAsync()
+    } catch {
+      /* best-effort phase-4 egress before ack */
+    }
   } finally {
     // sceneUi DOWN batch already injected UP — ensure hold flag never sticks.
     if (body.sceneUi) setWorkerPointerButtonHeld(button, false)

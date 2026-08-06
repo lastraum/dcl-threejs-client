@@ -2735,6 +2735,8 @@ export class SceneScriptSystem {
       const hasUiMountSnapshot = latestUiMountSnapshot !== undefined
       /** Mount authority: structured snapshot, or hydration wire emit — never bare uiEntities metadata on play batches. */
       const latestUiEntities = this.resolveOutboundBatchMountEntities(batch, hasUiMountSnapshot)
+      /** May be cleared when a partial dirty snapshot must not force a full mount commit. */
+      let mountEntitiesForFrame = latestUiEntities
       const uiKey = latestUiEntities?.join(',') ?? ''
       const prevMountKey = this.lastOutboundUiEntitiesKey
       const mountChanged =
@@ -2809,9 +2811,12 @@ export class SceneScriptSystem {
               if (row.componentId === UiTransform.componentId) snapTx.add(row.entity)
             }
             const mountIds = latestUiEntities ?? []
+            // Full mount = every listed mount id has a UiTransform row in this snapshot.
+            // Partial dirty (timer) = few rows for a large mount list.
             const fullMount =
-              mountChanged ||
-              (mountIds.length > 0 && mountIds.every((id) => snapTx.has(id)))
+              mountIds.length > 0 && mountIds.every((id) => snapTx.has(id))
+            // Clear LWW only for entities we reseed. Full mount may clear PE slots.
+            // Partial always reseed-in-place for snap entities (no PE wipe).
             if (snapEntities.size > 0) {
               const clearIds = [
                 UiTransform.componentId,
@@ -2819,9 +2824,21 @@ export class SceneScriptSystem {
                 UiBackground.componentId,
                 UiInput.componentId,
                 UiDropdown.componentId,
-                ...(fullMount ? [PointerEvents.componentId] : [])
+                ...(fullMount || mountChanged ? [PointerEvents.componentId] : [])
               ]
-              this.projection.clearLwwSlotsForEntities(snapEntities, clearIds)
+              // On mount growth with partial rows only, clear only snap entities (not PE-wide).
+              this.projection.clearLwwSlotsForEntities(
+                snapEntities,
+                fullMount
+                  ? clearIds
+                  : [
+                      UiTransform.componentId,
+                      UiText.componentId,
+                      UiBackground.componentId,
+                      UiInput.componentId,
+                      UiDropdown.componentId
+                    ]
+              )
             }
             projectionDeletes.length = 0
             this.projection.changes.length = 0
@@ -2838,6 +2855,16 @@ export class SceneScriptSystem {
             batchTouchesUi = true
             this.foldProjectionChanges()
             this.lastAppliedUiMountContentFp = uiMountSnapshotContentFp(latestUiMountSnapshot)
+            // Partial snapshot must not force commit of a larger mount set (163 ids / 10 rows).
+            // That left projection 10/163 and deferred paint forever.
+            if (!fullMount && mountChanged && latestUiEntities?.length) {
+              const readyIds = latestUiEntities.filter((id) =>
+                this.view.components.UiTransform.has(id as Entity)
+              )
+              if (readyIds.length < latestUiEntities.length) {
+                mountEntitiesForFrame = undefined
+              }
+            }
           } else if (hasUiMountSnapshot) {
             // Empty mount snapshot (welcome unmount) — still touch UI so commitMountSet([]) runs.
             projectionDeletes.length = 0
@@ -2853,7 +2880,7 @@ export class SceneScriptSystem {
 
       // COD C2 — mount commit + paint BEFORE structure/material peels so select HUD /
       // menus never wait behind a large pendingDiff drain on the same outbound batch.
-      if (latestUiEntities !== undefined) this.lastOutboundUiEntitiesKey = uiKey
+      if (mountEntitiesForFrame !== undefined) this.lastOutboundUiEntitiesKey = uiKey
       if (hasPayload || batchTouchesUi || projectionDeletes.length > 0 || mountChanged) {
         if (SCENE_UI_LOG && (hasPayload || hasUiMountSnapshot)) {
           let snapshotUiTransform = 0
@@ -2868,12 +2895,13 @@ export class SceneScriptSystem {
               else if (row.componentId === uiBackgroundId) snapshotUiBackground++
             }
           }
-          const mountSize = latestUiEntities?.length ?? 0
+          const mountSize = mountEntitiesForFrame?.length ?? latestUiEntities?.length ?? 0
           let projectionUiTransform = 0
           let projectionUiText = 0
           let projectionUiBackground = 0
-          if (mountSize) {
-            for (const entity of latestUiEntities!) {
+          const idsForLog = mountEntitiesForFrame ?? latestUiEntities
+          if (idsForLog?.length) {
+            for (const entity of idsForLog) {
               const id = entity as Entity
               if (this.view.components.UiTransform.has(id)) projectionUiTransform++
               if (this.view.components.UiText.has(id)) projectionUiText++
@@ -2891,8 +2919,8 @@ export class SceneScriptSystem {
           )
         }
         // Never defer DOM paint during pointer delivery when this batch touched UI (modal open/close).
-        if (latestUiEntities !== undefined || !this.pointerHoldTicksUntilMount || batchTouchesUi) {
-          this.applyUiFrame(projectionDeletes, latestUiEntities)
+        if (mountEntitiesForFrame !== undefined || !this.pointerHoldTicksUntilMount || batchTouchesUi) {
+          this.applyUiFrame(projectionDeletes, mountEntitiesForFrame)
         }
       } else if (this.projectionLagPendingUi && batchTouchesUi) {
         this.flushUiFrame()

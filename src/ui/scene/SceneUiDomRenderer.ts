@@ -721,12 +721,20 @@ export class SceneUiDomRenderer {
 
     // Nested shells: parent-relative; roots: canvas-absolute. Clip large panels (clipShell).
     applyYogaLayoutBox(shell, layoutBox, scale, coords, clipShell)
-    shell.style.zIndex = String(transform.zIndex ?? 0)
+    // Author zIndex — must paint order among siblings (later DOM = on top for equal isolate).
+    const z = transform.zIndex ?? 0
+    shell.style.zIndex = String(z)
+    shell.style.setProperty('z-index', String(z), 'important')
 
     // Hit map always canvas-absolute (not nested DOM rects).
     pushLayoutHitRegion(regions, entity, transform, layoutBox, input, depth)
 
-    const children = input.forest.get(entity) ?? []
+    // Explorer stacking: siblings paint low→high zIndex so higher author zIndex wins.
+    const children = [...(input.forest.get(entity) ?? [])].sort((a, b) => {
+      const ta = input.transformOf(a)
+      const tb = input.transformOf(b)
+      return (ta?.zIndex ?? 0) - (tb?.zIndex ?? 0)
+    })
     for (const child of children) {
       this.renderEntityTree(child, input, alive, visited, depth + 1, regions, scale)
     }

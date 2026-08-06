@@ -2815,30 +2815,18 @@ export class SceneScriptSystem {
             // Partial dirty (timer) = few rows for a large mount list.
             const fullMount =
               mountIds.length > 0 && mountIds.every((id) => snapTx.has(id))
-            // Clear LWW only for entities we reseed. Full mount may clear PE slots.
-            // Partial always reseed-in-place for snap entities (no PE wipe).
-            if (snapEntities.size > 0) {
-              const clearIds = [
+            // Partial dirty: clear only row entities we reseed (no PE wipe).
+            // Full mount: do NOT wipe all LWW then re-put (was O(mount×components) hitch on
+            // every select open — 180 entities × 5 comps). Force-puts overwrite; PE strip
+            // drops removed catchers without a full clear.
+            if (snapEntities.size > 0 && !fullMount) {
+              this.projection.clearLwwSlotsForEntities(snapEntities, [
                 UiTransform.componentId,
                 UiText.componentId,
                 UiBackground.componentId,
                 UiInput.componentId,
-                UiDropdown.componentId,
-                ...(fullMount || mountChanged ? [PointerEvents.componentId] : [])
-              ]
-              // On mount growth with partial rows only, clear only snap entities (not PE-wide).
-              this.projection.clearLwwSlotsForEntities(
-                snapEntities,
-                fullMount
-                  ? clearIds
-                  : [
-                      UiTransform.componentId,
-                      UiText.componentId,
-                      UiBackground.componentId,
-                      UiInput.componentId,
-                      UiDropdown.componentId
-                    ]
-              )
+                UiDropdown.componentId
+              ])
             }
             projectionDeletes.length = 0
             this.projection.changes.length = 0
@@ -2849,8 +2837,13 @@ export class SceneScriptSystem {
                 componentId: row.componentId,
                 value: row.value
               })),
-              { stripMissingPe: fullMount }
+              { stripMissingPe: fullMount || mountChanged }
             )
+            // Full mount: drop UiText/Bg/Input/Dropdown on snap entities when the snapshot
+            // no longer ships that component (no blanket pre-clear).
+            if (fullMount && latestUiMountSnapshot.length > 0) {
+              this.pruneUiComponentsMissingFromSnapshot(latestUiMountSnapshot)
+            }
             perfNoteUiMountPost()
             batchTouchesUi = true
             this.foldProjectionChanges()
@@ -3287,17 +3280,65 @@ export class SceneScriptSystem {
   ): void {
     const mountChanged = bridge.commitMountSet(nextSet)
     this.purgeProjectionUiOutsideWorkerMount()
-    // commitMountSet already clears layout/visual keys when the set changes — paint() is
-    // enough. forceRepaint() zeroed paintCount and thrashed the whole PE HUD (flash).
-    bridge.paint(this.view)
-    this.clearProjectionUiLag()
-    this.logSceneUiRepaintIfEnabled()
+    // Large mount growth (select HUD 160–200 nodes): commit now, Yoga/DOM next frame so
+    // pointer edge / deliver-done are not blocked ~1s by a full tree layout.
+    const heavyPaint = nextSet.size >= 64 && mountChanged
+    if (heavyPaint) {
+      bridge.markContentDirty()
+      this.clearProjectionUiLag()
+      const view = this.view
+      queueMicrotask(() => {
+        if (!this.sceneUiBridge || this.sceneUiBridge !== bridge) return
+        bridge.paint(view)
+        this.logSceneUiRepaintIfEnabled()
+      })
+    } else {
+      bridge.paint(this.view)
+      this.clearProjectionUiLag()
+      this.logSceneUiRepaintIfEnabled()
+    }
     if (mountChanged) {
       this.pointerStructureDirty = true
       this.flushPointerStructureIfDirty()
     }
     if (!this.pointerAwaitingWorkerApply) {
       this.resumeWorkerSceneTicksAfterMountIfHeld()
+    }
+  }
+
+  /**
+   * After full-mount force-puts, drop Ui* components no longer in the snapshot for each
+   * entity (without a pre-clear of the whole tree).
+   */
+  private pruneUiComponentsMissingFromSnapshot(
+    rows: readonly { entity: number; componentId: number; value: unknown }[]
+  ): void {
+    const { UiText, UiBackground, UiInput, UiDropdown } = this.readComponents
+    const present = new Map<number, Set<number>>()
+    for (const row of rows) {
+      let set = present.get(row.entity)
+      if (!set) {
+        set = new Set()
+        present.set(row.entity, set)
+      }
+      set.add(row.componentId)
+    }
+    const optional = [
+      UiText.componentId,
+      UiBackground.componentId,
+      UiInput.componentId,
+      UiDropdown.componentId
+    ]
+    for (const [entityNum, comps] of present) {
+      const entity = entityNum as Entity
+      const drop: number[] = []
+      for (const cid of optional) {
+        if (comps.has(cid)) continue
+        if (this.projection.componentMap(cid)?.has(entity)) drop.push(cid)
+      }
+      if (drop.length) {
+        this.projection.clearLwwSlotsForEntities(new Set([entity]), drop)
+      }
     }
   }
 
@@ -3688,12 +3729,12 @@ export class SceneScriptSystem {
       })
     }
 
-    // --- Structure lane (Gltf/Mesh create) — awaited, age-ordered ---
-    if (performance.now() < wallDeadline) {
-      const structCap = edge ? F.POINTER_STRUCTURE_ENTITIES : F.STRUCTURE_ENTITIES
+    // --- Structure lane — never on pointer edge (motion/material only; structure is async).
+    // PE click was draining structure mid-edge (g29ms + orphan cascade) and freezing frames.
+    if (!edge && performance.now() < wallDeadline) {
       const structureSlice = this.takePendingDiffSlice(
         new Set(['structure', 'other', 'material']),
-        structCap
+        F.STRUCTURE_ENTITIES
       )
       if (structureSlice.size) {
         const t0 = performance.now()
@@ -3994,11 +4035,17 @@ export class SceneScriptSystem {
   ): Map<Entity, Map<number, ProjectionChangeKind>> {
     const out = new Map<Entity, Map<number, ProjectionChangeKind>>()
     if (!this.pendingDiff.size || cap <= 0) return out
-    // Age-ordered fairness — oldest dirty entities first (true COD backlog drain).
-    const ordered = [...this.pendingDiff.keys()].sort(
-      (a, b) =>
-        (this.pendingDiffFirstDirtyAt.get(a) ?? 0) - (this.pendingDiffFirstDirtyAt.get(b) ?? 0)
-    )
+    // Age-order only for moderate backlogs. Sorting 1000+ keys every peel was a multi-ms
+    // hitch on PE click (pendingDiff=1400 → peel 65ms). Large backlog: FIFO Map order.
+    let ordered: Entity[]
+    if (this.pendingDiff.size <= 128) {
+      ordered = [...this.pendingDiff.keys()].sort(
+        (a, b) =>
+          (this.pendingDiffFirstDirtyAt.get(a) ?? 0) - (this.pendingDiffFirstDirtyAt.get(b) ?? 0)
+      )
+    } else {
+      ordered = [...this.pendingDiff.keys()]
+    }
     for (const entity of ordered) {
       if (out.size >= cap) break
       const comps = this.pendingDiff.get(entity)

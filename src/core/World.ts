@@ -3258,6 +3258,9 @@ export class World {
    * All runtime cooks use freezeRemoval:true so orphans never leave the scene otherwise
    * (SpaceRunner lobby walls/dome stayed solid after HF entity deletes).
    */
+  private orphanStaticRemoveLogBudget = 0
+  private orphanStaticRemoveLogAt = 0
+
   private onColliderEntityRemoved(ecsEntity: Entity): void {
     const meshId = ecsEntity as number
     const gltfId = GLTF_COLLIDER_ENTITY_BASE + ecsEntity
@@ -3269,11 +3272,21 @@ export class World {
     this.colliderCookQueue.delete(gltfId)
     if (hadMesh || hadGltf) {
       this.physics.invalidateControllerCache()
-      console.info(
-        `[phys] removed orphan static ecs=e${ecsEntity}` +
-          (hadMesh ? ` mesh=e${meshId}` : '') +
-          (hadGltf ? ` gltf=${gltfId}` : '')
-      )
+      // Burst orphan removes on select/reset must not flood console (was multi-ms hitch).
+      const now = performance.now()
+      if (now - this.orphanStaticRemoveLogAt > 1000) {
+        this.orphanStaticRemoveLogAt = now
+        this.orphanStaticRemoveLogBudget = 4
+      }
+      if (this.orphanStaticRemoveLogBudget > 0) {
+        this.orphanStaticRemoveLogBudget--
+        console.info(
+          `[phys] removed orphan static ecs=e${ecsEntity}` +
+            (hadMesh ? ` mesh=e${meshId}` : '') +
+            (hadGltf ? ` gltf=${gltfId}` : '') +
+            (this.orphanStaticRemoveLogBudget === 0 ? ' (+more throttled)' : '')
+        )
+      }
     }
   }
 

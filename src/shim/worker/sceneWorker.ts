@@ -2543,6 +2543,8 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
   }
   pointerDeliveryInFlight = true
   setPointerDeliveryInFlight(true)
+  // Main arms a 2s deliver-done watchdog — edge work must ack before that (1.5s hard cap).
+  const EDGE_ACK_BUDGET_MS = 1500
   try {
     // Apply live PPI *before* inject eng.update so onPointerDown handlers and systems
     // that gate on PrimaryPointerInfo (UI chrome, ground ray, marquee) see this click.
@@ -2551,19 +2553,50 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
     }
     // No exports.onUpdate mid-edge (pollEvents re-fires UI). Hold reassert on play-frame-tick
     // keeps isPressed true across cooperative frames for every scene.
-    await runSceneEnginePointerTick(sceneEngine, async () => {}, body)
-    // Platform law: phase-4 queues structured UI mount via queuePointerUiEgress.
-    // Inject path used to skip flush (only CRDT deliver path flushed) → main never got
-    // the open-menu snapshot (mount 110→159) and only saw later partial dirty posts
-    // (snapshotRows=10 for uiEntities=163) → mount commit deferred / blank select UI.
-    await flushPointerDeferredOutboundsAsync()
+    let edgeTimedOut = false
+    await Promise.race([
+      (async () => {
+        await runSceneEnginePointerTick(sceneEngine, async () => {}, body)
+        // Platform law: phase-4 queues structured UI mount via queuePointerUiEgress.
+        // Inject path used to skip flush (only CRDT deliver path flushed) → main never got
+        // the open-menu snapshot (mount 110→159) and only saw later partial dirty posts
+        // (snapshotRows=10 for uiEntities=163) → mount commit deferred / blank select UI.
+        await flushPointerDeferredOutboundsAsync()
+      })(),
+      new Promise<void>((resolve) => {
+        setTimeout(() => {
+          edgeTimedOut = true
+          resolve()
+        }, EDGE_ACK_BUDGET_MS)
+      })
+    ])
+    if (edgeTimedOut) {
+      workerLog(
+        'warn',
+        `[sceneWorker] ${label} — edge budget ${EDGE_ACK_BUDGET_MS}ms exceeded; acking deliver-done (partial)`
+      )
+      interruptPendingOutboundAcks()
+      forceReleaseEngineUpdateMutex(`${label}-edge-budget`)
+      // Best-effort phase-4 so select HUD is not lost when tick was slow.
+      try {
+        await Promise.race([
+          flushPointerDeferredOutboundsAsync(),
+          new Promise<void>((r) => setTimeout(r, 200))
+        ])
+      } catch {
+        /* ack regardless */
+      }
+    }
   } catch (err) {
     workerLog(
       'error',
       `[sceneWorker] ${label} failed — ${err instanceof Error ? err.message : String(err)}`
     )
     try {
-      await flushPointerDeferredOutboundsAsync()
+      await Promise.race([
+        flushPointerDeferredOutboundsAsync(),
+        new Promise<void>((r) => setTimeout(r, 200))
+      ])
     } catch {
       /* best-effort phase-4 egress before ack */
     }
@@ -2576,6 +2609,9 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
     postPointerDeliverDone(label)
     resumeSceneTicksAfterPointer()
     requestSceneEngineTick()
+    // CRDT-only delivers queued while inject edge was in-flight must not sit forever
+    // (main no longer arms deliver-done for CRDT-only, but residual queue still matters).
+    drainQueuedPointerDeliver()
   }
 }
 

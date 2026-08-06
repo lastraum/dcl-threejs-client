@@ -688,7 +688,11 @@ export class PointerEventsSystem {
   }
 
   hasPendingInput(): boolean {
-    return this.pendingPointerDown.size > 0 || this.pendingPointerUp.size > 0
+    return (
+      this.pendingPointerDown.size > 0 ||
+      this.pendingPointerUp.size > 0 ||
+      this.pendingInjectPayload !== null
+    )
   }
 
   /** Queued browser pointerdown not yet written to PET / inject. */

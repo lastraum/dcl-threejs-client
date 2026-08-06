@@ -4731,7 +4731,14 @@ export class SceneScriptSystem {
     })
   }
 
-  /** Push pointer CRDT to worker via inject + pointer-crdt-deliver. */
+  /**
+   * Push pointer edge to worker via inject-pointer-click only.
+   *
+   * Platform law: inject is the only authoritative PE edge. Main-encoded
+   * PointerEventsResult CRDT must never open the deliver-done session — the
+   * worker light path for pointer-crdt-deliver does not post deliver-done, so
+   * arming the 2s watchdog on CRDT-only freezes clicks indefinitely.
+   */
   async flushPendingPointerCrdt(): Promise<void> {
     if (!this.pointerEvents) {
       this.logPointerFlushSkipped('pointer system not bound')
@@ -4742,7 +4749,9 @@ export class SceneScriptSystem {
       return
     }
     if (this.pointerFlushInFlight) {
-      this.logPointerFlushSkipped('flush already in flight')
+      // Do not drop the edge — retry after the in-flight flush finishes.
+      this.pointerFlushCoalesceRequested = true
+      this.logPointer('pointer flush coalesced — flush already in flight')
       return
     }
     if (this.pointerDeliverAwaitingAck) {
@@ -4750,8 +4759,8 @@ export class SceneScriptSystem {
       this.logPointer('pointer flush coalesced — awaiting pointer-deliver-done')
       return
     }
-    if (!this.pointerEvents.hasPendingInput()) {
-      this.logPointerFlushSkipped('no pending pointer down/up')
+    if (!this.pointerEvents.hasPendingInput() && !this.pointerEvents.hasPendingInjectPayload()) {
+      this.logPointerFlushSkipped('no pending pointer down/up/inject')
       return
     }
 
@@ -4766,20 +4775,21 @@ export class SceneScriptSystem {
       // world PE never saw PET_DOWN (no getClick / click VFX).
       const hasDown = this.pointerEvents.hasPendingDown()
       const hasUp = this.pointerEvents.hasPendingUp()
-      this.syncPointerInput(this.crdtTick, {
-        processPendingDown: hasDown,
-        processPendingUp: !hasDown && hasUp
-      })
-      this.crdtTick++
+      if (hasDown || hasUp) {
+        this.syncPointerInput(this.crdtTick, {
+          processPendingDown: hasDown,
+          processPendingUp: !hasDown && hasUp
+        })
+        this.crdtTick++
+      }
 
-      // inject-pointer-click is authoritative on the worker — skip main-encoded pointer appends.
-      // Must also discard recorded PointerEventsResult (1063): inject-only used to leave them
-      // queued, then flushRendererGrowOnlyAppends re-delivered them after deliver-done with
-      // *main* timestamps > worker previousFrameMax → EventSystem re-fired CAM toggle and
-      // closed home on the worker while main still painted mount=23 (ghost CREATOR clicks).
-      const directInject = this.pointerEvents.hasPendingInjectPayload()
-      if (directInject) {
-        this.pointerResponseStash.length = 0
+      // Capture inject immediately after the edge write — never re-read after encode/discard.
+      const inject = this.pointerEvents.consumeInjectPayload()
+
+      // inject-pointer-click is authoritative — drop main PE Result appends so a later
+      // grow-only flush cannot re-fire EventSystem (ghost CAM toggle / menu close).
+      // Also drop hover leftovers so we never open a CRDT-only deliver-done session.
+      if (inject || hasDown || hasUp) {
         const dropped = this.encoder.discardRecordedAppends(
           this.readComponents.PointerEventsResult.componentId
         )
@@ -4789,65 +4799,50 @@ export class SceneScriptSystem {
             `inject-only — discarded ${dropped} main PointerEventsResult append(s) (worker inject is authoritative)`
           )
         }
-      } else {
-        const pendingAppends = this.encoder.pendingAppendCount
-        const appendBytes = this.encoder.encodeAppendsOnly()
-        if (appendBytes) {
-          this.pointerResponseStash.length = 0
-          this.pointerResponseStash.push(appendBytes.slice())
-        } else {
-          this.pointerResponseStash.length = 0
-          // No inject and no appends — nothing to deliver (do not arm 2s watchdog).
-          if (!this.pointerEvents.hasPendingInjectPayload()) {
-            console.warn(
-              '[pointer]',
-              `pointer flush — empty (no inject, pendingAppends=${pendingAppends}); not awaiting worker`
-            )
-            // Still have UP queued after a DOWN-only flush — schedule follow-up.
-            if (this.pointerEvents.hasPendingUp() || this.pointerEvents.hasPendingDown()) {
-              queueMicrotask(() => void this.flushPendingPointerCrdt())
-            }
-            return
-          }
-        }
       }
-      this.consolidatePointerStash()
-      const stashedBytes = this.pointerResponseStash.reduce((n, c) => n + c.byteLength, 0)
-      const flushMsg = `pointer flush — stashed ${this.pointerResponseStash.length} chunk(s), ${stashedBytes} bytes; delivering to worker`
-      if (stashedBytes > 0) this.logPointer(flushMsg)
-      else this.logPointer(flushMsg)
-      clientDebugLog.log('pointer', flushMsg, {
-        alsoConsole: false,
-        level: stashedBytes ? 'success' : 'info'
-      })
+      this.pointerResponseStash.length = 0
+
+      if (!inject) {
+        // Edge write failed or orphan empty flush — never arm deliver-done watchdog.
+        console.warn(
+          '[pointer]',
+          `pointer flush — no inject after edge (down=${hasDown ? 1 : 0} up=${hasUp ? 1 : 0}); not awaiting worker`
+        )
+        if (
+          this.pointerEvents.hasPendingUp() ||
+          this.pointerEvents.hasPendingDown() ||
+          this.pointerFlushCoalesceRequested
+        ) {
+          this.pointerFlushCoalesceRequested = false
+          queueMicrotask(() => void this.flushPendingPointerCrdt())
+        }
+        return
+      }
+
       this.pointerAwaitingWorkerApply = true
-      this.deliverPointerToWorker()
-      // If we only sent DOWN, flush UP next microtask (same user click, correct edge order).
+      this.deliverInjectToWorker(inject)
+      // If we only sent DOWN, flush UP after deliver-done (same user click, correct order).
       if (hasDown && this.pointerEvents.hasPendingUp()) {
         this.pointerFlushCoalesceRequested = true
       }
     } finally {
       this.pointerFlushInFlight = false
-    }
-  }
-
-  /** Deliver pointer to worker — inject first (priority lane), then CRDT; pause after queue. */
-  private deliverPointerToWorker(): void {
-    if (!this.worker) {
-      console.warn('[pointer]', 'pointer deliver skipped — worker missing')
-      return
-    }
-    const inject = this.pointerEvents?.consumeInjectPayload()
-    const pointerChunks = this.pointerResponseStash.filter((c) => c.byteLength > 0)
-    if (!inject && !pointerChunks.length) {
-      // Nothing to send — clear awaiting state (do not arm 2s deliver-done watchdog).
-      this.pointerAwaitingWorkerApply = false
-      this.pointerDeliverAwaitingAck = false
-      this.clearPointerDeliverWatchdog()
-      if (this.pointerFlushCoalesceRequested || this.pointerEvents?.hasPendingInput()) {
+      // In-flight coalesce: another press landed while we held the lock.
+      if (this.pointerFlushCoalesceRequested && !this.pointerDeliverAwaitingAck) {
         this.pointerFlushCoalesceRequested = false
         queueMicrotask(() => void this.flushPendingPointerCrdt())
       }
+    }
+  }
+
+  /**
+   * Post inject-pointer-click and arm deliver-done. Inject-only — never pairs with
+   * pointer-crdt-deliver (worker light CRDT path does not ack).
+   */
+  private deliverInjectToWorker(inject: import('../../player/injectPointerClick').InjectPointerClickBody): void {
+    if (!this.worker) {
+      console.warn('[pointer]', 'pointer deliver skipped — worker missing')
+      this.pointerAwaitingWorkerApply = false
       return
     }
 
@@ -4857,54 +4852,31 @@ export class SceneScriptSystem {
     this.pointerHoldTicksUntilMount = false
     this.armPointerDeliverWatchdog(2000)
 
-    const injectOnly = pointerChunks.length === 0
-    if (inject) {
-      // Refresh PPI at post time (writeResult may be a few ms earlier; edge tick must
-      // see the click's screen/ray for UI chrome gates + ground rays).
-      const ppi =
-        this.pointerEvents?.getPrimaryPointerSnapshot() ?? inject.primaryPointer ?? undefined
-      if (ppi) inject.primaryPointer = ppi
-      const sc = inject.primaryPointer?.screenCoordinates
-      const ray = inject.primaryPointer?.worldRayDirection
-      const injectLine =
-        `posting inject-pointer-click entity=${inject.entity} button=${inject.button} ` +
-        `ts=${inject.downTimestamp}/${inject.upTimestamp}` +
-        `${injectOnly ? ' (inject-only)' : ''}` +
-        ` sceneUi=${inject.sceneUi ? 1 : 0}` +
-        ` phase=${inject.phase ?? 'click'}` +
-        ` down=[${(inject.downEntities ?? inject.entities).join(',')}]` +
-        (sc
-          ? ` ppi=(${sc.x.toFixed(0)},${sc.y.toFixed(0)})` +
-            (ray ? ` ray=(${ray.x.toFixed(2)},${ray.y.toFixed(2)},${ray.z.toFixed(2)})` : '')
-          : ' ppi=missing')
-      this.logPointer(injectLine)
-      clientDebugLog.consoleOnly('info', `[pointer] ${injectLine}`)
-      this.worker.postMessage({
-        type: 'inject-pointer-click',
-        body: inject,
-        injectOnly
-      } satisfies MainToWorker)
-    } else {
-      console.warn('[pointer]', 'inject payload missing — CRDT chunks only')
-      this.logPointer('inject payload missing — CRDT chunks only')
-    }
-
-    this.deliverPointerCrdtDirect()
-  }
-
-  /** Post pre-encoded pointer CRDT directly to worker (parallel to inject). */
-  private deliverPointerCrdtDirect(): void {
-    if (!this.worker) return
-    const chunks = this.pointerResponseStash.filter((c) => c.byteLength > 0)
-    if (!chunks.length) {
-      this.logPointer('pointer-crdt-deliver skipped — stash empty')
-      return
-    }
-    const bytes = chunks.reduce((n, c) => n + c.byteLength, 0)
-    this.logPointer(`posting pointer-crdt-deliver — ${chunks.length} chunk(s), ${bytes} bytes`)
-    const copies = chunks.map((c) => c.slice())
-    const transfer = copies.map((c) => c.buffer)
-    this.worker.postMessage({ type: 'pointer-crdt-deliver', data: copies } satisfies MainToWorker, transfer)
+    // Refresh PPI at post time (writeResult may be a few ms earlier; edge tick must
+    // see the click's screen/ray for UI chrome gates + ground rays).
+    const ppi =
+      this.pointerEvents?.getPrimaryPointerSnapshot() ?? inject.primaryPointer ?? undefined
+    if (ppi) inject.primaryPointer = ppi
+    const sc = inject.primaryPointer?.screenCoordinates
+    const ray = inject.primaryPointer?.worldRayDirection
+    const injectLine =
+      `posting inject-pointer-click entity=${inject.entity} button=${inject.button} ` +
+      `ts=${inject.downTimestamp}/${inject.upTimestamp} (inject-only)` +
+      ` sceneUi=${inject.sceneUi ? 1 : 0}` +
+      ` phase=${inject.phase ?? 'click'}` +
+      ` down=[${(inject.downEntities ?? inject.entities).join(',')}]` +
+      (sc
+        ? ` ppi=(${sc.x.toFixed(0)},${sc.y.toFixed(0)})` +
+          (ray ? ` ray=(${ray.x.toFixed(2)},${ray.y.toFixed(2)},${ray.z.toFixed(2)})` : '')
+        : ' ppi=missing')
+    // Always console — match PET_DOWN visibility for edge diagnosis.
+    console.log('[pointer]', injectLine)
+    this.logPointer(injectLine)
+    this.worker.postMessage({
+      type: 'inject-pointer-click',
+      body: inject,
+      injectOnly: true
+    } satisfies MainToWorker)
   }
 
   private onPointerDeliverDone(): void {
@@ -5055,29 +5027,34 @@ export class SceneScriptSystem {
     this.pointerAwaitingWorkerApply = false
     this.pointerOutboundDeferBuffer = []
     this.clearPointerDeliverWatchdog()
-    if (!opts?.afterOutboundBatch) {
-      await this.crdtOutboundSerial
-    }
-    this.flushUiFrame()
-    await this.reconcilePointerCollisionAfterDelivery(opts)
-    // Click-move / select anim: apply Tween+Transform from the inject CRDT now.
-    this.applyPostPointerMotion()
-    this.proactiveTweenPushUntil = performance.now() + SceneScriptSystem.PROACTIVE_TWEEN_PUSH_MS
-    // Always unpause worker after pointer ack. Gating on projection UiTransform catch-up
-    // left sceneTicksPaused stuck while CBD Plaza welcome fade (and similar systems) need
-    // real dt — splash stayed opaque white forever after PET_DOWN/UP on the scrim.
-    // Mount paint lag is handled by flushUiFrame / maybeForceResumeWorkerTicksOnUiLag.
+    // Resume worker ticks FIRST — never leave the scene frozen while main paints Yoga
+    // or awaits crdtOutboundSerial (that was an indefinite click freeze).
     this.forceResumeWorkerSceneTicks(source)
-    if (this.pointerFlushCoalesceRequested && this.pointerEvents?.hasPendingInput()) {
+    try {
+      if (!opts?.afterOutboundBatch) {
+        await this.crdtOutboundSerial
+      }
+      this.flushUiFrame()
+      await this.reconcilePointerCollisionAfterDelivery(opts)
+      // Click-move / select anim: apply Tween+Transform from the inject CRDT now.
+      this.applyPostPointerMotion()
+      this.proactiveTweenPushUntil = performance.now() + SceneScriptSystem.PROACTIVE_TWEEN_PUSH_MS
+    } catch (err) {
+      console.error(
+        '[pointer]',
+        `post-deliver apply failed — ${err instanceof Error ? err.message : String(err)}`
+      )
+    }
+    // Mount paint lag is handled by flushUiFrame / maybeForceResumeWorkerTicksOnUiLag.
+    if (
+      this.pointerFlushCoalesceRequested &&
+      (this.pointerEvents?.hasPendingInput() || this.pointerEvents?.hasPendingInjectPayload())
+    ) {
       this.pointerFlushCoalesceRequested = false
       void this.flushPendingPointerCrdt()
     } else {
       this.pointerFlushCoalesceRequested = false
     }
-  }
-
-  private finishPointerDelivery(source: string): void {
-    void this.finishPointerDeliveryAsync(source)
   }
 
   /** Worker path failed — surface loudly; scene triggers/tweens did not run. */
@@ -5088,7 +5065,8 @@ export class SceneScriptSystem {
     clientDebugLog.log('pointer', message, { level: 'error', alsoConsole: true })
     this.pointerHoldTicksUntilMount = false
     this.pointerOutboundDeferBuffer = []
-    this.finishPointerDelivery('pointer-delivery-failed')
+    // finishPointerDeliveryAsync resumes ticks before any paint await — no indefinite freeze.
+    void this.finishPointerDeliveryAsync('pointer-delivery-failed')
   }
 
   private armPointerDeliverWatchdog(timeoutMs?: number): void {
@@ -5109,20 +5087,6 @@ export class SceneScriptSystem {
       this.pointerDeliverFailWatchdog = null
     }
     this.pointerDeliverAwaitingAck = false
-  }
-
-  /** Merge multiple stashed CRDT blobs into one append-only chunk. */
-  private consolidatePointerStash(): void {
-    if (this.pointerResponseStash.length <= 1) return
-    const total = this.pointerResponseStash.reduce((n, c) => n + c.byteLength, 0)
-    const merged = new Uint8Array(total)
-    let offset = 0
-    for (const chunk of this.pointerResponseStash) {
-      merged.set(chunk, offset)
-      offset += chunk.byteLength
-    }
-    this.pointerResponseStash.length = 0
-    this.pointerResponseStash.push(merged)
   }
 
   /** Advance tweens after inbound CRDT (scene may have just added Tween on worker). */

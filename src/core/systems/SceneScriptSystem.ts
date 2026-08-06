@@ -4898,11 +4898,11 @@ export class SceneScriptSystem {
 
   /**
    * Same-edge click VFX: Transform + MeshRenderer + Material for click markers.
-   * Full Gltf attach stays on async structure lane — not mid-PE plaza cook.
-   * Must include Transform with MeshRenderer or markers spawn at origin / invisible.
+   * Prioritize entities that still need a mesh leaf (new markers) over recoloring
+   * fog-of-war planes already attached — pendingDiff storms (3k+) used to starve VFX.
    */
   private async flushPointerClickVisualStructure(): Promise<void> {
-    if (!this.bridge || !this.entityStore || !this.pendingDiff.size) return
+    if (!this.bridge || !this.entityStore) return
     if (!this.bridge.canConsumeDiff()) return
     const { MeshRenderer, GltfNodeModifiers, Material, Transform, VisibilityComponent } =
       this.readComponents
@@ -4916,35 +4916,56 @@ export class SceneScriptSystem {
       Transform.componentId,
       VisibilityComponent.componentId
     ])
-    const slice = new Map<Entity, Map<number, ProjectionChangeKind>>()
-    const matEntities: Entity[] = []
+
+    type Cand = { entity: Entity; comps: Map<number, ProjectionChangeKind>; missingLeaf: boolean }
+    const candidates: Cand[] = []
     for (const [entity, comps] of this.pendingDiff) {
-      if (slice.size >= 24) break
-      // Only entities that actually create a click marker / select ring this edge.
       const hasVisual = [...visualIds].some((id) => comps.has(id))
       if (!hasVisual) continue
-      // Skip heavy GltfContainer attaches on the pointer edge.
       if (comps.has(this.readComponents.GltfContainer.componentId)) continue
       const sub = new Map<number, ProjectionChangeKind>()
       for (const [cid, kind] of comps) {
         if (withVisual.has(cid)) sub.set(cid, kind)
       }
       if (!sub.size) continue
-      slice.set(entity, sub)
-      if (sub.has(Material.componentId) || sub.has(MeshRenderer.componentId)) {
-        matEntities.push(entity)
-      }
-      for (const cid of sub.keys()) comps.delete(cid)
-      this.clearPendingEntityIfEmpty(entity)
+      // Missing leaf = click marker / new fog tile — must win over recolor of 200 attached planes.
+      const missingLeaf =
+        MeshRenderer.has(entity) && !this.bridgeHasMeshRendererLeaf(entity)
+      candidates.push({ entity, comps: sub, missingLeaf })
     }
-    if (!slice.size) return
-    const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
-    // Await attach so forceApply material runs after the mesh leaf exists.
-    await this.bridge.consumeDiff(slice, this.view, tweenRefresh)
+    candidates.sort((a, b) => Number(b.missingLeaf) - Number(a.missingLeaf))
+
+    const slice = new Map<Entity, Map<number, ProjectionChangeKind>>()
+    const matEntities: Entity[] = []
+    const CAP = 96
+    for (const c of candidates) {
+      if (slice.size >= CAP) break
+      slice.set(c.entity, c.comps)
+      if (c.comps.has(Material.componentId) || c.comps.has(MeshRenderer.componentId)) {
+        matEntities.push(c.entity)
+      }
+      const pending = this.pendingDiff.get(c.entity)
+      if (pending) {
+        for (const cid of c.comps.keys()) pending.delete(cid)
+        this.clearPendingEntityIfEmpty(c.entity)
+      }
+    }
+
+    if (slice.size) {
+      const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+      await this.bridge.consumeDiff(slice, this.view, tweenRefresh)
+    }
+    // Always ensure leaves for VFX entities + any pending MeshRenderer without geometry.
+    this.bridge.flushMissingMeshRendererLeaves(96, matEntities)
     for (const entity of matEntities) {
       this.bridge.forceApplyMeshRendererMaterial(entity)
     }
     this.publishPendingDiffPerf()
+  }
+
+  /** True when entity already has a MeshRenderer primitive or GPU instance leaf. */
+  private bridgeHasMeshRendererLeaf(entity: Entity): boolean {
+    return this.bridge?.hasMeshRendererLeaf(entity) === true
   }
 
   /**
@@ -4960,21 +4981,23 @@ export class SceneScriptSystem {
       pointerEdge: true,
       hardMs: F.POINTER_MOTION_MS
     })
-    // 2–3) MeshRenderer attach then materials — await so cyan rings land this edge.
+    // 2–3) MeshRenderer attach (prefer missing leaves) then materials.
     void this.flushPointerClickVisualStructure()
       .then(() => {
         this.flushMeshRendererMaterialsFromPendingDiff({
           pointerEdge: true,
           hardMs: F.POINTER_MATERIAL_MS,
-          entityCap: 48
+          entityCap: 64
         })
-        // Residual motion/material (async).
+        // Residual motion/material (async). Structure for MeshRenderer leaves is above.
         return this.drainPendingDiffLanes({
           pointerEdge: true,
           deadlineMs: F.POINTER_MOTION_MS + F.POINTER_MATERIAL_MS
         })
       })
       .then(() => {
+        // One more leaf pass — CRDT may land a frame after deliver-done.
+        this.bridge?.flushMissingMeshRendererLeaves(48)
         perfNotePointerEdge(performance.now() - t0, false)
       })
       .catch((err) => {

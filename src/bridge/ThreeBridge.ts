@@ -2093,6 +2093,68 @@ export class ThreeBridge {
     return true
   }
 
+  /** True when MeshRenderer already has a private mesh or GPU instance leaf. */
+  hasMeshRendererLeaf(entity: Entity): boolean {
+    if (!this.ecs.MeshRenderer.has(entity)) return false
+    if (this.meshRendererInstancer.has(entity)) return true
+    const obj = this.store.nodes.get(entity)
+    if (!obj) return false
+    if (obj.userData.dclMeshRendererInstanced) return true
+    const existing = obj.getObjectByName(meshKey(entity))
+    return (
+      existing instanceof THREE.Mesh &&
+      existing.userData.primitiveMeshKey != null &&
+      !existing.userData[MESH_RENDERER_INSTANCE_MARKER]
+    )
+  }
+
+  /**
+   * Platform law: MeshRenderer always has a blank primitive leaf even without Material.
+   * Click VFX / fog-of-war / markers must not wait for a Material put that races structure drain.
+   */
+  ensureMeshRendererLeaf(entity: Entity): boolean {
+    const { MeshRenderer, Material } = this.ecs
+    const spec = meshRendererGetOrNull(MeshRenderer, entity)
+    if (!spec) return false
+    if (this.hasMeshRendererLeaf(entity) && this.meshRendererIsInstanceEligible(entity)) {
+      return true
+    }
+    if (this.hasMeshRendererLeaf(entity)) return true
+    const obj = this.store.getOrCreateNode(entity, 'scene')
+    this.attachOrUpdateMeshRenderer(entity, obj, meshKey(entity), Material.has(entity))
+    return this.hasMeshRendererLeaf(entity)
+  }
+
+  /**
+   * Drain missing MeshRenderer leaves (new VFX / fog planes) up to `cap`.
+   * Prioritizes pendingMeshEntities, then optional extra scan list.
+   */
+  flushMissingMeshRendererLeaves(cap = 64, prefer: Iterable<Entity> = []): number {
+    let n = 0
+    const tryOne = (entity: Entity): void => {
+      if (n >= cap) return
+      if (!this.ecs.MeshRenderer.has(entity)) return
+      if (this.ecs.GltfContainer?.has(entity)) return
+      if (this.ensureMeshRendererLeaf(entity)) {
+        n++
+        this.pendingMeshEntities.delete(entity)
+        // Color if Material already present.
+        if (this.ecs.Material.has(entity)) {
+          this.forceApplyMeshRendererMaterial(entity)
+        }
+      }
+    }
+    for (const entity of prefer) {
+      tryOne(entity)
+      if (n >= cap) return n
+    }
+    for (const entity of [...this.pendingMeshEntities]) {
+      tryOne(entity)
+      if (n >= cap) return n
+    }
+    return n
+  }
+
   /**
    * Public entry for same-frame Material recolor (worker cold CRDT path).
    * Prefer O(1) instanceColor — never walk private mesh trees on paint storms.
@@ -2100,12 +2162,18 @@ export class ThreeBridge {
    * Also first-attach: Material put often lands in pendingDiff before applySceneDiff
    * creates the store node / mesh (DecentraCraft applied=0 + white default materials).
    * getOrCreateNode + attach so textured props are not stuck waiting for rAF drain.
+   *
+   * MeshRenderer without Material: still builds a blank plane (ensureMeshRendererLeaf).
    */
   forceApplyMeshRendererMaterial(entity: Entity): boolean {
     const { MeshRenderer, Material } = this.ecs
     const pb = materialGetOrNull(Material, entity)
     const spec = meshRendererGetOrNull(MeshRenderer, entity)
-    if (!pb || !spec) return false
+    if (!spec) return false
+    // No Material yet — blank leaf is still required (click markers / fog tiles).
+    if (!pb) {
+      return this.ensureMeshRendererLeaf(entity)
+    }
     try {
       const obj = this.store.getOrCreateNode(entity, 'scene')
       // PE / Tween / ineligible — never stay on GPU instance (marker-only leaf breaks PE).
@@ -2144,8 +2212,7 @@ export class ThreeBridge {
         // Re-check after detach — network entities can drop MeshRenderer mid-batch.
         const liveSpec = meshRendererGetOrNull(MeshRenderer, entity)
         if (!liveSpec) return false
-        primitive = this.replacePrimitiveMesh(obj, mk, primitive, liveSpec)
-        primitive.userData.entity = entity
+        primitive = this.replacePrimitiveMesh(obj, mk, primitive, liveSpec, entity)
         this.notifyMeshComponent(entity, MeshRenderer.componentId)
       }
       this.materials.applyScalarsToObject3D(primitive, entity, pb)
@@ -2380,7 +2447,8 @@ export class ThreeBridge {
     obj: THREE.Group,
     mk: string,
     existing: THREE.Mesh | undefined,
-    spec: ReturnType<MirrorComponents['MeshRenderer']['get']>
+    spec: ReturnType<MirrorComponents['MeshRenderer']['get']>,
+    entity?: Entity
   ): THREE.Mesh {
     if (existing) {
       releasePrimitiveGeometry(existing.geometry)
@@ -2398,12 +2466,12 @@ export class ThreeBridge {
       metalness: 0.2,
       roughness: 0.65
     })
-    // Coplanar terrain/rock plates: polygonOffset only — scene Transform stays as authored.
-    this.applyPlaneDepthBias(mat, spec)
+    this.applyPlaneDepthBias(mat, spec, entity)
     const primitive = new THREE.Mesh(geo, mat)
     primitive.name = mk
     primitive.userData.primitiveMeshKey = key
     primitive.userData.primitiveDoubleSided = doubleSided
+    if (entity !== undefined) primitive.userData.entity = entity
     const kind = primitiveKind(spec)
     primitive.userData.primitiveKind = kind
     // Solid architecture casts; dense ground planes stay non-casting (perf).
@@ -2414,14 +2482,36 @@ export class ThreeBridge {
   }
 
   /**
-   * GPU depth bias for coplanar MeshRenderer planes (DecentraCraft rock/ground Z-fight).
+   * GPU depth bias for small coplanar MeshRenderer plates (rocks under units).
    * Does not move meshes — Transform / Y from the scene are law.
+   *
+   * Large planes (fog-of-war cover, map hides) must NOT use polygonOffset: from a
+   * top-down VirtualCamera the bias punches holes and the cover fails to hide the map.
    */
   private applyPlaneDepthBias(
     mat: THREE.Material,
-    spec: ReturnType<MirrorComponents['MeshRenderer']['get']>
+    spec: ReturnType<MirrorComponents['MeshRenderer']['get']>,
+    entity?: Entity
   ): void {
     if (primitiveKind(spec) !== 'plane') return
+    if (entity != null && this.ecs.Transform?.has(entity)) {
+      try {
+        const s = (this.ecs.Transform.get(entity) as { scale?: { x?: number; y?: number; z?: number } })
+          .scale
+        const maxScale = Math.max(
+          Math.abs(s?.x ?? 1),
+          Math.abs(s?.y ?? 1),
+          Math.abs(s?.z ?? 1)
+        )
+        // Fog-of-war / map cover tiles are large uniform planes (scale ≫ unit markers).
+        if (maxScale >= 3.5) {
+          mat.polygonOffset = false
+          return
+        }
+      } catch {
+        /* ignore */
+      }
+    }
     mat.polygonOffset = true
     // Pull slightly toward camera so coplanar stacks resolve stably under top-down VC.
     mat.polygonOffsetFactor = 1
@@ -2844,8 +2934,7 @@ export class ThreeBridge {
     ) {
       primitive.userData.primitiveMeshKey = key
     } else if (!primitive?.isMesh || primitive.userData.primitiveMeshKey !== key) {
-      primitive = this.replacePrimitiveMesh(obj, mk, primitive, spec)
-      primitive.userData.entity = entity
+      primitive = this.replacePrimitiveMesh(obj, mk, primitive, spec, entity)
       this.notifyMeshComponent(entity, MeshRenderer.componentId)
       rebuilt = true
       this.materials.clearEntity(entity)
@@ -3888,11 +3977,12 @@ export class ThreeBridge {
       })
       baseMat.userData.dclInstanceBase = true
       // Coplanar ground tiles: depth bias only — never change scene Transform (author law).
-      this.applyPlaneDepthBias(baseMat, spec)
+      this.applyPlaneDepthBias(baseMat, spec, entity)
       if (alpha < 0.999) {
         baseMat.transparent = true
         baseMat.opacity = alpha
-        baseMat.depthWrite = alpha > 0.95
+        // Fog cover needs depthWrite or coplanar holes appear under top-down VC.
+        baseMat.depthWrite = alpha > 0.5
       }
       const bucketKey = this.meshRendererInstanceBucketKey(entity)
       // Geo/matCase bucket only — leave if already in this bucket (color stays instanceColor).
@@ -3950,8 +4040,7 @@ export class ThreeBridge {
         obj.remove(primitive)
         primitive = undefined
       }
-      primitive = this.replacePrimitiveMesh(obj, mk, primitive, spec)
-      primitive.userData.entity = entity
+      primitive = this.replacePrimitiveMesh(obj, mk, primitive, spec, entity)
       this.notifyMeshComponent(entity, MeshRenderer.componentId)
       rebuilt = true
       this.materials.clearEntity(entity)

@@ -50,7 +50,7 @@ import {
   type FftOceanSettings
 } from '../environment/fftOcean/readFftOceanOverride'
 import type { OceanPerfInfo } from '../client/ui/RenderStats'
-import { perfSetRemoteStats } from '../util/perfCounters'
+import { perfNoteSyncRendererMs, perfSetRemoteStats } from '../util/perfCounters'
 import type { OutdoorLightingSnapshot } from '../environment/OutdoorLighting'
 import type { IslandShoreMaterial } from '../dcl/landscape/IslandShoreMaterial'
 import {
@@ -1921,6 +1921,8 @@ export class World {
         const t0 = performance.now()
         await this.sceneScript.syncRenderer()
         const rendererMs = performance.now() - t0
+        // Frame budget: async CRDT apply wall time (?perfdebug [frame] line).
+        perfNoteSyncRendererMs(rendererMs)
 
         // Async pointer prepare only when dirty — full flush already ran on sync if needed.
         if (this.playerMode && this.player) {

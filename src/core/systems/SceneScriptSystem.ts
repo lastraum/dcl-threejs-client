@@ -80,6 +80,14 @@ import type { SceneHost } from '../../rendering/SceneHost'
 import type { PlayerMirrorIdentity } from '../../bridge/playerMirrorIdentity'
 import type { CommsRealmInfo } from '../../network/comms/types'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
+import {
+  perfNotePeels,
+  perfNotePointerEdge,
+  perfNoteUiMountPost,
+  perfNoteVcHydrate,
+  perfNoteVcPoseLive,
+  perfSetPendingDiff
+} from '../../util/perfCounters'
 import { skipSceneAnimators, skipTheatreSceneScript } from '../../client/devFlags'
 import { mirrorSceneBundle } from '../../dev/mirrorSceneBundle'
 import { PointerEventsSystem } from '../../input/PointerEventsSystem'
@@ -181,6 +189,8 @@ export class SceneScriptSystem {
   )
   /** Phase 2 — diff accumulated across worker ticks, drained (swapped out) by the render frame. */
   private pendingDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
+  /** Wall time when pendingDiff became non-empty (age for frame-budget SLO). */
+  private pendingDiffOldestAt = 0
   private projectionDiffActive = false
   /** Phase 3: encoder is the primary source for renderer-owned outbound CRDT (reserved, tween, pointer/video results). Always on. */
   private readonly encoder = new CrdtEncoder(SDK_RESERVED, this.projection, this.componentHost.components)
@@ -2791,12 +2801,14 @@ export class SceneScriptSystem {
                 value: row.value
               }))
             )
+            perfNoteUiMountPost()
             batchTouchesUi = true
             this.foldProjectionChanges()
           } else if (hasUiMountSnapshot) {
             // Empty mount snapshot (welcome unmount) — still touch UI so commitMountSet([]) runs.
             projectionDeletes.length = 0
             this.sceneUiBridge?.ingestMountSnapshot([])
+            perfNoteUiMountPost()
             batchTouchesUi = true
           }
         } finally {
@@ -3463,6 +3475,7 @@ export class SceneScriptSystem {
     putLiveTransform(bound.entity, bound.transform)
     VirtualCamera.createOrReplace(bound.entity as never, (bound.virtualCamera ?? {}) as never)
     this.vcBindHydratePullPending = false
+    perfNoteVcHydrate()
     // Structure-only key (pose rides vc-pose-live) — log once per structure change.
     if (graphKey !== this.lastVcBindHydrateLogKey) {
       this.lastVcBindHydrateLogKey = graphKey
@@ -3489,6 +3502,7 @@ export class SceneScriptSystem {
    */
   private applyVcPoseLive(entity: Entity, transform: DclTransformValues): void {
     if (!this.running || !this.entityStore || !this.bridge) return
+    perfNoteVcPoseLive()
     const { MainCamera, Transform } = this.readComponents
     const { CameraEntity } = this.view
     const main = MainCamera.getOrNull(CameraEntity) as { virtualCameraEntity?: number } | null
@@ -3533,6 +3547,7 @@ export class SceneScriptSystem {
   private flushGltfContainerFromPendingDiff(): void {
     if (!this.bridge || !this.entityStore || !this.pendingDiff.size) return
     if (!this.bridge.canConsumeDiff()) return
+    const t0 = performance.now()
     const { GltfContainer, Transform } = this.readComponents
     const gltfId = GltfContainer.componentId
     const transformId = Transform.componentId
@@ -3559,6 +3574,8 @@ export class SceneScriptSystem {
       pending.delete(transformId)
       if (pending.size === 0) this.pendingDiff.delete(entity)
     }
+    this.publishPendingDiffPerf()
+    perfNotePeels({ gltfMs: performance.now() - t0, entities: gltfDiff.size })
     const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
     // consumeDiff = applySceneDiff + budgeted GLB attach (do not double-apply).
     void this.bridge.consumeDiff(gltfDiff, this.view, tweenRefresh).then(() => {
@@ -3578,6 +3595,7 @@ export class SceneScriptSystem {
   private flushTweenAndTransformFromPendingDiff(): void {
     if (!this.bridge || !this.entityStore || !this.pendingDiff.size) return
     if (!this.bridge.canConsumeDiff()) return
+    const t0 = performance.now()
     const { Transform, Tween, MeshRenderer, PointerEvents } = this.readComponents
     const transformId = Transform.componentId
     const tweenId = Tween.componentId
@@ -3627,6 +3645,11 @@ export class SceneScriptSystem {
       if (pending.size === 0) this.pendingDiff.delete(entity)
     }
     this.pointerStructureDirty = true
+    this.publishPendingDiffPerf()
+    perfNotePeels({
+      transformMs: performance.now() - t0,
+      entities: moved.length
+    })
   }
 
   /**
@@ -3666,6 +3689,10 @@ export class SceneScriptSystem {
       } else {
         failed++
       }
+    }
+    if (applied > 0 || seen > 0) {
+      this.publishPendingDiffPerf()
+      perfNotePeels({ materialMs: performance.now() - t0, entities: applied })
     }
     for (const entity of cleared) this.pendingDiff.delete(entity)
     if (applied > 0 || seen > 0 || missingMesh > 0) {
@@ -3758,10 +3785,23 @@ export class SceneScriptSystem {
       let comps = this.pendingDiff.get(change.entity)
       if (!comps) {
         comps = new Map()
+        if (this.pendingDiff.size === 0) this.pendingDiffOldestAt = performance.now()
         this.pendingDiff.set(change.entity, comps)
       }
       comps.set(change.componentId, change.kind)
     }
+    this.publishPendingDiffPerf()
+  }
+
+  /** Frame-budget counters for `?perfdebug` / RenderStats. */
+  private publishPendingDiffPerf(): void {
+    const size = this.pendingDiff.size
+    const age =
+      size > 0 && this.pendingDiffOldestAt > 0
+        ? performance.now() - this.pendingDiffOldestAt
+        : 0
+    if (size === 0) this.pendingDiffOldestAt = 0
+    perfSetPendingDiff(size, age)
   }
 
   private flushPointerStructureIfDirty(): void {
@@ -4608,6 +4648,7 @@ export class SceneScriptSystem {
    */
   private applyPostPointerMotion(): void {
     if (!this.bridge || !this.entityStore) return
+    const t0 = performance.now()
     // Once per session so hard-reload proves the PE motion path without spam.
     if (!(SceneScriptSystem as { _peMotionV5Logged?: boolean })._peMotionV5Logged) {
       ;(SceneScriptSystem as { _peMotionV5Logged?: boolean })._peMotionV5Logged = true
@@ -4616,9 +4657,11 @@ export class SceneScriptSystem {
         'color:#0f0;font-size:12px;font-weight:bold'
       )
     }
+    // Frame law: peel only — fullDump must stay 0 (COD / AAA pointer budget).
     this.flushMeshRendererMaterialsFromPendingDiff()
     this.flushTweenAndTransformFromPendingDiff()
     this.flushGltfContainerFromPendingDiff()
+    perfNotePointerEdge(performance.now() - t0, false)
     // Click VFX / select rings: light sync — cooperative frames own the backlog.
     this.tweenBridge?.sync(this.view)
     if (this.tweenBridge?.hasLiveTweens()) {

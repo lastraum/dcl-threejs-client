@@ -4897,54 +4897,76 @@ export class SceneScriptSystem {
   }
 
   /**
-   * Same-edge click VFX: MeshRenderer / GltfNodeModifiers puts only (cap 12).
+   * Same-edge click VFX: Transform + MeshRenderer + Material for click markers.
    * Full Gltf attach stays on async structure lane — not mid-PE plaza cook.
+   * Must include Transform with MeshRenderer or markers spawn at origin / invisible.
    */
   private flushPointerClickVisualStructure(): void {
     if (!this.bridge || !this.entityStore || !this.pendingDiff.size) return
     if (!this.bridge.canConsumeDiff()) return
-    const { MeshRenderer, GltfNodeModifiers, Material } = this.readComponents
-    const want = new Set([
+    const { MeshRenderer, GltfNodeModifiers, Material, Transform, VisibilityComponent } =
+      this.readComponents
+    const visualIds = new Set([
       MeshRenderer.componentId,
       GltfNodeModifiers.componentId,
       Material.componentId
     ])
+    const withVisual = new Set([
+      ...visualIds,
+      Transform.componentId,
+      VisibilityComponent.componentId
+    ])
     const slice = new Map<Entity, Map<number, ProjectionChangeKind>>()
     for (const [entity, comps] of this.pendingDiff) {
-      if (slice.size >= 12) break
-      const sub = new Map<number, ProjectionChangeKind>()
-      for (const [cid, kind] of comps) {
-        if (want.has(cid)) sub.set(cid, kind)
-      }
-      if (!sub.size) continue
+      if (slice.size >= 16) break
+      // Only entities that actually create a click marker / select ring this edge.
+      const hasVisual = [...visualIds].some((id) => comps.has(id))
+      if (!hasVisual) continue
       // Skip heavy GltfContainer attaches on the pointer edge.
       if (comps.has(this.readComponents.GltfContainer.componentId)) continue
+      const sub = new Map<number, ProjectionChangeKind>()
+      for (const [cid, kind] of comps) {
+        if (withVisual.has(cid)) sub.set(cid, kind)
+      }
+      if (!sub.size) continue
       slice.set(entity, sub)
       for (const cid of sub.keys()) comps.delete(cid)
       this.clearPendingEntityIfEmpty(entity)
     }
     if (!slice.size) return
     const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+    // Sync path so the marker is visible this frame (void async was racing rAF).
     void this.bridge.consumeDiff(slice, this.view, tweenRefresh)
     this.publishPendingDiffPerf()
   }
 
   /**
-   * After PE click inject: one pointer-budgeted lane drain (not dual peels).
-   * Never full pendingDiff dump. Structure only up to POINTER_STRUCTURE_ENTITIES.
+   * After PE click inject: motion + click-marker structure + material, then particles.
+   * Never full pendingDiff dump. Gltf structure stays on async frames.
    */
   private applyPostPointerMotion(): void {
     if (!this.bridge || !this.entityStore) return
     const t0 = performance.now()
     const F = SceneScriptSystem.FRAME
-    // Motion + material only (no full structure). Click VFX is usually Tween/Material/
-    // Particle; MeshRenderer create is drained on the next async frame (not lost).
+    // 1) Transforms first (unit move + click-marker pose) — sync.
+    this.flushTweenAndTransformFromPendingDiff({
+      pointerEdge: true,
+      hardMs: F.POINTER_MOTION_MS
+    })
+    // 2) Click-marker MeshRenderer + remaining Transform/Material on those entities.
+    this.flushPointerClickVisualStructure()
+    // 3) Scalar materials (including marker colors).
+    this.flushMeshRendererMaterialsFromPendingDiff({
+      pointerEdge: true,
+      hardMs: F.POINTER_MATERIAL_MS,
+      entityCap: 32
+    })
+    // 4) Any residual motion/material from unit select (async, non-blocking).
     void this.drainPendingDiffLanes({
       pointerEdge: true,
       deadlineMs: F.POINTER_MOTION_MS + F.POINTER_MATERIAL_MS
     }).then(() => {
-      const edgeMs = performance.now() - t0
-      perfNotePointerEdge(edgeMs, false)
+      perfNotePointerEdge(performance.now() - t0, false)
     })
     // Click VFX / select rings: light time advance — cooperative frames own backlog.
     this.tweenBridge?.sync(this.view)
@@ -4952,8 +4974,6 @@ export class SceneScriptSystem {
       this.tweenBridge.update(1 / 30, this.view)
       this.markTweenColliderPosesDirty()
     }
-    // Ensure new click-marker MeshRenderers attach same edge (tiny structure budget).
-    this.flushPointerClickVisualStructure()
     void this.particleBridge?.sync(this.view)
     this.particleBridge?.update(1 / 30)
     if (this.pointerStructureDirty) {

@@ -503,11 +503,34 @@ export class PortableExperienceManager {
     }
   }
 
-  async tickAsync(): Promise<PhysicsColliderDesc[]> {
+  /** Round-robin cursor — at most one PE full renderer pass when apply budget is shared. */
+  private asyncFullWorkCursor = 0
+
+  /**
+   * COD F1 — PE workers share apply budget with secondaries.
+   * When `applyBudgetMs` is tight, only one PE does full syncRenderer; others dirty colliders only.
+   */
+  async tickAsync(opts?: { applyBudgetMs?: number }): Promise<PhysicsColliderDesc[]> {
     if (!this.cache) return []
     const descs: PhysicsColliderDesc[] = []
-    for (const worker of this.workers.values()) {
-      descs.push(...(await worker.tickAsync(this.primaryScene, this.cache)))
+    const workers = [...this.workers.values()]
+    if (!workers.length) return descs
+
+    const budgetMs = opts?.applyBudgetMs
+    // Any positive residual grants one fullWork (World floors at 0.5ms under load).
+    const allowFull = budgetMs === undefined || budgetMs > 0
+    const fullIdx = allowFull ? this.asyncFullWorkCursor++ % workers.length : -1
+    const t0 = performance.now()
+
+    for (let i = 0; i < workers.length; i++) {
+      const worker = workers[i]!
+      // After first full PE, if wall budget exhausted, remainder dirty-only.
+      const spent = performance.now() - t0
+      const stillRoom = budgetMs === undefined || spent < budgetMs
+      const fullWork = allowFull && stillRoom && i === fullIdx
+      descs.push(
+        ...(await worker.tickAsync(this.primaryScene, this.cache, { fullWork }))
+      )
     }
     return descs
   }

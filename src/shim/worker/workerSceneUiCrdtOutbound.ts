@@ -819,31 +819,73 @@ export const UI_TRANSFORM_COMPONENT_ID = 1050
 
 /**
  * Content-aware UI mount snapshot fingerprint (worker post dedupe + main reseed skip).
- * Must include UiText.value and layout width/height — entity:componentId alone made
- * timer/score updates look identical and get dropped after the first post.
+ * Must track real paint-affecting fields — entity:componentId alone made timer/score
+ * (and display/opacity/input) look identical and get dropped after the first post.
+ * Keep worker + main on this single helper (COD C3).
  */
 export function uiMountSnapshotContentFp(
   snapshot: readonly WorkerUiMountSnapshotRow[]
 ): string {
   if (!snapshot.length) return '0'
   const parts: string[] = []
-  const n = Math.min(snapshot.length, 96)
+  // Cap sample size but cover more of large HUDs (was 96 → false-match tail).
+  const n = Math.min(snapshot.length, 160)
   for (let i = 0; i < n; i++) {
     const r = snapshot[i]!
     const v = r.value
     let payload = ''
     if (v && typeof v === 'object') {
       const o = v as Record<string, unknown>
+      const cid = r.componentId
       // UiText (1052)
-      if (typeof o.value === 'string') payload = `t${o.value}`
-      // UiTransform width/height (HP bars grow without entity churn)
-      else if (o.width !== undefined || o.height !== undefined) {
-        payload = `wh${o.width ?? ''},${o.height ?? ''}`
+      if (cid === 1052 || typeof o.value === 'string') {
+        payload = `t${typeof o.value === 'string' ? o.value : ''}`
       }
-      // UiBackground color alpha (fades)
-      else if (o.color && typeof o.color === 'object') {
-        const c = o.color as { r?: number; g?: number; b?: number; a?: number }
-        payload = `c${c.r ?? 0},${c.g ?? 0},${c.b ?? 0},${c.a ?? 0}`
+      // UiInput (1093)
+      else if (cid === 1093) {
+        payload = `in${typeof o.value === 'string' ? o.value : ''}`
+      }
+      // UiDropdown (1094)
+      else if (cid === 1094) {
+        payload = `dd${o.selectedIndex ?? o.value ?? ''}`
+      }
+      // UiBackground (1053) — color + texture src (fades / image swaps)
+      else if (cid === 1053) {
+        const c = o.color as { r?: number; g?: number; b?: number; a?: number } | undefined
+        const col =
+          c && typeof c === 'object'
+            ? `${c.r ?? 0},${c.g ?? 0},${c.b ?? 0},${c.a ?? 0}`
+            : ''
+        let src = ''
+        const t = o.texture as Record<string, unknown> | string | undefined
+        if (typeof t === 'string') src = t
+        else if (t && typeof t === 'object') {
+          if (typeof t.src === 'string') src = t.src
+          else {
+            const nested = t.tex as { texture?: { src?: string } } | undefined
+            if (typeof nested?.texture?.src === 'string') src = nested.texture.src
+            else {
+              const tex = t.texture as { src?: string } | undefined
+              if (typeof tex?.src === 'string') src = tex.src
+            }
+          }
+        }
+        payload = `bg${col}|${src}`
+      }
+      // UiTransform (1050) — layout + visibility (display/opacity/parent/size/pos)
+      else if (cid === 1050 || o.width !== undefined || o.height !== undefined || o.display !== undefined) {
+        payload = [
+          `d${o.display ?? ''}`,
+          `o${o.opacity ?? ''}`,
+          `p${o.parent ?? ''}`,
+          `wh${o.width ?? ''},${o.height ?? ''}`,
+          `xy${(o.position as { x?: unknown } | undefined)?.x ?? o.positionX ?? ''},${(o.position as { y?: unknown } | undefined)?.y ?? o.positionY ?? ''}`
+        ].join(',')
+      }
+      // PointerEvents (1062) — presence only (structure of PE list)
+      else if (cid === 1062) {
+        const pe = o.pointerEvents
+        payload = `pe${Array.isArray(pe) ? pe.length : pe ? 1 : 0}`
       }
     }
     parts.push(`${r.entity}:${r.componentId}:${payload}`)

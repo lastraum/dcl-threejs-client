@@ -2834,33 +2834,8 @@ export class SceneScriptSystem {
         if (pointerUiMountBatch) this.projection.endForceWorkerUiPuts()
       }
 
-      // Pixelwars paint + PE click-move: Material/Tween must not wait on empty-UI serial.
-      // Also peel GltfContainer — PE material/transform-only flushes left 800+ Gltf puts
-      // stranded so prop/unit/building GLBs never attached after race start.
-      if (hasPayload || this.pendingDiff.size > 0) {
-        try {
-          this.flushMeshRendererMaterialsFromPendingDiff()
-        } catch (err) {
-          console.warn(
-            `[scene] material flush aborted — ${err instanceof Error ? err.message : String(err)}`
-          )
-        }
-        try {
-          this.flushTweenAndTransformFromPendingDiff()
-        } catch (err) {
-          console.warn(
-            `[scene] tween/transform flush aborted — ${err instanceof Error ? err.message : String(err)}`
-          )
-        }
-        try {
-          this.flushGltfContainerFromPendingDiff()
-        } catch (err) {
-          console.warn(
-            `[scene] gltf flush aborted — ${err instanceof Error ? err.message : String(err)}`
-          )
-        }
-      }
-
+      // COD C2 — mount commit + paint BEFORE structure/material peels so select HUD /
+      // menus never wait behind a large pendingDiff drain on the same outbound batch.
       if (latestUiEntities !== undefined) this.lastOutboundUiEntitiesKey = uiKey
       if (hasPayload || batchTouchesUi || projectionDeletes.length > 0 || mountChanged) {
         if (SCENE_UI_LOG && (hasPayload || hasUiMountSnapshot)) {
@@ -2907,6 +2882,32 @@ export class SceneScriptSystem {
       }
       if (this.pendingUiEntities !== undefined && (hasUiMountSnapshot || batchTouchesUi)) {
         this.flushUiFrame()
+      }
+
+      // Material/Tween/Gltf peels after UI so backlog cannot starve mount paint.
+      // Still run on the same batch — PE click-move + board recolor must not wait empty-UI serial.
+      if (hasPayload || this.pendingDiff.size > 0) {
+        try {
+          this.flushMeshRendererMaterialsFromPendingDiff()
+        } catch (err) {
+          console.warn(
+            `[scene] material flush aborted — ${err instanceof Error ? err.message : String(err)}`
+          )
+        }
+        try {
+          this.flushTweenAndTransformFromPendingDiff()
+        } catch (err) {
+          console.warn(
+            `[scene] tween/transform flush aborted — ${err instanceof Error ? err.message : String(err)}`
+          )
+        }
+        try {
+          this.flushGltfContainerFromPendingDiff()
+        } catch (err) {
+          console.warn(
+            `[scene] gltf flush aborted — ${err instanceof Error ? err.message : String(err)}`
+          )
+        }
       }
 
       if (this.pointerAwaitingWorkerApply) {
@@ -5074,6 +5075,13 @@ export class SceneScriptSystem {
 
     // Diff consumer at runtime; full walk only while asset hydration is active.
     if (this.bridge.canConsumeDiff()) {
+      // COD C2 — UI paint/mount lag is independent of structure backlog.
+      // Flush deferred mount before budgeted consumeDiff so select HUD / menus
+      // never wait on pendingDiff drain (was: only after structure slice).
+      if (this.projectionLagPendingUi || this.pendingUiEntities !== undefined) {
+        this.flushUiFrame()
+      }
+
       if (!this.pendingDiff.size) {
         await this.bridge.drainPendingWork()
         this.syncSceneUiAfterRenderer()

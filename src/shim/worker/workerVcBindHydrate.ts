@@ -51,19 +51,6 @@ function worldTransformUnderRoot(
   }
 }
 
-function transformKey(tr: PlayerFrameBoundVcTransform): string {
-  return [
-    tr.position.x.toFixed(3),
-    tr.position.y.toFixed(3),
-    tr.position.z.toFixed(3),
-    tr.rotation.x.toFixed(4),
-    tr.rotation.y.toFixed(4),
-    tr.rotation.z.toFixed(4),
-    tr.rotation.w.toFixed(4),
-    tr.parent ?? 0
-  ].join(',')
-}
-
 function isReserved(engine: IEngine, id: number): boolean {
   return (
     id === 0 ||
@@ -182,13 +169,16 @@ export function vcBindGraphKey(pkg: PlayerFrameBoundVc | null): string {
       .join(',')
     return [`vc=${pkg.entity}`, `lookAt=${lookAt}`, 'flat=1', `anchors=${anchorIds}`].join('|')
   }
-  // Follow / hierarchy: entity ids + VC local offset only (not cameraParent world pose).
+  // Follow / hierarchy: structure only — parent/lookAt/scale.
+  // Continuous local pos/rot rides `vc-pose-live` (COD D1). Including full transformKey
+  // re-hydrated every bob/zoom frame → FPS death + lens flicker.
+  const s = pkg.transform.scale
   return [
     `vc=${pkg.entity}`,
     `parent=${parent}`,
     `lookAt=${lookAt}`,
     'flat=0',
-    `local=${transformKey(pkg.transform)}`
+    `scale=${s?.x ?? 1},${s?.y ?? 1},${s?.z ?? 1}`
   ].join('|')
 }
 

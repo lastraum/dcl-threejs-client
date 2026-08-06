@@ -1960,10 +1960,17 @@ export class World {
         }
         const bridgesOnlyMs = performance.now() - t2
         // PE + secondary async projection + multi-scene colliders into PhysX.
+        // COD F1 — primary already took full apply above; PE/secondary share remainder.
         const t3 = performance.now()
         let multiMs = 0
         if (this.multiScene) {
-          const { colliders, invalidatePhysIds } = await this.multiScene.tickAsync()
+          // Async multi-worker slice of ~8ms wall; leftover after primary peel/bridges.
+          const ASYNC_MULTI_BUDGET_MS = 8
+          const primarySpent = t3 - t0
+          const applyBudgetMs = Math.max(0.5, ASYNC_MULTI_BUDGET_MS - primarySpent)
+          const { colliders, invalidatePhysIds } = await this.multiScene.tickAsync({
+            applyBudgetMs
+          })
           for (const id of invalidatePhysIds) {
             this.physics.invalidateStaticCollider(id)
           }

@@ -890,22 +890,33 @@ export class SecondaryLiveManager {
    * Async projection + bridges for live secondaries.
    * Scripts still run every sync frame (tickSync); full renderer/bridges are staggered
    * so N neighbors cannot each pay plaza-scale attach/animator cost on the same rAF.
+   *
+   * COD F1 — when `applyBudgetMs` is exhausted (PE already spent remainder), all
+   * secondaries dirty-collider-only this frame (no full syncRenderer).
    */
-  async tickAsync(): Promise<PhysicsColliderDesc[]> {
+  async tickAsync(opts?: { applyBudgetMs?: number }): Promise<PhysicsColliderDesc[]> {
     if (!this.cache) return []
     const descs: PhysicsColliderDesc[] = []
     const slots = [...this.slots.values()]
     const secondaries = slots.filter((s) => !s.isTertiary)
+    const budgetMs = opts?.applyBudgetMs
+    // Any positive residual grants one fullWork (World floors at 0.5ms under load).
+    const allowFull = budgetMs === undefined || budgetMs > 0
     const fullIdx =
-      secondaries.length > 0 ? this.asyncFullWorkCursor++ % secondaries.length : -1
+      allowFull && secondaries.length > 0
+        ? this.asyncFullWorkCursor++ % secondaries.length
+        : -1
     const fullSlot = fullIdx >= 0 ? secondaries[fullIdx] : null
+    const t0 = performance.now()
 
     for (const slot of slots) {
       if (slot.isTertiary) {
         descs.push(...(await slot.tickAsync(this.primaryScene, this.cache)))
         continue
       }
-      const fullWork = slot === fullSlot
+      const spent = performance.now() - t0
+      const stillRoom = budgetMs === undefined || spent < budgetMs
+      const fullWork = allowFull && stillRoom && slot === fullSlot
       descs.push(
         ...(await slot.tickAsync(this.primaryScene, this.cache, { fullWork }))
       )

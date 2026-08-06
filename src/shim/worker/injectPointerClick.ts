@@ -90,7 +90,8 @@ export function injectPointerClickDownOnEngine(engine: IEngine, body: InjectPoin
     hit,
     analog: undefined
   }
-  // Only scene-registered targets — never invent PE on PlayerEntity.
+  // Targets come from main: real PE mesh chain, scene UI leaf, or level-state PlayerEntity
+  // (global isPressed when no PE in range). Do not invent extra targets here.
   for (const entity of pointerDownTargets(body)) {
     PointerEventsResult.addValue(entity as Entity, down)
   }

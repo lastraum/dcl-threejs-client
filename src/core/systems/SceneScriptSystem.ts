@@ -4917,7 +4917,13 @@ export class SceneScriptSystem {
       VisibilityComponent.componentId
     ])
 
-    type Cand = { entity: Entity; comps: Map<number, ProjectionChangeKind>; missingLeaf: boolean }
+    type Cand = {
+      entity: Entity
+      comps: Map<number, ProjectionChangeKind>
+      missingLeaf: boolean
+      /** ALPHA_BLEND + emissive click discs (DecentraCraft Vf) beat fog recolors. */
+      glowMarker: boolean
+    }
     const candidates: Cand[] = []
     for (const [entity, comps] of this.pendingDiff) {
       const hasVisual = [...visualIds].some((id) => comps.has(id))
@@ -4931,9 +4937,13 @@ export class SceneScriptSystem {
       // Missing leaf = click marker / new fog tile — must win over recolor of 200 attached planes.
       const missingLeaf =
         MeshRenderer.has(entity) && !this.bridgeHasMeshRendererLeaf(entity)
-      candidates.push({ entity, comps: sub, missingLeaf })
+      const glowMarker = this.isPointerClickGlowMarker(entity)
+      candidates.push({ entity, comps: sub, missingLeaf, glowMarker })
     }
-    candidates.sort((a, b) => Number(b.missingLeaf) - Number(a.missingLeaf))
+    candidates.sort((a, b) => {
+      if (a.glowMarker !== b.glowMarker) return Number(b.glowMarker) - Number(a.glowMarker)
+      return Number(b.missingLeaf) - Number(a.missingLeaf)
+    })
 
     const slice = new Map<Entity, Map<number, ProjectionChangeKind>>()
     const matEntities: Entity[] = []
@@ -4966,6 +4976,38 @@ export class SceneScriptSystem {
   /** True when entity already has a MeshRenderer primitive or GPU instance leaf. */
   private bridgeHasMeshRendererLeaf(entity: Entity): boolean {
     return this.bridge?.hasMeshRendererLeaf(entity) === true
+  }
+
+  /**
+   * Click-move ground ring (and similar): MeshRenderer + PBR ALPHA_BLEND + high emissive,
+   * no texture maps. Prefer these over fog Material recolors in the pointer-edge peel.
+   */
+  private isPointerClickGlowMarker(entity: Entity): boolean {
+    const { MeshRenderer, Material } = this.readComponents
+    if (!MeshRenderer.has(entity) || !Material.has(entity)) return false
+    const pb = Material.get(entity) as {
+      material?: {
+        $case?: string
+        pbr?: {
+          transparencyMode?: number
+          emissiveIntensity?: number
+          emissiveColor?: { r?: number; g?: number; b?: number }
+          texture?: unknown
+          emissiveTexture?: unknown
+        }
+      }
+    } | null
+    if (!pb || pb.material?.$case !== 'pbr') return false
+    const pbr = pb.material.pbr
+    if (!pbr) return false
+    if (pbr.texture || pbr.emissiveTexture) return false
+    const mode = pbr.transparencyMode
+    if (mode !== 2 && mode !== 3) return false
+    const intensity = pbr.emissiveIntensity ?? 1
+    if (intensity < 1.5) return false
+    const e = pbr.emissiveColor
+    const elum = (e?.r ?? 0) + (e?.g ?? 0) + (e?.b ?? 0)
+    return elum > 0.05
   }
 
   /**

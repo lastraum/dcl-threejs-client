@@ -100,14 +100,24 @@ export function configureEmissiveRendering(
     material.emissiveMap &&
     material.map === material.emissiveMap
   )
-  // Flame/LED sprites + map-less click markers (DecentraCraft ground ring: ALPHA_BLEND,
-  // emissiveIntensity 1.6, no map). Opaque shared albedo/emissive floor bake — never sprite.
-  const glowSprite =
+  // Glow markers (narrow) — never promote ordinary floors/fog into this path:
+  // 1) Map-less ALPHA_BLEND click rings (DecentraCraft Vf: alpha 0.75, emissive 1.6)
+  // 2) Flame/LED sheets driven by emissiveMap (not opaque shared albedo+emissive bake)
+  // Prior over-broad rule (any intensity≥1.5 + !map) washed textured ground during load.
+  const emissiveLum =
+    material.emissive.r + material.emissive.g + material.emissive.b
+  const mapLessClickRing =
+    alphaBlend &&
+    !hasEmissiveMap &&
+    !material.map &&
     intensity >= 1.5 &&
-    (alphaBlend || !material.map || (sharedAlbedoEmissive && material.transparent)) &&
-    (!!hasEmissiveMap ||
-      alphaBlend ||
-      material.emissive.r + material.emissive.g + material.emissive.b > 0.05)
+    emissiveLum > 0.05
+  const flameOrLedSprite =
+    !!hasEmissiveMap &&
+    intensity >= 1.5 &&
+    !sharedAlbedoEmissive &&
+    (alphaBlend || material.transparent || !material.map)
+  const glowSprite = mapLessClickRing || flameOrLedSprite
 
   if (glowSprite) {
     // Keep tinted albedo for solid-color rings (map-less); black only when emissiveMap drives.
@@ -118,16 +128,19 @@ export function configureEmissiveRendering(
     material.roughness = 1
     material.envMapIntensity = 0
     material.toneMapped = false
-    if (material.emissive.r + material.emissive.g + material.emissive.b < 1e-4) {
+    if (emissiveLum < 1e-4) {
       material.emissive.setRGB(1, 1, 1)
     }
     // Scene author intensity (fire ~6). Slight bump so HDR tone-map still reads hot.
     material.emissiveIntensity = Math.max(intensity, intensity * 1.15)
-    if (alphaBlend) {
+    if (alphaBlend || mapLessClickRing) {
       material.transparent = true
+      // Rings must not write depth or fog/cover planes hide them under top-down VC.
       material.depthWrite = false
     }
     material.blending = THREE.NormalBlending
+    // Draw after terrain/fog so ALPHA_BLEND discs stay visible.
+    material.depthTest = true
     applyDirectIntensity(material, 0)
     return
   }

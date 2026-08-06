@@ -3995,8 +3995,8 @@ export class ThreeBridge {
       if (alpha < 0.999) {
         baseMat.transparent = true
         baseMat.opacity = alpha
-        // Fog cover needs depthWrite or coplanar holes appear under top-down VC.
-        baseMat.depthWrite = alpha > 0.5
+        // Fog cover (explored ~0.45) needs depthWrite or moon ground punches through VC.
+        baseMat.depthWrite = alpha > 0.4
       }
       const bucketKey = this.meshRendererInstanceBucketKey(entity)
       // Geo/matCase bucket only — leave if already in this bucket (color stays instanceColor).

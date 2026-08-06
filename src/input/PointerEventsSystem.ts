@@ -50,6 +50,12 @@ export type PointerHit = {
   inRange: boolean
   /** Screen-space ECS UI — skip 3D distance checks. */
   isSceneUi?: boolean
+  /**
+   * Global IA_POINTER edge on PlayerEntity when no PE mesh is in range.
+   * Updates inputSystem.isPressed / isTriggered only — does NOT invent a ground-plane
+   * hit.position (scenes aim via PrimaryPointerInfo.worldRayDirection × CameraEntity).
+   */
+  isLevelState?: boolean
 }
 
 type PointerDeps = {
@@ -118,6 +124,11 @@ export class PointerEventsSystem {
   private primaryKeyDown = false
   private readonly pendingPointerDown = new Map<InputActionValue, PointerHit | null>()
   private readonly pendingPointerUp = new Set<InputActionValue>()
+  /**
+   * Buttons whose PET_DOWN was level-state on PlayerEntity (no PE mesh).
+   * Must pair PET_UP without requiring a PointerEvents component on PlayerEntity.
+   */
+  private readonly levelStateButtons = new Set<InputActionValue>()
 
   private hoverEntity: Entity | null = null
   private lastHit: PointerHit | null = null
@@ -177,6 +188,10 @@ export class PointerEventsSystem {
     this.deps = null
     this.pointerTargets.length = 0
     this.pointerEntitySet.clear()
+    this.levelStateButtons.clear()
+    this.pendingPointerDown.clear()
+    this.pendingPointerUp.clear()
+    this.downEntityByButton.clear()
   }
 
   bind(deps: PointerDeps): void {
@@ -444,10 +459,26 @@ export class PointerEventsSystem {
     const button = mouseButtonToInputAction(e.button)
     const coords = this.pointerClientCoords(e.clientX, e.clientY)
     const hit = this.resolveWorldInteractHit(button)
-    // Only real scene PE / UI hits — never invent a PlayerEntity ground inject.
-    // Scenes that need free ground aim (e.g. DecentraCraft) use PrimaryPointerInfo +
-    // CameraEntity ray themselves; isTriggered(IA_POINTER) still works without PE hit.
+    // Real PE / UI when in range. On IA_POINTER miss/OOR: level-state PET on PlayerEntity so
+    // inputSystem.isPressed / isTriggered work (Explorer global button). Aim stays PPI ×
+    // CameraEntity in the scene — never invent a y=0 ground PE hit.position.
     if (!this.canQueuePointerDown(button, hit)) {
+      if (button === InputAction.IA_POINTER) {
+        const levelHit = this.buildLevelStatePointerHit()
+        if (levelHit) {
+          const player = this.deps.view.PlayerEntity
+          this.levelStateButtons.add(button)
+          this.downEntityByButton.set(button, player)
+          this.pendingPointerDown.set(button, levelHit)
+          clientDebugLog.log(
+            'pointer',
+            `click → level-state PlayerEntity (no PE in range; entities=${this.pointerEntitySet.size} meshes=${this.pointerTargets.length})`,
+            { alsoConsole: true }
+          )
+          this.deps.flushPointerCrdt?.()
+          return
+        }
+      }
       if (hit) {
         this.logInteractBlocked(mouseInteractLabel(button, e.button), button, hit)
       } else if (!this.shouldLogNoTarget(button, coords.x, coords.y)) {
@@ -477,6 +508,7 @@ export class PointerEventsSystem {
       }
       return
     }
+    this.levelStateButtons.delete(button)
     const targetEntity = this.resolvePointerResultEntity(hit!.entity, button)
     this.downEntityByButton.set(button, targetEntity)
     this.pendingPointerDown.set(button, hit)
@@ -487,7 +519,7 @@ export class PointerEventsSystem {
           : `click → entity ${targetEntity}`
       clientDebugLog.log('pointer', label, { alsoConsole: true })
     }
-    // Universal Explorer press edge: flush PET_DOWN immediately (world + UI).
+    // Universal Explorer press edge: flush PET_DOWN immediately (world + UI + level-state).
     // Same-tick DOWN+UP on mouseup alone never leaves multi-frame isPressed for any scene.
     this.deps.flushPointerCrdt?.()
   }
@@ -712,6 +744,15 @@ export class PointerEventsSystem {
   private tryWritePointerDown(button: InputActionValue, preferredHit: PointerHit | null = null): void {
     if (!this.deps) return
 
+    // Global IA_POINTER on PlayerEntity — no PE component required (same as keyboard PETs).
+    if (preferredHit?.isLevelState) {
+      const player = this.deps.view.PlayerEntity
+      this.levelStateButtons.add(button)
+      this.downEntityByButton.set(button, player)
+      this.writeResult(this.deps.ecs, player, preferredHit, PointerEventType.PET_DOWN, button)
+      return
+    }
+
     let activeHit = preferredHit ?? this.pickAtPointer()
     // Proximity is E/F-style interact only — never for left-click (phantom theater/NPC hits).
     if (!activeHit && this.allowsProximityFallback(button)) {
@@ -738,6 +779,7 @@ export class PointerEventsSystem {
     }
     if (!this.hitAllowsPointerDown(spec, button, activeHit)) return
 
+    this.levelStateButtons.delete(button)
     this.downEntityByButton.set(button, targetEntity)
     this.writeResult(this.deps.ecs, targetEntity, activeHit, PointerEventType.PET_DOWN, button)
   }
@@ -818,6 +860,8 @@ export class PointerEventsSystem {
 
   private canQueuePointerDown(button: InputActionValue, hit: PointerHit | null): boolean {
     if (!this.deps || !hit) return false
+    // Level-state IA_POINTER on PlayerEntity — no PE mesh required.
+    if (hit.isLevelState) return button === InputAction.IA_POINTER
     const targetEntity = this.resolvePointerResultEntity(hit.entity, button)
     if (hit.isSceneUi) {
       const spec = this.uiPointerSpec(targetEntity)
@@ -827,6 +871,30 @@ export class PointerEventsSystem {
     const spec = this.deps.ecs.PointerEvents.getOrNull(targetEntity)
     if (!hasPointerEvent(spec, PointerEventType.PET_DOWN, button)) return false
     return pointerEventInRange(spec, PointerEventType.PET_DOWN, button, hit)
+  }
+
+  /**
+   * Global pointer edge when no PE mesh is under the cursor / in range.
+   * Hit geometry is intentionally empty (camera origin) — scenes must not treat this as a
+   * ground pick. Ground aim uses PrimaryPointerInfo.worldRayDirection × CameraEntity.
+   * Mirrors keyboard injectSceneKey (PlayerEntity PET with zero hit).
+   */
+  private buildLevelStatePointerHit(): PointerHit | null {
+    if (!this.deps) return null
+    this.deps.camera.updateMatrixWorld(true)
+    this.refreshPointerRay(this.deps.camera)
+    this.deps.camera.getWorldPosition(_camPos)
+    return {
+      entity: this.deps.view.PlayerEntity,
+      point: _camPos.clone(),
+      distance: 0,
+      normal: new THREE.Vector3(0, 1, 0),
+      priority: -1,
+      cameraDistance: 0,
+      playerDistance: 0,
+      inRange: true,
+      isLevelState: true
+    }
   }
 
   private hitAllowsPointerDown(
@@ -873,6 +941,29 @@ export class PointerEventsSystem {
     if (downEntity === undefined) return false
 
     this.deps.camera.getWorldPosition(_camPos)
+
+    // Level-state PET_DOWN had no PointerEvents on PlayerEntity — always pair PET_UP.
+    if (this.levelStateButtons.has(button) || preferredHit?.isLevelState) {
+      this.levelStateButtons.delete(button)
+      const upHit: PointerHit =
+        preferredHit?.isLevelState
+          ? preferredHit
+          : this.buildLevelStatePointerHit() ?? {
+              entity: downEntity,
+              point: _camPos.clone(),
+              distance: 0,
+              normal: new THREE.Vector3(0, 1, 0),
+              priority: -1,
+              cameraDistance: 0,
+              playerDistance: 0,
+              inRange: true,
+              isLevelState: true
+            }
+      upHit.isLevelState = true
+      upHit.entity = downEntity
+      this.writeResult(this.deps.ecs, downEntity, upHit, PointerEventType.PET_UP, button)
+      return true
+    }
 
     const isSceneUi = this.deps.ecs.UiTransform.has(downEntity)
     const spec = isSceneUi ? this.uiPointerSpec(downEntity) : this.deps.ecs.PointerEvents.getOrNull(downEntity)
@@ -1465,11 +1556,16 @@ export class PointerEventsSystem {
       analog: undefined
     }
     let targets: Entity[]
-    const bubbleFrom = hit.isSceneUi ? hit.entity : targetEntity
-    targets = this.collectPointerResultTargets(bubbleFrom, button, state)
-    // react-ecs onMouseDown registers on the resolved leaf — never bubble UI inject to scrim ancestors.
-    if (hit.isSceneUi) {
+    // Level-state / reserved player: single target (no PE bubble walk).
+    if (hit.isLevelState) {
       targets = [targetEntity]
+    } else {
+      const bubbleFrom = hit.isSceneUi ? hit.entity : targetEntity
+      targets = this.collectPointerResultTargets(bubbleFrom, button, state)
+      // react-ecs onMouseDown registers on the resolved leaf — never bubble UI inject to scrim ancestors.
+      if (hit.isSceneUi) {
+        targets = [targetEntity]
+      }
     }
     for (const entity of targets) {
       ecs.PointerEventsResult.addValue(entity, result)

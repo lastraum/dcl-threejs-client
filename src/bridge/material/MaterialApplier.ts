@@ -540,6 +540,12 @@ export class MaterialApplier {
       mesh.material = m
     }
 
+    const alpha =
+      (isPbr ? (inner as PbrMaterial).albedoColor?.a : (inner as UnlitMaterial).diffuseColor?.a) ?? 1
+    // Dedicated alphaMap only — do not treat albedo map as AUTO cutout (Unity parity).
+    const hasAlphaMap =
+      !!(m as THREE.MeshPhysicalMaterial).alphaMap || !!(m as THREE.MeshBasicMaterial).alphaMap
+
     if (m instanceof THREE.MeshPhysicalMaterial) {
       const pbr = inner as PbrMaterial
       applyPbrColors(m, pbr)
@@ -549,32 +555,29 @@ export class MaterialApplier {
       if (emissiveUnion && m.map && textureUnionSameSrc(emissiveUnion, mainUnion)) {
         m.emissiveMap = m.map
       }
-      // Only glow once maps exist — black+no maps = invisible fire planes.
+      // Transparency first, then glow — glow re-forces depthWrite=false for click rings.
+      applyTransparency(m, alpha, inner.alphaTest, pbr.transparencyMode, hasAlphaMap)
       configureEmissiveRendering(
         m,
         pbr.emissiveIntensity,
         !!m.emissiveMap,
         pbr.transparencyMode
       )
+      applyGlowMarkerRenderOrder(mesh, m, pbr.transparencyMode, pbr.emissiveIntensity)
     } else {
       const diffuse = (inner as UnlitMaterial).diffuseColor
       if (diffuse) {
         m.color.setRGB(diffuse.r ?? 1, diffuse.g ?? 1, diffuse.b ?? 1)
       }
+      applyTransparency(
+        m,
+        alpha,
+        inner.alphaTest,
+        isPbr ? (inner as PbrMaterial).transparencyMode : MTM_AUTO,
+        hasAlphaMap
+      )
     }
 
-    const alpha =
-      (isPbr ? (inner as PbrMaterial).albedoColor?.a : (inner as UnlitMaterial).diffuseColor?.a) ?? 1
-    // Dedicated alphaMap only — do not treat albedo map as AUTO cutout (Unity parity).
-    const hasAlphaMap =
-      !!(m as THREE.MeshPhysicalMaterial).alphaMap || !!(m as THREE.MeshBasicMaterial).alphaMap
-    applyTransparency(
-      m,
-      alpha,
-      inner.alphaTest,
-      isPbr ? (inner as PbrMaterial).transparencyMode : MTM_AUTO,
-      hasAlphaMap
-    )
     // Scalar-only path is terminal for color materials — honor castShadows here too.
     applyMaterialCastShadows(mesh, inner.castShadows)
     m.needsUpdate = true
@@ -685,12 +688,6 @@ export class MaterialApplier {
       // Re-apply after maps land — emissiveIntensity drives flame brightness when albedoColor is absent.
       applyPbrColors(m, pbr)
       applyPbrScalars(m, pbr)
-      configureEmissiveRendering(
-        m,
-        pbr.emissiveIntensity,
-        !!m.emissiveMap,
-        pbr.transparencyMode
-      )
     }
 
     const transparencyMode = isPbr ? (inner as PbrMaterial).transparencyMode : MTM_AUTO
@@ -705,28 +702,23 @@ export class MaterialApplier {
       transparencyMode,
       hasAlphaTextureSlot || !!alphaTex || !!m.alphaMap
     )
-    if (transparencyMode === MTM_ALPHA_BLEND || transparencyMode === MTM_ALPHA_TEST_AND_ALPHA_BLEND) {
-      m.depthWrite = false
+
+    // Glow after transparency so depthWrite=false sticks for click rings (not fog covers).
+    if (m instanceof THREE.MeshPhysicalMaterial && isPbr) {
+      const pbr = inner as PbrMaterial
+      configureEmissiveRendering(
+        m,
+        pbr.emissiveIntensity,
+        !!m.emissiveMap,
+        pbr.transparencyMode
+      )
+      applyGlowMarkerRenderOrder(mesh, m, pbr.transparencyMode, pbr.emissiveIntensity)
     }
 
     // Material.castShadows → mesh.castShadow (see applyMaterialCastShadows).
     applyMaterialCastShadows(mesh, inner.castShadows)
     // Marquees face inward (FrontSide). Dual-face DCL plane geometry already has both
     // normals — FrontSide shows both. DoubleSide only when author marks primitiveDoubleSided.
-    // Glow sprites: alpha-blend cards with high emissive only (firepit / LED sheets).
-    // Opaque floors that share albedo as emissiveMap must stay tone-mapped + depth-write.
-    const glowSprite =
-      m instanceof THREE.MeshPhysicalMaterial &&
-      (transparencyMode === MTM_ALPHA_BLEND || transparencyMode === MTM_ALPHA_TEST_AND_ALPHA_BLEND) &&
-      (m.emissiveIntensity ?? 1) >= 1.5 &&
-      !!m.emissiveMap &&
-      !(m.map && m.emissiveMap === m.map && !m.transparent)
-    if (glowSprite) {
-      m.transparent = true
-      m.depthWrite = false
-      m.blending = THREE.NormalBlending
-      m.toneMapped = false
-    }
     m.side = mesh.userData.primitiveDoubleSided === true ? THREE.DoubleSide : THREE.FrontSide
     m.needsUpdate = true
     return texturesOk && meshHasTextureMaps(mesh, pb)
@@ -1043,6 +1035,34 @@ function bakeAlphaMapGreenChannel(tex: THREE.Texture): void {
   }
 }
 
+/**
+ * Click / selection glow discs (ALPHA_BLEND + high emissive, no maps) must paint after
+ * terrain and fog-of-war boxes. renderOrder is local to transparent pass.
+ */
+function applyGlowMarkerRenderOrder(
+  mesh: THREE.Mesh,
+  m: THREE.MeshPhysicalMaterial,
+  transparencyMode: number | undefined,
+  emissiveIntensity: number | undefined
+): void {
+  const alphaBlend = transparencyMode === MTM_ALPHA_BLEND || transparencyMode === MTM_ALPHA_TEST_AND_ALPHA_BLEND
+  const intensity = emissiveIntensity ?? 1
+  const emissiveLum = m.emissive.r + m.emissive.g + m.emissive.b
+  const mapLessRing =
+    alphaBlend &&
+    !m.map &&
+    !m.emissiveMap &&
+    intensity >= 1.5 &&
+    emissiveLum > 0.05
+  if (!mapLessRing) {
+    if (mesh.renderOrder === 50) mesh.renderOrder = 0
+    return
+  }
+  mesh.renderOrder = 50
+  // Top-down VC looks at the cylinder cap; DoubleSide avoids backface cull if Y flips.
+  m.side = THREE.DoubleSide
+}
+
 function applyTransparency(
   m: THREE.MeshBasicMaterial | THREE.MeshPhysicalMaterial,
   alpha: number,
@@ -1067,8 +1087,10 @@ function applyTransparency(
   if (resolved === MTM_ALPHA_BLEND) {
     m.transparent = true
     m.opacity = alpha
-    // Click markers / glass: writing depth with blend hides coplanar rings under fog planes.
-    m.depthWrite = false
+    // Fog-of-war explored covers (DecentraCraft alpha≈0.45) need depthWrite or the moon
+    // ground texture punches through / looks "missing" under top-down VC. Click-marker
+    // glow path re-forces depthWrite=false after this (configureEmissiveRendering).
+    m.depthWrite = alpha > 0.4
     return
   }
 
@@ -1076,7 +1098,7 @@ function applyTransparency(
     m.transparent = true
     m.opacity = alpha
     m.alphaTest = alphaTest ?? 0.5
-    m.depthWrite = false
+    m.depthWrite = alpha > 0.4
     return
   }
 

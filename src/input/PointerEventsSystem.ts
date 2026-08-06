@@ -1597,6 +1597,9 @@ export class PointerEventsSystem {
         (this.deps?.ecs.UiTransform.has(targetEntity) ?? false)
       // Every scene: DOWN edge inject so isPressed sticks until UP (Explorer press lifecycle).
       // Attach PPI so worker edge tick has live screen/ray (UI chrome gate + ground ray).
+      // Ray origin/direction required for Explorer-parity RaycastHit (click VFX placement).
+      const ppi = this.buildPrimaryPointerInfo(false)
+      const dclOrigin = threeToDclVec(_ray.origin)
       this.pendingInjectPayload = {
         entity: targetEntity,
         entities: [...targets],
@@ -1610,10 +1613,16 @@ export class PointerEventsSystem {
         hitPosition: { x: dclPoint.x, y: dclPoint.y, z: dclPoint.z },
         hitNormal: { x: dclNormal.x, y: dclNormal.y, z: dclNormal.z },
         hitDistance: hit.distance,
+        hitOrigin: { x: dclOrigin.x, y: dclOrigin.y, z: dclOrigin.z },
+        hitDirection: {
+          x: ppi.worldRayDirection.x,
+          y: ppi.worldRayDirection.y,
+          z: ppi.worldRayDirection.z
+        },
         meshName: hit.meshName,
         sceneUi: isSceneUi,
         phase: 'down',
-        primaryPointer: this.buildPrimaryPointerInfo(false)
+        primaryPointer: ppi
       }
     } else if (state === PointerEventType.PET_UP) {
       const downTs = this.downTimestampByButton.get(button)
@@ -1627,6 +1636,8 @@ export class PointerEventsSystem {
           hit.isSceneUi === true ||
           downEntities.some((id) => this.deps?.ecs.UiTransform.has(id as Entity)) ||
           (this.deps?.ecs.UiTransform.has(targetEntity) ?? false)
+        const ppi = this.buildPrimaryPointerInfo(false)
+        const dclOrigin = threeToDclVec(_ray.origin)
         this.pendingInjectPayload = {
           entity: targetEntity,
           entities: [...targets],
@@ -1640,10 +1651,16 @@ export class PointerEventsSystem {
           hitPosition: { x: dclPoint.x, y: dclPoint.y, z: dclPoint.z },
           hitNormal: { x: dclNormal.x, y: dclNormal.y, z: dclNormal.z },
           hitDistance: hit.distance,
+          hitOrigin: { x: dclOrigin.x, y: dclOrigin.y, z: dclOrigin.z },
+          hitDirection: {
+            x: ppi.worldRayDirection.x,
+            y: ppi.worldRayDirection.y,
+            z: ppi.worldRayDirection.z
+          },
           meshName: hit.meshName,
           sceneUi: isSceneUi,
           phase: 'up',
-          primaryPointer: this.buildPrimaryPointerInfo(false)
+          primaryPointer: ppi
         }
       }
     }

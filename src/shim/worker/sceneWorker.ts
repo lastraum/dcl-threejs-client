@@ -1875,16 +1875,11 @@ function reassertPressedKeysOnEngine(): void {
       tickNumber
     })
   }
-  // Pointer hold (any scene using isPressed(IA_POINTER) / drag / click-move).
-  for (const action of workerPointerButtonsHeldList()) {
-    injectSceneKeyOnEngine(sceneEngine, {
-      playerEntity: player,
-      button: action,
-      state: PointerEventType.PET_DOWN,
-      timestamp: nextWorkerPointerEventTimestamp(),
-      tickNumber
-    })
-  }
+  // Intentionally no IA_POINTER reassert here.
+  // @dcl/ecs getClick pairs last UP with the previous DOWN on that entity. Reasserting
+  // PET_DOWN on PlayerEntity with hit={0,0,0} every play frame made findClick pick a
+  // zero-hit DOWN so ground click markers / move VFX never spawned (DecentraCraft).
+  // isPressed(IA_POINTER) stays true from the original inject DOWN until browser UP.
 }
 
 /** PE vehicle/drone — engine.update even when residual pointer session would block primary ticks. */

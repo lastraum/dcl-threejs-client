@@ -17,6 +17,10 @@ export type InjectPointerClickBody = {
   hitPosition: { x: number; y: number; z: number }
   hitNormal: { x: number; y: number; z: number }
   hitDistance: number
+  /** Ray origin in DCL space (Explorer RaycastHit.globalOrigin) — required for click VFX. */
+  hitOrigin?: { x: number; y: number; z: number }
+  /** Ray direction in DCL space (Explorer RaycastHit.direction). */
+  hitDirection?: { x: number; y: number; z: number }
   meshName?: string
   /**
    * Scene DOM UI (react-ecs). Affects UP target resolution only:

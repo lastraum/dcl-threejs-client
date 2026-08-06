@@ -1707,10 +1707,15 @@ initSceneEngineScheduler({
       return false
     }
     const now = performance.now()
-    // Mount set unchanged: soft rate-limit pure re-posts of identical content only.
+    // Mount set unchanged: soft rate-limit re-posts (timer/score). 80ms was still ~12/s
+    // thrash under DecentraCraft fingerprint dirties → main pendingDiff age multi-second.
     const mountUnchanged = uiKey === lastOutboundUiEntitiesKey
-    if (mountUnchanged && snapFp === lastUiMountSnapshotContentOnly && now - lastUiMountSnapshotPostAt < 80) {
-      return false
+    const UI_MOUNT_SOFT_MS = 120
+    if (mountUnchanged && now - lastUiMountSnapshotPostAt < UI_MOUNT_SOFT_MS) {
+      // Allow true content change through after floor; drop pure thrash under floor.
+      if (snapFp === lastUiMountSnapshotContentOnly || now - lastUiMountSnapshotPostAt < 50) {
+        return false
+      }
     }
     lastUiMountSnapshotFp = fpKey
     lastUiMountSnapshotContentOnly = snapFp

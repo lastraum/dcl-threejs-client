@@ -167,10 +167,14 @@ export function perfNotePeels(opts: {
   if (opts.entities !== undefined) state.peelEntities = opts.entities
 }
 
-/** Last pointer edge wall ms on main (finishPointerDelivery / post path). */
+/**
+ * Last pointer edge wall ms on main (finishPointerDelivery / post path).
+ * `fullDump` is **this edge only** (0/1), not a sticky session counter — was latching
+ * fullDump=1 forever after one slow peel and looking like a full pendingDiff dump.
+ */
 export function perfNotePointerEdge(ms: number, fullDump: boolean): void {
   state.pointerEdgeMs = ms
-  if (fullDump) state.pointerFullDump++
+  state.pointerFullDump = fullDump ? 1 : 0
 }
 
 export function perfNoteSyncRendererMs(ms: number): void {

@@ -202,6 +202,10 @@ export class SceneScriptSystem {
   private static readonly POINTER_STRUCTURE_CAP = 16
   /** A3/B3 — hard wall ms for post-pointer peels (FrameLaw). */
   private static readonly POINTER_PEEL_HARD_MS = 2.5
+  /** Play-frame motion peel budget — unit move / temple spin must not wait on structure. */
+  private static readonly MOTION_PEEL_HARD_MS = 6
+  /** Motion entities to force-drain before structure each async frame. */
+  private static readonly MOTION_CONSUME_CAP = 128
   private static readonly MATERIAL_PEEL_HARD_MS = 48
   private static readonly MATERIAL_PEEL_POINTER_MS = 8
   private static readonly GLTF_PEEL_CAP = 64
@@ -3641,28 +3645,38 @@ export class SceneScriptSystem {
   /**
    * Same-batch Tween/Transform apply so click-move anims start this frame (not after
    * pendingDiff drains under UI spam). Mirrors MeshRenderer material flush.
+   *
+   * COD: peel **all** motion-lane Transform/Tween puts — not only PE/MeshRenderer.
+   * Restricting to PE/MR left parented unit roots / VFX markers stuck behind a material
+   * structure backlog (pendingDiff age multi-second → no Warmaster move / click VFX).
    */
   private flushTweenAndTransformFromPendingDiff(opts?: { pointerEdge?: boolean; hardMs?: number }): void {
     if (!this.bridge || !this.entityStore || !this.pendingDiff.size) return
     if (!this.bridge.canConsumeDiff()) return
     const t0 = performance.now()
-    const hardMs = opts?.hardMs ?? (opts?.pointerEdge ? SceneScriptSystem.POINTER_PEEL_HARD_MS : Infinity)
-    const { Transform, Tween, MeshRenderer, PointerEvents } = this.readComponents
+    const hardMs =
+      opts?.hardMs ??
+      (opts?.pointerEdge
+        ? SceneScriptSystem.POINTER_PEEL_HARD_MS
+        : SceneScriptSystem.MOTION_PEEL_HARD_MS)
+    const { Transform, Tween } = this.readComponents
     const transformId = Transform.componentId
     const tweenId = Tween.componentId
     const transformDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
     const tweenEntities: Entity[] = []
-    for (const [entity, comps] of this.pendingDiff) {
-      if (performance.now() - t0 >= hardMs && transformDiff.size > 0) break
-      const hasTween = comps.has(tweenId)
-      const hasTransform = comps.has(transformId)
-      if (!hasTween && !hasTransform) continue
-      // Prioritize interactive / tweened MeshRenderer props (click-to-move).
-      if (
-        hasTween ||
-        PointerEvents.has(entity) ||
-        (MeshRenderer.has(entity) && hasTransform)
-      ) {
+    // Pass 1 — Tween / PE-ish interactive first (click-move correctness under hardMs).
+    // Pass 2 fills remaining budget with any Transform put (unit roots, VFX, temple spin).
+    const pick = (requirePriority: boolean): void => {
+      for (const [entity, comps] of this.pendingDiff) {
+        if (performance.now() - t0 >= hardMs && transformDiff.size > 0) break
+        if (transformDiff.has(entity)) continue
+        const hasTween = comps.has(tweenId)
+        const hasTransform = comps.has(transformId)
+        if (!hasTween && !hasTransform) continue
+        if (requirePriority && !hasTween) {
+          // Priority pass: Tween first; second pass takes plain Transform.
+          continue
+        }
         const sub = new Map<number, ProjectionChangeKind>()
         const tk = comps.get(transformId)
         if (tk !== undefined) sub.set(transformId, tk)
@@ -3674,6 +3688,8 @@ export class SceneScriptSystem {
         if (sub.size) transformDiff.set(entity, sub)
       }
     }
+    pick(true)
+    pick(false)
     if (!transformDiff.size) return
     const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
     applySceneDiff(this.entityStore, transformDiff, this.view, this.readComponents, tweenRefresh, {
@@ -4770,24 +4786,25 @@ export class SceneScriptSystem {
         'color:#0f0;font-size:12px;font-weight:bold'
       )
     }
-    // Frame law B3: peel only with hard wall budget — fullDump must stay 0.
+    // Frame law B3: peel only — never full pendingDiff dump; never drainPendingWork on PE
+    // (that re-entered structure attach and set sticky fullDump=1 while starving unit move).
+    this.flushTweenAndTransformFromPendingDiff({
+      pointerEdge: true,
+      hardMs: SceneScriptSystem.POINTER_PEEL_HARD_MS * 2
+    })
     this.flushMeshRendererMaterialsFromPendingDiff({ pointerEdge: true })
-    this.flushTweenAndTransformFromPendingDiff({ pointerEdge: true })
     this.flushGltfContainerFromPendingDiff({ pointerEdge: true })
     const edgeMs = performance.now() - t0
-    const overBudget = edgeMs > SceneScriptSystem.POINTER_PEEL_HARD_MS * 2
-    perfNotePointerEdge(edgeMs, overBudget)
-    // Click VFX / select rings: light sync — cooperative frames own the backlog.
+    // fullDump only if we ever swap the entire map (we never do on PE path).
+    perfNotePointerEdge(edgeMs, false)
+    // Click VFX / select rings: light sync — cooperative frames own structure backlog.
     this.tweenBridge?.sync(this.view)
     if (this.tweenBridge?.hasLiveTweens()) {
       this.tweenBridge.update(1 / 30, this.view)
       this.markTweenColliderPosesDirty()
     }
-    void this.animatorBridge?.sync(this.view)
     void this.particleBridge?.sync(this.view)
     this.particleBridge?.update(1 / 30)
-    void this.bridge.drainPendingWork()
-    this.bridge.tickDeferredMaterials(24, 48)
     // Only re-private PE leaves when structure already dirty (select UI churn).
     if (this.pointerStructureDirty) {
       const pe: Entity[] = []
@@ -5134,21 +5151,34 @@ export class SceneScriptSystem {
         })
       }
 
-      // Hot peels — keep unit/temple motion + board recolor off the structure queue.
-      this.flushMeshRendererMaterialsFromPendingDiff()
+      // Hot peels first — unit/temple motion must never wait on structure backlog.
       this.flushTweenAndTransformFromPendingDiff()
+      this.flushMeshRendererMaterialsFromPendingDiff()
       if (performance.now() < deadline) {
         this.flushGltfContainerFromPendingDiff()
       }
 
-      // Structure / other (+ any leftover motion/material): budgeted entity cap; rest stays queued.
+      // Motion-only force drain (any Transform/Tween leftover after peels).
+      if (performance.now() < deadline) {
+        const motionSlice = this.takePendingDiffSlice(
+          new Set(['motion']),
+          SceneScriptSystem.MOTION_CONSUME_CAP
+        )
+        if (motionSlice.size) {
+          const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+          await this.bridge.consumeDiff(motionSlice, view, tweenRefresh)
+          this.bridge.syncInstancedTransforms([...motionSlice.keys()])
+        }
+      }
+
+      // Structure / other / leftover material: budgeted entity cap; rest stays queued.
       if (performance.now() >= deadline) {
         this.syncSceneUiAfterRenderer()
         this.publishPendingDiffPerf()
         return
       }
       const structureSlice = this.takePendingDiffSlice(
-        new Set(['structure', 'other', 'motion', 'material']),
+        new Set(['structure', 'other', 'material']),
         SceneScriptSystem.STRUCTURE_CONSUME_CAP
       )
 

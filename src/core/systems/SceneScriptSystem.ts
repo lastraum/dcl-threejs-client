@@ -4761,10 +4761,14 @@ export class SceneScriptSystem {
       clientDebugLog.log('pointer', `flush pending input tick=${this.crdtTick}`, {
         alsoConsole: POINTER_VERBOSE
       })
-      // Process whatever is queued (down on press flush, up on release flush).
+      // Explorer press lifecycle: one edge per flush. Processing DOWN+UP in the same
+      // flush overwrote inject payload with UP only → worker sceneUi ignores UP and
+      // world PE never saw PET_DOWN (no getClick / click VFX).
+      const hasDown = this.pointerEvents.hasPendingDown()
+      const hasUp = this.pointerEvents.hasPendingUp()
       this.syncPointerInput(this.crdtTick, {
-        processPendingDown: true,
-        processPendingUp: true
+        processPendingDown: hasDown,
+        processPendingUp: !hasDown && hasUp
       })
       this.crdtTick++
 
@@ -4792,24 +4796,36 @@ export class SceneScriptSystem {
           this.pointerResponseStash.length = 0
           this.pointerResponseStash.push(appendBytes.slice())
         } else {
-          console.warn(
-            '[pointer]',
-            `pointer flush — encoder append encode empty (pendingAppends=${pendingAppends})`
-          )
           this.pointerResponseStash.length = 0
+          // No inject and no appends — nothing to deliver (do not arm 2s watchdog).
+          if (!this.pointerEvents.hasPendingInjectPayload()) {
+            console.warn(
+              '[pointer]',
+              `pointer flush — empty (no inject, pendingAppends=${pendingAppends}); not awaiting worker`
+            )
+            // Still have UP queued after a DOWN-only flush — schedule follow-up.
+            if (this.pointerEvents.hasPendingUp() || this.pointerEvents.hasPendingDown()) {
+              queueMicrotask(() => void this.flushPendingPointerCrdt())
+            }
+            return
+          }
         }
       }
       this.consolidatePointerStash()
       const stashedBytes = this.pointerResponseStash.reduce((n, c) => n + c.byteLength, 0)
       const flushMsg = `pointer flush — stashed ${this.pointerResponseStash.length} chunk(s), ${stashedBytes} bytes; delivering to worker`
       if (stashedBytes > 0) this.logPointer(flushMsg)
-      else console.warn('[pointer]', flushMsg)
+      else this.logPointer(flushMsg)
       clientDebugLog.log('pointer', flushMsg, {
         alsoConsole: false,
-        level: stashedBytes ? 'success' : 'warn'
+        level: stashedBytes ? 'success' : 'info'
       })
       this.pointerAwaitingWorkerApply = true
       this.deliverPointerToWorker()
+      // If we only sent DOWN, flush UP next microtask (same user click, correct edge order).
+      if (hasDown && this.pointerEvents.hasPendingUp()) {
+        this.pointerFlushCoalesceRequested = true
+      }
     } finally {
       this.pointerFlushInFlight = false
     }
@@ -4822,13 +4838,25 @@ export class SceneScriptSystem {
       return
     }
     const inject = this.pointerEvents?.consumeInjectPayload()
+    const pointerChunks = this.pointerResponseStash.filter((c) => c.byteLength > 0)
+    if (!inject && !pointerChunks.length) {
+      // Nothing to send — clear awaiting state (do not arm 2s deliver-done watchdog).
+      this.pointerAwaitingWorkerApply = false
+      this.pointerDeliverAwaitingAck = false
+      this.clearPointerDeliverWatchdog()
+      if (this.pointerFlushCoalesceRequested || this.pointerEvents?.hasPendingInput()) {
+        this.pointerFlushCoalesceRequested = false
+        queueMicrotask(() => void this.flushPendingPointerCrdt())
+      }
+      return
+    }
+
     // Universal edge inject: deliver-done is near-instant; never hold cooperative ticks
     // for mouse-hold duration (all scenes need isPressed + live particles/VC/tweens).
     this.pointerDeliverAwaitingAck = true
     this.pointerHoldTicksUntilMount = false
     this.armPointerDeliverWatchdog(2000)
 
-    const pointerChunks = this.pointerResponseStash.filter((c) => c.byteLength > 0)
     const injectOnly = pointerChunks.length === 0
     if (inject) {
       // Refresh PPI at post time (writeResult may be a few ms earlier; edge tick must
@@ -4856,16 +4884,12 @@ export class SceneScriptSystem {
         body: inject,
         injectOnly
       } satisfies MainToWorker)
-      // Scene owns splash visuals (Color4.a fade). Do not force-dismiss / display:none —
-      // that was a client hack and caused flash + desync from scene alpha.
     } else {
-      console.warn('[pointer]', 'inject payload missing — direct CRDT only')
-      this.logPointer('inject payload missing — direct CRDT only')
+      console.warn('[pointer]', 'inject payload missing — CRDT chunks only')
+      this.logPointer('inject payload missing — CRDT chunks only')
     }
 
     this.deliverPointerCrdtDirect()
-    // Worker sets sceneTicksPaused during inject/deliver; do not pause from main mid-flight —
-    // it raced post-onUpdate engine.update CRDT (Tween sync) before deliver-done.
   }
 
   /** Post pre-encoded pointer CRDT directly to worker (parallel to inject). */
@@ -4901,6 +4925,39 @@ export class SceneScriptSystem {
   }
 
   /**
+   * Same-edge click VFX: MeshRenderer / GltfNodeModifiers puts only (cap 12).
+   * Full Gltf attach stays on async structure lane — not mid-PE plaza cook.
+   */
+  private flushPointerClickVisualStructure(): void {
+    if (!this.bridge || !this.entityStore || !this.pendingDiff.size) return
+    if (!this.bridge.canConsumeDiff()) return
+    const { MeshRenderer, GltfNodeModifiers, Material } = this.readComponents
+    const want = new Set([
+      MeshRenderer.componentId,
+      GltfNodeModifiers.componentId,
+      Material.componentId
+    ])
+    const slice = new Map<Entity, Map<number, ProjectionChangeKind>>()
+    for (const [entity, comps] of this.pendingDiff) {
+      if (slice.size >= 12) break
+      const sub = new Map<number, ProjectionChangeKind>()
+      for (const [cid, kind] of comps) {
+        if (want.has(cid)) sub.set(cid, kind)
+      }
+      if (!sub.size) continue
+      // Skip heavy GltfContainer attaches on the pointer edge.
+      if (comps.has(this.readComponents.GltfContainer.componentId)) continue
+      slice.set(entity, sub)
+      for (const cid of sub.keys()) comps.delete(cid)
+      this.clearPendingEntityIfEmpty(entity)
+    }
+    if (!slice.size) return
+    const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+    void this.bridge.consumeDiff(slice, this.view, tweenRefresh)
+    this.publishPendingDiffPerf()
+  }
+
+  /**
    * After PE click inject: one pointer-budgeted lane drain (not dual peels).
    * Never full pendingDiff dump. Structure only up to POINTER_STRUCTURE_ENTITIES.
    */
@@ -4908,13 +4965,13 @@ export class SceneScriptSystem {
     if (!this.bridge || !this.entityStore) return
     const t0 = performance.now()
     const F = SceneScriptSystem.FRAME
+    // Motion + material only (no full structure). Click VFX is usually Tween/Material/
+    // Particle; MeshRenderer create is drained on the next async frame (not lost).
     void this.drainPendingDiffLanes({
       pointerEdge: true,
-      deadlineMs: F.POINTER_MOTION_MS + F.POINTER_MATERIAL_MS + F.STRUCTURE_MS * 0.5
+      deadlineMs: F.POINTER_MOTION_MS + F.POINTER_MATERIAL_MS
     }).then(() => {
       const edgeMs = performance.now() - t0
-      // fullDump=1 only if we still held more work than a full structure swap would —
-      // PE path never swaps the map; always 0.
       perfNotePointerEdge(edgeMs, false)
     })
     // Click VFX / select rings: light time advance — cooperative frames own backlog.
@@ -4923,6 +4980,8 @@ export class SceneScriptSystem {
       this.tweenBridge.update(1 / 30, this.view)
       this.markTweenColliderPosesDirty()
     }
+    // Ensure new click-marker MeshRenderers attach same edge (tiny structure budget).
+    this.flushPointerClickVisualStructure()
     void this.particleBridge?.sync(this.view)
     this.particleBridge?.update(1 / 30)
     if (this.pointerStructureDirty) {

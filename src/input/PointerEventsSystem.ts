@@ -691,7 +691,17 @@ export class PointerEventsSystem {
     return this.pendingPointerDown.size > 0 || this.pendingPointerUp.size > 0
   }
 
-  /** True after syncInput PET_UP — direct worker inject will carry the click. */
+  /** Queued browser pointerdown not yet written to PET / inject. */
+  hasPendingDown(): boolean {
+    return this.pendingPointerDown.size > 0
+  }
+
+  /** Queued browser pointerup not yet written to PET / inject. */
+  hasPendingUp(): boolean {
+    return this.pendingPointerUp.size > 0
+  }
+
+  /** True after syncInput PET edge — direct worker inject will carry the click. */
   hasPendingInjectPayload(): boolean {
     return this.pendingInjectPayload !== null
   }

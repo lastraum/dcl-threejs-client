@@ -197,12 +197,8 @@ let rendererInboundApply: ((chunks: Uint8Array[]) => void) | null = null
 /** Coalesce outbound empty nudges to one post per microtask (still send when uiEntities change). */
 let crdtOutboundEmptyNudgeCoalesced = false
 let lastOutboundUiEntitiesKey = ''
-/** Mount entity key + snapshot row fingerprint — drop identical postUiMountSnapshot thrash. */
+/** Mount entity key + content fingerprint — drop identical postUiMountSnapshot only. */
 let lastUiMountSnapshotFp = ''
-/** Content-only half of last snapFp (for soft rate-limit without ignoring value changes). */
-let lastUiMountSnapshotContentOnly = ''
-/** Last wall time a cooperative UI mount snapshot was posted (rate-limit partial dirty). */
-let lastUiMountSnapshotPostAt = 0
 let outboundAckId = 0
 const pendingOutboundAck = new Map<number, () => void>()
 const OUTBOUND_ACK_TIMEOUT_MS = 4000
@@ -1706,20 +1702,8 @@ initSceneEngineScheduler({
     if (fpKey === lastUiMountSnapshotFp) {
       return false
     }
-    const now = performance.now()
-    // Mount set unchanged: soft rate-limit re-posts (timer/score). 80ms was still ~12/s
-    // thrash under DecentraCraft fingerprint dirties → main pendingDiff age multi-second.
-    const mountUnchanged = uiKey === lastOutboundUiEntitiesKey
-    const UI_MOUNT_SOFT_MS = 120
-    if (mountUnchanged && now - lastUiMountSnapshotPostAt < UI_MOUNT_SOFT_MS) {
-      // Allow true content change through after floor; drop pure thrash under floor.
-      if (snapFp === lastUiMountSnapshotContentOnly || now - lastUiMountSnapshotPostAt < 50) {
-        return false
-      }
-    }
+    // Platform law: identical content+mount never re-posts. No wall-clock rate limit.
     lastUiMountSnapshotFp = fpKey
-    lastUiMountSnapshotContentOnly = snapFp
-    lastUiMountSnapshotPostAt = now
     lastOutboundUiEntitiesKey = uiKey
     logSceneUiOutbound(new Uint8Array(0), uiEntities, snapshot.length)
     ctx.postMessage({

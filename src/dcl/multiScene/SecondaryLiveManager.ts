@@ -900,8 +900,8 @@ export class SecondaryLiveManager {
     const slots = [...this.slots.values()]
     const secondaries = slots.filter((s) => !s.isTertiary)
     const budgetMs = opts?.applyBudgetMs
-    // Any positive residual grants one fullWork (World floors at 0.5ms under load).
-    const allowFull = budgetMs === undefined || budgetMs > 0
+    const MIN_FULL_MS = 2
+    const allowFull = budgetMs === undefined || budgetMs >= MIN_FULL_MS
     const fullIdx =
       allowFull && secondaries.length > 0
         ? this.asyncFullWorkCursor++ % secondaries.length
@@ -915,10 +915,9 @@ export class SecondaryLiveManager {
         continue
       }
       const spent = performance.now() - t0
-      const stillRoom = budgetMs === undefined || spent < budgetMs
+      const rem = budgetMs === undefined ? undefined : budgetMs - spent
+      const stillRoom = rem === undefined || rem >= MIN_FULL_MS
       const fullWork = allowFull && stillRoom && slot === fullSlot
-      const rem =
-        budgetMs === undefined ? undefined : Math.max(0.25, budgetMs - (performance.now() - t0))
       descs.push(
         ...(await slot.tickAsync(this.primaryScene, this.cache, {
           fullWork,

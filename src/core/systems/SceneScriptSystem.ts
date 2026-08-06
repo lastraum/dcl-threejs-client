@@ -193,23 +193,27 @@ export class SceneScriptSystem {
   private pendingDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
   /** Wall time when pendingDiff became non-empty (age for frame-budget SLO). */
   private pendingDiffOldestAt = 0
+  /** Per-entity first dirty wall time — true ageMax (not “map non-empty since”). */
+  private readonly pendingDiffFirstDirtyAt = new Map<Entity, number>()
   /**
-   * COD frame law — max structure entities to fully consumeDiff per async frame.
-   * Motion/material peels run uncapped (budgeted by their own hard ms). Remainder stays queued.
+   * COD AAA frame pie — platform law (not scene-tuned heuristics).
+   * One ordered drain: Motion → Materials → Structure. No dual peels.
    */
-  private static readonly STRUCTURE_CONSUME_CAP = 48
-  /** A3 — pointer-edge structure slice (never fullDump). */
-  private static readonly POINTER_STRUCTURE_CAP = 16
-  /** A3/B3 — hard wall ms for post-pointer peels (FrameLaw). */
-  private static readonly POINTER_PEEL_HARD_MS = 2.5
-  /** Play-frame motion peel budget — unit move / temple spin must not wait on structure. */
-  private static readonly MOTION_PEEL_HARD_MS = 6
-  /** Motion entities to force-drain before structure each async frame. */
-  private static readonly MOTION_CONSUME_CAP = 128
-  private static readonly MATERIAL_PEEL_HARD_MS = 48
-  private static readonly MATERIAL_PEEL_POINTER_MS = 8
-  private static readonly GLTF_PEEL_CAP = 64
-  private static readonly GLTF_PEEL_POINTER_CAP = 8
+  private static readonly FRAME = {
+    /** Transform/Tween/Animator apply budget (ms). */
+    MOTION_MS: 4,
+    MOTION_ENTITIES: 256,
+    /** Scalar Material / instanceColor budget (ms). */
+    MATERIAL_MS: 6,
+    MATERIAL_ENTITIES: 256,
+    /** Gltf attach / Mesh create entity cap + soft ms. */
+    STRUCTURE_ENTITIES: 48,
+    STRUCTURE_MS: 8,
+    /** Pointer-edge budgets (same lanes, tighter). */
+    POINTER_MOTION_MS: 4,
+    POINTER_MATERIAL_MS: 4,
+    POINTER_STRUCTURE_ENTITIES: 16
+  } as const
   private projectionDiffActive = false
   /** Phase 3: encoder is the primary source for renderer-owned outbound CRDT (reserved, tween, pointer/video results). Always on. */
   private readonly encoder = new CrdtEncoder(SDK_RESERVED, this.projection, this.componentHost.components)
@@ -2749,15 +2753,13 @@ export class SceneScriptSystem {
           skipUiMountReseed = true
         }
       }
-      // Self-heal: prior clear-without-reseed (or purge race) left mount without transforms.
+      // Integrity only: if mount ids have zero UiTransform, reseed (not a ratio heuristic).
       if (skipUiMountReseed && latestUiEntities?.length) {
         let withTx = 0
         for (const id of latestUiEntities) {
           if (this.view.components.UiTransform.has(id as Entity)) withTx++
         }
-        if (withTx === 0 || withTx * 2 < latestUiEntities.length) {
-          skipUiMountReseed = false
-        }
+        if (withTx === 0) skipUiMountReseed = false
       }
       if (skipUiMountReseed) {
         perfNoteUiMountReseedSkip()
@@ -2899,28 +2901,19 @@ export class SceneScriptSystem {
         this.flushUiFrame()
       }
 
-      // Material/Tween/Gltf peels after UI so backlog cannot starve mount paint.
-      // Still run on the same batch — PE click-move + board recolor must not wait empty-UI serial.
+      // COD AAA — one ordered lane drain after UI (not triple peels).
+      // Motion/material/structure share FRAME pie; remainder stays queued for syncRenderer.
       if (hasPayload || this.pendingDiff.size > 0) {
         try {
-          this.flushMeshRendererMaterialsFromPendingDiff()
+          void this.drainPendingDiffLanes({
+            deadlineMs:
+              SceneScriptSystem.FRAME.MOTION_MS +
+              SceneScriptSystem.FRAME.MATERIAL_MS +
+              SceneScriptSystem.FRAME.STRUCTURE_MS
+          })
         } catch (err) {
           console.warn(
-            `[scene] material flush aborted — ${err instanceof Error ? err.message : String(err)}`
-          )
-        }
-        try {
-          this.flushTweenAndTransformFromPendingDiff()
-        } catch (err) {
-          console.warn(
-            `[scene] tween/transform flush aborted — ${err instanceof Error ? err.message : String(err)}`
-          )
-        }
-        try {
-          this.flushGltfContainerFromPendingDiff()
-        } catch (err) {
-          console.warn(
-            `[scene] gltf flush aborted — ${err instanceof Error ? err.message : String(err)}`
+            `[scene] lane drain aborted — ${err instanceof Error ? err.message : String(err)}`
           )
         }
       }
@@ -3586,69 +3579,116 @@ export class SceneScriptSystem {
   }
 
   /**
-   * Same-batch paint recolors. instanceColor is O(1) — allow large batches so a paintDelta
-   * of hundreds of cells lands in one frame (was 512, left multi-batch lag).
+   * COD AAA — single ordered lane drain (Motion → Materials → Structure).
+   * Replaces dual peels on CRDT/PE/syncRenderer. One apply path per lane per call.
+   * Structure is awaited (no fire-and-forget Gltf attach).
    */
-  private static readonly MESH_RENDERER_MATERIAL_FLUSH_CAP = 4096
+  private async drainPendingDiffLanes(opts?: {
+    pointerEdge?: boolean
+    deadlineMs?: number
+  }): Promise<void> {
+    if (!this.bridge || !this.entityStore) return
+    if (!this.bridge.canConsumeDiff() || !this.pendingDiff.size) return
+    const view = this.view
+    const F = SceneScriptSystem.FRAME
+    const edge = opts?.pointerEdge === true
+    const wallDeadline =
+      opts?.deadlineMs !== undefined && Number.isFinite(opts.deadlineMs)
+        ? performance.now() + Math.max(0, opts.deadlineMs)
+        : Infinity
 
-  /**
-   * Peel GltfContainer (+ Transform) puts so prop/unit/building GLBs attach without
-   * waiting for a full pendingDiff consume. Material/tween flushes were leaving
-   * GltfContainer stranded (pendingDiff hundreds, no meshes).
-   */
-  private flushGltfContainerFromPendingDiff(opts?: { pointerEdge?: boolean }): void {
-    if (!this.bridge || !this.entityStore || !this.pendingDiff.size) return
-    if (!this.bridge.canConsumeDiff()) return
-    const t0 = performance.now()
-    const { GltfContainer, Transform } = this.readComponents
-    const gltfId = GltfContainer.componentId
-    const transformId = Transform.componentId
-    const gltfDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
-    let n = 0
-    const CAP = opts?.pointerEdge
-      ? SceneScriptSystem.GLTF_PEEL_POINTER_CAP
-      : SceneScriptSystem.GLTF_PEEL_CAP
-    for (const [entity, comps] of this.pendingDiff) {
-      if (n >= CAP) break
-      const gk = comps.get(gltfId)
-      if (gk === undefined) continue
-      const sub = new Map<number, ProjectionChangeKind>()
-      sub.set(gltfId, gk)
-      const tk = comps.get(transformId)
-      if (tk !== undefined) sub.set(transformId, tk)
-      gltfDiff.set(entity, sub)
-      n++
+    // --- Motion lane (Transform/Tween/Animator…) — oldest dirty first ---
+    if (performance.now() < wallDeadline) {
+      const motionCap = edge ? Math.min(F.MOTION_ENTITIES, 64) : F.MOTION_ENTITIES
+      const motionSlice = this.takePendingDiffSlice(new Set(['motion']), motionCap)
+      if (motionSlice.size) {
+        const t0 = performance.now()
+        const { Transform, Tween } = this.readComponents
+        const transformId = Transform.componentId
+        const tweenId = Tween.componentId
+        const poseDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
+        const otherMotion = new Map<Entity, Map<number, ProjectionChangeKind>>()
+        const tweenEntities: Entity[] = []
+        for (const [entity, comps] of motionSlice) {
+          const pose = new Map<number, ProjectionChangeKind>()
+          const rest = new Map<number, ProjectionChangeKind>()
+          for (const [cid, kind] of comps) {
+            if (cid === transformId || cid === tweenId) {
+              pose.set(cid, kind)
+              if (cid === tweenId) tweenEntities.push(entity)
+            } else {
+              rest.set(cid, kind)
+            }
+          }
+          if (pose.size) poseDiff.set(entity, pose)
+          if (rest.size) otherMotion.set(entity, rest)
+        }
+        if (poseDiff.size) {
+          const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+          applySceneDiff(this.entityStore, poseDiff, view, this.readComponents, tweenRefresh, {
+            skipTransformApply: (entity) =>
+              this.readComponents.AvatarAttach.has(entity) ||
+              this.projection.isVcLiveTransformEntity(entity),
+            onReservedParent: (entity, parent, v) => {
+              this.bridge?.noteReservedParentedEntity(entity, parent, v)
+            }
+          })
+          this.bridge.syncInstancedTransforms([...poseDiff.keys()])
+          for (const entity of tweenEntities) {
+            this.bridge.ensureMeshRendererTweenVisual(entity)
+          }
+          this.tweenBridge?.sync(view)
+          this.pointerStructureDirty = true
+        }
+        if (otherMotion.size && performance.now() < wallDeadline) {
+          const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+          await this.bridge.consumeDiff(otherMotion, view, tweenRefresh)
+        }
+        perfNotePeels({
+          transformMs: performance.now() - t0,
+          entities: motionSlice.size
+        })
+      }
     }
-    if (!gltfDiff.size) return
-    // Peel from pending before async consume so the next frame does not re-queue.
-    for (const entity of gltfDiff.keys()) {
-      const pending = this.pendingDiff.get(entity)
-      if (!pending) continue
-      pending.delete(gltfId)
-      pending.delete(transformId)
-      if (pending.size === 0) this.pendingDiff.delete(entity)
+
+    // --- Materials lane (specialized instanceColor / scalar) ---
+    if (performance.now() < wallDeadline) {
+      this.flushMeshRendererMaterialsFromPendingDiff({
+        pointerEdge: edge,
+        hardMs: edge ? F.POINTER_MATERIAL_MS : F.MATERIAL_MS,
+        entityCap: F.MATERIAL_ENTITIES
+      })
     }
+
+    // --- Structure lane (Gltf/Mesh create) — awaited, age-ordered ---
+    if (performance.now() < wallDeadline) {
+      const structCap = edge ? F.POINTER_STRUCTURE_ENTITIES : F.STRUCTURE_ENTITIES
+      const structureSlice = this.takePendingDiffSlice(
+        new Set(['structure', 'other', 'material']),
+        structCap
+      )
+      if (structureSlice.size) {
+        const t0 = performance.now()
+        const { spriteDiff, sceneDiff } = this.bridge.partitionSpriteDiff(structureSlice, view)
+        if (spriteDiff.size) this.bridge.consumeSpriteDiff(spriteDiff, view)
+        const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+        if (sceneDiff.size) await this.bridge.consumeDiff(sceneDiff, view, tweenRefresh)
+        else await this.bridge.drainPendingWork()
+        this.bridge.reconcileBillboardFlags()
+        this.flushPointerStructureIfDirty()
+        perfNotePeels({
+          gltfMs: performance.now() - t0,
+          entities: structureSlice.size
+        })
+      }
+    }
+
     this.publishPendingDiffPerf()
-    perfNotePeels({ gltfMs: performance.now() - t0, entities: gltfDiff.size })
-    const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
-    // consumeDiff = applySceneDiff + budgeted GLB attach (do not double-apply).
-    void this.bridge.consumeDiff(gltfDiff, this.view, tweenRefresh).then(() => {
-      void this.bridge?.drainPendingWork()
-    })
-    clientDebugLog.log(
-      'collision',
-      `gltf flush — peeled=${gltfDiff.size} pendingDiff=${this.pendingDiff.size}`,
-      { level: 'info', alsoConsole: true, throttleMs: 1_000, throttleKey: 'gltf-flush' }
-    )
   }
 
   /**
-   * Same-batch Tween/Transform apply so click-move anims start this frame (not after
-   * pendingDiff drains under UI spam). Mirrors MeshRenderer material flush.
-   *
-   * COD: peel **all** motion-lane Transform/Tween puts — not only PE/MeshRenderer.
-   * Restricting to PE/MR left parented unit roots / VFX markers stuck behind a material
-   * structure backlog (pendingDiff age multi-second → no Warmaster move / click VFX).
+   * @deprecated Prefer drainPendingDiffLanes — kept for sync-frame platform Transform path.
+   * Narrow: Transform/Tween only, age-ordered, for CCT platform motion same-frame.
    */
   private flushTweenAndTransformFromPendingDiff(opts?: { pointerEdge?: boolean; hardMs?: number }): void {
     if (!this.bridge || !this.entityStore || !this.pendingDiff.size) return
@@ -3657,43 +3697,31 @@ export class SceneScriptSystem {
     const hardMs =
       opts?.hardMs ??
       (opts?.pointerEdge
-        ? SceneScriptSystem.POINTER_PEEL_HARD_MS
-        : SceneScriptSystem.MOTION_PEEL_HARD_MS)
+        ? SceneScriptSystem.FRAME.POINTER_MOTION_MS
+        : SceneScriptSystem.FRAME.MOTION_MS)
+    const cap = opts?.pointerEdge ? 64 : SceneScriptSystem.FRAME.MOTION_ENTITIES
+    const motionSlice = this.takePendingDiffSlice(new Set(['motion']), cap)
+    if (!motionSlice.size) return
     const { Transform, Tween } = this.readComponents
     const transformId = Transform.componentId
     const tweenId = Tween.componentId
     const transformDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
     const tweenEntities: Entity[] = []
-    // Pass 1 — Tween / PE-ish interactive first (click-move correctness under hardMs).
-    // Pass 2 fills remaining budget with any Transform put (unit roots, VFX, temple spin).
-    const pick = (requirePriority: boolean): void => {
-      for (const [entity, comps] of this.pendingDiff) {
-        if (performance.now() - t0 >= hardMs && transformDiff.size > 0) break
-        if (transformDiff.has(entity)) continue
-        const hasTween = comps.has(tweenId)
-        const hasTransform = comps.has(transformId)
-        if (!hasTween && !hasTransform) continue
-        if (requirePriority && !hasTween) {
-          // Priority pass: Tween first; second pass takes plain Transform.
-          continue
-        }
-        const sub = new Map<number, ProjectionChangeKind>()
-        const tk = comps.get(transformId)
-        if (tk !== undefined) sub.set(transformId, tk)
-        if (hasTween) {
-          const tw = comps.get(tweenId)
-          if (tw !== undefined) sub.set(tweenId, tw)
-          tweenEntities.push(entity)
-        }
-        if (sub.size) transformDiff.set(entity, sub)
+    for (const [entity, comps] of motionSlice) {
+      if (performance.now() - t0 >= hardMs && transformDiff.size > 0) break
+      const sub = new Map<number, ProjectionChangeKind>()
+      const tk = comps.get(transformId)
+      if (tk !== undefined) sub.set(transformId, tk)
+      const tw = comps.get(tweenId)
+      if (tw !== undefined) {
+        sub.set(tweenId, tw)
+        tweenEntities.push(entity)
       }
+      if (sub.size) transformDiff.set(entity, sub)
     }
-    pick(true)
-    pick(false)
     if (!transformDiff.size) return
     const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
     applySceneDiff(this.entityStore, transformDiff, this.view, this.readComponents, tweenRefresh, {
-      // COD D2 — AvatarAttach + vc-pose-live lane: cold Transform peels must not thrash lens.
       skipTransformApply: (entity) =>
         this.readComponents.AvatarAttach.has(entity) || this.projection.isVcLiveTransformEntity(entity),
       onReservedParent: (entity, parent, view) => {
@@ -3705,15 +3733,7 @@ export class SceneScriptSystem {
     for (const entity of tweenEntities) {
       this.bridge.ensureMeshRendererTweenVisual(entity)
     }
-    // Pick up new Tween signatures immediately so the next pumpMotionBridges advances them.
     this.tweenBridge?.sync(this.view)
-    for (const entity of moved) {
-      const pending = this.pendingDiff.get(entity)
-      if (!pending) continue
-      pending.delete(transformId)
-      pending.delete(tweenId)
-      if (pending.size === 0) this.pendingDiff.delete(entity)
-    }
     this.pointerStructureDirty = true
     this.publishPendingDiffPerf()
     perfNotePeels({
@@ -3728,35 +3748,45 @@ export class SceneScriptSystem {
    * arrives before mesh drain (textured props / DecentraCraft white-until-idle).
    * Clears Material put from pendingDiff on success; mesh/Transform work may remain.
    */
-  private flushMeshRendererMaterialsFromPendingDiff(opts?: { pointerEdge?: boolean }): void {
+  private flushMeshRendererMaterialsFromPendingDiff(opts?: {
+    pointerEdge?: boolean
+    hardMs?: number
+    entityCap?: number
+  }): void {
     if (!this.bridge || !this.pendingDiff.size) return
     const { Material, MeshRenderer } = this.readComponents
     const matId = Material.componentId
-    const hardMs = opts?.pointerEdge
-      ? SceneScriptSystem.MATERIAL_PEEL_POINTER_MS
-      : SceneScriptSystem.MATERIAL_PEEL_HARD_MS
+    const hardMs =
+      opts?.hardMs ??
+      (opts?.pointerEdge
+        ? SceneScriptSystem.FRAME.POINTER_MATERIAL_MS
+        : SceneScriptSystem.FRAME.MATERIAL_MS)
+    const entityCap = opts?.entityCap ?? SceneScriptSystem.FRAME.MATERIAL_ENTITIES
     const t0 = performance.now()
     let applied = 0
     let seen = 0
     let missingMesh = 0
     let failed = 0
-    const cleared: Entity[] = []
-    for (const [entity, comps] of this.pendingDiff) {
-      if (comps.get(matId) !== 'put') continue
+    // Age-ordered material entities.
+    const ordered = [...this.pendingDiff.keys()].sort(
+      (a, b) =>
+        (this.pendingDiffFirstDirtyAt.get(a) ?? 0) - (this.pendingDiffFirstDirtyAt.get(b) ?? 0)
+    )
+    for (const entity of ordered) {
+      const comps = this.pendingDiff.get(entity)
+      if (!comps || comps.get(matId) !== 'put') continue
       if (!Material.has(entity)) continue
       if (!MeshRenderer.has(entity)) {
         missingMesh++
         continue
       }
       seen++
-      if (applied >= SceneScriptSystem.MESH_RENDERER_MATERIAL_FLUSH_CAP) break
+      if (applied >= entityCap) break
       if (performance.now() - t0 >= hardMs && applied > 0) break
       if (this.bridge.forceApplyMeshRendererMaterial(entity)) {
         applied++
-        // Drop Material put so force-wave leftovers don't starve new paintDelta entities
-        // at the head of pendingDiff on the next flush.
         comps.delete(matId)
-        if (comps.size === 0) cleared.push(entity)
+        this.clearPendingEntityIfEmpty(entity)
       } else {
         failed++
       }
@@ -3765,7 +3795,6 @@ export class SceneScriptSystem {
       this.publishPendingDiffPerf()
       perfNotePeels({ materialMs: performance.now() - t0, entities: applied })
     }
-    for (const entity of cleared) this.pendingDiff.delete(entity)
     if (applied > 0 || seen > 0 || missingMesh > 0) {
       clientDebugLog.log(
         'collision',
@@ -3856,7 +3885,9 @@ export class SceneScriptSystem {
       let comps = this.pendingDiff.get(change.entity)
       if (!comps) {
         comps = new Map()
-        if (this.pendingDiff.size === 0) this.pendingDiffOldestAt = performance.now()
+        const now = performance.now()
+        if (this.pendingDiff.size === 0) this.pendingDiffOldestAt = now
+        this.pendingDiffFirstDirtyAt.set(change.entity, now)
         this.pendingDiff.set(change.entity, comps)
       }
       comps.set(change.componentId, change.kind)
@@ -3867,12 +3898,29 @@ export class SceneScriptSystem {
   /** Frame-budget counters for `?perfdebug` / RenderStats. */
   private publishPendingDiffPerf(): void {
     const size = this.pendingDiff.size
-    const age =
-      size > 0 && this.pendingDiffOldestAt > 0
-        ? performance.now() - this.pendingDiffOldestAt
-        : 0
-    if (size === 0) this.pendingDiffOldestAt = 0
+    const now = performance.now()
+    let age = 0
+    if (size > 0) {
+      // True max entity age — not “time since map was last empty”.
+      for (const entity of this.pendingDiff.keys()) {
+        const t0 = this.pendingDiffFirstDirtyAt.get(entity) ?? this.pendingDiffOldestAt
+        if (t0 > 0) age = Math.max(age, now - t0)
+      }
+    } else {
+      this.pendingDiffOldestAt = 0
+      this.pendingDiffFirstDirtyAt.clear()
+    }
     perfSetPendingDiff(size, age)
+  }
+
+  private clearPendingEntityIfEmpty(entity: Entity): void {
+    const pending = this.pendingDiff.get(entity)
+    if (pending && pending.size === 0) {
+      this.pendingDiff.delete(entity)
+      this.pendingDiffFirstDirtyAt.delete(entity)
+    } else if (!pending) {
+      this.pendingDiffFirstDirtyAt.delete(entity)
+    }
   }
 
   /**
@@ -3918,8 +3966,15 @@ export class SceneScriptSystem {
   ): Map<Entity, Map<number, ProjectionChangeKind>> {
     const out = new Map<Entity, Map<number, ProjectionChangeKind>>()
     if (!this.pendingDiff.size || cap <= 0) return out
-    for (const [entity, comps] of this.pendingDiff) {
+    // Age-ordered fairness — oldest dirty entities first (true COD backlog drain).
+    const ordered = [...this.pendingDiff.keys()].sort(
+      (a, b) =>
+        (this.pendingDiffFirstDirtyAt.get(a) ?? 0) - (this.pendingDiffFirstDirtyAt.get(b) ?? 0)
+    )
+    for (const entity of ordered) {
       if (out.size >= cap) break
+      const comps = this.pendingDiff.get(entity)
+      if (!comps?.size) continue
       const sub = new Map<number, ProjectionChangeKind>()
       for (const [cid, kind] of comps) {
         if (lanes.has(this.pendingDiffLaneOf(cid))) sub.set(cid, kind)
@@ -3927,7 +3982,10 @@ export class SceneScriptSystem {
       if (!sub.size) continue
       out.set(entity, sub)
       for (const cid of sub.keys()) comps.delete(cid)
-      if (comps.size === 0) this.pendingDiff.delete(entity)
+      if (comps.size === 0) {
+        this.pendingDiff.delete(entity)
+        this.pendingDiffFirstDirtyAt.delete(entity)
+      }
     }
     this.publishPendingDiffPerf()
     return out
@@ -4768,36 +4826,23 @@ export class SceneScriptSystem {
   }
 
   /**
-   * After PE click inject returns: scene often puts Tween/Transform/Animator/Particle for
-   * click-move or ground markers. Drain immediately so the anim is visible this frame
-   * (DecentraCraft select/move was lost behind pendingDiff + empty UI serial).
-   *
-   * v5: do **not** dump the entire pendingDiff (1000+) on every edge — that collapsed FPS
-   * and starved unit motion. Peel material/tween/gltf only; leave the rest for normal frames.
+   * After PE click inject: one pointer-budgeted lane drain (not dual peels).
+   * Never full pendingDiff dump. Structure only up to POINTER_STRUCTURE_ENTITIES.
    */
   private applyPostPointerMotion(): void {
     if (!this.bridge || !this.entityStore) return
     const t0 = performance.now()
-    // Once per session so hard-reload proves the PE motion path without spam.
-    if (!(SceneScriptSystem as { _peMotionV5Logged?: boolean })._peMotionV5Logged) {
-      ;(SceneScriptSystem as { _peMotionV5Logged?: boolean })._peMotionV5Logged = true
-      console.info(
-        '%c[ThreejsClient] applyPostPointerMotion v5 — peel only (no full pendingDiff dump)',
-        'color:#0f0;font-size:12px;font-weight:bold'
-      )
-    }
-    // Frame law B3: peel only — never full pendingDiff dump; never drainPendingWork on PE
-    // (that re-entered structure attach and set sticky fullDump=1 while starving unit move).
-    this.flushTweenAndTransformFromPendingDiff({
+    const F = SceneScriptSystem.FRAME
+    void this.drainPendingDiffLanes({
       pointerEdge: true,
-      hardMs: SceneScriptSystem.POINTER_PEEL_HARD_MS * 2
+      deadlineMs: F.POINTER_MOTION_MS + F.POINTER_MATERIAL_MS + F.STRUCTURE_MS * 0.5
+    }).then(() => {
+      const edgeMs = performance.now() - t0
+      // fullDump=1 only if we still held more work than a full structure swap would —
+      // PE path never swaps the map; always 0.
+      perfNotePointerEdge(edgeMs, false)
     })
-    this.flushMeshRendererMaterialsFromPendingDiff({ pointerEdge: true })
-    this.flushGltfContainerFromPendingDiff({ pointerEdge: true })
-    const edgeMs = performance.now() - t0
-    // fullDump only if we ever swap the entire map (we never do on PE path).
-    perfNotePointerEdge(edgeMs, false)
-    // Click VFX / select rings: light sync — cooperative frames own structure backlog.
+    // Click VFX / select rings: light time advance — cooperative frames own backlog.
     this.tweenBridge?.sync(this.view)
     if (this.tweenBridge?.hasLiveTweens()) {
       this.tweenBridge.update(1 / 30, this.view)
@@ -4805,7 +4850,6 @@ export class SceneScriptSystem {
     }
     void this.particleBridge?.sync(this.view)
     this.particleBridge?.update(1 / 30)
-    // Only re-private PE leaves when structure already dirty (select UI churn).
     if (this.pointerStructureDirty) {
       const pe: Entity[] = []
       for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {
@@ -4843,19 +4887,13 @@ export class SceneScriptSystem {
     if (!opts?.afterOutboundBatch) {
       await this.crdtOutboundSerial
     }
-    // COD A3: never fullDump pendingDiff after PE — peel-only + tiny structure slice.
-    this.flushMeshRendererMaterialsFromPendingDiff({ pointerEdge: true })
-    this.flushTweenAndTransformFromPendingDiff({ pointerEdge: true })
-    this.flushGltfContainerFromPendingDiff({ pointerEdge: true })
+    // COD A3: one pointer-budgeted lane drain — never fullDump map swap.
     if (this.bridge?.canConsumeDiff() && this.pendingDiff.size) {
-      const slice = this.takePendingDiffSlice(
-        new Set(['structure', 'motion', 'material', 'other']),
-        SceneScriptSystem.POINTER_STRUCTURE_CAP
-      )
-      if (slice.size) {
-        const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
-        await this.bridge.consumeDiff(slice, this.view, tweenRefresh)
-      }
+      const F = SceneScriptSystem.FRAME
+      await this.drainPendingDiffLanes({
+        pointerEdge: true,
+        deadlineMs: F.POINTER_MOTION_MS + F.POINTER_MATERIAL_MS + F.STRUCTURE_MS
+      })
     } else {
       this.consumeSyncFrameTransforms()
     }
@@ -5111,35 +5149,29 @@ export class SceneScriptSystem {
   }
 
   /**
-   * ECS projection → Three.js — runs during hydration before the worker loop is marked running.
-   *
-   * COD A2 lane drain (play): peel motion/material first (hot correctness), then a
-   * **budgeted** structure slice. Never swap out the entire pendingDiff map (that was
-   * fullDump thrash when backlog hit 1000+).
-   */
-  /**
-   * COD F2 — optional wall deadline for multi-worker residual fullWork.
-   * When exceeded mid-structure, leave remainder in pendingDiff for next frame.
+   * COD AAA — single ordered lane drain for play (Motion → Materials → Structure).
+   * Optional deadlineMs for multi-worker residual fullWork (F1).
+   * Never swaps the entire pendingDiff map (fullDump thrash).
    */
   async syncRenderer(opts?: { deadlineMs?: number }): Promise<void> {
     if (!this.bridge) return
     const view = this.view
-    const deadline =
+    const F = SceneScriptSystem.FRAME
+    const framePieMs = F.MOTION_MS + F.MATERIAL_MS + F.STRUCTURE_MS
+    const deadlineMs =
       opts?.deadlineMs !== undefined && Number.isFinite(opts.deadlineMs)
-        ? performance.now() + Math.max(0, opts.deadlineMs)
-        : Infinity
+        ? Math.max(0, opts.deadlineMs)
+        : framePieMs
 
     // Diff consumer at runtime; full walk only while asset hydration is active.
     if (this.bridge.canConsumeDiff()) {
-      // COD C2 — UI paint/mount lag is independent of structure backlog.
-      // Flush deferred mount before budgeted consumeDiff so select HUD / menus
-      // never wait on pendingDiff drain (was: only after structure slice).
+      // COD C2 — UI paint independent of structure backlog.
       if (this.projectionLagPendingUi || this.pendingUiEntities !== undefined) {
         this.flushUiFrame()
       }
 
       if (!this.pendingDiff.size) {
-        if (performance.now() < deadline) await this.bridge.drainPendingWork()
+        await this.bridge.drainPendingWork()
         this.syncSceneUiAfterRenderer()
         return
       }
@@ -5151,45 +5183,8 @@ export class SceneScriptSystem {
         })
       }
 
-      // Hot peels first — unit/temple motion must never wait on structure backlog.
-      this.flushTweenAndTransformFromPendingDiff()
-      this.flushMeshRendererMaterialsFromPendingDiff()
-      if (performance.now() < deadline) {
-        this.flushGltfContainerFromPendingDiff()
-      }
-
-      // Motion-only force drain (any Transform/Tween leftover after peels).
-      if (performance.now() < deadline) {
-        const motionSlice = this.takePendingDiffSlice(
-          new Set(['motion']),
-          SceneScriptSystem.MOTION_CONSUME_CAP
-        )
-        if (motionSlice.size) {
-          const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
-          await this.bridge.consumeDiff(motionSlice, view, tweenRefresh)
-          this.bridge.syncInstancedTransforms([...motionSlice.keys()])
-        }
-      }
-
-      // Structure / other / leftover material: budgeted entity cap; rest stays queued.
-      if (performance.now() >= deadline) {
-        this.syncSceneUiAfterRenderer()
-        this.publishPendingDiffPerf()
-        return
-      }
-      const structureSlice = this.takePendingDiffSlice(
-        new Set(['structure', 'other', 'material']),
-        SceneScriptSystem.STRUCTURE_CONSUME_CAP
-      )
-
-      const { spriteDiff, sceneDiff } = this.bridge.partitionSpriteDiff(structureSlice, view)
-      if (spriteDiff.size) this.bridge.consumeSpriteDiff(spriteDiff, view)
-      const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
-      if (sceneDiff.size) await this.bridge.consumeDiff(sceneDiff, view, tweenRefresh)
-      else if (performance.now() < deadline) await this.bridge.drainPendingWork()
-      this.bridge.reconcileBillboardFlags()
-      this.flushPointerStructureIfDirty()
-      this.syncSceneUiAfterRenderer(sceneDiff)
+      await this.drainPendingDiffLanes({ deadlineMs })
+      this.syncSceneUiAfterRenderer()
       this.publishPendingDiffPerf()
       return
     }

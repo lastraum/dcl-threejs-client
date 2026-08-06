@@ -1930,7 +1930,8 @@ export class World {
         if (this.editorPreviewMode) return
 
         const t0 = performance.now()
-        await this.sceneScript.syncRenderer()
+        // COD AAA — primary owns a hard frame pie (motion+material+structure), not free-run.
+        await this.sceneScript.syncRenderer({ deadlineMs: 18 })
         const rendererMs = performance.now() - t0
         // Frame budget: async CRDT apply wall time (?perfdebug [frame] line).
         perfNoteSyncRendererMs(rendererMs)
@@ -1971,14 +1972,15 @@ export class World {
         }
         const bridgesOnlyMs = performance.now() - t2
         // PE + secondary async projection + multi-scene colliders into PhysX.
-        // COD F1 — primary already took full apply above; PE/secondary share remainder.
+        // COD F1 — honest residual: fullWork only when remainder ≥ MIN_FULL_MS (no 0.5 floor lie).
         const t3 = performance.now()
         let multiMs = 0
         if (this.multiScene) {
-          // Async multi-worker slice of ~8ms wall; leftover after primary peel/bridges.
           const ASYNC_MULTI_BUDGET_MS = 8
+          const MIN_FULL_MS = 2
           const primarySpent = t3 - t0
-          const applyBudgetMs = Math.max(0.5, ASYNC_MULTI_BUDGET_MS - primarySpent)
+          const remainder = ASYNC_MULTI_BUDGET_MS - primarySpent
+          const applyBudgetMs = remainder >= MIN_FULL_MS ? remainder : 0
           const { colliders, invalidatePhysIds } = await this.multiScene.tickAsync({
             applyBudgetMs
           })

@@ -517,19 +517,18 @@ export class PortableExperienceManager {
     if (!workers.length) return descs
 
     const budgetMs = opts?.applyBudgetMs
-    // Any positive residual grants one fullWork (World floors at 0.5ms under load).
-    const allowFull = budgetMs === undefined || budgetMs > 0
+    // Honest fullWork: only when residual budget is real (≥2ms). Else dirty colliders only.
+    const MIN_FULL_MS = 2
+    const allowFull = budgetMs === undefined || budgetMs >= MIN_FULL_MS
     const fullIdx = allowFull ? this.asyncFullWorkCursor++ % workers.length : -1
     const t0 = performance.now()
 
     for (let i = 0; i < workers.length; i++) {
       const worker = workers[i]!
-      // After first full PE, if wall budget exhausted, remainder dirty-only.
       const spent = performance.now() - t0
-      const stillRoom = budgetMs === undefined || spent < budgetMs
+      const rem = budgetMs === undefined ? undefined : budgetMs - spent
+      const stillRoom = rem === undefined || rem >= MIN_FULL_MS
       const fullWork = allowFull && stillRoom && i === fullIdx
-      const rem =
-        budgetMs === undefined ? undefined : Math.max(0.25, budgetMs - (performance.now() - t0))
       descs.push(
         ...(await worker.tickAsync(this.primaryScene, this.cache, {
           fullWork,

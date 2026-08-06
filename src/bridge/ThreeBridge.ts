@@ -2212,9 +2212,10 @@ export class ThreeBridge {
     }
 
     // Eligible but not yet instanced (Material landed with mesh) — attach now.
+    // Only clear pending for scalar-only instanceColor (textured must stay pending for maps).
     if (this.meshRendererIsInstanceEligible(entity)) {
       this.attachOrUpdateMeshRenderer(entity, obj, meshKey(entity), true)
-      if (this.meshRendererInstancer.has(entity)) {
+      if (this.meshRendererInstancer.has(entity) && materialIsScalarOnly(pb)) {
         this.pendingMaterialEntities.delete(entity)
         return true
       }
@@ -2228,9 +2229,13 @@ export class ThreeBridge {
       visual.userData[MESH_RENDERER_INSTANCE_MARKER]
     ) {
       this.attachOrUpdateMeshRenderer(entity, obj, meshKey(entity), true)
-      if (this.meshRendererInstancer.has(entity)) {
+      if (this.meshRendererInstancer.has(entity) && materialIsScalarOnly(pb)) {
         this.pendingMaterialEntities.delete(entity)
         return true
+      }
+      // Instanced by mistake while textured — promote so maps can load.
+      if (this.meshRendererInstancer.has(entity) && !materialIsScalarOnly(pb)) {
+        this.promoteMeshRendererForPointerOrMotion(entity, obj)
       }
       visual = this.entityVisualRoot(entity, obj)
     }
@@ -3866,7 +3871,12 @@ export class ThreeBridge {
         obj.remove(existing)
       }
       const pb = materialGetOrNull(Material, entity)
-      if (!pb) return
+      // No Material yet — fall through to private white mesh so the leaf exists for PE/VFX.
+      // Returning here left click markers with MeshRenderer-only stuck invisible until a
+      // later Material put that never re-attached (pendingDiff peel races).
+      if (!pb) {
+        /* private path below */
+      } else {
       const geo = acquirePrimitiveGeometry(spec)
       const rgb = materialAlbedoRgb(pb)
       const alpha = materialAlbedoAlpha(pb)
@@ -3910,6 +3920,7 @@ export class ThreeBridge {
         this.meshRendererInstancer.update(entity, obj)
         return
       }
+      } // end else (has Material for instance path)
     }
 
     // T2/T3 private mesh path.

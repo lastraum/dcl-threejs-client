@@ -4901,7 +4901,7 @@ export class SceneScriptSystem {
    * Full Gltf attach stays on async structure lane — not mid-PE plaza cook.
    * Must include Transform with MeshRenderer or markers spawn at origin / invisible.
    */
-  private flushPointerClickVisualStructure(): void {
+  private async flushPointerClickVisualStructure(): Promise<void> {
     if (!this.bridge || !this.entityStore || !this.pendingDiff.size) return
     if (!this.bridge.canConsumeDiff()) return
     const { MeshRenderer, GltfNodeModifiers, Material, Transform, VisibilityComponent } =
@@ -4917,8 +4917,9 @@ export class SceneScriptSystem {
       VisibilityComponent.componentId
     ])
     const slice = new Map<Entity, Map<number, ProjectionChangeKind>>()
+    const matEntities: Entity[] = []
     for (const [entity, comps] of this.pendingDiff) {
-      if (slice.size >= 16) break
+      if (slice.size >= 24) break
       // Only entities that actually create a click marker / select ring this edge.
       const hasVisual = [...visualIds].some((id) => comps.has(id))
       if (!hasVisual) continue
@@ -4930,13 +4931,19 @@ export class SceneScriptSystem {
       }
       if (!sub.size) continue
       slice.set(entity, sub)
+      if (sub.has(Material.componentId) || sub.has(MeshRenderer.componentId)) {
+        matEntities.push(entity)
+      }
       for (const cid of sub.keys()) comps.delete(cid)
       this.clearPendingEntityIfEmpty(entity)
     }
     if (!slice.size) return
     const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
-    // Sync path so the marker is visible this frame (void async was racing rAF).
-    void this.bridge.consumeDiff(slice, this.view, tweenRefresh)
+    // Await attach so forceApply material runs after the mesh leaf exists.
+    await this.bridge.consumeDiff(slice, this.view, tweenRefresh)
+    for (const entity of matEntities) {
+      this.bridge.forceApplyMeshRendererMaterial(entity)
+    }
     this.publishPendingDiffPerf()
   }
 
@@ -4953,21 +4960,29 @@ export class SceneScriptSystem {
       pointerEdge: true,
       hardMs: F.POINTER_MOTION_MS
     })
-    // 2) Click-marker MeshRenderer + remaining Transform/Material on those entities.
-    this.flushPointerClickVisualStructure()
-    // 3) Scalar materials (including marker colors).
-    this.flushMeshRendererMaterialsFromPendingDiff({
-      pointerEdge: true,
-      hardMs: F.POINTER_MATERIAL_MS,
-      entityCap: 32
-    })
-    // 4) Any residual motion/material from unit select (async, non-blocking).
-    void this.drainPendingDiffLanes({
-      pointerEdge: true,
-      deadlineMs: F.POINTER_MOTION_MS + F.POINTER_MATERIAL_MS
-    }).then(() => {
-      perfNotePointerEdge(performance.now() - t0, false)
-    })
+    // 2–3) MeshRenderer attach then materials — await so cyan rings land this edge.
+    void this.flushPointerClickVisualStructure()
+      .then(() => {
+        this.flushMeshRendererMaterialsFromPendingDiff({
+          pointerEdge: true,
+          hardMs: F.POINTER_MATERIAL_MS,
+          entityCap: 48
+        })
+        // Residual motion/material (async).
+        return this.drainPendingDiffLanes({
+          pointerEdge: true,
+          deadlineMs: F.POINTER_MOTION_MS + F.POINTER_MATERIAL_MS
+        })
+      })
+      .then(() => {
+        perfNotePointerEdge(performance.now() - t0, false)
+      })
+      .catch((err) => {
+        console.warn(
+          '[pointer]',
+          `post-pointer VFX drain failed — ${err instanceof Error ? err.message : String(err)}`
+        )
+      })
     // Click VFX / select rings: light time advance — cooperative frames own backlog.
     this.tweenBridge?.sync(this.view)
     if (this.tweenBridge?.hasLiveTweens()) {

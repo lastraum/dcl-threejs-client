@@ -38,18 +38,40 @@ export function applyPbrColors(
     emissiveIntensity?: number
   }
 ): void {
+  const ec = pbr.emissiveColor
+  const er = ec?.r ?? 0
+  const eg = ec?.g ?? 0
+  const eb = ec?.b ?? 0
+  const emissiveLum = (er + eg + eb) / 3
+  const intensity = pbr.emissiveIntensity ?? 1
+
   if (pbr.albedoColor) {
+    const ar = pbr.albedoColor.r ?? 1
+    const ag = pbr.albedoColor.g ?? 1
+    const ab = pbr.albedoColor.b ?? 1
+    const albedoLum = (ar + ag + ab) / 3
+    // Selection rings / click VFX: white albedo + colored emissive reads as washed white under
+    // ACES if we keep full albedo. Drive the surface with emissive color (Explorer glow discs).
+    if (albedoLum > 0.88 && emissiveLum > 0.12 && !material.map) {
+      material.color.setRGB(Math.min(er, 1), Math.min(eg, 1), Math.min(eb, 1))
+      material.emissive.setRGB(Math.min(er, 1), Math.min(eg, 1), Math.min(eb, 1))
+      material.emissiveIntensity = Math.max(intensity, 1.35)
+      material.metalness = 0
+      material.roughness = 1
+      material.toneMapped = false
+      material.envMapIntensity = 0
+      return
+    }
     applyHdrAlbedoAndEmissive(material, pbr.albedoColor, pbr.emissiveColor, pbr.emissiveIntensity)
     return
   }
 
-  const ec = pbr.emissiveColor
   if (ec) {
-    material.emissive.setRGB(ec.r ?? 0, ec.g ?? 0, ec.b ?? 0)
+    material.emissive.setRGB(er, eg, eb)
   } else {
     material.emissive.setRGB(0, 0, 0)
   }
-  material.emissiveIntensity = pbr.emissiveIntensity ?? 1
+  material.emissiveIntensity = intensity
 }
 
 /**

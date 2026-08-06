@@ -281,21 +281,25 @@ export function materialAlbedoRgb(pb: PbMaterial): { r: number; g: number; b: nu
   }
   if (materialCase === 'pbr') {
     const a = pb.material!.pbr.albedoColor
-    // Prefer albedo; if absent/white-ish and emissive is set, land FX may use emissive only.
-    if (a) {
-      return {
-        r: normChannel(a.r, 1),
-        g: normChannel(a.g, 1),
-        b: normChannel(a.b, 1)
-      }
-    }
     const e = pb.material!.pbr.emissiveColor
-    if (e) {
-      return {
-        r: normChannel(e.r, 0),
-        g: normChannel(e.g, 0),
-        b: normChannel(e.b, 0)
+    const er = e ? normChannel(e.r, 0) : 0
+    const eg = e ? normChannel(e.g, 0) : 0
+    const eb = e ? normChannel(e.b, 0) : 0
+    const emissiveLum = (er + eg + eb) / 3
+    // Selection rings / click markers: white albedo + colored emissive — instanceColor
+    // must use emissive or GPU instances stay mat#ffffff and rings vanish on light ground.
+    if (a) {
+      const ar = normChannel(a.r, 1)
+      const ag = normChannel(a.g, 1)
+      const ab = normChannel(a.b, 1)
+      const albedoLum = (ar + ag + ab) / 3
+      if (albedoLum > 0.88 && emissiveLum > 0.12) {
+        return { r: er, g: eg, b: eb }
       }
+      return { r: ar, g: ag, b: ab }
+    }
+    if (e && emissiveLum > 0) {
+      return { r: er, g: eg, b: eb }
     }
   }
   return { r: 1, g: 1, b: 1 }

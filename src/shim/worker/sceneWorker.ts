@@ -1793,15 +1793,19 @@ function workerVerboseLog(
   workerLog(level, message)
 }
 
-/** Hydration keeps engine.update alive for splash/composite — pointer pause must not freeze it. */
+/**
+ * When true, cooperative eng.update is deferred (tickQueued).
+ *
+ * COD B2 — **Pointer never stops L2 clocks**: do **not** block on pointer input session
+ * alone. Session only coalesces keyboard; timers/VC/tweens/isPressed reassert need
+ * play-frame eng.update while mouse is held. Block only mid-inject or explicit pause.
+ */
 function pointerBlocksEngineTick(): boolean {
-  // Block only while inject eng.update is mid-flight — not during post-tick CRDT flush/ack
-  // (pointerDeliverWorkInFlight). That flush can take 100ms+ and starved nZ(dt) Color4.a fade
-  // + PE unmount after sceneUi click while main applied mount snapshots.
+  // Mid inject eng.update / queued deliver — must not interleave.
   if (pointerDeliveryInFlight || queuedPointerDeliver) return true
   if (sceneOnUpdatePaused) return false
   if (flightPumpBypassPause) return false
-  if (isPointerInputSessionActive()) return true
+  // pendingInjectPointer / deliver batch: short-lived only after edge.
   return sceneTicksPaused || !!pendingInjectPointer || pointerDeliverBatchOpen
 }
 
@@ -3860,21 +3864,17 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       void runPeVehicleInputPump()
       return
     }
-    // Do not gate on sceneTicksPaused: pointer UI hold must not freeze CameraFollow forever
-    // (left the gameplay VC stuck at cameraParent spawn near world origin).
-    // Still avoid overlapping a mid-batch pointer engine.update.
-    // Allow ticks once sceneEngine exists — not only after onStart — so freeze-watch systems
-    // can clear InputModifier while onStart awaits movePlayerTo.
-    // Do not gate on sceneUpdateInFlight — pollEvents runs outside eng.update flight now.
-    // Gating left welcome Color4.a / timers starved whenever plaza onUpdate was slow.
-    if (sceneEngine && !sceneOnUpdatePaused && !pointerDeliverBatchOpen && !pendingInjectPointer) {
-      // Always request — requestSceneEngineTick rate-limits via resolveDt / tickInFlight.
+    // COD B1: play-frame is the sole cooperative clock. Always request eng.update when
+    // scene is not fully paused. pointerBlocksTick() only defers mid-inject — not sessions.
+    // Do not gate on sceneUpdateInFlight (poll is outside eng.update flight).
+    if (sceneEngine && !sceneOnUpdatePaused) {
       requestSceneEngineTick()
-    } else if (sceneEngine && !sceneOnUpdatePaused) {
-      // Engine tick skipped (pointer hold) — still hydrate VC.
-      if (sceneOnStartComplete) {
-        publishVcBindHydrateIfNeeded()
-        publishVcPoseLiveIfBound()
+      // If inject is mid-flight, request queues; still keep VC live poses hot.
+      if (pointerDeliveryInFlight || pointerDeliverBatchOpen || pendingInjectPointer) {
+        if (sceneOnStartComplete) {
+          publishVcBindHydrateIfNeeded()
+          publishVcPoseLiveIfBound()
+        }
       }
     }
     return

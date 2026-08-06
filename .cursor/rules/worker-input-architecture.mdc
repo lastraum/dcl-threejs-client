@@ -82,6 +82,14 @@ Sticky `inputSystem.isPressed` + per-frame edges match `@dcl/ecs` for **every** 
 **Pointer hold reassert:** after phase=down, worker tracks held buttons and re-fires
 `PET_DOWN` each `play-frame-tick` (same as keyboard). Without this, a quick click never
 leaves a play frame with `isPressed` true and hold/click-move systems no-op. Clear on phase=up.
+**sceneUi DOWN batch** clears hold immediately (UP in same job).
+
+**L2 clocks never stop for pointer session** (COD B2): `pointerBlocksEngineTick` only for
+mid-inject / explicit pause — not `isPointerInputSessionActive()`. Sessions coalesce keyboard
+only; timers/VC/tweens keep running under mouse hold.
+
+**Main peel FrameLaw (A3/B3):** after PE, material ≤8ms, transform hard ≤2.5ms wall, gltf ≤8
+entities — never full `pendingDiff` dump.
 
 Components are independent — no cross-component input gating.
 

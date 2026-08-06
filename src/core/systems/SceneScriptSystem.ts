@@ -196,6 +196,14 @@ export class SceneScriptSystem {
    * Motion/material peels run uncapped (budgeted by their own hard ms). Remainder stays queued.
    */
   private static readonly STRUCTURE_CONSUME_CAP = 48
+  /** A3 — pointer-edge structure slice (never fullDump). */
+  private static readonly POINTER_STRUCTURE_CAP = 16
+  /** A3/B3 — hard wall ms for post-pointer peels (FrameLaw). */
+  private static readonly POINTER_PEEL_HARD_MS = 2.5
+  private static readonly MATERIAL_PEEL_HARD_MS = 48
+  private static readonly MATERIAL_PEEL_POINTER_MS = 8
+  private static readonly GLTF_PEEL_CAP = 64
+  private static readonly GLTF_PEEL_POINTER_CAP = 8
   private projectionDiffActive = false
   /** Phase 3: encoder is the primary source for renderer-owned outbound CRDT (reserved, tween, pointer/video results). Always on. */
   private readonly encoder = new CrdtEncoder(SDK_RESERVED, this.projection, this.componentHost.components)
@@ -3549,7 +3557,7 @@ export class SceneScriptSystem {
    * waiting for a full pendingDiff consume. Material/tween flushes were leaving
    * GltfContainer stranded (pendingDiff hundreds, no meshes).
    */
-  private flushGltfContainerFromPendingDiff(): void {
+  private flushGltfContainerFromPendingDiff(opts?: { pointerEdge?: boolean }): void {
     if (!this.bridge || !this.entityStore || !this.pendingDiff.size) return
     if (!this.bridge.canConsumeDiff()) return
     const t0 = performance.now()
@@ -3558,7 +3566,9 @@ export class SceneScriptSystem {
     const transformId = Transform.componentId
     const gltfDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
     let n = 0
-    const CAP = 64
+    const CAP = opts?.pointerEdge
+      ? SceneScriptSystem.GLTF_PEEL_POINTER_CAP
+      : SceneScriptSystem.GLTF_PEEL_CAP
     for (const [entity, comps] of this.pendingDiff) {
       if (n >= CAP) break
       const gk = comps.get(gltfId)
@@ -3597,16 +3607,18 @@ export class SceneScriptSystem {
    * Same-batch Tween/Transform apply so click-move anims start this frame (not after
    * pendingDiff drains under UI spam). Mirrors MeshRenderer material flush.
    */
-  private flushTweenAndTransformFromPendingDiff(): void {
+  private flushTweenAndTransformFromPendingDiff(opts?: { pointerEdge?: boolean; hardMs?: number }): void {
     if (!this.bridge || !this.entityStore || !this.pendingDiff.size) return
     if (!this.bridge.canConsumeDiff()) return
     const t0 = performance.now()
+    const hardMs = opts?.hardMs ?? (opts?.pointerEdge ? SceneScriptSystem.POINTER_PEEL_HARD_MS : Infinity)
     const { Transform, Tween, MeshRenderer, PointerEvents } = this.readComponents
     const transformId = Transform.componentId
     const tweenId = Tween.componentId
     const transformDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
     const tweenEntities: Entity[] = []
     for (const [entity, comps] of this.pendingDiff) {
+      if (performance.now() - t0 >= hardMs && transformDiff.size > 0) break
       const hasTween = comps.has(tweenId)
       const hasTransform = comps.has(transformId)
       if (!hasTween && !hasTransform) continue
@@ -3663,12 +3675,13 @@ export class SceneScriptSystem {
    * arrives before mesh drain (textured props / DecentraCraft white-until-idle).
    * Clears Material put from pendingDiff on success; mesh/Transform work may remain.
    */
-  private flushMeshRendererMaterialsFromPendingDiff(): void {
+  private flushMeshRendererMaterialsFromPendingDiff(opts?: { pointerEdge?: boolean }): void {
     if (!this.bridge || !this.pendingDiff.size) return
     const { Material, MeshRenderer } = this.readComponents
     const matId = Material.componentId
-    // Private mesh attach is cheap vs GLTF; budget enough for dense ground/wall plane sets.
-    const hardMs = 48
+    const hardMs = opts?.pointerEdge
+      ? SceneScriptSystem.MATERIAL_PEEL_POINTER_MS
+      : SceneScriptSystem.MATERIAL_PEEL_HARD_MS
     const t0 = performance.now()
     let applied = 0
     let seen = 0
@@ -4720,11 +4733,13 @@ export class SceneScriptSystem {
         'color:#0f0;font-size:12px;font-weight:bold'
       )
     }
-    // Frame law: peel only — fullDump must stay 0 (COD / AAA pointer budget).
-    this.flushMeshRendererMaterialsFromPendingDiff()
-    this.flushTweenAndTransformFromPendingDiff()
-    this.flushGltfContainerFromPendingDiff()
-    perfNotePointerEdge(performance.now() - t0, false)
+    // Frame law B3: peel only with hard wall budget — fullDump must stay 0.
+    this.flushMeshRendererMaterialsFromPendingDiff({ pointerEdge: true })
+    this.flushTweenAndTransformFromPendingDiff({ pointerEdge: true })
+    this.flushGltfContainerFromPendingDiff({ pointerEdge: true })
+    const edgeMs = performance.now() - t0
+    const overBudget = edgeMs > SceneScriptSystem.POINTER_PEEL_HARD_MS * 2
+    perfNotePointerEdge(edgeMs, overBudget)
     // Click VFX / select rings: light sync — cooperative frames own the backlog.
     this.tweenBridge?.sync(this.view)
     if (this.tweenBridge?.hasLiveTweens()) {
@@ -4774,14 +4789,14 @@ export class SceneScriptSystem {
     if (!opts?.afterOutboundBatch) {
       await this.crdtOutboundSerial
     }
-    // COD: never fullDump pendingDiff after PE — peel only (same as applyPostPointerMotion v5).
-    this.flushMeshRendererMaterialsFromPendingDiff()
-    this.flushTweenAndTransformFromPendingDiff()
-    this.flushGltfContainerFromPendingDiff()
+    // COD A3: never fullDump pendingDiff after PE — peel-only + tiny structure slice.
+    this.flushMeshRendererMaterialsFromPendingDiff({ pointerEdge: true })
+    this.flushTweenAndTransformFromPendingDiff({ pointerEdge: true })
+    this.flushGltfContainerFromPendingDiff({ pointerEdge: true })
     if (this.bridge?.canConsumeDiff() && this.pendingDiff.size) {
       const slice = this.takePendingDiffSlice(
         new Set(['structure', 'motion', 'material', 'other']),
-        Math.min(24, SceneScriptSystem.STRUCTURE_CONSUME_CAP)
+        SceneScriptSystem.POINTER_STRUCTURE_CAP
       )
       if (slice.size) {
         const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []

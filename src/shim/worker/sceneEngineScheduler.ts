@@ -1018,14 +1018,18 @@ export async function runSceneEnginePointerTick(
       return
     }
 
-    // phase === 'up' (world) — do not re-post full HUD (DOWN already opened panel).
-    // Re-settling on every UP doubled 300–400 row egress and froze frames for seconds.
+    // phase === 'up' (world) — getClick() is only true during this eng.update.
+    // Do not re-post full HUD (DOWN already opened panel). PlayerEntity also receives UP
+    // (injectPointerClick) so getClick(PlayerEntity) pairs with DOWN mirrored on press.
     setPointerInteractiveTickActive(true)
     await runSerializedEngineUpdate(async () => {
       injectPointerClickUpOnEngine(eng, splitPointerInject)
       await eng.update(0)
     })
     cfg.onAfterEngineTick?.()
+    // One more systems pass so MeshRenderer/Tween click markers created in getClick handlers
+    // land in CRDT before deliver-done (exports.onUpdate is not run mid-edge).
+    await runPointerNonUiPhase(eng)
     const mountAfterUp = countWorkerUiMount(eng)
     if (mountAfterUp > mountBefore) {
       // Rare: UI opened on UP — full snapshot once.
@@ -1036,7 +1040,6 @@ export async function runSceneEnginePointerTick(
       })
       mountGrew = settledUp.mountGrew
     }
-    await runPointerNonUiPhase(eng)
   } finally {
     setPointerInteractivePhase('none')
     setPointerInteractiveTickActive(false)

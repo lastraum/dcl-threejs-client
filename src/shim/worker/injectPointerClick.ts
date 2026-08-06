@@ -77,24 +77,6 @@ function resolveUpInjectTargets(engine: IEngine, body: InjectPointerClickBody): 
   return requested
 }
 
-/**
- * World mesh PE: also land results on PlayerEntity so click-to-move / global systems that
- * call getClick(IA_POINTER, PlayerEntity) or isTriggered without a mesh entity still see
- * the ray hit (Explorer). Floor MeshCollider PE alone left results only on e.g. e1083 while
- * DecentraCraft move VFX listens on PlayerEntity — markers never spawned.
- * SceneUi stays leaf-only (PlayerEntity UP already handled in resolveUpInjectTargets).
- */
-function worldPointerResultTargets(
-  engine: IEngine,
-  body: InjectPointerClickBody,
-  primary: number[]
-): number[] {
-  if (body.sceneUi) return primary
-  const player = engine.PlayerEntity as number
-  if (primary.includes(player)) return primary
-  return [...primary, player]
-}
-
 /** PET_DOWN only — must run before the first pointer-tick `engine.update(0)`. */
 export function injectPointerClickDownOnEngine(engine: IEngine, body: InjectPointerClickBody): void {
   preregisterRendererInjectedComponents(engine)
@@ -108,7 +90,8 @@ export function injectPointerClickDownOnEngine(engine: IEngine, body: InjectPoin
     hit,
     analog: undefined
   }
-  for (const entity of worldPointerResultTargets(engine, body, pointerDownTargets(body))) {
+  // Only scene-registered targets — never invent PE on PlayerEntity.
+  for (const entity of pointerDownTargets(body)) {
     PointerEventsResult.addValue(entity as Entity, down)
   }
 }
@@ -126,7 +109,7 @@ export function injectPointerClickUpOnEngine(engine: IEngine, body: InjectPointe
     hit,
     analog: undefined
   }
-  const targets = worldPointerResultTargets(engine, body, resolveUpInjectTargets(engine, body))
+  const targets = resolveUpInjectTargets(engine, body)
   for (const entity of targets) {
     PointerEventsResult.addValue(entity as Entity, up)
   }

@@ -50,11 +50,6 @@ export type PointerHit = {
   inRange: boolean
   /** Screen-space ECS UI — skip 3D distance checks. */
   isSceneUi?: boolean
-  /**
-   * Synthetic y=0 ground hit when the PE ray misses (top-down click-to-move).
-   * Injected on PlayerEntity so `inputSystem.isTriggered(IA_POINTER)` + hit.position work.
-   */
-  isGroundSynthetic?: boolean
 }
 
 type PointerDeps = {
@@ -123,10 +118,6 @@ export class PointerEventsSystem {
   private primaryKeyDown = false
   private readonly pendingPointerDown = new Map<InputActionValue, PointerHit | null>()
   private readonly pendingPointerUp = new Set<InputActionValue>()
-  /** Buttons whose PET_DOWN was a synthetic ground inject (no PE on PlayerEntity). */
-  private readonly groundSyntheticButtons = new Set<InputActionValue>()
-  /** Last ground hit point per button — PET_UP reuses DOWN position (no re-aim). */
-  private readonly groundHitByButton = new Map<InputActionValue, PointerHit>()
 
   private hoverEntity: Entity | null = null
   private lastHit: PointerHit | null = null
@@ -452,25 +443,10 @@ export class PointerEventsSystem {
 
     const button = mouseButtonToInputAction(e.button)
     const coords = this.pointerClientCoords(e.clientX, e.clientY)
-    let hit = this.resolveWorldInteractHit(button)
-    // PE miss / out-of-range: still deliver a global IA_POINTER edge on PlayerEntity with
-    // a ground-plane hit so any scene using isPressed/isTriggered (no entity) + hit.position
-    // or PPI worldRayDirection works (Explorer parity for strategy / free-aim click).
-    if (!this.canQueuePointerDown(button, hit) && button === InputAction.IA_POINTER) {
-      this.deps.prepareRaycast?.()
-      const ground = this.pickGroundPlaneHit()
-      if (ground) {
-        hit = ground
-        const dcl = threeToDclVec(ground.point)
-        clientDebugLog.log(
-          'pointer',
-          `click → ground PlayerEntity ` +
-            `dcl=(${dcl.x.toFixed(1)},${dcl.y.toFixed(1)},${dcl.z.toFixed(1)}) ` +
-            `cam=${ground.cameraDistance.toFixed(1)}m peMeshes=${this.pointerTargets.length}`,
-          { alsoConsole: true }
-        )
-      }
-    }
+    const hit = this.resolveWorldInteractHit(button)
+    // Only real scene PE / UI hits — never invent a PlayerEntity ground inject.
+    // Scenes that need free ground aim (e.g. DecentraCraft) use PrimaryPointerInfo +
+    // CameraEntity ray themselves; isTriggered(IA_POINTER) still works without PE hit.
     if (!this.canQueuePointerDown(button, hit)) {
       if (hit) {
         this.logInteractBlocked(mouseInteractLabel(button, e.button), button, hit)
@@ -501,27 +477,17 @@ export class PointerEventsSystem {
       }
       return
     }
-    const targetEntity = hit!.isGroundSynthetic
-      ? this.deps.view.PlayerEntity
-      : this.resolvePointerResultEntity(hit!.entity, button)
+    const targetEntity = this.resolvePointerResultEntity(hit!.entity, button)
     this.downEntityByButton.set(button, targetEntity)
     this.pendingPointerDown.set(button, hit)
-    if (hit!.isGroundSynthetic) {
-      this.groundSyntheticButtons.add(button)
-      this.groundHitByButton.set(button, hit!)
-    } else {
-      this.groundSyntheticButtons.delete(button)
-      this.groundHitByButton.delete(button)
-    }
     if (button === InputAction.IA_POINTER) {
-      const label = hit!.isGroundSynthetic
-        ? `click → ground player e${targetEntity as number}`
-        : targetEntity !== hit!.entity
+      const label =
+        targetEntity !== hit!.entity
           ? `click → target ${targetEntity} (hit ${hit!.entity})`
           : `click → entity ${targetEntity}`
       clientDebugLog.log('pointer', label, { alsoConsole: true })
     }
-    // Universal Explorer press edge: flush PET_DOWN immediately (world + UI + ground).
+    // Universal Explorer press edge: flush PET_DOWN immediately (world + UI).
     // Same-tick DOWN+UP on mouseup alone never leaves multi-frame isPressed for any scene.
     this.deps.flushPointerCrdt?.()
   }
@@ -753,16 +719,6 @@ export class PointerEventsSystem {
     }
     if (!activeHit) return
 
-    // Ground miss → PlayerEntity PET (click-to-move / global isTriggered).
-    if (activeHit.isGroundSynthetic) {
-      const player = this.deps.view.PlayerEntity
-      this.downEntityByButton.set(button, player)
-      this.groundSyntheticButtons.add(button)
-      this.groundHitByButton.set(button, activeHit)
-      this.writeResult(this.deps.ecs, player, activeHit, PointerEventType.PET_DOWN, button)
-      return
-    }
-
     // Scene UI pick already resolved the onMouseDown leaf — do not re-walk ancestors
     // (can re-target fullscreen scrim and close modals instead of CREATOR/USE cards).
     const targetEntity = activeHit.isSceneUi
@@ -862,10 +818,6 @@ export class PointerEventsSystem {
 
   private canQueuePointerDown(button: InputActionValue, hit: PointerHit | null): boolean {
     if (!this.deps || !hit) return false
-    // Ground synthetic: no PE required — global isTriggered(IA_POINTER) + hit.position.
-    if (hit.isGroundSynthetic) {
-      return button === InputAction.IA_POINTER
-    }
     const targetEntity = this.resolvePointerResultEntity(hit.entity, button)
     if (hit.isSceneUi) {
       const spec = this.uiPointerSpec(targetEntity)
@@ -921,31 +873,6 @@ export class PointerEventsSystem {
     if (downEntity === undefined) return false
 
     this.deps.camera.getWorldPosition(_camPos)
-
-    // Ground synthetic PET_DOWN on PlayerEntity — always pair with PET_UP (no PE component).
-    if (this.groundSyntheticButtons.has(button) || preferredHit?.isGroundSynthetic) {
-      this.groundSyntheticButtons.delete(button)
-      const stored = this.groundHitByButton.get(button)
-      this.groundHitByButton.delete(button)
-      const ground: PointerHit =
-        stored ??
-        (preferredHit?.isGroundSynthetic ? preferredHit : null) ??
-        this.pickGroundPlaneHit() ?? {
-          entity: downEntity,
-          point: _camPos.clone(),
-          distance: 0,
-          normal: new THREE.Vector3(0, 1, 0),
-          priority: -1,
-          cameraDistance: 0,
-          playerDistance: 0,
-          inRange: true,
-          isGroundSynthetic: true
-        }
-      ground.isGroundSynthetic = true
-      ground.entity = downEntity
-      this.writeResult(this.deps.ecs, downEntity, ground, PointerEventType.PET_UP, button)
-      return true
-    }
 
     const isSceneUi = this.deps.ecs.UiTransform.has(downEntity)
     const spec = isSceneUi ? this.uiPointerSpec(downEntity) : this.deps.ecs.PointerEvents.getOrNull(downEntity)
@@ -1009,39 +936,6 @@ export class PointerEventsSystem {
     const ray = this.computePointerRay(this.deps.camera)
     this.deps.camera.getWorldPosition(_camPos)
     return this.pickPointerHit(this.deps.collision, ray, _camPos, this.deps.getPlayerPosition())
-  }
-
-  /**
-   * Intersect the live pointer ray with y=0 (DCL / Three ground). Used when no PE mesh
-   * is under the cursor so strategy games can still receive click-to-move.
-   * Point is Three display space; writeResult converts via threeToDclVec.
-   */
-  private pickGroundPlaneHit(): PointerHit | null {
-    if (!this.deps) return null
-    const camera = this.deps.camera
-    camera.updateMatrixWorld(true)
-    const ray = this.computePointerRay(camera)
-    camera.getWorldPosition(_camPos)
-    // Plane y=0, normal +Y. t = -origin.y / dir.y
-    const dirY = ray.direction.y
-    if (Math.abs(dirY) < 1e-5) return null
-    const t = -ray.origin.y / dirY
-    if (!(t > 0) || t > 400) return null
-    const point = ray.origin.clone().addScaledVector(ray.direction, t)
-    const playerPos = this.deps.getPlayerPosition()
-    const cameraDistance = point.distanceTo(_camPos)
-    const playerDistance = playerPos ? point.distanceTo(playerPos) : cameraDistance
-    return {
-      entity: this.deps.view.PlayerEntity,
-      point,
-      distance: t,
-      normal: new THREE.Vector3(0, 1, 0),
-      priority: -1,
-      cameraDistance,
-      playerDistance,
-      inRange: true,
-      isGroundSynthetic: true
-    }
   }
 
   private resolveHoverEntity(hit: PointerHit): Entity | null {
@@ -1570,17 +1464,12 @@ export class PointerEventsSystem {
       hit: buildRaycastHit(hit),
       analog: undefined
     }
-    // Ground / reserved player inject: single target (no PE bubble walk).
     let targets: Entity[]
-    if (hit.isGroundSynthetic) {
+    const bubbleFrom = hit.isSceneUi ? hit.entity : targetEntity
+    targets = this.collectPointerResultTargets(bubbleFrom, button, state)
+    // react-ecs onMouseDown registers on the resolved leaf — never bubble UI inject to scrim ancestors.
+    if (hit.isSceneUi) {
       targets = [targetEntity]
-    } else {
-      const bubbleFrom = hit.isSceneUi ? hit.entity : targetEntity
-      targets = this.collectPointerResultTargets(bubbleFrom, button, state)
-      // react-ecs onMouseDown registers on the resolved leaf — never bubble UI inject to scrim ancestors.
-      if (hit.isSceneUi) {
-        targets = [targetEntity]
-      }
     }
     for (const entity of targets) {
       ecs.PointerEventsResult.addValue(entity, result)

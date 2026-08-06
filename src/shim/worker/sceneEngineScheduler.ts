@@ -437,14 +437,24 @@ function extractUiTextureSrcFromSnapshot(value: unknown): string | null {
   return null
 }
 
-/** Pointer phase 4 — structured mount snapshot after interactive click (sole play-mode UI egress). */
-function runPointerUiPhase4Egress(eng: IEngine): void {
+/**
+ * Pointer phase 4 — structured mount snapshot after interactive click.
+ * @param fullMount — true when mount set grew (open panel): full rows required.
+ *                    false when only content dirtied: dirty-only rows + full mount ids.
+ */
+function runPointerUiPhase4Egress(eng: IEngine, opts?: { fullMount?: boolean }): void {
   const cfg = config!
+  const fullMount = opts?.fullMount !== false
   planSceneUiCrdtEmit(eng, cfg.log, {
     pointerTick: true,
-    forceFullTouch: true
+    forceFullTouch: fullMount
   })
-  const snapshot = collectWorkerUiMountSnapshot(eng)
+  const mountEntityIds = collectWorkerUiMountEntityIds(eng)
+  const dirtyOnly =
+    !fullMount && shouldUsePartialUiMountSnapshot(mountEntityIds.length)
+      ? new Set(getLastPlannedUiDirtyEntities().map((e) => e as number))
+      : undefined
+  const snapshot = collectWorkerUiMountSnapshot(eng, dirtyOnly)
   let uiTransform = 0
   let uiBackground = 0
   let uiText = 0
@@ -471,16 +481,22 @@ function runPointerUiPhase4Egress(eng: IEngine): void {
         break
     }
   }
-  const mountEntities = new Set(snapshot.filter((r) => r.componentId === 1050).map((r) => r.entity))
+  const mountEntities = new Set(
+    fullMount
+      ? mountEntityIds
+      : snapshot.filter((r) => r.componentId === 1050).map((r) => r.entity)
+  )
   if (!cfg.isHydration()) {
-    notePlayModePointerUiEgress(mountEntities.size)
+    notePlayModePointerUiEgress(mountEntities.size || mountEntityIds.length)
   }
   cfg.log(
-    `[sceneWorker] pointer ui snapshot — mount=${mountEntities.size} rows=${snapshot.length} ` +
+    `[sceneWorker] pointer ui snapshot — mount=${mountEntityIds.length} rows=${snapshot.length}` +
+      `${dirtyOnly ? ' partial' : ' full'} ` +
       `UiTransform=${uiTransform} UiBackground=${uiBackground} UiText=${uiText} ` +
       `UiInput=${uiInput} PointerEvents=${pointerEvents}`
   )
   cfg.queuePointerUiEgress?.(snapshot)
+  // Flush attaches full mount ids via collectWorkerUiMountEntityIds (partial rows OK).
   commitSceneUiCrdtBaseline(eng)
 }
 
@@ -811,7 +827,7 @@ async function runPointerNonUiPhase(eng: IEngine): Promise<void> {
 async function settleWorldPointerUiAfterEdge(
   eng: IEngine,
   cfg: NonNullable<typeof config>,
-  opts: { fpBefore: string; mountBefore: number }
+  opts: { fpBefore: string; mountBefore: number; forceFullIfDirty?: boolean }
 ): Promise<{ dirty: boolean; mountGrew: boolean }> {
   setPointerInteractiveTickActive(true)
   setPointerInteractivePhase('flush')
@@ -827,10 +843,15 @@ async function settleWorldPointerUiAfterEdge(
   const mountGrew = mountAfter > opts.mountBefore
   const dirty = mountGrew || fpAfter !== opts.fpBefore
   if (dirty) {
-    runPointerUiPhase4Egress(eng)
+    // Full snapshot only when mount grew (panel open). Content-only dirties use partial
+    // rows — posting 300–400 full rows on every world PE DOWN+UP froze the client.
+    runPointerUiPhase4Egress(eng, {
+      fullMount: mountGrew || opts.forceFullIfDirty === true
+    })
     cfg.log(
       `[sceneWorker] pointer-ui phase4 world edge — dirty=1 ` +
-        `mount=${opts.mountBefore}→${mountAfter} fpChanged=${fpAfter !== opts.fpBefore ? 1 : 0}`
+        `mount=${opts.mountBefore}→${mountAfter} grew=${mountGrew ? 1 : 0} ` +
+        `fpChanged=${fpAfter !== opts.fpBefore ? 1 : 0}`
     )
   }
   return { dirty, mountGrew }
@@ -884,8 +905,8 @@ async function runSceneUiPointerDownBatch(
   cfg.onAfterEngineTick?.()
 
   setPointerInteractivePhase('flush')
-  // Snapshot open mount as-is — no multi-pass react-ecs settle.
-  runPointerUiPhase4Egress(eng)
+  // Snapshot open mount full — sceneUi toggle always needs complete rows.
+  runPointerUiPhase4Egress(eng, { fullMount: true })
   const mountAfter = countWorkerUiMount(eng)
   const mountGrew = mountAfter > mountBefore
   // Always hold briefly so cooperative ticks cannot collapse the just-opened menu.
@@ -985,22 +1006,36 @@ export async function runSceneEnginePointerTick(
       })
       reconcileLocomotionLatchAfterInjectDown(eng)
       cfg.onAfterEngineTick?.()
-      const settled = await settleWorldPointerUiAfterEdge(eng, cfg, { fpBefore, mountBefore })
+      // Full phase-4 only if select HUD mount grows; else partial dirty rows.
+      const settled = await settleWorldPointerUiAfterEdge(eng, cfg, {
+        fpBefore,
+        mountBefore,
+        forceFullIfDirty: false
+      })
       mountGrew = settled.mountGrew
       if (mountGrew) holdCooperativeReactEcs(12)
       await runPointerNonUiPhase(eng)
       return
     }
 
-    // phase === 'up' (world)
+    // phase === 'up' (world) — do not re-post full HUD (DOWN already opened panel).
+    // Re-settling on every UP doubled 300–400 row egress and froze frames for seconds.
     setPointerInteractiveTickActive(true)
     await runSerializedEngineUpdate(async () => {
       injectPointerClickUpOnEngine(eng, splitPointerInject)
       await eng.update(0)
     })
     cfg.onAfterEngineTick?.()
-    const settledUp = await settleWorldPointerUiAfterEdge(eng, cfg, { fpBefore, mountBefore })
-    mountGrew = settledUp.mountGrew
+    const mountAfterUp = countWorkerUiMount(eng)
+    if (mountAfterUp > mountBefore) {
+      // Rare: UI opened on UP — full snapshot once.
+      const settledUp = await settleWorldPointerUiAfterEdge(eng, cfg, {
+        fpBefore,
+        mountBefore,
+        forceFullIfDirty: true
+      })
+      mountGrew = settledUp.mountGrew
+    }
     await runPointerNonUiPhase(eng)
   } finally {
     setPointerInteractivePhase('none')

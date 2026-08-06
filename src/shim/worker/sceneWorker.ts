@@ -915,7 +915,12 @@ function shouldDeferPointerOutbound(): boolean {
   return pointerDeliverBatchOpen || pointerDeliveryInFlight || isPointerInputSessionActive()
 }
 
-/** Post non-UI chunks first, then one atomic UI snapshot with uiEntities — await acks before deliver-done. */
+/**
+ * Post non-UI chunks first, then structured UI mount.
+ * UI mount posts are fire-and-forget (empty data) — awaiting main ack on 300–400 row
+ * snapshots deadlocked deliver-done (main 2s watchdog vs worker 4s OUTBOUND_ACK while
+ * Yoga paint ran). Non-UI gameplay chunks still await ack with timeout.
+ */
 async function flushPointerDeferredOutboundsAsync(): Promise<void> {
   let nonUiChunks = coalesceCrdtChunksLww(pointerDeferredNonUi.splice(0))
   const eng = sceneEngine
@@ -949,22 +954,27 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
 
   const postOutbound = (
     data: Uint8Array,
-    attachUi?: { uiEntities: number[]; uiMountSnapshot?: typeof uiSnapshot }
+    attachUi?: { uiEntities: number[]; uiMountSnapshot?: typeof uiSnapshot },
+    opts?: { awaitAck?: boolean }
   ): void => {
+    const awaitAck = opts?.awaitAck !== false
     const id = ++outboundAckId
-    ackWaits.push(
-      new Promise<void>((resolve) => {
-        let settled = false
-        const finish = (): void => {
-          if (settled) return
-          settled = true
-          pendingOutboundAck.delete(id)
-          resolve()
-        }
-        pendingOutboundAck.set(id, finish)
-        setTimeout(finish, OUTBOUND_ACK_TIMEOUT_MS)
-      })
-    )
+    if (awaitAck) {
+      ackWaits.push(
+        new Promise<void>((resolve) => {
+          let settled = false
+          const finish = (): void => {
+            if (settled) return
+            settled = true
+            pendingOutboundAck.delete(id)
+            resolve()
+          }
+          pendingOutboundAck.set(id, finish)
+          // Short timeout — pointer deliver-done must not wait on main paint.
+          setTimeout(finish, Math.min(OUTBOUND_ACK_TIMEOUT_MS, 250))
+        })
+      )
+    }
     const msg = attachUi
       ? ({
           type: 'crdt-outbound',
@@ -980,7 +990,7 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
   }
 
   for (const chunk of nonUiChunks) {
-    postOutbound(chunk)
+    postOutbound(chunk, undefined, { awaitAck: true })
   }
 
   if (uiMountPending) {
@@ -995,13 +1005,18 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
     // Content fp so cooperative postUiMountSnapshot does not drop as "identical" forever.
     const snapFp = uiMountSnapshotContentFp(uiSnapshot ?? [])
     lastUiMountSnapshotFp = `${lastOutboundUiEntitiesKey}@@${snapFp}`
-    postOutbound(new Uint8Array(0), {
-      uiEntities: mountIds,
-      uiMountSnapshot: uiSnapshot ?? []
-    })
+    // Never await UI mount ack — main paint of large HUDs must not stall pointer lifecycle.
+    postOutbound(
+      new Uint8Array(0),
+      {
+        uiEntities: mountIds,
+        uiMountSnapshot: uiSnapshot ?? []
+      },
+      { awaitAck: false }
+    )
     workerLog(
       'log',
-      `[sceneWorker] pointer ui egress — snapshotRows=${uiSnapshot?.length ?? 0} mount=${mountIds.length} nonUiChunks=${nonUiChunks.length}`
+      `[sceneWorker] pointer ui egress — snapshotRows=${uiSnapshot?.length ?? 0} mount=${mountIds.length} nonUiChunks=${nonUiChunks.length} (no-await-ui)`
     )
   }
 

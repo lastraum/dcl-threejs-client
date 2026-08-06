@@ -2399,6 +2399,20 @@ export class ThreeBridge {
     // Scalar Material required — instanceColor needs a color; textured stay private.
     const pb = materialGetOrNull(Material, entity)
     if (!pb || !materialIsScalarOnly(pb)) return false
+    // Transparent / emissive markers (DecentraCraft ground click ring: alpha 0.75,
+    // emissiveIntensity 1.6, ALPHA_BLEND) must stay private MeshPhysical — GPU
+    // InstancedMesh uses MeshBasicMaterial which ignores emissive and often fails
+    // depth-sort under fog-of-war planes (marker "exists" but is invisible).
+    const alpha = materialAlbedoAlpha(pb)
+    if (alpha < 0.999) return false
+    const pbr = pb.material?.$case === 'pbr' ? pb.material.pbr : undefined
+    if (pbr) {
+      const mode = pbr.transparencyMode
+      if (mode === 2 || mode === 3) return false // ALPHA_BLEND / TEST+BLEND
+      if ((pbr.emissiveIntensity ?? 0) > 1.01) return false
+      const e = pbr.emissiveColor
+      if (e && (e.r ?? 0) + (e.g ?? 0) + (e.b ?? 0) > 0.05) return false
+    }
     return true
   }
 

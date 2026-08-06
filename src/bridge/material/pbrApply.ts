@@ -100,15 +100,20 @@ export function configureEmissiveRendering(
     material.emissiveMap &&
     material.map === material.emissiveMap
   )
-  // Flame/LED sprites: high intensity + emissive map + alpha blend (or map-less emissive).
-  // Opaque shared albedo/emissive = floor/wall bake — never sprite.
+  // Flame/LED sprites + map-less click markers (DecentraCraft ground ring: ALPHA_BLEND,
+  // emissiveIntensity 1.6, no map). Opaque shared albedo/emissive floor bake — never sprite.
   const glowSprite =
-    !!hasEmissiveMap &&
     intensity >= 1.5 &&
-    (alphaBlend || !material.map || (sharedAlbedoEmissive && material.transparent))
+    (alphaBlend || !material.map || (sharedAlbedoEmissive && material.transparent)) &&
+    (!!hasEmissiveMap ||
+      alphaBlend ||
+      material.emissive.r + material.emissive.g + material.emissive.b > 0.05)
 
   if (glowSprite) {
-    material.color.setRGB(0, 0, 0)
+    // Keep tinted albedo for solid-color rings (map-less); black only when emissiveMap drives.
+    if (hasEmissiveMap) {
+      material.color.setRGB(0, 0, 0)
+    }
     material.metalness = 0
     material.roughness = 1
     material.envMapIntensity = 0

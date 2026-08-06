@@ -1067,6 +1067,8 @@ function applyTransparency(
   if (resolved === MTM_ALPHA_BLEND) {
     m.transparent = true
     m.opacity = alpha
+    // Click markers / glass: writing depth with blend hides coplanar rings under fog planes.
+    m.depthWrite = false
     return
   }
 
@@ -1074,6 +1076,7 @@ function applyTransparency(
     m.transparent = true
     m.opacity = alpha
     m.alphaTest = alphaTest ?? 0.5
+    m.depthWrite = false
     return
   }
 

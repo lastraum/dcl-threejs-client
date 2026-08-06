@@ -61,9 +61,12 @@ import { bindSceneWorkerPriorityDispatch, type SceneWorkerPriorityMessage } from
 import {
 
   coalesceKeyboardSnapshotDuringPointerSession,
+  clearWorkerPointerButtonsHeld,
   enterPointerInputSession,
   isPointerInputSessionActive,
   leavePointerInputSession,
+  setWorkerPointerButtonHeld,
+  workerPointerButtonsHeldList,
   resetPointerInputSession,
   setPointerDeliveryInFlight
 } from './sceneWorkerInputSession'
@@ -193,6 +196,12 @@ let rendererInboundApply: ((chunks: Uint8Array[]) => void) | null = null
 /** Coalesce outbound empty nudges to one post per microtask (still send when uiEntities change). */
 let crdtOutboundEmptyNudgeCoalesced = false
 let lastOutboundUiEntitiesKey = ''
+/** Mount entity key + snapshot row fingerprint — drop identical postUiMountSnapshot thrash. */
+let lastUiMountSnapshotFp = ''
+/** Content-only half of last snapFp (for soft rate-limit without ignoring value changes). */
+let lastUiMountSnapshotContentOnly = ''
+/** Last wall time a cooperative UI mount snapshot was posted (rate-limit partial dirty). */
+let lastUiMountSnapshotPostAt = 0
 let outboundAckId = 0
 const pendingOutboundAck = new Map<number, () => void>()
 const OUTBOUND_ACK_TIMEOUT_MS = 4000
@@ -1160,10 +1169,10 @@ function armPointerDeliverAckFallback(label: string): void {
   }, 32)
 }
 
+/** Open a deliver batch (pointer-crdt-deliver path only — edge inject uses executePointerEdge). */
 function beginPointerDeliverBatch(label: string): void {
   if (!isPointerInputSessionActive()) enterPointerInputSession()
   resetWorkerSceneUiCrdtLamport()
-  // Force player-frame post even when IM value matches a prior freeze snapshot (STOP clear).
   resetPlayerFrameEgressBaseline()
   resetVcBindHydrateBaseline()
   clearPointerEgressBuffers()
@@ -1275,9 +1284,10 @@ function postPlayModeColdCrdtFireAndForget(data: Uint8Array): void {
 const PHYSICS_COMBINED_COMPONENT_IDS = new Set([1215, 1216])
 /**
  * core::Material (1017) + core::MeshRenderer (1018) — dense paint boards (pixelwars).
+ * core::Tween (1102) + TweenSequence (1104) — DecentraCraft click-move / bounce anims.
  * Must not sit in cold CRDT buffer until end-of-frame / serial UI queue (felt as 3–5s lag).
  */
-const PAINT_BOARD_HOT_COMPONENT_IDS = new Set([1017, 1018])
+const PAINT_BOARD_HOT_COMPONENT_IDS = new Set([1017, 1018, 1102, 1104])
 
 function crdtChunkHasComponentIds(data: Uint8Array, ids: ReadonlySet<number>): boolean {
   if (!data.byteLength) return false
@@ -1687,7 +1697,24 @@ initSceneEngineScheduler({
         : snapshot.length > 0
           ? extractSnapshotMountEntityIds(snapshot)
           : []
-    lastOutboundUiEntitiesKey = uiEntities.join(',')
+    const uiKey = uiEntities.join(',')
+    // Content-aware fingerprint — entity:componentId alone dropped timer/score UiText
+    // updates forever (same rows, new values → fpKey match → silent skip → clock skips).
+    const snapFp = uiMountSnapshotContentFp(snapshot)
+    const fpKey = `${uiKey}@@${snapFp}`
+    if (fpKey === lastUiMountSnapshotFp) {
+      return false
+    }
+    const now = performance.now()
+    // Mount set unchanged: soft rate-limit pure re-posts of identical content only.
+    const mountUnchanged = uiKey === lastOutboundUiEntitiesKey
+    if (mountUnchanged && snapFp === lastUiMountSnapshotContentOnly && now - lastUiMountSnapshotPostAt < 80) {
+      return false
+    }
+    lastUiMountSnapshotFp = fpKey
+    lastUiMountSnapshotContentOnly = snapFp
+    lastUiMountSnapshotPostAt = now
+    lastOutboundUiEntitiesKey = uiKey
     logSceneUiOutbound(new Uint8Array(0), uiEntities, snapshot.length)
     ctx.postMessage({
       type: 'crdt-outbound',
@@ -1695,6 +1722,7 @@ initSceneEngineScheduler({
       uiEntities,
       uiMountSnapshot: snapshot
     } satisfies SceneWorkerOutbound)
+    return true
   },
   onStuckRecover: () => {
     interruptPendingOutboundAcks()
@@ -1788,7 +1816,7 @@ const SCENE_FLIGHT_TICK_MIN_MS = 16
 let lastFlightPumpLogAt = 0
 
 /**
- * Level-state reassert for keyboard relay.
+ * Level-state reassert for keyboard relay + held pointer buttons.
  *
  * Neurolink drone (and many vehicles) use `inputSystem.isTriggered(PET_DOWN/UP)` edge
  * latches — NOT sticky `isPressed`. Those edges only count when PET timestamps land in
@@ -1797,6 +1825,9 @@ let lastFlightPumpLogAt = 0
  *
  * Always re-fire PET_DOWN with a fresh timestamp for every currently held key so
  * isTriggered(DOWN) is true every tick while the key is down. PET_UP only on release.
+ *
+ * Pointer: browser pointerdown/up is split across edges; without reassert, a quick click
+ * never leaves a play frame with isPressed true (DOWN+UP same second → hold systems no-op).
  */
 function reassertPressedKeysOnEngine(): void {
   if (!sceneEngine) return
@@ -1821,6 +1852,16 @@ function reassertPressedKeysOnEngine(): void {
       playerEntity: player,
       button: action,
       state: PointerEventType.PET_UP,
+      timestamp: nextWorkerPointerEventTimestamp(),
+      tickNumber
+    })
+  }
+  // Pointer hold (any scene using isPressed(IA_POINTER) / drag / click-move).
+  for (const action of workerPointerButtonsHeldList()) {
+    injectSceneKeyOnEngine(sceneEngine, {
+      playerEntity: player,
+      button: action,
+      state: PointerEventType.PET_DOWN,
       timestamp: nextWorkerPointerEventTimestamp(),
       tickNumber
     })
@@ -2302,15 +2343,54 @@ function flushDeferredRendererInbound(opts?: { applyOnly?: boolean }): void {
   }
 }
 
+/**
+ * Content-aware UI mount snapshot fingerprint.
+ * Must include UiText.value (and layout width for HP bars) — id:componentId alone made
+ * timer/score updates look identical and get dropped after the first post.
+ */
+function uiMountSnapshotContentFp(
+  snapshot: import('./workerSceneUiCrdtOutbound').WorkerUiMountSnapshotRow[]
+): string {
+  if (!snapshot.length) return '0'
+  const parts: string[] = []
+  const n = Math.min(snapshot.length, 96)
+  for (let i = 0; i < n; i++) {
+    const r = snapshot[i]!
+    const v = r.value
+    let payload = ''
+    if (v && typeof v === 'object') {
+      const o = v as Record<string, unknown>
+      // UiText (1052)
+      if (typeof o.value === 'string') payload = `t${o.value}`
+      // UiTransform width/height (HP bars grow without entity churn)
+      else if (o.width !== undefined || o.height !== undefined) {
+        payload = `wh${o.width ?? ''},${o.height ?? ''}`
+      }
+      // UiBackground color alpha (fades)
+      else if (o.color && typeof o.color === 'object') {
+        const c = o.color as { r?: number; g?: number; b?: number; a?: number }
+        payload = `c${c.r ?? 0},${c.g ?? 0},${c.b ?? 0},${c.a ?? 0}`
+      }
+    }
+    parts.push(`${r.entity}:${r.componentId}:${payload}`)
+  }
+  if (snapshot.length > n) parts.push(`#${snapshot.length}`)
+  return parts.join('|')
+}
+
 function logSceneUiOutbound(data: Uint8Array, uiEntities?: number[], snapshotRows = 0): void {
   sceneUiOutboundLogCount++
+  // Empty UI mount spam was logging every post (snapshotRows>0 always) — throttle to 1/s.
   const alwaysLog =
     sceneUiOutboundLogCount <= SCENE_UI_OUTBOUND_LOG_LIMIT ||
-    (data.byteLength > 0 && sceneUiOutboundLogCount <= SCENE_UI_OUTBOUND_LOG_LIMIT + 8) ||
-    snapshotRows > 0
+    (data.byteLength > 0 && sceneUiOutboundLogCount <= SCENE_UI_OUTBOUND_LOG_LIMIT + 8)
+  const emptyUiThrottled =
+    data.byteLength === 0 &&
+    snapshotRows > 0 &&
+    (sceneUiOutboundLogCount <= 8 || sceneUiOutboundLogCount % 40 === 0)
   const debugLog =
     debugSceneUiLog && (sceneUiOutboundLogCount <= 8 || sceneUiOutboundLogCount % 25 === 0)
-  if (!alwaysLog && !debugLog) return
+  if (!alwaysLog && !emptyUiThrottled && !debugLog) return
   workerLog(
     'log',
     `[sceneWorker] crdt-outbound #${sceneUiOutboundLogCount} bytes=${data.byteLength} uiEntities=${uiEntities?.length ?? 0} snapshotRows=${snapshotRows}`
@@ -2426,52 +2506,83 @@ function chunkByteCount(chunks: Uint8Array[]): number {
   return chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
 }
 
-function executePointerInjection(body: InjectPointerClickBody, injectOnly = false): void {
-  preemptForPointerDelivery()
-  if (isEngineUpdateInFlight()) {
-    forceRecoverStuckSceneEngineTick('inject-pointer-click-preempt')
+/**
+ * Universal Explorer press edge for **every** scene (worker-input-architecture).
+ *
+ * One light path for world PE, ground, and scene UI:
+ * - PET_DOWN or PET_UP only (split browser pointerdown/up)
+ * - eng.update(0) so EventSystem / inputSystem see the edge
+ * - no pointer-input-session spanning the mouse hold (that freezes all cooperative ticks)
+ * - no multi-second CRDT-ack batch before deliver-done
+ *
+ * isPressed stays sticky across cooperative play frames until the UP edge.
+ * getClick / onPointerDown use DOWN then later UP on the correct entity targets.
+ */
+async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
+  const phase =
+    body.phase === 'up' ? 'up' : body.phase === 'click' ? 'click' : 'down'
+  const label = `pointer-edge-${phase}`
+  const button = body.button as InputActionValue
+  sceneTicksPaused = false
+  if (isPointerInputSessionActive()) {
+    endPointerInputSessionAfterMountResume()
   }
-  // Mesh open-panel: pause cooperative ticks until deliver-done.
-  // sceneUi (CBD welcome splash, DOM HUD): do NOT pause — onMouseDown starts Color4.a fade
-  // systems that need real eng.update(dt) every frame. Pausing froze the scrim opaque.
-  if (!body.sceneUi) {
-    sceneTicksPaused = true
+  // Level-state hold before eng.update so this edge + reassert share the same press story.
+  if (phase === 'down') {
+    setWorkerPointerButtonHeld(button, true)
+  } else if (phase === 'up' || phase === 'click') {
+    setWorkerPointerButtonHeld(button, false)
   }
-  workerVerboseLog(
-    debugPointerDeliver,
+  const ppi = body.primaryPointer
+  const sc = ppi?.screenCoordinates
+  workerLog(
     'log',
-    `[sceneWorker] inject-pointer-click entity=${body.entity} button=${body.button} ts=${body.downTimestamp}/${body.upTimestamp}` +
-      ` sceneUi=${body.sceneUi ? 1 : 0}`
+    `[sceneWorker] ${label} e${body.entity} button=${body.button} sceneUi=${body.sceneUi ? 1 : 0} ` +
+      `heldPointer=[${workerPointerButtonsHeldList().join(',')}]` +
+      (sc
+        ? ` ppi=(${sc.x.toFixed(0)},${sc.y.toFixed(0)})`
+        : ' ppi=missing') +
+      ` (no hold-batch freeze)`
   )
-  if (!sceneEngine) {
+  if (!sceneEngine || !sceneOnStartComplete) {
     pendingInjectPointer = body
-    workerLog('warn', '[sceneWorker] inject-pointer-click queued — sceneEngine missing (no ack until bound)')
+    workerLog('warn', `[sceneWorker] ${label} queued — sceneEngine not ready`)
+    postPointerDeliverDone(`${label}-queued`)
     return
   }
-  pendingInjectPointer = null
+  if (isEngineUpdateInFlight()) {
+    forceRecoverStuckSceneEngineTick(`${label}-preempt`)
+  }
+  pointerDeliveryInFlight = true
+  setPointerDeliveryInFlight(true)
   try {
-    pendingSplitPointerInject = body
-    workerVerboseLog(
-      debugPointerDeliver,
-      'log',
-      '[sceneWorker] inject-pointer-click — queued split DOWN/UP inject for pointer tick'
-    )
-    beginPointerDeliverBatch('inject-pointer-click')
-    workerLog('log', `[sceneWorker] inject-pointer-click batch open injectOnly=${injectOnly} sceneUi=${body.sceneUi ? 1 : 0}`)
-    if (injectOnly) {
-      finalizePointerDelivery('inject-pointer-click')
+    // Apply live PPI *before* inject eng.update so onPointerDown handlers and systems
+    // that gate on PrimaryPointerInfo (UI chrome, ground ray, marquee) see this click.
+    if (ppi) {
+      applyPlayFrameReservedPoses(undefined, undefined, ppi)
     }
+    // No exports.onUpdate mid-edge (pollEvents re-fires UI). Hold reassert on play-frame-tick
+    // keeps isPressed true across cooperative frames for every scene.
+    await runSceneEnginePointerTick(sceneEngine, async () => {}, body)
   } catch (err) {
-    pendingSplitPointerInject = null
     workerLog(
       'error',
-      `[sceneWorker] inject-pointer-click failed — ${err instanceof Error ? err.message : String(err)}`
+      `[sceneWorker] ${label} failed — ${err instanceof Error ? err.message : String(err)}`
     )
-    beginPointerDeliverBatch('inject-pointer-click')
-    if (injectOnly) {
-      finalizePointerDelivery('inject-pointer-click-error')
-    }
+  } finally {
+    pointerDeliveryInFlight = false
+    setPointerDeliveryInFlight(false)
+    sceneTicksPaused = false
+    postPointerDeliverDone(label)
+    resumeSceneTicksAfterPointer()
+    requestSceneEngineTick()
   }
+}
+
+function executePointerInjection(body: InjectPointerClickBody, _injectOnly = false): void {
+  // All scenes / all targets: edge-first lifecycle. Heavy batch path removed —
+  // it entered pointer sessions and paused cooperative ticks for seconds.
+  void executePointerEdge(body)
 }
 
 function drainPendingInjectPointer(): void {
@@ -2829,15 +2940,16 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
     return
   }
 
-  // Real pointer click batch — pause, inject, finalize via deliver-done lifecycle.
+  // Residual CRDT pointer appends (rare with inject-authoritative edges).
+  // Prefer not to pause long — open batch only for finalize lifecycle.
   preemptForPointerDelivery()
-  sceneTicksPaused = true
   if (!rendererInboundApply && !(sceneEngine && sceneOnStartComplete)) {
     workerLog('warn', '[sceneWorker] pointer-crdt-deliver skipped — rendererInboundApply not bound')
-    finalizePointerDelivery('pointer-crdt-deliver')
+    postPointerDeliverDone('pointer-crdt-deliver-skip')
     return
   }
   try {
+    beginPointerDeliverBatch('pointer-crdt-deliver')
     const { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends, pointerAppends } =
       applyRendererInboundChunks(chunks)
     workerVerboseLog(
@@ -2851,7 +2963,8 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
       'error',
       `[sceneWorker] pointer-crdt-deliver failed — ${err instanceof Error ? err.message : String(err)}`
     )
-    finalizePointerDelivery('pointer-crdt-deliver')
+    if (pointerDeliverBatchOpen) finalizePointerDelivery('pointer-crdt-deliver')
+    else postPointerDeliverDone('pointer-crdt-deliver-error')
   }
 }
 
@@ -3120,13 +3233,21 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
       : undefined
     const uiKey = attachUiMount ? uiEntities!.join(',') : lastOutboundUiEntitiesKey
     if (copy.byteLength === 0) {
-      if (crdtOutboundEmptyNudgeCoalesced && (!attachUiMount || uiKey === lastOutboundUiEntitiesKey)) {
+      // Empty outbound with the same UI mount set is pure thrash (DecentraCraft spam-click
+      // re-posted uiEntities every microtask → main-thread freezes, Tweens stall).
+      if (attachUiMount && uiKey === lastOutboundUiEntitiesKey) {
         return Promise.resolve([])
       }
-      crdtOutboundEmptyNudgeCoalesced = true
-      queueMicrotask(() => {
-        crdtOutboundEmptyNudgeCoalesced = false
-      })
+      // Non-UI empty nudges: one post per microtask is enough for main to pump.
+      if (!attachUiMount && crdtOutboundEmptyNudgeCoalesced) {
+        return Promise.resolve([])
+      }
+      if (!attachUiMount) {
+        crdtOutboundEmptyNudgeCoalesced = true
+        queueMicrotask(() => {
+          crdtOutboundEmptyNudgeCoalesced = false
+        })
+      }
     }
     if (attachUiMount) lastOutboundUiEntitiesKey = uiKey
     // Prefer structured snapshot; strip wire Ui* so main does not double-apply partial shells.
@@ -3950,6 +4071,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     debugPointerDeliver = msg.debug?.pointerDeliver === true
     resetWorkerInputSnapshotState()
     workerSnapshotPressed = new Set()
+    clearWorkerPointerButtonsHeld()
     resetPointerInputSession()
     pointerDeliverSerial = Promise.resolve()
     pointerDeliverWorkInFlight = false

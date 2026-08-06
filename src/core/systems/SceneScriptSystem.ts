@@ -1319,12 +1319,18 @@ export class SceneScriptSystem {
       this.pointerStructureDirty = true
     }
 
-    // Late PE (asset-pack on_click) after GPU instance attach — private mesh for raycast.
+    // Late PE / MeshCollider after GPU instance attach — private mesh for raycast.
+    // Also when Tween lands on a MeshRenderer instance (click-move must leave GPU slots).
     if (
       change.kind === 'put' &&
-      (componentId === PointerEvents.componentId || componentId === MeshCollider.componentId)
+      (componentId === PointerEvents.componentId ||
+        componentId === MeshCollider.componentId ||
+        componentId === this.readComponents.Tween.componentId)
     ) {
       this.bridge?.ensurePointerMeshClone(entity)
+      if (componentId === this.readComponents.Tween.componentId) {
+        this.bridge?.ensureMeshRendererTweenVisual(entity)
+      }
     }
 
     // Only TriggerArea structure / pose — do NOT dirty on every GltfContainer put
@@ -2541,6 +2547,8 @@ export class SceneScriptSystem {
   }
 
   private lastOutboundUiEntitiesKey = ''
+  /** Skip identical empty UI mount re-seed (react-ecs partial dirty thrash). */
+  private lastEmptyUiMountSnapFp = ''
 
   private enqueueCrdtOutbound(item: {
     id?: number
@@ -2717,64 +2725,111 @@ export class SceneScriptSystem {
           ])
         }
       }
-      if (pointerUiMountBatch) this.projection.beginForceWorkerUiPuts()
-      try {
-        // Phases 1–3 non-UI first — snapshot last so deferred CRDT cannot clobber UI rows.
-        const frozenMountIds = !hasUiMountSnapshot
-          ? this.resolveFrozenWorkerMountIds(latestUiEntities)
-          : null
-        for (const item of batch) {
-          if (item.uiMountSnapshot !== undefined) continue
-          let data = item.data
-          if (!data?.byteLength) continue
-          const mayCarryInboundUi =
-            item.uiEntities !== undefined && item.uiMountSnapshot === undefined
-          if (!mayCarryInboundUi) {
-            data = stripSceneUiCrdtBytes(data)
-            if (frozenMountIds?.size) {
-              data = stripEntityDeletesFromCrdtBytes(data, frozenMountIds)
-            }
-            if (!data.byteLength) continue
-          }
-          this.projection.applyIncoming(data)
-          for (const change of this.projection.changes) {
-            if (change.kind === 'delete' && change.componentId === uiTransformId) {
-              projectionDeletes.push(change)
-            }
-            if (uiComponentIds.has(change.componentId)) {
-              batchTouchesUi = true
-            }
-          }
-          this.foldProjectionChanges()
+      // Identical empty UI mount — skip LWW clear + re-seed (DecentraCraft thrash).
+      // Still flush materials/tweens from backlog.
+      let skipUiMountReseed = false
+      if (
+        !hasPayload &&
+        hasUiMountSnapshot &&
+        latestUiMountSnapshot &&
+        latestUiMountSnapshot.length > 0 &&
+        !mountChanged
+      ) {
+        const snapFp = latestUiMountSnapshot
+          .map((r) => `${r.entity}:${r.componentId}`)
+          .join('|')
+        if (snapFp === this.lastEmptyUiMountSnapFp) {
+          skipUiMountReseed = true
+        } else {
+          this.lastEmptyUiMountSnapFp = snapFp
         }
-        if (latestUiMountSnapshot !== undefined && latestUiMountSnapshot.length > 0) {
-          projectionDeletes.length = 0
-          this.projection.changes.length = 0
-          this.sceneUiBridge?.ingestMountSnapshot(latestUiMountSnapshot)
-          this.projection.applyWorkerUiMountSnapshot(
-            latestUiMountSnapshot.map((row) => ({
-              entity: row.entity as Entity,
-              componentId: row.componentId,
-              value: row.value
-            }))
-          )
-          batchTouchesUi = true
-          this.foldProjectionChanges()
-        } else if (hasUiMountSnapshot) {
-          // Empty mount snapshot (welcome unmount) — still touch UI so commitMountSet([]) runs.
-          projectionDeletes.length = 0
-          this.sceneUiBridge?.ingestMountSnapshot([])
-          batchTouchesUi = true
-        }
-      } finally {
-        if (pointerUiMountBatch) this.projection.endForceWorkerUiPuts()
+      } else if (hasUiMountSnapshot && latestUiMountSnapshot) {
+        this.lastEmptyUiMountSnapFp = latestUiMountSnapshot
+          .map((r) => `${r.entity}:${r.componentId}`)
+          .join('|')
       }
 
-      // Pixelwars paint: Material PUTs ride play-mode cold CRDT (fire-and-forget). Waiting for
-      // the async-frame syncRenderer left boards white while Explorer already showed recolors
-      // (paintTick works — only local Material visual lagged/dropped). Apply MeshRenderer
-      // materials immediately from pendingDiff before the next rAF.
-      if (hasPayload) this.flushMeshRendererMaterialsFromPendingDiff()
+      if (!skipUiMountReseed) {
+        if (pointerUiMountBatch) this.projection.beginForceWorkerUiPuts()
+        try {
+          // Phases 1–3 non-UI first — snapshot last so deferred CRDT cannot clobber UI rows.
+          const frozenMountIds = !hasUiMountSnapshot
+            ? this.resolveFrozenWorkerMountIds(latestUiEntities)
+            : null
+          for (const item of batch) {
+            if (item.uiMountSnapshot !== undefined) continue
+            let data = item.data
+            if (!data?.byteLength) continue
+            const mayCarryInboundUi =
+              item.uiEntities !== undefined && item.uiMountSnapshot === undefined
+            if (!mayCarryInboundUi) {
+              data = stripSceneUiCrdtBytes(data)
+              if (frozenMountIds?.size) {
+                data = stripEntityDeletesFromCrdtBytes(data, frozenMountIds)
+              }
+              if (!data.byteLength) continue
+            }
+            this.projection.applyIncoming(data)
+            for (const change of this.projection.changes) {
+              if (change.kind === 'delete' && change.componentId === uiTransformId) {
+                projectionDeletes.push(change)
+              }
+              if (uiComponentIds.has(change.componentId)) {
+                batchTouchesUi = true
+              }
+            }
+            this.foldProjectionChanges()
+          }
+          if (latestUiMountSnapshot !== undefined && latestUiMountSnapshot.length > 0) {
+            projectionDeletes.length = 0
+            this.projection.changes.length = 0
+            this.sceneUiBridge?.ingestMountSnapshot(latestUiMountSnapshot)
+            this.projection.applyWorkerUiMountSnapshot(
+              latestUiMountSnapshot.map((row) => ({
+                entity: row.entity as Entity,
+                componentId: row.componentId,
+                value: row.value
+              }))
+            )
+            batchTouchesUi = true
+            this.foldProjectionChanges()
+          } else if (hasUiMountSnapshot) {
+            // Empty mount snapshot (welcome unmount) — still touch UI so commitMountSet([]) runs.
+            projectionDeletes.length = 0
+            this.sceneUiBridge?.ingestMountSnapshot([])
+            batchTouchesUi = true
+          }
+        } finally {
+          if (pointerUiMountBatch) this.projection.endForceWorkerUiPuts()
+        }
+      }
+
+      // Pixelwars paint + PE click-move: Material/Tween must not wait on empty-UI serial.
+      // Also peel GltfContainer — PE material/transform-only flushes left 800+ Gltf puts
+      // stranded so prop/unit/building GLBs never attached after race start.
+      if (hasPayload || this.pendingDiff.size > 0) {
+        try {
+          this.flushMeshRendererMaterialsFromPendingDiff()
+        } catch (err) {
+          console.warn(
+            `[scene] material flush aborted — ${err instanceof Error ? err.message : String(err)}`
+          )
+        }
+        try {
+          this.flushTweenAndTransformFromPendingDiff()
+        } catch (err) {
+          console.warn(
+            `[scene] tween/transform flush aborted — ${err instanceof Error ? err.message : String(err)}`
+          )
+        }
+        try {
+          this.flushGltfContainerFromPendingDiff()
+        } catch (err) {
+          console.warn(
+            `[scene] gltf flush aborted — ${err instanceof Error ? err.message : String(err)}`
+          )
+        }
+      }
 
       if (latestUiEntities !== undefined) this.lastOutboundUiEntitiesKey = uiKey
       if (hasPayload || batchTouchesUi || projectionDeletes.length > 0 || mountChanged) {
@@ -3408,6 +3463,7 @@ export class SceneScriptSystem {
     putLiveTransform(bound.entity, bound.transform)
     VirtualCamera.createOrReplace(bound.entity as never, (bound.virtualCamera ?? {}) as never)
     this.vcBindHydratePullPending = false
+    // Structure-only key (pose rides vc-pose-live) — log once per structure change.
     if (graphKey !== this.lastVcBindHydrateLogKey) {
       this.lastVcBindHydrateLogKey = graphKey
       const lookAt = (bound.virtualCamera as { lookAtEntity?: number } | null)?.lookAtEntity
@@ -3415,7 +3471,8 @@ export class SceneScriptSystem {
         'vc-lens',
         `vc-bind-hydrate e${bound.entity} anchors=${bound.anchors.length} ` +
           `flat=${bound.worldFlattened === true} parent=${bound.transform.parent ?? '∅'} lookAt=${lookAt ?? '∅'} ` +
-          `pos=(${bound.transform.position.x.toFixed(1)},${bound.transform.position.y.toFixed(1)},${bound.transform.position.z.toFixed(1)})`
+          `pos=(${bound.transform.position.x.toFixed(1)},${bound.transform.position.y.toFixed(1)},${bound.transform.position.z.toFixed(1)}) ` +
+          `key=${graphKey}`
       )
     }
   }
@@ -3469,19 +3526,126 @@ export class SceneScriptSystem {
   private static readonly MESH_RENDERER_MATERIAL_FLUSH_CAP = 4096
 
   /**
-   * Same-batch MeshRenderer Material recolor after worker cold CRDT applyIncoming.
-   * Prefer GPU instanceColor (O(1) per entity). Does not remove from pendingDiff —
-   * syncRenderer still handles first attach / mesh work.
+   * Peel GltfContainer (+ Transform) puts so prop/unit/building GLBs attach without
+   * waiting for a full pendingDiff consume. Material/tween flushes were leaving
+   * GltfContainer stranded (pendingDiff hundreds, no meshes).
+   */
+  private flushGltfContainerFromPendingDiff(): void {
+    if (!this.bridge || !this.entityStore || !this.pendingDiff.size) return
+    if (!this.bridge.canConsumeDiff()) return
+    const { GltfContainer, Transform } = this.readComponents
+    const gltfId = GltfContainer.componentId
+    const transformId = Transform.componentId
+    const gltfDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
+    let n = 0
+    const CAP = 64
+    for (const [entity, comps] of this.pendingDiff) {
+      if (n >= CAP) break
+      const gk = comps.get(gltfId)
+      if (gk === undefined) continue
+      const sub = new Map<number, ProjectionChangeKind>()
+      sub.set(gltfId, gk)
+      const tk = comps.get(transformId)
+      if (tk !== undefined) sub.set(transformId, tk)
+      gltfDiff.set(entity, sub)
+      n++
+    }
+    if (!gltfDiff.size) return
+    // Peel from pending before async consume so the next frame does not re-queue.
+    for (const entity of gltfDiff.keys()) {
+      const pending = this.pendingDiff.get(entity)
+      if (!pending) continue
+      pending.delete(gltfId)
+      pending.delete(transformId)
+      if (pending.size === 0) this.pendingDiff.delete(entity)
+    }
+    const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+    // consumeDiff = applySceneDiff + budgeted GLB attach (do not double-apply).
+    void this.bridge.consumeDiff(gltfDiff, this.view, tweenRefresh).then(() => {
+      void this.bridge?.drainPendingWork()
+    })
+    clientDebugLog.log(
+      'collision',
+      `gltf flush — peeled=${gltfDiff.size} pendingDiff=${this.pendingDiff.size}`,
+      { level: 'info', alsoConsole: true, throttleMs: 1_000, throttleKey: 'gltf-flush' }
+    )
+  }
+
+  /**
+   * Same-batch Tween/Transform apply so click-move anims start this frame (not after
+   * pendingDiff drains under UI spam). Mirrors MeshRenderer material flush.
+   */
+  private flushTweenAndTransformFromPendingDiff(): void {
+    if (!this.bridge || !this.entityStore || !this.pendingDiff.size) return
+    if (!this.bridge.canConsumeDiff()) return
+    const { Transform, Tween, MeshRenderer, PointerEvents } = this.readComponents
+    const transformId = Transform.componentId
+    const tweenId = Tween.componentId
+    const transformDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
+    const tweenEntities: Entity[] = []
+    for (const [entity, comps] of this.pendingDiff) {
+      const hasTween = comps.has(tweenId)
+      const hasTransform = comps.has(transformId)
+      if (!hasTween && !hasTransform) continue
+      // Prioritize interactive / tweened MeshRenderer props (click-to-move).
+      if (
+        hasTween ||
+        PointerEvents.has(entity) ||
+        (MeshRenderer.has(entity) && hasTransform)
+      ) {
+        const sub = new Map<number, ProjectionChangeKind>()
+        const tk = comps.get(transformId)
+        if (tk !== undefined) sub.set(transformId, tk)
+        if (hasTween) {
+          const tw = comps.get(tweenId)
+          if (tw !== undefined) sub.set(tweenId, tw)
+          tweenEntities.push(entity)
+        }
+        if (sub.size) transformDiff.set(entity, sub)
+      }
+    }
+    if (!transformDiff.size) return
+    const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+    applySceneDiff(this.entityStore, transformDiff, this.view, this.readComponents, tweenRefresh, {
+      skipTransformApply: (entity) => this.readComponents.AvatarAttach.has(entity),
+      onReservedParent: (entity, parent, view) => {
+        this.bridge?.noteReservedParentedEntity(entity, parent, view)
+      }
+    })
+    const moved = [...transformDiff.keys()]
+    this.bridge.syncInstancedTransforms(moved)
+    for (const entity of tweenEntities) {
+      this.bridge.ensureMeshRendererTweenVisual(entity)
+    }
+    // Pick up new Tween signatures immediately so the next pumpMotionBridges advances them.
+    this.tweenBridge?.sync(this.view)
+    for (const entity of moved) {
+      const pending = this.pendingDiff.get(entity)
+      if (!pending) continue
+      pending.delete(transformId)
+      pending.delete(tweenId)
+      if (pending.size === 0) this.pendingDiff.delete(entity)
+    }
+    this.pointerStructureDirty = true
+  }
+
+  /**
+   * Same-batch MeshRenderer Material after worker cold CRDT applyIncoming.
+   * Prefer GPU instanceColor (O(1)). Also first-attaches private meshes when Material
+   * arrives before mesh drain (textured props / DecentraCraft white-until-idle).
+   * Clears Material put from pendingDiff on success; mesh/Transform work may remain.
    */
   private flushMeshRendererMaterialsFromPendingDiff(): void {
     if (!this.bridge || !this.pendingDiff.size) return
     const { Material, MeshRenderer } = this.readComponents
     const matId = Material.componentId
-    const hardMs = 12 // O(1) instanceColor — match paint-storm budget
+    // Private mesh attach is cheap vs GLTF; budget enough for dense ground/wall plane sets.
+    const hardMs = 48
     const t0 = performance.now()
     let applied = 0
     let seen = 0
     let missingMesh = 0
+    let failed = 0
     const cleared: Entity[] = []
     for (const [entity, comps] of this.pendingDiff) {
       if (comps.get(matId) !== 'put') continue
@@ -3499,13 +3663,15 @@ export class SceneScriptSystem {
         // at the head of pendingDiff on the next flush.
         comps.delete(matId)
         if (comps.size === 0) cleared.push(entity)
+      } else {
+        failed++
       }
     }
     for (const entity of cleared) this.pendingDiff.delete(entity)
     if (applied > 0 || seen > 0 || missingMesh > 0) {
       clientDebugLog.log(
         'collision',
-        `mesh-renderer material flush — applied=${applied}/${seen} missingMesh=${missingMesh} pendingDiff=${this.pendingDiff.size}`,
+        `mesh-renderer material flush v3 — applied=${applied}/${seen} failed=${failed} missingMesh=${missingMesh} pendingDiff=${this.pendingDiff.size}`,
         { level: 'info', alsoConsole: true, throttleMs: 1_000, throttleKey: 'mr-mat-flush' }
       )
     }
@@ -3629,6 +3795,29 @@ export class SceneScriptSystem {
       return
     }
     this.consumeSyncFrameTransforms()
+    // Drain PE-related Transform/Tween stuck in pendingDiff before raycast (click-move).
+    if (this.pendingDiff.size) this.flushTweenAndTransformFromPendingDiff()
+    // Only re-promote PE leaves when structure is dirty — every-raycast promote thrashed
+    // MeshRenderer/GLB attach and competed with GltfContainer drain.
+    if (this.pointerStructureDirty && this.bridge && this.pointerEvents) {
+      const pe: Entity[] = []
+      for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {
+        if (
+          entity === this.view.RootEntity ||
+          entity === this.view.PlayerEntity ||
+          entity === this.view.CameraEntity
+        ) {
+          continue
+        }
+        if (this.readComponents.UiTransform.has(entity)) continue
+        pe.push(entity)
+      }
+      if (pe.length) {
+        const fixed = this.bridge.ensurePointerMeshesReady(pe)
+        if (fixed > 0) this.pointerStructureDirty = true
+      }
+    }
+    this.flushPointerStructureIfDirty()
     this.flushSceneGraphMatrices()
     // Full syncCollision runs on the async frame (World.applyPhysicsColliders) — not here.
     this.syncPointerCollisionPoses()
@@ -3721,7 +3910,9 @@ export class SceneScriptSystem {
       getWorldTransformDeps: () => this.getWorldTransformDeps(),
       camera: this.host.camera,
       getPlayerPosition,
-      isPointerBlocked: () => isPointerBlocked() || this.pointerDeliverAwaitingAck,
+      // Do not block world pointer while awaiting split-press ack (was freezing DecentraCraft
+      // input for the full multi-second pointer-deliver batch). UI still uses full batch.
+      isPointerBlocked: () => isPointerBlocked(),
       pointerEventsOf: (entity) => this.sceneUiBridge?.pointerEventsOf(entity) ?? null,
       flushPointerCrdt: () => {
         void this.flushPendingPointerCrdt()
@@ -3731,6 +3922,22 @@ export class SceneScriptSystem {
         this.bridge?.resolveMeshRendererInstanceEntity(mesh, instanceId) ?? null,
       getMeshRendererInstancePointerMeshes: () =>
         this.bridge?.getMeshRendererInstancePointerMeshes() ?? [],
+      ensurePointerMeshes: () => {
+        if (!this.bridge) return
+        const pe: Entity[] = []
+        for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {
+          if (
+            entity === this.view.RootEntity ||
+            entity === this.view.PlayerEntity ||
+            entity === this.view.CameraEntity
+          ) {
+            continue
+          }
+          if (this.readComponents.UiTransform.has(entity)) continue
+          pe.push(entity)
+        }
+        if (pe.length) this.bridge.ensurePointerMeshesReady(pe)
+      },
       recordAppend: this.recordRendererAppend,
       // Primary vs PX — gate blocks hit-map pierce under the other root's dialog.
       uiRootId: this.uiRootId,
@@ -4252,7 +4459,11 @@ export class SceneScriptSystem {
       clientDebugLog.log('pointer', `flush pending input tick=${this.crdtTick}`, {
         alsoConsole: POINTER_VERBOSE
       })
-      this.syncPointerInput(this.crdtTick, { processPendingDown: true, processPendingUp: true })
+      // Process whatever is queued (down on press flush, up on release flush).
+      this.syncPointerInput(this.crdtTick, {
+        processPendingDown: true,
+        processPendingUp: true
+      })
       this.crdtTick++
 
       // inject-pointer-click is authoritative on the worker — skip main-encoded pointer appends.
@@ -4309,22 +4520,33 @@ export class SceneScriptSystem {
       return
     }
     const inject = this.pointerEvents?.consumeInjectPayload()
+    // Universal edge inject: deliver-done is near-instant; never hold cooperative ticks
+    // for mouse-hold duration (all scenes need isPressed + live particles/VC/tweens).
     this.pointerDeliverAwaitingAck = true
-    // Mesh open-panel: hold ticks until mount commits.
-    // Scene DOM UI (react-ecs onMouseDown, CBD Plaza welcome splash): already mounted —
-    // holding pause freezes engine systems that animate fade alpha with real dt (nZ).
-    this.pointerHoldTicksUntilMount = inject?.sceneUi !== true
-    this.armPointerDeliverWatchdog()
+    this.pointerHoldTicksUntilMount = false
+    this.armPointerDeliverWatchdog(2000)
 
     const pointerChunks = this.pointerResponseStash.filter((c) => c.byteLength > 0)
     const injectOnly = pointerChunks.length === 0
     if (inject) {
+      // Refresh PPI at post time (writeResult may be a few ms earlier; edge tick must
+      // see the click's screen/ray for UI chrome gates + ground rays).
+      const ppi =
+        this.pointerEvents?.getPrimaryPointerSnapshot() ?? inject.primaryPointer ?? undefined
+      if (ppi) inject.primaryPointer = ppi
+      const sc = inject.primaryPointer?.screenCoordinates
+      const ray = inject.primaryPointer?.worldRayDirection
       const injectLine =
         `posting inject-pointer-click entity=${inject.entity} button=${inject.button} ` +
         `ts=${inject.downTimestamp}/${inject.upTimestamp}` +
         `${injectOnly ? ' (inject-only)' : ''}` +
         ` sceneUi=${inject.sceneUi ? 1 : 0}` +
-        ` down=[${(inject.downEntities ?? inject.entities).join(',')}]`
+        ` phase=${inject.phase ?? 'click'}` +
+        ` down=[${(inject.downEntities ?? inject.entities).join(',')}]` +
+        (sc
+          ? ` ppi=(${sc.x.toFixed(0)},${sc.y.toFixed(0)})` +
+            (ray ? ` ray=(${ray.x.toFixed(2)},${ray.y.toFixed(2)},${ray.z.toFixed(2)})` : '')
+          : ' ppi=missing')
       this.logPointer(injectLine)
       clientDebugLog.consoleOnly('info', `[pointer] ${injectLine}`)
       this.worker.postMessage({
@@ -4374,6 +4596,61 @@ export class SceneScriptSystem {
   private async finishPointerDeliveryAfterWorkerAck(): Promise<void> {
     await this.crdtOutboundSerial
     await this.finishPointerDeliveryAsync('pointer-deliver-done', { afterOutboundBatch: true })
+  }
+
+  /**
+   * After PE click inject returns: scene often puts Tween/Transform/Animator/Particle for
+   * click-move or ground markers. Drain immediately so the anim is visible this frame
+   * (DecentraCraft select/move was lost behind pendingDiff + empty UI serial).
+   *
+   * v5: do **not** dump the entire pendingDiff (1000+) on every edge — that collapsed FPS
+   * and starved unit motion. Peel material/tween/gltf only; leave the rest for normal frames.
+   */
+  private applyPostPointerMotion(): void {
+    if (!this.bridge || !this.entityStore) return
+    // Once per session so hard-reload proves the PE motion path without spam.
+    if (!(SceneScriptSystem as { _peMotionV5Logged?: boolean })._peMotionV5Logged) {
+      ;(SceneScriptSystem as { _peMotionV5Logged?: boolean })._peMotionV5Logged = true
+      console.info(
+        '%c[ThreejsClient] applyPostPointerMotion v5 — peel only (no full pendingDiff dump)',
+        'color:#0f0;font-size:12px;font-weight:bold'
+      )
+    }
+    this.flushMeshRendererMaterialsFromPendingDiff()
+    this.flushTweenAndTransformFromPendingDiff()
+    this.flushGltfContainerFromPendingDiff()
+    // Click VFX / select rings: light sync — cooperative frames own the backlog.
+    this.tweenBridge?.sync(this.view)
+    if (this.tweenBridge?.hasLiveTweens()) {
+      this.tweenBridge.update(1 / 30, this.view)
+      this.markTweenColliderPosesDirty()
+    }
+    void this.animatorBridge?.sync(this.view)
+    void this.particleBridge?.sync(this.view)
+    this.particleBridge?.update(1 / 30)
+    void this.bridge.drainPendingWork()
+    this.bridge.tickDeferredMaterials(24, 48)
+    // Only re-private PE leaves when structure already dirty (select UI churn).
+    if (this.pointerStructureDirty) {
+      const pe: Entity[] = []
+      for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {
+        if (
+          entity === this.view.RootEntity ||
+          entity === this.view.PlayerEntity ||
+          entity === this.view.CameraEntity
+        ) {
+          continue
+        }
+        if (this.readComponents.UiTransform.has(entity)) continue
+        pe.push(entity)
+      }
+      if (pe.length) {
+        const fixed = this.bridge.ensurePointerMeshesReady(pe)
+        if (fixed > 0) this.pointerStructureDirty = true
+      }
+      this.flushPointerStructureIfDirty()
+    }
+    this.flushSceneGraphMatrices()
   }
 
   /** Worker ticks resume only after mount set committed and projection UiTransform caught up. */
@@ -4429,6 +4706,8 @@ export class SceneScriptSystem {
     }
     this.flushUiFrame()
     await this.reconcilePointerCollisionAfterDelivery(opts)
+    // Click-move / select anim: apply Tween+Transform from the inject CRDT now.
+    this.applyPostPointerMotion()
     this.proactiveTweenPushUntil = performance.now() + SceneScriptSystem.PROACTIVE_TWEEN_PUSH_MS
     // Always unpause worker after pointer ack. Gating on projection UiTransform catch-up
     // left sceneTicksPaused stuck while CBD Plaza welcome fade (and similar systems) need
@@ -4458,15 +4737,16 @@ export class SceneScriptSystem {
     this.finishPointerDelivery('pointer-delivery-failed')
   }
 
-  private armPointerDeliverWatchdog(): void {
+  private armPointerDeliverWatchdog(timeoutMs?: number): void {
     if (this.pointerDeliverFailWatchdog) {
       clearTimeout(this.pointerDeliverFailWatchdog)
       this.pointerDeliverFailWatchdog = null
     }
+    const ms = timeoutMs ?? SceneScriptSystem.POINTER_DELIVER_FAIL_MS
     this.pointerDeliverFailWatchdog = setTimeout(() => {
       if (!this.pointerDeliverAwaitingAck) return
       this.failPointerDelivery('no worker pointer-deliver-done')
-    }, SceneScriptSystem.POINTER_DELIVER_FAIL_MS)
+    }, ms)
   }
 
   private clearPointerDeliverWatchdog(): void {

@@ -167,20 +167,20 @@ export function collectVcBindHydratePackage(engine: IEngine): PlayerFrameBoundVc
 /**
  * Hydrate only when *structure* changes.
  * Follow: ignore moving anchor poses (CameraFollow) — those ride vc-pose-live / PE-follow.
- * Locked (worldFlattened): include world pose so select cuts re-hydrate when the shot moves.
+ * Locked (worldFlattened): structure only (entity/lookAt/parent). Continuous pan/edge
+ * moves ride `vc-pose-live` — putting pose in the graph key re-hydrated every frame
+ * (DecentraCraft RTS VC spam → FPS death + stalled select UI).
  */
 export function vcBindGraphKey(pkg: PlayerFrameBoundVc | null): string {
   if (!pkg) return 'cleared'
   const lookAt = (pkg.virtualCamera as { lookAtEntity?: number } | null)?.lookAtEntity ?? 0
   const parent = pkg.transform.parent ?? 0
   if (pkg.worldFlattened) {
-    return [
-      `vc=${pkg.entity}`,
-      `lookAt=${lookAt}`,
-      'flat=1',
-      `tr=${transformKey(pkg.transform)}`,
-      ...pkg.anchors.map((a) => `a${a.entity}=${transformKey(a.transform)}`)
-    ].join('|')
+    const anchorIds = pkg.anchors
+      .map((a) => a.entity)
+      .sort((a, b) => a - b)
+      .join(',')
+    return [`vc=${pkg.entity}`, `lookAt=${lookAt}`, 'flat=1', `anchors=${anchorIds}`].join('|')
   }
   // Follow / hierarchy: entity ids + VC local offset only (not cameraParent world pose).
   return [

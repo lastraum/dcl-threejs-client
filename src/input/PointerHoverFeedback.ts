@@ -62,6 +62,7 @@ export class PointerHoverFeedback {
     }
 
     const tooltips: TooltipEntry[] = []
+    const seen = new Set<string>()
 
     for (const entry of entries) {
       const info = entry.eventInfo
@@ -72,9 +73,12 @@ export class PointerHoverFeedback {
       const button = (info.button ?? InputAction.IA_ANY) as InputActionValue
       const eventType = entry.eventType ?? PointerEventType.PET_DOWN
 
-      if (shouldShowPointerHoverHint(button, eventType, primaryActionDown)) {
-        tooltips.push({ hoverText, button })
-      }
+      if (!shouldShowPointerHoverHint(button, eventType, primaryActionDown)) continue
+      // One pill per unique label (PET_DOWN + PET_HOVER_ENTER often share the same text).
+      const key = `${button}:${hoverText}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      tooltips.push({ hoverText, button })
     }
 
     if (!tooltips.length) {

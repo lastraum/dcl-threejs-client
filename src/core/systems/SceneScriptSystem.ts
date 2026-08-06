@@ -84,6 +84,7 @@ import {
   perfNotePeels,
   perfNotePointerEdge,
   perfNoteUiMountPost,
+  perfNoteUiMountReseedSkip,
   perfNoteVcHydrate,
   perfNoteVcPoseLive,
   perfSetPendingDiff
@@ -2754,6 +2755,9 @@ export class SceneScriptSystem {
           skipUiMountReseed = false
         }
       }
+      if (skipUiMountReseed) {
+        perfNoteUiMountReseedSkip()
+      }
 
       // Non-UI CRDT always applies (even when UI reseed is skipped).
       if (pointerUiMountBatch) this.projection.beginForceWorkerUiPuts()
@@ -2788,25 +2792,31 @@ export class SceneScriptSystem {
         }
 
         if (!skipUiMountReseed) {
-          // Clear LWW only when we are about to re-seed the same entities.
-          // Must include PointerEvents: cooperative UI egress is snapshot-only; if the scene
-          // removes PE after splash click, omitting 1062 left main with a ghost PE catcher.
-          // Never wipe on bare uiEntities (no rows) — that left projection at 0/N.
-          if (latestUiMountSnapshot?.length) {
+          // Clear LWW only when we are about to re-seed.
+          // COD C3 — PE clear only on full-mount / mount-set change. Partial dirty reseeds
+          // (timer text) must not wipe PE LWW then re-put (ghost/hand-cursor thrash).
+          if (latestUiMountSnapshot !== undefined && latestUiMountSnapshot.length > 0) {
             const snapEntities = new Set<Entity>()
-            for (const row of latestUiMountSnapshot) snapEntities.add(row.entity as Entity)
+            const snapTx = new Set<number>()
+            for (const row of latestUiMountSnapshot) {
+              snapEntities.add(row.entity as Entity)
+              if (row.componentId === UiTransform.componentId) snapTx.add(row.entity)
+            }
+            const mountIds = latestUiEntities ?? []
+            const fullMount =
+              mountChanged ||
+              (mountIds.length > 0 && mountIds.every((id) => snapTx.has(id)))
             if (snapEntities.size > 0) {
-              this.projection.clearLwwSlotsForEntities(snapEntities, [
+              const clearIds = [
                 UiTransform.componentId,
                 UiText.componentId,
                 UiBackground.componentId,
                 UiInput.componentId,
                 UiDropdown.componentId,
-                PointerEvents.componentId
-              ])
+                ...(fullMount ? [PointerEvents.componentId] : [])
+              ]
+              this.projection.clearLwwSlotsForEntities(snapEntities, clearIds)
             }
-          }
-          if (latestUiMountSnapshot !== undefined && latestUiMountSnapshot.length > 0) {
             projectionDeletes.length = 0
             this.projection.changes.length = 0
             this.sceneUiBridge?.ingestMountSnapshot(latestUiMountSnapshot)
@@ -2815,7 +2825,8 @@ export class SceneScriptSystem {
                 entity: row.entity as Entity,
                 componentId: row.componentId,
                 value: row.value
-              }))
+              })),
+              { stripMissingPe: fullMount }
             )
             perfNoteUiMountPost()
             batchTouchesUi = true
@@ -3458,8 +3469,26 @@ export class SceneScriptSystem {
         `player-frame MainCamera → ${vcKey}` +
           (vcUnbound ? '' : ` transform=${hasTr} virtualCamera=${hasVc}`)
       )
-      if (!vcUnbound && (!hasTr || !hasVc)) {
-        this.requestVcBindHydrateOnce()
+      if (!vcUnbound && vcEnt != null) {
+        // COD D2 — if Transform already on projection, claim live lane immediately so
+        // cold CRDT cannot clobber before first hydrate/pose-live arrives.
+        if (hasTr) {
+          const tr = Transform.get(vcEnt as never) as {
+            position: { x: number; y: number; z: number }
+            rotation: { x: number; y: number; z: number; w: number }
+            scale?: { x: number; y: number; z: number }
+            parent?: number
+          }
+          this.projection.setVcLiveTransform(vcEnt as never, {
+            position: tr.position,
+            rotation: tr.rotation,
+            scale: tr.scale ?? { x: 1, y: 1, z: 1 },
+            parent: tr.parent
+          })
+        }
+        if (!hasTr || !hasVc) {
+          this.requestVcBindHydrateOnce()
+        }
       }
     } else if (!vcUnbound) {
       const vcEnt = mainCam!.virtualCameraEntity!
@@ -3648,7 +3677,9 @@ export class SceneScriptSystem {
     if (!transformDiff.size) return
     const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
     applySceneDiff(this.entityStore, transformDiff, this.view, this.readComponents, tweenRefresh, {
-      skipTransformApply: (entity) => this.readComponents.AvatarAttach.has(entity),
+      // COD D2 — AvatarAttach + vc-pose-live lane: cold Transform peels must not thrash lens.
+      skipTransformApply: (entity) =>
+        this.readComponents.AvatarAttach.has(entity) || this.projection.isVcLiveTransformEntity(entity),
       onReservedParent: (entity, parent, view) => {
         this.bridge?.noteReservedParentedEntity(entity, parent, view)
       }
@@ -5069,9 +5100,17 @@ export class SceneScriptSystem {
    * **budgeted** structure slice. Never swap out the entire pendingDiff map (that was
    * fullDump thrash when backlog hit 1000+).
    */
-  async syncRenderer(): Promise<void> {
+  /**
+   * COD F2 — optional wall deadline for multi-worker residual fullWork.
+   * When exceeded mid-structure, leave remainder in pendingDiff for next frame.
+   */
+  async syncRenderer(opts?: { deadlineMs?: number }): Promise<void> {
     if (!this.bridge) return
     const view = this.view
+    const deadline =
+      opts?.deadlineMs !== undefined && Number.isFinite(opts.deadlineMs)
+        ? performance.now() + Math.max(0, opts.deadlineMs)
+        : Infinity
 
     // Diff consumer at runtime; full walk only while asset hydration is active.
     if (this.bridge.canConsumeDiff()) {
@@ -5083,7 +5122,7 @@ export class SceneScriptSystem {
       }
 
       if (!this.pendingDiff.size) {
-        await this.bridge.drainPendingWork()
+        if (performance.now() < deadline) await this.bridge.drainPendingWork()
         this.syncSceneUiAfterRenderer()
         return
       }
@@ -5098,9 +5137,16 @@ export class SceneScriptSystem {
       // Hot peels — keep unit/temple motion + board recolor off the structure queue.
       this.flushMeshRendererMaterialsFromPendingDiff()
       this.flushTweenAndTransformFromPendingDiff()
-      this.flushGltfContainerFromPendingDiff()
+      if (performance.now() < deadline) {
+        this.flushGltfContainerFromPendingDiff()
+      }
 
       // Structure / other (+ any leftover motion/material): budgeted entity cap; rest stays queued.
+      if (performance.now() >= deadline) {
+        this.syncSceneUiAfterRenderer()
+        this.publishPendingDiffPerf()
+        return
+      }
       const structureSlice = this.takePendingDiffSlice(
         new Set(['structure', 'other', 'motion', 'material']),
         SceneScriptSystem.STRUCTURE_CONSUME_CAP
@@ -5110,7 +5156,7 @@ export class SceneScriptSystem {
       if (spriteDiff.size) this.bridge.consumeSpriteDiff(spriteDiff, view)
       const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
       if (sceneDiff.size) await this.bridge.consumeDiff(sceneDiff, view, tweenRefresh)
-      else await this.bridge.drainPendingWork()
+      else if (performance.now() < deadline) await this.bridge.drainPendingWork()
       this.bridge.reconcileBillboardFlags()
       this.flushPointerStructureIfDirty()
       this.syncSceneUiAfterRenderer(sceneDiff)
@@ -5472,7 +5518,9 @@ export class SceneScriptSystem {
     )
     const transformEntities = [...transformDiff.keys()]
     applySceneDiff(this.entityStore, transformDiff, this.view, this.readComponents, tweenRefresh, {
-      skipTransformApply: (entity) => AvatarAttach.has(entity),
+      // COD D2 — skip AvatarAttach + VC live-lane entities (pose rides vc-pose-live).
+      skipTransformApply: (entity) =>
+        AvatarAttach.has(entity) || this.projection.isVcLiveTransformEntity(entity),
       onReservedParent: (entity, parent, view) => {
         this.bridge?.noteReservedParentedEntity(entity, parent, view)
       }
@@ -5801,6 +5849,11 @@ export class SceneScriptSystem {
   getHydrationStats() {
     if (!this.bridge) return null
     return this.bridge.getHydrationStats(this.view)
+  }
+
+  /** G2 — MeshRenderer GPU instancing live density. */
+  getMeshRendererInstanceStats(): { instances: number; buckets: number } | null {
+    return this.bridge?.getMeshRendererInstanceStats() ?? null
   }
 
   /** Cheap mesh-queue counters for fps diagnostics (no full projection walk). */

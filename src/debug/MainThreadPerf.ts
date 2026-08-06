@@ -111,8 +111,10 @@ function logFrameHealth(
     `peel=${peel.toFixed(1)}(m${snap.peelMaterialMs.toFixed(1)}/t${snap.peelTransformMs.toFixed(1)}/g${snap.peelGltfMs.toFixed(1)} e${snap.peelEntities}) ` +
     `pendingDiff=${snap.pendingDiffSize} ageMax=${snap.pendingDiffAgeMaxMs.toFixed(0)}ms ` +
     `ptrEdge=${snap.pointerEdgeMs.toFixed(1)} fullDump=${snap.pointerFullDump} ` +
-    `uiMount/s=${snap.uiMountPostsPerSec.toFixed(1)} ` +
+    `uiMount/s=${snap.uiMountPostsPerSec.toFixed(1)} drop/s=${snap.uiMountDropsPerSec.toFixed(1)} skip/s=${snap.uiMountReseedSkipsPerSec.toFixed(1)} ` +
     `vcHydrate/s=${snap.vcHydratePerSec.toFixed(1)} poseLive/s=${snap.vcPoseLivePerSec.toFixed(1)} ` +
+    `physxSeal=${snap.physxStaticSealed} postRebuild=${snap.physxPostSealRebuild} ` +
+    `mrInst=${snap.meshRendererInstances} mrBucket=${snap.meshRendererBuckets} ` +
     `remotes=${snap.remoteVisible} remoteMs=${snap.remoteUpdateMs.toFixed(1)}`
   clientDebugLog.log('perf', line, {
     alsoConsole: true,

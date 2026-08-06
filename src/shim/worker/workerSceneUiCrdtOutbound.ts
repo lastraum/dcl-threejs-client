@@ -828,8 +828,8 @@ export function uiMountSnapshotContentFp(
 ): string {
   if (!snapshot.length) return '0'
   const parts: string[] = []
-  // Cap sample size but cover more of large HUDs (was 96 → false-match tail).
-  const n = Math.min(snapshot.length, 160)
+  // Hash all rows (no 96-row false-match tail). Large HUDs still cheap (short payloads).
+  const n = snapshot.length
   for (let i = 0; i < n; i++) {
     const r = snapshot[i]!
     const v = r.value
@@ -837,9 +837,14 @@ export function uiMountSnapshotContentFp(
     if (v && typeof v === 'object') {
       const o = v as Record<string, unknown>
       const cid = r.componentId
-      // UiText (1052)
+      // UiText (1052) — value + color (timer/score/style thrash)
       if (cid === 1052 || typeof o.value === 'string') {
-        payload = `t${typeof o.value === 'string' ? o.value : ''}`
+        const c = o.color as { r?: number; g?: number; b?: number; a?: number } | undefined
+        const col =
+          c && typeof c === 'object'
+            ? `${c.r ?? 0},${c.g ?? 0},${c.b ?? 0},${c.a ?? 0}`
+            : ''
+        payload = `t${typeof o.value === 'string' ? o.value : ''}|c${col}|fs${o.fontSize ?? ''}`
       }
       // UiInput (1093)
       else if (cid === 1093) {
@@ -849,7 +854,7 @@ export function uiMountSnapshotContentFp(
       else if (cid === 1094) {
         payload = `dd${o.selectedIndex ?? o.value ?? ''}`
       }
-      // UiBackground (1053) — color + texture src (fades / image swaps)
+      // UiBackground (1053) — color + texture src + atlas UV sample
       else if (cid === 1053) {
         const c = o.color as { r?: number; g?: number; b?: number; a?: number } | undefined
         const col =
@@ -870,27 +875,59 @@ export function uiMountSnapshotContentFp(
             }
           }
         }
-        payload = `bg${col}|${src}`
+        const uvs = o.uvs as number[] | undefined
+        const uv =
+          Array.isArray(uvs) && uvs.length
+            ? uvs
+                .slice(0, 8)
+                .map((n) => (typeof n === 'number' ? n.toFixed(3) : ''))
+                .join(',')
+            : ''
+        payload = `bg${col}|${src}|uv${uv}`
       }
-      // UiTransform (1050) — layout + visibility (display/opacity/parent/size/pos)
+      // UiTransform (1050) — layout + visibility + yoga edges (display/opacity/parent/size/pos)
       else if (cid === 1050 || o.width !== undefined || o.height !== undefined || o.display !== undefined) {
+        const pos = o.position as Record<string, unknown> | undefined
         payload = [
           `d${o.display ?? ''}`,
           `o${o.opacity ?? ''}`,
           `p${o.parent ?? ''}`,
           `wh${o.width ?? ''},${o.height ?? ''}`,
-          `xy${(o.position as { x?: unknown } | undefined)?.x ?? o.positionX ?? ''},${(o.position as { y?: unknown } | undefined)?.y ?? o.positionY ?? ''}`
+          `wu${o.widthUnit ?? ''},${o.heightUnit ?? ''}`,
+          `fd${o.flexDirection ?? ''}`,
+          `jc${o.justifyContent ?? ''}`,
+          `ai${o.alignItems ?? ''}`,
+          `pt${o.positionType ?? ''}`,
+          `xy${pos?.x ?? o.positionX ?? ''},${pos?.y ?? o.positionY ?? ''}`,
+          `trbl${pos?.top ?? ''},${pos?.right ?? ''},${pos?.bottom ?? ''},${pos?.left ?? ''}`
         ].join(',')
       }
-      // PointerEvents (1062) — presence only (structure of PE list)
+      // PointerEvents (1062) — eventType.interactionType keys (not count-only)
       else if (cid === 1062) {
         const pe = o.pointerEvents
-        payload = `pe${Array.isArray(pe) ? pe.length : pe ? 1 : 0}`
+        if (Array.isArray(pe)) {
+          const keys = pe
+            .map((ev) => {
+              const e = ev as {
+                eventType?: number
+                eventInfo?: { button?: number; hoverText?: string }
+                interactionType?: number
+              }
+              const t = e.eventType ?? e.interactionType ?? ''
+              const b = e.eventInfo?.button ?? ''
+              const h = e.eventInfo?.hoverText ?? ''
+              return `${t}.${b}.${h}`
+            })
+            .sort()
+            .join(';')
+          payload = `pe${keys}`
+        } else {
+          payload = `pe${pe ? 1 : 0}`
+        }
       }
     }
     parts.push(`${r.entity}:${r.componentId}:${payload}`)
   }
-  if (snapshot.length > n) parts.push(`#${snapshot.length}`)
   return parts.join('|')
 }
 

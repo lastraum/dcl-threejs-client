@@ -528,8 +528,13 @@ export class PortableExperienceManager {
       const spent = performance.now() - t0
       const stillRoom = budgetMs === undefined || spent < budgetMs
       const fullWork = allowFull && stillRoom && i === fullIdx
+      const rem =
+        budgetMs === undefined ? undefined : Math.max(0.25, budgetMs - (performance.now() - t0))
       descs.push(
-        ...(await worker.tickAsync(this.primaryScene, this.cache, { fullWork }))
+        ...(await worker.tickAsync(this.primaryScene, this.cache, {
+          fullWork,
+          deadlineMs: fullWork ? rem : undefined
+        }))
       )
     }
     return descs

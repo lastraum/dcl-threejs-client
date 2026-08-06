@@ -419,7 +419,7 @@ export class SceneWorkerSlot {
   async tickAsync(
     primaryScene: ResolvedScene | null,
     cache: AssetCache,
-    options?: { fullWork?: boolean }
+    options?: { fullWork?: boolean; deadlineMs?: number }
   ): Promise<PhysicsColliderDesc[]> {
     if (!this.running || this.disposed || this.detached) return []
     // Tertiary: scripts off — only re-push colliders when dirty (demote/retarget once).
@@ -436,7 +436,10 @@ export class SceneWorkerSlot {
 
     cache.setScene(this.scene)
     try {
-      await this.system.syncRenderer()
+      // COD F2 — residual wall budget; structure leftover stays in pendingDiff.
+      await this.system.syncRenderer(
+        options?.deadlineMs !== undefined ? { deadlineMs: options.deadlineMs } : undefined
+      )
       let structureOrPoseChanged = false
       if (this.system.hasColliderWorkPending()) {
         this.system.syncCollision()

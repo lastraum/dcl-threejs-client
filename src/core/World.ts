@@ -50,7 +50,12 @@ import {
   type FftOceanSettings
 } from '../environment/fftOcean/readFftOceanOverride'
 import type { OceanPerfInfo } from '../client/ui/RenderStats'
-import { perfNoteSyncRendererMs, perfSetRemoteStats } from '../util/perfCounters'
+import {
+  perfNoteSyncRendererMs,
+  perfSetMeshRendererInstanceStats,
+  perfSetPhysxSeal,
+  perfSetRemoteStats
+} from '../util/perfCounters'
 import type { OutdoorLightingSnapshot } from '../environment/OutdoorLighting'
 import type { IslandShoreMaterial } from '../dcl/landscape/IslandShoreMaterial'
 import {
@@ -1996,6 +2001,15 @@ export class World {
           multiMs = performance.now() - t3
         }
         const totalMs = performance.now() - t0
+        // COD E1 / G2 health — seal + MeshRenderer GPU density for ?perfdebug.
+        perfSetPhysxSeal({
+          sealed: this.physics.isStaticSqSealed(),
+          postSealRebuild: this.physics.getPostSealRebuildCount()
+        })
+        const mrStats = this.sceneScript.getMeshRendererInstanceStats()
+        if (mrStats) {
+          perfSetMeshRendererInstanceStats(mrStats)
+        }
         // COD F2 — track primary async pressure for secondary anim LOD (~12ms soft budget).
         if (totalMs > 12) this.primaryAsyncOverBudgetStreak++
         else this.primaryAsyncOverBudgetStreak = 0

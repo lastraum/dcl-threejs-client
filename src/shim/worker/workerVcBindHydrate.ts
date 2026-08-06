@@ -17,6 +17,9 @@ import { preregisterRendererInjectedComponents } from './preregisterRendererInje
 
 let lastGraphKey = ''
 let forceNextHydrate = false
+/** Soft rate limit for force-pull spam with unchanged structure key (COD D1). */
+let lastHydratePostAt = 0
+const VC_HYDRATE_FORCE_MIN_MS = 50
 
 function cloneTransform(tr: {
   position: { x: number; y: number; z: number }
@@ -185,6 +188,7 @@ export function vcBindGraphKey(pkg: PlayerFrameBoundVc | null): string {
 export function resetVcBindHydrateBaseline(): void {
   lastGraphKey = ''
   forceNextHydrate = false
+  lastHydratePostAt = 0
 }
 
 export function requestVcBindHydrateFromMain(): void {
@@ -202,9 +206,18 @@ export function takeVcBindHydrateIfNeeded(engine: IEngine): {
     forceNextHydrate = false
     return null
   }
-  if (!forceNextHydrate && key === lastGraphKey) return null
+  const now = performance.now()
+  if (key === lastGraphKey) {
+    // Same structure — only force-pull, and rate-limit force spam.
+    if (!forceNextHydrate) return null
+    if (now - lastHydratePostAt < VC_HYDRATE_FORCE_MIN_MS) {
+      forceNextHydrate = false
+      return null
+    }
+  }
   forceNextHydrate = false
   lastGraphKey = key
+  lastHydratePostAt = now
   return { bind: pkg, graphKey: key }
 }
 

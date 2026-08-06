@@ -40,8 +40,19 @@ export type PerfSnapshot = {
   pointerFullDump: number
   syncRendererMs: number
   uiMountPostsPerSec: number
+  /** Worker posts dropped by content/rate dedupe (should not include content-blind). */
+  uiMountDropsPerSec: number
+  /** Main reseed skips when content fp matched (healthy thrash suppression). */
+  uiMountReseedSkipsPerSec: number
   vcHydratePerSec: number
   vcPoseLivePerSec: number
+  /** PhysX static SQ sealed (1) after boot seal. */
+  physxStaticSealed: number
+  /** forceDynamicTreeRebuild count after seal — must stay 0 (COD E1). */
+  physxPostSealRebuild: number
+  /** MeshRenderer GPU instance live count (G2 density). */
+  meshRendererInstances: number
+  meshRendererBuckets: number
 }
 
 const state = {
@@ -68,7 +79,11 @@ const state = {
   peelEntities: 0,
   pointerEdgeMs: 0,
   pointerFullDump: 0,
-  syncRendererMs: 0
+  syncRendererMs: 0,
+  physxStaticSealed: 0,
+  physxPostSealRebuild: 0,
+  meshRendererInstances: 0,
+  meshRendererBuckets: 0
 }
 
 let windowSent = 0
@@ -78,10 +93,14 @@ let sentPerSec = 0
 let skippedPerSec = 0
 
 let uiMountWindow = 0
+let uiMountDropWindow = 0
+let uiMountReseedSkipWindow = 0
 let vcHydrateWindow = 0
 let vcPoseLiveWindow = 0
 let rateWindowStart = 0
 let uiMountPerSec = 0
+let uiMountDropsPerSec = 0
+let uiMountReseedSkipsPerSec = 0
 let vcHydratePerSec = 0
 let vcPoseLivePerSec = 0
 
@@ -163,6 +182,18 @@ export function perfNoteUiMountPost(): void {
   rollRateWindow()
 }
 
+/** Worker/main dropped an identical or rate-limited UI mount post. */
+export function perfNoteUiMountDrop(): void {
+  uiMountDropWindow++
+  rollRateWindow()
+}
+
+/** Main skipped clear+reseed because content fingerprint matched. */
+export function perfNoteUiMountReseedSkip(): void {
+  uiMountReseedSkipWindow++
+  rollRateWindow()
+}
+
 export function perfNoteVcHydrate(): void {
   vcHydrateWindow++
   rollRateWindow()
@@ -171,6 +202,18 @@ export function perfNoteVcHydrate(): void {
 export function perfNoteVcPoseLive(): void {
   vcPoseLiveWindow++
   rollRateWindow()
+}
+
+/** COD E1 — seal state + post-seal rebuild count (must stay 0 after boot). */
+export function perfSetPhysxSeal(opts: { sealed: boolean; postSealRebuild: number }): void {
+  state.physxStaticSealed = opts.sealed ? 1 : 0
+  state.physxPostSealRebuild = opts.postSealRebuild
+}
+
+/** G2 — MeshRenderer GPU instancing density. */
+export function perfSetMeshRendererInstanceStats(opts: { instances: number; buckets: number }): void {
+  state.meshRendererInstances = opts.instances
+  state.meshRendererBuckets = opts.buckets
 }
 
 function rollWindow(): void {
@@ -199,9 +242,13 @@ function rollRateWindow(): void {
   if (elapsed < 1000) return
   const sec = elapsed / 1000
   uiMountPerSec = uiMountWindow / sec
+  uiMountDropsPerSec = uiMountDropWindow / sec
+  uiMountReseedSkipsPerSec = uiMountReseedSkipWindow / sec
   vcHydratePerSec = vcHydrateWindow / sec
   vcPoseLivePerSec = vcPoseLiveWindow / sec
   uiMountWindow = 0
+  uiMountDropWindow = 0
+  uiMountReseedSkipWindow = 0
   vcHydrateWindow = 0
   vcPoseLiveWindow = 0
   rateWindowStart = now
@@ -238,7 +285,13 @@ export function perfSnapshot(): PerfSnapshot {
     pointerFullDump: state.pointerFullDump,
     syncRendererMs: state.syncRendererMs,
     uiMountPostsPerSec: uiMountPerSec,
+    uiMountDropsPerSec: uiMountDropsPerSec,
+    uiMountReseedSkipsPerSec: uiMountReseedSkipsPerSec,
     vcHydratePerSec: vcHydratePerSec,
-    vcPoseLivePerSec: vcPoseLivePerSec
+    vcPoseLivePerSec: vcPoseLivePerSec,
+    physxStaticSealed: state.physxStaticSealed,
+    physxPostSealRebuild: state.physxPostSealRebuild,
+    meshRendererInstances: state.meshRendererInstances,
+    meshRendererBuckets: state.meshRendererBuckets
   }
 }

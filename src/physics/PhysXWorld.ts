@@ -294,6 +294,10 @@ export class PhysXWorld {
   private allowStaticReinsert = true
   /** True after boot seal committed SQ once — blocks bulk reinsert / thrash rebuilds. */
   private staticSqSealed = false
+  /** Seal-time forceDynamicTreeRebuild count (0 or 1). Post-seal must stay 0. */
+  private sealRebuildCount = 0
+  /** Runtime rebuild attempts after seal — COD E1 law: must remain 0. */
+  private postSealRebuildCount = 0
   /** Permanent filter data for scene sweeps — avoid temp wrapPointer drops. */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private sceneQueryFilterWords: any = null
@@ -2001,6 +2005,7 @@ export class PhysXWorld {
       try {
         this.scene.forceDynamicTreeRebuild(true, false)
         rebuilt = true
+        this.sealRebuildCount = 1
         if (typeof this.scene.flushQueryUpdates === 'function') {
           this.scene.flushQueryUpdates()
         }
@@ -2073,6 +2078,19 @@ export class PhysXWorld {
       /* optional */
     }
     this.invalidateControllerCache()
+  }
+
+  /** COD E1 metrics — sealed once; post-seal rebuilds must stay 0. */
+  isStaticSqSealed(): boolean {
+    return this.staticSqSealed
+  }
+
+  getSealRebuildCount(): number {
+    return this.sealRebuildCount
+  }
+
+  getPostSealRebuildCount(): number {
+    return this.postSealRebuildCount
   }
 
   /**

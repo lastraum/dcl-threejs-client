@@ -1420,6 +1420,11 @@ export class ThreeBridge {
     }
   }
 
+  /** G2 — MeshRenderer GPU instancing density (boards / dense scalars). */
+  getMeshRendererInstanceStats(): { instances: number; buckets: number } {
+    return this.meshRendererInstancer.stats()
+  }
+
   getHydrationStats(view: ProjectionView): SceneHydrationStats {
     const { GltfContainer, Transform } = this.ecs
     const { RootEntity, PlayerEntity, CameraEntity } = view

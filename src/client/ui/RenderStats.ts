@@ -102,7 +102,9 @@ export class RenderStats {
       // COD frame-budget pipeline (A1)
       `pipeline: pendingDiff=${perf.pendingDiffSize} age=${perf.pendingDiffAgeMaxMs.toFixed(0)}ms syncR=${perf.syncRendererMs.toFixed(1)}`,
       `peel: m${perf.peelMaterialMs.toFixed(1)}/t${perf.peelTransformMs.toFixed(1)}/g${perf.peelGltfMs.toFixed(1)} e${perf.peelEntities} ptr=${perf.pointerEdgeMs.toFixed(1)} dump=${perf.pointerFullDump}`,
-      `uiMount/s=${perf.uiMountPostsPerSec.toFixed(1)} vcHydrate/s=${perf.vcHydratePerSec.toFixed(1)} poseLive/s=${perf.vcPoseLivePerSec.toFixed(1)}`
+      `uiMount/s=${perf.uiMountPostsPerSec.toFixed(1)} drop/s=${perf.uiMountDropsPerSec.toFixed(1)} skip/s=${perf.uiMountReseedSkipsPerSec.toFixed(1)}`,
+      `vcHydrate/s=${perf.vcHydratePerSec.toFixed(1)} poseLive/s=${perf.vcPoseLivePerSec.toFixed(1)} seal=${perf.physxStaticSealed} postReb=${perf.physxPostSealRebuild}`,
+      `mrInst=${perf.meshRendererInstances} buckets=${perf.meshRendererBuckets}`
     )
     this.extra.textContent = lines.join('\n')
   }

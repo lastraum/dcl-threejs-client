@@ -5121,13 +5121,16 @@ export class SceneScriptSystem {
     this.pointerHoldTicksUntilMount = false
     this.armPointerDeliverWatchdog(2000)
 
-    // Refresh PPI at post time (writeResult may be a few ms earlier; edge tick must
-    // see the click's screen/ray for UI chrome gates + ground rays).
+    // Refresh PPI + camera at post time — edge ticks do not wait for play-frame-tick.
+    // Scenes ray ground as CameraEntity.position × PPI.worldRayDirection; stale camera
+    // under VC (player feet vs lens at y=26) breaks click VFX placement / getClick handlers.
     const ppi =
       this.pointerEvents?.getPrimaryPointerSnapshot() ?? inject.primaryPointer ?? undefined
     if (ppi) inject.primaryPointer = ppi
+    inject.camera = this.capturePointerEdgeCameraDcl()
     const sc = inject.primaryPointer?.screenCoordinates
     const ray = inject.primaryPointer?.worldRayDirection
+    const cam = inject.camera?.position
     const injectLine =
       `posting inject-pointer-click entity=${inject.entity} button=${inject.button} ` +
       `ts=${inject.downTimestamp}/${inject.upTimestamp} (inject-only)` +
@@ -5137,8 +5140,8 @@ export class SceneScriptSystem {
       (sc
         ? ` ppi=(${sc.x.toFixed(0)},${sc.y.toFixed(0)})` +
           (ray ? ` ray=(${ray.x.toFixed(2)},${ray.y.toFixed(2)},${ray.z.toFixed(2)})` : '')
-        : ' ppi=missing')
-    // Always console — match PET_DOWN visibility for edge diagnosis.
+        : ' ppi=missing') +
+      (cam ? ` cam=(${cam.x.toFixed(1)},${cam.y.toFixed(1)},${cam.z.toFixed(1)})` : ' cam=missing')
     console.log('[pointer]', injectLine)
     this.logPointer(injectLine)
     this.worker.postMessage({
@@ -5146,6 +5149,25 @@ export class SceneScriptSystem {
       body: inject,
       injectOnly: true
     } satisfies MainToWorker)
+  }
+
+  /** Live camera pose (DCL) for pointer-edge CameraEntity write. */
+  private capturePointerEdgeCameraDcl(): {
+    position: { x: number; y: number; z: number }
+    rotation: { x: number; y: number; z: number; w: number }
+  } | undefined {
+    this.refreshClientPosesFromProvider()
+    const cam = this.clientCameraPose
+    if (!cam) return undefined
+    return {
+      position: { x: cam.position.x, y: cam.position.y, z: cam.position.z },
+      rotation: {
+        x: cam.rotation.x,
+        y: cam.rotation.y,
+        z: cam.rotation.z,
+        w: cam.rotation.w
+      }
+    }
   }
 
   private onPointerDeliverDone(): void {

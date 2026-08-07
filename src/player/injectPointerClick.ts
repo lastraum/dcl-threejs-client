@@ -51,4 +51,13 @@ export type InjectPointerClickBody = {
     screenDelta: { x: number; y: number }
     worldRayDirection: { x: number; y: number; z: number }
   }
+  /**
+   * Live CameraEntity pose for this edge (DCL space). Pointer ticks skip play-frame-tick;
+   * without this, scenes that raycast Camera + PPI for ground VFX use a stale camera
+   * (wrong under VirtualCamera top-down).
+   */
+  camera?: {
+    position: { x: number; y: number; z: number }
+    rotation: { x: number; y: number; z: number; w: number }
+  }
 }

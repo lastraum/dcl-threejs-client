@@ -1,4 +1,5 @@
 import type { IEngine } from '@dcl/ecs'
+import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import {
   injectPointerClickDownOnEngine,
@@ -758,6 +759,18 @@ function countWorkerUiMount(eng: IEngine): number {
   return count
 }
 
+/** Worker-side MeshRenderer count — diagnose getClick click-marker creation. */
+function countWorkerMeshRenderer(eng: IEngine): number {
+  try {
+    const MeshRenderer = generated.MeshRenderer(eng)
+    let n = 0
+    for (const _ of eng.getEntitiesWith(MeshRenderer)) n++
+    return n
+  } catch {
+    return -1
+  }
+}
+
 /** Extra react-ecs passes after inject — exit on stable UI fingerprint, not mount heuristics. */
 const POINTER_UI_FINGERPRINT_FLUSH_MAX_PASSES = 12
 const POINTER_UI_SCENEU_STABLE_NEEDED = 2
@@ -1047,6 +1060,7 @@ export async function runSceneEnginePointerTick(
     // Do not re-post full HUD (DOWN already opened panel). PlayerEntity also receives UP
     // (injectPointerClick) so getClick(PlayerEntity) pairs with DOWN mirrored on press.
     setPointerInteractiveTickActive(true)
+    const mrBefore = isLevelState ? countWorkerMeshRenderer(eng) : 0
     await runSerializedEngineUpdate(async () => {
       injectPointerClickUpOnEngine(eng, splitPointerInject)
       await eng.update(0)
@@ -1055,6 +1069,14 @@ export async function runSceneEnginePointerTick(
     // One more systems pass so MeshRenderer/Tween click markers created in getClick handlers
     // land in CRDT before deliver-done (exports.onUpdate is not run mid-edge).
     await runPointerNonUiPhase(eng)
+    if (isLevelState) {
+      const mrAfter = countWorkerMeshRenderer(eng)
+      const delta = mrAfter - mrBefore
+      cfg.log(
+        `[sceneWorker] level-state UP getClick — MeshRenderer ${mrBefore}→${mrAfter} (Δ=${delta}) ` +
+          `cam=${splitPointerInject.camera ? 'live' : 'missing'} ppi=${splitPointerInject.primaryPointer ? 1 : 0}`
+      )
+    }
     if (!isLevelState) {
       const mountAfterUp = countWorkerUiMount(eng)
       if (mountAfterUp > mountBefore) {

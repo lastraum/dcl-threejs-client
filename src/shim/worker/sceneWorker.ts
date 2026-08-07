@@ -2541,10 +2541,11 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
   // Main arms a 2s deliver-done watchdog — edge work must ack before that (1.5s hard cap).
   const EDGE_ACK_BUDGET_MS = 1500
   try {
-    // Apply live PPI *before* inject eng.update so onPointerDown handlers and systems
-    // that gate on PrimaryPointerInfo (UI chrome, ground ray, marquee) see this click.
-    if (ppi) {
-      applyPlayFrameReservedPoses(undefined, undefined, ppi)
+    // Apply live PPI + camera *before* inject eng.update. Pointer edges skip play-frame-tick;
+    // without CameraEntity update, ground rays (Camera × PPI) use a stale freecam/player camera
+    // while VC sits at y≈26 — click VFX / move aim handlers miss or place wrong.
+    if (ppi || body.camera) {
+      applyPlayFrameReservedPoses(undefined, body.camera, ppi)
     }
     // No exports.onUpdate mid-edge (pollEvents re-fires UI). Hold reassert on play-frame-tick
     // keeps isPressed true across cooperative frames for every scene.

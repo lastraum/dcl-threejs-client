@@ -4869,8 +4869,7 @@ export class SceneScriptSystem {
         ? ` ppi=(${sc.x.toFixed(0)},${sc.y.toFixed(0)})` +
           (ray ? ` ray=(${ray.x.toFixed(2)},${ray.y.toFixed(2)},${ray.z.toFixed(2)})` : '')
         : ' ppi=missing')
-    // Always console — match PET_DOWN visibility for edge diagnosis.
-    console.log('[pointer]', injectLine)
+    // Verbose / debug-panel only — production clicks must not spam the browser console.
     this.logPointer(injectLine)
     this.worker.postMessage({
       type: 'inject-pointer-click',

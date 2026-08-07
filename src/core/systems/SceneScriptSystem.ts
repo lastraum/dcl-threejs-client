@@ -5026,15 +5026,22 @@ export class SceneScriptSystem {
       clientDebugLog.log('pointer', `flush pending input tick=${this.crdtTick}`, {
         alsoConsole: POINTER_VERBOSE
       })
-      // Explorer press lifecycle: one edge per flush. Processing DOWN+UP in the same
-      // flush overwrote inject payload with UP only → worker sceneUi ignores UP and
-      // world PE never saw PET_DOWN (no getClick / click VFX).
+      // Explorer press lifecycle: one edge per flush.
+      // CRITICAL: process UP before DOWN when both are pending. Preferring DOWN under
+      // click-spam left PET_DOWN without PET_UP → getClick never fired (no VFX) and a
+      // pile of DOWN-only injects froze the client.
       const hasDown = this.pointerEvents.hasPendingDown()
       const hasUp = this.pointerEvents.hasPendingUp()
-      if (hasDown || hasUp) {
+      if (hasUp) {
         this.syncPointerInput(this.crdtTick, {
-          processPendingDown: hasDown,
-          processPendingUp: !hasDown && hasUp
+          processPendingDown: false,
+          processPendingUp: true
+        })
+        this.crdtTick++
+      } else if (hasDown) {
+        this.syncPointerInput(this.crdtTick, {
+          processPendingDown: true,
+          processPendingUp: false
         })
         this.crdtTick++
       }

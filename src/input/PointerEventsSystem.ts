@@ -129,6 +129,11 @@ export class PointerEventsSystem {
    * Must pair PET_UP without requiring a PointerEvents component on PlayerEntity.
    */
   private readonly levelStateButtons = new Set<InputActionValue>()
+  /**
+   * Next press while a prior press is still open (downEntity set / pending DOWN).
+   * Click-spam must not overwrite downEntity or getClick never pairs DOWN+UP.
+   */
+  private readonly stashedPointerDown = new Map<InputActionValue, PointerHit | null>()
 
   private hoverEntity: Entity | null = null
   private lastHit: PointerHit | null = null
@@ -189,6 +194,7 @@ export class PointerEventsSystem {
     this.pointerTargets.length = 0
     this.pointerEntitySet.clear()
     this.levelStateButtons.clear()
+    this.stashedPointerDown.clear()
     this.pendingPointerDown.clear()
     this.pendingPointerUp.clear()
     this.downEntityByButton.clear()
@@ -468,6 +474,13 @@ export class PointerEventsSystem {
       if (button === InputAction.IA_POINTER) {
         const levelHit = this.buildLevelStatePointerHit()
         if (levelHit) {
+          // Serialize presses: do not start DOWN2 while DOWN1 has no UP yet.
+          if (this.downEntityByButton.has(button) || this.pendingPointerDown.has(button)) {
+            this.stashedPointerDown.set(button, levelHit)
+            this.levelStateButtons.add(button)
+            this.deps.flushPointerCrdt?.()
+            return
+          }
           const player = this.deps.view.PlayerEntity
           this.levelStateButtons.add(button)
           this.downEntityByButton.set(button, player)
@@ -510,6 +523,12 @@ export class PointerEventsSystem {
       }
       return
     }
+    // Serialize: one open press per button — stash extra downs until UP completes.
+    if (this.downEntityByButton.has(button) || this.pendingPointerDown.has(button)) {
+      this.stashedPointerDown.set(button, hit)
+      this.deps.flushPointerCrdt?.()
+      return
+    }
     this.levelStateButtons.delete(button)
     const targetEntity = this.resolvePointerResultEntity(hit!.entity, button)
     this.downEntityByButton.set(button, targetEntity)
@@ -529,10 +548,12 @@ export class PointerEventsSystem {
   private onPointerUp = (e: PointerEvent): void => {
     if (!this.deps) return
     const button = mouseButtonToInputAction(e.button)
-    if (!this.downEntityByButton.has(button)) return
+    if (!this.downEntityByButton.has(button) && !this.pendingPointerDown.has(button)) {
+      // Orphan up after spam-drop — ignore.
+      return
+    }
     if (this.uiPointerButtons.has(button)) return
     this.pendingPointerUp.add(button)
-    console.log('[pointer]', `mouseup → flush entity=${this.downEntityByButton.get(button)} button=${button}`)
     this.deps.flushPointerCrdt?.()
   }
 
@@ -987,6 +1008,8 @@ export class PointerEventsSystem {
       upHit.isLevelState = true
       upHit.entity = downEntity
       this.writeResult(this.deps.ecs, downEntity, upHit, PointerEventType.PET_UP, button)
+      // Promote stashed next press (if any) only after this UP is written.
+      this.promoteStashedPointerDown(button)
       return true
     }
 
@@ -1025,7 +1048,32 @@ export class PointerEventsSystem {
             )
 
     this.writeResult(this.deps.ecs, downEntity, upHit, PointerEventType.PET_UP, button)
+    this.promoteStashedPointerDown(button)
     return true
+  }
+
+  /**
+   * After PET_UP, start at most one stashed press (latest spam click wins).
+   */
+  private promoteStashedPointerDown(button: InputActionValue): void {
+    const next = this.stashedPointerDown.get(button)
+    this.stashedPointerDown.delete(button)
+    if (next === undefined || !this.deps) return
+    if (this.downEntityByButton.has(button) || this.pendingPointerDown.has(button)) return
+    if (next?.isLevelState) {
+      this.levelStateButtons.add(button)
+      this.downEntityByButton.set(button, this.deps.view.PlayerEntity)
+      this.pendingPointerDown.set(button, next)
+    } else if (next) {
+      const targetEntity = this.resolvePointerResultEntity(next.entity, button)
+      this.levelStateButtons.delete(button)
+      this.downEntityByButton.set(button, targetEntity)
+      this.pendingPointerDown.set(button, next)
+    } else {
+      return
+    }
+    // Flush will process this DOWN after current UP inject is delivered (coalesce).
+    this.deps.flushPointerCrdt?.()
   }
 
   private tryPointerUp(button: InputActionValue, hit: PointerHit | null): void {

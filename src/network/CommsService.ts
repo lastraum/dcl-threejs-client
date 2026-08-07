@@ -471,6 +471,29 @@ export class CommsService {
     return sent
   }
 
+  /**
+   * P2P trade over world / scene LiveKit (not private-messages).
+   * Critical for Worlds: both players share world-prd-* rooms; PM room may not.
+   * Dual path: directed when peer identity is in room + topic broadcast (filter by msg.to).
+   */
+  async publishTradePacket(packet: Uint8Array, peerAddress?: string): Promise<boolean> {
+    const sessions = this.liveKitChatSessions()
+    if (!sessions.length) return false
+    const topic = 'd3js-trade'
+    const peer = (peerAddress || '').trim().toLowerCase()
+    let sent = false
+    for (const session of sessions) {
+      if (peer) {
+        const id = session.getExactRemoteIdentity(peer)
+        if (id) {
+          if (await session.publishTopicDataTo(topic, packet, [id], true)) sent = true
+        }
+      }
+      if (await session.publishTopicData(topic, packet, true)) sent = true
+    }
+    return sent
+  }
+
   async sendSceneChat(text: string): Promise<boolean> {
     const sessions = this.liveKitChatSessions()
     if (!sessions.length) {

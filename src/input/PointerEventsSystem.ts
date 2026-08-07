@@ -448,7 +448,9 @@ export class PointerEventsSystem {
     }
     if (this.isTypingTarget()) return
     if (this.deps.isPointerBlocked()) return
-    if (e.button === 2) {
+    // Peer profile/trade menu (body or pill) — claim left/right click before scene PE /
+    // level-state PlayerEntity inject (which was swallowing avatar clicks as entity=1).
+    if (e.button === 0 || e.button === 2) {
       if (tryOpenPeerContextMenu(e.clientX, e.clientY)) {
         e.preventDefault()
         e.stopPropagation()

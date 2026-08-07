@@ -5,6 +5,7 @@ import type { FriendshipRelation } from '../../../social/friendshipsApi'
 export type UserContextMenuAction =
   | 'add-friend'
   | 'view-profile'
+  | 'trade'
   | 'chat'
   | 'call'
   | 'hush'
@@ -23,7 +24,8 @@ type MenuRow =
 
 const MENU_ROWS: MenuRow[] = [
   // { kind: 'action', action: 'add-friend', label: 'Add Friend', icon: 'add-friend' },
-  { kind: 'action', action: 'view-profile', label: 'View Profile', icon: 'view-profile' }
+  { kind: 'action', action: 'view-profile', label: 'View Profile', icon: 'view-profile' },
+  { kind: 'action', action: 'trade', label: 'Trade', icon: 'trade' }
   // { kind: 'action', action: 'chat', label: 'Chat', icon: 'chat' },
   // { kind: 'action', action: 'call', label: 'Call', icon: 'call' },
   // { kind: 'action', action: 'hush', label: 'Hush', icon: 'hush' },
@@ -40,6 +42,7 @@ const ICONS: Record<string, string> = {
   call: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6.5 4.8c.5 2.2 1.6 4.2 3.2 5.8s3.6 2.7 5.8 3.2l2-2.1a1 1 0 0 1 1-.2c1.1.4 2.3.6 3.5.6a1 1 0 0 1 1 1V19a1 1 0 0 1-1 1C10.3 20 4 13.7 4 5a1 1 0 0 1 1-1h3.4a1 1 0 0 1 1 1c0 1.2.2 2.4.6 3.5a1 1 0 0 1-.2 1Z" stroke="currentColor" stroke-width="1.6"/></svg>`,
   hush: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9H5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M16 9l4 4M20 9l-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
   gift: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="10" width="18" height="11" rx="1.5" stroke="currentColor" stroke-width="1.6"/><path d="M12 10v11M3 14h18M8.5 10C7 10 6 8.8 6 7.5S7 5 8.5 5 11 6.2 11 7.5 10 10 8.5 10ZM15.5 10C17 10 18 8.8 18 7.5S17 5 15.5 5 13 6.2 13 7.5 14 10 15.5 10Z" stroke="currentColor" stroke-width="1.6"/></svg>`,
+  trade: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 7h11l-2.5-2.5M18 7l-2.5 2.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 17H6l2.5 2.5M6 17l2.5-2.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   report: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 4v16M5 4l11 4-11 4" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>`,
   block: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="1.6"/><path d="M7 17 17 7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`,
   copy: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.6"/></svg>`

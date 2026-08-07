@@ -84,6 +84,7 @@ import { sceneBanDebug } from '../network/sceneAccess/sceneBanDebug'
 import { SceneBanMonitor } from '../network/sceneAccess/SceneBanMonitor'
 import { SceneAccessDeniedError } from '../network/sceneAccess/SceneAccessDeniedError'
 import { ProfileUiController } from './ui/profile/ProfileUiController'
+import { TradeController } from './ui/trade/TradeController'
 import type { AppMode } from './appMode'
 import { bindWhatsNewShippedOpener, openWhatsNewFromMenu } from './whatsNew/WhatsNewToast'
 import { CommunitiesPageView } from './ui/explore/CommunitiesPageView'
@@ -186,6 +187,9 @@ export class AppController {
   private navigating = false
   private mobileHud: MobileGameHud | null = null
   private profileUi: ProfileUiController | null = null
+  private tradeUi: TradeController | null = null
+  /** Unsubscribe world LiveKit d3js-trade → PM trade handler. */
+  private worldTradeTopicUnsub: (() => void) | null = null
   private sceneContentUrl = 'https://peer.decentraland.org'
   private editorApp: EditorApp | null = null
   private explorerView: ExplorerView | null = null
@@ -2821,6 +2825,32 @@ export class AppController {
     })
 
     this.profileUi?.dispose()
+    this.tradeUi?.dispose()
+    // Worlds: peers share world LiveKit (world-prd-*), not always private-messages.
+    // Bridge d3js-trade over world/scene rooms so in-world invites actually arrive.
+    const pm = getPrivateMessagesService()
+    pm.setWorldTradePublish((packet, peer) => world.comms.publishTradePacket(packet, peer))
+    this.worldTradeTopicUnsub?.()
+    this.worldTradeTopicUnsub = world.comms.addTopicListener((topic, sender, data) => {
+      if (topic.trim().toLowerCase() !== 'd3js-trade') return
+      pm.handleTradeFromWorldRoom(sender, data)
+    })
+    this.tradeUi = new TradeController({
+      session: world.session,
+      social: world.social,
+      getPeerUrl: () => this.sceneContentUrl,
+      onPrepareOverlay: () => this.world?.cancelCameraPointer(),
+      pushToast: (title, sub) => {
+        this.socialMobileNotifications?.pushSystemToast({
+          id: `trade-${Date.now()}`,
+          appName: 'DECENTRALAND · TRADE',
+          title,
+          sub: sub ?? '',
+          theme: 'purple',
+          dismissMs: 4500
+        })
+      }
+    })
     this.profileUi = new ProfileUiController({
       session: world.session,
       social: world.social,
@@ -2829,7 +2859,10 @@ export class AppController {
       getCamera: () => world.host.camera,
       onOpenChat: () => this.shell?.openChatPanel(),
       onPrepareOverlay: () => this.world?.cancelCameraPointer(),
-      isPassportDisabled: (address) => world.sceneScript.isPassportDisabled(address)
+      isPassportDisabled: (address) => world.sceneScript.isPassportDisabled(address),
+      onTrade: (address) => {
+        void this.tradeUi?.invitePeer(address)
+      }
     })
 
     if (!this.debugPanel) {
@@ -3895,6 +3928,11 @@ export class AppController {
     this.editorApp = null
     this.profileUi?.dispose()
     this.profileUi = null
+    this.tradeUi?.dispose()
+    this.tradeUi = null
+    this.worldTradeTopicUnsub?.()
+    this.worldTradeTopicUnsub = null
+    getPrivateMessagesService().setWorldTradePublish(null)
     this.mobileHud?.dispose()
     this.mobileHud = null
     this.unbindMinimapLayout()
@@ -4131,6 +4169,11 @@ export class AppController {
     this.livePip?.close()
     this.profileUi?.dispose()
     this.profileUi = null
+    this.tradeUi?.dispose()
+    this.tradeUi = null
+    this.worldTradeTopicUnsub?.()
+    this.worldTradeTopicUnsub = null
+    getPrivateMessagesService().setWorldTradePublish(null)
     this.chatPanel?.dispose()
     this.chatPanel = null
     this.settingsOverlay?.dispose()

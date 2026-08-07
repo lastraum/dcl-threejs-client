@@ -17,6 +17,11 @@ import { BloomPipeline } from './BloomPipeline'
 import { clientSettings } from './ClientSettings'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { AdaptiveQualityController } from './AdaptiveQualityController'
+import {
+  applyClientCameraDepth,
+  CLIENT_CAMERA_NEAR,
+  farFromWorldDiagonal
+} from '../camera/cameraDepthPolicy'
 
 export class SceneHost {
   readonly renderer: THREE.WebGLRenderer
@@ -85,7 +90,12 @@ export class SceneHost {
     this.scene = new THREE.Scene()
     this.scene.background = new THREE.Color(0x87ceeb)
 
-    this.camera = new THREE.PerspectiveCamera(clientSettings.getFov(), window.innerWidth / window.innerHeight, 0.1, 500)
+    this.camera = new THREE.PerspectiveCamera(
+      clientSettings.getFov(),
+      window.innerWidth / window.innerHeight,
+      CLIENT_CAMERA_NEAR,
+      500
+    )
     this.controls = new OrbitControls(this.camera, this.renderer.domElement)
     this.controls.enableDamping = true
     this.controls.maxPolarAngle = Math.PI * 0.49
@@ -195,11 +205,10 @@ export class SceneHost {
   configureViewDistance(bounds: SceneWorldBounds): void {
     const width = bounds.maxX - bounds.minX
     const depth = bounds.maxZ - bounds.minZ
-    const diagonal = Math.hypot(width, depth)
-
-    this.camera.far = Math.max(800, diagonal * 1.25)
-    this.camera.near = 0.1
-    this.camera.updateProjectionMatrix()
+    applyClientCameraDepth(this.camera, {
+      near: CLIENT_CAMERA_NEAR,
+      far: farFromWorldDiagonal(width, depth)
+    })
   }
 
   setOrbitEnabled(enabled: boolean): void {

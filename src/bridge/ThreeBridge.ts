@@ -18,6 +18,10 @@ import {
   type PbMaterial
 } from './material/MaterialApplier'
 import {
+  PLANE_POLYGON_OFFSET_FACTOR,
+  PLANE_POLYGON_OFFSET_UNITS
+} from './material/depthCompositeBands'
+import {
   MeshRendererInstancer,
   MESH_RENDERER_INSTANCE_MARKER
 } from '../rendering/MeshRendererInstancer'
@@ -1032,15 +1036,26 @@ export class ThreeBridge {
 
   /**
    * MeshRenderer leave GPU InstancedMesh → private mesh (PE raycast + Tween move/scale).
-   * Instance matrix updates alone leave PE with marker-only groups and miss click targets
-   * after the first hit (DecentraCraft move-on-click).
+   * COD seal: promote **once** on PE/Tween/ineligibility transition — never thrash
+   * detach/rebuild every Transform when already private.
    */
   private promoteMeshRendererForPointerOrMotion(entity: Entity, obj: THREE.Group): void {
-    if (this.meshRendererInstancer.has(entity) || obj.userData.dclMeshRendererInstanced) {
+    const stillInstanced =
+      this.meshRendererInstancer.has(entity) || !!obj.userData.dclMeshRendererInstanced
+    if (!stillInstanced) {
+      // Already private leaf — Transform path must not re-attach.
+      const visual = this.entityVisualRoot(entity, obj)
+      if (visual instanceof THREE.Mesh && !visual.userData[MESH_RENDERER_INSTANCE_MARKER]) {
+        obj.matrixAutoUpdate = true
+        unfreezeObject3D(obj)
+        unfreezeObject3D(visual)
+        return
+      }
+    }
+    if (stillInstanced) {
       this.meshRendererInstancer.detach(entity, obj)
       delete obj.userData.dclMeshRendererInstanced
     }
-    // Force private path (eligibility already excludes PE/Tween; re-attach rebuilds leaf).
     this.attachOrUpdateMeshRenderer(entity, obj, meshKey(entity), true)
     obj.matrixAutoUpdate = true
     unfreezeObject3D(obj)
@@ -1079,15 +1094,12 @@ export class ThreeBridge {
       if (MeshCollider?.has(entity)) continue // PhysX path covers these
       if (MeshRenderer.has(entity)) {
         const obj = this.store.nodes.get(entity) ?? this.store.getOrCreateNode(entity, 'scene')
-        const visual = this.entityVisualRoot(entity, obj)
-        const isPrivateMesh =
-          visual instanceof THREE.Mesh && !visual.userData[MESH_RENDERER_INSTANCE_MARKER]
-        if (
-          this.meshRendererInstancer.has(entity) ||
-          obj.userData.dclMeshRendererInstanced ||
-          !isPrivateMesh
-        ) {
+        // Promote only while still GPU-instanced — private PE leaves are sealed.
+        if (this.meshRendererInstancer.has(entity) || obj.userData.dclMeshRendererInstanced) {
           this.promoteMeshRendererForPointerOrMotion(entity, obj)
+          fixed++
+        } else if (!this.hasMeshRendererLeaf(entity)) {
+          this.ensureMeshRendererLeaf(entity)
           fixed++
         }
         continue
@@ -2550,9 +2562,9 @@ export class ThreeBridge {
       }
     }
     mat.polygonOffset = true
-    // Pull slightly toward camera so coplanar stacks resolve stably under top-down VC.
-    mat.polygonOffsetFactor = 1
-    mat.polygonOffsetUnits = 1
+    // Small coplanar plates only — large covers skip offset above (platform law).
+    mat.polygonOffsetFactor = PLANE_POLYGON_OFFSET_FACTOR
+    mat.polygonOffsetUnits = PLANE_POLYGON_OFFSET_UNITS
   }
 
   /** Register sprite slots before applySceneDiff so DELETE_ENTITY skips collider/pointer notifies. */
@@ -4018,9 +4030,10 @@ export class ThreeBridge {
       if (alpha < 0.999) {
         baseMat.transparent = true
         baseMat.opacity = alpha
-        // Fog cover (explored ~0.45) needs depthWrite or moon ground punches through VC.
-        baseMat.depthWrite = alpha > 0.4
+        // Platform: ALPHA_BLEND surfaces write depth (occlude underlays). Markers force false.
+        baseMat.depthWrite = true
       }
+      // Instance base materials: blend band when transparent (marker path not used here).
       const bucketKey = this.meshRendererInstanceBucketKey(entity)
       // Geo/matCase bucket only — leave if already in this bucket (color stays instanceColor).
       const haveKey = this.meshRendererInstancer.bucketKey(entity)

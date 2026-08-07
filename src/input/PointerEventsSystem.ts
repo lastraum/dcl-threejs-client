@@ -532,10 +532,7 @@ export class PointerEventsSystem {
     if (!this.downEntityByButton.has(button)) return
     if (this.uiPointerButtons.has(button)) return
     this.pendingPointerUp.add(button)
-    clientDebugLog.log(
-      'pointer',
-      `mouseup → flush entity=${this.downEntityByButton.get(button)} button=${button}`
-    )
+    console.log('[pointer]', `mouseup → flush entity=${this.downEntityByButton.get(button)} button=${button}`)
     this.deps.flushPointerCrdt?.()
   }
 
@@ -1662,8 +1659,8 @@ export class PointerEventsSystem {
             ? `${targets[0]} (hit=${hit.entity})`
             : String(targets[0])
       const line = `${state === PointerEventType.PET_DOWN ? 'PET_DOWN' : 'PET_UP'} entity=${entityLabel} button=${button} ts=${result.timestamp}`
-      // Opt-in via Help panel / ?consolelogs — never unconditional console spam on every click.
-      clientDebugLog.log('pointer', line)
+      console.log('[pointer]', line)
+      clientDebugLog.log('pointer', line, { alsoConsole: false })
     }
   }
 

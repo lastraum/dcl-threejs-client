@@ -92,6 +92,22 @@ export function isPointerInteractiveTickActive(): boolean {
   return pointerInteractiveTickActive
 }
 
+/**
+ * Level-state (empty-ground) pointer edge: run scene systems without @dcl/react-ecs.
+ * Held IA_POINTER otherwise forces react-ecs every frame (marquee) — that is correct for
+ * play-frame holds, but must not re-reconcile the full match HUD on every inject eng.update
+ * (DecentraCraft mount~190 thrash → under 45 FPS + edge race timeout before CRDT egress).
+ */
+let levelStatePointerEdgeActive = false
+
+export function setLevelStatePointerEdgeActive(active: boolean): void {
+  levelStatePointerEdgeActive = active
+}
+
+export function isLevelStatePointerEdgeActive(): boolean {
+  return levelStatePointerEdgeActive
+}
+
 export function setPointerInteractivePhase(phase: 'inject' | 'flush' | 'non-ui' | 'none'): void {
   pointerInteractivePhase = phase
 }

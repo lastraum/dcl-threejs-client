@@ -6,6 +6,7 @@ import { normalizePointerFilterMode, normalizeYGDisplay } from '../../ui/scene/y
 import { preregisterRendererInjectedComponents } from './preregisterRendererInjectedComponents'
 import { ensureWorkerLocomotionFreezePersisted } from './workerPlayerFrameEgress'
 import {
+  isLevelStatePointerEdgeActive,
   isPointerInteractiveTickActive,
   isWorkerPointerButtonHeld,
   shouldSuppressCooperativeReactEcs as shouldSuppressPointerSessionReactEcs
@@ -144,6 +145,8 @@ function workerHasUiDrivingTween(engine: IEngine | null): boolean {
  * Do NOT gate on freeze latch or inject-only pollEvents DEFER.
  */
 export function shouldDeferCooperativeReactEcs(): boolean {
+  // Level-state inject edge: systems only (isPressed / oB / nQ / kK) — no full HUD reconcile.
+  if (isLevelStatePointerEdgeActive()) return true
   // isPointerInteractiveTickActive is false during non-ui phase — fall through to session suppress.
   if (isPointerInteractiveTickActive()) return false
   // Tween-driven UI (tutorial scale, letterbox, cake/confetti slide) — full 60Hz reconcile.

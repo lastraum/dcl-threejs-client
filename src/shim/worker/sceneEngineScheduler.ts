@@ -29,6 +29,7 @@ import {
   type WorkerUiMountSnapshotRow
 } from './workerSceneUiCrdtOutbound'
 import {
+  setLevelStatePointerEdgeActive,
   setPointerInteractivePhase,
   setPointerInteractiveTickActive
 } from './sceneWorkerInputSession'
@@ -967,10 +968,13 @@ export async function runSceneEnginePointerTick(
     cfg.onSceneUiInjectPointerComplete?.({ mountGrew })
   }
   beginPointerPlayerFrameBatch()
-  setPointerInteractiveTickActive(true)
+  const isLevelStateEarly = !!splitPointerInject?.levelState
+  // Level-state: systems only (no react-ecs). PE/sceneUi: interactive so select HUD reconciles.
+  setPointerInteractiveTickActive(!isLevelStateEarly)
   setPointerInteractivePhase('inject')
+  if (isLevelStateEarly) setLevelStatePointerEdgeActive(true)
   const mountBefore = countWorkerUiMount(eng)
-  const fpBefore = computeWorkerUiFingerprint(eng)
+  const fpBefore = isLevelStateEarly ? '' : computeWorkerUiFingerprint(eng)
   let mountGrew = false
   try {
     if (!splitPointerInject) {
@@ -1035,11 +1039,6 @@ export async function runSceneEnginePointerTick(
       return
     }
 
-    // DecentraCraft oQ/iB/kK are normal engine systems. Explorer advances them with real dt.
-    // eng.update(0) can leave the click-marker cylinder parked at offline y=-10 (kK only
-    // promotes Transform after td() on a subsequent sample) and skip match-gated work.
-    const edgeDt = isLevelState ? 1 / 30 : 0
-
     if (phase === 'down') {
       await runSerializedEngineUpdate(async () => {
         if (isLevelState) {
@@ -1048,12 +1047,12 @@ export async function runSceneEnginePointerTick(
         } else {
           injectPointerClickDownOnEngine(eng, splitPointerInject)
         }
-        await eng.update(edgeDt)
+        // transport-only dt: scene systems (iB) still run; kK places disc at QT even with e=0.
+        await eng.update(0)
       })
       reconcileLocomotionLatchAfterInjectDown(eng)
       cfg.onAfterEngineTick?.()
       // Select HUD only for real PE meshes — never for level-state click-to-move.
-      // Inject eng.update already ran systems; skip second react-ecs flush (hitch).
       if (!isLevelState) {
         const settled = await settleWorldPointerUiAfterEdge(eng, cfg, {
           fpBefore,
@@ -1069,11 +1068,9 @@ export async function runSceneEnginePointerTick(
     }
 
     // phase === 'up' (world).
-    // DecentraCraft: iB sees isPressed fall → onGroundClick(oB()) → nQ → td() MeshRenderer.
-    // kK(dt) then moves the disc from parking (0,-10,0) to ground — needs a second sample
-    // if kK is registered before the main oQ system that calls iB/nQ/td.
-    // Not getClick. Needs live CameraEntity × PPI (applied before this tick) + PET_UP.
-    setPointerInteractiveTickActive(true)
+    // DecentraCraft: isPressed fall → onGroundClick → nQ → td(); kK moves disc (works with dt=0).
+    // Level-state: NO react-ecs (see setLevelStatePointerEdgeActive) — was thrashing match HUD.
+    if (!isLevelState) setPointerInteractiveTickActive(true)
     const mrBefore = isLevelState ? countWorkerMeshRenderer(eng) : 0
     await runSerializedEngineUpdate(async () => {
       if (isLevelState) {
@@ -1081,16 +1078,15 @@ export async function runSceneEnginePointerTick(
       } else {
         injectPointerClickUpOnEngine(eng, splitPointerInject)
       }
-      await eng.update(edgeDt)
+      await eng.update(0)
     })
     if (isLevelState) {
-      // Second sample: kK places/scales the disc after td() in the previous update.
+      // Second systems pass if kK is registered before oQ/iB/td in the same frame.
       await runSerializedEngineUpdate(async () => {
-        await eng.update(1 / 30)
+        await eng.update(0)
       })
     }
     cfg.onAfterEngineTick?.()
-    // One more systems pass so MeshRenderer/Tween from onGroundClick/td land dirty.
     await runPointerNonUiPhase(eng)
     if (isLevelState) {
       try {
@@ -1098,13 +1094,12 @@ export async function runSceneEnginePointerTick(
         const delta = mrAfter - mrBefore
         const ground = diagnoseLevelStateGroundRay(eng)
         const g = ground.ground
-        // Always emit — main used to drop these under a shared throttle key.
         cfg.log(
           `[sceneWorker] level-state UP isPressed-path — MeshRenderer ${mrBefore}→${mrAfter} (Δ=${delta}) ` +
             `camY=${ground.camY?.toFixed(1) ?? '-'} rayY=${ground.rayY?.toFixed(2) ?? '-'} ` +
             `ground=${g ? `(${g.x.toFixed(1)},${g.z.toFixed(1)})` : 'null'} ` +
             `ppi=${ground.ppi ? 1 : 0} cam=${ground.cam ? 1 : 0} hitEntity=0 ` +
-            `(scene: nQ needs selected worker/soldier; disc kK after td)`
+            `(nQ needs selected worker/soldier)`
         )
       } catch (err) {
         cfg.log(
@@ -1117,7 +1112,6 @@ export async function runSceneEnginePointerTick(
     if (!isLevelState) {
       const mountAfterUp = countWorkerUiMount(eng)
       if (mountAfterUp > mountBefore) {
-        // Rare: UI opened on UP — full snapshot once (inject eng.update already ran).
         const settledUp = await settleWorldPointerUiAfterEdge(eng, cfg, {
           fpBefore,
           mountBefore,
@@ -1128,6 +1122,7 @@ export async function runSceneEnginePointerTick(
       }
     }
   } finally {
+    setLevelStatePointerEdgeActive(false)
     setPointerInteractivePhase('none')
     setPointerInteractiveTickActive(false)
     fireSceneUiInjectComplete(mountGrew)

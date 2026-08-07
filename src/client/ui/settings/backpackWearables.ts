@@ -65,6 +65,9 @@ const INVENTORY_MAX_PAGES = 50
  * Prefer `/users/{addr}/wearables` (includes individualData; PAGINATED — walk
  * every page or wallets with >100 wearables silently lose inventory). Fall back
  * to `wearables-by-owner` which often only returns asset URNs without tokens.
+ *
+ * When both an asset URN and instance URN(s) exist for the same item, drop the
+ * asset-only row — trade settle needs the packed ERC-721 token id.
  */
 export async function fetchOwnedWearableUrns(
   address: string,
@@ -124,7 +127,17 @@ export async function fetchOwnedWearableUrns(
     /* ignore */
   }
 
-  const merged = [...byKey.values()]
+  // Prefer instance URNs over bare asset URNs (…:itemId without tokenId).
+  const assetsWithInstances = new Set<string>()
+  for (const e of byKey.values()) {
+    const asset = assetUrnFromCompleteUrn(e.urn).toLowerCase()
+    if (e.urn.toLowerCase() !== asset) assetsWithInstances.add(asset)
+  }
+  const merged = [...byKey.values()].filter((e) => {
+    const asset = assetUrnFromCompleteUrn(e.urn).toLowerCase()
+    if (e.urn.toLowerCase() === asset && assetsWithInstances.has(asset)) return false
+    return true
+  })
   if (merged.length) return merged
   throw new Error('wearables inventory empty or failed')
 }

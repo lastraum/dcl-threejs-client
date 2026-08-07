@@ -22,6 +22,8 @@ export type ProfileUiControllerOptions = {
   onPrepareOverlay?: () => void
   /** AvatarModifierArea AMT_DISABLE_PASSPORTS — block profile UI for this peer. */
   isPassportDisabled?: (address: string) => boolean
+  /** P2P trade invite (from avatar context menu). */
+  onTrade?: (address: string) => void
 }
 
 /** Central hub for user pill context menus and the shared profile modal. */
@@ -134,6 +136,9 @@ export class ProfileUiController {
     switch (action) {
       case 'view-profile':
         this.openProfileForAddress(address)
+        break
+      case 'trade':
+        this.options.onTrade?.(address)
         break
       case 'chat':
         this.options.onOpenChat?.()

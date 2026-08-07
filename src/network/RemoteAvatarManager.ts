@@ -576,14 +576,17 @@ export class RemoteAvatarManager {
   }
 
   /**
-   * Screen-space hit on a remote avatar body — used for pointer-lock pill hover.
-   * Returns the peer's CSS2D pill element when the cursor is over the projected bounds.
+   * Screen-space hit on a remote avatar body — used for pill hover + context menu.
+   *
+   * Uses a stable feet-capsule AABB (not skinned-mesh `setFromObject`), so hits
+   * still work when name tags are culled, models are still placeholders, or
+   * skinned bind-pose bounds are empty after LOD/perf paths.
    */
   findPeerNearScreenPoint(
     clientX: number,
     clientY: number,
     camera: THREE.Camera | null,
-    slopPx = 28
+    slopPx = 36
   ): InteractiveNameTagHit | null {
     if (!camera) return null
     const canvas = document.querySelector('#app canvas') as HTMLCanvasElement | null
@@ -592,25 +595,40 @@ export class RemoteAvatarManager {
     if (canvasRect.width <= 0 || canvasRect.height <= 0) return null
 
     const _projected = new THREE.Vector3()
+    const _feet = new THREE.Vector3()
+    const _mid = new THREE.Vector3()
     const _box = new THREE.Box3()
     let best: { hit: InteractiveNameTagHit; score: number } | null = null
 
     for (const [address, record] of this.peers.entries()) {
       if (!record.hasPosition) continue
-      const body = record.model ?? record.placeholder
-      if (!body) continue
+      if (record.modifierHidden) continue
+      if (!record.root.visible) continue
+      // Need some body volume (model or placeholder) so we don't hit invisible stubs.
+      if (!record.model && !record.placeholder) continue
 
-      body.updateWorldMatrix(true, true)
-      _box.setFromObject(body)
-      if (_box.isEmpty()) continue
-      _box.expandByScalar(0.08)
+      record.root.updateWorldMatrix(true, false)
+      record.root.getWorldPosition(_feet)
+
+      // Fixed human-scale capsule around feet — independent of skinned bind pose.
+      const halfW = 0.5
+      const height = 1.95
+      _box.min.set(_feet.x - halfW, _feet.y, _feet.z - halfW)
+      _box.max.set(_feet.x + halfW, _feet.y + height, _feet.z + halfW)
+
+      // Reject peers behind the camera (projected z > 1 after perspective divide).
+      _mid.set(_feet.x, _feet.y + height * 0.5, _feet.z).project(camera)
+      if (_mid.z > 1) continue
 
       let minX = Infinity
       let minY = Infinity
       let maxX = -Infinity
       let maxY = -Infinity
+      let anyInFront = false
       for (const corner of boxCornerPoints(_box)) {
         _projected.copy(corner).project(camera)
+        if (_projected.z > 1) continue
+        anyInFront = true
         const sx = canvasRect.left + (_projected.x * 0.5 + 0.5) * canvasRect.width
         const sy = canvasRect.top + (-_projected.y * 0.5 + 0.5) * canvasRect.height
         minX = Math.min(minX, sx)
@@ -618,6 +636,13 @@ export class RemoteAvatarManager {
         minY = Math.min(minY, sy)
         maxY = Math.max(maxY, sy)
       }
+      if (!anyInFront || !Number.isFinite(minX) || !Number.isFinite(maxX)) continue
+
+      // Clamp degenerate / huge projected boxes (near-plane explosion).
+      const boxW = maxX - minX
+      const boxH = maxY - minY
+      if (boxW <= 2 || boxH <= 2) continue
+      if (boxW > canvasRect.width * 1.5 || boxH > canvasRect.height * 1.5) continue
 
       const inBounds =
         clientX >= minX - slopPx &&
@@ -626,10 +651,12 @@ export class RemoteAvatarManager {
         clientY <= maxY + slopPx
       if (!inBounds) continue
 
-      const element = document.querySelector<HTMLElement>(
-        `.avatar-name-tag--interactive[data-peer-address="${address}"]`
-      )
-      if (!element) continue
+      // Name tag is optional — body hit must work while the pill is distance-culled
+      // or still loading. Context menu only needs the wallet address.
+      const element =
+        document.querySelector<HTMLElement>(
+          `.avatar-name-tag--interactive[data-peer-address="${address}"]`
+        ) ?? null
 
       const cx = (minX + maxX) * 0.5
       const cy = (minY + maxY) * 0.5

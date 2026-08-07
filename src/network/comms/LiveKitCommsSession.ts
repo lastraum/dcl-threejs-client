@@ -889,6 +889,23 @@ export class LiveKitCommsSession {
     }
   }
 
+  /**
+   * Directed topic data (P2P control planes like trade).
+   * Uses destinationIdentities + topic so only the counterparty receives the packet.
+   */
+  async publishTopicDataTo(
+    topic: string,
+    packet: Uint8Array,
+    destinationAddresses: readonly string[],
+    reliable = true
+  ): Promise<boolean> {
+    if (!this.room || this.room.state !== ConnectionState.Connected) return false
+    if (!destinationAddresses.length) return false
+    const dest = this.resolveDestinationIdentities(destinationAddresses)
+    if (!dest.length) return false
+    return this.safePublishData(packet, reliable, dest, topic)
+  }
+
   /** True when a remote participant identity is currently in the room (case-insensitive). */
   hasRemoteIdentity(identity: string): boolean {
     return this.getExactRemoteIdentity(identity) != null

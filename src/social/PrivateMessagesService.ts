@@ -39,6 +39,13 @@ import {
   tryParseGlobalLiveDataPacket,
   type GlobalLiveWireMsg
 } from './globalLiveWire'
+import {
+  encodeTradeDataPacket,
+  isTradeTopic,
+  TRADE_TOPIC,
+  tryParseTradeDataPacket,
+  type TradeWireMsg
+} from './tradeWire'
 import { tryDecodeRfc4ChatPacket } from './dclRfc4Chat'
 
 const ETH_ADDRESS_RE = /^0x[a-f0-9]{40}$/
@@ -98,6 +105,11 @@ export type GlobalLiveDataEvent = {
   msg: GlobalLiveWireMsg
 }
 
+export type TradeDataEvent = {
+  fromAddress: string
+  msg: TradeWireMsg
+}
+
 /**
  * ADR-208 private chat room — one persistent LiveKit connection for:
  * - 1:1 DMs: RFC4 Chat + `destinationIdentities` + topic = recipient wallet (Explorer wire)
@@ -133,12 +145,22 @@ class PrivateMessagesServiceImpl {
   private readonly poolClaimInbound = new Set<(ev: PoolClaimDataEvent) => void>()
   private readonly voiceSignalInbound = new Set<(ev: CommunityVoiceSignalEvent) => void>()
   private readonly globalLiveInbound = new Set<(ev: GlobalLiveDataEvent) => void>()
+  private readonly tradeInbound = new Set<(ev: TradeDataEvent) => void>()
+  /**
+   * Optional bridge to world/scene LiveKit (CommsService).
+   * Worlds put peers in world-prd-* rooms; private-messages room often does not.
+   */
+  private worldTradePublish:
+    | ((packet: Uint8Array, peerAddress: string) => Promise<boolean>)
+    | null = null
   /** Dedupe dual-send (directed + topic) and retransmits: key → last unix sec. */
   private readonly recentDmKeys = new Map<string, number>()
   /** Dedupe pool claim rebroadcasts: claimer|pos|at-bucket */
   private readonly recentPoolClaimKeys = new Map<string, number>()
   /** Dedupe voice signals: community|status|at-bucket */
   private readonly recentVoiceSignalKeys = new Map<string, number>()
+  /** Dedupe trade packets seen on PM + world rooms: t|id|from|to|at → now */
+  private readonly recentTradeKeys = new Map<string, number>()
 
   /** Call when a SocialService wants the shared PM room (init / open DM). */
   retain(): void {
@@ -220,6 +242,31 @@ class PrivateMessagesServiceImpl {
     return () => {
       this.globalLiveInbound.delete(listener)
     }
+  }
+
+  subscribeTrade(listener: (ev: TradeDataEvent) => void): () => void {
+    this.tradeInbound.add(listener)
+    return () => {
+      this.tradeInbound.delete(listener)
+    }
+  }
+
+  /**
+   * Wire world/scene LiveKit as a trade transport (AppController when World mounts).
+   * Pass null on world dispose.
+   */
+  setWorldTradePublish(
+    fn: ((packet: Uint8Array, peerAddress: string) => Promise<boolean>) | null
+  ): void {
+    this.worldTradePublish = fn
+  }
+
+  /**
+   * Inbound trade packet from world/scene LiveKit topic handler.
+   * Same filter/dedupe path as private-messages topic.
+   */
+  handleTradeFromWorldRoom(address: string, data: Uint8Array): void {
+    this.handleTradeDataPacket(address, data)
   }
 
   isConnected(): boolean {
@@ -309,7 +356,8 @@ class PrivateMessagesServiceImpl {
     this.connected = true
     this.lastError = null
     // Prefer LiveKit token identity for recipient matching (must match private:{me} topics).
-    const roomIdentity = session.getLocalIdentity()
+    // Always lowercase — trade msg.to / session address compare is case-sensitive otherwise.
+    const roomIdentity = session.getLocalIdentity()?.trim().toLowerCase()
     if (roomIdentity) {
       this.localAddress = roomIdentity
       session.setLocalAddress(roomIdentity)
@@ -449,6 +497,12 @@ class PrivateMessagesServiceImpl {
       return
     }
 
+    // P2P trade session control plane.
+    if (isTradeTopic(topic)) {
+      this.handleTradeDataPacket(address, data)
+      return
+    }
+
     const communityId = parseCommunityChatTopic(topic)
     if (!communityId) return
     const chat = tryDecodeRfc4ChatPacket(data)
@@ -509,6 +563,148 @@ class PrivateMessagesServiceImpl {
       this.lastError = err instanceof Error ? err.message : String(err)
       return false
     }
+  }
+
+  /**
+   * P2P trade control on `d3js-trade`:
+   *  1. Private-messages LiveKit (social room) — directed + room topic
+   *  2. World/scene LiveKit (in-world peers) — required for Worlds servers
+   *     where both players share world-prd-* but may not share the PM room.
+   * Recipient always filters by msg.to.
+   */
+  async sendTrade(msg: TradeWireMsg, peerAddress: string): Promise<boolean> {
+    const dest = peerAddress.trim().toLowerCase()
+    if (!dest) return false
+    if (!this.isConnected() && this.identity && this.localAddress) {
+      await this.connect(this.identity, this.localAddress)
+    }
+    const packet = encodeTradeDataPacket(msg)
+
+    let pmDirected = false
+    let pmRoom = false
+    let worldOk = false
+
+    try {
+      if (this.session && this.isConnected()) {
+        const destIdentity = this.session.getExactRemoteIdentity(dest)
+        if (destIdentity) {
+          pmDirected = await this.session.publishTopicDataTo(
+            TRADE_TOPIC,
+            packet,
+            [destIdentity],
+            true
+          )
+        }
+        pmRoom = await this.session.publishTopicData(TRADE_TOPIC, packet, true)
+      }
+
+      if (this.worldTradePublish) {
+        worldOk = await this.worldTradePublish(packet, dest)
+      }
+
+      const published = pmDirected || pmRoom || worldOk
+      if (!published) {
+        this.lastError =
+          'trade publish failed — peer not reachable on private-messages or world LiveKit'
+        clientDebugLog.log(
+          'social',
+          `Trade publish failed · ${msg.t} to=${dest.slice(0, 10)}… pmDir=${pmDirected} pmRoom=${pmRoom} world=${worldOk}`,
+          { level: 'warn', alsoConsole: true }
+        )
+        return false
+      }
+      clientDebugLog.log(
+        'social',
+        `Trade → ${msg.t} id=${msg.id.slice(0, 8)}… to=${dest.slice(0, 10)}… pmDir=${pmDirected} pmRoom=${pmRoom} world=${worldOk}`,
+        { level: 'success', alsoConsole: true }
+      )
+      return true
+    } catch (err) {
+      this.lastError = err instanceof Error ? err.message : String(err)
+      clientDebugLog.log('social', `Trade publish failed: ${this.lastError}`, {
+        level: 'warn',
+        alsoConsole: true
+      })
+      return false
+    }
+  }
+
+  private handleTradeDataPacket(address: string, data: Uint8Array): void {
+    if (isMessageRouterIdentity(address)) return
+    // LiveKit participant identity is the only trusted sender (SFU-authenticated).
+    // Never trust JSON `from` — room broadcast would allow wallet spoofing.
+    const lkFrom = address.trim().toLowerCase()
+    const me = (this.selfAddress() || this.localAddress || '').toLowerCase()
+    if (!lkFrom || !/^0x[a-f0-9]{40}$/.test(lkFrom)) return
+
+    const msg = tryParseTradeDataPacket(data)
+    if (!msg) {
+      clientDebugLog.log('social', `Trade rx ignored (bad packet) from=${lkFrom.slice(0, 10)}…`, {
+        level: 'warn',
+        alsoConsole: true,
+        throttleMs: 3000,
+        throttleKey: `trade-bad:${lkFrom}`
+      })
+      return
+    }
+
+    const wireFrom = (msg.from || '').toLowerCase()
+    const to = (msg.to || '').toLowerCase()
+
+    // Injection guard: wire `from` must match LiveKit identity when present.
+    if (wireFrom && wireFrom !== lkFrom) {
+      clientDebugLog.log(
+        'social',
+        `Trade rx REJECT spoof · wireFrom=${wireFrom.slice(0, 10)}… lk=${lkFrom.slice(0, 10)}… t=${msg.t}`,
+        {
+          level: 'warn',
+          alsoConsole: true,
+          throttleMs: 2000,
+          throttleKey: `trade-spoof:${lkFrom}:${wireFrom}`
+        }
+      )
+      return
+    }
+
+    // Force authoritative sender onto the message (downstream must not re-trust body).
+    msg.from = lkFrom
+
+    // Ignore packets not addressed to us (broadcast fallback).
+    if (me && to !== me && lkFrom !== me) {
+      clientDebugLog.log(
+        'social',
+        `Trade rx ignored (to≠me) t=${msg.t} to=${to.slice(0, 10)}… me=${me.slice(0, 10)}… from=${lkFrom.slice(0, 10)}…`,
+        {
+          level: 'info',
+          alsoConsole: true,
+          throttleMs: 4000,
+          throttleKey: `trade-to-miss:${msg.t}:${to}`
+        }
+      )
+      return
+    }
+    // Skip pure self-echo (local UI already applied optimistic updates).
+    if (me && lkFrom === me) return
+
+    // Dedupe PM + world dual delivery of the same invite/offer.
+    const dedupeKey = `${msg.t}|${msg.id}|${lkFrom}|${to}|${msg.at}`
+    const now = Date.now()
+    const prev = this.recentTradeKeys.get(dedupeKey)
+    if (prev != null && now - prev < 8_000) return
+    this.recentTradeKeys.set(dedupeKey, now)
+    if (this.recentTradeKeys.size > 200) {
+      for (const [k, t] of this.recentTradeKeys) {
+        if (now - t > 30_000) this.recentTradeKeys.delete(k)
+      }
+    }
+
+    const ev: TradeDataEvent = { fromAddress: lkFrom, msg }
+    clientDebugLog.log(
+      'social',
+      `Trade rx t=${msg.t} id=${msg.id.slice(0, 8)}… from=${lkFrom.slice(0, 10)}… to=${to.slice(0, 10)}…`,
+      { level: 'info', alsoConsole: true }
+    )
+    for (const listener of this.tradeInbound) listener(ev)
   }
 
   private handlePoolClaimDataPacket(address: string, data: Uint8Array): void {

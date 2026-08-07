@@ -259,9 +259,12 @@ export class PlayerInput {
       this.notifyUserGesture()
       // Left-click drag orbit only when unlocked. In pointer lock, movement alone orbits.
       if (this.pointer.locked) return
-      // Clicking the pill (or its Options hint) is a UI action — orbiting instead
-      // rotates the avatar out from under the cursor and drops the hover.
-      if (tryOpenPeerContextMenuFromPillRect(e.clientX, e.clientY)) {
+      // Peer options win over orbit: pill rect first, then avatar body screen-bounds.
+      // (Body hit used to require a visible name-tag DOM node and broke after tag culling.)
+      if (
+        tryOpenPeerContextMenuFromPillRect(e.clientX, e.clientY) ||
+        tryOpenPeerContextMenu(e.clientX, e.clientY)
+      ) {
         e.preventDefault()
         return
       }

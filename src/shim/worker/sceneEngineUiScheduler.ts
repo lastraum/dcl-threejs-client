@@ -7,6 +7,7 @@ import { preregisterRendererInjectedComponents } from './preregisterRendererInje
 import { ensureWorkerLocomotionFreezePersisted } from './workerPlayerFrameEgress'
 import {
   isLevelStatePointerEdgeActive,
+  isLevelStatePointerHeld,
   isPointerInteractiveTickActive,
   isWorkerPointerButtonHeld,
   shouldSuppressCooperativeReactEcs as shouldSuppressPointerSessionReactEcs
@@ -145,14 +146,14 @@ function workerHasUiDrivingTween(engine: IEngine | null): boolean {
  * Do NOT gate on freeze latch or inject-only pollEvents DEFER.
  */
 export function shouldDeferCooperativeReactEcs(): boolean {
-  // Level-state inject edge: systems only (isPressed / oB / nQ / kK) — no full HUD reconcile.
-  if (isLevelStatePointerEdgeActive()) return true
+  // Level-state inject edge OR empty-ground hold window: systems only (isPressed / oB / nQ / kK).
+  // Must not force 60Hz match-HUD reconcile between DOWN and UP (COD P0 thrash).
+  if (isLevelStatePointerEdgeActive() || isLevelStatePointerHeld()) return true
   // isPointerInteractiveTickActive is false during non-ui phase — fall through to session suppress.
   if (isPointerInteractiveTickActive()) return false
   // Tween-driven UI (tutorial scale, letterbox, cake/confetti slide) — full 60Hz reconcile.
   if (workerHasUiDrivingTween(boundWorkerEngine)) return false
-  // Drag marquee / hold UI: scene module state (screen corners) changes without ECS puts.
-  // Must re-run react-ecs every tick while pointer is held (all scenes, not one game).
+  // World PE / UI hold (not empty-ground): marquee and select HUD need live react-ecs.
   if (isWorkerPointerButtonHeld()) return false
   if (shouldSuppressPointerSessionReactEcs()) return true
   // Wall-clock hold after PE/sceneUi phase-4 — suppress even when not in cooperative depth

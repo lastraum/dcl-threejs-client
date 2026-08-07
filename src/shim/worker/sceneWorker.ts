@@ -59,12 +59,12 @@ import { applyAvatarAttachTransformsOnEngine } from './applyAvatarAttachTransfor
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import { bindSceneWorkerPriorityDispatch, type SceneWorkerPriorityMessage } from './sceneWorkerBootstrap'
 import {
-
   coalesceKeyboardSnapshotDuringPointerSession,
   clearWorkerPointerButtonsHeld,
   enterPointerInputSession,
   isPointerInputSessionActive,
   leavePointerInputSession,
+  setLevelStatePointerHeld,
   setWorkerPointerButtonHeld,
   workerPointerButtonsHeldList,
   resetPointerInputSession,
@@ -2511,10 +2511,14 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
   // Level-state hold before eng.update so this edge + reassert share the same press story.
   // sceneUi DOWN batch injects UP same job — clear held after tick so reassert does not
   // re-fire PET_DOWN every play frame (browser UP is ignored for sceneUi).
+  // Empty-ground (levelState): also track hold session so cooperative react-ecs stays deferred
+  // between DOWN and UP (COD: do not thrash match HUD for click-to-move).
   if (phase === 'down' && !body.sceneUi) {
     setWorkerPointerButtonHeld(button, true)
+    if (body.levelState) setLevelStatePointerHeld(true)
   } else if (phase === 'up' || phase === 'click' || body.sceneUi) {
     setWorkerPointerButtonHeld(button, false)
+    if (body.levelState || phase === 'up' || phase === 'click') setLevelStatePointerHeld(false)
   }
   const ppi = body.primaryPointer
   const sc = ppi?.screenCoordinates
@@ -2550,22 +2554,26 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
     // No exports.onUpdate mid-edge (pollEvents re-fires UI). Hold reassert on play-frame-tick
     // keeps isPressed true across cooperative frames for every scene.
     let edgeTimedOut = false
+    let levelStateEdgeLogged = false
+    const logLevelStateEdgeDone = (suffix = ''): void => {
+      if (!body.levelState || levelStateEdgeLogged) return
+      levelStateEdgeLogged = true
+      workerLog(
+        'warn',
+        `[sceneWorker] level-state edge done phase=${body.phase ?? '?'} ` +
+          `hitEntity=${body.hitEntity} ` +
+          `hit=(${body.hitPosition.x.toFixed(1)},${body.hitPosition.y.toFixed(1)},${body.hitPosition.z.toFixed(1)}) ` +
+          `cam=${body.camera ? 'live' : 'missing'} ppi=${body.primaryPointer ? 1 : 0}` +
+          suffix
+      )
+    }
     await Promise.race([
       (async () => {
         await runSceneEnginePointerTick(sceneEngine, async () => {}, body)
-        // DecentraCraft onGroundClick → td() + kK place MeshRenderer on level-state UP.
-        // Inject path skips exports.onUpdate/pollEvents — force poll-only so MeshRenderer
-        // (1018) hits hot paint egress before deliver-done peel. Also log at this layer so
-        // main throttle cannot hide the path (levelState flag + phase).
-        if (body.levelState) {
-          workerLog(
-            'warn',
-            `[sceneWorker] level-state edge done phase=${body.phase ?? '?'} ` +
-              `hitEntity=${body.hitEntity} ` +
-              `hit=(${body.hitPosition.x.toFixed(1)},${body.hitPosition.y.toFixed(1)},${body.hitPosition.z.toFixed(1)}) ` +
-              `cam=${body.camera ? 'live' : 'missing'} ppi=${body.primaryPointer ? 1 : 0}`
-          )
-        }
+        // Log completion *before* poll/flush so UP path is visible even if egress stalls.
+        logLevelStateEdgeDone()
+        // Level-state UP: inject path skips exports.onUpdate — poll-only so MeshRenderer
+        // dirtied by scene systems (td/kK) hits rpcCrdt before deliver-done peel.
         if (body.levelState && body.phase === 'up' && sceneOnUpdate) {
           try {
             await runPlayFramePollPhase(sceneOnUpdate, 0)
@@ -2579,9 +2587,6 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
           }
         }
         // Platform law: phase-4 queues structured UI mount via queuePointerUiEgress.
-        // Inject path used to skip flush (only CRDT deliver path flushed) → main never got
-        // the open-menu snapshot (mount 110→159) and only saw later partial dirty posts
-        // (snapshotRows=10 for uiEntities=163) → mount commit deferred / blank select UI.
         await flushPointerDeferredOutboundsAsync()
       })(),
       new Promise<void>((resolve) => {
@@ -2592,6 +2597,7 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
       })
     ])
     if (edgeTimedOut) {
+      logLevelStateEdgeDone(' (budget-timeout)')
       workerLog(
         'warn',
         `[sceneWorker] ${label} — edge budget ${EDGE_ACK_BUDGET_MS}ms exceeded; acking deliver-done (partial)`

@@ -1078,14 +1078,10 @@ export async function runSceneEnginePointerTick(
       } else {
         injectPointerClickUpOnEngine(eng, splitPointerInject)
       }
+      // Single systems pass (COD: delete unproven second eng.update order shim).
+      // kK places disc with dt=0; pollEvents after tick carries MeshRenderer egress.
       await eng.update(0)
     })
-    if (isLevelState) {
-      // Second systems pass if kK is registered before oQ/iB/td in the same frame.
-      await runSerializedEngineUpdate(async () => {
-        await eng.update(0)
-      })
-    }
     cfg.onAfterEngineTick?.()
     await runPointerNonUiPhase(eng)
     if (isLevelState) {

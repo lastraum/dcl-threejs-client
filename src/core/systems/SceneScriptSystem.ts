@@ -217,15 +217,15 @@ export class SceneScriptSystem {
   /** Admit-seal drops this frame (Material/MeshRenderer content no-ops) — ?perfdebug. */
   private admitDropCount = 0
   /**
-   * Entities that received MeshRenderer / Material / Tween / Particle during a pointer
-   * deliver session — peel these first (click discs / select rings), not FIFO fog backlog.
+   * Tiny set of entities to peel first after a world/level-state pointer edge.
+   * Cap is hard — sceneUi board storms must never land here (edgeVis=3306 regression).
    */
   private readonly pointerEdgeVisualEntities = new Set<Entity>()
-  /**
-   * Collect visual dirties until post-pointer peel (stays true even after
-   * pointerAwaitingWorkerApply is cleared so late CRDT fold still tags VFX).
-   */
+  private static readonly POINTER_EDGE_VISUAL_CAP = 24
+  /** Only collect for non-sceneUi world/level-state edges. */
   private pointerEdgeVisualCollect = false
+  /** Keep peeling recent missing-leaf markers after edge (getClick CRDT lag). */
+  private pointerEdgeVisualUntil = 0
   private projectionDiffActive = false
   /** Phase 3: encoder is the primary source for renderer-owned outbound CRDT (reserved, tween, pointer/video results). Always on. */
   private readonly encoder = new CrdtEncoder(SDK_RESERVED, this.projection, this.componentHost.components)
@@ -3737,8 +3737,13 @@ export class SceneScriptSystem {
 
     // --- Material lane: pointer-edge VFX first, then missing leaves, then Material puts ---
     if (performance.now() < wallDeadline) {
+      if (performance.now() < this.pointerEdgeVisualUntil || this.pointerEdgeVisualEntities.size > 0) {
+        this.peelPointerEdgeVisuals()
+      }
       const prefer =
-        this.pointerEdgeVisualEntities.size > 0 ? [...this.pointerEdgeVisualEntities] : undefined
+        this.pointerEdgeVisualEntities.size > 0
+          ? [...this.pointerEdgeVisualEntities]
+          : undefined
       this.flushMissingPrimitiveMeshRendererLeaves({
         entityCap: matEnt,
         hardMs: matMs,
@@ -3750,9 +3755,6 @@ export class SceneScriptSystem {
         entityCap: matEnt,
         prefer
       })
-      if (edge && this.pointerEdgeVisualEntities.size) {
-        this.peelPointerEdgeVisuals()
-      }
     }
 
     // --- Structure lane (Gltf / TextShape / …) — never on pointer edge ---
@@ -3972,30 +3974,103 @@ export class SceneScriptSystem {
   }
 
   /**
-   * Peel MeshRenderer/Material/Tween for entities dirtied during pointer deliver
-   * (getClick click discs, select rings) before FIFO fog backlog.
+   * Tag only plausible click-marker entities during a world/level-state edge.
+   * Never ParticleSystem (board storms). Prefer missing-leaf MeshRenderer/Material.
+   */
+  private maybeTagPointerEdgeVisual(entity: Entity, componentId: number): void {
+    const { MeshRenderer, Material, Tween, GltfContainer } = this.readComponents
+    if (
+      componentId !== MeshRenderer.componentId &&
+      componentId !== Material.componentId &&
+      componentId !== Tween.componentId
+    ) {
+      return
+    }
+    if (GltfContainer.has(entity)) return
+    // Already have a leaf + only Material recolor → fog board, not click disc.
+    if (
+      componentId === Material.componentId &&
+      this.bridge?.hasMeshRendererLeaf(entity) &&
+      !Tween.has(entity)
+    ) {
+      return
+    }
+    if (this.pointerEdgeVisualEntities.has(entity)) return
+    if (this.pointerEdgeVisualEntities.size >= SceneScriptSystem.POINTER_EDGE_VISUAL_CAP) {
+      // Prefer missing-leaf newcomers: drop a sealed recolor if present.
+      if (this.bridge?.hasMeshRendererLeaf(entity) && !Tween.has(entity)) return
+      for (const existing of this.pointerEdgeVisualEntities) {
+        if (this.bridge?.hasMeshRendererLeaf(existing) && !Tween.has(existing)) {
+          this.pointerEdgeVisualEntities.delete(existing)
+          break
+        }
+      }
+      if (this.pointerEdgeVisualEntities.size >= SceneScriptSystem.POINTER_EDGE_VISUAL_CAP) return
+    }
+    this.pointerEdgeVisualEntities.add(entity)
+  }
+
+  /**
+   * Also pick up very recent missing-leaf MeshRenderer+Material (getClick markers
+   * that missed the edge set because CRDT landed one tick late).
+   */
+  private collectRecentMissingLeafMarkers(max: number): Entity[] {
+    if (!this.bridge) return []
+    const { MeshRenderer, Material, GltfContainer } = this.readComponents
+    const now = performance.now()
+    const out: Entity[] = []
+    for (const entity of this.pendingDiff.keys()) {
+      if (out.length >= max) break
+      const t0 = this.pendingDiffFirstDirtyAt.get(entity) ?? 0
+      if (t0 <= 0 || now - t0 > 200) continue
+      if (GltfContainer.has(entity)) continue
+      if (!MeshRenderer.has(entity) || !Material.has(entity)) continue
+      if (this.bridge.hasMeshRendererLeaf(entity)) continue
+      out.push(entity)
+    }
+    return out
+  }
+
+  /**
+   * Peel click-marker candidates after pointer deliver — small set only.
    */
   private peelPointerEdgeVisuals(): void {
-    if (!this.bridge || this.pointerEdgeVisualEntities.size === 0) return
-    const prefer = [...this.pointerEdgeVisualEntities]
+    if (!this.bridge) {
+      this.pointerEdgeVisualCollect = false
+      return
+    }
+    const recent = this.collectRecentMissingLeafMarkers(16)
+    for (const e of recent) this.pointerEdgeVisualEntities.add(e)
+    if (this.pointerEdgeVisualEntities.size === 0) {
+      this.pointerEdgeVisualCollect = false
+      return
+    }
+    const prefer = [...this.pointerEdgeVisualEntities].slice(0, SceneScriptSystem.POINTER_EDGE_VISUAL_CAP)
+    const cap = prefer.length
     this.flushMissingPrimitiveMeshRendererLeaves({
-      entityCap: Math.min(48, Math.max(prefer.length, 16)),
-      hardMs: SceneScriptSystem.FRAME.POINTER_MATERIAL_MS + 4,
+      entityCap: cap,
+      hardMs: SceneScriptSystem.FRAME.POINTER_MATERIAL_MS + 6,
       prefer
     })
     this.flushMeshRendererMaterialsFromPendingDiff({
       pointerEdge: true,
-      hardMs: SceneScriptSystem.FRAME.POINTER_MATERIAL_MS + 4,
-      entityCap: Math.min(48, Math.max(prefer.length, 16)),
+      hardMs: SceneScriptSystem.FRAME.POINTER_MATERIAL_MS + 6,
+      entityCap: cap,
       prefer
     })
-    // Motion for marker Transform/Tween
     this.flushTweenAndTransformFromPendingDiff({
       pointerEdge: true,
       hardMs: SceneScriptSystem.FRAME.POINTER_MOTION_MS
     })
     for (const entity of prefer) {
       this.bridge.ensureMeshRendererTweenVisual(entity)
+      // Ensure leaf even if Material put lags one frame.
+      if (this.readComponents.MeshRenderer.has(entity) && !this.bridge.hasMeshRendererLeaf(entity)) {
+        this.bridge.ensureMeshRendererLeaf(entity)
+      }
+      if (this.readComponents.Material.has(entity)) {
+        this.bridge.forceApplyMeshRendererMaterial(entity)
+      }
     }
     this.tweenBridge?.sync(this.view)
     if (this.tweenBridge?.hasLiveTweens()) {
@@ -4004,8 +4079,18 @@ export class SceneScriptSystem {
     }
     void this.particleBridge?.sync(this.view)
     this.particleBridge?.update(1 / 30)
+    if (prefer.length > 0) {
+      clientDebugLog.log(
+        'pointer',
+        `edge-VFX peel — n=${prefer.length} recentMissing=${recent.length} pendingDiff=${this.pendingDiff.size}`,
+        { alsoConsole: true, throttleMs: 200, throttleKey: 'edge-vfx-peel' }
+      )
+    }
     this.pointerEdgeVisualEntities.clear()
-    this.pointerEdgeVisualCollect = false
+    // Keep collect open until pointerEdgeVisualUntil so late MeshRenderer puts still tag.
+    if (performance.now() >= this.pointerEdgeVisualUntil) {
+      this.pointerEdgeVisualCollect = false
+    }
   }
 
   private foldProjectionChanges(): void {
@@ -4092,16 +4177,9 @@ export class SceneScriptSystem {
         continue
       }
 
-      // Pointer-edge visual set — click VFX / select rings created mid-deliver.
-      if (
-        this.pointerEdgeVisualCollect &&
-        change.kind === 'put' &&
-        (change.componentId === this.readComponents.MeshRenderer.componentId ||
-          change.componentId === this.readComponents.Material.componentId ||
-          change.componentId === this.readComponents.Tween.componentId ||
-          change.componentId === this.readComponents.ParticleSystem.componentId)
-      ) {
-        this.pointerEdgeVisualEntities.add(change.entity)
+      // Pointer-edge visual set — only small click-marker candidates (never board-wide).
+      if (this.pointerEdgeVisualCollect && change.kind === 'put') {
+        this.maybeTagPointerEdgeVisual(change.entity, change.componentId)
       }
 
       let comps = this.pendingDiff.get(change.entity)
@@ -4998,7 +5076,12 @@ export class SceneScriptSystem {
       }
 
       this.pointerAwaitingWorkerApply = true
-      this.pointerEdgeVisualCollect = true
+      // Never collect board-wide dirties from sceneUi menus (edgeVis=3306 hitch).
+      this.pointerEdgeVisualCollect = !inject.sceneUi
+      if (this.pointerEdgeVisualCollect) {
+        this.pointerEdgeVisualEntities.clear()
+        this.pointerEdgeVisualUntil = performance.now() + 250
+      }
       this.deliverInjectToWorker(inject)
       // If we only sent DOWN, flush UP after deliver-done (same user click, correct order).
       if (hasDown && this.pointerEvents.hasPendingUp()) {
@@ -5084,17 +5167,16 @@ export class SceneScriptSystem {
     if (!this.bridge || !this.entityStore) return
     const t0 = performance.now()
     const F = SceneScriptSystem.FRAME
-    // Keep collecting until peel runs (CRDT may fold after awaitingWorker is cleared).
-    this.pointerEdgeVisualCollect = true
-    // Click markers land in inject-edge CRDT — peel edge visual set first, then fixed pie.
+    // Keep collecting briefly for late getClick CRDT (not board-wide).
+    if (this.pointerEdgeVisualUntil > performance.now()) {
+      this.pointerEdgeVisualCollect = true
+    }
     this.peelPointerEdgeVisuals()
     void this.drainPendingDiffLanes({
       pointerEdge: true,
       deadlineMs: F.POINTER_MOTION_MS + F.POINTER_MATERIAL_MS
     })
       .then(() => {
-        // Late CRDT from getClick after first peel — edge set refilled during fold.
-        this.pointerEdgeVisualCollect = true
         this.peelPointerEdgeVisuals()
         this.bridge?.flushMissingMeshRendererLeaves(48)
         perfNotePointerEdge(performance.now() - t0, false)

@@ -2,69 +2,19 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-08-07  
-> **Current phase:** **v1.8.0 RC** on `dev-latest` / `fix/sync-entity` — COD frame pipeline · pointer/VFX · P2P trade.  
+> **Last updated:** 2026-07-31  
+> **Current phase:** **v1.7.0** on `main` — community voice · live tools · pets/Pet Barn · loot bag · AOI anim ship · EnvironmentApi/Testing · AudioAnalysis.  
 > **Shipped (1.x):** **v1.7.0** community voice · live polls/Q&A/trivia + CSV · pets/Pet Barn · loot bag · multi-scene AOI anim · AudioAnalysis · EnvironmentApi/Testing · **v1.6.0** tour photos / Camera Reel · admin tools · scene UI fixes · **v1.5.0** PART/ROOT colliders · Animator · tours · cast · **v1.4.0** custom worlds · Worlds map · AOI · shell UI.  
 
-> **1.x next (after 1.8):** scene UI text-measure / Yoga polish · portable experiences · backpack outfits/marketplace · create-community / invites · gallery multi-page · graphics P3 distance culls · Foundation marketplace-api index lag follow-up.  
+> **1.x next (1.8+):** scene UI text-measure / Yoga polish · portable experiences · backpack outfits/marketplace · create-community / invites · gallery multi-page · graphics P3 distance culls · CBD multi-scene FPS hardening · Social WS transport reliability (PM LiveKit dual-path mitigates voice discovery).  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). PM LiveKit survives teleports. Community voice LiveKit survives Jump In.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
 > **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **Static COD:** [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) · **Multi-scene continuity:** [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  
-> **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) · **Place analytics:** [CREATOR_ANALYTICS.md](./CREATOR_ANALYTICS.md) · **Marketplace index gap (Foundation):** [dcl-foundation-marketplace-index-gap.md](./dcl-foundation-marketplace-index-gap.md)
+> **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) · **Place analytics:** [CREATOR_ANALYTICS.md](./CREATOR_ANALYTICS.md)
 >
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
-
----
-
-## 🚀 Milestone — v1.8.0 RC (COD frame pipeline · pointer/VFX · P2P trade) (2026-08-07)
-
-**Status: release candidate on `dev-latest`** (`82d4445` + tip) — cut to `main` as **v1.8.0** after smoke below.
-
-Explorer-grade **lane discipline** for FPS under DecentraCraft / plaza / CBD load, plus in-client **P2P wearable trade**.
-
-### What's new
-
-- **COD / AAA frame pipeline** — structure / motion / material / UI / input lanes; budgeted `pendingDiff` peel; **never full dump on pointer edges**
-- **Play-frame sole cooperative clock** — pointer edges do not freeze timers / temple spin / `isPressed`
-- **Phase-4 world PE UI settle** — select HUD mounts same edge as click (not only `sceneUi`)
-- **Content-aware UI mount + commit-after-post** — timer skip / thrash fixed
-- **VC structure-only hydrate** + live pose on `vc-pose-live` — hydrate spam gone
-- **MeshRenderer private leaves for PE / Tween / glow discs** — click VFX + continuous parented motion
-- **Level-state `IA_POINTER`** — click-to-move when no PE mesh in range (Explorer global button; no invented y=0 ground hits)
-- **Glow material path narrowed** — map-less ALPHA_BLEND rings + real emissiveMap sprites only; fog covers keep `depthWrite` when alpha &gt; 0.4
-- **Multi-worker budgets** — secondary anim LOD under primary pressure; PhysX seal invariants instrumented
-- **`?perfdebug` frame health** — `pendingDiff` size/age, peel ms, `fullDump`, hydrate/s, PhysX seal
-- **In-client P2P trade** — Diablo-style invite + window; settle via official **DecentralandMarketplacePolygon** EIP-712 Trade + meta-tx `accept`
-- **Foundation brief** — marketplace-api / Catalyst lag after P2P settle ([doc](./dcl-foundation-marketplace-index-gap.md))
-
-| Area | Status | Notes |
-| ---- | ------ | ----- |
-| **Frame pipeline (A–G)** | 🟢 | Landed on `fix/sync-entity` → `dev-latest` |
-| **Pointer / click-move / VFX** | 🟡 smoke | Level-state + glow prioritization — hard-reload QA |
-| **Materials (ground / fog / rings)** | 🟡 smoke | Narrow glow + depthWrite rules |
-| **P2P trade settle** | 🟢 | On-chain OK; index lag is DCL-side |
-| **Instrumentation** | 🟢 | `?perfdebug` + Help RenderStats |
-
-### QA (1.8 smoke) — required before `main` cut
-
-| # | Scenario | Pass |
-|---|----------|------|
-| 1 | **Genesis Plaza** idle post-load | 30–60 FPS; solids; no void on walk |
-| 2 | **DecentraCraft** click-to-move (empty ground) | Moves; **green disc VFX** visible above fog |
-| 3 | **DecentraCraft** ground / fog textures | Moon ground + explored fog **not washed white** |
-| 4 | **DecentraCraft** select prop / timer | Select HUD ≤2 frames; timer does not skip |
-| 5 | Hold LMB + WASD | Spin / tweens continue; no multi-second freeze |
-| 6 | Temple / race architecture (if present) | Continuous spin/orbit; no re-attach storm |
-| 7 | Pointer spam ~5/s × 10s + `?perfdebug` | FPS ≥25; **`fullDump=0`**; `pendingDiff` recovers |
-| 8 | CBD / dual secondary (if available) | FPS recovers; sticky colliders; no unload void |
-| 9 | **P2P trade** invite → both lock → settle | TX success modal; chain `ownerOf` correct |
-| 10 | Console quiet | No per-click `[pointer]` spam without `?consolelogs` |
-
-**Release cut:** after smoke green → `git checkout main && git merge dev-latest` → `node scripts/release.mjs 1.8.0 --push`.
-
-**Tip:** Candidate on `dev-latest`. Package remains **1.7.0** until release script bumps.
 
 ---
 

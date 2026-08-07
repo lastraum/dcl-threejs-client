@@ -2,6 +2,8 @@ import type { IEngine } from '@dcl/ecs'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import {
+  diagnosePlayerGetClickPair,
+  injectLevelStateClickPairOnEngine,
   injectPointerClickDownOnEngine,
   injectPointerClickUpOnEngine
 } from './injectPointerClick'
@@ -1057,12 +1059,18 @@ export async function runSceneEnginePointerTick(
     }
 
     // phase === 'up' (world) — getClick() is only true during this eng.update.
-    // Do not re-post full HUD (DOWN already opened panel). PlayerEntity also receives UP
-    // (injectPointerClick) so getClick(PlayerEntity) pairs with DOWN mirrored on press.
+    // Do not re-post full HUD (DOWN already opened panel).
     setPointerInteractiveTickActive(true)
     const mrBefore = isLevelState ? countWorkerMeshRenderer(eng) : 0
     await runSerializedEngineUpdate(async () => {
-      injectPointerClickUpOnEngine(eng, splitPointerInject)
+      if (isLevelState) {
+        // CRITICAL: same-frame DOWN+UP on PlayerEntity so getClick pairs.
+        // Split-edge UP alone often has no DOWN left (PER maxElements=100 + keyboard
+        // reassert on PlayerEntity shifts out the press-DOWN) → getClick null → no VFX.
+        injectLevelStateClickPairOnEngine(eng, splitPointerInject)
+      } else {
+        injectPointerClickUpOnEngine(eng, splitPointerInject)
+      }
       await eng.update(0)
     })
     cfg.onAfterEngineTick?.()
@@ -1072,8 +1080,12 @@ export async function runSceneEnginePointerTick(
     if (isLevelState) {
       const mrAfter = countWorkerMeshRenderer(eng)
       const delta = mrAfter - mrBefore
+      const pair = diagnosePlayerGetClickPair(eng, splitPointerInject.button)
+      const hit = splitPointerInject.hitPosition
       cfg.log(
         `[sceneWorker] level-state UP getClick — MeshRenderer ${mrBefore}→${mrAfter} (Δ=${delta}) ` +
+          `pair=${pair.hasPair ? 1 : 0} downTs=${pair.downTs ?? '-'} upTs=${pair.upTs ?? '-'} ` +
+          `perN=${pair.perCount} hit=(${hit.x.toFixed(1)},${hit.y.toFixed(1)},${hit.z.toFixed(1)}) ` +
           `cam=${splitPointerInject.camera ? 'live' : 'missing'} ppi=${splitPointerInject.primaryPointer ? 1 : 0}`
       )
     }

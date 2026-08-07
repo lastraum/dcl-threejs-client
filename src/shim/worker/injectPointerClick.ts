@@ -121,3 +121,88 @@ export function injectPointerClickOnEngine(engine: IEngine, body: InjectPointerC
   injectPointerClickDownOnEngine(engine, body)
   injectPointerClickUpOnEngine(engine, body)
 }
+
+/**
+ * Level-state / ground click: force a same-frame DOWN+UP pair on PlayerEntity.
+ *
+ * @dcl/ecs getClick(button, entity) requires:
+ *   1. last UP on that entity in the *current* eng.update frame window
+ *   2. a prior DOWN on the *same* entity with timestamp ≤ UP
+ *
+ * Split browser edges alone are not enough: keyboard reassert floods PlayerEntity
+ * PointerEventsResult (maxElements=100) and can shift out the earlier DOWN, so
+ * findClick only sees UP → getClick null → no DecentraCraft ground VFX / move marker.
+ *
+ * Re-writing DOWN with the UP edge's hit (ground point + ray) then UP in one
+ * eng.update restores Explorer getClick without zero-hit reassert on play frames.
+ */
+export function injectLevelStateClickPairOnEngine(
+  engine: IEngine,
+  body: InjectPointerClickBody
+): void {
+  const player = engine.PlayerEntity as number
+  const paired: InjectPointerClickBody = {
+    ...body,
+    entity: player,
+    entities: [player],
+    downEntities: [player],
+    upEntities: [player],
+    hitEntity: body.hitEntity || player,
+    levelState: true,
+    sceneUi: false
+  }
+  injectPointerClickDownOnEngine(engine, paired)
+  injectPointerClickUpOnEngine(engine, paired)
+}
+
+/**
+ * Diagnose whether PlayerEntity has a getClick-capable IA_POINTER pair after inject.
+ * Mirrors @dcl/ecs findClick (last UP + prior DOWN, same button).
+ */
+export function diagnosePlayerGetClickPair(
+  engine: IEngine,
+  button: number
+): {
+  hasPair: boolean
+  downTs: number | null
+  upTs: number | null
+  hit: { x: number; y: number; z: number } | null
+  perCount: number
+} {
+  preregisterRendererInjectedComponents(engine)
+  const PointerEventsResult = generated.PointerEventsResult(engine)
+  const player = engine.PlayerEntity as Entity
+  const cmds = Array.from(PointerEventsResult.get(player) as Iterable<{
+    button: number
+    state: number
+    timestamp: number
+    hit?: { position?: { x: number; y: number; z: number } }
+  }>)
+  const forButton = cmds
+    .filter((c) => c.button === button)
+    .sort((a, b) => b.timestamp - a.timestamp)
+  let up: (typeof forButton)[0] | null = null
+  let down: (typeof forButton)[0] | null = null
+  for (const it of forButton) {
+    if (!up) {
+      if (it.state === PointerEventType.PET_UP) {
+        up = it
+        continue
+      }
+    } else if (!down) {
+      if (it.state === PointerEventType.PET_DOWN) {
+        down = it
+        break
+      }
+    }
+  }
+  const hasPair = !!(up && down && down.timestamp <= up.timestamp)
+  const pos = up?.hit?.position ?? down?.hit?.position
+  return {
+    hasPair,
+    downTs: down?.timestamp ?? null,
+    upTs: up?.timestamp ?? null,
+    hit: pos ? { x: pos.x, y: pos.y, z: pos.z } : null,
+    perCount: cmds.length
+  }
+}

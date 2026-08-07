@@ -5131,12 +5131,17 @@ export class SceneScriptSystem {
     const sc = inject.primaryPointer?.screenCoordinates
     const ray = inject.primaryPointer?.worldRayDirection
     const cam = inject.camera?.position
+    const hit = inject.hitPosition
     const injectLine =
       `posting inject-pointer-click entity=${inject.entity} button=${inject.button} ` +
       `ts=${inject.downTimestamp}/${inject.upTimestamp} (inject-only)` +
       ` sceneUi=${inject.sceneUi ? 1 : 0}` +
+      ` levelState=${inject.levelState ? 1 : 0}` +
       ` phase=${inject.phase ?? 'click'}` +
       ` down=[${(inject.downEntities ?? inject.entities).join(',')}]` +
+      (hit
+        ? ` hit=(${hit.x.toFixed(1)},${hit.y.toFixed(1)},${hit.z.toFixed(1)})`
+        : ' hit=missing') +
       (sc
         ? ` ppi=(${sc.x.toFixed(0)},${sc.y.toFixed(0)})` +
           (ray ? ` ray=(${ray.x.toFixed(2)},${ray.y.toFixed(2)},${ray.z.toFixed(2)})` : '')

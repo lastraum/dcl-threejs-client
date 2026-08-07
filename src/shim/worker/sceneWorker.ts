@@ -2553,6 +2553,21 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
     await Promise.race([
       (async () => {
         await runSceneEnginePointerTick(sceneEngine, async () => {}, body)
+        // DecentraCraft onGroundClick → td() creates MeshRenderer on UP eng.update.
+        // Inject path skips exports.onUpdate/pollEvents — force poll-only so MeshRenderer
+        // (1018) + Tween hit the hot paint egress before deliver-done peel.
+        if (body.levelState && body.phase === 'up' && sceneOnUpdate) {
+          try {
+            await runPlayFramePollPhase(sceneOnUpdate, 0)
+          } catch (err) {
+            workerLog(
+              'warn',
+              `[sceneWorker] level-state pollEvents after UP failed — ${
+                err instanceof Error ? err.message : String(err)
+              }`
+            )
+          }
+        }
         // Platform law: phase-4 queues structured UI mount via queuePointerUiEgress.
         // Inject path used to skip flush (only CRDT deliver path flushed) → main never got
         // the open-menu snapshot (mount 110→159) and only saw later partial dirty posts

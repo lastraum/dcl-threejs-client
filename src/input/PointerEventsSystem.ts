@@ -930,6 +930,9 @@ export class PointerEventsSystem {
       point.y = groundY
       distance = ray.origin.distanceTo(point)
     }
+    // Target for PET inject is still PlayerEntity (global isPressed). hit.entity stays
+    // PlayerEntity so bubble targets work; writeResult sets hitEntity for RaycastHit —
+    // level-state uses entityId 0 on the inject payload (empty ground; see writeResult).
     return {
       entity: this.deps.view.PlayerEntity,
       point,
@@ -1658,12 +1661,16 @@ export class PointerEventsSystem {
       // Ray origin/direction required for Explorer-parity RaycastHit (click VFX placement).
       const ppi = this.buildPrimaryPointerInfo(false)
       const dclOrigin = threeToDclVec(_ray.origin)
+      // DecentraCraft (-16,124): HS() = getInputCommand(IA_POINTER, PET_DOWN)?.hit?.entityId
+      // matches unit/building colliders. Level-state ground must report entityId 0 (empty),
+      // not PlayerEntity — otherwise jT (isPressOnSelectable) can poison release path.
+      const rayHitEntity = hit.isLevelState === true ? 0 : (hit.entity as number)
       this.pendingInjectPayload = {
         entity: targetEntity,
         entities: [...targets],
         downEntities: [...targets],
         upEntities: [...targets],
-        hitEntity: hit.entity,
+        hitEntity: rayHitEntity,
         button,
         tickNumber: this.tickNumber,
         downTimestamp: result.timestamp,
@@ -1697,12 +1704,13 @@ export class PointerEventsSystem {
           (this.deps?.ecs.UiTransform.has(targetEntity) ?? false)
         const ppi = this.buildPrimaryPointerInfo(false)
         const dclOrigin = threeToDclVec(_ray.origin)
+        const rayHitEntity = hit.isLevelState === true ? 0 : (hit.entity as number)
         this.pendingInjectPayload = {
           entity: targetEntity,
           entities: [...targets],
           downEntities,
           upEntities: [...targets],
-          hitEntity: hit.entity,
+          hitEntity: rayHitEntity,
           button,
           tickNumber: this.tickNumber,
           downTimestamp: downTs,

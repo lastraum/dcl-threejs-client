@@ -2302,14 +2302,21 @@ export class SceneScriptSystem {
         )
       const loadGateHot =
         /load-gate clear.*wasFrozen=true|disableAll=true|locomotion=blocked/i.test(cleaned)
-      if (loadGateHot) {
+      // Pointer / ground-ray diagnostics must not share the global 100ms scene-worker-log key
+      // (was swallowing level-state isPressed-path lines during click bursts).
+      const pointerDiag =
+        /level-state UP|pointer-edge-|isPressed-path|edge-VFX peel|pointer ui egress/i.test(cleaned)
+      if (loadGateHot || pointerDiag) {
         console.info(`[sceneWorker] ${cleaned}`)
       }
       clientDebugLog.log('scene', cleaned, {
-        throttleMs: loadGateNoise ? (loadGateHot ? 500 : 5000) : 100,
-        throttleKey: loadGateNoise
-          ? `scene-worker-loadgate-${cleaned.slice(0, 40)}`
-          : 'scene-worker-log'
+        throttleMs: pointerDiag ? 0 : loadGateNoise ? (loadGateHot ? 500 : 5000) : 100,
+        throttleKey: pointerDiag
+          ? `scene-worker-pointer-${cleaned.slice(0, 48)}`
+          : loadGateNoise
+            ? `scene-worker-loadgate-${cleaned.slice(0, 40)}`
+            : 'scene-worker-log',
+        alsoConsole: pointerDiag
       })
       return
     }

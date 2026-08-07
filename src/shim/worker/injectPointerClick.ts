@@ -1,5 +1,6 @@
 import type { Entity, IEngine } from '@dcl/ecs'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
+import * as extended from '@dcl/ecs/dist/components'
 import { preregisterRendererInjectedComponents } from './preregisterRendererInjectedComponents'
 import { PointerEventType } from '../../input/pointerConstants'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
@@ -123,86 +124,76 @@ export function injectPointerClickOnEngine(engine: IEngine, body: InjectPointerC
 }
 
 /**
- * Level-state / ground click: force a same-frame DOWN+UP pair on PlayerEntity.
+ * DecentraCraft (-16,124) ground move/VFX law (catalyst bin/index.js) — NOT getClick:
  *
- * @dcl/ecs getClick(button, entity) requires:
- *   1. last UP on that entity in the *current* eng.update frame window
- *   2. a prior DOWN on the *same* entity with timestamp ≤ UP
+ *   isPressed(IA_POINTER)  // press arm + release (global buttonState)
+ *   PrimaryPointerInfo.worldRayDirection on RootEntity
+ *   CameraEntity.position × ray → plane y=0  (oB / Ud)
+ *   onGroundClick → nQ (needs selected units) → td() green cylinder MeshRenderer
  *
- * Split browser edges alone are not enough: keyboard reassert floods PlayerEntity
- * PointerEventsResult (maxElements=100) and can shift out the earlier DOWN, so
- * findClick only sees UP → getClick null → no DecentraCraft ground VFX / move marker.
- *
- * Re-writing DOWN with the UP edge's hit (ground point + ray) then UP in one
- * eng.update restores Explorer getClick without zero-hit reassert on play frames.
+ * Level-state inject: PET on PlayerEntity for global isPressed / getInputCommand.
+ * hit.entityId must be 0 (empty ground) so HS() isPressOnSelectable is false.
  */
-export function injectLevelStateClickPairOnEngine(
+export function injectLevelStatePointerEdgeOnEngine(
   engine: IEngine,
-  body: InjectPointerClickBody
+  body: InjectPointerClickBody,
+  phase: 'down' | 'up'
 ): void {
   const player = engine.PlayerEntity as number
-  const paired: InjectPointerClickBody = {
+  const edge: InjectPointerClickBody = {
     ...body,
     entity: player,
     entities: [player],
     downEntities: [player],
     upEntities: [player],
-    hitEntity: body.hitEntity || player,
+    // Empty ground — never PlayerEntity (1) or a unit id.
+    hitEntity: 0,
     levelState: true,
     sceneUi: false
   }
-  injectPointerClickDownOnEngine(engine, paired)
-  injectPointerClickUpOnEngine(engine, paired)
+  if (phase === 'down') injectPointerClickDownOnEngine(engine, edge)
+  else injectPointerClickUpOnEngine(engine, edge)
 }
 
 /**
- * Diagnose whether PlayerEntity has a getClick-capable IA_POINTER pair after inject.
- * Mirrors @dcl/ecs findClick (last UP + prior DOWN, same button).
+ * Scene-style ground hit (DecentraCraft oB/Ud): CameraEntity × PPI.worldRayDirection ∩ y=0.
  */
-export function diagnosePlayerGetClickPair(
-  engine: IEngine,
-  button: number
-): {
-  hasPair: boolean
-  downTs: number | null
-  upTs: number | null
-  hit: { x: number; y: number; z: number } | null
-  perCount: number
+export function diagnoseLevelStateGroundRay(engine: IEngine): {
+  camY: number | null
+  rayY: number | null
+  ground: { x: number; z: number } | null
+  ppi: boolean
+  cam: boolean
 } {
   preregisterRendererInjectedComponents(engine)
-  const PointerEventsResult = generated.PointerEventsResult(engine)
-  const player = engine.PlayerEntity as Entity
-  const cmds = Array.from(PointerEventsResult.get(player) as Iterable<{
-    button: number
-    state: number
-    timestamp: number
-    hit?: { position?: { x: number; y: number; z: number } }
-  }>)
-  const forButton = cmds
-    .filter((c) => c.button === button)
-    .sort((a, b) => b.timestamp - a.timestamp)
-  let up: (typeof forButton)[0] | null = null
-  let down: (typeof forButton)[0] | null = null
-  for (const it of forButton) {
-    if (!up) {
-      if (it.state === PointerEventType.PET_UP) {
-        up = it
-        continue
-      }
-    } else if (!down) {
-      if (it.state === PointerEventType.PET_DOWN) {
-        down = it
-        break
-      }
+  const PrimaryPointerInfo = generated.PrimaryPointerInfo(engine)
+  const Transform = extended.Transform(engine)
+  const ppi = PrimaryPointerInfo.getOrNull(engine.RootEntity as Entity) as
+    | { worldRayDirection?: { x: number; y: number; z: number } }
+    | null
+  const camT = Transform.getOrNull(engine.CameraEntity as Entity) as
+    | { position?: { x: number; y: number; z: number } }
+    | null
+  const ray = ppi?.worldRayDirection ?? null
+  const camPos = camT?.position ?? null
+  if (!ray || !camPos || ray.y >= -1e-4) {
+    return {
+      camY: camPos?.y ?? null,
+      rayY: ray?.y ?? null,
+      ground: null,
+      ppi: !!ray,
+      cam: !!camPos
     }
   }
-  const hasPair = !!(up && down && down.timestamp <= up.timestamp)
-  const pos = up?.hit?.position ?? down?.hit?.position
+  const t = -camPos.y / ray.y
+  if (!(t > 0)) {
+    return { camY: camPos.y, rayY: ray.y, ground: null, ppi: true, cam: true }
+  }
   return {
-    hasPair,
-    downTs: down?.timestamp ?? null,
-    upTs: up?.timestamp ?? null,
-    hit: pos ? { x: pos.x, y: pos.y, z: pos.z } : null,
-    perCount: cmds.length
+    camY: camPos.y,
+    rayY: ray.y,
+    ground: { x: camPos.x + ray.x * t, z: camPos.z + ray.z * t },
+    ppi: true,
+    cam: true
   }
 }

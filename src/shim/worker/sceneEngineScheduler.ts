@@ -2,8 +2,8 @@ import type { IEngine } from '@dcl/ecs'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import {
-  diagnosePlayerGetClickPair,
-  injectLevelStateClickPairOnEngine,
+  diagnoseLevelStateGroundRay,
+  injectLevelStatePointerEdgeOnEngine,
   injectPointerClickDownOnEngine,
   injectPointerClickUpOnEngine
 } from './injectPointerClick'
@@ -1037,7 +1037,12 @@ export async function runSceneEnginePointerTick(
 
     if (phase === 'down') {
       await runSerializedEngineUpdate(async () => {
-        injectPointerClickDownOnEngine(eng, splitPointerInject)
+        if (isLevelState) {
+          // DecentraCraft iB: isPressed(IA_POINTER) arms press; hit.entityId=0 (empty ground).
+          injectLevelStatePointerEdgeOnEngine(eng, splitPointerInject, 'down')
+        } else {
+          injectPointerClickDownOnEngine(eng, splitPointerInject)
+        }
         await eng.update(0)
       })
       reconcileLocomotionLatchAfterInjectDown(eng)
@@ -1058,35 +1063,32 @@ export async function runSceneEnginePointerTick(
       return
     }
 
-    // phase === 'up' (world) — getClick() is only true during this eng.update.
-    // Do not re-post full HUD (DOWN already opened panel).
+    // phase === 'up' (world).
+    // DecentraCraft: iB sees isPressed fall → onGroundClick(oB()) → nQ → td() MeshRenderer.
+    // Not getClick. Needs live CameraEntity × PPI (applied before this tick) + PET_UP.
     setPointerInteractiveTickActive(true)
     const mrBefore = isLevelState ? countWorkerMeshRenderer(eng) : 0
     await runSerializedEngineUpdate(async () => {
       if (isLevelState) {
-        // CRITICAL: same-frame DOWN+UP on PlayerEntity so getClick pairs.
-        // Split-edge UP alone often has no DOWN left (PER maxElements=100 + keyboard
-        // reassert on PlayerEntity shifts out the press-DOWN) → getClick null → no VFX.
-        injectLevelStateClickPairOnEngine(eng, splitPointerInject)
+        injectLevelStatePointerEdgeOnEngine(eng, splitPointerInject, 'up')
       } else {
         injectPointerClickUpOnEngine(eng, splitPointerInject)
       }
       await eng.update(0)
     })
     cfg.onAfterEngineTick?.()
-    // One more systems pass so MeshRenderer/Tween click markers created in getClick handlers
-    // land in CRDT before deliver-done (exports.onUpdate is not run mid-edge).
+    // One more systems pass so MeshRenderer/Tween from onGroundClick/td land dirty.
     await runPointerNonUiPhase(eng)
     if (isLevelState) {
       const mrAfter = countWorkerMeshRenderer(eng)
       const delta = mrAfter - mrBefore
-      const pair = diagnosePlayerGetClickPair(eng, splitPointerInject.button)
-      const hit = splitPointerInject.hitPosition
+      const ground = diagnoseLevelStateGroundRay(eng)
+      const g = ground.ground
       cfg.log(
-        `[sceneWorker] level-state UP getClick — MeshRenderer ${mrBefore}→${mrAfter} (Δ=${delta}) ` +
-          `pair=${pair.hasPair ? 1 : 0} downTs=${pair.downTs ?? '-'} upTs=${pair.upTs ?? '-'} ` +
-          `perN=${pair.perCount} hit=(${hit.x.toFixed(1)},${hit.y.toFixed(1)},${hit.z.toFixed(1)}) ` +
-          `cam=${splitPointerInject.camera ? 'live' : 'missing'} ppi=${splitPointerInject.primaryPointer ? 1 : 0}`
+        `[sceneWorker] level-state UP isPressed-path — MeshRenderer ${mrBefore}→${mrAfter} (Δ=${delta}) ` +
+          `camY=${ground.camY?.toFixed(1) ?? '-'} rayY=${ground.rayY?.toFixed(2) ?? '-'} ` +
+          `ground=${g ? `(${g.x.toFixed(1)},${g.z.toFixed(1)})` : 'null'} ` +
+          `ppi=${ground.ppi ? 1 : 0} cam=${ground.cam ? 1 : 0} hitEntity=0`
       )
     }
     if (!isLevelState) {

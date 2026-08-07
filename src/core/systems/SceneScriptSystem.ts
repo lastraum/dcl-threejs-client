@@ -4997,11 +4997,24 @@ export class SceneScriptSystem {
     if (!this.bridge || !this.entityStore) return
     const t0 = performance.now()
     const F = SceneScriptSystem.FRAME
+    // Click markers often land in the inject-edge CRDT as new MeshRenderer+Material.
+    // Peel missing leaves first (same edge), then materials — fixed pie, no fullDump.
     void this.drainPendingDiffLanes({
       pointerEdge: true,
       deadlineMs: F.POINTER_MOTION_MS + F.POINTER_MATERIAL_MS
     })
       .then(() => {
+        // One more leaf+mat pass if getClick CRDT arrived mid-drain (same batch).
+        this.flushMissingPrimitiveMeshRendererLeaves({
+          entityCap: 32,
+          hardMs: F.POINTER_MATERIAL_MS
+        })
+        this.flushMeshRendererMaterialsFromPendingDiff({
+          pointerEdge: true,
+          hardMs: F.POINTER_MATERIAL_MS,
+          entityCap: 32
+        })
+        this.bridge?.flushMissingMeshRendererLeaves(32)
         perfNotePointerEdge(performance.now() - t0, false)
       })
       .catch((err) => {
@@ -5018,6 +5031,10 @@ export class SceneScriptSystem {
     }
     void this.particleBridge?.sync(this.view)
     this.particleBridge?.update(1 / 30)
+    // Click VFX discs often use short Tweens — advance once more so they appear this frame.
+    if (this.tweenBridge?.hasLiveTweens()) {
+      this.tweenBridge.update(1 / 30, this.view)
+    }
     if (this.pointerStructureDirty) {
       const pe: Entity[] = []
       for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {

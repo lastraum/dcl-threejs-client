@@ -979,6 +979,10 @@ export async function runSceneEnginePointerTick(
       return
     }
 
+    // Level-state ground click (PlayerEntity, no PE mesh): skip UI react-ecs settle.
+    // settleWorldPointerUiAfterEdge was ~1s hitch (mount~190 fingerprint + flush) for move/VFX.
+    const isLevelState = !!splitPointerInject.levelState
+
     // --- World mesh: split edges ---
     if (phase === 'click') {
       await runSerializedEngineUpdate(async () => {
@@ -992,9 +996,11 @@ export async function runSceneEnginePointerTick(
         await eng.update(0)
       })
       cfg.onAfterEngineTick?.()
-      const settled = await settleWorldPointerUiAfterEdge(eng, cfg, { fpBefore, mountBefore })
-      mountGrew = settled.mountGrew
-      if (mountGrew) holdCooperativeReactEcs(12)
+      if (!isLevelState) {
+        const settled = await settleWorldPointerUiAfterEdge(eng, cfg, { fpBefore, mountBefore })
+        mountGrew = settled.mountGrew
+        if (mountGrew) holdCooperativeReactEcs(12)
+      }
       await runPointerNonUiPhase(eng)
       return
     }
@@ -1006,14 +1012,16 @@ export async function runSceneEnginePointerTick(
       })
       reconcileLocomotionLatchAfterInjectDown(eng)
       cfg.onAfterEngineTick?.()
-      // Full phase-4 only if select HUD mount grows; else partial dirty rows.
-      const settled = await settleWorldPointerUiAfterEdge(eng, cfg, {
-        fpBefore,
-        mountBefore,
-        forceFullIfDirty: false
-      })
-      mountGrew = settled.mountGrew
-      if (mountGrew) holdCooperativeReactEcs(12)
+      // Select HUD only for real PE meshes — never for level-state click-to-move.
+      if (!isLevelState) {
+        const settled = await settleWorldPointerUiAfterEdge(eng, cfg, {
+          fpBefore,
+          mountBefore,
+          forceFullIfDirty: false
+        })
+        mountGrew = settled.mountGrew
+        if (mountGrew) holdCooperativeReactEcs(12)
+      }
       await runPointerNonUiPhase(eng)
       return
     }
@@ -1030,15 +1038,17 @@ export async function runSceneEnginePointerTick(
     // One more systems pass so MeshRenderer/Tween click markers created in getClick handlers
     // land in CRDT before deliver-done (exports.onUpdate is not run mid-edge).
     await runPointerNonUiPhase(eng)
-    const mountAfterUp = countWorkerUiMount(eng)
-    if (mountAfterUp > mountBefore) {
-      // Rare: UI opened on UP — full snapshot once.
-      const settledUp = await settleWorldPointerUiAfterEdge(eng, cfg, {
-        fpBefore,
-        mountBefore,
-        forceFullIfDirty: true
-      })
-      mountGrew = settledUp.mountGrew
+    if (!isLevelState) {
+      const mountAfterUp = countWorkerUiMount(eng)
+      if (mountAfterUp > mountBefore) {
+        // Rare: UI opened on UP — full snapshot once.
+        const settledUp = await settleWorldPointerUiAfterEdge(eng, cfg, {
+          fpBefore,
+          mountBefore,
+          forceFullIfDirty: true
+        })
+        mountGrew = settledUp.mountGrew
+      }
     }
   } finally {
     setPointerInteractivePhase('none')

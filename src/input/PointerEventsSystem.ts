@@ -877,22 +877,45 @@ export class PointerEventsSystem {
 
   /**
    * Global pointer edge when no PE mesh is under the cursor / in range.
-   * Hit geometry is intentionally empty (camera origin) — scenes must not treat this as a
-   * ground pick. Ground aim uses PrimaryPointerInfo.worldRayDirection × CameraEntity.
-   * Mirrors keyboard injectSceneKey (PlayerEntity PET with zero hit).
+   * Target stays PlayerEntity (no invented PE mesh). RaycastHit geometry is the
+   * aim-ray × horizontal ground plane at player feet (or y=0) so scenes that place
+   * click VFX from hit.position still get a board point; PPI remains the aim law.
    */
   private buildLevelStatePointerHit(): PointerHit | null {
     if (!this.deps) return null
     this.deps.camera.updateMatrixWorld(true)
     this.refreshPointerRay(this.deps.camera)
     this.deps.camera.getWorldPosition(_camPos)
+    const ray = this.raycaster.ray
+    const playerPos = this.deps.getPlayerPosition()
+    const groundY = playerPos?.y ?? 0
+    // Ray × horizontal plane y = groundY (Three Y-up). Looking up → fall back to feet/origin.
+    let point = _camPos.clone()
+    let distance = 0
+    const dy = ray.direction.y
+    if (Math.abs(dy) > 1e-5) {
+      const t = (groundY - ray.origin.y) / dy
+      if (t > 0 && t < 500) {
+        point = ray.origin.clone().addScaledVector(ray.direction, t)
+        point.y = groundY
+        distance = t
+      } else if (playerPos) {
+        point = playerPos.clone()
+        point.y = groundY
+        distance = ray.origin.distanceTo(point)
+      }
+    } else if (playerPos) {
+      point = playerPos.clone()
+      point.y = groundY
+      distance = ray.origin.distanceTo(point)
+    }
     return {
       entity: this.deps.view.PlayerEntity,
-      point: _camPos.clone(),
-      distance: 0,
+      point,
+      distance,
       normal: new THREE.Vector3(0, 1, 0),
       priority: -1,
-      cameraDistance: 0,
+      cameraDistance: distance,
       playerDistance: 0,
       inRange: true,
       isLevelState: true
@@ -1608,6 +1631,7 @@ export class PointerEventsSystem {
         },
         meshName: hit.meshName,
         sceneUi: isSceneUi,
+        levelState: hit.isLevelState === true,
         phase: 'down',
         primaryPointer: ppi
       }
@@ -1646,6 +1670,7 @@ export class PointerEventsSystem {
           },
           meshName: hit.meshName,
           sceneUi: isSceneUi,
+          levelState: hit.isLevelState === true,
           phase: 'up',
           primaryPointer: ppi
         }

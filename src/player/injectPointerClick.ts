@@ -29,6 +29,11 @@ export type InjectPointerClickBody = {
    */
   sceneUi?: boolean
   /**
+   * Global IA_POINTER on PlayerEntity when no PE mesh in range (click-to-move).
+   * Worker must skip world UI settle/react-ecs flush — no select HUD; was ~1s hitch.
+   */
+  levelState?: boolean
+  /**
    * Explorer press lifecycle for **all** scenes (see worker-input-architecture):
    * - `down` — PET_DOWN edge only; isPressed stays true across cooperative play frames
    * - `up` — PET_UP edge only; getClick / release handlers fire this frame

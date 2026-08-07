@@ -1930,7 +1930,8 @@ export class World {
         if (this.editorPreviewMode) return
 
         const t0 = performance.now()
-        // COD AAA — primary owns a hard frame pie (motion+material+structure), not free-run.
+        // COD AAA — primary owns a fixed frame pie (motion+material+structure).
+        // No backlog-proportional deadline boosts — admit seal keeps pendingDiff true-dirty.
         await this.sceneScript.syncRenderer({ deadlineMs: 18 })
         const rendererMs = performance.now() - t0
         // Frame budget: async CRDT apply wall time (?perfdebug [frame] line).

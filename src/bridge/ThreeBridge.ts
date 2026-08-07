@@ -2109,6 +2109,25 @@ export class ThreeBridge {
   }
 
   /**
+   * COD admit seal — Material put would not change Three state.
+   * Leaf still missing → not sealed (first paint must enter pendingDiff).
+   */
+  isMaterialPutSealed(entity: Entity): boolean {
+    const pb = materialGetOrNull(this.ecs.Material, entity)
+    if (!pb) return false
+    if (this.ecs.MeshRenderer.has(entity) && !this.hasMeshRendererLeaf(entity)) return false
+    return !this.materials.needsReapply(entity, pb)
+  }
+
+  /**
+   * COD admit seal — MeshRenderer put when a leaf already exists is a no-op
+   * (meshKey is entity-stable; shape-change re-attach is rare and follows Material peel).
+   */
+  isMeshRendererPutSealed(entity: Entity): boolean {
+    return this.hasMeshRendererLeaf(entity)
+  }
+
+  /**
    * Platform law: MeshRenderer always has a blank primitive leaf even without Material.
    * Click VFX / fog-of-war / markers must not wait for a Material put that races structure drain.
    */
@@ -2185,8 +2204,12 @@ export class ThreeBridge {
       ) {
         this.promoteMeshRendererForPointerOrMotion(entity, obj)
       }
-      // Fast path: already instanced → only rewrite instanceColor.
+      // Fast path: already instanced → only rewrite instanceColor when content dirty.
       if (this.meshRendererInstancer.has(entity) && materialIsScalarOnly(pb)) {
+        if (!this.materials.needsReapply(entity, pb)) {
+          this.pendingMaterialEntities.delete(entity)
+          return true
+        }
         const rgb = materialAlbedoRgb(pb)
         if (this.meshRendererInstancer.setInstanceColor(entity, rgb.r, rgb.g, rgb.b)) {
           this.materials.markScalarApplied(entity, pb)

@@ -67,16 +67,27 @@ true if entityId matches a unit/building entity or colliderEntity
 
 **Client duty:** empty ground PETs must use **hit.entityId = 0**, not PlayerEntity (1), so ground release is not treated as “started on selectable.”
 
-## Move + VFX (nQ → td)
+## Move + VFX (nQ → td → kK)
 
 ```text
 nQ(ground):
-  if no selected player units → return   # NO VFX
+  selected = workers+soldiers from V.selectedUnitIds only
+  if selected.length === 0 → return   # NO move, NO VFX
+  # selecting a building sets selectedId but selectedUnitIds=[] → still no VFX
   issue move orders (+ network if multiplayer)
-  td(ground)  # spawn/reuse cylinder MeshRenderer at (x, 0.2, z)
+  td(ground)  # ensure cylinder entity; set QT + Au timer; entity may still be at (0,-10,0)
+
+kK(dt):  # separate engine system
+  if Au > 0: move disc to (QT.x, 0.2, QT.z), animate scale
+  needs eng.update with systems running AFTER td in same or next sample
 ```
 
-**Client duty:** after scene systems create MeshRenderer/Material on UP, CRDT must egress (pollEvents / hot paint path) so main peels the disc. Missing disc with Δ=0 often means nQ returned early (no selection) or isBlocked — not “peel broken.”
+**Client duty:**
+1. PET edges so `isPressed` arms/releases across frames (iB state machine).
+2. Live CameraEntity + PPI on those frames (oB/Ud).
+3. Real `dt` (not only `eng.update(0)`) so match-gated oQ and kK behave like Explorer.
+4. After UP systems run, CRDT egress (pollEvents) so main peels MeshRenderer/Material/Transform.
+5. Missing disc with ground ray OK often means: no worker/soldier selected, match not `active` (iB not called), or isBlocked — not invent a PE mesh.
 
 ## What is NOT the law
 

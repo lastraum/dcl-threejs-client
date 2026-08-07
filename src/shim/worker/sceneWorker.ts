@@ -2553,9 +2553,19 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
     await Promise.race([
       (async () => {
         await runSceneEnginePointerTick(sceneEngine, async () => {}, body)
-        // DecentraCraft onGroundClick → td() creates MeshRenderer on UP eng.update.
+        // DecentraCraft onGroundClick → td() + kK place MeshRenderer on level-state UP.
         // Inject path skips exports.onUpdate/pollEvents — force poll-only so MeshRenderer
-        // (1018) + Tween hit the hot paint egress before deliver-done peel.
+        // (1018) hits hot paint egress before deliver-done peel. Also log at this layer so
+        // main throttle cannot hide the path (levelState flag + phase).
+        if (body.levelState) {
+          workerLog(
+            'warn',
+            `[sceneWorker] level-state edge done phase=${body.phase ?? '?'} ` +
+              `hitEntity=${body.hitEntity} ` +
+              `hit=(${body.hitPosition.x.toFixed(1)},${body.hitPosition.y.toFixed(1)},${body.hitPosition.z.toFixed(1)}) ` +
+              `cam=${body.camera ? 'live' : 'missing'} ppi=${body.primaryPointer ? 1 : 0}`
+          )
+        }
         if (body.levelState && body.phase === 'up' && sceneOnUpdate) {
           try {
             await runPlayFramePollPhase(sceneOnUpdate, 0)

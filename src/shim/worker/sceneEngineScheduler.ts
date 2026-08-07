@@ -1035,6 +1035,11 @@ export async function runSceneEnginePointerTick(
       return
     }
 
+    // DecentraCraft oQ/iB/kK are normal engine systems. Explorer advances them with real dt.
+    // eng.update(0) can leave the click-marker cylinder parked at offline y=-10 (kK only
+    // promotes Transform after td() on a subsequent sample) and skip match-gated work.
+    const edgeDt = isLevelState ? 1 / 30 : 0
+
     if (phase === 'down') {
       await runSerializedEngineUpdate(async () => {
         if (isLevelState) {
@@ -1043,7 +1048,7 @@ export async function runSceneEnginePointerTick(
         } else {
           injectPointerClickDownOnEngine(eng, splitPointerInject)
         }
-        await eng.update(0)
+        await eng.update(edgeDt)
       })
       reconcileLocomotionLatchAfterInjectDown(eng)
       cfg.onAfterEngineTick?.()
@@ -1065,6 +1070,8 @@ export async function runSceneEnginePointerTick(
 
     // phase === 'up' (world).
     // DecentraCraft: iB sees isPressed fall → onGroundClick(oB()) → nQ → td() MeshRenderer.
+    // kK(dt) then moves the disc from parking (0,-10,0) to ground — needs a second sample
+    // if kK is registered before the main oQ system that calls iB/nQ/td.
     // Not getClick. Needs live CameraEntity × PPI (applied before this tick) + PET_UP.
     setPointerInteractiveTickActive(true)
     const mrBefore = isLevelState ? countWorkerMeshRenderer(eng) : 0
@@ -1074,22 +1081,38 @@ export async function runSceneEnginePointerTick(
       } else {
         injectPointerClickUpOnEngine(eng, splitPointerInject)
       }
-      await eng.update(0)
+      await eng.update(edgeDt)
     })
+    if (isLevelState) {
+      // Second sample: kK places/scales the disc after td() in the previous update.
+      await runSerializedEngineUpdate(async () => {
+        await eng.update(1 / 30)
+      })
+    }
     cfg.onAfterEngineTick?.()
     // One more systems pass so MeshRenderer/Tween from onGroundClick/td land dirty.
     await runPointerNonUiPhase(eng)
     if (isLevelState) {
-      const mrAfter = countWorkerMeshRenderer(eng)
-      const delta = mrAfter - mrBefore
-      const ground = diagnoseLevelStateGroundRay(eng)
-      const g = ground.ground
-      cfg.log(
-        `[sceneWorker] level-state UP isPressed-path — MeshRenderer ${mrBefore}→${mrAfter} (Δ=${delta}) ` +
-          `camY=${ground.camY?.toFixed(1) ?? '-'} rayY=${ground.rayY?.toFixed(2) ?? '-'} ` +
-          `ground=${g ? `(${g.x.toFixed(1)},${g.z.toFixed(1)})` : 'null'} ` +
-          `ppi=${ground.ppi ? 1 : 0} cam=${ground.cam ? 1 : 0} hitEntity=0`
-      )
+      try {
+        const mrAfter = countWorkerMeshRenderer(eng)
+        const delta = mrAfter - mrBefore
+        const ground = diagnoseLevelStateGroundRay(eng)
+        const g = ground.ground
+        // Always emit — main used to drop these under a shared throttle key.
+        cfg.log(
+          `[sceneWorker] level-state UP isPressed-path — MeshRenderer ${mrBefore}→${mrAfter} (Δ=${delta}) ` +
+            `camY=${ground.camY?.toFixed(1) ?? '-'} rayY=${ground.rayY?.toFixed(2) ?? '-'} ` +
+            `ground=${g ? `(${g.x.toFixed(1)},${g.z.toFixed(1)})` : 'null'} ` +
+            `ppi=${ground.ppi ? 1 : 0} cam=${ground.cam ? 1 : 0} hitEntity=0 ` +
+            `(scene: nQ needs selected worker/soldier; disc kK after td)`
+        )
+      } catch (err) {
+        cfg.log(
+          `[sceneWorker] level-state UP isPressed-path — diagnose failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
+      }
     }
     if (!isLevelState) {
       const mountAfterUp = countWorkerUiMount(eng)

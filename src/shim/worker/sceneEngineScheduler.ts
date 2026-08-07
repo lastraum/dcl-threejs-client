@@ -827,17 +827,27 @@ async function runPointerNonUiPhase(eng: IEngine): Promise<void> {
 async function settleWorldPointerUiAfterEdge(
   eng: IEngine,
   cfg: NonNullable<typeof config>,
-  opts: { fpBefore: string; mountBefore: number; forceFullIfDirty?: boolean }
+  opts: {
+    fpBefore: string
+    mountBefore: number
+    forceFullIfDirty?: boolean
+    /**
+     * Inject eng.update(0) already ran react-ecs this edge — skip a second
+     * flushReactEcs pass (was ~1 eng.update + full fingerprint on every PE click).
+     */
+    skipReactFlush?: boolean
+  }
 ): Promise<{ dirty: boolean; mountGrew: boolean }> {
   setPointerInteractiveTickActive(true)
   setPointerInteractivePhase('flush')
-  const seed = computeWorkerUiFingerprint(eng)
-  // One eng.update pass only — enough for selection HUD without toggle thrash.
-  await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
-    maxPasses: 1,
-    seedFp: seed,
-    stableNeeded: 1
-  })
+  if (!opts.skipReactFlush) {
+    const seed = computeWorkerUiFingerprint(eng)
+    await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
+      maxPasses: 1,
+      seedFp: seed,
+      stableNeeded: 1
+    })
+  }
   const fpAfter = computeWorkerUiFingerprint(eng)
   const mountAfter = countWorkerUiMount(eng)
   const mountGrew = mountAfter > opts.mountBefore
@@ -851,7 +861,7 @@ async function settleWorldPointerUiAfterEdge(
     cfg.log(
       `[sceneWorker] pointer-ui phase4 world edge — dirty=1 ` +
         `mount=${opts.mountBefore}→${mountAfter} grew=${mountGrew ? 1 : 0} ` +
-        `fpChanged=${fpAfter !== opts.fpBefore ? 1 : 0}`
+        `fpChanged=${fpAfter !== opts.fpBefore ? 1 : 0} skipFlush=${opts.skipReactFlush ? 1 : 0}`
     )
   }
   return { dirty, mountGrew }
@@ -997,7 +1007,12 @@ export async function runSceneEnginePointerTick(
       })
       cfg.onAfterEngineTick?.()
       if (!isLevelState) {
-        const settled = await settleWorldPointerUiAfterEdge(eng, cfg, { fpBefore, mountBefore })
+        // Inject already ran eng.update — only phase-4 if HUD dirty, no second react flush.
+        const settled = await settleWorldPointerUiAfterEdge(eng, cfg, {
+          fpBefore,
+          mountBefore,
+          skipReactFlush: true
+        })
         mountGrew = settled.mountGrew
         if (mountGrew) holdCooperativeReactEcs(12)
       }
@@ -1013,11 +1028,13 @@ export async function runSceneEnginePointerTick(
       reconcileLocomotionLatchAfterInjectDown(eng)
       cfg.onAfterEngineTick?.()
       // Select HUD only for real PE meshes — never for level-state click-to-move.
+      // Inject eng.update already ran systems; skip second react-ecs flush (hitch).
       if (!isLevelState) {
         const settled = await settleWorldPointerUiAfterEdge(eng, cfg, {
           fpBefore,
           mountBefore,
-          forceFullIfDirty: false
+          forceFullIfDirty: false,
+          skipReactFlush: true
         })
         mountGrew = settled.mountGrew
         if (mountGrew) holdCooperativeReactEcs(12)
@@ -1041,11 +1058,12 @@ export async function runSceneEnginePointerTick(
     if (!isLevelState) {
       const mountAfterUp = countWorkerUiMount(eng)
       if (mountAfterUp > mountBefore) {
-        // Rare: UI opened on UP — full snapshot once.
+        // Rare: UI opened on UP — full snapshot once (inject eng.update already ran).
         const settledUp = await settleWorldPointerUiAfterEdge(eng, cfg, {
           fpBefore,
           mountBefore,
-          forceFullIfDirty: true
+          forceFullIfDirty: true,
+          skipReactFlush: true
         })
         mountGrew = settledUp.mountGrew
       }

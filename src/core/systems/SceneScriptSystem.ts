@@ -216,6 +216,16 @@ export class SceneScriptSystem {
   } as const
   /** Admit-seal drops this frame (Material/MeshRenderer content no-ops) — ?perfdebug. */
   private admitDropCount = 0
+  /**
+   * Entities that received MeshRenderer / Material / Tween / Particle during a pointer
+   * deliver session — peel these first (click discs / select rings), not FIFO fog backlog.
+   */
+  private readonly pointerEdgeVisualEntities = new Set<Entity>()
+  /**
+   * Collect visual dirties until post-pointer peel (stays true even after
+   * pointerAwaitingWorkerApply is cleared so late CRDT fold still tags VFX).
+   */
+  private pointerEdgeVisualCollect = false
   private projectionDiffActive = false
   /** Phase 3: encoder is the primary source for renderer-owned outbound CRDT (reserved, tween, pointer/video results). Always on. */
   private readonly encoder = new CrdtEncoder(SDK_RESERVED, this.projection, this.componentHost.components)
@@ -3725,17 +3735,24 @@ export class SceneScriptSystem {
       }
     }
 
-    // --- Material lane: missing primitive leaves first, then Material puts ---
+    // --- Material lane: pointer-edge VFX first, then missing leaves, then Material puts ---
     if (performance.now() < wallDeadline) {
+      const prefer =
+        this.pointerEdgeVisualEntities.size > 0 ? [...this.pointerEdgeVisualEntities] : undefined
       this.flushMissingPrimitiveMeshRendererLeaves({
         entityCap: matEnt,
-        hardMs: matMs
+        hardMs: matMs,
+        prefer
       })
       this.flushMeshRendererMaterialsFromPendingDiff({
         pointerEdge: edge,
         hardMs: matMs,
-        entityCap: matEnt
+        entityCap: matEnt,
+        prefer
       })
+      if (edge && this.pointerEdgeVisualEntities.size) {
+        this.peelPointerEdgeVisuals()
+      }
     }
 
     // --- Structure lane (Gltf / TextShape / …) — never on pointer edge ---
@@ -3821,32 +3838,32 @@ export class SceneScriptSystem {
 
   /**
    * Primitive MeshRenderer leaf create (no GltfContainer) — Material lane work-kind.
-   * Missing-leaf first so new planes/markers attach before fog recolors fill the budget.
+   * Prefer `prefer` entities (pointer-edge VFX) then scan pendingDiff for missing leaves.
    */
   private flushMissingPrimitiveMeshRendererLeaves(opts: {
     entityCap: number
     hardMs: number
+    prefer?: Iterable<Entity>
   }): void {
     if (!this.bridge || !this.pendingDiff.size) return
     const { MeshRenderer, GltfContainer } = this.readComponents
     const mrId = MeshRenderer.componentId
     const t0 = performance.now()
     let applied = 0
-    for (const entity of this.pendingDiff.keys()) {
-      if (applied >= opts.entityCap) break
-      if (performance.now() - t0 >= opts.hardMs && applied > 0) break
-      if (GltfContainer.has(entity)) continue
-      if (!MeshRenderer.has(entity)) continue
-      if (this.bridge.hasMeshRendererLeaf(entity)) {
-        // Sealed leaf — drop residual MeshRenderer put slots.
+    const tryLeaf = (entity: Entity): boolean => {
+      if (applied >= opts.entityCap) return false
+      if (performance.now() - t0 >= opts.hardMs && applied > 0) return false
+      if (GltfContainer.has(entity)) return true
+      if (!MeshRenderer.has(entity)) return true
+      if (this.bridge!.hasMeshRendererLeaf(entity)) {
         const comps = this.pendingDiff.get(entity)
         if (comps?.has(mrId)) {
           comps.delete(mrId)
           this.clearPendingEntityIfEmpty(entity)
         }
-        continue
+        return true
       }
-      if (this.bridge.ensureMeshRendererLeaf(entity)) {
+      if (this.bridge!.ensureMeshRendererLeaf(entity)) {
         applied++
         const comps = this.pendingDiff.get(entity)
         if (comps) {
@@ -3854,19 +3871,30 @@ export class SceneScriptSystem {
           this.clearPendingEntityIfEmpty(entity)
         }
       }
+      return true
+    }
+    if (opts.prefer) {
+      for (const entity of opts.prefer) {
+        if (!tryLeaf(entity)) break
+      }
+    }
+    for (const entity of this.pendingDiff.keys()) {
+      if (applied >= opts.entityCap) break
+      if (performance.now() - t0 >= opts.hardMs && applied > 0) break
+      tryLeaf(entity)
     }
     if (applied > 0) this.publishPendingDiffPerf()
   }
 
   /**
    * Same-batch MeshRenderer Material after worker cold CRDT applyIncoming.
-   * Prefer GPU instanceColor (O(1)). Missing-leaf entities first (not glow heuristics).
-   * Clears Material put from pendingDiff on success; mesh/Transform work may remain.
+   * Pointer-edge visual entities + missing-leaf first; stop collecting once we have enough.
    */
   private flushMeshRendererMaterialsFromPendingDiff(opts?: {
     pointerEdge?: boolean
     hardMs?: number
     entityCap?: number
+    prefer?: Iterable<Entity>
   }): void {
     if (!this.bridge || !this.pendingDiff.size) return
     const { Material, MeshRenderer } = this.readComponents
@@ -3882,27 +3910,37 @@ export class SceneScriptSystem {
     let seen = 0
     let missingMesh = 0
     let failed = 0
-    // Missing leaf first (new plane / marker), then FIFO recolors — never full-map sort.
-    const missingLeaf: Entity[] = []
-    const rest: Entity[] = []
-    for (const entity of this.pendingDiff.keys()) {
+    let missingLeafCount = 0
+    // Prefer pointer-edge VFX, then missing-leaf, then recolors — cap collect (no 3k arrays).
+    const preferList: Entity[] = []
+    const missingLeafList: Entity[] = []
+    const restList: Entity[] = []
+    const seenEnt = new Set<Entity>()
+    const consider = (entity: Entity, asPrefer: boolean): void => {
+      if (seenEnt.has(entity)) return
       const comps = this.pendingDiff.get(entity)
-      if (!comps || comps.get(matId) !== 'put') continue
-      if (!Material.has(entity)) continue
+      if (!comps || comps.get(matId) !== 'put') return
+      if (!Material.has(entity)) return
       if (!MeshRenderer.has(entity)) {
         missingMesh++
-        continue
+        return
       }
-      if (!this.bridge.hasMeshRendererLeaf(entity)) missingLeaf.push(entity)
-      else rest.push(entity)
+      seenEnt.add(entity)
+      const missing = !this.bridge!.hasMeshRendererLeaf(entity)
+      if (missing) missingLeafCount++
+      if (asPrefer) preferList.push(entity)
+      else if (missing) missingLeafList.push(entity)
+      else restList.push(entity)
     }
-    if (rest.length > 0 && rest.length <= 128) {
-      rest.sort(
-        (a, b) =>
-          (this.pendingDiffFirstDirtyAt.get(a) ?? 0) - (this.pendingDiffFirstDirtyAt.get(b) ?? 0)
-      )
+    if (opts?.prefer) {
+      for (const entity of opts.prefer) consider(entity, true)
     }
-    const ordered = missingLeaf.length ? missingLeaf.concat(rest) : rest
+    const collectCap = Math.max(entityCap * 2, 64)
+    for (const entity of this.pendingDiff.keys()) {
+      if (preferList.length + missingLeafList.length + restList.length >= collectCap) break
+      consider(entity, false)
+    }
+    const ordered = preferList.concat(missingLeafList, restList)
     for (const entity of ordered) {
       const comps = this.pendingDiff.get(entity)
       if (!comps || comps.get(matId) !== 'put') continue
@@ -3913,7 +3951,6 @@ export class SceneScriptSystem {
       if (this.bridge.forceApplyMeshRendererMaterial(entity)) {
         applied++
         comps.delete(matId)
-        // Leaf now exists — MeshRenderer put is sealed.
         comps.delete(MeshRenderer.componentId)
         this.clearPendingEntityIfEmpty(entity)
       } else {
@@ -3927,11 +3964,48 @@ export class SceneScriptSystem {
     if (applied > 0 || seen > 0 || missingMesh > 0) {
       clientDebugLog.log(
         'collision',
-        `mesh-renderer material flush v3 — applied=${applied}/${seen} failed=${failed} missingMesh=${missingMesh} missingLeaf=${missingLeaf.length} pendingDiff=${this.pendingDiff.size} admitDrop=${this.admitDropCount}`,
+        `mesh-renderer material flush v3 — applied=${applied}/${seen} failed=${failed} missingMesh=${missingMesh} missingLeaf=${missingLeafCount} pendingDiff=${this.pendingDiff.size} admitDrop=${this.admitDropCount} edgeVis=${this.pointerEdgeVisualEntities.size}`,
         { level: 'info', alsoConsole: true, throttleMs: 1_000, throttleKey: 'mr-mat-flush' }
       )
       this.admitDropCount = 0
     }
+  }
+
+  /**
+   * Peel MeshRenderer/Material/Tween for entities dirtied during pointer deliver
+   * (getClick click discs, select rings) before FIFO fog backlog.
+   */
+  private peelPointerEdgeVisuals(): void {
+    if (!this.bridge || this.pointerEdgeVisualEntities.size === 0) return
+    const prefer = [...this.pointerEdgeVisualEntities]
+    this.flushMissingPrimitiveMeshRendererLeaves({
+      entityCap: Math.min(48, Math.max(prefer.length, 16)),
+      hardMs: SceneScriptSystem.FRAME.POINTER_MATERIAL_MS + 4,
+      prefer
+    })
+    this.flushMeshRendererMaterialsFromPendingDiff({
+      pointerEdge: true,
+      hardMs: SceneScriptSystem.FRAME.POINTER_MATERIAL_MS + 4,
+      entityCap: Math.min(48, Math.max(prefer.length, 16)),
+      prefer
+    })
+    // Motion for marker Transform/Tween
+    this.flushTweenAndTransformFromPendingDiff({
+      pointerEdge: true,
+      hardMs: SceneScriptSystem.FRAME.POINTER_MOTION_MS
+    })
+    for (const entity of prefer) {
+      this.bridge.ensureMeshRendererTweenVisual(entity)
+    }
+    this.tweenBridge?.sync(this.view)
+    if (this.tweenBridge?.hasLiveTweens()) {
+      this.tweenBridge.update(1 / 30, this.view)
+      this.markTweenColliderPosesDirty()
+    }
+    void this.particleBridge?.sync(this.view)
+    this.particleBridge?.update(1 / 30)
+    this.pointerEdgeVisualEntities.clear()
+    this.pointerEdgeVisualCollect = false
   }
 
   private foldProjectionChanges(): void {
@@ -4016,6 +4090,18 @@ export class SceneScriptSystem {
       if (change.kind === 'put' && this.bridge && this.shouldDropSealedProjectionPut(change)) {
         this.admitDropCount++
         continue
+      }
+
+      // Pointer-edge visual set — click VFX / select rings created mid-deliver.
+      if (
+        this.pointerEdgeVisualCollect &&
+        change.kind === 'put' &&
+        (change.componentId === this.readComponents.MeshRenderer.componentId ||
+          change.componentId === this.readComponents.Material.componentId ||
+          change.componentId === this.readComponents.Tween.componentId ||
+          change.componentId === this.readComponents.ParticleSystem.componentId)
+      ) {
+        this.pointerEdgeVisualEntities.add(change.entity)
       }
 
       let comps = this.pendingDiff.get(change.entity)
@@ -4912,6 +4998,7 @@ export class SceneScriptSystem {
       }
 
       this.pointerAwaitingWorkerApply = true
+      this.pointerEdgeVisualCollect = true
       this.deliverInjectToWorker(inject)
       // If we only sent DOWN, flush UP after deliver-done (same user click, correct order).
       if (hasDown && this.pointerEvents.hasPendingUp()) {
@@ -4997,24 +5084,19 @@ export class SceneScriptSystem {
     if (!this.bridge || !this.entityStore) return
     const t0 = performance.now()
     const F = SceneScriptSystem.FRAME
-    // Click markers often land in the inject-edge CRDT as new MeshRenderer+Material.
-    // Peel missing leaves first (same edge), then materials — fixed pie, no fullDump.
+    // Keep collecting until peel runs (CRDT may fold after awaitingWorker is cleared).
+    this.pointerEdgeVisualCollect = true
+    // Click markers land in inject-edge CRDT — peel edge visual set first, then fixed pie.
+    this.peelPointerEdgeVisuals()
     void this.drainPendingDiffLanes({
       pointerEdge: true,
       deadlineMs: F.POINTER_MOTION_MS + F.POINTER_MATERIAL_MS
     })
       .then(() => {
-        // One more leaf+mat pass if getClick CRDT arrived mid-drain (same batch).
-        this.flushMissingPrimitiveMeshRendererLeaves({
-          entityCap: 32,
-          hardMs: F.POINTER_MATERIAL_MS
-        })
-        this.flushMeshRendererMaterialsFromPendingDiff({
-          pointerEdge: true,
-          hardMs: F.POINTER_MATERIAL_MS,
-          entityCap: 32
-        })
-        this.bridge?.flushMissingMeshRendererLeaves(32)
+        // Late CRDT from getClick after first peel — edge set refilled during fold.
+        this.pointerEdgeVisualCollect = true
+        this.peelPointerEdgeVisuals()
+        this.bridge?.flushMissingMeshRendererLeaves(48)
         perfNotePointerEdge(performance.now() - t0, false)
       })
       .catch((err) => {
@@ -5023,7 +5105,7 @@ export class SceneScriptSystem {
           `post-pointer peel failed — ${err instanceof Error ? err.message : String(err)}`
         )
       })
-    // Light time advance for click Tweens / particles — cooperative frames own backlog.
+    // Light time advance for click Tweens / particles.
     this.tweenBridge?.sync(this.view)
     if (this.tweenBridge?.hasLiveTweens()) {
       this.tweenBridge.update(1 / 30, this.view)
@@ -5031,10 +5113,6 @@ export class SceneScriptSystem {
     }
     void this.particleBridge?.sync(this.view)
     this.particleBridge?.update(1 / 30)
-    // Click VFX discs often use short Tweens — advance once more so they appear this frame.
-    if (this.tweenBridge?.hasLiveTweens()) {
-      this.tweenBridge.update(1 / 30, this.view)
-    }
     if (this.pointerStructureDirty) {
       const pe: Entity[] = []
       for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {

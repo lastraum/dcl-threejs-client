@@ -1088,20 +1088,18 @@ export async function runSceneEnginePointerTick(
 
     if (phase === 'down') {
       if (isLevelState) {
-        // Separate frames: sticky fall (if any) then fresh DOWN so isPressed is false→true.
-        if (isIaPointerPressedOnEngine(eng, splitPointerInject.button)) {
-          await runSerializedEngineUpdate(async () => {
-            injectLevelStatePointerEdgeOnEngine(eng, splitPointerInject, 'up')
-            await eng.update(0)
-          })
-          pointerProofLog(
-            '[sceneWorker] no-target DOWN sticky-clear — forced isPressed fall before arm'
-          )
-        }
+        // One eng.update only — multi-update freezes plaza cooperative ticks.
+        const sticky = isIaPointerPressedOnEngine(eng, splitPointerInject.button)
         await runSerializedEngineUpdate(async () => {
+          if (sticky) injectLevelStatePointerEdgeOnEngine(eng, splitPointerInject, 'up')
           injectLevelStatePointerEdgeOnEngine(eng, splitPointerInject, 'down')
           await eng.update(0)
         })
+        if (sticky) {
+          pointerProofLog(
+            '[sceneWorker] no-target DOWN sticky-clear — UP+DOWN same eng.update'
+          )
+        }
       } else {
         await runSerializedEngineUpdate(async () => {
           injectPointerClickDownOnEngine(eng, splitPointerInject)
@@ -1159,13 +1157,7 @@ export async function runSceneEnginePointerTick(
       }
       await eng.update(0)
     })
-    // No-target: second positive-dt sample so post-release systems (move VFX anim, etc.)
-    // run after the press machine sees isPressed fall on the prior frame.
-    if (isLevelState) {
-      await runSerializedEngineUpdate(async () => {
-        await eng.update(1 / 30)
-      })
-    }
+    // No-target: no second eng.update on the edge (plaza FPS). Cooperative tick follows.
     cfg.onAfterEngineTick?.()
     if (isLevelState) {
       try {

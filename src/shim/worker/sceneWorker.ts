@@ -2498,12 +2498,44 @@ function chunkByteCount(chunks: Uint8Array[]): number {
 }
 
 /**
+ * Hard cap for one eng.update on a no-target edge. Genesis Plaza (fishing + particles
+ * + 500+ entities) can spend >1s in a single systems pass — awaiting multiple updates
+ * and blocking cooperative ticks (pointerDeliveryInFlight) collapsed FPS to teens.
+ * One inject + one budgeted update per edge; follow-up dt via cooperative tick.
+ */
+const NO_TARGET_ENGINE_UPDATE_BUDGET_MS = 450
+
+async function runBudgetedPointerEngineUpdate(
+  label: string,
+  work: () => Promise<void>
+): Promise<'ok' | 'timeout'> {
+  let timedOut = false
+  await Promise.race([
+    runSerializedEngineUpdateForPointer(work),
+    new Promise<void>((resolve) => {
+      setTimeout(() => {
+        timedOut = true
+        forceReleaseEngineUpdateMutex(`${label}-eng-budget`)
+        resolve()
+      }, NO_TARGET_ENGINE_UPDATE_BUDGET_MS)
+    })
+  ])
+  if (timedOut) {
+    workerLog(
+      'warn',
+      `[sceneWorker] ${label} — eng.update budget ${NO_TARGET_ENGINE_UPDATE_BUDGET_MS}ms; acking edge (partial)`
+    )
+  }
+  return timedOut ? 'timeout' : 'ok'
+}
+
+/**
  * No-target pointer edge (Explorer level-state) — scene-agnostic systems path.
- * PET on PlayerEntity hitEntity=0 + Camera/PPI + eng.update. No UI settle.
+ * PET on PlayerEntity hitEntity=0 + Camera/PPI + **one** eng.update. No UI settle.
  *
- * Platform law: isPressed arms on DOWN eng.update, falls on UP eng.update so scene
- * systems (press machine → ground ray → optional VFX) see a real edge pair.
- * Never invent a PE mesh for empty hits.
+ * Platform law: isPressed arms on DOWN, falls on UP. Never invent a PE mesh.
+ * Performance law: never multi-update or hard-await hung plaza systems — that blocks
+ * all cooperative ticks via pointerDeliveryInFlight and tanks FPS (plaza ~13fps bug).
  */
 async function runNoTargetPointerEdge(
   eng: NonNullable<typeof sceneEngine>,
@@ -2511,14 +2543,11 @@ async function runNoTargetPointerEdge(
   phase: string,
   button: InputActionValue
 ): Promise<void> {
-  // FIRST line — if this never appears after levelState=1 / noTarget=1, worker is stale or
-  // the edge was lost before dispatch (hard-refresh the client).
   workerLog('warn', `[sceneWorker] no-target ENTER phase=${phase} button=${button}`)
   setLevelStatePointerEdgeActive(true)
   setPointerInteractiveTickActive(false)
   setPointerInteractivePhase('inject')
   try {
-    // Do not block behind a stuck cooperative mutex.
     forceReleaseEngineUpdateMutex('no-target-edge')
     const ppi = body.primaryPointer
     if (ppi || body.camera) {
@@ -2526,25 +2555,25 @@ async function runNoTargetPointerEdge(
     }
 
     if (phase === 'down') {
-      // Separate eng.update calls: sticky fall must be its own input frame so the press
-      // machine can rB(), then a fresh DOWN frame arms isPressed (false→true).
-      if (isIaPointerPressedOnEngine(eng, button)) {
-        await runSerializedEngineUpdateForPointer(async () => {
-          injectLevelStatePointerEdgeOnEngine(eng, body, 'up')
-          await eng.update(0)
-        })
-        workerLog('warn', '[sceneWorker] no-target DOWN sticky-clear — isPressed fall before arm')
-      }
-      await runSerializedEngineUpdateForPointer(async () => {
+      // Single frame: optional sticky UP inject then DOWN inject, one eng.update.
+      // (Two full updates on plaza freezes the worker for 1–3s and blocks play ticks.)
+      const sticky = isIaPointerPressedOnEngine(eng, button)
+      await runBudgetedPointerEngineUpdate('no-target-down', async () => {
         if (ppi || body.camera) {
           applyPlayFrameReservedPoses(undefined, body.camera, ppi)
+        }
+        if (sticky) {
+          injectLevelStatePointerEdgeOnEngine(eng, body, 'up')
         }
         injectLevelStatePointerEdgeOnEngine(eng, body, 'down')
         await eng.update(0)
       })
+      if (sticky) {
+        workerLog('warn', '[sceneWorker] no-target DOWN sticky-clear — UP+DOWN same eng.update')
+      }
       const ground = diagnoseLevelStateGroundRay(eng)
       const g = ground.ground
-      let pressed = isIaPointerPressedOnEngine(eng, button)
+      const pressed = isIaPointerPressedOnEngine(eng, button)
       workerLog(
         'warn',
         `[sceneWorker] no-target DOWN isPressed-arm — pressed=${pressed ? 1 : 0} ` +
@@ -2552,31 +2581,18 @@ async function runNoTargetPointerEdge(
           `planeY0=${g ? `(${g.x.toFixed(1)},${g.z.toFixed(1)})` : 'null'} ` +
           `ppi=${ground.ppi ? 1 : 0} cam=${ground.cam ? 1 : 0} hitEntity=0`
       )
-      if (!pressed) {
-        await runSerializedEngineUpdateForPointer(async () => {
-          injectLevelStatePointerEdgeOnEngine(eng, body, 'down')
-          // Positive dt: some scene systems gate work on dt>0.
-          await eng.update(1 / 30)
-        })
-        pressed = isIaPointerPressedOnEngine(eng, button)
-        workerLog('warn', `[sceneWorker] no-target DOWN re-arm — pressed=${pressed ? 1 : 0}`)
-      }
       workerLog('warn', `[sceneWorker] no-target EXIT phase=down pressed=${pressed ? 1 : 0}`)
       return
     }
 
-    // UP: release frame (isPressed true→false) then a positive-dt sample so follow-up
-    // systems (VFX anim / order apply) run after the press machine fires onGroundClick.
+    // UP: one release eng.update. Positive-dt follow-up is cooperative (not edge-critical).
     const mrBefore = countWorkerMeshRenderers(eng)
-    await runSerializedEngineUpdateForPointer(async () => {
+    await runBudgetedPointerEngineUpdate('no-target-up', async () => {
       if (ppi || body.camera) {
         applyPlayFrameReservedPoses(undefined, body.camera, ppi)
       }
       injectLevelStatePointerEdgeOnEngine(eng, body, 'up')
       await eng.update(0)
-    })
-    await runSerializedEngineUpdateForPointer(async () => {
-      await eng.update(1 / 30)
     })
     const mrAfter = countWorkerMeshRenderers(eng)
     const delta = mrAfter - mrBefore
@@ -2722,8 +2738,8 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
           suffix
       )
     }
-    // No-target: await systems fully (no race-abandon). Budget race only for PE/sceneUi
-    // so a hung eng.update cannot freeze the main 2s deliver-done watchdog forever.
+    // All edges budget-ack so pointerDeliveryInFlight cannot pin cooperative ticks.
+    // No-target used to hard-await hung plaza eng.update (1.5s+) → main 2s fail + ~13fps.
     const runEdgeWork = async (): Promise<void> => {
       if (treatAsNoTarget) {
         workerLog(
@@ -2734,7 +2750,11 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
         logNoTargetEdgeDone()
         if (phase === 'up' && sceneOnUpdate) {
           try {
-            await runPlayFramePollPhase(sceneOnUpdate, 0)
+            // Short poll only — full plaza pollEvents must not own the edge.
+            await Promise.race([
+              runPlayFramePollPhase(sceneOnUpdate, 0),
+              new Promise<void>((r) => setTimeout(r, 200))
+            ])
           } catch (err) {
             workerLog(
               'warn',
@@ -2749,50 +2769,34 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
       }
       await flushPointerDeferredOutboundsAsync()
     }
-    if (treatAsNoTarget) {
-      // Soft budget: force-release mutex if hung, but still await work so UP cannot
-      // start mid-DOWN (serialized inject queue depends on full completion).
-      const hangTimer = setTimeout(() => {
-        edgeTimedOut = true
-        workerLog(
-          'warn',
-          `[sceneWorker] ${label} — no-target still running past ${EDGE_ACK_BUDGET_MS}ms; force-release mutex`
-        )
-        forceReleaseEngineUpdateMutex(`${label}-no-target-budget`)
-      }, EDGE_ACK_BUDGET_MS)
+    // No-target: tighter budget (one eng.update + flush). PE/sceneUi keep EDGE_ACK_BUDGET_MS.
+    const ackBudgetMs = treatAsNoTarget
+      ? NO_TARGET_ENGINE_UPDATE_BUDGET_MS + 250
+      : EDGE_ACK_BUDGET_MS
+    await Promise.race([
+      runEdgeWork(),
+      new Promise<void>((resolve) => {
+        setTimeout(() => {
+          edgeTimedOut = true
+          resolve()
+        }, ackBudgetMs)
+      })
+    ])
+    if (edgeTimedOut) {
+      logNoTargetEdgeDone(' (budget-timeout)')
+      workerLog(
+        'warn',
+        `[sceneWorker] ${label} — edge budget ${ackBudgetMs}ms exceeded; acking deliver-done (partial)`
+      )
+      interruptPendingOutboundAcks()
+      forceReleaseEngineUpdateMutex(`${label}-edge-budget`)
       try {
-        await runEdgeWork()
-      } finally {
-        clearTimeout(hangTimer)
-      }
-      if (edgeTimedOut) {
-        logNoTargetEdgeDone(' (slow)')
-      }
-    } else {
-      await Promise.race([
-        runEdgeWork(),
-        new Promise<void>((resolve) => {
-          setTimeout(() => {
-            edgeTimedOut = true
-            resolve()
-          }, EDGE_ACK_BUDGET_MS)
-        })
-      ])
-      if (edgeTimedOut) {
-        workerLog(
-          'warn',
-          `[sceneWorker] ${label} — edge budget ${EDGE_ACK_BUDGET_MS}ms exceeded; acking deliver-done (partial)`
-        )
-        interruptPendingOutboundAcks()
-        forceReleaseEngineUpdateMutex(`${label}-edge-budget`)
-        try {
-          await Promise.race([
-            flushPointerDeferredOutboundsAsync(),
-            new Promise<void>((r) => setTimeout(r, 200))
-          ])
-        } catch {
-          /* ack regardless */
-        }
+        await Promise.race([
+          flushPointerDeferredOutboundsAsync(),
+          new Promise<void>((r) => setTimeout(r, 150))
+        ])
+      } catch {
+        /* ack regardless */
       }
     }
   } catch (err) {

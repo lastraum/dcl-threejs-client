@@ -129,6 +129,11 @@ export class PointerEventsSystem {
    * Must pair PET_UP without requiring a PointerEvents component on PlayerEntity.
    */
   private readonly levelStateButtons = new Set<InputActionValue>()
+  /**
+   * Next press while a prior press is still open (downEntity set / pending DOWN).
+   * Click-spam must not overwrite downEntity or getClick never pairs DOWN+UP.
+   */
+  private readonly stashedPointerDown = new Map<InputActionValue, PointerHit | null>()
 
   private hoverEntity: Entity | null = null
   private lastHit: PointerHit | null = null
@@ -189,6 +194,7 @@ export class PointerEventsSystem {
     this.pointerTargets.length = 0
     this.pointerEntitySet.clear()
     this.levelStateButtons.clear()
+    this.stashedPointerDown.clear()
     this.pendingPointerDown.clear()
     this.pendingPointerUp.clear()
     this.downEntityByButton.clear()
@@ -468,6 +474,13 @@ export class PointerEventsSystem {
       if (button === InputAction.IA_POINTER) {
         const levelHit = this.buildLevelStatePointerHit()
         if (levelHit) {
+          // Serialize presses: do not start DOWN2 while DOWN1 has no UP yet.
+          if (this.downEntityByButton.has(button) || this.pendingPointerDown.has(button)) {
+            this.stashedPointerDown.set(button, levelHit)
+            this.levelStateButtons.add(button)
+            this.deps.flushPointerCrdt?.()
+            return
+          }
           const player = this.deps.view.PlayerEntity
           this.levelStateButtons.add(button)
           this.downEntityByButton.set(button, player)
@@ -510,6 +523,12 @@ export class PointerEventsSystem {
       }
       return
     }
+    // Serialize: one open press per button — stash extra downs until UP completes.
+    if (this.downEntityByButton.has(button) || this.pendingPointerDown.has(button)) {
+      this.stashedPointerDown.set(button, hit)
+      this.deps.flushPointerCrdt?.()
+      return
+    }
     this.levelStateButtons.delete(button)
     const targetEntity = this.resolvePointerResultEntity(hit!.entity, button)
     this.downEntityByButton.set(button, targetEntity)
@@ -529,10 +548,12 @@ export class PointerEventsSystem {
   private onPointerUp = (e: PointerEvent): void => {
     if (!this.deps) return
     const button = mouseButtonToInputAction(e.button)
-    if (!this.downEntityByButton.has(button)) return
+    if (!this.downEntityByButton.has(button) && !this.pendingPointerDown.has(button)) {
+      // Orphan up after spam-drop — ignore.
+      return
+    }
     if (this.uiPointerButtons.has(button)) return
     this.pendingPointerUp.add(button)
-    console.log('[pointer]', `mouseup → flush entity=${this.downEntityByButton.get(button)} button=${button}`)
     this.deps.flushPointerCrdt?.()
   }
 
@@ -877,22 +898,48 @@ export class PointerEventsSystem {
 
   /**
    * Global pointer edge when no PE mesh is under the cursor / in range.
-   * Hit geometry is intentionally empty (camera origin) — scenes must not treat this as a
-   * ground pick. Ground aim uses PrimaryPointerInfo.worldRayDirection × CameraEntity.
-   * Mirrors keyboard injectSceneKey (PlayerEntity PET with zero hit).
+   * Target stays PlayerEntity (no invented PE mesh). RaycastHit geometry is the
+   * aim-ray × horizontal ground plane at player feet (or y=0) so scenes that place
+   * click VFX from hit.position still get a board point; PPI remains the aim law.
    */
   private buildLevelStatePointerHit(): PointerHit | null {
     if (!this.deps) return null
     this.deps.camera.updateMatrixWorld(true)
     this.refreshPointerRay(this.deps.camera)
     this.deps.camera.getWorldPosition(_camPos)
+    const ray = this.raycaster.ray
+    const playerPos = this.deps.getPlayerPosition()
+    const groundY = playerPos?.y ?? 0
+    // Ray × horizontal plane y = groundY (Three Y-up). Looking up → fall back to feet/origin.
+    let point = _camPos.clone()
+    let distance = 0
+    const dy = ray.direction.y
+    if (Math.abs(dy) > 1e-5) {
+      const t = (groundY - ray.origin.y) / dy
+      if (t > 0 && t < 500) {
+        point = ray.origin.clone().addScaledVector(ray.direction, t)
+        point.y = groundY
+        distance = t
+      } else if (playerPos) {
+        point = playerPos.clone()
+        point.y = groundY
+        distance = ray.origin.distanceTo(point)
+      }
+    } else if (playerPos) {
+      point = playerPos.clone()
+      point.y = groundY
+      distance = ray.origin.distanceTo(point)
+    }
+    // Target for PET inject is still PlayerEntity (global isPressed). hit.entity stays
+    // PlayerEntity so bubble targets work; writeResult sets hitEntity for RaycastHit —
+    // level-state uses entityId 0 on the inject payload (empty ground; see writeResult).
     return {
       entity: this.deps.view.PlayerEntity,
-      point: _camPos.clone(),
-      distance: 0,
+      point,
+      distance,
       normal: new THREE.Vector3(0, 1, 0),
       priority: -1,
-      cameraDistance: 0,
+      cameraDistance: distance,
       playerDistance: 0,
       inRange: true,
       isLevelState: true
@@ -964,6 +1011,8 @@ export class PointerEventsSystem {
       upHit.isLevelState = true
       upHit.entity = downEntity
       this.writeResult(this.deps.ecs, downEntity, upHit, PointerEventType.PET_UP, button)
+      // Promote stashed next press (if any) only after this UP is written.
+      this.promoteStashedPointerDown(button)
       return true
     }
 
@@ -1002,7 +1051,32 @@ export class PointerEventsSystem {
             )
 
     this.writeResult(this.deps.ecs, downEntity, upHit, PointerEventType.PET_UP, button)
+    this.promoteStashedPointerDown(button)
     return true
+  }
+
+  /**
+   * After PET_UP, start at most one stashed press (latest spam click wins).
+   */
+  private promoteStashedPointerDown(button: InputActionValue): void {
+    const next = this.stashedPointerDown.get(button)
+    this.stashedPointerDown.delete(button)
+    if (next === undefined || !this.deps) return
+    if (this.downEntityByButton.has(button) || this.pendingPointerDown.has(button)) return
+    if (next?.isLevelState) {
+      this.levelStateButtons.add(button)
+      this.downEntityByButton.set(button, this.deps.view.PlayerEntity)
+      this.pendingPointerDown.set(button, next)
+    } else if (next) {
+      const targetEntity = this.resolvePointerResultEntity(next.entity, button)
+      this.levelStateButtons.delete(button)
+      this.downEntityByButton.set(button, targetEntity)
+      this.pendingPointerDown.set(button, next)
+    } else {
+      return
+    }
+    // Flush will process this DOWN after current UP inject is delivered (coalesce).
+    this.deps.flushPointerCrdt?.()
   }
 
   private tryPointerUp(button: InputActionValue, hit: PointerHit | null): void {
@@ -1587,12 +1661,16 @@ export class PointerEventsSystem {
       // Ray origin/direction required for Explorer-parity RaycastHit (click VFX placement).
       const ppi = this.buildPrimaryPointerInfo(false)
       const dclOrigin = threeToDclVec(_ray.origin)
+      // DecentraCraft (-16,124): HS() = getInputCommand(IA_POINTER, PET_DOWN)?.hit?.entityId
+      // matches unit/building colliders. Level-state ground must report entityId 0 (empty),
+      // not PlayerEntity — otherwise jT (isPressOnSelectable) can poison release path.
+      const rayHitEntity = hit.isLevelState === true ? 0 : (hit.entity as number)
       this.pendingInjectPayload = {
         entity: targetEntity,
         entities: [...targets],
         downEntities: [...targets],
         upEntities: [...targets],
-        hitEntity: hit.entity,
+        hitEntity: rayHitEntity,
         button,
         tickNumber: this.tickNumber,
         downTimestamp: result.timestamp,
@@ -1608,6 +1686,7 @@ export class PointerEventsSystem {
         },
         meshName: hit.meshName,
         sceneUi: isSceneUi,
+        levelState: hit.isLevelState === true,
         phase: 'down',
         primaryPointer: ppi
       }
@@ -1625,12 +1704,13 @@ export class PointerEventsSystem {
           (this.deps?.ecs.UiTransform.has(targetEntity) ?? false)
         const ppi = this.buildPrimaryPointerInfo(false)
         const dclOrigin = threeToDclVec(_ray.origin)
+        const rayHitEntity = hit.isLevelState === true ? 0 : (hit.entity as number)
         this.pendingInjectPayload = {
           entity: targetEntity,
           entities: [...targets],
           downEntities,
           upEntities: [...targets],
-          hitEntity: hit.entity,
+          hitEntity: rayHitEntity,
           button,
           tickNumber: this.tickNumber,
           downTimestamp: downTs,
@@ -1646,6 +1726,7 @@ export class PointerEventsSystem {
           },
           meshName: hit.meshName,
           sceneUi: isSceneUi,
+          levelState: hit.isLevelState === true,
           phase: 'up',
           primaryPointer: ppi
         }

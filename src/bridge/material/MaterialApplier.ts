@@ -6,6 +6,11 @@ import { renderQuality } from '../../rendering/RenderQualitySettings'
 import { resolveSceneTextureUrl } from './resolveTexture'
 import { applyPbrColors, applyPbrScalars, configureEmissiveRendering } from './pbrApply'
 import { configureSceneVideoTexture } from '../../media/videoTextureOrientation'
+import {
+  DEPTH_BAND_BLEND_SURFACE,
+  DEPTH_BAND_MARKER_GLOW,
+  DEPTH_BAND_OPAQUE_SOLID
+} from './depthCompositeBands'
 
 /** Matches `@dcl/ecs` MaterialTransparencyMode. */
 const MTM_OPAQUE = 0
@@ -564,6 +569,7 @@ export class MaterialApplier {
         pbr.transparencyMode
       )
       applyGlowMarkerRenderOrder(mesh, m, pbr.transparencyMode, pbr.emissiveIntensity)
+      applyBlendSurfaceRenderOrder(mesh, m)
     } else {
       const diffuse = (inner as UnlitMaterial).diffuseColor
       if (diffuse) {
@@ -576,6 +582,7 @@ export class MaterialApplier {
         isPbr ? (inner as PbrMaterial).transparencyMode : MTM_AUTO,
         hasAlphaMap
       )
+      applyBlendSurfaceRenderOrder(mesh, m)
     }
 
     // Scalar-only path is terminal for color materials — honor castShadows here too.
@@ -714,6 +721,7 @@ export class MaterialApplier {
       )
       applyGlowMarkerRenderOrder(mesh, m, pbr.transparencyMode, pbr.emissiveIntensity)
     }
+    applyBlendSurfaceRenderOrder(mesh, m)
 
     // Material.castShadows → mesh.castShadow (see applyMaterialCastShadows).
     applyMaterialCastShadows(mesh, inner.castShadows)
@@ -1037,7 +1045,7 @@ function bakeAlphaMapGreenChannel(tex: THREE.Texture): void {
 
 /**
  * Click / selection glow discs (ALPHA_BLEND + high emissive, no maps) must paint after
- * terrain and fog-of-war boxes. renderOrder is local to transparent pass.
+ * blend covers. renderOrder is local to the transparent pass — use platform bands.
  */
 function applyGlowMarkerRenderOrder(
   mesh: THREE.Mesh,
@@ -1055,14 +1063,23 @@ function applyGlowMarkerRenderOrder(
     intensity >= 1.5 &&
     emissiveLum > 0.05
   if (!mapLessRing) {
-    if (mesh.renderOrder === 50) mesh.renderOrder = 0
+    if (mesh.renderOrder === DEPTH_BAND_MARKER_GLOW) {
+      mesh.renderOrder = DEPTH_BAND_OPAQUE_SOLID
+    }
     return
   }
-  mesh.renderOrder = 50
+  mesh.renderOrder = DEPTH_BAND_MARKER_GLOW
   // Top-down VC looks at the cylinder cap; DoubleSide avoids backface cull if Y flips.
   m.side = THREE.DoubleSide
 }
 
+/**
+ * Platform transparency → depth composite law (no alpha-threshold scene forks).
+ *
+ * - OPAQUE / ALPHA_TEST: solid depth write
+ * - ALPHA_BLEND: occluding blend surface (depthWrite true; MARKER path re-forces false)
+ * - Marker glow: configureEmissiveRendering after this sets depthWrite=false + MARKER band
+ */
 function applyTransparency(
   m: THREE.MeshBasicMaterial | THREE.MeshPhysicalMaterial,
   alpha: number,
@@ -1076,6 +1093,7 @@ function applyTransparency(
   m.transparent = false
   m.opacity = 1
   m.depthWrite = true
+  m.depthTest = true
 
   if (resolved === MTM_OPAQUE) return
 
@@ -1087,10 +1105,8 @@ function applyTransparency(
   if (resolved === MTM_ALPHA_BLEND) {
     m.transparent = true
     m.opacity = alpha
-    // Fog-of-war explored covers (DecentraCraft alpha≈0.45) need depthWrite or the moon
-    // ground texture punches through / looks "missing" under top-down VC. Click-marker
-    // glow path re-forces depthWrite=false after this (configureEmissiveRendering).
-    m.depthWrite = alpha > 0.4
+    // Mode-stable: blend surfaces occlude underlays. Marker glow re-forces depthWrite=false.
+    m.depthWrite = true
     return
   }
 
@@ -1098,7 +1114,7 @@ function applyTransparency(
     m.transparent = true
     m.opacity = alpha
     m.alphaTest = alphaTest ?? 0.5
-    m.depthWrite = alpha > 0.4
+    m.depthWrite = true
     return
   }
 
@@ -1111,5 +1127,16 @@ function applyTransparency(
   if (alpha < 0.999) {
     m.transparent = true
     m.opacity = alpha
+    m.depthWrite = true
+  }
+}
+
+/** Assign BLEND_SURFACE band when mesh is semi-transparent and not a marker. */
+export function applyBlendSurfaceRenderOrder(mesh: THREE.Mesh, m: THREE.Material): void {
+  if (mesh.renderOrder === DEPTH_BAND_MARKER_GLOW) return
+  if ((m as THREE.MeshPhysicalMaterial).transparent || (m as THREE.MeshBasicMaterial).transparent) {
+    if (mesh.renderOrder === DEPTH_BAND_OPAQUE_SOLID) {
+      mesh.renderOrder = DEPTH_BAND_BLEND_SURFACE
+    }
   }
 }

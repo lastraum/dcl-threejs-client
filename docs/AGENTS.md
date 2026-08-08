@@ -8,6 +8,19 @@ Treat every multi-scene, performance, and continuity task as **ship-or-iterate A
 
 > Build as if this were a first-person experience at the level of the most recent Call of Duty titles: visually complete, systems coherent, no accidental unload voids, no silent regressions. Prefer fix-until-proven over leave-a-TODO. Fan out investigation, harsh self-critique, measure, then land the continuity path.
 
+### Scene bundle is law (non-negotiable)
+
+> **Never invent scene behavior.** The deployed **scene bundle** (`bin/index.js` from catalyst for the parcel pointer, or the worker-evaluated entry) is source of truth for *what the scene calls*. The **client** only implements **Explorer-parity platform laws** so those calls work. No scene-name forks, no fake PE hits, no “probably getClick.”
+
+| Rule | Detail |
+|------|--------|
+| **Bundle before code** | If a scene feature fails (pointer, VFX, move, UI, audio), **fetch and read the bundle** before changing the client. |
+| **Platform laws, not guesses** | Fix gaps in reserved poses, PET inject, CRDT egress, COD peel/depth — not invented scene APIs. |
+| **No inventions** | Do not invent ground PE meshes, hit.entityId, or input paths the bundle does not use. |
+| **Skill** | Project skill **`scene-bundle-is-law`** (`.grok/skills/scene-bundle-is-law/`) — required for scene-behavior bugs. |
+
+Worked example: DecentraCraft at **`-16,124`** uses `isPressed` + Camera×PPI plane y=0, **not** `getClick` for ground move/VFX — see skill reference.
+
 ### Multi-scene continuity (non-negotiable)
 
 | Rule | Detail |
@@ -34,15 +47,17 @@ If a change makes the world go blank on neighbor step, **it is a P0 bug** — re
 ## Reading order
 
 1. **[PROGRESS.md](./PROGRESS.md)** — latest release / RC, what’s next, shipped history  
-2. **[MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md)** — FocusOwner · sticky demote · colliders · AOI (branch `feat/aoi-focus-owner`)  
-3. **[INTEGRATION.md](./INTEGRATION.md)** + **`src/client/dev/integrationRegistry.ts`** — parity matrix  
-3b. **[COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)** — PhysX PART vs ROOT (v1.5)  
-3c. **[STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md)** — cook-once statics · never forceDynamicTreeRebuild · kill-list
-4. **[CLAIMS.yaml](./CLAIMS.yaml)** — who is already working on what  
-5. **[ARCHITECTURE.md](./ARCHITECTURE.md)** — scene I/O model + debt  
-6. **[DEPLOYMENT.md](./DEPLOYMENT.md)** — build / preview / go-live  
-7. **[PR_CHECKLIST.md](./PR_CHECKLIST.md)** — required checks before PR  
-8. **[CONTRIBUTOR_TESTING.md](./CONTRIBUTOR_TESTING.md)** — test matrix  
+2. **Scene bundle is law** — section above + skill `.grok/skills/scene-bundle-is-law/`  
+3. **[MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md)** — FocusOwner · sticky demote · colliders · AOI  
+4. **[FRAME_PIPELINE_COD.md](./FRAME_PIPELINE_COD.md)** — admit / lanes / peel / depth  
+5. **[INTEGRATION.md](./INTEGRATION.md)** + **`src/client/dev/integrationRegistry.ts`** — parity matrix  
+5b. **[COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)** — PhysX PART vs ROOT (v1.5)  
+5c. **[STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md)** — cook-once statics · never forceDynamicTreeRebuild · kill-list  
+6. **[CLAIMS.yaml](./CLAIMS.yaml)** — who is already working on what  
+7. **[ARCHITECTURE.md](./ARCHITECTURE.md)** — scene I/O model + debt  
+8. **[DEPLOYMENT.md](./DEPLOYMENT.md)** — build / preview / go-live  
+9. **[PR_CHECKLIST.md](./PR_CHECKLIST.md)** — required checks before PR  
+10. **[CONTRIBUTOR_TESTING.md](./CONTRIBUTOR_TESTING.md)** — test matrix  
 
 Also: [REPO_MANAGEMENT.md](./REPO_MANAGEMENT.md) (branches/release), [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) (historical phases), [TASKS.yaml](./TASKS.yaml) (re-arch history only).
 

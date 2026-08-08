@@ -29,6 +29,11 @@ export type InjectPointerClickBody = {
    */
   sceneUi?: boolean
   /**
+   * Global IA_POINTER on PlayerEntity when no PE mesh in range (click-to-move).
+   * Worker must skip world UI settle/react-ecs flush — no select HUD; was ~1s hitch.
+   */
+  levelState?: boolean
+  /**
    * Explorer press lifecycle for **all** scenes (see worker-input-architecture):
    * - `down` — PET_DOWN edge only; isPressed stays true across cooperative play frames
    * - `up` — PET_UP edge only; getClick / release handlers fire this frame
@@ -45,5 +50,14 @@ export type InjectPointerClickBody = {
     screenCoordinates: { x: number; y: number }
     screenDelta: { x: number; y: number }
     worldRayDirection: { x: number; y: number; z: number }
+  }
+  /**
+   * Live CameraEntity pose for this edge (DCL space). Pointer ticks skip play-frame-tick;
+   * without this, scenes that raycast Camera + PPI for ground VFX use a stale camera
+   * (wrong under VirtualCamera top-down).
+   */
+  camera?: {
+    position: { x: number; y: number; z: number }
+    rotation: { x: number; y: number; z: number; w: number }
   }
 }

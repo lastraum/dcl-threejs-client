@@ -61,6 +61,8 @@ export function resetPointerInputSession(): void {
   pointerInputSessionDepth = 0
   coalescedKeyboardSnapshot = null
   pointerButtonsHeld.clear()
+  levelStatePointerHeld = false
+  levelStatePointerEdgeActive = false
   pointerInteractiveTickActive = false
   pointerInteractivePhase = 'none'
   pointerDeliveryInFlightFlag = false
@@ -90,6 +92,31 @@ export function setPointerInteractiveTickActive(active: boolean): void {
 
 export function isPointerInteractiveTickActive(): boolean {
   return pointerInteractiveTickActive
+}
+
+/**
+ * Level-state (empty-ground) pointer edge: run scene systems without @dcl/react-ecs.
+ * Held IA_POINTER otherwise forces react-ecs every frame (PE marquee) — that must NOT
+ * apply to empty-ground hold (full match HUD thrash → under 45 FPS + UP edge starvation).
+ */
+let levelStatePointerEdgeActive = false
+/** True from level-state PET_DOWN until PET_UP (hold window between edges). */
+let levelStatePointerHeld = false
+
+export function setLevelStatePointerEdgeActive(active: boolean): void {
+  levelStatePointerEdgeActive = active
+}
+
+export function isLevelStatePointerEdgeActive(): boolean {
+  return levelStatePointerEdgeActive
+}
+
+export function setLevelStatePointerHeld(held: boolean): void {
+  levelStatePointerHeld = held
+}
+
+export function isLevelStatePointerHeld(): boolean {
+  return levelStatePointerHeld
 }
 
 export function setPointerInteractivePhase(phase: 'inject' | 'flush' | 'non-ui' | 'none'): void {

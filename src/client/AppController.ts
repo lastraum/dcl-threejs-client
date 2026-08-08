@@ -3069,13 +3069,13 @@ export class AppController {
         onJumpToGenesis:
           sceneConfig.source.kind === 'world'
             ? () => {
+                // In-world teleport to Genesis Plaza — same as chat /goto 0,0.
+                // navigateTo(coords) opens the 2D landing page (wrong while already in play).
                 if (document.pointerLockElement) document.exitPointerLock()
-                void this.navigateTo({
-                  kind: 'coords',
-                  x: 0,
-                  y: 0,
-                  segment: '0,0'
-                })
+                void this.jumpInToScene(
+                  { kind: 'coords', x: 0, y: 0, segment: '0,0' },
+                  { fastAssets: true, entry: 'teleport', source: 'goto' }
+                )
               }
             : undefined,
         mapToggle: this.locationMapStack

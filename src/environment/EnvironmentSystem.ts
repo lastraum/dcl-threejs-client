@@ -140,9 +140,11 @@ export class EnvironmentSystem {
   ) {
     this.genesisSky = new DclGenesisSky()
 
-    this.hemi = new THREE.HemisphereLight(0xddeeff, 0x445533, 0.42)
-    this.equatorAmbient = new THREE.AmbientLight(0x8cb8d0, 0.48)
-    this.sun = new THREE.DirectionalLight(0xffffff, 1.0)
+    // Construct defaults match Explorer noon-ish trilight until first applyTime overwrites.
+    // Equator lavender + dark red ground (not cool cyan / green) — softer yellow outdoor fill.
+    this.hemi = new THREE.HemisphereLight(0x84adc0, 0x951a17, 0.42)
+    this.equatorAmbient = new THREE.AmbientLight(0xbba5c9, 0.48)
+    this.sun = new THREE.DirectionalLight(0xfff4d6, 1.0)
     configureDirectionalSunShadow(this.sun)
 
     this.moon = new THREE.DirectionalLight(0x8370ff, 0.4)

@@ -26,10 +26,15 @@ export const FIXED_SUN_DISC_CORE_GAIN = 0.55
 export const FIXED_SUN_DISC_GLOW_GAIN = 0.28
 
 const DEFAULTS: SunEnvironmentSettingsState = {
-  /** Scene mesh lighting (Reset lighting). Night moon exposure higher so 23:59 planes read. */
-  sceneSunLight: 52,
+  /**
+   * Scene mesh lighting (Reset lighting). Default is a touch softer than the old 52
+   * (~0.88× vs ~0.92× on the directional curve) so midday sits closer to Explorer’s
+   * warm outdoor key. Players still have the full 0–100 Scene sun light knob.
+   */
+  sceneSunLight: 48,
   exposure: 70,
   sceneMoonLight: 58,
+  /** Night moon exposure higher so 23:59 planes read. */
   moonExposure: 62
 }
 

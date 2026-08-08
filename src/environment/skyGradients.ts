@@ -86,26 +86,33 @@ export const SKY_GRADIENTS = {
     [0.801, 1, 0.6, 0.631],
     [1, 0.515, 0.386, 1]
   ]),
+  // Trilight ambient — keys from unity-explorer SkyboxRenderController.prefab
+  // (indirectSkyRamp / indirectEquatorRamp / groundEquatorRamp). Cool cyan equator +
+  // green-grey ground washed midday yellow key to “studio white”; Explorer uses
+  // lavender equator + dark red ground bounce for the softer yellow outdoor feel.
   indirectSky: stops([
-    [0, 0.354, 0, 1],
-    [0.25, 1, 0.597, 0.526],
-    [0.5, 0.519, 0.679, 0.738],
-    [0.7, 1, 0.5, 0.458],
-    [1, 0.353, 0, 1]
+    [0, 0.3536, 0, 1],
+    [0.25, 1, 0.5968, 0.5264],
+    [0.5, 0.5187, 0.6788, 0.738],
+    [0.7, 1, 0.4998, 0.4585],
+    [1, 0.3529, 0, 1]
   ]),
+  /** Ambient equator band (our AmbientLight) — noon lavender, not cool cyan. */
   indirectEquator: stops([
-    [0, 0.25, 0.1, 0.55],
-    [0.25, 0.85, 0.55, 0.45],
-    [0.5, 0.55, 0.72, 0.82],
-    [0.75, 0.9, 0.45, 0.5],
-    [1, 0.25, 0.1, 0.55]
+    [0, 0.6172, 0.6205, 0.766],
+    [0.3, 0.9019, 0.5242, 0.4748],
+    [0.5, 0.7318, 0.6489, 0.787],
+    [0.7, 0.7373, 0.5176, 0.6171],
+    [1, 0.6157, 0.6196, 0.7647]
   ]),
+  /** Ambient ground (hemi.groundColor) — noon dark red bounce, not green-grey. */
   indirectGround: stops([
-    [0, 0.08, 0.05, 0.18],
-    [0.25, 0.35, 0.2, 0.25],
-    [0.5, 0.25, 0.35, 0.28],
-    [0.75, 0.3, 0.15, 0.22],
-    [1, 0.08, 0.05, 0.18]
+    [0, 0.425, 0.1843, 0.203],
+    [0.135, 0.5472, 0.1833, 0.1833],
+    [0.3, 0.566, 0.1019, 0.0828],
+    [0.5, 0.5849, 0.1018, 0.091],
+    [0.7, 0.5283, 0.0922, 0.1054],
+    [1, 0.5608, 0.2431, 0.2608]
   ]),
   fog: stops([
     [0, 0.29, 0, 0.44],

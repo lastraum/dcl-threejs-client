@@ -3319,7 +3319,7 @@ export class ThreeBridge {
         }
         const live = obj.getObjectByName(mk)
         if (live) unfreezeObject3D(live)
-        else {
+        else if (FISH_GLTF_DIAG) {
           console.warn(
             `[fish] mesh still missing after force-attach e${entity as number} src=${src.split('/').pop()}`
           )
@@ -3335,8 +3335,10 @@ export class ThreeBridge {
 
   /** Log transform upserts for fishing GLBs (bobber aim / cast landing). */
   private logFishingTransformUpserts(entities: Iterable<Entity>): void {
+    // Default off — plaza multiplayer spam was measurable FPS cost (console every 250ms).
+    if (!FISH_GLTF_DIAG) return
     const now = performance.now()
-    if (now - this.lastFishXformLogAt < 250) return
+    if (now - this.lastFishXformLogAt < 1000) return
     const { GltfContainer, Transform, VisibilityComponent } = this.ecs
     for (const entity of entities) {
       if (!GltfContainer.has(entity) || !Transform.has(entity)) continue
@@ -3367,10 +3369,9 @@ export class ThreeBridge {
         `scale=(${t.scale.x.toFixed(2)},${t.scale.y.toFixed(2)},${t.scale.z.toFixed(2)}) ` +
         `parent=${t.parent ?? 0} vis=${vis ? 1 : 0} mesh=${mesh ? 1 : 0} meshes=${meshCount} ` +
         `inst=${obj.userData.dclInstanced ? 1 : 0} groupVis=${obj.visible ? 1 : 0}`
-      // Always console — Help mirror gate hid fishing aim misses.
       if (!mesh || meshCount === 0 || !vis || Math.abs(t.scale.x) < 1e-3) {
         console.warn(`[fish] ${line}`)
-      } else if (FISH_GLTF_DIAG) {
+      } else {
         console.log(`[fish] ${line}`)
       }
     }

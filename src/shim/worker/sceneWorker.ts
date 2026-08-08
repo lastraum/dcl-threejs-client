@@ -2509,13 +2509,15 @@ async function runBudgetedPointerEngineUpdate(
   label: string,
   work: () => Promise<void>
 ): Promise<'ok' | 'timeout'> {
+  // Race only for edge *ack* timing — never force-release the eng.update mutex.
+  // Releasing mid-update allowed concurrent eng.update and plaza 5s recovery thrash.
   let timedOut = false
+  const workP = runSerializedEngineUpdateForPointer(work)
   await Promise.race([
-    runSerializedEngineUpdateForPointer(work),
+    workP,
     new Promise<void>((resolve) => {
       setTimeout(() => {
         timedOut = true
-        forceReleaseEngineUpdateMutex(`${label}-eng-budget`)
         resolve()
       }, NO_TARGET_ENGINE_UPDATE_BUDGET_MS)
     })
@@ -2523,8 +2525,9 @@ async function runBudgetedPointerEngineUpdate(
   if (timedOut) {
     workerLog(
       'warn',
-      `[sceneWorker] ${label} — eng.update budget ${NO_TARGET_ENGINE_UPDATE_BUDGET_MS}ms; acking edge (partial)`
+      `[sceneWorker] ${label} — eng.update budget ${NO_TARGET_ENGINE_UPDATE_BUDGET_MS}ms; edge continues without mutex steal`
     )
+    // Let workP settle in background; serial inject queue still awaits via mutex chain.
   }
   return timedOut ? 'timeout' : 'ok'
 }

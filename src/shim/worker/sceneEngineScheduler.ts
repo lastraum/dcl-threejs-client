@@ -245,20 +245,26 @@ export function isEngineUpdateInFlight(): boolean {
   return engineUpdateInFlight || tickInFlight
 }
 
-/** Break a hung runSerializedEngineUpdate — awaitEngineUpdateIdle must not wait forever on the mutex. */
+/**
+ * Do **not** free the mutex while `eng.update` is still running.
+ * Early release allowed concurrent eng.update (pointer budget / inject-received) and
+ * collapsed Genesis Plaza into 5s tick-recovery thrash (~15–25 FPS).
+ * Mutex always drains when the in-flight update's finally runs.
+ */
 export function forceReleaseEngineUpdateMutex(reason: string): void {
   const cfg = config
+  if (engineUpdateInFlight) {
+    // Log once-class: flag stays true until real eng.update settles — waiters stay serialized.
+    cfg?.log(
+      `[sceneWorker] engine update still in-flight — ${reason} (mutex held until eng.update settles)`
+    )
+    return
+  }
   if (engineUpdateRelease) {
     cfg?.log(`[sceneWorker] engine update mutex force-release — ${reason}`)
     const release = engineUpdateRelease
     engineUpdateRelease = null
-    engineUpdateInFlight = false
     release()
-    return
-  }
-  if (engineUpdateInFlight) {
-    cfg?.log(`[sceneWorker] engine update in-flight flag cleared — ${reason}`)
-    engineUpdateInFlight = false
   }
 }
 

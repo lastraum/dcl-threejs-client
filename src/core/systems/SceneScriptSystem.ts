@@ -3933,9 +3933,17 @@ export class SceneScriptSystem {
       if (seenEnt.has(entity)) return
       const comps = this.pendingDiff.get(entity)
       if (!comps || comps.get(matId) !== 'put') return
-      if (!Material.has(entity)) return
+      if (!Material.has(entity)) {
+        // Orphan material dirt — drop so pendingDiff cannot stick forever.
+        comps.delete(matId)
+        this.clearPendingEntityIfEmpty(entity)
+        return
+      }
       if (!MeshRenderer.has(entity)) {
+        // Material without MeshRenderer can never paint — drop put (plaza stuck missingMesh=128).
         missingMesh++
+        comps.delete(matId)
+        this.clearPendingEntityIfEmpty(entity)
         return
       }
       seenEnt.add(entity)
@@ -3974,11 +3982,20 @@ export class SceneScriptSystem {
       this.publishPendingDiffPerf()
       perfNotePeels({ materialMs: performance.now() - t0, entities: applied })
     }
-    if (applied > 0 || seen > 0 || missingMesh > 0) {
+    // Log only real progress or rare stuck samples — every-second missingMesh=128
+    // console spam was measurable main-thread cost on plaza.
+    if (applied > 0 || (seen > 0 && failed > 0)) {
       clientDebugLog.log(
         'collision',
         `mesh-renderer material flush v3 — applied=${applied}/${seen} failed=${failed} missingMesh=${missingMesh} missingLeaf=${missingLeafCount} pendingDiff=${this.pendingDiff.size} admitDrop=${this.admitDropCount} edgeVis=${this.pointerEdgeVisualEntities.size}`,
-        { level: 'info', alsoConsole: true, throttleMs: 1_000, throttleKey: 'mr-mat-flush' }
+        { level: 'info', alsoConsole: true, throttleMs: 2_000, throttleKey: 'mr-mat-flush' }
+      )
+      this.admitDropCount = 0
+    } else if (missingMesh > 0) {
+      clientDebugLog.log(
+        'collision',
+        `mesh-renderer material flush v3 — dropped ${missingMesh} Material-without-MeshRenderer pendingDiff=${this.pendingDiff.size}`,
+        { level: 'info', alsoConsole: false, throttleMs: 5_000, throttleKey: 'mr-mat-flush-drop' }
       )
       this.admitDropCount = 0
     }

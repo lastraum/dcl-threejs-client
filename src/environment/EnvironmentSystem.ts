@@ -49,6 +49,7 @@ import {
   syncOutdoorLightingFromLights,
   type OutdoorLightingSnapshot
 } from './OutdoorLighting'
+import { OutdoorIbl } from './OutdoorIbl'
 import {
   animatedLightIntensity,
   celestialDirection,
@@ -131,6 +132,8 @@ export class EnvironmentSystem {
   /** Help panel — hide genesis dome and use void sky while keeping custom skybox textures. */
   private landscapeVisualSuppressed = false
   private readonly outdoorLighting = createOutdoorLightingSnapshot()
+  /** AAA low-rate outdoor env probe (Explorer-style sky IBL, not full GI). */
+  private outdoorIbl: OutdoorIbl | null = null
   /** Space biome starfield / void plate (when kind === space). */
   private spaceSky: SpaceSkyField | null = null
 
@@ -153,6 +156,7 @@ export class EnvironmentSystem {
 
     this.sun.target = new THREE.Object3D()
     this.moon.target = new THREE.Object3D()
+    this.outdoorIbl = new OutdoorIbl(this.host.renderer)
   }
 
   async init(scene: ResolvedScene): Promise<void> {
@@ -277,6 +281,8 @@ export class EnvironmentSystem {
     this.sceneLighting = {}
     this.userAdjustedLighting.clear()
     this.lastUserLighting = null
+    this.outdoorIbl?.dispose(this.host.scene)
+    this.outdoorIbl = null
     this.spaceSky?.dispose()
     this.spaceSky = null
     this.genesisSky.dispose()
@@ -590,6 +596,24 @@ export class EnvironmentSystem {
       this.equatorAmbient,
       { horizon: g.horizon, zenit: g.zenit },
       day
+    )
+
+    // Cheap outdoor IBL — Genesis day cycle only. Space/void/custom cube own their look.
+    const useOutdoorIbl =
+      !spaceSky && !voidSky && !this.customCube && !this.landscapeVisualSuppressed
+    this.outdoorIbl?.sync(
+      this.host.scene,
+      {
+        sky: g.indirectSky,
+        ground: g.indirectGround,
+        equator: g.indirectEquator
+      },
+      {
+        daySeconds: seconds,
+        isDay: day,
+        // skylightOff or non-genesis modes clear the probe.
+        skylightOff: skylightOff || !useOutdoorIbl
+      }
     )
   }
 

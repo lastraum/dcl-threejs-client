@@ -230,14 +230,12 @@ export class SceneHost {
     const shadowQ = renderQuality.getShadowQuality()
     const resScale = renderQuality.getResolutionScale()
     this.renderer.shadowMap.enabled = shadowQ !== 'off'
-    // Soft PCF multiplies shadow-pass cost. High/ultra keep soft; medium/low use cheaper maps
-    // (plaza at 22 FPS with soft + 300+ casters was submit/mesh ~3×).
+    // Explorer soft directional: PCFSoft on medium+ (parity). Low stays Basic for mobile/budget.
+    // Soft cost is real — AdaptiveQuality can still drop shadow tier under hitch.
     this.renderer.shadowMap.type =
-      shadowQ === 'ultra' || shadowQ === 'high'
+      shadowQ === 'ultra' || shadowQ === 'high' || shadowQ === 'medium'
         ? THREE.PCFSoftShadowMap
-        : shadowQ === 'medium'
-          ? THREE.PCFShadowMap
-          : THREE.BasicShadowMap
+        : THREE.BasicShadowMap
     this.renderer.setPixelRatio(effectivePixelRatio(resScale))
 
     // VSync On + Max FPS → pure rAF (display-aligned). VSync Off still uses rAF (browser limit).

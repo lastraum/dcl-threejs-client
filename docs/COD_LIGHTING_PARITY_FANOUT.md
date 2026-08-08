@@ -58,9 +58,9 @@ Kelvin **6570** on the light is **not applied** (`UseColorTemperature = false`);
 |---|----------|--------|--------|
 | ① | **P0** | Re-key **`indirectEquator` / `indirectGround`** from Explorer prefab (full day cycle); noon lavender + dark red | **Implemented** (`skyGradients.ts`) |
 | ② | **P0** | Default `sceneSunLight` **52→48** (softer key); **keep full 0–100 Scene sun light knob** in settings | **Implemented** (`SunEnvironmentSettings.ts`) |
-| ③ | **P1** | Soft shadows on **medium** (`PCFSoftShadowMap`) — perf-gate plaza | Pending |
-| ④ | **P1** | Share ECS outdoor PBR soften with scene GLTF materials | Pending |
-| ⑤ | **P2** | Cheap outdoor IBL (static/low-rate PMREM → `scene.environment`, low intensity) | Pending |
+| ③ | **P1** | Soft shadows on **medium** (`PCFSoftShadowMap`); low stays Basic | **Implemented** (`SceneHost.ts`) |
+| ④ | **P1** | Share ECS outdoor PBR soften with scene GLTF (`applyOutdoorMaterialResponse`) | **Implemented** (`pbrApply` + `LandscapeAssetSanitizer`) |
+| ⑤ | **P1/P2** | AAA outdoor IBL — low-rate PMREM from trilight (~12 buckets/day), `environmentIntensity` day 0.32 / night 0.22 | **Implemented** (`OutdoorIbl.ts` + `EnvironmentSystem`) |
 | ⑥ | **P2** | Exposure tier trim only after light balance | Pending |
 
 ---

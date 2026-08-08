@@ -167,6 +167,32 @@ export function configureEmissiveRendering(
   }
 }
 
+/**
+ * Outdoor lit response shared by ECS Material path and scene GLTF sanitize.
+ * Explorer-ish: less chrome, roughness floor, modest IBL from scene.environment.
+ * Does not assign envMap — null keeps Three.js scene.environment (cheap outdoor IBL).
+ */
+export const OUTDOOR_ENV_MAP_INTENSITY = 0.35
+
+export function applyOutdoorMaterialResponse(
+  material: THREE.MeshStandardMaterial,
+  opts?: { metalness?: number; roughness?: number }
+): void {
+  const metalIn = opts?.metalness ?? material.metalness
+  const roughIn = opts?.roughness ?? material.roughness
+  material.metalness = Math.min(1, metalIn * 0.55)
+  material.roughness = Math.min(1, Math.max(0.28, roughIn * 0.82 + 0.2))
+  // Allow scene.environment IBL; never pin intensity at 0.
+  if (
+    material.envMapIntensity === undefined ||
+    material.envMapIntensity === 0 ||
+    material.envMapIntensity === 1
+  ) {
+    material.envMapIntensity = OUTDOOR_ENV_MAP_INTENSITY
+  }
+  material.userData.dclOutdoorSoft = true
+}
+
 export function applyPbrScalars(
   material: THREE.MeshPhysicalMaterial,
   pbr: {
@@ -179,17 +205,14 @@ export function applyPbrScalars(
 ): void {
   // Soft outdoor response (Unity Explorer lit feel): less mirror, higher roughness floor.
   // Creator Hub often stamps metallic/roughness 0.5 — treat as mid, not chrome.
-  const metalIn = pbr.metallic ?? 0.2
-  const roughIn = pbr.roughness ?? 0.65
-  material.metalness = Math.min(1, metalIn * 0.55)
-  material.roughness = Math.min(1, Math.max(0.28, roughIn * 0.82 + 0.2))
+  applyOutdoorMaterialResponse(material, {
+    metalness: pbr.metallic ?? 0.2,
+    roughness: pbr.roughness ?? 0.65
+  })
 
   const spec = pbr.reflectivityColor ?? { r: 1, g: 1, b: 1 }
   material.specularColor.setRGB(spec.r ?? 1, spec.g ?? 1, spec.b ?? 1)
   material.specularIntensity = (pbr.specularIntensity ?? 1) * 0.65
-  if (material.envMapIntensity === undefined || material.envMapIntensity === 1) {
-    material.envMapIntensity = 0.4
-  }
 
   applyDirectIntensity(material, pbr.directIntensity ?? 1)
 }

@@ -62,6 +62,7 @@ Kelvin **6570** on the light is **not applied** (`UseColorTemperature = false`);
 | ④ | **P1** | Share ECS outdoor PBR soften with scene GLTF (`applyOutdoorMaterialResponse`) | **Implemented** (`pbrApply` + `LandscapeAssetSanitizer`) |
 | ⑤ | **P1/P2** | AAA outdoor IBL — low-rate PMREM from trilight (~12 buckets/day), `environmentIntensity` day 0.32 / night 0.22 | **Implemented** (`OutdoorIbl.ts` + `EnvironmentSystem`) |
 | ⑥ | **P2** | Exposure tier trim only after light balance | Pending |
+| ⑦ | **P0 night** | Darker 00:00 — lower moon/hemi/equator/ground boost/IBL/moonExposure; no residual sun | **Implemented** |
 
 ---
 

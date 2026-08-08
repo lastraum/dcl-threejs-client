@@ -114,31 +114,31 @@ export function animatedLightIntensity(seconds: number): number {
 
 /**
  * Moon directional fill at night. Unity sun anim intensity is ~0 overnight; night scenes
- * still read via ambient + residual directional. We keep a clear moon key light so vertical
- * planes (PNG character boards) light like Explorer at 23:59.
+ * still read via ambient + residual directional. Peak kept below ~0.7 so × MOON_BRIGHTNESS
+ * stays Explorer-dim at 00:00 (not washed marble/plaza).
  */
 export function moonLightIntensity(seconds: number): number {
   if (isSunPeriod(seconds)) return 0
   const t = normalizedTimeOfDay(seconds)
   const hours = t * 24
 
-  // Peak around midnight; stay usable through full night arc.
+  // Peak around midnight — lower than old 1.05 (was double-bright with MOON_BRIGHTNESS 1.75).
   if (hours >= 21 || hours <= 2) {
     const distFromMidnight = hours >= 12 ? 24 - hours : hours
     if (distFromMidnight <= 5) {
-      return THREE.MathUtils.lerp(1.05, 0.72, distFromMidnight / 5)
+      return THREE.MathUtils.lerp(0.62, 0.45, distFromMidnight / 5)
     }
-    return THREE.MathUtils.lerp(0.72, 0.55, (distFromMidnight - 5) / 2)
+    return THREE.MathUtils.lerp(0.45, 0.35, (distFromMidnight - 5) / 2)
   }
 
   if (hours < SUNRISE / 3600) {
-    return THREE.MathUtils.lerp(0.55, 0.7, hours / (SUNRISE / 3600))
+    return THREE.MathUtils.lerp(0.35, 0.48, hours / (SUNRISE / 3600))
   }
   if (hours > SUNSET / 3600) {
-    return THREE.MathUtils.lerp(0.7, 0.5, (hours - SUNSET / 3600) / (21 - SUNSET / 3600))
+    return THREE.MathUtils.lerp(0.48, 0.32, (hours - SUNSET / 3600) / (21 - SUNSET / 3600))
   }
 
-  return 0.48
+  return 0.32
 }
 
 export { normalizeDaySeconds, normalizedTimeOfDay, SECONDS_PER_DAY }

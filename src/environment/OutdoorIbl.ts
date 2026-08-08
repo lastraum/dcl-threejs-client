@@ -11,8 +11,8 @@ import { PMREMGenerator } from 'three'
 
 /** Daytime soft fill — keep below 0.5 so ACES + sun stay primary. */
 export const OUTDOOR_IBL_INTENSITY_DAY = 0.32
-/** Night probe — slightly lower so moon/hemi own the key. */
-export const OUTDOOR_IBL_INTENSITY_NIGHT = 0.22
+/** Night probe — low so moon/hemi own the key; was 0.22 and washed 00:00. */
+export const OUTDOOR_IBL_INTENSITY_NIGHT = 0.1
 
 /** Normalized TOD quantized into this many rebuilds per day (AAA: not every frame). */
 const TOD_BUCKETS = 12

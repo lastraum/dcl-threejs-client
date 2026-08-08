@@ -33,9 +33,13 @@ const DEFAULTS: SunEnvironmentSettingsState = {
    */
   sceneSunLight: 48,
   exposure: 70,
-  sceneMoonLight: 58,
-  /** Night moon exposure higher so 23:59 planes read. */
-  moonExposure: 62
+  /** Moon light slider default — slightly under mid so 00:00 stays dark. */
+  sceneMoonLight: 48,
+  /**
+   * Night ACES multiplier default. Was 62 (~1.4×) which lifted midnight to dusk.
+   * ~48 ≈ neutral-low; slider still goes to 100 for board-readable night.
+   */
+  moonExposure: 48
 }
 
 type Listener = (state: SunEnvironmentSettingsState) => void

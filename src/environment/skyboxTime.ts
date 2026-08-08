@@ -13,22 +13,29 @@ export const TRANSITION_WALL_SEC = 4
  * Near 1.0 — anim carries the punch; avoids double-boost harsh speculars.
  */
 export const SUN_BRIGHTNESS = 1.0
-/** Moon directional — strong enough to read planes at night (Unity ambient+moon fill). */
-export const MOON_BRIGHTNESS = 1.75
+/**
+ * Moon directional scale (× moonLightIntensity curve).
+ * Was 1.75 — stacked with hemi/equator/exposure and washed 00:00 to dusk-lavender.
+ * Explorer night is a dim cool key, not a second sun.
+ */
+export const MOON_BRIGHTNESS = 0.92
 /**
  * Unity Trilight ambient (SkyboxRenderController.UpdateIndirectLight):
  * Hemisphere = sky + ground; AmbientLight = equator band (soft fill on vertical surfaces).
  */
 export const HEMI_DAY_INTENSITY = 0.42
-/** Night sky/ground ambient — Explorer night is purple fill, not black. */
-export const HEMI_NIGHT_INTENSITY = 0.78
+/** Night sky/ground ambient — purple fill, darker than day (Explorer 00:00, not washed). */
+export const HEMI_NIGHT_INTENSITY = 0.38
 /** Equator ambient — primary reason vertical PNG planes read soft in Explorer. */
 export const EQUATOR_AMBIENT_DAY = 0.48
-/** Night equator — lifts dark PBR planes under moonlight (image: Unity 23:59). */
-export const EQUATOR_AMBIENT_NIGHT = 0.72
-/** Boost hemi groundColor at night — indirectGround gradient is very dark. */
-export const NIGHT_GROUND_HEMI_BOOST = 3.2
-/** ACES tone-mapping headroom at night (fixed daytime exposure crushes moon + hemi). */
+/** Night equator — soft cool fill without lifting marble/grass to day levels. */
+export const EQUATOR_AMBIENT_NIGHT = 0.32
+/**
+ * Night hemi groundColor multiplier. Was 3.2 (board readability) — over-lifted outdoor
+ * ground at midnight. Keep a mild boost so pure-black ground ramps still read.
+ */
+export const NIGHT_GROUND_HEMI_BOOST = 1.25
+/** ACES tone-mapping headroom at night (unused path; moonExposure slider owns night exposure). */
 export const NIGHT_EXPOSURE_BOOST = 1.32
 
 export const TransitionMode = {

@@ -511,9 +511,12 @@ export class EnvironmentSystem {
     const ambientMul = (day ? sceneSunMul : sceneMoonMul) * sunScale
 
     // Directional: Unity uses anim intensity ~2.72 peak × color ramp (SUN_BRIGHTNESS ≈ 1).
+    // No residual sun key at night — even 0.02× washed cool marble under ACES.
     this.sun.intensity = this.disableSun
       ? 0
-      : (day ? lit * SUN_BRIGHTNESS : 0.02) * sunScale * sceneSunMul
+      : day
+        ? lit * SUN_BRIGHTNESS * sunScale * sceneSunMul
+        : 0
     this.sun.color.copy(g.directional)
 
     const moonLit = moonLightIntensity(seconds)

@@ -24,6 +24,7 @@ import type { ProjectRoot } from '../localScene/projectRoot'
 import { saveTerrainToProject } from './saveTerrainToProject'
 import { saveTerrainDraft } from './terrainEditorStore'
 import {
+  footprintParcelSpan,
   generateTerrainStarter,
   templateMeta,
   type TerrainStarterTemplateId
@@ -219,17 +220,23 @@ export class TerrainSculptSession {
   applyTerrainStarter(opts: {
     templateId: TerrainStarterTemplateId
     seed: number
-  }): { ok: true; label: string; seed: number } | { ok: false; message: string } {
+  }):
+    | { ok: true; label: string; seed: number; widthM: number; depthM: number; parcels: number }
+    | { ok: false; message: string } {
     if (this.strokeOpen) this.endStroke()
     const meta = templateMeta(opts.templateId)
     const seed = (opts.seed >>> 0) || 1
+    // arenaWidthM/depthM = scene parcel footprint (from sceneWorldBounds at workspace boot).
+    const widthM = this.arenaWidthM
+    const depthM = this.arenaDepthM
+    const span = footprintParcelSpan(widthM, depthM)
     this.undoStack.pushSnapshot(this.heights, this.splat, this.lava, this.grass, this.grassRgb)
     const result = generateTerrainStarter({
       templateId: opts.templateId,
       seed,
       resolution: this.resolution,
-      widthM: this.arenaWidthM,
-      depthM: this.arenaDepthM
+      widthM,
+      depthM
     })
     this.heights.set(result.heights)
     this.splat.set(result.splat)
@@ -246,7 +253,14 @@ export class TerrainSculptSession {
     this.hooks.onGrassCommitted?.()
     this.hooks.onStarterApplied?.({ templateId: opts.templateId, seed })
     this.notify()
-    return { ok: true, label: meta.label, seed }
+    return {
+      ok: true,
+      label: meta.label,
+      seed,
+      widthM,
+      depthM,
+      parcels: span.parcels
+    }
   }
 
   undo(): void {

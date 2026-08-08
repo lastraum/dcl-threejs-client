@@ -4,6 +4,7 @@
  */
 import { simplex2d } from '../../dcl/landscape/simplex2d'
 import { mulberry32 } from '../../dcl/landscape/Utils/SeededRandom'
+import { PARCEL_SIZE } from '../../dcl/content/types'
 import {
   GENESIS_HEIGHTMAP_MAX_METERS,
   TERRAIN_SEA_FLOOR_WORLD_Y
@@ -66,8 +67,23 @@ export type GenerateTerrainStarterOpts = {
   /** u32 seed (from number or seedFromString). */
   seed: number
   resolution: number
+  /**
+   * Scene footprint in DCL meters (from sceneWorldBounds / parcels).
+   * Starters cover the full multi-parcel arena — not a single 16×16 only.
+   */
   widthM: number
   depthM: number
+}
+
+/** Approx parcel span of a footprint (DCL parcel = 16m). */
+export function footprintParcelSpan(widthM: number, depthM: number): {
+  cols: number
+  rows: number
+  parcels: number
+} {
+  const cols = Math.max(1, Math.round(widthM / PARCEL_SIZE))
+  const rows = Math.max(1, Math.round(depthM / PARCEL_SIZE))
+  return { cols, rows, parcels: cols * rows }
 }
 
 /** FNV-1a-ish string → u32 for human seeds (“pizza-island”). */
@@ -132,12 +148,18 @@ function clampHeight(y: number): number {
 
 /**
  * Generate sculpt buffers for a starter template. Pure: no Three.js / no session.
- * Deterministic for the same (templateId, seed, resolution, footprint).
+ * Deterministic for the same (templateId, seed, resolution, footprint meters).
+ *
+ * **Parcel size:** `widthM` × `depthM` is the full scene footprint (1×1 = 16×16m,
+ * 3×2 = 48×32m, …). Heights cover the whole arena; noise uses **world meters** so
+ * hill/dune wavelength stays similar across small and large multi-parcel scenes.
  */
 export function generateTerrainStarter(opts: GenerateTerrainStarterOpts): TerrainStarterResult {
   const res = opts.resolution
   const n = res * res
   const seed = (opts.seed >>> 0) || 1
+  const widthM = Math.max(PARCEL_SIZE, opts.widthM)
+  const depthM = Math.max(PARCEL_SIZE, opts.depthM)
   const heights = new Float32Array(n)
   const splat = new Uint8Array(n * 4)
   const lava = new Uint8Array(n)
@@ -145,21 +167,32 @@ export function generateTerrainStarter(opts: GenerateTerrainStarterOpts): Terrai
   const grassRgb = new Uint8Array(n * 3)
   const rng = mulberry32(seed ^ 0x9e3779b9)
 
-  // World span for noise scale (parcels ~16m).
-  const scale = Math.max(opts.widthM, opts.depthM, 16) / 64
+  // Noise wavelengths in meters (parcel-invariant feature size).
+  const HILL_WAVE_M = 28
+  const DETAIL_WAVE_M = 11
+  const RIDGE_WAVE_M = 32
+  const DUNE_WAVE_M = 18
+  // Island: fall off relative to the smaller footprint half-extent (fits multi-parcel).
+  const halfMinM = Math.min(widthM, depthM) * 0.5
+  const islandRadiusM = Math.max(PARCEL_SIZE * 0.45, halfMinM * 0.92)
 
   for (let iz = 0; iz < res; iz++) {
     for (let ix = 0; ix < res; ix++) {
       const i = iz * res + ix
       const u = res <= 1 ? 0.5 : ix / (res - 1)
       const v = res <= 1 ? 0.5 : iz / (res - 1)
-      // Centered XZ in “noise units”
-      const nx = (u - 0.5) * 2 * scale
-      const nz = (v - 0.5) * 2 * scale
-      // Distance from footprint center 0..1 (circular)
-      const dx = u - 0.5
-      const dz = v - 0.5
-      const radial = Math.min(1, Math.sqrt(dx * dx + dz * dz) * 2)
+      // Footprint-local meters from SW corner, then centered.
+      const wx = u * widthM
+      const wz = v * depthM
+      const cx = wx - widthM * 0.5
+      const cz = wz - depthM * 0.5
+      // World-metric noise coords (same hill size on 1×1 and 4×4).
+      const nxHill = cx / HILL_WAVE_M
+      const nzHill = cz / HILL_WAVE_M
+      const nxDetail = cx / DETAIL_WAVE_M
+      const nzDetail = cz / DETAIL_WAVE_M
+      const distM = Math.hypot(cx, cz)
+      const radial = Math.min(1.25, distM / islandRadiusM)
 
       let h = TERRAIN_SEA_FLOOR_WORLD_Y
       // splat channels: g,d,r,s
@@ -171,7 +204,7 @@ export function generateTerrainStarter(opts: GenerateTerrainStarterOpts): Terrai
 
       switch (opts.templateId) {
         case 'flat-land': {
-          const micro = fbm2(nx * 3, nz * 3, 2, seed) * 0.15
+          const micro = fbm2(nxDetail * 1.2, nzDetail * 1.2, 2, seed) * 0.15
           h = clampHeight(0.35 + micro)
           g = 180
           d = 40
@@ -181,8 +214,8 @@ export function generateTerrainStarter(opts: GenerateTerrainStarterOpts): Terrai
           break
         }
         case 'rolling-hills': {
-          const hills = fbm2(nx * 0.85, nz * 0.85, 5, seed)
-          const detail = fbm2(nx * 2.4, nz * 2.4, 3, seed ^ 0x55) * 0.35
+          const hills = fbm2(nxHill, nzHill, 5, seed)
+          const detail = fbm2(nxDetail, nzDetail, 3, seed ^ 0x55) * 0.35
           h = clampHeight(2.5 + (hills * 0.5 + 0.5) * 14 + detail * 3)
           if (h < 3) {
             s = 160
@@ -202,10 +235,10 @@ export function generateTerrainStarter(opts: GenerateTerrainStarterOpts): Terrai
           break
         }
         case 'island': {
-          const base = fbm2(nx * 0.9, nz * 0.9, 4, seed)
+          const base = fbm2(nxHill * 0.95, nzHill * 0.95, 4, seed)
           const peak = (base * 0.5 + 0.5) * 18 + 1.5
-          // Smooth falloff to sea at edges
-          const fall = Math.pow(Math.max(0, 1 - radial * 1.05), 1.65)
+          // Falloff to sea at footprint edges (scales with multi-parcel radius).
+          const fall = Math.pow(Math.max(0, 1 - radial * 1.02), 1.65)
           h = clampHeight(peak * fall)
           if (h < 1.2) {
             h = TERRAIN_SEA_FLOOR_WORLD_Y
@@ -233,8 +266,9 @@ export function generateTerrainStarter(opts: GenerateTerrainStarterOpts): Terrai
           break
         }
         case 'desert-ridges': {
-          const rid = ridge2(nx * 0.7, nz * 0.7, 4, seed)
-          const dunes = fbm2(nx * 1.6 + 3, nz * 0.4, 3, seed ^ 0xaa) * 0.4
+          const rid = ridge2(cx / RIDGE_WAVE_M, cz / RIDGE_WAVE_M, 4, seed)
+          const dunes =
+            fbm2(cx / DUNE_WAVE_M + 3, cz / (DUNE_WAVE_M * 2.2), 3, seed ^ 0xaa) * 0.4
           h = clampHeight(1.2 + rid * 12 + dunes * 4)
           s = 200
           d = 40

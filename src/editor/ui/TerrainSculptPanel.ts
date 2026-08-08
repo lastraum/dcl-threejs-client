@@ -2511,7 +2511,11 @@ export class TerrainSculptPanel {
       void this.refApi?.patchEnvironment?.({ kind: meta.matchKind })
     }
 
-    this.onStatus(`Applied ${result.label} · seed ${result.seed}`)
+    const cols = Math.max(1, Math.round(result.widthM / 16))
+    const rows = Math.max(1, Math.round(result.depthM / 16))
+    this.onStatus(
+      `Applied ${result.label} · seed ${result.seed} · footprint ${cols}×${rows} parcels (${result.widthM.toFixed(0)}×${result.depthM.toFixed(0)}m)`
+    )
   }
 
   private addSharedBrushSliders(parent: HTMLElement): void {

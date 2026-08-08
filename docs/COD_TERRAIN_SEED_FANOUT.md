@@ -104,6 +104,9 @@ Apply sequence:
 ```text
 heights[i] = f(seed, template, ix, iz, footprintMeters)
   — mulberry32 / hash already in landscape Utils
+  — footprint = sceneWorldBounds(parcels) widthM×depthM (multi-parcel aware)
+  — noise in **world meters** (hill/dune wavelength fixed; larger scenes get more features)
+  — island falloff uses footprint half-extent radius
   — template params: baseY, amplitude, frequency, ridge, islandFalloff, clamp 0…120
   — splat: optional band by height (sand low / grass mid / rock high)
   — grass density: optional low noise on grass band only

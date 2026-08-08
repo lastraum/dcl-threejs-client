@@ -11,6 +11,7 @@ import {
   isFileSystemAccessSupported,
   linkCreatorHubScenesFolder,
   listProjects,
+  loadProjectThumbnailObjectUrl,
   pickAndAddProject,
   relinkProject,
   removeProject,
@@ -36,6 +37,8 @@ export class EditorHubPage {
   private statusEl: HTMLDivElement
   private helpEl: HTMLParagraphElement
   private topNav: SocialShellTopNav | null = null
+  /** blob: URLs for card thumbs — revoked on refresh/dispose. */
+  private thumbnailUrls: string[] = []
 
   constructor(
     container: HTMLElement,
@@ -107,9 +110,21 @@ export class EditorHubPage {
   }
 
   dispose(): void {
+    this.revokeThumbnails()
     this.topNav?.dispose()
     this.topNav = null
     this.page.remove()
+  }
+
+  private revokeThumbnails(): void {
+    for (const url of this.thumbnailUrls) {
+      try {
+        URL.revokeObjectURL(url)
+      } catch {
+        /* ignore */
+      }
+    }
+    this.thumbnailUrls = []
   }
 
   private bindFolderDrop(): void {
@@ -225,6 +240,7 @@ export class EditorHubPage {
   }
 
   async refresh(): Promise<void> {
+    this.revokeThumbnails()
     const projects = await listProjects()
     this.grid.innerHTML = ''
     if (projects.length === 0) {
@@ -253,6 +269,26 @@ export class EditorHubPage {
     }
     if (project.permission !== 'granted') {
       card.classList.add('editor-hub-card--pending')
+    }
+
+    const media = document.createElement('div')
+    media.className = 'editor-hub-card-thumb'
+    media.setAttribute('aria-hidden', 'true')
+    card.appendChild(media)
+    if (project.permission === 'granted') {
+      void loadProjectThumbnailObjectUrl(project.id).then((url) => {
+        if (!url || !media.isConnected) {
+          if (url) URL.revokeObjectURL(url)
+          return
+        }
+        this.thumbnailUrls.push(url)
+        const img = document.createElement('img')
+        img.src = url
+        img.alt = ''
+        img.loading = 'lazy'
+        media.appendChild(img)
+        media.classList.add('editor-hub-card-thumb--has-image')
+      })
     }
 
     const name = document.createElement('h2')

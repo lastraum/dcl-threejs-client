@@ -180,6 +180,24 @@ export function injectEditorStyles(): void {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  overflow: hidden;
+}
+.editor-hub-card-thumb {
+  margin: -16px -16px 0;
+  height: 140px;
+  background: linear-gradient(145deg, #1e293b 0%, #0f172a 55%, #134e4a 100%);
+  border-bottom: 1px solid #1f2937;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.editor-hub-card-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.editor-hub-card-thumb--has-image {
+  background: #0b1220;
 }
 .editor-hub-card h2 {
   font-size: 16px;

@@ -1090,13 +1090,16 @@ export async function runSceneEnginePointerTick(
         const delta = mrAfter - mrBefore
         const ground = diagnoseLevelStateGroundRay(eng)
         const g = ground.ground
-        cfg.log(
+        // Always warn-level so main cannot throttle away the Δ proof (scene gate vs client).
+        const line =
           `[sceneWorker] level-state UP isPressed-path — MeshRenderer ${mrBefore}→${mrAfter} (Δ=${delta}) ` +
-            `camY=${ground.camY?.toFixed(1) ?? '-'} rayY=${ground.rayY?.toFixed(2) ?? '-'} ` +
-            `ground=${g ? `(${g.x.toFixed(1)},${g.z.toFixed(1)})` : 'null'} ` +
-            `ppi=${ground.ppi ? 1 : 0} cam=${ground.cam ? 1 : 0} hitEntity=0 ` +
-            `(nQ needs selected worker/soldier)`
-        )
+          `camY=${ground.camY?.toFixed(1) ?? '-'} rayY=${ground.rayY?.toFixed(2) ?? '-'} ` +
+          `ground=${g ? `(${g.x.toFixed(1)},${g.z.toFixed(1)})` : 'null'} ` +
+          `ppi=${ground.ppi ? 1 : 0} cam=${ground.cam ? 1 : 0} hitEntity=0 ` +
+          (delta === 0
+            ? `(Δ=0: scene nQ skipped — need selected worker/soldier, match active, not building-only)`
+            : `(Δ>0: scene created marker — peel should show disc)`)
+        cfg.log(line)
       } catch (err) {
         cfg.log(
           `[sceneWorker] level-state UP isPressed-path — diagnose failed: ${

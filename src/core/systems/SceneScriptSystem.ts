@@ -2305,7 +2305,9 @@ export class SceneScriptSystem {
       // Pointer / ground-ray diagnostics must not share the global 100ms scene-worker-log key
       // (was swallowing level-state isPressed-path lines during click bursts).
       const pointerDiag =
-        /level-state UP|pointer-edge-|isPressed-path|edge-VFX peel|pointer ui egress/i.test(cleaned)
+        /level-state edge done|level-state UP|isPressed-path|pointer-edge-|edge-VFX peel|pointer ui egress/i.test(
+          cleaned
+        )
       if (loadGateHot || pointerDiag) {
         console.info(`[sceneWorker] ${cleaned}`)
       }

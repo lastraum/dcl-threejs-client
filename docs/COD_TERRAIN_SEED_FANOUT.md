@@ -5,7 +5,7 @@
 **Bar:** AGENTS.md COD · editor/play landscape parity · no invent Explorer APIs  
 **Agents:** explore (terrain editor stack) · explore (biome catalog / scatter) · plan  
 
-**Status:** Plan only — no implementation on this fan-out.
+**Status:** P0 implemented — generator + Starters UI + apply/confirm/undo (2026-08-08).
 
 ---
 
@@ -60,12 +60,12 @@ Today the product already has two layers: (1) **`environment.kind`** — client 
 
 | # | Priority | Action | Risk | Status |
 |---|----------|--------|------|--------|
-| ① | **P0** | Pure `generateTerrainStarter(templateId, seed, footprint, res)` — heights + optional splat/grass; reuse perlin/simplex/mulberry32 | Med (1024² hitch) | Plan |
-| ② | **P0** | Wire apply via `TerrainSculptSession` + **full undo snapshot** + draft persist | Low–med | Plan |
-| ③ | **P0** | **Confirm if sculpt dirty**; never wipe without dialog | Low | Plan |
-| ④ | **P0** | **Starters UI** — card grid + seed + Re-roll + Apply; optional “Match biome backdrop” (default on) | Low | Plan |
-| ⑤ | **P0** | Ship **4 templates**: Flat Land, Rolling Hills, Island, Desert Ridges | Low | Plan |
-| ⑥ | **P1** | Human seed strings (`"pizza-island"` → u32); persist last template/seed in IndexedDB draft | Low | Plan |
+| ① | **P0** | Pure `generateTerrainStarter(templateId, seed, footprint, res)` — heights + optional splat/grass; reuse perlin/simplex/mulberry32 | Med (1024² hitch) | **Done** `generateTerrainStarter.ts` |
+| ② | **P0** | Wire apply via `TerrainSculptSession` + **full undo snapshot** + draft persist | Low–med | **Done** `applyTerrainStarter` |
+| ③ | **P0** | **Confirm if sculpt dirty**; never wipe without dialog | Low | **Done** panel confirm |
+| ④ | **P0** | **Starters UI** — card grid + seed + Re-roll + Apply; optional “Match biome backdrop” (default on) | Low | **Done** height flyout |
+| ⑤ | **P0** | Ship **4 templates**: Flat Land, Rolling Hills, Island, Desert Ridges | Low | **Done** |
+| ⑥ | **P1** | Human seed strings (`"pizza-island"` → u32); persist last template/seed in IndexedDB draft | Low | **Partial** seed strings yes; draft persist later |
 | ⑦ | **P1** | Optional `environment.scatterSeed` for re-rollable trees (ThreejsClient-only) | Med | Plan |
 | ⑧ | **P2** | Card thumbnails / worker-thread gen / masked apply | Med–high | Plan |
 

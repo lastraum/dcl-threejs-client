@@ -49,6 +49,12 @@ import {
   terrainColorFromHex,
   terrainColorToHex
 } from '../terrain/terrainSculptConstants'
+import {
+  TERRAIN_STARTER_TEMPLATES,
+  randomTerrainSeed,
+  seedFromString,
+  type TerrainStarterTemplateId
+} from '../terrain/generateTerrainStarter'
 import { LANDSCAPE_ENVIRONMENTS } from '../../dcl/landscape/EnvironmentCatalog'
 import {
   readEnvironmentKind,
@@ -237,6 +243,11 @@ export class TerrainSculptPanel {
   private shadingLegendEl: HTMLDivElement | null = null
   private readonly shadingInputs = new Set<HTMLInputElement>()
   private unsub: (() => void) | null = null
+  /** Terrain height starters (Minecraft-like). */
+  private starterSelected: TerrainStarterTemplateId = 'rolling-hills'
+  private starterSeedInput: HTMLInputElement | null = null
+  private starterMatchBiomeCb: HTMLInputElement | null = null
+  private starterTemplateButtons = new Map<TerrainStarterTemplateId, HTMLButtonElement>()
 
   constructor(
     parent: HTMLElement,
@@ -324,6 +335,7 @@ export class TerrainSculptPanel {
     this.heightToolsHost.className = 'editor-sculpt-tools'
     this.flyoutEl.appendChild(this.heightToolsHost)
     this.addSculptModes()
+    this.addTerrainStarters(this.heightToolsHost)
 
     this.splatToolsHost = document.createElement('div')
     this.splatToolsHost.className = 'editor-sculpt-tools editor-sculpt-tools--hidden'
@@ -2370,6 +2382,136 @@ export class TerrainSculptPanel {
       wrap.appendChild(btn)
     }
     this.heightToolsHost.appendChild(wrap)
+  }
+
+  /**
+   * Minecraft-like height starters — fills sculpt buffers; biome dock stays backdrop-only.
+   * Confirm if dirty · undo restores · Save still bakes terrain.glb.
+   */
+  private addTerrainStarters(parent: HTMLElement): void {
+    const box = document.createElement('div')
+    box.className = 'editor-terrain-starters'
+    box.style.cssText =
+      'margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.12)'
+
+    const title = document.createElement('div')
+    title.className = 'editor-sculpt-title'
+    title.textContent = 'Starters'
+    title.style.cssText = 'font-size:12px;margin-bottom:6px;opacity:0.9'
+    box.appendChild(title)
+
+    const hint = document.createElement('div')
+    hint.style.cssText = 'font-size:11px;opacity:0.65;margin-bottom:8px;line-height:1.35'
+    hint.textContent =
+      'Replace sculpt height · Undo restores · Save bakes GLB. Biome icons never wipe height.'
+    box.appendChild(hint)
+
+    const cards = document.createElement('div')
+    cards.className = 'editor-sculpt-row'
+    cards.style.cssText = 'flex-wrap:wrap;gap:6px'
+    for (const t of TERRAIN_STARTER_TEMPLATES) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'editor-sculpt-btn'
+      btn.textContent = `${t.emoji} ${t.label}`
+      btn.title = t.tip
+      btn.addEventListener('click', () => {
+        this.starterSelected = t.id
+        this.syncStarterTemplateHighlight()
+        this.onStatus(`Starter: ${t.label}`)
+      })
+      this.starterTemplateButtons.set(t.id, btn)
+      cards.appendChild(btn)
+    }
+    box.appendChild(cards)
+    this.syncStarterTemplateHighlight()
+
+    const seedRow = document.createElement('div')
+    seedRow.style.cssText =
+      'display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap'
+    const seedLab = document.createElement('label')
+    seedLab.textContent = 'Seed'
+    seedLab.style.cssText = 'font-size:11px;opacity:0.8'
+    const seedIn = document.createElement('input')
+    seedIn.type = 'text'
+    seedIn.className = 'editor-sculpt-input'
+    seedIn.value = String(randomTerrainSeed())
+    seedIn.placeholder = 'number or pizza-island'
+    seedIn.style.cssText = 'flex:1;min-width:100px;font-size:12px;padding:4px 6px'
+    this.starterSeedInput = seedIn
+    const reroll = document.createElement('button')
+    reroll.type = 'button'
+    reroll.className = 'editor-sculpt-btn'
+    reroll.textContent = '↻'
+    reroll.title = 'Re-roll seed'
+    reroll.addEventListener('click', () => {
+      if (this.starterSeedInput) this.starterSeedInput.value = String(randomTerrainSeed())
+    })
+    seedRow.appendChild(seedLab)
+    seedRow.appendChild(seedIn)
+    seedRow.appendChild(reroll)
+    box.appendChild(seedRow)
+
+    const matchRow = document.createElement('label')
+    matchRow.style.cssText =
+      'display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11px;cursor:pointer'
+    const matchCb = document.createElement('input')
+    matchCb.type = 'checkbox'
+    matchCb.checked = true
+    this.starterMatchBiomeCb = matchCb
+    matchRow.appendChild(matchCb)
+    matchRow.appendChild(document.createTextNode('Match biome backdrop to template'))
+    box.appendChild(matchRow)
+
+    const apply = document.createElement('button')
+    apply.type = 'button'
+    apply.className = 'editor-sculpt-btn'
+    apply.textContent = 'Apply starter'
+    apply.style.cssText = 'margin-top:10px;width:100%'
+    apply.addEventListener('click', () => this.applySelectedTerrainStarter())
+    box.appendChild(apply)
+
+    parent.appendChild(box)
+  }
+
+  private syncStarterTemplateHighlight(): void {
+    for (const [id, btn] of this.starterTemplateButtons) {
+      const on = id === this.starterSelected
+      btn.classList.toggle('editor-sculpt-btn--active', on)
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false')
+    }
+  }
+
+  private applySelectedTerrainStarter(): void {
+    const seedRaw = this.starterSeedInput?.value?.trim() || String(randomTerrainSeed())
+    const seed = seedFromString(seedRaw)
+    if (this.starterSeedInput) this.starterSeedInput.value = String(seed)
+
+    if (this.session.isSculptDirty()) {
+      const ok = window.confirm(
+        'Replace current sculpt with this starter?\n\nUndo will restore the previous heightmap. Save still bakes terrain.glb when you are ready.'
+      )
+      if (!ok) {
+        this.onStatus('Starter cancelled')
+        return
+      }
+    }
+
+    const result = this.session.applyTerrainStarter({
+      templateId: this.starterSelected,
+      seed
+    })
+    if (!result.ok) {
+      this.onStatus(result.message)
+      return
+    }
+
+    const meta = TERRAIN_STARTER_TEMPLATES.find((t) => t.id === this.starterSelected)
+    if (this.starterMatchBiomeCb?.checked && meta) {
+      void this.refApi?.patchEnvironment?.({ kind: meta.matchKind })
+    }
+
+    this.onStatus(`Applied ${result.label} · seed ${result.seed}`)
   }
 
   private addSharedBrushSliders(parent: HTMLElement): void {

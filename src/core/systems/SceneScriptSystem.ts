@@ -3903,6 +3903,80 @@ export class SceneScriptSystem {
    * Same-batch MeshRenderer Material after worker cold CRDT applyIncoming.
    * Pointer-edge visual entities + missing-leaf first; stop collecting once we have enough.
    */
+  /**
+   * Human-readable Material put for debug — texture file / video / avatar / color only.
+   * Not a full PbMaterial dump (too large for console).
+   */
+  private summarizeMaterialPut(entity: Entity): string {
+    const { Material, GltfContainer, MeshCollider, TextShape, ParticleSystem } = this.readComponents
+    const parts: string[] = [`e${entity as number}`]
+    try {
+      if (GltfContainer.has(entity)) {
+        const src = (GltfContainer.get(entity) as { src?: string }).src?.trim()
+        if (src) parts.push(`gltf=${src.split('/').pop() ?? src}`)
+      }
+      if (MeshCollider.has(entity)) parts.push('meshCollider=1')
+      if (TextShape.has(entity)) parts.push('textShape=1')
+      if (ParticleSystem?.has?.(entity)) parts.push('particle=1')
+      if (!Material.has(entity)) {
+        parts.push('material=∅')
+        return parts.join(' ')
+      }
+      const raw = Material.get(entity) as {
+        material?:
+          | { $case?: string; pbr?: Record<string, unknown>; unlit?: Record<string, unknown> }
+          | { pbr?: Record<string, unknown>; unlit?: Record<string, unknown> }
+      }
+      const m = raw?.material as
+        | {
+            $case?: string
+            pbr?: {
+              texture?: { tex?: { $case?: string; texture?: { src?: string }; videoTexture?: unknown } }
+              albedoColor?: { r?: number; g?: number; b?: number; a?: number }
+              emissiveTexture?: { tex?: { $case?: string; texture?: { src?: string } } }
+            }
+            unlit?: {
+              texture?: { tex?: { $case?: string; texture?: { src?: string } } }
+              diffuseColor?: { r?: number; g?: number; b?: number; a?: number }
+            }
+          }
+        | undefined
+      const caseName =
+        m?.$case ??
+        (m && 'pbr' in m && m.pbr ? 'pbr' : m && 'unlit' in m && m.unlit ? 'unlit' : '?')
+      parts.push(`kind=${caseName}`)
+      const texUnion =
+        caseName === 'unlit'
+          ? m?.unlit?.texture
+          : m?.pbr?.texture
+      const texCase = texUnion?.tex?.$case
+      if (texCase === 'texture') {
+        const src = (texUnion?.tex as { texture?: { src?: string } })?.texture?.src?.trim()
+        parts.push(src ? `tex=${src}` : 'tex=(empty)')
+      } else if (texCase === 'videoTexture') {
+        parts.push('tex=videoTexture')
+      } else if (texCase === 'avatarTexture') {
+        parts.push('tex=avatarTexture')
+      } else {
+        parts.push('tex=none')
+      }
+      const emSrc = m?.pbr?.emissiveTexture?.tex?.$case === 'texture'
+        ? (m.pbr.emissiveTexture.tex as { texture?: { src?: string } }).texture?.src?.trim()
+        : undefined
+      if (emSrc) parts.push(`emissiveTex=${emSrc}`)
+      const col =
+        caseName === 'unlit' ? m?.unlit?.diffuseColor : m?.pbr?.albedoColor
+      if (col) {
+        parts.push(
+          `color=(${(col.r ?? 1).toFixed(2)},${(col.g ?? 1).toFixed(2)},${(col.b ?? 1).toFixed(2)},${(col.a ?? 1).toFixed(2)})`
+        )
+      }
+    } catch (err) {
+      parts.push(`summarize-err=${err instanceof Error ? err.message : String(err)}`)
+    }
+    return parts.join(' ')
+  }
+
   private flushMeshRendererMaterialsFromPendingDiff(opts?: {
     pointerEdge?: boolean
     hardMs?: number
@@ -3924,6 +3998,8 @@ export class SceneScriptSystem {
     let missingMesh = 0
     let failed = 0
     let missingLeafCount = 0
+    /** First few Material-without-MeshRenderer drops — entity + texture path for diagnosis. */
+    const missingMeshSamples: string[] = []
     // Prefer pointer-edge VFX, then missing-leaf, then recolors — cap collect (no 3k arrays).
     const preferList: Entity[] = []
     const missingLeafList: Entity[] = []
@@ -3942,6 +4018,9 @@ export class SceneScriptSystem {
       if (!MeshRenderer.has(entity)) {
         // Material without MeshRenderer can never paint — drop put (plaza stuck missingMesh=128).
         missingMesh++
+        if (missingMeshSamples.length < 12) {
+          missingMeshSamples.push(this.summarizeMaterialPut(entity))
+        }
         comps.delete(matId)
         this.clearPendingEntityIfEmpty(entity)
         return
@@ -3992,10 +4071,21 @@ export class SceneScriptSystem {
       )
       this.admitDropCount = 0
     } else if (missingMesh > 0) {
+      const sample =
+        missingMeshSamples.length > 0
+          ? ` samples=[${missingMeshSamples.join(' | ')}]`
+          : ''
       clientDebugLog.log(
         'collision',
-        `mesh-renderer material flush v3 — dropped ${missingMesh} Material-without-MeshRenderer pendingDiff=${this.pendingDiff.size}`,
-        { level: 'info', alsoConsole: false, throttleMs: 5_000, throttleKey: 'mr-mat-flush-drop' }
+        `mesh-renderer material flush v3 — dropped ${missingMesh} Material-without-MeshRenderer ` +
+          `pendingDiff=${this.pendingDiff.size}${sample}`,
+        {
+          level: 'info',
+          // On for diagnosis (user asked which material/file) — 5s throttle so plaza stays playable.
+          alsoConsole: true,
+          throttleMs: 5_000,
+          throttleKey: 'mr-mat-flush-drop'
+        }
       )
       this.admitDropCount = 0
     }

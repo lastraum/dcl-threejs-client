@@ -12,6 +12,16 @@ import {
   type CreatorHubConfigEntry
 } from './creatorHubConfig'
 import { creatorHubProjectId, isCreatorHubProjectId } from './creatorHubPaths'
+import {
+  buildNewSceneFiles,
+  clampParcelSize,
+  NEW_SCENE_COLS_MAX,
+  NEW_SCENE_COLS_MIN,
+  NEW_SCENE_ROWS_MAX,
+  NEW_SCENE_ROWS_MIN,
+  sanitizeSceneFolderName,
+  type NewSceneSize
+} from './newSceneTemplate'
 
 const META_KEY = 'dcl-editor-projects'
 const DB_NAME = 'dcl-editor-fs'
@@ -519,6 +529,93 @@ export async function pickAndAddProject(): Promise<LocalProjectRecord | null> {
   } catch (e) {
     throw new Error(formatFilePickerError(e))
   }
+}
+
+export type CreateNewSceneOptions = {
+  title: string
+  size: NewSceneSize
+  /**
+   * Parent directory for the new folder.
+   * Default: linked Creator Hub / Local Scenes root, or user picks a folder.
+   */
+  parentHandle?: FileSystemDirectoryHandle
+}
+
+async function writeTextFileInDir(
+  dir: FileSystemDirectoryHandle,
+  relativePath: string,
+  text: string
+): Promise<void> {
+  const parts = relativePath.replace(/\\/g, '/').split('/').filter(Boolean)
+  let cur = dir
+  for (let i = 0; i < parts.length - 1; i++) {
+    cur = await cur.getDirectoryHandle(parts[i]!, { create: true })
+  }
+  const fh = await cur.getFileHandle(parts[parts.length - 1]!, { create: true })
+  const w = await fh.createWritable()
+  await w.write(text)
+  await w.close()
+}
+
+async function uniqueChildFolderName(
+  parent: FileSystemDirectoryHandle,
+  desired: string
+): Promise<string> {
+  let name = sanitizeSceneFolderName(desired)
+  for (let n = 0; n < 50; n++) {
+    const tryName = n === 0 ? name : `${name} ${n + 1}`
+    try {
+      await parent.getDirectoryHandle(tryName)
+      // exists — try next
+    } catch {
+      return tryName
+    }
+  }
+  return `${name} ${Date.now()}`
+}
+
+/**
+ * Create a new scene folder with templated scene.json (parcels from size) + empty composite.
+ * Registers it in Local Scenes (FSA handle).
+ */
+export async function createNewLocalScene(
+  options: CreateNewSceneOptions
+): Promise<LocalProjectRecord> {
+  if (!isFileSystemAccessSupported()) {
+    throw new Error('File System Access API is not supported in this browser. Use Chrome or Edge.')
+  }
+
+  const cols = clampParcelSize(options.size.cols, NEW_SCENE_COLS_MIN, NEW_SCENE_COLS_MAX)
+  const rows = clampParcelSize(options.size.rows, NEW_SCENE_ROWS_MIN, NEW_SCENE_ROWS_MAX)
+  const title = options.title.trim() || 'New Scene'
+
+  let parent = options.parentHandle ?? (await getCreatorHubScenesRoot())
+  if (!parent) {
+    // No linked Scenes root — pick parent (Documents/DCL-Scenes etc.)
+    parent = await pickWritableDirectory()
+  } else {
+    const perm = await parent.requestPermission({ mode: 'readwrite' })
+    if (perm !== 'granted') {
+      throw new Error('Scenes folder access denied. Re-link Scenes folder or pick another parent.')
+    }
+  }
+
+  const folderName = await uniqueChildFolderName(parent, title)
+  const sceneDir = await parent.getDirectoryHandle(folderName, { create: true })
+
+  const files = buildNewSceneFiles({
+    title,
+    folderName,
+    size: { cols, rows }
+  })
+  for (const f of files) {
+    await writeTextFileInDir(sceneDir, f.path, f.text)
+  }
+
+  return registerProjectFromHandle(sceneDir, {
+    source: 'manual',
+    pathHint: folderName
+  })
 }
 
 async function resolveProjectPermission(meta: LocalProjectMeta): Promise<LocalProjectRecord['permission']> {

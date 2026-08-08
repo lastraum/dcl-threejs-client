@@ -7,6 +7,7 @@ import {
 import { RECOMMENDED_SCENES_FOLDER } from '../localProjects/creatorHubPaths'
 import {
   addProjectFromDroppedHandle,
+  createNewLocalScene,
   isCreatorHubScenesLinked,
   isFileSystemAccessSupported,
   linkCreatorHubScenesFolder,
@@ -18,6 +19,12 @@ import {
   rescanCreatorHubScenes,
   type LocalProjectRecord
 } from '../localProjects/projectStore'
+import {
+  NEW_SCENE_COLS_MAX,
+  NEW_SCENE_COLS_MIN,
+  NEW_SCENE_ROWS_MAX,
+  NEW_SCENE_ROWS_MIN
+} from '../localProjects/newSceneTemplate'
 
 export type EditorHubShell = SocialShellChromeHandlers & {
   login: LoginResult
@@ -231,6 +238,14 @@ export class EditorHubPage {
     rescanBtn.addEventListener('click', () => void this.handleRescan())
     actions.appendChild(rescanBtn)
 
+    const newBtn = document.createElement('button')
+    newBtn.type = 'button'
+    newBtn.className = 'editor-hub-add editor-hub-add--primary'
+    newBtn.textContent = '+ New scene'
+    newBtn.title = 'Create a templated scene folder (name + parcel size)'
+    newBtn.addEventListener('click', () => void this.handleNewScene())
+    actions.appendChild(newBtn)
+
     const addBtn = document.createElement('button')
     addBtn.type = 'button'
     addBtn.className = 'editor-hub-add'
@@ -393,6 +408,153 @@ export class EditorHubPage {
       if (e instanceof Error && e.name === 'AbortError') return
       this.showError(e instanceof Error ? e.message : String(e))
     }
+  }
+
+  private async handleNewScene(): Promise<void> {
+    try {
+      this.clearMessages()
+      if (!isFileSystemAccessSupported()) {
+        this.showError('New scene requires Chrome or Edge (File System Access API).')
+        return
+      }
+      const spec = await this.promptNewSceneDialog()
+      if (!spec) return
+      const record = await createNewLocalScene(spec)
+      this.showStatus(
+        `Created “${record.name}” · ${spec.size.cols}×${spec.size.rows} parcels · Open to sculpt.`
+      )
+      await this.refresh()
+    } catch (e) {
+      if (e instanceof Error && e.name === 'AbortError') return
+      this.showError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  /**
+   * Modal: scene name + parcel size (cols × rows) for scene.json layout.
+   * Returns null if cancelled.
+   */
+  private promptNewSceneDialog(): Promise<{
+    title: string
+    size: { cols: number; rows: number }
+  } | null> {
+    return new Promise((resolve) => {
+      const backdrop = document.createElement('div')
+      backdrop.className = 'editor-hub-modal-backdrop'
+      backdrop.setAttribute('role', 'dialog')
+      backdrop.setAttribute('aria-modal', 'true')
+      backdrop.setAttribute('aria-label', 'New scene')
+
+      const modal = document.createElement('div')
+      modal.className = 'editor-hub-modal'
+
+      const title = document.createElement('h2')
+      title.textContent = 'New scene'
+      modal.appendChild(title)
+
+      const blurb = document.createElement('p')
+      blurb.className = 'editor-hub-modal-blurb'
+      blurb.textContent =
+        'Creates a folder with scene.json (parcels from size), empty main.composite, and package.json. ' +
+        'Uses your linked Scenes folder when available; otherwise pick a parent directory.'
+      modal.appendChild(blurb)
+
+      const nameLab = document.createElement('label')
+      nameLab.className = 'editor-hub-modal-label'
+      nameLab.textContent = 'Scene name'
+      const nameIn = document.createElement('input')
+      nameIn.type = 'text'
+      nameIn.className = 'editor-hub-modal-input'
+      nameIn.value = 'New Scene'
+      nameIn.autocomplete = 'off'
+      nameLab.appendChild(nameIn)
+      modal.appendChild(nameLab)
+
+      const sizeRow = document.createElement('div')
+      sizeRow.className = 'editor-hub-modal-size-row'
+
+      const colsLab = document.createElement('label')
+      colsLab.className = 'editor-hub-modal-label'
+      colsLab.textContent = 'Width (parcels)'
+      const colsIn = document.createElement('input')
+      colsIn.type = 'number'
+      colsIn.className = 'editor-hub-modal-input'
+      colsIn.min = String(NEW_SCENE_COLS_MIN)
+      colsIn.max = String(NEW_SCENE_COLS_MAX)
+      colsIn.value = '1'
+      colsLab.appendChild(colsIn)
+
+      const rowsLab = document.createElement('label')
+      rowsLab.className = 'editor-hub-modal-label'
+      rowsLab.textContent = 'Depth (parcels)'
+      const rowsIn = document.createElement('input')
+      rowsIn.type = 'number'
+      rowsIn.className = 'editor-hub-modal-input'
+      rowsIn.min = String(NEW_SCENE_ROWS_MIN)
+      rowsIn.max = String(NEW_SCENE_ROWS_MAX)
+      rowsIn.value = '1'
+      rowsLab.appendChild(rowsIn)
+
+      sizeRow.appendChild(colsLab)
+      sizeRow.appendChild(rowsLab)
+      modal.appendChild(sizeRow)
+
+      const hint = document.createElement('p')
+      hint.className = 'editor-hub-modal-hint'
+      const updateHint = () => {
+        const c = Math.max(NEW_SCENE_COLS_MIN, Math.min(NEW_SCENE_COLS_MAX, Number(colsIn.value) || 1))
+        const r = Math.max(NEW_SCENE_ROWS_MIN, Math.min(NEW_SCENE_ROWS_MAX, Number(rowsIn.value) || 1))
+        hint.textContent = `Footprint ${c}×${r} parcels · base 0,0 · ${c * r} parcel(s) · ${(c * 16).toFixed(0)}×${(r * 16).toFixed(0)} m`
+      }
+      colsIn.addEventListener('input', updateHint)
+      rowsIn.addEventListener('input', updateHint)
+      updateHint()
+      modal.appendChild(hint)
+
+      const actions = document.createElement('div')
+      actions.className = 'editor-hub-modal-actions'
+      const cancel = document.createElement('button')
+      cancel.type = 'button'
+      cancel.className = 'editor-hub-add'
+      cancel.textContent = 'Cancel'
+      const create = document.createElement('button')
+      create.type = 'button'
+      create.className = 'editor-hub-add editor-hub-add--primary'
+      create.textContent = 'Create scene'
+      actions.appendChild(cancel)
+      actions.appendChild(create)
+      modal.appendChild(actions)
+
+      const close = (value: { title: string; size: { cols: number; rows: number } } | null) => {
+        backdrop.remove()
+        resolve(value)
+      }
+      cancel.addEventListener('click', () => close(null))
+      backdrop.addEventListener('click', (e) => {
+        if (e.target === backdrop) close(null)
+      })
+      create.addEventListener('click', () => {
+        const t = nameIn.value.trim() || 'New Scene'
+        const cols = Math.max(
+          NEW_SCENE_COLS_MIN,
+          Math.min(NEW_SCENE_COLS_MAX, Math.floor(Number(colsIn.value) || 1))
+        )
+        const rows = Math.max(
+          NEW_SCENE_ROWS_MIN,
+          Math.min(NEW_SCENE_ROWS_MAX, Math.floor(Number(rowsIn.value) || 1))
+        )
+        close({ title: t, size: { cols, rows } })
+      })
+      nameIn.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') create.click()
+        if (e.key === 'Escape') close(null)
+      })
+
+      backdrop.appendChild(modal)
+      document.body.appendChild(backdrop)
+      nameIn.focus()
+      nameIn.select()
+    })
   }
 
   private async handleRelink(projectId: string): Promise<void> {

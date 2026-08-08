@@ -218,6 +218,66 @@ export function injectEditorStyles(): void {
   flex-wrap: wrap;
   margin-top: auto;
 }
+.editor-hub-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10050;
+  background: rgba(2, 6, 23, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.editor-hub-modal {
+  width: min(420px, 100%);
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 14px;
+  padding: 20px 22px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  color: #e2e8f0;
+}
+.editor-hub-modal h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 650;
+}
+.editor-hub-modal-blurb,
+.editor-hub-modal-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #94a3b8;
+}
+.editor-hub-modal-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: #cbd5e1;
+}
+.editor-hub-modal-input {
+  background: #111827;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  color: #f1f5f9;
+  padding: 8px 10px;
+  font-size: 14px;
+}
+.editor-hub-modal-size-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.editor-hub-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
 .editor-workspace {
   display: flex;
   flex-direction: column;

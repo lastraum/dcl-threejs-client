@@ -3,9 +3,12 @@ import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import {
   diagnoseLevelStateGroundRay,
+  injectGlobalPointerUpOnPlayer,
   injectLevelStatePointerEdgeOnEngine,
   injectPointerClickDownOnEngine,
-  injectPointerClickUpOnEngine
+  injectPointerClickUpOnEngine,
+  isIaPointerPressedOnEngine,
+  isLevelStateInjectBody
 } from './injectPointerClick'
 import {
   bindWorkerUiSchedulerEngine,
@@ -40,6 +43,13 @@ import {
 
 let lastUiDirtySnapshotLogAt = 0
 
+/** COD pointer proof lines — warn when available so they cannot share scene-log throttle. */
+function pointerProofLog(message: string): void {
+  const cfg = config
+  if (cfg?.logWarn) cfg.logWarn(message)
+  else cfg?.log(message)
+}
+
 /**
  * Single worker entry for sceneEngine.update — boot, hydration, play, inbound, pointer.
  *
@@ -58,6 +68,11 @@ let lastUiDirtySnapshotLogAt = 0
 
 export type SceneEngineSchedulerConfig = {
   log: (message: string) => void
+  /**
+   * Pointer/COD diagnostics that must never be throttled as normal scene noise.
+   * Prefer workerLog('warn') so main pointerDiag + DevTools always show the line.
+   */
+  logWarn?: (message: string) => void
   hydrationIntervalMs: number
   tickAbortMs: number
   isHydration: () => boolean
@@ -291,6 +306,16 @@ async function runSerializedEngineUpdate(fn: () => Promise<void>): Promise<void>
   }
 }
 
+/** Pointer edge direct path — same mutex as cooperative ticks / scheduler. */
+export async function runSerializedEngineUpdateForPointer(fn: () => Promise<void>): Promise<void> {
+  await runSerializedEngineUpdate(fn)
+}
+
+/** MeshRenderer count on worker engine (level-state VFX proof). */
+export function countWorkerMeshRenderers(eng: IEngine): number {
+  return countWorkerMeshRenderer(eng)
+}
+
 export function setSceneEngineLastExecutedAt(ms: number): void {
   lastExecutedAt = ms
 }
@@ -377,6 +402,11 @@ export function sceneEngineTickDue(now: number): boolean {
  *
  * Safe after inject-only PE append discard: cooperative remount no longer re-fires CAM toggle.
  */
+/** Play-mode: cap cooperative UI snapshot posts — menu thrash was 10+/s and starved inject. */
+let lastUiMountSnapshotPostAt = 0
+let lastUiMountSnapshotMountLen = -1
+const PLAY_UI_SNAPSHOT_MIN_MS = 200
+
 async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
   const cfg = config!
   if (cfg.pointerBlocksTick()) return
@@ -396,19 +426,26 @@ async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
     const src = extractUiTextureSrcFromSnapshot(row.value)
     if (src) texSamples++
   }
-  // Throttle log — pixelwars timer dirties often; logging every flush tanked FPS.
   const nowLog = performance.now()
-  const isFull = !partial || mountEntityIds.length === 0 || texSamples > 0
-  if (
-    isFull ||
-    nowLog - lastUiDirtySnapshotLogAt >= 2000
-  ) {
+  const mountEmpty = mountEntityIds.length === 0
+  const mountLenChanged = mountEntityIds.length !== lastUiMountSnapshotMountLen
+  // Play: throttle same-size remounts. Always allow mount-size change / unmount / hydration.
+  // Do NOT commit baseline when skipping — keep dirty so the next tick can post.
+  if (mode === 'play' && !mountEmpty && !mountLenChanged) {
+    if (nowLog - lastUiMountSnapshotPostAt < PLAY_UI_SNAPSHOT_MIN_MS) {
+      return
+    }
+  }
+  lastUiMountSnapshotPostAt = nowLog
+  lastUiMountSnapshotMountLen = mountEntityIds.length
+  // Throttle log — full dumps every tick tanked FPS (<45) and blocked pointer inject.
+  if (nowLog - lastUiDirtySnapshotLogAt >= 2000) {
     lastUiDirtySnapshotLogAt = nowLog
     cfg.log(
       `[sceneWorker] ui dirty snapshot — mount=${mountEntityIds.length} rows=${snapshot.length}` +
         `${partial ? ' partial' : ' full'} mode=${mode}` +
         (texSamples > 0 ? ` bgTextures=${texSamples}` : '') +
-        (mountEntityIds.length === 0 ? ' emptyMount' : '')
+        (mountEmpty ? ' emptyMount' : '')
     )
   }
   if (cfg.postUiMountSnapshot) {
@@ -968,7 +1005,12 @@ export async function runSceneEnginePointerTick(
     cfg.onSceneUiInjectPointerComplete?.({ mountGrew })
   }
   beginPointerPlayerFrameBatch()
-  const isLevelStateEarly = !!splitPointerInject?.levelState
+  const playerEntity = eng.PlayerEntity as number
+  // Prefer explicit flag; recover if postMessage dropped levelState (still entity=1 hit=0).
+  const isLevelStateEarly = !!(
+    splitPointerInject &&
+    isLevelStateInjectBody(splitPointerInject, playerEntity)
+  )
   // Level-state: systems only (no react-ecs). PE/sceneUi: interactive so select HUD reconciles.
   setPointerInteractiveTickActive(!isLevelStateEarly)
   setPointerInteractivePhase('inject')
@@ -1008,9 +1050,14 @@ export async function runSceneEnginePointerTick(
       return
     }
 
-    // Level-state ground click (PlayerEntity, no PE mesh): skip UI react-ecs settle.
-    // settleWorldPointerUiAfterEdge was ~1s hitch (mount~190 fingerprint + flush) for move/VFX.
-    const isLevelState = !!splitPointerInject.levelState
+    // No-target (level-state): PlayerEntity PET, hitEntity=0 — skip UI settle.
+    const isLevelState = isLevelStateInjectBody(splitPointerInject, playerEntity)
+    if (isLevelState && !splitPointerInject.levelState) {
+      pointerProofLog(
+        `[sceneWorker] no-target flag recovered — entity=${splitPointerInject.entity} ` +
+          `hitEntity=${splitPointerInject.hitEntity}`
+      )
+    }
 
     // --- World mesh: split edges ---
     if (phase === 'click') {
@@ -1040,19 +1087,49 @@ export async function runSceneEnginePointerTick(
     }
 
     if (phase === 'down') {
-      await runSerializedEngineUpdate(async () => {
-        if (isLevelState) {
-          // DecentraCraft iB: isPressed(IA_POINTER) arms press; hit.entityId=0 (empty ground).
-          injectLevelStatePointerEdgeOnEngine(eng, splitPointerInject, 'down')
-        } else {
-          injectPointerClickDownOnEngine(eng, splitPointerInject)
+      if (isLevelState) {
+        // Separate frames: sticky fall (if any) then fresh DOWN so isPressed is false→true.
+        if (isIaPointerPressedOnEngine(eng, splitPointerInject.button)) {
+          await runSerializedEngineUpdate(async () => {
+            injectLevelStatePointerEdgeOnEngine(eng, splitPointerInject, 'up')
+            await eng.update(0)
+          })
+          pointerProofLog(
+            '[sceneWorker] no-target DOWN sticky-clear — forced isPressed fall before arm'
+          )
         }
-        // transport-only dt: scene systems (iB) still run; kK places disc at QT even with e=0.
-        await eng.update(0)
-      })
+        await runSerializedEngineUpdate(async () => {
+          injectLevelStatePointerEdgeOnEngine(eng, splitPointerInject, 'down')
+          await eng.update(0)
+        })
+      } else {
+        await runSerializedEngineUpdate(async () => {
+          injectPointerClickDownOnEngine(eng, splitPointerInject)
+          await eng.update(0)
+        })
+      }
       reconcileLocomotionLatchAfterInjectDown(eng)
       cfg.onAfterEngineTick?.()
-      // Select HUD only for real PE meshes — never for level-state click-to-move.
+      if (isLevelState) {
+        try {
+          const ground = diagnoseLevelStateGroundRay(eng)
+          const g = ground.ground
+          const pressed = isIaPointerPressedOnEngine(eng, splitPointerInject.button)
+          pointerProofLog(
+            `[sceneWorker] no-target DOWN isPressed-arm — pressed=${pressed ? 1 : 0} ` +
+              `camY=${ground.camY?.toFixed(1) ?? '-'} rayY=${ground.rayY?.toFixed(2) ?? '-'} ` +
+              `planeY0=${g ? `(${g.x.toFixed(1)},${g.z.toFixed(1)})` : 'null'} ` +
+              `ppi=${ground.ppi ? 1 : 0} cam=${ground.cam ? 1 : 0} hitEntity=0`
+          )
+        } catch (err) {
+          pointerProofLog(
+            `[sceneWorker] no-target DOWN isPressed-arm — diagnose failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          )
+        }
+      }
+      // Mesh PE may open HUD — settle only for real PE meshes, never no-target.
       if (!isLevelState) {
         const settled = await settleWorldPointerUiAfterEdge(eng, cfg, {
           fpBefore,
@@ -1063,51 +1140,59 @@ export async function runSceneEnginePointerTick(
         mountGrew = settled.mountGrew
         if (mountGrew) holdCooperativeReactEcs(12)
       }
-      await runPointerNonUiPhase(eng)
+      // No-target: no second eng.update on DOWN (avoids false drag thresholds mid-hold).
+      if (!isLevelState) await runPointerNonUiPhase(eng)
       return
     }
 
-    // phase === 'up' (world).
-    // DecentraCraft: isPressed fall → onGroundClick → nQ → td(); kK moves disc (works with dt=0).
-    // Level-state: NO react-ecs (see setLevelStatePointerEdgeActive) — was thrashing match HUD.
+    // phase === 'up' (world mesh or no-target).
+    // No-target: systems only (react-ecs deferred via setLevelStatePointerEdgeActive).
     if (!isLevelState) setPointerInteractiveTickActive(true)
     const mrBefore = isLevelState ? countWorkerMeshRenderer(eng) : 0
     await runSerializedEngineUpdate(async () => {
       if (isLevelState) {
         injectLevelStatePointerEdgeOnEngine(eng, splitPointerInject, 'up')
       } else {
+        // World PE UP: mesh targets + PlayerEntity clear so global isPressed falls cleanly.
         injectPointerClickUpOnEngine(eng, splitPointerInject)
+        injectGlobalPointerUpOnPlayer(eng, splitPointerInject)
       }
-      // Single systems pass (COD: delete unproven second eng.update order shim).
-      // kK places disc with dt=0; pollEvents after tick carries MeshRenderer egress.
       await eng.update(0)
     })
+    // No-target: second positive-dt sample so post-release systems (move VFX anim, etc.)
+    // run after the press machine sees isPressed fall on the prior frame.
+    if (isLevelState) {
+      await runSerializedEngineUpdate(async () => {
+        await eng.update(1 / 30)
+      })
+    }
     cfg.onAfterEngineTick?.()
-    await runPointerNonUiPhase(eng)
     if (isLevelState) {
       try {
         const mrAfter = countWorkerMeshRenderer(eng)
         const delta = mrAfter - mrBefore
         const ground = diagnoseLevelStateGroundRay(eng)
         const g = ground.ground
-        // Always warn-level so main cannot throttle away the Δ proof (scene gate vs client).
+        const stillPressed = isIaPointerPressedOnEngine(eng, splitPointerInject.button)
         const line =
-          `[sceneWorker] level-state UP isPressed-path — MeshRenderer ${mrBefore}→${mrAfter} (Δ=${delta}) ` +
+          `[sceneWorker] no-target UP isPressed-path — MeshRenderer ${mrBefore}→${mrAfter} (Δ=${delta}) ` +
           `camY=${ground.camY?.toFixed(1) ?? '-'} rayY=${ground.rayY?.toFixed(2) ?? '-'} ` +
-          `ground=${g ? `(${g.x.toFixed(1)},${g.z.toFixed(1)})` : 'null'} ` +
+          `planeY0=${g ? `(${g.x.toFixed(1)},${g.z.toFixed(1)})` : 'null'} ` +
           `ppi=${ground.ppi ? 1 : 0} cam=${ground.cam ? 1 : 0} hitEntity=0 ` +
+          `stillPressed=${stillPressed ? 1 : 0} ` +
           (delta === 0
-            ? `(Δ=0: scene nQ skipped — need selected worker/soldier, match active, not building-only)`
-            : `(Δ>0: scene created marker — peel should show disc)`)
-        cfg.log(line)
+            ? `(Δ=0: no new MeshRenderer this edge — scene gate or no unit selected)`
+            : `(Δ>0: scene dirtied MeshRenderer — CRDT peel should apply)`)
+        pointerProofLog(line)
       } catch (err) {
-        cfg.log(
-          `[sceneWorker] level-state UP isPressed-path — diagnose failed: ${
+        pointerProofLog(
+          `[sceneWorker] no-target UP isPressed-path — diagnose failed: ${
             err instanceof Error ? err.message : String(err)
           }`
         )
       }
     }
+    await runPointerNonUiPhase(eng)
     if (!isLevelState) {
       const mountAfterUp = countWorkerUiMount(eng)
       if (mountAfterUp > mountBefore) {

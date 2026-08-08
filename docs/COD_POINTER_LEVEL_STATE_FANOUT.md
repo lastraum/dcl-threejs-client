@@ -14,11 +14,20 @@ Empty-ground IA_POINTER is **PlayerEntity PET** with **`hit.entityId = 0`**, not
 ## Scene law (−16,124 bundle)
 
 ```text
-isPressed DOWN → arm; HS(hit.entityId); Jr = Cam×PPI∩y=0
-isPressed UP   → if !selectable → nQ(ground)
-nQ: only selected workers/soldiers; else return (no td)
-td → kK: green cylinder (parked y=-10 until kK)
+DEFAULT MOVE + VFX (not isTriggered, not getClick):
+  isPressed DOWN → arm; HS(hit.entityId)→jT; Jr = Cam×PPI∩y=0 (oB)
+  isPressed UP   → if !drag && !jT → nQ(ground)
+  nQ: only selected workers/soldiers; else return (no td)
+  nQ → td → kK green cylinder (parked y=-10 until kK)
+
+isTriggered(IA_POINTER, PET_DOWN) + Ud() — ARMED MODES ONLY:
+  patrol (tq) / attack-move (lq) → td(ground)   # VFX on DOWN edge
+  spawn/rally (ZK), place (dQ), repair cancel (eq) → no td
+  gates: mode flags, Qr UI, HS (attack-move), match active
 ```
+
+**Do not diagnose default move disc as “isTriggered failed.”**  
+`isTriggered` is true only on the inject `eng.update` that carries that PET; no IA_POINTER reassert by design.
 
 ## Ranked actions (review survivors)
 

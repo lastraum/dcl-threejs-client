@@ -146,8 +146,8 @@ function workerHasUiDrivingTween(engine: IEngine | null): boolean {
  * Do NOT gate on freeze latch or inject-only pollEvents DEFER.
  */
 export function shouldDeferCooperativeReactEcs(): boolean {
-  // Level-state inject edge OR empty-ground hold window: systems only (isPressed / oB / nQ / kK).
-  // Must not force 60Hz match-HUD reconcile between DOWN and UP (COD P0 thrash).
+  // No-target pointer edge / hold: systems only (defer react-ecs). Any scene may use
+  // isPressed between DOWN and UP — do not thrash full UI reconcile on the hold window.
   if (isLevelStatePointerEdgeActive() || isLevelStatePointerHeld()) return true
   // isPointerInteractiveTickActive is false during non-ui phase — fall through to session suppress.
   if (isPointerInteractiveTickActive()) return false
@@ -639,7 +639,7 @@ export type PlanSceneUiCrdtEmitOptions = {
  */
 /**
  * Coalesce pure UiText thrash (pixelwars score spam) without starving 1 Hz clocks.
- * DecentraCraft match timer updates once per second — 120ms was fine; content-blind
+ * Some scenes update UI timers once per second — 120ms was fine; content-blind
  * main dedupe was the real skip. Keep a short floor so multi-text-frame score spam
  * does not flood, but always allow after the floor when plan re-runs with new text.
  */

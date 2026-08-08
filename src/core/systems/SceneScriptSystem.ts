@@ -2008,6 +2008,8 @@ export class SceneScriptSystem {
     ])
     const scriptCharLength = fetchedScript.scriptCharLength
 
+    // Stable worker URL — Vite content-hashes the module. Dynamic ?v= cache-bust broke
+    // worker module graph and left inject messages unhandled (no pointer-deliver-done).
     this.worker = new Worker(new URL('../../shim/worker/sceneWorkerEntry.ts', import.meta.url), {
       type: 'module'
     })
@@ -2305,7 +2307,7 @@ export class SceneScriptSystem {
       // Pointer / ground-ray diagnostics must not share the global 100ms scene-worker-log key
       // (was swallowing level-state isPressed-path lines during click bursts).
       const pointerDiag =
-        /level-state edge done|level-state UP|isPressed-path|pointer-edge-|edge-VFX peel|pointer ui egress/i.test(
+        /level-state edge done|no-target|inject RECEIVED|noTarget=|isPressed-path|isPressed-arm|sticky-clear|pointer-edge-|levelState=|edge-VFX peel|pointer ui egress|planeY0|VFXEDGE/i.test(
           cleaned
         )
       if (loadGateHot || pointerDiag) {

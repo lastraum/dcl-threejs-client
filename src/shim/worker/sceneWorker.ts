@@ -57,6 +57,11 @@ import { injectRendererGrowOnlyAppendsOnEngine } from './injectRendererGrowOnlyA
 import { injectRendererLwwPutsOnEngine } from './injectRendererLwwPuts'
 import { applyAvatarAttachTransformsOnEngine } from './applyAvatarAttachTransforms'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
+import {
+  diagnoseLevelStateGroundRay,
+  injectLevelStatePointerEdgeOnEngine,
+  isIaPointerPressedOnEngine
+} from './injectPointerClick'
 import { bindSceneWorkerPriorityDispatch, type SceneWorkerPriorityMessage } from './sceneWorkerBootstrap'
 import {
   coalesceKeyboardSnapshotDuringPointerSession,
@@ -64,7 +69,10 @@ import {
   enterPointerInputSession,
   isPointerInputSessionActive,
   leavePointerInputSession,
+  setLevelStatePointerEdgeActive,
   setLevelStatePointerHeld,
+  setPointerInteractivePhase,
+  setPointerInteractiveTickActive,
   setWorkerPointerButtonHeld,
   workerPointerButtonsHeldList,
   resetPointerInputSession,
@@ -158,6 +166,8 @@ import {
   resetSceneEngineScheduler,
   runSceneEngineBootTick,
   runSceneEnginePointerTick,
+  runSerializedEngineUpdateForPointer,
+  countWorkerMeshRenderers,
   shouldAttachUiMountSnapshot,
   hostInjectNeedsSceneSystems,
   sceneEngineTickAfterInboundInject,
@@ -1306,7 +1316,7 @@ function postPlayModeColdCrdtFireAndForget(data: Uint8Array): void {
 const PHYSICS_COMBINED_COMPONENT_IDS = new Set([1215, 1216])
 /**
  * core::Material (1017) + core::MeshRenderer (1018) — dense paint boards (pixelwars).
- * core::Tween (1102) + TweenSequence (1104) — DecentraCraft click-move / bounce anims.
+ * core::Tween (1102) + TweenSequence (1104) — scene motion / bounce anims.
  * Must not sit in cold CRDT buffer until end-of-frame / serial UI queue (felt as 3–5s lag).
  */
 const PAINT_BOARD_HOT_COMPONENT_IDS = new Set([1017, 1018, 1102, 1104])
@@ -1701,6 +1711,7 @@ function publishVcPoseLiveEgress(): void {
 
 initSceneEngineScheduler({
   log: (message) => workerLog('log', message),
+  logWarn: (message) => workerLog('warn', message),
   hydrationIntervalMs: HYDRATION_ENGINE_TICK_INTERVAL_MS,
   tickAbortMs: ENGINE_TICK_ABORT_MS,
   isHydration: () => sceneOnUpdatePaused,
@@ -1877,8 +1888,7 @@ function reassertPressedKeysOnEngine(): void {
   }
   // Intentionally no IA_POINTER reassert here.
   // @dcl/ecs getClick pairs last UP with the previous DOWN on that entity. Reasserting
-  // PET_DOWN on PlayerEntity with hit={0,0,0} every play frame made findClick pick a
-  // zero-hit DOWN so ground click markers / move VFX never spawned (DecentraCraft).
+  // PET_DOWN on PlayerEntity every play frame poisons getClick pairing for any scene.
   // isPressed(IA_POINTER) stays true from the original inject DOWN until browser UP.
 }
 
@@ -2488,16 +2498,147 @@ function chunkByteCount(chunks: Uint8Array[]): number {
 }
 
 /**
+ * No-target pointer edge (Explorer level-state) — scene-agnostic systems path.
+ * PET on PlayerEntity hitEntity=0 + Camera/PPI + eng.update. No UI settle.
+ *
+ * Platform law: isPressed arms on DOWN eng.update, falls on UP eng.update so scene
+ * systems (press machine → ground ray → optional VFX) see a real edge pair.
+ * Never invent a PE mesh for empty hits.
+ */
+async function runNoTargetPointerEdge(
+  eng: NonNullable<typeof sceneEngine>,
+  body: InjectPointerClickBody,
+  phase: string,
+  button: InputActionValue
+): Promise<void> {
+  // FIRST line — if this never appears after levelState=1 / noTarget=1, worker is stale or
+  // the edge was lost before dispatch (hard-refresh the client).
+  workerLog('warn', `[sceneWorker] no-target ENTER phase=${phase} button=${button}`)
+  setLevelStatePointerEdgeActive(true)
+  setPointerInteractiveTickActive(false)
+  setPointerInteractivePhase('inject')
+  try {
+    // Do not block behind a stuck cooperative mutex.
+    forceReleaseEngineUpdateMutex('no-target-edge')
+    const ppi = body.primaryPointer
+    if (ppi || body.camera) {
+      applyPlayFrameReservedPoses(undefined, body.camera, ppi)
+    }
+
+    if (phase === 'down') {
+      // Separate eng.update calls: sticky fall must be its own input frame so the press
+      // machine can rB(), then a fresh DOWN frame arms isPressed (false→true).
+      if (isIaPointerPressedOnEngine(eng, button)) {
+        await runSerializedEngineUpdateForPointer(async () => {
+          injectLevelStatePointerEdgeOnEngine(eng, body, 'up')
+          await eng.update(0)
+        })
+        workerLog('warn', '[sceneWorker] no-target DOWN sticky-clear — isPressed fall before arm')
+      }
+      await runSerializedEngineUpdateForPointer(async () => {
+        if (ppi || body.camera) {
+          applyPlayFrameReservedPoses(undefined, body.camera, ppi)
+        }
+        injectLevelStatePointerEdgeOnEngine(eng, body, 'down')
+        await eng.update(0)
+      })
+      const ground = diagnoseLevelStateGroundRay(eng)
+      const g = ground.ground
+      let pressed = isIaPointerPressedOnEngine(eng, button)
+      workerLog(
+        'warn',
+        `[sceneWorker] no-target DOWN isPressed-arm — pressed=${pressed ? 1 : 0} ` +
+          `camY=${ground.camY?.toFixed(1) ?? '-'} rayY=${ground.rayY?.toFixed(2) ?? '-'} ` +
+          `planeY0=${g ? `(${g.x.toFixed(1)},${g.z.toFixed(1)})` : 'null'} ` +
+          `ppi=${ground.ppi ? 1 : 0} cam=${ground.cam ? 1 : 0} hitEntity=0`
+      )
+      if (!pressed) {
+        await runSerializedEngineUpdateForPointer(async () => {
+          injectLevelStatePointerEdgeOnEngine(eng, body, 'down')
+          // Positive dt: some scene systems gate work on dt>0.
+          await eng.update(1 / 30)
+        })
+        pressed = isIaPointerPressedOnEngine(eng, button)
+        workerLog('warn', `[sceneWorker] no-target DOWN re-arm — pressed=${pressed ? 1 : 0}`)
+      }
+      workerLog('warn', `[sceneWorker] no-target EXIT phase=down pressed=${pressed ? 1 : 0}`)
+      return
+    }
+
+    // UP: release frame (isPressed true→false) then a positive-dt sample so follow-up
+    // systems (VFX anim / order apply) run after the press machine fires onGroundClick.
+    const mrBefore = countWorkerMeshRenderers(eng)
+    await runSerializedEngineUpdateForPointer(async () => {
+      if (ppi || body.camera) {
+        applyPlayFrameReservedPoses(undefined, body.camera, ppi)
+      }
+      injectLevelStatePointerEdgeOnEngine(eng, body, 'up')
+      await eng.update(0)
+    })
+    await runSerializedEngineUpdateForPointer(async () => {
+      await eng.update(1 / 30)
+    })
+    const mrAfter = countWorkerMeshRenderers(eng)
+    const delta = mrAfter - mrBefore
+    const ground = diagnoseLevelStateGroundRay(eng)
+    const g = ground.ground
+    const stillPressed = isIaPointerPressedOnEngine(eng, button)
+    workerLog(
+      'warn',
+      `[sceneWorker] no-target UP isPressed-path — MeshRenderer ${mrBefore}→${mrAfter} (Δ=${delta}) ` +
+        `camY=${ground.camY?.toFixed(1) ?? '-'} rayY=${ground.rayY?.toFixed(2) ?? '-'} ` +
+        `planeY0=${g ? `(${g.x.toFixed(1)},${g.z.toFixed(1)})` : 'null'} ` +
+        `ppi=${ground.ppi ? 1 : 0} cam=${ground.cam ? 1 : 0} hitEntity=0 ` +
+        `stillPressed=${stillPressed ? 1 : 0} ` +
+        (delta === 0
+          ? `(Δ=0: no new MeshRenderer this edge — scene gate or no unit selected)`
+          : `(Δ>0: scene dirtied MeshRenderer — CRDT peel should apply)`)
+    )
+    workerLog('warn', `[sceneWorker] no-target EXIT phase=up Δ=${delta}`)
+  } catch (err) {
+    workerLog(
+      'error',
+      `[sceneWorker] no-target FAILED phase=${phase} — ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    )
+    throw err
+  } finally {
+    setLevelStatePointerEdgeActive(false)
+    setPointerInteractivePhase('none')
+    setPointerInteractiveTickActive(false)
+  }
+}
+
+/** Serialize inject edges so DOWN always fully completes before UP (isPressed arm/release). */
+let pointerInjectSerial: Promise<void> = Promise.resolve()
+
+function enqueuePointerInject(body: InjectPointerClickBody): void {
+  pointerInjectSerial = pointerInjectSerial
+    .then(() => executePointerEdge(body))
+    .catch((err) => {
+      workerLog(
+        'error',
+        `[sceneWorker] inject-pointer-click edge rejected — ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
+      if (!pointerDeliveryInFlight) {
+        pointerDeliverBatchOpen = true
+        finalizePointerDelivery('inject-pointer-click-reject')
+      }
+    })
+}
+
+/**
  * Universal Explorer press edge for **every** scene (worker-input-architecture).
  *
- * One light path for world PE, ground, and scene UI:
- * - PET_DOWN or PET_UP only (split browser pointerdown/up)
- * - eng.update(0) so EventSystem / inputSystem see the edge
- * - no pointer-input-session spanning the mouse hold (that freezes all cooperative ticks)
- * - no multi-second CRDT-ack batch before deliver-done
+ * Target classes (not scene names):
+ * - no-target (level-state): PlayerEntity PET, hitEntity=0, systems-only
+ * - world PE mesh: entity PET + optional UI settle for mesh-driven HUD
+ * - sceneUi: react-ecs toggle path
  *
- * isPressed stays sticky across cooperative play frames until the UP edge.
- * getClick / onPointerDown use DOWN then later UP on the correct entity targets.
+ * PET_DOWN / PET_UP only; eng.update so inputSystem + scene systems see the edge.
  */
 async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
   const phase =
@@ -2508,110 +2649,150 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
   if (isPointerInputSessionActive()) {
     endPointerInputSessionAfterMountResume()
   }
-  // Level-state hold before eng.update so this edge + reassert share the same press story.
-  // sceneUi DOWN batch injects UP same job — clear held after tick so reassert does not
-  // re-fire PET_DOWN every play frame (browser UP is ignored for sceneUi).
-  // Empty-ground (levelState): also track hold session so cooperative react-ecs stays deferred
-  // between DOWN and UP (COD: do not thrash match HUD for click-to-move).
-  if (phase === 'down' && !body.sceneUi) {
-    setWorkerPointerButtonHeld(button, true)
-    if (body.levelState) setLevelStatePointerHeld(true)
-  } else if (phase === 'up' || phase === 'click' || body.sceneUi) {
-    setWorkerPointerButtonHeld(button, false)
-    if (body.levelState || phase === 'up' || phase === 'click') setLevelStatePointerHeld(false)
-  }
   const ppi = body.primaryPointer
   const sc = ppi?.screenCoordinates
-  workerLog(
-    'log',
+  // Resolve no-target before held flags so recovered entity=PlayerEntity+hit=0 counts.
+  const treatAsNoTargetEarly =
+    !!body.levelState ||
+    (!body.sceneUi &&
+      (body.hitEntity === 0 || body.hitEntity === undefined) &&
+      (body.entity === 1 ||
+        (sceneEngine != null && body.entity === (sceneEngine.PlayerEntity as number))))
+  // Track held buttons for press lifecycle. No-target also defers cooperative
+  // react-ecs between DOWN and UP so UI thrash does not starve systems on the hold window.
+  if (phase === 'down' && !body.sceneUi) {
+    setWorkerPointerButtonHeld(button, true)
+    if (treatAsNoTargetEarly || body.levelState) setLevelStatePointerHeld(true)
+  } else if (phase === 'up' || phase === 'click' || body.sceneUi) {
+    setWorkerPointerButtonHeld(button, false)
+    if (treatAsNoTargetEarly || body.levelState || phase === 'up' || phase === 'click') {
+      setLevelStatePointerHeld(false)
+    }
+  }
+  const edgeLine =
     `[sceneWorker] ${label} e${body.entity} button=${body.button} sceneUi=${body.sceneUi ? 1 : 0} ` +
-      `heldPointer=[${workerPointerButtonsHeldList().join(',')}]` +
-      (sc
-        ? ` ppi=(${sc.x.toFixed(0)},${sc.y.toFixed(0)})`
-        : ' ppi=missing') +
-      ` (no hold-batch freeze)`
-  )
+    `levelState=${body.levelState ? 1 : 0} noTarget=${treatAsNoTargetEarly ? 1 : 0} ` +
+    `hitEntity=${body.hitEntity ?? '∅'} ` +
+    `heldPointer=[${workerPointerButtonsHeldList().join(',')}]` +
+    (sc ? ` ppi=(${sc.x.toFixed(0)},${sc.y.toFixed(0)})` : ' ppi=missing') +
+    (body.camera
+      ? ` camY=${body.camera.position.y.toFixed(1)}`
+      : ' cam=missing') +
+    (ppi?.worldRayDirection
+      ? ` rayY=${ppi.worldRayDirection.y.toFixed(2)}`
+      : '') +
+    ` (no hold-batch freeze)`
+  // Always warn — log-level edge lines were swallowed under UI thrash.
+  workerLog('warn', edgeLine)
   if (!sceneEngine || !sceneOnStartComplete) {
     pendingInjectPointer = body
     workerLog('warn', `[sceneWorker] ${label} queued — sceneEngine not ready`)
     postPointerDeliverDone(`${label}-queued`)
     return
   }
+  const eng = sceneEngine
   if (isEngineUpdateInFlight()) {
     forceRecoverStuckSceneEngineTick(`${label}-preempt`)
   }
   pointerDeliveryInFlight = true
   setPointerDeliveryInFlight(true)
-  // Main arms a 2s deliver-done watchdog — edge work must ack before that (1.5s hard cap).
-  const EDGE_ACK_BUDGET_MS = 1500
+  // Main arms ~2s deliver-done watchdog. Scene UI must ack fast (menu clicks).
+  // No-target / world PE: 1.5s. Scene UI: 600ms hard cap so start-menu never freezes.
+  const EDGE_ACK_BUDGET_MS = body.sceneUi ? 600 : 1500
   try {
-    // Apply live PPI + camera *before* inject eng.update. Pointer edges skip play-frame-tick;
-    // without CameraEntity update, ground rays (Camera × PPI) use a stale freecam/player camera
-    // while VC sits at y≈26 — click VFX / move aim handlers miss or place wrong.
     if (ppi || body.camera) {
       applyPlayFrameReservedPoses(undefined, body.camera, ppi)
     }
-    // No exports.onUpdate mid-edge (pollEvents re-fires UI). Hold reassert on play-frame-tick
-    // keeps isPressed true across cooperative frames for every scene.
     let edgeTimedOut = false
-    let levelStateEdgeLogged = false
-    const logLevelStateEdgeDone = (suffix = ''): void => {
-      if (!body.levelState || levelStateEdgeLogged) return
-      levelStateEdgeLogged = true
+    let noTargetEdgeLogged = false
+    const treatAsNoTarget =
+      treatAsNoTargetEarly ||
+      (!body.sceneUi &&
+        body.entity === (eng.PlayerEntity as number) &&
+        (body.hitEntity === 0 || body.hitEntity === undefined))
+    const logNoTargetEdgeDone = (suffix = ''): void => {
+      if (!treatAsNoTarget || noTargetEdgeLogged) return
+      noTargetEdgeLogged = true
       workerLog(
         'warn',
-        `[sceneWorker] level-state edge done phase=${body.phase ?? '?'} ` +
-          `hitEntity=${body.hitEntity} ` +
+        `[sceneWorker] no-target edge done phase=${body.phase ?? '?'} ` +
+          `hitEntity=${body.hitEntity ?? 0} flag=${body.levelState ? 1 : 0} ` +
           `hit=(${body.hitPosition.x.toFixed(1)},${body.hitPosition.y.toFixed(1)},${body.hitPosition.z.toFixed(1)}) ` +
           `cam=${body.camera ? 'live' : 'missing'} ppi=${body.primaryPointer ? 1 : 0}` +
           suffix
       )
     }
-    await Promise.race([
-      (async () => {
-        await runSceneEnginePointerTick(sceneEngine, async () => {}, body)
-        // Log completion *before* poll/flush so UP path is visible even if egress stalls.
-        logLevelStateEdgeDone()
-        // Level-state UP: inject path skips exports.onUpdate — poll-only so MeshRenderer
-        // dirtied by scene systems (td/kK) hits rpcCrdt before deliver-done peel.
-        if (body.levelState && body.phase === 'up' && sceneOnUpdate) {
+    // No-target: await systems fully (no race-abandon). Budget race only for PE/sceneUi
+    // so a hung eng.update cannot freeze the main 2s deliver-done watchdog forever.
+    const runEdgeWork = async (): Promise<void> => {
+      if (treatAsNoTarget) {
+        workerLog(
+          'warn',
+          `[sceneWorker] no-target DISPATCH phase=${phase} treat=1 eng=1`
+        )
+        await runNoTargetPointerEdge(eng, body, phase, button)
+        logNoTargetEdgeDone()
+        if (phase === 'up' && sceneOnUpdate) {
           try {
             await runPlayFramePollPhase(sceneOnUpdate, 0)
           } catch (err) {
             workerLog(
               'warn',
-              `[sceneWorker] level-state pollEvents after UP failed — ${
+              `[sceneWorker] no-target pollEvents after UP failed — ${
                 err instanceof Error ? err.message : String(err)
               }`
             )
           }
         }
-        // Platform law: phase-4 queues structured UI mount via queuePointerUiEgress.
-        await flushPointerDeferredOutboundsAsync()
-      })(),
-      new Promise<void>((resolve) => {
-        setTimeout(() => {
-          edgeTimedOut = true
-          resolve()
-        }, EDGE_ACK_BUDGET_MS)
-      })
-    ])
-    if (edgeTimedOut) {
-      logLevelStateEdgeDone(' (budget-timeout)')
-      workerLog(
-        'warn',
-        `[sceneWorker] ${label} — edge budget ${EDGE_ACK_BUDGET_MS}ms exceeded; acking deliver-done (partial)`
-      )
-      interruptPendingOutboundAcks()
-      forceReleaseEngineUpdateMutex(`${label}-edge-budget`)
-      // Best-effort phase-4 so select HUD is not lost when tick was slow.
+      } else {
+        await runSceneEnginePointerTick(eng, async () => {}, body)
+      }
+      await flushPointerDeferredOutboundsAsync()
+    }
+    if (treatAsNoTarget) {
+      // Soft budget: force-release mutex if hung, but still await work so UP cannot
+      // start mid-DOWN (serialized inject queue depends on full completion).
+      const hangTimer = setTimeout(() => {
+        edgeTimedOut = true
+        workerLog(
+          'warn',
+          `[sceneWorker] ${label} — no-target still running past ${EDGE_ACK_BUDGET_MS}ms; force-release mutex`
+        )
+        forceReleaseEngineUpdateMutex(`${label}-no-target-budget`)
+      }, EDGE_ACK_BUDGET_MS)
       try {
-        await Promise.race([
-          flushPointerDeferredOutboundsAsync(),
-          new Promise<void>((r) => setTimeout(r, 200))
-        ])
-      } catch {
-        /* ack regardless */
+        await runEdgeWork()
+      } finally {
+        clearTimeout(hangTimer)
+      }
+      if (edgeTimedOut) {
+        logNoTargetEdgeDone(' (slow)')
+      }
+    } else {
+      await Promise.race([
+        runEdgeWork(),
+        new Promise<void>((resolve) => {
+          setTimeout(() => {
+            edgeTimedOut = true
+            resolve()
+          }, EDGE_ACK_BUDGET_MS)
+        })
+      ])
+      if (edgeTimedOut) {
+        workerLog(
+          'warn',
+          `[sceneWorker] ${label} — edge budget ${EDGE_ACK_BUDGET_MS}ms exceeded; acking deliver-done (partial)`
+        )
+        interruptPendingOutboundAcks()
+        forceReleaseEngineUpdateMutex(`${label}-edge-budget`)
+        try {
+          await Promise.race([
+            flushPointerDeferredOutboundsAsync(),
+            new Promise<void>((r) => setTimeout(r, 200))
+          ])
+        } catch {
+          /* ack regardless */
+        }
       }
     }
   } catch (err) {
@@ -2643,9 +2824,8 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
 }
 
 function executePointerInjection(body: InjectPointerClickBody, _injectOnly = false): void {
-  // All scenes / all targets: edge-first lifecycle. Heavy batch path removed —
-  // it entered pointer sessions and paused cooperative ticks for seconds.
-  void executePointerEdge(body)
+  // All scenes / all targets: edge-first lifecycle, serialized so DOWN completes before UP.
+  enqueuePointerInject(body)
 }
 
 function drainPendingInjectPointer(): void {
@@ -3296,7 +3476,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
       : undefined
     const uiKey = attachUiMount ? uiEntities!.join(',') : lastOutboundUiEntitiesKey
     if (copy.byteLength === 0) {
-      // Empty outbound with the same UI mount set is pure thrash (DecentraCraft spam-click
+      // Empty outbound with the same UI mount set is pure thrash (spam-click
       // re-posted uiEntities every microtask → main-thread freezes, Tweens stall).
       if (attachUiMount && uiKey === lastOutboundUiEntitiesKey) {
         return Promise.resolve([])
@@ -4449,9 +4629,29 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
     return
   }
   if (msg.type === 'inject-pointer-click') {
+    const body = msg.body as InjectPointerClickBody
+    const phase =
+      body?.phase === 'up' ? 'up' : body?.phase === 'click' ? 'click' : 'down'
+    // No-target = empty ray (Explorer level-state): not scene UI, not a PE mesh hit.
+    const noTarget =
+      !body?.sceneUi &&
+      (body?.levelState === true ||
+        body?.hitEntity === 0 ||
+        body?.hitEntity === undefined)
+    // Sync decision log BEFORE enqueue — proves the message hit the live worker bundle.
+    workerLog(
+      'warn',
+      `[sceneWorker] inject RECEIVED e${body?.entity ?? '?'} sceneUi=${body?.sceneUi ? 1 : 0} ` +
+        `levelState=${body?.levelState ? 1 : 0} phase=${phase} ` +
+        `hitEntity=${body?.hitEntity ?? '∅'} noTarget=${noTarget ? 1 : 0} ` +
+        `eng=${sceneEngine ? 1 : 0} onStart=${sceneOnStartComplete ? 1 : 0}`
+    )
     try {
-      const injectOnly = (msg as { injectOnly?: boolean }).injectOnly === true
-      executePointerInjection(msg.body as InjectPointerClickBody, injectOnly)
+      forceRecoverStuckSceneEngineTick('inject-received')
+      forceReleaseEngineUpdateMutex('inject-received')
+      // Single serialized path for every target class (no-target / PE mesh / sceneUi).
+      // Dual fire-and-forget IIFEs raced DOWN vs UP and acked deliver-done without systems.
+      enqueuePointerInject(body)
     } catch (err) {
       workerLog(
         'error',

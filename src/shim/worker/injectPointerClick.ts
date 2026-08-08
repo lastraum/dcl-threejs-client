@@ -124,15 +124,32 @@ export function injectPointerClickOnEngine(engine: IEngine, body: InjectPointerC
 }
 
 /**
- * DecentraCraft (-16,124) ground move/VFX law (catalyst bin/index.js) — NOT getClick:
+ * True when this inject is a **no-target** pointer edge (Explorer level-state):
+ * no PE mesh / no scene UI under the cursor. Host is PlayerEntity; hit.entityId is 0.
+ * Scene-agnostic — any bundle may read isPressed / isTriggered / getInputCommand here.
+ */
+export function isLevelStateInjectBody(
+  body: Pick<InjectPointerClickBody, 'levelState' | 'sceneUi' | 'entity' | 'hitEntity'>,
+  playerEntity: number
+): boolean {
+  if (body.sceneUi) return false
+  if (body.levelState === true) return true
+  // Recover lost flag: no-target posts entity=PlayerEntity + hitEntity=0.
+  return (
+    body.entity === playerEntity &&
+    (body.hitEntity === 0 || body.hitEntity === undefined)
+  )
+}
+
+/**
+ * No-target pointer edge (Explorer level-state) — platform law for every scene:
  *
- *   isPressed(IA_POINTER)  // press arm + release (global buttonState)
- *   PrimaryPointerInfo.worldRayDirection on RootEntity
- *   CameraEntity.position × ray → plane y=0  (oB / Ud)
- *   onGroundClick → nQ (needs selected units) → td() green cylinder MeshRenderer
+ *   PET_DOWN / PET_UP on PlayerEntity with hit.entityId = 0
+ *   global isPressed / isTriggered / getInputCommand for IA_POINTER
+ *   live PrimaryPointerInfo + CameraEntity on the same eng.update
  *
- * Level-state inject: PET on PlayerEntity for global isPressed / getInputCommand.
- * hit.entityId must be 0 (empty ground) so HS() isPressOnSelectable is false.
+ * Do not invent a PE mesh for empty hits. Scene chooses what to do with the edge
+ * (ray from PPI, getClick on a mesh entity, UI, etc.).
  */
 export function injectLevelStatePointerEdgeOnEngine(
   engine: IEngine,
@@ -146,7 +163,7 @@ export function injectLevelStatePointerEdgeOnEngine(
     entities: [player],
     downEntities: [player],
     upEntities: [player],
-    // Empty ground — never PlayerEntity (1) or a unit id.
+    // Empty hit — never PlayerEntity id or a mesh entity id.
     hitEntity: 0,
     levelState: true,
     sceneUi: false
@@ -156,7 +173,47 @@ export function injectLevelStatePointerEdgeOnEngine(
 }
 
 /**
- * Scene-style ground hit (DecentraCraft oB/Ud): CameraEntity × PPI.worldRayDirection ∩ y=0.
+ * Global IA_POINTER press from any entity's PointerEventsResult (matches @dcl/ecs buttonState).
+ * World PE mesh writes PER on the mesh; no-target writes on PlayerEntity.
+ */
+export function isIaPointerPressedOnEngine(engine: IEngine, button: number = 0): boolean {
+  preregisterRendererInjectedComponents(engine)
+  const PointerEventsResult = generated.PointerEventsResult(engine)
+  let latestTs = -1
+  let latestState: number | null = null
+  for (const [, commands] of engine.getEntitiesWith(PointerEventsResult)) {
+    for (const command of commands) {
+      if (command.button !== button) continue
+      if (
+        command.state !== PointerEventType.PET_DOWN &&
+        command.state !== PointerEventType.PET_UP
+      ) {
+        continue
+      }
+      if (command.timestamp > latestTs) {
+        latestTs = command.timestamp
+        latestState = command.state
+      }
+    }
+  }
+  return latestState === PointerEventType.PET_DOWN
+}
+
+/**
+ * After world PE mesh UP, also clear global isPressed via PlayerEntity PET_UP (hit 0).
+ * Mesh-only UP updates buttonState; pairing PlayerEntity keeps no-target edges clean
+ * for the next press (any scene that latches isPressed across PE then empty click).
+ */
+export function injectGlobalPointerUpOnPlayer(
+  engine: IEngine,
+  body: InjectPointerClickBody
+): void {
+  injectLevelStatePointerEdgeOnEngine(engine, body, 'up')
+}
+
+/**
+ * Diagnostic: CameraEntity × PrimaryPointerInfo.worldRayDirection ∩ plane y=0.
+ * Scenes may use this pattern; platform only reports whether poses/PPI are live.
  */
 export function diagnoseLevelStateGroundRay(engine: IEngine): {
   camY: number | null

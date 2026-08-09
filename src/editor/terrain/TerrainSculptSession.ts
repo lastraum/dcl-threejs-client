@@ -5,6 +5,7 @@ import {
   DEFAULT_TERRAIN_SCULPT_SETTINGS,
   TERRAIN_BRUSH_RADIUS_MAX_M,
   TERRAIN_BRUSH_RADIUS_MIN_M,
+  TERRAIN_SEA_FLOOR_WORLD_Y,
   clampTerrainExportSegments,
   type TerrainExportSettings,
   type TerrainSculptSettings
@@ -201,16 +202,75 @@ export class TerrainSculptSession {
    * (any raised height, splat paint, or grass).
    */
   isSculptDirty(): boolean {
+    const floor = TERRAIN_SEA_FLOOR_WORLD_Y
     for (let i = 0; i < this.heights.length; i++) {
-      if (this.heights[i]! > 0.02) return true
+      if (this.heights[i]! > floor + 0.05) return true
     }
     for (let i = 0; i < this.splat.length; i++) {
       if (this.splat[i]! > 0) return true
+    }
+    for (let i = 0; i < this.lava.length; i++) {
+      if (this.lava[i]! > 0) return true
     }
     for (let i = 0; i < this.grass.length; i++) {
       if (this.grass[i]! > 0) return true
     }
     return false
+  }
+
+  /**
+   * Flatten all heights to deep seafloor. Undoable. Does not clear paint/grass.
+   */
+  resetHeightsToSeafloor(): void {
+    if (this.strokeOpen) this.endStroke()
+    this.undoStack.pushSnapshot(this.heights, this.splat, this.lava, this.grass, this.grassRgb)
+    this.heights.fill(TERRAIN_SEA_FLOOR_WORLD_Y)
+    this.terrain.applySculptHeightBuffer(this.heights, this.resolution)
+    this.bindSharedBuffers()
+    this.persistDraft()
+    this.hooks.onHeightCommitted?.()
+    this.notify()
+  }
+
+  /**
+   * Clear splat paint, lava, and ez-tree grass. Undoable. Does not change heights.
+   */
+  clearPaintAndGrass(): void {
+    if (this.strokeOpen) this.endStroke()
+    this.undoStack.pushSnapshot(this.heights, this.splat, this.lava, this.grass, this.grassRgb)
+    this.splat.fill(0)
+    this.lava.fill(0)
+    this.grass.fill(0)
+    this.grassRgb.fill(0)
+    this.terrain.applySplatBuffer(this.splat, this.resolution, this.resolution)
+    this.terrain.applyLavaBuffer(this.lava, this.resolution, this.resolution)
+    this.bindSharedBuffers()
+    this.persistDraft()
+    this.hooks.onPaintCommitted?.()
+    this.hooks.onGrassCommitted?.()
+    this.notify()
+  }
+
+  /**
+   * Full wipe: seafloor heights + no paint + no grass. Undoable.
+   */
+  resetAllSculpt(): void {
+    if (this.strokeOpen) this.endStroke()
+    this.undoStack.pushSnapshot(this.heights, this.splat, this.lava, this.grass, this.grassRgb)
+    this.heights.fill(TERRAIN_SEA_FLOOR_WORLD_Y)
+    this.splat.fill(0)
+    this.lava.fill(0)
+    this.grass.fill(0)
+    this.grassRgb.fill(0)
+    this.terrain.applySculptHeightBuffer(this.heights, this.resolution)
+    this.terrain.applySplatBuffer(this.splat, this.resolution, this.resolution)
+    this.terrain.applyLavaBuffer(this.lava, this.resolution, this.resolution)
+    this.bindSharedBuffers()
+    this.persistDraft()
+    this.hooks.onHeightCommitted?.()
+    this.hooks.onPaintCommitted?.()
+    this.hooks.onGrassCommitted?.()
+    this.notify()
   }
 
   /**

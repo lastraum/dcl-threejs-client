@@ -2384,6 +2384,86 @@ export class TerrainSculptPanel {
       wrap.appendChild(btn)
     }
     this.heightToolsHost.appendChild(wrap)
+    this.addSculptClearActions(this.heightToolsHost)
+  }
+
+  /** Reset heightmap / clear paint+grass — undoable. */
+  private addSculptClearActions(parent: HTMLElement): void {
+    const box = document.createElement('div')
+    box.style.cssText =
+      'margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.12)'
+
+    const title = document.createElement('div')
+    title.className = 'editor-sculpt-title'
+    title.textContent = 'Reset'
+    title.style.cssText = 'font-size:12px;margin-bottom:6px;opacity:0.9'
+    box.appendChild(title)
+
+    const hint = document.createElement('div')
+    hint.style.cssText = 'font-size:11px;opacity:0.65;margin-bottom:8px;line-height:1.35'
+    hint.textContent = 'Undo restores. Does not change biome. Save to bake.'
+    box.appendChild(hint)
+
+    const row = document.createElement('div')
+    row.className = 'editor-sculpt-row'
+    row.style.cssText = 'flex-wrap:wrap;gap:6px'
+
+    const resetH = document.createElement('button')
+    resetH.type = 'button'
+    resetH.className = 'editor-sculpt-btn'
+    resetH.textContent = 'Reset heights'
+    resetH.title = 'Flatten heightmap to seafloor (under ocean). Keeps paint & grass.'
+    resetH.addEventListener('click', () => {
+      if (
+        !window.confirm(
+          'Reset all heights to seafloor?\n\nPaint and grass stay. Undo restores the previous heightmap.'
+        )
+      ) {
+        return
+      }
+      this.session.resetHeightsToSeafloor()
+      this.onStatus('Heights reset to seafloor')
+    })
+    row.appendChild(resetH)
+
+    const clearPaint = document.createElement('button')
+    clearPaint.type = 'button'
+    clearPaint.className = 'editor-sculpt-btn'
+    clearPaint.textContent = 'Clear paint & grass'
+    clearPaint.title = 'Remove splat materials, lava, and ez-tree grass. Keeps heights.'
+    clearPaint.addEventListener('click', () => {
+      if (
+        !window.confirm(
+          'Clear all surface paint, lava, and grass blades?\n\nHeights stay. Undo restores paint & grass.'
+        )
+      ) {
+        return
+      }
+      this.session.clearPaintAndGrass()
+      this.onStatus('Paint, lava, and grass cleared')
+    })
+    row.appendChild(clearPaint)
+
+    const resetAll = document.createElement('button')
+    resetAll.type = 'button'
+    resetAll.className = 'editor-sculpt-btn'
+    resetAll.textContent = 'Reset all'
+    resetAll.title = 'Seafloor heights + no paint + no grass'
+    resetAll.addEventListener('click', () => {
+      if (
+        !window.confirm(
+          'Reset everything?\n\n• Heights → seafloor\n• Paint / lava / grass → cleared\n\nUndo restores the previous state.'
+        )
+      ) {
+        return
+      }
+      this.session.resetAllSculpt()
+      this.onStatus('All sculpt data reset')
+    })
+    row.appendChild(resetAll)
+
+    box.appendChild(row)
+    parent.appendChild(box)
   }
 
   /**

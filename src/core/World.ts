@@ -884,16 +884,15 @@ export class World {
         }
       })
       this.scenePromote.bind(scene)
-      // Prewarm ground/roads while primary hydrates — cap radius so Scene Distance 200m
-      // does not compete with 10k–20k primary GltfContainers on the loading screen.
+      // Hydration: primary scene only for scripts. Prewarm roads + empty at full fill
+      // radius (default 200m) — no composite/live secondaries (LOAD_AOI_SCENE_VISUALS off).
       const spawnFeet = scene.spawn
         ? { x: scene.spawn.x, z: scene.spawn.z }
         : { x: 8, z: 8 }
-      const userRadius = renderQuality.getSceneLoadRadiusM()
-      const hydratePrewarmM = Math.min(userRadius, 48)
-      this.aoiVisual.prewarmVisuals(spawnFeet.x, spawnFeet.z, hydratePrewarmM)
+      const fillM = renderQuality.getSceneLoadRadiusM()
+      this.aoiVisual.prewarmVisuals(spawnFeet.x, spawnFeet.z, fillM)
       console.info(
-        `[aoi] Genesis walk — hydrate prewarm=${hydratePrewarmM}m (user Scene Distance=${userRadius}m) · FocusOwner=primary · base=${scene.baseParcel}`
+        `[aoi] Genesis walk — hydrate fill roads+empty=${fillM}m (no active neighbor scenes) · FocusOwner=primary · base=${scene.baseParcel}`
       )
     } else if (aoiOff) {
       this.aoiVisual.unbind()
@@ -1435,12 +1434,14 @@ export class World {
       plazaScale,
       engineTickIntervalMs: resolveEngineTickIntervalMs(this.sceneScript.getPerformanceTier())
     })
-    // AOI warm/live/visuals only after primary is play-ready — dual-boot kills CBD.
-    // Honor ?noaoi so neighbors never start.
+    // World fill (roads / empty) after primary is play-ready.
+    // Live secondary **scenes** stay off — Explorer no longer loads active neighbors here.
+    // Honor ?noaoi so AOI bind is skipped entirely.
     if (!skipAoiNeighbors()) {
       this.aoiVisual.setNeighborActivityEnabled(true)
-      this.scenePromote.setNeighborActivityEnabled(true)
-      this.multiScene?.setSecondaryActivityEnabled(true)
+      // Promote-on-stand + live secondary workers disabled while LOAD_AOI_SCENE_VISUALS is off.
+      this.scenePromote.setNeighborActivityEnabled(false)
+      this.multiScene?.setSecondaryActivityEnabled(false)
     }
     if (!skipRemoteAvatars()) {
       this.remoteAvatars?.setPlayReady(plazaScale)

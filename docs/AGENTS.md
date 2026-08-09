@@ -47,7 +47,7 @@ Worked example: DecentraCraft at **`-16,124`** uses `isPressed` + Camera×PPI pl
 | **Rebind origin on promote** | `comms.bindSceneTarget(newPrimary)` **before** `restoreGenesisFeet`. Missing this warps soft-route (old local + new base → wrong parcel like -135,107) and voids CBD. |
 | **Prior primary stays resident** | Demote keeps mesh graph sticky as **secondary** (muted scripts) regardless of parcel count. Tertiary only via leave-ring / cap pressure. Re-promote unpauses. **Never** `system.dispose()` into void. |
 | **Freeze hold pin** | `disableAllHoldFeet` only for intentional `InputModifier.disableAll`. Never pin for colliders-ready or multi-scene thrash. Stall auto-recover if keys held + free + feet stuck. |
-| **Secondary scripts** | Live secondaries hard-capped (≤3). Cadence: high = every frame; medium/low = ~30/20 Hz ([WORKER_SYSTEM_PIE.md](./WORKER_SYSTEM_PIE.md)). FocusOwner mute unchanged. |
+| **Secondary scripts** | **Off for now** — primary only + roads/empty fill (200 m). Live multi-scene workers disabled (`LOAD_AOI_SCENE_VISUALS`). |
 | **Secondary FocusOwner mute** | No video, audio, scene UI, privileged pointers/nav — `FocusPolicy = 'secondary'`. |
 | **Primary FocusOwner** | Only primary owns UI / media / inputs / locomotion. |
 | **Tertiary residents** | Only when **leave 16m live ring** or **secondary-cap pressure** (prefer non-sticky). Scripts OFF + LOD. Re-enter → scripts on only (**no GLB reload**). |

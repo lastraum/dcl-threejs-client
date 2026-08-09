@@ -43,10 +43,9 @@ export type RenderQualityOptions = {
    */
   avatarToonEnabled: boolean
   /**
-   * AOI warm + visual radius (meters): roads, empty layer, composites, first-frame,
-   * script/manifest prefetch, and live-secondary *eligibility*. 0 = primary only.
-   * Independent of graphics presets. Live workers stay tier-capped (see multiScene/caps).
-   * FocusOwner (UI/audio/video/inputs) is always primary only.
+   * World fill radius (meters): roads + empty-land scatter only.
+   * Active multi-scene neighbors / composites / live workers are off.
+   * 0 = primary footprint only. Independent of graphics presets.
    */
   sceneLoadRadiusM: number
   /**
@@ -66,11 +65,11 @@ export type RenderQualityOptions = {
 export const SCENE_LOAD_RADIUS_MIN_M = 0
 export const SCENE_LOAD_RADIUS_MAX_M = 200
 /**
- * Default AOI warm/visual band (~4 parcels).
- * 0 = primary only. Live workers stay adjacency-capped (see multiScene/caps).
- * Isolate single-scene CBD with `?noaoi` or slider 0.
+ * Roads + empty-land fill radius (meters). Explorer no longer exposes a multi-scene
+ * "Scene Distance" for active workers — we use this only for world fill (roads/empty).
+ * Live secondary scenes are off (see AoiVisualLayer LOAD_AOI_SCENE_VISUALS).
  */
-export const SCENE_LOAD_RADIUS_DEFAULT_M = 64
+export const SCENE_LOAD_RADIUS_DEFAULT_M = 200
 
 /** Max ECS LightSource lights active at once (nearest to avatar) — preset defaults. */
 export const LIGHT_LIMITS: Record<RenderQualityTier, number> = {
@@ -92,7 +91,8 @@ export const MAX_SHADOW_SPOT_LIGHTS = 3
 export const LIGHT_CULL_DISTANCE_M = 40
 
 export const RESOLUTION_SCALE_MIN = 50
-export const RESOLUTION_SCALE_MAX = 200
+/** Explorer client caps resolution scale at 120% — match that ceiling. */
+export const RESOLUTION_SCALE_MAX = 120
 export const MAX_SCENE_LIGHTS_CAP = 20
 
 /** Spot / directional shadow map resolution by shadow quality (not overall tier). */

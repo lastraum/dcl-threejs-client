@@ -211,8 +211,8 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
       items: [
         {
           type: 'slider',
-          // Warm/visual ring: composites + roads + empty. Live workers = 16m scene adjacency (capped).
-          label: 'Scene Distance',
+          // Roads + empty-land fill only (no multi-scene active workers).
+          label: 'World fill (roads & empty)',
           min: SCENE_LOAD_RADIUS_MIN_M,
           max: SCENE_LOAD_RADIUS_MAX_M,
           defaultValue: rq.sceneLoadRadiusM ?? SCENE_LOAD_RADIUS_DEFAULT_M,
@@ -439,6 +439,7 @@ export class GraphicsSettingsView {
             if (control.kind === 'dropdown') control.select.value = shadowLabel(opts.shadowQuality)
             break
           case 'Scene Distance':
+          case 'World fill (roads & empty)':
             if (control.kind === 'slider') {
               control.input.value = String(opts.sceneLoadRadiusM)
               control.label.textContent = `${opts.sceneLoadRadiusM}${control.suffix ?? ''}`

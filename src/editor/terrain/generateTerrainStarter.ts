@@ -53,7 +53,7 @@ export const TERRAIN_STARTER_TEMPLATES: readonly TerrainStarterTemplateMeta[] = 
     id: 'island',
     label: 'Island',
     emoji: '🏝',
-    tip: 'Fills parcels with land; short beach at the edges',
+    tip: 'Large main island + smaller satellites barely connected',
     matchKind: 'island'
   },
   {
@@ -175,9 +175,106 @@ function distToEdgeM(wx: number, wz: number, widthM: number, depthM: number): nu
   return Math.min(wx, widthM - wx, wz, depthM - wz)
 }
 
+/** Soft elliptical land blob — 1 at centre, 0 outside rim. */
+type IslandBlob = {
+  x: number
+  z: number
+  rx: number
+  rz: number
+  /** Extra peak height on this mass (metres above base plateau). */
+  peakBoost: number
+}
+
+function blobLand01(cx: number, cz: number, b: IslandBlob): number {
+  const nx = (cx - b.x) / Math.max(0.5, b.rx)
+  const nz = (cz - b.z) / Math.max(0.5, b.rz)
+  const d = Math.hypot(nx, nz)
+  // Solid interior, soft beach rim, hard zero past ~1.08.
+  if (d >= 1.08) return 0
+  if (d <= 0.55) return 1
+  return smooth01((1.08 - d) / (1.08 - 0.55))
+}
+
+/**
+ * Main landmass + 2–4 satellites placed so rims barely touch / thin isthmuses.
+ * Centres are footprint-relative (0,0 = arena centre).
+ */
+function buildIslandArchipelago(
+  widthM: number,
+  depthM: number,
+  seed: number
+): IslandBlob[] {
+  const rng = mulberry32(seed ^ 0xc001d00d)
+  const halfW = widthM * 0.5
+  const halfD = depthM * 0.5
+  const minHalf = Math.min(halfW, halfD)
+
+  // Main island: large, slightly off-centre — dominant mass in the arena.
+  const mainRx = minHalf * (0.58 + rng() * 0.1)
+  const mainRz = minHalf * (0.54 + rng() * 0.1)
+  const main: IslandBlob = {
+    x: (rng() - 0.5) * halfW * 0.12,
+    z: (rng() - 0.5) * halfD * 0.12,
+    rx: mainRx,
+    rz: mainRz,
+    peakBoost: 5 + rng() * 7
+  }
+  const blobs: IslandBlob[] = [main]
+
+  const satCount = 2 + Math.floor(rng() * 3) // 2–4
+  for (let i = 0; i < satCount; i++) {
+    const ang = rng() * Math.PI * 2 + i * 0.7
+    // Satellite size: clearly smaller than main.
+    const satRx = minHalf * (0.16 + rng() * 0.12)
+    const satRz = minHalf * (0.14 + rng() * 0.12)
+    // Place so soft rims barely connect (slight radius overlap → thin land bridge).
+    const mainReach = (mainRx + mainRz) * 0.5
+    const satReach = (satRx + satRz) * 0.5
+    const overlapM = 2 + rng() * 4 // barely connecting isthmus
+    let dist = mainReach + satReach - overlapM
+    dist = Math.max(mainReach * 0.65, dist)
+
+    let sx = main.x + Math.cos(ang) * dist
+    let sz = main.z + Math.sin(ang) * dist
+    // Keep satellite footprint inside the arena with a small water margin.
+    const margin = Math.max(2.5, minHalf * 0.06)
+    sx = Math.max(-halfW + margin + satRx * 0.35, Math.min(halfW - margin - satRx * 0.35, sx))
+    sz = Math.max(-halfD + margin + satRz * 0.35, Math.min(halfD - margin - satRz * 0.35, sz))
+
+    blobs.push({
+      x: sx,
+      z: sz,
+      rx: satRx,
+      rz: satRz,
+      peakBoost: 2 + rng() * 4
+    })
+  }
+  return blobs
+}
+
+function landMaskFromBlobs(cx: number, cz: number, blobs: IslandBlob[]): {
+  land: number
+  peakBoost: number
+} {
+  let land = 0
+  let peakBoost = 0
+  for (const b of blobs) {
+    const w = blobLand01(cx, cz, b)
+    if (w > land) {
+      land = w
+      peakBoost = b.peakBoost
+    } else if (w > 0.35) {
+      // Bridges / overlaps pick up a little extra height.
+      peakBoost = Math.max(peakBoost, b.peakBoost * 0.35)
+    }
+  }
+  return { land, peakBoost }
+}
+
 /**
  * Generate sculpt buffers for a starter template. Pure: no Three.js / no session.
  * Deterministic for the same (templateId, seed, resolution, footprint meters).
+ * Does **not** change environment.kind — starters only rewrite sculpt buffers.
  */
 export function generateTerrainStarter(opts: GenerateTerrainStarterOpts): TerrainStarterResult {
   const res = opts.resolution
@@ -201,9 +298,12 @@ export function generateTerrainStarter(opts: GenerateTerrainStarterOpts): Terrai
   const MASSIF_WAVE_M = Math.max(36, Math.min(widthM, depthM) * 0.55)
   const CLIFF_WAVE_M = Math.max(14, Math.min(widthM, depthM) * 0.22)
 
-  // Island beach only on the outer few metres so land owns most of the parcels.
   const halfMinM = Math.min(widthM, depthM) * 0.5
   const beachWidthM = Math.min(7, Math.max(3.5, halfMinM * 0.14))
+
+  // Island archipelago (main + satellites) — only used by island template.
+  const islandBlobs =
+    opts.templateId === 'island' ? buildIslandArchipelago(widthM, depthM, seed) : []
 
   // Range orientation (seeded): mountain spine runs along this axis.
   const spineAngle = (seed % 360) * (Math.PI / 180)
@@ -285,50 +385,60 @@ export function generateTerrainStarter(opts: GenerateTerrainStarterOpts): Terrai
         }
 
         case 'island': {
-          // Land fills the rectangle; short beach apron at parcel edges (near MSL).
-          // Interior: dry plateau — not a tiny mid-disc.
-          const inland = smooth01((edgeM - beachWidthM * 0.15) / beachWidthM)
-          const hills = fbm2(nxHill * 0.9, nzHill * 0.9, 5, seed)
-          const peak = fbm2(cx / (HILL_WAVE_M * 1.6), cz / (HILL_WAVE_M * 1.6), 3, seed ^ 0x77)
-          const detail = fbm2(nxDetail * 0.9, nzDetail * 0.9, 3, seed ^ 0x11) * 0.45
-          const plateau =
-            ARENA_WATER_SURFACE_Y +
-            6.5 +
-            (hills * 0.5 + 0.5) * 9 +
-            (peak * 0.5 + 0.5) * 7 +
-            detail
-          // Beach sits just under / at MSL so open water can still lap the edge.
-          const beachFloor =
-            ARENA_WATER_SURFACE_Y -
-            0.35 +
-            fbm2(nxDetail * 0.6, nzDetail * 0.6, 2, seed) * 0.25
-          h = clampHeight(beachFloor + (plateau - beachFloor) * inland)
+          // Archipelago: one large island + smaller satellites barely connected.
+          // Works on any biome (height only) — does not require island environment.kind.
+          const { land, peakBoost } = landMaskFromBlobs(cx, cz, islandBlobs)
+          const hills = fbm2(nxHill * 0.95, nzHill * 0.95, 4, seed)
+          const detail = fbm2(nxDetail * 0.85, nzDetail * 0.85, 3, seed ^ 0x11) * 0.4
+          const sea = TERRAIN_SEA_FLOOR_WORLD_Y
+          const msl = ARENA_WATER_SURFACE_Y
 
-          if (inland < 0.35 || h < ARENA_WATER_SURFACE_Y + 1.2) {
-            s = 210
-            g = 25
-            d = 35
-            r = 8
-            grassD = 8
-            if (inland < 0.08) h = clampHeight(Math.min(h, ARENA_WATER_SURFACE_Y - 0.1))
-          } else if (h < ARENA_WATER_SURFACE_Y + 5) {
-            s = 90
-            g = 120
-            d = 50
-            r = 15
-            grassD = 45
-          } else if (h < ARENA_WATER_SURFACE_Y + 13) {
-            g = 200
-            d = 40
-            r = 30
-            s = 15
-            grassD = Math.min(255, 110 + Math.floor(h * 5))
+          if (land < 0.04) {
+            // Open water between islands
+            h = clampHeight(sea + fbm2(nxDetail * 0.4, nzDetail * 0.4, 2, seed) * 0.15)
+            s = 40
+            g = 5
+            d = 10
+            r = 5
+            grassD = 0
           } else {
-            g = 70
-            d = 45
-            r = 160
-            s = 10
-            grassD = 20
+            const beach = land < 0.38
+            const plateau =
+              msl +
+              2.2 +
+              peakBoost * land +
+              (hills * 0.5 + 0.5) * 5 * land +
+              detail * land
+            // Soft ramp from seafloor through beach into interior.
+            h = clampHeight(sea + (plateau - sea) * smooth01((land - 0.04) / 0.55))
+
+            if (beach || h < msl + 0.9) {
+              s = 215
+              g = 20
+              d = 30
+              r = 8
+              grassD = 5
+              // Keep a wet shoulder slightly under / at MSL on the outer rim.
+              if (land < 0.18) h = clampHeight(Math.min(h, msl - 0.05 + land * 0.8))
+            } else if (h < msl + 5) {
+              s = 70
+              g = 150
+              d = 45
+              r = 20
+              grassD = 55
+            } else if (h < msl + 12) {
+              g = 200
+              d = 40
+              r = 35
+              s = 15
+              grassD = Math.min(255, 100 + Math.floor(h * 4))
+            } else {
+              g = 70
+              d = 45
+              r = 155
+              s = 10
+              grassD = 18
+            }
           }
           break
         }

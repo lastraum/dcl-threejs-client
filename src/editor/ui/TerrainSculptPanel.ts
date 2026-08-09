@@ -2459,10 +2459,15 @@ export class TerrainSculptPanel {
       'display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11px;cursor:pointer'
     const matchCb = document.createElement('input')
     matchCb.type = 'checkbox'
-    matchCb.checked = true
+    // Off by default — starters only rewrite the heightmap; keep current biome.
+    matchCb.checked = false
     this.starterMatchBiomeCb = matchCb
     matchRow.appendChild(matchCb)
-    matchRow.appendChild(document.createTextNode('Match biome backdrop to template'))
+    matchRow.appendChild(
+      document.createTextNode('Also switch biome to match starter (optional)')
+    )
+    matchRow.title =
+      'Off (default): seed only populates heights on your current biome. On: also sets environment.kind.'
     box.appendChild(matchRow)
 
     const apply = document.createElement('button')
@@ -2509,14 +2514,18 @@ export class TerrainSculptPanel {
     }
 
     const meta = TERRAIN_STARTER_TEMPLATES.find((t) => t.id === this.starterSelected)
+    // Optional only — height seeds never force a biome by default.
     if (this.starterMatchBiomeCb?.checked && meta) {
       void this.refApi?.patchEnvironment?.({ kind: meta.matchKind })
     }
 
     const cols = Math.max(1, Math.round(result.widthM / 16))
     const rows = Math.max(1, Math.round(result.depthM / 16))
+    const biomeNote = this.starterMatchBiomeCb?.checked
+      ? ` · biome → ${meta?.matchKind ?? '?'}`
+      : ' · biome unchanged'
     this.onStatus(
-      `Applied ${result.label} · seed ${result.seed} · footprint ${cols}×${rows} parcels (${result.widthM.toFixed(0)}×${result.depthM.toFixed(0)}m)`
+      `Applied ${result.label} · seed ${result.seed} · ${cols}×${rows} parcels (${result.widthM.toFixed(0)}×${result.depthM.toFixed(0)}m)${biomeNote}`
     )
   }
 

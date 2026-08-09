@@ -161,7 +161,28 @@ export function configureEmissiveRendering(
     return
   }
 
-  material.toneMapped = intensity <= 1.5
+  // Solid-color neon (Creator Hub kn(): same albedo+emissive RGB, intensity 1.5–4, no maps).
+  // Explorer keeps these in the tonemapper — toneMapped=false + full dual channels + outdoor
+  // sun + bloom turns pads/walls/characters into white chalk (brainrot vs DCL client).
+  const solidNeon =
+    !hasEmissiveMap &&
+    !material.map &&
+    !alphaBlend &&
+    intensity > 1.01 &&
+    emissiveLum > 0.08
+  if (solidNeon) {
+    // Diffuse carries the hue under the key light; emissive is a modest self-glow.
+    material.emissiveIntensity = Math.min(intensity, 3.5) * 0.42
+    material.toneMapped = true
+    material.envMapIntensity = Math.min(material.envMapIntensity ?? 1, 0.25)
+    if (material.blending !== THREE.NormalBlending) {
+      material.blending = THREE.NormalBlending
+    }
+    return
+  }
+
+  // All other authored materials stay in ACES — only glowSprite path is HDR-unmapped.
+  material.toneMapped = true
   if (material.blending !== THREE.NormalBlending) {
     material.blending = THREE.NormalBlending
   }

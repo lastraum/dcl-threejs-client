@@ -2,9 +2,9 @@
 
 > Browser-native Decentraland client: load deployed Worlds/scenes, shim SDK7 runtime, mirror ECS → Three.js, expand to open world.
 
-**Status:** **v1.7.0** on `main` ✅ (still not full Explorer parity). Community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AOI anim · AudioAnalysis · EnvironmentApi/Testing · v1.5 PART/ROOT · tours · cast · worlds map. **1.8+:** scene UI text-measure · PE polish · outfits/marketplace · create-community/invites (see [`PROGRESS.md`](./PROGRESS.md)).  
+**Status:** **v1.7.0** on `main` ✅ (still not full Explorer parity). **`dev-latest` (2026-08-09, no release):** MeshCollider platform riding · CCT ground law · scene-http · TextShape width · lighting washout. Community voice · live tools · pets · loot bag · AOI · AudioAnalysis · EnvironmentApi · v1.5 PART/ROOT · tours · cast · worlds map. **1.8+:** release cut of riding/lighting stack · scene UI text-measure · PE polish · outfits/marketplace · create-community/invites (see [`PROGRESS.md`](./PROGRESS.md)).  
 **ECS reference:** [`INTEGRATION.md`](./INTEGRATION.md)  
-**Note:** Historical phase plan. Prefer [PROGRESS.md](./PROGRESS.md) + [ARCHITECTURE.md](./ARCHITECTURE.md) + [INTEGRATION.md](./INTEGRATION.md) + [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) for current work.
+**Note:** Historical phase plan. Prefer [PROGRESS.md](./PROGRESS.md) + [ARCHITECTURE.md](./ARCHITECTURE.md) + [INTEGRATION.md](./INTEGRATION.md) + [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) + [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md) for current work.
 
 **Related repos in workspace:** `dcl-companion` (content resolution), `dcl-avatar-hyperfy` (VRM/Three.js), `colyseus-scene` (multiplayer), `blank-scene` (test deploy)
 

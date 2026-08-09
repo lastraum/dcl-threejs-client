@@ -1404,7 +1404,16 @@ export class PointerEventsSystem {
 
       if (ecs.MeshCollider.has(entity)) {
         const mesh = this.deps.collision.getColliderMesh(entity)
-        if (mesh) this.pointerTargets.push(mesh)
+        if (mesh) {
+          // Live visual → collider pose before raycast (stale matrixWorld = PE miss).
+          const visual = nodes.get(entity)
+          if (visual) {
+            visual.updateMatrixWorld(true)
+            this.deps.collision.syncColliderEntityPose(entity, nodes)
+          }
+          mesh.updateMatrixWorld(true)
+          this.pointerTargets.push(mesh)
+        }
       }
 
       if (ecs.MeshRenderer.has(entity)) {
@@ -1415,6 +1424,8 @@ export class PointerEventsSystem {
         // Marker-only instanced leaves use dclMeshRendererInstance (GPU InstancedMesh below).
         if (primitive instanceof THREE.Mesh && !primitive.userData.dclMeshRendererInstance) {
           primitive.userData.entity = entity
+          obj?.updateMatrixWorld(true)
+          primitive.updateMatrixWorld(true)
           this.pointerTargets.push(primitive)
         }
         // Instanced board tiles — marker Group only; GPU mesh is shared InstancedMesh.

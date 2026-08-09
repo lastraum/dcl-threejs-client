@@ -3,7 +3,12 @@ import Stats from 'three/examples/jsm/libs/stats.module.js'
 import { perfSnapshot } from '../../util/perfCounters'
 
 export type OceanPerfInfo =
-  | { backend: 'water.js'; variant: 'open' | 'island'; planeSpanM: number }
+  | {
+      backend: 'water.js'
+      variant: 'open' | 'island'
+      planeSpanM: number
+      authorHeight?: boolean
+    }
   | {
       backend: 'fft-ocean'
       variant: 'open' | 'island'
@@ -11,6 +16,7 @@ export type OceanPerfInfo =
       fftResolution: number
       gpgpuPasses: number
       gpgpuHz: number
+      authorHeight?: boolean
     }
 
 /** mrdoob stats.js — FPS / MS / MB panel plus optional ocean + draw-call HUD. */
@@ -68,13 +74,14 @@ export class RenderStats {
   private refreshExtra(): void {
     const lines: string[] = []
     if (this.oceanInfo) {
+      const shore = this.oceanInfo.authorHeight ? ' +authorH' : ''
       if (this.oceanInfo.backend === 'water.js') {
         lines.push(
-          `ocean: Water.js [${this.oceanInfo.variant}] (${this.oceanInfo.planeSpanM}m plane)`
+          `ocean: Water.js [${this.oceanInfo.variant}] (${this.oceanInfo.planeSpanM}m plane)${shore}`
         )
       } else {
         lines.push(
-          `ocean: FFTOCEAN [${this.oceanInfo.variant}] mesh=${this.oceanInfo.meshResolution} fft=${this.oceanInfo.fftResolution}`,
+          `ocean: FFTOCEAN [${this.oceanInfo.variant}] mesh=${this.oceanInfo.meshResolution} fft=${this.oceanInfo.fftResolution}${shore}`,
           `gpgpu: ${this.oceanInfo.gpgpuPasses} passes @ ${this.oceanInfo.gpgpuHz}Hz`
         )
       }

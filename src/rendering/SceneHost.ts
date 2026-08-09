@@ -260,9 +260,10 @@ export class SceneHost {
   private configureBloom(options: RenderQualityOptions): void {
     if (!this.bloom) return
     const pr = this.renderer.getPixelRatio()
-    // Film scale only — surface glow amount comes from glTF emissiveFactor × intensity.
+    // Film scale only — surface glow amount comes from glTF/ECS emissive × intensity.
+    // Keep modest: outdoor sunlit beauty + low threshold washed brainrot chalk-white vs Explorer.
     const strength =
-      options.tier === 'ultra' ? 0.16 : options.tier === 'high' ? 0.14 : 0.12
+      options.tier === 'ultra' ? 0.14 : options.tier === 'high' ? 0.12 : 0.1
     // Prefer selective on high/ultra when the scene is small enough; always fast on plaza-scale.
     // Mode is re-evaluated each frame in renderMainPass via pickBloomMode().
     const mode = this.pickBloomMode(options)
@@ -272,8 +273,9 @@ export class SceneHost {
         hdr: options.hdrEnabled,
         mode,
         strength,
-        threshold: 0.05,
-        radius: 0.28
+        // Selective only; fast path clamps via FAST_THRESHOLD in BloomPipeline.
+        threshold: 0.15,
+        radius: 0.26
       },
       this.viewportCssW,
       this.viewportCssH,

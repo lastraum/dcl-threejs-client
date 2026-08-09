@@ -924,13 +924,24 @@ export class SceneScriptSystem {
   collectMotionSnapshotCandidates(groundEcs: Entity | null): Set<Entity> {
     const out = new Set<Entity>()
     const { MeshCollider, GltfContainer } = this.readComponents
+    const addColliderEntity = (entity: Entity): void => {
+      if (MeshCollider.has(entity) || GltfContainer.has(entity)) out.add(entity)
+      // Parent Transform movers (crazy-floor-tile) — include collider-bearing descendants
+      for (const e of this.expandToExtractedColliderEntities(entity)) out.add(e)
+    }
 
-    if (groundEcs !== null && this.gltfColliders?.hasExtractedCollider(groundEcs)) {
-      out.add(groundEcs)
+    if (groundEcs !== null) {
+      if (
+        this.gltfColliders?.hasExtractedCollider(groundEcs) ||
+        MeshCollider.has(groundEcs) ||
+        this.colliderRootEntities.has(groundEcs)
+      ) {
+        out.add(groundEcs)
+      }
     }
 
     for (const entity of this.tweenBridge?.getActiveTweenEntities() ?? []) {
-      if (MeshCollider.has(entity) || GltfContainer.has(entity)) out.add(entity)
+      addColliderEntity(entity)
     }
 
     // PART doors / one-shots only — same set as pushColliderPartPoses (not all mixers).
@@ -946,11 +957,11 @@ export class SceneScriptSystem {
     }
 
     for (const entity of this.entityStore?.getBillboardEntities() ?? []) {
-      if (MeshCollider.has(entity) || GltfContainer.has(entity)) out.add(entity)
+      addColliderEntity(entity)
     }
 
     for (const entity of this.lastSyncFrameTransformEntities) {
-      if (MeshCollider.has(entity) || GltfContainer.has(entity)) out.add(entity)
+      addColliderEntity(entity)
     }
 
     return out
@@ -997,8 +1008,11 @@ export class SceneScriptSystem {
   private buildPhysMotionSets(): { transformDirty: Set<Entity>; animatorPart: Set<Entity> } {
     const transformDirty = new Set<Entity>()
     const animatorPart = new Set<Entity>()
+    /** ROOT: entity itself + collider-bearing parents/children (parent-driven MeshCollider pads). */
     const addRoot = (entity: Entity): void => {
-      if (this.physEntityIdForPoseSync(entity) !== null) transformDirty.add(entity)
+      for (const e of this.expandToExtractedColliderEntities(entity)) {
+        transformDirty.add(e)
+      }
     }
     const addPart = (entity: Entity): void => {
       for (const e of this.expandToExtractedColliderEntities(entity)) animatorPart.add(e)
@@ -1116,10 +1130,12 @@ export class SceneScriptSystem {
     const entities = new Set<Entity>(motion)
     for (const entity of shapeMotion) entities.add(entity)
     const priority: Entity[] = []
-    if (standPhysEntity !== null && standPhysEntity !== undefined && standPhysEntity >= GLTF_COLLIDER_ENTITY_BASE) {
-      const ecs = (standPhysEntity - GLTF_COLLIDER_ENTITY_BASE) as Entity
-      priority.push(ecs)
-      entities.add(ecs)
+    if (standPhysEntity !== null && standPhysEntity !== undefined) {
+      const ecs = this.standSurfaceEcsFromPhys(standPhysEntity)
+      if (ecs !== null) {
+        priority.push(ecs)
+        entities.add(ecs)
+      }
     }
     const changed = this.gltfColliders.computeWalkSurfaceDeltasForEntities(nodes, entities, feet, priority)
     for (const entity of changed) {
@@ -1173,9 +1189,35 @@ export class SceneScriptSystem {
     return null
   }
 
+  /**
+   * Map CCT ground PhysX actor id → ECS entity for platform riding.
+   * - MeshCollider / raw collider root: phys id === ecs entity
+   * - GltfContainer: phys id === GLTF_COLLIDER_ENTITY_BASE + ecs
+   * - Multi-shape children (40M+): decode parent GLTF phys id → ecs
+   * - Landscape / infinite ground: null (no ECS ride map)
+   */
   standSurfaceEcsFromPhys(physEntity: number | null): Entity | null {
-    if (physEntity === null || physEntity < GLTF_COLLIDER_ENTITY_BASE) return null
-    return (physEntity - GLTF_COLLIDER_ENTITY_BASE) as Entity
+    if (physEntity === null || physEntity < 0) return null
+    // Multi-shape child actors: 40_000_000 + parentPhys * 512 + slot
+    const MULTI_SHAPE_CHILD_BASE = 40_000_000
+    const MULTI_SHAPE_SLOT_STRIDE = 512
+    if (physEntity >= MULTI_SHAPE_CHILD_BASE) {
+      const parentPhys = Math.floor((physEntity - MULTI_SHAPE_CHILD_BASE) / MULTI_SHAPE_SLOT_STRIDE)
+      return this.standSurfaceEcsFromPhys(parentPhys)
+    }
+    if (physEntity >= GLTF_COLLIDER_ENTITY_BASE) {
+      return (physEntity - GLTF_COLLIDER_ENTITY_BASE) as Entity
+    }
+    // Landscape band — not an ECS ride entity
+    if (physEntity >= LANDSCAPE_COLLIDER_ENTITY_BASE) return null
+    // MeshCollider / mesh physics roots use raw ECS entity as phys id
+    if (this.colliderRootEntities.has(physEntity as Entity)) {
+      return physEntity as Entity
+    }
+    if (this.readComponents.MeshCollider.has(physEntity as Entity)) {
+      return physEntity as Entity
+    }
+    return null
   }
 
   physEntityIdForPoseSync(entity: Entity): number | null {

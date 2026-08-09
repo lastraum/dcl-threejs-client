@@ -5,6 +5,7 @@ import {
   DEFAULT_TERRAIN_SCULPT_SETTINGS,
   TERRAIN_BRUSH_RADIUS_MAX_M,
   TERRAIN_BRUSH_RADIUS_MIN_M,
+  TERRAIN_SEA_FLOOR_WORLD_Y,
   clampTerrainExportSegments,
   type TerrainExportSettings,
   type TerrainSculptSettings
@@ -23,6 +24,12 @@ import { TerrainSculptUndoStack } from './TerrainSculptUndoStack'
 import type { ProjectRoot } from '../localScene/projectRoot'
 import { saveTerrainToProject } from './saveTerrainToProject'
 import { saveTerrainDraft } from './terrainEditorStore'
+import {
+  footprintParcelSpan,
+  generateTerrainStarter,
+  templateMeta,
+  type TerrainStarterTemplateId
+} from './generateTerrainStarter'
 
 export type TerrainSculptSessionHooks = {
   /** After height stroke ends (or undo/redo height). */
@@ -31,6 +38,12 @@ export type TerrainSculptSessionHooks = {
   onPaintCommitted?: () => void
   /** After ez-tree grass blade density stroke (or undo/redo). */
   onGrassCommitted?: () => void
+  /** After a starter template rewrote sculpt buffers. */
+  onStarterApplied?: (info: {
+    templateId: TerrainStarterTemplateId
+    seed: number
+    matchKind?: string
+  }) => void
 }
 
 export class TerrainSculptSession {
@@ -182,6 +195,132 @@ export class TerrainSculptSession {
 
   canRedo(): boolean {
     return this.undoStack.canRedo()
+  }
+
+  /**
+   * True if sculpt buffers are not the virgin sea-floor default
+   * (any raised height, splat paint, or grass).
+   */
+  isSculptDirty(): boolean {
+    const floor = TERRAIN_SEA_FLOOR_WORLD_Y
+    for (let i = 0; i < this.heights.length; i++) {
+      if (this.heights[i]! > floor + 0.05) return true
+    }
+    for (let i = 0; i < this.splat.length; i++) {
+      if (this.splat[i]! > 0) return true
+    }
+    for (let i = 0; i < this.lava.length; i++) {
+      if (this.lava[i]! > 0) return true
+    }
+    for (let i = 0; i < this.grass.length; i++) {
+      if (this.grass[i]! > 0) return true
+    }
+    return false
+  }
+
+  /**
+   * Flatten all heights to deep seafloor. Undoable. Does not clear paint/grass.
+   */
+  resetHeightsToSeafloor(): void {
+    if (this.strokeOpen) this.endStroke()
+    this.undoStack.pushSnapshot(this.heights, this.splat, this.lava, this.grass, this.grassRgb)
+    this.heights.fill(TERRAIN_SEA_FLOOR_WORLD_Y)
+    this.terrain.applySculptHeightBuffer(this.heights, this.resolution)
+    this.bindSharedBuffers()
+    this.persistDraft()
+    this.hooks.onHeightCommitted?.()
+    this.notify()
+  }
+
+  /**
+   * Clear splat paint, lava, and ez-tree grass. Undoable. Does not change heights.
+   */
+  clearPaintAndGrass(): void {
+    if (this.strokeOpen) this.endStroke()
+    this.undoStack.pushSnapshot(this.heights, this.splat, this.lava, this.grass, this.grassRgb)
+    this.splat.fill(0)
+    this.lava.fill(0)
+    this.grass.fill(0)
+    this.grassRgb.fill(0)
+    this.terrain.applySplatBuffer(this.splat, this.resolution, this.resolution)
+    this.terrain.applyLavaBuffer(this.lava, this.resolution, this.resolution)
+    this.bindSharedBuffers()
+    this.persistDraft()
+    this.hooks.onPaintCommitted?.()
+    this.hooks.onGrassCommitted?.()
+    this.notify()
+  }
+
+  /**
+   * Full wipe: seafloor heights + no paint + no grass. Undoable.
+   */
+  resetAllSculpt(): void {
+    if (this.strokeOpen) this.endStroke()
+    this.undoStack.pushSnapshot(this.heights, this.splat, this.lava, this.grass, this.grassRgb)
+    this.heights.fill(TERRAIN_SEA_FLOOR_WORLD_Y)
+    this.splat.fill(0)
+    this.lava.fill(0)
+    this.grass.fill(0)
+    this.grassRgb.fill(0)
+    this.terrain.applySculptHeightBuffer(this.heights, this.resolution)
+    this.terrain.applySplatBuffer(this.splat, this.resolution, this.resolution)
+    this.terrain.applyLavaBuffer(this.lava, this.resolution, this.resolution)
+    this.bindSharedBuffers()
+    this.persistDraft()
+    this.hooks.onHeightCommitted?.()
+    this.hooks.onPaintCommitted?.()
+    this.hooks.onGrassCommitted?.()
+    this.notify()
+  }
+
+  /**
+   * Apply a biome height starter. Pushes full undo snapshot first.
+   * Caller should confirm when isSculptDirty().
+   */
+  applyTerrainStarter(opts: {
+    templateId: TerrainStarterTemplateId
+    seed: number
+  }):
+    | { ok: true; label: string; seed: number; widthM: number; depthM: number; parcels: number }
+    | { ok: false; message: string } {
+    if (this.strokeOpen) this.endStroke()
+    const meta = templateMeta(opts.templateId)
+    const seed = (opts.seed >>> 0) || 1
+    // arenaWidthM/depthM = scene parcel footprint (from sceneWorldBounds at workspace boot).
+    const widthM = this.arenaWidthM
+    const depthM = this.arenaDepthM
+    const span = footprintParcelSpan(widthM, depthM)
+    this.undoStack.pushSnapshot(this.heights, this.splat, this.lava, this.grass, this.grassRgb)
+    const result = generateTerrainStarter({
+      templateId: opts.templateId,
+      seed,
+      resolution: this.resolution,
+      widthM,
+      depthM
+    })
+    this.heights.set(result.heights)
+    this.splat.set(result.splat)
+    this.lava.set(result.lava)
+    this.grass = new Uint8Array(result.grass)
+    this.grassRgb = new Uint8Array(result.grassRgb)
+    this.terrain.applySculptHeightBuffer(this.heights, this.resolution)
+    this.terrain.applySplatBuffer(this.splat, this.resolution, this.resolution)
+    this.terrain.applyLavaBuffer(this.lava, this.resolution, this.resolution)
+    this.bindSharedBuffers()
+    this.persistDraft()
+    this.hooks.onHeightCommitted?.()
+    this.hooks.onPaintCommitted?.()
+    this.hooks.onGrassCommitted?.()
+    this.hooks.onStarterApplied?.({ templateId: opts.templateId, seed })
+    this.notify()
+    return {
+      ok: true,
+      label: meta.label,
+      seed,
+      widthM,
+      depthM,
+      parcels: span.parcels
+    }
   }
 
   undo(): void {

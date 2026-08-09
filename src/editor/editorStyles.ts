@@ -180,6 +180,24 @@ export function injectEditorStyles(): void {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  overflow: hidden;
+}
+.editor-hub-card-thumb {
+  margin: -16px -16px 0;
+  height: 140px;
+  background: linear-gradient(145deg, #1e293b 0%, #0f172a 55%, #134e4a 100%);
+  border-bottom: 1px solid #1f2937;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.editor-hub-card-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.editor-hub-card-thumb--has-image {
+  background: #0b1220;
 }
 .editor-hub-card h2 {
   font-size: 16px;
@@ -199,6 +217,66 @@ export function injectEditorStyles(): void {
   gap: 8px;
   flex-wrap: wrap;
   margin-top: auto;
+}
+.editor-hub-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10050;
+  background: rgba(2, 6, 23, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.editor-hub-modal {
+  width: min(420px, 100%);
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 14px;
+  padding: 20px 22px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  color: #e2e8f0;
+}
+.editor-hub-modal h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 650;
+}
+.editor-hub-modal-blurb,
+.editor-hub-modal-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #94a3b8;
+}
+.editor-hub-modal-label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: #cbd5e1;
+}
+.editor-hub-modal-input {
+  background: #111827;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  color: #f1f5f9;
+  padding: 8px 10px;
+  font-size: 14px;
+}
+.editor-hub-modal-size-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.editor-hub-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
 }
 .editor-workspace {
   display: flex;

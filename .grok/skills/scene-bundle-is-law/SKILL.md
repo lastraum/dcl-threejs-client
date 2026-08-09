@@ -14,6 +14,12 @@ description: >
 
 ## Absolute rules
 
+0. **Refactor platform law — never bandaids.**  
+   Scene failures expose client **parity gaps**. Fix the universal Explorer-parity
+   path (one authoritative model). Never ship sticky recovery, pull-down “if floating,”
+   scene-name forks, or stacked probes that paper over a wrong transfer/pose model.
+   See project `docs/AGENTS.md` § Refactor the law.
+
 1. **Never invent scene behavior.**  
    Do not assume `getClick`, invented ground PE hits, scene-name forks, or
    “what most scenes do” without reading the bundle that is running.

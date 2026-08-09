@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-07-31 (**v1.7.0** — community voice · live tools · pets/Pet Barn · loot bag · AOI anim · EnvironmentApi/Testing · AudioAnalysis; see [PROGRESS.md](./PROGRESS.md))
+> **Last updated:** 2026-08-09 (**dev-latest** parity gaps: MeshCollider riding · CCT ground · scene-http · TextShape width · lighting washout — **no release**; `main` still **v1.7.0**; see [PROGRESS.md](./PROGRESS.md))
 
 ---
 
@@ -57,14 +57,14 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | Animator | 1042 | 🟢 | `AnimatorBridge` — shouldReset one-shots · hold on playing=false · PART hull candidates while running ([COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)) |
 | Billboard | 1090 | 🟢 | `BillboardBridge` |
 | LightSource | 1079 | 🟢 | Culling + quality tiers |
-| TextShape | 1030 | 🟢 | Canvas planes · docs-order UVs · FrontSide · `scale.x<0` map U flip (Poker boards) |
+| TextShape | 1030 | 🟢 | Canvas planes · docs-order UVs · FrontSide · `scale.x<0` map U flip · **content-size width when width omitted** (no invent 1 m clip) |
 | GltfContainerLoadingState | 1049 | 🔵 | Host LWW from `ThreeBridge` attach path — LOADING→FINISHED/NOT_FOUND/ERROR → encoder + worker inject |
 
 ### Physics & input (Phase 2–3)
 
 | Component | ID | Status | Notes |
 | --------- | -- | ------ | ----- |
-| MeshCollider | 1019 | 🟢 | PhysX static + GLTF trimesh · ROOT actor T+R · PART world-cook on hull motion ([COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)) |
+| MeshCollider | 1019 | 🟢 | PhysX static + GLTF trimesh · ROOT actor T+R (parent dirty → child expand) · PART world-cook · **platform ride: single stand-actor Δ** ([COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md)) |
 | AvatarLocomotionSettings | 1211 | 🟢 | jump / doubleJump / glidingSpeed / glidingFallingSpeed / hardLandingCooldown |
 | PhysicsCombinedForce | 1216 | 🟢 | PE force → external XZ + effective-g Y; ×`20/9.8` arcade scale; 1.5× while gliding (`externalPhysics.ts`) |
 | PhysicsCombinedImpulse | 1215 | 🟢 | Explorer-raw Δv (no g-scale); eventId **or** LWW Lamport for plaza eventId=0; unground + cancel fall |
@@ -214,18 +214,23 @@ DOM overlay — not in-scene `UiTransform`.
 | PointerEvents cache, LightManager culling | 🟢 |
 | Genesis sky + cloud lighting (camera-centered dome) | 🟢 |
 | Sun/moon azimuth parity vs Explorer (negate-X celestial) | 🟢 |
-| Trilight ambient (sky + equator + ground) | 🟢 |
-| Soft directional sun shadows | 🟢 |
+| Trilight ambient (sky + equator + ground) | 🟢 | Explorer noon equator/ground; softer day hemi/equator washout close |
+| Soft directional sun shadows | 🟢 | Medium = PCF soft |
+| Outdoor IBL (cheap PMREM buckets) | 🟢 | Day/night environmentIntensity |
+| Solid neon / dual albedo+emissive washout | 🟢 | toneMapped + emissive cap · bloom threshold 0.92 |
 | Island shore receives shadows; wearables cast | 🟢 |
 | Skybox time authority (scene / session / auto) | 🟢 |
 | Low-end scene worker timing + adaptive abort backoff | 🟢 |
 | Boot/hydration: main.crdt seed, composite preload, unified GLB | 🟢 |
 | Landscapes, FFT ocean, Perlin scatter foliage | 🟢 |
-| Scene GLTF emissive LEDs (neon mats) | 🟢 | Property-based; untextured → additive MeshBasic; P4 bloom from emissive×intensity |
-| User sun/moon lighting + exposure sliders | 🟢 |
+| Scene GLTF emissive LEDs (neon mats) | 🟢 | Property-based; untextured → additive MeshBasic; solid dual mats stay toneMapped; P4 bloom threshold 0.92 |
+| User sun/moon lighting + exposure sliders | 🟢 | Defaults rebalanced (exposure/sun softer outdoor) |
 | Sun/hemi intensity match vs Explorer | 🟢 | anim peak 2.72 + trilight; user sliders still override |
 | GLTF hydration budgets, GLB parse pool, AssetCache IDB | 🟢 |
 | PhysX lazy load, collider prewarm, Hyperfy grouped GLTF actors | 🟢 |
+| MeshCollider platform riding (parent→child ROOT + single Δ) | 🟢 | [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md) — no sticky/snap/pull-down |
+| CCT grounded ⇔ walkable under capsule | 🟢 | Walk off elevated pad → freefall; cylinder Y-up cook |
+| Generic scene HTTP egress (`/api/scene-http/...`) | 🟢 | Worker fetch + SignedFetch; Vite + nginx; not per-game locations |
 | Spawn settle onto authored floor (elevated decks) | 🟢 | `settleSpawnOntoFloor` + `waitForSpawnFloorReady`; short CCT drop + multi-XZ probe |
 | GLTF InstancedMesh | 🟡 partial | Static multi-hash path; sustained Transform motion promotes to private clone (coins/projectiles) |
 | Swept projectile hits (bundle rewrite) | 🟢 | `patchProjectileSweptHits` — XZ segment–cylinder + origin snapshot |

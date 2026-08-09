@@ -49,6 +49,12 @@ import {
   terrainColorFromHex,
   terrainColorToHex
 } from '../terrain/terrainSculptConstants'
+import {
+  TERRAIN_STARTER_TEMPLATES,
+  randomTerrainSeed,
+  seedFromString,
+  type TerrainStarterTemplateId
+} from '../terrain/generateTerrainStarter'
 import { LANDSCAPE_ENVIRONMENTS } from '../../dcl/landscape/EnvironmentCatalog'
 import {
   readEnvironmentKind,
@@ -237,6 +243,11 @@ export class TerrainSculptPanel {
   private shadingLegendEl: HTMLDivElement | null = null
   private readonly shadingInputs = new Set<HTMLInputElement>()
   private unsub: (() => void) | null = null
+  /** Terrain height starters (Minecraft-like). */
+  private starterSelected: TerrainStarterTemplateId = 'rolling-hills'
+  private starterSeedInput: HTMLInputElement | null = null
+  private starterMatchBiomeCb: HTMLInputElement | null = null
+  private starterTemplateButtons = new Map<TerrainStarterTemplateId, HTMLButtonElement>()
 
   constructor(
     parent: HTMLElement,
@@ -324,6 +335,7 @@ export class TerrainSculptPanel {
     this.heightToolsHost.className = 'editor-sculpt-tools'
     this.flyoutEl.appendChild(this.heightToolsHost)
     this.addSculptModes()
+    this.addTerrainStarters(this.heightToolsHost)
 
     this.splatToolsHost = document.createElement('div')
     this.splatToolsHost.className = 'editor-sculpt-tools editor-sculpt-tools--hidden'
@@ -1848,7 +1860,9 @@ export class TerrainSculptPanel {
     }
 
     box.appendChild(
-      this.hintEl('Writes environment.water · live preview when biome is island/water')
+      this.hintEl(
+        'Writes environment.water · island/water biomes. Mesh off = no water (not Water.js fallback).'
+      )
     )
 
     this.oceanHintEl = document.createElement('div')
@@ -1856,7 +1870,7 @@ export class TerrainSculptPanel {
     this.oceanHintEl.dataset.role = 'ocean-hint'
     box.appendChild(this.oceanHintEl)
 
-    this.envWaterEnabled = this.envCheckRow(box, 'Water mesh on', (on) => {
+    this.envWaterEnabled = this.envCheckRow(box, 'Water mesh on (master)', (on) => {
       this.patchOcean({ enabled: on }, true)
     })
     this.envFftCb = this.envCheckRow(box, 'FFTOCEAN / dallapozza (WebGL2)', (on) => {
@@ -1938,7 +1952,7 @@ export class TerrainSculptPanel {
     const note = document.createElement('div')
     note.className = 'editor-sculpt-hint editor-sculpt-hint--compact'
     note.textContent =
-      'Surface height: ⚙ → water band → Water To. 💧 toggles preview visibility.'
+      'Surface height: ⚙ → Water To. FFT off = Water.js only. Mesh off = nothing. 💧 = viewport hide.'
     box.appendChild(note)
 
     const resetRow = document.createElement('div')
@@ -2213,7 +2227,7 @@ export class TerrainSculptPanel {
     if (this.oceanHintEl) {
       if (kind === 'island') {
         this.oceanHintEl.textContent =
-          'Island shore · FFT on = dallapozza GPGPU · height = Water To (⚙ Shading)'
+          'Island = circle (parcel centre → corner) + thin beach · open beaches = water biome'
       } else if (kind === 'water') {
         this.oceanHintEl.textContent =
           'Open ocean · FFT on = dallapozza GPGPU · height = Water To (⚙ Shading)'
@@ -2370,6 +2384,229 @@ export class TerrainSculptPanel {
       wrap.appendChild(btn)
     }
     this.heightToolsHost.appendChild(wrap)
+    this.addSculptClearActions(this.heightToolsHost)
+  }
+
+  /** Reset heightmap / clear paint+grass — undoable. */
+  private addSculptClearActions(parent: HTMLElement): void {
+    const box = document.createElement('div')
+    box.style.cssText =
+      'margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.12)'
+
+    const title = document.createElement('div')
+    title.className = 'editor-sculpt-title'
+    title.textContent = 'Reset'
+    title.style.cssText = 'font-size:12px;margin-bottom:6px;opacity:0.9'
+    box.appendChild(title)
+
+    const hint = document.createElement('div')
+    hint.style.cssText = 'font-size:11px;opacity:0.65;margin-bottom:8px;line-height:1.35'
+    hint.textContent = 'Undo restores. Does not change biome. Save to bake.'
+    box.appendChild(hint)
+
+    const row = document.createElement('div')
+    row.className = 'editor-sculpt-row'
+    row.style.cssText = 'flex-wrap:wrap;gap:6px'
+
+    const resetH = document.createElement('button')
+    resetH.type = 'button'
+    resetH.className = 'editor-sculpt-btn'
+    resetH.textContent = 'Reset heights'
+    resetH.title = 'Flatten heightmap to seafloor (under ocean). Keeps paint & grass.'
+    resetH.addEventListener('click', () => {
+      if (
+        !window.confirm(
+          'Reset all heights to seafloor?\n\nPaint and grass stay. Undo restores the previous heightmap.'
+        )
+      ) {
+        return
+      }
+      this.session.resetHeightsToSeafloor()
+      this.onStatus('Heights reset to seafloor')
+    })
+    row.appendChild(resetH)
+
+    const clearPaint = document.createElement('button')
+    clearPaint.type = 'button'
+    clearPaint.className = 'editor-sculpt-btn'
+    clearPaint.textContent = 'Clear paint & grass'
+    clearPaint.title = 'Remove splat materials, lava, and ez-tree grass. Keeps heights.'
+    clearPaint.addEventListener('click', () => {
+      if (
+        !window.confirm(
+          'Clear all surface paint, lava, and grass blades?\n\nHeights stay. Undo restores paint & grass.'
+        )
+      ) {
+        return
+      }
+      this.session.clearPaintAndGrass()
+      this.onStatus('Paint, lava, and grass cleared')
+    })
+    row.appendChild(clearPaint)
+
+    const resetAll = document.createElement('button')
+    resetAll.type = 'button'
+    resetAll.className = 'editor-sculpt-btn'
+    resetAll.textContent = 'Reset all'
+    resetAll.title = 'Seafloor heights + no paint + no grass'
+    resetAll.addEventListener('click', () => {
+      if (
+        !window.confirm(
+          'Reset everything?\n\n• Heights → seafloor\n• Paint / lava / grass → cleared\n\nUndo restores the previous state.'
+        )
+      ) {
+        return
+      }
+      this.session.resetAllSculpt()
+      this.onStatus('All sculpt data reset')
+    })
+    row.appendChild(resetAll)
+
+    box.appendChild(row)
+    parent.appendChild(box)
+  }
+
+  /**
+   * Minecraft-like height starters — fills sculpt buffers; biome dock stays backdrop-only.
+   * Confirm if dirty · undo restores · Save still bakes terrain.glb.
+   */
+  private addTerrainStarters(parent: HTMLElement): void {
+    const box = document.createElement('div')
+    box.className = 'editor-terrain-starters'
+    box.style.cssText =
+      'margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.12)'
+
+    const title = document.createElement('div')
+    title.className = 'editor-sculpt-title'
+    title.textContent = 'Starters'
+    title.style.cssText = 'font-size:12px;margin-bottom:6px;opacity:0.9'
+    box.appendChild(title)
+
+    const hint = document.createElement('div')
+    hint.style.cssText = 'font-size:11px;opacity:0.65;margin-bottom:8px;line-height:1.35'
+    hint.textContent =
+      'Replace sculpt height · Undo restores · Save bakes GLB. Biome icons never wipe height.'
+    box.appendChild(hint)
+
+    const cards = document.createElement('div')
+    cards.className = 'editor-sculpt-row'
+    cards.style.cssText = 'flex-wrap:wrap;gap:6px'
+    for (const t of TERRAIN_STARTER_TEMPLATES) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'editor-sculpt-btn'
+      btn.textContent = `${t.emoji} ${t.label}`
+      btn.title = t.tip
+      btn.addEventListener('click', () => {
+        this.starterSelected = t.id
+        this.syncStarterTemplateHighlight()
+        this.onStatus(`Starter: ${t.label}`)
+      })
+      this.starterTemplateButtons.set(t.id, btn)
+      cards.appendChild(btn)
+    }
+    box.appendChild(cards)
+    this.syncStarterTemplateHighlight()
+
+    const seedRow = document.createElement('div')
+    seedRow.style.cssText =
+      'display:flex;align-items:center;gap:6px;margin-top:8px;flex-wrap:wrap'
+    const seedLab = document.createElement('label')
+    seedLab.textContent = 'Seed'
+    seedLab.style.cssText = 'font-size:11px;opacity:0.8'
+    const seedIn = document.createElement('input')
+    seedIn.type = 'text'
+    seedIn.className = 'editor-sculpt-input'
+    seedIn.value = String(randomTerrainSeed())
+    seedIn.placeholder = 'number or pizza-island'
+    seedIn.style.cssText = 'flex:1;min-width:100px;font-size:12px;padding:4px 6px'
+    this.starterSeedInput = seedIn
+    const reroll = document.createElement('button')
+    reroll.type = 'button'
+    reroll.className = 'editor-sculpt-btn'
+    reroll.textContent = '↻'
+    reroll.title = 'Re-roll seed'
+    reroll.addEventListener('click', () => {
+      if (this.starterSeedInput) this.starterSeedInput.value = String(randomTerrainSeed())
+    })
+    seedRow.appendChild(seedLab)
+    seedRow.appendChild(seedIn)
+    seedRow.appendChild(reroll)
+    box.appendChild(seedRow)
+
+    const matchRow = document.createElement('label')
+    matchRow.style.cssText =
+      'display:flex;align-items:center;gap:6px;margin-top:8px;font-size:11px;cursor:pointer'
+    const matchCb = document.createElement('input')
+    matchCb.type = 'checkbox'
+    // Off by default — starters only rewrite the heightmap; keep current biome.
+    matchCb.checked = false
+    this.starterMatchBiomeCb = matchCb
+    matchRow.appendChild(matchCb)
+    matchRow.appendChild(
+      document.createTextNode('Also switch biome to match starter (optional)')
+    )
+    matchRow.title =
+      'Off (default): seed only populates heights on your current biome. On: also sets environment.kind.'
+    box.appendChild(matchRow)
+
+    const apply = document.createElement('button')
+    apply.type = 'button'
+    apply.className = 'editor-sculpt-btn'
+    apply.textContent = 'Apply starter'
+    apply.style.cssText = 'margin-top:10px;width:100%'
+    apply.addEventListener('click', () => this.applySelectedTerrainStarter())
+    box.appendChild(apply)
+
+    parent.appendChild(box)
+  }
+
+  private syncStarterTemplateHighlight(): void {
+    for (const [id, btn] of this.starterTemplateButtons) {
+      const on = id === this.starterSelected
+      btn.classList.toggle('editor-sculpt-btn--active', on)
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false')
+    }
+  }
+
+  private applySelectedTerrainStarter(): void {
+    const seedRaw = this.starterSeedInput?.value?.trim() || String(randomTerrainSeed())
+    const seed = seedFromString(seedRaw)
+    if (this.starterSeedInput) this.starterSeedInput.value = String(seed)
+
+    if (this.session.isSculptDirty()) {
+      const ok = window.confirm(
+        'Replace current sculpt with this starter?\n\nUndo will restore the previous heightmap. Save still bakes terrain.glb when you are ready.'
+      )
+      if (!ok) {
+        this.onStatus('Starter cancelled')
+        return
+      }
+    }
+
+    const result = this.session.applyTerrainStarter({
+      templateId: this.starterSelected,
+      seed
+    })
+    if (!result.ok) {
+      this.onStatus(result.message)
+      return
+    }
+
+    const meta = TERRAIN_STARTER_TEMPLATES.find((t) => t.id === this.starterSelected)
+    // Optional only — height seeds never force a biome by default.
+    if (this.starterMatchBiomeCb?.checked && meta) {
+      void this.refApi?.patchEnvironment?.({ kind: meta.matchKind })
+    }
+
+    const cols = Math.max(1, Math.round(result.widthM / 16))
+    const rows = Math.max(1, Math.round(result.depthM / 16))
+    const biomeNote = this.starterMatchBiomeCb?.checked
+      ? ` · biome → ${meta?.matchKind ?? '?'}`
+      : ' · biome unchanged'
+    this.onStatus(
+      `Applied ${result.label} · seed ${result.seed} · ${cols}×${rows} parcels (${result.widthM.toFixed(0)}×${result.depthM.toFixed(0)}m)${biomeNote}`
+    )
   }
 
   private addSharedBrushSliders(parent: HTMLElement): void {

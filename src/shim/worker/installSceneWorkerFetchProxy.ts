@@ -1,25 +1,11 @@
 /**
- * Rewrite scene-script fetches to same-origin API proxies — Genesis Plaza and other
- * deployed scenes hardcode decentraland.org hosts that block custom client origins.
+ * Scene worker fetch → single generic same-origin pipe `/api/scene-http/...`
+ * (see src/network/sceneHttpProxy.ts). Replaces per-host special cases.
  */
-const PLACES_API_ORIGIN = 'https://places.decentraland.org/api'
-const MARKETPLACE_API_ORIGIN = 'https://marketplace-api.decentraland.org'
-
-function rewriteFetchUrl(input: string): string {
-  if (input.startsWith(PLACES_API_ORIGIN)) {
-    const rest = input.slice(PLACES_API_ORIGIN.length)
-    return `/api/places${rest.startsWith('/') ? rest : `/${rest}`}`
-  }
-  if (input.startsWith(MARKETPLACE_API_ORIGIN)) {
-    const rest = input.slice(MARKETPLACE_API_ORIGIN.length)
-    return `/api/marketplace${rest.startsWith('/') ? rest : `/${rest}`}`
-  }
-  return input
-}
-
-function isPlacesApiUrl(url: string): boolean {
-  return url.includes('/api/places/') || url.includes('/api/places?')
-}
+import {
+  isPlacesUpstreamUrl,
+  toSceneHttpProxyUrl
+} from '../../network/sceneHttpProxy'
 
 /** Places lookups assume `data` is an array — normalize empty/error bodies. */
 async function normalizePlacesJsonResponse(res: Response): Promise<Response> {
@@ -57,12 +43,15 @@ export function installSceneWorkerFetchProxy(): void {
       return nativeFetch(input, init)
     }
 
-    const rewritten = rewriteFetchUrl(url)
-    if (rewritten === url) return nativeFetch(input, init)
+    const rewritten = toSceneHttpProxyUrl(url)
+    if (!rewritten) return nativeFetch(input, init)
 
     const run = (target: RequestInfo | URL) => {
       const promise = nativeFetch(target, init)
-      return isPlacesApiUrl(rewritten) ? promise.then(normalizePlacesJsonResponse) : promise
+      // Normalize when original (or proxy target) is Places
+      return isPlacesUpstreamUrl(url) || isPlacesUpstreamUrl(String(target))
+        ? promise.then(normalizePlacesJsonResponse)
+        : promise
     }
 
     if (typeof input === 'string' || input instanceof URL) {

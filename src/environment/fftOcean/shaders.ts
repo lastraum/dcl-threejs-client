@@ -1,5 +1,8 @@
 import { COMPLEX_GLSL, FRESNEL_GLSL, RANDOM_GLSL } from './glslIncludes'
-import { ISLAND_BEACH_HEIGHT_GLSL } from './islandBeachHeight.glsl'
+import {
+  AUTHOR_TERRAIN_HEIGHT_GLSL3,
+  ISLAND_BEACH_HEIGHT_GLSL
+} from './islandBeachHeight.glsl'
 import { ISLAND_BEACH_HEIGHT_CONSTANTS } from '../../dcl/landscape/islandBeachHeight'
 
 const FULLSCREEN_VERT = /* glsl */ `
@@ -224,7 +227,20 @@ uniform vec2 uGroupWorldXZ;
 uniform float uWaterWorldY;
 uniform float uShoreDampWidthM;
 
+// Author terrain heightfield (heights.bin) — optional shore coupling.
+uniform bool uAuthorHeightEnabled;
+uniform sampler2D uAuthorHeightMap;
+uniform vec2 uAuthorOriginDclXZ;
+uniform vec2 uAuthorSizeM;
+
+// Cheap local wake (player / boat) — single expanding ring, no extra GPGPU.
+uniform bool uWakeEnabled;
+uniform vec2 uWakeCenterXZ;
+uniform float uWakeTime;
+uniform float uWakeStrength;
+
 ${ISLAND_BEACH_HEIGHT_GLSL}
+${AUTHOR_TERRAIN_HEIGHT_GLSL3}
 
 out vec2 vUv;
 out vec3 vWorldPosition;
@@ -262,15 +278,48 @@ void main() {
 
     float dampen = 1.0;
     vec2 globalXZ = finalWorldXZ - snappedCamera + uGroupWorldXZ;
-    float terrainY = ISLAND_WATER_LEVEL_Y - ISLAND_OFFSHORE_DEPTH_M;
+    // Default: deep ocean (full waves). Raise terrainY where land exists.
+    float terrainY = uWaterWorldY - ISLAND_OFFSHORE_DEPTH_M;
+    float islandDist = 0.0;
+    if (uAuthorHeightEnabled) {
+        float authorY = authorTerrainHeightAt(
+            globalXZ, uAuthorHeightMap, uAuthorOriginDclXZ, uAuthorSizeM, uWaterWorldY
+        );
+        terrainY = max(terrainY, authorY);
+    }
     if (uIslandMask) {
-        terrainY = islandBeachHeightAt(globalXZ, uIslandCenterXZ, uFlatRadiusM, uOuterRadiusM);
-        dampen = islandShoreWaveDampen(terrainY, uShoreDampWidthM);
+        islandDist = length(globalXZ - uIslandCenterXZ);
+        // Slope beach to live mean sea level.
+        float beachY = islandBeachHeightAtWater(
+            globalXZ, uIslandCenterXZ, uFlatRadiusM, uOuterRadiusM, uWaterWorldY
+        );
+        terrainY = max(terrainY, beachY);
+        // Land disc law: inside flatRadius the circle IS dry land — force terrain
+        // above MSL so cutout/dampen work even if sculpt Water To ≠ beach base Y.
+        if (islandDist <= uFlatRadiusM) {
+            terrainY = max(terrainY, uWaterWorldY + 1.25);
+        }
+    }
+    if (uIslandMask || uAuthorHeightEnabled) {
+        dampen = shoreWaveDampenAt(terrainY, uWaterWorldY, uShoreDampWidthM);
+        // Kill waves hard on the land disc (not only height soft-step).
+        if (uIslandMask && islandDist <= uFlatRadiusM) {
+            dampen = 0.0;
+        }
     }
 
     height *= dampen;
     choppyX *= dampen;
     choppyZ *= dampen;
+
+    // Local wake ring (metres from wake centre). Cheap analytic only — no sim state.
+    // Applied after dampen so land still kills the ring; multiply dampen once for shore fade.
+    if (uWakeEnabled && uWakeStrength > 0.001) {
+        float d = length(globalXZ - uWakeCenterXZ);
+        float ringR = uWakeTime * 3.8;
+        float ring = exp(-pow(d - ringR, 2.0) * 0.12) * exp(-uWakeTime * 0.28);
+        height += ring * uWakeStrength * 0.22 * dampen;
+    }
 
     vec3 worldPos = vec3(
         globalXZ.x - choppyX * uScale * uChoppyScale,
@@ -345,6 +394,12 @@ uniform float uFlatRadiusM;
 uniform float uOuterRadiusM;
 uniform vec2 uSnapXZ;
 uniform vec2 uGroupWorldXZ;
+uniform float uWaterWorldY;
+uniform bool uAuthorHeightEnabled;
+uniform bool uWakeEnabled;
+uniform vec2 uWakeCenterXZ;
+uniform float uWakeTime;
+uniform float uWakeStrength;
 
 in vec2 vUv;
 in vec3 vWorldPosition;
@@ -417,18 +472,42 @@ void main() {
     float foamMask = jacobianCoverage * pow(foamNoise, 1.0 / uFoamDistortion);
     foamMask = clamp(foamMask, 0.0, 1.0) * clamp(lightLevel, 0.0, 1.0);
 
+    // Local wake foam ring (matches vertex ring radius).
+    if (uWakeEnabled && uWakeStrength > 0.001) {
+        float d = length(vWorldPosition.xz - uWakeCenterXZ);
+        float ringR = uWakeTime * 3.8;
+        float ring = exp(-pow(d - ringR, 2.0) * 0.1) * exp(-uWakeTime * 0.28);
+        foamMask = max(foamMask, ring * uWakeStrength * 0.85 * clamp(lightLevel, 0.0, 1.0));
+    }
+
     finalColor = mix(finalColor, uFoamColor * lightLevel, foamMask);
 
-    // Island: opaque water + cutout shore (not alpha-blend). Soft alpha was drawing
-    // the whole ocean in Three's transparent pass and overdrawing cutout planes (#19).
-    if (uIslandMask) {
-        float waterSurfaceY = vWorldPosition.y;
-        float landLift = vTerrainY - waterSurfaceY;
-        // Cutout-style edge: discard land + soft shore band; keep foam where we remain.
-        float shoreKeep = 1.0 - smoothstep(-0.08, 0.18, landLift);
+    // Shore cutout + foam: island land disc (radial) and/or author heightfield.
+    // CRITICAL: compare land to mean sea level (uWaterWorldY), NOT displaced vWorldPosition.y.
+    // Opaque + discard so water stays out of transparent overdraw (#19).
+    if (uIslandMask || uAuthorHeightEnabled) {
+        float landLift = vTerrainY - uWaterWorldY;
+
+        // Island: the circle (centre → parcel corner) is solid land — hard radial cutout.
+        // Without this, a high editor Water To (e.g. Y=5) floods land built near Y=0.
+        if (uIslandMask) {
+            float dist = length(vWorldPosition.xz - uIslandCenterXZ);
+            // Soft edge only at the land/beach transition (~0.6m), then full beach band.
+            float landDisc = 1.0 - smoothstep(uFlatRadiusM - 0.35, uFlatRadiusM + 0.15, dist);
+            if (landDisc > 0.5) discard;
+        }
+
+        // Author sculpt / beach height: cut solid land above MSL (soft wet band).
+        float shoreKeep = 1.0 - smoothstep(0.12, 0.55, landLift);
         if (shoreKeep < 0.5) discard;
 
-        float shoreMeet = 1.0 - smoothstep(0.0, 1.4, abs(vTerrainY - waterSurfaceY));
+        float shoreMeet = 1.0 - smoothstep(0.0, 1.6, abs(landLift));
+        // Extra foam along the land-disc rim.
+        if (uIslandMask) {
+            float dist = length(vWorldPosition.xz - uIslandCenterXZ);
+            float rim = 1.0 - smoothstep(0.0, 1.8, abs(dist - uFlatRadiusM));
+            shoreMeet = max(shoreMeet, rim);
+        }
         float foamBand = shoreMeet * (0.55 + 0.45 * foamMask) * clamp(lightLevel, 0.0, 1.0);
         finalColor = mix(finalColor, vec3(0.95, 0.97, 0.96) * lightLevel, foamBand * 0.5);
     }

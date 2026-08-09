@@ -2,19 +2,54 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-07-31  
-> **Current phase:** **v1.7.0** on `main` — community voice · live tools · pets/Pet Barn · loot bag · AOI anim ship · EnvironmentApi/Testing · AudioAnalysis.  
+> **Last updated:** 2026-08-09  
+> **Current phase:** **dev-latest** parity / implementation gap close (**no release cut**) — MeshCollider platform riding · CCT ground law · scene-http egress · TextShape width · outdoor lighting washout. **v1.7.0** remains latest on `main`.  
 > **Shipped (1.x):** **v1.7.0** community voice · live polls/Q&A/trivia + CSV · pets/Pet Barn · loot bag · multi-scene AOI anim · AudioAnalysis · EnvironmentApi/Testing · **v1.6.0** tour photos / Camera Reel · admin tools · scene UI fixes · **v1.5.0** PART/ROOT colliders · Animator · tours · cast · **v1.4.0** custom worlds · Worlds map · AOI · shell UI.  
 
-> **1.x next (1.8+):** scene UI text-measure / Yoga polish · portable experiences · backpack outfits/marketplace · create-community / invites · gallery multi-page · graphics P3 distance culls · CBD multi-scene FPS hardening · Social WS transport reliability (PM LiveKit dual-path mitigates voice discovery).  
+> **1.x next (1.8+):** release cut of platform-riding + lighting stack · scene UI text-measure / Yoga polish · portable experiences · backpack outfits/marketplace · create-community / invites · gallery multi-page · graphics P3 distance culls · CBD multi-scene FPS hardening · Social WS transport reliability · PE P3 pad/wind manual QA · multi-shape GLTF `40M+` riding follow-up.  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). PM LiveKit survives teleports. Community voice LiveKit survives Jump In.  
-> **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**.  
-> **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **Static COD:** [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) · **Multi-scene continuity:** [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  
+> **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**; outdoor washout rebalance **on `dev-latest`**.  
+> **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **Riding law:** [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md) · **Static COD:** [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) · **Multi-scene continuity:** [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) · **Place analytics:** [CREATOR_ANALYTICS.md](./CREATOR_ANALYTICS.md)
 >
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## ✅ Milestone — Platform riding + lighting + scene-http parity gaps → `dev-latest` (2026-08-09)
+
+**Status: merged to `dev-latest` — not a product release.** Closes Explorer-parity implementation gaps (MeshCollider movers, CCT ground, CORS egress, TextShape measure, outdoor washout). Repro class: parent-driven MeshCollider floors (e.g. `brainrot.dcl.eth` — scene is a repro, not a fork).
+
+### What's new (parity / implementation — no version toast)
+
+- **MeshCollider platform riding (law)** — stand surface treats raw ECS MeshCollider phys ids; ROOT transform dirty expands to collider-bearing descendants; **one** stand-actor slide Δ before CCT `move()` ([RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md))
+- **No sticky / snap / pull-down** — removed multi-frame sticky Δ, residual feet snap, and post-float pull-down (bandaids deleted; law refactored)
+- **Cylinder / sphere CCT cook** — DCL cylinder → Y-up capsule (or box if flat); half-height excludes caps; `nonWalkableMode = PREVENT_CLIMBING_AND_FORCE_SLIDING`
+- **Grounded ⇔ walkable support under capsule** — `eCOLLISION_DOWN` alone is not enough; freefall + gravity when walking off elevated pads over lower floors
+- **Generic scene HTTP egress** — `/api/scene-http/<https|http>/<host>/<path>` for worker `fetch` + SignedFetch (leaderboards etc.); one nginx block, not per-game APIs ([DEPLOYMENT.md](./DEPLOYMENT.md))
+- **TextShape width law** — content-size when width omitted; no invented 1 m cap that clips long HUD text
+- **Outdoor washout close** — solid neon keeps toneMapped + emissive cap; bloom FAST_THRESHOLD **0.92**; softer day hemi/equator; default exposure/sun rebalance ([COD_LIGHTING_PARITY_FANOUT.md](./COD_LIGHTING_PARITY_FANOUT.md))
+- **PointerEvents PE pose** — refresh PE pose path for elevated / pedestal targets
+- **Terrain biome seeds** (same branch stack) — full-footprint starters, water seafloor, archipelago, reset heights / paint clear
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Platform riding** | 🟢 gap closed | Parent→child MeshCollider bob; single actor Δ |
+| **CCT ground law** | 🟢 gap closed | Walk off elevated → freefall; no air-hover |
+| **scene-http proxy** | 🟢 | Dev Vite + prod nginx; `sceneHttpProxy.ts` |
+| **TextShape measure** | 🟢 | Content width; no fake 1 m |
+| **Lighting washout** | 🟢 gap closed | Neon + bloom + ambient; Explorer midday closer |
+| **Multi-shape GLTF 40M+ ride** | 🟡 follow-up | Not required for MeshCollider pad class |
+| **PE P3 pad/wind QA** | 🟡 open | Manual vs Explorer still open |
+| **Release** | ⬜ not yet | No version cut / toast; `main` stays **v1.7.0** |
+
+**QA (platform, not scene-named):** bobbing MeshCollider floors track tread (no multi-meter loft) · walk off elevated pad lands lower floor · PLAY / PE on pedestal · SignedFetch leaderboard via scene-http · long TextShape HUD readable · Genesis midday less chalk.
+
+**Docs:** [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md) · [PLAN_MESHCOLLIDER_PLATFORM_RIDING.md](./PLAN_MESHCOLLIDER_PLATFORM_RIDING.md) · [COD_BRAINROT_PLATFORM_FANOUT.md](./COD_BRAINROT_PLATFORM_FANOUT.md) · [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · [COD_LIGHTING_PARITY_FANOUT.md](./COD_LIGHTING_PARITY_FANOUT.md) · [AGENTS.md](./AGENTS.md) (refactor-the-law + scene-bundle-is-law)
+
+**Tip:** On `dev-latest` after merge. **Not** tagged for release.
 
 ---
 

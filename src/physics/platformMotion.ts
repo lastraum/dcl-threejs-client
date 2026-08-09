@@ -1,22 +1,20 @@
 /**
- * Platform motion architecture
+ * Platform motion architecture — Explorer-parity law
+ * (see docs/RIDING_TRANSFER_LAW.md, docs/COLLIDER_MOTION_POLICY.md)
  *
- * Two separate pipelines — do not conflate them:
+ * Two pipelines only — do not add a third “recovery” path:
  *
  * 1. **Collider pose sync** (World.syncPlayerMotionFrame)
- *    Detect mesh/transform motion → slide PhysX actor poses so colliders match the scene.
- *    May scan nearby GLTF colliders; animated props (SnoopCar) belong here only.
+ *    Transform dirty (ROOT, including collider-bearing descendants) or Animator PART
+ *    → PhysX actors match scene colliders the same frame.
  *
- * 2. **Riding transfer** (PlayerSystem → PhysXWorld.applyPlatformVelocityTransfer)
- *    CCT is kinematic — when the surface *under the feet* moves, capsule += Δ before move().
- *    Δ comes ONLY from the CCT-grounded PhysX actor (lastGroundPhysEntity), via actor-root /
- *    PhysX-bounds / ground-contact probes — never from distant mesh bbox animation.
+ * 2. **Riding transfer** (PlayerSystem → applyPlatformVelocityTransfer)
+ *    CCT is kinematic. When the *grounded* PhysX actor moves, capsule += that actor’s
+ *    world Δ **once** before move(). Δ is measured from that actor only (pose before/after
+ *    ROOT slide, or one PART walk-surface probe). Never sticky multi-frame Δ, never
+ *    stacked mesh/actor-root/bounds probes, never post-move pull-down.
  *
- * Mesh walk-surface Δ does not drive either pipeline.
- *
- * 3. **Animator mesh deformation** (SnoopCar, lift tread, etc.)
- *    PhysX shape locals sync only when the capsule column overlaps that tread (stand surface).
- *    Distant animated props stay at rest pose — no camera / bystander jitter.
+ * Scenes expose gaps in this law; they are not special cases.
  */
 
 /** Feet may be this far above animated tread to start PhysX shape sync (step onto bobbing prop). */
@@ -25,7 +23,7 @@ export const STAND_SURFACE_MAX_VERT_GAP = 1.4
 export const STAND_SURFACE_MAX_BELOW_TREAD = 1.4
 /** Feet must be on/near tread top — not walking on floor far below a bobbing mesh overhead. */
 export const STAND_SURFACE_CONTACT_TOLERANCE = 0.08
-/** Max horizontal riding Δ per frame — bobbing Animator treads; wider pose-sync limits stay separate. */
+/** Max horizontal riding Δ per frame. */
 export const MAX_RIDING_DELTA_HORIZ = 0.45
 
 /** Ignore sub-mm PhysX/probe jitter on static floors (~8 mm). */

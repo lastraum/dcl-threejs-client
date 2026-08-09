@@ -4,6 +4,7 @@ import { dclToThreePos } from '../bridge/dclTransform'
 import { parseParcelKey } from '../dcl/content/parseParcel'
 import { ISLAND_WATER_SURFACE_Y } from '../dcl/landscape/IslandShoreMaterial'
 import { islandCenterDcl, islandCenterThree, islandShoreLayout } from '../dcl/landscape/islandLandscapeKeys'
+import type { AuthorTerrainHeightMap } from './authorTerrainHeightMap'
 import type { OutdoorLightingSnapshot } from './OutdoorLighting'
 import { patchIslandTerrainShoreMask } from './islandWaterShoreMask'
 
@@ -31,17 +32,24 @@ export type IslandWaterPerfSnapshot = {
   backend: 'water.js'
   variant: 'island'
   planeSpanM: number
+  authorHeight: boolean
 }
 
 export class IslandWater {
   readonly group = new THREE.Group()
   readonly perf: IslandWaterPerfSnapshot
   private readonly water: Water
+  private authorHeightMap: AuthorTerrainHeightMap | null = null
 
-  private constructor(water: Water, span: number) {
+  private constructor(water: Water, span: number, authorHeight: boolean) {
     this.group.name = 'island-water'
     this.water = water
-    this.perf = { backend: 'water.js', variant: 'island', planeSpanM: span }
+    this.perf = {
+      backend: 'water.js',
+      variant: 'island',
+      planeSpanM: span,
+      authorHeight
+    }
     this.group.add(water)
   }
 
@@ -49,13 +57,18 @@ export class IslandWater {
     sceneParcels: string[],
     baseParcel: string,
     shoreWidthParcels: number,
-    options?: { waterColor?: number; distortionScale?: number }
+    options?: {
+      waterColor?: number
+      distortionScale?: number
+      authorHeightMap?: AuthorTerrainHeightMap | null
+    }
   ): Promise<IslandWater> {
     const base = parseParcelKey(baseParcel)
     const layout = islandShoreLayout(sceneParcels, shoreWidthParcels, base)
     const centerThree = islandCenterThree(sceneParcels, base)
     const extent = layout.outerRadiusM + OCEAN_EXTENT_M
     const waterNormals = await loadWaterNormals()
+    const author = options?.authorHeightMap ?? null
 
     const sunDir = new THREE.Vector3(0.45, 0.72, 0.35).normalize()
     const geometry = new THREE.PlaneGeometry(extent * 2, extent * 2)
@@ -77,13 +90,16 @@ export class IslandWater {
     water.renderOrder = 1
 
     const centerXZ = new THREE.Vector2(centerThree.x, centerThree.z)
-    patchIslandTerrainShoreMask(water.material as THREE.ShaderMaterial, layout, centerXZ)
+    patchIslandTerrainShoreMask(water.material as THREE.ShaderMaterial, layout, centerXZ, author)
 
     const centerDcl = islandCenterDcl(sceneParcels, base)
-    const instance = new IslandWater(water, extent * 2)
+    const instance = new IslandWater(water, extent * 2, author != null)
+    if (author) instance.authorHeightMap = author
     dclToThreePos(centerDcl.x, ISLAND_WATER_SURFACE_Y, centerDcl.z, instance.group.position)
     instance.group.userData.outerRadiusM = layout.outerRadiusM
-    console.info(`[ocean] Water.js active (island) — plane=${extent * 2}m`)
+    console.info(
+      `[ocean] Water.js active (island) — plane=${extent * 2}m authorHeight=${author != null}`
+    )
     return instance
   }
 
@@ -105,7 +121,12 @@ export class IslandWater {
 
   dispose(): void {
     this.water.geometry.dispose()
-    this.water.material.dispose()
+    const mat = this.water.material as THREE.ShaderMaterial
+    const dummy = mat.userData.authorHeightDummy as THREE.DataTexture | undefined
+    dummy?.dispose()
+    mat.dispose()
+    this.authorHeightMap?.dispose()
+    this.authorHeightMap = null
     this.group.removeFromParent()
   }
 }

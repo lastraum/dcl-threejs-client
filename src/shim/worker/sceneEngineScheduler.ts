@@ -620,21 +620,43 @@ async function executeTickWork(engineDt: number): Promise<void> {
   }
 }
 
+/** Throttle recovery spam — eng.update may still be holding the mutex (cannot cancel JS). */
+let lastForceRecoverAt = 0
+const FORCE_RECOVER_MIN_MS = 2000
+
 export function forceRecoverStuckSceneEngineTick(reason: string): void {
   if (!tickInFlight || !config) return
+  const now = performance.now()
+  // While real eng.update still owns the mutex, only clear scheduler flags once —
+  // requeue storms caused continuous "recovery" + "preempted" logs without freeing CPU.
+  if (engineUpdateInFlight && now - lastForceRecoverAt < FORCE_RECOVER_MIN_MS) {
+    tickEpoch++
+    tickInFlight = false
+    tickStartedAt = 0
+    return
+  }
+  if (now - lastForceRecoverAt < 500) return
+  lastForceRecoverAt = now
   config.log(
-    `[sceneWorker] engine tick recovery — ${reason} (inFlight=${tickInFlight} queued=${tickQueued})`
+    `[sceneWorker] engine tick recovery — ${reason} (tickInFlight=${tickInFlight} engMutex=${engineUpdateInFlight} queued=${tickQueued})`
   )
   tickEpoch++
   tickInFlight = false
   tickStartedAt = 0
   config.onStuckRecover()
+  // Do not requeue while eng.update is still running — wait for finally + play-frame.
+  if (engineUpdateInFlight) {
+    tickQueued = true
+    return
+  }
   const requeue = tickQueued
   tickQueued = false
   if (requeue) {
-    // Only re-fire when the play/hydration interval has elapsed — immediate re-entry
-    // with a dt floor used to invent NeonScreen wall-clock (row pause disappeared).
     queueMicrotask(() => {
+      if (engineUpdateInFlight) {
+        tickQueued = true
+        return
+      }
       if (sceneEngineTickDue(performance.now())) {
         requestSceneEngineTick()
       } else {

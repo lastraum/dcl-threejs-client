@@ -44,6 +44,7 @@ import { FftOceanWater } from '../environment/FftOceanWater'
 import { IslandWater } from '../environment/IslandWater'
 import { OpenOceanWater } from '../environment/OpenOceanWater'
 import { OceanRing } from '../environment/OceanRing'
+import { loadAuthorTerrainHeightMap } from '../environment/authorTerrainHeightMap'
 import {
   isClientWaterDisabled,
   resolveFftOceanSettings,
@@ -146,6 +147,8 @@ type SceneWater = {
   group: THREE.Group
   update: (delta: number, camera: THREE.Camera) => void
   applyOutdoorLighting?: (lighting: OutdoorLightingSnapshot) => void
+  /** Cheap local wake (FFT path). World XZ metres + horizontal speed m/s. */
+  setPlayerWake?: (worldX: number, worldZ: number, speedMps: number) => void
   dispose: () => void
   perfInfo?: OceanPerfInfo
 }
@@ -1746,6 +1749,10 @@ export class World {
           // Character select / menus / PE drone bind VirtualCamera — skip FFT ocean GPGPU while VC is live
           // so main-thread budget goes to UI + late GLB attach (Explorer is not paying this tax).
           if (!this.isAnyVirtualCameraActive()) {
+            if (this.ocean?.setPlayerWake && this.player) {
+              const feet = this.player.getWorldPosition()
+              this.ocean.setPlayerWake(feet.x, feet.z, this.player.getHorizontalSpeed())
+            }
             this.ocean?.update(delta, this.host.camera)
           }
           if (this.ezTreeGrass) {
@@ -4963,38 +4970,51 @@ export class World {
     fftSettings: FftOceanSettings,
     shoreWidthParcels?: number
   ): Promise<SceneWater> {
+    // Author heights.bin → GPU shore damp/foam when sculpt terrain is present.
+    const authorHeightMap = await loadAuthorTerrainHeightMap(scene)
     try {
       const ocean = await FftOceanWater.create(
         scene.parcels,
         scene.baseParcel,
         this.host.renderer,
-        { mode, shoreWidthParcels, settings: fftSettings }
+        { mode, shoreWidthParcels, settings: fftSettings, authorHeightMap }
       )
       return {
         group: ocean.group,
         update: (delta, camera) => ocean.update(delta, camera),
         applyOutdoorLighting: (lighting) => ocean.applyOutdoorLighting(lighting),
+        setPlayerWake: (x, z, speed) => ocean.setPlayerWake(x, z, speed),
         dispose: () => ocean.dispose(),
         perfInfo: ocean.perf
       }
     } catch (err) {
       console.error('[ocean] FFTOCEAN init failed — falling back to Water.js', err)
-      return mode === 'island'
-        ? this.createIslandWater(scene, shoreWidthParcels ?? 1)
-        : this.createOpenOcean(scene)
+      // Height map ownership transfers to IslandWater if island fallback; else free here.
+      if (mode === 'island') {
+        return this.createIslandWater(scene, shoreWidthParcels ?? 1, authorHeightMap)
+      }
+      authorHeightMap?.dispose()
+      return this.createOpenOcean(scene)
     }
   }
 
   private async createIslandWater(
     scene: ResolvedScene,
-    shoreWidthParcels: number
+    shoreWidthParcels: number,
+    /** Pre-loaded map when FFT falls back; otherwise loaded here. */
+    preloadedAuthorHeightMap?: Awaited<ReturnType<typeof loadAuthorTerrainHeightMap>>
   ): Promise<SceneWater> {
     const fft = resolveFftOceanSettings(scene.metadata)
     const waterColor = new THREE.Color(fft.waterDeep).getHex()
+    const authorHeightMap =
+      preloadedAuthorHeightMap !== undefined
+        ? preloadedAuthorHeightMap
+        : await loadAuthorTerrainHeightMap(scene)
     const ocean = await IslandWater.create(scene.parcels, scene.baseParcel, shoreWidthParcels, {
       waterColor,
       // Milder distortion when FFT is off so Water.js still reads as a calm shore.
-      distortionScale: fft.enabled ? 3.7 : 2.6
+      distortionScale: fft.enabled ? 3.7 : 2.6,
+      authorHeightMap
     })
     return {
       group: ocean.group,

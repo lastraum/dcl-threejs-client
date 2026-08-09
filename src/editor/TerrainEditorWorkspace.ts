@@ -23,6 +23,8 @@ import { allHashesForProfile } from '../dcl/landscape/EnvironmentCatalog'
 import { catalystAssetUrl } from '../dcl/landscape/Data/EmptyLandCatalog'
 import { resolveFftOceanSettings } from '../environment/fftOcean/readFftOceanOverride'
 import { SpaceSkyField } from '../environment/SpaceSkyField'
+import { DclGenesisSky } from '../environment/DclGenesisSky'
+import { celestialDirection } from '../environment/sunCycleSampler'
 import type { DesertAtmosphere } from '../environment/DesertAtmosphere'
 import { resolveMountainsSettings } from '../environment/mountainsDefaults'
 import { resolveDesertSettings } from '../environment/desertDefaults'
@@ -69,6 +71,10 @@ function addEditorLighting(scene: THREE.Scene): {
   return { hemi, sun }
 }
 
+/** Midday TOD for editor outdoor sky (seconds since 00:00). */
+const EDITOR_SKY_SECONDS = 12 * 3600
+const _editorCelestial = new THREE.Vector3()
+
 export class TerrainEditorWorkspace {
   private wrap: HTMLDivElement | null = null
   private host: SceneHost | null = null
@@ -78,6 +84,9 @@ export class TerrainEditorWorkspace {
   private editorWater: EditorBiomeWater | null = null
   private editorGrass: EditorGrassPaint | null = null
   private spaceSky: SpaceSkyField | null = null
+  /** Outdoor Genesis sky dome (island / water / land / …) — not used for space. */
+  private outdoorSky: DclGenesisSky | null = null
+  private outdoorSkyLoad: Promise<void> | null = null
   /** Same landscape group the play client builds (`buildParcelLandscape`). */
   private landscapeRoot: THREE.Group | null = null
   private desertAtmo: DesertAtmosphere | null = null
@@ -211,6 +220,7 @@ export class TerrainEditorWorkspace {
       this.editorWater?.update(delta, cam)
       this.editorGrass?.update(delta)
       this.spaceSky?.update(delta, cam)
+      this.tickOutdoorSky(delta, cam)
       this.desertAtmo?.update(delta)
       if (this.maxHeightGuide?.getVisible() && this.terrain) {
         this.maxHeightGuide.update(this.terrain.getMaxHeightSample())
@@ -246,7 +256,9 @@ export class TerrainEditorWorkspace {
       const kind = readEnvironmentKind(this.sceneEnv)
       const profile = LANDSCAPE_ENVIRONMENTS[kind]
       this.editorWater.setBorderPadding(profile.borderPadding)
-      this.editorWater.setWaterLevel(shading.waterToY)
+      if (kind !== 'island' && kind !== 'mountains') {
+        this.editorWater.setWaterLevel(shading.waterToY)
+      }
       this.editorWater.setWaterColor(shading.waterColor)
       await this.editorWater.applyKind(kind)
       void this.rebuildClientLandscapePreview()
@@ -336,7 +348,12 @@ export class TerrainEditorWorkspace {
       setProceduralShading: (patch) => {
         terrain.setProceduralShading(patch)
         const s = terrain.getProceduralShading()
-        this.editorWater?.setWaterLevel(s.waterToY)
+        // Island/mountains ocean Y is pinned to ISLAND_WATER_SURFACE_Y in EditorBiomeWater.
+        // Sculpt Water To is a heightmap band — don't flood the land disc with Y=5.
+        const kind = readEnvironmentKind(this.sceneEnv)
+        if (kind !== 'island' && kind !== 'mountains') {
+          this.editorWater?.setWaterLevel(s.waterToY)
+        }
         this.editorWater?.setWaterColor(s.waterColor)
         this.sculpt?.persistEditorDraft()
         if (
@@ -405,8 +422,11 @@ export class TerrainEditorWorkspace {
           const kind = readEnvironmentKind(this.sceneEnv)
           const profile = LANDSCAPE_ENVIRONMENTS[kind]
           this.editorWater?.setBorderPadding(profile.borderPadding)
-          const waterY = terrain.getProceduralShading().waterToY
-          this.editorWater?.setWaterLevel(waterY)
+          // Island pins sea level inside applyKind; open/plane use sculpt Water To.
+          if (kind !== 'island' && kind !== 'mountains') {
+            const waterY = terrain.getProceduralShading().waterToY
+            this.editorWater?.setWaterLevel(waterY)
+          }
           await this.editorWater?.applyKind(kind)
           // Rebuild the same landscape the play client uses for this environment.kind.
           this.scheduleClientLandscapePreview()
@@ -427,6 +447,10 @@ export class TerrainEditorWorkspace {
                 : backend === 'plane'
                   ? 'sculpt plane'
                   : 'off'
+          const waterYLabel =
+            kind === 'island' || kind === 'mountains'
+              ? 'island sea'
+              : `Y=${terrain.getProceduralShading().waterToY.toFixed(1)}`
           this.panel?.setStatus(
             kind === 'space'
               ? `space · void sky + stars · saved to scene.json`
@@ -435,7 +459,7 @@ export class TerrainEditorWorkspace {
                 : kind === 'mountains'
                   ? `mountains · client landscape · saved to scene.json`
                   : profile.showWater
-                    ? `${kind} · ${backendLabel} · Y=${waterY.toFixed(1)} · saved to scene.json`
+                    ? `${kind} · ${backendLabel} · ${waterYLabel} · saved to scene.json`
                     : `${kind} · no water · saved to scene.json`
           )
         } catch (e) {
@@ -527,6 +551,7 @@ export class TerrainEditorWorkspace {
     this.clearClientLandscapePreview()
     this.spaceSky?.dispose()
     this.spaceSky = null
+    this.disposeOutdoorSky()
     this.editorHemi = null
     this.editorSun = null
     this.terrain?.dispose()
@@ -637,6 +662,7 @@ export class TerrainEditorWorkspace {
     // Space sky is separate (EnvironmentSystem path) — keep that live.
     if (kind === 'space') {
       this.clearClientLandscapePreview()
+      this.hideOutdoorSky()
       if (!this.spaceSky) {
         this.spaceSky = SpaceSkyField.create(this.sceneEnv.space)
         this.spaceSky.mount(threeScene)
@@ -652,7 +678,9 @@ export class TerrainEditorWorkspace {
     this.spaceSky?.unmount(threeScene)
     this.spaceSky?.dispose()
     this.spaceSky = null
-    threeScene.background = null
+    // Soft fallback while Genesis dome textures load (was pure black void).
+    threeScene.background = new THREE.Color(0x87b8e8)
+    void this.ensureOutdoorSky(threeScene)
 
     // none / genesis: no empty-land landscape (matches client catalog)
     if (kind === 'none' || kind === 'genesis') {
@@ -742,6 +770,73 @@ export class TerrainEditorWorkspace {
         e instanceof Error ? e.message : 'Landscape preview failed'
       )
     }
+  }
+
+  /**
+   * Play-client Genesis sky dome for outdoor biomes (island / water / land / desert / …).
+   * Space uses {@link SpaceSkyField} instead.
+   */
+  private async ensureOutdoorSky(scene: THREE.Scene): Promise<void> {
+    const show = (sky: DclGenesisSky): void => {
+      sky.mesh.visible = true
+      if (sky.mesh.parent !== scene) scene.add(sky.mesh)
+      // Dome owns the look — clear solid fallback once ready.
+      scene.background = null
+    }
+
+    const existing = this.outdoorSky
+    if (existing) {
+      show(existing)
+      return
+    }
+
+    if (!this.outdoorSkyLoad) {
+      this.outdoorSkyLoad = (async () => {
+        const sky = new DclGenesisSky()
+        try {
+          await sky.loadTextures()
+        } catch (e) {
+          console.warn('[editor] outdoor sky textures failed — solid fallback', e)
+          sky.dispose()
+          return
+        }
+        this.outdoorSky = sky
+        scene.add(sky.mesh)
+        scene.background = null
+        // First paint at midday so the viewport is not empty until the next frame.
+        celestialDirection(EDITOR_SKY_SECONDS, _editorCelestial)
+        sky.update(EDITOR_SKY_SECONDS, _editorCelestial, 0, false)
+      })().finally(() => {
+        this.outdoorSkyLoad = null
+      })
+    }
+
+    await this.outdoorSkyLoad
+    const ready = this.outdoorSky
+    if (ready) show(ready)
+  }
+
+  private tickOutdoorSky(delta: number, camera: THREE.Camera): void {
+    const sky = this.outdoorSky
+    if (!sky || !sky.mesh.visible) return
+    sky.mesh.position.copy(camera.position)
+    celestialDirection(EDITOR_SKY_SECONDS, _editorCelestial)
+    sky.update(EDITOR_SKY_SECONDS, _editorCelestial, delta, false)
+  }
+
+  private hideOutdoorSky(): void {
+    const sky = this.outdoorSky
+    if (sky) sky.mesh.visible = false
+  }
+
+  private disposeOutdoorSky(): void {
+    const sky = this.outdoorSky
+    if (sky) {
+      sky.mesh.removeFromParent()
+      sky.dispose()
+    }
+    this.outdoorSky = null
+    this.outdoorSkyLoad = null
   }
 
   private scheduleGrassRebuild(): void {

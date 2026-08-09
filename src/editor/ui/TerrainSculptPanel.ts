@@ -1860,7 +1860,9 @@ export class TerrainSculptPanel {
     }
 
     box.appendChild(
-      this.hintEl('Writes environment.water · live preview when biome is island/water')
+      this.hintEl(
+        'Writes environment.water · island/water biomes. Mesh off = no water (not Water.js fallback).'
+      )
     )
 
     this.oceanHintEl = document.createElement('div')
@@ -1868,7 +1870,7 @@ export class TerrainSculptPanel {
     this.oceanHintEl.dataset.role = 'ocean-hint'
     box.appendChild(this.oceanHintEl)
 
-    this.envWaterEnabled = this.envCheckRow(box, 'Water mesh on', (on) => {
+    this.envWaterEnabled = this.envCheckRow(box, 'Water mesh on (master)', (on) => {
       this.patchOcean({ enabled: on }, true)
     })
     this.envFftCb = this.envCheckRow(box, 'FFTOCEAN / dallapozza (WebGL2)', (on) => {
@@ -1950,7 +1952,7 @@ export class TerrainSculptPanel {
     const note = document.createElement('div')
     note.className = 'editor-sculpt-hint editor-sculpt-hint--compact'
     note.textContent =
-      'Surface height: ⚙ → water band → Water To. 💧 toggles preview visibility.'
+      'Surface height: ⚙ → Water To. FFT off = Water.js only. Mesh off = nothing. 💧 = viewport hide.'
     box.appendChild(note)
 
     const resetRow = document.createElement('div')
@@ -2225,7 +2227,7 @@ export class TerrainSculptPanel {
     if (this.oceanHintEl) {
       if (kind === 'island') {
         this.oceanHintEl.textContent =
-          'Island shore · FFT on = dallapozza GPGPU · height = Water To (⚙ Shading)'
+          'Island = circle (parcel centre → corner) + thin beach · open beaches = water biome'
       } else if (kind === 'water') {
         this.oceanHintEl.textContent =
           'Open ocean · FFT on = dallapozza GPGPU · height = Water To (⚙ Shading)'

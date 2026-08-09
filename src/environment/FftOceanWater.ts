@@ -8,6 +8,7 @@ import {
 } from '../dcl/landscape/islandLandscapeKeys'
 import { ISLAND_BEACH_HEIGHT_CONSTANTS } from '../dcl/landscape/islandBeachHeight'
 import { ISLAND_WATER_SURFACE_Y } from '../dcl/landscape/IslandShoreMaterial'
+import type { AuthorTerrainHeightMap } from './authorTerrainHeightMap'
 import { ClipmapGeometry } from './fftOcean/ClipmapGeometry'
 import { OceanGPGPU } from './fftOcean/OceanGPGPU'
 import { readFftOceanOverride, type FftOceanSettings } from './fftOcean/readFftOceanOverride'
@@ -18,6 +19,14 @@ const FOAM_TEXTURE_URL = '/textures/foam/foam.webp'
 /** Default sim rate when settings omit simulationHz (matches FFTOCEAN-tuned client cost). */
 const DEFAULT_GPGPU_HZ = 15
 
+/** 1×1 black float placeholder so uAuthorHeightMap is always bound. */
+function makeDummyHeightTexture(): THREE.DataTexture {
+  const data = new Float32Array([0, 0, 0, 1])
+  const tex = new THREE.DataTexture(data, 1, 1, THREE.RGBAFormat, THREE.FloatType)
+  tex.needsUpdate = true
+  return tex
+}
+
 export type FftOceanPerfSnapshot = {
   backend: 'fft-ocean'
   variant: 'open' | 'island'
@@ -25,12 +34,15 @@ export type FftOceanPerfSnapshot = {
   fftResolution: number
   gpgpuPasses: number
   gpgpuHz: number
+  authorHeight: boolean
 }
 
 export type FftOceanCreateOptions = {
   mode?: 'open' | 'island'
   shoreWidthParcels?: number
   settings?: FftOceanSettings
+  /** Optional sculpt heightfield for shore damp / cutout / foam. */
+  authorHeightMap?: AuthorTerrainHeightMap | null
 }
 
 let foamPromise: Promise<THREE.Texture> | null = null
@@ -67,6 +79,12 @@ export class FftOceanWater {
   private readonly baseSpecularIntensity: number
   private readonly baseVertexSpacing: number
   private readonly islandMask: boolean
+  private readonly dummyHeightTex: THREE.DataTexture
+  private authorHeightMap: AuthorTerrainHeightMap | null = null
+  private wakeEnabled = false
+  private wakeTime = 0
+  private wakeStrength = 0
+  private readonly wakeCenter = new THREE.Vector2()
 
   private constructor(
     mesh: THREE.Mesh,
@@ -75,7 +93,9 @@ export class FftOceanWater {
     renderer: THREE.WebGLRenderer,
     settings: FftOceanSettings,
     mode: 'open' | 'island',
-    baseVertexSpacing: number
+    baseVertexSpacing: number,
+    dummyHeightTex: THREE.DataTexture,
+    authorHeight: boolean
   ) {
     this.group.name = mode === 'island' ? 'island-water' : 'open-ocean-water'
     this.baseVertexSpacing = baseVertexSpacing
@@ -84,6 +104,7 @@ export class FftOceanWater {
     this.material = material
     this.gpgpu = gpgpu
     this.renderer = renderer
+    this.dummyHeightTex = dummyHeightTex
     const simHz = settings.simulationHz > 0 ? settings.simulationHz : DEFAULT_GPGPU_HZ
     this.gpgpuInterval = 1 / simHz
     this.baseSpecularIntensity = settings.specularIntensity
@@ -93,7 +114,8 @@ export class FftOceanWater {
       meshResolution: settings.meshResolution,
       fftResolution: settings.fftResolution,
       gpgpuPasses: gpgpu.passesPerUpdate(),
-      gpgpuHz: simHz
+      gpgpuHz: simHz,
+      authorHeight
     }
     this.group.add(mesh)
   }
@@ -114,6 +136,8 @@ export class FftOceanWater {
         ? islandShoreLayout(sceneParcels, options.shoreWidthParcels ?? 1, base)
         : null
     const foam = await loadFoamTexture()
+    const author = options.authorHeightMap ?? null
+    const dummyHeightTex = makeDummyHeightTexture()
 
     const patchSize = 250
     const baseVertexSpacing = patchSize / settings.meshResolution
@@ -187,7 +211,19 @@ export class FftOceanWater {
         uSnapXZ: { value: new THREE.Vector2() },
         uGroupWorldXZ: { value: new THREE.Vector2() },
         uWaterWorldY: { value: ISLAND_WATER_SURFACE_Y },
-        uShoreDampWidthM: { value: ISLAND_BEACH_HEIGHT_CONSTANTS.shoreDampWidthM }
+        uShoreDampWidthM: { value: ISLAND_BEACH_HEIGHT_CONSTANTS.shoreDampWidthM },
+        uAuthorHeightEnabled: { value: author != null },
+        uAuthorHeightMap: { value: author?.texture ?? dummyHeightTex },
+        uAuthorOriginDclXZ: {
+          value: new THREE.Vector2(author?.originX ?? 0, author?.originZ ?? 0)
+        },
+        uAuthorSizeM: {
+          value: new THREE.Vector2(author?.widthM ?? 1, author?.depthM ?? 1)
+        },
+        uWakeEnabled: { value: false },
+        uWakeCenterXZ: { value: new THREE.Vector2() },
+        uWakeTime: { value: 0 },
+        uWakeStrength: { value: 0 }
       },
       glslVersion: THREE.GLSL3,
       /**
@@ -215,8 +251,11 @@ export class FftOceanWater {
       renderer,
       settings,
       mode,
-      baseVertexSpacing
+      baseVertexSpacing,
+      dummyHeightTex,
+      author != null
     )
+    if (author) instance.authorHeightMap = author
     dclToThreePos(centerDcl.x, ISLAND_WATER_SURFACE_Y, centerDcl.z, instance.group.position)
     instance.syncWorldUniforms()
     if (layout) {
@@ -229,7 +268,7 @@ export class FftOceanWater {
     material.uniforms.uDisplacementZ.value = initial.displacementZ
 
     console.info(
-      `[ocean] FFTOCEAN active (${mode}) — mesh=${settings.meshResolution} fft=${settings.fftResolution} choppy=${settings.choppyScale} gpgpuPasses=${gpgpu.passesPerUpdate()}/frame @${instance.perf.gpgpuHz}Hz`
+      `[ocean] FFTOCEAN active (${mode}) — mesh=${settings.meshResolution} fft=${settings.fftResolution} choppy=${settings.choppyScale} gpgpuPasses=${gpgpu.passesPerUpdate()}/frame @${instance.perf.gpgpuHz}Hz authorHeight=${author != null}`
     )
 
     return instance
@@ -242,6 +281,24 @@ export class FftOceanWater {
       this.group.position.z
     )
     u.uWaterWorldY.value = this.group.position.y
+  }
+
+  /**
+   * Feed player world XZ for a cheap local wake ring.
+   * Spawns/refreshes when the player moves; decays while idle.
+   * Pass Three.js world metres (same as camera.position.xz).
+   */
+  setPlayerWake(worldX: number, worldZ: number, speedMps: number): void {
+    const moving = speedMps > 0.35
+    if (moving) {
+      this.wakeCenter.set(worldX, worldZ)
+      // Refresh ring while moving (keeps a soft trail near feet).
+      if (!this.wakeEnabled || this.wakeTime > 1.2) {
+        this.wakeTime = 0
+      }
+      this.wakeEnabled = true
+      this.wakeStrength = THREE.MathUtils.clamp(speedMps * 0.22, 0.25, 1.1)
+    }
   }
 
   applyOutdoorLighting(lighting: OutdoorLightingSnapshot): void {
@@ -296,6 +353,21 @@ export class FftOceanWater {
       )
     }
 
+    // Advance / decay local wake.
+    if (this.wakeEnabled) {
+      this.wakeTime += delta
+      this.wakeStrength = Math.max(0, this.wakeStrength - delta * 0.35)
+      if (this.wakeTime > 4.5 || this.wakeStrength < 0.02) {
+        this.wakeEnabled = false
+        this.wakeStrength = 0
+        this.wakeTime = 0
+      }
+    }
+    u.uWakeEnabled.value = this.wakeEnabled
+    ;(u.uWakeCenterXZ.value as THREE.Vector2).copy(this.wakeCenter)
+    u.uWakeTime.value = this.wakeTime
+    u.uWakeStrength.value = this.wakeStrength
+
     this.gpgpuTimer += delta
     if (this.gpgpuTimer >= this.gpgpuInterval) {
       const { displacementY, displacementX, displacementZ } = this.gpgpu.update(
@@ -313,6 +385,10 @@ export class FftOceanWater {
     this.mesh.geometry.dispose()
     this.material.dispose()
     this.gpgpu.dispose()
+    this.dummyHeightTex.dispose()
+    // Author map is owned by the loader return; dispose here so World doesn't need dual free.
+    this.authorHeightMap?.dispose()
+    this.authorHeightMap = null
     this.group.removeFromParent()
   }
 }

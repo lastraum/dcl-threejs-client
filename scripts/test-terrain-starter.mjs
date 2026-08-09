@@ -78,5 +78,27 @@ const island = generateTerrainStarter({
 const edge = island.heights[0]
 const mid = island.heights[32 * 64 + 32]
 assert(mid >= edge, 'island center >= corner-ish')
+// Land should fill most of the footprint (not a tiny mid disc).
+let landCells = 0
+for (let i = 0; i < island.heights.length; i++) {
+  if (island.heights[i] > 2) landCells++
+}
+assert(landCells / island.heights.length > 0.55, 'island fills majority of parcels with land')
+
+const mtn = generateTerrainStarter({
+  templateId: 'mountain-range',
+  seed,
+  resolution: 64,
+  widthM: 48,
+  depthM: 48
+})
+let maxH = 0
+let rock = 0
+for (let i = 0; i < mtn.heights.length; i++) {
+  maxH = Math.max(maxH, mtn.heights[i])
+  if (mtn.splat[i * 4 + 2] > 120) rock++
+}
+assert(maxH > 35, 'mountain-range has large peaks')
+assert(rock > 50, 'mountain-range has rock/cliff splat')
 
 console.log('test-terrain-starter: ok')

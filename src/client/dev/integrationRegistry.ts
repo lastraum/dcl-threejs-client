@@ -211,7 +211,7 @@ export const NETWORKING_INTEGRATION: IntegrationEntry[] = [
   },
   { id: 'net:scene-binary', name: 'RFC4 Scene binary packets', status: 'render', category: 'networking', notes: 'comms topic → scene script' },
   { id: 'net:archipelago', name: 'Archipelago adapter', status: 'stub', category: 'networking', notes: 'Scaffold; LiveKit primary path' },
-  { id: 'net:voice-tracks', name: 'Voice tracks (WebRTC)', status: 'render', category: 'networking', notes: 'LiveKit mic: worlds=world room; parcels=island+scene; spatial PositionalAudio on peer avatars; archipelago genesis Z; handoff keepLiveKit' },
+  { id: 'net:voice-tracks', name: 'Voice tracks (WebRTC)', status: 'render', category: 'networking', notes: 'LiveKit mic: worlds=world room; parcels=scene preferred (island fallback only); single media room (no dual island+scene); archipelago WS for presence seed/Stats' },
   { id: 'net:signed-fetch', name: 'SignedFetch (ADR-44)', status: 'render', category: 'networking', notes: 'Worker RPC → main thread' },
   { id: 'net:catalyst-content', name: 'Catalyst content resolution', status: 'render', category: 'networking' },
   { id: 'net:wallet-session', name: 'Wallet / Catalyst session', status: 'render', category: 'networking' },

@@ -64,6 +64,7 @@ import {
 } from '../rendering/SceneGltfInstancer'
 import {
   applyGltfNodeModifiersToEntity,
+  gltfNodeModifiersMirrorStale,
   gltfNodeModifiersReferenceVideo,
   restoreGltfNodeModifierOriginals
 } from './GltfNodeModifiersSync'
@@ -1784,8 +1785,9 @@ export class ThreeBridge {
           this.pendingMaterialEntities.add(entity)
         }
       }
-      // GltfNodeModifiers: apply once when the *component* is in this diff (put/delete).
-      // Mesh attach also queues via notifyGltfAttached. Never re-scan on Transform streams.
+      // GltfNodeModifiers: apply on component put/delete; mesh attach also queues.
+      // Transform streams: only re-queue when UV/scale mirror fingerprint went stale
+      // (plaza event cards set scale.x = −1 after first paint — without this, map U stays wrong).
       const entityComps = diff.get(entity)
       if (entityComps?.has(GltfNodeModifiers.componentId)) {
         if (GltfNodeModifiers.has(entity)) {
@@ -1796,6 +1798,17 @@ export class ThreeBridge {
         } else {
           // Delete — runGltfNodeModifiersPass restores original GLB materials.
           this.pendingGltfNodeModEntities.add(entity)
+        }
+      } else if (
+        GltfNodeModifiers.has(entity) &&
+        entityComps?.has(this.ecs.Transform.componentId)
+      ) {
+        const obj = this.store.nodes.get(entity)
+        if (obj) {
+          const mods = GltfNodeModifiers.get(entity) as PBGltfNodeModifiers
+          if (gltfNodeModifiersMirrorStale(obj, mods)) {
+            this.pendingGltfNodeModEntities.add(entity)
+          }
         }
       }
     }

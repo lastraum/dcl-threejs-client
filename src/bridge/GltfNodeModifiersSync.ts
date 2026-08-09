@@ -250,16 +250,29 @@ function normalizeModifierPath(path: string): string {
     .replace(/\\/g, '/')
 }
 
+/**
+ * glTF exporters often strip Blender trailing `.001` → `001` (or drop the dot).
+ * Scene GltfNodeModifiers still author Unity-style `Building_03_Window.001`.
+ * Compare after removing `.` so path resolution hits without scene-name forks.
+ */
+function gltfNameKey(name: string): string {
+  return name.replace(/\./g, '')
+}
+
+function namesEqual(a: string, b: string, ignoreCase: boolean): boolean {
+  if (ignoreCase ? a.toLowerCase() === b.toLowerCase() : a === b) return true
+  // Dot-stripped match (Building_03_Window.001 ↔ Building_03_Window001).
+  const ak = gltfNameKey(a)
+  const bk = gltfNameKey(b)
+  return ignoreCase ? ak.toLowerCase() === bk.toLowerCase() : ak === bk
+}
+
 function gltfVisualRoot(entityRoot: THREE.Object3D): THREE.Object3D {
   return entityRoot.children.find((c) => c.name.startsWith('__mesh_')) ?? entityRoot
 }
 
 function isRenderMesh(obj: THREE.Object3D): obj is THREE.Mesh {
   return (obj as THREE.Mesh).isMesh === true
-}
-
-function namesEqual(a: string, b: string, ignoreCase: boolean): boolean {
-  return ignoreCase ? a.toLowerCase() === b.toLowerCase() : a === b
 }
 
 /**

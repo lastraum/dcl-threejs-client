@@ -462,9 +462,9 @@ export class World {
   }
 
   /**
-   * Bind voice rooms:
+   * Bind voice rooms (single media LiveKit — no dual island+scene):
    * - Worlds → world LiveKit only
-   * - Parcels → island + scene (Explorer nearby needs island; archipelago Z must be correct)
+   * - Parcels → scene preferred; island only if scene down
    * Does **not** unlock audio — call `unlockVoiceInPlay()` after spawn.
    */
   syncVoiceRoom(): void {
@@ -491,7 +491,8 @@ export class World {
 
   /** Unlock nearby voice only when play chrome is ready (not during loading). */
   unlockVoiceInPlay(): void {
-    // Archipelago still used for movement/nearby peers — not for voice (ADR-204 = scene room).
+    // Archipelago WS = presence seed / Stats clustering (not dual LiveKit media).
+    // Parcel voice + movement prefer gatekeeper **scene** LiveKit; island LiveKit only if scene is down.
     const pos = this.player?.getPosition()
     if (pos) this.comms.seedArchipelagoSceneLocal(pos.x, pos.y, pos.z)
     void this.comms.ensureArchipelagoConnected()

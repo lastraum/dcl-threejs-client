@@ -55,13 +55,12 @@ type BoundRoom = {
 /**
  * Nearby voice — **flat HTML audio only** (spatial temporarily disabled).
  *
- * Room set from CommsService.getVoiceLiveKitRooms():
+ * Room set from CommsService.getVoiceLiveKitRooms() — **single media room**:
  * - Worlds → world LiveKit only
- * - Parcels → island + scene (Explorer nearby voice needs island co-location)
+ * - Parcels → **scene** LiveKit preferred; island only if scene is down
  *
  * Remote tracks → HTMLAudioElement (unmuted, volume via sound settings).
- * One source per participant (island+scene dual rooms would otherwise double).
- * Audio stays muted until `setInPlay(true)` after play chrome is ready.
+ * One source per participant. Audio stays muted until `setInPlay(true)` after play chrome is ready.
  */
 export class VoiceChatService {
   private roomsProvider: RoomsProvider = () => []
@@ -575,7 +574,7 @@ export class VoiceChatService {
         const deviceId = soundSettings.get().microphoneDeviceId
         const captureOpts = deviceId ? { deviceId } : undefined
 
-        // Worlds: one room. Parcels: island + scene (publish each independently).
+        // Exactly the media room(s) from getVoiceLiveKitRooms (one for parcels/worlds).
         for (const room of rooms) {
           const perms = room.localParticipant.permissions
           const sources = (perms as { canPublishSources?: unknown[] } | undefined)?.canPublishSources

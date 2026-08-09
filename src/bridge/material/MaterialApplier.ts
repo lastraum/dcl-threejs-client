@@ -891,6 +891,11 @@ export class MaterialApplier {
   /**
    * Apply TextureMove ST first (persisted on mesh userData), else authored, else previous map.
    * Clones start at (0,0) — authored offset must not wipe live TextureMove offset mid-scroll.
+   *
+   * **Map U orientation law:** `dclMapUFlipped` must stay in sync with actual ST.
+   * Copying previous.repeat (already U-flipped for event cards) without the flag makes
+   * flipTextureU double-flip on re-apply → plaza event cards L–R mirrored again.
+   * Authored/held ST is unflipped base → clear the flag before flipTextureU runs.
    */
   private applyUvTransform(
     tex: THREE.Texture,
@@ -902,20 +907,46 @@ export class MaterialApplier {
       | { tiling?: boolean; x: number; y: number }
       | undefined
 
+    let orientationKnown = false
+
     if (held?.tiling) {
       tex.repeat.set(held.x, held.y)
+      tex.userData.dclMapUFlipped = false
+      orientationKnown = true
     } else if (def?.tiling) {
       tex.repeat.set(def.tiling.x ?? 1, def.tiling.y ?? 1)
+      tex.userData.dclMapUFlipped = false
+      orientationKnown = true
     } else if (previous && previous !== tex) {
       tex.repeat.copy(previous.repeat)
+      tex.userData.dclMapUFlipped = !!previous.userData.dclMapUFlipped
+      orientationKnown = true
     }
 
     if (held && !held.tiling) {
       tex.offset.set(held.x, held.y)
+      // TextureMove offset is authored in base (unflipped) space when held is set alone.
+      if (!orientationKnown) {
+        tex.userData.dclMapUFlipped = false
+        orientationKnown = true
+      }
     } else if (def?.offset) {
       tex.offset.set(def.offset.x ?? 0, def.offset.y ?? 0)
+      if (!orientationKnown) {
+        tex.userData.dclMapUFlipped = false
+        orientationKnown = true
+      }
     } else if (previous && previous !== tex) {
       tex.offset.copy(previous.offset)
+      if (!orientationKnown) {
+        tex.userData.dclMapUFlipped = !!previous.userData.dclMapUFlipped
+        orientationKnown = true
+      }
+    }
+
+    if (!orientationKnown) {
+      // Fresh clone defaults — unflipped base for flipTextureU.
+      tex.userData.dclMapUFlipped = false
     }
   }
 }
@@ -972,9 +1003,10 @@ function objectWorldMirrorX(obj: THREE.Object3D): boolean {
 }
 
 /**
- * Flip or un-flip texture U so sample' = 1 − sample when wantFlip.
- * Must support both directions: first paint often runs before scale.x = −1, then re-apply
- * when the board flips (event-card JUMP IN otherwise stays L–R mirrored).
+ * Absolute map-U orientation: sample' = 1 − sample when wantFlip.
+ * Idempotent vs `tex.userData.dclMapUFlipped` — requires applyUvTransform to keep that
+ * flag honest (never leave flipped ST with flag false, or re-apply double-flips).
+ * Event cards: first paint often before scale.x = −1; re-apply when scale settles.
  */
 function flipTextureU(tex: THREE.Texture, wantFlip = true): void {
   const isFlipped = !!tex.userData.dclMapUFlipped

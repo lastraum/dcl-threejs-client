@@ -8,6 +8,24 @@ Treat every multi-scene, performance, and continuity task as **ship-or-iterate A
 
 > Build as if this were a first-person experience at the level of the most recent Call of Duty titles: visually complete, systems coherent, no accidental unload voids, no silent regressions. Prefer fix-until-proven over leave-a-TODO. Fan out investigation, harsh self-critique, measure, then land the continuity path.
 
+### Refactor the law — never patches (non-negotiable)
+
+> **Always refactor toward Explorer-parity platform law. Never ship bandaids, belt-and-suspenders, or recovery layers that paper over a wrong model.**
+
+Scenes (brainrot, plaza, Flagtag, …) **expose gaps in our parity implementation**. They are repros, not special cases.
+
+| Do | Do not |
+|----|--------|
+| Find the **platform law** that is incomplete or double-applied | Scene-name forks (`if brainrot`) |
+| Fix **one** authoritative path (identity, order, single Δ, FocusOwner, …) | Sticky multi-frame “memory” of bad state |
+| Delete competing code paths that re-invent the same job | Pull-down / snap / clamp “if floating” after a wrong transfer |
+| Measure with a **platform** retest contract | Second and third probes that can **stack** with the first |
+| Prefer remove + correct over add + mitigate | “Just in case” residual corrections |
+
+**Smell test:** if the fix only makes sense as “recover when we got it wrong,” it is a bandaid — stop and refactor the law.
+
+Worked anti-pattern: bobbing MeshCollider floors lofting the CCT → wrong answer is sticky Δ + residual snap + feet pull-down; right answer is **ROOT parent→child pose sync + single riding Δ from the grounded PhysX actor, applied once before `move()`**.
+
 ### Scene bundle is law (non-negotiable)
 
 > **Never invent scene behavior.** The deployed **scene bundle** (`bin/index.js` from catalyst for the parcel pointer, or the worker-evaluated entry) is source of truth for *what the scene calls*. The **client** only implements **Explorer-parity platform laws** so those calls work. No scene-name forks, no fake PE hits, no “probably getClick.”
@@ -52,7 +70,8 @@ If a change makes the world go blank on neighbor step, **it is a P0 bug** — re
 4. **[FRAME_PIPELINE_COD.md](./FRAME_PIPELINE_COD.md)** — admit / lanes / peel / depth  
 5. **[INTEGRATION.md](./INTEGRATION.md)** + **`src/client/dev/integrationRegistry.ts`** — parity matrix  
 5b. **[COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)** — PhysX PART vs ROOT (v1.5)  
-5c. **[STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md)** — cook-once statics · never forceDynamicTreeRebuild · kill-list  
+5c. **[RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md)** — CCT ride: one Δ, no sticky/snap/pull-down  
+5d. **[STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md)** — cook-once statics · never forceDynamicTreeRebuild · kill-list  
 6. **[CLAIMS.yaml](./CLAIMS.yaml)** — who is already working on what  
 7. **[ARCHITECTURE.md](./ARCHITECTURE.md)** — scene I/O model + debt  
 8. **[DEPLOYMENT.md](./DEPLOYMENT.md)** — build / preview / go-live  
@@ -113,7 +132,8 @@ Offline: `?docsGithubFetch=0` shows placeholder notices only (not live progress)
 ## Debug flags
 
 - `?pointerverbose` — pointer flush diagnostics
+- `?platformdebug` — stand phys / groundIsMoving / riding transfer Δ
 - `?gltfloadstate` / `?gltfloadingverbose` — host→worker `GltfContainerLoadingState` (SpaceRunner InputModifier freeze/release)
 - `?docsGithubFetch=0` — offline docs snapshots
 
-Prefer real scenes: Genesis Plaza, `rickroll.dcl.eth`, `pizzapizza.dcl.eth`, `deadsurge.dcl.eth` (large combat / VC / PE attach), `spacerunner.dcl.eth` (load freeze → Gltf FINISHED release).
+Prefer real scenes: Genesis Plaza, `rickroll.dcl.eth`, `pizzapizza.dcl.eth`, `deadsurge.dcl.eth` (large combat / VC / PE attach), `spacerunner.dcl.eth` (load freeze → Gltf FINISHED release), parent-driven MeshCollider movers for riding law.

@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 
-const STORAGE_KEY = 'dcl-sun-environment-settings'
+/** Bump when defaults change so old chalk-wash prefs do not stick forever. */
+const STORAGE_KEY = 'dcl-sun-environment-settings-v2'
 
 export type SunEnvironmentSettingsState = {
   /** Directional sun + day hemi scene lighting (0–100) */
@@ -27,12 +28,16 @@ export const FIXED_SUN_DISC_GLOW_GAIN = 0.28
 
 const DEFAULTS: SunEnvironmentSettingsState = {
   /**
-   * Scene mesh lighting (Reset lighting). Default is a touch softer than the old 52
-   * (~0.88× vs ~0.92× on the directional curve) so midday sits closer to Explorer’s
-   * warm outdoor key. Players still have the full 0–100 Scene sun light knob.
+   * Scene mesh lighting (Reset lighting). Soft outdoor key — stacked with hemi/equator
+   * and ACES, higher defaults chalk-wash emissive Creator Hub scenes (brainrot) vs Explorer.
+   * Full 0–100 Scene sun light knob remains.
    */
-  sceneSunLight: 48,
-  exposure: 70,
+  sceneSunLight: 44,
+  /**
+   * Day ACES multiplier. 70 ≈ ~1.04× tier; mid outdoor reads better near ~0.95–1.0×.
+   * Players can raise for darker rooms.
+   */
+  exposure: 58,
   /** Moon light slider default — slightly under mid so 00:00 stays dark. */
   sceneMoonLight: 48,
   /**
@@ -63,7 +68,8 @@ export function sceneMoonLightMultiplier(sceneMoonLight: number): number {
 /** Multiplier on tier tone-mapping exposure during day. */
 export function sunExposureMultiplier(exposure: number): number {
   const t = clampSlider(exposure) / SUN_SLIDER_MAX
-  return THREE.MathUtils.lerp(0.72, 1.18, t)
+  // Slightly lower ceiling so 100% cannot double-bright ACES outdoor (was 1.18).
+  return THREE.MathUtils.lerp(0.68, 1.08, t)
 }
 
 /** Multiplier on tier tone-mapping exposure during night (~1.32 at 50%). */

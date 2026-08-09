@@ -33,9 +33,14 @@ export type BloomPipelineOptions = {
 
 const DEFAULT_STRENGTH = 0.12
 const DEFAULT_RADIUS = 0.28
-const DEFAULT_THRESHOLD = 0.05
-/** Fast mode: ignore mid-tone albedo so the single pass does not wash the whole plaza. */
-const FAST_THRESHOLD = 0.55
+/** Selective extract — only true emissive isolation; keep low. */
+const DEFAULT_THRESHOLD = 0.12
+/**
+ * Fast mode (luminance bloom on full beauty buffer): outdoor sun + ACES midtones often
+ * sit above 0.5–0.7 HDR. Threshold must stay high or the whole scene blooms chalk-white
+ * (Explorer: bloom is emissive/highlight only, not sunlit albedo).
+ */
+const FAST_THRESHOLD = 0.92
 const MIN_EMISSIVE_RADIANCE = 0.08
 /** Selective extract / bloom mips at this fraction of beauty resolution. */
 const EXTRACT_SCALE = 0.5

@@ -43,8 +43,12 @@ Run through this on a **production build** (`npm run build && npm run preview` o
 - [ ] Genesis Plaza or light-heavy scene — **FPS acceptable** (LightManager culling)
 - [ ] Local player feet on ground; remote avatars aligned
 - [ ] Sky: sun disc + soft clouds (no blue speckle / jagged cloud edges)
+- [ ] Midday Genesis — warm outdoor (not chalk white); solid neon not blown by bloom
 - [ ] Night skybox slider ~23:59 — moon visible; avatars/ground readable (not black silhouettes)
 - [ ] ECS `LightSource` scenes — no blinding yellow overexposure
+- [ ] Bobbing MeshCollider floors (any parent→child pad) — ride tread; no multi-meter loft; walk-off freefalls
+- [ ] Long TextShape HUD (score / leaderboard labels) — no mid-string clip from fake width
+- [ ] Scene third-party SignedFetch / leaderboard — works via `/api/scene-http/...` (not CORS fail)
 
 ### Multiplayer / comms
 
@@ -255,12 +259,36 @@ server {
 
 **Full reference:** [`deploy/nginx.conf`](../deploy/nginx.conf) — copy to the droplet site config. After v0.5.0, missing `/api/places/` causes Explorer 404s (`places/worlds`, `places/places`).
 
+### Generic scene HTTP pipe (required for scene leaderboards / SignedFetch CORS)
+
+Scene scripts and SignedFetch use **one** same-origin egress for absolute third-party URLs:
+
+```text
+/api/scene-http/<https|http>/<host>/<path>?<query>
+→  https://host/path?query
+```
+
+Examples:
+
+| Upstream | Proxied |
+|----------|---------|
+| `https://aura.roustan.xyz/api/aura/leaderboard` | `/api/scene-http/https/aura.roustan.xyz/api/aura/leaderboard` |
+
+- **Dev:** Vite middleware (`scripts/scene-fetch-proxy.mjs`)
+- **Prod:** nginx regex in [`deploy/nginx.conf`](../deploy/nginx.conf) (`location ~ ^/api/scene-http/...`)
+- **Client:** `src/network/sceneHttpProxy.ts` — worker `fetch` + `SignedFetchService`
+
+**Do not** add a new nginx `location` per game API. Named routes (`/api/places`, `/api/marketplace`, `/api/dcl-auth-api`, …) stay for **main-thread UI** contracts only.
+
 **Droplet apply (one-time or after editing):**
 
 ```bash
 sudo nginx -t && sudo systemctl reload nginx
 curl -sS 'https://decentraland.lastslice.co/api/places/worlds?limit=1' | head -c 120
 # expect {"total":...,"ok":true,...} not {"code":"not_found"}
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  'https://decentraland.lastslice.co/api/scene-http/https/aura.roustan.xyz/api/aura/leaderboard'
+# expect 200 (or upstream status), not 404 api_route_not_configured
 ```
 
 Point env vars at proxies (build-time):
@@ -317,6 +345,8 @@ Wallet login uses MetaMask `personal_sign` directly in the browser (no auth-serv
 | ------- | ----- | --- |
 | `ObjectMultiplex - orphaned data for stream "background-liveness"` | MetaMask browser extension | Ignore — not your app |
 | `GET /api/places/... 404` | nginx missing or wrong `/api/places/` proxy | Add `deploy/nginx.conf` block; trailing slashes matter |
+| `GET /api/scene-http/... 404` / `api_route_not_configured` | nginx missing scene-http regex | Add `location ~ ^/api/scene-http/` from `deploy/nginx.conf`; reload nginx |
+| Scene leaderboard CORS / failed fetch | worker URL not rewritten to scene-http | Client `sceneHttpProxy.ts` + Vite middleware; do not add per-game locations |
 | `social.decentraland.org ... 530` | DCL friendships API upstream down | Transient; client returns empty friends list (no console spam) |
 | `peer-wc1.decentraland.org ERR_NAME_NOT_RESOLVED` | Retired catalyst in Places thumbnails | Client rewrites to `VITE_CATALYST_BASE_URL` / `peer-ec2` |
 | `lambdas/profiles/0x… 404` | Scene owner has no Catalyst profile deployed | Expected — explorer shows initials, not an nginx bug |

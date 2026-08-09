@@ -42,9 +42,11 @@ SceneInputRelay (WASD)              inputSystem.isPressed
 | [PROGRESS.md](./PROGRESS.md) | Shipped milestones + “what’s next” |
 | [INTEGRATION.md](./INTEGRATION.md) + `integrationRegistry.ts` | Parity checklist |
 | [CLAIMS.yaml](./CLAIMS.yaml) | Community claims (GitHub issues) |
-| [AGENTS.md](./AGENTS.md) | AI / contributor onboarding |
+| [AGENTS.md](./AGENTS.md) | AI / contributor onboarding (scene-bundle-is-law · refactor-the-law) |
+| [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) | PhysX PART vs ROOT pose sync |
+| [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md) | CCT ride: one stand-actor Δ · grounded under capsule |
 | [CONTRIBUTOR_TESTING.md](./CONTRIBUTOR_TESTING.md) | How to test before PR |
-| [DEPLOYMENT.md](./DEPLOYMENT.md) | Build / host / smoke |
+| [DEPLOYMENT.md](./DEPLOYMENT.md) | Build / host / smoke · `/api/scene-http` |
 | [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) | Original phase sketch (historical) |
 | [PR_CHECKLIST.md](./PR_CHECKLIST.md) | PR gate |
 | [REPO_MANAGEMENT.md](./REPO_MANAGEMENT.md) | Branches, release, community |
@@ -59,7 +61,9 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 1. **Scene owns InputModifier / MainCamera writes** — shim transports; does not invent freeze policy.  
 2. **Hot path without ack** — IM/MC/`vc-pose-live` never wait on main CRDT ack.  
 3. **Pointer UI has one egress** — structured mount snapshot only.  
-4. **No belt-and-suspenders** — fix the phase boundary; do not re-apply opposing state.  
+4. **No belt-and-suspenders** — fix the phase boundary; do not re-apply opposing state. Same for locomotion: **refactor platform law** (one riding Δ, grounded under feet) — never sticky/snap/pull-down recovery.  
+4b. **Scene bundle is law** — never invent scene APIs/geometry; implement Explorer-parity client only.  
+4c. **Generic scene HTTP egress** — absolute third-party worker/SignedFetch URLs via `/api/scene-http/...` (one proxy), not per-game nginx.
 5. **Flight = engine systems + keyboard PETs** — not full SDK `onUpdate`/pollEvents.  
 6. **Ignore extension console noise** (e.g. MetaMask) when diagnosing.
 

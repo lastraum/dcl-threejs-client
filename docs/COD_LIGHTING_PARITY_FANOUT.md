@@ -1,7 +1,8 @@
 # COD fan-out — outdoor lighting parity (Explorer softer yellow)
 
-**Date:** 2026-08-08  
-**Branch:** `feat/lighting-parity`  
+**Date:** 2026-08-08 · **washout close 2026-08-09**  
+**Status:** P0–P1 + washout landed on `dev-latest` (**no release cut**)  
+**Branch:** `feat/lighting-parity` · follow-ups also on `feat/terrain-seed` → `dev-latest`  
 **Bar:** AGENTS.md COD · Explorer platform law (not scene-name looks)  
 **Agents:** explore (client light graph) · explore (materials/shadows/IBL) · research (unity-explorer assets) · plan  
 
@@ -61,7 +62,7 @@ Kelvin **6570** on the light is **not applied** (`UseColorTemperature = false`);
 | ③ | **P1** | Soft shadows on **medium** (`PCFSoftShadowMap`); low stays Basic | **Implemented** (`SceneHost.ts`) |
 | ④ | **P1** | Share ECS outdoor PBR soften with scene GLTF (`applyOutdoorMaterialResponse`) | **Implemented** (`pbrApply` + `LandscapeAssetSanitizer`) |
 | ⑤ | **P1/P2** | AAA outdoor IBL — low-rate PMREM from trilight (~12 buckets/day), `environmentIntensity` day 0.32 / night 0.22 | **Implemented** (`OutdoorIbl.ts` + `EnvironmentSystem`) |
-| ⑥ | **P2** | Exposure tier trim only after light balance | Pending |
+| ⑥ | **P0 washout** | Solid neon (kn-style dual albedo+emissive): keep **toneMapped**; cap emissive; fast bloom threshold **0.92**; softer day hemi/equator; default exposure 58 / sun 44 | **Implemented** 2026-08-09 (brainrot chalk vs Explorer) |
 | ⑦ | **P0 night** | Darker 00:00 — lower moon/hemi/equator/ground boost/IBL/moonExposure; no residual sun | **Implemented** |
 
 ---
@@ -112,4 +113,5 @@ fix(lighting): Explorer noon trilight equator/ground hues
 ## Related path
 
 - Branch: `feat/lighting-parity` (from `dev-latest` @ lighting COD start)  
-- Follow-ups: brightness rebalance → medium soft shadows → GLTF outdoor PBR → cheap IBL  
+- Follow-ups **done on `dev-latest`:** brightness rebalance → medium soft shadows → GLTF outdoor PBR → cheap IBL → **neon/bloom washout (⑥)** + midnight (⑦)  
+- **Not a release** — track for next version cut with platform-riding stack

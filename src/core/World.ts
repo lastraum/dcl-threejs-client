@@ -2043,9 +2043,10 @@ export class World {
   }
 
   /**
-   * Platform motion frame — two pipelines (see platformMotion.ts):
-   * 1. Pose sync: meshMotion → slide PhysX colliders (incl. distant animated props).
-   * 2. Riding transfer: Δ only for CCT-grounded actor → PlayerSystem capsule += Δ before move().
+   * Platform motion frame — Explorer law (docs/RIDING_TRANSFER_LAW.md):
+   * 1) Pose sync ROOT then PART so PhysX matches scene colliders.
+   * 2) Single riding Δ from stand actor (ROOT slide, else PART walk-surface).
+   * Transfer applied later in PlayerSystem before move().
    */
   private syncPlayerMotionFrame(delta: number, startFrame: number): void {
     const feet = this.player?.getWorldPosition()
@@ -2069,112 +2070,94 @@ export class World {
         const meshDescs = this.sceneScript.getPhysicsColliderDescsForEntities(meshEntities)
         this.physics.snapshotColliderPositions(meshDescs)
       }
-      if (feet) {
-        this.physics.snapshotGroundContactBaseline(feet)
-      }
     }
 
-    // 1) Transform writers (CRDT) already applied. 2) Tween/Billboard/Animator.
+    // Transform writers (CRDT) already applied. Tween / Billboard / Animator.
     this.sceneScript.pumpMotionBridges(delta, startFrame)
     this.refreshAnimatorSampleHud(delta)
     if (this.sceneScript.hasColliderWorkPending()) {
       this.sceneScript.syncCollision()
     }
 
-    // Two PhysX sources only (docs/COLLIDER_MOTION_POLICY.md): Transform dirty | Animator part.
     const physReady = this.collidersLoadingComplete && !this.deferPhysxCooks
     const { transformDirty, animatorPart } = physReady
       ? this.sceneScript.snapshotPhysMotionSets()
       : { transformDirty: new Set<Entity>(), animatorPart: new Set<Entity>() }
 
+    // --- ROOT pose sync + single riding Δ from stand actor global pose ---
+    this.physics.snapshotStandActorBeforeRootSlide(standPhysEntity)
     if (transformDirty.size > 0) {
       this.pushColliderRootPoses(transformDirty)
     }
+    this.physics.commitRidingDeltaFromActorSlide(standPhysEntity)
+
+    // --- PART pose sync; walk-surface Δ only if riding still empty ---
     if (animatorPart.size > 0) {
       this.sceneScript.refreshColliderDescPoses([...animatorPart], animatorPart)
-      this.pushColliderPartPoses(animatorPart)
-    }
-
-    let meshMotion: Entity[] = []
-    if (physReady && needsPlatformPipeline && feet) {
-      const groundEcs = groundEcsEarly
-      const frameMotion = this.sceneScript.consumeFrameMotionEntities()
-      meshMotion = this.sceneScript.recordWalkSurfaceDeltasForEntities(
-        frameMotion,
-        animatorPart,
-        feet,
-        standPhysEntity
-      )
-      if (this.sceneScript.hasColliderWorkPending()) {
-        this.sceneScript.syncCollision()
-      }
-      const poseSync = this.sceneScript.collectPhysXPoseSyncEntities(meshMotion, animatorPart)
-      const platformEntities = new Set<Entity>(poseSync)
-      for (const e of transformDirty) platformEntities.add(e)
-      if (groundEcs !== null) platformEntities.add(groundEcs)
-
-      let platformDescs: ReturnType<SceneScriptSystem['getPhysicsColliderDescsForEntities']> | null =
-        null
-      const ensurePlatformDescs = (): NonNullable<typeof platformDescs> => {
-        if (!platformDescs) {
-          platformDescs = this.sceneScript.getPhysicsColliderDescsForEntities([...platformEntities])
-        }
-        return platformDescs
-      }
-
-      const groundIsMoving =
-        groundEcs !== null &&
-        (meshMotion.includes(groundEcs) ||
-          animatorPart.has(groundEcs) ||
-          transformDirty.has(groundEcs))
-      const standScoped = standPhysEntity !== null && standPhysEntity !== -1
-
-      if (groundIsMoving || animatorPart.size > 0 || transformDirty.size > 0) {
-        const descs = ensurePlatformDescs()
-        if (!onSceneGround || animatorPart.size > 0 || transformDirty.size > 0) {
-          this.physics.snapshotActorRootPoses(descs)
-        }
-        if (animatorPart.size > 0 && standScoped) {
-          this.physics.snapshotGltfColliderWalkSurfaces(descs, feet, standPhysEntity)
-        }
-      }
-
-      if (feet && standScoped && groundIsMoving) {
-        this.physics.snapshotPhysXActorWalkSurfaces(standPhysEntity, feet, ensurePlatformDescs())
-      }
-
-      if (groundIsMoving || poseSync.length > 0) {
-        this.physics.applyGltfColliderPoseDeltas(ensurePlatformDescs(), feet)
-      }
-      if (groundIsMoving) {
-        this.physics.applyActorRootPoseDeltas(ensurePlatformDescs(), standPhysEntity)
-      }
       if (
         feet &&
-        groundEcs !== null &&
-        (groundIsMoving || animatorPart.has(groundEcs) || transformDirty.has(groundEcs))
+        standPhysEntity !== null &&
+        standPhysEntity !== -1 &&
+        !this.physics.hasRidingDeltaThisFrame()
       ) {
-        this.sceneScript.computeAnimatorOriginDeltas(feet, groundEcs)
+        const standEcs = groundEcsEarly
+        const partDescs =
+          standEcs !== null
+            ? this.sceneScript.getPhysicsColliderDescsForEntities([standEcs])
+            : this.sceneScript.getPhysicsColliderDescsForEntities([...animatorPart])
+        this.physics.snapshotGltfColliderWalkSurfaces(partDescs, feet, standPhysEntity)
       }
+      this.pushColliderPartPoses(animatorPart)
+      if (!this.physics.hasRidingDeltaThisFrame() && feet && standPhysEntity !== null) {
+        const standEcs = groundEcsEarly
+        const partDescs =
+          standEcs !== null
+            ? this.sceneScript.getPhysicsColliderDescsForEntities([standEcs])
+            : []
+        if (partDescs.length) {
+          this.sceneScript.refreshColliderDescPoses(
+            partDescs.map((d) => d.entity as Entity),
+            animatorPart
+          )
+          this.physics.applyGltfColliderPoseDeltas(
+            this.sceneScript.getPhysicsColliderDescsForEntities(
+              partDescs.map((d) => d.entity as Entity)
+            ),
+            feet
+          )
+        }
+      }
+    }
+
+    // MeshCollider last-pos tracking only (no riding author).
+    if (physReady && transformDirty.size > 0) {
+      const meshPoseEntities = [...transformDirty].filter((entity) =>
+        this.sceneScript.readComponents.MeshCollider.has(entity)
+      )
+      if (meshPoseEntities.length) {
+        this.sceneScript.refreshColliderDescPoses(meshPoseEntities)
+        this.physics.applyMeshColliderPoseDeltas(
+          this.sceneScript.getPhysicsColliderDescsForEntities(meshPoseEntities)
+        )
+      }
+    }
+
+    // PART animator origin only if still no riding Δ (GLTF transform elevators without ROOT slide).
+    if (
+      physReady &&
+      feet &&
+      groundEcsEarly !== null &&
+      !this.physics.hasRidingDeltaThisFrame() &&
+      (transformDirty.has(groundEcsEarly) || animatorPart.has(groundEcsEarly))
+    ) {
+      this.sceneScript.computeAnimatorOriginDeltas(feet, groundEcsEarly)
       this.physics.mergeAnimatorOriginPlatformMotion(
         this.sceneScript.consumeAnimatorOriginDeltasPhys(),
         this.sceneScript.consumeAnimatorOriginPositionsPhys()
       )
-      if (poseSync.length > 0 || groundIsMoving) {
-        const meshPoseEntities = poseSync.filter((entity) =>
-          this.sceneScript.readComponents.MeshCollider.has(entity)
-        )
-        if (meshPoseEntities.length) {
-          this.physics.applyMeshColliderPoseDeltas(
-            this.sceneScript.getPhysicsColliderDescsForEntities(meshPoseEntities)
-          )
-        }
-      }
-      if (feet && standScoped && groundIsMoving) {
-        this.physics.applyPhysXActorWalkSurfaceDeltas(standPhysEntity, feet, ensurePlatformDescs())
-      }
-      this.physics.cullInsignificantPlatformMotionDeltas()
     }
+
+    this.physics.cullInsignificantPlatformMotionDeltas()
     if (platformMotionDebug.isEnabled() && !this.loggedPlatformMotionDebugHint) {
       this.loggedPlatformMotionDebugHint = true
       clientDebugLog.log(
@@ -2185,10 +2168,10 @@ export class World {
     }
     if (feet && platformMotionDebug.isEnabled()) {
       this.sceneScript.logPlatformMotionTick(feet, {
-        meshMotion,
-        poseDirty: 0,
+        meshMotion: [...transformDirty],
+        poseDirty: transformDirty.size,
         platformDeltas: this.physics.getPlatformMotionDeltaSnapshot(),
-        platformTransferApplied: false,
+        platformTransferApplied: this.physics.hasRidingDeltaThisFrame(),
         lastGround: this.physics.getLastGroundPhysEntity(),
         standingPlatform: this.physics.getStandingPlatformEntity(),
         sceneOrigin: this.comms.getSceneOrigin()

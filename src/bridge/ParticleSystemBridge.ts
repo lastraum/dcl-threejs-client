@@ -78,6 +78,14 @@ export class ParticleSystemBridge {
     const nodes = this.getNodes()
     if (!nodes) return
 
+    // Early-out: no ECS particles and no live runtimes — skip full walks (pointer-edge spam).
+    let ecsAny = false
+    for (const _ of view.getEntitiesWith(ParticleSystem)) {
+      ecsAny = true
+      break
+    }
+    if (!ecsAny && this.runtimes.size === 0) return
+
     for (const [entity, runtime] of this.runtimes) {
       if (nodes.has(entity)) continue
       disposeParticleGpuMesh(runtime.gpu)

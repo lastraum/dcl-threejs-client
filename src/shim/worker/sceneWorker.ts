@@ -175,7 +175,11 @@ import {
   syncSceneEngineHydrationTimer
 } from './sceneEngineScheduler'
 import { hasGrowOnlyInjects } from './injectRendererGrowOnlyAppends'
+import { setWorkerSystemPieTier, resetWorkerSystemPie } from './workerSystemPie'
 const VIDEO_PLAYER_NULL_MUTABLE = /VideoPlayer for null not found/
+
+/** Sticky: trigger inject coalesced while eng.update in-flight — egress after next systems settle. */
+let pendingHostEventColdEgress = false
 
 const ctx = self
 
@@ -818,6 +822,7 @@ function applyPlayReadyTiming(
       `engineTick ${engineTickIntervalMs}ms, onUpdate interval ${fullSceneOnUpdateIntervalMs}ms, abort ${sceneUpdateAbortMs}ms`
   )
   setCooperativeLoopInterval(engineTickIntervalMs)
+  setWorkerSystemPieTier(low ? 'low' : medium ? 'medium' : 'high')
 }
 
 function armSceneUpdateAbortTimer(): void {
@@ -1356,6 +1361,7 @@ function crdtChunkHasPaintBoardMaterial(data: Uint8Array): boolean {
 /** Phase 3 — coalesced cold CRDT + VC hydrate + player-frame after pollEvents (play mode). */
 function completePlayFrameColdEgress(): void {
   if (sceneOnUpdatePaused) return
+  pendingHostEventColdEgress = false
   flushPlayModeColdCrdtEgress(postPlayModeColdCrdtFireAndForget)
   // Graph-hash hydrate (independent of player-frame change) then IM/MainCamera hot path.
   publishVcBindHydrateIfNeeded()
@@ -2333,13 +2339,21 @@ function deliverRendererAppendInbound(chunks: Uint8Array[]): void {
       `[sceneWorker] renderer-append-deliver — trigger=${counts.triggerAppends} videoEvent=${counts.videoAppends} audio=${counts.audioAppends} assetLoad=${counts.assetLoadAppends} pointer=${counts.pointerAppends}`
     )
   }
-  // Any host grow-only / LWW scene systems listen for must run same-message (onChange).
-  // requestSceneEngineTick() often no-ops when wall-clock debt is 0 (just after a play-frame
-  // tick) — Plaza bounce_parasol then never sees ENTER; Admin video src swap never sees LOADING.
-  // dt=0 runs systems without inventing NeonScreen wall time; flush cold CRDT for impulse egress.
+  // Single-clock law (WSP): host inject is data plane. Prefer the next cooperative
+  // eng.update when one is already in-flight — do not stack a second full systems pass
+  // (Genesis TriggerArea thrash → multi-second mutex death spiral).
+  // Immediate eng.update(0) only when idle (impulse pads / first ENTER / video LOADING).
   if (growOnly || hostInjectNeedsSceneSystems(counts)) {
+    if (isEngineUpdateInFlight() || isSceneEngineTickInFlight()) {
+      pendingHostEventColdEgress = pendingHostEventColdEgress || counts.triggerAppends > 0
+      sceneEngineTickAfterInboundInject(counts)
+      return
+    }
     void runSceneEngineUpdateNow(0).then(() => {
-      if (counts.triggerAppends > 0) completePlayFrameColdEgress()
+      if (counts.triggerAppends > 0 || pendingHostEventColdEgress) {
+        pendingHostEventColdEgress = false
+        completePlayFrameColdEgress()
+      }
     })
     return
   }
@@ -4310,6 +4324,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     portableExperienceWorker = false
     clearPlayModeColdCrdtBuffer()
     resetSceneEngineScheduler()
+    resetWorkerSystemPie()
     resetWorkerUiFingerprint()
     pendingOutboundAck.clear()
     pendingBootPriority.length = 0

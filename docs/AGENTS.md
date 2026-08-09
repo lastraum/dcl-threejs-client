@@ -47,7 +47,7 @@ Worked example: DecentraCraft at **`-16,124`** uses `isPressed` + Camera×PPI pl
 | **Rebind origin on promote** | `comms.bindSceneTarget(newPrimary)` **before** `restoreGenesisFeet`. Missing this warps soft-route (old local + new base → wrong parcel like -135,107) and voids CBD. |
 | **Prior primary stays resident** | Demote keeps mesh graph sticky as **secondary** (muted scripts) regardless of parcel count. Tertiary only via leave-ring / cap pressure. Re-promote unpauses. **Never** `system.dispose()` into void. |
 | **Freeze hold pin** | `disableAllHoldFeet` only for intentional `InputModifier.disableAll`. Never pin for colliders-ready or multi-scene thrash. Stall auto-recover if keys held + free + feet stuck. |
-| **Secondary scripts 100%** | Live secondary `onUpdate` every frame (`secondaryTickIntervalMs = 0`), hard-capped (≤3). |
+| **Secondary scripts** | Live secondaries hard-capped (≤3). Cadence: high = every frame; medium/low = ~30/20 Hz ([WORKER_SYSTEM_PIE.md](./WORKER_SYSTEM_PIE.md)). FocusOwner mute unchanged. |
 | **Secondary FocusOwner mute** | No video, audio, scene UI, privileged pointers/nav — `FocusPolicy = 'secondary'`. |
 | **Primary FocusOwner** | Only primary owns UI / media / inputs / locomotion. |
 | **Tertiary residents** | Only when **leave 16m live ring** or **secondary-cap pressure** (prefer non-sticky). Scripts OFF + LOD. Re-enter → scripts on only (**no GLB reload**). |
@@ -72,6 +72,8 @@ If a change makes the world go blank on neighbor step, **it is a P0 bug** — re
 5b. **[COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)** — PhysX PART vs ROOT (v1.5)  
 5c. **[RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md)** — CCT ride: one Δ, no sticky/snap/pull-down  
 5d. **[STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md)** — cook-once statics · never forceDynamicTreeRebuild · kill-list  
+5e. **[WORKER_SYSTEM_PIE.md](./WORKER_SYSTEM_PIE.md)** — scene `engine.update` HOT/COLD pie (Genesis multi-second stall law)  
+5f. **[FRAME_PIPELINE_COD.md](./FRAME_PIPELINE_COD.md)** — main admit / lanes / peel / depth  
 6. **[CLAIMS.yaml](./CLAIMS.yaml)** — who is already working on what  
 7. **[ARCHITECTURE.md](./ARCHITECTURE.md)** — scene I/O model + debt  
 8. **[DEPLOYMENT.md](./DEPLOYMENT.md)** — build / preview / go-live  

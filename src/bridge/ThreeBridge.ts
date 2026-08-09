@@ -2806,14 +2806,26 @@ export class ThreeBridge {
       if (!hasMesh) continue
 
       const mods = GltfNodeModifiers.get(entity) as PBGltfNodeModifiers
+      // Permanent path miss: stop thrashing pending every budget frame (plaza Building_03_*).
+      const missStreak = (obj.userData.dclGltfNodeModMissStreak as number) || 0
+      if (missStreak >= 3 && obj.userData.dclGltfNodeModPathMissLogged) {
+        this.pendingGltfNodeModEntities.delete(entity)
+        processed++
+        continue
+      }
       const ok = await applyGltfNodeModifiersToEntity(obj, mods, this.materials, {
         entity,
         logPathMiss: !obj.userData.dclGltfNodeModPathMissLogged
       })
-      if (!ok && !obj.userData.dclGltfNodeModPathMissLogged) {
-        obj.userData.dclGltfNodeModPathMissLogged = true
+      if (!ok) {
+        obj.userData.dclGltfNodeModMissStreak = missStreak + 1
+        if (!obj.userData.dclGltfNodeModPathMissLogged) {
+          obj.userData.dclGltfNodeModPathMissLogged = true
+        }
+      } else {
+        obj.userData.dclGltfNodeModMissStreak = 0
+        this.pendingGltfNodeModEntities.delete(entity)
       }
-      if (ok) this.pendingGltfNodeModEntities.delete(entity)
       processed++
     }
   }

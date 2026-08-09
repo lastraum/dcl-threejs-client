@@ -2,7 +2,7 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-08-09  
+> **Last updated:** 2026-08-09 (WSP)  
 > **Current phase:** **dev-latest** parity / implementation gap close (**no release cut**) — MeshCollider platform riding · CCT ground law · scene-http egress · TextShape width · outdoor lighting washout. **v1.7.0** remains latest on `main`.  
 > **Shipped (1.x):** **v1.7.0** community voice · live polls/Q&A/trivia + CSV · pets/Pet Barn · loot bag · multi-scene AOI anim · AudioAnalysis · EnvironmentApi/Testing · **v1.6.0** tour photos / Camera Reel · admin tools · scene UI fixes · **v1.5.0** PART/ROOT colliders · Animator · tours · cast · **v1.4.0** custom worlds · Worlds map · AOI · shell UI.  
 
@@ -15,6 +15,32 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## ✅ Milestone — Worker System Pie + single-clock eng.update (2026-08-09)
+
+**Status: on `dev-latest` — not a product release.** Closes Genesis multi-second `engine.update` stall class via Explorer-like system pie.
+
+### What's new (parity / performance — no version toast)
+
+- **Worker System Pie (WSP)** — HOT systems always finish; COLD (expensive EMA ambient) under wall budget with resume; force-progress never unbounded
+- **SDK event HOT allowlist** — `TriggerAreaResultSystem`, `EventSystem`, sleep/observable/tasks stay HOT
+- **Single-clock host inject** — grow-only/TriggerArea does not stack `eng.update(0)` while systems already in-flight
+- **Secondary script cadence** — high every frame; medium ~30 Hz; low ~20 Hz (FocusOwner mute unchanged)
+- **Hygiene** — GltfNodeModifiers path-miss backoff; TriggerArea structure dirty narrowed; particle empty early-out
+- **Docs:** [WORKER_SYSTEM_PIE.md](./WORKER_SYSTEM_PIE.md)
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **WSP cooperative** | 🟢 | HOT + COLD resume · tier budgets 12/16/20 ms |
+| **Pad ENTER parity** | 🟢 | TriggerAreaResultSystem HOT; idle still eng.update(0) |
+| **Dual eng.update thrash** | 🟢 gap closed | Coalesce when in-flight |
+| **Release** | ⬜ not yet | No version cut |
+
+**QA:** Genesis walk/fishing — no multi-s recovery spam · pads still bounce · Flagtag lobby · brainrot platforms.
+
+**Tip:** Worker console `globalThis.__THREEJS_SCENEWORKER_PERF__ = true` for `[wsp]` logs.
 
 ---
 

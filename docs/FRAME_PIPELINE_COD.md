@@ -1,9 +1,9 @@
 # Frame pipeline — COD / AAA admit, lanes, peel, depth composite
 
-**Status:** platform law on `fix/sync-entity`  
+**Status:** platform law on `dev-latest`  
 **Bar:** [AGENTS.md](./AGENTS.md) COD continuity · PhysX analogue [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md)  
-**Related:** mesh scale, multi-scene, material path  
-**Last updated:** 2026-08-07  
+**Related:** mesh scale, multi-scene, material path · **Worker pie:** [WORKER_SYSTEM_PIE.md](./WORKER_SYSTEM_PIE.md)  
+**Last updated:** 2026-08-09  
 
 ---
 
@@ -12,7 +12,8 @@
 > **`pendingDiff` holds only true content dirty work.**  
 > Motion / Material(+primitive leaf) / Structure(Gltf) drain on a **fixed** frame pie.  
 > Pointer edges **peel-only** (never fullDump, never catch-pass).  
-> Depth composite is **material-mode law**, never scene-name forks.
+> Depth composite is **material-mode law**, never scene-name forks.  
+> **Worker `engine.update` is also a pie** (HOT / COLD resume) — see [WORKER_SYSTEM_PIE.md](./WORKER_SYSTEM_PIE.md).
 
 ---
 

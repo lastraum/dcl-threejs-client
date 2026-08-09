@@ -112,11 +112,15 @@ export function peLiveCap(tier: PerformanceTier): number {
 }
 
 /**
- * Live secondary **scripts** run every frame (same as primary onUpdate rate).
- * FocusOwner still mutes video / audio / scene UI / privileged input for secondaries.
+ * Live secondary **scripts** cadence (Explorer under load drops scene tick rate).
+ * High: every frame (dense CBD continuity). Medium/low: 30/20 Hz ambient — HOT
+ * primary stays full rate; FocusOwner still mutes media/UI for secondaries.
  * @see SceneScriptSystem.applyFocusPolicy('secondary')
+ * @see docs/WORKER_SYSTEM_PIE.md
  */
-export function secondaryTickIntervalMs(_tier: PerformanceTier): number {
+export function secondaryTickIntervalMs(tier: PerformanceTier): number {
+  if (tier === 'low') return 50
+  if (tier === 'medium') return 33
   return 0
 }
 

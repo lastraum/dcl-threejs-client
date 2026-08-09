@@ -305,34 +305,29 @@ export class EditorTerrainSystem {
   }
 
   /**
-   * Hide the sculpt mesh when fully submerged so waves aren’t fighting a seafloor
-   * plate (still raycasts via a thin helper — see {@link getTerrainMeshForRaycast}).
+   * Hide sculpt mesh color when fully submerged so open ocean isn’t fighting a plate.
+   * Mesh stays raycastable (visible=true, colorWrite=false).
    */
   syncOpenOceanMeshVisibility(): void {
     const { maxY } = this.getMaxHeightSample()
     const above = maxY > ARENA_WATER_SURFACE_Y + 0.2
-    if (this.mesh) {
-      // Fully under water: invisible but keep raycast (raycaster hits invisible=false
-      // by default — use depth-only material trick instead).
-      if (above) {
-        this.mesh.visible = true
-        this.lambertMat.colorWrite = true
-        this.lambertMat.depthWrite = true
-        this.lambertMat.transparent = false
-        this.lambertMat.opacity = 1
-      } else {
-        // Keep mesh in scene for brush raycasts; don't write color (ocean owns the view).
-        this.mesh.visible = true
-        this.lambertMat.colorWrite = false
-        this.lambertMat.depthWrite = false
-        this.lambertMat.transparent = true
-        this.lambertMat.opacity = 0
-      }
-      this.lambertMat.needsUpdate = true
+    if (!this.mesh) return
+    this.mesh.visible = true
+    if (above) {
+      this.lambertMat.colorWrite = true
+      this.lambertMat.depthWrite = true
+      this.lambertMat.transparent = false
+      this.lambertMat.opacity = 1
+    } else {
+      this.lambertMat.colorWrite = false
+      this.lambertMat.depthWrite = false
+      this.lambertMat.transparent = true
+      this.lambertMat.opacity = 0
     }
+    this.lambertMat.needsUpdate = true
   }
 
-  /** Force every cell to seafloor (e.g. water biome “clear land”). */
+  /** Force every cell to deep seafloor and stop drawing the plate. */
   fillSeafloor(): void {
     this.heights.fill(TERRAIN_SEA_FLOOR_WORLD_Y)
     this.rebuildPreviewPositions()

@@ -328,10 +328,9 @@ export class TerrainEditorWorkspace {
         onGrassCommitted: () => this.scheduleGrassRebuild(),
         onStarterApplied: () => {
           if (readEnvironmentKind(this.sceneEnv) === 'water' && this.terrain) {
-            // Flat Land / To-water plates → sink; hills/island keep real relief.
-            const sunk = this.terrain.sinkUnraisedSeafloorForOpenOcean()
-            if (sunk) this.sculpt?.persistEditorDraft()
-            else this.terrain.syncOpenOceanMeshVisibility()
+            // Starters that raise land (island/hills) should show; pure flat stays under.
+            // Only re-hide if still fully submerged after the starter.
+            this.terrain.syncOpenOceanMeshVisibility()
           }
         }
       }
@@ -798,17 +797,20 @@ export class TerrainEditorWorkspace {
   }
 
   /**
-   * Water biome: align sculpt water bands to client MSL, sink empty/MSL-raft
-   * heightmaps under the ocean, hide fully submerged mesh color.
+   * Water biome = open ocean canvas. Always put the heightmap on the deep seafloor
+   * and stop drawing the plate. Raise / island starters bring land back on purpose.
+   * (No more “smart keep hills” — that left Rolling Hills / Flat Land as a tan raft.)
    */
   private prepareWaterBiomeTerrain(terrain: EditorTerrainSystem): void {
     terrain.setProceduralShading({
       waterToY: ARENA_WATER_SURFACE_Y,
       waterFromY: TERRAIN_SEA_FLOOR_WORLD_Y
     })
-    const sunk = terrain.sinkUnraisedSeafloorForOpenOcean()
-    if (sunk) this.sculpt?.persistEditorDraft()
-    else terrain.syncOpenOceanMeshVisibility()
+    terrain.fillSeafloor()
+    this.sculpt?.persistEditorDraft()
+    this.panel?.setStatus(
+      'water · open ocean · heightmap under sea (Raise or Island starter to surface land)'
+    )
   }
 
   /**

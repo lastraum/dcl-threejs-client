@@ -83,6 +83,10 @@ export function setWorkerSystemPieTier(tier: 'high' | 'medium' | 'low' | undefin
   else hardBudgetMs = WSP_HARD_BUDGET_MS_HIGH
 }
 
+export function getWorkerSystemPieBudgetMs(): number {
+  return hardBudgetMs
+}
+
 export function getWorkerSystemPieSnapshot(): WorkerSystemPieSnapshot {
   return { ...lastSnapshot }
 }

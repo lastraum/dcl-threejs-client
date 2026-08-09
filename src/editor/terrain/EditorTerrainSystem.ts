@@ -305,38 +305,36 @@ export class EditorTerrainSystem {
   }
 
   /**
-   * Hide sculpt mesh color when fully submerged so open ocean isn’t fighting a plate.
-   * Mesh stays raycastable (visible=true, colorWrite=false).
+   * Open-ocean view: hide the sculpt group while fully submerged.
+   * Brush raycasts use the heightfield (not the mesh), so invisibility is safe.
    */
   syncOpenOceanMeshVisibility(): void {
     const { maxY } = this.getMaxHeightSample()
     const above = maxY > ARENA_WATER_SURFACE_Y + 0.2
-    if (!this.mesh) return
-    this.mesh.visible = true
-    if (above) {
+    this.group.visible = above
+    if (this.mesh) {
+      this.mesh.visible = above
       this.lambertMat.colorWrite = true
       this.lambertMat.depthWrite = true
       this.lambertMat.transparent = false
       this.lambertMat.opacity = 1
-    } else {
-      this.lambertMat.colorWrite = false
-      this.lambertMat.depthWrite = false
-      this.lambertMat.transparent = true
-      this.lambertMat.opacity = 0
+      this.lambertMat.needsUpdate = true
     }
-    this.lambertMat.needsUpdate = true
   }
 
-  /** Force every cell to deep seafloor and stop drawing the plate. */
+  /** Force every cell to deep seafloor and hide the plate under open ocean. */
   fillSeafloor(): void {
     this.heights.fill(TERRAIN_SEA_FLOOR_WORLD_Y)
     this.rebuildPreviewPositions()
     this.finalizePreviewMesh()
-    this.syncOpenOceanMeshVisibility()
+    // Hard hide — do not leave a tan plate sitting under/through waves.
+    this.group.visible = false
+    if (this.mesh) this.mesh.visible = false
   }
 
   /** Restore normal opaque land draw (leave water biome). */
   restoreFullMeshDraw(): void {
+    this.group.visible = true
     if (!this.mesh) return
     this.mesh.visible = true
     this.lambertMat.colorWrite = true

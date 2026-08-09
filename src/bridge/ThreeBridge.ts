@@ -301,13 +301,14 @@ export class ThreeBridge {
    * pendingDiff peels, left DecentraCraft prop/unit/building GLBs invisible for ages.
    */
   private static readonly GLTF_BUDGET_PER_FRAME = 4
-  private static readonly GLTF_HYDRATION_BUDGET_PER_FRAME = 80
-  /** Post-hydration catch-up after loading screen. */
-  private static readonly GLTF_SOFT_HYDRATION_BUDGET_PER_FRAME = 12
+  /** Higher during loading screen — 20k instance plazas need throughput, not 7‑minute bars. */
+  private static readonly GLTF_HYDRATION_BUDGET_PER_FRAME = 120
+  /** Post-hydration catch-up after loading screen (background attach of the tail). */
+  private static readonly GLTF_SOFT_HYDRATION_BUDGET_PER_FRAME = 24
   private static readonly MESH_PASS_BUDGET_MS = 6
-  private static readonly MESH_PASS_HYDRATION_BUDGET_MS = 48
-  private static readonly HYDRATION_ATTACH_PASSES = 8
-  private static readonly HYDRATION_ATTACH_TOTAL_MS = 100
+  private static readonly MESH_PASS_HYDRATION_BUDGET_MS = 64
+  private static readonly HYDRATION_ATTACH_PASSES = 10
+  private static readonly HYDRATION_ATTACH_TOTAL_MS = 140
   /**
    * P0 frame law (not streaming): SkeletonUtils.clone of large templates can take seconds.
    * Those attach via a serial idle queue so rAF/UI stay alive. Scene still gets every entity.

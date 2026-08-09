@@ -50,7 +50,8 @@ const STABLE_WARM_MS = 150
 /** Scene scripts keep spawning entities after boot — wait for the count to settle. */
 const ENTITY_STABLE_MS = 800
 /** Brief soft attach budget only — long soft windows + high budgets freeze select UI. */
-const SOFT_HYDRATION_MS = 2_000
+/** Soft attach window after force-ready — large enough to drain plaza tails in background. */
+const SOFT_HYDRATION_MS = 12_000
 /**
  * No attach progress + no downloads for this long → force-ready.
  * Custom/marketplace worlds often leave 1–2 GLBs pending forever (missing hashes /
@@ -61,11 +62,22 @@ const SOFT_HYDRATION_MS = 2_000
  * No attach progress + no downloads → force-ready.
  * Plaza left ~30 "pending" forever (bad attach accounting); 60s+ hangs at ~79%.
  */
-const ATTACH_STALL_MS = 6_000
-/** Near-complete attach with idle downloads — don't wait the full stall. */
-const ATTACH_NEAR_COMPLETE_RATIO = 0.94
-const ATTACH_NEAR_COMPLETE_STALL_MS = 2_500
+const ATTACH_STALL_MS = 3_500
+/** Near-complete attach — enter play; rest attach under soft hydration. */
+const ATTACH_NEAR_COMPLETE_RATIO = 0.88
+const ATTACH_NEAR_COMPLETE_STALL_MS = 900
 const ENABLE_ATTACH_STALL_BAILOUT = true
+/**
+ * Huge scenes (Genesis ~10k–20k GltfContainers): never block the loading screen
+ * for multi-minute full attach. Play when this ratio is hit (background soft hydrate).
+ */
+const PLAYABLE_FORCE_RATIO = 0.90
+const PLAYABLE_FORCE_MIN_ELAPSED_MS = 12_000
+const PLAYABLE_FORCE_STALL_MS = 1_000
+/** Absolute ceiling for blocking hydrate (ms). Soft hydrate continues after. */
+const MAX_BLOCKING_HYDRATE_MS_HUGE = 75_000
+const MAX_BLOCKING_HYDRATE_MS = 120_000
+const HUGE_SCENE_GLTF_THRESHOLD = 4_000
 /** Wait before treating peakGltfEntities===0 as complete when composite may still publish GltfContainer. */
 const ZERO_GLTF_FALLBACK_MS = 12_000
 /** Fast path when projection never gets GltfContainer and manifest downloads are idle. */
@@ -116,6 +128,8 @@ function zeroGltfFallbackMs(stats: SceneHydrationStats, manifestGlbCount: number
 }
 
 function entityStableRequiredMs(peakGltfEntities: number, gltfContainers: number): number {
+  // Huge plazas keep publishing GltfContainer for a long time — don't wait 800ms forever.
+  if (peakGltfEntities >= HUGE_SCENE_GLTF_THRESHOLD) return ENTITY_STABLE_FAST_MS
   if (peakGltfEntities > 0 || gltfContainers > 0) return ENTITY_STABLE_MS
   return ENTITY_STABLE_FAST_MS
 }
@@ -142,19 +156,29 @@ function isGltfAttachComplete(
 
 function formatProgress(stats: SceneHydrationStats): string {
   if (stats.gltfEntities > 0) {
-    return `Loading scene assets (${stats.gltfLoaded}/${stats.gltfEntities})…`
+    const k = stats.gltfEntities >= 1000
+    const loaded = k ? `${(stats.gltfLoaded / 1000).toFixed(1)}k` : String(stats.gltfLoaded)
+    const total = k ? `${(stats.gltfEntities / 1000).toFixed(1)}k` : String(stats.gltfEntities)
+    return `Loading models (${loaded}/${total} instances)…`
   }
   if (blockingPending(stats) > 0) {
-    return 'Loading scene assets…'
+    return 'Loading scene models…'
   }
   return 'Finishing scene load…'
 }
 
 function formatTimeout(stats: SceneHydrationStats): string {
   if (stats.gltfEntities > 0) {
-    return `Scene still loading (${stats.gltfLoaded}/${stats.gltfEntities} models) — continuing in background`
+    const pct = ((stats.gltfLoaded / Math.max(1, stats.gltfEntities)) * 100).toFixed(0)
+    return `Entering world (${pct}% models) — rest loading in background`
   }
-  return 'Scene assets still loading — continuing in background'
+  return 'Entering world — models still loading in background'
+}
+
+function maxBlockingHydrateMs(peakGltf: number): number {
+  return peakGltf >= HUGE_SCENE_GLTF_THRESHOLD
+    ? MAX_BLOCKING_HYDRATE_MS_HUGE
+    : MAX_BLOCKING_HYDRATE_MS
 }
 
 /** Progress range for the asset-loading phase within the overall 0→1 loading bar. */
@@ -271,7 +295,10 @@ export async function waitForSceneAssets(
       finished = true
       if (hardTimeout !== undefined) window.clearTimeout(hardTimeout)
       sceneScript.setAssetHydrationMode(false)
-      sceneScript.extendSoftHydration(SOFT_HYDRATION_MS)
+      // Huge plazas force-ready early — keep soft attach high so the tail still streams in.
+      const softMs =
+        peakGltfEntities >= HUGE_SCENE_GLTF_THRESHOLD ? Math.max(SOFT_HYDRATION_MS, 20_000) : SOFT_HYDRATION_MS
+      sceneScript.extendSoftHydration(softMs)
       if (!timedOut) markSceneHydrated(scene)
       options.onPrimeRender?.()
       if (reason) console.warn(`[Hydration] ${reason}`)
@@ -385,23 +412,54 @@ export async function waitForSceneAssets(
         }
 
         const pending = blockingPending(stats)
+        const ratio =
+          stats.gltfEntities > 0 ? stats.gltfLoaded / stats.gltfEntities : 0
+        const idleMs = performance.now() - lastProgressAt
+        const elapsedNow = performance.now() - started
+
+        // Absolute ceiling — never multi-minute loading screens on 10k–20k instance plazas.
+        if (elapsedNow >= maxBlockingHydrateMs(peakGltfEntities)) {
+          forceTimeout(
+            `Blocking hydrate ceiling (${(elapsedNow / 1000).toFixed(0)}s, ${stats.gltfLoaded}/${stats.gltfEntities} models)`
+          )
+          return
+        }
+
+        // Playable force: enough of the world is up — soft-hydrate the rest after enter.
         if (
-          ENABLE_ATTACH_STALL_BAILOUT &&
-          pending > 0 &&
-          stats.gltfInflight === 0 &&
-          stats.textureInflight === 0
+          peakGltfEntities >= HUGE_SCENE_GLTF_THRESHOLD &&
+          ratio >= PLAYABLE_FORCE_RATIO &&
+          elapsedNow >= PLAYABLE_FORCE_MIN_ELAPSED_MS &&
+          idleMs >= PLAYABLE_FORCE_STALL_MS
         ) {
-          const idleMs = performance.now() - lastProgressAt
-          const ratio =
-            stats.gltfEntities > 0 ? stats.gltfLoaded / stats.gltfEntities : 0
-          if (
-            idleMs >= ATTACH_STALL_MS ||
-            (ratio >= ATTACH_NEAR_COMPLETE_RATIO && idleMs >= ATTACH_NEAR_COMPLETE_STALL_MS)
+          forceTimeout(
+            `Playable force-ready (${(ratio * 100).toFixed(0)}% of ${stats.gltfEntities} model instances)`
+          )
+          return
+        }
+
+        if (ENABLE_ATTACH_STALL_BAILOUT && pending > 0) {
+          // Allow near-complete bail even with a few downloads still in flight.
+          const downloadsQuiet = stats.gltfInflight <= 2 && stats.textureInflight <= 2
+          if (stats.gltfInflight === 0 && stats.textureInflight === 0) {
+            if (
+              idleMs >= ATTACH_STALL_MS ||
+              (ratio >= ATTACH_NEAR_COMPLETE_RATIO && idleMs >= ATTACH_NEAR_COMPLETE_STALL_MS)
+            ) {
+              forceTimeout(
+                ratio >= ATTACH_NEAR_COMPLETE_RATIO
+                  ? `Attach near-complete (${(ratio * 100).toFixed(0)}%)`
+                  : 'Attach stalled'
+              )
+              return
+            }
+          } else if (
+            downloadsQuiet &&
+            ratio >= ATTACH_NEAR_COMPLETE_RATIO &&
+            idleMs >= ATTACH_NEAR_COMPLETE_STALL_MS * 1.5
           ) {
             forceTimeout(
-              ratio >= ATTACH_NEAR_COMPLETE_RATIO
-                ? `Attach near-complete (${(ratio * 100).toFixed(0)}%)`
-                : 'Attach stalled'
+              `Attach near-complete with quiet downloads (${(ratio * 100).toFixed(0)}%)`
             )
             return
           }

@@ -456,6 +456,8 @@ export class EditorHubPage {
       blurb.className = 'editor-hub-modal-blurb'
       blurb.textContent =
         'Creates a folder with scene.json (parcels from size), empty main.composite, and package.json. ' +
+        'Base parcel is always the SW corner (default 0,0 expanding east/north). ' +
+        'Max 300 parcels per axis; full-width axes use SW −150 (Genesis-style). ' +
         'Uses your linked Scenes folder when available; otherwise pick a parent directory.'
       modal.appendChild(blurb)
 

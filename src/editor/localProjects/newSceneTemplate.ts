@@ -18,10 +18,19 @@ export type NewSceneSpec = {
   size: NewSceneSize
 }
 
+/** UI default max for New scene dialog (editor-friendly). */
 export const NEW_SCENE_COLS_MIN = 1
 export const NEW_SCENE_COLS_MAX = 20
 export const NEW_SCENE_ROWS_MIN = 1
 export const NEW_SCENE_ROWS_MAX = 20
+
+/**
+ * Absolute max parcels on one axis (Genesis-scale grid ~300 wide).
+ * Over this we clamp; full-span axes use SW origin -150 (see parcelsForRect).
+ */
+export const NEW_SCENE_AXIS_HARD_MAX = 300
+/** SW parcel of a full 300-wide Genesis-style span (−150 … +149). */
+export const NEW_SCENE_GENESIS_SW = -150
 
 /** Safe folder segment for File System Access. */
 export function sanitizeSceneFolderName(raw: string): string {
@@ -40,20 +49,54 @@ export function clampParcelSize(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.floor(n)))
 }
 
-/** Parcels for a cols×rows rectangle with base at SW 0,0. */
-export function parcelsForRect(cols: number, rows: number): { base: string; parcels: string[] } {
-  const c = clampParcelSize(cols, NEW_SCENE_COLS_MIN, NEW_SCENE_COLS_MAX)
-  const r = clampParcelSize(rows, NEW_SCENE_ROWS_MIN, NEW_SCENE_ROWS_MAX)
+export type ParcelRectLayout = {
+  /** Always the SW-most parcel of the rect (scene.json `scene.base`). */
+  base: string
+  baseX: number
+  baseZ: number
+  cols: number
+  rows: number
+  parcels: string[]
+}
+
+/**
+ * Build a cols×rows parcel rectangle.
+ *
+ * Platform law:
+ * - **base is always the SW-most parcel** of the set.
+ * - Prefer origin **(0,0)** expanding east/north.
+ * - **Hard max 300** on either axis (clamp).
+ * - If an axis would exceed that span from 0 (size &gt; 300 before clamp, or
+ *   full-width 300), that axis’s SW is **−150** so the range is −150…+149
+ *   (300 parcels), matching Genesis-style map extent.
+ */
+export function parcelsForRect(cols: number, rows: number): ParcelRectLayout {
+  const rawC = Number.isFinite(cols) ? Math.floor(cols) : 1
+  const rawR = Number.isFinite(rows) ? Math.floor(rows) : 1
+  const c = clampParcelSize(rawC, 1, NEW_SCENE_AXIS_HARD_MAX)
+  const r = clampParcelSize(rawR, 1, NEW_SCENE_AXIS_HARD_MAX)
+
+  // Over 300 on an axis → clamp + Genesis SW on that axis. Full 300-wide also uses −150.
+  const baseX = rawC > NEW_SCENE_AXIS_HARD_MAX || c >= NEW_SCENE_AXIS_HARD_MAX ? NEW_SCENE_GENESIS_SW : 0
+  const baseZ = rawR > NEW_SCENE_AXIS_HARD_MAX || r >= NEW_SCENE_AXIS_HARD_MAX ? NEW_SCENE_GENESIS_SW : 0
+
   const parcels: string[] = []
   for (let z = 0; z < r; z++) {
     for (let x = 0; x < c; x++) {
-      parcels.push(`${x},${z}`)
+      parcels.push(`${baseX + x},${baseZ + z}`)
     }
   }
-  return { base: '0,0', parcels }
+  return {
+    base: `${baseX},${baseZ}`,
+    baseX,
+    baseZ,
+    cols: c,
+    rows: r,
+    parcels
+  }
 }
 
-/** Spawn near footprint center (scene-local meters). */
+/** Spawn near footprint center in **scene-local** meters (base SW = 0,0 in local space). */
 function spawnForSize(cols: number, rows: number) {
   const cx = (cols * PARCEL_SIZE) / 2
   const cz = (rows * PARCEL_SIZE) / 2
@@ -71,16 +114,15 @@ function spawnForSize(cols: number, rows: number) {
 }
 
 export function buildNewSceneJson(spec: NewSceneSpec): string {
-  const cols = clampParcelSize(spec.size.cols, NEW_SCENE_COLS_MIN, NEW_SCENE_COLS_MAX)
-  const rows = clampParcelSize(spec.size.rows, NEW_SCENE_ROWS_MIN, NEW_SCENE_ROWS_MAX)
-  const { base, parcels } = parcelsForRect(cols, rows)
+  const layout = parcelsForRect(spec.size.cols, spec.size.rows)
+  const { base, parcels, cols, rows, baseX, baseZ } = layout
   const title = spec.title.trim() || spec.folderName || 'New Scene'
   const body = {
     ecs7: true,
     runtimeVersion: '7',
     display: {
       title,
-      description: `Created in ThreejsClient editor · ${cols}×${rows} parcels`,
+      description: `Created in ThreejsClient editor · ${cols}×${rows} parcels · base ${base} (SW)`,
       navmapThumbnail: 'images/scene-thumbnail.png',
       favicon: 'favicon_asset'
     },
@@ -103,7 +145,16 @@ export function buildNewSceneJson(spec: NewSceneSpec): string {
     skyboxConfig: {},
     source: {
       origin: 'threejs-client-editor',
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      layout: {
+        baseSW: base,
+        baseX,
+        baseZ,
+        cols,
+        rows,
+        maxAxis: NEW_SCENE_AXIS_HARD_MAX,
+        genesisSW: NEW_SCENE_GENESIS_SW
+      }
     }
   }
   return `${JSON.stringify(body, null, 2)}\n`

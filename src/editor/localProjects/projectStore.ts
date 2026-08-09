@@ -585,6 +585,7 @@ export async function createNewLocalScene(
     throw new Error('File System Access API is not supported in this browser. Use Chrome or Edge.')
   }
 
+  // Dialog uses UI max; parcelsForRect still enforces hard axis max 300 + SW base law.
   const cols = clampParcelSize(options.size.cols, NEW_SCENE_COLS_MIN, NEW_SCENE_COLS_MAX)
   const rows = clampParcelSize(options.size.rows, NEW_SCENE_ROWS_MIN, NEW_SCENE_ROWS_MAX)
   const title = options.title.trim() || 'New Scene'

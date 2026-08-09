@@ -46,6 +46,10 @@ import { EditorTerrainHeightHud } from './ui/EditorTerrainHeightHud'
 import { EditorCameraResetButton } from './ui/EditorCameraResetButton'
 import { PARCEL_SIZE } from '../dcl/content/types'
 import { dclBoundsToThreeDisplay, dclToThreePos } from '../bridge/dclTransform'
+import {
+  ARENA_WATER_SURFACE_Y,
+  TERRAIN_SEA_FLOOR_WORLD_Y
+} from './terrain/terrainSculptConstants'
 
 
 export type TerrainEditorWorkspaceCallbacks = {
@@ -260,6 +264,9 @@ export class TerrainEditorWorkspace {
         this.editorWater.setWaterLevel(shading.waterToY)
       }
       this.editorWater.setWaterColor(shading.waterColor)
+      if (kind === 'water') {
+        this.prepareWaterBiomeTerrain(this.terrain)
+      }
       await this.editorWater.applyKind(kind)
       void this.rebuildClientLandscapePreview()
     } catch (e) {
@@ -312,8 +319,21 @@ export class TerrainEditorWorkspace {
       bounds.minX,
       bounds.minZ,
       {
-        onHeightCommitted: () => this.scheduleGrassRebuild(),
-        onGrassCommitted: () => this.scheduleGrassRebuild()
+        onHeightCommitted: () => {
+          this.scheduleGrassRebuild()
+          if (readEnvironmentKind(this.sceneEnv) === 'water') {
+            this.terrain?.syncOpenOceanMeshVisibility()
+          }
+        },
+        onGrassCommitted: () => this.scheduleGrassRebuild(),
+        onStarterApplied: () => {
+          if (readEnvironmentKind(this.sceneEnv) === 'water' && this.terrain) {
+            // Flat Land / To-water plates → sink; hills/island keep real relief.
+            const sunk = this.terrain.sinkUnraisedSeafloorForOpenOcean()
+            if (sunk) this.sculpt?.persistEditorDraft()
+            else this.terrain.syncOpenOceanMeshVisibility()
+          }
+        }
       }
     )
     await this.sculpt.initialize()
@@ -427,10 +447,10 @@ export class TerrainEditorWorkspace {
             const waterY = terrain.getProceduralShading().waterToY
             this.editorWater?.setWaterLevel(waterY)
           }
-          // Open ocean: sink never-raised heightmaps so the seafloor sits under water.
           if (kind === 'water') {
-            const sunk = terrain.sinkUnraisedSeafloorForOpenOcean()
-            if (sunk) this.sculpt?.persistEditorDraft()
+            this.prepareWaterBiomeTerrain(terrain)
+          } else {
+            terrain.restoreFullMeshDraw()
           }
           await this.editorWater?.applyKind(kind)
           // Rebuild the same landscape the play client uses for this environment.kind.
@@ -775,6 +795,20 @@ export class TerrainEditorWorkspace {
         e instanceof Error ? e.message : 'Landscape preview failed'
       )
     }
+  }
+
+  /**
+   * Water biome: align sculpt water bands to client MSL, sink empty/MSL-raft
+   * heightmaps under the ocean, hide fully submerged mesh color.
+   */
+  private prepareWaterBiomeTerrain(terrain: EditorTerrainSystem): void {
+    terrain.setProceduralShading({
+      waterToY: ARENA_WATER_SURFACE_Y,
+      waterFromY: TERRAIN_SEA_FLOOR_WORLD_Y
+    })
+    const sunk = terrain.sinkUnraisedSeafloorForOpenOcean()
+    if (sunk) this.sculpt?.persistEditorDraft()
+    else terrain.syncOpenOceanMeshVisibility()
   }
 
   /**

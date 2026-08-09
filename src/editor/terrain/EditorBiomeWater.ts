@@ -100,10 +100,11 @@ export class EditorBiomeWater {
       else if (kind === 'island' || kind === 'mountains') next = 'island'
       else next = 'plane'
     }
-    if (next === 'island') {
+    // Island + open ocean share client sea level so seafloor heightmaps sit under water.
+    // Plane biomes (rare) still use sculpt Water To via setWaterLevel from workspace.
+    if (next === 'island' || next === 'open') {
       this.waterY = ISLAND_WATER_SURFACE_Y
-    } else if (next === 'open' || next === 'plane') {
-      // Keep last sculpt waterY for open ocean / plane biomes (setWaterLevel from workspace).
+    } else if (next === 'plane') {
       if (!Number.isFinite(this.waterY)) this.waterY = ARENA_WATER_SURFACE_Y
     }
     await this.rebuild(next)

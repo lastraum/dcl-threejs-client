@@ -3,6 +3,7 @@ import { parseParcelKey, parcelWorldOrigin } from '../../dcl/content/parseParcel
 import { PARCEL_SIZE } from '../../dcl/content/types'
 import { terrainGlbParcelMeshOffset } from '../../dcl/landscape/Utils/SceneSpace'
 import {
+  ARENA_WATER_SURFACE_Y,
   clampTerrainExportSegments,
   DEFAULT_TERRAIN_PROCEDURAL_SHADING,
   TERRAIN_ALBEDO_EXPORT_RESOLUTION,
@@ -255,6 +256,21 @@ export class EditorTerrainSystem {
     const peakX = this.originX + (peakIx / Math.max(res - 1, 1)) * this.widthM
     const peakZ = this.originZ + (peakIz / Math.max(res - 1, 1)) * this.depthM
     return { maxY, peakX, peakZ }
+  }
+
+  /**
+   * Water biome: if the heightmap was never really raised (still near old seafloor /
+   * barely above MSL), sink the whole field to {@link TERRAIN_SEA_FLOOR_WORLD_Y}
+   * so open ocean covers it. Real sculpt/starters (peaks above MSL) are left alone.
+   */
+  sinkUnraisedSeafloorForOpenOcean(): boolean {
+    const { maxY } = this.getMaxHeightSample()
+    // Anything that clearly pokes out of the water is intentional land.
+    if (maxY > ARENA_WATER_SURFACE_Y + 2.5) return false
+    this.heights.fill(TERRAIN_SEA_FLOOR_WORLD_Y)
+    this.rebuildPreviewPositions()
+    this.finalizePreviewMesh()
+    return true
   }
 
   applySculptHeightBuffer(heights: Float32Array, resolution: number): void {

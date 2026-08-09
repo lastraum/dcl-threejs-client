@@ -256,7 +256,7 @@ export class TerrainEditorWorkspace {
       const kind = readEnvironmentKind(this.sceneEnv)
       const profile = LANDSCAPE_ENVIRONMENTS[kind]
       this.editorWater.setBorderPadding(profile.borderPadding)
-      if (kind !== 'island' && kind !== 'mountains') {
+      if (kind !== 'island' && kind !== 'mountains' && kind !== 'water') {
         this.editorWater.setWaterLevel(shading.waterToY)
       }
       this.editorWater.setWaterColor(shading.waterColor)
@@ -348,10 +348,9 @@ export class TerrainEditorWorkspace {
       setProceduralShading: (patch) => {
         terrain.setProceduralShading(patch)
         const s = terrain.getProceduralShading()
-        // Island/mountains ocean Y is pinned to ISLAND_WATER_SURFACE_Y in EditorBiomeWater.
-        // Sculpt Water To is a heightmap band — don't flood the land disc with Y=5.
+        // Island / water / mountains: ocean Y pinned in EditorBiomeWater (client sea level).
         const kind = readEnvironmentKind(this.sceneEnv)
-        if (kind !== 'island' && kind !== 'mountains') {
+        if (kind !== 'island' && kind !== 'mountains' && kind !== 'water') {
           this.editorWater?.setWaterLevel(s.waterToY)
         }
         this.editorWater?.setWaterColor(s.waterColor)
@@ -422,10 +421,16 @@ export class TerrainEditorWorkspace {
           const kind = readEnvironmentKind(this.sceneEnv)
           const profile = LANDSCAPE_ENVIRONMENTS[kind]
           this.editorWater?.setBorderPadding(profile.borderPadding)
-          // Island pins sea level inside applyKind; open/plane use sculpt Water To.
-          if (kind !== 'island' && kind !== 'mountains') {
+          // Island / water / mountains pin sea level inside applyKind.
+          // Land-style plane biomes use sculpt Water To.
+          if (kind !== 'island' && kind !== 'mountains' && kind !== 'water') {
             const waterY = terrain.getProceduralShading().waterToY
             this.editorWater?.setWaterLevel(waterY)
+          }
+          // Open ocean: sink never-raised heightmaps so the seafloor sits under water.
+          if (kind === 'water') {
+            const sunk = terrain.sinkUnraisedSeafloorForOpenOcean()
+            if (sunk) this.sculpt?.persistEditorDraft()
           }
           await this.editorWater?.applyKind(kind)
           // Rebuild the same landscape the play client uses for this environment.kind.

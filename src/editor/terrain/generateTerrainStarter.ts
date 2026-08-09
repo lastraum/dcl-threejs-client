@@ -12,6 +12,7 @@ import { simplex2d } from '../../dcl/landscape/simplex2d'
 import { mulberry32 } from '../../dcl/landscape/Utils/SeededRandom'
 import { PARCEL_SIZE } from '../../dcl/content/types'
 import {
+  ARENA_WATER_SURFACE_Y,
   GENESIS_HEIGHTMAP_MAX_METERS,
   TERRAIN_SEA_FLOOR_WORLD_Y
 } from './terrainSculptConstants'
@@ -238,8 +239,9 @@ export function generateTerrainStarter(opts: GenerateTerrainStarterOpts): Terrai
 
       switch (opts.templateId) {
         case 'flat-land': {
+          // Dry ground above MSL (untouched default heightmap is seafloor under ocean).
           const micro = fbm2(nxDetail * 1.2, nzDetail * 1.2, 2, seed) * 0.12
-          h = clampHeight(0.4 + micro)
+          h = clampHeight(ARENA_WATER_SURFACE_Y + 1.6 + micro)
           g = 190
           d = 35
           r = 15
@@ -249,24 +251,30 @@ export function generateTerrainStarter(opts: GenerateTerrainStarterOpts): Terrai
         }
 
         case 'rolling-hills': {
-          // Broad hills that stay elevated across the whole footprint (no sea holes).
+          // Broad hills elevated above MSL across the whole footprint.
           const hills = fbm2(nxHill * 0.85, nzHill * 0.85, 5, seed)
           const broad = fbm2(cx / (HILL_WAVE_M * 2.2), cz / (HILL_WAVE_M * 2.2), 3, seed ^ 0x33)
           const detail = fbm2(nxDetail, nzDetail, 3, seed ^ 0x55) * 0.4
-          const base = 3.2 + (broad * 0.5 + 0.5) * 8 + (hills * 0.5 + 0.5) * 10 + detail * 2.5
-          // Soft roll-off only at the very edge so parcels stay full of terrain.
+          const base =
+            ARENA_WATER_SURFACE_Y +
+            4.5 +
+            (broad * 0.5 + 0.5) * 8 +
+            (hills * 0.5 + 0.5) * 10 +
+            detail * 2.5
           const edgeKeep = smooth01(edgeM / Math.max(2, beachWidthM * 0.55))
-          h = clampHeight(0.6 + base * (0.35 + 0.65 * edgeKeep))
-          if (h < 4) {
+          h = clampHeight(
+            ARENA_WATER_SURFACE_Y + 0.8 + (base - ARENA_WATER_SURFACE_Y) * (0.35 + 0.65 * edgeKeep)
+          )
+          if (h < ARENA_WATER_SURFACE_Y + 3) {
             s = 40
             g = 160
             d = 50
             grassD = 50
-          } else if (h < 12) {
+          } else if (h < ARENA_WATER_SURFACE_Y + 11) {
             g = 210
             d = 35
             r = 20
-            grassD = Math.min(255, 100 + Math.floor((h - 4) * 10))
+            grassD = Math.min(255, 100 + Math.floor((h - ARENA_WATER_SURFACE_Y) * 10))
           } else {
             g = 90
             d = 45
@@ -277,32 +285,39 @@ export function generateTerrainStarter(opts: GenerateTerrainStarterOpts): Terrai
         }
 
         case 'island': {
-          // Land fills the rectangle; only a short beach apron at parcel edges.
-          // Interior: plateau + coherent hills/peaks — not a tiny radial island blob.
+          // Land fills the rectangle; short beach apron at parcel edges (near MSL).
+          // Interior: dry plateau — not a tiny mid-disc.
           const inland = smooth01((edgeM - beachWidthM * 0.15) / beachWidthM)
           const hills = fbm2(nxHill * 0.9, nzHill * 0.9, 5, seed)
           const peak = fbm2(cx / (HILL_WAVE_M * 1.6), cz / (HILL_WAVE_M * 1.6), 3, seed ^ 0x77)
           const detail = fbm2(nxDetail * 0.9, nzDetail * 0.9, 3, seed ^ 0x11) * 0.45
-          // Most of footprint stays high; falloff only in the beach band.
-          const plateau = 5.5 + (hills * 0.5 + 0.5) * 9 + (peak * 0.5 + 0.5) * 7 + detail
-          const beachFloor = 0.15 + fbm2(nxDetail * 0.6, nzDetail * 0.6, 2, seed) * 0.35
+          const plateau =
+            ARENA_WATER_SURFACE_Y +
+            6.5 +
+            (hills * 0.5 + 0.5) * 9 +
+            (peak * 0.5 + 0.5) * 7 +
+            detail
+          // Beach sits just under / at MSL so open water can still lap the edge.
+          const beachFloor =
+            ARENA_WATER_SURFACE_Y -
+            0.35 +
+            fbm2(nxDetail * 0.6, nzDetail * 0.6, 2, seed) * 0.25
           h = clampHeight(beachFloor + (plateau - beachFloor) * inland)
 
-          if (inland < 0.35 || h < 1.8) {
-            // Beach / wet sand
+          if (inland < 0.35 || h < ARENA_WATER_SURFACE_Y + 1.2) {
             s = 210
             g = 25
             d = 35
             r = 8
             grassD = 8
-            if (inland < 0.08) h = clampHeight(Math.min(h, 0.55))
-          } else if (h < 6) {
+            if (inland < 0.08) h = clampHeight(Math.min(h, ARENA_WATER_SURFACE_Y - 0.1))
+          } else if (h < ARENA_WATER_SURFACE_Y + 5) {
             s = 90
             g = 120
             d = 50
             r = 15
             grassD = 45
-          } else if (h < 14) {
+          } else if (h < ARENA_WATER_SURFACE_Y + 13) {
             g = 200
             d = 40
             r = 30
@@ -326,7 +341,13 @@ export function generateTerrainStarter(opts: GenerateTerrainStarterOpts): Terrai
           const dunes =
             fbm2(cx / DUNE_WAVE_M + 3, cz / (DUNE_WAVE_M * 2.2), 3, seed ^ 0xaa) * 0.45
           const edgeKeep = smooth01(edgeM / 3)
-          h = clampHeight((1.5 + rid * 10 + longRidges * 14 + dunes * 5) * (0.4 + 0.6 * edgeKeep))
+          const base =
+            ARENA_WATER_SURFACE_Y + 2.2 + rid * 10 + longRidges * 14 + dunes * 5
+          h = clampHeight(
+            ARENA_WATER_SURFACE_Y +
+              0.5 +
+              (base - ARENA_WATER_SURFACE_Y) * (0.4 + 0.6 * edgeKeep)
+          )
           s = 210
           d = 35
           r = Math.min(255, 25 + Math.floor((rid + longRidges) * 90))
@@ -339,48 +360,48 @@ export function generateTerrainStarter(opts: GenerateTerrainStarterOpts): Terrai
           // Large massif envelope along a seeded spine + sharp ridged cliffs.
           const massif = fbm2(along / MASSIF_WAVE_M, across / (MASSIF_WAVE_M * 1.15), 4, seed)
           const massifN = massif * 0.5 + 0.5
-          // Across-spine: high near centre line of range, valleys off-axis.
           const acrossNorm = Math.abs(across) / Math.max(12, halfMinM * 0.85)
           const rangeEnvelope = Math.pow(Math.max(0, 1 - acrossNorm * 0.95), 1.35)
-          // Big peaks (low frequency).
           const peaks =
-            Math.pow(Math.max(0, fbm2(along / (MASSIF_WAVE_M * 0.7), across / MASSIF_WAVE_M, 3, seed ^ 0x91)), 1.4) *
-            0.5 +
+            Math.pow(
+              Math.max(0, fbm2(along / (MASSIF_WAVE_M * 0.7), across / MASSIF_WAVE_M, 3, seed ^ 0x91)),
+              1.4
+            ) *
+              0.5 +
             0.5
-          // Cliff / knife ridges (ridged noise, steep).
           const cliffRidge = ridge2(along / CLIFF_WAVE_M, across / (CLIFF_WAVE_M * 0.65), 5, seed ^ 0xcd)
           const cliffSharp = Math.pow(cliffRidge, 2.4)
-          // Secondary escarpment for sheer faces.
-          const scarp =
-            Math.pow(
-              Math.max(0, ridge2(across / (CLIFF_WAVE_M * 0.5) + 2.1, along / (CLIFF_WAVE_M * 1.2), 4, seed ^ 0x17)),
-              2.8
-            )
+          const scarp = Math.pow(
+            Math.max(
+              0,
+              ridge2(across / (CLIFF_WAVE_M * 0.5) + 2.1, along / (CLIFF_WAVE_M * 1.2), 4, seed ^ 0x17)
+            ),
+            2.8
+          )
           const detail = fbm2(nxDetail * 0.7, nzDetail * 0.7, 3, seed ^ 0x2a) * 0.5
 
-          const valleyFloor = 2.5 + massifN * 4
+          const valleyFloor = ARENA_WATER_SURFACE_Y + 3.5 + massifN * 4
           const mountainBody = rangeEnvelope * (22 + peaks * 38 + massifN * 18)
           const cliffs = rangeEnvelope * (cliffSharp * 28 + scarp * 22)
           const edgeKeep = smooth01(edgeM / Math.max(2.5, beachWidthM * 0.4))
-          h = clampHeight((valleyFloor + mountainBody + cliffs + detail * 3) * (0.25 + 0.75 * edgeKeep))
+          h = clampHeight(
+            (valleyFloor + mountainBody + cliffs + detail * 3) * (0.25 + 0.75 * edgeKeep)
+          )
 
-          // Splat by height + cliffiness (high rock on steep mid-bands).
           const cliffiness = cliffSharp * 0.55 + scarp * 0.45
           if (h > 55) {
-            // High alpine / snow-ish rock
             r = 200
             d = 40
             g = 15
             s = 20
             grassD = 0
           } else if (h > 28 || cliffiness > 0.45) {
-            // Cliff faces & mid rock
             r = Math.min(255, 140 + Math.floor(cliffiness * 120))
             d = 60
             g = 25
             s = 15
             grassD = 5
-          } else if (h > 12) {
+          } else if (h > ARENA_WATER_SURFACE_Y + 12) {
             g = 100
             d = 80
             r = 90

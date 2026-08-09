@@ -38,6 +38,7 @@ import { loadCompositeScene, type CompositeSceneHandle } from './composite/loadC
 import { EditorViewportCompass } from './EditorViewportCompass'
 import { EditorAxisGizmo } from './EditorAxisGizmo'
 import { EditorMaxHeightGuide } from './EditorMaxHeightGuide'
+import { EditorWorldBoundaryOutline } from './EditorWorldBoundaryOutline'
 import { EditorAvatarScaleGuides } from './EditorAvatarScaleGuides'
 import { EditorTerrainHeightHud } from './ui/EditorTerrainHeightHud'
 import { EditorCameraResetButton } from './ui/EditorCameraResetButton'
@@ -99,6 +100,8 @@ export class TerrainEditorWorkspace {
   private cameraReset: EditorCameraResetButton | null = null
   private axisGizmo: EditorAxisGizmo | null = null
   private maxHeightGuide: EditorMaxHeightGuide | null = null
+  /** True rectangular world footprint outline (+ parcel lines when small enough). */
+  private worldBoundary: EditorWorldBoundaryOutline | null = null
   private avatarScaleGuides: EditorAvatarScaleGuides | null = null
   private projectRoot: ProjectRoot | null = null
   private keyHandler: ((e: KeyboardEvent) => void) | null = null
@@ -281,6 +284,12 @@ export class TerrainEditorWorkspace {
       bounds.maxX
     )
     this.maxHeightGuide.mount(host.scene)
+
+    // Full world boundary from scene parcels (not square GridHelper max-span).
+    this.worldBoundary = new EditorWorldBoundaryOutline(bounds, {
+      showParcelLines: scene.parcels.length <= 400
+    })
+    this.worldBoundary.mount(host.scene)
 
     this.sculpt = new TerrainSculptSession(
       this.projectId,
@@ -532,6 +541,8 @@ export class TerrainEditorWorkspace {
     this.axisGizmo?.dispose()
     this.axisGizmo = null
     this.maxHeightGuide?.dispose()
+    this.worldBoundary?.dispose()
+    this.worldBoundary = null
     this.maxHeightGuide = null
     this.avatarScaleGuides?.dispose()
     this.avatarScaleGuides = null

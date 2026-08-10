@@ -224,15 +224,17 @@ send: async (messages) => {
 
 **Fix (0.5f):** One in-flight main hop; queue real outbound; empty/inbound poll ≤20Hz. Still pure async → ~5 FPS + sync weirdness.
 
-**Fix (0.5g) hybrid:**
-- **Empty** body (Genesis `n:0` every tick): never await RTT; optional ≤20Hz empty poll for inbound.
-- **Real outbound**: await main (correct LiveKit publish). Rare compared to empty polls.
+**0.5e–g sendBinary experiments REVERTED** to blocking await (baseline). Non-blocking
+flooded main or broke sync. postDump root cause (network-first `await sendBinary`) remains
+documented for a future fix that cannot spam main (e.g. renderer-first transport order
+in scene bundle, or main-side empty fast-path without 60Hz posts).
 
-### Follow-ups
+### Follow-ups (stay on track)
 
-- Confirm FPS recovers and postDump stays low on empty-heavy scenes  
-- Main COD: fishing UI thrash / remotes / SQ heal  
-- Phase 1 systems pie only if systems become the bottleneck
+1. **Main FPS** (current logs): fishing UI enter/exit thrash, remotes/VRM/DAV, `admitDrop`,
+   video rebind — worker is idle (`engineTickInFlight=false`, no `[wsp0]`).  
+2. **postDump** later: safe empty sendBinary without main flood.  
+3. Phase 1 systems pie only if systems dominate.
 
 ## Phase 1 — Systems pie (flag `?wsp=1` or settings)
 

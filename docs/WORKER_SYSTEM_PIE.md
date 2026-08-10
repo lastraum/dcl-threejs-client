@@ -29,16 +29,12 @@ WORKER eng.update(dt)
   HOT always  ──►  COLD until budget (resume)  ──►  react-ecs (deferred)
 ```
 
-| Mode | Hard wall (entire systems pass) |
-|------|----------------------------------|
-| Cooperative high | **14 ms** |
-| Cooperative medium | **18 ms** |
-| Cooperative low | **24 ms** |
-| Pointer edge | **20 ms** |
-
-**Per-system quarantine:** any system that runs **>40 ms** is skipped for several ticks (cannot abort mid-fn in JS). First overrun can still hitch once; it must not pin every frame.
-
-**Slow log:** automatic `[wsp] SLOW … top=…` when a pass exceeds **80 ms** (no flag required).
+| Mode | COLD budget (default) |
+|------|------------------------|
+| Cooperative high | **12 ms** |
+| Cooperative medium | **16 ms** |
+| Cooperative low | **20 ms** |
+| Pointer edge | **8 ms** (edges force HOT-all) |
 
 ---
 

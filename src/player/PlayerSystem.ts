@@ -127,6 +127,18 @@ const CAM_PITCH_DEFAULT = 0.35
 const CAM_PITCH_MIN = 0
 const CAM_PITCH_MAX = Math.PI / 2 - 0.02
 const ZOOM_WHEEL_SPEED = 0.004
+
+/** True when movePlayerTo authors a real cameraTarget (not empty `{}`). */
+function hasCameraTargetCoords(
+  t: { x?: number; y?: number; z?: number } | null | undefined
+): boolean {
+  if (!t || typeof t !== 'object') return false
+  return (
+    (typeof t.x === 'number' && Number.isFinite(t.x)) ||
+    (typeof t.y === 'number' && Number.isFinite(t.y)) ||
+    (typeof t.z === 'number' && Number.isFinite(t.z))
+  )
+}
 const GRAVITY = 20
 const GROUND_ACCEL = 48
 const AIR_ACCEL = 22
@@ -1009,13 +1021,18 @@ export class PlayerSystem {
       if (avatarTarget) {
         this.applyAvatarLookTarget(lookFrom, avatarTarget)
       }
-      if (request.cameraTarget) {
-        this.applyCameraLookTarget(lookFrom, request.cameraTarget)
+      // Only retarget freecam when the scene authors cameraTarget. Without it, keep the
+      // current orbit (yaw/pitch/distance) and hard-snap the boom onto new feet — otherwise
+      // seat/leave teleports leave an "underneath the floor" shot after VC/sit handoffs.
+      if (hasCameraTargetCoords(request.cameraTarget)) {
+        this.applyCameraLookTarget(lookFrom, request.cameraTarget!)
+      } else if (reposition) {
+        this.freecamSnapAfterVc = true
       }
       if (this.isFirstPerson()) {
         if (request.avatarTarget) {
           this.camYaw = this.playerYaw
-        } else if (request.cameraTarget) {
+        } else if (hasCameraTargetCoords(request.cameraTarget)) {
           this.playerYaw = this.camYaw
         }
       }

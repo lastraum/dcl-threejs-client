@@ -810,12 +810,25 @@ export class SceneUiBridge {
     // Must run on the full box list so parent→child multi-pass can unlock stacks.
     // Cache repaired geometry under layoutKey so we do not thrash fullYoga every frame
     // (logs showed repaired=53 every click → brutal animation stutter).
-    const repairedCollapsed = repairCollapsedLayoutBoxes(layoutBoxes, transformOf, this.virtual)
+    let repairedCollapsed = repairCollapsedLayoutBoxes(layoutBoxes, transformOf, this.virtual)
     if (repairedCollapsed > 0) {
       this.lastFullLayoutBoxes = layoutBoxes
       this.layoutCache.set(layoutKey, layoutBoxes)
       // Prefer patch after repair when possible — geometry is now known.
       layoutCacheHit = true
+    }
+
+    // Poker seat rows / card slots stick at 0×0 under cached Yoga (collapsed=8, fullYoga=0).
+    // Force one full forest layout when many collapsed remain after repair.
+    if (!usedFullYoga && countCollapsedLayoutBoxes(layoutBoxes) > 4) {
+      layoutBoxes = runFullYoga()
+      usedFullYoga = true
+      layoutCacheHit = false
+      repairedCollapsed = repairCollapsedLayoutBoxes(layoutBoxes, transformOf, this.virtual)
+      if (repairedCollapsed > 0) {
+        this.lastFullLayoutBoxes = layoutBoxes
+        this.layoutCache.set(layoutKey, layoutBoxes)
+      }
     }
 
     let layoutBoxMap = new Map<Entity, LayoutBox>(

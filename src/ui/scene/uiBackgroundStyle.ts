@@ -122,28 +122,68 @@ export function hasUiVisualBackground(
   return true
 }
 
-/** SDK TextureUnion, react-ecs `{ src }`, and loose CRDT shapes. */
+/**
+ * Resolve AvatarTexture → public face snapshot URL for DOM UiBackground.
+ * Explorer uses Catalyst profile face images; without this, poker seat icons stay blank white.
+ */
+export function resolveAvatarTextureUserIdToUrl(userId: string): string | null {
+  const id = userId.trim()
+  if (!id) return null
+  if (/^https?:\/\//i.test(id)) return id
+  if (/^0x[a-fA-F0-9]{40}$/.test(id)) {
+    return `https://profile-images.decentraland.org/face/${id.toLowerCase()}`
+  }
+  // Catalyst entity id / face256 snapshot id
+  return `https://profile-images.decentraland.org/entities/${id}/face.png`
+}
+
+/** SDK TextureUnion, react-ecs `{ src }`, AvatarTexture, and loose CRDT shapes. */
 export function extractUiTextureSrc(texture: unknown): string | null {
   if (!texture) return null
   if (typeof texture === 'string') return texture.trim() || null
 
   const t = texture as Record<string, unknown>
   const tex = t.tex as
-    | { $case?: string; texture?: { src?: string }; avatarTexture?: { userId?: string } }
+    | {
+        $case?: string
+        texture?: { src?: string }
+        avatarTexture?: { userId?: string }
+      }
     | undefined
   if (tex?.$case === 'texture' && typeof tex.texture?.src === 'string') {
     return tex.texture.src.trim() || null
   }
-  // Some CRDT decodes omit $case but still nest texture.src
+  if (tex?.$case === 'avatarTexture' && typeof tex.avatarTexture?.userId === 'string') {
+    return resolveAvatarTextureUserIdToUrl(tex.avatarTexture.userId)
+  }
+  // Some CRDT decodes omit $case but still nest texture.src / avatarTexture
   if (tex && typeof tex.texture?.src === 'string') {
     return tex.texture.src.trim() || null
   }
+  if (tex && typeof tex.avatarTexture?.userId === 'string') {
+    return resolveAvatarTextureUserIdToUrl(tex.avatarTexture.userId)
+  }
   if (typeof t.src === 'string') return t.src.trim() || null
+  if (typeof (t as { userId?: string }).userId === 'string') {
+    return resolveAvatarTextureUserIdToUrl((t as { userId: string }).userId)
+  }
 
-  const nested = t.texture as { src?: string; tex?: { $case?: string; texture?: { src?: string } } } | undefined
+  const nested = t.texture as
+    | {
+        src?: string
+        tex?: { $case?: string; texture?: { src?: string }; avatarTexture?: { userId?: string } }
+        avatarTexture?: { userId?: string }
+      }
+    | undefined
   if (typeof nested?.src === 'string') return nested.src.trim() || null
   if (nested?.tex?.$case === 'texture' && typeof nested.tex.texture?.src === 'string') {
     return nested.tex.texture.src.trim() || null
+  }
+  if (nested?.tex?.$case === 'avatarTexture' && typeof nested.tex.avatarTexture?.userId === 'string') {
+    return resolveAvatarTextureUserIdToUrl(nested.tex.avatarTexture.userId)
+  }
+  if (typeof nested?.avatarTexture?.userId === 'string') {
+    return resolveAvatarTextureUserIdToUrl(nested.avatarTexture.userId)
   }
 
   return null

@@ -671,13 +671,12 @@ export class SceneUiDomRenderer {
       input.forest
     )
 
-    // Clip only when author asks (overflow hidden/scroll) or border-radius needs it.
-    // Auto-clipping mid panels (≥120) trapped hover tooltips behind sibling HUD roots
-    // and inside isolation stacking contexts (Explorer free stack does not do this).
+    // Clip only when author sets overflow hidden/scroll (Explorer free stack).
+    // Do NOT clip solely for border-radius — that trapped poker face/card icons inside
+    // rounded seat rows (DCL client lets children paint outside the rounded panel).
+    // Border-radius still applies on shell/bg layers for the rounded look.
     const clipShell =
-      !!radius ||
-      transform.overflow === YGOverflow.HIDDEN ||
-      transform.overflow === YGOverflow.SCROLL
+      transform.overflow === YGOverflow.HIDDEN || transform.overflow === YGOverflow.SCROLL
 
     const compactControl =
       layoutBox.width < 500 &&

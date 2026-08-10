@@ -163,7 +163,8 @@ Also fixed: transfer-before-note made `b=0` on hot-phys; length is captured pre-
 
 ### Phase 0.5c — encode sub-split (dump vs postDump)
 
-Wrap `engine.componentsIter` for the sendMessages dirty dump for-of (includes SDK write + `onProcessEntityComponentChange` between yields).
+Dump window = first→last `getCrdtUpdates` after systems (includes SDK write/onChange between yields).  
+`encTop` `Name+sdk` = consumer time between yields when ≥0.5ms.
 
 ```text
 send=90(enc=90 preDump=0 dump=12 postDump=78 xport=0 …) dump=180c/40m getCrdt=1ms encTop=…
@@ -171,17 +172,22 @@ send=90(enc=90 preDump=0 dump=12 postDump=78 xport=0 …) dump=180c/40m getCrdt=
 
 | Field | Meaning |
 |-------|---------|
-| **preDump** | systems end → dump start |
-| **dump** | full dirty dump for-of (all components + consumer body) |
-| **postDump** | dump end → first rpcCrdt (transport buffer assembly) |
-| **dump=Nc/Mm** | N components visited, M dirty messages |
+| **preDump** | systems end → first getCrdtUpdates |
+| **dump** | first→last getCrdtUpdates (serialize + SDK consumer) |
+| **postDump** | last getCrdt → first rpcCrdt (transport buffer assembly) |
+| **dump=Nc/Mm** | N getCrdt calls (components visited), M dirty messages |
 | **getCrdt** | sum of produce-only serialize time |
+
+**Genesis 0.5c first capture (partial meter bug):** always `dump=0 postDump=enc` while msgs fired — componentsIter timer was wrong. Fixed to getCrdt entry/exit. Re-capture.
+
+**Also saw:** `eng.update 14537ms` with LiveKit ping timeout + `RES_CRDT_STATE` flood + scene network disconnect — lag spikes are often **sync/comms storm while eng.update stuck**, not steady encode alone.
 
 **How to read**
 
 - `dump ≫ getCrdt` → cost in SDK write/onChange, not serialize  
 - `postDump ≫ dump` → transport buffer / filter path  
 - `dump=500c/20m` → huge component walk, few dirties  
+- multi-second eng.update + LiveKit disconnect → treat as spike class separately
 
 ### Follow-ups (after 0.5c capture, still not pie)
 

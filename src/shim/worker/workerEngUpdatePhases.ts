@@ -141,8 +141,6 @@ const crdtCompMs = new Map<string, number>()
 const crdtCompYields = new Map<string, number>()
 /** componentIds already wrapped per engine (re-scan after preregister / onStart). */
 const crdtEncodeWrappedIds = new WeakMap<object, Set<number>>()
-/** engines whose componentsIter is wrapped for dump timing. */
-const crdtEncodeIterWrapped = new WeakSet<object>()
 let lastSnapshot: EngUpdatePhaseSnapshot = emptySnapshot()
 let lastSlowLogAt = 0
 let passCount = 0
@@ -198,10 +196,13 @@ type MeteredComponent = {
 }
 
 /**
- * Phase 0.5b/c — wrap getCrdtUpdates + componentsIter so encode attributes to:
- * - per-component dirty yields (encTop)
- * - full dirty-dump wall including SDK consumer (dump=) — captures write/onChange
- * Safe to call multiple times; wraps each new componentId once.
+ * Phase 0.5b/c — wrap getCrdtUpdates so encode attributes to:
+ * - per-component produce time (encTop / getCrdt)
+ * - dump window = first→last getCrdtUpdates call after systems (includes SDK consumer
+ *   between yields — write/onChange). postDump = dump end → first rpcCrdt.
+ *
+ * Note: componentsIter wrap was unreliable (always dump=0ms); dump is timed from
+ * getCrdt entry/exit only. Safe to call multiple times; wraps each componentId once.
  */
 export function installCrdtEncodeComponentMeters(engine: {
   componentsIter?: () => Iterable<MeteredComponent>
@@ -214,7 +215,6 @@ export function installCrdtEncodeComponentMeters(engine: {
     crdtEncodeWrappedIds.set(engKey, wrapped)
   }
 
-  // Snapshot current components, wrap getCrdtUpdates, then re-install componentsIter wrap.
   const comps = [...engine.componentsIter()]
   for (const comp of comps) {
     if (wrapped.has(comp.componentId)) continue
@@ -227,11 +227,19 @@ export function installCrdtEncodeComponentMeters(engine: {
           yield* orig() as Generator
           return
         }
-        // Time only generator production (serialize/compare/yield), not outer consumer —
-        // consumer is included in componentsIter dump wall (0.5c).
+        // sendMessages dirty dump only runs after systemsLoopEnd.
+        const inDump = gate.systemsLoopEnd > 0
+        if (inDump) {
+          if (gate.dumpStartAt <= 0) gate.dumpStartAt = performance.now()
+          gate.dumpComps++
+        }
+
+        // Produce-only: time next() of underlying generator (serialize/compare).
         let yields = 0
         let produceMs = 0
         const it = orig()[Symbol.iterator]()
+        // Wall including consumer between yields (PutComponent write / onChange).
+        const wallT0 = performance.now()
         for (;;) {
           const stepT0 = performance.now()
           const step = it.next()
@@ -240,11 +248,23 @@ export function installCrdtEncodeComponentMeters(engine: {
           yields++
           yield step.value
         }
-        const ms = produceMs
-        gate.getCrdtSumMs += ms
-        if (yields > 0) gate.dumpMsgs += yields
-        if (ms < 0.05 && yields === 0) return
-        crdtCompMs.set(label, (crdtCompMs.get(label) ?? 0) + ms)
+        const wallMs = performance.now() - wallT0
+
+        if (inDump) {
+          gate.dumpEndAt = performance.now()
+          gate.getCrdtSumMs += produceMs
+          // dumpWallSum stored in getCrdtSum for produce; wallMs - produce ≈ consumer.
+          if (yields > 0) gate.dumpMsgs += yields
+          // Track consumer cost under a synthetic encTop bucket when large.
+          const consumerMs = Math.max(0, wallMs - produceMs)
+          if (consumerMs >= 0.5) {
+            const key = `${label}+sdk`
+            crdtCompMs.set(key, (crdtCompMs.get(key) ?? 0) + consumerMs)
+          }
+        }
+
+        if (produceMs < 0.05 && yields === 0) return
+        crdtCompMs.set(label, (crdtCompMs.get(label) ?? 0) + produceMs)
         if (yields > 0) {
           crdtCompYields.set(label, (crdtCompYields.get(label) ?? 0) + yields)
         }
@@ -253,29 +273,6 @@ export function installCrdtEncodeComponentMeters(engine: {
     } catch {
       /* frozen component — skip */
     }
-  }
-
-  if (crdtEncodeIterWrapped.has(engKey)) return
-  const origIter = engine.componentsIter.bind(engine)
-  try {
-    engine.componentsIter = function meteredComponentsIter(): Iterable<MeteredComponent> {
-      // Materialize once so we can time a single full for-of (sendMessages dirty dump).
-      const list = [...origIter()]
-      const inSendDump =
-        gate.active && gate.systemsLoopEnd > 0 && gate.dumpStartAt <= 0 && gate.firstCrdtAt <= 0
-      if (!inSendDump) return list
-      return {
-        [Symbol.iterator]: function* () {
-          gate.dumpStartAt = performance.now()
-          gate.dumpComps = list.length
-          for (const c of list) yield c
-          gate.dumpEndAt = performance.now()
-        }
-      }
-    }
-    crdtEncodeIterWrapped.add(engKey)
-  } catch {
-    /* componentsIter not writable */
   }
 }
 

@@ -152,19 +152,44 @@ Independent of worker `enc` — correlates worker→main apply + projection fold
 Wrap `component.getCrdtUpdates` after engine bind. Slow `[wsp0]` lines add:
 
 ```text
-encTop=Transform:90ms×400 Tween:20ms×12 Material:5ms×3
+encTop=Transform:0ms×15 Tween:0ms×25 MeshRenderer:0ms×4
 ```
 
-(`ms` = getCrdtUpdates wall; `×N` = yielded PUT/DELETE messages.)
+(`ms` = **produce-only** serialize time; `×N` = yielded PUT/DELETE messages.)
+
+Genesis 0.5b result: dirty yields present but **produce ~0ms** — encode cost is not LWW serialize.
 
 Also fixed: transfer-before-note made `b=0` on hot-phys; length is captured pre-`postMessage`.
 
-### Follow-ups (after encTop capture, still not pie)
+### Phase 0.5c — encode sub-split (dump vs postDump)
 
-- Cut dirty churn for top `encTop` components (often Transform/Tween/Material every frame)  
-- LWW serialize-even-when-unchanged path in `@dcl/ecs` getCrdtUpdates (compare after full serialize)  
-- Main COD: attach/materials / SQ heal if `[wsp05]` + phys spam dominate FPS  
-- Throttle PE pose / UI fingerprint re-dirty if path is cold thrash  
+Wrap `engine.componentsIter` for the sendMessages dirty dump for-of (includes SDK write + `onProcessEntityComponentChange` between yields).
+
+```text
+send=90(enc=90 preDump=0 dump=12 postDump=78 xport=0 …) dump=180c/40m getCrdt=1ms encTop=…
+```
+
+| Field | Meaning |
+|-------|---------|
+| **preDump** | systems end → dump start |
+| **dump** | full dirty dump for-of (all components + consumer body) |
+| **postDump** | dump end → first rpcCrdt (transport buffer assembly) |
+| **dump=Nc/Mm** | N components visited, M dirty messages |
+| **getCrdt** | sum of produce-only serialize time |
+
+**How to read**
+
+- `dump ≫ getCrdt` → cost in SDK write/onChange, not serialize  
+- `postDump ≫ dump` → transport buffer / filter path  
+- `dump=500c/20m` → huge component walk, few dirties  
+
+### Follow-ups (after 0.5c capture, still not pie)
+
+- If **postDump** dominates: optimize/skip redundant transport buffer work; batch filter  
+- If **dump** dominates with high `c` low `m`: skip empty components / cache dirty set  
+- If **dump** + high `m`: cut Tween/Transform dirty rate (scene-side or host inject)  
+- Main COD: fishing UI apply / SQ heal spam (`[wsp05]`, phys)  
+- Do **not** start Phase 1 systems pie until encode &lt; systems share  
 
 ## Phase 1 — Systems pie (flag `?wsp=1` or settings)
 

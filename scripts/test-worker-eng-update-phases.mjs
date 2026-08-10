@@ -53,6 +53,26 @@ assert.ok(slow.tailMs < 2)
 // Genesis-like: encode dominates send
 assert.ok(slow.encodeMs / slow.sendMs > 0.9)
 
+// Phase 0.5c — encode sub-split
+function splitEncode({ systemsLoopEnd, dumpStart, dumpEnd, firstCrdtAt }) {
+  return {
+    preDump: Math.max(0, dumpStart - systemsLoopEnd),
+    dump: Math.max(0, dumpEnd - dumpStart),
+    postDump: Math.max(0, firstCrdtAt - dumpEnd)
+  }
+}
+const enc = splitEncode({
+  systemsLoopEnd: 100,
+  dumpStart: 101,
+  dumpEnd: 115,
+  firstCrdtAt: 211
+})
+assert.equal(enc.preDump, 1)
+assert.equal(enc.dump, 14)
+assert.equal(enc.postDump, 96)
+// Genesis-like 0.5b: dump small, postDump owns encode
+assert.ok(enc.postDump > enc.dump)
+
 // Path histogram format
 function formatPaths(paths) {
   return [...paths.entries()]
@@ -66,4 +86,4 @@ const paths = new Map([
 ])
 assert.equal(formatPaths(paths), 'cold:3|empty-coal:1')
 
-console.log('ok worker-eng-update-phases smoke (0 + 0.5)')
+console.log('ok worker-eng-update-phases smoke (0 + 0.5 + 0.5c)')

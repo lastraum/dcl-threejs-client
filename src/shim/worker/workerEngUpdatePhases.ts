@@ -14,9 +14,15 @@
  *   crdt*   = rpcCrdt calls nested in send (or elsewhere during update)
  *
  * Phase 0.5 — split send when total ≥ SLOW_MS:
- *   encode  = systemsLoopEnd → first rpcCrdt entry (SDK dirty iterate + buffer build)
+ *   encode  = systemsLoopEnd → first rpcCrdt entry
  *   xport   = sum of rpcCrdt walls (postMessage / ack wait)
  *   path=   = rpcCrdt outcome histogram (cold / ack / skip / …)
+ *
+ * Phase 0.5c — split encode further (Genesis: getCrdt body ~0ms, enc still 80–200ms):
+ *   preDump = systemsLoopEnd → start of componentsIter (sendMessages dirty dump)
+ *   dump    = full componentsIter for-of (getCrdtUpdates + SDK write/onChange body)
+ *   postDump= dump end → first rpcCrdt (transport buffer assembly)
+ *   comps/msgs = components visited / dirty messages yielded
  *
  * Genesis capture: systems≈1ms, send≈80–500ms, crdt ack=0 → cost is encode, not systems pie.
  *
@@ -95,6 +101,12 @@ type PhaseGate = {
   firstCrdtAt: number
   lastCrdtAt: number
   crdtPaths: Map<string, number>
+  /** Phase 0.5c — sendMessages dirty-dump window via componentsIter wrap. */
+  dumpStartAt: number
+  dumpEndAt: number
+  dumpComps: number
+  dumpMsgs: number
+  getCrdtSumMs: number
 }
 
 const gate: PhaseGate = {
@@ -115,7 +127,12 @@ const gate: PhaseGate = {
   crdtAckMs: 0,
   firstCrdtAt: 0,
   lastCrdtAt: 0,
-  crdtPaths: new Map()
+  crdtPaths: new Map(),
+  dumpStartAt: 0,
+  dumpEndAt: 0,
+  dumpComps: 0,
+  dumpMsgs: 0,
+  getCrdtSumMs: 0
 }
 
 const systemMsEma = new Map<string, number>()
@@ -124,6 +141,8 @@ const crdtCompMs = new Map<string, number>()
 const crdtCompYields = new Map<string, number>()
 /** componentIds already wrapped per engine (re-scan after preregister / onStart). */
 const crdtEncodeWrappedIds = new WeakMap<object, Set<number>>()
+/** engines whose componentsIter is wrapped for dump timing. */
+const crdtEncodeIterWrapped = new WeakSet<object>()
 let lastSnapshot: EngUpdatePhaseSnapshot = emptySnapshot()
 let lastSlowLogAt = 0
 let passCount = 0
@@ -172,17 +191,20 @@ export function resetEngUpdatePhases(): void {
   gate.crdtPaths.clear()
 }
 
+type MeteredComponent = {
+  componentId: number
+  componentName: string
+  getCrdtUpdates: () => Iterable<unknown>
+}
+
 /**
- * Phase 0.5b — wrap every component.getCrdtUpdates so slow send encode attributes
- * to component names (Transform / Material / Tween / …).
- * Safe to call multiple times; wraps each new componentId once (after preregister / onStart).
+ * Phase 0.5b/c — wrap getCrdtUpdates + componentsIter so encode attributes to:
+ * - per-component dirty yields (encTop)
+ * - full dirty-dump wall including SDK consumer (dump=) — captures write/onChange
+ * Safe to call multiple times; wraps each new componentId once.
  */
 export function installCrdtEncodeComponentMeters(engine: {
-  componentsIter?: () => Iterable<{
-    componentId: number
-    componentName: string
-    getCrdtUpdates: () => Iterable<unknown>
-  }>
+  componentsIter?: () => Iterable<MeteredComponent>
 }): void {
   if (!engine?.componentsIter) return
   const engKey = engine as object
@@ -191,7 +213,10 @@ export function installCrdtEncodeComponentMeters(engine: {
     wrapped = new Set()
     crdtEncodeWrappedIds.set(engKey, wrapped)
   }
-  for (const comp of engine.componentsIter()) {
+
+  // Snapshot current components, wrap getCrdtUpdates, then re-install componentsIter wrap.
+  const comps = [...engine.componentsIter()]
+  for (const comp of comps) {
     if (wrapped.has(comp.componentId)) continue
     const orig = comp.getCrdtUpdates.bind(comp)
     const label =
@@ -202,13 +227,22 @@ export function installCrdtEncodeComponentMeters(engine: {
           yield* orig() as Generator
           return
         }
-        const t0 = performance.now()
+        // Time only generator production (serialize/compare/yield), not outer consumer —
+        // consumer is included in componentsIter dump wall (0.5c).
         let yields = 0
-        for (const msg of orig()) {
+        let produceMs = 0
+        const it = orig()[Symbol.iterator]()
+        for (;;) {
+          const stepT0 = performance.now()
+          const step = it.next()
+          produceMs += performance.now() - stepT0
+          if (step.done) break
           yields++
-          yield msg
+          yield step.value
         }
-        const ms = performance.now() - t0
+        const ms = produceMs
+        gate.getCrdtSumMs += ms
+        if (yields > 0) gate.dumpMsgs += yields
         if (ms < 0.05 && yields === 0) return
         crdtCompMs.set(label, (crdtCompMs.get(label) ?? 0) + ms)
         if (yields > 0) {
@@ -219,6 +253,29 @@ export function installCrdtEncodeComponentMeters(engine: {
     } catch {
       /* frozen component — skip */
     }
+  }
+
+  if (crdtEncodeIterWrapped.has(engKey)) return
+  const origIter = engine.componentsIter.bind(engine)
+  try {
+    engine.componentsIter = function meteredComponentsIter(): Iterable<MeteredComponent> {
+      // Materialize once so we can time a single full for-of (sendMessages dirty dump).
+      const list = [...origIter()]
+      const inSendDump =
+        gate.active && gate.systemsLoopEnd > 0 && gate.dumpStartAt <= 0 && gate.firstCrdtAt <= 0
+      if (!inSendDump) return list
+      return {
+        [Symbol.iterator]: function* () {
+          gate.dumpStartAt = performance.now()
+          gate.dumpComps = list.length
+          for (const c of list) yield c
+          gate.dumpEndAt = performance.now()
+        }
+      }
+    }
+    crdtEncodeIterWrapped.add(engKey)
+  } catch {
+    /* componentsIter not writable */
   }
 }
 
@@ -283,6 +340,11 @@ export function beginEngUpdatePhase(dt: number): void {
   gate.firstCrdtAt = 0
   gate.lastCrdtAt = 0
   gate.crdtPaths.clear()
+  gate.dumpStartAt = 0
+  gate.dumpEndAt = 0
+  gate.dumpComps = 0
+  gate.dumpMsgs = 0
+  gate.getCrdtSumMs = 0
   crdtCompMs.clear()
   crdtCompYields.clear()
 }
@@ -399,6 +461,20 @@ export function endEngUpdatePhase(): EngUpdatePhaseSnapshot {
     }
   }
 
+  // Phase 0.5c — encode sub-split.
+  let encPreMs = 0
+  let encDumpMs = 0
+  let encPostMs = 0
+  if (gate.systemsLoopEnd > 0 && gate.dumpStartAt > 0 && gate.dumpEndAt > 0) {
+    encPreMs = Math.max(0, gate.dumpStartAt - gate.systemsLoopEnd)
+    encDumpMs = Math.max(0, gate.dumpEndAt - gate.dumpStartAt)
+    const afterDump = gate.firstCrdtAt > 0 ? gate.firstCrdtAt : now
+    encPostMs = Math.max(0, afterDump - gate.dumpEndAt)
+  } else if (sendEncodeMs > 0) {
+    // Dump wrap miss — keep residual visible as post.
+    encPostMs = sendEncodeMs
+  }
+
   const pathsObj: Record<string, number> = {}
   for (const [k, v] of gate.crdtPaths) pathsObj[k] = v
 
@@ -433,7 +509,7 @@ export function endEngUpdatePhase(): EngUpdatePhaseSnapshot {
       const top = getEngUpdateTopSystems(TOP_LOG)
         .map((x) => `${x.name.slice(0, 28)}:${x.ms.toFixed(0)}`)
         .join(' ')
-      // Phase 0.5b — which components spent time in getCrdtUpdates (encode).
+      // Phase 0.5b — which components spent time in getCrdtUpdates produce (serialize).
       const encTop = [...crdtCompMs.entries()]
         .sort((a, b) => b[1] - a[1])
         .slice(0, 6)
@@ -442,15 +518,18 @@ export function endEngUpdatePhase(): EngUpdatePhaseSnapshot {
           return y > 0 ? `${name}:${ms.toFixed(0)}ms×${y}` : `${name}:${ms.toFixed(0)}ms`
         })
         .join(' ')
-      // encode vs xport: when encode dominates, next dig is dirty CRDT size / component churn —
+      // encode vs xport: when encode dominates, split dump vs transport prep —
       // not HOT/COLD systems pie and not main ack (play mode is fire-and-forget).
       console.warn(
         `[wsp0] eng.update ${totalMs.toFixed(0)}ms ` +
           `pre=${preMs.toFixed(0)} systems=${systemsMs.toFixed(0)} react=${reactMs.toFixed(0)} ` +
-          `send=${sendMs.toFixed(0)}(enc=${sendEncodeMs.toFixed(0)} xport=${sendTransportMs.toFixed(0)} tail=${sendTailMs.toFixed(0)}) ` +
+          `send=${sendMs.toFixed(0)}(enc=${sendEncodeMs.toFixed(0)}` +
+          ` preDump=${encPreMs.toFixed(0)} dump=${encDumpMs.toFixed(0)} postDump=${encPostMs.toFixed(0)}` +
+          ` xport=${sendTransportMs.toFixed(0)} tail=${sendTailMs.toFixed(0)}) ` +
           `crdt=${snap.crdtMs.toFixed(0)}ms×${snap.crdtCalls}` +
           `(ack=${snap.crdtAckCalls}/${snap.crdtAckMs.toFixed(0)}ms b=${snap.crdtBytes}) ` +
           `path=${formatCrdtPaths(gate.crdtPaths)} ` +
+          `dump=${gate.dumpComps}c/${gate.dumpMsgs}m getCrdt=${gate.getCrdtSumMs.toFixed(0)}ms ` +
           `encTop=${encTop || '—'} ` +
           `n=${snap.systemRun}/${snap.systemCount} loop=${snap.systemsLoop ? 1 : 0} dt=${snap.dt.toFixed(3)} ` +
           `top=${top || '—'}`

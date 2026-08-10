@@ -364,8 +364,16 @@ export class ParticleSystemBridge {
 
 /** Conservative emitter sphere so large VFX still count as in-view near the camera. */
 function emitterRadius(spec: ParticleSpec): number {
-  const life = Math.max(0.5, spec.lifetime ?? 5)
-  const speed = Math.max(0, spec.initialVelocitySpeed ?? 1)
+  const life = Math.max(0.5, typeof spec.lifetime === 'number' ? spec.lifetime : 5)
+  const vel = spec.initialVelocitySpeed
+  let speed = 1
+  if (typeof vel === 'number') speed = vel
+  else if (vel && typeof vel === 'object') {
+    const a = typeof vel.start === 'number' ? vel.start : 1
+    const b = typeof vel.end === 'number' ? vel.end : a
+    speed = Math.max(a, b)
+  }
+  speed = Math.max(0, speed)
   // Spread ~ lifetime * speed; clamp so we don't keep half the plaza "in view".
   return Math.min(48, Math.max(4, life * speed * 0.35 + 3))
 }

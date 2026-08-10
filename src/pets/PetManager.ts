@@ -18,6 +18,7 @@ import { PetFollow } from './PetFollow'
 import { PetInstance } from './PetInstance'
 import type { PetPeerSync } from './PetPeerSync'
 import type { ActivePetSpec, PetAnimClipMap, PetCategory, PetPose } from './types'
+import { logMainHitch } from '../debug/MainHitchLog'
 
 const _dcl = new THREE.Vector3()
 const _three = new THREE.Vector3()
@@ -173,7 +174,13 @@ export class PetManager {
     this.lastOwnerMoveMs = performance.now()
     this.localInstance.setMeshYawOffsetDeg(meshYaw)
     this.localInstance.setAnimClipMap(animClipMap)
+    const hitchT0 = performance.now()
     await this.localInstance.loadFromBytes(bytes, spec.category)
+    logMainHitch(
+      'local-pet',
+      performance.now() - hitchT0,
+      `${spec.category} ${(bytes.byteLength / 1e6).toFixed(2)}MB ${hash.slice(0, 10)}…`
+    )
     this.localInstance.setMeshYawOffsetDeg(meshYaw)
     this.localInstance.setAnimClipMap(animClipMap)
     await this.peerSync?.setLocalEquipped(hash, spec.category, {
@@ -427,7 +434,13 @@ export class PetManager {
     const stillAnnounced = this.peerSync?.getPeerEquippedHash(key)
     if (stillAnnounced && stillAnnounced !== contentHash) return
     remote.instance.setMeshYawOffsetDeg(meshYawOffsetDeg)
+    const hitchT0 = performance.now()
     await remote.instance.loadFromBytes(bytes, category)
+    logMainHitch(
+      'remote-pet',
+      performance.now() - hitchT0,
+      `${category} ${(bytes.byteLength / 1e6).toFixed(2)}MB ${key.slice(0, 10)}… ${contentHash.slice(0, 10)}…`
+    )
     // Another equip may have won while parse ran.
     if (this.remotes.get(key)?.contentHash !== contentHash) return
     remote.loadedHash = contentHash

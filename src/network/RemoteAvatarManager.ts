@@ -58,6 +58,7 @@ import type { InteractiveNameTagHit } from '../client/ui/overlayHitTest'
 import { buildPlayerMirrorIdentity } from '../bridge/playerMirrorIdentity'
 import { GliderProp, GlideStateWire, glideStateWantsOpen } from '../avatar/GliderProp'
 import { perfNoteComposeMs } from '../util/perfCounters'
+import { logMainHitch } from '../debug/MainHitchLog'
 
 /** Packet / lerp settle epsilon (meters / radians). */
 const POSE_EPS = 0.02
@@ -1981,7 +1982,13 @@ export class RemoteAvatarManager {
           } else {
             await this.loadVrmPeerAvatar(key, record, customBytes)
           }
-          perfNoteComposeMs(performance.now() - composeT0)
+          const wallMs = performance.now() - composeT0
+          perfNoteComposeMs(wallMs)
+          logMainHitch(
+            format === 'odk' ? 'remote-odk' : 'remote-vrm',
+            wallMs,
+            `${record.identity.displayName} ${(customBytes.byteLength / 1e6).toFixed(1)}MB ${record.vrmContentHash?.slice(0, 10) ?? ''}…`
+          )
           try {
             this.onComposeSettled?.()
           } catch {
@@ -2074,7 +2081,13 @@ export class RemoteAvatarManager {
         record.pendingEmote = null
         void this.applyPeerEmote(record, pending)
       }
-      perfNoteComposeMs(performance.now() - composeT0)
+      const wallMs = performance.now() - composeT0
+      perfNoteComposeMs(wallMs)
+      logMainHitch(
+        'remote-dcl',
+        wallMs,
+        `${record.identity.displayName} @${x.toFixed(0)},${z.toFixed(0)}`
+      )
       try {
         this.onComposeSettled?.()
       } catch {
@@ -2095,6 +2108,7 @@ export class RemoteAvatarManager {
     record: RemotePeerRecord,
     bytes: ArrayBuffer
   ): Promise<void> {
+    const hitchT0 = performance.now()
     try {
       this.disposePeerModel(record)
       if (record.hasPosition) {
@@ -2158,6 +2172,11 @@ export class RemoteAvatarManager {
         `Remote ODK ready · ${record.identity.displayName} (${record.vrmContentHash?.slice(0, 12)}…)`,
         { level: 'success' }
       )
+      logMainHitch(
+        'remote-odk',
+        performance.now() - hitchT0,
+        `${record.identity.displayName} ${(bytes.byteLength / 1e6).toFixed(1)}MB`
+      )
 
       if (record.pendingEmote) {
         const pending = record.pendingEmote
@@ -2183,6 +2202,7 @@ export class RemoteAvatarManager {
     record: RemotePeerRecord,
     bytes: ArrayBuffer
   ): Promise<void> {
+    const hitchT0 = performance.now()
     try {
       this.disposePeerModel(record)
       if (record.hasPosition) {
@@ -2240,6 +2260,11 @@ export class RemoteAvatarManager {
         'network',
         `Remote VRM ready · ${record.identity.displayName} (${record.vrmContentHash?.slice(0, 12)}…)`,
         { level: 'success' }
+      )
+      logMainHitch(
+        'remote-vrm',
+        performance.now() - hitchT0,
+        `${record.identity.displayName} ${(bytes.byteLength / 1e6).toFixed(1)}MB ${record.vrmContentHash?.slice(0, 10) ?? ''}…`
       )
 
       if (record.pendingEmote) {

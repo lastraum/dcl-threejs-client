@@ -607,19 +607,23 @@ export class MaterialApplier {
     const geo = mesh.geometry as THREE.BufferGeometry | undefined
     const marqueeAtlas = !!geo?.userData?.dclTextAlongYBasis
     const flipY = mesh.userData.primitiveMeshKey != null && !marqueeAtlas
-    // Plaza event cards: thumbnail GLB UVs are LH-mirrored (spatial −X → high U); JUMP IN
-    // bottom mesh UVs are normal. Three RH needs map-U flip on mirrored meshes only.
-    // Do NOT XOR with parent scale.x: negative board scale + map flip was cancelling and
-    // leaving posters L–R mirrored (Career Mondays / Business Migration). Scale is geometry;
-    // map flip is independent UV-space correction (pre-XOR law from before d266c743).
-    // MeshRenderer planes with scale.x < 0 still need the flip (no UV-mirror bit).
+    // Plaza event cards: GLB UVs are LH-mirrored → Three RH needs map-U flip.
+    // Apply for both GltfNodeModifiers *and* Material-on-GltfContainer (applyToObject3D
+    // used to pass no gltfNodeModifier flag → zero flip → permanent L–R mirror).
+    // MeshRenderer planes: flip when world scale.x product is negative.
+    // Ignore previous map ST when flipping GLB maps (inheritance double-flipped posters).
+    // Negative repeat.x needs RepeatWrapping (ClampToEdge breaks U flip sampling).
     const worldMirror = objectWorldMirrorX(mesh)
     const uvMirror = meshUvMapsUMirroredOnX(mesh)
+    const isPrimitivePlane = mesh.userData.primitiveMeshKey != null
+    const isGltfMesh = !isPrimitivePlane && !marqueeAtlas
     const flipMapU = !marqueeAtlas && (
-      options?.gltfNodeModifier
+      isGltfMesh || options?.gltfNodeModifier
         ? uvMirror
-        : mesh.userData.primitiveMeshKey != null && worldMirror
+        : isPrimitivePlane && worldMirror
     )
+    // Authored ST only when we may flip (don't inherit already-flipped previous.repeat).
+    const stPrev = flipMapU || isGltfMesh || options?.gltfNodeModifier ? null : undefined
 
     let texturesOk = true
     let alphaTex: THREE.Texture | null = null
@@ -632,7 +636,12 @@ export class MaterialApplier {
       m.map = mainTex
       if (!mainTex) texturesOk = false
       else {
-        this.applyUvTransform(mainTex, getTextureDef(mainUnion), prev, mesh)
+        this.applyUvTransform(
+          mainTex,
+          getTextureDef(mainUnion),
+          stPrev === null ? null : prev,
+          mesh
+        )
         if (mainUnion.tex?.$case === 'texture') flipTextureU(mainTex, flipMapU)
       }
     }
@@ -656,7 +665,12 @@ export class MaterialApplier {
         m.alphaMap = alphaTex
         if (!alphaTex) texturesOk = false
         else {
-          this.applyUvTransform(alphaTex, getTextureDef(alphaUnion), prev, mesh)
+          this.applyUvTransform(
+            alphaTex,
+            getTextureDef(alphaUnion),
+            stPrev === null ? null : prev,
+            mesh
+          )
           if (alphaUnion.tex?.$case === 'texture') flipTextureU(alphaTex, flipMapU)
         }
       }
@@ -678,7 +692,12 @@ export class MaterialApplier {
           m.emissiveMap = emissiveTex
           if (!emissiveTex) texturesOk = false
           else if (emissiveTex !== m.map) {
-            this.applyUvTransform(emissiveTex, getTextureDef(emissiveUnion), prev, mesh)
+            this.applyUvTransform(
+              emissiveTex,
+              getTextureDef(emissiveUnion),
+              stPrev === null ? null : prev,
+              mesh
+            )
             if (emissiveUnion.tex?.$case === 'texture') flipTextureU(emissiveTex, flipMapU)
           }
         }
@@ -691,7 +710,12 @@ export class MaterialApplier {
         if (!bumpTex) texturesOk = false
         else {
           bumpTex.colorSpace = THREE.LinearSRGBColorSpace
-          this.applyUvTransform(bumpTex, getTextureDef(bumpUnion), prev, mesh)
+          this.applyUvTransform(
+            bumpTex,
+            getTextureDef(bumpUnion),
+            stPrev === null ? null : prev,
+            mesh
+          )
           if (bumpUnion.tex?.$case === 'texture') flipTextureU(bumpTex, flipMapU)
         }
       }
@@ -1009,11 +1033,19 @@ function objectWorldMirrorX(obj: THREE.Object3D): boolean {
  * Absolute map-U orientation: sample' = 1 − sample when wantFlip.
  * Idempotent vs `tex.userData.dclMapUFlipped` — requires applyUvTransform to keep that
  * flag honest (never leave flipped ST with flag false, or re-apply double-flips).
- * Event cards: first paint often before scale.x = −1; re-apply when scale settles.
+ *
+ * **Wrap:** negative `repeat.x` needs `RepeatWrapping`. Default DCL wrap is ClampToEdge,
+ * which makes U-flip sampling wrong / still look L–R mirrored on plaza posters.
  */
 function flipTextureU(tex: THREE.Texture, wantFlip = true): void {
   const isFlipped = !!tex.userData.dclMapUFlipped
   if (wantFlip === isFlipped) return
+  if (wantFlip || isFlipped) {
+    // Ensure negative U repeat samples the full map (not clamped edge).
+    if (tex.wrapS === THREE.ClampToEdgeWrapping) {
+      tex.wrapS = THREE.RepeatWrapping
+    }
+  }
   const rep = tex.repeat.x
   const off = tex.offset.x
   tex.repeat.x = -rep

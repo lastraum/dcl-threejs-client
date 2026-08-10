@@ -229,12 +229,22 @@ flooded main or broke sync. postDump root cause (network-first `await sendBinary
 documented for a future fix that cannot spam main (e.g. renderer-first transport order
 in scene bundle, or main-side empty fast-path without 60Hz posts).
 
-### Follow-ups (stay on track)
+### Phase 0.6 — Main hitch lines (always-on, sparse)
 
-1. **Main FPS** (current logs): fishing UI enter/exit thrash, remotes/VRM/DAV, `admitDrop`,
-   video rebind — worker is idle (`engineTickInFlight=false`, no `[wsp0]`).  
-2. **postDump** later: safe empty sendBinary without main flood.  
-3. Phase 1 systems pie only if systems dominate.
+`[hitch] kind Nms detail` when a main load/compose wall ≥50ms:
+
+| kind | Source |
+|------|--------|
+| `remote-vrm` / `remote-odk` | Custom peer mesh parse+mount |
+| `remote-dcl` | Wearable compose for remote |
+| `remote-pet` / `local-pet` | DPET pet GLB parse+mount |
+
+### Follow-ups (ordered)
+
+1. Capture logs-off steady FPS + any `[hitch]` on spikes to ~10  
+2. **Main COD** if hitches name the spike: remote load budget, fishing UI enter/exit thrash  
+3. **postDump** later: empty sendBinary without main flood  
+4. **Phase 1** systems pie only if systems dominate
 
 ## Phase 1 — Systems pie (flag `?wsp=1` or settings)
 

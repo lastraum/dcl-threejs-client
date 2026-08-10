@@ -3083,15 +3083,19 @@ export class SceneScriptSystem {
           this.assetLoadBridge?.sync(this.view)
         }
 
+        // WSP 0.5k4 — pointer/input + TriggerArea/raycast already driven every rAF
+        // (updatePointerEvents / updateTriggerAreas / updateRaycasts / inputHub).
+        // Re-running on every worker CRDT apply was ptr 8–30ms + trg 7–18ms on [wsp05].
+        // Keep them only on live pointer edge (inject session) so PE edges stay correct.
         let t = performance.now()
-        this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
-        this.sceneInputRelay?.sync(this.crdtTick)
+        if (this.pointerAwaitingWorkerApply || this.pointerDeliverAwaitingAck) {
+          this.syncPointerInput(this.crdtTick, {
+            processPendingDown: false,
+            processPendingUp: false
+          })
+          this.sceneInputRelay?.sync(this.crdtTick)
+        }
         split.ptrMs += performance.now() - t
-
-        // WSP 0.5k3 — TriggerArea (61 vols) + raycasts already run every rAF
-        // (updateTriggerAreas / updateRaycasts). Re-running them on every worker CRDT
-        // apply doubled main cost (trg 7–18ms on [wsp05]). Skip here; pad impulses
-        // still fire from the rAF path + grow-only flush.
         split.trgMs = 0
         split.rayMs = 0
 

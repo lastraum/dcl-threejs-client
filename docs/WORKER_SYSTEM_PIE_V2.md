@@ -268,8 +268,10 @@ Validated: idle holds ~30; multi-second empty postDump freezes gone. Walk→17 i
 
 Genesis 0.5k: **fold≈0**, **sync** = trg + ptr. Ghost stick fixed (no provisional shells on local feet).
 
-**0.5k3:** skip `syncTriggerAreas` / `syncRaycasts` inside worker CRDT apply — rAF already runs them
-(`updateTriggerAreas` / `updateRaycasts`). Cuts double trg 7–18ms off `[wsp05]` apply wall.
+**0.5k3:** skip `syncTriggerAreas` / `syncRaycasts` inside worker CRDT apply — rAF already runs them.  
+
+**0.5k4:** skip ambient `syncPointerInput` / scene-input on CRDT apply unless pointer edge in flight
+(was **ptr 8–30ms**). rAF `updatePointerEvents` owns ambient; inject session still syncs.
 
 ### Follow-ups (ordered) — no AOI / remote-LOD experiments unless requested
 

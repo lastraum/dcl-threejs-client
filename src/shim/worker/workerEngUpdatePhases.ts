@@ -107,6 +107,10 @@ type PhaseGate = {
   dumpComps: number
   dumpMsgs: number
   getCrdtSumMs: number
+  /** Phase 0.5d — transport.filter wall during postDump. */
+  transportFilterMs: number
+  transportFilterCalls: number
+  transportSendNote: string
 }
 
 const gate: PhaseGate = {
@@ -132,7 +136,10 @@ const gate: PhaseGate = {
   dumpEndAt: 0,
   dumpComps: 0,
   dumpMsgs: 0,
-  getCrdtSumMs: 0
+  getCrdtSumMs: 0,
+  transportFilterMs: 0,
+  transportFilterCalls: 0,
+  transportSendNote: ''
 }
 
 const systemMsEma = new Map<string, number>()
@@ -196,6 +203,60 @@ type MeteredComponent = {
 }
 
 /**
+ * Phase 0.5d — wrap renderer/network transport filter+send for postDump attribution.
+ * Installed via global hook from patched addTransport capture.
+ */
+export function wrapCrdtTransportForMeters(transport: {
+  type?: string
+  filter?: (message: unknown) => boolean
+  send: (data: unknown) => unknown
+}): void {
+  const t = transport as {
+    type?: string
+    filter?: (message: unknown) => boolean
+    send: (data: unknown) => unknown
+    __wsp0Transport?: boolean
+  }
+  if (!t || t.__wsp0Transport) return
+  t.__wsp0Transport = true
+  const kind = String(t.type || '?')
+  if (typeof t.filter === 'function') {
+    const origFilter = t.filter.bind(t)
+    t.filter = (message: unknown) => {
+      if (!gate.active || gate.systemsLoopEnd <= 0) return origFilter(message)
+      gate.transportFilterCalls++
+      const a = performance.now()
+      const ok = origFilter(message)
+      gate.transportFilterMs += performance.now() - a
+      return ok
+    }
+  }
+  const origSend = t.send.bind(t)
+  t.send = (data: unknown) => {
+    if (gate.active) {
+      let bytes = 0
+      if (data instanceof Uint8Array) bytes = data.byteLength
+      else if (Array.isArray(data)) {
+        for (const chunk of data) {
+          if (chunk instanceof Uint8Array) bytes += chunk.byteLength
+        }
+      }
+      const note = `${kind[0] ?? '?'}:${bytes}`
+      gate.transportSendNote = gate.transportSendNote
+        ? `${gate.transportSendNote}|${note}`
+        : note
+    }
+    return origSend(data)
+  }
+}
+
+/** Install global addTransport wrap hook (called from sceneWorker boot). */
+export function installCrdtTransportMeterHook(): void {
+  const g = globalThis as Record<string, unknown>
+  g.__THREEJS_WRAP_CRDT_TRANSPORT__ = wrapCrdtTransportForMeters
+}
+
+/**
  * Phase 0.5b/c — wrap getCrdtUpdates so encode attributes to:
  * - per-component produce time (encTop / getCrdt)
  * - dump window = first→last getCrdtUpdates call after systems (includes SDK consumer
@@ -206,6 +267,8 @@ type MeteredComponent = {
  */
 export function installCrdtEncodeComponentMeters(engine: {
   componentsIter?: () => Iterable<MeteredComponent>
+  // Loose typing — @dcl Transport.send is Promise<void>; we only wrap.
+  addTransport?: (transport: never) => void
 }): void {
   if (!engine?.componentsIter) return
   const engKey = engine as object
@@ -213,6 +276,29 @@ export function installCrdtEncodeComponentMeters(engine: {
   if (!wrapped) {
     wrapped = new Set()
     crdtEncodeWrappedIds.set(engKey, wrapped)
+  }
+
+  try {
+    const engAny = engine as {
+      addTransport?: (t: unknown) => void
+      __wsp0AddTransportWrapped?: boolean
+    }
+    if (engAny.addTransport && !engAny.__wsp0AddTransportWrapped) {
+      const origAdd = engAny.addTransport.bind(engine)
+      engAny.addTransport = (transport: unknown) => {
+        wrapCrdtTransportForMeters(
+          transport as {
+            type?: string
+            filter?: (message: unknown) => boolean
+            send: (data: unknown) => unknown
+          }
+        )
+        return origAdd(transport)
+      }
+      engAny.__wsp0AddTransportWrapped = true
+    }
+  } catch {
+    /* ignore */
   }
 
   const comps = [...engine.componentsIter()]
@@ -342,6 +428,9 @@ export function beginEngUpdatePhase(dt: number): void {
   gate.dumpComps = 0
   gate.dumpMsgs = 0
   gate.getCrdtSumMs = 0
+  gate.transportFilterMs = 0
+  gate.transportFilterCalls = 0
+  gate.transportSendNote = ''
   crdtCompMs.clear()
   crdtCompYields.clear()
 }
@@ -527,6 +616,8 @@ export function endEngUpdatePhase(): EngUpdatePhaseSnapshot {
           `(ack=${snap.crdtAckCalls}/${snap.crdtAckMs.toFixed(0)}ms b=${snap.crdtBytes}) ` +
           `path=${formatCrdtPaths(gate.crdtPaths)} ` +
           `dump=${gate.dumpComps}c/${gate.dumpMsgs}m getCrdt=${gate.getCrdtSumMs.toFixed(0)}ms ` +
+          `xfilt=${gate.transportFilterMs.toFixed(0)}ms×${gate.transportFilterCalls}` +
+          `${gate.transportSendNote ? ` xsend=${gate.transportSendNote}` : ''} ` +
           `encTop=${encTop || '—'} ` +
           `n=${snap.systemRun}/${snap.systemCount} loop=${snap.systemsLoop ? 1 : 0} dt=${snap.dt.toFixed(3)} ` +
           `top=${top || '—'}`

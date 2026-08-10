@@ -178,24 +178,36 @@ send=90(enc=90 preDump=0 dump=12 postDump=78 xport=0 …) dump=180c/40m getCrdt=
 | **dump=Nc/Mm** | N getCrdt calls (components visited), M dirty messages |
 | **getCrdt** | sum of produce-only serialize time |
 
-**Genesis 0.5c first capture (partial meter bug):** always `dump=0 postDump=enc` while msgs fired — componentsIter timer was wrong. Fixed to getCrdt entry/exit. Re-capture.
+**Genesis 0.5c re-capture (fixed timer):**
 
-**Also saw:** `eng.update 14537ms` with LiveKit ping timeout + `RES_CRDT_STATE` flood + scene network disconnect — lag spikes are often **sync/comms storm while eng.update stuck**, not steady encode alone.
+```text
+enc=265 dump=1 postDump=264  dump=148c/35m getCrdt=1ms
+enc=1454 dump=1 postDump=1453 …
+enc=10631 dump=1 postDump=10630 …   // spike class
+```
 
-**How to read**
+**Conclusion:** dirty dump is **~1ms**. Entire encode bill is **postDump** = SDK work after getCrdt until `transport.send` (transport pack over `crdtMessages`, including broadcast merge + network/renderer filters).
 
-- `dump ≫ getCrdt` → cost in SDK write/onChange, not serialize  
-- `postDump ≫ dump` → transport buffer / filter path  
-- `dump=500c/20m` → huge component walk, few dirties  
-- multi-second eng.update + LiveKit disconnect → treat as spike class separately
+**Also saw:** multi-second eng.update + LiveKit disconnect + `RES_CRDT_STATE` — spike class.
 
-### Follow-ups (after 0.5c capture, still not pie)
+### Phase 0.5d — postDump dig + cheap pack fix
 
-- If **postDump** dominates: optimize/skip redundant transport buffer work; batch filter  
-- If **dump** dominates with high `c` low `m`: skip empty components / cache dirty set  
-- If **dump** + high `m`: cut Tween/Transform dirty rate (scene-side or host inject)  
-- Main COD: fishing UI apply / SQ heal spam (`[wsp05]`, phys)  
-- Do **not** start Phase 1 systems pie until encode &lt; systems share  
+1. **Meters:** `xfilt=Nms×calls` (transport.filter) + `xsend=r:bytes|n:bytes` on slow lines.  
+2. **Patch:** scene-bundle `.toBinary().byteLength` → `.currentWriteOffset()` (O(1) size; payload `.toBinary()` unchanged).  
+3. Transport wrap via addTransport capture hook.
+
+**How to read next logs**
+
+- `xfilt` large / high call count → filter thrash or huge `crdtMessages`  
+- `xfilt` tiny + `postDump` still huge → pack/writeBuffer/network convert path  
+- spikes + LiveKit/`RES_CRDT_STATE` → sync storm class (separate from steady postDump)
+
+### Follow-ups (after 0.5d, still not pie)
+
+- If **xfilt×calls** huge: shrink broadcast re-export / network filter work  
+- If pack residual: further sendMessages instrumentation or skip redundant network pass  
+- Main COD: fishing UI / SQ heal  
+- Do **not** start Phase 1 systems pie until postDump &lt; systems share
 
 ## Phase 1 — Systems pie (flag `?wsp=1` or settings)
 

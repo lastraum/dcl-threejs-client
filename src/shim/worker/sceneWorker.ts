@@ -42,6 +42,7 @@ import {
 } from './pointerEventColliderCheckerPatch'
 import {
   installCrdtEncodeComponentMeters,
+  installCrdtTransportMeterHook,
   noteCrdtSendToRenderer,
   type CrdtSendPath
 } from './workerEngUpdatePhases'
@@ -4457,6 +4458,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     // Allow the next bundle's first createReactBasedUiSystem to register (worker reuse).
     resetReactEcsOnceGuard()
     installPreregisterRendererComponentsHook()
+    installCrdtTransportMeterHook()
     ;(globalThis as Record<string, unknown>).__THREEJS_WORKER_LOG__ = (message: string) => {
       workerLog('log', message)
     }

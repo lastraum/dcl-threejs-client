@@ -196,18 +196,35 @@ enc=10631 dump=1 postDump=10630 …   // spike class
 2. **Patch:** scene-bundle `.toBinary().byteLength` → `.currentWriteOffset()` (O(1) size; payload `.toBinary()` unchanged).  
 3. Transport wrap via addTransport capture hook.
 
-**How to read next logs**
+**Genesis 0.5d capture:**
 
-- `xfilt` large / high call count → filter thrash or huge `crdtMessages`  
-- `xfilt` tiny + `postDump` still huge → pack/writeBuffer/network convert path  
-- spikes + LiveKit/`RES_CRDT_STATE` → sync storm class (separate from steady postDump)
+```text
+postDump=403 xfilt=0ms×168 xsend=n:0|r:1821
+postDump=1399 xfilt=0ms×120 xsend=n:0|r:1578
+```
 
-### Follow-ups (after 0.5d, still not pie)
+Filter free; network send **0 bytes** but **first** transport; renderer ~2KB.
 
-- If **xfilt×calls** huge: shrink broadcast re-export / network filter work  
-- If pack residual: further sendMessages instrumentation or skip redundant network pass  
+### Phase 0.5e — root cause + fix (network sendBinary await)
+
+SDK `@dcl/sdk/network/message-bus-sync` network transport (registered before renderer):
+
+```js
+send: async (messages) => {
+  const response = await sendBinary({ data: [], peerData: peerMessages })
+  binaryMessageBus.__processMessages(response.data)
+}
+```
+
+`sendMessages` awaits each transport. Network-first → every eng.update **blocked on worker→main sendBinary RPC** (even empty `n:0`). That wait **was** postDump (100–400ms steady, multi-second spikes).
+
+**Fix:** `rpcSendBinary` posts outbound fire-and-forget and **immediately** resolves with inbound already buffered from the previous response (one-frame lag). eng.update no longer blocks on LiveKit publish RTT.
+
+### Follow-ups
+
+- Confirm postDump collapses after 0.5e (target &lt;10–20ms steady)  
 - Main COD: fishing UI / SQ heal  
-- Do **not** start Phase 1 systems pie until postDump &lt; systems share
+- Phase 1 systems pie only if systems become the bottleneck
 
 ## Phase 1 — Systems pie (flag `?wsp=1` or settings)
 

@@ -12,7 +12,6 @@ import {
   isWorkerPointerButtonHeld,
   shouldSuppressCooperativeReactEcs as shouldSuppressPointerSessionReactEcs
 } from './sceneWorkerInputSession'
-// isLevelStatePointerEdgeActive used by Worker System Pie via session; keep imports for defer gates.
 import {
   resolveWorkerUiBackground,
   resolveWorkerUiDropdown,
@@ -20,10 +19,6 @@ import {
   resolveWorkerUiText,
   resolveWorkerUiTransform
 } from './resolveBundledUiComponents'
-import {
-  runWorkerSystemPie,
-  type PieSystemItem
-} from './workerSystemPie'
 
 /**
  * Scene UI scheduler — scene-agnostic infrastructure matching Explorer ordering.
@@ -232,7 +227,6 @@ export function installEngineSystemLoopPartition(): void {
     // until async admin toolkit setUiRenderer) → permanent mount=0.
     let react: SystemItem | undefined
     let scale: SystemItem | undefined
-    const pieSystems: PieSystemItem[] = []
     for (const system of systems) {
       const name = system.name
       if (name === '@dcl/react-ecs') {
@@ -243,16 +237,8 @@ export function installEngineSystemLoopPartition(): void {
         if (!scale) scale = system
         continue
       }
-      pieSystems.push(system)
+      safeRunSystem(system, dt, runOne)
     }
-    // Worker System Pie — HOT always; COLD under wall budget with resume cursor.
-    // Pointer edges force HOT-all via isHotPieSystem (no multi-second all-systems barrier).
-    const pointerEdge =
-      isPointerInteractiveTickActive() || isLevelStatePointerEdgeActive()
-    runWorkerSystemPie(pieSystems, dt, runOne, {
-      pointerEdge,
-      safeRun: (s, d, run) => safeRunSystem(s as SystemItem, d, run as (s: SystemItem, dt: number) => void)
-    })
     const suppressReact = shouldDeferCooperativeReactEcs()
     if (suppressReact && cooperativeSchedulerTickDepth > 0 && !isPointerInteractiveTickActive()) {
       cooperativeReactEcsSkippedThisTick = true

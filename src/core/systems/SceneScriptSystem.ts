@@ -1320,14 +1320,7 @@ export class SceneScriptSystem {
     if (change.kind === 'create' || change.kind === 'destroy') {
       if (spriteSlot) return
       this.pointerStructureDirty = true
-      // TriggerArea volume cache: create only if entity has TriggerArea; destroy always
-      // (component may already be gone). Avoid rebuild on every MeshRenderer churn.
-      if (change.kind === 'destroy') {
-        this.triggerStructureDirty = true
-      } else if (change.entity !== undefined) {
-        const { TriggerArea } = this.readComponents
-        if (TriggerArea?.has?.(change.entity)) this.triggerStructureDirty = true
-      }
+      this.triggerStructureDirty = true
       if (change.kind === 'create') {
         const { Transform } = this.readComponents
         if (change.entity !== undefined && Transform.has(change.entity)) {

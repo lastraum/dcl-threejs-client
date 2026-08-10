@@ -24,7 +24,6 @@ import {
   runWorkerSystemPie,
   type PieSystemItem
 } from './workerSystemPie'
-import { noteSystemLoopHookInvoked } from './forceSystemPieGate'
 
 /**
  * Scene UI scheduler — scene-agnostic infrastructure matching Explorer ordering.
@@ -226,8 +225,6 @@ export function installEngineSystemLoopPartition(): void {
   const g = globalThis as Record<string, unknown>
   if (typeof g[ENGINE_SYSTEM_LOOP_KEY] === 'function') return
   g[ENGINE_SYSTEM_LOOP_KEY] = (systems: SystemItem[], dt: number, runOne: (s: SystemItem, dt: number) => void) => {
-    // Structured pie owns this eng.update — disable per-fn forced gate double-skip.
-    noteSystemLoopHookInvoked()
     if (boundWorkerEngine) ensureWorkerLocomotionFreezePersisted(boundWorkerEngine)
     cooperativeReactEcsSkippedThisTick = false
     // First-wins for react-ecs: scene createReactBasedUiSystem registers before
@@ -248,7 +245,8 @@ export function installEngineSystemLoopPartition(): void {
       }
       pieSystems.push(system)
     }
-    // Worker System Pie — hard wall HOT-first + residual COLD (resume + quarantine).
+    // Worker System Pie — HOT always; COLD under wall budget with resume cursor.
+    // Pointer edges force HOT-all via isHotPieSystem (no multi-second all-systems barrier).
     const pointerEdge =
       isPointerInteractiveTickActive() || isLevelStatePointerEdgeActive()
     runWorkerSystemPie(pieSystems, dt, runOne, {

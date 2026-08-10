@@ -11,8 +11,6 @@ import { installVirtualCameraBindGuard } from './virtualCameraBindGuard'
 import { installReactEcsOnceGuard } from './reactEcsOnce'
 import { installSdkPollEventsLatchHook } from './patchSdkOnUpdatePollEvents'
 import { installEngineSystemLoopPartition, installSceneEngineUiScheduler } from './sceneEngineUiScheduler'
-import { installForcedSystemPieGateOnEngine } from './forceSystemPieGate'
-import { getWorkerSystemPieBudgetMs } from './workerSystemPie'
 
 /** Global hook invoked from patched bundle capture snippets (pre-seal). */
 export const PREREGISTER_RENDERER_COMPONENTS_KEY = '__THREEJS_PREREGISTER_RENDERER_COMPONENTS__'
@@ -66,8 +64,6 @@ export function preregisterRendererInjectedComponents(engine: IEngine): void {
   if (preregistered.has(engine)) return
   preregistered.add(engine)
   installSceneEngineUiScheduler(engine)
-  // Force pie gate before scene systems register (works even if bundle loop patch misses).
-  installForcedSystemPieGateOnEngine(engine, getWorkerSystemPieBudgetMs)
   for (const register of RENDERER_PREREGISTER_FACTORIES) {
     register(engine)
   }

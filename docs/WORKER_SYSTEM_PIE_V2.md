@@ -63,27 +63,39 @@ On every `engine.update` (or every Nth under load):
 Log when `t_total ≥ 80` with **all** phases (not only systems).  
 **Exit criterion:** one Genesis capture with clear share of recv/systems/send/react. No behavior change.
 
-### Phase 0 implementation (`feat-wsp`)
+### Phase 0 / 0b implementation (`feat-wsp`)
 
 | Piece | Role |
 |-------|------|
-| `src/shim/worker/workerEngUpdatePhases.ts` | begin/end, EMA top systems, `[wsp0]` slow log |
-| `sceneEngineScheduler` `wrapEngineUpdateWithWallClock` | wall `total` around every `engine.update` |
-| `installEngineSystemLoopPartition` | times scene systems vs react-ecs* (same run order) |
+| `src/shim/worker/workerEngUpdatePhases.ts` | begin/end, EMA top systems, CRDT meters, `[wsp0]` log |
+| `sceneEngineScheduler` wrap | wall `total` around every `engine.update` |
+| `installEngineSystemLoopPartition` | times scene systems vs react-ecs* |
+| `rpcCrdt` (`sceneWorker`) | times each `crdtSendToRenderer` (ack vs immediate) |
+
+@dcl/ecs `engine.update` is literally:
+
+```text
+await receiveMessages() → systems loop → await sendMessages()
+```
 
 Log line example:
 
 ```text
-[wsp0] eng.update 420ms pre=12 systems=280 react=90 post=38 n=40/42 loop=1 dt=0.016 top=MySystem:120 …
+[wsp0] eng.update 96ms pre=0 systems=1 react=1 send=94 crdt=2ms×12(ack=0/0ms b=4800) n=67/67 loop=1 …
 ```
 
-- **pre** ≈ native work before systems loop (often CRDT/setup)  
-- **systems** = partition loop excluding react-ecs*  
-- **react** = react-ecs + ui-scale  
-- **post** ≈ after systems loop returns (often transport/send)  
-- **loop=0** means systems-loop patch missed — only total is trustworthy  
+| Field | Meaning |
+|-------|---------|
+| **pre** | `receiveMessages` (before systems) |
+| **systems** | scene systems only |
+| **react** | react-ecs + ui-scale |
+| **send** | `sendMessages` wall after systems |
+| **crdt** | sum of nested `rpcCrdt` walls; ack= waited on main |
+| **loop=0** | systems-loop patch miss |
 
-Optional periodic OK lines when `globalThis.__THREEJS_SCENEWORKER_PERF__ = true`.
+Genesis Phase 0 capture: **systems≈1ms, send≈post≈80–500ms** → systems pie is not the bottleneck; next work is send/CRDT/main apply, not HOT/COLD.
+
+Optional OK lines when `globalThis.__THREEJS_SCENEWORKER_PERF__ = true`.
 
 ## Phase 1 — Systems pie (flag `?wsp=1` or settings)
 

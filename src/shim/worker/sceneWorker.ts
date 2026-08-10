@@ -40,6 +40,7 @@ import {
   patchSceneBundle,
   patchSceneBundleWithCheckerStrip
 } from './pointerEventColliderCheckerPatch'
+import { noteCrdtSendToRenderer } from './workerEngUpdatePhases'
 
 import {
   applySceneInputSnapshotOnEngine,
@@ -3442,7 +3443,15 @@ function interruptPendingOutboundAcks(): void {
 }
 
 function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
+  // WSP v2 Phase 0b — measure crdtSendToRenderer wall (nested in eng.update sendMessages).
+  const t0 = performance.now()
+  const inBytes = data.byteLength
+  const note = (awaitedAck: boolean) => {
+    noteCrdtSendToRenderer(performance.now() - t0, inBytes, awaitedAck)
+  }
+
   if (sceneEvalInProgress) {
+    note(false)
     return Promise.resolve([])
   }
   let copy = data.slice()
@@ -3450,7 +3459,10 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
   if (sceneOnStartComplete && !sceneBootInProgress) {
     if (!shouldAttachUiMountSnapshot() && copy.byteLength > 0) {
       const stripped = stripSceneUiCrdtBytes(copy)
-      if (!stripped.byteLength) return Promise.resolve([])
+      if (!stripped.byteLength) {
+        note(false)
+        return Promise.resolve([])
+      }
       copy = stripped.slice()
     }
     if (sceneEngine && copy.byteLength > 0) {
@@ -3460,13 +3472,17 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
       } else {
         copy = stripPlayerFrameComponentsFromCrdt(copy).slice()
       }
-      if (!copy.byteLength) return Promise.resolve([])
+      if (!copy.byteLength) {
+        note(false)
+        return Promise.resolve([])
+      }
     }
     if (shouldDeferPointerOutbound()) {
       if (copy.byteLength > 0) {
         const nonUi = stripSceneUiCrdtBytes(copy)
         if (nonUi.byteLength) pointerDeferredNonUi.push(nonUi)
       }
+      note(false)
       return Promise.resolve([])
     }
     const attachUiMount = shouldAttachUiMountSnapshot()
@@ -3486,10 +3502,12 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
       // Empty outbound with the same UI mount set is pure thrash (spam-click
       // re-posted uiEntities every microtask → main-thread freezes, Tweens stall).
       if (attachUiMount && uiKey === lastOutboundUiEntitiesKey) {
+        note(false)
         return Promise.resolve([])
       }
       // Non-UI empty nudges: one post per microtask is enough for main to pump.
       if (!attachUiMount && crdtOutboundEmptyNudgeCoalesced) {
+        note(false)
         return Promise.resolve([])
       }
       if (!attachUiMount) {
@@ -3515,6 +3533,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
           } satisfies SceneWorkerOutbound)
         : ({ type: 'crdt-outbound', data: copy } satisfies SceneWorkerOutbound)
       ctx.postMessage(msg)
+      note(false)
       return Promise.resolve([])
     }
     // Phase 3 — play mode cold CRDT batched per unified frame (no ack).
@@ -3525,9 +3544,11 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
         // Preserve order: flush any buffered cold CRDT first, then this hot chunk now.
         flushPlayModeColdCrdtEgress(postPlayModeColdCrdtFireAndForget)
         postPlayModeColdCrdtFireAndForget(copy)
+        note(false)
         return Promise.resolve([])
       }
       bufferPlayModeColdCrdt(copy)
+      note(false)
       return Promise.resolve([])
     }
     logSceneUiOutbound(copy, uiEntities, uiMountSnapshot?.length ?? 0)
@@ -3538,6 +3559,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
         if (settled) return
         settled = true
         pendingOutboundAck.delete(id)
+        note(true)
         resolve([])
       }
       pendingOutboundAck.set(id, finish)
@@ -3556,7 +3578,11 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
   }
   const id = ++requestId
   return new Promise((resolve) => {
-    pendingCrdt.set(id, resolve)
+    const finish = (value: Uint8Array[]): void => {
+      note(true)
+      resolve(value)
+    }
+    pendingCrdt.set(id, finish)
     const msg = { type: 'crdt-send', id, data: copy } satisfies SceneWorkerOutbound
     // Do not transfer an empty view's backing buffer — some runtimes deliver a broken payload.
     if (copy.byteLength === 0) ctx.postMessage(msg)

@@ -1,14 +1,19 @@
 /**
- * WSP v2 Phase 0 — engine.update phase meters (behavior-neutral).
+ * WSP v2 Phase 0 / 0b — engine.update phase meters (behavior-neutral).
  *
- * Measures wall time split for diagnosis only:
- *   pre  ≈ work before systems loop (CRDT/native setup when patch applies)
- *   systems = scene systems in the partition loop (excludes react-ecs*)
- *   react   = @dcl/react-ecs + ui-scale after systems
- *   post  ≈ work after systems loop returns (transport / send when after systems)
- *   total = full eng.update wall
+ * @dcl/ecs engine.update is:
+ *   await receiveMessages()  →  systems loop  →  await sendMessages()
  *
- * Does not skip, quarantine, or budget systems. Log when total ≥ SLOW_MS.
+ * With our systems-loop partition, react-ecs runs at end of systems (Explorer order).
+ *
+ * Meters:
+ *   pre     ≈ receiveMessages (before systems loop)
+ *   systems = scene systems (excludes react-ecs*)
+ *   react   = @dcl/react-ecs + ui-scale
+ *   send    = sendMessages wall (after systems loop → update resolves)
+ *   crdt*   = rpcCrdt calls nested in send (or elsewhere during update)
+ *
+ * Does not skip, quarantine, or budget. Log when total ≥ SLOW_MS.
  *
  * @see docs/WORKER_SYSTEM_PIE_V2.md
  */
@@ -18,10 +23,16 @@ export type EngUpdatePhaseSnapshot = {
   preMs: number
   systemsMs: number
   reactMs: number
-  postMs: number
+  /** SDK sendMessages wall (was labeled post). */
+  sendMs: number
+  /** Sum of rpcCrdt wall times during this update. */
+  crdtMs: number
+  crdtCalls: number
+  crdtBytes: number
+  crdtAckCalls: number
+  crdtAckMs: number
   systemRun: number
   systemCount: number
-  /** True when structured systems-loop hook ran this update. */
   systemsLoop: boolean
   dt: number
 }
@@ -42,6 +53,11 @@ type PhaseGate = {
   systemRun: number
   systemCount: number
   systemsLoop: boolean
+  crdtMs: number
+  crdtCalls: number
+  crdtBytes: number
+  crdtAckCalls: number
+  crdtAckMs: number
 }
 
 const gate: PhaseGate = {
@@ -54,7 +70,12 @@ const gate: PhaseGate = {
   reactMs: 0,
   systemRun: 0,
   systemCount: 0,
-  systemsLoop: false
+  systemsLoop: false,
+  crdtMs: 0,
+  crdtCalls: 0,
+  crdtBytes: 0,
+  crdtAckCalls: 0,
+  crdtAckMs: 0
 }
 
 const systemMsEma = new Map<string, number>()
@@ -63,7 +84,12 @@ let lastSnapshot: EngUpdatePhaseSnapshot = {
   preMs: 0,
   systemsMs: 0,
   reactMs: 0,
-  postMs: 0,
+  sendMs: 0,
+  crdtMs: 0,
+  crdtCalls: 0,
+  crdtBytes: 0,
+  crdtAckCalls: 0,
+  crdtAckMs: 0,
   systemRun: 0,
   systemCount: 0,
   systemsLoop: false,
@@ -92,7 +118,12 @@ export function resetEngUpdatePhases(): void {
     preMs: 0,
     systemsMs: 0,
     reactMs: 0,
-    postMs: 0,
+    sendMs: 0,
+    crdtMs: 0,
+    crdtCalls: 0,
+    crdtBytes: 0,
+    crdtAckCalls: 0,
+    crdtAckMs: 0,
     systemRun: 0,
     systemCount: 0,
     systemsLoop: false,
@@ -130,9 +161,14 @@ export function beginEngUpdatePhase(dt: number): void {
   gate.systemRun = 0
   gate.systemCount = 0
   gate.systemsLoop = false
+  gate.crdtMs = 0
+  gate.crdtCalls = 0
+  gate.crdtBytes = 0
+  gate.crdtAckCalls = 0
+  gate.crdtAckMs = 0
 }
 
-/** Systems-loop partition entered (after native pre-loop work). */
+/** Systems-loop partition entered (after receiveMessages). */
 export function noteSystemsLoopBegin(systemCount: number): void {
   if (!gate.active) return
   gate.systemsLoop = true
@@ -153,7 +189,6 @@ export function noteSystemRun(name: string | undefined, run: () => void): void {
   recordSystemMs(name || 'anonymous', ms)
 }
 
-/** Accumulate pure systems wall (caller may also use noteSystemRun for per-fn). */
 export function addSystemsWallMs(ms: number): void {
   if (!gate.active || ms <= 0) return
   gate.systemsMs += ms
@@ -168,8 +203,22 @@ export function noteSystemsLoopEnd(): void {
   if (!gate.active) return
   gate.systemsLoopEnd = performance.now()
   if (gate.systemsLoopStart > 0 && gate.systemsMs <= 0) {
-    // Fallback: whole loop wall if per-pass not set
     gate.systemsMs = Math.max(0, gate.systemsLoopEnd - gate.systemsLoopStart - gate.reactMs)
+  }
+}
+
+/**
+ * Record one crdtSendToRenderer (rpcCrdt) wall time.
+ * @param awaitedAck true when the call waited on crdt-outbound-ack / crdt-send response
+ */
+export function noteCrdtSendToRenderer(ms: number, bytes: number, awaitedAck: boolean): void {
+  if (!gate.active || ms < 0) return
+  gate.crdtCalls++
+  gate.crdtMs += ms
+  gate.crdtBytes += Math.max(0, bytes)
+  if (awaitedAck) {
+    gate.crdtAckCalls++
+    gate.crdtAckMs += ms
   }
 }
 
@@ -183,7 +232,7 @@ export function endEngUpdatePhase(): EngUpdatePhaseSnapshot {
       : 0
   const systemsMs = gate.systemsMs
   const reactMs = gate.reactMs
-  const postMs =
+  const sendMs =
     gate.systemsLoop && gate.systemsLoopEnd > 0
       ? Math.max(0, now - gate.systemsLoopEnd)
       : Math.max(0, totalMs - systemsMs - reactMs - preMs)
@@ -193,7 +242,12 @@ export function endEngUpdatePhase(): EngUpdatePhaseSnapshot {
     preMs,
     systemsMs,
     reactMs,
-    postMs,
+    sendMs,
+    crdtMs: gate.crdtMs,
+    crdtCalls: gate.crdtCalls,
+    crdtBytes: gate.crdtBytes,
+    crdtAckCalls: gate.crdtAckCalls,
+    crdtAckMs: gate.crdtAckMs,
     systemRun: gate.systemRun,
     systemCount: gate.systemCount,
     systemsLoop: gate.systemsLoop,
@@ -210,9 +264,12 @@ export function endEngUpdatePhase(): EngUpdatePhaseSnapshot {
       const top = getEngUpdateTopSystems(TOP_LOG)
         .map((x) => `${x.name.slice(0, 28)}:${x.ms.toFixed(0)}`)
         .join(' ')
+      // send ≈ SDK sendMessages; crdt nested inside (or concurrent) rpcCrdt walls.
       console.warn(
         `[wsp0] eng.update ${totalMs.toFixed(0)}ms ` +
-          `pre=${preMs.toFixed(0)} systems=${systemsMs.toFixed(0)} react=${reactMs.toFixed(0)} post=${postMs.toFixed(0)} ` +
+          `pre=${preMs.toFixed(0)} systems=${systemsMs.toFixed(0)} react=${reactMs.toFixed(0)} ` +
+          `send=${sendMs.toFixed(0)} crdt=${snap.crdtMs.toFixed(0)}ms×${snap.crdtCalls}` +
+          `(ack=${snap.crdtAckCalls}/${snap.crdtAckMs.toFixed(0)}ms b=${snap.crdtBytes}) ` +
           `n=${snap.systemRun}/${snap.systemCount} loop=${snap.systemsLoop ? 1 : 0} dt=${snap.dt.toFixed(3)} ` +
           `top=${top || '—'}`
       )
@@ -226,7 +283,8 @@ export function endEngUpdatePhase(): EngUpdatePhaseSnapshot {
       .join(' ')
     console.info(
       `[wsp0] ok total=${totalMs.toFixed(1)}ms pre=${preMs.toFixed(1)} sys=${systemsMs.toFixed(1)} ` +
-        `react=${reactMs.toFixed(1)} post=${postMs.toFixed(1)} top=${top || '—'}`
+        `react=${reactMs.toFixed(1)} send=${sendMs.toFixed(1)} crdt=${snap.crdtMs.toFixed(1)}×${snap.crdtCalls} ` +
+        `top=${top || '—'}`
     )
   }
 

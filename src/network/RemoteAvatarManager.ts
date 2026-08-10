@@ -302,8 +302,7 @@ export class RemoteAvatarManager {
   private hasLocalPlayerPos = false
   /** Active camera for frustum anim skip (looking away from a huddle). */
   private camera: THREE.Camera | null = null
-  /** Scene-local feet for provisional peer placement until first transform arrives. */
-  private provisionalPositionProvider: (() => THREE.Vector3 | null) | null = null
+
   /** Host→scene CRDT mirror for remote PlayerIdentityData / AvatarBase / AvatarEquippedData. */
   private onPeerMirrorIdentity:
     | ((entity: Entity, identity: ReturnType<typeof buildPlayerMirrorIdentity> | null) => void)
@@ -331,8 +330,12 @@ export class RemoteAvatarManager {
    * Optional local feet (Three.js scene space). Peers that join without a pose yet
    * spawn a visible placeholder here instead of staying `visible=false` forever.
    */
-  setProvisionalPositionProvider(provider: (() => THREE.Vector3 | null) | null): void {
-    this.provisionalPositionProvider = provider
+  /**
+   * Legacy API — provisional shells at local feet disabled (ghost stick).
+   * Peers appear only after first RFC4 transform.
+   */
+  setProvisionalPositionProvider(_provider: (() => THREE.Vector3 | null) | null): void {
+    /* no-op */
   }
 
   setPeerMirrorIdentityHandler(
@@ -408,25 +411,49 @@ export class RemoteAvatarManager {
   }
 
   /**
-   * Snapshot for HUD toast: how many remotes still need compose vs total present.
-   * `queuePending` is load-queue depth (active + waiting).
+   * Snapshot for HUD toast.
+   *
+   * **inRange*** — peers with a real pose inside LOAD_DISTANCE (can compose).
+   * Far pills and pose-less joins are not "pending load" for the toast.
+   * `queuePending` / `composeActive` — actual queue work (dismiss when both 0).
    */
   getComposeProgress(): {
     total: number
     loaded: number
     pending: number
     queuePending: number
+    composeActive: number
+    /** Peers eligible to compose (hasPosition + ≤ load radius). */
+    inRangeTotal: number
+    inRangeLoaded: number
+    inRangePending: number
   } {
-    const total = this.peers.size
+    const loadSq =
+      RemoteAvatarLoadQueue.LOAD_DISTANCE * RemoteAvatarLoadQueue.LOAD_DISTANCE
     let loaded = 0
+    let inRangeTotal = 0
+    let inRangeLoaded = 0
     for (const record of this.peers.values()) {
-      if (record.model && !record.loading) loaded++
+      const hasModel = !!(record.model && !record.loading)
+      if (hasModel) loaded++
+      if (!record.hasPosition || !this.hasLocalPlayerPos) continue
+      const dx = record.root.position.x - this.localPlayerWorldPos.x
+      const dz = record.root.position.z - this.localPlayerWorldPos.z
+      if (dx * dx + dz * dz > loadSq) continue
+      inRangeTotal++
+      if (hasModel) inRangeLoaded++
     }
+    const queuePending = this.loadQueue.getPendingComposeCount()
+    const composeActive = this.loadQueue.getActiveComposeCount()
     return {
-      total,
+      total: this.peers.size,
       loaded,
-      pending: Math.max(0, total - loaded),
-      queuePending: this.loadQueue.getPendingComposeCount()
+      pending: Math.max(0, this.peers.size - loaded),
+      queuePending,
+      composeActive,
+      inRangeTotal,
+      inRangeLoaded,
+      inRangePending: Math.max(0, inRangeTotal - inRangeLoaded)
     }
   }
 
@@ -457,11 +484,9 @@ export class RemoteAvatarManager {
     this.localPlayerWorldPos.copy(position)
     this.hasLocalPlayerPos = true
     this.loadQueue.setLocalPlayerPosition(position)
-    // Follow teleports re-push island peers before local player exists — root stays
-    // invisible (hasPosition=false). Once we have feet origin, place pills.
-    this.backfillProvisionalPeers()
-    // Walking toward pills: refresh waiting distances; only enqueue peers not yet queued.
-    // Do not re-enqueue every frame — that allocated a new run() closure + Vector3.clone each peer.
+    // Do NOT paste pose-less peers onto local feet here (was backfillProvisionalPeers every
+    // move → ghost avatars stuck to the player). Peers stay invisible until RFC4 transform.
+    // Walking toward real-posed pills: refresh waiting distances; only enqueue if not queued.
     let bulkDistance = false
     for (const [key, record] of this.peers) {
       if (record.model || !record.hasPosition) continue
@@ -486,23 +511,12 @@ export class RemoteAvatarManager {
   }
 
   /**
-   * Peers joined before local feet were ready (World rebuild / follow /goto): show
-   * provisional neon BaseMale shells so remotes are not invisible until the first RFC4 transform.
+   * @deprecated No-op. Provisional shells at local feet caused ghosts that followed the
+   * player (setLocalPlayerPosition used to call this every move). Peers stay hidden until
+   * the first real RFC4 transform.
    */
   backfillProvisionalPeers(): void {
-    const provisional = this.provisionalPositionProvider?.()
-    if (!provisional) return
-    for (const record of this.peers.values()) {
-      if (record.hasPosition) continue
-      if (record.modifierHidden) continue
-      record.root.position.copy(provisional)
-      record.targetPosition.copy(provisional)
-      record.root.visible = true
-      record.hasPosition = true
-      if (!record.model && !record.placeholder) {
-        this.attachLoadingPresentation(record)
-      }
-    }
+    /* intentionally empty — see setLocalPlayerPosition / upsertPeer */
   }
 
   /** Scene asset hydration — throttle remote composes so scene GLTF attach wins. */
@@ -1200,25 +1214,13 @@ export class RemoteAvatarManager {
         this.attachLoadingPresentation(record)
       }
     } else if (!record.hasPosition) {
-      // Join without pose (common right after island LiveKit connect): show a
-      // provisional neon BaseMale near the local player so remotes are not "invisible".
-      // Do NOT compose yet — provisional is colocated with local, which would pass
-      // the ≤20 m gate (or force-park at camera) and permanently load far peers.
-      // First real RFC4 transform in updatePeerTransform starts the queue.
-      // hasPosition stays false so we don't treat provisional as a real pose (avoids
-      // "stuck next to me" when the first transform is delayed on empty-land islands).
-      const provisional = this.provisionalPositionProvider?.()
-      if (provisional) {
-        record.root.position.copy(provisional)
-        record.targetPosition.copy(provisional)
-        record.root.visible = !record.modifierHidden
-        if (!record.model && !record.placeholder) {
-          this.attachLoadingPresentation(record)
-        }
-      }
+      // Join without pose: stay invisible at origin until first RFC4 Movement.
+      // Never place a shell on local feet — that glued remotes to the player (ghost stick)
+      // and backfill re-ran on every setLocalPlayerPosition while hasPosition stayed false.
+      record.root.visible = false
     }
 
-    // Real pose only — never force-compose provisional joins (steals slots + far skinned bodies).
+    // Real pose only — never compose without a wire position.
     if (positionDcl) {
       this.tryStartAvatarLoad(key, record, false)
     }

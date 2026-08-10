@@ -766,6 +766,8 @@ export class MaterialApplier {
   ): THREE.Texture {
     // Clone so wrap/offset/tiling/tween UV never mutate the AssetCache entry.
     const tex = base.clone()
+    // Clone copies userData — never inherit a stale map-U flip flag from a prior clone path.
+    tex.userData.dclMapUFlipped = false
     tex.wrapS = wrapMode(opts.wrapMode)
     tex.wrapT = wrapMode(opts.wrapMode)
     tex.minFilter =
@@ -984,7 +986,11 @@ function meshUvMapsUMirroredOnX(mesh: THREE.Mesh): boolean {
   return uAtMin > uAtMax + 1e-5
 }
 
-/** Product of local scale.x up the parent chain (DCL boards often use scale.x = −1). */
+/**
+ * Product of local scale.x up the parent chain (DCL boards often use scale.x = −1).
+ * Use **scale.x only** — matrixWorld.det < 0 also trips on RH/LH parenting noise and
+ * wrongly cancelled the event-card map-U flip (boards read L–R mirrored).
+ */
 function objectWorldMirrorX(obj: THREE.Object3D): boolean {
   obj.updateWorldMatrix(true, false)
   let sx = 1
@@ -993,13 +999,7 @@ function objectWorldMirrorX(obj: THREE.Object3D): boolean {
     sx *= o.scale.x
     o = o.parent
   }
-  // Odd negative scales (reflection) — det < 0 also catches multi-axis flips.
-  if (sx < 0) return true
-  try {
-    return obj.matrixWorld.determinant() < 0
-  } catch {
-    return false
-  }
+  return sx < 0
 }
 
 /**

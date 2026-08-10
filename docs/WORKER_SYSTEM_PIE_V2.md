@@ -250,11 +250,32 @@ Validated: idle holds ~30; multi-second empty postDump freezes gone. Walk→17 i
 
 `?noremote` A/B: floor barely moved → remotes not sole steady owner; compose hitches still real.
 
+### Phase 0.5k — main crdt-apply sub-split (meters)
+
+`[wsp05]` still 16–32ms after 0.5i (worker empty path done). Split the main wall:
+
+```text
+[wsp05] main crdt-apply 24ms … fold=12 uiA=3 drain=1 sync=5 enc=2
+```
+
+| Tag | Phase |
+|-----|--------|
+| **fold** | `applyIncoming` + `foldProjectionChanges` |
+| **uiA** | UI mount reseed + paint |
+| **drain** | lane-drain kick (often fire-and-forget; only sync prefix) |
+| **sync** | pointer / input / trigger / ray / tween — sub: `trg` / `ray` / `tw` / `ptr` |
+| **enc** | `encodeRendererCrdt` inbound bytes |
+
+Genesis 0.5k: **fold≈0**, **sync** = trg + ptr. Ghost stick fixed (no provisional shells on local feet).
+
+**0.5k3:** skip `syncTriggerAreas` / `syncRaycasts` inside worker CRDT apply — rAF already runs them
+(`updateTriggerAreas` / `updateRaycasts`). Cuts double trg 7–18ms off `[wsp05]` apply wall.
+
 ### Follow-ups (ordered) — no AOI / remote-LOD experiments unless requested
 
-1. **0.5k** main crdt-apply dig — `[wsp05]` still 16–32ms; split fold / drain / UI (encode empty path is done)  
+1. Capture Genesis `[wsp05]` with fold/uiA/drain/sync/enc → fix dominant slice  
 2. **0.5j** (if needed): push inbound → zero empty polls  
-3. **Phase 2** main COD from doc only: play-cook near feet, soft-attach rate, post-seal SQ heal (not AOI radius, not remote body demote)  
+3. **Phase 2** main COD from doc only: play-cook near feet, soft-attach rate, post-seal SQ heal  
 4. **Phase 1** systems pie only if systems dominate (still ~1ms — skip)
 
 ## Phase 1 — Systems pie (flag `?wsp=1` or settings)

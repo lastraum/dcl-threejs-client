@@ -187,8 +187,7 @@ function meshUvMirroredOnX(mesh: THREE.Mesh): boolean {
 }
 
 function objectScaleMirrorX(obj: THREE.Object3D): boolean {
-  // Match MaterialApplier.objectWorldMirrorX — matrices must be current when scale.x
-  // lands on a parent after first material paint (event-card JUMP IN).
+  // Match MaterialApplier.objectWorldMirrorX — scale.x product only (not matrix det).
   obj.updateWorldMatrix(true, false)
   let sx = 1
   let o: THREE.Object3D | null = obj
@@ -196,12 +195,7 @@ function objectScaleMirrorX(obj: THREE.Object3D): boolean {
     sx *= o.scale.x
     o = o.parent
   }
-  if (sx < 0) return true
-  try {
-    return obj.matrixWorld.determinant() < 0
-  } catch {
-    return false
-  }
+  return sx < 0
 }
 
 /** Restore materials/castShadows cached before the first GltfNodeModifiers apply. */

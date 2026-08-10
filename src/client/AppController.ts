@@ -2811,12 +2811,21 @@ export class AppController {
       const TOAST_ID = 'remote-avatar-load'
       // Force 3D HUD placement (top-center) — not 2D shell top-right.
       notif.host.classList.add('social-mobile-notif-host--in-world-center')
-      if (p.total > 5 && p.pending > 0) {
+      // Show only while compose work is real (queue / in-range pending).
+      // Old rule used total-room peers: far pills kept "8/9" toast forever.
+      const busy =
+        p.queuePending > 0 ||
+        p.composeActive > 0 ||
+        (p.inRangeTotal > 0 && p.inRangePending > 0)
+      const showBanner = busy && (p.inRangeTotal > 1 || p.total > 5)
+      if (showBanner) {
+        const denom = Math.max(p.inRangeTotal, p.inRangeLoaded)
+        const num = p.inRangeLoaded
         notif.pushSystemToast({
           id: TOAST_ID,
           appName: 'DECENTRALAND · AVATARS',
-          title: `Loading remote avatars ${p.loaded}/${p.total}`,
-          sub: 'Please wait…',
+          title: `Loading remote avatars ${num}/${denom}`,
+          sub: 'Nearby peers…',
           dismissMs: 0
         })
       } else {

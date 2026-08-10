@@ -198,7 +198,16 @@ export class World {
   private editorPreviewMode = false
   /** AppController HUD — remote avatar compose progress toast. */
   private remoteAvatarProgressHandler:
-    | ((progress: { total: number; loaded: number; pending: number }) => void)
+    | ((progress: {
+        total: number
+        loaded: number
+        pending: number
+        queuePending: number
+        composeActive: number
+        inRangeTotal: number
+        inRangeLoaded: number
+        inRangePending: number
+      }) => void)
     | null = null
   private lastRemoteProgressKey = ''
   private remoteProgressReportAt = 0
@@ -342,12 +351,9 @@ export class World {
       camera: this.player!.getCameraEntityPose()
     }))
     this.remoteAvatars = new RemoteAvatarManager(this.host.scene)
-    // Island peers often join before first Movement packet — show placeholder near local feet.
-    this.remoteAvatars.setProvisionalPositionProvider(() => {
-      // Three.js world feet (same space as remote avatar roots).
-      const pos = this.player?.getWorldPosition()
-      return pos ? pos.clone() : null
-    })
+    // Do not place pose-less remotes on local feet (ghost stick). Provider unused for shells;
+    // peers appear when first RFC4 Movement lands at their scene pose.
+    this.remoteAvatars.setProvisionalPositionProvider(() => null)
     // Peer avatar compose: CCT cache only — never reinsert/rebuild after seal.
     this.remoteAvatars.setOnComposeSettled(() => {
       if (!this.collidersLoadingComplete) return
@@ -4725,9 +4731,18 @@ export class World {
     return this.player?.getFreecamState() ?? null
   }
 
-  /** HUD toast while many remotes compose (community-style banner). */
+  /** HUD toast while nearby remotes compose (community-style banner). */
   setRemoteAvatarProgressHandler(
-    handler: ((progress: { total: number; loaded: number; pending: number }) => void) | null
+    handler: ((progress: {
+      total: number
+      loaded: number
+      pending: number
+      queuePending: number
+      composeActive: number
+      inRangeTotal: number
+      inRangeLoaded: number
+      inRangePending: number
+    }) => void) | null
   ): void {
     this.remoteAvatarProgressHandler = handler
     this.lastRemoteProgressKey = ''
@@ -4740,7 +4755,7 @@ export class World {
     if (now - this.remoteProgressReportAt < 250) return
     this.remoteProgressReportAt = now
     const p = this.remoteAvatars.getComposeProgress()
-    const key = `${p.total}:${p.loaded}:${p.pending}`
+    const key = `${p.inRangeLoaded}/${p.inRangeTotal}:q${p.queuePending}:a${p.composeActive}:p${p.inRangePending}`
     if (key === this.lastRemoteProgressKey) return
     this.lastRemoteProgressKey = key
     this.remoteAvatarProgressHandler(p)

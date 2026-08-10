@@ -2716,6 +2716,23 @@ export class SceneScriptSystem {
 
   /** Throttle for WSP Phase 0.5 main apply logs. */
   private lastWsp05MainApplyLogAt = 0
+  /**
+   * WSP 0.5k — last processWorkerOutboundCrdtBatch sub-split (ms).
+   * fold=applyIncoming+fold · uiA=mount reseed · drain=lane kick ·
+   * sync=pointer+input+triggers+ray+tween · enc=encodeRendererCrdt
+   * 0.5k2: sync sub — trg / ray / tw / ptr (when sync dominates).
+   */
+  private lastWsp05Split = {
+    foldMs: 0,
+    uiMs: 0,
+    drainMs: 0,
+    syncMs: 0,
+    encMs: 0,
+    trgMs: 0,
+    rayMs: 0,
+    twMs: 0,
+    ptrMs: 0
+  }
 
   /** Worker outbound (post-onStart) — ack + renderer-inbound-deliver. */
   private async handleCrdtOutboundBatch(
@@ -2737,6 +2754,17 @@ export class SceneScriptSystem {
       batchBytes += item.data?.byteLength ?? 0
       if (item.uiEntities?.length) uiN = Math.max(uiN, item.uiEntities.length)
       if (item.uiMountSnapshot?.length) snapRows += item.uiMountSnapshot.length
+    }
+    this.lastWsp05Split = {
+      foldMs: 0,
+      uiMs: 0,
+      drainMs: 0,
+      syncMs: 0,
+      encMs: 0,
+      trgMs: 0,
+      rayMs: 0,
+      twMs: 0,
+      ptrMs: 0
     }
     try {
       if (!this.running) return
@@ -2761,9 +2789,13 @@ export class SceneScriptSystem {
         const now = performance.now()
         if (now - this.lastWsp05MainApplyLogAt >= 1_500) {
           this.lastWsp05MainApplyLogAt = now
+          const s = this.lastWsp05Split
           console.warn(
             `[wsp05] main crdt-apply ${applyMs.toFixed(0)}ms n=${batch.length} b=${batchBytes} ` +
-              `ui=${uiN} snap=${snapRows} ack=${ackIds.length} inbound=${inbound.length}`
+              `ui=${uiN} snap=${snapRows} ack=${ackIds.length} inbound=${inbound.length} ` +
+              `fold=${s.foldMs.toFixed(0)} uiA=${s.uiMs.toFixed(0)} drain=${s.drainMs.toFixed(0)} ` +
+              `sync=${s.syncMs.toFixed(0)}(trg=${s.trgMs.toFixed(0)} ray=${s.rayMs.toFixed(0)} ` +
+              `tw=${s.twMs.toFixed(0)} ptr=${s.ptrMs.toFixed(0)}) enc=${s.encMs.toFixed(0)}`
           )
         }
       }
@@ -2802,6 +2834,7 @@ export class SceneScriptSystem {
     }[]
   ): Promise<Uint8Array[]> {
     const hasPayload = batch.some((item) => item.data?.byteLength > 0)
+    const split = this.lastWsp05Split
     try {
       this.prepareRendererOutboundState()
       const projectionDeletes: ProjectionChange[] = []
@@ -2864,6 +2897,7 @@ export class SceneScriptSystem {
         const frozenMountIds = !hasUiMountSnapshot
           ? this.resolveFrozenWorkerMountIds(latestUiEntities)
           : null
+        const foldT0 = performance.now()
         for (const item of batch) {
           if (item.uiMountSnapshot !== undefined) continue
           let data = item.data
@@ -2888,7 +2922,9 @@ export class SceneScriptSystem {
           }
           this.foldProjectionChanges()
         }
+        split.foldMs += performance.now() - foldT0
 
+        const uiT0 = performance.now()
         if (!skipUiMountReseed) {
           // Clear LWW only when we are about to re-seed.
           // COD C3 — PE clear only on full-mount / mount-set change. Partial dirty reseeds
@@ -2957,6 +2993,7 @@ export class SceneScriptSystem {
             this.lastAppliedUiMountContentFp = '0'
           }
         }
+        split.uiMs += performance.now() - uiT0
       } finally {
         if (pointerUiMountBatch) this.projection.endForceWorkerUiPuts()
       }
@@ -2964,57 +3001,63 @@ export class SceneScriptSystem {
       // COD C2 — mount commit + paint BEFORE structure/material peels so select HUD /
       // menus never wait behind a large pendingDiff drain on the same outbound batch.
       if (mountEntitiesForFrame !== undefined) this.lastOutboundUiEntitiesKey = uiKey
-      if (hasPayload || batchTouchesUi || projectionDeletes.length > 0 || mountChanged) {
-        if (SCENE_UI_LOG && (hasPayload || hasUiMountSnapshot)) {
-          let snapshotUiTransform = 0
-          let snapshotUiText = 0
-          let snapshotUiBackground = 0
-          if (latestUiMountSnapshot?.length) {
-            const uiTextId = UiText.componentId
-            const uiBackgroundId = UiBackground.componentId
-            for (const row of latestUiMountSnapshot) {
-              if (row.componentId === uiTransformId) snapshotUiTransform++
-              else if (row.componentId === uiTextId) snapshotUiText++
-              else if (row.componentId === uiBackgroundId) snapshotUiBackground++
+      {
+        const uiPaintT0 = performance.now()
+        if (hasPayload || batchTouchesUi || projectionDeletes.length > 0 || mountChanged) {
+          if (SCENE_UI_LOG && (hasPayload || hasUiMountSnapshot)) {
+            let snapshotUiTransform = 0
+            let snapshotUiText = 0
+            let snapshotUiBackground = 0
+            if (latestUiMountSnapshot?.length) {
+              const uiTextId = UiText.componentId
+              const uiBackgroundId = UiBackground.componentId
+              for (const row of latestUiMountSnapshot) {
+                if (row.componentId === uiTransformId) snapshotUiTransform++
+                else if (row.componentId === uiTextId) snapshotUiText++
+                else if (row.componentId === uiBackgroundId) snapshotUiBackground++
+              }
             }
-          }
-          const mountSize = mountEntitiesForFrame?.length ?? latestUiEntities?.length ?? 0
-          let projectionUiTransform = 0
-          let projectionUiText = 0
-          let projectionUiBackground = 0
-          const idsForLog = mountEntitiesForFrame ?? latestUiEntities
-          if (idsForLog?.length) {
-            for (const entity of idsForLog) {
-              const id = entity as Entity
-              if (this.view.components.UiTransform.has(id)) projectionUiTransform++
-              if (this.view.components.UiText.has(id)) projectionUiText++
-              if (this.view.components.UiBackground.has(id)) projectionUiBackground++
+            const mountSize = mountEntitiesForFrame?.length ?? latestUiEntities?.length ?? 0
+            let projectionUiTransform = 0
+            let projectionUiText = 0
+            let projectionUiBackground = 0
+            const idsForLog = mountEntitiesForFrame ?? latestUiEntities
+            if (idsForLog?.length) {
+              for (const entity of idsForLog) {
+                const id = entity as Entity
+                if (this.view.components.UiTransform.has(id)) projectionUiTransform++
+                if (this.view.components.UiText.has(id)) projectionUiText++
+                if (this.view.components.UiBackground.has(id)) projectionUiBackground++
+              }
             }
+            clientDebugLog.log(
+              'scene-ui',
+              `crdt batch — bytes=${batch.reduce((n, item) => n + (item.data?.byteLength ?? 0), 0)} ` +
+                `snapshotRows=${latestUiMountSnapshot?.length ?? 0} touchesUi=${batchTouchesUi} mountChanged=${mountChanged} ` +
+                `deletes=${projectionDeletes.length} snapshotUiTransform=${snapshotUiTransform} ` +
+                `snapshotUiText=${snapshotUiText} snapshotUiBackground=${snapshotUiBackground} ` +
+                `projection=${projectionUiTransform}/${mountSize} text=${projectionUiText} bg=${projectionUiBackground}`,
+              { throttleMs: 1500, throttleKey: 'scene-ui-crdt-batch' }
+            )
           }
-          clientDebugLog.log(
-            'scene-ui',
-            `crdt batch — bytes=${batch.reduce((n, item) => n + (item.data?.byteLength ?? 0), 0)} ` +
-              `snapshotRows=${latestUiMountSnapshot?.length ?? 0} touchesUi=${batchTouchesUi} mountChanged=${mountChanged} ` +
-              `deletes=${projectionDeletes.length} snapshotUiTransform=${snapshotUiTransform} ` +
-              `snapshotUiText=${snapshotUiText} snapshotUiBackground=${snapshotUiBackground} ` +
-              `projection=${projectionUiTransform}/${mountSize} text=${projectionUiText} bg=${projectionUiBackground}`,
-            { throttleMs: 1500, throttleKey: 'scene-ui-crdt-batch' }
-          )
+          // Never defer DOM paint during pointer delivery when this batch touched UI (modal open/close).
+          if (mountEntitiesForFrame !== undefined || !this.pointerHoldTicksUntilMount || batchTouchesUi) {
+            this.applyUiFrame(projectionDeletes, mountEntitiesForFrame)
+          }
+        } else if (this.projectionLagPendingUi && batchTouchesUi) {
+          this.flushUiFrame()
         }
-        // Never defer DOM paint during pointer delivery when this batch touched UI (modal open/close).
-        if (mountEntitiesForFrame !== undefined || !this.pointerHoldTicksUntilMount || batchTouchesUi) {
-          this.applyUiFrame(projectionDeletes, mountEntitiesForFrame)
+        if (this.pendingUiEntities !== undefined && (hasUiMountSnapshot || batchTouchesUi)) {
+          this.flushUiFrame()
         }
-      } else if (this.projectionLagPendingUi && batchTouchesUi) {
-        this.flushUiFrame()
-      }
-      if (this.pendingUiEntities !== undefined && (hasUiMountSnapshot || batchTouchesUi)) {
-        this.flushUiFrame()
+        split.uiMs += performance.now() - uiPaintT0
       }
 
       // COD AAA — one ordered lane drain after UI (not triple peels).
       // Motion/material/structure share FRAME pie; remainder stays queued for syncRenderer.
+      // Fire-and-forget: wall here is only sync prefix until first await inside drain.
       if (hasPayload || this.pendingDiff.size > 0) {
+        const drainT0 = performance.now()
         try {
           void this.drainPendingDiffLanes({
             deadlineMs:
@@ -3027,45 +3070,65 @@ export class SceneScriptSystem {
             `[scene] lane drain aborted — ${err instanceof Error ? err.message : String(err)}`
           )
         }
+        split.drainMs += performance.now() - drainT0
       }
 
-      if (this.pointerAwaitingWorkerApply) {
-        this.videoPlayerBridge?.notifyUserPointerDelivered()
-        this.videoPlayerBridge?.sync(this.view)
-        this.audioSourceBridge?.sync(this.view)
-        this.audioStreamBridge?.sync(this.view)
-        this.assetLoadBridge?.sync(this.view)
-      }
-
-      this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
-      this.sceneInputRelay?.sync(this.crdtTick)
-      this.syncTriggerAreas()
-      this.syncRaycasts()
-      this.syncTweenBeforeEncode()
-      this.crdtTick++
-
-      this.prepareRendererOutboundState()
-      const encoderBytes = this.encodeRendererCrdt()
-      let inbound = encoderBytes ? [encoderBytes] : []
-      const mountSet =
-        latestUiEntities?.length && mountChanged
-          ? new Set(latestUiEntities.map((e) => e as Entity))
-          : undefined
-      if (
-        mountSet &&
-        this.sceneUiBridge &&
-        !this.sceneUiBridge.isMountSetReady(this.view, mountSet)
-      ) {
-        if (inbound.length) {
-          this.pendingInboundAfterUiMount = this.filterRendererInboundDuringPointerSession(inbound)
+      {
+        const syncT0 = performance.now()
+        if (this.pointerAwaitingWorkerApply) {
+          this.videoPlayerBridge?.notifyUserPointerDelivered()
+          this.videoPlayerBridge?.sync(this.view)
+          this.audioSourceBridge?.sync(this.view)
+          this.audioStreamBridge?.sync(this.view)
+          this.assetLoadBridge?.sync(this.view)
         }
-        inbound = []
-      } else if (this.pointerAwaitingWorkerApply && inbound.length) {
-        inbound = this.filterRendererInboundDuringPointerSession(inbound)
+
+        let t = performance.now()
+        this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
+        this.sceneInputRelay?.sync(this.crdtTick)
+        split.ptrMs += performance.now() - t
+
+        // WSP 0.5k3 — TriggerArea (61 vols) + raycasts already run every rAF
+        // (updateTriggerAreas / updateRaycasts). Re-running them on every worker CRDT
+        // apply doubled main cost (trg 7–18ms on [wsp05]). Skip here; pad impulses
+        // still fire from the rAF path + grow-only flush.
+        split.trgMs = 0
+        split.rayMs = 0
+
+        t = performance.now()
+        this.syncTweenBeforeEncode()
+        split.twMs += performance.now() - t
+
+        this.crdtTick++
+        split.syncMs += performance.now() - syncT0
       }
 
-      if (!hasPayload && !inbound.length) return []
-      return inbound
+      {
+        const encT0 = performance.now()
+        this.prepareRendererOutboundState()
+        const encoderBytes = this.encodeRendererCrdt()
+        let inbound = encoderBytes ? [encoderBytes] : []
+        const mountSet =
+          latestUiEntities?.length && mountChanged
+            ? new Set(latestUiEntities.map((e) => e as Entity))
+            : undefined
+        if (
+          mountSet &&
+          this.sceneUiBridge &&
+          !this.sceneUiBridge.isMountSetReady(this.view, mountSet)
+        ) {
+          if (inbound.length) {
+            this.pendingInboundAfterUiMount = this.filterRendererInboundDuringPointerSession(inbound)
+          }
+          inbound = []
+        } else if (this.pointerAwaitingWorkerApply && inbound.length) {
+          inbound = this.filterRendererInboundDuringPointerSession(inbound)
+        }
+        split.encMs += performance.now() - encT0
+
+        if (!hasPayload && !inbound.length) return []
+        return inbound
+      }
     } catch (err) {
       console.error(
         '[scene]',

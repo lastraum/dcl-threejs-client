@@ -258,7 +258,8 @@ function applyTextureUvToTargets(
   root?: THREE.Object3D
 ): void {
   const tiling = movementType === TMT_TILING
-  // Offset mode: invert V so TextureMove y steps match Explorer scroll direction.
+  // Offset mode: DCL y → Three V with sign flip for flipY=false marquees (636e405).
+  // If scroll direction is still wrong in-game, invert only this line — do not thrash map-U.
   const y = tiling ? uv.y : -uv.y
   for (const tex of targets) {
     ensureRepeatWrapping(tex)
@@ -269,7 +270,6 @@ function applyTextureUvToTargets(
     }
   }
   // Persist ST on meshes so material re-clone can restore during scene pause.
-  // Store the values we actually applied (incl. Y negate for offset mode).
   if (root) {
     root.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return

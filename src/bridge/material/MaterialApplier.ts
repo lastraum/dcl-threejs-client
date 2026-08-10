@@ -610,18 +610,20 @@ export class MaterialApplier {
     const geo = mesh.geometry as THREE.BufferGeometry | undefined
     const marqueeAtlas = !!geo?.userData?.dclTextAlongYBasis
     const flipY = mesh.userData.primitiveMeshKey != null && !marqueeAtlas
-    // Plaza event cards (8aa5830 law, no scale XOR): LH-authored GLB UVs need map-U flip in Three.
-    // Do not XOR with parent scale.x — that cancelled the flip when boards use scale.x = −1
-    // and left posters permanently L–R mirrored. MeshRenderer planes still use world scale.x.
-    // Always flip when gltfNodeModifier (GltfNodeModifiers *or* Material-on-GLB re-apply).
+    // Plaza event cards: LH GLB UVs read L–R mirrored in Three.
+    // **Geometry U flip** (not texture.repeat) — survives Material re-apply / TextureMove
+    // which kept overwriting map ST and made every texture-only fix look like a no-op.
+    // Marquee planes: leave geometry alone; only MeshRenderer scale.x uses texture flip.
     const worldMirror = objectWorldMirrorX(mesh)
-    const uvMirror = meshUvMapsUMirroredOnX(mesh)
-    const flipMapU = !marqueeAtlas && (
-      options?.gltfNodeModifier
-        ? true // always flip GLB/node-mod static maps (XOR+heuristic left posters mirrored)
-        : mesh.userData.primitiveMeshKey != null && worldMirror
-    )
-    void uvMirror
+    const isGltfMaterialPath = !!options?.gltfNodeModifier && !marqueeAtlas
+    if (isGltfMaterialPath) {
+      ensureGeometryUFlipped(mesh, true)
+    }
+    const flipMapU =
+      !marqueeAtlas &&
+      !isGltfMaterialPath &&
+      mesh.userData.primitiveMeshKey != null &&
+      worldMirror
 
     let texturesOk = true
     let alphaTex: THREE.Texture | null = null
@@ -634,13 +636,7 @@ export class MaterialApplier {
       m.map = mainTex
       if (!mainTex) texturesOk = false
       else {
-        // Authored ST only for GLB flip path — never inherit already-flipped previous.repeat.
-        this.applyUvTransform(
-          mainTex,
-          getTextureDef(mainUnion),
-          options?.gltfNodeModifier ? null : prev,
-          mesh
-        )
+        this.applyUvTransform(mainTex, getTextureDef(mainUnion), prev, mesh)
         if (mainUnion.tex?.$case === 'texture') flipTextureU(mainTex, flipMapU)
       }
     }
@@ -664,12 +660,7 @@ export class MaterialApplier {
         m.alphaMap = alphaTex
         if (!alphaTex) texturesOk = false
         else {
-          this.applyUvTransform(
-            alphaTex,
-            getTextureDef(alphaUnion),
-            options?.gltfNodeModifier ? null : prev,
-            mesh
-          )
+          this.applyUvTransform(alphaTex, getTextureDef(alphaUnion), prev, mesh)
           if (alphaUnion.tex?.$case === 'texture') flipTextureU(alphaTex, flipMapU)
         }
       }
@@ -691,12 +682,7 @@ export class MaterialApplier {
           m.emissiveMap = emissiveTex
           if (!emissiveTex) texturesOk = false
           else if (emissiveTex !== m.map) {
-            this.applyUvTransform(
-              emissiveTex,
-              getTextureDef(emissiveUnion),
-              options?.gltfNodeModifier ? null : prev,
-              mesh
-            )
+            this.applyUvTransform(emissiveTex, getTextureDef(emissiveUnion), prev, mesh)
             if (emissiveUnion.tex?.$case === 'texture') flipTextureU(emissiveTex, flipMapU)
           }
         }
@@ -709,12 +695,7 @@ export class MaterialApplier {
         if (!bumpTex) texturesOk = false
         else {
           bumpTex.colorSpace = THREE.LinearSRGBColorSpace
-          this.applyUvTransform(
-            bumpTex,
-            getTextureDef(bumpUnion),
-            options?.gltfNodeModifier ? null : prev,
-            mesh
-          )
+          this.applyUvTransform(bumpTex, getTextureDef(bumpUnion), prev, mesh)
           if (bumpUnion.tex?.$case === 'texture') flipTextureU(bumpTex, flipMapU)
         }
       }
@@ -984,30 +965,27 @@ function getTextureDef(union?: TextureUnion): TextureDef | undefined {
 }
 
 /**
- * True when mesh UVs map spatial −X → higher U than +X (L–R mirrored vs reading order).
- * Kept for diagnostics / optional narrowing; force-flip path no longer gates on this alone.
+ * Flip geometry U in place (1−u). Idempotent via mesh.userData.dclGeomUFlipped.
+ * Clones geometry first so shared GLB buffers are not mutated for every instance.
+ * Survives Material re-clone / TextureMove (texture ST no longer carries orientation).
  */
-function meshUvMapsUMirroredOnX(mesh: THREE.Mesh): boolean {
-  const pos = mesh.geometry?.getAttribute('position')
-  const uv = mesh.geometry?.getAttribute('uv')
-  if (!pos || !uv || pos.count < 2 || uv.count < 2) return false
-  let minX = Infinity
-  let maxX = -Infinity
-  let uAtMin = 0
-  let uAtMax = 0
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i)
-    if (x < minX) {
-      minX = x
-      uAtMin = uv.getX(i)
-    }
-    if (x > maxX) {
-      maxX = x
-      uAtMax = uv.getX(i)
-    }
+function ensureGeometryUFlipped(mesh: THREE.Mesh, want: boolean): void {
+  const cur = !!mesh.userData.dclGeomUFlipped
+  if (cur === want) return
+  let geo = mesh.geometry as THREE.BufferGeometry | undefined
+  if (!geo) return
+  if (!mesh.userData.dclGeomUOwned) {
+    geo = geo.clone()
+    mesh.geometry = geo
+    mesh.userData.dclGeomUOwned = true
   }
-  if (!(maxX - minX > 1e-5)) return false
-  return uAtMin > uAtMax + 1e-5
+  const uv = geo.getAttribute('uv') as THREE.BufferAttribute | undefined
+  if (!uv || uv.count < 1) return
+  for (let i = 0; i < uv.count; i++) {
+    uv.setX(i, 1 - uv.getX(i))
+  }
+  uv.needsUpdate = true
+  mesh.userData.dclGeomUFlipped = want
 }
 
 /** Product of local scale.x up the parent chain (DCL boards often use scale.x = −1). */

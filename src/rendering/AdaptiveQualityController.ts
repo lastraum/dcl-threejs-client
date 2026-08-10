@@ -5,12 +5,12 @@ import {
 } from './RenderQualitySettings'
 
 /**
- * Runtime FPS → temporary shadow quality + resolution scale.
+ * Runtime FPS → temporary bloom / shadow quality / resolution scale.
  *
  * - Never writes Preferences / localStorage for step-down values.
  * - Never raises quality above the user's ceiling (slider / preset).
- * - Prefer stepping **shadows first**, then resolution (shadows are a big GPU multiplier;
- *   soft/no shadows hurt less than a blurry full-screen res drop).
+ * - Step-down: **shadows → bloom → resolution**.
+ * - Step-up: **resolution → bloom → shadows**.
  */
 export class AdaptiveQualityController {
   /** Need this many consecutive low windows before stepping down. */
@@ -35,31 +35,44 @@ export class AdaptiveQualityController {
   /** 0 = at user ceiling; positive = steps below. */
   private resStepsDown = 0
   private shadowStepsDown = 0
+  /** 0 = user bloom; 1 = adaptive forced bloom off (only if user has bloom on). */
+  private bloomStepsDown = 0
   private unsub: (() => void) | null = null
   private lastCeilingRes = -1
   private lastCeilingShadow: ShadowQuality | '' = ''
+  private lastCeilingBloom = false
 
   start(): void {
     if (this.unsub) return
     this.lastCeilingRes = renderQuality.getUserResolutionScale()
     this.lastCeilingShadow = renderQuality.getUserShadowQuality()
+    this.lastCeilingBloom = renderQuality.getUserBloomEnabled()
     // Re-clamp when user moves Preferences ceiling; ignore adaptive-only notifies.
     this.unsub = renderQuality.subscribe(() => {
       if (!renderQuality.getAdaptiveQualityEnabled()) {
         this.resStepsDown = 0
         this.shadowStepsDown = 0
+        this.bloomStepsDown = 0
         this.lastCeilingRes = renderQuality.getUserResolutionScale()
         this.lastCeilingShadow = renderQuality.getUserShadowQuality()
+        this.lastCeilingBloom = renderQuality.getUserBloomEnabled()
         return
       }
       const ceilingRes = renderQuality.getUserResolutionScale()
       const ceilingShadow = renderQuality.getUserShadowQuality()
-      if (ceilingRes !== this.lastCeilingRes || ceilingShadow !== this.lastCeilingShadow) {
+      const ceilingBloom = renderQuality.getUserBloomEnabled()
+      if (
+        ceilingRes !== this.lastCeilingRes ||
+        ceilingShadow !== this.lastCeilingShadow ||
+        ceilingBloom !== this.lastCeilingBloom
+      ) {
         this.lastCeilingRes = ceilingRes
         this.lastCeilingShadow = ceilingShadow
+        this.lastCeilingBloom = ceilingBloom
         // User raised/lowered settings — reset temporary steps so prefs win.
         this.resStepsDown = 0
         this.shadowStepsDown = 0
+        this.bloomStepsDown = 0
         renderQuality.clearAdaptiveOverrides()
       }
     })
@@ -70,6 +83,7 @@ export class AdaptiveQualityController {
     this.unsub = null
     this.resStepsDown = 0
     this.shadowStepsDown = 0
+    this.bloomStepsDown = 0
     renderQuality.clearAdaptiveOverrides()
   }
 
@@ -81,6 +95,7 @@ export class AdaptiveQualityController {
       if (renderQuality.isAdaptiveReducing()) {
         this.resStepsDown = 0
         this.shadowStepsDown = 0
+        this.bloomStepsDown = 0
         renderQuality.clearAdaptiveOverrides()
       }
       return
@@ -114,14 +129,16 @@ export class AdaptiveQualityController {
         this.badStreak >= AdaptiveQualityController.BAD_WINDOWS &&
         now - this.lastStepAt >= cooldown
       ) {
-        // Critical: try up to 2 steps (shadow + res) in one window so CBD recovers.
+        // Critical: try up to 2 steps in one window so CBD recovers.
         let stepped = this.stepDown()
         if (critical && stepped) stepped = this.stepDown() || stepped
         if (stepped) {
           this.lastStepAt = now
           this.badStreak = 0
           console.info(
-            `[adaptive-quality] step-down fps=${fps.toFixed(0)} resSteps=${this.resStepsDown} shadowSteps=${this.shadowStepsDown}`
+            `[adaptive-quality] step-down fps=${fps.toFixed(0)} ` +
+              `bloomOff=${this.bloomStepsDown > 0} resSteps=${this.resStepsDown} ` +
+              `shadowSteps=${this.shadowStepsDown}`
           )
         }
       }
@@ -134,7 +151,7 @@ export class AdaptiveQualityController {
       if (
         this.goodStreak >= AdaptiveQualityController.GOOD_WINDOWS &&
         now - this.lastStepAt >= AdaptiveQualityController.COOLDOWN_MS &&
-        (this.resStepsDown > 0 || this.shadowStepsDown > 0)
+        (this.resStepsDown > 0 || this.shadowStepsDown > 0 || this.bloomStepsDown > 0)
       ) {
         if (this.stepUp()) {
           this.lastStepAt = now
@@ -150,7 +167,7 @@ export class AdaptiveQualityController {
   }
 
   private stepDown(): boolean {
-    // Prefer shadows before resolution — fill/res drop is more noticeable than softer shadows.
+    // 1) Shadows first — big GPU multiplier; softer/no shadows before killing bloom/res.
     const ceilingShadow = renderQuality.getUserShadowQuality()
     const ceilingIdx = SHADOW_QUALITY_LADDER.indexOf(ceilingShadow)
     if (ceilingIdx > 0 && this.shadowStepsDown < ceilingIdx) {
@@ -159,6 +176,14 @@ export class AdaptiveQualityController {
       return true
     }
 
+    // 2) Bloom off (only if user has bloom on).
+    if (renderQuality.getUserBloomEnabled() && this.bloomStepsDown < 1) {
+      this.bloomStepsDown = 1
+      this.applyFromSteps()
+      return true
+    }
+
+    // 3) Resolution last — most noticeable.
     const ceilingRes = renderQuality.getUserResolutionScale()
     const minRes = Math.min(ceilingRes, AdaptiveQualityController.RES_FLOOR)
     const maxResSteps = Math.max(
@@ -175,9 +200,14 @@ export class AdaptiveQualityController {
   }
 
   private stepUp(): boolean {
-    // Reverse of step-down: restore resolution first, then shadows.
+    // Restore cheapest-to-notice first: resolution → bloom → shadows.
     if (this.resStepsDown > 0) {
       this.resStepsDown--
+      this.applyFromSteps()
+      return true
+    }
+    if (this.bloomStepsDown > 0) {
+      this.bloomStepsDown = 0
       this.applyFromSteps()
       return true
     }
@@ -207,6 +237,10 @@ export class AdaptiveQualityController {
     const ceilingIdx = Math.max(0, SHADOW_QUALITY_LADDER.indexOf(ceilingShadow))
     this.shadowStepsDown = Math.min(this.shadowStepsDown, ceilingIdx)
 
+    if (!renderQuality.getUserBloomEnabled()) {
+      this.bloomStepsDown = 0
+    }
+
     const nextRes =
       this.resStepsDown <= 0
         ? null
@@ -221,7 +255,8 @@ export class AdaptiveQualityController {
 
     renderQuality.setAdaptiveOverrides({
       resolutionScale: nextRes,
-      shadowQuality: nextShadow
+      shadowQuality: nextShadow,
+      bloomOff: this.bloomStepsDown > 0
     })
   }
 }

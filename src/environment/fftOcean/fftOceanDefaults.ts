@@ -39,7 +39,8 @@ export type FftOceanSimSettings = {
  * plus ThreejsClient-tuned colors for Genesis-style island/open water.
  */
 export const FFT_OCEAN_DEFAULTS: FftOceanSimSettings = {
-  waterEnabled: true,
+  /** Client landscape water off by default — opt-in `?water=1`. */
+  waterEnabled: false,
   enabled: true,
   meshResolution: 256,
   fftResolution: 128,

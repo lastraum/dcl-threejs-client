@@ -32,10 +32,13 @@ import {
 import { renderQuality } from '../rendering/RenderQualitySettings'
 import {
   skipAoiNeighbors,
+  skipPhysxColliders,
   skipSceneAnimators,
-  wantAnimatorSampleHud
+  wantAnimatorSampleHud,
+  wantMainFrameHud
 } from '../client/devFlags'
 import { AnimatorSampleHud } from '../debug/AnimatorSampleHud'
+import { MainFrameHud } from '../debug/MainFrameHud'
 import type { PerformanceTier } from '../shim/types'
 import { LandscapeSystem } from './systems/LandscapeSystem'
 import { SceneScriptSystem } from './systems/SceneScriptSystem'
@@ -52,10 +55,15 @@ import {
 } from '../environment/fftOcean/readFftOceanOverride'
 import type { OceanPerfInfo } from '../client/ui/RenderStats'
 import {
+  perfNoteAsyncCollSplit,
+  perfNoteAsyncSplit,
+  perfNoteSyncPlus,
   perfNoteSyncRendererMs,
+  perfNoteSyncSubsystems,
   perfSetMeshRendererInstanceStats,
   perfSetPhysxSeal,
-  perfSetRemoteStats
+  perfSetRemoteStats,
+  perfSnapshot
 } from '../util/perfCounters'
 import type { OutdoorLightingSnapshot } from '../environment/OutdoorLighting'
 import type { IslandShoreMaterial } from '../dcl/landscape/IslandShoreMaterial'
@@ -101,7 +109,7 @@ import {
 import { shortenAddress } from '../avatar/displayName'
 import { buildPlayerMirrorIdentity, getOrCreateGuestAddress } from '../bridge/playerMirrorIdentity'
 import type { AvatarAttachTargetResolver } from '../avatar/AvatarAttachTargets'
-import { dclToThreeVec, type DclTransformValues } from '../bridge/dclTransform'
+import { dclToThreePos, dclToThreeVec, type DclTransformValues } from '../bridge/dclTransform'
 import { feetDclToPlayerEntityPosition } from '../player/dclPlayerEntity'
 import type { PhysicsColliderDesc } from '../physics/PhysXWorld'
 
@@ -223,6 +231,14 @@ export class World {
   private loggedPlatformMotionDebugHint = false
   private collidersLoadingComplete = false
   /**
+   * Pointer PE raycasts / hover / click targets stay off until this wall time
+   * (`start()` + {@link POINTER_RAYCAST_HOLD_MS}). Saves ~6ms/frame during enter.
+   * 0 = not armed (before start) → treated as not live.
+   */
+  private pointerRaycastLiveAt = 0
+  /** Hold PE raycasts this long after `start()` before first prepare/update. */
+  private static readonly POINTER_RAYCAST_HOLD_MS = 5_000
+  /**
    * Platform gate: primary-scene colliders prepared (single prep path).
    * Player locomotion blocked until true.
    */
@@ -241,6 +257,22 @@ export class World {
   private lastNeverCookedScanMs = 0
   /** Missing-actor scan only (no near-player thrash). */
   private static readonly NEVER_COOKED_SCAN_MS = 1_500
+  /**
+   * Cap play-time cook drain starts (~30 Hz). Starting drain every rAF while the queue
+   * stuck at N unsynced ids made `cook` ≈ 5–6ms steady on the pie.
+   */
+  private static readonly COOK_DRAIN_MIN_INTERVAL_MS = 48
+  /**
+   * After this many play drain attempts without becoming synced, drop the id for the
+   * current geom fingerprint (keep whatever solid exists). Prevents cookQ=N forever
+   * thrash (~11ms/frame) without turning colliders off.
+   */
+  private static readonly PLAY_COOK_GIVE_UP_ATTEMPTS = 4
+  /** entity → geom fingerprint we stopped retrying (cleared when fp changes). */
+  private readonly playCookGiveUpFp = new Map<number, string>()
+  /** entity → consecutive play drain attempts still unsynced. */
+  private readonly playCookAttempts = new Map<number, number>()
+  private lastColliderCookDrainStartMs = 0
   private lastColliderHealthLogMs = 0
   private lastLoggedStaticCount = -1
   /** SQ soft watchdog interval (probe-only; not full O(static) diag). */
@@ -318,6 +350,8 @@ export class World {
   private onVoluntaryEmoteAllowedChange: ((allowed: boolean) => void) | null = null
   /** Always-on top-right phase-slice animator counters. */
   private readonly animatorSampleHud = new AnimatorSampleHud()
+  private readonly mainFrameHud = new MainFrameHud()
+  private unsubMainFrameHud: (() => void) | null = null
 
   /** Per-tick budget while GLBs still attaching on the loading screen. */
   /** Per-frame budget during the post-hydration loading drain. */
@@ -850,6 +884,16 @@ export class World {
 
     onProgress?.('Initialising physics…')
     await this.physics.init()
+    if (skipPhysxColliders()) {
+      console.info(
+        '[World] ?nophysx / ?nocolliders — play-time scene colliders OFF (CCT + infinite ground only; A/B async coll)'
+      )
+      clientDebugLog.log(
+        'collision',
+        'PhysX scene colliders skipped (?nophysx) — solids will not cook; walk uses infinite ground',
+        { level: 'warn', alsoConsole: true }
+      )
+    }
     // Coords + Scene Distance > 0: open Genesis walk (infinite ground plane) — no parcel walls.
     // ?noaoi keeps walk open if radius > 0, but skips neighbor systems.
     const aoiOff = skipAoiNeighbors()
@@ -1698,7 +1742,9 @@ export class World {
     options?: WaitForSceneAssetsOptions
   ) {
     // Before CCT exists, spawn feet are the best local-player reference for load radius.
-    const spawnFeet = new THREE.Vector3(scene.spawn.x, scene.spawn.y, scene.spawn.z)
+    // Must be Three display space (negate X) — peers use dclToThreeVec; DCL spawn was
+    // mirroring the load origin and pushing same-parcel peers outside 20 m.
+    const spawnFeet = dclToThreePos(scene.spawn.x, scene.spawn.y, scene.spawn.z)
     if (!skipRemoteAvatars()) {
       this.remoteAvatars?.setLocalPlayerPosition(spawnFeet)
       this.remoteAvatars?.setHydrationLoading(true)
@@ -1748,25 +1794,34 @@ export class World {
     // Optimistic play unlock only — stay muted so browser autoplay policy allows
     // frames. Sound unlocks on the first real pointer/key gesture.
     this.sceneScript.setVideoUserGestureUnlocked(true, { allowSound: false })
+    // PE raycast/hover off for first 5s of the play loop — enter budget (env/async/bodies).
+    this.pointerRaycastLiveAt = performance.now() + World.POINTER_RAYCAST_HOLD_MS
     let startFrame = 0
+    this.unsubMainFrameHud?.()
+    this.unsubMainFrameHud = this.host.addPostFrameListener(() => this.refreshMainFrameHud())
     this.host.start({
       onSyncFrame: (delta) => {
         startFrame++
+        // --- env / sky / lights (sync+ slice) ---
+        // Client landscape water is off by default (?water=1 to opt in). Still skip ocean/GPGPU
+        // and landscape grass/desert/foliage when not present — scenes do not need them.
+        const envT0 = performance.now()
+        if (!this.editorPreviewMode && this.ocean && !this.isAnyVirtualCameraActive()) {
+          if (this.ocean.setPlayerWake && this.player) {
+            const feet = this.player.getWorldPosition()
+            this.ocean.setPlayerWake(feet.x, feet.z, this.player.getHorizontalSpeed())
+          }
+          this.ocean.update(delta, this.host.camera)
+        }
+        // Landscape extras only when mounted (genesis/desert/island paths) — never for plain scenes.
+        if (!this.editorPreviewMode && this.ezTreeGrass) {
+          this.ezTreeGrassElapsed += delta
+          this.ezTreeGrass.update(this.ezTreeGrassElapsed, this.host.camera.position)
+        }
+        if (!this.editorPreviewMode && this.desertAtmosphere) {
+          this.desertAtmosphere.update(delta)
+        }
         if (!this.editorPreviewMode) {
-          // Character select / menus / PE drone bind VirtualCamera — skip FFT ocean GPGPU while VC is live
-          // so main-thread budget goes to UI + late GLB attach (Explorer is not paying this tax).
-          if (!this.isAnyVirtualCameraActive()) {
-            if (this.ocean?.setPlayerWake && this.player) {
-              const feet = this.player.getWorldPosition()
-              this.ocean.setPlayerWake(feet.x, feet.z, this.player.getHorizontalSpeed())
-            }
-            this.ocean?.update(delta, this.host.camera)
-          }
-          if (this.ezTreeGrass) {
-            this.ezTreeGrassElapsed += delta
-            this.ezTreeGrass.update(this.ezTreeGrassElapsed, this.host.camera.position)
-          }
-          this.desertAtmosphere?.update(delta)
           this.foliageWindElapsed += delta
           updateFoliageWind(this.foliageWindElapsed)
         }
@@ -1780,10 +1835,15 @@ export class World {
           this.remoteAvatars?.setViewCamera(this.host.camera)
         }
         if (!this.editorPreviewMode) {
+          // Sky/sun cycle only — not landscape water (that was the 16ms enter tax).
           this.environment.update(delta, this.sceneScript.view, this.sceneScript.readComponents)
           this.syncOutdoorLighting()
         }
+        const envMs = performance.now() - envT0
 
+        let sceneTickMs = 0
+        let peMs = 0
+        let aoiMs = 0
         if (this.playerMode && this.player) {
           // Multi-scene secondary boots flip global content map — reassert primary every frame
           // so primary asset resolve never sticks on a neighbor's manifest mid-walk.
@@ -1791,6 +1851,7 @@ export class World {
             this.assets.setScene(this.loadedPrimaryScene)
           }
           // Motion first — PE pose + TriggerArea enter must beat worker onUpdate.
+          // Includes pumpMotionBridges (animators + particles) — part is nested here.
           const platformT0 = performance.now()
           this.syncPlayerMotionFrame(delta, startFrame)
           // PE owns VirtualCamera / MainCamera (drone, vehicle) — drive lens from PE bridge,
@@ -1803,6 +1864,7 @@ export class World {
             this.photoCamera.update(delta)
           }
           const playerMs = performance.now() - playerT0
+          perfNoteSyncSubsystems({ platformMs, playerMs })
           recordMainThreadPerf({ platformMotionMs: platformMs, playerUpdateMs: playerMs, colliderApplyMs: 0 })
           const emoteAllowed = this.player.canPlayVoluntaryEmote()
           if (emoteAllowed !== this.lastVoluntaryEmoteAllowed) {
@@ -1812,6 +1874,7 @@ export class World {
           const playerPose = this.player.getEntityPose()
           const cameraPose = this.player.getCameraEntityPose()
           // Keyboard bus first — PE/primary onUpdate this frame sees isPressed for drone WASD.
+          const sceneT0 = performance.now()
           this.inputHub.sync(startFrame)
           this.sceneScript.syncClientEntities(playerPose, cameraPose)
           // Detect enter/exit with post-move CCT feet, then flush PE+TriggerAreaResult to worker.
@@ -1820,7 +1883,9 @@ export class World {
           this.sceneScript.tickPlayFrame()
           // Portable experiences + live secondaries (primary already ticked — primary wins intents).
           this.multiScene?.tickSync(playerPose, cameraPose, startFrame)
+          sceneTickMs = performance.now() - sceneT0
           // PE tween/billboard/attach motion + reserved-parent meshes (same as primary pump).
+          const peT0 = performance.now()
           this.pumpPeMotionBridges(delta, startFrame)
           // Live secondaries: scripts tick above, but host Animator mixers need delta
           // (was frozen mid-clip without this — COD gap for sticky/demoted plaza).
@@ -1829,12 +1894,15 @@ export class World {
           this.selectActiveVirtualCameraBridge()
           // Mirror PE player-affecting state onto primary (InputModifier, forces) — not MainCamera ids.
           this.applyPeMainThreadMirror()
+          peMs = performance.now() - peT0
 
           const pos = this.player.getPosition()
+          const aoiT0 = performance.now()
           // AOI tertiary visuals — scene-local DCL feet (throttled inside layer).
           this.aoiVisual.update(pos.x, pos.z)
           // Multi-scene: dwell on foreign parcel → promote that scene to primary.
           this.scenePromote.tick(pos.x, pos.z)
+          aoiMs = performance.now() - aoiT0
           const yaw = this.player.getNetworkYaw()
           const isEmoting = this.player.isProfileEmoteActive()
           const locomotion = this.player.getLocomotionWireState()
@@ -1866,6 +1934,9 @@ export class World {
               this.assets.getLoadStats().gltfCached
             )
           }
+        } else {
+          // Non-player frame — don't leave stale CCT walls on the pie.
+          perfNoteSyncSubsystems({ platformMs: 0, playerMs: 0 })
         }
 
         if (!skipRemoteAvatars()) {
@@ -1883,6 +1954,7 @@ export class World {
           const remoteTick = this.remoteAvatars?.update(delta)
           this.reportRemoteAvatarProgress()
           if (this.remoteAvatars) {
+            const gate = this.remoteAvatars.getComposeGateSnapshot()
             perfSetRemoteStats({
               visible: this.remoteAvatars.visiblePeerCount,
               loaded: this.remoteAvatars.loadedPeerCount,
@@ -1895,11 +1967,36 @@ export class World {
               remoteAnimMs: remoteTick?.remoteAnimMs ?? 0,
               lodNear: remoteTick?.lodNear ?? 0,
               lodMid: remoteTick?.lodMid ?? 0,
-              lodFar: remoteTick?.lodFar ?? 0
+              lodFar: remoteTick?.lodFar ?? 0,
+              peerTotal: this.remoteAvatars.peerCount,
+              placeholder: this.remoteAvatars.placeholderPeerCount,
+              composeWaiting: gate.waiting,
+              composeHold: gate.hold,
+              composeHydration: gate.hydration,
+              composePressure: gate.pressure,
+              composeGapMs: gate.gapMs
             })
           }
+        } else {
+          perfSetRemoteStats({
+            visible: 0,
+            loaded: 0,
+            composePending: 0,
+            composeActive: 0,
+            poseSkipped: 0,
+            animSkipped: 0,
+            nameTagsShown: 0,
+            remoteUpdateMs: 0,
+            remoteAnimMs: 0,
+            lodNear: 0,
+            lodMid: 0,
+            lodFar: 0,
+            peerTotal: 0,
+            placeholder: 0
+          })
         }
         // Local pet leash (owner feet Y + category height) then remote pet lerp.
+        const petT0 = performance.now()
         if (this.player) {
           const feet = this.player.getWorldPosition()
           // Real owner speed — pets were hardcoded to 0 so they never left idle
@@ -1912,6 +2009,7 @@ export class World {
           )
           this.petManager.updateRemotes(delta, feet)
         }
+        const petMs = performance.now() - petT0
         // Tour flag: spine attach for local or remote leader (after avatar pose ticks).
         this.followFlagManager?.update(delta)
         // Debug crowd idle anim (Help → Avatar crowd).
@@ -1926,10 +2024,13 @@ export class World {
         if (!this.editorPreviewMode && (!this.playerMode || !this.player)) {
           this.sceneScript.pumpMotionBridges(delta, startFrame)
         }
-        if (this.playerMode && this.player) {
+        let pointerMs = 0
+        if (this.playerMode && this.player && this.isPointerRaycastLive()) {
+          const ptrT0 = performance.now()
           this.sceneScript.preparePointerRaycast(startFrame)
           this.sceneScript.updateRaycasts()
           this.sceneScript.updatePointerEvents(startFrame)
+          pointerMs = performance.now() - ptrT0
           // Hub already synced before scene/PE ticks; late edges still publish on keydown.
         }
         if (!this.editorPreviewMode) {
@@ -1939,6 +2040,7 @@ export class World {
           this.sceneScript.tickDeferredMaterials()
         }
         this.refreshAnimatorSampleHud(delta)
+        perfNoteSyncPlus({ envMs, petMs, peMs, sceneTickMs, aoiMs, pointerMs })
       },
       onAsyncFrame: async (_delta) => {
         if (this.editorPreviewMode) return
@@ -1947,40 +2049,56 @@ export class World {
         // COD AAA — primary owns a fixed frame pie (motion+material+structure).
         // No backlog-proportional deadline boosts — admit seal keeps pendingDiff true-dirty.
         await this.sceneScript.syncRenderer({ deadlineMs: 18 })
-        const rendererMs = performance.now() - t0
+        const peelMs = performance.now() - t0
         // Frame budget: async CRDT apply wall time (?perfdebug [frame] line).
-        perfNoteSyncRendererMs(rendererMs)
+        perfNoteSyncRendererMs(peelMs)
 
         // Async pointer prepare only when dirty — full flush already ran on sync if needed.
-        if (this.playerMode && this.player) {
+        let asyncPtrMs = 0
+        if (this.playerMode && this.player && this.isPointerRaycastLive()) {
+          const ptrT0 = performance.now()
           this.sceneScript.preparePointerRaycast(startFrame)
+          asyncPtrMs = performance.now() - ptrT0
         }
 
-        // Sync frame already runs syncCollision after motion bridges — async only when
-        // projection diff or entity-store changes mark new collider work this frame.
+        // Collider path: single applyPhysicsColliders pass (meters inside — no outer
+        // syncCollision double-call; that used to inflate async coll).
         const t1 = performance.now()
-        if (this.sceneScript.hasColliderWorkPending()) {
-          this.sceneScript.syncCollision()
-        }
-
-        let colliderMs = 0
+        let collisionMs = 0
         if (this.playerMode && this.player) {
-          const colliderT0 = performance.now()
-          this.applyPhysicsColliders()
-          colliderMs = performance.now() - colliderT0
+          const collSplit = this.applyPhysicsCollidersTimed()
+          collisionMs = collSplit.totalMs
+          perfNoteAsyncCollSplit(collSplit)
           recordMainThreadPerf({
             platformMotionMs: 0,
             playerUpdateMs: 0,
-            colliderApplyMs: colliderMs
+            colliderApplyMs: collisionMs
           })
           this.logCollidersPhysDebug()
+        } else {
+          collisionMs = performance.now() - t1
+          perfNoteAsyncCollSplit({
+            syncMs: 0,
+            poseMs: 0,
+            discoverMs: 0,
+            cookMs: 0,
+            watchMs: 0,
+            healthMs: 0,
+            totalMs: collisionMs,
+            queueSize: 0
+          })
         }
-        const collisionMs = performance.now() - t1
 
         const t2 = performance.now()
         await this.sceneScript.syncAsyncBridges()
         // Animator.sync is async-only — PART kinematic pose same frame open/close applies.
-        if (this.playerMode && this.player && this.collidersLoadingComplete && !this.deferPhysxCooks) {
+        if (
+          !skipPhysxColliders() &&
+          this.playerMode &&
+          this.player &&
+          this.collidersLoadingComplete &&
+          !this.deferPhysxCooks
+        ) {
           this.sceneScript.snapshotPhysMotionSets()
           const part = this.sceneScript.refreshAnimatorColliderPosesNow()
           if (part.size > 0) this.pushColliderPartPoses(part)
@@ -1999,25 +2117,36 @@ export class World {
           const { colliders, invalidatePhysIds } = await this.multiScene.tickAsync({
             applyBudgetMs
           })
-          for (const id of invalidatePhysIds) {
-            this.physics.invalidateStaticCollider(id)
-          }
-          if (colliders.length && this.collidersLoadingComplete && !this.deferPhysxCooks) {
-            try {
-              const result = this.physics.syncStaticColliders(colliders, {
-                cookBudget: Math.min(16, colliders.length),
-                freezeRemoval: true,
-                forceRecookOnPoseChange: false,
-                geometryCache: true
-              })
-              if (result.geometryChanged) this.scheduleStaticGeometryWarm()
-            } catch (err) {
-              console.warn('[multi-scene] PE/secondary collider sync failed', err)
+          if (!skipPhysxColliders()) {
+            for (const id of invalidatePhysIds) {
+              this.physics.invalidateStaticCollider(id)
+            }
+            if (colliders.length && this.collidersLoadingComplete && !this.deferPhysxCooks) {
+              try {
+                const result = this.physics.syncStaticColliders(colliders, {
+                  cookBudget: Math.min(16, colliders.length),
+                  freezeRemoval: true,
+                  forceRecookOnPoseChange: false,
+                  geometryCache: true
+                })
+                if (result.geometryChanged) this.scheduleStaticGeometryWarm()
+              } catch (err) {
+                console.warn('[multi-scene] PE/secondary collider sync failed', err)
+              }
             }
           }
           multiMs = performance.now() - t3
         }
         const totalMs = performance.now() - t0
+        // MainFrameHud async pie — peel / ptr / collision / bridges / multi.
+        perfNoteAsyncSplit({
+          totalMs,
+          peelMs,
+          ptrMs: asyncPtrMs,
+          collisionMs,
+          bridgesMs: bridgesOnlyMs,
+          multiMs
+        })
         // COD E1 / G2 health — seal + MeshRenderer GPU density for ?perfdebug.
         perfSetPhysxSeal({
           sealed: this.physics.isStaticSqSealed(),
@@ -2037,7 +2166,7 @@ export class World {
           const lite = this.sceneScript.getAttachProgressLite()
           clientDebugLog.consoleOnly(
             'warn',
-            `[fps] async breakdown ${totalMs.toFixed(0)}ms — renderer=${rendererMs.toFixed(0)} ` +
+            `[fps] async breakdown ${totalMs.toFixed(0)}ms — peel=${peelMs.toFixed(0)} ` +
               `collision=${collisionMs.toFixed(0)} bridges=${bridgesOnlyMs.toFixed(0)} multi=${multiMs.toFixed(0)} ` +
               `gltfCached=${this.assets.getLoadStats().gltfCached} inflight=${this.assets.getLoadStats().gltfInflight}` +
               (lite
@@ -2082,11 +2211,12 @@ export class World {
     // Transform writers (CRDT) already applied. Tween / Billboard / Animator.
     this.sceneScript.pumpMotionBridges(delta, startFrame)
     this.refreshAnimatorSampleHud(delta)
-    if (this.sceneScript.hasColliderWorkPending()) {
+    if (!skipPhysxColliders() && this.sceneScript.hasColliderWorkPending()) {
       this.sceneScript.syncCollision()
     }
 
-    const physReady = this.collidersLoadingComplete && !this.deferPhysxCooks
+    const physReady =
+      !skipPhysxColliders() && this.collidersLoadingComplete && !this.deferPhysxCooks
     const { transformDirty, animatorPart } = physReady
       ? this.sceneScript.snapshotPhysMotionSets()
       : { transformDirty: new Set<Entity>(), animatorPart: new Set<Entity>() }
@@ -2188,93 +2318,174 @@ export class World {
 
   /** Runtime pose-drift recook — off unless `?colliderrecook` or Help debug toggle. Boot + manual recook bypass. */
 
+  /**
+   * Async-frame PhysX collider apply with sub-meters for MainFrameHud.
+   * One syncCollision pass only (structure extract + pose dirty + pose slides).
+   */
+  private applyPhysicsCollidersTimed(): {
+    syncMs: number
+    poseMs: number
+    discoverMs: number
+    cookMs: number
+    watchMs: number
+    healthMs: number
+    totalMs: number
+    queueSize: number
+  } {
+    const t0 = performance.now()
+    let syncMs = 0
+    let poseMs = 0
+    let discoverMs = 0
+    let cookMs = 0
+    let watchMs = 0
+    let healthMs = 0
 
-  private applyPhysicsColliders(): void {
-    if (!this.playerMode || !this.collidersLoadingComplete || this.deferPhysxCooks) return
+    if (
+      skipPhysxColliders() ||
+      !this.playerMode ||
+      !this.collidersLoadingComplete ||
+      this.deferPhysxCooks
+    ) {
+      return {
+        syncMs: 0,
+        poseMs: 0,
+        discoverMs: 0,
+        cookMs: 0,
+        watchMs: 0,
+        healthMs: 0,
+        totalMs: performance.now() - t0,
+        queueSize: skipPhysxColliders() ? 0 : this.colliderCookQueue.size
+      }
+    }
+
     const colliderWork = this.sceneScript.hasColliderWorkPending()
 
     if (colliderWork) {
+      const tSync = performance.now()
       this.sceneScript.syncCollision()
+      syncMs = performance.now() - tSync
       const poseChanged = this.sceneScript.getLastPoseChangedEntities()
       if (poseChanged.length) {
+        const tPose = performance.now()
         this.applyColliderPoseSlides([...poseChanged])
+        poseMs = performance.now() - tPose
       }
     }
 
     // Missing PhysX actors only (late attaches) — no full-scene thrash.
-    this.maybeDiscoverMissingColliderActors()
-
-    if (colliderWork || this.colliderCookQueue.size > 0) {
-      this.reconcileColliderCookQueue()
+    {
+      const tDisc = performance.now()
+      this.maybeDiscoverMissingColliderActors()
+      discoverMs = performance.now() - tDisc
     }
-    if (this.colliderCookQueue.size > 0) {
-      void this.scheduleColliderCookDrain()
+
+    {
+      const tCook = performance.now()
+      // Play-time cook: do not reconcile/start drain every rAF.
+      // - Skip entirely when queue empty and no structure/pose dirty.
+      // - Skip reconcile while a drain is already in-flight (drain prunes synced ids).
+      // - Throttle new drain starts so stuck queue members cannot burn ~5ms/frame forever.
+      const queueN = this.colliderCookQueue.size
+      if (queueN > 0 || colliderWork) {
+        if (!this.colliderCookDrainInFlight) {
+          this.reconcileColliderCookQueue()
+        }
+        const nowCook = performance.now()
+        if (
+          this.colliderCookQueue.size > 0 &&
+          !this.colliderCookDrainInFlight &&
+          nowCook - this.lastColliderCookDrainStartMs >= World.COOK_DRAIN_MIN_INTERVAL_MS
+        ) {
+          this.lastColliderCookDrainStartMs = nowCook
+          void this.scheduleColliderCookDrain()
+        }
+      }
+      cookMs = performance.now() - tCook
     }
 
     // Fast SQ soft watchdog — sweep only (no O(static) membership scan every 500ms).
     // Full diagnoseSceneQueryAt walks ~3k+ WASM actors and was a continuous walk tax.
-    if (this.spawnColliderSealComplete && this.collidersReady) {
-      const nowWatch = performance.now()
-      if (nowWatch - this.lastSqSoftWatchMs > 1500) {
-        this.lastSqSoftWatchMs = nowWatch
-        const feetW = this.player?.getWorldPosition()
-        if (feetW) {
-          const probe = this.physics.probeWalkSurfaceFeetY(
-            feetW.x,
-            feetW.z,
-            feetW.y + 2.5,
-            6,
-            feetW.y
-          )
-          // Heal only when SQ truly misses (probe null), not when CCT stands on infinite ground.
-          if (probe == null) {
-            this.physics.tryHealPostSealSceneQuery(feetW.x, feetW.y, feetW.z)
+    {
+      const tWatch = performance.now()
+      if (this.spawnColliderSealComplete && this.collidersReady) {
+        const nowWatch = performance.now()
+        if (nowWatch - this.lastSqSoftWatchMs > 1500) {
+          this.lastSqSoftWatchMs = nowWatch
+          const feetW = this.player?.getWorldPosition()
+          if (feetW) {
+            const probe = this.physics.probeWalkSurfaceFeetY(
+              feetW.x,
+              feetW.z,
+              feetW.y + 2.5,
+              6,
+              feetW.y
+            )
+            // Heal only when SQ truly misses (probe null), not when CCT stands on infinite ground.
+            if (probe == null) {
+              this.physics.tryHealPostSealSceneQuery(feetW.x, feetW.y, feetW.z)
+            }
           }
         }
       }
+      watchMs = performance.now() - tWatch
     }
 
     // Health log: static count drop or rare summary — NOT O(n) soft diagnostics every 8s
     // while standing on infinite ground (expected on Genesis roads / empty land).
-    const now = performance.now()
-    const staticN = this.physics.staticColliderCount
-    const staticDropped =
-      this.lastLoggedStaticCount >= 0 && staticN < this.lastLoggedStaticCount - 5
-    if (staticDropped || now - this.lastColliderHealthLogMs > 30_000) {
-      this.lastColliderHealthLogMs = now
-      const descs = this.sceneScript.getAllPhysicsColliderDescs()
-      const extracted = descs.length
-      let missing = 0
-      for (const d of descs) {
-        if (this.physics.isAoiRoadColliderEntity(d.entity)) continue
-        if (this.physics.isAoiEmptyLandColliderEntity(d.entity)) continue
-        if (!this.physics.hasStaticActor(d.entity)) missing++
-      }
-      const ground = this.physics.getLastGroundPhysEntity()
-      const feet = this.player?.getWorldPosition()
-      const sides = this.physics.getLastCctHitSides()
-      // Only log when something is wrong or count changed — skip spam on healthy infinite ground.
-      if (missing > 0 || staticDropped || staticN !== this.lastLoggedStaticCount) {
-        console.info(
-          `[phys] health static=${staticN} extracted≈${extracted} missing≈${missing} ` +
-            `queue=${this.colliderCookQueue.size} seal=${this.spawnColliderSealComplete} ` +
-            `groundPhys=${ground ?? 'none'} sides=${sides ? 'yes' : 'no'} feet=${
-              feet
-                ? `(${feet.x.toFixed(1)},${feet.y.toFixed(2)},${feet.z.toFixed(1)})`
-                : '?'
-            }`
-        )
-      }
-      // Soft recovery only when actors are missing or SQ truly fails — NOT when
-      // groundPhys=-1 (infinite plane is normal on roads/empty Genesis parcels).
-      if (feet && missing > 0) {
-        const probe = this.physics.probeWalkSurfaceFeetY(feet.x, feet.z, feet.y + 2.5, 6, feet.y)
-        if (probe == null) {
-          this.physics.tryHealPostSealSceneQuery(feet.x, feet.y, feet.z)
+    {
+      const tHealth = performance.now()
+      const now = performance.now()
+      const staticN = this.physics.staticColliderCount
+      const staticDropped =
+        this.lastLoggedStaticCount >= 0 && staticN < this.lastLoggedStaticCount - 5
+      if (staticDropped || now - this.lastColliderHealthLogMs > 30_000) {
+        this.lastColliderHealthLogMs = now
+        const descs = this.sceneScript.getAllPhysicsColliderDescs()
+        const extracted = descs.length
+        let missing = 0
+        for (const d of descs) {
+          if (this.physics.isAoiRoadColliderEntity(d.entity)) continue
+          if (this.physics.isAoiEmptyLandColliderEntity(d.entity)) continue
+          if (!this.physics.hasStaticActor(d.entity)) missing++
         }
-        this.discoverMissingColliderActors()
+        const ground = this.physics.getLastGroundPhysEntity()
+        const feet = this.player?.getWorldPosition()
+        const sides = this.physics.getLastCctHitSides()
+        // Only log when something is wrong or count changed — skip spam on healthy infinite ground.
+        if (missing > 0 || staticDropped || staticN !== this.lastLoggedStaticCount) {
+          console.info(
+            `[phys] health static=${staticN} extracted≈${extracted} missing≈${missing} ` +
+              `queue=${this.colliderCookQueue.size} seal=${this.spawnColliderSealComplete} ` +
+              `groundPhys=${ground ?? 'none'} sides=${sides ? 'yes' : 'no'} feet=${
+                feet
+                  ? `(${feet.x.toFixed(1)},${feet.y.toFixed(2)},${feet.z.toFixed(1)})`
+                  : '?'
+              }`
+          )
+        }
+        // Soft recovery only when actors are missing or SQ truly fails — NOT when
+        // groundPhys=-1 (infinite plane is normal on roads/empty Genesis parcels).
+        if (feet && missing > 0) {
+          const probe = this.physics.probeWalkSurfaceFeetY(feet.x, feet.z, feet.y + 2.5, 6, feet.y)
+          if (probe == null) {
+            this.physics.tryHealPostSealSceneQuery(feet.x, feet.y, feet.z)
+          }
+          this.discoverMissingColliderActors()
+        }
+        this.lastLoggedStaticCount = staticN
       }
-      this.lastLoggedStaticCount = staticN
+      healthMs = performance.now() - tHealth
+    }
+
+    return {
+      syncMs,
+      poseMs,
+      discoverMs,
+      cookMs,
+      watchMs,
+      healthMs,
+      totalMs: performance.now() - t0,
+      queueSize: this.colliderCookQueue.size
     }
   }
 
@@ -2330,6 +2541,24 @@ export class World {
       new THREE.Vector3(scene.spawn.x, scene.spawn.y, scene.spawn.z),
       this.colliderCookPriority
     )
+
+    // A/B: skip full boot extract+cook. CCT walks infinite ground only.
+    if (skipPhysxColliders()) {
+      this.deferPhysxCooks = true
+      this.colliderCookQueue.clear()
+      this.pendingColliderCooks = 0
+      this.collidersLoadingComplete = true
+      this.spawnColliderSealComplete = true
+      this.lastPhysicsBatchFp = this.sceneScript.getPhysicsColliderBatchFingerprint()
+      console.info(
+        `[phys] colliders SKIPPED (?nocolliders / ?nophysx) — no extract/cook; infinite ground only (${(
+          (performance.now() - started) /
+          1000
+        ).toFixed(1)}s)`
+      )
+      onProgress?.('Colliders skipped (?nocolliders)')
+      return
+    }
 
     onProgress?.('Preparing collisions…')
     // Wait for GLB graph BEFORE cook (pendingMesh→0). Early 4s soft-exit was sealing incomplete plaza.
@@ -2481,6 +2710,9 @@ export class World {
     maxPasses: number,
     options?: { postSeal?: boolean }
   ): Promise<{ missing: number; registered: number; extracted: number }> {
+    if (skipPhysxColliders()) {
+      return { missing: 0, registered: 0, extracted: 0 }
+    }
     const postSeal = options?.postSeal === true || this.spawnColliderSealComplete
     this.sceneScript.flushSceneGraphMatrices()
     this.sceneScript.refreshAllInstancedTransforms()
@@ -2552,6 +2784,7 @@ export class World {
    * Pose = slide; scale geom mismatch = bounded recook via {@link enqueueScaleDriftRecooks}.
    */
   private discoverMissingColliderActors(): void {
+    if (skipPhysxColliders()) return
     let added = 0
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
@@ -2559,6 +2792,8 @@ export class World {
       if (this.physics.hasStaticActor(desc.entity)) continue
       // Permanent cook failure — re-queueing every 2s only thrashes and softs neighbors.
       if (this.physics.hasFailedCookFingerprint(desc.fingerprint)) continue
+      // Play give-up for this geom fp — do not re-open the thrash queue.
+      if (this.isPlayCookGivenUp(desc.entity, desc.fingerprint)) continue
       if (!this.colliderCookQueue.has(desc.entity)) added++
       this.colliderCookQueue.add(desc.entity)
     }
@@ -2724,6 +2959,7 @@ export class World {
 
   /** Single in-flight cook drain — never stack async drains from attach callbacks. */
   private async scheduleColliderCookDrain(): Promise<void> {
+    if (skipPhysxColliders()) return
     if (this.colliderCookDrainInFlight) return
     this.colliderCookDrainInFlight = true
     try {
@@ -2743,6 +2979,7 @@ export class World {
 
   /** @deprecated alias — waitForSpawnFloorReady still drains mid-probe. */
   private async drainPendingColliderCooksInitialOnly(): Promise<void> {
+    if (skipPhysxColliders()) return
     if (this.colliderCookQueue.size === 0) return
     await this.drainColliderCookQueue({ mode: 'play' })
     this.scheduleStaticGeometryWarm()
@@ -2788,6 +3025,8 @@ export class World {
     this.spawnColliderSealComplete = false
     this.colliderCookQueue.clear()
     this.pendingColliderCooks = 0
+    this.playCookAttempts.clear()
+    this.playCookGiveUpFp.clear()
     this.lastPhysicsBatchFp = ''
     this.lastNeverCookedScanMs = 0
     this.physics.setAllowZeroDtWarmSim(true)
@@ -3202,6 +3441,7 @@ export class World {
 
   /** GLB attached or hydration tick — enqueue only; drain runs in applyPhysicsColliders. */
   private onColliderCookRequest(ecsEntity?: Entity): void {
+    if (skipPhysxColliders()) return
     const queueBefore = this.colliderCookQueue.size
     if (ecsEntity !== undefined) {
       this.enqueueColliderCook(ecsEntity)
@@ -3219,8 +3459,8 @@ export class World {
    * Boot / post-structure only — not on every late GLB attach (that thrashed plaza solids).
    */
   private discoverUnsyncedColliderCooks(): void {
-    if (this.deferPhysxCooks) {
-      this.pendingColliderCooks = this.colliderCookQueue.size
+    if (skipPhysxColliders() || this.deferPhysxCooks) {
+      this.pendingColliderCooks = skipPhysxColliders() ? 0 : this.colliderCookQueue.size
       return
     }
     this.sceneScript.flushSceneGraphMatrices()
@@ -3328,7 +3568,7 @@ export class World {
   }
 
   private enqueueColliderCook(ecsEntity: Entity): void {
-    if (this.deferPhysxCooks) return
+    if (skipPhysxColliders() || this.deferPhysxCooks) return
     const enqueuedPhysIds: number[] = []
     const slideDescs: PhysicsColliderDesc[] = []
     // Subtree roots + the entity itself (extract may land before colliderRootEntities rebuild).
@@ -3337,7 +3577,7 @@ export class World {
     for (const entity of entities) {
       for (const physId of this.sceneScript.collectPhysCookTargets(entity)) {
         if (this.physics.isAoiRoadColliderEntity(physId)) continue
-      if (this.physics.isAoiEmptyLandColliderEntity(physId)) continue
+        if (this.physics.isAoiEmptyLandColliderEntity(physId)) continue
         const hasActor = this.physics.hasStaticActor(physId)
         if (hasActor) {
           // ALWAYS refresh extract from live matrixWorld then pose-slide PhysX.
@@ -3346,6 +3586,7 @@ export class World {
           this.sceneScript.refreshColliderPose(physId)
           const desc = this.sceneScript.getPhysicsColliderDesc(physId)
           if (!desc) continue
+          if (this.isPlayCookGivenUp(physId, desc.fingerprint)) continue
           if (this.physics.isWorldBakedStatic(desc.entity)) {
             // World-baked cannot slide — queue recook if pose drifted.
             if (!this.physics.isColliderSynced(desc)) {
@@ -3353,6 +3594,7 @@ export class World {
               enqueuedPhysIds.push(physId)
             } else {
               this.colliderCookQueue.delete(physId)
+              this.clearPlayCookTracking(physId)
             }
             continue
           }
@@ -3368,8 +3610,10 @@ export class World {
         const desc = this.sceneScript.getPhysicsColliderDesc(physId)
         if (!desc || this.physics.isColliderSynced(desc)) {
           this.colliderCookQueue.delete(physId)
+          this.clearPlayCookTracking(physId)
           continue
         }
+        if (this.isPlayCookGivenUp(physId, desc.fingerprint)) continue
         this.colliderCookQueue.add(physId)
         enqueuedPhysIds.push(physId)
       }
@@ -3384,7 +3628,8 @@ export class World {
         // Scale/geom mismatch still needs recook; pure T+R is synced after slide.
         if (this.physics.isColliderSynced(desc)) {
           this.colliderCookQueue.delete(desc.entity)
-        } else {
+          this.clearPlayCookTracking(desc.entity)
+        } else if (!this.isPlayCookGivenUp(desc.entity, desc.fingerprint)) {
           this.colliderCookQueue.add(desc.entity)
           enqueuedPhysIds.push(desc.entity)
         }
@@ -3403,18 +3648,27 @@ export class World {
   /**
    * Boot — discover uncooked descriptors. Runtime — validate explicit queue only
    * (scoped to dirty/attach subtrees; no global fingerprint or world-baked scan).
+   *
+   * Play: drop failed-cook fingerprints (isColliderSynced stays false for those and
+   * used to leave them in the queue forever → cook thrash every frame).
    */
   private reconcileColliderCookQueue(): void {
-    if (this.deferPhysxCooks) {
-      this.pendingColliderCooks = this.colliderCookQueue.size
+    if (skipPhysxColliders() || this.deferPhysxCooks) {
+      this.pendingColliderCooks = skipPhysxColliders() ? 0 : this.colliderCookQueue.size
+      if (skipPhysxColliders()) this.colliderCookQueue.clear()
       return
     }
     if (!this.collidersLoadingComplete) {
       this.sceneScript.flushSceneGraphMatrices()
       this.sceneScript.syncCollisionPoses()
       for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+        if (this.physics.hasFailedCookFingerprint(desc.fingerprint)) {
+          this.colliderCookQueue.delete(desc.entity)
+          continue
+        }
         if (this.physics.isColliderSynced(desc)) {
           this.colliderCookQueue.delete(desc.entity)
+          this.clearPlayCookTracking(desc.entity)
         } else {
           this.colliderCookQueue.add(desc.entity)
         }
@@ -3422,8 +3676,24 @@ export class World {
     } else {
       for (const physId of [...this.colliderCookQueue]) {
         const desc = this.sceneScript.getPhysicsColliderDesc(physId)
-        if (!desc || this.physics.isColliderSynced(desc)) {
+        if (!desc) {
           this.colliderCookQueue.delete(physId)
+          this.clearPlayCookTracking(physId)
+          continue
+        }
+        // Permanent cook failure — do not re-drain forever (was ~5ms cook/frame).
+        if (this.physics.hasFailedCookFingerprint(desc.fingerprint)) {
+          this.colliderCookQueue.delete(physId)
+          this.notePlayCookGiveUp(physId, desc.fingerprint, 'failed-fp')
+          continue
+        }
+        if (this.isPlayCookGivenUp(physId, desc.fingerprint)) {
+          this.colliderCookQueue.delete(physId)
+          continue
+        }
+        if (this.physics.isColliderSynced(desc)) {
+          this.colliderCookQueue.delete(physId)
+          this.clearPlayCookTracking(physId)
         }
       }
     }
@@ -3446,6 +3716,11 @@ export class World {
     integrity?: boolean
     initialOnly?: boolean
   }): Promise<void> {
+    if (skipPhysxColliders()) {
+      this.colliderCookQueue.clear()
+      this.pendingColliderCooks = 0
+      return
+    }
     const burstActive = performance.now() < this.runtimeColliderBurstUntil
     const bootMode =
       options?.mode === 'boot' ||
@@ -3468,19 +3743,47 @@ export class World {
       const desc = this.sceneScript.getPhysicsColliderDesc(physId)
       if (!desc) {
         this.colliderCookQueue.delete(physId)
+        this.clearPlayCookTracking(physId)
+        continue
+      }
+      // Empty extract — nothing to cook; drop forever for this desc.
+      if (!desc.geometry && !(desc.shapes && desc.shapes.length > 0)) {
+        this.colliderCookQueue.delete(physId)
+        this.clearPlayCookTracking(physId)
+        continue
+      }
+      // Drop permanent failures — re-cooking only burns main-thread budget.
+      if (this.physics.hasFailedCookFingerprint(desc.fingerprint)) {
+        this.colliderCookQueue.delete(physId)
+        this.notePlayCookGiveUp(physId, desc.fingerprint, 'failed-fp')
+        continue
+      }
+      if (playMode && this.isPlayCookGivenUp(physId, desc.fingerprint)) {
+        this.colliderCookQueue.delete(physId)
         continue
       }
       // Play: skip already-synced (boot force-rebuilds from live extracts).
       if (playMode && this.physics.isColliderSynced(desc)) {
         this.colliderCookQueue.delete(physId)
+        this.clearPlayCookTracking(physId)
         continue
       }
       this.sceneScript.flushSceneGraphMatrices()
       this.sceneScript.refreshColliderBeforeCook(physId)
       const fresh = this.sceneScript.getPhysicsColliderDesc(physId)
       if (!fresh) continue
+      if (this.physics.hasFailedCookFingerprint(fresh.fingerprint)) {
+        this.colliderCookQueue.delete(physId)
+        this.notePlayCookGiveUp(physId, fresh.fingerprint, 'failed-fp')
+        continue
+      }
+      if (playMode && this.isPlayCookGivenUp(physId, fresh.fingerprint)) {
+        this.colliderCookQueue.delete(physId)
+        continue
+      }
       if (playMode && this.physics.isColliderSynced(fresh)) {
         this.colliderCookQueue.delete(physId)
+        this.clearPlayCookTracking(physId)
         continue
       }
       toCook.push(fresh)
@@ -3500,16 +3803,25 @@ export class World {
       })
 
       // Play: never force-recook on pose-only drift (slide path). Boot still force-rebuilds.
-      // forceRecook=true on every late-attach queue was soft-window thrash (replaceStatic churn).
+      // After 2 failed play attempts, one last-chance force recook before give-up.
+      const forceLastChance =
+        playMode &&
+        toCook.some((d) => (this.playCookAttempts.get(d.entity) ?? 0) >= 2)
       const result = this.physics.syncStaticColliders(toCook, {
         cookBudget: toCook.length,
         freezeRemoval: true,
-        forceRecookOnPoseChange: bootMode,
+        forceRecookOnPoseChange: bootMode || forceLastChance,
         geometryCache: true
       })
       for (const desc of toCook) {
         if (this.physics.isColliderSynced(desc)) {
           this.colliderCookQueue.delete(desc.entity)
+          this.clearPlayCookTracking(desc.entity)
+        } else if (this.physics.hasFailedCookFingerprint(desc.fingerprint)) {
+          this.colliderCookQueue.delete(desc.entity)
+          this.notePlayCookGiveUp(desc.entity, desc.fingerprint, 'failed-fp')
+        } else if (playMode) {
+          this.notePlayCookAttempt(desc.entity, desc.fingerprint)
         }
       }
       if (result.geometryChanged) {
@@ -3522,6 +3834,46 @@ export class World {
 
     this.pendingColliderCooks = this.colliderCookQueue.size
     this.refreshColliderCookStats()
+  }
+
+  private isPlayCookGivenUp(entity: number, fingerprint: string): boolean {
+    return this.playCookGiveUpFp.get(entity) === fingerprint
+  }
+
+  private clearPlayCookTracking(entity: number): void {
+    this.playCookAttempts.delete(entity)
+    this.playCookGiveUpFp.delete(entity)
+  }
+
+  private notePlayCookGiveUp(entity: number, fingerprint: string, reason: string): void {
+    const prev = this.playCookGiveUpFp.get(entity)
+    this.playCookGiveUpFp.set(entity, fingerprint)
+    this.playCookAttempts.delete(entity)
+    this.colliderCookQueue.delete(entity)
+    if (prev !== fingerprint) {
+      console.info(
+        `[phys] play cook give-up entity=${entity} reason=${reason} ` +
+          `fp=${fingerprint.slice(0, 12)}… (queue=${this.colliderCookQueue.size})`
+      )
+    }
+  }
+
+  /** Count a failed play cook; after PLAY_COOK_GIVE_UP_ATTEMPTS drop for this fp. */
+  private notePlayCookAttempt(entity: number, fingerprint: string): void {
+    if (this.playCookGiveUpFp.get(entity) === fingerprint) {
+      this.colliderCookQueue.delete(entity)
+      return
+    }
+    // Fingerprint changed — reset attempt counter.
+    const given = this.playCookGiveUpFp.get(entity)
+    if (given && given !== fingerprint) {
+      this.playCookGiveUpFp.delete(entity)
+    }
+    const n = (this.playCookAttempts.get(entity) ?? 0) + 1
+    this.playCookAttempts.set(entity, n)
+    if (n >= World.PLAY_COOK_GIVE_UP_ATTEMPTS) {
+      this.notePlayCookGiveUp(entity, fingerprint, `attempts=${n}`)
+    }
   }
 
   private refreshColliderCookStats(): void {
@@ -3675,6 +4027,15 @@ export class World {
     if (!this.playerMode) return
     this.bootAssetsTimedOut = options.assetsTimedOut ?? false
     this.resetColliderBootState()
+
+    if (skipPhysxColliders()) {
+      this.deferPhysxCooks = true
+      this.colliderCookQueue.clear()
+      this.pendingColliderCooks = 0
+      onProgress?.('Colliders skipped (?nocolliders)', 1)
+      console.info('[phys] prewarm SKIPPED (?nocolliders / ?nophysx)')
+      return
+    }
 
     // Light prewarm only — authoritative extract+seal is prepareCollidersForPlay.
     // Do not seal SQ here (that froze reinsert before final cook on plaza).
@@ -4642,29 +5003,34 @@ export class World {
     // invalidated above). Prefer geometryCache + no forceRecook — walk-back must not
     // re-trimesh the entire plaza (that was continuous 3fps with Missing-actors thrash).
     this.colliderCookQueue.clear()
-    try {
-      this.sceneScript.syncCollisionForce()
-    } catch (err) {
-      console.warn('[promote] primary syncCollisionForce failed', err)
-    }
-    this.reconcileColliderCookQueue()
-    try {
-      const descs = this.sceneScript.getAllPhysicsColliderDescs?.() ?? []
-      if (descs.length > 0) {
-        // Bounded first push — remaining cooks trickle via cook queue (not 128 main-thread).
-        this.physics.syncStaticColliders(descs, {
-          cookBudget: Math.min(48, descs.length),
-          freezeRemoval: true,
-          forceRecookOnPoseChange: false,
-          geometryCache: true
-        })
-        console.info(`[promote] primary colliders force-sync n=${descs.length}`)
+    if (skipPhysxColliders()) {
+      this.pendingColliderCooks = 0
+      console.info('[promote] colliders skipped (?nocolliders) — no primary re-cook')
+    } else {
+      try {
+        this.sceneScript.syncCollisionForce()
+      } catch (err) {
+        console.warn('[promote] primary syncCollisionForce failed', err)
       }
-    } catch {
-      /* optional API */
-    }
-    if (this.colliderCookQueue.size > 0) {
-      void this.scheduleColliderCookDrain()
+      this.reconcileColliderCookQueue()
+      try {
+        const descs = this.sceneScript.getAllPhysicsColliderDescs?.() ?? []
+        if (descs.length > 0) {
+          // Bounded first push — remaining cooks trickle via cook queue (not 128 main-thread).
+          this.physics.syncStaticColliders(descs, {
+            cookBudget: Math.min(48, descs.length),
+            freezeRemoval: true,
+            forceRecookOnPoseChange: false,
+            geometryCache: true
+          })
+          console.info(`[promote] primary colliders force-sync n=${descs.length}`)
+        }
+      } catch {
+        /* optional API */
+      }
+      if (this.colliderCookQueue.size > 0) {
+        void this.scheduleColliderCookDrain()
+      }
     }
 
     // Longer settle: dual full workers after walk-back thrash freeze locomotion.
@@ -5065,10 +5431,28 @@ export class World {
     this.animatorSampleHud.update(stats)
   }
 
+  /**
+   * PE pointer raycasts / hover visuals — live only after {@link POINTER_RAYCAST_HOLD_MS}
+   * past `start()`. Clicks before then still hit via UI/DOM paths; scene PE mesh rays wait.
+   */
+  private isPointerRaycastLive(): boolean {
+    return this.pointerRaycastLiveAt > 0 && performance.now() >= this.pointerRaycastLiveAt
+  }
+
+  /** Top-left frame pie — splits sync/render/loop residual (`?perf` / `?framehud`). */
+  private refreshMainFrameHud(): void {
+    if (!wantMainFrameHud()) return
+    this.mainFrameHud.update(perfSnapshot())
+  }
+
   dispose(): void {
     this.onVoluntaryEmoteAllowedChange = null
     this.lastVoluntaryEmoteAllowed = true
+    this.pointerRaycastLiveAt = 0
     this.animatorSampleHud.dispose()
+    this.unsubMainFrameHud?.()
+    this.unsubMainFrameHud = null
+    this.mainFrameHud.dispose()
     this.followFlagManager?.unbindScene()
     this.followFlagManager = null
     this.debugAvatarCrowd?.dispose()

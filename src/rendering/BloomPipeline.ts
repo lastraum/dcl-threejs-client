@@ -212,13 +212,26 @@ export class BloomPipeline {
     this.applyPassParams(w, h)
   }
 
-  render(): void {
-    if (!this.opts.enabled) return
-    if (this.opts.mode === 'fast') {
-      this.renderFast()
-      return
+  /**
+   * Draw bloom path. Returns sub-timings for MainFrameHud (ms wall).
+   * - fast: beauty+bloom+output in one composer → all in `beautyMs`
+   * - selective: extract (prep+half-res) / beauty / composite split
+   */
+  render(): { extractMs: number; beautyMs: number; compositeMs: number; mode: BloomMode } {
+    if (!this.opts.enabled) {
+      return { extractMs: 0, beautyMs: 0, compositeMs: 0, mode: this.opts.mode }
     }
-    this.renderSelective()
+    if (this.opts.mode === 'fast') {
+      const t0 = performance.now()
+      this.renderFast()
+      return {
+        extractMs: 0,
+        beautyMs: performance.now() - t0,
+        compositeMs: 0,
+        mode: 'fast'
+      }
+    }
+    return this.renderSelectiveTimed()
   }
 
   dispose(): void {
@@ -273,18 +286,34 @@ export class BloomPipeline {
   }
 
   /** 2× geometry — half-res emissive extract + full-res beauty + additive pure bloom. */
-  private renderSelective(): void {
-    if (!this.bloomComposer || !this.finalComposer) return
+  private renderSelectiveTimed(): {
+    extractMs: number
+    beautyMs: number
+    compositeMs: number
+    mode: BloomMode
+  } {
+    if (!this.bloomComposer || !this.finalComposer) {
+      return { extractMs: 0, beautyMs: 0, compositeMs: 0, mode: 'selective' }
+    }
 
+    const tExtract0 = performance.now()
     this.beginBloomExtract()
     try {
       this.bloomComposer.render()
     } finally {
       this.endBloomExtract()
     }
+    const extractMs = performance.now() - tExtract0
 
+    const tBeauty0 = performance.now()
     this.finalComposer.render()
+    const beautyMs = performance.now() - tBeauty0
+
+    const tComp0 = performance.now()
     this.blitPureBloomAdditive()
+    const compositeMs = performance.now() - tComp0
+
+    return { extractMs, beautyMs, compositeMs, mode: 'selective' }
   }
 
   private beginBloomExtract(): void {

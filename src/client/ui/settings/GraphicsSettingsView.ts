@@ -13,6 +13,7 @@ import {
   SCENE_LOAD_RADIUS_MAX_M,
   SCENE_LOAD_RADIUS_MIN_M,
   renderQuality,
+  type BloomModePreference,
   type FpsLimitOption,
   type GraphicsPreset,
   type MsaaSamples,
@@ -61,6 +62,22 @@ const PRESET_LABELS = ['Low', 'Medium', 'High', 'Custom'] as const
 const SHADOW_LABELS = ['Off', 'Low', 'Medium', 'High', 'Ultra'] as const
 const FPS_LABELS = ['30', '60', '120', 'Max'] as const
 const MSAA_LABELS = ['Off', '2x', '4x', '8x'] as const
+/** Bloom pipeline when Bloom toggle is on — A/B fast (1×) vs selective (2×). */
+const BLOOM_MODE_LABELS = ['Auto', 'Fast', 'Selective'] as const
+
+function bloomModeLabel(mode: BloomModePreference): string {
+  if (mode === 'fast') return 'Fast'
+  if (mode === 'selective') return 'Selective'
+  return 'Auto'
+}
+
+function parseBloomModeLabel(v: string): BloomModePreference | null {
+  const key = v.trim().toLowerCase()
+  if (key === 'auto') return 'auto'
+  if (key === 'fast') return 'fast'
+  if (key === 'selective') return 'selective'
+  return null
+}
 
 function presetLabel(preset: GraphicsPreset): string {
   // Ultra is not in the Preferences dropdown; surface as Custom.
@@ -190,6 +207,17 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
           label: 'Bloom',
           defaultOn: rq.bloomEnabled,
           onChange: (on) => renderQuality.setBloomEnabled(on)
+        },
+        {
+          type: 'dropdown',
+          // Only used while Bloom is on. Auto = tier+mesh heuristic; Fast = 1× scene; Selective = 2×.
+          label: 'Bloom mode',
+          options: [...BLOOM_MODE_LABELS],
+          defaultIndex: indexOfLabel(BLOOM_MODE_LABELS, bloomModeLabel(rq.bloomMode ?? 'fast'), 1),
+          onChange: (v) => {
+            const mode = parseBloomModeLabel(v)
+            if (mode) renderQuality.setBloomMode(mode)
+          }
         },
         { type: 'toggle', label: 'Avatar Outline', defaultOn: false, stub: true }
       ]
@@ -421,6 +449,11 @@ export class GraphicsSettingsView {
             break
           case 'Bloom':
             if (control.kind === 'toggle') control.input.checked = opts.bloomEnabled
+            break
+          case 'Bloom mode':
+            if (control.kind === 'dropdown') {
+              control.select.value = bloomModeLabel(opts.bloomMode ?? 'fast')
+            }
             break
           case 'Avatar toon shading':
             if (control.kind === 'toggle') control.input.checked = opts.avatarToonEnabled

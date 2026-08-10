@@ -22,6 +22,8 @@ import {
   CLIENT_CAMERA_NEAR,
   farFromWorldDiagonal
 } from '../camera/cameraDepthPolicy'
+import { perfNoteFrameHost, perfNoteRenderSplit } from '../util/perfCounters'
+import { forceNoBloom, forceNoShadow } from '../client/devFlags'
 
 export class SceneHost {
   readonly renderer: THREE.WebGLRenderer
@@ -34,6 +36,8 @@ export class SceneHost {
   private disposing = false
   private readonly clock = new THREE.Clock()
   private readonly frameListeners = new Set<(delta: number) => void>()
+  /** After sync+render+frame pie meters — for MainFrameHud paint. */
+  private readonly postFrameListeners = new Set<() => void>()
   private resizeObserver: ResizeObserver | null = null
   private viewportElement: HTMLElement | null = null
   private onViewportResize: ((width: number, height: number) => void) | null = null
@@ -221,15 +225,32 @@ export class SceneHost {
     return () => this.frameListeners.delete(listener)
   }
 
+  /** After sync + render + frame pie meters (for MainFrameHud). */
+  addPostFrameListener(listener: () => void): () => void {
+    this.postFrameListeners.add(listener)
+    return () => this.postFrameListeners.delete(listener)
+  }
+
+  private abFlagsLogged = false
+
   /** ACES tone mapping + exposure, shadows, resolution scale, FPS cap, MSAA, bloom. */
   private applyRendererQuality(options: RenderQualityOptions): void {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
     this.renderer.toneMappingExposure = TONE_MAPPING_EXPOSURE[options.tier]
     // Effective shadow/res may be temporarily lowered by AdaptiveQualityController.
-    const shadowQ = renderQuality.getShadowQuality()
+    // `?noshadow` forces off for render A/B (does not rewrite Preferences storage).
+    const shadowQ = forceNoShadow() ? 'off' : renderQuality.getShadowQuality()
     const resScale = renderQuality.getResolutionScale()
     this.renderer.shadowMap.enabled = shadowQ !== 'off'
+    if (!this.abFlagsLogged && (forceNoShadow() || forceNoBloom())) {
+      this.abFlagsLogged = true
+      console.info(
+        `[SceneHost] render A/B flags —` +
+          (forceNoShadow() ? ' noshadow' : '') +
+          (forceNoBloom() ? ' nobloom' : '')
+      )
+    }
     // Explorer soft directional: PCFSoft on medium+ (parity). Low stays Basic for mobile/budget.
     // Soft cost is real — AdaptiveQuality can still drop shadow tier under hitch.
     this.renderer.shadowMap.type =
@@ -247,8 +268,10 @@ export class SceneHost {
     }
 
     // Bloom uses EffectComposer (no MSAA samples on that path).
+    // Effective bloom includes adaptive step-down; `?nobloom` forces off for A/B.
+    const bloomOn = renderQuality.getBloomEnabled() && !forceNoBloom()
     const maxSamples = this.renderer.capabilities.maxSamples ?? 0
-    this.msaaSamples = options.bloomEnabled
+    this.msaaSamples = bloomOn
       ? 0
       : clampMsaaSamples(options.msaaSamples, maxSamples)
     this.rebuildMsaaTarget()
@@ -267,9 +290,10 @@ export class SceneHost {
     // Prefer selective on high/ultra when the scene is small enough; always fast on plaza-scale.
     // Mode is re-evaluated each frame in renderMainPass via pickBloomMode().
     const mode = this.pickBloomMode(options)
+    const bloomOn = renderQuality.getBloomEnabled() && !forceNoBloom()
     this.bloom.configure(
       {
-        enabled: options.bloomEnabled,
+        enabled: bloomOn,
         hdr: options.hdrEnabled,
         mode,
         strength,
@@ -286,8 +310,13 @@ export class SceneHost {
   /**
    * selective = emissive isolation + depth occlusion (2× scene).
    * fast = 1× beauty + UnrealBloom luminance (plaza / large worlds).
+   * Preferences → Bloom mode: Auto (legacy heuristic) / Fast / Selective.
    */
   private pickBloomMode(options: RenderQualityOptions): 'fast' | 'selective' {
+    const pref = renderQuality.getBloomMode()
+    if (pref === 'fast') return 'fast'
+    if (pref === 'selective') return 'selective'
+    // auto — prior behavior
     const meshes = this.sceneMeshCountForBloom()
     const smallEnough = meshes > 0 && meshes <= SceneHost.BLOOM_SELECTIVE_MESH_CAP
     const tierWantsSelective = options.tier === 'high' || options.tier === 'ultra'
@@ -346,13 +375,16 @@ export class SceneHost {
     return n
   }
 
-  private renderForwardPass(): void {
+  private renderForwardPass(): { sceneMs: number; blitMs: number } {
     if (this.msaaTarget && this.msaaSamples > 0) {
+      const tScene0 = performance.now()
       this.renderer.setRenderTarget(this.msaaTarget)
       this.renderer.clear(true, true, true)
       this.renderer.render(this.scene, this.camera)
-      this.renderer.setRenderTarget(null)
+      const sceneMs = performance.now() - tScene0
       // Resolved MSAA color → canvas (tone mapping already applied in main pass).
+      const tBlit0 = performance.now()
+      this.renderer.setRenderTarget(null)
       const prevTone = this.renderer.toneMapping
       const prevAutoClear = this.renderer.autoClear
       this.renderer.toneMapping = THREE.NoToneMapping
@@ -360,21 +392,44 @@ export class SceneHost {
       this.renderer.render(this.blitScene, this.blitCamera)
       this.renderer.toneMapping = prevTone
       this.renderer.autoClear = prevAutoClear
-    } else {
-      this.renderer.setRenderTarget(null)
-      this.renderer.render(this.scene, this.camera)
+      return { sceneMs, blitMs: performance.now() - tBlit0 }
     }
+    const tScene0 = performance.now()
+    this.renderer.setRenderTarget(null)
+    this.renderer.render(this.scene, this.camera)
+    return { sceneMs: performance.now() - tScene0, blitMs: 0 }
   }
 
-  private renderMainPass(): void {
-    if (!this.bloom?.isActive() || !renderQuality.getBloomEnabled()) {
-      this.renderForwardPass()
-      return
+  /**
+   * Main WebGL pass with sub-meters:
+   * - scene: beauty geometry (+ shadow maps baked into three.js render)
+   * - extract: selective bloom material-swap + half-res emissive pass
+   * - bloom: UnrealBloom / composite (fast: whole composer lives here as beauty)
+   * - blit: MSAA resolve (only when bloom off + MSAA on)
+   */
+  private renderMainPass(): {
+    sceneMs: number
+    extractMs: number
+    bloomMs: number
+    blitMs: number
+    mode: string
+  } {
+    const bloomWanted =
+      !!this.bloom?.isActive() && renderQuality.getBloomEnabled() && !forceNoBloom()
+    if (!bloomWanted) {
+      const fwd = this.renderForwardPass()
+      return {
+        sceneMs: fwd.sceneMs,
+        extractMs: 0,
+        bloomMs: 0,
+        blitMs: fwd.blitMs,
+        mode: 'forward'
+      }
     }
 
     // Hot-swap mode when mesh inventory crosses the selective cap (plaza hydrate).
     const mode = this.pickBloomMode(renderQuality.getOptions())
-    if (this.bloom.getMode() !== mode) {
+    if (this.bloom!.getMode() !== mode) {
       this.configureBloom(renderQuality.getOptions())
       if (this.bloomModeLogged !== mode) {
         this.bloomModeLogged = mode
@@ -388,7 +443,24 @@ export class SceneHost {
     }
 
     this.renderer.setRenderTarget(null)
-    this.bloom.render()
+    const split = this.bloom!.render()
+    // Fast: beautyMs = full composer (scene+bloom). Selective: beauty = full-res scene only.
+    if (split.mode === 'fast') {
+      return {
+        sceneMs: split.beautyMs,
+        extractMs: 0,
+        bloomMs: 0, // folded into scene (one composer; cannot split without custom passes)
+        blitMs: 0,
+        mode: 'bloom-fast'
+      }
+    }
+    return {
+      sceneMs: split.beautyMs,
+      extractMs: split.extractMs,
+      bloomMs: split.compositeMs,
+      blitMs: 0,
+      mode: 'bloom-selective'
+    }
   }
 
   /** Draw one frame without starting the animation loop (used after asset hydration). */
@@ -455,9 +527,25 @@ export class SceneHost {
       this.renderStats.begin()
       if (this.orbitEnabled) this.controls.update()
       const renderT0 = performance.now()
-      this.renderMainPass()
+      const mainSplit = this.renderMainPass()
+      const mainMs = performance.now() - renderT0
+      const tagsT0 = performance.now()
       this.nameTags.render(this.scene, this.camera)
+      const tagsMs = performance.now() - tagsT0
       const renderMs = performance.now() - renderT0
+      const info = this.renderer.info.render
+      perfNoteRenderSplit({
+        mainMs,
+        tagsMs,
+        sceneMs: mainSplit.sceneMs,
+        extractMs: mainSplit.extractMs,
+        bloomMs: mainSplit.bloomMs,
+        blitMs: mainSplit.blitMs,
+        mode: mainSplit.mode,
+        shadowOn: this.renderer.shadowMap.enabled,
+        drawCalls: info.calls,
+        triangles: info.triangles
+      })
       this.renderStats.end()
       this.renderStats.update()
       // Count completed frames only (skipped interval frames never reach here).
@@ -494,11 +582,17 @@ export class SceneHost {
       windowAsyncMs += lastAsyncMs
       windowFrames++
       if (totalMs > 33) windowSlow++
+      // Rolling FPS for MainFrameHud / RenderStats (update each ~1s window).
+      let windowFps =
+        windowFrames > 0
+          ? (windowFrames * 1000) / Math.max(1, performance.now() - windowStart)
+          : 0
       // Rollup every ~1s. Only warn on real pain (<28fps or many slow frames), and at most
       // every 5s — logging at 40fps with DevTools open was a self-inflicted hitch loop.
       if (performance.now() - windowStart >= 1000) {
         const n = Math.max(1, windowFrames)
         const fps = (windowFrames * 1000) / Math.max(1, performance.now() - windowStart)
+        windowFps = fps
         const now = performance.now()
         const painful = fps < 28 || windowSlow > n * 0.25
         if (painful && now - lastFpsWarnMs > 5000) {
@@ -517,6 +611,21 @@ export class SceneHost {
         windowAsyncMs = 0
         windowFrames = 0
         windowSlow = 0
+      }
+      // Main frame pie — splits former black-box "other" (sync sub + render + loop residual).
+      perfNoteFrameHost({
+        frameMs: totalMs,
+        syncMs,
+        renderMs,
+        asyncMs: lastAsyncMs,
+        fps: windowFps
+      })
+      for (const listener of this.postFrameListeners) {
+        try {
+          listener()
+        } catch (err) {
+          if (frameCount <= 3) console.error('[SceneHost] postFrameListener error:', err)
+        }
       }
     })
   }

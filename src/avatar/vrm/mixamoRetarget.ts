@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { VRMHumanBoneName, type VRM } from '@pixiv/three-vrm'
+import { buildVrmHipsPositionTrackFromEmote } from '../emoteHipRetarget'
 import { normalizeMixamoBoneName } from '../odk/odkBoneMap'
 
 const q1 = new THREE.Quaternion()
@@ -229,13 +230,9 @@ export function retargetClipToVrm(
 /**
  * Retarget a loaded emote GLB (DCL / Mixamo bone names) onto a VRM skeleton.
  *
- * Hips **position** is stripped: the local player is CCT-locked (feet at capsule).
- * DCL scene emotes (plaza fishing, sit, watering, …) bake `Avatar_Hips.translation` in
- * cm-space under an Armature scale≈0.01 (rest often z≈-100). Scaling that absolute track
- * onto VRM overwrites rest hips and sinks/shifts the mesh — looks like a “height offset”
- * but is root-motion bleed, not DCL avatar height. Rotations alone carry the pose.
- *
- * Locomotion already uses the same strip via {@link loadRetargetedClip}.
+ * Rotations: standard Mixamo→VRM map. Hips **position**: sit/chair need the authored
+ * lower/Z delta; raw cm keys must not be scaled as absolute (that sinks the mesh).
+ * Locomotion still uses {@link loadRetargetedClip} with hips position stripped.
  */
 export function retargetGltfClipToVrm(
   clip: THREE.AnimationClip,
@@ -243,12 +240,22 @@ export function retargetGltfClipToVrm(
   vrm: VRM
 ): THREE.AnimationClip {
   glbScene.updateWorldMatrix(true, true)
+  vrm.scene.updateWorldMatrix(true, true)
   const prepared = clip.clone()
   filterAndPrepClip(prepared, glbScene, 1)
   const rootToHips = extractRootToHipsMeters(vrm)
-  return retargetClipToVrm(prepared, glbScene, vrm, rootToHips, vrm.meta?.metaVersion, {
+  // Rotations only — hips translation injected as rest + meter delta below.
+  const retargeted = retargetClipToVrm(prepared, glbScene, vrm, rootToHips, vrm.meta?.metaVersion, {
     stripHipsPosition: true
   })
+  const hipsNode = vrm.humanoid.getRawBoneNode(VRMHumanBoneName.Hips)
+  if (!hipsNode) return retargeted
+  const hipsTrack = buildVrmHipsPositionTrackFromEmote(prepared, glbScene, hipsNode)
+  if (!hipsTrack) return retargeted
+  return new THREE.AnimationClip(retargeted.name, retargeted.duration, [
+    ...retargeted.tracks,
+    hipsTrack
+  ])
 }
 
 export async function loadRetargetedClip(url: string, vrm: VRM): Promise<THREE.AnimationClip> {

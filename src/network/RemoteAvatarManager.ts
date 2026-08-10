@@ -396,6 +396,15 @@ export class RemoteAvatarManager {
     return count
   }
 
+  /** Peers showing neon loading shell (pose known, full body not ready). */
+  get placeholderPeerCount(): number {
+    let count = 0
+    for (const record of this.peers.values()) {
+      if (record.placeholder && !record.model) count++
+    }
+    return count
+  }
+
   /** Peers that still need a full avatar compose (placeholder / loading). */
   get pendingComposePeerCount(): number {
     let count = 0
@@ -529,12 +538,20 @@ export class RemoteAvatarManager {
    * Full composes stay held briefly (collider pose resync / CCT) then plaza-staggered.
    */
   setPlayReady(plazaScale = false): void {
+    // Clear hydration gate (waitForSceneAssets set it true; must not stick).
+    this.loadQueue.setHydrationMode(false)
     this.loadQueue.setPlayReady(plazaScale)
     clientDebugLog.log(
       'network',
-      `Remote avatars: collider-hold then 1 compose / 10s${plazaScale ? ' (plaza)' : ''}`,
+      `Remote avatars: collider-hold then 1 compose / ${RemoteAvatarLoadQueue.MIN_COMPOSE_INTERVAL_MS / 1000}s` +
+        `${plazaScale ? ' (plaza)' : ''}`,
       { alsoConsole: true, throttleMs: 30_000 }
     )
+  }
+
+  /** Compose gate snapshot for HUD (hold / pressure / waiting). */
+  getComposeGateSnapshot(): ReturnType<RemoteAvatarLoadQueue['getGateSnapshot']> {
+    return this.loadQueue.getGateSnapshot()
   }
 
   setSceneAssetPressure(gltfInflight: number, textureInflight = 0): void {
@@ -1414,6 +1431,13 @@ export class RemoteAvatarManager {
     record.targetYaw = yaw
     record.receivedAt = now
 
+    // Neon loading shell as soon as we have a real RFC4 pose — do not wait for the
+    // 10s compose stagger (was: empty root until loadPeerAvatar, so far/queued peers
+    // had no ghost body at all). Never place shells without a pose (ghost stick).
+    if (!record.model && !record.placeholder) {
+      this.attachLoadingPresentation(record)
+    }
+
     this.loadQueue.updatePeerDistance(key, record.targetPosition)
     this.tryStartAvatarLoad(key, record)
   }
@@ -1802,6 +1826,10 @@ export class RemoteAvatarManager {
     force = false
   ): Promise<void> | null {
     if (!record.hasPosition || record.model) return null
+    // Shell at pose immediately (compose may wait on 20 m / 10 s queue).
+    if (!record.placeholder) {
+      this.attachLoadingPresentation(record)
+    }
     if (record.loading && !force) return record.loading
     const key = address.toLowerCase()
     // Already queued: refresh distance only — do not allocate a new run() each frame.

@@ -38,11 +38,14 @@ export class RenderStats {
 
     this.extra = document.createElement('div')
     this.extra.id = 'render-stats-extra'
+    // pre-wrap: long meter lines wrap instead of overflowing over Position HUD.
     this.extra.style.cssText =
-      'font:11px/1.35 monospace;color:#9fd3ff;margin-top:4px;white-space:pre;line-height:1.4;'
+      'font:11px/1.4 monospace;color:#9fd3ff;margin-top:4px;white-space:pre-wrap;' +
+      'word-break:break-word;overflow-wrap:anywhere;max-width:100%;line-height:1.4;'
 
     this.dom = document.createElement('div')
     this.dom.id = 'render-stats-host'
+    this.dom.style.cssText = 'max-width:100%;overflow:hidden;'
     this.dom.appendChild(this.stats.dom)
     this.dom.appendChild(this.extra)
     this.refreshExtra()
@@ -66,8 +69,14 @@ export class RenderStats {
     this.stats.end()
   }
 
+  /**
+   * Refresh extra HUD lines only.
+   *
+   * Do **not** call `stats.update()` here: three's Stats.update() re-enters `end()`,
+   * which increments the FPS counter a second time per frame (panel showed ~2× real FPS
+   * vs MainFrameHud / `frame: … fps=` line).
+   */
   update(): void {
-    this.stats.update()
     this.refreshExtra()
   }
 
@@ -101,16 +110,53 @@ export class RenderStats {
       )
     }
     const perf = perfSnapshot()
+    // Keep each line short — long single lines overflow the Debug panel and look "corrupted".
     lines.push(
-      `remotes: vis=${perf.remoteVisible} loaded=${perf.remoteLoaded} poseSkip=${perf.remotePoseSkipped} animSkip=${perf.remoteAnimSkipped}`,
-      `remote ms: ${perf.remoteUpdateMs.toFixed(1)} (anim ${perf.remoteAnimMs.toFixed(1)})  lod n/m/f=${perf.lodNear}/${perf.lodMid}/${perf.lodFar}`,
-      `compose: q=${perf.remoteComposePending} active=${perf.remoteComposeActive} last=${perf.lastComposeMs.toFixed(0)}ms  tags=${perf.nameTagsShown}`,
-      `move out: ${perf.movementSentPerSec.toFixed(1)}/s  idle skip: ${perf.movementSkippedPerSec.toFixed(1)}/s`,
-      // COD frame-budget pipeline (A1)
-      `pipeline: pendingDiff=${perf.pendingDiffSize} age=${perf.pendingDiffAgeMaxMs.toFixed(0)}ms syncR=${perf.syncRendererMs.toFixed(1)}`,
-      `peel: m${perf.peelMaterialMs.toFixed(1)}/t${perf.peelTransformMs.toFixed(1)}/g${perf.peelGltfMs.toFixed(1)} e${perf.peelEntities} ptr=${perf.pointerEdgeMs.toFixed(1)} dump=${perf.pointerFullDump}`,
-      `uiMount/s=${perf.uiMountPostsPerSec.toFixed(1)} drop/s=${perf.uiMountDropsPerSec.toFixed(1)} skip/s=${perf.uiMountReseedSkipsPerSec.toFixed(1)}`,
-      `vcHydrate/s=${perf.vcHydratePerSec.toFixed(1)} poseLive/s=${perf.vcPoseLivePerSec.toFixed(1)} seal=${perf.physxStaticSealed} postReb=${perf.physxPostSealRebuild}`,
+      `frame: ${perf.frameMs.toFixed(1)}ms fps=${perf.fps.toFixed(0)} ` +
+        `sync=${perf.syncMs.toFixed(1)} render=${perf.renderMs.toFixed(1)} ` +
+        `loop+=${perf.loopRestMs.toFixed(1)}`,
+      `  rem=${perf.remoteUpdateMs.toFixed(1)} plat=${perf.platformMs.toFixed(1)} ` +
+        `part=${perf.particleMs.toFixed(1)} pl=${perf.playerMs.toFixed(1)} ` +
+        `sync+=${perf.syncRestMs.toFixed(1)}`,
+      `  sync+: env=${perf.envMs.toFixed(1)} scene=${perf.sceneTickMs.toFixed(1)} ` +
+        `pe=${perf.peMs.toFixed(1)} aoi=${perf.aoiMs.toFixed(1)} ` +
+        `pet=${perf.petMs.toFixed(1)} ptr=${perf.pointerMs.toFixed(1)}`,
+      `  render: main=${perf.renderMainMs.toFixed(1)} tags=${perf.renderTagsMs.toFixed(1)} ` +
+        `scene=${perf.renderSceneMs.toFixed(1)} extract=${perf.renderExtractMs.toFixed(1)}`,
+      `    bloom=${perf.renderBloomMs.toFixed(1)} blit=${perf.renderBlitMs.toFixed(1)} ` +
+        `${perf.renderMode} sh=${perf.renderShadowOn ? 'on' : 'off'}`,
+      `  apply=${perf.applyMs.toFixed(1)} async~=${perf.asyncMs.toFixed(1)} ` +
+        `peel=${perf.asyncPeelMs.toFixed(1)} coll=${perf.asyncCollisionMs.toFixed(1)} ` +
+        `bridge=${perf.asyncBridgesMs.toFixed(1)}`,
+      `    multi=${perf.asyncMultiMs.toFixed(1)} ptr=${perf.asyncPtrMs.toFixed(1)} ` +
+        `rest=${perf.asyncRestMs.toFixed(1)}`,
+      `  coll: syncC=${perf.asyncCollSyncMs.toFixed(1)} pose=${perf.asyncCollPoseMs.toFixed(1)} ` +
+        `disc=${perf.asyncCollDiscoverMs.toFixed(1)} cook=${perf.asyncCollCookMs.toFixed(1)} ` +
+        `q=${perf.colliderCookQueueSize}`,
+      `    watch=${perf.asyncCollWatchMs.toFixed(1)} health=${perf.asyncCollHealthMs.toFixed(1)} ` +
+        `rest=${perf.asyncCollRestMs.toFixed(1)}`
+    )
+    lines.push(
+      `remotes: peers=${perf.remotePeerTotal} pos=${perf.remoteVisible} ` +
+        `shell=${perf.remotePlaceholder} body=${perf.remoteLoaded}`,
+      `  poseSkip=${perf.remotePoseSkipped} animSkip=${perf.remoteAnimSkipped} ` +
+        `ms=${perf.remoteUpdateMs.toFixed(1)} anim=${perf.remoteAnimMs.toFixed(1)}`,
+      `  lod n/m/f=${perf.lodNear}/${perf.lodMid}/${perf.lodFar} ` +
+        `compose q=${perf.remoteComposePending} act=${perf.remoteComposeActive} ` +
+        `last=${perf.lastComposeMs.toFixed(0)}ms tags=${perf.nameTagsShown}`,
+      `move out: ${perf.movementSentPerSec.toFixed(1)}/s ` +
+        `idle skip: ${perf.movementSkippedPerSec.toFixed(1)}/s`,
+      `pipeline: pendingDiff=${perf.pendingDiffSize} ` +
+        `age=${perf.pendingDiffAgeMaxMs.toFixed(0)}ms syncR=${perf.syncRendererMs.toFixed(1)}`,
+      `peel: m${perf.peelMaterialMs.toFixed(1)}/t${perf.peelTransformMs.toFixed(1)}/` +
+        `g${perf.peelGltfMs.toFixed(1)} e${perf.peelEntities} ` +
+        `ptr=${perf.pointerEdgeMs.toFixed(1)} dump=${perf.pointerFullDump}`,
+      `uiMount/s=${perf.uiMountPostsPerSec.toFixed(1)} ` +
+        `drop/s=${perf.uiMountDropsPerSec.toFixed(1)} ` +
+        `skip/s=${perf.uiMountReseedSkipsPerSec.toFixed(1)}`,
+      `vcHydrate/s=${perf.vcHydratePerSec.toFixed(1)} ` +
+        `poseLive/s=${perf.vcPoseLivePerSec.toFixed(1)} ` +
+        `seal=${perf.physxStaticSealed} postReb=${perf.physxPostSealRebuild}`,
       `mrInst=${perf.meshRendererInstances} buckets=${perf.meshRendererBuckets}`
     )
     this.extra.textContent = lines.join('\n')

@@ -18,6 +18,7 @@ import {
   splitEmoteClips
 } from './emotePlayback'
 import { remapClipToAvatar } from './emoteBoneMap'
+import { reanchorEmoteHipPositions } from './emoteHipRetarget'
 import {
   collectParallelWearableStates,
   findBodyShapeRoot,
@@ -334,7 +335,7 @@ export class AvatarAnimations {
     if (avatarClip) {
       let remapped = this.remappedProfileClips.get(key)
       if (!remapped) {
-        remapped = remapClipToAvatar(avatarClip, findBodyShapeRoot(this.avatarRoot)) ?? undefined
+        remapped = this.remapProfileEmoteClip(avatarClip, gltf.root) ?? undefined
         if (remapped) this.remappedProfileClips.set(key, remapped)
       }
       if (remapped) {
@@ -402,7 +403,7 @@ export class AvatarAnimations {
     if (avatarClip) {
       let remapped = this.remappedProfileClips.get(key)
       if (!remapped) {
-        remapped = remapClipToAvatar(avatarClip, findBodyShapeRoot(this.avatarRoot)) ?? undefined
+        remapped = this.remapProfileEmoteClip(avatarClip, gltf.root) ?? undefined
         if (remapped) this.remappedProfileClips.set(key, remapped)
       }
       if (remapped) {
@@ -428,6 +429,21 @@ export class AvatarAnimations {
     return true
   }
 
+  /**
+   * Bone-name remap + sit/chair hips re-anchor (cm-scale emote → meter avatar rest).
+   * Locomotion keeps its own hip-bob path in {@link getRemappedLocomotionClip}.
+   */
+  private remapProfileEmoteClip(
+    clip: THREE.AnimationClip,
+    emoteRoot: THREE.Object3D
+  ): THREE.AnimationClip | null {
+    if (!this.avatarRoot) return null
+    const body = findBodyShapeRoot(this.avatarRoot)
+    const remapped = remapClipToAvatar(clip, body)
+    if (!remapped) return null
+    return reanchorEmoteHipPositions(remapped, emoteRoot, body)
+  }
+
   /** One-shot or loop profile emote — locomotion clips only (no prop scene). */
   playProfileEmote(clip: THREE.AnimationClip, loop = false, emoteKey?: string): boolean {
     if (!this.mixer || !this.avatarRoot) return false
@@ -438,6 +454,7 @@ export class AvatarAnimations {
     }
 
     this.teardownProfileEmotePlayback()
+    // No emote GLB root — cannot re-anchor hips; rotations-only remap.
     const remapped = remapClipToAvatar(clip, findBodyShapeRoot(this.avatarRoot))
     if (!remapped) {
       console.warn(`[avatar] emote "${clip.name}" has no matching bone tracks`)

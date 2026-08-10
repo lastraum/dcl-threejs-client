@@ -81,6 +81,7 @@ import type { PlayerMirrorIdentity } from '../../bridge/playerMirrorIdentity'
 import type { CommsRealmInfo } from '../../network/comms/types'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 import {
+  perfNoteApplyMs,
   perfNotePeels,
   perfNotePointerEdge,
   perfNoteUiMountPost,
@@ -2785,6 +2786,8 @@ export class SceneScriptSystem {
       }
     } finally {
       const applyMs = performance.now() - applyT0
+      // Always meter for MainFrameHud / RenderStats pie (apply is off the worker clock).
+      perfNoteApplyMs(applyMs)
       // Correlate with [wsp0] send(enc=…) — main apply is off the worker clock.
       if (applyMs >= 16) {
         const now = performance.now()

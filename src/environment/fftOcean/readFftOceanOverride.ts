@@ -129,10 +129,10 @@ function applyUrlOverrides(base: FftOceanSimSettings): FftOceanSimSettings {
   const mobile = window.innerWidth <= 768
   const next = { ...base, windDirection: base.windDirection.clone() }
 
-  // Master water on/off — URL wins over scene.json for local debug
+  // Master water — default OFF (isClientWaterDisabled). Opt-in ?water=1 only.
   const waterQ = parseBoolQueryOptional(params.get('water'))
-  if (waterQ === false) next.waterEnabled = false
   if (waterQ === true) next.waterEnabled = true
+  else next.waterEnabled = false
   if (parseBoolQueryOptional(params.get('noWater')) === true) next.waterEnabled = false
   if (parseBoolQueryOptional(params.get('disableWater')) === true) next.waterEnabled = false
 
@@ -192,17 +192,22 @@ export function readFftOceanOverride(): FftOceanSettings {
 }
 
 /**
- * Disable all client water (FFT + Water.js island/open).
- * `?water=0` / `?noWater=1` / `?disableWater=1`
+ * Client water (FFT + Water.js island/open) is **off by default** for all scenes —
+ * SDK scenes do not need landscape ocean, and GPGPU was ~16ms on enter.
+ *
+ * Opt-in: `?water=1` / `?water=true`
+ * Explicit off (no-op now): `?water=0` / `?noWater` / `?disableWater`
  */
 export function isClientWaterDisabled(): boolean {
-  if (typeof window === 'undefined') return false
+  if (typeof window === 'undefined') return true
   const params = new URLSearchParams(window.location.search)
   const water = parseBoolQueryOptional(params.get('water'))
+  // Only explicit opt-in enables client water.
+  if (water === true) return false
   if (water === false) return true
   if (parseBoolQueryOptional(params.get('noWater')) === true) return true
   if (parseBoolQueryOptional(params.get('disableWater')) === true) return true
-  return false
+  return true
 }
 
 /** Keys that must trigger a full scene reload when changed (path unchanged). */

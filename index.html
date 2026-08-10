@@ -342,9 +342,9 @@
       }
       .debug-panel__position {
         display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 12px;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
         font-size: 10px;
         line-height: 1.45;
@@ -355,32 +355,44 @@
       }
       .debug-panel__position-main {
         min-width: 0;
-        flex: 1 1 auto;
+        flex: 0 0 auto;
       }
+      /* Full-width under Position — was a narrow right column that overflowed over POS text. */
       .debug-panel__stats {
         flex: 0 0 auto;
         display: flex;
         flex-direction: column;
-        align-items: flex-end;
+        align-items: stretch;
+        width: 100%;
+        max-width: 100%;
         margin: 0;
         padding: 0;
         border: none;
+        overflow: hidden;
       }
       .debug-panel__stats #render-stats-host {
         display: flex;
         flex-direction: column;
-        align-items: flex-end;
+        align-items: stretch;
+        width: 100%;
+        max-width: 100%;
+        overflow: hidden;
       }
       .debug-panel__stats #render-stats {
         position: relative !important;
         inset: auto !important;
         transform: scale(0.92);
-        transform-origin: top right;
+        transform-origin: top left;
+        align-self: flex-start;
       }
       .debug-panel__stats #render-stats-extra {
-        text-align: right;
+        text-align: left;
         font-size: 10px !important;
-        margin-top: 2px !important;
+        margin-top: 4px !important;
+        max-width: 100% !important;
+        white-space: pre-wrap !important;
+        word-break: break-word !important;
+        overflow-wrap: anywhere;
       }
       .debug-panel__environment {
         margin-top: 10px;

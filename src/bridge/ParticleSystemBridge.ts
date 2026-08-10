@@ -27,6 +27,7 @@ import {
   type SpawnContext
 } from './particles/simulation'
 import type { BurstRuntime, LiveParticle, ParticleSpec } from './particles/types'
+import { perfNoteParticleMs } from '../util/perfCounters'
 
 function particleKey(entity: Entity): string {
   return `__particles_${entity}`
@@ -176,8 +177,12 @@ export class ParticleSystemBridge {
   }
 
   update(delta: number): void {
+    const t0 = performance.now()
     const nodes = this.getNodes()
-    if (!nodes) return
+    if (!nodes) {
+      perfNoteParticleMs(0)
+      return
+    }
 
     // Frustum: every system whose emitter is in (or near) view plays at full rate.
     // Off-camera systems do not emit (free budget / GPU); already-live particles still age out.
@@ -295,6 +300,7 @@ export class ParticleSystemBridge {
         ((spec.active !== false && !stopped && !runtime.finished && inView) ||
           runtime.live.length > 0)
     }
+    perfNoteParticleMs(performance.now() - t0)
   }
 
   dispose(): void {

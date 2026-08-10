@@ -218,11 +218,15 @@ send: async (messages) => {
 
 `sendMessages` awaits each transport. Network-first → every eng.update **blocked on worker→main sendBinary RPC** (even empty `n:0`). That wait **was** postDump (100–400ms steady, multi-second spikes).
 
-**Fix:** `rpcSendBinary` posts outbound fire-and-forget and **immediately** resolves with inbound already buffered from the previous response (one-frame lag). eng.update no longer blocks on LiveKit publish RTT.
+**Fix (0.5e):** `rpcSendBinary` posts outbound fire-and-forget and **immediately** resolves with inbound already buffered from the previous response (one-frame lag). eng.update no longer blocks on LiveKit publish RTT.
+
+**Regression (0.5e alone):** Worker free → ~60 eng.update/s → **60× `comms-send-binary` posts/s to main** → main thrash → **11–17 FPS**. Logs: no `[wsp0]` (worker OK), `engineTickInFlight=false`, main crdt-apply + UI still busy.
+
+**Fix (0.5f):** One in-flight main hop; queue real outbound; empty/inbound poll ≤20Hz (`SEND_BINARY_IDLE_POLL_MS=50`). eng.update stays non-blocking; main not flooded.
 
 ### Follow-ups
 
-- Confirm postDump collapses after 0.5e (target &lt;10–20ms steady)  
+- Confirm FPS recovers (≥ prior ~30 logs-off) and postDump stays low  
 - Main COD: fishing UI / SQ heal  
 - Phase 1 systems pie only if systems become the bottleneck
 

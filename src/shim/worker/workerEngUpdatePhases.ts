@@ -1,5 +1,5 @@
 /**
- * WSP v2 Phase 0 / 0b / 0.5 — engine.update phase meters (behavior-neutral).
+ * WSP v2 Phase 0 / 0b / 0.5–0.5i — engine.update phase meters (+ sendBinary path tags).
  *
  * @dcl/ecs engine.update is:
  *   await receiveMessages()  →  systems loop  →  await sendMessages()
@@ -111,6 +111,11 @@ type PhaseGate = {
   transportFilterMs: number
   transportFilterCalls: number
   transportSendNote: string
+  /**
+   * Phase 0.5i — network sendBinary path tags this eng.update:
+   * `fast` (empty, no await) · `poll` (empty kick ≤20Hz) · `wait` (real outbound await).
+   */
+  sendBinaryNote: string
 }
 
 const gate: PhaseGate = {
@@ -139,7 +144,8 @@ const gate: PhaseGate = {
   getCrdtSumMs: 0,
   transportFilterMs: 0,
   transportFilterCalls: 0,
-  transportSendNote: ''
+  transportSendNote: '',
+  sendBinaryNote: ''
 }
 
 const systemMsEma = new Map<string, number>()
@@ -431,8 +437,24 @@ export function beginEngUpdatePhase(dt: number): void {
   gate.transportFilterMs = 0
   gate.transportFilterCalls = 0
   gate.transportSendNote = ''
+  gate.sendBinaryNote = ''
   crdtCompMs.clear()
   crdtCompYields.clear()
+}
+
+/**
+ * Phase 0.5i — tag network sendBinary path for slow [wsp0] lines.
+ * `fast` = empty resolve without await · `poll` = kicked empty main hop · `wait` = outbound await.
+ */
+export function noteSendBinaryPath(tag: 'fast' | 'poll' | 'wait'): void {
+  if (!gate.active) return
+  if (!gate.sendBinaryNote) {
+    gate.sendBinaryNote = tag
+    return
+  }
+  if (!gate.sendBinaryNote.split('+').includes(tag)) {
+    gate.sendBinaryNote = `${gate.sendBinaryNote}+${tag}`
+  }
 }
 
 /** Systems-loop partition entered (after receiveMessages). */
@@ -617,7 +639,8 @@ export function endEngUpdatePhase(): EngUpdatePhaseSnapshot {
           `path=${formatCrdtPaths(gate.crdtPaths)} ` +
           `dump=${gate.dumpComps}c/${gate.dumpMsgs}m getCrdt=${gate.getCrdtSumMs.toFixed(0)}ms ` +
           `xfilt=${gate.transportFilterMs.toFixed(0)}ms×${gate.transportFilterCalls}` +
-          `${gate.transportSendNote ? ` xsend=${gate.transportSendNote}` : ''} ` +
+          `${gate.transportSendNote ? ` xsend=${gate.transportSendNote}` : ''}` +
+          `${gate.sendBinaryNote ? ` sb=${gate.sendBinaryNote}` : ''} ` +
           `encTop=${encTop || '—'} ` +
           `n=${snap.systemRun}/${snap.systemCount} loop=${snap.systemsLoop ? 1 : 0} dt=${snap.dt.toFixed(3)} ` +
           `top=${top || '—'}`

@@ -44,6 +44,7 @@ import {
   installCrdtEncodeComponentMeters,
   installCrdtTransportMeterHook,
   noteCrdtSendToRenderer,
+  noteSendBinaryPath,
   type CrdtSendPath
 } from './workerEngUpdatePhases'
 
@@ -3706,24 +3707,112 @@ function rpcCommsAdapter(body: CommsAdapterRequest): Promise<{ success: boolean 
   })
 }
 
+/**
+ * Inbound scene-binary stashed from async empty-poll responses (or other ingress).
+ * Applied on the next network transport send (≤1 empty-poll interval lag when empty-fast).
+ */
+function takeBufferedSendBinaryInbound(): Uint8Array[] {
+  if (!pendingInboundBinaries.length) return []
+  return pendingInboundBinaries.splice(0)
+}
+
 function mergeSendBinaryResponse(body: SendBinaryResponse): SendBinaryResponse {
-  if (!pendingInboundBinaries.length) return body
-  return { data: [...body.data, ...pendingInboundBinaries.splice(0)] }
+  const buffered = takeBufferedSendBinaryInbound()
+  if (!buffered.length) return body
+  return { data: [...body.data, ...buffered] }
+}
+
+function sendBinaryBodyHasOutbound(body: SendBinaryRequest): boolean {
+  if (body.data?.some((c) => c.byteLength > 0)) return true
+  for (const entry of body.peerData ?? []) {
+    if (entry.data?.some((c) => c.byteLength > 0)) return true
+  }
+  return false
 }
 
 /**
- * Comms sendBinary — **blocking await** (pre-0.5e baseline).
+ * Phase 0.5i — hybrid sendBinary (hardened 0.5g).
  *
- * WSP 0.5e–g tried non-blocking / hybrid paths to cut postDump. They caused main-thread
- * floods or sync weirdness (5–17 FPS). Keep meters; fix network-first await later with a
- * design that cannot spam main. Until then: correct multiplayer + known behavior.
+ * SDK network transport is first every eng.update and always `await sendBinary`, even when
+ * peerData is empty (Genesis xsend=n:0). Blocking that hop made postDump 80–120ms steady
+ * and multi-second freezes when main could not answer.
+ *
+ * History:
+ * - 0.5e fire-and-forget every frame → ~60 posts/s main thrash → 11–17 FPS
+ * - 0.5f coalesce pure-async → sync weird + ~5 FPS
+ * - 0.5g hybrid empty-fast / outbound-await (reverted with e–f before clean A/B)
+ * - 0.5h main empty = drain only (kept; worker still awaited)
+ *
+ * 0.5i:
+ * - **Empty**: never await RTT; resolve with buffered inbound; optional ≤20Hz empty poll
+ *   (one in-flight) so queue still drains without flooding main.
+ * - **Real outbound**: await main (correct multiplayer publish + drain).
+ * - Stuck-flight watchdog clears empty inFlight if response lost (>2s).
  */
-function rpcSendBinary(body: SendBinaryRequest): Promise<SendBinaryResponse> {
+const SEND_BINARY_EMPTY_POLL_MS = 50
+const SEND_BINARY_EMPTY_STUCK_MS = 2_000
+let lastEmptySendBinaryPostAt = 0
+let emptySendBinaryInFlight = false
+let emptySendBinaryInFlightSince = 0
+
+function stashSendBinaryInbound(chunks: Uint8Array[] | undefined): void {
+  if (!chunks?.length) return
+  for (const chunk of chunks) {
+    if (chunk.byteLength) pendingInboundBinaries.push(chunk)
+  }
+}
+
+function clearEmptySendBinaryInFlight(): void {
+  emptySendBinaryInFlight = false
+  emptySendBinaryInFlightSince = 0
+}
+
+function maybeKickEmptySendBinaryPoll(now: number): boolean {
+  if (emptySendBinaryInFlight) {
+    if (
+      emptySendBinaryInFlightSince > 0 &&
+      now - emptySendBinaryInFlightSince >= SEND_BINARY_EMPTY_STUCK_MS
+    ) {
+      // Response dropped or main hung — allow a new poll; do not leave poll permanently stuck.
+      clearEmptySendBinaryInFlight()
+    } else {
+      return false
+    }
+  }
+  if (now - lastEmptySendBinaryPostAt < SEND_BINARY_EMPTY_POLL_MS) return false
+
+  emptySendBinaryInFlight = true
+  emptySendBinaryInFlightSince = now
+  lastEmptySendBinaryPostAt = now
   const id = ++requestId
-  return new Promise((resolve) => {
-    pendingSendBinary.set(id, (response) => resolve(mergeSendBinaryResponse(response)))
-    ctx.postMessage({ type: 'comms-send-binary', id, body } satisfies SceneWorkerOutbound)
+  pendingSendBinary.set(id, (response) => {
+    clearEmptySendBinaryInFlight()
+    stashSendBinaryInbound(response.data)
   })
+  ctx.postMessage({
+    type: 'comms-send-binary',
+    id,
+    body: { data: [], peerData: [] }
+  } satisfies SceneWorkerOutbound)
+  return true
+}
+
+function rpcSendBinary(body: SendBinaryRequest): Promise<SendBinaryResponse> {
+  if (sendBinaryBodyHasOutbound(body)) {
+    // Real multiplayer / peer bytes — must reach LiveKit this tick; await main.
+    noteSendBinaryPath('wait')
+    const id = ++requestId
+    return new Promise((resolve) => {
+      pendingSendBinary.set(id, (response) => resolve(mergeSendBinaryResponse(response)))
+      ctx.postMessage({ type: 'comms-send-binary', id, body } satisfies SceneWorkerOutbound)
+    })
+  }
+
+  // Empty poll path — eng.update must not block on main RTT.
+  const now = performance.now()
+  const polled = maybeKickEmptySendBinaryPoll(now)
+  noteSendBinaryPath(polled ? 'poll' : 'fast')
+  return Promise.resolve({ data: takeBufferedSendBinaryInbound() })
 }
 
 function rpcGetUserData(): Promise<UserDataResponse> {

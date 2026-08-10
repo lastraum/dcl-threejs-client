@@ -1,6 +1,6 @@
 # Worker System Pie v2 — design only (not implemented)
 
-**Status:** Phase 0 / 0b / **0.5** instrumentation on branch `feat-wsp` (meters only). Phase 1+ not implemented.  
+**Status:** Phase 0 / 0b / **0.5–0.5i** on branch `feat-wsp` (meters + empty-path sendBinary). Phase 1+ not implemented.  
 **Supersedes:** WSP v1 (`da7110f`…`cdf8de5`) — **reverted** on `dev-latest` after Genesis load/FPS regressions.  
 **Baseline:** post-revert tip ≈ `fe4f24a` + terrain/platform (same architecture as pre-stall stack).
 
@@ -230,6 +230,14 @@ send: async (messages) => {
 `drainSceneBinaryInbound()` — no LiveKit publish hop. Worker still awaits the RPC, but
 main work is O(queue). Real outbound still `await sendBinary(chunks)`.
 
+### Phase 0.5i — hybrid empty-fast sendBinary (worker)
+
+**Empty** (`n:0`): never await RTT; resolve with buffered inbound; optional ≤20Hz empty poll (one in-flight).  
+**Real outbound**: await main. Stuck empty poll: clear inFlight after 2s.  
+Slow `[wsp0]` adds `sb=fast|poll|wait`. Main 0.5h drain kept.
+
+Validated: idle holds ~30; multi-second empty postDump freezes gone. Walk→17 is residual main/GPU (not empty sendBinary).
+
 ### Phase 0.6 — Main hitch lines (always-on, sparse)
 
 `[hitch] kind Nms detail` when a main load/compose wall ≥50ms:
@@ -240,12 +248,14 @@ main work is O(queue). Real outbound still `await sendBinary(chunks)`.
 | `remote-dcl` | Wearable compose for remote |
 | `remote-pet` / `local-pet` | DPET pet GLB parse+mount |
 
-### Follow-ups (ordered)
+`?noremote` A/B: floor barely moved → remotes not sole steady owner; compose hitches still real.
 
-1. Capture logs-off steady FPS + any `[hitch]` on spikes to ~10  
-2. **Main COD** if hitches name the spike: remote load budget, fishing UI enter/exit thrash  
-3. **postDump** later: empty sendBinary without main flood  
-4. **Phase 1** systems pie only if systems dominate
+### Follow-ups (ordered) — no AOI / remote-LOD experiments unless requested
+
+1. **0.5k** main crdt-apply dig — `[wsp05]` still 16–32ms; split fold / drain / UI (encode empty path is done)  
+2. **0.5j** (if needed): push inbound → zero empty polls  
+3. **Phase 2** main COD from doc only: play-cook near feet, soft-attach rate, post-seal SQ heal (not AOI radius, not remote body demote)  
+4. **Phase 1** systems pie only if systems dominate (still ~1ms — skip)
 
 ## Phase 1 — Systems pie (flag `?wsp=1` or settings)
 

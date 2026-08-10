@@ -582,49 +582,62 @@ export class SceneUiBridge {
 
     // P2 text-only fast path: layout transforms unchanged, only UiText visual keys dirty.
     // Skip full Yoga + hit-map rebuild — patch label text on existing DOM nodes.
+    // Never take this path when any previously-visible entity is gone/hidden — leave-seat
+    // and modal close need a full forest walk (or patchEntities hide sweep).
     if (
       this.paintCount > 0 &&
       layoutKey === this.lastPaintLayoutKey &&
       this.lastLayoutBoxMap &&
       this.lastEntityLayoutKeys.size > 0
     ) {
-      const textOnlyDirty: Entity[] = []
-      let layoutStable = true
-      for (const { entity, transform } of records) {
-        const lk = layoutTransformFingerprint(transform)
-        if (this.lastEntityLayoutKeys.get(entity) !== lk) {
-          layoutStable = false
-          break
+      let hideInProgress = false
+      if (this.lastLayoutBoxMap.size > 0) {
+        for (const entity of this.lastLayoutBoxMap.keys()) {
+          if (!mounted.has(entity) || !isUiEntityVisible(entity, transformOf)) {
+            hideInProgress = true
+            break
+          }
         }
       }
-      if (layoutStable) {
-        for (const [entity, key] of entityVisualKeys) {
-          if (this.lastEntityVisualKeys.get(entity) !== key) textOnlyDirty.push(entity)
-        }
-        if (textOnlyDirty.length > 0 && textOnlyDirty.length <= 16 && this.lastUiForest) {
-          const drawInput = {
-            forest: this.lastUiForest,
-            virtual: this.virtual,
-            interactable,
-            viewport,
-            scene: this.scene,
-            ecs,
-            pointerEventsOf: this.pointerEventsLookup,
-            transformOf,
-            textOf,
-            inputOf,
-            dropdownOf,
-            backgroundOf,
-            mountedEntities: mounted,
-            authoritativeEntities: this.workerUiEntities!,
-            layoutBoxes: this.lastLayoutBoxMap,
-            onRegions: (regions: UiScreenRegion[]) => this.hitMap.replace(regions)
+      if (!hideInProgress) {
+        const textOnlyDirty: Entity[] = []
+        let layoutStable = true
+        for (const { entity, transform } of records) {
+          const lk = layoutTransformFingerprint(transform)
+          if (this.lastEntityLayoutKeys.get(entity) !== lk) {
+            layoutStable = false
+            break
           }
-          if (this.dom.patchEntities(textOnlyDirty, drawInput)) {
-            this.lastPaintVisualKey = visualKey
-            this.lastEntityVisualKeys = entityVisualKeys
-            this.paintedEpoch = this.contentEpoch
-            return
+        }
+        if (layoutStable) {
+          for (const [entity, key] of entityVisualKeys) {
+            if (this.lastEntityVisualKeys.get(entity) !== key) textOnlyDirty.push(entity)
+          }
+          if (textOnlyDirty.length > 0 && textOnlyDirty.length <= 16 && this.lastUiForest) {
+            const drawInput = {
+              forest: this.lastUiForest,
+              virtual: this.virtual,
+              interactable,
+              viewport,
+              scene: this.scene,
+              ecs,
+              pointerEventsOf: this.pointerEventsLookup,
+              transformOf,
+              textOf,
+              inputOf,
+              dropdownOf,
+              backgroundOf,
+              mountedEntities: mounted,
+              authoritativeEntities: this.workerUiEntities!,
+              layoutBoxes: this.lastLayoutBoxMap,
+              onRegions: (regions: UiScreenRegion[]) => this.hitMap.replace(regions)
+            }
+            if (this.dom.patchEntities(textOnlyDirty, drawInput)) {
+              this.lastPaintVisualKey = visualKey
+              this.lastEntityVisualKeys = entityVisualKeys
+              this.paintedEpoch = this.contentEpoch
+              return
+            }
           }
         }
       }
@@ -880,6 +893,17 @@ export class SceneUiBridge {
     const visibleSetGrew =
       layoutBoxMap.size > prevVisibleCount + 2 || missingVisible.length > 0
     const visibleSetShrank = layoutBoxMap.size + 2 < prevVisibleCount
+    // Any previously-visible entity now hidden (display:none / opacity / unmounted) —
+    // force full forest walk so leave-seat / modal close cannot leave stacked DOM.
+    let previouslyVisibleNowHidden = false
+    if (this.lastLayoutBoxMap && this.lastLayoutBoxMap.size > 0) {
+      for (const entity of this.lastLayoutBoxMap.keys()) {
+        if (!mounted.has(entity) || !isUiEntityVisible(entity, transformOf)) {
+          previouslyVisibleNowHidden = true
+          break
+        }
+      }
+    }
     const visibleDelta = Math.abs(layoutBoxMap.size - this.lastStableVisibleCount)
     if (visibleDelta <= 2 && layoutBoxMap.size > 0 && collapsedVisible <= 4) {
       this.stableVisibleStreak++
@@ -895,10 +919,12 @@ export class SceneUiBridge {
     // Never patch while any collapsed icon cells remain — fishing rod/bait dock is only 2
     // cells; `collapsedVisible <= 4` used to leave them 0×0 forever until vendor open forced
     // a full forest walk.
+    // Never patch when visibility shrinks (poker stand-up, shop close) — patch missed hide.
     const preferPatch =
       this.paintCount > 1 &&
       !visibleSetGrew &&
       !visibleSetShrank &&
+      !previouslyVisibleNowHidden &&
       collapsedVisible === 0 &&
       repairedCollapsed === 0 &&
       dirtyEntities.length > 0 &&

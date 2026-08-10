@@ -376,6 +376,7 @@ export class SceneUiDomRenderer {
   patchEntities(dirty: readonly Entity[], input: SceneUiDrawInput): boolean {
     const scale = uiScreenScaleFromViewport(input.viewport)
     const alive = new Set<Entity>(input.mountedEntities)
+    const patched = new Set<Entity>()
     for (const entity of dirty) {
       if (!alive.has(entity)) {
         const el = this.nodes.get(entity)
@@ -386,7 +387,28 @@ export class SceneUiDomRenderer {
         return false
       }
       // depth ignored for patch (regions rebuilt below)
-      this.renderEntityTree(entity, input, alive, new Set(), 0, [], scale)
+      this.renderEntityTree(entity, input, alive, patched, 0, [], scale)
+    }
+    // Poker leave-seat / modal close: only a few dirties arrive, but siblings that became
+    // display:none (or lost mount) must hide even if not in the dirty set — else stacked HUD.
+    for (const [entity, el] of [...this.nodes]) {
+      if (patched.has(entity)) continue
+      if (!alive.has(entity) || !input.authoritativeEntities.has(entity)) {
+        this.applyHiddenDomState(el)
+        continue
+      }
+      if (!isUiEntityVisible(entity, input.transformOf)) {
+        this.applyHiddenDomState(el)
+        // Hide subtree shells even when only an ancestor flipped display:none.
+        const hideKids = (e: Entity): void => {
+          for (const child of input.forest.get(e) ?? []) {
+            const node = this.nodes.get(child)
+            if (node) this.applyHiddenDomState(node)
+            hideKids(child)
+          }
+        }
+        hideKids(entity)
+      }
     }
     const regions: UiScreenRegion[] = []
     this.collectHitRegionsFromForest(input, regions)

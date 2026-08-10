@@ -3707,8 +3707,7 @@ function rpcCommsAdapter(body: CommsAdapterRequest): Promise<{ success: boolean 
 }
 
 /**
- * Inbound scene-binary from main that arrived outside a sendBinary wait
- * (async response after non-blocking send, or other ingress).
+ * Inbound scene-binary stashed from async empty-poll responses / other ingress.
  */
 function takeBufferedSendBinaryInbound(): Uint8Array[] {
   if (!pendingInboundBinaries.length) return []
@@ -3723,77 +3722,60 @@ function sendBinaryBodyHasOutbound(body: SendBinaryRequest): boolean {
   return false
 }
 
-/** Coalesce outbound until the next main hop (one in-flight max). */
-let sendBinaryQueued: SendBinaryRequest = { data: [], peerData: [] }
-let sendBinaryInFlight = false
-let lastSendBinaryPostAt = 0
-/** Empty/inbound-poll posts — do not hammer main at eng.update rate. */
-const SEND_BINARY_IDLE_POLL_MS = 50
+/** Empty network.send still called every eng.update — poll main at most 20Hz. */
+const SEND_BINARY_EMPTY_POLL_MS = 50
+let lastEmptySendBinaryPostAt = 0
+let emptySendBinaryInFlight = false
 
-function queueSendBinaryOutbound(body: SendBinaryRequest): void {
-  if (body.data?.length) {
-    const data = sendBinaryQueued.data ? [...sendBinaryQueued.data] : []
-    for (const chunk of body.data) {
-      if (chunk.byteLength) data.push(chunk)
-    }
-    sendBinaryQueued = { ...sendBinaryQueued, data }
-  }
-  if (body.peerData?.length) {
-    const peerData = sendBinaryQueued.peerData ? [...sendBinaryQueued.peerData] : []
-    for (const entry of body.peerData) {
-      const chunks = (entry.data ?? []).filter((c) => c.byteLength > 0)
-      if (!chunks.length) continue
-      peerData.push({ data: chunks, address: entry.address ?? [] })
-    }
-    sendBinaryQueued = { ...sendBinaryQueued, peerData }
-  }
-}
-
-function takeQueuedSendBinaryOutbound(): SendBinaryRequest {
-  const out = sendBinaryQueued
-  sendBinaryQueued = { data: [], peerData: [] }
-  return out
-}
-
-function postSendBinaryToMain(body: SendBinaryRequest): void {
-  const id = ++requestId
-  sendBinaryInFlight = true
-  lastSendBinaryPostAt = performance.now()
-  pendingSendBinary.set(id, (response) => {
-    sendBinaryInFlight = false
-    if (response.data?.length) {
-      for (const chunk of response.data) pendingInboundBinaries.push(chunk)
-    }
-    // Flush any outbound that arrived while main was busy (real multiplayer data).
-    if (sendBinaryBodyHasOutbound(sendBinaryQueued)) {
-      postSendBinaryToMain(takeQueuedSendBinaryOutbound())
-    }
-  })
-  ctx.postMessage({ type: 'comms-send-binary', id, body } satisfies SceneWorkerOutbound)
+function mergeSendBinaryResponse(body: SendBinaryResponse): SendBinaryResponse {
+  if (!pendingInboundBinaries.length) return body
+  return { data: [...body.data, ...pendingInboundBinaries.splice(0)] }
 }
 
 /**
- * WSP Phase 0.5e/f — non-blocking + coalesced sendBinary.
+ * WSP Phase 0.5g — hybrid sendBinary (revert pure fire-and-forget).
  *
- * 0.5e: do not await main RTT inside eng.update (network transport is first and
- *   `await sendBinary` every frame was postDump 100–400ms).
- * 0.5f: do not postMessage main every eng.update either — after 0.5e the worker
- *   ticked freely and flooded main (~60 sendBinary/s → 11–17 FPS). Coalesce to
- *   one in-flight hop; idle/empty poll at most every SEND_BINARY_IDLE_POLL_MS.
+ * Problem chain:
+ * - Stock: await sendBinary every frame → postDump 100–400ms (network first).
+ * - 0.5e fire-and-forget every frame → main flooded → 11–17 FPS.
+ * - 0.5f coalesce still async-only → multiplayer/inbound timing weird + main still hot → ~5 FPS.
+ *
+ * Fix:
+ * - **Empty** body (Genesis xsend=n:0): do not await RTT; optional ≤20Hz empty poll for inbound.
+ * - **Real outbound**: await main (correct multiplayer publish + drain), rare vs every tick.
  */
 function rpcSendBinary(body: SendBinaryRequest): Promise<SendBinaryResponse> {
   const hasOutbound = sendBinaryBodyHasOutbound(body)
-  if (hasOutbound) queueSendBinaryOutbound(body)
 
-  const now = performance.now()
-  const idleDue = now - lastSendBinaryPostAt >= SEND_BINARY_IDLE_POLL_MS
-  // Real multiplayer bytes: post ASAP when not in-flight.
-  // Empty poll: rate-limited so inbound still drains without main thrash.
-  if (!sendBinaryInFlight && (hasOutbound || sendBinaryBodyHasOutbound(sendBinaryQueued) || idleDue)) {
-    postSendBinaryToMain(takeQueuedSendBinaryOutbound())
+  if (hasOutbound) {
+    // Real multiplayer / peer bytes — must reach LiveKit this tick; await main.
+    const id = ++requestId
+    return new Promise((resolve) => {
+      pendingSendBinary.set(id, (response) => resolve(mergeSendBinaryResponse(response)))
+      ctx.postMessage({ type: 'comms-send-binary', id, body } satisfies SceneWorkerOutbound)
+    })
   }
 
-  // Immediate resolve — eng.update must not wait on main LiveKit publish.
+  // Empty poll path — eng.update must not block; do not spam main every frame.
+  const now = performance.now()
+  const due = now - lastEmptySendBinaryPostAt >= SEND_BINARY_EMPTY_POLL_MS
+  if (!emptySendBinaryInFlight && due) {
+    emptySendBinaryInFlight = true
+    lastEmptySendBinaryPostAt = now
+    const id = ++requestId
+    pendingSendBinary.set(id, (response) => {
+      emptySendBinaryInFlight = false
+      if (response.data?.length) {
+        for (const chunk of response.data) pendingInboundBinaries.push(chunk)
+      }
+    })
+    ctx.postMessage({
+      type: 'comms-send-binary',
+      id,
+      body: { data: [], peerData: [] }
+    } satisfies SceneWorkerOutbound)
+  }
+
   return Promise.resolve({ data: takeBufferedSendBinaryInbound() })
 }
 

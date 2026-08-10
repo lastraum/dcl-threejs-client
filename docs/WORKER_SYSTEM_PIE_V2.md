@@ -222,12 +222,16 @@ send: async (messages) => {
 
 **Regression (0.5e alone):** Worker free → ~60 eng.update/s → **60× `comms-send-binary` posts/s to main** → main thrash → **11–17 FPS**. Logs: no `[wsp0]` (worker OK), `engineTickInFlight=false`, main crdt-apply + UI still busy.
 
-**Fix (0.5f):** One in-flight main hop; queue real outbound; empty/inbound poll ≤20Hz (`SEND_BINARY_IDLE_POLL_MS=50`). eng.update stays non-blocking; main not flooded.
+**Fix (0.5f):** One in-flight main hop; queue real outbound; empty/inbound poll ≤20Hz. Still pure async → ~5 FPS + sync weirdness.
+
+**Fix (0.5g) hybrid:**
+- **Empty** body (Genesis `n:0` every tick): never await RTT; optional ≤20Hz empty poll for inbound.
+- **Real outbound**: await main (correct LiveKit publish). Rare compared to empty polls.
 
 ### Follow-ups
 
-- Confirm FPS recovers (≥ prior ~30 logs-off) and postDump stays low  
-- Main COD: fishing UI / SQ heal  
+- Confirm FPS recovers and postDump stays low on empty-heavy scenes  
+- Main COD: fishing UI thrash / remotes / SQ heal  
 - Phase 1 systems pie only if systems become the bottleneck
 
 ## Phase 1 — Systems pie (flag `?wsp=1` or settings)

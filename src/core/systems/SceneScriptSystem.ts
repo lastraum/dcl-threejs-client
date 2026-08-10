@@ -3053,18 +3053,28 @@ export class SceneScriptSystem {
         split.uiMs += performance.now() - uiPaintT0
       }
 
-      // COD AAA — one ordered lane drain after UI (not triple peels).
-      // Motion/material/structure share FRAME pie; remainder stays queued for syncRenderer.
-      // Fire-and-forget: wall here is only sync prefix until first await inside drain.
+      // COD AAA — lane drain after UI.
+      // WSP 0.5k5: ambient CRDT apply only peels **motion** (short budget). Full
+      // Motion+Material+Structure pie is owned by rAF syncRenderer — running the full
+      // pie here stacked with rAF (drain 10–27ms on [wsp05]). Pointer edges still get
+      // motion+material (structure=0) so click VFX stays same-frame.
       if (hasPayload || this.pendingDiff.size > 0) {
         const drainT0 = performance.now()
+        const pointerEdge =
+          this.pointerAwaitingWorkerApply || this.pointerDeliverAwaitingAck
         try {
-          void this.drainPendingDiffLanes({
-            deadlineMs:
-              SceneScriptSystem.FRAME.MOTION_MS +
-              SceneScriptSystem.FRAME.MATERIAL_MS +
-              SceneScriptSystem.FRAME.STRUCTURE_MS
-          })
+          if (pointerEdge) {
+            const F = SceneScriptSystem.FRAME
+            void this.drainPendingDiffLanes({
+              pointerEdge: true,
+              deadlineMs: F.POINTER_MOTION_MS + F.POINTER_MATERIAL_MS
+            })
+          } else {
+            void this.drainPendingDiffLanes({
+              motionOnly: true,
+              deadlineMs: SceneScriptSystem.FRAME.MOTION_MS
+            })
+          }
         } catch (err) {
           console.warn(
             `[scene] lane drain aborted — ${err instanceof Error ? err.message : String(err)}`
@@ -3100,7 +3110,11 @@ export class SceneScriptSystem {
         split.rayMs = 0
 
         t = performance.now()
-        this.syncTweenBeforeEncode()
+        // WSP 0.5k5b — only when tweens active (encode path still needs completed states).
+        const tweensLive = (this.tweenBridge?.getActiveTweenEntities()?.length ?? 0) > 0
+        if (tweensLive || this.pointerAwaitingWorkerApply) {
+          this.syncTweenBeforeEncode()
+        }
         split.twMs += performance.now() - t
 
         this.crdtTick++
@@ -3811,6 +3825,8 @@ export class SceneScriptSystem {
    */
   private async drainPendingDiffLanes(opts?: {
     pointerEdge?: boolean
+    /** Ambient CRDT apply — motion only; material/structure left to rAF syncRenderer. */
+    motionOnly?: boolean
     deadlineMs?: number
   }): Promise<void> {
     if (!this.bridge || !this.entityStore) return
@@ -3818,10 +3834,15 @@ export class SceneScriptSystem {
     const view = this.view
     const F = SceneScriptSystem.FRAME
     const edge = opts?.pointerEdge === true
-    const motionCap = edge ? Math.min(F.MOTION_ENTITIES, 64) : F.MOTION_ENTITIES
+    const motionOnly = opts?.motionOnly === true
+    const motionCap = edge
+      ? Math.min(F.MOTION_ENTITIES, 64)
+      : motionOnly
+        ? Math.min(F.MOTION_ENTITIES, 128)
+        : F.MOTION_ENTITIES
     const matMs = edge ? F.POINTER_MATERIAL_MS : F.MATERIAL_MS
     const matEnt = edge ? 64 : F.MATERIAL_ENTITIES
-    const structureEnt = edge ? 0 : F.STRUCTURE_ENTITIES
+    const structureEnt = edge || motionOnly ? 0 : F.STRUCTURE_ENTITIES
     const wallDeadline =
       opts?.deadlineMs !== undefined && Number.isFinite(opts.deadlineMs)
         ? performance.now() + Math.max(0, opts.deadlineMs)
@@ -3879,6 +3900,8 @@ export class SceneScriptSystem {
         })
       }
     }
+
+    if (motionOnly) return
 
     // --- Material lane: pointer-edge VFX first, then missing leaves, then Material puts ---
     if (performance.now() < wallDeadline) {

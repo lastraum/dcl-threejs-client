@@ -273,6 +273,20 @@ Genesis 0.5k: **fold≈0**, **sync** = trg + ptr. Ghost stick fixed (no provisio
 **0.5k4:** skip ambient `syncPointerInput` / scene-input on CRDT apply unless pointer edge in flight
 (was **ptr 8–30ms**). rAF `updatePointerEvents` owns ambient; inject session still syncs.
 
+**0.5k5:** ambient CRDT apply drains **motion only** (≤MOTION_MS); material/structure left to rAF
+`syncRenderer`. Pointer edges still peel motion+material. Skip tween encode prep when no live tweens.
+
+### Phase 0.5 exit (track complete for WSP dig)
+
+| Done | Residual (not 0.5x) |
+|------|---------------------|
+| Empty sendBinary non-blocking (0.5i) | GPU / particles / MSAA floor |
+| Apply no longer double-runs rAF systems (k3–k5) | Remote compose hitches (`[hitch]`) |
+| Meters `[wsp0]` / `[wsp05]` / `sb=` / fold|uiA|drain|sync | Event-card UV (parked) |
+| Ghost stick fixed; toast queue-only | Phase 2 play-cook / soft-attach |
+
+**Do not** open Phase 1 pie (systems ~1ms). Next work is Phase 2 main COD or product bugs.
+
 ### Follow-ups (ordered) — no AOI / remote-LOD experiments unless requested
 
 1. Capture Genesis `[wsp05]` with fold/uiA/drain/sync/enc → fix dominant slice  

@@ -92,7 +92,8 @@ export const MAX_SHADOW_SPOT_LIGHTS = 3
 export const LIGHT_CULL_DISTANCE_M = 40
 
 export const RESOLUTION_SCALE_MIN = 50
-export const RESOLUTION_SCALE_MAX = 200
+/** Preferences slider ceiling — 120% is enough for sharp DPR without 2× pixel thrash. */
+export const RESOLUTION_SCALE_MAX = 120
 export const MAX_SCENE_LIGHTS_CAP = 20
 
 /** Spot / directional shadow map resolution by shadow quality (not overall tier). */
@@ -168,7 +169,7 @@ const PRESET_BUNDLES: Record<PresetId, PresetBundle> = {
     shadowQuality: 'ultra',
     sceneLightsEnabled: true,
     maxSceneLights: LIGHT_LIMITS[RenderQualityTier.Ultra],
-    resolutionScale: 125,
+    resolutionScale: 120,
     fpsLimit: 0,
     msaaSamples: 8,
     vsync: true,

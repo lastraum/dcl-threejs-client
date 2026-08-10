@@ -1,6 +1,6 @@
 # Worker System Pie v2 — design only (not implemented)
 
-**Status:** design / do not ship until instrumented and flag-gated.  
+**Status:** Phase 0 implemented on branch `feat-wsp` (meters only). Phase 1+ not implemented.  
 **Supersedes:** WSP v1 (`da7110f`…`cdf8de5`) — **reverted** on `dev-latest` after Genesis load/FPS regressions.  
 **Baseline:** post-revert tip ≈ `fe4f24a` + terrain/platform (same architecture as pre-stall stack).
 
@@ -62,6 +62,28 @@ On every `engine.update` (or every Nth under load):
 
 Log when `t_total ≥ 80` with **all** phases (not only systems).  
 **Exit criterion:** one Genesis capture with clear share of recv/systems/send/react. No behavior change.
+
+### Phase 0 implementation (`feat-wsp`)
+
+| Piece | Role |
+|-------|------|
+| `src/shim/worker/workerEngUpdatePhases.ts` | begin/end, EMA top systems, `[wsp0]` slow log |
+| `sceneEngineScheduler` `wrapEngineUpdateWithWallClock` | wall `total` around every `engine.update` |
+| `installEngineSystemLoopPartition` | times scene systems vs react-ecs* (same run order) |
+
+Log line example:
+
+```text
+[wsp0] eng.update 420ms pre=12 systems=280 react=90 post=38 n=40/42 loop=1 dt=0.016 top=MySystem:120 …
+```
+
+- **pre** ≈ native work before systems loop (often CRDT/setup)  
+- **systems** = partition loop excluding react-ecs*  
+- **react** = react-ecs + ui-scale  
+- **post** ≈ after systems loop returns (often transport/send)  
+- **loop=0** means systems-loop patch missed — only total is trustworthy  
+
+Optional periodic OK lines when `globalThis.__THREEJS_SCENEWORKER_PERF__ = true`.
 
 ## Phase 1 — Systems pie (flag `?wsp=1` or settings)
 

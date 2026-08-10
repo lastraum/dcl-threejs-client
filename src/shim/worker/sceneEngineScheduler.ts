@@ -40,6 +40,11 @@ import {
   beginPointerPlayerFrameBatch,
   reconcileLocomotionLatchAfterInjectDown
 } from './workerPlayerFrameEgress'
+import {
+  beginEngUpdatePhase,
+  endEngUpdatePhase,
+  resetEngUpdatePhases
+} from './workerEngUpdatePhases'
 
 let lastUiDirtySnapshotLogAt = 0
 
@@ -184,8 +189,14 @@ function wrapEngineUpdateWithWallClock(eng: IEngine): void {
   if (wrapped.__threejsWallClockWrapped) return
   const nativeUpdate = eng.update.bind(eng)
   wrapped.update = async (dt: number) => {
+    // WSP v2 Phase 0 — phase meters around every eng.update (incl. dt=0 transport).
     if (!(dt > 0)) {
-      await nativeUpdate(0)
+      beginEngUpdatePhase(0)
+      try {
+        await nativeUpdate(0)
+      } finally {
+        endEngUpdatePhase()
+      }
       return
     }
     // Wall since last positive tick *start* (or prior stamp).
@@ -195,7 +206,12 @@ function wrapEngineUpdateWithWallClock(eng: IEngine): void {
     if (wallClockOriginMs <= 0) wallClockOriginMs = now
     lastExecutedAt = now
     sceneTimeSec += applied
-    await nativeUpdate(applied)
+    beginEngUpdatePhase(applied)
+    try {
+      await nativeUpdate(applied)
+    } finally {
+      endEngUpdatePhase()
+    }
   }
   wrapped.__threejsWallClockWrapped = true
 }
@@ -219,6 +235,7 @@ export function resetSceneEngineScheduler(): void {
   diagCount = 0
   tickEpoch = 0
   resetPlayModePointerUiEgress()
+  resetEngUpdatePhases()
 }
 
 export function resetSceneEngineDiagCount(): void {

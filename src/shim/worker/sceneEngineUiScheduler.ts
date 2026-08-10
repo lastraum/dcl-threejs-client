@@ -13,6 +13,13 @@ import {
   shouldSuppressCooperativeReactEcs as shouldSuppressPointerSessionReactEcs
 } from './sceneWorkerInputSession'
 import {
+  addReactWallMs,
+  addSystemsWallMs,
+  noteSystemRun,
+  noteSystemsLoopBegin,
+  noteSystemsLoopEnd
+} from './workerEngUpdatePhases'
+import {
   resolveWorkerUiBackground,
   resolveWorkerUiDropdown,
   resolveWorkerUiInput,
@@ -227,6 +234,7 @@ export function installEngineSystemLoopPartition(): void {
     // until async admin toolkit setUiRenderer) → permanent mount=0.
     let react: SystemItem | undefined
     let scale: SystemItem | undefined
+    const sceneSystems: SystemItem[] = []
     for (const system of systems) {
       const name = system.name
       if (name === '@dcl/react-ecs') {
@@ -237,17 +245,30 @@ export function installEngineSystemLoopPartition(): void {
         if (!scale) scale = system
         continue
       }
-      safeRunSystem(system, dt, runOne)
+      sceneSystems.push(system)
     }
+    // WSP v2 Phase 0 — measure only (same run order as before).
+    noteSystemsLoopBegin(sceneSystems.length + (scale ? 1 : 0) + (react ? 1 : 0))
+    const sysT0 = performance.now()
+    for (const system of sceneSystems) {
+      noteSystemRun(system.name, () => safeRunSystem(system, dt, runOne))
+    }
+    addSystemsWallMs(performance.now() - sysT0)
+
     const suppressReact = shouldDeferCooperativeReactEcs()
     if (suppressReact && cooperativeSchedulerTickDepth > 0 && !isPointerInteractiveTickActive()) {
       cooperativeReactEcsSkippedThisTick = true
     }
-    if (scale && !suppressReact) safeRunSystem(scale, dt, runOne)
+    const reactT0 = performance.now()
+    if (scale && !suppressReact) {
+      noteSystemRun(scale.name || '@dcl/react-ecs-ui-scale', () => safeRunSystem(scale!, dt, runOne))
+    }
     if (react && !suppressReact) {
-      safeRunSystem(react, dt, runOne)
+      noteSystemRun(react.name || '@dcl/react-ecs', () => safeRunSystem(react!, dt, runOne))
       if (cooperativeSchedulerTickDepth > 0) lastCooperativeReactEcsAt = performance.now()
     }
+    addReactWallMs(performance.now() - reactT0)
+    noteSystemsLoopEnd()
   }
 }
 

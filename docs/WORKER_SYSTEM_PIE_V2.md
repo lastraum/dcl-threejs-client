@@ -224,10 +224,11 @@ send: async (messages) => {
 
 **Fix (0.5f):** One in-flight main hop; queue real outbound; empty/inbound poll ≤20Hz. Still pure async → ~5 FPS + sync weirdness.
 
-**0.5e–g sendBinary experiments REVERTED** to blocking await (baseline). Non-blocking
-flooded main or broke sync. postDump root cause (network-first `await sendBinary`) remains
-documented for a future fix that cannot spam main (e.g. renderer-first transport order
-in scene bundle, or main-side empty fast-path without 60Hz posts).
+**0.5e–g worker-side sendBinary experiments REVERTED** (flooded main).  
+
+**0.5h main-side empty fast-path:** `handleSendBinary` with no outbound only
+`drainSceneBinaryInbound()` — no LiveKit publish hop. Worker still awaits the RPC, but
+main work is O(queue). Real outbound still `await sendBinary(chunks)`.
 
 ### Phase 0.6 — Main hitch lines (always-on, sparse)
 

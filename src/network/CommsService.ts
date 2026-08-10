@@ -1223,6 +1223,14 @@ export class CommsService {
     return this.inboundQueue.isHoldDrain()
   }
 
+  /**
+   * Drain buffered scene-binary for the worker without LiveKit publish.
+   * Used when network transport's sendBinary has empty outbound (every eng.update).
+   */
+  drainSceneBinaryInbound(): Uint8Array[] {
+    return this.inboundQueue.drain()
+  }
+
   async sendBinary(data: Uint8Array[], addresses: string[] = []): Promise<Uint8Array[]> {
     if (this.transport !== 'livekit' || !this.sceneId) {
       // RFC5 has no directed peer targeting — broadcast only (rare fallback path).

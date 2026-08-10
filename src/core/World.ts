@@ -5141,8 +5141,11 @@ export class World {
     const broadcast = [...(body.data ?? []), ...broadcastFromPeers]
     const sent: Uint8Array[] = []
 
+    // WSP postDump: network transport await sendBinary every eng.update even when empty
+    // (xsend=n:0). Drain inbound only — do not round-trip LiveKit publish path.
+    // Worker still awaits this RPC, but main work is O(queue drain) not publish.
     if (broadcast.length === 0 && directed.length === 0) {
-      return { data: await this.comms.sendBinary([]) }
+      return { data: this.comms.drainSceneBinaryInbound() }
     }
 
     logSyncOutbound({ broadcast, directed })

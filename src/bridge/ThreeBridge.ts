@@ -550,6 +550,10 @@ export class ThreeBridge {
             const mesh = obj.getObjectByName(mk)
             if (mesh) unfreezeObject3D(mesh)
             this.pendingMeshEntities.delete(entity)
+            // Motion promote replaced instanced rest — re-apply ECS Material to the clone.
+            if (this.ecs.Material.has(entity)) {
+              this.pendingMaterialEntities.add(entity)
+            }
             return
           }
         }
@@ -949,6 +953,11 @@ export class ThreeBridge {
     if (this.ecs.GltfNodeModifiers.has(entity)) {
       this.pendingGltfNodeModEntities.add(entity)
       void this.runGltfNodeModifiersPass()
+    }
+    // ECS Material often lands before the private clone exists (poker deal cards, PE props).
+    // Re-queue so maps/colors apply to the live mesh — not the detached instanced rest pose.
+    if (this.ecs.Material.has(entity)) {
+      this.pendingMaterialEntities.add(entity)
     }
     // PE/Camera-parented roots often get Gltf on a child after the first CRDT parent pass —
     // re-walk reserved parents so the mesh follows the live player/camera root.

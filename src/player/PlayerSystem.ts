@@ -1021,13 +1021,14 @@ export class PlayerSystem {
       if (avatarTarget) {
         this.applyAvatarLookTarget(lookFrom, avatarTarget)
       }
-      // Only retarget freecam when the scene authors cameraTarget. Without it, keep the
-      // current orbit (yaw/pitch/distance) and hard-snap the boom onto new feet — otherwise
-      // seat/leave teleports leave an "underneath the floor" shot after VC/sit handoffs.
+      // Only retarget freecam when the scene authors cameraTarget. Without it, keep orbit
+      // angles and immediately re-seat boom on the new feet (do not wait a frame — seat
+      // InputModifier freeze + VC unbind left camera under the pad for a full tick).
       if (hasCameraTargetCoords(request.cameraTarget)) {
         this.applyCameraLookTarget(lookFrom, request.cameraTarget!)
+        this.placeFreecamBoomOnFeetHard()
       } else if (reposition) {
-        this.freecamSnapAfterVc = true
+        this.placeFreecamBoomOnFeetHard()
       }
       if (this.isFirstPerson()) {
         if (request.avatarTarget) {
@@ -2023,7 +2024,7 @@ export class PlayerSystem {
     const dist = _offset.length()
 
     // Prefer boom invert from lens position (matches Space Runner end keyframe).
-    if (dist >= 0.55) {
+    if (dist >= 0.55 && cam.position.y >= this.root.position.y + 0.45) {
       _offset.multiplyScalar(1 / dist)
       this.camPitch = clamp(
         Math.asin(THREE.MathUtils.clamp(_offset.y, -1, 1)),
@@ -2033,9 +2034,9 @@ export class PlayerSystem {
       this.camYaw = Math.atan2(_offset.x, _offset.z)
       this.camDistance = clamp(dist, CAM_FPV_MAX_DISTANCE + 0.2, CAM_DISTANCE_MAX)
     } else {
-      // Lens almost on pivot — fall back to look direction + default third-person range.
+      // Under-floor / on-pivot VC lens — do not seed freecam from it (poker sit under-table).
       _forward.set(0, 0, -1).applyQuaternion(cam.quaternion)
-      if (_forward.lengthSq() > 1e-8) {
+      if (_forward.lengthSq() > 1e-8 && cam.position.y >= this.root.position.y + 0.45) {
         _forward.normalize()
         this.camYaw = Math.atan2(-_forward.x, -_forward.z)
         if (_forward.y <= 0.15) {
@@ -2044,8 +2045,16 @@ export class PlayerSystem {
         } else {
           this.camPitch = CAM_PITCH_DEFAULT
         }
+        if (dist >= 0.55) {
+          this.camDistance = clamp(dist, CAM_FPV_MAX_DISTANCE + 0.2, CAM_DISTANCE_MAX)
+        } else {
+          this.camDistance = CAM_DISTANCE_DEFAULT
+        }
+      } else {
+        // Keep prior freecam yaw when possible; force safe pitch/distance.
+        this.camPitch = CAM_PITCH_DEFAULT
+        this.camDistance = CAM_DISTANCE_DEFAULT
       }
-      this.camDistance = CAM_DISTANCE_DEFAULT
     }
 
     // Forced camera mode areas still win after seed.
@@ -2067,6 +2076,64 @@ export class PlayerSystem {
         `pivot=(${_pivot.x.toFixed(1)},${_pivot.y.toFixed(1)},${_pivot.z.toFixed(1)})`,
       { level: 'info', alsoConsole: true }
     )
+  }
+
+  /**
+   * Place freecam boom on current feet **now** (hard snap). Keeps camYaw/pitch/distance
+   * unless the resulting lens would sit under the avatar (then safe third-person defaults).
+   */
+  private placeFreecamBoomOnFeetHard(): void {
+    // If a VirtualCamera still owns the lens, only arm snap for unbind — do not fight VC.
+    if (this.isSceneVirtualCameraDriving() || this.virtualCamera?.isMainCameraVcBound()) {
+      this.freecamSnapAfterVc = true
+      return
+    }
+    this.wasVirtualCameraActive = false
+    this.freecamSnapAfterVc = false
+
+    if (this.forcedCameraMode === 'first_person' || this.camDistance <= CAM_FPV_MAX_DISTANCE) {
+      _pivot.copy(this.root.position)
+      _pivot.y += CAM_EYE_HEIGHT + 0.3
+      _camEuler.set(this.camPitch, this.camYaw, 0)
+      _camQuat.setFromEuler(_camEuler)
+      this.host.camera.position.copy(_pivot)
+      this.host.camera.quaternion.copy(_camQuat)
+      return
+    }
+
+    let pitch = this.camPitch
+    let dist = clamp(this.camDistance, CAM_FPV_MAX_DISTANCE + 0.2, CAM_DISTANCE_MAX)
+    _pivot.copy(this.root.position)
+    _pivot.y += CAM_PIVOT_HEIGHT
+    let cosPitch = Math.cos(pitch)
+    let sinPitch = Math.sin(pitch)
+    let camY = _pivot.y + sinPitch * dist
+    // Refuse under-floor / under-avatar freecam after seat teleports.
+    if (camY < this.root.position.y + 0.85 || pitch < 0.08) {
+      pitch = CAM_PITCH_DEFAULT
+      dist = Math.max(dist, CAM_DISTANCE_DEFAULT)
+      this.camPitch = pitch
+      this.camDistance = dist
+      cosPitch = Math.cos(pitch)
+      sinPitch = Math.sin(pitch)
+      camY = _pivot.y + sinPitch * dist
+    }
+
+    _offset.set(
+      Math.sin(this.camYaw) * cosPitch * dist,
+      sinPitch * dist,
+      Math.cos(this.camYaw) * cosPitch * dist
+    )
+    if (pitch < 0.65) {
+      _shoulder.set(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw))
+      _offset.addScaledVector(_shoulder, CAM_SHOULDER_OFFSET * (1 - pitch / 0.65))
+    }
+    _camPos.copy(_pivot).add(_offset)
+    _lookAt.copy(this.root.position)
+    _lookAt.y += CAM_LOOK_HEIGHT
+    this.host.camera.position.copy(_camPos)
+    this.host.camera.lookAt(_lookAt)
+    this.host.camera.updateMatrixWorld(true)
   }
 
   private syncCamera(snap: boolean, delta = 0.016): void {

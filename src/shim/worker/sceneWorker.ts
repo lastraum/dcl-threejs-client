@@ -3715,26 +3715,84 @@ function takeBufferedSendBinaryInbound(): Uint8Array[] {
   return pendingInboundBinaries.splice(0)
 }
 
-/**
- * WSP Phase 0.5e — non-blocking sendBinary.
- *
- * SDK `message-bus-sync` network transport is registered *before* renderer and does:
- *   await sendBinary({ data: [], peerData })  every eng.update sendMessages.
- * Awaiting the main RPC every frame made postDump ≈ 100–400ms (and multi-second spikes)
- * even when xsend=n:0. Logs: postDump=403 xfilt=0ms×168 xsend=n:0|r:1821.
- *
- * Fix: post outbound to main without blocking eng.update; return any inbound already
- * buffered from the previous response (one-frame lag, Explorer-class async drain).
- */
-function rpcSendBinary(body: SendBinaryRequest): Promise<SendBinaryResponse> {
+function sendBinaryBodyHasOutbound(body: SendBinaryRequest): boolean {
+  if (body.data?.some((c) => c.byteLength > 0)) return true
+  for (const peer of body.peerData ?? []) {
+    if (peer.data?.some((c) => c.byteLength > 0)) return true
+  }
+  return false
+}
+
+/** Coalesce outbound until the next main hop (one in-flight max). */
+let sendBinaryQueued: SendBinaryRequest = { data: [], peerData: [] }
+let sendBinaryInFlight = false
+let lastSendBinaryPostAt = 0
+/** Empty/inbound-poll posts — do not hammer main at eng.update rate. */
+const SEND_BINARY_IDLE_POLL_MS = 50
+
+function queueSendBinaryOutbound(body: SendBinaryRequest): void {
+  if (body.data?.length) {
+    const data = sendBinaryQueued.data ? [...sendBinaryQueued.data] : []
+    for (const chunk of body.data) {
+      if (chunk.byteLength) data.push(chunk)
+    }
+    sendBinaryQueued = { ...sendBinaryQueued, data }
+  }
+  if (body.peerData?.length) {
+    const peerData = sendBinaryQueued.peerData ? [...sendBinaryQueued.peerData] : []
+    for (const entry of body.peerData) {
+      const chunks = (entry.data ?? []).filter((c) => c.byteLength > 0)
+      if (!chunks.length) continue
+      peerData.push({ data: chunks, address: entry.address ?? [] })
+    }
+    sendBinaryQueued = { ...sendBinaryQueued, peerData }
+  }
+}
+
+function takeQueuedSendBinaryOutbound(): SendBinaryRequest {
+  const out = sendBinaryQueued
+  sendBinaryQueued = { data: [], peerData: [] }
+  return out
+}
+
+function postSendBinaryToMain(body: SendBinaryRequest): void {
   const id = ++requestId
+  sendBinaryInFlight = true
+  lastSendBinaryPostAt = performance.now()
   pendingSendBinary.set(id, (response) => {
-    // Stash for the next network.send / immediate callers — do not block this tick.
+    sendBinaryInFlight = false
     if (response.data?.length) {
       for (const chunk of response.data) pendingInboundBinaries.push(chunk)
     }
+    // Flush any outbound that arrived while main was busy (real multiplayer data).
+    if (sendBinaryBodyHasOutbound(sendBinaryQueued)) {
+      postSendBinaryToMain(takeQueuedSendBinaryOutbound())
+    }
   })
   ctx.postMessage({ type: 'comms-send-binary', id, body } satisfies SceneWorkerOutbound)
+}
+
+/**
+ * WSP Phase 0.5e/f — non-blocking + coalesced sendBinary.
+ *
+ * 0.5e: do not await main RTT inside eng.update (network transport is first and
+ *   `await sendBinary` every frame was postDump 100–400ms).
+ * 0.5f: do not postMessage main every eng.update either — after 0.5e the worker
+ *   ticked freely and flooded main (~60 sendBinary/s → 11–17 FPS). Coalesce to
+ *   one in-flight hop; idle/empty poll at most every SEND_BINARY_IDLE_POLL_MS.
+ */
+function rpcSendBinary(body: SendBinaryRequest): Promise<SendBinaryResponse> {
+  const hasOutbound = sendBinaryBodyHasOutbound(body)
+  if (hasOutbound) queueSendBinaryOutbound(body)
+
+  const now = performance.now()
+  const idleDue = now - lastSendBinaryPostAt >= SEND_BINARY_IDLE_POLL_MS
+  // Real multiplayer bytes: post ASAP when not in-flight.
+  // Empty poll: rate-limited so inbound still drains without main thrash.
+  if (!sendBinaryInFlight && (hasOutbound || sendBinaryBodyHasOutbound(sendBinaryQueued) || idleDue)) {
+    postSendBinaryToMain(takeQueuedSendBinaryOutbound())
+  }
+
   // Immediate resolve — eng.update must not wait on main LiveKit publish.
   return Promise.resolve({ data: takeBufferedSendBinaryInbound() })
 }

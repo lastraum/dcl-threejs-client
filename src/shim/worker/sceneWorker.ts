@@ -3706,17 +3706,37 @@ function rpcCommsAdapter(body: CommsAdapterRequest): Promise<{ success: boolean 
   })
 }
 
-function mergeSendBinaryResponse(body: SendBinaryResponse): SendBinaryResponse {
-  if (!pendingInboundBinaries.length) return body
-  return { data: [...body.data, ...pendingInboundBinaries.splice(0)] }
+/**
+ * Inbound scene-binary from main that arrived outside a sendBinary wait
+ * (async response after non-blocking send, or other ingress).
+ */
+function takeBufferedSendBinaryInbound(): Uint8Array[] {
+  if (!pendingInboundBinaries.length) return []
+  return pendingInboundBinaries.splice(0)
 }
 
+/**
+ * WSP Phase 0.5e — non-blocking sendBinary.
+ *
+ * SDK `message-bus-sync` network transport is registered *before* renderer and does:
+ *   await sendBinary({ data: [], peerData })  every eng.update sendMessages.
+ * Awaiting the main RPC every frame made postDump ≈ 100–400ms (and multi-second spikes)
+ * even when xsend=n:0. Logs: postDump=403 xfilt=0ms×168 xsend=n:0|r:1821.
+ *
+ * Fix: post outbound to main without blocking eng.update; return any inbound already
+ * buffered from the previous response (one-frame lag, Explorer-class async drain).
+ */
 function rpcSendBinary(body: SendBinaryRequest): Promise<SendBinaryResponse> {
   const id = ++requestId
-  return new Promise((resolve) => {
-    pendingSendBinary.set(id, (response) => resolve(mergeSendBinaryResponse(response)))
-    ctx.postMessage({ type: 'comms-send-binary', id, body } satisfies SceneWorkerOutbound)
+  pendingSendBinary.set(id, (response) => {
+    // Stash for the next network.send / immediate callers — do not block this tick.
+    if (response.data?.length) {
+      for (const chunk of response.data) pendingInboundBinaries.push(chunk)
+    }
   })
+  ctx.postMessage({ type: 'comms-send-binary', id, body } satisfies SceneWorkerOutbound)
+  // Immediate resolve — eng.update must not wait on main LiveKit publish.
+  return Promise.resolve({ data: takeBufferedSendBinaryInbound() })
 }
 
 function rpcGetUserData(): Promise<UserDataResponse> {

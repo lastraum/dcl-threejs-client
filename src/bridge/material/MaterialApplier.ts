@@ -503,10 +503,7 @@ export class MaterialApplier {
 
     let texturesOk = true
     for (const mesh of meshes) {
-      // GLB / non-plane meshes: use event-card map-U path (Material re-apply on promote
-      // used to skip gltfNodeModifier and leave plaza posters L–R mirrored).
-      const gltfMesh = mesh.userData.primitiveMeshKey == null
-      const ok = await this.applyToMesh(mesh, pb, gltfMesh ? { gltfNodeModifier: true } : undefined)
+      const ok = await this.applyToMesh(mesh, pb)
       if (!ok) texturesOk = false
     }
 
@@ -610,20 +607,16 @@ export class MaterialApplier {
     const geo = mesh.geometry as THREE.BufferGeometry | undefined
     const marqueeAtlas = !!geo?.userData?.dclTextAlongYBasis
     const flipY = mesh.userData.primitiveMeshKey != null && !marqueeAtlas
-    // Plaza event cards: LH GLB UVs read L–R mirrored in Three.
-    // **Geometry U flip** (not texture.repeat) — survives Material re-apply / TextureMove
-    // which kept overwriting map ST and made every texture-only fix look like a no-op.
-    // Marquee planes: leave geometry alone; only MeshRenderer scale.x uses texture flip.
+    // Plaza event cards: thumbnail GLB UVs are LH-mirrored; bottom (JUMP IN) UVs are normal.
+    // Parent Transform.scale.x = −1 is common. Flip map U when UV-mirror XOR scale-mirror.
+    // MeshRenderer planes with scale.x < 0 also need the flip (no UV-mirror bit).
     const worldMirror = objectWorldMirrorX(mesh)
-    const isGltfMaterialPath = !!options?.gltfNodeModifier && !marqueeAtlas
-    if (isGltfMaterialPath) {
-      ensureGeometryUFlipped(mesh, true)
-    }
-    const flipMapU =
-      !marqueeAtlas &&
-      !isGltfMaterialPath &&
-      mesh.userData.primitiveMeshKey != null &&
-      worldMirror
+    const uvMirror = meshUvMapsUMirroredOnX(mesh)
+    const flipMapU = !marqueeAtlas && (
+      options?.gltfNodeModifier
+        ? uvMirror !== worldMirror
+        : mesh.userData.primitiveMeshKey != null && worldMirror
+    )
 
     let texturesOk = true
     let alphaTex: THREE.Texture | null = null
@@ -773,7 +766,6 @@ export class MaterialApplier {
   ): THREE.Texture {
     // Clone so wrap/offset/tiling/tween UV never mutate the AssetCache entry.
     const tex = base.clone()
-    tex.userData.dclMapUFlipped = false
     tex.wrapS = wrapMode(opts.wrapMode)
     tex.wrapT = wrapMode(opts.wrapMode)
     tex.minFilter =
@@ -965,27 +957,31 @@ function getTextureDef(union?: TextureUnion): TextureDef | undefined {
 }
 
 /**
- * Flip geometry U in place (1−u). Idempotent via mesh.userData.dclGeomUFlipped.
- * Clones geometry first so shared GLB buffers are not mutated for every instance.
- * Survives Material re-clone / TextureMove (texture ST no longer carries orientation).
+ * True when mesh UVs map spatial −X → higher U than +X (L–R mirrored vs reading order).
+ * Plaza `event_card_thumbnail.glb` is authored this way for Unity LH; Three RH needs a map U flip
+ * unless parent scale.x is already negative (then they cancel).
  */
-function ensureGeometryUFlipped(mesh: THREE.Mesh, want: boolean): void {
-  const cur = !!mesh.userData.dclGeomUFlipped
-  if (cur === want) return
-  let geo = mesh.geometry as THREE.BufferGeometry | undefined
-  if (!geo) return
-  if (!mesh.userData.dclGeomUOwned) {
-    geo = geo.clone()
-    mesh.geometry = geo
-    mesh.userData.dclGeomUOwned = true
+function meshUvMapsUMirroredOnX(mesh: THREE.Mesh): boolean {
+  const pos = mesh.geometry?.getAttribute('position')
+  const uv = mesh.geometry?.getAttribute('uv')
+  if (!pos || !uv || pos.count < 2 || uv.count < 2) return false
+  let minX = Infinity
+  let maxX = -Infinity
+  let uAtMin = 0
+  let uAtMax = 0
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i)
+    if (x < minX) {
+      minX = x
+      uAtMin = uv.getX(i)
+    }
+    if (x > maxX) {
+      maxX = x
+      uAtMax = uv.getX(i)
+    }
   }
-  const uv = geo.getAttribute('uv') as THREE.BufferAttribute | undefined
-  if (!uv || uv.count < 1) return
-  for (let i = 0; i < uv.count; i++) {
-    uv.setX(i, 1 - uv.getX(i))
-  }
-  uv.needsUpdate = true
-  mesh.userData.dclGeomUFlipped = want
+  if (!(maxX - minX > 1e-5)) return false
+  return uAtMin > uAtMax + 1e-5
 }
 
 /** Product of local scale.x up the parent chain (DCL boards often use scale.x = −1). */
@@ -1008,15 +1004,13 @@ function objectWorldMirrorX(obj: THREE.Object3D): boolean {
 
 /**
  * Absolute map-U orientation: sample' = 1 − sample when wantFlip.
- * Idempotent vs `tex.userData.dclMapUFlipped`.
- * Negative repeat requires RepeatWrapping (default ClampToEdge breaks U flip).
+ * Idempotent vs `tex.userData.dclMapUFlipped` — requires applyUvTransform to keep that
+ * flag honest (never leave flipped ST with flag false, or re-apply double-flips).
+ * Event cards: first paint often before scale.x = −1; re-apply when scale settles.
  */
 function flipTextureU(tex: THREE.Texture, wantFlip = true): void {
   const isFlipped = !!tex.userData.dclMapUFlipped
   if (wantFlip === isFlipped) return
-  if (wantFlip && tex.wrapS === THREE.ClampToEdgeWrapping) {
-    tex.wrapS = THREE.RepeatWrapping
-  }
   const rep = tex.repeat.x
   const off = tex.offset.x
   tex.repeat.x = -rep

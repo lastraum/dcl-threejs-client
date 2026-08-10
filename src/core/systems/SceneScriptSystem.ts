@@ -2714,6 +2714,9 @@ export class SceneScriptSystem {
       })
   }
 
+  /** Throttle for WSP Phase 0.5 main apply logs. */
+  private lastWsp05MainApplyLogAt = 0
+
   /** Worker outbound (post-onStart) — ack + renderer-inbound-deliver. */
   private async handleCrdtOutboundBatch(
     batch: {
@@ -2725,6 +2728,16 @@ export class SceneScriptSystem {
   ): Promise<void> {
     const ackIds = batch.map((item) => item.id).filter((id): id is number => id !== undefined)
     let inbound: Uint8Array[] = []
+    // WSP v2 Phase 0.5 — main apply wall (independent of worker eng.update send/encode).
+    const applyT0 = performance.now()
+    let batchBytes = 0
+    let uiN = 0
+    let snapRows = 0
+    for (const item of batch) {
+      batchBytes += item.data?.byteLength ?? 0
+      if (item.uiEntities?.length) uiN = Math.max(uiN, item.uiEntities.length)
+      if (item.uiMountSnapshot?.length) snapRows += item.uiMountSnapshot.length
+    }
     try {
       if (!this.running) return
       inbound = await this.processWorkerOutboundCrdtBatch(batch)
@@ -2742,6 +2755,18 @@ export class SceneScriptSystem {
         )
       }
     } finally {
+      const applyMs = performance.now() - applyT0
+      // Correlate with [wsp0] send(enc=…) — main apply is off the worker clock.
+      if (applyMs >= 16) {
+        const now = performance.now()
+        if (now - this.lastWsp05MainApplyLogAt >= 1_500) {
+          this.lastWsp05MainApplyLogAt = now
+          console.warn(
+            `[wsp05] main crdt-apply ${applyMs.toFixed(0)}ms n=${batch.length} b=${batchBytes} ` +
+              `ui=${uiN} snap=${snapRows} ack=${ackIds.length} inbound=${inbound.length}`
+          )
+        }
+      }
       // Ack after apply (or on failure) — worker must not stall pointer-deliver-done awaiting ack.
       for (const id of ackIds) {
         this.worker?.postMessage({ type: 'crdt-outbound-ack', id } satisfies MainToWorker)

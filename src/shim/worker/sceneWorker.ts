@@ -40,7 +40,7 @@ import {
   patchSceneBundle,
   patchSceneBundleWithCheckerStrip
 } from './pointerEventColliderCheckerPatch'
-import { noteCrdtSendToRenderer } from './workerEngUpdatePhases'
+import { noteCrdtSendToRenderer, type CrdtSendPath } from './workerEngUpdatePhases'
 
 import {
   applySceneInputSnapshotOnEngine,
@@ -3443,15 +3443,15 @@ function interruptPendingOutboundAcks(): void {
 }
 
 function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
-  // WSP v2 Phase 0b — measure crdtSendToRenderer wall (nested in eng.update sendMessages).
+  // WSP v2 Phase 0b/0.5 — measure crdtSendToRenderer wall + path (nested in sendMessages).
   const t0 = performance.now()
   const inBytes = data.byteLength
-  const note = (awaitedAck: boolean) => {
-    noteCrdtSendToRenderer(performance.now() - t0, inBytes, awaitedAck)
+  const note = (awaitedAck: boolean, path: CrdtSendPath, outBytes = inBytes) => {
+    noteCrdtSendToRenderer(performance.now() - t0, outBytes, awaitedAck, path)
   }
 
   if (sceneEvalInProgress) {
-    note(false)
+    note(false, 'eval', 0)
     return Promise.resolve([])
   }
   let copy = data.slice()
@@ -3460,7 +3460,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
     if (!shouldAttachUiMountSnapshot() && copy.byteLength > 0) {
       const stripped = stripSceneUiCrdtBytes(copy)
       if (!stripped.byteLength) {
-        note(false)
+        note(false, 'strip-ui', 0)
         return Promise.resolve([])
       }
       copy = stripped.slice()
@@ -3473,7 +3473,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
         copy = stripPlayerFrameComponentsFromCrdt(copy).slice()
       }
       if (!copy.byteLength) {
-        note(false)
+        note(false, 'strip-pe', 0)
         return Promise.resolve([])
       }
     }
@@ -3482,7 +3482,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
         const nonUi = stripSceneUiCrdtBytes(copy)
         if (nonUi.byteLength) pointerDeferredNonUi.push(nonUi)
       }
-      note(false)
+      note(false, 'defer-ptr', 0)
       return Promise.resolve([])
     }
     const attachUiMount = shouldAttachUiMountSnapshot()
@@ -3502,12 +3502,12 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
       // Empty outbound with the same UI mount set is pure thrash (spam-click
       // re-posted uiEntities every microtask → main-thread freezes, Tweens stall).
       if (attachUiMount && uiKey === lastOutboundUiEntitiesKey) {
-        note(false)
+        note(false, 'empty-dup', 0)
         return Promise.resolve([])
       }
       // Non-UI empty nudges: one post per microtask is enough for main to pump.
       if (!attachUiMount && crdtOutboundEmptyNudgeCoalesced) {
-        note(false)
+        note(false, 'empty-coal', 0)
         return Promise.resolve([])
       }
       if (!attachUiMount) {
@@ -3533,7 +3533,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
           } satisfies SceneWorkerOutbound)
         : ({ type: 'crdt-outbound', data: copy } satisfies SceneWorkerOutbound)
       ctx.postMessage(msg)
-      note(false)
+      note(false, 'empty-nudge', 0)
       return Promise.resolve([])
     }
     // Phase 3 — play mode cold CRDT batched per unified frame (no ack).
@@ -3544,22 +3544,23 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
         // Preserve order: flush any buffered cold CRDT first, then this hot chunk now.
         flushPlayModeColdCrdtEgress(postPlayModeColdCrdtFireAndForget)
         postPlayModeColdCrdtFireAndForget(copy)
-        note(false)
+        note(false, 'hot-phys', copy.byteLength)
         return Promise.resolve([])
       }
       bufferPlayModeColdCrdt(copy)
-      note(false)
+      note(false, 'cold', copy.byteLength)
       return Promise.resolve([])
     }
     logSceneUiOutbound(copy, uiEntities, uiMountSnapshot?.length ?? 0)
     const id = ++outboundAckId
+    const outBytes = copy.byteLength
     return new Promise((resolve) => {
       let settled = false
       const finish = (): void => {
         if (settled) return
         settled = true
         pendingOutboundAck.delete(id)
-        note(true)
+        note(true, 'ack', outBytes)
         resolve([])
       }
       pendingOutboundAck.set(id, finish)
@@ -3577,9 +3578,10 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
     })
   }
   const id = ++requestId
+  const bootBytes = copy.byteLength
   return new Promise((resolve) => {
     const finish = (value: Uint8Array[]): void => {
-      note(true)
+      note(true, 'boot', bootBytes)
       resolve(value)
     }
     pendingCrdt.set(id, finish)

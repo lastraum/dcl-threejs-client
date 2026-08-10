@@ -1,6 +1,6 @@
 # Worker System Pie v2 — design only (not implemented)
 
-**Status:** Phase 0 implemented on branch `feat-wsp` (meters only). Phase 1+ not implemented.  
+**Status:** Phase 0 / 0b / **0.5** instrumentation on branch `feat-wsp` (meters only). Phase 1+ not implemented.  
 **Supersedes:** WSP v1 (`da7110f`…`cdf8de5`) — **reverted** on `dev-latest` after Genesis load/FPS regressions.  
 **Baseline:** post-revert tip ≈ `fe4f24a` + terrain/platform (same architecture as pre-stall stack).
 
@@ -97,6 +97,48 @@ Genesis Phase 0 capture: **systems≈1ms, send≈post≈80–500ms** → systems
 
 Optional OK lines when `globalThis.__THREEJS_SCENEWORKER_PERF__ = true`.
 
+## Phase 0.5 — Send dig (instrumentation only)
+
+**Why:** Phase 0 showed `send ≫ systems` and `crdt ack=0` in play mode. Play-mode `rpcCrdt` is mostly fire-and-forget (`cold` / `hot-phys` / empty coalescing) — so a large `send` wall with `crdt≈0` means **SDK `sendMessages` encode** (dirty component iteration + buffer build), not waiting on main.
+
+### Worker split (`[wsp0]` log when total ≥ 80ms)
+
+| Field | Meaning |
+|-------|---------|
+| `send` | Full `sendMessages` wall |
+| `enc` | systemsLoopEnd → first `rpcCrdt` entry ≈ **encode** |
+| `xport` | Sum of `rpcCrdt` walls (post / strip / buffer) |
+| `tail` | After last `rpcCrdt` until update resolves |
+| `path=` | Outcome histogram: `cold`, `hot-phys`, `ack`, `empty-*`, `strip-*`, `boot`, … |
+
+Example:
+
+```text
+[wsp0] eng.update 113ms pre=0 systems=0 react=1 send=112(enc=111 xport=0 tail=1) crdt=0ms×1(ack=0/0ms b=641) path=cold:1 …
+```
+
+**Read:** encode≈send → dig dirty CRDT volume / per-component `getCrdtUpdates`; not systems pie.
+
+### Main apply (`[wsp05]` when apply ≥ 16ms)
+
+```text
+[wsp05] main crdt-apply 42ms n=1 b=641 ui=0 snap=0 ack=0 inbound=2
+```
+
+Independent of worker `enc` — correlates worker→main apply + projection fold. Throttled 1.5s.
+
+### Exit criterion
+
+- One Genesis + one light scene capture with `enc` / `xport` / `path` filled.  
+- Decision: reduce dirty churn (encode) vs main apply vs both.  
+- **Do not** start Phase 1 HOT/COLD until encode is small or proven unfixable.
+
+### Follow-ups (after capture, still not pie)
+
+- Count dirty components / top componentIds in encode (if enc stays huge)  
+- Throttle PE pose / UI fingerprint re-dirty if path is cold thrash  
+- Main COD: attach/materials (Phase 2) if `[wsp05]` dominate FPS more than enc  
+
 ## Phase 1 — Systems pie (flag `?wsp=1` or settings)
 
 ### HOT (prefer this tick)
@@ -137,11 +179,12 @@ Documented here so pie is not asked to solve them:
 
 ## Rollout
 
-1. Land Phase 0 on `dev-latest` (meters only).  
-2. Capture Genesis with logs on.  
-3. Land Phase 1 behind **default off**.  
-4. Default on only after metrics + smoke (pointer, fishing PE, scene UI, multiplayer chat).  
-5. Deploy CDN with commit SHA in build banner so prod ≠ tip confusion never repeats.
+1. Land Phase 0 + 0.5 on `dev-latest` (meters only).  
+2. Capture Genesis + PokerClub with `[wsp0]` / `[wsp05]` on — confirm encode vs main apply share.  
+3. Fix the dominant cost (dirty send encode and/or main apply) **before** systems pie.  
+4. Land Phase 1 behind **default off** only if systems remain a real share.  
+5. Default on only after metrics + smoke (pointer, fishing PE, scene UI, multiplayer chat).  
+6. Deploy CDN with commit SHA in build banner so prod ≠ tip confusion never repeats.
 
 ## Explicit anti-patterns (do not reintroduce)
 

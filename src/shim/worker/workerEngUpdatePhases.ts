@@ -1,19 +1,26 @@
 /**
- * WSP v2 Phase 0 / 0b — engine.update phase meters (behavior-neutral).
+ * WSP v2 Phase 0 / 0b / 0.5 — engine.update phase meters (behavior-neutral).
  *
  * @dcl/ecs engine.update is:
  *   await receiveMessages()  →  systems loop  →  await sendMessages()
  *
  * With our systems-loop partition, react-ecs runs at end of systems (Explorer order).
  *
- * Meters:
+ * Phase 0 meters:
  *   pre     ≈ receiveMessages (before systems loop)
  *   systems = scene systems (excludes react-ecs*)
  *   react   = @dcl/react-ecs + ui-scale
  *   send    = sendMessages wall (after systems loop → update resolves)
  *   crdt*   = rpcCrdt calls nested in send (or elsewhere during update)
  *
- * Does not skip, quarantine, or budget. Log when total ≥ SLOW_MS.
+ * Phase 0.5 — split send when total ≥ SLOW_MS:
+ *   encode  = systemsLoopEnd → first rpcCrdt entry (SDK dirty iterate + buffer build)
+ *   xport   = sum of rpcCrdt walls (postMessage / ack wait)
+ *   path=   = rpcCrdt outcome histogram (cold / ack / skip / …)
+ *
+ * Genesis capture: systems≈1ms, send≈80–500ms, crdt ack=0 → cost is encode, not systems pie.
+ *
+ * Does not skip, quarantine, or budget.
  *
  * @see docs/WORKER_SYSTEM_PIE_V2.md
  */
@@ -25,17 +32,43 @@ export type EngUpdatePhaseSnapshot = {
   reactMs: number
   /** SDK sendMessages wall (was labeled post). */
   sendMs: number
+  /**
+   * Phase 0.5 — wall from systems loop end to first rpcCrdt entry.
+   * Dominated by component.getCrdtUpdates + transport buffer build when dirty.
+   */
+  sendEncodeMs: number
+  /** Phase 0.5 — sum of rpcCrdt walls (= crdtMs). */
+  sendTransportMs: number
+  /** Phase 0.5 — residual send after last rpcCrdt returns (usually ~0). */
+  sendTailMs: number
   /** Sum of rpcCrdt wall times during this update. */
   crdtMs: number
   crdtCalls: number
   crdtBytes: number
   crdtAckCalls: number
   crdtAckMs: number
+  /** rpcCrdt path → call count this update (Phase 0.5). */
+  crdtPaths: Record<string, number>
   systemRun: number
   systemCount: number
   systemsLoop: boolean
   dt: number
 }
+
+/** rpcCrdt outcome tags — keep short for log lines. */
+export type CrdtSendPath =
+  | 'eval'
+  | 'strip-ui'
+  | 'strip-pe'
+  | 'defer-ptr'
+  | 'empty-dup'
+  | 'empty-coal'
+  | 'empty-nudge'
+  | 'hot-phys'
+  | 'cold'
+  | 'ack'
+  | 'boot'
+  | 'other'
 
 const SLOW_MS = 80
 const SLOW_LOG_MIN_INTERVAL_MS = 1_500
@@ -58,6 +91,10 @@ type PhaseGate = {
   crdtBytes: number
   crdtAckCalls: number
   crdtAckMs: number
+  /** performance.now when first rpcCrdt note fires this update (0 = none). */
+  firstCrdtAt: number
+  lastCrdtAt: number
+  crdtPaths: Map<string, number>
 }
 
 const gate: PhaseGate = {
@@ -75,31 +112,42 @@ const gate: PhaseGate = {
   crdtCalls: 0,
   crdtBytes: 0,
   crdtAckCalls: 0,
-  crdtAckMs: 0
+  crdtAckMs: 0,
+  firstCrdtAt: 0,
+  lastCrdtAt: 0,
+  crdtPaths: new Map()
 }
 
 const systemMsEma = new Map<string, number>()
-let lastSnapshot: EngUpdatePhaseSnapshot = {
-  totalMs: 0,
-  preMs: 0,
-  systemsMs: 0,
-  reactMs: 0,
-  sendMs: 0,
-  crdtMs: 0,
-  crdtCalls: 0,
-  crdtBytes: 0,
-  crdtAckCalls: 0,
-  crdtAckMs: 0,
-  systemRun: 0,
-  systemCount: 0,
-  systemsLoop: false,
-  dt: 0
-}
+let lastSnapshot: EngUpdatePhaseSnapshot = emptySnapshot()
 let lastSlowLogAt = 0
 let passCount = 0
 
+function emptySnapshot(): EngUpdatePhaseSnapshot {
+  return {
+    totalMs: 0,
+    preMs: 0,
+    systemsMs: 0,
+    reactMs: 0,
+    sendMs: 0,
+    sendEncodeMs: 0,
+    sendTransportMs: 0,
+    sendTailMs: 0,
+    crdtMs: 0,
+    crdtCalls: 0,
+    crdtBytes: 0,
+    crdtAckCalls: 0,
+    crdtAckMs: 0,
+    crdtPaths: {},
+    systemRun: 0,
+    systemCount: 0,
+    systemsLoop: false,
+    dt: 0
+  }
+}
+
 export function getEngUpdatePhaseSnapshot(): EngUpdatePhaseSnapshot {
-  return { ...lastSnapshot }
+  return { ...lastSnapshot, crdtPaths: { ...lastSnapshot.crdtPaths } }
 }
 
 export function getEngUpdateTopSystems(limit = TOP_LOG): { name: string; ms: number }[] {
@@ -113,22 +161,8 @@ export function resetEngUpdatePhases(): void {
   systemMsEma.clear()
   passCount = 0
   lastSlowLogAt = 0
-  lastSnapshot = {
-    totalMs: 0,
-    preMs: 0,
-    systemsMs: 0,
-    reactMs: 0,
-    sendMs: 0,
-    crdtMs: 0,
-    crdtCalls: 0,
-    crdtBytes: 0,
-    crdtAckCalls: 0,
-    crdtAckMs: 0,
-    systemRun: 0,
-    systemCount: 0,
-    systemsLoop: false,
-    dt: 0
-  }
+  lastSnapshot = emptySnapshot()
+  gate.crdtPaths.clear()
 }
 
 function recordSystemMs(name: string, ms: number): void {
@@ -166,6 +200,9 @@ export function beginEngUpdatePhase(dt: number): void {
   gate.crdtBytes = 0
   gate.crdtAckCalls = 0
   gate.crdtAckMs = 0
+  gate.firstCrdtAt = 0
+  gate.lastCrdtAt = 0
+  gate.crdtPaths.clear()
 }
 
 /** Systems-loop partition entered (after receiveMessages). */
@@ -208,11 +245,20 @@ export function noteSystemsLoopEnd(): void {
 }
 
 /**
- * Record one crdtSendToRenderer (rpcCrdt) wall time.
+ * Record one crdtSendToRenderer (rpcCrdt) wall time + Phase 0.5 path tag.
  * @param awaitedAck true when the call waited on crdt-outbound-ack / crdt-send response
+ * @param path short outcome tag (cold, ack, empty-nudge, …)
  */
-export function noteCrdtSendToRenderer(ms: number, bytes: number, awaitedAck: boolean): void {
+export function noteCrdtSendToRenderer(
+  ms: number,
+  bytes: number,
+  awaitedAck: boolean,
+  path: CrdtSendPath | string = 'other'
+): void {
   if (!gate.active || ms < 0) return
+  const now = performance.now()
+  if (gate.firstCrdtAt <= 0) gate.firstCrdtAt = now - Math.max(0, ms)
+  gate.lastCrdtAt = now
   gate.crdtCalls++
   gate.crdtMs += ms
   gate.crdtBytes += Math.max(0, bytes)
@@ -220,6 +266,21 @@ export function noteCrdtSendToRenderer(ms: number, bytes: number, awaitedAck: bo
     gate.crdtAckCalls++
     gate.crdtAckMs += ms
   }
+  const key = path || 'other'
+  gate.crdtPaths.set(key, (gate.crdtPaths.get(key) ?? 0) + 1)
+}
+
+function formatCrdtPaths(paths: Map<string, number> | Record<string, number>): string {
+  const entries =
+    paths instanceof Map
+      ? [...paths.entries()]
+      : Object.entries(paths)
+  if (!entries.length) return '—'
+  entries.sort((a, b) => b[1] - a[1])
+  return entries
+    .slice(0, 8)
+    .map(([k, n]) => `${k}:${n}`)
+    .join('|')
 }
 
 /** Call in finally after nativeUpdate resolves. */
@@ -237,17 +298,43 @@ export function endEngUpdatePhase(): EngUpdatePhaseSnapshot {
       ? Math.max(0, now - gate.systemsLoopEnd)
       : Math.max(0, totalMs - systemsMs - reactMs - preMs)
 
+  // Phase 0.5 — split send wall.
+  // encode: systems end → entry into first rpcCrdt (SDK dirty dump + buffer).
+  // xport:  nested rpcCrdt walls (usually ~0 in play — fire-and-forget cold buffer).
+  // tail:   after last rpcCrdt returns until update resolves.
+  let sendEncodeMs = 0
+  let sendTransportMs = gate.crdtMs
+  let sendTailMs = 0
+  if (gate.systemsLoopEnd > 0) {
+    if (gate.firstCrdtAt > 0) {
+      sendEncodeMs = Math.max(0, gate.firstCrdtAt - gate.systemsLoopEnd)
+      sendTailMs = Math.max(0, now - gate.lastCrdtAt)
+    } else {
+      // No transport call — entire send wall is encode/filter with empty payload.
+      sendEncodeMs = sendMs
+      sendTransportMs = 0
+      sendTailMs = 0
+    }
+  }
+
+  const pathsObj: Record<string, number> = {}
+  for (const [k, v] of gate.crdtPaths) pathsObj[k] = v
+
   const snap: EngUpdatePhaseSnapshot = {
     totalMs,
     preMs,
     systemsMs,
     reactMs,
     sendMs,
+    sendEncodeMs,
+    sendTransportMs,
+    sendTailMs,
     crdtMs: gate.crdtMs,
     crdtCalls: gate.crdtCalls,
     crdtBytes: gate.crdtBytes,
     crdtAckCalls: gate.crdtAckCalls,
     crdtAckMs: gate.crdtAckMs,
+    crdtPaths: pathsObj,
     systemRun: gate.systemRun,
     systemCount: gate.systemCount,
     systemsLoop: gate.systemsLoop,
@@ -264,12 +351,15 @@ export function endEngUpdatePhase(): EngUpdatePhaseSnapshot {
       const top = getEngUpdateTopSystems(TOP_LOG)
         .map((x) => `${x.name.slice(0, 28)}:${x.ms.toFixed(0)}`)
         .join(' ')
-      // send ≈ SDK sendMessages; crdt nested inside (or concurrent) rpcCrdt walls.
+      // encode vs xport: when encode dominates, next dig is dirty CRDT size / component churn —
+      // not HOT/COLD systems pie and not main ack (play mode is fire-and-forget).
       console.warn(
         `[wsp0] eng.update ${totalMs.toFixed(0)}ms ` +
           `pre=${preMs.toFixed(0)} systems=${systemsMs.toFixed(0)} react=${reactMs.toFixed(0)} ` +
-          `send=${sendMs.toFixed(0)} crdt=${snap.crdtMs.toFixed(0)}ms×${snap.crdtCalls}` +
+          `send=${sendMs.toFixed(0)}(enc=${sendEncodeMs.toFixed(0)} xport=${sendTransportMs.toFixed(0)} tail=${sendTailMs.toFixed(0)}) ` +
+          `crdt=${snap.crdtMs.toFixed(0)}ms×${snap.crdtCalls}` +
           `(ack=${snap.crdtAckCalls}/${snap.crdtAckMs.toFixed(0)}ms b=${snap.crdtBytes}) ` +
+          `path=${formatCrdtPaths(gate.crdtPaths)} ` +
           `n=${snap.systemRun}/${snap.systemCount} loop=${snap.systemsLoop ? 1 : 0} dt=${snap.dt.toFixed(3)} ` +
           `top=${top || '—'}`
       )
@@ -283,7 +373,8 @@ export function endEngUpdatePhase(): EngUpdatePhaseSnapshot {
       .join(' ')
     console.info(
       `[wsp0] ok total=${totalMs.toFixed(1)}ms pre=${preMs.toFixed(1)} sys=${systemsMs.toFixed(1)} ` +
-        `react=${reactMs.toFixed(1)} send=${sendMs.toFixed(1)} crdt=${snap.crdtMs.toFixed(1)}×${snap.crdtCalls} ` +
+        `react=${reactMs.toFixed(1)} send=${sendMs.toFixed(1)}(enc=${sendEncodeMs.toFixed(1)}) ` +
+        `crdt=${snap.crdtMs.toFixed(1)}×${snap.crdtCalls} path=${formatCrdtPaths(pathsObj)} ` +
         `top=${top || '—'}`
     )
   }

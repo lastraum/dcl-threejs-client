@@ -133,11 +133,38 @@ Independent of worker `enc` — correlates worker→main apply + projection fold
 - Decision: reduce dirty churn (encode) vs main apply vs both.  
 - **Do not** start Phase 1 HOT/COLD until encode is small or proven unfixable.
 
-### Follow-ups (after capture, still not pie)
+### Genesis capture (2026-08-09, ~22 FPS, logs on)
 
-- Count dirty components / top componentIds in encode (if enc stays huge)  
+| Signal | Value |
+|--------|--------|
+| systems / react | **1–5ms** |
+| send / enc | **80–1220ms** (enc ≈ send) |
+| xport / ack | **0** (play fire-and-forget) |
+| path | almost always **`hot-phys:1`** (Physics / Material / MeshRenderer / Tween in payload) |
+| main `[wsp05]` | **16–86ms** apply (secondary; real) |
+| pointer | edge budget 700ms exceeded while eng.update stuck in encode |
+| phys | post-seal SQ heal spam `didHit=false` map=1070 (COD, not WSP) |
+
+**Conclusion:** Phase 0.5 exit met. Do **not** start systems pie. Next: attribute encode to component (`encTop=`) then cut dirty churn / serialize waste.
+
+### Phase 0.5b — per-component encode meters
+
+Wrap `component.getCrdtUpdates` after engine bind. Slow `[wsp0]` lines add:
+
+```text
+encTop=Transform:90ms×400 Tween:20ms×12 Material:5ms×3
+```
+
+(`ms` = getCrdtUpdates wall; `×N` = yielded PUT/DELETE messages.)
+
+Also fixed: transfer-before-note made `b=0` on hot-phys; length is captured pre-`postMessage`.
+
+### Follow-ups (after encTop capture, still not pie)
+
+- Cut dirty churn for top `encTop` components (often Transform/Tween/Material every frame)  
+- LWW serialize-even-when-unchanged path in `@dcl/ecs` getCrdtUpdates (compare after full serialize)  
+- Main COD: attach/materials / SQ heal if `[wsp05]` + phys spam dominate FPS  
 - Throttle PE pose / UI fingerprint re-dirty if path is cold thrash  
-- Main COD: attach/materials (Phase 2) if `[wsp05]` dominate FPS more than enc  
 
 ## Phase 1 — Systems pie (flag `?wsp=1` or settings)
 

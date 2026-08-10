@@ -119,6 +119,11 @@ const gate: PhaseGate = {
 }
 
 const systemMsEma = new Map<string, number>()
+/** Per-update getCrdtUpdates wall by component (Phase 0.5b). */
+const crdtCompMs = new Map<string, number>()
+const crdtCompYields = new Map<string, number>()
+/** componentIds already wrapped per engine (re-scan after preregister / onStart). */
+const crdtEncodeWrappedIds = new WeakMap<object, Set<number>>()
 let lastSnapshot: EngUpdatePhaseSnapshot = emptySnapshot()
 let lastSlowLogAt = 0
 let passCount = 0
@@ -159,10 +164,85 @@ export function getEngUpdateTopSystems(limit = TOP_LOG): { name: string; ms: num
 
 export function resetEngUpdatePhases(): void {
   systemMsEma.clear()
+  crdtCompMs.clear()
+  crdtCompYields.clear()
   passCount = 0
   lastSlowLogAt = 0
   lastSnapshot = emptySnapshot()
   gate.crdtPaths.clear()
+}
+
+/**
+ * Phase 0.5b — wrap every component.getCrdtUpdates so slow send encode attributes
+ * to component names (Transform / Material / Tween / …).
+ * Safe to call multiple times; wraps each new componentId once (after preregister / onStart).
+ */
+export function installCrdtEncodeComponentMeters(engine: {
+  componentsIter?: () => Iterable<{
+    componentId: number
+    componentName: string
+    getCrdtUpdates: () => Iterable<unknown>
+  }>
+}): void {
+  if (!engine?.componentsIter) return
+  const engKey = engine as object
+  let wrapped = crdtEncodeWrappedIds.get(engKey)
+  if (!wrapped) {
+    wrapped = new Set()
+    crdtEncodeWrappedIds.set(engKey, wrapped)
+  }
+  for (const comp of engine.componentsIter()) {
+    if (wrapped.has(comp.componentId)) continue
+    const orig = comp.getCrdtUpdates.bind(comp)
+    const label =
+      shortCrdtComponentLabel(comp.componentName, comp.componentId) || `c${comp.componentId}`
+    try {
+      comp.getCrdtUpdates = function* wrappedGetCrdtUpdates() {
+        if (!gate.active) {
+          yield* orig() as Generator
+          return
+        }
+        const t0 = performance.now()
+        let yields = 0
+        for (const msg of orig()) {
+          yields++
+          yield msg
+        }
+        const ms = performance.now() - t0
+        if (ms < 0.05 && yields === 0) return
+        crdtCompMs.set(label, (crdtCompMs.get(label) ?? 0) + ms)
+        if (yields > 0) {
+          crdtCompYields.set(label, (crdtCompYields.get(label) ?? 0) + yields)
+        }
+      } as typeof comp.getCrdtUpdates
+      wrapped.add(comp.componentId)
+    } catch {
+      /* frozen component — skip */
+    }
+  }
+}
+
+function shortCrdtComponentLabel(name: string, id: number): string {
+  const n = (name || '').replace(/^core(::|\/)/, '').replace(/^core-schema::/, '')
+  if (!n) return `c${id}`
+  // Prefer short stable ids in logs.
+  if (n === 'Transform' || n.endsWith('::Transform')) return 'Transform'
+  if (n.includes('Material')) return 'Material'
+  if (n.includes('MeshRenderer')) return 'MeshRenderer'
+  if (n.includes('TweenSequence')) return 'TweenSeq'
+  if (n.includes('Tween')) return 'Tween'
+  if (n.includes('Physics')) return 'Physics'
+  if (n.includes('UiTransform')) return 'UiTransform'
+  if (n.includes('UiBackground')) return 'UiBg'
+  if (n.includes('UiText')) return 'UiText'
+  if (n.includes('Animator')) return 'Animator'
+  if (n.includes('GltfContainer')) return 'Gltf'
+  if (n.includes('PointerEvents')) return 'PtrEv'
+  if (n.includes('Billboard')) return 'Billboard'
+  if (n.includes('Visibility')) return 'Vis'
+  if (n.includes('AudioSource')) return 'Audio'
+  if (n.includes('VideoPlayer')) return 'Video'
+  return n.length > 18 ? n.slice(0, 18) : n
 }
 
 function recordSystemMs(name: string, ms: number): void {
@@ -203,6 +283,8 @@ export function beginEngUpdatePhase(dt: number): void {
   gate.firstCrdtAt = 0
   gate.lastCrdtAt = 0
   gate.crdtPaths.clear()
+  crdtCompMs.clear()
+  crdtCompYields.clear()
 }
 
 /** Systems-loop partition entered (after receiveMessages). */
@@ -351,6 +433,15 @@ export function endEngUpdatePhase(): EngUpdatePhaseSnapshot {
       const top = getEngUpdateTopSystems(TOP_LOG)
         .map((x) => `${x.name.slice(0, 28)}:${x.ms.toFixed(0)}`)
         .join(' ')
+      // Phase 0.5b — which components spent time in getCrdtUpdates (encode).
+      const encTop = [...crdtCompMs.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 6)
+        .map(([name, ms]) => {
+          const y = crdtCompYields.get(name) ?? 0
+          return y > 0 ? `${name}:${ms.toFixed(0)}ms×${y}` : `${name}:${ms.toFixed(0)}ms`
+        })
+        .join(' ')
       // encode vs xport: when encode dominates, next dig is dirty CRDT size / component churn —
       // not HOT/COLD systems pie and not main ack (play mode is fire-and-forget).
       console.warn(
@@ -360,6 +451,7 @@ export function endEngUpdatePhase(): EngUpdatePhaseSnapshot {
           `crdt=${snap.crdtMs.toFixed(0)}ms×${snap.crdtCalls}` +
           `(ack=${snap.crdtAckCalls}/${snap.crdtAckMs.toFixed(0)}ms b=${snap.crdtBytes}) ` +
           `path=${formatCrdtPaths(gate.crdtPaths)} ` +
+          `encTop=${encTop || '—'} ` +
           `n=${snap.systemRun}/${snap.systemCount} loop=${snap.systemsLoop ? 1 : 0} dt=${snap.dt.toFixed(3)} ` +
           `top=${top || '—'}`
       )

@@ -40,7 +40,11 @@ import {
   patchSceneBundle,
   patchSceneBundleWithCheckerStrip
 } from './pointerEventColliderCheckerPatch'
-import { noteCrdtSendToRenderer, type CrdtSendPath } from './workerEngUpdatePhases'
+import {
+  installCrdtEncodeComponentMeters,
+  noteCrdtSendToRenderer,
+  type CrdtSendPath
+} from './workerEngUpdatePhases'
 
 import {
   applySceneInputSnapshotOnEngine,
@@ -3540,15 +3544,17 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
     // Physics force/impulse + Material/MeshRenderer paint boards must not wait for the
     // next cooperative tick / empty UI serial queue (pixelwars felt 3–5s recolor lag).
     if (!sceneOnUpdatePaused) {
+      // Capture length before postMessage transfer detaches the ArrayBuffer (was logging b=0).
+      const outLen = copy.byteLength
       if (crdtChunkHasPhysicsCombined(copy) || crdtChunkHasPaintBoardMaterial(copy)) {
         // Preserve order: flush any buffered cold CRDT first, then this hot chunk now.
         flushPlayModeColdCrdtEgress(postPlayModeColdCrdtFireAndForget)
         postPlayModeColdCrdtFireAndForget(copy)
-        note(false, 'hot-phys', copy.byteLength)
+        note(false, 'hot-phys', outLen)
         return Promise.resolve([])
       }
       bufferPlayModeColdCrdt(copy)
-      note(false, 'cold', copy.byteLength)
+      note(false, 'cold', outLen)
       return Promise.resolve([])
     }
     logSceneUiOutbound(copy, uiEntities, uiMountSnapshot?.length ?? 0)
@@ -3973,6 +3979,7 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     )
   }
   bindSceneEngineScheduler(sceneEngine)
+  installCrdtEncodeComponentMeters(sceneEngine)
   // Explorer order: onStart only queues crdtGetState via transport.onmessage.
   // First engine.update receives those messages (Name/Transform/…) then runs systems.
   // SDK entry-points schedule main() as Infinity priority so it sees main.crdt entities.
@@ -4543,6 +4550,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
           `[sceneWorker] renderer component preregister skipped — ${err instanceof Error ? err.message : String(err)}`
         )
       }
+      installCrdtEncodeComponentMeters(sceneEngine)
       const engineId = (sceneEngine as { _id?: number })._id
       workerLog(
         'log',

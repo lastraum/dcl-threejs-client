@@ -20,7 +20,7 @@ import { isGlbOffThreadParseEnabled } from './gltfWorkerTransfer'
 import { prepareGlbBytes } from './glbSanitizer'
 import { markSharedAssetResources } from './sharedAsset'
 import { cloneGltfInstance } from './skinnedMeshInstance'
-import { prepareAvatarMaterials } from '../avatar/materials'
+import { prepareAvatarMaterials, prepareEmotePropMaterials } from '../avatar/materials'
 import { prepareWearableCacheRoot } from '../avatar/wearableCache'
 import { clearLocomotionClipCache } from '../avatar/locomotionClipCache'
 import { disposeSessionAudioBufferCache } from '../media/AudioBufferCache'
@@ -379,9 +379,13 @@ export class AssetCache {
       sanitizeSceneGltfMaterials(entry.root)
       applySceneGltfEmissives(entry.root)
     } else {
+      // Emote props (dontsee cards, money particles, hammer) need the same material
+      // prep as wearables — sRGB maps + double-side alpha cards; hide colliders only.
       entry.root.traverse((obj) => {
         if (/collider/i.test(obj.name)) obj.visible = false
       })
+      prepareAvatarMaterials(entry.root)
+      prepareEmotePropMaterials(entry.root)
     }
     return entry
   }

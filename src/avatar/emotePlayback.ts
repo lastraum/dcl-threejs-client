@@ -114,6 +114,9 @@ export function prepareEmotePropRoot(propRoot: THREE.Object3D, propTrackTargets:
       obj.visible = true
       repairSkinnedMesh(obj)
       obj.skeleton?.update()
+      // SkeletonUtils clones share materials with the cache template — clone maps so
+      // prop playback cannot leave shared albedo white if a later apply mutates them.
+      cloneEmoteMeshMaterials(obj)
       return
     }
 
@@ -123,6 +126,7 @@ export function prepareEmotePropRoot(propRoot: THREE.Object3D, propTrackTargets:
     const name = normalizeBoneName(obj.name)
     if (propTrackTargets.has(name) || isEmotePropMesh(obj.name)) {
       obj.visible = true
+      cloneEmoteMeshMaterials(obj)
       return
     }
 
@@ -134,6 +138,25 @@ export function prepareEmotePropRoot(propRoot: THREE.Object3D, propTrackTargets:
     // Static sit anchors / collision proxies (e.g. sittingChair2 "Cube") — hide unless animated prop.
     obj.visible = false
   })
+}
+
+/** Per-instance material clone + sRGB albedo so emote props keep their maps. */
+function cloneEmoteMeshMaterials(mesh: THREE.Mesh): void {
+  const cloneOne = (mat: THREE.Material): THREE.Material => {
+    const next = mat.clone()
+    if ('map' in next && (next as THREE.MeshStandardMaterial).map) {
+      const map = (next as THREE.MeshStandardMaterial).map!
+      map.colorSpace = THREE.SRGBColorSpace
+      map.needsUpdate = true
+    }
+    next.needsUpdate = true
+    return next
+  }
+  if (Array.isArray(mesh.material)) {
+    mesh.material = mesh.material.map(cloneOne)
+  } else if (mesh.material) {
+    mesh.material = cloneOne(mesh.material)
+  }
 }
 
 /** @deprecated Use prepareEmotePropRoot */

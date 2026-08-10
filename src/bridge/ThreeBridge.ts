@@ -1762,6 +1762,7 @@ export class ThreeBridge {
         ) {
           if (!obj.userData.dclPromotedForTextureMat) {
             obj.userData.dclPromotedForTextureMat = true
+            this.materials.clearEntity(entity)
             this.promoteInstancedForMotion(entity, obj)
           }
           this.pendingMaterialEntities.add(entity)
@@ -2906,6 +2907,24 @@ export class ThreeBridge {
         processed++
         continue
       }
+      // Instanced GLTF + textured Material: promote to private clone before map apply.
+      // meshDirty already promotes once; Material-after-attach / deferred pass must too
+      // or maps never land (white deal cards / emote prop materials).
+      if (
+        (obj.userData.dclInstanced || this.instancer.has(entity)) &&
+        !materialIsScalarOnly(pb)
+      ) {
+        if (!obj.userData.dclPromotedForTextureMat) {
+          obj.userData.dclPromotedForTextureMat = true
+          this.promoteInstancedForMotion(entity, obj)
+        }
+        // Promote re-attaches async-ish; if still instanced or no visual yet, retry next tick.
+        if (obj.userData.dclInstanced || this.instancer.has(entity)) {
+          processed++
+          continue
+        }
+        this.materials.clearEntity(entity)
+      }
       // MeshRenderer: scalars-only attach must not skip textured maps. Previously
       // applyMeshRendererMaterialNow returned true after queue-pending and we
       // `continue`d without ever awaiting applyToObject3D — ground/wall planes stayed
@@ -3457,6 +3476,12 @@ export class ThreeBridge {
     if (this.isAvatarAttachDriven(entity)) return false
     // Explicit ECS Animator needs a private hierarchy for the mixer.
     if (this.ecs.Animator.has(entity)) return false
+    // Textured / video / avatar Material needs unique maps — InstancedMesh cannot
+    // bind per-entity textures (poker deal cards, press-E props stay white otherwise).
+    if (this.ecs.Material.has(entity)) {
+      const pb = this.ecs.Material.get(entity) as PbMaterial
+      if (!materialIsScalarOnly(pb)) return false
+    }
     // Embedded clips WITHOUT Animator used to force private clone so default autoplay
     // could run (ABC fireparticles). That also forced 10k+ pixelwars `tile-*.glb` clones
     // (export often includes unused tracks) → meshes≈12k / ~20 FPS.

@@ -123,7 +123,11 @@ export function pushEmoteContent(content: ContentFile[], assetUrl: (hash: string
     emoteContentByKey = new Map()
     for (const entry of content) {
       const leaf = leafName(entry.file)
-      for (const key of [entry.file, leaf, normalizeContentKey(entry.file), normalizeContentKey(leaf)]) {
+      // Same key variants as wearables — Catalyst often mismatches `Foo.png` vs `Foo.png.png`.
+      for (const key of wearableMappingKeyVariants(entry.file)) {
+        emoteContentByKey.set(key, entry.hash)
+      }
+      for (const key of wearableMappingKeyVariants(leaf)) {
         emoteContentByKey.set(key, entry.hash)
       }
     }
@@ -166,13 +170,15 @@ function resolveFromWearableMappings(url: string, leaf: string): string | null {
 
 function resolveFromEmoteManifest(url: string, leaf: string): string | null {
   if (!emoteAssetUrl) return null
-  const hash =
-    emoteContentByKey.get(url) ??
-    emoteContentByKey.get(leaf) ??
-    emoteContentByKey.get(safeDecodeURIComponent(url)) ??
-    emoteContentByKey.get(normalizeContentKey(url)) ??
-    emoteContentByKey.get(normalizeContentKey(leaf))
-  return hash ? emoteAssetUrl(hash) : null
+  for (const variant of wearableMappingKeyVariants(url)) {
+    const hash = emoteContentByKey.get(variant)
+    if (hash) return emoteAssetUrl(hash)
+  }
+  for (const variant of wearableMappingKeyVariants(leaf)) {
+    const hash = emoteContentByKey.get(variant)
+    if (hash) return emoteAssetUrl(hash)
+  }
+  return null
 }
 
 function resolveFromSceneManifest(url: string, leaf: string): string | null {

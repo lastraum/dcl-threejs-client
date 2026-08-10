@@ -336,25 +336,17 @@ export class AoiVisualLayer {
    * **before** play-ready. Live secondary **workers** stay off (capped + expensive).
    * Awaits until scatter queue is empty so play does not drain trees mid-walk.
    */
-  /**
-   * @param radiusCapM optional max radius (loading screen should pass ≤48 so 200m prefs
-   * do not starve primary plaza hydrate).
-   */
-  prewarmVisuals(dclX: number, dclZ: number, radiusCapM?: number): void {
+  prewarmVisuals(dclX: number, dclZ: number): void {
     if (this.disposed || !this.enabled || !this.ctx) return
     this.neighborActivityEnabled = true
     this.liveReconcileEnabled = false
     this.lastParcelKey = ''
-    const userR = renderQuality.getSceneLoadRadiusM()
-    const radius =
-      typeof radiusCapM === 'number' && Number.isFinite(radiusCapM)
-        ? Math.max(0, Math.min(userR, radiusCapM))
-        : userR
+    const radius = renderQuality.getSceneLoadRadiusM()
     const gen = ++this.prewarmGen
     this.prewarmActive = true
     console.info(
       `[aoi] prewarm visuals @ feet=(${dclX.toFixed(1)},${dclZ.toFixed(1)}) ` +
-        `radius=${radius}m (user=${userR}m, live workers gated — drain only while prewarmActive)`
+        `radius=${radius}m (live workers gated — drain only while prewarmActive)`
     )
     void this.runPrewarm(dclX, dclZ, radius, gen)
   }

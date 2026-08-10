@@ -884,16 +884,13 @@ export class World {
         }
       })
       this.scenePromote.bind(scene)
-      // Prewarm ground/roads while primary hydrates — cap radius so Scene Distance 200m
-      // does not compete with 10k–20k primary GltfContainers on the loading screen.
+      // Prewarm default ground + roads + scatter for Scene Distance while primary hydrates.
       const spawnFeet = scene.spawn
         ? { x: scene.spawn.x, z: scene.spawn.z }
         : { x: 8, z: 8 }
-      const userRadius = renderQuality.getSceneLoadRadiusM()
-      const hydratePrewarmM = Math.min(userRadius, 48)
-      this.aoiVisual.prewarmVisuals(spawnFeet.x, spawnFeet.z, hydratePrewarmM)
+      this.aoiVisual.prewarmVisuals(spawnFeet.x, spawnFeet.z)
       console.info(
-        `[aoi] Genesis walk — hydrate prewarm=${hydratePrewarmM}m (user Scene Distance=${userRadius}m) · FocusOwner=primary · base=${scene.baseParcel}`
+        `[aoi] Genesis walk — Scene Distance warm=${renderQuality.getSceneLoadRadiusM()}m · FocusOwner=primary · base=${scene.baseParcel}`
       )
     } else if (aoiOff) {
       this.aoiVisual.unbind()

@@ -643,7 +643,8 @@ export class SceneScriptSystem {
       this.readComponents,
       cache,
       scene,
-      () => this.bridge?.getEntityNodes()
+      () => this.bridge?.getEntityNodes(),
+      () => this.host?.camera ?? null
     )
     this.sceneUiBridge?.dispose()
     const uiDetached = opts?.uiDetached === true

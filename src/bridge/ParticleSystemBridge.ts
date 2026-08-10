@@ -49,6 +49,11 @@ type ParticleRuntime = {
   invParent: THREE.Matrix4
 }
 
+const _frustum = new THREE.Frustum()
+const _projScreen = new THREE.Matrix4()
+const _emitterWorld = new THREE.Vector3()
+const _emitterSphere = new THREE.Sphere()
+
 /** ECS ParticleSystem → GPU-instanced billboard sprites (Explorer parity). */
 export class ParticleSystemBridge {
   private readonly runtimes = new Map<Entity, ParticleRuntime>()
@@ -60,7 +65,9 @@ export class ParticleSystemBridge {
     private readonly ecs: MirrorComponents,
     private readonly cache: AssetCache,
     private readonly scene: ResolvedScene,
-    private readonly getNodes: () => Map<Entity, THREE.Group> | undefined
+    private readonly getNodes: () => Map<Entity, THREE.Group> | undefined,
+    /** Active camera for frustum prioritization (in-view systems always full rate). */
+    private readonly getCamera: () => THREE.Camera | null = () => null
   ) {}
 
   async sync(view: ProjectionView): Promise<void> {
@@ -155,14 +162,14 @@ export class ParticleSystemBridge {
     if (now - this.lastDiagAt > 3000) {
       this.lastDiagAt = now
       const ecsCount = [...view.getEntitiesWith(ParticleSystem)].length
-      // Always log once we have *any* signal — including ecs=0 so we know fire is not ParticleSystem.
       let live = 0
       for (const r of this.runtimes.values()) live += r.live.length
       clientDebugLog.log(
         'scene',
         `particles sync ecs=${ecsCount} runtimes=${this.runtimes.size} live=${live}` +
           (missingNode ? ` missingNode=${missingNode}` : '') +
-          (pendingCreates ? ` createFail=${pendingCreates}` : ''),
+          (pendingCreates ? ` createFail=${pendingCreates}` : '') +
+          ` frustumPriority=1`,
         { alsoConsole: true, throttleMs: 3000, throttleKey: 'particles-sync-diag' }
       )
     }
@@ -172,18 +179,45 @@ export class ParticleSystemBridge {
     const nodes = this.getNodes()
     if (!nodes) return
 
-    let totalLive = 0
-    for (const runtime of this.runtimes.values()) totalLive += runtime.live.length
-    const rateScale = totalLive > SCENE_PARTICLE_BUDGET ? SCENE_PARTICLE_BUDGET / totalLive : 1
+    // Frustum: every system whose emitter is in (or near) view plays at full rate.
+    // Off-camera systems do not emit (free budget / GPU); already-live particles still age out.
+    let frustumReady = false
+    const cam = this.getCamera()
+    if (cam) {
+      cam.updateMatrixWorld(false)
+      _projScreen.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse)
+      _frustum.setFromProjectionMatrix(_projScreen)
+      frustumReady = true
+    }
 
+    type Marked = { entity: Entity; runtime: ParticleRuntime; parent: THREE.Group; inView: boolean }
+    const marked: Marked[] = []
+    let liveInView = 0
     for (const [entity, runtime] of this.runtimes) {
       const parent = nodes.get(entity)
       if (!parent) continue
+      parent.updateWorldMatrix(true, false)
+      parent.getWorldPosition(_emitterWorld)
+      const radius = emitterRadius(runtime.spec)
+      _emitterSphere.center.copy(_emitterWorld)
+      _emitterSphere.radius = radius
+      const inView = !frustumReady || _frustum.intersectsSphere(_emitterSphere)
+      if (inView) liveInView += runtime.live.length
+      marked.push({ entity, runtime, parent, inView })
+    }
 
+    // Budget only among in-view systems — never starve visible VFX for off-camera emitters.
+    const rateScaleIn =
+      liveInView > SCENE_PARTICLE_BUDGET ? SCENE_PARTICLE_BUDGET / Math.max(1, liveInView) : 1
+
+    for (const { runtime, parent, inView } of marked) {
       const spec = runtime.spec
       const paused = spec.playbackState === PS_PAUSED
       const stopped = spec.playbackState === PS_STOPPED
-      const canEmit = spec.active !== false && !paused && !stopped && !runtime.finished
+      // Scene-paused still honored; we never force-play against ECS. Off-camera: stop *emit*
+      // so in-view systems get full budget, but keep simulating existing particles.
+      const sceneAllows = spec.active !== false && !paused && !stopped && !runtime.finished
+      const canEmit = sceneAllows && inView
 
       if (stopped) {
         runtime.live.length = 0
@@ -207,6 +241,7 @@ export class ParticleSystemBridge {
 
       const ctx: SpawnContext = { worldSpace: runtime.worldSpace, parent }
       const lifetime = Math.max(0.05, spec.lifetime ?? 5)
+      const rateScale = inView ? rateScaleIn : 0
 
       if (!paused && canEmit) {
         if (!runtime.prewarmed && spec.prewarm === true && runtime.loop) {
@@ -217,12 +252,30 @@ export class ParticleSystemBridge {
 
         const canEmitRate = runtime.loop || runtime.elapsed < lifetime
         if (canEmitRate) {
-          runtime.emitCarry = emitContinuous(runtime.live, spec, ctx, delta, runtime.emitCarry, rateScale)
+          runtime.emitCarry = emitContinuous(
+            runtime.live,
+            spec,
+            ctx,
+            delta,
+            runtime.emitCarry,
+            rateScale
+          )
         }
-        processBursts(runtime.live, spec, runtime.bursts, runtime.elapsed, runtime.prevElapsed, ctx, lifetime)
+        processBursts(
+          runtime.live,
+          spec,
+          runtime.bursts,
+          runtime.elapsed,
+          runtime.prevElapsed,
+          ctx,
+          lifetime
+        )
       }
 
-      if (!paused) simulateParticles(runtime.live, spec, delta)
+      // Always simulate while in view (or while live particles remain off-camera).
+      if (!paused && (inView || runtime.live.length > 0)) {
+        simulateParticles(runtime.live, spec, delta)
+      }
 
       if (!runtime.loop && runtime.live.length === 0) {
         const burstsDone = runtime.bursts.every((b) => b.cycles !== 0 && b.firedCycles >= b.cycles)
@@ -232,14 +285,15 @@ export class ParticleSystemBridge {
 
       let inv: THREE.Matrix4 | null = null
       if (runtime.worldSpace) {
-        parent.updateWorldMatrix(true, false)
         runtime.invParent.copy(parent.matrixWorld).invert()
         inv = runtime.invParent
       }
 
       uploadParticlesToGpu(runtime.gpu, runtime.live, spec, runtime.worldSpace, inv)
+      // Keep mesh visible when in view or still has live sprites (tail of burst).
       runtime.gpu.mesh.visible =
-        ((spec.active !== false && !stopped && !runtime.finished) || runtime.live.length > 0)
+        ((spec.active !== false && !stopped && !runtime.finished && inView) ||
+          runtime.live.length > 0)
     }
   }
 
@@ -306,4 +360,12 @@ export class ParticleSystemBridge {
     runtime.live.length = 0
     this.runtimes.delete(entity)
   }
+}
+
+/** Conservative emitter sphere so large VFX still count as in-view near the camera. */
+function emitterRadius(spec: ParticleSpec): number {
+  const life = Math.max(0.5, spec.lifetime ?? 5)
+  const speed = Math.max(0, spec.initialVelocitySpeed ?? 1)
+  // Spread ~ lifetime * speed; clamp so we don't keep half the plaza "in view".
+  return Math.min(48, Math.max(4, life * speed * 0.35 + 3))
 }

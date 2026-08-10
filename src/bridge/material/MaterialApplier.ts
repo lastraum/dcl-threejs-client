@@ -607,14 +607,17 @@ export class MaterialApplier {
     const geo = mesh.geometry as THREE.BufferGeometry | undefined
     const marqueeAtlas = !!geo?.userData?.dclTextAlongYBasis
     const flipY = mesh.userData.primitiveMeshKey != null && !marqueeAtlas
-    // Plaza event cards: thumbnail GLB UVs are LH-mirrored; bottom (JUMP IN) UVs are normal.
-    // Parent Transform.scale.x = −1 is common. Flip map U when UV-mirror XOR scale-mirror.
-    // MeshRenderer planes with scale.x < 0 also need the flip (no UV-mirror bit).
+    // Plaza event cards: thumbnail GLB UVs are LH-mirrored (spatial −X → high U); JUMP IN
+    // bottom mesh UVs are normal. Three RH needs map-U flip on mirrored meshes only.
+    // Do NOT XOR with parent scale.x: negative board scale + map flip was cancelling and
+    // leaving posters L–R mirrored (Career Mondays / Business Migration). Scale is geometry;
+    // map flip is independent UV-space correction (pre-XOR law from before d266c743).
+    // MeshRenderer planes with scale.x < 0 still need the flip (no UV-mirror bit).
     const worldMirror = objectWorldMirrorX(mesh)
     const uvMirror = meshUvMapsUMirroredOnX(mesh)
     const flipMapU = !marqueeAtlas && (
       options?.gltfNodeModifier
-        ? uvMirror !== worldMirror
+        ? uvMirror
         : mesh.userData.primitiveMeshKey != null && worldMirror
     )
 
@@ -960,8 +963,8 @@ function getTextureDef(union?: TextureUnion): TextureDef | undefined {
 
 /**
  * True when mesh UVs map spatial −X → higher U than +X (L–R mirrored vs reading order).
- * Plaza `event_card_thumbnail.glb` is authored this way for Unity LH; Three RH needs a map U flip
- * unless parent scale.x is already negative (then they cancel).
+ * Plaza `event_card_thumbnail.glb` is authored this way for Unity LH; Three RH needs a map U flip.
+ * Parent scale.x does not cancel this — geometry scale and map U are independent here.
  */
 function meshUvMapsUMirroredOnX(mesh: THREE.Mesh): boolean {
   const pos = mesh.geometry?.getAttribute('position')

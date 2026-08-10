@@ -2811,15 +2811,12 @@ export class AppController {
       const TOAST_ID = 'remote-avatar-load'
       // Force 3D HUD placement (top-center) — not 2D shell top-right.
       notif.host.classList.add('social-mobile-notif-host--in-world-center')
-      // Show only while compose work is real (queue / in-range pending).
-      // Old rule used total-room peers: far pills kept "8/9" toast forever.
-      const busy =
-        p.queuePending > 0 ||
-        p.composeActive > 0 ||
-        (p.inRangeTotal > 0 && p.inRangePending > 0)
-      const showBanner = busy && (p.inRangeTotal > 1 || p.total > 5)
-      if (showBanner) {
-        const denom = Math.max(p.inRangeTotal, p.inRangeLoaded)
+      // Show only while the load queue is actually working.
+      // Never gate on inRangePending alone — one peer that never composes (fail / hold /
+      // outside queue) left "5/6" up forever.
+      const busy = p.queuePending > 0 || p.composeActive > 0
+      if (busy) {
+        const denom = Math.max(1, p.inRangeTotal, p.inRangeLoaded + p.queuePending)
         const num = p.inRangeLoaded
         notif.pushSystemToast({
           id: TOAST_ID,

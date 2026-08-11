@@ -284,6 +284,18 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
             }
           }
         },
+        {
+          type: 'toggle',
+          label: 'Avatar shadows',
+          defaultOn: rq.avatarShadowsEnabled ?? true,
+          onChange: (on) => renderQuality.setAvatarShadowsEnabled(on)
+        },
+        {
+          type: 'toggle',
+          label: 'Environment shadows',
+          defaultOn: rq.environmentShadowsEnabled ?? true,
+          onChange: (on) => renderQuality.setEnvironmentShadowsEnabled(on)
+        },
         { type: 'slider', label: 'Shadows Distance', min: 0, max: 200, defaultValue: 100, stub: true }
       ]
     },
@@ -470,6 +482,14 @@ export class GraphicsSettingsView {
             break
           case 'Quality':
             if (control.kind === 'dropdown') control.select.value = shadowLabel(opts.shadowQuality)
+            break
+          case 'Avatar shadows':
+            if (control.kind === 'toggle') control.input.checked = opts.avatarShadowsEnabled ?? true
+            break
+          case 'Environment shadows':
+            if (control.kind === 'toggle') {
+              control.input.checked = opts.environmentShadowsEnabled ?? true
+            }
             break
           case 'Scene Distance':
             if (control.kind === 'slider') {

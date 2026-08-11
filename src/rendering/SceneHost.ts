@@ -13,6 +13,7 @@ import {
   type MsaaSamples,
   type RenderQualityOptions
 } from './RenderQualitySettings'
+import { reapplySceneCastShadows } from './shadowCastPolicy'
 import { BloomPipeline } from './BloomPipeline'
 import { clientSettings } from './ClientSettings'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
@@ -258,6 +259,9 @@ export class SceneHost {
         ? THREE.PCFSoftShadowMap
         : THREE.BasicShadowMap
     this.renderer.setPixelRatio(effectivePixelRatio(resScale))
+
+    // Avatar vs environment cast toggles (and shadow off/on) re-apply without reloading meshes.
+    reapplySceneCastShadows(this.scene)
 
     // VSync On + Max FPS → pure rAF (display-aligned). VSync Off still uses rAF (browser limit).
     // Explicit FPS caps always apply.

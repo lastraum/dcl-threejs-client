@@ -6,6 +6,7 @@ import {
   isGltfVisibleClassMesh
 } from '../collision/gltfColliderNaming'
 import type { PhysicsColliderShapeDesc } from '../physics/PhysXWorld'
+import { setMeshDesiredCastShadow } from './shadowCastPolicy'
 
 /**
  * GPU instancing for scene GltfContainers that share a content hash.
@@ -408,10 +409,9 @@ export class SceneGltfInstancer {
       const mesh = new THREE.InstancedMesh(leaf.geometry, mat, capacity)
       mesh.name = `inst:${i}`
       mesh.count = 0
-      // Never cast from GPU InstancedMesh — N× leaf geometry into the sun/spot shadow
-      // maps tanks Genesis Plaza (~5–10fps). Receive only; Material / GltfNodeModifiers
-      // on private clones still control cast. Matches landscape gltfInstancing.
-      mesh.castShadow = false
+      // Ultra only (gltfDefaultCaster): high/medium stay receive-only so plaza instancing
+      // does not fill the sun map. Private clones + Material still use their own cast path.
+      setMeshDesiredCastShadow(mesh, true, 'environment', { gltfDefaultCaster: true })
       mesh.receiveShadow = true
       // Dense boards span the whole scene — geometry-only sphere at origin culls far tiles.
       mesh.frustumCulled = false
@@ -469,8 +469,8 @@ export class SceneGltfInstancer {
       const mesh = new THREE.InstancedMesh(leaf.geometry, old.material, nextCap)
       mesh.name = old.name
       mesh.count = bucket.used
-      mesh.castShadow = old.castShadow
-      mesh.receiveShadow = old.receiveShadow
+      setMeshDesiredCastShadow(mesh, true, 'environment', { gltfDefaultCaster: true })
+      mesh.receiveShadow = true
       mesh.frustumCulled = false
       mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 1e6)
       _instance.makeScale(0, 0, 0)

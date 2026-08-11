@@ -3,6 +3,7 @@ import type { ResolvedScene } from '../../dcl/content/types'
 import type { AssetCache } from '../../rendering/AssetCache'
 import { isSharedAssetResource } from '../../rendering/sharedAsset'
 import { renderQuality } from '../../rendering/RenderQualitySettings'
+import { setMeshDesiredCastShadow } from '../../rendering/shadowCastPolicy'
 import { resolveSceneTextureUrl } from './resolveTexture'
 import { applyPbrColors, applyPbrScalars, configureEmissiveRendering } from './pbrApply'
 import { configureSceneVideoTexture } from '../../media/videoTextureOrientation'
@@ -227,7 +228,8 @@ export function applyMaterialCastShadows(
     // Explicit true only — 10k+ MeshRenderer boards default-true and kill FPS
     cast = castShadows === true
   }
-  mesh.castShadow = cast
+  // Author Material path wins over GltfContainer ultra-default cast marker.
+  setMeshDesiredCastShadow(mesh, cast, 'environment', { gltfDefaultCaster: false })
   mesh.receiveShadow = true
 }
 

@@ -70,6 +70,7 @@ import {
 } from './GltfNodeModifiersSync'
 import type { PBGltfNodeModifiers } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/gltf_node_modifiers.gen'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
+import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
 
 import { gltfLoadingStateLabel, isGltfLoadingStateVerbose } from './gltfLoadingStateConfig'
 
@@ -245,15 +246,17 @@ function particleKey(entity: Entity): string {
 }
 
 /**
- * Scene GltfContainer default: receive only.
- * Mass-enabling castShadow on every plaza leaf re-draws the full scene into the sun
- * (+ spot) shadow map each frame and collapses FPS (~5–10 in Genesis). Authors still
- * control cast via Material.castShadows / GltfNodeModifiers; avatars keep their own cast.
+ * Scene GltfContainer shadow policy:
+ * - Always receive.
+ * - Cast only on Ultra (see dclGltfDefaultCaster) — high/medium/low stay receive-only so
+ *   plaza-scale maps do not collapse FPS. Material.castShadows / GltfNodeModifiers can still
+ *   enable cast on high when authors opt in.
  */
 function enableMeshShadows(root: THREE.Object3D): void {
   root.traverse((child) => {
     if (!(child as THREE.Mesh).isMesh) return
     const mesh = child as THREE.Mesh
+    setMeshDesiredCastShadow(mesh, true, 'environment', { gltfDefaultCaster: true })
     mesh.receiveShadow = true
   })
 }
@@ -2547,7 +2550,9 @@ export class ThreeBridge {
     const kind = primitiveKind(spec)
     primitive.userData.primitiveKind = kind
     // Solid architecture casts; dense ground planes stay non-casting (perf).
-    primitive.castShadow = kind !== 'plane' && !kind.startsWith('plane')
+    // Env cast toggle lives in Preferences → Avatar / Environment shadows.
+    const wantCast = kind !== 'plane' && !kind.startsWith('plane')
+    setMeshDesiredCastShadow(primitive, wantCast, 'environment')
     primitive.receiveShadow = true
     obj.add(primitive)
     return primitive

@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { applyAvatarToonShading } from '../avatar/materials'
 import { syncGltfInstanceRenderState } from '../collision/gltfRenderMeshes'
+import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
 import { PET_CATEGORY_CONFIG } from './petCategories'
 import { countMappedMaterials, parsePetGlbBytes } from './parsePetGlb'
 import type { PetAnimClipMap, PetAnimState, PetCategory, PetPose } from './types'
@@ -118,7 +119,8 @@ export class PetInstance {
       scene.traverse((obj) => {
         const mesh = obj as THREE.Mesh
         if (mesh.isMesh && mesh.visible) {
-          mesh.castShadow = true
+          // Same Preferences gate as avatars (Avatar shadows).
+          setMeshDesiredCastShadow(mesh, true, 'avatar')
           mesh.receiveShadow = true
           mesh.frustumCulled = true
         }

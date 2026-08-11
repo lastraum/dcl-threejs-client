@@ -5,6 +5,7 @@ import type { AssetCache } from '../rendering/AssetCache'
 import { resolveDclAssetUrl, wearableMappingKeyVariants } from '../rendering/DclTextureResolver'
 import { repairSkinnedMesh } from '../rendering/skinnedMeshInstance'
 import { disposeOwnedObject3D } from '../rendering/sharedAsset'
+import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
 import { sanitizeSceneGltfMaterials } from '../rendering/LandscapeAssetSanitizer'
 import { contentMappings, getMainFileUrl } from './peerApi'
 import { prepareAvatarMaterials, tintWearableMaterials } from './materials'
@@ -579,7 +580,7 @@ export function attachWearableFallback(
   wearableRoot.traverse((obj) => {
     if (obj instanceof THREE.SkinnedMesh) repairSkinnedMesh(obj)
     if (obj instanceof THREE.Mesh) {
-      obj.castShadow = true
+      setMeshDesiredCastShadow(obj, true, 'avatar')
       obj.receiveShadow = true
     }
   })
@@ -593,7 +594,8 @@ export function sanitizeWearableRoot(root: THREE.Object3D): void {
   root.traverse((obj) => {
     if (obj instanceof THREE.Mesh) {
       // Cast contact shadows onto landscape / scene floors (worlds island beach included).
-      obj.castShadow = true
+      // Preferences → Avatar shadows gates cast; remotes also apply distance budget.
+      setMeshDesiredCastShadow(obj, true, 'avatar')
       obj.receiveShadow = true
     }
     if (obj instanceof THREE.SkinnedMesh) {

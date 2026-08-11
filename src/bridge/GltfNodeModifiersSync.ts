@@ -6,6 +6,7 @@ import {
   type MaterialApplier,
   type PbMaterial
 } from './material/MaterialApplier'
+import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
 
 const ORIG_MAT_KEY = 'dclGltfNodeModOriginalMaterial'
 const ORIG_CAST_KEY = 'dclGltfNodeModOriginalCastShadow'
@@ -141,7 +142,9 @@ export async function applyGltfNodeModifiersToEntity(
 
       // Explicit GltfNodeModifiers.castShadows overrides Material (SDK path-level control).
       if (mod.castShadows !== undefined) {
-        mesh.castShadow = mod.castShadows
+        setMeshDesiredCastShadow(mesh, !!mod.castShadows, 'environment', {
+          gltfDefaultCaster: false
+        })
       }
     }
   }
@@ -195,7 +198,7 @@ export function restoreGltfNodeModifierOriginals(entityRoot: THREE.Object3D): vo
       delete mesh.userData[ORIG_MAT_KEY]
     }
     if (mesh.userData[ORIG_CAST_KEY] !== undefined) {
-      mesh.castShadow = !!mesh.userData[ORIG_CAST_KEY]
+      setMeshDesiredCastShadow(mesh, !!mesh.userData[ORIG_CAST_KEY], 'environment')
       delete mesh.userData[ORIG_CAST_KEY]
     }
     delete mesh.userData.primitiveDoubleSided
@@ -326,7 +329,11 @@ function cacheOriginalAppearance(mesh: THREE.Mesh): void {
     mesh.userData[ORIG_MAT_KEY] = Array.isArray(mat) ? mat.map((m) => m.clone()) : mat.clone()
   }
   if (mesh.userData[ORIG_CAST_KEY] === undefined) {
-    mesh.userData[ORIG_CAST_KEY] = mesh.castShadow
+    // Prefer ungated desired flag so Preferences env toggle can re-apply cleanly.
+    mesh.userData[ORIG_CAST_KEY] =
+      typeof mesh.userData.dclDesiredCastShadow === 'boolean'
+        ? mesh.userData.dclDesiredCastShadow
+        : mesh.castShadow
   }
 }
 

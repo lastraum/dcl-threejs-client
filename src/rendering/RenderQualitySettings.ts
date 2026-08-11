@@ -72,6 +72,16 @@ export type RenderQualityOptions = {
    * Off = distance sleep + fair-phase sampling (cheaper CBD). Independent of presets.
    */
   primaryFullRateAnimators: boolean
+  /**
+   * Local + remote avatar meshes cast into the sun/moon shadow map.
+   * Independent of quality tier (quality still controls map size / soft / off).
+   */
+  avatarShadowsEnabled: boolean
+  /**
+   * Scene GLTF / MeshRenderer / NFT / props cast into the shadow map.
+   * Landscape stays receive-only. Independent of avatar cast.
+   */
+  environmentShadowsEnabled: boolean
 }
 
 /** Min/max for Preferences → Scene Distance (AOI neighbor load radius). */
@@ -126,7 +136,7 @@ export const TONE_MAPPING_EXPOSURE: Record<RenderQualityTier, number> = {
 
 type PresetId = Exclude<GraphicsPreset, 'custom'>
 
-/** Graphics preset fields — AOI / toon / adaptive / animators / bloom mode are user-owned. */
+/** Graphics preset fields — AOI / toon / adaptive / animators / bloom mode / cast splits are user-owned. */
 type PresetBundle = Omit<
   RenderQualityOptions,
   | 'preset'
@@ -135,6 +145,8 @@ type PresetBundle = Omit<
   | 'adaptiveQualityEnabled'
   | 'primaryFullRateAnimators'
   | 'bloomMode'
+  | 'avatarShadowsEnabled'
+  | 'environmentShadowsEnabled'
 >
 
 const PRESET_BUNDLES: Record<PresetId, PresetBundle> = {
@@ -200,6 +212,9 @@ const DEFAULT_OPTIONS: RenderQualityOptions = {
   adaptiveQualityEnabled: true,
   /** On by default — full-rate primary clips; turn off for cheaper CBD. */
   primaryFullRateAnimators: true,
+  /** Split cast toggles — test avatar vs env shadow cost independently. */
+  avatarShadowsEnabled: true,
+  environmentShadowsEnabled: true,
   /**
    * Fast = 1× scene + luminance bloom (plaza-safe).
    * Selective is opt-in (2× extract was ~11ms on Genesis).
@@ -345,6 +360,24 @@ class RenderQualityStore {
 
   shadowsEnabled(): boolean {
     return this.getShadowQuality() !== 'off'
+  }
+
+  /** Avatar cast into the map (needs quality ≠ off). */
+  avatarCastShadowsActive(): boolean {
+    return this.shadowsEnabled() && this.options.avatarShadowsEnabled
+  }
+
+  /** Scene / prop cast into the map (needs quality ≠ off). */
+  environmentCastShadowsActive(): boolean {
+    return this.shadowsEnabled() && this.options.environmentShadowsEnabled
+  }
+
+  getAvatarShadowsEnabled(): boolean {
+    return this.options.avatarShadowsEnabled
+  }
+
+  getEnvironmentShadowsEnabled(): boolean {
+    return this.options.environmentShadowsEnabled
   }
 
   getShadowMapSize(): number {
@@ -503,7 +536,7 @@ class RenderQualityStore {
     this.patch({ primaryFullRateAnimators: !!primaryFullRateAnimators })
   }
 
-  /** Apply a named preset bundle (not custom). Preserves toon + AOI + adaptive + animators + bloom mode. */
+  /** Apply a named preset bundle (not custom). Preserves toon + AOI + adaptive + animators + bloom mode + cast splits. */
   applyPreset(preset: PresetId): void {
     const bundle = PRESET_BUNDLES[preset]
     this.commit({
@@ -513,6 +546,8 @@ class RenderQualityStore {
       sceneLoadRadiusM: this.options.sceneLoadRadiusM,
       adaptiveQualityEnabled: this.options.adaptiveQualityEnabled,
       primaryFullRateAnimators: this.options.primaryFullRateAnimators,
+      avatarShadowsEnabled: this.options.avatarShadowsEnabled,
+      environmentShadowsEnabled: this.options.environmentShadowsEnabled,
       bloomMode: this.options.bloomMode
     })
     // New ceiling — drop temporary overrides so the preset is what you get.
@@ -530,6 +565,14 @@ class RenderQualityStore {
       this.adaptiveShadowQuality = null
       this.notify()
     }
+  }
+
+  setAvatarShadowsEnabled(avatarShadowsEnabled: boolean): void {
+    this.patch({ avatarShadowsEnabled: !!avatarShadowsEnabled })
+  }
+
+  setEnvironmentShadowsEnabled(environmentShadowsEnabled: boolean): void {
+    this.patch({ environmentShadowsEnabled: !!environmentShadowsEnabled })
   }
 
   setSceneLightsEnabled(sceneLightsEnabled: boolean): void {
@@ -625,6 +668,12 @@ class RenderQualityStore {
     if (typeof next.primaryFullRateAnimators !== 'boolean') {
       next.primaryFullRateAnimators = this.options.primaryFullRateAnimators
     }
+    if (typeof next.avatarShadowsEnabled !== 'boolean') {
+      next.avatarShadowsEnabled = this.options.avatarShadowsEnabled
+    }
+    if (typeof next.environmentShadowsEnabled !== 'boolean') {
+      next.environmentShadowsEnabled = this.options.environmentShadowsEnabled
+    }
 
     if (partial.preset === undefined || partial.preset === 'custom') {
       next.preset = this.inferPreset(next)
@@ -673,7 +722,9 @@ class RenderQualityStore {
       a.avatarToonEnabled === b.avatarToonEnabled &&
       a.sceneLoadRadiusM === b.sceneLoadRadiusM &&
       a.adaptiveQualityEnabled === b.adaptiveQualityEnabled &&
-      a.primaryFullRateAnimators === b.primaryFullRateAnimators
+      a.primaryFullRateAnimators === b.primaryFullRateAnimators &&
+      a.avatarShadowsEnabled === b.avatarShadowsEnabled &&
+      a.environmentShadowsEnabled === b.environmentShadowsEnabled
     )
   }
 
@@ -723,6 +774,12 @@ class RenderQualityStore {
       }
       if (typeof parsed.primaryFullRateAnimators === 'boolean') {
         next.primaryFullRateAnimators = parsed.primaryFullRateAnimators
+      }
+      if (typeof parsed.avatarShadowsEnabled === 'boolean') {
+        next.avatarShadowsEnabled = parsed.avatarShadowsEnabled
+      }
+      if (typeof parsed.environmentShadowsEnabled === 'boolean') {
+        next.environmentShadowsEnabled = parsed.environmentShadowsEnabled
       }
       if (typeof parsed.sceneLoadRadiusM === 'number') {
         next.sceneLoadRadiusM = clampSceneLoadRadiusM(parsed.sceneLoadRadiusM)

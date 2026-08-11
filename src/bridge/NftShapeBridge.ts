@@ -10,6 +10,7 @@ import { color3ToThree } from './pbColor'
 import { buildDclPlaneGeometry } from './primitiveShapes'
 import { disposeOwnedObject3D } from '../rendering/sharedAsset'
 import { proxiedTextureUrl } from '../rendering/textureProxy'
+import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
 
 /** Default purple background (SDK docs / Explorer). */
 const DEFAULT_BG = { r: 0.6404918, g: 0.611472, b: 0.8584906 }
@@ -278,7 +279,7 @@ export class NftShapeBridge {
         root.traverse((child) => {
           if ((child as THREE.Mesh).isMesh) {
             const mesh = child as THREE.Mesh
-            mesh.castShadow = true
+            setMeshDesiredCastShadow(mesh, true, 'environment')
             mesh.receiveShadow = true
           }
         })

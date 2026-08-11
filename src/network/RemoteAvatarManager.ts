@@ -59,6 +59,7 @@ import { buildPlayerMirrorIdentity } from '../bridge/playerMirrorIdentity'
 import { GliderProp, GlideStateWire, glideStateWantsOpen } from '../avatar/GliderProp'
 import { perfNoteComposeMs } from '../util/perfCounters'
 import { logMainHitch } from '../debug/MainHitchLog'
+import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
 
 /** Packet / lerp settle epsilon (meters / radians). */
 const POSE_EPS = 0.02
@@ -1782,7 +1783,7 @@ export class RemoteAvatarManager {
   private setModelCastShadow(model: THREE.Object3D, cast: boolean): void {
     model.traverse((obj) => {
       if ((obj as THREE.Mesh).isMesh) {
-        ;(obj as THREE.Mesh).castShadow = cast
+        setMeshDesiredCastShadow(obj, cast, 'avatar')
       }
     })
   }
@@ -1802,11 +1803,11 @@ export class RemoteAvatarManager {
       ranked.push({ record, dist2 })
     }
     ranked.sort((a, b) => a.dist2 - b.dist2)
+    // Distance budget only — avatarShadowsEnabled gate is inside setMeshDesiredCastShadow.
     for (let i = 0; i < ranked.length; i++) {
-      const cast = i < REMOTE_SHADOW_CASTERS
       const model = ranked[i]!.record.model
       if (!model) continue
-      this.setModelCastShadow(model, cast)
+      this.setModelCastShadow(model, i < REMOTE_SHADOW_CASTERS)
     }
   }
 

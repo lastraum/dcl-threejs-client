@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { clone as cloneSkinnedRoot } from 'three/examples/jsm/utils/SkeletonUtils.js'
+import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
 
 /** Explorer CharacterMotion asset — same GLB as unity-explorer GliderProp.glb. */
 export const GLIDER_PROP_URL = '/avatar/glider/GliderProp.glb'
@@ -75,7 +76,7 @@ async function loadGliderTemplate(): Promise<THREE.Object3D> {
       root.traverse((obj) => {
         if ((obj as THREE.Mesh).isMesh) {
           const mesh = obj as THREE.Mesh
-          mesh.castShadow = true
+          setMeshDesiredCastShadow(mesh, true, 'avatar')
           mesh.receiveShadow = true
           mesh.frustumCulled = false
         }

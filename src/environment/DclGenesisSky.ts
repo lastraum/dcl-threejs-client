@@ -143,16 +143,21 @@ vec3 rotateY(vec3 dir, float angle) {
   return vec3(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z);
 }
 
-// DCL clouds gradient is HDR (keys >1 at midday). Keep hue, put brightness in intensity.
-vec3 cloudTintColor(vec3 hdr, float highlights, vec3 dir, vec3 sunDir) {
+// DCL clouds gradient is HDR (keys >1 at midday). Keep hue, scale intensity.
+vec3 cloudBaseTint(vec3 hdr, float highlights) {
   float peak = max(max(hdr.r, hdr.g), hdr.b);
   vec3 hue = hdr / max(peak, 1e-4);
-  float intensity = peak * (0.82 + highlights * 0.55);
-  float sunSide = sunDir.y > 0.05
-    ? smoothstep(-0.05, 0.45, dot(normalize(dir), normalize(sunDir)))
-    : 0.0;
-  intensity *= mix(0.88, 1.28, sunSide * highlights);
+  float intensity = clamp(peak * (0.55 + highlights * 0.35), 0.0, 2.2);
   return hue * intensity;
+}
+
+/** Dual-lobe sample — structure + soft fluff (less flat poster blobs). */
+float cloudNoise(vec3 dir, samplerCube map, float angle) {
+  vec3 d = rotateY(normalize(dir), angle);
+  float a = textureCube(map, d, -0.75).r;
+  float b = textureCube(map, normalize(d + vec3(0.035, 0.02, -0.028)), 0.35).r;
+  float c = textureCube(map, normalize(d * 1.07), 1.0).r;
+  return clamp(a * 0.58 + b * 0.28 + c * 0.14, 0.0, 1.0);
 }
 
 float cloudLayerMask(
@@ -161,16 +166,18 @@ float cloudLayerMask(
   float angle,
   float opacity,
   float yMin,
-  float yMax
+  float yMax,
+  out float rawN
 ) {
+  rawN = 0.0;
   if (dir.y < yMin) return 0.0;
-  vec3 sampleDir = rotateY(normalize(dir), angle);
-  float n = textureCube(map, sampleDir, -1.0).r;
+  rawN = cloudNoise(dir, map, angle);
   float density = 1.0 - uCloudDensity;
-  float falloff = 0.62;
-  float mask = smoothstep(density, density + falloff, n);
-  mask *= smoothstep(yMin, yMin + 0.15, dir.y);
-  mask *= 1.0 - smoothstep(yMax - 0.1, yMax, dir.y);
+  // Wider soft edge so silhouettes feather into blue sky
+  float falloff = 0.78;
+  float mask = smoothstep(density - 0.04, density + falloff, rawN);
+  mask *= smoothstep(yMin, yMin + 0.12, dir.y);
+  mask *= 1.0 - smoothstep(yMax - 0.12, yMax, dir.y);
   return mask * opacity * uCloudOpacity;
 }
 
@@ -183,13 +190,28 @@ vec3 blendCloudLayer(
   float yMin,
   float yMax
 ) {
-  float mask = cloudLayerMask(dir, map, angle, opacity, yMin, yMax);
+  float rawN;
+  float mask = cloudLayerMask(dir, map, angle, opacity, yMin, yMax, rawN);
   if (mask <= 0.001) return sky;
-  vec3 cloud = cloudTintColor(uCloudsColor, uCloudHighlights, dir, uSunDirection);
-  // Soft over — less screen-lift so clouds do not bleach the whole sky to chalk.
-  vec3 layer = min(cloud, vec3(1.85));
-  vec3 soft = mix(sky, max(layer, sky * 0.92 + layer * 0.35), 0.72);
-  return mix(sky, soft, mask * 0.92);
+
+  vec3 base = cloudBaseTint(uCloudsColor, uCloudHighlights);
+  vec3 v = normalize(dir);
+  vec3 sunD = normalize(uSunDirection);
+  float sunUp = smoothstep(-0.05, 0.15, sunD.y);
+  float sunSide = sunUp * smoothstep(-0.15, 0.55, dot(v, sunD));
+
+  // Volume cue: denser noise cores stay brighter; edges pick up sky / cool shadow
+  float core = smoothstep(0.35, 0.92, rawN);
+  float edge = mask * (1.0 - core);
+  vec3 lit = base * mix(vec3(0.78, 0.82, 0.9), vec3(1.05, 1.02, 0.98), sunSide);
+  vec3 shade = mix(sky * 0.55 + lit * 0.35, lit * 0.72, 0.55);
+  vec3 body = mix(shade, lit, core);
+  // Soft silver lining on sunward edge
+  body += vec3(0.12, 0.11, 0.08) * edge * sunSide * uCloudHighlights;
+
+  // Premultiplied-style over: thick cores opaque, edges keep blue sky
+  float alpha = clamp(mask * mix(0.55, 0.92, core), 0.0, 0.95);
+  return mix(sky, body, alpha);
 }
 
 void main() {
@@ -202,10 +224,11 @@ void main() {
   sky += moonDisc(dir, uMoonDirection, uMoonMap, uMoonMask);
 
   float cloudAngle = uTime * uCloudsRotationSpeed;
-  sky = blendCloudLayer(sky, dir, uHorizonCloudsCube, cloudAngle * 0.5, 0.85, 0.02, 0.42);
-  sky = blendCloudLayer(sky, dir, uFarCloudsCube, cloudAngle, 0.55, 0.05, 0.95);
-  sky = blendCloudLayer(sky, dir, uNearCloudsCube, cloudAngle * 2.0, 0.75, 0.08, 1.0);
-  sky = blendCloudLayer(sky, dir, uTopCloudsCube, cloudAngle * 1.5, 0.45, 0.35, 1.0);
+  // Horizon wisps → far sheets → near puffs → high cap (opacity tuned for volume, not chalk slabs)
+  sky = blendCloudLayer(sky, dir, uHorizonCloudsCube, cloudAngle * 0.5, 0.72, 0.02, 0.42);
+  sky = blendCloudLayer(sky, dir, uFarCloudsCube, cloudAngle, 0.62, 0.05, 0.95);
+  sky = blendCloudLayer(sky, dir, uNearCloudsCube, cloudAngle * 2.0, 0.78, 0.08, 1.0);
+  sky = blendCloudLayer(sky, dir, uTopCloudsCube, cloudAngle * 1.5, 0.5, 0.35, 1.0);
 
   float rim = pow(max(1.0 - abs(dir.y), 0.0), 3.0) * 0.25;
   sky += uRimColor * rim;
@@ -270,7 +293,7 @@ export class DclGenesisSky {
       uSunDiscGlowGain: { value: FIXED_SUN_DISC_GLOW_GAIN },
       uCloudHighlights: { value: 0.8 },
       uCloudDensity: { value: 0.52 },
-      uCloudOpacity: { value: 0.88 },
+      uCloudOpacity: { value: 0.94 },
       uCloudsRotationSpeed: { value: 0.01 },
       uTime: { value: 0 },
       uMoonMap: { value: null },

@@ -166,7 +166,7 @@ DOM overlay — not in-scene `UiTransform`.
 | Settings overlay: Events, Map, Backpack, Places, Gallery | 🟢 | Map tab embedded when opened from minimap / shell (no page HUD chrome) |
 | **In-World Camera (C)** | 🟢 | Dedicated photo fly mode (not orbit freecam) · Space shutter · FOV scroll · pointer-lock look · review 3/4·1/4 · Save → Camera Reel |
 | **Settings → Gallery (K)** | 🟢 | Camera Reel list/detail · public/delete/link · thumb ⋮ menu · signed fetch |
-| Backpack wearables equip + Catalyst profile deploy | 🟡 | Inventory/equip/preview/deploy + **in-world reload from session** 🟢 · emotes tab / outfits / marketplace ⬜ · mobile sheets 🟢 |
+| Backpack wearables equip + Catalyst profile deploy | 🟡 | Inventory/equip/preview/deploy + **in-world reload from session** 🟢 · emotes tab / **saved outfits** ⬜ · mobile sheets 🟢 · **P2P peer trade** is separate 🟢 (not shell marketplace browse) |
 | Profile pills + right-click profile menu (+ copy wallet) | 🟢 |
 | Overhead name tags (`featureToggles.nameTags` / `?nameTags=` lock; **N** = local + remotes + AvatarShapes) | 🟢 |
 | Hide all UI (**U**) | 🟢 | Client chrome + scene UI + overlays |
@@ -181,6 +181,7 @@ DOM overlay — not in-scene `UiTransform`.
 | **Live tools** (polls / Q&A / trivia) | 🟢 | Location-card host menu · scene LiveKit · end-session **CSV** stats |
 | Pets panel + Pet Barn | 🟢 | Multiplayer companions · Barn catalog/publish · purple chrome |
 | Loot Bag | 🟢 | Deposit grid · multi-item NFT bundles · 3D pack model |
+| **P2P in-world trade** | 🟢 | Peer invite → dual offer UI → PM wire → on-chain settle (EIP-712); **1.8 headline** (not shell marketplace catalog) |
 
 ---
 

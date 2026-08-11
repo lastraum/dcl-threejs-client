@@ -174,7 +174,15 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
     notes:
       'Production path (smoke-pass): Yoga + DOM · hit-map · nine-slice · Color4×texture · UiInput/UiDropdown writeback · free z-stack · leave cleanup. One-off scene bugs only — not a platform rebuild'
   },
-  { id: 'ui:voice-ui', name: 'Voice / mic UI', status: 'render', category: 'client-ui', notes: 'Explorer NEARBY VOICE: Hear others + Speak + hold T; mute-in-bg; name-tag bars; 3D PositionalAudio falloff' }
+  { id: 'ui:voice-ui', name: 'Voice / mic UI', status: 'render', category: 'client-ui', notes: 'Explorer NEARBY VOICE: Hear others + Speak + hold T; mute-in-bg; name-tag bars; 3D PositionalAudio falloff' },
+  {
+    id: 'ui:p2p-trade',
+    name: 'P2P in-world wearable trade',
+    status: 'render',
+    category: 'client-ui',
+    notes:
+      '1.8 headline: context-menu invite → dual offer window → PM offer sync → on-chain settle (EIP-712). Not shell marketplace catalog / saved outfits'
+  }
 ]
 
 /** Comms, content, identity — explorer shell (frozen during renderer re-arch). */

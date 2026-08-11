@@ -3,10 +3,11 @@
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-08-10  
-> **Current phase:** **dev-latest** parity / implementation gap close (**no release cut**) — MeshCollider platform riding · CCT ground · scene-http · lighting · PART curtain/door thrash fix · plaza marquee/JUMP IN/sit · **in-scene ECS UI smoke-pass 🟢**. **v1.7.0** remains latest on `main`.  
+> **Current phase:** **dev-latest** → **1.8 candidate** (**no release cut yet**) — world-feel stack (riding · CCT · lighting · PART doors · pointer · plaza) + **in-scene ECS UI smoke-pass 🟢** + **in-world P2P wearable trading** (parity+ headline). **v1.7.0** remains latest on `main`.  
 > **Shipped (1.x):** **v1.7.0** community voice · live polls/Q&A/trivia + CSV · pets/Pet Barn · loot bag · multi-scene AOI anim · AudioAnalysis · EnvironmentApi/Testing · **v1.6.0** tour photos / Camera Reel · admin tools · scene UI structure · **v1.5.0** PART/ROOT colliders · Animator · tours · cast · **v1.4.0** custom worlds · Worlds map · AOI · shell UI.  
 
-> **1.x next (1.8+):** release cut of riding/lighting/PART/pointer/plaza stack · portable experiences polish · backpack outfits / shell marketplace · create-community / invites · gallery multi-page · graphics P3 distance culls · CBD multi-scene FPS · Social WS reliability · PE P3 pad/wind QA · multi-shape GLTF `40M+` riding · WSP pie (meters only; full pie not shipped). Scene UI = **one-off bugs only**.  
+> **1.8 headline (on tip, unreleased):** platform riding + lighting + PART curtains + plaza boards + pointer FPS + **P2P in-world trade** (invite → dual offer → on-chain settle).  
+> **1.8+ after cut / still open:** portable experiences polish · saved outfits · create-community / invites · gallery multi-page · graphics P3 culls · CBD multi-scene FPS · Social WS reliability · PE P3 pad/wind QA · multi-shape GLTF `40M+` riding · WSP pie (meters only). Scene UI = **one-off bugs only**. Shell marketplace browse is separate from **P2P peer trade**.  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). PM LiveKit survives teleports. Community voice LiveKit survives Jump In.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**; outdoor washout rebalance **on `dev-latest`**.  
 > **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **Riding law:** [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md) · **Static COD:** [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) · **Multi-scene continuity:** [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  
@@ -40,6 +41,31 @@
 **QA:** PIP curtains open → walk through · no `Missing actors ids=[568]` loop · plaza marquee pause · JUMP IN readable · sit on bench · FPS with `?colliders` stable.
 
 **Tip:** On `dev-latest`. **Not** tagged for release.
+
+---
+
+## ✅ Milestone — In-world P2P wearable trade → `dev-latest` (2026-08)
+
+**Status: on `dev-latest` — parity+ headline for 1.8** (not Explorer-required; ThreejsClient differentiator). Full peer trade loop in-client — not a shell marketplace catalog.
+
+### What's new
+
+- **P2P in-world trade** — context-menu invite → countdown → dual inventory offer window → offer sync over PM · **on-chain settle** (EIP-712 sign by inviter, `accept()` by invitee)
+- **Marketplace index assist** — Foundation index brief for settle path (`marketplaceSettle` / config)
+- **Received-item cache** — session storage for post-settle inventory lag
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Invite + dual offer UI** | 🟢 | `TradeController` · `TradeWindow` · modals |
+| **Wire / PM sync** | 🟢 | `tradeWire` + private-messages path |
+| **On-chain settle** | 🟢 | Polygon settle path |
+| **Shell marketplace browse** | ⬜ separate | Outfits / catalog shop still open product |
+
+**QA:** two wallets in-world → invite trade → both lock offers → settle → wearables move · inventory reflects after settle.
+
+**Files:** `src/client/ui/trade/*` · `src/social/tradeWire.ts` · `docs/dcl-foundation-marketplace-index-gap.md`
+
+**Tip:** Headline **1.8** feature alongside world-feel stack — not “misc social+.”
 
 ---
 

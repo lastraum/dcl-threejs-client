@@ -86,6 +86,7 @@ import { clientSettings } from '../rendering/ClientSettings'
 import type { ForcedCameraMode } from '../input/CameraModeAreaSystem'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { clearPointerLockAim, setPointerLockAimFromCanvas } from '../input/pointerLockAim'
+import { clientCameraNearForBoomDistance } from '../camera/cameraDepthPolicy'
 
 /** PB CameraType — numeric (isolatedModules cannot import const enum). */
 const CT_FIRST_PERSON = 0
@@ -128,7 +129,9 @@ const CAM_DISTANCE_DEFAULT = 4.5
 const CAM_DISTANCE_MIN = 0
 const CAM_FPV_MAX_DISTANCE = 0.35
 const CAM_DISTANCE_MAX = 16
+/** Lateral boom offset — taper toward 0 when zoomed in (stay behind head, not shoulder). */
 const CAM_SHOULDER_OFFSET = 0.3
+const CAM_SHOULDER_CLOSE_DIST = 1.4
 const CAM_PITCH_DEFAULT = 0.35
 /** Far 3rd-person floor — boom stays on/above the horizontal ring (no look-up into sky). */
 const CAM_PITCH_MIN = 0
@@ -2185,16 +2188,31 @@ export class PlayerSystem {
       sinPitch * dist,
       Math.cos(this.camYaw) * cosPitch * dist
     )
-    if (pitch < 0.65) {
+    if (pitch < 0.65 && dist > CAM_SHOULDER_CLOSE_DIST) {
+      const shoulderScale =
+        (1 - pitch / 0.65) *
+        Math.min(1, (dist - CAM_SHOULDER_CLOSE_DIST) / (CAM_HEIGHT_FAR_DIST - CAM_SHOULDER_CLOSE_DIST))
       _shoulder.set(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw))
-      _offset.addScaledVector(_shoulder, CAM_SHOULDER_OFFSET * (1 - pitch / 0.65))
+      _offset.addScaledVector(_shoulder, CAM_SHOULDER_OFFSET * shoulderScale)
     }
     _camPos.copy(_pivot).add(_offset)
     _lookAt.copy(this.root.position)
     _lookAt.y += h.lookY
     this.host.camera.position.copy(_camPos)
     this.host.camera.lookAt(_lookAt)
+    this.applyCameraNearForBoom(dist)
     this.host.camera.updateMatrixWorld(true)
+  }
+
+  /** Tighten near plane when over-shoulder so hair/face/hands are not near-clipped. */
+  private applyCameraNearForBoom(dist: number): void {
+    const near = this.isFirstPerson()
+      ? 0.05
+      : clientCameraNearForBoomDistance(dist)
+    if (Math.abs(this.host.camera.near - near) > 1e-4) {
+      this.host.camera.near = near
+      this.host.camera.updateProjectionMatrix()
+    }
   }
 
   private syncCamera(snap: boolean, delta = 0.016): void {
@@ -2272,6 +2290,7 @@ export class PlayerSystem {
       const alpha = hardSnap ? 1 : 1 - Math.exp(-14 * delta)
       this.host.camera.position.lerp(_pivot, alpha)
       this.host.camera.quaternion.slerp(_camQuat, alpha)
+      this.applyCameraNearForBoom(0)
       return
     }
 
@@ -2290,9 +2309,16 @@ export class PlayerSystem {
       Math.cos(this.camYaw) * cosPitch * this.camDistance
     )
 
-    if (this.camPitch < 0.65) {
+    if (this.camPitch < 0.65 && this.camDistance > CAM_SHOULDER_CLOSE_DIST) {
+      const shoulderScale =
+        (1 - this.camPitch / 0.65) *
+        Math.min(
+          1,
+          (this.camDistance - CAM_SHOULDER_CLOSE_DIST) /
+            (CAM_HEIGHT_FAR_DIST - CAM_SHOULDER_CLOSE_DIST)
+        )
       _shoulder.set(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw))
-      _offset.addScaledVector(_shoulder, CAM_SHOULDER_OFFSET * (1 - this.camPitch / 0.65))
+      _offset.addScaledVector(_shoulder, CAM_SHOULDER_OFFSET * shoulderScale)
     }
 
     _camDir.copy(_offset).normalize()
@@ -2306,6 +2332,7 @@ export class PlayerSystem {
 
     this.host.camera.position.lerp(_camPos, alpha)
     this.host.camera.lookAt(_lookAt)
+    this.applyCameraNearForBoom(this.camDistance)
   }
 
   private resolveCameraDistance(pivot: THREE.Vector3, direction: THREE.Vector3, maxDistance: number): number {

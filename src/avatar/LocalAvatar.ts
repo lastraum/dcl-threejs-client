@@ -107,6 +107,7 @@ export class LocalAvatar {
             prepareCustomAvatarScene(this.model)
             applyOdkPivotOffset(this.pivot, this.model)
             prepareCustomAvatarScene(this.model)
+            this.disableSkinnedFrustumCull()
 
             const odkBindPoseOnly =
               typeof window !== 'undefined' &&
@@ -132,6 +133,7 @@ export class LocalAvatar {
             this.pivot.add(this.model)
             this.vrmAvatar.vrm.humanoid.autoUpdateHumanBones = false
             prepareCustomAvatarScene(this.model)
+            this.disableSkinnedFrustumCull()
 
             this.vrmLocomotion = new VrmLocomotionAnimations()
             try {
@@ -174,6 +176,7 @@ export class LocalAvatar {
     this.renderMode = 'dcl'
     this.model = await composeAvatarFromProfile(profile, this.peerUrl, this.assetCache)
     this.pivot.add(this.model)
+    this.disableSkinnedFrustumCull()
 
     this.animations = new AvatarAnimations()
     try {
@@ -226,6 +229,17 @@ export class LocalAvatar {
     if (this.model) this.model.visible = visible
     // Glider is pivot child (not under model) — hide with body (FPV / modifier hide).
     this.glider.setBodyVisible(visible)
+  }
+
+  /**
+   * Local player never frustum-culls skinned parts — close over-shoulder zoom was
+   * dropping hands/face when bind-pose spheres missed animated verts.
+   */
+  disableSkinnedFrustumCull(): void {
+    if (!this.model) return
+    this.model.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) obj.frustumCulled = false
+    })
   }
 
   async playEmote(emoteId: string, options: PlayEmoteOptions = {}): Promise<ResolvedProfileEmote | null> {

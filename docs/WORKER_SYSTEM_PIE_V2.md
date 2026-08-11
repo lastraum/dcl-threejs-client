@@ -1,8 +1,10 @@
-# Worker System Pie v2 — design only (not implemented)
+# Worker System Pie v2 — design + meters (systems pie parked)
 
-**Status:** Phase 0 / 0b / **0.5–0.5i** on branch `feat-wsp` (meters + empty-path sendBinary). Phase 1+ not implemented.  
+**Status (2026-08-11 decision):** **PARK systems pie.** Keep Phase 0 / 0.5 **meters** (and empty-path sendBinary / apply hygiene) as diagnostic tools. Do **not** implement Phase 1 HOT/COLD systems pie on the default path until multi-scene FPS work (or a new Genesis capture) proves **systems ms** is the bottleneck.  
+**Shipped so far:** Phase 0 / 0b / **0.5–0.5i** (meters + empty-path sendBinary + apply skips). Phase 1+ **not implemented**.  
 **Supersedes:** WSP v1 (`da7110f`…`cdf8de5`) — **reverted** on `dev-latest` after Genesis load/FPS regressions.  
-**Baseline:** post-revert tip ≈ `fe4f24a` + terrain/platform (same architecture as pre-stall stack).
+**Baseline:** post-revert tip ≈ `fe4f24a` + terrain/platform (same architecture as pre-stall stack).  
+**Next platform focus:** multi-scene AOI / live-radius density FPS — not a second worker scheduler. See [ARCHITECTURE.md](./ARCHITECTURE.md) · [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md).
 
 ## Why v1 failed (constraints for v2)
 
@@ -285,14 +287,13 @@ Genesis 0.5k: **fold≈0**, **sync** = trg + ptr. Ghost stick fixed (no provisio
 | Meters `[wsp0]` / `[wsp05]` / `sb=` / fold|uiA|drain|sync | Event-card UV (parked) |
 | Ghost stick fixed; toast queue-only | Phase 2 play-cook / soft-attach |
 
-**Do not** open Phase 1 pie (systems ~1ms). Next work is Phase 2 main COD or product bugs.
+**Do not** open Phase 1 pie (systems ~1ms historically). **Parked 2026-08-11.**
 
-### Follow-ups (ordered) — no AOI / remote-LOD experiments unless requested
+### Follow-ups when unparking (only if systems share reappears)
 
-1. Capture Genesis `[wsp05]` with fold/uiA/drain/sync/enc → fix dominant slice  
-2. **0.5j** (if needed): push inbound → zero empty polls  
-3. **Phase 2** main COD from doc only: play-cook near feet, soft-attach rate, post-seal SQ heal  
-4. **Phase 1** systems pie only if systems dominate (still ~1ms — skip)
+1. Capture Genesis + CBD multi-scene with `[wsp0]` / `[wsp05]` — if **systems** dominate, unpark Phase 1 behind `?wsp=1`  
+2. Else stay on main apply / attach / multi-scene budget (not pie)  
+3. Phase 2 main frame/cook items remain independent of WSP — see frame pipeline + multi-scene docs
 
 ## Phase 1 — Systems pie (flag `?wsp=1` or settings)
 
@@ -332,14 +333,13 @@ Documented here so pie is not asked to solve them:
 - Post-seal SQ heal: stop spam when didHit=false with full map in-scene (diagnose root, don’t rebuild thrash)  
 - Event-card map-U: keep `fe4f24a` law; fix remaining boards if flip still wrong after seal  
 
-## Rollout
+## Rollout (historical — pie remains default-off / parked)
 
-1. Land Phase 0 + 0.5 on `dev-latest` (meters only).  
-2. Capture Genesis + PokerClub with `[wsp0]` / `[wsp05]` on — confirm encode vs main apply share.  
-3. Fix the dominant cost (dirty send encode and/or main apply) **before** systems pie.  
-4. Land Phase 1 behind **default off** only if systems remain a real share.  
-5. Default on only after metrics + smoke (pointer, fishing PE, scene UI, multiplayer chat).  
-6. Deploy CDN with commit SHA in build banner so prod ≠ tip confusion never repeats.
+1. ~~Land Phase 0 + 0.5 on `dev-latest` (meters only).~~ done / keep  
+2. Capture under multi-scene load only if re-evaluating pie.  
+3. Fix dominant cost (main apply / attach / AOI budget) **before** systems pie.  
+4. Phase 1 only behind **default off** if systems are a real share.  
+5. Default on only after metrics + smoke — **not planned near-term.**
 
 ## Explicit anti-patterns (do not reintroduce)
 

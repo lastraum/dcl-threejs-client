@@ -27,7 +27,7 @@ export type PerformanceTier = 'low' | 'medium' | 'high'
 export type SceneWorkerDebugFlags = {
   /** `?sceneinputsnapshot` — log scene-input-snapshot apply on the worker. */
   sceneInputSnapshot?: boolean
-  /** `?pointerverbose` — log pointer-crdt-deliver round-trips in the worker. */
+  /** `?pointerverbose` — log PE inject + light renderer inbound (historical: pointer-crdt-deliver) in the worker. */
   pointerDeliver?: boolean
   /** `?tweenverbose` — log tween-state inject / push in the worker. */
   tweenDeliver?: boolean
@@ -361,10 +361,18 @@ export type MainToWorker =
        */
       portableExperience?: boolean
     }
+  /**
+   * Light main→worker renderer CRDT (grow-only / ambient LWW). Historical name —
+   * not PE edges (those are `inject-pointer-click` only). Does not open deliver-done.
+   */
   | { type: 'pointer-crdt-deliver'; data: Uint8Array[] }
   | { type: 'tween-state-deliver'; data: Uint8Array[] }
   | { type: 'renderer-append-deliver'; data: Uint8Array[] }
-  /** Phase C — main→worker renderer-owned inbound after async outbound apply. */
+  /**
+   * Main→worker renderer inbound that must not open the pointer pause path
+   * (e.g. GltfContainerLoadingState mid-onStart). Same light apply family as
+   * pointer-crdt-deliver; separate type for boot-safe routing.
+   */
   | { type: 'renderer-inbound-deliver'; data: Uint8Array[] }
   | { type: 'crdt-outbound-ack'; id: number }
   | { type: 'inject-pointer-click'; body: InjectPointerClickBody; injectOnly?: boolean }

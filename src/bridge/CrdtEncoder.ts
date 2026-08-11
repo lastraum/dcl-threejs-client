@@ -86,11 +86,11 @@ export class CrdtEncoder {
   private readonly growOnlyIds: Set<number>
   private readonly growOnlyById: Map<number, ComponentDef>
   /**
-   * Source-captured grow-only appends since the last `encode()`. The renderer writers
-   * (`PointerEventsSystem`, `VideoPlayerBridge`) call `recordAppend` at the exact
-   * `addValue` site, so we serialize the value at that instant and reproduce one APPEND
-   * per call — byte-exact and immune to grow-only set pruning (which silently drops
-   * older entries the engine still flushed, the cause of the snapshot-diff append misses).
+   * Source-captured grow-only appends since the last `encode()`. Renderer writers
+   * (TriggerArea, Video/Audio/AssetLoad) call `recordAppend` at the exact `addValue`
+   * site so we serialize at that instant and reproduce one APPEND per call — byte-exact
+   * and immune to grow-only set pruning.
+   * **PointerEventsResult is not encoded here** — PE edges use inject-pointer-click only.
    */
   private readonly recordedAppends: EncoderEmit[] = []
   /** Source-captured dynamic LWW PUTs (RaycastResult, etc.). */
@@ -266,10 +266,9 @@ export class CrdtEncoder {
   }
 
   /**
-   * Drop pending grow-only appends for a component (e.g. PointerEventsResult=1063).
-   * inject-pointer-click is authoritative on the worker — main PE Result appends must not
-   * flush later via grow-only delivery (different timestamp clock re-fires onMouseDown and
-   * toggles CAM closed while main still paints the open modal).
+   * Drop pending grow-only appends for a component (safety belt for PointerEventsResult=1063).
+   * PE should never enter `recordedAppends` (recordRendererAppend gate). If any slip through,
+   * discard before inject so grow-only cannot re-fire EventSystem on a second clock.
    */
   discardRecordedAppends(componentId: number): number {
     const before = this.recordedAppends.length
@@ -289,8 +288,8 @@ export class CrdtEncoder {
   }
 
   /**
-   * Encode only source-captured grow-only appends (pointer/video results).
-   * Used for pointer flush stash so player/camera LWW is not re-shipped every nudge.
+   * Encode only source-captured grow-only appends (TriggerArea, VideoEvent, …).
+   * Not used for PE edges (inject-only).
    */
   encodeAppendsOnly(): Uint8Array | null {
     this.emittedAppends.length = 0
@@ -401,9 +400,7 @@ export class CrdtEncoder {
       }
     }
 
-    // Grow-only path (3c): pointer/video results the renderer appends. flushOutgoing
-    // emits one APPEND per `addValue` since the last flush; we reproduce that one-for-one
-    // from the values source-captured at each `addValue` site (see `recordAppend`).
+    // Grow-only path: TriggerArea / media / asset-load results (not PE — inject-only).
     if (this.encodeAppends(buf)) wrote = true
 
     if (this.encodeRecordedLwwPuts(buf)) wrote = true

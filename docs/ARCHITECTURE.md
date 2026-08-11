@@ -1,14 +1,23 @@
 # Architecture & tech debt
 
-> Scene I/O model, hard rules, and remaining debt.  
-> **Parity matrix:** [INTEGRATION.md](./INTEGRATION.md) · **Narrative:** [PROGRESS.md](./PROGRESS.md)  
-> **Input CRDT rules:** `.cursor/rules/worker-input-architecture.mdc` (authoritative)
+> Scene I/O model, hard rules, remaining debt, and how this monorepo is layered.  
+> **Parity matrix:** [INTEGRATION.md](./INTEGRATION.md) · **Narrative / next:** [PROGRESS.md](./PROGRESS.md)  
+> **Input CRDT rules:** `.cursor/rules/worker-input-architecture.mdc` (authoritative for pointer / UI wire)
 
 ---
 
 ## What this client is
 
-Browser-native DCL SDK7 client: load Worlds/parcels → run `bin/scene.js` in a **Web Worker** shim → mirror ECS to **Three.js** on main → HUD / chat / social shell.
+Browser-native DCL SDK7 client: load Worlds/parcels → run `bin/scene.js` in a **Web Worker** shim → mirror ECS to **Three.js** on main → Explorer-style HUD / chat / social shell.
+
+**One repo, two layers** (say which moved when you ship):
+
+| Layer | Owns | Examples |
+|-------|------|----------|
+| **Platform runtime** | Worker, CRDT, bridges, PhysX, pointer inject, FocusOwner, multi-scene continuity | riding law, PART/ROOT colliders, scene-http, mesh frame law |
+| **Client shell / parity+** | Product UI and client-only features that may go beyond Unity Explorer | P2P trade, pets, loot bag, live tools, terrain editor, communities |
+
+Parity target for platform I/O: **Unity Foundation Explorer behavior** — not identical internal architecture.
 
 ```text
 Main (rAF)                          Worker (scene.js)
@@ -18,20 +27,32 @@ SceneUiBridge (DOM UI)              react-ecs UI + VirtualCameraRig
 PointerEventsSystem                 PointerEventsResult inject
 SceneInputRelay (WASD)              inputSystem.isPressed
         │  postMessage lanes        │
-        ├─ inject-pointer-click  ──►│ priority deliver queue
-        ├─ scene-input-snapshot  ──►│ PETs on PlayerEntity
-        ├─ pump-scene-engine-tick──►│ flight engine.update
+        ├─ inject-pointer-click  ──►│ PE edges (authoritative)
+        ├─ scene-input-snapshot  ──►│ keyboard PETs on PlayerEntity
         ├─ play-frame-tick       ──►│ unified play frame
+        ├─ *-deliver (below)     ──►│ renderer-owned CRDT inbound
         ◄── player-frame ───────────┤ InputModifier + MainCamera (no ack)
         ◄── vc-pose-live ───────────┤ VC Transform during edit flight
         ◄── crdt-outbound ──────────┤ cold world + UI mount snapshot
 ```
 
-**Parity target:** Unity Foundation Explorer behavior for scene I/O — not identical internal architecture.
+**Transforms:** Logical sim/comms stay in DCL left-handed meters. Display conversion only at the render boundary (`src/bridge/dclTransform.ts`). Landscape uses the same X reflection so author terrain and biome floors align.
 
-**Transforms:** Logical sim/comms stay in DCL left-handed meters. Display conversion only at the render boundary (`src/bridge/dclTransform.ts`). Landscape infinite ground / scatter use the same X reflection (`dclSceneToLandscapeThree` → threeX = −dclX) so author terrain and biome floors align.
+**Landscape / terrain editor:** Play client builds empty-land + decoration via `buildParcelLandscape` from `scene.json` → `environment.kind` (+ optional `water` / `desert` / `land` / `space`). The `/editor` workspace rebuilds that same path for live biome preview.
 
-**Landscape / terrain editor:** Play client builds empty-land + decoration via `buildParcelLandscape` from `scene.json` → `environment.kind` (+ optional `water` / `desert` / `land` / `space` objects). The `/editor` terrain workspace rebuilds that same path for live biome preview (not a separate fake floor).
+---
+
+## “COD” naming (not a runtime product)
+
+Docs and commits sometimes say **COD** (Call of Duty–level bar). That was a **focus prompt** for continuity and frame discipline — not a separate platform product or scheduler brand.
+
+| Use “COD” for | Do not treat COD as |
+|---------------|---------------------|
+| Quality bar: no unload voids, coherent systems, measure then land | A second architecture next to “the real one” |
+| Frame-pipeline discipline (admit / lanes / peel) in [FRAME_PIPELINE_COD.md](./FRAME_PIPELINE_COD.md) | A shippable feature name in release notes |
+| Static-collider cook/seal intensity ([STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md)) | Something community contributors must implement as “COD mode” |
+
+Prefer plain names in new text: **frame pipeline**, **static collider seal**, **multi-scene continuity**, **platform law**.
 
 ---
 
@@ -39,15 +60,19 @@ SceneInputRelay (WASD)              inputSystem.isPressed
 
 | Doc | Role |
 |-----|------|
-| [PROGRESS.md](./PROGRESS.md) | Shipped milestones + “what’s next” |
+| [PROGRESS.md](./PROGRESS.md) | **Current next** + shipped milestones (source of truth for “what’s open”) |
 | [INTEGRATION.md](./INTEGRATION.md) + `integrationRegistry.ts` | Parity checklist |
 | [CLAIMS.yaml](./CLAIMS.yaml) | Community claims (GitHub issues) |
 | [AGENTS.md](./AGENTS.md) | AI / contributor onboarding (scene-bundle-is-law · refactor-the-law) |
+| [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) | FocusOwner · sticky demote · AOI · promote order |
+| [FRAME_PIPELINE_COD.md](./FRAME_PIPELINE_COD.md) | Main-thread admit / lanes / peel (name is historical) |
 | [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) | PhysX PART vs ROOT pose sync |
 | [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md) | CCT ride: one stand-actor Δ · grounded under capsule |
+| [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) | Cook-once statics · never forceDynamicTreeRebuild |
+| [WORKER_SYSTEM_PIE_V2.md](./WORKER_SYSTEM_PIE_V2.md) | WSP — meters shipped; systems pie **parked / decide** |
 | [CONTRIBUTOR_TESTING.md](./CONTRIBUTOR_TESTING.md) | How to test before PR |
 | [DEPLOYMENT.md](./DEPLOYMENT.md) | Build / host / smoke · `/api/scene-http` |
-| [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) | Original phase sketch (historical) |
+| [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) | Original phase sketch (**historical**) |
 | [PR_CHECKLIST.md](./PR_CHECKLIST.md) | PR gate |
 | [REPO_MANAGEMENT.md](./REPO_MANAGEMENT.md) | Branches, release, community |
 | [TASKS.yaml](./TASKS.yaml) | Re-arch history — **not** a pickup queue |
@@ -60,12 +85,43 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 
 1. **Scene owns InputModifier / MainCamera writes** — shim transports; does not invent freeze policy.  
 2. **Hot path without ack** — IM/MC/`vc-pose-live` never wait on main CRDT ack.  
-3. **Pointer UI has one egress** — structured mount snapshot only.  
-4. **No belt-and-suspenders** — fix the phase boundary; do not re-apply opposing state. Same for locomotion: **refactor platform law** (one riding Δ, grounded under feet) — never sticky/snap/pull-down recovery.  
+3. **Pointer UI has one egress** — structured mount snapshot only (no Ui\* CRDT on cooperative wire).  
+4. **No belt-and-suspenders** — fix the phase boundary; do not re-apply opposing state. Same for locomotion: **one** riding Δ, grounded under feet — never sticky/snap/pull-down recovery.  
 4b. **Scene bundle is law** — never invent scene APIs/geometry; implement Explorer-parity client only.  
-4c. **Generic scene HTTP egress** — absolute third-party worker/SignedFetch URLs via `/api/scene-http/...` (one proxy), not per-game nginx.
+4c. **Generic scene HTTP egress** — absolute third-party worker/SignedFetch URLs via `/api/scene-http/...` (one proxy), not per-game nginx.  
 5. **Flight = engine systems + keyboard PETs** — not full SDK `onUpdate`/pollEvents.  
-6. **Ignore extension console noise** (e.g. MetaMask) when diagnosing.
+6. **Ignore extension console noise** (e.g. MetaMask) when diagnosing.  
+7. **One repo** — when documenting a ship, tag **platform** vs **shell/parity+**.
+
+---
+
+## Main → worker deliver channels (I/O map)
+
+These are **not** two competing full runtimes. They are specialized postMessage types that grew as we fixed freezes and same-tick delivery. Some residual dualism is real hygiene debt (below).
+
+| Channel | Direction | Role today |
+|---------|-----------|------------|
+| **`inject-pointer-click`** | main → worker | **Authoritative PE edge** (down/up). Opens deliver-done session. `injectOnly: true`. |
+| **`pointer-crdt-deliver`** | main → worker | Light inbound for **non-edge** renderer CRDT: grow-only appends (TriggerArea, VideoEvent), RaycastResult LWW, some ambient LWW. Does **not** post deliver-done. Name is historical — not “pointer only.” |
+| **`renderer-inbound-deliver`** | main → worker | General renderer inbound (e.g. GltfContainerLoadingState, reserved snapshot paths). Avoids pointer pause path mid-boot. |
+| **`tween-state-deliver`** | main → worker | TweenState only (ambient textureMove / sequence complete). |
+| **`scene-input-snapshot` / `play-frame-tick`** | main → worker | Keyboard PETs + unified play frame. |
+| **`player-frame` / `vc-pose-live` / `crdt-outbound`** | worker → main | Hot IM/MC, VC pose, cold world + UI mount. |
+
+**Pointer PE law (settled):** inject is the only authoritative PE edge. Main **never-records** `PointerEventsResult` into the encoder (`recordRendererAppend` gates 1063). Inject flush still discards PE appends as a safety belt (warn if any). See `flushPendingPointerCrdt` + `.cursor/rules/worker-input-architecture.mdc`.
+
+**Hygiene status (2026-08-11, `feat/io-leftovers-hygiene`):**
+
+| Item | Status |
+|------|--------|
+| `pointerResponseStash` | ✅ Removed (e7 leftover) |
+| PE never-record on main | ✅ Gate on `recordRendererAppend` |
+| Discard PE on inject flush | ✅ Safety belt + warn if non-zero |
+| `pointer-crdt-deliver` name | Kept on wire; documented as **light renderer inbound** (not PE) |
+| Gltf LWW → `renderer-inbound-deliver` | Intentional (boot-safe; no pointer pause) |
+| Grow-only / raycast / tween flush timers | Correct specialization — do not merge |
+
+Do **not** resurrect `crdt-renderer-push` / dual main-thread ECS engines.
 
 ---
 
@@ -78,65 +134,77 @@ Gaps and claims live in the **integration registry** + GitHub issues — not ext
 | Over-shimmed InputModifier | ✅ Latch re-apply removed; scene owns IM |
 | Pointer session vs keyboard | ✅ Flight keys apply immediately |
 | pollEvents defer while frozen | Keep; re-evaluate if UI stalls |
-| Async play-frame vs rAF | Apply pending player-frame at start of locomotion tick |
-| Ui mount vs DOM hit-map drift | ✅ Hit regions from Yoga layoutBoxes + layoutToScreen (not getBoundingClientRect) |
+| Async play-frame vs rAF | Apply pending player-frame at **start** of locomotion tick |
+| Ui mount vs DOM hit-map drift | ✅ Hit regions from Yoga layoutBoxes + layoutToScreen |
 | Edit-flight IM / VC residual | Retest MOVE/WASD/STOP; strip invent-policy |
+| PE / deliver channel hygiene | ✅ never-record PE · stash removed · channels documented |
 
-### P1 — Performance
+### P1 — Performance / multi-scene
 
 | Debt | Notes |
 |------|--------|
+| **CBD multi-scene FPS** | Continuity law landed; density budget still 🟡 — next hard push after 1.8 cut |
 | Mesh frame law | Bytes-only content-map warm; no cold parse/clone on rAF; parse concurrency 1 |
 | Worker CRDT acks on cold path | Play-mode fire-and-forget; verify no stalls |
 | Full UI mount on growth | Dirty-only default |
 | Third-person camera + foliage jitter | Not MOVE CAMERA |
 | Avatar profile `localStorage` quota | ✅ Pruned (`profileStorage.ts`) |
+| GLTF instancing | Partial — static multi-hash; motion promotes private clone |
+| Graphics P3 distance culls | Prefs stubs still open (P4 bloom/HDR shipped) |
 
-### P2 — Product / parity (see PROGRESS header)
+### P2 — Product / shell (see PROGRESS)
 
 | Area | Status |
 |------|--------|
-| Scene UI | Partial — Creator modal / hit-map polish |
-| Social | Multi-room + cast ✅; 2D chat FAB dock ✅; community toasts/mod gates ✅; nearby voice + spatial audio ✅; DMs ✅; **community voice** start/join/speak/promote/demote/kick/end · dual-path discovery · 2D/3D UI · Jump In keep ✅ · create/invites open |
-| Live tools | Scene **polls** · **Q&A** · **trivia** from location card · end-session **CSV** stats ✅ (v1.7) |
-| Pets / Pet Barn | Multiplayer companions · Barn marketplace catalog/publish ✅ (v1.7) |
-| Loot Bag | Deposit grid · multi-item bundles · 3D pack ✅ (v1.7) |
-| Play HUD | Location pill + circular Genesis minimap (parcels) ✅; worlds pill-only |
-| In-World Camera / Gallery | Photo fly mode (C) + Camera Reel save/list/detail ✅ (v1.6); gallery multi-page open |
-| Spawn / physics | Elevated deck settle + PE stage-before-script ✅; PhysicsCombined force/impulse ✅; hold-Space glider ✅; **PART/ROOT collider motion (v1.5)** ✅ |
-| Backpack | Wearables/emotes/colors ✅; outfits + marketplace open |
-| Graphics P3/P4 | **P4 bloom/HDR shipped** (`BloomPipeline` emissive extract + depth) · P3 distance culls open · untextured VFX additive glow · full-rate primary animators Advanced ✅ (v1.7) |
-| PhysicsCombined* | Force + impulse on PE + glider force 1.5× |
-| Scene colliders (CCT) | ROOT cook-once + actor T+R · PART world-cook on hull fp · seal never rebuilds SQ ([COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md)) |
-| Multi-scene / AOI | FocusOwner continuity · sticky demote · secondary Animator pump · warm-band AOI ✅ (v1.7); CBD ring FPS still 🟡 |
-| GltfNodeModifiers | 🟢 full path + material/shadow overrides; instance promote |
-| NftShape | 🟢 procedural frames + OpenSea proxy |
-| GltfContainerLoadingState, AvatarBase | 🔵 host LWW (done) |
-| Social / tours | Follow tours · Focus POV · cast landing audio · tour rejoin/keep-alive ✅ |
-| Avatar crowd | Stagger · compose path · jump mesh pin ✅ (v1.5 RC) |
+| In-scene ECS UI | 🟢 smoke-pass — one-off scene bugs only |
+| Social | Multi-room + cast · 2D chat FAB · community voice (start/join/mod) · dual-path **discovery** (PM + Social WS) · create/invites **open** |
+| Live tools / pets / loot bag | 🟢 v1.7 |
+| P2P in-world trade | 🟢 on tip (1.8 headline, unreleased) |
+| Backpack | Wearables/emotes 🟢 · saved outfits + shell marketplace browse **open** |
+| Play HUD / minimap / Camera Reel | 🟢 · gallery multi-page open |
+| Portable experiences | Panel exists · polish open |
+| Keybinds | Sensitivity live · rebinding **open** |
+| Multi-scene / AOI | FocusOwner + sticky demote + secondary anim 🟢 · **CBD FPS 🟡** |
+| PART/ROOT · riding · scene-http · TextShape width · lighting | 🟢 on tip (1.8 platform stack) |
 
-### P3 — Hygiene
+### P3 — Hygiene / deferred architecture
 
 | Debt | Action |
 |------|--------|
-| Dual defensive CRDT/pointer paths | Prefer one path when QA-green |
+| Deliver-channel naming / PE encoder discard | Collapse when QA-green (see I/O map) |
+| **WSP systems pie** | **Parked (2026-08-11)** — meters stay; pie off until systems ms dominates ([WORKER_SYSTEM_PIE_V2.md](./WORKER_SYSTEM_PIE_V2.md)) |
+| Archipelago adapter | Stub — LiveKit primary |
 
 ---
 
-## Suggested next engineering order (post v1.7.0)
+## Release posture (2026-08)
 
-1. Product **1.8**: scene UI text-measure / Yoga · portable experiences · backpack outfits · **create-community / invites**.  
-2. Optional: harden Social RPC long-lived streams (friend connectivity / voice WS still flap; PM dual-path covers voice discovery).  
-3. Optional: graphics **P3** distance culls; MSAA+bloom concurrent; SyncEntities auth-host; CBD multi-scene FPS.  
-4. Mesh frame-law / instancing follow-through (motion promote already covers dynamic props).  
-5. ~~EnvironmentApi/Testing~~ · ~~AudioAnalysis~~ · ~~community voice~~ · ~~live tools~~ · ~~pets/Pet Barn~~ · ~~loot bag~~ · ~~AOI anim ship~~ — **shipped v1.7.0** (2026-07-31).  
-6. Keep INTEGRATION registry + PROGRESS updated on each ship.
+| Item | State |
+|------|--------|
+| **`main`** | **v1.7.0** |
+| **`dev-latest` tip** | **1.8 candidate** — world-feel platform + ECS UI smoke-pass + P2P trade |
+| **1.8 cut** | **Not yet** — planned for **~2‑month anniversary** (do not cut mid-stack) |
+| **After 1.8 cut** | Multi-scene FPS / density pass; shell gaps (outfits / create-community / keybinds) as chosen |
+
+---
+
+## Suggested engineering order (until / after 1.8 cut)
+
+1. **Hold 1.8 cut** for anniversary — stop stacking unrelated headlines; finish QA on tip.  
+2. ~~**Decide WSP**~~ → **parked** (meters only).  
+3. ~~**I/O hygiene**~~ → never-record PE · stash removed · channels documented.  
+4. **Multi-scene density / FPS** (AOI radius · live secondary budget · CBD ring) — continuity laws written; re-attack with tip perf stack.  
+5. Shell picks (create-community / outfits / keybinds) — one at a time.  
+6. Optional: P3 culls, MSAA+bloom concurrent, Social WS reliability, SyncEntities auth-host.  
+7. Keep INTEGRATION + PROGRESS updated on each ship; tag **platform** vs **shell**.
 
 ---
 
 ## Non-goals
 
+- Treating “COD” as a product or second runtime  
 - Changing camera-operator scene bundle  
 - Rewriting Three.js renderer  
 - Matching Unity internal scheduling exactly  
 - Fixing MetaMask content-script warnings  
+- Re-introducing `crdt-renderer-push` / dual main-thread ECS engines  

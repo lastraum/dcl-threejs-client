@@ -2,12 +2,13 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-08-10  
-> **Current phase:** **dev-latest** → **1.8 candidate** (**no release cut yet**) — world-feel stack (riding · CCT · lighting · PART doors · pointer · plaza) + **in-scene ECS UI smoke-pass 🟢** + **in-world P2P wearable trading** (parity+ headline). **v1.7.0** remains latest on `main`.  
+> **Last updated:** 2026-08-11  
+> **Current phase:** **dev-latest** → **1.8 candidate** (**no cut yet** — hold for **~2‑month anniversary cut**, then multi-scene density/FPS). World-feel stack (riding · CCT · lighting · PART doors · pointer · plaza) + **in-scene ECS UI smoke-pass 🟢** + **in-world P2P wearable trading** (shell/parity+ headline). **v1.7.0** remains latest on `main`.  
 > **Shipped (1.x):** **v1.7.0** community voice · live polls/Q&A/trivia + CSV · pets/Pet Barn · loot bag · multi-scene AOI anim · AudioAnalysis · EnvironmentApi/Testing · **v1.6.0** tour photos / Camera Reel · admin tools · scene UI structure · **v1.5.0** PART/ROOT colliders · Animator · tours · cast · **v1.4.0** custom worlds · Worlds map · AOI · shell UI.  
 
-> **1.8 headline (on tip, unreleased):** platform riding + lighting + PART curtains + plaza boards + pointer FPS + **P2P in-world trade** (invite → dual offer → on-chain settle).  
-> **1.8+ after cut / still open:** portable experiences polish · saved outfits · create-community / invites · gallery multi-page · graphics P3 culls · CBD multi-scene FPS · Social WS reliability · PE P3 pad/wind QA · multi-shape GLTF `40M+` riding · WSP pie (meters only). Scene UI = **one-off bugs only**. Shell marketplace browse is separate from **P2P peer trade**.  
+> **1.8 headline (on tip, unreleased):** **platform** riding + lighting + PART curtains + plaza boards + pointer FPS · **shell** **P2P in-world trade** (invite → dual offer → on-chain settle).  
+> **After 1.8 cut (planned next):** multi-scene CBD density/FPS · decide **park vs finish WSP** · optional I/O channel hygiene · portable experiences · saved outfits · create-community / invites · gallery multi-page · graphics P3 culls · Social WS reliability · PE P3 pad/wind QA · multi-shape GLTF `40M+` riding. Scene UI = **one-off bugs only**. Shell marketplace browse ≠ **P2P peer trade**.  
+
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). PM LiveKit survives teleports. Community voice LiveKit survives Jump In.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**; outdoor washout rebalance **on `dev-latest`**.  
 > **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **Riding law:** [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md) · **Static COD:** [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) · **Multi-scene continuity:** [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  

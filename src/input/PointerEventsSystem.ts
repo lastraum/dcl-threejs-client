@@ -72,7 +72,11 @@ type PointerDeps = {
   flushPointerCrdt?: () => void
   /** Flush matrixWorld + collider poses immediately before a raycast (click / hover). */
   prepareRaycast?: () => void
-  /** Source-capture each PointerEventsResult append for the outbound CrdtEncoder. */
+  /**
+   * Source-capture grow-only appends for the outbound CrdtEncoder.
+   * PointerEventsResult is ignored at the SceneScriptSystem gate (inject-only PE law);
+   * TriggerArea and other writers still use this.
+   */
   recordAppend?: (componentId: number, entity: Entity, value: unknown) => void
   /** Scene UI click — DOM overlay (`#scene-ui-root`) → entity → worker inject. */
   pickUiHit?: (clientX: number, clientY: number, target?: EventTarget | null) => PointerHit | null
@@ -1655,6 +1659,8 @@ export class PointerEventsSystem {
       }
     }
     for (const entity of targets) {
+      // Local host/projection only — PE edges to the scene worker are inject-only.
+      // recordAppend is a no-op for PointerEventsResult (never-record gate).
       ecs.PointerEventsResult.addValue(entity, result)
       this.deps?.recordAppend?.(ecs.PointerEventsResult.componentId, entity, result)
     }

@@ -231,11 +231,15 @@ export class SceneScriptSystem {
   /** Phase 3: encoder is the primary source for renderer-owned outbound CRDT (reserved, tween, pointer/video results). Always on. */
   private readonly encoder = new CrdtEncoder(SDK_RESERVED, this.projection, this.componentHost.components)
   /**
-   * Source-capture sink: renderer grow-only writers (pointer results, video events) call
-   * this at their exact `addValue` site so the outbound encoder reproduces each APPEND
-   * byte-exactly.
+   * Source-capture sink: renderer grow-only writers call this at their exact `addValue`
+   * site so the outbound encoder reproduces each APPEND byte-exactly.
+   *
+   * **PointerEventsResult is never recorded** — PE edges reach the worker only via
+   * `inject-pointer-click` (worker inject is authoritative). Encoding PE on main caused
+   * ghost onMouseDown when a later grow-only flush shipped a second clock.
    */
   private readonly recordRendererAppend = (componentId: number, entity: Entity, value: unknown): void => {
+    if (componentId === this.readComponents.PointerEventsResult.componentId) return
     this.encoder.recordAppend(componentId, entity, value)
   }
   private readonly recordRendererLww = (componentId: number, entity: Entity, value: unknown): void => {
@@ -416,9 +420,7 @@ export class SceneScriptSystem {
   private bridgeSyncEvery = BRIDGE_ECS_SYNC_RUNTIME
   private signedFetchHandler: SignedFetchHandler | null = null
   private signedFetchGetHeadersHandler: SignedFetchGetHeadersHandler | null = null
-  /** Pointer append bytes captured at flush, sent via pointer-crdt-deliver. */
-  private readonly pointerResponseStash: Uint8Array[] = []
-  /** Prevents overlapping flush encodes while mirror flushOutgoing is awaited. */
+  /** Prevents overlapping inject flushes. */
   private pointerFlushInFlight = false
   private motionFocusDumped = false
   private motionFocusDumpTicks = 0
@@ -429,7 +431,7 @@ export class SceneScriptSystem {
   private bootProgressReporter: ((msg: string) => void) | null = null
   private scriptBlobUrl: string | null = null
   private compileProgressTimer: ReturnType<typeof setInterval> | null = null
-  /** Set when pointer-crdt-deliver is posted; cleared on pointer-deliver-done from worker. */
+  /** Set when inject-pointer-click is posted; cleared on pointer-deliver-done from worker. */
   private pointerDeliverAwaitingAck = false
   private pointerDeliverFailWatchdog: ReturnType<typeof setTimeout> | null = null
   /** Click flush pending — cleared on pointer-deliver-done. */
@@ -4953,7 +4955,7 @@ export class SceneScriptSystem {
    */
   private static readonly GROW_ONLY_FLUSH_MIN_MS = 16
   private static readonly RAYCAST_FLUSH_MIN_MS = 100
-  /** While GLTFs stream in, avoid pointer-crdt-deliver storms (each can run worker onUpdate). */
+  /** While GLTFs stream in, avoid light-renderer-inbound storms (each can run worker onUpdate). */
   private static readonly HYDRATION_CRDT_FLUSH_MIN_MS = 500
   private lastTweenDeliverAt = 0
   /**
@@ -5068,8 +5070,12 @@ export class SceneScriptSystem {
 
   /**
    * Deliver renderer-owned LWW PUTs (VideoPlayer/AudioSource/GltfLoadingState).
-   * Gltf loading state uses renderer-inbound-deliver (not pointer-crdt-deliver) so we never
-   * open the pointer pause path mid-onStart — that froze SpaceRunner forever.
+   *
+   * Channel policy (wire names are historical — both are light main→worker inbound):
+   * - **GltfContainerLoadingState** → `renderer-inbound-deliver` (must not open pointer
+   *   pause mid-onStart — that froze SpaceRunner forever).
+   * - **Other ambient LWW** → `pointer-crdt-deliver` (light inject; no deliver-done session).
+   * PE edges never use either channel — only `inject-pointer-click`.
    */
   private flushRendererLwwToWorker(opts?: { reason?: string }): void {
     if (!this.worker || !this.running) return
@@ -5096,6 +5102,7 @@ export class SceneScriptSystem {
       )
       return
     }
+    // Wire name is historical; payload is ambient renderer LWW (not PE edges).
     this.worker.postMessage(
       { type: 'pointer-crdt-deliver', data: [copy] } satisfies MainToWorker,
       [copy.buffer]
@@ -5113,6 +5120,7 @@ export class SceneScriptSystem {
       `Raycast CRDT deliver — ${pending} PUT(s), ${copy.byteLength} bytes`,
       { level: 'info', alsoConsole: isRaycastVerbose() }
     )
+    // Light renderer inbound (historical message type name).
     this.worker.postMessage(
       { type: 'pointer-crdt-deliver', data: [copy] } satisfies MainToWorker,
       [copy.buffer]
@@ -5271,10 +5279,10 @@ export class SceneScriptSystem {
   /**
    * Push pointer edge to worker via inject-pointer-click only.
    *
-   * Platform law: inject is the only authoritative PE edge. Main-encoded
-   * PointerEventsResult CRDT must never open the deliver-done session — the
-   * worker light path for pointer-crdt-deliver does not post deliver-done, so
-   * arming the 2s watchdog on CRDT-only freezes clicks indefinitely.
+   * Platform law: inject is the only authoritative PE edge. Main never encodes
+   * PointerEventsResult for the worker (`recordRendererAppend` no-ops 1063).
+   * Safety: discard any PE appends that still land in the encoder before inject.
+   * Do not open deliver-done on light `pointer-crdt-deliver` (no ack → 2s freeze).
    */
   async flushPendingPointerCrdt(): Promise<void> {
     if (!this.pointerEvents) {
@@ -5330,9 +5338,8 @@ export class SceneScriptSystem {
       // Capture inject immediately after the edge write — never re-read after encode/discard.
       const inject = this.pointerEvents.consumeInjectPayload()
 
-      // inject-pointer-click is authoritative — drop main PE Result appends so a later
-      // grow-only flush cannot re-fire EventSystem (ghost CAM toggle / menu close).
-      // Also drop hover leftovers so we never open a CRDT-only deliver-done session.
+      // Belt: PE should never be recorded (recordRendererAppend gates 1063). If anything
+      // still queued PE appends, drop them so grow-only cannot ghost-fire EventSystem.
       if (inject || hasDown || hasUp) {
         const dropped = this.encoder.discardRecordedAppends(
           this.readComponents.PointerEventsResult.componentId
@@ -5340,11 +5347,11 @@ export class SceneScriptSystem {
         if (dropped > 0) {
           clientDebugLog.log(
             'pointer',
-            `inject-only — discarded ${dropped} main PointerEventsResult append(s) (worker inject is authoritative)`
+            `inject-only — discarded ${dropped} unexpected PointerEventsResult append(s) (should be never-record)`,
+            { level: 'warn', alsoConsole: true }
           )
         }
       }
-      this.pointerResponseStash.length = 0
 
       if (!inject) {
         // Edge write failed or orphan empty flush — never arm deliver-done watchdog.
@@ -5387,7 +5394,7 @@ export class SceneScriptSystem {
 
   /**
    * Post inject-pointer-click and arm deliver-done. Inject-only — never pairs with
-   * pointer-crdt-deliver (worker light CRDT path does not ack).
+   * light renderer inbound (`pointer-crdt-deliver`; that path does not ack).
    */
   private deliverInjectToWorker(inject: import('../../player/injectPointerClick').InjectPointerClickBody): void {
     if (!this.worker) {
@@ -6630,7 +6637,6 @@ export class SceneScriptSystem {
     this.raycasts = null
     this.engineApiEvents.dispose()
     this.clearPointerDeliverWatchdog()
-    this.pointerResponseStash.length = 0
     this.worker?.terminate()
     this.worker = null
     this.host = null

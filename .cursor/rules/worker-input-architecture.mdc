@@ -9,9 +9,10 @@ alwaysApply: true
 
 | Lane | Messages | Handler |
 |------|----------|---------|
-| Pointer | `inject-pointer-click`, `pointer-crdt-deliver` | Priority bootstrap → `sceneWorker` deliver queue |
+| Pointer edges | `inject-pointer-click` only (authoritative PE) | Priority bootstrap → inject session |
+| Light renderer inbound | `pointer-crdt-deliver` (historical name — TriggerArea/Raycast/ambient LWW, **not** PE edges), `tween-state-deliver` | Worker light apply; no deliver-done for ambient |
 | Keyboard | `scene-input-snapshot`, `pump-scene-engine-tick` | Normal worker message path |
-| Cooperative | `renderer-inbound-deliver`, RPC, boot | Normal path |
+| Boot-safe inbound | `renderer-inbound-deliver` (e.g. GltfLoadingState), RPC, boot | Avoids pointer pause mid-onStart |
 
 Main posts freely. Worker owns ordering via `sceneWorkerInputSession` (snapshots coalesce during pointer session).
 
@@ -102,6 +103,10 @@ Pointer deferred non-Ui chunks are LWW-coalesced, then each reconcile runs as it
 ## Pointer timestamps
 
 All worker `PointerEventsResult` rows use `workerPointerEventTimestamp.ts`. UI clicks: `inject-pointer-click` only.
+
+## PE never-record on main
+
+Main must **not** encode `PointerEventsResult` into grow-only outbound (`recordRendererAppend` gates component 1063). Worker inject owns PE clocks. A leftover discard on inject flush is a safety belt only — unexpected PE appends should log as a warning.
 
 ## Pointer delivery & tick resume
 

@@ -1,9 +1,11 @@
-# Frame pipeline — COD / AAA admit, lanes, peel, depth composite
+# Frame pipeline — admit, lanes, peel, depth composite
 
-**Status:** platform law on `fix/sync-entity`  
-**Bar:** [AGENTS.md](./AGENTS.md) COD continuity · PhysX analogue [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md)  
-**Related:** mesh scale, multi-scene, material path  
-**Last updated:** 2026-08-07  
+**Status:** platform law (main-thread pendingDiff discipline)  
+**Bar:** [AGENTS.md](./AGENTS.md) continuity · PhysX analogue [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md)  
+**Related:** mesh scale, multi-scene, material path · architecture overview [ARCHITECTURE.md](./ARCHITECTURE.md)  
+**Last updated:** 2026-08-11  
+
+> **Filename / “COD”:** historical focus prompt (AAA-quality bar), not a product mode. Prefer “frame pipeline” in new prose.  
 
 ---
 

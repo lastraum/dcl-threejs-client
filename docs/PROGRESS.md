@@ -2,11 +2,11 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-08-09  
-> **Current phase:** **dev-latest** parity / implementation gap close (**no release cut**) — MeshCollider platform riding · CCT ground law · scene-http egress · TextShape width · outdoor lighting washout. **v1.7.0** remains latest on `main`.  
-> **Shipped (1.x):** **v1.7.0** community voice · live polls/Q&A/trivia + CSV · pets/Pet Barn · loot bag · multi-scene AOI anim · AudioAnalysis · EnvironmentApi/Testing · **v1.6.0** tour photos / Camera Reel · admin tools · scene UI fixes · **v1.5.0** PART/ROOT colliders · Animator · tours · cast · **v1.4.0** custom worlds · Worlds map · AOI · shell UI.  
+> **Last updated:** 2026-08-10  
+> **Current phase:** **dev-latest** parity / implementation gap close (**no release cut**) — MeshCollider platform riding · CCT ground · scene-http · lighting · PART curtain/door thrash fix · plaza marquee/JUMP IN/sit · **in-scene ECS UI smoke-pass 🟢**. **v1.7.0** remains latest on `main`.  
+> **Shipped (1.x):** **v1.7.0** community voice · live polls/Q&A/trivia + CSV · pets/Pet Barn · loot bag · multi-scene AOI anim · AudioAnalysis · EnvironmentApi/Testing · **v1.6.0** tour photos / Camera Reel · admin tools · scene UI structure · **v1.5.0** PART/ROOT colliders · Animator · tours · cast · **v1.4.0** custom worlds · Worlds map · AOI · shell UI.  
 
-> **1.x next (1.8+):** release cut of platform-riding + lighting stack · scene UI text-measure / Yoga polish · portable experiences · backpack outfits/marketplace · create-community / invites · gallery multi-page · graphics P3 distance culls · CBD multi-scene FPS hardening · Social WS transport reliability · PE P3 pad/wind manual QA · multi-shape GLTF `40M+` riding follow-up.  
+> **1.x next (1.8+):** release cut of riding/lighting/PART/pointer/plaza stack · portable experiences polish · backpack outfits / shell marketplace · create-community / invites · gallery multi-page · graphics P3 distance culls · CBD multi-scene FPS · Social WS reliability · PE P3 pad/wind QA · multi-shape GLTF `40M+` riding · WSP pie (meters only; full pie not shipped). Scene UI = **one-off bugs only**.  
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). PM LiveKit survives teleports. Community voice LiveKit survives Jump In.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**; outdoor washout rebalance **on `dev-latest`**.  
 > **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **Riding law:** [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md) · **Static COD:** [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) · **Multi-scene continuity:** [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  
@@ -15,6 +15,31 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## ✅ Milestone — PART thrash + plaza polish + UI smoke-pass → `dev-latest` (2026-08-10)
+
+**Status: on `dev-latest` — not a product release.** In-scene ECS UI marked **production / smoke-pass** (structure complete; one-off scene bugs only). PART curtain/door hulls + collider cook thrash closed; plaza marquee / JUMP IN / sit hips.
+
+### What's new (parity / implementation — no version toast)
+
+- **In-scene ECS UI → 🟢** — Yoga + DOM path is smoke-pass; matrix no longer tracks Ui* as partial platform work
+- **PART curtains/doors** — settle after Open · multi-shape doneIds via `hasStaticActor` · no pose-fp wipe thrash · walk-through when open without 13 FPS re-expand
+- **Primitive MeshCollider cook** — drain no longer drops box/sphere/etc. as “empty” (e568 Missing-actors loop)
+- **Plaza** — NeonScreen TextureMove pause hold · JUMP IN L–R corners · MeshRenderer marquee UVs · sit emote hip retarget
+- **Plaza FPS baseline** — bloom/adaptive cook give-up (with thrash kill above)
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **In-scene ECS UI** | 🟢 smoke-pass | One-off bugs only |
+| **PART / cook thrash** | 🟢 | Curtains e541 · primitive e568 |
+| **Plaza boards / sit** | 🟢 | Marquee · JUMP IN · hips |
+| **Release** | ⬜ not yet | `main` stays **v1.7.0** |
+
+**QA:** PIP curtains open → walk through · no `Missing actors ids=[568]` loop · plaza marquee pause · JUMP IN readable · sit on bench · FPS with `?colliders` stable.
+
+**Tip:** On `dev-latest`. **Not** tagged for release.
 
 ---
 

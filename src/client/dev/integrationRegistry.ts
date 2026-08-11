@@ -169,10 +169,10 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
   {
     id: 'ui:ecs-scene-ui',
     name: 'In-scene ECS UI (UiTransform…)',
-    status: 'partial',
+    status: 'render',
     category: 'client-ui',
     notes:
-      'Yoga + DOM · hit-map from layoutBoxes+layoutToScreen · nine-slice border-image (HTTP OK, natural size) · UiInput/UiDropdown writeback · uvs/text-measure polish remain'
+      'Production path (smoke-pass): Yoga + DOM · hit-map · nine-slice · Color4×texture · UiInput/UiDropdown writeback · free z-stack · leave cleanup. One-off scene bugs only — not a platform rebuild'
   },
   { id: 'ui:voice-ui', name: 'Voice / mic UI', status: 'render', category: 'client-ui', notes: 'Explorer NEARBY VOICE: Hear others + Speak + hold T; mute-in-bg; name-tag bars; 3D PositionalAudio falloff' }
 ]

@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-08-09 (**dev-latest** parity gaps: MeshCollider riding · CCT ground · scene-http · TextShape width · lighting washout — **no release**; `main` still **v1.7.0**; see [PROGRESS.md](./PROGRESS.md))
+> **Last updated:** 2026-08-10 (**dev-latest** — no release; `main` still **v1.7.0**). Platform: MeshCollider riding · CCT ground · scene-http · TextShape width · lighting · PART curtains. **In-scene ECS UI = production / smoke-pass** (one-off bugs only). See [PROGRESS.md](./PROGRESS.md)
 
 ---
 
@@ -27,14 +27,14 @@
 
 | Area | Tracked | 🟢 Done | 🟡 Partial | ⬜ Not started | 🔵 Client-only |
 | ---- | ------- | ------- | ---------- | -------------- | -------------- |
-| ECS components | 65 | 39 | 5 | 2 | 19 |
+| ECS components | 65 | 46 | 0 | 0 | 19 |
 | Client UI | see `integrationRegistry.ts` | | | | |
 | Networking | see `integrationRegistry.ts` | | | | |
 | Performance | see `integrationRegistry.ts` | | | | |
 | Environment | 4 | 4 | 0 | 0 | — |
 | ~system modules | 9 | 9 | 0 | 0 | — |
 
-*ECS counts from `src/dcl/ecs/registry.ts`. **Without full parity** = ⬜ + 🟡 = **7**. Client-only (🔵) is intentional renderer→scene ownership, not a missing feature — e.g. AssetLoadLoadingState, GltfContainerLoadingState, TweenState, EngineInfo. **Tags** + `getEntitiesByTag()` are 🟢.*
+*ECS counts from `src/dcl/ecs/registry.ts`. **In-scene UI** (`UiTransform`…`UiDropdown`) is **🟢 production / smoke-pass** — fix one-off scene bugs only. Client-only (🔵) is intentional renderer→scene ownership, not a missing feature — e.g. AssetLoadLoadingState, GltfContainerLoadingState, TweenState, EngineInfo. **Tags** + `getEntitiesByTag()` are 🟢.*
 
 ---
 
@@ -119,7 +119,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | NetworkEntity / NetworkParent | — | 🟢 | Typed projection + local parent resolve (P3) |
 | SyncComponents / `syncEntity` | — | 🟢 | P0–P3 host path · directed LiveKit · size cap |
 | SkyboxTime | 1210 | 🟢 | Scene fixed → session custom → Auto; ECS/json lock snaps on cold bind |
-| UiTransform … UiDropdown | 1050+ | 🟡 | Yoga + DOM partial — results writeback; polish gaps |
+| UiTransform … UiDropdown | 1050+ | 🟢 | Yoga + DOM production path · hit-map · nine-slice · input writeback · smoke-pass (one-off bugs only) |
 | ParticleSystem | 1217 | 🟢 | `ParticleSystemBridge` — GPU billboard sprites |
 | MapPin | 1097 | 🟢 | Mirror + `MapPinStore` list (deprecated upstream; still honored) |
 | NftShape | 1040 | 🟢 | `NftShapeBridge` — OpenSea proxy image + **Explorer FBX frames** (`/nft-frames/*.fbx`); animated GIF; `openNftDialog` HTML modal (RestrictedActions) |
@@ -133,7 +133,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 
 | Status | Components |
 | ------ | ---------- |
-| 🟡 | UiTransform · UiText · UiBackground · UiInput · UiDropdown |
+| — | **None** — in-scene UI smoke-pass 🟢; remaining product work is shell (outfits / keybinds / create-community), not ECS Ui* |
 
 ### ~system modules (worker shim)
 
@@ -176,7 +176,7 @@ DOM overlay — not in-scene `UiTransform`.
 | Preferences: Controls, Chat tabs | 🟡 | Mouse sensitivity live; chat translate prefs 🟢 · keybinds pending |
 | Settings: Communities | 🟢 | Browse + ACTIVE VOICE · modal roster (promote/demote/kick) · announce/start-voice **owner/mod/admin** · end-all · community chat into dock |
 | Community HUD toasts | 🟢 | Top-center · posts poll · voice via bus (PM LiveKit + Social WS) · guest+wallet |
-| In-scene ECS UI | 🟡 | Yoga + DOM · hit-map 🟢 · UiBackground nine-slice + **Color4×texture multiply** 🟢 · instant solid tint · text-measure polish remain |
+| In-scene ECS UI | 🟢 | Production / smoke-pass · Yoga + DOM · hit-map · nine-slice · Color4×texture · UiInput/UiDropdown writeback · free z-stack · leave cleanup · one-off bugs only |
 | Voice / mic UI | 🟢 | Nearby voice panel · Speak / hold T · mute-in-bg · name-tag bars · **3D PositionalAudio** · community voice 2D pill + in-play chat card |
 | **Live tools** (polls / Q&A / trivia) | 🟢 | Location-card host menu · scene LiveKit · end-session **CSV** stats |
 | Pets panel + Pet Barn | 🟢 | Multiplayer companions · Barn catalog/publish · purple chrome |

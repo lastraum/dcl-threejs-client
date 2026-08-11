@@ -1025,9 +1025,10 @@ export class SceneScriptSystem {
     for (const entity of this.billboardBridge?.pendingMotionEntities() ?? []) addRoot(entity)
     for (const entity of this.systemTransformDirty) addRoot(entity)
 
-    // PART only for mixers sampled/applied this frame (shape-motion marks).
-    // Do NOT walk every running mixer — decorative loops used to thrash PhysX every frame.
-    // Dirty door apply calls markShapeMotionAfterSample (update(0)) so open/close still lands.
+    // PART: running one-shots + post-finish settle (final open pose) + this-frame sample marks.
+    // Do NOT use every looping mixer — decorative loops thrash PhysX. getPartColliderEntities
+    // is doors/curtains only (non-loop running or PART_SETTLE_MS window).
+    for (const entity of this.animatorBridge?.getPartColliderEntities() ?? []) addPart(entity)
     for (const entity of this.animatorBridge?.pendingShapeMotionEntities() ?? []) addPart(entity)
     for (const entity of this.systemPartColliders) addPart(entity)
 

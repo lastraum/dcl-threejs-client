@@ -554,10 +554,22 @@ export class GltfColliderExtractor {
   }
 
   /**
-   * World matrix for a physics mesh. Skinned `_collider` panels often leave mesh.matrixWorld
-   * fixed while bones drive the visual — use bone/parent bone world then.
+   * World matrix for a physics mesh.
+   * - Skinned `_collider` panels often leave mesh.matrixWorld fixed while bones drive the
+   *   visual — use bone/parent bone world then.
+   * - Rigid meshes parented under an animated Bone (curtains_1: Curtain/Pole under Bone,
+   *   not SkinnedMesh) already include the bone in mesh.matrixWorld after updateMatrixWorld;
+   *   we still force parent bone updates so PART cooks match the raised pose.
    */
   private colliderMeshWorldMatrix(mesh: THREE.Mesh): THREE.Matrix4 {
+    // Walk up and refresh animated bones first (hierarchy can be Bone → mesh, no skin).
+    let p: THREE.Object3D | null = mesh.parent
+    for (let i = 0; i < 12 && p; i++) {
+      if ((p as THREE.Bone).isBone || /^(bone|joint|hinge)/i.test(p.name)) {
+        p.updateMatrixWorld(true)
+      }
+      p = p.parent
+    }
     mesh.updateMatrixWorld(true)
     const sk = mesh as THREE.SkinnedMesh
     if (sk.isSkinnedMesh && sk.skeleton) {

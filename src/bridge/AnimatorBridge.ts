@@ -37,6 +37,14 @@ type AnimEntry = {
   loopingOnly: boolean
   /** Rigid + loopingOnly — one mixer sample fans out to same-hash clones. */
   shareableLooping: boolean
+  /**
+   * performance.now() deadline: keep PART PhysX follow after a one-shot ends so the
+   * final clamped pose (open door / raised curtain) is cooked. Without this, the last
+   * running-clip frame may miss the cook gate and the hull stays at bind pose.
+   */
+  partSettleUntil?: number
+  /** Mixer 'finished' listener — one-shot PART settle. */
+  partFinishedHooked?: boolean
 }
 
 /** Sample scheduling context — near camera / frustum bias for fair phase slice. */
@@ -102,6 +110,12 @@ const TARGET_VIEW_SAMPLE_HZ = 30
 const MAX_SAMPLES_PER_FRAME = 48
 /** Near / PART absolute ceiling (adaptive near cap is lower under load). */
 const MAX_NEAR_ALWAYS_PER_FRAME = 16
+/**
+ * After a non-loop clip finishes, keep PART hull follow this long so the final
+ * open/raised pose is world-cooked (curtains ~0.75s Open; doors similar).
+ * Short: long settle + full multi-shape re-expand every frame murdered FPS (~13).
+ */
+const PART_SETTLE_MS = 200
 /**
  * Default-autoplay promote (instance→clone) budget per frame.
  * Full-rate mode uses a higher cap so more props start animating sooner.
@@ -254,9 +268,16 @@ function isPartPhysxCandidate(entry: AnimEntry): boolean {
   return true
 }
 
+/** Running one-shot OR post-finish settle window (final open pose cook). */
+function needsPartPhysxWork(entry: AnimEntry, now = performance.now()): boolean {
+  if (isPartPhysxCandidate(entry)) return true
+  if (entry.partSettleUntil != null && now < entry.partSettleUntil) return true
+  return false
+}
+
 /** @deprecated name — use hasRunningClip / isPartPhysxCandidate */
 function hasPartColliderWork(entry: AnimEntry): boolean {
-  return isPartPhysxCandidate(entry)
+  return needsPartPhysxWork(entry)
 }
 
 /** One name→node map per bind — per-track traverse was O(tracks × nodes) on huge characters. */
@@ -472,6 +493,20 @@ export class AnimatorBridge {
   }
 
   /**
+   * Running one-shot PART **or** post-finish settle — PhysX hull follow set for this frame.
+   * Prefer this over {@link pendingShapeMotionEntities} alone (that only has mixers sampled
+   * this tick; a finished clamp pose still needs one cook).
+   */
+  getPartColliderEntities(): Entity[] {
+    const now = performance.now()
+    const out: Entity[] = []
+    for (const [entity, entry] of this.entries) {
+      if (needsPartPhysxWork(entry, now)) out.push(entity)
+    }
+    return out
+  }
+
+  /**
    * Apply ECS Animator states for already-bound mixers that were markDirty'd.
    * Must run on the **sync motion path** — full `sync()` only runs async, which left
    * door open/close one frame late and often missed shape-slide samples.
@@ -494,9 +529,18 @@ export class AnimatorBridge {
    * After mixer sample: only pay matrix/skeleton when needed.
    * Decorative rigid loops: mixer writes local TRS; renderer scene updateMatrixWorld
    * covers them next frame. PART doors + skinned need same-frame matrix/skeleton.
+   *
+   * One-shot settle: after Open/Close finishes, keep PART for {@link PART_SETTLE_MS}
+   * so the clamped end pose is world-cooked (curtains raise ~3.4m under Bone).
    */
   private markShapeMotionAfterSample(entity: Entity, entry: AnimEntry): void {
-    const part = isPartPhysxCandidate(entry)
+    const now = performance.now()
+    const runningPart = isPartPhysxCandidate(entry)
+    if (runningPart) {
+      // Extend settle window while the one-shot is still advancing.
+      entry.partSettleUntil = now + PART_SETTLE_MS
+    }
+    const part = needsPartPhysxWork(entry, now)
     if (entry.hasSkinned) {
       entry.root.traverse((obj) => {
         const sk = obj as THREE.SkinnedMesh
@@ -504,6 +548,7 @@ export class AnimatorBridge {
       })
     }
     // Decorative rigid loops: skip forced updateMatrixWorld — scene graph pass is enough.
+    // PART / settle / skinned: same-frame hierarchy so bone-parented panels move PhysX.
     if (part || entry.hasSkinned) {
       const entityNode = entry.root.parent
       if (entityNode) entityNode.updateMatrixWorld(true)
@@ -513,6 +558,25 @@ export class AnimatorBridge {
     if (part) {
       this.shapeMotionEntities.add(entity)
     }
+  }
+
+  /** Hook mixer finished once — one-shots must PART-cook their final clamped pose. */
+  private ensurePartFinishedHook(entity: Entity, entry: AnimEntry): void {
+    if (entry.partFinishedHooked) return
+    entry.partFinishedHooked = true
+    entry.mixer.addEventListener('finished', () => {
+      // Clip ended (or loop boundary). Arm settle so pushColliderPartPoses runs once more.
+      entry.partSettleUntil = performance.now() + PART_SETTLE_MS
+      // Pose is already at clamp end — refresh matrices and mark PART this frame if possible.
+      const entityNode = entry.root.parent
+      if (entityNode) entityNode.updateMatrixWorld(true)
+      else entry.root.updateMatrixWorld(true)
+      this.shapeMotionEntities.add(entity)
+      this.logAnimator(
+        `Animator finished → PART settle ${PART_SETTLE_MS}ms — entity ${entity} · ${entry.gltfSrc}`,
+        { entity, throttleMs: 200 }
+      )
+    })
   }
 
   private applyStatesToEntry(
@@ -588,6 +652,10 @@ export class AnimatorBridge {
       states.length > 0 &&
       states.every((s) => s.playing === false || s.loop !== false)
     bound.shareableLooping = !bound.hasSkinned && bound.loopingOnly
+    // One-shots (doors/curtains): listen for finished so final pose still PART-cooks.
+    if (!bound.loopingOnly) {
+      this.ensurePartFinishedHook(entity, bound)
+    }
     // Sample current pose immediately so PhysX can track the first open frame.
     if (playingClips.length || mixerHasActiveWork(bound)) {
       bound.mixer.update(0)
@@ -840,7 +908,9 @@ export class AnimatorBridge {
         sleeping: false,
         poseNodes: collectPoseNodes(mesh),
         loopingOnly: false,
-        shareableLooping: false
+        shareableLooping: false,
+        partSettleUntil: undefined,
+        partFinishedHooked: false
       }
       const nodeByName = loaded.animations.length ? buildNodeNameMap(mesh) : undefined
       let retargetedTracks = 0
@@ -1037,18 +1107,30 @@ export class AnimatorBridge {
     if (fullRate) {
       let sampled = 0
       let active = 0
+      const now = performance.now()
       for (const [entity, entry] of this.entries) {
         if (entry.sleeping) {
           entry.sleeping = false
           entry.mixer.timeScale = 1
           entry.deferredSampleDt = 0
         }
-        if (!mixerHasActiveWork(entry)) {
+        const settleOnly =
+          !mixerHasActiveWork(entry) &&
+          entry.partSettleUntil != null &&
+          now < entry.partSettleUntil
+        if (!mixerHasActiveWork(entry) && !settleOnly) {
           entry.deferredSampleDt = 0
           continue
         }
         active++
         entry.deferredSampleDt = 0
+        if (settleOnly) {
+          // Clip finished — hold end pose, still PART-cook hull to match visuals.
+          entry.mixer.update(0)
+          this.markShapeMotionAfterSample(entity, entry)
+          sampled++
+          continue
+        }
         if (delta > 1e-8) {
           entry.mixer.update(delta)
           sampled++
@@ -1118,9 +1200,21 @@ export class AnimatorBridge {
       }
     }
 
+    const nowFair = performance.now()
     for (const [entity, entry] of this.entries) {
-      if (!mixerHasActiveWork(entry) && !entry.sleeping) {
+      const settleOnly =
+        !mixerHasActiveWork(entry) &&
+        entry.partSettleUntil != null &&
+        nowFair < entry.partSettleUntil
+      if (!mixerHasActiveWork(entry) && !entry.sleeping && !settleOnly) {
         entry.deferredSampleDt = 0
+        continue
+      }
+      if (settleOnly) {
+        // Final open pose — force near/PART sample without replaying the clip.
+        entry.deferredSampleDt = 0
+        entry.mixer.update(0)
+        this.markShapeMotionAfterSample(entity, entry)
         continue
       }
       const { priority, distSq, inFrustum } = this.samplePriority(entry, sampleCtx!)
@@ -1394,8 +1488,9 @@ export class AnimatorBridge {
     _sphere.radius = FRUSTUM_EXPAND_M
     const inFrustum = _frustum.intersectsSphere(_sphere)
 
-    // PART / one-shot doors near camera — highest.
-    if (hasPartColliderWork(entry) && distSq <= nearSq * 2.25) {
+    // PART / one-shot doors — always highest priority (any distance). Hull follow must
+    // not wait for the fair ring while a curtain/door is opening 30m away.
+    if (hasPartColliderWork(entry)) {
       return { priority: 3, distSq, inFrustum: true }
     }
     if (distSq <= nearSq) return { priority: 2, distSq, inFrustum: true }

@@ -1105,13 +1105,11 @@ export class PhysXWorld {
 
     let cooked = 0
     if (worldCook.length) {
-      // Do NOT invalidate first — that was a mid-walk soft hole (solids vanish until cook
-      // finishes). replaceStaticWithCook keeps the live actor until the new hull succeeds.
-      // Stale geom fingerprints so forceRecook cannot no-op on matching pose fp alone.
-      for (const desc of worldCook) {
-        this.staticFp.delete(desc.entity)
-        this.staticPoseFp.delete(desc.entity)
-      }
+      // Do NOT wipe parent fps before cook. Deleting staticPoseFp made poseMoved always
+      // true → full multi-shape re-expand every PART tick (curtains e541 → 13 FPS).
+      // forceRecookOnPoseChange already re-bakes when multiShapePoseFingerprint moves;
+      // when idle, pose gate no-ops and hulls stay solid.
+      // Do NOT invalidate first — mid-walk soft hole (solids vanish until cook finishes).
       try {
         const result = this.syncStaticColliders(worldCook, {
           cookBudget: worldCook.length,
@@ -1120,16 +1118,20 @@ export class PhysXWorld {
           geometryCache: false,
           skipWorkerStream: true
         })
+        // Expanded multi-shape parents live as children only — hasStaticActor, not staticActors.
+        // Returning empty doneIds left World.partMotionPoseFp unlatched → re-queue thrash.
+        for (const desc of worldCook) {
+          if (!this.hasStaticActor(desc.entity)) continue
+          doneIds.push(desc.entity)
+          if (result.geometryChanged) cooked++
+        }
         if (result.geometryChanged) {
-          for (const desc of worldCook) {
-            if (this.staticActors.has(desc.entity)) {
-              doneIds.push(desc.entity)
-              cooked++
-            }
-          }
           updated += cooked
           // COD: PART cooks use replaceStaticWithCook (addActor) — never forceDynamicTreeRebuild.
           this.invalidateControllerCache()
+        } else if (doneIds.length) {
+          // Idle/no-op cook still acks PART so World can latch poseFp and stop calling us.
+          updated += doneIds.length
         }
       } catch (err) {
         console.warn('[PhysXWorld] PART world hull cook failed', err)
@@ -1774,32 +1776,40 @@ export class PhysXWorld {
         // Scale grow (tile tween) bakes into world-space verts — geom fp stays identical while
         // hull stays at cook-time scale. Must fall through to replaceStatic, not pose-ack.
         const scaleDrift = this.hasCookScaleDrift(desc)
+        // PART doors/curtains: bone motion updates shape.localMatrix while geom fps stay
+        // identical. forceRecookOnPoseChange must recook when poseFp moved — but NOT every
+        // call (that re-expanded 5 curtain actors every frame → 13 FPS). Gate on pose change.
+        const forcePoseRecook = options?.forceRecookOnPoseChange === true || bootStyleCook
+        const poseMoved = this.staticPoseFp.get(desc.entity) !== poseFp
 
-        // Children live + parent geom fingerprint matches → keep solids (pose-only drift OK).
-        // Multi-shape parents have no single RigidStatic; only children matter.
-        if (shapeCountOk && prevGeomFp === geomFp && !scaleDrift) {
-          this.staticPoseFp.set(desc.entity, poseFp)
-          continue
-        }
-
-        // Children live + per-shape geom fps match → adopt new parent geom string without recook
-        // (extract naming noise). Missing child fp (legacy expand) still counts as match if live.
-        // NEVER re-adopt when cook scale drifted — that left pixelwars tiles at 0.001 hulls.
-        if (shapeCountOk && expectedShapes > 0 && !scaleDrift) {
-          let childFpOk = true
-          for (let i = 0; i < desc.shapes.length; i++) {
-            const shape = desc.shapes[i]!
-            if (!shape.geometry) continue
-            const childFp = this.staticFp.get(multiShapeChildPhysId(desc.entity, i))
-            if (childFp !== undefined && childFp !== shape.fingerprint) {
-              childFpOk = false
-              break
+        // Children live + nothing structural/pose-motion needs work → keep solids.
+        if (shapeCountOk && !scaleDrift) {
+          if (forcePoseRecook) {
+            // PART: only re-bake when multi-shape pose fingerprint actually moved.
+            if (!poseMoved && prevGeomFp === geomFp) {
+              continue
             }
-          }
-          if (childFpOk) {
-            this.staticFp.set(desc.entity, geomFp)
+            // poseMoved or geom string noise → fall through to expand/replace.
+          } else if (prevGeomFp === geomFp) {
             this.staticPoseFp.set(desc.entity, poseFp)
             continue
+          } else {
+            // Geom string noise only: adopt parent fp if per-shape child fps still match.
+            let childFpOk = true
+            for (let i = 0; i < desc.shapes.length; i++) {
+              const shape = desc.shapes[i]!
+              if (!shape.geometry) continue
+              const childFp = this.staticFp.get(multiShapeChildPhysId(desc.entity, i))
+              if (childFp !== undefined && childFp !== shape.fingerprint) {
+                childFpOk = false
+                break
+              }
+            }
+            if (childFpOk) {
+              this.staticFp.set(desc.entity, geomFp)
+              this.staticPoseFp.set(desc.entity, poseFp)
+              continue
+            }
           }
         }
 

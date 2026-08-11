@@ -151,6 +151,16 @@ function useOrbitMode(): boolean {
   return typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('orbit')
 }
 
+/**
+ * MeshCollider primitives cook from kind + matrix scale — no BufferGeometry on the desc.
+ * Used by cook drain so we do not treat them as empty extracts.
+ */
+function isPrimitiveMeshColliderKind(kind: string): boolean {
+  if (kind.startsWith('cylinder')) return true
+  const base = (kind.split(':')[0] ?? '').toLowerCase()
+  return base === 'box' || base === 'sphere' || base === 'cylinder' || base === 'plane'
+}
+
 type SceneWater = {
   group: THREE.Group
   update: (delta: number, camera: THREE.Camera) => void
@@ -2786,6 +2796,7 @@ export class World {
   private discoverMissingColliderActors(): void {
     if (skipPhysxColliders()) return
     let added = 0
+    const missingIds: number[] = []
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
@@ -2794,7 +2805,10 @@ export class World {
       if (this.physics.hasFailedCookFingerprint(desc.fingerprint)) continue
       // Play give-up for this geom fp — do not re-open the thrash queue.
       if (this.isPlayCookGivenUp(desc.entity, desc.fingerprint)) continue
-      if (!this.colliderCookQueue.has(desc.entity)) added++
+      if (!this.colliderCookQueue.has(desc.entity)) {
+        added++
+        if (missingIds.length < 4) missingIds.push(desc.entity)
+      }
       this.colliderCookQueue.add(desc.entity)
     }
     this.enqueueScaleDriftRecooks()
@@ -2802,7 +2816,8 @@ export class World {
     if (added > 0) {
       clientDebugLog.log(
         'collision',
-        `Missing actors — +${added} (queue=${this.colliderCookQueue.size} static=${this.physics.staticColliderCount})`,
+        `Missing actors — +${added} (queue=${this.colliderCookQueue.size} static=${this.physics.staticColliderCount})` +
+          (missingIds.length ? ` ids=[${missingIds.join(',')}]` : ''),
         { level: 'info', throttleMs: 3_000 }
       )
       this.maybeBeginRuntimeColliderBurst(this.colliderCookQueue.size - added)
@@ -3334,6 +3349,14 @@ export class World {
    * Refresh live shape locals → when hull world fingerprint changes, world-cook that
    * entity only ({@link PhysXWorld.applyPartColliderMotions}). See policy doc.
    */
+  /**
+   * Min interval between PART world-recooks of the same multi-shape entity while a door
+   * is mid-animation. Full recook every display frame (5 curtain trimeshes × 60Hz) tanks
+   * FPS to teens; ~12Hz is still smooth for a 0.75s Open and settle pins the final pose.
+   */
+  private static readonly PART_RECOOK_MIN_INTERVAL_MS = 80
+  private readonly lastPartRecookAt = new Map<number, number>()
+
   private pushColliderPartPoses(animatorPart: ReadonlySet<Entity>): void {
     if (!this.playerMode || !animatorPart.size) return
 
@@ -3342,6 +3365,7 @@ export class World {
 
     const descs: PhysicsColliderDesc[] = []
     const pendingFp = new Map<number, string>()
+    const now = performance.now()
 
     for (const entity of animatorPart) {
       const physId = this.sceneScript.physEntityIdForPoseSync(entity)
@@ -3378,18 +3402,23 @@ export class World {
       // Stable hull pose (coarse) → no PhysX work.
       if (this.partMotionPoseFp.get(desc.entity) === poseFp) continue
 
+      // Throttle mid-motion recooks — final settle still lands when poseFp stabilizes.
+      const lastAt = this.lastPartRecookAt.get(desc.entity) ?? 0
+      if (now - lastAt < World.PART_RECOOK_MIN_INTERVAL_MS) continue
+
       descs.push(desc)
       pendingFp.set(desc.entity, poseFp)
     }
 
     if (!descs.length) return
 
-    // No cook budget — coarse fp gate limits work. Every meaningfully moved hull cooks.
+    // Coarse pose-fp + interval gate thrash; still no hard cook budget (skipping movers is worse).
     const { updated, doneIds } = this.physics.applyPartColliderMotions(descs)
 
     for (const physId of doneIds) {
       const fp = pendingFp.get(physId)
       if (fp) this.partMotionPoseFp.set(physId, fp)
+      this.lastPartRecookAt.set(physId, now)
     }
 
     if (updated > 0) this.physics.refreshStaticColliderQueries()
@@ -3746,8 +3775,12 @@ export class World {
         this.clearPlayCookTracking(physId)
         continue
       }
-      // Empty extract — nothing to cook; drop forever for this desc.
-      if (!desc.geometry && !(desc.shapes && desc.shapes.length > 0)) {
+      // Empty extract — nothing to cook. MeshCollider primitives (box/sphere/cylinder/plane)
+      // have no geometry/shapes — size lives in matrix scale. Dropping them re-queued e568
+      // forever (Missing actors thrash every 1.5s) while they never got a PhysX actor.
+      const hasShapes = !!(desc.shapes && desc.shapes.length > 0)
+      const hasGeom = !!desc.geometry
+      if (!hasShapes && !hasGeom && !isPrimitiveMeshColliderKind(desc.kind)) {
         this.colliderCookQueue.delete(physId)
         this.clearPlayCookTracking(physId)
         continue

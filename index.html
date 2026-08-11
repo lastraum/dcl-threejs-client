@@ -21845,12 +21845,17 @@
       .places-view--explorer .places-view__browse {
         display: flex;
         flex-direction: column;
-        gap: 14px;
+        gap: 18px;
         width: 100%;
-        padding-top: 12px;
-        margin-top: 4px;
-        border-top: 1px solid rgba(255, 255, 255, 0.1);
+        /* Nav sits above Live/Featured — no top divider (was for below-spotlight layout). */
+        padding-top: 0;
+        margin-top: 0;
+        border-top: none;
         flex-shrink: 0;
+      }
+      .places-view--explorer .places-view__browse .places-view__spotlight {
+        margin-top: 4px;
+        padding-top: 4px;
       }
       .places-view--explorer .places-view__browse-head {
         display: flex;

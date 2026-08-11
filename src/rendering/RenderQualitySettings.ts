@@ -94,12 +94,13 @@ export const SCENE_LOAD_RADIUS_MAX_M = 200
  */
 export const SCENE_LOAD_RADIUS_DEFAULT_M = 64
 
-/** Max ECS LightSource lights active at once (nearest to avatar) — preset defaults. */
+/** Max ECS LightSource lights active at once (nearest to avatar) — Explorer docs: 4/6/10. */
 export const LIGHT_LIMITS: Record<RenderQualityTier, number> = {
   [RenderQualityTier.Low]: 4,
   [RenderQualityTier.Medium]: 6,
   [RenderQualityTier.High]: 10,
-  [RenderQualityTier.Ultra]: 16
+  /** Same as High — Explorer does not grant more than 10 concurrent scene lights. */
+  [RenderQualityTier.Ultra]: 10
 }
 
 /** Max simultaneous VideoPlayer decoders (DCL Explorer parity). */

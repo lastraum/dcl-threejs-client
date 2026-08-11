@@ -115,9 +115,15 @@ const _camEuler = new THREE.Euler(0, 0, 0, 'YXZ')
 const _camPos = new THREE.Vector3()
 
 const POINTER_LOOK_SPEED = 0.003
-const CAM_PIVOT_HEIGHT = 1.45
+/** Boom pivot Y (m above feet) — far 3rd person (chest/shoulders). */
+const CAM_PIVOT_HEIGHT_FAR = 1.48
+/** Boom pivot when zoomed in — sit higher, behind the head. */
+const CAM_PIVOT_HEIGHT_NEAR = 1.72
 const CAM_EYE_HEIGHT = 1.82
-const CAM_LOOK_HEIGHT = 1.15
+/** Look-at Y far — upper chest / neck (was 1.15 = mid-shoulders). */
+const CAM_LOOK_HEIGHT_FAR = 1.42
+/** Look-at Y near zoom — head focus. */
+const CAM_LOOK_HEIGHT_NEAR = 1.7
 const CAM_DISTANCE_DEFAULT = 4.5
 const CAM_DISTANCE_MIN = 0
 const CAM_FPV_MAX_DISTANCE = 0.35
@@ -134,6 +140,10 @@ const CAM_PITCH_LOOK_UP = -CAM_PITCH_MAX + 0.05
  * (locks sky look-up). Between FPV and this, min pitch lerps FPV look-up → horizontal.
  */
 const CAM_PITCH_LOOK_UP_LOCK_DIST = 5.5
+/** Zoom closer than this → full near pivot/look (behind head). */
+const CAM_HEIGHT_NEAR_DIST = 1.15
+/** Zoom farther than this → far pivot/look (classic 3rd person). */
+const CAM_HEIGHT_FAR_DIST = 6.0
 const ZOOM_WHEEL_SPEED = 0.004
 
 /**
@@ -147,6 +157,22 @@ function pitchMinForDistance(dist: number): number {
   const t = (dist - CAM_FPV_MAX_DISTANCE) / (CAM_PITCH_LOOK_UP_LOCK_DIST - CAM_FPV_MAX_DISTANCE)
   const s = t * t * (3 - 2 * t)
   return THREE.MathUtils.lerp(CAM_PITCH_LOOK_UP, CAM_PITCH_MIN, s)
+}
+
+/** Pivot + look-at heights vs zoom — close frames the head, far sits behind shoulders. */
+function camHeightsForDistance(dist: number): { pivotY: number; lookY: number } {
+  if (dist <= CAM_HEIGHT_NEAR_DIST) {
+    return { pivotY: CAM_PIVOT_HEIGHT_NEAR, lookY: CAM_LOOK_HEIGHT_NEAR }
+  }
+  if (dist >= CAM_HEIGHT_FAR_DIST) {
+    return { pivotY: CAM_PIVOT_HEIGHT_FAR, lookY: CAM_LOOK_HEIGHT_FAR }
+  }
+  const t = (dist - CAM_HEIGHT_NEAR_DIST) / (CAM_HEIGHT_FAR_DIST - CAM_HEIGHT_NEAR_DIST)
+  const s = t * t * (3 - 2 * t)
+  return {
+    pivotY: THREE.MathUtils.lerp(CAM_PIVOT_HEIGHT_NEAR, CAM_PIVOT_HEIGHT_FAR, s),
+    lookY: THREE.MathUtils.lerp(CAM_LOOK_HEIGHT_NEAR, CAM_LOOK_HEIGHT_FAR, s)
+  }
 }
 
 /** True when movePlayerTo authors a real cameraTarget (not empty `{}`). */
@@ -2046,8 +2072,9 @@ export class PlayerSystem {
    */
   private seedFreecamFromLastVcLens(): void {
     const cam = this.host.camera
+    const h = camHeightsForDistance(this.camDistance)
     _pivot.copy(this.root.position)
-    _pivot.y += CAM_PIVOT_HEIGHT
+    _pivot.y += h.pivotY
     _offset.copy(cam.position).sub(_pivot)
     const dist = _offset.length()
 
@@ -2134,8 +2161,9 @@ export class PlayerSystem {
     let dist = clamp(this.camDistance, CAM_FPV_MAX_DISTANCE + 0.2, CAM_DISTANCE_MAX)
     const pitchMin = pitchMinForDistance(dist)
     pitch = clamp(pitch, pitchMin, CAM_PITCH_MAX)
+    const h = camHeightsForDistance(dist)
     _pivot.copy(this.root.position)
-    _pivot.y += CAM_PIVOT_HEIGHT
+    _pivot.y += h.pivotY
     let cosPitch = Math.cos(pitch)
     let sinPitch = Math.sin(pitch)
     let camY = _pivot.y + sinPitch * dist
@@ -2163,7 +2191,7 @@ export class PlayerSystem {
     }
     _camPos.copy(_pivot).add(_offset)
     _lookAt.copy(this.root.position)
-    _lookAt.y += CAM_LOOK_HEIGHT
+    _lookAt.y += h.lookY
     this.host.camera.position.copy(_camPos)
     this.host.camera.lookAt(_lookAt)
     this.host.camera.updateMatrixWorld(true)
@@ -2247,11 +2275,12 @@ export class PlayerSystem {
       return
     }
 
+    const h = camHeightsForDistance(this.camDistance)
     _pivot.copy(this.root.position)
-    _pivot.y += CAM_PIVOT_HEIGHT
+    _pivot.y += h.pivotY
 
     _lookAt.copy(this.root.position)
-    _lookAt.y += CAM_LOOK_HEIGHT
+    _lookAt.y += h.lookY
 
     const cosPitch = Math.cos(this.camPitch)
     const sinPitch = Math.sin(this.camPitch)

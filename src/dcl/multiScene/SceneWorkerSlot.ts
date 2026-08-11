@@ -113,12 +113,9 @@ export class SceneWorkerSlot {
         this.host.scene.add(root)
       }
     }
-    if (this.mode === 'secondary') {
-      try {
-        this.system.syncCollisionForce()
-      } catch {
-        /* ignore during teardown */
-      }
+    // Pose-only: update remapped desc matrices for World pose-slide — never force recook.
+    if (this.lastRemappedColliders.length > 0) {
+      this.captureRemappedColliders()
     }
   }
 
@@ -250,19 +247,13 @@ export class SceneWorkerSlot {
       }
       this.running = true
       this.lastTickAt = performance.now()
-      // Capture colliders under secondary phys offset BEFORE tertiary skips recook.
-      // World will invalidate native primary ids next — without this, plaza colliders vanish.
-      try {
-        this.system.syncCollisionForce()
-      } catch {
-        /* optional */
-      }
+      // Primary→secondary: keep existing PhysX (World rekeys native→offset + pose-slides).
+      // Do NOT syncCollisionForce — that re-extracts and multi-shape expands (CBD thrash).
       this.captureRemappedColliders()
       // Apply initial mode (sticky demote = secondary; tertiary only via ring/cap later).
       this.setResidentMode(this.mode)
-      // Re-bake origin after mode visuals.
+      // Re-bake origin after mode visuals, then refresh desc matrices for pose-slide.
       this.applySceneOriginOffset()
-      // Origin change can shift mesh-local colliders — recapture once after offset.
       if (this.mode !== 'tertiary') {
         this.captureRemappedColliders()
       }
@@ -270,7 +261,7 @@ export class SceneWorkerSlot {
         `[multi-scene] demoted primary → resident “${scene.title}” mode=${this.mode} ` +
           `base=${scene.baseParcel} vs primary=${this.primaryBaseParcel || '?'} ` +
           `rootPos=(${root?.position.x.toFixed(1) ?? '?'},${root?.position.z.toFixed(1) ?? '?'}) ` +
-          `colliders=${this.lastRemappedColliders.length}`
+          `colliders=${this.lastRemappedColliders.length} (rekey+pose, no recook)`
       )
       return
     }

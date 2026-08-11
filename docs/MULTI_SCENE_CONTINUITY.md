@@ -1,8 +1,8 @@
 # Multi-scene continuity (FocusOwner + sticky residents)
 
-**Status:** **continuity path landed** (v1.7 AOI / FocusOwner / sticky demote + secondary Animator pump). **Open work:** CBD ring **density / FPS** under real load — not re-litigate promote/demote voids.  
+**Status:** **shipping default = GLB shells only** (single primary, no secondary workers / promote). Continuity handoff code remains for optional re-enable (`aoiGlbShellsOnly()`).  
 **Last updated:** 2026-08-11  
-**Bar:** walk continuity — no void unload, no freecam snap, no soft-route warp, **30–60 FPS** target with solids and freecam intact  
+**Bar:** spawn primary runs forever; neighbors = composite GLBs over Scene Distance; **30–60 FPS** without dual-worker thrash  
 
 Quick rules for agents: [AGENTS.md § Multi-scene continuity](./AGENTS.md#multi-scene-continuity-non-negotiable).  
 Architecture context: [ARCHITECTURE.md](./ARCHITECTURE.md) · milestones: [PROGRESS.md](./PROGRESS.md).
@@ -11,29 +11,24 @@ Architecture context: [ARCHITECTURE.md](./ARCHITECTURE.md) · milestones: [PROGR
 
 ---
 
-## Product model
+## Product model (shipping)
 
 ```text
-PRIMARY (feet)
-  FocusOwner — UI, media, privileged input, locomotion modifiers, AvatarModifier/CameraMode
-  Full scene worker + scripts
+PRIMARY (spawn only)
+  FocusOwner — UI, media, privileged input, locomotion modifiers
+  Full scene worker + scripts — **never demoted / never replaced on walk**
 
-SECONDARY (live ring / sticky demote)
-  Same loaded graph — scripts every frame, FocusOwner MUTE
-  Hard-capped (≤3 live secondaries) + serial boot concurrency (1)
-  Live eligibility = scene-to-scene footprint proximity (16m), not player frustum alone
+NEIGHBORS (Scene Distance)
+  main.composite **GLB shells only** — no worker, no scripts, no promote
+  Roads + empty/scatter fill
+  Soft-route URL updates under feet (address bar) — not a primary swap
 
-TERTIARY (resident)
-  Same loaded graph — scripts OFF + visual LOD (no cast shadows / local lights)
-  Triggered only by: leave live ring OR secondary-cap pressure
-  Meshes + colliders stay — re-enter ring = scripts on only (no GLB reload)
-
-COMPOSITE / AOI shells
-  Roads, default ground, first-frame shells — no scene worker
-  Procedural scatter trees/rocks ONLY on true vacant land (never real/resident footprints)
+DISABLED by default (code still present)
+  Live secondary workers, sticky demote, stand-on promote handoff
+  Flip: aoiGlbShellsOnly() → false in caps.ts for continuity experiments
 ```
 
-**Never** unload a scene into the void just because the player stepped onto a neighbor parcel.
+**Never** cold-boot a full neighbor worker just because the player walked near or onto its parcel (default).
 
 ---
 
@@ -60,14 +55,14 @@ COMPOSITE / AOI shells
 
 - Graph + worker stay resident (`SecondaryLiveManager.adoptDemotedPrimary`).
 - Mode on demote: **always secondary** (muted scripts).
-- Tertiary only later via reconcile (leave 16m ring or cap).
+- Tertiary only later via reconcile (player > 80m keep or cap).
 - Colliders: capture remapped descs under `physOffset`, one-shot PhysX register (`forceRecookOnPoseChange: false`), mark synced.
 
 ### Promote settle window (~8s)
 
 - `setSecondaryActivityEnabled(false)` — no neighbor cold boots during hydrate.
 - `forceAllResidentsTertiary` — temporary scripts-off on residents so **new primary hydrates alone**.
-- After settle: re-enable secondary activity; ring/cap reconcile decides secondary vs tertiary again.
+- After settle: re-enable secondary activity; enter/keep reconcile decides secondary vs tertiary again.
 
 ---
 
@@ -76,9 +71,11 @@ COMPOSITE / AOI shells
 | Lever | Policy |
 |-------|--------|
 | **Parcel count** | **Never** refuses secondary boot or picks tertiary. |
-| Live radius | Scene-to-scene edge distance ≤ 16m (`SECONDARY_LIVE_SCENE_PROXIMITY_M`) |
+| Live **enter** | Player → footprint ≤ **16m** (`SECONDARY_LIVE_ENTER_M`) boots / re-promotes |
+| Live **keep** | Player → footprint ≤ **80m** (`SECONDARY_LIVE_KEEP_M`) keeps scripts on |
 | Live secondary cap | Hard ≤3 (`AOI_LIVE_SECONDARY_HARD_CAP`) |
 | Boot concurrency | 1 at a time (`SECONDARY_LIVE_BOOT_CONCURRENCY`) |
+| Composite shells | Full Scene Distance (up to 200m); no extra 80m gate |
 | Tertiary residents | Cap 8; dispose farthest **non-sticky** only |
 | Sticky demoted | Never auto-evicted |
 

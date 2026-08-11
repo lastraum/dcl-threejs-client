@@ -10,7 +10,7 @@ import {
   isOpenRoadEntity,
   type ActiveSceneEntity
 } from './fetchActiveEntities'
-import { aoiLiveSecondariesOnly } from '../multiScene/caps'
+import { aoiGlbShellsOnly, aoiLiveSecondariesOnly } from '../multiScene/caps'
 
 /**
  * Dense Genesis (CBD) can have 30–50+ SDK7 scenes inside Scene Distance.
@@ -219,6 +219,12 @@ export class ScenePromoteController {
 
     // Empty / road already classified — soft URL only.
     if (this.skipPromoteKeys.has(key)) {
+      this.dwellKey = ''
+      return
+    }
+
+    // Single primary + GLB shells: soft URL only, never promote/demote.
+    if (aoiGlbShellsOnly()) {
       this.dwellKey = ''
       return
     }

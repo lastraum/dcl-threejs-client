@@ -9,9 +9,16 @@ export type {
 } from './types'
 export { SCENE_WORKER_PRIORITY } from './types'
 export {
+  aoiGlbShellsOnly,
+  aoiLiveSecondariesOnly,
   secondaryLiveCap,
   secondaryLiveRadiusM,
+  secondaryLiveEnterRadiusM,
+  secondaryLiveKeepRadiusM,
+  SECONDARY_LIVE_ENTER_M,
+  SECONDARY_LIVE_KEEP_M,
   SECONDARY_LIVE_MAX_RADIUS_M,
+  SECONDARY_LIVE_SCENE_PROXIMITY_M,
   SECONDARY_LIVE_BOOT_CONCURRENCY,
   peLiveCap,
   secondaryTickIntervalMs,

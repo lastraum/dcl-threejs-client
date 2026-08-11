@@ -13,6 +13,7 @@ import { World } from '../core/World'
 import { MultiSceneRuntime } from '../dcl/multiScene/MultiSceneRuntime'
 import { PortableExperienceManager } from '../dcl/multiScene/PortableExperienceManager'
 import { resolvePortableExperiencesPolicy } from '../dcl/multiScene/resolvePortableExperiences'
+import { aoiGlbShellsOnly } from '../dcl/multiScene/caps'
 import { readSceneDevQueryKey } from '../environment/fftOcean/readFftOceanOverride'
 import { disconnectAll } from '../network/SessionConnections'
 import { clearVrmRamCache } from '../avatar/vrm/vrmRamCache'
@@ -3783,6 +3784,13 @@ export class AppController {
     target: Extract<RouteTarget, { kind: 'coords' }>,
     reason: string
   ): Promise<void> {
+    // GLB-shells-only: stay on spawn primary forever; neighbors are composites only.
+    if (aoiGlbShellsOnly()) {
+      console.info(
+        `[promote] skipped @ ${target.x},${target.y} (${reason}) — AOI GLB shells only (single primary)`
+      )
+      return
+    }
     const key = `${target.x},${target.y}`
     // Collapse concurrent dwells (logs showed promote spam every 200ms → dual seamless jumps).
     if (this.promoteInFlight) {

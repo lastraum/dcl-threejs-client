@@ -1,13 +1,13 @@
 /**
  * Multi-scene FocusOwner + LOD rings (product model):
  * - primary: parcel under feet — **FocusOwner** (UI, audio, video, inputs, locomotion)
- * - secondary (live): muted workers for **scene-to-scene ≤16m** neighbors (throttled;
- *   hard-capped; no media/UI). Nested plaza holes always qualify.
+ * - secondary (live): muted workers when **player** ≤16m of that scene; keep until 80m
+ *   (hard-capped; no media/UI). Stand-on / sticky demote still promote-safe.
  * - tertiary: Scene Distance disc — roads, empty land, composite shells (no worker)
  * - pe: portable experience / smart wearable (own UI root; arbiter below primary)
  *
- * Warm/visual band = user Scene Distance (`sceneLoadRadiusM`). Live workers are
- * NOT scaled with Scene Distance (see caps.ts) — warm-all ≠ live-all.
+ * Warm/visual band = user Scene Distance (`sceneLoadRadiusM`). Live workers use
+ * player enter/keep radii (caps.ts) — warm-all ≠ live-all.
  */
 
 export type SceneWorkerKind = 'primary' | 'secondary' | 'pe'
@@ -74,8 +74,8 @@ export type SecondaryLiveRequest = {
   resolveX: number
   resolveY: number
   /**
-   * Min edge distance (m) between **primary footprint** and this scene's parcels.
-   * Scene-to-scene, not player — nested hole scenes are ~0.
+   * Min distance (m) from **player feet** to this scene's footprint edge.
+   * Live boot at ≤ enter (16m); keep scripts until ≤ keep (80m).
    */
   distM: number
   /** Parcel footprint size — large estates prefer composite, not full live worker. */

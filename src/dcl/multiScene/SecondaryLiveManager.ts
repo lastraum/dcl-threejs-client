@@ -8,9 +8,11 @@ import { resolveSceneFromRoute } from '../content/resolveScene'
 import type { ResolvedScene } from '../content/types'
 import type { Mesh, Object3D } from 'three'
 import {
+  aoiGlbShellsOnly,
   SECONDARY_LIVE_BOOT_CONCURRENCY,
   secondaryLiveCap,
-  secondaryLiveRadiusM,
+  secondaryLiveEnterRadiusM,
+  secondaryLiveKeepRadiusM,
   secondaryTickIntervalMs,
   tertiaryResidentCap
 } from './caps'
@@ -23,8 +25,10 @@ export type PromoteHandoffPayload = {
   entityId: string
   scene: ResolvedScene
   system: SceneScriptSystem
-  /** Phys ids that were registered under secondary offset — World should invalidate. */
+  /** Phys ids registered under secondary offset — rekey back to native (no recook). */
   physIds: number[]
+  /** Offset applied to native ecs phys ids while resident. */
+  physOffset: number
 }
 
 /**
@@ -50,6 +54,8 @@ export class SecondaryLiveManager {
   private arbiter: PrivilegedIntentArbiter | null = null
   private poseProvider: (() => { player: EntityPose; camera: EntityPose }) | null = null
   private onLiveIdsChange: ((ids: ReadonlySet<string>) => void) | null = null
+  /** Full secondary graph meshes ready — AOI can hide composite shells. */
+  private onLiveGraphReady: ((entityId: string) => void) | null = null
   private lastReconcileAt = 0
   private nextSlotIndex = 0
   /**
@@ -66,6 +72,7 @@ export class SecondaryLiveManager {
     arbiter: PrivilegedIntentArbiter
     poseProvider: () => { player: EntityPose; camera: EntityPose }
     onLiveIdsChange?: (ids: ReadonlySet<string>) => void
+    onLiveGraphReady?: (entityId: string) => void
   }): void {
     this.primaryScene = opts.primaryScene
     this.cache = opts.cache
@@ -74,6 +81,16 @@ export class SecondaryLiveManager {
     this.arbiter = opts.arbiter
     this.poseProvider = opts.poseProvider
     this.onLiveIdsChange = opts.onLiveIdsChange ?? null
+    this.onLiveGraphReady = opts.onLiveGraphReady ?? null
+  }
+
+  private notifyGraphReady(entityId: string, slot: SceneWorkerSlot): void {
+    const root = slot.system.getEntityStore()?.root
+    let meshes = 0
+    root?.traverse((o) => {
+      if ((o as Mesh).isMesh) meshes++
+    })
+    if (meshes > 0) this.onLiveGraphReady?.(entityId)
   }
 
   setPrimaryScene(scene: ResolvedScene): void {
@@ -272,6 +289,7 @@ export class SecondaryLiveManager {
         this.stickyIds.delete(entityId)
         this.emitLiveIds()
         const physIds = [...slot.registeredPhysicsEntities()]
+        const physOffset = slot.physOffset
         const system = slot.detachForPromote()
         console.info(
           `[multi-scene] handoff ${fromMode} → primary “${slot.scene.title}” base=${base} parcel=${key}`
@@ -280,11 +298,18 @@ export class SecondaryLiveManager {
           entityId,
           scene: slot.scene,
           system,
-          physIds
+          physIds,
+          physOffset
         }
       }
     }
     return null
+  }
+
+  /** Phys offset for a resident entity id (sticky demote rekey). */
+  physOffsetForEntityId(entityId: string): number | null {
+    const slot = this.slots.get(entityId)
+    return slot ? slot.physOffset : null
   }
 
   /**
@@ -427,6 +452,7 @@ export class SecondaryLiveManager {
     this.slots.set(id, slot)
     this.stickyIds.add(id)
     this.emitLiveIds()
+    this.notifyGraphReady(id, slot)
     const assert = this.assertResidentVisible(id)
     console.info(
       `[multi-scene] demoted “${scene.title}” → sticky secondary parcels=${parcelCount} ` +
@@ -462,6 +488,7 @@ export class SecondaryLiveManager {
     y: number,
     timeoutMs = 28_000
   ): Promise<boolean> {
+    if (aoiGlbShellsOnly()) return false
     if (this.disposed || !this.cache || !this.host || !this.arbiter || !this.poseProvider) {
       return false
     }
@@ -539,6 +566,7 @@ export class SecondaryLiveManager {
         }
         this.slots.set(scene.entityId, slot)
         this.emitLiveIds()
+        this.notifyGraphReady(scene.entityId, slot)
         console.info(
           `[multi-scene] force-boot secondary for promote “${scene.title}” @ ${key}`
         )
@@ -686,53 +714,78 @@ export class SecondaryLiveManager {
 
   reconcile(candidates: SecondaryLiveRequest[]): void {
     if (this.disposed || !this.cache || !this.host || !this.arbiter || !this.poseProvider) return
+    // Single-primary + composite shells only — never boot live secondary workers.
+    if (aoiGlbShellsOnly()) {
+      if (candidates.length) {
+        // One log per session would spam — silence unless debugging.
+      }
+      return
+    }
     const cap = this.maxSecondarySlots()
+    if (cap <= 0) return
     const now = performance.now()
     // Faster when under-feet priority is pinned (promote path needs quick boot).
     const minGap = this.priorityParcelKey ? 200 : 800
     if (now - this.lastReconcileAt < minGap) return
     this.lastReconcileAt = now
 
-    // distM is **scene-to-scene** footprint edge distance (not player).
-    // Nested hole scenes (Spring in plaza) are ~0m → always in range when primary is plaza.
-    const liveProxM = secondaryLiveRadiusM()
+    // distM = **player → scene footprint** (edge m). Enter 16m boots; keep until 80m.
+    const enterM = secondaryLiveEnterRadiusM()
+    const keepM = secondaryLiveKeepRadiusM()
     const pri = this.priorityParcelKey
     const coversPri = (c: SecondaryLiveRequest): boolean => this.requestCoversParcel(c, pri)
 
-    const eligible = candidates.filter((c) => liveProxM > 0 && c.distM <= liveProxM)
-    const priorityReq = pri ? eligible.find((c) => coversPri(c)) : undefined
+    // Candidates for boot / re-promote: player within enter radius (or under-feet priority).
+    const bootEligible = candidates.filter(
+      (c) => enterM > 0 && (c.distM <= enterM || coversPri(c))
+    )
+    const priorityReq = pri
+      ? candidates.find((c) => coversPri(c)) ?? bootEligible.find((c) => coversPri(c))
+      : undefined
 
-    const sorted = [...eligible].sort((a, b) => {
-      // Under-feet parcel first so promote handoff is ready without /goto rebuild.
+    const sortedBoot = [...bootEligible].sort((a, b) => {
       const ap = coversPri(a) ? 0 : 1
       const bp = coversPri(b) ? 0 : 1
       if (ap !== bp) return ap - bp
-      // Closer scene footprints first; then smaller over mega-estates.
       if (a.distM !== b.distM) return a.distM - b.distM
       return (a.parcelCount ?? 1) - (b.parcelCount ?? 1)
     })
 
-    // Always reserve a slot for under-feet priority even if it was outside top-N noise.
-    const inRange: SecondaryLiveRequest[] = []
-    if (priorityReq) inRange.push(priorityReq)
-    for (const c of sorted) {
-      if (inRange.some((x) => x.entityId === c.entityId)) continue
-      if (inRange.length >= Math.max(cap, 0)) break
-      inRange.push(c)
+    const bootList: SecondaryLiveRequest[] = []
+    if (priorityReq && (priorityReq.distM <= enterM || coversPri(priorityReq))) {
+      bootList.push(priorityReq)
+    }
+    for (const c of sortedBoot) {
+      if (bootList.some((x) => x.entityId === c.entityId)) continue
+      if (bootList.length >= Math.max(cap, 0)) break
+      bootList.push(c)
     }
 
-    const wantSecondary = new Set(inRange.map((c) => c.entityId))
-    // Sticky demoted prior primary: secondary while still in live ring (or unknown dist —
-    // just demoted on parcel walk = adjacent). Size / top-N noise must NOT drop them.
-    for (const id of this.stickyIds) {
+    const wantSecondary = new Set(bootList.map((c) => c.entityId))
+    // Hysteresis: already-loaded (or sticky) stay secondary while player ≤ keepM.
+    for (const [id, slot] of this.slots) {
       const cand = candidates.find((c) => c.entityId === id)
-      if (!cand || cand.distM <= liveProxM) {
+      const dist = cand?.distM
+      if (dist != null && dist <= keepM) wantSecondary.add(id)
+      // No candidate this frame (discover lag): keep sticky demoted in secondary.
+      if (this.stickyIds.has(id) && (dist == null || dist <= keepM)) {
+        wantSecondary.add(id)
+      }
+      // Under-feet always secondary while standing on it.
+      if (
+        !!pri &&
+        (slot.scene.baseParcel.trim() === pri ||
+          slot.scene.parcels.some((p) => p.trim() === pri))
+      ) {
         wantSecondary.add(id)
       }
     }
+    for (const id of this.stickyIds) {
+      const cand = candidates.find((c) => c.entityId === id)
+      if (!cand || cand.distM <= keepM) wantSecondary.add(id)
+    }
 
-    // Mode transitions for existing residents — never dispose on leave ring.
-    // NEVER use parcel count to force tertiary (sticky CBD stays secondary while in ring).
+    // Mode transitions — never dispose on leave keep radius.
     for (const [id, slot] of this.slots) {
       const isPri =
         !!pri &&
@@ -740,15 +793,15 @@ export class SecondaryLiveManager {
           slot.scene.parcels.some((p) => p.trim() === pri))
       if (wantSecondary.has(id) || isPri) {
         if (slot.residentMode === 'tertiary') {
-          // Re-enter live ring: scripts only, no GLB reload.
+          // Re-enter enter/keep band: scripts only, no GLB reload.
           slot.setResidentMode('secondary')
         }
       } else {
-        // Left live ring — tertiary (scripts off), keep meshes.
+        // Player > keepM — tertiary (scripts off), keep meshes.
         if (slot.residentMode === 'secondary') {
           slot.setResidentMode('tertiary')
           console.info(
-            `[multi-scene] leave ring → tertiary “${slot.scene.title}” (scripts off, meshes stay)`
+            `[multi-scene] leave keep (${keepM}m) → tertiary “${slot.scene.title}” (scripts off, meshes stay)`
           )
         }
       }
@@ -761,14 +814,12 @@ export class SecondaryLiveManager {
     // Serial boot — one full secondary worker at a time.
     if (this.booting.size >= SECONDARY_LIVE_BOOT_CONCURRENCY) return
 
-    // While under-feet priority is pinned (promote path), only boot that parcel —
-    // never chain-boot 3 neighbors and thrash CBD into 13fps void.
-    const bootOrder = pri
-      ? inRange.filter((c) => coversPri(c))
-      : [...inRange]
+    // While under-feet priority is pinned (promote path), only boot that parcel.
+    const bootOrder = pri ? bootList.filter((c) => coversPri(c)) : [...bootList]
     for (const req of bootOrder) {
       if (this.slots.has(req.entityId) || this.booting.has(req.entityId)) continue
-      // Need a secondary script slot (cap + live radius only — never parcel-count refuse).
+      // Only cold-boot when player within enter (sticky re-promote handled above).
+      if (req.distM > enterM && !coversPri(req)) continue
       if (this.countMode('secondary') + this.booting.size >= cap) {
         this.demoteOneSecondaryToTertiary({ preferNonSticky: true })
         if (this.countMode('secondary') + this.booting.size >= cap) break
@@ -843,9 +894,10 @@ export class SecondaryLiveManager {
         this.slots.set(slotId, slot)
         this.balanceModes()
         this.emitLiveIds()
+        this.notifyGraphReady(slotId, slot)
         console.info(
           `[multi-scene] secondary live “${req.title}” base=${req.base} ` +
-            `sceneDist≈${req.distM.toFixed(0)}m parcels=${req.parcelCount ?? '?'} ` +
+            `playerDist≈${req.distM.toFixed(0)}m parcels=${req.parcelCount ?? '?'} ` +
             (preferParcelKey ? `priority=${preferParcelKey}` : '')
         )
       } finally {

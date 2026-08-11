@@ -25,6 +25,7 @@ import { AoiVisualLayer } from '../dcl/aoi/AoiVisualLayer'
 import { ScenePromoteController } from '../dcl/aoi/ScenePromoteController'
 import type { MultiSceneRuntime } from '../dcl/multiScene/MultiSceneRuntime'
 import { PeMainThreadMirror } from '../dcl/multiScene/PeMainThreadMirror'
+import { aoiGlbShellsOnly } from '../dcl/multiScene/caps'
 import {
   resolvePortableExperiencesPolicy,
   type PortableExperiencesPolicy
@@ -4349,6 +4350,9 @@ export class World {
       this.aoiVisual.setLiveSecondaryIds(ids)
       this.aoiVisual.setResidentParcelKeys(runtime.residentParcelKeys())
     })
+    runtime.setOnLiveGraphReady((entityId) => {
+      this.aoiVisual.markLiveSecondaryGraphReady(entityId)
+    })
     // PE worker: full main-thread surface (identity, pointer, keys, avatar modifiers, physics lamport).
     runtime.pe.setOnPeWorkerReady((system, physOffset) => {
       this.wirePeWorkerToMainThread(system, physOffset)
@@ -4702,6 +4706,7 @@ export class World {
    * seamless-jump (continuity: prior primary stays until handoff succeeds).
    */
   async tryPromoteInWorld(target: { x: number; y: number }): Promise<boolean> {
+    if (aoiGlbShellsOnly()) return false
     const multi = this.multiScene
     if (!multi || !this.player) return false
 
@@ -4731,6 +4736,7 @@ export class World {
     scene: ResolvedScene
     system: import('./systems/SceneScriptSystem').SceneScriptSystem
     physIds: number[]
+    physOffset: number
   }): Promise<boolean> {
     const multi = this.multiScene
     if (!multi || !this.player) return false
@@ -4747,9 +4753,16 @@ export class World {
     const newScene = handoff.scene
     const newSystem = handoff.system
 
-    // Drop secondary-offset colliders for the adopted scene (will re-register as primary ids).
-    for (const id of handoff.physIds) {
-      this.physics.invalidateStaticCollider(id)
+    // Secondary→primary: rekey offset phys ids back to native (keep actors, no recook).
+    if (handoff.physOffset !== 0 && handoff.physIds.length > 0) {
+      let rekeyed = 0
+      for (const id of handoff.physIds) {
+        rekeyed += this.physics.rekeyStaticColliderFamily(id, id - handoff.physOffset)
+      }
+      console.info(
+        `[promote] handoff colliders rekey offset→native “${newScene.title}” ` +
+          `n=${handoff.physIds.length} rekeyed=${rekeyed} (no recook)`
+      )
     }
 
     // Point multi-scene at NEW primary SW *before* demote so sticky offset is correct.
@@ -4773,29 +4786,30 @@ export class World {
         newScene.baseParcel
       )
       if (demoted) {
-        // Platform continuity: remapped colliders under secondary phys offset are already
-        // captured on the sticky slot. Invalidate native primary ids only AFTER we have
-        // the remapped snapshot — then push remapped into PhysX so plaza walk stays solid.
+        // Primary→secondary: rekey existing PhysX actors native→offset + pose-slide.
+        // Never invalidate+syncStaticColliders (multi-shape expand thrash / 6fps walk-back).
         const remapped = multi.collectResidentColliders()
-        for (const id of demoted.primaryPhysIds) {
-          this.physics.invalidateStaticCollider(id)
+        const physOffset =
+          multi.secondaryManager?.physOffsetForEntityId(demoted.entityId) ??
+          (remapped[0] && demoted.primaryPhysIds[0] != null
+            ? remapped[0]!.entity - demoted.primaryPhysIds[0]!
+            : 0)
+        let rekeyed = 0
+        if (physOffset !== 0) {
+          for (const id of demoted.primaryPhysIds) {
+            rekeyed += this.physics.rekeyStaticColliderFamily(id, id + physOffset)
+          }
         }
         if (remapped.length > 0) {
           try {
-            // One-shot register under secondary ids — never forceRecook (geometry already cooked).
-            this.physics.syncStaticColliders(remapped, {
-              cookBudget: Math.min(32, remapped.length),
-              freezeRemoval: true,
-              forceRecookOnPoseChange: false,
-              geometryCache: true
-            })
+            const slid = this.physics.applyStaticColliderPoseUpdates(remapped, { force: true })
             multi.markResidentCollidersSynced()
             console.info(
-              `[promote] sticky colliders kept “${oldScene.title}” remapped=${remapped.length} ` +
-                `(invalidated native=${demoted.primaryPhysIds.length})`
+              `[promote] sticky colliders rekey+pose “${oldScene.title}” remapped=${remapped.length} ` +
+                `rekeyed=${rekeyed} slid=${slid} offset=${physOffset} (no recook)`
             )
           } catch (err) {
-            console.warn('[promote] sticky collider keep failed', err)
+            console.warn('[promote] sticky collider rekey/pose failed', err)
           }
         } else {
           console.warn(
@@ -4977,6 +4991,9 @@ export class World {
       this.aoiVisual.setLiveSecondaryIds(ids)
       // Keep empty-land skip set in lockstep with residents.
       this.aoiVisual.setResidentParcelKeys(multi.residentParcelKeys())
+    })
+    multi.setOnLiveGraphReady((entityId) => {
+      this.aoiVisual.markLiveSecondaryGraphReady(entityId)
     })
     multi.syncLiveSecondaryVisibility()
     // CRITICAL: register demoted plaza parcels BEFORE retarget refresh paints scatter/empty.

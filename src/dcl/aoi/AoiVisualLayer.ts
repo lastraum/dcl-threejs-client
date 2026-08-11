@@ -15,7 +15,7 @@ import {
 } from './fetchActiveEntities'
 import {
   distanceToParcelCenterM,
-  minSceneFootprintDistanceM,
+  minPlayerToFootprintDistanceM,
   parcelsInLoadRadius,
   parcelsNearFootprint
 } from './parcelAoi'
@@ -37,13 +37,15 @@ import {
 } from './SecondaryFirstFrameSampler'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 import {
+  aoiGlbShellsOnly,
   aoiLiveSecondariesOnly,
   COMPOSITE_MAX_RETAINED,
   compositeMaxGltfsForDistance,
   EMPTY_LAND_PHYS_RADIUS_M,
   ROAD_PHYS_RADIUS_M,
   secondaryLiveCap,
-  secondaryLiveRadiusM
+  secondaryLiveEnterRadiusM,
+  secondaryLiveKeepRadiusM
 } from '../multiScene/caps'
 
 /** Visible first-frame secondaries inside the inner radius. */
@@ -80,8 +82,6 @@ const REFRESH_DEBOUNCE_MS = 600
 const DISCOVER_MIN_MOVE_M = 128
 /** Composites to load per drain tick (true settle only). */
 const COMPOSITE_LOAD_PER_DRAIN = 1
-/** Skip composite shells farther than this (was loading Grill Master @ 200m+ mid-walk). */
-const COMPOSITE_MAX_DIST_M = 80
 /** Feet move (m²) that counts as locomotion. */
 const WALK_MOVE_EPS2 = 0.04 // ~0.2m
 /**
@@ -143,10 +143,9 @@ export type AoiVisualLayerContext = {
  *   (load once in Scene Distance, add on walk, hide LOD, purge only >1km)
  * - Genesis roads via **Explorer catalog + OriginalAssets FBX** (tile + street
  *   furniture), not runtime SDK6 game.js
- * - Neighbor main.composite GLBs (render-only, no colliders / anim) — **tertiary**
+ * - Neighbor main.composite GLBs (render-only, no colliders / anim) — full Scene Distance
  * - First-frame samples for script-built scenes (tertiary when no live worker)
- * - Live secondary candidates by **scene-to-scene** footprint proximity
- *   (budgeted workers; FocusOwner = primary only; frustum LOD is player-side)
+ * - Live secondary: **player** ≤16m boots; keep until player ≤80m (cap ≤3)
  */
 export class AoiVisualLayer {
   private root = new THREE.Group()
@@ -220,6 +219,8 @@ export class AoiVisualLayer {
   private readonly firstFrameSampler = new SecondaryFirstFrameSampler()
   /** Live secondary workers — hide tertiary FF/composite for these entity ids. */
   private readonly liveSecondaryIds = new Set<string>()
+  /** Live workers with meshes ready — hide composite shells only for these. */
+  private readonly liveGraphReadyIds = new Set<string>()
   /**
    * Absolute parcel keys owned by sticky/live residents (demoted plaza, live secondaries).
    * Empty-land red ground MUST NOT paint these — that was the CBD void after promote.
@@ -253,17 +254,39 @@ export class AoiVisualLayer {
    * and composite meshes so we don't double-draw. **Restores** visibility when
    * a live worker is evicted (previously only hid, never re-showed).
    */
+  /**
+   * Live worker ids. Composite/first-frame shells stay visible until
+   * {@link markLiveSecondaryGraphReady} — avoids flash/reload when the worker boots.
+   */
   setLiveSecondaryIds(ids: ReadonlySet<string>): void {
     this.liveSecondaryIds.clear()
     for (const id of ids) this.liveSecondaryIds.add(id)
+    // Drop ready marks for workers that left.
+    for (const id of [...this.liveGraphReadyIds]) {
+      if (!this.liveSecondaryIds.has(id)) this.liveGraphReadyIds.delete(id)
+    }
+    this.applyShellVisibility()
+  }
+
+  /**
+   * Full secondary graph has meshes on host — safe to hide composite/first-frame shell.
+   */
+  markLiveSecondaryGraphReady(entityId: string): void {
+    if (!entityId) return
+    this.liveGraphReadyIds.add(entityId)
+    this.applyShellVisibility()
+  }
+
+  private applyShellVisibility(): void {
     for (const [id, group] of this.firstFrameGroups) {
-      group.visible = !this.liveSecondaryIds.has(id)
+      // Hide shell only when full graph is ready (not merely "booting").
+      group.visible = !this.liveGraphReadyIds.has(id)
     }
     for (const child of this.compositeRoot.children) {
       const name = child.name
       if (!name.startsWith('aoi-secondary:')) continue
       const id = name.slice('aoi-secondary:'.length)
-      child.visible = !this.liveSecondaryIds.has(id)
+      child.visible = !this.liveGraphReadyIds.has(id)
     }
   }
 
@@ -441,6 +464,7 @@ export class AoiVisualLayer {
     this.primaryIsEmpty = !ctx.scene.entityId?.trim() && !ctx.scene.mainEntry?.trim()
     this.primaryParcelSet.clear()
     this.liveSecondaryIds.clear()
+    this.liveGraphReadyIds.clear()
     this.residentParcelSet.clear()
     for (const p of ctx.scene.parcels) this.primaryParcelSet.add(p)
     this.loadedCompositeIds.clear()
@@ -493,6 +517,7 @@ export class AoiVisualLayer {
     this.lastParcelKey = ''
     this.lastRadius = -1
     this.liveSecondaryIds.clear()
+    this.liveGraphReadyIds.clear()
     this.residentParcelSet.clear()
     this.primaryParcelSet.clear()
     this.firstFrameSampler.reset()
@@ -638,7 +663,7 @@ export class AoiVisualLayer {
    * Dev budget line: how big the warm ring is vs how many scripts we might run.
    * - warmParcels = player Scene Distance disc (+ primary collar)
    * - uniqueEntities = catalyst deployments returned for that pointer set
-   * - liveEligible = scene-to-scene ≤16m from **primary footprint** (not player)
+   * - liveEligible = player→footprint ≤ enter (16m)
    * - liveRunning = currently loaded secondary workers (cap is separate)
    */
   private logAoiBudget(opts: {
@@ -650,10 +675,13 @@ export class AoiVisualLayer {
     primaryId: string
     entities: ActiveSceneEntity[]
     pointerSet: Set<string>
+    dclX: number
+    dclZ: number
+    primaryBase: string
   }): void {
-    const liveProxM = secondaryLiveRadiusM()
+    const enterM = secondaryLiveEnterRadiusM()
+    const keepM = secondaryLiveKeepRadiusM()
     const liveCap = secondaryLiveCap('high')
-    const primaryParcels = [...this.primaryParcelSet]
     let scriptableInWarm = 0
     let liveEligible = 0
     for (const e of opts.entities) {
@@ -663,18 +691,18 @@ export class AoiVisualLayer {
       const keys = (e.pointers.length ? e.pointers : e.parcels).map((p) => p.trim())
       if (!keys.some((p) => opts.pointerSet.has(p))) continue
       scriptableInWarm++
-      if (liveProxM <= 0 || !primaryParcels.length) continue
-      const dist = minSceneFootprintDistanceM(primaryParcels, keys)
-      if (Number.isFinite(dist) && dist <= liveProxM) liveEligible++
+      if (enterM <= 0) continue
+      const dist = minPlayerToFootprintDistanceM(opts.dclX, opts.dclZ, keys, opts.primaryBase)
+      if (Number.isFinite(dist) && dist <= enterM) liveEligible++
     }
     console.info(
       `[aoi] budget warmParcels=${opts.warmParcels} (playerDisc=${opts.playerParcels}` +
         ` +primaryCollar=${opts.primaryAdjacentParcels}) ` +
         `uniqueEntities=${opts.uniqueEntities} scriptableInWarm=${scriptableInWarm} ` +
         `liveEligible=${liveEligible} liveRunning=${this.liveSecondaryIds.size} liveCap=${liveCap} ` +
-        `sceneDist=${opts.radiusM}m liveProx=${liveProxM}m ` +
+        `sceneDist=${opts.radiusM}m liveEnter=${enterM}m liveKeep=${keepM}m ` +
         `composites=${this.loadedCompositeIds.size} ` +
-        `(warm=from player feet · live=scene-to-scene vs primary)`
+        `(warm=player feet · live=player→scene enter/keep)`
     )
   }
 
@@ -734,13 +762,13 @@ export class AoiVisualLayer {
     // Light path must not cancel an in-flight full refresh (gen thrash).
     const gen = mode === 'full' ? ++this.refreshGen : this.refreshGen
     const base = ctx.scene.baseParcel
-    // Player warm band (composites/roads) ∪ primary-footprint + live proximity
-    // so nested hole scenes are always discovered regardless of where you stand.
+    // Player warm band (composites/roads) ∪ primary-footprint collar so nested
+    // hole scenes stay discoverable when you stand on the far side of a multi-parcel primary.
     const playerPointers = parcelsInLoadRadius(dclX, dclZ, base, radiusM)
-    const liveProxM = secondaryLiveRadiusM()
+    const keepM = secondaryLiveKeepRadiusM()
     const primaryAdjacent =
-      liveProxM > 0 && this.primaryParcelSet.size
-        ? parcelsNearFootprint([...this.primaryParcelSet], liveProxM)
+      keepM > 0 && this.primaryParcelSet.size
+        ? parcelsNearFootprint([...this.primaryParcelSet], keepM)
         : []
     const pointers = [...new Set([...playerPointers, ...primaryAdjacent])]
     if (!pointers.length) return
@@ -775,14 +803,24 @@ export class AoiVisualLayer {
       radiusM,
       primaryId,
       entities,
-      pointerSet
+      pointerSet,
+      dclX,
+      dclZ,
+      primaryBase: base
     })
 
-    // Live secondary list only when truly settled (not brief pause mid-walk).
+    // Live secondary list: always while play-ready so we **pre-boot at ≤16m** before
+    // stand-on promote (not only after 2s settle).
     const settled = this.isPlayerSettled()
     const mayDrainThisRefresh =
       this.prewarmActive || this.allowDrainOnce || settled
-    if (LOAD_AOI_SCENE_VISUALS && aoiLiveSecondariesOnly() && settled) {
+    // Live secondary workers off under GLB shells only — composites still load below.
+    if (
+      LOAD_AOI_SCENE_VISUALS &&
+      aoiLiveSecondariesOnly() &&
+      this.liveReconcileEnabled &&
+      !aoiGlbShellsOnly()
+    ) {
       this.emitLiveSecondaryCandidatesOnly(entities, primaryId, base, dclX, dclZ, pointerSet)
     }
 
@@ -894,7 +932,7 @@ export class AoiVisualLayer {
           `[aoi] discover parcels=${pointers.length} vacantWarm=${vacantKeys.length} ` +
             `roads=${this.loadedRoadIds.size} composites=${this.loadedCompositeIds.size} ` +
             `pending={scatter:${this.pendingScatterParcels.size} composite:${this.pendingCompositeIds.size}} ` +
-            `liveRadius=${secondaryLiveRadiusM()}m settled=${settled ? '1' : '0'} prewarm=${this.prewarmActive ? '1' : '0'}`
+            `liveEnter=${secondaryLiveEnterRadiusM()}m liveKeep=${secondaryLiveKeepRadiusM()}m settled=${settled ? '1' : '0'} prewarm=${this.prewarmActive ? '1' : '0'}`
         )
       }
       return
@@ -975,7 +1013,7 @@ export class AoiVisualLayer {
 
   /**
    * Mark composite candidates as outstanding (add-only).
-   * Skips shells farther than {@link COMPOSITE_MAX_DIST_M} (far estates thrash GPU).
+   * Distance gate = Preferences Scene Distance (up to 200m) — no extra hard cap.
    */
   private enqueueCompositeWork(
     entities: ActiveSceneEntity[],
@@ -985,6 +1023,8 @@ export class AoiVisualLayer {
     dclZ: number,
     primaryBase: string
   ): void {
+    const warmM = renderQuality.getSceneLoadRadiusM()
+    if (warmM <= 0) return
     for (const e of entities) {
       if (primaryId && e.id === primaryId) continue
       if (!isSecondarySceneCandidate(e) || !findCompositeFile(e.content)) continue
@@ -1002,17 +1042,13 @@ export class AoiVisualLayer {
         continue
       }
       if (!keys.some((p) => pointerSet.has(p.trim()))) continue
-      // Distance gate — multi-parcel rank used to load 200m shells mid-walk.
-      let best = Infinity
-      for (const k of keys) {
-        try {
-          const d = distanceToParcelCenterM(dclX, dclZ, parseParcelKey(k.trim()), primaryBase)
-          if (d < best) best = d
-        } catch {
-          /* skip */
-        }
-      }
-      if (Number.isFinite(best) && best > COMPOSITE_MAX_DIST_M) continue
+      const best = minPlayerToFootprintDistanceM(
+        dclX,
+        dclZ,
+        keys.map((k) => k.trim()).filter(Boolean),
+        primaryBase
+      )
+      if (Number.isFinite(best) && best > warmM) continue
       this.pendingCompositeIds.add(e.id)
     }
   }
@@ -1152,8 +1188,8 @@ export class AoiVisualLayer {
           continue
         }
         group.name = `aoi-secondary:${ent.id}`
-        // Hide if a live secondary worker owns this entity (avoid double-draw).
-        group.visible = !this.liveSecondaryIds.has(ent.id)
+        // Keep shell until full live graph is ready (avoids flash-reload on boot).
+        group.visible = !this.liveGraphReadyIds.has(ent.id)
         // No shadows on tertiary — primary keeps the shadow budget.
         group.traverse((o) => {
           if ((o as THREE.Mesh).isMesh) {
@@ -1177,30 +1213,24 @@ export class AoiVisualLayer {
   }
 
   /**
-   * Live-secondary candidates by **scene-to-scene** footprint proximity (not player).
-   * Nested hole scenes (Spring @ plaza cutout) have ~0m edge distance → always live.
-   * Player frustum LOD is applied later on the live worker meshes, not for eligibility.
+   * Live-secondary candidates by **player → footprint** distance.
+   * Emit up to keep radius (80m) so reconcile can hysteresis; boot only when ≤ enter (16m).
    */
   private emitLiveSecondaryCandidatesOnly(
     entities: ActiveSceneEntity[],
     primaryId: string,
-    _primaryBase: string,
-    _dclX: number,
-    _dclZ: number,
+    primaryBase: string,
+    dclX: number,
+    dclZ: number,
     pointerSet: Set<string>
   ): void {
     // Prewarm visuals only — do not boot workers until play-ready.
     if (!this.liveReconcileEnabled) {
       return
     }
-    const liveProxM = secondaryLiveRadiusM()
-    if (liveProxM <= 0) {
-      this.emitLiveCandidatesIfChanged([])
-      return
-    }
-
-    const primaryParcels = [...this.primaryParcelSet]
-    if (!primaryParcels.length) {
+    const enterM = secondaryLiveEnterRadiusM()
+    const keepM = secondaryLiveKeepRadiusM()
+    if (enterM <= 0 || keepM <= 0) {
       this.emitLiveCandidatesIfChanged([])
       return
     }
@@ -1210,27 +1240,22 @@ export class AoiVisualLayer {
       if (!isSecondarySceneCandidate(e)) return false
       if (isOpenRoadEntity(e)) return false
       const keys = e.pointers.length ? e.pointers : e.parcels
-      // Must appear in fetched pointer set (player warm ∪ primary+proximity ring).
       if (!keys.some((p) => pointerSet.has(p.trim()))) return false
       return true
     })
 
-    const withSceneDist = scriptBuilt.map((e) => {
+    const withPlayerDist = scriptBuilt.map((e) => {
       const keys = [
         ...new Set((e.pointers.length ? e.pointers : e.parcels).map((p) => p.trim()).filter(Boolean))
       ]
-      const dist = minSceneFootprintDistanceM(primaryParcels, keys)
-      // Nested hole: zero edge distance and no parcel owned by primary (Spring in plaza cutout).
-      const nestedHole =
-        dist === 0 && keys.length > 0 && keys.every((p) => !this.primaryParcelSet.has(p))
-      return { ent: e, dist, parcelCount: keys.length || 1, keys, nestedHole }
+      const dist = minPlayerToFootprintDistanceM(dclX, dclZ, keys, primaryBase)
+      return { ent: e, dist, parcelCount: keys.length || 1, keys }
     })
 
-    const ranked = withSceneDist
-      .filter((x) => Number.isFinite(x.dist) && x.dist <= liveProxM)
+    // Include keep band so already-live secondaries get dist updates for exit hysteresis.
+    const ranked = withPlayerDist
+      .filter((x) => Number.isFinite(x.dist) && x.dist <= keepM)
       .sort((a, b) => {
-        // Nested hole scenes first (always live when standing in CBD plaza).
-        if (a.nestedHole !== b.nestedHole) return a.nestedHole ? -1 : 1
         if (a.dist !== b.dist) return a.dist - b.dist
         return a.parcelCount - b.parcelCount
       })
@@ -1263,7 +1288,7 @@ export class AoiVisualLayer {
         /* skip */
       }
     }
-    this.emitLiveCandidatesIfChanged(liveCandidates, liveProxM)
+    this.emitLiveCandidatesIfChanged(liveCandidates, enterM, keepM)
   }
 
   private emitLiveCandidatesIfChanged(
@@ -1277,21 +1302,25 @@ export class AoiVisualLayer {
       parcelCount: number
       parcels: string[]
     }>,
-    liveProxM?: number
+    enterM?: number,
+    keepM?: number
   ): void {
-    const sig = liveCandidates.map((c) => c.entityId).join('|')
+    // Include distances so keep-band hysteresis updates even when entity set is stable.
+    const sig = liveCandidates.map((c) => `${c.entityId}:${c.distM.toFixed(0)}`).join('|')
     if (sig === this.lastLiveCandidateSignature) return
     this.lastLiveCandidateSignature = sig
     this.ctx?.onSecondaryCandidates?.(liveCandidates)
-    if (liveCandidates.length && liveProxM != null) {
+    if (liveCandidates.length && enterM != null) {
+      const bootable = liveCandidates.filter((c) => c.distM <= enterM)
       console.info(
-        `[aoi] live-secondary (scene-prox≤${liveProxM}m) n=${liveCandidates.length} nearest=${liveCandidates
-          .slice(0, 5)
-          .map(
-            (c) =>
-              `“${c.title}”@${c.base}(scene ${c.distM.toFixed(0)}m,p=${c.parcelCount})`
-          )
-          .join(' · ')}`
+        `[aoi] live-secondary (player enter≤${enterM}m keep≤${keepM ?? '?'}m) ` +
+          `n=${liveCandidates.length} bootable=${bootable.length} nearest=${liveCandidates
+            .slice(0, 5)
+            .map(
+              (c) =>
+                `“${c.title}”@${c.base}(player ${c.distM.toFixed(0)}m,p=${c.parcelCount})`
+            )
+            .join(' · ')}`
       )
     }
   }
@@ -1342,7 +1371,7 @@ export class AoiVisualLayer {
       return (a.parcels.length || a.pointers.length) - (b.parcels.length || b.pointers.length)
     })
 
-    // Live secondaries: scene-to-scene footprint proximity (not player distance).
+    // Live secondaries: player→footprint (emit keep band; reconcile boots only at enter).
     const liveCandidates: Array<{
       entityId: string
       title: string
@@ -1353,14 +1382,13 @@ export class AoiVisualLayer {
       parcelCount: number
       parcels: string[]
     }> = []
-    const liveProxM = secondaryLiveRadiusM()
-    const primaryParcels = [...this.primaryParcelSet]
+    const keepLiveM = secondaryLiveKeepRadiusM()
     for (const ent of ranked) {
       const keys = [
         ...new Set((ent.pointers.length ? ent.pointers : ent.parcels).map((p) => p.trim()).filter(Boolean))
       ]
-      const dist = minSceneFootprintDistanceM(primaryParcels, keys)
-      if (liveProxM <= 0 || !Number.isFinite(dist) || dist > liveProxM) continue
+      const dist = minPlayerToFootprintDistanceM(dclX, dclZ, keys, primaryBase)
+      if (keepLiveM <= 0 || !Number.isFinite(dist) || dist > keepLiveM) continue
       try {
         const baseCoord = parseParcelKey(ent.base)
         liveCandidates.push({
@@ -1400,7 +1428,7 @@ export class AoiVisualLayer {
       const cached = this.firstFrameGroups.get(ent.id)
       if (cached) {
         if (cached.userData.ffHierarchyVer === FF_HIERARCHY_VERSION) {
-          cached.visible = !this.liveSecondaryIds.has(ent.id)
+          cached.visible = !this.liveGraphReadyIds.has(ent.id)
           continue
         }
         // Stale hierarchy bake — drop and re-sample.
@@ -1439,9 +1467,8 @@ export class AoiVisualLayer {
             disposeObject3D(prev)
           }
           group.name = `aoi-secondary-ff:${entityId}`
-          // Race: live secondary may have started while this sample was in flight.
-          // Never show a static first-frame over a live worker (dual prize portal / rotators).
-          group.visible = !this.liveSecondaryIds.has(entityId)
+          // Hide only when full live graph is ready (shell can overlap boot briefly).
+          group.visible = !this.liveGraphReadyIds.has(entityId)
           this.firstFrameRoot.add(group)
           this.firstFrameGroups.set(entityId, group)
           this.firstFrameLastUse.set(entityId, performance.now())
@@ -1453,7 +1480,7 @@ export class AoiVisualLayer {
 
     // LOD hide — do **not** dispose or forget sampler (no full re-sample on re-enter).
     for (const [id, group] of this.firstFrameGroups) {
-      if (wantFf.has(id) && !this.liveSecondaryIds.has(id)) {
+      if (wantFf.has(id) && !this.liveGraphReadyIds.has(id)) {
         group.visible = true
       } else {
         group.visible = false

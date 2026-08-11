@@ -4186,6 +4186,64 @@ export class PhysXWorld {
     return true
   }
 
+  /**
+   * Primary→secondary demote / secondary→primary promote: rename phys entity ids
+   * without remove/recook. Multi-shape children rekey with the parent.
+   * @returns number of map entries rekeyed (parent + children)
+   */
+  rekeyStaticColliderFamily(fromEntity: number, toEntity: number): number {
+    if (fromEntity === toEntity) return 0
+    if (this.staticActors.has(toEntity) || this.multiShapeChildCount.has(toEntity)) {
+      // Target already occupied — fall back to invalidate target first (rare clash).
+      this.invalidateStaticCollider(toEntity)
+    }
+    let n = 0
+    const childCount = this.multiShapeChildCount.get(fromEntity) ?? 0
+    if (childCount > 0) {
+      for (let i = 0; i < childCount; i++) {
+        const fromChild = multiShapeChildPhysId(fromEntity, i)
+        const toChild = multiShapeChildPhysId(toEntity, i)
+        n += this.rekeyStaticColliderOne(fromChild, toChild)
+      }
+      this.multiShapeChildCount.set(toEntity, childCount)
+      this.multiShapeChildCount.delete(fromEntity)
+    }
+    n += this.rekeyStaticColliderOne(fromEntity, toEntity)
+    if (n > 0) this.invalidateControllerCache()
+    return n
+  }
+
+  /** Move one phys-id map entry; does not touch multi-shape children. */
+  private rekeyStaticColliderOne(fromEntity: number, toEntity: number): number {
+    if (fromEntity === toEntity) return 0
+    let moved = 0
+    const actor = this.staticActors.get(fromEntity)
+    if (actor) {
+      this.staticActors.set(toEntity, actor)
+      this.staticActors.delete(fromEntity)
+      moved++
+    }
+    const transferMap = <V>(map: Map<number, V>, from: number, to: number) => {
+      if (!map.has(from)) return
+      map.set(to, map.get(from)!)
+      map.delete(from)
+      moved++
+    }
+    transferMap(this.staticFp, fromEntity, toEntity)
+    transferMap(this.staticPoseFp, fromEntity, toEntity)
+    transferMap(this.actorWorldBaked, fromEntity, toEntity)
+    transferMap(this.shapeBaselineLocal, fromEntity, toEntity)
+    transferMap(this.actorCookScale, fromEntity, toEntity)
+    transferMap(this.pmeshHandles, fromEntity, toEntity)
+    transferMap(this.multiShapeExpandLogAt, fromEntity, toEntity)
+    if (this.actorIsKinematic.has(fromEntity)) {
+      this.actorIsKinematic.delete(fromEntity)
+      this.actorIsKinematic.add(toEntity)
+      moved++
+    }
+    return moved > 0 ? 1 : 0
+  }
+
   private removeStatic(entity: number): void {
     this.unregisterStaticActor(entity)
     const actor = this.staticActors.get(entity)

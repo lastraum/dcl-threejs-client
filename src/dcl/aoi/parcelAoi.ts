@@ -6,8 +6,7 @@ import { PARCEL_SIZE } from '../content/types'
  * - **Warm + visual band** = user Scene Distance (`sceneLoadRadiusM`): roads, empty,
  *   composites, first-frame, script/manifest prefetch.
  * - **FocusOwner** = primary only (UI / audio / video / inputs / locomotion).
- * - **Live secondaries** = scenes whose footprint is within scene-proximity meters of
- *   the **primary footprint** (not player). Cap + serial boot; frustum LOD is separate.
+ * - **Live secondaries** = player→footprint ≤ enter (16m) boots; keep until player ≤ exit (80m).
  *
  * @deprecated Prefer `renderQuality.getSceneLoadRadiusM()`. Kept as fallback when
  * settings are unavailable (tests / early init). Default matches Scene Distance default (100m).
@@ -95,8 +94,7 @@ export function parcelEdgeDistanceM(a: ParcelCoord, b: ParcelCoord): number {
 
 /**
  * Min edge distance between two scene footprints (absolute parcel keys).
- * Used for live-secondary eligibility: **scene-to-scene**, not player position.
- * Nested hole scenes (Spring in plaza cutout) → ~0m → always live candidates.
+ * Still used for discovery collars / nested-hole detection — **not** live boot.
  */
 export function minSceneFootprintDistanceM(
   parcelsA: readonly string[],
@@ -119,6 +117,38 @@ export function minSceneFootprintDistanceM(
       } catch {
         /* bad key */
       }
+    }
+  }
+  return best
+}
+
+/**
+ * Min distance (meters) from **player feet** (scene-local DCL) to a scene footprint
+ * as axis-aligned parcel squares. Inside any covered parcel → 0.
+ * Live secondary enter/keep radii use this (not scene-to-scene).
+ */
+export function minPlayerToFootprintDistanceM(
+  dclX: number,
+  dclZ: number,
+  footprintKeys: readonly string[],
+  baseParcel: string
+): number {
+  if (!footprintKeys.length) return Infinity
+  let best = Infinity
+  for (const key of footprintKeys) {
+    try {
+      const sw = parcelSwSceneLocal(key.trim(), baseParcel)
+      const minX = sw.x
+      const maxX = sw.x + PARCEL_SIZE
+      const minZ = sw.z
+      const maxZ = sw.z + PARCEL_SIZE
+      const dx = Math.max(0, minX - dclX, dclX - maxX)
+      const dz = Math.max(0, minZ - dclZ, dclZ - maxZ)
+      const d = Math.hypot(dx, dz)
+      if (d < best) best = d
+      if (best === 0) return 0
+    } catch {
+      /* bad key */
     }
   }
   return best

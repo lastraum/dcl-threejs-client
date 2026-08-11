@@ -2,15 +2,19 @@ import type { PerformanceTier } from '../../shim/types'
 import { renderQuality } from '../../rendering/RenderQualitySettings'
 
 /**
- * Product multi-scene model (FocusOwner + LOD rings):
- * - **Primary** — FocusOwner (UI/audio/video/inputs)
- * - **Live secondaries** — muted workers, scripts every frame, scene-to-scene ≤16m, hard-capped
- * - **Tertiary residents** — scripts OFF + visual LOD when leave ring / under cap (never unload on demote)
- * - **Tertiary composites** — roads / empty / AOI shells over Scene Distance (no worker)
+ * Product multi-scene model (current shipping):
+ * - **Primary only** — the scene you spawned into; FocusOwner; never promote/demote
+ * - **Neighbors** — composite **GLB shells only** over Scene Distance (no workers)
+ * - No live secondary workers, no stand-on handoff (perf: CBD thrash killed FPS)
  *
- * Parcel count never refuses secondary boot or picks mode. Budget = radius + cap + serial boot.
  * Full contract: docs/MULTI_SCENE_CONTINUITY.md
  */
+/**
+ * When true: single primary forever + composite GLB shells for neighbors.
+ * No secondary workers, no promote/demote. Re-enable for continuity experiments.
+ */
+const AOI_GLB_SHELLS_ONLY = true
+/** Legacy: composite shells without first-frame sample (still used when shells-only). */
 const AOI_LIVE_SECONDARIES_ONLY = true
 /** Hard cap on concurrent muted live secondary workers (dense Genesis). */
 const AOI_LIVE_SECONDARY_HARD_CAP = 3
@@ -49,13 +53,11 @@ export function compositeMaxGltfsForDistance(distM: number, parcelCount: number)
 }
 
 /**
- * Live secondary workers: nearest N inside a **live radius** (not full Scene Distance).
- * Warm + tertiary still use full Scene Distance. Live scripts are expensive.
- * Multi-parcel size is not a reject gate — concurrency + live radius are the budget.
- *
- * Middle tier targets ~6 concurrent muted neighbors; scale low/high around that.
+ * Live secondary workers: nearest N by **player→scene** distance.
+ * Warm + composite shells use full Scene Distance. Live scripts are expensive.
  */
 export function secondaryLiveCap(tier: PerformanceTier): number {
+  if (aoiGlbShellsOnly()) return 0
   if (AOI_LIVE_SECONDARIES_ONLY) return AOI_LIVE_SECONDARY_HARD_CAP
   if (tier === 'low') return 3
   if (tier === 'medium') return 6
@@ -63,34 +65,69 @@ export function secondaryLiveCap(tier: PerformanceTier): number {
 }
 
 /**
- * Live secondary eligibility: **scene-to-scene** footprint edge distance (meters).
- * Not player distance — nested hole scenes (Spring in plaza cutout) sit ~0m from
- * primary parcels and always qualify. Player frustum LOD is separate.
- * One parcel = 16m; 16m ≈ adjacent + same-parcel contact.
+ * Boot / promote live secondary when **player** is within this distance of the
+ * neighbor scene footprint (edge meters, scene-local).
  */
-export const SECONDARY_LIVE_SCENE_PROXIMITY_M = 16
-
-/** @deprecated use SECONDARY_LIVE_SCENE_PROXIMITY_M — kept for call-site greps. */
-export const SECONDARY_LIVE_MAX_RADIUS_M = SECONDARY_LIVE_SCENE_PROXIMITY_M
+export const SECONDARY_LIVE_ENTER_M = 16
 
 /**
- * Scene-adjacency band for live workers. Independent of player Scene Distance
- * (warm/composite still use Scene Distance). Returns 0 only if Scene Distance is 0
- * (AOI fully off).
+ * Keep a live secondary (scripts on) until **player** is farther than this from
+ * that scene's footprint. Beyond → tertiary (scripts off, meshes stay).
  */
-export function secondaryLiveRadiusM(): number {
+export const SECONDARY_LIVE_KEEP_M = 80
+
+/**
+ * @deprecated use {@link SECONDARY_LIVE_ENTER_M} — historical scene-to-scene name.
+ * Now means player enter radius.
+ */
+export const SECONDARY_LIVE_SCENE_PROXIMITY_M = SECONDARY_LIVE_ENTER_M
+
+/** @deprecated use SECONDARY_LIVE_ENTER_M */
+export const SECONDARY_LIVE_MAX_RADIUS_M = SECONDARY_LIVE_ENTER_M
+
+/**
+ * Player distance at which we **boot** a live secondary (or re-promote tertiary→secondary).
+ * 0 when Scene Distance is 0 (AOI off).
+ */
+export function secondaryLiveEnterRadiusM(): number {
+  if (aoiGlbShellsOnly()) return 0
   const warm = renderQuality.getSceneLoadRadiusM()
   if (warm <= 0) return 0
-  return SECONDARY_LIVE_SCENE_PROXIMITY_M
+  return SECONDARY_LIVE_ENTER_M
 }
 
 /**
- * When true: skip script-warm + first-frame sample; keep composite tertiary for
- * multi-parcel neighbors (plaza ring around nested hole scenes). Live workers still
- * hard-capped. Full dual-worker plaza+nested thrash is what crashed CBD promotes.
+ * Player distance hysteresis — keep scripts on until this far from the secondary.
+ * Clamped so keep ≥ enter. 0 when AOI off / GLB shells only.
+ */
+export function secondaryLiveKeepRadiusM(): number {
+  if (aoiGlbShellsOnly()) return 0
+  const warm = renderQuality.getSceneLoadRadiusM()
+  if (warm <= 0) return 0
+  return Math.max(SECONDARY_LIVE_ENTER_M, SECONDARY_LIVE_KEEP_M)
+}
+
+/**
+ * @deprecated use {@link secondaryLiveEnterRadiusM} — was scene-adjacency; now enter radius.
+ */
+export function secondaryLiveRadiusM(): number {
+  return secondaryLiveEnterRadiusM()
+}
+
+/**
+ * When true: skip script-warm + first-frame sample; keep composite shells.
+ * Live workers hard-capped (or zero under {@link aoiGlbShellsOnly}).
  */
 export function aoiLiveSecondariesOnly(): boolean {
-  return AOI_LIVE_SECONDARIES_ONLY
+  return AOI_LIVE_SECONDARIES_ONLY || AOI_GLB_SHELLS_ONLY
+}
+
+/**
+ * Single primary + neighbor **GLB shells only** — no secondary workers, no promote.
+ * Default on for FPS; set false to restore enter/keep live secondary experiments.
+ */
+export function aoiGlbShellsOnly(): boolean {
+  return AOI_GLB_SHELLS_ONLY
 }
 
 /** Only one secondary full boot at a time — parallel 2MB workers thrash CBD promotes. */

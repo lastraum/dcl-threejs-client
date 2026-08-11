@@ -19,6 +19,7 @@ import type { SecondaryLiveRequest } from './types'
 export type MultiSceneRuntimeOptions = {
   peManager: PortableExperienceManager
   onLiveSecondaryIds?: (ids: ReadonlySet<string>) => void
+  onLiveGraphReady?: (entityId: string) => void
 }
 
 /**
@@ -36,6 +37,7 @@ export class MultiSceneRuntime {
   private cache: AssetCache | null = null
   private disposed = false
   private onLiveSecondaryIds: ((ids: ReadonlySet<string>) => void) | null
+  private onLiveGraphReady: ((entityId: string) => void) | null
   /** Last multi-scene phys descs — for tracking invalidation. */
   private lastMultiPhysIds = new Set<number>()
   /** Live secondary tick/reconcile gated until primary play-ready. */
@@ -44,10 +46,15 @@ export class MultiSceneRuntime {
   constructor(opts: MultiSceneRuntimeOptions) {
     this.pe = opts.peManager
     this.onLiveSecondaryIds = opts.onLiveSecondaryIds ?? null
+    this.onLiveGraphReady = opts.onLiveGraphReady ?? null
   }
 
   setOnLiveSecondaryIds(fn: ((ids: ReadonlySet<string>) => void) | null): void {
     this.onLiveSecondaryIds = fn
+  }
+
+  setOnLiveGraphReady(fn: ((entityId: string) => void) | null): void {
+    this.onLiveGraphReady = fn
   }
 
   /** Push current live/sticky entity ids to AOI (hide duplicate composites). */
@@ -112,7 +119,8 @@ export class MultiSceneRuntime {
       tier: opts.tier,
       arbiter: this.arbiter,
       poseProvider: opts.poseProvider,
-      onLiveIdsChange: (ids) => this.onLiveSecondaryIds?.(ids)
+      onLiveIdsChange: (ids) => this.onLiveSecondaryIds?.(ids),
+      onLiveGraphReady: (id) => this.onLiveGraphReady?.(id)
     })
 
     void this.pe.attachWorld({

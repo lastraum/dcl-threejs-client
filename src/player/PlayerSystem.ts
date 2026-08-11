@@ -2038,7 +2038,7 @@ export class PlayerSystem {
       this.camYaw -= this.input.pointer.dx * look
       this.camYaw = normalizeAngle(this.camYaw)
       const pitchDelta = this.input.pointer.dy * look
-      // Original orbit sense: FPV mouse-up looks up; 3rd mouse-up raises boom (look down ring).
+      // FPV mouse-up looks up; 3rd mouse-up raises boom (look down ring).
       // Distance still gates how far you can look into the sky (pitchMinForDistance).
       this.camPitch += this.isFirstPerson() ? -pitchDelta : pitchDelta
     }

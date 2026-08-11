@@ -60,6 +60,15 @@ type TweenRuntime = {
   lastProgressMilestone?: number
   /** Marquee debug — last hold phase logged. */
   lastHoldLogPhase?: 'holding' | 'expired' | 'armed' | 'defer-scroll'
+  /**
+   * Client-driven sequence cycle (TL_RESTART / multi-leg). Keeps visuals moving when
+   * worker TweenSequence stalls (settings hitch, missed COMPLETED inject).
+   * Cleared when CRDT delivers a real new Tween signature.
+   */
+  localLoop?: {
+    legs: PBTween[]
+    index: number
+  }
 }
 
 const TWEEN_STATE_LABEL = ['active', 'completed', 'paused'] as const
@@ -80,6 +89,7 @@ const _v3a = new THREE.Vector3()
 const _qA = new THREE.Quaternion()
 const _qB = new THREE.Quaternion()
 const _qOut = new THREE.Quaternion()
+const _yAxis = new THREE.Vector3(0, 1, 0)
 const _euler = new THREE.Euler(0, 0, 0, 'YXZ')
 const _scratchTransform: DclTransformValues = {
   position: { x: 0, y: 0, z: 0 },
@@ -159,9 +169,38 @@ function lerpVec3(a: Vec3, b: Vec3, t: number): Vec3 {
   }
 }
 
+/**
+ * Interpolate rotation for Tween.rotate.
+ * Pure Y spins (Genesis blimp 0→180→360): Euler 360° serializes as identity (=0°), so
+ * short-path slerp would reverse the second leg. Prefer continuous yaw (unwrap, +π when
+ * exactly 180°) so full-orbit sequences keep spinning the same way.
+ */
 function slerpQuat(a: Quat, b: Quat, t: number): Quat {
-  _qA.set(a.x, a.y, a.z, a.w)
-  _qB.set(b.x, b.y, b.z, b.w)
+  _qA.set(a.x, a.y, a.z, a.w).normalize()
+  _qB.set(b.x, b.y, b.z, b.w).normalize()
+  // Horizontal yaw-dominant: |x|,|z| small on both ends.
+  const yawOnly =
+    Math.abs(_qA.x) < 0.08 &&
+    Math.abs(_qA.z) < 0.08 &&
+    Math.abs(_qB.x) < 0.08 &&
+    Math.abs(_qB.z) < 0.08
+  if (yawOnly) {
+    const yawA = 2 * Math.atan2(_qA.y, _qA.w)
+    const yawB = 2 * Math.atan2(_qB.y, _qB.w)
+    let d = yawB - yawA
+    while (d > Math.PI) d -= Math.PI * 2
+    while (d < -Math.PI) d += Math.PI * 2
+    // Exactly half-turn: short path is ambiguous. Authored 180°→360° becomes 180°→identity
+    // after quat bake — take +180° so GP blimp keeps orbiting the same way (not reverse).
+    if (Math.abs(Math.abs(d) - Math.PI) < 1e-3) {
+      const endIsIdentity = Math.abs(_qB.w) > 0.99
+      const startIsHalfY = Math.abs(_qA.y) > 0.99
+      d = endIsIdentity && startIsHalfY ? Math.PI : d >= 0 ? Math.PI : -Math.PI
+    }
+    const yaw = yawA + d * t
+    _qOut.setFromAxisAngle(_yAxis, yaw)
+    return { x: _qOut.x, y: _qOut.y, z: _qOut.z, w: _qOut.w }
+  }
   _qOut.copy(_qA).slerp(_qB, t)
   return { x: _qOut.x, y: _qOut.y, z: _qOut.z, w: _qOut.w }
 }
@@ -180,6 +219,21 @@ function r4(n: number | undefined | null): number | null {
 function vec2Key(v?: { x?: number; y?: number } | null): { x: number; y: number } | null {
   if (!v) return null
   return { x: r4(v.x) ?? 0, y: r4(v.y) ?? 0 }
+}
+
+function quatKey(q?: Quat | null): Quat | null {
+  if (!q) return null
+  return {
+    x: r4(q.x) ?? 0,
+    y: r4(q.y) ?? 0,
+    z: r4(q.z) ?? 0,
+    w: r4(q.w) ?? 1
+  }
+}
+
+function vec3Key(v?: Vec3 | null): Vec3 | null {
+  if (!v) return null
+  return { x: r4(v.x) ?? 0, y: r4(v.y) ?? 0, z: r4(v.z) ?? 0 }
 }
 
 function tweenSignature(tween: PBTween): string {
@@ -203,6 +257,25 @@ function tweenSignature(tween: PBTween): string {
       speed: r4(tm.speed),
       movementType: tm.movementType ?? 0
     }
+  } else if (mode?.$case === 'rotate' && mode.rotate) {
+    // Genesis blimp: sequence legs 0→180 / 180→360 must differ so TL_RESTART restarts.
+    modeKey = {
+      $case: 'rotate',
+      start: quatKey(mode.rotate.start as Quat | undefined),
+      end: quatKey(mode.rotate.end as Quat | undefined)
+    }
+  } else if (mode?.$case === 'move' && mode.move) {
+    modeKey = {
+      $case: 'move',
+      start: vec3Key(mode.move.start as Vec3 | undefined),
+      end: vec3Key(mode.move.end as Vec3 | undefined)
+    }
+  } else if (mode?.$case === 'scale' && mode.scale) {
+    modeKey = {
+      $case: 'scale',
+      start: vec3Key(mode.scale.start as Vec3 | undefined),
+      end: vec3Key(mode.scale.end as Vec3 | undefined)
+    }
   }
   return JSON.stringify({
     duration: r4(tween.duration) ?? 0,
@@ -223,6 +296,42 @@ function isContinuousMode(mode: PBTween['mode']): boolean {
 function isTextureMode(mode: PBTween['mode']): boolean {
   const kind = mode?.$case
   return kind === 'textureMove' || kind === 'textureMoveContinuous'
+}
+
+function cloneTween(tween: PBTween): PBTween {
+  return JSON.parse(JSON.stringify(tween)) as PBTween
+}
+
+/** TweenLoop.TL_RESTART = 0, TL_YOYO = 1 */
+function isSequenceRestartLoop(loop: number | undefined): boolean {
+  return loop === 0
+}
+
+function isSequenceYoyoLoop(loop: number | undefined): boolean {
+  return loop === 1
+}
+
+function backwardsTween(tween: PBTween): PBTween {
+  const next = cloneTween(tween)
+  const mode = next.mode
+  if (mode?.$case === 'move' && mode.move) {
+    const s = mode.move.start
+    mode.move.start = mode.move.end
+    mode.move.end = s
+  } else if (mode?.$case === 'rotate' && mode.rotate) {
+    const s = mode.rotate.start
+    mode.rotate.start = mode.rotate.end
+    mode.rotate.end = s
+  } else if (mode?.$case === 'scale' && mode.scale) {
+    const s = mode.scale.start
+    mode.scale.start = mode.scale.end
+    mode.scale.end = s
+  } else if (mode?.$case === 'textureMove' && mode.textureMove) {
+    const s = mode.textureMove.start
+    mode.textureMove.start = mode.textureMove.end
+    mode.textureMove.end = s
+  }
+  return next
 }
 
 function collectMeshTextures(mesh: THREE.Mesh): THREE.Texture[] {
@@ -531,7 +640,7 @@ export class TweenBridge {
 
   sync(view: ProjectionView): void {
     this.motionFocusView = view
-    const { Tween } = this.ecs
+    const { Tween, TweenState } = this.ecs
     const active = new Set<Entity>()
     const now = performance.now()
 
@@ -582,6 +691,7 @@ export class TweenBridge {
         const marqueeRow = isPlazaMarqueeTextureMove(tween)
         const tm = tween.mode?.$case === 'textureMove' ? tween.mode.textureMove : undefined
         const durationMs = tween.duration ?? 0
+        // CRDT / worker delivered a real next Tween — drop client sequence loop for this entity.
         this.runtime.set(entity, {
           signature,
           completed: false,
@@ -590,8 +700,8 @@ export class TweenBridge {
           textureTargets: keptTargets,
           justReset: true,
           completedDirtySent: false,
-          lastWrittenState: undefined,
-          lastWrittenProgress: undefined,
+          lastWrittenState: 0,
+          lastWrittenProgress: 0,
           textureHoldUntil: undefined,
           textureHoldUv: undefined,
           textureHoldMovementType: tm?.movementType ?? 0,
@@ -604,8 +714,14 @@ export class TweenBridge {
           marqueeEasing: tween.easingFunction ?? 0,
           lastLoggedState: undefined,
           lastProgressMilestone: undefined,
-          lastHoldLogPhase: undefined
+          lastHoldLogPhase: undefined,
+          localLoop: undefined
         })
+        // Clear stale TS_COMPLETED immediately so worker TweenSequence does not treat the
+        // next leg as already finished (blimp TL_RESTART would advance once and stall).
+        TweenState.createOrReplace(entity, { state: 0, currentTime: 0 })
+        this.encodeDirty.add(entity)
+        this.completionDeliverUrgent = true
         this.logTween(
           `Tween reset — entity ${entity} · ${tweenModeLabel(tween)} · duration ${tween.duration}ms · playing ${tween.playing !== false}`,
           { entity }
@@ -652,6 +768,8 @@ export class TweenBridge {
       // Marquee row busy (scroll or wall hold) — must keep update running even if ECS
       // already replaced the Tween component with the next signature.
       if (this.marqueeRowBusy(runtime, now)) return true
+      // Local sequence loop (blimp TL_RESTART) — keep ticking even while ECS Tween is parked COMPLETED.
+      if (runtime.localLoop && runtime.localLoop.legs.length > 0 && !runtime.completed) return true
       if (!Tween.has(entity)) continue
       if (runtime.justReset) return true
       if (runtime.completed && runtime.completedDirtySent) continue
@@ -822,33 +940,44 @@ export class TweenBridge {
         continue
       }
 
-      if (!hasTween || !tween) continue
+      // Local sequence loop can run without a live ECS Tween (worker deleted mid-RESTART).
+      const loopTween =
+        runtime.localLoop && !runtime.completed
+          ? runtime.localLoop.legs[runtime.localLoop.index]
+          : undefined
+      if (!hasTween && !loopTween) continue
+      const driveTween = loopTween ?? tween
+      if (!driveTween) continue
 
       // Parked: finished finite tween already reported — wait for next signature via sync.
       // Keep pinning marquee end UV so material re-apply cannot flash mid-pause.
+      // Exception: localLoop should not park here (completed is cleared when next leg starts).
       if (runtime.completed && runtime.completedDirtySent && !runtime.justReset) {
-        if (runtime.marqueeRow && runtime.textureHoldUv && node) {
-          let targets = runtime.textureTargets
-          if (!targets?.length || !textureTargetsLive(node, targets)) {
-            targets = collectTextureTargets(node)
-            runtime.textureTargets = targets
+        // Still finished with a sequence loop but no next leg started — try arm again.
+        if (hasTween && tween && this.tryArmLocalSequenceLoop(entity, tween, runtime)) {
+          // Fall through with new leg active.
+        } else {
+          if (runtime.marqueeRow && runtime.textureHoldUv && node) {
+            let targets = runtime.textureTargets
+            if (!targets?.length || !textureTargetsLive(node, targets)) {
+              targets = collectTextureTargets(node)
+              runtime.textureTargets = targets
+            }
+            if (targets?.length) {
+              applyTextureUvToTargets(
+                targets,
+                runtime.textureHoldUv,
+                runtime.textureHoldMovementType,
+                node
+              )
+            }
           }
-          if (targets?.length) {
-            applyTextureUvToTargets(
-              targets,
-              runtime.textureHoldUv,
-              runtime.textureHoldMovementType,
-              node
-            )
-          }
+          continue
         }
-        continue
       }
 
-      const playing = tween.playing !== false
-      const continuous = isContinuousMode(tween.mode)
-      const textureMode = isTextureMode(tween.mode)
-      const durationSec = Math.max(tween.duration / 1000, 0)
+      const playing = driveTween.playing !== false
+      const textureMode = isTextureMode(driveTween.mode)
 
       // Paused and already wrote TweenState=2 — no per-frame work until playing/signature changes.
       if (
@@ -860,16 +989,16 @@ export class TweenBridge {
         continue
       }
 
-      // Completed finite tween: pin end once, encode dirty once, then park (or hold if armed).
+      // Completed finite tween: pin end once, encode dirty once, then either park or
+      // start the next sequence leg locally (worker may lag after settings hitches).
       if (runtime.completed) {
         if (node && !runtime.completedDirtySent) {
           if (textureMode) {
-            this.applyTextureTween(node, tween, runtime, 0, 1, true)
+            this.applyTextureTween(node, driveTween, runtime, 0, 1, true)
           } else if (Transform.has(entity)) {
-            // Pin rotate/move end pose so orbit pivots don't leave children mid-lerp.
             this.applyTransformTween(
               entity,
-              tween,
+              driveTween,
               Transform.get(entity),
               node,
               1,
@@ -886,52 +1015,64 @@ export class TweenBridge {
           this.encodeDirty.add(entity)
           this.completionDeliverUrgent = true
         }
+        // Start next RESTART leg for next frame — keep COMPLETED on the wire this frame.
+        this.tryArmLocalSequenceLoop(entity, driveTween, runtime)
         continue
       }
+
+      // Re-resolve after possible sequence step.
+      const activeTween =
+        runtime.localLoop && !runtime.completed
+          ? runtime.localLoop.legs[runtime.localLoop.index]!
+          : driveTween
+      const activePlaying = activeTween.playing !== false
+      const activeContinuous = isContinuousMode(activeTween.mode)
+      const activeTexture = isTextureMode(activeTween.mode)
+      const activeDurationSec = Math.max((activeTween.duration ?? 0) / 1000, 0)
 
       let progress = runtime.progress ?? 0
       if (runtime.justReset) {
         progress = runtime.progress
         runtime.justReset = false
       }
-      if (!runtime.completed && playing) {
-        if (!continuous && durationSec > 0) {
-          progress = Math.min(1, progress + delta / durationSec)
-        } else if (textureMode && durationSec <= 0) {
+      if (!runtime.completed && activePlaying) {
+        if (!activeContinuous && activeDurationSec > 0) {
+          progress = Math.min(1, progress + delta / activeDurationSec)
+        } else if (activeTexture && activeDurationSec <= 0) {
           this.logMarquee(
-            `SCROLL blocked · durationSec=${durationSec} durationRaw=${tween.duration} continuous=${continuous}`,
+            `SCROLL blocked · durationSec=${activeDurationSec} durationRaw=${activeTween.duration} continuous=${activeContinuous}`,
             { entity, level: 'warn', throttleMs: 1000 }
           )
         }
       }
       runtime.progress = progress
 
-      const eased = applyEasing(tween.easingFunction ?? 0, progress)
+      const eased = applyEasing(activeTween.easingFunction ?? 0, progress)
       let applied = false
 
       if (node) {
-        if (textureMode) {
-          applied = this.applyTextureTween(node, tween, runtime, delta, eased, playing)
+        if (activeTexture) {
+          applied = this.applyTextureTween(node, activeTween, runtime, delta, eased, activePlaying)
         } else if (Transform.has(entity)) {
           applied = this.applyTransformTween(
             entity,
-            tween,
+            activeTween,
             Transform.get(entity),
             node,
             eased,
-            playing,
+            activePlaying,
             delta
           )
         }
       }
 
-      const reachedEnd = !continuous && durationSec > 0 && progress >= 1
+      const reachedEnd = !activeContinuous && activeDurationSec > 0 && progress >= 1
       const completed = reachedEnd && !runtime.completed
       if (reachedEnd) {
         runtime.completed = true
       }
 
-      const state = !playing && !reachedEnd ? 2 : reachedEnd ? 1 : 0
+      const state = !activePlaying && !reachedEnd ? 2 : reachedEnd ? 1 : 0
 
       TweenState.createOrReplace(entity, { state, currentTime: progress })
       const stateChanged = runtime.lastWrittenState !== state
@@ -943,16 +1084,21 @@ export class TweenBridge {
         runtime.lastWrittenProgress = progress
         if (reachedEnd) {
           runtime.completedDirtySent = true
-          // Sequence loops (bobber bob) need the worker this frame — 100ms throttle steps motion.
+          // Sequence loops (bobber bob / blimp) need the worker this frame.
           this.completionDeliverUrgent = true
         }
         this.encodeDirty.add(entity)
       }
-      this.logTweenState(entity, tween, state, progress, continuous)
+      this.logTweenState(entity, activeTween, state, progress, activeContinuous)
 
-      if (!applied && !textureMode) {
+      // After COMPLETED is encoded this frame, arm next leg for the following update tick.
+      if (reachedEnd && completed) {
+        this.tryArmLocalSequenceLoop(entity, activeTween, runtime)
+      }
+
+      if (!applied && !activeTexture) {
         this.logTween(
-          `Tween visual skip — entity ${entity} · ${tweenModeLabel(tween)} (no node or Transform)`,
+          `Tween visual skip — entity ${entity} · ${tweenModeLabel(activeTween)} (no node or Transform)`,
           { entity, throttleMs: 1500, level: 'warn' }
         )
       }
@@ -1006,6 +1152,70 @@ export class TweenBridge {
         (samples.length ? ` · ${samples.join(' | ')}` : ''),
       { level: withTargets === 0 ? 'warn' : 'info', event: 'summary', throttleMs: 4000 }
     )
+  }
+
+  /**
+   * After a finite leg completes, start the next TweenSequence leg on the client so
+   * continuous orbits (Genesis blimp TL_RESTART) never wait on worker CRDT / settings hitches.
+   * Returns true when a new leg is live (runtime.completed cleared).
+   */
+  private tryArmLocalSequenceLoop(
+    entity: Entity,
+    completedTween: PBTween,
+    runtime: TweenRuntime
+  ): boolean {
+    // Texture marquee rows are driven by scene systems — do not invent a loop.
+    if (isTextureMode(completedTween.mode)) return false
+
+    const { TweenSequence } = this.ecs
+    if (!runtime.localLoop) {
+      if (!TweenSequence.has(entity)) return false
+      const seq = TweenSequence.get(entity)
+      const loop = seq.loop
+      const queued = seq.sequence ?? []
+      const hasQueued = queued.length > 0
+      if (!hasQueued && !isSequenceRestartLoop(loop) && !isSequenceYoyoLoop(loop)) {
+        return false
+      }
+      if (isSequenceYoyoLoop(loop) && !hasQueued) {
+        runtime.localLoop = {
+          legs: [cloneTween(completedTween), backwardsTween(completedTween)],
+          index: 0
+        }
+      } else {
+        // Full cycle: completed leg + remaining sequence (RESTART rotates this forever).
+        runtime.localLoop = {
+          legs: [cloneTween(completedTween), ...queued.map(cloneTween)],
+          index: 0
+        }
+      }
+      this.logTween(
+        `Tween local sequence armed — entity ${entity} · legs=${runtime.localLoop.legs.length} · loop=${loop ?? 'none'}`,
+        { entity, level: 'success' }
+      )
+    }
+
+    const loop = runtime.localLoop
+    if (!loop.legs.length) return false
+
+    // Advance to next leg (wrap).
+    loop.index = (loop.index + 1) % loop.legs.length
+    const next = loop.legs[loop.index]!
+    runtime.signature = tweenSignature(next)
+    runtime.completed = false
+    runtime.progress = 0
+    runtime.justReset = true
+    // Keep last COMPLETED dirty/urgent so the worker still receives the finish edge.
+    // Do not overwrite TweenState with ACTIVE here — that would swallow COMPLETED on the
+    // same encode (settings hitches left the blimp parked after one orbit).
+    runtime.completedDirtySent = false
+    runtime.lastWrittenProgress = 0
+    runtime.lastProgressMilestone = undefined
+    this.logTween(
+      `Tween local sequence next — entity ${entity} · leg ${loop.index + 1}/${loop.legs.length} · ${tweenModeLabel(next)}`,
+      { entity }
+    )
+    return true
   }
 
   private logTweenState(

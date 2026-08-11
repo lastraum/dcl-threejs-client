@@ -11,6 +11,11 @@ const RESERVED_ENTITIES = new Set<Entity>([0 as Entity, 1 as Entity, 2 as Entity
 
 /** `core::TweenState` — renderer-driven tween progress for worker `tweenCompleted()`. */
 const TWEEN_STATE_ID = 1103
+/** TweenStateStatus.TS_COMPLETED — sequence advance leaves this stale on the next leg. */
+const TS_COMPLETED = 1
+/** TweenLoop.TL_RESTART / TL_YOYO */
+const TL_RESTART = 0
+const TL_YOYO = 1
 /** `core::RaycastResult` — renderer raycast hits for worker `raycastSystem` callbacks. */
 const RAYCAST_RESULT_ID = 1068
 /** `core::GltfContainerLoadingState` — renderer reports GLB load progress (ADR-215). */
@@ -231,4 +236,32 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
     engineInfoPuts,
     reservedTransformPuts
   }
+}
+
+/**
+ * After TweenState COMPLETED inject + eng.update(0), TweenSequence may createOrReplace the
+ * next leg while TweenState is still COMPLETED. SDK createTweenSystem then treats the new
+ * tween as already finished (isCompleted) — Genesis blimp TL_RESTART only runs one orbit.
+ *
+ * Re-arm ACTIVE for playing sequence/loop tweens still marked COMPLETED.
+ * @returns number of entities re-armed
+ */
+export function rearmTweenStateAfterSequenceAdvance(engine: IEngine): number {
+  const Tween = generated.Tween(engine)
+  const TweenState = generated.TweenState(engine)
+  const TweenSequence = generated.TweenSequence(engine)
+  let n = 0
+  for (const [entity, tween] of engine.getEntitiesWith(Tween)) {
+    if (tween.playing === false) continue
+    const st = TweenState.getOrNull(entity)
+    if (!st || st.state !== TS_COMPLETED) continue
+    const seq = TweenSequence.getOrNull(entity)
+    if (!seq) continue
+    const hasQueued = (seq.sequence?.length ?? 0) > 0
+    const loops = seq.loop === TL_RESTART || seq.loop === TL_YOYO
+    if (!hasQueued && !loops) continue
+    TweenState.createOrReplace(entity, { state: 0, currentTime: 0 })
+    n++
+  }
+  return n
 }

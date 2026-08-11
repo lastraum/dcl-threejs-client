@@ -61,7 +61,10 @@ import { nextWorkerPointerEventTimestamp } from './workerPointerEventTimestamp'
 import { PointerEventType } from '../../input/pointerConstants'
 import { InputAction, type InputActionValue } from '../../input/pointerConstants'
 import { injectRendererGrowOnlyAppendsOnEngine } from './injectRendererGrowOnlyAppends'
-import { injectRendererLwwPutsOnEngine } from './injectRendererLwwPuts'
+import {
+  injectRendererLwwPutsOnEngine,
+  rearmTweenStateAfterSequenceAdvance
+} from './injectRendererLwwPuts'
 import { applyAvatarAttachTransformsOnEngine } from './applyAvatarAttachTransforms'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import {
@@ -2315,7 +2318,22 @@ function deliverTweenStateInbound(chunks: Uint8Array[]): void {
     'log',
     `[sceneWorker] tween-state-deliver — inject ${tweenPuts} TweenState PUT(s)`
   )
-  void runSceneEngineUpdateNow(0)
+  void (async () => {
+    await runSceneEngineUpdateNow(0)
+    // Sequence may have swapped Tween while state stayed COMPLETED — re-arm next leg
+    // so isCompleted does not fire again on the same COMPLETED snapshot (blimp loop).
+    if (!sceneEngine) return
+    const rearmed = rearmTweenStateAfterSequenceAdvance(sceneEngine)
+    if (rearmed > 0) {
+      workerVerboseLog(
+        debugTweenDeliver,
+        'log',
+        `[sceneWorker] tween-state re-arm after sequence — ${rearmed} entity(s)`
+      )
+      // Second transport tick so createTweenSystem cache sees ACTIVE for the new leg.
+      await runSceneEngineUpdateNow(0)
+    }
+  })()
 }
 
 /**

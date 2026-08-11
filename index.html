@@ -342,9 +342,11 @@
       }
       .debug-panel__position {
         display: flex;
-        flex-direction: column;
-        align-items: stretch;
-        gap: 8px;
+        flex-direction: row;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 10px 12px;
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
         font-size: 10px;
         line-height: 1.45;
@@ -355,11 +357,11 @@
       }
       .debug-panel__position-main {
         min-width: 0;
-        flex: 0 0 auto;
+        flex: 1 1 140px;
       }
-      /* Full-width under Position — was a narrow right column that overflowed over POS text. */
+      /* FPS graphs (stats.js) top-right of position row; meters full-width below. */
       .debug-panel__stats {
-        flex: 0 0 auto;
+        flex: 1 1 100%;
         display: flex;
         flex-direction: column;
         align-items: stretch;
@@ -368,7 +370,7 @@
         margin: 0;
         padding: 0;
         border: none;
-        overflow: hidden;
+        overflow: visible;
       }
       .debug-panel__stats #render-stats-host {
         display: flex;
@@ -376,19 +378,33 @@
         align-items: stretch;
         width: 100%;
         max-width: 100%;
-        overflow: hidden;
+        overflow: visible;
       }
       .debug-panel__stats #render-stats {
         position: relative !important;
         inset: auto !important;
-        transform: scale(0.92);
-        transform-origin: top left;
+        top: auto !important;
+        left: auto !important;
+        transform: none !important;
+        opacity: 1 !important;
+        display: flex !important;
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 4px;
         align-self: flex-start;
+        z-index: 1;
+        cursor: pointer;
+      }
+      /* stats.js hides non-active panels — force FPS (and MS) visible in Help → Debug. */
+      .debug-panel__stats #render-stats > div {
+        position: relative !important;
+        inset: auto !important;
+        display: block !important;
       }
       .debug-panel__stats #render-stats-extra {
         text-align: left;
         font-size: 10px !important;
-        margin-top: 4px !important;
+        margin-top: 6px !important;
         max-width: 100% !important;
         white-space: pre-wrap !important;
         word-break: break-word !important;

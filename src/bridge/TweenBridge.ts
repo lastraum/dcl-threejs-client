@@ -36,13 +36,45 @@ type TweenRuntime = {
   lastWrittenState?: number
   /** Last progress written to TweenState (dedupe encodeDirty). */
   lastWrittenProgress?: number
+  /**
+   * performance.now() deadline: pin textureMove end UV between NeonScreen rows.
+   * Genesis pauseDuration=0.5s (wall). Next TextureMove is deferred until this time.
+   */
+  textureHoldUntil?: number
+  /** DCL-space end UV frozen during / after hold until next row adopts. */
+  textureHoldUv?: Vec2
+  textureHoldMovementType?: number
+  /**
+   * Plaza LED row (discrete textureMove step). While scrolling or holding, ignore
+   * createOrReplace of the next row — scene clock often fires the next step early.
+   */
+  marqueeRow?: boolean
+  /** Snapshot of the active row — used when ECS already replaced Tween with the next step. */
+  marqueeStart?: Vec2
+  marqueeEnd?: Vec2
+  marqueeDurationSec?: number
+  marqueeEasing?: number
   /** Verbose — last TweenState.state written (0 active / 1 completed / 2 paused). */
   lastLoggedState?: number
   /** Verbose — last progress milestone logged (0, 0.25, 0.5, 0.75, 1). */
   lastProgressMilestone?: number
+  /** Marquee debug — last hold phase logged. */
+  lastHoldLogPhase?: 'holding' | 'expired' | 'armed' | 'defer-scroll'
 }
 
 const TWEEN_STATE_LABEL = ['active', 'completed', 'paused'] as const
+
+/**
+ * Genesis NeonScreen (bin/index.js):
+ *   pauseDuration = 0.5s, scrollDuration = 1s
+ *   state 0: elapsed += dt until pauseDuration → create TextureMove(duration=scroll*1000)
+ *   state 1: elapsed += dt until scrollDuration → back to pause
+ * Pause is pure wall-clock in addSystem — NOT tweenCompleted. Worker scene-time often
+ * races ahead and createOrReplace's the next TextureMove while the client is still
+ * scrolling (or mid-hold). Client must finish the current row + wall-clock pause before
+ * adopting the next signature.
+ */
+const NEON_SCREEN_PAUSE_MS = 500
 
 const _v3a = new THREE.Vector3()
 const _qA = new THREE.Quaternion()
@@ -249,6 +281,11 @@ export const DCL_TEXTURE_MOVE_ST = 'dclTextureMoveST'
  * Offset mode: Y is negated for Three’s V axis (flipY=false marquees). Without −Y
  * the LED scroll runs opposite Explorer. Tiling uses DCL sign as-is.
  *
+ * **Map-U flip law (event cards):** MaterialApplier may set `dclMapUFlipped` with
+ * `repeat.x = −base` and `offset.x = 1 − base`. TextureMove must write **base** ST
+ * into userData (for re-apply) but apply **flipped** ST on the live texture, or scroll
+ * overwrites the flip and posters go L–R mirrored mid-tween.
+ *
  * (Older “split panel” bugs were dual-face PlaneGeometry + DoubleSide, not this sign.)
  */
 function applyTextureUvToTargets(
@@ -259,17 +296,27 @@ function applyTextureUvToTargets(
 ): void {
   const tiling = movementType === TMT_TILING
   // Offset mode: DCL y → Three V with sign flip for flipY=false marquees (636e405).
-  // If scroll direction is still wrong in-game, invert only this line — do not thrash map-U.
+  // Horizontal U uses DCL sign as-is (Explorer). Do not invert X — that mirrored marquees.
   const y = tiling ? uv.y : -uv.y
   for (const tex of targets) {
     ensureRepeatWrapping(tex)
+    // Clear false map-U flips left by old worldMirror det checks so scroll stays L→R.
+    if (tex.userData.dclMapUFlipped) {
+      // Restore base ST if we still have a flipped residual from prior Material apply.
+      const rep = tex.repeat.x
+      if (rep < 0) {
+        tex.repeat.x = -rep
+        tex.offset.x = 1 - tex.offset.x
+      }
+      tex.userData.dclMapUFlipped = false
+    }
     if (tiling) {
       tex.repeat.set(uv.x, uv.y)
     } else {
       tex.offset.set(uv.x, y)
     }
   }
-  // Persist ST on meshes so material re-clone can restore during scene pause.
+  // Persist ST on meshes in **DCL/base** space so MaterialApplier re-flip stays honest.
   if (root) {
     root.traverse((child) => {
       if (!(child instanceof THREE.Mesh)) return
@@ -345,11 +392,9 @@ function isPlazaMarqueeTextureMove(tween: PBTween): boolean {
  * SDK parity: `@dcl/ecs` `createTweenSystem()` reads `TweenState.state` (0 active / 1 completed / 2 paused)
  * and `currentTime` (0–1 progress) to fire `tweenCompleted()` and advance `TweenSequence` yoyo/restart.
  *
- * KNOWN (lastraum, 2026-07-14): Genesis NeonScreen row pause is still broken. Scene owns
- * pauseDuration/scrollDuration via addSystem(dt); client no longer fakes a 0.5s hold. TextureMove
- * scrolls, but the authored inter-row pause does not hold (was ~10ms or none after wall-clock
- * ledger attempts). Needs a dedicated follow-up — do not reintroduce TEXTURE_MOVE_PAUSE_OVER_SCROLL
- * without fixing worker scene-time vs NeonScreen properly.
+ * NeonScreen row pause: scene addSystem owns pauseDuration/scrollDuration; client finishes
+ * each discrete textureMove, pins end UV for {@link NEON_SCREEN_PAUSE_MS}, and defers any
+ * next-row createOrReplace until that wall hold ends (worker clock often races).
  */
 export class TweenBridge {
   private readonly runtime = new Map<Entity, TweenRuntime>()
@@ -473,10 +518,22 @@ export class TweenBridge {
     return [...this.runtime.keys()]
   }
 
+  /**
+   * True while a NeonScreen row must finish (scroll in flight or wall-clock pause).
+   * Incoming createOrReplace TextureMoves are ignored until this is false.
+   */
+  private marqueeRowBusy(runtime: TweenRuntime, now: number): boolean {
+    if (!runtime.marqueeRow) return false
+    if (!runtime.completed) return true
+    if (runtime.textureHoldUntil != null && now < runtime.textureHoldUntil) return true
+    return false
+  }
+
   sync(view: ProjectionView): void {
     this.motionFocusView = view
     const { Tween } = this.ecs
     const active = new Set<Entity>()
+    const now = performance.now()
 
     for (const [entity] of view.getEntitiesWith(Tween)) {
       active.add(entity)
@@ -485,6 +542,35 @@ export class TweenBridge {
       const signature = tweenSignature(tween)
       const prev = this.runtime.get(entity)
       if (!prev || prev.signature !== signature) {
+        // NeonScreen: worker often createOrReplace's the next row early (compressed pause
+        // and/or scroll). Finish current scroll + wall hold before adopting the new signature.
+        if (
+          prev &&
+          tween.mode?.$case === 'textureMove' &&
+          this.marqueeRowBusy(prev, now)
+        ) {
+          const holding =
+            prev.textureHoldUntil != null && now < prev.textureHoldUntil && prev.textureHoldUv
+          if (holding) {
+            if (prev.lastHoldLogPhase !== 'holding') {
+              prev.lastHoldLogPhase = 'holding'
+              this.logMarquee(
+                `HOLD defer next · ${((prev.textureHoldUntil! - now) / 1000).toFixed(2)}s left · ` +
+                  `heldUv=(${prev.textureHoldUv!.x.toFixed(3)},${prev.textureHoldUv!.y.toFixed(3)}) · ` +
+                  `incoming ${this.formatTextureMove(tween)}`,
+                { entity, level: 'warn', event: 'hold-defer', throttleMs: 50 }
+              )
+            }
+          } else if (prev.lastHoldLogPhase !== 'defer-scroll') {
+            prev.lastHoldLogPhase = 'defer-scroll'
+            this.logMarquee(
+              `SCROLL defer next · progress=${formatTweenProgress(prev.progress)} · ` +
+                `incoming ${this.formatTextureMove(tween)}`,
+              { entity, level: 'warn', event: 'scroll-defer', throttleMs: 200 }
+            )
+          }
+          continue
+        }
         const node = this.store.getNode(entity)
         const keptTargets =
           prev?.textureTargets && node && textureTargetsLive(node, prev.textureTargets)
@@ -492,6 +578,10 @@ export class TweenBridge {
             : node && isTextureMode(tween.mode)
               ? collectTextureTargets(node)
               : undefined
+        const wasHolding = prev?.lastHoldLogPhase === 'holding' || prev?.lastHoldLogPhase === 'expired'
+        const marqueeRow = isPlazaMarqueeTextureMove(tween)
+        const tm = tween.mode?.$case === 'textureMove' ? tween.mode.textureMove : undefined
+        const durationMs = tween.duration ?? 0
         this.runtime.set(entity, {
           signature,
           completed: false,
@@ -502,19 +592,26 @@ export class TweenBridge {
           completedDirtySent: false,
           lastWrittenState: undefined,
           lastWrittenProgress: undefined,
+          textureHoldUntil: undefined,
+          textureHoldUv: undefined,
+          textureHoldMovementType: tm?.movementType ?? 0,
+          marqueeRow,
+          marqueeStart: tm?.start
+            ? { x: tm.start.x ?? 0, y: tm.start.y ?? 0 }
+            : undefined,
+          marqueeEnd: tm?.end ? { x: tm.end.x ?? 0, y: tm.end.y ?? 0 } : undefined,
+          marqueeDurationSec: durationMs > 0 ? durationMs / 1000 : 1,
+          marqueeEasing: tween.easingFunction ?? 0,
           lastLoggedState: undefined,
-          lastProgressMilestone: undefined
+          lastProgressMilestone: undefined,
+          lastHoldLogPhase: undefined
         })
         this.logTween(
           `Tween reset — entity ${entity} · ${tweenModeLabel(tween)} · duration ${tween.duration}ms · playing ${tween.playing !== false}`,
           { entity }
         )
         // Discrete textureMove row steps only after mesh maps exist (never during hydration targets=0).
-        if (
-          tween.mode?.$case === 'textureMove' &&
-          isPlazaMarqueeTextureMove(tween) &&
-          (keptTargets?.length ?? 0) > 0
-        ) {
+        if (marqueeRow && (keptTargets?.length ?? 0) > 0) {
           if (!this.marqueeLive) {
             this.marqueeLive = true
             this.logMarquee('logging live (meshes attached)', {
@@ -524,7 +621,7 @@ export class TweenBridge {
             })
           }
           this.logMarquee(
-            `START ${this.formatTextureMove(tween)} · targets=${keptTargets!.length}`,
+            `START ${wasHolding ? '(after hold) ' : ''}${this.formatTextureMove(tween)} · targets=${keptTargets!.length}`,
             { entity, level: 'success', event: 'start', throttleMs: 200 }
           )
         }
@@ -533,6 +630,9 @@ export class TweenBridge {
 
     for (const entity of this.runtime.keys()) {
       if (!active.has(entity)) {
+        const rt = this.runtime.get(entity)
+        // Keep runtime through row-pause / unfinished marquee scroll.
+        if (rt && this.marqueeRowBusy(rt, now)) continue
         this.runtime.delete(entity)
         this.store.setTween(entity, false)
         this.logTween(`Tween removed — entity ${entity}`, { entity })
@@ -541,13 +641,17 @@ export class TweenBridge {
   }
 
   /**
-   * Phase C: true when any runtime needs a per-frame advance (playing / continuous / just reset).
-   * Parked completed tweens do not count.
+   * Phase C: true when any runtime needs a per-frame advance (playing / continuous / just reset / row hold).
+   * Parked completed tweens do not count — except NeonScreen hold (must expire).
    */
   hasLiveTweens(): boolean {
     if (!this.runtime.size) return false
+    const now = performance.now()
     const { Tween } = this.ecs
     for (const [entity, runtime] of this.runtime) {
+      // Marquee row busy (scroll or wall hold) — must keep update running even if ECS
+      // already replaced the Tween component with the next signature.
+      if (this.marqueeRowBusy(runtime, now)) return true
       if (!Tween.has(entity)) continue
       if (runtime.justReset) return true
       if (runtime.completed && runtime.completedDirtySent) continue
@@ -566,24 +670,180 @@ export class TweenBridge {
     if (!this.runtime.size) return
 
     const { Tween, TweenState, Transform, AvatarAttach } = this.ecs
+    const now = performance.now()
 
     // Phase C dirty set: iterate runtime only (not full ECS scan). Skip parked completed/paused.
     for (const [entity, runtime] of this.runtime) {
-      if (!Tween.has(entity)) continue
-      const tween = Tween.get(entity)
+      const hasTween = Tween.has(entity)
+      const tween = hasTween ? Tween.get(entity) : undefined
 
-      if (AvatarAttach.has(entity)) {
+      if (hasTween && AvatarAttach.has(entity)) {
         this.logTween(`Tween skip — entity ${entity} has AvatarAttach`, { entity, throttleMs: 2000 })
         continue
       }
 
-      // Parked: finished finite tween already reported to worker — wait for next signature via sync.
-      if (runtime.completed && runtime.completedDirtySent && !runtime.justReset) {
+      // Transform-only pivots (Genesis blimp orbit) must get a scene Group even without a mesh.
+      const node =
+        this.store.getNode(entity) ??
+        (Transform.has(entity) ? this.store.getOrCreateNode(entity) : undefined)
+
+      // Force-pin end UV for NeonScreen-style row pause (scene may already have next Tween).
+      const holdingRow =
+        runtime.marqueeRow === true &&
+        runtime.textureHoldUntil != null &&
+        now < runtime.textureHoldUntil &&
+        runtime.textureHoldUv != null
+
+      if (holdingRow) {
+        if (node) {
+          let targets = runtime.textureTargets
+          if (!targets?.length || !textureTargetsLive(node, targets)) {
+            targets = collectTextureTargets(node)
+            runtime.textureTargets = targets
+          }
+          if (targets.length) {
+            applyTextureUvToTargets(
+              targets,
+              runtime.textureHoldUv!,
+              runtime.textureHoldMovementType,
+              node
+            )
+          }
+        }
+        // Keep TweenState completed so scene systems don't stall; we ignore the next
+        // TextureMove signature until hold ends.
+        if (hasTween) {
+          TweenState.createOrReplace(entity, { state: 1, currentTime: 1 })
+          if (!runtime.completedDirtySent) {
+            runtime.completedDirtySent = true
+            runtime.lastWrittenState = 1
+            runtime.lastWrittenProgress = 1
+            this.encodeDirty.add(entity)
+          }
+        }
         continue
       }
 
-      const node = this.store.getNode(entity)
-      // Never log no-node during attach storms (Genesis: thousands of tweens).
+      // Hold expired — pin end UV; keep completed signature so we don't re-start the same
+      // row. Next sync adopts only when ECS TextureMove start/end actually change.
+      if (
+        runtime.marqueeRow &&
+        runtime.textureHoldUntil != null &&
+        now >= runtime.textureHoldUntil
+      ) {
+        const held = runtime.textureHoldUv
+        this.logMarquee(
+          `HOLD expired · was uv=(${held?.x.toFixed(3) ?? '?'},${held?.y.toFixed(3) ?? '?'}) · open for next row`,
+          { entity, level: 'success', event: 'hold-end', throttleMs: 50 }
+        )
+        if (node && held) {
+          let targets = runtime.textureTargets
+          if (!targets?.length || !textureTargetsLive(node, targets)) {
+            targets = collectTextureTargets(node)
+            runtime.textureTargets = targets
+          }
+          if (targets?.length) {
+            applyTextureUvToTargets(targets, held, runtime.textureHoldMovementType, node)
+          }
+        }
+        runtime.textureHoldUntil = undefined
+        // Keep textureHoldUv for pin while parked until next row adopts.
+        runtime.completed = true
+        runtime.completedDirtySent = true
+        runtime.lastHoldLogPhase = 'expired'
+        // marqueeRow stays true until next START clears it — but marqueeRowBusy is false
+        // once hold deadline is cleared and completed, so next signature can adopt.
+        continue
+      }
+
+      // ── NeonScreen row: drive from runtime snapshot (ignore early ECS replace) ──
+      if (runtime.marqueeRow && !runtime.completed && runtime.marqueeStart && runtime.marqueeEnd) {
+        if (runtime.justReset) runtime.justReset = false
+        const durationSec = Math.max(runtime.marqueeDurationSec ?? 1, 1e-3)
+        let progress = runtime.progress ?? 0
+        progress = Math.min(1, progress + delta / durationSec)
+        runtime.progress = progress
+        const eased = applyEasing(runtime.marqueeEasing ?? 0, progress)
+        const start = runtime.marqueeStart
+        const end = runtime.marqueeEnd
+        const uv: Vec2 = {
+          x: start.x + (end.x - start.x) * eased,
+          y: start.y + (end.y - start.y) * eased
+        }
+        runtime.textureUv = uv
+        if (node) {
+          let targets = runtime.textureTargets
+          if (!targets?.length || !textureTargetsLive(node, targets)) {
+            targets = collectTextureTargets(node)
+            runtime.textureTargets = targets
+          }
+          if (targets?.length) {
+            applyTextureUvToTargets(targets, uv, runtime.textureHoldMovementType ?? 0, node)
+          }
+        }
+        if (this.marqueeVerbose) {
+          const mile = progressMilestone(progress)
+          if (runtime.lastProgressMilestone !== mile) {
+            runtime.lastProgressMilestone = mile
+            this.logMarquee(
+              `SCROLL ${formatTweenProgress(progress)} · uv=(${uv.x.toFixed(3)},${uv.y.toFixed(3)}) · ` +
+                `durSec=${durationSec.toFixed(2)}`,
+              { entity }
+            )
+          }
+        }
+        if (progress >= 1) {
+          runtime.completed = true
+          runtime.completedDirtySent = true
+          runtime.textureHoldUv = { x: end.x, y: end.y }
+          runtime.textureHoldUntil = now + NEON_SCREEN_PAUSE_MS
+          runtime.lastHoldLogPhase = 'armed'
+          if (hasTween) {
+            TweenState.createOrReplace(entity, { state: 1, currentTime: 1 })
+            this.encodeDirty.add(entity)
+            this.completionDeliverUrgent = true
+          }
+          this.logMarquee(
+            `COMPLETE → HOLD ${NEON_SCREEN_PAUSE_MS}ms · end=(${end.x.toFixed(3)},${end.y.toFixed(3)})`,
+            { entity, level: 'success', event: 'complete', throttleMs: 50 }
+          )
+        } else if (hasTween) {
+          // Report progress for the *current* row; ECS may already hold the next signature.
+          TweenState.createOrReplace(entity, { state: 0, currentTime: progress })
+          if (
+            runtime.lastWrittenProgress === undefined ||
+            Math.abs(runtime.lastWrittenProgress - progress) >= 0.02
+          ) {
+            runtime.lastWrittenProgress = progress
+            runtime.lastWrittenState = 0
+            this.encodeDirty.add(entity)
+          }
+        }
+        continue
+      }
+
+      if (!hasTween || !tween) continue
+
+      // Parked: finished finite tween already reported — wait for next signature via sync.
+      // Keep pinning marquee end UV so material re-apply cannot flash mid-pause.
+      if (runtime.completed && runtime.completedDirtySent && !runtime.justReset) {
+        if (runtime.marqueeRow && runtime.textureHoldUv && node) {
+          let targets = runtime.textureTargets
+          if (!targets?.length || !textureTargetsLive(node, targets)) {
+            targets = collectTextureTargets(node)
+            runtime.textureTargets = targets
+          }
+          if (targets?.length) {
+            applyTextureUvToTargets(
+              targets,
+              runtime.textureHoldUv,
+              runtime.textureHoldMovementType,
+              node
+            )
+          }
+        }
+        continue
+      }
 
       const playing = tween.playing !== false
       const continuous = isContinuousMode(tween.mode)
@@ -600,10 +860,23 @@ export class TweenBridge {
         continue
       }
 
-      // Completed finite tween: pin end once, encode dirty once, then park.
+      // Completed finite tween: pin end once, encode dirty once, then park (or hold if armed).
       if (runtime.completed) {
-        if (node && textureMode && !runtime.completedDirtySent) {
-          this.applyTextureTween(node, tween, runtime, 0, 1, true)
+        if (node && !runtime.completedDirtySent) {
+          if (textureMode) {
+            this.applyTextureTween(node, tween, runtime, 0, 1, true)
+          } else if (Transform.has(entity)) {
+            // Pin rotate/move end pose so orbit pivots don't leave children mid-lerp.
+            this.applyTransformTween(
+              entity,
+              tween,
+              Transform.get(entity),
+              node,
+              1,
+              true,
+              0
+            )
+          }
         }
         TweenState.createOrReplace(entity, { state: 1, currentTime: 1 })
         if (!runtime.completedDirtySent) {
@@ -612,14 +885,6 @@ export class TweenBridge {
           runtime.lastWrittenProgress = 1
           this.encodeDirty.add(entity)
           this.completionDeliverUrgent = true
-          if (textureMode && isPlazaMarqueeTextureMove(tween)) {
-            this.logMarquee(`COMPLETED · ${this.formatTextureMove(tween)}`, {
-              entity,
-              level: 'success',
-              event: 'complete',
-              throttleMs: 50
-            })
-          }
         }
         continue
       }
@@ -647,20 +912,6 @@ export class TweenBridge {
       if (node) {
         if (textureMode) {
           applied = this.applyTextureTween(node, tween, runtime, delta, eased, playing)
-          if (this.marqueeVerbose && runtime && isPlazaMarqueeTextureMove(tween)) {
-            const mile = progressMilestone(progress)
-            if (runtime.lastProgressMilestone !== mile) {
-              runtime.lastProgressMilestone = mile
-              const uv = runtime.textureUv
-              this.logMarquee(
-                `SCROLL ${formatTweenProgress(progress)} · ` +
-                  `uv=(${uv?.x.toFixed(3) ?? '?'},${uv?.y.toFixed(3) ?? '?'}) · ` +
-                  `delta=${(delta * 1000).toFixed(0)}ms durSec=${durationSec.toFixed(2)} · ` +
-                  this.formatTextureMove(tween),
-                { entity }
-              )
-            }
-          }
         } else if (Transform.has(entity)) {
           applied = this.applyTransformTween(
             entity,
@@ -672,12 +923,6 @@ export class TweenBridge {
             delta
           )
         }
-      } else if (textureMode) {
-        this.logMarquee(`SCROLL no node · ${this.formatTextureMove(tween)}`, {
-          entity,
-          level: 'warn',
-          throttleMs: 1000
-        })
       }
 
       const reachedEnd = !continuous && durationSec > 0 && progress >= 1
@@ -714,18 +959,18 @@ export class TweenBridge {
     }
 
     if (this.marqueeVerbose) {
-      const now = performance.now()
       if (now - this.marqueeSummaryAt > 5000) {
         this.marqueeSummaryAt = now
-        this.logMarqueeSummary()
+        this.logMarqueeSummary(now)
       }
     }
   }
 
-  private logMarqueeSummary(): void {
+  private logMarqueeSummary(now: number): void {
     const { Tween } = this.ecs
     let plaza = 0
     let scrolling = 0
+    let holding = 0
     let completed = 0
     let withTargets = 0
     const samples: string[] = []
@@ -734,7 +979,14 @@ export class TweenBridge {
       if (!tw || !isPlazaMarqueeTextureMove(tw)) continue
       plaza++
       if ((rt.textureTargets?.length ?? 0) > 0) withTargets++
-      if (rt.completed) {
+      if (rt.textureHoldUntil != null && now < rt.textureHoldUntil) {
+        holding++
+        if (samples.length < 2) {
+          samples.push(
+            `e${entity}:HOLD ${((rt.textureHoldUntil - now) / 1000).toFixed(2)}s y=${rt.textureHoldUv?.y?.toFixed(2)}`
+          )
+        }
+      } else if (rt.completed) {
         completed++
       } else {
         scrolling++
@@ -750,7 +1002,7 @@ export class TweenBridge {
     // Skip empty early-boot summaries (hydration — no meshes yet).
     if (plaza === 0) return
     this.logMarquee(
-      `summary · textureMove=${plaza} meshes=${withTargets} scroll=${scrolling} done=${completed}` +
+      `summary · textureMove=${plaza} meshes=${withTargets} scroll=${scrolling} hold=${holding} done=${completed}` +
         (samples.length ? ` · ${samples.join(' | ')}` : ''),
       { level: withTargets === 0 ? 'warn' : 'info', event: 'summary', throttleMs: 4000 }
     )
@@ -954,7 +1206,11 @@ export class TweenBridge {
       scale: { ..._scratchTransform.scale },
       parent: _scratchTransform.parent
     })
+    // Orbit pivots (Genesis blimp) must never stay frozen — children inherit world TRS.
+    node.matrixAutoUpdate = true
     applyDclLocalTransform(node, _scratchTransform)
+    // Propagate to blimp/child GLBs this frame (don't wait for renderer walk).
+    node.updateMatrixWorld(true)
     this.transformMotionEntities.add(entity)
     return true
   }

@@ -62,7 +62,11 @@ function inferUnitScale(values: ArrayLike<number>): number {
 
 /**
  * Rewrite hips-class `.position` tracks so sit/chair emotes land at avatar rest ± authored delta.
- * Non-hips tracks unchanged. Returns `clip` if nothing to do.
+ *
+ * Emote GLBs bake **all** bone translations in cm under Armature×0.01 (e.g. LeftLeg y≈45).
+ * Applying those raw numbers onto a meter-scale DCL body warps limbs; only hips need the
+ * authored sit delta (lower ~0.35m). Non-hips `.position` tracks are dropped — rotations
+ * alone define the pose (Explorer-style retarget).
  *
  * `clip` bone names must already match nodes under `avatarRoot` (DCL remap or VRM raw names).
  */
@@ -76,6 +80,7 @@ export function reanchorEmoteHipPositions(
 
   const emoteHips = findEmoteHipsNode(emoteRoot)
   // Prefer authored rest on the emote skeleton (pre-animation bind).
+  // sittingChair*: bind is (0,0,-100) cm; track is (~0,-36.5,-64) → Δy≈−0.37m, Δz≈+0.36m.
   const emoteRest = emoteHips
     ? emoteHips.position.clone()
     : new THREE.Vector3(0, 0, -100)
@@ -84,7 +89,13 @@ export function reanchorEmoteHipPositions(
   const tracks: THREE.KeyframeTrack[] = []
 
   for (const track of clip.tracks) {
-    if (!(track instanceof THREE.VectorKeyframeTrack) || !isHipsPositionTrack(track.name)) {
+    // Drop non-hips position tracks (cm-scale limb bind poses — not meter deltas).
+    if (track instanceof THREE.VectorKeyframeTrack && track.name.endsWith('.position')) {
+      if (!isHipsPositionTrack(track.name)) {
+        changed = true
+        continue
+      }
+    } else if (!(track instanceof THREE.VectorKeyframeTrack) || !isHipsPositionTrack(track.name)) {
       tracks.push(track)
       continue
     }
@@ -92,7 +103,8 @@ export function reanchorEmoteHipPositions(
     const nodeName = track.name.slice(0, -'.position'.length)
     const bone = THREE.PropertyBinding.findNode(avatarRoot, nodeName) as THREE.Object3D | null
     if (!bone) {
-      tracks.push(track)
+      // No hips bone on avatar — drop the cm-scale track rather than apply raw.
+      changed = true
       continue
     }
 

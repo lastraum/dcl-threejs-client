@@ -1,7 +1,11 @@
 import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
 import type { PBGltfNodeModifiers } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/gltf_node_modifiers.gen'
-import type { MaterialApplier, PbMaterial } from './material/MaterialApplier'
+import {
+  meshUvMapsUMirroredHorizontal,
+  type MaterialApplier,
+  type PbMaterial
+} from './material/MaterialApplier'
 
 const ORIG_MAT_KEY = 'dclGltfNodeModOriginalMaterial'
 const ORIG_CAST_KEY = 'dclGltfNodeModOriginalCastShadow'
@@ -164,44 +168,19 @@ function meshMirrorKey(root: THREE.Object3D): string {
 }
 
 function meshUvMirroredOnX(mesh: THREE.Mesh): boolean {
-  const pos = mesh.geometry?.getAttribute('position')
-  const uv = mesh.geometry?.getAttribute('uv')
-  if (!pos || !uv || pos.count < 2 || uv.count < 2) return false
-  let minX = Infinity
-  let maxX = -Infinity
-  let uAtMin = 0
-  let uAtMax = 0
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i)
-    if (x < minX) {
-      minX = x
-      uAtMin = uv.getX(i)
-    }
-    if (x > maxX) {
-      maxX = x
-      uAtMax = uv.getX(i)
-    }
-  }
-  if (!(maxX - minX > 1e-5)) return false
-  return uAtMin > uAtMax + 1e-5
+  // Same dominant-axis law as MaterialApplier (event cards face player on Z).
+  return meshUvMapsUMirroredHorizontal(mesh)
 }
 
 function objectScaleMirrorX(obj: THREE.Object3D): boolean {
-  // Match MaterialApplier.objectWorldMirrorX — matrices must be current when scale.x
-  // lands on a parent after first material paint (event-card JUMP IN).
-  obj.updateWorldMatrix(true, false)
+  // Match MaterialApplier.objectWorldMirrorX — scale.x product only (not det).
   let sx = 1
   let o: THREE.Object3D | null = obj
   for (let i = 0; i < 48 && o; i++) {
     sx *= o.scale.x
     o = o.parent
   }
-  if (sx < 0) return true
-  try {
-    return obj.matrixWorld.determinant() < 0
-  } catch {
-    return false
-  }
+  return sx < 0
 }
 
 /** Restore materials/castShadows cached before the first GltfNodeModifiers apply. */

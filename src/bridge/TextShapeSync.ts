@@ -95,6 +95,9 @@ export function buildTextShapeMesh(spec: PBTextShape): THREE.Mesh {
   applyTextShapeMeshOffset(mesh, layout)
   mesh.userData.textShapeSignature = textShapeSignature(spec)
   mesh.userData.textShapeCanvas = canvas
+  // Plane geometry uses L–R-compensated UV corners (dcl→Three X). Canvas is painted
+  // L→R in texture space — flip map U so glyphs still read correctly.
+  applyTextShapeFacingMirror(mesh, false)
   return mesh
 }
 
@@ -133,20 +136,26 @@ export function updateTextShapeMesh(mesh: THREE.Mesh, spec: PBTextShape): void {
   mesh.geometry = buildDclPlaneGeometry(layout.planeW, layout.planeH)
   applyTextShapeMeshOffset(mesh, layout)
 
-  if (mesh.userData.dclTextShapeMirrorX) {
-    applyTextShapeFacingMirror(mesh, true)
-  }
+  // Re-apply orientation after geometry rebuild (default L–R + optional entity scale.x=-1).
+  applyTextShapeFacingMirror(mesh, !!mesh.userData.dclTextShapeEntityMirrorX)
 }
 
 /**
- * Scenes often set Transform.scale.x = −1 on TextShape so text faces a wall in Unity.
- * Flip map U when the entity (or parent chain) has negative X scale product.
+ * Map U orientation for TextShape under L–R-compensated plane geometry.
+ *
+ * Base: geometry corners already swap U for dcl→Three X, so canvas needs map U flip
+ * to read L→R. Scenes that set Transform.scale.x = −1 (Poker boards) reflect the mesh
+ * again — XOR so text stays correct.
+ *
+ * @param entityMirrorX product of parent scale.x &lt; 0
  */
-export function applyTextShapeFacingMirror(mesh: THREE.Mesh, mirrorX: boolean): void {
+export function applyTextShapeFacingMirror(mesh: THREE.Mesh, entityMirrorX: boolean): void {
   const mat = mesh.material as THREE.MeshBasicMaterial
   const map = mat.map
   if (!map) return
-  if (mirrorX) {
+  // Base flip (true) XOR entity scale mirror.
+  const wantFlip = !entityMirrorX
+  if (wantFlip) {
     map.repeat.x = -1
     map.offset.x = 1
   } else {
@@ -154,7 +163,8 @@ export function applyTextShapeFacingMirror(mesh: THREE.Mesh, mirrorX: boolean): 
     map.offset.x = 0
   }
   map.needsUpdate = true
-  mesh.userData.dclTextShapeMirrorX = mirrorX
+  mesh.userData.dclTextShapeEntityMirrorX = entityMirrorX
+  mesh.userData.dclTextShapeMirrorX = wantFlip
 }
 
 export function disposeTextShapeMesh(mesh: THREE.Object3D): void {

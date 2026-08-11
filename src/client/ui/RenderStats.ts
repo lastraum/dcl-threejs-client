@@ -35,17 +35,39 @@ export class RenderStats {
   constructor() {
     this.stats = new Stats()
     this.stats.dom.id = 'render-stats'
+    // stats.js defaults to fixed top-left + only one panel visible (click cycles).
+    // In Help → Debug show FPS + MS (+ MB) side by side always.
+    this.stats.dom.style.cssText =
+      'position:relative;inset:auto;top:auto;left:auto;opacity:1;z-index:1;' +
+      'display:flex;flex-direction:row;flex-wrap:wrap;gap:4px;cursor:default;'
+    const showAllStatsPanels = (): void => {
+      for (let i = 0; i < this.stats.dom.children.length; i++) {
+        const panel = this.stats.dom.children[i] as HTMLElement
+        panel.style.display = 'block'
+        panel.style.position = 'relative'
+      }
+    }
+    showAllStatsPanels()
+    // Stop stats.js from hiding panels on click (it toggles display:none).
+    this.stats.dom.addEventListener(
+      'click',
+      (ev) => {
+        ev.stopImmediatePropagation()
+        showAllStatsPanels()
+      },
+      true
+    )
 
     this.extra = document.createElement('div')
     this.extra.id = 'render-stats-extra'
     // pre-wrap: long meter lines wrap instead of overflowing over Position HUD.
     this.extra.style.cssText =
-      'font:11px/1.4 monospace;color:#9fd3ff;margin-top:4px;white-space:pre-wrap;' +
+      'font:11px/1.4 monospace;color:#9fd3ff;margin-top:6px;white-space:pre-wrap;' +
       'word-break:break-word;overflow-wrap:anywhere;max-width:100%;line-height:1.4;'
 
     this.dom = document.createElement('div')
     this.dom.id = 'render-stats-host'
-    this.dom.style.cssText = 'max-width:100%;overflow:hidden;'
+    this.dom.style.cssText = 'max-width:100%;overflow:visible;'
     this.dom.appendChild(this.stats.dom)
     this.dom.appendChild(this.extra)
     this.refreshExtra()

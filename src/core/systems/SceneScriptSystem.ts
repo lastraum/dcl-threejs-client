@@ -5032,11 +5032,12 @@ export class SceneScriptSystem {
   private deliverTweenStateToWorker(): void {
     if (!this.worker || !this.running || !this.tweenBridge?.hasEncodeDirty()) return
     if (this.pointerAwaitingWorkerApply || this.pointerFlushInFlight) return
-    // Defer ambient push while GLTFs stream — avoid worker tick storms mid-hydration.
-    if (this.bridge?.isAssetHydrationMode()) return
-    const now = performance.now()
-    // Bobber float / TweenSequence TL_RESTART must see completion this frame or motion steps.
+    // Bobber float / TweenSequence TL_RESTART (blimp orbit 0→180→360) must see completion
+    // this frame or motion parks forever after the first leg.
     const urgentComplete = this.tweenBridge.hasUrgentCompletionDeliver()
+    // Defer ambient push while GLTFs stream — but never block sequence completion.
+    if (this.bridge?.isAssetHydrationMode() && !urgentComplete) return
+    const now = performance.now()
     const minMs = urgentComplete
       ? 0
       : now <= this.proactiveTweenPushUntil
@@ -6156,8 +6157,16 @@ export class SceneScriptSystem {
     if (!this.tweenBridge) return
     this.lastTweenMotionEntities.clear()
     const moved = this.tweenBridge.consumeTransformMotionEntities()
+    // Orbit pivots (Genesis blimp): ensure parent Groups propagate world TRS to children.
+    for (const entity of moved) {
+      const node = this.entityStore?.getNode(entity)
+      if (!node) continue
+      node.matrixAutoUpdate = true
+      node.updateMatrixWorld(true)
+    }
     // GPU InstancedMesh stores world matrices outside entity groups — rewrite after tween pose.
     // Without this, Flagtag coins (and other instanced Tween props) look frozen.
+    // Also rewrites instanced *descendants* of a moved parent (parent orbit / group spin).
     if (moved.size && this.bridge) {
       this.bridge.syncInstancedTransforms(moved)
     }

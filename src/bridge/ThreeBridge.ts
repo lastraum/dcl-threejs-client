@@ -3819,6 +3819,11 @@ export class ThreeBridge {
       this.notifyGltfAttached(entity)
       this.attachedSceneGltfCount++
       this.attachedSceneTris += templateTris
+      // Same-frame GltfNodeModifiers (event card posters) — don't wait for deferred budget.
+      if (this.ecs.GltfNodeModifiers?.has(entity)) {
+        this.pendingGltfNodeModEntities.add(entity)
+        void this.flushGltfNodeModifiersEntity(entity)
+      }
       return true
     } catch (err) {
       obj.userData.gltfSrcKey = srcKey
@@ -3828,6 +3833,35 @@ export class ThreeBridge {
       }
       this.setGltfLoadingState(entity, 3 /* FINISHED_WITH_ERROR */)
       return false
+    }
+  }
+
+  /**
+   * Apply GltfNodeModifiers for one entity immediately after mesh attach.
+   * Plaza event cards put Texture.Common on path "" — deferred budget left posters
+   * L–R mirrored until a late re-apply (or never under load).
+   */
+  private async flushGltfNodeModifiersEntity(entity: Entity): Promise<void> {
+    const obj = this.store.nodes.get(entity)
+    if (!obj || !this.ecs.GltfNodeModifiers?.has(entity)) return
+    if (obj.userData.dclInstanced || this.instancer.has(entity)) {
+      // Non-scalar modifiers need promote; deferred pass handles that.
+      return
+    }
+    let hasMesh = false
+    obj.traverse((c) => {
+      if ((c as THREE.Mesh).isMesh) hasMesh = true
+    })
+    if (!hasMesh) return
+    const mods = this.ecs.GltfNodeModifiers.get(entity) as PBGltfNodeModifiers
+    try {
+      const ok = await applyGltfNodeModifiersToEntity(obj, mods, this.materials, {
+        entity,
+        logPathMiss: false
+      })
+      if (ok) this.pendingGltfNodeModEntities.delete(entity)
+    } catch (err) {
+      console.warn('[ThreeBridge] same-frame GltfNodeModifiers failed', entity, err)
     }
   }
 

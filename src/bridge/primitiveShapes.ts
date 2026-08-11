@@ -33,25 +33,25 @@ const DEFAULT_DCL_PLANE_UVS = [
 /**
  * Spatial verts: 0=TL(−X,+Y) 1=TR(+X,+Y) 2=BL(−X,−Y) 3=BR(+X,−Y).
  *
- * DCL docs map BL,BR,TR,TL → [2,3,1,0] (north) and BR,BL,TL,TR → [3,2,0,1] (south).
+ * DCL docs map BL,BR,TR,TL → [2,3,1,0] and BR,BL,TL,TR → [3,2,0,1].
  *
- * A prior L-R corner swap (v19) tried to compensate for `dclToThree` X reflection so
- * MeshRenderer textures would match Explorer. It inverted every player-facing plane with
- * readable content: TextShape canvas labels, and MeshRenderer button/label PNGs
- * (e.g. Dead Surge BACK/NEXT pills showed as KCAB/TXEN). Entity transforms already go
- * through `dclToThreePos`/`dclToThreeQuat`; UVs stay in docs order so authored textures
- * and client-rasterized glyphs share one reading direction.
+ * The client reflects DCL +X → Three −X (`dclToThreePos`). MeshRenderer atlas PNGs
+ * (Genesis JUMP IN, open/interested buttons) read L–R mirrored under pure docs maps.
+ * Corner maps below are docs order with L–R swapped so plane textures match Explorer.
+ *
+ * TextShape paints its own canvas in Three UV space — it compensates with map U flip
+ * in TextShapeSync so glyphs stay L→R under the same geometry.
  *
  * Marquee atlas planes (`buildMarqueePlaneGeometry`) keep their own inward-face U flip.
  */
-/** North face: BL, BR, TR, TL → spatial verts (DCL docs order). */
-const DCL_PLANE_NORTH_CORNER_TO_THREE = [2, 3, 1, 0]
+/** North face: BL, BR, TR, TL → verts (L–R compensated for dcl→Three X). */
+const DCL_PLANE_NORTH_CORNER_TO_THREE = [3, 2, 0, 1]
 
-/** South face: BR, BL, TL, TR → spatial verts (DCL docs order). */
-const DCL_PLANE_SOUTH_CORNER_TO_THREE = [3, 2, 0, 1]
+/** South face: BR, BL, TL, TR → verts (L–R compensated). */
+const DCL_PLANE_SOUTH_CORNER_TO_THREE = [2, 3, 1, 0]
 
 /** Bump when plane topology/UV layout changes — busts primitiveMeshKey mesh cache. */
-const PLANE_GEOMETRY_REVISION = 'v21'
+const PLANE_GEOMETRY_REVISION = 'v22'
 
 /**
  * userData: marquee atlas plane. MaterialApplier: flipY=false, FrontSide only.
@@ -255,29 +255,42 @@ function normalizeNorthPlaneUvs(uvs: readonly number[]): number[] {
 }
 
 /**
- * True when atlas U (text) runs along plane local Y (plaza LED marquees).
- * UVs must already be docs-ordered (BL,BR,TR,TL). Require a full axis swap:
- * bottom edge (BL→BR / local +X) is mostly V, and left edge (BL→TL / local +Y)
- * is mostly U.
+ * True when MeshRenderer UVs are a plaza LED marquee slice (uvAnimWords).
  *
- * Flipbook sprites (fishing splash sheets, campfire) often use the same axis
- * swap for a near-square cell — those must stay on the in-place UV path. Full
- * mesh rebuild every frame clears materials and makes splash look intermittent.
- * Marquees are long thin strips (U along Y >> V along X).
+ * Must run on **raw** scene UVs — never after {@link normalizeNorthPlaneUvs}.
+ * Marquees author docs BL,BR,TR,TL with UV axis swap (U/text along local Y, V along X).
+ * `normalizeNorthPlaneUvs` treats the vertical first edge as flipbook packing and
+ * destroys the axis swap → dual-face path → classic “split + mirrored” LED text.
+ *
+ * Discrimination vs flipbooks / atlas buttons (M4e JUMP IN):
+ * - Axis swap on north (V along BL→BR, U along BL→TL)
+ * - Full 16 UV floats with south U ≈ 1 − north U at each corner (same V)
+ * Flipbooks are usually 8 UVs; atlas buttons use different south packing (not 1−U).
+ * UV cell aspect alone fails: plaza LED segments are short (U span ~0.15 < V ~0.21).
  */
-function planeUvsMapTextAlongLocalY(uvs: readonly number[]): boolean {
+function planeUvsMapTextAlongLocalY(rawUvs: readonly number[]): boolean {
+  if (rawUvs.length < 8) return false
+  const n = rawUvs
   // BL→BR (local +X)
-  const duX = Math.abs((uvs[2] ?? 0) - (uvs[0] ?? 0))
-  const dvX = Math.abs((uvs[3] ?? 0) - (uvs[1] ?? 0))
+  const duX = Math.abs((n[2] ?? 0) - (n[0] ?? 0))
+  const dvX = Math.abs((n[3] ?? 0) - (n[1] ?? 0))
   // BL→TL (local +Y) — docs packing TL is indices 6,7
-  const duY = Math.abs((uvs[6] ?? 0) - (uvs[0] ?? 0))
-  const dvY = Math.abs((uvs[7] ?? 0) - (uvs[1] ?? 0))
+  const duY = Math.abs((n[6] ?? 0) - (n[0] ?? 0))
+  const dvY = Math.abs((n[7] ?? 0) - (n[1] ?? 0))
   // Axis swap: V along local X, U along local Y
   if (!(dvX > duX + 1e-5 && duY > dvY + 1e-5)) return false
-  // Long text strip vs square flipbook cell (stepU ≈ stepV ≈ 1/N)
-  const textSpan = duY
-  const rowThickness = dvX
-  return textSpan > rowThickness * 2.5 + 1e-5
+
+  // Marquee dual-face: south mirrors north in U only (Genesis uvAnimWords).
+  if (rawUvs.length < 16) return false
+  for (let i = 0; i < 8; i += 2) {
+    const nU = n[i] ?? 0
+    const nV = n[i + 1] ?? 0
+    const sU = rawUvs[8 + i] ?? 0
+    const sV = rawUvs[8 + i + 1] ?? 0
+    if (Math.abs(sU - (1 - nU)) > 0.02) return false
+    if (Math.abs(sV - nV) > 0.02) return false
+  }
+  return true
 }
 
 /**
@@ -347,10 +360,12 @@ function buildPlaneGeometryWithUvs(uvs: number[]): THREE.BufferGeometry {
   const perSide = uvs.length >= 16 ? 8 : uvs.length >= 8 ? 8 : 0
   if (!perSide) return buildPlaneGeometryWithUvs(DEFAULT_DCL_PLANE_UVS)
 
-  const north = normalizeNorthPlaneUvs(uvs.slice(0, 8))
-  if (planeUvsMapTextAlongLocalY(north)) {
-    return buildMarqueePlaneGeometry(north)
+  // Marquee: classify on raw UVs before normalize (normalize destroys axis swap).
+  if (planeUvsMapTextAlongLocalY(uvs)) {
+    return buildMarqueePlaneGeometry(uvs.slice(0, 8))
   }
+
+  const north = normalizeNorthPlaneUvs(uvs.slice(0, 8))
 
   // Flipbook sprites usually send 8 UVs (north only); south is mirrored.
   // When 16 are authored, normalize the second face the same way then pack as south.
@@ -393,21 +408,38 @@ function northStyleToSouthPacking(north: readonly number[]): number[] {
 }
 
 /**
- * In-place UV update for sprite planes only.
- * Marquee always returns false → force full mesh rebuild.
+ * In-place UV update for sprite / flipbook planes.
+ * Marquee single-face atlas: update the 4 UVs in place (same remap as build).
  */
 export function updatePlaneGeometryUvs(geometry: THREE.BufferGeometry, uvs: number[]): boolean {
   const perSide = uvs.length >= 16 ? 8 : uvs.length >= 8 ? 8 : 0
   if (!perSide) return false
 
-  const north = normalizeNorthPlaneUvs(uvs.slice(0, 8))
-  if (planeUvsMapTextAlongLocalY(north) || geometry.userData[DCL_TEXT_ALONG_Y_BASIS]) {
-    return false
+  const attr = geometry.getAttribute('uv')
+  if (!(attr instanceof THREE.BufferAttribute)) return false
+
+  // Marquee single-face (4 verts) — keep materials, only rewrite atlas window.
+  if (geometry.userData[DCL_TEXT_ALONG_Y_BASIS] || planeUvsMapTextAlongLocalY(uvs)) {
+    if (attr.count < 4) return false
+    const north = uvs.slice(0, 8)
+    const u0 = north[0] ?? 0
+    const vA = north[1] ?? 0
+    const vB = north[3] ?? 0
+    const u1 = north[6] ?? 0
+    const vTop = Math.min(vA, vB)
+    const vBot = Math.max(vA, vB)
+    attr.setXY(0, u1, vTop) // TL −X
+    attr.setXY(1, u0, vTop) // TR +X
+    attr.setXY(2, u1, vBot) // BL −X
+    attr.setXY(3, u0, vBot) // BR +X
+    attr.needsUpdate = true
+    geometry.userData[DCL_TEXT_ALONG_Y_BASIS] = true
+    return true
   }
 
-  const attr = geometry.getAttribute('uv')
-  if (!(attr instanceof THREE.BufferAttribute) || attr.count < 8) return false
+  if (attr.count < 8) return false
 
+  const north = normalizeNorthPlaneUvs(uvs.slice(0, 8))
   const south =
     uvs.length >= 16
       ? northStyleToSouthPacking(normalizeNorthPlaneUvs(uvs.slice(8, 16)))

@@ -10,9 +10,10 @@ export const SUNSET = 19 * 3600 + 50 * 60 /** 19:50 → 71400 */
 export const TRANSITION_WALL_SEC = 4
 /**
  * Directional sun vs SunCycle24h m_Intensity (Unity peaks ~2.72 raw).
- * Near 1.0 — anim carries the punch; avoids double-boost harsh speculars.
+ * Slight lift so Three.js ACES outdoor matches Explorer key brightness without
+ * maxing the Scene sun light slider (default mul × anim already below peak).
  */
-export const SUN_BRIGHTNESS = 1.0
+export const SUN_BRIGHTNESS = 1.12
 /**
  * Moon directional scale (× moonLightIntensity curve).
  * Was 1.75 — stacked with hemi/equator/exposure and washed 00:00 to dusk-lavender.

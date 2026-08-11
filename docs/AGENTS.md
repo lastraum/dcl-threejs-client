@@ -69,6 +69,7 @@ If a change makes the world go blank on neighbor step, **it is a P0 bug** — re
 3. **[MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md)** — FocusOwner · sticky demote · colliders · AOI  
 4. **[FRAME_PIPELINE_COD.md](./FRAME_PIPELINE_COD.md)** — admit / lanes / peel / depth  
 5. **[INTEGRATION.md](./INTEGRATION.md)** + **`src/client/dev/integrationRegistry.ts`** — parity matrix  
+5a. **[PLATFORM_COMPONENT_LAWS.md](./PLATFORM_COMPONENT_LAWS.md)** — Billboard · plane UV · Visibility · AvatarAttach · MainCamera (Verified / Open gap — no fishing inventions)  
 5b. **[COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)** — PhysX PART vs ROOT (v1.5)  
 5c. **[RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md)** — CCT ride: one Δ, no sticky/snap/pull-down  
 5d. **[STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md)** — cook-once statics · never forceDynamicTreeRebuild · kill-list  

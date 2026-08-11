@@ -489,7 +489,8 @@ export class CrdtProjection {
 
   private virtualCameraTargetFromMain(value: unknown): Entity | null {
     const target = (value as { virtualCameraEntity?: number | null } | null)?.virtualCameraEntity
-    if (target === undefined || target === null) return null
+    // GP freeRevealCamera sets void 0; treat 0 / missing as unbound (not entity 0).
+    if (target === undefined || target === null || target === 0) return null
     return target as Entity
   }
 

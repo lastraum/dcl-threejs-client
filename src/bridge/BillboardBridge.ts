@@ -4,6 +4,7 @@ import type { MirrorComponents } from './mirrorComponents'
 import type { EntityStore } from './EntityStore'
 import type { ProjectionView } from './ProjectionView'
 
+/** Matches `@dcl/ecs` BillboardMode bit flags. */
 const BM_X = 1
 const BM_Y = 2
 const YAW_EPS = 1e-5
@@ -15,10 +16,28 @@ const _worldQuat = new THREE.Quaternion()
 const _parentWorldQuat = new THREE.Quaternion()
 const _prevLocalQuat = new THREE.Quaternion()
 
-/** Y-axis / full billboarding for TextShape and signs. */
+/**
+ * Platform Billboard (1090).
+ *
+ * ## Verified client law (git history: initial → aefccaf live ECS scan)
+ *
+ * - `billboardMode ?? 7` → BM_ALL when omitted (matches scene `Billboard.create` / ECS default).
+ * - **BM_Y** / X|Y: yaw only via `atan2(cam−pos)` on **world** XZ.
+ * - **BM_ALL**: Three.js **lookAt** — object **−Z** faces the camera (Three convention).
+ *
+ * ## Hierarchy (required engineering — parented roots)
+ *
+ * Use **world** position for look/yaw (not `obj.position`). Write rotation as
+ * **parent-local**. Local-space lookAt breaks GP press_e / bobber parents.
+ *
+ * ## Explicitly NOT platform law (reverted — invented during fishing debug)
+ *
+ * Ry(π) after lookAt · scale.x = −1 · makeBasis + 180° roll for dual-face UVs.
+ * Texture orientation under lookAt is a **MeshRenderer plane UV** parity question
+ * vs Explorer Unity — fix that law once; do not invent Billboard forks.
+ */
 export class BillboardBridge {
   private readonly lastYaw = new Map<Entity, number>()
-  /** Entities whose camera-facing rotation changed this frame — collider pose slide emitter. */
   private readonly motionEntities = new Set<Entity>()
 
   constructor(
@@ -27,19 +46,17 @@ export class BillboardBridge {
     private readonly getCamera: () => THREE.Camera
   ) {}
 
-  /** Entities rotated this frame — valid until `consumeMotionEntities`. */
   pendingMotionEntities(): ReadonlySet<Entity> {
     return this.motionEntities
   }
 
-  /** Consume entities that rotated this frame (clears the set). */
   consumeMotionEntities(): ReadonlySet<Entity> {
     const out = new Set(this.motionEntities)
     this.motionEntities.clear()
     return out
   }
 
-  /** Register ECS Billboard entities on the store — O(billboards), not O(scene). */
+  /** Mark ECS Billboard entities on the store (O(billboards) path). */
   sync(view: ProjectionView): void {
     const { Billboard } = this.ecs
     for (const [entity] of view.getEntitiesWith(Billboard)) {
@@ -47,61 +64,58 @@ export class BillboardBridge {
     }
   }
 
-  update(): void {
-    const billboards = this.store.getBillboardEntities()
-    if (!billboards.length) return
+  /** Clear yaw early-out after hide→show. */
+  invalidateFacing(entity: Entity): void {
+    this.lastYaw.delete(entity)
+  }
 
+  update(): void {
     const { Billboard } = this.ecs
     const camPos = this.getCamera().position
 
-    for (const entity of billboards) {
-      const obj = this.store.nodes.get(entity)
-      if (!obj) continue
-
+    // Live ECS check — same as aefccaf (runtime spawns, not flags alone).
+    this.store.forEachSceneEntity((entity, obj) => {
       if (!Billboard.has(entity)) {
-        this.store.setBillboard(entity, false)
+        if (this.store.isBillboard(entity)) this.store.setBillboard(entity, false)
         this.lastYaw.delete(entity)
-        continue
+        return
       }
       this.store.setBillboard(entity, true)
 
       const mode = Billboard.get(entity).billboardMode ?? 7
-      if (mode === 0) continue
+      if (mode === 0) return
 
-      // World-space facing — press_e / bite prompts are often parented under the bobber.
-      // Using local obj.position vs camera world pos made planes edge-on / invisible.
       obj.updateWorldMatrix(true, false)
       obj.getWorldPosition(_worldPos)
 
-      let nextYaw: number
       if (mode === BM_Y || mode === (BM_X | BM_Y)) {
         const dx = camPos.x - _worldPos.x
         const dz = camPos.z - _worldPos.z
-        nextYaw = Math.atan2(dx, dz)
+        const nextYaw = Math.atan2(dx, dz)
         const prev = this.lastYaw.get(entity)
-        if (prev !== undefined && Math.abs(nextYaw - prev) <= YAW_EPS) continue
+        if (prev !== undefined && Math.abs(nextYaw - prev) <= YAW_EPS) return
         _worldQuat.setFromAxisAngle(_worldUp, nextYaw)
         this.applyWorldQuaternionAsLocal(obj, _worldQuat)
-      } else {
-        _prevLocalQuat.copy(obj.quaternion)
-        _lookMat.lookAt(_worldPos, camPos, _worldUp)
-        _worldQuat.setFromRotationMatrix(_lookMat)
-        this.applyWorldQuaternionAsLocal(obj, _worldQuat)
-        if (_prevLocalQuat.angleTo(obj.quaternion) <= YAW_EPS) {
-          obj.quaternion.copy(_prevLocalQuat)
-          continue
-        }
-        nextYaw = obj.rotation.y
+        if (!obj.matrixAutoUpdate) obj.updateMatrix()
+        obj.updateMatrixWorld(true)
+        this.lastYaw.set(entity, nextYaw)
+        this.motionEntities.add(entity)
+        return
       }
 
+      // BM_ALL — platform law: Three lookAt (−Z toward camera).
+      _prevLocalQuat.copy(obj.quaternion)
+      _lookMat.lookAt(_worldPos, camPos, _worldUp)
+      _worldQuat.setFromRotationMatrix(_lookMat)
+      this.applyWorldQuaternionAsLocal(obj, _worldQuat)
+      if (_prevLocalQuat.angleTo(obj.quaternion) <= YAW_EPS) return
       if (!obj.matrixAutoUpdate) obj.updateMatrix()
       obj.updateMatrixWorld(true)
-      this.lastYaw.set(entity, nextYaw)
+      this.lastYaw.set(entity, obj.rotation.y)
       this.motionEntities.add(entity)
-    }
+    })
   }
 
-  /** Convert a world-space facing quaternion into parent-local rotation. */
   private applyWorldQuaternionAsLocal(obj: THREE.Object3D, worldQuat: THREE.Quaternion): void {
     const parent = obj.parent
     if (parent) {

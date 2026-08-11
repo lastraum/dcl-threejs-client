@@ -921,6 +921,30 @@ export function applyUiBackgroundStyles(
     if (multipliedImageLoading.has(key) && !multipliedImageUrl.has(key)) return
   }
 
+  // GP reeling: zone/fill UVs move every tick. Only the crop changes — do not tear down
+  // borderImage/background (that flashed wood bar BGs every frame).
+  const baseKey = `${imageUrl ?? ''}|${mode}|${tint}`
+  const prevSig = el.dataset.dclUiBgSig ?? ''
+  if (
+    imageUrl &&
+    uvsKey &&
+    mode === BackgroundTextureMode.STRETCH &&
+    prevSig.startsWith(`${baseKey}|`) &&
+    !prevSig.endsWith('|pending')
+  ) {
+    let paintUrlFast = imageUrl
+    let imgAlphaFast = effectiveUiBackgroundAlpha(c)
+    if (c && needsTextureColorMultiply(c)) {
+      const baked = resolveColorMultipliedImageUrl(imageUrl, c)
+      if (!baked) return
+      paintUrlFast = baked
+      imgAlphaFast = baked === imageUrl ? effectiveUiBackgroundAlpha(c) : 1
+    }
+    applyBgImg(el, paintUrlFast, mode, imgAlphaFast, bg?.uvs)
+    el.dataset.dclUiBgSig = sig
+    return
+  }
+
   el.style.borderImage = ''
   el.style.borderImageSource = ''
   el.style.borderImageSlice = ''

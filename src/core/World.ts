@@ -1888,6 +1888,9 @@ export class World {
           const sceneT0 = performance.now()
           this.inputHub.sync(startFrame)
           this.sceneScript.syncClientEntities(playerPose, cameraPose)
+          // Hand-held props (GP fishing rod/line): after locomotion + scene emote mixer and
+          // fresh PE Transform so AvatarAttach is not one frame behind (very visible at low FPS).
+          this.sceneScript.pumpAvatarAttach()
           // Detect enter/exit with post-move CCT feet, then flush PE+TriggerAreaResult to worker.
           this.sceneScript.updateTriggerAreas()
           // Worker onUpdate with current PE (bounce parasols read Transform.get(PlayerEntity)).
@@ -2220,7 +2223,8 @@ export class World {
     }
 
     // Transform writers (CRDT) already applied. Tween / Billboard / Animator.
-    this.sceneScript.pumpMotionBridges(delta, startFrame)
+    // Skip AvatarAttach here — sample hand bones after player.update + PE sync (below).
+    this.sceneScript.pumpMotionBridges(delta, startFrame, { skipAvatarAttach: true })
     this.refreshAnimatorSampleHud(delta)
     if (!skipPhysxColliders() && this.sceneScript.hasColliderWorkPending()) {
       this.sceneScript.syncCollision()

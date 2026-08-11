@@ -37,8 +37,11 @@ export function playerMatrixFromDclTransform(player: DclTransformValues): THREE.
 }
 
 /**
- * Anchor world (Three.js) → avatar-relative DCL Transform (SDK parity).
- * relative such that: playerWorld * relative ≈ anchorWorld
+ * Anchor world (Three.js) → avatar-relative DCL Transform.
+ *
+ * **Law (docs + Tier B):** AvatarAttach overwrites Transform with pose relative to the
+ * avatar so `playerWorld * relative ≈ boneWorld`. Scene `getWorldPosition` uses PE × rel
+ * (SDK nBe). Do not invent GP-only world-offset positions for fishing I5e.
  */
 export function anchorWorldToRelativeTransform(
   player: DclTransformValues,

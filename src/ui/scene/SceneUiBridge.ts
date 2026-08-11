@@ -764,7 +764,7 @@ export class SceneUiBridge {
 
     // COD: large modal mounts (inventory ~700+) still refine absolute dirties aggressively
     // so reeling / slot tweaks never re-Yoga the whole tree every tick.
-    const refineBudget = mounted.size >= 200 ? 64 : 32
+    const refineBudget = mounted.size >= 200 ? 96 : 48
     const patchBudget = mounted.size >= 200 ? 96 : 48
 
     let layoutBoxes = this.layoutCache.get(layoutKey)
@@ -776,17 +776,18 @@ export class SceneUiBridge {
       if (layoutDirtyEntities.length === 0 && this.lastFullLayoutBoxes?.length) {
         layoutBoxes = this.lastFullLayoutBoxes
         layoutCacheHit = true
-      } else if (
-        layoutDirtyEntities.length > 0 &&
-        layoutDirtyEntities.length <= refineBudget &&
-        layoutDirtyEntities.length < mounted.size * 0.4
-      ) {
-        // Fishing reeling + inventory slot absolute tweaks: refine only those.
+      } else if (layoutDirtyEntities.length > 0 && this.lastFullLayoutBoxes?.length) {
+        // Prefer absolute refine whenever we have a seed (GP reeling bar every tick).
+        // Cap only as soft budget: still refine first N absolute movers rather than full Yoga.
         const seed = fullSeedMap()
         if (seed?.size) {
+          const refineList =
+            layoutDirtyEntities.length <= refineBudget
+              ? layoutDirtyEntities
+              : layoutDirtyEntities.slice(0, refineBudget)
           const refined = tryRefineAbsoluteLayoutBoxes(
             seed,
-            layoutDirtyEntities,
+            refineList,
             transformOf,
             this.virtual
           )
@@ -794,7 +795,7 @@ export class SceneUiBridge {
             layoutBoxes = [...refined.values()]
             this.lastFullLayoutBoxes = layoutBoxes
             layoutCacheHit = true
-            // Don't poison the layout cache with a transient reeling key — keep refining.
+            // Don't cache under transient reeling layoutKey — keep refining next frame.
           }
         }
       }

@@ -5031,13 +5031,22 @@ export class SceneScriptSystem {
    * Push renderer-owned `TweenState` to the worker (throttled, lightweight message).
    * Ambient textureMove needs this for tweenCompleted → scene pauseDuration → next row;
    * play-mode cold CRDT is fire-and-forget and too sparse. Uses encodeTweenStateOnly.
+   *
+   * **Urgent completions always deliver** (Genesis blimp TweenSequence, bobber float) —
+   * even during pointer inject. Blocking those on pointerAwaiting left the blimp frozen
+   * after the first orbit leg until a lucky click finished.
    */
   private deliverTweenStateToWorker(): void {
     if (!this.worker || !this.running || !this.tweenBridge?.hasEncodeDirty()) return
-    if (this.pointerAwaitingWorkerApply || this.pointerFlushInFlight) return
     // Bobber float / TweenSequence TL_RESTART (blimp orbit 0→180→360) must see completion
     // this frame or motion parks forever after the first leg.
     const urgentComplete = this.tweenBridge.hasUrgentCompletionDeliver()
+    if (
+      !urgentComplete &&
+      (this.pointerAwaitingWorkerApply || this.pointerFlushInFlight)
+    ) {
+      return
+    }
     // Defer ambient push while GLTFs stream — but never block sequence completion.
     if (this.bridge?.isAssetHydrationMode() && !urgentComplete) return
     const now = performance.now()
@@ -5057,7 +5066,7 @@ export class SceneScriptSystem {
     if (isTweenVerbose()) {
       clientDebugLog.log(
         'motion',
-        `TweenState push — ${tweenDirty.size} entity(s) [${[...tweenDirty].join(', ')}]`,
+        `TweenState push — ${tweenDirty.size} entity(s) [${[...tweenDirty].join(', ')}]${urgentComplete ? ' urgent' : ''}`,
         { throttleMs: 300, alsoConsole: true }
       )
     }
@@ -5591,6 +5600,8 @@ export class SceneScriptSystem {
     // Resume worker ticks FIRST — never leave the scene frozen while main paints Yoga
     // or awaits crdtOutboundSerial (that was an indefinite click freeze).
     this.forceResumeWorkerSceneTicks(source)
+    // Flush any TweenState that was deferred while inject was in flight (blimp sequence).
+    this.deliverTweenStateToWorker()
     try {
       if (!opts?.afterOutboundBatch) {
         await this.crdtOutboundSerial
@@ -5600,6 +5611,8 @@ export class SceneScriptSystem {
       // Click-move / select anim: apply Tween+Transform from the inject CRDT now.
       this.applyPostPointerMotion()
       this.proactiveTweenPushUntil = performance.now() + SceneScriptSystem.PROACTIVE_TWEEN_PUSH_MS
+      // Second chance after motion apply — sequence may have just completed.
+      this.deliverTweenStateToWorker()
     } catch (err) {
       console.error(
         '[pointer]',

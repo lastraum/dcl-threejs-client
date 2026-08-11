@@ -54,7 +54,8 @@ varying vec3 vDirection;
 vec3 sampleGradient(vec3 dir, vec3 zenit, vec3 horizon, vec3 nadir) {
   float y = clamp(dir.y, -1.0, 1.0);
   float t = y * 0.5 + 0.5;
-  vec3 upBlend = mix(horizon, zenit, pow(t, 0.65));
+  // Stronger zenith weight when looking up so horizon pink/white does not chalk the dome.
+  vec3 upBlend = mix(horizon, zenit, pow(t, 0.82));
   vec3 downBlend = mix(horizon, nadir, pow(1.0 - t, 0.55));
   return y >= 0.0 ? upBlend : downBlend;
 }
@@ -185,10 +186,10 @@ vec3 blendCloudLayer(
   float mask = cloudLayerMask(dir, map, angle, opacity, yMin, yMax);
   if (mask <= 0.001) return sky;
   vec3 cloud = cloudTintColor(uCloudsColor, uCloudHighlights, dir, uSunDirection);
-  // Screen-style brighten — lerp toward gray tint; DCL puffs read white over blue sky
-  vec3 layer = min(cloud, vec3(2.5));
-  vec3 screen = vec3(1.0) - (vec3(1.0) - sky) * (vec3(1.0) - min(layer, vec3(1.0)));
-  return mix(sky, max(screen, layer), mask);
+  // Soft over — less screen-lift so clouds do not bleach the whole sky to chalk.
+  vec3 layer = min(cloud, vec3(1.85));
+  vec3 soft = mix(sky, max(layer, sky * 0.92 + layer * 0.35), 0.72);
+  return mix(sky, soft, mask * 0.92);
 }
 
 void main() {
@@ -269,7 +270,7 @@ export class DclGenesisSky {
       uSunDiscGlowGain: { value: FIXED_SUN_DISC_GLOW_GAIN },
       uCloudHighlights: { value: 0.8 },
       uCloudDensity: { value: 0.52 },
-      uCloudOpacity: { value: 1 },
+      uCloudOpacity: { value: 0.88 },
       uCloudsRotationSpeed: { value: 0.01 },
       uTime: { value: 0 },
       uMoonMap: { value: null },

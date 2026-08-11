@@ -124,9 +124,30 @@ const CAM_FPV_MAX_DISTANCE = 0.35
 const CAM_DISTANCE_MAX = 16
 const CAM_SHOULDER_OFFSET = 0.3
 const CAM_PITCH_DEFAULT = 0.35
+/** Far 3rd-person floor — boom stays on/above the horizontal ring (no look-up into sky). */
 const CAM_PITCH_MIN = 0
 const CAM_PITCH_MAX = Math.PI / 2 - 0.02
+/** Full look-up (toward zenith) when FPV / ultra-close boom. */
+const CAM_PITCH_LOOK_UP = -CAM_PITCH_MAX + 0.05
+/**
+ * Beyond this boom distance (m), pitch cannot go below {@link CAM_PITCH_MIN}
+ * (locks sky look-up). Between FPV and this, min pitch lerps FPV look-up → horizontal.
+ */
+const CAM_PITCH_LOOK_UP_LOCK_DIST = 5.5
 const ZOOM_WHEEL_SPEED = 0.004
+
+/**
+ * Min freecam boom pitch vs zoom distance.
+ * Close: allow angling up into the sky (negative boom pitch).
+ * Far 3rd-person: lock to horizontal+ only so orbit stays grounded.
+ */
+function pitchMinForDistance(dist: number): number {
+  if (dist <= CAM_FPV_MAX_DISTANCE) return CAM_PITCH_LOOK_UP
+  if (dist >= CAM_PITCH_LOOK_UP_LOCK_DIST) return CAM_PITCH_MIN
+  const t = (dist - CAM_FPV_MAX_DISTANCE) / (CAM_PITCH_LOOK_UP_LOCK_DIST - CAM_FPV_MAX_DISTANCE)
+  const s = t * t * (3 - 2 * t)
+  return THREE.MathUtils.lerp(CAM_PITCH_LOOK_UP, CAM_PITCH_MIN, s)
+}
 
 /** True when movePlayerTo authors a real cameraTarget (not empty `{}`). */
 function hasCameraTargetCoords(
@@ -1095,7 +1116,7 @@ export class PlayerSystem {
     // Align freecam orbit so release of the hold does not hard-snap.
     _camEuler.setFromQuaternion(this.host.camera.quaternion, 'YXZ')
     this.camYaw = normalizeAngle(_camEuler.y)
-    this.camPitch = clamp(_camEuler.x, CAM_PITCH_MIN, CAM_PITCH_MAX)
+    this.camPitch = clamp(_camEuler.x, pitchMinForDistance(this.camDistance), CAM_PITCH_MAX)
     this.testingCameraHoldFrames = 4
     return true
   }
@@ -1988,9 +2009,8 @@ export class PlayerSystem {
       this.camYaw -= this.input.pointer.dx * look
       this.camYaw = normalizeAngle(this.camYaw)
       const pitchDelta = this.input.pointer.dy * look
-      this.camPitch += this.isFirstPerson() ? -pitchDelta : pitchDelta
-      const pitchMin = this.isFirstPerson() ? -CAM_PITCH_MAX + 0.05 : CAM_PITCH_MIN
-      this.camPitch = clamp(this.camPitch, pitchMin, CAM_PITCH_MAX)
+      // Mouse up → look toward sky (FPV euler up / 3rd boom lowers). Far zoom clamps min pitch to 0.
+      this.camPitch -= pitchDelta
     }
 
     const zoomDelta = this.input.scrollDelta + this.input.pinchZoomDelta * 3
@@ -2006,6 +2026,13 @@ export class PlayerSystem {
         CAM_DISTANCE_MAX
       )
     }
+
+    // Re-clamp after look + zoom so zooming out while sky-gazing locks pitch up.
+    this.camPitch = clamp(
+      this.camPitch,
+      pitchMinForDistance(this.camDistance),
+      CAM_PITCH_MAX
+    )
   }
 
   /**
@@ -2026,29 +2053,30 @@ export class PlayerSystem {
     // Prefer boom invert from lens position (matches Space Runner end keyframe).
     if (dist >= 0.55 && cam.position.y >= this.root.position.y + 0.45) {
       _offset.multiplyScalar(1 / dist)
+      const seedDist = clamp(dist, CAM_FPV_MAX_DISTANCE + 0.2, CAM_DISTANCE_MAX)
+      this.camDistance = seedDist
       this.camPitch = clamp(
         Math.asin(THREE.MathUtils.clamp(_offset.y, -1, 1)),
-        CAM_PITCH_MIN,
+        pitchMinForDistance(seedDist),
         CAM_PITCH_MAX
       )
       this.camYaw = Math.atan2(_offset.x, _offset.z)
-      this.camDistance = clamp(dist, CAM_FPV_MAX_DISTANCE + 0.2, CAM_DISTANCE_MAX)
     } else {
       // Under-floor / on-pivot VC lens — do not seed freecam from it (poker sit under-table).
       _forward.set(0, 0, -1).applyQuaternion(cam.quaternion)
       if (_forward.lengthSq() > 1e-8 && cam.position.y >= this.root.position.y + 0.45) {
         _forward.normalize()
         this.camYaw = Math.atan2(-_forward.x, -_forward.z)
-        if (_forward.y <= 0.15) {
-          const lookPitch = Math.asin(THREE.MathUtils.clamp(_forward.y, -1, 1))
-          this.camPitch = clamp(-lookPitch, CAM_PITCH_MIN, CAM_PITCH_MAX)
-        } else {
-          this.camPitch = CAM_PITCH_DEFAULT
-        }
         if (dist >= 0.55) {
           this.camDistance = clamp(dist, CAM_FPV_MAX_DISTANCE + 0.2, CAM_DISTANCE_MAX)
         } else {
           this.camDistance = CAM_DISTANCE_DEFAULT
+        }
+        if (_forward.y <= 0.15) {
+          const lookPitch = Math.asin(THREE.MathUtils.clamp(_forward.y, -1, 1))
+          this.camPitch = clamp(-lookPitch, pitchMinForDistance(this.camDistance), CAM_PITCH_MAX)
+        } else {
+          this.camPitch = CAM_PITCH_DEFAULT
         }
       } else {
         // Keep prior freecam yaw when possible; force safe pitch/distance.
@@ -2103,14 +2131,17 @@ export class PlayerSystem {
 
     let pitch = this.camPitch
     let dist = clamp(this.camDistance, CAM_FPV_MAX_DISTANCE + 0.2, CAM_DISTANCE_MAX)
+    const pitchMin = pitchMinForDistance(dist)
+    pitch = clamp(pitch, pitchMin, CAM_PITCH_MAX)
     _pivot.copy(this.root.position)
     _pivot.y += CAM_PIVOT_HEIGHT
     let cosPitch = Math.cos(pitch)
     let sinPitch = Math.sin(pitch)
     let camY = _pivot.y + sinPitch * dist
-    // Refuse under-floor / under-avatar freecam after seat teleports.
-    if (camY < this.root.position.y + 0.85 || pitch < 0.08) {
-      pitch = CAM_PITCH_DEFAULT
+    // Refuse under-floor freecam after seat teleports — do not kill intentional close look-up.
+    const floorY = this.root.position.y + 0.35
+    if (camY < floorY && pitch > pitchMin + 0.02) {
+      pitch = Math.max(pitchMin, CAM_PITCH_DEFAULT)
       dist = Math.max(dist, CAM_DISTANCE_DEFAULT)
       this.camPitch = pitch
       this.camDistance = dist
@@ -2118,6 +2149,7 @@ export class PlayerSystem {
       sinPitch = Math.sin(pitch)
       camY = _pivot.y + sinPitch * dist
     }
+    this.camPitch = pitch
 
     _offset.set(
       Math.sin(this.camYaw) * cosPitch * dist,
@@ -2159,7 +2191,11 @@ export class PlayerSystem {
         // Never seed a looking-up VC into negative boom (under-floor freecam on unbind).
         if (_forward.y <= 0.15) {
           const lookPitch = Math.asin(THREE.MathUtils.clamp(_forward.y, -1, 1))
-          this.camPitch = clamp(-lookPitch, CAM_PITCH_MIN, CAM_PITCH_MAX)
+          this.camPitch = clamp(
+            -lookPitch,
+            pitchMinForDistance(this.camDistance),
+            CAM_PITCH_MAX
+          )
         } else {
           this.camPitch = CAM_PITCH_DEFAULT
         }

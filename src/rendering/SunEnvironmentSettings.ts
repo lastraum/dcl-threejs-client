@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 
 /** Bump when defaults change so old chalk-wash prefs do not stick forever. */
-const STORAGE_KEY = 'dcl-sun-environment-settings-v2'
+const STORAGE_KEY = 'dcl-sun-environment-settings-v3'
 
 export type SunEnvironmentSettingsState = {
   /** Directional sun + day hemi scene lighting (0–100) */
@@ -34,10 +34,10 @@ const DEFAULTS: SunEnvironmentSettingsState = {
    */
   sceneSunLight: 44,
   /**
-   * Day ACES multiplier. 70 ≈ ~1.04× tier; mid outdoor reads better near ~0.95–1.0×.
-   * Players can raise for darker rooms.
+   * Day ACES multiplier. Lower default keeps zenith blue from washing to chalk;
+   * slider still goes to 100 for indoor lift.
    */
-  exposure: 58,
+  exposure: 52,
   /** Moon light slider default — slightly under mid so 00:00 stays dark. */
   sceneMoonLight: 48,
   /**

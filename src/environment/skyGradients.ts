@@ -3,8 +3,17 @@ import * as THREE from 'three'
 /** Unity gradient key (t in 0–1, linear RGB). Ported from SkyboxRenderController.prefab. */
 type GradientStop = { t: number; color: THREE.Color }
 
+/**
+ * Unity SkyboxRenderController keys are authored in sRGB. Feed Three as sRGB so
+ * linear working space + output encoding keep sky blues saturated (raw 0–1 as
+ * linear looked chalky/washed under ACES).
+ */
 function stops(entries: Array<[number, number, number, number]>): GradientStop[] {
-  return entries.map(([t, r, g, b]) => ({ t, color: new THREE.Color(r, g, b) }))
+  return entries.map(([t, r, g, b]) => {
+    const color = new THREE.Color()
+    color.setRGB(r, g, b, THREE.SRGBColorSpace)
+    return { t, color }
+  })
 }
 
 function evaluate(stops: GradientStop[], t: number, out = new THREE.Color()): THREE.Color {
@@ -29,12 +38,14 @@ export { normalizedTimeOfDay }
 
 /** DCL SkyboxRenderController gradient ramps (unity-explorer). */
 export const SKY_GRADIENTS = {
+  // Midday zenith: slightly deeper blue than raw prefab (0.187,0.601,0.933) so
+  // look-up reads Explorer-like rather than pale wash after tonemap/clouds.
   zenit: stops([
     [0.05, 0.259, 0.197, 0.507],
-    [0.2, 0.369, 0.399, 0.792],
-    [0.3, 0.52, 0.538, 0.896],
-    [0.5, 0.187, 0.601, 0.933],
-    [0.75, 0.49, 0.414, 0.887],
+    [0.2, 0.32, 0.42, 0.82],
+    [0.3, 0.22, 0.48, 0.9],
+    [0.5, 0.11, 0.42, 0.88],
+    [0.75, 0.28, 0.36, 0.82],
     [1, 0.261, 0.199, 0.51]
   ]),
   horizon: stops([

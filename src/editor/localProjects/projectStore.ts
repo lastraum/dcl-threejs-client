@@ -575,7 +575,7 @@ async function uniqueChildFolderName(
 }
 
 /**
- * Create a new scene folder with templated scene.json (parcels from size) + empty composite.
+ * Create a new scene folder (SDK7 starter: scene.json, src/index.ts, tsconfig, composite).
  * Registers it in Local Scenes (FSA handle).
  */
 export async function createNewLocalScene(

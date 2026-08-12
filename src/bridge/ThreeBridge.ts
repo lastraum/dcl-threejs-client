@@ -2818,7 +2818,7 @@ export class ThreeBridge {
   private materialTickBusy = false
 
   /** Retry deferred sprite/material textures without blocking the render loop. */
-  tickDeferredMaterials(budgetMs = 24, maxEntities = 48): void {
+  tickDeferredMaterials(budgetMs = 8, maxEntities = 24): void {
     if (this.materialTickBusy) return
     if (!this.pendingMaterialEntities.size && !this.pendingGltfNodeModEntities.size) return
     // Instant path first — GPU-instanced board colors must not wait on texture budget.
@@ -2937,8 +2937,9 @@ export class ThreeBridge {
           processed++
           continue
         }
-        this.promoteInstancedGltfForModifiers(entity, obj)
-        // Re-attach path will re-queue via notifyGltfAttached.
+        // Missing / unused paths must not de-instance the plaza every pass.
+        this.pendingGltfNodeModEntities.delete(entity)
+        processed++
         continue
       }
 
@@ -2958,6 +2959,7 @@ export class ThreeBridge {
         obj.userData.dclGltfNodeModPathMissLogged = true
       }
       if (ok) this.pendingGltfNodeModEntities.delete(entity)
+      else this.pendingGltfNodeModEntities.delete(entity)
       processed++
     }
   }

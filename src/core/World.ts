@@ -2056,10 +2056,7 @@ export class World {
           // Hub already synced before scene/PE ticks; late edges still publish on keydown.
         }
         if (!this.editorPreviewMode) {
-          // Campfire sprite UV animation — sync frame (tiny tracked set, self-prunes static planes).
           this.sceneScript.syncAnimatedSprites()
-          // Texture retries — sync frame so failed loads don't block async projection drain.
-          this.sceneScript.tickDeferredMaterials()
         }
         this.refreshAnimatorSampleHud(delta)
         perfNoteSyncPlus({ envMs, petMs, peMs, sceneTickMs, aoiMs, pointerMs })
@@ -2134,6 +2131,9 @@ export class World {
           })
         }
 
+        if (!this.editorPreviewMode) {
+          this.sceneScript.tickDeferredMaterials()
+        }
         const t2 = performance.now()
         await this.sceneScript.syncAsyncBridges()
         // Animator.sync is async-only — PART kinematic pose same frame open/close applies.

@@ -4499,20 +4499,28 @@ export class SceneScriptSystem {
     const view = this.view
     const { Tween, MeshCollider, GltfContainer } = this.readComponents
     const tweenId = Tween.componentId
+    const transformId = this.readComponents.Transform.componentId
+    const tweenSeqId = this.readComponents.TweenSequence.componentId
     const tweenEntities: Entity[] = []
+    const trsDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
     for (const [entity, comps] of poseDiff) {
       if (comps.has(tweenId)) tweenEntities.push(entity)
-    }
-    // Empty refresh — do not stamp every live tween from ECS (rewinds continuous orbits).
-    applySceneDiff(this.entityStore, poseDiff, view, this.readComponents, [], {
-      skipTransformApply: (entity) =>
-        this.readComponents.AvatarAttach.has(entity) ||
-        this.projection.isVcLiveTransformEntity(entity),
-      onReservedParent: (entity, parent, v) => {
-        if (this.readComponents.AvatarAttach.has(entity)) return
-        this.bridge?.noteReservedParentedEntity(entity, parent, v)
+      if (comps.has(transformId) || comps.has(tweenId) || comps.has(tweenSeqId)) {
+        trsDiff.set(entity, comps)
       }
-    })
+    }
+    if (trsDiff.size) {
+      applySceneDiff(this.entityStore, trsDiff, view, this.readComponents, [], {
+        skipTransformApply: (entity) =>
+          this.readComponents.AvatarAttach.has(entity) ||
+          this.projection.isVcLiveTransformEntity(entity),
+        reservedAnchors: this.bridge.getReservedTransformAnchors(),
+        onReservedParent: (entity, parent, v) => {
+          if (this.readComponents.AvatarAttach.has(entity)) return
+          this.bridge?.noteReservedParentedEntity(entity, parent, v)
+        }
+      })
+    }
     const entities = [...poseDiff.keys()]
     this.bridge.syncEcsVisibility(entities)
     this.bridge.syncInstancedTransforms(entities)
@@ -4522,6 +4530,7 @@ export class SceneScriptSystem {
     this.bridge.syncEcsVisibility(entities)
     this.tweenBridge?.sync(view)
     this.pointerStructureDirty = true
+    this.lastSyncFrameTransformEntities.clear()
     for (const entity of entities) {
       this.lastTweenMotionEntities.add(entity)
       this.lastSyncFrameTransformEntities.add(entity)

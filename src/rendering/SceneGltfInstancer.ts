@@ -207,7 +207,6 @@ export class SceneGltfInstancer {
     entityObj.userData[INSTANCE_COLLIDER_SHAPES_KEY] = bucket.colliderShapes
 
     this.writeMatrix(bucket, index, entityObj)
-    this.refreshBucketBounds(bucket)
 
     let templateTris = 0
     for (const leaf of bucket.leaves) {
@@ -270,15 +269,6 @@ export class SceneGltfInstancer {
         }
         p = p.parent
       }
-    }
-    const hashes = new Set<string>()
-    for (const entity of refreshed) {
-      const h = this.entityHash.get(entity)
-      if (h) hashes.add(h)
-    }
-    for (const h of hashes) {
-      const b = this.buckets.get(h)
-      if (b) this.refreshBucketBounds(b)
     }
   }
 
@@ -443,8 +433,10 @@ export class SceneGltfInstancer {
       setMeshDesiredCastShadow(mesh, true, 'environment', { gltfDefaultCaster: true })
       mesh.receiveShadow = true
       // Dense boards span the whole scene — geometry-only sphere at origin culls far tiles.
-      mesh.frustumCulled = true
-      mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 1)
+      // Instance matrices are mesh-local (entityWorld × leaf). A world-space
+      // sphere here culls plaza buildings. Keep always-on; GPU cost is 1 draw/leaf.
+      mesh.frustumCulled = false
+      mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 1e6)
       // Zero all slots initially
       _instance.makeScale(0, 0, 0)
       for (let s = 0; s < capacity; s++) mesh.setMatrixAt(s, _instance)
@@ -479,46 +471,6 @@ export class SceneGltfInstancer {
     return index
   }
 
-  private refreshBucketBounds(bucket: Bucket): void {
-    const sample = bucket.meshes[0]
-    if (!sample || bucket.entityIndex.size === 0) return
-    let minX = Infinity
-    let minY = Infinity
-    let minZ = Infinity
-    let maxX = -Infinity
-    let maxY = -Infinity
-    let maxZ = -Infinity
-    for (const index of bucket.entityIndex.values()) {
-      sample.getMatrixAt(index, _instance)
-      const e = _instance.elements
-      const x = e[12]!
-      const y = e[13]!
-      const z = e[14]!
-      if (x < minX) minX = x
-      if (y < minY) minY = y
-      if (z < minZ) minZ = z
-      if (x > maxX) maxX = x
-      if (y > maxY) maxY = y
-      if (z > maxZ) maxZ = z
-    }
-    let leafR = 0
-    for (const leaf of bucket.leaves) {
-      if (!leaf.geometry.boundingSphere) leaf.geometry.computeBoundingSphere()
-      const r = leaf.geometry.boundingSphere?.radius ?? 0
-      if (r > leafR) leafR = r
-    }
-    const cx = (minX + maxX) * 0.5
-    const cy = (minY + maxY) * 0.5
-    const cz = (minZ + maxZ) * 0.5
-    const ext = Math.hypot(maxX - cx, maxY - cy, maxZ - cz) + leafR + 2
-    for (const mesh of bucket.meshes) {
-      if (!mesh.boundingSphere) mesh.boundingSphere = new THREE.Sphere()
-      mesh.boundingSphere.center.set(cx, cy, cz)
-      mesh.boundingSphere.radius = ext
-      mesh.frustumCulled = true
-    }
-  }
-
   private ensureCount(bucket: Bucket, minCount: number): void {
     for (const mesh of bucket.meshes) {
       if (mesh.count < minCount) {
@@ -540,8 +492,8 @@ export class SceneGltfInstancer {
       mesh.count = bucket.used
       setMeshDesiredCastShadow(mesh, true, 'environment', { gltfDefaultCaster: true })
       mesh.receiveShadow = true
-      mesh.frustumCulled = true
-      mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 1)
+      mesh.frustumCulled = false
+      mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 1e6)
       _instance.makeScale(0, 0, 0)
       for (let s = 0; s < nextCap; s++) {
         if (s < bucket.capacity) {

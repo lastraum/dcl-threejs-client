@@ -92,7 +92,6 @@ import {
   perfSetPendingDiff
 } from '../../util/perfCounters'
 import { skipSceneAnimators, skipTheatreSceneScript } from '../../client/devFlags'
-import { visualWarmRadiusM } from '../../dcl/multiScene/caps'
 import { mirrorSceneBundle } from '../../dev/mirrorSceneBundle'
 import { PointerEventsSystem } from '../../input/PointerEventsSystem'
 import type { InputHub } from '../../input/InputHub'
@@ -6618,19 +6617,11 @@ export class SceneScriptSystem {
     if (!skipSceneAnimators()) {
       this.animatorBridge?.update(delta, this.view, this.animatorSampleContext())
     }
-    // One-shot: clear stale experiment flags, then apply the 80 m visual keep LOD.
+    // Primary scene stays fully live. 48/80 m is AOI neighbor shells only —
+    // hiding plaza Gltfs (theatre, stage) was a residency bug, not a host-world win.
     if (!this.restoredGltfCull) {
       this.restoredGltfCull = true
       this.bridge.restoreGltfDistanceCull()
-    }
-    if (this.bridgeSyncTick % 8 === 0) {
-      const ctx = this.animatorSampleContext()
-      if (ctx) {
-        this.bridge.updateGltfDistanceLod(
-          ctx.playerWorld,
-          visualWarmRadiusM()
-        )
-      }
     }
     this.particleBridge?.update(delta)
     // Particles need create/sync even when Animator/Gltf is quiet — don't wait for 12-frame cadence only.

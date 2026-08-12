@@ -491,7 +491,7 @@ export function stripHostOwnedLwwBytes(data: Uint8Array): Uint8Array {
       msg = readMessage(readBuf)
     }
   } catch {
-    return new Uint8Array(0)
+    return wrote ? out.toBinary() : data
   }
   return wrote ? out.toBinary() : new Uint8Array(0)
 }

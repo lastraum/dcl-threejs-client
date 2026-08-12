@@ -5398,7 +5398,7 @@ export class SceneScriptSystem {
             }
           }
         : {}),
-      ...(poseMoved && primaryPointer ? { primaryPointer } : {})
+      ...(primaryPointer ? { primaryPointer } : {})
     } satisfies MainToWorker)
   }
 

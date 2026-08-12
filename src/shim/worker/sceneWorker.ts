@@ -3547,7 +3547,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
     }
     if (attachUiMount) lastOutboundUiEntitiesKey = uiKey
     // Prefer structured snapshot; strip wire Ui* so main does not double-apply partial shells.
-    if (attachUiMount && uiMountSnapshot?.length) {
+    if (attachUiMount) {
       copy = stripHostOwnedLwwBytes(stripSceneUiCrdtBytes(copy)).slice()
     }
     if (copy.byteLength === 0) {

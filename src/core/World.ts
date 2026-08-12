@@ -180,8 +180,11 @@ export class World {
   readonly landscape = new LandscapeSystem()
   /** Mutable so promote handoff can adopt a live secondary worker as primary. */
   sceneScript = new SceneScriptSystem()
-  /** Host clock for scene-JS guests (primary + PE). Phase 0: same every-rAF send. */
+  /** Host clock for scene-JS guests. Present is host-only; guest ticks on async. */
   readonly sceneLoop = new SceneLoop()
+  private guestTickPlayer: ReturnType<PlayerSystem['getEntityPose']> | null = null
+  private guestTickCamera: ReturnType<PlayerSystem['getCameraEntityPose']> | null = null
+  private guestTickFrame = 0
   readonly physics = new PhysXWorld()
   readonly session = new SessionIdentity()
   /** May be replaced by landing handoff (`adoptComms`) — keep LiveKit without reconnect. */
@@ -1876,10 +1879,7 @@ export class World {
           if (this.loadedPrimaryScene) {
             this.assets.setScene(this.loadedPrimaryScene)
           }
-          // Fold last guest dirty before platform / CCT so CRDT movers ride this frame.
-          this.sceneLoop.receive()
-          // Motion first — PE pose + TriggerArea enter must beat worker onUpdate.
-          // Includes pumpMotionBridges (animators + particles) — part is nested here.
+          // Host present: CCT + motion only. Guest send/receive is on the async clock.
           const platformT0 = performance.now()
           this.syncPlayerMotionFrame(delta, startFrame)
           // PE owns VirtualCamera / MainCamera (drone, vehicle) — drive lens from PE bridge,
@@ -1901,28 +1901,15 @@ export class World {
           }
           const playerPose = this.player.getEntityPose()
           const cameraPose = this.player.getCameraEntityPose()
-          // Keyboard bus first — PE/primary onUpdate this frame sees isPressed for drone WASD.
+          this.guestTickPlayer = playerPose
+          this.guestTickCamera = cameraPose
+          this.guestTickFrame = startFrame
+          // Host input + attach. Guest play-frame / CRDT fold run after present.
           const sceneT0 = performance.now()
           this.inputHub.sync(startFrame)
           this.sceneScript.syncClientEntities(playerPose, cameraPose)
-          // Hand-held props (GP fishing rod/line): after locomotion + scene emote mixer and
-          // fresh PE Transform so AvatarAttach is not one frame behind (very visible at low FPS).
           this.sceneScript.pumpAvatarAttach()
-          // Detect enter/exit with post-move CCT feet, then flush PE+TriggerAreaResult to worker.
           this.sceneScript.updateTriggerAreas()
-          // SceneLoop owns play-frame-tick (primary + PE). Same every-rAF rate in Phase 0.
-          this.sceneLoop.reconcilePe(this.multiScene?.pe ?? null)
-          this.sceneLoop.send({
-            now: performance.now(),
-            fpsTarget: renderQuality.getFpsLimit() || 60,
-            player: playerPose,
-            camera: cameraPose,
-            frame: startFrame
-          })
-          this.sceneLoop.peelMotion(4)
-          perfNoteSceneLoop(this.sceneLoop.getMeters())
-          // PE pointer inject + live secondaries (play-frame already sent).
-          this.multiScene?.tickSync(playerPose, cameraPose, startFrame)
           sceneTickMs = performance.now() - sceneT0
           // PE tween/billboard/attach motion + reserved-parent meshes (same as primary pump).
           const peT0 = performance.now()
@@ -1937,12 +1924,7 @@ export class World {
           peMs = performance.now() - peT0
 
           const pos = this.player.getPosition()
-          const aoiT0 = performance.now()
-          if (!loopMinimum) {
-            this.aoiVisual.update(pos.x, pos.z)
-            this.scenePromote.tick(pos.x, pos.z)
-          }
-          aoiMs = performance.now() - aoiT0
+          aoiMs = 0
           const yaw = this.player.getNetworkYaw()
           const isEmoting = this.player.isProfileEmoteActive()
           const locomotion = this.player.getLocomotionWireState()
@@ -2086,7 +2068,25 @@ export class World {
         if (this.editorPreviewMode) return
 
         const t0 = performance.now()
+        // Guest VM clock — after present. Host already simulated + drew this rAF.
         this.sceneLoop.receive()
+        if (this.playerMode && this.player && this.guestTickPlayer && this.guestTickCamera) {
+          this.sceneLoop.reconcilePe(this.multiScene?.pe ?? null)
+          this.sceneLoop.send({
+            now: performance.now(),
+            fpsTarget: renderQuality.getFpsLimit() || 60,
+            player: this.guestTickPlayer,
+            camera: this.guestTickCamera,
+            frame: this.guestTickFrame
+          })
+          this.sceneLoop.peelMotion(4)
+          this.multiScene?.tickSync(this.guestTickPlayer, this.guestTickCamera, this.guestTickFrame)
+          if (!this.sceneLoop.lastApplyOverran(28)) {
+            const pos = this.player.getPosition()
+            this.aoiVisual.update(pos.x, pos.z)
+            this.scenePromote.tick(pos.x, pos.z)
+          }
+        }
         await this.sceneLoop.applyWorld(18)
         const peelMs = performance.now() - t0
         perfNoteSceneLoop(this.sceneLoop.getMeters())

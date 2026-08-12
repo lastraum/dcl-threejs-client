@@ -50,13 +50,20 @@ Reserved host writes each eligible send: PE/Camera Transform, Root PPI / EngineI
 ## SceneLoop (clock only)
 
 ```text
-rAF: CCT + input → send (if !inFlight) → receive guest dirty
-     → fold motion → present → spare apply (Gltf/maps only; 0 if idle)
+rAF present (host only):
+  CCT + host motion + input + attach → WebGL present
+
+async (guest VM, after present):
+  receive + fold → send play-frame-tick → apply Gltf/maps → AOI
 ```
 
-Pointer inject / `player-frame` / CCT stay outside the clock.
+The guest `@dcl/ecs` worker is a VM, not a second present world. Official `scene.js` still runs there. It must not sit on the present rAF.
 
-**Residency (P6 policy, already shipping):** one primary guest worker. Neighbor visuals enter 48 m / keep 80 m (0 GLB clones past keep). Live JS for other deployments is off (`aoiGlbShellsOnly`). Imposter bake is not this invert. PhysicsCombinedImpulse (1215) on PlayerEntity is read by the host CCT — never a second store PUT.
+Pointer inject / `player-frame` / CCT stay on the host.
+
+Remote avatar **pose** ticks on present. Remote **compose** is idle-only (placeholders until the body is ready).
+
+**Residency:** one primary guest worker. Neighbor visuals enter 48 m / keep 80 m (0 GLB clones past keep). Live JS for other deployments is off (`aoiGlbShellsOnly`). Far shells are merged statics, not a second live world. PhysicsCombinedImpulse (1215) on PlayerEntity is read by the host CCT — never a second store PUT.
 
 **Transforms:** sim/comms stay DCL left-handed. Display conversion only at `dclTransform.ts`.
 

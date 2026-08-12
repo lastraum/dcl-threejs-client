@@ -84,7 +84,7 @@ export class RemoteAvatarLoadQueue {
       }
       this.colliderHoldMode = false
     }
-    this.pump()
+    this.scheduleOffRafPump()
   }
 
   /**
@@ -101,10 +101,9 @@ export class RemoteAvatarLoadQueue {
     this.colliderHoldExitTimer = setTimeout(() => {
       this.colliderHoldExitTimer = null
       this.colliderHoldMode = false
-      // First compose may start immediately after hold (interval clock starts on first start).
-      this.pump()
+      this.scheduleOffRafPump()
     }, holdMs)
-    this.pump()
+    this.scheduleOffRafPump()
   }
 
   /**
@@ -113,7 +112,7 @@ export class RemoteAvatarLoadQueue {
    */
   setSceneAssetPressure(gltfInflight: number, _textureInflight = 0): void {
     this.sceneGltfInflight = gltfInflight
-    this.pump()
+    this.scheduleOffRafPump()
   }
 
   /**
@@ -122,7 +121,7 @@ export class RemoteAvatarLoadQueue {
    */
   setLocalEmoteLoadBusy(busy: boolean): void {
     this.localEmoteBusy = busy
-    if (!busy) this.pump()
+    if (!busy) this.scheduleOffRafPump()
   }
 
   /** True if this peer is waiting or actively composing. */
@@ -265,7 +264,7 @@ export class RemoteAvatarLoadQueue {
   private markFinished(address: string): void {
     this.active.delete(address)
     this.running = Math.max(0, this.running - 1)
-    this.pump()
+    this.scheduleOffRafPump()
   }
 
   private scheduleOffRafPump(): void {

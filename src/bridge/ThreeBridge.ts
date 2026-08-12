@@ -3576,8 +3576,8 @@ export class ThreeBridge {
     if (this.isAvatarAttachDriven(entity)) return false
     // Explicit ECS Animator needs a private hierarchy for the mixer.
     if (this.ecs.Animator.has(entity)) return false
-    // Textured / video / avatar Material needs unique maps — InstancedMesh cannot
-    // bind per-entity textures (poker deal cards, press-E props stay white otherwise).
+    // ECS Material with a unique map needs a private mesh. GLB-embedded textures
+    // stay on the shared template and instance fine (no Material component).
     if (this.ecs.Material.has(entity)) {
       const pb = this.ecs.Material.get(entity) as PbMaterial
       if (!materialIsScalarOnly(pb)) return false

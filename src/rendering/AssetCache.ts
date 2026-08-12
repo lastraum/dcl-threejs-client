@@ -531,7 +531,11 @@ export class AssetCache {
   async loadTexture(url: string): Promise<THREE.Texture> {
     const fetchUrl = proxiedTextureUrl(url)
     const hit = this.textures.get(url) ?? this.textures.get(fetchUrl)
-    if (hit) return hit
+    if (hit) {
+      this.textures.delete(url)
+      this.textures.set(url, hit)
+      return hit
+    }
 
     if (this.givenUp.has(url)) {
       throw new Error(`texture load given up: ${url}`)

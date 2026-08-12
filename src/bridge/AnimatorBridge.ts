@@ -94,6 +94,11 @@ const FRUSTUM_EXPAND_M = 8
  */
 const SLEEP_OFF_FRUSTUM_M = 40
 /**
+ * Even in-frustum decorative mixers sleep beyond this (snap on enter).
+ * PART / doors stay awake. Matches the 64 m primary draw freeze band.
+ */
+const SLEEP_FAR_M = 64
+/**
  * Default-autoplay bind distance (promote instanced rest → clone + mixer).
  * Full-rate mode still uses this for *first bind*; once bound, always ticks.
  */
@@ -1224,8 +1229,13 @@ export class AnimatorBridge {
       }
       const { priority, distSq, inFrustum } = this.samplePriority(entry, sampleCtx!)
       const isPart = hasPartColliderWork(entry)
-      // Sleep only when off-frustum and far — in-view props stay awake (user goal).
-      if (!isPart && priority < 2 && !inFrustum && distSq > sleepOffSq) {
+      const sleepFarSq = SLEEP_FAR_M * SLEEP_FAR_M
+      // Sleep decorative mixers that are off-frustum+far, or beyond the 64 m freeze band.
+      if (
+        !isPart &&
+        priority < 2 &&
+        (( !inFrustum && distSq > sleepOffSq ) || distSq > sleepFarSq)
+      ) {
         putToSleep(entry)
         continue
       }

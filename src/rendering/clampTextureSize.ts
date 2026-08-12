@@ -23,6 +23,8 @@ export function clampTextureSize(texture: THREE.Texture, maxEdge = MAX_SCENE_TEX
   if (!(w > 0) || !(h > 0)) return
   const max = Math.max(w, h)
   if (max <= maxEdge) {
+    adoptCanvasIfDecodedImage(texture, image, w, h)
+    dropTextureCpuAfterUpload(texture)
     seen.add(texture)
     return
   }
@@ -35,9 +37,76 @@ export function clampTextureSize(texture: THREE.Texture, maxEdge = MAX_SCENE_TEX
   const ctx = canvas.getContext('2d')
   if (!ctx) return
   ctx.drawImage(image as CanvasImageSource, 0, 0, cw, ch)
+  closeDecodedImage(image)
   texture.image = canvas
   texture.needsUpdate = true
+  texture.generateMipmaps = true
+  dropTextureCpuAfterUpload(texture)
   seen.add(texture)
+}
+
+/** Copy HTMLImageElement / ImageBitmap onto a same-size canvas so the decode can GC. */
+function adoptCanvasIfDecodedImage(
+  texture: THREE.Texture,
+  image: { width?: number; height?: number },
+  w: number,
+  h: number
+): void {
+  if (image instanceof HTMLCanvasElement) return
+  if (!(image instanceof HTMLImageElement) && !(typeof ImageBitmap !== 'undefined' && image instanceof ImageBitmap)) {
+    return
+  }
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  ctx.drawImage(image as CanvasImageSource, 0, 0, w, h)
+  closeDecodedImage(image)
+  texture.image = canvas
+  texture.needsUpdate = true
+}
+
+function closeDecodedImage(image: unknown): void {
+  if (image && typeof (image as ImageBitmap).close === 'function') {
+    try {
+      ;(image as ImageBitmap).close()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/**
+ * After the first GPU upload (Three `onUpdate` is post-texImage2D), drop CPU pixels.
+ * Video / compressed maps stay intact. Dimension placeholder keeps later width reads safe.
+ */
+export function dropTextureCpuAfterUpload(texture: THREE.Texture): void {
+  if (texture.userData.dclCpuDropHook) return
+  if ((texture as THREE.VideoTexture).isVideoTexture) return
+  if ((texture as THREE.CompressedTexture).isCompressedTexture) return
+  texture.userData.dclCpuDropHook = true
+  const prev = texture.onUpdate
+  texture.onUpdate = () => {
+    try {
+      prev?.call(texture)
+    } finally {
+      releaseTextureCpu(texture)
+    }
+  }
+}
+
+function releaseTextureCpu(texture: THREE.Texture): void {
+  if (texture.userData.dclCpuDropped) return
+  const image = texture.image as { width?: number; height?: number; close?: () => void } | null
+  if (!image) return
+  const w = typeof image.width === 'number' && image.width > 0 ? image.width : 1
+  const h = typeof image.height === 'number' && image.height > 0 ? image.height : 1
+  texture.userData.dclTexW = w
+  texture.userData.dclTexH = h
+  closeDecodedImage(image)
+  texture.image = { width: w, height: h }
+  texture.userData.dclCpuDropped = true
 }
 
 /** Clamp every map on a parsed GLB (shared template — run once before cache). */

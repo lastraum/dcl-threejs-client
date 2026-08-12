@@ -44,6 +44,7 @@ import {
   refreshDirectionalSunShadowMapSize,
   updateDirectionalSunShadowFocus
 } from '../rendering/directionalSunShadow'
+import { budgetEnvironmentCasters } from '../rendering/shadowCastPolicy'
 import {
   createOutdoorLightingSnapshot,
   syncOutdoorLightingFromLights,
@@ -136,6 +137,8 @@ export class EnvironmentSystem {
   private outdoorIbl: OutdoorIbl | null = null
   /** Space biome starfield / void plate (when kind === space). */
   private spaceSky: SpaceSkyField | null = null
+  /** Last env caster budget (ms) — do not walk the graph every lighting tick. */
+  private lastEnvCasterBudgetAt = 0
 
   constructor(
     private readonly host: SceneHost,
@@ -563,6 +566,12 @@ export class EnvironmentSystem {
       this.moon.castShadow = false
       this.sun.position.copy(_celestial).multiplyScalar(120)
       this.sun.target.position.set(0, 0, 0)
+    }
+
+    const now = performance.now()
+    if (now - this.lastEnvCasterBudgetAt >= 250) {
+      this.lastEnvCasterBudgetAt = now
+      budgetEnvironmentCasters(this.host.scene, this.host.camera.position)
     }
 
     const tierExposure = TONE_MAPPING_EXPOSURE[renderQuality.getTier()]

@@ -2114,11 +2114,6 @@ export class RemoteAvatarManager {
       }
       const wallMs = performance.now() - composeT0
       perfNoteComposeMs(wallMs)
-      logMainHitch(
-        'remote-dcl',
-        wallMs,
-        `${record.identity.displayName} @${x.toFixed(0)},${z.toFixed(0)}`
-      )
       try {
         this.onComposeSettled?.()
       } catch {

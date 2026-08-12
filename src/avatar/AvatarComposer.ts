@@ -123,26 +123,27 @@ async function composeFromConfig(
     const modelWearables = config.wearables.filter(
       (w) => w.data.category !== 'body_shape' && isModelWearable(w)
     )
-    const loadedLayers = await Promise.all(
-      modelWearables.map(async (wearable) => {
-        try {
-          // Facial hair: D3JS localStorage / extension color first, else profile hair.
-          const hairTint = hairTintForWearable(wearable.data.category, config)
-          const layer = await loadWearableSceneCached(
-            cache,
-            wearable,
-            config.bodyShape,
-            config.skin,
-            hairTint,
-            true
-          )
-          return { wearable, layer }
-        } catch (err) {
-          console.warn(`Skipping wearable ${wearable.id}:`, err)
-          return null
-        }
-      })
-    )
+    const loadedLayers: Array<{ wearable: (typeof modelWearables)[number]; layer: THREE.Object3D } | null> =
+      []
+    for (const wearable of modelWearables) {
+      await yieldToIdle(32)
+      await yieldToNextFrame()
+      try {
+        const hairTint = hairTintForWearable(wearable.data.category, config)
+        const layer = await loadWearableSceneCached(
+          cache,
+          wearable,
+          config.bodyShape,
+          config.skin,
+          hairTint,
+          true
+        )
+        loadedLayers.push({ wearable, layer })
+      } catch (err) {
+        console.warn(`Skipping wearable ${wearable.id}:`, err)
+        loadedLayers.push(null)
+      }
+    }
 
     let mergeIndex = 0
     for (const entry of loadedLayers) {

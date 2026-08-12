@@ -1,6 +1,5 @@
 import * as THREE from 'three'
 import type { AssetCache } from '../../rendering/AssetCache'
-import { renderQuality } from '../../rendering/RenderQualitySettings'
 import type { ResolvedScene } from '../content/types'
 import { parseParcelKey } from '../content/parseParcel'
 import { buildGenesisCityEmptyPlane } from './genesisEmptyPlane'
@@ -368,7 +367,7 @@ export class AoiVisualLayer {
     this.neighborActivityEnabled = true
     this.liveReconcileEnabled = false
     this.lastParcelKey = ''
-    const radius = renderQuality.getSceneLoadRadiusM()
+    const radius = visualWarmRadiusM()
     const gen = ++this.prewarmGen
     this.prewarmActive = true
     console.info(
@@ -454,7 +453,7 @@ export class AoiVisualLayer {
     this.blankPlaneBase = ''
     this.clearScatter()
     this.lastLiveCandidateSignature = ''
-    void this.refresh(dclX, dclZ, renderQuality.getSceneLoadRadiusM(), 'full')
+    void this.refresh(dclX, dclZ, visualWarmRadiusM(), 'full')
   }
 
   /** Call after primary scene is known — coords only. */
@@ -482,7 +481,7 @@ export class AoiVisualLayer {
     ctx.hostScene.add(this.root)
     console.info(
       '[aoi] bound — Scene Distance warm band (coords only); radius=',
-      renderQuality.getSceneLoadRadiusM(),
+      visualWarmRadiusM(),
       'm · first-frame visible≤',
       FF_MAX_VISIBLE,
       ' retained≤',
@@ -546,7 +545,7 @@ export class AoiVisualLayer {
   update(dclX: number, dclZ: number, force = false): void {
     if (this.disposed || !this.enabled || !this.ctx) return
     if (!this.neighborActivityEnabled && !force) return
-    const radius = renderQuality.getSceneLoadRadiusM()
+    const radius = visualWarmRadiusM()
 
     if (radius <= 0) {
       this.clearRefreshDebounce()
@@ -1047,7 +1046,7 @@ export class AoiVisualLayer {
     dclZ: number,
     primaryBase: string
   ): void {
-    const warmM = renderQuality.getSceneLoadRadiusM()
+    const warmM = visualWarmRadiusM()
     if (warmM <= 0) return
     for (const e of entities) {
       if (primaryId && e.id === primaryId) continue

@@ -353,6 +353,7 @@ export class SceneScriptSystem {
   /** When true, gameplay crdt-outbound waits for SceneLoop.receive. */
   private sceneLoopReceiveArmed = false
   private lastSentPlayerPos = { x: Number.NaN, y: Number.NaN, z: Number.NaN }
+  private lastTriggerFeet = { x: Number.NaN, y: Number.NaN, z: Number.NaN }
   private lastSentPlayerRot = { x: Number.NaN, y: Number.NaN, z: Number.NaN, w: Number.NaN }
   private lastSentCamPos = { x: Number.NaN, y: Number.NaN, z: Number.NaN }
   private lastSentCamRot = { x: Number.NaN, y: Number.NaN, z: Number.NaN, w: Number.NaN }
@@ -5140,6 +5141,9 @@ export class SceneScriptSystem {
    */
   updateTriggerAreas(): void {
     if (!this.running || !this.triggerAreas) return
+    const feet = this.clientPlayerPose?.position
+    if (feet && !this.triggerFeetMoved(feet)) return
+    if (feet) this.lastTriggerFeet = { x: feet.x, y: feet.y, z: feet.z }
     const appendsBefore = this.encoder.pendingAppendCount
     this.syncTriggerAreas()
     const appendsAfter = this.encoder.pendingAppendCount
@@ -5486,6 +5490,16 @@ export class SceneScriptSystem {
     }
     if (ppi && posChanged(ppi.worldRayDirection, this.lastSentPpiDir)) return true
     return Number.isNaN(this.lastSentPlayerPos.x)
+  }
+
+  private triggerFeetMoved(feet: { x: number; y: number; z: number }): boolean {
+    const eps = 0.04
+    if (Number.isNaN(this.lastTriggerFeet.x)) return true
+    return (
+      Math.abs(feet.x - this.lastTriggerFeet.x) > eps ||
+      Math.abs(feet.y - this.lastTriggerFeet.y) > eps ||
+      Math.abs(feet.z - this.lastTriggerFeet.z) > eps
+    )
   }
 
   private rememberPlayFramePose(
@@ -5989,6 +6003,12 @@ export class SceneScriptSystem {
     this.clientPlayerPose = player
     this.clientCameraPose = camera
     this.refreshRealmInfoFromProvider()
+    if (!this.playFramePoseMoved(player, camera, undefined)) {
+      this.engineFrame++
+      this.reserved.setEngineCounters(this.engineFrame, this.crdtTick)
+      this.reserved.syncEngineInfoOnly()
+      return
+    }
     this.prepareReservedRoundTrip(player, camera)
   }
 

@@ -709,6 +709,44 @@ export class ThreeBridge {
     return this.store
   }
 
+  /**
+   * Hide far static GltfContainer graphs (and zero InstancedMesh slots).
+   * ECS Visibility / Transform / Animator state is kept; walk-in restores from Visibility.
+   * Fishing / AvatarAttach / Tween stay live.
+   */
+  updateGltfDistanceLod(focusWorld: THREE.Vector3, keepM: number): void {
+    const { GltfContainer, VisibilityComponent, Tween } = this.ecs
+    if (!GltfContainer || keepM <= 0) return
+    const keepSq = keepM * keepM
+    for (const [entity, obj] of this.store.nodes) {
+      if (!GltfContainer.has(entity)) continue
+      const src = GltfContainer.get(entity).src?.trim() ?? ''
+      if (isFishingMotionGltfSrc(src)) continue
+      if (this.isAvatarAttachDriven(entity)) continue
+      if (Tween?.has(entity)) continue
+      const e = obj.matrixWorld.elements
+      const dx = e[12]! - focusWorld.x
+      const dy = e[13]! - focusWorld.y
+      const dz = e[14]! - focusWorld.z
+      const far = dx * dx + dy * dy + dz * dz > keepSq
+      if (far) {
+        if (obj.userData.dclDistCulled) continue
+        obj.userData.dclDistCulled = true
+        obj.visible = false
+        if (obj.userData.dclInstanced) this.instancer.update(entity, obj)
+        continue
+      }
+      if (!obj.userData.dclDistCulled) continue
+      obj.userData.dclDistCulled = false
+      const visible =
+        !VisibilityComponent || !VisibilityComponent.has(entity)
+          ? true
+          : VisibilityComponent.get(entity).visible !== false
+      obj.visible = visible
+      if (obj.userData.dclInstanced) this.instancer.update(entity, obj)
+    }
+  }
+
   /** Undo any temporary distance-cull from earlier experiments (meshes follow ECS visibility). */
   restoreGltfDistanceCull(): void {
     const { VisibilityComponent } = this.ecs

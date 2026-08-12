@@ -19,6 +19,7 @@ export {
   AOI_SHELL_KEEP_M,
   COMPOSITE_MAX_RETAINED,
   compositeMaxGltfsForDistance,
+  visualWarmRadiusM,
   SECONDARY_LIVE_ENTER_M,
   SECONDARY_LIVE_KEEP_M,
   SECONDARY_LIVE_MAX_RADIUS_M,

@@ -59,6 +59,16 @@ export function compositeMaxGltfsForDistance(distM: number, _parcelCount: number
 }
 
 /**
+ * Visual attach/hide radius for scatter, roads, and primary Gltf LOD.
+ * Preferences Scene Distance may be 200 m for pointer fetch; we do not mesh that disc.
+ */
+export function visualWarmRadiusM(): number {
+  const pref = renderQuality.getSceneLoadRadiusM()
+  if (pref <= 0) return 0
+  return Math.min(pref, AOI_SHELL_KEEP_M)
+}
+
+/**
  * Live secondary workers: nearest N by **player→scene** distance.
  * Warm + composite shells use full Scene Distance. Live scripts are expensive.
  */

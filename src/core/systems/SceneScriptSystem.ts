@@ -91,6 +91,7 @@ import {
   perfSetPendingDiff
 } from '../../util/perfCounters'
 import { skipSceneAnimators, skipTheatreSceneScript } from '../../client/devFlags'
+import { visualWarmRadiusM } from '../../dcl/multiScene/caps'
 import { mirrorSceneBundle } from '../../dev/mirrorSceneBundle'
 import { PointerEventsSystem } from '../../input/PointerEventsSystem'
 import type { InputHub } from '../../input/InputHub'
@@ -6598,19 +6599,30 @@ export class SceneScriptSystem {
     }
     this.videoPlayerBridge?.sync(this.view)
     this.audioSourceBridge?.sync(this.view)
-    this.audioStreamBridge?.sync(this.view)
-    this.assetLoadBridge?.sync(this.view)
-    this.nftShapeBridge?.sync(this.view)
+    if (this.bridgeSyncTick % 4 === 0) {
+      this.audioStreamBridge?.sync(this.view)
+      this.assetLoadBridge?.sync(this.view)
+      this.nftShapeBridge?.sync(this.view)
+    }
     this.nftShapeBridge?.update()
     this.avatarShapes?.update(delta)
     // ?noanim — skip mixer sample (clips frozen; default auto-play never advances).
     if (!skipSceneAnimators()) {
       this.animatorBridge?.update(delta, this.view, this.animatorSampleContext())
     }
-    // One-shot: clear mesh distance-cull leftovers (we no longer hide scene GLTFs).
+    // One-shot: clear stale experiment flags, then apply the 80 m visual keep LOD.
     if (!this.restoredGltfCull) {
       this.restoredGltfCull = true
       this.bridge.restoreGltfDistanceCull()
+    }
+    if (this.bridgeSyncTick % 8 === 0) {
+      const ctx = this.animatorSampleContext()
+      if (ctx) {
+        this.bridge.updateGltfDistanceLod(
+          ctx.playerWorld,
+          visualWarmRadiusM()
+        )
+      }
     }
     this.particleBridge?.update(delta)
     // Particles need create/sync even when Animator/Gltf is quiet — don't wait for 12-frame cadence only.

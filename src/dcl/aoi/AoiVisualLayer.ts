@@ -43,6 +43,7 @@ import {
   AOI_SHELL_KEEP_M,
   COMPOSITE_MAX_RETAINED,
   compositeMaxGltfsForDistance,
+  visualWarmRadiusM,
   EMPTY_LAND_PHYS_RADIUS_M,
   ROAD_PHYS_RADIUS_M,
   secondaryLiveCap,
@@ -67,10 +68,10 @@ const FF_MAX_RETAINED = 6
  * - Leave-ring → **hide** (LOD), not dispose.
  * - Dispose mesh + PhysX only when player is > SCATTER_PURGE_M away.
  */
-/** Hide scatter layers beyond this (keep in memory + PhysX until purge). */
-const SCATTER_LOD_HIDE_M = 160
-/** Hard unload mesh + colliders — huge walk / teleport only. */
-const SCATTER_PURGE_M = 1000
+/** Hide scatter layers beyond the visual keep band. */
+const SCATTER_LOD_HIDE_M = AOI_SHELL_KEEP_M
+/** Hard unload mesh + colliders just outside keep (was 1 km — a second city in RAM). */
+const SCATTER_PURGE_M = 160
 /** Cap new parcels meshed per drain tick (first ring fill is uncapped). */
 const SCATTER_ADD_PER_REFRESH = 48
 /**
@@ -885,9 +886,18 @@ export class AoiVisualLayer {
     if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
 
     // Enqueue vacant parcels not yet meshed — drain pulls from this queue only.
+    // Visual band only (keep ≤ 80 m). Scene Distance 200 m still fetched pointers above.
+    const visualM = visualWarmRadiusM()
     for (const key of vacantKeys) {
       const k = key.trim()
-      if (!this.loadedScatterParcels.has(k)) this.pendingScatterParcels.add(k)
+      if (this.loadedScatterParcels.has(k)) continue
+      try {
+        const p = parseParcelKey(k)
+        if (distanceToParcelCenterM(dclX, dclZ, p, base) > visualM) continue
+      } catch {
+        continue
+      }
+      this.pendingScatterParcels.add(k)
     }
     // Drop pending that are no longer vacant in this ring (real scene claimed, etc.).
     for (const k of [...this.pendingScatterParcels]) {
@@ -897,6 +907,14 @@ export class AoiVisualLayer {
       }
       // Keep pending outside current ring — may re-enter; only drop if now real footprint.
       if (realSceneFootprint.has(k)) this.pendingScatterParcels.delete(k)
+      try {
+        const p = parseParcelKey(k)
+        if (distanceToParcelCenterM(dclX, dclZ, p, base) > visualM) {
+          this.pendingScatterParcels.delete(k)
+        }
+      } catch {
+        this.pendingScatterParcels.delete(k)
+      }
     }
 
     // --- Classic open-road foundation tiles (catalog + ownership, full Scene Distance) ---
@@ -1434,8 +1452,8 @@ export class AoiVisualLayer {
     }
     this.ctx?.onSecondaryCandidates?.(liveCandidates)
 
-    // First-frame tertiary: still player warm band (visual LOD by where you stand).
-    const warmRadiusM = renderQuality.getSceneLoadRadiusM()
+    // First-frame tertiary: visual keep band, not Preferences Scene Distance.
+    const warmRadiusM = visualWarmRadiusM()
 
     const wantFf = new Set<string>()
     let visibleSlots = 0
@@ -1954,9 +1972,12 @@ export class AoiVisualLayer {
     }
 
     const placements: RoadTilePlacement[] = []
+    const visualM = visualWarmRadiusM()
     for (const [parcelKey, ent] of roadParcels) {
       if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
       try {
+        const p = parseParcelKey(parcelKey)
+        if (distanceToParcelCenterM(dclX, dclZ, p, primaryBase) > visualM) continue
         let placement = ent
           ? await resolveRoadTilePlacement(ent, ctx.scene.realm.contentUrl)
           : null

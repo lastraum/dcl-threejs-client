@@ -274,7 +274,6 @@ export class TriggerAreaSystem {
       `vols=${this.volumes.length} inside=${insideCount} skipMat=${skippedMatrix} ` +
       `near12m=${nearHits} nearest=${nearest}`
     clientDebugLog.log('input', msg, { level: 'info' })
-    clientDebugLog.consoleOnly('info', `[input] ${msg}`)
   }
 
   private logVerboseProbe(

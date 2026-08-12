@@ -2152,7 +2152,7 @@ export class World {
         // COD F1 — honest residual: fullWork only when remainder ≥ MIN_FULL_MS (no 0.5 floor lie).
         const t3 = performance.now()
         let multiMs = 0
-        if (this.multiScene) {
+        if (this.multiScene?.hasAsyncTickWork()) {
           const ASYNC_MULTI_BUDGET_MS = 8
           const MIN_FULL_MS = 2
           const primarySpent = t3 - t0

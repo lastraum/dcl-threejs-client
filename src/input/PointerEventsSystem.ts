@@ -95,6 +95,8 @@ type PointerDeps = {
   resolveMeshRendererInstanceHit?: (mesh: THREE.Object3D, instanceId: number) => Entity | null
   /** Unique InstancedMeshes that host PointerEvents entities (raycast targets). */
   getMeshRendererInstancePointerMeshes?: () => THREE.Object3D[]
+  /** InstancedMeshes for this PE set only — never the full board. */
+  getInstancePointerMeshesFor?: (entities: Iterable<Entity>) => THREE.Object3D[]
   /**
    * Promote PE MeshRenderer/GLTF instances to private leaves before target collect.
    * Shared by hover tooltips and click (same raycast path).
@@ -257,8 +259,6 @@ export class PointerEventsSystem {
     if (!this.deps) return false
     if (this.pointerDirty || this.primaryKeyDown) return true
     if (this.hasPendingInput()) return true
-    // Periodic hover refresh (pointer-lock look is pointerDirty on move, not every frame).
-    if (tickNumber % 3 === 0) return true
     return false
   }
 
@@ -1450,7 +1450,10 @@ export class PointerEventsSystem {
       }
     }
     if (needInstanceRaycast) {
-      const instMeshes = this.deps.getMeshRendererInstancePointerMeshes?.() ?? []
+      const instMeshes =
+        this.deps.getInstancePointerMeshesFor?.(this.pointerEntitySet) ??
+        this.deps.getMeshRendererInstancePointerMeshes?.() ??
+        []
       for (const mesh of instMeshes) {
         this.pointerTargets.push(mesh)
       }

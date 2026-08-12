@@ -359,6 +359,19 @@ export class SceneGltfInstancer {
     return out
   }
 
+  /** InstancedMeshes that actually host these entities (never the full board). */
+  meshesForEntities(entities: Iterable<Entity>): THREE.InstancedMesh[] {
+    const seen = new Set<THREE.InstancedMesh>()
+    for (const entity of entities) {
+      const hash = this.entityHash.get(entity)
+      if (!hash) continue
+      const bucket = this.buckets.get(hash)
+      if (!bucket) continue
+      for (const mesh of bucket.meshes) seen.add(mesh)
+    }
+    return [...seen]
+  }
+
   dispose(): void {
     for (const hash of [...this.buckets.keys()]) this.disposeBucket(hash)
     this.entityHash.clear()

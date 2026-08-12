@@ -396,6 +396,7 @@ export class SceneScriptSystem {
   private readonly lastSyncFrameTransformEntities = new Set<Entity>()
   /** Full entity-graph updateMatrixWorld — skip when nothing moved. */
   private sceneGraphMatrixDirty = true
+  private pointerPrepareFlushedTick = -1
   private readonly lastPoseChangedEntities: Entity[] = []
   /**
    * Systems that moved **parts** (bone/_collider) this frame — PART path.
@@ -4755,9 +4756,11 @@ export class SceneScriptSystem {
    * Phase C: skip when pointer system reports idle (no move / lock / pending click).
    */
   preparePointerRaycast(tickNumber = 0): void {
+    if (this.pointerPrepareFlushedTick === tickNumber) return
     if (this.pointerEvents && !this.pointerEvents.needsRaycastPrepare(tickNumber)) {
       return
     }
+    this.pointerPrepareFlushedTick = tickNumber
     this.consumeSyncFrameTransforms()
     // Only re-promote PE leaves when structure is dirty — every-raycast promote thrashed
     // MeshRenderer/GLB attach and competed with GltfContainer drain.
@@ -4884,6 +4887,8 @@ export class SceneScriptSystem {
         this.bridge?.resolveMeshRendererInstanceEntity(mesh, instanceId) ?? null,
       getMeshRendererInstancePointerMeshes: () =>
         this.bridge?.getMeshRendererInstancePointerMeshes() ?? [],
+      getInstancePointerMeshesFor: (entities) =>
+        this.bridge?.getInstancePointerMeshesForEntities(entities) ?? [],
       ensurePointerMeshes: () => {
         if (!this.bridge) return
         const pe: Entity[] = []
@@ -5366,7 +5371,9 @@ export class SceneScriptSystem {
     const camera = this.clientCameraPose
     const primaryPointer = this.pointerEvents?.getPrimaryPointerSnapshot() ?? undefined
     const poseMoved = this.playFramePoseMoved(player, camera, primaryPointer)
-    this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
+    if (this.pointerEvents?.hasPendingInput()) {
+      this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
+    }
     this.crdtTick++
     if (poseMoved) this.rememberPlayFramePose(player, camera, primaryPointer)
     this.playFrameInFlight = true

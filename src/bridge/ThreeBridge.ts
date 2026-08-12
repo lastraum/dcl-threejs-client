@@ -412,10 +412,18 @@ export class ThreeBridge {
   }
 
   getMeshRendererInstancePointerMeshes(): THREE.Object3D[] {
-    // Include GPU-instanced GLTF boards (pixelwars tile-*.glb) so PE can hit them.
-    const a = this.meshRendererInstancer.getAllInstanceMeshes()
-    const b = this.instancer.getAllInstanceMeshes()
-    return a.length && b.length ? [...a, ...b] : a.length ? a : b
+    return this.getInstancePointerMeshesForEntities(this.store.nodes.keys())
+  }
+
+  getInstancePointerMeshesForEntities(entities: Iterable<Entity>): THREE.Object3D[] {
+    const list = [...entities]
+    const gltf = this.instancer.meshesForEntities(list)
+    const needMr = list.some((e) => {
+      const obj = this.store.nodes.get(e)
+      return !!(obj?.userData.dclMeshRendererInstanced)
+    })
+    const mr = needMr ? this.meshRendererInstancer.getAllInstanceMeshes() : []
+    return mr.length && gltf.length ? [...mr, ...gltf] : mr.length ? mr : gltf
   }
 
   /**
@@ -1154,6 +1162,8 @@ export class ThreeBridge {
       this.promoteMeshRendererForPointerOrMotion(entity, obj)
       return true
     }
+    // Gltf PE stays instanced — pointer resolves instanceId. MeshRenderer PE still promotes.
+    if (this.ecs.GltfContainer.has(entity)) return false
     if (!obj.userData.dclInstanced && !this.instancer.has(entity)) return false
     this.promoteInstancedGltfForModifiers(entity, obj)
     return true
@@ -1229,9 +1239,7 @@ export class ThreeBridge {
         }
         continue
       }
-      if (GltfContainer.has(entity) && (this.instancer.has(entity) || this.store.nodes.get(entity)?.userData.dclInstanced)) {
-        if (this.ensurePointerMeshClone(entity)) fixed++
-      }
+      // Gltf PE stays on InstancedMesh (instanceId → entity). Do not promote.
     }
     return fixed
   }

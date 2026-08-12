@@ -394,6 +394,8 @@ export class SceneScriptSystem {
   private readonly colliderPoseDirty = new Set<Entity>()
   private readonly lastTweenMotionEntities = new Set<Entity>()
   private readonly lastSyncFrameTransformEntities = new Set<Entity>()
+  /** Full entity-graph updateMatrixWorld — skip when nothing moved. */
+  private sceneGraphMatrixDirty = true
   private readonly lastPoseChangedEntities: Entity[] = []
   /**
    * Systems that moved **parts** (bone/_collider) this frame — PART path.
@@ -1289,9 +1291,15 @@ export class SceneScriptSystem {
     }
   }
 
+  markSceneGraphDirty(): void {
+    this.sceneGraphMatrixDirty = true
+  }
+
   /** Propagate ECS transforms → matrixWorld on the full scene entity graph before collider extract. */
   flushSceneGraphMatrices(): void {
+    if (!this.sceneGraphMatrixDirty) return
     this.entityStore?.root.updateMatrixWorld(true)
+    this.sceneGraphMatrixDirty = false
   }
 
   /** Rewrite all GPU-instanced GLTF world matrices after hierarchy is stable. */
@@ -4529,6 +4537,7 @@ export class SceneScriptSystem {
     this.bridge.syncEcsVisibility(entities)
     this.tweenBridge?.sync(view)
     this.pointerStructureDirty = true
+    this.sceneGraphMatrixDirty = true
     this.lastSyncFrameTransformEntities.clear()
     for (const entity of entities) {
       this.lastTweenMotionEntities.add(entity)
@@ -4558,6 +4567,7 @@ export class SceneScriptSystem {
         const pb = Material.get(entity) as PbMaterial
         if (materialIsScalarOnly(pb)) this.bridge.forceApplyMeshRendererMaterial(entity)
       }
+      this.sceneGraphMatrixDirty = true
       return true
     }
     if (componentId === Material.componentId) {
@@ -6603,9 +6613,12 @@ export class SceneScriptSystem {
     if (this.tweenBridge?.hasLiveTweens()) {
       this.tweenBridge.update(delta, this.view)
       this.markTweenColliderPosesDirty()
+      this.sceneGraphMatrixDirty = true
     }
-    this.videoPlayerBridge?.sync(this.view)
-    this.audioSourceBridge?.sync(this.view)
+    if (this.bridgeSyncTick % 2 === 0) {
+      this.videoPlayerBridge?.sync(this.view)
+      this.audioSourceBridge?.sync(this.view)
+    }
     if (this.bridgeSyncTick % 4 === 0) {
       this.audioStreamBridge?.sync(this.view)
       this.assetLoadBridge?.sync(this.view)
@@ -6634,8 +6647,12 @@ export class SceneScriptSystem {
     }
     // PlayerEntity-parented scene meshes (Dead Surge path arrow) — re-parent each frame.
     this.bridge.syncReservedParentedTransforms(this.view)
-    this.billboardBridge?.sync(this.view)
-    this.billboardBridge?.update()
+    const billed = this.entityStore?.getBillboardEntities() ?? []
+    if (billed.length) {
+      this.billboardBridge?.sync(this.view)
+      this.billboardBridge?.update()
+      this.sceneGraphMatrixDirty = true
+    }
     this.markMotionEmitterColliderDirty()
     this.deliverTweenStateToWorker()
     this.videoPlayerBridge?.update(tickNumber, this.view)

@@ -3647,8 +3647,7 @@ export class ThreeBridge {
         return false
       }
     }
-    // PointerEvents need live meshes for raycast (promote later if PE arrives).
-    if (this.ecs.PointerEvents.has(entity)) return false
+    // PointerEvents hit InstancedMesh via resolveMeshRendererInstanceEntity.
     // MeshCollider: PhysX uses template collider shapes + entity pose for instances —
     // do NOT force clone (CBD puts MeshCollider on almost every prop).
     // GltfNodeModifiers: scalar color-only can use instanceColor (pixelwars boards).

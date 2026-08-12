@@ -15,6 +15,7 @@ import { CrdtEncoder } from '../../bridge/CrdtEncoder'
 import { ReservedEntitiesSync, type EntityPose } from '../../bridge/ReservedEntitiesSync'
 import { ThreeBridge } from '../../bridge/ThreeBridge'
 import { applySceneDiff } from '../../bridge/entityStoreApply'
+import { materialIsScalarOnly, type PbMaterial } from '../../bridge/material/MaterialApplier'
 import {
   expandTransformAncestors,
   sortEntitiesByTransformDepth,
@@ -4438,6 +4439,7 @@ export class SceneScriptSystem {
       MainCamera,
       InputModifier
     } = this.readComponents
+    const motionNow = new Map<Entity, Map<number, ProjectionChangeKind>>()
 
     for (const change of this.projection.changes) {
       if (
@@ -4515,6 +4517,21 @@ export class SceneScriptSystem {
         this.maybeTagPointerEdgeVisual(change.entity, change.componentId)
       }
 
+      // Host world: motion is UpdateWorld at fold — not a pendingDiff replay.
+      if (this.isHostMotionComponent(change.componentId)) {
+        let motion = motionNow.get(change.entity)
+        if (!motion) {
+          motion = new Map()
+          motionNow.set(change.entity, motion)
+        }
+        motion.set(change.componentId, change.kind)
+        continue
+      }
+
+      if (this.tryApplyHostPrimitiveNow(change.entity, change.componentId, change.kind)) {
+        continue
+      }
+
       let comps = this.pendingDiff.get(change.entity)
       if (!comps) {
         comps = new Map()
@@ -4525,7 +4542,89 @@ export class SceneScriptSystem {
       }
       comps.set(change.componentId, change.kind)
     }
+    if (motionNow.size) this.applyHostMotionNow(motionNow)
     this.publishPendingDiffPerf()
+  }
+
+  private isHostMotionComponent(componentId: number): boolean {
+    const c = this.readComponents
+    return (
+      componentId === c.Transform.componentId ||
+      componentId === c.Tween.componentId ||
+      componentId === c.TweenSequence.componentId ||
+      componentId === c.VisibilityComponent.componentId
+    )
+  }
+
+  /**
+   * Fold-time UpdateWorld for pose. AvatarAttach + VC live lane skip Transform
+   * (rod/line / reveal cam). Same extract path as the old motion peel.
+   */
+  private applyHostMotionNow(
+    poseDiff: Map<Entity, Map<number, ProjectionChangeKind>>
+  ): void {
+    if (!this.entityStore || !this.bridge) return
+    const view = this.view
+    const { Tween, MeshCollider, GltfContainer } = this.readComponents
+    const tweenId = Tween.componentId
+    const tweenEntities: Entity[] = []
+    for (const [entity, comps] of poseDiff) {
+      if (comps.has(tweenId)) tweenEntities.push(entity)
+    }
+    const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
+    applySceneDiff(this.entityStore, poseDiff, view, this.readComponents, tweenRefresh, {
+      skipTransformApply: (entity) =>
+        this.readComponents.AvatarAttach.has(entity) ||
+        this.projection.isVcLiveTransformEntity(entity),
+      onReservedParent: (entity, parent, v) => {
+        this.bridge?.noteReservedParentedEntity(entity, parent, v)
+      }
+    })
+    const entities = [...poseDiff.keys()]
+    this.bridge.syncEcsVisibility(entities)
+    this.bridge.syncInstancedTransforms(entities)
+    for (const entity of tweenEntities) {
+      this.bridge.ensureMeshRendererTweenVisual(entity)
+    }
+    this.bridge.syncEcsVisibility(entities)
+    this.tweenBridge?.sync(view)
+    this.pointerStructureDirty = true
+    for (const entity of entities) {
+      this.lastTweenMotionEntities.add(entity)
+      if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
+        this.colliderPoseDirty.add(entity)
+      }
+      this.markDescendantColliderPosesDirty(entity)
+    }
+  }
+
+  /**
+   * Primitive MeshRenderer + scalar Material at fold (pointer VFX / press_e).
+   * Gltf + textured maps stay in pendingDiff.
+   */
+  private tryApplyHostPrimitiveNow(
+    entity: Entity,
+    componentId: number,
+    kind: ProjectionChangeKind
+  ): boolean {
+    if (!this.bridge || kind === 'delete') return false
+    const { Material, MeshRenderer, GltfContainer } = this.readComponents
+    if (GltfContainer.has(entity)) return false
+    if (componentId === MeshRenderer.componentId) {
+      if (!this.bridge.ensureMeshRendererLeaf(entity)) return false
+      if (Material.has(entity)) {
+        const pb = Material.get(entity) as PbMaterial
+        if (materialIsScalarOnly(pb)) this.bridge.forceApplyMeshRendererMaterial(entity)
+      }
+      return true
+    }
+    if (componentId === Material.componentId) {
+      if (!MeshRenderer.has(entity)) return false
+      const pb = Material.get(entity) as PbMaterial
+      if (!materialIsScalarOnly(pb)) return false
+      return this.bridge.forceApplyMeshRendererMaterial(entity)
+    }
+    return false
   }
 
   /**
@@ -5274,8 +5373,8 @@ export class SceneScriptSystem {
   }
 
   /**
-   * Material/structure/mesh only. Motion Tweens stay in pendingDiff forever on plaza —
-   * they are peeled on the sync path and must not keep the 18ms async pie alive.
+   * Gltf / textured maps / unsealed structure only.
+   * Motion + scalar primitives apply at fold (host world).
    */
   hasContentApplyWork(): boolean {
     if ((this.getAttachProgressLite()?.pendingMesh ?? 0) > 0) return true
@@ -5287,7 +5386,7 @@ export class SceneScriptSystem {
     return false
   }
 
-  /** Sync motion peel for SceneLoop before present (Transform/Tween/Visibility only). */
+  /** Leftover Animator/Billboard peel. Pose already applied at fold. */
   peelMotionSync(deadlineMs: number): void {
     if (!this.bridge?.canConsumeDiff() || !this.pendingDiff.size) return
     this.flushTweenAndTransformFromPendingDiff({ hardMs: deadlineMs })

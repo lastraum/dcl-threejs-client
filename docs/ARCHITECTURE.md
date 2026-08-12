@@ -56,6 +56,8 @@ rAF: CCT + input → send (if !inFlight) → receive guest dirty
 
 Pointer inject / `player-frame` / CCT stay outside the clock.
 
+**Residency (P6 policy, already shipping):** one primary guest worker. Neighbor visuals enter 48 m / keep 80 m (0 GLB clones past keep). Live JS for other deployments is off (`aoiGlbShellsOnly`). Imposter bake is not this invert. PhysicsCombinedImpulse (1215) on PlayerEntity is read by the host CCT — never a second store PUT.
+
 **Transforms:** sim/comms stay DCL left-handed. Display conversion only at `dclTransform.ts`.
 
 ---

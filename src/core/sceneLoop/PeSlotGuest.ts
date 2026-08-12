@@ -22,8 +22,8 @@ export class PeSlotGuest implements SceneGuest {
     return this.sentAt
   }
 
-  isDue(_now: number): boolean {
-    return true
+  isDue(now: number): boolean {
+    return this.sentAt <= 0 || now - this.sentAt >= 50
   }
 
   sendTick(player: EntityPose, camera: EntityPose, _frame: number): void {

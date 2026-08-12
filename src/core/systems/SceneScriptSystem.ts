@@ -5345,6 +5345,13 @@ export class SceneScriptSystem {
     if (!armed && this.crdtOutboundPending.length) this.flushCrdtOutboundPendingSynchronously()
   }
 
+  /** Guest must tick now (pointer edge). Otherwise SceneLoop may stay at 20 Hz. */
+  needsImmediateGuestTick(): boolean {
+    return !!(
+      this.pointerEvents?.hasPendingInput() || this.pointerEvents?.hasPendingInjectPayload()
+    )
+  }
+
   isPlayFrameInFlight(): boolean {
     if (!this.playFrameInFlight) return false
     if (this.playFrameInFlightAt > 0 && performance.now() - this.playFrameInFlightAt > 2000) {

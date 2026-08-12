@@ -22,8 +22,11 @@ export class SceneScriptGuest implements SceneGuest {
     return this.sentAt
   }
 
-  isDue(_now: number): boolean {
-    return true
+  isDue(now: number): boolean {
+    // Pointer inject still needs a guest tick this turn. Otherwise 20 Hz — display
+    // rAF is the presenter, not scene.js.
+    if (this.getSystem().needsImmediateGuestTick()) return true
+    return this.sentAt <= 0 || now - this.sentAt >= 50
   }
 
   sendTick(_player: EntityPose, _camera: EntityPose, _frame: number): void {

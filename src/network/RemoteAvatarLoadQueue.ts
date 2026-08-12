@@ -283,9 +283,10 @@ export class RemoteAvatarLoadQueue {
       return
     }
     if (this.localEmoteBusy) return
-    // Never start a 4–32s compose on a frame that already blew 30 FPS.
-    if (lastFrameOverBudget(33)) {
-      this.scheduleIntervalPump(80)
+    // Presenter owns the frame. Do not start a multi-second compose unless the
+    // last present was cheap (Bevy: compose off the present thread).
+    if (lastFrameOverBudget(20)) {
+      this.scheduleIntervalPump(120)
       return
     }
 

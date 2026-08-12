@@ -59,11 +59,13 @@ async (guest VM, after present):
 
 The guest `@dcl/ecs` worker is a VM, not a second present world. Official `scene.js` still runs there. It must not sit on the present rAF.
 
+Guest play-frame is **20 Hz** unless a pointer edge needs an immediate tick. Display rAF is the presenter.
+
 Pointer inject / `player-frame` / CCT stay on the host.
 
-Remote avatar **pose** ticks on present. Remote **compose** is idle-only (placeholders until the body is ready).
+Remote avatar **pose** ticks on present. Remote **compose** starts only when the last present frame was cheap (idle callback). Placeholders stay until the body is ready.
 
-**Residency:** one primary guest worker. Neighbor visuals enter 48 m / keep 80 m (0 GLB clones past keep). Live JS for other deployments is off (`aoiGlbShellsOnly`). Far shells are merged statics, not a second live world. PhysicsCombinedImpulse (1215) on PlayerEntity is read by the host CCT — never a second store PUT.
+**Residency:** one primary guest worker. Neighbors are **one AABB proxy** (no GLB clones). Live JS for other deployments is off. PhysicsCombinedImpulse (1215) on PlayerEntity is read by the host CCT — never a second store PUT.
 
 **Transforms:** sim/comms stay DCL left-handed. Display conversion only at `dclTransform.ts`.
 

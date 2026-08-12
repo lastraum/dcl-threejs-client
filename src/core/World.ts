@@ -844,20 +844,28 @@ export class World {
     }
 
     this.clearOcean()
-    const fftSettings = resolveFftOceanSettings(scene.metadata)
-    // waterEnabled folds scene.json + URL (?water=0 / noWater / disableWater)
-    const waterDisabled = !fftSettings.waterEnabled || isClientWaterDisabled()
-    if (!skipClientLandscape && landscapeProfile.showWater && waterDisabled) {
+    // Law: biome owns water. island / water / mountains (showWater) → ocean mesh.
+    // Not a separate ?water=1 opt-in. Only explicit kill: ?water=0 / noWater /
+    // disableWater, or scene.json environment.water.enabled=false.
+    const fftSettings = resolveFftOceanSettings(scene.metadata, {
+      landscapeWantsWater: landscapeProfile.showWater === true
+    })
+    const biomeWantsOcean = !skipClientLandscape && landscapeProfile.showWater === true
+    const oceanKilled = !fftSettings.waterEnabled || isClientWaterDisabled()
+    if (biomeWantsOcean && oceanKilled) {
       console.info(
-        '[ocean] disabled (?water=0 / scene environment.water.enabled=false) — no water mesh or GPGPU'
+        `[ocean] biome=${landscapeProfile.kind} wants water but killed ` +
+          `(?water=0 / noWater / disableWater / environment.water.enabled=false)`
       )
-    } else if (!skipClientLandscape && landscapeProfile.showWater) {
+      this.host.renderStats.setOceanPerf(null)
+    } else if (biomeWantsOcean) {
       const useFftOcean = fftSettings.enabled && this.host.renderer.capabilities.isWebGL2
       if (fftSettings.enabled && !useFftOcean) {
         console.warn('[ocean] FFTOCEAN requires WebGL2 — using Water.js')
       }
       console.info(
-        `[ocean] env=${landscapeProfile.kind} openOcean=${openOcean} fftOcean=${useFftOcean} fft=${fftSettings.fftResolution} amp=${fftSettings.amplitude}`
+        `[ocean] biome=${landscapeProfile.kind} showWater=true openOcean=${openOcean} ` +
+          `fftOcean=${useFftOcean} fft=${fftSettings.fftResolution} amp=${fftSettings.amplitude}`
       )
       this.ocean = openOcean
         ? useFftOcean

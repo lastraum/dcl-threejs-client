@@ -78,7 +78,6 @@ export class FftOceanWater {
   private readonly gpgpuInterval: number
   private readonly baseSpecularIntensity: number
   private readonly baseVertexSpacing: number
-  private readonly islandMask: boolean
   private readonly dummyHeightTex: THREE.DataTexture
   private authorHeightMap: AuthorTerrainHeightMap | null = null
   private wakeEnabled = false
@@ -99,7 +98,6 @@ export class FftOceanWater {
   ) {
     this.group.name = mode === 'island' ? 'island-water' : 'open-ocean-water'
     this.baseVertexSpacing = baseVertexSpacing
-    this.islandMask = mode === 'island'
     this.mesh = mesh
     this.material = material
     this.gpgpu = gpgpu
@@ -339,19 +337,20 @@ export class FftOceanWater {
     const u = this.material.uniforms
     u.uTime.value = this.elapsed
 
+    // Clipmap follows the camera (relative to ocean group). Shore mask uses absolute
+    // world XZ in the vertex shader, so the island stays put while the sea moves.
     const relX = camera.position.x - this.group.position.x
     const relZ = camera.position.z - this.group.position.z
     ;(u.uViewerPos.value as THREE.Vector2).set(relX, relZ)
 
     this.syncWorldUniforms()
 
-    if (this.islandMask) {
-      const snap = this.baseVertexSpacing
-      ;(u.uSnapXZ.value as THREE.Vector2).set(
-        Math.floor(relX / snap) * snap,
-        Math.floor(relZ / snap) * snap
-      )
-    }
+    // Keep uSnapXZ in sync for any debug / secondary consumers (vert uses uViewerPos).
+    const snap = this.baseVertexSpacing
+    ;(u.uSnapXZ.value as THREE.Vector2).set(
+      Math.floor(relX / snap) * snap,
+      Math.floor(relZ / snap) * snap
+    )
 
     // Advance / decay local wake.
     if (this.wakeEnabled) {

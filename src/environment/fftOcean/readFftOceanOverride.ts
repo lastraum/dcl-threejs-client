@@ -129,10 +129,11 @@ function applyUrlOverrides(base: FftOceanSimSettings): FftOceanSimSettings {
   const mobile = window.innerWidth <= 768
   const next = { ...base, windDirection: base.windDirection.clone() }
 
-  // Master water — default OFF (isClientWaterDisabled). Opt-in ?water=1 only.
+  // Master water — only override when URL explicitly mentions water.
+  // Do not clobber biome/scene defaults when the param is absent.
   const waterQ = parseBoolQueryOptional(params.get('water'))
   if (waterQ === true) next.waterEnabled = true
-  else next.waterEnabled = false
+  else if (waterQ === false) next.waterEnabled = false
   if (parseBoolQueryOptional(params.get('noWater')) === true) next.waterEnabled = false
   if (parseBoolQueryOptional(params.get('disableWater')) === true) next.waterEnabled = false
 
@@ -170,11 +171,26 @@ function applyUrlOverrides(base: FftOceanSimSettings): FftOceanSimSettings {
   return next
 }
 
+export type ResolveFftOceanOptions = {
+  /**
+   * Biome profile `showWater` (island / water / mountains).
+   * When true, water mesh is ON — that is the biome flag. Not a separate opt-in.
+   * scene.json `water.enabled: false` or `?water=0` can still kill it.
+   * When false, water stays off unless `?water=1` or scene.json `water.enabled: true`.
+   */
+  landscapeWantsWater?: boolean
+}
+
 /**
- * Full ocean settings for a scene: defaults ← scene.json `environment.water` ← URL query.
- * URL query wins for debug (same as other client landscape overrides).
+ * Full ocean settings:
+ * defaults ← biome showWater ← scene.json environment.water ← URL.
+ *
+ * Biome law: island/water/mountains ⇒ waterEnabled. Do not require `?water=1`.
  */
-export function resolveFftOceanSettings(metadata?: SceneMetadata | null): FftOceanSettings {
+export function resolveFftOceanSettings(
+  metadata?: SceneMetadata | null,
+  options?: ResolveFftOceanOptions
+): FftOceanSettings {
   const sceneWater = readSceneWaterConfig(metadata)
   const fromScene = mergeSceneWater(
     {
@@ -183,6 +199,12 @@ export function resolveFftOceanSettings(metadata?: SceneMetadata | null): FftOce
     },
     sceneWater
   )
+  // Biome owns water. showWater true → mesh on, unless scene.json set enabled:false.
+  if (options?.landscapeWantsWater === true) {
+    if (typeof sceneWater.enabled !== 'boolean') {
+      fromScene.waterEnabled = true
+    }
+  }
   return applyUrlOverrides(fromScene)
 }
 
@@ -192,22 +214,17 @@ export function readFftOceanOverride(): FftOceanSettings {
 }
 
 /**
- * Client water (FFT + Water.js island/open) is **off by default** for all scenes —
- * SDK scenes do not need landscape ocean, and GPGPU was ~16ms on enter.
- *
- * Opt-in: `?water=1` / `?water=true`
- * Explicit off (no-op now): `?water=0` / `?noWater` / `?disableWater`
+ * Explicit URL kill only (`?water=0` / `?noWater` / `?disableWater`).
+ * Does NOT default-disable water — biome showWater turns ocean on.
  */
 export function isClientWaterDisabled(): boolean {
-  if (typeof window === 'undefined') return true
+  if (typeof window === 'undefined') return false
   const params = new URLSearchParams(window.location.search)
   const water = parseBoolQueryOptional(params.get('water'))
-  // Only explicit opt-in enables client water.
-  if (water === true) return false
   if (water === false) return true
   if (parseBoolQueryOptional(params.get('noWater')) === true) return true
   if (parseBoolQueryOptional(params.get('disableWater')) === true) return true
-  return true
+  return false
 }
 
 /** Keys that must trigger a full scene reload when changed (path unchanged). */

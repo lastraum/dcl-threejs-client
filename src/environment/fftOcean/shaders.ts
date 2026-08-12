@@ -258,6 +258,8 @@ void main() {
     float gridSize = uBaseVertexSpacing * exp2(lod);
     float nextGridSize = gridSize * 2.0;
 
+    // Camera-following clipmap (true infinite ocean). uViewerPos is camera XZ
+    // relative to the ocean group; snap vertices to the grid so LODs don't crawl.
     vec2 snappedCamera = floor(uViewerPos / gridSize) * gridSize;
     vec2 worldXZ = position.xz + snappedCamera;
 
@@ -277,7 +279,11 @@ void main() {
     float choppyZ = dataZ.x;
 
     float dampen = 1.0;
-    vec2 globalXZ = finalWorldXZ - snappedCamera + uGroupWorldXZ;
+    // Absolute Three world XZ. Must KEEP snappedCamera so the mesh rides with the
+    // camera — previously we subtracted it, which froze the ocean on the island
+    // center (~4 km square edge visible from altitude / far pan).
+    // Island shore mask / author heights still use absolute world coords.
+    vec2 globalXZ = finalWorldXZ + uGroupWorldXZ;
     // Default: deep ocean (full waves). Raise terrainY where land exists.
     float terrainY = uWaterWorldY - ISLAND_OFFSHORE_DEPTH_M;
     float islandDist = 0.0;

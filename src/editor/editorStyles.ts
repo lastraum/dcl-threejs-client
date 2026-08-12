@@ -5,6 +5,139 @@ export function injectEditorStyles(): void {
   const style = document.createElement('style')
   style.id = STYLE_ID
   style.textContent = `
+/*
+ * Subtle transparent scrollbars on editor chrome — thin ghost track so users
+ * still see “there’s more below,” without the heavy native bar.
+ * Hover / active brightens the thumb; wheel / trackpad / touch still work.
+ */
+.editor-hub-page,
+.editor-hub,
+.editor-workspace,
+.editor-float-flyout,
+.editor-sculpt-panel,
+.editor-env-box,
+.editor-env-water,
+.editor-space-panel,
+.editor-desert-panel,
+.editor-land-panel,
+.editor-mountains-panel,
+.editor-sculpt-viewport-box,
+.editor-sculpt-shading-box,
+.editor-camera-controls-popover,
+.editor-hub-modal {
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: rgba(148, 163, 184, 0.28) transparent;
+}
+.editor-hub-page:hover,
+.editor-hub:hover,
+.editor-workspace:hover,
+.editor-float-flyout:hover,
+.editor-sculpt-panel:hover,
+.editor-hub-modal:hover {
+  scrollbar-color: rgba(110, 231, 183, 0.45) rgba(15, 23, 42, 0.2);
+}
+/* Nested scrollables inside flyouts / panels */
+.editor-float-flyout *,
+.editor-sculpt-panel *,
+.editor-hub-modal * {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.28) transparent;
+}
+.editor-float-flyout *:hover,
+.editor-sculpt-panel *:hover,
+.editor-hub-modal *:hover {
+  scrollbar-color: rgba(110, 231, 183, 0.45) rgba(15, 23, 42, 0.2);
+}
+/* WebKit / Chromium */
+.editor-hub-page::-webkit-scrollbar,
+.editor-hub::-webkit-scrollbar,
+.editor-workspace::-webkit-scrollbar,
+.editor-float-flyout::-webkit-scrollbar,
+.editor-sculpt-panel::-webkit-scrollbar,
+.editor-env-box::-webkit-scrollbar,
+.editor-env-water::-webkit-scrollbar,
+.editor-space-panel::-webkit-scrollbar,
+.editor-desert-panel::-webkit-scrollbar,
+.editor-land-panel::-webkit-scrollbar,
+.editor-mountains-panel::-webkit-scrollbar,
+.editor-sculpt-viewport-box::-webkit-scrollbar,
+.editor-sculpt-shading-box::-webkit-scrollbar,
+.editor-camera-controls-popover::-webkit-scrollbar,
+.editor-hub-modal::-webkit-scrollbar,
+.editor-float-flyout *::-webkit-scrollbar,
+.editor-sculpt-panel *::-webkit-scrollbar,
+.editor-hub-modal *::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.editor-hub-page::-webkit-scrollbar-track,
+.editor-hub::-webkit-scrollbar-track,
+.editor-workspace::-webkit-scrollbar-track,
+.editor-float-flyout::-webkit-scrollbar-track,
+.editor-sculpt-panel::-webkit-scrollbar-track,
+.editor-env-box::-webkit-scrollbar-track,
+.editor-env-water::-webkit-scrollbar-track,
+.editor-space-panel::-webkit-scrollbar-track,
+.editor-desert-panel::-webkit-scrollbar-track,
+.editor-land-panel::-webkit-scrollbar-track,
+.editor-mountains-panel::-webkit-scrollbar-track,
+.editor-sculpt-viewport-box::-webkit-scrollbar-track,
+.editor-sculpt-shading-box::-webkit-scrollbar-track,
+.editor-camera-controls-popover::-webkit-scrollbar-track,
+.editor-hub-modal::-webkit-scrollbar-track,
+.editor-float-flyout *::-webkit-scrollbar-track,
+.editor-sculpt-panel *::-webkit-scrollbar-track,
+.editor-hub-modal *::-webkit-scrollbar-track {
+  background: transparent;
+}
+.editor-hub-page::-webkit-scrollbar-thumb,
+.editor-hub::-webkit-scrollbar-thumb,
+.editor-workspace::-webkit-scrollbar-thumb,
+.editor-float-flyout::-webkit-scrollbar-thumb,
+.editor-sculpt-panel::-webkit-scrollbar-thumb,
+.editor-env-box::-webkit-scrollbar-thumb,
+.editor-env-water::-webkit-scrollbar-thumb,
+.editor-space-panel::-webkit-scrollbar-thumb,
+.editor-desert-panel::-webkit-scrollbar-thumb,
+.editor-land-panel::-webkit-scrollbar-thumb,
+.editor-mountains-panel::-webkit-scrollbar-thumb,
+.editor-sculpt-viewport-box::-webkit-scrollbar-thumb,
+.editor-sculpt-shading-box::-webkit-scrollbar-thumb,
+.editor-camera-controls-popover::-webkit-scrollbar-thumb,
+.editor-hub-modal::-webkit-scrollbar-thumb,
+.editor-float-flyout *::-webkit-scrollbar-thumb,
+.editor-sculpt-panel *::-webkit-scrollbar-thumb,
+.editor-hub-modal *::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.28);
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+.editor-hub-page:hover::-webkit-scrollbar-thumb,
+.editor-hub:hover::-webkit-scrollbar-thumb,
+.editor-workspace:hover::-webkit-scrollbar-thumb,
+.editor-float-flyout:hover::-webkit-scrollbar-thumb,
+.editor-sculpt-panel:hover::-webkit-scrollbar-thumb,
+.editor-hub-modal:hover::-webkit-scrollbar-thumb,
+.editor-float-flyout *:hover::-webkit-scrollbar-thumb,
+.editor-sculpt-panel *:hover::-webkit-scrollbar-thumb,
+.editor-hub-modal *:hover::-webkit-scrollbar-thumb {
+  background: rgba(110, 231, 183, 0.5);
+}
+.editor-float-flyout::-webkit-scrollbar-thumb:active,
+.editor-sculpt-panel::-webkit-scrollbar-thumb:active,
+.editor-hub::-webkit-scrollbar-thumb:active,
+.editor-hub-modal::-webkit-scrollbar-thumb:active {
+  background: rgba(110, 231, 183, 0.7);
+}
+.editor-hub-page::-webkit-scrollbar-corner,
+.editor-hub::-webkit-scrollbar-corner,
+.editor-workspace::-webkit-scrollbar-corner,
+.editor-float-flyout::-webkit-scrollbar-corner,
+.editor-sculpt-panel::-webkit-scrollbar-corner,
+.editor-hub-modal::-webkit-scrollbar-corner {
+  background: transparent;
+}
 .editor-hub-page {
   position: fixed;
   inset: 0;
@@ -360,7 +493,9 @@ export function injectEditorStyles(): void {
   z-index: 16;
   width: min(300px, calc(100% - 88px));
   max-height: min(78vh, 720px);
+  overflow-x: hidden;
   overflow-y: auto;
+  /* thin transparent scrollbar via shared editor rules above */
   padding: 12px;
   border-radius: 14px;
   background: rgba(12, 18, 22, 0.92);
@@ -668,10 +803,10 @@ export function injectEditorStyles(): void {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 8px;
-  border-radius: 10px;
-  background: rgba(20, 40, 50, 0.45);
-  border: 1px solid rgba(110, 180, 231, 0.2);
+  /* No nested card — flyout chrome is enough */
+  padding: 0;
+  background: transparent;
+  border: 0;
 }
 .editor-env-water {
   display: flex;
@@ -680,9 +815,6 @@ export function injectEditorStyles(): void {
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid rgba(148, 163, 184, 0.15);
-}
-.editor-env-water--inactive {
-  opacity: 0.55;
 }
 .editor-env-water--hidden {
   display: none !important;
@@ -743,35 +875,24 @@ export function injectEditorStyles(): void {
 .editor-viewport-dock-group--hidden {
   display: none !important;
 }
+/* Biome sub-panels sit on the flyout — no extra tinted card per menu */
 .editor-space-panel,
 .editor-desert-panel,
 .editor-land-panel,
+.editor-forest-panel,
 .editor-mountains-panel {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 8px;
-  border-radius: 10px;
-}
-.editor-space-panel {
-  background: rgba(8, 12, 28, 0.55);
-  border: 1px solid rgba(110, 140, 255, 0.22);
-}
-.editor-desert-panel {
-  background: rgba(40, 28, 12, 0.55);
-  border: 1px solid rgba(212, 168, 88, 0.28);
-}
-.editor-land-panel {
-  background: rgba(28, 40, 18, 0.55);
-  border: 1px solid rgba(90, 158, 74, 0.28);
-}
-.editor-mountains-panel {
-  background: rgba(18, 28, 36, 0.55);
-  border: 1px solid rgba(155, 176, 196, 0.28);
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  border: 0;
 }
 .editor-space-panel.editor-sculpt-tools--hidden,
 .editor-desert-panel.editor-sculpt-tools--hidden,
 .editor-land-panel.editor-sculpt-tools--hidden,
+.editor-forest-panel.editor-sculpt-tools--hidden,
 .editor-mountains-panel.editor-sculpt-tools--hidden {
   display: none !important;
 }
@@ -953,10 +1074,10 @@ export function injectEditorStyles(): void {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 8px;
-  border-radius: 10px;
-  background: rgba(20, 40, 30, 0.45);
-  border: 1px solid rgba(110, 231, 183, 0.18);
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  border: 0;
 }
 .editor-sculpt-shading-title {
   font-size: 10px;

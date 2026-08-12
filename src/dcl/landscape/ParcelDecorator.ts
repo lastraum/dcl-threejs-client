@@ -9,12 +9,19 @@ import { parcelKeyFromDclScene, randomParcelLocalXZ } from './Utils/SceneSpace'
 import { applyFoliageWindToObject } from './foliageWind'
 import { hashParcelCoords, mulberry32, pickInt } from './Utils/SeededRandom'
 
-/** Optional density / perlin overrides from scene.json environment.desert / .mountains */
+/** Optional density / perlin overrides from scene.json environment.desert / .mountains / .forest */
 export type DecorateDensityOpts = {
   rockDensity?: number
   treeDensity?: number
   bushDensity?: number
   backdropDensity?: number
+  /**
+   * Per tree-hash density 0–2 (forest). Parallel to profile.trees.
+   * When set, used for weighted pick + mean scale of tree counts.
+   */
+  treeDensities?: number[]
+  /** Per rock-hash density 0–2 (forest). Parallel to profile.rocks. */
+  rockDensities?: number[]
   /** Desert rock perlin frequency (parcel units). */
   perlinScale?: number
   /** Desert: only place rocks when perlin ≥ threshold. */
@@ -100,6 +107,32 @@ function pickHash<T extends readonly string[]>(rng: () => number, pool: T): stri
   return pool[Math.floor(rng() * pool.length)]!
 }
 
+function meanOf(weights: number[] | undefined, n: number, fallback = 1): number {
+  if (!weights?.length || n <= 0) return fallback
+  let s = 0
+  for (let i = 0; i < n; i++) s += Math.max(0, Math.min(2, weights[i] ?? fallback))
+  return s / n
+}
+
+/** Weighted pick; zero weights skipped. */
+function weightedPickHash(
+  rng: () => number,
+  pool: readonly string[],
+  weights: number[] | undefined
+): string {
+  if (!pool.length) return ''
+  if (!weights?.length) return pickHash(rng, pool)
+  let sum = 0
+  for (let i = 0; i < pool.length; i++) sum += Math.max(0, weights[i] ?? 1)
+  if (sum <= 1e-8) return pool[0]!
+  let t = rng() * sum
+  for (let i = 0; i < pool.length; i++) {
+    t -= Math.max(0, weights[i] ?? 1)
+    if (t <= 0) return pool[i]!
+  }
+  return pool[pool.length - 1]!
+}
+
 function countsForProfile(profile: LandscapeEnvironmentProfile): DecorationCounts {
   if (profile.kind === 'island') return ISLAND_PADDING
   if (profile.kind === 'forest') return FOREST_PADDING
@@ -147,10 +180,19 @@ export async function decorateParcel(
 
   const rng = mulberry32(hashParcelCoords(parcelX, parcelY))
   const baseCounts = countsForProfile(profile)
+  // Forest: per-type arrays override global tree/rock multipliers when present.
+  const treeMul =
+    density?.treeDensities?.length
+      ? meanOf(density.treeDensities, profile.trees.length)
+      : (density?.treeDensity ?? 1)
+  const rockMul =
+    density?.rockDensities?.length
+      ? meanOf(density.rockDensities, profile.rocks.length)
+      : (density?.rockDensity ?? 1)
   const counts: DecorationCounts = {
-    trees: scaleRange(baseCounts.trees, density?.treeDensity ?? 1),
+    trees: scaleRange(baseCounts.trees, treeMul),
     bushes: scaleRange(baseCounts.bushes, density?.bushDensity ?? 1),
-    rocks: scaleRange(baseCounts.rocks, density?.rockDensity ?? 1),
+    rocks: scaleRange(baseCounts.rocks, rockMul),
     grass: baseCounts.grass,
     backdrop: baseCounts.backdrop
       ? scaleRange(baseCounts.backdrop, density?.backdropDensity ?? 1)
@@ -193,7 +235,7 @@ export async function decorateParcel(
     const scale = 0.9 + rng() * 0.2
     await placeProp(
       cache,
-      pickHash(rng, profile.trees),
+      weightedPickHash(rng, profile.trees, density?.treeDensities),
       root,
       pos.x,
       pos.z,
@@ -240,7 +282,15 @@ export async function decorateParcel(
       if (lp < density.perlinThreshold) continue
     }
     const scale = desertPadding ? 0.45 + rng() * 0.35 : 0.7 + rng() * 0.6
-    await placeProp(cache, pickHash(rng, profile.rocks), root, pos.x, pos.z, rng() * Math.PI * 2, scale)
+    await placeProp(
+      cache,
+      weightedPickHash(rng, profile.rocks, density?.rockDensities),
+      root,
+      pos.x,
+      pos.z,
+      rng() * Math.PI * 2,
+      scale
+    )
   }
 
   const grassCount =

@@ -141,12 +141,18 @@ function collectGrassInstances(
   sceneParcels: string[],
   sceneSeed: number,
   borderPadding: number,
-  groundTint: THREE.Color
+  groundTint: THREE.Color,
+  densityScale: number
 ): GrassInstance[] {
   const instances: GrassInstance[] = []
+  if (densityScale <= 0.001) return instances
   const sceneParcelSet = new Set(sceneParcels)
   const sceneBounds = sceneParcelBounds(sceneParcels)
   const base = ctx.base
+  const maxCount = Math.max(
+    1,
+    Math.floor(GRASS_OPTIONS.maxInstanceCount * Math.max(0.25, densityScale))
+  )
 
   let minPx = Infinity
   let maxPx = -Infinity
@@ -176,14 +182,14 @@ function collectGrassInstances(
       const origin = { x: (px - base.x) * PARCEL_SIZE, z: (py - base.y) * PARCEL_SIZE }
 
       const patch = simplex2d(px * 0.19, py * 0.19)
-      const density = falloff * (0.5 + (patch * 0.5 + 0.5) * 0.5)
+      const density = falloff * (0.5 + (patch * 0.5 + 0.5) * 0.5) * densityScale
       if (density < 0.1) continue
 
       const grassMax = Math.max(1, Math.round(14 * GRASS_DENSITY_MULTIPLIER * density))
       const grassCount = pickInt(rng, 0, grassMax)
       const positions = distributedParcelPositions(rng, grassCount, {
         inset: 0.35,
-        minSeparation: 1.1 / Math.sqrt(GRASS_DENSITY_MULTIPLIER)
+        minSeparation: 1.1 / Math.sqrt(GRASS_DENSITY_MULTIPLIER * Math.max(0.25, densityScale))
       })
 
       for (const pos of positions) {
@@ -210,7 +216,7 @@ function collectGrassInstances(
           color
         })
 
-        if (instances.length >= GRASS_OPTIONS.maxInstanceCount) return instances
+        if (instances.length >= maxCount) return instances
       }
     }
   }
@@ -224,6 +230,16 @@ export type EzTreeGrassFieldOptions = {
    * Resolved from `environment.windShader` / `?windShader=` — defaults **on**.
    */
   windShader?: boolean
+  /**
+   * Blade density multiplier for outer land/forest patches (0–2). Default 1.
+   * Land biome: `environment.land.grassDensity`. Not author/Ez Grass paint.
+   */
+  densityScale?: number
+  /**
+   * Blade / material tint. Land biome: `environment.land.grassColor`.
+   * Default ez-tree red grass when omitted.
+   */
+  grassColor?: THREE.Color | string | number
 }
 
 /**
@@ -238,17 +254,36 @@ export async function buildEzTreeGrassField(
   onProgress?: (msg: string) => void,
   options?: EzTreeGrassFieldOptions
 ): Promise<EzTreeGrassFieldHandle | null> {
-  const instances = collectGrassInstances(ctx, sceneParcels, sceneSeed, borderPadding, GRASS_BLADE_TINT)
+  const densityScale =
+    typeof options?.densityScale === 'number' && Number.isFinite(options.densityScale)
+      ? Math.max(0, Math.min(2, options.densityScale))
+      : 1
+  const bladeTint = new THREE.Color()
+  if (options?.grassColor != null) {
+    if (options.grassColor instanceof THREE.Color) bladeTint.copy(options.grassColor)
+    else bladeTint.set(options.grassColor as THREE.ColorRepresentation)
+  } else {
+    bladeTint.copy(GRASS_BLADE_TINT)
+  }
+  const instances = collectGrassInstances(
+    ctx,
+    sceneParcels,
+    sceneSeed,
+    borderPadding,
+    bladeTint,
+    densityScale
+  )
   if (!instances.length) return null
 
   // Default on — client always runs the wind shader unless explicitly disabled.
   const windShader = options?.windShader !== false
   onProgress?.(
-    `ez-tree grass: ${instances.length} instances${windShader ? ' + windShader' : ' (wind off)'}`
+    `ez-tree grass: ${instances.length} blades · density×${densityScale.toFixed(2)}` +
+      `${windShader ? ' + wind' : ' (wind off)'}`
   )
   if (windShader) {
     console.info(
-      `[windShader] ez-tree grass wind enabled (${instances.length} blades) — disable with environment.windShader:false or ?windShader=0`
+      `[windShader] ez-tree grass wind enabled (${instances.length} blades, density×${densityScale.toFixed(2)}) — disable with environment.windShader:false or ?windShader=0`
     )
   }
 
@@ -256,7 +291,7 @@ export async function buildEzTreeGrassField(
   const map = extractMaterialMap(sourceMesh.material)
   if (!map) throw new Error('ez-tree grass: texture unavailable after load')
 
-  const grassMaterial = createGrassMaterial(map, GRASS_BLADE_TINT, windShader)
+  const grassMaterial = createGrassMaterial(map, bladeTint, windShader)
   const grassMesh = new THREE.InstancedMesh(sourceMesh.geometry, grassMaterial, instances.length)
   grassMesh.name = 'landscape:ez-tree-grass'
   grassMesh.receiveShadow = true

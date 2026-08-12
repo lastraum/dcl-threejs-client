@@ -41,6 +41,7 @@ export class WorldLocationCard {
   private readonly coordsEl: HTMLElement
   private readonly expandBtn: HTMLButtonElement | null
   private readonly optionsBtn: HTMLButtonElement | null
+  private readonly bodyEl: HTMLElement | null
   private collapsed = false
   private disposed = false
   private readonly getCoordsLabel: () => string
@@ -131,13 +132,27 @@ export class WorldLocationCard {
     this.coordsEl = this.root.querySelector('.world-location-card__coords-text')!
     this.expandBtn = this.root.querySelector('.world-location-card__expand')
     this.optionsBtn = this.root.querySelector('[data-scene-options]')
+    this.bodyEl = this.root.querySelector('.world-location-card__body')
 
     this.titleEl.textContent = title
 
     if (showExpand && this.expandBtn) {
+      // pointerdown (capture) so the toggle still fires if canvas/gesture
+      // handlers swallow the later `click` after pointer unlock.
+      this.expandBtn.addEventListener(
+        'pointerdown',
+        (ev) => {
+          if (ev.button !== 0) return
+          ev.preventDefault()
+          ev.stopPropagation()
+          this.setCollapsed(!this.collapsed)
+        },
+        { capture: true }
+      )
+      // Swallow the synthetic click so we never double-toggle.
       this.expandBtn.addEventListener('click', (ev) => {
+        ev.preventDefault()
         ev.stopPropagation()
-        this.setCollapsed(!this.collapsed)
       })
     }
     if (this.showJump) {
@@ -169,6 +184,11 @@ export class WorldLocationCard {
   private setCollapsed(next: boolean): void {
     this.collapsed = next
     this.root.classList.toggle('is-collapsed', next)
+    // Worlds: hide JUMP BACK row via attribute (CSS class can be overridden by scene UI).
+    if (this.bodyEl) {
+      this.bodyEl.hidden = next
+      this.bodyEl.setAttribute('aria-hidden', next ? 'true' : 'false')
+    }
     // Map stack: collapse class lives on the shared host so the circle slides away.
     if (this.mapToggle?.host) {
       this.mapToggle.host.classList.toggle('is-map-collapsed', next)

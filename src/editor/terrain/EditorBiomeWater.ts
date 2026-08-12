@@ -155,12 +155,14 @@ export class EditorBiomeWater {
     const settings = this.getFftSettings()
 
     try {
-      // Master kill switch: environment.water.enabled === false → no mesh at all
-      // (do NOT fall back to Water.js — that looked like "doubling" when FFT was off).
+      // mode already follows biome showWater. waterEnabled=false only after
+      // resolveFftOceanSettings with landscapeWantsWater — i.e. explicit scene/URL kill.
       if (mode !== 'hidden' && settings.waterEnabled === false) {
         this.mode = 'hidden'
         this.backend = 'none'
-        console.info('[editor] water mesh disabled (environment.water.enabled=false)')
+        console.info(
+          `[editor] water killed (environment.water.enabled=false or ?water=0), biomeMode was ${mode}`
+        )
         this.applyVisibility()
         return
       }

@@ -55,9 +55,10 @@ export type SceneEnvironmentKind =
  */
 export type SceneWaterConfig = {
   /**
-   * When false, no client water mesh (same as `?water=0`).
-   * Default true only when biome is `island`/`water` (those profiles set showWater).
-   * Worlds no longer default to island — set `environment.kind` / `"island"` to get water.
+   * Explicit water mesh kill/force. Biome owns water by default:
+   * `environment.kind` island | water | mountains → ocean ON (showWater).
+   * Set `enabled: false` (or `?water=0`) to kill on an island world.
+   * Set `enabled: true` (or `?water=1`) only when forcing water on a dry biome.
    */
   enabled?: boolean
   /** When false, use Water.js fallback instead of GPGPU FFT. Default true when WebGL2. */
@@ -150,6 +151,11 @@ export type SceneDesertConfig = {
   acrossParcels?: boolean
   /** Procedural dune field on the outer gold plane. Default true. */
   dunes?: boolean
+  /**
+   * When true, Perlin dune height is also applied under scene parcels.
+   * Default **false** — dunes stay outside the scene footprint so author terrain stays flat.
+   */
+  dunesOnParcels?: boolean
   /** Crest height in metres. Default 1.1. */
   duneHeight?: number
   /** Ridge spacing across wind (short axis), metres. Default 22. */
@@ -163,12 +169,46 @@ export type SceneDesertConfig = {
 }
 
 /**
- * Land biome look — ground tint for infinite / padding grass tiles.
+ * Land biome look — ground tint + outer ez-tree grass patches (not author paint).
  * Applied when `environment.kind === "land"`. ThreejsClient-only.
  */
 export type SceneLandConfig = {
-  /** Tint color for land ground GLBs / infinite tiles. Default `#c43c2c` (red grass). */
+  /** Tint color for land ground plane. Default `#c43c2c` (red grass). */
   groundColor?: string
+  /**
+   * Outer land-biome grass patch density 0–2 (ez-tree blades around the scene).
+   * Default 1. Does **not** affect author-terrain / Ez Grass paint.
+   */
+  grassDensity?: number
+  /**
+   * Blade tint for outer land-biome ez-tree grass patches.
+   * Default `#d44831` (matches empty-land red grass). Not paint Ez Grass.
+   */
+  grassColor?: string
+}
+
+/**
+ * Forest biome — ground tint + per empty-land tree / rock seed densities.
+ * Arrays align with `EMPTY_LAND.trees` / `EMPTY_LAND.rocks` (index 0…n-1).
+ * Density values 0–2 (default 1). ThreejsClient-only.
+ */
+export type SceneForestConfig = {
+  /**
+   * Floor plane color (same solid-color expanse as land biome).
+   * Default `#c43c2c` (red grass). Replaces red-grass GLB tiles.
+   */
+  groundColor?: string
+  /**
+   * Outer ez-tree grass blade tint (forest floor patches, not paint Ez Grass).
+   * Default `#d44831`.
+   */
+  grassColor?: string
+  /** Density per tree variant (coral, pink, green canopy). Length 3. */
+  treeDensity?: number[]
+  /** Density per rock variant. Length 3. */
+  rockDensity?: number[]
+  /** Global bush density multiplier 0–2. Default 1. */
+  bushDensity?: number
 }
 
 /**
@@ -230,6 +270,8 @@ export type SceneEnvironmentConfig = {
   desert?: SceneDesertConfig
   /** Land ground tint when `kind === "land"`. ThreejsClient-only. */
   land?: SceneLandConfig
+  /** Forest tree/rock seed densities when `kind === "forest"`. ThreejsClient-only. */
+  forest?: SceneForestConfig
   /** Mountains prop density / haze when `kind === "mountains"`. ThreejsClient-only. */
   mountains?: SceneMountainsConfig
   /**

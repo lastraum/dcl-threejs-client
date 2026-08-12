@@ -626,6 +626,9 @@ export class SceneScriptSystem {
       this.entityStore,
       () => this.host!.camera
     )
+    this.bridge.setBillboardFacingInvalidator((entity) =>
+      this.billboardBridge?.invalidateFacing(entity)
+    )
     this.virtualCameraBridge = new VirtualCameraBridge(
       this.readComponents,
       this.view,
@@ -3667,19 +3670,26 @@ export class SceneScriptSystem {
     }
     // Stuck theater / VIEW SHOT: host Escape suppress strips scene re-bind until worker clears.
     const inboundMain = (msg.mainCamera ?? {}) as { virtualCameraEntity?: number | null }
+    // GP freeRevealCamera: getMutable().virtualCameraEntity = void 0 — treat 0/missing as clear.
+    const inboundVcRaw = inboundMain.virtualCameraEntity
     const inboundVc =
-      inboundMain.virtualCameraEntity === undefined || inboundMain.virtualCameraEntity === null
+      inboundVcRaw === undefined || inboundVcRaw === null || inboundVcRaw === 0
         ? null
-        : inboundMain.virtualCameraEntity
+        : inboundVcRaw
     if (this.hostVcBindSuppress) {
       if (inboundVc === null) {
         this.hostVcBindSuppress = false
-        MainCamera.createOrReplace(CameraEntity, (msg.mainCamera ?? {}) as never)
+        MainCamera.createOrReplace(CameraEntity, {} as never)
       } else {
         MainCamera.createOrReplace(CameraEntity, {} as never)
       }
+    } else if (inboundVc === null) {
+      // Explicit unbind — empty put so freecam/orbit recover after fishing reveal cam.
+      MainCamera.createOrReplace(CameraEntity, {} as never)
     } else {
-      MainCamera.createOrReplace(CameraEntity, (msg.mainCamera ?? {}) as never)
+      MainCamera.createOrReplace(CameraEntity, {
+        virtualCameraEntity: inboundVc
+      } as never)
     }
     this.foldProjectionChanges()
     const mainCam = MainCamera.getOrNull(CameraEntity) as { virtualCameraEntity?: number } | null
@@ -3860,9 +3870,15 @@ export class SceneScriptSystem {
       const motionSlice = this.takePendingDiffSlice(new Set(['motion']), motionCap)
       if (motionSlice.size) {
         const t0 = performance.now()
-        const { Transform, Tween } = this.readComponents
+        const { Transform, Tween, TweenSequence, VisibilityComponent } = this.readComponents
         const transformId = Transform.componentId
         const tweenId = Tween.componentId
+        const tweenSeqId = TweenSequence.componentId
+        const visibilityId = VisibilityComponent.componentId
+        // Pose-fast path: Transform/Tween **and** Visibility + TweenSequence.
+        // GP fishing hide (press_e plane / bobber) is jI(): visible=false + tween deletes +
+        // parent stash — if Visibility waits on the async otherMotion drain it sticks on screen
+        // under plaza load.
         const poseDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
         const otherMotion = new Map<Entity, Map<number, ProjectionChangeKind>>()
         const tweenEntities: Entity[] = []
@@ -3870,7 +3886,12 @@ export class SceneScriptSystem {
           const pose = new Map<number, ProjectionChangeKind>()
           const rest = new Map<number, ProjectionChangeKind>()
           for (const [cid, kind] of comps) {
-            if (cid === transformId || cid === tweenId) {
+            if (
+              cid === transformId ||
+              cid === tweenId ||
+              cid === tweenSeqId ||
+              cid === visibilityId
+            ) {
               pose.set(cid, kind)
               if (cid === tweenId) tweenEntities.push(entity)
             } else {
@@ -3890,10 +3911,14 @@ export class SceneScriptSystem {
               this.bridge?.noteReservedParentedEntity(entity, parent, v)
             }
           })
+          // Group + __mesh_* + instancer matrix (zero scale when hidden).
+          this.bridge.syncEcsVisibility([...poseDiff.keys()])
           this.bridge.syncInstancedTransforms([...poseDiff.keys()])
           for (const entity of tweenEntities) {
             this.bridge.ensureMeshRendererTweenVisual(entity)
           }
+          // Re-apply visibility after tween promote (leaf attach can leave mesh.visible=true).
+          this.bridge.syncEcsVisibility([...poseDiff.keys()])
           this.tweenBridge?.sync(view)
           this.pointerStructureDirty = true
         }
@@ -3973,9 +3998,11 @@ export class SceneScriptSystem {
     const cap = opts?.pointerEdge ? 64 : SceneScriptSystem.FRAME.MOTION_ENTITIES
     const motionSlice = this.takePendingDiffSlice(new Set(['motion']), cap)
     if (!motionSlice.size) return
-    const { Transform, Tween } = this.readComponents
+    const { Transform, Tween, TweenSequence, VisibilityComponent } = this.readComponents
     const transformId = Transform.componentId
     const tweenId = Tween.componentId
+    const tweenSeqId = TweenSequence.componentId
+    const visibilityId = VisibilityComponent.componentId
     const transformDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
     const tweenEntities: Entity[] = []
     for (const [entity, comps] of motionSlice) {
@@ -3988,6 +4015,10 @@ export class SceneScriptSystem {
         sub.set(tweenId, tw)
         tweenEntities.push(entity)
       }
+      const ts = comps.get(tweenSeqId)
+      if (ts !== undefined) sub.set(tweenSeqId, ts)
+      const vis = comps.get(visibilityId)
+      if (vis !== undefined) sub.set(visibilityId, vis)
       if (sub.size) transformDiff.set(entity, sub)
     }
     if (!transformDiff.size) return
@@ -4000,10 +4031,12 @@ export class SceneScriptSystem {
       }
     })
     const moved = [...transformDiff.keys()]
+    this.bridge.syncEcsVisibility(moved)
     this.bridge.syncInstancedTransforms(moved)
     for (const entity of tweenEntities) {
       this.bridge.ensureMeshRendererTweenVisual(entity)
     }
+    this.bridge.syncEcsVisibility(moved)
     this.tweenBridge?.sync(this.view)
     this.pointerStructureDirty = true
     this.publishPendingDiffPerf()
@@ -6408,7 +6441,15 @@ export class SceneScriptSystem {
     this.dumpMotionFocusNow()
   }
 
-  pumpMotionBridges(delta: number, tickNumber = 0): void {
+  /**
+   * @param opts.skipAvatarAttach — primary player path runs attach **after** `player.update`
+   *   + PE CRDT sync so hand bones / fishing rod sample this frame’s mixer (not last frame).
+   */
+  pumpMotionBridges(
+    delta: number,
+    tickNumber = 0,
+    opts?: { skipAvatarAttach?: boolean }
+  ): void {
     if (!this.running || !this.bridge) return
     this.maybeDumpMotionFocus()
     // Fresh animated set each frame — systems re-mark if they moved colliders.
@@ -6443,13 +6484,8 @@ export class SceneScriptSystem {
     if (this.bridgeSyncTick % 8 === 0) {
       void this.particleBridge?.sync(this.view)
     }
-    this.avatarAttachBridge?.update(this.view)
-    // AvatarAttach → private GLB clone (never GPU instance): rod/held props + Transform children
-    // can animate independently while following bones.
-    const attachBatch = this.avatarAttachBridge?.consumeWorkerBatch() ?? []
-    if (attachBatch.length) {
-      this.bridge.promoteAvatarAttachGltfs(attachBatch.map((e) => e.entity as Entity))
-      this.flushAvatarAttachTransformsFromBatch(attachBatch)
+    if (!opts?.skipAvatarAttach) {
+      this.pumpAvatarAttach()
     }
     // PlayerEntity-parented scene meshes (Dead Surge path arrow) — re-parent each frame.
     this.bridge.syncReservedParentedTransforms(this.view)
@@ -6465,6 +6501,23 @@ export class SceneScriptSystem {
     // VideoEvent / AudioEvent / AssetLoadLoadingState appends — do not wait solely on
     // updateTriggerAreas; scenes listening via onChange need same-frame host CRDT.
     this.flushRendererGrowOnlyAppends()
+  }
+
+  /**
+   * AvatarAttach bone sample + worker relative Transform batch.
+   * Call after local avatar locomotion/emote mixer has advanced this frame and
+   * PlayerEntity CRDT pose is current — otherwise rod/line lag one frame (painful at low FPS).
+   */
+  pumpAvatarAttach(): void {
+    if (!this.running || !this.bridge || !this.avatarAttachBridge) return
+    this.avatarAttachBridge.update(this.view)
+    // AvatarAttach → private GLB clone (never GPU instance): rod/held props + Transform children
+    // can animate independently while following bones.
+    const attachBatch = this.avatarAttachBridge.consumeWorkerBatch()
+    if (attachBatch.length) {
+      this.bridge.promoteAvatarAttachGltfs(attachBatch.map((e) => e.entity as Entity))
+      this.flushAvatarAttachTransformsFromBatch(attachBatch)
+    }
   }
 
   private flushAvatarAttachTransformsFromBatch(

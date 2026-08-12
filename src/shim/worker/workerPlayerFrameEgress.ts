@@ -618,7 +618,14 @@ export function collectPlayerFrameSnapshot(engine: IEngine): PlayerFrameSnapshot
   if (!MainCamera.has(camera)) {
     MainCamera.createOrReplace(camera, {})
   }
-  const mainCamera = MainCamera.getOrNull(camera) ?? {}
+  const mainCameraRaw = MainCamera.getOrNull(camera) ?? {}
+  // GP freeRevealCamera: getMutable().virtualCameraEntity = void 0 — normalize to empty
+  // so main freecam recovers (missing/0 must not re-bind a stale entity id).
+  const vcRaw = (mainCameraRaw as { virtualCameraEntity?: number | null }).virtualCameraEntity
+  const mainCamera =
+    vcRaw === undefined || vcRaw === null || vcRaw === 0
+      ? {}
+      : { virtualCameraEntity: vcRaw }
   const key = stableSnapshotKey(inputModifierHas, inputModifier, mainCamera)
   if (key === lastSnapshotKey) return null
   lastSnapshotKey = key

@@ -10,7 +10,8 @@ let lastBlockedClearLogAt = 0
 
 function mainCameraVcEntity(value: unknown): Entity | null {
   const vc = (value as { virtualCameraEntity?: number | null } | null | undefined)?.virtualCameraEntity
-  if (vc === undefined || vc === null) return null
+  // 0 is not a valid VC entity (GP freeRevealCamera / void 0 paths).
+  if (vc === undefined || vc === null || vc === 0) return null
   return vc as Entity
 }
 
@@ -36,27 +37,36 @@ function noteMainCameraWrite(_engine: IEngine, entity: Entity, value: unknown): 
   return false
 }
 
-function wrapMainCameraMutable(engine: IEngine, entity: Entity, mutable: Record<string, unknown>): object {
+function wrapMainCameraMutable(
+  engine: IEngine,
+  entity: Entity,
+  mutable: Record<string, unknown>,
+  createOrReplace: MainCameraReplaceFn
+): object {
   if (entity !== engine.CameraEntity) return mutable
   return new Proxy(mutable, {
     set(target, prop, value, receiver) {
       if (prop === 'virtualCameraEntity') {
-        if (value !== undefined && value !== null) {
+        if (value !== undefined && value !== null && value !== 0) {
           prepareVcForMainCameraBind(engine, entity, {
             virtualCameraEntity: value as Entity
           })
-        } else {
-          const was = readBoundVc(engine)
-          if (was !== null) {
-            const now = performance.now()
-            if (now - lastBlockedClearLogAt >= 500) {
-              lastBlockedClearLogAt = now
-              console.log(
-                `[vc-lens] worker — MainCamera clear (getMutable) was=e${was} → player lens`
-              )
-            }
+          return Reflect.set(target, prop, value, receiver)
+        }
+        // GP freeRevealCamera: .virtualCameraEntity = void 0 — force empty put so
+        // player-frame egress + main freecam unbind (Reflect.set alone can leave stale id).
+        const was = readBoundVc(engine)
+        if (was !== null) {
+          const now = performance.now()
+          if (now - lastBlockedClearLogAt >= 500) {
+            lastBlockedClearLogAt = now
+            console.log(
+              `[vc-lens] worker — MainCamera clear (getMutable) was=e${was} → player lens`
+            )
           }
         }
+        createOrReplace(entity, {})
+        return true
       }
       return Reflect.set(target, prop, value, receiver)
     }
@@ -136,7 +146,12 @@ export function installVirtualCameraBindGuard(engine: IEngine): void {
       originalGetOrCreateMutable && entity === engine.CameraEntity
         ? (originalGetOrCreateMutable(entity, {}) as Record<string, unknown>)
         : (originalGetMutable(entity) as Record<string, unknown>)
-    return wrapMainCameraMutable(engine, entity, mutable)
+    return wrapMainCameraMutable(
+      engine,
+      entity,
+      mutable,
+      originalCreateOrReplace as MainCameraReplaceFn
+    )
   }
 
   if (originalGetMutableOrNull) {
@@ -146,7 +161,12 @@ export function installVirtualCameraBindGuard(engine: IEngine): void {
       }
       const mutable = originalGetMutableOrNull(entity)
       if (!mutable) return null
-      return wrapMainCameraMutable(engine, entity, mutable as Record<string, unknown>)
+      return wrapMainCameraMutable(
+        engine,
+        entity,
+        mutable as Record<string, unknown>,
+        originalCreateOrReplace as MainCameraReplaceFn
+      )
     }
   }
 

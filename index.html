@@ -750,6 +750,10 @@
         background: transparent;
         color: rgba(255, 255, 255, 0.72);
         cursor: pointer;
+        position: relative;
+        z-index: 2;
+        flex-shrink: 0;
+        pointer-events: auto;
         transition: color 0.12s ease, background 0.12s ease, transform 0.2s ease;
       }
       .world-location-card__expand:hover {
@@ -1591,8 +1595,10 @@
       .world-location-card__body {
         display: block;
       }
-      .world-location-card.is-collapsed .world-location-card__body {
-        display: none;
+      /* Worlds: chevron collapses JUMP BACK — class + [hidden] (JS sets both). */
+      .world-location-card.is-collapsed .world-location-card__body,
+      .world-location-card__body[hidden] {
+        display: none !important;
       }
       .world-location-card__divider {
         height: 1px;

@@ -95,7 +95,9 @@ export class AvatarAttachBridge {
         ? (Transform.get(entity) as DclTransformValues)
         : undefined
 
-      // Player-local relative + parent PlayerEntity so resolveEntityWorldPose (VC, etc.) follows.
+      // Platform law (docs + Tier B): AvatarAttach overwrites Transform with
+      // avatar-relative pose (playerWorld * relative ≈ boneWorld). Parent PE so
+      // getWorldPosition walks PE × relative. Never PE chest +0.88 reparent on mesh.
       const relative = anchorWorldToRelativeTransform(
         playerTransform,
         anchorPose.position,
@@ -112,9 +114,6 @@ export class AvatarAttachBridge {
       this.projection.setRenderer(Transform.componentId, entity, relativeWithParent)
 
       // Mesh optional — lights / VC-adjacent attach entities may have no store node yet.
-      // Godot explorer sets global_transform = anchor every frame and keeps scale.
-      // We apply absolute bone world pose under the scene root — never under PE chest
-      // attach (+0.88). Reparenting relative (feet) coords under that root offsets the rod.
       const node = nodes.get(entity)
       if (node) {
         const sceneRoot = this.getSceneRoot?.()
@@ -122,7 +121,6 @@ export class AvatarAttachBridge {
           sceneRoot.add(node)
         }
         const world = composeAvatarAttachedWorldTransform(playerTransform, relativeWithParent)
-        // Preserve scene-authored scale (proto: Transform overridden except scale via children).
         const scale = relativeWithParent.scale
         applyWorldDclTransformToObject(node, world)
         node.scale.set(scale.x, scale.y, scale.z)
@@ -140,6 +138,10 @@ export class AvatarAttachBridge {
         avatarId: spec.avatarId,
         anchorPointId: spec.anchorPointId ?? 0
       })
+
+      // GP fishing: rod GLB is Transform-child of AvatarAttach root; Visibility toggles on
+      // the child (y_/K6e). Re-apply each frame so leave-pond hide is not stuck visible.
+      this.syncAttachChildVisibility(entity, nodes)
     }
 
     for (const entity of this.attached) {
@@ -150,6 +152,29 @@ export class AvatarAttachBridge {
     }
 
     this.lastWorkerBatch = workerBatch
+  }
+
+  /** Honor VisibilityComponent on Transform children of an AvatarAttach root (rod GLB). */
+  private syncAttachChildVisibility(
+    attachRoot: Entity,
+    nodes: Map<Entity, THREE.Group>
+  ): void {
+    const { Transform, VisibilityComponent, GltfContainer } = this.ecs
+    if (!Transform || !VisibilityComponent) return
+    for (const [child, node] of nodes) {
+      if (child === attachRoot) continue
+      if (!Transform.has(child)) continue
+      const parent = Transform.get(child).parent as Entity | undefined
+      if (parent !== attachRoot) continue
+      if (!VisibilityComponent.has(child)) continue
+      const visible = VisibilityComponent.get(child).visible !== false
+      node.visible = visible
+      if (GltfContainer?.has(child)) {
+        node.traverse((o) => {
+          if (o !== node && (o as THREE.Mesh).isMesh) o.visible = visible
+        })
+      }
+    }
   }
 
   private resolveSkeleton(

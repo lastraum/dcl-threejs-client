@@ -1,6 +1,7 @@
 /**
- * Minimal Creator Hub–compatible scene folder for Local Scenes → New scene.
- * Enough for the terrain editor (scene.json + empty main.composite).
+ * Creator Hub–compatible SDK7 scene folder for Local Scenes → New scene.
+ * Same starter layout as sdk-commands / Creator Hub: scene.json, package.json,
+ * tsconfig.json, src/index.ts (export function main), assets/scene/main.composite.
  */
 import { PARCEL_SIZE } from '../../dcl/content/types'
 
@@ -165,7 +166,7 @@ export function buildEmptyMainComposite(): string {
   return `${JSON.stringify({ version: 1, components: [] }, null, 2)}\n`
 }
 
-export function buildPlaceholderPackageJson(title: string): string {
+export function buildPackageJson(title: string): string {
   const name = sanitizeSceneFolderName(title)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
@@ -174,17 +175,92 @@ export function buildPlaceholderPackageJson(title: string): string {
     {
       name,
       version: '1.0.0',
-      private: true,
-      description: 'Scene created in ThreejsClient editor',
+      description: 'SDK7 scene created in ThreejsClient editor',
       scripts: {
-        build: 'echo \"Open in Creator Hub or add SDK7 toolchain to build bin/index.js\"',
-        start: 'echo \"Use ThreejsClient Local Scenes → Open for terrain editor\"'
+        start: 'sdk-commands start',
+        deploy: 'sdk-commands deploy',
+        build: 'sdk-commands build',
+        'upgrade-sdk': 'npm install --save-dev @dcl/sdk@latest',
+        'upgrade-sdk:next': 'npm install --save-dev @dcl/sdk@next'
       },
-      engines: { node: '>=18' }
+      devDependencies: {
+        '@dcl/js-runtime': 'latest',
+        '@dcl/sdk': 'latest'
+      },
+      engines: {
+        node: '>=16.0.0',
+        npm: '>=6.0.0'
+      }
     },
     null,
     2
   )}\n`
+}
+
+/** Matches Creator Hub / sdk7-scene-template — sdk-commands compiles src → bin/index.js. */
+export function buildTsconfigJson(): string {
+  return `${JSON.stringify(
+    {
+      compilerOptions: {
+        allowJs: true,
+        strict: true,
+        skipLibCheck: true,
+        resolveJsonModule: true,
+        baseUrl: '.',
+        paths: {
+          '@dcl/asset-packs/*': ['node_modules/@dcl/inspector/node_modules/@dcl/asset-packs/*']
+        }
+      },
+      include: ['src/**/*.ts', 'src/**/*.tsx', 'assets/**/*.ts', 'assets/**/*.tsx'],
+      extends: '@dcl/sdk/types/tsconfig.ecs7.json'
+    },
+    null,
+    2
+  )}\n`
+}
+
+/**
+ * SDK7 entry. Creator Hub / sdk-commands always compile `src/index.ts`.
+ * Load-time entities stay in assets/scene/main.composite — main() is runtime logic.
+ */
+export function buildIndexTs(): string {
+  return (
+    `// Empty imports so editor auto-complete works as expected.\n` +
+    `import {} from '@dcl/sdk/math'\n` +
+    `import {} from '@dcl/sdk/ecs'\n` +
+    `\n` +
+    `export function main() {\n` +
+    `  // Composite / editor entities are loaded. Add runtime logic here.\n` +
+    `}\n`
+  )
+}
+
+/** Standard SDK7 deploy ignore list (sdk7-scene-template). */
+export function buildDclIgnore(): string {
+  return [
+    '.*',
+    'bin/*.map',
+    'package-lock.json',
+    'yarn-lock.json',
+    'build.json',
+    'export',
+    'tsconfig.json',
+    'tslint.json',
+    'node_modules',
+    '*.ts',
+    '*.tsx',
+    '.vscode',
+    'Dockerfile',
+    'dist',
+    'README.md',
+    '*.blend',
+    '*.fbx',
+    '*.zip',
+    '*.rar',
+    '*.md',
+    'src',
+    ''
+  ].join('\n')
 }
 
 export type NewSceneFile = { path: string; text: string }
@@ -194,7 +270,10 @@ export function buildNewSceneFiles(spec: NewSceneSpec): NewSceneFile[] {
   return [
     { path: 'scene.json', text: buildNewSceneJson(spec) },
     { path: 'assets/scene/main.composite', text: buildEmptyMainComposite() },
-    { path: 'package.json', text: buildPlaceholderPackageJson(spec.title) },
+    { path: 'package.json', text: buildPackageJson(spec.title) },
+    { path: 'tsconfig.json', text: buildTsconfigJson() },
+    { path: 'src/index.ts', text: buildIndexTs() },
+    { path: '.dclignore', text: buildDclIgnore() },
     {
       path: 'README.md',
       text:
@@ -202,7 +281,7 @@ export function buildNewSceneFiles(spec: NewSceneSpec): NewSceneFile[] {
         `Created with **ThreejsClient → Local Scenes → New scene**.\n\n` +
         `- Footprint: **${spec.size.cols}×${spec.size.rows}** parcels (base \`0,0\`)\n` +
         `- Open in Local Scenes to sculpt terrain / set biome\n` +
-        `- Add SDK7 \`src\` + build for full deploy, or keep as terrain-only project\n`
+        `- Scene code: \`src/index.ts\` (\`export function main()\`) — \`npm i && npm run build\`\n`
     }
   ]
 }

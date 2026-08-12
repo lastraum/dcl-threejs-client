@@ -336,6 +336,8 @@ export class ThreeBridge {
   private readonly loggedEmptyGltfSrcs = new Set<string>()
   private readonly loggedGltfAttachFailures = new Set<string>()
   private onGltfAttached: ((entity: Entity) => void) | null = null
+  /** Invalidate billboard facing cache (hide→show press_e / missed-it). */
+  private invalidateBillboardFacing: ((entity: Entity) => void) | null = null
   /** Source-capture sink for host LWW (GltfContainerLoadingState → encoder). */
   private recordLww: ((componentId: number, entity: Entity, value: unknown) => void) | null = null
   /** entity → last LoadingState written (dirty-only; avoids CREATE spam). */
@@ -707,14 +709,20 @@ export class ThreeBridge {
     return this.store
   }
 
-  /** Undo any temporary distance-cull from earlier experiments (meshes always visible). */
+  /** Undo any temporary distance-cull from earlier experiments (meshes follow ECS visibility). */
   restoreGltfDistanceCull(): void {
-    for (const obj of this.store.nodes.values()) {
+    const { VisibilityComponent } = this.ecs
+    for (const [entity, obj] of this.store.nodes) {
       if (!obj.userData.dclDistCulled) continue
       obj.userData.dclDistCulled = false
+      const visible =
+        !VisibilityComponent || !VisibilityComponent.has(entity)
+          ? true
+          : VisibilityComponent.get(entity).visible !== false
+      obj.visible = visible
       for (const child of obj.children) {
         if (typeof child.name === 'string' && child.name.startsWith('__mesh_')) {
-          child.visible = true
+          child.visible = visible
         }
       }
     }
@@ -722,6 +730,68 @@ export class ThreeBridge {
 
   getEntityNodes(): Map<Entity, THREE.Group> {
     return this.store.nodes
+  }
+
+  /**
+   * Apply ECS VisibilityComponent to EntityStore group + private `__mesh_*` leaves.
+   * Instanced MeshRenderer: rewrite matrix (zero scale when hidden).
+   *
+   * Do **not** rewrite scale here — GP missed-it / press_e pop-ins use Scale tweens
+   * (and v9 starts at scale.y=0). Only unfreeze + leaf visibility.
+   */
+  syncEcsVisibility(entities: Iterable<Entity>): void {
+    const { VisibilityComponent, Transform, Billboard } = this.ecs
+    if (!VisibilityComponent) return
+    const instanced: Entity[] = []
+    for (const entity of entities) {
+      const obj = this.store.nodes.get(entity)
+      if (!obj) continue
+      // No Visibility component → leave Three visibility alone (missed-it uses scale, not Vis).
+      if (!VisibilityComponent.has(entity)) continue
+      const visible = VisibilityComponent.get(entity).visible !== false
+      const wasVisible = obj.visible
+      obj.visible = visible
+      if (visible) {
+        unfreezeObject3D(obj)
+        if (Billboard?.has(entity)) {
+          this.invalidateBillboardFacing?.(entity)
+        }
+        const parentId = Transform?.has(entity)
+          ? (Transform.get(entity).parent as Entity | undefined)
+          : undefined
+        if (parentId && Billboard?.has(parentId)) {
+          this.invalidateBillboardFacing?.(parentId)
+        }
+      }
+      for (const child of obj.children) {
+        if (typeof child.name === 'string' && child.name.startsWith('__mesh_')) {
+          child.visible = visible
+          if (visible) unfreezeObject3D(child)
+        }
+      }
+      // GltfContainer private clones (fishing rod) — hide whole subtree, not just __mesh_*.
+      if (this.ecs.GltfContainer?.has(entity)) {
+        obj.traverse((o) => {
+          if (o !== obj && (o as THREE.Mesh).isMesh) {
+            o.visible = visible
+          }
+        })
+      }
+      if (visible && this.ecs.MeshRenderer?.has(entity) && !this.hasMeshRendererLeaf(entity)) {
+        this.ensureMeshRendererLeaf(entity)
+        const leaf = obj.getObjectByName(meshKey(entity))
+        if (leaf) leaf.visible = true
+      }
+      if (this.meshRendererInstancer.has(entity) || obj.userData.dclMeshRendererInstanced) {
+        instanced.push(entity)
+      }
+      if (!wasVisible && visible && Billboard?.has(entity)) {
+        this.invalidateBillboardFacing?.(entity)
+      }
+    }
+    if (instanced.length) {
+      this.meshRendererInstancer.updateEntities(instanced, this.store.nodes)
+    }
   }
 
   /**
@@ -899,6 +969,10 @@ export class ThreeBridge {
   /** Fired after a GLB lands on an entity — incremental collider extract for that entity only. */
   setOnGltfAttached(callback: ((entity: Entity) => void) | null): void {
     this.onGltfAttached = callback
+  }
+
+  setBillboardFacingInvalidator(callback: ((entity: Entity) => void) | null): void {
+    this.invalidateBillboardFacing = callback
   }
 
   /** Host LWW capture (GltfContainerLoadingState → CrdtEncoder.recordLww). */
@@ -1719,6 +1793,10 @@ export class ThreeBridge {
     for (const entity of applied.upserts) {
       if (Billboard.has(entity)) this.store.setBillboard(entity, true)
     }
+    // VisibilityComponent → group + private mesh leaf + instancer zero-scale hide.
+    // Required for MeshRenderer planes (GP press_e) — parent group alone is not enough when
+    // a leaf was force-shown / unfrozen with mesh.visible=true.
+    this.syncEcsVisibility(applied.upserts)
 
     // AvatarAttach put this frame — promote self (+ Transform children) off GPU instances.
     if (AvatarAttach) {
@@ -3288,9 +3366,10 @@ export class ThreeBridge {
   private lastFishXformLogAt = 0
 
   /**
-   * Scene often keeps VisibilityComponent.visible=false on stash bobbers/rods, then
-   * setBobberPosition moves them to the water without flipping visible (or CRDT misses).
-   * Explorer shows active aim/cast bobbers — match that when not stashed at origin.
+   * Bobber/line: scene may leave VisibilityComponent.visible=false while aim/cast moves
+   * the prop off the stash origin (or CRDT misses a show). Explorer still draws those —
+   * force-show only when not stashed. Rods always honor ECS VisibilityComponent (GP keeps
+   * the right-hand AvatarAttach socket forever and toggles rod visibility on cast/leave).
    */
   private applyFishingGameplayVisibility(
     entity: Entity,
@@ -3315,9 +3394,16 @@ export class ThreeBridge {
       return
     }
 
-    // Equipped rod/line on avatar — inventory shelf rods stay ECS-hidden.
-    if (this.isAvatarAttachDriven(entity) && /rod/i.test(src)) {
-      obj.visible = true
+    // Rod (and other non-bobber fishing GLBs): re-apply ECS visibility after mesh promote
+    // so a private clone never stays lit when the scene authored visible=false.
+    if (/(^|\/|_)(rod)(_|\.|\/|$)/i.test(src) || src.toLowerCase().includes('_rod') || src.toLowerCase().includes('rod.glb')) {
+      const { VisibilityComponent } = this.ecs
+      const visible = VisibilityComponent.has(entity)
+        ? VisibilityComponent.get(entity).visible !== false
+        : true
+      obj.visible = visible
+      const mesh = obj.getObjectByName(meshKey(entity))
+      if (mesh) mesh.visible = visible
     }
   }
 
@@ -3329,13 +3415,22 @@ export class ThreeBridge {
     entities: Iterable<Entity>,
     meshEcs: Pick<MirrorComponents, 'MeshRenderer' | 'Material' | 'GltfContainer' | 'TextShape'>
   ): void {
-    const { GltfContainer } = this.ecs
+    const { GltfContainer, VisibilityComponent } = this.ecs
     for (const entity of entities) {
       if (!GltfContainer.has(entity)) continue
       const src = GltfContainer.get(entity).src?.trim() ?? ''
       if (!isFishingMotionGltfSrc(src)) continue
       const obj = this.store.nodes.get(entity)
       if (!obj) continue
+
+      // GP y_() hide rod (leave pond) — do not cold-load / force-show hidden rods.
+      if (VisibilityComponent?.has(entity) && VisibilityComponent.get(entity).visible === false) {
+        obj.visible = false
+        obj.traverse((o) => {
+          if ((o as THREE.Mesh).isMesh) o.visible = false
+        })
+        continue
+      }
 
       obj.userData.dclForceCloneAttach = true
       obj.matrixAutoUpdate = true
@@ -3374,7 +3469,7 @@ export class ThreeBridge {
         unfreezeObject3D(mesh)
       }
 
-      // After ECS VisibilityComponent apply — force-show active aim/cast bobbers.
+      // Bobber: unstash force-show. Rod: re-sync ECS Visibility after promote/attach.
       this.applyFishingGameplayVisibility(entity, obj, src)
     }
   }

@@ -19,6 +19,7 @@ import {
 import { readEnvironmentWindShader } from '../dcl/landscape/readEnvironmentWindShader'
 import { LANDSCAPE_ENVIRONMENTS } from '../dcl/landscape/EnvironmentCatalog'
 import { buildParcelLandscape } from '../dcl/landscape/Systems/RenderGroundSystem'
+import type { EzTreeGrassFieldHandle } from '../dcl/landscape/EzTreeGrassField'
 import { allHashesForProfile } from '../dcl/landscape/EnvironmentCatalog'
 import { catalystAssetUrl } from '../dcl/landscape/Data/EmptyLandCatalog'
 import { resolveFftOceanSettings } from '../environment/fftOcean/readFftOceanOverride'
@@ -28,6 +29,9 @@ import { celestialDirection } from '../environment/sunCycleSampler'
 import type { DesertAtmosphere } from '../environment/DesertAtmosphere'
 import { resolveMountainsSettings } from '../environment/mountainsDefaults'
 import { resolveDesertSettings } from '../environment/desertDefaults'
+import { duneHeightAtDcl } from '../dcl/landscape/Systems/DesertGoldGround'
+import { EMPTY_LAND_GROUND_OFFSET } from '../dcl/landscape/Utils/SceneSpace'
+import { parseParcelKey } from '../dcl/content/parseParcel'
 import type {
   ResolvedScene,
   SceneEnvironmentConfig,
@@ -93,6 +97,9 @@ export class TerrainEditorWorkspace {
   private outdoorSkyLoad: Promise<void> | null = null
   /** Same landscape group the play client builds (`buildParcelLandscape`). */
   private landscapeRoot: THREE.Group | null = null
+  /** Land/forest ez-tree grass from landscape preview — needs per-frame wind update. */
+  private landscapeEzTreeGrass: EzTreeGrassFieldHandle | null = null
+  private landscapeEzTreeGrassElapsed = 0
   private desertAtmo: DesertAtmosphere | null = null
   private landscapeRebuildTimer = 0
   private landscapeBuildGen = 0
@@ -223,6 +230,11 @@ export class TerrainEditorWorkspace {
       this.compass?.updateFromCamera(cam, this.flyCamera)
       this.editorWater?.update(delta, cam)
       this.editorGrass?.update(delta)
+      // Land biome outer grass patches — drive wind shader uTime (same as play client).
+      if (this.landscapeEzTreeGrass) {
+        this.landscapeEzTreeGrassElapsed += delta
+        this.landscapeEzTreeGrass.update(this.landscapeEzTreeGrassElapsed, cam.position)
+      }
       this.spaceSky?.update(delta, cam)
       this.tickOutdoorSky(delta, cam)
       this.desertAtmo?.update(delta)
@@ -252,10 +264,15 @@ export class TerrainEditorWorkspace {
           originZ: bounds.minZ
         },
         host.renderer,
-        () =>
-          resolveFftOceanSettings({
-            environment: this.sceneEnv
-          } as SceneMetadata)
+        () => {
+          // Biome owns water — same law as play client / worlds.
+          const kind = readEnvironmentKind(this.sceneEnv)
+          const wants = LANDSCAPE_ENVIRONMENTS[kind]?.showWater === true
+          return resolveFftOceanSettings(
+            { environment: this.sceneEnv } as SceneMetadata,
+            { landscapeWantsWater: wants }
+          )
+        }
       )
       const kind = readEnvironmentKind(this.sceneEnv)
       const profile = LANDSCAPE_ENVIRONMENTS[kind]
@@ -340,7 +357,7 @@ export class TerrainEditorWorkspace {
     this.scheduleGrassRebuild()
 
     this.avatarScaleGuides = new EditorAvatarScaleGuides(terrainFootprint, (dclX, dclZ) =>
-      this.terrain!.probeSurfaceAtDcl(dclX, dclZ).heightM
+      this.sampleEditorSurfaceY(dclX, dclZ)
     )
     this.avatarScaleGuides.mount(host.scene)
 
@@ -431,6 +448,8 @@ export class TerrainEditorWorkspace {
         replaceDesert?: boolean
         land?: SceneEnvironmentConfig['land'] | null
         replaceLand?: boolean
+        forest?: SceneEnvironmentConfig['forest'] | null
+        replaceForest?: boolean
         mountains?: SceneEnvironmentConfig['mountains'] | null
         replaceMountains?: boolean
       }) => {
@@ -645,6 +664,49 @@ export class TerrainEditorWorkspace {
     })
   }
 
+  /**
+   * Mannequin / HUD surface: max of author sculpt and the client landscape floor
+   * (desert gold plane + dunes, land/forest color plane). Empty sculpt defaults to
+   * seafloor (~−4 m) which left mannequins in a pit under desert dunes at y≈0.
+   */
+  private sampleEditorSurfaceY(dclX: number, dclZ: number): number {
+    const sculptY = this.terrain?.probeSurfaceAtDcl(dclX, dclZ).heightM ?? Number.NEGATIVE_INFINITY
+    const landscapeY = this.sampleLandscapeFloorY(dclX, dclZ)
+    if (!Number.isFinite(sculptY) && !Number.isFinite(landscapeY)) return 0
+    if (!Number.isFinite(sculptY)) return landscapeY
+    if (!Number.isFinite(landscapeY)) return sculptY
+    return Math.max(sculptY, landscapeY)
+  }
+
+  /** Client landscape floor Y at a DCL XZ (desert dunes / solid color planes). */
+  private sampleLandscapeFloorY(dclX: number, dclZ: number): number {
+    const kind = readEnvironmentKind(this.sceneEnv)
+    const baseY = EMPTY_LAND_GROUND_OFFSET.y
+
+    if (kind === 'land' || kind === 'forest') {
+      // Solid color expanse sits at the same base as desert gold.
+      return baseY
+    }
+
+    if (kind !== 'desert') return Number.NEGATIVE_INFINITY
+
+    const settings = resolveDesertSettings(this.sceneEnv.desert)
+    if (!settings.dunes || settings.duneHeight <= 0.001) return baseY
+
+    // Match DesertGoldGround: flat under scene parcels unless dunesOnParcels.
+    if (!settings.dunesOnParcels) {
+      const scene = this.localCache?.scene
+      if (scene?.parcels?.length && scene.baseParcel) {
+        const base = parseParcelKey(scene.baseParcel)
+        const px = base.x + Math.floor(dclX / PARCEL_SIZE)
+        const py = base.y + Math.floor(dclZ / PARCEL_SIZE)
+        if (scene.parcels.includes(`${px},${py}`)) return baseY
+      }
+    }
+
+    return baseY + duneHeightAtDcl(dclX, dclZ, settings)
+  }
+
   private clearClientLandscapePreview(): void {
     const scene = this.host?.scene
     // Prefer structured dispose for dust / tumbleweeds if present.
@@ -653,6 +715,10 @@ export class TerrainEditorWorkspace {
       | undefined
     atmo?.dispose?.()
     this.desertAtmo = null
+    // Dispose grass handle first (materials) before traverse dispose of the root.
+    this.landscapeEzTreeGrass?.dispose()
+    this.landscapeEzTreeGrass = null
+    this.landscapeEzTreeGrassElapsed = 0
     if (this.landscapeRoot) {
       this.landscapeRoot.removeFromParent()
       this.landscapeRoot.traverse((obj) => {
@@ -757,10 +823,17 @@ export class TerrainEditorWorkspace {
       root.renderOrder = -5
       threeScene.add(root)
 
+      this.landscapeEzTreeGrass =
+        (root.userData.ezTreeGrass as EzTreeGrassFieldHandle | undefined) ?? null
+      this.landscapeEzTreeGrassElapsed = 0
       this.desertAtmo =
         (root.userData.desertAtmosphere as DesertAtmosphere | undefined) ?? null
       if (this.desertAtmo) {
         this.desertAtmo.applyToScene(threeScene)
+      }
+      // Re-place mannequins on desert/land floor after landscape rebuild.
+      if (this.avatarScaleGuides?.getVisible()) {
+        this.avatarScaleGuides.setVisible(true)
       }
 
       if (kind === 'mountains') {

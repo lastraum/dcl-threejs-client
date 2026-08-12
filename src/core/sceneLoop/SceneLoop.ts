@@ -22,11 +22,17 @@ const emptyMeters = (): SceneLoopPhaseMeters => ({
 
 /**
  * Host frame clock for scene-JS guests.
- * Phase 0: named send / receive / apply + meters. Same tick rate as before (every rAF, no gate).
+ * Send (if due) → receive queued CRDT → motion peel → present → spare apply.
  */
 export class SceneLoop {
   private readonly guests = new Map<string, SceneGuest>()
   private meters: SceneLoopPhaseMeters = emptyMeters()
+  private lastApplyMs = 0
+
+  /** True when the last apply overran the display budget — next rAF should be minimum. */
+  lastApplyOverran(budgetMs = 16): boolean {
+    return this.lastApplyMs > budgetMs
+  }
 
   setPrimary(getSystem: () => SceneScriptSystem): void {
     this.guests.set(
@@ -64,10 +70,6 @@ export class SceneLoop {
     return this.meters
   }
 
-  /**
-   * Send due guests (priority first). Phase 0: everyone is due; no in-flight skip.
-   * Receive is still the CRDT message handler — this only snapshots a 0 receive wall.
-   */
   send(input: SceneLoopTickInput): void {
     const t0 = performance.now()
     const ordered = [...this.guests.values()].sort((a, b) => {
@@ -80,17 +82,18 @@ export class SceneLoop {
     let sent = 0
     let inFlight = 0
     for (const guest of ordered) {
-      if (guest.inFlight()) inFlight++
+      if (guest.inFlight()) {
+        inFlight++
+        continue
+      }
       if (!guest.isDue(input.now)) continue
       due++
       guest.sendTick(input.player, input.camera, input.frame)
       sent++
     }
-    const sendMs = performance.now() - t0
     this.meters = {
       ...this.meters,
-      sendMs,
-      receiveMs: 0,
+      sendMs: performance.now() - t0,
       leftoverMs: 0,
       inFlight,
       due,
@@ -99,13 +102,28 @@ export class SceneLoop {
     }
   }
 
+  receive(): void {
+    const t0 = performance.now()
+    for (const guest of this.guests.values()) guest.takeReceived()
+    this.meters = {
+      ...this.meters,
+      receiveMs: performance.now() - t0
+    }
+  }
+
+  /** Cheap Transform/Tween peel before WebGL present. */
+  peelMotion(deadlineMs: number): void {
+    this.guests.get(PRIMARY_GUEST_ID)?.peelMotion?.(deadlineMs)
+  }
+
   async applyWorld(deadlineMs: number): Promise<void> {
     const t0 = performance.now()
     const primary = this.guests.get(PRIMARY_GUEST_ID)
     if (primary) await primary.applyWorld(deadlineMs)
+    this.lastApplyMs = performance.now() - t0
     this.meters = {
       ...this.meters,
-      applyMs: performance.now() - t0
+      applyMs: this.lastApplyMs
     }
   }
 }

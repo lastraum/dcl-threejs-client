@@ -15,7 +15,7 @@ export class PeSlotGuest implements SceneGuest {
   ) {}
 
   inFlight(): boolean {
-    return false
+    return this.slot.system.isPlayFrameInFlight()
   }
 
   lastSentMs(): number {

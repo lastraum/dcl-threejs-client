@@ -257,8 +257,7 @@ export class PointerEventsSystem {
     if (!this.deps) return false
     if (this.pointerDirty || this.primaryKeyDown) return true
     if (this.hasPendingInput()) return true
-    if (document.pointerLockElement === this.canvas) return true
-    // Periodic hover refresh while looking around without mouse events (rare).
+    // Periodic hover refresh (pointer-lock look is pointerDirty on move, not every frame).
     if (tickNumber % 3 === 0) return true
     return false
   }

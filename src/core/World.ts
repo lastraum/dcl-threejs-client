@@ -1818,6 +1818,7 @@ export class World {
     // Optimistic play unlock only — stay muted so browser autoplay policy allows
     // frames. Sound unlocks on the first real pointer/key gesture.
     this.sceneScript.setVideoUserGestureUnlocked(true, { allowSound: false })
+    this.sceneScript.armSceneLoopReceive(true)
     // PE raycast/hover off for first 5s of the play loop — enter budget (env/async/bodies).
     this.pointerRaycastLiveAt = performance.now() + World.POINTER_RAYCAST_HOLD_MS
     let startFrame = 0
@@ -1826,6 +1827,7 @@ export class World {
     this.host.start({
       onSyncFrame: (delta) => {
         startFrame++
+        const loopMinimum = this.sceneLoop.lastApplyOverran(16)
         // --- env / sky / lights (sync+ slice) ---
         // Client landscape water is off by default (?water=1 to opt in). Still skip ocean/GPGPU
         // and landscape grass/desert/foliage when not present — scenes do not need them.
@@ -1908,6 +1910,7 @@ export class World {
           this.sceneScript.updateTriggerAreas()
           // SceneLoop owns play-frame-tick (primary + PE). Same every-rAF rate in Phase 0.
           this.sceneLoop.reconcilePe(this.multiScene?.pe ?? null)
+          this.sceneLoop.receive()
           this.sceneLoop.send({
             now: performance.now(),
             fpsTarget: renderQuality.getFpsLimit() || 60,
@@ -1915,6 +1918,7 @@ export class World {
             camera: cameraPose,
             frame: startFrame
           })
+          this.sceneLoop.peelMotion(4)
           perfNoteSceneLoop(this.sceneLoop.getMeters())
           // PE pointer inject + live secondaries (play-frame already sent).
           this.multiScene?.tickSync(playerPose, cameraPose, startFrame)
@@ -1933,10 +1937,10 @@ export class World {
 
           const pos = this.player.getPosition()
           const aoiT0 = performance.now()
-          // AOI tertiary visuals — scene-local DCL feet (throttled inside layer).
-          this.aoiVisual.update(pos.x, pos.z)
-          // Multi-scene: dwell on foreign parcel → promote that scene to primary.
-          this.scenePromote.tick(pos.x, pos.z)
+          if (!loopMinimum) {
+            this.aoiVisual.update(pos.x, pos.z)
+            this.scenePromote.tick(pos.x, pos.z)
+          }
           aoiMs = performance.now() - aoiT0
           const yaw = this.player.getNetworkYaw()
           const isEmoting = this.player.isProfileEmoteActive()
@@ -1974,7 +1978,7 @@ export class World {
           perfNoteSyncSubsystems({ platformMs: 0, playerMs: 0 })
         }
 
-        if (!skipRemoteAvatars()) {
+        if (!skipRemoteAvatars() && !loopMinimum) {
           // Keep scene asset pressure on the load queue after play-ready so remote composes
           // don't fight late GLB attach / collider pose resync (walk-through under remotes).
           const assetStats = this.assets.getLoadStats()
@@ -2060,7 +2064,7 @@ export class World {
           this.sceneScript.pumpMotionBridges(delta, startFrame)
         }
         let pointerMs = 0
-        if (this.playerMode && this.player && this.isPointerRaycastLive()) {
+        if (this.playerMode && this.player && this.isPointerRaycastLive() && !loopMinimum) {
           const ptrT0 = performance.now()
           this.sceneScript.preparePointerRaycast(startFrame)
           this.sceneScript.updateRaycasts()
@@ -2081,7 +2085,7 @@ export class World {
         if (this.editorPreviewMode) return
 
         const t0 = performance.now()
-        // SceneLoop apply — Phase 0 still the 18ms primary peel (same as syncRenderer).
+        this.sceneLoop.receive()
         await this.sceneLoop.applyWorld(18)
         const peelMs = performance.now() - t0
         perfNoteSceneLoop(this.sceneLoop.getMeters())
@@ -2090,7 +2094,12 @@ export class World {
 
         // Async pointer prepare only when dirty — full flush already ran on sync if needed.
         let asyncPtrMs = 0
-        if (this.playerMode && this.player && this.isPointerRaycastLive()) {
+        if (
+          this.playerMode &&
+          this.player &&
+          this.isPointerRaycastLive() &&
+          !this.sceneLoop.lastApplyOverran(16)
+        ) {
           const ptrT0 = performance.now()
           this.sceneScript.preparePointerRaycast(startFrame)
           asyncPtrMs = performance.now() - ptrT0

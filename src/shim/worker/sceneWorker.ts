@@ -1329,7 +1329,8 @@ const PHYSICS_COMBINED_COMPONENT_IDS = new Set([1215, 1216])
  * core::Tween (1102) + TweenSequence (1104) — scene motion / bounce anims.
  * Must not sit in cold CRDT buffer until end-of-frame / serial UI queue (felt as 3–5s lag).
  */
-const PAINT_BOARD_HOT_COMPONENT_IDS = new Set([1017, 1018, 1102, 1104])
+/** Paint boards only — ambient Tween/TweenSequence stay cold (SceneLoop guest clock). */
+const PAINT_BOARD_HOT_COMPONENT_IDS = new Set([1017, 1018])
 
 function crdtChunkHasComponentIds(data: Uint8Array, ids: ReadonlySet<number>): boolean {
   if (!data.byteLength) return false
@@ -1791,6 +1792,7 @@ initSceneEngineScheduler({
       sceneUpdatePromiseActive = false
     }
     completePlayFrameColdEgress()
+    ctx.postMessage({ type: 'play-frame-done' } satisfies SceneWorkerOutbound)
   },
   onInjectOnlyUiPointerTickDone: () => {
     markDeferSdkPollEventsAfterInjectUiClick()
@@ -4254,13 +4256,17 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     // Dedicated pump bypasses pointer session while still avoiding mid-inject races.
     if (portableExperienceWorker && sceneEngine && !sceneOnUpdatePaused) {
       void runPeVehicleInputPump()
+      ctx.postMessage({ type: 'play-frame-done' } satisfies SceneWorkerOutbound)
       return
     }
     // COD B1: play-frame is the sole cooperative clock. Always request eng.update when
     // scene is not fully paused. pointerBlocksTick() only defers mid-inject — not sessions.
     // Do not gate on sceneUpdateInFlight (poll is outside eng.update flight).
     if (sceneEngine && !sceneOnUpdatePaused) {
-      requestSceneEngineTick()
+      const tickReq = requestSceneEngineTick()
+      if (tickReq === 'idle') {
+        ctx.postMessage({ type: 'play-frame-done' } satisfies SceneWorkerOutbound)
+      }
       // If inject is mid-flight, request queues; still keep VC live poses hot.
       if (pointerDeliveryInFlight || pointerDeliverBatchOpen || pendingInjectPointer) {
         if (sceneOnStartComplete) {
@@ -4268,6 +4274,8 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
           publishVcPoseLiveIfBound()
         }
       }
+    } else {
+      ctx.postMessage({ type: 'play-frame-done' } satisfies SceneWorkerOutbound)
     }
     return
   }

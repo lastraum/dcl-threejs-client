@@ -36,7 +36,14 @@ SceneInputRelay (WASD)              inputSystem.isPressed
         ◄── crdt-outbound ──────────┤ cold world + UI mount snapshot
 ```
 
-**SceneLoop** (`src/core/sceneLoop/`): host clock for scene-JS guests. rAF still presents; the loop owns **when** primary (and PE) get a `play-frame-tick`. Phase 0 is behavior-identical (every rAF, no in-flight gate). CRDT apply stays on the existing message path + 18ms async peel. Pointer inject / `player-frame` / CCT stay outside the loop.
+**SceneLoop** (`src/core/sceneLoop/`): host clock for scene-JS guests.
+
+```text
+rAF: CCT + input → send (if !inFlight / pose ε) → receive queued CRDT
+     → motion peel → present → spare apply (0 if sealed idle)
+```
+
+One outstanding `play-frame-tick` per guest (`play-frame-done`). Gameplay `crdt-outbound` waits for receive (pointer UI still flushes immediately). Tween is not `hot-phys`. Pointer inject / `player-frame` / CCT stay outside the loop.
 
 **Transforms:** Logical sim/comms stay in DCL left-handed meters. Display conversion only at the render boundary (`src/bridge/dclTransform.ts`). Landscape uses the same X reflection so author terrain and biome floors align.
 

@@ -30,6 +30,8 @@ DISABLED by default (code still present)
 
 **Never** cold-boot a full neighbor worker just because the player walked near or onto its parcel (default).
 
+Primary + PE play-frames are **SceneLoop guests** (one in-flight tick, host receive/apply). Shells are not guests. Do not re-enable live secondaries as N dual-runtimes.
+
 ---
 
 ## Promote / demote contract

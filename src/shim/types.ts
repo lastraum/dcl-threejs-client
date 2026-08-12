@@ -289,6 +289,8 @@ export type SceneWorkerOutbound =
   | { type: 'engine-api-unsubscribe'; eventId: string }
   | { type: 'crdt-get-state'; id: number }
   | { type: 'pointer-deliver-done' }
+  /** Worker finished the play-frame that SceneLoop marked in-flight (or declined a new tick). */
+  | { type: 'play-frame-done' }
   | { type: 'ui-virtual-canvas'; width: number; height: number }
   /** Bound VC world Transform — bypasses CRDT ack latency for lens + gizmo pose sync. */
   | {

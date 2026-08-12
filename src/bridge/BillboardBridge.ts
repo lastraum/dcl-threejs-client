@@ -73,17 +73,20 @@ export class BillboardBridge {
     const { Billboard } = this.ecs
     const camPos = this.getCamera().position
 
-    // Live ECS check — same as aefccaf (runtime spawns, not flags alone).
-    this.store.forEachSceneEntity((entity, obj) => {
+    const billed = this.store.getBillboardEntities()
+    if (billed.length === 0) return
+    for (const entity of billed) {
+      const obj = this.store.getNode(entity)
+      if (!obj) continue
       if (!Billboard.has(entity)) {
         if (this.store.isBillboard(entity)) this.store.setBillboard(entity, false)
         this.lastYaw.delete(entity)
-        return
+        continue
       }
       this.store.setBillboard(entity, true)
 
       const mode = Billboard.get(entity).billboardMode ?? 7
-      if (mode === 0) return
+      if (mode === 0) continue
 
       obj.updateWorldMatrix(true, false)
       obj.getWorldPosition(_worldPos)
@@ -93,14 +96,14 @@ export class BillboardBridge {
         const dz = camPos.z - _worldPos.z
         const nextYaw = Math.atan2(dx, dz)
         const prev = this.lastYaw.get(entity)
-        if (prev !== undefined && Math.abs(nextYaw - prev) <= YAW_EPS) return
+        if (prev !== undefined && Math.abs(nextYaw - prev) <= YAW_EPS) continue
         _worldQuat.setFromAxisAngle(_worldUp, nextYaw)
         this.applyWorldQuaternionAsLocal(obj, _worldQuat)
         if (!obj.matrixAutoUpdate) obj.updateMatrix()
         obj.updateMatrixWorld(true)
         this.lastYaw.set(entity, nextYaw)
         this.motionEntities.add(entity)
-        return
+        continue
       }
 
       // BM_ALL — platform law: Three lookAt (−Z toward camera).
@@ -108,12 +111,12 @@ export class BillboardBridge {
       _lookMat.lookAt(_worldPos, camPos, _worldUp)
       _worldQuat.setFromRotationMatrix(_lookMat)
       this.applyWorldQuaternionAsLocal(obj, _worldQuat)
-      if (_prevLocalQuat.angleTo(obj.quaternion) <= YAW_EPS) return
+      if (_prevLocalQuat.angleTo(obj.quaternion) <= YAW_EPS) continue
       if (!obj.matrixAutoUpdate) obj.updateMatrix()
       obj.updateMatrixWorld(true)
       this.lastYaw.set(entity, obj.rotation.y)
       this.motionEntities.add(entity)
-    })
+    }
   }
 
   private applyWorldQuaternionAsLocal(obj: THREE.Object3D, worldQuat: THREE.Quaternion): void {

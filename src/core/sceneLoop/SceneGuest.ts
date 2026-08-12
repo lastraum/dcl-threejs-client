@@ -14,7 +14,7 @@ export interface SceneGuest {
   lastSentMs(): number
   isDue(now: number): boolean
   sendTick(player: EntityPose, camera: EntityPose, frame: number): void
-  /** Phase 2 will drain queued CRDT here. Phase 0 is a no-op. */
   takeReceived(): number
+  peelMotion?(deadlineMs: number): void
   applyWorld(deadlineMs: number): Promise<void>
 }

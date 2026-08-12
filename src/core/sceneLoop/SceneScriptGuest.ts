@@ -15,7 +15,7 @@ export class SceneScriptGuest implements SceneGuest {
   ) {}
 
   inFlight(): boolean {
-    return false
+    return this.getSystem().isPlayFrameInFlight()
   }
 
   lastSentMs(): number {
@@ -32,10 +32,16 @@ export class SceneScriptGuest implements SceneGuest {
   }
 
   takeReceived(): number {
+    this.getSystem().drainQueuedCrdtOutbound()
     return 0
   }
 
+  peelMotion(deadlineMs: number): void {
+    this.getSystem().peelMotionSync(deadlineMs)
+  }
+
   applyWorld(deadlineMs: number): Promise<void> {
+    if (!this.getSystem().hasPendingApplyWork()) return Promise.resolve()
     return this.getSystem().syncRenderer({ deadlineMs })
   }
 }

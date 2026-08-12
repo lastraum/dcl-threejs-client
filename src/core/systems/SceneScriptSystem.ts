@@ -287,7 +287,7 @@ export class SceneScriptSystem {
     uiEntities?: number[]
     uiMountSnapshot?: WorkerUiMountSnapshotRow[]
   }[] = []
-  private crdtOutboundFlushQueued = false
+
   readonly reserved = new ReservedEntitiesSync(this.projection, this.readComponents, SDK_RESERVED)
   collision: CollisionSystem | null = null
   gltfColliders: GltfColliderExtractor | null = null
@@ -344,6 +344,16 @@ export class SceneScriptSystem {
   private host: SceneHost | null = null
   private worker: Worker | null = null
   private running = false
+  /** SceneLoop: a play-frame-tick is outstanding until play-frame-done. */
+  private playFrameInFlight = false
+  private playFrameInFlightAt = 0
+  /** When true, gameplay crdt-outbound waits for SceneLoop.receive. */
+  private sceneLoopReceiveArmed = false
+  private lastSentPlayerPos = { x: Number.NaN, y: Number.NaN, z: Number.NaN }
+  private lastSentPlayerRot = { x: Number.NaN, y: Number.NaN, z: Number.NaN, w: Number.NaN }
+  private lastSentCamPos = { x: Number.NaN, y: Number.NaN, z: Number.NaN }
+  private lastSentCamRot = { x: Number.NaN, y: Number.NaN, z: Number.NaN, w: Number.NaN }
+  private lastSentPpiDir = { x: Number.NaN, y: Number.NaN, z: Number.NaN }
   private prepared = false
   private crdtTick = 0
   /** Renderer frame counter for EngineInfo (ADR-148). */
@@ -2602,6 +2612,11 @@ export class SceneScriptSystem {
       } satisfies MainToWorker)
       return
     }
+    if (msg.type === 'play-frame-done') {
+      this.playFrameInFlight = false
+      this.playFrameInFlightAt = 0
+      return
+    }
     if (msg.type === 'crdt-outbound') {
       this.enqueueCrdtOutbound({
         id: msg.id,
@@ -2690,26 +2705,27 @@ export class SceneScriptSystem {
     const hasGameplayPayload = (item.data?.byteLength ?? 0) > 0 && item.uiEntities === undefined
     if (hasGameplayPayload) {
       this.crdtOutboundPending.unshift(item)
-      this.flushCrdtOutboundPendingSynchronously()
-      return
+    } else {
+      this.crdtOutboundPending.push(item)
     }
-    this.crdtOutboundPending.push(item)
-    // Hydration / menu open with uiEntities — must land before pointer-deliver-done.
-    if (item.uiEntities !== undefined) {
+    // Pointer / hydration UI mount must land before pointer-deliver-done.
+    // Before World.start arms SceneLoop receive, keep the old immediate flush (boot).
+    if (
+      !this.sceneLoopReceiveArmed ||
+      this.bootPhaseActive ||
+      item.uiEntities !== undefined
+    ) {
       this.flushCrdtOutboundPendingSynchronously()
-      return
     }
-    if (this.crdtOutboundFlushQueued) return
-    this.crdtOutboundFlushQueued = true
-    queueMicrotask(() => {
-      this.crdtOutboundFlushQueued = false
-      if (!this.crdtOutboundPending.length) return
-      this.flushCrdtOutboundPendingSynchronously()
-    })
+  }
+
+  /** SceneLoop ReceiveFromScene — fold queued worker CRDT on the host clock. */
+  drainQueuedCrdtOutbound(): void {
+    if (!this.crdtOutboundPending.length) return
+    this.flushCrdtOutboundPendingSynchronously()
   }
 
   private flushCrdtOutboundPendingSynchronously(): void {
-    this.crdtOutboundFlushQueued = false
     const batch = this.crdtOutboundPending.splice(0)
     if (!batch.length) return
     this.crdtOutboundSerial = this.crdtOutboundSerial
@@ -5214,30 +5230,55 @@ export class SceneScriptSystem {
     this.worker.postMessage({ type: 'pump-scene-engine-tick' } satisfies MainToWorker)
   }
 
+  armSceneLoopReceive(armed: boolean): void {
+    this.sceneLoopReceiveArmed = armed
+    if (!armed && this.crdtOutboundPending.length) this.flushCrdtOutboundPendingSynchronously()
+  }
+
+  isPlayFrameInFlight(): boolean {
+    if (!this.playFrameInFlight) return false
+    if (this.playFrameInFlightAt > 0 && performance.now() - this.playFrameInFlightAt > 2000) {
+      this.playFrameInFlight = false
+      this.playFrameInFlightAt = 0
+      return false
+    }
+    return true
+  }
+
+  hasPendingApplyWork(): boolean {
+    if (this.pendingDiff.size > 0) return true
+    const mesh = this.getAttachProgressLite()?.pendingMesh ?? 0
+    return mesh > 0
+  }
+
+  /** Sync motion peel for SceneLoop before present (Transform/Tween/Visibility only). */
+  peelMotionSync(deadlineMs: number): void {
+    if (!this.bridge?.canConsumeDiff() || !this.pendingDiff.size) return
+    this.flushTweenAndTransformFromPendingDiff({ hardMs: deadlineMs })
+  }
+
   /** Phase 2 — one unified worker play frame per main rAF (engine.update + pollEvents). */
   tickPlayFrame(): void {
     // Do not gate on bootPhaseActive: eval-done sets running while onStart continues, and
     // World may notifyPlayReady before worker `ready`. Blocking ticks here deadlocks SpaceRunner
     // (InputModifier.disableAll freeze-watch never gets dt / never sees Gltf FINISHED).
     if (!this.running || !this.worker) return
-    // CameraFollowSystem (and similar) read Transform.get(PlayerEntity) on the worker.
-    // Embed poses on play-frame-tick (same message) so PE is current before engine.update —
-    // separate renderer-inbound CRDT raced / dirty-skipped and left follow anchors at spawn.
+    // Never stack a play-frame while poll/egress is live (second engine.update).
+    if (this.isPlayFrameInFlight()) return
     this.refreshClientPosesFromProvider()
     this.refreshRealmInfoFromProvider()
-    if (this.clientPlayerPose && this.clientCameraPose) {
-      this.prepareReservedRoundTrip(this.clientPlayerPose, this.clientCameraPose)
-    }
-    // Hover/PPI every main frame — fishing bobber aim must not wait for crdt-outbound.
-    this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
-    this.crdtTick++
-    const primaryPointer = this.pointerEvents?.getPrimaryPointerSnapshot() ?? undefined
     const player = this.clientPlayerPose
     const camera = this.clientCameraPose
-    // Quiet by default — enable with ?ppidiag (same as PointerEventsSystem PPI spam).
+    const primaryPointer = this.pointerEvents?.getPrimaryPointerSnapshot() ?? undefined
+    const poseMoved = this.playFramePoseMoved(player, camera, primaryPointer)
+    this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
+    this.crdtTick++
+    if (poseMoved) this.rememberPlayFramePose(player, camera, primaryPointer)
+    this.playFrameInFlight = true
+    this.playFrameInFlightAt = performance.now()
     this.worker.postMessage({
       type: 'play-frame-tick',
-      ...(player
+      ...(poseMoved && player
         ? {
             player: {
               position: {
@@ -5254,7 +5295,7 @@ export class SceneScriptSystem {
             }
           }
         : {}),
-      ...(camera
+      ...(poseMoved && camera
         ? {
             camera: {
               position: {
@@ -5271,9 +5312,67 @@ export class SceneScriptSystem {
             }
           }
         : {}),
-      // Always embed when snapshot exists — worker applies before engine.update for bobber aim.
-      ...(primaryPointer ? { primaryPointer } : {})
+      ...(poseMoved && primaryPointer ? { primaryPointer } : {})
     } satisfies MainToWorker)
+  }
+
+  private playFramePoseMoved(
+    player: EntityPose | null,
+    camera: EntityPose | null,
+    ppi: { worldRayDirection: { x: number; y: number; z: number } } | undefined
+  ): boolean {
+    const eps = 1e-4
+    const posChanged = (
+      a: { x: number; y: number; z: number },
+      b: { x: number; y: number; z: number }
+    ): boolean =>
+      Math.abs(a.x - b.x) > eps || Math.abs(a.y - b.y) > eps || Math.abs(a.z - b.z) > eps
+    const rotChanged = (
+      a: { x: number; y: number; z: number; w: number },
+      b: { x: number; y: number; z: number; w: number }
+    ): boolean =>
+      Math.abs(a.x - b.x) > eps ||
+      Math.abs(a.y - b.y) > eps ||
+      Math.abs(a.z - b.z) > eps ||
+      Math.abs(a.w - b.w) > eps
+    if (player) {
+      if (posChanged(player.position, this.lastSentPlayerPos)) return true
+      if (rotChanged(player.rotation, this.lastSentPlayerRot)) return true
+    }
+    if (camera) {
+      if (posChanged(camera.position, this.lastSentCamPos)) return true
+      if (rotChanged(camera.rotation, this.lastSentCamRot)) return true
+    }
+    if (ppi && posChanged(ppi.worldRayDirection, this.lastSentPpiDir)) return true
+    return Number.isNaN(this.lastSentPlayerPos.x)
+  }
+
+  private rememberPlayFramePose(
+    player: EntityPose | null,
+    camera: EntityPose | null,
+    ppi: { worldRayDirection: { x: number; y: number; z: number } } | undefined
+  ): void {
+    if (player) {
+      this.lastSentPlayerPos = { x: player.position.x, y: player.position.y, z: player.position.z }
+      this.lastSentPlayerRot = {
+        x: player.rotation.x,
+        y: player.rotation.y,
+        z: player.rotation.z,
+        w: player.rotation.w
+      }
+    }
+    if (camera) {
+      this.lastSentCamPos = { x: camera.position.x, y: camera.position.y, z: camera.position.z }
+      this.lastSentCamRot = {
+        x: camera.rotation.x,
+        y: camera.rotation.y,
+        z: camera.rotation.z,
+        w: camera.rotation.w
+      }
+    }
+    if (ppi) {
+      this.lastSentPpiDir = { ...ppi.worldRayDirection }
+    }
   }
 
   /** Level keyboard snapshot → worker (InputHub fan-out). */

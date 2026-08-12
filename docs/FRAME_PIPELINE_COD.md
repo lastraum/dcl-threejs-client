@@ -125,4 +125,4 @@ Camera near/far: `src/camera/cameraDepthPolicy.ts` (`CLIENT_CAMERA_NEAR`, far fr
 | `MaterialApplier.ts` / `pbrApply.ts` | transparency + marker depth |
 | `depthCompositeBands.ts` | renderOrder bands |
 | `cameraDepthPolicy.ts` | near/far policy |
-| `World.ts` | SceneLoop apply — Phase 0 still 18ms primary peel |
+| `World.ts` | SceneLoop: motion peel before present; apply 0 when sealed idle |

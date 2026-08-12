@@ -393,12 +393,8 @@ export class CrdtEncoder {
     }
     if (tweenEntities?.length) {
       for (const entity of tweenEntities) emitTweenEntity(entity)
-    } else {
-      const tweenMap = this.projection.componentMap(tweenStateId)
-      if (tweenMap) {
-        for (const [entity] of tweenMap) emitTweenEntity(entity)
-      }
     }
+    // Empty/null dirty set: do not scan every TweenState owner (plaza marquees).
 
     // Grow-only path: TriggerArea / media / asset-load results (not PE — inject-only).
     if (this.encodeAppends(buf)) wrote = true

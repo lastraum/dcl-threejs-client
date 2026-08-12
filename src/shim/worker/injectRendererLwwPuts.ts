@@ -5,6 +5,7 @@ import { preregisterRendererInjectedComponents } from './preregisterRendererInje
 import { ReadWriteByteBuffer } from '@dcl/ecs/dist/serialization/ByteBuffer'
 import { readMessage } from '@dcl/ecs/dist/serialization/crdt/message'
 import { CrdtMessageType } from '@dcl/ecs/dist/serialization/crdt/types'
+import { writeHostLwwNoDirty } from './injectHostLww'
 
 /** SDK7 reserved entities — renderer-owned Transform must land same-tick on the worker. */
 const RESERVED_ENTITIES = new Set<Entity>([0 as Entity, 1 as Entity, 2 as Entity])
@@ -136,22 +137,22 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
         if (msg.componentId === transformId && RESERVED_ENTITIES.has(msg.entityId as Entity)) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = Transform.schema.deserialize(valueBuf)
-          Transform.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(Transform, msg.entityId as number, value)
           reservedTransformPuts++
         } else if (msg.componentId === TWEEN_STATE_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = TweenState.schema.deserialize(valueBuf)
-          TweenState.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(TweenState, msg.entityId as number, value)
           tweenPuts++
         } else if (msg.componentId === RAYCAST_RESULT_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = RaycastResult.schema.deserialize(valueBuf)
-          RaycastResult.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(RaycastResult, msg.entityId as number, value)
           raycastPuts++
         } else if (msg.componentId === GLTF_CONTAINER_LOADING_STATE_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = GltfContainerLoadingState.schema.deserialize(valueBuf)
-          GltfContainerLoadingState.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(GltfContainerLoadingState, msg.entityId as number, value)
           gltfLoadingStatePuts++
           const currentState = (value as { currentState?: number } | null)?.currentState
           if (isTerminalGltfLoadingState(currentState)) {
@@ -160,57 +161,57 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
         } else if (msg.componentId === VIDEO_PLAYER_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = VideoPlayer.schema.deserialize(valueBuf)
-          VideoPlayer.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(VideoPlayer, msg.entityId as number, value)
           videoPlayerPuts++
         } else if (msg.componentId === AUDIO_SOURCE_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = AudioSource.schema.deserialize(valueBuf)
-          AudioSource.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(AudioSource, msg.entityId as number, value)
           audioSourcePuts++
         } else if (msg.componentId === AUDIO_ANALYSIS_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = AudioAnalysis.schema.deserialize(valueBuf)
-          AudioAnalysis.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(AudioAnalysis, msg.entityId as number, value)
           audioAnalysisPuts++
         } else if (msg.componentId === UI_CANVAS_INFORMATION_ID && msg.entityId === 0) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = UiCanvasInformation.schema.deserialize(valueBuf)
-          UiCanvasInformation.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(UiCanvasInformation, msg.entityId as number, value)
           uiCanvasPuts++
         } else if (msg.componentId === UI_INPUT_RESULT_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = UiInputResult.schema.deserialize(valueBuf)
-          UiInputResult.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(UiInputResult, msg.entityId as number, value)
           uiInputResultPuts++
         } else if (msg.componentId === UI_DROPDOWN_RESULT_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = UiDropdownResult.schema.deserialize(valueBuf)
-          UiDropdownResult.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(UiDropdownResult, msg.entityId as number, value)
           uiDropdownResultPuts++
         } else if (msg.componentId === CAMERA_MODE_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = CameraMode.schema.deserialize(valueBuf)
-          CameraMode.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(CameraMode, msg.entityId as number, value)
           cameraModePuts++
         } else if (msg.componentId === POINTER_LOCK_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = PointerLock.schema.deserialize(valueBuf)
-          PointerLock.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(PointerLock, msg.entityId as number, value)
           pointerLockPuts++
         } else if (msg.componentId === REALM_INFO_ID && msg.entityId === 0) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = RealmInfo.schema.deserialize(valueBuf)
-          RealmInfo.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(RealmInfo, msg.entityId as number, value)
           realmInfoPuts++
         } else if (msg.componentId === PRIMARY_POINTER_INFO_ID && msg.entityId === 0) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = PrimaryPointerInfo.schema.deserialize(valueBuf)
-          PrimaryPointerInfo.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(PrimaryPointerInfo, msg.entityId as number, value)
           primaryPointerPuts++
         } else if (msg.componentId === ENGINE_INFO_ID && msg.entityId === 0) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = EngineInfo.schema.deserialize(valueBuf)
-          EngineInfo.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(EngineInfo, msg.entityId as number, value)
           engineInfoPuts++
         }
       }
@@ -260,7 +261,7 @@ export function rearmTweenStateAfterSequenceAdvance(engine: IEngine): number {
     const hasQueued = (seq.sequence?.length ?? 0) > 0
     const loops = seq.loop === TL_RESTART || seq.loop === TL_YOYO
     if (!hasQueued && !loops) continue
-    TweenState.createOrReplace(entity, { state: 0, currentTime: 0 })
+    writeHostLwwNoDirty(TweenState, entity as number, { state: 0, currentTime: 0 })
     n++
   }
   return n

@@ -130,11 +130,13 @@ import {
   reconcileWorkerAuthoritativeCrdtEgress,
   resetInputModifierEgressBaseline,
   resetWorkerSceneUiCrdtLamport,
+  stripHostOwnedLwwBytes,
   stripRendererHostGrowOnlyAppendsBytes,
   stripSceneUiCrdtBytes,
   stripWorkerAuthoritativeCrdtBytes,
   uiMountSnapshotContentFp
 } from './workerSceneUiCrdtOutbound'
+import { writeHostLwwNoDirty } from './injectHostLww'
 import {
   collectPlayerFrameSnapshot,
   describeWorkerInputModifier,
@@ -1468,7 +1470,7 @@ function ensurePlayerEntityTransform(engine: import('@dcl/ecs').IEngine): void {
   const Transform = extended.Transform(engine)
   const pe = engine.PlayerEntity as Entity
   if (Transform.has(pe)) return
-  Transform.createOrReplace(pe, {
+  writeHostLwwNoDirty(Transform, pe as number, {
     position: { x: 0, y: 0, z: 0 },
     rotation: { x: 0, y: 0, z: 0, w: 1 },
     scale: { x: 1, y: 1, z: 1 },
@@ -1516,7 +1518,7 @@ function applyPlayFrameReservedPoses(
     }
   ): void => {
     const prev = Transform.has(entity) ? Transform.get(entity) : undefined
-    Transform.createOrReplace(entity, {
+    writeHostLwwNoDirty(Transform, entity as number, {
       position: pose.position,
       rotation: pose.rotation,
       scale: prev?.scale ?? { x: 1, y: 1, z: 1 },
@@ -1531,7 +1533,7 @@ function applyPlayFrameReservedPoses(
   if (primaryPointer) {
     preregisterRendererInjectedComponents(sceneEngine)
     const PrimaryPointerInfo = generated.PrimaryPointerInfo(sceneEngine)
-    PrimaryPointerInfo.createOrReplace(sceneEngine.RootEntity as Entity, {
+    writeHostLwwNoDirty(PrimaryPointerInfo, sceneEngine.RootEntity as number, {
       pointerType: primaryPointer.pointerType,
       screenCoordinates: primaryPointer.screenCoordinates,
       screenDelta: primaryPointer.screenDelta,
@@ -3484,7 +3486,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
   // Post-onStart: empty nudges are fire-and-forget; non-empty awaits crdt-outbound-ack.
   if (sceneOnStartComplete && !sceneBootInProgress) {
     if (!shouldAttachUiMountSnapshot() && copy.byteLength > 0) {
-      const stripped = stripSceneUiCrdtBytes(copy)
+      const stripped = stripHostOwnedLwwBytes(stripSceneUiCrdtBytes(copy))
       if (!stripped.byteLength) {
         note(false, 'strip-ui', 0)
         return Promise.resolve([])
@@ -3505,7 +3507,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
     }
     if (shouldDeferPointerOutbound()) {
       if (copy.byteLength > 0) {
-        const nonUi = stripSceneUiCrdtBytes(copy)
+        const nonUi = stripHostOwnedLwwBytes(stripSceneUiCrdtBytes(copy))
         if (nonUi.byteLength) pointerDeferredNonUi.push(nonUi)
       }
       note(false, 'defer-ptr', 0)
@@ -3546,7 +3548,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
     if (attachUiMount) lastOutboundUiEntitiesKey = uiKey
     // Prefer structured snapshot; strip wire Ui* so main does not double-apply partial shells.
     if (attachUiMount && uiMountSnapshot?.length) {
-      copy = stripSceneUiCrdtBytes(copy).slice()
+      copy = stripHostOwnedLwwBytes(stripSceneUiCrdtBytes(copy)).slice()
     }
     if (copy.byteLength === 0) {
       logSceneUiOutbound(copy, uiEntities, uiMountSnapshot?.length ?? 0)

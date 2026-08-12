@@ -3996,6 +3996,7 @@ export class SceneScriptSystem {
     }
 
     this.publishPendingDiffPerf()
+    this.dropStalePendingDiff()
   }
 
   /**
@@ -4541,6 +4542,28 @@ export class SceneScriptSystem {
       return this.bridge.isMeshRendererPutSealed(change.entity)
     }
     return false
+  }
+
+  /**
+   * Drop structure/material/other puts that have sat unapplied for too long.
+   * Motion and pointer-edge VFX stay — those must not be sealed away.
+   */
+  private dropStalePendingDiff(): void {
+    if (!this.pendingDiff.size) return
+    const now = performance.now()
+    const STALE_MS = 12_000
+    for (const [entity, comps] of this.pendingDiff) {
+      if (this.pointerEdgeVisualEntities.has(entity)) continue
+      const t0 = this.pendingDiffFirstDirtyAt.get(entity) ?? 0
+      if (t0 <= 0 || now - t0 < STALE_MS) continue
+      for (const cid of [...comps.keys()]) {
+        const lane = this.pendingDiffLaneOf(cid, entity)
+        if (lane === 'motion') continue
+        comps.delete(cid)
+      }
+      this.clearPendingEntityIfEmpty(entity)
+    }
+    this.publishPendingDiffPerf()
   }
 
   /** Frame-budget counters for `?perfdebug` / RenderStats. */
@@ -6643,6 +6666,8 @@ export class SceneScriptSystem {
     this.bridgeSyncTick++
     if (!this.bridgeDirty && this.bridgeSyncTick % this.bridgeSyncEvery !== 0) return
     this.bridgeDirty = false
+    const t0 = performance.now()
+    const BRIDGE_BUDGET_MS = 8
     await this.avatarShapes?.sync(this.view)
     this.avatarEmoteBridge?.sync(this.view)
     // ?noanim — skip bind + sample so no GLTF clips start or advance.
@@ -6652,7 +6677,10 @@ export class SceneScriptSystem {
       // delta=0: no frustum cull (pose apply only).
       this.animatorBridge?.update(0, this.view)
     }
-    await this.particleBridge?.sync(this.view)
+    // Particles are not the beauty pass — skip create/diag when the bridge pie is already spent.
+    if (performance.now() - t0 < BRIDGE_BUDGET_MS) {
+      await this.particleBridge?.sync(this.view)
+    }
   }
 
   private readonly animatorSamplePlayerWorld = new THREE.Vector3()

@@ -5,14 +5,14 @@ function readSearchParams(): URLSearchParams | null {
 
 /**
  * Skip remote avatar compose/load (comms may still connect).
- * Default **off** — plaza compose is a 4–32s main hitch (`[hitch] remote-dcl`).
- * Re-enable with `?remotes` / `?withremotes`. Force off with `?noremote`.
+ * Default **on** — remotes are product. Force off with `?noremote` / `?skipremote` for A/B.
+ * `?remotes` / `?withremotes` force on.
  */
 export function skipRemoteAvatars(): boolean {
   const params = readSearchParams()
   if (params?.has('remotes') || params?.has('withremotes')) return false
-  if (params?.has('noremote')) return true
-  return true
+  if (params?.has('noremote') || params?.has('skipremote')) return true
+  return false
 }
 
 /** Force bloom off for render A/B (`?nobloom` / `?skipbloom`). */

@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { lastFrameOverBudget, scheduleOffPlayRaf, yieldToIdle } from '../rendering/mainThreadYield'
 
 type QueuedLoad = {
   address: string
@@ -56,11 +57,13 @@ export class RemoteAvatarLoadQueue {
   /** performance.now() when the last compose was started (0 = never). */
   private lastComposeStartMs = 0
   private intervalPumpTimer: ReturnType<typeof setTimeout> | null = null
+  /** Coalesce rAF position updates into one idle pump. */
+  private offRafPumpScheduled = false
 
   /** Reference for distance gates — pass local player feet, not freecam / orbit camera. */
   setLocalPlayerPosition(position: THREE.Vector3): void {
     this.localPlayer.copy(position)
-    this.pump()
+    this.scheduleOffRafPump()
   }
 
   /** @deprecated use {@link setLocalPlayerPosition} */
@@ -150,7 +153,7 @@ export class RemoteAvatarLoadQueue {
       } else {
         existing.position.copy(peerPosition)
       }
-      this.pump()
+      this.scheduleOffRafPump()
       return
     }
 
@@ -160,7 +163,7 @@ export class RemoteAvatarLoadQueue {
       pos.copy(this.localPlayer)
     }
     this.waiting.set(key, { address: key, position: pos, run })
-    this.pump()
+    this.scheduleOffRafPump()
   }
 
   /**
@@ -172,12 +175,12 @@ export class RemoteAvatarLoadQueue {
     const entry = this.waiting.get(key)
     if (!entry) return
     entry.position.copy(peerPosition)
-    if (pump) this.pump()
+    if (pump) this.scheduleOffRafPump()
   }
 
   /** Re-evaluate the wait queue (e.g. after bulk distance updates). */
   notifyPump(): void {
-    this.pump()
+    this.scheduleOffRafPump()
   }
 
   cancel(address: string): void {
@@ -265,6 +268,15 @@ export class RemoteAvatarLoadQueue {
     this.pump()
   }
 
+  private scheduleOffRafPump(): void {
+    if (this.offRafPumpScheduled) return
+    this.offRafPumpScheduled = true
+    scheduleOffPlayRaf(() => {
+      this.offRafPumpScheduled = false
+      this.pump()
+    })
+  }
+
   private pump(): void {
     if (this.scenePressureBlocks()) {
       // Retry — without this, a sticky pressure sample never re-evaluates.
@@ -272,6 +284,11 @@ export class RemoteAvatarLoadQueue {
       return
     }
     if (this.localEmoteBusy) return
+    // Never start a 4–32s compose on a frame that already blew 30 FPS.
+    if (lastFrameOverBudget(33)) {
+      this.scheduleIntervalPump(80)
+      return
+    }
 
     const waitGap = this.msUntilNextComposeAllowed()
     if (waitGap > 0) {
@@ -307,7 +324,10 @@ export class RemoteAvatarLoadQueue {
       this.running++
       this.lastComposeStartMs = performance.now()
 
-      void next.c.run().finally(() => {
+      void (async () => {
+        await yieldToIdle(48)
+        await next.c.run()
+      })().finally(() => {
         this.markFinished(next.c.address)
       })
     }

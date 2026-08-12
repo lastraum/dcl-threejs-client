@@ -313,7 +313,7 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
           // On: every bound primary clip advances every frame (smooth plaza).
           // Off: distance sleep + fair sampling (cheaper CBD, can freeze mid-pose far/off-screen).
           label: 'Full-rate scene animators',
-          defaultOn: rq.primaryFullRateAnimators ?? true,
+          defaultOn: rq.primaryFullRateAnimators ?? false,
           onChange: (on) => renderQuality.setPrimaryFullRateAnimators(on)
         }
       ]
@@ -500,7 +500,7 @@ export class GraphicsSettingsView {
             break
           case 'Full-rate scene animators':
             if (control.kind === 'toggle') {
-              control.input.checked = opts.primaryFullRateAnimators ?? true
+              control.input.checked = opts.primaryFullRateAnimators ?? false
             }
             break
         }

@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import type { AssetCache } from '../../rendering/AssetCache'
 import { dclToThreePos, dclToThreeQuat } from '../../bridge/dclTransform'
+import { yieldToIdle } from '../../rendering/mainThreadYield'
 import { parseParcelKey } from '../content/parseParcel'
 import { PARCEL_SIZE } from '../content/types'
 import { catalystContentAssetUrl } from '../../network/catalyst/CatalystClient'
@@ -252,43 +253,56 @@ export async function buildPlacementVisualGroup(opts: {
   const originOffset = neighborOriginOffset(opts.neighborBase, opts.primaryBase)
   dclToThreePos(originOffset.x, 0, originOffset.z, group.position)
 
-  const max = opts.maxGltfs ?? 80
+  const max = opts.maxGltfs ?? 16
   const slice = opts.placements.slice(0, max)
   const skipGround = opts.skipGroundGlbs === true
 
   const quat = new THREE.Quaternion()
   const pos = new THREE.Vector3()
 
-  await Promise.all(
+  const loaded = await Promise.all(
     slice.map(async (place) => {
-      if (skipGround && isAoiSecondaryGroundSrc(place.src)) return
+      if (skipGround && isAoiSecondaryGroundSrc(place.src)) return null
       const resolved = resolveContentUrl(place.src, opts.content, opts.contentBaseUrl)
-      if (!resolved) return
+      if (!resolved) return null
       try {
         const { root } = await opts.cache.load(resolved.url, resolved.hash)
-        const clone = root.clone(true)
-        hideColliderMeshes(clone)
-        // Local to neighbor base (already world-within-neighbor after hierarchy bake).
-        dclToThreePos(place.position.x, place.position.y, place.position.z, pos)
-        clone.position.copy(pos)
-        dclToThreeQuat(
-          place.rotation.x,
-          place.rotation.y,
-          place.rotation.z,
-          place.rotation.w,
-          quat
-        )
-        clone.quaternion.copy(quat)
-        clone.scale.set(place.scale.x, place.scale.y, place.scale.z)
-        clone.name = `aoi-gltf:${place.src.split('/').pop() ?? 'mesh'}`
-        group.add(clone)
+        return { place, root }
       } catch {
-        /* missing glb */
+        return null
       }
     })
   )
 
+  // Fetch in parallel; clone/attach one at a time so play rAF can paint.
+  for (const item of loaded) {
+    if (!item) continue
+    await yieldToIdle(16)
+    const { place, root } = item
+    const clone = root.clone(true)
+    hideColliderMeshes(clone)
+    freezeStaticGraph(clone)
+    dclToThreePos(place.position.x, place.position.y, place.position.z, pos)
+    clone.position.copy(pos)
+    dclToThreeQuat(place.rotation.x, place.rotation.y, place.rotation.z, place.rotation.w, quat)
+    clone.quaternion.copy(quat)
+    clone.scale.set(place.scale.x, place.scale.y, place.scale.z)
+    clone.name = `aoi-gltf:${place.src.split('/').pop() ?? 'mesh'}`
+    clone.updateMatrix()
+    group.add(clone)
+  }
+
+  freezeStaticGraph(group)
+  group.updateMatrixWorld(true)
   return group
+}
+
+/** Neighbor shells never tween — skip per-frame matrix walks. */
+function freezeStaticGraph(root: THREE.Object3D): void {
+  root.traverse((node) => {
+    node.matrixAutoUpdate = false
+    node.updateMatrix()
+  })
 }
 
 /**

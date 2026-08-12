@@ -211,8 +211,8 @@ const DEFAULT_OPTIONS: RenderQualityOptions = {
   sceneLoadRadiusM: SCENE_LOAD_RADIUS_DEFAULT_M,
   /** On by default — steps down only under load; never raises above user settings. */
   adaptiveQualityEnabled: true,
-  /** On by default — full-rate primary clips; turn off for cheaper CBD. */
-  primaryFullRateAnimators: true,
+  /** Off by default — fair sample budget. `?fullanim` or Advanced toggle for every mixer. */
+  primaryFullRateAnimators: false,
   /** Split cast toggles — test avatar vs env shadow cost independently. */
   avatarShadowsEnabled: true,
   environmentShadowsEnabled: true,

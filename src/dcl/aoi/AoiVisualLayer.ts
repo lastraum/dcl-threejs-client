@@ -39,6 +39,8 @@ import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 import {
   aoiGlbShellsOnly,
   aoiLiveSecondariesOnly,
+  AOI_SHELL_ENTER_M,
+  AOI_SHELL_KEEP_M,
   COMPOSITE_MAX_RETAINED,
   compositeMaxGltfsForDistance,
   EMPTY_LAND_PHYS_RADIUS_M,
@@ -47,6 +49,7 @@ import {
   secondaryLiveEnterRadiusM,
   secondaryLiveKeepRadiusM
 } from '../multiScene/caps'
+import { lastFrameOverBudget, yieldToIdle } from '../../rendering/mainThreadYield'
 
 /** Visible first-frame secondaries inside the inner radius. */
 const FF_MAX_VISIBLE = 3
@@ -645,6 +648,8 @@ export class AoiVisualLayer {
     if (!this.hasOutstandingWork()) return
     if (this.drainInFlight) return
     if (now - this.lastDrainAt < 400) return
+    // After play-ready, never attach composites on an already-over-budget frame.
+    if (!this.prewarmActive && lastFrameOverBudget(33)) return
     this.lastDrainAt = now
     void this.drainOutstandingWork(dclX, dclZ)
   }
@@ -1013,7 +1018,8 @@ export class AoiVisualLayer {
 
   /**
    * Mark composite candidates as outstanding (add-only).
-   * Distance gate = Preferences Scene Distance (up to 200m) — no extra hard cap.
+   * New shells only inside {@link AOI_SHELL_ENTER_M}; already-loaded stay until KEEP.
+   * Pointer fetch may still walk Scene Distance — this does not build 200m of clones.
    */
   private enqueueCompositeWork(
     entities: ActiveSceneEntity[],
@@ -1049,6 +1055,10 @@ export class AoiVisualLayer {
         primaryBase
       )
       if (Number.isFinite(best) && best > warmM) continue
+      if (Number.isFinite(best) && best > AOI_SHELL_KEEP_M) continue
+      if (Number.isFinite(best) && best > AOI_SHELL_ENTER_M && !this.loadedCompositeIds.has(e.id)) {
+        continue
+      }
       this.pendingCompositeIds.add(e.id)
     }
   }
@@ -1100,18 +1110,29 @@ export class AoiVisualLayer {
       return true
     })
 
-    // Drop secondaries that left the AOI or are no longer composite-loadable
+    // Drop secondaries that left the AOI, walked past KEEP, or are no longer composite-loadable.
     const wantIds = new Set(compositeCandidates.map((c) => c.id))
     for (const id of [...this.loadedCompositeIds]) {
-      if (!wantIds.has(id)) {
+      const ent = compositeCandidates.find((c) => c.id === id)
+      const dist = ent ? distToEntity(ent) : Infinity
+      if (!wantIds.has(id) || dist > AOI_SHELL_KEEP_M) {
         const child = this.compositeRoot.getObjectByName(`aoi-secondary:${id}`)
         child?.removeFromParent()
         this.loadedCompositeIds.delete(id)
+        this.pendingCompositeIds.delete(id)
       }
     }
 
     // Multi-parcel shells first (CBD plaza around nested hole), then nearest.
-    const ranked = [...compositeCandidates].sort((a, b) => {
+    // Visual band: new attach ≤ ENTER; keep ≤ KEEP; past KEEP is road/ground only.
+    const ranked = [...compositeCandidates]
+      .filter((e) => {
+        const d = distToEntity(e)
+        if (d > AOI_SHELL_KEEP_M) return false
+        if (d > AOI_SHELL_ENTER_M && !this.loadedCompositeIds.has(e.id)) return false
+        return true
+      })
+      .sort((a, b) => {
       const aParcels = a.parcels.length || a.pointers.length
       const bParcels = b.parcels.length || b.pointers.length
       const aMega = aParcels >= 16 ? 1 : 0
@@ -1169,7 +1190,13 @@ export class AoiVisualLayer {
       const parcels = ent.parcels.length || ent.pointers.length
       const distM = distToEntity(ent)
       const maxGltfs = compositeMaxGltfsForDistance(distM, parcels)
+      if (maxGltfs <= 0 || distM > AOI_SHELL_KEEP_M) {
+        this.pendingCompositeIds.delete(ent.id)
+        continue
+      }
       try {
+        await yieldToIdle(48)
+        if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
         const group = await buildCompositeVisualGroup({
           cache: ctx.cache,
           contentBaseUrl: ctx.scene.realm.contentUrl,

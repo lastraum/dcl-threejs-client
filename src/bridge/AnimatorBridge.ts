@@ -125,8 +125,13 @@ const MAX_DEFAULT_BINDS_FULL_RATE = 12
 /** Never let near layer eat the whole budget while fair in-view units exist. */
 const FAIR_BUDGET_RESERVE_MIN = 4
 
-/** Graphics Advanced: full scene-tick sampling for primary (default on). */
+/** Graphics Advanced: full scene-tick sampling for primary. Default off (fair budget). */
 function primaryFullRateAnimators(): boolean {
+  if (typeof location !== 'undefined') {
+    const q = location.search
+    if (/(?:^|[?&])fullanim(?:=|&|$)/i.test(q)) return true
+    if (/(?:^|[?&])nofullanim(?:=|&|$)/i.test(q)) return false
+  }
   return renderQuality.getPrimaryFullRateAnimators()
 }
 

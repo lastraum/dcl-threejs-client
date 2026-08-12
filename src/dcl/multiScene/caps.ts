@@ -37,19 +37,25 @@ export const ROAD_PHYS_RADIUS_M = 48
  */
 export const EMPTY_LAND_PHYS_RADIUS_M = 48
 
+/**
+ * Neighbor **visual shell** band (player → footprint, scene-local meters).
+ * New composites attach inside ENTER; stay until KEEP; past KEEP = 0 GLB clones
+ * (road + ground only). Independent of Preferences Scene Distance pointer fetch.
+ */
+export const AOI_SHELL_ENTER_M = 48
+export const AOI_SHELL_KEEP_M = 80
+
 /** Max retained composite tertiary entities (LRU; multi-parcel shells preferred). */
-export const COMPOSITE_MAX_RETAINED = 16
+export const COMPOSITE_MAX_RETAINED = 6
 
 /**
  * Composite GLB budget by distance from player (scene-local meters).
- * Near = denser shell; far = silhouette only.
+ * Past {@link AOI_SHELL_KEEP_M}: no clones. Near/mid are silhouette budgets, not a second plaza.
  */
-export function compositeMaxGltfsForDistance(distM: number, parcelCount: number): number {
-  const multi = parcelCount >= 16
-  if (distM <= 32) return multi ? 80 : 40
-  if (distM <= 64) return multi ? 48 : 24
-  if (distM <= 100) return multi ? 24 : 12
-  return multi ? 12 : 6
+export function compositeMaxGltfsForDistance(distM: number, _parcelCount: number): number {
+  if (distM > AOI_SHELL_KEEP_M) return 0
+  if (distM <= AOI_SHELL_ENTER_M) return 16
+  return 8
 }
 
 /**

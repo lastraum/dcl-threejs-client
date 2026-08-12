@@ -547,6 +547,11 @@ export function perfNoteAsyncCollSplit(opts: {
  * under the residual (env/pet/pe/scene/aoi/pointer) for HUD only — residual is
  * still frame math against rem+player+plat.
  */
+/** Last completed rAF wall ms (0 before the first frame). */
+export function getLastFrameMs(): number {
+  return state.frameMs
+}
+
 export function perfNoteFrameHost(opts: {
   frameMs: number
   syncMs: number

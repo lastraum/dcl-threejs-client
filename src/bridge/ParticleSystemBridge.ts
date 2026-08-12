@@ -3,6 +3,7 @@ import type { Entity } from '@dcl/ecs'
 import type { ResolvedScene } from '../dcl/content/types'
 import type { AssetCache } from '../rendering/AssetCache'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
+import { usePerfDebug } from '../client/devFlags'
 import { resolveSceneTextureUrl } from './material/resolveTexture'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionView } from './ProjectionView'
@@ -171,7 +172,7 @@ export class ParticleSystemBridge {
           (missingNode ? ` missingNode=${missingNode}` : '') +
           (pendingCreates ? ` createFail=${pendingCreates}` : '') +
           ` frustumPriority=1`,
-        { alsoConsole: true, throttleMs: 3000, throttleKey: 'particles-sync-diag' }
+        { alsoConsole: usePerfDebug(), throttleMs: 3000, throttleKey: 'particles-sync-diag' }
       )
     }
   }

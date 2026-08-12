@@ -317,11 +317,13 @@ export class SceneHost {
    * Preferences → Bloom mode: Auto (legacy heuristic) / Fast / Selective.
    */
   private pickBloomMode(options: RenderQualityOptions): 'fast' | 'selective' {
+    const meshes = this.sceneMeshCountForBloom()
+    const plazaScale = meshes > SceneHost.BLOOM_SELECTIVE_MESH_CAP
+    // Plaza / CBD: never 2× the beauty pass (HUD extract=17ms at 2.7k meshes).
+    if (plazaScale) return 'fast'
     const pref = renderQuality.getBloomMode()
     if (pref === 'fast') return 'fast'
     if (pref === 'selective') return 'selective'
-    // auto — prior behavior
-    const meshes = this.sceneMeshCountForBloom()
     const smallEnough = meshes > 0 && meshes <= SceneHost.BLOOM_SELECTIVE_MESH_CAP
     const tierWantsSelective = options.tier === 'high' || options.tier === 'ultra'
     return smallEnough && tierWantsSelective ? 'selective' : 'fast'

@@ -18,6 +18,7 @@ import { fetchGlbBytesOffThread, disposeGlbFetchPool } from './glbFetchPool'
 import { parseGlbOffThread, disposeGlbParsePool } from './glbParsePool'
 import { isGlbOffThreadParseEnabled } from './gltfWorkerTransfer'
 import { prepareGlbBytes } from './glbSanitizer'
+import { clampObject3DTextures, clampTextureSize } from './clampTextureSize'
 import { markSharedAssetResources } from './sharedAsset'
 import { cloneGltfInstance } from './skinnedMeshInstance'
 import { prepareAvatarMaterials, prepareEmotePropMaterials } from '../avatar/materials'
@@ -495,6 +496,7 @@ export class AssetCache {
       } else {
         result = await this.loader.parseAsync(buffer, resourcePath)
       }
+      clampObject3DTextures(result.scene)
       await new Promise<void>((r) => setTimeout(r, 0))
       return result
     } finally {
@@ -574,7 +576,9 @@ export class AssetCache {
       return this.loadTextureViaFetch(url)
     }
     try {
-      return await this.textureLoader.loadAsync(url)
+      const tex = await this.textureLoader.loadAsync(url)
+      clampTextureSize(tex)
+      return tex
     } catch (err) {
       // Peer content can flip between image/* and octet-stream+nosniff; retry via fetch.
       try {
@@ -620,6 +624,7 @@ export class AssetCache {
     tex.colorSpace = THREE.SRGBColorSpace
     tex.needsUpdate = true
     tex.flipY = true
+    clampTextureSize(tex)
     return tex
   }
 }

@@ -751,7 +751,7 @@ export class World {
       scene.baseParcel ||
       'Scene'
     if (skipRemoteAvatars()) {
-      clientDebugLog.log('network', 'Remote avatars disabled (?noremote)', {
+      clientDebugLog.log('network', 'Remote avatars disabled (default; ?remotes to enable)', {
         alsoConsole: true,
         throttleMs: 60_000
       })

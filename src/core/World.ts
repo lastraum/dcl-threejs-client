@@ -42,6 +42,7 @@ import { AnimatorSampleHud } from '../debug/AnimatorSampleHud'
 import { MainFrameHud } from '../debug/MainFrameHud'
 import type { PerformanceTier } from '../shim/types'
 import { LandscapeSystem } from './systems/LandscapeSystem'
+import { SceneLoop } from './sceneLoop'
 import { SceneScriptSystem } from './systems/SceneScriptSystem'
 import { EnvironmentSystem } from '../environment/EnvironmentSystem'
 import { FftOceanWater } from '../environment/FftOceanWater'
@@ -58,6 +59,7 @@ import type { OceanPerfInfo } from '../client/ui/RenderStats'
 import {
   perfNoteAsyncCollSplit,
   perfNoteAsyncSplit,
+  perfNoteSceneLoop,
   perfNoteSyncPlus,
   perfNoteSyncRendererMs,
   perfNoteSyncSubsystems,
@@ -178,6 +180,8 @@ export class World {
   readonly landscape = new LandscapeSystem()
   /** Mutable so promote handoff can adopt a live secondary worker as primary. */
   sceneScript = new SceneScriptSystem()
+  /** Host clock for scene-JS guests (primary + PE). Phase 0: same every-rAF send. */
+  readonly sceneLoop = new SceneLoop()
   readonly physics = new PhysXWorld()
   readonly session = new SessionIdentity()
   /** May be replaced by landing handoff (`adoptComms`) — keep LiveKit without reconnect. */
@@ -385,6 +389,7 @@ export class World {
     this.performanceTier = performanceTier
     applyClientPerformanceDefaults(this.host.renderer, performanceTier)
     this.sceneScript.setPerformanceTier(performanceTier)
+    this.sceneLoop.setPrimary(() => this.sceneScript)
     if (performanceTier !== 'high') {
       console.info(`[World] performance tier=${performanceTier} — relaxed scene-worker timing + render defaults`)
     }
@@ -1901,9 +1906,17 @@ export class World {
           this.sceneScript.pumpAvatarAttach()
           // Detect enter/exit with post-move CCT feet, then flush PE+TriggerAreaResult to worker.
           this.sceneScript.updateTriggerAreas()
-          // Worker onUpdate with current PE (bounce parasols read Transform.get(PlayerEntity)).
-          this.sceneScript.tickPlayFrame()
-          // Portable experiences + live secondaries (primary already ticked — primary wins intents).
+          // SceneLoop owns play-frame-tick (primary + PE). Same every-rAF rate in Phase 0.
+          this.sceneLoop.reconcilePe(this.multiScene?.pe ?? null)
+          this.sceneLoop.send({
+            now: performance.now(),
+            fpsTarget: renderQuality.getFpsLimit() || 60,
+            player: playerPose,
+            camera: cameraPose,
+            frame: startFrame
+          })
+          perfNoteSceneLoop(this.sceneLoop.getMeters())
+          // PE pointer inject + live secondaries (play-frame already sent).
           this.multiScene?.tickSync(playerPose, cameraPose, startFrame)
           sceneTickMs = performance.now() - sceneT0
           // PE tween/billboard/attach motion + reserved-parent meshes (same as primary pump).
@@ -2068,10 +2081,10 @@ export class World {
         if (this.editorPreviewMode) return
 
         const t0 = performance.now()
-        // COD AAA — primary owns a fixed frame pie (motion+material+structure).
-        // No backlog-proportional deadline boosts — admit seal keeps pendingDiff true-dirty.
-        await this.sceneScript.syncRenderer({ deadlineMs: 18 })
+        // SceneLoop apply — Phase 0 still the 18ms primary peel (same as syncRenderer).
+        await this.sceneLoop.applyWorld(18)
         const peelMs = performance.now() - t0
+        perfNoteSceneLoop(this.sceneLoop.getMeters())
         // Frame budget: async CRDT apply wall time (?perfdebug [frame] line).
         perfNoteSyncRendererMs(peelMs)
 
@@ -4354,9 +4367,11 @@ export class World {
    */
   attachMultiScene(runtime: MultiSceneRuntime | null): void {
     if (this.multiScene && this.multiScene !== runtime) {
+      this.multiScene.pe.setPlayFrameOwnedExternally(false)
       this.multiScene.unbindWorld()
     }
     this.multiScene = runtime
+    runtime?.pe.setPlayFrameOwnedExternally(!!runtime)
     if (!runtime || !this.loadedPrimaryScene) return
     runtime.setOnLiveSecondaryIds((ids) => {
       this.aoiVisual.setLiveSecondaryIds(ids)
@@ -5534,7 +5549,9 @@ export class World {
     this.host.stop()
 
     // Detach multi-scene (PE workers) before primary host dies — PE prefs stay on manager.
+    this.sceneLoop.clear()
     if (this.multiScene) {
+      this.multiScene.pe.setPlayFrameOwnedExternally(false)
       this.multiScene.unbindWorld()
       this.multiScene = null
     }

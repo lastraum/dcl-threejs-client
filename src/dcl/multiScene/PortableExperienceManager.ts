@@ -45,6 +45,8 @@ export class PortableExperienceManager {
   private consentShownThisSession = false
   private discoveryInFlight = false
   private nextPeIndex = 0
+  /** SceneLoop.send owns PE play-frame-tick; tickSync only does pointer. */
+  private playFrameOwnedExternally = false
   /** Phys ids to invalidate when a PE is fully unloaded. */
   private readonly pendingPhysInvalidation: number[] = []
   /** World wires player identity + pointer after PE boot (UI clicks / getPlayer). physOffset for collider remove. */
@@ -75,6 +77,21 @@ export class PortableExperienceManager {
 
   runningCount(): number {
     return this.workers.size
+  }
+
+  /**
+   * Live PE workers for SceneLoop guests.
+   * When {@link setPlayFrameOwnedExternally} is true, {@link tickSync} skips play-frame
+   * (SceneLoop.send owns it) and only runs PE pointer inject.
+   */
+  listRunningWorkers(): ReadonlyArray<{ id: string; slot: SceneWorkerSlot }> {
+    const out: { id: string; slot: SceneWorkerSlot }[] = []
+    for (const [id, slot] of this.workers) out.push({ id, slot })
+    return out
+  }
+
+  setPlayFrameOwnedExternally(owned: boolean): void {
+    this.playFrameOwnedExternally = owned
   }
 
   /** scene.json featureToggles.portableExperiences (and URL override). */
@@ -492,8 +509,10 @@ export class PortableExperienceManager {
   tickSync(player: EntityPose, camera: EntityPose, frame = 0): void {
     const interval = peTickIntervalMs(this.tier)
     for (const worker of this.workers.values()) {
-      // Keyboard is InputHub → PE subscriber (World.inputHub.sync once per frame).
-      worker.tickSync(player, camera, interval)
+      // SceneLoop.send owns play-frame when wired; otherwise keep the old combined tick.
+      if (!this.playFrameOwnedExternally) {
+        worker.tickSync(player, camera, interval)
+      }
       // PE UI pointer inject (clicks) — primary loop alone never ticks PE PointerEventsSystem.
       worker.system.updatePointerEvents(frame)
       worker.system.syncPointerInput(frame, {

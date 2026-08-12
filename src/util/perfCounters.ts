@@ -103,6 +103,14 @@ export type PerfSnapshot = {
   aoiMs: number
   /** Pointer raycast prep + PE pointer edges (sync tail). */
   pointerMs: number
+  /** SceneLoop send / receive / apply (host guest clock). */
+  sceneLoopSendMs: number
+  sceneLoopReceiveMs: number
+  sceneLoopApplyMs: number
+  sceneLoopInFlight: number
+  sceneLoopDue: number
+  sceneLoopGuests: number
+  sceneLoopSent: number
   // --- render sub-split ---
   /** WebGL scene pass (forward or bloom path). */
   renderMainMs: number
@@ -212,6 +220,13 @@ const state = {
   sceneTickMs: 0,
   aoiMs: 0,
   pointerMs: 0,
+  sceneLoopSendMs: 0,
+  sceneLoopReceiveMs: 0,
+  sceneLoopApplyMs: 0,
+  sceneLoopInFlight: 0,
+  sceneLoopDue: 0,
+  sceneLoopGuests: 0,
+  sceneLoopSent: 0,
   renderMainMs: 0,
   renderTagsMs: 0,
   renderSceneMs: 0,
@@ -426,6 +441,26 @@ export function perfNoteApplyMs(ms: number): void {
   state.applyMs = ms
 }
 
+/** Host SceneLoop phase walls (send on sync, apply on async peel). */
+export function perfNoteSceneLoop(opts: {
+  sendMs: number
+  receiveMs: number
+  applyMs: number
+  leftoverMs?: number
+  inFlight: number
+  due: number
+  guests: number
+  sent: number
+}): void {
+  state.sceneLoopSendMs = opts.sendMs
+  state.sceneLoopReceiveMs = opts.receiveMs
+  state.sceneLoopApplyMs = opts.applyMs
+  state.sceneLoopInFlight = opts.inFlight
+  state.sceneLoopDue = opts.due
+  state.sceneLoopGuests = opts.guests
+  state.sceneLoopSent = opts.sent
+}
+
 /** SceneHost render sub-split (main pass vs name tags + scene/bloom/extract). */
 export function perfNoteRenderSplit(opts: {
   mainMs: number
@@ -632,6 +667,13 @@ export function perfSnapshot(): PerfSnapshot {
     sceneTickMs: state.sceneTickMs,
     aoiMs: state.aoiMs,
     pointerMs: state.pointerMs,
+    sceneLoopSendMs: state.sceneLoopSendMs,
+    sceneLoopReceiveMs: state.sceneLoopReceiveMs,
+    sceneLoopApplyMs: state.sceneLoopApplyMs,
+    sceneLoopInFlight: state.sceneLoopInFlight,
+    sceneLoopDue: state.sceneLoopDue,
+    sceneLoopGuests: state.sceneLoopGuests,
+    sceneLoopSent: state.sceneLoopSent,
     renderMainMs: state.renderMainMs,
     renderTagsMs: state.renderTagsMs,
     renderSceneMs: state.renderSceneMs,

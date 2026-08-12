@@ -29,12 +29,14 @@ SceneInputRelay (WASD)              inputSystem.isPressed
         │  postMessage lanes        │
         ├─ inject-pointer-click  ──►│ PE edges (authoritative)
         ├─ scene-input-snapshot  ──►│ keyboard PETs on PlayerEntity
-        ├─ play-frame-tick       ──►│ unified play frame
+        ├─ play-frame-tick       ──►│ unified play frame (SceneLoop.send)
         ├─ *-deliver (below)     ──►│ renderer-owned CRDT inbound
         ◄── player-frame ───────────┤ InputModifier + MainCamera (no ack)
         ◄── vc-pose-live ───────────┤ VC Transform during edit flight
         ◄── crdt-outbound ──────────┤ cold world + UI mount snapshot
 ```
+
+**SceneLoop** (`src/core/sceneLoop/`): host clock for scene-JS guests. rAF still presents; the loop owns **when** primary (and PE) get a `play-frame-tick`. Phase 0 is behavior-identical (every rAF, no in-flight gate). CRDT apply stays on the existing message path + 18ms async peel. Pointer inject / `player-frame` / CCT stay outside the loop.
 
 **Transforms:** Logical sim/comms stay in DCL left-handed meters. Display conversion only at the render boundary (`src/bridge/dclTransform.ts`). Landscape uses the same X reflection so author terrain and biome floors align.
 

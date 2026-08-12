@@ -126,6 +126,12 @@ export class MainFrameHud {
         `</div>`,
       row('loop+', snap.loopRestMs, 'frame−sync−render'),
       row('apply', snap.applyMs, 'last CRDT (worker→main)'),
+      `<div style="padding-left:12px;opacity:.85;font-size:10px">` +
+        `loop send=${fmt1(snap.sceneLoopSendMs)} recv=${fmt1(snap.sceneLoopReceiveMs)} ` +
+        `apply=${fmt1(snap.sceneLoopApplyMs)} ` +
+        `g=${snap.sceneLoopGuests} due=${snap.sceneLoopDue} sent=${snap.sceneLoopSent} ` +
+        `inflight=${snap.sceneLoopInFlight}` +
+        `</div>`,
       section('async~', snap.asyncMs, [
         ['peel', snap.asyncPeelMs],
         ['coll', snap.asyncCollisionMs],

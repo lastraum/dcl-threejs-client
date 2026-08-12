@@ -41,7 +41,22 @@ type HostLwwComponent<T> = {
   componentId: number
   schema: { serialize: (value: T, buf: ReadWriteByteBuffer) => void }
   updateFromCrdt: (body: CrdtMessageBody) => unknown
+  get?: (entity: Entity) => T
+  __onChangeCallbacks?: (entity: Entity, value: T | undefined) => void
 }
+
+/** Host LWW that scene systems subscribe to via Component.onChange (not pose/PPI heartbeats). */
+const HOST_LWW_ONCHANGE_IDS = new Set([
+  1049, // GltfContainerLoadingState
+  1068, // RaycastResult
+  1103, // TweenState
+  1095, // UiInputResult
+  1096, // UiDropdownResult
+  1054, // UiCanvasInformation
+  1072, // CameraMode
+  1074, // PointerLock
+  1106 // RealmInfo
+])
 
 /** Put host value on the guest store. Does not add the entity to dirtyIterator. */
 export function writeHostLwwNoDirty<T>(
@@ -59,4 +74,9 @@ export function writeHostLwwNoDirty<T>(
     timestamp: ++hostLamport,
     data
   })
+  // updateFromCrdt does not dirty sendMessages and does not fire Component.onChange.
+  if (HOST_LWW_ONCHANGE_IDS.has(component.componentId) && component.__onChangeCallbacks) {
+    const after = component.get?.(entity as Entity)
+    component.__onChangeCallbacks(entity as Entity, after)
+  }
 }

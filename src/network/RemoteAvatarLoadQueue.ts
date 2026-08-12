@@ -325,7 +325,7 @@ export class RemoteAvatarLoadQueue {
       this.lastComposeStartMs = performance.now()
 
       void (async () => {
-        await yieldToIdle(48)
+        await yieldToIdle(80)
         await next.c.run()
       })().finally(() => {
         this.markFinished(next.c.address)

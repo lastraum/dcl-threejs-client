@@ -57,6 +57,7 @@ import { disposeOwnedObject3D } from '../rendering/sharedAsset'
 import { enableSceneGltfVertexColors } from '../rendering/LandscapeAssetSanitizer'
 import { applySceneGltfEmissives } from '../rendering/sceneGltfEmissives'
 import { cloneGltfInstance } from '../rendering/skinnedMeshInstance'
+import { mergeStaticGltfLeaves } from '../rendering/mergeStaticGltfLeaves'
 import {
   INSTANCE_COLLIDER_SHAPES_KEY,
   SceneGltfInstancer,
@@ -3956,6 +3957,9 @@ export class ThreeBridge {
         template.animations.length === 0
       ) {
         freezeStaticObject3D(clone)
+        // Unique GLBs (theatre) cannot instance. Collapse generic same-material
+        // leaves so one unique asset is not 200 draw calls. Authored names stay.
+        mergeStaticGltfLeaves(clone)
         obj.matrixAutoUpdate = false
         obj.updateMatrix()
       } else {

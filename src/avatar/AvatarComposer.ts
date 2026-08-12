@@ -22,7 +22,7 @@ import { applyAvatarOpaqueAtlas, isAvatarOpaqueAtlasEnabled } from './avatarOpaq
 import { buildComposeConfig } from './resolveProfile'
 import { resolveAvatarProfile } from './peerApi'
 import { isModelWearable } from './slots'
-import { yieldToNextFrame } from '../rendering/mainThreadYield'
+import { yieldToIdle, yieldToNextFrame } from '../rendering/mainThreadYield'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
 import { isAvatarVerbose } from '../client/debug/ClientDebugLog'
 import type {
@@ -115,6 +115,7 @@ async function composeFromConfig(
     )
     sanitizeWearableRoot(bodyRoot)
     avatar.add(bodyRoot)
+    await yieldToIdle(24)
 
     const skeleton = findSkeleton(bodyRoot)
     if (!skeleton) throw new Error('Body shape has no skeleton')
@@ -147,7 +148,10 @@ async function composeFromConfig(
     for (const entry of loadedLayers) {
       if (!entry) continue
       // One wearable merge per frame — keeps peer compose from stacking multi-ms CPU on rAF.
-      if (mergeIndex > 0) await yieldToNextFrame()
+      if (mergeIndex > 0) {
+        await yieldToIdle(24)
+        await yieldToNextFrame()
+      }
       mergeIndex++
 
       const category = entry.wearable.data.category

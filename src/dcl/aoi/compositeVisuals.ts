@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import type { AssetCache } from '../../rendering/AssetCache'
 import { dclToThreePos, dclToThreeQuat } from '../../bridge/dclTransform'
 import { yieldToIdle } from '../../rendering/mainThreadYield'
+import { mergeStaticGltfLeaves } from '../../rendering/mergeStaticGltfLeaves'
 import { parseParcelKey } from '../content/parseParcel'
 import { PARCEL_SIZE } from '../content/types'
 import { catalystContentAssetUrl } from '../../network/catalyst/CatalystClient'
@@ -292,6 +293,10 @@ export async function buildPlacementVisualGroup(opts: {
     group.add(clone)
   }
 
+  freezeStaticGraph(group)
+  group.updateMatrixWorld(true)
+  // Neighbor shells are not pointer targets — merge named leaves too (imposter draw collapse).
+  mergeStaticGltfLeaves(group, { namedOk: true })
   freezeStaticGraph(group)
   group.updateMatrixWorld(true)
   return group

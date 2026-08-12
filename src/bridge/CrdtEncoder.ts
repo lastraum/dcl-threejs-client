@@ -126,7 +126,8 @@ export class CrdtEncoder {
     this.growOnlyIds = new Set(growOnly.map((d) => d.componentId))
     this.growOnlyById = new Map(growOnly.map((d) => [d.componentId, d]))
     // Host dynamic LWW → worker inject (must match injectRendererLwwPuts recordLww path).
-    // Reserved LWW (CameraMode, PrimaryPointerInfo, EngineInfo, …) use reservedTargets.
+    // Reserved LWW (CameraMode, EngineInfo, RealmInfo, …) use reservedTargets.
+    // PE/Cam Transform + PPI ride play-frame-tick, not this encoder.
     const lwwCapture = [
       components.RaycastResult,
       components.VideoPlayer,
@@ -148,20 +149,18 @@ export class CrdtEncoder {
       serialize: (e) => serializeFromProjection(def, projection, e)
     })
 
+    // PE / Camera Transform + PrimaryPointerInfo ride play-frame-tick (no-dirty inject).
+    // Re-encoding them here after every guest outbound was identity echo.
     this.reservedTargets = [
-      mk(components.Transform, reserved.player),
       mk(components.PlayerIdentityData, reserved.player),
       mk(components.AvatarBase, reserved.player),
       mk(components.AvatarEquippedData, reserved.player),
-      mk(components.Transform, reserved.camera),
       // MainCamera.virtualCameraEntity is scene-worker authoritative (VIEW SHOT bind).
       // Round-tripping client projection `{}` cleared worker binds before VC hydrated.
       // Renderer reads MainCamera from worker outbound only (VirtualCameraBridge).
       // Renderer writes 1st/3rd person + pointer-lock state on CameraEntity.
       mk(components.CameraMode, reserved.camera),
       mk(components.PointerLock, reserved.camera),
-      // Renderer writes pointer screen/hover state to RootEntity (PointerEventsSystem).
-      mk(components.PrimaryPointerInfo, reserved.root),
       // Scene UI canvas dimensions for react-ecs / UiCanvasInformation.get(RootEntity).
       mk(components.UiCanvasInformation, reserved.root),
       // LiveKit scene-room connect flag — SDK network REQ_CRDT_STATE / isStateSyncronized.

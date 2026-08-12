@@ -152,6 +152,14 @@ export class PointerEventsSystem {
   private readonly uiPointerButtons = new Set<InputActionValue>()
 
   private lastPrimaryInfoKey = ''
+  private lastPpiSnapshot: {
+    pointerType: number
+    screenCoordinates: { x: number; y: number }
+    screenDelta: { x: number; y: number }
+    worldRayDirection: { x: number; y: number; z: number }
+  } | null = null
+  private readonly lastPpiCamElements = new Float32Array(16)
+  private lastPpiScreenKey = ''
   /**
    * PPI diagnostic lines — **off by default** (alsoConsole spam tanked FPS at clubhouse).
    * Enable with `?ppidiag=1` for fishing aim debugging only.
@@ -1880,11 +1888,28 @@ export class PointerEventsSystem {
     worldRayDirection: { x: number; y: number; z: number }
   } | null {
     if (!this.deps) return null
-    // Ensure _ray is fresh for this rAF even when no CRDT outbound ran.
-    this.refreshPointerRay(this.deps.camera)
+    const camera = this.deps.camera
+    camera.updateMatrixWorld(true)
+    const el = camera.matrixWorld.elements
+    const screenKey = `${this.screenX.toFixed(1)}|${this.screenY.toFixed(1)}|${this.screenDx}|${this.screenDy}`
+    let camSame = this.lastPpiSnapshot != null
+    if (camSame) {
+      for (let i = 0; i < 16; i++) {
+        if (Math.abs(el[i] - this.lastPpiCamElements[i]) > 1e-6) {
+          camSame = false
+          break
+        }
+      }
+    }
+    if (!camSame || screenKey !== this.lastPpiScreenKey) {
+      this.refreshPointerRay(camera)
+      this.lastPpiCamElements.set(el)
+      this.lastPpiScreenKey = screenKey
+    }
     // Consume deltas here (once per play frame) so worker embed gets non-zero screenDelta
     // for DecentraCraft VC drag/edge pan. syncInput earlier this frame uses consume=false.
     const info = this.buildPrimaryPointerInfo(true)
+    this.lastPpiSnapshot = info
     const d = info.worldRayDirection
     const key =
       `${info.screenCoordinates.x.toFixed(1)}|${info.screenCoordinates.y.toFixed(1)}|` +

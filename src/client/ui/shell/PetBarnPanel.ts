@@ -15,6 +15,8 @@ import {
   sha256HexOfBlob,
   submitPetBarnListing,
   updatePetBarnListing,
+  watchBarnDeploy,
+  type BarnDeployAction,
   type PetBarnCatalog,
   type PetBarnListing
 } from '../../../pets/petBarn'
@@ -77,6 +79,15 @@ export class PetBarnPanel {
   private readonly onKeyDown: (ev: KeyboardEvent) => void
   /** Center overlay: loading (blocks UI) or result (dismissible). */
   private overlayMode: 'none' | 'loading' | 'error' | 'success' = 'none'
+  /**
+   * Queued actions being watched until the catalog confirms them. Keyed by
+   * listing id (update/delete) or the Worker's queue id (create — that id
+   * becomes the listing id when the deploy lands).
+   */
+  private readonly pendingDeploys = new Map<
+    string,
+    { petName: string; action: BarnDeployAction; state: 'deploying' | 'deployed' | 'timeout' }
+  >()
 
   constructor(private readonly options: PetBarnPanelOptions) {
     this.element = document.createElement('div')
@@ -303,6 +314,56 @@ export class PetBarnPanel {
     this.setPublishLocked(false)
   }
 
+  /**
+   * Track a queued action until the catalog proves it deployed (or 6 min pass).
+   * "Queued" from the Worker is not a deploy — the Action can still fail and
+   * roll back, which the submitter would otherwise only discover by rechecking
+   * the world later. Deploy state renders as a chip on the listing's card and
+   * a status-line message on resolution.
+   */
+  private beginDeployWatch(
+    key: string,
+    petName: string,
+    action: BarnDeployAction,
+    prevGlbCid?: string
+  ): void {
+    this.pendingDeploys.set(key, { petName, action, state: 'deploying' })
+    if (this.visible && this.view === 'catalog') this.renderCatalogPreservingSearchFocus()
+    void watchBarnDeploy({ action, targetId: key, prevGlbCid }).then(async (outcome) => {
+      const row = this.pendingDeploys.get(key)
+      if (!row) return
+      row.state = outcome === 'deployed' ? 'deployed' : 'timeout'
+      if (outcome === 'deployed') {
+        await this.refreshCatalog()
+        const verb =
+          action === 'delete' ? 'removed from the world' : action === 'create' ? 'live in the world' : 'deployed'
+        this.setStatus(`✓ ${petName} ${verb}`)
+        // Keep the ✓ chip visible briefly, then let the card go back to normal.
+        setTimeout(() => {
+          this.pendingDeploys.delete(key)
+          if (this.visible && this.view === 'catalog') this.renderCatalogPreservingSearchFocus()
+        }, 10_000)
+      } else {
+        this.setStatus(
+          `⚠ ${petName}: deploy not confirmed after 6 min — refresh the catalog later or resubmit.`
+        )
+      }
+      if (this.visible && this.view === 'catalog') this.renderCatalogPreservingSearchFocus()
+    })
+  }
+
+  private deployChipHtml(listingId: string): string {
+    const row = this.pendingDeploys.get(listingId)
+    if (!row) return ''
+    if (row.state === 'deploying') {
+      return `<span class="petbarn-card__deploy is-deploying">Deploying…</span>`
+    }
+    if (row.state === 'deployed') {
+      return `<span class="petbarn-card__deploy is-deployed">Deployed ✓</span>`
+    }
+    return `<span class="petbarn-card__deploy is-timeout" title="Not confirmed after 6 minutes — refresh later">Unconfirmed ⚠</span>`
+  }
+
   private startPoll(): void {
     this.stopPoll()
     this.pollTimer = setInterval(() => {
@@ -514,6 +575,7 @@ export class PetBarnPanel {
           <div class="petbarn-card__name">${escapeHtml(p.petName)}</div>
           <div class="petbarn-card__meta">${escapeHtml(p.creatorName)} · ${typeLabel}</div>
           <div class="petbarn-card__meta">${anims} anim${anims === 1 ? '' : 's'}</div>
+          ${this.deployChipHtml(p.id)}
         </div>
         <div class="petbarn-card__actions">
           <button
@@ -997,9 +1059,10 @@ export class PetBarnPanel {
         return
       }
       const done =
-        'Delete queued. Catalog updates after GitHub Action finishes (listing disappears when deploy completes).'
+        'Delete queued — the card shows a confirmation when the deploy Action finishes (~1–2 min).'
       if (card) this.setCardOverlay(card, 'success', done)
       else this.showSuccessOverlay(done, 'Delete queued')
+      this.beginDeployWatch(listing.id, listing.petName, 'delete')
       // Optimistic: drop from local catalog view until refresh
       if (this.catalog) {
         this.catalog = {
@@ -1086,10 +1149,10 @@ export class PetBarnPanel {
       this.updateTarget = null
       this.view = 'catalog'
       this.showSuccessOverlay(
-        'Update queued. Catalog refreshes after GitHub Action finishes.',
+        `Update queued — “${target.petName}” shows Deployed ✓ on its card when the world has the new model (~1–2 min).`,
         'Update queued'
       )
-      void this.refreshCatalog({ manual: true })
+      this.beginDeployWatch(target.id, petName.trim() || target.petName, 'update', target.glbCid)
     } catch (err) {
       this.showErrorOverlay(err instanceof Error ? err.message : 'Update failed', 'Update failed')
     } finally {
@@ -1179,9 +1242,10 @@ export class PetBarnPanel {
       this.glbFile = null
       this.thumbFile = null
       this.showSuccessOverlay(
-        'Queued for Worlds deploy. Catalog updates after GitHub Action finishes.',
+        `Queued for Worlds deploy — “${petName.trim()}” appears in the catalog when the deploy Action finishes (~1–2 min).`,
         'Published'
       )
+      this.beginDeployWatch(result.id, petName.trim(), 'create')
     } catch (err) {
       this.showErrorOverlay(err instanceof Error ? err.message : 'Publish failed', 'Publish failed')
     } finally {

@@ -5246,9 +5246,21 @@ export class SceneScriptSystem {
   }
 
   hasPendingApplyWork(): boolean {
-    if (this.pendingDiff.size > 0) return true
-    const mesh = this.getAttachProgressLite()?.pendingMesh ?? 0
-    return mesh > 0
+    return this.hasContentApplyWork()
+  }
+
+  /**
+   * Material/structure/mesh only. Motion Tweens stay in pendingDiff forever on plaza —
+   * they are peeled on the sync path and must not keep the 18ms async pie alive.
+   */
+  hasContentApplyWork(): boolean {
+    if ((this.getAttachProgressLite()?.pendingMesh ?? 0) > 0) return true
+    for (const [entity, comps] of this.pendingDiff) {
+      for (const cid of comps.keys()) {
+        if (this.pendingDiffLaneOf(cid, entity) !== 'motion') return true
+      }
+    }
+    return false
   }
 
   /** Sync motion peel for SceneLoop before present (Transform/Tween/Visibility only). */

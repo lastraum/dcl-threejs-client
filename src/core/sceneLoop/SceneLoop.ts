@@ -30,7 +30,7 @@ export class SceneLoop {
   private lastApplyMs = 0
 
   /** True when the last apply overran the display budget — next rAF should be minimum. */
-  lastApplyOverran(budgetMs = 16): boolean {
+  lastApplyOverran(budgetMs = 28): boolean {
     return this.lastApplyMs > budgetMs
   }
 

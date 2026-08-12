@@ -41,7 +41,7 @@ export class SceneScriptGuest implements SceneGuest {
   }
 
   applyWorld(deadlineMs: number): Promise<void> {
-    if (!this.getSystem().hasPendingApplyWork()) return Promise.resolve()
+    if (!this.getSystem().hasContentApplyWork()) return Promise.resolve()
     return this.getSystem().syncRenderer({ deadlineMs })
   }
 }

@@ -1827,7 +1827,7 @@ export class World {
     this.host.start({
       onSyncFrame: (delta) => {
         startFrame++
-        const loopMinimum = this.sceneLoop.lastApplyOverran(16)
+        const loopMinimum = this.sceneLoop.lastApplyOverran(28)
         // --- env / sky / lights (sync+ slice) ---
         // Client landscape water is off by default (?water=1 to opt in). Still skip ocean/GPGPU
         // and landscape grass/desert/foliage when not present — scenes do not need them.
@@ -2064,7 +2064,7 @@ export class World {
           this.sceneScript.pumpMotionBridges(delta, startFrame)
         }
         let pointerMs = 0
-        if (this.playerMode && this.player && this.isPointerRaycastLive() && !loopMinimum) {
+        if (this.playerMode && this.player && this.isPointerRaycastLive()) {
           const ptrT0 = performance.now()
           this.sceneScript.preparePointerRaycast(startFrame)
           this.sceneScript.updateRaycasts()
@@ -2098,7 +2098,7 @@ export class World {
           this.playerMode &&
           this.player &&
           this.isPointerRaycastLive() &&
-          !this.sceneLoop.lastApplyOverran(16)
+          !this.sceneLoop.lastApplyOverran(28)
         ) {
           const ptrT0 = performance.now()
           this.sceneScript.preparePointerRaycast(startFrame)

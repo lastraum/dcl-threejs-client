@@ -110,6 +110,9 @@ const _camPos = new THREE.Vector3()
 const _playerPos = new THREE.Vector3()
 const _entityPos = new THREE.Vector3()
 const _worldNormal = new THREE.Vector3()
+/** Do not raycast plaza-wide PE (576 entities / 812 meshes). Fishing / click stay inside this. */
+const POINTER_TARGET_KEEP_M = 40
+const POINTER_TARGET_KEEP_M2 = POINTER_TARGET_KEEP_M * POINTER_TARGET_KEEP_M
 
 /** Unity splits raycast (`PointerEventsController`) from result writer (`ECSPointerInputSystem`); we combine both here. */
 export class PointerEventsSystem {
@@ -1387,8 +1390,20 @@ export class PointerEventsSystem {
     const { ecs, getEntityNodes } = this.deps
     const nodes = getEntityNodes()
     this.pointerTargets.length = 0
+    const feet = this.deps.getPlayerPosition()
+    if (feet) _playerPos.copy(feet)
 
     for (const entity of this.pointerEntitySet) {
+      if (feet) {
+        const obj = nodes.get(entity)
+        if (obj) {
+          obj.getWorldPosition(_entityPos)
+          const dx = _entityPos.x - _playerPos.x
+          const dy = _entityPos.y - _playerPos.y
+          const dz = _entityPos.z - _playerPos.z
+          if (dx * dx + dy * dy + dz * dz > POINTER_TARGET_KEEP_M2) continue
+        }
+      }
       if (ecs.GltfContainer.has(entity)) {
         const obj = nodes.get(entity)
         // GPU-instanced GLTF: empty marker only — InstancedMeshes added below for raycast.

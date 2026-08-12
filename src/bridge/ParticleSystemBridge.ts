@@ -278,8 +278,15 @@ export class ParticleSystemBridge {
         )
       }
 
-      // Always simulate while in view (or while live particles remain off-camera).
-      if (!paused && (inView || runtime.live.length > 0)) {
+      if (!inView) {
+        // Off-camera decorative loops — drop sprites instead of simulating 36 systems.
+        if (runtime.live.length) runtime.live.length = 0
+        runtime.gpu.geometry.instanceCount = 0
+        runtime.gpu.mesh.visible = false
+        continue
+      }
+
+      if (!paused) {
         simulateParticles(runtime.live, spec, delta)
       }
 

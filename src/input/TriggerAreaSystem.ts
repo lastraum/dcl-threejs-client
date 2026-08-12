@@ -216,10 +216,19 @@ export class TriggerAreaSystem {
     }
     const feetDcl = this.sampleFeetDcl()
     out.clear()
+    const feet = feetDcl
+    const KEEP_M2 = 48 * 48
     for (const vol of this.volumes) {
       if ((vol.collisionMask & LOCAL_PLAYER_LAYERS) === 0) continue
       if (!composeTriggerWorldMatrixDcl(vol.entity, worldDeps, this._worldMatrix)) {
         continue
+      }
+      if (feet) {
+        const e = this._worldMatrix.elements
+        const dx = e[12]! - feet.x
+        const dy = e[13]! - feet.y
+        const dz = e[14]! - feet.z
+        if (dx * dx + dy * dy + dz * dz > KEEP_M2) continue
       }
       if (isPlayerInsideTriggerDcl(playerTransform, this._worldMatrix, vol.mesh, undefined, feetDcl)) {
         out.add(vol.entity)

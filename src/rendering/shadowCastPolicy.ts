@@ -5,10 +5,10 @@ import { renderQuality, type ShadowQuality } from './RenderQualitySettings'
 /** Environment casters only inside the visual keep band. Avatars / remotes are not this list. */
 const ENV_CASTER_KEEP_M = AOI_SHELL_KEEP_M
 const ENV_CASTER_CAP: Record<Exclude<ShadowQuality, 'off'>, number> = {
-  low: 48,
-  medium: 96,
-  high: 192,
-  ultra: 256
+  low: 16,
+  medium: 32,
+  high: 64,
+  ultra: 96
 }
 
 type EnvCasterCand = { mesh: THREE.Mesh; distSq: number }

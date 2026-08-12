@@ -3957,9 +3957,9 @@ export class ThreeBridge {
         template.animations.length === 0
       ) {
         freezeStaticObject3D(clone)
-        // Unique GLBs (theatre) cannot instance. Collapse generic same-material
-        // leaves so one unique asset is not 200 draw calls. Authored names stay.
-        mergeStaticGltfLeaves(clone)
+        // Unique GLBs (theatre, buildings) cannot instance. Merge same-material
+        // leaves including authored names — pointer still hits the entity.
+        mergeStaticGltfLeaves(clone, { namedOk: true })
         obj.matrixAutoUpdate = false
         obj.updateMatrix()
       } else {

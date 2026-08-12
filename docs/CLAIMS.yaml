@@ -10,6 +10,13 @@ source: github
 base_branch: dev-latest
 workflow:
   - stage: pending_review
+    integration_ref: pr:63
+    title: host clock for primary and PE play-frames
+    owner: lastraum
+    pr: 63
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/63
+    updated: 2026-08-12
+  - stage: pending_review
     integration_ref: pr:62
     title: deploy confirmation on Barn cards + update-available refresh for library
       pets

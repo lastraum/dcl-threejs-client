@@ -99,11 +99,6 @@ const SLEEP_OFF_FRUSTUM_M = 40
  */
 const SLEEP_FAR_M = 64
 /**
- * Default-autoplay bind distance (promote instanced rest → clone + mixer).
- * Full-rate mode still uses this for *first bind*; once bound, always ticks.
- */
-const DEFAULT_AUTOPLAY_BIND_M = 48
-/**
  * Target sample Hz for in-view (fair) unique groups. Near/PART stay at display rate.
  * Unused when full-rate primary animators is on.
  */
@@ -1074,9 +1069,9 @@ export class AnimatorBridge {
 
     const fullRate = primaryFullRateAnimators()
 
-    // Promote + bind deferred default autoplay (amortized — no plaza bind storm).
-    this.allowDefaultAutoplayBind = true
-    const bindSq = DEFAULT_AUTOPLAY_BIND_M * DEFAULT_AUTOPLAY_BIND_M
+    // Only retry ECS Animator binds. Default autoplay (no Animator) used to promote
+    // every nearby plaza GLB with unused export clips → 2000+ unique clones / 10 FPS.
+    const { Animator } = this.ecs
     const bindCap = fullRate ? MAX_DEFAULT_BINDS_FULL_RATE : MAX_DEFAULT_BINDS_PER_FRAME
     let bindsThisFrame = 0
     for (const entity of [...this.pendingBind]) {
@@ -1085,23 +1080,9 @@ export class AnimatorBridge {
         this.pendingBind.delete(entity)
         continue
       }
-      const node = this.getNodes()?.get(entity)
-      if (!node) continue
-      // Frozen/instanced roots may have stale matrixWorld until the render walk —
-      // force one update so near-camera tests match the live scene pose.
-      node.updateMatrixWorld(true)
-      _worldPos.setFromMatrixPosition(node.matrixWorld)
-      const dx = _worldPos.x - _camPos.x
-      const dy = _worldPos.y - _camPos.y
-      const dz = _worldPos.z - _camPos.z
-      const distSq = dx * dx + dy * dy + dz * dz
-      // Bind near camera always; also bind farther if roughly in expanded frustum.
-      if (distSq > bindSq) {
-        _sphere.center.copy(_worldPos)
-        _sphere.radius = FRUSTUM_EXPAND_M
-        if (!_frustum.intersectsSphere(_sphere)) continue
-        // Cap far frustum autoplay bind so we don't clone the whole plaza at once.
-        if (distSq > bindSq * 2.25) continue
+      if (!Animator.has(entity)) {
+        this.pendingBind.delete(entity)
+        continue
       }
       const result = this.bindAndApplyEntity(entity)
       if (result === 'bound') {
@@ -1111,7 +1092,6 @@ export class AnimatorBridge {
         this.pendingBind.delete(entity)
       }
     }
-    this.allowDefaultAutoplayBind = false
 
     // --- Full-rate primary path: every active mixer, every frame, full delta ---
     if (fullRate) {

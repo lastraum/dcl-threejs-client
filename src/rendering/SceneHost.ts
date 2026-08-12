@@ -532,6 +532,7 @@ export class SceneHost {
 
       this.renderStats.begin()
       if (this.orbitEnabled) this.controls.update()
+      this.renderer.info.reset()
       const renderT0 = performance.now()
       const mainSplit = this.renderMainPass()
       const mainMs = performance.now() - renderT0

@@ -796,20 +796,9 @@ export class SceneScriptSystem {
         this.bridgeDirty = true
         this.animatorBridge?.markDirty(entity)
         this.animatorBridge?.syncEntity(entity, this.view)
-      } else if (this.bridge?.entityGltfHasAnimations(entity)) {
-        // GPU-instanced boards (pixelwars tiles with unused export clips) have no private
-        // hierarchy — skip default autoplay so we do not force clone / mixers × N.
-        const nodes = this.bridge.getEntityNodes()
-        const obj = nodes.get(entity)
-        if (obj?.userData.dclInstanced) {
-          // Rest pose on GPU instance — keep INSTANCE_COLLIDER_SHAPES + 1 draw.
-        } else {
-          // Includes fishing bobber float clips — rest-pose scale can hide until bind.
-          this.bridgeDirty = true
-          this.animatorBridge?.markDirty(entity)
-          this.animatorBridge?.syncEntityAllowDefaultAutoplay(entity, this.view)
-        }
       }
+      // Embedded clips without ECS Animator stay rest-pose (GPU instance or frozen clone).
+      // Near-camera default autoplay used to clone the whole plaza (2000+ unique meshes).
       // else: static terrain/props stay GPU-instanced with INSTANCE_COLLIDER_SHAPES intact
     })
     this.bridge.setRecordLww(this.recordRendererLww)
@@ -6136,7 +6125,9 @@ export class SceneScriptSystem {
       }
 
       if (!this.pendingDiff.size) {
-        await this.bridge.drainPendingWork()
+        if ((this.getAttachProgressLite()?.pendingMesh ?? 0) > 0) {
+          await this.bridge.drainPendingWork()
+        }
         this.syncSceneUiAfterRenderer()
         return
       }

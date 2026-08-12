@@ -1773,10 +1773,10 @@ export class ThreeBridge {
    */
   /** Drain deferred mesh work when the projection diff is empty — materials use sync-frame tickDeferredMaterials. */
   async drainPendingWork(): Promise<void> {
+    if (!this.pendingMeshEntities.size) return
     // One-shot promote parented MeshRenderers that were GPU-instanced before hierarchy gate
     // (DecentraCraft multi-part temples/barracks invisible under env GLBs).
     this.promoteParentedMeshRendererInstances()
-    if (!this.pendingMeshEntities.size) return
     const { MeshRenderer, Material, GltfContainer, TextShape } = this.ecs
     const meshEcs = { MeshRenderer, Material, GltfContainer, TextShape }
     const deferMaterials = this.shouldDeferMaterials()

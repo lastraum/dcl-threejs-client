@@ -287,6 +287,8 @@ export class SceneScriptSystem {
     data: Uint8Array
     uiEntities?: number[]
     uiMountSnapshot?: WorkerUiMountSnapshotRow[]
+    /** applyIncoming + fold already ran on the sync clock (CCT same-frame). */
+    motionFolded?: boolean
   }[] = []
 
   readonly reserved = new ReservedEntitiesSync(this.projection, this.readComponents, SDK_RESERVED)
@@ -1024,6 +1026,15 @@ export class SceneScriptSystem {
   snapshotPhysMotionSets(): { transformDirty: Set<Entity>; animatorPart: Set<Entity> } {
     this.physMotionSnapshot = this.buildPhysMotionSets()
     return this.physMotionSnapshot
+  }
+
+  /**
+   * After CCT / collider pose push consumed this frame's fold marks.
+   * Leaving them sticky kept the platform pipeline hot on idle plaza.
+   */
+  clearConsumedFrameMotionMarks(): void {
+    this.lastSyncFrameTransformEntities.clear()
+    this.lastTweenMotionEntities.clear()
   }
 
   private buildPhysMotionSets(): { transformDirty: Set<Entity>; animatorPart: Set<Entity> } {
@@ -2732,7 +2743,33 @@ export class SceneScriptSystem {
   /** SceneLoop ReceiveFromScene — fold queued worker CRDT on the host clock. */
   drainQueuedCrdtOutbound(): void {
     if (!this.crdtOutboundPending.length) return
+    // Fold motion on this call stack so CCT rides guest Transform the same frame.
+    this.foldQueuedGuestMotionNow()
     this.flushCrdtOutboundPendingSynchronously()
+  }
+
+  /**
+   * Apply + fold guest CRDT immediately (before platform / CCT).
+   * The async outbound handler still owns UI mount, inbound encode, and ack.
+   */
+  private foldQueuedGuestMotionNow(): void {
+    for (const item of this.crdtOutboundPending) {
+      if (item.motionFolded) continue
+      if (item.uiMountSnapshot !== undefined) continue
+      let data = item.data
+      if (!data?.byteLength) continue
+      const mayCarryInboundUi = item.uiEntities !== undefined && item.uiMountSnapshot === undefined
+      if (!mayCarryInboundUi) {
+        data = stripSceneUiCrdtBytes(data)
+        if (!data.byteLength) {
+          item.motionFolded = true
+          continue
+        }
+      }
+      this.projection.applyIncoming(data)
+      this.foldProjectionChanges()
+      item.motionFolded = true
+    }
   }
 
   private flushCrdtOutboundPendingSynchronously(): void {
@@ -2867,6 +2904,7 @@ export class SceneScriptSystem {
       data: Uint8Array
       uiEntities?: number[]
       uiMountSnapshot?: WorkerUiMountSnapshotRow[]
+      motionFolded?: boolean
     }[]
   ): Promise<Uint8Array[]> {
     const hasPayload = batch.some((item) => item.data?.byteLength > 0)
@@ -2956,7 +2994,8 @@ export class SceneScriptSystem {
               batchTouchesUi = true
             }
           }
-          this.foldProjectionChanges()
+          // Sync clock already folded motion for CCT; do not rewind tweens / restamp TRS.
+          if (!item.motionFolded) this.foldProjectionChanges()
         }
         split.foldMs += performance.now() - foldT0
 
@@ -6615,12 +6654,14 @@ export class SceneScriptSystem {
     this.systemPartColliders.clear()
     this.systemTransformDirty.clear()
     this.physMotionSnapshot = null
-    // Phase C: always sync to pick up new Tween signatures; update only when live.
-    this.tweenBridge?.sync(this.view)
+    // Fold already synced new Tween puts. Idle sync is a watchdog, not every rAF.
     if (this.tweenBridge?.hasLiveTweens()) {
+      this.tweenBridge.sync(this.view)
       this.tweenBridge.update(delta, this.view)
       this.markTweenColliderPosesDirty()
       this.sceneGraphMatrixDirty = true
+    } else if (this.bridgeSyncTick % 8 === 0) {
+      this.tweenBridge?.sync(this.view)
     }
     if (this.bridgeSyncTick % 2 === 0) {
       this.videoPlayerBridge?.sync(this.view)

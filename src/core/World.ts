@@ -1876,6 +1876,8 @@ export class World {
           if (this.loadedPrimaryScene) {
             this.assets.setScene(this.loadedPrimaryScene)
           }
+          // Fold last guest dirty before platform / CCT so CRDT movers ride this frame.
+          this.sceneLoop.receive()
           // Motion first — PE pose + TriggerArea enter must beat worker onUpdate.
           // Includes pumpMotionBridges (animators + particles) — part is nested here.
           const platformT0 = performance.now()
@@ -1910,7 +1912,6 @@ export class World {
           this.sceneScript.updateTriggerAreas()
           // SceneLoop owns play-frame-tick (primary + PE). Same every-rAF rate in Phase 0.
           this.sceneLoop.reconcilePe(this.multiScene?.pe ?? null)
-          this.sceneLoop.receive()
           this.sceneLoop.send({
             now: performance.now(),
             fpsTarget: renderQuality.getFpsLimit() || 60,
@@ -2359,6 +2360,7 @@ export class World {
         sceneOrigin: this.comms.getSceneOrigin()
       })
     }
+    this.sceneScript.clearConsumedFrameMotionMarks()
   }
 
   /** Runtime pose-drift recook — off unless `?colliderrecook` or Help debug toggle. Boot + manual recook bypass. */

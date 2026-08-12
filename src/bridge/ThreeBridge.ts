@@ -418,11 +418,7 @@ export class ThreeBridge {
   getInstancePointerMeshesForEntities(entities: Iterable<Entity>): THREE.Object3D[] {
     const list = [...entities]
     const gltf = this.instancer.meshesForEntities(list)
-    const needMr = list.some((e) => {
-      const obj = this.store.nodes.get(e)
-      return !!(obj?.userData.dclMeshRendererInstanced)
-    })
-    const mr = needMr ? this.meshRendererInstancer.getAllInstanceMeshes() : []
+    const mr = this.meshRendererInstancer.meshesForEntities(list)
     return mr.length && gltf.length ? [...mr, ...gltf] : mr.length ? mr : gltf
   }
 
@@ -1146,23 +1142,27 @@ export class ThreeBridge {
 
   /**
    * Asset-pack Triggers / DecentraCraft clickables register `PointerEvents` after mesh attach.
-   * GPU InstancedMesh slots have no private raycast leaf — promote:
-   * - GltfContainer instances → private GLB clone
-   * - MeshRenderer instances → private primitive mesh (click-move / crystal pick)
+   * GPU InstancedMesh slots have no private raycast leaf — promote only when
+   * instanceId raycast cannot serve the entity:
+   * - MeshCollider / Tween MeshRenderer → private primitive mesh
+   * - Gltf PE and MeshRenderer PE stay instanced (instanceId → entity)
    */
   ensurePointerMeshClone(entity: Entity): boolean {
     if (this.isAnimatedSpriteSlot(entity)) return false
     if (!this.ecs.PointerEvents.has(entity) && !this.ecs.MeshCollider.has(entity)) return false
     const obj = this.store.nodes.get(entity) ?? this.store.getOrCreateNode(entity, 'scene')
-    // MeshRenderer GPU board instances — detach + private mesh for PE/Tween.
+    // MeshCollider / Tween still need a private MeshRenderer leaf. PE-only stays instanced.
     if (
       this.ecs.MeshRenderer.has(entity) &&
       (obj.userData.dclMeshRendererInstanced || this.meshRendererInstancer.has(entity))
     ) {
-      this.promoteMeshRendererForPointerOrMotion(entity, obj)
-      return true
+      if (this.ecs.MeshCollider.has(entity) || this.ecs.Tween.has(entity)) {
+        this.promoteMeshRendererForPointerOrMotion(entity, obj)
+        return true
+      }
+      return false
     }
-    // Gltf PE stays instanced — pointer resolves instanceId. MeshRenderer PE still promotes.
+    // Gltf PE stays instanced — pointer resolves instanceId.
     if (this.ecs.GltfContainer.has(entity)) return false
     if (!obj.userData.dclInstanced && !this.instancer.has(entity)) return false
     this.promoteInstancedGltfForModifiers(entity, obj)
@@ -1221,7 +1221,7 @@ export class ThreeBridge {
    */
   ensurePointerMeshesReady(entities: Iterable<Entity>): number {
     let fixed = 0
-    const { MeshRenderer, PointerEvents, GltfContainer, MeshCollider } = this.ecs
+    const { MeshRenderer, PointerEvents, MeshCollider } = this.ecs
     for (const entity of entities) {
       if (!PointerEvents.has(entity)) continue
       // DOM UI PE — not 3D.
@@ -1229,11 +1229,12 @@ export class ThreeBridge {
       if (MeshCollider?.has(entity)) continue // PhysX path covers these
       if (MeshRenderer.has(entity)) {
         const obj = this.store.nodes.get(entity) ?? this.store.getOrCreateNode(entity, 'scene')
-        // Promote only while still GPU-instanced — private PE leaves are sealed.
+        // MeshRenderer PE stays on InstancedMesh (instanceId → entity), same as Gltf PE.
+        // Only attach a private leaf when the entity was never instanced.
         if (this.meshRendererInstancer.has(entity) || obj.userData.dclMeshRendererInstanced) {
-          this.promoteMeshRendererForPointerOrMotion(entity, obj)
-          fixed++
-        } else if (!this.hasMeshRendererLeaf(entity)) {
+          continue
+        }
+        if (!this.hasMeshRendererLeaf(entity)) {
           this.ensureMeshRendererLeaf(entity)
           fixed++
         }
@@ -2545,7 +2546,8 @@ export class ThreeBridge {
 
   /**
    * MeshRenderer → InstancedMesh eligibility (T1).
-   * Scalar color boards only — motion/texture/PE-heavy entities stay private.
+   * Scalar color boards only — motion/texture entities stay private.
+   * PointerEvents stay instanced (instanceId → entity); textured/emissive PE still fail below.
    */
   private meshRendererIsInstanceEligible(entity: Entity): boolean {
     if (!ThreeBridge.MESH_RENDERER_GPU_INSTANCE) return false
@@ -2558,15 +2560,13 @@ export class ThreeBridge {
       AvatarAttach,
       GltfNodeModifiers,
       MeshCollider,
-      PointerEvents,
       Transform
     } = this.ecs
     const spec = meshRendererGetOrNull(MeshRenderer, entity)
     if (!spec) return false
     if (MeshCollider?.has(entity)) return false
-    // PE targets need a private mesh (or MeshCollider) — instancing drops the leaf mesh and
-    // made DecentraCraft crystal clicks miss / freeze under spam when only instance raycast ran.
-    if (PointerEvents?.has(entity)) return false
+    // PointerEvents stay on InstancedMesh (instanceId → entity). Unique / emissive /
+    // textured PE (DecentraCraft crystals) still fail the scalar/emissive gates below.
     if (Animator?.has(entity)) return false
     if (Billboard?.has(entity)) return false
     if (AvatarAttach?.has(entity)) return false

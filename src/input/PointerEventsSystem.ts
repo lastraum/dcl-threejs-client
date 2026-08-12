@@ -255,7 +255,7 @@ export class PointerEventsSystem {
    * Phase C — true when matrix/collider prepare is needed before raycast/hover.
    * Avoids full scene-graph flush every frame while the pointer is idle.
    */
-  needsRaycastPrepare(tickNumber: number): boolean {
+  needsRaycastPrepare(_tickNumber: number): boolean {
     if (!this.deps) return false
     if (this.pointerDirty || this.primaryKeyDown) return true
     if (this.hasPendingInput()) return true
@@ -1875,16 +1875,14 @@ export class PointerEventsSystem {
     // Consume deltas here (once per play frame) so worker embed gets non-zero screenDelta
     // for DecentraCraft VC drag/edge pan. syncInput earlier this frame uses consume=false.
     const info = this.buildPrimaryPointerInfo(true)
-    const { ecs, view } = this.deps
     const d = info.worldRayDirection
     const key =
       `${info.screenCoordinates.x.toFixed(1)}|${info.screenCoordinates.y.toFixed(1)}|` +
       `${info.screenDelta.x}|${info.screenDelta.y}|${this.lastHit?.entity ?? ''}|` +
       `${d.x.toFixed(3)}|${d.y.toFixed(3)}|${d.z.toFixed(3)}`
-    if (key !== this.lastPrimaryInfoKey) {
-      this.lastPrimaryInfoKey = key
-      ecs.PrimaryPointerInfo.createOrReplace(view.RootEntity, info)
-    }
+    // Play-frame embed is the guest source. Do not dirty host PPI every look —
+    // that was identity echo back through renderer-inbound-deliver.
+    this.lastPrimaryInfoKey = key
     this.maybeLogPrimaryPointer(info)
     return info
   }

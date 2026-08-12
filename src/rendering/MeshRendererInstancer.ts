@@ -176,6 +176,18 @@ export class MeshRendererInstancer {
     return [...this.buckets.values()].map((b) => b.mesh)
   }
 
+  /** InstancedMeshes that actually host these entities (never the full board). */
+  meshesForEntities(entities: Iterable<Entity>): THREE.InstancedMesh[] {
+    const seen = new Set<THREE.InstancedMesh>()
+    for (const entity of entities) {
+      const key = this.entityBucket.get(entity)
+      if (!key) continue
+      const bucket = this.buckets.get(key)
+      if (bucket) seen.add(bucket.mesh)
+    }
+    return [...seen]
+  }
+
   detach(entity: Entity, entityObj?: THREE.Group): void {
     if (entityObj) {
       delete entityObj.userData.dclMeshRendererInstanced

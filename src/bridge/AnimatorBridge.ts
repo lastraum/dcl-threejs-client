@@ -411,6 +411,11 @@ export class AnimatorBridge {
     return { ...this.lastStats }
   }
 
+  /** True when async pose-0 sample is needed (door bind / pending ECS Animator). */
+  hasIdlePoseWork(): boolean {
+    return this.dirtyReplay.size > 0 || this.pendingBind.size > 0
+  }
+
   /**
    * Bulk sleep/wake for multi-scene tertiary residents.
    * When true: every mixer paused, update() early-outs (zero sample cost).

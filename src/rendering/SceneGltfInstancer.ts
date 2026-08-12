@@ -161,6 +161,12 @@ export class SceneGltfInstancer {
     return this.entityHash.has(entity)
   }
 
+  stats(): { buckets: number; instances: number; draws: number } {
+    let draws = 0
+    for (const b of this.buckets.values()) draws += b.meshes.length
+    return { buckets: this.buckets.size, instances: this.entityHash.size, draws }
+  }
+
   /**
    * Register entity as an instance of `hash`. Writes marker under entityObj for mesh identity.
    * Returns triangle count attributed once per hash leaf * (not × instance count for inventory).

@@ -2198,8 +2198,14 @@ export class World {
           postSealRebuild: this.physics.getPostSealRebuildCount()
         })
         const mrStats = this.sceneScript.getMeshRendererInstanceStats()
+        const gltfInst = this.sceneScript.getGltfInstanceStats()
         if (mrStats) {
-          perfSetMeshRendererInstanceStats(mrStats)
+          perfSetMeshRendererInstanceStats({
+            ...mrStats,
+            gltfInstances: gltfInst?.instances,
+            gltfBuckets: gltfInst?.buckets,
+            gltfDraws: gltfInst?.draws
+          })
         }
         // COD F2 — track primary async pressure for secondary anim LOD (~12ms soft budget).
         if (totalMs > 12) this.primaryAsyncOverBudgetStreak++

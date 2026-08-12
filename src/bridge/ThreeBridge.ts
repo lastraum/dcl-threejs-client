@@ -1664,6 +1664,10 @@ export class ThreeBridge {
     }
   }
 
+  getGltfInstanceStats(): { buckets: number; instances: number; draws: number } {
+    return this.instancer.stats()
+  }
+
   /**
    * Fire off network requests for every `.glb` in the scene content manifest.
    * Does not block — downloads proceed in parallel while attach budgets control scene-graph work.
@@ -3626,18 +3630,8 @@ export class ThreeBridge {
     // Billboard rotates the entity group. InstancedMesh lives under the scene root —
     // rotating the marker leaves the GPU slot world-fixed.
     if (this.ecs.Billboard?.has(entity)) return false
-    // ECS Material with a unique map needs a private mesh. GLB-embedded textures
-    // stay on the shared template and instance fine (no Material component).
-    if (this.ecs.Material.has(entity)) {
-      const pb = this.ecs.Material.get(entity) as PbMaterial
-      if (!materialIsScalarOnly(pb)) return false
-    }
-    // Embedded clips WITHOUT Animator used to force private clone so default autoplay
-    // could run (ABC fireparticles). That also forced 10k+ pixelwars `tile-*.glb` clones
-    // (export often includes unused tracks) → meshes≈12k / ~20 FPS.
-    // Allow GPU instance when no Animator; autoplay only binds private clones (see
-    // SceneScriptSystem onGltfAttached). Fireparticles that need autoplay should put
-    // Animator or stay non-instanced via other gates — not kill board density.
+    // Material maps live on the shared template. Scalar albedo uses instanceColor.
+    // Per-entity unique maps used to force a clone of every plaza pipe/chair.
     // Plaza fishing bobber/line/rod — always private clone (never GPU instance lag).
     if (this.ecs.GltfContainer.has(entity)) {
       const src = this.ecs.GltfContainer.get(entity).src?.trim() ?? ''

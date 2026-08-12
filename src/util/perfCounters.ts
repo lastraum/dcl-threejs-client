@@ -53,6 +53,9 @@ export type PerfSnapshot = {
   /** MeshRenderer GPU instance live count (G2 density). */
   meshRendererInstances: number
   meshRendererBuckets: number
+  gltfInstances: number
+  gltfInstanceBuckets: number
+  gltfInstanceDraws: number
   /** Remote peers tracked / with pose / neon shell / full body. */
   remotePeerTotal: number
   remotePlaceholder: number
@@ -196,6 +199,9 @@ const state = {
   physxPostSealRebuild: 0,
   meshRendererInstances: 0,
   meshRendererBuckets: 0,
+  gltfInstances: 0,
+  gltfInstanceBuckets: 0,
+  gltfInstanceDraws: 0,
   remotePeerTotal: 0,
   remotePlaceholder: 0,
   remoteComposeWaiting: 0,
@@ -400,9 +406,18 @@ export function perfSetPhysxSeal(opts: { sealed: boolean; postSealRebuild: numbe
 }
 
 /** G2 — MeshRenderer GPU instancing density. */
-export function perfSetMeshRendererInstanceStats(opts: { instances: number; buckets: number }): void {
+export function perfSetMeshRendererInstanceStats(opts: {
+  instances: number
+  buckets: number
+  gltfInstances?: number
+  gltfBuckets?: number
+  gltfDraws?: number
+}): void {
   state.meshRendererInstances = opts.instances
   state.meshRendererBuckets = opts.buckets
+  if (opts.gltfInstances !== undefined) state.gltfInstances = opts.gltfInstances
+  if (opts.gltfBuckets !== undefined) state.gltfInstanceBuckets = opts.gltfBuckets
+  if (opts.gltfDraws !== undefined) state.gltfInstanceDraws = opts.gltfDraws
 }
 
 /** ParticleSystemBridge.update wall (subset of sync / motion bridges). */
@@ -648,6 +663,9 @@ export function perfSnapshot(): PerfSnapshot {
     physxPostSealRebuild: state.physxPostSealRebuild,
     meshRendererInstances: state.meshRendererInstances,
     meshRendererBuckets: state.meshRendererBuckets,
+    gltfInstances: state.gltfInstances,
+    gltfInstanceBuckets: state.gltfInstanceBuckets,
+    gltfInstanceDraws: state.gltfInstanceDraws,
     remotePeerTotal: state.remotePeerTotal,
     remotePlaceholder: state.remotePlaceholder,
     remoteComposeWaiting: state.remoteComposeWaiting,

@@ -182,7 +182,8 @@ export class RenderStats {
       `vcHydrate/s=${perf.vcHydratePerSec.toFixed(1)} ` +
         `poseLive/s=${perf.vcPoseLivePerSec.toFixed(1)} ` +
         `seal=${perf.physxStaticSealed} postReb=${perf.physxPostSealRebuild}`,
-      `mrInst=${perf.meshRendererInstances} buckets=${perf.meshRendererBuckets}`
+      `mrInst=${perf.meshRendererInstances} buckets=${perf.meshRendererBuckets} ` +
+        `gltfInst=${perf.gltfInstances}/${perf.gltfInstanceBuckets} draws=${perf.gltfInstanceDraws}`
     )
     this.extra.textContent = lines.join('\n')
   }

@@ -6765,9 +6765,9 @@ export class SceneScriptSystem {
     // ?noanim — skip bind + sample so no GLTF clips start or advance.
     if (!skipSceneAnimators()) {
       await this.animatorBridge?.sync(this.view)
-      // Same async frame as Animator open/close apply — sample mixers so doors aren't one frame late.
-      // delta=0: no frustum cull (pose apply only).
-      this.animatorBridge?.update(0, this.view)
+      if (this.animatorBridge?.hasIdlePoseWork()) {
+        this.animatorBridge?.update(0, this.view)
+      }
     }
     // Particles are not the beauty pass — skip create/diag when the bridge pie is already spent.
     if (performance.now() - t0 < BRIDGE_BUDGET_MS) {
@@ -6843,6 +6843,10 @@ export class SceneScriptSystem {
   /** G2 — MeshRenderer GPU instancing live density. */
   getMeshRendererInstanceStats(): { instances: number; buckets: number } | null {
     return this.bridge?.getMeshRendererInstanceStats() ?? null
+  }
+
+  getGltfInstanceStats(): { buckets: number; instances: number; draws: number } | null {
+    return this.bridge?.getGltfInstanceStats() ?? null
   }
 
   /** Cheap mesh-queue counters for fps diagnostics (no full projection walk). */

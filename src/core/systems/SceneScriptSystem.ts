@@ -4002,70 +4002,6 @@ export class SceneScriptSystem {
   }
 
   /**
-   * @deprecated Prefer drainPendingDiffLanes — kept for sync-frame platform Transform path.
-   * Narrow: Transform/Tween only, age-ordered, for CCT platform motion same-frame.
-   */
-  private flushTweenAndTransformFromPendingDiff(opts?: { pointerEdge?: boolean; hardMs?: number }): void {
-    if (!this.bridge || !this.entityStore || !this.pendingDiff.size) return
-    if (!this.bridge.canConsumeDiff()) return
-    const t0 = performance.now()
-    const hardMs =
-      opts?.hardMs ??
-      (opts?.pointerEdge
-        ? SceneScriptSystem.FRAME.POINTER_MOTION_MS
-        : SceneScriptSystem.FRAME.MOTION_MS)
-    const cap = opts?.pointerEdge ? 64 : SceneScriptSystem.FRAME.MOTION_ENTITIES
-    const motionSlice = this.takePendingDiffSlice(new Set(['motion']), cap)
-    if (!motionSlice.size) return
-    const { Transform, Tween, TweenSequence, VisibilityComponent } = this.readComponents
-    const transformId = Transform.componentId
-    const tweenId = Tween.componentId
-    const tweenSeqId = TweenSequence.componentId
-    const visibilityId = VisibilityComponent.componentId
-    const transformDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
-    const tweenEntities: Entity[] = []
-    for (const [entity, comps] of motionSlice) {
-      if (performance.now() - t0 >= hardMs && transformDiff.size > 0) break
-      const sub = new Map<number, ProjectionChangeKind>()
-      const tk = comps.get(transformId)
-      if (tk !== undefined) sub.set(transformId, tk)
-      const tw = comps.get(tweenId)
-      if (tw !== undefined) {
-        sub.set(tweenId, tw)
-        tweenEntities.push(entity)
-      }
-      const ts = comps.get(tweenSeqId)
-      if (ts !== undefined) sub.set(tweenSeqId, ts)
-      const vis = comps.get(visibilityId)
-      if (vis !== undefined) sub.set(visibilityId, vis)
-      if (sub.size) transformDiff.set(entity, sub)
-    }
-    if (!transformDiff.size) return
-    const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
-    applySceneDiff(this.entityStore, transformDiff, this.view, this.readComponents, tweenRefresh, {
-      skipTransformApply: (entity) =>
-        this.readComponents.AvatarAttach.has(entity) || this.projection.isVcLiveTransformEntity(entity),
-      onReservedParent: (entity, parent, view) => {
-        this.bridge?.noteReservedParentedEntity(entity, parent, view)
-      }
-    })
-    const moved = [...transformDiff.keys()]
-    this.bridge.syncEcsVisibility(moved)
-    this.bridge.syncInstancedTransforms(moved)
-    for (const entity of tweenEntities) {
-      this.bridge.ensureMeshRendererTweenVisual(entity)
-    }
-    this.bridge.syncEcsVisibility(moved)
-    this.tweenBridge?.sync(this.view)
-    this.pointerStructureDirty = true
-    this.publishPendingDiffPerf()
-    perfNotePeels({
-      transformMs: performance.now() - t0,
-      entities: moved.length
-    })
-  }
-
-  /**
    * Primitive MeshRenderer leaf create (no GltfContainer) — Material lane work-kind.
    * Prefer `prefer` entities (pointer-edge VFX) then scan pendingDiff for missing leaves.
    */
@@ -4392,10 +4328,6 @@ export class SceneScriptSystem {
       entityCap: cap,
       prefer
     })
-    this.flushTweenAndTransformFromPendingDiff({
-      pointerEdge: true,
-      hardMs: SceneScriptSystem.FRAME.POINTER_MOTION_MS
-    })
     for (const entity of prefer) {
       this.bridge.ensureMeshRendererTweenVisual(entity)
       // Ensure leaf even if Material put lags one frame.
@@ -4571,12 +4503,13 @@ export class SceneScriptSystem {
     for (const [entity, comps] of poseDiff) {
       if (comps.has(tweenId)) tweenEntities.push(entity)
     }
-    const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
-    applySceneDiff(this.entityStore, poseDiff, view, this.readComponents, tweenRefresh, {
+    // Empty refresh — do not stamp every live tween from ECS (rewinds continuous orbits).
+    applySceneDiff(this.entityStore, poseDiff, view, this.readComponents, [], {
       skipTransformApply: (entity) =>
         this.readComponents.AvatarAttach.has(entity) ||
         this.projection.isVcLiveTransformEntity(entity),
       onReservedParent: (entity, parent, v) => {
+        if (this.readComponents.AvatarAttach.has(entity)) return
         this.bridge?.noteReservedParentedEntity(entity, parent, v)
       }
     })
@@ -4591,6 +4524,7 @@ export class SceneScriptSystem {
     this.pointerStructureDirty = true
     for (const entity of entities) {
       this.lastTweenMotionEntities.add(entity)
+      this.lastSyncFrameTransformEntities.add(entity)
       if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
         this.colliderPoseDirty.add(entity)
       }
@@ -4807,8 +4741,6 @@ export class SceneScriptSystem {
       return
     }
     this.consumeSyncFrameTransforms()
-    // Drain PE-related Transform/Tween stuck in pendingDiff before raycast (click-move).
-    if (this.pendingDiff.size) this.flushTweenAndTransformFromPendingDiff()
     // Only re-promote PE leaves when structure is dirty — every-raycast promote thrashed
     // MeshRenderer/GLB attach and competed with GltfContainer drain.
     if (this.pointerStructureDirty && this.bridge && this.pointerEvents) {
@@ -5386,10 +5318,20 @@ export class SceneScriptSystem {
     return false
   }
 
-  /** Leftover Animator/Billboard peel. Pose already applied at fold. */
-  peelMotionSync(deadlineMs: number): void {
-    if (!this.bridge?.canConsumeDiff() || !this.pendingDiff.size) return
-    this.flushTweenAndTransformFromPendingDiff({ hardMs: deadlineMs })
+  /** Pose is written at fold. Watchdog only — do not replay Transform/Tween/Vis. */
+  peelMotionSync(_deadlineMs: number): void {
+    this.assertNoFoldMotionInPendingDiff('peelMotionSync')
+  }
+
+  private assertNoFoldMotionInPendingDiff(where: string): void {
+    if (!this.pendingDiff.size) return
+    for (const [entity, comps] of this.pendingDiff) {
+      for (const cid of comps.keys()) {
+        if (!this.isHostMotionComponent(cid)) continue
+        console.error(`[host-motion] ${where}: e${entity} cid=${cid} still in pendingDiff`)
+        return
+      }
+    }
   }
 
   /** Phase 2 — one unified worker play frame per main rAF (engine.update + pollEvents). */
@@ -6473,49 +6415,7 @@ export class SceneScriptSystem {
    * before player CCT so moving platforms record walk-surface Δ the same frame.
    */
   consumeSyncFrameTransforms(): void {
-    if (!this.running || !this.bridge || !this.entityStore || !this.pendingDiff.size) return
-    if (!this.bridge.canConsumeDiff()) return
-
-    const { Transform, AvatarAttach } = this.readComponents
-    const transformDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
-    for (const [entity, comps] of this.pendingDiff) {
-      const transformKind = comps.get(Transform.componentId)
-      if (transformKind === undefined) continue
-      transformDiff.set(entity, new Map([[Transform.componentId, transformKind]]))
-    }
-    if (!transformDiff.size) return
-
-    const tweenRefresh = (this.tweenBridge?.getActiveTweenEntities() ?? []).filter(
-      (entity) => !AvatarAttach.has(entity)
-    )
-    const transformEntities = [...transformDiff.keys()]
-    applySceneDiff(this.entityStore, transformDiff, this.view, this.readComponents, tweenRefresh, {
-      // COD D2 — skip AvatarAttach + VC live-lane entities (pose rides vc-pose-live).
-      skipTransformApply: (entity) =>
-        AvatarAttach.has(entity) || this.projection.isVcLiveTransformEntity(entity),
-      onReservedParent: (entity, parent, view) => {
-        this.bridge?.noteReservedParentedEntity(entity, parent, view)
-      }
-    })
-    // GPU InstancedMesh stores world/instance matrices outside entity groups — rewrite after pose.
-    // Sustained motion (death coins, projectiles) promotes to private clones inside this call.
-    this.bridge.syncInstancedTransforms(transformEntities)
-    this.lastSyncFrameTransformEntities.clear()
-    const { MeshCollider, GltfContainer } = this.readComponents
-    for (const entity of transformEntities) {
-      this.lastSyncFrameTransformEntities.add(entity)
-      if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
-        this.colliderPoseDirty.add(entity)
-      }
-      this.markDescendantColliderPosesDirty(entity)
-    }
-
-    for (const entity of transformEntities) {
-      const pending = this.pendingDiff.get(entity)
-      if (!pending) continue
-      pending.delete(Transform.componentId)
-      if (pending.size === 0) this.pendingDiff.delete(entity)
-    }
+    this.assertNoFoldMotionInPendingDiff('consumeSyncFrameTransforms')
   }
 
   /** Motion emitters (billboard / animator shape) → collider pose dirty before syncCollision. */

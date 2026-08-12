@@ -6677,6 +6677,9 @@ export class SceneScriptSystem {
     // ?noanim — skip mixer sample (clips frozen; default auto-play never advances).
     if (!skipSceneAnimators()) {
       this.animatorBridge?.update(delta, this.view, this.animatorSampleContext())
+      if ((this.animatorBridge?.getPartColliderEntities().length ?? 0) > 0) {
+        this.sceneGraphMatrixDirty = true
+      }
     }
     // Primary scene stays fully live. 48/80 m is AOI neighbor shells only —
     // hiding plaza Gltfs (theatre, stage) was a residency bug, not a host-world win.
@@ -6695,11 +6698,13 @@ export class SceneScriptSystem {
     }
     // PlayerEntity-parented scene meshes (Dead Surge path arrow) — re-parent each frame.
     this.bridge.syncReservedParentedTransforms(this.view)
+    // Always sync so new Billboard puts get flagged; update only when the set is live.
+    this.billboardBridge?.sync(this.view)
     const billed = this.entityStore?.getBillboardEntities() ?? []
     if (billed.length) {
-      this.billboardBridge?.sync(this.view)
       this.billboardBridge?.update()
       this.sceneGraphMatrixDirty = true
+      this.bridge.syncInstancedTransforms(billed)
     }
     this.markMotionEmitterColliderDirty()
     this.deliverTweenStateToWorker()

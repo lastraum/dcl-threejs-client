@@ -3622,6 +3622,9 @@ export class ThreeBridge {
     if (this.isAvatarAttachDriven(entity)) return false
     // Explicit ECS Animator needs a private hierarchy for the mixer.
     if (this.ecs.Animator.has(entity)) return false
+    // Billboard rotates the entity group. InstancedMesh lives under the scene root —
+    // rotating the marker leaves the GPU slot world-fixed.
+    if (this.ecs.Billboard?.has(entity)) return false
     // ECS Material with a unique map needs a private mesh. GLB-embedded textures
     // stay on the shared template and instance fine (no Material component).
     if (this.ecs.Material.has(entity)) {

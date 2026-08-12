@@ -1437,21 +1437,31 @@ export class PointerEventsSystem {
       this.collectDescendantPointerTargets(entity, ecs, nodes)
     }
 
-    // Only pull GPU InstancedMeshes when a PE entity is actually instanced.
-    // Unconditionally adding every board InstancedMesh (10k+ tile slots × leaves)
-    // made every WASD/click raycast the entire land grid → main-thread freezes.
-    // Step-on boards (pixelwars) do not need PE on each tile.
-    let needInstanceRaycast = false
-    for (const entity of this.pointerEntitySet) {
+    // Instance raycast for PE entities and instanced Gltf/MeshRenderer descendants
+    // (asset-pack sit/sign: PE on parent, Gltf on child). Never dump the full board.
+    const instanceEntities: Entity[] = []
+    const seenInst = new Set<Entity>()
+    const addIfInstanced = (entity: Entity): void => {
+      if (seenInst.has(entity)) return
       const obj = nodes.get(entity)
       if (obj?.userData.dclInstanced || obj?.userData.dclMeshRendererInstanced) {
-        needInstanceRaycast = true
-        break
+        seenInst.add(entity)
+        instanceEntities.push(entity)
       }
     }
-    if (needInstanceRaycast) {
+    for (const entity of this.pointerEntitySet) {
+      addIfInstanced(entity)
+      const stack = [...(this.childrenByParent.get(entity) ?? [])]
+      while (stack.length) {
+        const child = stack.pop()!
+        addIfInstanced(child)
+        const next = this.childrenByParent.get(child)
+        if (next) stack.push(...next)
+      }
+    }
+    if (instanceEntities.length) {
       const instMeshes =
-        this.deps.getInstancePointerMeshesFor?.(this.pointerEntitySet) ??
+        this.deps.getInstancePointerMeshesFor?.(instanceEntities) ??
         this.deps.getMeshRendererInstancePointerMeshes?.() ??
         []
       for (const mesh of instMeshes) {

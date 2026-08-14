@@ -15,6 +15,7 @@ const UI_BACKGROUND_ID = 1053
 const UI_INPUT_ID = 1093
 const UI_DROPDOWN_ID = 1094
 const POINTER_EVENTS_ID = 1062
+const POINTER_EVENTS_RESULT_ID = 1063
 
 type UiTransform = ReturnType<typeof generated.UiTransform>
 type UiBackground = ReturnType<typeof generated.UiBackground>
@@ -53,6 +54,32 @@ export function resolveWorkerUiDropdown(engine: IEngine): UiDropdown {
 
 export function resolveWorkerPointerEvents(engine: IEngine): ReturnType<typeof generated.PointerEvents> {
   return resolveByCoreId(engine, POINTER_EVENTS_ID, generated.PointerEvents)
+}
+
+/**
+ * Bundled engines often omit `component.name`. Name-lookup `PointerEventsResult(engine)`
+ * then defines a *second* grow-only set. Inject wrote there; scene EventSystem
+ * still read the original — onMouseDown never fired (welcome needed many clicks).
+ * Write/read every 1063 instance so the scene's inputSystem always sees the edge.
+ */
+export function resolveWorkerPointerEventsResult(
+  engine: IEngine
+): ReturnType<typeof generated.PointerEventsResult> {
+  return resolveByCoreId(engine, POINTER_EVENTS_RESULT_ID, generated.PointerEventsResult)
+}
+
+export function forEachWorkerPointerEventsResult(
+  engine: IEngine,
+  visit: (component: ReturnType<typeof generated.PointerEventsResult>) => void
+): void {
+  let found = false
+  for (const component of engine.componentsIter()) {
+    if (component.componentId !== POINTER_EVENTS_RESULT_ID) continue
+    if (typeof (component as { addValue?: unknown }).addValue !== 'function') continue
+    visit(component as ReturnType<typeof generated.PointerEventsResult>)
+    found = true
+  }
+  if (!found) visit(generated.PointerEventsResult(engine))
 }
 
 /** UiTransform entity ids on the worker — mount set for main-thread DOM. */

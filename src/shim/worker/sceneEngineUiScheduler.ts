@@ -97,6 +97,29 @@ export function holdCooperativeReactEcs(ticks: number): void {
   cooperativeReactEcsHoldUntilMs = Math.max(cooperativeReactEcsHoldUntilMs, performance.now() + holdMs)
 }
 
+/** Drop the post-click menu hold so Color4.a / unmount reconciles can run. */
+export function releaseCooperativeReactEcsHold(): void {
+  cooperativeReactEcsHoldTicks = 0
+  cooperativeReactEcsHoldUntilMs = 0
+}
+
+/**
+ * After a scene-UI click that did not grow the mount (dismiss / fade), keep
+ * react-ecs live so JS-driven Color4.a (welcome dissolve) reaches the DOM.
+ */
+let cooperativeReactEcsPaintFollowupUntilMs = 0
+
+export function armCooperativeReactEcsPaintFollowup(ms: number): void {
+  cooperativeReactEcsPaintFollowupUntilMs = Math.max(
+    cooperativeReactEcsPaintFollowupUntilMs,
+    performance.now() + Math.max(0, ms)
+  )
+}
+
+export function isCooperativeReactEcsPaintFollowupActive(): boolean {
+  return performance.now() < cooperativeReactEcsPaintFollowupUntilMs
+}
+
 /** True while post-click hold is suppressing cooperative/PE eng.update UI reconcile. */
 export function isCooperativeReactEcsHeld(): boolean {
   if (cooperativeReactEcsHoldTicks > 0) return true
@@ -316,6 +339,9 @@ export const installWorkerEngineUiHooks = installSceneEngineUiScheduler
 
 export function resetWorkerUiFingerprint(): void {
   lastWorkerUiFingerprint = ''
+  cooperativeReactEcsHoldTicks = 0
+  cooperativeReactEcsHoldUntilMs = 0
+  cooperativeReactEcsPaintFollowupUntilMs = 0
 }
 
 export function seedWorkerUiFingerprint(engine: IEngine): void {

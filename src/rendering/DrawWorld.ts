@@ -52,9 +52,9 @@ export class DrawWorld {
         this.writeBillboard(visual, pose, camera, billboardMode)
         continue
       }
-      if (visual.userData.dclDrawStatic === true && visual.userData.dclDrawAnimated !== true) {
-        continue
-      }
+      // dclDrawStatic means “skip when pose world is unchanged” — not “never
+      // extract.” Promote rebases the FocusOwner origin; frozen clones kept
+      // the old matrixWorld and frustum-culled (appear on rotate, then vanish).
       if (visual.userData.dclDrawAnimated === true) {
         this.writeAnimated(visual, pose)
         continue

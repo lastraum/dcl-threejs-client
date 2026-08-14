@@ -6930,6 +6930,30 @@ export class SceneScriptSystem {
     return this.bridge?.getGltfInstanceStats() ?? null
   }
 
+  /**
+   * FocusOwner origin moved (demote offset / promote clear). Pose graph is
+   * already translated — rewrite InstancedMesh slots + bounding spheres so
+   * frustum cull does not eat the estate.
+   */
+  rebakeGpuAfterOriginChange(): void {
+    const root = this.entityStore?.root
+    if (root) root.updateMatrixWorld(true)
+    this.bridge?.refreshAllInstancedTransforms()
+  }
+
+  /** Instancer + pose Mesh children — entity-store Mesh count is 0 on plaza. */
+  countGpuVisuals(): number {
+    const inst = this.bridge?.getGltfInstanceStats()
+    let n = inst?.instances ?? 0
+    const root = this.entityStore?.root
+    if (root) {
+      root.traverse((o) => {
+        if ((o as THREE.Mesh).isMesh) n++
+      })
+    }
+    return n
+  }
+
   /** Cheap mesh-queue counters for fps diagnostics (no full projection walk). */
   getAttachProgressLite(): { attached: number; pendingMesh: number; sceneTris: number } | null {
     return this.bridge?.getAttachProgressLite() ?? null

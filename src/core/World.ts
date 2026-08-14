@@ -26,7 +26,7 @@ import { ScenePromoteController } from '../dcl/aoi/ScenePromoteController'
 import type { MultiSceneRuntime } from '../dcl/multiScene/MultiSceneRuntime'
 import { PeMainThreadMirror } from '../dcl/multiScene/PeMainThreadMirror'
 import { aoiStandOnPromote } from '../dcl/multiScene/caps'
-import { lastFrameOverBudget, scheduleOffPlayRaf } from '../rendering/mainThreadYield'
+import { scheduleOffPlayRaf } from '../rendering/mainThreadYield'
 import {
   resolvePortableExperiencesPolicy,
   type PortableExperiencesPolicy
@@ -1932,7 +1932,13 @@ export class World {
           peMs = performance.now() - peT0
 
           const pos = this.player.getPosition()
-          aoiMs = 0
+          // Soft-route + AOI LOD/discover must run on present — leftover async
+          // is skipped for whole CBD walks (asyncBusy / >33 ms present). Drain
+          // still self-gates and idle-schedules; tick is parcel math + HUD.
+          const aoiT0 = performance.now()
+          this.scenePromote.tick(pos.x, pos.z)
+          this.aoiVisual.update(pos.x, pos.z)
+          aoiMs = performance.now() - aoiT0
           const yaw = this.player.getNetworkYaw()
           const isEmoting = this.player.isProfileEmoteActive()
           const locomotion = this.player.getLocomotionWireState()
@@ -2177,7 +2183,10 @@ export class World {
           const MIN_FULL_MS = 2
           const primarySpent = t3 - t0
           const remainder = ASYNC_MULTI_BUDGET_MS - primarySpent
-          const applyBudgetMs = remainder >= MIN_FULL_MS ? remainder : 0
+          const guestHydrating =
+            this.multiScene?.secondaryManager?.hasHydratingSecondary() === true
+          const applyBudgetMs =
+            remainder >= MIN_FULL_MS ? remainder : guestHydrating ? 6 : 0
           const { colliders, invalidatePhysIds } = await this.multiScene.tickAsync({
             applyBudgetMs
           })
@@ -2200,12 +2209,6 @@ export class World {
             }
           }
           multiMs = performance.now() - t3
-        }
-        // Drain AFTER leftover apply so one clone inflate cannot steal primary apply.
-        if (remain() > 2 && !lastFrameOverBudget(33) && this.player) {
-          const pos = this.player.getPosition()
-          this.aoiVisual.update(pos.x, pos.z)
-          this.scenePromote.tick(pos.x, pos.z)
         }
         const totalMs = performance.now() - t0
         // MainFrameHud async pie — peel / ptr / collision / bridges / multi.
@@ -4464,6 +4467,16 @@ export class World {
       pePolicy
     })
     runtime.secondaryManager?.setPlayFrameOwnedExternally(true)
+    // notifyPlayReady runs during spawn, *before* attach — the earlier
+    // setSecondaryActivityEnabled(true) was a no-op (multiScene was null).
+    // Without this, reconcile + force-boot stay off and stand-on promote
+    // waits forever (title moves, script GLBs never spawn).
+    if (!skipAoiNeighbors() && this.player) {
+      runtime.setSecondaryActivityEnabled(true)
+      this.aoiVisual.kickLiveSecondaryReconcile()
+      const p = this.player.getPosition()
+      this.aoiVisual.update(p.x, p.z)
+    }
   }
 
   getMultiScene(): MultiSceneRuntime | null {
@@ -4928,6 +4941,12 @@ export class World {
     this.sceneScript = newSystem
     this.loadedPrimaryScene = newScene
     this.assets.setScene(newScene)
+    // Snow sat at neighbor offset as a guest; origin is now its SW — rewrite GPU.
+    this.sceneScript.rebakeGpuAfterOriginChange()
+    const adoptedId = newScene.entityId?.trim()
+    if (adoptedId && this.sceneScript.countGpuVisuals() > 0) {
+      this.aoiVisual.markLiveSecondaryGraphReady(adoptedId)
+    }
 
     // Pose + player identity on the adopted worker.
     this.sceneScript.setClientPoseProvider(() => ({

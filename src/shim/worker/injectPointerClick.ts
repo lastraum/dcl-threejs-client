@@ -4,8 +4,15 @@ import * as extended from '@dcl/ecs/dist/components'
 import { preregisterRendererInjectedComponents } from './preregisterRendererInjectedComponents'
 import { PointerEventType } from '../../input/pointerConstants'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
-import { nextWorkerPointerEventTimestamp } from './workerPointerEventTimestamp'
-import { resolveWorkerUiTransform } from './resolveBundledUiComponents'
+import {
+  ensureWorkerPointerEventTimestampAfter,
+  nextWorkerPointerEventTimestamp
+} from './workerPointerEventTimestamp'
+import {
+  forEachWorkerPointerEventsResult,
+  resolveWorkerPointerEventsResult,
+  resolveWorkerUiTransform
+} from './resolveBundledUiComponents'
 
 function buildPointerHit(body: InjectPointerClickBody) {
   // Prefer explicit ray fields; fall back to PPI world ray + estimate origin from hit.
@@ -78,10 +85,23 @@ function resolveUpInjectTargets(engine: IEngine, body: InjectPointerClickBody): 
   return requested
 }
 
+function maxPointerResultTimestamp(engine: IEngine): number {
+  let maxTs = 0
+  forEachWorkerPointerEventsResult(engine, (PointerEventsResult) => {
+    for (const [, commands] of engine.getEntitiesWith(PointerEventsResult)) {
+      for (const command of commands) {
+        const ts = command.timestamp
+        if (typeof ts === 'number' && ts > maxTs) maxTs = ts
+      }
+    }
+  })
+  return maxTs
+}
+
 /** PET_DOWN only — must run before the first pointer-tick `engine.update(0)`. */
 export function injectPointerClickDownOnEngine(engine: IEngine, body: InjectPointerClickBody): void {
   preregisterRendererInjectedComponents(engine)
-  const PointerEventsResult = generated.PointerEventsResult(engine)
+  ensureWorkerPointerEventTimestampAfter(maxPointerResultTimestamp(engine))
   const hit = buildPointerHit(body)
   const down = {
     button: body.button,
@@ -91,17 +111,19 @@ export function injectPointerClickDownOnEngine(engine: IEngine, body: InjectPoin
     hit,
     analog: undefined
   }
-  // Targets come from main: real PE mesh chain, scene UI leaf, or level-state PlayerEntity
-  // (global isPressed when no PE in range). Do not invent extra targets here.
+  // One leaf (main pick). Write every 1063 on this engine — bundled inputSystem
+  // may be closed over a nameless first instance, not the client-named getter.
   for (const entity of pointerDownTargets(body)) {
-    PointerEventsResult.addValue(entity as Entity, down)
+    forEachWorkerPointerEventsResult(engine, (PointerEventsResult) => {
+      PointerEventsResult.addValue(entity as Entity, down)
+    })
   }
 }
 
 /** PET_UP only — targets resolved after any post-DOWN remount. */
 export function injectPointerClickUpOnEngine(engine: IEngine, body: InjectPointerClickBody): void {
   preregisterRendererInjectedComponents(engine)
-  const PointerEventsResult = generated.PointerEventsResult(engine)
+  ensureWorkerPointerEventTimestampAfter(maxPointerResultTimestamp(engine))
   const hit = buildPointerHit(body)
   const up = {
     button: body.button,
@@ -113,7 +135,9 @@ export function injectPointerClickUpOnEngine(engine: IEngine, body: InjectPointe
   }
   const targets = resolveUpInjectTargets(engine, body)
   for (const entity of targets) {
-    PointerEventsResult.addValue(entity as Entity, up)
+    forEachWorkerPointerEventsResult(engine, (PointerEventsResult) => {
+      PointerEventsResult.addValue(entity as Entity, up)
+    })
   }
 }
 
@@ -178,7 +202,7 @@ export function injectLevelStatePointerEdgeOnEngine(
  */
 export function isIaPointerPressedOnEngine(engine: IEngine, button: number = 0): boolean {
   preregisterRendererInjectedComponents(engine)
-  const PointerEventsResult = generated.PointerEventsResult(engine)
+  const PointerEventsResult = resolveWorkerPointerEventsResult(engine)
   let latestTs = -1
   let latestState: number | null = null
   for (const [, commands] of engine.getEntitiesWith(PointerEventsResult)) {

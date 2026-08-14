@@ -19,6 +19,7 @@ import {
   getLastPlannedUiDirtyEntities,
   holdCooperativeReactEcs,
   leaveCooperativeSchedulerTick,
+  releaseCooperativeReactEcsHold,
   notePlayModePointerUiEgress,
   planSceneUiCrdtEmit,
   resetPlayModePointerUiEgress,
@@ -428,7 +429,7 @@ export function sceneEngineTickDue(now: number): boolean {
 /** Play-mode: cap cooperative UI snapshot posts — menu thrash was 10+/s and starved inject. */
 let lastUiMountSnapshotPostAt = 0
 let lastUiMountSnapshotMountLen = -1
-const PLAY_UI_SNAPSHOT_MIN_MS = 200
+const PLAY_UI_SNAPSHOT_MIN_MS = 50
 
 async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
   const cfg = config!
@@ -452,8 +453,8 @@ async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
   const nowLog = performance.now()
   const mountEmpty = mountEntityIds.length === 0
   const mountLenChanged = mountEntityIds.length !== lastUiMountSnapshotMountLen
-  // Play: throttle same-size remounts. Always allow mount-size change / unmount / hydration.
-  // Do NOT commit baseline when skipping — keep dirty so the next tick can post.
+  // Play: throttle same-size remounts (~50ms = Color4.a fade without 60Hz posts).
+  // Always allow mount-size change / unmount / hydration.
   if (mode === 'play' && !mountEmpty && !mountLenChanged) {
     if (nowLog - lastUiMountSnapshotPostAt < PLAY_UI_SNAPSHOT_MIN_MS) {
       return
@@ -975,36 +976,28 @@ async function runSceneUiPointerDownBatch(
     `[sceneWorker] pointer sceneUi DOWN done — mount ${mountBefore}→${mountAfterDown} e${body.entity}`
   )
 
-  // PET_UP clears isPressed. react-ecs OFF — do not re-reconcile (toggle thrash).
+  // PET_UP on PlayerEntity only — clear isPressed. react-ecs OFF (no remount thrash).
   setPointerInteractivePhase('inject')
   setPointerInteractiveTickActive(false)
   await runSerializedEngineUpdate(async () => {
     injectPointerClickUpOnEngine(eng, body)
-    const clickEntity = body.entity
-    if (clickEntity !== (eng.PlayerEntity as number)) {
-      injectPointerClickUpOnEngine(eng, {
-        ...body,
-        sceneUi: false,
-        entities: [clickEntity],
-        upEntities: [clickEntity],
-        downEntities: [clickEntity]
-      })
-    }
     await eng.update(0)
   })
   cfg.onAfterEngineTick?.()
 
   setPointerInteractivePhase('flush')
-  // Snapshot open mount full — sceneUi toggle always needs complete rows.
-  runPointerUiPhase4Egress(eng, { fullMount: true })
   const mountAfter = countWorkerUiMount(eng)
   const mountGrew = mountAfter > mountBefore
-  // Always hold briefly so cooperative ticks cannot collapse the just-opened menu.
-  holdCooperativeReactEcs(12)
+  // Full rows only when a panel opened. Fade / same-size = dirty Color4.a.
+  runPointerUiPhase4Egress(eng, { fullMount: mountGrew })
+  if (mountGrew) {
+    holdCooperativeReactEcs(12)
+  } else {
+    releaseCooperativeReactEcsHold()
+  }
   cfg.log(
     `[sceneWorker] pointer sceneUi phase4 — mount=${mountAfter} grew=${mountGrew ? 1 : 0}`
   )
-  await runPointerNonUiPhase(eng)
   return mountGrew
 }
 

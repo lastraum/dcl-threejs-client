@@ -6,7 +6,6 @@ import type { PerformanceTier } from '../../shim/types'
 import type { SceneScriptSystem } from '../../core/systems/SceneScriptSystem'
 import { resolveSceneFromRoute } from '../content/resolveScene'
 import type { ResolvedScene } from '../content/types'
-import type { Mesh, Object3D } from 'three'
 import {
   aoiGlbShellsOnly,
   SECONDARY_LIVE_BOOT_CONCURRENCY,
@@ -46,6 +45,8 @@ export class SecondaryLiveManager {
   /** Demoted primaries — never auto-evicted (only by promote handoff). */
   private readonly stickyIds = new Set<string>()
   private readonly booting = new Set<string>()
+  /** In-flight kickHydrate pumps — avoid idle-callback starve + duplicate pumps. */
+  private readonly hydratePumps = new Set<string>()
   private disposed = false
   private tier: PerformanceTier = 'high'
   private primaryScene: ResolvedScene | null = null
@@ -87,11 +88,7 @@ export class SecondaryLiveManager {
   }
 
   private notifyGraphReady(entityId: string, slot: SceneWorkerSlot): void {
-    const root = slot.system.getEntityStore()?.root
-    let meshes = 0
-    root?.traverse((o) => {
-      if ((o as Mesh).isMesh) meshes++
-    })
+    const meshes = slot.system.countGpuVisuals()
     if (meshes > 0) this.onLiveGraphReady?.(entityId)
   }
 
@@ -271,10 +268,7 @@ export class SecondaryLiveManager {
     if (!slot) return { ok: false, meshCount: 0, rootPos: null, parented: false }
     const root = slot.system.getEntityStore()?.root
     if (!root) return { ok: false, meshCount: 0, rootPos: null, parented: false }
-    let meshCount = 0
-    root.traverse((o: Object3D) => {
-      if ((o as Mesh).isMesh) meshCount++
-    })
+    const meshCount = slot.system.countGpuVisuals()
     const parented = !!root.parent
     root.visible = true
     return {
@@ -758,7 +752,7 @@ export class SecondaryLiveManager {
     if (now - this.lastReconcileAt < minGap) return
     this.lastReconcileAt = now
 
-    // distM = **player → scene footprint** (edge m). Enter 16m boots; keep until 80m.
+    // distM = player → scene footprint (any parcel). Enter = Scene Distance.
     const enterM = secondaryLiveEnterRadiusM()
     const keepM = secondaryLiveKeepRadiusM()
     const pri = this.priorityParcelKey
@@ -843,17 +837,20 @@ export class SecondaryLiveManager {
     // Serial boot — one full secondary worker at a time.
     if (this.booting.size >= SECONDARY_LIVE_BOOT_CONCURRENCY) return
 
-    // While under-feet priority is pinned (promote path), only boot that parcel.
-    const bootOrder = pri ? bootList.filter((c) => coversPri(c)) : [...bootList]
-    for (const req of bootOrder) {
+    // Under-feet is sort priority only. Never exclusive — a 4-parcel neighbor
+    // 14 m away must boot while standing on plaza (player→footprint, not parcel pin).
+    for (const req of bootList) {
       if (this.slots.has(req.entityId) || this.booting.has(req.entityId)) continue
-      // Only cold-boot when player within enter (sticky re-promote handled above).
       if (req.distM > enterM && !coversPri(req)) continue
       if (this.countMode('secondary') + this.booting.size >= cap) {
         this.demoteOneSecondaryToTertiary({ preferNonSticky: true })
         if (this.countMode('secondary') + this.booting.size >= cap) break
       }
       this.ensureCapacityForNew('secondary')
+      console.info(
+        `[multi-scene] boot “${req.title}” playerDist≈${req.distM.toFixed(0)}m ` +
+          `enter=${enterM}m pri=${pri ?? '—'} parcels=${req.parcelCount ?? '?'}`
+      )
       void this.bootOne(req, coversPri(req) ? pri : null)
       break // only start one per reconcile
     }
@@ -925,6 +922,7 @@ export class SecondaryLiveManager {
         this.balanceModes()
         this.emitLiveIds()
         this.notifyGraphReady(slotId, slot)
+        this.kickHydrate(slot)
         console.info(
           `[multi-scene] secondary live “${req.title}” base=${req.base} ` +
             `playerDist≈${req.distM.toFixed(0)}m parcels=${req.parcelCount ?? '?'} ` +
@@ -977,6 +975,59 @@ export class SecondaryLiveManager {
    * COD F1 — when `applyBudgetMs` is exhausted (PE already spent remainder), all
    * secondaries dirty-collider-only this frame (no full syncRenderer).
    */
+  hasHydratingSecondary(): boolean {
+    for (const slot of this.slots.values()) {
+      if (slot.needsHydrationApply()) return true
+    }
+    return false
+  }
+
+  /**
+   * Off-play attach pump — plaza leftover is often 0 ms so new guests never
+   * get syncRenderer and stay empty (snow worker started, 0 GLBs).
+   *
+   * Must use setTimeout, not requestIdleCallback: plaza rAF stays busy and
+   * idle callbacks never run, so the pump died silently (no hydrate log).
+   */
+  private kickHydrate(slot: SceneWorkerSlot): void {
+    const id = slot.scene.entityId ?? ''
+    if (this.hydratePumps.has(id)) return
+    this.hydratePumps.add(id)
+    let n = 0
+    const startedAt = performance.now()
+    const MAX_MS = 30_000
+    const pump = (): void => {
+      if (this.disposed || !this.cache || !this.slots.has(id)) {
+        this.hydratePumps.delete(id)
+        return
+      }
+      const elapsed = performance.now() - startedAt
+      const done = !slot.needsHydrationApply() || elapsed > MAX_MS
+      if (done) {
+        this.hydratePumps.delete(id)
+        this.notifyGraphReady(id, slot)
+        console.info(
+          `[multi-scene] hydrate “${slot.scene.title}” gpu=${slot.system.countGpuVisuals()} ` +
+            `pumps=${n} ${elapsed.toFixed(0)}ms`
+        )
+        return
+      }
+      n++
+      if (n === 1 || n % 10 === 0) {
+        console.info(
+          `[multi-scene] hydrate pump “${slot.scene.title}” #${n} ` +
+            `gpu=${slot.system.countGpuVisuals()} pending=${slot.system.hasContentApplyWork() ? 1 : 0}`
+        )
+      }
+      void slot
+        .tickAsync(this.primaryScene, this.cache, { fullWork: true, deadlineMs: 12 })
+        .finally(() => {
+          setTimeout(pump, 32)
+        })
+    }
+    setTimeout(pump, 0)
+  }
+
   async tickAsync(opts?: { applyBudgetMs?: number }): Promise<PhysicsColliderDesc[]> {
     if (!this.cache) return []
     const descs: PhysicsColliderDesc[] = []
@@ -984,12 +1035,15 @@ export class SecondaryLiveManager {
     const secondaries = slots.filter((s) => !s.isTertiary)
     const budgetMs = opts?.applyBudgetMs
     const MIN_FULL_MS = 2
-    const allowFull = budgetMs === undefined || budgetMs >= MIN_FULL_MS
+    const hydrating = secondaries.filter((s) => s.needsHydrationApply())
+    for (const slot of hydrating) this.kickHydrate(slot)
+    const allowFull = budgetMs === undefined || budgetMs >= MIN_FULL_MS || hydrating.length > 0
+    const prefer = hydrating[0]
     const fullIdx =
       allowFull && secondaries.length > 0
         ? this.asyncFullWorkCursor++ % secondaries.length
         : -1
-    const fullSlot = fullIdx >= 0 ? secondaries[fullIdx] : null
+    const fullSlot = prefer ?? (fullIdx >= 0 ? secondaries[fullIdx] : null)
     const t0 = performance.now()
 
     for (const slot of slots) {
@@ -1033,6 +1087,7 @@ export class SecondaryLiveManager {
 
   dispose(): void {
     this.disposed = true
+    this.hydratePumps.clear()
     for (const slot of this.slots.values()) slot.dispose()
     this.slots.clear()
     this.stickyIds.clear()

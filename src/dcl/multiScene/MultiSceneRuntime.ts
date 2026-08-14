@@ -201,7 +201,9 @@ export class MultiSceneRuntime {
   }
 
   setSecondaryActivityEnabled(enabled: boolean): void {
+    if (this.secondaryActivityEnabled === enabled) return
     this.secondaryActivityEnabled = enabled
+    console.info(`[multi-scene] secondary activity ${enabled ? 'ON' : 'OFF'}`)
   }
 
   /** When false, soft-route must not force-boot neighbors (promote settle). */

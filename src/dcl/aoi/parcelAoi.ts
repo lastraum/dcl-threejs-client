@@ -64,6 +64,25 @@ export function parcelsInLoadRadius(
   return out
 }
 
+/**
+ * Stable SW for city-fill local space (Explorer roads, dirt plane, vacant scatter).
+ * Parcel 0,0 — not the FocusOwner base. Scene graphs still offset from FocusOwner.
+ */
+export const GENESIS_CITY_FILL_ORIGIN = '0,0'
+
+/** Genesis DCL meters from FocusOwner-local feet. */
+export function genesisMetersFromSceneLocal(
+  dclX: number,
+  dclZ: number,
+  primaryBase: string
+): { x: number; z: number } {
+  const base = parseParcelKey(primaryBase)
+  return {
+    x: dclX + base.x * PARCEL_SIZE,
+    z: dclZ + base.y * PARCEL_SIZE
+  }
+}
+
 /** Scene-local DCL SW corner of an absolute parcel relative to primary base. */
 export function parcelSwSceneLocal(parcelKey: string, baseParcel: string): { x: number; z: number } {
   const base = parseParcelKey(baseParcel)

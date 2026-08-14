@@ -7,13 +7,21 @@ import { skipAoiNeighbors } from '../../client/devFlags'
  * Compile defaults ON for the city soak — `?noaoi` still wins.
  * URL: ?aoishells=0|1  ?aoidisc=0|1  ?aoilive=0|1  ?aoipromote=0|1
  */
-const AOI_NEIGHBOR_SHELLS = true
+const AOI_NEIGHBOR_SHELLS = false
 const AOI_SCENE_DISTANCE_VISUALS = true
 const AOI_LIVE_GUESTS = true
-const AOI_STAND_ON_PROMOTE = true
+/** Walk never rebases origin / never handoff-promotes. */
+const AOI_STAND_ON_PROMOTE = false
 
-/** Hard cap on concurrent muted live secondary workers (dense Genesis). */
-const AOI_LIVE_SECONDARY_HARD_CAP = 3
+/**
+ * Live JS workers (scripts + CRDT). Official desktop: ~10 m load + ~10 m extra
+ * keep, 4 scene threads. Player → scene footprint (any parcel), not a ring.
+ * Snow @ 14 m from plaza still enters. Scene Distance is the visual disc.
+ */
+const LIVE_SCENE_MAX_M = 20
+const LIVE_SCENE_UNLOAD_EXTRA_M = 16
+/** Concurrent live isolates — desktop uses 4 threads; Three.js is costlier. */
+const AOI_LIVE_SECONDARY_HARD_CAP = 4
 const TERTIARY_RESIDENT_HARD_CAP = 8
 
 export const ROAD_PHYS_RADIUS_M = 48
@@ -100,17 +108,16 @@ export const SECONDARY_LIVE_MAX_RADIUS_M = SECONDARY_LIVE_ENTER_M
 
 export function secondaryLiveEnterRadiusM(): number {
   if (!aoiLiveGuests()) return 0
-  const d = renderQuality.getSceneLoadRadiusM()
+  const d = visualWarmRadiusM()
   if (d <= 0) return 0
-  return Math.min(d * 0.35, 32)
+  return Math.min(d, LIVE_SCENE_MAX_M)
 }
 
 export function secondaryLiveKeepRadiusM(): number {
   if (!aoiLiveGuests()) return 0
-  const d = renderQuality.getSceneLoadRadiusM()
-  if (d <= 0) return 0
   const enter = secondaryLiveEnterRadiusM()
-  return Math.min(d, Math.max(enter + 16, d * 0.6))
+  if (enter <= 0) return 0
+  return enter + LIVE_SCENE_UNLOAD_EXTRA_M
 }
 
 export function secondaryLiveRadiusM(): number {

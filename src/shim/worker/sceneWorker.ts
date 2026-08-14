@@ -1853,14 +1853,9 @@ initSceneEngineScheduler({
       'log',
       `[sceneWorker] sceneUi inject complete — session ended, ticks unpaused (mountGrew=${mountGrew ? 1 : 0})`
     )
-    // Kick immediately — do not wait for post-tick CRDT flush/ack (that starved fade).
-    const kick = (): void => {
-      if (!sceneEngine || sceneTicksPaused || pointerBlocksEngineTick()) return
+    if (sceneEngine && !sceneTicksPaused && !pointerBlocksEngineTick()) {
       requestSceneEngineTick()
     }
-    kick()
-    queueMicrotask(kick)
-    setTimeout(kick, 0)
   }
 })
 
@@ -2784,9 +2779,10 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
   }
   pointerDeliveryInFlight = true
   setPointerDeliveryInFlight(true)
-  // Main arms ~2s deliver-done watchdog. Scene UI must ack fast (menu clicks).
-  // No-target / world PE: 1.5s. Scene UI: 600ms hard cap so start-menu never freezes.
-  const EDGE_ACK_BUDGET_MS = body.sceneUi ? 600 : 1500
+  // Main arms ~2s deliver-done watchdog. Scene UI DOWN must finish EventSystem
+  // (onMouseDown / welcome fade) — a 600ms race acked deliver-done before update
+  // and the splash needed many clicks. UP can still budget-ack.
+  const EDGE_ACK_BUDGET_MS = body.sceneUi ? 2000 : 1500
   try {
     if (ppi || body.camera) {
       applyPlayFrameReservedPoses(undefined, body.camera, ppi)
@@ -2841,19 +2837,24 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
       }
       await flushPointerDeferredOutboundsAsync()
     }
-    // No-target: tighter budget (one eng.update + flush). PE/sceneUi keep EDGE_ACK_BUDGET_MS.
+    // Scene-UI DOWN: never budget-cut before EventSystem sees PET_DOWN.
+    const skipBudgetRace = !!body.sceneUi && phase === 'down'
     const ackBudgetMs = treatAsNoTarget
       ? NO_TARGET_ENGINE_UPDATE_BUDGET_MS + 250
       : EDGE_ACK_BUDGET_MS
-    await Promise.race([
-      runEdgeWork(),
-      new Promise<void>((resolve) => {
-        setTimeout(() => {
-          edgeTimedOut = true
-          resolve()
-        }, ackBudgetMs)
-      })
-    ])
+    if (skipBudgetRace) {
+      await runEdgeWork()
+    } else {
+      await Promise.race([
+        runEdgeWork(),
+        new Promise<void>((resolve) => {
+          setTimeout(() => {
+            edgeTimedOut = true
+            resolve()
+          }, ackBudgetMs)
+        })
+      ])
+    }
     if (edgeTimedOut) {
       logNoTargetEdgeDone(' (budget-timeout)')
       workerLog(
@@ -4870,8 +4871,6 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
     try {
       forceRecoverStuckSceneEngineTick('inject-received')
       forceReleaseEngineUpdateMutex('inject-received')
-      // Single serialized path for every target class (no-target / PE mesh / sceneUi).
-      // Dual fire-and-forget IIFEs raced DOWN vs UP and acked deliver-done without systems.
       enqueuePointerInject(body)
     } catch (err) {
       workerLog(

@@ -2788,17 +2788,15 @@ export class AppController {
         if (from) this.trackNavigate(from, target, 'navigate', 'goto')
         this.softUpdatePlayRoute(target)
         void this.refreshLocationTitleForParcel(target.x, target.y)
+        // Compile default: aoiStandOnPromote() is false — no origin rebase on walk.
         void this.promotePrimary(target, reason)
       },
       // Feet parcel only — replaceState, never reload (fixes empty-land thrash + URL lag).
       onSoftRoute: (x, y) => {
         this.softUpdatePlayRoute({ kind: 'coords', x, y, segment: `${x},${y}` })
         void this.refreshLocationTitleForParcel(x, y)
-        // Pin under-feet for promote preference only.
-        // NEVER force-boot a secondary worker on every parcel step — that was the
-        // 1-step thrash (resolveScene + full SceneWorkerSlot.start mid-walk).
-        // Dwell promote / live-candidate reconcile boots serially when needed.
-        this.multiSceneRuntime.setSecondaryPriorityParcel(x, y)
+        // Soft-route is URL/title only. Do not pin live-boot to the cell under
+        // feet — that blocked nearby multi-parcel scenes (snow from plaza).
       },
       onPrefetch: (x, y) => {
         this.enqueueScriptWarm(x, y)
@@ -3651,6 +3649,7 @@ export class AppController {
     // Leave primary footprint — don't keep the old scene name while resolving.
     const provisional = `Parcel ${x},${y}`
     this.applyLocationTitle(provisional, key)
+    clientDebugLog.consoleOnly('info', `[location] ${key} — resolving title (left primary)`)
 
     const gen = ++this.locationTitleGen
     try {
@@ -3664,6 +3663,7 @@ export class AppController {
       // Only paint if feet are still here (stale fetches still warm the cache).
       if (gen === this.locationTitleGen && this.lastLocationTitleKey === key) {
         this.applyLocationTitle(resolved, key)
+        clientDebugLog.consoleOnly('info', `[location] ${key} → “${resolved}”`)
       }
     } catch {
       this.locationTitleCache.set(key, provisional)

@@ -9,7 +9,8 @@ import { openExternalUrl } from '../../player/openExternalUrl'
 import type { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
 import {
   applySecondarySceneRootOrigin,
-  clearSecondarySceneRootOrigin
+  clearSecondarySceneRootOrigin,
+  hostPoseToSceneLocal
 } from './secondarySceneOrigin'
 import { SCENE_WORKER_PRIORITY, type SceneWorkerKind } from './types'
 import * as THREE from 'three'
@@ -76,6 +77,8 @@ export class SceneWorkerSlot {
   private primaryBaseParcel: string
   /** SceneLoop.send owns play-frame; tickSync must not call tickPlayFrame. */
   private playFrameOwnedExternally = false
+  /** Wall clock of first GPU attach — trickle remaining meshes for a short window. */
+  private firstGpuAt = 0
 
   constructor(private readonly opts: SceneWorkerSlotOptions) {
     this.id = opts.id
@@ -109,6 +112,7 @@ export class SceneWorkerSlot {
     this.primaryBaseParcel = primaryBaseParcel.trim()
     if (this.kind !== 'secondary' || this.disposed || this.detached) return
     this.applySceneOriginOffset()
+    this.system.rebakeGpuAfterOriginChange()
     // Pose root stays on host.poseRoot (EntityStore). Never reparent onto host.scene.
     const root = this.system.getEntityStore()?.root
     if (root) root.visible = true
@@ -122,6 +126,11 @@ export class SceneWorkerSlot {
     if (this.kind !== 'secondary') return
     const root = this.system.getEntityStore()?.root
     applySecondarySceneRootOrigin(root, this.scene.baseParcel, this.primaryBaseParcel)
+  }
+
+  private toSceneLocal(pose: EntityPose): EntityPose {
+    if (this.kind !== 'secondary' || !this.primaryBaseParcel) return pose
+    return hostPoseToSceneLocal(pose, this.scene.baseParcel, this.primaryBaseParcel)
   }
 
   get isRunning(): boolean {
@@ -245,6 +254,7 @@ export class SceneWorkerSlot {
       this.setResidentMode(this.mode)
       // Re-bake origin after mode visuals, then refresh desc matrices for pose-slide.
       this.applySceneOriginOffset()
+      this.system.rebakeGpuAfterOriginChange()
       if (this.mode !== 'tertiary') {
         this.captureRemappedColliders()
       }
@@ -289,7 +299,17 @@ export class SceneWorkerSlot {
     }
 
     const poses = poseProvider()
-    this.system.seedRendererEntities(poses.player, poses.camera)
+    this.system.setClientPoseProvider(() => {
+      const live = this.opts.poseProvider()
+      return {
+        player: this.toSceneLocal(live.player),
+        camera: this.toSceneLocal(live.camera)
+      }
+    })
+    this.system.seedRendererEntities(
+      this.toSceneLocal(poses.player),
+      this.toSceneLocal(poses.camera)
+    )
     await this.system.start(scene, cache, host)
     this.system.syncCollisionForce()
     this.applySceneOriginOffset()
@@ -387,7 +407,7 @@ export class SceneWorkerSlot {
     const now = performance.now()
     if (now - this.lastTickAt < minIntervalMs) return false
     this.lastTickAt = now
-    this.system.syncClientEntities(player, camera)
+    this.system.syncClientEntities(this.toSceneLocal(player), this.toSceneLocal(camera))
     if (this.kind === 'pe') {
       this.system.updateTriggerAreas()
     }
@@ -407,6 +427,21 @@ export class SceneWorkerSlot {
     if (!this.collidersDirty || this.lastRemappedColliders.length === 0) return []
     this.collidersDirty = false
     return this.lastRemappedColliders
+  }
+
+  /**
+   * Cold attach: keep pumping until the first mesh, then a short window while
+   * more GLBs are still pending. Do not key off unbounded hasContentApplyWork
+   * (snow sat at gpu=771 pending=1 forever).
+   */
+  needsHydrationApply(): boolean {
+    if (!this.running || this.disposed || this.detached || this.mode === 'tertiary') return false
+    const gpu = this.system.countGpuVisuals()
+    if (gpu <= 0) return true
+    if (this.firstGpuAt <= 0) this.firstGpuAt = performance.now()
+    const lite = this.system.getAttachProgressLite()
+    if ((lite?.pendingMesh ?? 0) <= 0) return false
+    return performance.now() - this.firstGpuAt < 8_000
   }
 
   async tickAsync(
@@ -526,6 +561,7 @@ export class SceneWorkerSlot {
     this.system.setCopyToClipboardHandler(null)
     this.system.setTriggerEmoteHandler(null)
     clearSecondarySceneRootOrigin(this.system.getEntityStore()?.root)
+    this.system.rebakeGpuAfterOriginChange()
     return this.system
   }
 

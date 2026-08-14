@@ -195,10 +195,11 @@ export class ScenePromoteController {
     if (!Number.isFinite(px) || !Number.isFinite(py)) return
     const key = `${px},${py}`
 
-    // Always keep the address bar on the parcel under your feet (SPA only).
+    // Always keep the address bar + HUD on the parcel under your feet (SPA only).
     if (key !== this.lastSoftKey && !this.inFlight) {
       this.lastSoftKey = key
       this.onSoftRoute?.(px, py)
+      console.info(`[promote] soft-route ${key}`)
     }
 
     if (!this.neighborActivityEnabled) return

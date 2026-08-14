@@ -23,6 +23,8 @@ import {
 } from './fetchActiveEntities'
 import {
   distanceToParcelCenterM,
+  GENESIS_CITY_FILL_ORIGIN,
+  genesisMetersFromSceneLocal,
   minPlayerToFootprintDistanceM,
   parcelsInLoadRadius,
   parcelsNearFootprint
@@ -54,7 +56,7 @@ import {
   secondaryLiveEnterRadiusM,
   secondaryLiveKeepRadiusM
 } from '../multiScene/caps'
-import { lastFrameOverBudget, yieldToIdle } from '../../rendering/mainThreadYield'
+import { lastFrameOverBudget, scheduleOffPlayRaf, yieldToIdle } from '../../rendering/mainThreadYield'
 
 /** Visible first-frame secondaries inside the inner radius. */
 const FF_MAX_VISIBLE = 3
@@ -108,7 +110,7 @@ type StickyScatterLayer = {
   root: THREE.Group
   colliders: PhysicsColliderDesc[]
   parcelKeys: string[]
-  /** DCL scene-local meters (for distance LOD / purge). */
+  /** Genesis DCL meters (parcel 0,0 origin — not FocusOwner-local). */
   centerX: number
   centerZ: number
 }
@@ -191,9 +193,14 @@ export type AoiVisualLayerContext = {
  */
 export class AoiVisualLayer {
   private root = new THREE.Group()
+  /**
+   * Genesis-stable parent for dirt / roads / scatter. Children are authored vs
+   * {@link GENESIS_CITY_FILL_ORIGIN}; this root is the only FocusOwner offset.
+   */
+  private readonly cityFillRoot = new THREE.Group()
   private blankRoot: THREE.Object3D | null = null
-  /** Primary base the city empty plane is centered on — rebuild on retarget. */
-  private blankPlaneBase = ''
+  /** True after the one Genesis dirt plane is built (never keyed to FocusOwner). */
+  private blankPlaneReady = false
   /** Parent for sticky scatter layers (never rebuilt as a whole). */
   private readonly scatterRoot = new THREE.Group()
   private readonly scatterLayers: StickyScatterLayer[] = []
@@ -234,6 +241,8 @@ export class AoiVisualLayer {
   private pendingRefresh: { dclX: number; dclZ: number; radiusM: number } | null = null
   private lastDrainAt = 0
   private drainInFlight = false
+  /** One off-play drain scheduled while presents stay over 33 ms. */
+  private idleDrainScheduled = false
   private lastFeetSample = { x: Number.NaN, z: Number.NaN }
   private lastFeetMoveAt = 0
   /** Empty-land PhysX ids currently registered (near-player subset only). */
@@ -253,6 +262,8 @@ export class AoiVisualLayer {
   private roadParcelSignature = ''
   /** Last live-secondary candidate id list (avoid spam + reconcile churn when identical). */
   private lastLiveCandidateSignature = ''
+  /** Console line only when the bootable set changes (not every meter). */
+  private lastLiveLogSignature = ''
   /** Cached after last discovery — composite drain without re-fetch. */
   private cachedEntities: ActiveSceneEntity[] = []
   private cachedPrimaryId = ''
@@ -289,12 +300,14 @@ export class AoiVisualLayer {
   constructor() {
     this.root.name = 'aoi-visual-layer'
     this.aoiPoseRoot.name = 'aoi-pose-root'
+    this.cityFillRoot.name = 'aoi-city-fill'
     this.scatterRoot.name = 'aoi-empty-scatter-sticky'
     this.compositeRoot.name = 'aoi-composite-secondaries'
     this.roadRoot.name = 'aoi-road-tiles'
     this.firstFrameRoot.name = 'aoi-first-frame-secondaries'
-    this.root.add(this.scatterRoot)
-    this.root.add(this.roadRoot)
+    this.cityFillRoot.add(this.scatterRoot)
+    this.cityFillRoot.add(this.roadRoot)
+    this.root.add(this.cityFillRoot)
     this.root.add(this.compositeRoot)
     this.root.add(this.firstFrameRoot)
   }
@@ -390,6 +403,27 @@ export class AoiVisualLayer {
     }
   }
 
+  /**
+   * Multi-scene attach happens *after* play-ready. Candidate emits during
+   * that gap hit a null/inactive runtime. Clear the signature so the next
+   * update re-delivers bootable neighbors (Spring in the Snow, etc.).
+   */
+  kickLiveSecondaryReconcile(): void {
+    this.lastLiveCandidateSignature = ''
+    this.lastLiveLogSignature = ''
+    if (!this.liveReconcileEnabled || !this.hasDiscoveredOnce || this.cachedEntities.length === 0) {
+      return
+    }
+    this.emitLiveSecondaryCandidatesOnly(
+      this.cachedEntities,
+      this.cachedPrimaryId,
+      this.cachedPrimaryBase || this.ctx?.scene.baseParcel || '0,0',
+      this.lastDiscoverFeet.x || 0,
+      this.lastDiscoverFeet.z || 0,
+      this.cachedPointerSet
+    )
+  }
+
   /** Abort in-flight prewarm drain loop (play-ready / unbind / dispose). */
   private cancelPrewarm(reason: string): void {
     if (!this.prewarmActive && this.prewarmGen === 0) return
@@ -475,6 +509,7 @@ export class AoiVisualLayer {
       // First bind only when layer never attached.
       return
     }
+    const newBase = scene.baseParcel.trim()
     this.ctx = {
       ...this.ctx,
       scene
@@ -501,14 +536,20 @@ export class AoiVisualLayer {
       this.ctx.host.poseRoot.add(this.aoiPoseRoot)
     }
     const newPrimaryId = scene.entityId?.trim() ?? ''
-    if (newPrimaryId) this.disposeShell(newPrimaryId)
-    this.rebakeShellPoses(scene.baseParcel)
+    // Keep the composite shell until the adopted worker has GPU (avoid a hole
+    // while instancer rebakes). Hide later via markLiveSecondaryGraphReady.
+    if (newPrimaryId) this.liveGraphReadyIds.delete(newPrimaryId)
+    this.applyCityFillOrigin(newBase)
+    this.rebakeShellPoses(newBase)
     this.applyShellVisibility()
+    if (this.ctx) {
+      this.syncNearRoadPhys(this.ctx, dclX, dclZ, /*force*/ true)
+      this.syncNearEmptyLandPhys(this.ctx, dclX, dclZ, /*force*/ true)
+    }
     console.info(
-      `[aoi] retarget primary “${scene.title}” base=${scene.baseParcel} ` +
+      `[aoi] retarget primary “${scene.title}” base=${newBase} ` +
         `(preserve tertiary — no unbind wipe)`
     )
-    this.blankPlaneBase = ''
     this.lastLiveCandidateSignature = ''
     void this.refresh(dclX, dclZ, visualWarmRadiusM(), 'full')
   }
@@ -534,6 +575,7 @@ export class AoiVisualLayer {
     this.lastParcelKey = ''
     this.lastRadius = -1
     if (!this.enabled) return
+    this.applyCityFillOrigin(ctx.scene.baseParcel)
     ctx.hostScene.add(this.root)
     if (ctx.host) ctx.host.poseRoot.add(this.aoiPoseRoot)
     else if (aoiNeighborShells()) {
@@ -563,6 +605,7 @@ export class AoiVisualLayer {
     this.loadedRoadIds.clear()
     this.roadParcelSignature = ''
     this.lastLiveCandidateSignature = ''
+    this.lastLiveLogSignature = ''
     this.pendingScatterParcels.clear()
     this.pendingCompositeIds.clear()
     this.cachedEntities = []
@@ -573,6 +616,7 @@ export class AoiVisualLayer {
     this.lastFeetSample = { x: Number.NaN, z: Number.NaN }
     this.lastFeetMoveAt = 0
     this.drainInFlight = false
+    this.idleDrainScheduled = false
     this.cancelPrewarm('unbind')
     this.allowDrainOnce = false
     this.neighborActivityEnabled = false
@@ -599,8 +643,9 @@ export class AoiVisualLayer {
 
   /**
    * AOI tick from player feet (scene-local DCL meters).
-   * Clock 1 (LOD / near PhysX) always runs. Drain is leftover + not-over-budget,
-   * including mid-walk. Full rediscover stays 128 m + 600 ms.
+   * Clock 1 (LOD / near PhysX / discover schedule) always runs.
+   * Mesh drain never starts on a hot present — it idle-schedules instead.
+   * Full rediscover stays 128 m + 600 ms.
    */
   update(dclX: number, dclZ: number, force = false): void {
     if (this.disposed || !this.enabled || !this.ctx) return
@@ -695,9 +740,30 @@ export class AoiVisualLayer {
     if (!this.hasOutstandingWork()) return
     if (this.drainInFlight) return
     if (now - this.lastDrainAt < 400) return
-    if (!this.prewarmActive && lastFrameOverBudget(33)) return
+    // Present tick is host-only. Mesh drain is always off-play after load.
+    if (!this.prewarmActive) {
+      this.scheduleIdleDrain(dclX, dclZ)
+      return
+    }
     this.lastDrainAt = now
     void this.drainOutstandingWork(dclX, dclZ)
+  }
+
+  /**
+   * Plaza presents stay over 33 ms for long stretches. Skipping drain then
+   * leaves neighbor composites (e.g. Spring in the Snow) in the queue forever.
+   * Attach off the play rAF — one clone per idle turn.
+   */
+  private scheduleIdleDrain(dclX: number, dclZ: number): void {
+    if (this.idleDrainScheduled || this.drainInFlight || this.disposed) return
+    this.idleDrainScheduled = true
+    scheduleOffPlayRaf(() => {
+      this.idleDrainScheduled = false
+      if (this.disposed || !this.enabled || !this.ctx) return
+      if (this.drainInFlight || !this.hasOutstandingWork()) return
+      this.lastDrainAt = performance.now()
+      void this.drainOutstandingWork(dclX, dclZ, undefined, false, false, true)
+    }, 64)
   }
 
   /** No feet motion for {@link WALK_IDLE_MS} — safe for main-thread mesh work. */
@@ -714,7 +780,7 @@ export class AoiVisualLayer {
    * Dev budget line: how big the warm ring is vs how many scripts we might run.
    * - warmParcels = player Scene Distance disc (+ primary collar)
    * - uniqueEntities = catalyst deployments returned for that pointer set
-   * - liveEligible = player→footprint ≤ enter (16m)
+   * - liveEligible = player→scene footprint ≤ Scene Distance
    * - liveRunning = currently loaded secondary workers (cap is separate)
    */
   private logAoiBudget(opts: {
@@ -998,21 +1064,25 @@ export class AoiVisualLayer {
 
   /**
    * Complete outstanding scatter / composite / road work from queues.
-   * Mid-walk is allowed; skip only when the last present frame blew 33 ms.
+   * Hot presents skip and idle-schedule. `allowOverBudget` is the idle path.
    */
   private async drainOutstandingWork(
     dclX: number,
     dclZ: number,
     genHint?: number,
     forceUncappedScatter = false,
-    _allow = false
+    _allow = false,
+    allowOverBudget = false
   ): Promise<void> {
     const ctx = this.ctx
     if (!ctx || this.disposed || this.drainInFlight) return
     if (forceUncappedScatter && !this.prewarmActive) {
       return
     }
-    if (!this.prewarmActive && lastFrameOverBudget(33)) return
+    if (!this.prewarmActive && !allowOverBudget && lastFrameOverBudget(33)) {
+      this.scheduleIdleDrain(dclX, dclZ)
+      return
+    }
     this.drainInFlight = true
     const gen = genHint ?? this.refreshGen
     try {
@@ -1040,8 +1110,12 @@ export class AoiVisualLayer {
       if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
       this.syncNearRoadPhys(ctx, dclX, dclZ, /*force*/ true)
 
-      if (aoiNeighborShells() && ctx.host && !lastFrameOverBudget(33)) {
-        await this.drainPendingComposites(ctx, gen, dclX, dclZ)
+      if (
+        aoiNeighborShells() &&
+        ctx.host &&
+        (allowOverBudget || !lastFrameOverBudget(33))
+      ) {
+        await this.drainPendingComposites(ctx, gen, dclX, dclZ, allowOverBudget)
       }
     } finally {
       this.drainInFlight = false
@@ -1153,6 +1227,32 @@ export class AoiVisualLayer {
       rec.pose.updateMatrixWorld(true)
       rec.visual.userData.dclDrawStatic = false
     }
+  }
+
+  /**
+   * Express the Genesis city-fill frame in the current FocusOwner world.
+   * Children stay at parcel-0,0 local; only this root moves on promote.
+   */
+  private applyCityFillOrigin(primaryBase: string): void {
+    const o = neighborOriginOffset(GENESIS_CITY_FILL_ORIGIN, primaryBase)
+    dclToThreePos(o.x, 0, o.z, this.cityFillRoot.position)
+    this.cityFillRoot.updateMatrix()
+    this.cityFillRoot.updateMatrixWorld(true)
+  }
+
+  private genesisFeet(dclX: number, dclZ: number): { x: number; z: number } {
+    const base = this.cachedPrimaryBase || this.ctx?.scene.baseParcel || GENESIS_CITY_FILL_ORIGIN
+    return genesisMetersFromSceneLocal(dclX, dclZ, base)
+  }
+
+  /** PhysX is FocusOwner-local — bake Genesis-local collider matrices through the city-fill root. */
+  private bakeCityFillColliders(descs: PhysicsColliderDesc[]): PhysicsColliderDesc[] {
+    this.cityFillRoot.updateMatrixWorld(false)
+    const parent = this.cityFillRoot.matrixWorld
+    return descs.map((d) => ({
+      ...d,
+      matrix: new THREE.Matrix4().multiplyMatrices(parent, d.matrix)
+    }))
   }
 
   private updateShellLod(dclX: number, dclZ: number): void {
@@ -1362,8 +1462,8 @@ export class AoiVisualLayer {
   }
 
   /**
-   * Live-secondary candidates by **player → footprint** distance.
-   * Emit up to keep radius (80m) so reconcile can hysteresis; boot only when ≤ enter (16m).
+   * Live-secondary candidates by **player → scene footprint** (not parcel rings).
+   * A multi-parcel estate is in-range if any of its parcels is within enter/keep.
    */
   private emitLiveSecondaryCandidatesOnly(
     entities: ActiveSceneEntity[],
@@ -1461,6 +1561,9 @@ export class AoiVisualLayer {
     this.ctx?.onSecondaryCandidates?.(liveCandidates)
     if (liveCandidates.length && enterM != null) {
       const bootable = liveCandidates.filter((c) => c.distM <= enterM)
+      const logSig = `${bootable.map((c) => c.entityId).join('|')}#${liveCandidates.length}`
+      if (logSig === this.lastLiveLogSignature) return
+      this.lastLiveLogSignature = logSig
       console.info(
         `[aoi] live-secondary (player enter≤${enterM}m keep≤${keepM ?? '?'}m) ` +
           `n=${liveCandidates.length} bootable=${bootable.length} nearest=${liveCandidates
@@ -1517,17 +1620,16 @@ export class AoiVisualLayer {
 
   /**
    * Sticky Genesis-wide empty plane under the whole city.
-   * Coords AOI only (bind already gates worlds). Rebuilds only when primary base changes.
+   * Authored once vs parcel 0,0 — FocusOwner retarget only moves cityFillRoot.
    */
   private async ensureGenesisEmptyPlane(
     ctx: NonNullable<typeof this.ctx>,
     gen: number,
-    primaryBase: string
+    _primaryBase: string
   ): Promise<void> {
-    const baseKey = primaryBase.trim()
-    if (this.blankRoot && this.blankPlaneBase === baseKey) return
+    if (this.blankRoot && this.blankPlaneReady) return
     try {
-      const plane = await buildGenesisCityEmptyPlane(ctx.cache, baseKey)
+      const plane = await buildGenesisCityEmptyPlane(ctx.cache, GENESIS_CITY_FILL_ORIGIN)
       if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) {
         plane.traverse((o) => {
           if (o instanceof THREE.Mesh) {
@@ -1540,8 +1642,8 @@ export class AoiVisualLayer {
       }
       this.clearBlank()
       this.blankRoot = plane
-      this.blankPlaneBase = baseKey
-      this.root.add(plane)
+      this.blankPlaneReady = true
+      this.cityFillRoot.add(plane)
       const ud = plane.userData as {
         parcels?: { w?: number; d?: number }
         sizeM?: { x?: number; z?: number }
@@ -1550,7 +1652,7 @@ export class AoiVisualLayer {
         `[aoi] genesis empty plane ` +
           `${ud.parcels?.w ?? '?'}×${ud.parcels?.d ?? '?'} parcels ` +
           `(${((ud.sizeM?.x ?? 0) / 16).toFixed(0)}×${((ud.sizeM?.z ?? 0) / 16).toFixed(0)} @ 16m) ` +
-          `base=${baseKey}`
+          `origin=${GENESIS_CITY_FILL_ORIGIN}`
       )
     } catch (err) {
       console.warn('[aoi] genesis empty plane failed', err)
@@ -1630,7 +1732,6 @@ export class AoiVisualLayer {
     }
     if (!byChunk.size) return
 
-    const baseCoord = parseParcelKey(primaryBase)
     const t0 = performance.now()
     let addedParcels = 0
     let addedColliders = 0
@@ -1642,7 +1743,7 @@ export class AoiVisualLayer {
         const { root, colliders } = await buildEmptyParcelScatter({
           cache: ctx.cache,
           parcelKeys: chunkKeys,
-          primaryBase
+          primaryBase: GENESIS_CITY_FILL_ORIGIN
         })
         if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) {
           root.traverse((o) => {
@@ -1658,8 +1759,8 @@ export class AoiVisualLayer {
         for (const key of chunkKeys) {
           try {
             const p = parseParcelKey(key)
-            cx += (p.x - baseCoord.x) * 16 + 8
-            cz += (p.y - baseCoord.y) * 16 + 8
+            cx += p.x * 16 + 8
+            cz += p.y * 16 + 8
             n++
           } catch {
             /* skip */
@@ -1712,7 +1813,8 @@ export class AoiVisualLayer {
     ctx: NonNullable<typeof this.ctx>,
     gen: number,
     dclX: number,
-    dclZ: number
+    dclZ: number,
+    allowOverBudget = false
   ): Promise<void> {
     if (!ctx.host) return
     const cacheIds = new Set(this.cachedEntities.map((e) => e.id))
@@ -1741,7 +1843,7 @@ export class AoiVisualLayer {
       }
     }
 
-    if (!this.prewarmActive && lastFrameOverBudget(33)) return
+    if (!this.prewarmActive && !allowOverBudget && lastFrameOverBudget(33)) return
 
     let attached = 0
     for (const rec of this.loadedShells.values()) {
@@ -1759,9 +1861,10 @@ export class AoiVisualLayer {
   private updateStickyScatterLod(dclX: number, dclZ: number): void {
     const hideM = visualWarmRadiusM()
     const hideR2 = hideM * hideM
+    const feet = this.genesisFeet(dclX, dclZ)
     for (const layer of this.scatterLayers) {
-      const dx = layer.centerX - dclX
-      const dz = layer.centerZ - dclZ
+      const dx = layer.centerX - feet.x
+      const dz = layer.centerZ - feet.z
       layer.root.visible = dx * dx + dz * dz <= hideR2
     }
   }
@@ -1774,12 +1877,13 @@ export class AoiVisualLayer {
   ): void {
     const purgeM = visualWarmRadiusM() + SHELL_PURGE_PAST_SD_M
     const purgeR2 = purgeM * purgeM
+    const feet = this.genesisFeet(dclX, dclZ)
     const dropEntities: number[] = []
     let purged = 0
     for (let i = this.scatterLayers.length - 1; i >= 0; i--) {
       const layer = this.scatterLayers[i]!
-      const dx = layer.centerX - dclX
-      const dz = layer.centerZ - dclZ
+      const dx = layer.centerX - feet.x
+      const dz = layer.centerZ - feet.z
       if (dx * dx + dz * dz <= purgeR2) continue
       for (const c of layer.colliders) dropEntities.push(c.entity)
       layer.root.removeFromParent()
@@ -1829,14 +1933,15 @@ export class AoiVisualLayer {
     force: boolean
   ): void {
     const r2 = EMPTY_LAND_PHYS_RADIUS_M * EMPTY_LAND_PHYS_RADIUS_M
+    const feet = this.genesisFeet(dclX, dclZ)
     const near: PhysicsColliderDesc[] = []
     const nearIds = new Set<number>()
     for (const layer of this.scatterLayers) {
       for (const c of layer.colliders) {
         const e = c.matrix.elements
-        // three.x = −sceneX → sceneX = −e[12]; compare in scene-local feet space.
-        const dx = -e[12]! - dclX
-        const dz = e[14]! - dclZ
+        // Matrices are Genesis-local three (x = −dclX).
+        const dx = -e[12]! - feet.x
+        const dz = e[14]! - feet.z
         if (dx * dx + dz * dz <= r2) {
           near.push(c)
           nearIds.add(c.entity)
@@ -1871,7 +1976,7 @@ export class AoiVisualLayer {
       // Nothing near — tracking already purged far ids above.
       return
     }
-    ctx.syncEmptyLandColliders?.(near)
+    ctx.syncEmptyLandColliders?.(this.bakeCityFillColliders(near))
   }
 
   /**
@@ -1971,7 +2076,7 @@ export class AoiVisualLayer {
     try {
       const built = await buildInstancedRoadLayer({
         placements,
-        primaryBase,
+        primaryBase: GENESIS_CITY_FILL_ORIGIN,
         cache: ctx.cache,
         contentBaseUrl: ctx.scene.realm.contentUrl
       })
@@ -2054,7 +2159,7 @@ export class AoiVisualLayer {
     try {
       const built = await buildInstancedRoadLayer({
         placements,
-        primaryBase,
+        primaryBase: GENESIS_CITY_FILL_ORIGIN,
         cache: ctx.cache,
         contentBaseUrl: ctx.scene.realm.contentUrl
       })
@@ -2095,15 +2200,16 @@ export class AoiVisualLayer {
   ): void {
     if (!this.roadColliderDescs.length) return
     const r2 = ROAD_PHYS_RADIUS_M * ROAD_PHYS_RADIUS_M
+    const feet = this.genesisFeet(dclX, dclZ)
     const near = this.roadColliderDescs.filter((c) => {
       const e = c.matrix.elements
-      const dx = e[12]! - dclX
-      const dz = e[14]! - dclZ
+      const dx = -e[12]! - feet.x
+      const dz = e[14]! - feet.z
       return dx * dx + dz * dz <= r2
     })
     if (!force && near.length === 0) return
     this.lastRoadPhysFeet = { x: dclX, z: dclZ }
-    ctx.syncRoadColliders?.(near)
+    ctx.syncRoadColliders?.(this.bakeCityFillColliders(near))
   }
 
   private clearRoads(): void {
@@ -2139,7 +2245,7 @@ export class AoiVisualLayer {
       }
     })
     this.blankRoot = null
-    this.blankPlaneBase = ''
+    this.blankPlaneReady = false
   }
 
   private clearScatter(): void {
@@ -2156,7 +2262,7 @@ export class AoiVisualLayer {
     this.lastNearEmptyLandIds.clear()
     this.lastEmptyLandPhysFeet = { x: Number.NaN, z: Number.NaN }
     this.scatterRoot.clear()
-    // scatterRoot stays attached under this.root for sticky adds.
+    // scatterRoot stays attached under cityFillRoot for sticky adds.
     this.ctx?.clearEmptyLandColliders?.()
   }
 }

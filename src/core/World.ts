@@ -2725,7 +2725,7 @@ export class World {
         : World.LOADING_COLLIDER_WALL_MS
       const cookStarted = performance.now()
 
-      while (this.colliderCookQueue.size > 0) {
+      while (this.cookableColliderQueueCount() > 0) {
         if (performance.now() - cookStarted > maxWallMs) {
           const pending = this.colliderCookQueue.size
           const registered = this.physics.gltfStaticActorCount
@@ -2749,12 +2749,21 @@ export class World {
         await this.drainColliderCookQueue({ mode: 'boot' })
         const gltfCount = this.lastGltfColliderCount
         const registered = this.physics.gltfStaticActorCount
-        const pending = this.colliderCookQueue.size
+        const pending = this.cookableColliderQueueCount()
+        const deferred = this.colliderCookQueue.size - pending
         onProgress?.(
           `Cooking collisions… ${registered}/${gltfCount}` +
-            (pending > 0 ? ` (${pending} left)` : '')
+            (pending > 0 ? ` (${pending} left)` : '') +
+            (deferred > 0 ? ` (${deferred} scale-in)` : '')
         )
         await new Promise<void>((r) => requestAnimationFrame(() => r()))
+      }
+      if (this.colliderCookQueue.size > 0) {
+        clientDebugLog.log(
+          'collision',
+          `[phys] prepare — ${this.colliderCookQueue.size} deferred (Tween/tiny scale); seal cookable now`,
+          { level: 'info', alsoConsole: true }
+        )
       }
 
       // COD: mid-cook late attaches — progressive pending only (no invalidate-all / markAll).
@@ -2771,7 +2780,7 @@ export class World {
       this.reconcileColliderCookQueue()
       this.discoverMissingColliderActors()
       let guard = 0
-      while (this.colliderCookQueue.size > 0 && guard < 256) {
+      while (this.cookableColliderQueueCount() > 0 && guard < 256) {
         await this.drainColliderCookQueue({ mode: 'boot' })
         guard++
         await new Promise<void>((r) => requestAnimationFrame(() => r()))
@@ -2910,6 +2919,19 @@ export class World {
     if (now - this.lastNeverCookedScanMs < World.NEVER_COOKED_SCAN_MS) return
     this.lastNeverCookedScanMs = now
     this.discoverMissingColliderActors()
+  }
+
+  /** Queue entries that can cook now (skip Tween/tiny scale-in and vanished descs). */
+  private cookableColliderQueueCount(): number {
+    let n = 0
+    for (const physId of this.colliderCookQueue) {
+      const desc = this.sceneScript.getPhysicsColliderDesc(physId)
+      if (!desc) continue
+      if (isDegenerateCookScale(desc.matrix)) continue
+      if (this.physics.hasFailedCookFingerprint(desc.fingerprint)) continue
+      n++
+    }
+    return n
   }
 
   /**
@@ -3929,8 +3951,13 @@ export class World {
       this.sceneScript.flushSceneGraphMatrices()
       this.sceneScript.refreshColliderBeforeCook(physId)
       const fresh = this.sceneScript.getPhysicsColliderDesc(physId)
-      if (!fresh) continue
+      if (!fresh) {
+        this.colliderCookQueue.delete(physId)
+        this.clearPlayCookTracking(physId)
+        continue
+      }
       // Late Tween scale-in — do not cook or fail-stamp while the actor is still a speck.
+      // Stay queued for play; must not block the loading-screen drain (plaza 97% hang).
       if (isDegenerateCookScale(fresh.matrix)) continue
       if (this.physics.hasFailedCookFingerprint(fresh.fingerprint)) {
         this.colliderCookQueue.delete(physId)

@@ -19,6 +19,9 @@ export function unregisterNameTagObject(obj: CSS2DObject): void {
 }
 
 function isHierarchyVisible(obj: THREE.Object3D): boolean {
+  // Detached leftovers (reload stripped the CSS2D but left it registered) have
+  // parent === null. That is not "visible" — it is not in the scene graph.
+  if (!obj.parent) return false
   let p: THREE.Object3D | null = obj
   while (p) {
     if (!p.visible) return false

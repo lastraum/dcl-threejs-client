@@ -275,6 +275,8 @@ export class PlayerSystem {
   private readonly playerEntityAttach = new THREE.Object3D()
   private avatar: LocalAvatar | null = null
   private nameTag: NameTag | null = null
+  /** Latest `loadAvatar` wins — overlapping VRM equips must not each attach a pill. */
+  private avatarLoadGen = 0
   private playerIdentity: ProfileIdentity | null = null
   private walkBounds: PlayerWalkBounds | null = null
   private moveTask: {
@@ -510,6 +512,7 @@ export class PlayerSystem {
     onProgress?: (msg: string) => void,
     profileOverride?: AvatarProfile | null
   ): Promise<void> {
+    const gen = ++this.avatarLoadGen
     onProgress?.('Loading avatar…')
     const avatarOptions = avatarOptionsFromUrl()
     // Only trust the override when it belongs to the profile being rendered —
@@ -519,14 +522,19 @@ export class PlayerSystem {
       (!avatarOptions.profileId ||
         avatarOptions.profileId.toLowerCase() === (profileOverride.address ?? '').toLowerCase())
     try {
-      this.playerIdentity =
+      const identity =
         (await this.avatar?.load(
           overrideApplies ? { ...avatarOptions, profile: profileOverride } : avatarOptions
         )) ?? null
+      if (gen !== this.avatarLoadGen) return
+      this.playerIdentity = identity
     } catch (err) {
+      if (gen !== this.avatarLoadGen) return
       console.warn('Avatar load failed — continuing with invisible capsule', err)
     }
 
+    if (gen !== this.avatarLoadGen) return
+    this.dropNameTag()
     if (this.avatar && this.playerIdentity && areSceneNameTagsVisible()) {
       this.nameTag = NameTag.attach(this.avatar.nameTagAnchor, this.playerIdentity.displayName, {
         textColor: this.playerIdentity.nameColor,
@@ -544,10 +552,17 @@ export class PlayerSystem {
     onProgress?: (msg: string) => void,
     profileOverride?: AvatarProfile | null
   ): Promise<void> {
+    this.dropNameTag()
+    const genBefore = this.avatarLoadGen
+    await this.loadAvatar(onProgress, profileOverride)
+    // A newer equip started while we awaited — that load owns the tag + visibility.
+    if (this.avatarLoadGen !== genBefore + 1) return
+    this.forceRefreshBodyVisibility()
+  }
+
+  private dropNameTag(): void {
     this.nameTag?.dispose()
     this.nameTag = null
-    await this.loadAvatar(onProgress, profileOverride)
-    this.forceRefreshBodyVisibility()
   }
 
   /**
@@ -699,11 +714,11 @@ export class PlayerSystem {
   }
 
   dispose(): void {
+    this.avatarLoadGen++
     this.resetExternalPhysicsState()
     this.input?.dispose()
     this.input = null
-    this.nameTag?.dispose()
-    this.nameTag = null
+    this.dropNameTag()
     this.avatar?.dispose()
     this.avatar = null
     this.enabled = false
@@ -2348,8 +2363,7 @@ export class PlayerSystem {
   private syncNameTag(): void {
     if (!this.playerIdentity) return
     if (!areSceneNameTagsVisible()) {
-      this.nameTag?.dispose()
-      this.nameTag = null
+      this.dropNameTag()
       return
     }
     if (!this.nameTag) {

@@ -198,6 +198,8 @@ export class World {
   private readonly lightManager: LightManager
   private ocean: SceneWater | null = null
   private player: PlayerSystem | null = null
+  /** Latest backpack / VRM equip reload wins — overlapping calls must not stack name tags. */
+  private reloadLocalAvatarGen = 0
   private remoteAvatars: RemoteAvatarManager | null = null
   /** Help → Debug crowd harness (local composed avatars for multi-avatar FPS tests). */
   private debugAvatarCrowd: DebugAvatarCrowd | null = null
@@ -5330,6 +5332,7 @@ export class World {
 
   /** Reload local avatar after backpack equip / profile save (session profile, not stale Catalyst). */
   async reloadLocalAvatar(): Promise<void> {
+    const gen = ++this.reloadLocalAvatarGen
     if (!this.playerMode || !this.player) return
     const profile = this.session.getProfile()
     const address = this.session.getAddress() ?? profile?.address
@@ -5340,6 +5343,7 @@ export class World {
     }
     // Session profile is authoritative right after a local deploy.
     await this.player.reloadAvatar(undefined, profile ?? undefined)
+    if (gen !== this.reloadLocalAvatarGen) return
     // Re-announce with the deploy-bumped version + fresh serialized profile so
     // peers rebuild our remote avatar (they ignore repeats of the old version).
     this.comms.setCommsProfile(this.session.getCommsProfileEntity())
@@ -5347,6 +5351,7 @@ export class World {
     // Equip key + announce identity — session wallet wins over stale ?profile=.
     this.vrmPeerSync.setLocalAddress(address ?? null)
     await this.vrmPeerSync.onLocalEquipChanged(address)
+    if (gen !== this.reloadLocalAvatarGen) return
     // Comms may still be settling after backpack close — re-push a few times.
     this.vrmPeerSync.scheduleLoginWantAnnounceRetries()
     // Re-assert third-person body after mesh swap (FPV hide must not stick across equip).
@@ -5598,6 +5603,7 @@ export class World {
   }
 
   dispose(): void {
+    this.reloadLocalAvatarGen++
     this.onVoluntaryEmoteAllowedChange = null
     this.lastVoluntaryEmoteAllowed = true
     this.pointerRaycastLiveAt = 0

@@ -143,9 +143,12 @@ export class NameTag {
   }
 
   static attach(parent: THREE.Object3D, text: string, options: NameTagOptions): NameTag {
-    // Drop any leftover CSS2D pills on this anchor (reload / N-toggle races).
+    // Drop leftover CSS2D pills on this anchor (reload / N-toggle / VRM-equip races).
+    // Must unregister — removeFromParent alone leaves the object in the overlay set,
+    // and a detached CSS2D still counts as visible (no parent to hide it).
     for (const child of [...parent.children]) {
       if (child instanceof CSS2DObject) {
+        unregisterNameTagObject(child)
         child.removeFromParent()
         child.element?.remove()
       }

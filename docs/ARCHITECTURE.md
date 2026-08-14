@@ -1,8 +1,9 @@
 # Architecture — host world
 
-> **This is the law.** The old dual-runtime (“worker owns the world, main mirrors it”) is void.  
+> **This is the law.** Shipped **v2.0.0**. The old dual-runtime (“worker owns the world, main mirrors it”) is void.  
 > Parity matrix: [INTEGRATION.md](./INTEGRATION.md) · Scene I/O: `.cursor/rules/worker-input-architecture.mdc`  
-> Scene behavior: **scene-bundle-is-law** (official `bin/scene.js` still runs in a Worker).
+> Scene behavior: **scene-bundle-is-law** (official `bin/scene.js` still runs in a Worker).  
+> Milestone log: [PROGRESS.md](./PROGRESS.md).
 
 ---
 
@@ -43,7 +44,7 @@ No second `@dcl/ecs` `Engine()` on main. No worker-as-source-of-truth.
 5. `MainCamera` / `InputModifier` stay **scene-authored** (`player-frame`).
 6. Scene bundle is law. No scene-name forks. Remotes are product (not this invert).
 
-Reserved host writes each eligible send: PE/Camera Transform, Root PPI / EngineInfo / canvas / RealmInfo, CameraMode, PointerLock.
+Reserved host writes each eligible send: PE/Camera Transform, Root PPI / EngineInfo / canvas / RealmInfo, CameraMode, PointerLock, PlayerIdentityData (before `sendBinary` / `isRoomReady`).
 
 ---
 
@@ -72,7 +73,9 @@ Remote avatar **pose** ticks on present (mixers may skip when the last guest app
 
 One HDR beauty pass; bloom is a half-res Unreal filter on that buffer (WebGL). Directional shadow maps recast on focus/sun hysteresis, not every frame; casters come from `drawRoot`. Static unique GLB leaves batch via `BatchedMesh`. Far name tags draw on a canvas atlas; near pills stay CSS2D.
 
-**Residency:** one primary guest worker. Far AOI neighbor scenes / composite shells are off (single-scene bench). PhysicsCombinedImpulse (1215) on PlayerEntity is read by the host CCT — never a second store PUT.
+**Residency (v2.0):** one **Current** guest worker plus **live guests** on occupied footprints and **composite shells** for farther AOI. Focus follows **feet** (no stand-on origin rebase). Occupancy is present-based. Neighbor origin is applied before static bake. Multi-scene textures live in a per-hash registry (a secondary must not wipe the primary). PhysicsCombinedImpulse (1215) on PlayerEntity is read by the host CCT — never a second store PUT.
+
+**Auth-server comms:** inbound `CUSTOM_EVENT` is held until the sandbox clock leads join, then `drain()` must **splice** pending (never alias + `length = 0`). `PlayerIdentityData` + `RealmInfo` exist on the worker store before the first `sendBinary`.
 
 **Transforms:** sim/comms stay DCL left-handed. Display conversion only at `dclTransform.ts`.
 

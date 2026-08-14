@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-08-10 (**dev-latest** — no release; `main` still **v1.7.0**). Platform: MeshCollider riding · CCT ground · scene-http · TextShape width · lighting · PART curtains. **In-scene ECS UI = production / smoke-pass** (one-off bugs only). See [PROGRESS.md](./PROGRESS.md)
+> **Last updated:** 2026-08-14 (**v2.0.0** on `main`). Host world + instanced city + live neighbors · MeshCollider riding · CCT ground · scene-http · TextShape width · lighting · PART curtains · auth-server join/paint. **In-scene ECS UI = production / smoke-pass** (one-off bugs only). See [PROGRESS.md](./PROGRESS.md)
 
 ---
 
@@ -181,7 +181,7 @@ DOM overlay — not in-scene `UiTransform`.
 | **Live tools** (polls / Q&A / trivia) | 🟢 | Location-card host menu · scene LiveKit · end-session **CSV** stats |
 | Pets panel + Pet Barn | 🟢 | Multiplayer companions · Barn catalog/publish · purple chrome |
 | Loot Bag | 🟢 | Deposit grid · multi-item NFT bundles · 3D pack model |
-| **P2P in-world trade** | 🟢 | Peer invite → dual offer UI → PM wire → on-chain settle (EIP-712); **1.8 headline** (not shell marketplace catalog) |
+| **P2P in-world trade** | 🟢 | Peer invite → dual offer UI → PM wire → on-chain settle (EIP-712); **v2.0** (not shell marketplace catalog) |
 
 ---
 

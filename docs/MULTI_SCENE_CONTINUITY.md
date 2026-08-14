@@ -82,7 +82,7 @@ Primary + PE play-frames are **SceneLoop guests** (one in-flight tick, host rece
 | Sticky demoted | Never auto-evicted |
 
 **Shipped:** policy + FocusOwner mute + secondary Animator pump.  
-**Not done:** proving CBD ring stays ≥30 FPS with multiple live secondaries + sticky plaza solids (density pass after 1.8 cut).
+**Not done:** proving CBD ring stays ≥30 FPS with multiple live secondaries + sticky plaza solids (density pass after **v2.0.0**).
 
 ---
 
@@ -231,7 +231,7 @@ Platform rules:
 
 ---
 
-## Open follow-ups (post–1.8 cut focus)
+## Open follow-ups (post–v2.0.0 density / PE)
 
 | Priority | Item |
 |----------|------|

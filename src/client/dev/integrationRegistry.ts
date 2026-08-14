@@ -181,7 +181,7 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
     status: 'render',
     category: 'client-ui',
     notes:
-      '1.8 headline: context-menu invite → dual offer window → PM offer sync → on-chain settle (EIP-712). Not shell marketplace catalog / saved outfits'
+      'v2.0: context-menu invite → dual offer window → PM offer sync → on-chain settle (EIP-712). Not shell marketplace catalog / saved outfits'
   }
 ]
 

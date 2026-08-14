@@ -2,7 +2,7 @@
 
 > Browser-native Decentraland client: load deployed Worlds/scenes, shim SDK7 runtime, mirror ECS → Three.js, expand to open world.
 
-**Status:** **v1.7.0** on `main` ✅ (still not full Explorer parity). **`dev-latest` (2026-08-10, 1.8 candidate, no cut):** world-feel (riding · CCT · lighting · PART · pointer · plaza) · **in-scene ECS UI smoke-pass 🟢** · **in-world P2P wearable trade** (parity+ headline). Community voice · live tools · pets · loot bag · AOI · tours · cast · worlds map. **After 1.8:** PE polish · saved outfits · create-community/invites (see [`PROGRESS.md`](./PROGRESS.md)).  
+**Status:** **v2.0.0** on `main` ✅ (host world + city walk; still not full Explorer parity). **`dev-latest`:** QA for post-2.0 (neighbor density, RTS drag, outfits, create-community — see [`PROGRESS.md`](./PROGRESS.md)). Shipped in 2.0: host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · 1.7 social/tools.  
 **ECS reference:** [`INTEGRATION.md`](./INTEGRATION.md)  
 **Note:** Historical phase plan. Prefer [PROGRESS.md](./PROGRESS.md) + [ARCHITECTURE.md](./ARCHITECTURE.md) + [INTEGRATION.md](./INTEGRATION.md) + [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) + [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md) for current work.
 
@@ -47,7 +47,7 @@ Build a **browser-native Decentraland client** that:
 
 The bundled scene does **not** talk to Three.js directly. It talks to a **fake DCL runtime** (shim). The shim records ECS mutations and posts them to the main thread, where `ThreeBridge` turns them into meshes, lights, animations, and UI.
 
-This matches how Hyperfy, Bevy explorer, and custom viewers bootstrap DCL scenes.
+This matches how official Explorers and custom viewers bootstrap DCL scenes.
 
 ### Reference parity (implementation principle)
 

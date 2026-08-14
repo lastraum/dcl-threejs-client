@@ -1,12 +1,14 @@
 # ThreejsClient
 
-A **browser-native Decentraland SDK7 Explorer** — Three.js renderer, Web Worker scene runtime, PhysX, and LiveKit/RFC4 multiplayer. Runs published scene bundles (`bin/index.js`) with CRDT sync, avatars, and an Explorer-style HUD. An alternative to the Unity and Godot explorers, built for the open web.
+A **browser-native Decentraland SDK7 Explorer** — Three.js renderer, Web Worker scene runtime, PhysX, and LiveKit/RFC4 multiplayer. Runs published scene bundles (`bin/index.js`) with CRDT sync, avatars, and an Explorer-style HUD. Built for the open web.
+
+**Current release:** **v2.0.0** (host world + city walk). Latest tagged on `main`. QA continues on `dev-latest`.
 
 ## Goals
 
 **Web-native scene runtime.** Ship a client that runs real DCL SDK7 scenes in the browser without a game-engine shell — Three.js on the main thread, scene scripts in a worker, content from Catalyst and the content network.
 
-**Performance-first architecture.** The active re-architecture removes redundant engine duplication on the main thread (mirror `Engine()`, `crdt-renderer-push`, stash/nudge machinery). The target path is **projection + encoder**: decode CRDT once, render from a projection, write reserved entities back through an encoder — fewer copies, better frame time.
+**Performance-first architecture.** **v2.0** ships the host world: decode CRDT once onto a projection, present from the host store, run official `scene.js` in a guest VM. No second main-thread SDK engine, no `crdt-renderer-push`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 **SDK7 scene parity.** Match Explorer behavior where creators expect it: correct DCL↔Three.js transforms, PhysX grounding and colliders, pointer and trigger flows, media, avatars, and comms wired to realm/LiveKit patterns. Parity is proven on real scenes (Genesis Plaza, `rickroll.dcl.eth`, `pizzaparty.dcl.eth`), not toy demos.
 

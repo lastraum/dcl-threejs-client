@@ -2,12 +2,11 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-08-11  
-> **Current phase:** **dev-latest** → **1.8 candidate** (**no cut yet** — hold for **~2‑month anniversary cut**, then multi-scene density/FPS). World-feel stack (riding · CCT · lighting · PART doors · pointer · plaza) + **in-scene ECS UI smoke-pass 🟢** + **in-world P2P wearable trading** (shell/parity+ headline). **v1.7.0** remains latest on `main`.  
-> **Shipped (1.x):** **v1.7.0** community voice · live polls/Q&A/trivia + CSV · pets/Pet Barn · loot bag · multi-scene AOI anim · AudioAnalysis · EnvironmentApi/Testing · **v1.6.0** tour photos / Camera Reel · admin tools · scene UI structure · **v1.5.0** PART/ROOT colliders · Animator · tours · cast · **v1.4.0** custom worlds · Worlds map · AOI · shell UI.  
+> **Last updated:** 2026-08-14  
+> **Current phase:** **v2.0.0** on `main` — host world + city walk (two months from the July tab post). **`dev-latest`** continues as QA.  
+> **Shipped:** **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
 
-> **1.8 headline (on tip, unreleased):** **platform** riding + lighting + PART curtains + plaza boards + pointer FPS · **shell** **P2P in-world trade** (invite → dual offer → on-chain settle).  
-> **After 1.8 cut (planned next):** multi-scene CBD density/FPS · decide **park vs finish WSP** · optional I/O channel hygiene · portable experiences · saved outfits · create-community / invites · gallery multi-page · graphics P3 culls · Social WS reliability · PE P3 pad/wind QA · multi-shape GLTF `40M+` riding. Scene UI = **one-off bugs only**. Shell marketplace browse ≠ **P2P peer trade**.  
+> **After 2.0 (next):** CBD density/FPS with stacked live neighbors · RTS box-select / pad-drag polish · saved outfits · create-community / invites · gallery multi-page · graphics P3 culls · Social WS reliability · PE P3 pad/wind QA · multi-shape GLTF `40M+` riding. Scene UI = **one-off bugs only**. Shell marketplace browse ≠ **P2P peer trade**.  
 
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). PM LiveKit survives teleports. Community voice LiveKit survives Jump In.  
 > **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**; outdoor washout rebalance **on `dev-latest`**.  
@@ -17,6 +16,46 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## 🎉 Milestone — v2.0.0 release (host world · city walk) (2026-08-14)
+
+**Status: release cut** — `dev-latest` → `main` · tag `v2.0.0`.
+
+Two months after the July “full client in a tab” post. Same SDK7 scenes. The tab is now the one you walk without thinking about the client.
+
+### What's new
+
+- **Walk feels finished** — Genesis and Worlds stay up; plaza is not a slideshow
+- **Host world** — one present path; scene JS is a guest VM on a host clock
+- **Instanced city** — static GLBs instance; no 2,000-mesh autoplay clone storm
+- **Live neighbors** — composite shells + live guests; Focus follows feet; textures per scene
+- **Community voice** — join muted, raise hand, mods; Jump In keeps the room
+- **Live polls / Q&A / trivia** — plus CSV when a session ends
+- **Pets + Pet Barn** · **Loot bags** · **AudioAnalysis**
+- **Stay in the city** when you cross parcels (FocusOwner, no full unload)
+- **Platform riding** · **CCT ground** (walk off a pad, you fall) · **doors that open**
+- **In-scene ECS UI** smoke-pass
+- **In-world P2P wearable trade** — invite → dual offer → on-chain settle
+- **Chat that survives teleports** · **custom VRM**
+- **Auth-server games** — mid-round maze, colliders, join, and paint
+- Terrain editor, 2D shell, and contribute-from-inside-the-client still here
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Host present / guest VM** | 🟢 | [ARCHITECTURE.md](./ARCHITECTURE.md) |
+| **City instancing + residency** | 🟢 | Shells + live guests · Focus = feet |
+| **World-feel** | 🟢 | Riding · CCT · PART · lighting |
+| **Social / tools (1.7)** | 🟢 | Voice · live tools · pets · loot |
+| **P2P trade** | 🟢 | Not shell marketplace catalog |
+| **Auth-server join/paint** | 🟢 | CUSTOM_EVENT drain + reserved identity |
+| **Stacked-neighbor FPS** | 🟡 | Density pass after this cut |
+| **RTS box-select / pad-drag** | 🟡 | Edge |
+
+**QA:** Genesis walk + neighbor parcels · plaza FPS · community voice Jump In · P2P trade two wallets · PixelWars mid-round maze + paint + walk flip · Worlds Jump In.
+
+**Tip:** `v2.0.0` on `main`. Quote the July tab post; this is month two.
 
 ---
 

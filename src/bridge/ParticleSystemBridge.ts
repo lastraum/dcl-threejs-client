@@ -62,6 +62,8 @@ export class ParticleSystemBridge {
   private lastDiagAt = 0
   private loggedCreates = 0
   private syncInFlight = false
+  /** Seconds (performance.now/1000) of last update — elapsed, not rAF delta. */
+  private lastUpdateSec = 0
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -69,7 +71,9 @@ export class ParticleSystemBridge {
     private readonly scene: ResolvedScene,
     private readonly getNodes: () => Map<Entity, THREE.Group> | undefined,
     /** Active camera for frustum prioritization (in-view systems always full rate). */
-    private readonly getCamera: () => THREE.Camera | null = () => null
+    private readonly getCamera: () => THREE.Camera | null = () => null,
+    private readonly bindDrawVisual?: (pose: THREE.Object3D, visual: THREE.Object3D) => void,
+    private readonly unbindDrawVisual?: (pose: THREE.Object3D) => void
   ) {}
 
   async sync(view: ProjectionView): Promise<void> {
@@ -119,7 +123,8 @@ export class ParticleSystemBridge {
           continue
         }
         created.gpu.mesh.name = particleKey(entity)
-        parent.add(created.gpu.mesh)
+        if (this.bindDrawVisual) this.bindDrawVisual(parent, created.gpu.mesh)
+        else parent.add(created.gpu.mesh)
         this.runtimes.set(entity, created)
         runtime = created
         this.loggedCreates++
@@ -177,8 +182,12 @@ export class ParticleSystemBridge {
     }
   }
 
-  update(delta: number): void {
+  update(_ignoredDelta?: number): void {
     const t0 = performance.now()
+    const nowSec = t0 / 1000
+    const delta =
+      this.lastUpdateSec > 0 ? Math.min(0.25, Math.max(0, nowSec - this.lastUpdateSec)) : 0
+    this.lastUpdateSec = nowSec
     const nodes = this.getNodes()
     if (!nodes) {
       perfNoteParticleMs(0)
@@ -368,8 +377,12 @@ export class ParticleSystemBridge {
   private disposeRuntime(entity: Entity, parent: THREE.Object3D): void {
     const runtime = this.runtimes.get(entity)
     if (!runtime) return
-    const child = parent.getObjectByName(particleKey(entity))
-    if (child) parent.remove(child)
+    const child =
+      (parent.userData.dclDrawParticles as THREE.Object3D | undefined) ??
+      parent.getObjectByName(particleKey(entity))
+    this.unbindDrawVisual?.(parent)
+    if (child) child.removeFromParent()
+    if (parent.userData.dclDrawParticles === child) delete parent.userData.dclDrawParticles
     disposeParticleGpuMesh(runtime.gpu)
     runtime.live.length = 0
     this.runtimes.delete(entity)

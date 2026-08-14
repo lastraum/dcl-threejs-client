@@ -108,7 +108,8 @@ type StickyScatterLayer = {
  * Neighbor scene meshes (composite GLBs + first-frame) + live-secondary candidates.
  * Prefer URL kill switch `?noaoi` (World skips bind entirely). This only gates meshes.
  */
-const LOAD_AOI_SCENE_VISUALS = true
+/** Neighbor scene composites off — single primary scene (Bevy column / plaza bench). */
+const LOAD_AOI_SCENE_VISUALS = false
 
 export type AoiVisualLayerContext = {
   scene: ResolvedScene

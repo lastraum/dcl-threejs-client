@@ -2336,6 +2336,7 @@ export class PlayerSystem {
   }
 
   private resolveCameraDistance(pivot: THREE.Vector3, direction: THREE.Vector3, maxDistance: number): number {
+    // Default on — `?nocamerasweep` or Help panel to disable.
     if (!cameraCollisionDebug.isWallOcclusionEnabled()) return maxDistance
     const hitDist = this.physics.sweepRay(pivot, direction, maxDistance)
     if (hitDist === null) return maxDistance

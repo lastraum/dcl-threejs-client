@@ -19,6 +19,7 @@ function materialKey(mat: THREE.Material): string {
 
 function canMergeMesh(mesh: THREE.Mesh, root: THREE.Object3D, opts: { namedOk: boolean }): boolean {
   if ((mesh as THREE.SkinnedMesh).isSkinnedMesh) return false
+  if ((mesh as THREE.BatchedMesh).isBatchedMesh) return false
   if (geometryHasMorphTargets(mesh.geometry)) return false
   if (isGltfInvisibleColliderMesh(mesh, root)) return false
   if (!mesh.visible) return false
@@ -68,13 +69,30 @@ export function mergeStaticGltfLeaves(
       geos.push(geo)
       if (mesh.name) names.push(mesh.name)
     }
+    const sample = meshes[0]!
+    const batched = tryMakeBatchedStatic(meshes, rootInv, sample.material as THREE.Material)
+    if (batched) {
+      batched.name = names[0] || 'batched-static'
+      batched.userData.dclMergedMeshNames = names
+      batched.userData.dclDrawStatic = true
+      batched.castShadow = meshes.some((m) => m.castShadow)
+      batched.receiveShadow = meshes.some((m) => m.receiveShadow)
+      batched.matrixAutoUpdate = false
+      batched.updateMatrix()
+      root.add(batched)
+      for (const mesh of meshes) {
+        mesh.removeFromParent()
+        mergedAway++
+      }
+      continue
+    }
     const merged = mergeGeometries(geos, false)
     for (const geo of geos) geo.dispose()
     if (!merged) continue
-    const sample = meshes[0]!
     const out = new THREE.Mesh(merged, sample.material)
     out.name = names[0] || 'merged-static'
     out.userData.dclMergedMeshNames = names
+    out.userData.dclDrawStatic = true
     out.castShadow = meshes.some((m) => m.castShadow)
     out.receiveShadow = meshes.some((m) => m.receiveShadow)
     out.matrixAutoUpdate = false
@@ -87,4 +105,36 @@ export function mergeStaticGltfLeaves(
   }
   if (mergedAway > 0) root.updateMatrixWorld(true)
   return mergedAway
+}
+
+function tryMakeBatchedStatic(
+  meshes: THREE.Mesh[],
+  rootInv: THREE.Matrix4,
+  material: THREE.Material
+): THREE.BatchedMesh | null {
+  if (typeof THREE.BatchedMesh !== 'function') return null
+  let verts = 0
+  let indices = 0
+  for (const mesh of meshes) {
+    const pos = mesh.geometry.getAttribute('position')
+    if (!pos) return null
+    verts += pos.count
+    const idx = mesh.geometry.getIndex()
+    indices += idx ? idx.count : pos.count
+  }
+  if (verts > 250_000) return null
+  const local = new THREE.Matrix4()
+  try {
+    const batched = new THREE.BatchedMesh(meshes.length, verts, indices, material)
+    batched.frustumCulled = false
+    for (const mesh of meshes) {
+      const geoId = batched.addGeometry(mesh.geometry)
+      const instId = batched.addInstance(geoId)
+      local.copy(mesh.matrixWorld).premultiply(rootInv)
+      batched.setMatrixAt(instId, local)
+    }
+    return batched
+  } catch {
+    return null
+  }
 }

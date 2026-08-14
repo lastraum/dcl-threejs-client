@@ -8,7 +8,6 @@ import { platformMotionDebug } from '../debug/PlatformMotionDebug'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { extendThreePhysX } from './extendThreePhysX'
 import {
-  CAMERA_QUERY_MASK,
   Layers,
   SOLID_FILTER_OPEN,
   TRIGGER_QUERY_MASK
@@ -2152,14 +2151,15 @@ export class PhysXWorld {
     }
     this.pinCctFilters()
     this.invalidateControllerCache()
-    const d = this.diagnoseSceneQueryAt(x, y, z, 'post-seal-heal')
-    // Throttle console — heal can fire every cooldown while soft; never claim rebuild.
-    if (readded > 0 || !d.didHit) {
-      console.warn(
-        `[PhysXWorld] post-seal SQ heal — readded=${readded} didHit=${d.didHit} rebuild=forbidden ` +
-          `cooldown=${PhysXWorld.POST_SEAL_SQ_HEAL_COOLDOWN_MS}ms`
-      )
+    if (readded === 0) {
+      // No orphans — skip O(static) diagnose (894 actor walk was a 26ms hitch).
+      return true
     }
+    const d = this.diagnoseSceneQueryAt(x, y, z, 'post-seal-heal')
+    console.warn(
+      `[PhysXWorld] post-seal SQ heal — readded=${readded} didHit=${d.didHit} rebuild=forbidden ` +
+        `cooldown=${PhysXWorld.POST_SEAL_SQ_HEAL_COOLDOWN_MS}ms`
+    )
     return d.didHit
   }
 
@@ -3438,7 +3438,7 @@ export class PhysXWorld {
     this.cameraSweepGeometry = new PHYSX.PxSphereGeometry(0.2)
   }
 
-  /** Ray-style sweep for third-person camera wall collision — opt-in via `?camerasweep`. */
+  /** Ray-style sweep for third-person camera wall collision (same solid filter as CCT). */
   sweepRay(origin: THREE.Vector3, direction: THREE.Vector3, maxDistance: number): number | null {
     if (!this.scene) return null
     this.ensureCameraSweepGeometry()
@@ -3450,7 +3450,9 @@ export class PhysXWorld {
     this._v1.copy(origin).addScaledVector(direction, skipNear)
     this._v1.toPxVec3(this.sweepPose.p)
 
-    this.applySceneQueryFilter(CAMERA_QUERY_MASK)
+    // Same OPEN bilateral words as CCT — CAMERA_QUERY_MASK missed plaza hulls
+    // (word drift / static=1100) the same way player sweeps used to.
+    this.applySceneQueryFilter(0)
 
     const didHit = this.scene.sweep(
       this.cameraSweepGeometry,

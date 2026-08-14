@@ -137,7 +137,6 @@ export class TriggerAreaSystem {
           `${this.volumes.filter((v) => v.mesh !== TRIGGER_MESH_SPHERE).length}box`
         : '')
     clientDebugLog.log('input', msg, { level: 'info', throttleMs: 5000 })
-    clientDebugLog.consoleOnly('info', `[input] ${msg}`)
   }
 
   /**
@@ -282,7 +281,9 @@ export class TriggerAreaSystem {
       `feet=(${fx.toFixed(1)},${fy.toFixed(2)},${fz.toFixed(1)}) ` +
       `vols=${this.volumes.length} inside=${insideCount} skipMat=${skippedMatrix} ` +
       `near12m=${nearHits} nearest=${nearest}`
-    clientDebugLog.log('input', msg, { level: 'info' })
+    if (this.verbose) {
+      clientDebugLog.log('input', msg, { level: 'info', throttleMs: 2500 })
+    }
   }
 
   private logVerboseProbe(

@@ -30,6 +30,8 @@ export class ArchipelagoClient {
   private wsUrl = ''
   private welcomed = false
   private islandId: string | null = null
+  /** Ignore onclose from a socket we replaced or closed on purpose. */
+  private closeGeneration = 0
 
   setIslandHandler(handler: ((event: IslandChangedEvent) => void) | null): void {
     this.onIslandChanged = handler
@@ -37,6 +39,10 @@ export class ArchipelagoClient {
 
   isConnected(): boolean {
     return this.socket?.readyState === WebSocket.OPEN
+  }
+
+  isConnecting(): boolean {
+    return this.socket?.readyState === WebSocket.CONNECTING
   }
 
   isWelcomed(): boolean {
@@ -58,18 +64,27 @@ export class ArchipelagoClient {
   }
 
   connect(wsTarget: string, address: string, identity: AuthIdentity): void {
-    this.disconnect()
-    this.identity = identity
-    this.address = address.toLowerCase()
-    this.retries = 0
-    this.welcomed = false
-    this.islandId = null
-
     let url = wsTarget.trim()
     if (url.startsWith('archipelago:')) url = url.slice('archipelago:'.length)
     if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
       url = `wss://${url.replace(/^\/+/, '')}`
     }
+    while (url.startsWith('archipelago:')) url = url.slice('archipelago:'.length)
+    this.identity = identity
+    this.address = address.toLowerCase()
+    // Same control plane already up or handshaking — do not close it (onclose would
+    // reconnect forever: welcome resets retries, then connect() kills the live socket).
+    if (
+      this.wsUrl === url &&
+      (this.isConnected() || this.isConnecting()) &&
+      this.socket
+    ) {
+      return
+    }
+    this.disconnect({ keepIdentity: true })
+    this.retries = 0
+    this.welcomed = false
+    this.islandId = null
     this.wsUrl = url
 
     clientDebugLog.log('network', `Archipelago connecting · ${url}`, {
@@ -112,26 +127,37 @@ export class ArchipelagoClient {
     }
   }
 
-  disconnect(): void {
+  disconnect(opts?: { keepIdentity?: boolean }): void {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
     this.stopHeartbeatLoop()
-    this.socket?.close()
+    this.closeGeneration++
+    const socket = this.socket
     this.socket = null
+    if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+      socket.close()
+    }
     this.pendingPosition = null
-    this.lastPosition = null
+    if (!opts?.keepIdentity) {
+      this.lastPosition = null
+      this.identity = null
+      this.address = null
+      this.wsUrl = ''
+    }
     this.welcomed = false
     this.islandId = null
   }
 
   private openSocket(url: string): void {
+    const generation = this.closeGeneration
     const socket = new WebSocket(url, ['archipelago'])
     this.socket = socket
     socket.binaryType = 'arraybuffer'
 
     socket.onopen = () => {
+      if (this.socket !== socket || generation !== this.closeGeneration) return
       clientDebugLog.log('network', 'Archipelago WS open · sending challenge', {
         level: 'success',
         throttleMs: 5000,
@@ -159,18 +185,22 @@ export class ArchipelagoClient {
     }
 
     socket.onclose = () => {
+      if (this.socket !== socket || generation !== this.closeGeneration) return
       clientDebugLog.log('network', `Archipelago WS closed · retries=${this.retries}`, {
         level: 'warn',
-        throttleMs: 5000,
+        throttleMs: 8000,
         throttleKey: 'archipelago-ws-closed'
       })
-      clientDebugLog.log('network', 'Archipelago WS closed', { level: 'warn', alsoConsole: true })
       this.socket = null
       this.welcomed = false
       this.stopHeartbeatLoop()
       if (this.retries < 5 && this.wsUrl && this.identity && this.address) {
         this.retries++
-        this.reconnectTimer = setTimeout(() => this.openSocket(this.wsUrl), 1500 * this.retries)
+        const delay = 1500 * this.retries
+        this.reconnectTimer = setTimeout(() => {
+          if (generation !== this.closeGeneration) return
+          this.openSocket(this.wsUrl)
+        }, delay)
       }
     }
   }

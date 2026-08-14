@@ -62,6 +62,11 @@ export function createSceneFetchProxyMiddleware() {
         if (!shouldForwardHeader(key)) continue
         headers[key] = Array.isArray(value) ? value.join(', ') : value
       }
+      // Google gviz / some CDNs 403 anonymous Node fetch without a browser UA.
+      if (!headers['user-agent'] && !headers['User-Agent']) {
+        headers['user-agent'] =
+          'Mozilla/5.0 (compatible; ThreejsClient scene-http proxy)'
+      }
 
       /** @type {Buffer | undefined} */
       let body

@@ -122,7 +122,7 @@ function makePackAlbedoTexture(image: HTMLImageElement): {
     const tex = new THREE.Texture(image)
     tex.colorSpace = THREE.SRGBColorSpace
     tex.needsUpdate = true
-    return { texture: tex as THREE.CanvasTexture, aspect: FALLBACK_ASPECT }
+    return { texture: tex as unknown as THREE.CanvasTexture, aspect: FALLBACK_ASPECT }
   }
 
   ctx.drawImage(image, sx, sy, sw, sh, 0, 0, sw, sh)

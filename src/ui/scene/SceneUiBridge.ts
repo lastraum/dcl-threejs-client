@@ -18,8 +18,8 @@ import { SceneUiInputController } from './SceneUiInputController'
 import {
   alignSceneUiRoot,
   computeUiViewport,
-  DEFAULT_VIRTUAL_CANVAS,
   interactableInsetsVirtual,
+  liveVirtualCanvas,
   readInteractableArea,
   type VirtualCanvasSize
 } from './virtualCanvas'
@@ -83,7 +83,7 @@ export class SceneUiBridge {
   private readonly hitMap = new SceneUiHitMap()
   private readonly layoutCache = new UiLayoutCache()
   private scene: ResolvedScene | null = null
-  private virtual: VirtualCanvasSize = { ...DEFAULT_VIRTUAL_CANVAS }
+  private virtual: VirtualCanvasSize = { width: 1, height: 1 }
   private lastCanvasKey = ''
   private writeback: SceneUiWriteback | null = null
   private mirrorEcs: MirrorComponents | null = null
@@ -465,17 +465,12 @@ export class SceneUiBridge {
     return this.input.isTypingActive()
   }
 
-  /** Override virtual screen size (e.g. from scene `setUiRenderer` options). */
-  setVirtualSize(width: number, height: number): void {
-    if (!Number.isFinite(width) || !Number.isFinite(height)) return
-    if (width > 0 && height > 0) {
-      const next = { width: Math.floor(width), height: Math.floor(height) }
-      if (next.width !== this.virtual.width || next.height !== this.virtual.height) {
-        this.layoutCache.clear()
-        this.markContentDirty()
-      }
-      this.virtual = next
-    }
+  /**
+   * Scene `setUiRenderer` virtual size is for react-ecs ui-scale on the worker.
+   * Yoga + UiCanvasInformation stay live interactable px (Explorer 7.25).
+   */
+  setVirtualSize(_width: number, _height: number): void {
+    /* intentionally unused — do not replace the live canvas with 1920×1080 */
   }
 
   dispose(): void {
@@ -498,10 +493,25 @@ export class SceneUiBridge {
     this.root.remove()
   }
 
+  private applyVirtual(interactable: ReturnType<typeof readInteractableArea>): void {
+    const next = liveVirtualCanvas(interactable)
+    if (next.width !== this.virtual.width || next.height !== this.virtual.height) {
+      this.virtual = next
+      this.layoutCache.clear()
+      this.markContentDirty()
+    }
+  }
+
   /** Yoga layout → DOM paint for the committed worker mount set. */
   paint(view: ProjectionView): void {
     this.mirrorEcs = view.components
     this.lastView = view
+    const ecs = view.components
+    const interactable = readInteractableArea(this.getCanvas())
+    this.applyVirtual(interactable)
+    alignSceneUiRoot(this.root, interactable)
+    const viewport = computeUiViewport(this.virtual, interactable)
+    this.injectCanvasInfo(view, ecs, interactable, viewport)
     if (!this.domVisible) {
       // Mount still commits while hidden; revealPlayChrome → setVisible(true) repaints.
       // Never log per-frame (was flooding console + main-thread during 60s attach).
@@ -511,12 +521,6 @@ export class SceneUiBridge {
     if (this.paintCount > 0 && this.paintedEpoch === this.contentEpoch) {
       return
     }
-    const ecs = view.components
-
-    const interactable = readInteractableArea(this.getCanvas())
-    alignSceneUiRoot(this.root, interactable)
-    const viewport = computeUiViewport(this.virtual, interactable)
-    this.injectCanvasInfo(view, ecs, interactable, viewport)
 
     if (!this.workerUiEntitiesKnown || !this.workerUiEntities?.size) {
       this.scrubUnauthoritativeDom()
@@ -1108,6 +1112,20 @@ export class SceneUiBridge {
 
   private applyHoverCursor(next: 'default' | 'pointer' | 'text'): void {
     const canvas = this.getCanvas()
+    if (canvas && document.pointerLockElement === canvas) {
+      canvas.style.cursor = 'none'
+      this.root.style.cursor = 'none'
+      return
+    }
+    // Hand cursor only when a real scene-UI node is under the point.
+    // Invisible BLOCK hit-maps (welcome fade leftovers) used to pin canvas to pointer.
+    if (next === 'pointer' && typeof document !== 'undefined') {
+      const under = document.elementFromPoint(this.lastPointerClientX, this.lastPointerClientY)
+      const onUi =
+        under instanceof Element &&
+        !!under.closest('.scene-ui-node, .scene-ui-root, [class*="scene-ui"]')
+      if (!onUi) next = 'default'
+    }
     if (canvas) canvas.style.cursor = next
     this.root.style.cursor = next
   }

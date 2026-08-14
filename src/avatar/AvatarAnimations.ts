@@ -27,7 +27,7 @@ import {
 } from './loadWearable'
 import { getRemappedLocomotionClip } from './locomotionClipCache'
 import type { AssetCache, CachedGltf } from '../rendering/AssetCache'
-import { yieldToNextFrame } from '../rendering/mainThreadYield'
+import { yieldToIdle } from '../rendering/mainThreadYield'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
 import type { LocomotionMode } from '../player/locomotion'
 import { DCL_LOCOMOTION_DEFAULTS } from '../player/locomotion'
@@ -285,7 +285,7 @@ export class AvatarAnimations {
     this.profileEmoteLoop = loop
     if (isCancelled?.()) return false
 
-    await yieldToNextFrame()
+    await yieldToIdle(24)
     if (isCancelled?.() || !this.mixer || !this.avatarRoot || !this.attachParent) return false
 
     const { avatarClip, propClip, propTrackTargets } = splitEmoteClips(gltf, this.avatarRoot)
@@ -298,13 +298,13 @@ export class AvatarAnimations {
       return false
     }
 
-    await yieldToNextFrame()
+    await yieldToIdle(24)
     if (isCancelled?.() || !this.mixer || !this.avatarRoot || !this.attachParent) return false
 
     if (needsPropScene) {
       // SkeletonUtils clone of prop armatures is the main first-play hitch for watering/sit.
       this.propRoot = cloneEmotePropRoots(gltf.root)
-      await yieldToNextFrame()
+      await yieldToIdle(24)
       if (isCancelled?.() || !this.mixer || !this.avatarRoot || !this.attachParent) {
         this.teardownProfileEmotePlayback()
         return false
@@ -326,7 +326,7 @@ export class AvatarAnimations {
       }
     }
 
-    await yieldToNextFrame()
+    await yieldToIdle(24)
     if (isCancelled?.() || !this.mixer || !this.avatarRoot) {
       this.teardownProfileEmotePlayback()
       return false

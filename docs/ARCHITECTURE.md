@@ -52,20 +52,27 @@ Reserved host writes each eligible send: PE/Camera Transform, Root PPI / EngineI
 ```text
 rAF present (host only):
   CCT + host motion + input + attach → WebGL present
+  (guest/apply/compose start after this rAF returns)
 
-async (guest VM, after present):
+async (guest VM, after present, idle callback):
   receive + fold → send play-frame-tick → apply Gltf/maps → AOI
 ```
 
 The guest `@dcl/ecs` worker is a VM, not a second present world. Official `scene.js` still runs there. It must not sit on the present rAF.
 
-Guest play-frame is **20 Hz** unless a pointer edge needs an immediate tick. Display rAF is the presenter.
+**GLB parse** runs in a dedicated worker pool (Draco + GLTFLoader). The worker posts transferable buffers + ImageBitmaps; main inflates the THREE graph from those typed arrays (no `Array.from` copies). `parseAsync` on the present thread is fallback only (`?mainglb` to force). Avatar compose still merges on main, but yields via idle callback — never `requestAnimationFrame`.
 
-Pointer inject / `player-frame` / CCT stay on the host.
+Guest play-frame is **20 Hz** unless a pointer edge needs an immediate tick. Display rAF is the presenter. Fold queued guest motion at the **start** of the next sync, before CCT.
 
-Remote avatar **pose** ticks on present. Remote **compose** starts only when the last present frame was cheap (idle callback). Placeholders stay until the body is ready.
+Pointer inject / `player-frame` / CCT stay on the host. Pointer **prepare** (scene-graph flush + raycast) runs on down/up and ~80 ms hover — not every `mousemove`.
 
-**Residency:** one primary guest worker. Neighbors are **one AABB proxy** (no GLB clones). Live JS for other deployments is off. PhysicsCombinedImpulse (1215) on PlayerEntity is read by the host CCT — never a second store PUT.
+Remote avatar **pose** ticks on present (mixers may skip when the last guest apply overran). Remote **compose** starts only off the play rAF (idle callback). Placeholders stay until the body is ready.
+
+**Presenter draws:** pose graph (`poseRoot`) is parent/child only — not rendered. **Draw list** (`drawRoot`) is registered on attach / dropped on detach; present walks that list and copies matrices only when they change (frozen statics skip). `updateMatrixWorld` is incremental (`force=false`) on the present path. Billboard yaw writes the instance matrix only — it does not dirty the pose graph or promote off InstancedMesh.
+
+One HDR beauty pass; bloom is a half-res Unreal filter on that buffer (WebGL). Directional shadow maps recast on focus/sun hysteresis, not every frame; casters come from `drawRoot`. Static unique GLB leaves batch via `BatchedMesh`. Far name tags draw on a canvas atlas; near pills stay CSS2D.
+
+**Residency:** one primary guest worker. Far AOI neighbor scenes / composite shells are off (single-scene bench). PhysicsCombinedImpulse (1215) on PlayerEntity is read by the host CCT — never a second store PUT.
 
 **Transforms:** sim/comms stay DCL left-handed. Display conversion only at `dclTransform.ts`.
 

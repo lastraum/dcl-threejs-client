@@ -33,8 +33,15 @@ export function configureDirectionalSunShadow(light: THREE.DirectionalLight): vo
   }
   light.castShadow = true
   applyDirectionalShadowQuality(light)
-  light.shadow.autoUpdate = true
+  light.shadow.autoUpdate = false
+  light.shadow.needsUpdate = true
 }
+
+const _lastFocus = new THREE.Vector3()
+const _lastSun = new THREE.Vector3()
+let lastShadowFocusAt = 0
+const SHADOW_RECAST_MOVE_M = 2.4
+const SHADOW_RECAST_MS = 250
 
 function applyDirectionalShadowQuality(light: THREE.DirectionalLight): void {
   const q = renderQuality.getShadowQuality()
@@ -84,6 +91,16 @@ export function updateDirectionalSunShadowFocus(
   light.updateMatrixWorld()
   light.shadow.camera.updateMatrixWorld()
   light.shadow.camera.updateProjectionMatrix()
+
+  const now = performance.now()
+  const moved = _lastFocus.distanceToSquared(_focus) > SHADOW_RECAST_MOVE_M * SHADOW_RECAST_MOVE_M
+  const sunTurned = _lastSun.distanceToSquared(_dir) > 0.0004
+  if (moved || sunTurned || now - lastShadowFocusAt >= SHADOW_RECAST_MS) {
+    light.shadow.needsUpdate = true
+    _lastFocus.copy(_focus)
+    _lastSun.copy(_dir)
+    lastShadowFocusAt = now
+  }
 }
 
 export function refreshDirectionalSunShadowMapSize(light: THREE.DirectionalLight): void {

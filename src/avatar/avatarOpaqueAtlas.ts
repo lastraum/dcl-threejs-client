@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { yieldToNextFrame } from '../rendering/mainThreadYield'
+import { yieldToIdle } from '../rendering/mainThreadYield'
 
 /**
  * Practical per-avatar opaque albedo atlas.
@@ -233,7 +233,7 @@ export async function applyAvatarOpaqueAtlas(root: THREE.Object3D): Promise<bool
   }
   if (!pack) return false
 
-  await yieldToNextFrame()
+  await yieldToIdle(24)
 
   const canvas = document.createElement('canvas')
   canvas.width = pack.W
@@ -322,7 +322,7 @@ export async function applyAvatarOpaqueAtlas(root: THREE.Object3D): Promise<bool
     }
   }
 
-  await yieldToNextFrame()
+  await yieldToIdle(24)
   return true
 }
 

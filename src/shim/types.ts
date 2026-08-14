@@ -41,6 +41,8 @@ export type SceneWorkerDebugFlags = {
 
 export type SceneWorkerBoot = {
   type: 'boot'
+  /** Live interactable px — worker seeds UiCanvasInformation (not SDK 7.26 1920×1080). */
+  canvas?: { width: number; height: number }
   debug?: SceneWorkerDebugFlags
   scene: Pick<
     ResolvedScene,

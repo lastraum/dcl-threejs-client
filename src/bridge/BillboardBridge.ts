@@ -13,8 +13,10 @@ const _worldPos = new THREE.Vector3()
 const _worldUp = new THREE.Vector3(0, 1, 0)
 const _lookMat = new THREE.Matrix4()
 const _worldQuat = new THREE.Quaternion()
-const _parentWorldQuat = new THREE.Quaternion()
-const _prevLocalQuat = new THREE.Quaternion()
+const _extractPos = new THREE.Vector3()
+const _extractQuat = new THREE.Quaternion()
+const _extractScale = new THREE.Vector3()
+const _extractWorld = new THREE.Matrix4()
 
 /**
  * Platform Billboard (1090).
@@ -39,11 +41,12 @@ const _prevLocalQuat = new THREE.Quaternion()
 export class BillboardBridge {
   private readonly lastYaw = new Map<Entity, number>()
   private readonly motionEntities = new Set<Entity>()
+  private readonly lastCam = new THREE.Vector3(Number.NaN, 0, 0)
 
   constructor(
     private readonly ecs: MirrorComponents,
     private readonly store: EntityStore,
-    private readonly getCamera: () => THREE.Camera
+    _getCamera: () => THREE.Camera
   ) {}
 
   pendingMotionEntities(): ReadonlySet<Entity> {
@@ -61,6 +64,8 @@ export class BillboardBridge {
     const { Billboard } = this.ecs
     for (const [entity] of view.getEntitiesWith(Billboard)) {
       this.store.setBillboard(entity, true)
+      const node = this.store.getNode(entity)
+      if (node) node.userData.dclBillboardMode = Billboard.get(entity).billboardMode ?? 7
     }
   }
 
@@ -69,28 +74,44 @@ export class BillboardBridge {
     this.lastYaw.delete(entity)
   }
 
+  /**
+   * Stamp extract flags on the pose node. Facing is applied in DrawWorld.sync
+   * (registered visuals) and {@link applyExtract} (GPU instances) — never here.
+   */
   update(): void {
-    const { Billboard } = this.ecs
-    const camPos = this.getCamera().position
+    this.syncFlags()
+  }
 
+  /**
+   * Extract-only: write GPU instance world matrices. Does not mutate pose quat.
+   * Registered draw visuals are handled by DrawWorld.writeBillboard.
+   */
+  applyExtract(
+    camera: THREE.Camera,
+    writeInstanceWorld: (entity: Entity, world: THREE.Matrix4) => boolean
+  ): void {
+    const { Billboard } = this.ecs
+    const camPos = camera.position
     const billed = this.store.getBillboardEntities()
     if (billed.length === 0) return
+    if (camPos.distanceToSquared(this.lastCam) < 1e-8) return
+    this.lastCam.copy(camPos)
     for (const entity of billed) {
       const obj = this.store.getNode(entity)
       if (!obj) continue
       if (!Billboard.has(entity)) {
         if (this.store.isBillboard(entity)) this.store.setBillboard(entity, false)
+        delete obj.userData.dclBillboardMode
         this.lastYaw.delete(entity)
         continue
       }
-      this.store.setBillboard(entity, true)
-
       const mode = Billboard.get(entity).billboardMode ?? 7
+      obj.userData.dclBillboardMode = mode
+      this.store.setBillboard(entity, true)
       if (mode === 0) continue
 
-      obj.updateWorldMatrix(true, false)
-      obj.getWorldPosition(_worldPos)
-
+      _worldPos.setFromMatrixPosition(obj.matrixWorld)
+      obj.matrixWorld.decompose(_extractPos, _extractQuat, _extractScale)
       if (mode === BM_Y || mode === (BM_X | BM_Y)) {
         const dx = camPos.x - _worldPos.x
         const dz = camPos.z - _worldPos.z
@@ -98,34 +119,31 @@ export class BillboardBridge {
         const prev = this.lastYaw.get(entity)
         if (prev !== undefined && Math.abs(nextYaw - prev) <= YAW_EPS) continue
         _worldQuat.setFromAxisAngle(_worldUp, nextYaw)
-        this.applyWorldQuaternionAsLocal(obj, _worldQuat)
-        if (!obj.matrixAutoUpdate) obj.updateMatrix()
-        obj.updateMatrixWorld(true)
         this.lastYaw.set(entity, nextYaw)
+      } else {
+        _lookMat.lookAt(_worldPos, camPos, _worldUp)
+        _worldQuat.setFromRotationMatrix(_lookMat)
+        if (_extractQuat.angleTo(_worldQuat) <= YAW_EPS) continue
+        this.lastYaw.set(entity, 0)
+      }
+      _extractWorld.compose(_extractPos, _worldQuat, _extractScale)
+      if (writeInstanceWorld(entity, _extractWorld)) {
         this.motionEntities.add(entity)
+      }
+    }
+  }
+
+  private syncFlags(): void {
+    const { Billboard } = this.ecs
+    for (const entity of this.store.getBillboardEntities()) {
+      const obj = this.store.getNode(entity)
+      if (!obj) continue
+      if (!Billboard.has(entity)) {
+        delete obj.userData.dclBillboardMode
         continue
       }
-
-      // BM_ALL — platform law: Three lookAt (−Z toward camera).
-      _prevLocalQuat.copy(obj.quaternion)
-      _lookMat.lookAt(_worldPos, camPos, _worldUp)
-      _worldQuat.setFromRotationMatrix(_lookMat)
-      this.applyWorldQuaternionAsLocal(obj, _worldQuat)
-      if (_prevLocalQuat.angleTo(obj.quaternion) <= YAW_EPS) continue
-      if (!obj.matrixAutoUpdate) obj.updateMatrix()
-      obj.updateMatrixWorld(true)
-      this.lastYaw.set(entity, obj.rotation.y)
-      this.motionEntities.add(entity)
+      obj.userData.dclBillboardMode = Billboard.get(entity).billboardMode ?? 7
     }
   }
 
-  private applyWorldQuaternionAsLocal(obj: THREE.Object3D, worldQuat: THREE.Quaternion): void {
-    const parent = obj.parent
-    if (parent) {
-      parent.getWorldQuaternion(_parentWorldQuat)
-      obj.quaternion.copy(_parentWorldQuat).invert().multiply(worldQuat)
-    } else {
-      obj.quaternion.copy(worldQuat)
-    }
-  }
 }

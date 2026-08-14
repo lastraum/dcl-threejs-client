@@ -43,7 +43,7 @@ type RemotePet = {
  * Local + remote pet roots. Network is DPET over RFC4 (PetPeerSync), not scene CRDT.
  */
 export class PetManager {
-  private scene: THREE.Scene | null = null
+  private scene: THREE.Object3D | null = null
   private peerSync: PetPeerSync | null = null
   private localWallet: string | null = null
   private localInstance: PetInstance | null = null
@@ -67,13 +67,13 @@ export class PetManager {
   /** Optional: seed remote pet near peer avatar until first DPET pose. */
   private peerFeetProvider: ((address: string) => THREE.Vector3 | null) | null = null
 
-  bindScene(scene: THREE.Scene): void {
-    this.scene = scene
-    if (this.localInstance && this.localInstance.root.parent !== scene) {
-      scene.add(this.localInstance.root)
+  bindScene(parent: THREE.Object3D): void {
+    this.scene = parent
+    if (this.localInstance && this.localInstance.root.parent !== parent) {
+      parent.add(this.localInstance.root)
     }
     for (const remote of this.remotes.values()) {
-      if (remote.instance.root.parent !== scene) scene.add(remote.instance.root)
+      if (remote.instance.root.parent !== parent) parent.add(remote.instance.root)
     }
   }
 

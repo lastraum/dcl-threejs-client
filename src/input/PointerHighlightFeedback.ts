@@ -2,6 +2,17 @@ import * as THREE from 'three'
 import type { PBPointerEvents_Entry } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/pointer_events.gen'
 import { InteractionType } from './pointerConstants'
 
+/**
+ * SDK default is true. Explicit false/0 hides the outline (Cast Line, event cards).
+ * Omitted (How To Play / See Tutorial) → outline; green in range, red out of range.
+ */
+export function pointerShowHighlight(info?: { showHighlight?: boolean | number } | null): boolean {
+  if (!info) return true
+  const value = info.showHighlight
+  if (value === false || value === 0) return false
+  return true
+}
+
 const HIGHLIGHT_IN_RANGE = 0x44ff66
 const HIGHLIGHT_OUT_OF_RANGE = 0xff4444
 const OUTLINE_SCALE = 1.025
@@ -21,7 +32,7 @@ export class PointerHighlightFeedback {
       if ((entry.interactionType ?? InteractionType.CURSOR) !== InteractionType.CURSOR) continue
       const info = entry.eventInfo
       if (info?.showFeedback === false) continue
-      if (info?.showHighlight === false) continue
+      if (!pointerShowHighlight(info)) continue
       return true
     }
     return false

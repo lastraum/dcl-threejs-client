@@ -89,8 +89,8 @@ function pushLayoutHitRegion(
 ): void {
   if (layoutBox.width <= 0.5 || layoutBox.height <= 0.5) return
   // Skip off-virtual-canvas hit regions (second shop root at x=2146, etc.).
-  const vw = input.virtual?.width ?? 1920
-  const vh = input.virtual?.height ?? 1080
+  const vw = input.virtual?.width ?? input.interactable.width
+  const vh = input.virtual?.height ?? input.interactable.height
   if (
     layoutBox.left >= vw - 1 ||
     layoutBox.top >= vh - 1 ||

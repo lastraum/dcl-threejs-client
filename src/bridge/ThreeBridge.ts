@@ -72,6 +72,7 @@ import {
 import type { PBGltfNodeModifiers } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/gltf_node_modifiers.gen'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
+import type { DrawWorld } from '../rendering/DrawWorld'
 
 import { gltfLoadingStateLabel, isGltfLoadingStateVerbose } from './gltfLoadingStateConfig'
 
@@ -155,6 +156,8 @@ function hideGltfRenderMeshes(root: THREE.Object3D): void {
 function isFishingMotionGltfSrc(src: string): boolean {
   const s = src.trim().toLowerCase()
   if (!s) return false
+  // Avatar_*_emote.glb (Avatar_Float_NoProp_emote) is an anim rig, not a rod/bobber.
+  if (/_emote\.glb$/.test(s) || /\/avatar_/.test(s)) return false
   // Explicit fishing assets only (leaf or path).
   if (s.includes('bobber') || s.includes('fishing_line') || s.includes('fishing-line')) return true
   if (s.includes('lure') || s.includes('hook')) return true
@@ -165,7 +168,7 @@ function isFishingMotionGltfSrc(src: string): boolean {
   if (s.includes('bait_') || s.includes('/bait/') || s.includes('bait.glb')) return true
   // Cork float only when clearly fishing-related (avoid "floating" props).
   if (s.includes('cork') && (s.includes('fish') || s.includes('pool') || s.includes('bait'))) return true
-  if (/pool\/.*(rod|line|bobber|lure|hook|bait|float)/i.test(s)) return true
+  if (/pool\/.*(rod|line|bobber|lure|hook|bait)/i.test(s)) return true
   return false
 }
 
@@ -242,10 +245,6 @@ function textKey(entity: Entity): string {
   return `__text_${entity}`
 }
 
-function particleKey(entity: Entity): string {
-  return `__particles_${entity}`
-}
-
 /**
  * Scene GltfContainer shadow policy:
  * - Always receive.
@@ -278,17 +277,19 @@ function countObjectTriangles(root: THREE.Object3D): number {
   return tris
 }
 
-/** Static GLTF leaves — skip per-frame local matrix rebuild in scene.updateMatrixWorld. */
+/** Static GLTF leaves — skip per-frame local matrix rebuild and DrawWorld.sync copies. */
 function freezeStaticObject3D(root: THREE.Object3D): void {
   root.traverse((o) => {
     o.matrixAutoUpdate = false
     o.updateMatrix()
+    o.userData.dclDrawStatic = true
   })
 }
 
 function unfreezeObject3D(root: THREE.Object3D): void {
   root.traverse((o) => {
     o.matrixAutoUpdate = true
+    delete o.userData.dclDrawStatic
   })
 }
 
@@ -396,12 +397,61 @@ export class ThreeBridge {
     private readonly sceneConfig: ResolvedScene,
     private readonly cache: AssetCache,
     store: EntityStore,
-    private readonly ecs: MirrorComponents
+    private readonly ecs: MirrorComponents,
+    private readonly drawWorld: DrawWorld
   ) {
     this.store = store
     this.materials = new MaterialApplier(sceneConfig, cache)
-    this.instancer = new SceneGltfInstancer(() => this.store.root)
-    this.meshRendererInstancer = new MeshRendererInstancer(() => this.store.root)
+    this.instancer = new SceneGltfInstancer(() => this.drawWorld.drawRoot)
+    this.meshRendererInstancer = new MeshRendererInstancer(() => this.drawWorld.drawRoot)
+  }
+
+  private getEntityVisual(obj: THREE.Group, mk: string): THREE.Object3D | undefined {
+    const vis = obj.userData.dclDrawVisual as THREE.Object3D | undefined
+    if (vis) return vis
+    // Pose-child leftover before bindDrawVisual (or never registered).
+    return obj.getObjectByName(mk) ?? undefined
+  }
+
+  bindEntityDrawVisual(pose: THREE.Object3D, visual: THREE.Object3D): void {
+    this.bindDrawSlot(pose, visual, 'dclDrawVisual')
+  }
+
+  bindEntityDrawSlot(pose: THREE.Object3D, visual: THREE.Object3D, slot: string): void {
+    this.bindDrawSlot(pose, visual, slot)
+  }
+
+  unbindEntityDrawVisual(pose: THREE.Object3D): void {
+    this.unbindDrawSlot(pose, 'dclDrawVisual')
+  }
+
+  unbindEntityDrawSlot(pose: THREE.Object3D, slot: string): void {
+    this.unbindDrawSlot(pose, slot)
+  }
+
+  private bindDrawVisual(obj: THREE.Group, visual: THREE.Object3D): void {
+    this.bindDrawSlot(obj, visual, 'dclDrawVisual')
+  }
+
+  private unbindDrawVisual(obj: THREE.Group): void {
+    this.unbindDrawSlot(obj, 'dclDrawVisual')
+  }
+
+  private bindDrawSlot(pose: THREE.Object3D, visual: THREE.Object3D, slot: string): void {
+    const prev = pose.userData[slot] as THREE.Object3D | undefined
+    if (prev && prev !== visual) this.drawWorld.unregister(prev)
+    pose.userData[slot] = visual
+    visual.userData.dclPoseNode = pose
+    this.drawWorld.register(visual, pose)
+    // Visibility may have been set on the pose before the draw visual existed (LO()
+    // hides pond benches, then the GLB attaches). DrawRoot ignores pose.visible.
+    visual.visible = pose.visible
+  }
+
+  private unbindDrawSlot(pose: THREE.Object3D, slot: string): void {
+    const vis = pose.userData[slot] as THREE.Object3D | undefined
+    if (vis) this.drawWorld.unregister(vis)
+    delete pose.userData[slot]
   }
 
   /** Pointer raycast: MeshRenderer or Gltf InstancedMesh hit → ECS entity. */
@@ -489,6 +539,12 @@ export class ThreeBridge {
           continue
         }
       }
+      // Billboard yaw follows the camera every walk frame. Stay on GPU instance —
+      // 3 hits used to clone every plaza sign and hitch the present thread.
+      if (this.ecs.Billboard?.has(entity)) {
+        toUpdate.push(entity)
+        continue
+      }
       const hits = (this.instanceMotionHits.get(entity) ?? 0) + 1
       this.instanceMotionHits.set(entity, hits)
       // Script-animated props (Transform.getMutable every tick / continuous Tween) —
@@ -501,6 +557,75 @@ export class ThreeBridge {
       toUpdate.push(entity)
     }
     if (toUpdate.length) this.instancer.updateEntities(toUpdate, this.store.nodes)
+  }
+
+  /**
+   * Extract billboard: write GPU instance world without mutating pose quat.
+   * @returns true when this entity is instanced and the slot was written.
+   */
+  setInstancedWorldMatrix(entity: Entity, world: THREE.Matrix4): boolean {
+    const obj = this.store.nodes.get(entity)
+    if (obj && !obj.visible) {
+      if (this.instancer.has(entity)) this.instancer.update(entity, obj)
+      return true
+    }
+    if (this.meshRendererInstancer.has(entity)) {
+      return this.meshRendererInstancer.writeWorldMatrix(entity, world)
+    }
+    if (this.instancer.has(entity)) {
+      return this.instancer.writeWorldMatrix(entity, world)
+    }
+    return false
+  }
+
+  /**
+   * Bevy handle admit — GltfContainer lives on the host store; the GPU object
+   * appears when the GLB template is Ready (`pendingMeshEntities` drain).
+   * Never a pendingDiff component replay.
+   */
+  admitGltfHandle(entity: Entity, kind: 'put' | 'delete'): void {
+    if (kind === 'delete') {
+      const obj = this.store.nodes.get(entity)
+      if (obj) {
+        if (this.instancer.has(entity)) this.instancer.detach(entity, obj)
+        this.unbindDrawVisual(obj)
+        this.removeMeshSlot(obj, meshKey(entity))
+      }
+      this.pendingMeshEntities.delete(entity)
+      return
+    }
+    this.pendingMeshEntities.add(entity)
+    const key = this.gltfDrainKey(entity)
+    if (!key || key.ready) return
+    if (this.cache.isResolving(key.cacheKey) || this.cache.hasGivenUp(key.cacheKey)) return
+    this.scheduleBackgroundLoad(key.url, key.hash, key.cacheKey)
+  }
+
+  /**
+   * Material handle — apply when leaf + maps are Ready. Not a pendingDiff replay.
+   */
+  admitMaterialHandle(entity: Entity, kind: 'put' | 'delete'): void {
+    if (kind === 'delete') {
+      this.pendingMaterialEntities.delete(entity)
+      return
+    }
+    this.pendingMaterialEntities.add(entity)
+    if (this.ecs.MeshRenderer.has(entity) && !this.ecs.GltfContainer.has(entity)) {
+      this.forceApplyMeshRendererMaterial(entity)
+    }
+  }
+
+  /** GltfNodeModifiers handle — apply when the GLB visual exists. */
+  admitGltfNodeModHandle(entity: Entity, kind: 'put' | 'delete'): void {
+    if (kind === 'delete') {
+      this.pendingGltfNodeModEntities.add(entity)
+      return
+    }
+    this.queueGltfNodeModifiers(entity)
+  }
+
+  hasPendingHandleWork(): boolean {
+    return this.pendingMaterialEntities.size > 0 || this.pendingGltfNodeModEntities.size > 0
   }
 
   /**
@@ -521,7 +646,7 @@ export class ThreeBridge {
 
     // Marker group from instancer may remain — clear so attach path can rebuild.
     const mk = meshKey(entity)
-    const marker = obj.getObjectByName(mk)
+    const marker = this.getEntityVisual(obj, mk)
     if (marker) {
       obj.remove(marker)
       disposeOwnedObject3D(marker)
@@ -557,7 +682,7 @@ export class ThreeBridge {
           )
           if (ok) {
             obj.matrixAutoUpdate = true
-            const mesh = obj.getObjectByName(mk)
+            const mesh = this.getEntityVisual(obj, mk)
             if (mesh) unfreezeObject3D(mesh)
             this.pendingMeshEntities.delete(entity)
             // Motion promote replaced instanced rest — re-apply ECS Material to the clone.
@@ -775,6 +900,16 @@ export class ThreeBridge {
     return this.store.nodes
   }
 
+  entitiesWithVisibility(): Entity[] {
+    const vis = this.ecs.VisibilityComponent
+    if (!vis) return []
+    const out: Entity[] = []
+    for (const entity of this.store.nodes.keys()) {
+      if (vis.has(entity)) out.push(entity)
+    }
+    return out
+  }
+
   /**
    * Apply ECS VisibilityComponent to EntityStore group + private `__mesh_*` leaves.
    * Instanced MeshRenderer: rewrite matrix (zero scale when hidden).
@@ -786,6 +921,7 @@ export class ThreeBridge {
     const { VisibilityComponent, Transform, Billboard } = this.ecs
     if (!VisibilityComponent) return
     const instanced: Entity[] = []
+    const gltfInstanced: Entity[] = []
     for (const entity of entities) {
       const obj = this.store.nodes.get(entity)
       if (!obj) continue
@@ -794,6 +930,12 @@ export class ThreeBridge {
       const visible = VisibilityComponent.get(entity).visible !== false
       const wasVisible = obj.visible
       obj.visible = visible
+      const drawn = obj.userData.dclDrawVisual as THREE.Object3D | undefined
+      if (drawn) drawn.visible = visible
+      const parts = obj.userData.dclDrawParticles as THREE.Object3D | undefined
+      if (parts) parts.visible = visible
+      const light = obj.userData.dclDrawLight as THREE.Object3D | undefined
+      if (light) light.visible = visible
       if (visible) {
         unfreezeObject3D(obj)
         if (Billboard?.has(entity)) {
@@ -828,12 +970,16 @@ export class ThreeBridge {
       if (this.meshRendererInstancer.has(entity) || obj.userData.dclMeshRendererInstanced) {
         instanced.push(entity)
       }
+      if (obj.userData.dclInstanced) gltfInstanced.push(entity)
       if (!wasVisible && visible && Billboard?.has(entity)) {
         this.invalidateBillboardFacing?.(entity)
       }
     }
     if (instanced.length) {
       this.meshRendererInstancer.updateEntities(instanced, this.store.nodes)
+    }
+    if (gltfInstanced.length) {
+      this.instancer.updateEntities(gltfInstanced, this.store.nodes)
     }
   }
 
@@ -869,6 +1015,8 @@ export class ThreeBridge {
       onReservedParent: (entity, parent, view) => {
         this.noteReservedParentedEntity(entity, parent, view)
       },
+      bindDrawVisual: (pose, visual) => this.bindDrawSlot(pose, visual, 'dclDrawLight'),
+      unbindDrawVisual: (pose) => this.unbindDrawSlot(pose, 'dclDrawLight'),
       ...extra
     }
   }
@@ -1047,17 +1195,12 @@ export class ThreeBridge {
     }
     const hasSink = !!this.recordLww
     this.recordLww?.(def.componentId, entity, value)
-    // Terminal FINISHED/FAILED noise is enormous on plaza (100s of disco cells). Only when
-    // Help → Debug “Browser console logs” is on, or ?gltfloadverbose=1.
-    if (isGltfLoadingStateVerbose() || currentState === 4 || currentState === 3 || currentState === 2) {
+    // Terminal FINISHED × plaza cells was a console hitch (100s/s). Verbose only.
+    if (isGltfLoadingStateVerbose()) {
       const src =
         this.ecs.GltfContainer.has(entity) ? this.ecs.GltfContainer.get(entity).src : '(no GltfContainer)'
       const msg = `host LWW e${entity as number} → ${gltfLoadingStateLabel(currentState)} sink=${hasSink ? 'ok' : 'MISSING'} ${src}`
-      if (isGltfLoadingStateVerbose()) {
-        clientDebugLog.log('gltf-load', msg, { throttleMs: 0 })
-      } else if (currentState === 4 || currentState === 3 || currentState === 2) {
-        clientDebugLog.consoleOnly('info', `[gltf-load] ${msg}`)
-      }
+      clientDebugLog.log('gltf-load', msg, { throttleMs: 0 })
     }
   }
 
@@ -1241,9 +1384,26 @@ export class ThreeBridge {
         }
         continue
       }
-      // Gltf PE stays on InstancedMesh (instanceId → entity). Do not promote.
+      if (this.ecs.GltfContainer.has(entity) && this.gltfPointerWantsHighlight(entity)) {
+        const obj = this.store.nodes.get(entity)
+        if (obj && (obj.userData.dclInstanced || this.instancer.has(entity))) {
+          this.promoteInstancedForMotion(entity, obj)
+          fixed++
+        }
+      }
     }
     return fixed
+  }
+
+  /** SDK default showHighlight=true — Cast Line / event cards set false. */
+  private gltfPointerWantsHighlight(entity: Entity): boolean {
+    const spec = this.ecs.PointerEvents.getOrNull(entity)
+    if (!spec?.pointerEvents?.length) return false
+    for (const entry of spec.pointerEvents) {
+      if (entry.eventInfo?.showHighlight === false) continue
+      return true
+    }
+    return false
   }
 
   private invalidateMaterialsForVideoPlayer(videoPlayerEntity: Entity): void {
@@ -1328,7 +1488,7 @@ export class ThreeBridge {
 
   private entityVisualRoot(entity: Entity, obj: THREE.Group): THREE.Object3D | null {
     const mk = meshKey(entity)
-    return obj.getObjectByName(mk) ?? null
+    return this.getEntityVisual(obj, mk) ?? null
   }
 
   private queueAllMaterialEntities(): void {
@@ -1403,7 +1563,7 @@ export class ThreeBridge {
       if (obj.userData.gltfSrcKey === hash) {
         if (obj.userData.dclInstanced || obj.userData.animationRig) return false
       }
-      const mesh = obj.getObjectByName(meshKey(entity))
+      const mesh = this.getEntityVisual(obj, meshKey(entity))
       if (!mesh || obj.userData.gltfSrcKey !== hash) return true
       return !gltfInstanceHasGeometry(mesh)
     }
@@ -1427,7 +1587,7 @@ export class ThreeBridge {
 
     // TextShape LWW updates (lobby counts, timers) keep the same mesh child — compare signature.
     if (TextShape.has(entity)) {
-      const textMesh = obj.getObjectByName(textKey(entity)) as THREE.Mesh | undefined
+      const textMesh = this.getEntityVisual(obj, textKey(entity)) as THREE.Mesh | undefined
       if (!textMesh) return true
       if (textMesh.userData.textShapeSignature !== textShapeSignature(TextShape.get(entity))) {
         return true
@@ -1447,7 +1607,7 @@ export class ThreeBridge {
         return false
       }
       const mk = meshKey(entity)
-      const primitive = obj.getObjectByName(mk)
+      const primitive = this.getEntityVisual(obj, mk)
       const spec = meshRendererGetOrNull(MeshRenderer, entity)
       if (!spec) return false
       const key = primitiveMeshKey(spec)
@@ -1777,14 +1937,17 @@ export class ThreeBridge {
    */
   /** Drain deferred mesh work when the projection diff is empty — materials use sync-frame tickDeferredMaterials. */
   async drainPendingWork(): Promise<void> {
-    if (!this.pendingMeshEntities.size) return
+    if (!this.pendingMeshEntities.size && !this.hasPendingHandleWork()) return
     // One-shot promote parented MeshRenderers that were GPU-instanced before hierarchy gate
     // (DecentraCraft multi-part temples/barracks invisible under env GLBs).
     this.promoteParentedMeshRendererInstances()
     const { MeshRenderer, Material, GltfContainer, TextShape } = this.ecs
     const meshEcs = { MeshRenderer, Material, GltfContainer, TextShape }
     const deferMaterials = this.shouldDeferMaterials()
-    await this.runDiffMeshPass(meshEcs, deferMaterials)
+    if (this.pendingMeshEntities.size) {
+      await this.runDiffMeshPass(meshEcs, deferMaterials)
+    }
+    if (this.hasPendingHandleWork()) this.tickDeferredMaterials()
   }
 
   /** Leave GPU InstancedMesh when Transform.parent is set (private hierarchy TRS). */
@@ -1846,9 +2009,9 @@ export class ThreeBridge {
       if (Billboard.has(entity)) this.store.setBillboard(entity, true)
     }
     // VisibilityComponent → group + private mesh leaf + instancer zero-scale hide.
-    // Required for MeshRenderer planes (GP press_e) — parent group alone is not enough when
-    // a leaf was force-shown / unfrozen with mesh.visible=true.
-    this.syncEcsVisibility(applied.upserts)
+    // Scan every entity that has the component — LO() hides a set that may not all
+    // land in this frame's upserts if GLB attach already ran.
+    this.syncEcsVisibility(this.entitiesWithVisibility())
 
     // AvatarAttach put this frame — promote self (+ Transform children) off GPU instances.
     if (AvatarAttach) {
@@ -1859,6 +2022,17 @@ export class ThreeBridge {
         }
       }
       if (attachTouched.length) this.promoteAvatarAttachGltfs(attachTouched)
+    }
+
+    // Animator put on an already-instanced GLB (Spring flowers, banners) — clone now
+    // so the mixer can scale. Waiting 3 motion hits left bind-scale sheets in the sky.
+    const { Animator } = this.ecs
+    if (Animator) {
+      for (const [entity, comps] of diff) {
+        if (!comps.has(Animator.componentId) || !Animator.has(entity)) continue
+        const obj = this.store.nodes.get(entity)
+        if (obj && this.instancer.has(entity)) this.promoteInstancedForMotion(entity, obj)
+      }
     }
 
     // After cast, setBobberPosition moves fishing GLBs — log pose so we can match scene coords.
@@ -2268,7 +2442,7 @@ export class ThreeBridge {
     const obj = this.store.nodes.get(entity)
     if (!obj) return false
     if (obj.userData.dclMeshRendererInstanced) return true
-    const existing = obj.getObjectByName(meshKey(entity))
+    const existing = this.getEntityVisual(obj, meshKey(entity))
     return (
       existing instanceof THREE.Mesh &&
       existing.userData.primitiveMeshKey != null &&
@@ -2394,7 +2568,7 @@ export class ThreeBridge {
       this.meshRendererInstancer.detach(entity, obj)
       delete obj.userData.dclMeshRendererInstanced
       const mk = meshKey(entity)
-      let primitive = obj.getObjectByName(mk) as THREE.Mesh | undefined
+      let primitive = this.getEntityVisual(obj, mk) as THREE.Mesh | undefined
       if (primitive?.userData[MESH_RENDERER_INSTANCE_MARKER] || primitive?.userData.dclInstanceMarker) {
         obj.remove(primitive)
         primitive = undefined
@@ -2683,7 +2857,7 @@ export class ThreeBridge {
     const wantCast = kind !== 'plane' && !kind.startsWith('plane')
     setMeshDesiredCastShadow(primitive, wantCast, 'environment')
     primitive.receiveShadow = true
-    obj.add(primitive)
+    this.bindDrawVisual(obj, primitive)
     return primitive
   }
 
@@ -2789,7 +2963,7 @@ export class ThreeBridge {
     if (!obj) return
 
     const mk = meshKey(entity)
-    const primitive = obj.getObjectByName(mk) as THREE.Mesh | undefined
+    const primitive = this.getEntityVisual(obj, mk) as THREE.Mesh | undefined
     if (!primitive?.isMesh) return
 
     const key = primitiveMeshKey(spec)
@@ -2928,7 +3102,7 @@ export class ThreeBridge {
       if (!obj) continue
 
       // Scalar color-only modifiers on GPU instances → instanceColor (keep one draw).
-      // Textures / multi-path / video still need a private clone.
+      // Textures / video / multi-path need one private clone — do not drop the pending.
       if (obj.userData.dclInstanced || this.instancer.has(entity)) {
         const mods = GltfNodeModifiers.get(entity) as PBGltfNodeModifiers
         const tint = this.scalarTintFromGltfNodeModifiers(mods)
@@ -2937,15 +3111,16 @@ export class ThreeBridge {
           processed++
           continue
         }
-        // Missing / unused paths must not de-instance the plaza every pass.
-        this.pendingGltfNodeModEntities.delete(entity)
-        processed++
+        if (!obj.userData.dclPromotedForNodeMod) {
+          obj.userData.dclPromotedForNodeMod = true
+          this.promoteInstancedGltfForModifiers(entity, obj)
+        }
         continue
       }
 
-      // Wait until GLB is attached (mesh root or any mesh).
+      const visual = this.getEntityVisual(obj, meshKey(entity)) ?? obj
       let hasMesh = false
-      obj.traverse((c) => {
+      visual.traverse((c) => {
         if ((c as THREE.Mesh).isMesh) hasMesh = true
       })
       if (!hasMesh) continue
@@ -2958,8 +3133,9 @@ export class ThreeBridge {
       if (!ok && !obj.userData.dclGltfNodeModPathMissLogged) {
         obj.userData.dclGltfNodeModPathMissLogged = true
       }
-      if (ok) this.pendingGltfNodeModEntities.delete(entity)
-      else this.pendingGltfNodeModEntities.delete(entity)
+      if (ok || obj.userData.dclGltfNodeModPathMissLogged) {
+        this.pendingGltfNodeModEntities.delete(entity)
+      }
       processed++
     }
   }
@@ -3148,7 +3324,7 @@ export class ThreeBridge {
     const mk = meshKey(entity)
     const key = primitiveMeshKey(spec)
     const planeUvs = spec.mesh?.$case === 'plane' ? spec.mesh.plane?.uvs : undefined
-    let primitive = obj.getObjectByName(mk) as THREE.Mesh | undefined
+    let primitive = this.getEntityVisual(obj, mk) as THREE.Mesh | undefined
     let rebuilt = false
 
     if (
@@ -3255,11 +3431,12 @@ export class ThreeBridge {
       delete obj.userData.dclInstanceTemplateTris
       removedGltf = true
     }
-    const meshChild = obj.getObjectByName(mk)
+    const meshChild = this.getEntityVisual(obj, mk)
     if (meshChild && meshChild.userData.primitiveKind === undefined && meshChild.userData.primitiveMeshKey === undefined) {
       if (obj.userData.gltfSrcKey || meshChild.userData.dclInstanceMarker) removedGltf = true
+      this.unbindDrawVisual(obj)
       disposeOwnedObject3D(meshChild)
-      obj.remove(meshChild)
+      meshChild.removeFromParent()
     }
     if (removedGltf || obj.userData.gltfSrcKey || obj.userData.animationRig || obj.userData.emoteAnchor) {
       if (removedGltf || obj.userData.gltfSrcKey) {
@@ -3280,7 +3457,6 @@ export class ThreeBridge {
     const mk = meshKey(entity)
     const tk = textKey(entity)
     const lk = lightKey(entity)
-    const pk = particleKey(entity)
     this.clearGltfVisual(entity, obj)
     // MeshRenderer GPU instances only have a marker Group — not a private Mesh.
     // Must detach or round-reset / tile teardown leaves colored instances visible forever
@@ -3292,25 +3468,30 @@ export class ThreeBridge {
     ) {
       this.meshRendererInstancer.detach(entity, obj)
     }
-    for (const name of [tk, pk]) {
-      const child = obj.getObjectByName(name)
-      if (!child) continue
-      if (name === tk) disposeTextShapeMesh(child)
-      else if (name === pk && (child as THREE.Mesh).isMesh) {
-        const mesh = child as THREE.Mesh
-        mesh.geometry.dispose()
-        const mat = mesh.material
-        if (Array.isArray(mat)) mat.forEach((m) => m.dispose())
-        else mat.dispose()
-      } else disposeOwnedObject3D(child)
-      obj.remove(child)
+    const textVis = this.getEntityVisual(obj, tk)
+    if (textVis) {
+      this.unbindDrawVisual(obj)
+      disposeTextShapeMesh(textVis)
+      textVis.removeFromParent()
+    }
+    const particleVis = obj.userData.dclDrawParticles as THREE.Object3D | undefined
+    if (particleVis) {
+      this.unbindDrawSlot(obj, 'dclDrawParticles')
+      particleVis.removeFromParent()
+    }
+    const nftVis = obj.userData.dclDrawNft as THREE.Object3D | undefined
+    if (nftVis) {
+      this.unbindDrawSlot(obj, 'dclDrawNft')
+      disposeOwnedObject3D(nftVis)
+      nftVis.removeFromParent()
     }
     // Primitive MeshRenderer mesh (not glTF) — clearGltfVisual leaves these alone.
     // Also strip instancer markers left under __mesh_* if detach missed them.
-    const primitive = obj.getObjectByName(mk)
+    const primitive = this.getEntityVisual(obj, mk)
     if (primitive) {
+      this.unbindDrawVisual(obj)
       if (primitive.userData[MESH_RENDERER_INSTANCE_MARKER] || primitive.userData.dclInstanceMarker) {
-        obj.remove(primitive)
+        primitive.removeFromParent()
       } else if (
         (primitive as THREE.Mesh).isMesh &&
         (primitive.userData.primitiveKind !== undefined ||
@@ -3319,10 +3500,10 @@ export class ThreeBridge {
         const mesh = primitive as THREE.Mesh
         releasePrimitiveGeometry(mesh.geometry)
         disposeMeshMaterials(mesh)
-        obj.remove(mesh)
+        mesh.removeFromParent()
       }
     }
-    removeLightSource(obj, lk)
+    removeLightSource(obj, lk, (pose) => this.unbindDrawSlot(pose, 'dclDrawLight'))
   }
 
   /**
@@ -3488,7 +3669,7 @@ export class ThreeBridge {
       obj.userData.dclForceCloneAttach = true
       obj.matrixAutoUpdate = true
       const mk = meshKey(entity)
-      const mesh = obj.getObjectByName(mk) as THREE.Object3D | undefined
+      const mesh = this.getEntityVisual(obj, mk) as THREE.Object3D | undefined
       const needsAttach =
         !mesh ||
         !!mesh.userData.dclInstanceMarker ||
@@ -3511,7 +3692,7 @@ export class ThreeBridge {
         if (!this.entityNeedsMeshWork(entity, obj, { includeMaterial: false })) {
           this.pendingMeshEntities.delete(entity)
         }
-        const live = obj.getObjectByName(mk)
+        const live = this.getEntityVisual(obj, mk)
         if (live) unfreezeObject3D(live)
         else if (FISH_GLTF_DIAG) {
           console.warn(
@@ -3551,7 +3732,7 @@ export class ThreeBridge {
       const vis =
         VisibilityComponent.has(entity) ? VisibilityComponent.get(entity).visible !== false : true
       const mk = meshKey(entity)
-      const mesh = obj.getObjectByName(mk)
+      const mesh = this.getEntityVisual(obj, mk)
       let meshCount = 0
       mesh?.traverse((o) => {
         if ((o as THREE.Mesh).isMesh && o.visible) meshCount++
@@ -3589,7 +3770,7 @@ export class ThreeBridge {
     const clone = !!obj.userData.dclForceCloneAttach
     const attach = this.isAvatarAttachDriven(entity)
     const mk = meshKey(entity)
-    const mesh = obj.getObjectByName(mk)
+    const mesh = this.getEntityVisual(obj, mk)
     let meshCount = 0
     mesh?.traverse((o) => {
       if ((o as THREE.Mesh).isMesh && o.visible) meshCount++
@@ -3625,16 +3806,21 @@ export class ThreeBridge {
     // Prior motion / attach promote — stay on private clone.
     const existing = this.store.nodes.get(entity)
     if (existing?.userData.dclForceCloneAttach) return false
+    // Outline shells need a private mesh (InstancedMesh has no per-entity children).
+    if (this.gltfPointerWantsHighlight(entity)) return false
     // AvatarAttach (or child of attach) — always clone (fishing rod/line hierarchy).
     if (this.isAvatarAttachDriven(entity)) return false
     // Explicit ECS Animator needs a private hierarchy for the mixer.
     if (this.ecs.Animator.has(entity)) return false
+    // Embedded clips (Spring flower scale 0.003, plaza banners) never play on
+    // InstancedMesh — they stay at bind scale and fill the sky.
+    if (template.animations.length > 0) return false
     // Billboard rotates the entity group. InstancedMesh lives under the scene root —
     // rotating the marker leaves the GPU slot world-fixed.
     if (this.ecs.Billboard?.has(entity)) return false
     // Material maps live on the shared template. Scalar albedo uses instanceColor.
     // Per-entity unique maps used to force a clone of every plaza pipe/chair.
-    // Plaza fishing bobber/line/rod — always private clone (never GPU instance lag).
+    // Plaza fishing bobber/line/rod — always private clone (never GPU instance).
     if (this.ecs.GltfContainer.has(entity)) {
       const src = this.ecs.GltfContainer.get(entity).src?.trim() ?? ''
       if (isFishingMotionGltfSrc(src)) return false
@@ -3777,7 +3963,7 @@ export class ThreeBridge {
     const obj = this.store.nodes.get(entity)
     if (!obj) return null
     const mk = `__mesh_${entity}`
-    const existing = obj.getObjectByName(mk) ?? null
+    const existing = this.getEntityVisual(obj, mk) ?? null
     // Live private clone (real geometry, not GPU instance marker).
     if (
       existing &&
@@ -3830,7 +4016,7 @@ export class ThreeBridge {
     if (!ok) return null
     // Mixer needs live matrices.
     obj.matrixAutoUpdate = true
-    const mesh = obj.getObjectByName(mk) ?? null
+    const mesh = this.getEntityVisual(obj, mk) ?? null
     if (mesh?.userData.dclInstanceMarker) {
       // Instance path re-won (shouldn't with forceClone) — refuse marker for mixer.
       return null
@@ -3864,6 +4050,11 @@ export class ThreeBridge {
           obj.matrixAutoUpdate = false
           obj.updateMatrix()
           obj.updateMatrixWorld(true)
+          const vis = this.ecs.VisibilityComponent
+          if (vis?.has(entity) && vis.get(entity).visible === false) {
+            obj.visible = false
+          }
+          this.instancer.update(entity, obj)
           enableSceneGltfVertexColors(template.root)
           // Material may have arrived before mesh attach — tint instance now.
           if (this.ecs.Material.has(entity)) {
@@ -3905,7 +4096,7 @@ export class ThreeBridge {
           clone.name = mk
           hideGltfRenderMeshes(clone)
           obj.userData.animationRig = true
-          obj.add(clone)
+          this.bindDrawVisual(obj, clone)
           this.notifyMeshComponent(entity, this.ecs.GltfContainer.componentId)
           this.notifyGltfAttached(entity)
           this.attachedSceneGltfCount++
@@ -3913,13 +4104,13 @@ export class ThreeBridge {
           return true
         }
         if (isEmoteAnchorGltfSrc(src)) {
-          this.emptyGltfHashes.add(hash)
           disposeOwnedObject3D(clone)
           const anchor = new THREE.Group()
           anchor.name = mk
           obj.userData.emoteAnchor = true
           obj.add(anchor)
           this.notifyMeshComponent(entity, this.ecs.GltfContainer.componentId)
+          this.notifyGltfAttached(entity)
           this.setGltfLoadingState(entity, 4 /* FINISHED */)
           return true
         }
@@ -3962,7 +4153,12 @@ export class ThreeBridge {
         obj.matrixAutoUpdate = true
         if (fishingMotion) unfreezeObject3D(clone)
       }
-      obj.add(clone)
+      this.bindDrawVisual(obj, clone)
+      const visComp = this.ecs.VisibilityComponent
+      if (visComp?.has(entity) && visComp.get(entity).visible === false) {
+        obj.visible = false
+        clone.visible = false
+      }
       this.notifyMeshComponent(entity, this.ecs.GltfContainer.componentId)
       this.notifyGltfAttached(entity)
       this.attachedSceneGltfCount++
@@ -3996,8 +4192,9 @@ export class ThreeBridge {
       // Non-scalar modifiers need promote; deferred pass handles that.
       return
     }
+    const visual = this.getEntityVisual(obj, meshKey(entity)) ?? obj
     let hasMesh = false
-    obj.traverse((c) => {
+    visual.traverse((c) => {
       if ((c as THREE.Mesh).isMesh) hasMesh = true
     })
     if (!hasMesh) return
@@ -4055,18 +4252,23 @@ export class ThreeBridge {
 
     if (TextShape.has(entity)) {
       const spec = TextShape.get(entity)
-      let textMesh = obj.getObjectByName(tk) as THREE.Mesh | undefined
+      let textMesh = this.getEntityVisual(obj, tk) as THREE.Mesh | undefined
+      if (!textMesh || textMesh.name !== tk) {
+        textMesh = obj.getObjectByName(tk) as THREE.Mesh | undefined
+      }
       if (!textMesh) {
-        const stale = obj.getObjectByName(mk)
+        const stale = this.getEntityVisual(obj, mk)
         if (stale) {
+          this.unbindDrawVisual(obj)
           disposeOwnedObject3D(stale)
           obj.remove(stale)
         }
         textMesh = buildTextShapeMesh(spec)
         textMesh.name = tk
-        obj.add(textMesh)
+        this.bindDrawVisual(obj, textMesh)
         this.notifyMeshComponent(entity, TextShape.componentId)
       } else {
+        if (textMesh.parent === obj) this.bindDrawVisual(obj, textMesh)
         updateTextShapeMesh(textMesh, spec)
         this.notifyMeshComponent(entity, TextShape.componentId)
       }
@@ -4075,10 +4277,11 @@ export class ThreeBridge {
       return
     }
 
-    const staleText = obj.getObjectByName(tk)
-    if (staleText) {
+    const staleText = this.getEntityVisual(obj, tk) ?? obj.getObjectByName(tk)
+    if (staleText && staleText.name === tk) {
+      this.unbindDrawVisual(obj)
       disposeTextShapeMesh(staleText)
-      obj.remove(staleText)
+      staleText.removeFromParent()
     }
 
     if (GltfContainer.has(entity)) {
@@ -4088,7 +4291,7 @@ export class ThreeBridge {
       if (fishingMotion) obj.userData.dclForceCloneAttach = true
       const hash = hashFromSrc(src, this.sceneConfig)
       const srcKey = hash ?? src.trim()
-      let mesh = obj.getObjectByName(mk) as THREE.Object3D | undefined
+      let mesh = this.getEntityVisual(obj, mk) as THREE.Object3D | undefined
 
       if (!hash) {
         this.setGltfLoadingState(entity, 2 /* NOT_FOUND */)
@@ -4108,6 +4311,7 @@ export class ThreeBridge {
           delete obj.userData.dclInstanced
         }
         if (mesh) {
+          this.unbindDrawVisual(obj)
           disposeOwnedObject3D(mesh)
           obj.remove(mesh)
         }
@@ -4116,13 +4320,21 @@ export class ThreeBridge {
         const url = isLocal ? hash.slice(GLTF_LOCAL_PREFIX.length) : this.sceneConfig.assetUrl(hash)
         const cacheKey = this.gltfCacheKey(isLocal ? url : hash)
 
-        if (this.cache.hasGivenUp(cacheKey) || this.emptyGltfHashes.has(hash)) {
+        const hashDead =
+          this.cache.hasGivenUp(cacheKey) ||
+          (this.emptyGltfHashes.has(hash) && !isEmoteAnchorGltfSrc(src))
+        if (hashDead) {
           this.setGltfLoadingState(entity, 3 /* FINISHED_WITH_ERROR */)
           if (fishingMotion) {
             clientDebugLog.log(
               'pointer',
               `fish-gltf e${entity as number} GIVEN_UP/EMPTY — src=${src}`,
-              { level: 'warn', alsoConsole: true }
+              {
+                level: 'warn',
+                alsoConsole: true,
+                throttleMs: 8_000,
+                throttleKey: `fish-givenup-${entity}`
+              }
             )
           }
           return
@@ -4151,10 +4363,11 @@ export class ThreeBridge {
             if (!fishingMotion) this.gltfBudgetRemaining--
             this.scheduleBackgroundLoad(url, isLocal ? url : hash, cacheKey)
             if (fishingMotion) {
+              const leaf = src.split('/').pop() ?? src
               clientDebugLog.log(
                 'pointer',
-                `fish-gltf e${entity as number} COLD load scheduled — src=${src.split('/').pop()}`,
-                { alsoConsole: true, throttleMs: 500, throttleKey: `fish-cold-${entity}` }
+                `fish-gltf COLD load scheduled — src=${leaf}`,
+                { alsoConsole: true, throttleMs: 8_000, throttleKey: `fish-cold-${cacheKey}` }
               )
             }
           }
@@ -4183,7 +4396,7 @@ export class ThreeBridge {
           }
           return
         }
-        mesh = obj.getObjectByName(mk) as THREE.Object3D | undefined
+        mesh = this.getEntityVisual(obj, mk) as THREE.Object3D | undefined
       } else {
         // Already attached — ensure FINISHED even if we never re-enter attachCachedGltf.
         this.setGltfLoadingState(entity, 4 /* FINISHED */)
@@ -4232,7 +4445,7 @@ export class ThreeBridge {
 
     if (this.meshRendererIsInstanceEligible(entity)) {
       // Drop private mesh if present (promote into instance bucket).
-      const existing = obj.getObjectByName(mk) as THREE.Mesh | undefined
+      const existing = this.getEntityVisual(obj, mk) as THREE.Mesh | undefined
       if (existing?.isMesh && !existing.userData[MESH_RENDERER_INSTANCE_MARKER]) {
         releasePrimitiveGeometry(existing.geometry)
         disposeMeshMaterials(existing)
@@ -4276,7 +4489,7 @@ export class ThreeBridge {
       })
       baseMat.dispose() // instancer cloned it
       if (ok) {
-        const marker = obj.getObjectByName(mk)
+        const marker = this.getEntityVisual(obj, mk)
         if (marker) {
           marker.userData.entity = entity
           marker.userData.primitiveMeshKey = primitiveMeshKey(spec)
@@ -4299,7 +4512,7 @@ export class ThreeBridge {
     }
 
     const key = primitiveMeshKey(spec)
-    let primitive = obj.getObjectByName(mk) as THREE.Mesh | undefined
+    let primitive = this.getEntityVisual(obj, mk) as THREE.Mesh | undefined
     const meshKind = primitiveKind(spec)
     const planeUvs = spec.mesh?.$case === 'plane' ? spec.mesh.plane?.uvs : undefined
 

@@ -1,12 +1,13 @@
 /**
- * Offloads GLTF Draco parse from the main thread. Returns a structured-cloneable
- * THREE.Group + animation clips for AssetCache to cache on main.
+ * Off-thread GLB parse. GLTFLoader runs here only to decode buffers/Draco.
+ * The worker graph is discarded after flatten — main inflates from transferable
+ * typed arrays (no Array.from, no second parseAsync).
  */
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
 import { safeDecodeURIComponent } from '../util/safeDecodeURIComponent'
-// Worker path is experimental — THREE graphs are not structured-cloneable (see gltfWorkerTransfer.ts).
+import { collectTransfers, flattenGltf, type XferGltfPayload } from '../rendering/gltfTransferable'
 
 type ParseRequest = {
   type: 'parse'
@@ -19,8 +20,7 @@ type ParseRequest = {
 type ParseDone = {
   type: 'parse-done'
   id: number
-  scene: THREE.Group
-  animations: THREE.AnimationClip[]
+  payload: XferGltfPayload
 }
 
 type ParseError = { type: 'parse-error'; id: number; message: string }
@@ -80,22 +80,10 @@ ctx.onmessage = (ev: MessageEvent<ParseRequest>) => {
 
   void createLoader(msg.urlMappings)
     .parseAsync(msg.buffer, msg.resourcePath)
-    .then((gltf) => {
-      const payload = {
-        type: 'parse-done',
-        id: msg.id,
-        scene: gltf.scene,
-        animations: gltf.animations ?? []
-      } satisfies ParseDone
-      try {
-        structuredClone(payload)
-      } catch (err) {
-        const message =
-          err instanceof Error ? err.message : 'GLB parse result is not structured-cloneable'
-        ctx.postMessage({ type: 'parse-error', id: msg.id, message } satisfies ParseError)
-        return
-      }
-      ctx.postMessage(payload)
+    .then(async (gltf) => {
+      const payload = await flattenGltf(gltf.scene, gltf.animations ?? [])
+      const transfers = collectTransfers(payload)
+      ctx.postMessage({ type: 'parse-done', id: msg.id, payload } satisfies ParseDone, transfers)
     })
     .catch((err) => {
       const message = err instanceof Error ? err.message : String(err)

@@ -309,13 +309,14 @@ export class CrdtEncoder {
   }
 
   /**
-   * Encode only dirty `TweenState` PUTs (no Transform, reserved entities, or appends).
-   * Used for lightweight proactive worker push after pointer-triggered tweens.
+   * Encode dirty `TweenState` + interpolated `Transform`.
+   * Scene systems read Transform.scale/position (tutorial popup scale, bounce).
    */
   encodeTweenStateOnly(): Uint8Array | null {
     this.emitted.length = 0
     const buf = new ReadWriteByteBuffer()
     const tweenStateId = this.tweenState.componentId
+    const transformId = this.transform.componentId
     const tweenDirty = this.tweenEncodeEntities
     this.tweenEncodeEntities = null
     if (!tweenDirty?.size) return null
@@ -331,6 +332,18 @@ export class CrdtEncoder {
         )
       ) {
         wrote = true
+      }
+      if (this.projection.has(transformId, entity)) {
+        if (
+          this.emitLww(
+            entity,
+            transformId,
+            serializeFromProjection(this.transform, this.projection, entity),
+            buf
+          )
+        ) {
+          wrote = true
+        }
       }
     }
     return wrote ? buf.toBinary() : null

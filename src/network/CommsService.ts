@@ -2023,6 +2023,11 @@ export class CommsService {
       if (seed) this.archipelago.ensurePresenceSeed(seed)
       return
     }
+    // Handshake in flight — do not disconnect()/reconnect (that flapped the WS forever).
+    if (this.archipelago.isConnecting() || this.archipelago.isConnected()) {
+      if (seed) this.archipelago.ensurePresenceSeed(seed)
+      return
+    }
     const ok = await this.connectRealmComms()
     this.archipelago.ensurePresenceSeed(seed ?? this.presenceSeedGenesisMeters() ?? undefined)
     if (!ok) {

@@ -160,6 +160,7 @@ export class AssetCache {
    */
   private parseSlotsInUse = 0
   private readonly parseWaiters: Array<() => void> = []
+  private loggedWorkerFallback = false
   private static readonly MAX_CONCURRENT_PARSES = 4
   private static readonly FAILED_RETRY_MS = 2_000
   private static readonly MAX_LOAD_ATTEMPTS = 5
@@ -489,8 +490,15 @@ export class AssetCache {
         try {
           const parsed = await parseGlbOffThread(buffer, resourcePath, buildParseUrlMappings())
           result = { scene: parsed.scene, animations: parsed.animations }
-        } catch {
-          // THREE graphs are not postMessage-safe — fall back silently.
+        } catch (err) {
+          // Worker init / flatten miss — one parse on main, then keep trying worker.
+          if (!this.loggedWorkerFallback) {
+            this.loggedWorkerFallback = true
+            console.warn(
+              '[assets] GLB parse worker failed — main-thread fallback',
+              err instanceof Error ? err.message : err
+            )
+          }
           result = await this.loader.parseAsync(buffer, resourcePath)
         }
       } else {

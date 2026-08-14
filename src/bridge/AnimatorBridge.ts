@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
 import type { ResolvedScene } from '../dcl/content/types'
 import type { AssetCache } from '../rendering/AssetCache'
-import { resolveGltfSrcHash } from '../rendering/DclTextureResolver'
+import { isEmoteAnchorGltfSrc, resolveGltfSrcHash } from '../rendering/DclTextureResolver'
 import { renderQuality } from '../rendering/RenderQualitySettings'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import type { MirrorComponents } from './mirrorComponents'
@@ -15,6 +15,8 @@ type AnimEntry = {
   mixer: THREE.AnimationMixer
   actions: Map<string, THREE.AnimationAction>
   root: THREE.Object3D
+  /** Entity pose Group — sleep/near LOD must use this world, not drawRoot. */
+  poseNode: THREE.Object3D | null
   gltfHash: string
   gltfSrc: string
   /** Last applied ECS/default animator states — skip stop/play when unchanged. */
@@ -45,6 +47,16 @@ type AnimEntry = {
   partSettleUntil?: number
   /** Mixer 'finished' listener — one-shot PART settle. */
   partFinishedHooked?: boolean
+  /** Present-rAF sample generation — async skips so we do not double-advance. */
+  lastPresentGen: number
+  /**
+   * Rest-pose local sphere (not the whole flight path). HighDrone2 rest sits
+   * ~160 m from the entity origin — we test this center, not (0,0,0).
+   */
+  cullCenter: THREE.Vector3
+  cullRadius: number
+  /** Nodes with position tracks — current local pos for in-flight frustum tests. */
+  travelNodes: THREE.Object3D[]
 }
 
 /** Sample scheduling context — near camera / frustum bias for fair phase slice. */
@@ -90,14 +102,10 @@ const NEAR_PLAYER_FULL_RATE_M = 16
 const FRUSTUM_EXPAND_M = 8
 /**
  * Off-frustum decorative mixers sleep beyond this distance (timeScale 0).
+ * In-frustum looping clips stay awake at any range (CBD drone / tube shuttle).
  * Unused when Preferences → Advanced → Full-rate scene animators is on.
  */
 const SLEEP_OFF_FRUSTUM_M = 40
-/**
- * Even in-frustum decorative mixers sleep beyond this (snap on enter).
- * PART / doors stay awake. Matches the 64 m primary draw freeze band.
- */
-const SLEEP_FAR_M = 64
 /**
  * Target sample Hz for in-view (fair) unique groups. Near/PART stay at display rate.
  * Unused when full-rate primary animators is on.
@@ -206,6 +214,57 @@ const _projScreen = new THREE.Matrix4()
 const _worldPos = new THREE.Vector3()
 const _sphere = new THREE.Sphere()
 const _camPos = new THREE.Vector3()
+const _cullScale = new THREE.Vector3()
+const _bindBox = new THREE.Box3()
+const _bindSphere = new THREE.Sphere()
+const _bindInv = new THREE.Matrix4()
+
+const MAX_TRAVEL_NODES = 8
+
+/**
+ * Rest-pose local sphere only. Do not union clip translation keys — that made
+ * CBD/plaza flight paths hundreds of meters wide so every mixer looked in-view
+ * and present sync jumped to ~800 ms.
+ */
+function computeMixerCullSphere(mesh: THREE.Object3D, outCenter: THREE.Vector3): number {
+  mesh.updateMatrixWorld(true)
+  _bindBox.setFromObject(mesh)
+  if (_bindBox.isEmpty()) {
+    outCenter.set(0, 0, 0)
+    return FRUSTUM_EXPAND_M
+  }
+  _bindBox.applyMatrix4(_bindInv.copy(mesh.matrixWorld).invert())
+  _bindBox.getBoundingSphere(_bindSphere)
+  if (!Number.isFinite(_bindSphere.radius) || _bindSphere.radius <= 0) {
+    outCenter.set(0, 0, 0)
+    return FRUSTUM_EXPAND_M
+  }
+  outCenter.copy(_bindSphere.center)
+  return Math.max(FRUSTUM_EXPAND_M, _bindSphere.radius)
+}
+
+/** Child nodes driven by clip `.position` tracks (HighDrone2 / tram). */
+function collectTravelNodes(
+  mesh: THREE.Object3D,
+  clips: readonly THREE.AnimationClip[]
+): THREE.Object3D[] {
+  const names = new Set<string>()
+  for (const clip of clips) {
+    for (const track of clip.tracks) {
+      if (!track.name.endsWith('.position')) continue
+      names.add(track.name.slice(0, -'.position'.length))
+      if (names.size >= MAX_TRAVEL_NODES) break
+    }
+    if (names.size >= MAX_TRAVEL_NODES) break
+  }
+  if (names.size === 0) return []
+  const nodes: THREE.Object3D[] = []
+  mesh.traverse((obj) => {
+    if (nodes.length >= MAX_TRAVEL_NODES) return
+    if (names.has(obj.name)) nodes.push(obj)
+  })
+  return nodes
+}
 
 /**
  * Resolve scene GLB path → content hash.
@@ -374,6 +433,8 @@ export class AnimatorBridge {
   private readonly shapeMotionEntities = new Set<Entity>()
   /** Monotonic frame counter for off-screen sample stride. */
   private sampleFrame = 0
+  /** Bumped each present rAF that samples PART / in-view decor. */
+  private presentSampleGen = 0
   /** Rotating start index into the fair (non-near) active set. */
   private fairRingCursor = 0
   /**
@@ -751,7 +812,9 @@ export class AnimatorBridge {
     // Cap new mixer binds per async tick — unbound storm on play-ready
     // (clone + AnimationMixer + retarget) was multi-second bridges= spikes.
     // Already-bound dirtyReplay applies are cheap; always process those first.
-    const BIND_BUDGET = 8
+    const BIND_BUDGET = 6
+    const BIND_BUDGET_MS = 8
+    const t0 = performance.now()
     let newBinds = 0
 
     // Pass 1: already-bound dirty apply (open/close doors must not wait for bind budget).
@@ -781,7 +844,7 @@ export class AnimatorBridge {
         this.markRemoved(entity)
         continue
       }
-      if (newBinds >= BIND_BUDGET) {
+      if (newBinds >= BIND_BUDGET || performance.now() - t0 >= BIND_BUDGET_MS) {
         this.dirtyReplay.delete(entity)
         this.pendingBind.add(entity)
         continue
@@ -816,16 +879,21 @@ export class AnimatorBridge {
     const { Animator, GltfContainer } = this.ecs
     if (!GltfContainer.has(entity)) return 'skip'
     const { src } = GltfContainer.get(entity)
+    // Sit-spot sources (Puff_Idle_*_emote.glb): clips target Avatar_* bones.
+    // They play on the player via AvatarEmote, not as a scene mixer on this entity.
+    if (isEmoteAnchorGltfSrc(src)) return 'skip'
     const hasExplicitAnimator = Animator.has(entity)
     if (!hasExplicitAnimator && this.staticGltfNoClips.has(entity) && !this.entries.has(entity)) {
-      return 'skip'
+      const hashNow = hashFromSrc(src, this.sceneConfig)
+      const templateNow = hashNow
+        ? (this.cache.peekCached(hashNow) ?? this.cache.peekCached(this.sceneConfig.assetUrl(hashNow)))
+        : undefined
+      if (!templateNow?.animations.length) return 'skip'
+      // Cache gained clips after first peek (IDB/worker inflate) — retry bind.
+      this.staticGltfNoClips.delete(entity)
     }
-    // Default autoplay (DCL first-clip): defer until near-camera sample path so far
-    // plaza props stay GPU-instanced rest poses (visibility intact, no 3k clones).
-    if (!hasExplicitAnimator && !this.allowDefaultAutoplayBind && !this.entries.has(entity)) {
-      this.pendingBind.add(entity)
-      return 'waiting'
-    }
+    // Default first-clip is allowed — bindAndApply still skips no-clip statics.
+    // Blocking it left Spring flowers at bind scale 1 and froze the how-to arrow / blimp props.
 
     const nodes = this.getNodes()
     const node = nodes?.get(entity)
@@ -854,7 +922,8 @@ export class AnimatorBridge {
     // Instanced rest-pose → private clone only when we will actually play clips.
     // Never force-promote static instances during probe (that orphaned markers and
     // wiped INSTANCE_COLLIDER_SHAPES → terrain/plaza colliders disappeared).
-    let mesh = node.getObjectByName(`__mesh_${entity}`) as THREE.Object3D | null
+    let mesh = ((node.userData.dclDrawVisual as THREE.Object3D | undefined) ??
+      node.getObjectByName(`__mesh_${entity}`)) as THREE.Object3D | null
     const needsPrivateClone =
       !!node.userData.dclInstanced || !mesh || !!mesh.userData.dclInstanceMarker
     if (needsPrivateClone) {
@@ -882,8 +951,12 @@ export class AnimatorBridge {
     // Mixer writes position/quaternion/scale — frozen leaves (matrixAutoUpdate=false)
     // never rebuild matrices, so fire/FX rest-pose stays invisible (scale tracks ~0.001).
     node.matrixAutoUpdate = true
+    mesh.matrixAutoUpdate = true
+    mesh.userData.dclDrawAnimated = true
+    mesh.userData.dclDrawStatic = false
     mesh.traverse((o) => {
       o.matrixAutoUpdate = true
+      o.userData.dclDrawStatic = false
     })
 
     let entry = this.entries.get(entity)
@@ -911,6 +984,7 @@ export class AnimatorBridge {
         mixer: new THREE.AnimationMixer(mesh),
         actions: new Map(),
         root: mesh,
+        poseNode: node,
         gltfHash: hash,
         gltfSrc: src,
         deferredSampleDt: 0,
@@ -920,8 +994,14 @@ export class AnimatorBridge {
         loopingOnly: false,
         shareableLooping: false,
         partSettleUntil: undefined,
-        partFinishedHooked: false
+        partFinishedHooked: false,
+        lastPresentGen: 0,
+        cullCenter: new THREE.Vector3(),
+        cullRadius: FRUSTUM_EXPAND_M,
+        travelNodes: []
       }
+      entry.cullRadius = computeMixerCullSphere(mesh, entry.cullCenter)
+      entry.travelNodes = collectTravelNodes(mesh, loaded.animations)
       const nodeByName = loaded.animations.length ? buildNodeNameMap(mesh) : undefined
       let retargetedTracks = 0
       for (const clip of loaded.animations) {
@@ -994,12 +1074,17 @@ export class AnimatorBridge {
    * When {@link PRIMARY_FULL_RATE_ANIMATORS}: every bound mixer with active work
    * gets full `delta` every frame (no distance sleep / fair skip / adaptive budget).
    *
-   * Legacy path (flag off): shared-hash + fair phase + off-frustum sleep for CBD FPS.
+   * Legacy path (flag off): shared-hash + fair phase + off-frustum sleep (in-view stays live).
    *
    * `delta === 0` (post-bind pose): sample active work so doors get first pose.
    * Tertiary multi-scene still uses {@link setAllSleeping} (force freeze).
    */
-  update(delta: number, view?: ProjectionView, sampleCtx?: AnimatorSampleContext): void {
+  update(
+    delta: number,
+    view?: ProjectionView,
+    sampleCtx?: AnimatorSampleContext,
+    opts?: { partOnly?: boolean; presentDecor?: boolean; skipPresentSampled?: boolean }
+  ): void {
     if (!this.entries.size) {
       this.lastStats = {
         ...this.lastStats,
@@ -1046,6 +1131,37 @@ export class AnimatorBridge {
     // Door open/close CRDT often lands between async sync ticks — apply dirty before sample.
     if (view) this.applyDirtyBoundStates(view)
 
+    // Present rAF: PART hulls every frame + in-view looping props (shared-hash).
+    if (opts?.partOnly || opts?.presentDecor) {
+      this.presentSampleGen++
+      const now = performance.now()
+      let sampled = 0
+      for (const [entity, entry] of this.entries) {
+        if (!needsPartPhysxWork(entry, now) && !isPartPhysxCandidate(entry)) continue
+        const dt = delta + entry.deferredSampleDt
+        entry.deferredSampleDt = 0
+        if (entry.sleeping) {
+          entry.sleeping = false
+          entry.mixer.timeScale = 1
+        }
+        entry.mixer.update(dt)
+        entry.lastPresentGen = this.presentSampleGen
+        this.markShapeMotionAfterSample(entity, entry)
+        sampled++
+      }
+      if (opts?.presentDecor && sampleCtx) {
+        this.retryPendingBinds(2)
+        sampled += this.samplePresentDecoratives(delta, sampleCtx)
+      }
+      this.lastStats = {
+        ...this.lastStats,
+        sampled,
+        frameDt: delta,
+        displayFps: delta > 1e-6 ? 1 / delta : 0
+      }
+      return
+    }
+
     this.sampleFrame++
     const schedule = delta > 1e-8 && sampleCtx != null
 
@@ -1074,18 +1190,13 @@ export class AnimatorBridge {
 
     const fullRate = primaryFullRateAnimators()
 
-    // Only retry ECS Animator binds. Default autoplay (no Animator) used to promote
-    // every nearby plaza GLB with unused export clips → 2000+ unique clones / 10 FPS.
-    const { Animator } = this.ecs
+    // Retry pending binds (ECS Animator + default first-clip). bindAndApply still
+    // skips no-clip statics so terrain stays instanced.
     const bindCap = fullRate ? MAX_DEFAULT_BINDS_FULL_RATE : MAX_DEFAULT_BINDS_PER_FRAME
     let bindsThisFrame = 0
     for (const entity of [...this.pendingBind]) {
       if (bindsThisFrame >= bindCap) break
       if (this.entries.has(entity)) {
-        this.pendingBind.delete(entity)
-        continue
-      }
-      if (!Animator.has(entity)) {
         this.pendingBind.delete(entity)
         continue
       }
@@ -1103,7 +1214,12 @@ export class AnimatorBridge {
       let sampled = 0
       let active = 0
       const now = performance.now()
+      const skipPresent = opts?.skipPresentSampled === true
       for (const [entity, entry] of this.entries) {
+        if (skipPresent && entry.lastPresentGen === this.presentSampleGen) {
+          entry.deferredSampleDt = 0
+          continue
+        }
         if (entry.sleeping) {
           entry.sleeping = false
           entry.mixer.timeScale = 1
@@ -1196,7 +1312,12 @@ export class AnimatorBridge {
     }
 
     const nowFair = performance.now()
+    const skipPresent = opts?.skipPresentSampled === true
     for (const [entity, entry] of this.entries) {
+      if (skipPresent && entry.lastPresentGen === this.presentSampleGen) {
+        entry.deferredSampleDt = 0
+        continue
+      }
       const settleOnly =
         !mixerHasActiveWork(entry) &&
         entry.partSettleUntil != null &&
@@ -1214,13 +1335,9 @@ export class AnimatorBridge {
       }
       const { priority, distSq, inFrustum } = this.samplePriority(entry, sampleCtx!)
       const isPart = hasPartColliderWork(entry)
-      const sleepFarSq = SLEEP_FAR_M * SLEEP_FAR_M
-      // Sleep decorative mixers that are off-frustum+far, or beyond the 64 m freeze band.
-      if (
-        !isPart &&
-        priority < 2 &&
-        (( !inFrustum && distSq > sleepOffSq ) || distSq > sleepFarSq)
-      ) {
+      // Sleep decorative mixers only when off-camera and far. In-view loops
+      // (CBD drone / tube shuttle) stay awake at any distance.
+      if (!isPart && priority < 2 && !inFrustum && distSq > sleepOffSq) {
         putToSleep(entry)
         continue
       }
@@ -1467,6 +1584,135 @@ export class AnimatorBridge {
   }
 
   /**
+   * Present: finish a few already-pending mixer binds. Do not scan every
+   * static-no-clip GLB — that promoted the whole plaza on rAF (~1 fps).
+   */
+  private retryPendingBinds(cap: number): void {
+    if (cap <= 0) return
+    let bound = 0
+    for (const entity of [...this.pendingBind]) {
+      if (bound >= cap) return
+      if (this.entries.has(entity)) {
+        this.pendingBind.delete(entity)
+        continue
+      }
+      const result = this.bindAndApplyEntity(entity)
+      if (result === 'bound') {
+        this.pendingBind.delete(entity)
+        bound++
+      } else if (result === 'skip') {
+        this.pendingBind.delete(entity)
+      }
+    }
+  }
+
+  /**
+   * In-view looping props at display rate (any distance). Shared-hash = one
+   * mixer.update + fan-out. No binds, no PART (already sampled). Caps solo mixers.
+   */
+  private samplePresentDecoratives(delta: number, sampleCtx: AnimatorSampleContext): number {
+    if (delta <= 1e-8) return 0
+    sampleCtx.camera.updateMatrixWorld(true)
+    _camPos.setFromMatrixPosition(sampleCtx.camera.matrixWorld)
+    _projScreen.multiplyMatrices(
+      sampleCtx.camera.projectionMatrix,
+      sampleCtx.camera.matrixWorldInverse
+    )
+    _frustum.setFromProjectionMatrix(_projScreen)
+
+    type DecorCand = { entity: Entity; entry: AnimEntry; distSq: number }
+    const shareable: DecorCand[] = []
+    const solo: DecorCand[] = []
+    const now = performance.now()
+
+    for (const [entity, entry] of this.entries) {
+      if (entry.lastPresentGen === this.presentSampleGen) continue
+      if (needsPartPhysxWork(entry, now)) continue
+      if (!mixerHasActiveWork(entry) && !entry.sleeping) continue
+      const { priority, distSq, inFrustum } = this.samplePriority(entry, sampleCtx)
+      // In-frustum looping clips play at any range. Off-camera stays skipped.
+      if (!inFrustum && priority < 2) continue
+      if (entry.sleeping) {
+        entry.sleeping = false
+        entry.mixer.timeScale = 1
+        entry.deferredSampleDt = 0
+      }
+      const cand: DecorCand = { entity, entry, distSq }
+      // Signature may be unset on default autoplay — still share by hash.
+      if (entry.shareableLooping && !entry.hasSkinned) {
+        shareable.push(cand)
+      } else if (entry.loopingOnly) {
+        solo.push(cand)
+      } else {
+        solo.push(cand)
+      }
+    }
+
+    const groups = new Map<string, { leader: DecorCand; followers: DecorCand[] }>()
+    for (const cand of shareable) {
+      const key = `${cand.entry.gltfHash}|${cand.entry.lastAppliedSignature ?? 'loop'}`
+      const existing = groups.get(key)
+      if (!existing) groups.set(key, { leader: cand, followers: [] })
+      else existing.followers.push(cand)
+    }
+
+    const wallSec = now / 1000
+    const SOLO_CAP = 12
+    const GROUP_CAP = 24
+    let sampled = 0
+    const mark = (entry: AnimEntry): void => {
+      entry.lastPresentGen = this.presentSampleGen
+      entry.deferredSampleDt = 0
+      if (entry.mixer.timeScale !== 1) entry.mixer.timeScale = 1
+    }
+    const sampleLooping = (entry: AnimEntry): void => {
+      if (entry.loopingOnly || entry.shareableLooping) {
+        snapLoopingActionsToWallClock(entry, wallSec)
+        entry.mixer.update(0)
+      } else {
+        const step = Math.min(delta + entry.deferredSampleDt, 0.25)
+        if (step > 1e-8) entry.mixer.update(step)
+      }
+    }
+
+    const groupList = [...groups.values()].sort((a, b) => a.leader.distSq - b.leader.distSq)
+    for (let gi = 0; gi < groupList.length; gi++) {
+      if (gi >= GROUP_CAP) break
+      const group = groupList[gi]!
+      sampleLooping(group.leader.entry)
+      mark(group.leader.entry)
+      sampled++
+      if (group.leader.entry.poseNodes.length) {
+        for (const follower of group.followers) {
+          if (follower.entry.poseNodes.length) {
+            fanOutLocalPose(group.leader.entry.poseNodes, follower.entry.poseNodes)
+          } else {
+            sampleLooping(follower.entry)
+          }
+          mark(follower.entry)
+        }
+      } else {
+        for (const follower of group.followers) {
+          sampleLooping(follower.entry)
+          mark(follower.entry)
+          sampled++
+        }
+      }
+    }
+
+    solo.sort((a, b) => a.distSq - b.distSq)
+    for (const cand of solo) {
+      if (sampled >= SOLO_CAP && !cand.entry.loopingOnly) break
+      if (sampled >= SOLO_CAP + 8) break
+      sampleLooping(cand.entry)
+      mark(cand.entry)
+      sampled++
+    }
+
+    return sampled
+  }
+
+  /**
    * priority ≥ 2 → try every-frame (near / PART).
    * priority 1 → frustum (fair / shared-hash).
    * priority 0 → off-cam fair ring (may sleep if far).
@@ -1475,7 +1721,18 @@ export class AnimatorBridge {
     entry: AnimEntry,
     _ctx: AnimatorSampleContext
   ): { priority: number; distSq: number; inFrustum: boolean } {
-    const anchor = entry.root.parent ?? entry.root
+    // Draw visual world is written every present. Pose matrixWorld is only
+    // refreshed in renderMainPass *after* this sample — using it slept plaza
+    // props at the origin (~60 m off-frustum) so they only advanced on async
+    // with a 16 ms delta → ~⅓ speed.
+    const pose =
+      entry.poseNode ?? (entry.root.userData.dclPoseNode as THREE.Object3D | undefined)
+    const visual = entry.root
+    const visualAlive =
+      visual.matrixWorld.elements[12] !== 0 ||
+      visual.matrixWorld.elements[13] !== 0 ||
+      visual.matrixWorld.elements[14] !== 0
+    const anchor = visualAlive ? visual : (pose ?? visual)
     _worldPos.setFromMatrixPosition(anchor.matrixWorld)
 
     const dx = _worldPos.x - _camPos.x
@@ -1484,9 +1741,29 @@ export class AnimatorBridge {
     const distSq = dx * dx + dy * dy + dz * dz
     const nearSq = NEAR_PLAYER_FULL_RATE_M * NEAR_PLAYER_FULL_RATE_M
 
-    _sphere.center.copy(_worldPos)
-    _sphere.radius = FRUSTUM_EXPAND_M
-    const inFrustum = _frustum.intersectsSphere(_sphere)
+    // Rest-pose sphere (HighDrone2 rest is ~160 m from the entity origin).
+    _cullScale.setFromMatrixScale(anchor.matrixWorld)
+    const worldScale = Math.max(
+      Math.abs(_cullScale.x),
+      Math.abs(_cullScale.y),
+      Math.abs(_cullScale.z),
+      1e-3
+    )
+    _sphere.center.copy(entry.cullCenter).applyMatrix4(anchor.matrixWorld)
+    _sphere.radius =
+      (entry.cullRadius > 0 ? entry.cullRadius : FRUSTUM_EXPAND_M) * worldScale + FRUSTUM_EXPAND_M
+    let inFrustum = _frustum.intersectsSphere(_sphere)
+    // In-flight: current travel-node locals (not the whole clip AABB).
+    if (!inFrustum && entry.travelNodes.length) {
+      _sphere.radius = FRUSTUM_EXPAND_M * worldScale
+      for (const node of entry.travelNodes) {
+        _sphere.center.copy(node.position).applyMatrix4(anchor.matrixWorld)
+        if (_frustum.intersectsSphere(_sphere)) {
+          inFrustum = true
+          break
+        }
+      }
+    }
 
     // PART / one-shot doors — always highest priority (any distance). Hull follow must
     // not wait for the fair ring while a curtain/door is opening 30m away.

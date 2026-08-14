@@ -353,19 +353,29 @@ function collectMeshTextures(mesh: THREE.Mesh): THREE.Texture[] {
 
 function collectTextureTargets(root: THREE.Object3D): THREE.Texture[] {
   const out: THREE.Texture[] = []
-  root.traverse((child) => {
+  const drawn = root.userData.dclDrawVisual as THREE.Object3D | undefined
+  const search = drawn ?? root
+  search.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) return
     out.push(...collectMeshTextures(child))
   })
+  if (drawn && drawn !== root) {
+    root.traverse((child) => {
+      if (!(child instanceof THREE.Mesh)) return
+      out.push(...collectMeshTextures(child))
+    })
+  }
   return out
 }
 
-/** True when every cached target is still referenced by a mesh under `root`. */
+/** True when cached targets match live maps (map + emissiveMap). Late emissive attach must re-collect. */
 function textureTargetsLive(root: THREE.Object3D, targets: THREE.Texture[]): boolean {
   if (!targets.length) return false
-  const live = new Set(collectTextureTargets(root))
+  const live = collectTextureTargets(root)
+  if (live.length !== targets.length) return false
+  const set = new Set(live)
   for (const t of targets) {
-    if (!live.has(t)) return false
+    if (!set.has(t)) return false
   }
   return true
 }
@@ -427,14 +437,19 @@ function applyTextureUvToTargets(
   }
   // Persist ST on meshes in **DCL/base** space so MaterialApplier re-flip stays honest.
   if (root) {
-    root.traverse((child) => {
-      if (!(child instanceof THREE.Mesh)) return
-      child.userData[DCL_TEXTURE_MOVE_ST] = {
-        tiling: !!tiling,
-        x: uv.x,
-        y
-      }
-    })
+    const drawn = root.userData.dclDrawVisual as THREE.Object3D | undefined
+    const mark = (obj: THREE.Object3D) => {
+      obj.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return
+        child.userData[DCL_TEXTURE_MOVE_ST] = {
+          tiling: !!tiling,
+          x: uv.x,
+          y
+        }
+      })
+    }
+    mark(root)
+    if (drawn && drawn !== root) mark(drawn)
   }
 }
 

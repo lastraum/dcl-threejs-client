@@ -1,7 +1,16 @@
 /**
- * Off-thread GLB parse is opt-in (`VITE_GLB_OFF_THREAD_PARSE=true`).
- * THREE.js graphs are not structured-cloneable; buffer-transfer rebuild (option B) is future work.
+ * Off-thread GLB parse is on by default.
+ * Escape hatch: `?mainglb` / `?glbparse=main` forces parseAsync on the present thread.
  */
 export function isGlbOffThreadParseEnabled(): boolean {
-  return import.meta.env.VITE_GLB_OFF_THREAD_PARSE === 'true'
+  if (typeof location === 'undefined') return true
+  try {
+    const q = new URLSearchParams(location.search)
+    if (q.has('mainglb')) return false
+    const raw = q.get('glbparse')
+    if (raw === 'main' || raw === '0' || raw === 'off') return false
+  } catch {
+    /* ignore */
+  }
+  return true
 }

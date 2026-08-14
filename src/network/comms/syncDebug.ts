@@ -207,13 +207,14 @@ export function logSyncInbound(opts: {
     return
   }
 
-  // REQ/RES always useful for paint/team room-ready diagnosis.
+  // REQ/RES stay in the client log (throttled). Browser console only with ?syncdebug —
+  // 10 remotes × RES_CRDT_STATE was a DevTools hitch.
   const important = isResCrdtStateType(opts.messageType) || isReqCrdtStateType(opts.messageType)
   if (!isSyncDebugEnabled() && !important) return
   const line =
     `[sync] inbound — type=${name}` +
     ` from=${opts.sender.slice(0, 20)} payload=${opts.payloadBytes}B`
-  if (isSyncDebugEnabled() || important) console.info(line)
+  if (isSyncDebugEnabled()) console.info(line)
   clientDebugLog.log('sync', line, {
     alsoConsole: false,
     throttleMs: important ? 400 : 100,

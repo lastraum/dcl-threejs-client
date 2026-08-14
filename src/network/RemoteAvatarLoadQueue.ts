@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { lastFrameOverBudget, scheduleOffPlayRaf, yieldToIdle } from '../rendering/mainThreadYield'
+import { scheduleOffPlayRaf, yieldToIdle } from '../rendering/mainThreadYield'
 
 type QueuedLoad = {
   address: string
@@ -23,7 +23,7 @@ export class RemoteAvatarLoadQueue {
    * Minimum wall time between compose **starts** (not finishes).
    * Was 10s — four nearby peers took 40s+ and felt “stuck at shells”.
    */
-  static readonly MIN_COMPOSE_INTERVAL_MS = 3_500
+  static readonly MIN_COMPOSE_INTERVAL_MS = 0
   /**
    * Horizontal meters — only start full body compose inside this radius.
    * ~1.25× a 16 m parcel edge so same-parcel + neighbor edge load; far stay shells.
@@ -39,8 +39,8 @@ export class RemoteAvatarLoadQueue {
   /**
    * After collider seal: hold all remote composes so pose resync + CCT aren't starved.
    */
-  static readonly COLLIDER_HOLD_MS_PLAZA = 4_000
-  static readonly COLLIDER_HOLD_MS_DEFAULT = 2_000
+  static readonly COLLIDER_HOLD_MS_PLAZA = 0
+  static readonly COLLIDER_HOLD_MS_DEFAULT = 0
 
   /** Local player feet (Three world) — load radius / sort origin, not camera. */
   private readonly localPlayer = new THREE.Vector3()
@@ -283,12 +283,8 @@ export class RemoteAvatarLoadQueue {
       return
     }
     if (this.localEmoteBusy) return
-    // Presenter owns the frame. Do not start a multi-second compose unless the
-    // last present was cheap (Bevy: compose off the present thread).
-    if (lastFrameOverBudget(20)) {
-      this.scheduleIntervalPump(120)
-      return
-    }
+    // Compose already starts off the play rAF (idle callback + yieldToIdle).
+    // A 16 ms budget here starved every nearby body at 16 FPS (q=8 act=0 forever).
 
     const waitGap = this.msUntilNextComposeAllowed()
     if (waitGap > 0) {

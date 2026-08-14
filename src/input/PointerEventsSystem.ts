@@ -15,8 +15,8 @@ import {
 import type { CollisionSystem } from '../collision/CollisionSystem'
 import { ColliderLayer } from '../collision/ColliderLayer'
 import { isGltfInvisibleColliderMesh } from '../collision/gltfColliderNaming'
-import { collectGltfPointerTargetMeshes } from '../collision/gltfPointerMeshes'
-import { PointerHighlightFeedback } from './PointerHighlightFeedback'
+import { collectGltfPointerTargetMeshes, gltfEntityDrawRoot } from '../collision/gltfPointerMeshes'
+import { PointerHighlightFeedback, pointerShowHighlight } from './PointerHighlightFeedback'
 import { PointerHoverFeedback } from './PointerHoverFeedback'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { findPeerPillAtPointer, tryOpenPeerContextMenu } from '../client/ui/overlayHitTest'
@@ -114,6 +114,14 @@ const _worldNormal = new THREE.Vector3()
 const POINTER_TARGET_KEEP_M = 40
 const POINTER_TARGET_KEEP_M2 = POINTER_TARGET_KEEP_M * POINTER_TARGET_KEEP_M
 
+/** DrawWorld parents `__mesh_*` under drawRoot — pose children are empty. */
+function poseDrawVisual(
+  obj: THREE.Object3D | undefined,
+  entity?: Entity
+): THREE.Object3D | undefined {
+  return gltfEntityDrawRoot(obj, entity)
+}
+
 /** Unity splits raycast (`PointerEventsController`) from result writer (`ECSPointerInputSystem`); we combine both here. */
 export class PointerEventsSystem {
   private deps: PointerDeps | null = null
@@ -130,6 +138,11 @@ export class PointerEventsSystem {
   private screenDx = 0
   private screenDy = 0
   private pointerDirty = true
+  /** Last hover raycast. Move only refreshes coords; prepare runs on edges + this cadence. */
+  private lastHoverPrepareAt = 0
+  private hoverScreenX = Number.NaN
+  private hoverScreenY = Number.NaN
+  private static readonly HOVER_PREPARE_MS = 80
   private primaryKeyDown = false
   private readonly pendingPointerDown = new Map<InputActionValue, PointerHit | null>()
   private readonly pendingPointerUp = new Set<InputActionValue>()
@@ -270,7 +283,17 @@ export class PointerEventsSystem {
     if (!this.deps) return false
     if (this.pointerDirty || this.primaryKeyDown) return true
     if (this.hasPendingInput()) return true
-    return false
+    const locked = document.pointerLockElement === this.canvas
+    // Unlocked: only re-hover when the cursor actually moved. Locked look uses the
+    // 80 ms cadence because screen coords stay centered while the camera turns.
+    if (
+      !locked &&
+      this.screenX === this.hoverScreenX &&
+      this.screenY === this.hoverScreenY
+    ) {
+      return false
+    }
+    return performance.now() - this.lastHoverPrepareAt >= PointerEventsSystem.HOVER_PREPARE_MS
   }
 
   /** Tooltip + mesh highlight only (no CRDT). */
@@ -290,6 +313,9 @@ export class PointerEventsSystem {
 
     const hit = this.computeCurrentHit()
     this.lastHit = hit
+    this.lastHoverPrepareAt = performance.now()
+    this.hoverScreenX = this.screenX
+    this.hoverScreenY = this.screenY
 
     if (!hit) {
       this.hoverFeedback.hide()
@@ -423,7 +449,6 @@ export class PointerEventsSystem {
     this.screenDy += e.movementY
     this.screenX = e.clientX
     this.screenY = e.clientY
-    this.pointerDirty = true
   }
 
   /**
@@ -442,7 +467,6 @@ export class PointerEventsSystem {
     }
     this.screenX = e.clientX
     this.screenY = e.clientY
-    this.pointerDirty = true
   }
 
   private onPointerDown = (e: PointerEvent): void => {
@@ -568,6 +592,7 @@ export class PointerEventsSystem {
     }
     if (this.uiPointerButtons.has(button)) return
     this.pendingPointerUp.add(button)
+    this.pointerDirty = true
     this.deps.flushPointerCrdt?.()
   }
 
@@ -1364,11 +1389,12 @@ export class PointerEventsSystem {
 
     if (ecs.GltfContainer.has(visualEntity)) {
       const obj = nodes.get(visualEntity)
-      const gltfRoot = obj?.children.find((c) => c.name.startsWith('__mesh_'))
-      if (gltfRoot) {
+      const gltfRoot = poseDrawVisual(obj, visualEntity) ?? obj
+      if (gltfRoot && !obj?.userData.dclInstanced) {
         gltfRoot.traverse((node) => {
           if (!(node instanceof THREE.Mesh) || !node.geometry) return
           if (node.name === '__pointer_highlight__') return
+          if ((node as THREE.InstancedMesh).isInstancedMesh) return
           if (isGltfInvisibleColliderMesh(node, gltfRoot)) return
           if (node.visible === false) return
           meshes.push(node)
@@ -1378,7 +1404,7 @@ export class PointerEventsSystem {
 
     if (!meshes.length && ecs.MeshRenderer.has(visualEntity)) {
       const obj = nodes.get(visualEntity)
-      const primitive = obj?.getObjectByName(`__mesh_${visualEntity}`)
+      const primitive = poseDrawVisual(obj, visualEntity)
       if (primitive instanceof THREE.Mesh && primitive.geometry) meshes.push(primitive)
     }
 
@@ -1408,7 +1434,7 @@ export class PointerEventsSystem {
         const obj = nodes.get(entity)
         // GPU-instanced GLTF: empty marker only — InstancedMeshes added below for raycast.
         if (!obj?.userData.dclInstanced) {
-          const gltfRoot = obj?.children.find((c) => c.name.startsWith('__mesh_'))
+          const gltfRoot = poseDrawVisual(obj, entity)
           if (gltfRoot) {
             collectGltfPointerTargetMeshes(
               gltfRoot,
@@ -1444,8 +1470,7 @@ export class PointerEventsSystem {
 
       if (ecs.MeshRenderer.has(entity)) {
         const obj = nodes.get(entity)
-        const mk = `__mesh_${entity}`
-        const primitive = obj?.getObjectByName(mk)
+        const primitive = poseDrawVisual(obj, entity)
         // Private MeshRenderer (textured / PE) — direct raycast target.
         // Marker-only instanced leaves use dclMeshRendererInstance (GPU InstancedMesh below).
         if (primitive instanceof THREE.Mesh && !primitive.userData.dclMeshRendererInstance) {
@@ -1514,7 +1539,7 @@ export class PointerEventsSystem {
 
       if (ecs.GltfContainer.has(child)) {
         const obj = nodes.get(child)
-        const gltfRoot = obj?.children.find((c) => c.name.startsWith('__mesh_'))
+        const gltfRoot = poseDrawVisual(obj, child)
         if (gltfRoot) {
           collectGltfPointerTargetMeshes(
             gltfRoot,
@@ -1528,7 +1553,7 @@ export class PointerEventsSystem {
 
       if (ecs.MeshRenderer.has(child)) {
         const obj = nodes.get(child)
-        const primitive = obj?.getObjectByName(`__mesh_${child}`)
+        const primitive = poseDrawVisual(obj, child)
         if (primitive instanceof THREE.Mesh && !primitive.userData.dclMeshRendererInstance) {
           primitive.userData.entity = child
           this.pointerTargets.push(primitive)
@@ -1839,8 +1864,8 @@ export class PointerEventsSystem {
   } {
     const worldDir = _ray.direction.clone()
     const dclDir = threeToDclVec(worldDir)
-    // Virtual canvas space (default 1920×1080) — matches UiCanvasInformation so scene
-    // systems that rebuild rays from screenCoordinates + canvas size stay consistent.
+    // Virtual canvas space — matches UiCanvasInformation so scene systems that
+    // rebuild rays from screenCoordinates + canvas size stay consistent.
     const screen = this.screenCoordinatesInVirtualCanvas()
     // Explorer/Unity: +screenDelta.y = cursor moved toward top of screen.
     // DOM movementY is opposite (positive = move down) — invert for parity.
@@ -1868,9 +1893,10 @@ export class PointerEventsSystem {
     const rect = this.canvas.getBoundingClientRect()
     const w = Math.max(1, rect.width)
     const h = Math.max(1, rect.height)
-    // Prefer live UiCanvasInformation when present; fall back to Explorer default.
-    let vw = 1920
-    let vh = 1080
+    // Prefer live UiCanvasInformation. Pre-7.26 scenes omit virtual size — use the
+    // canvas box (not SDK 7.26's 1920×1080 default).
+    let vw = Math.max(1, Math.round(w))
+    let vh = Math.max(1, Math.round(h))
     const canvasInfo = this.deps?.ecs.UiCanvasInformation?.getOrNull?.(
       this.deps.view.RootEntity
     ) as { width?: number; height?: number } | null | undefined
@@ -2148,7 +2174,7 @@ function pointerHighlightInRange(
     if ((entry.interactionType ?? InteractionType.CURSOR) !== InteractionType.CURSOR) continue
     const info = entry.eventInfo
     if (info?.showFeedback === false) continue
-    if (info?.showHighlight === false) continue
+    if (!pointerShowHighlight(info)) continue
     if (entryPassesDistance(entry, cameraDistance, playerDistance)) return true
   }
   return false
@@ -2194,35 +2220,22 @@ function buildSyntheticProximityHit(
 }
 
 /**
- * Camera maxDistance first; then player distance.
- * Top-down / VirtualCamera strategy games (DecentraCraft y≈26 lens) make cameraDistance
- * far larger than maxDistance (often 10) while the avatar is still next to the unit —
- * prefer playerDistance when the lens is clearly elevated above the player.
+ * PointerEvents range is avatar→hit (SDK `maxDistance` default 10).
+ * The aim ray still originates at the camera; only the gate uses player distance.
+ * 3rd-person lens is 5–8m behind the avatar — cameraDistance would fail a 10m PE
+ * on a prop next to the player.
  */
 function entryPassesDistance(
   entry: Readonly<PBPointerEvents_Entry>,
-  cameraDistance: number,
+  _cameraDistance: number,
   playerDistance: number
 ): boolean {
-  const maxDistance = entry.eventInfo?.maxDistance
+  const maxDistance = entry.eventInfo?.maxDistance ?? 10
+  if (playerDistance > maxDistance) return false
   const maxPlayerDistance = entry.eventInfo?.maxPlayerDistance
-
-  if (maxDistance !== undefined) {
-    if (cameraDistance <= maxDistance) return true
-    const playerLimit =
-      maxPlayerDistance !== undefined && maxPlayerDistance > 0 ? maxPlayerDistance : maxDistance
-    if (playerDistance <= playerLimit) return true
-    // Elevated lens: camera is high above feet — treat as top-down and use player range only.
-    if (cameraDistance > playerDistance + 8 && playerDistance <= Math.max(playerLimit, 16)) {
-      return true
-    }
+  if (maxPlayerDistance !== undefined && maxPlayerDistance > 0 && playerDistance > maxPlayerDistance) {
     return false
   }
-
-  if (maxPlayerDistance !== undefined && maxPlayerDistance > 0) {
-    return playerDistance <= maxPlayerDistance
-  }
-
   return true
 }
 

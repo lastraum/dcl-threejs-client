@@ -45,6 +45,14 @@ export function installSceneWorkerFetchProxy(): void {
 
     const rewritten = toSceneHttpProxyUrl(url)
     if (!rewritten) return nativeFetch(input, init)
+    // Dedicated workers must fetch an absolute same-origin URL (blob workers
+    // resolve `/api/...` against the worker script, not the page).
+    const origin =
+      typeof location !== 'undefined' && location.origin.startsWith('http')
+        ? location.origin
+        : ''
+    const absolute =
+      rewritten.startsWith('/') && origin ? `${origin}${rewritten}` : rewritten
 
     const run = (target: RequestInfo | URL) => {
       const promise = nativeFetch(target, init)
@@ -55,10 +63,10 @@ export function installSceneWorkerFetchProxy(): void {
     }
 
     if (typeof input === 'string' || input instanceof URL) {
-      return run(rewritten)
+      return run(absolute)
     }
     if (input instanceof Request) {
-      return run(new Request(rewritten, input))
+      return run(new Request(absolute, input))
     }
     return nativeFetch(input, init)
   }) as typeof fetch

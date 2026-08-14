@@ -571,7 +571,7 @@ export class EnvironmentSystem {
     const now = performance.now()
     if (now - this.lastEnvCasterBudgetAt >= 250) {
       this.lastEnvCasterBudgetAt = now
-      budgetEnvironmentCasters(this.host.scene, this.host.camera.position)
+      budgetEnvironmentCasters(this.host.drawWorld.drawRoot, this.host.camera.position)
     }
 
     const tierExposure = TONE_MAPPING_EXPOSURE[renderQuality.getTier()]

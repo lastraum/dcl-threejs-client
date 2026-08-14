@@ -89,7 +89,7 @@ export function dropTextureCpuAfterUpload(texture: THREE.Texture): void {
   const prev = texture.onUpdate
   texture.onUpdate = () => {
     try {
-      prev?.call(texture)
+      prev?.(texture)
     } finally {
       releaseTextureCpu(texture)
     }

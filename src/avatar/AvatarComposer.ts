@@ -22,7 +22,7 @@ import { applyAvatarOpaqueAtlas, isAvatarOpaqueAtlasEnabled } from './avatarOpaq
 import { buildComposeConfig } from './resolveProfile'
 import { resolveAvatarProfile } from './peerApi'
 import { isModelWearable } from './slots'
-import { yieldToIdle, yieldToNextFrame } from '../rendering/mainThreadYield'
+import { yieldToIdle } from '../rendering/mainThreadYield'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
 import { isAvatarVerbose } from '../client/debug/ClientDebugLog'
 import type {
@@ -127,7 +127,6 @@ async function composeFromConfig(
       []
     for (const wearable of modelWearables) {
       await yieldToIdle(32)
-      await yieldToNextFrame()
       try {
         const hairTint = hairTintForWearable(wearable.data.category, config)
         const layer = await loadWearableSceneCached(
@@ -151,7 +150,6 @@ async function composeFromConfig(
       // One wearable merge per frame — keeps peer compose from stacking multi-ms CPU on rAF.
       if (mergeIndex > 0) {
         await yieldToIdle(24)
-        await yieldToNextFrame()
       }
       mergeIndex++
 
@@ -214,13 +212,13 @@ async function composeFromConfig(
     popWearableMappings()
   }
 
-  await yieldToNextFrame()
+  await yieldToIdle(24)
   applyBodyShapeVisibility(bodyRoot, config.wearables, {
     attachedCategories,
     forceRender: config.forceRender
   })
   await applyFacialFeatures(bodyRoot, config, cache)
-  await yieldToNextFrame()
+  await yieldToIdle(24)
   applyWearableEmissives(avatar)
   // After emissives — toon banding skips the matte clamp on boosted materials.
   // Opt-in via Preferences → Graphics → Toon shaders (default off).
@@ -229,7 +227,7 @@ async function composeFromConfig(
   // Opaque atlas is opt-in — default off until flipY/UV/incomplete-texture issues are solid.
   // Enable with ?avataratlas=1 (or session storage dcl.avatar.opaqueAtlas=1).
   if (isAvatarOpaqueAtlasEnabled()) {
-    await yieldToNextFrame()
+    await yieldToIdle(24)
     await applyAvatarOpaqueAtlas(avatar)
   }
   return avatar

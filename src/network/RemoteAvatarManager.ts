@@ -30,7 +30,7 @@ import { NameTag } from '../client/ui/NameTag'
 import { areSceneNameTagsVisible } from '../client/ui/nameTagVisibility'
 import { resolveProfileEmote, loadResolvedProfileEmote } from '../avatar/profileEmotes'
 import type { AssetCache } from '../rendering/AssetCache'
-import { yieldToNextFrame } from '../rendering/mainThreadYield'
+import { yieldToIdle } from '../rendering/mainThreadYield'
 import {
   createRemoteAvatarPlaceholder,
   disposeRemoteAvatarPlaceholder,
@@ -317,10 +317,11 @@ export class RemoteAvatarManager {
    */
   private onComposeSettled: (() => void) | null = null
 
-  constructor(scene: THREE.Scene) {
-    this.scene = scene
+  constructor(drawRoot: THREE.Object3D) {
+    const parent = drawRoot.parent
+    this.scene = parent instanceof THREE.Scene ? parent : (drawRoot as unknown as THREE.Scene)
     this.root.name = 'remote-avatars'
-    scene.add(this.root)
+    drawRoot.add(this.root)
   }
 
   setOnComposeSettled(handler: (() => void) | null): void {
@@ -368,6 +369,9 @@ export class RemoteAvatarManager {
   /** Phase 4.5 — register remote peers in the unified EntityStore (owner `'avatar'`). */
   setEntityStore(store: EntityStore | null): void {
     this.entityStore = store
+    for (const record of this.peers.values()) {
+      if (record.root.parent !== this.root) this.root.add(record.root)
+    }
   }
 
   setLocalAddress(address: string | null): void {
@@ -567,9 +571,10 @@ export class RemoteAvatarManager {
   getAttachSkeleton(address: string): AvatarSkeletonTarget | null {
     const record = this.peers.get(address.toLowerCase())
     if (!record) return null
-    const model = record.model ?? record.placeholder
-    if (!model) return null
-    return { model, nameTagAnchor: record.nameTagAnchor }
+    // Neon shells have no hand/head bones. Using them as the attach skeleton
+    // snapped rods/fish to the name-tag (and sometimes the local player).
+    if (!record.model) return null
+    return { model: record.model, nameTagAnchor: record.nameTagAnchor }
   }
 
   /** Scene chat line shown inside the peer's overhead name-tag pill. */
@@ -1161,7 +1166,9 @@ export class RemoteAvatarManager {
       nameTagAnchor.name = 'remote-name-tag'
       root.add(pivot)
       root.add(nameTagAnchor)
-      if (!this.entityStore) this.root.add(root)
+      // EntityStore lives on poseRoot (not rendered). Remotes must stay under
+      // this.root on the live scene or only CSS name tags appear.
+      if (root.parent !== this.root) this.root.add(root)
 
       record = {
         address: key,
@@ -1446,7 +1453,7 @@ export class RemoteAvatarManager {
   /**
    * Per-frame remote tick. Returns counters for RenderStats / perfCounters.
    */
-  update(delta: number): {
+  update(delta: number, opts?: { skipAnim?: boolean }): {
     poseSkipped: number
     animSkipped: number
     nameTagsShown: number
@@ -1458,6 +1465,10 @@ export class RemoteAvatarManager {
   } {
     const updateT0 = performance.now()
     const now = updateT0
+    // PoseRoot is not drawn. Any avatar still parented there is name-tag-only.
+    for (const record of this.peers.values()) {
+      if (record.root.parent !== this.root) this.root.add(record.root)
+    }
     // Neon loading shells — idle clip while Catalyst wearables compose.
     updateRemoteAvatarPlaceholders(delta)
     let poseSkipped = 0
@@ -1519,6 +1530,7 @@ export class RemoteAvatarManager {
           lodBand = 'mid'
         }
       }
+      if (opts?.skipAnim) allowAnim = false
 
       // Off-camera: drop skinned mixer unless emote (Focus / look-away from huddle).
       if (frustumReady && allowAnim && !emoteBusy && record.hasPosition) {
@@ -2038,7 +2050,7 @@ export class RemoteAvatarManager {
 
       const composed = await composeAvatarFromProfile(profile, this.contentUrl || undefined, this.assetCache)
       // Let a frame paint after the (time-sliced) compose before scene-graph attach + anim bind.
-      await yieldToNextFrame()
+      await yieldToIdle(32)
       stabilizeSkinnedMeshes(composed)
 
       if (!this.peers.has(key)) {
@@ -2077,13 +2089,18 @@ export class RemoteAvatarManager {
 
       record.pivot.add(record.model)
       applyAvatarPivotOffset(record.pivot, record.model)
+      record.model.visible = true
+      record.pivot.visible = true
+      record.model.traverse((obj) => {
+        if ((obj as THREE.Mesh).isMesh) obj.frustumCulled = false
+      })
       // Wearables default cast-on — clear immediately; nearest-N budget re-enables a few.
       this.setModelCastShadow(record.model, false)
       this.applyRemoteShadowBudget()
       this.finalizeNameTag(record)
 
       // Bind locomotion/emote clips on the next frame so first GPU upload isn't stacked with bind.
-      await yieldToNextFrame()
+      await yieldToIdle(32)
       if (!this.peers.has(key) || record.model !== composed) return
 
       record.animations = new AvatarAnimations()
@@ -2147,7 +2164,7 @@ export class RemoteAvatarManager {
         return
       }
 
-      await yieldToNextFrame()
+      await yieldToIdle(32)
       if (!this.peers.has(key)) {
         odkAvatar.dispose()
         return
@@ -2170,7 +2187,7 @@ export class RemoteAvatarManager {
       this.applyRemoteShadowBudget()
       this.finalizeNameTag(record)
 
-      await yieldToNextFrame()
+      await yieldToIdle(32)
       if (!this.peers.has(key) || record.model !== odkAvatar.root) return
 
       record.odkLocomotion = new OdkLocomotionAnimations()
@@ -2241,7 +2258,7 @@ export class RemoteAvatarManager {
         return
       }
 
-      await yieldToNextFrame()
+      await yieldToIdle(32)
       if (!this.peers.has(key)) {
         vrmAvatar.dispose()
         return
@@ -2263,7 +2280,7 @@ export class RemoteAvatarManager {
       this.applyRemoteShadowBudget()
       this.finalizeNameTag(record)
 
-      await yieldToNextFrame()
+      await yieldToIdle(32)
       if (!this.peers.has(key) || record.model !== vrmAvatar.root) return
 
       record.vrmLocomotion = new VrmLocomotionAnimations()

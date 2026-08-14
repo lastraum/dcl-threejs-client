@@ -7,9 +7,6 @@ import { readMessage } from '@dcl/ecs/dist/serialization/crdt/message'
 import { CrdtMessageType } from '@dcl/ecs/dist/serialization/crdt/types'
 import { writeHostLwwNoDirty } from './injectHostLww'
 
-/** SDK7 reserved entities — renderer-owned Transform must land same-tick on the worker. */
-const RESERVED_ENTITIES = new Set<Entity>([0 as Entity, 1 as Entity, 2 as Entity])
-
 /** `core::TweenState` — renderer-driven tween progress for worker `tweenCompleted()`. */
 const TWEEN_STATE_ID = 1103
 /** TweenStateStatus.TS_COMPLETED — sequence advance leaves this stale on the next leg. */
@@ -134,7 +131,8 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
     let msg = readMessage(buf)
     while (msg) {
       if (msg.type === CrdtMessageType.PUT_COMPONENT) {
-        if (msg.componentId === transformId && RESERVED_ENTITIES.has(msg.entityId as Entity)) {
+        if (msg.componentId === transformId) {
+          // Reserved poses + tween-interpolated Transform (tutorial popup scale, bounce).
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = Transform.schema.deserialize(valueBuf)
           writeHostLwwNoDirty(Transform, msg.entityId as number, value)

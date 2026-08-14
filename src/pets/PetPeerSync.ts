@@ -78,6 +78,7 @@ export class PetPeerSync {
   private peerJoinReannounceTimer: ReturnType<typeof setTimeout> | null = null
   private loginRetryTimers: ReturnType<typeof setTimeout>[] = []
   private lastPoseSendMs = 0
+  private loggedWantAnnounce = false
   /** Debounce rapid local equip/clear toggles into one wire publish. */
   private equipPublishTimer: ReturnType<typeof setTimeout> | null = null
   private pendingEquipPublish: {
@@ -298,7 +299,8 @@ export class PetPeerSync {
   /** Probe peers for pet equip (late join / handoff). */
   async requestPeerAnnounces(): Promise<void> {
     const sent = await this.publish(encodeDpetEnvelopes(encodeDpetWantAnnounce()), 'want-announce')
-    if (sent) {
+    if (sent && !this.loggedWantAnnounce) {
+      this.loggedWantAnnounce = true
       console.info('[pets] DPET WantAnnounce sent — asking peers to re-announce equip')
     }
   }

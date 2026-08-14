@@ -44,7 +44,8 @@ export class SceneScriptGuest implements SceneGuest {
   }
 
   applyWorld(deadlineMs: number): Promise<void> {
-    if (!this.getSystem().hasContentApplyWork()) return Promise.resolve()
-    return this.getSystem().syncRenderer({ deadlineMs })
+    const sys = this.getSystem()
+    if (sys.pendingDiffSize() === 0 && !sys.hasContentApplyWork()) return Promise.resolve()
+    return sys.syncRenderer({ deadlineMs, skipMotion: true })
   }
 }

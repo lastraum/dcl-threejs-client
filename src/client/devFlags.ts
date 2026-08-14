@@ -5,11 +5,13 @@ function readSearchParams(): URLSearchParams | null {
 
 /**
  * Skip remote avatar compose/load (comms may still connect).
- * Default: remotes **ON**. Isolate draw cost with `?noremote`.
+ * Default **on** — remotes are product. Force off with `?noremote` / `?skipremote` for A/B.
+ * `?remotes` / `?withremotes` force on.
  */
 export function skipRemoteAvatars(): boolean {
   const params = readSearchParams()
-  if (params?.has('noremote')) return true
+  if (params?.has('remotes') || params?.has('withremotes')) return false
+  if (params?.has('noremote') || params?.has('skipremote')) return true
   return false
 }
 

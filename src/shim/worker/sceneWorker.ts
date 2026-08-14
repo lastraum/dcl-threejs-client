@@ -130,11 +130,13 @@ import {
   reconcileWorkerAuthoritativeCrdtEgress,
   resetInputModifierEgressBaseline,
   resetWorkerSceneUiCrdtLamport,
+  stripHostOwnedLwwBytes,
   stripRendererHostGrowOnlyAppendsBytes,
   stripSceneUiCrdtBytes,
   stripWorkerAuthoritativeCrdtBytes,
   uiMountSnapshotContentFp
 } from './workerSceneUiCrdtOutbound'
+import { writeHostLwwNoDirty } from './injectHostLww'
 import {
   collectPlayerFrameSnapshot,
   describeWorkerInputModifier,
@@ -297,6 +299,8 @@ let sceneBootInProgress = false
 let sceneEvalInProgress = false
 /** Boot snapshot from main — satisfies crdtGetState during bundle eval without worker↔main RPC. */
 let bootCrdtSnapshot: { hasEntities: boolean; data: Uint8Array[] } | null = null
+/** Live interactable px from main — seed UiCanvasInformation without inventing 1920×1080. */
+let bootCanvas: { width: number; height: number } | null = null
 /** Priority lane messages received while sceneBootInProgress — drained after onStart. */
 const pendingBootPriority: SceneWorkerPriorityMessage[] = []
 /** True after inject until deliver (or fallback) finalizes the batch. */
@@ -1329,7 +1333,10 @@ const PHYSICS_COMBINED_COMPONENT_IDS = new Set([1215, 1216])
  * core::Tween (1102) + TweenSequence (1104) — scene motion / bounce anims.
  * Must not sit in cold CRDT buffer until end-of-frame / serial UI queue (felt as 3–5s lag).
  */
-const PAINT_BOARD_HOT_COMPONENT_IDS = new Set([1017, 1018, 1102, 1104])
+/** Paint boards only — ambient Tween/TweenSequence stay cold (SceneLoop guest clock). */
+const PAINT_BOARD_HOT_COMPONENT_IDS = new Set([1017, 1018])
+/** core::VisibilityComponent — LO() / hide must present; InstancedMesh is off the pose graph. */
+const VISIBILITY_HOT_COMPONENT_IDS = new Set([1081])
 
 function crdtChunkHasComponentIds(data: Uint8Array, ids: ReadonlySet<number>): boolean {
   if (!data.byteLength) return false
@@ -1363,10 +1370,24 @@ function crdtChunkHasPaintBoardMaterial(data: Uint8Array): boolean {
   return crdtChunkHasComponentIds(data, PAINT_BOARD_HOT_COMPONENT_IDS)
 }
 
+function crdtChunkHasVisibility(data: Uint8Array): boolean {
+  return crdtChunkHasComponentIds(data, VISIBILITY_HOT_COMPONENT_IDS)
+}
+
+function crdtChunkIsHotPresent(data: Uint8Array): boolean {
+  return (
+    crdtChunkHasPhysicsCombined(data) ||
+    crdtChunkHasPaintBoardMaterial(data) ||
+    crdtChunkHasVisibility(data)
+  )
+}
+
 /** Phase 3 — coalesced cold CRDT + VC hydrate + player-frame after pollEvents (play mode). */
 function completePlayFrameColdEgress(): void {
-  if (sceneOnUpdatePaused) return
+  // Always publish buffered scene CRDT. Skipping while onUpdate is paused (plaza
+  // hydration) left Visibility PUTs on the worker — pond furniture stayed drawn.
   flushPlayModeColdCrdtEgress(postPlayModeColdCrdtFireAndForget)
+  if (sceneOnUpdatePaused) return
   // Graph-hash hydrate (independent of player-frame change) then IM/MainCamera hot path.
   publishVcBindHydrateIfNeeded()
   publishPlayerFrameIfChanged()
@@ -1463,16 +1484,37 @@ function postVcPoseLive(entity: Entity, tr: {
  * Scenes often gate PE parenting on Transform.has(PlayerEntity). Seed a shell so
  * mid-session equip (weapons, attach props) gets parent=PE instead of a world-space orphan.
  */
-function ensurePlayerEntityTransform(engine: import('@dcl/ecs').IEngine): void {
+function seedReservedTransform(
+  engine: import('@dcl/ecs').IEngine,
+  entity: Entity,
+  position: { x: number; y: number; z: number }
+): void {
   const Transform = extended.Transform(engine)
-  const pe = engine.PlayerEntity as Entity
-  if (Transform.has(pe)) return
-  Transform.createOrReplace(pe, {
-    position: { x: 0, y: 0, z: 0 },
+  if (Transform.has(entity)) return
+  const value = {
+    position,
     rotation: { x: 0, y: 0, z: 0, w: 1 },
     scale: { x: 1, y: 1, z: 1 },
     parent: engine.RootEntity
-  })
+  }
+  writeHostLwwNoDirty(Transform, entity as number, value)
+  if (!Transform.has(entity)) {
+    Transform.createOrReplace(entity, value)
+  }
+}
+
+function ensurePlayerEntityTransform(engine: import('@dcl/ecs').IEngine): void {
+  seedReservedTransform(engine, engine.PlayerEntity as Entity, { x: 0, y: 0, z: 0 })
+}
+
+function ensureCameraEntityTransform(engine: import('@dcl/ecs').IEngine): void {
+  seedReservedTransform(engine, engine.CameraEntity as Entity, { x: 0, y: 1.6, z: 0 })
+}
+
+/** Player=1 / Camera=2 must exist before plaza `Ztt` → fishing `init` (Transform.get). */
+function ensureReservedEntityTransforms(engine: import('@dcl/ecs').IEngine): void {
+  ensurePlayerEntityTransform(engine)
+  ensureCameraEntityTransform(engine)
 }
 
 /** Worker PPI apply logs — off unless `?ppidiag` (spam was a major FPS tax). */
@@ -1515,22 +1557,22 @@ function applyPlayFrameReservedPoses(
     }
   ): void => {
     const prev = Transform.has(entity) ? Transform.get(entity) : undefined
-    Transform.createOrReplace(entity, {
+    writeHostLwwNoDirty(Transform, entity as number, {
       position: pose.position,
       rotation: pose.rotation,
       scale: prev?.scale ?? { x: 1, y: 1, z: 1 },
       parent: sceneEngine!.RootEntity
     })
   }
-  // Always host PE Transform before scene systems parent weapons to PlayerEntity.
-  ensurePlayerEntityTransform(sceneEngine)
+  // Always host PE/Camera Transform before scene systems parent weapons to PlayerEntity.
+  ensureReservedEntityTransforms(sceneEngine)
   if (player) write(sceneEngine.PlayerEntity as Entity, player)
   if (camera) write(sceneEngine.CameraEntity as Entity, camera)
   // Live cursor ray before systems — fishing bobber aim reads PrimaryPointerInfo each tick.
   if (primaryPointer) {
     preregisterRendererInjectedComponents(sceneEngine)
     const PrimaryPointerInfo = generated.PrimaryPointerInfo(sceneEngine)
-    PrimaryPointerInfo.createOrReplace(sceneEngine.RootEntity as Entity, {
+    writeHostLwwNoDirty(PrimaryPointerInfo, sceneEngine.RootEntity as number, {
       pointerType: primaryPointer.pointerType,
       screenCoordinates: primaryPointer.screenCoordinates,
       screenDelta: primaryPointer.screenDelta,
@@ -1767,6 +1809,7 @@ initSceneEngineScheduler({
     clearInjectOnlySdkPollEventsDeferred()
   },
   onAfterEngineTick: () => {
+    flushPlayModeColdCrdtEgress(postPlayModeColdCrdtFireAndForget)
     publishVcBindHydrateIfNeeded()
     publishPlayerFrameIfChanged()
     publishVcPoseLiveEgress()
@@ -1791,6 +1834,7 @@ initSceneEngineScheduler({
       sceneUpdatePromiseActive = false
     }
     completePlayFrameColdEgress()
+    ctx.postMessage({ type: 'play-frame-done' } satisfies SceneWorkerOutbound)
   },
   onInjectOnlyUiPointerTickDone: () => {
     markDeferSdkPollEventsAfterInjectUiClick()
@@ -3482,7 +3526,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
   // Post-onStart: empty nudges are fire-and-forget; non-empty awaits crdt-outbound-ack.
   if (sceneOnStartComplete && !sceneBootInProgress) {
     if (!shouldAttachUiMountSnapshot() && copy.byteLength > 0) {
-      const stripped = stripSceneUiCrdtBytes(copy)
+      const stripped = stripHostOwnedLwwBytes(stripSceneUiCrdtBytes(copy))
       if (!stripped.byteLength) {
         note(false, 'strip-ui', 0)
         return Promise.resolve([])
@@ -3501,9 +3545,22 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
         return Promise.resolve([])
       }
     }
+    // Visibility / impulse / paint: present now. Do not wait for play-frame flush
+    // (skipped during hydration) or a pointer-session defer.
+    if (copy.byteLength > 0 && crdtChunkIsHotPresent(copy)) {
+      const hot = stripHostOwnedLwwBytes(stripSceneUiCrdtBytes(copy))
+      if (hot.byteLength) {
+        const outLen = hot.byteLength
+        const path: CrdtSendPath = crdtChunkHasVisibility(hot) ? 'hot-vis' : 'hot-phys'
+        flushPlayModeColdCrdtEgress(postPlayModeColdCrdtFireAndForget)
+        postPlayModeColdCrdtFireAndForget(hot)
+        note(false, path, outLen)
+        return Promise.resolve([])
+      }
+    }
     if (shouldDeferPointerOutbound()) {
       if (copy.byteLength > 0) {
-        const nonUi = stripSceneUiCrdtBytes(copy)
+        const nonUi = stripHostOwnedLwwBytes(stripSceneUiCrdtBytes(copy))
         if (nonUi.byteLength) pointerDeferredNonUi.push(nonUi)
       }
       note(false, 'defer-ptr', 0)
@@ -3543,8 +3600,8 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
     }
     if (attachUiMount) lastOutboundUiEntitiesKey = uiKey
     // Prefer structured snapshot; strip wire Ui* so main does not double-apply partial shells.
-    if (attachUiMount && uiMountSnapshot?.length) {
-      copy = stripSceneUiCrdtBytes(copy).slice()
+    if (attachUiMount) {
+      copy = stripHostOwnedLwwBytes(stripSceneUiCrdtBytes(copy)).slice()
     }
     if (copy.byteLength === 0) {
       logSceneUiOutbound(copy, uiEntities, uiMountSnapshot?.length ?? 0)
@@ -3564,15 +3621,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
     // Physics force/impulse + Material/MeshRenderer paint boards must not wait for the
     // next cooperative tick / empty UI serial queue (pixelwars felt 3–5s recolor lag).
     if (!sceneOnUpdatePaused) {
-      // Capture length before postMessage transfer detaches the ArrayBuffer (was logging b=0).
       const outLen = copy.byteLength
-      if (crdtChunkHasPhysicsCombined(copy) || crdtChunkHasPaintBoardMaterial(copy)) {
-        // Preserve order: flush any buffered cold CRDT first, then this hot chunk now.
-        flushPlayModeColdCrdtEgress(postPlayModeColdCrdtFireAndForget)
-        postPlayModeColdCrdtFireAndForget(copy)
-        note(false, 'hot-phys', outLen)
-        return Promise.resolve([])
-      }
       bufferPlayModeColdCrdt(copy)
       note(false, 'cold', outLen)
       return Promise.resolve([])
@@ -4037,9 +4086,10 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     return
   }
   workerLog('log', '[sceneWorker] sceneEngine ok after onStart')
-  // Scenes that call setUiRenderer(fn) without virtualWidth/Height never trip the
-  // virtual-canvas hook — seed Explorer-default canvas so react-ecs can paint.
-  seedWorkerUiCanvasInformation(sceneEngine, 1920, 1080)
+  // Before the boot tick: plaza fetch-pages → Ztt → fishing init does Transform.get(PlayerEntity).
+  ensureReservedEntityTransforms(sceneEngine)
+  // Pre-7.26 scenes omit virtualWidth/Height — seed the live canvas, never 1920×1080.
+  if (bootCanvas) seedWorkerUiCanvasInformation(sceneEngine, bootCanvas.width, bootCanvas.height)
   try {
     guardVideoPlayerGetMutable(sceneEngine)
   } catch (err) {
@@ -4139,7 +4189,7 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
   // Scene main() often creates VC entities; ensure CameraEntity hosts MainCamera so systems that
   // gate on MainCamera.has(CameraEntity) can assign virtualCameraEntity on first tick.
   ensureMainCameraOnCameraEntity(sceneEngine)
-  ensurePlayerEntityTransform(sceneEngine)
+  ensureReservedEntityTransforms(sceneEngine)
 
   if (exports.onUpdate) {
     try {
@@ -4254,13 +4304,17 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     // Dedicated pump bypasses pointer session while still avoiding mid-inject races.
     if (portableExperienceWorker && sceneEngine && !sceneOnUpdatePaused) {
       void runPeVehicleInputPump()
+      ctx.postMessage({ type: 'play-frame-done' } satisfies SceneWorkerOutbound)
       return
     }
     // COD B1: play-frame is the sole cooperative clock. Always request eng.update when
     // scene is not fully paused. pointerBlocksTick() only defers mid-inject — not sessions.
     // Do not gate on sceneUpdateInFlight (poll is outside eng.update flight).
     if (sceneEngine && !sceneOnUpdatePaused) {
-      requestSceneEngineTick()
+      const tickReq = requestSceneEngineTick()
+      if (tickReq === 'idle') {
+        ctx.postMessage({ type: 'play-frame-done' } satisfies SceneWorkerOutbound)
+      }
       // If inject is mid-flight, request queues; still keep VC live poses hot.
       if (pointerDeliveryInFlight || pointerDeliverBatchOpen || pendingInjectPointer) {
         if (sceneOnStartComplete) {
@@ -4268,6 +4322,8 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
           publishVcPoseLiveIfBound()
         }
       }
+    } else {
+      ctx.postMessage({ type: 'play-frame-done' } satisfies SceneWorkerOutbound)
     }
     return
   }
@@ -4491,6 +4547,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
           data: msg.scene.bootCrdtSnapshot.data.map((chunk) => chunk.slice())
         }
       : null
+    bootCanvas =
+      msg.canvas && msg.canvas.width > 0 && msg.canvas.height > 0
+        ? { width: Math.floor(msg.canvas.width), height: Math.floor(msg.canvas.height) }
+        : null
 
     let code: string
     const scriptSource = msg.scene.scriptBlobUrl ?? msg.scene.scriptUrl
@@ -4658,6 +4718,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     sceneEngine = resolveSceneEngine(exports)
     bindSceneEngineScheduler(sceneEngine)
     if (sceneEngine) {
+      ensureReservedEntityTransforms(sceneEngine)
       try {
         preregisterRendererInjectedComponents(sceneEngine)
       } catch (err) {
@@ -4785,6 +4846,7 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
       'log',
       `[sceneWorker] scene onUpdate ${sceneOnUpdatePaused ? 'paused (hydration)' : 'resumed'}`
     )
+    if (!sceneOnUpdatePaused && wasPaused) completePlayFrameColdEgress()
     return
   }
   if (msg.type === 'inject-pointer-click') {

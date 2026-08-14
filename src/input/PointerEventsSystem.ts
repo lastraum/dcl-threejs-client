@@ -15,8 +15,8 @@ import {
 import type { CollisionSystem } from '../collision/CollisionSystem'
 import { ColliderLayer } from '../collision/ColliderLayer'
 import { isGltfInvisibleColliderMesh } from '../collision/gltfColliderNaming'
-import { collectGltfPointerTargetMeshes } from '../collision/gltfPointerMeshes'
-import { PointerHighlightFeedback } from './PointerHighlightFeedback'
+import { collectGltfPointerTargetMeshes, gltfEntityDrawRoot } from '../collision/gltfPointerMeshes'
+import { PointerHighlightFeedback, pointerShowHighlight } from './PointerHighlightFeedback'
 import { PointerHoverFeedback } from './PointerHoverFeedback'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { findPeerPillAtPointer, tryOpenPeerContextMenu } from '../client/ui/overlayHitTest'
@@ -95,6 +95,8 @@ type PointerDeps = {
   resolveMeshRendererInstanceHit?: (mesh: THREE.Object3D, instanceId: number) => Entity | null
   /** Unique InstancedMeshes that host PointerEvents entities (raycast targets). */
   getMeshRendererInstancePointerMeshes?: () => THREE.Object3D[]
+  /** InstancedMeshes for this PE set only — never the full board. */
+  getInstancePointerMeshesFor?: (entities: Iterable<Entity>) => THREE.Object3D[]
   /**
    * Promote PE MeshRenderer/GLTF instances to private leaves before target collect.
    * Shared by hover tooltips and click (same raycast path).
@@ -108,6 +110,17 @@ const _camPos = new THREE.Vector3()
 const _playerPos = new THREE.Vector3()
 const _entityPos = new THREE.Vector3()
 const _worldNormal = new THREE.Vector3()
+/** Do not raycast plaza-wide PE (576 entities / 812 meshes). Fishing / click stay inside this. */
+const POINTER_TARGET_KEEP_M = 40
+const POINTER_TARGET_KEEP_M2 = POINTER_TARGET_KEEP_M * POINTER_TARGET_KEEP_M
+
+/** DrawWorld parents `__mesh_*` under drawRoot — pose children are empty. */
+function poseDrawVisual(
+  obj: THREE.Object3D | undefined,
+  entity?: Entity
+): THREE.Object3D | undefined {
+  return gltfEntityDrawRoot(obj, entity)
+}
 
 /** Unity splits raycast (`PointerEventsController`) from result writer (`ECSPointerInputSystem`); we combine both here. */
 export class PointerEventsSystem {
@@ -125,6 +138,11 @@ export class PointerEventsSystem {
   private screenDx = 0
   private screenDy = 0
   private pointerDirty = true
+  /** Last hover raycast. Move only refreshes coords; prepare runs on edges + this cadence. */
+  private lastHoverPrepareAt = 0
+  private hoverScreenX = Number.NaN
+  private hoverScreenY = Number.NaN
+  private static readonly HOVER_PREPARE_MS = 80
   private primaryKeyDown = false
   private readonly pendingPointerDown = new Map<InputActionValue, PointerHit | null>()
   private readonly pendingPointerUp = new Set<InputActionValue>()
@@ -150,6 +168,14 @@ export class PointerEventsSystem {
   private readonly uiPointerButtons = new Set<InputActionValue>()
 
   private lastPrimaryInfoKey = ''
+  private lastPpiSnapshot: {
+    pointerType: number
+    screenCoordinates: { x: number; y: number }
+    screenDelta: { x: number; y: number }
+    worldRayDirection: { x: number; y: number; z: number }
+  } | null = null
+  private readonly lastPpiCamElements = new Float32Array(16)
+  private lastPpiScreenKey = ''
   /**
    * PPI diagnostic lines — **off by default** (alsoConsole spam tanked FPS at clubhouse).
    * Enable with `?ppidiag=1` for fishing aim debugging only.
@@ -253,14 +279,21 @@ export class PointerEventsSystem {
    * Phase C — true when matrix/collider prepare is needed before raycast/hover.
    * Avoids full scene-graph flush every frame while the pointer is idle.
    */
-  needsRaycastPrepare(tickNumber: number): boolean {
+  needsRaycastPrepare(_tickNumber: number): boolean {
     if (!this.deps) return false
     if (this.pointerDirty || this.primaryKeyDown) return true
     if (this.hasPendingInput()) return true
-    if (document.pointerLockElement === this.canvas) return true
-    // Periodic hover refresh while looking around without mouse events (rare).
-    if (tickNumber % 3 === 0) return true
-    return false
+    const locked = document.pointerLockElement === this.canvas
+    // Unlocked: only re-hover when the cursor actually moved. Locked look uses the
+    // 80 ms cadence because screen coords stay centered while the camera turns.
+    if (
+      !locked &&
+      this.screenX === this.hoverScreenX &&
+      this.screenY === this.hoverScreenY
+    ) {
+      return false
+    }
+    return performance.now() - this.lastHoverPrepareAt >= PointerEventsSystem.HOVER_PREPARE_MS
   }
 
   /** Tooltip + mesh highlight only (no CRDT). */
@@ -280,6 +313,9 @@ export class PointerEventsSystem {
 
     const hit = this.computeCurrentHit()
     this.lastHit = hit
+    this.lastHoverPrepareAt = performance.now()
+    this.hoverScreenX = this.screenX
+    this.hoverScreenY = this.screenY
 
     if (!hit) {
       this.hoverFeedback.hide()
@@ -413,7 +449,6 @@ export class PointerEventsSystem {
     this.screenDy += e.movementY
     this.screenX = e.clientX
     this.screenY = e.clientY
-    this.pointerDirty = true
   }
 
   /**
@@ -432,7 +467,6 @@ export class PointerEventsSystem {
     }
     this.screenX = e.clientX
     this.screenY = e.clientY
-    this.pointerDirty = true
   }
 
   private onPointerDown = (e: PointerEvent): void => {
@@ -558,6 +592,7 @@ export class PointerEventsSystem {
     }
     if (this.uiPointerButtons.has(button)) return
     this.pendingPointerUp.add(button)
+    this.pointerDirty = true
     this.deps.flushPointerCrdt?.()
   }
 
@@ -1354,11 +1389,12 @@ export class PointerEventsSystem {
 
     if (ecs.GltfContainer.has(visualEntity)) {
       const obj = nodes.get(visualEntity)
-      const gltfRoot = obj?.children.find((c) => c.name.startsWith('__mesh_'))
-      if (gltfRoot) {
+      const gltfRoot = poseDrawVisual(obj, visualEntity) ?? obj
+      if (gltfRoot && !obj?.userData.dclInstanced) {
         gltfRoot.traverse((node) => {
           if (!(node instanceof THREE.Mesh) || !node.geometry) return
           if (node.name === '__pointer_highlight__') return
+          if ((node as THREE.InstancedMesh).isInstancedMesh) return
           if (isGltfInvisibleColliderMesh(node, gltfRoot)) return
           if (node.visible === false) return
           meshes.push(node)
@@ -1368,7 +1404,7 @@ export class PointerEventsSystem {
 
     if (!meshes.length && ecs.MeshRenderer.has(visualEntity)) {
       const obj = nodes.get(visualEntity)
-      const primitive = obj?.getObjectByName(`__mesh_${visualEntity}`)
+      const primitive = poseDrawVisual(obj, visualEntity)
       if (primitive instanceof THREE.Mesh && primitive.geometry) meshes.push(primitive)
     }
 
@@ -1380,13 +1416,25 @@ export class PointerEventsSystem {
     const { ecs, getEntityNodes } = this.deps
     const nodes = getEntityNodes()
     this.pointerTargets.length = 0
+    const feet = this.deps.getPlayerPosition()
+    if (feet) _playerPos.copy(feet)
 
     for (const entity of this.pointerEntitySet) {
+      if (feet) {
+        const obj = nodes.get(entity)
+        if (obj) {
+          obj.getWorldPosition(_entityPos)
+          const dx = _entityPos.x - _playerPos.x
+          const dy = _entityPos.y - _playerPos.y
+          const dz = _entityPos.z - _playerPos.z
+          if (dx * dx + dy * dy + dz * dz > POINTER_TARGET_KEEP_M2) continue
+        }
+      }
       if (ecs.GltfContainer.has(entity)) {
         const obj = nodes.get(entity)
         // GPU-instanced GLTF: empty marker only — InstancedMeshes added below for raycast.
         if (!obj?.userData.dclInstanced) {
-          const gltfRoot = obj?.children.find((c) => c.name.startsWith('__mesh_'))
+          const gltfRoot = poseDrawVisual(obj, entity)
           if (gltfRoot) {
             collectGltfPointerTargetMeshes(
               gltfRoot,
@@ -1422,8 +1470,7 @@ export class PointerEventsSystem {
 
       if (ecs.MeshRenderer.has(entity)) {
         const obj = nodes.get(entity)
-        const mk = `__mesh_${entity}`
-        const primitive = obj?.getObjectByName(mk)
+        const primitive = poseDrawVisual(obj, entity)
         // Private MeshRenderer (textured / PE) — direct raycast target.
         // Marker-only instanced leaves use dclMeshRendererInstance (GPU InstancedMesh below).
         if (primitive instanceof THREE.Mesh && !primitive.userData.dclMeshRendererInstance) {
@@ -1438,20 +1485,33 @@ export class PointerEventsSystem {
       this.collectDescendantPointerTargets(entity, ecs, nodes)
     }
 
-    // Only pull GPU InstancedMeshes when a PE entity is actually instanced.
-    // Unconditionally adding every board InstancedMesh (10k+ tile slots × leaves)
-    // made every WASD/click raycast the entire land grid → main-thread freezes.
-    // Step-on boards (pixelwars) do not need PE on each tile.
-    let needInstanceRaycast = false
-    for (const entity of this.pointerEntitySet) {
+    // Instance raycast for PE entities and instanced Gltf/MeshRenderer descendants
+    // (asset-pack sit/sign: PE on parent, Gltf on child). Never dump the full board.
+    const instanceEntities: Entity[] = []
+    const seenInst = new Set<Entity>()
+    const addIfInstanced = (entity: Entity): void => {
+      if (seenInst.has(entity)) return
       const obj = nodes.get(entity)
       if (obj?.userData.dclInstanced || obj?.userData.dclMeshRendererInstanced) {
-        needInstanceRaycast = true
-        break
+        seenInst.add(entity)
+        instanceEntities.push(entity)
       }
     }
-    if (needInstanceRaycast) {
-      const instMeshes = this.deps.getMeshRendererInstancePointerMeshes?.() ?? []
+    for (const entity of this.pointerEntitySet) {
+      addIfInstanced(entity)
+      const stack = [...(this.childrenByParent.get(entity) ?? [])]
+      while (stack.length) {
+        const child = stack.pop()!
+        addIfInstanced(child)
+        const next = this.childrenByParent.get(child)
+        if (next) stack.push(...next)
+      }
+    }
+    if (instanceEntities.length) {
+      const instMeshes =
+        this.deps.getInstancePointerMeshesFor?.(instanceEntities) ??
+        this.deps.getMeshRendererInstancePointerMeshes?.() ??
+        []
       for (const mesh of instMeshes) {
         this.pointerTargets.push(mesh)
       }
@@ -1479,7 +1539,7 @@ export class PointerEventsSystem {
 
       if (ecs.GltfContainer.has(child)) {
         const obj = nodes.get(child)
-        const gltfRoot = obj?.children.find((c) => c.name.startsWith('__mesh_'))
+        const gltfRoot = poseDrawVisual(obj, child)
         if (gltfRoot) {
           collectGltfPointerTargetMeshes(
             gltfRoot,
@@ -1493,7 +1553,7 @@ export class PointerEventsSystem {
 
       if (ecs.MeshRenderer.has(child)) {
         const obj = nodes.get(child)
-        const primitive = obj?.getObjectByName(`__mesh_${child}`)
+        const primitive = poseDrawVisual(obj, child)
         if (primitive instanceof THREE.Mesh && !primitive.userData.dclMeshRendererInstance) {
           primitive.userData.entity = child
           this.pointerTargets.push(primitive)
@@ -1804,8 +1864,8 @@ export class PointerEventsSystem {
   } {
     const worldDir = _ray.direction.clone()
     const dclDir = threeToDclVec(worldDir)
-    // Virtual canvas space (default 1920×1080) — matches UiCanvasInformation so scene
-    // systems that rebuild rays from screenCoordinates + canvas size stay consistent.
+    // Virtual canvas space — matches UiCanvasInformation so scene systems that
+    // rebuild rays from screenCoordinates + canvas size stay consistent.
     const screen = this.screenCoordinatesInVirtualCanvas()
     // Explorer/Unity: +screenDelta.y = cursor moved toward top of screen.
     // DOM movementY is opposite (positive = move down) — invert for parity.
@@ -1833,9 +1893,10 @@ export class PointerEventsSystem {
     const rect = this.canvas.getBoundingClientRect()
     const w = Math.max(1, rect.width)
     const h = Math.max(1, rect.height)
-    // Prefer live UiCanvasInformation when present; fall back to Explorer default.
-    let vw = 1920
-    let vh = 1080
+    // Prefer live UiCanvasInformation. Pre-7.26 scenes omit virtual size — use the
+    // canvas box (not SDK 7.26's 1920×1080 default).
+    let vw = Math.max(1, Math.round(w))
+    let vh = Math.max(1, Math.round(h))
     const canvasInfo = this.deps?.ecs.UiCanvasInformation?.getOrNull?.(
       this.deps.view.RootEntity
     ) as { width?: number; height?: number } | null | undefined
@@ -1868,21 +1929,36 @@ export class PointerEventsSystem {
     worldRayDirection: { x: number; y: number; z: number }
   } | null {
     if (!this.deps) return null
-    // Ensure _ray is fresh for this rAF even when no CRDT outbound ran.
-    this.refreshPointerRay(this.deps.camera)
+    const camera = this.deps.camera
+    camera.updateMatrixWorld(true)
+    const el = camera.matrixWorld.elements
+    const screenKey = `${this.screenX.toFixed(1)}|${this.screenY.toFixed(1)}|${this.screenDx}|${this.screenDy}`
+    let camSame = this.lastPpiSnapshot != null
+    if (camSame) {
+      for (let i = 0; i < 16; i++) {
+        if (Math.abs(el[i] - this.lastPpiCamElements[i]) > 1e-6) {
+          camSame = false
+          break
+        }
+      }
+    }
+    if (!camSame || screenKey !== this.lastPpiScreenKey) {
+      this.refreshPointerRay(camera)
+      this.lastPpiCamElements.set(el)
+      this.lastPpiScreenKey = screenKey
+    }
     // Consume deltas here (once per play frame) so worker embed gets non-zero screenDelta
     // for DecentraCraft VC drag/edge pan. syncInput earlier this frame uses consume=false.
     const info = this.buildPrimaryPointerInfo(true)
-    const { ecs, view } = this.deps
+    this.lastPpiSnapshot = info
     const d = info.worldRayDirection
     const key =
       `${info.screenCoordinates.x.toFixed(1)}|${info.screenCoordinates.y.toFixed(1)}|` +
       `${info.screenDelta.x}|${info.screenDelta.y}|${this.lastHit?.entity ?? ''}|` +
       `${d.x.toFixed(3)}|${d.y.toFixed(3)}|${d.z.toFixed(3)}`
-    if (key !== this.lastPrimaryInfoKey) {
-      this.lastPrimaryInfoKey = key
-      ecs.PrimaryPointerInfo.createOrReplace(view.RootEntity, info)
-    }
+    // Play-frame embed is the guest source. Do not dirty host PPI every look —
+    // that was identity echo back through renderer-inbound-deliver.
+    this.lastPrimaryInfoKey = key
     this.maybeLogPrimaryPointer(info)
     return info
   }
@@ -2098,7 +2174,7 @@ function pointerHighlightInRange(
     if ((entry.interactionType ?? InteractionType.CURSOR) !== InteractionType.CURSOR) continue
     const info = entry.eventInfo
     if (info?.showFeedback === false) continue
-    if (info?.showHighlight === false) continue
+    if (!pointerShowHighlight(info)) continue
     if (entryPassesDistance(entry, cameraDistance, playerDistance)) return true
   }
   return false
@@ -2144,35 +2220,22 @@ function buildSyntheticProximityHit(
 }
 
 /**
- * Camera maxDistance first; then player distance.
- * Top-down / VirtualCamera strategy games (DecentraCraft y≈26 lens) make cameraDistance
- * far larger than maxDistance (often 10) while the avatar is still next to the unit —
- * prefer playerDistance when the lens is clearly elevated above the player.
+ * PointerEvents range is avatar→hit (SDK `maxDistance` default 10).
+ * The aim ray still originates at the camera; only the gate uses player distance.
+ * 3rd-person lens is 5–8m behind the avatar — cameraDistance would fail a 10m PE
+ * on a prop next to the player.
  */
 function entryPassesDistance(
   entry: Readonly<PBPointerEvents_Entry>,
-  cameraDistance: number,
+  _cameraDistance: number,
   playerDistance: number
 ): boolean {
-  const maxDistance = entry.eventInfo?.maxDistance
+  const maxDistance = entry.eventInfo?.maxDistance ?? 10
+  if (playerDistance > maxDistance) return false
   const maxPlayerDistance = entry.eventInfo?.maxPlayerDistance
-
-  if (maxDistance !== undefined) {
-    if (cameraDistance <= maxDistance) return true
-    const playerLimit =
-      maxPlayerDistance !== undefined && maxPlayerDistance > 0 ? maxPlayerDistance : maxDistance
-    if (playerDistance <= playerLimit) return true
-    // Elevated lens: camera is high above feet — treat as top-down and use player range only.
-    if (cameraDistance > playerDistance + 8 && playerDistance <= Math.max(playerLimit, 16)) {
-      return true
-    }
+  if (maxPlayerDistance !== undefined && maxPlayerDistance > 0 && playerDistance > maxPlayerDistance) {
     return false
   }
-
-  if (maxPlayerDistance !== undefined && maxPlayerDistance > 0) {
-    return playerDistance <= maxPlayerDistance
-  }
-
   return true
 }
 

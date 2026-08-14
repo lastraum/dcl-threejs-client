@@ -25,21 +25,92 @@ export function gltfInvisibleMeshPointerEnabled(gltfData: GltfCollisionMaskSourc
   return hasColliderLayer(invisibleMask, ColliderLayer.CL_POINTER)
 }
 
+/** DrawWorld parents `__mesh_*` under drawRoot — pose children are empty. */
+export function gltfEntityDrawRoot(
+  obj: THREE.Object3D | undefined,
+  entity?: Entity
+): THREE.Object3D | undefined {
+  if (!obj) return undefined
+  const drawn = obj.userData.dclDrawVisual as THREE.Object3D | undefined
+  if (drawn) return drawn
+  if (entity !== undefined) {
+    const named = obj.getObjectByName(`__mesh_${entity}`)
+    if (named) return named
+  }
+  return obj.children.find((c) => c.name.startsWith('__mesh_'))
+}
+
+export function gltfVisibleMeshLayerEnabled(
+  gltfData: GltfCollisionMaskSource,
+  layerMask: number
+): boolean {
+  const visibleMask = gltfData.visibleMeshesCollisionMask ?? 0
+  return hasColliderLayer(visibleMask, layerMask)
+}
+
+export function gltfInvisibleMeshLayerEnabled(
+  gltfData: GltfCollisionMaskSource,
+  layerMask: number
+): boolean {
+  const invisibleMask =
+    gltfData.invisibleMeshesCollisionMask ?? (ColliderLayer.CL_POINTER | ColliderLayer.CL_PHYSICS)
+  return hasColliderLayer(invisibleMask, layerMask)
+}
+
 /**
- * Push GLTF mesh raycast targets honoring DCL visible/invisible collision masks.
- *
- * Hidden `_collider` meshes (`visible=false`) with CL_POINTER are included; the pointer
- * raycaster temporarily unhides for THREE.Raycaster (skips invisible objects).
+ * Scene `Raycast` / any-layer query — include visible/invisible Gltf meshes whose
+ * authored collision mask intersects `layerMask`. Not PhysX: CUSTOM* hulls stay
+ * query-only so they never become walk surfaces.
  */
+export function collectGltfLayerTargetMeshes(
+  gltfRoot: THREE.Object3D,
+  gltfData: GltfCollisionMaskSource,
+  entity: Entity,
+  layerMask: number,
+  out: THREE.Object3D[]
+): void {
+  const includeVisible = gltfVisibleMeshLayerEnabled(gltfData, layerMask)
+  const includeInvisible = gltfInvisibleMeshLayerEnabled(gltfData, layerMask)
+  if (!includeVisible && !includeInvisible) return
+
+  gltfRoot.traverse((node) => {
+    if (!(node instanceof THREE.Mesh)) return
+    if (isGltfInvisibleColliderMesh(node, gltfRoot)) {
+      if (!includeInvisible) return
+    } else if (isGltfVisibleClassMesh(node, gltfRoot)) {
+      if (!includeVisible) return
+      if (node.visible === false) return
+    } else {
+      if (!includeVisible) return
+      if (node.visible === false) return
+    }
+    node.userData.entity = entity
+    out.push(node)
+  })
+}
+
+function gltfHasInvisibleColliderMesh(gltfRoot: THREE.Object3D): boolean {
+  let found = false
+  gltfRoot.traverse((node) => {
+    if (found || !(node instanceof THREE.Mesh)) return
+    if (isGltfInvisibleColliderMesh(node, gltfRoot)) found = true
+  })
+  return found
+}
+
 export function collectGltfPointerTargetMeshes(
   gltfRoot: THREE.Object3D,
   gltfData: GltfCollisionMaskSource,
   entity: Entity,
-  _pointerEventsRegistered: boolean,
+  pointerEventsRegistered: boolean,
   out: THREE.Object3D[]
 ): void {
-  const includeVisible = gltfVisibleMeshesPointerEnabled(gltfData)
   const invisiblePointer = gltfInvisibleMeshPointerEnabled(gltfData)
+  const hasInvisibleHull = invisiblePointer && gltfHasInvisibleColliderMesh(gltfRoot)
+  // Visible art: authored CL_POINTER, or PE with no `_collider` hull (How To Play).
+  // Do not include visible water/pond art when invisible CL_POINTER hulls exist —
+  // a scale-18 water plane would steal every nearby PE (How To Play, inventory).
+  const includeVisible = gltfVisibleMeshesPointerEnabled(gltfData) || (pointerEventsRegistered && !hasInvisibleHull)
 
   gltfRoot.traverse((node) => {
     if (!(node instanceof THREE.Mesh)) return

@@ -3,6 +3,7 @@ import type { Entity } from '@dcl/ecs'
 import type { PBGltfNodeModifiers } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/gltf_node_modifiers.gen'
 import {
   meshUvMapsUMirroredHorizontal,
+  poseAwareMirrorX,
   type MaterialApplier,
   type PbMaterial
 } from './material/MaterialApplier'
@@ -11,6 +12,8 @@ import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
 const ORIG_MAT_KEY = 'dclGltfNodeModOriginalMaterial'
 const ORIG_CAST_KEY = 'dclGltfNodeModOriginalCastShadow'
 const APPLIED_SIG_KEY = 'dclGltfNodeModAppliedSig'
+/** One console line per missing path (plaza fishing stalls share `bobber_color`). */
+const loggedMissingPaths = new Set<string>()
 
 /**
  * Resolve GLTF meshes under an entity for GltfNodeModifiers.path.
@@ -110,10 +113,11 @@ export async function applyGltfNodeModifiersToEntity(
     if (!targets.length) {
       if (mod.material || mod.castShadows !== undefined) {
         allOk = false
-        if (opts?.logPathMiss) {
+        const missKey = String(mod.path ?? '')
+        if (opts?.logPathMiss && !loggedMissingPaths.has(missKey)) {
+          loggedMissingPaths.add(missKey)
           console.warn(
-            '[GltfNodeModifiers] path not found on entity',
-            opts.entity,
+            '[GltfNodeModifiers] path not found',
             JSON.stringify(mod.path),
             'valid:',
             listValidMeshPaths(entityRoot).slice(0, 24)
@@ -160,7 +164,7 @@ export async function applyGltfNodeModifiersToEntity(
 /** Compact UV-mirror × world-reflection fingerprint for each mesh under root. */
 function meshMirrorKey(root: THREE.Object3D): string {
   const parts: string[] = []
-  root.traverse((obj) => {
+  gltfVisualRoot(root).traverse((obj) => {
     if (!(obj as THREE.Mesh).isMesh) return
     const mesh = obj as THREE.Mesh
     const uvM = meshUvMirroredOnX(mesh) ? '1' : '0'
@@ -176,19 +180,12 @@ function meshUvMirroredOnX(mesh: THREE.Mesh): boolean {
 }
 
 function objectScaleMirrorX(obj: THREE.Object3D): boolean {
-  // Match MaterialApplier.objectWorldMirrorX — scale.x product only (not det).
-  let sx = 1
-  let o: THREE.Object3D | null = obj
-  for (let i = 0; i < 48 && o; i++) {
-    sx *= o.scale.x
-    o = o.parent
-  }
-  return sx < 0
+  return poseAwareMirrorX(obj)
 }
 
 /** Restore materials/castShadows cached before the first GltfNodeModifiers apply. */
 export function restoreGltfNodeModifierOriginals(entityRoot: THREE.Object3D): void {
-  entityRoot.traverse((obj) => {
+  gltfVisualRoot(entityRoot).traverse((obj) => {
     if (!(obj as THREE.Mesh).isMesh) return
     const mesh = obj as THREE.Mesh
     if (mesh.userData[ORIG_MAT_KEY] !== undefined) {
@@ -250,6 +247,8 @@ function namesEqual(a: string, b: string, ignoreCase: boolean): boolean {
 }
 
 function gltfVisualRoot(entityRoot: THREE.Object3D): THREE.Object3D {
+  const drawn = entityRoot.userData.dclDrawVisual as THREE.Object3D | undefined
+  if (drawn) return drawn
   return entityRoot.children.find((c) => c.name.startsWith('__mesh_')) ?? entityRoot
 }
 

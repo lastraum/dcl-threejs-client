@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import type { AssetCache } from '../../rendering/AssetCache'
-import { dclToThreePos, dclToThreeQuat } from '../../bridge/dclTransform'
+import { dclToThreePos } from '../../bridge/dclTransform'
 import { parseParcelKey } from '../content/parseParcel'
 import { PARCEL_SIZE } from '../content/types'
 import { catalystContentAssetUrl } from '../../network/catalyst/CatalystClient'
@@ -210,14 +210,6 @@ export function neighborOriginOffset(
   }
 }
 
-function hideColliderMeshes(root: THREE.Object3D): void {
-  root.traverse((node) => {
-    if (node instanceof THREE.Mesh && /collider/i.test(node.name)) {
-      node.visible = false
-    }
-  })
-}
-
 /** Neighbor-local Gltf placement (from composite parse or first-frame ECS snapshot). */
 export type GltfPlacement = {
   src: string
@@ -227,11 +219,10 @@ export type GltfPlacement = {
 }
 
 /**
- * Build a Three group of cloned GLBs for a neighbor scene (render-only).
+ * One far proxy for a neighbor (AABB of composite placements). No GLB clones.
  *
- * Placements are **neighbor scene-local DCL** (same space as a primary load of that
- * scene). The whole group is shifted by (neighborBase − primaryBase) so it sits
- * correctly in the primary's scene graph.
+ * Placements are neighbor scene-local DCL. The group is shifted by
+ * (neighborBase − primaryBase) so it sits in the primary graph.
  */
 export async function buildPlacementVisualGroup(opts: {
   cache: AssetCache
@@ -252,43 +243,57 @@ export async function buildPlacementVisualGroup(opts: {
   const originOffset = neighborOriginOffset(opts.neighborBase, opts.primaryBase)
   dclToThreePos(originOffset.x, 0, originOffset.z, group.position)
 
-  const max = opts.maxGltfs ?? 80
-  const slice = opts.placements.slice(0, max)
   const skipGround = opts.skipGroundGlbs === true
-
-  const quat = new THREE.Quaternion()
   const pos = new THREE.Vector3()
+  const box = new THREE.Box3()
+  let any = false
+  for (const place of opts.placements) {
+    if (skipGround && isAoiSecondaryGroundSrc(place.src)) continue
+    dclToThreePos(place.position.x, place.position.y, place.position.z, pos)
+    const ext = Math.max(2, Math.abs(place.scale.x), Math.abs(place.scale.z)) * 2
+    box.expandByPoint(pos)
+    box.expandByPoint(new THREE.Vector3(pos.x + ext, pos.y + ext, pos.z + ext))
+    box.expandByPoint(new THREE.Vector3(pos.x - ext, pos.y, pos.z - ext))
+    any = true
+  }
+  if (any && !box.isEmpty()) {
+    const size = new THREE.Vector3()
+    const center = new THREE.Vector3()
+    box.getSize(size)
+    box.getCenter(center)
+    const mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        Math.max(8, size.x),
+        Math.max(4, size.y),
+        Math.max(8, size.z)
+      ),
+      new THREE.MeshLambertMaterial({
+        color: 0x6a7a68,
+        transparent: true,
+        opacity: 0.45,
+        depthWrite: false
+      })
+    )
+    mesh.name = 'aoi-far-proxy'
+    mesh.position.copy(center)
+    mesh.castShadow = false
+    mesh.receiveShadow = true
+    mesh.frustumCulled = true
+    mesh.updateMatrix()
+    group.add(mesh)
+  }
 
-  await Promise.all(
-    slice.map(async (place) => {
-      if (skipGround && isAoiSecondaryGroundSrc(place.src)) return
-      const resolved = resolveContentUrl(place.src, opts.content, opts.contentBaseUrl)
-      if (!resolved) return
-      try {
-        const { root } = await opts.cache.load(resolved.url, resolved.hash)
-        const clone = root.clone(true)
-        hideColliderMeshes(clone)
-        // Local to neighbor base (already world-within-neighbor after hierarchy bake).
-        dclToThreePos(place.position.x, place.position.y, place.position.z, pos)
-        clone.position.copy(pos)
-        dclToThreeQuat(
-          place.rotation.x,
-          place.rotation.y,
-          place.rotation.z,
-          place.rotation.w,
-          quat
-        )
-        clone.quaternion.copy(quat)
-        clone.scale.set(place.scale.x, place.scale.y, place.scale.z)
-        clone.name = `aoi-gltf:${place.src.split('/').pop() ?? 'mesh'}`
-        group.add(clone)
-      } catch {
-        /* missing glb */
-      }
-    })
-  )
-
+  freezeStaticGraph(group)
+  group.updateMatrixWorld(true)
   return group
+}
+
+/** Neighbor shells never tween — skip per-frame matrix walks. */
+function freezeStaticGraph(root: THREE.Object3D): void {
+  root.traverse((node) => {
+    node.matrixAutoUpdate = false
+    node.updateMatrix()
+  })
 }
 
 /**

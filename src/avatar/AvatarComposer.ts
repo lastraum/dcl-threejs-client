@@ -22,7 +22,7 @@ import { applyAvatarOpaqueAtlas, isAvatarOpaqueAtlasEnabled } from './avatarOpaq
 import { buildComposeConfig } from './resolveProfile'
 import { resolveAvatarProfile } from './peerApi'
 import { isModelWearable } from './slots'
-import { yieldToNextFrame } from '../rendering/mainThreadYield'
+import { yieldToIdle } from '../rendering/mainThreadYield'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
 import { isAvatarVerbose } from '../client/debug/ClientDebugLog'
 import type {
@@ -115,6 +115,7 @@ async function composeFromConfig(
     )
     sanitizeWearableRoot(bodyRoot)
     avatar.add(bodyRoot)
+    await yieldToIdle(24)
 
     const skeleton = findSkeleton(bodyRoot)
     if (!skeleton) throw new Error('Body shape has no skeleton')
@@ -122,32 +123,34 @@ async function composeFromConfig(
     const modelWearables = config.wearables.filter(
       (w) => w.data.category !== 'body_shape' && isModelWearable(w)
     )
-    const loadedLayers = await Promise.all(
-      modelWearables.map(async (wearable) => {
-        try {
-          // Facial hair: D3JS localStorage / extension color first, else profile hair.
-          const hairTint = hairTintForWearable(wearable.data.category, config)
-          const layer = await loadWearableSceneCached(
-            cache,
-            wearable,
-            config.bodyShape,
-            config.skin,
-            hairTint,
-            true
-          )
-          return { wearable, layer }
-        } catch (err) {
-          console.warn(`Skipping wearable ${wearable.id}:`, err)
-          return null
-        }
-      })
-    )
+    const loadedLayers: Array<{ wearable: (typeof modelWearables)[number]; layer: THREE.Object3D } | null> =
+      []
+    for (const wearable of modelWearables) {
+      await yieldToIdle(32)
+      try {
+        const hairTint = hairTintForWearable(wearable.data.category, config)
+        const layer = await loadWearableSceneCached(
+          cache,
+          wearable,
+          config.bodyShape,
+          config.skin,
+          hairTint,
+          true
+        )
+        loadedLayers.push({ wearable, layer })
+      } catch (err) {
+        console.warn(`Skipping wearable ${wearable.id}:`, err)
+        loadedLayers.push(null)
+      }
+    }
 
     let mergeIndex = 0
     for (const entry of loadedLayers) {
       if (!entry) continue
       // One wearable merge per frame — keeps peer compose from stacking multi-ms CPU on rAF.
-      if (mergeIndex > 0) await yieldToNextFrame()
+      if (mergeIndex > 0) {
+        await yieldToIdle(24)
+      }
       mergeIndex++
 
       const category = entry.wearable.data.category
@@ -209,13 +212,13 @@ async function composeFromConfig(
     popWearableMappings()
   }
 
-  await yieldToNextFrame()
+  await yieldToIdle(24)
   applyBodyShapeVisibility(bodyRoot, config.wearables, {
     attachedCategories,
     forceRender: config.forceRender
   })
   await applyFacialFeatures(bodyRoot, config, cache)
-  await yieldToNextFrame()
+  await yieldToIdle(24)
   applyWearableEmissives(avatar)
   // After emissives — toon banding skips the matte clamp on boosted materials.
   // Opt-in via Preferences → Graphics → Toon shaders (default off).
@@ -224,7 +227,7 @@ async function composeFromConfig(
   // Opaque atlas is opt-in — default off until flipY/UV/incomplete-texture issues are solid.
   // Enable with ?avataratlas=1 (or session storage dcl.avatar.opaqueAtlas=1).
   if (isAvatarOpaqueAtlasEnabled()) {
-    await yieldToNextFrame()
+    await yieldToIdle(24)
     await applyAvatarOpaqueAtlas(avatar)
   }
   return avatar

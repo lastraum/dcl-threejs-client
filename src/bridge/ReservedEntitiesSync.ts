@@ -114,6 +114,11 @@ export class ReservedEntitiesSync {
     this.applyEngineInfo()
   }
 
+  /** Idle frame — tick EngineInfo only (poses / identity already current). */
+  syncEngineInfoOnly(): void {
+    this.applyEngineInfo()
+  }
+
   private applyPlayerIdentity(): void {
     if (!this.playerIdentity) return
     this.applyPlayerIdentityToEntity(this.reserved.player, this.playerIdentity)

@@ -1,5 +1,18 @@
 import type * as THREE from 'three'
-import { renderQuality } from './RenderQualitySettings'
+import { AOI_SHELL_KEEP_M } from '../dcl/multiScene/caps'
+import { renderQuality, type ShadowQuality } from './RenderQualitySettings'
+
+/** Environment casters only inside the visual keep band. Avatars / remotes are not this list. */
+const ENV_CASTER_KEEP_M = AOI_SHELL_KEEP_M
+const ENV_CASTER_CAP: Record<Exclude<ShadowQuality, 'off'>, number> = {
+  low: 16,
+  medium: 32,
+  high: 64,
+  ultra: 96
+}
+
+type EnvCasterCand = { mesh: THREE.Mesh; distSq: number }
+const _envCasterCands: EnvCasterCand[] = []
 
 export type ShadowCastOwner = 'avatar' | 'environment'
 
@@ -61,4 +74,43 @@ export function reapplySceneCastShadows(root: THREE.Object3D): void {
       mesh.castShadow = desired && envCastActiveForMesh(mesh)
     }
   })
+}
+
+/**
+ * Cap environment shadow casters to the nearest N inside {@link ENV_CASTER_KEEP_M}.
+ * Does not walk or change `owner === 'avatar'` (local + remotes stay as they are).
+ */
+export function budgetEnvironmentCasters(root: THREE.Object3D, focusWorld: THREE.Vector3): void {
+  if (!renderQuality.environmentCastShadowsActive()) return
+  const q = renderQuality.getShadowQuality()
+  if (q === 'off') return
+  const cap = ENV_CASTER_CAP[q]
+  const keepSq = ENV_CASTER_KEEP_M * ENV_CASTER_KEEP_M
+  _envCasterCands.length = 0
+
+  root.traverse((obj) => {
+    if (!(obj as THREE.Mesh).isMesh) return
+    const mesh = obj as THREE.Mesh
+    if (mesh.userData.dclShadowOwner === 'avatar') return
+    const desired = mesh.userData.dclDesiredCastShadow
+    if (desired !== true || !envCastActiveForMesh(mesh)) {
+      if (mesh.userData.dclShadowOwner === 'environment') mesh.castShadow = false
+      return
+    }
+    const e = mesh.matrixWorld.elements
+    const dx = e[12]! - focusWorld.x
+    const dy = e[13]! - focusWorld.y
+    const dz = e[14]! - focusWorld.z
+    const distSq = dx * dx + dy * dy + dz * dz
+    if (distSq > keepSq) {
+      mesh.castShadow = false
+      return
+    }
+    _envCasterCands.push({ mesh, distSq })
+  })
+
+  _envCasterCands.sort((a, b) => a.distSq - b.distSq)
+  for (let i = 0; i < _envCasterCands.length; i++) {
+    _envCasterCands[i]!.mesh.castShadow = i < cap
+  }
 }

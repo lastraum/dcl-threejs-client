@@ -34,6 +34,16 @@ export type InstanceColliderShape = PhysicsColliderShapeDesc & {
 
 export const INSTANCE_COLLIDER_SHAPES_KEY = 'dclInstanceColliderShapes'
 
+/** Pose graph hide: instance slots do not inherit Object3D.visible from ancestors. */
+function poseAncestryVisible(obj: THREE.Object3D): boolean {
+  let p: THREE.Object3D | null = obj.parent
+  while (p) {
+    if (!p.visible) return false
+    p = p.parent
+  }
+  return true
+}
+
 type Bucket = {
   hash: string
   leaves: InstancerMeshLeaf[]
@@ -56,6 +66,9 @@ const _entityWorld = new THREE.Matrix4()
 const _instance = new THREE.Matrix4()
 const _shapeLocal = new THREE.Matrix4()
 const _color = new THREE.Color()
+const _boundBox = new THREE.Box3()
+const _leafBox = new THREE.Box3()
+const _boundSphere = new THREE.Sphere()
 
 function geometryHasMorphTargets(geometry: THREE.BufferGeometry | undefined): boolean {
   if (!geometry?.morphAttributes) return false
@@ -161,6 +174,12 @@ export class SceneGltfInstancer {
     return this.entityHash.has(entity)
   }
 
+  stats(): { buckets: number; instances: number; draws: number } {
+    let draws = 0
+    for (const b of this.buckets.values()) draws += b.meshes.length
+    return { buckets: this.buckets.size, instances: this.entityHash.size, draws }
+  }
+
   /**
    * Register entity as an instance of `hash`. Writes marker under entityObj for mesh identity.
    * Returns triangle count attributed once per hash leaf * (not × instance count for inventory).
@@ -201,6 +220,7 @@ export class SceneGltfInstancer {
     entityObj.userData[INSTANCE_COLLIDER_SHAPES_KEY] = bucket.colliderShapes
 
     this.writeMatrix(bucket, index, entityObj)
+    this.refreshBucketBounds(bucket)
 
     let templateTris = 0
     for (const leaf of bucket.leaves) {
@@ -225,6 +245,25 @@ export class SceneGltfInstancer {
     const index = bucket.entityIndex.get(entity)
     if (index === undefined) return
     this.writeMatrix(bucket, index, entityObj)
+  }
+
+  /** Extract: instance matrix from a world matrix (billboard) — pose quat untouched. */
+  writeWorldMatrix(entity: Entity, world: THREE.Matrix4): boolean {
+    const hash = this.entityHash.get(entity)
+    if (!hash) return false
+    const bucket = this.buckets.get(hash)
+    if (!bucket) return false
+    const index = bucket.entityIndex.get(entity)
+    if (index === undefined) return false
+    for (let i = 0; i < bucket.meshes.length; i++) {
+      const leaf = bucket.leaves[i]!
+      const mesh = bucket.meshes[i]!
+      mesh.updateWorldMatrix(true, false)
+      _instance.copy(mesh.matrixWorld).invert().multiply(world).multiply(leaf.localMatrix)
+      mesh.setMatrixAt(index, _instance)
+      mesh.instanceMatrix.needsUpdate = true
+    }
+    return true
   }
 
   /**
@@ -259,10 +298,21 @@ export class SceneGltfInstancer {
       while (p) {
         if (dirtyNodes.has(p)) {
           this.update(entity, obj)
+          refreshed.add(entity)
           break
         }
         p = p.parent
       }
+    }
+
+    const hashes = new Set<string>()
+    for (const entity of refreshed) {
+      const h = this.entityHash.get(entity)
+      if (h) hashes.add(h)
+    }
+    for (const h of hashes) {
+      const b = this.buckets.get(h)
+      if (b) this.refreshBucketBounds(b)
     }
   }
 
@@ -272,6 +322,7 @@ export class SceneGltfInstancer {
       const obj = nodes.get(entity)
       if (obj) this.update(entity, obj)
     }
+    for (const bucket of this.buckets.values()) this.refreshBucketBounds(bucket)
   }
 
   detach(entity: Entity, entityObj?: THREE.Group): void {
@@ -308,6 +359,8 @@ export class SceneGltfInstancer {
     }
     if (bucket.entityIndex.size === 0) {
       this.disposeBucket(hash)
+    } else {
+      this.refreshBucketBounds(bucket)
     }
   }
 
@@ -357,6 +410,19 @@ export class SceneGltfInstancer {
     const out: THREE.InstancedMesh[] = []
     for (const bucket of this.buckets.values()) out.push(...bucket.meshes)
     return out
+  }
+
+  /** InstancedMeshes that actually host these entities (never the full board). */
+  meshesForEntities(entities: Iterable<Entity>): THREE.InstancedMesh[] {
+    const seen = new Set<THREE.InstancedMesh>()
+    for (const entity of entities) {
+      const hash = this.entityHash.get(entity)
+      if (!hash) continue
+      const bucket = this.buckets.get(hash)
+      if (!bucket) continue
+      for (const mesh of bucket.meshes) seen.add(mesh)
+    }
+    return [...seen]
   }
 
   dispose(): void {
@@ -413,9 +479,10 @@ export class SceneGltfInstancer {
       // does not fill the sun map. Private clones + Material still use their own cast path.
       setMeshDesiredCastShadow(mesh, true, 'environment', { gltfDefaultCaster: true })
       mesh.receiveShadow = true
-      // Dense boards span the whole scene — geometry-only sphere at origin culls far tiles.
-      mesh.frustumCulled = false
-      mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 1e6)
+      // Mesh-local sphere is filled by refreshBucketBounds after the first write.
+      // Do not use a world-space AABB here — Three applies matrixWorld on top.
+      mesh.frustumCulled = true
+      mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0)
       // Zero all slots initially
       _instance.makeScale(0, 0, 0)
       for (let s = 0; s < capacity; s++) mesh.setMatrixAt(s, _instance)
@@ -471,8 +538,8 @@ export class SceneGltfInstancer {
       mesh.count = bucket.used
       setMeshDesiredCastShadow(mesh, true, 'environment', { gltfDefaultCaster: true })
       mesh.receiveShadow = true
-      mesh.frustumCulled = false
-      mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 1e6)
+      mesh.frustumCulled = true
+      mesh.boundingSphere = old.boundingSphere?.clone() ?? new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0)
       _instance.makeScale(0, 0, 0)
       for (let s = 0; s < nextCap; s++) {
         if (s < bucket.capacity) {
@@ -505,12 +572,55 @@ export class SceneGltfInstancer {
     }
     bucket.meshes = newMeshes
     bucket.capacity = nextCap
+    this.refreshBucketBounds(bucket)
+  }
+
+  /**
+   * Mesh-local bounding sphere per leaf — Three.js copies this and applies matrixWorld.
+   *
+   * Previous world-space AABB from mesh[0] translations double-transformed (or missed
+   * other leaves' local offsets) and culled plaza Building_*.glb slots. Each leaf has
+   * its own instance matrices (entity × leaf.localMatrix, then meshWorld⁻¹).
+   */
+  private refreshBucketBounds(bucket: Bucket): void {
+    for (let i = 0; i < bucket.meshes.length; i++) {
+      const mesh = bucket.meshes[i]!
+      const geo = mesh.geometry
+      if (!geo.boundingBox) geo.computeBoundingBox()
+      const srcBox = geo.boundingBox
+      if (!srcBox) {
+        mesh.frustumCulled = false
+        continue
+      }
+      _boundBox.makeEmpty()
+      let any = false
+      for (const index of bucket.entityIndex.values()) {
+        mesh.getMatrixAt(index, _instance)
+        const te = _instance.elements
+        // Hidden slots are zero-scale at origin — including them inflates the sphere
+        // to (0,0,0) and either never-culls or culls the real cluster.
+        if (te[0] === 0 && te[5] === 0 && te[10] === 0) continue
+        _leafBox.copy(srcBox).applyMatrix4(_instance)
+        _boundBox.union(_leafBox)
+        any = true
+      }
+      if (!mesh.boundingSphere) mesh.boundingSphere = new THREE.Sphere()
+      if (!any) {
+        mesh.boundingSphere.center.set(0, 0, 0)
+        mesh.boundingSphere.radius = 0
+      } else {
+        _boundBox.getBoundingSphere(_boundSphere)
+        mesh.boundingSphere.copy(_boundSphere)
+        mesh.boundingSphere.radius += 2
+      }
+      mesh.frustumCulled = true
+    }
   }
 
   private writeMatrix(bucket: Bucket, index: number, entityObj: THREE.Group): void {
-    // VisibilityComponent only sets entityObj.visible — InstancedMesh lives outside the
-    // entity group, so zero the slot when hidden (coin pickup, doors, etc.).
-    if (!entityObj.visible) {
+    // InstancedMesh lives under drawRoot, not the pose group — Object3D.visible on
+    // this entity or any ancestor does not hide the GPU slot by itself.
+    if (!entityObj.visible || !poseAncestryVisible(entityObj)) {
       _instance.makeScale(0, 0, 0)
       for (const mesh of bucket.meshes) {
         mesh.setMatrixAt(index, _instance)
@@ -518,16 +628,17 @@ export class SceneGltfInstancer {
       }
       return
     }
-    // Force TRS → matrix (do not assume matrixAutoUpdate ran this frame).
+    // Ancestors only — writeMatrix often runs before poseRoot.flush. force=false
+    // left instance matrices at identity / last-frame parent (giant plaza banners).
     entityObj.updateMatrix()
-    entityObj.updateMatrixWorld(true)
+    entityObj.updateWorldMatrix(true, false)
     _entityWorld.copy(entityObj.matrixWorld)
     for (let i = 0; i < bucket.meshes.length; i++) {
       const leaf = bucket.leaves[i]!
       const mesh = bucket.meshes[i]!
       // InstancedMesh multiplies instanceMatrix by its own matrixWorld — write
       // instance-local matrices (identity host → same as world * leaf).
-      mesh.updateMatrixWorld(true)
+      mesh.updateWorldMatrix(true, false)
       _instance.copy(mesh.matrixWorld).invert()
       _instance.multiply(_entityWorld).multiply(leaf.localMatrix)
       mesh.setMatrixAt(index, _instance)

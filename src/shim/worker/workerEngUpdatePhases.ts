@@ -71,6 +71,7 @@ export type CrdtSendPath =
   | 'empty-coal'
   | 'empty-nudge'
   | 'hot-phys'
+  | 'hot-vis'
   | 'cold'
   | 'ack'
   | 'boot'

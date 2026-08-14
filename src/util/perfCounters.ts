@@ -53,6 +53,9 @@ export type PerfSnapshot = {
   /** MeshRenderer GPU instance live count (G2 density). */
   meshRendererInstances: number
   meshRendererBuckets: number
+  gltfInstances: number
+  gltfInstanceBuckets: number
+  gltfInstanceDraws: number
   /** Remote peers tracked / with pose / neon shell / full body. */
   remotePeerTotal: number
   remotePlaceholder: number
@@ -103,6 +106,14 @@ export type PerfSnapshot = {
   aoiMs: number
   /** Pointer raycast prep + PE pointer edges (sync tail). */
   pointerMs: number
+  /** SceneLoop send / receive / apply (host guest clock). */
+  sceneLoopSendMs: number
+  sceneLoopReceiveMs: number
+  sceneLoopApplyMs: number
+  sceneLoopInFlight: number
+  sceneLoopDue: number
+  sceneLoopGuests: number
+  sceneLoopSent: number
   // --- render sub-split ---
   /** WebGL scene pass (forward or bloom path). */
   renderMainMs: number
@@ -188,6 +199,9 @@ const state = {
   physxPostSealRebuild: 0,
   meshRendererInstances: 0,
   meshRendererBuckets: 0,
+  gltfInstances: 0,
+  gltfInstanceBuckets: 0,
+  gltfInstanceDraws: 0,
   remotePeerTotal: 0,
   remotePlaceholder: 0,
   remoteComposeWaiting: 0,
@@ -212,6 +226,13 @@ const state = {
   sceneTickMs: 0,
   aoiMs: 0,
   pointerMs: 0,
+  sceneLoopSendMs: 0,
+  sceneLoopReceiveMs: 0,
+  sceneLoopApplyMs: 0,
+  sceneLoopInFlight: 0,
+  sceneLoopDue: 0,
+  sceneLoopGuests: 0,
+  sceneLoopSent: 0,
   renderMainMs: 0,
   renderTagsMs: 0,
   renderSceneMs: 0,
@@ -385,9 +406,18 @@ export function perfSetPhysxSeal(opts: { sealed: boolean; postSealRebuild: numbe
 }
 
 /** G2 — MeshRenderer GPU instancing density. */
-export function perfSetMeshRendererInstanceStats(opts: { instances: number; buckets: number }): void {
+export function perfSetMeshRendererInstanceStats(opts: {
+  instances: number
+  buckets: number
+  gltfInstances?: number
+  gltfBuckets?: number
+  gltfDraws?: number
+}): void {
   state.meshRendererInstances = opts.instances
   state.meshRendererBuckets = opts.buckets
+  if (opts.gltfInstances !== undefined) state.gltfInstances = opts.gltfInstances
+  if (opts.gltfBuckets !== undefined) state.gltfInstanceBuckets = opts.gltfBuckets
+  if (opts.gltfDraws !== undefined) state.gltfInstanceDraws = opts.gltfDraws
 }
 
 /** ParticleSystemBridge.update wall (subset of sync / motion bridges). */
@@ -424,6 +454,26 @@ export function perfNoteSyncPlus(opts: {
 /** Last main-thread CRDT apply wall (worker→main batch). */
 export function perfNoteApplyMs(ms: number): void {
   state.applyMs = ms
+}
+
+/** Host SceneLoop phase walls (send on sync, apply on async peel). */
+export function perfNoteSceneLoop(opts: {
+  sendMs: number
+  receiveMs: number
+  applyMs: number
+  leftoverMs?: number
+  inFlight: number
+  due: number
+  guests: number
+  sent: number
+}): void {
+  state.sceneLoopSendMs = opts.sendMs
+  state.sceneLoopReceiveMs = opts.receiveMs
+  state.sceneLoopApplyMs = opts.applyMs
+  state.sceneLoopInFlight = opts.inFlight
+  state.sceneLoopDue = opts.due
+  state.sceneLoopGuests = opts.guests
+  state.sceneLoopSent = opts.sent
 }
 
 /** SceneHost render sub-split (main pass vs name tags + scene/bloom/extract). */
@@ -512,6 +562,11 @@ export function perfNoteAsyncCollSplit(opts: {
  * under the residual (env/pet/pe/scene/aoi/pointer) for HUD only — residual is
  * still frame math against rem+player+plat.
  */
+/** Last completed rAF wall ms (0 before the first frame). */
+export function getLastFrameMs(): number {
+  return state.frameMs
+}
+
 export function perfNoteFrameHost(opts: {
   frameMs: number
   syncMs: number
@@ -608,6 +663,9 @@ export function perfSnapshot(): PerfSnapshot {
     physxPostSealRebuild: state.physxPostSealRebuild,
     meshRendererInstances: state.meshRendererInstances,
     meshRendererBuckets: state.meshRendererBuckets,
+    gltfInstances: state.gltfInstances,
+    gltfInstanceBuckets: state.gltfInstanceBuckets,
+    gltfInstanceDraws: state.gltfInstanceDraws,
     remotePeerTotal: state.remotePeerTotal,
     remotePlaceholder: state.remotePlaceholder,
     remoteComposeWaiting: state.remoteComposeWaiting,
@@ -632,6 +690,13 @@ export function perfSnapshot(): PerfSnapshot {
     sceneTickMs: state.sceneTickMs,
     aoiMs: state.aoiMs,
     pointerMs: state.pointerMs,
+    sceneLoopSendMs: state.sceneLoopSendMs,
+    sceneLoopReceiveMs: state.sceneLoopReceiveMs,
+    sceneLoopApplyMs: state.sceneLoopApplyMs,
+    sceneLoopInFlight: state.sceneLoopInFlight,
+    sceneLoopDue: state.sceneLoopDue,
+    sceneLoopGuests: state.sceneLoopGuests,
+    sceneLoopSent: state.sceneLoopSent,
     renderMainMs: state.renderMainMs,
     renderTagsMs: state.renderTagsMs,
     renderSceneMs: state.renderSceneMs,

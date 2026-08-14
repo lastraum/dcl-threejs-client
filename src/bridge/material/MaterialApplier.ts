@@ -627,9 +627,10 @@ export class MaterialApplier {
     const worldMirror = objectWorldMirrorX(mesh)
     const uvMirror = meshUvMapsUMirroredHorizontal(mesh)
     const isGltfMaterialPath = !!options?.gltfNodeModifier && !marqueeAtlas
+    // Event-card quads only. Curved marquees (uvAnimScreen) fail the U-mirror heuristic
+    // and a geometry U flip slides the LED border onto the side faces.
     if (isGltfMaterialPath) {
-      // want=true only when GLB UVs are L–R mirrored — JUMP IN / white bottoms stay put.
-      ensureGeometryUFlipped(mesh, uvMirror)
+      ensureGeometryUFlipped(mesh, isFlatCardGeometry(mesh.geometry) && uvMirror)
     }
     // After UV normalize, only cancel world reflection via texture ST.
     const flipMapU =
@@ -1001,6 +1002,22 @@ function getTextureDef(union?: TextureUnion): TextureDef | undefined {
   return coerced?.tex?.$case === 'texture' ? coerced.tex.texture : undefined
 }
 
+/** Event-card / poster quads — not curved marquees or furniture. */
+function isFlatCardGeometry(geo: THREE.BufferGeometry | undefined): boolean {
+  if (!geo) return false
+  const pos = geo.getAttribute('position')
+  if (!pos || pos.count > 12) return false
+  if (!geo.boundingBox) geo.computeBoundingBox()
+  const box = geo.boundingBox
+  if (!box) return false
+  const sx = box.max.x - box.min.x
+  const sy = box.max.y - box.min.y
+  const sz = box.max.z - box.min.z
+  const thick = Math.min(sx, sy, sz)
+  const wide = Math.max(sx, sy, sz)
+  return wide > 1e-4 && thick / wide < 0.08
+}
+
 /**
  * Flip geometry U in place (1−u). Idempotent via mesh.userData.dclGeomUFlipped.
  * Clones geometry first so shared GLB buffers are not mutated for every instance.
@@ -1083,9 +1100,16 @@ export function meshUvMapsUMirroredHorizontal(mesh: THREE.Mesh): boolean {
  * MeshRenderer plane (JUMP IN buttons, TextureMove marquees) L–R.
  */
 function objectWorldMirrorX(obj: THREE.Object3D): boolean {
-  let sx = 1
-  let o: THREE.Object3D | null = obj
+  return poseAwareMirrorX(obj)
+}
+
+/** scale.x product along the pose chain — skip drawRoot (identity, not ECS). */
+export function poseAwareMirrorX(obj: THREE.Object3D): boolean {
+  let sx = obj.scale.x
+  const pose = (obj.userData.dclPoseNode as THREE.Object3D | undefined) ?? obj
+  let o: THREE.Object3D | null = pose === obj ? obj.parent : pose
   for (let i = 0; i < 48 && o; i++) {
+    if (o.name === 'draw-root' || o.name === 'pose-root' || o.name === 'scene-entities') break
     sx *= o.scale.x
     o = o.parent
   }

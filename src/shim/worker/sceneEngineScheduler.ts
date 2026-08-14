@@ -694,22 +694,25 @@ export async function runSceneEngineUpdateNow(engineDt?: number): Promise<void> 
   config.onAfterEngineTick?.()
 }
 
-export function requestSceneEngineTick(): void {
-  if (!engine || !bootSealed || !config) return
+/** started = wait for play-frame-done; deferred = in-flight/queued (do not done); idle = no tick. */
+export type SceneEngineTickRequest = 'started' | 'deferred' | 'idle'
+
+export function requestSceneEngineTick(): SceneEngineTickRequest {
+  if (!engine || !bootSealed || !config) return 'idle'
   if (config.pointerBlocksTick()) {
     tickQueued = true
-    return
+    return 'deferred'
   }
   if (tickInFlight) {
     tickQueued = true
-    return
+    return 'deferred'
   }
   let dt = resolveDt()
   // Same-frame re-entry: no wall elapsed yet — do not invent large time, but queue so
   // the next play-frame-tick can run (was a hard return that starved timers).
   if (dt <= 0 && lastExecutedAt > 0) {
     tickQueued = true
-    return
+    return 'deferred'
   }
   if (dt <= 0) dt = Math.min(1 / 60, MAX_ENGINE_DT_SEC)
   const epoch = tickEpoch
@@ -758,6 +761,7 @@ export function requestSceneEngineTick(): void {
         )
       }
     })
+  return 'started'
 }
 
 export function drainQueuedSceneEngineTick(): void {

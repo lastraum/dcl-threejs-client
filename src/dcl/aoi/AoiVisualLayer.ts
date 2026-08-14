@@ -1,6 +1,5 @@
 import * as THREE from 'three'
 import type { AssetCache } from '../../rendering/AssetCache'
-import { renderQuality } from '../../rendering/RenderQualitySettings'
 import type { ResolvedScene } from '../content/types'
 import { parseParcelKey } from '../content/parseParcel'
 import { buildGenesisCityEmptyPlane } from './genesisEmptyPlane'
@@ -39,14 +38,18 @@ import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 import {
   aoiGlbShellsOnly,
   aoiLiveSecondariesOnly,
+  AOI_SHELL_ENTER_M,
+  AOI_SHELL_KEEP_M,
   COMPOSITE_MAX_RETAINED,
   compositeMaxGltfsForDistance,
+  visualWarmRadiusM,
   EMPTY_LAND_PHYS_RADIUS_M,
   ROAD_PHYS_RADIUS_M,
   secondaryLiveCap,
   secondaryLiveEnterRadiusM,
   secondaryLiveKeepRadiusM
 } from '../multiScene/caps'
+import { lastFrameOverBudget, yieldToIdle } from '../../rendering/mainThreadYield'
 
 /** Visible first-frame secondaries inside the inner radius. */
 const FF_MAX_VISIBLE = 3
@@ -64,10 +67,10 @@ const FF_MAX_RETAINED = 6
  * - Leave-ring → **hide** (LOD), not dispose.
  * - Dispose mesh + PhysX only when player is > SCATTER_PURGE_M away.
  */
-/** Hide scatter layers beyond this (keep in memory + PhysX until purge). */
-const SCATTER_LOD_HIDE_M = 160
-/** Hard unload mesh + colliders — huge walk / teleport only. */
-const SCATTER_PURGE_M = 1000
+/** Hide scatter layers beyond the visual keep band. */
+const SCATTER_LOD_HIDE_M = AOI_SHELL_KEEP_M
+/** Hard unload mesh + colliders just outside keep (was 1 km — a second city in RAM). */
+const SCATTER_PURGE_M = 160
 /** Cap new parcels meshed per drain tick (first ring fill is uncapped). */
 const SCATTER_ADD_PER_REFRESH = 48
 /**
@@ -105,7 +108,8 @@ type StickyScatterLayer = {
  * Neighbor scene meshes (composite GLBs + first-frame) + live-secondary candidates.
  * Prefer URL kill switch `?noaoi` (World skips bind entirely). This only gates meshes.
  */
-const LOAD_AOI_SCENE_VISUALS = true
+/** Neighbor scene composites off — single primary scene (Bevy column / plaza bench). */
+const LOAD_AOI_SCENE_VISUALS = false
 
 export type AoiVisualLayerContext = {
   scene: ResolvedScene
@@ -364,7 +368,7 @@ export class AoiVisualLayer {
     this.neighborActivityEnabled = true
     this.liveReconcileEnabled = false
     this.lastParcelKey = ''
-    const radius = renderQuality.getSceneLoadRadiusM()
+    const radius = visualWarmRadiusM()
     const gen = ++this.prewarmGen
     this.prewarmActive = true
     console.info(
@@ -450,7 +454,7 @@ export class AoiVisualLayer {
     this.blankPlaneBase = ''
     this.clearScatter()
     this.lastLiveCandidateSignature = ''
-    void this.refresh(dclX, dclZ, renderQuality.getSceneLoadRadiusM(), 'full')
+    void this.refresh(dclX, dclZ, visualWarmRadiusM(), 'full')
   }
 
   /** Call after primary scene is known — coords only. */
@@ -478,7 +482,7 @@ export class AoiVisualLayer {
     ctx.hostScene.add(this.root)
     console.info(
       '[aoi] bound — Scene Distance warm band (coords only); radius=',
-      renderQuality.getSceneLoadRadiusM(),
+      visualWarmRadiusM(),
       'm · first-frame visible≤',
       FF_MAX_VISIBLE,
       ' retained≤',
@@ -542,7 +546,7 @@ export class AoiVisualLayer {
   update(dclX: number, dclZ: number, force = false): void {
     if (this.disposed || !this.enabled || !this.ctx) return
     if (!this.neighborActivityEnabled && !force) return
-    const radius = renderQuality.getSceneLoadRadiusM()
+    const radius = visualWarmRadiusM()
 
     if (radius <= 0) {
       this.clearRefreshDebounce()
@@ -645,6 +649,8 @@ export class AoiVisualLayer {
     if (!this.hasOutstandingWork()) return
     if (this.drainInFlight) return
     if (now - this.lastDrainAt < 400) return
+    // After play-ready, never attach composites on an already-over-budget frame.
+    if (!this.prewarmActive && lastFrameOverBudget(33)) return
     this.lastDrainAt = now
     void this.drainOutstandingWork(dclX, dclZ)
   }
@@ -880,9 +886,18 @@ export class AoiVisualLayer {
     if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
 
     // Enqueue vacant parcels not yet meshed — drain pulls from this queue only.
+    // Visual band only (keep ≤ 80 m). Scene Distance 200 m still fetched pointers above.
+    const visualM = visualWarmRadiusM()
     for (const key of vacantKeys) {
       const k = key.trim()
-      if (!this.loadedScatterParcels.has(k)) this.pendingScatterParcels.add(k)
+      if (this.loadedScatterParcels.has(k)) continue
+      try {
+        const p = parseParcelKey(k)
+        if (distanceToParcelCenterM(dclX, dclZ, p, base) > visualM) continue
+      } catch {
+        continue
+      }
+      this.pendingScatterParcels.add(k)
     }
     // Drop pending that are no longer vacant in this ring (real scene claimed, etc.).
     for (const k of [...this.pendingScatterParcels]) {
@@ -892,6 +907,14 @@ export class AoiVisualLayer {
       }
       // Keep pending outside current ring — may re-enter; only drop if now real footprint.
       if (realSceneFootprint.has(k)) this.pendingScatterParcels.delete(k)
+      try {
+        const p = parseParcelKey(k)
+        if (distanceToParcelCenterM(dclX, dclZ, p, base) > visualM) {
+          this.pendingScatterParcels.delete(k)
+        }
+      } catch {
+        this.pendingScatterParcels.delete(k)
+      }
     }
 
     // --- Classic open-road foundation tiles (catalog + ownership, full Scene Distance) ---
@@ -1013,7 +1036,8 @@ export class AoiVisualLayer {
 
   /**
    * Mark composite candidates as outstanding (add-only).
-   * Distance gate = Preferences Scene Distance (up to 200m) — no extra hard cap.
+   * New shells only inside {@link AOI_SHELL_ENTER_M}; already-loaded stay until KEEP.
+   * Pointer fetch may still walk Scene Distance — this does not build 200m of clones.
    */
   private enqueueCompositeWork(
     entities: ActiveSceneEntity[],
@@ -1023,7 +1047,7 @@ export class AoiVisualLayer {
     dclZ: number,
     primaryBase: string
   ): void {
-    const warmM = renderQuality.getSceneLoadRadiusM()
+    const warmM = visualWarmRadiusM()
     if (warmM <= 0) return
     for (const e of entities) {
       if (primaryId && e.id === primaryId) continue
@@ -1049,6 +1073,10 @@ export class AoiVisualLayer {
         primaryBase
       )
       if (Number.isFinite(best) && best > warmM) continue
+      if (Number.isFinite(best) && best > AOI_SHELL_KEEP_M) continue
+      if (Number.isFinite(best) && best > AOI_SHELL_ENTER_M && !this.loadedCompositeIds.has(e.id)) {
+        continue
+      }
       this.pendingCompositeIds.add(e.id)
     }
   }
@@ -1100,18 +1128,29 @@ export class AoiVisualLayer {
       return true
     })
 
-    // Drop secondaries that left the AOI or are no longer composite-loadable
+    // Drop secondaries that left the AOI, walked past KEEP, or are no longer composite-loadable.
     const wantIds = new Set(compositeCandidates.map((c) => c.id))
     for (const id of [...this.loadedCompositeIds]) {
-      if (!wantIds.has(id)) {
+      const ent = compositeCandidates.find((c) => c.id === id)
+      const dist = ent ? distToEntity(ent) : Infinity
+      if (!wantIds.has(id) || dist > AOI_SHELL_KEEP_M) {
         const child = this.compositeRoot.getObjectByName(`aoi-secondary:${id}`)
         child?.removeFromParent()
         this.loadedCompositeIds.delete(id)
+        this.pendingCompositeIds.delete(id)
       }
     }
 
     // Multi-parcel shells first (CBD plaza around nested hole), then nearest.
-    const ranked = [...compositeCandidates].sort((a, b) => {
+    // Visual band: new attach ≤ ENTER; keep ≤ KEEP; past KEEP is road/ground only.
+    const ranked = [...compositeCandidates]
+      .filter((e) => {
+        const d = distToEntity(e)
+        if (d > AOI_SHELL_KEEP_M) return false
+        if (d > AOI_SHELL_ENTER_M && !this.loadedCompositeIds.has(e.id)) return false
+        return true
+      })
+      .sort((a, b) => {
       const aParcels = a.parcels.length || a.pointers.length
       const bParcels = b.parcels.length || b.pointers.length
       const aMega = aParcels >= 16 ? 1 : 0
@@ -1169,7 +1208,13 @@ export class AoiVisualLayer {
       const parcels = ent.parcels.length || ent.pointers.length
       const distM = distToEntity(ent)
       const maxGltfs = compositeMaxGltfsForDistance(distM, parcels)
+      if (maxGltfs <= 0 || distM > AOI_SHELL_KEEP_M) {
+        this.pendingCompositeIds.delete(ent.id)
+        continue
+      }
       try {
+        await yieldToIdle(48)
+        if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
         const group = await buildCompositeVisualGroup({
           cache: ctx.cache,
           contentBaseUrl: ctx.scene.realm.contentUrl,
@@ -1407,8 +1452,8 @@ export class AoiVisualLayer {
     }
     this.ctx?.onSecondaryCandidates?.(liveCandidates)
 
-    // First-frame tertiary: still player warm band (visual LOD by where you stand).
-    const warmRadiusM = renderQuality.getSceneLoadRadiusM()
+    // First-frame tertiary: visual keep band, not Preferences Scene Distance.
+    const warmRadiusM = visualWarmRadiusM()
 
     const wantFf = new Set<string>()
     let visibleSlots = 0
@@ -1927,9 +1972,12 @@ export class AoiVisualLayer {
     }
 
     const placements: RoadTilePlacement[] = []
+    const visualM = visualWarmRadiusM()
     for (const [parcelKey, ent] of roadParcels) {
       if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
       try {
+        const p = parseParcelKey(parcelKey)
+        if (distanceToParcelCenterM(dclX, dclZ, p, primaryBase) > visualM) continue
         let placement = ent
           ? await resolveRoadTilePlacement(ent, ctx.scene.realm.contentUrl)
           : null

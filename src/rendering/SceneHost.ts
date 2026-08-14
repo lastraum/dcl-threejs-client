@@ -15,6 +15,7 @@ import {
 } from './RenderQualitySettings'
 import { reapplySceneCastShadows } from './shadowCastPolicy'
 import { BloomPipeline } from './BloomPipeline'
+import { DrawWorld } from './DrawWorld'
 import { clientSettings } from './ClientSettings'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { AdaptiveQualityController } from './AdaptiveQualityController'
@@ -25,12 +26,16 @@ import {
 } from '../camera/cameraDepthPolicy'
 import { perfNoteFrameHost, perfNoteRenderSplit } from '../util/perfCounters'
 import { forceNoBloom, forceNoShadow } from '../client/devFlags'
+import { scheduleOffPlayRaf } from './mainThreadYield'
 
 export class SceneHost {
-  readonly renderer: THREE.WebGLRenderer
+  renderer: THREE.WebGLRenderer
   readonly scene: THREE.Scene
+  /** Entity Transform graph — not a child of {@link scene}; present does not walk it. */
+  readonly poseRoot = new THREE.Group()
+  readonly drawWorld = new DrawWorld()
   readonly camera: THREE.PerspectiveCamera
-  readonly controls: OrbitControls
+  controls: OrbitControls
   readonly nameTags: NameTagRenderer
   readonly renderStats: RenderStats
   private orbitEnabled = true
@@ -56,15 +61,6 @@ export class SceneHost {
   private viewportCssW = 1
   private viewportCssH = 1
   private bloom: BloomPipeline | null = null
-  /** Cached visible mesh count for bloom mode pick (refreshed every ~2s). */
-  private bloomMeshCount = 0
-  private bloomMeshCountAt = 0
-  private bloomModeLogged = ''
-  /**
-   * Below this → selective bloom (2× geo, half-res extract, emissive occlusion).
-   * At/above → fast bloom (1× geo, luminance threshold). Plaza is always fast.
-   */
-  private static readonly BLOOM_SELECTIVE_MESH_CAP = 900
   private readonly adaptiveQuality = new AdaptiveQualityController()
 
   constructor(container: HTMLElement) {
@@ -73,6 +69,8 @@ export class SceneHost {
     this.renderer.setPixelRatio(effectivePixelRatio(renderQuality.getResolutionScale()))
     this.renderer.setSize(window.innerWidth, window.innerHeight)
     this.renderer.setClearColor(0x1a1a2e)
+    // Bloom composer calls renderer.render() per pass; autoReset made HUD draws:1.
+    this.renderer.info.autoReset = false
     container.appendChild(this.renderer.domElement)
 
     this.blitMaterial = new THREE.MeshBasicMaterial({
@@ -94,6 +92,8 @@ export class SceneHost {
 
     this.scene = new THREE.Scene()
     this.scene.background = new THREE.Color(0x87ceeb)
+    this.poseRoot.name = 'pose-root'
+    this.scene.add(this.drawWorld.drawRoot)
 
     this.camera = new THREE.PerspectiveCamera(
       clientSettings.getFov(),
@@ -232,6 +232,16 @@ export class SceneHost {
     return () => this.postFrameListeners.delete(listener)
   }
 
+  /**
+   * Bevy extract: after pose flush + drawWorld.sync, before WebGL.
+   * Billboard instance matrices land here — not in Update.
+   */
+  private extractHook: ((camera: THREE.Camera) => void) | null = null
+
+  setExtractHook(hook: ((camera: THREE.Camera) => void) | null): void {
+    this.extractHook = hook
+  }
+
   private abFlagsLogged = false
 
   /** ACES tone mapping + exposure, shadows, resolution scale, FPS cap, MSAA, bloom. */
@@ -252,11 +262,10 @@ export class SceneHost {
           (forceNoBloom() ? ' nobloom' : '')
       )
     }
-    // Explorer soft directional: PCFSoft on medium+ (parity). Low stays Basic for mobile/budget.
-    // Soft cost is real — AdaptiveQuality can still drop shadow tier under hitch.
+    // r185: PCFSoft is deprecated (WebGL maps it to PCF). Medium+ uses PCF.
     this.renderer.shadowMap.type =
       shadowQ === 'ultra' || shadowQ === 'high' || shadowQ === 'medium'
-        ? THREE.PCFSoftShadowMap
+        ? THREE.PCFShadowMap
         : THREE.BasicShadowMap
     this.renderer.setPixelRatio(effectivePixelRatio(resScale))
 
@@ -274,10 +283,8 @@ export class SceneHost {
     // Bloom uses EffectComposer (no MSAA samples on that path).
     // Effective bloom includes adaptive step-down; `?nobloom` forces off for A/B.
     const bloomOn = renderQuality.getBloomEnabled() && !forceNoBloom()
-    const maxSamples = this.renderer.capabilities.maxSamples ?? 0
-    this.msaaSamples = bloomOn
-      ? 0
-      : clampMsaaSamples(options.msaaSamples, maxSamples)
+    const maxSamples = this.renderer.capabilities?.maxSamples ?? 0
+    this.msaaSamples = bloomOn ? 0 : clampMsaaSamples(options.msaaSamples, maxSamples)
     this.rebuildMsaaTarget()
     // Re-apply size so backing store matches new pixel ratio / MSAA / bloom buffers.
     this.applyViewportSize()
@@ -290,18 +297,14 @@ export class SceneHost {
     // Film scale only — surface glow amount comes from glTF/ECS emissive × intensity.
     // Keep modest: outdoor sunlit beauty + low threshold washed brainrot chalk-white vs Explorer.
     const strength =
-      options.tier === 'ultra' ? 0.14 : options.tier === 'high' ? 0.12 : 0.1
-    // Prefer selective on high/ultra when the scene is small enough; always fast on plaza-scale.
-    // Mode is re-evaluated each frame in renderMainPass via pickBloomMode().
-    const mode = this.pickBloomMode(options)
+      options.tier === 'ultra' ? 0.09 : options.tier === 'high' ? 0.08 : 0.06
     const bloomOn = renderQuality.getBloomEnabled() && !forceNoBloom()
     this.bloom.configure(
       {
         enabled: bloomOn,
         hdr: options.hdrEnabled,
-        mode,
+        mode: 'fast',
         strength,
-        // Selective only; fast path clamps via FAST_THRESHOLD in BloomPipeline.
         threshold: 0.15,
         radius: 0.26
       },
@@ -309,22 +312,6 @@ export class SceneHost {
       this.viewportCssH,
       pr
     )
-  }
-
-  /**
-   * selective = emissive isolation + depth occlusion (2× scene).
-   * fast = 1× beauty + UnrealBloom luminance (plaza / large worlds).
-   * Preferences → Bloom mode: Auto (legacy heuristic) / Fast / Selective.
-   */
-  private pickBloomMode(options: RenderQualityOptions): 'fast' | 'selective' {
-    const pref = renderQuality.getBloomMode()
-    if (pref === 'fast') return 'fast'
-    if (pref === 'selective') return 'selective'
-    // auto — prior behavior
-    const meshes = this.sceneMeshCountForBloom()
-    const smallEnough = meshes > 0 && meshes <= SceneHost.BLOOM_SELECTIVE_MESH_CAP
-    const tierWantsSelective = options.tier === 'high' || options.tier === 'ultra'
-    return smallEnough && tierWantsSelective ? 'selective' : 'fast'
   }
 
   private rebuildMsaaTarget(): void {
@@ -364,21 +351,6 @@ export class SceneHost {
     this.rebuildMsaaTarget()
   }
 
-  /** Visible mesh inventory for bloom gate — full walk only every 2s. */
-  private sceneMeshCountForBloom(): number {
-    const now = performance.now()
-    if (now - this.bloomMeshCountAt < 2000 && this.bloomMeshCountAt > 0) {
-      return this.bloomMeshCount
-    }
-    this.bloomMeshCountAt = now
-    let n = 0
-    this.scene.traverseVisible((obj) => {
-      if ((obj as THREE.Mesh).isMesh) n++
-    })
-    this.bloomMeshCount = n
-    return n
-  }
-
   private renderForwardPass(): { sceneMs: number; blitMs: number } {
     if (this.msaaTarget && this.msaaSamples > 0) {
       const tScene0 = performance.now()
@@ -404,11 +376,18 @@ export class SceneHost {
     return { sceneMs: performance.now() - tScene0, blitMs: 0 }
   }
 
+  /** Extract: flush pose, copy to draw list, billboard instance matrices. */
+  private extractPass(): void {
+    this.poseRoot.updateMatrixWorld(false)
+    this.drawWorld.sync(this.camera)
+    this.extractHook?.(this.camera)
+  }
+
   /**
    * Main WebGL pass with sub-meters:
+   * - extract: pose → draw list (not a Bevy RenderGraph)
    * - scene: beauty geometry (+ shadow maps baked into three.js render)
-   * - extract: selective bloom material-swap + half-res emissive pass
-   * - bloom: UnrealBloom / composite (fast: whole composer lives here as beauty)
+   * - bloom: UnrealBloom / composite (filter on the beauty buffer)
    * - blit: MSAA resolve (only when bloom off + MSAA on)
    */
   private renderMainPass(): {
@@ -418,8 +397,13 @@ export class SceneHost {
     blitMs: number
     mode: string
   } {
+    // Bevy stages we can do in Three: Update already ran (onSyncFrame).
+    // Extract copies pose → GPU objects. Queue+Render is still WebGLRenderer.
+    this.extractPass()
     const bloomWanted =
-      !!this.bloom?.isActive() && renderQuality.getBloomEnabled() && !forceNoBloom()
+      !!this.bloom?.isActive() &&
+      renderQuality.getBloomEnabled() &&
+      !forceNoBloom()
     if (!bloomWanted) {
       const fwd = this.renderForwardPass()
       return {
@@ -431,39 +415,13 @@ export class SceneHost {
       }
     }
 
-    // Hot-swap mode when mesh inventory crosses the selective cap (plaza hydrate).
-    const mode = this.pickBloomMode(renderQuality.getOptions())
-    if (this.bloom!.getMode() !== mode) {
-      this.configureBloom(renderQuality.getOptions())
-      if (this.bloomModeLogged !== mode) {
-        this.bloomModeLogged = mode
-        console.info(
-          `[SceneHost] bloom mode=${mode} meshes≈${this.bloomMeshCount}` +
-            (mode === 'fast'
-              ? ' (1× scene + luminance threshold)'
-              : ' (2× scene, half-res emissive extract)')
-        )
-      }
-    }
-
-    this.renderer.setRenderTarget(null)
     const split = this.bloom!.render()
-    // Fast: beautyMs = full composer (scene+bloom). Selective: beauty = full-res scene only.
-    if (split.mode === 'fast') {
-      return {
-        sceneMs: split.beautyMs,
-        extractMs: 0,
-        bloomMs: 0, // folded into scene (one composer; cannot split without custom passes)
-        blitMs: 0,
-        mode: 'bloom-fast'
-      }
-    }
     return {
       sceneMs: split.beautyMs,
       extractMs: split.extractMs,
       bloomMs: split.compositeMs,
       blitMs: 0,
-      mode: 'bloom-selective'
+      mode: 'bloom-post'
     }
   }
 
@@ -483,6 +441,7 @@ export class SceneHost {
   } = {}): void {
     this.clock.start()
     this.adaptiveQuality.start()
+
     let asyncBusy = false
     let frameCount = 0
     let windowStart = performance.now()
@@ -492,6 +451,7 @@ export class SceneHost {
     let windowFrames = 0
     let windowSlow = 0
     let lastAsyncMs = 0
+    let presentLock = false
     /** Don't console.warn every second at 40fps — DevTools logging itself tanks FPS. */
     let lastFpsWarnMs = 0
     this.lastFrameTime = 0
@@ -512,6 +472,7 @@ export class SceneHost {
       const delta = Math.min(this.clock.getDelta(), 0.1)
       frameCount++
 
+      presentLock = true
       const syncT0 = performance.now()
       try {
         opts.onSyncFrame?.(delta)
@@ -530,6 +491,7 @@ export class SceneHost {
 
       this.renderStats.begin()
       if (this.orbitEnabled) this.controls.update()
+      this.renderer.info?.reset?.()
       const renderT0 = performance.now()
       const mainSplit = this.renderMainPass()
       const mainMs = performance.now() - renderT0
@@ -552,6 +514,7 @@ export class SceneHost {
       })
       this.renderStats.end()
       this.renderStats.update()
+      presentLock = false
       // Count completed frames only (skipped interval frames never reach here).
       this.adaptiveQuality.noteFrame()
 
@@ -564,20 +527,33 @@ export class SceneHost {
           'msaa:',
           this.msaaSamples,
           'bloom:',
-          this.bloom?.isActive() ? 'on' : 'off'
+          this.bloom?.isActive() ? 'post' : 'off',
+          'drawVisuals:',
+          this.drawWorld.visualCount
         )
       }
 
+      // Guest / apply / compose start after this rAF returns — Bevy present is host-only.
       if (!asyncBusy && opts.onAsyncFrame) {
         asyncBusy = true
-        const asyncT0 = performance.now()
-        opts
-          .onAsyncFrame(delta)
-          .catch((err) => console.error('[SceneHost] async frame failed', err))
-          .finally(() => {
-            lastAsyncMs = performance.now() - asyncT0
+        const asyncDelta = delta
+        const presentMs = syncMs + renderMs
+        // Hot present → wait longer so apply cannot steal the next rAF.
+        // Idle (timeout 0) when the paint turn was cheap.
+        scheduleOffPlayRaf(() => {
+          if (presentLock) {
             asyncBusy = false
-          })
+            return
+          }
+          const asyncT0 = performance.now()
+          opts
+            .onAsyncFrame!(asyncDelta)
+            .catch((err) => console.error('[SceneHost] async frame failed', err))
+            .finally(() => {
+              lastAsyncMs = performance.now() - asyncT0
+              asyncBusy = false
+            })
+        }, presentMs > 18 ? 64 : 0)
       }
 
       const totalMs = performance.now() - frameT0
@@ -654,7 +630,8 @@ export class SceneHost {
     this.nameTags.dispose()
     this.controls.dispose()
     this.renderStats.dom.remove()
-    this.renderer.forceContextLoss()
+    this.drawWorld.dispose()
+    if (typeof this.renderer.forceContextLoss === 'function') this.renderer.forceContextLoss()
     this.renderer.dispose()
     this.renderer.domElement.remove()
   }

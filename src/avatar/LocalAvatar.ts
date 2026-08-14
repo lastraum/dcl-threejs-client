@@ -15,7 +15,7 @@ import { updateNameTagAnchor } from './headAnchor'
 import { resolveAvatarProfile } from './peerApi'
 import { resolveProfileEmote, loadResolvedProfileEmote, isSceneEmoteUrn, type ResolvedProfileEmote } from './profileEmotes'
 import type { AssetCache } from '../rendering/AssetCache'
-import { yieldToNextFrame } from '../rendering/mainThreadYield'
+import { yieldToIdle } from '../rendering/mainThreadYield'
 import type { ComposeOptions } from './AvatarComposer'
 import type { BodyShape } from './types'
 import { VrmAvatar } from './vrm/VrmAvatar'
@@ -273,7 +273,7 @@ export class LocalAvatar {
 
     try {
       // Yield so a frame paints before/after cold emote GLB fetch/parse (sit / watering freezes).
-      await yieldToNextFrame()
+      await yieldToIdle(24)
       if (seq !== this.emotePlaySeq) return null
 
       const cached = this.assetCache
@@ -285,7 +285,7 @@ export class LocalAvatar {
         return null
       }
 
-      await yieldToNextFrame()
+      await yieldToIdle(24)
       if (seq !== this.emotePlaySeq) return null
 
       const emoteKey = resolved.urn.trim().toLowerCase()

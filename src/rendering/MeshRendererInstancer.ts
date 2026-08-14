@@ -29,6 +29,9 @@ type Bucket = {
 
 const _mat = new THREE.Matrix4()
 const _color = new THREE.Color()
+const _boundBox = new THREE.Box3()
+const _leafBox = new THREE.Box3()
+const _boundSphere = new THREE.Sphere()
 
 const INITIAL_CAP = 64
 
@@ -103,6 +106,7 @@ export class MeshRendererInstancer {
     entityObj.userData[MESH_RENDERER_INSTANCE_BUCKET_KEY] = bucketKey
 
     this.writeMatrix(bucket, index, entityObj)
+    this.refreshBucketBounds(bucket)
     if (opts?.color && bucket.useInstanceColor) {
       _color.setRGB(opts.color.r, opts.color.g, opts.color.b)
       bucket.mesh.setColorAt(index, _color)
@@ -131,12 +135,33 @@ export class MeshRendererInstancer {
     this.writeMatrix(bucket, index, entityObj)
   }
 
+  /** Extract: instance matrix from a world matrix (billboard) — pose quat untouched. */
+  writeWorldMatrix(entity: Entity, world: THREE.Matrix4): boolean {
+    const key = this.entityBucket.get(entity)
+    if (!key) return false
+    const bucket = this.buckets.get(key)
+    if (!bucket) return false
+    const index = bucket.entityIndex.get(entity)
+    if (index === undefined) return false
+    bucket.mesh.updateWorldMatrix(true, false)
+    _mat.copy(bucket.mesh.matrixWorld).invert().multiply(world)
+    bucket.mesh.setMatrixAt(index, _mat)
+    bucket.mesh.instanceMatrix.needsUpdate = true
+    return true
+  }
+
   updateEntities(entities: Iterable<Entity>, nodes: Map<Entity, THREE.Group>): void {
+    const dirty = new Set<Bucket>()
     for (const entity of entities) {
       if (!this.entityBucket.has(entity)) continue
       const obj = nodes.get(entity)
-      if (obj) this.update(entity, obj)
+      if (!obj) continue
+      this.update(entity, obj)
+      const key = this.entityBucket.get(entity)
+      const bucket = key ? this.buckets.get(key) : undefined
+      if (bucket) dirty.add(bucket)
     }
+    for (const bucket of dirty) this.refreshBucketBounds(bucket)
   }
 
   /**
@@ -176,6 +201,18 @@ export class MeshRendererInstancer {
     return [...this.buckets.values()].map((b) => b.mesh)
   }
 
+  /** InstancedMeshes that actually host these entities (never the full board). */
+  meshesForEntities(entities: Iterable<Entity>): THREE.InstancedMesh[] {
+    const seen = new Set<THREE.InstancedMesh>()
+    for (const entity of entities) {
+      const key = this.entityBucket.get(entity)
+      if (!key) continue
+      const bucket = this.buckets.get(key)
+      if (bucket) seen.add(bucket.mesh)
+    }
+    return [...seen]
+  }
+
   detach(entity: Entity, entityObj?: THREE.Group): void {
     if (entityObj) {
       delete entityObj.userData.dclMeshRendererInstanced
@@ -211,6 +248,7 @@ export class MeshRendererInstancer {
       }
     }
     if (bucket.entityIndex.size === 0) this.disposeBucket(key)
+    else this.refreshBucketBounds(bucket)
   }
 
   dispose(): void {
@@ -242,9 +280,8 @@ export class MeshRendererInstancer {
     const mesh = new THREE.InstancedMesh(geometry, mat, INITIAL_CAP)
     mesh.castShadow = false
     mesh.receiveShadow = true
-    // Instance matrices place tiles across the whole scene; geometry bounds at origin would
-    // frustum-cull the entire board when the camera is elsewhere.
-    mesh.frustumCulled = false
+    // Mesh-local sphere is filled by refreshBucketBounds after the first write.
+    mesh.frustumCulled = true
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     if (useInstanceColor) {
       for (let i = 0; i < INITIAL_CAP; i++) {
@@ -256,8 +293,7 @@ export class MeshRendererInstancer {
     _mat.makeScale(0, 0, 0)
     for (let i = 0; i < INITIAL_CAP; i++) mesh.setMatrixAt(i, _mat)
     mesh.instanceMatrix.needsUpdate = true
-    // Large bounds so raycasts / helpers that consult sphere still work.
-    mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 1e6)
+    mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0)
     root.add(mesh)
 
     return {
@@ -287,8 +323,8 @@ export class MeshRendererInstancer {
     const mesh = new THREE.InstancedMesh(bucket.geometry, bucket.material, nextCap)
     mesh.castShadow = false
     mesh.receiveShadow = true
-    mesh.frustumCulled = false
-    mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 1e6)
+    mesh.frustumCulled = true
+    mesh.boundingSphere = old.boundingSphere?.clone() ?? new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0)
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     if (bucket.useInstanceColor) {
       for (let i = 0; i < nextCap; i++) mesh.setColorAt(i, _color.setRGB(1, 1, 1))
@@ -311,6 +347,42 @@ export class MeshRendererInstancer {
     old.dispose()
     bucket.mesh = mesh
     bucket.capacity = nextCap
+    this.refreshBucketBounds(bucket)
+  }
+
+  /**
+   * Mesh-local sphere from live instance matrices. Three applies matrixWorld —
+   * a world-space AABB here double-transforms and culls the board.
+   */
+  private refreshBucketBounds(bucket: Bucket): void {
+    const mesh = bucket.mesh
+    const geo = mesh.geometry
+    if (!geo.boundingBox) geo.computeBoundingBox()
+    const srcBox = geo.boundingBox
+    if (!srcBox) {
+      mesh.frustumCulled = false
+      return
+    }
+    _boundBox.makeEmpty()
+    let any = false
+    for (const index of bucket.entityIndex.values()) {
+      mesh.getMatrixAt(index, _mat)
+      const te = _mat.elements
+      if (te[0] === 0 && te[5] === 0 && te[10] === 0) continue
+      _leafBox.copy(srcBox).applyMatrix4(_mat)
+      _boundBox.union(_leafBox)
+      any = true
+    }
+    if (!mesh.boundingSphere) mesh.boundingSphere = new THREE.Sphere()
+    if (!any) {
+      mesh.boundingSphere.center.set(0, 0, 0)
+      mesh.boundingSphere.radius = 0
+    } else {
+      _boundBox.getBoundingSphere(_boundSphere)
+      mesh.boundingSphere.copy(_boundSphere)
+      mesh.boundingSphere.radius += 2
+    }
+    mesh.frustumCulled = true
   }
 
   private writeMatrix(bucket: Bucket, index: number, entityObj: THREE.Group): void {
@@ -321,9 +393,8 @@ export class MeshRendererInstancer {
       return
     }
     entityObj.updateMatrix()
-    entityObj.updateMatrixWorld(true)
-    // InstancedMesh is under host root — write world matrix (host usually identity).
-    bucket.mesh.updateMatrixWorld(true)
+    entityObj.updateWorldMatrix(true, false)
+    bucket.mesh.updateWorldMatrix(true, false)
     _mat.copy(bucket.mesh.matrixWorld).invert().multiply(entityObj.matrixWorld)
     bucket.mesh.setMatrixAt(index, _mat)
     bucket.mesh.instanceMatrix.needsUpdate = true

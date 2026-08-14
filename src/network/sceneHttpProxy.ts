@@ -31,10 +31,11 @@ function shouldBypassProxyHost(hostname: string): boolean {
     if (a === 169 && b === 254) return true
   }
 
-  // Catalyst / content bulk — keep direct (bandwidth + existing content pipeline)
+  // Catalyst / content bulk — keep direct only when the host sends CORS.
+  // peer-ec1/ec2 omit Access-Control-Allow-Origin → fishing atlas + emote GLBs fail.
   if (h.includes('worlds-content-server')) return true
   if (h.includes('content-assets')) return true
-  if (/^peer(-[a-z0-9]+)?\.decentraland\.org$/i.test(h)) return true
+  if (h === 'peer.decentraland.org') return true
   if (h.endsWith('.decentraland.zone') || h.endsWith('.decentraland.today')) return true
 
   return false

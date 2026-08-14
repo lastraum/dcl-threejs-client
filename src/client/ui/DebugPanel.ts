@@ -175,7 +175,7 @@ export class DebugPanel {
           </label>
           <label class="debug-panel__check">
             <input type="checkbox" data-camera-wall-occlusion />
-            <span>Third-person camera wall sweep (camerasweep)</span>
+            <span>Third-person camera wall sweep (on; ?nocamerasweep)</span>
           </label>
           <button type="button" class="debug-panel__logs-btn" data-physx-recook>Force recook all colliders</button>
         </div>

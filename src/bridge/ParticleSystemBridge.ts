@@ -3,6 +3,7 @@ import type { Entity } from '@dcl/ecs'
 import type { ResolvedScene } from '../dcl/content/types'
 import type { AssetCache } from '../rendering/AssetCache'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
+import { usePerfDebug } from '../client/devFlags'
 import { resolveSceneTextureUrl } from './material/resolveTexture'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionView } from './ProjectionView'
@@ -61,6 +62,8 @@ export class ParticleSystemBridge {
   private lastDiagAt = 0
   private loggedCreates = 0
   private syncInFlight = false
+  /** Seconds (performance.now/1000) of last update — elapsed, not rAF delta. */
+  private lastUpdateSec = 0
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -68,7 +71,9 @@ export class ParticleSystemBridge {
     private readonly scene: ResolvedScene,
     private readonly getNodes: () => Map<Entity, THREE.Group> | undefined,
     /** Active camera for frustum prioritization (in-view systems always full rate). */
-    private readonly getCamera: () => THREE.Camera | null = () => null
+    private readonly getCamera: () => THREE.Camera | null = () => null,
+    private readonly bindDrawVisual?: (pose: THREE.Object3D, visual: THREE.Object3D) => void,
+    private readonly unbindDrawVisual?: (pose: THREE.Object3D) => void
   ) {}
 
   async sync(view: ProjectionView): Promise<void> {
@@ -118,7 +123,8 @@ export class ParticleSystemBridge {
           continue
         }
         created.gpu.mesh.name = particleKey(entity)
-        parent.add(created.gpu.mesh)
+        if (this.bindDrawVisual) this.bindDrawVisual(parent, created.gpu.mesh)
+        else parent.add(created.gpu.mesh)
         this.runtimes.set(entity, created)
         runtime = created
         this.loggedCreates++
@@ -171,13 +177,17 @@ export class ParticleSystemBridge {
           (missingNode ? ` missingNode=${missingNode}` : '') +
           (pendingCreates ? ` createFail=${pendingCreates}` : '') +
           ` frustumPriority=1`,
-        { alsoConsole: true, throttleMs: 3000, throttleKey: 'particles-sync-diag' }
+        { alsoConsole: usePerfDebug(), throttleMs: 3000, throttleKey: 'particles-sync-diag' }
       )
     }
   }
 
-  update(delta: number): void {
+  update(_ignoredDelta?: number): void {
     const t0 = performance.now()
+    const nowSec = t0 / 1000
+    const delta =
+      this.lastUpdateSec > 0 ? Math.min(0.25, Math.max(0, nowSec - this.lastUpdateSec)) : 0
+    this.lastUpdateSec = nowSec
     const nodes = this.getNodes()
     if (!nodes) {
       perfNoteParticleMs(0)
@@ -277,8 +287,15 @@ export class ParticleSystemBridge {
         )
       }
 
-      // Always simulate while in view (or while live particles remain off-camera).
-      if (!paused && (inView || runtime.live.length > 0)) {
+      if (!inView) {
+        // Off-camera decorative loops — drop sprites instead of simulating 36 systems.
+        if (runtime.live.length) runtime.live.length = 0
+        runtime.gpu.geometry.instanceCount = 0
+        runtime.gpu.mesh.visible = false
+        continue
+      }
+
+      if (!paused) {
         simulateParticles(runtime.live, spec, delta)
       }
 
@@ -360,8 +377,12 @@ export class ParticleSystemBridge {
   private disposeRuntime(entity: Entity, parent: THREE.Object3D): void {
     const runtime = this.runtimes.get(entity)
     if (!runtime) return
-    const child = parent.getObjectByName(particleKey(entity))
-    if (child) parent.remove(child)
+    const child =
+      (parent.userData.dclDrawParticles as THREE.Object3D | undefined) ??
+      parent.getObjectByName(particleKey(entity))
+    this.unbindDrawVisual?.(parent)
+    if (child) child.removeFromParent()
+    if (parent.userData.dclDrawParticles === child) delete parent.userData.dclDrawParticles
     disposeParticleGpuMesh(runtime.gpu)
     runtime.live.length = 0
     this.runtimes.delete(entity)

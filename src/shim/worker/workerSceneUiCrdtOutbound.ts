@@ -12,6 +12,7 @@ import { PutNetworkComponentOperation } from '@dcl/ecs/dist/serialization/crdt/n
 import { PutComponentOperation } from '@dcl/ecs/dist/serialization/crdt/putComponent'
 import { CrdtMessageType, type CrdtMessage } from '@dcl/ecs/dist/serialization/crdt/types'
 import { shouldBlockPlayerLocomotionClear } from './inputModifierLocomotionGuard'
+import { isHostOwnedLwwEgress } from './injectHostLww'
 import { preregisterRendererInjectedComponents } from './preregisterRendererInjectedComponents'
 import {
   resolveWorkerPointerEvents,
@@ -458,6 +459,41 @@ function filterWorkerAuthoritativeCrdtBytes(data: Uint8Array): Uint8Array {
 /** Remove worker-authoritative PUT/DELETE — inbound during open pointer session. */
 export function stripWorkerAuthoritativeCrdtBytes(data: Uint8Array): Uint8Array {
   return filterWorkerAuthoritativeCrdtBytes(data)
+}
+
+/** Drop host-owned LWW the guest must not echo (reserved Transform, PPI, EngineInfo, …). */
+export function stripHostOwnedLwwBytes(data: Uint8Array): Uint8Array {
+  if (!data.byteLength) return data
+  const out = new ReadWriteByteBuffer()
+  const readBuf = new ReadWriteByteBuffer(data)
+  let wrote = false
+  try {
+    let msg = readMessage(readBuf)
+    while (msg) {
+      const entityId =
+        'entityId' in msg && typeof (msg as { entityId?: number }).entityId === 'number'
+          ? (msg as { entityId: number }).entityId
+          : -1
+      const componentId =
+        'componentId' in msg && typeof (msg as { componentId?: number }).componentId === 'number'
+          ? (msg as { componentId: number }).componentId
+          : -1
+      const strip =
+        (msg.type === CrdtMessageType.PUT_COMPONENT ||
+          msg.type === CrdtMessageType.PUT_COMPONENT_NETWORK ||
+          msg.type === CrdtMessageType.DELETE_COMPONENT ||
+          msg.type === CrdtMessageType.DELETE_COMPONENT_NETWORK) &&
+        isHostOwnedLwwEgress(componentId, entityId)
+      if (!strip) {
+        rewriteCrdtMessage(msg, out)
+        wrote = true
+      }
+      msg = readMessage(readBuf)
+    }
+  } catch {
+    return wrote ? out.toBinary() : data
+  }
+  return wrote ? out.toBinary() : new Uint8Array(0)
 }
 
 /**

@@ -514,11 +514,9 @@ export class SocialChatController {
     // handlers again (World is about to rewire; shell dispose must not wipe them later).
     this.social.releaseCommsOwnership()
     // Shell gets a blank CommsService — must NOT dispose `transferred` (World owns it now).
+    // Do not setIdentity here: that would let a leftover ensureArchipelagoConnected
+    // open a second control-plane WS and the server kicks the transferred socket.
     this.comms = new CommsService()
-    if (this.login && (this.login.kind === 'wallet' || this.login.kind === 'guest')) {
-      this.comms.setIdentity(this.login.address, this.login.identity)
-      this.chatPool.setIdentity(this.login.address, this.login.identity)
-    }
     this.connectedPointer = null
     this.syncLiveKeys()
     if (this.status.kind === 'connected' || this.status.kind === 'browser_chat_disabled') {

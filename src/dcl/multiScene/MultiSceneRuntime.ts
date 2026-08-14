@@ -248,6 +248,11 @@ export class MultiSceneRuntime {
    * COD F1 — `applyBudgetMs` is wall remainder after primary full apply.
    * PE spends first; secondaries get leftover (or dirty-only if exhausted).
    */
+  /** True when a PE worker is live (shells-only has no secondary apply). */
+  hasAsyncTickWork(): boolean {
+    return this.pe.runningCount() > 0
+  }
+
   async tickAsync(opts?: { applyBudgetMs?: number }): Promise<{
     colliders: PhysicsColliderDesc[]
     invalidatePhysIds: number[]

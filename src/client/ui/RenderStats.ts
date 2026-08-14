@@ -147,6 +147,9 @@ export class RenderStats {
         `scene=${perf.renderSceneMs.toFixed(1)} extract=${perf.renderExtractMs.toFixed(1)}`,
       `    bloom=${perf.renderBloomMs.toFixed(1)} blit=${perf.renderBlitMs.toFixed(1)} ` +
         `${perf.renderMode} sh=${perf.renderShadowOn ? 'on' : 'off'}`,
+      `  scene-loop: send=${perf.sceneLoopSendMs.toFixed(1)} recv=${perf.sceneLoopReceiveMs.toFixed(1)} ` +
+        `apply=${perf.sceneLoopApplyMs.toFixed(1)} g=${perf.sceneLoopGuests} ` +
+        `sent=${perf.sceneLoopSent} inflight=${perf.sceneLoopInFlight}`,
       `  apply=${perf.applyMs.toFixed(1)} async~=${perf.asyncMs.toFixed(1)} ` +
         `peel=${perf.asyncPeelMs.toFixed(1)} coll=${perf.asyncCollisionMs.toFixed(1)} ` +
         `bridge=${perf.asyncBridgesMs.toFixed(1)}`,
@@ -179,7 +182,8 @@ export class RenderStats {
       `vcHydrate/s=${perf.vcHydratePerSec.toFixed(1)} ` +
         `poseLive/s=${perf.vcPoseLivePerSec.toFixed(1)} ` +
         `seal=${perf.physxStaticSealed} postReb=${perf.physxPostSealRebuild}`,
-      `mrInst=${perf.meshRendererInstances} buckets=${perf.meshRendererBuckets}`
+      `mrInst=${perf.meshRendererInstances} buckets=${perf.meshRendererBuckets} ` +
+        `gltfInst=${perf.gltfInstances}/${perf.gltfInstanceBuckets} draws=${perf.gltfInstanceDraws}`
     )
     this.extra.textContent = lines.join('\n')
   }

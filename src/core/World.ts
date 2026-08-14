@@ -42,6 +42,7 @@ import { AnimatorSampleHud } from '../debug/AnimatorSampleHud'
 import { MainFrameHud } from '../debug/MainFrameHud'
 import type { PerformanceTier } from '../shim/types'
 import { LandscapeSystem } from './systems/LandscapeSystem'
+import { SceneLoop } from './sceneLoop'
 import { SceneScriptSystem } from './systems/SceneScriptSystem'
 import { EnvironmentSystem } from '../environment/EnvironmentSystem'
 import { FftOceanWater } from '../environment/FftOceanWater'
@@ -58,6 +59,7 @@ import type { OceanPerfInfo } from '../client/ui/RenderStats'
 import {
   perfNoteAsyncCollSplit,
   perfNoteAsyncSplit,
+  perfNoteSceneLoop,
   perfNoteSyncPlus,
   perfNoteSyncRendererMs,
   perfNoteSyncSubsystems,
@@ -178,6 +180,11 @@ export class World {
   readonly landscape = new LandscapeSystem()
   /** Mutable so promote handoff can adopt a live secondary worker as primary. */
   sceneScript = new SceneScriptSystem()
+  /** Host clock for scene-JS guests. Present is host-only; guest ticks on async. */
+  readonly sceneLoop = new SceneLoop()
+  private guestTickPlayer: ReturnType<PlayerSystem['getEntityPose']> | null = null
+  private guestTickCamera: ReturnType<PlayerSystem['getCameraEntityPose']> | null = null
+  private guestTickFrame = 0
   readonly physics = new PhysXWorld()
   readonly session = new SessionIdentity()
   /** May be replaced by landing handoff (`adoptComms`) — keep LiveKit without reconnect. */
@@ -385,6 +392,7 @@ export class World {
     this.performanceTier = performanceTier
     applyClientPerformanceDefaults(this.host.renderer, performanceTier)
     this.sceneScript.setPerformanceTier(performanceTier)
+    this.sceneLoop.setPrimary(() => this.sceneScript)
     if (performanceTier !== 'high') {
       console.info(`[World] performance tier=${performanceTier} — relaxed scene-worker timing + render defaults`)
     }
@@ -395,7 +403,8 @@ export class World {
       player: this.player!.getEntityPose(),
       camera: this.player!.getCameraEntityPose()
     }))
-    this.remoteAvatars = new RemoteAvatarManager(this.host.scene)
+    this.remoteAvatars = new RemoteAvatarManager(this.host.drawWorld.drawRoot)
+    this.host.setExtractHook((camera) => this.sceneScript.extractBillboards(camera))
     // Do not place pose-less remotes on local feet (ghost stick). Provider unused for shells;
     // peers appear when first RFC4 Movement lands at their scene pose.
     this.remoteAvatars.setProvisionalPositionProvider(() => null)
@@ -407,7 +416,7 @@ export class World {
 
     this.unsubEnvironmentDebug = environmentDebug.subscribe(() => this.applyEnvironmentDebugVisibility())
 
-    this.petManager.bindScene(this.host.scene)
+    this.petManager.bindScene(this.host.drawWorld.drawRoot)
     this.petManager.attachPeerSync(this.petPeerSync)
     this.wireCommsHandlers()
     this.bindPetContextMenu()
@@ -746,7 +755,7 @@ export class World {
       scene.baseParcel ||
       'Scene'
     if (skipRemoteAvatars()) {
-      clientDebugLog.log('network', 'Remote avatars disabled (?noremote)', {
+      clientDebugLog.log('network', 'Remote avatars disabled (default; ?remotes to enable)', {
         alsoConsole: true,
         throttleMs: 60_000
       })
@@ -859,7 +868,7 @@ export class World {
       )
       this.host.renderStats.setOceanPerf(null)
     } else if (biomeWantsOcean) {
-      const useFftOcean = fftSettings.enabled && this.host.renderer.capabilities.isWebGL2
+      const useFftOcean = fftSettings.enabled && this.host.renderer.capabilities?.isWebGL2 === true
       if (fftSettings.enabled && !useFftOcean) {
         console.warn('[ocean] FFTOCEAN requires WebGL2 — using Water.js')
       }
@@ -1788,14 +1797,18 @@ export class World {
 
   /** One visible frame (sky/landscape/camera) before the loading overlay hides. */
   primeRender(): void {
-    this.ocean?.update(0, this.host.camera)
-    updateFoliageWind(this.foliageWindElapsed)
-    // Cull ECS lights by avatar (not camera) so freecam/orbit doesn't re-pick distant lights.
-    this.lightManager.update(this.player?.getWorldPosition() ?? this.host.camera.position)
-    this.environment.update(0, this.sceneScript.view, this.sceneScript.readComponents)
-    this.syncOutdoorLighting()
-    this.player?.snapCamera()
-    this.host.renderFrame()
+    try {
+      this.ocean?.update(0, this.host.camera)
+      updateFoliageWind(this.foliageWindElapsed)
+      // Cull ECS lights by avatar (not camera) so freecam/orbit doesn't re-pick distant lights.
+      this.lightManager.update(this.player?.getWorldPosition() ?? this.host.camera.position)
+      this.environment.update(0, this.sceneScript.view, this.sceneScript.readComponents)
+      this.syncOutdoorLighting()
+      this.player?.snapCamera()
+      this.host.renderFrame()
+    } catch (err) {
+      console.warn('[World] primeRender failed', err)
+    }
     const entityRoot = this.host.scene.getObjectByName('scene-entities')
     const hydration = this.sceneScript.getHydrationStats()
     console.info(
@@ -1813,6 +1826,7 @@ export class World {
     // Optimistic play unlock only — stay muted so browser autoplay policy allows
     // frames. Sound unlocks on the first real pointer/key gesture.
     this.sceneScript.setVideoUserGestureUnlocked(true, { allowSound: false })
+    this.sceneScript.armSceneLoopReceive(true)
     // PE raycast/hover off for first 5s of the play loop — enter budget (env/async/bodies).
     this.pointerRaycastLiveAt = performance.now() + World.POINTER_RAYCAST_HOLD_MS
     let startFrame = 0
@@ -1821,6 +1835,9 @@ export class World {
     this.host.start({
       onSyncFrame: (delta) => {
         startFrame++
+        const loopMinimum = this.sceneLoop.lastApplyOverran(28)
+        // Guest motion from last receive — apply before CCT so riding matches Bevy Update-then-present.
+        this.sceneScript.applyPendingGuestMotion()
         // --- env / sky / lights (sync+ slice) ---
         // Client landscape water is off by default (?water=1 to opt in). Still skip ocean/GPGPU
         // and landscape grass/desert/foliage when not present — scenes do not need them.
@@ -1869,8 +1886,7 @@ export class World {
           if (this.loadedPrimaryScene) {
             this.assets.setScene(this.loadedPrimaryScene)
           }
-          // Motion first — PE pose + TriggerArea enter must beat worker onUpdate.
-          // Includes pumpMotionBridges (animators + particles) — part is nested here.
+          // Host present: CCT + motion only. Guest send/receive is on the async clock.
           const platformT0 = performance.now()
           this.syncPlayerMotionFrame(delta, startFrame)
           // PE owns VirtualCamera / MainCamera (drone, vehicle) — drive lens from PE bridge,
@@ -1892,26 +1908,24 @@ export class World {
           }
           const playerPose = this.player.getEntityPose()
           const cameraPose = this.player.getCameraEntityPose()
-          // Keyboard bus first — PE/primary onUpdate this frame sees isPressed for drone WASD.
+          this.guestTickPlayer = playerPose
+          this.guestTickCamera = cameraPose
+          this.guestTickFrame = startFrame
+          // Host input + attach. Guest play-frame / CRDT fold run after present.
           const sceneT0 = performance.now()
           this.inputHub.sync(startFrame)
           this.sceneScript.syncClientEntities(playerPose, cameraPose)
-          // Hand-held props (GP fishing rod/line): after locomotion + scene emote mixer and
-          // fresh PE Transform so AvatarAttach is not one frame behind (very visible at low FPS).
           this.sceneScript.pumpAvatarAttach()
-          // Detect enter/exit with post-move CCT feet, then flush PE+TriggerAreaResult to worker.
           this.sceneScript.updateTriggerAreas()
-          // Worker onUpdate with current PE (bounce parasols read Transform.get(PlayerEntity)).
-          this.sceneScript.tickPlayFrame()
-          // Portable experiences + live secondaries (primary already ticked — primary wins intents).
-          this.multiScene?.tickSync(playerPose, cameraPose, startFrame)
           sceneTickMs = performance.now() - sceneT0
           // PE tween/billboard/attach motion + reserved-parent meshes (same as primary pump).
           const peT0 = performance.now()
-          this.pumpPeMotionBridges(delta, startFrame)
-          // Live secondaries: scripts tick above, but host Animator mixers need delta
-          // (was frozen mid-clip without this — COD gap for sticky/demoted plaza).
-          this.pumpSecondaryMotionBridges(delta, startFrame)
+          if ((this.multiScene?.pe?.getRunningSystems() ?? []).length) {
+            this.pumpPeMotionBridges(delta, startFrame)
+          }
+          if ((this.multiScene?.getSecondaryMotionSystems() ?? []).length) {
+            this.pumpSecondaryMotionBridges(delta, startFrame)
+          }
           // After PE player-frame may have bound VC this tick — re-select before next freecam frame.
           this.selectActiveVirtualCameraBridge()
           // Mirror PE player-affecting state onto primary (InputModifier, forces) — not MainCamera ids.
@@ -1919,12 +1933,7 @@ export class World {
           peMs = performance.now() - peT0
 
           const pos = this.player.getPosition()
-          const aoiT0 = performance.now()
-          // AOI tertiary visuals — scene-local DCL feet (throttled inside layer).
-          this.aoiVisual.update(pos.x, pos.z)
-          // Multi-scene: dwell on foreign parcel → promote that scene to primary.
-          this.scenePromote.tick(pos.x, pos.z)
-          aoiMs = performance.now() - aoiT0
+          aoiMs = 0
           const yaw = this.player.getNetworkYaw()
           const isEmoting = this.player.isProfileEmoteActive()
           const locomotion = this.player.getLocomotionWireState()
@@ -1971,9 +1980,8 @@ export class World {
           )
           this.vrmPeerSync.gcStaleFetches()
           this.petPeerSync.gcStaleFetches()
-          // Always tick remote pose (skipping frames made peers look choppy).
-          // LOD inside RemoteAvatarManager already throttles far anim work.
-          const remoteTick = this.remoteAvatars?.update(delta)
+          // Always lerp remotes. If guest apply overran, skip mixers only (Bevy: pose stays cheap).
+          const remoteTick = this.remoteAvatars?.update(delta, { skipAnim: loopMinimum })
           this.reportRemoteAvatarProgress()
           if (this.remoteAvatars) {
             const gate = this.remoteAvatars.getComposeGateSnapshot()
@@ -2056,10 +2064,7 @@ export class World {
           // Hub already synced before scene/PE ticks; late edges still publish on keydown.
         }
         if (!this.editorPreviewMode) {
-          // Campfire sprite UV animation — sync frame (tiny tracked set, self-prunes static planes).
           this.sceneScript.syncAnimatedSprites()
-          // Texture retries — sync frame so failed loads don't block async projection drain.
-          this.sceneScript.tickDeferredMaterials()
         }
         this.refreshAnimatorSampleHud(delta)
         perfNoteSyncPlus({ envMs, petMs, peMs, sceneTickMs, aoiMs, pointerMs })
@@ -2068,16 +2073,49 @@ export class World {
         if (this.editorPreviewMode) return
 
         const t0 = performance.now()
-        // COD AAA — primary owns a fixed frame pie (motion+material+structure).
-        // No backlog-proportional deadline boosts — admit seal keeps pendingDiff true-dirty.
-        await this.sceneScript.syncRenderer({ deadlineMs: 18 })
+        const ASYNC_HARD_MS = 8
+        const remain = (): number => ASYNC_HARD_MS - (performance.now() - t0)
+        // Guest VM clock — after present. Host already simulated + drew this rAF.
+        this.sceneLoop.receive()
+        if (this.playerMode && this.player && this.guestTickPlayer && this.guestTickCamera) {
+          this.sceneLoop.reconcilePe(this.multiScene?.pe ?? null)
+          this.sceneLoop.send({
+            now: performance.now(),
+            fpsTarget: renderQuality.getFpsLimit() || 60,
+            player: this.guestTickPlayer,
+            camera: this.guestTickCamera,
+            frame: this.guestTickFrame
+          })
+          this.sceneLoop.peelMotion(2)
+          if (remain() > 2) {
+            this.multiScene?.tickSync(this.guestTickPlayer, this.guestTickCamera, this.guestTickFrame)
+          }
+          if (remain() > 2 && !this.sceneLoop.lastApplyOverran(28)) {
+            const pos = this.player.getPosition()
+            this.aoiVisual.update(pos.x, pos.z)
+            this.scenePromote.tick(pos.x, pos.z)
+          }
+        }
+        if (remain() > 2) {
+          await this.sceneLoop.applyWorld(Math.min(8, remain()))
+        }
+        if (remain() > 2) {
+          this.sceneScript.pumpMotionBridges(_delta, startFrame, { visualOnly: true })
+        }
         const peelMs = performance.now() - t0
+        perfNoteSceneLoop(this.sceneLoop.getMeters())
         // Frame budget: async CRDT apply wall time (?perfdebug [frame] line).
         perfNoteSyncRendererMs(peelMs)
 
         // Async pointer prepare only when dirty — full flush already ran on sync if needed.
         let asyncPtrMs = 0
-        if (this.playerMode && this.player && this.isPointerRaycastLive()) {
+        if (
+          remain() > 2 &&
+          this.playerMode &&
+          this.player &&
+          this.isPointerRaycastLive() &&
+          !this.sceneLoop.lastApplyOverran(28)
+        ) {
           const ptrT0 = performance.now()
           this.sceneScript.preparePointerRaycast(startFrame)
           asyncPtrMs = performance.now() - ptrT0
@@ -2111,8 +2149,13 @@ export class World {
           })
         }
 
+        if (!this.editorPreviewMode && remain() > 2) {
+          this.sceneScript.tickDeferredMaterials()
+        }
         const t2 = performance.now()
-        await this.sceneScript.syncAsyncBridges()
+        if (remain() > 2) {
+          await this.sceneScript.syncAsyncBridges()
+        }
         // Animator.sync is async-only — PART kinematic pose same frame open/close applies.
         if (
           !skipPhysxColliders() &&
@@ -2130,7 +2173,7 @@ export class World {
         // COD F1 — honest residual: fullWork only when remainder ≥ MIN_FULL_MS (no 0.5 floor lie).
         const t3 = performance.now()
         let multiMs = 0
-        if (this.multiScene) {
+        if (this.multiScene?.hasAsyncTickWork()) {
           const ASYNC_MULTI_BUDGET_MS = 8
           const MIN_FULL_MS = 2
           const primarySpent = t3 - t0
@@ -2175,8 +2218,14 @@ export class World {
           postSealRebuild: this.physics.getPostSealRebuildCount()
         })
         const mrStats = this.sceneScript.getMeshRendererInstanceStats()
+        const gltfInst = this.sceneScript.getGltfInstanceStats()
         if (mrStats) {
-          perfSetMeshRendererInstanceStats(mrStats)
+          perfSetMeshRendererInstanceStats({
+            ...mrStats,
+            gltfInstances: gltfInst?.instances,
+            gltfBuckets: gltfInst?.buckets,
+            gltfDraws: gltfInst?.draws
+          })
         }
         // COD F2 — track primary async pressure for secondary anim LOD (~12ms soft budget).
         if (totalMs > 12) this.primaryAsyncOverBudgetStreak++
@@ -2214,10 +2263,8 @@ export class World {
     this.sceneScript.consumeSyncFrameTransforms()
 
     const groundEcsEarly = this.sceneScript.standSurfaceEcsFromPhys(standPhysEntity)
-    const onSceneGround = groundPhysEntity !== null && groundPhysEntity !== -1
     const motionSnapshotCandidates = this.sceneScript.collectMotionSnapshotCandidates(groundEcsEarly)
-    const needsPlatformPipeline =
-      motionSnapshotCandidates.size > 0 || !onSceneGround || groundPhysEntity === -1
+    const needsPlatformPipeline = motionSnapshotCandidates.size > 0
 
     if (needsPlatformPipeline && feet) {
       this.sceneScript.snapshotMotionBaselines(motionSnapshotCandidates, feet, groundEcsEarly)
@@ -2232,7 +2279,10 @@ export class World {
 
     // Transform writers (CRDT) already applied. Tween / Billboard / Animator.
     // Skip AvatarAttach here — sample hand bones after player.update + PE sync (below).
-    this.sceneScript.pumpMotionBridges(delta, startFrame, { skipAvatarAttach: true })
+    this.sceneScript.pumpMotionBridges(delta, startFrame, {
+      skipAvatarAttach: true,
+      ridingOnly: true
+    })
     this.refreshAnimatorSampleHud(delta)
     if (!skipPhysxColliders() && this.sceneScript.hasColliderWorkPending()) {
       this.sceneScript.syncCollision()
@@ -2337,6 +2387,7 @@ export class World {
         sceneOrigin: this.comms.getSceneOrigin()
       })
     }
+    this.sceneScript.clearConsumedFrameMotionMarks()
   }
 
   /** Runtime pose-drift recook — off unless `?colliderrecook` or Help debug toggle. Boot + manual recook bypass. */
@@ -2443,8 +2494,10 @@ export class World {
               6,
               feetW.y
             )
-            // Heal only when SQ truly misses (probe null), not when CCT stands on infinite ground.
-            if (probe == null) {
+            // Plaza roads sit on the y=0 infinite plane — probe null is expected.
+            // Healing that case walked 894 WASM actors (~26ms) every 1.5s.
+            const onSeaLevel = feetW.y > -0.4 && feetW.y < 0.6
+            if (probe == null && !onSeaLevel) {
               this.physics.tryHealPostSealSceneQuery(feetW.x, feetW.y, feetW.z)
             }
           }
@@ -4354,9 +4407,11 @@ export class World {
    */
   attachMultiScene(runtime: MultiSceneRuntime | null): void {
     if (this.multiScene && this.multiScene !== runtime) {
+      this.multiScene.pe.setPlayFrameOwnedExternally(false)
       this.multiScene.unbindWorld()
     }
     this.multiScene = runtime
+    runtime?.pe.setPlayFrameOwnedExternally(!!runtime)
     if (!runtime || !this.loadedPrimaryScene) return
     runtime.setOnLiveSecondaryIds((ids) => {
       this.aoiVisual.setLiveSecondaryIds(ids)
@@ -5534,7 +5589,9 @@ export class World {
     this.host.stop()
 
     // Detach multi-scene (PE workers) before primary host dies — PE prefs stay on manager.
+    this.sceneLoop.clear()
     if (this.multiScene) {
+      this.multiScene.pe.setPlayFrameOwnedExternally(false)
       this.multiScene.unbindWorld()
       this.multiScene = null
     }

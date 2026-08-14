@@ -1,20 +1,23 @@
 export type CameraCollisionDebugOptions = {
-  /** Third-person PhysX sweep from pivot to camera — off by default. */
+  /** Third-person PhysX sweep from pivot to camera — on by default. */
   wallOcclusion: boolean
 }
 
 type Listener = (options: CameraCollisionDebugOptions) => void
 
 function readUrlDefault(): boolean {
-  if (typeof window === 'undefined') return false
-  return new URLSearchParams(window.location.search).has('camerasweep')
+  if (typeof window === 'undefined') return true
+  const q = new URLSearchParams(window.location.search)
+  if (q.has('nocamerasweep')) return false
+  if (q.has('camerasweep')) return true
+  return true
 }
 
 const DEFAULT_OPTIONS: CameraCollisionDebugOptions = {
   wallOcclusion: readUrlDefault()
 }
 
-/** Third-person camera wall occlusion — Help panel + `?camerasweep`. */
+/** Third-person camera wall occlusion — on by default. `?nocamerasweep` disables. */
 class CameraCollisionDebugStore {
   private options: CameraCollisionDebugOptions = { ...DEFAULT_OPTIONS }
   private readonly listeners = new Set<Listener>()

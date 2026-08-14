@@ -19,6 +19,7 @@ import { PetInstance } from './PetInstance'
 import type { PetPeerSync } from './PetPeerSync'
 import type { ActivePetSpec, PetAnimClipMap, PetCategory, PetPose } from './types'
 import { logMainHitch } from '../debug/MainHitchLog'
+import { yieldToIdle } from '../rendering/mainThreadYield'
 
 const _dcl = new THREE.Vector3()
 const _three = new THREE.Vector3()
@@ -42,7 +43,7 @@ type RemotePet = {
  * Local + remote pet roots. Network is DPET over RFC4 (PetPeerSync), not scene CRDT.
  */
 export class PetManager {
-  private scene: THREE.Scene | null = null
+  private scene: THREE.Object3D | null = null
   private peerSync: PetPeerSync | null = null
   private localWallet: string | null = null
   private localInstance: PetInstance | null = null
@@ -66,13 +67,13 @@ export class PetManager {
   /** Optional: seed remote pet near peer avatar until first DPET pose. */
   private peerFeetProvider: ((address: string) => THREE.Vector3 | null) | null = null
 
-  bindScene(scene: THREE.Scene): void {
-    this.scene = scene
-    if (this.localInstance && this.localInstance.root.parent !== scene) {
-      scene.add(this.localInstance.root)
+  bindScene(parent: THREE.Object3D): void {
+    this.scene = parent
+    if (this.localInstance && this.localInstance.root.parent !== parent) {
+      parent.add(this.localInstance.root)
     }
     for (const remote of this.remotes.values()) {
-      if (remote.instance.root.parent !== scene) scene.add(remote.instance.root)
+      if (remote.instance.root.parent !== parent) parent.add(remote.instance.root)
     }
   }
 
@@ -174,6 +175,7 @@ export class PetManager {
     this.lastOwnerMoveMs = performance.now()
     this.localInstance.setMeshYawOffsetDeg(meshYaw)
     this.localInstance.setAnimClipMap(animClipMap)
+    await yieldToIdle(48)
     const hitchT0 = performance.now()
     await this.localInstance.loadFromBytes(bytes, spec.category)
     logMainHitch(
@@ -434,6 +436,7 @@ export class PetManager {
     const stillAnnounced = this.peerSync?.getPeerEquippedHash(key)
     if (stillAnnounced && stillAnnounced !== contentHash) return
     remote.instance.setMeshYawOffsetDeg(meshYawOffsetDeg)
+    await yieldToIdle(48)
     const hitchT0 = performance.now()
     await remote.instance.loadFromBytes(bytes, category)
     logMainHitch(

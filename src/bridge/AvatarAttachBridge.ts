@@ -78,10 +78,11 @@ export class AvatarAttachBridge {
       active.add(entity)
       this.attached.add(entity)
 
-      const playerTransform = resolver.getPlayerTransformDcl(spec.avatarId)
+      const ownerId = this.resolveAttachOwnerId(entity, spec.avatarId, resolver, view)
+      const playerTransform = resolver.getPlayerTransformDcl(ownerId)
       if (!playerTransform) continue
 
-      const skeleton = this.resolveSkeleton(entity, spec.avatarId, resolver, view)
+      const skeleton = this.resolveSkeleton(entity, ownerId, resolver, view)
       if (!skeleton) continue
 
       const anchorPose = sampleAvatarAttachAnchor(
@@ -104,11 +105,12 @@ export class AvatarAttachBridge {
         anchorPose.quaternion,
         existing
       )
+      const ownerEntity =
+        this.resolveAttachOwnerEntity(ownerId, resolver, view) ??
+        (existing?.parent && existing.parent !== 0 ? existing.parent : view.PlayerEntity)
       const relativeWithParent: DclTransformValues = {
         ...relative,
-        parent: (existing?.parent && existing.parent !== 0
-          ? existing.parent
-          : view.PlayerEntity) as DclTransformValues['parent']
+        parent: ownerEntity as DclTransformValues['parent']
       }
 
       this.projection.setRenderer(Transform.componentId, entity, relativeWithParent)
@@ -135,7 +137,7 @@ export class AvatarAttachBridge {
       })
 
       this.cache.set(entity, {
-        avatarId: spec.avatarId,
+        avatarId: ownerId,
         anchorPointId: spec.anchorPointId ?? 0
       })
 
@@ -175,6 +177,49 @@ export class AvatarAttachBridge {
         })
       }
     }
+  }
+
+  /**
+   * Owner of an AvatarAttach. Empty avatarId is NOT "always local" — plaza fishing
+   * syncs catch/rod entities with parent = that player's entity. Binding those to
+   * the local skeleton put someone else's fish on our head.
+   */
+  private resolveAttachOwnerId(
+    entity: Entity,
+    avatarId: string | undefined,
+    resolver: AvatarAttachTargetResolver,
+    view: ProjectionView
+  ): string | undefined {
+    const id = avatarId?.trim().toLowerCase()
+    if (id) return id
+
+    const { Transform, PlayerIdentityData } = this.ecs
+    if (!Transform?.has(entity)) return undefined
+    const parent = Transform.get(entity).parent as Entity | undefined
+    if (parent == null || parent === 0) return undefined
+    if (parent === view.PlayerEntity) return resolver.getLocalWallet()?.toLowerCase()
+    if (PlayerIdentityData?.has(parent)) {
+      const address = (PlayerIdentityData.get(parent) as { address?: string }).address
+      if (address) return address.toLowerCase()
+    }
+    return undefined
+  }
+
+  private resolveAttachOwnerEntity(
+    ownerId: string | undefined,
+    resolver: AvatarAttachTargetResolver,
+    view: ProjectionView
+  ): Entity | undefined {
+    const localWallet = resolver.getLocalWallet()?.toLowerCase()
+    const id = ownerId?.trim().toLowerCase()
+    if (!id || (localWallet && id === localWallet)) return view.PlayerEntity
+    const { PlayerIdentityData } = this.ecs
+    if (!PlayerIdentityData) return undefined
+    for (const [playerEntity, identity] of view.getEntitiesWith(PlayerIdentityData)) {
+      const address = (identity as { address?: string }).address?.toLowerCase()
+      if (address === id) return playerEntity
+    }
+    return undefined
   }
 
   private resolveSkeleton(

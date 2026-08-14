@@ -978,6 +978,7 @@ export class GltfColliderExtractor {
     ) {
       return
     }
+    if (!physxColliderDebug.isGltfCollidersVisible()) return
     const shortSrc = src.length > 64 ? `…${src.slice(-48)}` : src
     const msg =
       `[GltfCollider] e${entity} src="${shortSrc}" ` +
@@ -985,8 +986,6 @@ export class GltfColliderExtractor {
       `meshes=${meshTotal} (invClass=${meshInvClass} visClass=${meshVisClass}) ` +
       `→ shapes=${shapeCount} (inv=${invCount} vis=${visCount})` +
       (shapeCount === 0 ? ` names=[${collectMeshNames(gltfMesh).slice(0, 12).join(', ')}]` : '')
-    // Do NOT console.info every entity — plaza logs 1k+ lines and freezes the load bar
-    // when ?consolelogs is on. Panel/throttle only; physdebug can still dump via Help.
     clientDebugLog.log('collision', msg, {
       alsoConsole: false,
       throttleKey: `gltf-collider:${entity}`

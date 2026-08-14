@@ -24,6 +24,18 @@ function isHipsPositionTrack(trackName: string): boolean {
   return HIP_BONE.test(n) || HIP_BONE.test(normalizeBoneName(bone))
 }
 
+function findEmoteArmature(
+  emoteRoot: THREE.Object3D,
+  hips: THREE.Object3D | null
+): THREE.Object3D | null {
+  let p: THREE.Object3D | null = hips?.parent ?? null
+  while (p) {
+    if (/armature/i.test(p.name)) return p
+    p = p.parent
+  }
+  return emoteRoot.getObjectByName('Armature') ?? null
+}
+
 function findEmoteHipsNode(emoteRoot: THREE.Object3D): THREE.Object3D | null {
   const names = [
     'Avatar_Hips',
@@ -61,14 +73,26 @@ function inferUnitScale(values: ArrayLike<number>): number {
 }
 
 /**
- * Rewrite hips-class `.position` tracks so sit/chair emotes land at avatar rest ± authored delta.
+ * T-pose / bind hips.position. Sit_Edge bind is (0,0,-100) cm under Armature×0.01;
+ * frame 0 is already seated (z −16). Same-rig DCL bodies use this cm space — do not
+ * treat frame 0 as rest (that leaves standing hips + sit rotations = float).
+ */
+function hipsRestFromTrack(_track: THREE.VectorKeyframeTrack, bind: THREE.Vector3): THREE.Vector3 {
+  return bind.clone()
+}
+
+/** DCL body hips live in cm under Armature×0.01 (rest z≈-100). VRM hips are meters. */
+function avatarHipsAreCmScale(rest: THREE.Vector3): boolean {
+  return Math.abs(rest.z) > 5 || Math.abs(rest.y) > 5 || rest.length() > 5
+}
+
+/**
+ * Rewrite hips-class `.position` tracks so sit/chair emotes stay on the hotspot.
  *
- * Emote GLBs bake **all** bone translations in cm under Armature×0.01 (e.g. LeftLeg y≈45).
- * Applying those raw numbers onto a meter-scale DCL body warps limbs; only hips need the
- * authored sit delta (lower ~0.35m). Non-hips `.position` tracks are dropped — rotations
- * alone define the pose (Explorer-style retarget).
- *
- * `clip` bone names must already match nodes under `avatarRoot` (DCL remap or VRM raw names).
+ * Emote GLBs bake translations in cm under Armature×0.01. Only hips keep a
+ * within-clip delta (sway). Non-hips `.position` tracks are dropped — rotations
+ * define the pose. Rest is **bind / T-pose**. Same-rig DCL hips stay in cm;
+ * meter-scale (VRM) hips get the Armature×0.01 (+90X) sit drop on Y.
  */
 export function reanchorEmoteHipPositions(
   clip: THREE.AnimationClip,
@@ -79,9 +103,7 @@ export function reanchorEmoteHipPositions(
   emoteRoot.updateWorldMatrix(true, true)
 
   const emoteHips = findEmoteHipsNode(emoteRoot)
-  // Prefer authored rest on the emote skeleton (pre-animation bind).
-  // sittingChair*: bind is (0,0,-100) cm; track is (~0,-36.5,-64) → Δy≈−0.37m, Δz≈+0.36m.
-  const emoteRest = emoteHips
+  const bindRest = emoteHips
     ? emoteHips.position.clone()
     : new THREE.Vector3(0, 0, -100)
 
@@ -114,16 +136,31 @@ export function reanchorEmoteHipPositions(
       continue
     }
 
+    const rest = bone.position.clone()
+    const emoteRest = hipsRestFromTrack(track, bindRest)
     const unit = inferUnitScale(track.values)
-    const rest = bone.position
+    const cmRig = avatarHipsAreCmScale(rest)
+    const armature = cmRig ? null : findEmoteArmature(emoteRoot, emoteHips)
+    armature?.updateMatrix()
     const out = new Float32Array(track.values.length)
+    const a = new THREE.Vector3()
+    const b = new THREE.Vector3()
     for (let i = 0; i < track.values.length; i += 3) {
-      const dx = (track.values[i]! - emoteRest.x) * unit
-      const dy = (track.values[i + 1]! - emoteRest.y) * unit
-      const dz = (track.values[i + 2]! - emoteRest.z) * unit
-      out[i] = rest.x + dx
-      out[i + 1] = rest.y + dy
-      out[i + 2] = rest.z + dz
+      a.set(track.values[i]!, track.values[i + 1]!, track.values[i + 2]!)
+      b.copy(emoteRest)
+      if (cmRig) {
+        // Same DCL rig: keep cm. Do not *0.01 (that left a 0.84 cm sit drop).
+        a.sub(b)
+      } else if (armature) {
+        a.applyMatrix4(armature.matrix)
+        b.applyMatrix4(armature.matrix)
+        a.sub(b)
+      } else {
+        a.sub(b).multiplyScalar(unit)
+      }
+      out[i] = rest.x + a.x
+      out[i + 1] = rest.y + a.y
+      out[i + 2] = rest.z + a.z
     }
     tracks.push(
       new THREE.VectorKeyframeTrack(track.name, Array.from(track.times), Array.from(out))
@@ -146,7 +183,7 @@ export function buildVrmHipsPositionTrackFromEmote(
 ): THREE.VectorKeyframeTrack | null {
   emoteRoot.updateWorldMatrix(true, true)
   const emoteHips = findEmoteHipsNode(emoteRoot)
-  const emoteRest = emoteHips
+  const bindRest = emoteHips
     ? emoteHips.position.clone()
     : new THREE.Vector3(0, 0, -100)
 
@@ -159,19 +196,32 @@ export function buildVrmHipsPositionTrackFromEmote(
   }
   if (!src || src.getValueSize() !== 3 || src.values.length < 3) return null
 
+  const rest = vrmHipsBone.position.clone()
+  const emoteRest = hipsRestFromTrack(src, bindRest)
   const unit = inferUnitScale(src.values)
-  // Static sits (chair): if delta is tiny after unit scale, still apply — sit Y is ~0.35m.
-  const rest = vrmHipsBone.position
+  const cmRig = avatarHipsAreCmScale(rest)
+  const armature = cmRig ? null : findEmoteArmature(emoteRoot, emoteHips)
+  armature?.updateMatrix()
   const out = new Float32Array(src.values.length)
+  const a = new THREE.Vector3()
+  const b = new THREE.Vector3()
   let maxDelta = 0
   for (let i = 0; i < src.values.length; i += 3) {
-    const dx = (src.values[i]! - emoteRest.x) * unit
-    const dy = (src.values[i + 1]! - emoteRest.y) * unit
-    const dz = (src.values[i + 2]! - emoteRest.z) * unit
-    maxDelta = Math.max(maxDelta, Math.abs(dx), Math.abs(dy), Math.abs(dz))
-    out[i] = rest.x + dx
-    out[i + 1] = rest.y + dy
-    out[i + 2] = rest.z + dz
+    a.set(src.values[i]!, src.values[i + 1]!, src.values[i + 2]!)
+    b.copy(emoteRest)
+    if (cmRig) {
+      a.sub(b)
+    } else if (armature) {
+      a.applyMatrix4(armature.matrix)
+      b.applyMatrix4(armature.matrix)
+      a.sub(b)
+    } else {
+      a.sub(b).multiplyScalar(unit)
+    }
+    maxDelta = Math.max(maxDelta, Math.abs(a.x), Math.abs(a.y), Math.abs(a.z))
+    out[i] = rest.x + a.x
+    out[i + 1] = rest.y + a.y
+    out[i + 2] = rest.z + a.z
   }
   // No meaningful sit delta (pure wave/idle) — skip hips position.
   if (maxDelta < 0.02) return null

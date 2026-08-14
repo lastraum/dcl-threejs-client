@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
+import { registerNameTagObject, unregisterNameTagObject } from './NameTagRenderer'
 
 export type NameTagStyle = {
   textColor: string
@@ -138,6 +139,7 @@ export class NameTag {
     }
 
     this.object = new CSS2DObject(el)
+    this.syncPresentFlags()
   }
 
   static attach(parent: THREE.Object3D, text: string, options: NameTagOptions): NameTag {
@@ -150,6 +152,7 @@ export class NameTag {
     }
     const tag = new NameTag(text, options)
     parent.add(tag.object)
+    registerNameTagObject(tag.object)
     return tag
   }
 
@@ -157,6 +160,7 @@ export class NameTag {
     if (text === this.label) return
     this.label = text
     this.textEl.textContent = text
+    this.syncPresentFlags()
   }
 
   setStyle(style: NameTagStyle): void {
@@ -172,6 +176,7 @@ export class NameTag {
       this.badgeEl.style.display = next.claimed ? '' : 'none'
     }
     this.applyStyle()
+    this.syncPresentFlags()
   }
 
   /**
@@ -227,6 +232,7 @@ export class NameTag {
     this.dmToEl.hidden = true
     this.dmToEl.textContent = ''
     this.chatEl.setAttribute('aria-hidden', 'true')
+    this.syncPresentFlags()
   }
 
   private beginChatDisplay(trimmed: string, durationMs: number): void {
@@ -238,6 +244,7 @@ export class NameTag {
     this.rootEl.classList.add('avatar-name-tag--has-chat')
     this.chatEl.setAttribute('aria-hidden', 'false')
     this.chatHideTimer = setTimeout(() => this.clearChat(), durationMs)
+    this.syncPresentFlags()
   }
 
   /** Centered spinner overlay while a remote avatar is still loading. */
@@ -246,6 +253,7 @@ export class NameTag {
     this.loading = loading
     this.rootEl.classList.toggle('avatar-name-tag--loading', loading)
     this.loadingEl.setAttribute('aria-hidden', loading ? 'false' : 'true')
+    this.syncPresentFlags()
   }
 
   /**
@@ -262,13 +270,14 @@ export class NameTag {
     if (was === now) return
     this.rootEl.classList.toggle('avatar-name-tag--speaking', now)
     this.voiceEl.setAttribute('aria-hidden', now ? 'false' : 'true')
+    this.syncPresentFlags()
   }
 
   dispose(): void {
     this.clearChat()
     this.setVoiceLevel(0)
+    unregisterNameTagObject(this.object)
     this.object.removeFromParent()
-    // CSS2DRenderer keeps the node in its overlay layer until removed explicitly.
     this.rootEl.remove()
   }
 
@@ -308,6 +317,17 @@ export class NameTag {
 
   private applyStyle(): void {
     this.textEl.style.color = this.style.textColor
+  }
+
+  /** Far tags drop CSS layout unless chat / voice / loading need the full pill. */
+  private syncPresentFlags(): void {
+    const rich =
+      this.loading ||
+      this.voiceLevel > 0.02 ||
+      this.rootEl.classList.contains('avatar-name-tag--has-chat')
+    this.object.userData.dclTagRich = rich
+    this.object.userData.dclTagLabel = this.label
+    this.object.userData.dclTagColor = this.style.textColor
   }
 }
 

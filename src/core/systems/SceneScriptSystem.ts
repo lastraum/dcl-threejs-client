@@ -15,6 +15,7 @@ import { CrdtEncoder } from '../../bridge/CrdtEncoder'
 import { ReservedEntitiesSync, type EntityPose } from '../../bridge/ReservedEntitiesSync'
 import { ThreeBridge } from '../../bridge/ThreeBridge'
 import { applySceneDiff } from '../../bridge/entityStoreApply'
+import { materialIsScalarOnly, type PbMaterial } from '../../bridge/material/MaterialApplier'
 import {
   expandTransformAncestors,
   sortEntitiesByTransformDepth,
@@ -26,6 +27,7 @@ import { BillboardBridge } from '../../bridge/BillboardBridge'
 import { VirtualCameraBridge } from '../../camera/VirtualCameraBridge'
 import type { EntityWorldTransformDeps } from '../../transform/entityWorldTransform'
 import { AnimatorBridge } from '../../bridge/AnimatorBridge'
+import { isEmoteAnchorGltfSrc } from '../../rendering/DclTextureResolver'
 import { TweenBridge } from '../../bridge/TweenBridge'
 import { ParticleSystemBridge } from '../../bridge/ParticleSystemBridge'
 import { fetchProfileFaceUrl } from '../../avatar/peerApi'
@@ -41,6 +43,7 @@ import { VideoPlayerBridge } from '../../media/VideoPlayerBridge'
 import { AssetLoadBridge } from '../../media/AssetLoadBridge'
 import { NftShapeBridge } from '../../bridge/NftShapeBridge'
 import { SceneUiBridge } from '../../ui/scene/SceneUiBridge'
+import { liveVirtualCanvas, readInteractableArea } from '../../ui/scene/virtualCanvas'
 import type { LiveKitVideoBinder } from '../../media/WebVideoPlayer'
 import { CollisionSystem } from '../../collision/CollisionSystem'
 import {
@@ -286,8 +289,10 @@ export class SceneScriptSystem {
     data: Uint8Array
     uiEntities?: number[]
     uiMountSnapshot?: WorkerUiMountSnapshotRow[]
+    /** applyIncoming + fold already ran on the sync clock (CCT same-frame). */
+    motionFolded?: boolean
   }[] = []
-  private crdtOutboundFlushQueued = false
+
   readonly reserved = new ReservedEntitiesSync(this.projection, this.readComponents, SDK_RESERVED)
   collision: CollisionSystem | null = null
   gltfColliders: GltfColliderExtractor | null = null
@@ -344,6 +349,16 @@ export class SceneScriptSystem {
   private host: SceneHost | null = null
   private worker: Worker | null = null
   private running = false
+  /** SceneLoop: a play-frame-tick is outstanding until play-frame-done. */
+  private playFrameInFlight = false
+  private playFrameInFlightAt = 0
+  /** When true, gameplay crdt-outbound waits for SceneLoop.receive. */
+  private sceneLoopReceiveArmed = false
+  private lastSentPlayerPos = { x: Number.NaN, y: Number.NaN, z: Number.NaN }
+  private lastSentPlayerRot = { x: Number.NaN, y: Number.NaN, z: Number.NaN, w: Number.NaN }
+  private lastSentCamPos = { x: Number.NaN, y: Number.NaN, z: Number.NaN }
+  private lastSentCamRot = { x: Number.NaN, y: Number.NaN, z: Number.NaN, w: Number.NaN }
+  private lastSentPpiDir = { x: Number.NaN, y: Number.NaN, z: Number.NaN }
   private prepared = false
   private crdtTick = 0
   /** Renderer frame counter for EngineInfo (ADR-148). */
@@ -383,6 +398,9 @@ export class SceneScriptSystem {
   private readonly colliderPoseDirty = new Set<Entity>()
   private readonly lastTweenMotionEntities = new Set<Entity>()
   private readonly lastSyncFrameTransformEntities = new Set<Entity>()
+  /** Full entity-graph updateMatrixWorld — skip when nothing moved. */
+  private sceneGraphMatrixDirty = true
+  private pointerPrepareFlushedTick = -1
   private readonly lastPoseChangedEntities: Entity[] = []
   /**
    * Systems that moved **parts** (bone/_collider) this frame — PART path.
@@ -611,9 +629,9 @@ export class SceneScriptSystem {
     this.platformMotionReportDumped = false
     this.reserved.initialize(scene.spawn)
     this.host = host
-    this.entityStore = new EntityStore(host.scene, opts?.rootName ?? 'scene-entities')
+    this.entityStore = new EntityStore(host.poseRoot, opts?.rootName ?? 'scene-entities')
     this.entityStoreUnsub = this.entityStore.subscribe((change) => this.onEntityStoreChange(change))
-    this.bridge = new ThreeBridge(scene, cache, this.entityStore, this.readComponents)
+    this.bridge = new ThreeBridge(scene, cache, this.entityStore, this.readComponents, host.drawWorld)
     if (opts?.focusPolicy) this.focusPolicy = opts.focusPolicy
     this.avatarShapes = new AvatarShapeBridge(this.readComponents, (entity) =>
       this.bridge?.getEntityNodes().get(entity)
@@ -650,7 +668,9 @@ export class SceneScriptSystem {
       cache,
       scene,
       () => this.bridge?.getEntityNodes(),
-      () => this.host?.camera ?? null
+      () => this.host?.camera ?? null,
+      (pose, visual) => this.bridge?.bindEntityDrawSlot(pose, visual, 'dclDrawParticles'),
+      (pose) => this.bridge?.unbindEntityDrawSlot(pose, 'dclDrawParticles')
     )
     this.sceneUiBridge?.dispose()
     const uiDetached = opts?.uiDetached === true
@@ -751,7 +771,13 @@ export class SceneScriptSystem {
       this.recordRendererAppend
     )
     this.assetLoadBridge.onAppendFlush = () => this.flushRendererGrowOnlyAppends()
-    this.nftShapeBridge = new NftShapeBridge(this.readComponents, cache, () => this.bridge?.getEntityNodes())
+    this.nftShapeBridge = new NftShapeBridge(
+      this.readComponents,
+      cache,
+      () => this.bridge?.getEntityNodes(),
+      (pose, visual) => this.bridge?.bindEntityDrawSlot(pose, visual, 'dclDrawNft'),
+      (pose) => this.bridge?.unbindEntityDrawSlot(pose, 'dclDrawNft')
+    )
     this.collision = new CollisionSystem(host.scene)
     this.gltfColliders = new GltfColliderExtractor(host.scene)
     // Extract drop → PhysX removeStatic (cook path uses freezeRemoval and never prunes).
@@ -771,29 +797,21 @@ export class SceneScriptSystem {
       // ?noanim — 58bee02 added bind-on-attach; without this guard the isolation flag no longer
       // skips mixer bind (only skipped update + async sync from d35596f).
       if (skipSceneAnimators()) return
-      // Explicit Animator: bind immediately (doors / grow / scripted clips).
-      // Default auto-play only when the GLB has embedded clips — never promote static GPU
-      // instances (terrain/plaza) or colliders extract 0 meshes from empty markers.
-      const { Animator } = this.readComponents
+      // Sit-spot emote GLBs (Puff_Idle, Sit_Edge, BeanBag) — not scene mixers.
+      const { Animator, GltfContainer } = this.readComponents
+      if (GltfContainer.has(entity)) {
+        const src = GltfContainer.get(entity).src ?? ''
+        if (isEmoteAnchorGltfSrc(src)) return
+      }
       if (Animator.has(entity)) {
         this.bridgeDirty = true
         this.animatorBridge?.markDirty(entity)
         this.animatorBridge?.syncEntity(entity, this.view)
-      } else if (this.bridge?.entityGltfHasAnimations(entity)) {
-        // GPU-instanced boards (pixelwars tiles with unused export clips) have no private
-        // hierarchy — skip default autoplay so we do not force clone / mixers × N.
-        const nodes = this.bridge.getEntityNodes()
-        const obj = nodes.get(entity)
-        if (obj?.userData.dclInstanced) {
-          // Rest pose on GPU instance — keep INSTANCE_COLLIDER_SHAPES + 1 draw.
-        } else {
-          // Includes fishing bobber float clips — rest-pose scale can hide until bind.
-          this.bridgeDirty = true
-          this.animatorBridge?.markDirty(entity)
-          this.animatorBridge?.syncEntityAllowDefaultAutoplay(entity, this.view)
-        }
+      } else {
+        // DCL default first-clip (flowers, blimp props, how-to arrow). bindAndApply
+        // still skips no-clip statics so terrain stays instanced.
+        this.animatorBridge?.syncEntityAllowDefaultAutoplay(entity, this.view)
       }
-      // else: static terrain/props stay GPU-instanced with INSTANCE_COLLIDER_SHAPES intact
     })
     this.bridge.setRecordLww(this.recordRendererLww)
     this.bindSceneUiViewportSync(host)
@@ -963,10 +981,6 @@ export class SceneScriptSystem {
       }
     }
 
-    for (const entity of this.entityStore?.getBillboardEntities() ?? []) {
-      addColliderEntity(entity)
-    }
-
     for (const entity of this.lastSyncFrameTransformEntities) {
       addColliderEntity(entity)
     }
@@ -1012,6 +1026,15 @@ export class SceneScriptSystem {
     return this.physMotionSnapshot
   }
 
+  /**
+   * After CCT / collider pose push consumed this frame's fold marks.
+   * Leaving them sticky kept the platform pipeline hot on idle plaza.
+   */
+  clearConsumedFrameMotionMarks(): void {
+    this.lastSyncFrameTransformEntities.clear()
+    this.lastTweenMotionEntities.clear()
+  }
+
   private buildPhysMotionSets(): { transformDirty: Set<Entity>; animatorPart: Set<Entity> } {
     const transformDirty = new Set<Entity>()
     const animatorPart = new Set<Entity>()
@@ -1027,7 +1050,9 @@ export class SceneScriptSystem {
 
     for (const entity of this.lastSyncFrameTransformEntities) addRoot(entity)
     for (const entity of this.lastTweenMotionEntities) addRoot(entity)
-    for (const entity of this.billboardBridge?.pendingMotionEntities() ?? []) addRoot(entity)
+    for (const entity of this.billboardBridge?.pendingMotionEntities() ?? []) {
+      if (this.readComponents.MeshCollider.has(entity)) addRoot(entity)
+    }
     for (const entity of this.systemTransformDirty) addRoot(entity)
 
     // PART: running one-shots + post-finish settle (final open pose) + this-frame sample marks.
@@ -1278,9 +1303,20 @@ export class SceneScriptSystem {
     }
   }
 
-  /** Propagate ECS transforms → matrixWorld on the full scene entity graph before collider extract. */
+  markSceneGraphDirty(): void {
+    this.sceneGraphMatrixDirty = true
+  }
+
+  /** Propagate ECS transforms → matrixWorld. Incremental — do not force the full tree. */
   flushSceneGraphMatrices(): void {
-    this.entityStore?.root.updateMatrixWorld(true)
+    if (!this.sceneGraphMatrixDirty) return
+    this.entityStore?.root.updateMatrixWorld(false)
+    this.sceneGraphMatrixDirty = false
+  }
+
+  /** Fold already-queued guest motion before CCT (Bevy Update-then-present). */
+  applyPendingGuestMotion(): void {
+    this.foldQueuedGuestMotionNow()
   }
 
   /** Rewrite all GPU-instanced GLTF world matrices after hierarchy is stable. */
@@ -2092,6 +2128,7 @@ export class SceneScriptSystem {
 
     const boot: SceneWorkerBoot = {
       type: 'boot',
+      canvas: liveVirtualCanvas(readInteractableArea(this.host?.renderer.domElement ?? null)),
       debug: {
         sceneInputSnapshot: SCENE_INPUT_SNAPSHOT_VERBOSE,
         pointerDeliver: POINTER_VERBOSE,
@@ -2602,6 +2639,11 @@ export class SceneScriptSystem {
       } satisfies MainToWorker)
       return
     }
+    if (msg.type === 'play-frame-done') {
+      this.playFrameInFlight = false
+      this.playFrameInFlightAt = 0
+      return
+    }
     if (msg.type === 'crdt-outbound') {
       this.enqueueCrdtOutbound({
         id: msg.id,
@@ -2690,26 +2732,53 @@ export class SceneScriptSystem {
     const hasGameplayPayload = (item.data?.byteLength ?? 0) > 0 && item.uiEntities === undefined
     if (hasGameplayPayload) {
       this.crdtOutboundPending.unshift(item)
-      this.flushCrdtOutboundPendingSynchronously()
-      return
+    } else {
+      this.crdtOutboundPending.push(item)
     }
-    this.crdtOutboundPending.push(item)
-    // Hydration / menu open with uiEntities — must land before pointer-deliver-done.
-    if (item.uiEntities !== undefined) {
+    // Pointer / hydration UI mount must land before pointer-deliver-done.
+    // Before World.start arms SceneLoop receive, keep the old immediate flush (boot).
+    if (
+      !this.sceneLoopReceiveArmed ||
+      this.bootPhaseActive ||
+      item.uiEntities !== undefined
+    ) {
       this.flushCrdtOutboundPendingSynchronously()
-      return
     }
-    if (this.crdtOutboundFlushQueued) return
-    this.crdtOutboundFlushQueued = true
-    queueMicrotask(() => {
-      this.crdtOutboundFlushQueued = false
-      if (!this.crdtOutboundPending.length) return
-      this.flushCrdtOutboundPendingSynchronously()
-    })
+  }
+
+  /** SceneLoop ReceiveFromScene — fold queued worker CRDT on the host clock. */
+  drainQueuedCrdtOutbound(): void {
+    if (!this.crdtOutboundPending.length) return
+    // Fold motion on this call stack so CCT rides guest Transform the same frame.
+    this.foldQueuedGuestMotionNow()
+    this.flushCrdtOutboundPendingSynchronously()
+  }
+
+  /**
+   * Apply + fold guest CRDT immediately (before platform / CCT).
+   * The async outbound handler still owns UI mount, inbound encode, and ack.
+   */
+  private foldQueuedGuestMotionNow(): void {
+    for (const item of this.crdtOutboundPending) {
+      if (item.motionFolded) continue
+      if (item.uiMountSnapshot !== undefined) continue
+      let data = item.data
+      if (!data?.byteLength) continue
+      const mayCarryInboundUi = item.uiEntities !== undefined && item.uiMountSnapshot === undefined
+      if (!mayCarryInboundUi) {
+        data = stripSceneUiCrdtBytes(data)
+        if (!data.byteLength) {
+          item.motionFolded = true
+          continue
+        }
+      }
+      this.projection.applyIncoming(data)
+      this.foldProjectionChanges()
+      item.motionFolded = true
+    }
   }
 
   private flushCrdtOutboundPendingSynchronously(): void {
-    this.crdtOutboundFlushQueued = false
     const batch = this.crdtOutboundPending.splice(0)
     if (!batch.length) return
     this.crdtOutboundSerial = this.crdtOutboundSerial
@@ -2841,6 +2910,7 @@ export class SceneScriptSystem {
       data: Uint8Array
       uiEntities?: number[]
       uiMountSnapshot?: WorkerUiMountSnapshotRow[]
+      motionFolded?: boolean
     }[]
   ): Promise<Uint8Array[]> {
     const hasPayload = batch.some((item) => item.data?.byteLength > 0)
@@ -2930,7 +3000,8 @@ export class SceneScriptSystem {
               batchTouchesUi = true
             }
           }
-          this.foldProjectionChanges()
+          // Sync clock already folded motion for CCT; do not rewind tweens / restamp TRS.
+          if (!item.motionFolded) this.foldProjectionChanges()
         }
         split.foldMs += performance.now() - foldT0
 
@@ -3445,11 +3516,10 @@ export class SceneScriptSystem {
     }
     this.clearProjectionUiLag()
     this.purgeProjectionUiOutsideWorkerMount()
-    // Phase C: skip paint walk when content epoch already painted (lag resume, double flush).
-    if (bridge.isContentDirty()) {
-      bridge.paint(this.view)
-      this.logSceneUiRepaintIfEnabled()
-    }
+    // Always inject UiCanvasInformation (resize / pre-7.26 live pixels). Yoga only when dirty.
+    const uiDirty = bridge.isContentDirty()
+    bridge.paint(this.view)
+    if (uiDirty) this.logSceneUiRepaintIfEnabled()
     if (!this.pointerAwaitingWorkerApply) {
       this.resumeWorkerSceneTicksAfterMountIfHeld()
     }
@@ -3844,6 +3914,8 @@ export class SceneScriptSystem {
     pointerEdge?: boolean
     /** Ambient CRDT apply — motion only; material/structure left to rAF syncRenderer. */
     motionOnly?: boolean
+    /** Async leftover — skip fold-motion, spend the deadline on maps/GLB. */
+    skipMotion?: boolean
     deadlineMs?: number
   }): Promise<void> {
     if (!this.bridge || !this.entityStore) return
@@ -3852,6 +3924,7 @@ export class SceneScriptSystem {
     const F = SceneScriptSystem.FRAME
     const edge = opts?.pointerEdge === true
     const motionOnly = opts?.motionOnly === true
+    const skipMotion = opts?.skipMotion === true
     const motionCap = edge
       ? Math.min(F.MOTION_ENTITIES, 64)
       : motionOnly
@@ -3866,7 +3939,7 @@ export class SceneScriptSystem {
         : Infinity
 
     // --- Motion lane (Transform/Tween/Animator…) ---
-    if (performance.now() < wallDeadline) {
+    if (!skipMotion && performance.now() < wallDeadline) {
       const motionSlice = this.takePendingDiffSlice(new Set(['motion']), motionCap)
       if (motionSlice.size) {
         const t0 = performance.now()
@@ -3958,10 +4031,15 @@ export class SceneScriptSystem {
     }
 
     // --- Structure lane (Gltf / TextShape / …) — never on pointer edge ---
-    if (!edge && structureEnt > 0 && performance.now() < wallDeadline) {
+    const structureRemain = wallDeadline - performance.now()
+    const structureCap =
+      Number.isFinite(wallDeadline) && structureRemain < 10
+        ? Math.min(structureEnt, 2)
+        : structureEnt
+    if (!edge && structureCap > 0 && structureRemain > 2) {
       const structureSlice = this.takePendingDiffSlice(
         new Set(['structure', 'other']),
-        structureEnt
+        structureCap
       )
       if (structureSlice.size) {
         const t0 = performance.now()
@@ -3969,7 +4047,7 @@ export class SceneScriptSystem {
         if (spriteDiff.size) this.bridge.consumeSpriteDiff(spriteDiff, view)
         const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
         if (sceneDiff.size) await this.bridge.consumeDiff(sceneDiff, view, tweenRefresh)
-        else await this.bridge.drainPendingWork()
+        else if (performance.now() < wallDeadline) await this.bridge.drainPendingWork()
         this.bridge.reconcileBillboardFlags()
         this.flushPointerStructureIfDirty()
         perfNotePeels({
@@ -3980,70 +4058,7 @@ export class SceneScriptSystem {
     }
 
     this.publishPendingDiffPerf()
-  }
-
-  /**
-   * @deprecated Prefer drainPendingDiffLanes — kept for sync-frame platform Transform path.
-   * Narrow: Transform/Tween only, age-ordered, for CCT platform motion same-frame.
-   */
-  private flushTweenAndTransformFromPendingDiff(opts?: { pointerEdge?: boolean; hardMs?: number }): void {
-    if (!this.bridge || !this.entityStore || !this.pendingDiff.size) return
-    if (!this.bridge.canConsumeDiff()) return
-    const t0 = performance.now()
-    const hardMs =
-      opts?.hardMs ??
-      (opts?.pointerEdge
-        ? SceneScriptSystem.FRAME.POINTER_MOTION_MS
-        : SceneScriptSystem.FRAME.MOTION_MS)
-    const cap = opts?.pointerEdge ? 64 : SceneScriptSystem.FRAME.MOTION_ENTITIES
-    const motionSlice = this.takePendingDiffSlice(new Set(['motion']), cap)
-    if (!motionSlice.size) return
-    const { Transform, Tween, TweenSequence, VisibilityComponent } = this.readComponents
-    const transformId = Transform.componentId
-    const tweenId = Tween.componentId
-    const tweenSeqId = TweenSequence.componentId
-    const visibilityId = VisibilityComponent.componentId
-    const transformDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
-    const tweenEntities: Entity[] = []
-    for (const [entity, comps] of motionSlice) {
-      if (performance.now() - t0 >= hardMs && transformDiff.size > 0) break
-      const sub = new Map<number, ProjectionChangeKind>()
-      const tk = comps.get(transformId)
-      if (tk !== undefined) sub.set(transformId, tk)
-      const tw = comps.get(tweenId)
-      if (tw !== undefined) {
-        sub.set(tweenId, tw)
-        tweenEntities.push(entity)
-      }
-      const ts = comps.get(tweenSeqId)
-      if (ts !== undefined) sub.set(tweenSeqId, ts)
-      const vis = comps.get(visibilityId)
-      if (vis !== undefined) sub.set(visibilityId, vis)
-      if (sub.size) transformDiff.set(entity, sub)
-    }
-    if (!transformDiff.size) return
-    const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
-    applySceneDiff(this.entityStore, transformDiff, this.view, this.readComponents, tweenRefresh, {
-      skipTransformApply: (entity) =>
-        this.readComponents.AvatarAttach.has(entity) || this.projection.isVcLiveTransformEntity(entity),
-      onReservedParent: (entity, parent, view) => {
-        this.bridge?.noteReservedParentedEntity(entity, parent, view)
-      }
-    })
-    const moved = [...transformDiff.keys()]
-    this.bridge.syncEcsVisibility(moved)
-    this.bridge.syncInstancedTransforms(moved)
-    for (const entity of tweenEntities) {
-      this.bridge.ensureMeshRendererTweenVisual(entity)
-    }
-    this.bridge.syncEcsVisibility(moved)
-    this.tweenBridge?.sync(this.view)
-    this.pointerStructureDirty = true
-    this.publishPendingDiffPerf()
-    perfNotePeels({
-      transformMs: performance.now() - t0,
-      entities: moved.length
-    })
+    this.dropStalePendingDiff()
   }
 
   /**
@@ -4212,8 +4227,8 @@ export class SceneScriptSystem {
         this.clearPendingEntityIfEmpty(entity)
         return
       }
-      if (!MeshRenderer.has(entity)) {
-        // Material without MeshRenderer can never paint — drop put (plaza stuck missingMesh=128).
+      if (!MeshRenderer.has(entity) && !this.readComponents.GltfContainer.has(entity)) {
+        // Primitive Material without a mesh can never paint. Gltf maps stay pending.
         missingMesh++
         if (missingMeshSamples.length < 12) {
           missingMeshSamples.push(this.summarizeMaterialPut(entity))
@@ -4373,10 +4388,6 @@ export class SceneScriptSystem {
       entityCap: cap,
       prefer
     })
-    this.flushTweenAndTransformFromPendingDiff({
-      pointerEdge: true,
-      hardMs: SceneScriptSystem.FRAME.POINTER_MOTION_MS
-    })
     for (const entity of prefer) {
       this.bridge.ensureMeshRendererTweenVisual(entity)
       // Ensure leaf even if Material put lags one frame.
@@ -4420,6 +4431,7 @@ export class SceneScriptSystem {
       MainCamera,
       InputModifier
     } = this.readComponents
+    const motionNow = new Map<Entity, Map<number, ProjectionChangeKind>>()
 
     for (const change of this.projection.changes) {
       if (
@@ -4484,6 +4496,12 @@ export class SceneScriptSystem {
 
       if (change.componentId === Billboard.componentId) {
         this.entityStore?.setBillboard(change.entity, change.kind !== 'delete')
+        const node = this.entityStore?.getNode(change.entity)
+        if (node) {
+          if (change.kind === 'delete') delete node.userData.dclBillboardMode
+          else node.userData.dclBillboardMode = Billboard.get(change.entity).billboardMode ?? 7
+        }
+        continue
       }
 
       // COD admit seal — only true dirty enters pendingDiff (PhysX PART-fp analogue).
@@ -4497,6 +4515,43 @@ export class SceneScriptSystem {
         this.maybeTagPointerEdgeVisual(change.entity, change.componentId)
       }
 
+      // Host world: motion is UpdateWorld at fold — not a pendingDiff replay.
+      if (this.isHostMotionComponent(change.componentId)) {
+        let motion = motionNow.get(change.entity)
+        if (!motion) {
+          motion = new Map()
+          motionNow.set(change.entity, motion)
+        }
+        motion.set(change.componentId, change.kind)
+        continue
+      }
+      if (change.componentId === this.readComponents.Animator.componentId) {
+        if (change.kind === 'delete') this.animatorBridge?.markRemoved(change.entity)
+        else this.animatorBridge?.markDirty(change.entity)
+        continue
+      }
+      if (change.componentId === this.readComponents.GltfContainer.componentId) {
+        if (change.kind === 'delete') this.animatorBridge?.markRemoved(change.entity)
+        else this.animatorBridge?.markDirty(change.entity)
+        this.bridge?.admitGltfHandle(change.entity, change.kind === 'delete' ? 'delete' : 'put')
+        continue
+      }
+      if (change.componentId === this.readComponents.Material.componentId) {
+        this.bridge?.admitMaterialHandle(change.entity, change.kind === 'delete' ? 'delete' : 'put')
+        continue
+      }
+      if (change.componentId === this.readComponents.GltfNodeModifiers.componentId) {
+        this.bridge?.admitGltfNodeModHandle(
+          change.entity,
+          change.kind === 'delete' ? 'delete' : 'put'
+        )
+        continue
+      }
+
+      if (this.tryApplyHostPrimitiveNow(change.entity, change.componentId, change.kind)) {
+        continue
+      }
+
       let comps = this.pendingDiff.get(change.entity)
       if (!comps) {
         comps = new Map()
@@ -4507,7 +4562,102 @@ export class SceneScriptSystem {
       }
       comps.set(change.componentId, change.kind)
     }
+    if (motionNow.size) this.applyHostMotionNow(motionNow)
     this.publishPendingDiffPerf()
+  }
+
+  private isHostMotionComponent(componentId: number): boolean {
+    const c = this.readComponents
+    return (
+      componentId === c.Transform.componentId ||
+      componentId === c.Tween.componentId ||
+      componentId === c.TweenSequence.componentId ||
+      componentId === c.VisibilityComponent.componentId
+    )
+  }
+
+  /**
+   * Fold-time UpdateWorld for pose. AvatarAttach + VC live lane skip Transform
+   * (rod/line / reveal cam). Same extract path as the old motion peel.
+   */
+  private applyHostMotionNow(
+    poseDiff: Map<Entity, Map<number, ProjectionChangeKind>>
+  ): void {
+    if (!this.entityStore || !this.bridge) return
+    const view = this.view
+    const { Tween, MeshCollider, GltfContainer } = this.readComponents
+    const tweenId = Tween.componentId
+    const transformId = this.readComponents.Transform.componentId
+    const tweenSeqId = this.readComponents.TweenSequence.componentId
+    const tweenEntities: Entity[] = []
+    const trsDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
+    for (const [entity, comps] of poseDiff) {
+      if (comps.has(tweenId)) tweenEntities.push(entity)
+      if (comps.has(transformId) || comps.has(tweenId) || comps.has(tweenSeqId)) {
+        trsDiff.set(entity, comps)
+      }
+    }
+    if (trsDiff.size) {
+      applySceneDiff(this.entityStore, trsDiff, view, this.readComponents, [], {
+        skipTransformApply: (entity) =>
+          this.readComponents.AvatarAttach.has(entity) ||
+          this.projection.isVcLiveTransformEntity(entity),
+        reservedAnchors: this.bridge.getReservedTransformAnchors(),
+        onReservedParent: (entity, parent, v) => {
+          if (this.readComponents.AvatarAttach.has(entity)) return
+          this.bridge?.noteReservedParentedEntity(entity, parent, v)
+        }
+      })
+    }
+    const entities = [...poseDiff.keys()]
+    this.bridge.syncEcsVisibility(this.bridge.entitiesWithVisibility())
+    this.bridge.syncInstancedTransforms(entities)
+    for (const entity of tweenEntities) {
+      this.bridge.ensureMeshRendererTweenVisual(entity)
+    }
+    this.bridge.syncEcsVisibility(this.bridge.entitiesWithVisibility())
+    this.tweenBridge?.sync(view)
+    this.pointerStructureDirty = true
+    this.sceneGraphMatrixDirty = true
+    this.lastSyncFrameTransformEntities.clear()
+    for (const entity of entities) {
+      this.lastTweenMotionEntities.add(entity)
+      this.lastSyncFrameTransformEntities.add(entity)
+      if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
+        this.colliderPoseDirty.add(entity)
+      }
+      this.markDescendantColliderPosesDirty(entity)
+    }
+  }
+
+  /**
+   * Primitive MeshRenderer + scalar Material at fold (pointer VFX / press_e).
+   * Textured maps / GltfNodeModifiers admit as handles (not pendingDiff replay).
+   */
+  private tryApplyHostPrimitiveNow(
+    entity: Entity,
+    componentId: number,
+    kind: ProjectionChangeKind
+  ): boolean {
+    if (!this.bridge || kind === 'delete') return false
+    const { Material, MeshRenderer, GltfContainer } = this.readComponents
+    if (GltfContainer.has(entity)) return false
+    if (componentId === MeshRenderer.componentId) {
+      if (!this.bridge.ensureMeshRendererLeaf(entity)) return false
+      if (Material.has(entity)) {
+        const pb = Material.get(entity) as PbMaterial
+        if (materialIsScalarOnly(pb)) this.bridge.forceApplyMeshRendererMaterial(entity)
+      }
+      this.sceneGraphMatrixDirty = true
+      return true
+    }
+    if (componentId === Material.componentId) {
+      if (!MeshRenderer.has(entity)) return false
+      const pb = Material.get(entity) as PbMaterial
+      if (!materialIsScalarOnly(pb)) return false
+      return this.bridge.forceApplyMeshRendererMaterial(entity)
+    }
+    return false
   }
 
   /**
@@ -4525,6 +4675,30 @@ export class SceneScriptSystem {
       return this.bridge.isMeshRendererPutSealed(change.entity)
     }
     return false
+  }
+
+  /**
+   * Drop structure/material/other puts that have sat unapplied for too long.
+   * Motion and pointer-edge VFX stay — those must not be sealed away.
+   */
+  private dropStalePendingDiff(): void {
+    if (!this.pendingDiff.size) return
+    const now = performance.now()
+    const STALE_MS = 12_000
+    for (const [entity, comps] of this.pendingDiff) {
+      if (this.pointerEdgeVisualEntities.has(entity)) continue
+      const t0 = this.pendingDiffFirstDirtyAt.get(entity) ?? 0
+      if (t0 <= 0 || now - t0 < STALE_MS) continue
+      for (const cid of [...comps.keys()]) {
+        const lane = this.pendingDiffLaneOf(cid, entity)
+        if (lane === 'motion') continue
+        // Do not stale-drop Gltf / maps still waiting on attach or texture.
+        if (lane === 'structure' || lane === 'material') continue
+        comps.delete(cid)
+      }
+      this.clearPendingEntityIfEmpty(entity)
+    }
+    this.publishPendingDiffPerf()
   }
 
   /** Frame-budget counters for `?perfdebug` / RenderStats. */
@@ -4664,12 +4838,12 @@ export class SceneScriptSystem {
    * Phase C: skip when pointer system reports idle (no move / lock / pending click).
    */
   preparePointerRaycast(tickNumber = 0): void {
+    if (this.pointerPrepareFlushedTick === tickNumber) return
     if (this.pointerEvents && !this.pointerEvents.needsRaycastPrepare(tickNumber)) {
       return
     }
+    this.pointerPrepareFlushedTick = tickNumber
     this.consumeSyncFrameTransforms()
-    // Drain PE-related Transform/Tween stuck in pendingDiff before raycast (click-move).
-    if (this.pendingDiff.size) this.flushTweenAndTransformFromPendingDiff()
     // Only re-promote PE leaves when structure is dirty — every-raycast promote thrashed
     // MeshRenderer/GLB attach and competed with GltfContainer drain.
     if (this.pointerStructureDirty && this.bridge && this.pointerEvents) {
@@ -4795,6 +4969,8 @@ export class SceneScriptSystem {
         this.bridge?.resolveMeshRendererInstanceEntity(mesh, instanceId) ?? null,
       getMeshRendererInstancePointerMeshes: () =>
         this.bridge?.getMeshRendererInstancePointerMeshes() ?? [],
+      getInstancePointerMeshesFor: (entities) =>
+        this.bridge?.getInstancePointerMeshesForEntities(entities) ?? [],
       ensurePointerMeshes: () => {
         if (!this.bridge) return
         const pe: Entity[] = []
@@ -5007,6 +5183,8 @@ export class SceneScriptSystem {
    */
   updateTriggerAreas(): void {
     if (!this.running || !this.triggerAreas) return
+    // Always test while standing still. Skipping on “feet unmoved” missed enter
+    // when TriggerAreas spawn during hydration (fishing pads, bounce parasols).
     const appendsBefore = this.encoder.pendingAppendCount
     this.syncTriggerAreas()
     const appendsAfter = this.encoder.pendingAppendCount
@@ -5127,15 +5305,10 @@ export class SceneScriptSystem {
     if (!lwwBytes?.byteLength) return
     const copy = lwwBytes.slice()
     const gltfPath = opts?.reason === 'gltf-loading-state'
-    if (isGltfLoadingStateVerbose() || gltfPath) {
+    if (isGltfLoadingStateVerbose()) {
       const channel = gltfPath ? 'renderer-inbound-deliver' : 'pointer-crdt-deliver'
       const msg = `→ worker ${channel} (${opts?.reason ?? 'lww'}) puts≈${pending} bytes=${copy.byteLength}`
-      if (isGltfLoadingStateVerbose()) {
-        clientDebugLog.log('gltf-load', msg, { throttleMs: 50 })
-      } else if (gltfPath) {
-        // Respect Help → Debug console mirror (plaza can emit hundreds of these).
-        clientDebugLog.consoleOnly('info', `[gltf-load] ${msg}`)
-      }
+      clientDebugLog.log('gltf-load', msg, { throttleMs: 50 })
     }
     if (gltfPath) {
       this.worker.postMessage(
@@ -5214,30 +5387,87 @@ export class SceneScriptSystem {
     this.worker.postMessage({ type: 'pump-scene-engine-tick' } satisfies MainToWorker)
   }
 
+  armSceneLoopReceive(armed: boolean): void {
+    this.sceneLoopReceiveArmed = armed
+    if (!armed && this.crdtOutboundPending.length) this.flushCrdtOutboundPendingSynchronously()
+  }
+
+  /** Guest must tick now (pointer edge). Otherwise SceneLoop may stay at 20 Hz. */
+  needsImmediateGuestTick(): boolean {
+    return !!(
+      this.pointerEvents?.hasPendingInput() || this.pointerEvents?.hasPendingInjectPayload()
+    )
+  }
+
+  isPlayFrameInFlight(): boolean {
+    if (!this.playFrameInFlight) return false
+    if (this.playFrameInFlightAt > 0 && performance.now() - this.playFrameInFlightAt > 2000) {
+      this.playFrameInFlight = false
+      this.playFrameInFlightAt = 0
+      return false
+    }
+    return true
+  }
+
+  hasPendingApplyWork(): boolean {
+    return this.hasContentApplyWork()
+  }
+
+  /**
+   * Gltf / textured maps / unsealed structure only.
+   * Motion + scalar primitives apply at fold (host world).
+   */
+  hasContentApplyWork(): boolean {
+    if ((this.getAttachProgressLite()?.pendingMesh ?? 0) > 0) return true
+    if (this.bridge?.hasPendingHandleWork()) return true
+    for (const [entity, comps] of this.pendingDiff) {
+      for (const cid of comps.keys()) {
+        if (this.pendingDiffLaneOf(cid, entity) !== 'motion') return true
+      }
+    }
+    return false
+  }
+
+  /** Pose is written at fold. Watchdog only — do not replay Transform/Tween/Vis. */
+  peelMotionSync(_deadlineMs: number): void {
+    this.assertNoFoldMotionInPendingDiff('peelMotionSync')
+  }
+
+  private assertNoFoldMotionInPendingDiff(where: string): void {
+    if (!this.pendingDiff.size) return
+    for (const [entity, comps] of this.pendingDiff) {
+      for (const cid of comps.keys()) {
+        if (!this.isHostMotionComponent(cid)) continue
+        console.error(`[host-motion] ${where}: e${entity} cid=${cid} still in pendingDiff`)
+        return
+      }
+    }
+  }
+
   /** Phase 2 — one unified worker play frame per main rAF (engine.update + pollEvents). */
   tickPlayFrame(): void {
     // Do not gate on bootPhaseActive: eval-done sets running while onStart continues, and
     // World may notifyPlayReady before worker `ready`. Blocking ticks here deadlocks SpaceRunner
     // (InputModifier.disableAll freeze-watch never gets dt / never sees Gltf FINISHED).
     if (!this.running || !this.worker) return
-    // CameraFollowSystem (and similar) read Transform.get(PlayerEntity) on the worker.
-    // Embed poses on play-frame-tick (same message) so PE is current before engine.update —
-    // separate renderer-inbound CRDT raced / dirty-skipped and left follow anchors at spawn.
+    // Never stack a play-frame while poll/egress is live (second engine.update).
+    if (this.isPlayFrameInFlight()) return
     this.refreshClientPosesFromProvider()
     this.refreshRealmInfoFromProvider()
-    if (this.clientPlayerPose && this.clientCameraPose) {
-      this.prepareReservedRoundTrip(this.clientPlayerPose, this.clientCameraPose)
-    }
-    // Hover/PPI every main frame — fishing bobber aim must not wait for crdt-outbound.
-    this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
-    this.crdtTick++
-    const primaryPointer = this.pointerEvents?.getPrimaryPointerSnapshot() ?? undefined
     const player = this.clientPlayerPose
     const camera = this.clientCameraPose
-    // Quiet by default — enable with ?ppidiag (same as PointerEventsSystem PPI spam).
+    const primaryPointer = this.pointerEvents?.getPrimaryPointerSnapshot() ?? undefined
+    const poseMoved = this.playFramePoseMoved(player, camera, primaryPointer)
+    if (this.pointerEvents?.hasPendingInput()) {
+      this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
+    }
+    this.crdtTick++
+    if (poseMoved) this.rememberPlayFramePose(player, camera, primaryPointer)
+    this.playFrameInFlight = true
+    this.playFrameInFlightAt = performance.now()
     this.worker.postMessage({
       type: 'play-frame-tick',
-      ...(player
+      ...(poseMoved && player
         ? {
             player: {
               position: {
@@ -5254,7 +5484,7 @@ export class SceneScriptSystem {
             }
           }
         : {}),
-      ...(camera
+      ...(poseMoved && camera
         ? {
             camera: {
               position: {
@@ -5271,9 +5501,67 @@ export class SceneScriptSystem {
             }
           }
         : {}),
-      // Always embed when snapshot exists — worker applies before engine.update for bobber aim.
       ...(primaryPointer ? { primaryPointer } : {})
     } satisfies MainToWorker)
+  }
+
+  private playFramePoseMoved(
+    player: EntityPose | null,
+    camera: EntityPose | null,
+    ppi: { worldRayDirection: { x: number; y: number; z: number } } | undefined
+  ): boolean {
+    const eps = 1e-4
+    const posChanged = (
+      a: { x: number; y: number; z: number },
+      b: { x: number; y: number; z: number }
+    ): boolean =>
+      Math.abs(a.x - b.x) > eps || Math.abs(a.y - b.y) > eps || Math.abs(a.z - b.z) > eps
+    const rotChanged = (
+      a: { x: number; y: number; z: number; w: number },
+      b: { x: number; y: number; z: number; w: number }
+    ): boolean =>
+      Math.abs(a.x - b.x) > eps ||
+      Math.abs(a.y - b.y) > eps ||
+      Math.abs(a.z - b.z) > eps ||
+      Math.abs(a.w - b.w) > eps
+    if (player) {
+      if (posChanged(player.position, this.lastSentPlayerPos)) return true
+      if (rotChanged(player.rotation, this.lastSentPlayerRot)) return true
+    }
+    if (camera) {
+      if (posChanged(camera.position, this.lastSentCamPos)) return true
+      if (rotChanged(camera.rotation, this.lastSentCamRot)) return true
+    }
+    if (ppi && posChanged(ppi.worldRayDirection, this.lastSentPpiDir)) return true
+    return Number.isNaN(this.lastSentPlayerPos.x)
+  }
+
+  private rememberPlayFramePose(
+    player: EntityPose | null,
+    camera: EntityPose | null,
+    ppi: { worldRayDirection: { x: number; y: number; z: number } } | undefined
+  ): void {
+    if (player) {
+      this.lastSentPlayerPos = { x: player.position.x, y: player.position.y, z: player.position.z }
+      this.lastSentPlayerRot = {
+        x: player.rotation.x,
+        y: player.rotation.y,
+        z: player.rotation.z,
+        w: player.rotation.w
+      }
+    }
+    if (camera) {
+      this.lastSentCamPos = { x: camera.position.x, y: camera.position.y, z: camera.position.z }
+      this.lastSentCamRot = {
+        x: camera.rotation.x,
+        y: camera.rotation.y,
+        z: camera.rotation.z,
+        w: camera.rotation.w
+      }
+    }
+    if (ppi) {
+      this.lastSentPpiDir = { ...ppi.worldRayDirection }
+    }
   }
 
   /** Level keyboard snapshot → worker (InputHub fan-out). */
@@ -5749,6 +6037,12 @@ export class SceneScriptSystem {
     this.clientPlayerPose = player
     this.clientCameraPose = camera
     this.refreshRealmInfoFromProvider()
+    if (!this.playFramePoseMoved(player, camera, undefined)) {
+      this.engineFrame++
+      this.reserved.setEngineCounters(this.engineFrame, this.crdtTick)
+      this.reserved.syncEngineInfoOnly()
+      return
+    }
     this.prepareReservedRoundTrip(player, camera)
   }
 
@@ -5858,7 +6152,11 @@ export class SceneScriptSystem {
    * Optional deadlineMs for multi-worker residual fullWork (F1).
    * Never swaps the entire pendingDiff map (fullDump thrash).
    */
-  async syncRenderer(opts?: { deadlineMs?: number }): Promise<void> {
+  pendingDiffSize(): number {
+    return this.pendingDiff.size
+  }
+
+  async syncRenderer(opts?: { deadlineMs?: number; skipMotion?: boolean }): Promise<void> {
     if (!this.bridge) return
     const view = this.view
     const F = SceneScriptSystem.FRAME
@@ -5876,7 +6174,13 @@ export class SceneScriptSystem {
       }
 
       if (!this.pendingDiff.size) {
-        await this.bridge.drainPendingWork()
+        if (
+          (this.getAttachProgressLite()?.pendingMesh ?? 0) > 0 ||
+          this.bridge.hasPendingHandleWork()
+        ) {
+          await this.bridge.drainPendingWork()
+          this.bridge.tickDeferredMaterials()
+        }
         this.syncSceneUiAfterRenderer()
         return
       }
@@ -5888,7 +6192,7 @@ export class SceneScriptSystem {
         })
       }
 
-      await this.drainPendingDiffLanes({ deadlineMs })
+      await this.drainPendingDiffLanes({ deadlineMs, skipMotion: opts?.skipMotion === true })
       this.syncSceneUiAfterRenderer()
       this.publishPendingDiffPerf()
       return
@@ -6239,62 +6543,26 @@ export class SceneScriptSystem {
    * before player CCT so moving platforms record walk-surface Δ the same frame.
    */
   consumeSyncFrameTransforms(): void {
-    if (!this.running || !this.bridge || !this.entityStore || !this.pendingDiff.size) return
-    if (!this.bridge.canConsumeDiff()) return
-
-    const { Transform, AvatarAttach } = this.readComponents
-    const transformDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
-    for (const [entity, comps] of this.pendingDiff) {
-      const transformKind = comps.get(Transform.componentId)
-      if (transformKind === undefined) continue
-      transformDiff.set(entity, new Map([[Transform.componentId, transformKind]]))
-    }
-    if (!transformDiff.size) return
-
-    const tweenRefresh = (this.tweenBridge?.getActiveTweenEntities() ?? []).filter(
-      (entity) => !AvatarAttach.has(entity)
-    )
-    const transformEntities = [...transformDiff.keys()]
-    applySceneDiff(this.entityStore, transformDiff, this.view, this.readComponents, tweenRefresh, {
-      // COD D2 — skip AvatarAttach + VC live-lane entities (pose rides vc-pose-live).
-      skipTransformApply: (entity) =>
-        AvatarAttach.has(entity) || this.projection.isVcLiveTransformEntity(entity),
-      onReservedParent: (entity, parent, view) => {
-        this.bridge?.noteReservedParentedEntity(entity, parent, view)
-      }
-    })
-    // GPU InstancedMesh stores world/instance matrices outside entity groups — rewrite after pose.
-    // Sustained motion (death coins, projectiles) promotes to private clones inside this call.
-    this.bridge.syncInstancedTransforms(transformEntities)
-    this.lastSyncFrameTransformEntities.clear()
-    const { MeshCollider, GltfContainer } = this.readComponents
-    for (const entity of transformEntities) {
-      this.lastSyncFrameTransformEntities.add(entity)
-      if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
-        this.colliderPoseDirty.add(entity)
-      }
-      this.markDescendantColliderPosesDirty(entity)
-    }
-
-    for (const entity of transformEntities) {
-      const pending = this.pendingDiff.get(entity)
-      if (!pending) continue
-      pending.delete(Transform.componentId)
-      if (pending.size === 0) this.pendingDiff.delete(entity)
-    }
+    this.assertNoFoldMotionInPendingDiff('consumeSyncFrameTransforms')
   }
 
-  /** Motion emitters (billboard / animator shape) → collider pose dirty before syncCollision. */
+  /** Motion emitters → collider pose dirty before syncCollision. */
   private markMotionEmitterColliderDirty(): void {
     const { MeshCollider, GltfContainer } = this.readComponents
-    const mark = (entity: Entity) => {
+    // Billboard yaw is visual-only (instance matrix). Do NOT dirty GltfContainer
+    // PhysX poses — that re-synced hundreds of plaza signs every walk frame (~14ms plat).
+    for (const entity of this.billboardBridge?.pendingMotionEntities() ?? []) {
+      if (MeshCollider.has(entity)) {
+        this.colliderPoseDirty.add(entity)
+        this.markDescendantColliderPosesDirty(entity)
+      }
+    }
+    for (const entity of this.animatorBridge?.pendingShapeMotionEntities() ?? []) {
       if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
         this.colliderPoseDirty.add(entity)
         this.markDescendantColliderPosesDirty(entity)
       }
     }
-    for (const entity of this.billboardBridge?.pendingMotionEntities() ?? []) mark(entity)
-    for (const entity of this.animatorBridge?.pendingShapeMotionEntities() ?? []) mark(entity)
   }
 
   /** Pose refresh before PhysX cook — keeps MeshCollider actors aligned with visuals. */
@@ -6448,51 +6716,76 @@ export class SceneScriptSystem {
   pumpMotionBridges(
     delta: number,
     tickNumber = 0,
-    opts?: { skipAvatarAttach?: boolean }
+    opts?: { skipAvatarAttach?: boolean; ridingOnly?: boolean; visualOnly?: boolean }
   ): void {
     if (!this.running || !this.bridge) return
     this.maybeDumpMotionFocus()
+    const ridingOnly = opts?.ridingOnly === true
+    const visualOnly = opts?.visualOnly === true
+    if (!visualOnly) {
     // Fresh animated set each frame — systems re-mark if they moved colliders.
     this.systemPartColliders.clear()
     this.systemTransformDirty.clear()
     this.physMotionSnapshot = null
-    // Phase C: always sync to pick up new Tween signatures; update only when live.
-    this.tweenBridge?.sync(this.view)
+    }
+    // Fold already synced new Tween puts. Idle sync is a watchdog, not every rAF.
+    if (!visualOnly) {
     if (this.tweenBridge?.hasLiveTweens()) {
+      this.tweenBridge.sync(this.view)
       this.tweenBridge.update(delta, this.view)
       this.markTweenColliderPosesDirty()
+      this.sceneGraphMatrixDirty = true
+    } else if (this.bridgeSyncTick % 8 === 0) {
+      this.tweenBridge?.sync(this.view)
     }
-    this.videoPlayerBridge?.sync(this.view)
-    this.audioSourceBridge?.sync(this.view)
-    this.audioStreamBridge?.sync(this.view)
-    this.assetLoadBridge?.sync(this.view)
-    this.nftShapeBridge?.sync(this.view)
-    this.nftShapeBridge?.update()
-    this.avatarShapes?.update(delta)
     // ?noanim — skip mixer sample (clips frozen; default auto-play never advances).
     if (!skipSceneAnimators()) {
-      this.animatorBridge?.update(delta, this.view, this.animatorSampleContext())
+      this.animatorBridge?.update(delta, this.view, this.animatorSampleContext(), {
+        partOnly: ridingOnly,
+        presentDecor: ridingOnly
+      })
+      if ((this.animatorBridge?.getPartColliderEntities().length ?? 0) > 0) {
+        this.sceneGraphMatrixDirty = true
+      }
     }
-    // One-shot: clear mesh distance-cull leftovers (we no longer hide scene GLTFs).
+    // In-view particles at present rate with wall elapsed (not async rAF delta).
+    this.particleBridge?.update()
+    // Primary scene stays fully live. 48/80 m is AOI neighbor shells only —
+    // hiding plaza Gltfs (theatre, stage) was a residency bug, not a host-world win.
     if (!this.restoredGltfCull) {
       this.restoredGltfCull = true
       this.bridge.restoreGltfDistanceCull()
     }
-    this.particleBridge?.update(delta)
+    if (!opts?.skipAvatarAttach) {
+      this.pumpAvatarAttach()
+    }
+    this.markMotionEmitterColliderDirty()
+    this.deliverTweenStateToWorker()
+    }
+    if (ridingOnly) return
+    // Do not sample mixers here. Present already advanced PART + in-view looping
+    // (wall-clock). Re-running with the last rAF delta made props crawl at ~⅓ speed.
+    if (this.bridgeSyncTick % 2 === 0) {
+      this.videoPlayerBridge?.sync(this.view)
+      this.audioSourceBridge?.sync(this.view)
+    }
+    if (this.bridgeSyncTick % 4 === 0) {
+      this.audioStreamBridge?.sync(this.view)
+      this.assetLoadBridge?.sync(this.view)
+      this.nftShapeBridge?.sync(this.view)
+    }
+    this.nftShapeBridge?.update()
+    this.avatarShapes?.update(delta)
+    // Particles advance on present (elapsed). Do not re-step here.
     // Particles need create/sync even when Animator/Gltf is quiet — don't wait for 12-frame cadence only.
     // sync is async (texture load); throttle so we don't pile concurrent creates.
     if (this.bridgeSyncTick % 8 === 0) {
       void this.particleBridge?.sync(this.view)
     }
-    if (!opts?.skipAvatarAttach) {
-      this.pumpAvatarAttach()
-    }
     // PlayerEntity-parented scene meshes (Dead Surge path arrow) — re-parent each frame.
     this.bridge.syncReservedParentedTransforms(this.view)
+    // Flag new Billboard puts. Facing is extract (DrawWorld + applyExtract), not Update.
     this.billboardBridge?.sync(this.view)
-    this.billboardBridge?.update()
-    this.markMotionEmitterColliderDirty()
-    this.deliverTweenStateToWorker()
     this.videoPlayerBridge?.update(tickNumber, this.view)
     this.audioSourceBridge?.update(tickNumber, this.view)
     this.audioStreamBridge?.update(tickNumber, this.view)
@@ -6532,16 +6825,26 @@ export class SceneScriptSystem {
     this.bridgeSyncTick++
     if (!this.bridgeDirty && this.bridgeSyncTick % this.bridgeSyncEvery !== 0) return
     this.bridgeDirty = false
-    await this.avatarShapes?.sync(this.view)
+    const t0 = performance.now()
+    const BRIDGE_BUDGET_MS = 6
+    if (performance.now() - t0 < BRIDGE_BUDGET_MS) {
+      await this.avatarShapes?.sync(this.view)
+    }
     this.avatarEmoteBridge?.sync(this.view)
     // ?noanim — skip bind + sample so no GLTF clips start or advance.
-    if (!skipSceneAnimators()) {
+    if (!skipSceneAnimators() && performance.now() - t0 < BRIDGE_BUDGET_MS) {
       await this.animatorBridge?.sync(this.view)
-      // Same async frame as Animator open/close apply — sample mixers so doors aren't one frame late.
-      // delta=0: no frustum cull (pose apply only).
-      this.animatorBridge?.update(0, this.view)
+      if (
+        this.animatorBridge?.hasIdlePoseWork() &&
+        performance.now() - t0 < BRIDGE_BUDGET_MS
+      ) {
+        this.animatorBridge?.update(0, this.view)
+      }
     }
-    await this.particleBridge?.sync(this.view)
+    // Particles are not the beauty pass — skip create/diag when the bridge pie is already spent.
+    if (performance.now() - t0 < BRIDGE_BUDGET_MS) {
+      await this.particleBridge?.sync(this.view)
+    }
   }
 
   private readonly animatorSamplePlayerWorld = new THREE.Vector3()
@@ -6582,6 +6885,15 @@ export class SceneScriptSystem {
     return this.animatorBridge?.getSampleStats() ?? null
   }
 
+  /** Bevy extract: instance billboard matrices after pose flush. Pose quat untouched. */
+  extractBillboards(camera: import('three').Camera): void {
+    if (!this.bridge) return
+    this.bridge.syncEcsVisibility(this.bridge.entitiesWithVisibility())
+    this.billboardBridge?.applyExtract(camera, (entity, world) =>
+      this.bridge!.setInstancedWorldMatrix(entity, world)
+    )
+  }
+
   /** @deprecated Prefer pumpMotionBridges + syncAsyncBridges */
   async syncBridges(delta: number): Promise<void> {
     this.pumpMotionBridges(delta)
@@ -6612,6 +6924,10 @@ export class SceneScriptSystem {
   /** G2 — MeshRenderer GPU instancing live density. */
   getMeshRendererInstanceStats(): { instances: number; buckets: number } | null {
     return this.bridge?.getMeshRendererInstanceStats() ?? null
+  }
+
+  getGltfInstanceStats(): { buckets: number; instances: number; draws: number } | null {
+    return this.bridge?.getGltfInstanceStats() ?? null
   }
 
   /** Cheap mesh-queue counters for fps diagnostics (no full projection walk). */

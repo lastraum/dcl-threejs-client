@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { scheduleOffPlayRaf, yieldToIdle } from '../rendering/mainThreadYield'
 
 type QueuedLoad = {
   address: string
@@ -22,7 +23,7 @@ export class RemoteAvatarLoadQueue {
    * Minimum wall time between compose **starts** (not finishes).
    * Was 10s — four nearby peers took 40s+ and felt “stuck at shells”.
    */
-  static readonly MIN_COMPOSE_INTERVAL_MS = 3_500
+  static readonly MIN_COMPOSE_INTERVAL_MS = 0
   /**
    * Horizontal meters — only start full body compose inside this radius.
    * ~1.25× a 16 m parcel edge so same-parcel + neighbor edge load; far stay shells.
@@ -38,8 +39,8 @@ export class RemoteAvatarLoadQueue {
   /**
    * After collider seal: hold all remote composes so pose resync + CCT aren't starved.
    */
-  static readonly COLLIDER_HOLD_MS_PLAZA = 4_000
-  static readonly COLLIDER_HOLD_MS_DEFAULT = 2_000
+  static readonly COLLIDER_HOLD_MS_PLAZA = 0
+  static readonly COLLIDER_HOLD_MS_DEFAULT = 0
 
   /** Local player feet (Three world) — load radius / sort origin, not camera. */
   private readonly localPlayer = new THREE.Vector3()
@@ -56,11 +57,13 @@ export class RemoteAvatarLoadQueue {
   /** performance.now() when the last compose was started (0 = never). */
   private lastComposeStartMs = 0
   private intervalPumpTimer: ReturnType<typeof setTimeout> | null = null
+  /** Coalesce rAF position updates into one idle pump. */
+  private offRafPumpScheduled = false
 
   /** Reference for distance gates — pass local player feet, not freecam / orbit camera. */
   setLocalPlayerPosition(position: THREE.Vector3): void {
     this.localPlayer.copy(position)
-    this.pump()
+    this.scheduleOffRafPump()
   }
 
   /** @deprecated use {@link setLocalPlayerPosition} */
@@ -81,7 +84,7 @@ export class RemoteAvatarLoadQueue {
       }
       this.colliderHoldMode = false
     }
-    this.pump()
+    this.scheduleOffRafPump()
   }
 
   /**
@@ -98,10 +101,9 @@ export class RemoteAvatarLoadQueue {
     this.colliderHoldExitTimer = setTimeout(() => {
       this.colliderHoldExitTimer = null
       this.colliderHoldMode = false
-      // First compose may start immediately after hold (interval clock starts on first start).
-      this.pump()
+      this.scheduleOffRafPump()
     }, holdMs)
-    this.pump()
+    this.scheduleOffRafPump()
   }
 
   /**
@@ -110,7 +112,7 @@ export class RemoteAvatarLoadQueue {
    */
   setSceneAssetPressure(gltfInflight: number, _textureInflight = 0): void {
     this.sceneGltfInflight = gltfInflight
-    this.pump()
+    this.scheduleOffRafPump()
   }
 
   /**
@@ -119,7 +121,7 @@ export class RemoteAvatarLoadQueue {
    */
   setLocalEmoteLoadBusy(busy: boolean): void {
     this.localEmoteBusy = busy
-    if (!busy) this.pump()
+    if (!busy) this.scheduleOffRafPump()
   }
 
   /** True if this peer is waiting or actively composing. */
@@ -150,7 +152,7 @@ export class RemoteAvatarLoadQueue {
       } else {
         existing.position.copy(peerPosition)
       }
-      this.pump()
+      this.scheduleOffRafPump()
       return
     }
 
@@ -160,7 +162,7 @@ export class RemoteAvatarLoadQueue {
       pos.copy(this.localPlayer)
     }
     this.waiting.set(key, { address: key, position: pos, run })
-    this.pump()
+    this.scheduleOffRafPump()
   }
 
   /**
@@ -172,12 +174,12 @@ export class RemoteAvatarLoadQueue {
     const entry = this.waiting.get(key)
     if (!entry) return
     entry.position.copy(peerPosition)
-    if (pump) this.pump()
+    if (pump) this.scheduleOffRafPump()
   }
 
   /** Re-evaluate the wait queue (e.g. after bulk distance updates). */
   notifyPump(): void {
-    this.pump()
+    this.scheduleOffRafPump()
   }
 
   cancel(address: string): void {
@@ -262,7 +264,16 @@ export class RemoteAvatarLoadQueue {
   private markFinished(address: string): void {
     this.active.delete(address)
     this.running = Math.max(0, this.running - 1)
-    this.pump()
+    this.scheduleOffRafPump()
+  }
+
+  private scheduleOffRafPump(): void {
+    if (this.offRafPumpScheduled) return
+    this.offRafPumpScheduled = true
+    scheduleOffPlayRaf(() => {
+      this.offRafPumpScheduled = false
+      this.pump()
+    })
   }
 
   private pump(): void {
@@ -272,6 +283,8 @@ export class RemoteAvatarLoadQueue {
       return
     }
     if (this.localEmoteBusy) return
+    // Compose already starts off the play rAF (idle callback + yieldToIdle).
+    // A 16 ms budget here starved every nearby body at 16 FPS (q=8 act=0 forever).
 
     const waitGap = this.msUntilNextComposeAllowed()
     if (waitGap > 0) {
@@ -307,7 +320,10 @@ export class RemoteAvatarLoadQueue {
       this.running++
       this.lastComposeStartMs = performance.now()
 
-      void next.c.run().finally(() => {
+      void (async () => {
+        await yieldToIdle(80)
+        await next.c.run()
+      })().finally(() => {
         this.markFinished(next.c.address)
       })
     }

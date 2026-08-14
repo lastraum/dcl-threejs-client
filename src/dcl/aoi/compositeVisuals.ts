@@ -20,25 +20,52 @@ function num(v: unknown, fallback = 0): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback
 }
 
-/**
- * Parse Creator Hub / main.composite for GltfContainer + Transform only.
- * Skips Animator, MeshCollider, PointerEvents, etc.
- */
-export function extractCompositeGltfPlacements(
-  compositeJson: unknown,
-  opts?: { skipGroundGlbs?: boolean }
-): Array<{
-  src: string
+function parentIdOf(parent: unknown): string | null {
+  if (parent === undefined || parent === null || parent === 0 || parent === '0' || parent === '') {
+    return null
+  }
+  const id = String(parent)
+  return id.length ? id : null
+}
+
+function readTransform(raw: unknown): {
   position: { x: number; y: number; z: number }
   rotation: { x: number; y: number; z: number; w: number }
   scale: { x: number; y: number; z: number }
-}> {
-  const root = unwrap(compositeJson)
-  if (!root || typeof root !== 'object') return []
-  const components = (root as { components?: unknown }).components
-  if (!Array.isArray(components)) return []
+  parentId: string | null
+} {
+  const tf = (unwrap(raw) ?? {}) as {
+    position?: Vec3
+    rotation?: Quat
+    scale?: Vec3
+    parent?: unknown
+  }
+  const p = tf.position ?? {}
+  const r = tf.rotation ?? {}
+  const s = tf.scale ?? {}
+  return {
+    position: { x: num(p.x), y: num(p.y), z: num(p.z) },
+    rotation: {
+      x: num(r.x),
+      y: num(r.y),
+      z: num(r.z),
+      w: r.w === undefined ? 1 : num(r.w, 1)
+    },
+    scale: {
+      x: s.x === undefined ? 1 : num(s.x, 1),
+      y: s.y === undefined ? 1 : num(s.y, 1),
+      z: s.z === undefined ? 1 : num(s.z, 1)
+    },
+    parentId: parentIdOf(tf.parent)
+  }
+}
 
+function componentDataByName(compositeJson: unknown): Map<string, Record<string, unknown>> {
+  const root = unwrap(compositeJson)
   const byName = new Map<string, Record<string, unknown>>()
+  if (!root || typeof root !== 'object') return byName
+  const components = (root as { components?: unknown }).components
+  if (!Array.isArray(components)) return byName
   for (const c of components) {
     if (!c || typeof c !== 'object') continue
     const name = (c as { name?: string }).name
@@ -47,57 +74,119 @@ export function extractCompositeGltfPlacements(
       byName.set(name, data as Record<string, unknown>)
     }
   }
+  return byName
+}
 
+export type CompositeTransform = {
+  entityId: string
+  parentId: string | null
+  position: { x: number; y: number; z: number }
+  rotation: { x: number; y: number; z: number; w: number }
+  scale: { x: number; y: number; z: number }
+}
+
+/** Neighbor-local Gltf placement (composite parse; local TRS + parent). */
+export type CompositeGltfPlacement = CompositeTransform & {
+  src: string
+}
+
+/** @deprecated Use CompositeGltfPlacement. */
+export type GltfPlacement = CompositeGltfPlacement
+
+/** Height-weighted silhouette: largest axis scale × max(1, |py|). */
+export function compositeSilhouetteKey(
+  scale: { x: number; y: number; z: number },
+  positionY: number
+): number {
+  return (
+    Math.max(Math.abs(scale.x), Math.abs(scale.y), Math.abs(scale.z)) * Math.max(1, Math.abs(positionY))
+  )
+}
+
+/** Every Transform entity (pivots included) — parent-walk, no skip. */
+export function extractCompositeTransforms(compositeJson: unknown): CompositeTransform[] {
+  const transformData = componentDataByName(compositeJson).get('core::Transform')
+  if (!transformData) return []
+  const out: CompositeTransform[] = []
+  for (const [entKey, rawTf] of Object.entries(transformData)) {
+    const entityId = String(entKey)
+    if (!entityId) continue
+    const tf = readTransform(rawTf)
+    out.push({
+      entityId,
+      parentId: tf.parentId === entityId ? null : tf.parentId,
+      position: tf.position,
+      rotation: tf.rotation,
+      scale: tf.scale
+    })
+  }
+  return out
+}
+
+/**
+ * Parse Creator Hub / main.composite for GltfContainer + Transform.
+ * Includes nested entities (`parent`); does not flatten or skip the tree.
+ */
+export function extractCompositeGltfPlacements(
+  compositeJson: unknown,
+  opts?: { skipGroundGlbs?: boolean }
+): CompositeGltfPlacement[] {
+  const byName = componentDataByName(compositeJson)
   const gltfData = byName.get('core::GltfContainer')
   const transformData = byName.get('core::Transform')
   if (!gltfData) return []
 
-  const out: Array<{
-    src: string
-    position: { x: number; y: number; z: number }
-    rotation: { x: number; y: number; z: number; w: number }
-    scale: { x: number; y: number; z: number }
-  }> = []
-
   const skipGround = opts?.skipGroundGlbs === true
+  const out: CompositeGltfPlacement[] = []
   for (const [entKey, rawGltf] of Object.entries(gltfData)) {
     const gltf = unwrap(rawGltf) as { src?: string } | null
     const src = typeof gltf?.src === 'string' ? gltf.src.trim() : ''
     if (!src) continue
-    // Only when scene.json opts in — never strip default scene.glb by default.
     if (skipGround && isAoiSecondaryGroundSrc(src)) continue
 
-    const rawTf = transformData?.[entKey]
-    const tf = (unwrap(rawTf) ?? {}) as {
-      position?: Vec3
-      rotation?: Quat
-      scale?: Vec3
-      parent?: number
-    }
-    // Only root-level (parent 0 / missing) — nested trees need full hierarchy later.
-    const parent = tf.parent
-    if (parent !== undefined && parent !== 0 && parent !== null) continue
-
-    const p = tf.position ?? {}
-    const r = tf.rotation ?? {}
-    const s = tf.scale ?? {}
+    const entityId = String(entKey)
+    const tf = readTransform(transformData?.[entKey])
     out.push({
       src,
-      position: { x: num(p.x), y: num(p.y), z: num(p.z) },
-      rotation: {
-        x: num(r.x),
-        y: num(r.y),
-        z: num(r.z),
-        w: r.w === undefined ? 1 : num(r.w, 1)
-      },
-      scale: {
-        x: s.x === undefined ? 1 : num(s.x, 1),
-        y: s.y === undefined ? 1 : num(s.y, 1),
-        z: s.z === undefined ? 1 : num(s.z, 1)
-      }
+      entityId,
+      parentId: tf.parentId === entityId ? null : tf.parentId,
+      position: tf.position,
+      rotation: tf.rotation,
+      scale: tf.scale
     })
   }
   return out
+}
+
+export function planCompositeShell(
+  json: unknown,
+  opts?: { maxGltfs?: number; skipGroundGlbs?: boolean }
+): { placements: CompositeGltfPlacement[] } {
+  const placements = extractCompositeGltfPlacements(json, {
+    skipGroundGlbs: opts?.skipGroundGlbs
+  })
+  placements.sort(
+    (a, b) =>
+      compositeSilhouetteKey(b.scale, b.position.y) - compositeSilhouetteKey(a.scale, a.position.y)
+  )
+  const cap = opts?.maxGltfs
+  if (cap === undefined) return { placements }
+  if (cap <= 0) return { placements: [] }
+  return { placements: placements.slice(0, cap) }
+}
+
+export async function fetchCompositeJson(
+  contentBaseUrl: string,
+  compositeHash: string
+): Promise<unknown | null> {
+  try {
+    const url = catalystContentAssetUrl(contentBaseUrl, compositeHash)
+    const res = await fetch(url)
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -210,94 +299,9 @@ export function neighborOriginOffset(
   }
 }
 
-/** Neighbor-local Gltf placement (from composite parse or first-frame ECS snapshot). */
-export type GltfPlacement = {
-  src: string
-  position: { x: number; y: number; z: number }
-  rotation: { x: number; y: number; z: number; w: number }
-  scale: { x: number; y: number; z: number }
-}
-
 /**
- * One far proxy for a neighbor (AABB of composite placements). No GLB clones.
- *
- * Placements are neighbor scene-local DCL. The group is shifted by
- * (neighborBase − primaryBase) so it sits in the primary graph.
- */
-export async function buildPlacementVisualGroup(opts: {
-  cache: AssetCache
-  contentBaseUrl: string
-  content: { file: string; hash: string }[]
-  placements: GltfPlacement[]
-  neighborBase: string
-  primaryBase: string
-  maxGltfs?: number
-  groupName?: string
-  /** Only when scene.json sets aoiSkipGroundGlbs — default keep all GLBs. */
-  skipGroundGlbs?: boolean
-}): Promise<THREE.Group> {
-  const group = new THREE.Group()
-  group.name = opts.groupName ?? 'aoi-placement-visuals'
-
-  // Neighbor root origin in primary-relative DCL → Three (X reflect once on the root).
-  const originOffset = neighborOriginOffset(opts.neighborBase, opts.primaryBase)
-  dclToThreePos(originOffset.x, 0, originOffset.z, group.position)
-
-  const skipGround = opts.skipGroundGlbs === true
-  const pos = new THREE.Vector3()
-  const box = new THREE.Box3()
-  let any = false
-  for (const place of opts.placements) {
-    if (skipGround && isAoiSecondaryGroundSrc(place.src)) continue
-    dclToThreePos(place.position.x, place.position.y, place.position.z, pos)
-    const ext = Math.max(2, Math.abs(place.scale.x), Math.abs(place.scale.z)) * 2
-    box.expandByPoint(pos)
-    box.expandByPoint(new THREE.Vector3(pos.x + ext, pos.y + ext, pos.z + ext))
-    box.expandByPoint(new THREE.Vector3(pos.x - ext, pos.y, pos.z - ext))
-    any = true
-  }
-  if (any && !box.isEmpty()) {
-    const size = new THREE.Vector3()
-    const center = new THREE.Vector3()
-    box.getSize(size)
-    box.getCenter(center)
-    const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(
-        Math.max(8, size.x),
-        Math.max(4, size.y),
-        Math.max(8, size.z)
-      ),
-      new THREE.MeshLambertMaterial({
-        color: 0x6a7a68,
-        transparent: true,
-        opacity: 0.45,
-        depthWrite: false
-      })
-    )
-    mesh.name = 'aoi-far-proxy'
-    mesh.position.copy(center)
-    mesh.castShadow = false
-    mesh.receiveShadow = true
-    mesh.frustumCulled = true
-    mesh.updateMatrix()
-    group.add(mesh)
-  }
-
-  freezeStaticGraph(group)
-  group.updateMatrixWorld(true)
-  return group
-}
-
-/** Neighbor shells never tween — skip per-frame matrix walks. */
-function freezeStaticGraph(root: THREE.Object3D): void {
-  root.traverse((node) => {
-    node.matrixAutoUpdate = false
-    node.updateMatrix()
-  })
-}
-
-/**
- * Build a Three group from main.composite Gltf placements (render-only).
+ * Fetch-only wrapper. Clone attach lives in the AOI drain (1/`cache.load` per turn).
+ * Unused on the hot path — kept for callers that only need the JSON group stub.
  */
 export async function buildCompositeVisualGroup(opts: {
   cache: AssetCache
@@ -308,31 +312,13 @@ export async function buildCompositeVisualGroup(opts: {
   primaryBase: string
   maxGltfs?: number
 }): Promise<THREE.Group> {
-  const url = catalystContentAssetUrl(opts.contentBaseUrl, opts.compositeHash)
-  const res = await fetch(url)
-  if (!res.ok) {
-    const empty = new THREE.Group()
-    empty.name = 'aoi-composite-visuals'
-    return empty
-  }
-  let json: unknown
-  try {
-    json = await res.json()
-  } catch {
-    const empty = new THREE.Group()
-    empty.name = 'aoi-composite-visuals'
-    return empty
-  }
-
-  return buildPlacementVisualGroup({
-    cache: opts.cache,
-    contentBaseUrl: opts.contentBaseUrl,
-    content: opts.content,
-    placements: extractCompositeGltfPlacements(json),
-    neighborBase: opts.neighborBase,
-    primaryBase: opts.primaryBase,
-    maxGltfs: opts.maxGltfs,
-    groupName: 'aoi-composite-visuals'
-  })
+  const group = new THREE.Group()
+  group.name = 'aoi-composite-visuals'
+  const json = await fetchCompositeJson(opts.contentBaseUrl, opts.compositeHash)
+  if (!json) return group
+  const planned = planCompositeShell(json, { maxGltfs: opts.maxGltfs })
+  group.userData.pendingSrcs = planned.placements.map((p) => p.src)
+  const originOffset = neighborOriginOffset(opts.neighborBase, opts.primaryBase)
+  dclToThreePos(originOffset.x, 0, originOffset.z, group.position)
+  return group
 }
-

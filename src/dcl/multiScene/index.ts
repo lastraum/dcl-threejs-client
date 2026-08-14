@@ -9,6 +9,10 @@ export type {
 } from './types'
 export { SCENE_WORKER_PRIORITY } from './types'
 export {
+  aoiNeighborShells,
+  aoiSceneDistanceVisuals,
+  aoiLiveGuests,
+  aoiStandOnPromote,
   aoiGlbShellsOnly,
   aoiLiveSecondariesOnly,
   secondaryLiveCap,

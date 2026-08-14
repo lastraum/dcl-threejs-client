@@ -3,7 +3,7 @@ import type { SceneScriptSystem } from '../systems/SceneScriptSystem'
 import type { SceneGuest } from './SceneGuest'
 import type { GuestId, GuestKind } from './types'
 
-/** Host adapter over a live {@link SceneScriptSystem} (primary today; PE/secondary later). */
+/** Host adapter over a live {@link SceneScriptSystem} (primary + SceneLoop secondaries). PE is PeSlotGuest. */
 export class SceneScriptGuest implements SceneGuest {
   private sentAt = 0
 
@@ -23,6 +23,10 @@ export class SceneScriptGuest implements SceneGuest {
   }
 
   isDue(now: number): boolean {
+    // Secondaries are 50 ms only — never honor pointer inject (that's the primary guest).
+    if (this.kind === 'secondary') {
+      return this.sentAt <= 0 || now - this.sentAt >= 50
+    }
     // Pointer inject still needs a guest tick this turn. Otherwise 20 Hz — display
     // rAF is the presenter, not scene.js.
     if (this.getSystem().needsImmediateGuestTick()) return true

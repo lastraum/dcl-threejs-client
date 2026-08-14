@@ -644,6 +644,26 @@ export class CommsService {
    * Update scene origin/bounds/target without touching LiveKit sockets.
    * Used after landing → play handoff so movement encoding matches the World scene.
    */
+  getSceneTarget(): SceneCommsTarget | null {
+    return this.sceneTarget
+  }
+
+  /**
+   * Reconnect scene LiveKit iff FocusOwner deployment changed.
+   * Compare sceneId + pointer only — never commsAdapterHint (realm /about, identical on Genesis).
+   */
+  sceneRoomIdentityChanged(
+    prev: Pick<SceneCommsTarget, 'sceneId' | 'pointer'> | null | undefined,
+    next: Pick<SceneCommsTarget, 'sceneId' | 'pointer'>
+  ): boolean {
+    if (!prev) return true
+    const prevSceneId = prev.sceneId?.trim() ?? ''
+    const nextSceneId = next.sceneId?.trim() ?? ''
+    const prevPointer = prev.pointer?.trim() ?? ''
+    const nextPointer = next.pointer?.trim() ?? ''
+    return prevSceneId !== nextSceneId || prevPointer !== nextPointer
+  }
+
   bindSceneTarget(target: SceneCommsTarget): void {
     this.sceneTarget = target
     this.sceneId = target.sceneId.trim()

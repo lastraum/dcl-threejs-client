@@ -74,7 +74,8 @@ export class SceneWorkerSlot {
   /** True when World should re-sync lastRemappedColliders (once, not every frame). */
   private collidersDirty = false
   private primaryBaseParcel: string
-  private readonly host: SceneHost
+  /** SceneLoop.send owns play-frame; tickSync must not call tickPlayFrame. */
+  private playFrameOwnedExternally = false
 
   constructor(private readonly opts: SceneWorkerSlotOptions) {
     this.id = opts.id
@@ -86,7 +87,6 @@ export class SceneWorkerSlot {
     this.mode = opts.initialMode ?? 'secondary'
     this.system = opts.existingSystem ?? new SceneScriptSystem()
     this.primaryBaseParcel = (opts.primaryBaseParcel ?? '').trim()
-    this.host = opts.host
   }
 
   get residentMode(): ResidentMode {
@@ -97,6 +97,10 @@ export class SceneWorkerSlot {
     return this.mode === 'tertiary'
   }
 
+  setPlayFrameOwnedExternally(owned: boolean): void {
+    this.playFrameOwnedExternally = owned
+  }
+
   /**
    * After primary promote — re-place this secondary relative to the new primary SW.
    * Without this, demoted scenes stay at host origin and overrun the new primary.
@@ -105,14 +109,9 @@ export class SceneWorkerSlot {
     this.primaryBaseParcel = primaryBaseParcel.trim()
     if (this.kind !== 'secondary' || this.disposed || this.detached) return
     this.applySceneOriginOffset()
-    // Ensure demoted tertiary shells stay on host after offset bake.
+    // Pose root stays on host.poseRoot (EntityStore). Never reparent onto host.scene.
     const root = this.system.getEntityStore()?.root
-    if (root) {
-      root.visible = true
-      if (this.host.scene && root.parent !== this.host.scene) {
-        this.host.scene.add(root)
-      }
-    }
+    if (root) root.visible = true
     // Pose-only: update remapped desc matrices for World pose-slide — never force recook.
     if (this.lastRemappedColliders.length > 0) {
       this.captureRemappedColliders()
@@ -210,9 +209,6 @@ export class SceneWorkerSlot {
       }
     })
     root.updateMatrixWorld(true)
-    if (this.host.scene && root.parent !== this.host.scene) {
-      this.host.scene.add(root)
-    }
   }
 
   private freezeAnimators(freeze: boolean): void {
@@ -239,12 +235,7 @@ export class SceneWorkerSlot {
       // Offset FIRST (while matrices still free), then LOD mode may freeze descendants.
       this.applySceneOriginOffset()
       const root = this.system.getEntityStore()?.root
-      if (root) {
-        root.visible = true
-        if (this.host.scene && root.parent !== this.host.scene) {
-          this.host.scene.add(root)
-        }
-      }
+      if (root) root.visible = true
       this.running = true
       this.lastTickAt = performance.now()
       // Primary→secondary: keep existing PhysX (World rekeys native→offset + pose-slides).
@@ -372,13 +363,21 @@ export class SceneWorkerSlot {
     this.system.setTeleportToHandler(null)
     this.system.setChangeRealmHandler(() => false)
     this.system.setOpenExternalUrlHandler(null)
+    this.system.setOpenNftDialogHandler(null)
+    this.system.setCopyToClipboardHandler(null)
+    this.system.setTriggerEmoteHandler(null)
   }
 
   setUiVisible(visible: boolean): void {
     this.system.setSceneUiVisible(visible)
   }
 
-  tickSync(player: EntityPose, camera: EntityPose, minIntervalMs: number): boolean {
+  tickSync(
+    player: EntityPose,
+    camera: EntityPose,
+    minIntervalMs: number,
+    skipPlayFrame = false
+  ): boolean {
     if (!this.running || this.disposed || this.detached) return false
     // Tertiary: meshes only — no script onUpdate (worker paused + skip local pump).
     if (this.mode === 'tertiary') {
@@ -392,7 +391,10 @@ export class SceneWorkerSlot {
     if (this.kind === 'pe') {
       this.system.updateTriggerAreas()
     }
-    this.system.tickPlayFrame()
+    // SceneLoop.send owns play-frame when skipPlayFrame (or manager flag) is set.
+    if (!skipPlayFrame && !this.playFrameOwnedExternally) {
+      this.system.tickPlayFrame()
+    }
     return true
   }
 
@@ -520,6 +522,8 @@ export class SceneWorkerSlot {
     this.system.setTeleportToHandler(null)
     this.system.setChangeRealmHandler(null)
     this.system.setOpenExternalUrlHandler(null)
+    this.system.setOpenNftDialogHandler(null)
+    this.system.setCopyToClipboardHandler(null)
     this.system.setTriggerEmoteHandler(null)
     clearSecondarySceneRootOrigin(this.system.getEntityStore()?.root)
     return this.system

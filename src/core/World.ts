@@ -25,7 +25,8 @@ import { AoiVisualLayer } from '../dcl/aoi/AoiVisualLayer'
 import { ScenePromoteController } from '../dcl/aoi/ScenePromoteController'
 import type { MultiSceneRuntime } from '../dcl/multiScene/MultiSceneRuntime'
 import { PeMainThreadMirror } from '../dcl/multiScene/PeMainThreadMirror'
-import { aoiGlbShellsOnly } from '../dcl/multiScene/caps'
+import { aoiStandOnPromote } from '../dcl/multiScene/caps'
+import { lastFrameOverBudget, scheduleOffPlayRaf } from '../rendering/mainThreadYield'
 import {
   resolvePortableExperiencesPolicy,
   type PortableExperiencesPolicy
@@ -944,6 +945,7 @@ export class World {
       this.aoiVisual.bind({
         scene,
         cache: this.assets,
+        host: this.host,
         hostScene: this.host.scene,
         syncRoadColliders: (descs) => {
           // Runtime road rebuilds use cache-invalidate only (no simulate(0) — see PhysXWorld).
@@ -1923,9 +1925,6 @@ export class World {
           if ((this.multiScene?.pe?.getRunningSystems() ?? []).length) {
             this.pumpPeMotionBridges(delta, startFrame)
           }
-          if ((this.multiScene?.getSecondaryMotionSystems() ?? []).length) {
-            this.pumpSecondaryMotionBridges(delta, startFrame)
-          }
           // After PE player-frame may have bound VC this tick — re-select before next freecam frame.
           this.selectActiveVirtualCameraBridge()
           // Mirror PE player-affecting state onto primary (InputModifier, forces) — not MainCamera ids.
@@ -2079,6 +2078,9 @@ export class World {
         this.sceneLoop.receive()
         if (this.playerMode && this.player && this.guestTickPlayer && this.guestTickCamera) {
           this.sceneLoop.reconcilePe(this.multiScene?.pe ?? null)
+          this.sceneLoop.reconcileLiveGuests(
+            this.multiScene?.secondaryManager?.listSecondaryModeSystems() ?? []
+          )
           this.sceneLoop.send({
             now: performance.now(),
             fpsTarget: renderQuality.getFpsLimit() || 60,
@@ -2088,12 +2090,9 @@ export class World {
           })
           this.sceneLoop.peelMotion(2)
           if (remain() > 2) {
+            // PE pointer only; secondaries no-op play-frame when owned externally.
             this.multiScene?.tickSync(this.guestTickPlayer, this.guestTickCamera, this.guestTickFrame)
-          }
-          if (remain() > 2 && !this.sceneLoop.lastApplyOverran(28)) {
-            const pos = this.player.getPosition()
-            this.aoiVisual.update(pos.x, pos.z)
-            this.scenePromote.tick(pos.x, pos.z)
+            this.pumpSecondaryMotionBridges(_delta, this.guestTickFrame)
           }
         }
         if (remain() > 2) {
@@ -2201,6 +2200,12 @@ export class World {
             }
           }
           multiMs = performance.now() - t3
+        }
+        // Drain AFTER leftover apply so one clone inflate cannot steal primary apply.
+        if (remain() > 2 && !lastFrameOverBudget(33) && this.player) {
+          const pos = this.player.getPosition()
+          this.aoiVisual.update(pos.x, pos.z)
+          this.scenePromote.tick(pos.x, pos.z)
         }
         const totalMs = performance.now() - t0
         // MainFrameHud async pie — peel / ptr / collision / bridges / multi.
@@ -4408,6 +4413,7 @@ export class World {
   attachMultiScene(runtime: MultiSceneRuntime | null): void {
     if (this.multiScene && this.multiScene !== runtime) {
       this.multiScene.pe.setPlayFrameOwnedExternally(false)
+      this.multiScene.secondaryManager?.setPlayFrameOwnedExternally(false)
       this.multiScene.unbindWorld()
     }
     this.multiScene = runtime
@@ -4457,6 +4463,7 @@ export class World {
       },
       pePolicy
     })
+    runtime.secondaryManager?.setPlayFrameOwnedExternally(true)
   }
 
   getMultiScene(): MultiSceneRuntime | null {
@@ -4773,7 +4780,7 @@ export class World {
    * seamless-jump (continuity: prior primary stays until handoff succeeds).
    */
   async tryPromoteInWorld(target: { x: number; y: number }): Promise<boolean> {
-    if (aoiGlbShellsOnly()) return false
+    if (!aoiStandOnPromote()) return false
     const multi = this.multiScene
     if (!multi || !this.player) return false
 
@@ -4897,9 +4904,6 @@ export class World {
           if (store?.root) {
             store.root.name = `secondary-orphan:${oldScene.entityId.slice(0, 16)}`
             store.root.visible = true
-            if (store.root.parent !== this.host.scene) {
-              this.host.scene.add(store.root)
-            }
           }
         } catch {
           /* ignore */
@@ -4915,9 +4919,6 @@ export class World {
         if (store?.root && oldPrimary !== newSystem) {
           store.root.visible = true
           store.root.name = `secondary-orphan:same:${oldScene?.entityId?.slice(0, 12) ?? 'x'}`
-          if (store.root.parent !== this.host.scene) {
-            this.host.scene.add(store.root)
-          }
         }
       } catch {
         /* ignore */
@@ -5028,12 +5029,20 @@ export class World {
     // local space under the new base → soft-route warped (e.g. -141,99 + stale local
     // → -135,107) and CBD looked unloaded.
     const originBefore = { ...this.comms.getSceneOrigin() }
+    const prevSceneTarget = this.comms.getSceneTarget()
+    const nextSceneTarget = this.buildCommsTarget(newScene)
     this.comms.applyRealmAbout(newScene.realm, newScene.commsPointer)
-    this.comms.bindSceneTarget(this.buildCommsTarget(newScene))
+    this.comms.bindSceneTarget(nextSceneTarget)
     this.session.setCatalystEndpoints(newScene.realm.contentUrl, newScene.realm.lambdasUrl)
 
     // Feet stay put in Genesis space under the NEW origin.
     const ok = this.restoreGenesisFeet(genesis)
+    if (this.comms.sceneRoomIdentityChanged(prevSceneTarget, nextSceneTarget)) {
+      // Hitch-defer socket swap off present; keep publishing on the old room for one RTT.
+      scheduleOffPlayRaf(() => {
+        void this.comms.connectSceneRoom(nextSceneTarget)
+      })
+    }
     // Platform camera: freecam orbit is durable player state — rebind VC bridge for the
     // new primary, clear MainCamera (already in clearPlayerFocusState), snap boom to feet.
     // Never reseed yaw/pitch/dist from scene VC (that was the "reset mode" snap).
@@ -5097,7 +5106,10 @@ export class World {
     multi.setSecondaryActivityEnabled(false)
     // Only new primary runs scripts during settle — sticky/plaza tertiary (meshes stay).
     multi.forceAllResidentsTertiary('promote-settle')
-    // Ensure demoted roots stay visible after tertiary mode (CBD must not look empty).
+    this.sceneLoop.reconcileLiveGuests(
+      multi.secondaryManager?.listSecondaryModeSystems() ?? []
+    )
+    // Ensure demoted pose roots stay visible after tertiary mode (never host.scene.add).
     multi.ensureResidentsVisible()
     this.aoiVisual.retargetPrimary(newScene, feetAfter.x, feetAfter.z)
     // retargetPrimary already liveReconcileEnabled=false; visuals neighborActivity on.
@@ -5158,6 +5170,10 @@ export class World {
       this.sceneScript.clearPlayerFocusState()
       this.player?.releaseSceneFreezeHold('promote-settle-end')
       multi.setSecondaryActivityEnabled(true)
+      multi.restoreStickySecondaries()
+      this.sceneLoop.reconcileLiveGuests(
+        multi.secondaryManager?.listSecondaryModeSystems() ?? []
+      )
       // Allow live-secondary candidate emit + boots (visuals already on).
       this.aoiVisual.setNeighborActivityEnabled(true)
       const p = this.player?.getPosition()
@@ -5592,6 +5608,7 @@ export class World {
     this.sceneLoop.clear()
     if (this.multiScene) {
       this.multiScene.pe.setPlayFrameOwnedExternally(false)
+      this.multiScene.secondaryManager?.setPlayFrameOwnedExternally(false)
       this.multiScene.unbindWorld()
       this.multiScene = null
     }

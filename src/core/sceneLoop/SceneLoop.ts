@@ -57,6 +57,19 @@ export class SceneLoop {
     }
   }
 
+  /** Keep SceneLoop secondaries aligned with running secondary-mode slots. */
+  reconcileLiveGuests(getters: Array<{ id: string; getSystem: () => SceneScriptSystem }>): void {
+    const live = new Set(getters.map((g) => g.id))
+    for (const g of getters) {
+      if (!this.guests.has(g.id)) {
+        this.guests.set(g.id, new SceneScriptGuest(g.id, 'secondary', g.getSystem, false))
+      }
+    }
+    for (const [id, guest] of this.guests) {
+      if (guest.kind === 'secondary' && !live.has(id)) this.guests.delete(id)
+    }
+  }
+
   removeGuest(id: string): void {
     this.guests.delete(id)
   }

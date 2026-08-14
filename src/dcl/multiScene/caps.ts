@@ -1,181 +1,139 @@
 import type { PerformanceTier } from '../../shim/types'
 import { renderQuality } from '../../rendering/RenderQualitySettings'
+import { skipAoiNeighbors } from '../../client/devFlags'
 
 /**
- * Product multi-scene model (current shipping):
- * - **Primary only** — the scene you spawned into; FocusOwner; never promote/demote
- * - **Neighbors** — composite **GLB shells only** over Scene Distance (no workers)
- * - No live secondary workers, no stand-on handoff (perf: CBD thrash killed FPS)
- *
- * Full contract: docs/MULTI_SCENE_CONTINUITY.md
+ * Open-world residency (docs/OPEN_WORLD_RESIDENCY.md).
+ * Compile defaults ON for the city soak — `?noaoi` still wins.
+ * URL: ?aoishells=0|1  ?aoidisc=0|1  ?aoilive=0|1  ?aoipromote=0|1
  */
-/**
- * When true: single primary forever + composite GLB shells for neighbors.
- * No secondary workers, no promote/demote. Re-enable for continuity experiments.
- */
-const AOI_GLB_SHELLS_ONLY = true
-/** Legacy: composite shells without first-frame sample (still used when shells-only). */
-const AOI_LIVE_SECONDARIES_ONLY = true
+const AOI_NEIGHBOR_SHELLS = true
+const AOI_SCENE_DISTANCE_VISUALS = true
+const AOI_LIVE_GUESTS = true
+const AOI_STAND_ON_PROMOTE = true
+
 /** Hard cap on concurrent muted live secondary workers (dense Genesis). */
 const AOI_LIVE_SECONDARY_HARD_CAP = 3
-/**
- * Max tertiary residents (scripts-off, meshes stay). Over cap → dispose farthest non-sticky.
- * Sticky demoted primaries never count against eviction of continuity-critical slots.
- */
 const TERTIARY_RESIDENT_HARD_CAP = 8
 
-/**
- * Road **PhysX** furniture only within this player radius (meters).
- * Visual roads still cover full Scene Distance — CCT doesn't need 200m of planters.
- */
 export const ROAD_PHYS_RADIUS_M = 48
-
-/**
- * Empty-land tree/rock **PhysX** boxes only within this player radius.
- * Visual scatter (trees/rocks/grass instancing) stays sticky across the warm band;
- * far props are decoration until you walk near them.
- */
 export const EMPTY_LAND_PHYS_RADIUS_M = 48
 
-/**
- * Neighbor **visual shell** band (player → footprint, scene-local meters).
- * New composites attach inside ENTER; stay until KEEP; past KEEP = 0 GLB clones
- * (road + ground only). Independent of Preferences Scene Distance pointer fetch.
- */
+/** Shadow / env-caster / near-PhysX keep. Also the visual cliff while !aoiSceneDistanceVisuals(). */
 export const AOI_SHELL_ENTER_M = 48
 export const AOI_SHELL_KEEP_M = 80
 
-/** Max retained composite tertiary entities (LRU; multi-parcel shells preferred). */
-export const COMPOSITE_MAX_RETAINED = 6
+export const COMPOSITE_MAX_RETAINED = 24
 
-/**
- * Composite GLB budget by distance from player (scene-local meters).
- * Past {@link AOI_SHELL_KEEP_M}: no clones. Near/mid are silhouette budgets, not a second plaza.
- */
-export function compositeMaxGltfsForDistance(distM: number, _parcelCount: number): number {
-  if (distM > AOI_SHELL_KEEP_M) return 0
-  if (distM <= AOI_SHELL_ENTER_M) return 16
-  return 8
+function urlFlag(name: string): boolean | null {
+  if (typeof window === 'undefined') return null
+  const params = new URLSearchParams(window.location.search)
+  if (!params.has(name)) return null
+  const raw = (params.get(name) ?? '1').trim().toLowerCase()
+  if (raw === '0' || raw === 'false' || raw === 'off') return false
+  return true
 }
 
-/**
- * Visual attach/hide radius for scatter, roads, and primary Gltf LOD.
- * Preferences Scene Distance may be 200 m for pointer fetch; we do not mesh that disc.
- */
+function urlBool(name: string, compileDefault: boolean): boolean {
+  const override = urlFlag(name)
+  return override === null ? compileDefault : override
+}
+
+export function aoiNeighborShells(): boolean {
+  if (skipAoiNeighbors()) return false
+  return urlBool('aoishells', AOI_NEIGHBOR_SHELLS)
+}
+
+export function aoiSceneDistanceVisuals(): boolean {
+  if (skipAoiNeighbors()) return false
+  return urlBool('aoidisc', AOI_SCENE_DISTANCE_VISUALS)
+}
+
+export function aoiLiveGuests(): boolean {
+  if (skipAoiNeighbors()) return false
+  return urlBool('aoilive', AOI_LIVE_GUESTS)
+}
+
+export function aoiStandOnPromote(): boolean {
+  if (skipAoiNeighbors()) return false
+  if (!aoiLiveGuests()) return false
+  return urlBool('aoipromote', AOI_STAND_ON_PROMOTE)
+}
+
+/** Compat: true when live guests are off (old “shells-only / never promote” gate). */
+export function aoiGlbShellsOnly(): boolean {
+  return !aoiLiveGuests()
+}
+
+/** @deprecated Folded into aoiNeighborShells / aoiLiveGuests. Always false. */
+export function aoiLiveSecondariesOnly(): boolean {
+  return false
+}
+
+export function compositeMaxGltfsForDistance(distM: number, _parcelCount: number): number {
+  const d = visualWarmRadiusM()
+  if (d <= 0 || distM > d) return 0
+  if (distM <= Math.min(48, d * 0.35)) return 24
+  if (distM <= Math.min(120, d * 0.75)) return 8
+  return 3
+}
+
 export function visualWarmRadiusM(): number {
   const pref = renderQuality.getSceneLoadRadiusM()
   if (pref <= 0) return 0
-  return Math.min(pref, AOI_SHELL_KEEP_M)
+  if (!aoiSceneDistanceVisuals()) return Math.min(pref, AOI_SHELL_KEEP_M)
+  return pref
 }
 
-/**
- * Live secondary workers: nearest N by **player→scene** distance.
- * Warm + composite shells use full Scene Distance. Live scripts are expensive.
- */
 export function secondaryLiveCap(tier: PerformanceTier): number {
-  if (aoiGlbShellsOnly()) return 0
-  if (AOI_LIVE_SECONDARIES_ONLY) return AOI_LIVE_SECONDARY_HARD_CAP
-  if (tier === 'low') return 3
-  if (tier === 'medium') return 6
-  return 9 // high
+  if (!aoiLiveGuests()) return 0
+  if (tier === 'low') return 1
+  if (tier === 'medium') return 2
+  return AOI_LIVE_SECONDARY_HARD_CAP
 }
 
-/**
- * Boot / promote live secondary when **player** is within this distance of the
- * neighbor scene footprint (edge meters, scene-local).
- */
+/** @deprecated Prefer secondaryLiveEnterRadiusM — kept for call sites. */
 export const SECONDARY_LIVE_ENTER_M = 16
-
-/**
- * Keep a live secondary (scripts on) until **player** is farther than this from
- * that scene's footprint. Beyond → tertiary (scripts off, meshes stay).
- */
 export const SECONDARY_LIVE_KEEP_M = 80
-
-/**
- * @deprecated use {@link SECONDARY_LIVE_ENTER_M} — historical scene-to-scene name.
- * Now means player enter radius.
- */
 export const SECONDARY_LIVE_SCENE_PROXIMITY_M = SECONDARY_LIVE_ENTER_M
-
-/** @deprecated use SECONDARY_LIVE_ENTER_M */
 export const SECONDARY_LIVE_MAX_RADIUS_M = SECONDARY_LIVE_ENTER_M
 
-/**
- * Player distance at which we **boot** a live secondary (or re-promote tertiary→secondary).
- * 0 when Scene Distance is 0 (AOI off).
- */
 export function secondaryLiveEnterRadiusM(): number {
-  if (aoiGlbShellsOnly()) return 0
-  const warm = renderQuality.getSceneLoadRadiusM()
-  if (warm <= 0) return 0
-  return SECONDARY_LIVE_ENTER_M
+  if (!aoiLiveGuests()) return 0
+  const d = renderQuality.getSceneLoadRadiusM()
+  if (d <= 0) return 0
+  return Math.min(d * 0.35, 32)
 }
 
-/**
- * Player distance hysteresis — keep scripts on until this far from the secondary.
- * Clamped so keep ≥ enter. 0 when AOI off / GLB shells only.
- */
 export function secondaryLiveKeepRadiusM(): number {
-  if (aoiGlbShellsOnly()) return 0
-  const warm = renderQuality.getSceneLoadRadiusM()
-  if (warm <= 0) return 0
-  return Math.max(SECONDARY_LIVE_ENTER_M, SECONDARY_LIVE_KEEP_M)
+  if (!aoiLiveGuests()) return 0
+  const d = renderQuality.getSceneLoadRadiusM()
+  if (d <= 0) return 0
+  const enter = secondaryLiveEnterRadiusM()
+  return Math.min(d, Math.max(enter + 16, d * 0.6))
 }
 
-/**
- * @deprecated use {@link secondaryLiveEnterRadiusM} — was scene-adjacency; now enter radius.
- */
 export function secondaryLiveRadiusM(): number {
   return secondaryLiveEnterRadiusM()
 }
 
-/**
- * When true: skip script-warm + first-frame sample; keep composite shells.
- * Live workers hard-capped (or zero under {@link aoiGlbShellsOnly}).
- */
-export function aoiLiveSecondariesOnly(): boolean {
-  return AOI_LIVE_SECONDARIES_ONLY || AOI_GLB_SHELLS_ONLY
-}
-
-/**
- * Single primary + neighbor **GLB shells only** — no secondary workers, no promote.
- * Default on for FPS; set false to restore enter/keep live secondary experiments.
- */
-export function aoiGlbShellsOnly(): boolean {
-  return AOI_GLB_SHELLS_ONLY
-}
-
-/** Only one secondary full boot at a time — parallel 2MB workers thrash CBD promotes. */
 export const SECONDARY_LIVE_BOOT_CONCURRENCY = 1
 
-/**
- * Cap on scripts-off tertiary residents (mesh graphs retained after leave-ring / large demote).
- * Live secondary cap is separate — a slot in secondary mode does not count here.
- */
 export function tertiaryResidentCap(_tier: PerformanceTier): number {
   return TERTIARY_RESIDENT_HARD_CAP
 }
 
-/** Concurrent portable-experience workers. */
 export function peLiveCap(tier: PerformanceTier): number {
   if (tier === 'low') return 1
   if (tier === 'medium') return 1
   return 2
 }
 
-/**
- * Live secondary **scripts** run every frame (same as primary onUpdate rate).
- * FocusOwner still mutes video / audio / scene UI / privileged input for secondaries.
- * @see SceneScriptSystem.applyFocusPolicy('secondary')
- */
+/** Live guests are SceneLoop 20 Hz — never a 0 ms present pump. */
 export function secondaryTickIntervalMs(_tier: PerformanceTier): number {
-  return 0
+  return 50
 }
 
-/**
- * PE must run every frame like a primary scene (drone InputModifier, entity remove, etc.).
- */
 export function peTickIntervalMs(_tier: PerformanceTier): number {
   return 0
 }

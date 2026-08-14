@@ -58,6 +58,8 @@ export class SecondaryLiveManager {
   private onLiveGraphReady: ((entityId: string) => void) | null = null
   private lastReconcileAt = 0
   private nextSlotIndex = 0
+  /** SceneLoop.send owns play-frame; tickSync / tickStickySync must not call tickPlayFrame. */
+  private playFrameOwnedExternally = false
   /**
    * Parcel under feet (absolute) — always prefer a covering candidate for live secondary
    * so walk-on promote can hand off without a cold /goto loading screen.
@@ -113,6 +115,35 @@ export class SecondaryLiveManager {
 
   setTier(tier: PerformanceTier): void {
     this.tier = tier
+  }
+
+  /**
+   * When true, SceneLoop.send owns play-frame. {@link tickSync} / {@link tickStickySync}
+   * still refresh reserved poses but never call tickPlayFrame.
+   */
+  setPlayFrameOwnedExternally(owned: boolean): void {
+    this.playFrameOwnedExternally = owned
+    for (const slot of this.slots.values()) slot.setPlayFrameOwnedExternally(owned)
+  }
+
+  /**
+   * Running secondary-mode slots for SceneLoop.reconcileLiveGuests.
+   * Tertiary is not a guest.
+   */
+  listSecondaryModeSystems(): Array<{ id: string; getSystem: () => SceneScriptSystem }> {
+    const out: Array<{ id: string; getSystem: () => SceneScriptSystem }> = []
+    for (const [entityId, slot] of this.slots) {
+      if (slot.residentMode !== 'secondary' || !slot.isRunning) continue
+      out.push({
+        id: `secondary:${entityId}`,
+        getSystem: () => slot.system
+      })
+    }
+    return out
+  }
+
+  hasResidentSlots(): boolean {
+    return this.slots.size > 0
   }
 
   /** Live secondary script budget (tertiary residents use a separate cap). */
@@ -184,17 +215,25 @@ export class SecondaryLiveManager {
     )
   }
 
-  /** After demote/retarget: force every resident root visible + on host (no empty-land look). */
+  /** Settle-end: scripts back on for sticky residents so SceneLoop guests return. */
+  restoreStickySecondaries(): void {
+    for (const [entityId, slot] of this.slots) {
+      if (this.stickyIds.has(entityId) && slot.residentMode === 'tertiary' && slot.isRunning) {
+        slot.setResidentMode('secondary')
+      }
+    }
+  }
+
+  /**
+   * After demote/retarget: force every resident pose root visible.
+   * Roots stay on poseRoot — never reparent onto host.scene.
+   */
   ensureResidentsVisible(): void {
-    if (!this.host) return
     for (const slot of this.slots.values()) {
       try {
         const root = slot.system.getEntityStore()?.root
         if (!root) continue
         root.visible = true
-        if (root.parent !== this.host.scene) {
-          this.host.scene.add(root)
-        }
         root.updateMatrixWorld(true)
       } catch {
         /* ignore */
@@ -347,9 +386,6 @@ export class SecondaryLiveManager {
         if (root) {
           root.visible = true
           root.name = `secondary-orphan:noid`
-          if (this.host.scene && root.parent !== this.host.scene) {
-            this.host.scene.add(root)
-          }
         }
       } catch {
         /* ignore */
@@ -380,9 +416,6 @@ export class SecondaryLiveManager {
           if (orphanRoot && orphanRoot !== existing.system.getEntityStore()?.root) {
             orphanRoot.visible = true
             orphanRoot.name = `secondary-orphan-dup:${id.slice(0, 12)}`
-            if (this.host.scene && orphanRoot.parent !== this.host.scene) {
-              this.host.scene.add(orphanRoot)
-            }
           }
         } catch {
           /* ignore */
@@ -425,6 +458,7 @@ export class SecondaryLiveManager {
       existingSystem: system,
       initialMode
     })
+    slot.setPlayFrameOwnedExternally(this.playFrameOwnedExternally)
     try {
       await slot.start()
     } catch (err) {
@@ -439,9 +473,6 @@ export class SecondaryLiveManager {
         if (root) {
           root.visible = true
           root.name = `secondary-orphan:${id.slice(0, 16)}`
-          if (this.host.scene && root.parent !== this.host.scene) {
-            this.host.scene.add(root)
-          }
         }
       } catch {
         /* ignore */
@@ -467,10 +498,7 @@ export class SecondaryLiveManager {
       )
       try {
         const root = system.getEntityStore()?.root
-        if (root && this.host.scene) {
-          root.visible = true
-          this.host.scene.add(root)
-        }
+        if (root) root.visible = true
       } catch {
         /* ignore */
       }
@@ -553,6 +581,7 @@ export class SecondaryLiveManager {
         primaryBaseParcel: this.primaryScene?.baseParcel,
         initialMode: 'secondary'
       })
+      slot.setPlayFrameOwnedExternally(this.playFrameOwnedExternally)
       try {
         const boot = slot.start()
         const timed = await Promise.race([
@@ -885,6 +914,7 @@ export class SecondaryLiveManager {
         primaryBaseParcel: this.primaryScene?.baseParcel,
         initialMode: 'secondary'
       })
+      slot.setPlayFrameOwnedExternally(this.playFrameOwnedExternally)
       try {
         await slot.start()
         if (this.disposed) {
@@ -916,22 +946,23 @@ export class SecondaryLiveManager {
   }
 
   tickSync(player: EntityPose, camera: EntityPose): void {
-    const interval = secondaryTickIntervalMs(this.tier)
+    const interval = this.playFrameOwnedExternally ? 0 : secondaryTickIntervalMs(this.tier)
     for (const slot of this.slots.values()) {
-      // Tertiary tickSync is a no-op (scripts off).
-      slot.tickSync(player, camera, interval)
+      // Tertiary tickSync is a no-op (scripts off). Owned-externally never tickPlayFrame.
+      slot.tickSync(player, camera, interval, this.playFrameOwnedExternally)
     }
   }
 
   /**
    * During post-promote settle (new boots paused), still advance **sticky demoted**
    * residents so the world never goes void. Tertiary sticky no-ops cheaply.
+   * Must not become a tickPlayFrame back door while SceneLoop owns the clock.
    */
   tickStickySync(player: EntityPose, camera: EntityPose): void {
-    const interval = secondaryTickIntervalMs(this.tier)
+    const interval = this.playFrameOwnedExternally ? 0 : secondaryTickIntervalMs(this.tier)
     for (const [id, slot] of this.slots) {
       if (!this.stickyIds.has(id)) continue
-      slot.tickSync(player, camera, interval)
+      slot.tickSync(player, camera, interval, this.playFrameOwnedExternally)
     }
   }
 

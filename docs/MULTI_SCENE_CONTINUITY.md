@@ -1,6 +1,6 @@
 # Multi-scene continuity (FocusOwner + sticky residents)
 
-**Status:** **shipping default = GLB shells only** (single primary, no secondary workers / promote). Continuity handoff code remains for optional re-enable (`aoiGlbShellsOnly()`).  
+**Status:** Open-world residency on `dev-latest` — extract shells + SceneLoop live guests + stand-on promote (see [OPEN_WORLD_RESIDENCY.md](./OPEN_WORLD_RESIDENCY.md)). `?noaoi` still kills all neighbor load. Continuity handoff: FocusOwner + `bindSceneTarget` before feet.  
 **Last updated:** 2026-08-11  
 **Bar:** spawn primary runs forever; neighbors = composite GLBs over Scene Distance; **30–60 FPS** without dual-worker thrash  
 

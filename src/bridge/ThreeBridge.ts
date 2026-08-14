@@ -560,6 +560,25 @@ export class ThreeBridge {
   }
 
   /**
+   * Fold-time extract: pose.matrixWorld → draw-root GLB/MeshRenderer now.
+   * Waiting for the next present increment left RTS units' colliders/rings walking
+   * while the GltfContainer clone stayed at bind pose.
+   */
+  extractMovedPoses(entities: Iterable<Entity>): void {
+    const seen = new Set<THREE.Object3D>()
+    const visit = (pose: THREE.Object3D): void => {
+      if (seen.has(pose)) return
+      seen.add(pose)
+      this.drawWorld.syncLinkedPose(pose)
+      for (const child of pose.children) visit(child)
+    }
+    for (const entity of entities) {
+      const obj = this.store.nodes.get(entity)
+      if (obj) visit(obj)
+    }
+  }
+
+  /**
    * Extract billboard: write GPU instance world without mutating pose quat.
    * @returns true when this entity is instanced and the slot was written.
    */
@@ -607,6 +626,8 @@ export class ThreeBridge {
   admitMaterialHandle(entity: Entity, kind: 'put' | 'delete'): void {
     if (kind === 'delete') {
       this.pendingMaterialEntities.delete(entity)
+      // Drop fingerprint so a same-tick recreate PUT is not sealed as "already applied".
+      this.materials.clearEntity(entity)
       return
     }
     this.pendingMaterialEntities.add(entity)

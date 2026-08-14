@@ -86,6 +86,8 @@ type PointerDeps = {
   isSceneUiTypingActive?: () => boolean
   /** Interactive scene UI at coords — blocks 3D raycast when over the DOM overlay. */
   pickUiRegionHit?: (clientX: number, clientY: number) => PointerHit | null
+  /** Smallest UI entity with PET_HOVER_ENTER under the cursor (action-slot tooltips). */
+  pickUiHoverHit?: (clientX: number, clientY: number) => PointerHit | null
   /**
    * Host root this system paints (`scene-ui-root` | `pe-ui-root`).
    * Required so primary does not inject under a PX dialog (dual window listeners).
@@ -163,6 +165,7 @@ export class PointerEventsSystem {
   private tickNumber = 0
   private readonly downTimestampByButton = new Map<InputActionValue, number>()
   private pendingInjectPayload: InjectPointerClickBody | null = null
+  private pendingHoverInjects: InjectPointerClickBody[] = []
   /** PET_DOWN bubble targets from the same flush — worker inject uses these for split DOWN/UP. */
   private pendingInjectDownEntities: number[] | null = null
   private readonly uiPointerButtons = new Set<InputActionValue>()
@@ -320,6 +323,7 @@ export class PointerEventsSystem {
     if (!hit) {
       this.hoverFeedback.hide()
       this.highlightFeedback.clear()
+      this.clearHoverIfNeeded(this.deps.ecs)
       this.pointerDirty = false
       return
     }
@@ -333,6 +337,7 @@ export class PointerEventsSystem {
     if (hit.isSceneUi) {
       this.hoverFeedback.hide()
       this.highlightFeedback.clear()
+      this.syncSceneUiHover(hit)
       return
     }
     const { ecs } = this.deps
@@ -423,6 +428,8 @@ export class PointerEventsSystem {
     if (!this.deps) return null
 
     if (isPointerOverSceneUi(this.screenX, this.screenY)) {
+      const uiHoverHit = this.deps.pickUiHoverHit?.(this.screenX, this.screenY)
+      if (uiHoverHit) return uiHoverHit
       const uiRegionHit = this.deps.pickUiRegionHit?.(this.screenX, this.screenY)
       if (uiRegionHit) return uiRegionHit
       // DOM has an interactive node under the cursor but hit-map did not claim a BLOCK
@@ -803,6 +810,13 @@ export class PointerEventsSystem {
     return payload
   }
 
+  consumeHoverInjects(): InjectPointerClickBody[] {
+    if (!this.pendingHoverInjects.length) return []
+    const out = this.pendingHoverInjects
+    this.pendingHoverInjects = []
+    return out
+  }
+
   private tryWritePointerDown(button: InputActionValue, preferredHit: PointerHit | null = null): void {
     if (!this.deps) return
 
@@ -1128,6 +1142,8 @@ export class PointerEventsSystem {
     // Only when DOM also reports interactive scene UI — hit-map-only BLOCK must not kill world
     // hits when the canvas received the event (pointer-events:none pass-through).
     if (isPointerOverSceneUi(this.screenX, this.screenY)) {
+      const uiHoverHit = this.deps.pickUiHoverHit?.(this.screenX, this.screenY)
+      if (uiHoverHit) return uiHoverHit
       const uiRegionHit = this.deps.pickUiRegionHit?.(this.screenX, this.screenY)
       if (uiRegionHit) return uiRegionHit
     }
@@ -1573,14 +1589,12 @@ export class PointerEventsSystem {
       | typeof PointerEventType.PET_HOVER_LEAVE,
     hit: PointerHit | null
   ): void {
-    const spec = ecs.PointerEvents.getOrNull(entity)
-    if (!spec) return
-
-    const button = hoverButtonForSpec(spec, state)
-    const isUi = ecs.UiTransform.has(entity)
-    if (isUi) {
-      if (!hasUiPointerEvent(spec, state, button)) return
-    } else if (!hasPointerEvent(spec, state, button)) {
+    const isUi = hit?.isSceneUi === true || ecs.UiTransform.has(entity)
+    const spec = isUi ? this.uiPointerSpec(entity) : ecs.PointerEvents.getOrNull(entity)
+    const button = spec ? hoverButtonForSpec(spec, state) : InputAction.IA_POINTER
+    if (!isUi) {
+      if (!spec || !hasPointerEvent(spec, state, button)) return
+    } else if (spec && !hasUiPointerEvent(spec, state, button)) {
       return
     }
 
@@ -1594,11 +1608,56 @@ export class PointerEventsSystem {
         priority: 0,
         cameraDistance: Infinity,
         playerDistance: Infinity,
-        inRange: false
+        inRange: false,
+        isSceneUi: isUi
       } as PointerHit)
 
-    const targetEntity = this.resolvePointerResultEntity(entity, button, state)
+    const targetEntity = isUi ? entity : this.resolvePointerResultEntity(entity, button, state)
     this.writeResult(ecs, targetEntity, syntheticHit, state, button)
+    if (isUi) this.queueHoverInject(targetEntity, state, syntheticHit)
+  }
+
+  private syncSceneUiHover(hit: PointerHit): void {
+    if (!this.deps) return
+    const nextHover = this.resolveHoverEntity(hit)
+    if (nextHover === this.hoverEntity) return
+    if (this.hoverEntity !== null) {
+      this.emitHover(this.deps.ecs, this.hoverEntity, PointerEventType.PET_HOVER_LEAVE, hit)
+    }
+    if (nextHover !== null) {
+      this.emitHover(this.deps.ecs, nextHover, PointerEventType.PET_HOVER_ENTER, hit)
+    }
+    this.hoverEntity = nextHover
+  }
+
+  private queueHoverInject(
+    entity: Entity,
+    state:
+      | typeof PointerEventType.PET_HOVER_ENTER
+      | typeof PointerEventType.PET_HOVER_LEAVE,
+    hit: PointerHit
+  ): void {
+    const ppi = this.buildPrimaryPointerInfo(false)
+    const dclPoint = threeToDclVec(hit.point)
+    const dclNormal = threeToDclVec(hit.normal)
+    const ts = nextPointerEventTimestamp()
+    this.pendingHoverInjects.push({
+      entity: entity as number,
+      entities: [entity as number],
+      downEntities: [entity as number],
+      upEntities: [entity as number],
+      hitEntity: entity as number,
+      button: InputAction.IA_POINTER,
+      tickNumber: this.tickNumber,
+      downTimestamp: ts,
+      upTimestamp: ts,
+      hitPosition: { x: dclPoint.x, y: dclPoint.y, z: dclPoint.z },
+      hitNormal: { x: dclNormal.x, y: dclNormal.y, z: dclNormal.z },
+      hitDistance: hit.distance,
+      sceneUi: true,
+      phase: state === PointerEventType.PET_HOVER_ENTER ? 'hover-enter' : 'hover-leave',
+      primaryPointer: ppi
+    })
   }
 
   private clearHoverIfNeeded(ecs: MirrorComponents): void {

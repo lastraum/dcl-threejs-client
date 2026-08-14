@@ -11,7 +11,9 @@ export class SceneScriptGuest implements SceneGuest {
     readonly id: GuestId,
     readonly kind: GuestKind,
     private readonly getSystem: () => SceneScriptSystem,
-    readonly priority = kind !== 'secondary'
+    readonly priority = kind !== 'secondary',
+    /** Under-feet current scene — full-rate tick, no origin rebase. */
+    private readonly isCurrent: () => boolean = () => false
   ) {}
 
   inFlight(): boolean {
@@ -23,9 +25,11 @@ export class SceneScriptGuest implements SceneGuest {
   }
 
   isDue(now: number): boolean {
-    // Secondaries are 50 ms only — never honor pointer inject (that's the primary guest).
+    // Scene under feet is current (official desktop) — display-rate scripts.
+    // Other live neighbors stay on the 20 Hz guest clock.
     if (this.kind === 'secondary') {
-      return this.sentAt <= 0 || now - this.sentAt >= 50
+      const minMs = this.isCurrent() ? 16 : 50
+      return this.sentAt <= 0 || now - this.sentAt >= minMs
     }
     // Pointer inject still needs a guest tick this turn. Otherwise 20 Hz — display
     // rAF is the presenter, not scene.js.

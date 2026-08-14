@@ -3,7 +3,11 @@ import {
   evaluateSceneBundle,
   watchRendererTransportOnmessage
 } from '../system/createSystemStubs'
-import { encodeCommsBinaryMessage } from '../../network/comms/commsBinaryWire'
+import {
+  decodeCommsBinaryMessage,
+  encodeCommsBinaryMessage,
+  isolateCommsBinaryMessage
+} from '../../network/comms/commsBinaryWire'
 import { unwrapCraftedCommsMessage } from '../../network/comms/syncDebug'
 import { createEngineApiEventState, type EngineApiEventState } from '../engine/EngineApiEventState'
 import type {
@@ -12,6 +16,7 @@ import type {
   CommsPublishDataRequest,
   CommsTopicRequest,
   ConsumeMessagesResponse,
+  HostReservedSceneStore,
   MainToWorker,
   PerformanceTier,
   RealmResponse,
@@ -70,6 +75,7 @@ import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import {
   diagnoseLevelStateGroundRay,
   injectLevelStatePointerEdgeOnEngine,
+  injectPointerHoverOnEngine,
   isIaPointerPressedOnEngine
 } from './injectPointerClick'
 import { bindSceneWorkerPriorityDispatch, type SceneWorkerPriorityMessage } from './sceneWorkerBootstrap'
@@ -137,6 +143,11 @@ import {
   uiMountSnapshotContentFp
 } from './workerSceneUiCrdtOutbound'
 import { writeHostLwwNoDirty } from './injectHostLww'
+import {
+  installInboundGuestLwwHostForward,
+  resetInboundGuestLwwForward
+} from './forwardInboundGuestLww'
+
 import {
   collectPlayerFrameSnapshot,
   describeWorkerInputModifier,
@@ -216,6 +227,8 @@ const pendingSignedFetch = new Map<number, (body: SignedFetchResponse) => void>(
 const pendingSignedFetchGetHeaders = new Map<number, (body: SignedFetchGetHeadersResponse) => void>()
 const pendingCommsSend = new Map<number, (body: Record<string, never>) => void>()
 const pendingInboundBinaries: Uint8Array[] = []
+let lastUserData: NonNullable<UserDataResponse['data']> | null = null
+let lastRealmInfo: NonNullable<HostReservedSceneStore['realmInfo']> | null = null
 let rendererInboundApply: ((chunks: Uint8Array[]) => void) | null = null
 /** Coalesce outbound empty nudges to one post per microtask (still send when uiEntities change). */
 let crdtOutboundEmptyNudgeCoalesced = false
@@ -358,7 +371,7 @@ function engineHasSdkStartupSystem(eng: {
 
 /**
  * SDK entry-points schedule `main()` as Infinity-priority system and do **not** await the
- * promise. Pixelwars `setupClient` hits `await import` then `syncEntity(SeedHolder, 3000)`.
+ * promise. Auth-server scenes `await import` then `syncEntity(enumId)`.
  * Host must wait until that settles before releasing LiveKit AUTH_RES (orphan NetworkEntity race).
  *
  * Signal: any `core-schema::Network-Entity` (syncEntity attached), or timeout for non-network scenes.
@@ -409,307 +422,6 @@ async function waitForSdkMainSettled(eng: {
     waitedMs: Math.round(performance.now() - start),
     reason: countNetwork() > 0 ? 'syncEntity-network-late' : 'timeout'
   }
-}
-
-/**
- * Pixelwars / auth-server seed race repair.
- *
- * If AUTH_RES landed before `syncEntity(seedHolder, 3000)`, SDK creates an **orphan** entity
- * with NetworkEntity(0,3000) + SeedHolder{seed:N}, then syncEntity throws "already in use".
- * Local `seedHolder` stays seed=0 → wrong/no maze cells vs paintDelta ids → white tiles +
- * rising HUD (serverCoverage / cellEntity.size still drive %).
- *
- * Propagate any non-zero `maze::seed-holder` seed onto every entity that has that component
- * so the scene's seed watcher rebuilds the correct maze.
- */
-type LwwComponentLike = {
-  has?: (entity: number) => boolean
-  get?: (entity: number) => unknown
-  getOrNull?: (entity: number) => unknown
-  createOrReplace?: (entity: number, value: unknown) => void
-  create?: (entity: number, value?: unknown) => void
-  deleteFrom?: (entity: number, markAsDirty?: boolean) => unknown
-}
-
-/**
- * Deep-ish clone for Material / MeshRenderer values so createOrReplace is a new object.
- * Avoids accidental shared references; JSON is fine for plain protobuf-like structs.
- */
-function cloneComponentValue<T>(value: T): T {
-  try {
-    return structuredClone(value)
-  } catch {
-    return JSON.parse(JSON.stringify(value)) as T
-  }
-}
-
-/**
- * Force Material (and MeshRenderer) CRDT re-egress for dense paint boards.
- *
- * ECS LWW `lastSentData` is updated when a dirty PUT is *yielded* to transports — not when
- * main actually applies it. If a huge cold CRDT batch is buffered/dropped/failed, lastSent
- * still holds the painted colors. paintDelta then early-returns (same team) or createOrReplace
- * dirties but getCrdtUpdates **skips** (bytes equal lastSent) → permanent white tiles while
- * worker still has MeshRenderer=10k + Material=10k (paint-board diag).
- *
- * deleteFrom clears lastSentData; recreate yields a fresh PUT to the renderer transport.
- * Chunked via `offset` so we never freeze the worker on 10k deletes in one tick.
- */
-function forceResyncMeshMaterialBoardChunk(
-  eng: {
-    getComponentOrNull?: (name: string) => LwwComponentLike | null
-    getEntitiesWith?: (...components: unknown[]) => Iterable<[number, ...unknown[]]>
-  },
-  entities: number[],
-  offset: number,
-  chunkSize: number,
-  includeMeshRenderer: boolean
-): { forced: number; nextOffset: number; done: boolean } {
-  const Material = eng.getComponentOrNull?.('core::Material') as LwwComponentLike | null | undefined
-  const MeshRenderer = eng.getComponentOrNull?.(
-    'core::MeshRenderer'
-  ) as LwwComponentLike | null | undefined
-  if (!Material?.get || !MeshRenderer) {
-    return { forced: 0, nextOffset: entities.length, done: true }
-  }
-  let forced = 0
-  const end = Math.min(entities.length, offset + chunkSize)
-  for (let i = offset; i < end; i++) {
-    const entity = entities[i]!
-    try {
-      const matVal = Material.get?.(entity) ?? Material.getOrNull?.(entity)
-      if (matVal == null) continue
-      const matClone = cloneComponentValue(matVal)
-      Material.deleteFrom?.(entity, true)
-      if (typeof Material.create === 'function') Material.create(entity, matClone)
-      else Material.createOrReplace?.(entity, matClone)
-
-      if (includeMeshRenderer && MeshRenderer.get) {
-        const meshVal = MeshRenderer.get(entity) ?? MeshRenderer.getOrNull?.(entity)
-        if (meshVal != null) {
-          const meshClone = cloneComponentValue(meshVal)
-          MeshRenderer.deleteFrom?.(entity, true)
-          if (typeof MeshRenderer.create === 'function') MeshRenderer.create(entity, meshClone)
-          else MeshRenderer.createOrReplace?.(entity, meshClone)
-        }
-      }
-      forced++
-    } catch {
-      /* skip one entity */
-    }
-  }
-  return { forced, nextOffset: end, done: end >= entities.length }
-}
-
-function collectMeshMaterialEntities(eng: {
-  getComponentOrNull?: (name: string) => LwwComponentLike | null
-  getEntitiesWith?: (...components: unknown[]) => Iterable<[number, ...unknown[]]>
-}): number[] {
-  const Material = eng.getComponentOrNull?.('core::Material') as LwwComponentLike | null | undefined
-  const MeshRenderer = eng.getComponentOrNull?.(
-    'core::MeshRenderer'
-  ) as LwwComponentLike | null | undefined
-  if (!Material?.has || !MeshRenderer || typeof eng.getEntitiesWith !== 'function') return []
-  const out: number[] = []
-  try {
-    for (const row of eng.getEntitiesWith!(MeshRenderer)) {
-      const entity = row[0] as number
-      if (Material.has(entity)) out.push(entity)
-    }
-  } catch {
-    return []
-  }
-  return out
-}
-
-function installAuthSeedHolderRepair(eng: {
-  getComponentOrNull?: (name: string) => {
-    has?: (entity: number) => boolean
-    get?: (entity: number) => { seed?: number } | null
-    createOrReplace?: (entity: number, value: { seed: number }) => void
-  } | null
-  getEntitiesWith?: (...components: unknown[]) => Iterable<[number, ...unknown[]]>
-  addSystem?: (fn: (dt: number) => void, priority?: number) => void
-}): void {
-  if (typeof eng.addSystem !== 'function' || typeof eng.getEntitiesWith !== 'function') return
-
-  let ticks = 0
-  let lastLoggedSeed = 0
-  let lastDiagAt = 0
-  let forceWave = 0
-  let forceQueue: number[] = []
-  let forceOffset = 0
-  let forceIncludeMesh = true
-  let forceWaveForced = 0
-  let nextForceWaveAt = 0
-  const MAX_TICKS = 60 * 90 // ~90s of repair window
-  /**
-   * Dense boards: one force re-push after spawn clears lastSent if main never applied.
-   * Was 4 waves × 2.5s gap — felt as 3–5s paint lag while live paintDelta waited behind storms.
-   */
-  const FORCE_RESYNC_MIN_MESH = 500
-  /** Smaller chunks so engine.update stays under abort budget during one-shot repair. */
-  const FORCE_CHUNK = 400
-  const FORCE_WAVE_MAX = 1
-  const FORCE_WAVE_GAP_MS = 0
-
-  eng.addSystem(() => {
-    ticks++
-    if (ticks > MAX_TICKS) return
-
-    // Pixelwars-only work. Plaza / fishing must not pay for mesh+mat scans or force-resync
-    // (FORCE_RESYNC at ≥500 MeshRenderers froze Genesis with 5s engine ticks).
-    const SeedHolder = eng.getComponentOrNull?.('maze::seed-holder')
-    if (!SeedHolder || typeof SeedHolder.get !== 'function') return
-
-    let bestSeed = 0
-    const holders: number[] = []
-    try {
-      for (const row of eng.getEntitiesWith!(SeedHolder)) {
-        const entity = row[0] as number
-        holders.push(entity)
-        const v = SeedHolder.get!(entity)
-        const s = typeof v?.seed === 'number' ? v.seed : 0
-        if (s !== 0) bestSeed = s
-      }
-    } catch {
-      /* ignore */
-    }
-
-    // Also scan NetworkEntity enum 3000 (pixelwars SeedHolder sync id) if orphan-only.
-    const NetworkEntity = eng.getComponentOrNull?.('core-schema::Network-Entity') as
-      | { get?: (e: number) => { networkId?: number; entityId?: number } | null }
-      | null
-      | undefined
-    if (NetworkEntity && bestSeed === 0) {
-      try {
-        for (const row of eng.getEntitiesWith!(NetworkEntity)) {
-          const entity = row[0] as number
-          const net = NetworkEntity.get?.(entity)
-          if (net && Number(net.networkId) === 0 && Number(net.entityId) === 3000) {
-            if (SeedHolder.has?.(entity)) {
-              const v = SeedHolder.get!(entity)
-              const s = typeof v?.seed === 'number' ? v.seed : 0
-              if (s !== 0) bestSeed = s
-            }
-          }
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-
-    if (bestSeed !== 0 && typeof SeedHolder.createOrReplace === 'function') {
-      let repaired = 0
-      for (const entity of holders) {
-        const cur = SeedHolder.get!(entity)?.seed ?? 0
-        if (cur !== bestSeed) {
-          try {
-            SeedHolder.createOrReplace!(entity, { seed: bestSeed })
-            repaired++
-          } catch {
-            /* ignore */
-          }
-        }
-      }
-      if (repaired > 0 || (bestSeed !== lastLoggedSeed && ticks < 120)) {
-        lastLoggedSeed = bestSeed
-        workerLog(
-          'log',
-          `[sceneWorker] seed-holder repair — seed=${bestSeed} holders=${holders.length} repaired=${repaired}`
-        )
-      }
-    }
-
-    const now = performance.now()
-
-    // In-progress force-resync wave: chunk Material/MeshRenderer delete+create (clear lastSent).
-    const engLww = eng as {
-      getComponentOrNull?: (name: string) => LwwComponentLike | null
-      getEntitiesWith?: (...components: unknown[]) => Iterable<[number, ...unknown[]]>
-    }
-    if (forceQueue.length > 0 && forceOffset < forceQueue.length) {
-      const { forced, nextOffset, done } = forceResyncMeshMaterialBoardChunk(
-        engLww,
-        forceQueue,
-        forceOffset,
-        FORCE_CHUNK,
-        forceIncludeMesh
-      )
-      forceOffset = nextOffset
-      forceWaveForced += forced
-      if (done) {
-        workerLog(
-          'log',
-          `[sceneWorker] paint-board force-resync wave #${forceWave} done — forced=${forceWaveForced}/${forceQueue.length} ` +
-            `includeMesh=${forceIncludeMesh ? 1 : 0}`
-        )
-        forceQueue = []
-        forceOffset = 0
-        forceWaveForced = 0
-        nextForceWaveAt = now + FORCE_WAVE_GAP_MS
-      }
-    } else if (
-      forceWave < FORCE_WAVE_MAX &&
-      forceQueue.length === 0 &&
-      now >= nextForceWaveAt
-    ) {
-      // Start a new wave once the board is dense enough (spawn finished).
-      const entities = collectMeshMaterialEntities(engLww)
-      if (entities.length >= FORCE_RESYNC_MIN_MESH) {
-        forceWave++
-        forceQueue = entities
-        forceOffset = 0
-        forceWaveForced = 0
-        // Single wave: mesh+mat so planes exist and colors land; live paintDelta uses hot Material path.
-        forceIncludeMesh = true
-        workerLog(
-          'log',
-          `[sceneWorker] paint-board force-resync wave #${forceWave} start — entities=${entities.length} ` +
-            `includeMesh=${forceIncludeMesh ? 1 : 0}`
-        )
-      } else if (entities.length > 0 && forceWave === 0) {
-        // Small board: single wave then stop.
-        forceWave = FORCE_WAVE_MAX
-        forceQueue = entities
-        forceOffset = 0
-        forceIncludeMesh = true
-      } else {
-        nextForceWaveAt = now + 1_000
-      }
-    }
-
-    // Periodic paint-board diag (throttled).
-    if (now - lastDiagAt < 5_000) return
-    lastDiagAt = now
-    try {
-      const MeshRenderer = eng.getComponentOrNull?.('core::MeshRenderer') as
-        | object
-        | null
-        | undefined
-      const Material = eng.getComponentOrNull?.('core::Material') as object | null | undefined
-      let meshN = 0
-      let matN = 0
-      let bothN = 0
-      if (MeshRenderer) {
-        for (const row of eng.getEntitiesWith!(MeshRenderer)) {
-          meshN++
-          const e = row[0] as number
-          if (Material && (Material as { has?: (id: number) => boolean }).has?.(e)) bothN++
-        }
-      }
-      if (Material) {
-        for (const _ of eng.getEntitiesWith!(Material)) matN++
-      }
-      workerLog(
-        'log',
-        `[sceneWorker] paint-board diag — seedHolders=${holders.length} bestSeed=${bestSeed} ` +
-          `MeshRenderer=${meshN} Material=${matN} mesh+mat=${bothN} forceWave=${forceWave}/${FORCE_WAVE_MAX}`
-      )
-    } catch {
-      /* ignore */
-    }
-  }, 1)
 }
 
 async function invokeSceneMainBootstrap(
@@ -1326,6 +1038,20 @@ function postPlayModeColdCrdtFireAndForget(data: Uint8Array): void {
   ctx.postMessage({ type: 'crdt-outbound', data } satisfies SceneWorkerOutbound, [data.buffer])
 }
 
+/** Inbound guest LWW (Material etc.) must present now — same hot path as scene-authored paint. */
+function postInboundGuestLwwToHost(data: Uint8Array): void {
+  if (!data.byteLength) return
+  if (crdtChunkIsHotPresent(data)) {
+    postPlayModeColdCrdtFireAndForget(data)
+    return
+  }
+  bufferPlayModeColdCrdt(data)
+}
+
+function bindInboundGuestLwwHostForward(engine: object): void {
+  installInboundGuestLwwHostForward(engine, postInboundGuestLwwToHost, workerLog)
+}
+
 /** core::PhysicsCombinedImpulse / Force — pad/bounce must not wait cold-frame batching. */
 const PHYSICS_COMBINED_COMPONENT_IDS = new Set([1215, 1216])
 /**
@@ -1530,6 +1256,88 @@ const workerPpiDiagEnabled = (() => {
   }
 })()
 
+function cacheHostReserved(reserved?: HostReservedSceneStore): void {
+  const identity = reserved?.playerIdentity
+  if (identity?.userId) {
+    lastUserData = {
+      userId: identity.userId,
+      displayName: identity.displayName ?? lastUserData?.displayName ?? '',
+      hasConnectedWeb3: identity.hasConnectedWeb3 === true,
+      version: lastUserData?.version ?? 0,
+      ...(lastUserData?.publicKey ? { publicKey: lastUserData.publicKey } : {}),
+      ...(lastUserData?.avatar ? { avatar: lastUserData.avatar } : {})
+    }
+  }
+  const realm = reserved?.realmInfo
+  if (realm) {
+    lastRealmInfo = {
+      baseUrl: realm.baseUrl || '',
+      realmName: realm.realmName || '',
+      networkId: Number.isFinite(realm.networkId) ? realm.networkId : 1,
+      commsAdapter: realm.commsAdapter || '',
+      isPreview: realm.isPreview === true,
+      room: realm.room,
+      isConnectedSceneRoom: realm.isConnectedSceneRoom === true
+    }
+  }
+}
+
+/**
+ * Explorer: PlayerIdentityData + RealmInfo live on the scene store before sendBinary.
+ * `@dcl/sdk/network` isRoomReady is set only when AUTH_RES is processed *and*
+ * RootEntity already has RealmInfo. joinRoster / paint team read PlayerEntity.address.
+ *
+ * Identity: write when address is known (skip unchanged).
+ * RealmInfo: seed only when missing — later host CRDT injects remain authority.
+ */
+function applyHostReservedSceneStore(): void {
+  if (!sceneEngine) return
+  preregisterRendererInjectedComponents(sceneEngine)
+  let wroteIdentity = false
+  let wroteRealm = false
+  if (lastUserData?.userId) {
+    const PlayerIdentityData = generated.PlayerIdentityData(sceneEngine)
+    const existing = PlayerIdentityData.getOrNull(sceneEngine.PlayerEntity) as
+      | { address?: string; isGuest?: boolean }
+      | null
+    const isGuest = lastUserData.hasConnectedWeb3 !== true
+    if (!existing?.address || existing.address !== lastUserData.userId || existing.isGuest !== isGuest) {
+      writeHostLwwNoDirty(PlayerIdentityData, sceneEngine.PlayerEntity as number, {
+        address: lastUserData.userId,
+        isGuest
+      })
+      wroteIdentity = true
+    }
+  }
+  const RealmInfo = generated.RealmInfo(sceneEngine)
+  if (!RealmInfo.getOrNull(sceneEngine.RootEntity)) {
+    const info = lastRealmInfo
+    writeHostLwwNoDirty(RealmInfo, sceneEngine.RootEntity as number, {
+      baseUrl: info?.baseUrl ?? '',
+      realmName: info?.realmName ?? '',
+      networkId: info?.networkId ?? 1,
+      commsAdapter: info?.commsAdapter ?? '',
+      isPreview: info?.isPreview === true,
+      room: info?.room,
+      isConnectedSceneRoom: info ? info.isConnectedSceneRoom === true : true
+    })
+    wroteRealm = true
+  }
+  if (wroteIdentity || wroteRealm) {
+    const pid = lastUserData?.userId
+      ? `${lastUserData.userId.slice(0, 12)}… guest=${lastUserData.hasConnectedWeb3 !== true}`
+      : 'none'
+    const realm = RealmInfo.getOrNull(sceneEngine.RootEntity) as
+      | { isConnectedSceneRoom?: boolean; realmName?: string }
+      | null
+    workerLog(
+      'warn',
+      `[sceneWorker] host reserved store — identity=${pid} realm=${realm?.realmName || 'seed'} ` +
+        `connected=${realm?.isConnectedSceneRoom === true} wroteId=${wroteIdentity} wroteRealm=${wroteRealm}`
+    )
+  }
+}
+
 /** Same-tick PlayerEntity / CameraEntity for scene systems (CameraFollowSystem, etc.). */
 function applyPlayFrameReservedPoses(
   player?: {
@@ -1568,6 +1376,7 @@ function applyPlayFrameReservedPoses(
   ensureReservedEntityTransforms(sceneEngine)
   if (player) write(sceneEngine.PlayerEntity as Entity, player)
   if (camera) write(sceneEngine.CameraEntity as Entity, camera)
+  applyHostReservedSceneStore()
   // Live cursor ray before systems — fishing bobber aim reads PrimaryPointerInfo each tick.
   if (primaryPointer) {
     preregisterRendererInjectedComponents(sceneEngine)
@@ -1769,6 +1578,7 @@ initSceneEngineScheduler({
   isHydration: () => sceneOnUpdatePaused,
   resolvePlayIntervalMs: () => engineTickIntervalMs,
   pointerBlocksTick: () => pointerBlocksEngineTick(),
+  onBeforeEngineUpdate: () => applyHostReservedSceneStore(),
   queuePointerUiEgress: (snapshot) => {
     pointerUiMountSnapshot = snapshot
     pointerUiMountEgressPending = true
@@ -2723,7 +2533,33 @@ function enqueuePointerInject(body: InjectPointerClickBody): void {
  *
  * PET_DOWN / PET_UP only; eng.update so inputSystem + scene systems see the edge.
  */
+async function executePointerHoverEdge(body: InjectPointerClickBody): Promise<void> {
+  const enter = body.phase !== 'hover-leave'
+  const label = enter ? 'pointer-edge-hover-enter' : 'pointer-edge-hover-leave'
+  if (!sceneEngine || !sceneOnStartComplete) return
+  try {
+    if (body.primaryPointer || body.camera) {
+      applyPlayFrameReservedPoses(undefined, body.camera, body.primaryPointer)
+    }
+    injectPointerHoverOnEngine(
+      sceneEngine,
+      body,
+      enter ? PointerEventType.PET_HOVER_ENTER : PointerEventType.PET_HOVER_LEAVE
+    )
+    await sceneEngine.update(0)
+  } catch (err) {
+    workerLog(
+      'warn',
+      `[sceneWorker] ${label} failed — ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+}
+
 async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
+  if (body.phase === 'hover-enter' || body.phase === 'hover-leave') {
+    await executePointerHoverEdge(body)
+    return
+  }
   const phase =
     body.phase === 'up' ? 'up' : body.phase === 'click' ? 'click' : 'down'
   const label = `pointer-edge-${phase}`
@@ -3784,10 +3620,65 @@ function takeBufferedSendBinaryInbound(): Uint8Array[] {
   return pendingInboundBinaries.splice(0)
 }
 
+const CUSTOM_EVENT_NAME_RE =
+  /teamAssigned|paintDelta|snapshot|joinRoster|paintTick|botPositions|roundReset|requestSnapshot|updateName/
+
+function peekCustomEventName(payload: Uint8Array): string {
+  const n = Math.min(payload.byteLength, 96)
+  let ascii = ''
+  for (let i = 0; i < n; i++) {
+    const b = payload[i]!
+    ascii += b >= 32 && b < 127 ? String.fromCharCode(b) : ' '
+  }
+  return ascii.match(CUSTOM_EVENT_NAME_RE)?.[0] ?? '?'
+}
+
+function isolateSendBinaryInbound(chunks: Uint8Array[] | undefined): Uint8Array[] {
+  if (!chunks?.length) return []
+  return chunks.map((chunk) => isolateCommsBinaryMessage(chunk))
+}
+
+let sendBinaryInboundLogCount = 0
+
+function noteSendBinaryInbound(chunks: Uint8Array[]): void {
+  if (!chunks.length) return
+  sendBinaryInboundLogCount++
+  if (sendBinaryInboundLogCount > 8 && sendBinaryInboundLogCount % 30 !== 0) return
+  const types = new Map<string, number>()
+  const senders = new Set<string>()
+  const events: string[] = []
+  for (const chunk of chunks) {
+    const decoded = decodeCommsBinaryMessage(chunk)
+    if (!decoded) {
+      types.set('bad', (types.get('bad') ?? 0) + 1)
+      continue
+    }
+    senders.add(decoded.sender || '(empty)')
+    const name =
+      decoded.messageType === 6
+        ? `CUSTOM:${peekCustomEventName(decoded.payload)}`
+        : decoded.messageType === 9
+          ? 'AUTH_RES'
+          : decoded.messageType === 7
+            ? 'AUTH_CRDT'
+            : `t${decoded.messageType}`
+    types.set(name, (types.get(name) ?? 0) + 1)
+    if (decoded.messageType === 6 && events.length < 8) {
+      events.push(peekCustomEventName(decoded.payload))
+    }
+  }
+  const typeNote = [...types.entries()].map(([k, v]) => `${k}×${v}`).join(' ')
+  workerLog(
+    'warn',
+    `[sceneWorker] sendBinary inbound n=${chunks.length} ${typeNote} ` +
+      `from=[${[...senders].slice(0, 4).join(',')}] events=[${events.join(',')}]`
+  )
+}
+
 function mergeSendBinaryResponse(body: SendBinaryResponse): SendBinaryResponse {
-  const buffered = takeBufferedSendBinaryInbound()
-  if (!buffered.length) return body
-  return { data: [...body.data, ...buffered] }
+  const merged = isolateSendBinaryInbound([...(body.data ?? []), ...takeBufferedSendBinaryInbound()])
+  noteSendBinaryInbound(merged)
+  return { data: merged }
 }
 
 function sendBinaryBodyHasOutbound(body: SendBinaryRequest): boolean {
@@ -3876,17 +3767,37 @@ function rpcSendBinary(body: SendBinaryRequest): Promise<SendBinaryResponse> {
     })
   }
 
-  // Empty poll path — eng.update must not block on main RTT.
-  const now = performance.now()
-  const polled = maybeKickEmptySendBinaryPoll(now)
-  noteSendBinaryPath(polled ? 'poll' : 'fast')
-  return Promise.resolve({ data: takeBufferedSendBinaryInbound() })
+  // Empty: official SDK still awaits sendBinary then __processMessages(response).
+  // Fire-and-forget poll left CUSTOM_EVENT (team/snapshot/paint) in a stash the
+  // current send() never saw — joinRoster ran, replies never hit EventBus.
+  const buffered = takeBufferedSendBinaryInbound()
+  if (buffered.length) {
+    noteSendBinaryPath('fast')
+    maybeKickEmptySendBinaryPoll(performance.now())
+    return Promise.resolve(mergeSendBinaryResponse({ data: buffered }))
+  }
+  noteSendBinaryPath('wait')
+  const id = ++requestId
+  return new Promise((resolve) => {
+    pendingSendBinary.set(id, (response) => resolve(mergeSendBinaryResponse(response)))
+    ctx.postMessage({
+      type: 'comms-send-binary',
+      id,
+      body: { data: [], peerData: [] }
+    } satisfies SceneWorkerOutbound)
+  })
 }
 
 function rpcGetUserData(): Promise<UserDataResponse> {
   const id = ++requestId
   return new Promise((resolve) => {
-    pendingUserData.set(id, resolve)
+    pendingUserData.set(id, (body) => {
+      if (body.data?.userId) {
+        lastUserData = body.data
+        applyHostReservedSceneStore()
+      }
+      resolve(body)
+    })
     ctx.postMessage({ type: 'get-user-data', id } satisfies SceneWorkerOutbound)
   })
 }
@@ -3894,7 +3805,23 @@ function rpcGetUserData(): Promise<UserDataResponse> {
 function rpcGetRealm(): Promise<RealmResponse> {
   const id = ++requestId
   return new Promise((resolve) => {
-    pendingRealm.set(id, resolve)
+    pendingRealm.set(id, (body) => {
+      if (body.realmInfo) {
+        cacheHostReserved({
+          realmInfo: {
+            baseUrl: body.realmInfo.baseUrl || '',
+            realmName: body.realmInfo.realmName || '',
+            networkId: body.realmInfo.networkId,
+            commsAdapter: body.realmInfo.commsAdapter || '',
+            isPreview: body.realmInfo.isPreview === true,
+            room: body.realmInfo.room,
+            isConnectedSceneRoom: body.realmInfo.isConnectedSceneRoom === true
+          }
+        })
+        applyHostReservedSceneStore()
+      }
+      resolve(body)
+    })
     ctx.postMessage({ type: 'get-realm', id } satisfies SceneWorkerOutbound)
   })
 }
@@ -4087,6 +4014,7 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     return
   }
   workerLog('log', '[sceneWorker] sceneEngine ok after onStart')
+  applyHostReservedSceneStore()
   // Before the boot tick: plaza fetch-pages → Ztt → fishing init does Transform.get(PlayerEntity).
   ensureReservedEntityTransforms(sceneEngine)
   // Pre-7.26 scenes omit virtualWidth/Height — seed the live canvas, never 1920×1080.
@@ -4146,6 +4074,7 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
   }
   bindSceneEngineScheduler(sceneEngine)
   installCrdtEncodeComponentMeters(sceneEngine)
+  bindInboundGuestLwwHostForward(sceneEngine)
   // Explorer order: onStart only queues crdtGetState via transport.onmessage.
   // First engine.update receives those messages (Name/Transform/…) then runs systems.
   // SDK entry-points schedule main() as Infinity priority so it sees main.crdt entities.
@@ -4167,26 +4096,7 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     )
   }
   await invokeSceneMainBootstrap(exports, { skipMain: sdkStartupOwnsMain })
-  // Pixelwars: heal SeedHolder orphan after AUTH_RES↔syncEntity race (white tiles / rising HUD).
-  try {
-    installAuthSeedHolderRepair(
-      sceneEngine as {
-        getComponentOrNull?: (name: string) => {
-          has?: (entity: number) => boolean
-          get?: (entity: number) => { seed?: number } | null
-          createOrReplace?: (entity: number, value: { seed: number }) => void
-        } | null
-        getEntitiesWith?: (...components: unknown[]) => Iterable<[number, ...unknown[]]>
-        addSystem?: (fn: (dt: number) => void, priority?: number) => void
-      }
-    )
-    workerLog('log', '[sceneWorker] auth seed-holder repair system installed')
-  } catch (err) {
-    workerLog(
-      'warn',
-      `[sceneWorker] seed-holder repair install failed — ${err instanceof Error ? err.message : String(err)}`
-    )
-  }
+  bindInboundGuestLwwHostForward(sceneEngine)
   // Scene main() often creates VC entities; ensure CameraEntity hosts MainCamera so systems that
   // gate on MainCamera.has(CameraEntity) can assign virtualCameraEntity on first tick.
   ensureMainCameraOnCameraEntity(sceneEngine)
@@ -4266,6 +4176,8 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     return
   }
   if (msg.type === 'scene-play-ready') {
+    cacheHostReserved(msg.reserved)
+    applyHostReservedSceneStore()
     playReadyPerformanceTier = msg.performanceTier
     portableExperienceWorker = msg.portableExperience === true
     // Do NOT set playFrameTickMainDriven yet — World often notifies play-ready while main still
@@ -4409,8 +4321,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     return
   }
   if (msg.type === 'get-user-data-response') {
+    if (msg.body.data?.userId) lastUserData = msg.body.data
     pendingUserData.get(msg.id)?.(msg.body)
     pendingUserData.delete(msg.id)
+    applyHostReservedSceneStore()
     return
   }
   if (msg.type === 'get-realm-response') {
@@ -4513,6 +4427,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
   try {
     sceneOnStartComplete = false
     sceneBootInProgress = true
+    resetInboundGuestLwwForward()
+    lastUserData = null
+    lastRealmInfo = null
+    cacheHostReserved(msg.reserved)
     playFrameTickMainDriven = false
     portableExperienceWorker = false
     clearPlayModeColdCrdtBuffer()
@@ -4720,6 +4638,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     bindSceneEngineScheduler(sceneEngine)
     if (sceneEngine) {
       ensureReservedEntityTransforms(sceneEngine)
+      applyHostReservedSceneStore()
       try {
         preregisterRendererInjectedComponents(sceneEngine)
       } catch (err) {
@@ -4729,6 +4648,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
         )
       }
       installCrdtEncodeComponentMeters(sceneEngine)
+      bindInboundGuestLwwHostForward(sceneEngine)
       const engineId = (sceneEngine as { _id?: number })._id
       workerLog(
         'log',
@@ -4853,7 +4773,13 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
   if (msg.type === 'inject-pointer-click') {
     const body = msg.body as InjectPointerClickBody
     const phase =
-      body?.phase === 'up' ? 'up' : body?.phase === 'click' ? 'click' : 'down'
+      body?.phase === 'up'
+        ? 'up'
+        : body?.phase === 'click'
+          ? 'click'
+          : body?.phase === 'hover-enter' || body?.phase === 'hover-leave'
+            ? body.phase
+            : 'down'
     // No-target = empty ray (Explorer level-state): not scene UI, not a PE mesh hit.
     const noTarget =
       !body?.sceneUi &&
@@ -4917,6 +4843,13 @@ function drainPendingBootPriority(): void {
 }
 
 bindSceneWorkerPriorityDispatch(dispatchPriorityMessage)
+
+ctx.addEventListener('unhandledrejection', (ev: PromiseRejectionEvent) => {
+  const msg = ev.reason instanceof Error ? ev.reason.message : String(ev.reason ?? '')
+  if (!/Profile not initialized|Couldn't fetch profile data/i.test(msg)) return
+  ev.preventDefault()
+  workerLog('warn', `[sceneWorker] ${msg} (continuing)`)
+})
 
 // Non-priority messages (boot, crdt-response, RPC responses, …).
 ctx.addEventListener(

@@ -386,14 +386,17 @@ export class AoiVisualLayer {
       this.cancelPrewarm('play-ready')
       // Prefer re-emit from prewarm cache (no 550-parcel rediscover hitch at unlock).
       if (this.hasDiscoveredOnce && this.cachedEntities.length > 0) {
-        this.emitLiveSecondaryCandidatesOnly(
-          this.cachedEntities,
-          this.cachedPrimaryId,
-          this.cachedPrimaryBase || this.ctx?.scene.baseParcel || '0,0',
-          this.lastDiscoverFeet.x || 0,
-          this.lastDiscoverFeet.z || 0,
-          this.cachedPointerSet
-        )
+        const feet = this.liveEmitFeet()
+        if (feet) {
+          this.emitLiveSecondaryCandidatesOnly(
+            this.cachedEntities,
+            this.cachedPrimaryId,
+            this.cachedPrimaryBase || this.ctx?.scene.baseParcel || '0,0',
+            feet.x,
+            feet.z,
+            this.cachedPointerSet
+          )
+        }
       } else {
         this.hasDiscoveredOnce = false
         this.lastParcelKey = ''
@@ -411,17 +414,34 @@ export class AoiVisualLayer {
   kickLiveSecondaryReconcile(): void {
     this.lastLiveCandidateSignature = ''
     this.lastLiveLogSignature = ''
-    if (!this.liveReconcileEnabled || !this.hasDiscoveredOnce || this.cachedEntities.length === 0) {
+    const feet = this.liveEmitFeet()
+    if (
+      !this.liveReconcileEnabled ||
+      !this.hasDiscoveredOnce ||
+      this.cachedEntities.length === 0 ||
+      !feet
+    ) {
       return
     }
     this.emitLiveSecondaryCandidatesOnly(
       this.cachedEntities,
       this.cachedPrimaryId,
       this.cachedPrimaryBase || this.ctx?.scene.baseParcel || '0,0',
-      this.lastDiscoverFeet.x || 0,
-      this.lastDiscoverFeet.z || 0,
+      feet.x,
+      feet.z,
       this.cachedPointerSet
     )
+  }
+
+  /** Prefer last discover; never emit live candidates from (0,0) via `NaN || 0`. */
+  private liveEmitFeet(): { x: number; z: number } | null {
+    if (Number.isFinite(this.lastDiscoverFeet.x) && Number.isFinite(this.lastDiscoverFeet.z)) {
+      return this.lastDiscoverFeet
+    }
+    if (Number.isFinite(this.lastFeetSample.x) && Number.isFinite(this.lastFeetSample.z)) {
+      return this.lastFeetSample
+    }
+    return null
   }
 
   /** Abort in-flight prewarm drain loop (play-ready / unbind / dispose). */

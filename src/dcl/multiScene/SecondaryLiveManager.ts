@@ -2,7 +2,7 @@ import type { EntityPose } from '../../bridge/ReservedEntitiesSync'
 import type { AssetCache } from '../../rendering/AssetCache'
 import type { SceneHost } from '../../rendering/SceneHost'
 import type { PhysicsColliderDesc } from '../../physics/PhysXWorld'
-import type { PerformanceTier } from '../../shim/types'
+import type { PerformanceTier, RealmResponse, UserDataResponse } from '../../shim/types'
 import type { SceneScriptSystem } from '../../core/systems/SceneScriptSystem'
 import { resolveSceneFromRoute } from '../content/resolveScene'
 import type { ResolvedScene } from '../content/types'
@@ -54,6 +54,8 @@ export class SecondaryLiveManager {
   private host: SceneHost | null = null
   private arbiter: PrivilegedIntentArbiter | null = null
   private poseProvider: (() => { player: EntityPose; camera: EntityPose }) | null = null
+  private getUserData: (() => Promise<UserDataResponse>) | null = null
+  private getRealm: (() => Promise<RealmResponse>) | null = null
   private onLiveIdsChange: ((ids: ReadonlySet<string>) => void) | null = null
   /** Full secondary graph meshes ready — AOI can hide composite shells. */
   private onLiveGraphReady: ((entityId: string) => void) | null = null
@@ -66,6 +68,11 @@ export class SecondaryLiveManager {
    * so walk-on promote can hand off without a cold /goto loading screen.
    */
   private priorityParcelKey: string | null = null
+  /**
+   * Catalyst/AOI footprints by entity id. `ResolvedScene.parcels` can miss
+   * non-base cells; occupancy must use the same pointers AOI ranked.
+   */
+  private readonly footprints = new Map<string, Set<string>>()
 
   bind(opts: {
     primaryScene: ResolvedScene
@@ -74,6 +81,8 @@ export class SecondaryLiveManager {
     tier: PerformanceTier
     arbiter: PrivilegedIntentArbiter
     poseProvider: () => { player: EntityPose; camera: EntityPose }
+    getUserData?: () => Promise<UserDataResponse>
+    getRealm?: () => Promise<RealmResponse>
     onLiveIdsChange?: (ids: ReadonlySet<string>) => void
     onLiveGraphReady?: (entityId: string) => void
   }): void {
@@ -83,6 +92,8 @@ export class SecondaryLiveManager {
     this.tier = opts.tier
     this.arbiter = opts.arbiter
     this.poseProvider = opts.poseProvider
+    this.getUserData = opts.getUserData ?? null
+    this.getRealm = opts.getRealm ?? null
     this.onLiveIdsChange = opts.onLiveIdsChange ?? null
     this.onLiveGraphReady = opts.onLiveGraphReady ?? null
   }
@@ -130,7 +141,7 @@ export class SecondaryLiveManager {
   listSecondaryModeSystems(): Array<{ id: string; getSystem: () => SceneScriptSystem }> {
     const out: Array<{ id: string; getSystem: () => SceneScriptSystem }> = []
     for (const [entityId, slot] of this.slots) {
-      if (slot.residentMode !== 'secondary' || !slot.isRunning) continue
+      if (slot.residentMode !== 'secondary') continue
       out.push({
         id: `secondary:${entityId}`,
         getSystem: () => slot.system
@@ -174,6 +185,48 @@ export class SecondaryLiveManager {
     return out
   }
 
+  motionSystemForGuestId(guestId: string): SceneScriptSystem | null {
+    return this.slotForGuestId(guestId)?.system ?? null
+  }
+
+  sceneForGuestId(guestId: string): ResolvedScene | null {
+    return this.slotForGuestId(guestId)?.scene ?? null
+  }
+
+  setFocusSendBinary(
+    guestId: string,
+    sendBinary: Parameters<SceneWorkerSlot['setFocusSendBinary']>[0]
+  ): void {
+    this.slotForGuestId(guestId)?.setFocusSendBinary(sendBinary)
+  }
+
+  private slotForGuestId(guestId: string): SceneWorkerSlot | null {
+    if (!guestId.startsWith('secondary:')) return null
+    const slot = this.slots.get(guestId.slice('secondary:'.length))
+    if (!slot || slot.residentMode !== 'secondary') return null
+    return slot
+  }
+
+  private rememberFootprint(entityId: string, keys: readonly string[] | undefined): void {
+    if (!entityId) return
+    let set = this.footprints.get(entityId)
+    if (!set) {
+      set = new Set()
+      this.footprints.set(entityId, set)
+    }
+    if (!keys) return
+    for (const k of keys) {
+      const t = k.trim()
+      if (t) set.add(t)
+    }
+  }
+
+  private slotCoversParcel(slot: SceneWorkerSlot, key: string): boolean {
+    if (slot.scene.baseParcel.trim() === key) return true
+    if (slot.scene.parcels.some((p) => p.trim() === key)) return true
+    return this.footprints.get(slot.id)?.has(key) === true
+  }
+
   /**
    * Absolute parcel keys for every resident graph (secondary + tertiary sticky).
    * AOI must skip empty-land ground under these — otherwise demoted CBD becomes red void.
@@ -192,6 +245,14 @@ export class SecondaryLiveManager {
       if (base && !seen.has(base)) {
         seen.add(base)
         out.push(base)
+      }
+      const extra = this.footprints.get(slot.id)
+      if (extra) {
+        for (const k of extra) {
+          if (!k || seen.has(k)) continue
+          seen.add(k)
+          out.push(k)
+        }
       }
     }
     return out
@@ -283,6 +344,13 @@ export class SecondaryLiveManager {
     return this.findSlotForParcel(x, y) !== null
   }
 
+  /** SceneLoop guest id for the live secondary covering this parcel, or null. */
+  liveGuestIdForParcel(x: number, y: number): string | null {
+    const slot = this.findSlotForParcel(x, y)
+    if (!slot || slot.residentMode !== 'secondary') return null
+    return `secondary:${slot.id}`
+  }
+
   /** Prefer booting a live secondary that covers this absolute parcel (under feet). */
   setPriorityParcel(x: number, y: number | null): void {
     this.priorityParcelKey = x != null && y != null ? `${x},${y}` : null
@@ -291,10 +359,7 @@ export class SecondaryLiveManager {
   private findSlotForParcel(x: number, y: number): SceneWorkerSlot | null {
     const key = `${x},${y}`
     for (const slot of this.slots.values()) {
-      const base = slot.scene.baseParcel.trim()
-      if (base === key || slot.scene.parcels.some((p) => p.trim() === key)) {
-        return slot
-      }
+      if (this.slotCoversParcel(slot, key)) return slot
     }
     return null
   }
@@ -314,9 +379,7 @@ export class SecondaryLiveManager {
   takeForPromote(x: number, y: number): PromoteHandoffPayload | null {
     const key = `${x},${y}`
     for (const [entityId, slot] of this.slots) {
-      const parcels = slot.scene.parcels
-      const base = slot.scene.baseParcel.trim()
-      if (base === key || parcels.some((p) => p.trim() === key)) {
+      if (this.slotCoversParcel(slot, key)) {
         const fromMode = slot.residentMode
         this.slots.delete(entityId)
         this.stickyIds.delete(entityId)
@@ -325,7 +388,7 @@ export class SecondaryLiveManager {
         const physOffset = slot.physOffset
         const system = slot.detachForPromote()
         console.info(
-          `[multi-scene] handoff ${fromMode} → primary “${slot.scene.title}” base=${base} parcel=${key}`
+          `[multi-scene] handoff ${fromMode} → primary “${slot.scene.title}” base=${slot.scene.baseParcel} parcel=${key}`
         )
         return {
           entityId,
@@ -447,6 +510,8 @@ export class SecondaryLiveManager {
       performanceTier: this.tier,
       arbiter: this.arbiter,
       poseProvider: this.poseProvider,
+      getUserData: this.getUserData ?? undefined,
+      getRealm: this.getRealm ?? undefined,
       physOffset: secondaryPhysOffset(slotIndex),
       primaryBaseParcel: primaryBase,
       existingSystem: system,
@@ -550,6 +615,7 @@ export class SecondaryLiveManager {
       })
       if (this.disposed || !scene?.mainEntry || !scene.entityId) return false
       if (this.primaryScene?.entityId === scene.entityId) return false
+      this.rememberFootprint(scene.entityId, [scene.baseParcel, ...scene.parcels, key])
       if (this.slots.has(scene.entityId)) {
         const slot = this.slots.get(scene.entityId)!
         if (slot.residentMode === 'tertiary') {
@@ -571,6 +637,8 @@ export class SecondaryLiveManager {
         performanceTier: this.tier,
         arbiter: this.arbiter,
         poseProvider: this.poseProvider,
+        getUserData: this.getUserData ?? undefined,
+        getRealm: this.getRealm ?? undefined,
         physOffset: secondaryPhysOffset(slotIndex),
         primaryBaseParcel: this.primaryScene?.baseParcel,
         initialMode: 'secondary'
@@ -649,11 +717,7 @@ export class SecondaryLiveManager {
     const pri = this.priorityParcelKey
     for (const [id, slot] of entries) {
       if (this.stickyIds.has(id) && opts.preferNonSticky) continue
-      if (
-        pri &&
-        (slot.scene.baseParcel.trim() === pri ||
-          slot.scene.parcels.some((p) => p.trim() === pri))
-      ) {
+      if (pri && this.slotCoversParcel(slot, pri)) {
         continue // keep under-feet secondary for promote handoff
       }
       slot.setResidentMode('tertiary')
@@ -664,11 +728,7 @@ export class SecondaryLiveManager {
     }
     // Fallback: demote non-priority sticky only if nothing else (rare).
     for (const [, slot] of entries) {
-      if (
-        pri &&
-        (slot.scene.baseParcel.trim() === pri ||
-          slot.scene.parcels.some((p) => p.trim() === pri))
-      ) {
+      if (pri && this.slotCoversParcel(slot, pri)) {
         continue
       }
       slot.setResidentMode('tertiary')
@@ -737,6 +797,13 @@ export class SecondaryLiveManager {
 
   reconcile(candidates: SecondaryLiveRequest[]): void {
     if (this.disposed || !this.cache || !this.host || !this.arbiter || !this.poseProvider) return
+    for (const c of candidates) {
+      this.rememberFootprint(c.entityId, [
+        c.base,
+        `${c.resolveX},${c.resolveY}`,
+        ...(c.parcels ?? [])
+      ])
+    }
     // Single-primary + composite shells only — never boot live secondary workers.
     if (aoiGlbShellsOnly()) {
       if (candidates.length) {
@@ -795,11 +862,7 @@ export class SecondaryLiveManager {
         wantSecondary.add(id)
       }
       // Under-feet always secondary while standing on it.
-      if (
-        !!pri &&
-        (slot.scene.baseParcel.trim() === pri ||
-          slot.scene.parcels.some((p) => p.trim() === pri))
-      ) {
+      if (pri && this.slotCoversParcel(slot, pri)) {
         wantSecondary.add(id)
       }
     }
@@ -810,10 +873,7 @@ export class SecondaryLiveManager {
 
     // Mode transitions — never dispose on leave keep radius.
     for (const [id, slot] of this.slots) {
-      const isPri =
-        !!pri &&
-        (slot.scene.baseParcel.trim() === pri ||
-          slot.scene.parcels.some((p) => p.trim() === pri))
+      const isPri = !!pri && this.slotCoversParcel(slot, pri)
       if (wantSecondary.has(id) || isPri) {
         if (slot.residentMode === 'tertiary') {
           // Re-enter enter/keep band: scripts only, no GLB reload.
@@ -834,12 +894,12 @@ export class SecondaryLiveManager {
     this.balanceModes()
     this.emitLiveIds()
 
-    // Serial boot — one full secondary worker at a time.
-    if (this.booting.size >= SECONDARY_LIVE_BOOT_CONCURRENCY) return
-
     // Under-feet is sort priority only. Never exclusive — a 4-parcel neighbor
     // 14 m away must boot while standing on plaza (player→footprint, not parcel pin).
+    const bootSlots = Math.max(0, SECONDARY_LIVE_BOOT_CONCURRENCY - this.booting.size)
+    let started = 0
     for (const req of bootList) {
+      if (started >= bootSlots) break
       if (this.slots.has(req.entityId) || this.booting.has(req.entityId)) continue
       if (req.distM > enterM && !coversPri(req)) continue
       if (this.countMode('secondary') + this.booting.size >= cap) {
@@ -852,7 +912,7 @@ export class SecondaryLiveManager {
           `enter=${enterM}m pri=${pri ?? '—'} parcels=${req.parcelCount ?? '?'}`
       )
       void this.bootOne(req, coversPri(req) ? pri : null)
-      break // only start one per reconcile
+      started++
     }
   }
 
@@ -882,6 +942,16 @@ export class SecondaryLiveManager {
       })
       if (this.disposed || !scene?.mainEntry || !scene.entityId) return
       if (this.primaryScene?.entityId === scene.entityId) return
+      this.rememberFootprint(req.entityId, [req.base, ...(req.parcels ?? scene.parcels)])
+      this.rememberFootprint(scene.entityId, [scene.baseParcel, ...scene.parcels, ...(req.parcels ?? [])])
+      if (req.parcels?.length) {
+        const merged = new Set(scene.parcels.map((p) => p.trim()).filter(Boolean))
+        for (const p of req.parcels) {
+          const t = p.trim()
+          if (t) merged.add(t)
+        }
+        scene.parcels = [...merged]
+      }
       // Already resident (maybe tertiary) — scripts on only.
       const existing =
         this.slots.get(req.entityId) ?? this.slots.get(scene.entityId) ?? null
@@ -907,6 +977,8 @@ export class SecondaryLiveManager {
         performanceTier: this.tier,
         arbiter: this.arbiter,
         poseProvider: this.poseProvider,
+        getUserData: this.getUserData ?? undefined,
+        getRealm: this.getRealm ?? undefined,
         physOffset: secondaryPhysOffset(slotIndex),
         primaryBaseParcel: this.primaryScene?.baseParcel,
         initialMode: 'secondary'
@@ -1088,6 +1160,7 @@ export class SecondaryLiveManager {
   dispose(): void {
     this.disposed = true
     this.hydratePumps.clear()
+    this.footprints.clear()
     for (const slot of this.slots.values()) slot.dispose()
     this.slots.clear()
     this.stickyIds.clear()

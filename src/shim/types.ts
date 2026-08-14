@@ -39,11 +39,34 @@ export type SceneWorkerDebugFlags = {
   sceneUiLog?: boolean
 }
 
+/** Host-owned reserved store seed — Explorer has these on the scene engine before the first tick. */
+export type HostReservedSceneStore = {
+  playerIdentity?: {
+    userId: string
+    displayName?: string
+    hasConnectedWeb3?: boolean
+  }
+  realmInfo?: {
+    baseUrl: string
+    realmName: string
+    networkId: number
+    commsAdapter: string
+    isPreview: boolean
+    room?: string
+    isConnectedSceneRoom: boolean
+  }
+}
+
 export type SceneWorkerBoot = {
   type: 'boot'
   /** Live interactable px — worker seeds UiCanvasInformation (not SDK 7.26 1920×1080). */
   canvas?: { width: number; height: number }
   debug?: SceneWorkerDebugFlags
+  /**
+   * PlayerIdentityData + RealmInfo for the worker scene store.
+   * SDK `@dcl/sdk/network` isRoomReady / joinRoster read these on the first sendBinary.
+   */
+  reserved?: HostReservedSceneStore
   scene: Pick<
     ResolvedScene,
     'title' | 'parcels' | 'baseParcel' | 'spawn' | 'contentsBaseUrl' | 'entityId' | 'mainEntry'
@@ -364,6 +387,8 @@ export type MainToWorker =
        * and survive GLB FINISHED; force-clear was wiping freeze + breaking WASD flight).
        */
       portableExperience?: boolean
+      /** Late refresh of reserved identity / RealmInfo (scene room connect after boot). */
+      reserved?: HostReservedSceneStore
     }
   /**
    * Light main→worker renderer CRDT (grow-only / ambient LWW). Historical name —

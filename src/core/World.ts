@@ -22,6 +22,7 @@ import {
 } from '../player/SceneBounds'
 import { genesisCityWalkBounds } from '../player/genesisCityBounds'
 import { AoiVisualLayer } from '../dcl/aoi/AoiVisualLayer'
+import { absoluteParcelAtSceneLocal } from '../dcl/aoi/parcelAoi'
 import { ScenePromoteController } from '../dcl/aoi/ScenePromoteController'
 import type { MultiSceneRuntime } from '../dcl/multiScene/MultiSceneRuntime'
 import { PeMainThreadMirror } from '../dcl/multiScene/PeMainThreadMirror'
@@ -44,6 +45,7 @@ import { MainFrameHud } from '../debug/MainFrameHud'
 import type { PerformanceTier } from '../shim/types'
 import { LandscapeSystem } from './systems/LandscapeSystem'
 import { SceneLoop } from './sceneLoop'
+import { PRIMARY_GUEST_ID } from './sceneLoop/types'
 import { SceneScriptSystem } from './systems/SceneScriptSystem'
 import { EnvironmentSystem } from '../environment/EnvironmentSystem'
 import { FftOceanWater } from '../environment/FftOceanWater'
@@ -165,6 +167,21 @@ function isPrimitiveMeshColliderKind(kind: string): boolean {
   return base === 'box' || base === 'sphere' || base === 'cylinder' || base === 'plane'
 }
 
+const _cookScale = new THREE.Vector3()
+const _cookPos = new THREE.Vector3()
+const _cookQuat = new THREE.Quaternion()
+
+/**
+ * Tween scale-in (0.001 → authored) bakes degenerate trimeshes and then stamps
+ * that geom fingerprint as a permanent cook failure. Keep the entity queued
+ * until world scale is cookable.
+ */
+function isDegenerateCookScale(matrix: THREE.Matrix4): boolean {
+  matrix.decompose(_cookPos, _cookQuat, _cookScale)
+  const minAbs = Math.min(Math.abs(_cookScale.x), Math.abs(_cookScale.y), Math.abs(_cookScale.z))
+  return !Number.isFinite(minAbs) || minAbs < 0.05
+}
+
 type SceneWater = {
   group: THREE.Group
   update: (delta: number, camera: THREE.Camera) => void
@@ -200,6 +217,12 @@ export class World {
   private player: PlayerSystem | null = null
   /** Latest backpack / VRM equip reload wins — overlapping calls must not stack name tags. */
   private reloadLocalAvatarGen = 0
+  /** Last Focus grant — PRIMARY_GUEST_ID or `secondary:<entityId>`. */
+  private focusGuestId: string | null = PRIMARY_GUEST_ID
+  private focusGrantInFlight = false
+  private pendingFocusGuestId: string | null | undefined = undefined
+  /** Occupancy log — parcel + current guest (avoid per-frame spam). */
+  private lastOccupancyLogKey = ''
   private remoteAvatars: RemoteAvatarManager | null = null
   /** Help → Debug crowd harness (local composed avatars for multi-avatar FPS tests). */
   private debugAvatarCrowd: DebugAvatarCrowd | null = null
@@ -356,7 +379,17 @@ export class World {
       if (this.promoteNavigate) this.promoteNavigate(target, reason)
       else this.navigateHandler?.(target)
     },
-    onSoftRoute: (x, y) => this.promoteSoftRoute?.(x, y),
+    onSoftRoute: (x, y) => {
+      const scene = this.loadedPrimaryScene
+      const key = `${x},${y}`
+      const onPrimary =
+        !!scene &&
+        (scene.baseParcel.trim() === key || scene.parcels.some((p) => p.trim() === key))
+      // Pin under-feet only when it is a *neighbor* footprint so SceneLoop
+      // boots that guest first. Pinning a plaza cell is a no-op (primary).
+      this.multiScene?.setSecondaryPriorityParcel(x, onPrimary ? null : y)
+      this.promoteSoftRoute?.(x, y)
+    },
     // Inner radius: warm scripts/manifests. Outer Scene Distance = composite GLBs (AoiVisualLayer).
     onPrefetch: (x, y) => this.promotePrefetch?.(x, y),
     dwellMs: 320,
@@ -1025,6 +1058,9 @@ export class World {
       this.sceneScript.setSceneBinaryIngressRelease(() => {
         this.comms.setSceneBinaryIngressHold(false)
       })
+      this.sceneScript.setSceneBinaryCustomEventRelease(() => {
+        this.comms.setSceneBinaryCustomEventHold(false)
+      })
       this.sceneScript.setCommsHandler({
         setCommunicationsAdapter: async (body) => ({
           success: await this.comms.connectAdapter(body.connectionString)
@@ -1515,11 +1551,14 @@ export class World {
       engineTickIntervalMs: resolveEngineTickIntervalMs(this.sceneScript.getPerformanceTier())
     })
     // AOI warm/live/visuals only after primary is play-ready — dual-boot kills CBD.
-    // Honor ?noaoi so neighbors never start.
+    // Guests must be ON *before* the live emit or reconcile no-ops and stamps a
+    // signature that skips snow/Jarod until the player walks (then the wrong
+    // neighbor can steal the only boot lane).
     if (!skipAoiNeighbors()) {
+      this.multiScene?.setSecondaryActivityEnabled(true)
       this.aoiVisual.setNeighborActivityEnabled(true)
       this.scenePromote.setNeighborActivityEnabled(true)
-      this.multiScene?.setSecondaryActivityEnabled(true)
+      this.aoiVisual.kickLiveSecondaryReconcile()
     }
     if (!skipRemoteAvatars()) {
       this.remoteAvatars?.setPlayReady(plazaScale)
@@ -1556,8 +1595,8 @@ export class World {
     }
   }
 
-  private bindAvatarAttachTargets(): void {
-    const { readComponents, view } = this.sceneScript
+  private bindAvatarAttachTargets(system: SceneScriptSystem = this.sceneScript): void {
+    const { readComponents, view } = system
     const { Transform, PlayerIdentityData } = readComponents
     const { PlayerEntity } = view
 
@@ -1575,7 +1614,7 @@ export class World {
         return { model, nameTagAnchor: avatar.nameTagAnchor }
       },
       getRemoteSkeleton: (avatarId) => this.remoteAvatars?.getAttachSkeleton(avatarId) ?? null,
-      getNpcSkeleton: (entity) => this.sceneScript.getAvatarShapeSkeleton(entity),
+      getNpcSkeleton: (entity) => system.getAvatarShapeSkeleton(entity),
       getPlayerTransformDcl: (avatarId) => {
         const localWallet = resolver.getLocalWallet()
         const id = avatarId?.trim().toLowerCase()
@@ -1595,7 +1634,7 @@ export class World {
     }
 
     this.avatarAttachResolver = resolver
-    this.sceneScript.setAvatarAttachTargets(resolver)
+    system.setAvatarAttachTargets(resolver)
     this.bindFollowFlagCct()
   }
 
@@ -1934,11 +1973,15 @@ export class World {
           peMs = performance.now() - peT0
 
           const pos = this.player.getPosition()
-          // Soft-route + AOI LOD/discover must run on present — leftover async
-          // is skipped for whole CBD walks (asyncBusy / >33 ms present). Drain
-          // still self-gates and idle-schedules; tick is parcel math + HUD.
+          // Soft-route + occupancy + AOI must run on present — leftover async
+          // is skipped for whole CBD walks (asyncBusy / >33 ms present).
           const aoiT0 = performance.now()
           this.scenePromote.tick(pos.x, pos.z)
+          this.sceneLoop.reconcilePe(this.multiScene?.pe ?? null)
+          this.sceneLoop.reconcileLiveGuests(
+            this.multiScene?.secondaryManager?.listSecondaryModeSystems() ?? []
+          )
+          this.syncCurrentSceneGuestAt(pos.x, pos.z)
           this.aoiVisual.update(pos.x, pos.z)
           aoiMs = performance.now() - aoiT0
           const yaw = this.player.getNetworkYaw()
@@ -2064,9 +2107,10 @@ export class World {
         let pointerMs = 0
         if (this.playerMode && this.player && this.isPointerRaycastLive()) {
           const ptrT0 = performance.now()
-          this.sceneScript.preparePointerRaycast(startFrame)
-          this.sceneScript.updateRaycasts()
-          this.sceneScript.updatePointerEvents(startFrame)
+          const focus = this.focusScript()
+          focus.preparePointerRaycast(startFrame)
+          focus.updateRaycasts()
+          focus.updatePointerEvents(startFrame)
           pointerMs = performance.now() - ptrT0
           // Hub already synced before scene/PE ticks; late edges still publish on keydown.
         }
@@ -2097,10 +2141,15 @@ export class World {
             frame: this.guestTickFrame
           })
           this.sceneLoop.peelMotion(2)
+          // Under-feet guest apply is not leftover-gated — snow flowers / drone
+          // Tweens never reached the GPU when plaza leftover was 0.
+          await this.sceneLoop.applyCurrentGuest(6)
           if (remain() > 2) {
-            // PE pointer only; secondaries no-op play-frame when owned externally.
+            await this.sceneLoop.applyOtherLiveGuests(Math.min(4, remain() - 1))
+          }
+          this.pumpSecondaryMotionBridges(_delta, this.guestTickFrame)
+          if (remain() > 2) {
             this.multiScene?.tickSync(this.guestTickPlayer, this.guestTickCamera, this.guestTickFrame)
-            this.pumpSecondaryMotionBridges(_delta, this.guestTickFrame)
           }
         }
         if (remain() > 2) {
@@ -2124,7 +2173,7 @@ export class World {
           !this.sceneLoop.lastApplyOverran(28)
         ) {
           const ptrT0 = performance.now()
-          this.sceneScript.preparePointerRaycast(startFrame)
+          this.focusScript().preparePointerRaycast(startFrame)
           asyncPtrMs = performance.now() - ptrT0
         }
 
@@ -3881,6 +3930,8 @@ export class World {
       this.sceneScript.refreshColliderBeforeCook(physId)
       const fresh = this.sceneScript.getPhysicsColliderDesc(physId)
       if (!fresh) continue
+      // Late Tween scale-in — do not cook or fail-stamp while the actor is still a speck.
+      if (isDegenerateCookScale(fresh.matrix)) continue
       if (this.physics.hasFailedCookFingerprint(fresh.fingerprint)) {
         this.colliderCookQueue.delete(physId)
         this.notePlayCookGiveUp(physId, fresh.fingerprint, 'failed-fp')
@@ -4448,6 +4499,8 @@ export class World {
       cache: this.assets,
       host: this.host,
       tier: this.performanceTier,
+      getUserData: async () => this.buildUserData(),
+      getRealm: async () => ({ realmInfo: this.comms.getRealmInfo() }),
       poseProvider: () => {
         if (this.player) {
           return {
@@ -4677,6 +4730,219 @@ export class World {
    * Accumulated delta keeps clip time correct when frames are skipped.
    */
   private secondaryMotionHeldDelta = 0
+  /**
+   * Current = catalyst footprint under feet. A live secondary covering the
+   * cell wins over the plaza parcel list (holes inside a large primary).
+   * Vacant/road keeps last Focus (no mute flicker). Origin is never rebased.
+   */
+  private syncCurrentSceneGuestAt(dclX: number, dclZ: number): void {
+    const next = this.resolveCurrentGuestIdAt(dclX, dclZ)
+    this.sceneLoop.setCurrentGuestId(next)
+    if (next !== this.focusGuestId) void this.grantFocusToGuest(next)
+  }
+
+  private resolveCurrentGuestIdAt(dclX: number, dclZ: number): string {
+    const scene = this.loadedPrimaryScene
+    if (!scene || scene.source.kind !== 'coords') {
+      return PRIMARY_GUEST_ID
+    }
+    const parcel = absoluteParcelAtSceneLocal(dclX, dclZ, scene.baseParcel)
+    const key = `${parcel.x},${parcel.y}`
+    const live = this.multiScene?.liveGuestIdForParcel(parcel.x, parcel.y) ?? null
+    const onPrimary =
+      scene.baseParcel.trim() === key || scene.parcels.some((p) => p.trim() === key)
+    // Live guest under feet is Current/Focus. Plaza only when no neighbor covers.
+    const next = live ?? (onPrimary ? PRIMARY_GUEST_ID : this.focusGuestId ?? PRIMARY_GUEST_ID)
+    const sig = `${key}|${next}|${live ?? 'none'}|${onPrimary ? 'p' : 'n'}`
+    if (sig !== this.lastOccupancyLogKey) {
+      this.lastOccupancyLogKey = sig
+      const title =
+        next === PRIMARY_GUEST_ID
+          ? scene.title
+          : this.multiScene?.secondaryManager?.sceneForGuestId(next)?.title ?? '?'
+      console.info(
+        `[focus] feet=${key} current=${next} “${title}” live=${live ?? 'none'} plaza=${onPrimary}`
+      )
+    }
+    return next
+  }
+
+  private focusScript(): SceneScriptSystem {
+    const id = this.focusGuestId ?? PRIMARY_GUEST_ID
+    if (id !== PRIMARY_GUEST_ID) {
+      const sys = this.multiScene?.secondaryManager?.motionSystemForGuestId(id)
+      if (sys) return sys
+    }
+    return this.sceneScript
+  }
+
+  private async grantFocusToGuest(guestId: string): Promise<void> {
+    if (this.focusGrantInFlight) {
+      this.pendingFocusGuestId = guestId
+      return
+    }
+    if (guestId === this.focusGuestId) return
+    this.focusGrantInFlight = true
+    const prev = this.focusGuestId
+    try {
+      const prevSys = this.systemForFocusGuest(prev)
+      const nextSys = this.systemForFocusGuest(guestId)
+      const nextScene = this.sceneForFocusGuest(guestId)
+
+      if (prevSys && prevSys !== nextSys) {
+        prevSys.setReservedPoseStreaming(false)
+        const prevScene = this.sceneForFocusGuest(prev)
+        if ((prevScene?.parcels.length ?? 0) > 16) {
+          prevSys.setSceneWorkerOnUpdatePaused(true)
+        }
+        prevSys.clearAvatarModifierEffects()
+        prevSys.setFocusPolicy('secondary')
+        prevSys.setInputHub(null)
+        prevSys.setAvatarModifierProviders(null)
+        try {
+          prevSys.setAvatarAttachTargets(null)
+        } catch {
+          /* optional */
+        }
+        if (prev && prev !== PRIMARY_GUEST_ID) {
+          this.multiScene?.secondaryManager?.setFocusSendBinary(prev, null)
+        } else {
+          this.installPlazaResidentComms()
+        }
+      }
+
+      if (nextSys) {
+        this.player?.setReadComponents(nextSys.readComponents)
+        nextSys.setReservedPoseStreaming(true)
+        nextSys.notifyPlayReady({
+          engineTickIntervalMs: resolveEngineTickIntervalMs(this.performanceTier)
+        })
+        nextSys.clearPlayerFocusState()
+        nextSys.setFocusPolicy('primary')
+        nextSys.setInputHub(this.inputHub, guestId === PRIMARY_GUEST_ID ? 'primary' : `focus:${guestId}`)
+        nextSys.setSceneUiVisible(true)
+        this.player?.releaseSceneFreezeHold('focus-grant')
+        this.player?.setModifierHidden(false)
+        this.player?.setForcedCameraMode(null)
+        this.bindAvatarAttachTargets(nextSys)
+        this.installFocusAvatarModifiers(nextSys)
+        this.player?.setVirtualCameraBridge(nextSys.getVirtualCameraBridge())
+        if (guestId === PRIMARY_GUEST_ID) {
+          this.installPlazaFocusComms()
+        } else {
+          this.multiScene?.secondaryManager?.setFocusSendBinary(guestId, (body) =>
+            this.handleSendBinary(body)
+          )
+        }
+      }
+
+      if (nextScene) {
+        this.applySignedFetchSceneContext(nextScene)
+        const target = this.buildCommsTarget(nextScene)
+        const prevTarget = this.comms.getSceneTarget()
+        if (this.comms.sceneRoomIdentityChanged(prevTarget, target)) {
+          scheduleOffPlayRaf(() => {
+            void this.comms.connectFocusSceneRoom(target)
+          })
+        }
+      }
+
+      this.focusGuestId = guestId
+      console.info(
+        `[focus] grant ${prev ?? 'none'} → ${guestId} “${nextScene?.title ?? '?'}” (origin held)`
+      )
+    } catch (err) {
+      console.warn('[focus] grant failed', err)
+    } finally {
+      this.focusGrantInFlight = false
+      const queued = this.pendingFocusGuestId
+      this.pendingFocusGuestId = undefined
+      if (queued != null && queued !== this.focusGuestId) {
+        void this.grantFocusToGuest(queued)
+      }
+    }
+  }
+
+  private systemForFocusGuest(guestId: string | null): SceneScriptSystem | null {
+    if (!guestId || guestId === PRIMARY_GUEST_ID) return this.sceneScript
+    return this.multiScene?.secondaryManager?.motionSystemForGuestId(guestId) ?? null
+  }
+
+  private sceneForFocusGuest(guestId: string | null): ResolvedScene | null {
+    if (!guestId || guestId === PRIMARY_GUEST_ID) return this.loadedPrimaryScene
+    return this.multiScene?.secondaryManager?.sceneForGuestId(guestId) ?? null
+  }
+
+  private installPlazaFocusComms(): void {
+    this.sceneScript.setCommsHandler({
+      setCommunicationsAdapter: async (body) => ({
+        success: await this.comms.connectAdapter(body.connectionString)
+      }),
+      sendBinary: async (body) => this.handleSendBinary(body),
+      send: async (body) => {
+        await this.comms.publishCommsMessage(body.message)
+        return {}
+      },
+      getUserData: async () => this.buildUserData(),
+      getRealm: async () => ({ realmInfo: this.comms.getRealmInfo() }),
+      subscribeToTopic: async (body) => {
+        this.comms.subscribeToTopic(body.topic)
+        return {}
+      },
+      unsubscribeFromTopic: async (body) => {
+        this.comms.unsubscribeFromTopic(body.topic)
+        return {}
+      },
+      publishData: async (body) => {
+        await this.comms.publishTopicData(body.topic, body.data)
+        return {}
+      },
+      consumeMessages: async (body) => this.comms.consumeMessages(body.topic),
+      getActiveVideoStreams: async () => this.comms.getActiveVideoStreams()
+    })
+  }
+
+  private installPlazaResidentComms(): void {
+    this.sceneScript.setCommsHandler({
+      setCommunicationsAdapter: async () => ({ success: false }),
+      send: async () => ({}),
+      sendBinary: async () => ({ data: [] }),
+      getUserData: async () => this.buildUserData(),
+      getRealm: async () => ({ realmInfo: this.comms.getRealmInfo() }),
+      subscribeToTopic: async () => ({}),
+      unsubscribeFromTopic: async () => ({}),
+      publishData: async () => ({}),
+      consumeMessages: async () => ({ messages: [] }),
+      getActiveVideoStreams: async () => ({ streams: [] })
+    })
+  }
+
+  private installFocusAvatarModifiers(system: SceneScriptSystem): void {
+    system.setAvatarModifierProviders({
+      getSamples: () => {
+        const samples: { id: string; position: { x: number; y: number; z: number } }[] = []
+        const localPos = this.player?.getPosition()
+        if (localPos) {
+          const localId = this.session.getAddress()?.toLowerCase() ?? ''
+          samples.push({
+            id: localId,
+            position: { x: localPos.x, y: localPos.y, z: localPos.z }
+          })
+        }
+        this.remoteAvatars?.collectModifierSamples(samples)
+        return samples
+      },
+      apply: (id, effects) => {
+        const localId = this.session.getAddress()?.toLowerCase() ?? ''
+        if (!id || id === localId) {
+          this.player?.setModifierHidden(effects.hide)
+          return
+        }
+        this.remoteAvatars?.setModifierHidden(id, effects.hide)
+      }
+    })
+  }
+
   private pumpSecondaryMotionBridges(delta: number, frame: number): void {
     const systems = this.multiScene?.getSecondaryMotionSystems() ?? []
     if (!systems.length) {
@@ -4684,6 +4950,18 @@ export class World {
       return
     }
     this.secondaryMotionHeldDelta += delta
+    const currentId = this.sceneLoop.getCurrentGuestId()
+    const currentSys = currentId
+      ? this.multiScene?.secondaryManager?.motionSystemForGuestId(currentId) ?? null
+      : null
+    // Current scene mixers every frame (drones). Other neighbors may LOD.
+    if (currentSys) {
+      try {
+        currentSys.pumpMotionBridges(delta, frame)
+      } catch (err) {
+        console.warn('[multi-scene] current-guest pumpMotionBridges failed', err)
+      }
+    }
     const lodActive = this.primaryAsyncOverBudgetStreak >= 3
     if (lodActive) {
       this.secondaryMotionLodFrame++
@@ -4694,6 +4972,7 @@ export class World {
     const step = this.secondaryMotionHeldDelta
     this.secondaryMotionHeldDelta = 0
     for (const sys of systems) {
+      if (sys === currentSys) continue
       try {
         sys.pumpMotionBridges(step, frame)
       } catch (err) {
@@ -5197,6 +5476,7 @@ export class World {
       )
       // Allow live-secondary candidate emit + boots (visuals already on).
       this.aoiVisual.setNeighborActivityEnabled(true)
+      this.aoiVisual.kickLiveSecondaryReconcile()
       const p = this.player?.getPosition()
       if (p) this.aoiVisual.update(p.x, p.z, true)
       console.info(

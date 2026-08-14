@@ -4,7 +4,7 @@ import type { SceneHost } from '../../rendering/SceneHost'
 import type { AssetCache } from '../../rendering/AssetCache'
 import type { PhysicsColliderDesc } from '../../physics/PhysXWorld'
 import type { ResolvedScene } from '../content/types'
-import type { PerformanceTier } from '../../shim/types'
+import type { PerformanceTier, RealmResponse, UserDataResponse } from '../../shim/types'
 import { openExternalUrl } from '../../player/openExternalUrl'
 import type { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
 import {
@@ -13,6 +13,7 @@ import {
   hostPoseToSceneLocal
 } from './secondarySceneOrigin'
 import { SCENE_WORKER_PRIORITY, type SceneWorkerKind } from './types'
+import { resolveEngineTickIntervalMs } from '../../client/detectPerformanceTier'
 import * as THREE from 'three'
 
 /**
@@ -46,6 +47,13 @@ export type SceneWorkerSlotOptions = {
   existingSystem?: SceneScriptSystem
   /** Initial resident mode (default secondary). Sticky demote always starts secondary. */
   initialMode?: ResidentMode
+  /**
+   * Local player identity — required by `@dcl/sdk/network` `syncEntity`.
+   * Not scene LiveKit (FocusOwner only). Without this, guest `getUserData` is
+   * `{}` and asset-pack syncEntity throws "Profile not initialized".
+   */
+  getUserData?: () => Promise<UserDataResponse>
+  getRealm?: () => Promise<RealmResponse>
 }
 
 /**
@@ -125,7 +133,12 @@ export class SceneWorkerSlot {
   private applySceneOriginOffset(): void {
     if (this.kind !== 'secondary') return
     const root = this.system.getEntityStore()?.root
+    if (!root) return
+    const before = root.position.clone()
     applySecondarySceneRootOrigin(root, this.scene.baseParcel, this.primaryBaseParcel)
+    if (before.distanceToSquared(root.position) > 1e-4) {
+      this.system.rebakeGpuAfterOriginChange()
+    }
   }
 
   private toSceneLocal(pose: EntityPose): EntityPose {
@@ -167,6 +180,11 @@ export class SceneWorkerSlot {
       try {
         this.system.setSceneWorkerTicksPaused(false)
         this.system.setSceneWorkerOnUpdatePaused(false)
+        if (this.scene.parcels.length <= 16) {
+          this.system.notifyPlayReady({
+            engineTickIntervalMs: resolveEngineTickIntervalMs(this.opts.performanceTier)
+          })
+        }
       } catch {
         /* ignore */
       }
@@ -288,6 +306,9 @@ export class SceneWorkerSlot {
       uiDetached: this.kind === 'secondary',
       focusPolicy: this.kind === 'pe' ? 'pe' : 'secondary'
     })
+    // Offset the store wrapper before worker CRDT/GLBs land. After start is too
+    // late: static attaches bake world at plaza 0 and sit on the roads.
+    this.applySceneOriginOffset()
 
     if (this.kind === 'pe') {
       this.system.setFocusPolicy('pe')
@@ -306,10 +327,16 @@ export class SceneWorkerSlot {
         camera: this.toSceneLocal(live.camera)
       }
     })
-    this.system.seedRendererEntities(
-      this.toSceneLocal(poses.player),
-      this.toSceneLocal(poses.camera)
-    )
+    // Live neighbor: no reserved PE until Current. Seed would put plaza-world
+    // feet into snow-local space and the trail would paint on CBD.
+    if (this.kind === 'secondary') {
+      this.system.setReservedPoseStreaming(false)
+    } else {
+      this.system.seedRendererEntities(
+        this.toSceneLocal(poses.player),
+        this.toSceneLocal(poses.camera)
+      )
+    }
     await this.system.start(scene, cache, host)
     this.system.syncCollisionForce()
     this.applySceneOriginOffset()
@@ -324,12 +351,21 @@ export class SceneWorkerSlot {
     this.lastTickAt = performance.now()
     if (this.kind === 'secondary') {
       this.setResidentMode(this.mode)
+      // Small live guests: play-mode onUpdate. Large estates (plaza 116) stay
+      // hydration-paused until Current — otherwise plaza onUpdate tanks FPS.
+      if (this.mode === 'secondary' && scene.parcels.length <= 16) {
+        this.system.notifyPlayReady({
+          engineTickIntervalMs: resolveEngineTickIntervalMs(performanceTier)
+        })
+      }
     }
+    const root = this.system.getEntityStore()?.root
     console.info(
       `[multi-scene] started ${this.kind} “${scene.title}” id=${this.id.slice(0, 20)}… ` +
         `mode=${this.mode} physOffset=${this.physOffset}` +
         (this.kind === 'secondary'
-          ? ` origin=${this.scene.baseParcel}→${this.primaryBaseParcel || '?'}`
+          ? ` origin=${this.scene.baseParcel}→${this.primaryBaseParcel || '?'} ` +
+            `rootThree=(${root?.position.x.toFixed(1) ?? '?'},${root?.position.z.toFixed(1) ?? '?'})`
           : '')
     )
   }
@@ -386,6 +422,53 @@ export class SceneWorkerSlot {
     this.system.setOpenNftDialogHandler(null)
     this.system.setCopyToClipboardHandler(null)
     this.system.setTriggerEmoteHandler(null)
+    const getUserData = this.opts.getUserData
+    const getRealm = this.opts.getRealm
+    if (!getUserData && !getRealm) return
+    this.installResidentComms()
+  }
+
+  /** Identity always; sendBinary only while this guest is Focus. */
+  setFocusSendBinary(
+    sendBinary: ((body: import('../../shim/types').SendBinaryRequest) => Promise<import('../../shim/types').SendBinaryResponse>) | null
+  ): void {
+    if (this.kind !== 'secondary') return
+    if (sendBinary) {
+      const getUserData = this.opts.getUserData
+      const getRealm = this.opts.getRealm
+      this.system.setCommsHandler({
+        setCommunicationsAdapter: async () => ({ success: false }),
+        send: async () => ({}),
+        sendBinary,
+        getUserData: async () => (getUserData ? getUserData() : {}),
+        getRealm: async () => (getRealm ? getRealm() : {}),
+        subscribeToTopic: async () => ({}),
+        unsubscribeFromTopic: async () => ({}),
+        publishData: async () => ({}),
+        consumeMessages: async () => ({ messages: [] }),
+        getActiveVideoStreams: async () => ({ streams: [] })
+      })
+      return
+    }
+    this.installResidentComms()
+  }
+
+  private installResidentComms(): void {
+    const getUserData = this.opts.getUserData
+    const getRealm = this.opts.getRealm
+    if (!getUserData && !getRealm) return
+    this.system.setCommsHandler({
+      setCommunicationsAdapter: async () => ({ success: false }),
+      send: async () => ({}),
+      sendBinary: async () => ({ data: [] }),
+      getUserData: async () => (getUserData ? getUserData() : {}),
+      getRealm: async () => (getRealm ? getRealm() : {}),
+      subscribeToTopic: async () => ({}),
+      unsubscribeFromTopic: async () => ({}),
+      publishData: async () => ({}),
+      consumeMessages: async () => ({ messages: [] }),
+      getActiveVideoStreams: async () => ({ streams: [] })
+    })
   }
 
   setUiVisible(visible: boolean): void {
@@ -464,6 +547,7 @@ export class SceneWorkerSlot {
 
     cache.setScene(this.scene)
     try {
+      this.applySceneOriginOffset()
       // COD F2 — residual wall budget; structure leftover stays in pendingDiff.
       await this.system.syncRenderer(
         options?.deadlineMs !== undefined ? { deadlineMs: options.deadlineMs } : undefined
@@ -569,6 +653,8 @@ export class SceneWorkerSlot {
     if (this.disposed) return
     this.disposed = true
     this.running = false
+    const eid = this.scene.entityId?.trim()
+    if (eid) this.opts.cache.unregisterScene(eid)
     if (!this.detached) {
       try {
         this.system.dispose()

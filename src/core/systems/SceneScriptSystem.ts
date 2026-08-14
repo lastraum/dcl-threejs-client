@@ -58,6 +58,7 @@ import { platformMotionDebug } from '../../debug/PlatformMotionDebug'
 import { GltfColliderExtractor } from '../../collision/GltfColliderExtractor'
 import type {
   CommsRpcHandler,
+  HostReservedSceneStore,
   MainToWorker,
   PerformanceTier,
   SceneWorkerBoot,
@@ -359,6 +360,7 @@ export class SceneScriptSystem {
   private lastSentCamPos = { x: Number.NaN, y: Number.NaN, z: Number.NaN }
   private lastSentCamRot = { x: Number.NaN, y: Number.NaN, z: Number.NaN, w: Number.NaN }
   private lastSentPpiDir = { x: Number.NaN, y: Number.NaN, z: Number.NaN }
+  private lastSentPpiScreen = { x: Number.NaN, y: Number.NaN }
   private prepared = false
   private crdtTick = 0
   /** Renderer frame counter for EngineInfo (ADR-148). */
@@ -367,6 +369,11 @@ export class SceneScriptSystem {
   private clientCameraPose: EntityPose | null = null
   /** Live player/camera poses sampled immediately before CRDT encode (rotation must not lag). */
   private clientPoseProvider: (() => { player: EntityPose; camera: EntityPose }) | null = null
+  /**
+   * Reserved PE/Camera stream. Current/Focus only — live neighbors that read
+   * Transform.get(PlayerEntity) (snow flower trail) must not see plaza-world feet.
+   */
+  private reservedPoseStreaming = true
   private getSpatialAudioPlayerRoot: (() => THREE.Object3D | null) | null = null
   private bindLiveKitVideo: LiveKitVideoBinder | null = null
   /** Scene LiveKit remote video (stream-key ingress and/or Cast). */
@@ -1811,6 +1818,35 @@ export class SceneScriptSystem {
   }
 
   /**
+   * Reserved scene-store seed for the worker. Explorer has PlayerIdentityData + RealmInfo
+   * on the isolate before the first sendBinary (isRoomReady / joinRoster).
+   */
+  private hostReservedForWorker(): HostReservedSceneStore {
+    const identity = this.reserved.getPlayerIdentity()
+    const realm = this.realmInfoProvider?.() ?? null
+    const reserved: HostReservedSceneStore = {}
+    if (identity?.address) {
+      reserved.playerIdentity = {
+        userId: identity.address,
+        displayName: identity.displayName,
+        hasConnectedWeb3: identity.isGuest !== true
+      }
+    }
+    if (realm) {
+      reserved.realmInfo = {
+        baseUrl: realm.baseUrl || realm.domain || '',
+        realmName: realm.realmName || '',
+        networkId: Number.isFinite(realm.networkId) ? realm.networkId : 1,
+        commsAdapter: realm.commsAdapter || '',
+        isPreview: realm.isPreview === true,
+        room: realm.room,
+        isConnectedSceneRoom: realm.isConnectedSceneRoom === true
+      }
+    }
+    return reserved
+  }
+
+  /**
    * Mirror a remote peer as host-owned PlayerIdentityData + AvatarBase + AvatarEquippedData
    * on the synthetic avatar entity (same path Unity uses for other players in-scene).
    */
@@ -1859,12 +1895,38 @@ export class SceneScriptSystem {
     this.sceneBinaryIngressRelease = handler
   }
 
+  /**
+   * Explorer web: scene LiveKit comes up after ~1.5s of sandbox time, then
+   * join/snapshot. Reused landing rooms must not inject those events at t=0.
+   */
+  private sceneBinaryCustomEventRelease: (() => void) | null = null
+  private customEventReleaseTimer: number | null = null
+  /** Bevy PixelWars: seed fallback 1.57s, teamAssigned 2.76s. */
+  private static readonly SANDBOX_BEFORE_JOIN_MS = 2000
+
+  setSceneBinaryCustomEventRelease(handler: (() => void) | null): void {
+    this.sceneBinaryCustomEventRelease = handler
+  }
+
   private releaseSceneBinaryIngressAfterMain(): void {
     try {
       this.sceneBinaryIngressRelease?.()
     } catch {
       /* ignore */
     }
+    if (this.customEventReleaseTimer != null) {
+      window.clearTimeout(this.customEventReleaseTimer)
+      this.customEventReleaseTimer = null
+    }
+    this.customEventReleaseTimer = window.setTimeout(() => {
+      this.customEventReleaseTimer = null
+      if (!this.running) return
+      try {
+        this.sceneBinaryCustomEventRelease?.()
+      } catch {
+        /* ignore */
+      }
+    }, SceneScriptSystem.SANDBOX_BEFORE_JOIN_MS)
   }
 
   private refreshRealmInfoFromProvider(): void {
@@ -2003,10 +2065,35 @@ export class SceneScriptSystem {
     this.clientPoseProvider = provider
   }
 
+  /**
+   * Live neighbors keep scripts (animators / ambient) but do not receive a moving
+   * PlayerEntity until they are Current. Otherwise PE-follow VFX paints at the
+   * avatar in host space (flowers on plaza).
+   */
+  setReservedPoseStreaming(on: boolean): void {
+    if (this.reservedPoseStreaming === on) return
+    this.reservedPoseStreaming = on
+    if (on) this.seedReservedPosesFromProvider()
+  }
+
+  isReservedPoseStreaming(): boolean {
+    return this.reservedPoseStreaming
+  }
+
+  seedReservedPosesFromProvider(): void {
+    this.refreshClientPosesFromProvider()
+    if (!this.clientPlayerPose || !this.clientCameraPose) return
+    this.seedRendererEntities(this.clientPlayerPose, this.clientCameraPose)
+  }
+
   /** EngineInfo + poses + RealmInfo before a renderer→worker CRDT deliver. */
   private prepareReservedRoundTrip(player: EntityPose, camera: EntityPose): void {
     this.engineFrame++
     this.reserved.setEngineCounters(this.engineFrame, this.crdtTick)
+    if (!this.reservedPoseStreaming) {
+      this.reserved.syncEngineInfoOnly()
+      return
+    }
     this.reserved.prepareRendererRoundTrip(player, camera)
   }
 
@@ -2129,6 +2216,7 @@ export class SceneScriptSystem {
     const boot: SceneWorkerBoot = {
       type: 'boot',
       canvas: liveVirtualCanvas(readInteractableArea(this.host?.renderer.domElement ?? null)),
+      reserved: this.hostReservedForWorker(),
       debug: {
         sceneInputSnapshot: SCENE_INPUT_SNAPSHOT_VERBOSE,
         pointerDeliver: POINTER_VERBOSE,
@@ -2275,8 +2363,10 @@ export class SceneScriptSystem {
             })
           return
         }
-        // Boot progress for loading UI; browser console only if Help → console mirror is on.
-        if (msg?.type === 'log' && /\[sceneWorker\]/.test(msg.message)) {
+        // Compile progress only while the boot promise is open. After settle this
+        // handler used to swallow every `[sceneWorker]` line into an 80ms bucket
+        // and skip handleWorkerMessage — join/reserved/sendBinary proof vanished.
+        if (!settled && msg?.type === 'log' && /\[sceneWorker\]/.test(msg.message)) {
           const line = msg.message.replace(/^\[(?:log|info|warn|error|debug)\]\s*/, '')
           clientDebugLog.log('scene', line, { throttleMs: 80, throttleKey: 'scene-worker-boot' })
           if (/patching|compiling|evaluated|script ready|transferred script|compile fallback/i.test(msg.message)) {
@@ -2397,17 +2487,23 @@ export class SceneScriptSystem {
         /level-state edge done|no-target|inject RECEIVED|noTarget=|isPressed-path|isPressed-arm|sticky-clear|pointer-edge-|levelState=|edge-VFX peel|pointer ui egress|planeY0|VFXEDGE/i.test(
           cleaned
         )
-      if (loadGateHot || pointerDiag) {
+      const joinPaint =
+        /\[Client\]|joinRoster|teamAssigned|snapshot received|host reserved|sendBinary inbound|EventBus|isRoomReady/i.test(
+          cleaned
+        )
+      if (loadGateHot || pointerDiag || joinPaint) {
         console.info(`[sceneWorker] ${cleaned}`)
       }
       clientDebugLog.log('scene', cleaned, {
-        throttleMs: pointerDiag ? 0 : loadGateNoise ? (loadGateHot ? 500 : 5000) : 100,
+        throttleMs: pointerDiag || joinPaint ? 0 : loadGateNoise ? (loadGateHot ? 500 : 5000) : 100,
         throttleKey: pointerDiag
           ? `scene-worker-pointer-${cleaned.slice(0, 48)}`
-          : loadGateNoise
-            ? `scene-worker-loadgate-${cleaned.slice(0, 40)}`
-            : 'scene-worker-log',
-        alsoConsole: pointerDiag
+          : joinPaint
+            ? `scene-join-${cleaned.slice(0, 48)}`
+            : loadGateNoise
+              ? `scene-worker-loadgate-${cleaned.slice(0, 40)}`
+              : 'scene-worker-log',
+        alsoConsole: pointerDiag || joinPaint
       })
       return
     }
@@ -3985,8 +4081,10 @@ export class SceneScriptSystem {
             }
           })
           // Group + __mesh_* + instancer matrix (zero scale when hidden).
-          this.bridge.syncEcsVisibility([...poseDiff.keys()])
-          this.bridge.syncInstancedTransforms([...poseDiff.keys()])
+          const motionEntities = this.expandMotionExtractEntities(poseDiff.keys())
+          this.bridge.syncEcsVisibility(motionEntities)
+          this.bridge.syncInstancedTransforms(motionEntities)
+          this.bridge.extractMovedPoses(motionEntities)
           for (const entity of tweenEntities) {
             this.bridge.ensureMeshRendererTweenVisual(entity)
           }
@@ -4577,6 +4675,25 @@ export class SceneScriptSystem {
   }
 
   /**
+   * Parent Transform.getMutable (RTS walk) must also extract/instance-update
+   * GltfContainer children — DrawWorld visuals live on each pose node, not the parent.
+   */
+  private expandMotionExtractEntities(roots: Iterable<Entity>): Entity[] {
+    const out: Entity[] = []
+    const seen = new Set<Entity>()
+    const stack = [...roots]
+    while (stack.length) {
+      const entity = stack.pop()!
+      if (seen.has(entity)) continue
+      seen.add(entity)
+      out.push(entity)
+      const kids = this.transformChildren.get(entity)
+      if (kids) for (const child of kids) stack.push(child)
+    }
+    return out
+  }
+
+  /**
    * Fold-time UpdateWorld for pose. AvatarAttach + VC live lane skip Transform
    * (rod/line / reveal cam). Same extract path as the old motion peel.
    */
@@ -4608,10 +4725,26 @@ export class SceneScriptSystem {
           this.bridge?.noteReservedParentedEntity(entity, parent, v)
         }
       })
+      // Same as Tween orbit: extract copies pose.matrixWorld onto draw-root GLB
+      // clones. Incremental poseRoot.updateMatrixWorld(false) can miss a
+      // getMutable write this fold — MeshRenderer rings follow ECS, the GLB stays.
+      for (const entity of trsDiff.keys()) {
+        if (
+          this.readComponents.AvatarAttach.has(entity) ||
+          this.projection.isVcLiveTransformEntity(entity)
+        ) {
+          continue
+        }
+        const node = this.entityStore.getNode(entity)
+        if (!node) continue
+        node.updateMatrixWorld(true)
+      }
     }
-    const entities = [...poseDiff.keys()]
+    const entities = this.expandMotionExtractEntities(poseDiff.keys())
     this.bridge.syncEcsVisibility(this.bridge.entitiesWithVisibility())
+    // Promote InstancedMesh → clone before extract so the new GLB gets this pose.
     this.bridge.syncInstancedTransforms(entities)
+    if (trsDiff.size) this.bridge.extractMovedPoses(entities)
     for (const entity of tweenEntities) {
       this.bridge.ensureMeshRendererTweenVisual(entity)
     }
@@ -5005,7 +5138,9 @@ export class SceneScriptSystem {
       isSceneUiFieldEntity: (entity) => this.sceneUiBridge?.isFieldEntity(entity) ?? false,
       isSceneUiTypingActive: () => this.sceneUiBridge?.isTypingActive() ?? false,
       pickUiRegionHit: (clientX, clientY) =>
-        this.sceneUiBridge?.pickUiRegionHit(clientX, clientY, this.host!.camera) ?? null
+        this.sceneUiBridge?.pickUiRegionHit(clientX, clientY, this.host!.camera) ?? null,
+      pickUiHoverHit: (clientX, clientY) =>
+        this.sceneUiBridge?.pickUiHoverHit(clientX, clientY, this.host!.camera) ?? null
     })
     let pointerEntities = 0
     for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {
@@ -5452,10 +5587,10 @@ export class SceneScriptSystem {
     if (!this.running || !this.worker) return
     // Never stack a play-frame while poll/egress is live (second engine.update).
     if (this.isPlayFrameInFlight()) return
-    this.refreshClientPosesFromProvider()
+    if (this.reservedPoseStreaming) this.refreshClientPosesFromProvider()
     this.refreshRealmInfoFromProvider()
-    const player = this.clientPlayerPose
-    const camera = this.clientCameraPose
+    const player = this.reservedPoseStreaming ? this.clientPlayerPose : null
+    const camera = this.reservedPoseStreaming ? this.clientCameraPose : null
     const primaryPointer = this.pointerEvents?.getPrimaryPointerSnapshot() ?? undefined
     const poseMoved = this.playFramePoseMoved(player, camera, primaryPointer)
     if (this.pointerEvents?.hasPendingInput()) {
@@ -5508,7 +5643,12 @@ export class SceneScriptSystem {
   private playFramePoseMoved(
     player: EntityPose | null,
     camera: EntityPose | null,
-    ppi: { worldRayDirection: { x: number; y: number; z: number } } | undefined
+    ppi:
+      | {
+          worldRayDirection: { x: number; y: number; z: number }
+          screenCoordinates?: { x: number; y: number }
+        }
+      | undefined
   ): boolean {
     const eps = 1e-4
     const posChanged = (
@@ -5533,13 +5673,25 @@ export class SceneScriptSystem {
       if (rotChanged(camera.rotation, this.lastSentCamRot)) return true
     }
     if (ppi && posChanged(ppi.worldRayDirection, this.lastSentPpiDir)) return true
+    if (
+      ppi?.screenCoordinates &&
+      (Math.abs(ppi.screenCoordinates.x - this.lastSentPpiScreen.x) > 0.5 ||
+        Math.abs(ppi.screenCoordinates.y - this.lastSentPpiScreen.y) > 0.5)
+    ) {
+      return true
+    }
     return Number.isNaN(this.lastSentPlayerPos.x)
   }
 
   private rememberPlayFramePose(
     player: EntityPose | null,
     camera: EntityPose | null,
-    ppi: { worldRayDirection: { x: number; y: number; z: number } } | undefined
+    ppi:
+      | {
+          worldRayDirection: { x: number; y: number; z: number }
+          screenCoordinates?: { x: number; y: number }
+        }
+      | undefined
   ): void {
     if (player) {
       this.lastSentPlayerPos = { x: player.position.x, y: player.position.y, z: player.position.z }
@@ -5561,6 +5713,9 @@ export class SceneScriptSystem {
     }
     if (ppi) {
       this.lastSentPpiDir = { ...ppi.worldRayDirection }
+      if (ppi.screenCoordinates) {
+        this.lastSentPpiScreen = { ...ppi.screenCoordinates }
+      }
     }
   }
 
@@ -5588,6 +5743,8 @@ export class SceneScriptSystem {
 
   updatePointerEvents(tickNumber: number): void {
     this.pointerEvents?.updateVisuals(tickNumber)
+    const hovers = this.pointerEvents?.consumeHoverInjects() ?? []
+    for (const inject of hovers) this.deliverHoverToWorker(inject)
   }
 
   /** Flush queued pointer down/up after worker CRDT apply — ADR-214 executeRaycast stage. */
@@ -5720,6 +5877,21 @@ export class SceneScriptSystem {
         queueMicrotask(() => void this.flushPendingPointerCrdt())
       }
     }
+  }
+
+  /** UI hover enter/leave — do not arm the click deliver-done watchdog. */
+  private deliverHoverToWorker(
+    inject: import('../../player/injectPointerClick').InjectPointerClickBody
+  ): void {
+    if (!this.worker || !this.running) return
+    const ppi = this.pointerEvents?.getPrimaryPointerSnapshot() ?? inject.primaryPointer
+    if (ppi) inject.primaryPointer = ppi
+    inject.camera = this.capturePointerEdgeCameraDcl()
+    this.worker.postMessage({
+      type: 'inject-pointer-click',
+      body: inject,
+      injectOnly: true
+    } satisfies MainToWorker)
   }
 
   /**
@@ -6020,8 +6192,14 @@ export class SceneScriptSystem {
   /** Apply latest client poses to projection before renderer outbound CRDT. */
   private prepareRendererOutboundState(): void {
     this.projection.flushPendingMainCameraBind()
-    this.refreshClientPosesFromProvider()
     this.refreshRealmInfoFromProvider()
+    if (!this.reservedPoseStreaming) {
+      this.engineFrame++
+      this.reserved.setEngineCounters(this.engineFrame, this.crdtTick)
+      this.reserved.syncEngineInfoOnly()
+      return
+    }
+    this.refreshClientPosesFromProvider()
     if (!this.clientPlayerPose || !this.clientCameraPose) return
     this.prepareReservedRoundTrip(this.clientPlayerPose, this.clientCameraPose)
   }
@@ -6034,6 +6212,13 @@ export class SceneScriptSystem {
   }
 
   syncClientEntities(player: EntityPose, camera: EntityPose): void {
+    if (!this.reservedPoseStreaming) {
+      this.refreshRealmInfoFromProvider()
+      this.engineFrame++
+      this.reserved.setEngineCounters(this.engineFrame, this.crdtTick)
+      this.reserved.syncEngineInfoOnly()
+      return
+    }
     this.clientPlayerPose = player
     this.clientCameraPose = camera
     this.refreshRealmInfoFromProvider()
@@ -6254,7 +6439,8 @@ export class SceneScriptSystem {
       plazaScale: options?.plazaScale,
       engineTickIntervalMs:
         options?.engineTickIntervalMs ?? resolveEngineTickIntervalMs(this.performanceTier),
-      portableExperience: options?.portableExperience === true
+      portableExperience: options?.portableExperience === true,
+      reserved: this.hostReservedForWorker()
     } satisfies MainToWorker)
   }
 
@@ -7046,6 +7232,10 @@ export class SceneScriptSystem {
     this.worker?.terminate()
     this.worker = null
     this.host = null
+    if (this.customEventReleaseTimer != null) {
+      window.clearTimeout(this.customEventReleaseTimer)
+      this.customEventReleaseTimer = null
+    }
     this.running = false
     this.prepared = false
   }

@@ -119,6 +119,8 @@ const REMOTE_SHADOW_CASTERS = 3
 const SHADOW_BUDGET_INTERVAL_MS = 250
 /** Sphere radius for camera-frustum anim skip (avatar torso + a bit of headroom). */
 const FRUSTUM_SKIP_RADIUS_M = 1.4
+/** Small rooms: full compose + full pose/anim regardless of distance. */
+const FULL_RATE_CROWD = 20
 
 const _frustum = new THREE.Frustum()
 const _projScreen = new THREE.Matrix4()
@@ -1494,6 +1496,9 @@ export class RemoteAvatarManager {
       frustumReady = true
     }
 
+    const fullRateCrowd = this.peers.size <= FULL_RATE_CROWD
+    this.loadQueue.setIgnoreDistance(fullRateCrowd)
+
     for (const [key, record] of this.peers.entries()) {
       const remoteGlidingEarly =
         glideStateWantsOpen(record.glideState) ||
@@ -1515,10 +1520,11 @@ export class RemoteAvatarManager {
       }
 
       // LOD: near ≤8 m full · mid ≤20 m throttled · far pose-only (unless emote).
+      // ≤20 remotes: full pose/anim at any distance (still skip off-camera skinning).
       let lodIntervalMs = 0
       let allowAnim = true
       let lodBand: 'near' | 'mid' | 'far' = 'near'
-      if (this.hasLocalPlayerPos && record.hasPosition) {
+      if (!fullRateCrowd && this.hasLocalPlayerPos && record.hasPosition) {
         if (dist2 > LOD_MID_M2) {
           lodIntervalMs = LOD_FAR_INTERVAL_MS
           allowAnim = emoteBusy

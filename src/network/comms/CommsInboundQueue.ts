@@ -31,21 +31,37 @@ export const CommsWireMessageType = {
  * Worker BinaryMessageBus expects `encodeCommsBinaryMessage` envelopes:
  * `[senderLen][sender][messageType][payload…]`.
  *
- * **Ingress hold:** auth-server scenes (`pixelwars`, Flagtag) call `syncEntity(enumId)`
- * at the end of async `main()` / `setupClient`. SDK schedules `main()` fire-and-forget
- * (first await yields before `syncEntity`). If AUTH_RES / CRDT is drained into the
- * worker during that gap, `findOrCreateNetworkEntity` creates an **orphan** for enum
- * ids (e.g. SeedHolder=3000), then `syncEntity` throws "already in use". Seed stays
- * on the orphan while `SeedHolder.get(seedHolder)` remains 0 → wrong/no maze, paint
- * cell ids never match, HUD % climbs from paintDelta, tiles stay white.
+ * **Ingress hold:** this client boots the scene worker, then drains a LiveKit
+ * buffer. Official isolate runs `main()` interleaved with comms. Dumping AUTH_RES
+ * before `syncEntity(enumId)` makes SDK `findNetworkId` create a new local entity;
+ * the later `syncEntity` throws "already in use". Hold until main has attached
+ * network identities, then deliver — same remap the official CRDT system already
+ * does when the identity exists first.
  *
  * Hold drains until the host releases after scene main has settled (syncEntity ran).
+ *
+ * **CUSTOM_EVENT:** official web Explorer connects scene LiveKit *after* the
+ * sandbox clock is running, so join/snapshot land after the scene's own 1.5s
+ * seed fallback. We reuse a landing room that is already hot, so dumping
+ * buffered CUSTOM_EVENT at sandbox t=0 is not that order. Keep those packets
+ * queued until the host opens gameplay ingress; AUTH_RES/CRDT still drain
+ * when `holdDrain` clears.
  */
+function encodedCommsMessageType(buf: Uint8Array): number | null {
+  if (buf.byteLength < 2) return null
+  const senderLen = buf[0]!
+  if (buf.byteLength < 2 + senderLen) return null
+  return buf[1 + senderLen]!
+}
+
 export class CommsInboundQueue {
   private readonly pending: Uint8Array[] = []
   /** When true, push still accepts but drain returns [] (keeps FIFO for later). */
   private holdDrain = true
+  /** Sandbox clock must start before warm-room join/snapshot (Explorer order). */
+  private holdCustomEvents = true
   private holdLogged = false
+  private customHoldLogged = false
 
   /**
    * @param craftedPayload — RFC4 scene-binary body = SDK craftCommsMessage
@@ -75,11 +91,24 @@ export class CommsInboundQueue {
    */
   setHoldDrain(hold: boolean): void {
     this.holdDrain = hold
-    if (hold) this.holdLogged = false
+    if (hold) {
+      this.holdLogged = false
+      this.holdCustomEvents = true
+      this.customHoldLogged = false
+    }
+  }
+
+  setHoldCustomEvents(hold: boolean): void {
+    this.holdCustomEvents = hold
+    if (hold) this.customHoldLogged = false
   }
 
   isHoldDrain(): boolean {
     return this.holdDrain
+  }
+
+  isHoldCustomEvents(): boolean {
+    return this.holdCustomEvents
   }
 
   pendingCount(): number {
@@ -98,12 +127,33 @@ export class CommsInboundQueue {
       return []
     }
     if (!this.pending.length) return []
-    const out = this.pending.slice()
-    this.pending.length = 0
+    let toDrain: Uint8Array[]
+    if (this.holdCustomEvents) {
+      const crdt: Uint8Array[] = []
+      const rest: Uint8Array[] = []
+      for (const msg of this.pending) {
+        if (encodedCommsMessageType(msg) === CommsWireMessageType.CUSTOM_EVENT) rest.push(msg)
+        else crdt.push(msg)
+      }
+      this.pending.length = 0
+      this.pending.push(...rest)
+      toDrain = crdt
+      if (rest.length > 0 && !this.customHoldLogged) {
+        this.customHoldLogged = true
+        console.info(
+          `[sync] CUSTOM_EVENT held — ${rest.length} packet(s) until sandbox clock leads join`
+        )
+      }
+    } else {
+      // Must splice — `toDrain = this.pending; this.pending.length = 0` aliases
+      // the same array and returns [] so join/snapshot never reach EventBus.
+      toDrain = this.pending.splice(0)
+    }
+    if (!toDrain.length) return []
     let totalBytes = 0
-    for (const m of out) totalBytes += m.byteLength
-    logSyncDrain({ count: out.length, totalBytes })
-    return out
+    for (const m of toDrain) totalBytes += m.byteLength
+    logSyncDrain({ count: toDrain.length, totalBytes })
+    return toDrain
   }
 
   clear(): void {

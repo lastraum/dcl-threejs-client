@@ -10,7 +10,7 @@ import {
   isOpenRoadEntity,
   type ActiveSceneEntity
 } from './fetchActiveEntities'
-import { aoiLiveGuests, aoiStandOnPromote } from '../multiScene/caps'
+import { aoiStandOnPromote } from '../multiScene/caps'
 
 /**
  * Dense Genesis (CBD) can have 30–50+ SDK7 scenes inside Scene Distance.
@@ -246,7 +246,9 @@ export class ScenePromoteController {
    * Roads/empty are classified and skipped; only real SDK7 scenes get onPrefetch.
    */
   private scheduleScriptWarmScan(dclX: number, dclZ: number, baseParcel: string): void {
-    if (!(aoiLiveGuests() || aoiStandOnPromote())) return
+    // Live guests boot from AoiVisualLayer + SceneLoop. This scan is leftover
+    // promote prefetch (extra catalyst POST + IDB) and is not the guest clock.
+    if (!aoiStandOnPromote()) return
     if (!this.onPrefetch || this.getScriptWarmRadiusM() <= 0) return
     if (this.warmScanInFlight) return
     const now = performance.now()

@@ -96,6 +96,11 @@ export type SceneEngineSchedulerConfig = {
     mountEntityIds: number[]
   ) => boolean | void
   onStuckRecover: () => void
+  /**
+   * Explorer: reserved LWW (PlayerIdentityData, RealmInfo) exists on the scene store
+   * before sendBinary / systems. Called at the start of every eng.update (dt=0 included).
+   */
+  onBeforeEngineUpdate?: () => void
   onAfterEngineTick?: () => void
   /**
    * Phase 2 — play mode only: pollEvents + cold CRDT flush after cooperative engine.update.
@@ -190,11 +195,19 @@ function wrapEngineUpdateWithWallClock(eng: IEngine): void {
   if (wrapped.__threejsWallClockWrapped) return
   const nativeUpdate = eng.update.bind(eng)
   wrapped.update = async (dt: number) => {
+    config?.onBeforeEngineUpdate?.()
     // WSP v2 Phase 0 — phase meters around every eng.update (incl. dt=0 transport).
     if (!(dt > 0)) {
       beginEngUpdatePhase(0)
       try {
         await nativeUpdate(0)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (/Profile not initialized/i.test(msg)) {
+          console.warn(`[sceneWorker] eng.update(0) ${msg} (continuing)`)
+        } else {
+          throw err
+        }
       } finally {
         endEngUpdatePhase()
       }

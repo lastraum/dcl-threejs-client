@@ -15,6 +15,7 @@ export const HOST_OWNED_LWW_COMPONENT_IDS = new Set([
   1072, // CameraMode
   1074, // PointerLock
   1106, // RealmInfo
+  1089, // PlayerIdentityData — renderer-owned local + remote mirrors
   1209, // PrimaryPointerInfo
   1103, // TweenState
   1068, // RaycastResult

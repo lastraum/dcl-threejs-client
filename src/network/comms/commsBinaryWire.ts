@@ -10,6 +10,32 @@ export function encodeCommsBinaryMessage(sender: string, messageType: number, pa
   return out
 }
 
+/**
+ * Standalone copy at byteOffset 0. SDK `DataView(buf.buffer)` ignores view offsets —
+ * a sliced/transferred envelope decodes the wrong sender and EventBus drops
+ * `sender !== "authoritative-server"` with no log.
+ */
+export function isolateCommsBinaryMessage(chunk: Uint8Array): Uint8Array {
+  if (chunk.byteOffset === 0 && chunk.buffer.byteLength === chunk.byteLength) {
+    return chunk
+  }
+  const out = new Uint8Array(chunk.byteLength)
+  out.set(chunk)
+  return out
+}
+
+export function decodeCommsBinaryMessage(
+  chunk: Uint8Array
+): { sender: string; messageType: number; payload: Uint8Array } | null {
+  if (chunk.byteLength < 2) return null
+  const senderLen = chunk[0]!
+  if (chunk.byteLength < 2 + senderLen) return null
+  const sender = new TextDecoder().decode(chunk.subarray(1, 1 + senderLen))
+  const messageType = chunk[1 + senderLen]!
+  const payload = chunk.subarray(2 + senderLen)
+  return { sender, messageType, payload }
+}
+
 export function bytesToBase64(data: Uint8Array): string {
   let binary = ''
   for (let i = 0; i < data.length; i++) binary += String.fromCharCode(data[i]!)

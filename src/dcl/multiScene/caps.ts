@@ -124,7 +124,8 @@ export function secondaryLiveRadiusM(): number {
   return secondaryLiveEnterRadiusM()
 }
 
-export const SECONDARY_LIVE_BOOT_CONCURRENCY = 1
+/** After play-ready, start every live-band guest (desktop = 4 scene threads). */
+export const SECONDARY_LIVE_BOOT_CONCURRENCY = 4
 
 export function tertiaryResidentCap(_tier: PerformanceTier): number {
   return TERTIARY_RESIDENT_HARD_CAP

@@ -26,7 +26,6 @@ import {
 } from '../camera/cameraDepthPolicy'
 import { perfNoteFrameHost, perfNoteRenderSplit } from '../util/perfCounters'
 import { forceNoBloom, forceNoShadow } from '../client/devFlags'
-import { scheduleOffPlayRaf } from './mainThreadYield'
 
 export class SceneHost {
   renderer: THREE.WebGLRenderer
@@ -533,16 +532,15 @@ export class SceneHost {
         )
       }
 
-      // Guest / apply / compose start after this rAF returns — Bevy present is host-only.
+      // Guest clock starts after this rAF returns. Do not idle-delay into the
+      // next present and then drop — that starved live guests on CBD (19 ticks
+      // per walk, snow onUpdate never applied flowers).
       if (!asyncBusy && opts.onAsyncFrame) {
         asyncBusy = true
         const asyncDelta = delta
-        const presentMs = syncMs + renderMs
-        // Hot present → wait longer so apply cannot steal the next rAF.
-        // Idle (timeout 0) when the paint turn was cheap.
-        scheduleOffPlayRaf(() => {
+        const kick = (): void => {
           if (presentLock) {
-            asyncBusy = false
+            setTimeout(kick, 0)
             return
           }
           const asyncT0 = performance.now()
@@ -553,7 +551,8 @@ export class SceneHost {
               lastAsyncMs = performance.now() - asyncT0
               asyncBusy = false
             })
-        }, presentMs > 18 ? 64 : 0)
+        }
+        setTimeout(kick, 0)
       }
 
       const totalMs = performance.now() - frameT0

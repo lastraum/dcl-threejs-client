@@ -10,6 +10,7 @@ import type { ProjectionView } from './ProjectionView'
 import { isAnimatorVerbose } from './animatorConfig'
 import { deriveDefaultAnimatorStates } from './implicitAnimator'
 import { isInBlimpSubtree, isMotionFocusActive, matchesMotionFocusSrc } from './motionFocus'
+import { prepareAnimatedDrawLocal } from '../rendering/DrawWorld'
 
 type AnimEntry = {
   mixer: THREE.AnimationMixer
@@ -952,7 +953,7 @@ export class AnimatorBridge {
     // never rebuild matrices, so fire/FX rest-pose stays invisible (scale tracks ~0.001).
     node.matrixAutoUpdate = true
     mesh.matrixAutoUpdate = true
-    mesh.userData.dclDrawAnimated = true
+    prepareAnimatedDrawLocal(mesh)
     mesh.userData.dclDrawStatic = false
     mesh.traverse((o) => {
       o.matrixAutoUpdate = true

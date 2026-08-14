@@ -5,6 +5,7 @@ import { SceneScriptGuest } from './SceneScriptGuest'
 import type { SceneScriptSystem } from '../systems/SceneScriptSystem'
 import {
   PRIMARY_GUEST_ID,
+  type GuestId,
   type SceneLoopPhaseMeters,
   type SceneLoopTickInput
 } from './types'
@@ -28,6 +29,8 @@ export class SceneLoop {
   private readonly guests = new Map<string, SceneGuest>()
   private meters: SceneLoopPhaseMeters = emptyMeters()
   private lastApplyMs = 0
+  /** Live guest whose footprint contains the player — current scene, not FocusOwner. */
+  private currentGuestId: GuestId | null = null
 
   /** True when the last apply overran the display budget — next rAF should be minimum. */
   lastApplyOverran(budgetMs = 28): boolean {
@@ -57,16 +60,29 @@ export class SceneLoop {
     }
   }
 
-  /** Keep SceneLoop secondaries aligned with running secondary-mode slots. */
+  setCurrentGuestId(id: GuestId | null): void {
+    this.currentGuestId = id
+  }
+
+  getCurrentGuestId(): GuestId | null {
+    return this.currentGuestId
+  }
+
   reconcileLiveGuests(getters: Array<{ id: string; getSystem: () => SceneScriptSystem }>): void {
     const live = new Set(getters.map((g) => g.id))
     for (const g of getters) {
-      if (!this.guests.has(g.id)) {
-        this.guests.set(g.id, new SceneScriptGuest(g.id, 'secondary', g.getSystem, false))
-      }
+      const existing = this.guests.get(g.id)
+      if (existing instanceof SceneScriptGuest) continue
+      this.guests.set(
+        g.id,
+        new SceneScriptGuest(g.id, 'secondary', g.getSystem, false, () => this.currentGuestId === g.id)
+      )
     }
     for (const [id, guest] of this.guests) {
       if (guest.kind === 'secondary' && !live.has(id)) this.guests.delete(id)
+    }
+    if (this.currentGuestId && !this.guests.has(this.currentGuestId)) {
+      this.currentGuestId = null
     }
   }
 
@@ -127,6 +143,8 @@ export class SceneLoop {
   /** Cheap Transform/Tween peel before WebGL present. */
   peelMotion(deadlineMs: number): void {
     this.guests.get(PRIMARY_GUEST_ID)?.peelMotion?.(deadlineMs)
+    const cur = this.currentGuest()
+    if (cur) cur.peelMotion?.(deadlineMs)
   }
 
   async applyWorld(deadlineMs: number): Promise<void> {
@@ -138,5 +156,34 @@ export class SceneLoop {
       ...this.meters,
       applyMs: this.lastApplyMs
     }
+  }
+
+  /** Apply the under-feet guest even when plaza leftover is 0 (new flower GLBs). */
+  async applyCurrentGuest(deadlineMs: number): Promise<void> {
+    const cur = this.currentGuest()
+    if (!cur || cur.id === PRIMARY_GUEST_ID) return
+    await cur.applyWorld(deadlineMs)
+  }
+
+  /**
+   * Neighbor live guests still emit CRDT after hydrate (Transform drones,
+   * flower addEntity). Current already applied; spend leftover here.
+   */
+  async applyOtherLiveGuests(deadlineMs: number): Promise<void> {
+    if (deadlineMs <= 0) return
+    const skip = this.currentGuestId
+    const t0 = performance.now()
+    for (const guest of this.guests.values()) {
+      if (guest.kind !== 'secondary') continue
+      if (guest.id === skip) continue
+      const spent = performance.now() - t0
+      if (spent >= deadlineMs) break
+      await guest.applyWorld(Math.max(1, deadlineMs - spent))
+    }
+  }
+
+  private currentGuest(): SceneGuest | undefined {
+    if (!this.currentGuestId) return undefined
+    return this.guests.get(this.currentGuestId)
   }
 }

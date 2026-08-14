@@ -299,12 +299,13 @@ export class CommsService {
   }
 
   /**
-   * Re-broadcast profile on the **single** media LiveKit room (not dual island+scene).
-   * @see mediaLiveKitSession
+   * Re-broadcast profile on every movement room (scene + island on parcels).
+   * Explorer peers read RFC4 Profile on the archipelago island.
    */
   announceProfile(reason: 'connect' | 'heartbeat' | 'profile-request' = 'connect'): void {
-    const session = this.mediaLiveKitSession()
-    if (session) session.sendProfileAnnouncement(reason)
+    for (const session of this.movementLiveKitSessions()) {
+      session.sendProfileAnnouncement(reason)
+    }
   }
 
   setLambdasUrl(url: string): void {
@@ -360,8 +361,6 @@ export class CommsService {
         alsoConsole: true
       })
     }
-    // Single media law: scene preferred over island LiveKit.
-    this.pruneIslandLiveKitIfSceneMedia('prune-unused-parcel')
   }
 
   setSceneBinaryHandler(handler: SceneBinaryHandler | null): void {
@@ -620,6 +619,18 @@ export class CommsService {
     return connected
   }
 
+  /** Focus walk: join under-feet scene LiveKit; keep host origin / movement frame. */
+  async connectFocusSceneRoom(target: SceneCommsTarget): Promise<SceneCommsConnectResult> {
+    const run = this.sceneRoomConnectChain.then(() =>
+      this.connectSceneRoomExclusive(target, { preserveHostOrigin: true })
+    )
+    this.sceneRoomConnectChain = run.then(
+      () => undefined,
+      () => undefined
+    )
+    return run
+  }
+
   async connectSceneRoom(target: SceneCommsTarget): Promise<SceneCommsConnectResult> {
     const run = this.sceneRoomConnectChain.then(() => this.connectSceneRoomExclusive(target))
     this.sceneRoomConnectChain = run.then(
@@ -629,12 +640,15 @@ export class CommsService {
     return run
   }
 
-  private async connectSceneRoomExclusive(target: SceneCommsTarget): Promise<SceneCommsConnectResult> {
+  private async connectSceneRoomExclusive(
+    target: SceneCommsTarget,
+    opts?: { preserveHostOrigin?: boolean }
+  ): Promise<SceneCommsConnectResult> {
     this.sceneRoomConnectInFlight = true
     // Re-arm hold for each scene join — early AUTH_RES must not race async main/syncEntity.
     this.setSceneBinaryIngressHold(true)
     try {
-      return await this.connectSceneRoomImpl(target)
+      return await this.connectSceneRoomImpl(target, opts)
     } finally {
       this.sceneRoomConnectInFlight = false
     }
@@ -662,6 +676,30 @@ export class CommsService {
     const prevPointer = prev.pointer?.trim() ?? ''
     const nextPointer = next.pointer?.trim() ?? ''
     return prevSceneId !== nextSceneId || prevPointer !== nextPointer
+  }
+
+  /**
+   * Swap Focus scene-room identity (sceneId + pointer) without moving the host
+   * origin / PhysX frame. Walk Focus grant must not rebase Genesis.
+   */
+  bindFocusRoomIdentity(target: SceneCommsTarget): void {
+    const host = this.sceneTarget
+    this.sceneId = target.sceneId.trim()
+    this.realm.room = normalizePointer(target.pointer)
+    this.sceneTarget = {
+      ...(host ?? target),
+      sceneId: target.sceneId,
+      pointer: target.pointer,
+      sceneTitle: target.sceneTitle ?? host?.sceneTitle,
+      commsEnabled: target.commsEnabled,
+      commsAdapterHint: target.commsAdapterHint ?? host?.commsAdapterHint,
+      metadataBlacklist: target.metadataBlacklist ?? host?.metadataBlacklist
+    }
+    this.realm = {
+      ...this.realm,
+      realmName: gatekeeperRealmNameForComms(target),
+      isConnectedSceneRoom: this.isLiveKitConnected()
+    }
   }
 
   bindSceneTarget(target: SceneCommsTarget): void {
@@ -709,12 +747,23 @@ export class CommsService {
     void reason
   }
 
-  private async connectSceneRoomImpl(target: SceneCommsTarget): Promise<SceneCommsConnectResult> {
-    this.bindSceneTarget(target)
-    clientDebugLog.log(
-      'comms',
-      `Scene origin: baseParcel=${target.baseParcel} → world offset (${this.sceneOriginMeters.x}, ${this.sceneOriginMeters.z})m | bounds=(${this.realmBounds?.minX},${this.realmBounds?.minY})→(${this.realmBounds?.maxX},${this.realmBounds?.maxY})`
-    )
+  private async connectSceneRoomImpl(
+    target: SceneCommsTarget,
+    opts?: { preserveHostOrigin?: boolean }
+  ): Promise<SceneCommsConnectResult> {
+    if (opts?.preserveHostOrigin && this.sceneTarget) {
+      this.bindFocusRoomIdentity(target)
+      clientDebugLog.log(
+        'comms',
+        `Focus room (origin held) · scene=${target.sceneId.slice(0, 12)}… pointer=${target.pointer} hostBase=${this.sceneTarget.baseParcel}`
+      )
+    } else {
+      this.bindSceneTarget(target)
+      clientDebugLog.log(
+        'comms',
+        `Scene origin: baseParcel=${target.baseParcel} → world offset (${this.sceneOriginMeters.x}, ${this.sceneOriginMeters.z})m | bounds=(${this.realmBounds?.minX},${this.realmBounds?.minY})→(${this.realmBounds?.maxX},${this.realmBounds?.maxY})`
+      )
+    }
 
     if (!this.localAddress || !this.identity) {
       clientDebugLog.log('comms', 'Wallet login required for production comms', { level: 'warn' })
@@ -960,13 +1009,13 @@ export class CommsService {
     this.realm.isConnectedSceneRoom = true
 
     this.sceneLiveKit.seedPeers(participants)
-    // Scene is media authority — drop island LiveKit so we never dual WebRTC/movement/voice.
-    this.pruneIslandLiveKitIfSceneMedia('scene-room-connected')
+    // ADR-204: scene room = scene media / scene packets. Island LiveKit stays
+    // for RFC4 Movement + profiles (Explorer peers live on the island).
     this.notifyLiveKitRoomsChanged()
 
     clientDebugLog.log(
       'comms',
-      'Transport: LiveKit scene room (single media) · RFC4 Movement + Scene packets · island LiveKit pruned',
+      'Transport: LiveKit scene room (media) + island (avatars) · RFC4 Movement + Scene packets',
       { level: 'success' }
     )
     return { ok: true }
@@ -1120,19 +1169,18 @@ export class CommsService {
   }
 
   /**
-   * **One** LiveKit session for avatar media (movement / voice / profile).
+   * **One** LiveKit session for voice / scene media (not island avatars).
    *
-   * Never dual-publish island+scene or world+scene.
+   * Movement/profile fan-out is {@link movementLiveKitSessions}.
    *
    * | Place | Media room |
    * |-------|------------|
    * | Worlds | world (Cast scene room is not avatar media) |
-   * | Parcels | **scene** preferred (gatekeeper / ADR-204) |
+   * | Parcels | **scene** preferred for voice / scene packets |
    * | Empty land / scene fail | island LiveKit fallback |
    *
-   * Archipelago **WebSocket** stays for presence seed + Stats/monitoring
-   * (see Archipelago workers docs — Stats is observability; not a second media plane).
-   * Island LiveKit is not used when scene room is up.
+   * Archipelago **WebSocket** stays for presence seed + Stats/monitoring.
+   * Island LiveKit stays up for RFC4 Movement + profiles (Explorer peers).
    */
   private mediaLiveKitSession(): LiveKitCommsSession | null {
     if (this.isWorldComms()) {
@@ -1147,20 +1195,20 @@ export class CommsService {
     return null
   }
 
-  /** Drop island LiveKit when scene media is authoritative (no dual WebRTC). */
-  private pruneIslandLiveKitIfSceneMedia(reason: string): void {
-    if (this.isWorldComms()) return
-    if (!this.sceneLiveKit.isConnected()) return
-    if (!this.islandConnected && !this.islandLiveKit.isConnected()) return
-    this.islandLiveKit.disconnect()
-    this.islandConnected = false
-    this.clearPeerTransport(TransportType.Island)
-    clientDebugLog.log(
-      'comms',
-      `Pruned island LiveKit (scene media preferred) · ${reason}`,
-      { level: 'info', alsoConsole: true }
-    )
-    this.notifyLiveKitRoomsChanged()
+  /**
+   * RFC4 Movement + Profile rooms. Explorer peers publish on the archipelago
+   * island; our scene room only has people who also joined gatekeeper LiveKit.
+   * Voice / scene-binary stay on {@link mediaLiveKitSession}.
+   */
+  private movementLiveKitSessions(): LiveKitCommsSession[] {
+    if (this.isWorldComms()) {
+      const media = this.mediaLiveKitSession()
+      return media ? [media] : []
+    }
+    const out: LiveKitCommsSession[] = []
+    if (this.sceneLiveKit.isConnected()) out.push(this.sceneLiveKit)
+    if (this.islandLiveKit.isConnected()) out.push(this.islandLiveKit)
+    return out
   }
 
   broadcastTransform(
@@ -1181,9 +1229,8 @@ export class CommsService {
     if (this.canPublishLiveKitMovement()) {
       this.transport = 'livekit'
       this.pendingTransform = { type: 'avatar-transform', x, y, z, yaw }
-      const media = this.mediaLiveKitSession()
-      if (media) {
-        media.queueTransform(x, y, z, yaw, isEmoting, locomotion)
+      for (const session of this.movementLiveKitSessions()) {
+        session.queueTransform(x, y, z, yaw, isEmoting, locomotion)
       }
       // Archipelago WS position only (Stats / clustering seed) — not a second LiveKit publish.
       if (this.sceneOrigin) {
@@ -1204,8 +1251,9 @@ export class CommsService {
     }
     if (this.canPublishLiveKitMovement()) {
       this.transport = 'livekit'
-      const media = this.mediaLiveKitSession()
-      if (media) media.flushBroadcast(now, BROADCAST_INTERVAL_MS)
+      for (const session of this.movementLiveKitSessions()) {
+        session.flushBroadcast(now, BROADCAST_INTERVAL_MS)
+      }
       return
     }
     if (!this.pendingTransform || now - this.lastBroadcast < BROADCAST_INTERVAL_MS) return
@@ -1241,6 +1289,25 @@ export class CommsService {
 
   isSceneBinaryIngressHeld(): boolean {
     return this.inboundQueue.isHoldDrain()
+  }
+
+  /**
+   * Official web Explorer connects scene LiveKit after the sandbox is ticking.
+   * We reuse a landing room — open CUSTOM_EVENT only once that clock has a head start.
+   */
+  setSceneBinaryCustomEventHold(hold: boolean): void {
+    const wasHeld = this.inboundQueue.isHoldCustomEvents()
+    this.inboundQueue.setHoldCustomEvents(hold)
+    if (wasHeld && !hold) {
+      const n = this.inboundQueue.pendingCount()
+      clientDebugLog.log(
+        'sync',
+        n > 0
+          ? `CUSTOM_EVENT ingress live — ${n} join/snapshot packet(s) drain next sendBinary`
+          : 'CUSTOM_EVENT ingress live (queue empty)',
+        { level: 'info', alsoConsole: true }
+      )
+    }
   }
 
   /**
@@ -1811,42 +1878,24 @@ export class CommsService {
   }
 
   private async onIslandChanged(connStr: string): Promise<void> {
-    // Scene media preferred: archipelago island assignment is control-plane / Stats clustering.
-    // Do not open a second LiveKit media room when the gatekeeper scene room is already up.
-    if (!this.isWorldComms() && this.sceneLiveKit.isConnected()) {
-      if (this.islandConnected || this.islandLiveKit.isConnected()) {
-        this.pruneIslandLiveKitIfSceneMedia('islandChanged-while-scene-media')
-      } else {
-        clientDebugLog.log(
-          'comms',
-          `Archipelago islandChanged ignored for LiveKit (scene media preferred) · ${connStr.slice(0, 40)}…`,
-          { level: 'info', alsoConsole: true, throttleMs: 15_000 }
-        )
-      }
-      return
-    }
-
     this.islandLiveKit.disconnect()
     this.islandConnected = false
     if (!isLiveKitAdapter(connStr)) {
       clientDebugLog.log('comms', `Island conn_str unsupported: ${connStr.slice(0, 48)}`, { level: 'warn' })
       return
     }
-    const connected = await this.islandLiveKit.connect(connStr)
+    // Data-only: Explorer avatars ride island RFC4. Do not auto-sub island A/V
+    // (voice stays on the scene room).
+    const connected = await this.islandLiveKit.connect(connStr, { autoSubscribe: false })
     this.islandConnected = connected
-    // Race: scene may have connected while we awaited island LiveKit.
-    if (connected && !this.isWorldComms() && this.sceneLiveKit.isConnected()) {
-      this.pruneIslandLiveKitIfSceneMedia('island-connect-race-scene-won')
-      return
-    }
     clientDebugLog.log(
       'network',
       connected
-        ? `Island LiveKit connected (scene media unavailable — fallback) · remotes=${this.islandLiveKit.getRemotePeerAddresses().length}`
+        ? `Island LiveKit connected · remotes=${this.islandLiveKit.getRemotePeerAddresses().length}` +
+            (this.sceneLiveKit.isConnected() ? ' (scene media still primary for voice)' : '')
         : 'Island LiveKit connect failed (archipelago)',
       { level: connected ? 'success' : 'error', alsoConsole: true }
     )
-    // Island is movement + voice **only** when scene room is down (empty land / gatekeeper fail).
     if (connected) {
       // Without this, transport stays 'none' and broadcastTransform never publishes RFC4 Movement,
       // so peers freeze as name-tag pills forever on island-only parcels.

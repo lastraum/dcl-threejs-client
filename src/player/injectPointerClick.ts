@@ -38,8 +38,9 @@ export type InjectPointerClickBody = {
    * - `down` — PET_DOWN edge only; isPressed stays true across cooperative play frames
    * - `up` — PET_UP edge only; getClick / release handlers fire this frame
    * - `click` — deprecated combined batch; mapped to down+up only if a caller still sends it
+   * - `hover-enter` / `hover-leave` — react-ecs onMouseEnter/Leave (getInputCommand HOVER)
    */
-  phase?: 'down' | 'up' | 'click'
+  phase?: 'down' | 'up' | 'click' | 'hover-enter' | 'hover-leave'
   /**
    * Live PrimaryPointerInfo for the edge tick — applied on the worker *before* eng.update(0).
    * Scenes gate select/move on PPI (UI chrome hit-test, ground ray from worldRayDirection).

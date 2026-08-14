@@ -227,6 +227,13 @@ export function performGetSignedHeaders(
   return { headers: headersFromSigned(authHeaders) }
 }
 
+/** Guest plaza toolkit: scene-admin / scene-bans 401 is role, not a bad URL. */
+function isExpectedGuestAdminDenied(status: number, url: string, body: string): boolean {
+  if (status !== 401 && status !== 403) return false
+  if (!isGatekeeperSignedFetchUrl(url)) return false
+  return /scene-admin|scene-bans/i.test(url) || /permission to list scene bans/i.test(body)
+}
+
 function logSignedFetch(
   phase: 'start' | 'ok' | 'fail',
   detail: string,
@@ -307,6 +314,8 @@ export async function performSignedFetch(
         logSignedFetch('ok', `proxy ${res.status} ${urlShort}`, {
           bodyPreview: text.slice(0, 120)
         })
+      } else if (isExpectedGuestAdminDenied(res.status, request.url, text)) {
+        logSignedFetch('ok', `proxy ${res.status} guest-denied ${urlShort}`)
       } else {
         logSignedFetch('fail', `proxy ${res.status} ${urlShort}`, {
           bodyPreview: text.slice(0, 240)
@@ -339,6 +348,8 @@ export async function performSignedFetch(
     const text = await res.text()
     if (res.ok) {
       logSignedFetch('ok', `${res.status} ${urlShort}`, { bodyPreview: text.slice(0, 120) })
+    } else if (isExpectedGuestAdminDenied(res.status, request.url, text)) {
+      logSignedFetch('ok', `${res.status} guest-denied ${urlShort}`)
     } else {
       logSignedFetch('fail', `${res.status} ${urlShort}`, { bodyPreview: text.slice(0, 240) })
     }

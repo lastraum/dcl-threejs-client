@@ -1057,6 +1057,64 @@ export class SceneUiBridge {
   }
 
   /**
+   * Deepest / smallest UI entity under the cursor with PET_HOVER_ENTER.
+   * Click capture ignores hover-only nodes (supply pill, action-slot tooltips);
+   * react-ecs onMouseEnter still needs that leaf so getInputCommand fires.
+   */
+  pickUiHoverHit(
+    clientX: number,
+    clientY: number,
+    camera: THREE.Camera
+  ): PointerHit | null {
+    this.lastPointerClientX = clientX
+    this.lastPointerClientY = clientY
+    if (!this.domVisible) return null
+    if (isForeignUiRootOnTop(this.root.id, clientX, clientY)) return null
+    const ecs = this.mirrorEcs
+    const view = this.lastView
+    if (!ecs || !view) return null
+    const handler = this.resolveUiHoverHandlerAtPoint(clientX, clientY)
+    if (handler === null || this.input.isFieldEntity(handler)) return null
+    return this.buildDomPointerHit(handler, camera)
+  }
+
+  private resolveUiHoverHandlerAtPoint(clientX: number, clientY: number): Entity | null {
+    const ecs = this.mirrorEcs
+    const view = this.lastView
+    if (!ecs || !view) return null
+    const transformOf = (e: Entity) => ecs.UiTransform.getOrNull(e)
+    const candidates = this.collectTopClusterPickCandidates(clientX, clientY)
+    let best: Entity | null = null
+    let bestArea = Number.POSITIVE_INFINITY
+    for (const entity of candidates) {
+      if (this.input.isFieldEntity(entity)) continue
+      const handler = findUiPointerHandlerEntity(
+        ecs,
+        view,
+        entity,
+        InputAction.IA_POINTER,
+        PointerEventType.PET_HOVER_ENTER,
+        this.pointerEventsLookup
+      )
+      if (handler === null) continue
+      if (!isUiEntityVisible(handler, transformOf)) continue
+      let area = this.candidatePickArea(handler)
+      if (!Number.isFinite(area)) area = this.candidatePickArea(entity)
+      if (
+        this.isNearFullscreenPickArea(area) &&
+        !isFullscreenUiPeAllowed(ecs, handler, { forest: this.lastUiForest })
+      ) {
+        continue
+      }
+      if (area < bestArea) {
+        best = handler
+        bestArea = area
+      }
+    }
+    return best
+  }
+
+  /**
    * Blocks 3D raycast when the topmost authoritative UI layer at (x,y) is blocking.
    * UI stacks above scene pointers — BLOCK shells consume the ray without falling through.
    */

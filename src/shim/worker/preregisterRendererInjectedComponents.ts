@@ -51,6 +51,8 @@ export const RENDERER_PREREGISTER_FACTORIES: readonly RendererComponentFactory[]
   (engine) => generated.UiDropdownResult(engine),
   // SDK network listens for isConnectedSceneRoom on RootEntity
   (engine) => generated.RealmInfo(engine),
+  // Host-owned local + remote player mirrors — joinRoster / getPlayer read PlayerEntity
+  (engine) => generated.PlayerIdentityData(engine),
   // ADR-148 host frame counters — scenes may EngineInfo.onChange / read RootEntity
   (engine) => generated.EngineInfo(engine)
 ]

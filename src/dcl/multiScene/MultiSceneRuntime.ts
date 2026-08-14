@@ -108,6 +108,8 @@ export class MultiSceneRuntime {
     host: SceneHost
     tier: PerformanceTier
     poseProvider: () => { player: EntityPose; camera: EntityPose }
+    getUserData?: () => Promise<import('../../shim/types').UserDataResponse>
+    getRealm?: () => Promise<import('../../shim/types').RealmResponse>
     pePolicy: PortableExperiencesPolicy
   }): void {
     if (this.disposed) return
@@ -123,6 +125,8 @@ export class MultiSceneRuntime {
       tier: opts.tier,
       arbiter: this.arbiter,
       poseProvider: opts.poseProvider,
+      getUserData: opts.getUserData,
+      getRealm: opts.getRealm,
       onLiveIdsChange: (ids) => this.onLiveSecondaryIds?.(ids),
       onLiveGraphReady: (id) => this.onLiveGraphReady?.(id)
     })
@@ -223,6 +227,10 @@ export class MultiSceneRuntime {
 
   hasLiveSecondaryForParcel(x: number, y: number): boolean {
     return this.secondary?.hasSecondaryForParcel(x, y) ?? false
+  }
+
+  liveGuestIdForParcel(x: number, y: number): string | null {
+    return this.secondary?.liveGuestIdForParcel(x, y) ?? null
   }
 
   tickSync(player: EntityPose, camera: EntityPose, frame = 0): void {

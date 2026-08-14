@@ -473,7 +473,7 @@ export class LiveKitCommsSession {
     }
   }
 
-  async connect(adapter: string): Promise<boolean> {
+  async connect(adapter: string, opts?: { autoSubscribe?: boolean }): Promise<boolean> {
     const gen = ++this.connectGeneration
     // Tear down previous room without invalidating *this* generation.
     this.teardownRoom()
@@ -581,7 +581,7 @@ export class LiveKitCommsSession {
     room.on(RoomEvent.TrackPublished, forceSubscribeRemoteVideo)
 
     try {
-      await room.connect(url, token, { autoSubscribe: true })
+      await room.connect(url, token, { autoSubscribe: opts?.autoSubscribe !== false })
       // Superseded by a newer connect/disconnect while awaiting join.
       if (gen !== this.connectGeneration || this.room !== room) {
         try {

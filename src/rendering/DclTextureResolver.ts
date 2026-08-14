@@ -50,6 +50,13 @@ const sharedTexturesByLowerKey = new Map(
   Object.entries(DCL_SHARED_TEXTURES).map(([file, hash]) => [normalizeContentKey(file), hash] as const)
 )
 
+type SceneManifestReg = {
+  content: ContentFile[]
+  assetUrl: (hash: string) => string
+  byKey: Map<string, string>
+}
+
+const sceneManifests = new Map<string, SceneManifestReg>()
 let sceneContentByKey = new Map<string, string>()
 let sceneAssetUrl: ((hash: string) => string) | null = null
 let activeSceneContent: ContentFile[] = []
@@ -82,35 +89,71 @@ function stripBlenderSuffix(name: string): string | null {
   return m ? m[1]! + m[2]! : null
 }
 
-/** Register the active parcel scene manifest so glTF-relative texture paths resolve to content hashes. */
+function buildSceneKeyMap(content: ContentFile[]): Map<string, string> {
+  const byKey = new Map<string, string>()
+  for (const entry of content) {
+    const leaf = leafName(entry.file)
+    for (const key of [entry.file, leaf, normalizeContentKey(entry.file), normalizeContentKey(leaf)]) {
+      byKey.set(key, entry.hash)
+    }
+    const strippedLeaf = stripBlenderSuffix(normalizeContentKey(leaf))
+    if (strippedLeaf && !byKey.has(strippedLeaf)) {
+      byKey.set(strippedLeaf, entry.hash)
+    }
+    const strippedFull = stripBlenderSuffix(normalizeContentKey(entry.file))
+    if (strippedFull && !byKey.has(strippedFull)) {
+      byKey.set(strippedFull, entry.hash)
+    }
+  }
+  return byKey
+}
+
+function lookupHashInMap(byKey: Map<string, string>, url: string, leaf: string): string | null {
+  const normalLeaf = normalizeContentKey(leaf)
+  const hash =
+    byKey.get(url) ??
+    byKey.get(leaf) ??
+    byKey.get(safeDecodeURIComponent(url)) ??
+    byKey.get(normalizeContentKey(url)) ??
+    byKey.get(normalLeaf) ??
+    byKey.get(stripBlenderSuffix(normalLeaf) ?? '')
+  if (hash) return hash
+  const suffix = `/${normalLeaf}`
+  for (const [key, entryHash] of byKey) {
+    if (key.endsWith(suffix) || key === normalLeaf) return entryHash
+  }
+  return null
+}
+
+/**
+ * Register a scene manifest. Live neighbors keep their hashes after primary
+ * `setScene` — otherwise plaza `CBDplaza.png` 404s and roads stay untextured.
+ */
 export function configureSceneContent(
   content: ContentFile[],
   assetUrl: (hash: string) => string,
   entityId: string | null = null
 ): void {
+  const id = entityId?.trim() || '__primary__'
+  const byKey = buildSceneKeyMap(content)
+  sceneManifests.set(id, { content, assetUrl, byKey })
   activeSceneContent = content
   activeSceneEntityId = entityId
-  sceneContentByKey = new Map()
-  for (const entry of content) {
-    const leaf = leafName(entry.file)
-    for (const key of [entry.file, leaf, normalizeContentKey(entry.file), normalizeContentKey(leaf)]) {
-      sceneContentByKey.set(key, entry.hash)
-    }
-    // Bidirectional Blender suffix matching: if manifest has `Foo.001.glb`,
-    // also register `foo.glb` so scene scripts referencing either name resolve.
-    const strippedLeaf = stripBlenderSuffix(normalizeContentKey(leaf))
-    if (strippedLeaf && !sceneContentByKey.has(strippedLeaf)) {
-      sceneContentByKey.set(strippedLeaf, entry.hash)
-    }
-    const strippedFull = stripBlenderSuffix(normalizeContentKey(entry.file))
-    if (strippedFull && !sceneContentByKey.has(strippedFull)) {
-      sceneContentByKey.set(strippedFull, entry.hash)
-    }
-  }
+  sceneContentByKey = byKey
   sceneAssetUrl = assetUrl
 }
 
+export function unregisterSceneContent(entityId: string): void {
+  const id = entityId.trim()
+  if (!id) return
+  sceneManifests.delete(id)
+  if (activeSceneEntityId === id) {
+    activeSceneEntityId = null
+  }
+}
+
 export function clearSceneContent(): void {
+  sceneManifests.clear()
   sceneContentByKey = new Map()
   sceneAssetUrl = null
   activeSceneContent = []
@@ -182,24 +225,20 @@ function resolveFromEmoteManifest(url: string, leaf: string): string | null {
 }
 
 function resolveFromSceneManifest(url: string, leaf: string): string | null {
-  if (!sceneAssetUrl) return null
-
-  const normalLeaf = normalizeContentKey(leaf)
-  const hash =
-    sceneContentByKey.get(url) ??
-    sceneContentByKey.get(leaf) ??
-    sceneContentByKey.get(safeDecodeURIComponent(url)) ??
-    sceneContentByKey.get(normalizeContentKey(url)) ??
-    sceneContentByKey.get(normalLeaf) ??
-    sceneContentByKey.get(stripBlenderSuffix(normalLeaf) ?? '')
-
-  if (hash) return sceneAssetUrl(hash)
-
-  const suffix = `/${normalLeaf}`
-  for (const [key, entryHash] of sceneContentByKey) {
-    if (key.endsWith(suffix) || key === normalLeaf) return sceneAssetUrl(entryHash)
+  const activeId = activeSceneEntityId?.trim() || '__primary__'
+  const active = sceneManifests.get(activeId)
+  if (active) {
+    const hash = lookupHashInMap(active.byKey, url, leaf)
+    if (hash) return active.assetUrl(hash)
+  } else if (sceneAssetUrl) {
+    const hash = lookupHashInMap(sceneContentByKey, url, leaf)
+    if (hash) return sceneAssetUrl(hash)
   }
-
+  for (const [id, reg] of sceneManifests) {
+    if (id === activeId) continue
+    const hash = lookupHashInMap(reg.byKey, url, leaf)
+    if (hash) return reg.assetUrl(hash)
+  }
   return null
 }
 
@@ -325,12 +364,17 @@ export function buildParseUrlMappings(): Record<string, string> {
     mappings[key] = url
   }
 
-  if (sceneAssetUrl) {
-    for (const entry of activeSceneContent) {
-      const url = sceneAssetUrl(entry.hash)
+  const emitScene = (content: ContentFile[], assetUrl: (hash: string) => string): void => {
+    for (const entry of content) {
+      const url = assetUrl(entry.hash)
       for (const variant of wearableMappingKeyVariants(entry.file)) mappings[variant] = url
       for (const variant of wearableMappingKeyVariants(leafName(entry.file))) mappings[variant] = url
     }
+  }
+  if (sceneManifests.size > 0) {
+    for (const reg of sceneManifests.values()) emitScene(reg.content, reg.assetUrl)
+  } else if (sceneAssetUrl) {
+    emitScene(activeSceneContent, sceneAssetUrl)
   }
 
   if (emoteAssetUrl) {

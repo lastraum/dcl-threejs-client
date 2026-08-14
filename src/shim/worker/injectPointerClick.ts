@@ -147,6 +147,31 @@ export function injectPointerClickOnEngine(engine: IEngine, body: InjectPointerC
   injectPointerClickUpOnEngine(engine, body)
 }
 
+/** PET_HOVER_ENTER / PET_HOVER_LEAVE — react-ecs onMouseEnter/Leave via getInputCommand. */
+export function injectPointerHoverOnEngine(
+  engine: IEngine,
+  body: InjectPointerClickBody,
+  state: typeof PointerEventType.PET_HOVER_ENTER | typeof PointerEventType.PET_HOVER_LEAVE
+): void {
+  preregisterRendererInjectedComponents(engine)
+  ensureWorkerPointerEventTimestampAfter(maxPointerResultTimestamp(engine))
+  const hit = buildPointerHit(body)
+  const row = {
+    button: body.button,
+    state,
+    timestamp: nextWorkerPointerEventTimestamp(),
+    tickNumber: body.tickNumber,
+    hit,
+    analog: undefined
+  }
+  const targets = body.entities.length ? body.entities : [body.entity]
+  for (const entity of targets) {
+    forEachWorkerPointerEventsResult(engine, (PointerEventsResult) => {
+      PointerEventsResult.addValue(entity as Entity, row)
+    })
+  }
+}
+
 /**
  * True when this inject is a **no-target** pointer edge (Explorer level-state):
  * no PE mesh / no scene UI under the cursor. Host is PlayerEntity; hit.entityId is 0.

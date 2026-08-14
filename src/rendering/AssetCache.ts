@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
-import { clearSceneContent, configureSceneContent, popEmoteContent, popWearableMappings, pushEmoteContent, pushWearableMappings, resolveDclAssetUrl } from './DclTextureResolver'
+import { clearSceneContent, configureSceneContent, popEmoteContent, popWearableMappings, pushEmoteContent, pushWearableMappings, resolveDclAssetUrl, unregisterSceneContent } from './DclTextureResolver'
 import type { ResolvedScene } from '../dcl/content/types'
 import type { ContentFile } from '../dcl/content/types'
 import { buildParseUrlMappings } from './DclTextureResolver'
@@ -179,6 +179,11 @@ export class AssetCache {
   /** Wire scene content manifest into the global glTF URL rewriter. */
   setScene(scene: ResolvedScene): void {
     configureSceneContent(scene.content, scene.assetUrl, scene.entityId)
+  }
+
+  /** Drop one resident manifest (slot dispose). Other scenes stay resolvable. */
+  unregisterScene(entityId: string): void {
+    unregisterSceneContent(entityId)
   }
 
   clearScene(): void {

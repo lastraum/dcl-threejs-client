@@ -59,6 +59,17 @@ export class RemoteAvatarLoadQueue {
   private intervalPumpTimer: ReturnType<typeof setTimeout> | null = null
   /** Coalesce rAF position updates into one idle pump. */
   private offRafPumpScheduled = false
+  /**
+   * When tracked remotes ≤ 20, compose regardless of distance (still nearest-first).
+   * Larger crowds keep the 20 m hard radius.
+   */
+  private ignoreDistance = false
+
+  setIgnoreDistance(on: boolean): void {
+    if (this.ignoreDistance === on) return
+    this.ignoreDistance = on
+    this.scheduleOffRafPump()
+  }
 
   /** Reference for distance gates — pass local player feet, not freecam / orbit camera. */
   setLocalPlayerPosition(position: THREE.Vector3): void {
@@ -311,8 +322,10 @@ export class RemoteAvatarLoadQueue {
         }))
         .sort((a, b) => a.distanceSq - b.distanceSq)
 
-      // Hard gate: never start a compose outside load radius (no far fallback).
-      const next = candidates.find((row) => row.distanceSq <= loadSq)
+      // Hard gate unless a small crowd (≤20) — then compose all, nearest first.
+      const next = this.ignoreDistance
+        ? candidates[0]
+        : candidates.find((row) => row.distanceSq <= loadSq)
       if (!next) break
 
       this.waiting.delete(next.c.address)

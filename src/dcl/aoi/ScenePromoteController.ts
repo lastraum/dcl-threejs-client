@@ -10,7 +10,7 @@ import {
   isOpenRoadEntity,
   type ActiveSceneEntity
 } from './fetchActiveEntities'
-import { aoiLiveSecondariesOnly } from '../multiScene/caps'
+import { aoiStandOnPromote } from '../multiScene/caps'
 
 /**
  * Dense Genesis (CBD) can have 30–50+ SDK7 scenes inside Scene Distance.
@@ -195,10 +195,11 @@ export class ScenePromoteController {
     if (!Number.isFinite(px) || !Number.isFinite(py)) return
     const key = `${px},${py}`
 
-    // Always keep the address bar on the parcel under your feet (SPA only).
+    // Always keep the address bar + HUD on the parcel under your feet (SPA only).
     if (key !== this.lastSoftKey && !this.inFlight) {
       this.lastSoftKey = key
       this.onSoftRoute?.(px, py)
+      console.info(`[promote] soft-route ${key}`)
     }
 
     if (!this.neighborActivityEnabled) return
@@ -223,6 +224,12 @@ export class ScenePromoteController {
       return
     }
 
+    // Stand-on promote is a separate flag (implies live guests). Soft URL still runs.
+    if (!aoiStandOnPromote()) {
+      this.dwellKey = ''
+      return
+    }
+
     if (key !== this.dwellKey) {
       this.dwellKey = key
       this.dwellSince = now
@@ -239,8 +246,9 @@ export class ScenePromoteController {
    * Roads/empty are classified and skipped; only real SDK7 scenes get onPrefetch.
    */
   private scheduleScriptWarmScan(dclX: number, dclZ: number, baseParcel: string): void {
-    // TEMP: live secondaries only — no distant IDB/script-warm thrash while walking.
-    if (aoiLiveSecondariesOnly()) return
+    // Live guests boot from AoiVisualLayer + SceneLoop. This scan is leftover
+    // promote prefetch (extra catalyst POST + IDB) and is not the guest clock.
+    if (!aoiStandOnPromote()) return
     if (!this.onPrefetch || this.getScriptWarmRadiusM() <= 0) return
     if (this.warmScanInFlight) return
     const now = performance.now()

@@ -40,8 +40,8 @@ function findScene(obj: THREE.Object3D): THREE.Scene | null {
   return null
 }
 
-function registerWithLightManager(parent: THREE.Object3D, light: THREE.PointLight | THREE.SpotLight): void {
-  const scene = findScene(parent)
+function registerWithLightManager(anchor: THREE.Object3D, light: THREE.PointLight | THREE.SpotLight): void {
+  const scene = findScene(anchor) ?? findScene(light)
   const reg = scene?.userData.dclRegisterLight as
     | ((l: THREE.PointLight | THREE.SpotLight) => void)
     | undefined
@@ -49,18 +49,29 @@ function registerWithLightManager(parent: THREE.Object3D, light: THREE.PointLigh
 }
 
 function unregisterWithLightManager(
-  parent: THREE.Object3D,
+  anchor: THREE.Object3D,
   light: THREE.PointLight | THREE.SpotLight
 ): void {
-  const scene = findScene(parent)
+  const scene = findScene(anchor) ?? findScene(light)
   const unreg = scene?.userData.dclUnregisterLight as
     | ((l: THREE.PointLight | THREE.SpotLight) => void)
     | undefined
   unreg?.(light)
 }
 
-export function syncLightSource(parent: THREE.Object3D, key: string, spec: PBLightSource): void {
-  let light = parent.getObjectByName(key) as THREE.Light | undefined
+function existingLight(parent: THREE.Object3D, key: string): THREE.Light | undefined {
+  const drawn = parent.userData.dclDrawLight as THREE.Object3D | undefined
+  if (drawn?.name === key && (drawn as THREE.Light).isLight) return drawn as THREE.Light
+  return parent.getObjectByName(key) as THREE.Light | undefined
+}
+
+export function syncLightSource(
+  parent: THREE.Object3D,
+  key: string,
+  spec: PBLightSource,
+  bindDrawVisual?: (pose: THREE.Object3D, visual: THREE.Object3D) => void
+): void {
+  let light = existingLight(parent, key)
   const active = spec.active !== false
   const intensity = lightIntensityFromCandelas(spec.intensity)
   const color = color3ToThree(spec.color)
@@ -73,16 +84,16 @@ export function syncLightSource(parent: THREE.Object3D, key: string, spec: PBLig
         unregisterWithLightManager(parent, light)
       }
       disposeLight(light)
-      parent.remove(light)
-      if (light instanceof THREE.SpotLight) removeSpotTarget(parent, key)
+      light.removeFromParent()
+      if (light instanceof THREE.SpotLight) removeSpotTarget(light, key)
       light = undefined
     }
   }
 
   if (!light) {
     if (isSpot) {
-      const target = getOrCreateSpotTarget(parent, key)
       const spot = new THREE.SpotLight(color, intensity, distance)
+      const target = getOrCreateSpotTarget(spot, key)
       spot.target = target
       configureSpotLightShadow(spot)
       light = spot
@@ -90,7 +101,8 @@ export function syncLightSource(parent: THREE.Object3D, key: string, spec: PBLig
       light = new THREE.PointLight(color, intensity, distance)
     }
     light.name = key
-    parent.add(light)
+    if (bindDrawVisual) bindDrawVisual(parent, light)
+    else parent.add(light)
   }
 
   light.color.copy(color)
@@ -104,13 +116,13 @@ export function syncLightSource(parent: THREE.Object3D, key: string, spec: PBLig
   if (light instanceof THREE.PointLight || light instanceof THREE.SpotLight) {
     light.distance = distance
     light.decay = 2
-    registerWithLightManager(parent, light)
+    registerWithLightManager(light, light)
   }
   // LightManager enables castShadow on up to 3 nearest spot lights when shadow: true.
   light.castShadow = false
 
   if (light instanceof THREE.SpotLight) {
-    light.target = getOrCreateSpotTarget(parent, key)
+    light.target = getOrCreateSpotTarget(light, key)
     light.shadow.camera.far = Math.max(distance, 1)
     if (spec.type?.$case === 'spot') {
       const inner = THREE.MathUtils.degToRad(spec.type.spot.innerAngle ?? 21.8)
@@ -121,19 +133,30 @@ export function syncLightSource(parent: THREE.Object3D, key: string, spec: PBLig
   }
 }
 
-export function removeLightSource(parent: THREE.Object3D, key: string): void {
-  const light = parent.getObjectByName(key)
+export function removeLightSource(
+  parent: THREE.Object3D,
+  key: string,
+  unbindDrawVisual?: (pose: THREE.Object3D) => void
+): void {
+  const light = existingLight(parent, key)
   if (light) {
     if (light instanceof THREE.PointLight || light instanceof THREE.SpotLight) {
-      unregisterWithLightManager(parent, light)
+      unregisterWithLightManager(light, light)
     }
     disposeLight(light as THREE.Light)
-    parent.remove(light)
+    unbindDrawVisual?.(parent)
+    light.removeFromParent()
   }
   removeSpotTarget(parent, key)
 }
 
 function disposeLight(light: THREE.Light): void {
   light.dispose?.()
-  light.shadow?.map?.dispose()
+  if (
+    light instanceof THREE.PointLight ||
+    light instanceof THREE.SpotLight ||
+    light instanceof THREE.DirectionalLight
+  ) {
+    light.shadow?.map?.dispose()
+  }
 }

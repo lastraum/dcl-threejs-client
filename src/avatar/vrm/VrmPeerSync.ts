@@ -61,6 +61,7 @@ export class VrmPeerSync {
   private readonly pendingRequests = new Set<string>()
   private readonly servingKeys = new Set<string>()
   private readonly fetchAttempts = new Map<string, number>()
+  private loggedWantAnnounce = false
 
   private static readonly MAX_FETCH_ATTEMPTS = 6
   private static readonly FETCH_RETRY_MS = 400
@@ -196,7 +197,8 @@ export class VrmPeerSync {
    */
   async requestPeerAnnounces(): Promise<void> {
     const sent = await this.publish(encodeDavEnvelopes(encodeDavWantAnnounce()), 'want-announce')
-    if (sent) {
+    if (sent && !this.loggedWantAnnounce) {
+      this.loggedWantAnnounce = true
       odkNetInfo('DAV WantAnnounce sent — asking peers to re-announce equip')
     }
   }

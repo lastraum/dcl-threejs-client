@@ -1,9 +1,13 @@
 # Collider motion policy (platform-wide)
 
-**Status:** **v1.5.0 RC** — shipped on `dev-latest` (`e24ce7f`); ice rink + Genesis Plaza QA green  
+**Status:** **v1.5.0** ROOT/PART shipped · **2026-08-09** MeshCollider parent→child ROOT expand + riding law landed on `dev-latest` (no release)  
 **Engine:** PhysX (CCT player + scene solids)  
 **Scope:** all scenes — no content labels, no asset-type branches  
-**Last updated:** 2026-07-23  
+**Last updated:** 2026-08-09  
+
+**Riding the player on movers** is a separate law: [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md)  
+(pose sync here · single stand-actor Δ there · never sticky / snap / pull-down bandaids).  
+**Plan + COD:** [PLAN_MESHCOLLIDER_PLATFORM_RIDING.md](./PLAN_MESHCOLLIDER_PLATFORM_RIDING.md) · [COD_BRAINROT_PLATFORM_FANOUT.md](./COD_BRAINROT_PLATFORM_FANOUT.md)
 
 ## Two motion sources only
 
@@ -14,6 +18,7 @@ DEFAULT (boot)
 
 Transform dirty  →  ROOT follow
   sources: CRDT Transform, Tween, Billboard, system Transform writes
+  expand dirty parents → collider-bearing descendants (MeshCollider child under bob parent)
   PhysX: actor global pose = entity T+R only
   cooked verts / shape locals unchanged  (true cook-once + move)
 
@@ -84,6 +89,8 @@ No motion destiny at extract. Motion is runtime: Transform dirty | Animator part
 - Scene/asset name checks in PhysX paths
 - Budget-capping PART cooks (skips movers; fp gate is enough)
 - Full static SQ rebuild / reinsert-all after boot (see [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md))
+- Sticky multi-frame riding Δ · residual feet snap · pull-down “if floating” (see [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md))
+- Treating only `20M+` GLTF ids as stand surfaces (MeshCollider raw ECS ids ride too)
 
 ## Static cook-once (COD)
 

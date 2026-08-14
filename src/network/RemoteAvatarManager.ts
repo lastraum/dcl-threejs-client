@@ -30,7 +30,7 @@ import { NameTag } from '../client/ui/NameTag'
 import { areSceneNameTagsVisible } from '../client/ui/nameTagVisibility'
 import { resolveProfileEmote, loadResolvedProfileEmote } from '../avatar/profileEmotes'
 import type { AssetCache } from '../rendering/AssetCache'
-import { yieldToNextFrame } from '../rendering/mainThreadYield'
+import { yieldToIdle } from '../rendering/mainThreadYield'
 import {
   createRemoteAvatarPlaceholder,
   disposeRemoteAvatarPlaceholder,
@@ -41,6 +41,7 @@ import { VrmAvatar } from '../avatar/vrm/VrmAvatar'
 import { VrmLocomotionAnimations } from '../avatar/vrm/VrmLocomotionAnimations'
 import { disposeVrmRoot, prepareCustomAvatarScene } from '../avatar/vrm/VrmLoader'
 import { applyVrmPivotOffset } from '../avatar/vrm/vrmFeetAlign'
+import { buildEmotePropAttachment } from '../avatar/emotePlayback'
 import { retargetGltfClipToVrm } from '../avatar/vrm/mixamoRetarget'
 import { getVrmRamBytes, getVrmRamFormat } from '../avatar/vrm/vrmRamCache'
 import type { CustomAvatarFormat } from '../avatar/vrm/constants'
@@ -57,6 +58,8 @@ import type { InteractiveNameTagHit } from '../client/ui/overlayHitTest'
 import { buildPlayerMirrorIdentity } from '../bridge/playerMirrorIdentity'
 import { GliderProp, GlideStateWire, glideStateWantsOpen } from '../avatar/GliderProp'
 import { perfNoteComposeMs } from '../util/perfCounters'
+import { logMainHitch } from '../debug/MainHitchLog'
+import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
 
 /** Packet / lerp settle epsilon (meters / radians). */
 const POSE_EPS = 0.02
@@ -116,6 +119,8 @@ const REMOTE_SHADOW_CASTERS = 3
 const SHADOW_BUDGET_INTERVAL_MS = 250
 /** Sphere radius for camera-frustum anim skip (avatar torso + a bit of headroom). */
 const FRUSTUM_SKIP_RADIUS_M = 1.4
+/** Small rooms: full compose + full pose/anim regardless of distance. */
+const FULL_RATE_CROWD = 20
 
 const _frustum = new THREE.Frustum()
 const _projScreen = new THREE.Matrix4()
@@ -300,8 +305,7 @@ export class RemoteAvatarManager {
   private hasLocalPlayerPos = false
   /** Active camera for frustum anim skip (looking away from a huddle). */
   private camera: THREE.Camera | null = null
-  /** Scene-local feet for provisional peer placement until first transform arrives. */
-  private provisionalPositionProvider: (() => THREE.Vector3 | null) | null = null
+
   /** Host→scene CRDT mirror for remote PlayerIdentityData / AvatarBase / AvatarEquippedData. */
   private onPeerMirrorIdentity:
     | ((entity: Entity, identity: ReturnType<typeof buildPlayerMirrorIdentity> | null) => void)
@@ -315,10 +319,11 @@ export class RemoteAvatarManager {
    */
   private onComposeSettled: (() => void) | null = null
 
-  constructor(scene: THREE.Scene) {
-    this.scene = scene
+  constructor(drawRoot: THREE.Object3D) {
+    const parent = drawRoot.parent
+    this.scene = parent instanceof THREE.Scene ? parent : (drawRoot as unknown as THREE.Scene)
     this.root.name = 'remote-avatars'
-    scene.add(this.root)
+    drawRoot.add(this.root)
   }
 
   setOnComposeSettled(handler: (() => void) | null): void {
@@ -329,8 +334,12 @@ export class RemoteAvatarManager {
    * Optional local feet (Three.js scene space). Peers that join without a pose yet
    * spawn a visible placeholder here instead of staying `visible=false` forever.
    */
-  setProvisionalPositionProvider(provider: (() => THREE.Vector3 | null) | null): void {
-    this.provisionalPositionProvider = provider
+  /**
+   * Legacy API — provisional shells at local feet disabled (ghost stick).
+   * Peers appear only after first RFC4 transform.
+   */
+  setProvisionalPositionProvider(_provider: (() => THREE.Vector3 | null) | null): void {
+    /* no-op */
   }
 
   setPeerMirrorIdentityHandler(
@@ -362,6 +371,9 @@ export class RemoteAvatarManager {
   /** Phase 4.5 — register remote peers in the unified EntityStore (owner `'avatar'`). */
   setEntityStore(store: EntityStore | null): void {
     this.entityStore = store
+    for (const record of this.peers.values()) {
+      if (record.root.parent !== this.root) this.root.add(record.root)
+    }
   }
 
   setLocalAddress(address: string | null): void {
@@ -391,6 +403,15 @@ export class RemoteAvatarManager {
     return count
   }
 
+  /** Peers showing neon loading shell (pose known, full body not ready). */
+  get placeholderPeerCount(): number {
+    let count = 0
+    for (const record of this.peers.values()) {
+      if (record.placeholder && !record.model) count++
+    }
+    return count
+  }
+
   /** Peers that still need a full avatar compose (placeholder / loading). */
   get pendingComposePeerCount(): number {
     let count = 0
@@ -406,25 +427,49 @@ export class RemoteAvatarManager {
   }
 
   /**
-   * Snapshot for HUD toast: how many remotes still need compose vs total present.
-   * `queuePending` is load-queue depth (active + waiting).
+   * Snapshot for HUD toast.
+   *
+   * **inRange*** — peers with a real pose inside LOAD_DISTANCE (can compose).
+   * Far pills and pose-less joins are not "pending load" for the toast.
+   * `queuePending` / `composeActive` — actual queue work (dismiss when both 0).
    */
   getComposeProgress(): {
     total: number
     loaded: number
     pending: number
     queuePending: number
+    composeActive: number
+    /** Peers eligible to compose (hasPosition + ≤ load radius). */
+    inRangeTotal: number
+    inRangeLoaded: number
+    inRangePending: number
   } {
-    const total = this.peers.size
+    const loadSq =
+      RemoteAvatarLoadQueue.LOAD_DISTANCE * RemoteAvatarLoadQueue.LOAD_DISTANCE
     let loaded = 0
+    let inRangeTotal = 0
+    let inRangeLoaded = 0
     for (const record of this.peers.values()) {
-      if (record.model && !record.loading) loaded++
+      const hasModel = !!(record.model && !record.loading)
+      if (hasModel) loaded++
+      if (!record.hasPosition || !this.hasLocalPlayerPos) continue
+      const dx = record.root.position.x - this.localPlayerWorldPos.x
+      const dz = record.root.position.z - this.localPlayerWorldPos.z
+      if (dx * dx + dz * dz > loadSq) continue
+      inRangeTotal++
+      if (hasModel) inRangeLoaded++
     }
+    const queuePending = this.loadQueue.getPendingComposeCount()
+    const composeActive = this.loadQueue.getActiveComposeCount()
     return {
-      total,
+      total: this.peers.size,
       loaded,
-      pending: Math.max(0, total - loaded),
-      queuePending: this.loadQueue.getPendingComposeCount()
+      pending: Math.max(0, this.peers.size - loaded),
+      queuePending,
+      composeActive,
+      inRangeTotal,
+      inRangeLoaded,
+      inRangePending: Math.max(0, inRangeTotal - inRangeLoaded)
     }
   }
 
@@ -455,11 +500,9 @@ export class RemoteAvatarManager {
     this.localPlayerWorldPos.copy(position)
     this.hasLocalPlayerPos = true
     this.loadQueue.setLocalPlayerPosition(position)
-    // Follow teleports re-push island peers before local player exists — root stays
-    // invisible (hasPosition=false). Once we have feet origin, place pills.
-    this.backfillProvisionalPeers()
-    // Walking toward pills: refresh waiting distances; only enqueue peers not yet queued.
-    // Do not re-enqueue every frame — that allocated a new run() closure + Vector3.clone each peer.
+    // Do NOT paste pose-less peers onto local feet here (was backfillProvisionalPeers every
+    // move → ghost avatars stuck to the player). Peers stay invisible until RFC4 transform.
+    // Walking toward real-posed pills: refresh waiting distances; only enqueue if not queued.
     let bulkDistance = false
     for (const [key, record] of this.peers) {
       if (record.model || !record.hasPosition) continue
@@ -484,23 +527,12 @@ export class RemoteAvatarManager {
   }
 
   /**
-   * Peers joined before local feet were ready (World rebuild / follow /goto): show
-   * provisional neon BaseMale shells so remotes are not invisible until the first RFC4 transform.
+   * @deprecated No-op. Provisional shells at local feet caused ghosts that followed the
+   * player (setLocalPlayerPosition used to call this every move). Peers stay hidden until
+   * the first real RFC4 transform.
    */
   backfillProvisionalPeers(): void {
-    const provisional = this.provisionalPositionProvider?.()
-    if (!provisional) return
-    for (const record of this.peers.values()) {
-      if (record.hasPosition) continue
-      if (record.modifierHidden) continue
-      record.root.position.copy(provisional)
-      record.targetPosition.copy(provisional)
-      record.root.visible = true
-      record.hasPosition = true
-      if (!record.model && !record.placeholder) {
-        this.attachLoadingPresentation(record)
-      }
-    }
+    /* intentionally empty — see setLocalPlayerPosition / upsertPeer */
   }
 
   /** Scene asset hydration — throttle remote composes so scene GLTF attach wins. */
@@ -513,12 +545,20 @@ export class RemoteAvatarManager {
    * Full composes stay held briefly (collider pose resync / CCT) then plaza-staggered.
    */
   setPlayReady(plazaScale = false): void {
+    // Clear hydration gate (waitForSceneAssets set it true; must not stick).
+    this.loadQueue.setHydrationMode(false)
     this.loadQueue.setPlayReady(plazaScale)
     clientDebugLog.log(
       'network',
-      `Remote avatars: collider-hold then 1 compose / 10s${plazaScale ? ' (plaza)' : ''}`,
+      `Remote avatars: collider-hold then 1 compose / ${RemoteAvatarLoadQueue.MIN_COMPOSE_INTERVAL_MS / 1000}s` +
+        `${plazaScale ? ' (plaza)' : ''}`,
       { alsoConsole: true, throttleMs: 30_000 }
     )
+  }
+
+  /** Compose gate snapshot for HUD (hold / pressure / waiting). */
+  getComposeGateSnapshot(): ReturnType<RemoteAvatarLoadQueue['getGateSnapshot']> {
+    return this.loadQueue.getGateSnapshot()
   }
 
   setSceneAssetPressure(gltfInflight: number, textureInflight = 0): void {
@@ -533,9 +573,10 @@ export class RemoteAvatarManager {
   getAttachSkeleton(address: string): AvatarSkeletonTarget | null {
     const record = this.peers.get(address.toLowerCase())
     if (!record) return null
-    const model = record.model ?? record.placeholder
-    if (!model) return null
-    return { model, nameTagAnchor: record.nameTagAnchor }
+    // Neon shells have no hand/head bones. Using them as the attach skeleton
+    // snapped rods/fish to the name-tag (and sometimes the local player).
+    if (!record.model) return null
+    return { model: record.model, nameTagAnchor: record.nameTagAnchor }
   }
 
   /** Scene chat line shown inside the peer's overhead name-tag pill. */
@@ -575,14 +616,17 @@ export class RemoteAvatarManager {
   }
 
   /**
-   * Screen-space hit on a remote avatar body — used for pointer-lock pill hover.
-   * Returns the peer's CSS2D pill element when the cursor is over the projected bounds.
+   * Screen-space hit on a remote avatar body — used for pill hover + context menu.
+   *
+   * Uses a stable feet-capsule AABB (not skinned-mesh `setFromObject`), so hits
+   * still work when name tags are culled, models are still placeholders, or
+   * skinned bind-pose bounds are empty after LOD/perf paths.
    */
   findPeerNearScreenPoint(
     clientX: number,
     clientY: number,
     camera: THREE.Camera | null,
-    slopPx = 28
+    slopPx = 36
   ): InteractiveNameTagHit | null {
     if (!camera) return null
     const canvas = document.querySelector('#app canvas') as HTMLCanvasElement | null
@@ -591,25 +635,40 @@ export class RemoteAvatarManager {
     if (canvasRect.width <= 0 || canvasRect.height <= 0) return null
 
     const _projected = new THREE.Vector3()
+    const _feet = new THREE.Vector3()
+    const _mid = new THREE.Vector3()
     const _box = new THREE.Box3()
     let best: { hit: InteractiveNameTagHit; score: number } | null = null
 
     for (const [address, record] of this.peers.entries()) {
       if (!record.hasPosition) continue
-      const body = record.model ?? record.placeholder
-      if (!body) continue
+      if (record.modifierHidden) continue
+      if (!record.root.visible) continue
+      // Need some body volume (model or placeholder) so we don't hit invisible stubs.
+      if (!record.model && !record.placeholder) continue
 
-      body.updateWorldMatrix(true, true)
-      _box.setFromObject(body)
-      if (_box.isEmpty()) continue
-      _box.expandByScalar(0.08)
+      record.root.updateWorldMatrix(true, false)
+      record.root.getWorldPosition(_feet)
+
+      // Fixed human-scale capsule around feet — independent of skinned bind pose.
+      const halfW = 0.5
+      const height = 1.95
+      _box.min.set(_feet.x - halfW, _feet.y, _feet.z - halfW)
+      _box.max.set(_feet.x + halfW, _feet.y + height, _feet.z + halfW)
+
+      // Reject peers behind the camera (projected z > 1 after perspective divide).
+      _mid.set(_feet.x, _feet.y + height * 0.5, _feet.z).project(camera)
+      if (_mid.z > 1) continue
 
       let minX = Infinity
       let minY = Infinity
       let maxX = -Infinity
       let maxY = -Infinity
+      let anyInFront = false
       for (const corner of boxCornerPoints(_box)) {
         _projected.copy(corner).project(camera)
+        if (_projected.z > 1) continue
+        anyInFront = true
         const sx = canvasRect.left + (_projected.x * 0.5 + 0.5) * canvasRect.width
         const sy = canvasRect.top + (-_projected.y * 0.5 + 0.5) * canvasRect.height
         minX = Math.min(minX, sx)
@@ -617,6 +676,13 @@ export class RemoteAvatarManager {
         minY = Math.min(minY, sy)
         maxY = Math.max(maxY, sy)
       }
+      if (!anyInFront || !Number.isFinite(minX) || !Number.isFinite(maxX)) continue
+
+      // Clamp degenerate / huge projected boxes (near-plane explosion).
+      const boxW = maxX - minX
+      const boxH = maxY - minY
+      if (boxW <= 2 || boxH <= 2) continue
+      if (boxW > canvasRect.width * 1.5 || boxH > canvasRect.height * 1.5) continue
 
       const inBounds =
         clientX >= minX - slopPx &&
@@ -625,10 +691,12 @@ export class RemoteAvatarManager {
         clientY <= maxY + slopPx
       if (!inBounds) continue
 
-      const element = document.querySelector<HTMLElement>(
-        `.avatar-name-tag--interactive[data-peer-address="${address}"]`
-      )
-      if (!element) continue
+      // Name tag is optional — body hit must work while the pill is distance-culled
+      // or still loading. Context menu only needs the wallet address.
+      const element =
+        document.querySelector<HTMLElement>(
+          `.avatar-name-tag--interactive[data-peer-address="${address}"]`
+        ) ?? null
 
       const cx = (minX + maxX) * 0.5
       const cy = (minY + maxY) * 0.5
@@ -1057,6 +1125,7 @@ export class RemoteAvatarManager {
   playPeerEmote(address: string, emoteRef: string, incrementalId: number): void {
     const key = address.toLowerCase()
     const record = this.peers.get(key)
+    // lastEmoteId starts at -1 so Explorer/Unity packets with incrementalId=0 are accepted.
     if (!record || incrementalId <= record.lastEmoteId) return
     record.lastEmoteId = incrementalId
 
@@ -1081,8 +1150,12 @@ export class RemoteAvatarManager {
   upsertPeer(address: string, positionDcl?: THREE.Vector3): void {
     const key = address.toLowerCase()
     if (this.isLocalPeer(key)) return
-    // RTMP stream-key ingress / Cast bots — video-only, never a player mesh.
-    if (isNonPlayerLiveKitIdentity(key)) return
+    // RTMP stream-key ingress / Cast bots / auth-server — never a player mesh.
+    if (isNonPlayerLiveKitIdentity(key)) {
+      // Drop a mistaken prior spawn (e.g. before identity filter covered auth-server).
+      if (this.peers.has(key)) this.removePeer(key)
+      return
+    }
     let record = this.peers.get(key)
     if (!record) {
       const entity = avatarEntityFromAddress(key)
@@ -1095,7 +1168,9 @@ export class RemoteAvatarManager {
       nameTagAnchor.name = 'remote-name-tag'
       root.add(pivot)
       root.add(nameTagAnchor)
-      if (!this.entityStore) this.root.add(root)
+      // EntityStore lives on poseRoot (not rendered). Remotes must stay under
+      // this.root on the live scene or only CSS name tags appear.
+      if (root.parent !== this.root) this.root.add(root)
 
       record = {
         address: key,
@@ -1121,7 +1196,7 @@ export class RemoteAvatarManager {
         hasPosition: false,
         modifierHidden: false,
         pendingProfile: null,
-        lastEmoteId: 0,
+        lastEmoteId: -1,
         activeEmoteUrn: null,
         pendingEmote: null,
         profileSignature: null,
@@ -1166,25 +1241,13 @@ export class RemoteAvatarManager {
         this.attachLoadingPresentation(record)
       }
     } else if (!record.hasPosition) {
-      // Join without pose (common right after island LiveKit connect): show a
-      // provisional neon BaseMale near the local player so remotes are not "invisible".
-      // Do NOT compose yet — provisional is colocated with local, which would pass
-      // the ≤20 m gate (or force-park at camera) and permanently load far peers.
-      // First real RFC4 transform in updatePeerTransform starts the queue.
-      // hasPosition stays false so we don't treat provisional as a real pose (avoids
-      // "stuck next to me" when the first transform is delayed on empty-land islands).
-      const provisional = this.provisionalPositionProvider?.()
-      if (provisional) {
-        record.root.position.copy(provisional)
-        record.targetPosition.copy(provisional)
-        record.root.visible = !record.modifierHidden
-        if (!record.model && !record.placeholder) {
-          this.attachLoadingPresentation(record)
-        }
-      }
+      // Join without pose: stay invisible at origin until first RFC4 Movement.
+      // Never place a shell on local feet — that glued remotes to the player (ghost stick)
+      // and backfill re-ran on every setLocalPlayerPosition while hasPosition stayed false.
+      record.root.visible = false
     }
 
-    // Real pose only — never force-compose provisional joins (steals slots + far skinned bodies).
+    // Real pose only — never compose without a wire position.
     if (positionDcl) {
       this.tryStartAvatarLoad(key, record, false)
     }
@@ -1258,7 +1321,10 @@ export class RemoteAvatarManager {
   ): void {
     const key = address.toLowerCase()
     if (this.isLocalPeer(key)) return
-    if (isNonPlayerLiveKitIdentity(key)) return
+    if (isNonPlayerLiveKitIdentity(key)) {
+      if (this.peers.has(key)) this.removePeer(key)
+      return
+    }
     const position = dclToThreeVec(positionDcl)
     const yaw = dclYawToThreeYaw(yawDcl)
     if (!this.peers.has(key)) {
@@ -1375,6 +1441,13 @@ export class RemoteAvatarManager {
     record.targetYaw = yaw
     record.receivedAt = now
 
+    // Neon loading shell as soon as we have a real RFC4 pose — do not wait for the
+    // 10s compose stagger (was: empty root until loadPeerAvatar, so far/queued peers
+    // had no ghost body at all). Never place shells without a pose (ghost stick).
+    if (!record.model && !record.placeholder) {
+      this.attachLoadingPresentation(record)
+    }
+
     this.loadQueue.updatePeerDistance(key, record.targetPosition)
     this.tryStartAvatarLoad(key, record)
   }
@@ -1382,7 +1455,7 @@ export class RemoteAvatarManager {
   /**
    * Per-frame remote tick. Returns counters for RenderStats / perfCounters.
    */
-  update(delta: number): {
+  update(delta: number, opts?: { skipAnim?: boolean }): {
     poseSkipped: number
     animSkipped: number
     nameTagsShown: number
@@ -1394,6 +1467,10 @@ export class RemoteAvatarManager {
   } {
     const updateT0 = performance.now()
     const now = updateT0
+    // PoseRoot is not drawn. Any avatar still parented there is name-tag-only.
+    for (const record of this.peers.values()) {
+      if (record.root.parent !== this.root) this.root.add(record.root)
+    }
     // Neon loading shells — idle clip while Catalyst wearables compose.
     updateRemoteAvatarPlaceholders(delta)
     let poseSkipped = 0
@@ -1419,6 +1496,9 @@ export class RemoteAvatarManager {
       frustumReady = true
     }
 
+    const fullRateCrowd = this.peers.size <= FULL_RATE_CROWD
+    this.loadQueue.setIgnoreDistance(fullRateCrowd)
+
     for (const [key, record] of this.peers.entries()) {
       const remoteGlidingEarly =
         glideStateWantsOpen(record.glideState) ||
@@ -1440,10 +1520,11 @@ export class RemoteAvatarManager {
       }
 
       // LOD: near ≤8 m full · mid ≤20 m throttled · far pose-only (unless emote).
+      // ≤20 remotes: full pose/anim at any distance (still skip off-camera skinning).
       let lodIntervalMs = 0
       let allowAnim = true
       let lodBand: 'near' | 'mid' | 'far' = 'near'
-      if (this.hasLocalPlayerPos && record.hasPosition) {
+      if (!fullRateCrowd && this.hasLocalPlayerPos && record.hasPosition) {
         if (dist2 > LOD_MID_M2) {
           lodIntervalMs = LOD_FAR_INTERVAL_MS
           allowAnim = emoteBusy
@@ -1455,6 +1536,7 @@ export class RemoteAvatarManager {
           lodBand = 'mid'
         }
       }
+      if (opts?.skipAnim) allowAnim = false
 
       // Off-camera: drop skinned mixer unless emote (Focus / look-away from huddle).
       if (frustumReady && allowAnim && !emoteBusy && record.hasPosition) {
@@ -1592,7 +1674,9 @@ export class RemoteAvatarManager {
           const speed = record.smoothedSpeed
           // Local player cancels emotes on WASD; remotes must cancel when wire speed shows walk/run
           // or they keep sit loops while sliding (mauhetti-style glitch after hitch).
-          if (emoteActive && speed > 0.45) {
+          // Threshold matches applyPeerEmote start gate — lower values cancelled looping sits
+          // (Cute and Coy / Sexy Sit) on position jitter while still seated.
+          if (emoteActive && speed > 0.85) {
             this.stopPeerProfileEmote(record)
             emoteActive = false
           }
@@ -1717,7 +1801,7 @@ export class RemoteAvatarManager {
   private setModelCastShadow(model: THREE.Object3D, cast: boolean): void {
     model.traverse((obj) => {
       if ((obj as THREE.Mesh).isMesh) {
-        ;(obj as THREE.Mesh).castShadow = cast
+        setMeshDesiredCastShadow(obj, cast, 'avatar')
       }
     })
   }
@@ -1737,11 +1821,11 @@ export class RemoteAvatarManager {
       ranked.push({ record, dist2 })
     }
     ranked.sort((a, b) => a.dist2 - b.dist2)
+    // Distance budget only — avatarShadowsEnabled gate is inside setMeshDesiredCastShadow.
     for (let i = 0; i < ranked.length; i++) {
-      const cast = i < REMOTE_SHADOW_CASTERS
       const model = ranked[i]!.record.model
       if (!model) continue
-      this.setModelCastShadow(model, cast)
+      this.setModelCastShadow(model, i < REMOTE_SHADOW_CASTERS)
     }
   }
 
@@ -1761,6 +1845,10 @@ export class RemoteAvatarManager {
     force = false
   ): Promise<void> | null {
     if (!record.hasPosition || record.model) return null
+    // Shell at pose immediately (compose may wait on 20 m / 10 s queue).
+    if (!record.placeholder) {
+      this.attachLoadingPresentation(record)
+    }
     if (record.loading && !force) return record.loading
     const key = address.toLowerCase()
     // Already queued: refresh distance only — do not allocate a new run() each frame.
@@ -1943,7 +2031,13 @@ export class RemoteAvatarManager {
           } else {
             await this.loadVrmPeerAvatar(key, record, customBytes)
           }
-          perfNoteComposeMs(performance.now() - composeT0)
+          const wallMs = performance.now() - composeT0
+          perfNoteComposeMs(wallMs)
+          logMainHitch(
+            format === 'odk' ? 'remote-odk' : 'remote-vrm',
+            wallMs,
+            `${record.identity.displayName} ${(customBytes.byteLength / 1e6).toFixed(1)}MB ${record.vrmContentHash?.slice(0, 10) ?? ''}…`
+          )
           try {
             this.onComposeSettled?.()
           } catch {
@@ -1962,7 +2056,7 @@ export class RemoteAvatarManager {
 
       const composed = await composeAvatarFromProfile(profile, this.contentUrl || undefined, this.assetCache)
       // Let a frame paint after the (time-sliced) compose before scene-graph attach + anim bind.
-      await yieldToNextFrame()
+      await yieldToIdle(32)
       stabilizeSkinnedMeshes(composed)
 
       if (!this.peers.has(key)) {
@@ -2001,13 +2095,18 @@ export class RemoteAvatarManager {
 
       record.pivot.add(record.model)
       applyAvatarPivotOffset(record.pivot, record.model)
+      record.model.visible = true
+      record.pivot.visible = true
+      record.model.traverse((obj) => {
+        if ((obj as THREE.Mesh).isMesh) obj.frustumCulled = false
+      })
       // Wearables default cast-on — clear immediately; nearest-N budget re-enables a few.
       this.setModelCastShadow(record.model, false)
       this.applyRemoteShadowBudget()
       this.finalizeNameTag(record)
 
       // Bind locomotion/emote clips on the next frame so first GPU upload isn't stacked with bind.
-      await yieldToNextFrame()
+      await yieldToIdle(32)
       if (!this.peers.has(key) || record.model !== composed) return
 
       record.animations = new AvatarAnimations()
@@ -2036,7 +2135,8 @@ export class RemoteAvatarManager {
         record.pendingEmote = null
         void this.applyPeerEmote(record, pending)
       }
-      perfNoteComposeMs(performance.now() - composeT0)
+      const wallMs = performance.now() - composeT0
+      perfNoteComposeMs(wallMs)
       try {
         this.onComposeSettled?.()
       } catch {
@@ -2057,6 +2157,7 @@ export class RemoteAvatarManager {
     record: RemotePeerRecord,
     bytes: ArrayBuffer
   ): Promise<void> {
+    const hitchT0 = performance.now()
     try {
       this.disposePeerModel(record)
       if (record.hasPosition) {
@@ -2069,7 +2170,7 @@ export class RemoteAvatarManager {
         return
       }
 
-      await yieldToNextFrame()
+      await yieldToIdle(32)
       if (!this.peers.has(key)) {
         odkAvatar.dispose()
         return
@@ -2092,7 +2193,7 @@ export class RemoteAvatarManager {
       this.applyRemoteShadowBudget()
       this.finalizeNameTag(record)
 
-      await yieldToNextFrame()
+      await yieldToIdle(32)
       if (!this.peers.has(key) || record.model !== odkAvatar.root) return
 
       record.odkLocomotion = new OdkLocomotionAnimations()
@@ -2120,6 +2221,11 @@ export class RemoteAvatarManager {
         `Remote ODK ready · ${record.identity.displayName} (${record.vrmContentHash?.slice(0, 12)}…)`,
         { level: 'success' }
       )
+      logMainHitch(
+        'remote-odk',
+        performance.now() - hitchT0,
+        `${record.identity.displayName} ${(bytes.byteLength / 1e6).toFixed(1)}MB`
+      )
 
       if (record.pendingEmote) {
         const pending = record.pendingEmote
@@ -2145,6 +2251,7 @@ export class RemoteAvatarManager {
     record: RemotePeerRecord,
     bytes: ArrayBuffer
   ): Promise<void> {
+    const hitchT0 = performance.now()
     try {
       this.disposePeerModel(record)
       if (record.hasPosition) {
@@ -2157,7 +2264,7 @@ export class RemoteAvatarManager {
         return
       }
 
-      await yieldToNextFrame()
+      await yieldToIdle(32)
       if (!this.peers.has(key)) {
         vrmAvatar.dispose()
         return
@@ -2179,7 +2286,7 @@ export class RemoteAvatarManager {
       this.applyRemoteShadowBudget()
       this.finalizeNameTag(record)
 
-      await yieldToNextFrame()
+      await yieldToIdle(32)
       if (!this.peers.has(key) || record.model !== vrmAvatar.root) return
 
       record.vrmLocomotion = new VrmLocomotionAnimations()
@@ -2202,6 +2309,11 @@ export class RemoteAvatarManager {
         'network',
         `Remote VRM ready · ${record.identity.displayName} (${record.vrmContentHash?.slice(0, 12)}…)`,
         { level: 'success' }
+      )
+      logMainHitch(
+        'remote-vrm',
+        performance.now() - hitchT0,
+        `${record.identity.displayName} ${(bytes.byteLength / 1e6).toFixed(1)}MB ${record.vrmContentHash?.slice(0, 10) ?? ''}…`
       )
 
       if (record.pendingEmote) {
@@ -2250,23 +2362,59 @@ export class RemoteAvatarManager {
     }
 
     const peerUrl = this.contentUrl || PEER_URL
+    const short = record.address.slice(0, 10)
     const resolved = await resolveProfileEmote(emoteRef, record.bodyShape, peerUrl)
-    if (!resolved) return
+    if (!resolved) {
+      clientDebugLog.log(
+        'emote',
+        `remote emote resolve failed · peer=${short}… ref=${emoteRef.slice(0, 72)} body=${record.bodyShape}`,
+        { level: 'warn', throttleMs: 4000, throttleKey: `emote-resolve:${short}` }
+      )
+      return
+    }
 
     try {
       const cached = this.assetCache ? await loadResolvedProfileEmote(this.assetCache, resolved) : null
-      if (!cached?.animations.length) return
+      if (!cached?.animations.length) {
+        clientDebugLog.log(
+          'emote',
+          `remote emote GLB empty · peer=${short}… urn=${resolved.urn.slice(0, 64)} clips=0 loop=${resolved.loop}`,
+          { level: 'warn', throttleMs: 4000, throttleKey: `emote-empty:${short}` }
+        )
+        return
+      }
 
       // Peer may have started walking while the emote GLB was loading.
-      if (record.smoothedSpeed > 0.45 || record.horizontalSpeed > 0.45) {
+      // Looping sits/poses (Cute and Coy, dances) still apply under light jitter —
+      // only hard-cancel when clearly walking/running.
+      if (record.smoothedSpeed > 0.85 || record.horizontalSpeed > 0.85) {
+        clientDebugLog.log(
+          'emote',
+          `remote emote skipped (moving) · peer=${short}… speed=${record.smoothedSpeed.toFixed(2)}/${record.horizontalSpeed.toFixed(2)} loop=${resolved.loop}`,
+          { throttleMs: 3000, throttleKey: `emote-moving:${short}` }
+        )
         return
       }
 
       if (record.renderMode === 'vrm' && record.vrmAvatar && record.vrmLocomotion) {
         const clip = retargetGltfClipToVrm(cached.animations[0]!, cached.root, record.vrmAvatar.vrm)
-        if (clip.tracks.length === 0) return
-        if (record.vrmLocomotion.playProfileEmote(clip, resolved.loop)) {
+        if (clip.tracks.length === 0) {
+          clientDebugLog.log(
+            'emote',
+            `remote emote VRM retarget empty · peer=${short}… clip=${cached.animations[0]?.name ?? '?'}`,
+            { level: 'warn', throttleMs: 4000, throttleKey: `emote-vrm:${short}` }
+          )
+          return
+        }
+        const propAtt = buildEmotePropAttachment(cached)
+        const props = propAtt ? { ...propAtt, attachParent: record.pivot } : null
+        if (record.vrmLocomotion.playProfileEmote(clip, resolved.loop, props)) {
           record.activeEmoteUrn = resolved.urn.trim().toLowerCase()
+          clientDebugLog.log(
+            'emote',
+            `remote emote play · peer=${short}… mode=vrm loop=${resolved.loop} urn=${resolved.urn.slice(0, 56)} props=${props ? 1 : 0}`,
+            { throttleMs: 2000, throttleKey: `emote-play:${short}` }
+          )
         }
         return
       }
@@ -2279,19 +2427,48 @@ export class RemoteAvatarManager {
         )
         const restCorrection = record.odkLocomotion.getRestCorrection()
         if (restCorrection) applyOdkRestCorrection(clip, restCorrection)
-        if (clip.tracks.length === 0) return
-        if (record.odkLocomotion.playProfileEmote(clip, resolved.loop)) {
+        if (clip.tracks.length === 0) {
+          clientDebugLog.log(
+            'emote',
+            `remote emote ODK retarget empty · peer=${short}… clip=${cached.animations[0]?.name ?? '?'}`,
+            { level: 'warn', throttleMs: 4000, throttleKey: `emote-odk:${short}` }
+          )
+          return
+        }
+        const propAtt = buildEmotePropAttachment(cached)
+        const props = propAtt ? { ...propAtt, attachParent: record.pivot } : null
+        if (record.odkLocomotion.playProfileEmote(clip, resolved.loop, props)) {
           record.activeEmoteUrn = resolved.urn.trim().toLowerCase()
+          clientDebugLog.log(
+            'emote',
+            `remote emote play · peer=${short}… mode=odk loop=${resolved.loop} urn=${resolved.urn.slice(0, 56)} props=${props ? 1 : 0}`,
+            { throttleMs: 2000, throttleKey: `emote-play:${short}` }
+          )
         }
         return
       }
 
       if (!record.animations) return
-      if (record.animations.playProfileEmoteFromGltf(cached, resolved.loop)) {
+      if (record.animations.playProfileEmoteFromGltf(cached, resolved.loop, resolved.urn)) {
         record.activeEmoteUrn = resolved.urn.trim().toLowerCase()
+        clientDebugLog.log(
+          'emote',
+          `remote emote play · peer=${short}… mode=dcl loop=${resolved.loop} clips=${cached.animations.map((c) => c.name).join(',')} urn=${resolved.urn.slice(0, 56)}`,
+          { throttleMs: 2000, throttleKey: `emote-play:${short}` }
+        )
+      } else {
+        clientDebugLog.log(
+          'emote',
+          `remote emote play failed · peer=${short}… mode=dcl clips=${cached.animations.map((c) => c.name).join(',')} (no avatar/prop tracks?)`,
+          { level: 'warn', throttleMs: 4000, throttleKey: `emote-fail:${short}` }
+        )
       }
-    } catch {
-      /* scene / profile emote load failures are expected when assets are unavailable */
+    } catch (err) {
+      clientDebugLog.log(
+        'emote',
+        `remote emote error · peer=${short}… ${err instanceof Error ? err.message : String(err)}`,
+        { level: 'warn', throttleMs: 4000, throttleKey: `emote-err:${short}` }
+      )
     }
   }
 

@@ -580,6 +580,8 @@ export class SocialMobileNotifications {
     title: string
     sub: string
     appName?: string
+    /** Pets / Loot Bag purple chrome (trade, pets, etc.). */
+    theme?: 'default' | 'purple'
     /** 0 = stay until replaced/dismissed (progress toasts). */
     dismissMs?: number
     /** Optional click action (e.g. open community chat for a tour toast). */
@@ -601,18 +603,23 @@ export class SocialMobileNotifications {
       return
     }
 
+    const purple = opts.theme === 'purple'
     const banner = document.createElement('button')
     banner.type = 'button'
-    banner.className = 'social-mobile-notif'
+    banner.className = `social-mobile-notif${purple ? ' social-mobile-notif--purple' : ''}`
     banner.innerHTML = `
-      <div class="social-mobile-notif__card">
-        <div class="social-mobile-notif__header">
-          <span class="social-mobile-notif__app-icon" aria-hidden="true">D</span>
+      <div class="social-mobile-notif__card${purple ? ' social-mobile-notif__card--purple' : ''}">
+        <div class="social-mobile-notif__header${purple ? ' social-mobile-notif__header--purple' : ''}">
+          <span class="social-mobile-notif__app-icon${purple ? ' social-mobile-notif__app-icon--purple' : ''}" aria-hidden="true">${
+            purple ? '⇄' : 'D'
+          }</span>
           <span class="social-mobile-notif__app-name">${escapeHtml(opts.appName ?? 'DECENTRALAND')}</span>
           <span class="social-mobile-notif__time">now</span>
         </div>
         <div class="social-mobile-notif__body">
-          <span class="social-mobile-notif__avatar"><span class="social-mobile-notif__avatar-fallback" aria-hidden="true">👤</span></span>
+          <span class="social-mobile-notif__avatar${purple ? ' social-mobile-notif__avatar--purple' : ''}"><span class="social-mobile-notif__avatar-fallback" aria-hidden="true">${
+            purple ? '◈' : '👤'
+          }</span></span>
           <span class="social-mobile-notif__text">
             <span class="social-mobile-notif__title">${escapeHtml(opts.title)}</span>
             <span class="social-mobile-notif__sub">${escapeHtml(opts.sub)}</span>

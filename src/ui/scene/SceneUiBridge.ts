@@ -18,8 +18,8 @@ import { SceneUiInputController } from './SceneUiInputController'
 import {
   alignSceneUiRoot,
   computeUiViewport,
-  DEFAULT_VIRTUAL_CANVAS,
   interactableInsetsVirtual,
+  liveVirtualCanvas,
   readInteractableArea,
   type VirtualCanvasSize
 } from './virtualCanvas'
@@ -83,7 +83,7 @@ export class SceneUiBridge {
   private readonly hitMap = new SceneUiHitMap()
   private readonly layoutCache = new UiLayoutCache()
   private scene: ResolvedScene | null = null
-  private virtual: VirtualCanvasSize = { ...DEFAULT_VIRTUAL_CANVAS }
+  private virtual: VirtualCanvasSize = { width: 1, height: 1 }
   private lastCanvasKey = ''
   private writeback: SceneUiWriteback | null = null
   private mirrorEcs: MirrorComponents | null = null
@@ -202,6 +202,8 @@ export class SceneUiBridge {
     // Many UiBackground textures finish in a burst (menus / character UI) — one paint, not N full Yoga passes.
     if (this.imageRepaintQueued) return
     this.imageRepaintQueued = true
+    // Keep short — fishing rod/bait dock icons were blank for seconds while 80ms+
+    // batches waited behind plaza disco/collider thrash.
     window.setTimeout(() => {
       this.imageRepaintQueued = false
       // Visual fingerprint does not include bake completion — without this, paint early-outs
@@ -210,7 +212,7 @@ export class SceneUiBridge {
       this.lastEntityVisualKeys.clear()
       this.markContentDirty()
       if (this.lastView) this.paint(this.lastView)
-    }, 80)
+    }, 16)
   }
 
   /** Phase C — mark UI content dirty (CRDT put, mount, image, size). */
@@ -401,8 +403,8 @@ export class SceneUiBridge {
 
   /**
    * Worker mount ids should have UiTransform before commit+paint.
-   * Allow one missing id on large trees (race on last PUT) so Flagtag timer/HUD is not
-   * deferred forever when a single shell entity lacks transform.
+   * Large trees may race a couple of shell rows — allow a small absolute miss
+   * (not a ratio heuristic) so open menus paint when nearly complete.
    */
   isMountSetReady(view: ProjectionView, mountSet?: ReadonlySet<Entity>): boolean {
     const target = mountSet ?? this.workerUiEntities
@@ -413,8 +415,9 @@ export class SceneUiBridge {
       if (ecs.UiTransform.has(entity)) withTransform++
     }
     const missing = target.size - withTransform
-    const ready =
-      missing === 0 || (target.size >= 8 && withTransform > 0 && missing <= 1)
+    // Absolute miss budget scales gently with tree size (platform race, not scene-tuned %).
+    const missBudget = target.size >= 64 ? 3 : target.size >= 8 ? 1 : 0
+    const ready = missing === 0 || (withTransform > 0 && missing <= missBudget)
     if (
       !ready &&
       typeof location !== 'undefined' &&
@@ -462,17 +465,12 @@ export class SceneUiBridge {
     return this.input.isTypingActive()
   }
 
-  /** Override virtual screen size (e.g. from scene `setUiRenderer` options). */
-  setVirtualSize(width: number, height: number): void {
-    if (!Number.isFinite(width) || !Number.isFinite(height)) return
-    if (width > 0 && height > 0) {
-      const next = { width: Math.floor(width), height: Math.floor(height) }
-      if (next.width !== this.virtual.width || next.height !== this.virtual.height) {
-        this.layoutCache.clear()
-        this.markContentDirty()
-      }
-      this.virtual = next
-    }
+  /**
+   * Scene `setUiRenderer` virtual size is for react-ecs ui-scale on the worker.
+   * Yoga + UiCanvasInformation stay live interactable px (Explorer 7.25).
+   */
+  setVirtualSize(_width: number, _height: number): void {
+    /* intentionally unused — do not replace the live canvas with 1920×1080 */
   }
 
   dispose(): void {
@@ -495,10 +493,25 @@ export class SceneUiBridge {
     this.root.remove()
   }
 
+  private applyVirtual(interactable: ReturnType<typeof readInteractableArea>): void {
+    const next = liveVirtualCanvas(interactable)
+    if (next.width !== this.virtual.width || next.height !== this.virtual.height) {
+      this.virtual = next
+      this.layoutCache.clear()
+      this.markContentDirty()
+    }
+  }
+
   /** Yoga layout → DOM paint for the committed worker mount set. */
   paint(view: ProjectionView): void {
     this.mirrorEcs = view.components
     this.lastView = view
+    const ecs = view.components
+    const interactable = readInteractableArea(this.getCanvas())
+    this.applyVirtual(interactable)
+    alignSceneUiRoot(this.root, interactable)
+    const viewport = computeUiViewport(this.virtual, interactable)
+    this.injectCanvasInfo(view, ecs, interactable, viewport)
     if (!this.domVisible) {
       // Mount still commits while hidden; revealPlayChrome → setVisible(true) repaints.
       // Never log per-frame (was flooding console + main-thread during 60s attach).
@@ -508,12 +521,6 @@ export class SceneUiBridge {
     if (this.paintCount > 0 && this.paintedEpoch === this.contentEpoch) {
       return
     }
-    const ecs = view.components
-
-    const interactable = readInteractableArea(this.getCanvas())
-    alignSceneUiRoot(this.root, interactable)
-    const viewport = computeUiViewport(this.virtual, interactable)
-    this.injectCanvasInfo(view, ecs, interactable, viewport)
 
     if (!this.workerUiEntitiesKnown || !this.workerUiEntities?.size) {
       this.scrubUnauthoritativeDom()
@@ -575,6 +582,69 @@ export class SceneUiBridge {
     ) {
       this.paintedEpoch = this.contentEpoch
       return
+    }
+
+    // P2 text-only fast path: layout transforms unchanged, only UiText visual keys dirty.
+    // Skip full Yoga + hit-map rebuild — patch label text on existing DOM nodes.
+    // Never take this path when any previously-visible entity is gone/hidden — leave-seat
+    // and modal close need a full forest walk (or patchEntities hide sweep).
+    if (
+      this.paintCount > 0 &&
+      layoutKey === this.lastPaintLayoutKey &&
+      this.lastLayoutBoxMap &&
+      this.lastEntityLayoutKeys.size > 0
+    ) {
+      let hideInProgress = false
+      if (this.lastLayoutBoxMap.size > 0) {
+        for (const entity of this.lastLayoutBoxMap.keys()) {
+          if (!mounted.has(entity) || !isUiEntityVisible(entity, transformOf)) {
+            hideInProgress = true
+            break
+          }
+        }
+      }
+      if (!hideInProgress) {
+        const textOnlyDirty: Entity[] = []
+        let layoutStable = true
+        for (const { entity, transform } of records) {
+          const lk = layoutTransformFingerprint(transform)
+          if (this.lastEntityLayoutKeys.get(entity) !== lk) {
+            layoutStable = false
+            break
+          }
+        }
+        if (layoutStable) {
+          for (const [entity, key] of entityVisualKeys) {
+            if (this.lastEntityVisualKeys.get(entity) !== key) textOnlyDirty.push(entity)
+          }
+          if (textOnlyDirty.length > 0 && textOnlyDirty.length <= 16 && this.lastUiForest) {
+            const drawInput = {
+              forest: this.lastUiForest,
+              virtual: this.virtual,
+              interactable,
+              viewport,
+              scene: this.scene,
+              ecs,
+              pointerEventsOf: this.pointerEventsLookup,
+              transformOf,
+              textOf,
+              inputOf,
+              dropdownOf,
+              backgroundOf,
+              mountedEntities: mounted,
+              authoritativeEntities: this.workerUiEntities!,
+              layoutBoxes: this.lastLayoutBoxMap,
+              onRegions: (regions: UiScreenRegion[]) => this.hitMap.replace(regions)
+            }
+            if (this.dom.patchEntities(textOnlyDirty, drawInput)) {
+              this.lastPaintVisualKey = visualKey
+              this.lastEntityVisualKeys = entityVisualKeys
+              this.paintedEpoch = this.contentEpoch
+              return
+            }
+          }
+        }
+      }
     }
 
     this.paintCount++
@@ -698,7 +768,7 @@ export class SceneUiBridge {
 
     // COD: large modal mounts (inventory ~700+) still refine absolute dirties aggressively
     // so reeling / slot tweaks never re-Yoga the whole tree every tick.
-    const refineBudget = mounted.size >= 200 ? 64 : 32
+    const refineBudget = mounted.size >= 200 ? 96 : 48
     const patchBudget = mounted.size >= 200 ? 96 : 48
 
     let layoutBoxes = this.layoutCache.get(layoutKey)
@@ -710,17 +780,18 @@ export class SceneUiBridge {
       if (layoutDirtyEntities.length === 0 && this.lastFullLayoutBoxes?.length) {
         layoutBoxes = this.lastFullLayoutBoxes
         layoutCacheHit = true
-      } else if (
-        layoutDirtyEntities.length > 0 &&
-        layoutDirtyEntities.length <= refineBudget &&
-        layoutDirtyEntities.length < mounted.size * 0.4
-      ) {
-        // Fishing reeling + inventory slot absolute tweaks: refine only those.
+      } else if (layoutDirtyEntities.length > 0 && this.lastFullLayoutBoxes?.length) {
+        // Prefer absolute refine whenever we have a seed (GP reeling bar every tick).
+        // Cap only as soft budget: still refine first N absolute movers rather than full Yoga.
         const seed = fullSeedMap()
         if (seed?.size) {
+          const refineList =
+            layoutDirtyEntities.length <= refineBudget
+              ? layoutDirtyEntities
+              : layoutDirtyEntities.slice(0, refineBudget)
           const refined = tryRefineAbsoluteLayoutBoxes(
             seed,
-            layoutDirtyEntities,
+            refineList,
             transformOf,
             this.virtual
           )
@@ -728,7 +799,7 @@ export class SceneUiBridge {
             layoutBoxes = [...refined.values()]
             this.lastFullLayoutBoxes = layoutBoxes
             layoutCacheHit = true
-            // Don't poison the layout cache with a transient reeling key — keep refining.
+            // Don't cache under transient reeling layoutKey — keep refining next frame.
           }
         }
       }
@@ -744,12 +815,25 @@ export class SceneUiBridge {
     // Must run on the full box list so parent→child multi-pass can unlock stacks.
     // Cache repaired geometry under layoutKey so we do not thrash fullYoga every frame
     // (logs showed repaired=53 every click → brutal animation stutter).
-    const repairedCollapsed = repairCollapsedLayoutBoxes(layoutBoxes, transformOf, this.virtual)
+    let repairedCollapsed = repairCollapsedLayoutBoxes(layoutBoxes, transformOf, this.virtual)
     if (repairedCollapsed > 0) {
       this.lastFullLayoutBoxes = layoutBoxes
       this.layoutCache.set(layoutKey, layoutBoxes)
       // Prefer patch after repair when possible — geometry is now known.
       layoutCacheHit = true
+    }
+
+    // Poker seat rows / card slots stick at 0×0 under cached Yoga (collapsed=8, fullYoga=0).
+    // Force one full forest layout when many collapsed remain after repair.
+    if (!usedFullYoga && countCollapsedLayoutBoxes(layoutBoxes) > 4) {
+      layoutBoxes = runFullYoga()
+      usedFullYoga = true
+      layoutCacheHit = false
+      repairedCollapsed = repairCollapsedLayoutBoxes(layoutBoxes, transformOf, this.virtual)
+      if (repairedCollapsed > 0) {
+        this.lastFullLayoutBoxes = layoutBoxes
+        this.layoutCache.set(layoutKey, layoutBoxes)
+      }
     }
 
     let layoutBoxMap = new Map<Entity, LayoutBox>(
@@ -827,6 +911,17 @@ export class SceneUiBridge {
     const visibleSetGrew =
       layoutBoxMap.size > prevVisibleCount + 2 || missingVisible.length > 0
     const visibleSetShrank = layoutBoxMap.size + 2 < prevVisibleCount
+    // Any previously-visible entity now hidden (display:none / opacity / unmounted) —
+    // force full forest walk so leave-seat / modal close cannot leave stacked DOM.
+    let previouslyVisibleNowHidden = false
+    if (this.lastLayoutBoxMap && this.lastLayoutBoxMap.size > 0) {
+      for (const entity of this.lastLayoutBoxMap.keys()) {
+        if (!mounted.has(entity) || !isUiEntityVisible(entity, transformOf)) {
+          previouslyVisibleNowHidden = true
+          break
+        }
+      }
+    }
     const visibleDelta = Math.abs(layoutBoxMap.size - this.lastStableVisibleCount)
     if (visibleDelta <= 2 && layoutBoxMap.size > 0 && collapsedVisible <= 4) {
       this.stableVisibleStreak++
@@ -834,17 +929,21 @@ export class SceneUiBridge {
       this.stableVisibleStreak = 0
       this.lastStableVisibleCount = layoutBoxMap.size
     }
-    // Do not declare modal stable while many 0×0 icon cells remain (empty vendor after reopen).
+    // Do not declare modal stable while any 0×0 icon cells remain (empty vendor / rod-bait dock).
     const modalStable =
-      this.stableVisibleStreak >= 2 && layoutBoxMap.size >= 32 && collapsedVisible <= 4
+      this.stableVisibleStreak >= 2 && layoutBoxMap.size >= 32 && collapsedVisible === 0
 
     // Prefer patch when: layout reused/refined, OR full Yoga but modal already open and few dirties.
-    // Never patch while collapsed icon cells remain — full forest walk after repair.
+    // Never patch while any collapsed icon cells remain — fishing rod/bait dock is only 2
+    // cells; `collapsedVisible <= 4` used to leave them 0×0 forever until vendor open forced
+    // a full forest walk.
+    // Never patch when visibility shrinks (poker stand-up, shop close) — patch missed hide.
     const preferPatch =
       this.paintCount > 1 &&
       !visibleSetGrew &&
       !visibleSetShrank &&
-      collapsedVisible <= 4 &&
+      !previouslyVisibleNowHidden &&
+      collapsedVisible === 0 &&
       repairedCollapsed === 0 &&
       dirtyEntities.length > 0 &&
       dirtyEntities.length <= patchBudget &&
@@ -958,6 +1057,64 @@ export class SceneUiBridge {
   }
 
   /**
+   * Deepest / smallest UI entity under the cursor with PET_HOVER_ENTER.
+   * Click capture ignores hover-only nodes (supply pill, action-slot tooltips);
+   * react-ecs onMouseEnter still needs that leaf so getInputCommand fires.
+   */
+  pickUiHoverHit(
+    clientX: number,
+    clientY: number,
+    camera: THREE.Camera
+  ): PointerHit | null {
+    this.lastPointerClientX = clientX
+    this.lastPointerClientY = clientY
+    if (!this.domVisible) return null
+    if (isForeignUiRootOnTop(this.root.id, clientX, clientY)) return null
+    const ecs = this.mirrorEcs
+    const view = this.lastView
+    if (!ecs || !view) return null
+    const handler = this.resolveUiHoverHandlerAtPoint(clientX, clientY)
+    if (handler === null || this.input.isFieldEntity(handler)) return null
+    return this.buildDomPointerHit(handler, camera)
+  }
+
+  private resolveUiHoverHandlerAtPoint(clientX: number, clientY: number): Entity | null {
+    const ecs = this.mirrorEcs
+    const view = this.lastView
+    if (!ecs || !view) return null
+    const transformOf = (e: Entity) => ecs.UiTransform.getOrNull(e)
+    const candidates = this.collectTopClusterPickCandidates(clientX, clientY)
+    let best: Entity | null = null
+    let bestArea = Number.POSITIVE_INFINITY
+    for (const entity of candidates) {
+      if (this.input.isFieldEntity(entity)) continue
+      const handler = findUiPointerHandlerEntity(
+        ecs,
+        view,
+        entity,
+        InputAction.IA_POINTER,
+        PointerEventType.PET_HOVER_ENTER,
+        this.pointerEventsLookup
+      )
+      if (handler === null) continue
+      if (!isUiEntityVisible(handler, transformOf)) continue
+      let area = this.candidatePickArea(handler)
+      if (!Number.isFinite(area)) area = this.candidatePickArea(entity)
+      if (
+        this.isNearFullscreenPickArea(area) &&
+        !isFullscreenUiPeAllowed(ecs, handler, { forest: this.lastUiForest })
+      ) {
+        continue
+      }
+      if (area < bestArea) {
+        best = handler
+        bestArea = area
+      }
+    }
+    return best
+  }
+
+  /**
    * Blocks 3D raycast when the topmost authoritative UI layer at (x,y) is blocking.
    * UI stacks above scene pointers — BLOCK shells consume the ray without falling through.
    */
@@ -1013,6 +1170,20 @@ export class SceneUiBridge {
 
   private applyHoverCursor(next: 'default' | 'pointer' | 'text'): void {
     const canvas = this.getCanvas()
+    if (canvas && document.pointerLockElement === canvas) {
+      canvas.style.cursor = 'none'
+      this.root.style.cursor = 'none'
+      return
+    }
+    // Hand cursor only when a real scene-UI node is under the point.
+    // Invisible BLOCK hit-maps (welcome fade leftovers) used to pin canvas to pointer.
+    if (next === 'pointer' && typeof document !== 'undefined') {
+      const under = document.elementFromPoint(this.lastPointerClientX, this.lastPointerClientY)
+      const onUi =
+        under instanceof Element &&
+        !!under.closest('.scene-ui-node, .scene-ui-root, [class*="scene-ui"]')
+      if (!onUi) next = 'default'
+    }
     if (canvas) canvas.style.cursor = next
     this.root.style.cursor = next
   }

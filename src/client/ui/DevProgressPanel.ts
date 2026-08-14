@@ -42,6 +42,7 @@ type DevTab = 'community' | 'status' | 'progress'
 
 export type DevProgressPanelOptions = {
   getSession?: () => SessionIdentity | null
+  onVisibilityChange?: (visible: boolean) => void
 }
 
 /** Dev overlay — community workflow + full parity matrix + PROGRESS.md milestones. */
@@ -65,9 +66,11 @@ export class DevProgressPanel {
   private suggestionSubmitting = false
   private suggestionFormOpen = false
   private readonly getSession: () => SessionIdentity | null
+  private readonly onVisibilityChange: ((visible: boolean) => void) | null
 
   constructor(options: DevProgressPanelOptions = {}) {
     this.getSession = options.getSession ?? (() => null)
+    this.onVisibilityChange = options.onVisibilityChange ?? null
     this.root = document.createElement('div')
     this.root.className = 'dev-progress'
     this.root.hidden = true
@@ -154,6 +157,7 @@ export class DevProgressPanel {
     void this.refreshClaims(true)
     void this.refreshProgress(true)
     this.render()
+    this.onVisibilityChange?.(true)
   }
 
   /** Open panel on a tab (e.g. What's new → Shipped). */
@@ -165,6 +169,7 @@ export class DevProgressPanel {
   hide(): void {
     this.visible = false
     this.root.classList.remove('is-open')
+    this.onVisibilityChange?.(false)
     window.setTimeout(() => {
       if (!this.visible) this.root.hidden = true
     }, 200)

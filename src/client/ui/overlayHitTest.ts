@@ -40,6 +40,9 @@ export function isClientOverlayTarget(target: EventTarget | null): boolean {
       '.user-context-menu-backdrop',
       '.user-profile-modal',
       '.user-profile-modal-backdrop',
+      '.trade-invite-host',
+      '.trade-result-host',
+      '.trade-window-host',
       '#threejs-hud-confirm-overlay',
       '#threejs-external-link-overlay',
       '#threejs-nft-dialog-overlay'
@@ -49,7 +52,8 @@ export function isClientOverlayTarget(target: EventTarget | null): boolean {
 
 export type InteractiveNameTagHit = {
   address: string
-  element: HTMLElement
+  /** CSS2D pill when present — may be null if the tag is culled/loading. */
+  element: HTMLElement | null
 }
 
 export type PillHoverLookupOptions = {

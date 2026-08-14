@@ -5,10 +5,18 @@
 # Dev panel Community tab renders this as a single workflow table.
 
 schema_version: 2
-updated: 2026-07-31
+updated: 2026-08-14
 source: github
 base_branch: dev-latest
 workflow:
+  - stage: pending_review
+    integration_ref: pr:62
+    title: deploy confirmation on Barn cards + update-available refresh for library
+      pets
+    owner: awedjob
+    pr: 62
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/62
+    updated: 2026-08-12
   - stage: pending_review
     integration_ref: pr:56
     title: re-add foil pack and retriever, compressed (1.1 MB total)
@@ -16,6 +24,41 @@ workflow:
     pr: 56
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/56
     updated: 2026-07-29
+  - stage: merged
+    integration_ref: pr:63
+    title: host clock for primary and PE play-frames
+    owner: lastraum
+    pr: 63
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/63
+    updated: 2026-08-14
+  - stage: merged
+    integration_ref: pr:58
+    title: update/delete actions in dispatch Worker
+    owner: awedjob
+    pr: 58
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/58
+    updated: 2026-08-04
+  - stage: merged
+    integration_ref: pr:59
+    title: skinned-bounds grounding/size cap + barn added-flag sync on delete
+    owner: awedjob
+    pr: 59
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/59
+    updated: 2026-08-04
+  - stage: merged
+    integration_ref: pr:61
+    title: fill the preview stage, stop the stuck spinner, pointerdown peer options
+    owner: awedjob
+    pr: 61
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/61
+    updated: 2026-08-04
+  - stage: merged
+    integration_ref: pr:60
+    title: desktop-parity jog clip, hip bob, and run cadence
+    owner: awedjob
+    pr: 60
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/60
+    updated: 2026-08-04
   - stage: merged
     integration_ref: pr:55
     title: foil pack + retriever pet models
@@ -81,20 +124,6 @@ workflow:
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/46
     updated: 2026-07-24
   - stage: merged
-    integration_ref: pr:45
-    title: wallet-inventory mode for the wearable sweep harness
-    owner: awedjob
-    pr: 45
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/45
-    updated: 2026-07-22
-  - stage: merged
-    integration_ref: pr:44
-    title: overlay/backpack redesign, 2D↔3D toggle, and cross-tab consistency
-    owner: awedjob
-    pr: 44
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/44
-    updated: 2026-07-22
-  - stage: merged
     integration_ref: pr:43
     title: stop PE HUD flash from paint thrash
     owner: lastraum
@@ -129,28 +158,6 @@ workflow:
     pr: 41
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/41
     updated: 2026-07-21
-  - stage: merged
-    integration_ref: pr:34
-    title: official DCL rarity colors + sort by rarity
-    owner: awedjob
-    pr: 34
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/34
-    updated: 2026-07-21
-  - stage: merged
-    integration_ref: pr:29
-    title: D3JS-exclusive brow + facial hair colors
-    owner: awedjob
-    pr: 29
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/29
-    updated: 2026-07-20
-  - stage: merged
-    integration_ref: pr:28
-    title: skeleton-named display meshes pruned invisible + hides-driven base shell
-      hiding
-    owner: awedjob
-    pr: 28
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/28
-    updated: 2026-07-20
   - stage: merged
     integration_ref: ecs:TriggerArea
     title: TriggerArea Tier A — volume enter/exit and scene callbacks

@@ -21,15 +21,20 @@ export function tryRefineAbsoluteLayoutBoxes(
 ): Map<Entity, LayoutBox> | null {
   if (!dirty.length || !prev.size) return null
 
-  // Flex/relative/display/parent dirties and brand-new nodes need full Yoga.
-  // Silently keeping a stale prev box (old behavior) left shop roots box-less after
-  // display:none → flex, so SceneUiDomRenderer hid entire inventory subtrees.
+  // Brand-new nodes (not in prev) need full Yoga — shop open / modal mount.
+  // Non-absolute (flex) dirties are **skipped** (keep previous box) so one flex
+  // life-bar sibling does not force full Yoga every reeling tick (was: return null).
+  const absoluteDirty: Entity[] = []
   for (const entity of dirty) {
     const t = transformOf(entity)
     if (!t) return null
-    if (normalizeYGPositionType(t.positionType) !== YGPositionType.ABSOLUTE) return null
     if (!prev.has(entity)) return null
+    if (normalizeYGPositionType(t.positionType) !== YGPositionType.ABSOLUTE) {
+      continue
+    }
+    absoluteDirty.push(entity)
   }
+  if (!absoluteDirty.length) return null
 
   const next = new Map(prev)
   let refinedAny = false
@@ -50,7 +55,7 @@ export function tryRefineAbsoluteLayoutBoxes(
   }
 
   // Parents before children when possible (dirty order often DFS).
-  const ordered = [...dirty].sort((a, b) => {
+  const ordered = [...absoluteDirty].sort((a, b) => {
     const ta = transformOf(a)
     const tb = transformOf(b)
     const pa = (ta?.parent ?? 0) as number

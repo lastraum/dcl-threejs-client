@@ -89,8 +89,8 @@ function pushLayoutHitRegion(
 ): void {
   if (layoutBox.width <= 0.5 || layoutBox.height <= 0.5) return
   // Skip off-virtual-canvas hit regions (second shop root at x=2146, etc.).
-  const vw = input.virtual?.width ?? 1920
-  const vh = input.virtual?.height ?? 1080
+  const vw = input.virtual?.width ?? input.interactable.width
+  const vh = input.virtual?.height ?? input.interactable.height
   if (
     layoutBox.left >= vw - 1 ||
     layoutBox.top >= vh - 1 ||
@@ -324,7 +324,12 @@ export class SceneUiDomRenderer {
     const scale = uiScreenScaleFromViewport(input.viewport)
     this.ensureLayoutHost()
 
-    const roots = input.forest.get(CANVAS_ROOT_ENTITY) ?? []
+    // Explorer free stack among canvas roots — low→high author zIndex (later DOM on top).
+    const roots = [...(input.forest.get(CANVAS_ROOT_ENTITY) ?? [])].sort((a, b) => {
+      const za = input.transformOf(a)?.zIndex ?? 0
+      const zb = input.transformOf(b)?.zIndex ?? 0
+      return za - zb
+    })
     for (const root of roots) {
       this.renderEntityTree(root, input, alive, visited, 0, regions, scale)
     }
@@ -344,7 +349,24 @@ export class SceneUiDomRenderer {
     this.purgeStaleDomTreeInternal(input.authoritativeEntities)
     this.purgeDisconnectedNodes()
     this.purgeOrphanHostChildren()
+    // Free-stack hosts (roots + elevated tooltips): paint low→high zIndex among host kids.
+    this.orderHostFreeStack()
     input.onRegions?.(regions)
+  }
+
+  /** Reorder canvas-absolute host children by author zIndex (Explorer free stack). */
+  private orderHostFreeStack(): void {
+    const kids = [...this.host.children].filter(
+      (n): n is HTMLElement =>
+        n instanceof HTMLElement && n.classList.contains('scene-ui-node')
+    )
+    if (kids.length < 2) return
+    kids.sort((a, b) => {
+      const za = Number.parseFloat(a.style.zIndex || '0') || 0
+      const zb = Number.parseFloat(b.style.zIndex || '0') || 0
+      return za - zb
+    })
+    for (const el of kids) this.host.appendChild(el)
   }
 
   /**
@@ -354,6 +376,7 @@ export class SceneUiDomRenderer {
   patchEntities(dirty: readonly Entity[], input: SceneUiDrawInput): boolean {
     const scale = uiScreenScaleFromViewport(input.viewport)
     const alive = new Set<Entity>(input.mountedEntities)
+    const patched = new Set<Entity>()
     for (const entity of dirty) {
       if (!alive.has(entity)) {
         const el = this.nodes.get(entity)
@@ -364,7 +387,28 @@ export class SceneUiDomRenderer {
         return false
       }
       // depth ignored for patch (regions rebuilt below)
-      this.renderEntityTree(entity, input, alive, new Set(), 0, [], scale)
+      this.renderEntityTree(entity, input, alive, patched, 0, [], scale)
+    }
+    // Poker leave-seat / modal close: only a few dirties arrive, but siblings that became
+    // display:none (or lost mount) must hide even if not in the dirty set — else stacked HUD.
+    for (const [entity, el] of [...this.nodes]) {
+      if (patched.has(entity)) continue
+      if (!alive.has(entity) || !input.authoritativeEntities.has(entity)) {
+        this.applyHiddenDomState(el)
+        continue
+      }
+      if (!isUiEntityVisible(entity, input.transformOf)) {
+        this.applyHiddenDomState(el)
+        // Hide subtree shells even when only an ancestor flipped display:none.
+        const hideKids = (e: Entity): void => {
+          for (const child of input.forest.get(e) ?? []) {
+            const node = this.nodes.get(child)
+            if (node) this.applyHiddenDomState(node)
+            hideKids(child)
+          }
+        }
+        hideKids(entity)
+      }
     }
     const regions: UiScreenRegion[] = []
     this.collectHitRegionsFromForest(input, regions)
@@ -404,15 +448,29 @@ export class SceneUiDomRenderer {
    * Flat canvas-absolute (host + abs box) painted every inventory icon over the 3D world
    * because parents no longer clipped — fishing mash screenshot.
    *
+   * Explorer free stack: when author zIndex is strictly higher than the parent, promote
+   * to canvas-absolute so hover tooltips / overlays stack above sibling HUD roots instead
+   * of being trapped in the parent's transform stacking context.
+   *
    * Unusable (0×0) parents → canvas-absolute fallback for that node only; never nest under
    * a collapsed shell (that piled icons at one point).
    */
-  private resolveDomParent(transform: PBUiTransform): {
+  private resolveDomParent(
+    transform: PBUiTransform,
+    transformOf: (e: Entity) => PBUiTransform | null
+  ): {
     parent: HTMLElement
     coords: 'canvas' | 'parent'
   } {
     const parentId = transform.parent ?? CANVAS_ROOT_ENTITY
     if (parentId === CANVAS_ROOT_ENTITY || parentId === 0) {
+      return { parent: this.host, coords: 'canvas' }
+    }
+    const selfZ = transform.zIndex ?? 0
+    const parentZ = transformOf(parentId as Entity)?.zIndex ?? 0
+    // Free stack: elevated zIndex breaks out of parent clip/isolation (command-center
+    // tooltips, NEW banners over grids). Same z stays nested for inventory cells.
+    if (selfZ > parentZ) {
       return { parent: this.host, coords: 'canvas' }
     }
     const parentShell = this.nodes.get(parentId as Entity)
@@ -477,7 +535,7 @@ export class SceneUiDomRenderer {
       return
     }
 
-    const { parent: domParent, coords } = this.resolveDomParent(transform)
+    const { parent: domParent, coords } = this.resolveDomParent(transform, input.transformOf)
     const shell = this.getOrCreateNode(entity)
     adoptNode(domParent, shell)
     const el = ensureContentRoot(shell)
@@ -613,17 +671,12 @@ export class SceneUiDomRenderer {
       input.forest
     )
 
-    // Clip modal chrome so absolute children don't spill across the plaza.
-    // Slot cells (≈110×110): allow slight overflow for selection rings, but still clip
-    // when the scene authors overflow:hidden. Mid panels (grid, detail ≥120) clip so
-    // NEW banners / icons stay inside their cell stacking context.
-    // Don't force-clip small text-only chrome (title bars / icon buttons).
-    const hasTextOnlyChrome = !!text?.value?.trim() && !bg && !interactive
+    // Clip only when author sets overflow hidden/scroll (Explorer free stack).
+    // Do NOT clip solely for border-radius — that trapped poker face/card icons inside
+    // rounded seat rows (DCL client lets children paint outside the rounded panel).
+    // Border-radius still applies on shell/bg layers for the rounded look.
     const clipShell =
-      !!radius ||
-      transform.overflow === YGOverflow.HIDDEN ||
-      transform.overflow === YGOverflow.SCROLL ||
-      (layoutBox.width >= 120 && layoutBox.height >= 120 && !hasTextOnlyChrome)
+      transform.overflow === YGOverflow.HIDDEN || transform.overflow === YGOverflow.SCROLL
 
     const compactControl =
       layoutBox.width < 500 &&
@@ -721,12 +774,20 @@ export class SceneUiDomRenderer {
 
     // Nested shells: parent-relative; roots: canvas-absolute. Clip large panels (clipShell).
     applyYogaLayoutBox(shell, layoutBox, scale, coords, clipShell)
-    shell.style.zIndex = String(transform.zIndex ?? 0)
+    // Author zIndex — must paint order among siblings (later DOM = on top for equal isolate).
+    const z = transform.zIndex ?? 0
+    shell.style.zIndex = String(z)
+    shell.style.setProperty('z-index', String(z), 'important')
 
     // Hit map always canvas-absolute (not nested DOM rects).
     pushLayoutHitRegion(regions, entity, transform, layoutBox, input, depth)
 
-    const children = input.forest.get(entity) ?? []
+    // Explorer stacking: siblings paint low→high zIndex so higher author zIndex wins.
+    const children = [...(input.forest.get(entity) ?? [])].sort((a, b) => {
+      const ta = input.transformOf(a)
+      const tb = input.transformOf(b)
+      return (ta?.zIndex ?? 0) - (tb?.zIndex ?? 0)
+    })
     for (const child of children) {
       this.renderEntityTree(child, input, alive, visited, depth + 1, regions, scale)
     }

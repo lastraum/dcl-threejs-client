@@ -3,6 +3,7 @@ import { parseParcelKey, parcelWorldOrigin } from '../../dcl/content/parseParcel
 import { PARCEL_SIZE } from '../../dcl/content/types'
 import { terrainGlbParcelMeshOffset } from '../../dcl/landscape/Utils/SceneSpace'
 import {
+  ARENA_WATER_SURFACE_Y,
   clampTerrainExportSegments,
   DEFAULT_TERRAIN_PROCEDURAL_SHADING,
   TERRAIN_ALBEDO_EXPORT_RESOLUTION,
@@ -255,6 +256,92 @@ export class EditorTerrainSystem {
     const peakX = this.originX + (peakIx / Math.max(res - 1, 1)) * this.widthM
     const peakZ = this.originZ + (peakIz / Math.max(res - 1, 1)) * this.depthM
     return { maxY, peakX, peakZ }
+  }
+
+  /**
+   * Water biome: put the heightmap under the ocean unless the user has real relief.
+   *
+   * Sinks flat “tan plates”:
+   * - old seafloor Y=0 (above MSL −1.35)
+   * - “To water” rafts at MSL
+   * - Flat Land starter (constant height, little variance)
+   *
+   * Keeps island / rolling hills / mountains (height range ≥ ~2.5m of real relief).
+   */
+  sinkUnraisedSeafloorForOpenOcean(): boolean {
+    const msl = ARENA_WATER_SURFACE_Y
+    let maxY = -Infinity
+    let minY = Infinity
+    let sum = 0
+    const n = this.heights.length
+    for (let i = 0; i < n; i++) {
+      const h = this.heights[i]!
+      if (h > maxY) maxY = h
+      if (h < minY) minY = h
+      sum += h
+    }
+    const range = maxY - minY
+    const mean = sum / Math.max(1, n)
+    // Real sculpted/starters have multi-metre relief. Plates are nearly constant Y.
+    const isFlatPlate = range < 2.5
+    const plateNearSea = mean > msl - 1 && mean < msl + 10
+
+    // Already deep seafloor — just hide color if needed.
+    if (maxY < msl - 0.5) {
+      this.syncOpenOceanMeshVisibility()
+      return false
+    }
+    // Keep maps with real hills/cliffs.
+    if (!isFlatPlate || !plateNearSea) {
+      this.syncOpenOceanMeshVisibility()
+      return false
+    }
+
+    this.heights.fill(TERRAIN_SEA_FLOOR_WORLD_Y)
+    this.rebuildPreviewPositions()
+    this.finalizePreviewMesh()
+    this.syncOpenOceanMeshVisibility()
+    return true
+  }
+
+  /**
+   * Open-ocean view: hide the sculpt group while fully submerged.
+   * Brush raycasts use the heightfield (not the mesh), so invisibility is safe.
+   */
+  syncOpenOceanMeshVisibility(): void {
+    const { maxY } = this.getMaxHeightSample()
+    const above = maxY > ARENA_WATER_SURFACE_Y + 0.2
+    this.group.visible = above
+    if (this.mesh) {
+      this.mesh.visible = above
+      this.lambertMat.colorWrite = true
+      this.lambertMat.depthWrite = true
+      this.lambertMat.transparent = false
+      this.lambertMat.opacity = 1
+      this.lambertMat.needsUpdate = true
+    }
+  }
+
+  /** Force every cell to deep seafloor and hide the plate under open ocean. */
+  fillSeafloor(): void {
+    this.heights.fill(TERRAIN_SEA_FLOOR_WORLD_Y)
+    this.rebuildPreviewPositions()
+    this.finalizePreviewMesh()
+    // Hard hide — do not leave a tan plate sitting under/through waves.
+    this.group.visible = false
+    if (this.mesh) this.mesh.visible = false
+  }
+
+  /** Restore normal opaque land draw (leave water biome). */
+  restoreFullMeshDraw(): void {
+    this.group.visible = true
+    if (!this.mesh) return
+    this.mesh.visible = true
+    this.lambertMat.colorWrite = true
+    this.lambertMat.depthWrite = true
+    this.lambertMat.transparent = false
+    this.lambertMat.opacity = 1
+    this.lambertMat.needsUpdate = true
   }
 
   applySculptHeightBuffer(heights: Float32Array, resolution: number): void {

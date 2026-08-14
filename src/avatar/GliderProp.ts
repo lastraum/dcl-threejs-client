@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { clone as cloneSkinnedRoot } from 'three/examples/jsm/utils/SkeletonUtils.js'
+import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
 
 /** Explorer CharacterMotion asset — same GLB as unity-explorer GliderProp.glb. */
 export const GLIDER_PROP_URL = '/avatar/glider/GliderProp.glb'
@@ -46,22 +47,49 @@ let sharedTemplateLoad: Promise<THREE.Object3D> | null = null
 let sharedClips: { start: THREE.AnimationClip; end: THREE.AnimationClip } | null = null
 let sharedClipsLoad: Promise<{ start: THREE.AnimationClip; end: THREE.AnimationClip }> | null = null
 
-function tracksFromJson(clip: ClipJson): THREE.KeyframeTrack[] {
+function collectNodeNames(root: THREE.Object3D): Set<string> {
+  const names = new Set<string>()
+  root.traverse((obj) => {
+    if (obj.name) names.add(obj.name)
+  })
+  return names
+}
+
+/** GLTFLoader strips `. : / [ ]` from node names; clip JSON still has Unity dots. */
+function resolveClipNodeName(raw: string, names: Set<string>): string | null {
+  if (names.has(raw)) return raw
+  const sanitized = THREE.PropertyBinding.sanitizeNodeName(raw)
+  if (names.has(sanitized)) return sanitized
+  return null
+}
+
+function tracksFromJson(clip: ClipJson, names: Set<string>): THREE.KeyframeTrack[] {
   const tracks: THREE.KeyframeTrack[] = []
+  const push = (
+    ctor: new (name: string, times: number[], values: number[]) => THREE.KeyframeTrack,
+    bone: string,
+    suffix: string,
+    times: number[],
+    values: number[]
+  ): void => {
+    const node = resolveClipNodeName(bone, names)
+    if (!node) return
+    tracks.push(new ctor(`${node}.${suffix}`, times, values))
+  }
   for (const t of clip.rotation) {
-    tracks.push(new THREE.QuaternionKeyframeTrack(`${t.bone}.quaternion`, t.times, t.values))
+    push(THREE.QuaternionKeyframeTrack, t.bone, 'quaternion', t.times, t.values)
   }
   for (const t of clip.position) {
-    tracks.push(new THREE.VectorKeyframeTrack(`${t.bone}.position`, t.times, t.values))
+    push(THREE.VectorKeyframeTrack, t.bone, 'position', t.times, t.values)
   }
   for (const t of clip.scale) {
-    tracks.push(new THREE.VectorKeyframeTrack(`${t.bone}.scale`, t.times, t.values))
+    push(THREE.VectorKeyframeTrack, t.bone, 'scale', t.times, t.values)
   }
   return tracks
 }
 
-function clipFromJson(clip: ClipJson): THREE.AnimationClip {
-  return new THREE.AnimationClip(clip.name, clip.duration, tracksFromJson(clip))
+function clipFromJson(clip: ClipJson, names: Set<string>): THREE.AnimationClip {
+  return new THREE.AnimationClip(clip.name, clip.duration, tracksFromJson(clip, names))
 }
 
 async function loadGliderTemplate(): Promise<THREE.Object3D> {
@@ -75,7 +103,7 @@ async function loadGliderTemplate(): Promise<THREE.Object3D> {
       root.traverse((obj) => {
         if ((obj as THREE.Mesh).isMesh) {
           const mesh = obj as THREE.Mesh
-          mesh.castShadow = true
+          setMeshDesiredCastShadow(mesh, true, 'avatar')
           mesh.receiveShadow = true
           mesh.frustumCulled = false
         }
@@ -90,16 +118,24 @@ async function loadGliderTemplate(): Promise<THREE.Object3D> {
   return sharedTemplateLoad
 }
 
-async function loadGliderClips(): Promise<{ start: THREE.AnimationClip; end: THREE.AnimationClip }> {
+async function loadGliderClipFile(): Promise<ClipsFile> {
+  const res = await fetch(GLIDER_CLIPS_URL)
+  if (!res.ok) throw new Error(`gliderClips.json HTTP ${res.status}`)
+  return (await res.json()) as ClipsFile
+}
+
+async function loadGliderClipsFor(template: THREE.Object3D): Promise<{
+  start: THREE.AnimationClip
+  end: THREE.AnimationClip
+}> {
   if (sharedClips) return sharedClips
   if (!sharedClipsLoad) {
     sharedClipsLoad = (async () => {
-      const res = await fetch(GLIDER_CLIPS_URL)
-      if (!res.ok) throw new Error(`gliderClips.json HTTP ${res.status}`)
-      const data = (await res.json()) as ClipsFile
+      const data = await loadGliderClipFile()
+      const names = collectNodeNames(template)
       const clips = {
-        start: clipFromJson(data.start),
-        end: clipFromJson(data.end)
+        start: clipFromJson(data.start, names),
+        end: clipFromJson(data.end, names)
       }
       sharedClips = clips
       return clips
@@ -147,13 +183,20 @@ export class GliderProp {
   private loadGen = 0
   private clipsReady = false
 
-  /** Attach (or re-attach) under avatar pivot; loads mesh + open/close clips once. */
+  /** Remember pivot. Mesh + clips load on first open — grounded remotes stay empty. */
   async attach(parent: THREE.Object3D): Promise<void> {
     this.detach()
     this.parent = parent
+    if (this.wantOpen) await this.ensureLoaded()
+  }
+
+  private async ensureLoaded(): Promise<void> {
+    const parent = this.parent
+    if (!parent || this.root) return
     const gen = ++this.loadGen
     try {
-      const [template, clips] = await Promise.all([loadGliderTemplate(), loadGliderClips()])
+      const template = await loadGliderTemplate()
+      const clips = await loadGliderClipsFor(template)
       if (gen !== this.loadGen || this.parent !== parent) return
 
       const clone = cloneSkinnedRoot(template)
@@ -164,8 +207,15 @@ export class GliderProp {
       this.root = clone
 
       this.propellers = []
+      const propL = THREE.PropertyBinding.sanitizeNodeName('DEF_glider_propeller.L')
+      const propR = THREE.PropertyBinding.sanitizeNodeName('DEF_glider_propeller.R')
       clone.traverse((obj) => {
-        if (obj.name === 'DEF_glider_propeller.L' || obj.name === 'DEF_glider_propeller.R') {
+        if (
+          obj.name === 'DEF_glider_propeller.L' ||
+          obj.name === 'DEF_glider_propeller.R' ||
+          obj.name === propL ||
+          obj.name === propR
+        ) {
           this.propellers.push(obj)
         }
       })
@@ -195,6 +245,10 @@ export class GliderProp {
   setOpen(open: boolean): void {
     if (this.wantOpen === open) return
     this.wantOpen = open
+    if (open && !this.root) {
+      if (this.parent) void this.ensureLoaded()
+      return
+    }
     if (!this.clipsReady || !this.root) return
 
     if (open) {
@@ -225,7 +279,7 @@ export class GliderProp {
   }
 
   update(delta: number): void {
-    if (!this.root) return
+    if (!this.root || this.phase === 'closed') return
     this.mixer?.update(delta)
 
     // Explorer: rotors spin while gliding after open clip releases bones.

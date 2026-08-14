@@ -9,9 +9,10 @@ alwaysApply: true
 
 | Lane | Messages | Handler |
 |------|----------|---------|
-| Pointer | `inject-pointer-click`, `pointer-crdt-deliver` | Priority bootstrap → `sceneWorker` deliver queue |
+| Pointer edges | `inject-pointer-click` only (authoritative PE) | Priority bootstrap → inject session |
+| Light renderer inbound | `pointer-crdt-deliver` (historical name — TriggerArea/Raycast/ambient LWW, **not** PE edges), `tween-state-deliver` | Worker light apply; no deliver-done for ambient |
 | Keyboard | `scene-input-snapshot`, `pump-scene-engine-tick` | Normal worker message path |
-| Cooperative | `renderer-inbound-deliver`, RPC, boot | Normal path |
+| Boot-safe inbound | `renderer-inbound-deliver` (e.g. GltfLoadingState), RPC, boot | Avoids pointer pause mid-onStart |
 
 Main posts freely. Worker owns ordering via `sceneWorkerInputSession` (snapshots coalesce during pointer session).
 
@@ -41,24 +42,55 @@ During pointer defer (`shouldDeferPointerOutbound`):
 
 No gap force-flush, no shrink skip, no mid-tick Ui emit.
 
-## Pointer interactive tick
+## Pointer interactive tick (Explorer press lifecycle — all scenes)
 
-One universal pipeline in `runSceneEnginePointerTick` — same for every scene, no per-scene tuning. Inject runs immediately before each `engine.update(0)`, never on the `inject-pointer-click` message:
+**Two universal pipelines** (no per-scene forks; branch on `sceneUi` flag only):
 
-1. `inject PET_DOWN` → `engine.update(0)` — handlers + systems + react-ecs
-2. `inject PET_UP` → `engine.update(0)` — no `exports.onUpdate` on inject path (pollEvents must not run mid-batch)
-3. react-ecs flush until UI fingerprint stable (two identical passes, not mount thresholds)
-4. `runPointerUiPhase4Egress` — structured snapshot → `pointerUiMountSnapshot` (sole UI egress)
-5. `engine.update(0)` — react-ecs off (`pointerInteractiveTickActive` false, session still open); non-Ui CRDT → `pointerDeferredNonUi`
-6. `flushPointerDeferredOutboundsAsync` — non-Ui chunks then atomic UI snapshot; await acks
-7. `pointer-deliver-done`
-8. cooperative ticks resume on main mount commit — **do not** replay skipped `exports.onUpdate` in the deliver chain (pollEvents undoes handler egress: MainCamera, UI flags)
+```text
+WORLD mesh:
+  pointerdown → inject phase=down → eng.update(0) → phase-4 if HUD dirty → deliver-done
+  pointerup   → inject phase=up   → eng.update(0) → phase-4 if dirty → deliver-done
+  (isPressed sticky across play frames until UP)
 
-`awaitEngineUpdateIdle` before pointer deliver — no cooperative `engine.update` interleaving.
+SCENE UI (react-ecs onMouseDown):
+  pointerdown → DOWN eng.update(0) → UP (react-ecs OFF) same job → phase-4 open mount → deliver-done
+  pointerup   → ignored (isPressed already cleared; avoids toggle thrash)
+```
 
-Cooperative ticks during pointer **session** skip `@dcl/react-ecs` (`pointerInputSessionDepth > 0`). Pointer phases 1–3 still run react-ecs (`pointerInteractiveTickActive`). Phase 5 runs with react-ecs off.
+`runSceneEnginePointerTick` + `executePointerEdge` (worker):
 
-Never emit Ui CRDT between phases 1 and 4. Main must not echo `InputModifier` / `MainCamera` inbound during open pointer session.
+1. Apply **PrimaryPointerInfo** from inject body on RootEntity
+2. **World:** one PET edge per browser edge. **Scene UI:** DOWN batch = DOWN+UP same job (toggle-safe)
+3. **Never** `exports.onUpdate` / pollEvents on inject path
+4. **Never** multi-pass react-ecs flush after sceneUi DOWN (re-opens then closes menus)
+5. World PE phase-4 when selection HUD fingerprint dirty (`sceneUi=false` is fine)
+6. Cooperative ticks keep running; sceneUi hold reassert cleared after DOWN batch
+
+**PPI on edges:** many scenes gate select/move on `PrimaryPointerInfo` (UI chrome hit-test, ground ray from `worldRayDirection`). Play-frame-tick alone is not enough when edges run between play frames — main must attach `primaryPointer` on every `inject-pointer-click`.
+
+**VC bind hydrate:** graph key is structure-only (entity/lookAt/parent). Continuous pan pose rides `vc-pose-live` — never re-hydrate every frame.
+
+**Hard rules:**
+
+- Do **not** open a long-lived pointer input session spanning mouse hold (that sets `pointerBlocksEngineTick` and freezes particles/VC/tweens).
+- Do **not** default `sceneTicksPaused` for ordinary PE edges.
+- UI CRDT: still strip on cooperative; phase-4 structured snapshot only when dirty.
+- `sceneUi` flag only changes **UP target resolution** (PlayerEntity clear), not freeze policy.
+- Same-tick DOWN+UP (`phase=click`) is deprecated; main always flushes split edges.
+
+Sticky `inputSystem.isPressed` + per-frame edges match `@dcl/ecs` for **every** scene.
+
+**Pointer hold reassert:** after phase=down, worker tracks held buttons and re-fires
+`PET_DOWN` each `play-frame-tick` (same as keyboard). Without this, a quick click never
+leaves a play frame with `isPressed` true and hold/click-move systems no-op. Clear on phase=up.
+**sceneUi DOWN batch** clears hold immediately (UP in same job).
+
+**L2 clocks never stop for pointer session** (COD B2): `pointerBlocksEngineTick` only for
+mid-inject / explicit pause — not `isPointerInputSessionActive()`. Sessions coalesce keyboard
+only; timers/VC/tweens keep running under mouse hold.
+
+**Main peel FrameLaw (A3/B3):** after PE, material ≤8ms, transform hard ≤2.5ms wall, gltf ≤8
+entities — never full `pendingDiff` dump.
 
 Components are independent — no cross-component input gating.
 
@@ -71,6 +103,10 @@ Pointer deferred non-Ui chunks are LWW-coalesced, then each reconcile runs as it
 ## Pointer timestamps
 
 All worker `PointerEventsResult` rows use `workerPointerEventTimestamp.ts`. UI clicks: `inject-pointer-click` only.
+
+## PE never-record on main
+
+Main must **not** encode `PointerEventsResult` into grow-only outbound (`recordRendererAppend` gates component 1063). Worker inject owns PE clocks. A leftover discard on inject flush is a safety belt only — unexpected PE appends should log as a warning.
 
 ## Pointer delivery & tick resume
 

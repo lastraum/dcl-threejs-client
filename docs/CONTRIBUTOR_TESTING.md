@@ -78,6 +78,10 @@ Parcel URLs: `/80,-1` style routes — see [IMPLEMENTATION_PLAN.md](./IMPLEMENTA
 | **Reference scene** | Genesis Plaza **or** `/rickroll.dcl.eth` | Task `test_scenes` in TASKS.yaml |
 | **Your scene** | — | `/yourname.dcl.eth` exercising the task feature |
 | **Multiplayer** | Two tabs, same world, wallet or guest rules | + scene chat / emote if comms task |
+| **Platform movers** | Stand on parent-driven MeshCollider bob; walk off elevated → freefall | `?platformdebug` · no multi-meter loft ([RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md)) |
+| **Lighting** | Genesis midday Reset lighting — not chalk white; neon not bloom-blown | Side-by-side Explorer |
+| **Scene HTTP** | Any SignedFetch third-party URL via `/api/scene-http/...` | Prod nginx smoke curl (see [DEPLOYMENT.md](./DEPLOYMENT.md)) |
+| **TextShape** | Long HUD label without mid-string clip when width omitted | — |
 | **2D social chat** | Explore shell logged in | FAB open/close restores thread; leave landing → × on scene tab; empty idle text centered |
 | **Elevated spawn** | Tower scene (e.g. Flagtag) | On deck after load; no drown UI during boot; no long hover |
 | **Nearby voice** | Two tabs: Speak / hold **T**, hear peer | Browser + Explorer on **world** and **Genesis parcel**; Jump In keeps LiveKit (`handoff OK`) |

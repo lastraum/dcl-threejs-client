@@ -1,12 +1,14 @@
 # ThreejsClient
 
-A **browser-native Decentraland SDK7 Explorer** — Three.js renderer, Web Worker scene runtime, PhysX, and LiveKit/RFC4 multiplayer. Runs published scene bundles (`bin/index.js`) with CRDT sync, avatars, and an Explorer-style HUD. An alternative to the Unity and Godot explorers, built for the open web.
+A **browser-native Decentraland SDK7 Explorer** — Three.js renderer, Web Worker scene runtime, PhysX, and LiveKit/RFC4 multiplayer. Runs published scene bundles (`bin/index.js`) with CRDT sync, avatars, and an Explorer-style HUD. Built for the open web.
+
+**Current release:** **v2.0.0** (host world + city walk). Latest tagged on `main`. QA continues on `dev-latest`.
 
 ## Goals
 
 **Web-native scene runtime.** Ship a client that runs real DCL SDK7 scenes in the browser without a game-engine shell — Three.js on the main thread, scene scripts in a worker, content from Catalyst and the content network.
 
-**Performance-first architecture.** The active re-architecture removes redundant engine duplication on the main thread (mirror `Engine()`, `crdt-renderer-push`, stash/nudge machinery). The target path is **projection + encoder**: decode CRDT once, render from a projection, write reserved entities back through an encoder — fewer copies, better frame time.
+**Performance-first architecture.** **v2.0** ships the host world: decode CRDT once onto a projection, present from the host store, run official `scene.js` in a guest VM. No second main-thread SDK engine, no `crdt-renderer-push`. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 **SDK7 scene parity.** Match Explorer behavior where creators expect it: correct DCL↔Three.js transforms, PhysX grounding and colliders, pointer and trigger flows, media, avatars, and comms wired to realm/LiveKit patterns. Parity is proven on real scenes (Genesis Plaza, `rickroll.dcl.eth`, `pizzaparty.dcl.eth`), not toy demos.
 
@@ -110,18 +112,101 @@ Production build: `npm run build` → static SPA in `dist/`. Preview: `npm run p
 
 Dev overlay: `</>` sidebar → Community claims + parity gaps + `PROGRESS.md` from GitHub `dev-latest`.
 
-## Terrain editor & landscape biomes
+## Scene environments (landscape biomes)
 
-Open **`/editor`** (or top nav **Terrain**) for the in-browser sculpt workspace:
+ThreejsClient-only backdrop for **worlds** and parcels: sky, ground package, and (for water biomes) ocean waves. Unity/Godot Explorer ignore these fields — they only affect this client.
 
-- Height / splat / Ez Grass brushes, floating dock + flyouts  
-- **Biomes** via icon rail → writes `scene.json` `environment.kind`  
-- **Desert** — dunes, outer rocks, dust/tumbleweeds (`environment.desert`)  
-- **Land** — solid color plane under the scene (`environment.land.groundColor`)  
-- **Island / water** — FFTOCEAN knobs (`environment.water`)  
-- Editor preview uses the **same** `buildParcelLandscape` path as play  
+### How to set the biome
 
-See [docs/PROGRESS.md](docs/PROGRESS.md) for the latest milestone notes.
+**1. `scene.json` (recommended for worlds)** — ship with your deploy:
+
+```json
+{
+  "environment": {
+    "kind": "island"
+  }
+}
+```
+
+Or a string: `"environment": "island"`.
+
+**2. URL override (dev / QA)** — wins over `scene.json` for the session:
+
+```text
+http://localhost:5173/yourworld.dcl.eth?environment=island
+http://localhost:5173/yourworld.dcl.eth?env=desert
+```
+
+**3. Terrain editor** — open **`/editor`** (or top nav **Terrain**) → biome icon rail → writes `environment.kind` into the project `scene.json`. Play and editor use the same `buildParcelLandscape` path.
+
+### Biome kinds
+
+| `kind` | Look | Ocean |
+| --- | --- | --- |
+| `none` | Void authoring sky (local/blank default) | No |
+| `genesis` | Genesis sky + default floor tiles (parcel/world default when unset) | No |
+| `island` | Circular shore + beach disc | **Yes** (FFT waves) |
+| `water` | Open ocean (no land disc) | **Yes** |
+| `mountains` | Parcel decoration + haze; shore water | **Yes** |
+| `land` | Solid color infinite plane | No |
+| `forest` | Empty-land trees/rocks scatter | No |
+| `desert` | Gold dunes + outer rocks + dust | No |
+| `space` | Stars / nebula sky + platform | No |
+
+**Water is tied to the biome.** `island`, `water`, and `mountains` turn the ocean **on** automatically. You do **not** need `?water=1`.
+
+Defaults when `environment` is omitted: **worlds + parcels → `genesis`**; local/blank projects → `none`.
+
+### Optional knobs
+
+```json
+{
+  "environment": {
+    "kind": "island",
+    "water": {
+      "amplitude": 0.05,
+      "windSpeed": 18,
+      "waterDeep": "#52b9e5",
+      "fft": true
+    },
+    "desert": { "sandColor": "#d4a858" },
+    "land": { "groundColor": "#3d6b2e" },
+    "space": { "starDensity": 0.7 },
+    "disableSun": false,
+    "disableMoon": false
+  }
+}
+```
+
+| Field | Purpose |
+| --- | --- |
+| `environment.water` | FFT ocean look (amplitude, wind, colors, `fft: false` → Water.js fallback). Ignored by other explorers. |
+| `environment.water.enabled` | Explicit kill/force. Default follows biome (`showWater`). Set `false` to dry an island; set `true` only to force water on a dry biome. |
+| `environment.desert` / `.land` / `.space` / `.mountains` | Biome-specific look (colors, haze, stars, …) |
+
+### Dev URL flags
+
+| Query | Effect |
+| --- | --- |
+| `?environment=island` / `?env=island` | Force biome for this load |
+| `?water=0` / `?noWater` / `?disableWater` | Kill ocean even on island |
+| `?water=1` | Force ocean on a **non**-water biome |
+| `?fftOcean=0` | Use Water.js instead of GPGPU FFT |
+| `?oceanAmplitude=0.05` | Wave energy (debug) |
+| `?oceanWind=20` | Wind speed (debug) |
+| `?disableSun=1` / `?disableMoon=1` | Hide celestial bodies |
+
+Example world smoke:
+
+```bash
+npm run dev
+# → http://localhost:5173/yourname.dcl.eth?environment=island
+# Console: [ocean] biome=island showWater=true ... fftOcean=true
+```
+
+### Terrain editor (sculpt + biomes)
+
+Open **`/editor`** for height / splat / Ez Grass brushes and the floating biome dock. Biome rail writes `environment.kind`; island/water also expose FFTOCEAN controls under `environment.water`. Latest notes: [docs/PROGRESS.md](docs/PROGRESS.md).
 
 ## Credits
 

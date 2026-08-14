@@ -44,11 +44,13 @@ import {
   refreshDirectionalSunShadowMapSize,
   updateDirectionalSunShadowFocus
 } from '../rendering/directionalSunShadow'
+import { budgetEnvironmentCasters } from '../rendering/shadowCastPolicy'
 import {
   createOutdoorLightingSnapshot,
   syncOutdoorLightingFromLights,
   type OutdoorLightingSnapshot
 } from './OutdoorLighting'
+import { OutdoorIbl } from './OutdoorIbl'
 import {
   animatedLightIntensity,
   celestialDirection,
@@ -131,8 +133,12 @@ export class EnvironmentSystem {
   /** Help panel — hide genesis dome and use void sky while keeping custom skybox textures. */
   private landscapeVisualSuppressed = false
   private readonly outdoorLighting = createOutdoorLightingSnapshot()
+  /** AAA low-rate outdoor env probe (Explorer-style sky IBL, not full GI). */
+  private outdoorIbl: OutdoorIbl | null = null
   /** Space biome starfield / void plate (when kind === space). */
   private spaceSky: SpaceSkyField | null = null
+  /** Last env caster budget (ms) — do not walk the graph every lighting tick. */
+  private lastEnvCasterBudgetAt = 0
 
   constructor(
     private readonly host: SceneHost,
@@ -140,9 +146,11 @@ export class EnvironmentSystem {
   ) {
     this.genesisSky = new DclGenesisSky()
 
-    this.hemi = new THREE.HemisphereLight(0xddeeff, 0x445533, 0.42)
-    this.equatorAmbient = new THREE.AmbientLight(0x8cb8d0, 0.48)
-    this.sun = new THREE.DirectionalLight(0xffffff, 1.0)
+    // Construct defaults match Explorer noon-ish trilight until first applyTime overwrites.
+    // Equator lavender + dark red ground (not cool cyan / green) — softer yellow outdoor fill.
+    this.hemi = new THREE.HemisphereLight(0x84adc0, 0x951a17, 0.42)
+    this.equatorAmbient = new THREE.AmbientLight(0xbba5c9, 0.48)
+    this.sun = new THREE.DirectionalLight(0xfff4d6, 1.0)
     configureDirectionalSunShadow(this.sun)
 
     this.moon = new THREE.DirectionalLight(0x8370ff, 0.4)
@@ -151,6 +159,7 @@ export class EnvironmentSystem {
 
     this.sun.target = new THREE.Object3D()
     this.moon.target = new THREE.Object3D()
+    this.outdoorIbl = new OutdoorIbl(this.host.renderer)
   }
 
   async init(scene: ResolvedScene): Promise<void> {
@@ -275,6 +284,8 @@ export class EnvironmentSystem {
     this.sceneLighting = {}
     this.userAdjustedLighting.clear()
     this.lastUserLighting = null
+    this.outdoorIbl?.dispose(this.host.scene)
+    this.outdoorIbl = null
     this.spaceSky?.dispose()
     this.spaceSky = null
     this.genesisSky.dispose()
@@ -503,9 +514,12 @@ export class EnvironmentSystem {
     const ambientMul = (day ? sceneSunMul : sceneMoonMul) * sunScale
 
     // Directional: Unity uses anim intensity ~2.72 peak × color ramp (SUN_BRIGHTNESS ≈ 1).
+    // No residual sun key at night — even 0.02× washed cool marble under ACES.
     this.sun.intensity = this.disableSun
       ? 0
-      : (day ? lit * SUN_BRIGHTNESS : 0.02) * sunScale * sceneSunMul
+      : day
+        ? lit * SUN_BRIGHTNESS * sunScale * sceneSunMul
+        : 0
     this.sun.color.copy(g.directional)
 
     const moonLit = moonLightIntensity(seconds)
@@ -554,6 +568,12 @@ export class EnvironmentSystem {
       this.sun.target.position.set(0, 0, 0)
     }
 
+    const now = performance.now()
+    if (now - this.lastEnvCasterBudgetAt >= 250) {
+      this.lastEnvCasterBudgetAt = now
+      budgetEnvironmentCasters(this.host.drawWorld.drawRoot, this.host.camera.position)
+    }
+
     const tierExposure = TONE_MAPPING_EXPOSURE[renderQuality.getTier()]
     this.host.renderer.toneMappingExposure = skylightOff
       ? tierExposure * CELESTIAL_OFF_EXPOSURE
@@ -588,6 +608,24 @@ export class EnvironmentSystem {
       this.equatorAmbient,
       { horizon: g.horizon, zenit: g.zenit },
       day
+    )
+
+    // Cheap outdoor IBL — Genesis day cycle only. Space/void/custom cube own their look.
+    const useOutdoorIbl =
+      !spaceSky && !voidSky && !this.customCube && !this.landscapeVisualSuppressed
+    this.outdoorIbl?.sync(
+      this.host.scene,
+      {
+        sky: g.indirectSky,
+        ground: g.indirectGround,
+        equator: g.indirectEquator
+      },
+      {
+        daySeconds: seconds,
+        isDay: day,
+        // skylightOff or non-genesis modes clear the probe.
+        skylightOff: skylightOff || !useOutdoorIbl
+      }
     )
   }
 

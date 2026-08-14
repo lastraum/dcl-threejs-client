@@ -1,23 +1,12 @@
 import * as THREE from 'three'
-import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
-import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
-import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js'
 
 /**
- * Bloom post-process — two modes:
+ * Bevy-shaped present: **one** geometry pass into an HDR beauty buffer,
+ * then bloom is a fullscreen filter on that texture (no second scene walk).
  *
- * **fast** (1× geometry): beauty RenderPass → UnrealBloomPass → OutputPass.
- *   Classic three.js path. Bright pixels (emissives + lit highlights) glow.
- *   No material swap, no second full-scene draw.
- *
- * **selective** (2× geometry): emissive-only extract (half-res) + beauty + additive
- *   composite. Extract blacks non-emissives for depth occlusion so neon does not
- *   x-ray through walls. More correct for muzzle/LED, much more expensive.
- *
- * Extract resolution is half of the beauty buffer (pixel area ÷4) — blur does not
- * need full-res and this is the main selective-path GPU win.
+ * `mode` is kept for HUD/prefs compatibility — both paths are the same post now.
  */
 export type BloomMode = 'fast' | 'selective'
 
@@ -25,40 +14,17 @@ export type BloomPipelineOptions = {
   enabled: boolean
   hdr: boolean
   mode: BloomMode
-  /** Film scale on top of material radiance. */
   strength: number
   radius: number
   threshold: number
 }
 
-const DEFAULT_STRENGTH = 0.12
-const DEFAULT_RADIUS = 0.28
-const DEFAULT_THRESHOLD = 0.05
-/** Fast mode: ignore mid-tone albedo so the single pass does not wash the whole plaza. */
-const FAST_THRESHOLD = 0.55
-const MIN_EMISSIVE_RADIANCE = 0.08
-/** Selective extract / bloom mips at this fraction of beauty resolution. */
+const DEFAULT_STRENGTH = 0.08
+const DEFAULT_RADIUS = 0.22
+const DEFAULT_THRESHOLD = 0.12
+/** Linear HDR beauty is untonemapped — albedo-white signs sit near 1. Only HDR emissives bloom. */
+const FAST_THRESHOLD = 1.6
 const EXTRACT_SCALE = 0.5
-
-const _black = new THREE.Color(0x000000)
-const _hidden: THREE.Object3D[] = []
-
-type LightSave = { light: THREE.Light; intensity: number }
-type StandardSave = {
-  mat: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial
-  color: THREE.Color
-  metalness: number
-  roughness: number
-  envMapIntensity: number
-}
-type MeshMaterialSave = {
-  mesh: THREE.Mesh
-  material: THREE.Material | THREE.Material[]
-}
-
-type BloomPassInternal = UnrealBloomPass & {
-  renderTargetsHorizontal: THREE.WebGLRenderTarget[]
-}
 
 function isPbrMaterial(
   mat: THREE.Material
@@ -73,8 +39,6 @@ function isPbrMaterial(
 export function materialEmissiveRadiance(mat: THREE.Material): number {
   const ud = mat.userData as Record<string, unknown>
   if (ud.dclBloomExclude === true) return 0
-
-  // Cached at material load / apply — avoids re-scanning maps every extract frame.
   if (typeof ud.dclBloomRadiance === 'number') {
     return ud.dclBloomRadiance as number
   }
@@ -103,23 +67,18 @@ export function materialEmissiveRadiance(mat: THREE.Material): number {
   return 0
 }
 
-/** Stamp radiance cache after emissive tuning (call from material load paths). */
 export function cacheMaterialBloomRadiance(mat: THREE.Material): void {
   const ud = mat.userData as Record<string, unknown>
-  // Clear first so materialEmissiveRadiance recomputes from authored channels.
   delete ud.dclBloomRadiance
   ud.dclBloomRadiance = materialEmissiveRadiance(mat)
 }
 
 export class BloomPipeline {
-  private bloomComposer: EffectComposer | null = null
-  private finalComposer: EffectComposer | null = null
-  private bloomPass: BloomPassInternal | null = null
-  private compositeQuad: FullScreenQuad | null = null
-  private compositeMaterial: THREE.MeshBasicMaterial | null = null
-  /** Fast path: single composer (beauty + bloom + output). */
-  private fastComposer: EffectComposer | null = null
-  private fastBloomPass: UnrealBloomPass | null = null
+  /** HDR beauty — the only geometry pass. */
+  private beauty: THREE.WebGLRenderTarget | null = null
+  private bloomPass: UnrealBloomPass | null = null
+  private blitQuad: FullScreenQuad | null = null
+  private blitMaterial: THREE.MeshBasicMaterial | null = null
   private readonly resolution = new THREE.Vector2(1, 1)
   private opts: BloomPipelineOptions = {
     enabled: false,
@@ -129,19 +88,6 @@ export class BloomPipeline {
     radius: DEFAULT_RADIUS,
     threshold: DEFAULT_THRESHOLD
   }
-  private savedBackground: THREE.Scene['background'] = null
-  private readonly lightSaves: LightSave[] = []
-  private readonly standardSaves: StandardSave[] = []
-  private readonly meshMaterialSaves: MeshMaterialSave[] = []
-  /** Opaque black occluder — writes depth so emissives cannot x-ray through props. */
-  private readonly blackOccluder = new THREE.MeshBasicMaterial({
-    color: 0x000000,
-    toneMapped: false,
-    transparent: false,
-    depthTest: true,
-    depthWrite: true,
-    side: THREE.DoubleSide
-  })
 
   constructor(
     private readonly renderer: THREE.WebGLRenderer,
@@ -150,9 +96,7 @@ export class BloomPipeline {
   ) {}
 
   isActive(): boolean {
-    if (!this.opts.enabled) return false
-    if (this.opts.mode === 'fast') return this.fastComposer != null
-    return this.bloomComposer != null && this.finalComposer != null
+    return this.opts.enabled && this.beauty != null && this.bloomPass != null
   }
 
   getOptions(): BloomPipelineOptions {
@@ -160,7 +104,7 @@ export class BloomPipeline {
   }
 
   getMode(): BloomMode {
-    return this.opts.mode
+    return 'fast'
   }
 
   configure(
@@ -172,7 +116,7 @@ export class BloomPipeline {
     const next: BloomPipelineOptions = {
       enabled: options.enabled ?? this.opts.enabled,
       hdr: options.hdr ?? this.opts.hdr,
-      mode: options.mode ?? this.opts.mode,
+      mode: 'fast',
       strength: options.strength ?? this.opts.strength,
       radius: options.radius ?? this.opts.radius,
       threshold: options.threshold ?? this.opts.threshold
@@ -180,343 +124,121 @@ export class BloomPipeline {
 
     const w = Math.max(1, Math.floor(widthPx * pixelRatio))
     const h = Math.max(1, Math.floor(heightPx * pixelRatio))
+    const sizeChanged = this.resolution.x !== w || this.resolution.y !== h
     this.resolution.set(w, h)
-
-    const needRebuild =
-      next.enabled !== this.opts.enabled ||
-      next.hdr !== this.opts.hdr ||
-      next.mode !== this.opts.mode ||
-      this.resolutionChanged(w, h, next.mode)
-
     this.opts = next
 
     if (!next.enabled) {
-      this.disposeComposers()
+      this.disposeTargets()
       return
     }
 
-    if (needRebuild) {
-      this.disposeComposers()
-      if (next.mode === 'fast') {
-        this.buildFastComposer(w, h, next.hdr)
-      } else {
-        this.buildSelectiveComposers(w, h, next.hdr)
-      }
+    if (!this.beauty || sizeChanged || !this.bloomPass) {
+      this.disposeTargets()
+      this.build(w, h, next.hdr)
     }
 
-    this.applyPassParams(w, h)
+    if (this.bloomPass) {
+      const bw = Math.max(1, Math.floor(w * EXTRACT_SCALE))
+      const bh = Math.max(1, Math.floor(h * EXTRACT_SCALE))
+      this.bloomPass.strength = next.strength
+      this.bloomPass.radius = next.radius
+      this.bloomPass.threshold = Math.max(next.threshold, FAST_THRESHOLD)
+      this.bloomPass.resolution.set(bw, bh)
+      this.bloomPass.setSize(bw, bh)
+    }
   }
 
-  render(): void {
-    if (!this.opts.enabled) return
-    if (this.opts.mode === 'fast') {
-      this.renderFast()
-      return
+  /**
+   * One scene draw → HDR beauty. Bloom is Unreal mips on that texture.
+   * ACES + sRGB happen on the fullscreen blit to the canvas.
+   */
+  render(): { extractMs: number; beautyMs: number; compositeMs: number; mode: BloomMode } {
+    if (!this.opts.enabled || !this.beauty || !this.bloomPass || !this.blitQuad || !this.blitMaterial) {
+      return { extractMs: 0, beautyMs: 0, compositeMs: 0, mode: 'fast' }
     }
-    this.renderSelective()
+
+    const renderer = this.renderer
+    const prevTarget = renderer.getRenderTarget()
+    const prevTone = renderer.toneMapping
+    const prevCs = renderer.outputColorSpace
+    const prevAutoClear = renderer.autoClear
+
+    const t0 = performance.now()
+    renderer.toneMapping = THREE.NoToneMapping
+    renderer.outputColorSpace = THREE.LinearSRGBColorSpace
+    renderer.autoClear = true
+    renderer.setRenderTarget(this.beauty)
+    renderer.clear(true, true, true)
+    renderer.render(this.scene, this.camera)
+    const beautyMs = performance.now() - t0
+
+    const t1 = performance.now()
+    this.bloomPass.renderToScreen = false
+    this.bloomPass.render(renderer, this.beauty, this.beauty, 0, false)
+    const extractMs = performance.now() - t1
+
+    const t2 = performance.now()
+    this.blitMaterial.map = this.beauty.texture
+    renderer.setRenderTarget(null)
+    renderer.toneMapping = THREE.ACESFilmicToneMapping
+    renderer.outputColorSpace = THREE.SRGBColorSpace
+    renderer.autoClear = true
+    this.blitQuad.render(renderer)
+    const compositeMs = performance.now() - t2
+
+    renderer.setRenderTarget(prevTarget)
+    renderer.toneMapping = prevTone
+    renderer.outputColorSpace = prevCs
+    renderer.autoClear = prevAutoClear
+
+    return { extractMs, beautyMs, compositeMs, mode: 'fast' }
   }
 
   dispose(): void {
-    this.disposeComposers()
-    this.blackOccluder.dispose()
+    this.disposeTargets()
   }
 
-  private resolutionChanged(w: number, h: number, mode: BloomMode): boolean {
-    if (mode === 'fast') {
-      return !this.fastComposer || this.fastComposer.writeBuffer.width !== w || this.fastComposer.writeBuffer.height !== h
-    }
-    const ew = Math.max(1, Math.floor(w * EXTRACT_SCALE))
-    const eh = Math.max(1, Math.floor(h * EXTRACT_SCALE))
-    return (
-      !this.bloomComposer ||
-      !this.finalComposer ||
-      this.bloomComposer.writeBuffer.width !== ew ||
-      this.bloomComposer.writeBuffer.height !== eh ||
-      this.finalComposer.writeBuffer.width !== w ||
-      this.finalComposer.writeBuffer.height !== h
-    )
-  }
-
-  private applyPassParams(w: number, h: number): void {
-    if (this.fastBloomPass) {
-      this.fastBloomPass.strength = this.opts.strength
-      this.fastBloomPass.radius = this.opts.radius
-      this.fastBloomPass.threshold = Math.max(this.opts.threshold, FAST_THRESHOLD)
-      this.fastBloomPass.resolution.set(w, h)
-    }
-    this.fastComposer?.setSize(w, h)
-    this.fastComposer?.setPixelRatio(1)
-
-    const ew = Math.max(1, Math.floor(w * EXTRACT_SCALE))
-    const eh = Math.max(1, Math.floor(h * EXTRACT_SCALE))
-    if (this.bloomPass) {
-      this.bloomPass.strength = this.opts.strength
-      this.bloomPass.radius = this.opts.radius
-      this.bloomPass.threshold = this.opts.threshold
-      this.bloomPass.resolution.set(ew, eh)
-    }
-    this.bloomComposer?.setSize(ew, eh)
-    this.finalComposer?.setSize(w, h)
-    this.bloomComposer?.setPixelRatio(1)
-    this.finalComposer?.setPixelRatio(1)
-  }
-
-  /** 1× geometry — beauty buffer feeds UnrealBloom luminance extract. */
-  private renderFast(): void {
-    if (!this.fastComposer) return
-    this.fastComposer.render()
-  }
-
-  /** 2× geometry — half-res emissive extract + full-res beauty + additive pure bloom. */
-  private renderSelective(): void {
-    if (!this.bloomComposer || !this.finalComposer) return
-
-    this.beginBloomExtract()
-    try {
-      this.bloomComposer.render()
-    } finally {
-      this.endBloomExtract()
-    }
-
-    this.finalComposer.render()
-    this.blitPureBloomAdditive()
-  }
-
-  private beginBloomExtract(): void {
-    this.savedBackground = this.scene.background
-    this.scene.background = _black
-    _hidden.length = 0
-    this.lightSaves.length = 0
-    this.standardSaves.length = 0
-    this.meshMaterialSaves.length = 0
-
-    this.scene.traverse((obj) => {
-      if ((obj as THREE.Light).isLight) {
-        const light = obj as THREE.Light
-        this.lightSaves.push({ light, intensity: light.intensity })
-        light.intensity = 0
-        return
-      }
-
-      if (!obj.visible) return
-      // Sky only — keep world geometry for depth occlusion.
-      if ((obj.userData as Record<string, unknown>).dclBloomExclude === true) {
-        obj.visible = false
-        _hidden.push(obj)
-        return
-      }
-
-      if (!(obj as THREE.Mesh).isMesh) return
-      const mesh = obj as THREE.Mesh
-      // Skip GPU instanced markers (no real materials under entity).
-      if ((mesh.userData as Record<string, unknown>).dclInstanceMarker) return
-
-      const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
-      let anyEmissive = false
-      const nextMats: THREE.Material[] = []
-
-      for (const mat of mats) {
-        if (!mat) {
-          nextMats.push(this.blackOccluder)
-          continue
-        }
-        const rad = materialEmissiveRadiance(mat)
-        if (rad < MIN_EMISSIVE_RADIANCE) {
-          nextMats.push(this.blackOccluder)
-          continue
-        }
-        anyEmissive = true
-        if (isPbrMaterial(mat)) {
-          // Only once per unique material instance (shared across clones).
-          if (!this.standardSaves.some((s) => s.mat === mat)) {
-            this.standardSaves.push({
-              mat,
-              color: mat.color.clone(),
-              metalness: mat.metalness,
-              roughness: mat.roughness,
-              envMapIntensity: mat.envMapIntensity
-            })
-            // Diffuse contribution off; **keep map** so alpha/cutout still works if needed.
-            // With lights at 0, only emissive × intensity reaches the buffer.
-            mat.color.setRGB(0, 0, 0)
-            mat.metalness = 0
-            mat.roughness = 1
-            mat.envMapIntensity = 0
-            mat.needsUpdate = true
-          }
-          nextMats.push(mat)
-        } else if ((mat as THREE.MeshBasicMaterial).isMeshBasicMaterial) {
-          nextMats.push(mat)
-        } else {
-          nextMats.push(this.blackOccluder)
-        }
-      }
-
-      // Always swap materials for extract so non-emissive slots are black occluders.
-      this.meshMaterialSaves.push({ mesh, material: mesh.material })
-      if (!anyEmissive) {
-        mesh.material = Array.isArray(mesh.material)
-          ? mats.map(() => this.blackOccluder)
-          : this.blackOccluder
-      } else {
-        mesh.material = Array.isArray(mesh.material) ? nextMats : (nextMats[0] ?? this.blackOccluder)
-      }
-    })
-  }
-
-  private endBloomExtract(): void {
-    for (const { light, intensity } of this.lightSaves) {
-      light.intensity = intensity
-    }
-    this.lightSaves.length = 0
-
-    // Restore material *slots* first (drop blackOccluder references).
-    for (const s of this.meshMaterialSaves) {
-      s.mesh.material = s.material
-    }
-    this.meshMaterialSaves.length = 0
-
-    for (const s of this.standardSaves) {
-      s.mat.color.copy(s.color)
-      s.mat.metalness = s.metalness
-      s.mat.roughness = s.roughness
-      s.mat.envMapIntensity = s.envMapIntensity
-      s.mat.needsUpdate = true
-    }
-    this.standardSaves.length = 0
-
-    for (let i = 0; i < _hidden.length; i++) {
-      _hidden[i]!.visible = true
-    }
-    _hidden.length = 0
-
-    this.scene.background = this.savedBackground
-    this.savedBackground = null
-  }
-
-  private blitPureBloomAdditive(): void {
-    if (!this.bloomPass || !this.compositeQuad || !this.compositeMaterial) return
-
-    const pure = this.bloomPass.renderTargetsHorizontal?.[0]
-    if (!pure?.texture) return
-
-    this.compositeMaterial.map = pure.texture
-    this.compositeMaterial.needsUpdate = true
-
-    const prevAutoClear = this.renderer.autoClear
-    const prevTarget = this.renderer.getRenderTarget()
-    const prevTone = this.renderer.toneMapping
-    this.renderer.autoClear = false
-    this.renderer.setRenderTarget(null)
-    this.renderer.toneMapping = THREE.NoToneMapping
-    this.compositeQuad.render(this.renderer)
-    this.renderer.toneMapping = prevTone
-    this.renderer.setRenderTarget(prevTarget)
-    this.renderer.autoClear = prevAutoClear
-  }
-
-  private buildFastComposer(w: number, h: number, hdr: boolean): void {
+  private build(w: number, h: number, hdr: boolean): void {
     const type = hdr ? THREE.HalfFloatType : THREE.UnsignedByteType
-    const rt = new THREE.WebGLRenderTarget(w, h, {
+    this.beauty = new THREE.WebGLRenderTarget(w, h, {
       type,
       format: THREE.RGBAFormat,
       colorSpace: THREE.LinearSRGBColorSpace,
       depthBuffer: true,
       stencilBuffer: false
     })
-    rt.texture.name = 'bloom-fast'
+    this.beauty.texture.name = 'beauty-hdr'
 
-    const composer = new EffectComposer(this.renderer, rt)
-    composer.setSize(w, h)
-    composer.setPixelRatio(1)
-    composer.addPass(new RenderPass(this.scene, this.camera))
-
-    const bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(w, h),
+    this.bloomPass = new UnrealBloomPass(
+      new THREE.Vector2(
+        Math.max(1, Math.floor(w * EXTRACT_SCALE)),
+        Math.max(1, Math.floor(h * EXTRACT_SCALE))
+      ),
       this.opts.strength,
       this.opts.radius,
       Math.max(this.opts.threshold, FAST_THRESHOLD)
     )
-    composer.addPass(bloomPass)
-    composer.addPass(new OutputPass())
+    this.bloomPass.renderToScreen = false
 
-    this.fastComposer = composer
-    this.fastBloomPass = bloomPass
-  }
-
-  private buildSelectiveComposers(w: number, h: number, hdr: boolean): void {
-    const type = hdr ? THREE.HalfFloatType : THREE.UnsignedByteType
-    const ew = Math.max(1, Math.floor(w * EXTRACT_SCALE))
-    const eh = Math.max(1, Math.floor(h * EXTRACT_SCALE))
-
-    const bloomRt = new THREE.WebGLRenderTarget(ew, eh, {
-      type,
-      format: THREE.RGBAFormat,
-      colorSpace: THREE.LinearSRGBColorSpace,
-      depthBuffer: true,
-      stencilBuffer: false
-    })
-    bloomRt.texture.name = 'bloom-extract-half'
-
-    const bloomComposer = new EffectComposer(this.renderer, bloomRt)
-    bloomComposer.renderToScreen = false
-    bloomComposer.setSize(ew, eh)
-    bloomComposer.setPixelRatio(1)
-
-    bloomComposer.addPass(new RenderPass(this.scene, this.camera))
-    const bloomPass = new UnrealBloomPass(
-      new THREE.Vector2(ew, eh),
-      this.opts.strength,
-      this.opts.radius,
-      this.opts.threshold
-    ) as BloomPassInternal
-    bloomComposer.addPass(bloomPass)
-
-    const finalRt = new THREE.WebGLRenderTarget(w, h, {
-      type,
-      format: THREE.RGBAFormat,
-      colorSpace: THREE.LinearSRGBColorSpace,
-      depthBuffer: true,
-      stencilBuffer: false
-    })
-    finalRt.texture.name = 'bloom-final'
-
-    const finalComposer = new EffectComposer(this.renderer, finalRt)
-    finalComposer.setSize(w, h)
-    finalComposer.setPixelRatio(1)
-    finalComposer.addPass(new RenderPass(this.scene, this.camera))
-    finalComposer.addPass(new OutputPass())
-
-    const compositeMaterial = new THREE.MeshBasicMaterial({
-      map: null,
-      blending: THREE.AdditiveBlending,
-      transparent: true,
+    this.blitMaterial = new THREE.MeshBasicMaterial({
+      map: this.beauty.texture,
       depthTest: false,
       depthWrite: false,
-      toneMapped: false
+      toneMapped: true
     })
-    const compositeQuad = new FullScreenQuad(compositeMaterial)
-
-    this.bloomComposer = bloomComposer
-    this.finalComposer = finalComposer
-    this.bloomPass = bloomPass
-    this.compositeMaterial = compositeMaterial
-    this.compositeQuad = compositeQuad
+    this.blitQuad = new FullScreenQuad(this.blitMaterial)
   }
 
-  private disposeComposers(): void {
-    this.bloomComposer?.dispose()
-    this.finalComposer?.dispose()
-    this.fastComposer?.dispose()
-    this.compositeMaterial?.dispose()
-    this.compositeQuad?.dispose()
-    this.bloomComposer = null
-    this.finalComposer = null
-    this.fastComposer = null
-    this.fastBloomPass = null
+  private disposeTargets(): void {
+    this.beauty?.dispose()
+    this.bloomPass?.dispose()
+    this.blitMaterial?.dispose()
+    this.blitQuad?.dispose()
+    this.beauty = null
     this.bloomPass = null
-    this.compositeMaterial = null
-    this.compositeQuad = null
+    this.blitMaterial = null
+    this.blitQuad = null
   }
 }
 

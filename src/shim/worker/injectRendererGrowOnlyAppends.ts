@@ -5,6 +5,7 @@ import { ReadWriteByteBuffer } from '@dcl/ecs/dist/serialization/ByteBuffer'
 import { readMessage } from '@dcl/ecs/dist/serialization/crdt/message'
 import { CrdtMessageType } from '@dcl/ecs/dist/serialization/crdt/types'
 import { nextWorkerPointerEventTimestamp } from './workerPointerEventTimestamp'
+import { forEachWorkerPointerEventsResult } from './resolveBundledUiComponents'
 
 /** `core::TriggerAreaResult` — grow-only trigger events from the renderer. */
 const TRIGGER_AREA_RESULT_ID = 1061
@@ -48,7 +49,6 @@ export function injectRendererGrowOnlyAppendsOnEngine(
   preregisterRendererInjectedComponents(engine)
   const TriggerAreaResult = generated.TriggerAreaResult(engine)
   const VideoEvent = generated.VideoEvent(engine)
-  const PointerEventsResult = generated.PointerEventsResult(engine)
   const AudioEvent = generated.AudioEvent(engine)
   const AssetLoadLoadingState = generated.AssetLoadLoadingState(engine)
   let triggerAppends = 0
@@ -73,11 +73,18 @@ export function injectRendererGrowOnlyAppendsOnEngine(
           VideoEvent.addValue(msg.entityId as Entity, value)
           videoAppends++
         } else if (msg.componentId === POINTER_EVENTS_RESULT_ID) {
-          const valueBuf = new ReadWriteByteBuffer(msg.data)
-          const value = PointerEventsResult.schema.deserialize(valueBuf)
-          value.timestamp = nextWorkerPointerEventTimestamp()
-          PointerEventsResult.addValue(msg.entityId as Entity, value)
-          pointerAppends++
+          const raw = msg.data
+          const entityId = msg.entityId as Entity
+          let first = true
+          forEachWorkerPointerEventsResult(engine, (PointerEventsResult) => {
+            const value = PointerEventsResult.schema.deserialize(new ReadWriteByteBuffer(raw))
+            value.timestamp = nextWorkerPointerEventTimestamp()
+            PointerEventsResult.addValue(entityId, value)
+            if (first) {
+              pointerAppends++
+              first = false
+            }
+          })
         } else if (msg.componentId === AUDIO_EVENT_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = AudioEvent.schema.deserialize(valueBuf)

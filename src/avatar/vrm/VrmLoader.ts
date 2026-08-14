@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { VRMLoaderPlugin, VRMUtils, type VRM } from '@pixiv/three-vrm'
+import { setMeshDesiredCastShadow } from '../../rendering/shadowCastPolicy'
 
 export type ParsedVrm = {
   root: THREE.Group
@@ -29,7 +30,7 @@ export function prepareCustomAvatarScene(scene: THREE.Object3D): void {
   scene.traverse((obj) => {
     obj.visible = true
     if (!(obj instanceof THREE.Mesh)) return
-    obj.castShadow = true
+    setMeshDesiredCastShadow(obj, true, 'avatar')
     obj.receiveShadow = true
     obj.frustumCulled = false
     if (obj instanceof THREE.SkinnedMesh) {

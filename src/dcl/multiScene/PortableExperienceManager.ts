@@ -45,6 +45,8 @@ export class PortableExperienceManager {
   private consentShownThisSession = false
   private discoveryInFlight = false
   private nextPeIndex = 0
+  /** SceneLoop.send owns PE play-frame-tick; tickSync only does pointer. */
+  private playFrameOwnedExternally = false
   /** Phys ids to invalidate when a PE is fully unloaded. */
   private readonly pendingPhysInvalidation: number[] = []
   /** World wires player identity + pointer after PE boot (UI clicks / getPlayer). physOffset for collider remove. */
@@ -75,6 +77,21 @@ export class PortableExperienceManager {
 
   runningCount(): number {
     return this.workers.size
+  }
+
+  /**
+   * Live PE workers for SceneLoop guests.
+   * When {@link setPlayFrameOwnedExternally} is true, {@link tickSync} skips play-frame
+   * (SceneLoop.send owns it) and only runs PE pointer inject.
+   */
+  listRunningWorkers(): ReadonlyArray<{ id: string; slot: SceneWorkerSlot }> {
+    const out: { id: string; slot: SceneWorkerSlot }[] = []
+    for (const [id, slot] of this.workers) out.push({ id, slot })
+    return out
+  }
+
+  setPlayFrameOwnedExternally(owned: boolean): void {
+    this.playFrameOwnedExternally = owned
   }
 
   /** scene.json featureToggles.portableExperiences (and URL override). */
@@ -492,8 +509,10 @@ export class PortableExperienceManager {
   tickSync(player: EntityPose, camera: EntityPose, frame = 0): void {
     const interval = peTickIntervalMs(this.tier)
     for (const worker of this.workers.values()) {
-      // Keyboard is InputHub → PE subscriber (World.inputHub.sync once per frame).
-      worker.tickSync(player, camera, interval)
+      // SceneLoop.send owns play-frame when wired; otherwise keep the old combined tick.
+      if (!this.playFrameOwnedExternally) {
+        worker.tickSync(player, camera, interval)
+      }
       // PE UI pointer inject (clicks) — primary loop alone never ticks PE PointerEventsSystem.
       worker.system.updatePointerEvents(frame)
       worker.system.syncPointerInput(frame, {
@@ -503,11 +522,38 @@ export class PortableExperienceManager {
     }
   }
 
-  async tickAsync(): Promise<PhysicsColliderDesc[]> {
+  /** Round-robin cursor — at most one PE full renderer pass when apply budget is shared. */
+  private asyncFullWorkCursor = 0
+
+  /**
+   * COD F1 — PE workers share apply budget with secondaries.
+   * When `applyBudgetMs` is tight, only one PE does full syncRenderer; others dirty colliders only.
+   */
+  async tickAsync(opts?: { applyBudgetMs?: number }): Promise<PhysicsColliderDesc[]> {
     if (!this.cache) return []
     const descs: PhysicsColliderDesc[] = []
-    for (const worker of this.workers.values()) {
-      descs.push(...(await worker.tickAsync(this.primaryScene, this.cache)))
+    const workers = [...this.workers.values()]
+    if (!workers.length) return descs
+
+    const budgetMs = opts?.applyBudgetMs
+    // Honest fullWork: only when residual budget is real (≥2ms). Else dirty colliders only.
+    const MIN_FULL_MS = 2
+    const allowFull = budgetMs === undefined || budgetMs >= MIN_FULL_MS
+    const fullIdx = allowFull ? this.asyncFullWorkCursor++ % workers.length : -1
+    const t0 = performance.now()
+
+    for (let i = 0; i < workers.length; i++) {
+      const worker = workers[i]!
+      const spent = performance.now() - t0
+      const rem = budgetMs === undefined ? undefined : budgetMs - spent
+      const stillRoom = rem === undefined || rem >= MIN_FULL_MS
+      const fullWork = allowFull && stillRoom && i === fullIdx
+      descs.push(
+        ...(await worker.tickAsync(this.primaryScene, this.cache, {
+          fullWork,
+          deadlineMs: fullWork ? rem : undefined
+        }))
+      )
     }
     return descs
   }

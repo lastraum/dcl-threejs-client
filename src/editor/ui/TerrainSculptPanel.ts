@@ -8,6 +8,7 @@ import type {
   SceneDesertConfig,
   SceneEnvironmentConfig,
   SceneEnvironmentKind,
+  SceneForestConfig,
   SceneLandConfig,
   SceneMountainsConfig,
   SceneSpaceConfig,
@@ -40,6 +41,12 @@ import {
   resolveLandSettings
 } from '../../environment/landDefaults'
 import {
+  FOREST_DEFAULTS,
+  FOREST_ROCK_LABELS,
+  FOREST_TREE_LABELS,
+  resolveForestSettings
+} from '../../environment/forestDefaults'
+import {
   TERRAIN_BIOME_COLORS,
   TERRAIN_BRUSH_RADIUS_MAX_M,
   TERRAIN_BRUSH_RADIUS_MIN_M,
@@ -49,6 +56,12 @@ import {
   terrainColorFromHex,
   terrainColorToHex
 } from '../terrain/terrainSculptConstants'
+import {
+  TERRAIN_STARTER_TEMPLATES,
+  randomTerrainSeed,
+  seedFromString,
+  type TerrainStarterTemplateId
+} from '../terrain/generateTerrainStarter'
 import { LANDSCAPE_ENVIRONMENTS } from '../../dcl/landscape/EnvironmentCatalog'
 import {
   readEnvironmentKind,
@@ -56,7 +69,7 @@ import {
 } from '../terrain/sceneEnvironmentIO'
 
 /** Main-dock secondary rail content. */
-type SecondaryRailMode = 'off' | 'settings' | 'biomes'
+type SecondaryRailMode = 'off' | 'materials' | 'biomes' | 'paint' | 'ocean'
 
 const BIOME_DOCK_ITEMS: {
   kind: SceneEnvironmentKind
@@ -92,22 +105,31 @@ type FloatPaneId =
   | 'splat'
   | 'grass'
   | 'env'
+  | 'starters'
   | 'ocean'
   | 'shade-water'
   | 'shade-sand'
   | 'shade-grass'
   | 'shade-rock'
   | 'guides'
+  | 'project'
   | 'export'
 
-const SETTINGS_SUB_PANES: FloatPaneId[] = [
+/**
+ * Height-materials secondary rail (water/sand/grass/rock elevation colors + export).
+ * Guides live on the main dock.
+ */
+const MATERIAL_SUB_PANES: FloatPaneId[] = [
   'shade-water',
   'shade-sand',
   'shade-grass',
   'shade-rock',
-  'guides',
   'export'
 ]
+
+
+/** Paint parent dock → second column: surface color + Ez Grass. */
+const PAINT_SUB_PANES: FloatPaneId[] = ['splat', 'grass']
 
 export class TerrainSculptPanel {
   private host: HTMLDivElement
@@ -118,6 +140,7 @@ export class TerrainSculptPanel {
   private brushSlidersHost: HTMLDivElement
   private statusEl: HTMLDivElement
   private heightToolsHost: HTMLDivElement
+  private startersHost: HTMLDivElement
   private splatToolsHost: HTMLDivElement
   private grassToolsHost: HTMLDivElement
   private shadeWaterHost: HTMLDivElement
@@ -125,6 +148,7 @@ export class TerrainSculptPanel {
   private shadeGrassHost: HTMLDivElement
   private shadeRockHost: HTMLDivElement
   private guidesHost: HTMLDivElement
+  private projectHost: HTMLDivElement
   private exportHost: HTMLDivElement
   private envBox: HTMLDivElement | null = null
   private oceanBox: HTMLDivElement | null = null
@@ -157,6 +181,7 @@ export class TerrainSculptPanel {
   private desertTumbleweedCount: HTMLInputElement | null = null
   private desertAcrossParcelsCb: HTMLInputElement | null = null
   private desertDunesCb: HTMLInputElement | null = null
+  private desertDunesOnParcelsCb: HTMLInputElement | null = null
   private desertDuneHeight: HTMLInputElement | null = null
   private desertDuneWidth: HTMLInputElement | null = null
   private desertDuneLength: HTMLInputElement | null = null
@@ -164,6 +189,20 @@ export class TerrainSculptPanel {
   private desertDuneRipple: HTMLInputElement | null = null
   private landPanelEl: HTMLDivElement | null = null
   private landGroundColor: HTMLInputElement | null = null
+  private landGrassColor: HTMLInputElement | null = null
+  private landGrassDensitySlider: HTMLInputElement | null = null
+  private landGrassDensityValue: HTMLSpanElement | null = null
+  private forestPanelEl: HTMLDivElement | null = null
+  private forestTreeSliders: HTMLInputElement[] = []
+  private forestTreeValues: HTMLSpanElement[] = []
+  private forestRockSliders: HTMLInputElement[] = []
+  private forestRockValues: HTMLSpanElement[] = []
+  private forestBushSlider: HTMLInputElement | null = null
+  private forestBushValue: HTMLSpanElement | null = null
+  private forestGroundColor: HTMLInputElement | null = null
+  private forestGrassColor: HTMLInputElement | null = null
+  private forestPatchTimer = 0
+  private pendingForest: SceneForestConfig = {}
   private mtRockDensity: HTMLInputElement | null = null
   private mtTreeDensity: HTMLInputElement | null = null
   private mtBackdropDensity: HTMLInputElement | null = null
@@ -179,8 +218,10 @@ export class TerrainSculptPanel {
   private mountainsPatchTimer = 0
   private pendingMountains: SceneMountainsConfig = {}
   private secondaryRail: SecondaryRailMode = 'off'
-  private settingsGroupEl: HTMLDivElement | null = null
+  private materialsGroupEl: HTMLDivElement | null = null
   private biomeGroupEl: HTMLDivElement | null = null
+  private paintGroupEl: HTMLDivElement | null = null
+  private oceanGroupEl: HTMLDivElement | null = null
   private subDockButtons = new Map<string, HTMLButtonElement>()
   private biomeDockButtons = new Map<SceneEnvironmentKind, HTMLButtonElement>()
   private subDockLayoutHandler: (() => void) | null = null
@@ -237,6 +278,11 @@ export class TerrainSculptPanel {
   private shadingLegendEl: HTMLDivElement | null = null
   private readonly shadingInputs = new Set<HTMLInputElement>()
   private unsub: (() => void) | null = null
+  /** Terrain height starters (Minecraft-like). */
+  private starterSelected: TerrainStarterTemplateId = 'rolling-hills'
+  private starterSeedInput: HTMLInputElement | null = null
+  private starterMatchBiomeCb: HTMLInputElement | null = null
+  private starterTemplateButtons = new Map<TerrainStarterTemplateId, HTMLButtonElement>()
 
   constructor(
     parent: HTMLElement,
@@ -268,6 +314,8 @@ export class TerrainSculptPanel {
           replaceDesert?: boolean
           land?: SceneLandConfig | null
           replaceLand?: boolean
+          forest?: SceneForestConfig | null
+          replaceForest?: boolean
           mountains?: SceneMountainsConfig | null
           replaceMountains?: boolean
         }
@@ -290,7 +338,7 @@ export class TerrainSculptPanel {
     this.subDockEl = document.createElement('div')
     this.subDockEl.className = 'editor-viewport-dock editor-viewport-dock--sub editor-viewport-dock--sub-hidden'
     this.subDockEl.setAttribute('role', 'toolbar')
-    this.subDockEl.setAttribute('aria-label', 'Shading and settings')
+    this.subDockEl.setAttribute('aria-label', 'Terrain tools')
     this.host.appendChild(this.subDockEl)
     this.buildSubDock()
     this.subDockLayoutHandler = () => this.layoutSecondaryDock()
@@ -324,6 +372,11 @@ export class TerrainSculptPanel {
     this.heightToolsHost.className = 'editor-sculpt-tools'
     this.flyoutEl.appendChild(this.heightToolsHost)
     this.addSculptModes()
+
+    this.startersHost = document.createElement('div')
+    this.startersHost.className = 'editor-sculpt-tools editor-sculpt-tools--hidden'
+    this.flyoutEl.appendChild(this.startersHost)
+    this.addTerrainStarters(this.startersHost)
 
     this.splatToolsHost = document.createElement('div')
     this.splatToolsHost.className = 'editor-sculpt-tools editor-sculpt-tools--hidden'
@@ -363,7 +416,11 @@ export class TerrainSculptPanel {
     this.guidesHost.className = 'editor-sculpt-tools editor-sculpt-tools--hidden'
     this.flyoutEl.appendChild(this.guidesHost)
     this.addViewportControls(this.guidesHost)
-    this.addActionButtons(this.guidesHost)
+
+    this.projectHost = document.createElement('div')
+    this.projectHost.className = 'editor-sculpt-tools editor-sculpt-tools--hidden'
+    this.flyoutEl.appendChild(this.projectHost)
+    this.addActionButtons(this.projectHost)
 
     this.exportHost = document.createElement('div')
     this.exportHost.className = 'editor-sculpt-tools editor-sculpt-tools--hidden'
@@ -391,8 +448,8 @@ export class TerrainSculptPanel {
   }
 
   /** Dock / workspace calls this for tool activation. */
-  openToolPane(id: FloatPaneId | 'grid' | 'water' | 'save' | null): void {
-    if (id === 'grid' || id === 'water' || id === 'save' || id === null) return
+  openToolPane(id: FloatPaneId | 'grid' | 'water' | null): void {
+    if (id === 'grid' || id === 'water' || id === null) return
     this.setOpenPane(id)
   }
 
@@ -401,6 +458,7 @@ export class TerrainSculptPanel {
     if (this.spacePatchTimer) window.clearTimeout(this.spacePatchTimer)
     if (this.desertPatchTimer) window.clearTimeout(this.desertPatchTimer)
     if (this.landPatchTimer) window.clearTimeout(this.landPatchTimer)
+    if (this.forestPatchTimer) window.clearTimeout(this.forestPatchTimer)
     if (this.mountainsPatchTimer) window.clearTimeout(this.mountainsPatchTimer)
     if (this.subDockLayoutHandler) {
       window.removeEventListener('resize', this.subDockLayoutHandler)
@@ -416,23 +474,29 @@ export class TerrainSculptPanel {
 
   private buildDock(): void {
     // Icons in the dock; hover tip (data-tip) carries the name.
-    // 🌊 = full FFTOCEAN tweak panel (dallapozza); 💧 = preview visibility only.
+    // Order: sculpt → biome → starters → paint → guides → ocean / materials → project (save/undo/redo).
+    // Grid under Guides. Water preview under Ocean. Save/undo/redo under ⚙ Project.
     const groups: { id: string; label: string; tip: string }[][] = [
+      [{ id: 'height', label: '⛰', tip: 'Sculpt height' }],
+      [{ id: 'env', label: '🌍', tip: 'Biome picker (second icon row)' }],
       [
-        { id: 'height', label: '⛰', tip: 'Sculpt height' },
-        { id: 'splat', label: '🎨', tip: 'Paint surface' },
-        { id: 'grass', label: '🌿', tip: 'Ez Grass blades' }
+        {
+          id: 'starters',
+          label: '🎲',
+          tip: 'Terrain starters — seed height templates · clear seeded'
+        }
       ],
+      [{ id: 'paint', label: '🎨', tip: 'Paint — color & Ez Grass (second icon row)' }],
+      [{ id: 'guides', label: '📐', tip: 'Guides · grid · scale refs' }],
       [
-        { id: 'env', label: '🌍', tip: 'Biome picker (second icon row)' },
-        { id: 'ocean', label: '🌊', tip: 'FFTOCEAN / dallapozza settings' },
-        { id: 'settings', label: '⚙', tip: 'Shading · guides · export (second icon row)' }
+        { id: 'ocean', label: '🌊', tip: 'Water settings — FFTOCEAN + preview (second icon row)' },
+        {
+          id: 'materials',
+          label: '🧱',
+          tip: 'Height materials — water · sand · grass · rock by elevation · export'
+        }
       ],
-      [
-        { id: 'grid', label: '▦', tip: 'Grid on/off' },
-        { id: 'water', label: '💧', tip: 'Water preview on/off' },
-        { id: 'save', label: '💾', tip: 'Save project' }
-      ]
+      [{ id: 'project', label: '⚙', tip: 'Project — save · undo · redo' }]
     ]
     groups.forEach((group, gi) => {
       if (gi > 0) {
@@ -472,23 +536,36 @@ export class TerrainSculptPanel {
       this.syncDockToggles()
       return
     }
-    if (id === 'save') {
-      void this.refApi?.onSave?.()
-      return
-    }
-    if (id === 'settings') {
-      if (this.secondaryRail === 'settings') {
+    if (id === 'materials') {
+      if (this.secondaryRail === 'materials') {
         this.secondaryRail = 'off'
-        if (this.openPane && SETTINGS_SUB_PANES.includes(this.openPane)) {
+        if (this.openPane && MATERIAL_SUB_PANES.includes(this.openPane)) {
           this.setOpenPane(null)
         } else {
           this.syncSecondaryRail()
           this.syncDockHighlight()
         }
       } else {
-        this.secondaryRail = 'settings'
+        this.secondaryRail = 'materials'
         this.syncSecondaryRail()
         this.syncDockHighlight()
+      }
+      return
+    }
+    if (id === 'paint') {
+      if (this.secondaryRail === 'paint') {
+        this.secondaryRail = 'off'
+        if (this.openPane && PAINT_SUB_PANES.includes(this.openPane)) {
+          this.setOpenPane(null)
+        } else {
+          this.syncSecondaryRail()
+          this.syncDockHighlight()
+        }
+      } else {
+        // Open paint rail + color tools by default (keep grass if already painting blades).
+        const preferGrass = this.openPane === 'grass' || this.session.getSettings().paintLayer === 'grass'
+        this.secondaryRail = 'paint'
+        this.setOpenPane(preferGrass ? 'grass' : 'splat')
       }
       return
     }
@@ -502,15 +579,32 @@ export class TerrainSculptPanel {
       }
       return
     }
+    if (id === 'ocean') {
+      if (this.openPane === 'ocean' && this.secondaryRail === 'ocean') {
+        this.secondaryRail = 'off'
+        this.setOpenPane(null)
+      } else {
+        this.secondaryRail = 'ocean'
+        this.setOpenPane('ocean')
+      }
+      return
+    }
     if (
       id === 'height' ||
+      id === 'starters' ||
       id === 'splat' ||
       id === 'grass' ||
-      id === 'ocean' ||
-      SETTINGS_SUB_PANES.includes(id as FloatPaneId)
+      id === 'guides' ||
+      id === 'project' ||
+      MATERIAL_SUB_PANES.includes(id as FloatPaneId)
     ) {
-      if (SETTINGS_SUB_PANES.includes(id as FloatPaneId)) {
-        this.secondaryRail = 'settings'
+      if (MATERIAL_SUB_PANES.includes(id as FloatPaneId)) {
+        this.secondaryRail = 'materials'
+      } else if (PAINT_SUB_PANES.includes(id as FloatPaneId)) {
+        this.secondaryRail = 'paint'
+      } else if (id === 'height' || id === 'starters' || id === 'guides' || id === 'project') {
+        // Top-level panes — hide secondary rails that don't belong.
+        this.secondaryRail = 'off'
       }
       if (this.openPane === id) this.setOpenPane(null)
       else this.setOpenPane(id as FloatPaneId)
@@ -518,23 +612,49 @@ export class TerrainSculptPanel {
   }
 
   private buildSubDock(): void {
-    this.settingsGroupEl = document.createElement('div')
-    this.settingsGroupEl.className = 'editor-viewport-dock-group'
-    this.settingsGroupEl.dataset.rail = 'settings'
+    this.paintGroupEl = document.createElement('div')
+    this.paintGroupEl.className =
+      'editor-viewport-dock-group editor-viewport-dock-group--hidden'
+    this.paintGroupEl.dataset.rail = 'paint'
+    const paintTools: { id: FloatPaneId; label: string; tip: string }[] = [
+      { id: 'splat', label: '🖌', tip: 'Paint surface color' },
+      { id: 'grass', label: '🌿', tip: 'Ez Grass blades' }
+    ]
+    for (const t of paintTools) {
+      const btn = this.makeDockIconBtn(t.id, t.label, t.tip, () => this.onDockClick(t.id))
+      this.subDockButtons.set(t.id, btn)
+      this.paintGroupEl.appendChild(btn)
+    }
+    this.subDockEl.appendChild(this.paintGroupEl)
+
+    // Water settings (🌊 main) → second column: preview on/off
+    this.oceanGroupEl = document.createElement('div')
+    this.oceanGroupEl.className =
+      'editor-viewport-dock-group editor-viewport-dock-group--hidden'
+    this.oceanGroupEl.dataset.rail = 'ocean'
+    const waterBtn = this.makeDockIconBtn('water', '💧', 'Water preview on/off', () =>
+      this.onDockClick('water')
+    )
+    this.subDockButtons.set('water', waterBtn)
+    this.oceanGroupEl.appendChild(waterBtn)
+    this.subDockEl.appendChild(this.oceanGroupEl)
+
+    this.materialsGroupEl = document.createElement('div')
+    this.materialsGroupEl.className = 'editor-viewport-dock-group'
+    this.materialsGroupEl.dataset.rail = 'materials'
     const tools: { id: FloatPaneId; label: string; tip: string }[] = [
-      { id: 'shade-water', label: '🌊', tip: 'Water height band (shading)' },
-      { id: 'shade-sand', label: '🏖', tip: 'Sand height band' },
-      { id: 'shade-grass', label: '🍀', tip: 'Grass height band' },
-      { id: 'shade-rock', label: '🪨', tip: 'Rock height band' },
-      { id: 'guides', label: '📐', tip: 'Guides · undo' },
+      { id: 'shade-water', label: '🌊', tip: 'Water material — color by elevation' },
+      { id: 'shade-sand', label: '🏖', tip: 'Sand material — color by elevation' },
+      { id: 'shade-grass', label: '🍀', tip: 'Grass material — color by elevation' },
+      { id: 'shade-rock', label: '🪨', tip: 'Rock material — color by elevation' },
       { id: 'export', label: '📤', tip: 'Export mesh density' }
     ]
     for (const t of tools) {
       const btn = this.makeDockIconBtn(t.id, t.label, t.tip, () => this.onDockClick(t.id))
       this.subDockButtons.set(t.id, btn)
-      this.settingsGroupEl.appendChild(btn)
+      this.materialsGroupEl.appendChild(btn)
     }
-    this.subDockEl.appendChild(this.settingsGroupEl)
+    this.subDockEl.appendChild(this.materialsGroupEl)
 
     this.biomeGroupEl = document.createElement('div')
     this.biomeGroupEl.className = 'editor-viewport-dock-group editor-viewport-dock-group--hidden'
@@ -597,6 +717,7 @@ export class TerrainSculptPanel {
     this.flyoutTitleEl.textContent = this.biomePanelTitle(kind)
     this.brushSlidersHost.classList.add('editor-sculpt-tools--hidden')
     this.heightToolsHost.classList.add('editor-sculpt-tools--hidden')
+    this.startersHost.classList.add('editor-sculpt-tools--hidden')
     this.splatToolsHost.classList.add('editor-sculpt-tools--hidden')
     this.grassToolsHost.classList.add('editor-sculpt-tools--hidden')
     this.envBox?.classList.remove('editor-sculpt-tools--hidden')
@@ -606,6 +727,7 @@ export class TerrainSculptPanel {
     this.shadeGrassHost.classList.add('editor-sculpt-tools--hidden')
     this.shadeRockHost.classList.add('editor-sculpt-tools--hidden')
     this.guidesHost.classList.add('editor-sculpt-tools--hidden')
+    this.projectHost.classList.add('editor-sculpt-tools--hidden')
     this.exportHost.classList.add('editor-sculpt-tools--hidden')
     this.syncSecondaryRail()
     this.syncEnvironmentUi(kind)
@@ -635,16 +757,29 @@ export class TerrainSculptPanel {
   }
 
   private isSecondaryRailVisible(): boolean {
-    if (this.secondaryRail === 'settings' || this.secondaryRail === 'biomes') return true
-    if (this.openPane !== null && SETTINGS_SUB_PANES.includes(this.openPane)) return true
+    if (
+      this.secondaryRail === 'materials' ||
+      this.secondaryRail === 'biomes' ||
+      this.secondaryRail === 'paint' ||
+      this.secondaryRail === 'ocean'
+    ) {
+      return true
+    }
+    if (this.openPane !== null && MATERIAL_SUB_PANES.includes(this.openPane)) return true
+    if (this.openPane !== null && PAINT_SUB_PANES.includes(this.openPane)) return true
     if (this.openPane === 'env') return true
+    if (this.openPane === 'ocean') return true
     return false
   }
 
   private syncSecondaryRail(): void {
     // Keep rail mode coherent with open pane.
-    if (this.openPane && SETTINGS_SUB_PANES.includes(this.openPane)) {
-      this.secondaryRail = 'settings'
+    if (this.openPane && MATERIAL_SUB_PANES.includes(this.openPane)) {
+      this.secondaryRail = 'materials'
+    } else if (this.openPane && PAINT_SUB_PANES.includes(this.openPane)) {
+      this.secondaryRail = 'paint'
+    } else if (this.openPane === 'ocean') {
+      this.secondaryRail = 'ocean'
     } else if (this.openPane === 'env' && this.secondaryRail === 'off') {
       this.secondaryRail = 'biomes'
     }
@@ -652,16 +787,27 @@ export class TerrainSculptPanel {
     const mode = this.secondaryRail
     const show = this.isSecondaryRailVisible()
     this.subDockEl.classList.toggle('editor-viewport-dock--sub-hidden', !show)
+    // Layout flag name is historical — any secondary rail open shifts the flyout.
     this.host.classList.toggle('editor-float-ui--settings-open', show)
 
-    this.settingsGroupEl?.classList.toggle(
+    this.materialsGroupEl?.classList.toggle(
       'editor-viewport-dock-group--hidden',
-      mode !== 'settings'
+      mode !== 'materials'
     )
     this.biomeGroupEl?.classList.toggle('editor-viewport-dock-group--hidden', mode !== 'biomes')
+    this.paintGroupEl?.classList.toggle('editor-viewport-dock-group--hidden', mode !== 'paint')
+    this.oceanGroupEl?.classList.toggle('editor-viewport-dock-group--hidden', mode !== 'ocean')
     this.subDockEl.setAttribute(
       'aria-label',
-      mode === 'biomes' ? 'Biome picker' : 'Shading and settings'
+      mode === 'biomes'
+        ? 'Biome picker'
+        : mode === 'paint'
+          ? 'Paint tools'
+          : mode === 'ocean'
+            ? 'Water settings'
+            : mode === 'materials'
+              ? 'Height materials'
+              : 'Terrain tools'
     )
 
     if (show) {
@@ -700,13 +846,17 @@ export class TerrainSculptPanel {
       return
     }
 
-    // Prefer the visible group (settings vs biomes) so we don't measure a collapsed rail.
+    // Prefer the visible group so we don't measure a collapsed rail.
     const activeGroup =
       this.secondaryRail === 'biomes'
         ? this.biomeGroupEl
-        : this.secondaryRail === 'settings'
-          ? this.settingsGroupEl
-          : null
+        : this.secondaryRail === 'materials'
+          ? this.materialsGroupEl
+          : this.secondaryRail === 'paint'
+            ? this.paintGroupEl
+            : this.secondaryRail === 'ocean'
+              ? this.oceanGroupEl
+              : null
     const groupRect = activeGroup?.getBoundingClientRect()
     const subRect = this.subDockEl.getBoundingClientRect()
     const anchorRight =
@@ -724,9 +874,21 @@ export class TerrainSculptPanel {
 
   private setOpenPane(id: FloatPaneId | null): void {
     this.openPane = id
-    if (id && SETTINGS_SUB_PANES.includes(id)) this.secondaryRail = 'settings'
+    if (id && MATERIAL_SUB_PANES.includes(id)) this.secondaryRail = 'materials'
+    else if (id && PAINT_SUB_PANES.includes(id)) this.secondaryRail = 'paint'
     else if (id === 'env') this.secondaryRail = 'biomes'
-    else if (id === null && this.secondaryRail === 'biomes') this.secondaryRail = 'off'
+    else if (id === 'ocean') this.secondaryRail = 'ocean'
+    else if (id === 'height' || id === 'starters' || id === 'guides' || id === 'project') {
+      this.secondaryRail = 'off'
+    }
+    else if (
+      id === null &&
+      (this.secondaryRail === 'biomes' ||
+        this.secondaryRail === 'paint' ||
+        this.secondaryRail === 'ocean')
+    ) {
+      this.secondaryRail = 'off'
+    }
     this.syncSecondaryRail()
 
     const hidden = id === null
@@ -737,6 +899,8 @@ export class TerrainSculptPanel {
     if (id === 'height') {
       this.session.patchSettings({ paintLayer: 'height' })
       this.flyoutTitleEl.textContent = 'Sculpt'
+    } else if (id === 'starters') {
+      this.flyoutTitleEl.textContent = 'Starters'
     } else if (id === 'splat') {
       this.session.patchSettings({ paintLayer: 'splat' })
       this.flyoutTitleEl.textContent = 'Paint'
@@ -751,15 +915,17 @@ export class TerrainSculptPanel {
       this.flyoutTitleEl.textContent = 'FFTOCEAN'
       this.syncEnvironmentUi()
     } else if (id === 'shade-water') {
-      this.flyoutTitleEl.textContent = 'Water band'
+      this.flyoutTitleEl.textContent = 'Water material'
     } else if (id === 'shade-sand') {
-      this.flyoutTitleEl.textContent = 'Sand band'
+      this.flyoutTitleEl.textContent = 'Sand material'
     } else if (id === 'shade-grass') {
-      this.flyoutTitleEl.textContent = 'Grass band'
+      this.flyoutTitleEl.textContent = 'Grass material'
     } else if (id === 'shade-rock') {
-      this.flyoutTitleEl.textContent = 'Rock band'
+      this.flyoutTitleEl.textContent = 'Rock material'
     } else if (id === 'guides') {
       this.flyoutTitleEl.textContent = 'Guides'
+    } else if (id === 'project') {
+      this.flyoutTitleEl.textContent = 'Project'
     } else if (id === 'export') {
       this.flyoutTitleEl.textContent = 'Export'
     }
@@ -767,6 +933,7 @@ export class TerrainSculptPanel {
     const brush = id === 'height' || id === 'splat' || id === 'grass'
     this.brushSlidersHost.classList.toggle('editor-sculpt-tools--hidden', !brush)
     this.heightToolsHost.classList.toggle('editor-sculpt-tools--hidden', id !== 'height')
+    this.startersHost.classList.toggle('editor-sculpt-tools--hidden', id !== 'starters')
     this.splatToolsHost.classList.toggle('editor-sculpt-tools--hidden', id !== 'splat')
     this.grassToolsHost.classList.toggle('editor-sculpt-tools--hidden', id !== 'grass')
     this.envBox?.classList.toggle('editor-sculpt-tools--hidden', id !== 'env')
@@ -776,6 +943,7 @@ export class TerrainSculptPanel {
     this.shadeGrassHost.classList.toggle('editor-sculpt-tools--hidden', id !== 'shade-grass')
     this.shadeRockHost.classList.toggle('editor-sculpt-tools--hidden', id !== 'shade-rock')
     this.guidesHost.classList.toggle('editor-sculpt-tools--hidden', id !== 'guides')
+    this.projectHost.classList.toggle('editor-sculpt-tools--hidden', id !== 'project')
     this.exportHost.classList.toggle('editor-sculpt-tools--hidden', id !== 'export')
 
     this.syncDockHighlight()
@@ -790,21 +958,33 @@ export class TerrainSculptPanel {
     const layer = this.session.getSettings().paintLayer
     for (const [toolId, btn] of this.dockButtons) {
       let on = false
-      if (toolId === 'height' || toolId === 'splat' || toolId === 'grass') {
-        on = this.openPane === toolId || (this.openPane === null && layer === toolId)
+      if (toolId === 'height') {
+        on = this.openPane === 'height' || (this.openPane === null && layer === 'height')
+      } else if (toolId === 'starters') {
+        on = this.openPane === 'starters'
+      } else if (toolId === 'paint') {
+        on =
+          this.secondaryRail === 'paint' ||
+          this.openPane === 'splat' ||
+          this.openPane === 'grass' ||
+          (this.openPane === null && (layer === 'splat' || layer === 'grass'))
       } else if (toolId === 'env') {
         on = this.openPane === 'env' || this.secondaryRail === 'biomes'
       } else if (toolId === 'ocean') {
+        on = this.openPane === 'ocean' || this.secondaryRail === 'ocean'
+      } else if (toolId === 'guides' || toolId === 'project') {
         on = this.openPane === toolId
-      } else if (toolId === 'settings') {
+      } else if (toolId === 'materials') {
         on =
-          this.secondaryRail === 'settings' ||
-          (this.openPane !== null && SETTINGS_SUB_PANES.includes(this.openPane))
+          this.secondaryRail === 'materials' ||
+          (this.openPane !== null && MATERIAL_SUB_PANES.includes(this.openPane))
       }
       btn.classList.toggle('editor-viewport-dock-btn--active', on)
       btn.setAttribute('aria-pressed', on ? 'true' : 'false')
     }
     for (const [toolId, btn] of this.subDockButtons) {
+      // Water preview is a toggle (on = visible), not an open pane.
+      if (toolId === 'water') continue
       const on = this.openPane === toolId
       btn.classList.toggle('editor-viewport-dock-btn--active', on)
       btn.setAttribute('aria-pressed', on ? 'true' : 'false')
@@ -819,13 +999,11 @@ export class TerrainSculptPanel {
   }
 
   private syncDockToggles(): void {
-    const gridBtn = this.dockButtons.get('grid')
-    const waterBtn = this.dockButtons.get('water')
-    const gridOn = this.refApi?.getGridVisible?.() ?? false
+    // Water preview lives on the ocean secondary rail (not main dock).
+    // Grid lives under Guides checkbox — no main-dock icon.
+    const waterBtn = this.subDockButtons.get('water') ?? this.dockButtons.get('water')
     const waterOn = this.refApi?.getWaterPlaneVisible?.() ?? false
-    gridBtn?.classList.toggle('editor-viewport-dock-btn--on', gridOn)
     waterBtn?.classList.toggle('editor-viewport-dock-btn--on', waterOn)
-    gridBtn?.setAttribute('aria-pressed', gridOn ? 'true' : 'false')
     waterBtn?.setAttribute('aria-pressed', waterOn ? 'true' : 'false')
   }
 
@@ -1308,8 +1486,6 @@ export class TerrainSculptPanel {
     }
 
     // Biome pick is the left icon rail only — no duplicate dropdown.
-    box.appendChild(this.hintEl('Biome via icon rail · writes scene.json environment.kind'))
-
     this.biomeHintEl = document.createElement('div')
     this.biomeHintEl.className = 'editor-sculpt-hint editor-sculpt-hint--compact'
     this.biomeHintEl.dataset.role = 'biome-hint'
@@ -1330,6 +1506,11 @@ export class TerrainSculptPanel {
     this.landPanelEl.className = 'editor-land-panel editor-sculpt-tools--hidden'
     this.addLandControls(this.landPanelEl)
     box.appendChild(this.landPanelEl)
+
+    this.forestPanelEl = document.createElement('div')
+    this.forestPanelEl.className = 'editor-forest-panel editor-sculpt-tools--hidden'
+    this.addForestControls(this.forestPanelEl)
+    box.appendChild(this.forestPanelEl)
 
     this.mountainsPanelEl = document.createElement('div')
     this.mountainsPanelEl.className = 'editor-mountains-panel editor-sculpt-tools--hidden'
@@ -1589,11 +1770,18 @@ export class TerrainSculptPanel {
 
     const duneTitle = document.createElement('div')
     duneTitle.className = 'editor-sculpt-shading-biome-title'
-    duneTitle.textContent = 'Dunes (outer sand)'
+    duneTitle.textContent = 'Dunes'
     box.appendChild(duneTitle)
     this.desertDunesCb = this.envCheckRow(box, 'Perlin dunes', (on) => {
       this.patchDesert({ dunes: on })
     })
+    this.desertDunesOnParcelsCb = this.envCheckRow(
+      box,
+      'Dunes on scene parcels',
+      (on) => {
+        this.patchDesert({ dunesOnParcels: on })
+      }
+    )
     this.desertDuneHeight = this.envSliderRow(box, 'Dune height (m)', 0, 16, 0.05, 1.1, (v) => {
       this.patchDesert({ duneHeight: v })
     })
@@ -1609,9 +1797,6 @@ export class TerrainSculptPanel {
     this.desertDuneRipple = this.envSliderRow(box, 'Ripple', 0, 1, 0.05, 0.35, (v) => {
       this.patchDesert({ duneRipple: v })
     })
-    box.appendChild(
-      this.hintEl('Length = along wind · width = across ridge · flat under your parcels')
-    )
 
     const resetRow = document.createElement('div')
     resetRow.className = 'editor-sculpt-row'
@@ -1652,9 +1837,6 @@ export class TerrainSculptPanel {
     title.className = 'editor-sculpt-shading-biome-title'
     title.textContent = 'Land ground'
     box.appendChild(title)
-    box.appendChild(
-      this.hintEl('Single color plane under the scene (y≈−0.01) · no GLB · environment.land')
-    )
 
     const presets = document.createElement('div')
     presets.className = 'editor-sculpt-row'
@@ -1669,12 +1851,18 @@ export class TerrainSculptPanel {
         this.pendingLand = {}
         if (this.landPatchTimer) window.clearTimeout(this.landPatchTimer)
         this.landPatchTimer = 0
+        // Keep density when swapping color presets; set matching ground + grass tints.
+        const density = this.refApi?.getEnvironment?.()?.land?.grassDensity
         void this.refApi?.patchEnvironment?.({
-          land: { groundColor: p.groundColor },
+          land: {
+            groundColor: p.groundColor,
+            grassColor: p.grassColor,
+            ...(typeof density === 'number' ? { grassDensity: density } : {})
+          },
           replaceLand: true
         })
         this.syncEnvironmentUi()
-        this.onStatus(`Land color: ${p.label}`)
+        this.onStatus(`Land: ${p.label}`)
       })
       presets.appendChild(btn)
     }
@@ -1683,20 +1871,56 @@ export class TerrainSculptPanel {
     const colorRow = document.createElement('div')
     colorRow.className = 'editor-sculpt-row'
     colorRow.style.alignItems = 'center'
-    const lbl = document.createElement('label')
-    lbl.className = 'editor-sculpt-check'
-    lbl.style.display = 'flex'
-    lbl.style.alignItems = 'center'
-    lbl.style.gap = '6px'
-    lbl.append('Ground color')
+    colorRow.style.flexWrap = 'wrap'
+    colorRow.style.gap = '12px'
+
+    const groundLbl = document.createElement('label')
+    groundLbl.className = 'editor-sculpt-check'
+    groundLbl.style.display = 'flex'
+    groundLbl.style.alignItems = 'center'
+    groundLbl.style.gap = '6px'
+    groundLbl.append('Ground color')
     this.landGroundColor = document.createElement('input')
     this.landGroundColor.type = 'color'
     this.landGroundColor.addEventListener('input', () => {
       this.patchLand({ groundColor: this.landGroundColor!.value })
     })
-    lbl.appendChild(this.landGroundColor)
-    colorRow.appendChild(lbl)
+    groundLbl.appendChild(this.landGroundColor)
+    colorRow.appendChild(groundLbl)
+
+    const grassLbl = document.createElement('label')
+    grassLbl.className = 'editor-sculpt-check'
+    grassLbl.style.display = 'flex'
+    grassLbl.style.alignItems = 'center'
+    grassLbl.style.gap = '6px'
+    grassLbl.title =
+      'Blade tint for outer land-biome grass patches (environment.land.grassColor). Not paint Ez Grass.'
+    grassLbl.append('Grass color')
+    this.landGrassColor = document.createElement('input')
+    this.landGrassColor.type = 'color'
+    this.landGrassColor.addEventListener('input', () => {
+      this.patchLand({ grassColor: this.landGrassColor!.value })
+    })
+    grassLbl.appendChild(this.landGrassColor)
+    colorRow.appendChild(grassLbl)
     box.appendChild(colorRow)
+
+    // Outer grass patch density (land biome ez-tree field — not author paint).
+    const densityRow = this.sliderRow(
+      'Grass patch density',
+      0,
+      2,
+      LAND_DEFAULTS.grassDensity,
+      (v) => {
+        this.patchLand({ grassDensity: v })
+        this.onStatus(`Land grass density ×${v.toFixed(2)}`)
+      }
+    )
+    this.landGrassDensitySlider = densityRow.querySelector('input') as HTMLInputElement
+    this.landGrassDensityValue = densityRow.querySelector('span') as HTMLSpanElement
+    densityRow.title =
+      'How dense outer land-biome grass patches are (environment.land.grassDensity). Does not affect paint Ez Grass.'
+    box.appendChild(densityRow)
 
     const resetRow = document.createElement('div')
     resetRow.className = 'editor-sculpt-row'
@@ -1730,6 +1954,201 @@ export class TerrainSculptPanel {
       this.pendingLand = {}
       void this.refApi!.patchEnvironment!({ land: merged })
     }, 120)
+  }
+
+  private addForestControls(box: HTMLDivElement): void {
+    const title = document.createElement('div')
+    title.className = 'editor-sculpt-shading-biome-title'
+    title.textContent = 'Forest'
+    box.appendChild(title)
+
+    // Ground color — same solid plane as land biome.
+    const groundTitle = document.createElement('div')
+    groundTitle.className = 'editor-sculpt-title'
+    groundTitle.textContent = 'Ground'
+    box.appendChild(groundTitle)
+
+    const groundPresets = document.createElement('div')
+    groundPresets.className = 'editor-sculpt-row'
+    groundPresets.style.flexWrap = 'wrap'
+    for (const p of LAND_COLOR_PRESETS) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'editor-sculpt-btn'
+      btn.textContent = p.label
+      btn.style.borderLeft = `4px solid ${p.groundColor}`
+      btn.addEventListener('click', () => {
+        this.patchForest({ groundColor: p.groundColor, grassColor: p.grassColor })
+        if (this.forestGroundColor) this.forestGroundColor.value = p.groundColor
+        if (this.forestGrassColor) this.forestGrassColor.value = p.grassColor
+        this.onStatus(`Forest: ${p.label}`)
+      })
+      groundPresets.appendChild(btn)
+    }
+    box.appendChild(groundPresets)
+
+    const groundRow = document.createElement('div')
+    groundRow.className = 'editor-sculpt-row'
+    groundRow.style.alignItems = 'center'
+    groundRow.style.flexWrap = 'wrap'
+    groundRow.style.gap = '12px'
+
+    const groundLbl = document.createElement('label')
+    groundLbl.className = 'editor-sculpt-check'
+    groundLbl.style.display = 'flex'
+    groundLbl.style.alignItems = 'center'
+    groundLbl.style.gap = '6px'
+    groundLbl.append('Ground color')
+    this.forestGroundColor = document.createElement('input')
+    this.forestGroundColor.type = 'color'
+    this.forestGroundColor.addEventListener('input', () => {
+      this.patchForest({ groundColor: this.forestGroundColor!.value })
+    })
+    groundLbl.appendChild(this.forestGroundColor)
+    groundRow.appendChild(groundLbl)
+
+    const grassLbl = document.createElement('label')
+    grassLbl.className = 'editor-sculpt-check'
+    grassLbl.style.display = 'flex'
+    grassLbl.style.alignItems = 'center'
+    grassLbl.style.gap = '6px'
+    grassLbl.title =
+      'Blade tint for outer forest grass patches (environment.forest.grassColor). Not paint Ez Grass.'
+    grassLbl.append('Grass color')
+    this.forestGrassColor = document.createElement('input')
+    this.forestGrassColor.type = 'color'
+    this.forestGrassColor.addEventListener('input', () => {
+      this.patchForest({ grassColor: this.forestGrassColor!.value })
+    })
+    grassLbl.appendChild(this.forestGrassColor)
+    groundRow.appendChild(grassLbl)
+    box.appendChild(groundRow)
+
+    const treesTitle = document.createElement('div')
+    treesTitle.className = 'editor-sculpt-title'
+    treesTitle.textContent = 'Trees'
+    treesTitle.style.cssText = 'margin-top:8px'
+    box.appendChild(treesTitle)
+
+    this.forestTreeSliders = []
+    this.forestTreeValues = []
+    for (let i = 0; i < FOREST_TREE_LABELS.length; i++) {
+      const idx = i
+      const row = this.sliderRow(
+        FOREST_TREE_LABELS[i]!,
+        0,
+        2,
+        FOREST_DEFAULTS.treeDensity[i] ?? 1,
+        (v) => {
+          const cur = resolveForestSettings(this.refApi?.getEnvironment?.()?.forest)
+          const treeDensity = [...cur.treeDensity]
+          treeDensity[idx] = v
+          this.patchForest({ treeDensity })
+          this.onStatus(`${FOREST_TREE_LABELS[idx]} density ×${v.toFixed(2)}`)
+        }
+      )
+      this.forestTreeSliders.push(row.querySelector('input') as HTMLInputElement)
+      this.forestTreeValues.push(row.querySelector('span') as HTMLSpanElement)
+      box.appendChild(row)
+    }
+
+    const rocksTitle = document.createElement('div')
+    rocksTitle.className = 'editor-sculpt-title'
+    rocksTitle.textContent = 'Rocks'
+    rocksTitle.style.cssText = 'margin-top:8px'
+    box.appendChild(rocksTitle)
+
+    this.forestRockSliders = []
+    this.forestRockValues = []
+    for (let i = 0; i < FOREST_ROCK_LABELS.length; i++) {
+      const idx = i
+      const row = this.sliderRow(
+        FOREST_ROCK_LABELS[i]!,
+        0,
+        2,
+        FOREST_DEFAULTS.rockDensity[i] ?? 1,
+        (v) => {
+          const cur = resolveForestSettings(this.refApi?.getEnvironment?.()?.forest)
+          const rockDensity = [...cur.rockDensity]
+          rockDensity[idx] = v
+          this.patchForest({ rockDensity })
+          this.onStatus(`${FOREST_ROCK_LABELS[idx]} density ×${v.toFixed(2)}`)
+        }
+      )
+      this.forestRockSliders.push(row.querySelector('input') as HTMLInputElement)
+      this.forestRockValues.push(row.querySelector('span') as HTMLSpanElement)
+      box.appendChild(row)
+    }
+
+    const bushRow = this.sliderRow('Bushes', 0, 2, FOREST_DEFAULTS.bushDensity, (v) => {
+      this.patchForest({ bushDensity: v })
+      this.onStatus(`Bush density ×${v.toFixed(2)}`)
+    })
+    this.forestBushSlider = bushRow.querySelector('input') as HTMLInputElement
+    this.forestBushValue = bushRow.querySelector('span') as HTMLSpanElement
+    bushRow.style.marginTop = '8px'
+    box.appendChild(bushRow)
+
+    const resetRow = document.createElement('div')
+    resetRow.className = 'editor-sculpt-row'
+    resetRow.style.marginTop = '8px'
+    const resetBtn = document.createElement('button')
+    resetBtn.type = 'button'
+    resetBtn.className = 'editor-sculpt-btn'
+    resetBtn.textContent = 'Reset forest defaults'
+    resetBtn.addEventListener('click', () => {
+      this.pendingForest = {}
+      if (this.forestPatchTimer) window.clearTimeout(this.forestPatchTimer)
+      this.forestPatchTimer = 0
+      void this.refApi?.patchEnvironment?.({
+        forest: {
+          groundColor: FOREST_DEFAULTS.groundColor,
+          grassColor: FOREST_DEFAULTS.grassColor,
+          treeDensity: [...FOREST_DEFAULTS.treeDensity],
+          rockDensity: [...FOREST_DEFAULTS.rockDensity],
+          bushDensity: FOREST_DEFAULTS.bushDensity
+        },
+        replaceForest: true
+      })
+      this.syncEnvironmentUi()
+      this.onStatus('Forest defaults reset')
+    })
+    resetRow.appendChild(resetBtn)
+    box.appendChild(resetRow)
+  }
+
+  private patchForest(forest: SceneForestConfig): void {
+    if (!this.refApi?.patchEnvironment) return
+    this.pendingForest = { ...this.pendingForest, ...forest }
+    if (forest.treeDensity) this.pendingForest.treeDensity = [...forest.treeDensity]
+    if (forest.rockDensity) this.pendingForest.rockDensity = [...forest.rockDensity]
+    if (this.forestPatchTimer) window.clearTimeout(this.forestPatchTimer)
+    this.forestPatchTimer = window.setTimeout(() => {
+      this.forestPatchTimer = 0
+      const cur = resolveForestSettings(this.refApi!.getEnvironment?.()?.forest)
+      const merged: SceneForestConfig = {
+        groundColor:
+          typeof this.pendingForest.groundColor === 'string'
+            ? this.pendingForest.groundColor
+            : cur.groundColor,
+        grassColor:
+          typeof this.pendingForest.grassColor === 'string'
+            ? this.pendingForest.grassColor
+            : cur.grassColor,
+        treeDensity: this.pendingForest.treeDensity
+          ? [...this.pendingForest.treeDensity]
+          : [...cur.treeDensity],
+        rockDensity: this.pendingForest.rockDensity
+          ? [...this.pendingForest.rockDensity]
+          : [...cur.rockDensity],
+        bushDensity:
+          typeof this.pendingForest.bushDensity === 'number'
+            ? this.pendingForest.bushDensity
+            : cur.bushDensity
+      }
+      this.pendingForest = {}
+      void this.refApi!.patchEnvironment!({ forest: merged })
+    }, 140)
   }
 
   private addMountainsControls(box: HTMLDivElement): void {
@@ -1848,7 +2267,9 @@ export class TerrainSculptPanel {
     }
 
     box.appendChild(
-      this.hintEl('Writes environment.water · live preview when biome is island/water')
+      this.hintEl(
+        'Writes environment.water · island/water biomes. Mesh off = no water (not Water.js fallback).'
+      )
     )
 
     this.oceanHintEl = document.createElement('div')
@@ -1856,7 +2277,7 @@ export class TerrainSculptPanel {
     this.oceanHintEl.dataset.role = 'ocean-hint'
     box.appendChild(this.oceanHintEl)
 
-    this.envWaterEnabled = this.envCheckRow(box, 'Water mesh on', (on) => {
+    this.envWaterEnabled = this.envCheckRow(box, 'Water mesh on (master)', (on) => {
       this.patchOcean({ enabled: on }, true)
     })
     this.envFftCb = this.envCheckRow(box, 'FFTOCEAN / dallapozza (WebGL2)', (on) => {
@@ -1938,7 +2359,7 @@ export class TerrainSculptPanel {
     const note = document.createElement('div')
     note.className = 'editor-sculpt-hint editor-sculpt-hint--compact'
     note.textContent =
-      'Surface height: ⚙ → water band → Water To. 💧 toggles preview visibility.'
+      'Surface height: ⚙ → Water To. FFT off = Water.js only. Mesh off = nothing. 💧 = viewport hide.'
     box.appendChild(note)
 
     const resetRow = document.createElement('div')
@@ -2098,6 +2519,7 @@ export class TerrainSculptPanel {
     const isSpace = kind === 'space'
     const isDesert = kind === 'desert'
     const isLand = kind === 'land'
+    const isForest = kind === 'forest'
     const isMountains = kind === 'mountains'
 
     if (this.biomeHintEl) {
@@ -2108,16 +2530,16 @@ export class TerrainSculptPanel {
         this.biomeHintEl.textContent =
           'Desert · dunes, sand, rocks, dust & tumbleweeds'
       } else if (isLand) {
-        this.biomeHintEl.textContent = 'Land · infinite ground tint · grass wind below'
+        // Controls below are self-explanatory — no banner copy.
+        this.biomeHintEl.textContent = ''
+      } else if (isForest) {
+        this.biomeHintEl.textContent = ''
       } else if (isMountains) {
         this.biomeHintEl.textContent =
           'Mountains · prop density + haze · shore water via FFT below'
       } else if (kind === 'island' || kind === 'water') {
         this.biomeHintEl.textContent =
           `${kind} · ocean on · use 🌊 for FFT waves · 💧 toggles preview`
-      } else if (kind === 'forest') {
-        this.biomeHintEl.textContent =
-          `${kind} · no ocean · Ez Grass wind via checkbox below`
       } else if (kind === 'genesis') {
         this.biomeHintEl.textContent = 'Genesis · city sky · no ocean / no empty-land clutter'
       } else if (kind === 'none') {
@@ -2125,11 +2547,13 @@ export class TerrainSculptPanel {
       } else {
         this.biomeHintEl.textContent = `Biome “${kind}” · showWater=${profile?.showWater ?? false}`
       }
+      this.biomeHintEl.hidden = !this.biomeHintEl.textContent.trim()
     }
 
     this.spacePanelEl?.classList.toggle('editor-sculpt-tools--hidden', !isSpace)
     this.desertPanelEl?.classList.toggle('editor-sculpt-tools--hidden', !isDesert)
     this.landPanelEl?.classList.toggle('editor-sculpt-tools--hidden', !isLand)
+    this.forestPanelEl?.classList.toggle('editor-sculpt-tools--hidden', !isForest)
     this.mountainsPanelEl?.classList.toggle('editor-sculpt-tools--hidden', !isMountains)
     // Mountains has its own FFT jump inside panel; hide generic jump for mountains.
     this.oceanJumpBtn?.classList.toggle(
@@ -2138,11 +2562,11 @@ export class TerrainSculptPanel {
     )
     this.windShaderRowEl?.classList.toggle(
       'editor-sculpt-tools--hidden',
-      isSpace || isDesert || isMountains || !(kind === 'land' || kind === 'forest')
+      isSpace || isDesert || isMountains || !(isLand || isForest)
     )
     this.dryBiomeNoteEl?.classList.toggle(
       'editor-sculpt-tools--hidden',
-      showOcean || isSpace || isDesert || isLand || isMountains
+      showOcean || isSpace || isDesert || isLand || isForest || isMountains
     )
 
     if (this.envWindShaderCb) {
@@ -2189,6 +2613,7 @@ export class TerrainSculptPanel {
     setRangeEl(this.desertTumbleweedCount, ds.tumbleweedCount)
     if (this.desertAcrossParcelsCb) this.desertAcrossParcelsCb.checked = ds.acrossParcels
     if (this.desertDunesCb) this.desertDunesCb.checked = ds.dunes
+    if (this.desertDunesOnParcelsCb) this.desertDunesOnParcelsCb.checked = ds.dunesOnParcels
     setRangeEl(this.desertDuneHeight, ds.duneHeight)
     setRangeEl(this.desertDuneWidth, ds.duneWidth)
     setRangeEl(this.desertDuneLength, ds.duneLength)
@@ -2200,6 +2625,40 @@ export class TerrainSculptPanel {
     if (this.landGroundColor) {
       this.landGroundColor.value = normalizeHexColor(land.groundColor, '#c43c2c')
     }
+    if (this.landGrassColor) {
+      this.landGrassColor.value = normalizeHexColor(land.grassColor, LAND_DEFAULTS.grassColor)
+    }
+    if (this.landGrassDensitySlider) {
+      this.landGrassDensitySlider.value = String(land.grassDensity)
+    }
+    if (this.landGrassDensityValue) {
+      this.landGrassDensityValue.textContent = land.grassDensity.toFixed(2)
+    }
+
+    // Forest
+    const forest = resolveForestSettings(env.forest)
+    if (this.forestGroundColor) {
+      this.forestGroundColor.value = normalizeHexColor(forest.groundColor, FOREST_DEFAULTS.groundColor)
+    }
+    if (this.forestGrassColor) {
+      this.forestGrassColor.value = normalizeHexColor(forest.grassColor, FOREST_DEFAULTS.grassColor)
+    }
+    for (let i = 0; i < this.forestTreeSliders.length; i++) {
+      const v = forest.treeDensity[i] ?? 1
+      const sl = this.forestTreeSliders[i]
+      const val = this.forestTreeValues[i]
+      if (sl) sl.value = String(v)
+      if (val) val.textContent = v.toFixed(2)
+    }
+    for (let i = 0; i < this.forestRockSliders.length; i++) {
+      const v = forest.rockDensity[i] ?? 1
+      const sl = this.forestRockSliders[i]
+      const val = this.forestRockValues[i]
+      if (sl) sl.value = String(v)
+      if (val) val.textContent = v.toFixed(2)
+    }
+    if (this.forestBushSlider) this.forestBushSlider.value = String(forest.bushDensity)
+    if (this.forestBushValue) this.forestBushValue.textContent = forest.bushDensity.toFixed(2)
 
     // Mountains
     const mt = resolveMountainsSettings(env.mountains)
@@ -2213,17 +2672,18 @@ export class TerrainSculptPanel {
     if (this.oceanHintEl) {
       if (kind === 'island') {
         this.oceanHintEl.textContent =
-          'Island shore · FFT on = dallapozza GPGPU · height = Water To (⚙ Shading)'
+          'Island = circle (parcel centre → corner) + thin beach · open beaches = water biome'
       } else if (kind === 'water') {
         this.oceanHintEl.textContent =
-          'Open ocean · FFT on = dallapozza GPGPU · height = Water To (⚙ Shading)'
+          'Open ocean · FFT on = dallapozza GPGPU · height = Water To (🧱 Height materials)'
       } else if (kind === 'mountains') {
         this.oceanHintEl.textContent = 'Mountains water · FFT on for GPGPU waves'
       } else {
         this.oceanHintEl.textContent = `Biome “${kind}” has no ocean — pick 🏝 / 🌊 / 🏔 on the biome rail`
       }
     }
-    this.oceanBox?.classList.toggle('editor-env-water--inactive', !showOcean)
+    // Keep ocean knobs full brightness even on dry biomes — the hint covers “no ocean”.
+    this.oceanBox?.classList.remove('editor-env-water--inactive')
 
     for (const [k, btn] of this.biomeDockButtons) {
       const on = k === kind
@@ -2370,6 +2830,260 @@ export class TerrainSculptPanel {
       wrap.appendChild(btn)
     }
     this.heightToolsHost.appendChild(wrap)
+    this.addSculptClearActions(this.heightToolsHost)
+  }
+
+  /** Reset heightmap / clear paint+grass — undoable. */
+  private addSculptClearActions(parent: HTMLElement): void {
+    const box = document.createElement('div')
+    box.style.cssText =
+      'margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.12)'
+
+    const title = document.createElement('div')
+    title.className = 'editor-sculpt-title'
+    title.textContent = 'Reset'
+    title.style.cssText = 'font-size:12px;margin-bottom:6px;opacity:0.9'
+    box.appendChild(title)
+
+    const hint = document.createElement('div')
+    hint.style.cssText = 'font-size:11px;opacity:0.65;margin-bottom:8px;line-height:1.35'
+    hint.textContent = 'Undo restores. Does not change biome. Save to bake.'
+    box.appendChild(hint)
+
+    const row = document.createElement('div')
+    row.className = 'editor-sculpt-row'
+    row.style.cssText = 'flex-wrap:wrap;gap:6px'
+
+    const resetH = document.createElement('button')
+    resetH.type = 'button'
+    resetH.className = 'editor-sculpt-btn'
+    resetH.textContent = 'Reset heights'
+    resetH.title = 'Flatten heightmap to seafloor (under ocean). Keeps paint & grass.'
+    resetH.addEventListener('click', () => {
+      if (
+        !window.confirm(
+          'Reset all heights to seafloor?\n\nPaint and grass stay. Undo restores the previous heightmap.'
+        )
+      ) {
+        return
+      }
+      this.session.resetHeightsToSeafloor()
+      this.onStatus('Heights reset to seafloor')
+    })
+    row.appendChild(resetH)
+
+    const clearPaint = document.createElement('button')
+    clearPaint.type = 'button'
+    clearPaint.className = 'editor-sculpt-btn'
+    clearPaint.textContent = 'Clear paint & grass'
+    clearPaint.title = 'Remove splat materials, lava, and ez-tree grass. Keeps heights.'
+    clearPaint.addEventListener('click', () => {
+      if (
+        !window.confirm(
+          'Clear all surface paint, lava, and grass blades?\n\nHeights stay. Undo restores paint & grass.'
+        )
+      ) {
+        return
+      }
+      this.session.clearPaintAndGrass()
+      this.onStatus('Paint, lava, and grass cleared')
+    })
+    row.appendChild(clearPaint)
+
+    const resetAll = document.createElement('button')
+    resetAll.type = 'button'
+    resetAll.className = 'editor-sculpt-btn'
+    resetAll.textContent = 'Reset all'
+    resetAll.title = 'Seafloor heights + no paint + no grass'
+    resetAll.addEventListener('click', () => {
+      if (
+        !window.confirm(
+          'Reset everything?\n\n• Heights → seafloor\n• Paint / lava / grass → cleared\n\nUndo restores the previous state.'
+        )
+      ) {
+        return
+      }
+      this.session.resetAllSculpt()
+      this.onStatus('All sculpt data reset')
+    })
+    row.appendChild(resetAll)
+
+    box.appendChild(row)
+    parent.appendChild(box)
+  }
+
+  /**
+   * Minecraft-like height starters — top-level dock pane (🎲).
+   * Fills sculpt buffers; biome dock stays backdrop-only unless “match biome” is on.
+   * Confirm if dirty · undo restores · Save still bakes terrain.glb.
+   */
+  private addTerrainStarters(parent: HTMLElement): void {
+    const box = document.createElement('div')
+    box.className = 'editor-terrain-starters'
+    box.style.cssText = 'display:flex;flex-direction:column;gap:8px'
+
+    const hint = document.createElement('div')
+    hint.className = 'editor-sculpt-hint'
+    hint.textContent =
+      'Seed a height template across the parcel footprint. Undo restores. Save bakes terrain.glb. Biome icons never wipe height.'
+    box.appendChild(hint)
+
+    const cards = document.createElement('div')
+    cards.className = 'editor-sculpt-row'
+    cards.style.cssText = 'flex-wrap:wrap;gap:6px'
+    for (const t of TERRAIN_STARTER_TEMPLATES) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'editor-sculpt-btn'
+      btn.textContent = `${t.emoji} ${t.label}`
+      btn.title = t.tip
+      btn.addEventListener('click', () => {
+        this.starterSelected = t.id
+        this.syncStarterTemplateHighlight()
+        this.onStatus(`Starter: ${t.label}`)
+      })
+      this.starterTemplateButtons.set(t.id, btn)
+      cards.appendChild(btn)
+    }
+    box.appendChild(cards)
+    this.syncStarterTemplateHighlight()
+
+    const seedRow = document.createElement('div')
+    seedRow.style.cssText =
+      'display:flex;align-items:center;gap:6px;flex-wrap:wrap'
+    const seedLab = document.createElement('label')
+    seedLab.textContent = 'Seed'
+    seedLab.style.cssText = 'font-size:11px;opacity:0.8'
+    const seedIn = document.createElement('input')
+    seedIn.type = 'text'
+    seedIn.className = 'editor-sculpt-input'
+    seedIn.value = String(randomTerrainSeed())
+    seedIn.placeholder = 'number or pizza-island'
+    seedIn.style.cssText = 'flex:1;min-width:100px;font-size:12px;padding:4px 6px'
+    this.starterSeedInput = seedIn
+    const reroll = document.createElement('button')
+    reroll.type = 'button'
+    reroll.className = 'editor-sculpt-btn'
+    reroll.textContent = '↻'
+    reroll.title = 'Re-roll seed'
+    reroll.addEventListener('click', () => {
+      if (this.starterSeedInput) this.starterSeedInput.value = String(randomTerrainSeed())
+    })
+    seedRow.appendChild(seedLab)
+    seedRow.appendChild(seedIn)
+    seedRow.appendChild(reroll)
+    box.appendChild(seedRow)
+
+    const matchRow = document.createElement('label')
+    matchRow.style.cssText =
+      'display:flex;align-items:center;gap:6px;font-size:11px;cursor:pointer'
+    const matchCb = document.createElement('input')
+    matchCb.type = 'checkbox'
+    // Off by default — starters only rewrite the heightmap; keep current biome.
+    matchCb.checked = false
+    this.starterMatchBiomeCb = matchCb
+    matchRow.appendChild(matchCb)
+    matchRow.appendChild(
+      document.createTextNode('Also switch biome to match starter (optional)')
+    )
+    matchRow.title =
+      'Off (default): seed only populates heights on your current biome. On: also sets environment.kind.'
+    box.appendChild(matchRow)
+
+    const apply = document.createElement('button')
+    apply.type = 'button'
+    apply.className = 'editor-sculpt-btn editor-sculpt-btn--primary'
+    apply.textContent = 'Apply starter'
+    apply.style.cssText = 'width:100%'
+    apply.addEventListener('click', () => this.applySelectedTerrainStarter())
+    box.appendChild(apply)
+
+    // Clear seeded terrain (heights + paint + grass from starters / sculpt).
+    const resetBox = document.createElement('div')
+    resetBox.style.cssText =
+      'margin-top:4px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.12);display:flex;flex-direction:column;gap:6px'
+    const resetTitle = document.createElement('div')
+    resetTitle.className = 'editor-sculpt-title'
+    resetTitle.textContent = 'Reset'
+    resetTitle.style.cssText = 'font-size:12px;opacity:0.9'
+    resetBox.appendChild(resetTitle)
+    const resetHint = document.createElement('div')
+    resetHint.className = 'editor-sculpt-hint'
+    resetHint.textContent =
+      'Wipe seeded height + paint + grass back to empty seafloor. Does not change biome. Undo restores.'
+    resetBox.appendChild(resetHint)
+    const resetBtn = document.createElement('button')
+    resetBtn.type = 'button'
+    resetBtn.className = 'editor-sculpt-btn'
+    resetBtn.textContent = 'Clear all seeded'
+    resetBtn.title = 'Seafloor heights + clear paint / lava / grass (undoable)'
+    resetBtn.style.cssText = 'width:100%'
+    resetBtn.addEventListener('click', () => this.clearAllSeededTerrain())
+    resetBox.appendChild(resetBtn)
+    box.appendChild(resetBox)
+
+    parent.appendChild(box)
+  }
+
+  /** Wipe starter/sculpt seed result → seafloor heights + no paint/grass. Undoable. */
+  private clearAllSeededTerrain(): void {
+    if (
+      !window.confirm(
+        'Clear all seeded terrain?\n\n• Heights → seafloor\n• Paint / lava / grass → cleared\n\nBiome stays the same. Undo restores the previous state.'
+      )
+    ) {
+      return
+    }
+    this.session.resetAllSculpt()
+    this.onStatus('Cleared all seeded terrain (heights + paint + grass)')
+  }
+
+  private syncStarterTemplateHighlight(): void {
+    for (const [id, btn] of this.starterTemplateButtons) {
+      const on = id === this.starterSelected
+      btn.classList.toggle('editor-sculpt-btn--active', on)
+      btn.setAttribute('aria-pressed', on ? 'true' : 'false')
+    }
+  }
+
+  private applySelectedTerrainStarter(): void {
+    const seedRaw = this.starterSeedInput?.value?.trim() || String(randomTerrainSeed())
+    const seed = seedFromString(seedRaw)
+    if (this.starterSeedInput) this.starterSeedInput.value = String(seed)
+
+    if (this.session.isSculptDirty()) {
+      const ok = window.confirm(
+        'Replace current sculpt with this starter?\n\nUndo will restore the previous heightmap. Save still bakes terrain.glb when you are ready.'
+      )
+      if (!ok) {
+        this.onStatus('Starter cancelled')
+        return
+      }
+    }
+
+    const result = this.session.applyTerrainStarter({
+      templateId: this.starterSelected,
+      seed
+    })
+    if (!result.ok) {
+      this.onStatus(result.message)
+      return
+    }
+
+    const meta = TERRAIN_STARTER_TEMPLATES.find((t) => t.id === this.starterSelected)
+    // Optional only — height seeds never force a biome by default.
+    if (this.starterMatchBiomeCb?.checked && meta) {
+      void this.refApi?.patchEnvironment?.({ kind: meta.matchKind })
+    }
+
+    const cols = Math.max(1, Math.round(result.widthM / 16))
+    const rows = Math.max(1, Math.round(result.depthM / 16))
+    const biomeNote = this.starterMatchBiomeCb?.checked
+      ? ` · biome → ${meta?.matchKind ?? '?'}`
+      : ' · biome unchanged'
+    this.onStatus(
+      `Applied ${result.label} · seed ${result.seed} · ${cols}×${rows} parcels (${result.widthM.toFixed(0)}×${result.depthM.toFixed(0)}m)${biomeNote}`
+    )
   }
 
   private addSharedBrushSliders(parent: HTMLElement): void {
@@ -2510,9 +3224,12 @@ export class TerrainSculptPanel {
     parent.appendChild(wrap)
   }
 
+  /** Project pane: undo / redo / save (moved off Guides). */
   private addActionButtons(parent: HTMLElement): void {
     const row = document.createElement('div')
     row.className = 'editor-sculpt-row'
+    row.style.flexWrap = 'wrap'
+    row.style.gap = '6px'
     const undo = document.createElement('button')
     undo.type = 'button'
     undo.textContent = 'Undo'

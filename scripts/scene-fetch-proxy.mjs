@@ -1,14 +1,17 @@
 /**
- * Dev CORS bypass for scene `~system/SignedFetch` / plain scene HTTP.
+ * Dev / preview CORS egress — **one** generic pipe for scene + third-party HTTP.
  *
  * Path: `/api/scene-http/<https|http>/<host>/<path>?<query>`
  * Forwards method, body, and allowlisted headers to the remote host.
  *
  * Auth signatures must be computed for the **original** URL pathname (see
  * SignedFetchService) — this proxy only transports the already-signed request.
+ *
+ * Named app routes (/api/places, /api/marketplace, …) stay as separate vite
+ * aliases for main-thread UI contracts; scene absolute URLs all use this pipe.
  */
 
-const SCENE_HTTP_RE = /^\/api\/scene-http\/(https?)\/([^/?#]+)(\/[^?#]*)?(\?.*)?$/
+import { resolveSceneHttpProxyTarget } from './scene-http-proxy-url.mjs'
 
 /** Headers safe to forward (exclude hop-by-hop / browser-only). */
 const FORWARD_REQ_HEADERS = new Set([
@@ -21,21 +24,12 @@ const FORWARD_REQ_HEADERS = new Set([
   'x-identity-auth-chain-2',
   'x-identity-timestamp',
   'x-identity-metadata',
-  'x-identity-auth-chain',
-  // ADR-44 / crypto-fetch often lowercases multi-part chain headers
+  'x-identity-auth-chain'
 ])
-
-export function resolveSceneHttpProxyTarget(url) {
-  const match = url.match(SCENE_HTTP_RE)
-  if (!match) return null
-  const [, proto, host, path = '', query = ''] = match
-  return `${proto}://${host}${path}${query}`
-}
 
 function shouldForwardHeader(name) {
   const lower = name.toLowerCase()
   if (FORWARD_REQ_HEADERS.has(lower)) return true
-  // ADR-44 chain can be many headers: x-identity-auth-chain-N
   if (lower.startsWith('x-identity-')) return true
   if (lower.startsWith('x-decentraland-')) return true
   return false
@@ -52,7 +46,6 @@ export function createSceneFetchProxyMiddleware() {
       return
     }
 
-    // CORS preflight for same-origin is rare, but answer anyway.
     if (req.method === 'OPTIONS') {
       res.statusCode = 204
       res.setHeader('Access-Control-Allow-Origin', '*')
@@ -68,6 +61,11 @@ export function createSceneFetchProxyMiddleware() {
         if (value == null) continue
         if (!shouldForwardHeader(key)) continue
         headers[key] = Array.isArray(value) ? value.join(', ') : value
+      }
+      // Google gviz / some CDNs 403 anonymous Node fetch without a browser UA.
+      if (!headers['user-agent'] && !headers['User-Agent']) {
+        headers['user-agent'] =
+          'Mozilla/5.0 (compatible; ThreejsClient scene-http proxy)'
       }
 
       /** @type {Buffer | undefined} */
@@ -85,11 +83,9 @@ export function createSceneFetchProxyMiddleware() {
       })
 
       res.statusCode = upstream.status
-      // Mirror useful response headers
       for (const [key, value] of upstream.headers.entries()) {
         const lower = key.toLowerCase()
         if (lower === 'transfer-encoding' || lower === 'connection') continue
-        // Avoid double-compression issues
         if (lower === 'content-encoding') continue
         res.setHeader(key, value)
       }
@@ -104,3 +100,6 @@ export function createSceneFetchProxyMiddleware() {
     }
   }
 }
+
+// Re-export for tests / scripts that imported resolve from this file
+export { resolveSceneHttpProxyTarget } from './scene-http-proxy-url.mjs'

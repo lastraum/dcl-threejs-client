@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { CSS2DObject } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
+import { registerNameTagObject, unregisterNameTagObject } from './NameTagRenderer'
 
 export type NameTagStyle = {
   textColor: string
@@ -138,18 +139,23 @@ export class NameTag {
     }
 
     this.object = new CSS2DObject(el)
+    this.syncPresentFlags()
   }
 
   static attach(parent: THREE.Object3D, text: string, options: NameTagOptions): NameTag {
-    // Drop any leftover CSS2D pills on this anchor (reload / N-toggle races).
+    // Drop leftover CSS2D pills on this anchor (reload / N-toggle / VRM-equip races).
+    // Must unregister — removeFromParent alone leaves the object in the overlay set,
+    // and a detached CSS2D still counts as visible (no parent to hide it).
     for (const child of [...parent.children]) {
       if (child instanceof CSS2DObject) {
+        unregisterNameTagObject(child)
         child.removeFromParent()
         child.element?.remove()
       }
     }
     const tag = new NameTag(text, options)
     parent.add(tag.object)
+    registerNameTagObject(tag.object)
     return tag
   }
 
@@ -157,6 +163,7 @@ export class NameTag {
     if (text === this.label) return
     this.label = text
     this.textEl.textContent = text
+    this.syncPresentFlags()
   }
 
   setStyle(style: NameTagStyle): void {
@@ -172,6 +179,7 @@ export class NameTag {
       this.badgeEl.style.display = next.claimed ? '' : 'none'
     }
     this.applyStyle()
+    this.syncPresentFlags()
   }
 
   /**
@@ -227,6 +235,7 @@ export class NameTag {
     this.dmToEl.hidden = true
     this.dmToEl.textContent = ''
     this.chatEl.setAttribute('aria-hidden', 'true')
+    this.syncPresentFlags()
   }
 
   private beginChatDisplay(trimmed: string, durationMs: number): void {
@@ -238,6 +247,7 @@ export class NameTag {
     this.rootEl.classList.add('avatar-name-tag--has-chat')
     this.chatEl.setAttribute('aria-hidden', 'false')
     this.chatHideTimer = setTimeout(() => this.clearChat(), durationMs)
+    this.syncPresentFlags()
   }
 
   /** Centered spinner overlay while a remote avatar is still loading. */
@@ -246,6 +256,7 @@ export class NameTag {
     this.loading = loading
     this.rootEl.classList.toggle('avatar-name-tag--loading', loading)
     this.loadingEl.setAttribute('aria-hidden', loading ? 'false' : 'true')
+    this.syncPresentFlags()
   }
 
   /**
@@ -262,13 +273,14 @@ export class NameTag {
     if (was === now) return
     this.rootEl.classList.toggle('avatar-name-tag--speaking', now)
     this.voiceEl.setAttribute('aria-hidden', now ? 'false' : 'true')
+    this.syncPresentFlags()
   }
 
   dispose(): void {
     this.clearChat()
     this.setVoiceLevel(0)
+    unregisterNameTagObject(this.object)
     this.object.removeFromParent()
-    // CSS2DRenderer keeps the node in its overlay layer until removed explicitly.
     this.rootEl.remove()
   }
 
@@ -279,27 +291,46 @@ export class NameTag {
       e.stopPropagation()
     }
 
+    // Open from `pointerdown`, not the derived `click` / `contextmenu` events.
+    // `click` only fires when down and up land on the same element, and the pill
+    // tracks a moving avatar — it slips out from under the cursor between the
+    // two. `contextmenu` is worse: Opera's mouse gestures (on by default) claim
+    // the right button and never dispatch it. pointerdown fires in every engine.
+    this.rootEl.addEventListener(
+      'pointerdown',
+      (e) => {
+        e.stopPropagation()
+        // Primary and secondary only — middle-click stays a browser gesture.
+        if (e.button !== 0 && e.button !== 2) return
+        e.preventDefault()
+        contextMenuHandler?.(this.address!, e.clientX, e.clientY)
+      },
+      true
+    )
+
+    // Right-click already opened the menu above; keep the native menu suppressed.
     this.rootEl.addEventListener('contextmenu', (e) => {
       e.preventDefault()
       e.stopPropagation()
-      contextMenuHandler?.(this.address!, e.clientX, e.clientY)
     })
 
-    // The Options hint advertises a click — honour the obvious gesture, not just
-    // right-click. PlayerInput skips this target, so no camera drag competes.
-    this.rootEl.addEventListener('click', (e) => {
-      e.preventDefault()
-      e.stopPropagation()
-      contextMenuHandler?.(this.address!, e.clientX, e.clientY)
-    })
-
-    this.rootEl.addEventListener('pointerdown', blockCameraInput, true)
     this.rootEl.addEventListener('mousedown', blockCameraInput, true)
     this.rootEl.addEventListener('pointerup', blockCameraInput, true)
   }
 
   private applyStyle(): void {
     this.textEl.style.color = this.style.textColor
+  }
+
+  /** Far tags drop CSS layout unless chat / voice / loading need the full pill. */
+  private syncPresentFlags(): void {
+    const rich =
+      this.loading ||
+      this.voiceLevel > 0.02 ||
+      this.rootEl.classList.contains('avatar-name-tag--has-chat')
+    this.object.userData.dclTagRich = rich
+    this.object.userData.dclTagLabel = this.label
+    this.object.userData.dclTagColor = this.style.textColor
   }
 }
 

@@ -1,6 +1,7 @@
-import type { Object3D } from 'three'
+import type { Object3D, Vector3 } from 'three'
 import { dclToThreePos } from '../../bridge/dclTransform'
 import { neighborOriginOffset } from '../aoi/compositeVisuals'
+import type { EntityPose } from '../../bridge/ReservedEntitiesSync'
 
 /**
  * Force-bake local TRS → matrix even when matrixAutoUpdate is false.
@@ -38,6 +39,25 @@ export function applySecondarySceneRootOrigin(
   const o = neighborOriginOffset(n, p)
   dclToThreePos(o.x, 0, o.z, root.position)
   bakeWorldMatrix(root)
+}
+
+/**
+ * Host feet/camera are FocusOwner-local DCL. Each live scene.js wants
+ * coordinates relative to *its* SW: host − (neighbor − hostBase)×16.
+ */
+export function hostPoseToSceneLocal(
+  pose: EntityPose,
+  neighborBase: string,
+  hostBase: string
+): EntityPose {
+  const n = neighborBase.trim()
+  const p = hostBase.trim()
+  if (!n || !p || n === p) return pose
+  const o = neighborOriginOffset(n, p)
+  const position = pose.position.clone() as Vector3
+  position.x -= o.x
+  position.z -= o.z
+  return { position, rotation: pose.rotation }
 }
 
 /** Promote handoff — primary must sit at host origin again. */

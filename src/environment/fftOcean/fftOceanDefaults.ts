@@ -39,7 +39,11 @@ export type FftOceanSimSettings = {
  * plus ThreejsClient-tuned colors for Genesis-style island/open water.
  */
 export const FFT_OCEAN_DEFAULTS: FftOceanSimSettings = {
-  waterEnabled: true,
+  /**
+   * Base default before biome resolution. Island/water/mountains force this true
+   * via resolveFftOceanSettings({ landscapeWantsWater: true }) — biome flag owns water.
+   */
+  waterEnabled: false,
   enabled: true,
   meshResolution: 256,
   fftResolution: 128,
@@ -48,7 +52,9 @@ export const FFT_OCEAN_DEFAULTS: FftOceanSimSettings = {
   windDirection: new THREE.Vector2(0.4, 0.8).normalize(),
   displacementScale: 1.0,
   choppyScale: 2.0,
-  clipLevels: 5,
+  // Outer LOD rings — level N covers ~250m * 2^N full width (level 7 ≈ 32 km).
+  // Paired with camera-following clipmap so ocean stays under the camera.
+  clipLevels: 7,
   simulationHz: 15,
   // Brighter tropical palette than upstream deep navy (#002b4f) — better for DCL islands
   waterDeep: '#52b9e5',

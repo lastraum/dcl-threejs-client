@@ -1,8 +1,14 @@
 import type { IEngine } from '@dcl/ecs'
+import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import {
+  diagnoseLevelStateGroundRay,
+  injectGlobalPointerUpOnPlayer,
+  injectLevelStatePointerEdgeOnEngine,
   injectPointerClickDownOnEngine,
-  injectPointerClickUpOnEngine
+  injectPointerClickUpOnEngine,
+  isIaPointerPressedOnEngine,
+  isLevelStateInjectBody
 } from './injectPointerClick'
 import {
   bindWorkerUiSchedulerEngine,
@@ -13,32 +19,42 @@ import {
   getLastPlannedUiDirtyEntities,
   holdCooperativeReactEcs,
   leaveCooperativeSchedulerTick,
+  releaseCooperativeReactEcsHold,
   notePlayModePointerUiEgress,
   planSceneUiCrdtEmit,
   resetPlayModePointerUiEgress,
   seedWorkerUiFingerprint,
   shouldUsePartialUiMountSnapshot
 } from './sceneEngineUiScheduler'
-import {
-  resolveWorkerUiText,
-  resolveWorkerUiTransform
-} from './resolveBundledUiComponents'
+import { resolveWorkerUiTransform } from './resolveBundledUiComponents'
 import {
   collectWorkerUiMountEntityIds,
   collectWorkerUiMountSnapshot,
   type WorkerUiMountSnapshotRow
 } from './workerSceneUiCrdtOutbound'
 import {
+  setLevelStatePointerEdgeActive,
   setPointerInteractivePhase,
   setPointerInteractiveTickActive
 } from './sceneWorkerInputSession'
 import {
   beginPointerPlayerFrameBatch,
-  describeWorkerInputModifier,
-  isRefuseFreezeWrites,
-  reconcileLocomotionLatchAfterInjectDown,
-  rewriteStopMoveCameraUiLabels
+  reconcileLocomotionLatchAfterInjectDown
 } from './workerPlayerFrameEgress'
+import {
+  beginEngUpdatePhase,
+  endEngUpdatePhase,
+  resetEngUpdatePhases
+} from './workerEngUpdatePhases'
+
+let lastUiDirtySnapshotLogAt = 0
+
+/** COD pointer proof lines — warn when available so they cannot share scene-log throttle. */
+function pointerProofLog(message: string): void {
+  const cfg = config
+  if (cfg?.logWarn) cfg.logWarn(message)
+  else cfg?.log(message)
+}
 
 /**
  * Single worker entry for sceneEngine.update — boot, hydration, play, inbound, pointer.
@@ -58,6 +74,11 @@ import {
 
 export type SceneEngineSchedulerConfig = {
   log: (message: string) => void
+  /**
+   * Pointer/COD diagnostics that must never be throttled as normal scene noise.
+   * Prefer workerLog('warn') so main pointerDiag + DevTools always show the line.
+   */
+  logWarn?: (message: string) => void
   hydrationIntervalMs: number
   tickAbortMs: number
   isHydration: () => boolean
@@ -73,8 +94,13 @@ export type SceneEngineSchedulerConfig = {
   postUiMountSnapshot?: (
     snapshot: WorkerUiMountSnapshotRow[],
     mountEntityIds: number[]
-  ) => void
+  ) => boolean | void
   onStuckRecover: () => void
+  /**
+   * Explorer: reserved LWW (PlayerIdentityData, RealmInfo) exists on the scene store
+   * before sendBinary / systems. Called at the start of every eng.update (dt=0 included).
+   */
+  onBeforeEngineUpdate?: () => void
   onAfterEngineTick?: () => void
   /**
    * Phase 2 — play mode only: pollEvents + cold CRDT flush after cooperative engine.update.
@@ -169,8 +195,22 @@ function wrapEngineUpdateWithWallClock(eng: IEngine): void {
   if (wrapped.__threejsWallClockWrapped) return
   const nativeUpdate = eng.update.bind(eng)
   wrapped.update = async (dt: number) => {
+    config?.onBeforeEngineUpdate?.()
+    // WSP v2 Phase 0 — phase meters around every eng.update (incl. dt=0 transport).
     if (!(dt > 0)) {
-      await nativeUpdate(0)
+      beginEngUpdatePhase(0)
+      try {
+        await nativeUpdate(0)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (/Profile not initialized/i.test(msg)) {
+          console.warn(`[sceneWorker] eng.update(0) ${msg} (continuing)`)
+        } else {
+          throw err
+        }
+      } finally {
+        endEngUpdatePhase()
+      }
       return
     }
     // Wall since last positive tick *start* (or prior stamp).
@@ -180,7 +220,12 @@ function wrapEngineUpdateWithWallClock(eng: IEngine): void {
     if (wallClockOriginMs <= 0) wallClockOriginMs = now
     lastExecutedAt = now
     sceneTimeSec += applied
-    await nativeUpdate(applied)
+    beginEngUpdatePhase(applied)
+    try {
+      await nativeUpdate(applied)
+    } finally {
+      endEngUpdatePhase()
+    }
   }
   wrapped.__threejsWallClockWrapped = true
 }
@@ -204,6 +249,7 @@ export function resetSceneEngineScheduler(): void {
   diagCount = 0
   tickEpoch = 0
   resetPlayModePointerUiEgress()
+  resetEngUpdatePhases()
 }
 
 export function resetSceneEngineDiagCount(): void {
@@ -230,20 +276,26 @@ export function isEngineUpdateInFlight(): boolean {
   return engineUpdateInFlight || tickInFlight
 }
 
-/** Break a hung runSerializedEngineUpdate — awaitEngineUpdateIdle must not wait forever on the mutex. */
+/**
+ * Do **not** free the mutex while `eng.update` is still running.
+ * Early release allowed concurrent eng.update (pointer budget / inject-received) and
+ * collapsed Genesis Plaza into 5s tick-recovery thrash (~15–25 FPS).
+ * Mutex always drains when the in-flight update's finally runs.
+ */
 export function forceReleaseEngineUpdateMutex(reason: string): void {
   const cfg = config
+  if (engineUpdateInFlight) {
+    // Log once-class: flag stays true until real eng.update settles — waiters stay serialized.
+    cfg?.log(
+      `[sceneWorker] engine update still in-flight — ${reason} (mutex held until eng.update settles)`
+    )
+    return
+  }
   if (engineUpdateRelease) {
     cfg?.log(`[sceneWorker] engine update mutex force-release — ${reason}`)
     const release = engineUpdateRelease
     engineUpdateRelease = null
-    engineUpdateInFlight = false
     release()
-    return
-  }
-  if (engineUpdateInFlight) {
-    cfg?.log(`[sceneWorker] engine update in-flight flag cleared — ${reason}`)
-    engineUpdateInFlight = false
   }
 }
 
@@ -289,6 +341,16 @@ async function runSerializedEngineUpdate(fn: () => Promise<void>): Promise<void>
     engineUpdateRelease = null
     release()
   }
+}
+
+/** Pointer edge direct path — same mutex as cooperative ticks / scheduler. */
+export async function runSerializedEngineUpdateForPointer(fn: () => Promise<void>): Promise<void> {
+  await runSerializedEngineUpdate(fn)
+}
+
+/** MeshRenderer count on worker engine (level-state VFX proof). */
+export function countWorkerMeshRenderers(eng: IEngine): number {
+  return countWorkerMeshRenderer(eng)
 }
 
 export function setSceneEngineLastExecutedAt(ms: number): void {
@@ -377,6 +439,11 @@ export function sceneEngineTickDue(now: number): boolean {
  *
  * Safe after inject-only PE append discard: cooperative remount no longer re-fires CAM toggle.
  */
+/** Play-mode: cap cooperative UI snapshot posts — menu thrash was 10+/s and starved inject. */
+let lastUiMountSnapshotPostAt = 0
+let lastUiMountSnapshotMountLen = -1
+const PLAY_UI_SNAPSHOT_MIN_MS = 50
+
 async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
   const cfg = config!
   if (cfg.pointerBlocksTick()) return
@@ -387,7 +454,6 @@ async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
     ? new Set(getLastPlannedUiDirtyEntities().map((e) => e as number))
     : undefined
   const snapshot = collectWorkerUiMountSnapshot(eng, dirtyOnly)
-  commitSceneUiCrdtBaseline(eng)
   // Always post — including mount=[] + empty rows when react-ecs unmounts the last UI
   // (CBD welcome: Hr<=0 → return null). Skipping empty left main PE/DOM ghosts.
   const mode = cfg.isHydration() ? 'hydration' : 'play'
@@ -397,16 +463,36 @@ async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
     const src = extractUiTextureSrcFromSnapshot(row.value)
     if (src) texSamples++
   }
-  cfg.log(
-    `[sceneWorker] ui dirty snapshot — mount=${mountEntityIds.length} rows=${snapshot.length}` +
-      `${partial ? ' partial' : ' full'} mode=${mode}` +
-      (texSamples > 0 ? ` bgTextures=${texSamples}` : '') +
-      (mountEntityIds.length === 0 ? ' emptyMount' : '')
-  )
+  const nowLog = performance.now()
+  const mountEmpty = mountEntityIds.length === 0
+  const mountLenChanged = mountEntityIds.length !== lastUiMountSnapshotMountLen
+  // Play: throttle same-size remounts (~50ms = Color4.a fade without 60Hz posts).
+  // Always allow mount-size change / unmount / hydration.
+  if (mode === 'play' && !mountEmpty && !mountLenChanged) {
+    if (nowLog - lastUiMountSnapshotPostAt < PLAY_UI_SNAPSHOT_MIN_MS) {
+      return
+    }
+  }
+  lastUiMountSnapshotPostAt = nowLog
+  lastUiMountSnapshotMountLen = mountEntityIds.length
+  // Throttle log — full dumps every tick tanked FPS (<45) and blocked pointer inject.
+  if (nowLog - lastUiDirtySnapshotLogAt >= 2000) {
+    lastUiDirtySnapshotLogAt = nowLog
+    cfg.log(
+      `[sceneWorker] ui dirty snapshot — mount=${mountEntityIds.length} rows=${snapshot.length}` +
+        `${partial ? ' partial' : ' full'} mode=${mode}` +
+        (texSamples > 0 ? ` bgTextures=${texSamples}` : '') +
+        (mountEmpty ? ' emptyMount' : '')
+    )
+  }
   if (cfg.postUiMountSnapshot) {
-    cfg.postUiMountSnapshot(snapshot, mountEntityIds)
+    const posted = cfg.postUiMountSnapshot(snapshot, mountEntityIds)
+    // Commit fingerprint only after a real post — otherwise timer text was "sent" on the
+    // worker while main never received it (rate-limit / content-blind dedupe).
+    if (posted !== false) commitSceneUiCrdtBaseline(eng)
     return
   }
+  commitSceneUiCrdtBaseline(eng)
   attachUiMountSnapshot = true
   try {
     await eng.update(0)
@@ -429,14 +515,24 @@ function extractUiTextureSrcFromSnapshot(value: unknown): string | null {
   return null
 }
 
-/** Pointer phase 4 — structured mount snapshot after interactive click (sole play-mode UI egress). */
-function runPointerUiPhase4Egress(eng: IEngine): void {
+/**
+ * Pointer phase 4 — structured mount snapshot after interactive click.
+ * @param fullMount — true when mount set grew (open panel): full rows required.
+ *                    false when only content dirtied: dirty-only rows + full mount ids.
+ */
+function runPointerUiPhase4Egress(eng: IEngine, opts?: { fullMount?: boolean }): void {
   const cfg = config!
+  const fullMount = opts?.fullMount !== false
   planSceneUiCrdtEmit(eng, cfg.log, {
     pointerTick: true,
-    forceFullTouch: true
+    forceFullTouch: fullMount
   })
-  const snapshot = collectWorkerUiMountSnapshot(eng)
+  const mountEntityIds = collectWorkerUiMountEntityIds(eng)
+  const dirtyOnly =
+    !fullMount && shouldUsePartialUiMountSnapshot(mountEntityIds.length)
+      ? new Set(getLastPlannedUiDirtyEntities().map((e) => e as number))
+      : undefined
+  const snapshot = collectWorkerUiMountSnapshot(eng, dirtyOnly)
   let uiTransform = 0
   let uiBackground = 0
   let uiText = 0
@@ -463,16 +559,22 @@ function runPointerUiPhase4Egress(eng: IEngine): void {
         break
     }
   }
-  const mountEntities = new Set(snapshot.filter((r) => r.componentId === 1050).map((r) => r.entity))
+  const mountEntities = new Set(
+    fullMount
+      ? mountEntityIds
+      : snapshot.filter((r) => r.componentId === 1050).map((r) => r.entity)
+  )
   if (!cfg.isHydration()) {
-    notePlayModePointerUiEgress(mountEntities.size)
+    notePlayModePointerUiEgress(mountEntities.size || mountEntityIds.length)
   }
   cfg.log(
-    `[sceneWorker] pointer ui snapshot — mount=${mountEntities.size} rows=${snapshot.length} ` +
+    `[sceneWorker] pointer ui snapshot — mount=${mountEntityIds.length} rows=${snapshot.length}` +
+      `${dirtyOnly ? ' partial' : ' full'} ` +
       `UiTransform=${uiTransform} UiBackground=${uiBackground} UiText=${uiText} ` +
       `UiInput=${uiInput} PointerEvents=${pointerEvents}`
   )
   cfg.queuePointerUiEgress?.(snapshot)
+  // Flush attaches full mount ids via collectWorkerUiMountEntityIds (partial rows OK).
   commitSceneUiCrdtBaseline(eng)
 }
 
@@ -606,22 +708,25 @@ export async function runSceneEngineUpdateNow(engineDt?: number): Promise<void> 
   config.onAfterEngineTick?.()
 }
 
-export function requestSceneEngineTick(): void {
-  if (!engine || !bootSealed || !config) return
+/** started = wait for play-frame-done; deferred = in-flight/queued (do not done); idle = no tick. */
+export type SceneEngineTickRequest = 'started' | 'deferred' | 'idle'
+
+export function requestSceneEngineTick(): SceneEngineTickRequest {
+  if (!engine || !bootSealed || !config) return 'idle'
   if (config.pointerBlocksTick()) {
     tickQueued = true
-    return
+    return 'deferred'
   }
   if (tickInFlight) {
     tickQueued = true
-    return
+    return 'deferred'
   }
   let dt = resolveDt()
   // Same-frame re-entry: no wall elapsed yet — do not invent large time, but queue so
   // the next play-frame-tick can run (was a hard return that starved timers).
   if (dt <= 0 && lastExecutedAt > 0) {
     tickQueued = true
-    return
+    return 'deferred'
   }
   if (dt <= 0) dt = Math.min(1 / 60, MAX_ENGINE_DT_SEC)
   const epoch = tickEpoch
@@ -670,6 +775,7 @@ export function requestSceneEngineTick(): void {
         )
       }
     })
+  return 'started'
 }
 
 export function drainQueuedSceneEngineTick(): void {
@@ -734,24 +840,20 @@ function countWorkerUiMount(eng: IEngine): number {
   return count
 }
 
-/** Compact UiText sample for pointer diagnostics (must survive main log throttle). */
-function sampleWorkerUiTexts(eng: IEngine, limit = 10): string {
-  const UiText = resolveWorkerUiText(eng)
-  const samples: string[] = []
-  for (const [entity, text] of eng.getEntitiesWith(UiText)) {
-    const value = (text as { value?: string }).value?.trim()
-    if (!value) continue
-    samples.push(`e${entity as number}:"${value.slice(0, 28)}"`)
-    if (samples.length >= limit) break
+/** Worker-side MeshRenderer count — diagnose getClick click-marker creation. */
+function countWorkerMeshRenderer(eng: IEngine): number {
+  try {
+    const MeshRenderer = generated.MeshRenderer(eng)
+    let n = 0
+    for (const _ of eng.getEntitiesWith(MeshRenderer)) n++
+    return n
+  } catch {
+    return -1
   }
-  return samples.length ? samples.join(', ') : '(no text)'
 }
 
 /** Extra react-ecs passes after inject — exit on stable UI fingerprint, not mount heuristics. */
 const POINTER_UI_FINGERPRINT_FLUSH_MAX_PASSES = 12
-/** Mesh path: UI rarely thrash-toggles; one stable pass after seeded UP is enough. */
-const POINTER_UI_MESH_FLUSH_MAX_PASSES = 4
-const POINTER_UI_MESH_STABLE_NEEDED = 1
 const POINTER_UI_SCENEU_STABLE_NEEDED = 2
 
 async function flushReactEcsForUiSnapshot(
@@ -810,209 +912,331 @@ async function runPointerNonUiPhase(eng: IEngine): Promise<void> {
 }
 
 /**
- * Pointer interactive tick — one universal pipeline (worker-input-architecture).
+ * World PE only: if react-ecs dirty after edge, settle + phase-4 mount snapshot.
+ * (Unit/building select mutates HUD without sceneUi=true.)
  *
- * sceneUi (DOM / react-ecs onMouseDown) — PE Neurolink launcher thrash fix:
- *   1. inject PET_DOWN → engine.update(0) — onMouseDown toggle + remount (open panel)
- *   2. inject PET_UP (PlayerEntity + click entity), react-ecs OFF — clear isPressed
- *      without multi-pass fingerprint flush (that re-ran eng.update and toggled closed
- *      1245→1203 every click)
- *   3. phase-4 snapshot of the OPEN mount immediately
- *   4. hold cooperative react-ecs so PE pump / residual ticks cannot collapse the panel
- *   5. non-ui phase
+ * **Do not use multi-pass flushReactEcs after sceneUi DOWN** — that re-reconciles and
+ * toggles menus closed (Neurolink 1245→1203 thrash). sceneUi uses its own path.
+ */
+async function settleWorldPointerUiAfterEdge(
+  eng: IEngine,
+  cfg: NonNullable<typeof config>,
+  opts: {
+    fpBefore: string
+    mountBefore: number
+    forceFullIfDirty?: boolean
+    /**
+     * Inject eng.update(0) already ran react-ecs this edge — skip a second
+     * flushReactEcs pass (was ~1 eng.update + full fingerprint on every PE click).
+     */
+    skipReactFlush?: boolean
+  }
+): Promise<{ dirty: boolean; mountGrew: boolean }> {
+  setPointerInteractiveTickActive(true)
+  setPointerInteractivePhase('flush')
+  if (!opts.skipReactFlush) {
+    const seed = computeWorkerUiFingerprint(eng)
+    await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
+      maxPasses: 1,
+      seedFp: seed,
+      stableNeeded: 1
+    })
+  }
+  const fpAfter = computeWorkerUiFingerprint(eng)
+  const mountAfter = countWorkerUiMount(eng)
+  const mountGrew = mountAfter > opts.mountBefore
+  const dirty = mountGrew || fpAfter !== opts.fpBefore
+  if (dirty) {
+    // Full snapshot only when mount grew (panel open). Content-only dirties use partial
+    // rows — posting 300–400 full rows on every world PE DOWN+UP froze the client.
+    runPointerUiPhase4Egress(eng, {
+      fullMount: mountGrew || opts.forceFullIfDirty === true
+    })
+    cfg.log(
+      `[sceneWorker] pointer-ui phase4 world edge — dirty=1 ` +
+        `mount=${opts.mountBefore}→${mountAfter} grew=${mountGrew ? 1 : 0} ` +
+        `fpChanged=${fpAfter !== opts.fpBefore ? 1 : 0} skipFlush=${opts.skipReactFlush ? 1 : 0}`
+    )
+  }
+  return { dirty, mountGrew }
+}
+
+/**
+ * Scene DOM UI (react-ecs onMouseDown) — PE Neurolink / menu thrash fix.
  *
- * mesh / getClick:
- *   1. inject PET_DOWN → update
- *   2. inject PET_UP on hit targets → update
- *   3. fingerprint flush
- *   4. phase-4
- *   5. non-ui
+ * 1. PET_DOWN → eng.update(0) — onMouseDown toggle + remount (open panel)
+ * 2. PET_UP (PlayerEntity + click leaf) with react-ecs **OFF** — clear isPressed
+ *    without multi-pass fingerprint flush (that re-ran eng.update and toggled closed)
+ * 3. phase-4 snapshot of the OPEN mount immediately
+ * 4. hold cooperative react-ecs so residual ticks cannot collapse the panel
+ * 5. non-ui phase
  *
- * Inject path always skips exports.onUpdate (pollEvents mid-batch).
+ * Browser may still send phase=up later — that is a no-op for sceneUi (already cleared).
+ */
+async function runSceneUiPointerDownBatch(
+  eng: IEngine,
+  cfg: NonNullable<typeof config>,
+  body: InjectPointerClickBody,
+  mountBefore: number
+): Promise<boolean> {
+  await runSerializedEngineUpdate(async () => {
+    injectPointerClickDownOnEngine(eng, body)
+    await eng.update(0)
+  })
+  reconcileLocomotionLatchAfterInjectDown(eng)
+  const mountAfterDown = countWorkerUiMount(eng)
+  cfg.log(
+    `[sceneWorker] pointer sceneUi DOWN done — mount ${mountBefore}→${mountAfterDown} e${body.entity}`
+  )
+
+  // PET_UP on PlayerEntity only — clear isPressed. react-ecs OFF (no remount thrash).
+  setPointerInteractivePhase('inject')
+  setPointerInteractiveTickActive(false)
+  await runSerializedEngineUpdate(async () => {
+    injectPointerClickUpOnEngine(eng, body)
+    await eng.update(0)
+  })
+  cfg.onAfterEngineTick?.()
+
+  setPointerInteractivePhase('flush')
+  const mountAfter = countWorkerUiMount(eng)
+  const mountGrew = mountAfter > mountBefore
+  // Full rows only when a panel opened. Fade / same-size = dirty Color4.a.
+  runPointerUiPhase4Egress(eng, { fullMount: mountGrew })
+  if (mountGrew) {
+    holdCooperativeReactEcs(12)
+  } else {
+    releaseCooperativeReactEcsHold()
+  }
+  cfg.log(
+    `[sceneWorker] pointer sceneUi phase4 — mount=${mountAfter} grew=${mountGrew ? 1 : 0}`
+  )
+  return mountGrew
+}
+
+/**
+ * Universal pointer edge tick (all scenes) — worker-input-architecture.
+ *
+ * Browser: pointerdown → phase=down; pointerup → phase=up.
+ * - **World mesh:** one PET edge per browser edge; isPressed sticky until UP
+ * - **Scene UI (sceneUi):** DOWN batch does DOWN+UP same worker job (toggle-safe);
+ *   browser phase=up is ignored
+ * - no exports.onUpdate mid-edge
+ * - never multi-second session pause for mouse hold
  */
 export async function runSceneEnginePointerTick(
   eng: IEngine,
-  runOnUpdate: () => Promise<void>,
+  _runOnUpdate: () => Promise<void>,
   splitPointerInject?: InjectPointerClickBody | null
 ): Promise<void> {
   const cfg = config!
-  // inject-pointer-click path: skip onUpdate (architecture). sceneUi marks DOM UI vs mesh.
-  const injectOnlyUiClick = !!splitPointerInject?.sceneUi
+  const isSceneUi = !!splitPointerInject?.sceneUi
   let sceneUiInjectCompleteFired = false
   const fireSceneUiInjectComplete = (mountGrew: boolean): void => {
-    if (!injectOnlyUiClick || sceneUiInjectCompleteFired) return
+    if (!isSceneUi || sceneUiInjectCompleteFired) return
     sceneUiInjectCompleteFired = true
     cfg.onSceneUiInjectPointerComplete?.({ mountGrew })
   }
   beginPointerPlayerFrameBatch()
-  setPointerInteractiveTickActive(true)
+  const playerEntity = eng.PlayerEntity as number
+  // Prefer explicit flag; recover if postMessage dropped levelState (still entity=1 hit=0).
+  const isLevelStateEarly = !!(
+    splitPointerInject &&
+    isLevelStateInjectBody(splitPointerInject, playerEntity)
+  )
+  // Level-state: systems only (no react-ecs). PE/sceneUi: interactive so select HUD reconciles.
+  setPointerInteractiveTickActive(!isLevelStateEarly)
   setPointerInteractivePhase('inject')
-  const mountBeforeDown = injectOnlyUiClick ? countWorkerUiMount(eng) : 0
+  if (isLevelStateEarly) setLevelStatePointerEdgeActive(true)
+  const mountBefore = countWorkerUiMount(eng)
+  const fpBefore = isLevelStateEarly ? '' : computeWorkerUiFingerprint(eng)
   let mountGrew = false
   try {
-    if (splitPointerInject) {
-      cfg.log(
-        `[sceneWorker] pointer inject — entity=${splitPointerInject.entity}` +
-          ` sceneUi=${injectOnlyUiClick ? 1 : 0}` +
-          ` down=[${(splitPointerInject.downEntities ?? splitPointerInject.entities).join(',')}]`
+    if (!splitPointerInject) {
+      await runSerializedEngineUpdate(async () => {
+        await eng.update(0)
+      })
+      cfg.onAfterEngineTick?.()
+      await runPointerNonUiPhase(eng)
+      return
+    }
+
+    const phase = splitPointerInject.phase ?? 'down'
+    cfg.log(
+      `[sceneWorker] pointer edge — entity=${splitPointerInject.entity}` +
+        ` sceneUi=${isSceneUi ? 1 : 0} phase=${phase}` +
+        ` targets=[${(splitPointerInject.downEntities ?? splitPointerInject.entities).join(',')}]`
+    )
+
+    // --- Scene UI: toggle-safe DOWN batch; ignore browser UP ---
+    if (isSceneUi) {
+      if (phase === 'up') {
+        // Already cleared isPressed in the DOWN batch — do not re-enter EventSystem.
+        cfg.log(
+          `[sceneWorker] pointer sceneUi UP ignored — cleared on DOWN batch e${splitPointerInject.entity}`
+        )
+        return
+      }
+      // phase=down or deprecated click
+      mountGrew = await runSceneUiPointerDownBatch(eng, cfg, splitPointerInject, mountBefore)
+      fireSceneUiInjectComplete(mountGrew)
+      return
+    }
+
+    // No-target (level-state): PlayerEntity PET, hitEntity=0 — skip UI settle.
+    const isLevelState = isLevelStateInjectBody(splitPointerInject, playerEntity)
+    if (isLevelState && !splitPointerInject.levelState) {
+      pointerProofLog(
+        `[sceneWorker] no-target flag recovered — entity=${splitPointerInject.entity} ` +
+          `hitEntity=${splitPointerInject.hitEntity}`
       )
-      // Phase 1 — DOWN
+    }
+
+    // --- World mesh: split edges ---
+    if (phase === 'click') {
       await runSerializedEngineUpdate(async () => {
         injectPointerClickDownOnEngine(eng, splitPointerInject)
         await eng.update(0)
       })
       reconcileLocomotionLatchAfterInjectDown(eng)
-      const mountAfterDownUpdate = countWorkerUiMount(eng)
-      cfg.log(
-        `[sceneWorker] pointer DOWN done — mount ${mountBeforeDown}→${mountAfterDownUpdate}` +
-          ` texts=[${sampleWorkerUiTexts(eng)}]` +
-          ` ${describeWorkerInputModifier(eng)}`
-      )
-
-      if (injectOnlyUiClick) {
-        // PET_UP clears isPressed. react-ecs OFF so we do not re-reconcile (and thrash toggles).
-        // Multi-pass flush was collapsing Neurolink open→closed every click (1245→1203).
-        setPointerInteractivePhase('inject')
-        setPointerInteractiveTickActive(false)
-        await runSerializedEngineUpdate(async () => {
-          injectPointerClickUpOnEngine(eng, splitPointerInject)
-          // Also UP the original click entity so residual PET_DOWN is not the latest on that id
-          // (PlayerEntity-only UP left e2907 DOWN; later EventSystem edge cases re-toggle).
-          const clickEntity = splitPointerInject.entity
-          if (clickEntity !== (eng.PlayerEntity as number)) {
-            injectPointerClickUpOnEngine(eng, {
-              ...splitPointerInject,
-              sceneUi: false,
-              entities: [clickEntity],
-              upEntities: [clickEntity],
-              downEntities: [clickEntity]
-            })
-          }
-          await eng.update(0)
-        })
-        const mountAfterUp = countWorkerUiMount(eng)
-        cfg.log(
-          `[sceneWorker] pointer UP early (no multi-flush) — mount ${mountAfterDownUpdate}→${mountAfterUp}` +
-            ` (sceneUi; down was e${splitPointerInject.entity})` +
-            ` texts=[${sampleWorkerUiTexts(eng)}]`
-        )
-
-        // Phase-4 from OPEN ECS state (react-ecs remount from DOWN still present).
-        setPointerInteractivePhase('flush')
-        if (isRefuseFreezeWrites()) {
-          const n = rewriteStopMoveCameraUiLabels(eng)
-          if (n > 0) {
-            cfg.log(`[sceneWorker] UI label fix — rewrote ${n} STOP MOVE CAMERA → MOVE CAMERA`)
-          }
-        }
-        // In-menu selection (inventory slot): mount does not grow, but react-ecs must
-        // reconcile selection highlight after UP. One seeded pass — not full multipass
-        // (that thrash-closed Neurolink). Skip for open/close (mountGrew) and pure fades.
-        mountGrew = mountAfterDownUpdate > mountBeforeDown
-        const mountShrunk = mountAfterUp < mountAfterDownUpdate
-        if (!mountGrew && !mountShrunk) {
-          setPointerInteractiveTickActive(true)
-          const selectSeed = computeWorkerUiFingerprint(eng)
-          await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
-            maxPasses: 2,
-            seedFp: selectSeed,
-            stableNeeded: 1
-          })
-          cfg.log(
-            `[sceneWorker] pointer sceneUi selection settle — mount=${mountAfterUp} seed=${selectSeed.length}B`
-          )
-        }
-        runPointerUiPhase4Egress(eng)
-        // Hold cooperative react-ecs ONLY when a menu actually opened (mount grew).
-        // PE Neurolink thrash: residual reconcile collapsed open panel (1245→1203).
-        // CBD Plaza welcome splash: onMouseDown only starts a fade (same mount size) —
-        // systems update Color4.a every frame; holding react-ecs freezes that alpha on the
-        // last paint and leaves a half-visible full-screen PE catcher (pointer stuck).
-        // Short hold (menu open only) — long holds froze tutorial scale / page-pulse tweens.
-        if (mountGrew) {
-          holdCooperativeReactEcs(12)
-          cfg.log(
-            `[sceneWorker] pointer phase-4 hold — mount=${countWorkerUiMount(eng)} ` +
-              `texts=[${sampleWorkerUiTexts(eng)}] (menu open; short hold then tween UI)`
-          )
-        } else {
-          cfg.log(
-            `[sceneWorker] pointer phase-4 no-hold — mount=${countWorkerUiMount(eng)} ` +
-              `texts=[${sampleWorkerUiTexts(eng)}] (same mount; allow fade/selection/tween UI)`
-          )
-        }
-
-        cfg.onAfterEngineTick?.()
-        cfg.log('[sceneWorker] pointer tick — skipping exports.onUpdate (inject path)')
-        await runPointerNonUiPhase(eng)
-        // Unblock cooperative eng.update NOW — welcome fade (nZ) needs real wall-clock dt.
-        fireSceneUiInjectComplete(mountGrew)
-      } else {
-        // Mesh inject path continues below for UP + flush + phase-4
-        cfg.onAfterEngineTick?.()
-
-        // inject path: never exports.onUpdate mid-batch (pollEvents undoes handler egress).
-        cfg.log('[sceneWorker] pointer tick — skipping exports.onUpdate (inject path)')
-
-        await runSerializedEngineUpdate(async () => {
-          injectPointerClickUpOnEngine(eng, splitPointerInject)
-          await eng.update(0)
-        })
-        cfg.onAfterEngineTick?.()
-
-        setPointerInteractivePhase('flush')
-        // Mesh/getClick (vending, world PE): seed fingerprint after UP so a no-op shop
-        // open exits in 1 pass instead of 3× eng.update(0) + 828-row snapshot thrash.
-        const meshSeedFp = computeWorkerUiFingerprint(eng)
-        cfg.log(
-          `[sceneWorker] pointer ui flush — post-UP react-ecs fingerprint seed=${meshSeedFp.length}B`
-        )
-        await flushReactEcsForUiSnapshot(eng, cfg.log, true, {
-          maxPasses: POINTER_UI_MESH_FLUSH_MAX_PASSES,
-          seedFp: meshSeedFp,
-          stableNeeded: POINTER_UI_MESH_STABLE_NEEDED
-        })
-
-        if (isRefuseFreezeWrites()) {
-          const n = rewriteStopMoveCameraUiLabels(eng)
-          if (n > 0) {
-            cfg.log(`[sceneWorker] UI label fix — rewrote ${n} STOP MOVE CAMERA → MOVE CAMERA`)
-          }
-        }
-
-        runPointerUiPhase4Egress(eng)
-        await runPointerNonUiPhase(eng)
-      }
-    } else {
+      setPointerInteractiveTickActive(false)
       await runSerializedEngineUpdate(async () => {
-        await eng.update(0)
-      })
-      await runSerializedEngineUpdate(async () => {
+        injectPointerClickUpOnEngine(eng, splitPointerInject)
         await eng.update(0)
       })
       cfg.onAfterEngineTick?.()
-
-      await runOnUpdate()
-
-      setPointerInteractivePhase('flush')
-      await flushReactEcsForUiSnapshot(eng, cfg.log, false)
-
-      if (isRefuseFreezeWrites()) {
-        const n = rewriteStopMoveCameraUiLabels(eng)
-        if (n > 0) cfg.log(`[sceneWorker] UI label fix — rewrote ${n} STOP MOVE CAMERA → MOVE CAMERA`)
+      if (!isLevelState) {
+        // Inject already ran eng.update — only phase-4 if HUD dirty, no second react flush.
+        const settled = await settleWorldPointerUiAfterEdge(eng, cfg, {
+          fpBefore,
+          mountBefore,
+          skipReactFlush: true
+        })
+        mountGrew = settled.mountGrew
+        if (mountGrew) holdCooperativeReactEcs(12)
       }
-
-      runPointerUiPhase4Egress(eng)
       await runPointerNonUiPhase(eng)
+      return
+    }
+
+    if (phase === 'down') {
+      if (isLevelState) {
+        // One eng.update only — multi-update freezes plaza cooperative ticks.
+        const sticky = isIaPointerPressedOnEngine(eng, splitPointerInject.button)
+        await runSerializedEngineUpdate(async () => {
+          if (sticky) injectLevelStatePointerEdgeOnEngine(eng, splitPointerInject, 'up')
+          injectLevelStatePointerEdgeOnEngine(eng, splitPointerInject, 'down')
+          await eng.update(0)
+        })
+        if (sticky) {
+          pointerProofLog(
+            '[sceneWorker] no-target DOWN sticky-clear — UP+DOWN same eng.update'
+          )
+        }
+      } else {
+        await runSerializedEngineUpdate(async () => {
+          injectPointerClickDownOnEngine(eng, splitPointerInject)
+          await eng.update(0)
+        })
+      }
+      reconcileLocomotionLatchAfterInjectDown(eng)
+      cfg.onAfterEngineTick?.()
+      if (isLevelState) {
+        try {
+          const ground = diagnoseLevelStateGroundRay(eng)
+          const g = ground.ground
+          const pressed = isIaPointerPressedOnEngine(eng, splitPointerInject.button)
+          pointerProofLog(
+            `[sceneWorker] no-target DOWN isPressed-arm — pressed=${pressed ? 1 : 0} ` +
+              `camY=${ground.camY?.toFixed(1) ?? '-'} rayY=${ground.rayY?.toFixed(2) ?? '-'} ` +
+              `planeY0=${g ? `(${g.x.toFixed(1)},${g.z.toFixed(1)})` : 'null'} ` +
+              `ppi=${ground.ppi ? 1 : 0} cam=${ground.cam ? 1 : 0} hitEntity=0`
+          )
+        } catch (err) {
+          pointerProofLog(
+            `[sceneWorker] no-target DOWN isPressed-arm — diagnose failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`
+          )
+        }
+      }
+      // Mesh PE may open HUD — settle only for real PE meshes, never no-target.
+      if (!isLevelState) {
+        const settled = await settleWorldPointerUiAfterEdge(eng, cfg, {
+          fpBefore,
+          mountBefore,
+          forceFullIfDirty: false,
+          skipReactFlush: true
+        })
+        mountGrew = settled.mountGrew
+        if (mountGrew) holdCooperativeReactEcs(12)
+      }
+      // No-target: no second eng.update on DOWN (avoids false drag thresholds mid-hold).
+      if (!isLevelState) await runPointerNonUiPhase(eng)
+      return
+    }
+
+    // phase === 'up' (world mesh or no-target).
+    // No-target: systems only (react-ecs deferred via setLevelStatePointerEdgeActive).
+    if (!isLevelState) setPointerInteractiveTickActive(true)
+    const mrBefore = isLevelState ? countWorkerMeshRenderer(eng) : 0
+    await runSerializedEngineUpdate(async () => {
+      if (isLevelState) {
+        injectLevelStatePointerEdgeOnEngine(eng, splitPointerInject, 'up')
+      } else {
+        // World PE UP: mesh targets + PlayerEntity clear so global isPressed falls cleanly.
+        injectPointerClickUpOnEngine(eng, splitPointerInject)
+        injectGlobalPointerUpOnPlayer(eng, splitPointerInject)
+      }
+      await eng.update(0)
+    })
+    // No-target: no second eng.update on the edge (plaza FPS). Cooperative tick follows.
+    cfg.onAfterEngineTick?.()
+    if (isLevelState) {
+      try {
+        const mrAfter = countWorkerMeshRenderer(eng)
+        const delta = mrAfter - mrBefore
+        const ground = diagnoseLevelStateGroundRay(eng)
+        const g = ground.ground
+        const stillPressed = isIaPointerPressedOnEngine(eng, splitPointerInject.button)
+        const line =
+          `[sceneWorker] no-target UP isPressed-path — MeshRenderer ${mrBefore}→${mrAfter} (Δ=${delta}) ` +
+          `camY=${ground.camY?.toFixed(1) ?? '-'} rayY=${ground.rayY?.toFixed(2) ?? '-'} ` +
+          `planeY0=${g ? `(${g.x.toFixed(1)},${g.z.toFixed(1)})` : 'null'} ` +
+          `ppi=${ground.ppi ? 1 : 0} cam=${ground.cam ? 1 : 0} hitEntity=0 ` +
+          `stillPressed=${stillPressed ? 1 : 0} ` +
+          (delta === 0
+            ? `(Δ=0: no new MeshRenderer this edge — scene gate or no unit selected)`
+            : `(Δ>0: scene dirtied MeshRenderer — CRDT peel should apply)`)
+        pointerProofLog(line)
+      } catch (err) {
+        pointerProofLog(
+          `[sceneWorker] no-target UP isPressed-path — diagnose failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        )
+      }
+    }
+    await runPointerNonUiPhase(eng)
+    if (!isLevelState) {
+      const mountAfterUp = countWorkerUiMount(eng)
+      if (mountAfterUp > mountBefore) {
+        const settledUp = await settleWorldPointerUiAfterEdge(eng, cfg, {
+          fpBefore,
+          mountBefore,
+          forceFullIfDirty: true,
+          skipReactFlush: true
+        })
+        mountGrew = settledUp.mountGrew
+      }
     }
   } finally {
+    setLevelStatePointerEdgeActive(false)
     setPointerInteractivePhase('none')
     setPointerInteractiveTickActive(false)
-    // Always end session for sceneUi — preempt/timeout must not leave react-ecs suppressed
-    // (nZ would advance Hr but Color4.a would not paint; PE catcher stuck).
     fireSceneUiInjectComplete(mountGrew)
   }
-  if (injectOnlyUiClick) {
+  if (isSceneUi || mountGrew) {
     cfg.onInjectOnlyUiPointerTickDone?.()
   }
 }

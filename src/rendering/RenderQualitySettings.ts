@@ -13,6 +13,13 @@ export type ShadowQuality = 'off' | 'low' | 'medium' | 'high' | 'ultra'
 export type FpsLimitOption = 30 | 60 | 120 | 0
 /** Multisample AA sample count (0 = off). WebGL2 RT path. */
 export type MsaaSamples = 0 | 2 | 4 | 8
+/**
+ * Bloom pipeline when {@link RenderQualityOptions.bloomEnabled} is on.
+ * - auto: selective on high/ultra when mesh count is modest; else fast
+ * - fast: 1× scene + luminance UnrealBloom (cheaper A/B)
+ * - selective: 2× scene emissive extract (nicer neon, heavier)
+ */
+export type BloomModePreference = 'auto' | 'fast' | 'selective'
 
 export type RenderQualityOptions = {
   tier: RenderQualityTier
@@ -32,6 +39,11 @@ export type RenderQualityOptions = {
   vsync: boolean
   /** UnrealBloomPass full-screen glow (muzzle / neon / sky highlights). */
   bloomEnabled: boolean
+  /**
+   * Which bloom path when bloom is on. Independent of named presets (A/B friendly).
+   * Default auto preserves prior high/ultra selective behavior.
+   */
+  bloomMode: BloomModePreference
   /**
    * HalfFloat composer color buffer — keeps bright emissives above 1.0 for bloom.
    * Off = 8-bit path (cheaper, more clip).
@@ -60,6 +72,16 @@ export type RenderQualityOptions = {
    * Off = distance sleep + fair-phase sampling (cheaper CBD). Independent of presets.
    */
   primaryFullRateAnimators: boolean
+  /**
+   * Local + remote avatar meshes cast into the sun/moon shadow map.
+   * Independent of quality tier (quality still controls map size / soft / off).
+   */
+  avatarShadowsEnabled: boolean
+  /**
+   * Scene GLTF / MeshRenderer / NFT / props cast into the shadow map.
+   * Landscape stays receive-only. Independent of avatar cast.
+   */
+  environmentShadowsEnabled: boolean
 }
 
 /** Min/max for Preferences → Scene Distance (AOI neighbor load radius). */
@@ -72,12 +94,13 @@ export const SCENE_LOAD_RADIUS_MAX_M = 200
  */
 export const SCENE_LOAD_RADIUS_DEFAULT_M = 64
 
-/** Max ECS LightSource lights active at once (nearest to avatar) — preset defaults. */
+/** Max ECS LightSource lights active at once (nearest to avatar) — Explorer docs: 4/6/10. */
 export const LIGHT_LIMITS: Record<RenderQualityTier, number> = {
   [RenderQualityTier.Low]: 4,
   [RenderQualityTier.Medium]: 6,
   [RenderQualityTier.High]: 10,
-  [RenderQualityTier.Ultra]: 16
+  /** Same as High — Explorer does not grant more than 10 concurrent scene lights. */
+  [RenderQualityTier.Ultra]: 10
 }
 
 /** Max simultaneous VideoPlayer decoders (DCL Explorer parity). */
@@ -92,7 +115,8 @@ export const MAX_SHADOW_SPOT_LIGHTS = 3
 export const LIGHT_CULL_DISTANCE_M = 40
 
 export const RESOLUTION_SCALE_MIN = 50
-export const RESOLUTION_SCALE_MAX = 200
+/** Preferences slider ceiling — 120% is enough for sharp DPR without 2× pixel thrash. */
+export const RESOLUTION_SCALE_MAX = 120
 export const MAX_SCENE_LIGHTS_CAP = 20
 
 /** Spot / directional shadow map resolution by shadow quality (not overall tier). */
@@ -113,7 +137,7 @@ export const TONE_MAPPING_EXPOSURE: Record<RenderQualityTier, number> = {
 
 type PresetId = Exclude<GraphicsPreset, 'custom'>
 
-/** Graphics preset fields — AOI / toon / adaptive / animators are user-owned, not preset-bundled. */
+/** Graphics preset fields — AOI / toon / adaptive / animators / bloom mode / cast splits are user-owned. */
 type PresetBundle = Omit<
   RenderQualityOptions,
   | 'preset'
@@ -121,6 +145,9 @@ type PresetBundle = Omit<
   | 'avatarToonEnabled'
   | 'adaptiveQualityEnabled'
   | 'primaryFullRateAnimators'
+  | 'bloomMode'
+  | 'avatarShadowsEnabled'
+  | 'environmentShadowsEnabled'
 >
 
 const PRESET_BUNDLES: Record<PresetId, PresetBundle> = {
@@ -146,9 +173,8 @@ const PRESET_BUNDLES: Record<PresetId, PresetBundle> = {
     // 4× MSAA on plaza-scale (1.5M+ tris) was a silent FPS tax; high keeps 4.
     msaaSamples: 0,
     vsync: true,
-    // Off by default — selective bloom full-scene material swap kills Genesis.
-    // High/ultra keep bloom for neon/muzzle; auto-skipped when mesh count is huge.
-    bloomEnabled: false,
+    // On + fast mode (default bloomMode) — selective is opt-in only.
+    bloomEnabled: true,
     hdrEnabled: false
   },
   high: {
@@ -168,7 +194,7 @@ const PRESET_BUNDLES: Record<PresetId, PresetBundle> = {
     shadowQuality: 'ultra',
     sceneLightsEnabled: true,
     maxSceneLights: LIGHT_LIMITS[RenderQualityTier.Ultra],
-    resolutionScale: 125,
+    resolutionScale: 120,
     fpsLimit: 0,
     msaaSamples: 8,
     vsync: true,
@@ -185,8 +211,21 @@ const DEFAULT_OPTIONS: RenderQualityOptions = {
   sceneLoadRadiusM: SCENE_LOAD_RADIUS_DEFAULT_M,
   /** On by default — steps down only under load; never raises above user settings. */
   adaptiveQualityEnabled: true,
-  /** On by default — full-rate primary clips; turn off for cheaper CBD. */
-  primaryFullRateAnimators: true
+  /** Off by default — fair sample budget. `?fullanim` or Advanced toggle for every mixer. */
+  primaryFullRateAnimators: false,
+  /** Split cast toggles — test avatar vs env shadow cost independently. */
+  avatarShadowsEnabled: true,
+  environmentShadowsEnabled: true,
+  /**
+   * Fast = 1× scene + luminance bloom (plaza-safe).
+   * Selective is opt-in (2× extract was ~11ms on Genesis).
+   * Adaptive quality may temporarily force bloom off under low FPS.
+   */
+  bloomMode: 'fast'
+}
+
+function isBloomModePreference(v: unknown): v is BloomModePreference {
+  return v === 'auto' || v === 'fast' || v === 'selective'
 }
 
 /** Shadow ladder low → high (adaptive steps down toward index 0). */
@@ -285,6 +324,8 @@ class RenderQualityStore {
    */
   private adaptiveResolutionScale: number | null = null
   private adaptiveShadowQuality: ShadowQuality | null = null
+  /** When true, effective bloom is forced off (user toggle still shows ON). */
+  private adaptiveBloomOff = false
 
   constructor() {
     this.load()
@@ -320,6 +361,24 @@ class RenderQualityStore {
 
   shadowsEnabled(): boolean {
     return this.getShadowQuality() !== 'off'
+  }
+
+  /** Avatar cast into the map (needs quality ≠ off). */
+  avatarCastShadowsActive(): boolean {
+    return this.shadowsEnabled() && this.options.avatarShadowsEnabled
+  }
+
+  /** Scene / prop cast into the map (needs quality ≠ off). */
+  environmentCastShadowsActive(): boolean {
+    return this.shadowsEnabled() && this.options.environmentShadowsEnabled
+  }
+
+  getAvatarShadowsEnabled(): boolean {
+    return this.options.avatarShadowsEnabled
+  }
+
+  getEnvironmentShadowsEnabled(): boolean {
+    return this.options.environmentShadowsEnabled
   }
 
   getShadowMapSize(): number {
@@ -363,6 +422,8 @@ class RenderQualityStore {
   setAdaptiveOverrides(opts: {
     resolutionScale?: number | null
     shadowQuality?: ShadowQuality | null
+    /** true = force bloom off; false/null = use user bloom toggle. */
+    bloomOff?: boolean | null
   }): void {
     let changed = false
     if (opts.resolutionScale !== undefined) {
@@ -387,19 +448,37 @@ class RenderQualityStore {
         changed = true
       }
     }
+    if (opts.bloomOff !== undefined) {
+      const next = opts.bloomOff === true
+      if (next !== this.adaptiveBloomOff) {
+        this.adaptiveBloomOff = next
+        changed = true
+      }
+    }
     if (changed) this.notify()
   }
 
   clearAdaptiveOverrides(): void {
-    if (this.adaptiveResolutionScale === null && this.adaptiveShadowQuality === null) return
+    if (
+      this.adaptiveResolutionScale === null &&
+      this.adaptiveShadowQuality === null &&
+      !this.adaptiveBloomOff
+    ) {
+      return
+    }
     this.adaptiveResolutionScale = null
     this.adaptiveShadowQuality = null
+    this.adaptiveBloomOff = false
     this.notify()
   }
 
   /** True when adaptive is actively lowering something below the user ceiling. */
   isAdaptiveReducing(): boolean {
-    return this.adaptiveResolutionScale !== null || this.adaptiveShadowQuality !== null
+    return (
+      this.adaptiveResolutionScale !== null ||
+      this.adaptiveShadowQuality !== null ||
+      this.adaptiveBloomOff
+    )
   }
 
   getFpsLimit(): FpsLimitOption {
@@ -414,8 +493,22 @@ class RenderQualityStore {
     return this.options.vsync
   }
 
+  /**
+   * Effective bloom for the renderer (adaptive may force off under low FPS).
+   * Preferences still show {@link options.bloomEnabled}.
+   */
   getBloomEnabled(): boolean {
+    if (this.adaptiveBloomOff) return false
     return this.options.bloomEnabled
+  }
+
+  /** User ceiling (Preferences) — ignores adaptive bloom-off. */
+  getUserBloomEnabled(): boolean {
+    return this.options.bloomEnabled
+  }
+
+  getBloomMode(): BloomModePreference {
+    return this.options.bloomMode
   }
 
   getHdrEnabled(): boolean {
@@ -444,7 +537,7 @@ class RenderQualityStore {
     this.patch({ primaryFullRateAnimators: !!primaryFullRateAnimators })
   }
 
-  /** Apply a named preset bundle (not custom). Preserves toon + AOI radius + adaptive + animators. */
+  /** Apply a named preset bundle (not custom). Preserves toon + AOI + adaptive + animators + bloom mode + cast splits. */
   applyPreset(preset: PresetId): void {
     const bundle = PRESET_BUNDLES[preset]
     this.commit({
@@ -453,7 +546,10 @@ class RenderQualityStore {
       avatarToonEnabled: this.options.avatarToonEnabled,
       sceneLoadRadiusM: this.options.sceneLoadRadiusM,
       adaptiveQualityEnabled: this.options.adaptiveQualityEnabled,
-      primaryFullRateAnimators: this.options.primaryFullRateAnimators
+      primaryFullRateAnimators: this.options.primaryFullRateAnimators,
+      avatarShadowsEnabled: this.options.avatarShadowsEnabled,
+      environmentShadowsEnabled: this.options.environmentShadowsEnabled,
+      bloomMode: this.options.bloomMode
     })
     // New ceiling — drop temporary overrides so the preset is what you get.
     this.clearAdaptiveOverrides()
@@ -470,6 +566,14 @@ class RenderQualityStore {
       this.adaptiveShadowQuality = null
       this.notify()
     }
+  }
+
+  setAvatarShadowsEnabled(avatarShadowsEnabled: boolean): void {
+    this.patch({ avatarShadowsEnabled: !!avatarShadowsEnabled })
+  }
+
+  setEnvironmentShadowsEnabled(environmentShadowsEnabled: boolean): void {
+    this.patch({ environmentShadowsEnabled: !!environmentShadowsEnabled })
   }
 
   setSceneLightsEnabled(sceneLightsEnabled: boolean): void {
@@ -502,6 +606,17 @@ class RenderQualityStore {
 
   setBloomEnabled(bloomEnabled: boolean): void {
     this.patch({ bloomEnabled })
+    // User re-asserted ceiling — clear temporary adaptive bloom-off.
+    if (this.adaptiveBloomOff) {
+      this.adaptiveBloomOff = false
+      this.notify()
+    }
+  }
+
+  /** Auto / fast (1×) / selective (2×). Only applies while bloom is enabled. */
+  setBloomMode(bloomMode: BloomModePreference): void {
+    if (!isBloomModePreference(bloomMode)) return
+    this.patch({ bloomMode })
   }
 
   setHdrEnabled(hdrEnabled: boolean): void {
@@ -545,6 +660,7 @@ class RenderQualityStore {
     if (!isMsaaSamples(next.msaaSamples)) next.msaaSamples = this.options.msaaSamples
     if (typeof next.vsync !== 'boolean') next.vsync = this.options.vsync
     if (typeof next.bloomEnabled !== 'boolean') next.bloomEnabled = this.options.bloomEnabled
+    if (!isBloomModePreference(next.bloomMode)) next.bloomMode = this.options.bloomMode
     if (typeof next.hdrEnabled !== 'boolean') next.hdrEnabled = this.options.hdrEnabled
     if (typeof next.avatarToonEnabled !== 'boolean') next.avatarToonEnabled = this.options.avatarToonEnabled
     if (typeof next.adaptiveQualityEnabled !== 'boolean') {
@@ -552,6 +668,12 @@ class RenderQualityStore {
     }
     if (typeof next.primaryFullRateAnimators !== 'boolean') {
       next.primaryFullRateAnimators = this.options.primaryFullRateAnimators
+    }
+    if (typeof next.avatarShadowsEnabled !== 'boolean') {
+      next.avatarShadowsEnabled = this.options.avatarShadowsEnabled
+    }
+    if (typeof next.environmentShadowsEnabled !== 'boolean') {
+      next.environmentShadowsEnabled = this.options.environmentShadowsEnabled
     }
 
     if (partial.preset === undefined || partial.preset === 'custom') {
@@ -596,11 +718,14 @@ class RenderQualityStore {
       a.msaaSamples === b.msaaSamples &&
       a.vsync === b.vsync &&
       a.bloomEnabled === b.bloomEnabled &&
+      a.bloomMode === b.bloomMode &&
       a.hdrEnabled === b.hdrEnabled &&
       a.avatarToonEnabled === b.avatarToonEnabled &&
       a.sceneLoadRadiusM === b.sceneLoadRadiusM &&
       a.adaptiveQualityEnabled === b.adaptiveQualityEnabled &&
-      a.primaryFullRateAnimators === b.primaryFullRateAnimators
+      a.primaryFullRateAnimators === b.primaryFullRateAnimators &&
+      a.avatarShadowsEnabled === b.avatarShadowsEnabled &&
+      a.environmentShadowsEnabled === b.environmentShadowsEnabled
     )
   }
 
@@ -642,6 +767,7 @@ class RenderQualityStore {
       if (msaa !== null) next.msaaSamples = msaa
       if (typeof parsed.vsync === 'boolean') next.vsync = parsed.vsync
       if (typeof parsed.bloomEnabled === 'boolean') next.bloomEnabled = parsed.bloomEnabled
+      if (isBloomModePreference(parsed.bloomMode)) next.bloomMode = parsed.bloomMode
       if (typeof parsed.hdrEnabled === 'boolean') next.hdrEnabled = parsed.hdrEnabled
       if (typeof parsed.avatarToonEnabled === 'boolean') next.avatarToonEnabled = parsed.avatarToonEnabled
       if (typeof parsed.adaptiveQualityEnabled === 'boolean') {
@@ -649,6 +775,12 @@ class RenderQualityStore {
       }
       if (typeof parsed.primaryFullRateAnimators === 'boolean') {
         next.primaryFullRateAnimators = parsed.primaryFullRateAnimators
+      }
+      if (typeof parsed.avatarShadowsEnabled === 'boolean') {
+        next.avatarShadowsEnabled = parsed.avatarShadowsEnabled
+      }
+      if (typeof parsed.environmentShadowsEnabled === 'boolean') {
+        next.environmentShadowsEnabled = parsed.environmentShadowsEnabled
       }
       if (typeof parsed.sceneLoadRadiusM === 'number') {
         next.sceneLoadRadiusM = clampSceneLoadRadiusM(parsed.sceneLoadRadiusM)

@@ -2,6 +2,7 @@ import type {
   SceneDesertConfig,
   SceneEnvironmentConfig,
   SceneEnvironmentKind,
+  SceneForestConfig,
   SceneLandConfig,
   SceneMetadata,
   SceneMountainsConfig,
@@ -74,6 +75,8 @@ export async function patchProjectEnvironment(
     replaceDesert?: boolean
     land?: SceneLandConfig | null
     replaceLand?: boolean
+    forest?: SceneForestConfig | null
+    replaceForest?: boolean
     mountains?: SceneMountainsConfig | null
     replaceMountains?: boolean
   }
@@ -88,6 +91,7 @@ export async function patchProjectEnvironment(
     replaceSpace,
     replaceDesert,
     replaceLand,
+    replaceForest,
     replaceMountains,
     ...envPatch
   } = patch
@@ -97,6 +101,7 @@ export async function patchProjectEnvironment(
   delete (next as { replaceSpace?: boolean }).replaceSpace
   delete (next as { replaceDesert?: boolean }).replaceDesert
   delete (next as { replaceLand?: boolean }).replaceLand
+  delete (next as { replaceForest?: boolean }).replaceForest
   delete (next as { replaceMountains?: boolean }).replaceMountains
 
   if (patch.water === null) {
@@ -129,6 +134,20 @@ export async function patchProjectEnvironment(
     next.land = replaceLand
       ? { ...patch.land }
       : { ...(current.land ?? {}), ...patch.land }
+  }
+
+  if (patch.forest === null) {
+    delete next.forest
+  } else if (patch.forest && typeof patch.forest === 'object') {
+    next.forest = replaceForest
+      ? { ...patch.forest }
+      : {
+          ...(current.forest ?? {}),
+          ...patch.forest,
+          // Array fields replace (not shallow-merge slots).
+          ...(patch.forest.treeDensity ? { treeDensity: [...patch.forest.treeDensity] } : {}),
+          ...(patch.forest.rockDensity ? { rockDensity: [...patch.forest.rockDensity] } : {})
+        }
   }
 
   if (patch.mountains === null) {

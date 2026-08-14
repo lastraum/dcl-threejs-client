@@ -15,6 +15,7 @@ import { decorateParcel, type DecorateDensityOpts } from '../ParcelDecorator'
 import { resolveDesertSettings } from '../../../environment/desertDefaults'
 import { resolveMountainsSettings } from '../../../environment/mountainsDefaults'
 import { resolveLandSettings } from '../../../environment/landDefaults'
+import { resolveForestSettings } from '../../../environment/forestDefaults'
 import { DesertAtmosphere } from '../../../environment/DesertAtmosphere'
 import { isSceneParcel, sceneParcelBounds } from '../Utils/ParcelGrid'
 import { createTerrainModel } from '../Worlds/TerrainModel'
@@ -229,6 +230,7 @@ export async function buildParcelLandscape(
       : undefined
   const desertCfg = resolveDesertSettings(envCfg?.desert)
   const mountainsCfg = resolveMountainsSettings(envCfg?.mountains)
+  const forestCfg = resolveForestSettings(envCfg?.forest)
 
   if (proceduralDesert) {
     onProgress?.('Building desert gold ground…')
@@ -242,8 +244,8 @@ export async function buildParcelLandscape(
     landscape.add(desertGround)
   }
 
-  if (solidLandPlane) {
-    const landCfg = resolveLandSettings(envCfg?.land)
+  const landCfg = solidLandPlane ? resolveLandSettings(envCfg?.land) : null
+  if (solidLandPlane && landCfg) {
     onProgress?.('Building land color plane…')
     landscape.add(
       buildLandColorGround(
@@ -251,6 +253,20 @@ export async function buildParcelLandscape(
         scene.baseParcel,
         profile.borderPadding,
         landCfg.groundColor
+      )
+    )
+  }
+
+  // Forest floor — same solid color expanse as land (no red-grass GLB tiles).
+  const forestColorGround = profile.kind === 'forest'
+  if (forestColorGround) {
+    onProgress?.(`Building forest ground plane (${forestCfg.groundColor})…`)
+    landscape.add(
+      buildLandColorGround(
+        scene.parcels,
+        scene.baseParcel,
+        profile.borderPadding,
+        forestCfg.groundColor
       )
     )
   }
@@ -268,7 +284,13 @@ export async function buildParcelLandscape(
             treeDensity: mountainsCfg.treeDensity,
             backdropDensity: mountainsCfg.backdropDensity
           }
-        : undefined
+        : profile.kind === 'forest'
+          ? {
+              treeDensities: forestCfg.treeDensity,
+              rockDensities: forestCfg.rockDensity,
+              bushDensity: forestCfg.bushDensity
+            }
+          : undefined
 
   for (let i = 0; i < total; i++) {
     const key = parcelKeys[i]!
@@ -282,8 +304,8 @@ export async function buildParcelLandscape(
     dclToThreePos(origin.x, origin.y, origin.z, parcelRoot.position)
 
     const skipSceneGround = authorTerrain && role === 'scene'
-    // Desert / land use a single color plane — no per-parcel ground GLBs.
-    if (!proceduralDesert && !solidLandPlane && !skipSceneGround) {
+    // Desert / land / forest use a single color plane — no per-parcel ground GLBs.
+    if (!proceduralDesert && !solidLandPlane && !forestColorGround && !skipSceneGround) {
       const groundHash = role === 'scene' ? profile.sceneGround : profile.paddingGround
       const ground = await cache.clone(catalystAssetUrl(groundHash), groundHash, { landscape: true })
       ground.position.set(
@@ -352,28 +374,38 @@ export async function buildParcelLandscape(
   // Land: solid plane already covers the floor — only plant outer grass.
   // Forest / other infiniteGround: instanced GLB tiles + scatter.
   if (solidLandPlane) {
-    if (profile.ezTreeGrass) {
-      onProgress?.('Planting ez-tree grass (outer)…')
+    if (profile.ezTreeGrass && landCfg) {
+      onProgress?.(
+        `Planting land grass patches (density×${landCfg.grassDensity.toFixed(2)}, color ${landCfg.grassColor})…`
+      )
       const outerGrass = await buildEzTreeGrassField(
         outerCtx,
         scene.parcels,
         seed,
         profile.borderPadding,
         onProgress,
-        { windShader }
+        {
+          // Land outer patches: wind + density + blade color (not author paint).
+          windShader,
+          densityScale: landCfg.grassDensity,
+          grassColor: landCfg.grassColor
+        }
       )
       ezTreeGrass = combineGrassHandles(ezTreeGrass, outerGrass)
     }
   } else if (profile.infiniteGround) {
-    onProgress?.('Building outer instanced ground…')
-    const infinite = await buildInfiniteGround(
-      cache,
-      profile.sceneGround,
-      scene.parcels,
-      scene.baseParcel,
-      profile.borderPadding
-    )
-    landscape.add(infinite)
+    // Forest already has a solid color plane — skip red-grass GLB tiles.
+    if (!forestColorGround) {
+      onProgress?.('Building outer instanced ground…')
+      const infinite = await buildInfiniteGround(
+        cache,
+        profile.sceneGround,
+        scene.parcels,
+        scene.baseParcel,
+        profile.borderPadding
+      )
+      landscape.add(infinite)
+    }
 
     if (profile.kind === 'forest') {
       onProgress?.('Growing forest expanse…')
@@ -384,7 +416,12 @@ export async function buildParcelLandscape(
         scene.parcels,
         seed,
         profile.borderPadding,
-        onProgress
+        onProgress,
+        {
+          treeDensities: forestCfg.treeDensity,
+          rockDensities: forestCfg.rockDensity,
+          bushDensity: forestCfg.bushDensity
+        }
       )
       landscape.add(forest)
     } else if (profile.kind !== 'desert' && (profile.trees.length > 0 || profile.rocks.length > 0)) {
@@ -392,16 +429,24 @@ export async function buildParcelLandscape(
       landscape.add(scatter)
     }
 
-    // Outer empty-parcel grass (land/forest style expanse).
+    // Outer empty-parcel grass (forest style expanse). Land uses solidLandPlane branch above.
     if (profile.ezTreeGrass) {
-      onProgress?.('Planting ez-tree grass (outer)…')
+      const grassOpts =
+        profile.kind === 'forest'
+          ? { windShader, grassColor: forestCfg.grassColor }
+          : { windShader }
+      onProgress?.(
+        profile.kind === 'forest'
+          ? `Planting forest grass patches (${forestCfg.grassColor})…`
+          : 'Planting ez-tree grass (outer)…'
+      )
       const outerGrass = await buildEzTreeGrassField(
         outerCtx,
         scene.parcels,
         seed,
         profile.borderPadding,
         onProgress,
-        { windShader }
+        grassOpts
       )
       ezTreeGrass = combineGrassHandles(ezTreeGrass, outerGrass)
     }

@@ -67,6 +67,9 @@ export type ApplySceneDiffOptions = {
   reservedAnchors?: ReservedTransformAnchors | null
   /** Track entities parented to reserved anchors (tiny set for cheap later sync). */
   onReservedParent?: (entity: Entity, parent: Entity | undefined, view: ProjectionView) => void
+  /** Extract GPU objects onto drawRoot (pose Groups are not in the scene). */
+  bindDrawVisual?: (pose: import('three').Object3D, visual: import('three').Object3D) => void
+  unbindDrawVisual?: (pose: import('three').Object3D) => void
 }
 
 function notifyKind(kind: ProjectionChangeKind): 'put' | 'delete' {
@@ -86,6 +89,11 @@ function applyEntityLocalTransform(
   skipLocal: boolean
 ): void {
   const obj = store.getOrCreateNode(entity)
+  // AvatarAttach (and similar) owns world pose on the renderer. Do not reparent under
+  // PlayerEntity→chest attach (+0.88m) or overwrite TRS — that parks bone-world coords as
+  // local under the elevated root (plaza fishing rod / line huge offset).
+  if (skipLocal) return
+
   const t = Transform.get(entity)
   const parentId = t.parent as Entity | undefined
   const desiredParent = resolveTransformParent(
@@ -96,9 +104,7 @@ function applyEntityLocalTransform(
     reservedAnchors
   )
   if (obj.parent !== desiredParent) desiredParent.add(obj)
-  if (!skipLocal) {
-    applyDclLocalTransform(obj, t)
-  }
+  applyDclLocalTransform(obj, t)
 }
 
 /**
@@ -157,9 +163,12 @@ export function applySceneDiff(
         diffEntities.add(entity)
         const obj = store.getNode(entity)
         if (obj) {
-          obj.visible = VisibilityComponent.has(entity)
+          const vis = VisibilityComponent.has(entity)
             ? VisibilityComponent.get(entity).visible !== false
             : true
+          obj.visible = vis
+          const drawn = obj.userData.dclDrawVisual as { visible: boolean } | undefined
+          if (drawn) drawn.visible = vis
         }
         for (const [componentId, kind] of comps) {
           if (meshComponentIds.has(componentId)) meshDirty.add(entity)
@@ -223,9 +232,12 @@ export function applySceneDiff(
     const obj = store.getNode(entity)
     if (!obj) continue
 
-    obj.visible = VisibilityComponent.has(entity)
+    const vis = VisibilityComponent.has(entity)
       ? VisibilityComponent.get(entity).visible !== false
       : true
+    obj.visible = vis
+    const drawn = obj.userData.dclDrawVisual as { visible: boolean } | undefined
+    if (drawn) drawn.visible = vis
 
     // core-schema::Name — debug / tooling label on the Three.js group (Explorer entity name).
     if (Name.has(entity)) {
@@ -235,9 +247,9 @@ export function applySceneDiff(
 
     const lk = lightKey(entity)
     if (LightSource.has(entity)) {
-      syncLightSource(obj, lk, LightSource.get(entity))
+      syncLightSource(obj, lk, LightSource.get(entity), options.bindDrawVisual)
     } else {
-      removeLightSource(obj, lk)
+      removeLightSource(obj, lk, options.unbindDrawVisual)
     }
 
     // Tween refresh entities — notify Transform so collider pose dirty propagates on-change.

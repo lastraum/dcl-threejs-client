@@ -55,13 +55,12 @@ type BoundRoom = {
 /**
  * Nearby voice — **flat HTML audio only** (spatial temporarily disabled).
  *
- * Room set from CommsService.getVoiceLiveKitRooms():
+ * Room set from CommsService.getVoiceLiveKitRooms() — **single media room**:
  * - Worlds → world LiveKit only
- * - Parcels → island + scene (Explorer nearby voice needs island co-location)
+ * - Parcels → **scene** LiveKit preferred; island only if scene is down
  *
  * Remote tracks → HTMLAudioElement (unmuted, volume via sound settings).
- * One source per participant (island+scene dual rooms would otherwise double).
- * Audio stays muted until `setInPlay(true)` after play chrome is ready.
+ * One source per participant. Audio stays muted until `setInPlay(true)` after play chrome is ready.
  */
 export class VoiceChatService {
   private roomsProvider: RoomsProvider = () => []
@@ -272,6 +271,13 @@ export class VoiceChatService {
   async unlockRemotePlayback(reason = 'unlock'): Promise<void> {
     if (!this.canHear()) return
     this.refreshRooms()
+    // No remotes and rooms already unlocked — skip startAudio/rescan storm (pixelwars click spam).
+    if (this.remoteCount === 0 && reason === 'user-gesture') {
+      const rooms = this.liveRooms()
+      if (rooms.length > 0 && rooms.every((r) => r.canPlaybackAudio)) {
+        return
+      }
+    }
     const rooms = this.liveRooms()
     for (const room of rooms) {
       try {
@@ -285,9 +291,12 @@ export class VoiceChatService {
     await this.kickAllRemotePlayback(reason)
     const paused = [...this.remotes.values()].filter((e) => e.element.paused).length
     const playback = rooms.map((r) => `${shortName(r.name)}:canPlay=${String(r.canPlaybackAudio)}`).join(' ')
-    voiceLog(
-      `unlockRemotePlayback (${reason}) remotes=${this.remoteCount} paused=${paused} ${playback || 'no-rooms'}`
-    )
+    // Throttle success logs — was every click with remotes=0 and tanked FPS with debug capture on.
+    if (this.remoteCount > 0 || reason !== 'user-gesture') {
+      voiceLog(
+        `unlockRemotePlayback (${reason}) remotes=${this.remoteCount} paused=${paused} ${playback || 'no-rooms'}`
+      )
+    }
     this.notify()
   }
 
@@ -565,7 +574,7 @@ export class VoiceChatService {
         const deviceId = soundSettings.get().microphoneDeviceId
         const captureOpts = deviceId ? { deviceId } : undefined
 
-        // Worlds: one room. Parcels: island + scene (publish each independently).
+        // Exactly the media room(s) from getVoiceLiveKitRooms (one for parcels/worlds).
         for (const room of rooms) {
           const perms = room.localParticipant.permissions
           const sources = (perms as { canPublishSources?: unknown[] } | undefined)?.canPublishSources

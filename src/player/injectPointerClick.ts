@@ -17,11 +17,48 @@ export type InjectPointerClickBody = {
   hitPosition: { x: number; y: number; z: number }
   hitNormal: { x: number; y: number; z: number }
   hitDistance: number
+  /** Ray origin in DCL space (Explorer RaycastHit.globalOrigin) — required for click VFX. */
+  hitOrigin?: { x: number; y: number; z: number }
+  /** Ray direction in DCL space (Explorer RaycastHit.direction). */
+  hitDirection?: { x: number; y: number; z: number }
   meshName?: string
   /**
-   * Scene DOM UI click (react-ecs). Worker uses this for inject-only UI path:
-   * post-DOWN flush, skip onUpdate, PET_UP → PlayerEntity only.
-   * Must not be set for 3D mesh clicks (getClick needs UP on the hit entity).
+   * Scene DOM UI (react-ecs). Affects UP target resolution only:
+   * PET_UP → PlayerEntity (clear isPressed without remount thrash).
+   * World PE keeps UP on the hit entity (getClick / onPointerDown parity).
    */
   sceneUi?: boolean
+  /**
+   * Global IA_POINTER on PlayerEntity when no PE mesh in range (click-to-move).
+   * Worker must skip world UI settle/react-ecs flush — no select HUD; was ~1s hitch.
+   */
+  levelState?: boolean
+  /**
+   * Explorer press lifecycle for **all** scenes (see worker-input-architecture):
+   * - `down` — PET_DOWN edge only; isPressed stays true across cooperative play frames
+   * - `up` — PET_UP edge only; getClick / release handlers fire this frame
+   * - `click` — deprecated combined batch; mapped to down+up only if a caller still sends it
+   * - `hover-enter` / `hover-leave` — react-ecs onMouseEnter/Leave (getInputCommand HOVER)
+   */
+  phase?: 'down' | 'up' | 'click' | 'hover-enter' | 'hover-leave'
+  /**
+   * Live PrimaryPointerInfo for the edge tick — applied on the worker *before* eng.update(0).
+   * Scenes gate select/move on PPI (UI chrome hit-test, ground ray from worldRayDirection).
+   * Play-frame-tick alone is not enough: edge ticks can run without a play frame in between.
+   */
+  primaryPointer?: {
+    pointerType: number
+    screenCoordinates: { x: number; y: number }
+    screenDelta: { x: number; y: number }
+    worldRayDirection: { x: number; y: number; z: number }
+  }
+  /**
+   * Live CameraEntity pose for this edge (DCL space). Pointer ticks skip play-frame-tick;
+   * without this, scenes that raycast Camera + PPI for ground VFX use a stale camera
+   * (wrong under VirtualCamera top-down).
+   */
+  camera?: {
+    position: { x: number; y: number; z: number }
+    rotation: { x: number; y: number; z: number; w: number }
+  }
 }

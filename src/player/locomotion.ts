@@ -5,8 +5,8 @@ import type { MirrorComponents } from '../bridge/mirrorComponents'
 export const DCL_LOCOMOTION_DEFAULTS = {
   walkSpeed: 1.5,
   jogSpeed: 8,
-  /** Shift sprint — faster than auto-jog (Explorer default jog is 8 m/s). */
-  runSpeed: 12,
+  /** Shift sprint — unity-explorer CharacterControllerSettings RunSpeed (walk 1.5 / jog 8 / run 10). */
+  runSpeed: 10,
   jumpHeight: 1,
   runJumpHeight: 1.5,
   doubleJumpHeight: 2,

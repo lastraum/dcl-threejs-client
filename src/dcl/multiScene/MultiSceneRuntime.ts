@@ -19,6 +19,7 @@ import type { SecondaryLiveRequest } from './types'
 export type MultiSceneRuntimeOptions = {
   peManager: PortableExperienceManager
   onLiveSecondaryIds?: (ids: ReadonlySet<string>) => void
+  onLiveGraphReady?: (entityId: string) => void
 }
 
 /**
@@ -36,6 +37,7 @@ export class MultiSceneRuntime {
   private cache: AssetCache | null = null
   private disposed = false
   private onLiveSecondaryIds: ((ids: ReadonlySet<string>) => void) | null
+  private onLiveGraphReady: ((entityId: string) => void) | null
   /** Last multi-scene phys descs — for tracking invalidation. */
   private lastMultiPhysIds = new Set<number>()
   /** Live secondary tick/reconcile gated until primary play-ready. */
@@ -44,10 +46,15 @@ export class MultiSceneRuntime {
   constructor(opts: MultiSceneRuntimeOptions) {
     this.pe = opts.peManager
     this.onLiveSecondaryIds = opts.onLiveSecondaryIds ?? null
+    this.onLiveGraphReady = opts.onLiveGraphReady ?? null
   }
 
   setOnLiveSecondaryIds(fn: ((ids: ReadonlySet<string>) => void) | null): void {
     this.onLiveSecondaryIds = fn
+  }
+
+  setOnLiveGraphReady(fn: ((entityId: string) => void) | null): void {
+    this.onLiveGraphReady = fn
   }
 
   /** Push current live/sticky entity ids to AOI (hide duplicate composites). */
@@ -67,6 +74,10 @@ export class MultiSceneRuntime {
   /** Promote settle: scripts off on all residents (primary alone). */
   forceAllResidentsTertiary(reason: string): void {
     this.secondary?.forceAllResidentsTertiary(reason)
+  }
+
+  restoreStickySecondaries(): void {
+    this.secondary?.restoreStickySecondaries()
   }
 
   ensureResidentsVisible(): void {
@@ -97,6 +108,8 @@ export class MultiSceneRuntime {
     host: SceneHost
     tier: PerformanceTier
     poseProvider: () => { player: EntityPose; camera: EntityPose }
+    getUserData?: () => Promise<import('../../shim/types').UserDataResponse>
+    getRealm?: () => Promise<import('../../shim/types').RealmResponse>
     pePolicy: PortableExperiencesPolicy
   }): void {
     if (this.disposed) return
@@ -112,7 +125,10 @@ export class MultiSceneRuntime {
       tier: opts.tier,
       arbiter: this.arbiter,
       poseProvider: opts.poseProvider,
-      onLiveIdsChange: (ids) => this.onLiveSecondaryIds?.(ids)
+      getUserData: opts.getUserData,
+      getRealm: opts.getRealm,
+      onLiveIdsChange: (ids) => this.onLiveSecondaryIds?.(ids),
+      onLiveGraphReady: (id) => this.onLiveGraphReady?.(id)
     })
 
     void this.pe.attachWorld({
@@ -180,6 +196,7 @@ export class MultiSceneRuntime {
 
   /** Force-boot secondary for parcel then handoff can succeed. */
   async ensureSecondaryForParcel(x: number, y: number, timeoutMs?: number): Promise<boolean> {
+    if (!this.secondaryActivityEnabled) return false
     return this.secondary?.ensureSecondaryForParcel(x, y, timeoutMs) ?? false
   }
 
@@ -188,7 +205,9 @@ export class MultiSceneRuntime {
   }
 
   setSecondaryActivityEnabled(enabled: boolean): void {
+    if (this.secondaryActivityEnabled === enabled) return
     this.secondaryActivityEnabled = enabled
+    console.info(`[multi-scene] secondary activity ${enabled ? 'ON' : 'OFF'}`)
   }
 
   /** When false, soft-route must not force-boot neighbors (promote settle). */
@@ -208,6 +227,10 @@ export class MultiSceneRuntime {
 
   hasLiveSecondaryForParcel(x: number, y: number): boolean {
     return this.secondary?.hasSecondaryForParcel(x, y) ?? false
+  }
+
+  liveGuestIdForParcel(x: number, y: number): string | null {
+    return this.secondary?.liveGuestIdForParcel(x, y) ?? null
   }
 
   tickSync(player: EntityPose, camera: EntityPose, frame = 0): void {
@@ -236,15 +259,30 @@ export class MultiSceneRuntime {
    * They still own remapped entity ids — only invalidate when a slot actually drops
    * its registered set (dispose / promote detach). Treating "not streamed this frame"
    * as removal was the CBD→scene→CBD 3fps death spiral (wipe→Missing actors→recook).
+   *
+   * COD F1 — `applyBudgetMs` is wall remainder after primary full apply.
+   * PE spends first; secondaries get leftover (or dirty-only if exhausted).
    */
-  async tickAsync(): Promise<{
+  /** True when PE or a live/sticky secondary still needs leftover apply. */
+  hasAsyncTickWork(): boolean {
+    return this.pe.runningCount() > 0 || (this.secondary?.hasResidentSlots() ?? false)
+  }
+
+  async tickAsync(opts?: { applyBudgetMs?: number }): Promise<{
     colliders: PhysicsColliderDesc[]
     invalidatePhysIds: number[]
   }> {
     const colliders: PhysicsColliderDesc[] = []
-    colliders.push(...(await this.pe.tickAsync()))
+    const budgetMs = opts?.applyBudgetMs
+    const t0 = performance.now()
+    colliders.push(...(await this.pe.tickAsync({ applyBudgetMs: budgetMs })))
+    const peSpent = performance.now() - t0
+    const secondaryBudget =
+      budgetMs === undefined ? undefined : Math.max(0, budgetMs - peSpent)
     if (this.secondaryActivityEnabled) {
-      colliders.push(...((await this.secondary?.tickAsync()) ?? []))
+      colliders.push(
+        ...((await this.secondary?.tickAsync({ applyBudgetMs: secondaryBudget })) ?? [])
+      )
     } else {
       colliders.push(...((await this.secondary?.tickStickyAsync()) ?? []))
     }

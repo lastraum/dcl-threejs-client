@@ -6,6 +6,7 @@ import type { PhysicsColliderDesc, PhysicsColliderShapeDesc } from '../physics/P
 import { physxColliderDebug } from '../debug/PhysxColliderDebug'
 import { ColliderLayer, hasColliderLayer } from './ColliderLayer'
 import { isGltfInvisibleColliderMesh, isGltfVisibleClassMesh } from './gltfColliderNaming'
+import { gltfEntityDrawRoot } from './gltfPointerMeshes'
 import {
   INSTANCE_COLLIDER_SHAPES_KEY,
   type InstanceColliderShape
@@ -119,8 +120,11 @@ export class GltfColliderExtractor {
       if (this.isReserved(entity, view)) continue
       const obj = entityNodes.get(entity)
       if (!obj) continue
-      const gltfMesh = obj.children.find((c) => c.name.startsWith('__mesh_'))
-      if (!gltfMesh) continue
+      const instanceShapes = obj.userData[INSTANCE_COLLIDER_SHAPES_KEY] as
+        | InstanceColliderShape[]
+        | undefined
+      const gltfMesh = resolveGltfColliderMesh(obj, entity)
+      if (!gltfMesh && !instanceShapes?.length && !obj.userData.dclInstanced) continue
       active.add(entity)
       this.syncColliderEntity(entity, view, ecs, entityNodes)
     }
@@ -170,7 +174,17 @@ export class GltfColliderExtractor {
     const instanceShapes = obj.userData[INSTANCE_COLLIDER_SHAPES_KEY] as
       | InstanceColliderShape[]
       | undefined
-    const gltfMesh = obj.children.find((c) => c.name.startsWith('__mesh_'))
+    // DrawWorld parents `__mesh_*` under drawRoot — pose children are empty.
+    // Tween / PE leave GPU instancing, so instance shapes are gone and we must
+    // extract visible-mesh CL_PHYSICS from the drawn tree (late-spawn tiles).
+    const gltfMesh = resolveGltfColliderMesh(obj, entity)
+    // Orphan marker (promote wiped shapes but left empty Group) — not a real mesh tree.
+    // Treat as not-ready so we don't cook 0 shapes and seal forever with floors≈0.
+    const orphanMarker =
+      !!gltfMesh?.userData.dclInstanceMarker &&
+      !obj.userData.dclInstanced &&
+      !(instanceShapes?.length)
+    if (orphanMarker) return false
     const isInstance = !!obj.userData.dclInstanced || !!instanceShapes?.length
     if (!gltfMesh && !isInstance) return false
 
@@ -267,7 +281,7 @@ export class GltfColliderExtractor {
     if (!stored || !obj) return false
     obj.updateMatrixWorld(true)
     const state = this.syncState.get(entity)
-    const gltfMesh = state?.mesh ?? obj.children.find((c) => c.name.startsWith('__mesh_'))
+    const gltfMesh = state?.mesh ?? resolveGltfColliderMesh(obj, entity)
     let shapesChanged = false
     if (allowShapeMotion && stored.shapes?.length && gltfMesh && state) {
       shapesChanged = this.refreshShapeLocalMatrices(
@@ -367,7 +381,7 @@ export class GltfColliderExtractor {
     const obj = entityNodes.get(entity)
     if (!stored?.shapes?.length || !obj) return null
     const state = this.syncState.get(entity)
-    const gltfMesh = state?.mesh ?? obj.children.find((c) => c.name.startsWith('__mesh_'))
+    const gltfMesh = state?.mesh ?? resolveGltfColliderMesh(obj, entity)
     if (!gltfMesh || !state) return null
     obj.updateMatrixWorld(true)
     gltfMesh.updateMatrixWorld(true)
@@ -547,10 +561,22 @@ export class GltfColliderExtractor {
   }
 
   /**
-   * World matrix for a physics mesh. Skinned `_collider` panels often leave mesh.matrixWorld
-   * fixed while bones drive the visual — use bone/parent bone world then.
+   * World matrix for a physics mesh.
+   * - Skinned `_collider` panels often leave mesh.matrixWorld fixed while bones drive the
+   *   visual — use bone/parent bone world then.
+   * - Rigid meshes parented under an animated Bone (curtains_1: Curtain/Pole under Bone,
+   *   not SkinnedMesh) already include the bone in mesh.matrixWorld after updateMatrixWorld;
+   *   we still force parent bone updates so PART cooks match the raised pose.
    */
   private colliderMeshWorldMatrix(mesh: THREE.Mesh): THREE.Matrix4 {
+    // Walk up and refresh animated bones first (hierarchy can be Bone → mesh, no skin).
+    let p: THREE.Object3D | null = mesh.parent
+    for (let i = 0; i < 12 && p; i++) {
+      if ((p as THREE.Bone).isBone || /^(bone|joint|hinge)/i.test(p.name)) {
+        p.updateMatrixWorld(true)
+      }
+      p = p.parent
+    }
     mesh.updateMatrixWorld(true)
     const sk = mesh as THREE.SkinnedMesh
     if (sk.isSkinnedMesh && sk.skeleton) {
@@ -950,6 +976,16 @@ export class GltfColliderExtractor {
       if (isGltfInvisibleColliderMesh(node, gltfMesh)) meshInvClass++
       else if (isGltfVisibleClassMesh(node, gltfMesh)) meshVisClass++
     })
+    // Decorative pool VFX (disco_cell, star, drop) — inv mask set but only visible-class
+    // meshes → expected shapes=0. Logging hundreds of these froze the fishing dock UI.
+    if (
+      shapeCount === 0 &&
+      meshInvClass === 0 &&
+      !hasColliderLayer(visibleMask, ColliderLayer.CL_PHYSICS)
+    ) {
+      return
+    }
+    if (!physxColliderDebug.isGltfCollidersVisible()) return
     const shortSrc = src.length > 64 ? `…${src.slice(-48)}` : src
     const msg =
       `[GltfCollider] e${entity} src="${shortSrc}" ` +
@@ -957,8 +993,6 @@ export class GltfColliderExtractor {
       `meshes=${meshTotal} (invClass=${meshInvClass} visClass=${meshVisClass}) ` +
       `→ shapes=${shapeCount} (inv=${invCount} vis=${visCount})` +
       (shapeCount === 0 ? ` names=[${collectMeshNames(gltfMesh).slice(0, 12).join(', ')}]` : '')
-    // Do NOT console.info every entity — plaza logs 1k+ lines and freezes the load bar
-    // when ?consolelogs is on. Panel/throttle only; physdebug can still dump via Help.
     clientDebugLog.log('collision', msg, {
       alsoConsole: false,
       throttleKey: `gltf-collider:${entity}`
@@ -1251,6 +1285,13 @@ function debugWireframeEntries(desc: PhysicsColliderDesc): DebugWireframeEntry[]
 
 function colliderPoseFp(matrix: THREE.Matrix4): string {
   return matrix.elements.map((n) => n.toFixed(3)).join(',')
+}
+
+/** Pose node or DrawWorld visual — Tweened GLBs have no `__mesh_*` under the pose group. */
+function resolveGltfColliderMesh(obj: THREE.Object3D, entity: Entity): THREE.Object3D | undefined {
+  const drawn = gltfEntityDrawRoot(obj, entity)
+  if (drawn) return drawn
+  return obj.children.find((c) => c.name.startsWith('__mesh_'))
 }
 
 function gltfColliderPoseFp(desc: PhysicsColliderDesc): string {

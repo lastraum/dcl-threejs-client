@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import type { AvatarLocomotionState } from '../AvatarAnimations'
 import { DoubleJumpTwirl } from '../doubleJumpTwirl'
+import type { EmotePropAttachment } from '../emotePlayback'
 import { DCL_LOCOMOTION_DEFAULTS } from '../../player/locomotion'
 import { buildOdkRestCorrection } from './odkRetarget'
 import { loadMmlUeClipForOdk } from './odkMmlAnimLoader'
@@ -8,6 +9,10 @@ import { ODK_MML_LOCOMOTION } from './odkMmlLocomotionPaths'
 import { vrmLocomotionTimeScale } from '../vrm/vrmLocomotionSpeed'
 import { logOdkBoneDiagnostics } from './odkBoneDebug'
 import { updateOdkSkinnedMeshes } from './odkSkeleton'
+
+export type ProfileEmoteProps = EmotePropAttachment & {
+  attachParent: THREE.Object3D
+}
 
 /**
  * UE5 Manny locomotion from MML worlds — native bone tracks, no Mixamo retarget.
@@ -24,6 +29,11 @@ export class OdkLocomotionAnimations {
   private profileEmoteAction: THREE.AnimationAction | null = null
   private profileEmoteActive = false
   private profileEmoteLoop = false
+  private propMixer: THREE.AnimationMixer | null = null
+  private propRoot: THREE.Object3D | null = null
+  private propAction: THREE.AnimationAction | null = null
+  /** Fired when a one-shot profile emote finishes (cast → Fishing_Idle queue). */
+  private onOneShotFinished: (() => void) | null = null
   private walkBlend = 0
   private jogBlend = 0
   private runBlend = 0
@@ -102,28 +112,69 @@ export class OdkLocomotionAnimations {
     updateOdkSkinnedMeshes(avatarRoot)
   }
 
-  playProfileEmote(clip: THREE.AnimationClip, loop: boolean): boolean {
+  setOnOneShotFinished(handler: (() => void) | null): void {
+    this.onOneShotFinished = handler
+  }
+
+  playProfileEmote(
+    clip: THREE.AnimationClip,
+    loop: boolean,
+    props?: ProfileEmoteProps | null
+  ): boolean {
     if (!this.mixer) return false
-    this.stopProfileEmote()
+    this.stopProfileEmote({ silent: true })
     this.profileEmoteAction = this.mixer.clipAction(clip)
     this.profileEmoteAction.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1)
     this.profileEmoteAction.clampWhenFinished = !loop
     this.profileEmoteAction.reset()
     this.profileEmoteAction.setEffectiveWeight(1)
     this.profileEmoteAction.play()
+
+    if (props?.root) {
+      this.propRoot = props.root
+      props.attachParent.add(props.root)
+      this.propMixer = new THREE.AnimationMixer(props.root)
+      this.propMixer.addEventListener('finished', this.onPropMixerFinished)
+      if (props.clip) {
+        this.propAction = this.propMixer.clipAction(props.clip)
+        this.propAction.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1)
+        this.propAction.clampWhenFinished = !loop
+        this.propAction.reset()
+        this.propAction.setEffectiveWeight(1)
+        this.propAction.play()
+      }
+    }
+
     this.profileEmoteActive = true
     this.profileEmoteLoop = loop
     return true
   }
 
-  stopProfileEmote(): void {
+  stopProfileEmote(opts?: { silent?: boolean }): void {
+    const wasOneShot = this.profileEmoteActive && !this.profileEmoteLoop
     if (this.profileEmoteAction) {
       this.profileEmoteAction.stop()
       this.mixer?.uncacheClip(this.profileEmoteAction.getClip())
       this.profileEmoteAction = null
     }
+    if (this.propMixer) {
+      this.propMixer.removeEventListener('finished', this.onPropMixerFinished)
+    }
+    if (this.propAction) {
+      this.propAction.stop()
+      this.propMixer?.uncacheClip(this.propAction.getClip())
+      this.propAction = null
+    }
+    this.propMixer = null
+    if (this.propRoot) {
+      this.propRoot.removeFromParent()
+      this.propRoot = null
+    }
     this.profileEmoteActive = false
     this.profileEmoteLoop = false
+    if (wasOneShot && !opts?.silent) {
+      this.onOneShotFinished?.()
+    }
   }
 
   isProfileEmoteActive(): boolean {
@@ -148,6 +199,7 @@ export class OdkLocomotionAnimations {
       this.fallAction?.setEffectiveWeight(0)
       this.profileEmoteAction.setEffectiveWeight(1)
       this.mixer.update(delta)
+      this.propMixer?.update(delta)
       if (this.avatarRoot) updateOdkSkinnedMeshes(this.avatarRoot)
       return
     }
@@ -286,7 +338,8 @@ export class OdkLocomotionAnimations {
   dispose(): void {
     this.bindGeneration++
     this.twirl.reset()
-    this.stopProfileEmote()
+    this.onOneShotFinished = null
+    this.stopProfileEmote({ silent: true })
     if (this.mixer) {
       this.mixer.removeEventListener('finished', this.onMixerFinished)
       this.mixer.stopAllAction()
@@ -311,6 +364,15 @@ export class OdkLocomotionAnimations {
 
   private onMixerFinished = (event: THREE.Event & { action: THREE.AnimationAction }): void => {
     if (event.action === this.profileEmoteAction && !this.profileEmoteLoop) {
+      // SDK one-shots end and release — queue may re-fire Fishing_Idle via onOneShotFinished.
+      if (this.propAction?.isRunning()) return
+      this.stopProfileEmote()
+    }
+  }
+
+  private onPropMixerFinished = (event: THREE.Event & { action: THREE.AnimationAction }): void => {
+    if (event.action === this.propAction && !this.profileEmoteLoop) {
+      if (this.profileEmoteAction?.isRunning()) return
       this.stopProfileEmote()
     }
   }

@@ -1,13 +1,43 @@
 /**
- * Dedicated LiveKit room for Cast 2.0 watchers (not scene chat).
- * Connect with gatekeeper POST /cast/watcher-token credentials.
+ * Dedicated LiveKit room for cast / OBS stream consumption only.
+ * - Subscribes only to streamer-ingress video + companion stream audio
+ * - Does not process chat data packets or peer voice/mics
+ * - Not used as a general scene chat room
  */
-import { ConnectionState, Room, RoomEvent, Track, type RemoteTrackPublication } from 'livekit-client'
+import {
+  ConnectionState,
+  Room,
+  RoomEvent,
+  Track,
+  type RemoteParticipant,
+  type RemoteTrackPublication
+} from 'livekit-client'
 import {
   clearCastVideoHost,
-  reattachFirstRemoteVideoToHost,
-  forceSubscribeRemoteVideo
+  forceSubscribeRemoteVideo,
+  isStreamerIngressIdentity,
+  isPresentationBotIdentity,
+  reattachFirstRemoteVideoToHost
 } from './livekitVideoStreams'
+
+function isStreamVideoPub(pub: RemoteTrackPublication, identity: string): boolean {
+  if (pub.kind !== Track.Kind.Video) return false
+  // Prefer known cast/ingress identities; also allow screen-share from any remote.
+  if (isStreamerIngressIdentity(identity) || isPresentationBotIdentity(identity)) return true
+  if (pub.source === Track.Source.ScreenShare) return true
+  // Ingress sometimes uses Unknown source with -streamer identity only (handled above).
+  return false
+}
+
+function isStreamAudioPub(pub: RemoteTrackPublication, identity: string, hasStreamVideo: boolean): boolean {
+  if (pub.kind !== Track.Kind.Audio) return false
+  // Companion audio on same streamer participant (incl. mic-labelled ingress).
+  if (isStreamerIngressIdentity(identity) || isPresentationBotIdentity(identity)) return true
+  // Non-mic stream audio when we already matched a stream video publisher.
+  if (hasStreamVideo && pub.source !== Track.Source.Microphone) return true
+  if (pub.source === Track.Source.ScreenShareAudio) return true
+  return false
+}
 
 export class CastLiveKitRoom {
   private room: Room | null = null
@@ -21,31 +51,28 @@ export class CastLiveKitRoom {
     return this.room
   }
 
+  /**
+   * Connect as a pure stream consumer.
+   * autoSubscribe=false — we only subscribe to cast/ingress A/V tracks.
+   */
   async connect(url: string, token: string): Promise<boolean> {
     this.disconnect()
-    const room = new Room({ adaptiveStream: false, dynacast: false })
+    const room = new Room({
+      adaptiveStream: true,
+      dynacast: false
+    })
     this.room = room
     try {
-      // url may be wss://… or livekit:wss://…
       const u = url.trim().startsWith('livekit:') ? url.trim().slice('livekit:'.length) : url.trim()
-      await room.connect(u, token, { autoSubscribe: true })
-      // Join live is a user gesture path — unlock remote A/V playback ASAP.
+      // Stream-only: do not auto-sub peer cams/mics/data consumers.
+      await room.connect(u, token, { autoSubscribe: false })
       try {
         await room.startAudio()
       } catch {
         void room.startAudio().catch(() => {})
       }
-      // Force-sub remote video + stream audio (mic stays for voice chat if shared room).
-      for (const p of room.remoteParticipants.values()) {
-        for (const pub of p.trackPublications.values()) {
-          if (pub.kind !== Track.Kind.Video && pub.kind !== Track.Kind.Audio) continue
-          try {
-            ;(pub as RemoteTrackPublication).setSubscribed(true)
-          } catch {
-            /* ignore */
-          }
-        }
-      }
+      this.subscribeStreamTracksOnly(room)
+      // Ignore data messages (chat / RFC4) — no dataReceived handlers registered.
       return room.state === ConnectionState.Connected
     } catch {
       this.disconnect()
@@ -53,8 +80,63 @@ export class CastLiveKitRoom {
     }
   }
 
+  /** Subscribe only to OBS/cast ingress video + companion audio. */
+  private subscribeStreamTracksOnly(room: Room): void {
+    const applyForParticipant = (p: RemoteParticipant): void => {
+      const identity = p.identity?.trim() || ''
+      let hasStreamVideo = false
+      for (const pub of p.trackPublications.values()) {
+        if (isStreamVideoPub(pub as RemoteTrackPublication, identity)) {
+          hasStreamVideo = true
+          break
+        }
+      }
+      for (const pub of p.trackPublications.values()) {
+        const rp = pub as RemoteTrackPublication
+        const want =
+          isStreamVideoPub(rp, identity) || isStreamAudioPub(rp, identity, hasStreamVideo)
+        try {
+          if (want && !rp.isSubscribed) rp.setSubscribed(true)
+          if (!want && rp.isSubscribed) rp.setSubscribed(false)
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
+    for (const p of room.remoteParticipants.values()) {
+      applyForParticipant(p)
+    }
+
+    // Also force helper path for video (streamer priority).
+    forceSubscribeRemoteVideo(room)
+
+    room.on(RoomEvent.TrackPublished, (pub, participant) => {
+      if (participant.isLocal) return
+      const identity = participant.identity?.trim() || ''
+      const rp = pub as RemoteTrackPublication
+      const hasStreamVideo =
+        isStreamerIngressIdentity(identity) ||
+        isPresentationBotIdentity(identity) ||
+        rp.source === Track.Source.ScreenShare
+      const want =
+        isStreamVideoPub(rp, identity) || isStreamAudioPub(rp, identity, hasStreamVideo)
+      if (want) {
+        try {
+          rp.setSubscribed(true)
+        } catch {
+          /* ignore */
+        }
+      }
+    })
+
+    room.on(RoomEvent.ParticipantConnected, (p) => {
+      if (!p.isLocal) applyForParticipant(p as RemoteParticipant)
+    })
+  }
+
   /**
-   * Attach best remote video into host; re-try on track events.
+   * Attach best remote cast video into host; re-try on track events.
    */
   bindVideoToHost(
     host: HTMLElement,
@@ -69,14 +151,13 @@ export class CastLiveKitRoom {
 
     let last = false
     const attach = (): void => {
+      this.subscribeStreamTracksOnly(room)
       forceSubscribeRemoteVideo(room)
-      // reattach also force-subs + mounts companion stream audio tracks
       const ok = reattachFirstRemoteVideoToHost(room, host, {
         muted: opts?.muted,
         volume: opts?.volume,
         controls: false
       })
-      // Only notify on transition — reattach itself no-ops same track (no flicker).
       if (ok !== last) {
         last = ok
         onUpdate?.(ok)
@@ -93,7 +174,6 @@ export class CastLiveKitRoom {
     room.on(RoomEvent.Disconnected, onEv)
 
     attach()
-    // Poll for late RTMP publishers and stream-end (clears host + onUpdate(false)).
     const poll = window.setInterval(() => {
       attach()
     }, 2000)
@@ -105,6 +185,7 @@ export class CastLiveKitRoom {
       room.off(RoomEvent.TrackUnpublished, onEv)
       room.off(RoomEvent.ParticipantConnected, onEv)
       room.off(RoomEvent.ParticipantDisconnected, onEv)
+      room.off(RoomEvent.Disconnected, onEv)
       clearCastVideoHost(host)
     }
     return () => {

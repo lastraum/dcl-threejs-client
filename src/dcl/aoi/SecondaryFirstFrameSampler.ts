@@ -18,6 +18,7 @@ import {
   resolveContentUrl,
   shouldSkipAoiSecondaryGroundGlbs
 } from './compositeVisuals'
+import { lastFrameOverBudget, scheduleOffPlayRaf } from '../../rendering/mainThreadYield'
 
 /**
  * Caps (not “only one scene total”):
@@ -130,10 +131,13 @@ export class SecondaryFirstFrameSampler {
       this.inFlightIds.add(req.entityId)
       this.active++
       const gen = this.gen
-      void this.runOne(req, gen).finally(() => {
-        this.inFlightIds.delete(req.entityId)
-        this.active = Math.max(0, this.active - 1)
-        this.pump()
+      // Isolated host after present — never tickPlayFrame on the play rAF.
+      scheduleOffPlayRaf(() => {
+        void this.runOne(req, gen).finally(() => {
+          this.inFlightIds.delete(req.entityId)
+          this.active = Math.max(0, this.active - 1)
+          this.pump()
+        })
       })
     }
   }
@@ -192,9 +196,20 @@ export class SecondaryFirstFrameSampler {
       let parentedStableSince = 0
       let lastParented = -1
       let ready = false
+      let overBudgetStreak = 0
 
       while (performance.now() - started < TIMEOUT_MS) {
         if (gen !== this.gen || this.disposed) return
+        if (lastFrameOverBudget(33)) {
+          overBudgetStreak++
+          if (overBudgetStreak >= 3) {
+            this.doneIds.add(this.doneKey(req.entityId))
+            req.onFail?.(req.entityId, 'over-budget')
+            return
+          }
+        } else {
+          overBudgetStreak = 0
+        }
         system.tickPlayFrame()
         await system.yieldForWorkerMessages()
         try {

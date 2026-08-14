@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { scheduleOffPlayRaf, yieldToIdle } from '../rendering/mainThreadYield'
 
 type QueuedLoad = {
   address: string
@@ -10,33 +11,36 @@ type QueuedLoad = {
 /**
  * Limits concurrent remote avatar composes; nearer peers load first.
  * Hard load radius: never start a compose beyond {@link LOAD_DISTANCE} m.
- * Steady state: **one at a time**, **≥10s between starts** so plaza CCT/colliders stay solid.
+ * Steady state: **one at a time**, staggered starts so plaza CCT/colliders stay solid.
  * Once a peer has a model, the manager keeps it (no unload-for-distance).
  */
 export class RemoteAvatarLoadQueue {
   /** Steady state + warm: never more than one full avatar compose. */
   static readonly MAX_CONCURRENT = 1
-  /** During scene hydration / collider hold — no full composes; pill + name tag only. */
+  /** During scene hydration / collider hold — no full composes; neon shell only. */
   static readonly MAX_CONCURRENT_HYDRATION = 0
   /**
    * Minimum wall time between compose **starts** (not finishes).
-   * Next peer waits until this gap after the previous start, even if the first finished early.
+   * Was 10s — four nearby peers took 40s+ and felt “stuck at shells”.
    */
-  static readonly MIN_COMPOSE_INTERVAL_MS = 10_000
+  static readonly MIN_COMPOSE_INTERVAL_MS = 0
   /**
    * Horizontal meters — only start full body compose inside this radius.
-   * ~1.25× a 16 m parcel edge so same-parcel + neighbor edge load; far stay pills.
+   * ~1.25× a 16 m parcel edge so same-parcel + neighbor edge load; far stay shells.
    */
   static readonly LOAD_DISTANCE = 20
   /** @deprecated use LOAD_DISTANCE — kept as alias for older call sites / logs. */
   static readonly DEFER_DISTANCE = RemoteAvatarLoadQueue.LOAD_DISTANCE
-  /** Pause new avatar starts while scene has this many GLB fetches in flight. */
-  static readonly SCENE_PRESSURE_INFLIGHT = 3
+  /**
+   * Pause new avatar starts while scene has this many **GLB** fetches in flight.
+   * Only applies during hydration — post-play texture thrash used to block forever.
+   */
+  static readonly SCENE_PRESSURE_INFLIGHT = 4
   /**
    * After collider seal: hold all remote composes so pose resync + CCT aren't starved.
    */
-  static readonly COLLIDER_HOLD_MS_PLAZA = 10_000
-  static readonly COLLIDER_HOLD_MS_DEFAULT = 4_000
+  static readonly COLLIDER_HOLD_MS_PLAZA = 0
+  static readonly COLLIDER_HOLD_MS_DEFAULT = 0
 
   /** Local player feet (Three world) — load radius / sort origin, not camera. */
   private readonly localPlayer = new THREE.Vector3()
@@ -44,7 +48,7 @@ export class RemoteAvatarLoadQueue {
   private readonly active = new Set<string>()
   private running = 0
   private hydrationMode = false
-  /** Post-seal hold — no full composes (pills/name tags still update). */
+  /** Post-seal hold — no full composes (shells still show). */
   private colliderHoldMode = false
   private sceneGltfInflight = 0
   /** Local player loading an emote GLB — don't start new remote composes until done. */
@@ -53,11 +57,24 @@ export class RemoteAvatarLoadQueue {
   /** performance.now() when the last compose was started (0 = never). */
   private lastComposeStartMs = 0
   private intervalPumpTimer: ReturnType<typeof setTimeout> | null = null
+  /** Coalesce rAF position updates into one idle pump. */
+  private offRafPumpScheduled = false
+  /**
+   * When tracked remotes ≤ 20, compose regardless of distance (still nearest-first).
+   * Larger crowds keep the 20 m hard radius.
+   */
+  private ignoreDistance = false
+
+  setIgnoreDistance(on: boolean): void {
+    if (this.ignoreDistance === on) return
+    this.ignoreDistance = on
+    this.scheduleOffRafPump()
+  }
 
   /** Reference for distance gates — pass local player feet, not freecam / orbit camera. */
   setLocalPlayerPosition(position: THREE.Vector3): void {
     this.localPlayer.copy(position)
-    this.pump()
+    this.scheduleOffRafPump()
   }
 
   /** @deprecated use {@link setLocalPlayerPosition} */
@@ -78,12 +95,12 @@ export class RemoteAvatarLoadQueue {
       }
       this.colliderHoldMode = false
     }
-    this.pump()
+    this.scheduleOffRafPump()
   }
 
   /**
    * Scene play-ready — still hold full composes briefly so collider pose resync / CCT
-   * settle, then stagger 1 compose / 10s.
+   * settle, then stagger 1 compose at a time.
    */
   setPlayReady(plazaScale = false): void {
     this.hydrationMode = false
@@ -95,15 +112,18 @@ export class RemoteAvatarLoadQueue {
     this.colliderHoldExitTimer = setTimeout(() => {
       this.colliderHoldExitTimer = null
       this.colliderHoldMode = false
-      // First compose may start immediately after hold (interval clock starts on first start).
-      this.pump()
+      this.scheduleOffRafPump()
     }, holdMs)
-    this.pump()
+    this.scheduleOffRafPump()
   }
 
-  setSceneAssetPressure(gltfInflight: number, textureInflight = 0): void {
-    this.sceneGltfInflight = gltfInflight + textureInflight
-    this.pump()
+  /**
+   * Scene asset pressure — **GLB inflight only** (textures are continuous and were
+   * permanently blocking remote bodies after play). Only gates during hydration.
+   */
+  setSceneAssetPressure(gltfInflight: number, _textureInflight = 0): void {
+    this.sceneGltfInflight = gltfInflight
+    this.scheduleOffRafPump()
   }
 
   /**
@@ -112,7 +132,7 @@ export class RemoteAvatarLoadQueue {
    */
   setLocalEmoteLoadBusy(busy: boolean): void {
     this.localEmoteBusy = busy
-    if (!busy) this.pump()
+    if (!busy) this.scheduleOffRafPump()
   }
 
   /** True if this peer is waiting or actively composing. */
@@ -125,10 +145,7 @@ export class RemoteAvatarLoadQueue {
    * Queue a peer avatar load.
    * `force` ignores load radius (profile reload / explicit) by parking at local player.
    * Far peers may still be enqueued; {@link pump} will not start them until inside radius
-   * (unless force) so walking toward a pill can promote without re-enqueue races.
-   *
-   * If already waiting: only refresh position (and force-park) — keep the existing `run`
-   * so player walk rechecks do not allocate a new closure every frame.
+   * (unless force) so walking toward a shell can promote without re-enqueue races.
    */
   enqueue(
     address: string,
@@ -146,7 +163,7 @@ export class RemoteAvatarLoadQueue {
       } else {
         existing.position.copy(peerPosition)
       }
-      this.pump()
+      this.scheduleOffRafPump()
       return
     }
 
@@ -156,7 +173,7 @@ export class RemoteAvatarLoadQueue {
       pos.copy(this.localPlayer)
     }
     this.waiting.set(key, { address: key, position: pos, run })
-    this.pump()
+    this.scheduleOffRafPump()
   }
 
   /**
@@ -168,12 +185,12 @@ export class RemoteAvatarLoadQueue {
     const entry = this.waiting.get(key)
     if (!entry) return
     entry.position.copy(peerPosition)
-    if (pump) this.pump()
+    if (pump) this.scheduleOffRafPump()
   }
 
   /** Re-evaluate the wait queue (e.g. after bulk distance updates). */
   notifyPump(): void {
-    this.pump()
+    this.scheduleOffRafPump()
   }
 
   cancel(address: string): void {
@@ -197,6 +214,33 @@ export class RemoteAvatarLoadQueue {
     return this.active.size
   }
 
+  getWaitingCount(): number {
+    return this.waiting.size
+  }
+
+  /** Debug snapshot for MainFrameHud / toast diagnosis. */
+  getGateSnapshot(): {
+    waiting: number
+    active: number
+    hydration: boolean
+    hold: boolean
+    pressure: boolean
+    emoteBusy: boolean
+    gapMs: number
+    gltfInflight: number
+  } {
+    return {
+      waiting: this.waiting.size,
+      active: this.active.size,
+      hydration: this.hydrationMode,
+      hold: this.colliderHoldMode,
+      pressure: this.scenePressureBlocks(),
+      emoteBusy: this.localEmoteBusy,
+      gapMs: this.msUntilNextComposeAllowed(),
+      gltfInflight: this.sceneGltfInflight
+    }
+  }
+
   private maxConcurrent(): number {
     if (this.hydrationMode || this.colliderHoldMode) {
       return RemoteAvatarLoadQueue.MAX_CONCURRENT_HYDRATION
@@ -204,12 +248,16 @@ export class RemoteAvatarLoadQueue {
     return RemoteAvatarLoadQueue.MAX_CONCURRENT
   }
 
+  /**
+   * Only block during **hydration**. After play-ready, AOI / deferred textures used to keep
+   * inflight ≥ 3 forever → body=0 for all remotes (shells only).
+   */
   private scenePressureBlocks(): boolean {
-    // Block new composes under scene GLB pressure even after play-ready (not only hydration).
+    if (!this.hydrationMode) return false
     return this.sceneGltfInflight >= RemoteAvatarLoadQueue.SCENE_PRESSURE_INFLIGHT
   }
 
-  /** Ms until the 10s start-gap allows another compose (0 = ready). */
+  /** Ms until the start-gap allows another compose (0 = ready). */
   private msUntilNextComposeAllowed(): number {
     if (this.lastComposeStartMs <= 0) return 0
     const elapsed = performance.now() - this.lastComposeStartMs
@@ -221,18 +269,33 @@ export class RemoteAvatarLoadQueue {
     this.intervalPumpTimer = setTimeout(() => {
       this.intervalPumpTimer = null
       this.pump()
-    }, delayMs)
+    }, Math.max(50, delayMs))
   }
 
   private markFinished(address: string): void {
     this.active.delete(address)
     this.running = Math.max(0, this.running - 1)
-    this.pump()
+    this.scheduleOffRafPump()
+  }
+
+  private scheduleOffRafPump(): void {
+    if (this.offRafPumpScheduled) return
+    this.offRafPumpScheduled = true
+    scheduleOffPlayRaf(() => {
+      this.offRafPumpScheduled = false
+      this.pump()
+    })
   }
 
   private pump(): void {
-    if (this.scenePressureBlocks()) return
+    if (this.scenePressureBlocks()) {
+      // Retry — without this, a sticky pressure sample never re-evaluates.
+      this.scheduleIntervalPump(400)
+      return
+    }
     if (this.localEmoteBusy) return
+    // Compose already starts off the play rAF (idle callback + yieldToIdle).
+    // A 16 ms budget here starved every nearby body at 16 FPS (q=8 act=0 forever).
 
     const waitGap = this.msUntilNextComposeAllowed()
     if (waitGap > 0) {
@@ -259,8 +322,10 @@ export class RemoteAvatarLoadQueue {
         }))
         .sort((a, b) => a.distanceSq - b.distanceSq)
 
-      // Hard gate: never start a compose outside load radius (no far fallback).
-      const next = candidates.find((row) => row.distanceSq <= loadSq)
+      // Hard gate unless a small crowd (≤20) — then compose all, nearest first.
+      const next = this.ignoreDistance
+        ? candidates[0]
+        : candidates.find((row) => row.distanceSq <= loadSq)
       if (!next) break
 
       this.waiting.delete(next.c.address)
@@ -268,7 +333,10 @@ export class RemoteAvatarLoadQueue {
       this.running++
       this.lastComposeStartMs = performance.now()
 
-      void next.c.run().finally(() => {
+      void (async () => {
+        await yieldToIdle(80)
+        await next.c.run()
+      })().finally(() => {
         this.markFinished(next.c.address)
       })
     }

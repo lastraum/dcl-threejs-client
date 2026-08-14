@@ -3,7 +3,11 @@ import {
   evaluateSceneBundle,
   watchRendererTransportOnmessage
 } from '../system/createSystemStubs'
-import { encodeCommsBinaryMessage } from '../../network/comms/commsBinaryWire'
+import {
+  decodeCommsBinaryMessage,
+  encodeCommsBinaryMessage,
+  isolateCommsBinaryMessage
+} from '../../network/comms/commsBinaryWire'
 import { unwrapCraftedCommsMessage } from '../../network/comms/syncDebug'
 import { createEngineApiEventState, type EngineApiEventState } from '../engine/EngineApiEventState'
 import type {
@@ -12,6 +16,7 @@ import type {
   CommsPublishDataRequest,
   CommsTopicRequest,
   ConsumeMessagesResponse,
+  HostReservedSceneStore,
   MainToWorker,
   PerformanceTier,
   RealmResponse,
@@ -40,6 +45,13 @@ import {
   patchSceneBundle,
   patchSceneBundleWithCheckerStrip
 } from './pointerEventColliderCheckerPatch'
+import {
+  installCrdtEncodeComponentMeters,
+  installCrdtTransportMeterHook,
+  noteCrdtSendToRenderer,
+  noteSendBinaryPath,
+  type CrdtSendPath
+} from './workerEngUpdatePhases'
 
 import {
   applySceneInputSnapshotOnEngine,
@@ -54,16 +66,31 @@ import { nextWorkerPointerEventTimestamp } from './workerPointerEventTimestamp'
 import { PointerEventType } from '../../input/pointerConstants'
 import { InputAction, type InputActionValue } from '../../input/pointerConstants'
 import { injectRendererGrowOnlyAppendsOnEngine } from './injectRendererGrowOnlyAppends'
-import { injectRendererLwwPutsOnEngine } from './injectRendererLwwPuts'
+import {
+  injectRendererLwwPutsOnEngine,
+  rearmTweenStateAfterSequenceAdvance
+} from './injectRendererLwwPuts'
 import { applyAvatarAttachTransformsOnEngine } from './applyAvatarAttachTransforms'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
+import {
+  diagnoseLevelStateGroundRay,
+  injectLevelStatePointerEdgeOnEngine,
+  injectPointerHoverOnEngine,
+  isIaPointerPressedOnEngine
+} from './injectPointerClick'
 import { bindSceneWorkerPriorityDispatch, type SceneWorkerPriorityMessage } from './sceneWorkerBootstrap'
 import {
-
   coalesceKeyboardSnapshotDuringPointerSession,
+  clearWorkerPointerButtonsHeld,
   enterPointerInputSession,
   isPointerInputSessionActive,
   leavePointerInputSession,
+  setLevelStatePointerEdgeActive,
+  setLevelStatePointerHeld,
+  setPointerInteractivePhase,
+  setPointerInteractiveTickActive,
+  setWorkerPointerButtonHeld,
+  workerPointerButtonsHeldList,
   resetPointerInputSession,
   setPointerDeliveryInFlight
 } from './sceneWorkerInputSession'
@@ -101,6 +128,7 @@ import {
 } from './workerSceneUiSync'
 import {
   coalesceCrdtChunksLww,
+  collectWorkerUiMountEntityIds,
   collectWorkerUiMountSnapshot,
   extractSnapshotMountEntityIds,
   reconcileInputModifierCrdtEgress,
@@ -108,10 +136,18 @@ import {
   reconcileWorkerAuthoritativeCrdtEgress,
   resetInputModifierEgressBaseline,
   resetWorkerSceneUiCrdtLamport,
+  stripHostOwnedLwwBytes,
   stripRendererHostGrowOnlyAppendsBytes,
   stripSceneUiCrdtBytes,
-  stripWorkerAuthoritativeCrdtBytes
+  stripWorkerAuthoritativeCrdtBytes,
+  uiMountSnapshotContentFp
 } from './workerSceneUiCrdtOutbound'
+import { writeHostLwwNoDirty } from './injectHostLww'
+import {
+  installInboundGuestLwwHostForward,
+  resetInboundGuestLwwForward
+} from './forwardInboundGuestLww'
+
 import {
   collectPlayerFrameSnapshot,
   describeWorkerInputModifier,
@@ -153,6 +189,8 @@ import {
   resetSceneEngineScheduler,
   runSceneEngineBootTick,
   runSceneEnginePointerTick,
+  runSerializedEngineUpdateForPointer,
+  countWorkerMeshRenderers,
   shouldAttachUiMountSnapshot,
   hostInjectNeedsSceneSystems,
   sceneEngineTickAfterInboundInject,
@@ -189,10 +227,14 @@ const pendingSignedFetch = new Map<number, (body: SignedFetchResponse) => void>(
 const pendingSignedFetchGetHeaders = new Map<number, (body: SignedFetchGetHeadersResponse) => void>()
 const pendingCommsSend = new Map<number, (body: Record<string, never>) => void>()
 const pendingInboundBinaries: Uint8Array[] = []
+let lastUserData: NonNullable<UserDataResponse['data']> | null = null
+let lastRealmInfo: NonNullable<HostReservedSceneStore['realmInfo']> | null = null
 let rendererInboundApply: ((chunks: Uint8Array[]) => void) | null = null
 /** Coalesce outbound empty nudges to one post per microtask (still send when uiEntities change). */
 let crdtOutboundEmptyNudgeCoalesced = false
 let lastOutboundUiEntitiesKey = ''
+/** Mount entity key + content fingerprint — drop identical postUiMountSnapshot only. */
+let lastUiMountSnapshotFp = ''
 let outboundAckId = 0
 const pendingOutboundAck = new Map<number, () => void>()
 const OUTBOUND_ACK_TIMEOUT_MS = 4000
@@ -270,6 +312,8 @@ let sceneBootInProgress = false
 let sceneEvalInProgress = false
 /** Boot snapshot from main — satisfies crdtGetState during bundle eval without worker↔main RPC. */
 let bootCrdtSnapshot: { hasEntities: boolean; data: Uint8Array[] } | null = null
+/** Live interactable px from main — seed UiCanvasInformation without inventing 1920×1080. */
+let bootCanvas: { width: number; height: number } | null = null
 /** Priority lane messages received while sceneBootInProgress — drained after onStart. */
 const pendingBootPriority: SceneWorkerPriorityMessage[] = []
 /** True after inject until deliver (or fallback) finalizes the batch. */
@@ -325,6 +369,61 @@ function engineHasSdkStartupSystem(eng: {
   return false
 }
 
+/**
+ * SDK entry-points schedule `main()` as Infinity-priority system and do **not** await the
+ * promise. Auth-server scenes `await import` then `syncEntity(enumId)`.
+ * Host must wait until that settles before releasing LiveKit AUTH_RES (orphan NetworkEntity race).
+ *
+ * Signal: any `core-schema::Network-Entity` (syncEntity attached), or timeout for non-network scenes.
+ *
+ * Never short-circuit under ~500ms — even when NetworkEntity component is missing/empty, async
+ * main must get time to finish setupClient before ingress is released.
+ */
+async function waitForSdkMainSettled(eng: {
+  getComponentOrNull?: (name: string) => unknown
+  getEntitiesWith?: (...components: unknown[]) => Iterable<unknown>
+}): Promise<{ networkEntities: number; waitedMs: number; reason: string }> {
+  const start = performance.now()
+  const timeoutMs = 5_000
+  const minWaitMs = 500
+  // Let the first await inside main() (dynamic import) resolve.
+  await new Promise<void>((r) => setTimeout(r, 0))
+
+  const countNetwork = (): number => {
+    const NetworkEntity = eng.getComponentOrNull?.('core-schema::Network-Entity')
+    if (!NetworkEntity || typeof eng.getEntitiesWith !== 'function') return 0
+    let n = 0
+    try {
+      for (const _ of eng.getEntitiesWith!(NetworkEntity)) n++
+    } catch {
+      /* ignore */
+    }
+    return n
+  }
+
+  // setupClient may take a few hundred ms (import + systems); poll until syncEntity attaches.
+  while (performance.now() - start < timeoutMs) {
+    const n = countNetwork()
+    const waited = performance.now() - start
+    if (n > 0 && waited >= minWaitMs) {
+      // Second syncEntity (leaderboard etc.) often follows in the same async function.
+      await new Promise<void>((r) => setTimeout(r, 50))
+      const n2 = countNetwork()
+      return {
+        networkEntities: n2,
+        waitedMs: Math.round(performance.now() - start),
+        reason: 'syncEntity-network'
+      }
+    }
+    await new Promise<void>((r) => setTimeout(r, 40))
+  }
+  return {
+    networkEntities: countNetwork(),
+    waitedMs: Math.round(performance.now() - start),
+    reason: countNetwork() > 0 ? 'syncEntity-network-late' : 'timeout'
+  }
+}
+
 async function invokeSceneMainBootstrap(
   exports: import('../system/createSystemStubs').SceneBundleExports,
   options?: { skipMain?: boolean }
@@ -345,9 +444,18 @@ async function invokeSceneMainBootstrap(
     }
   }
   if (options?.skipMain) {
+    // Boot tick already started main() fire-and-forget — wait for syncEntity / settle.
+    const settled = await waitForSdkMainSettled(
+      sceneEngine as {
+        getComponentOrNull?: (name: string) => unknown
+        getEntitiesWith?: (...components: unknown[]) => Iterable<unknown>
+      }
+    )
     workerLog(
       'log',
-      `[sceneWorker] scene main() owned by SDK startup system — UiTransform=${collectWorkerUiEntityIds().length}`
+      `[sceneWorker] scene main() owned by SDK startup — settled reason=${settled.reason} ` +
+        `networkEntities=${settled.networkEntities} waited=${settled.waitedMs}ms ` +
+        `UiTransform=${collectWorkerUiEntityIds().length}`
     )
     return
   }
@@ -543,7 +651,12 @@ function shouldDeferPointerOutbound(): boolean {
   return pointerDeliverBatchOpen || pointerDeliveryInFlight || isPointerInputSessionActive()
 }
 
-/** Post non-UI chunks first, then one atomic UI snapshot with uiEntities — await acks before deliver-done. */
+/**
+ * Post non-UI chunks first, then structured UI mount.
+ * UI mount posts are fire-and-forget (empty data) — awaiting main ack on 300–400 row
+ * snapshots deadlocked deliver-done (main 2s watchdog vs worker 4s OUTBOUND_ACK while
+ * Yoga paint ran). Non-UI gameplay chunks still await ack with timeout.
+ */
 async function flushPointerDeferredOutboundsAsync(): Promise<void> {
   let nonUiChunks = coalesceCrdtChunksLww(pointerDeferredNonUi.splice(0))
   const eng = sceneEngine
@@ -573,27 +686,31 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
   const snapshotMountIds =
     uiSnapshot?.length ? extractSnapshotMountEntityIds(uiSnapshot) : []
   const uiEntities = snapshotMountIds.length ? snapshotMountIds : collectWorkerUiEntityIds()
-  const uiKey = uiEntities.join(',')
   const ackWaits: Promise<void>[] = []
 
   const postOutbound = (
     data: Uint8Array,
-    attachUi?: { uiEntities: number[]; uiMountSnapshot?: typeof uiSnapshot }
+    attachUi?: { uiEntities: number[]; uiMountSnapshot?: typeof uiSnapshot },
+    opts?: { awaitAck?: boolean }
   ): void => {
+    const awaitAck = opts?.awaitAck !== false
     const id = ++outboundAckId
-    ackWaits.push(
-      new Promise<void>((resolve) => {
-        let settled = false
-        const finish = (): void => {
-          if (settled) return
-          settled = true
-          pendingOutboundAck.delete(id)
-          resolve()
-        }
-        pendingOutboundAck.set(id, finish)
-        setTimeout(finish, OUTBOUND_ACK_TIMEOUT_MS)
-      })
-    )
+    if (awaitAck) {
+      ackWaits.push(
+        new Promise<void>((resolve) => {
+          let settled = false
+          const finish = (): void => {
+            if (settled) return
+            settled = true
+            pendingOutboundAck.delete(id)
+            resolve()
+          }
+          pendingOutboundAck.set(id, finish)
+          // Short timeout — pointer deliver-done must not wait on main paint.
+          setTimeout(finish, Math.min(OUTBOUND_ACK_TIMEOUT_MS, 250))
+        })
+      )
+    }
     const msg = attachUi
       ? ({
           type: 'crdt-outbound',
@@ -609,18 +726,33 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
   }
 
   for (const chunk of nonUiChunks) {
-    postOutbound(chunk)
+    postOutbound(chunk, undefined, { awaitAck: true })
   }
 
   if (uiMountPending) {
-    lastOutboundUiEntitiesKey = uiKey
-    postOutbound(new Uint8Array(0), {
-      uiEntities,
-      uiMountSnapshot: uiSnapshot ?? []
-    })
+    // Prefer full mount id list from worker engine (not only entities present in this snap)
+    // so main commitMountSet matches phase-4 authority even if a row is briefly missing.
+    const fullMountIds =
+      sceneEngine && uiSnapshot?.length
+        ? collectWorkerUiMountEntityIds(sceneEngine)
+        : uiEntities
+    const mountIds = fullMountIds.length > 0 ? fullMountIds : uiEntities
+    lastOutboundUiEntitiesKey = mountIds.join(',')
+    // Content fp so cooperative postUiMountSnapshot does not drop as "identical" forever.
+    const snapFp = uiMountSnapshotContentFp(uiSnapshot ?? [])
+    lastUiMountSnapshotFp = `${lastOutboundUiEntitiesKey}@@${snapFp}`
+    // Never await UI mount ack — main paint of large HUDs must not stall pointer lifecycle.
+    postOutbound(
+      new Uint8Array(0),
+      {
+        uiEntities: mountIds,
+        uiMountSnapshot: uiSnapshot ?? []
+      },
+      { awaitAck: false }
+    )
     workerLog(
       'log',
-      `[sceneWorker] pointer ui egress — snapshotRows=${uiSnapshot?.length ?? 0} mount=${uiEntities.length} nonUiChunks=${nonUiChunks.length}`
+      `[sceneWorker] pointer ui egress — snapshotRows=${uiSnapshot?.length ?? 0} mount=${mountIds.length} nonUiChunks=${nonUiChunks.length} (no-await-ui)`
     )
   }
 
@@ -795,10 +927,10 @@ function armPointerDeliverAckFallback(label: string): void {
   }, 32)
 }
 
+/** Open a deliver batch (pointer-crdt-deliver path only — edge inject uses executePointerEdge). */
 function beginPointerDeliverBatch(label: string): void {
   if (!isPointerInputSessionActive()) enterPointerInputSession()
   resetWorkerSceneUiCrdtLamport()
-  // Force player-frame post even when IM value matches a prior freeze snapshot (STOP clear).
   resetPlayerFrameEgressBaseline()
   resetVcBindHydrateBaseline()
   clearPointerEgressBuffers()
@@ -906,10 +1038,33 @@ function postPlayModeColdCrdtFireAndForget(data: Uint8Array): void {
   ctx.postMessage({ type: 'crdt-outbound', data } satisfies SceneWorkerOutbound, [data.buffer])
 }
 
+/** Inbound guest LWW (Material etc.) must present now — same hot path as scene-authored paint. */
+function postInboundGuestLwwToHost(data: Uint8Array): void {
+  if (!data.byteLength) return
+  if (crdtChunkIsHotPresent(data)) {
+    postPlayModeColdCrdtFireAndForget(data)
+    return
+  }
+  bufferPlayModeColdCrdt(data)
+}
+
+function bindInboundGuestLwwHostForward(engine: object): void {
+  installInboundGuestLwwHostForward(engine, postInboundGuestLwwToHost, workerLog)
+}
+
 /** core::PhysicsCombinedImpulse / Force — pad/bounce must not wait cold-frame batching. */
 const PHYSICS_COMBINED_COMPONENT_IDS = new Set([1215, 1216])
+/**
+ * core::Material (1017) + core::MeshRenderer (1018) — dense paint boards (pixelwars).
+ * core::Tween (1102) + TweenSequence (1104) — scene motion / bounce anims.
+ * Must not sit in cold CRDT buffer until end-of-frame / serial UI queue (felt as 3–5s lag).
+ */
+/** Paint boards only — ambient Tween/TweenSequence stay cold (SceneLoop guest clock). */
+const PAINT_BOARD_HOT_COMPONENT_IDS = new Set([1017, 1018])
+/** core::VisibilityComponent — LO() / hide must present; InstancedMesh is off the pose graph. */
+const VISIBILITY_HOT_COMPONENT_IDS = new Set([1081])
 
-function crdtChunkHasPhysicsCombined(data: Uint8Array): boolean {
+function crdtChunkHasComponentIds(data: Uint8Array, ids: ReadonlySet<number>): boolean {
   if (!data.byteLength) return false
   try {
     const buf = new ReadWriteByteBuffer(data)
@@ -917,8 +1072,11 @@ function crdtChunkHasPhysicsCombined(data: Uint8Array): boolean {
     while (msg) {
       if (
         (msg.type === CrdtMessageType.PUT_COMPONENT ||
-          msg.type === CrdtMessageType.PUT_COMPONENT_NETWORK) &&
-        PHYSICS_COMBINED_COMPONENT_IDS.has(msg.componentId)
+          msg.type === CrdtMessageType.PUT_COMPONENT_NETWORK ||
+          msg.type === CrdtMessageType.DELETE_COMPONENT ||
+          msg.type === CrdtMessageType.DELETE_COMPONENT_NETWORK) &&
+        'componentId' in msg &&
+        ids.has(msg.componentId)
       ) {
         return true
       }
@@ -930,10 +1088,32 @@ function crdtChunkHasPhysicsCombined(data: Uint8Array): boolean {
   return false
 }
 
+function crdtChunkHasPhysicsCombined(data: Uint8Array): boolean {
+  return crdtChunkHasComponentIds(data, PHYSICS_COMBINED_COMPONENT_IDS)
+}
+
+function crdtChunkHasPaintBoardMaterial(data: Uint8Array): boolean {
+  return crdtChunkHasComponentIds(data, PAINT_BOARD_HOT_COMPONENT_IDS)
+}
+
+function crdtChunkHasVisibility(data: Uint8Array): boolean {
+  return crdtChunkHasComponentIds(data, VISIBILITY_HOT_COMPONENT_IDS)
+}
+
+function crdtChunkIsHotPresent(data: Uint8Array): boolean {
+  return (
+    crdtChunkHasPhysicsCombined(data) ||
+    crdtChunkHasPaintBoardMaterial(data) ||
+    crdtChunkHasVisibility(data)
+  )
+}
+
 /** Phase 3 — coalesced cold CRDT + VC hydrate + player-frame after pollEvents (play mode). */
 function completePlayFrameColdEgress(): void {
-  if (sceneOnUpdatePaused) return
+  // Always publish buffered scene CRDT. Skipping while onUpdate is paused (plaza
+  // hydration) left Visibility PUTs on the worker — pond furniture stayed drawn.
   flushPlayModeColdCrdtEgress(postPlayModeColdCrdtFireAndForget)
+  if (sceneOnUpdatePaused) return
   // Graph-hash hydrate (independent of player-frame change) then IM/MainCamera hot path.
   publishVcBindHydrateIfNeeded()
   publishPlayerFrameIfChanged()
@@ -1030,16 +1210,132 @@ function postVcPoseLive(entity: Entity, tr: {
  * Scenes often gate PE parenting on Transform.has(PlayerEntity). Seed a shell so
  * mid-session equip (weapons, attach props) gets parent=PE instead of a world-space orphan.
  */
-function ensurePlayerEntityTransform(engine: import('@dcl/ecs').IEngine): void {
+function seedReservedTransform(
+  engine: import('@dcl/ecs').IEngine,
+  entity: Entity,
+  position: { x: number; y: number; z: number }
+): void {
   const Transform = extended.Transform(engine)
-  const pe = engine.PlayerEntity as Entity
-  if (Transform.has(pe)) return
-  Transform.createOrReplace(pe, {
-    position: { x: 0, y: 0, z: 0 },
+  if (Transform.has(entity)) return
+  const value = {
+    position,
     rotation: { x: 0, y: 0, z: 0, w: 1 },
     scale: { x: 1, y: 1, z: 1 },
     parent: engine.RootEntity
-  })
+  }
+  writeHostLwwNoDirty(Transform, entity as number, value)
+  if (!Transform.has(entity)) {
+    Transform.createOrReplace(entity, value)
+  }
+}
+
+function ensurePlayerEntityTransform(engine: import('@dcl/ecs').IEngine): void {
+  seedReservedTransform(engine, engine.PlayerEntity as Entity, { x: 0, y: 0, z: 0 })
+}
+
+function ensureCameraEntityTransform(engine: import('@dcl/ecs').IEngine): void {
+  seedReservedTransform(engine, engine.CameraEntity as Entity, { x: 0, y: 1.6, z: 0 })
+}
+
+/** Player=1 / Camera=2 must exist before plaza `Ztt` → fishing `init` (Transform.get). */
+function ensureReservedEntityTransforms(engine: import('@dcl/ecs').IEngine): void {
+  ensurePlayerEntityTransform(engine)
+  ensureCameraEntityTransform(engine)
+}
+
+/** Worker PPI apply logs — off unless `?ppidiag` (spam was a major FPS tax). */
+let lastWorkerPpiLogAt = 0
+const WORKER_PPI_LOG_MS = 1000
+let lastWorkerPpiMissingLogAt = 0
+const workerPpiDiagEnabled = (() => {
+  try {
+    // Worker has no location; main posts debug flags on boot — default off.
+    return false
+  } catch {
+    return false
+  }
+})()
+
+function cacheHostReserved(reserved?: HostReservedSceneStore): void {
+  const identity = reserved?.playerIdentity
+  if (identity?.userId) {
+    lastUserData = {
+      userId: identity.userId,
+      displayName: identity.displayName ?? lastUserData?.displayName ?? '',
+      hasConnectedWeb3: identity.hasConnectedWeb3 === true,
+      version: lastUserData?.version ?? 0,
+      ...(lastUserData?.publicKey ? { publicKey: lastUserData.publicKey } : {}),
+      ...(lastUserData?.avatar ? { avatar: lastUserData.avatar } : {})
+    }
+  }
+  const realm = reserved?.realmInfo
+  if (realm) {
+    lastRealmInfo = {
+      baseUrl: realm.baseUrl || '',
+      realmName: realm.realmName || '',
+      networkId: Number.isFinite(realm.networkId) ? realm.networkId : 1,
+      commsAdapter: realm.commsAdapter || '',
+      isPreview: realm.isPreview === true,
+      room: realm.room,
+      isConnectedSceneRoom: realm.isConnectedSceneRoom === true
+    }
+  }
+}
+
+/**
+ * Explorer: PlayerIdentityData + RealmInfo live on the scene store before sendBinary.
+ * `@dcl/sdk/network` isRoomReady is set only when AUTH_RES is processed *and*
+ * RootEntity already has RealmInfo. joinRoster / paint team read PlayerEntity.address.
+ *
+ * Identity: write when address is known (skip unchanged).
+ * RealmInfo: seed only when missing — later host CRDT injects remain authority.
+ */
+function applyHostReservedSceneStore(): void {
+  if (!sceneEngine) return
+  preregisterRendererInjectedComponents(sceneEngine)
+  let wroteIdentity = false
+  let wroteRealm = false
+  if (lastUserData?.userId) {
+    const PlayerIdentityData = generated.PlayerIdentityData(sceneEngine)
+    const existing = PlayerIdentityData.getOrNull(sceneEngine.PlayerEntity) as
+      | { address?: string; isGuest?: boolean }
+      | null
+    const isGuest = lastUserData.hasConnectedWeb3 !== true
+    if (!existing?.address || existing.address !== lastUserData.userId || existing.isGuest !== isGuest) {
+      writeHostLwwNoDirty(PlayerIdentityData, sceneEngine.PlayerEntity as number, {
+        address: lastUserData.userId,
+        isGuest
+      })
+      wroteIdentity = true
+    }
+  }
+  const RealmInfo = generated.RealmInfo(sceneEngine)
+  if (!RealmInfo.getOrNull(sceneEngine.RootEntity)) {
+    const info = lastRealmInfo
+    writeHostLwwNoDirty(RealmInfo, sceneEngine.RootEntity as number, {
+      baseUrl: info?.baseUrl ?? '',
+      realmName: info?.realmName ?? '',
+      networkId: info?.networkId ?? 1,
+      commsAdapter: info?.commsAdapter ?? '',
+      isPreview: info?.isPreview === true,
+      room: info?.room,
+      isConnectedSceneRoom: info ? info.isConnectedSceneRoom === true : true
+    })
+    wroteRealm = true
+  }
+  if (wroteIdentity || wroteRealm) {
+    const pid = lastUserData?.userId
+      ? `${lastUserData.userId.slice(0, 12)}… guest=${lastUserData.hasConnectedWeb3 !== true}`
+      : 'none'
+    const realm = RealmInfo.getOrNull(sceneEngine.RootEntity) as
+      | { isConnectedSceneRoom?: boolean; realmName?: string }
+      | null
+    workerLog(
+      'warn',
+      `[sceneWorker] host reserved store — identity=${pid} realm=${realm?.realmName || 'seed'} ` +
+        `connected=${realm?.isConnectedSceneRoom === true} wroteId=${wroteIdentity} wroteRealm=${wroteRealm}`
+    )
+  }
 }
 
 /** Same-tick PlayerEntity / CameraEntity for scene systems (CameraFollowSystem, etc.). */
@@ -1051,6 +1347,12 @@ function applyPlayFrameReservedPoses(
   camera?: {
     position: { x: number; y: number; z: number }
     rotation: { x: number; y: number; z: number; w: number }
+  },
+  primaryPointer?: {
+    pointerType: number
+    screenCoordinates: { x: number; y: number }
+    screenDelta: { x: number; y: number }
+    worldRayDirection: { x: number; y: number; z: number }
   }
 ): void {
   if (!sceneEngine) return
@@ -1063,17 +1365,49 @@ function applyPlayFrameReservedPoses(
     }
   ): void => {
     const prev = Transform.has(entity) ? Transform.get(entity) : undefined
-    Transform.createOrReplace(entity, {
+    writeHostLwwNoDirty(Transform, entity as number, {
       position: pose.position,
       rotation: pose.rotation,
       scale: prev?.scale ?? { x: 1, y: 1, z: 1 },
       parent: sceneEngine!.RootEntity
     })
   }
-  // Always host PE Transform before scene systems parent weapons to PlayerEntity.
-  ensurePlayerEntityTransform(sceneEngine)
+  // Always host PE/Camera Transform before scene systems parent weapons to PlayerEntity.
+  ensureReservedEntityTransforms(sceneEngine)
   if (player) write(sceneEngine.PlayerEntity as Entity, player)
   if (camera) write(sceneEngine.CameraEntity as Entity, camera)
+  applyHostReservedSceneStore()
+  // Live cursor ray before systems — fishing bobber aim reads PrimaryPointerInfo each tick.
+  if (primaryPointer) {
+    preregisterRendererInjectedComponents(sceneEngine)
+    const PrimaryPointerInfo = generated.PrimaryPointerInfo(sceneEngine)
+    writeHostLwwNoDirty(PrimaryPointerInfo, sceneEngine.RootEntity as number, {
+      pointerType: primaryPointer.pointerType,
+      screenCoordinates: primaryPointer.screenCoordinates,
+      screenDelta: primaryPointer.screenDelta,
+      worldRayDirection: primaryPointer.worldRayDirection
+    })
+    // Intentional silence — enable only if we re-wire ppidiag to the worker boot flags.
+    if (workerPpiDiagEnabled) {
+      const now = performance.now()
+      if (now - lastWorkerPpiLogAt >= WORKER_PPI_LOG_MS) {
+        lastWorkerPpiLogAt = now
+        const d = primaryPointer.worldRayDirection
+        const s = primaryPointer.screenCoordinates
+        workerLog(
+          'log',
+          `[sceneWorker] PPI apply screen=(${s.x.toFixed(0)},${s.y.toFixed(0)}) ` +
+            `ray=(${d.x.toFixed(3)},${d.y.toFixed(3)},${d.z.toFixed(3)})`
+        )
+      }
+    }
+  } else if (workerPpiDiagEnabled) {
+    const now = performance.now()
+    if (now - lastWorkerPpiMissingLogAt >= 2000) {
+      lastWorkerPpiMissingLogAt = now
+      workerLog('warn', '[sceneWorker] PPI missing on play-frame-tick — bobber aim may stall')
+    }
+  }
 }
 
 /**
@@ -1238,11 +1572,13 @@ function publishVcPoseLiveEgress(): void {
 
 initSceneEngineScheduler({
   log: (message) => workerLog('log', message),
+  logWarn: (message) => workerLog('warn', message),
   hydrationIntervalMs: HYDRATION_ENGINE_TICK_INTERVAL_MS,
   tickAbortMs: ENGINE_TICK_ABORT_MS,
   isHydration: () => sceneOnUpdatePaused,
   resolvePlayIntervalMs: () => engineTickIntervalMs,
   pointerBlocksTick: () => pointerBlocksEngineTick(),
+  onBeforeEngineUpdate: () => applyHostReservedSceneStore(),
   queuePointerUiEgress: (snapshot) => {
     pointerUiMountSnapshot = snapshot
     pointerUiMountEgressPending = true
@@ -1256,7 +1592,17 @@ initSceneEngineScheduler({
         : snapshot.length > 0
           ? extractSnapshotMountEntityIds(snapshot)
           : []
-    lastOutboundUiEntitiesKey = uiEntities.join(',')
+    const uiKey = uiEntities.join(',')
+    // Content-aware fingerprint — entity:componentId alone dropped timer/score UiText
+    // updates forever (same rows, new values → fpKey match → silent skip → clock skips).
+    const snapFp = uiMountSnapshotContentFp(snapshot) // shared content fp (workerSceneUiCrdtOutbound)
+    const fpKey = `${uiKey}@@${snapFp}`
+    if (fpKey === lastUiMountSnapshotFp) {
+      return false
+    }
+    // Platform law: identical content+mount never re-posts. No wall-clock rate limit.
+    lastUiMountSnapshotFp = fpKey
+    lastOutboundUiEntitiesKey = uiKey
     logSceneUiOutbound(new Uint8Array(0), uiEntities, snapshot.length)
     ctx.postMessage({
       type: 'crdt-outbound',
@@ -1264,6 +1610,7 @@ initSceneEngineScheduler({
       uiEntities,
       uiMountSnapshot: snapshot
     } satisfies SceneWorkerOutbound)
+    return true
   },
   onStuckRecover: () => {
     interruptPendingOutboundAcks()
@@ -1272,6 +1619,7 @@ initSceneEngineScheduler({
     clearInjectOnlySdkPollEventsDeferred()
   },
   onAfterEngineTick: () => {
+    flushPlayModeColdCrdtEgress(postPlayModeColdCrdtFireAndForget)
     publishVcBindHydrateIfNeeded()
     publishPlayerFrameIfChanged()
     publishVcPoseLiveEgress()
@@ -1296,6 +1644,7 @@ initSceneEngineScheduler({
       sceneUpdatePromiseActive = false
     }
     completePlayFrameColdEgress()
+    ctx.postMessage({ type: 'play-frame-done' } satisfies SceneWorkerOutbound)
   },
   onInjectOnlyUiPointerTickDone: () => {
     markDeferSdkPollEventsAfterInjectUiClick()
@@ -1314,14 +1663,9 @@ initSceneEngineScheduler({
       'log',
       `[sceneWorker] sceneUi inject complete — session ended, ticks unpaused (mountGrew=${mountGrew ? 1 : 0})`
     )
-    // Kick immediately — do not wait for post-tick CRDT flush/ack (that starved fade).
-    const kick = (): void => {
-      if (!sceneEngine || sceneTicksPaused || pointerBlocksEngineTick()) return
+    if (sceneEngine && !sceneTicksPaused && !pointerBlocksEngineTick()) {
       requestSceneEngineTick()
     }
-    kick()
-    queueMicrotask(kick)
-    setTimeout(kick, 0)
   }
 })
 
@@ -1334,15 +1678,19 @@ function workerVerboseLog(
   workerLog(level, message)
 }
 
-/** Hydration keeps engine.update alive for splash/composite — pointer pause must not freeze it. */
+/**
+ * When true, cooperative eng.update is deferred (tickQueued).
+ *
+ * COD B2 — **Pointer never stops L2 clocks**: do **not** block on pointer input session
+ * alone. Session only coalesces keyboard; timers/VC/tweens/isPressed reassert need
+ * play-frame eng.update while mouse is held. Block only mid-inject or explicit pause.
+ */
 function pointerBlocksEngineTick(): boolean {
-  // Block only while inject eng.update is mid-flight — not during post-tick CRDT flush/ack
-  // (pointerDeliverWorkInFlight). That flush can take 100ms+ and starved nZ(dt) Color4.a fade
-  // + PE unmount after sceneUi click while main applied mount snapshots.
+  // Mid inject eng.update / queued deliver — must not interleave.
   if (pointerDeliveryInFlight || queuedPointerDeliver) return true
   if (sceneOnUpdatePaused) return false
   if (flightPumpBypassPause) return false
-  if (isPointerInputSessionActive()) return true
+  // pendingInjectPointer / deliver batch: short-lived only after edge.
   return sceneTicksPaused || !!pendingInjectPointer || pointerDeliverBatchOpen
 }
 
@@ -1357,7 +1705,7 @@ const SCENE_FLIGHT_TICK_MIN_MS = 16
 let lastFlightPumpLogAt = 0
 
 /**
- * Level-state reassert for keyboard relay.
+ * Level-state reassert for keyboard relay + held pointer buttons.
  *
  * Neurolink drone (and many vehicles) use `inputSystem.isTriggered(PET_DOWN/UP)` edge
  * latches — NOT sticky `isPressed`. Those edges only count when PET timestamps land in
@@ -1366,6 +1714,9 @@ let lastFlightPumpLogAt = 0
  *
  * Always re-fire PET_DOWN with a fresh timestamp for every currently held key so
  * isTriggered(DOWN) is true every tick while the key is down. PET_UP only on release.
+ *
+ * Pointer: browser pointerdown/up is split across edges; without reassert, a quick click
+ * never leaves a play frame with isPressed true (DOWN+UP same second → hold systems no-op).
  */
 function reassertPressedKeysOnEngine(): void {
   if (!sceneEngine) return
@@ -1394,6 +1745,10 @@ function reassertPressedKeysOnEngine(): void {
       tickNumber
     })
   }
+  // Intentionally no IA_POINTER reassert here.
+  // @dcl/ecs getClick pairs last UP with the previous DOWN on that entity. Reasserting
+  // PET_DOWN on PlayerEntity every play frame poisons getClick pairing for any scene.
+  // isPressed(IA_POINTER) stays true from the original inject DOWN until browser UP.
 }
 
 /** PE vehicle/drone — engine.update even when residual pointer session would block primary ticks. */
@@ -1812,7 +2167,22 @@ function deliverTweenStateInbound(chunks: Uint8Array[]): void {
     'log',
     `[sceneWorker] tween-state-deliver — inject ${tweenPuts} TweenState PUT(s)`
   )
-  void runSceneEngineUpdateNow(0)
+  void (async () => {
+    await runSceneEngineUpdateNow(0)
+    // Sequence may have swapped Tween while state stayed COMPLETED — re-arm next leg
+    // so isCompleted does not fire again on the same COMPLETED snapshot (blimp loop).
+    if (!sceneEngine) return
+    const rearmed = rearmTweenStateAfterSequenceAdvance(sceneEngine)
+    if (rearmed > 0) {
+      workerVerboseLog(
+        debugTweenDeliver,
+        'log',
+        `[sceneWorker] tween-state re-arm after sequence — ${rearmed} entity(s)`
+      )
+      // Second transport tick so createTweenSystem cache sees ACTIVE for the new leg.
+      await runSceneEngineUpdateNow(0)
+    }
+  })()
 }
 
 /**
@@ -1871,15 +2241,21 @@ function flushDeferredRendererInbound(opts?: { applyOnly?: boolean }): void {
   }
 }
 
+
+
 function logSceneUiOutbound(data: Uint8Array, uiEntities?: number[], snapshotRows = 0): void {
   sceneUiOutboundLogCount++
+  // Empty UI mount spam was logging every post (snapshotRows>0 always) — throttle to 1/s.
   const alwaysLog =
     sceneUiOutboundLogCount <= SCENE_UI_OUTBOUND_LOG_LIMIT ||
-    (data.byteLength > 0 && sceneUiOutboundLogCount <= SCENE_UI_OUTBOUND_LOG_LIMIT + 8) ||
-    snapshotRows > 0
+    (data.byteLength > 0 && sceneUiOutboundLogCount <= SCENE_UI_OUTBOUND_LOG_LIMIT + 8)
+  const emptyUiThrottled =
+    data.byteLength === 0 &&
+    snapshotRows > 0 &&
+    (sceneUiOutboundLogCount <= 8 || sceneUiOutboundLogCount % 40 === 0)
   const debugLog =
     debugSceneUiLog && (sceneUiOutboundLogCount <= 8 || sceneUiOutboundLogCount % 25 === 0)
-  if (!alwaysLog && !debugLog) return
+  if (!alwaysLog && !emptyUiThrottled && !debugLog) return
   workerLog(
     'log',
     `[sceneWorker] crdt-outbound #${sceneUiOutboundLogCount} bytes=${data.byteLength} uiEntities=${uiEntities?.length ?? 0} snapshotRows=${snapshotRows}`
@@ -1995,52 +2371,374 @@ function chunkByteCount(chunks: Uint8Array[]): number {
   return chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
 }
 
-function executePointerInjection(body: InjectPointerClickBody, injectOnly = false): void {
-  preemptForPointerDelivery()
-  if (isEngineUpdateInFlight()) {
-    forceRecoverStuckSceneEngineTick('inject-pointer-click-preempt')
-  }
-  // Mesh open-panel: pause cooperative ticks until deliver-done.
-  // sceneUi (CBD welcome splash, DOM HUD): do NOT pause — onMouseDown starts Color4.a fade
-  // systems that need real eng.update(dt) every frame. Pausing froze the scrim opaque.
-  if (!body.sceneUi) {
-    sceneTicksPaused = true
-  }
-  workerVerboseLog(
-    debugPointerDeliver,
-    'log',
-    `[sceneWorker] inject-pointer-click entity=${body.entity} button=${body.button} ts=${body.downTimestamp}/${body.upTimestamp}` +
-      ` sceneUi=${body.sceneUi ? 1 : 0}`
-  )
-  if (!sceneEngine) {
-    pendingInjectPointer = body
-    workerLog('warn', '[sceneWorker] inject-pointer-click queued — sceneEngine missing (no ack until bound)')
-    return
-  }
-  pendingInjectPointer = null
-  try {
-    pendingSplitPointerInject = body
-    workerVerboseLog(
-      debugPointerDeliver,
-      'log',
-      '[sceneWorker] inject-pointer-click — queued split DOWN/UP inject for pointer tick'
+/**
+ * Hard cap for one eng.update on a no-target edge. Genesis Plaza (fishing + particles
+ * + 500+ entities) can spend >1s in a single systems pass — awaiting multiple updates
+ * and blocking cooperative ticks (pointerDeliveryInFlight) collapsed FPS to teens.
+ * One inject + one budgeted update per edge; follow-up dt via cooperative tick.
+ */
+const NO_TARGET_ENGINE_UPDATE_BUDGET_MS = 450
+
+async function runBudgetedPointerEngineUpdate(
+  label: string,
+  work: () => Promise<void>
+): Promise<'ok' | 'timeout'> {
+  // Race only for edge *ack* timing — never force-release the eng.update mutex.
+  // Releasing mid-update allowed concurrent eng.update and plaza 5s recovery thrash.
+  let timedOut = false
+  const workP = runSerializedEngineUpdateForPointer(work)
+  await Promise.race([
+    workP,
+    new Promise<void>((resolve) => {
+      setTimeout(() => {
+        timedOut = true
+        resolve()
+      }, NO_TARGET_ENGINE_UPDATE_BUDGET_MS)
+    })
+  ])
+  if (timedOut) {
+    workerLog(
+      'warn',
+      `[sceneWorker] ${label} — eng.update budget ${NO_TARGET_ENGINE_UPDATE_BUDGET_MS}ms; edge continues without mutex steal`
     )
-    beginPointerDeliverBatch('inject-pointer-click')
-    workerLog('log', `[sceneWorker] inject-pointer-click batch open injectOnly=${injectOnly} sceneUi=${body.sceneUi ? 1 : 0}`)
-    if (injectOnly) {
-      finalizePointerDelivery('inject-pointer-click')
+    // Let workP settle in background; serial inject queue still awaits via mutex chain.
+  }
+  return timedOut ? 'timeout' : 'ok'
+}
+
+/**
+ * No-target pointer edge (Explorer level-state) — scene-agnostic systems path.
+ * PET on PlayerEntity hitEntity=0 + Camera/PPI + **one** eng.update. No UI settle.
+ *
+ * Platform law: isPressed arms on DOWN, falls on UP. Never invent a PE mesh.
+ * Performance law: never multi-update or hard-await hung plaza systems — that blocks
+ * all cooperative ticks via pointerDeliveryInFlight and tanks FPS (plaza ~13fps bug).
+ */
+async function runNoTargetPointerEdge(
+  eng: NonNullable<typeof sceneEngine>,
+  body: InjectPointerClickBody,
+  phase: string,
+  button: InputActionValue
+): Promise<void> {
+  workerLog('warn', `[sceneWorker] no-target ENTER phase=${phase} button=${button}`)
+  setLevelStatePointerEdgeActive(true)
+  setPointerInteractiveTickActive(false)
+  setPointerInteractivePhase('inject')
+  try {
+    forceReleaseEngineUpdateMutex('no-target-edge')
+    const ppi = body.primaryPointer
+    if (ppi || body.camera) {
+      applyPlayFrameReservedPoses(undefined, body.camera, ppi)
     }
+
+    if (phase === 'down') {
+      // Single frame: optional sticky UP inject then DOWN inject, one eng.update.
+      // (Two full updates on plaza freezes the worker for 1–3s and blocks play ticks.)
+      const sticky = isIaPointerPressedOnEngine(eng, button)
+      await runBudgetedPointerEngineUpdate('no-target-down', async () => {
+        if (ppi || body.camera) {
+          applyPlayFrameReservedPoses(undefined, body.camera, ppi)
+        }
+        if (sticky) {
+          injectLevelStatePointerEdgeOnEngine(eng, body, 'up')
+        }
+        injectLevelStatePointerEdgeOnEngine(eng, body, 'down')
+        await eng.update(0)
+      })
+      if (sticky) {
+        workerLog('warn', '[sceneWorker] no-target DOWN sticky-clear — UP+DOWN same eng.update')
+      }
+      const ground = diagnoseLevelStateGroundRay(eng)
+      const g = ground.ground
+      const pressed = isIaPointerPressedOnEngine(eng, button)
+      workerLog(
+        'warn',
+        `[sceneWorker] no-target DOWN isPressed-arm — pressed=${pressed ? 1 : 0} ` +
+          `camY=${ground.camY?.toFixed(1) ?? '-'} rayY=${ground.rayY?.toFixed(2) ?? '-'} ` +
+          `planeY0=${g ? `(${g.x.toFixed(1)},${g.z.toFixed(1)})` : 'null'} ` +
+          `ppi=${ground.ppi ? 1 : 0} cam=${ground.cam ? 1 : 0} hitEntity=0`
+      )
+      workerLog('warn', `[sceneWorker] no-target EXIT phase=down pressed=${pressed ? 1 : 0}`)
+      return
+    }
+
+    // UP: one release eng.update. Positive-dt follow-up is cooperative (not edge-critical).
+    const mrBefore = countWorkerMeshRenderers(eng)
+    await runBudgetedPointerEngineUpdate('no-target-up', async () => {
+      if (ppi || body.camera) {
+        applyPlayFrameReservedPoses(undefined, body.camera, ppi)
+      }
+      injectLevelStatePointerEdgeOnEngine(eng, body, 'up')
+      await eng.update(0)
+    })
+    const mrAfter = countWorkerMeshRenderers(eng)
+    const delta = mrAfter - mrBefore
+    const ground = diagnoseLevelStateGroundRay(eng)
+    const g = ground.ground
+    const stillPressed = isIaPointerPressedOnEngine(eng, button)
+    workerLog(
+      'warn',
+      `[sceneWorker] no-target UP isPressed-path — MeshRenderer ${mrBefore}→${mrAfter} (Δ=${delta}) ` +
+        `camY=${ground.camY?.toFixed(1) ?? '-'} rayY=${ground.rayY?.toFixed(2) ?? '-'} ` +
+        `planeY0=${g ? `(${g.x.toFixed(1)},${g.z.toFixed(1)})` : 'null'} ` +
+        `ppi=${ground.ppi ? 1 : 0} cam=${ground.cam ? 1 : 0} hitEntity=0 ` +
+        `stillPressed=${stillPressed ? 1 : 0} ` +
+        (delta === 0
+          ? `(Δ=0: no new MeshRenderer this edge — scene gate or no unit selected)`
+          : `(Δ>0: scene dirtied MeshRenderer — CRDT peel should apply)`)
+    )
+    workerLog('warn', `[sceneWorker] no-target EXIT phase=up Δ=${delta}`)
   } catch (err) {
-    pendingSplitPointerInject = null
     workerLog(
       'error',
-      `[sceneWorker] inject-pointer-click failed — ${err instanceof Error ? err.message : String(err)}`
+      `[sceneWorker] no-target FAILED phase=${phase} — ${
+        err instanceof Error ? err.message : String(err)
+      }`
     )
-    beginPointerDeliverBatch('inject-pointer-click')
-    if (injectOnly) {
-      finalizePointerDelivery('inject-pointer-click-error')
+    throw err
+  } finally {
+    setLevelStatePointerEdgeActive(false)
+    setPointerInteractivePhase('none')
+    setPointerInteractiveTickActive(false)
+  }
+}
+
+/** Serialize inject edges so DOWN always fully completes before UP (isPressed arm/release). */
+let pointerInjectSerial: Promise<void> = Promise.resolve()
+
+function enqueuePointerInject(body: InjectPointerClickBody): void {
+  pointerInjectSerial = pointerInjectSerial
+    .then(() => executePointerEdge(body))
+    .catch((err) => {
+      workerLog(
+        'error',
+        `[sceneWorker] inject-pointer-click edge rejected — ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
+      if (!pointerDeliveryInFlight) {
+        pointerDeliverBatchOpen = true
+        finalizePointerDelivery('inject-pointer-click-reject')
+      }
+    })
+}
+
+/**
+ * Universal Explorer press edge for **every** scene (worker-input-architecture).
+ *
+ * Target classes (not scene names):
+ * - no-target (level-state): PlayerEntity PET, hitEntity=0, systems-only
+ * - world PE mesh: entity PET + optional UI settle for mesh-driven HUD
+ * - sceneUi: react-ecs toggle path
+ *
+ * PET_DOWN / PET_UP only; eng.update so inputSystem + scene systems see the edge.
+ */
+async function executePointerHoverEdge(body: InjectPointerClickBody): Promise<void> {
+  const enter = body.phase !== 'hover-leave'
+  const label = enter ? 'pointer-edge-hover-enter' : 'pointer-edge-hover-leave'
+  if (!sceneEngine || !sceneOnStartComplete) return
+  try {
+    if (body.primaryPointer || body.camera) {
+      applyPlayFrameReservedPoses(undefined, body.camera, body.primaryPointer)
+    }
+    injectPointerHoverOnEngine(
+      sceneEngine,
+      body,
+      enter ? PointerEventType.PET_HOVER_ENTER : PointerEventType.PET_HOVER_LEAVE
+    )
+    await sceneEngine.update(0)
+  } catch (err) {
+    workerLog(
+      'warn',
+      `[sceneWorker] ${label} failed — ${err instanceof Error ? err.message : String(err)}`
+    )
+  }
+}
+
+async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
+  if (body.phase === 'hover-enter' || body.phase === 'hover-leave') {
+    await executePointerHoverEdge(body)
+    return
+  }
+  const phase =
+    body.phase === 'up' ? 'up' : body.phase === 'click' ? 'click' : 'down'
+  const label = `pointer-edge-${phase}`
+  const button = body.button as InputActionValue
+  sceneTicksPaused = false
+  if (isPointerInputSessionActive()) {
+    endPointerInputSessionAfterMountResume()
+  }
+  const ppi = body.primaryPointer
+  const sc = ppi?.screenCoordinates
+  // Resolve no-target before held flags so recovered entity=PlayerEntity+hit=0 counts.
+  const treatAsNoTargetEarly =
+    !!body.levelState ||
+    (!body.sceneUi &&
+      (body.hitEntity === 0 || body.hitEntity === undefined) &&
+      (body.entity === 1 ||
+        (sceneEngine != null && body.entity === (sceneEngine.PlayerEntity as number))))
+  // Track held buttons for press lifecycle. No-target also defers cooperative
+  // react-ecs between DOWN and UP so UI thrash does not starve systems on the hold window.
+  if (phase === 'down' && !body.sceneUi) {
+    setWorkerPointerButtonHeld(button, true)
+    if (treatAsNoTargetEarly || body.levelState) setLevelStatePointerHeld(true)
+  } else if (phase === 'up' || phase === 'click' || body.sceneUi) {
+    setWorkerPointerButtonHeld(button, false)
+    if (treatAsNoTargetEarly || body.levelState || phase === 'up' || phase === 'click') {
+      setLevelStatePointerHeld(false)
     }
   }
+  const edgeLine =
+    `[sceneWorker] ${label} e${body.entity} button=${body.button} sceneUi=${body.sceneUi ? 1 : 0} ` +
+    `levelState=${body.levelState ? 1 : 0} noTarget=${treatAsNoTargetEarly ? 1 : 0} ` +
+    `hitEntity=${body.hitEntity ?? '∅'} ` +
+    `heldPointer=[${workerPointerButtonsHeldList().join(',')}]` +
+    (sc ? ` ppi=(${sc.x.toFixed(0)},${sc.y.toFixed(0)})` : ' ppi=missing') +
+    (body.camera
+      ? ` camY=${body.camera.position.y.toFixed(1)}`
+      : ' cam=missing') +
+    (ppi?.worldRayDirection
+      ? ` rayY=${ppi.worldRayDirection.y.toFixed(2)}`
+      : '') +
+    ` (no hold-batch freeze)`
+  // Always warn — log-level edge lines were swallowed under UI thrash.
+  workerLog('warn', edgeLine)
+  if (!sceneEngine || !sceneOnStartComplete) {
+    pendingInjectPointer = body
+    workerLog('warn', `[sceneWorker] ${label} queued — sceneEngine not ready`)
+    postPointerDeliverDone(`${label}-queued`)
+    return
+  }
+  const eng = sceneEngine
+  if (isEngineUpdateInFlight()) {
+    forceRecoverStuckSceneEngineTick(`${label}-preempt`)
+  }
+  pointerDeliveryInFlight = true
+  setPointerDeliveryInFlight(true)
+  // Main arms ~2s deliver-done watchdog. Scene UI DOWN must finish EventSystem
+  // (onMouseDown / welcome fade) — a 600ms race acked deliver-done before update
+  // and the splash needed many clicks. UP can still budget-ack.
+  const EDGE_ACK_BUDGET_MS = body.sceneUi ? 2000 : 1500
+  try {
+    if (ppi || body.camera) {
+      applyPlayFrameReservedPoses(undefined, body.camera, ppi)
+    }
+    let edgeTimedOut = false
+    let noTargetEdgeLogged = false
+    const treatAsNoTarget =
+      treatAsNoTargetEarly ||
+      (!body.sceneUi &&
+        body.entity === (eng.PlayerEntity as number) &&
+        (body.hitEntity === 0 || body.hitEntity === undefined))
+    const logNoTargetEdgeDone = (suffix = ''): void => {
+      if (!treatAsNoTarget || noTargetEdgeLogged) return
+      noTargetEdgeLogged = true
+      workerLog(
+        'warn',
+        `[sceneWorker] no-target edge done phase=${body.phase ?? '?'} ` +
+          `hitEntity=${body.hitEntity ?? 0} flag=${body.levelState ? 1 : 0} ` +
+          `hit=(${body.hitPosition.x.toFixed(1)},${body.hitPosition.y.toFixed(1)},${body.hitPosition.z.toFixed(1)}) ` +
+          `cam=${body.camera ? 'live' : 'missing'} ppi=${body.primaryPointer ? 1 : 0}` +
+          suffix
+      )
+    }
+    // All edges budget-ack so pointerDeliveryInFlight cannot pin cooperative ticks.
+    // No-target used to hard-await hung plaza eng.update (1.5s+) → main 2s fail + ~13fps.
+    const runEdgeWork = async (): Promise<void> => {
+      if (treatAsNoTarget) {
+        workerLog(
+          'warn',
+          `[sceneWorker] no-target DISPATCH phase=${phase} treat=1 eng=1`
+        )
+        await runNoTargetPointerEdge(eng, body, phase, button)
+        logNoTargetEdgeDone()
+        if (phase === 'up' && sceneOnUpdate) {
+          try {
+            // Short poll only — full plaza pollEvents must not own the edge.
+            await Promise.race([
+              runPlayFramePollPhase(sceneOnUpdate, 0),
+              new Promise<void>((r) => setTimeout(r, 200))
+            ])
+          } catch (err) {
+            workerLog(
+              'warn',
+              `[sceneWorker] no-target pollEvents after UP failed — ${
+                err instanceof Error ? err.message : String(err)
+              }`
+            )
+          }
+        }
+      } else {
+        await runSceneEnginePointerTick(eng, async () => {}, body)
+      }
+      await flushPointerDeferredOutboundsAsync()
+    }
+    // Scene-UI DOWN: never budget-cut before EventSystem sees PET_DOWN.
+    const skipBudgetRace = !!body.sceneUi && phase === 'down'
+    const ackBudgetMs = treatAsNoTarget
+      ? NO_TARGET_ENGINE_UPDATE_BUDGET_MS + 250
+      : EDGE_ACK_BUDGET_MS
+    if (skipBudgetRace) {
+      await runEdgeWork()
+    } else {
+      await Promise.race([
+        runEdgeWork(),
+        new Promise<void>((resolve) => {
+          setTimeout(() => {
+            edgeTimedOut = true
+            resolve()
+          }, ackBudgetMs)
+        })
+      ])
+    }
+    if (edgeTimedOut) {
+      logNoTargetEdgeDone(' (budget-timeout)')
+      workerLog(
+        'warn',
+        `[sceneWorker] ${label} — edge budget ${ackBudgetMs}ms exceeded; acking deliver-done (partial)`
+      )
+      interruptPendingOutboundAcks()
+      forceReleaseEngineUpdateMutex(`${label}-edge-budget`)
+      try {
+        await Promise.race([
+          flushPointerDeferredOutboundsAsync(),
+          new Promise<void>((r) => setTimeout(r, 150))
+        ])
+      } catch {
+        /* ack regardless */
+      }
+    }
+  } catch (err) {
+    workerLog(
+      'error',
+      `[sceneWorker] ${label} failed — ${err instanceof Error ? err.message : String(err)}`
+    )
+    try {
+      await Promise.race([
+        flushPointerDeferredOutboundsAsync(),
+        new Promise<void>((r) => setTimeout(r, 200))
+      ])
+    } catch {
+      /* best-effort phase-4 egress before ack */
+    }
+  } finally {
+    // sceneUi DOWN batch already injected UP — ensure hold flag never sticks.
+    if (body.sceneUi) setWorkerPointerButtonHeld(button, false)
+    pointerDeliveryInFlight = false
+    setPointerDeliveryInFlight(false)
+    sceneTicksPaused = false
+    postPointerDeliverDone(label)
+    resumeSceneTicksAfterPointer()
+    requestSceneEngineTick()
+    // CRDT-only delivers queued while inject edge was in-flight must not sit forever
+    // (main no longer arms deliver-done for CRDT-only, but residual queue still matters).
+    drainQueuedPointerDeliver()
+  }
+}
+
+function executePointerInjection(body: InjectPointerClickBody, _injectOnly = false): void {
+  // All scenes / all targets: edge-first lifecycle, serialized so DOWN completes before UP.
+  enqueuePointerInject(body)
 }
 
 function drainPendingInjectPointer(): void {
@@ -2398,15 +3096,16 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
     return
   }
 
-  // Real pointer click batch — pause, inject, finalize via deliver-done lifecycle.
+  // Residual CRDT pointer appends (rare with inject-authoritative edges).
+  // Prefer not to pause long — open batch only for finalize lifecycle.
   preemptForPointerDelivery()
-  sceneTicksPaused = true
   if (!rendererInboundApply && !(sceneEngine && sceneOnStartComplete)) {
     workerLog('warn', '[sceneWorker] pointer-crdt-deliver skipped — rendererInboundApply not bound')
-    finalizePointerDelivery('pointer-crdt-deliver')
+    postPointerDeliverDone('pointer-crdt-deliver-skip')
     return
   }
   try {
+    beginPointerDeliverBatch('pointer-crdt-deliver')
     const { tweenPuts, raycastPuts, videoPlayerPuts, triggerAppends, videoAppends, pointerAppends } =
       applyRendererInboundChunks(chunks)
     workerVerboseLog(
@@ -2420,7 +3119,8 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
       'error',
       `[sceneWorker] pointer-crdt-deliver failed — ${err instanceof Error ? err.message : String(err)}`
     )
-    finalizePointerDelivery('pointer-crdt-deliver')
+    if (pointerDeliverBatchOpen) finalizePointerDelivery('pointer-crdt-deliver')
+    else postPointerDeliverDone('pointer-crdt-deliver-error')
   }
 }
 
@@ -2648,15 +3348,26 @@ function interruptPendingOutboundAcks(): void {
 }
 
 function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
+  // WSP v2 Phase 0b/0.5 — measure crdtSendToRenderer wall + path (nested in sendMessages).
+  const t0 = performance.now()
+  const inBytes = data.byteLength
+  const note = (awaitedAck: boolean, path: CrdtSendPath, outBytes = inBytes) => {
+    noteCrdtSendToRenderer(performance.now() - t0, outBytes, awaitedAck, path)
+  }
+
   if (sceneEvalInProgress) {
+    note(false, 'eval', 0)
     return Promise.resolve([])
   }
   let copy = data.slice()
   // Post-onStart: empty nudges are fire-and-forget; non-empty awaits crdt-outbound-ack.
   if (sceneOnStartComplete && !sceneBootInProgress) {
     if (!shouldAttachUiMountSnapshot() && copy.byteLength > 0) {
-      const stripped = stripSceneUiCrdtBytes(copy)
-      if (!stripped.byteLength) return Promise.resolve([])
+      const stripped = stripHostOwnedLwwBytes(stripSceneUiCrdtBytes(copy))
+      if (!stripped.byteLength) {
+        note(false, 'strip-ui', 0)
+        return Promise.resolve([])
+      }
       copy = stripped.slice()
     }
     if (sceneEngine && copy.byteLength > 0) {
@@ -2666,13 +3377,30 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
       } else {
         copy = stripPlayerFrameComponentsFromCrdt(copy).slice()
       }
-      if (!copy.byteLength) return Promise.resolve([])
+      if (!copy.byteLength) {
+        note(false, 'strip-pe', 0)
+        return Promise.resolve([])
+      }
+    }
+    // Visibility / impulse / paint: present now. Do not wait for play-frame flush
+    // (skipped during hydration) or a pointer-session defer.
+    if (copy.byteLength > 0 && crdtChunkIsHotPresent(copy)) {
+      const hot = stripHostOwnedLwwBytes(stripSceneUiCrdtBytes(copy))
+      if (hot.byteLength) {
+        const outLen = hot.byteLength
+        const path: CrdtSendPath = crdtChunkHasVisibility(hot) ? 'hot-vis' : 'hot-phys'
+        flushPlayModeColdCrdtEgress(postPlayModeColdCrdtFireAndForget)
+        postPlayModeColdCrdtFireAndForget(hot)
+        note(false, path, outLen)
+        return Promise.resolve([])
+      }
     }
     if (shouldDeferPointerOutbound()) {
       if (copy.byteLength > 0) {
-        const nonUi = stripSceneUiCrdtBytes(copy)
+        const nonUi = stripHostOwnedLwwBytes(stripSceneUiCrdtBytes(copy))
         if (nonUi.byteLength) pointerDeferredNonUi.push(nonUi)
       }
+      note(false, 'defer-ptr', 0)
       return Promise.resolve([])
     }
     const attachUiMount = shouldAttachUiMountSnapshot()
@@ -2689,18 +3417,28 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
       : undefined
     const uiKey = attachUiMount ? uiEntities!.join(',') : lastOutboundUiEntitiesKey
     if (copy.byteLength === 0) {
-      if (crdtOutboundEmptyNudgeCoalesced && (!attachUiMount || uiKey === lastOutboundUiEntitiesKey)) {
+      // Empty outbound with the same UI mount set is pure thrash (spam-click
+      // re-posted uiEntities every microtask → main-thread freezes, Tweens stall).
+      if (attachUiMount && uiKey === lastOutboundUiEntitiesKey) {
+        note(false, 'empty-dup', 0)
         return Promise.resolve([])
       }
-      crdtOutboundEmptyNudgeCoalesced = true
-      queueMicrotask(() => {
-        crdtOutboundEmptyNudgeCoalesced = false
-      })
+      // Non-UI empty nudges: one post per microtask is enough for main to pump.
+      if (!attachUiMount && crdtOutboundEmptyNudgeCoalesced) {
+        note(false, 'empty-coal', 0)
+        return Promise.resolve([])
+      }
+      if (!attachUiMount) {
+        crdtOutboundEmptyNudgeCoalesced = true
+        queueMicrotask(() => {
+          crdtOutboundEmptyNudgeCoalesced = false
+        })
+      }
     }
     if (attachUiMount) lastOutboundUiEntitiesKey = uiKey
     // Prefer structured snapshot; strip wire Ui* so main does not double-apply partial shells.
-    if (attachUiMount && uiMountSnapshot?.length) {
-      copy = stripSceneUiCrdtBytes(copy).slice()
+    if (attachUiMount) {
+      copy = stripHostOwnedLwwBytes(stripSceneUiCrdtBytes(copy)).slice()
     }
     if (copy.byteLength === 0) {
       logSceneUiOutbound(copy, uiEntities, uiMountSnapshot?.length ?? 0)
@@ -2713,27 +3451,28 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
           } satisfies SceneWorkerOutbound)
         : ({ type: 'crdt-outbound', data: copy } satisfies SceneWorkerOutbound)
       ctx.postMessage(msg)
+      note(false, 'empty-nudge', 0)
       return Promise.resolve([])
     }
     // Phase 3 — play mode cold CRDT batched per unified frame (no ack).
-    // Physics force/impulse must not wait for the next cooperative tick — pad/bounce
-    // enter→impulse is written mid-frame and main reads it on the following player.update.
+    // Physics force/impulse + Material/MeshRenderer paint boards must not wait for the
+    // next cooperative tick / empty UI serial queue (pixelwars felt 3–5s recolor lag).
     if (!sceneOnUpdatePaused) {
-      if (crdtChunkHasPhysicsCombined(copy)) {
-        postPlayModeColdCrdtFireAndForget(copy)
-        return Promise.resolve([])
-      }
+      const outLen = copy.byteLength
       bufferPlayModeColdCrdt(copy)
+      note(false, 'cold', outLen)
       return Promise.resolve([])
     }
     logSceneUiOutbound(copy, uiEntities, uiMountSnapshot?.length ?? 0)
     const id = ++outboundAckId
+    const outBytes = copy.byteLength
     return new Promise((resolve) => {
       let settled = false
       const finish = (): void => {
         if (settled) return
         settled = true
         pendingOutboundAck.delete(id)
+        note(true, 'ack', outBytes)
         resolve([])
       }
       pendingOutboundAck.set(id, finish)
@@ -2751,8 +3490,13 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
     })
   }
   const id = ++requestId
+  const bootBytes = copy.byteLength
   return new Promise((resolve) => {
-    pendingCrdt.set(id, resolve)
+    const finish = (value: Uint8Array[]): void => {
+      note(true, 'boot', bootBytes)
+      resolve(value)
+    }
+    pendingCrdt.set(id, finish)
     const msg = { type: 'crdt-send', id, data: copy } satisfies SceneWorkerOutbound
     // Do not transfer an empty view's backing buffer — some runtimes deliver a broken payload.
     if (copy.byteLength === 0) ctx.postMessage(msg)
@@ -2867,23 +3611,193 @@ function rpcCommsAdapter(body: CommsAdapterRequest): Promise<{ success: boolean 
   })
 }
 
+/**
+ * Inbound scene-binary stashed from async empty-poll responses (or other ingress).
+ * Applied on the next network transport send (≤1 empty-poll interval lag when empty-fast).
+ */
+function takeBufferedSendBinaryInbound(): Uint8Array[] {
+  if (!pendingInboundBinaries.length) return []
+  return pendingInboundBinaries.splice(0)
+}
+
+const CUSTOM_EVENT_NAME_RE =
+  /teamAssigned|paintDelta|snapshot|joinRoster|paintTick|botPositions|roundReset|requestSnapshot|updateName/
+
+function peekCustomEventName(payload: Uint8Array): string {
+  const n = Math.min(payload.byteLength, 96)
+  let ascii = ''
+  for (let i = 0; i < n; i++) {
+    const b = payload[i]!
+    ascii += b >= 32 && b < 127 ? String.fromCharCode(b) : ' '
+  }
+  return ascii.match(CUSTOM_EVENT_NAME_RE)?.[0] ?? '?'
+}
+
+function isolateSendBinaryInbound(chunks: Uint8Array[] | undefined): Uint8Array[] {
+  if (!chunks?.length) return []
+  return chunks.map((chunk) => isolateCommsBinaryMessage(chunk))
+}
+
+let sendBinaryInboundLogCount = 0
+
+function noteSendBinaryInbound(chunks: Uint8Array[]): void {
+  if (!chunks.length) return
+  sendBinaryInboundLogCount++
+  if (sendBinaryInboundLogCount > 8 && sendBinaryInboundLogCount % 30 !== 0) return
+  const types = new Map<string, number>()
+  const senders = new Set<string>()
+  const events: string[] = []
+  for (const chunk of chunks) {
+    const decoded = decodeCommsBinaryMessage(chunk)
+    if (!decoded) {
+      types.set('bad', (types.get('bad') ?? 0) + 1)
+      continue
+    }
+    senders.add(decoded.sender || '(empty)')
+    const name =
+      decoded.messageType === 6
+        ? `CUSTOM:${peekCustomEventName(decoded.payload)}`
+        : decoded.messageType === 9
+          ? 'AUTH_RES'
+          : decoded.messageType === 7
+            ? 'AUTH_CRDT'
+            : `t${decoded.messageType}`
+    types.set(name, (types.get(name) ?? 0) + 1)
+    if (decoded.messageType === 6 && events.length < 8) {
+      events.push(peekCustomEventName(decoded.payload))
+    }
+  }
+  const typeNote = [...types.entries()].map(([k, v]) => `${k}×${v}`).join(' ')
+  workerLog(
+    'warn',
+    `[sceneWorker] sendBinary inbound n=${chunks.length} ${typeNote} ` +
+      `from=[${[...senders].slice(0, 4).join(',')}] events=[${events.join(',')}]`
+  )
+}
+
 function mergeSendBinaryResponse(body: SendBinaryResponse): SendBinaryResponse {
-  if (!pendingInboundBinaries.length) return body
-  return { data: [...body.data, ...pendingInboundBinaries.splice(0)] }
+  const merged = isolateSendBinaryInbound([...(body.data ?? []), ...takeBufferedSendBinaryInbound()])
+  noteSendBinaryInbound(merged)
+  return { data: merged }
+}
+
+function sendBinaryBodyHasOutbound(body: SendBinaryRequest): boolean {
+  if (body.data?.some((c) => c.byteLength > 0)) return true
+  for (const entry of body.peerData ?? []) {
+    if (entry.data?.some((c) => c.byteLength > 0)) return true
+  }
+  return false
+}
+
+/**
+ * Phase 0.5i — hybrid sendBinary (hardened 0.5g).
+ *
+ * SDK network transport is first every eng.update and always `await sendBinary`, even when
+ * peerData is empty (Genesis xsend=n:0). Blocking that hop made postDump 80–120ms steady
+ * and multi-second freezes when main could not answer.
+ *
+ * History:
+ * - 0.5e fire-and-forget every frame → ~60 posts/s main thrash → 11–17 FPS
+ * - 0.5f coalesce pure-async → sync weird + ~5 FPS
+ * - 0.5g hybrid empty-fast / outbound-await (reverted with e–f before clean A/B)
+ * - 0.5h main empty = drain only (kept; worker still awaited)
+ *
+ * 0.5i:
+ * - **Empty**: never await RTT; resolve with buffered inbound; optional ≤20Hz empty poll
+ *   (one in-flight) so queue still drains without flooding main.
+ * - **Real outbound**: await main (correct multiplayer publish + drain).
+ * - Stuck-flight watchdog clears empty inFlight if response lost (>2s).
+ */
+const SEND_BINARY_EMPTY_POLL_MS = 50
+const SEND_BINARY_EMPTY_STUCK_MS = 2_000
+let lastEmptySendBinaryPostAt = 0
+let emptySendBinaryInFlight = false
+let emptySendBinaryInFlightSince = 0
+
+function stashSendBinaryInbound(chunks: Uint8Array[] | undefined): void {
+  if (!chunks?.length) return
+  for (const chunk of chunks) {
+    if (chunk.byteLength) pendingInboundBinaries.push(chunk)
+  }
+}
+
+function clearEmptySendBinaryInFlight(): void {
+  emptySendBinaryInFlight = false
+  emptySendBinaryInFlightSince = 0
+}
+
+function maybeKickEmptySendBinaryPoll(now: number): boolean {
+  if (emptySendBinaryInFlight) {
+    if (
+      emptySendBinaryInFlightSince > 0 &&
+      now - emptySendBinaryInFlightSince >= SEND_BINARY_EMPTY_STUCK_MS
+    ) {
+      // Response dropped or main hung — allow a new poll; do not leave poll permanently stuck.
+      clearEmptySendBinaryInFlight()
+    } else {
+      return false
+    }
+  }
+  if (now - lastEmptySendBinaryPostAt < SEND_BINARY_EMPTY_POLL_MS) return false
+
+  emptySendBinaryInFlight = true
+  emptySendBinaryInFlightSince = now
+  lastEmptySendBinaryPostAt = now
+  const id = ++requestId
+  pendingSendBinary.set(id, (response) => {
+    clearEmptySendBinaryInFlight()
+    stashSendBinaryInbound(response.data)
+  })
+  ctx.postMessage({
+    type: 'comms-send-binary',
+    id,
+    body: { data: [], peerData: [] }
+  } satisfies SceneWorkerOutbound)
+  return true
 }
 
 function rpcSendBinary(body: SendBinaryRequest): Promise<SendBinaryResponse> {
+  if (sendBinaryBodyHasOutbound(body)) {
+    // Real multiplayer / peer bytes — must reach LiveKit this tick; await main.
+    noteSendBinaryPath('wait')
+    const id = ++requestId
+    return new Promise((resolve) => {
+      pendingSendBinary.set(id, (response) => resolve(mergeSendBinaryResponse(response)))
+      ctx.postMessage({ type: 'comms-send-binary', id, body } satisfies SceneWorkerOutbound)
+    })
+  }
+
+  // Empty: official SDK still awaits sendBinary then __processMessages(response).
+  // Fire-and-forget poll left CUSTOM_EVENT (team/snapshot/paint) in a stash the
+  // current send() never saw — joinRoster ran, replies never hit EventBus.
+  const buffered = takeBufferedSendBinaryInbound()
+  if (buffered.length) {
+    noteSendBinaryPath('fast')
+    maybeKickEmptySendBinaryPoll(performance.now())
+    return Promise.resolve(mergeSendBinaryResponse({ data: buffered }))
+  }
+  noteSendBinaryPath('wait')
   const id = ++requestId
   return new Promise((resolve) => {
     pendingSendBinary.set(id, (response) => resolve(mergeSendBinaryResponse(response)))
-    ctx.postMessage({ type: 'comms-send-binary', id, body } satisfies SceneWorkerOutbound)
+    ctx.postMessage({
+      type: 'comms-send-binary',
+      id,
+      body: { data: [], peerData: [] }
+    } satisfies SceneWorkerOutbound)
   })
 }
 
 function rpcGetUserData(): Promise<UserDataResponse> {
   const id = ++requestId
   return new Promise((resolve) => {
-    pendingUserData.set(id, resolve)
+    pendingUserData.set(id, (body) => {
+      if (body.data?.userId) {
+        lastUserData = body.data
+        applyHostReservedSceneStore()
+      }
+      resolve(body)
+    })
     ctx.postMessage({ type: 'get-user-data', id } satisfies SceneWorkerOutbound)
   })
 }
@@ -2891,7 +3805,23 @@ function rpcGetUserData(): Promise<UserDataResponse> {
 function rpcGetRealm(): Promise<RealmResponse> {
   const id = ++requestId
   return new Promise((resolve) => {
-    pendingRealm.set(id, resolve)
+    pendingRealm.set(id, (body) => {
+      if (body.realmInfo) {
+        cacheHostReserved({
+          realmInfo: {
+            baseUrl: body.realmInfo.baseUrl || '',
+            realmName: body.realmInfo.realmName || '',
+            networkId: body.realmInfo.networkId,
+            commsAdapter: body.realmInfo.commsAdapter || '',
+            isPreview: body.realmInfo.isPreview === true,
+            room: body.realmInfo.room,
+            isConnectedSceneRoom: body.realmInfo.isConnectedSceneRoom === true
+          }
+        })
+        applyHostReservedSceneStore()
+      }
+      resolve(body)
+    })
     ctx.postMessage({ type: 'get-realm', id } satisfies SceneWorkerOutbound)
   })
 }
@@ -3084,9 +4014,11 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     return
   }
   workerLog('log', '[sceneWorker] sceneEngine ok after onStart')
-  // Scenes that call setUiRenderer(fn) without virtualWidth/Height never trip the
-  // virtual-canvas hook — seed Explorer-default canvas so react-ecs can paint.
-  seedWorkerUiCanvasInformation(sceneEngine, 1920, 1080)
+  applyHostReservedSceneStore()
+  // Before the boot tick: plaza fetch-pages → Ztt → fishing init does Transform.get(PlayerEntity).
+  ensureReservedEntityTransforms(sceneEngine)
+  // Pre-7.26 scenes omit virtualWidth/Height — seed the live canvas, never 1920×1080.
+  if (bootCanvas) seedWorkerUiCanvasInformation(sceneEngine, bootCanvas.width, bootCanvas.height)
   try {
     guardVideoPlayerGetMutable(sceneEngine)
   } catch (err) {
@@ -3141,6 +4073,8 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     )
   }
   bindSceneEngineScheduler(sceneEngine)
+  installCrdtEncodeComponentMeters(sceneEngine)
+  bindInboundGuestLwwHostForward(sceneEngine)
   // Explorer order: onStart only queues crdtGetState via transport.onmessage.
   // First engine.update receives those messages (Name/Transform/…) then runs systems.
   // SDK entry-points schedule main() as Infinity priority so it sees main.crdt entities.
@@ -3162,10 +4096,11 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
     )
   }
   await invokeSceneMainBootstrap(exports, { skipMain: sdkStartupOwnsMain })
+  bindInboundGuestLwwHostForward(sceneEngine)
   // Scene main() often creates VC entities; ensure CameraEntity hosts MainCamera so systems that
   // gate on MainCamera.has(CameraEntity) can assign virtualCameraEntity on first tick.
   ensureMainCameraOnCameraEntity(sceneEngine)
-  ensurePlayerEntityTransform(sceneEngine)
+  ensureReservedEntityTransforms(sceneEngine)
 
   if (exports.onUpdate) {
     try {
@@ -3224,10 +4159,25 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       if (ok) {
         workerLog('log', `[sceneWorker] force-locomotion-clear — ${msg.reason ?? 'escape'}`)
       }
+      // Escape from stuck VIEW SHOT / theater VirtualCamera (host suppress pairs with this).
+      if (msg.reason?.includes('vc-clear') || msg.reason?.includes('escape-vc')) {
+        try {
+          const MainCamera = generated.MainCamera(sceneEngine)
+          MainCamera.createOrReplace(sceneEngine.CameraEntity, {})
+          workerLog('log', `[sceneWorker] force MainCamera clear — ${msg.reason}`)
+        } catch (err) {
+          workerLog(
+            'warn',
+            `[sceneWorker] force MainCamera clear failed — ${err instanceof Error ? err.message : String(err)}`
+          )
+        }
+      }
     }
     return
   }
   if (msg.type === 'scene-play-ready') {
+    cacheHostReserved(msg.reserved)
+    applyHostReservedSceneStore()
     playReadyPerformanceTier = msg.performanceTier
     portableExperienceWorker = msg.portableExperience === true
     // Do NOT set playFrameTickMainDriven yet — World often notifies play-ready while main still
@@ -3253,9 +4203,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       playFrameTickMainDriven = true
       workerLog('log', '[sceneWorker] first play-frame-tick — main now drives engine ticks')
     }
-    // Reserved poses first — same message as the tick so CameraFollowSystem sees live PE.
-    if (sceneEngine && (msg.player || msg.camera)) {
-      applyPlayFrameReservedPoses(msg.player, msg.camera)
+    // Reserved poses + pointer first — same message as the tick so CameraFollow /
+    // fishing bobber systems see live PE + PrimaryPointerInfo before engine.update.
+    if (sceneEngine && (msg.player || msg.camera || msg.primaryPointer)) {
+      applyPlayFrameReservedPoses(msg.player, msg.camera, msg.primaryPointer)
     }
     // Snap active PE-follow anchors even when UI holds engine.update (pointer select / menus).
     snapBoundPeFollowAnchorIfNearPlayer()
@@ -3266,24 +4217,26 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     // Dedicated pump bypasses pointer session while still avoiding mid-inject races.
     if (portableExperienceWorker && sceneEngine && !sceneOnUpdatePaused) {
       void runPeVehicleInputPump()
+      ctx.postMessage({ type: 'play-frame-done' } satisfies SceneWorkerOutbound)
       return
     }
-    // Do not gate on sceneTicksPaused: pointer UI hold must not freeze CameraFollow forever
-    // (left the gameplay VC stuck at cameraParent spawn near world origin).
-    // Still avoid overlapping a mid-batch pointer engine.update.
-    // Allow ticks once sceneEngine exists — not only after onStart — so freeze-watch systems
-    // can clear InputModifier while onStart awaits movePlayerTo.
-    // Do not gate on sceneUpdateInFlight — pollEvents runs outside eng.update flight now.
-    // Gating left welcome Color4.a / timers starved whenever plaza onUpdate was slow.
-    if (sceneEngine && !sceneOnUpdatePaused && !pointerDeliverBatchOpen && !pendingInjectPointer) {
-      // Always request — requestSceneEngineTick rate-limits via resolveDt / tickInFlight.
-      requestSceneEngineTick()
-    } else if (sceneEngine && !sceneOnUpdatePaused) {
-      // Engine tick skipped (pointer hold) — still hydrate VC.
-      if (sceneOnStartComplete) {
-        publishVcBindHydrateIfNeeded()
-        publishVcPoseLiveIfBound()
+    // COD B1: play-frame is the sole cooperative clock. Always request eng.update when
+    // scene is not fully paused. pointerBlocksTick() only defers mid-inject — not sessions.
+    // Do not gate on sceneUpdateInFlight (poll is outside eng.update flight).
+    if (sceneEngine && !sceneOnUpdatePaused) {
+      const tickReq = requestSceneEngineTick()
+      if (tickReq === 'idle') {
+        ctx.postMessage({ type: 'play-frame-done' } satisfies SceneWorkerOutbound)
       }
+      // If inject is mid-flight, request queues; still keep VC live poses hot.
+      if (pointerDeliveryInFlight || pointerDeliverBatchOpen || pendingInjectPointer) {
+        if (sceneOnStartComplete) {
+          publishVcBindHydrateIfNeeded()
+          publishVcPoseLiveIfBound()
+        }
+      }
+    } else {
+      ctx.postMessage({ type: 'play-frame-done' } satisfies SceneWorkerOutbound)
     }
     return
   }
@@ -3368,8 +4321,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     return
   }
   if (msg.type === 'get-user-data-response') {
+    if (msg.body.data?.userId) lastUserData = msg.body.data
     pendingUserData.get(msg.id)?.(msg.body)
     pendingUserData.delete(msg.id)
+    applyHostReservedSceneStore()
     return
   }
   if (msg.type === 'get-realm-response') {
@@ -3472,6 +4427,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
   try {
     sceneOnStartComplete = false
     sceneBootInProgress = true
+    resetInboundGuestLwwForward()
+    lastUserData = null
+    lastRealmInfo = null
+    cacheHostReserved(msg.reserved)
     playFrameTickMainDriven = false
     portableExperienceWorker = false
     clearPlayModeColdCrdtBuffer()
@@ -3483,6 +4442,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     debugPointerDeliver = msg.debug?.pointerDeliver === true
     resetWorkerInputSnapshotState()
     workerSnapshotPressed = new Set()
+    clearWorkerPointerButtonsHeld()
     resetPointerInputSession()
     pointerDeliverSerial = Promise.resolve()
     pointerDeliverWorkInFlight = false
@@ -3506,6 +4466,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
           data: msg.scene.bootCrdtSnapshot.data.map((chunk) => chunk.slice())
         }
       : null
+    bootCanvas =
+      msg.canvas && msg.canvas.width > 0 && msg.canvas.height > 0
+        ? { width: Math.floor(msg.canvas.width), height: Math.floor(msg.canvas.height) }
+        : null
 
     let code: string
     const scriptSource = msg.scene.scriptBlobUrl ?? msg.scene.scriptUrl
@@ -3587,6 +4551,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     // Allow the next bundle's first createReactBasedUiSystem to register (worker reuse).
     resetReactEcsOnceGuard()
     installPreregisterRendererComponentsHook()
+    installCrdtTransportMeterHook()
     ;(globalThis as Record<string, unknown>).__THREEJS_WORKER_LOG__ = (message: string) => {
       workerLog('log', message)
     }
@@ -3672,6 +4637,8 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     sceneEngine = resolveSceneEngine(exports)
     bindSceneEngineScheduler(sceneEngine)
     if (sceneEngine) {
+      ensureReservedEntityTransforms(sceneEngine)
+      applyHostReservedSceneStore()
       try {
         preregisterRendererInjectedComponents(sceneEngine)
       } catch (err) {
@@ -3680,6 +4647,8 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
           `[sceneWorker] renderer component preregister skipped — ${err instanceof Error ? err.message : String(err)}`
         )
       }
+      installCrdtEncodeComponentMeters(sceneEngine)
+      bindInboundGuestLwwHostForward(sceneEngine)
       const engineId = (sceneEngine as { _id?: number })._id
       workerLog(
         'log',
@@ -3798,12 +4767,37 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
       'log',
       `[sceneWorker] scene onUpdate ${sceneOnUpdatePaused ? 'paused (hydration)' : 'resumed'}`
     )
+    if (!sceneOnUpdatePaused && wasPaused) completePlayFrameColdEgress()
     return
   }
   if (msg.type === 'inject-pointer-click') {
+    const body = msg.body as InjectPointerClickBody
+    const phase =
+      body?.phase === 'up'
+        ? 'up'
+        : body?.phase === 'click'
+          ? 'click'
+          : body?.phase === 'hover-enter' || body?.phase === 'hover-leave'
+            ? body.phase
+            : 'down'
+    // No-target = empty ray (Explorer level-state): not scene UI, not a PE mesh hit.
+    const noTarget =
+      !body?.sceneUi &&
+      (body?.levelState === true ||
+        body?.hitEntity === 0 ||
+        body?.hitEntity === undefined)
+    // Sync decision log BEFORE enqueue — proves the message hit the live worker bundle.
+    workerLog(
+      'warn',
+      `[sceneWorker] inject RECEIVED e${body?.entity ?? '?'} sceneUi=${body?.sceneUi ? 1 : 0} ` +
+        `levelState=${body?.levelState ? 1 : 0} phase=${phase} ` +
+        `hitEntity=${body?.hitEntity ?? '∅'} noTarget=${noTarget ? 1 : 0} ` +
+        `eng=${sceneEngine ? 1 : 0} onStart=${sceneOnStartComplete ? 1 : 0}`
+    )
     try {
-      const injectOnly = (msg as { injectOnly?: boolean }).injectOnly === true
-      executePointerInjection(msg.body as InjectPointerClickBody, injectOnly)
+      forceRecoverStuckSceneEngineTick('inject-received')
+      forceReleaseEngineUpdateMutex('inject-received')
+      enqueuePointerInject(body)
     } catch (err) {
       workerLog(
         'error',
@@ -3849,6 +4843,13 @@ function drainPendingBootPriority(): void {
 }
 
 bindSceneWorkerPriorityDispatch(dispatchPriorityMessage)
+
+ctx.addEventListener('unhandledrejection', (ev: PromiseRejectionEvent) => {
+  const msg = ev.reason instanceof Error ? ev.reason.message : String(ev.reason ?? '')
+  if (!/Profile not initialized|Couldn't fetch profile data/i.test(msg)) return
+  ev.preventDefault()
+  workerLog('warn', `[sceneWorker] ${msg} (continuing)`)
+})
 
 // Non-priority messages (boot, crdt-response, RPC responses, …).
 ctx.addEventListener(

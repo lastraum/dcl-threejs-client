@@ -44,7 +44,9 @@ export class AvatarAttachBridge {
   constructor(
     private readonly ecs: MirrorComponents,
     private readonly projection: CrdtProjection,
-    private readonly getNodes: () => Map<Entity, THREE.Group> | undefined
+    private readonly getNodes: () => Map<Entity, THREE.Group> | undefined,
+    /** Scene EntityStore root — attach meshes stay here (Godot-style global pose). */
+    private readonly getSceneRoot?: () => THREE.Object3D | null | undefined
   ) {}
 
   setTargets(resolver: AvatarAttachTargetResolver | null): void {
@@ -76,10 +78,11 @@ export class AvatarAttachBridge {
       active.add(entity)
       this.attached.add(entity)
 
-      const playerTransform = resolver.getPlayerTransformDcl(spec.avatarId)
+      const ownerId = this.resolveAttachOwnerId(entity, spec.avatarId, resolver, view)
+      const playerTransform = resolver.getPlayerTransformDcl(ownerId)
       if (!playerTransform) continue
 
-      const skeleton = this.resolveSkeleton(entity, spec.avatarId, resolver, view)
+      const skeleton = this.resolveSkeleton(entity, ownerId, resolver, view)
       if (!skeleton) continue
 
       const anchorPose = sampleAvatarAttachAnchor(
@@ -93,18 +96,21 @@ export class AvatarAttachBridge {
         ? (Transform.get(entity) as DclTransformValues)
         : undefined
 
-      // Player-local relative + parent PlayerEntity so resolveEntityWorldPose (VC, etc.) follows.
+      // Platform law (docs + Tier B): AvatarAttach overwrites Transform with
+      // avatar-relative pose (playerWorld * relative ≈ boneWorld). Parent PE so
+      // getWorldPosition walks PE × relative. Never PE chest +0.88 reparent on mesh.
       const relative = anchorWorldToRelativeTransform(
         playerTransform,
         anchorPose.position,
         anchorPose.quaternion,
         existing
       )
+      const ownerEntity =
+        this.resolveAttachOwnerEntity(ownerId, resolver, view) ??
+        (existing?.parent && existing.parent !== 0 ? existing.parent : view.PlayerEntity)
       const relativeWithParent: DclTransformValues = {
         ...relative,
-        parent: (existing?.parent && existing.parent !== 0
-          ? existing.parent
-          : view.PlayerEntity) as DclTransformValues['parent']
+        parent: ownerEntity as DclTransformValues['parent']
       }
 
       this.projection.setRenderer(Transform.componentId, entity, relativeWithParent)
@@ -112,8 +118,14 @@ export class AvatarAttachBridge {
       // Mesh optional — lights / VC-adjacent attach entities may have no store node yet.
       const node = nodes.get(entity)
       if (node) {
+        const sceneRoot = this.getSceneRoot?.()
+        if (sceneRoot && node.parent !== sceneRoot) {
+          sceneRoot.add(node)
+        }
         const world = composeAvatarAttachedWorldTransform(playerTransform, relativeWithParent)
+        const scale = relativeWithParent.scale
         applyWorldDclTransformToObject(node, world)
+        node.scale.set(scale.x, scale.y, scale.z)
       }
 
       workerBatch.push({
@@ -125,9 +137,13 @@ export class AvatarAttachBridge {
       })
 
       this.cache.set(entity, {
-        avatarId: spec.avatarId,
+        avatarId: ownerId,
         anchorPointId: spec.anchorPointId ?? 0
       })
+
+      // GP fishing: rod GLB is Transform-child of AvatarAttach root; Visibility toggles on
+      // the child (y_/K6e). Re-apply each frame so leave-pond hide is not stuck visible.
+      this.syncAttachChildVisibility(entity, nodes)
     }
 
     for (const entity of this.attached) {
@@ -138,6 +154,72 @@ export class AvatarAttachBridge {
     }
 
     this.lastWorkerBatch = workerBatch
+  }
+
+  /** Honor VisibilityComponent on Transform children of an AvatarAttach root (rod GLB). */
+  private syncAttachChildVisibility(
+    attachRoot: Entity,
+    nodes: Map<Entity, THREE.Group>
+  ): void {
+    const { Transform, VisibilityComponent, GltfContainer } = this.ecs
+    if (!Transform || !VisibilityComponent) return
+    for (const [child, node] of nodes) {
+      if (child === attachRoot) continue
+      if (!Transform.has(child)) continue
+      const parent = Transform.get(child).parent as Entity | undefined
+      if (parent !== attachRoot) continue
+      if (!VisibilityComponent.has(child)) continue
+      const visible = VisibilityComponent.get(child).visible !== false
+      node.visible = visible
+      if (GltfContainer?.has(child)) {
+        node.traverse((o) => {
+          if (o !== node && (o as THREE.Mesh).isMesh) o.visible = visible
+        })
+      }
+    }
+  }
+
+  /**
+   * Owner of an AvatarAttach. Empty avatarId is NOT "always local" — plaza fishing
+   * syncs catch/rod entities with parent = that player's entity. Binding those to
+   * the local skeleton put someone else's fish on our head.
+   */
+  private resolveAttachOwnerId(
+    entity: Entity,
+    avatarId: string | undefined,
+    resolver: AvatarAttachTargetResolver,
+    view: ProjectionView
+  ): string | undefined {
+    const id = avatarId?.trim().toLowerCase()
+    if (id) return id
+
+    const { Transform, PlayerIdentityData } = this.ecs
+    if (!Transform?.has(entity)) return undefined
+    const parent = Transform.get(entity).parent as Entity | undefined
+    if (parent == null || parent === 0) return undefined
+    if (parent === view.PlayerEntity) return resolver.getLocalWallet()?.toLowerCase()
+    if (PlayerIdentityData?.has(parent)) {
+      const address = (PlayerIdentityData.get(parent) as { address?: string }).address
+      if (address) return address.toLowerCase()
+    }
+    return undefined
+  }
+
+  private resolveAttachOwnerEntity(
+    ownerId: string | undefined,
+    resolver: AvatarAttachTargetResolver,
+    view: ProjectionView
+  ): Entity | undefined {
+    const localWallet = resolver.getLocalWallet()?.toLowerCase()
+    const id = ownerId?.trim().toLowerCase()
+    if (!id || (localWallet && id === localWallet)) return view.PlayerEntity
+    const { PlayerIdentityData } = this.ecs
+    if (!PlayerIdentityData) return undefined
+    for (const [playerEntity, identity] of view.getEntitiesWith(PlayerIdentityData)) {
+      const address = (identity as { address?: string }).address?.toLowerCase()
+      if (address === id) return playerEntity
+    }
+    return undefined
   }
 
   private resolveSkeleton(

@@ -2,9 +2,20 @@
 
 export const GENESIS_HEIGHTMAP_MAX_METERS = 120
 export const TERRAIN_SCULPT_DEFAULT_RESOLUTION = 1024
-export const TERRAIN_SEA_FLOOR_WORLD_Y = 0
+
+/**
+ * Client ocean surface Y — keep in sync with `ISLAND_WATER_SURFACE_Y`
+ * (`IslandShoreMaterial` / FFT ocean). “To water” sculpt targets this.
+ */
+export const ARENA_WATER_SURFACE_Y = -1.35
+
+/**
+ * Default / empty heightmap floor — **below** ocean so untouched author terrain
+ * stays submerged under island/open water. Raise brush brings land through the surface.
+ */
+export const TERRAIN_SEA_FLOOR_WORLD_Y = ARENA_WATER_SURFACE_Y - 2.75
+
 export const ARENA_TERRAIN_HEIGHT_OFFSET = 0
-export const ARENA_WATER_SURFACE_Y = 5
 
 export type TerrainBrushMode = 'raise' | 'lower' | 'smooth' | 'flatten' | 'towater'
 /** height = sculpt · splat = surface material · grass = plant ez-tree blade GLBs */
@@ -103,10 +114,11 @@ export const DEFAULT_TERRAIN_PROCEDURAL_SHADING: TerrainProceduralShading = {
   waterFromY: TERRAIN_SEA_FLOOR_WORLD_Y,
   waterToY: ARENA_WATER_SURFACE_Y,
   waterBlendM: 1.5,
-  sandFromY: TERRAIN_SEA_FLOOR_WORLD_Y,
-  sandToY: ARENA_WATER_SURFACE_Y + 1.3,
+  // Beach band just above MSL; grass/rock climb from there.
+  sandFromY: ARENA_WATER_SURFACE_Y - 0.4,
+  sandToY: ARENA_WATER_SURFACE_Y + 1.6,
   sandBlendM: 1.5,
-  grassFromY: ARENA_WATER_SURFACE_Y + 0.5,
+  grassFromY: ARENA_WATER_SURFACE_Y + 0.8,
   grassToY: GENESIS_HEIGHTMAP_MAX_METERS,
   grassBlendM: 2,
   rockFromY: 40,

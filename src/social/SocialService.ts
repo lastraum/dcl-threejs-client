@@ -28,6 +28,11 @@ import { getPrivateMessagesService } from './PrivateMessagesService'
 import type { CommunityFollowController } from './CommunityFollowController'
 import { tryParseFollowWire, type FollowWireMsg } from './communityFollowWire'
 import {
+  bindSharedLiveDirectory,
+  getSharedLiveDirectory,
+  type LiveDirectoryController
+} from './LiveDirectoryController'
+import {
   loadDmLocalThreads,
   removeDmLocalThread,
   saveAllDmLocalThreads,
@@ -161,11 +166,14 @@ export class SocialService {
   private unsubPrivateMessages: (() => void) | null = null
   private unsubCommunityMessages: (() => void) | null = null
   private unsubCommunityFollowData: (() => void) | null = null
+  private unsubGlobalLiveData: (() => void) | null = null
   /**
    * Session-scoped Follow/Tour controller (owned by AppController so it survives
    * World rebuild on /goto). Optional until play wires it.
    */
   private communityFollow: CommunityFollowController | null = null
+  /** Global Live directory — always-on with PM room (2D + 3D). */
+  private liveDirectory: LiveDirectoryController | null = null
 
   /** Wire multi-room publish (pool / controller). Falls back to primary CommsService. */
   setSceneChatTransport(options: {
@@ -187,6 +195,28 @@ export class SocialService {
   /** In-world community Follow / Tour session controller (may be null before play wire). */
   getFollow(): CommunityFollowController | null {
     return this.communityFollow
+  }
+
+  /**
+   * Global Live directory (PM `d3js-live`) — process singleton.
+   * Same instance for 2D shell and 3D World so GO LIVE / heartbeats survive jump-in.
+   */
+  getLiveDirectory(): LiveDirectoryController | null {
+    if (!this.authIdentity || !this.localAddress) {
+      // Still return shared if already live (UI rebinding mid-handoff).
+      const shared = getSharedLiveDirectory()
+      return shared.isBroadcasting() || shared.list().length > 0 ? shared : null
+    }
+    this.ensureLiveDirectory()
+    return this.liveDirectory
+  }
+
+  /** Warm PM + Live directory for Live tab / panel (await before binding UI). */
+  async ensureLiveReady(): Promise<LiveDirectoryController | null> {
+    if (!this.authIdentity || !this.localAddress) return null
+    this.ensureLiveDirectory()
+    await this.ensurePrivateMessagesConnected()
+    return this.liveDirectory
   }
 
   /** Mark a scene chat room live or offline (multi-room pool + primary). */
@@ -1073,9 +1103,12 @@ export class SocialService {
       }
     }
     void run()
+    // Retries every ~5–8s on stream end — log once (was spamming pixelwars idle FPS + debug capture).
     clientDebugLog.log('social', 'Subscribed to friend connectivity updates', {
       level: 'success',
-      alsoConsole: true
+      alsoConsole: true,
+      throttleMs: 30_000,
+      throttleKey: 'social-friend-connectivity-sub'
     })
   }
 
@@ -1281,12 +1314,27 @@ export class SocialService {
         this.communityFollow?.handleRemote(ev.communityId, ev.fromAddress, ev.msg)
       })
     }
+    this.ensureLiveDirectory()
+    if (!this.unsubGlobalLiveData) {
+      this.unsubGlobalLiveData = this.privateMessages.subscribeGlobalLive((ev) => {
+        this.liveDirectory?.handleRemote(ev.fromAddress, ev.msg)
+      })
+    }
     if (this.privateMessages.isConnected()) {
       this.notifyChannelChange()
       return
     }
     await this.privateMessages.connect(this.authIdentity, this.localAddress)
     this.notifyChannelChange()
+  }
+
+  private ensureLiveDirectory(): void {
+    // Always rebind identity/publish onto the process singleton (2D → 3D handoff).
+    this.liveDirectory = bindSharedLiveDirectory({
+      publish: (msg) => this.privateMessages.sendGlobalLive(msg),
+      getLocalAddress: () => this.localAddress,
+      getDisplayName: () => this.displayName || 'You'
+    })
   }
 
   private retainPrivateMessages(): void {
@@ -1302,6 +1350,11 @@ export class SocialService {
     this.unsubCommunityMessages = null
     this.unsubCommunityFollowData?.()
     this.unsubCommunityFollowData = null
+    this.unsubGlobalLiveData?.()
+    this.unsubGlobalLiveData = null
+    // Keep shared Live directory + heartbeats alive across SocialService swaps
+    // (2D shell dispose → World.social). Only drop the local ref.
+    this.liveDirectory = null
     // Shared room: release holder; only the last SocialService tears down LiveKit.
     if (this.privateMessagesRetained) {
       this.privateMessages.release()

@@ -169,12 +169,20 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
   {
     id: 'ui:ecs-scene-ui',
     name: 'In-scene ECS UI (UiTransform…)',
-    status: 'partial',
+    status: 'render',
     category: 'client-ui',
     notes:
-      'Yoga + DOM · hit-map from layoutBoxes+layoutToScreen · nine-slice border-image (HTTP OK, natural size) · UiInput/UiDropdown writeback · uvs/text-measure polish remain'
+      'Production path (smoke-pass): Yoga + DOM · hit-map · nine-slice · Color4×texture · UiInput/UiDropdown writeback · free z-stack · leave cleanup. One-off scene bugs only — not a platform rebuild'
   },
-  { id: 'ui:voice-ui', name: 'Voice / mic UI', status: 'render', category: 'client-ui', notes: 'Explorer NEARBY VOICE: Hear others + Speak + hold T; mute-in-bg; name-tag bars; 3D PositionalAudio falloff' }
+  { id: 'ui:voice-ui', name: 'Voice / mic UI', status: 'render', category: 'client-ui', notes: 'Explorer NEARBY VOICE: Hear others + Speak + hold T; mute-in-bg; name-tag bars; 3D PositionalAudio falloff' },
+  {
+    id: 'ui:p2p-trade',
+    name: 'P2P in-world wearable trade',
+    status: 'render',
+    category: 'client-ui',
+    notes:
+      'v2.0: context-menu invite → dual offer window → PM offer sync → on-chain settle (EIP-712). Not shell marketplace catalog / saved outfits'
+  }
 ]
 
 /** Comms, content, identity — explorer shell (frozen during renderer re-arch). */
@@ -211,7 +219,7 @@ export const NETWORKING_INTEGRATION: IntegrationEntry[] = [
   },
   { id: 'net:scene-binary', name: 'RFC4 Scene binary packets', status: 'render', category: 'networking', notes: 'comms topic → scene script' },
   { id: 'net:archipelago', name: 'Archipelago adapter', status: 'stub', category: 'networking', notes: 'Scaffold; LiveKit primary path' },
-  { id: 'net:voice-tracks', name: 'Voice tracks (WebRTC)', status: 'render', category: 'networking', notes: 'LiveKit mic: worlds=world room; parcels=island+scene; spatial PositionalAudio on peer avatars; archipelago genesis Z; handoff keepLiveKit' },
+  { id: 'net:voice-tracks', name: 'Voice tracks (WebRTC)', status: 'render', category: 'networking', notes: 'LiveKit mic: worlds=world room; parcels=scene preferred (island fallback only); single media room (no dual island+scene); archipelago WS for presence seed/Stats' },
   { id: 'net:signed-fetch', name: 'SignedFetch (ADR-44)', status: 'render', category: 'networking', notes: 'Worker RPC → main thread' },
   { id: 'net:catalyst-content', name: 'Catalyst content resolution', status: 'render', category: 'networking' },
   { id: 'net:wallet-session', name: 'Wallet / Catalyst session', status: 'render', category: 'networking' },

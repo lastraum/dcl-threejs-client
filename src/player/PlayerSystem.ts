@@ -7,6 +7,29 @@ import { SDK_RESERVED } from '../bridge/reservedEntities'
 import { ReservedEntitiesSync, type EntityPose } from '../bridge/ReservedEntitiesSync'
 import { NameTag } from '../client/ui/NameTag'
 import { areSceneNameTagsVisible } from '../client/ui/nameTagVisibility'
+import { isTextInputFocused } from '../client/ui/textInputFocus'
+
+/** Module latch — Escape is not an IA_* action on the hub. */
+let virtualCameraEscapeLatched = false
+if (typeof window !== 'undefined') {
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      if (e.code === 'Escape' || e.key === 'Escape') virtualCameraEscapeLatched = true
+    },
+    true
+  )
+  window.addEventListener(
+    'keyup',
+    (e) => {
+      if (e.code === 'Escape' || e.key === 'Escape') virtualCameraEscapeLatched = false
+    },
+    true
+  )
+  window.addEventListener('blur', () => {
+    virtualCameraEscapeLatched = false
+  })
+}
 import { cameraCollisionDebug } from '../debug/CameraCollisionDebug'
 import type { PhysXWorld } from '../physics/PhysXWorld'
 import type { SceneHost } from '../rendering/SceneHost'
@@ -63,6 +86,7 @@ import { clientSettings } from '../rendering/ClientSettings'
 import type { ForcedCameraMode } from '../input/CameraModeAreaSystem'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { clearPointerLockAim, setPointerLockAimFromCanvas } from '../input/pointerLockAim'
+import { clientCameraNearForBoomDistance } from '../camera/cameraDepthPolicy'
 
 /** PB CameraType — numeric (isolatedModules cannot import const enum). */
 const CT_FIRST_PERSON = 0
@@ -92,18 +116,79 @@ const _camEuler = new THREE.Euler(0, 0, 0, 'YXZ')
 const _camPos = new THREE.Vector3()
 
 const POINTER_LOOK_SPEED = 0.003
-const CAM_PIVOT_HEIGHT = 1.45
+/** Boom pivot Y (m above feet) — far 3rd person (chest/shoulders). */
+const CAM_PIVOT_HEIGHT_FAR = 1.48
+/** Boom pivot when zoomed in — sit higher, behind the head. */
+const CAM_PIVOT_HEIGHT_NEAR = 1.72
 const CAM_EYE_HEIGHT = 1.82
-const CAM_LOOK_HEIGHT = 1.15
+/** Look-at Y far — upper chest / neck (was 1.15 = mid-shoulders). */
+const CAM_LOOK_HEIGHT_FAR = 1.42
+/** Look-at Y near zoom — head focus. */
+const CAM_LOOK_HEIGHT_NEAR = 1.7
 const CAM_DISTANCE_DEFAULT = 4.5
 const CAM_DISTANCE_MIN = 0
 const CAM_FPV_MAX_DISTANCE = 0.35
 const CAM_DISTANCE_MAX = 16
+/** Lateral boom offset — taper toward 0 when zoomed in (stay behind head, not shoulder). */
 const CAM_SHOULDER_OFFSET = 0.3
+const CAM_SHOULDER_CLOSE_DIST = 1.4
 const CAM_PITCH_DEFAULT = 0.35
+/** Far 3rd-person floor — boom stays on/above the horizontal ring (no look-up into sky). */
 const CAM_PITCH_MIN = 0
 const CAM_PITCH_MAX = Math.PI / 2 - 0.02
+/** Full look-up (toward zenith) when FPV / ultra-close boom. */
+const CAM_PITCH_LOOK_UP = -CAM_PITCH_MAX + 0.05
+/**
+ * Beyond this boom distance (m), pitch cannot go below {@link CAM_PITCH_MIN}
+ * (locks sky look-up). Between FPV and this, min pitch lerps FPV look-up → horizontal.
+ */
+const CAM_PITCH_LOOK_UP_LOCK_DIST = 5.5
+/** Zoom closer than this → full near pivot/look (behind head). */
+const CAM_HEIGHT_NEAR_DIST = 1.15
+/** Zoom farther than this → far pivot/look (classic 3rd person). */
+const CAM_HEIGHT_FAR_DIST = 6.0
 const ZOOM_WHEEL_SPEED = 0.004
+
+/**
+ * Min freecam boom pitch vs zoom distance.
+ * Close: allow angling up into the sky (negative boom pitch).
+ * Far 3rd-person: lock to horizontal+ only so orbit stays grounded.
+ */
+function pitchMinForDistance(dist: number): number {
+  if (dist <= CAM_FPV_MAX_DISTANCE) return CAM_PITCH_LOOK_UP
+  if (dist >= CAM_PITCH_LOOK_UP_LOCK_DIST) return CAM_PITCH_MIN
+  const t = (dist - CAM_FPV_MAX_DISTANCE) / (CAM_PITCH_LOOK_UP_LOCK_DIST - CAM_FPV_MAX_DISTANCE)
+  const s = t * t * (3 - 2 * t)
+  return THREE.MathUtils.lerp(CAM_PITCH_LOOK_UP, CAM_PITCH_MIN, s)
+}
+
+/** Pivot + look-at heights vs zoom — close frames the head, far sits behind shoulders. */
+function camHeightsForDistance(dist: number): { pivotY: number; lookY: number } {
+  if (dist <= CAM_HEIGHT_NEAR_DIST) {
+    return { pivotY: CAM_PIVOT_HEIGHT_NEAR, lookY: CAM_LOOK_HEIGHT_NEAR }
+  }
+  if (dist >= CAM_HEIGHT_FAR_DIST) {
+    return { pivotY: CAM_PIVOT_HEIGHT_FAR, lookY: CAM_LOOK_HEIGHT_FAR }
+  }
+  const t = (dist - CAM_HEIGHT_NEAR_DIST) / (CAM_HEIGHT_FAR_DIST - CAM_HEIGHT_NEAR_DIST)
+  const s = t * t * (3 - 2 * t)
+  return {
+    pivotY: THREE.MathUtils.lerp(CAM_PIVOT_HEIGHT_NEAR, CAM_PIVOT_HEIGHT_FAR, s),
+    lookY: THREE.MathUtils.lerp(CAM_LOOK_HEIGHT_NEAR, CAM_LOOK_HEIGHT_FAR, s)
+  }
+}
+
+/** True when movePlayerTo authors a real cameraTarget (not empty `{}`). */
+function hasCameraTargetCoords(
+  t: { x?: number; y?: number; z?: number } | null | undefined
+): boolean {
+  if (!t || typeof t !== 'object') return false
+  return (
+    (typeof t.x === 'number' && Number.isFinite(t.x)) ||
+    (typeof t.y === 'number' && Number.isFinite(t.y)) ||
+    (typeof t.z === 'number' && Number.isFinite(t.z))
+  )
+}
 const GRAVITY = 20
 const GROUND_ACCEL = 48
 const AIR_ACCEL = 22
@@ -190,6 +275,8 @@ export class PlayerSystem {
   private readonly playerEntityAttach = new THREE.Object3D()
   private avatar: LocalAvatar | null = null
   private nameTag: NameTag | null = null
+  /** Latest `loadAvatar` wins — overlapping VRM equips must not each attach a pill. */
+  private avatarLoadGen = 0
   private playerIdentity: ProfileIdentity | null = null
   private walkBounds: PlayerWalkBounds | null = null
   private moveTask: {
@@ -234,6 +321,10 @@ export class PlayerSystem {
    */
   private modeFreezeEscapeHandler: (() => void) | null = null
   private lastModeFreezeEscapeAt = 0
+  /** Escape (or host request) — force-clear stuck MainCamera→VirtualCamera theater/VIEW SHOT. */
+  private virtualCameraEscapeHandler: (() => void) | null = null
+  private lastVirtualCameraEscapeAt = 0
+  private virtualCameraEscapeKeyDown = false
   /** DevTools console (not Help panel) — prod mirror may be off. */
   private lastLocomotionBlockedConsoleAt = 0
   /** Stall detect: keys pressed + free locomotion + no feet move (thrash / pin bug). */
@@ -421,6 +512,7 @@ export class PlayerSystem {
     onProgress?: (msg: string) => void,
     profileOverride?: AvatarProfile | null
   ): Promise<void> {
+    const gen = ++this.avatarLoadGen
     onProgress?.('Loading avatar…')
     const avatarOptions = avatarOptionsFromUrl()
     // Only trust the override when it belongs to the profile being rendered —
@@ -430,14 +522,19 @@ export class PlayerSystem {
       (!avatarOptions.profileId ||
         avatarOptions.profileId.toLowerCase() === (profileOverride.address ?? '').toLowerCase())
     try {
-      this.playerIdentity =
+      const identity =
         (await this.avatar?.load(
           overrideApplies ? { ...avatarOptions, profile: profileOverride } : avatarOptions
         )) ?? null
+      if (gen !== this.avatarLoadGen) return
+      this.playerIdentity = identity
     } catch (err) {
+      if (gen !== this.avatarLoadGen) return
       console.warn('Avatar load failed — continuing with invisible capsule', err)
     }
 
+    if (gen !== this.avatarLoadGen) return
+    this.dropNameTag()
     if (this.avatar && this.playerIdentity && areSceneNameTagsVisible()) {
       this.nameTag = NameTag.attach(this.avatar.nameTagAnchor, this.playerIdentity.displayName, {
         textColor: this.playerIdentity.nameColor,
@@ -455,10 +552,17 @@ export class PlayerSystem {
     onProgress?: (msg: string) => void,
     profileOverride?: AvatarProfile | null
   ): Promise<void> {
+    this.dropNameTag()
+    const genBefore = this.avatarLoadGen
+    await this.loadAvatar(onProgress, profileOverride)
+    // A newer equip started while we awaited — that load owns the tag + visibility.
+    if (this.avatarLoadGen !== genBefore + 1) return
+    this.forceRefreshBodyVisibility()
+  }
+
+  private dropNameTag(): void {
     this.nameTag?.dispose()
     this.nameTag = null
-    await this.loadAvatar(onProgress, profileOverride)
-    this.forceRefreshBodyVisibility()
   }
 
   /**
@@ -577,6 +681,11 @@ export class PlayerSystem {
     this.modeFreezeEscapeHandler = handler
   }
 
+  /** Main/World — Escape exits stuck plaza theater / VIEW SHOT VirtualCamera. */
+  setVirtualCameraEscapeHandler(handler: (() => void) | null): void {
+    this.virtualCameraEscapeHandler = handler
+  }
+
   canPlayVoluntaryEmote(): boolean {
     return canVoluntaryEmote(this.getLocomotionConfig())
   }
@@ -605,11 +714,11 @@ export class PlayerSystem {
   }
 
   dispose(): void {
+    this.avatarLoadGen++
     this.resetExternalPhysicsState()
     this.input?.dispose()
     this.input = null
-    this.nameTag?.dispose()
-    this.nameTag = null
+    this.dropNameTag()
     this.avatar?.dispose()
     this.avatar = null
     this.enabled = false
@@ -977,13 +1086,19 @@ export class PlayerSystem {
       if (avatarTarget) {
         this.applyAvatarLookTarget(lookFrom, avatarTarget)
       }
-      if (request.cameraTarget) {
-        this.applyCameraLookTarget(lookFrom, request.cameraTarget)
+      // Only retarget freecam when the scene authors cameraTarget. Without it, keep orbit
+      // angles and immediately re-seat boom on the new feet (do not wait a frame — seat
+      // InputModifier freeze + VC unbind left camera under the pad for a full tick).
+      if (hasCameraTargetCoords(request.cameraTarget)) {
+        this.applyCameraLookTarget(lookFrom, request.cameraTarget!)
+        this.placeFreecamBoomOnFeetHard()
+      } else if (reposition) {
+        this.placeFreecamBoomOnFeetHard()
       }
       if (this.isFirstPerson()) {
         if (request.avatarTarget) {
           this.camYaw = this.playerYaw
-        } else if (request.cameraTarget) {
+        } else if (hasCameraTargetCoords(request.cameraTarget)) {
           this.playerYaw = this.camYaw
         }
       }
@@ -1045,7 +1160,7 @@ export class PlayerSystem {
     // Align freecam orbit so release of the hold does not hard-snap.
     _camEuler.setFromQuaternion(this.host.camera.quaternion, 'YXZ')
     this.camYaw = normalizeAngle(_camEuler.y)
-    this.camPitch = clamp(_camEuler.x, CAM_PITCH_MIN, CAM_PITCH_MAX)
+    this.camPitch = clamp(_camEuler.x, pitchMinForDistance(this.camDistance), CAM_PITCH_MAX)
     this.testingCameraHoldFrames = 4
     return true
   }
@@ -1053,6 +1168,9 @@ export class PlayerSystem {
   update(delta: number): void {
     if (!this.enabled || !this.input) return
     delta = Math.min(delta, 1 / 20)
+
+    // Escape while MainCamera→VC is bound (plaza theater stuck, VIEW SHOT hang).
+    this.pollVirtualCameraEscape()
 
     const locomotion = this.getLocomotionConfig()
     const imBlocked = !canLocomote(locomotion)
@@ -1883,6 +2001,33 @@ export class PlayerSystem {
     return this.virtualCamera?.isActive() === true
   }
 
+  /** True while MainCamera→VC is bound or the bridge is actively driving the lens. */
+  isSceneVirtualCameraBoundOrDriving(): boolean {
+    return this.isSceneVirtualCameraDriving() || this.virtualCamera?.isMainCameraVcBound() === true
+  }
+
+  private pollVirtualCameraEscape(): void {
+    if (!this.virtualCameraEscapeHandler) return
+    if (!this.isSceneVirtualCameraBoundOrDriving()) {
+      this.virtualCameraEscapeKeyDown = false
+      return
+    }
+    if (isTextInputFocused()) return
+    const down = this.isEscapeKeyPhysicallyDown()
+    if (down && !this.virtualCameraEscapeKeyDown) {
+      const now = performance.now()
+      if (now - this.lastVirtualCameraEscapeAt > 400) {
+        this.lastVirtualCameraEscapeAt = now
+        this.virtualCameraEscapeHandler()
+      }
+    }
+    this.virtualCameraEscapeKeyDown = down
+  }
+
+  private isEscapeKeyPhysicallyDown(): boolean {
+    return virtualCameraEscapeLatched
+  }
+
   private releaseFreecamLookForVirtualCamera(): void {
     if (!this.input) return
     this.input.stopOrbitIfActive()
@@ -1908,9 +2053,9 @@ export class PlayerSystem {
       this.camYaw -= this.input.pointer.dx * look
       this.camYaw = normalizeAngle(this.camYaw)
       const pitchDelta = this.input.pointer.dy * look
+      // FPV mouse-up looks up; 3rd mouse-up raises boom (look down ring).
+      // Distance still gates how far you can look into the sky (pitchMinForDistance).
       this.camPitch += this.isFirstPerson() ? -pitchDelta : pitchDelta
-      const pitchMin = this.isFirstPerson() ? -CAM_PITCH_MAX + 0.05 : CAM_PITCH_MIN
-      this.camPitch = clamp(this.camPitch, pitchMin, CAM_PITCH_MAX)
     }
 
     const zoomDelta = this.input.scrollDelta + this.input.pinchZoomDelta * 3
@@ -1926,6 +2071,13 @@ export class PlayerSystem {
         CAM_DISTANCE_MAX
       )
     }
+
+    // Re-clamp after look + zoom so zooming out while sky-gazing locks pitch up.
+    this.camPitch = clamp(
+      this.camPitch,
+      pitchMinForDistance(this.camDistance),
+      CAM_PITCH_MAX
+    )
   }
 
   /**
@@ -1938,35 +2090,45 @@ export class PlayerSystem {
    */
   private seedFreecamFromLastVcLens(): void {
     const cam = this.host.camera
+    const h = camHeightsForDistance(this.camDistance)
     _pivot.copy(this.root.position)
-    _pivot.y += CAM_PIVOT_HEIGHT
+    _pivot.y += h.pivotY
     _offset.copy(cam.position).sub(_pivot)
     const dist = _offset.length()
 
     // Prefer boom invert from lens position (matches Space Runner end keyframe).
-    if (dist >= 0.55) {
+    if (dist >= 0.55 && cam.position.y >= this.root.position.y + 0.45) {
       _offset.multiplyScalar(1 / dist)
+      const seedDist = clamp(dist, CAM_FPV_MAX_DISTANCE + 0.2, CAM_DISTANCE_MAX)
+      this.camDistance = seedDist
       this.camPitch = clamp(
         Math.asin(THREE.MathUtils.clamp(_offset.y, -1, 1)),
-        CAM_PITCH_MIN,
+        pitchMinForDistance(seedDist),
         CAM_PITCH_MAX
       )
       this.camYaw = Math.atan2(_offset.x, _offset.z)
-      this.camDistance = clamp(dist, CAM_FPV_MAX_DISTANCE + 0.2, CAM_DISTANCE_MAX)
     } else {
-      // Lens almost on pivot — fall back to look direction + default third-person range.
+      // Under-floor / on-pivot VC lens — do not seed freecam from it (poker sit under-table).
       _forward.set(0, 0, -1).applyQuaternion(cam.quaternion)
-      if (_forward.lengthSq() > 1e-8) {
+      if (_forward.lengthSq() > 1e-8 && cam.position.y >= this.root.position.y + 0.45) {
         _forward.normalize()
         this.camYaw = Math.atan2(-_forward.x, -_forward.z)
+        if (dist >= 0.55) {
+          this.camDistance = clamp(dist, CAM_FPV_MAX_DISTANCE + 0.2, CAM_DISTANCE_MAX)
+        } else {
+          this.camDistance = CAM_DISTANCE_DEFAULT
+        }
         if (_forward.y <= 0.15) {
           const lookPitch = Math.asin(THREE.MathUtils.clamp(_forward.y, -1, 1))
-          this.camPitch = clamp(-lookPitch, CAM_PITCH_MIN, CAM_PITCH_MAX)
+          this.camPitch = clamp(-lookPitch, pitchMinForDistance(this.camDistance), CAM_PITCH_MAX)
         } else {
           this.camPitch = CAM_PITCH_DEFAULT
         }
+      } else {
+        // Keep prior freecam yaw when possible; force safe pitch/distance.
+        this.camPitch = CAM_PITCH_DEFAULT
+        this.camDistance = CAM_DISTANCE_DEFAULT
       }
-      this.camDistance = CAM_DISTANCE_DEFAULT
     }
 
     // Forced camera mode areas still win after seed.
@@ -1988,6 +2150,84 @@ export class PlayerSystem {
         `pivot=(${_pivot.x.toFixed(1)},${_pivot.y.toFixed(1)},${_pivot.z.toFixed(1)})`,
       { level: 'info', alsoConsole: true }
     )
+  }
+
+  /**
+   * Place freecam boom on current feet **now** (hard snap). Keeps camYaw/pitch/distance
+   * unless the resulting lens would sit under the avatar (then safe third-person defaults).
+   */
+  private placeFreecamBoomOnFeetHard(): void {
+    // If a VirtualCamera still owns the lens, only arm snap for unbind — do not fight VC.
+    if (this.isSceneVirtualCameraDriving() || this.virtualCamera?.isMainCameraVcBound()) {
+      this.freecamSnapAfterVc = true
+      return
+    }
+    this.wasVirtualCameraActive = false
+    this.freecamSnapAfterVc = false
+
+    if (this.forcedCameraMode === 'first_person' || this.camDistance <= CAM_FPV_MAX_DISTANCE) {
+      _pivot.copy(this.root.position)
+      _pivot.y += CAM_EYE_HEIGHT + 0.3
+      _camEuler.set(this.camPitch, this.camYaw, 0)
+      _camQuat.setFromEuler(_camEuler)
+      this.host.camera.position.copy(_pivot)
+      this.host.camera.quaternion.copy(_camQuat)
+      return
+    }
+
+    let pitch = this.camPitch
+    let dist = clamp(this.camDistance, CAM_FPV_MAX_DISTANCE + 0.2, CAM_DISTANCE_MAX)
+    const pitchMin = pitchMinForDistance(dist)
+    pitch = clamp(pitch, pitchMin, CAM_PITCH_MAX)
+    const h = camHeightsForDistance(dist)
+    _pivot.copy(this.root.position)
+    _pivot.y += h.pivotY
+    let cosPitch = Math.cos(pitch)
+    let sinPitch = Math.sin(pitch)
+    let camY = _pivot.y + sinPitch * dist
+    // Refuse under-floor freecam after seat teleports — do not kill intentional close look-up.
+    const floorY = this.root.position.y + 0.35
+    if (camY < floorY && pitch > pitchMin + 0.02) {
+      pitch = Math.max(pitchMin, CAM_PITCH_DEFAULT)
+      dist = Math.max(dist, CAM_DISTANCE_DEFAULT)
+      this.camPitch = pitch
+      this.camDistance = dist
+      cosPitch = Math.cos(pitch)
+      sinPitch = Math.sin(pitch)
+      camY = _pivot.y + sinPitch * dist
+    }
+    this.camPitch = pitch
+
+    _offset.set(
+      Math.sin(this.camYaw) * cosPitch * dist,
+      sinPitch * dist,
+      Math.cos(this.camYaw) * cosPitch * dist
+    )
+    if (pitch < 0.65 && dist > CAM_SHOULDER_CLOSE_DIST) {
+      const shoulderScale =
+        (1 - pitch / 0.65) *
+        Math.min(1, (dist - CAM_SHOULDER_CLOSE_DIST) / (CAM_HEIGHT_FAR_DIST - CAM_SHOULDER_CLOSE_DIST))
+      _shoulder.set(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw))
+      _offset.addScaledVector(_shoulder, CAM_SHOULDER_OFFSET * shoulderScale)
+    }
+    _camPos.copy(_pivot).add(_offset)
+    _lookAt.copy(this.root.position)
+    _lookAt.y += h.lookY
+    this.host.camera.position.copy(_camPos)
+    this.host.camera.lookAt(_lookAt)
+    this.applyCameraNearForBoom(dist)
+    this.host.camera.updateMatrixWorld(true)
+  }
+
+  /** Tighten near plane when over-shoulder so hair/face/hands are not near-clipped. */
+  private applyCameraNearForBoom(dist: number): void {
+    const near = this.isFirstPerson()
+      ? 0.05
+      : clientCameraNearForBoomDistance(dist)
+    if (Math.abs(this.host.camera.near - near) > 1e-4) {
+      this.host.camera.near = near
+      this.host.camera.updateProjectionMatrix()
+    }
   }
 
   private syncCamera(snap: boolean, delta = 0.016): void {
@@ -2013,7 +2253,11 @@ export class PlayerSystem {
         // Never seed a looking-up VC into negative boom (under-floor freecam on unbind).
         if (_forward.y <= 0.15) {
           const lookPitch = Math.asin(THREE.MathUtils.clamp(_forward.y, -1, 1))
-          this.camPitch = clamp(-lookPitch, CAM_PITCH_MIN, CAM_PITCH_MAX)
+          this.camPitch = clamp(
+            -lookPitch,
+            pitchMinForDistance(this.camDistance),
+            CAM_PITCH_MAX
+          )
         } else {
           this.camPitch = CAM_PITCH_DEFAULT
         }
@@ -2061,14 +2305,16 @@ export class PlayerSystem {
       const alpha = hardSnap ? 1 : 1 - Math.exp(-14 * delta)
       this.host.camera.position.lerp(_pivot, alpha)
       this.host.camera.quaternion.slerp(_camQuat, alpha)
+      this.applyCameraNearForBoom(0)
       return
     }
 
+    const h = camHeightsForDistance(this.camDistance)
     _pivot.copy(this.root.position)
-    _pivot.y += CAM_PIVOT_HEIGHT
+    _pivot.y += h.pivotY
 
     _lookAt.copy(this.root.position)
-    _lookAt.y += CAM_LOOK_HEIGHT
+    _lookAt.y += h.lookY
 
     const cosPitch = Math.cos(this.camPitch)
     const sinPitch = Math.sin(this.camPitch)
@@ -2078,9 +2324,16 @@ export class PlayerSystem {
       Math.cos(this.camYaw) * cosPitch * this.camDistance
     )
 
-    if (this.camPitch < 0.65) {
+    if (this.camPitch < 0.65 && this.camDistance > CAM_SHOULDER_CLOSE_DIST) {
+      const shoulderScale =
+        (1 - this.camPitch / 0.65) *
+        Math.min(
+          1,
+          (this.camDistance - CAM_SHOULDER_CLOSE_DIST) /
+            (CAM_HEIGHT_FAR_DIST - CAM_SHOULDER_CLOSE_DIST)
+        )
       _shoulder.set(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw))
-      _offset.addScaledVector(_shoulder, CAM_SHOULDER_OFFSET * (1 - this.camPitch / 0.65))
+      _offset.addScaledVector(_shoulder, CAM_SHOULDER_OFFSET * shoulderScale)
     }
 
     _camDir.copy(_offset).normalize()
@@ -2094,9 +2347,11 @@ export class PlayerSystem {
 
     this.host.camera.position.lerp(_camPos, alpha)
     this.host.camera.lookAt(_lookAt)
+    this.applyCameraNearForBoom(this.camDistance)
   }
 
   private resolveCameraDistance(pivot: THREE.Vector3, direction: THREE.Vector3, maxDistance: number): number {
+    // Default on — `?nocamerasweep` or Help panel to disable.
     if (!cameraCollisionDebug.isWallOcclusionEnabled()) return maxDistance
     const hitDist = this.physics.sweepRay(pivot, direction, maxDistance)
     if (hitDist === null) return maxDistance
@@ -2108,8 +2363,7 @@ export class PlayerSystem {
   private syncNameTag(): void {
     if (!this.playerIdentity) return
     if (!areSceneNameTagsVisible()) {
-      this.nameTag?.dispose()
-      this.nameTag = null
+      this.dropNameTag()
       return
     }
     if (!this.nameTag) {

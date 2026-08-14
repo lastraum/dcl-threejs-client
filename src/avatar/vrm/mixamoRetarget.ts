@@ -1,13 +1,14 @@
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { VRMHumanBoneName, type VRM } from '@pixiv/three-vrm'
+import { buildVrmHipsPositionTrackFromEmote } from '../emoteHipRetarget'
 import { normalizeMixamoBoneName } from '../odk/odkBoneMap'
 
 const q1 = new THREE.Quaternion()
 const restRotationInverse = new THREE.Quaternion()
 const parentRestWorldRotation = new THREE.Quaternion()
 
-/** Mixamo bone names → VRM humanoid keys (genesis-games / Hyperfy). */
+/** Mixamo / DCL humanoid short names → VRM humanoid keys (genesis-games / Hyperfy). */
 const TO_VRM: Record<string, string> = {
   Hips: 'hips',
   Spine: 'spine',
@@ -55,6 +56,40 @@ const TO_VRM: Record<string, string> = {
   mixamorigRightToeBase: 'rightToes'
 }
 
+/**
+ * Map a clip track bone name onto a VRM humanoid key.
+ *
+ * DCL scene/profile emotes (plaza fishing cast/idle, sit, watering, …) target
+ * `Avatar_*` / `CTRL_Avatar_*` deform bones — not Mixamo `mixamorig*`. Without this
+ * strip, retarget produces 0 tracks and LocalAvatar logs
+ * "VRM emote retarget produced no tracks".
+ */
+export function resolveVrmHumanoidKey(trackBoneName: string): string | undefined {
+  const normalized = normalizeMixamoBoneName(trackBoneName)
+  const direct = TO_VRM[normalized] ?? TO_VRM[trackBoneName]
+  if (direct) return direct
+
+  let core = normalized
+  if (core.startsWith('CTRL_FK_Avatar_')) core = core.slice('CTRL_FK_Avatar_'.length)
+  else if (core.startsWith('CTRL_Avatar_')) core = core.slice('CTRL_Avatar_'.length)
+  else if (core.startsWith('Avatar_')) core = core.slice('Avatar_'.length)
+  else return undefined
+
+  // Fingers / extra channels not in the body map → skip (body pose is enough for cast).
+  return TO_VRM[core]
+}
+
+function isHipsPositionBone(name: string): boolean {
+  return (
+    name === 'Root' ||
+    name === 'mixamorigHips' ||
+    name === 'mixamorig:Hips' ||
+    name === 'Hips' ||
+    name === 'Avatar_Hips' ||
+    name === 'CTRL_Avatar_Hips'
+  )
+}
+
 let sharedLoader: GLTFLoader | null = null
 
 function getLoader(): GLTFLoader {
@@ -68,12 +103,7 @@ function filterAndPrepClip(clip: THREE.AnimationClip, glbScene: THREE.Object3D, 
       const [, type] = track.name.split('.')
       if (type !== 'position') return false
       const [name] = track.name.split('.')
-      return (
-        name === 'Root' ||
-        name === 'mixamorigHips' ||
-        name === 'mixamorig:Hips' ||
-        name === 'Hips'
-      )
+      return isHipsPositionBone(name ?? '')
     }
     return true
   })
@@ -87,7 +117,7 @@ function filterAndPrepClip(clip: THREE.AnimationClip, glbScene: THREE.Object3D, 
   clip.tracks.forEach((track) => {
     const rigName = track.name.split('.')[0]
     const node =
-      glbScene.getObjectByName(rigName) ??
+      glbScene.getObjectByName(rigName ?? '') ??
       glbScene.getObjectByName(normalizeMixamoBoneName(rigName ?? ''))
     if (!node) return
     node.getWorldQuaternion(restRotationInverse).invert()
@@ -164,7 +194,7 @@ export function retargetClipToVrm(
   const tracks: THREE.KeyframeTrack[] = []
   for (const track of clip.tracks) {
     const parts = track.name.split('.')
-    const vrmKey = TO_VRM[normalizeMixamoBoneName(parts[0] ?? '')] ?? TO_VRM[parts[0] ?? '']
+    const vrmKey = resolveVrmHumanoidKey(parts[0] ?? '')
     if (!vrmKey) continue
     const nodeName = getBoneName(vrmKey)
     if (!nodeName) continue
@@ -197,18 +227,35 @@ export function retargetClipToVrm(
   return new THREE.AnimationClip(clip.name, clip.duration, tracks)
 }
 
-/** Retarget a loaded emote GLB (DCL / Mixamo bone names) onto a VRM skeleton. */
+/**
+ * Retarget a loaded emote GLB (DCL / Mixamo bone names) onto a VRM skeleton.
+ *
+ * Rotations: standard Mixamo→VRM map. Hips **position**: sit/chair need the authored
+ * lower/Z delta; raw cm keys must not be scaled as absolute (that sinks the mesh).
+ * Locomotion still uses {@link loadRetargetedClip} with hips position stripped.
+ */
 export function retargetGltfClipToVrm(
   clip: THREE.AnimationClip,
   glbScene: THREE.Object3D,
   vrm: VRM
 ): THREE.AnimationClip {
   glbScene.updateWorldMatrix(true, true)
+  vrm.scene.updateWorldMatrix(true, true)
   const prepared = clip.clone()
   filterAndPrepClip(prepared, glbScene, 1)
   const rootToHips = extractRootToHipsMeters(vrm)
-  // Profile emotes may use hip translation — keep position tracks.
-  return retargetClipToVrm(prepared, glbScene, vrm, rootToHips, vrm.meta?.metaVersion)
+  // Rotations only — hips translation injected as rest + meter delta below.
+  const retargeted = retargetClipToVrm(prepared, glbScene, vrm, rootToHips, vrm.meta?.metaVersion, {
+    stripHipsPosition: true
+  })
+  const hipsNode = vrm.humanoid.getRawBoneNode(VRMHumanBoneName.Hips)
+  if (!hipsNode) return retargeted
+  const hipsTrack = buildVrmHipsPositionTrackFromEmote(prepared, glbScene, hipsNode)
+  if (!hipsTrack) return retargeted
+  return new THREE.AnimationClip(retargeted.name, retargeted.duration, [
+    ...retargeted.tracks,
+    hipsTrack
+  ])
 }
 
 export async function loadRetargetedClip(url: string, vrm: VRM): Promise<THREE.AnimationClip> {

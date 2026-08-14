@@ -137,7 +137,6 @@ export class TriggerAreaSystem {
           `${this.volumes.filter((v) => v.mesh !== TRIGGER_MESH_SPHERE).length}box`
         : '')
     clientDebugLog.log('input', msg, { level: 'info', throttleMs: 5000 })
-    clientDebugLog.consoleOnly('info', `[input] ${msg}`)
   }
 
   /**
@@ -216,10 +215,19 @@ export class TriggerAreaSystem {
     }
     const feetDcl = this.sampleFeetDcl()
     out.clear()
+    const feet = feetDcl
+    const KEEP_M2 = 48 * 48
     for (const vol of this.volumes) {
       if ((vol.collisionMask & LOCAL_PLAYER_LAYERS) === 0) continue
       if (!composeTriggerWorldMatrixDcl(vol.entity, worldDeps, this._worldMatrix)) {
         continue
+      }
+      if (feet) {
+        const e = this._worldMatrix.elements
+        const dx = e[12]! - feet.x
+        const dy = e[13]! - feet.y
+        const dz = e[14]! - feet.z
+        if (dx * dx + dy * dy + dz * dz > KEEP_M2) continue
       }
       if (isPlayerInsideTriggerDcl(playerTransform, this._worldMatrix, vol.mesh, undefined, feetDcl)) {
         out.add(vol.entity)
@@ -273,8 +281,9 @@ export class TriggerAreaSystem {
       `feet=(${fx.toFixed(1)},${fy.toFixed(2)},${fz.toFixed(1)}) ` +
       `vols=${this.volumes.length} inside=${insideCount} skipMat=${skippedMatrix} ` +
       `near12m=${nearHits} nearest=${nearest}`
-    clientDebugLog.log('input', msg, { level: 'info' })
-    clientDebugLog.consoleOnly('info', `[input] ${msg}`)
+    if (this.verbose) {
+      clientDebugLog.log('input', msg, { level: 'info', throttleMs: 2500 })
+    }
   }
 
   private logVerboseProbe(

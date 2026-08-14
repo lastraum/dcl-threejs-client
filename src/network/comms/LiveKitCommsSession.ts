@@ -473,7 +473,7 @@ export class LiveKitCommsSession {
     }
   }
 
-  async connect(adapter: string): Promise<boolean> {
+  async connect(adapter: string, opts?: { autoSubscribe?: boolean }): Promise<boolean> {
     const gen = ++this.connectGeneration
     // Tear down previous room without invalidating *this* generation.
     this.teardownRoom()
@@ -581,7 +581,7 @@ export class LiveKitCommsSession {
     room.on(RoomEvent.TrackPublished, forceSubscribeRemoteVideo)
 
     try {
-      await room.connect(url, token, { autoSubscribe: true })
+      await room.connect(url, token, { autoSubscribe: opts?.autoSubscribe !== false })
       // Superseded by a newer connect/disconnect while awaiting join.
       if (gen !== this.connectGeneration || this.room !== room) {
         try {
@@ -644,6 +644,8 @@ export class LiveKitCommsSession {
     }
     for (const address of addresses) {
       if (address === this.localAddress) continue
+      // Gatekeeper participant lists can include auth-server / streamers — never avatar them.
+      if (isNonPlayerLiveKitIdentity(address)) continue
       this.peerHandlers?.onPeerJoin(address, this.transport)
     }
   }
@@ -885,6 +887,23 @@ export class LiveKitCommsSession {
       /* room tore down mid-publish — ignore PC manager closed */
       return false
     }
+  }
+
+  /**
+   * Directed topic data (P2P control planes like trade).
+   * Uses destinationIdentities + topic so only the counterparty receives the packet.
+   */
+  async publishTopicDataTo(
+    topic: string,
+    packet: Uint8Array,
+    destinationAddresses: readonly string[],
+    reliable = true
+  ): Promise<boolean> {
+    if (!this.room || this.room.state !== ConnectionState.Connected) return false
+    if (!destinationAddresses.length) return false
+    const dest = this.resolveDestinationIdentities(destinationAddresses)
+    if (!dest.length) return false
+    return this.safePublishData(packet, reliable, dest, topic)
   }
 
   /** True when a remote participant identity is currently in the room (case-insensitive). */

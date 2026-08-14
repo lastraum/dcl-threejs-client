@@ -2,38 +2,50 @@ import { parseParcelKey } from '../content/parseParcel'
 import { PARCEL_SIZE } from '../content/types'
 import { isSceneParcel, parcelKey, sceneParcelBounds } from './Utils/ParcelGrid'
 
-/** Flat y=0 disc extends this many metres beyond the scene parcel corners. */
-export const ISLAND_FLAT_MARGIN_M = 3
+/**
+ * Island land disc = circumcircle of the scene parcel AABB.
+ * Tiny margin so beach/ocean meet the corners cleanly (no large halo).
+ */
+export const ISLAND_FLAT_MARGIN_M = 0.75
 
-/** Beach ring width in metres (outside the flat scene disc). */
-export const ISLAND_SHORE_RING_M = 12
+/**
+ * Thin sand beach outside the land disc (metres).
+ * Keep short — open “beachy” oceans belong on the water biome, not island.
+ */
+export const ISLAND_SHORE_RING_M = 6
 
 export type IslandShoreLayout = {
+  /** Parcel-grid AABB centre (parcel units). */
   center: { x: number; y: number }
+  /** Parcel units: centre → furthest scene cell centre. */
   coreRadius: number
+  /** Parcel units: core + shoreWidthParcels (landscape scatter ring). */
   outerRadius: number
   shoreWidth: number
-  /** Scene bounding diameter + margin on each side, halved (metres). */
+  /**
+   * Land disc radius in metres: centre → furthest parcel AABB corner + margin.
+   * This is “the island” — a circle that just covers the rectangular footprint.
+   */
   flatRadiusM: number
-  /** Island disc outer edge in metres from scene centre. */
+  /** Outer beach edge in metres (flatRadiusM + shore ring). */
   outerRadiusM: number
 }
 
-/** Centroid of deployed parcel cell centers (matches visual scene footprint). */
+/**
+ * Geometric centre of the scene parcel AABB (parcel units).
+ * Midpoint of the bounding rect — not a weighted centroid of only owned cells —
+ * so a 2×2 square and a sparse L-shape still get a stable circle centre.
+ */
 export function sceneCenterParcel(sceneParcels: string[]): { x: number; y: number } {
   if (!sceneParcels.length) return { x: 0, y: 0 }
-  let sumX = 0
-  let sumY = 0
-  for (const key of sceneParcels) {
-    const p = parseParcelKey(key)
-    sumX += p.x + 0.5
-    sumY += p.y + 0.5
+  const bounds = sceneParcelBounds(sceneParcels)
+  return {
+    x: (bounds.minX + bounds.maxX + 1) / 2,
+    y: (bounds.minY + bounds.maxY + 1) / 2
   }
-  const n = sceneParcels.length
-  return { x: sumX / n, y: sumY / n }
 }
 
-/** Furthest scene cell center from the scene centroid. */
+/** Furthest scene cell center from the scene AABB centre (parcel units). */
 export function sceneCoreRadius(sceneParcels: string[], center: { x: number; y: number }): number {
   let max = 0
   for (const key of sceneParcels) {
@@ -45,8 +57,8 @@ export function sceneCoreRadius(sceneParcels: string[], center: { x: number; y: 
 }
 
 /**
- * Circular island footprint: deployed scene parcels + shore ring in a circle
- * (not a rectangular padding block).
+ * Circular island footprint for landscape scatter: scene parcels + circular shore ring
+ * (parcel units). Visual land/beach still use flatRadiusM / outerRadiusM metres.
  */
 export function islandLandscapeParcelKeys(sceneParcels: string[], shoreWidthParcels: number): string[] {
   const center = sceneCenterParcel(sceneParcels)
@@ -84,38 +96,43 @@ export function islandShoreParcelKeys(sceneParcels: string[], shoreWidthParcels:
 }
 
 /**
- * Flat disc radius: furthest scene parcel corner from centroid + margin.
- * (Using max(width, depth)/2 leaves non-square scenes with a lopsided circle.)
+ * Scene parcel AABB in DCL metres relative to base SW (inclusive parcel rect).
  */
-export function islandFlatRadiusM(sceneParcels: string[], base: { x: number; y: number }): number {
-  const center = islandCenterDcl(sceneParcels, base)
-  let maxDist = 0
-  for (const key of sceneParcels) {
-    const p = parseParcelKey(key)
-    const swX = (p.x - base.x) * PARCEL_SIZE
-    const swZ = (p.y - base.y) * PARCEL_SIZE
-    const corners = [
-      { x: swX, z: swZ },
-      { x: swX + PARCEL_SIZE, z: swZ },
-      { x: swX, z: swZ + PARCEL_SIZE },
-      { x: swX + PARCEL_SIZE, z: swZ + PARCEL_SIZE }
-    ]
-    for (const c of corners) {
-      maxDist = Math.max(maxDist, Math.hypot(c.x - center.x, c.z - center.z))
-    }
+export function islandParcelBoundsM(
+  sceneParcels: string[],
+  base: { x: number; y: number }
+): { minX: number; maxX: number; minZ: number; maxZ: number } {
+  const bounds = sceneParcelBounds(sceneParcels)
+  return {
+    minX: (bounds.minX - base.x) * PARCEL_SIZE,
+    maxX: (bounds.maxX - base.x + 1) * PARCEL_SIZE,
+    minZ: (bounds.minY - base.y) * PARCEL_SIZE,
+    maxZ: (bounds.maxY - base.y + 1) * PARCEL_SIZE
   }
-  return maxDist + ISLAND_FLAT_MARGIN_M
 }
 
-/** Scene-space centre of deployed parcels (DCL metres, +X east / +Z north). */
+/**
+ * Land disc radius (metres): distance from parcel AABB centre to the farthest
+ * corner of that AABB, plus a tight margin. Square N×N → half-diagonal of N×16m.
+ */
+export function islandFlatRadiusM(sceneParcels: string[], base: { x: number; y: number }): number {
+  const box = islandParcelBoundsM(sceneParcels, base)
+  const halfW = (box.maxX - box.minX) * 0.5
+  const halfD = (box.maxZ - box.minZ) * 0.5
+  return Math.hypot(halfW, halfD) + ISLAND_FLAT_MARGIN_M
+}
+
+/**
+ * Island centre in DCL metres (+X east / +Z north) — midpoint of the parcel AABB.
+ */
 export function islandCenterDcl(
   sceneParcels: string[],
   base: { x: number; y: number }
 ): { x: number; z: number } {
-  const center = sceneCenterParcel(sceneParcels)
+  const box = islandParcelBoundsM(sceneParcels, base)
   return {
-    x: (center.x - base.x) * PARCEL_SIZE,
-    z: (center.y - base.y) * PARCEL_SIZE
+    x: (box.minX + box.maxX) * 0.5,
+    z: (box.minZ + box.maxZ) * 0.5
   }
 }
 
@@ -128,6 +145,12 @@ export function islandCenterThree(
   return { x: -c.x, z: c.z }
 }
 
+/**
+ * Island geometry law:
+ *   centre = parcel AABB midpoint
+ *   flatRadiusM = centre → AABB corner (+ tiny margin)  → land disc
+ *   outerRadiusM = flat + thin beach ring                → sand meets water
+ */
 export function islandShoreLayout(
   sceneParcels: string[],
   shoreWidthParcels: number,
@@ -145,7 +168,6 @@ export function islandShoreLayout(
     outerRadius,
     shoreWidth: shoreWidthParcels,
     flatRadiusM,
-    /** Centre → flat disc → beach ring (metres). */
     outerRadiusM: flatRadiusM + ISLAND_SHORE_RING_M
   }
 }

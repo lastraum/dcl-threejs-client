@@ -127,11 +127,17 @@ export function entityHasVisibleUiPaint(ecs: MirrorComponents, entity: Entity): 
     | undefined
   if (bg) {
     const a = bg.color?.a
-    if (a !== undefined && a !== null && a >= 0.05) return true
-    // No color channel — solid default paint is treated as visible scrim.
-    if (bg.color === undefined || bg.color === null) return true
-    // Texture-only backgrounds (splash image, a may be 0 while texture shows).
-    if (bg.texture != null) return true
+    const hasExplicitA = typeof a === 'number' && Number.isFinite(a)
+    if (hasExplicitA) {
+      // Welcome / splash dissolve: Color4.a is the paint channel. A textured
+      // sheet with a < 0.05 is gone — do not keep the fullscreen PE catcher.
+      if (a >= 0.05) return true
+    } else {
+      // No color channel — solid default paint is treated as visible scrim.
+      if (bg.color === undefined || bg.color === null) return true
+      // Texture with omitted a (protobuf omit-zero) still shows the sheet.
+      if (bg.texture != null) return true
+    }
   }
   const text = ecs.UiText.getOrNull(entity) as { value?: string } | null | undefined
   if (text?.value?.trim()) return true
@@ -159,10 +165,9 @@ function forestHasVisiblePaintDescendant(
 
 /**
  * Near-fullscreen PE may capture only when the scene authored a real scrim:
- * pointerFilter BLOCK, visible UiBackground (Color4.a ≥ 0.05 / texture), UiText,
- * **or a descendant with that paint** (CBD welcome: PE on full shell, image on child).
- * Empty transparent full-viewport PE (ghost inventory / dissolved splash) must
- * not block 3D mesh PE.
+ * pointerFilter BLOCK, visible UiBackground (Color4.a ≥ 0.05), UiText,
+ * **or a descendant with that paint** (welcome: PE on full shell, image on child).
+ * Explicit Color4.a < 0.05 (dissolve) and empty transparent PE must not block 3D.
  */
 export function isFullscreenUiPeAllowed(
   ecs: MirrorComponents,

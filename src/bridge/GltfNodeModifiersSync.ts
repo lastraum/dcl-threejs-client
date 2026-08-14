@@ -1,11 +1,19 @@
 import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
 import type { PBGltfNodeModifiers } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/gltf_node_modifiers.gen'
-import type { MaterialApplier, PbMaterial } from './material/MaterialApplier'
+import {
+  meshUvMapsUMirroredHorizontal,
+  poseAwareMirrorX,
+  type MaterialApplier,
+  type PbMaterial
+} from './material/MaterialApplier'
+import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
 
 const ORIG_MAT_KEY = 'dclGltfNodeModOriginalMaterial'
 const ORIG_CAST_KEY = 'dclGltfNodeModOriginalCastShadow'
 const APPLIED_SIG_KEY = 'dclGltfNodeModAppliedSig'
+/** One console line per missing path (plaza fishing stalls share `bobber_color`). */
+const loggedMissingPaths = new Set<string>()
 
 /**
  * Resolve GLTF meshes under an entity for GltfNodeModifiers.path.
@@ -105,10 +113,11 @@ export async function applyGltfNodeModifiersToEntity(
     if (!targets.length) {
       if (mod.material || mod.castShadows !== undefined) {
         allOk = false
-        if (opts?.logPathMiss) {
+        const missKey = String(mod.path ?? '')
+        if (opts?.logPathMiss && !loggedMissingPaths.has(missKey)) {
+          loggedMissingPaths.add(missKey)
           console.warn(
-            '[GltfNodeModifiers] path not found on entity',
-            opts.entity,
+            '[GltfNodeModifiers] path not found',
             JSON.stringify(mod.path),
             'valid:',
             listValidMeshPaths(entityRoot).slice(0, 24)
@@ -137,7 +146,9 @@ export async function applyGltfNodeModifiersToEntity(
 
       // Explicit GltfNodeModifiers.castShadows overrides Material (SDK path-level control).
       if (mod.castShadows !== undefined) {
-        mesh.castShadow = mod.castShadows
+        setMeshDesiredCastShadow(mesh, !!mod.castShadows, 'environment', {
+          gltfDefaultCaster: false
+        })
       }
     }
   }
@@ -153,7 +164,7 @@ export async function applyGltfNodeModifiersToEntity(
 /** Compact UV-mirror × world-reflection fingerprint for each mesh under root. */
 function meshMirrorKey(root: THREE.Object3D): string {
   const parts: string[] = []
-  root.traverse((obj) => {
+  gltfVisualRoot(root).traverse((obj) => {
     if (!(obj as THREE.Mesh).isMesh) return
     const mesh = obj as THREE.Mesh
     const uvM = meshUvMirroredOnX(mesh) ? '1' : '0'
@@ -164,41 +175,17 @@ function meshMirrorKey(root: THREE.Object3D): string {
 }
 
 function meshUvMirroredOnX(mesh: THREE.Mesh): boolean {
-  const pos = mesh.geometry?.getAttribute('position')
-  const uv = mesh.geometry?.getAttribute('uv')
-  if (!pos || !uv || pos.count < 2 || uv.count < 2) return false
-  let minX = Infinity
-  let maxX = -Infinity
-  let uAtMin = 0
-  let uAtMax = 0
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i)
-    if (x < minX) {
-      minX = x
-      uAtMin = uv.getX(i)
-    }
-    if (x > maxX) {
-      maxX = x
-      uAtMax = uv.getX(i)
-    }
-  }
-  if (!(maxX - minX > 1e-5)) return false
-  return uAtMin > uAtMax + 1e-5
+  // Same dominant-axis law as MaterialApplier (event cards face player on Z).
+  return meshUvMapsUMirroredHorizontal(mesh)
 }
 
 function objectScaleMirrorX(obj: THREE.Object3D): boolean {
-  let sx = 1
-  let o: THREE.Object3D | null = obj
-  for (let i = 0; i < 48 && o; i++) {
-    sx *= o.scale.x
-    o = o.parent
-  }
-  return sx < 0
+  return poseAwareMirrorX(obj)
 }
 
 /** Restore materials/castShadows cached before the first GltfNodeModifiers apply. */
 export function restoreGltfNodeModifierOriginals(entityRoot: THREE.Object3D): void {
-  entityRoot.traverse((obj) => {
+  gltfVisualRoot(entityRoot).traverse((obj) => {
     if (!(obj as THREE.Mesh).isMesh) return
     const mesh = obj as THREE.Mesh
     if (mesh.userData[ORIG_MAT_KEY] !== undefined) {
@@ -208,7 +195,7 @@ export function restoreGltfNodeModifierOriginals(entityRoot: THREE.Object3D): vo
       delete mesh.userData[ORIG_MAT_KEY]
     }
     if (mesh.userData[ORIG_CAST_KEY] !== undefined) {
-      mesh.castShadow = !!mesh.userData[ORIG_CAST_KEY]
+      setMeshDesiredCastShadow(mesh, !!mesh.userData[ORIG_CAST_KEY], 'environment')
       delete mesh.userData[ORIG_CAST_KEY]
     }
     delete mesh.userData.primitiveDoubleSided
@@ -242,16 +229,31 @@ function normalizeModifierPath(path: string): string {
     .replace(/\\/g, '/')
 }
 
+/**
+ * glTF exporters often strip Blender trailing `.001` → `001` (or drop the dot).
+ * Scene GltfNodeModifiers still author Unity-style `Building_03_Window.001`.
+ * Compare after removing `.` so path resolution hits without scene-name forks.
+ */
+function gltfNameKey(name: string): string {
+  return name.replace(/\./g, '')
+}
+
+function namesEqual(a: string, b: string, ignoreCase: boolean): boolean {
+  if (ignoreCase ? a.toLowerCase() === b.toLowerCase() : a === b) return true
+  // Dot-stripped match (Building_03_Window.001 ↔ Building_03_Window001).
+  const ak = gltfNameKey(a)
+  const bk = gltfNameKey(b)
+  return ignoreCase ? ak.toLowerCase() === bk.toLowerCase() : ak === bk
+}
+
 function gltfVisualRoot(entityRoot: THREE.Object3D): THREE.Object3D {
+  const drawn = entityRoot.userData.dclDrawVisual as THREE.Object3D | undefined
+  if (drawn) return drawn
   return entityRoot.children.find((c) => c.name.startsWith('__mesh_')) ?? entityRoot
 }
 
 function isRenderMesh(obj: THREE.Object3D): obj is THREE.Mesh {
   return (obj as THREE.Mesh).isMesh === true
-}
-
-function namesEqual(a: string, b: string, ignoreCase: boolean): boolean {
-  return ignoreCase ? a.toLowerCase() === b.toLowerCase() : a === b
 }
 
 /**
@@ -326,7 +328,11 @@ function cacheOriginalAppearance(mesh: THREE.Mesh): void {
     mesh.userData[ORIG_MAT_KEY] = Array.isArray(mat) ? mat.map((m) => m.clone()) : mat.clone()
   }
   if (mesh.userData[ORIG_CAST_KEY] === undefined) {
-    mesh.userData[ORIG_CAST_KEY] = mesh.castShadow
+    // Prefer ungated desired flag so Preferences env toggle can re-apply cleanly.
+    mesh.userData[ORIG_CAST_KEY] =
+      typeof mesh.userData.dclDesiredCastShadow === 'boolean'
+        ? mesh.userData.dclDesiredCastShadow
+        : mesh.castShadow
   }
 }
 

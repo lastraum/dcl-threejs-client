@@ -119,14 +119,27 @@ function repairSkinWeights(geometry: THREE.BufferGeometry): void {
  * Avatar / wearable skinned mesh hygiene.
  * Fixed generous bounds + frustumCulled so off-screen remotes can skip draw
  * without relying on expensive (and often broken) bone-derived spheres.
+ *
+ * Radius must cover outstretched hands / headwear — r≈2.6 was tight enough that
+ * close freecam often frustum-culled faces and hands (bind-pose sphere vs animated pose).
  */
 export function repairSkinnedMesh(mesh: THREE.SkinnedMesh): void {
-  // ~human-sized capsule from feet to head + accessories; better than infinite always-draw.
   if (!mesh.boundingSphere) mesh.boundingSphere = new THREE.Sphere()
-  mesh.boundingSphere.set(new THREE.Vector3(0, 1.0, 0), 2.6)
+  // Center mid-torso; r covers T-pose reach + hats / props (local mesh space).
+  mesh.boundingSphere.set(new THREE.Vector3(0, 1.1, 0), 4.25)
   if (!mesh.geometry.boundingSphere) mesh.geometry.boundingSphere = new THREE.Sphere()
   mesh.geometry.boundingSphere.copy(mesh.boundingSphere)
-  mesh.frustumCulled = true
+  // Head / hands / face: never cull — close zoom + animation stretch is a common false-out.
+  const n = (mesh.name ?? '').toLowerCase()
+  const faceOrHands =
+    n.includes('head') ||
+    n.includes('hand') ||
+    n.includes('face') ||
+    n.includes('mask_') ||
+    n.includes('eye') ||
+    n.includes('mouth') ||
+    n.includes('hair')
+  mesh.frustumCulled = !faceOrHands
   repairSkinWeights(mesh.geometry)
 }
 

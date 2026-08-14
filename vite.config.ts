@@ -43,7 +43,7 @@ export default defineConfig({
       name: 'scene-fetch-proxy',
       enforce: 'pre',
       configureServer(server) {
-        // Dev CORS bypass for fishing auth / third-party scene SignedFetch hosts.
+        // Single generic egress: /api/scene-http/<https|http>/<host>/… (scene fetch + SignedFetch)
         server.middlewares.use(createSceneFetchProxyMiddleware())
       },
       configurePreviewServer(server) {

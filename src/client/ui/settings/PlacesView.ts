@@ -77,23 +77,6 @@ const OVERLAY_SHELL = `
 `
 
 const EXPLORER_SHELL = `
-  <section class="places-view__spotlight" aria-label="Highlighted scenes">
-    <div class="places-view__spotlight-block">
-      <h2 class="places-view__spotlight-title places-view__spotlight-title--live">Live Now</h2>
-      <div class="places-view__carousel places-view__carousel--live" data-live-row role="list"></div>
-      <p class="places-view__spotlight-muted" data-live-empty hidden>Nothing live right now.</p>
-    </div>
-    <div class="places-view__spotlight-block places-view__spotlight-block--featured">
-      <div class="places-view__spotlight-head">
-        <h2 class="places-view__spotlight-title">Featured Places</h2>
-        <div class="places-view__featured-nav">
-          <button type="button" class="places-view__featured-nav-btn" data-featured-prev aria-label="Previous featured page" disabled>&lsaquo;</button>
-          <button type="button" class="places-view__featured-nav-btn" data-featured-next aria-label="Next featured page">&rsaquo;</button>
-        </div>
-      </div>
-      <div class="places-view__carousel places-view__carousel--featured" data-featured-row role="list"></div>
-    </div>
-  </section>
   <section class="places-view__browse" aria-label="Browse all places">
     <div class="places-view__browse-head">
       <nav class="places-view__subtabs places-view__subtabs--browse" data-subtabs role="tablist" aria-label="Places sections">
@@ -110,6 +93,23 @@ const EXPLORER_SHELL = `
       </div>
     </div>
     <div class="places-view__cat-bar" data-cat-bar role="toolbar" aria-label="Filter by category"></div>
+    <section class="places-view__spotlight" aria-label="Highlighted scenes">
+      <div class="places-view__spotlight-block">
+        <h2 class="places-view__spotlight-title places-view__spotlight-title--live">Live Now</h2>
+        <div class="places-view__carousel places-view__carousel--live" data-live-row role="list"></div>
+        <p class="places-view__spotlight-muted" data-live-empty hidden>Nothing live right now.</p>
+      </div>
+      <div class="places-view__spotlight-block places-view__spotlight-block--featured">
+        <div class="places-view__spotlight-head">
+          <h2 class="places-view__spotlight-title">Featured Places</h2>
+          <div class="places-view__featured-nav">
+            <button type="button" class="places-view__featured-nav-btn" data-featured-prev aria-label="Previous featured page" disabled>&lsaquo;</button>
+            <button type="button" class="places-view__featured-nav-btn" data-featured-next aria-label="Next featured page">&rsaquo;</button>
+          </div>
+        </div>
+        <div class="places-view__carousel places-view__carousel--featured" data-featured-row role="list"></div>
+      </div>
+    </section>
     <p class="places-view__status" data-status hidden></p>
     <div class="places-view__results" data-results>
       <div class="places-view__grid" data-grid role="list"></div>

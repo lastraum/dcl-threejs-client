@@ -29,6 +29,7 @@ import {
   worldsContentBase,
   worldsContentsUrl
 } from '../network/worlds/worldsServerConfig'
+import { toSceneHttpProxyUrl } from '../network/sceneHttpProxy'
 /** Same default as dcl-companion server (`MARKETPLACE_SUBGRAPH_URL`). */
 const MARKETPLACE_SUBGRAPH =
   (import.meta.env.VITE_MARKETPLACE_SUBGRAPH_URL as string | undefined)?.trim().replace(/\/$/, '') ||
@@ -85,7 +86,10 @@ export async function fetchWorldNameOwnerAddress(worldName: string): Promise<str
     }
   }`
   try {
-    const res = await fetch(MARKETPLACE_SUBGRAPH, {
+    // subgraph.decentraland.org sends invalid CORS (`Allow-Origin: false`).
+    // Same-origin scene-http pipe (Vite + prod nginx).
+    const url = toSceneHttpProxyUrl(MARKETPLACE_SUBGRAPH) ?? MARKETPLACE_SUBGRAPH
+    const res = await fetch(url, {
       method: 'POST',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -189,10 +193,11 @@ async function resolveWorldDescription(
   customServer?: string | null
 ): Promise<string> {
   const short = worldName.replace(/\.dcl\.eth$/i, '').trim() || worldName
-  const candidates = new Set<string>([worldName, short])
-  if (!worldName.toLowerCase().endsWith('.dcl.eth')) {
-    candidates.add(`${short}.dcl.eth`)
-  }
+  const dotted = `${short}.dcl.eth`
+  // Official worlds content keys are `name.dcl.eth`. Bare `name` 404s.
+  const candidates = customServer
+    ? [...new Set([worldName, short, dotted])]
+    : [...new Set([dotted, worldName.endsWith('.dcl.eth') ? worldName : dotted])]
   for (const name of candidates) {
     const description = await fetchWorldDeploymentDescription(name, customServer)
     if (description) return description

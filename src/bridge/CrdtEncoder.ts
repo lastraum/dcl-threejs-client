@@ -86,11 +86,11 @@ export class CrdtEncoder {
   private readonly growOnlyIds: Set<number>
   private readonly growOnlyById: Map<number, ComponentDef>
   /**
-   * Source-captured grow-only appends since the last `encode()`. The renderer writers
-   * (`PointerEventsSystem`, `VideoPlayerBridge`) call `recordAppend` at the exact
-   * `addValue` site, so we serialize the value at that instant and reproduce one APPEND
-   * per call — byte-exact and immune to grow-only set pruning (which silently drops
-   * older entries the engine still flushed, the cause of the snapshot-diff append misses).
+   * Source-captured grow-only appends since the last `encode()`. Renderer writers
+   * (TriggerArea, Video/Audio/AssetLoad) call `recordAppend` at the exact `addValue`
+   * site so we serialize at that instant and reproduce one APPEND per call — byte-exact
+   * and immune to grow-only set pruning.
+   * **PointerEventsResult is not encoded here** — PE edges use inject-pointer-click only.
    */
   private readonly recordedAppends: EncoderEmit[] = []
   /** Source-captured dynamic LWW PUTs (RaycastResult, etc.). */
@@ -126,7 +126,8 @@ export class CrdtEncoder {
     this.growOnlyIds = new Set(growOnly.map((d) => d.componentId))
     this.growOnlyById = new Map(growOnly.map((d) => [d.componentId, d]))
     // Host dynamic LWW → worker inject (must match injectRendererLwwPuts recordLww path).
-    // Reserved LWW (CameraMode, PrimaryPointerInfo, EngineInfo, …) use reservedTargets.
+    // Reserved LWW (CameraMode, EngineInfo, RealmInfo, …) use reservedTargets.
+    // PE/Cam Transform + PPI ride play-frame-tick, not this encoder.
     const lwwCapture = [
       components.RaycastResult,
       components.VideoPlayer,
@@ -148,20 +149,18 @@ export class CrdtEncoder {
       serialize: (e) => serializeFromProjection(def, projection, e)
     })
 
+    // PE / Camera Transform + PrimaryPointerInfo ride play-frame-tick (no-dirty inject).
+    // Re-encoding them here after every guest outbound was identity echo.
     this.reservedTargets = [
-      mk(components.Transform, reserved.player),
       mk(components.PlayerIdentityData, reserved.player),
       mk(components.AvatarBase, reserved.player),
       mk(components.AvatarEquippedData, reserved.player),
-      mk(components.Transform, reserved.camera),
       // MainCamera.virtualCameraEntity is scene-worker authoritative (VIEW SHOT bind).
       // Round-tripping client projection `{}` cleared worker binds before VC hydrated.
       // Renderer reads MainCamera from worker outbound only (VirtualCameraBridge).
       // Renderer writes 1st/3rd person + pointer-lock state on CameraEntity.
       mk(components.CameraMode, reserved.camera),
       mk(components.PointerLock, reserved.camera),
-      // Renderer writes pointer screen/hover state to RootEntity (PointerEventsSystem).
-      mk(components.PrimaryPointerInfo, reserved.root),
       // Scene UI canvas dimensions for react-ecs / UiCanvasInformation.get(RootEntity).
       mk(components.UiCanvasInformation, reserved.root),
       // LiveKit scene-room connect flag — SDK network REQ_CRDT_STATE / isStateSyncronized.
@@ -266,10 +265,9 @@ export class CrdtEncoder {
   }
 
   /**
-   * Drop pending grow-only appends for a component (e.g. PointerEventsResult=1063).
-   * inject-pointer-click is authoritative on the worker — main PE Result appends must not
-   * flush later via grow-only delivery (different timestamp clock re-fires onMouseDown and
-   * toggles CAM closed while main still paints the open modal).
+   * Drop pending grow-only appends for a component (safety belt for PointerEventsResult=1063).
+   * PE should never enter `recordedAppends` (recordRendererAppend gate). If any slip through,
+   * discard before inject so grow-only cannot re-fire EventSystem on a second clock.
    */
   discardRecordedAppends(componentId: number): number {
     const before = this.recordedAppends.length
@@ -289,8 +287,8 @@ export class CrdtEncoder {
   }
 
   /**
-   * Encode only source-captured grow-only appends (pointer/video results).
-   * Used for pointer flush stash so player/camera LWW is not re-shipped every nudge.
+   * Encode only source-captured grow-only appends (TriggerArea, VideoEvent, …).
+   * Not used for PE edges (inject-only).
    */
   encodeAppendsOnly(): Uint8Array | null {
     this.emittedAppends.length = 0
@@ -311,13 +309,14 @@ export class CrdtEncoder {
   }
 
   /**
-   * Encode only dirty `TweenState` PUTs (no Transform, reserved entities, or appends).
-   * Used for lightweight proactive worker push after pointer-triggered tweens.
+   * Encode dirty `TweenState` + interpolated `Transform`.
+   * Scene systems read Transform.scale/position (tutorial popup scale, bounce).
    */
   encodeTweenStateOnly(): Uint8Array | null {
     this.emitted.length = 0
     const buf = new ReadWriteByteBuffer()
     const tweenStateId = this.tweenState.componentId
+    const transformId = this.transform.componentId
     const tweenDirty = this.tweenEncodeEntities
     this.tweenEncodeEntities = null
     if (!tweenDirty?.size) return null
@@ -333,6 +332,18 @@ export class CrdtEncoder {
         )
       ) {
         wrote = true
+      }
+      if (this.projection.has(transformId, entity)) {
+        if (
+          this.emitLww(
+            entity,
+            transformId,
+            serializeFromProjection(this.transform, this.projection, entity),
+            buf
+          )
+        ) {
+          wrote = true
+        }
       }
     }
     return wrote ? buf.toBinary() : null
@@ -394,16 +405,10 @@ export class CrdtEncoder {
     }
     if (tweenEntities?.length) {
       for (const entity of tweenEntities) emitTweenEntity(entity)
-    } else {
-      const tweenMap = this.projection.componentMap(tweenStateId)
-      if (tweenMap) {
-        for (const [entity] of tweenMap) emitTweenEntity(entity)
-      }
     }
+    // Empty/null dirty set: do not scan every TweenState owner (plaza marquees).
 
-    // Grow-only path (3c): pointer/video results the renderer appends. flushOutgoing
-    // emits one APPEND per `addValue` since the last flush; we reproduce that one-for-one
-    // from the values source-captured at each `addValue` site (see `recordAppend`).
+    // Grow-only path: TriggerArea / media / asset-load results (not PE — inject-only).
     if (this.encodeAppends(buf)) wrote = true
 
     if (this.encodeRecordedLwwPuts(buf)) wrote = true

@@ -5,12 +5,15 @@ import { preregisterRendererInjectedComponents } from './preregisterRendererInje
 import { ReadWriteByteBuffer } from '@dcl/ecs/dist/serialization/ByteBuffer'
 import { readMessage } from '@dcl/ecs/dist/serialization/crdt/message'
 import { CrdtMessageType } from '@dcl/ecs/dist/serialization/crdt/types'
-
-/** SDK7 reserved entities — renderer-owned Transform must land same-tick on the worker. */
-const RESERVED_ENTITIES = new Set<Entity>([0 as Entity, 1 as Entity, 2 as Entity])
+import { writeHostLwwNoDirty } from './injectHostLww'
 
 /** `core::TweenState` — renderer-driven tween progress for worker `tweenCompleted()`. */
 const TWEEN_STATE_ID = 1103
+/** TweenStateStatus.TS_COMPLETED — sequence advance leaves this stale on the next leg. */
+const TS_COMPLETED = 1
+/** TweenLoop.TL_RESTART / TL_YOYO */
+const TL_RESTART = 0
+const TL_YOYO = 1
 /** `core::RaycastResult` — renderer raycast hits for worker `raycastSystem` callbacks. */
 const RAYCAST_RESULT_ID = 1068
 /** `core::GltfContainerLoadingState` — renderer reports GLB load progress (ADR-215). */
@@ -128,25 +131,26 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
     let msg = readMessage(buf)
     while (msg) {
       if (msg.type === CrdtMessageType.PUT_COMPONENT) {
-        if (msg.componentId === transformId && RESERVED_ENTITIES.has(msg.entityId as Entity)) {
+        if (msg.componentId === transformId) {
+          // Reserved poses + tween-interpolated Transform (tutorial popup scale, bounce).
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = Transform.schema.deserialize(valueBuf)
-          Transform.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(Transform, msg.entityId as number, value)
           reservedTransformPuts++
         } else if (msg.componentId === TWEEN_STATE_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = TweenState.schema.deserialize(valueBuf)
-          TweenState.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(TweenState, msg.entityId as number, value)
           tweenPuts++
         } else if (msg.componentId === RAYCAST_RESULT_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = RaycastResult.schema.deserialize(valueBuf)
-          RaycastResult.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(RaycastResult, msg.entityId as number, value)
           raycastPuts++
         } else if (msg.componentId === GLTF_CONTAINER_LOADING_STATE_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = GltfContainerLoadingState.schema.deserialize(valueBuf)
-          GltfContainerLoadingState.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(GltfContainerLoadingState, msg.entityId as number, value)
           gltfLoadingStatePuts++
           const currentState = (value as { currentState?: number } | null)?.currentState
           if (isTerminalGltfLoadingState(currentState)) {
@@ -170,42 +174,42 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
         } else if (msg.componentId === UI_CANVAS_INFORMATION_ID && msg.entityId === 0) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = UiCanvasInformation.schema.deserialize(valueBuf)
-          UiCanvasInformation.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(UiCanvasInformation, msg.entityId as number, value)
           uiCanvasPuts++
         } else if (msg.componentId === UI_INPUT_RESULT_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = UiInputResult.schema.deserialize(valueBuf)
-          UiInputResult.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(UiInputResult, msg.entityId as number, value)
           uiInputResultPuts++
         } else if (msg.componentId === UI_DROPDOWN_RESULT_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = UiDropdownResult.schema.deserialize(valueBuf)
-          UiDropdownResult.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(UiDropdownResult, msg.entityId as number, value)
           uiDropdownResultPuts++
         } else if (msg.componentId === CAMERA_MODE_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = CameraMode.schema.deserialize(valueBuf)
-          CameraMode.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(CameraMode, msg.entityId as number, value)
           cameraModePuts++
         } else if (msg.componentId === POINTER_LOCK_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = PointerLock.schema.deserialize(valueBuf)
-          PointerLock.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(PointerLock, msg.entityId as number, value)
           pointerLockPuts++
         } else if (msg.componentId === REALM_INFO_ID && msg.entityId === 0) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = RealmInfo.schema.deserialize(valueBuf)
-          RealmInfo.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(RealmInfo, msg.entityId as number, value)
           realmInfoPuts++
         } else if (msg.componentId === PRIMARY_POINTER_INFO_ID && msg.entityId === 0) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = PrimaryPointerInfo.schema.deserialize(valueBuf)
-          PrimaryPointerInfo.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(PrimaryPointerInfo, msg.entityId as number, value)
           primaryPointerPuts++
         } else if (msg.componentId === ENGINE_INFO_ID && msg.entityId === 0) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = EngineInfo.schema.deserialize(valueBuf)
-          EngineInfo.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(EngineInfo, msg.entityId as number, value)
           engineInfoPuts++
         }
       }
@@ -231,4 +235,32 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
     engineInfoPuts,
     reservedTransformPuts
   }
+}
+
+/**
+ * After TweenState COMPLETED inject + eng.update(0), TweenSequence may createOrReplace the
+ * next leg while TweenState is still COMPLETED. SDK createTweenSystem then treats the new
+ * tween as already finished (isCompleted) — Genesis blimp TL_RESTART only runs one orbit.
+ *
+ * Re-arm ACTIVE for playing sequence/loop tweens still marked COMPLETED.
+ * @returns number of entities re-armed
+ */
+export function rearmTweenStateAfterSequenceAdvance(engine: IEngine): number {
+  const Tween = generated.Tween(engine)
+  const TweenState = generated.TweenState(engine)
+  const TweenSequence = generated.TweenSequence(engine)
+  let n = 0
+  for (const [entity, tween] of engine.getEntitiesWith(Tween)) {
+    if (tween.playing === false) continue
+    const st = TweenState.getOrNull(entity)
+    if (!st || st.state !== TS_COMPLETED) continue
+    const seq = TweenSequence.getOrNull(entity)
+    if (!seq) continue
+    const hasQueued = (seq.sequence?.length ?? 0) > 0
+    const loops = seq.loop === TL_RESTART || seq.loop === TL_YOYO
+    if (!hasQueued && !loops) continue
+    writeHostLwwNoDirty(TweenState, entity as number, { state: 0, currentTime: 0 })
+    n++
+  }
+  return n
 }

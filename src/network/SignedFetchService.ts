@@ -6,6 +6,7 @@ import type {
   SignedFetchRequest,
   SignedFetchResponse
 } from '../shim/types'
+import { toSceneHttpProxyUrl } from './sceneHttpProxy'
 
 const signedHeader = signedHeaderFactory()
 
@@ -45,28 +46,14 @@ function prefersPlainSceneHttpFetch(url: string): boolean {
 }
 
 /**
- * Dev-only same-origin proxy for scene HTTP that third-party auth servers block via CORS
- * (e.g. fishing Colyseus host allows Explorer origins but not localhost:5173).
- *
+ * Same-origin generic egress for scene HTTP (CORS).
  * Signature is always computed against the **original** pathname; only the transport URL
- * is rewritten to `/api/scene-http/...` (vite middleware).
+ * is rewritten to `/api/scene-http/...` (Vite middleware + prod nginx).
+ *
+ * @see toSceneHttpProxyUrl — single pipe for worker fetch + SignedFetch (dev + prod).
  */
 function sceneHttpProxyUrl(absoluteUrl: string): string | null {
-  if (!import.meta.env.DEV) return null
-  try {
-    const u = new URL(absoluteUrl)
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
-    if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') return null
-    // DCL first-party APIs already CORS-allow browser origins.
-    if (u.hostname.endsWith('.decentraland.org') || u.hostname === 'decentraland.org') {
-      return null
-    }
-    const proto = u.protocol === 'https:' ? 'https' : 'http'
-    const path = u.pathname.startsWith('/') ? u.pathname : `/${u.pathname}`
-    return `/api/scene-http/${proto}/${u.host}${path}${u.search}`
-  } catch {
-    return null
-  }
+  return toSceneHttpProxyUrl(absoluteUrl)
 }
 
 /**
@@ -240,6 +227,13 @@ export function performGetSignedHeaders(
   return { headers: headersFromSigned(authHeaders) }
 }
 
+/** Guest plaza toolkit: scene-admin / scene-bans 401 is role, not a bad URL. */
+function isExpectedGuestAdminDenied(status: number, url: string, body: string): boolean {
+  if (status !== 401 && status !== 403) return false
+  if (!isGatekeeperSignedFetchUrl(url)) return false
+  return /scene-admin|scene-bans/i.test(url) || /permission to list scene bans/i.test(body)
+}
+
 function logSignedFetch(
   phase: 'start' | 'ok' | 'fail',
   detail: string,
@@ -320,6 +314,8 @@ export async function performSignedFetch(
         logSignedFetch('ok', `proxy ${res.status} ${urlShort}`, {
           bodyPreview: text.slice(0, 120)
         })
+      } else if (isExpectedGuestAdminDenied(res.status, request.url, text)) {
+        logSignedFetch('ok', `proxy ${res.status} guest-denied ${urlShort}`)
       } else {
         logSignedFetch('fail', `proxy ${res.status} ${urlShort}`, {
           bodyPreview: text.slice(0, 240)
@@ -352,6 +348,8 @@ export async function performSignedFetch(
     const text = await res.text()
     if (res.ok) {
       logSignedFetch('ok', `${res.status} ${urlShort}`, { bodyPreview: text.slice(0, 120) })
+    } else if (isExpectedGuestAdminDenied(res.status, request.url, text)) {
+      logSignedFetch('ok', `${res.status} guest-denied ${urlShort}`)
     } else {
       logSignedFetch('fail', `${res.status} ${urlShort}`, { bodyPreview: text.slice(0, 240) })
     }

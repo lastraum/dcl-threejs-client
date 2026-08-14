@@ -403,31 +403,51 @@ export class UserProfileModal {
   private async ensureAvatarPreview(token: number): Promise<void> {
     const data = this.loaded
     const stage = this.root.querySelector('.user-profile-modal__avatar-stage') as HTMLElement | null
-    if (!stage || !data?.profile) {
-      stage?.classList.add('user-profile-modal__avatar-stage--loading')
+    if (!stage) return
+    if (!data?.profile) {
+      // Peer profile never resolved — a spinner that never stops reads as a hang.
+      this.setAvatarStageState(stage, 'empty')
       return
     }
 
     const key = data.address ?? 'local'
     if (this.avatarAddress === key && this.preview) {
-      stage.classList.remove('user-profile-modal__avatar-stage--loading')
+      this.setAvatarStageState(stage, 'ready')
       return
     }
 
-    stage.classList.add('user-profile-modal__avatar-stage--loading')
+    this.setAvatarStageState(stage, 'loading')
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))
     if (token !== this.loadToken || !this.visible) return
 
     this.preview?.dispose()
-    this.preview = new AvatarPreviewMini(stage)
+    const preview = new AvatarPreviewMini(stage)
+    this.preview = preview
     this.avatarAddress = key
+    let shown = false
     try {
-      await this.preview.showProfile(data.profile, this.getPeerUrl())
+      shown = await preview.showProfile(data.profile, this.getPeerUrl())
     } finally {
-      if (token === this.loadToken && this.visible) {
-        stage.classList.remove('user-profile-modal__avatar-stage--loading')
+      if (this.preview === preview && this.visible) {
+        if (!shown) this.avatarAddress = null
+        this.setAvatarStageState(stage, shown ? 'ready' : 'empty')
       }
     }
+  }
+
+  /** Spinner, avatar, or "unavailable" — the stage always leaves the loading state. */
+  private setAvatarStageState(stage: HTMLElement, state: 'loading' | 'ready' | 'empty'): void {
+    stage.classList.toggle('user-profile-modal__avatar-stage--loading', state === 'loading')
+    const note = stage.querySelector('.user-profile-modal__avatar-empty')
+    if (state !== 'empty') {
+      note?.remove()
+      return
+    }
+    if (note) return
+    const el = document.createElement('p')
+    el.className = 'user-profile-modal__avatar-empty'
+    el.textContent = 'Avatar preview unavailable'
+    stage.appendChild(el)
   }
 
   private renderTabBody(data: LoadedProfile): string {

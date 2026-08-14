@@ -17,6 +17,9 @@ import { preregisterRendererInjectedComponents } from './preregisterRendererInje
 
 let lastGraphKey = ''
 let forceNextHydrate = false
+/** Soft rate limit for force-pull spam with unchanged structure key (COD D1). */
+let lastHydratePostAt = 0
+const VC_HYDRATE_FORCE_MIN_MS = 50
 
 function cloneTransform(tr: {
   position: { x: number; y: number; z: number }
@@ -49,19 +52,6 @@ function worldTransformUnderRoot(
     scale: { x: 1, y: 1, z: 1 },
     parent: root
   }
-}
-
-function transformKey(tr: PlayerFrameBoundVcTransform): string {
-  return [
-    tr.position.x.toFixed(3),
-    tr.position.y.toFixed(3),
-    tr.position.z.toFixed(3),
-    tr.rotation.x.toFixed(4),
-    tr.rotation.y.toFixed(4),
-    tr.rotation.z.toFixed(4),
-    tr.rotation.w.toFixed(4),
-    tr.parent ?? 0
-  ].join(',')
 }
 
 function isReserved(engine: IEngine, id: number): boolean {
@@ -167,34 +157,38 @@ export function collectVcBindHydratePackage(engine: IEngine): PlayerFrameBoundVc
 /**
  * Hydrate only when *structure* changes.
  * Follow: ignore moving anchor poses (CameraFollow) — those ride vc-pose-live / PE-follow.
- * Locked (worldFlattened): include world pose so select cuts re-hydrate when the shot moves.
+ * Locked (worldFlattened): structure only (entity/lookAt/parent). Continuous pan/edge
+ * moves ride `vc-pose-live` — putting pose in the graph key re-hydrated every frame
+ * (DecentraCraft RTS VC spam → FPS death + stalled select UI).
  */
 export function vcBindGraphKey(pkg: PlayerFrameBoundVc | null): string {
   if (!pkg) return 'cleared'
   const lookAt = (pkg.virtualCamera as { lookAtEntity?: number } | null)?.lookAtEntity ?? 0
   const parent = pkg.transform.parent ?? 0
   if (pkg.worldFlattened) {
-    return [
-      `vc=${pkg.entity}`,
-      `lookAt=${lookAt}`,
-      'flat=1',
-      `tr=${transformKey(pkg.transform)}`,
-      ...pkg.anchors.map((a) => `a${a.entity}=${transformKey(a.transform)}`)
-    ].join('|')
+    const anchorIds = pkg.anchors
+      .map((a) => a.entity)
+      .sort((a, b) => a - b)
+      .join(',')
+    return [`vc=${pkg.entity}`, `lookAt=${lookAt}`, 'flat=1', `anchors=${anchorIds}`].join('|')
   }
-  // Follow / hierarchy: entity ids + VC local offset only (not cameraParent world pose).
+  // Follow / hierarchy: structure only — parent/lookAt/scale.
+  // Continuous local pos/rot rides `vc-pose-live` (COD D1). Including full transformKey
+  // re-hydrated every bob/zoom frame → FPS death + lens flicker.
+  const s = pkg.transform.scale
   return [
     `vc=${pkg.entity}`,
     `parent=${parent}`,
     `lookAt=${lookAt}`,
     'flat=0',
-    `local=${transformKey(pkg.transform)}`
+    `scale=${s?.x ?? 1},${s?.y ?? 1},${s?.z ?? 1}`
   ].join('|')
 }
 
 export function resetVcBindHydrateBaseline(): void {
   lastGraphKey = ''
   forceNextHydrate = false
+  lastHydratePostAt = 0
 }
 
 export function requestVcBindHydrateFromMain(): void {
@@ -212,9 +206,18 @@ export function takeVcBindHydrateIfNeeded(engine: IEngine): {
     forceNextHydrate = false
     return null
   }
-  if (!forceNextHydrate && key === lastGraphKey) return null
+  const now = performance.now()
+  if (key === lastGraphKey) {
+    // Same structure — only force-pull, and rate-limit force spam.
+    if (!forceNextHydrate) return null
+    if (now - lastHydratePostAt < VC_HYDRATE_FORCE_MIN_MS) {
+      forceNextHydrate = false
+      return null
+    }
+  }
   forceNextHydrate = false
   lastGraphKey = key
+  lastHydratePostAt = now
   return { bind: pkg, graphKey: key }
 }
 

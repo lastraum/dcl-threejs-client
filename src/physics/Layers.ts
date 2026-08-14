@@ -20,6 +20,10 @@ export const SOLID_FILTER_OPEN = 0xffffffff >>> 0
 
 export const ENVIRONMENT_MASK = Layers.environment.group | Layers.prop.group
 export const GROUND_QUERY_MASK = Layers.environment.group | Layers.prop.group | Layers.gltfCollider.group
-/** Landscape / parcel walls only — scene GLTF trimesh colliders stay on prop and must not pull the camera in. */
-export const CAMERA_QUERY_MASK = Layers.environment.group
+/**
+ * Third-person boom occlusion — landscape + scene GLTF / MeshCollider hulls (plaza buildings).
+ * Triggers excluded (overlap-only). Prop group is where non-landscape colliders land.
+ */
+export const CAMERA_QUERY_MASK =
+  Layers.environment.group | Layers.prop.group | Layers.gltfCollider.group
 export const TRIGGER_QUERY_MASK = Layers.trigger.group

@@ -146,6 +146,42 @@ export function prepareAvatarMaterials(root: THREE.Object3D): void {
   })
 }
 
+/**
+ * Emote prop meshes (dontsee cards, money, particles) — ensure albedo maps are sRGB and
+ * cutout cards stay double-sided. Called after Catalyst emote GLB parse (not on armature-only
+ * bundled locomotion clips which have no materials).
+ */
+export function prepareEmotePropMaterials(root: THREE.Object3D): void {
+  root.traverse((obj) => {
+    if (!(obj instanceof THREE.Mesh)) return
+    const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
+    for (const mat of materials) {
+      if (!isStandardMaterial(mat) && !((mat as THREE.MeshBasicMaterial).isMeshBasicMaterial)) {
+        continue
+      }
+      const std = mat as THREE.MeshStandardMaterial | THREE.MeshBasicMaterial
+      if (std.map) {
+        std.map.colorSpace = THREE.SRGBColorSpace
+        std.map.needsUpdate = true
+      }
+      const name = (mat.name ?? obj.name ?? '').toLowerCase()
+      const propCard =
+        name.includes('prop') ||
+        name.includes('card') ||
+        name.includes('particle') ||
+        mat.transparent === true ||
+        (typeof mat.alphaTest === 'number' && mat.alphaTest > 0)
+      if (propCard) {
+        mat.side = THREE.DoubleSide
+        if (mat.transparent || (typeof mat.alphaTest === 'number' && mat.alphaTest > 0)) {
+          mat.depthWrite = mat.depthWrite ?? true
+        }
+      }
+      mat.needsUpdate = true
+    }
+  })
+}
+
 /** DCL wearables use emissiveFactor and/or Em.* materials for visors, neon trim, etc. */
 export function applyWearableEmissives(root: THREE.Object3D): void {
   root.traverse((obj) => {

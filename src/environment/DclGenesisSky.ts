@@ -54,7 +54,8 @@ varying vec3 vDirection;
 vec3 sampleGradient(vec3 dir, vec3 zenit, vec3 horizon, vec3 nadir) {
   float y = clamp(dir.y, -1.0, 1.0);
   float t = y * 0.5 + 0.5;
-  vec3 upBlend = mix(horizon, zenit, pow(t, 0.65));
+  // Stronger zenith weight when looking up so horizon pink/white does not chalk the dome.
+  vec3 upBlend = mix(horizon, zenit, pow(t, 0.82));
   vec3 downBlend = mix(horizon, nadir, pow(1.0 - t, 0.55));
   return y >= 0.0 ? upBlend : downBlend;
 }
@@ -143,6 +144,7 @@ vec3 rotateY(vec3 dir, float angle) {
 }
 
 // DCL clouds gradient is HDR (keys >1 at midday). Keep hue, put brightness in intensity.
+// (Restored full puffs — multi-warp/low-alpha passes looked stringy/sparse.)
 vec3 cloudTintColor(vec3 hdr, float highlights, vec3 dir, vec3 sunDir) {
   float peak = max(max(hdr.r, hdr.g), hdr.b);
   vec3 hue = hdr / max(peak, 1e-4);
@@ -185,7 +187,7 @@ vec3 blendCloudLayer(
   float mask = cloudLayerMask(dir, map, angle, opacity, yMin, yMax);
   if (mask <= 0.001) return sky;
   vec3 cloud = cloudTintColor(uCloudsColor, uCloudHighlights, dir, uSunDirection);
-  // Screen-style brighten — lerp toward gray tint; DCL puffs read white over blue sky
+  // Screen-style brighten — full DCL-style puffs over blue sky
   vec3 layer = min(cloud, vec3(2.5));
   vec3 screen = vec3(1.0) - (vec3(1.0) - sky) * (vec3(1.0) - min(layer, vec3(1.0)));
   return mix(sky, max(screen, layer), mask);

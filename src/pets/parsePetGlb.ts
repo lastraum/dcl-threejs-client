@@ -11,6 +11,7 @@
  */
 import * as THREE from 'three'
 import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { yieldToIdle, yieldToNextFrame } from '../rendering/mainThreadYield'
 
 const GLB_MAGIC = 0x46546c67 // glTF
 const CHUNK_JSON = 0x4e4f534a // JSON
@@ -84,8 +85,11 @@ function rebuildGlb(json: Record<string, unknown>, bin: Uint8Array): ArrayBuffer
  * Parse pet model bytes. Prefers data-URI image rewrite + GLB rebuild.
  */
 export async function parsePetGlbBytes(bytes: ArrayBuffer): Promise<GLTF> {
+  // Never start a 1s+ rewrite/parse on the play rAF.
+  await yieldToIdle(48)
   const copy = bytes.slice(0)
   if (copy.byteLength < 20) {
+    await yieldToNextFrame()
     return loader.parseAsync(copy, '')
   }
   const view = new DataView(copy)
@@ -151,15 +155,18 @@ export async function parsePetGlbBytes(bytes: ArrayBuffer): Promise<GLTF> {
         delete image.bufferView
         delete image.mimeType
         rewritten++
+        if (rewritten % 4 === 0) await yieldToIdle(16)
       }
     }
 
+    await yieldToNextFrame()
     if (rewritten === 0) {
       // No embedded images to rewrite — stock GLB parse is fine.
       return loader.parseAsync(copy, '')
     }
 
     const rebuilt = rebuildGlb(json, bin)
+    await yieldToIdle(32)
     const gltf = await loader.parseAsync(rebuilt, '')
     return gltf
   } catch (err) {

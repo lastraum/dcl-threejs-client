@@ -35,10 +35,24 @@ export type PetFollowInput = {
   ownerYaw: number
   ownerHorizontalSpeed: number
   category: PetCategory
+  /** Rendered XZ half-extent (m) — widens the side slot for big pets. */
+  petHalfExtent?: number
   dt: number
   timeSec: number
   /** Force snap (goto / first spawn). */
   snap?: boolean
+}
+
+/**
+ * Pets up to this half-extent keep the classic slot exactly; bigger ones get
+ * pushed out so their EDGE keeps the classic clearance instead of their
+ * center — an elephant (~1.2m half-extent) walks ~1.55m out rather than
+ * overlapping the owner.
+ */
+const SMALL_PET_ALLOWANCE_M = 0.35
+
+function sideSlotM(base: number, petHalfExtent: number | undefined): number {
+  return base + Math.max(0, (petHalfExtent ?? 0) - SMALL_PET_ALLOWANCE_M)
 }
 
 /**
@@ -70,7 +84,7 @@ export class PetFollow {
     _ownerPos.copy(input.ownerFeet)
     // Visual body faces +Z after avatar bind (playerYaw + AVATAR_YAW_OFFSET).
     const faceYaw = input.ownerYaw + AVATAR_YAW_OFFSET
-    writeDesiredSlot(_desired, _ownerPos, faceYaw, flying)
+    writeDesiredSlot(_desired, _ownerPos, faceYaw, flying, input.petHalfExtent)
 
     let bob = 0
     if (cfg.bobAmplitude > 0 && cfg.bobHz > 0) {
@@ -108,6 +122,18 @@ export class PetFollow {
       _move.copy(_delta).multiplyScalar(step / dist)
       this.position.x += _move.x
       this.position.z += _move.z
+      // Owner exclusion zone: catch-up steering aims at the slot point, and
+      // the shortest path can pass straight through the player (a buck's head
+      // in your chest). Push the pet radially out of the keep-clear circle.
+      const clear = Math.max(0.5, (input.petHalfExtent ?? 0) + 0.35)
+      const ex = this.position.x - _ownerPos.x
+      const ez = this.position.z - _ownerPos.z
+      const eDist = Math.hypot(ex, ez)
+      if (eDist > 1e-4 && eDist < clear) {
+        const push = clear / eDist
+        this.position.x = _ownerPos.x + ex * push
+        this.position.z = _ownerPos.z + ez * push
+      }
       this.horizontalSpeed = damp(this.horizontalSpeed, step / Math.max(dt, 1e-4), SPEED_SMOOTH_RATE, dt)
       // Travel yaw in playerYaw space so Face 180° stays correct while moving.
       const travelYaw = Math.atan2(_move.x, _move.z)
@@ -146,7 +172,8 @@ function writeDesiredSlot(
   out: THREE.Vector3,
   ownerFeet: THREE.Vector3,
   faceYaw: number,
-  flying: boolean
+  flying: boolean,
+  petHalfExtent?: number
 ): void {
   // Right relative to visual facing: (cos, -sin); behind: (-sin, -cos).
   const rightX = Math.cos(faceYaw)
@@ -155,19 +182,21 @@ function writeDesiredSlot(
   const backZ = -Math.cos(faceYaw)
 
   if (flying) {
-    // Right shoulder perch.
+    // Right shoulder perch (side-adjusted for big fliers — a shark is no parakeet).
+    const side = sideSlotM(FLY_SHOULDER_SIDE_M, petHalfExtent)
     out.set(
-      ownerFeet.x + rightX * FLY_SHOULDER_SIDE_M + backX * FLY_SHOULDER_BACK_M,
+      ownerFeet.x + rightX * side + backX * FLY_SHOULDER_BACK_M,
       0,
-      ownerFeet.z + rightZ * FLY_SHOULDER_SIDE_M + backZ * FLY_SHOULDER_BACK_M
+      ownerFeet.z + rightZ * side + backZ * FLY_SHOULDER_BACK_M
     )
     return
   }
   // Walking: right next to the player (side companion).
+  const side = sideSlotM(WALK_SIDE_M, petHalfExtent)
   out.set(
-    ownerFeet.x + rightX * WALK_SIDE_M + backX * WALK_BACK_M,
+    ownerFeet.x + rightX * side + backX * WALK_BACK_M,
     0,
-    ownerFeet.z + rightZ * WALK_SIDE_M + backZ * WALK_BACK_M
+    ownerFeet.z + rightZ * side + backZ * WALK_BACK_M
   )
 }
 

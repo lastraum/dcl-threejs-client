@@ -235,8 +235,9 @@ export function applyYogaLayoutBox(
   el.style.minHeight = ''
   el.style.maxWidth = ''
   el.style.maxHeight = ''
-  // Positioning context for .scene-ui-node__content (absolute fill) and nested shells.
-  el.style.isolation = 'isolate'
+  // Only isolate when clipping — isolation on every shell traps descendant zIndex so
+  // author zIndex cannot stack a tooltip above a sibling HUD root (Explorer uses free stack).
+  el.style.isolation = clipOverflow ? 'isolate' : 'auto'
 }
 
 const TEXT_ALIGN_MODES = {
@@ -345,19 +346,14 @@ export function applyUiTextStyles(
   label.style.fontFamily = FONT_FAMILY[text.font ?? 0] ?? FONT_FAMILY[0]
   label.style.textAlign = align.textAlign
   // SDK default is TW_WRAP (0). Only TW_NO_WRAP (1) is single-line.
-  // Prefer single-line for interactive/compact controls even when wrap is left default.
-  // Short chrome labels ("Admin tools", "Stream") without authored newlines also stay on one line —
-  // default wrap + anywhere was stacking mid-word and clipping under overflow:hidden.
-  const plainLen = stripUiTextMarkup(text.value ?? '').replace(/\s+/g, ' ').trim().length
-  const hasNewline = (text.value ?? '').includes('\n')
-  const singleLine =
-    preferSingleLine ||
-    text.textWrap === 1 ||
-    (!hasNewline && plainLen > 0 && plainLen <= 48)
+  // Prefer single-line only for compact/interactive chrome (preferSingleLine) or authored NO_WRAP.
+  // Auto-nowrap for plainLen≤48 clipped poker banners ("Next hand starting soon") and other
+  // mid-width labels under overflow:hidden parents — wrap to the UiTransform box instead.
+  const singleLine = preferSingleLine || text.textWrap === 1
   // Fill the UiTransform box and honor TextAlignMode (default TAM_MIDDLE_CENTER).
   // Content root is absolute-filled to the shell — 100% height is valid there.
   label.style.width = '100%'
-  label.style.height = '100%'
+  label.style.height = singleLine ? '100%' : 'auto'
   label.style.maxWidth = '100%'
   label.style.minWidth = '0'
   // Never collapse below one line (auto-height Labels without explicit UiTransform height).
@@ -369,15 +365,22 @@ export function applyUiTextStyles(
   label.style.padding = '0'
   label.style.boxSizing = 'border-box'
   label.style.display = 'flex'
-  label.style.flexDirection = 'row'
+  label.style.flexDirection = singleLine ? 'row' : 'column'
   // TEXT_ALIGN_MODES: justifyContent = horizontal, alignItems = vertical (row flex).
-  label.style.justifyContent = align.justifyContent
-  label.style.alignItems = align.alignItems
+  if (singleLine) {
+    label.style.justifyContent = align.justifyContent
+    label.style.alignItems = align.alignItems
+  } else {
+    // Column: map horizontal textAlign to alignItems; keep vertical center when box is tall.
+    label.style.justifyContent = align.alignItems
+    label.style.alignItems =
+      align.textAlign === 'center' ? 'center' : align.textAlign === 'right' ? 'flex-end' : 'flex-start'
+  }
   // Never use overflow-wrap:anywhere — mid-word breaks destroy button labels (Stream → Str\neam).
-  label.style.wordBreak = singleLine ? 'normal' : 'normal'
+  label.style.wordBreak = 'normal'
   label.style.overflowWrap = singleLine ? 'normal' : 'break-word'
   label.style.whiteSpace = singleLine ? 'nowrap' : 'pre-wrap'
-  // Clip only when intentionally single-line (ellipsis optional); multi-line can grow visually.
+  // Clip only when intentionally single-line (ellipsis); multi-line can grow visually.
   // Tight line-height + overflow:hidden was clipping Admin Tools titles mid-glyph.
   label.style.overflow = singleLine ? 'hidden' : 'visible'
   label.style.textOverflow = singleLine ? 'ellipsis' : ''

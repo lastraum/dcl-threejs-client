@@ -87,15 +87,26 @@ export function isReqCrdtStateType(type: number): boolean {
 
 /**
  * LiveKit publish reliability for craftCommsMessage types.
+ *
  * Auth-server combat / lobby events use CUSTOM_EVENT — lossy DC drops shot/hit
  * sequences and leaves networked damage stuck with no HP updates.
  * REQ/RES stay reliable so state sync and room-ready complete.
+ *
+ * **CRDT (serverless type 1 + auth-server type 7) and CRDT_AUTHORITATIVE (5) must
+ * also be reliable.** Pixelwars seeds the maze via `syncEntity(SeedHolder)` on the
+ * auth-server CRDT channel (type 7). Lossy drops left clients on a local seed while
+ * paintDelta (type 6, reliable) still updated coverage % — white tiles, rising HUD,
+ * zero Material CRDT (cell ids never match).
  */
 export function isReliableCommsWireType(type: number): boolean {
   return (
     isResCrdtStateType(type) ||
     isReqCrdtStateType(type) ||
-    type === CommsWireMessageType.CUSTOM_EVENT
+    type === CommsWireMessageType.CUSTOM_EVENT ||
+    type === CommsWireMessageType.CRDT ||
+    type === CommsWireMessageType.AUTH_CRDT ||
+    type === CommsWireMessageType.CRDT_SERVER ||
+    type === CommsWireMessageType.CRDT_AUTHORITATIVE
   )
 }
 
@@ -153,17 +164,62 @@ export function logSyncOutbound(opts: {
   clientDebugLog.log('sync', line, { alsoConsole: false, throttleMs: 200, throttleKey: 'sync-out' })
 }
 
+/** Aggregate CUSTOM_EVENT spam (paintDelta/botPositions ~5–10Hz) into one line / second. */
+let customEventCount = 0
+let customEventBytes = 0
+let customEventFrom = ''
+let customEventWindowStart = 0
+
+function flushCustomEventSummary(): void {
+  if (customEventCount <= 0) return
+  const line =
+    `[sync] inbound CUSTOM_EVENT ×${customEventCount} from=${customEventFrom || '?'} ` +
+    `~${customEventBytes}B (1s window)`
+  console.info(line)
+  clientDebugLog.log('sync', line, { alsoConsole: false, throttleMs: 0, throttleKey: 'sync-in:CUSTOM_EVENT' })
+  customEventCount = 0
+  customEventBytes = 0
+  customEventFrom = ''
+}
+
 export function logSyncInbound(opts: {
   sender: string
   messageType: number
   payloadBytes: number
 }): void {
-  if (!isSyncDebugEnabled()) return
+  const name = syncWireTypeName(opts.messageType)
+  // CUSTOM_EVENT: aggregate — per-packet logs froze DevTools under paintDelta storms.
+  if (opts.messageType === CommsWireMessageType.CUSTOM_EVENT) {
+    const now = performance.now()
+    if (customEventWindowStart === 0) customEventWindowStart = now
+    if (now - customEventWindowStart >= 1000) {
+      flushCustomEventSummary()
+      customEventWindowStart = now
+    }
+    customEventCount++
+    customEventBytes += opts.payloadBytes
+    customEventFrom = opts.sender.slice(0, 20)
+    if (isSyncDebugEnabled()) {
+      const line =
+        `[sync] inbound — type=CUSTOM_EVENT from=${opts.sender.slice(0, 20)} payload=${opts.payloadBytes}B`
+      console.info(line)
+    }
+    return
+  }
+
+  // REQ/RES stay in the client log (throttled). Browser console only with ?syncdebug —
+  // 10 remotes × RES_CRDT_STATE was a DevTools hitch.
+  const important = isResCrdtStateType(opts.messageType) || isReqCrdtStateType(opts.messageType)
+  if (!isSyncDebugEnabled() && !important) return
   const line =
-    `[sync] inbound — type=${syncWireTypeName(opts.messageType)}` +
-    ` from=${opts.sender.slice(0, 12)}… payload=${opts.payloadBytes}B`
-  console.info(line)
-  clientDebugLog.log('sync', line, { alsoConsole: false, throttleMs: 100, throttleKey: 'sync-in' })
+    `[sync] inbound — type=${name}` +
+    ` from=${opts.sender.slice(0, 20)} payload=${opts.payloadBytes}B`
+  if (isSyncDebugEnabled()) console.info(line)
+  clientDebugLog.log('sync', line, {
+    alsoConsole: false,
+    throttleMs: important ? 400 : 100,
+    throttleKey: `sync-in:${name}`
+  })
 }
 
 export function logSyncDrain(opts: { count: number; totalBytes: number }): void {

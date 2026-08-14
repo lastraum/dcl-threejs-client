@@ -1,14 +1,15 @@
 # Physics parity plan — Unity Explorer vs ThreejsClient
 
-**Status:** **PE P0+P1+P2 ✅** · **scene collider PART/ROOT ✅ (v1.5.0 RC)** · PE P3 pad/wind manual QA still open  
+**Status:** **PE P0+P1+P2 ✅** · **scene collider PART/ROOT ✅ (v1.5.0)** · **MeshCollider platform riding + CCT ground law ✅ (2026-08-09, `dev-latest`, no release)** · PE P3 pad/wind manual QA still open · multi-shape GLTF `40M+` ride follow-up  
 **Branch context:** `dev-latest`  
-**Last updated:** 2026-07-23  
+**Last updated:** 2026-08-09  
 
 Related code:
 
 - PE: [`src/player/externalPhysics.ts`](../src/player/externalPhysics.ts), [`PlayerSystem.ts`](../src/player/PlayerSystem.ts), [`locomotion.ts`](../src/player/locomotion.ts)
 - Scene solids: [`PhysXWorld.ts`](../src/physics/PhysXWorld.ts), [`World.ts`](../src/core/World.ts) (`pushColliderRootPoses` / `pushColliderPartPoses`)
-- Policy: [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md)
+- Riding: [`platformMotion.ts`](../src/physics/platformMotion.ts), `SceneScriptSystem.standSurfaceEcsFromPhys`
+- Policy: [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md)
 
 Official scene API: [Player Physics](https://docs.decentraland.org/creator/scenes-sdk7/interactivity/player-physics).
 
@@ -213,6 +214,25 @@ Full policy: [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md).
 Code: `PhysXWorld.applyPartColliderMotions`, `World.pushColliderPartPoses`, `SceneScriptSystem.snapshotPhysMotionSets`.
 
 **Out of scope for PART (still open):** continuous high-rate deforming hulls without Animator (prefer Tween/Transform ROOT or future per-shape actors).
+
+---
+
+## MeshCollider platform riding + CCT ground (2026-08-09) ✅
+
+Explorer-parity **implementation gap close** on `dev-latest` — **not a release**. Full law: [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md) · plan: [PLAN_MESHCOLLIDER_PLATFORM_RIDING.md](./PLAN_MESHCOLLIDER_PLATFORM_RIDING.md).
+
+| Track | Model | Status |
+|-------|--------|--------|
+| Stand phys map | raw ECS MeshCollider + 20M GLTF + −1 infinite | 🟢 |
+| ROOT parent→child | Transform dirty expands to collider descendants | 🟢 |
+| Riding Δ | **One** stand-actor world pose slide before `move()` | 🟢 |
+| Anti-bandaid | No sticky multi-frame Δ · no residual snap · no pull-down | 🟢 |
+| Cylinder cook | Y-up capsule / flat box; half-height excludes caps | 🟢 |
+| nonWalkable | `PREVENT_CLIMBING_AND_FORCE_SLIDING` (sphere sides ≠ ladders) | 🟢 |
+| Grounded law | Walkable support under capsule column; else freefall | 🟢 |
+| Follow-up | Multi-shape GLTF `40M+` child ride key | 🟡 |
+
+**Kill-list:** scene-name forks · sticky “help” · invent PE ground · per-game nginx for scene fetch (use `/api/scene-http`).
 
 ---
 

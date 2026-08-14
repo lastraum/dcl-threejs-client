@@ -85,6 +85,36 @@ export class ProfilePopup {
     this.open = true
     this.root.hidden = false
     this.backdrop.hidden = false
+    this.fitNameToColumn()
+  }
+
+  /**
+   * DCL caps names at 15 characters, so a long one overruns the column beside the
+   * face by a little — scale the type down to fit rather than truncate a name the
+   * user chose. Must run while visible; a hidden root measures zero.
+   */
+  private fitNameToColumn(): void {
+    const row = this.root.querySelector('.profile-popup__name-row') as HTMLElement | null
+    const name = this.root.querySelector('.profile-popup__name') as HTMLElement | null
+    if (!row || !name) return
+
+    const maxPx = 22
+    const minPx = 13
+    name.style.fontSize = `${maxPx}px`
+
+    // Everything in the row that does not scale with the name (the verified tick).
+    const fixed = row.scrollWidth - name.scrollWidth
+    const availableForName = row.clientWidth - fixed
+    if (name.scrollWidth <= availableForName || name.scrollWidth === 0) return
+
+    let size = Math.floor(maxPx * (availableForName / name.scrollWidth))
+    size = Math.max(minPx, Math.min(maxPx, size))
+    name.style.fontSize = `${size}px`
+    // Glyph widths are not perfectly linear in font size — close the last gap.
+    while (size > minPx && row.scrollWidth > row.clientWidth) {
+      size -= 1
+      name.style.fontSize = `${size}px`
+    }
   }
 
   private async render(data: ProfilePopupData): Promise<void> {
@@ -102,6 +132,8 @@ export class ProfilePopup {
       ? `https://decentraland.org/profile/accounts/${address}`
       : 'https://decentraland.org/profile'
 
+    // Name / wallet / View Profile stack beside one round face, matching the
+    // peer card in UserContextMenu.
     this.root.innerHTML = `
       <div class="profile-popup__hero">
         <div class="profile-popup__avatar-ring">
@@ -111,15 +143,14 @@ export class ProfilePopup {
               : `<div class="profile-popup__avatar profile-popup__avatar--fallback">${displayName.charAt(0).toUpperCase()}</div>`
           }
         </div>
-        <div class="profile-popup__name-row">
-          <span class="profile-popup__name" style="color:${nameColor}">${escapeHtml(displayName)}</span>
-          ${claimed ? '<span class="profile-popup__verified" title="Verified name">✓</span>' : ''}
-        </div>
-        ${
-          address
-            ? `<div class="profile-popup__wallet">
-                <div class="profile-popup__wallet-label">Wallet address</div>
-                <div class="profile-popup__wallet-row">
+        <div class="profile-popup__meta">
+          <div class="profile-popup__name-row">
+            <span class="profile-popup__name" style="color:${nameColor}">${escapeHtml(displayName)}</span>
+            ${claimed ? '<span class="profile-popup__verified" title="Verified name">✓</span>' : ''}
+          </div>
+          ${
+            address
+              ? `<div class="profile-popup__wallet-row">
                   <code class="profile-popup__wallet-value">${shortenAddress(address)}</code>
                   <button type="button" class="profile-popup__copy" data-copy="${address}" aria-label="Copy wallet address">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -127,12 +158,22 @@ export class ProfilePopup {
                       <path d="M7 15H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v1" stroke="currentColor" stroke-width="1.6"/>
                     </svg>
                   </button>
-                </div>
-              </div>`
-            : `<p class="profile-popup__guest-note">Guest session — sign in to save your avatar and join voice.</p>`
-        }
+                </div>`
+              : ''
+          }
+          <button type="button" class="profile-popup__view-btn">
+            <span class="profile-popup__view-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12" r="2.8" stroke="currentColor" stroke-width="1.6"/></svg>
+            </span>
+            <span>View Profile</span>
+          </button>
+        </div>
       </div>
-      <button type="button" class="profile-popup__view-btn">View profile</button>
+      ${
+        address
+          ? ''
+          : `<p class="profile-popup__guest-note">Guest session — sign in to save your avatar and join voice.</p>`
+      }
       <div class="profile-popup__divider"></div>
       <button type="button" class="profile-popup__action profile-popup__action--signout">
         <span class="profile-popup__action-icon" aria-hidden="true">⏻</span>

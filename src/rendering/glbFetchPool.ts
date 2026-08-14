@@ -1,4 +1,14 @@
 import { normalizeGlbCacheKey } from './glbByteCache'
+import { toSceneHttpProxyUrl } from '../network/sceneHttpProxy'
+
+function proxiedFetchUrl(url: string): string {
+  const rewritten = toSceneHttpProxyUrl(url)
+  if (!rewritten) return url
+  if (rewritten.startsWith('/') && typeof location !== 'undefined' && location.origin.startsWith('http')) {
+    return `${location.origin}${rewritten}`
+  }
+  return rewritten
+}
 
 /**
  * Pool of workers for GLB byte fetch + IndexedDB — parallel network during avatar/scene storms.
@@ -89,7 +99,7 @@ function fetchGlbBytesOffThreadOnce(url: string, key: string): Promise<ArrayBuff
     pending.set(id, { resolve, reject })
     void acquireWorker().then((worker) => {
       workerBusy.set(worker, true)
-      worker.postMessage({ type: 'fetch', id, url, key })
+      worker.postMessage({ type: 'fetch', id, url: proxiedFetchUrl(url), key })
     })
   })
 }

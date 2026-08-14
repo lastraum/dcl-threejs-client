@@ -1,14 +1,20 @@
+import { signPersonalMessage } from '../../../auth/ethereumProvider'
 import type { SessionIdentity } from '../../../network/SessionIdentity'
 import {
   PETBARN_MAX_GLB_BYTES,
   PETBARN_MAX_THUMB_BYTES,
   PETBARN_POLL_MS,
   addPetFromBarn,
+  deletePetBarnListing,
   fetchPetBarnCatalog,
   getCachedPetBarnCatalog,
   isPetBarnAdded,
+  isPetBarnListingOwner,
+  petBarnActionMessage,
   petBarnContentUrl,
+  sha256HexOfBlob,
   submitPetBarnListing,
+  updatePetBarnListing,
   type PetBarnCatalog,
   type PetBarnListing
 } from '../../../pets/petBarn'
@@ -26,7 +32,7 @@ export type PetBarnPanelOptions = {
   onPublishLockChange?: (locked: boolean) => void
 }
 
-type View = 'catalog' | 'publish'
+type View = 'catalog' | 'publish' | 'update'
 
 function escapeHtml(s: string): string {
   return s
@@ -54,6 +60,8 @@ export class PetBarnPanel {
   private publishType: PetCategory = 'walking'
   private glbFile: File | null = null
   private thumbFile: File | null = null
+  /** When set, publish form is an owner update of this listing id. */
+  private updateTarget: PetBarnListing | null = null
   private refreshing = false
   private readonly panelEl: HTMLElement
   private readonly bodyEl: HTMLElement
@@ -134,8 +142,11 @@ export class PetBarnPanel {
         this.dismissOverlay()
         return
       }
-      if (this.view === 'publish') {
+      if (this.view === 'publish' || this.view === 'update') {
         this.view = 'catalog'
+        this.updateTarget = null
+        this.glbFile = null
+        this.thumbFile = null
         void this.render()
         return
       }
@@ -146,7 +157,8 @@ export class PetBarnPanel {
       const form = (ev.target as HTMLElement).closest('form[data-publish-form]')
       if (!form) return
       ev.preventDefault()
-      void this.handlePublish(form as HTMLFormElement)
+      if (this.view === 'update') void this.handleUpdate(form as HTMLFormElement)
+      else void this.handlePublish(form as HTMLFormElement)
     })
 
     document.body.appendChild(this.element)
@@ -361,7 +373,7 @@ export class PetBarnPanel {
   }
 
   private async render(): Promise<void> {
-    if (this.view === 'publish') {
+    if (this.view === 'publish' || this.view === 'update') {
       this.renderPublish()
       return
     }
@@ -453,6 +465,38 @@ export class PetBarnPanel {
     const added = isPetBarnAdded(p.id)
     const typeLabel = p.type === 'flying' ? 'Flying' : 'Walking'
     const anims = p.animationCount ?? 0
+    const isOwner =
+      !this.options.getSession().isGuest() &&
+      isPetBarnListingOwner(p.wallet, this.wallet() ?? undefined)
+    const ownerBtns = isOwner
+      ? `
+        <button
+          type="button"
+          class="petbarn-card__icon-btn"
+          data-edit="${escapeHtml(p.id)}"
+          title="Update listing"
+          aria-label="Update ${escapeHtml(p.petName)}"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M12 20h9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="petbarn-card__icon-btn petbarn-card__icon-btn--danger"
+          data-delete="${escapeHtml(p.id)}"
+          title="Delete listing"
+          aria-label="Delete ${escapeHtml(p.petName)}"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M4 7h16" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            <path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            <path d="M7 7l1 12a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2l1-12" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+            <path d="M10 11v6M14 11v6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+          </svg>
+        </button>`
+      : ''
     return `
       <article class="petbarn-card${added ? ' is-added' : ''}" data-barn-id="${escapeHtml(p.id)}">
         <div class="petbarn-card__thumb-wrap">
@@ -471,12 +515,15 @@ export class PetBarnPanel {
           <div class="petbarn-card__meta">${escapeHtml(p.creatorName)} · ${typeLabel}</div>
           <div class="petbarn-card__meta">${anims} anim${anims === 1 ? '' : 's'}</div>
         </div>
-        <button
-          type="button"
-          class="petbarn-card__add"
-          data-add="${escapeHtml(p.id)}"
-          ${added ? 'disabled' : ''}
-        >${added ? 'Added' : 'Add'}</button>
+        <div class="petbarn-card__actions">
+          <button
+            type="button"
+            class="petbarn-card__add"
+            data-add="${escapeHtml(p.id)}"
+            ${added ? 'disabled' : ''}
+          >${added ? 'Added' : 'Add'}</button>
+          ${ownerBtns}
+        </div>
         <div class="petbarn-card__overlay" data-card-overlay hidden>
           <div class="petbarn-card__overlay-inner">
             <div class="petbarn-card__spinner" data-card-spinner aria-hidden="true"></div>
@@ -517,21 +564,40 @@ export class PetBarnPanel {
   }
 
   private renderPublish(): void {
-    const creatorDefault = escapeHtml(this.displayName())
+    const isUpdate = this.view === 'update' && this.updateTarget
+    const target = this.updateTarget
+    const creatorDefault = escapeHtml(
+      isUpdate && target ? target.creatorName : this.displayName()
+    )
+    const petNameDefault = isUpdate && target ? escapeHtml(target.petName) : ''
     const glbLabel = this.glbFile
       ? `${this.glbFile.name} · ${formatPetByteSize(this.glbFile.size)}`
-      : 'Drop .glb here or click to browse'
+      : isUpdate
+        ? 'Drop new .glb (required for update)'
+        : 'Drop .glb here or click to browse'
     const thumbLabel = this.thumbFile
       ? `${this.thumbFile.name} · ${formatPetByteSize(this.thumbFile.size)}`
-      : 'Drop image here or click to browse'
+      : isUpdate
+        ? 'Drop new thumbnail (required for update)'
+        : 'Drop image here or click to browse'
+    const title = isUpdate
+      ? `Update · ${escapeHtml(target!.petName)}`
+      : 'Publish to Pet Barn'
+    const submitLabel = isUpdate ? 'Update listing' : 'Publish to Pet Barn'
     this.bodyEl.innerHTML = `
       <div class="petbarn-publish-head">
         <button type="button" class="petbarn-back-catalog" data-back-catalog>← Catalog</button>
+        <span class="petbarn-publish-head__title">${title}</span>
       </div>
       <form class="petbarn-publish" data-publish-form>
+        ${
+          isUpdate
+            ? `<p class="petbarn-update-hint">Replaces the model on the same Barn slot. Your wallet will sign the update.</p>`
+            : ''
+        }
         <label class="petbarn-field">
           <span>Pet name</span>
-          <input type="text" name="petName" maxlength="64" required placeholder="Spark" />
+          <input type="text" name="petName" maxlength="64" required placeholder="Spark" value="${petNameDefault}" />
         </label>
         <label class="petbarn-field">
           <span>Creator name</span>
@@ -586,7 +652,7 @@ export class PetBarnPanel {
             <div class="petbarn-dropzone__hint" data-thumb-label>${escapeHtml(thumbLabel)}</div>
           </div>
         </div>
-        <button type="submit" class="petbarn-publish-btn" data-publish-submit>Publish to Pet Barn</button>
+        <button type="submit" class="petbarn-publish-btn" data-publish-submit>${submitLabel}</button>
       </form>
     `
     this.bindDropzones()
@@ -774,12 +840,19 @@ export class PetBarnPanel {
 
     if (t.closest('[data-open-publish]')) {
       this.view = 'publish'
+      this.updateTarget = null
+      this.glbFile = null
+      this.thumbFile = null
+      this.publishType = 'walking'
       void this.render()
       return
     }
 
     if (t.closest('[data-back-catalog]')) {
       this.view = 'catalog'
+      this.updateTarget = null
+      this.glbFile = null
+      this.thumbFile = null
       void this.render()
       return
     }
@@ -808,7 +881,13 @@ export class PetBarnPanel {
     if (closeOverlay) {
       const card = closeOverlay.closest<HTMLElement>('.petbarn-card')
       if (card) {
+        const state = card.querySelector<HTMLElement>('[data-card-overlay]')?.dataset.state
         this.clearCardOverlay(card)
+        // After delete success the listing was removed from local catalog — refresh grid.
+        if (state === 'success' && this.view === 'catalog') {
+          this.renderCatalogPreservingSearchFocus()
+          return
+        }
         const addBtn = card.querySelector<HTMLButtonElement>('[data-add]')
         if (addBtn && isPetBarnAdded(card.dataset.barnId || '')) {
           addBtn.disabled = true
@@ -819,11 +898,203 @@ export class PetBarnPanel {
       return
     }
 
+    const editBtn = t.closest<HTMLElement>('[data-edit]')
+    if (editBtn) {
+      const id = editBtn.dataset.edit
+      if (id) this.openUpdate(id)
+      return
+    }
+
+    const delBtn = t.closest<HTMLElement>('[data-delete]')
+    if (delBtn) {
+      const id = delBtn.dataset.delete
+      if (id) await this.handleDelete(id)
+      return
+    }
+
     const addBtn = t.closest<HTMLElement>('[data-add]')
     if (addBtn) {
       const id = addBtn.dataset.add
       if (id) await this.handleAdd(id, addBtn)
       return
+    }
+  }
+
+  private openUpdate(barnId: string): void {
+    if (this.busy || this.publishLocked) return
+    const listing = this.catalog?.pets.find((p) => p.id === barnId)
+    if (!listing) {
+      this.setStatus('Listing not found')
+      return
+    }
+    if (this.options.getSession().isGuest()) {
+      this.showErrorOverlay('Sign in with a wallet to update your listings.', 'Wallet required')
+      return
+    }
+    if (!isPetBarnListingOwner(listing.wallet, this.wallet() ?? undefined)) {
+      this.showErrorOverlay('Only the listing owner can update this pet.', 'Not owner')
+      return
+    }
+    this.updateTarget = listing
+    this.view = 'update'
+    this.publishType = listing.type === 'flying' ? 'flying' : 'walking'
+    this.glbFile = null
+    this.thumbFile = null
+    void this.render()
+  }
+
+  private async handleDelete(barnId: string): Promise<void> {
+    if (this.busy || this.publishLocked) return
+    const listing = this.catalog?.pets.find((p) => p.id === barnId)
+    const card = this.bodyEl.querySelector<HTMLElement>(`.petbarn-card[data-barn-id="${CSS.escape(barnId)}"]`)
+    if (!listing) {
+      this.showErrorOverlay('Listing not found', 'Delete failed')
+      return
+    }
+    if (this.options.getSession().isGuest()) {
+      this.showErrorOverlay('Sign in with a wallet to delete your listings.', 'Wallet required')
+      return
+    }
+    const address = this.wallet()
+    if (!address || !isPetBarnListingOwner(listing.wallet, address)) {
+      this.showErrorOverlay('Only the listing owner can delete this pet.', 'Not owner')
+      return
+    }
+    const ok = window.confirm(
+      `Delete “${listing.petName}” from the Pet Barn?\n\nThis removes it from the public catalog after the deploy Action runs. Your wallet will sign the request.`
+    )
+    if (!ok) return
+
+    this.busy = true
+    if (card) this.setCardOverlay(card, 'loading', 'Sign in wallet…')
+    else this.showLoadingOverlay('Sign delete in your wallet…', 'Deleting…')
+
+    try {
+      const timestampMs = Date.now()
+      const message = petBarnActionMessage('delete', listing.id, 'none', timestampMs)
+      let signature: string
+      try {
+        signature = await signPersonalMessage(message, address)
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Wallet signature failed'
+        if (card) this.setCardOverlay(card, 'error', msg)
+        else this.showErrorOverlay(msg, 'Delete cancelled')
+        return
+      }
+
+      if (card) this.setCardOverlay(card, 'loading', 'Submitting delete…')
+      else this.showLoadingOverlay('Submitting delete…', 'Deleting…')
+
+      const result = await deletePetBarnListing({
+        targetId: listing.id,
+        signature,
+        timestampMs,
+        wallet: address
+      })
+      if (!result.ok) {
+        if (card) this.setCardOverlay(card, 'error', result.error)
+        else this.showErrorOverlay(result.error, 'Delete failed')
+        return
+      }
+      const done =
+        'Delete queued. Catalog updates after GitHub Action finishes (listing disappears when deploy completes).'
+      if (card) this.setCardOverlay(card, 'success', done)
+      else this.showSuccessOverlay(done, 'Delete queued')
+      // Optimistic: drop from local catalog view until refresh
+      if (this.catalog) {
+        this.catalog = {
+          ...this.catalog,
+          pets: this.catalog.pets.filter((p) => p.id !== listing.id)
+        }
+      }
+    } finally {
+      this.busy = false
+    }
+  }
+
+  private async handleUpdate(form: HTMLFormElement): Promise<void> {
+    if (this.busy || this.publishLocked || !this.updateTarget) return
+    const target = this.updateTarget
+    const address = this.wallet()
+    if (!address || this.options.getSession().isGuest()) {
+      this.showErrorOverlay('Sign in with a wallet to update your listings.', 'Wallet required')
+      return
+    }
+    if (!isPetBarnListingOwner(target.wallet, address)) {
+      this.showErrorOverlay('Only the listing owner can update this pet.', 'Not owner')
+      return
+    }
+
+    const fd = new FormData(form)
+    const petName = String(fd.get('petName') || '')
+    const creatorName = String(fd.get('creatorName') || '')
+    const glb =
+      this.glbFile ||
+      (form.querySelector<HTMLInputElement>('[data-glb]')?.files?.[0] ?? null)
+    const thumb =
+      this.thumbFile ||
+      (form.querySelector<HTMLInputElement>('[data-thumb]')?.files?.[0] ?? null)
+    if (!petName.trim() || !creatorName.trim()) {
+      this.showErrorOverlay('Pet name and creator name are required.', 'Missing info')
+      return
+    }
+    if (!glb || !thumb) {
+      this.showErrorOverlay('Add a new GLB and thumbnail for the update.', 'Missing files')
+      return
+    }
+
+    this.busy = true
+    this.showLoadingOverlay('Hashing model & waiting for wallet…', 'Updating…')
+    const submitBtn = form.querySelector<HTMLButtonElement>('[data-publish-submit]')
+    if (submitBtn) submitBtn.disabled = true
+
+    try {
+      const glbSha256 = await sha256HexOfBlob(glb)
+      const timestampMs = Date.now()
+      const message = petBarnActionMessage('update', target.id, glbSha256, timestampMs)
+      let signature: string
+      try {
+        signature = await signPersonalMessage(message, address)
+      } catch (err) {
+        this.showErrorOverlay(
+          err instanceof Error ? err.message : 'Wallet signature failed',
+          'Update cancelled'
+        )
+        return
+      }
+
+      this.showLoadingOverlay('Compressing thumbnail & uploading…', 'Updating…')
+      const result = await updatePetBarnListing({
+        targetId: target.id,
+        petName,
+        creatorName,
+        type: this.publishType,
+        glb,
+        thumb,
+        wallet: address,
+        signature,
+        timestampMs,
+        glbSha256
+      })
+      if (!result.ok) {
+        this.showErrorOverlay(result.error, 'Update failed')
+        return
+      }
+
+      this.glbFile = null
+      this.thumbFile = null
+      this.updateTarget = null
+      this.view = 'catalog'
+      this.showSuccessOverlay(
+        'Update queued. Catalog refreshes after GitHub Action finishes.',
+        'Update queued'
+      )
+      void this.refreshCatalog({ manual: true })
+    } catch (err) {
+      this.showErrorOverlay(err instanceof Error ? err.message : 'Update failed', 'Update failed')
+    } finally {
+      this.busy = false
+      if (submitBtn) submitBtn.disabled = false
     }
   }
 

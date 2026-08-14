@@ -1,6 +1,6 @@
 import type { Entity, IEngine } from '@dcl/ecs'
-import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import { preregisterRendererInjectedComponents } from '../shim/worker/preregisterRendererInjectedComponents'
+import { forEachWorkerPointerEventsResult } from '../shim/worker/resolveBundledUiComponents'
 import { InputAction, PointerEventType, type InputActionValue, type PointerEventTypeValue } from '../input/pointerConstants'
 
 /** Direct worker injection — scene keyboard relay (WASD / actions → inputSystem.isPressed). */
@@ -14,7 +14,6 @@ export type InjectSceneInputBody = {
 
 export function injectSceneKeyOnEngine(engine: IEngine, body: InjectSceneInputBody): void {
   preregisterRendererInjectedComponents(engine)
-  const PointerEventsResult = generated.PointerEventsResult(engine)
   const result = {
     button: body.button,
     state: body.state,
@@ -31,7 +30,9 @@ export function injectSceneKeyOnEngine(engine: IEngine, body: InjectSceneInputBo
     },
     analog: undefined
   }
-  PointerEventsResult.addValue(body.playerEntity as Entity, result)
+  forEachWorkerPointerEventsResult(engine, (PointerEventsResult) => {
+    PointerEventsResult.addValue(body.playerEntity as Entity, result)
+  })
 }
 
 /** Scene keyboard relay actions — PET_UP clears worker inputSystem.buttonState. */

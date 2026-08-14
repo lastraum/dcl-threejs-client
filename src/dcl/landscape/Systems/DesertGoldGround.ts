@@ -128,7 +128,32 @@ export function buildDesertGoldGround(
     const sceneMaxX = (bounds.maxX - base.x + 1) * PARCEL_SIZE
     const sceneMinZ = (bounds.minY - base.y) * PARCEL_SIZE
     const sceneMaxZ = (bounds.maxY - base.y + 1) * PARCEL_SIZE
-    const pad = borderPadding * PARCEL_SIZE
+    // Soft blend band outside the scene AABB so dunes don't form a hard cliff at the edge.
+    const blendBandM = Math.max(PARCEL_SIZE * 0.75, 8)
+    // Deployed scene parcel keys — precise exclusion (not only AABB).
+    const sceneParcelKeys = new Set(sceneParcels)
+    const dunesOnParcels = settings.dunesOnParcels === true
+
+    const parcelKeyAtDcl = (dclX: number, dclZ: number): string => {
+      const px = base.x + Math.floor(dclX / PARCEL_SIZE)
+      const py = base.y + Math.floor(dclZ / PARCEL_SIZE)
+      return `${px},${py}`
+    }
+
+    /** 0 = fully inside scene (flat), 1 = full dune height outside. */
+    const duneWeight = (dclX: number, dclZ: number): number => {
+      if (dunesOnParcels) return 1
+      // Exact scene parcels always flat (author terrain / build footprint).
+      if (sceneParcelKeys.has(parcelKeyAtDcl(dclX, dclZ))) return 0
+      // Distance outside scene AABB (0 inside).
+      const dx =
+        dclX < sceneMinX ? sceneMinX - dclX : dclX > sceneMaxX ? dclX - sceneMaxX : 0
+      const dz =
+        dclZ < sceneMinZ ? sceneMinZ - dclZ : dclZ > sceneMaxZ ? dclZ - sceneMaxZ : 0
+      if (dx === 0 && dz === 0) return 0
+      const outside = Math.hypot(dx, dz)
+      return Math.min(1, outside / blendBandM)
+    }
 
     for (let i = 0; i < pos.count; i++) {
       const lx = pos.getX(i) // three-local (already reflected space once parent is placed)
@@ -136,17 +161,12 @@ export function buildDesertGoldGround(
       // Inverse of dclToThree for offsets from center: dcl offset X = -lx
       const dclX = centerDclX - lx
       const dclZ = centerDclZ + lz
-      // Flatten under scene + padding so author terrain / pads aren't wrinkled
-      const onFootprint =
-        dclX >= sceneMinX - pad &&
-        dclX <= sceneMaxX + pad &&
-        dclZ >= sceneMinZ - pad &&
-        dclZ <= sceneMaxZ + pad
-      if (onFootprint) {
+      const w = duneWeight(dclX, dclZ)
+      if (w <= 0.001) {
         pos.setY(i, 0)
         continue
       }
-      pos.setY(i, duneHeightAtDcl(dclX, dclZ, settings))
+      pos.setY(i, duneHeightAtDcl(dclX, dclZ, settings) * w)
     }
     pos.needsUpdate = true
     geometry.computeVertexNormals()

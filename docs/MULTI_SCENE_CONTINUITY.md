@@ -1,37 +1,36 @@
 # Multi-scene continuity (FocusOwner + sticky residents)
 
-**Branch:** `feat/aoi-focus-owner`  
-**Status:** in progress — continuity path landed; FPS / dual-worker budget still hardening  
-**Last updated:** 2026-07-26  
-**Bar:** COD-style walk continuity — no void unload, no freecam snap, no soft-route warp, 30–60 FPS target  
+**Status:** Open-world residency on `dev-latest` — extract shells + SceneLoop live guests + stand-on promote (see [OPEN_WORLD_RESIDENCY.md](./OPEN_WORLD_RESIDENCY.md)). `?noaoi` still kills all neighbor load. Continuity handoff: FocusOwner + `bindSceneTarget` before feet.  
+**Last updated:** 2026-08-11  
+**Bar:** spawn primary runs forever; neighbors = composite GLBs over Scene Distance; **30–60 FPS** without dual-worker thrash  
 
-Quick rules for agents: [AGENTS.md § Multi-scene continuity](./AGENTS.md#multi-scene-continuity-non-negotiable).
+Quick rules for agents: [AGENTS.md § Multi-scene continuity](./AGENTS.md#multi-scene-continuity-non-negotiable).  
+Architecture context: [ARCHITECTURE.md](./ARCHITECTURE.md) · milestones: [PROGRESS.md](./PROGRESS.md).
+
+> **Quality bar note:** older text said “COD-style.” That meant **AAA continuity discipline** (measure, no accidental unload voids) — not a separate multi-scene product mode.
 
 ---
 
-## Product model
+## Product model (shipping)
 
 ```text
-PRIMARY (feet)
-  FocusOwner — UI, media, privileged input, locomotion modifiers, AvatarModifier/CameraMode
-  Full scene worker + scripts
+PRIMARY (spawn only)
+  FocusOwner — UI, media, privileged input, locomotion modifiers
+  Full scene worker + scripts — **never demoted / never replaced on walk**
 
-SECONDARY (live ring / sticky demote)
-  Same loaded graph — scripts every frame, FocusOwner MUTE
-  Hard-capped (≤3 live secondaries) + serial boot concurrency (1)
-  Live eligibility = scene-to-scene footprint proximity (16m), not player frustum alone
+NEIGHBORS (Scene Distance)
+  main.composite **GLB shells only** — no worker, no scripts, no promote
+  Roads + empty/scatter fill
+  Soft-route URL updates under feet (address bar) — not a primary swap
 
-TERTIARY (resident)
-  Same loaded graph — scripts OFF + visual LOD (no cast shadows / local lights)
-  Triggered only by: leave live ring OR secondary-cap pressure
-  Meshes + colliders stay — re-enter ring = scripts on only (no GLB reload)
-
-COMPOSITE / AOI shells
-  Roads, default ground, first-frame shells — no scene worker
-  Procedural scatter trees/rocks ONLY on true vacant land (never real/resident footprints)
+DISABLED by default (code still present)
+  Live secondary workers, sticky demote, stand-on promote handoff
+  Flip: aoiGlbShellsOnly() → false in caps.ts for continuity experiments
 ```
 
-**Never** unload a scene into the void just because the player stepped onto a neighbor parcel.
+**Never** cold-boot a full neighbor worker just because the player walked near or onto its parcel (default).
+
+Primary + PE play-frames are **SceneLoop guests** (one in-flight tick, host receive/apply). Shells are not guests. Do not re-enable live secondaries as N dual-runtimes.
 
 ---
 
@@ -58,14 +57,14 @@ COMPOSITE / AOI shells
 
 - Graph + worker stay resident (`SecondaryLiveManager.adoptDemotedPrimary`).
 - Mode on demote: **always secondary** (muted scripts).
-- Tertiary only later via reconcile (leave 16m ring or cap).
+- Tertiary only later via reconcile (player > 80m keep or cap).
 - Colliders: capture remapped descs under `physOffset`, one-shot PhysX register (`forceRecookOnPoseChange: false`), mark synced.
 
 ### Promote settle window (~8s)
 
 - `setSecondaryActivityEnabled(false)` — no neighbor cold boots during hydrate.
 - `forceAllResidentsTertiary` — temporary scripts-off on residents so **new primary hydrates alone**.
-- After settle: re-enable secondary activity; ring/cap reconcile decides secondary vs tertiary again.
+- After settle: re-enable secondary activity; enter/keep reconcile decides secondary vs tertiary again.
 
 ---
 
@@ -74,11 +73,16 @@ COMPOSITE / AOI shells
 | Lever | Policy |
 |-------|--------|
 | **Parcel count** | **Never** refuses secondary boot or picks tertiary. |
-| Live radius | Scene-to-scene edge distance ≤ 16m (`SECONDARY_LIVE_SCENE_PROXIMITY_M`) |
+| Live **enter** | Player → footprint ≤ **16m** (`SECONDARY_LIVE_ENTER_M`) boots / re-promotes |
+| Live **keep** | Player → footprint ≤ **80m** (`SECONDARY_LIVE_KEEP_M`) keeps scripts on |
 | Live secondary cap | Hard ≤3 (`AOI_LIVE_SECONDARY_HARD_CAP`) |
 | Boot concurrency | 1 at a time (`SECONDARY_LIVE_BOOT_CONCURRENCY`) |
+| Composite shells | Full Scene Distance (up to 200m); no extra 80m gate |
 | Tertiary residents | Cap 8; dispose farthest **non-sticky** only |
 | Sticky demoted | Never auto-evicted |
+
+**Shipped:** policy + FocusOwner mute + secondary Animator pump.  
+**Not done:** proving CBD ring stays ≥30 FPS with multiple live secondaries + sticky plaza solids (density pass after **v2.0.0**).
 
 ---
 
@@ -154,7 +158,7 @@ After adopting sticky → primary: invalidate secondary-offset actors, extract u
 
 ---
 
-## Bugs fixed on this branch (continuity arc)
+## Bugs fixed (continuity arc — landed)
 
 | Symptom | Cause | Fix direction |
 |---------|--------|----------------|
@@ -181,13 +185,14 @@ After adopting sticky → primary: invalidate secondary-offset actors, extract u
 - [ ] No procedural trees on CBD / resident footprints
 - [ ] Avatar not permanently hidden after demote (AvatarModifier clear)
 - [ ] `?noaoi=1` still primary-only debug path
+- [ ] **Density:** stand in CBD with ≥2 live secondaries + sticky plaza — interactive FPS (target ≥30)
 
 ---
 
 ## Primary load solids (Genesis Plaza)
 
 Cold plaza load cooks hundreds of multi-shape actors. Full law:
-[STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md). Order (COD):
+[STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md). Order:
 
 ```text
 loadScene (worker onStart — scene systems)
@@ -217,19 +222,23 @@ Platform rules:
 
 - **Never** `simulate(0)` / `computeInteractions(0)` to warm statics — only CCT cache invalidate.
 - **Never** `forceDynamicTreeRebuild` (WASM SQ death).
-- **Once** at boot: `reinsertAll` before seal so multi-shape SQ AABBs match (static=1100 + MISS without it).
+- **Once** at boot: `reinsertAll` before seal so multi-shape SQ AABBs match.
 - **Never** reinsert-all after seal / from health.
 - Graph settle: wait `pendingMesh===0` (soft only at ≥97% attached + 2s stable).
 - prepare: **cook missing only** — do not wipe all GLTF actors / geometry cache.
 - `ensurePrimaryColliderIntegrity` after prepare + avatar + pre-walk before free walk.
 - Log `[phys] integrity` / `prewarm cook` / `collider graph settle` / `reinsert=` / `static SQ sealed` on collision channel.
 
-## Open follow-ups
+---
 
-- Dual full secondary scripts (e.g. plaza + neighbor both secondary) still expensive — budget is cap + radius, not parcel size; measure under real CBD ring load.
-- Promote primary re-register can hitch once on huge plazas; geometry cache should blunt recook, not eliminate actor rebind cost.
-- Long-term: reverse-map sticky colliders to primary entity ids without full extract when fingerprints match.
-- Keep iterating until walk loops stay ≥30 FPS with solids and freecam intact.
+## Open follow-ups (post–v2.0.0 density / PE)
+
+| Priority | Item |
+|----------|------|
+| **P0** | CBD multi-scene **FPS / density** — dual full secondary scripts (plaza + neighbor) still expensive; measure real ring load |
+| P1 | Promote primary re-register hitch on huge plazas — geometry cache blunts recook, not rebind cost |
+| P2 | Long-term: reverse-map sticky colliders to primary entity ids without full extract when fingerprints match |
+| — | Continuity voids / warp / freecam snap — **treat regressions as P0 bugs**, not “still designing promote” |
 
 ---
 
@@ -252,10 +261,12 @@ Host must:
 
 Debug: `?syncdebug=1` logs REQ/RES/CRDT on the sync channel.
 
+---
+
 ## Related docs
 
 - [AGENTS.md](./AGENTS.md) — non-negotiable rules for every change
+- [ARCHITECTURE.md](./ARCHITECTURE.md) — scene I/O model + deliver channels
 - [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) — PART vs ROOT PhysX motion
 - [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) — cook-once statics · never full SQ rebuild
-- [ARCHITECTURE.md](./ARCHITECTURE.md) — scene I/O model
 - [PROGRESS.md](./PROGRESS.md) — milestone log

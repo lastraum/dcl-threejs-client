@@ -273,7 +273,11 @@ export async function waitForSceneAssets(
       sceneScript.setAssetHydrationMode(false)
       sceneScript.extendSoftHydration(SOFT_HYDRATION_MS)
       if (!timedOut) markSceneHydrated(scene)
-      options.onPrimeRender?.()
+      try {
+        options.onPrimeRender?.()
+      } catch (err) {
+        console.warn('[Hydration] primeRender failed — continuing load', err)
+      }
       if (reason) console.warn(`[Hydration] ${reason}`)
       resolve({ timedOut, elapsedMs: performance.now() - started })
     }

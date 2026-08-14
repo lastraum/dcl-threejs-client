@@ -13,6 +13,7 @@ import { World } from '../core/World'
 import { MultiSceneRuntime } from '../dcl/multiScene/MultiSceneRuntime'
 import { PortableExperienceManager } from '../dcl/multiScene/PortableExperienceManager'
 import { resolvePortableExperiencesPolicy } from '../dcl/multiScene/resolvePortableExperiences'
+import { aoiStandOnPromote } from '../dcl/multiScene/caps'
 import { readSceneDevQueryKey } from '../environment/fftOcean/readFftOceanOverride'
 import { disconnectAll } from '../network/SessionConnections'
 import { clearVrmRamCache } from '../avatar/vrm/vrmRamCache'
@@ -37,7 +38,13 @@ import { ChatPanel } from './ui/chat/ChatPanel'
 import { SocialChatController } from './ui/chat/SocialChatController'
 import { SocialChatDock } from './ui/chat/SocialChatDock'
 import { getPrivateMessagesService } from '../social/PrivateMessagesService'
+import {
+  getSharedLiveDirectory,
+  resetSharedLiveDirectory
+} from '../social/LiveDirectoryController'
 import { CommunityFollowController } from '../social/CommunityFollowController'
+import { LivePip } from './ui/live/LivePip'
+import type { LiveSession } from '../social/globalLiveWire'
 import { FollowFlagManager } from '../social/FollowFlagManager'
 import { TourFocusController } from '../social/TourFocusController'
 import {
@@ -78,11 +85,13 @@ import { sceneBanDebug } from '../network/sceneAccess/sceneBanDebug'
 import { SceneBanMonitor } from '../network/sceneAccess/SceneBanMonitor'
 import { SceneAccessDeniedError } from '../network/sceneAccess/SceneAccessDeniedError'
 import { ProfileUiController } from './ui/profile/ProfileUiController'
+import { TradeController } from './ui/trade/TradeController'
 import type { AppMode } from './appMode'
 import { bindWhatsNewShippedOpener, openWhatsNewFromMenu } from './whatsNew/WhatsNewToast'
 import { CommunitiesPageView } from './ui/explore/CommunitiesPageView'
 import { EventsPageView } from './ui/explore/EventsPageView'
 import { ExplorerView } from './ui/explore/ExplorerView'
+import { LivePageView } from './ui/explore/LivePageView'
 import { LootBagPageView } from './ui/explore/LootBagPageView'
 import { MapPageView } from './ui/explore/MapPageView'
 import { ProfilePageView } from './ui/explore/ProfilePageView'
@@ -179,11 +188,17 @@ export class AppController {
   private navigating = false
   private mobileHud: MobileGameHud | null = null
   private profileUi: ProfileUiController | null = null
+  private tradeUi: TradeController | null = null
+  /** Unsubscribe world LiveKit d3js-trade → PM trade handler. */
+  private worldTradeTopicUnsub: (() => void) | null = null
   private sceneContentUrl = 'https://peer.decentraland.org'
   private editorApp: EditorApp | null = null
   private explorerView: ExplorerView | null = null
   private mapPageView: MapPageView | null = null
   private eventsPageView: EventsPageView | null = null
+  private livePageView: LivePageView | null = null
+  private livePip: LivePip | null = null
+  private unsubLiveSessionEnded: (() => void) | null = null
   private lootBagPageView: LootBagPageView | null = null
   private communitiesPageView: CommunitiesPageView | null = null
   private profilePageView: ProfilePageView | null = null
@@ -287,6 +302,11 @@ export class AppController {
       return
     }
 
+    if (postLoginRoute.kind === 'live') {
+      await this.showLivePage({ replace: true })
+      return
+    }
+
     if (postLoginRoute.kind === 'lootbag') {
       await this.showLootBagPage({ replace: true })
       return
@@ -377,6 +397,16 @@ export class AppController {
       return
     }
 
+    if (target.kind === 'live') {
+      this.navigating = true
+      try {
+        await this.showLivePage({ fromHistory: opts.fromHistory, replace: opts.replace })
+      } finally {
+        this.navigating = false
+      }
+      return
+    }
+
     if (target.kind === 'lootbag') {
       this.navigating = true
       try {
@@ -439,6 +469,7 @@ export class AppController {
     if (tab === 'explore') void this.navigateTo({ kind: 'blank' })
     else if (tab === 'map') void this.navigateTo({ kind: 'map' })
     else if (tab === 'communities') void this.navigateTo({ kind: 'communities' })
+    else if (tab === 'live') void this.navigateTo({ kind: 'live' })
     else if (tab === 'lootbag') void this.navigateTo({ kind: 'lootbag' })
     else if (tab === 'editor') void this.navigateTo({ kind: 'editor' })
     else void this.navigateTo({ kind: 'events' })
@@ -460,6 +491,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownLivePage()
     this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
@@ -1390,6 +1422,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownLivePage()
     this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
@@ -1439,6 +1472,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownLivePage()
     this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
@@ -1496,6 +1530,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownLivePage()
     this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
@@ -1521,6 +1556,51 @@ export class AppController {
     this.collapseSocialChatThread()
   }
 
+  private async showLivePage(
+    opts: { fromHistory?: boolean; replace?: boolean } = {}
+  ): Promise<void> {
+    if (this.appMode === 'play') {
+      stopDwellTracking('shell')
+      this.disposeCommunityFollow()
+      await this.teardownScene({ clearVrmCache: true })
+    }
+
+    if (!opts.fromHistory) {
+      applyRouteToHistory({ kind: 'live' }, opts.replace ?? false)
+    }
+    this.currentRoute = { kind: 'live' }
+    this.appMode = 'live'
+    this.syncCommunityVoiceBarVisibility()
+    this.clearSceneBanWatch()
+
+    this.teardownExplorer()
+    this.teardownLanding()
+    this.teardownMapPage()
+    this.teardownEventsPage()
+    this.teardownLivePage()
+    this.teardownLootBagPage()
+    this.teardownCommunitiesPage()
+    this.teardownProfilePage()
+
+    if (!this.container || !this.login) return
+
+    const hudEl = document.getElementById('hud')
+    if (hudEl) hudEl.hidden = true
+
+    await this.ensureSocialForLiveShell()
+    this.livePageView = new LivePageView({
+      login: this.login,
+      onNavigate: (tab) => this.navigateSocialShell(tab),
+      getDirectory: () => this.resolveLiveDirectory(),
+      getLogin: () => this.login,
+      onWatch: (session) => this.openLivePip(session),
+      ...this.socialShellLoginHandlers()
+    })
+    this.livePageView.mount(this.container)
+    this.ensureSocialChatShell()
+    this.collapseSocialChatThread()
+  }
+
   private async showLootBagPage(
     opts: { fromHistory?: boolean; replace?: boolean } = {}
   ): Promise<void> {
@@ -1542,6 +1622,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownLivePage()
     this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
@@ -1582,6 +1663,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownLivePage()
     this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
@@ -1630,6 +1712,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownLivePage()
     this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
@@ -1668,9 +1751,165 @@ export class AppController {
     this.eventsPageView = null
   }
 
+  private teardownLivePage(): void {
+    this.livePageView?.dispose()
+    this.livePageView = null
+  }
+
   private teardownLootBagPage(): void {
     this.lootBagPageView?.dispose()
     this.lootBagPageView = null
+  }
+
+  /** Warm PM + Live directory for 2D Live tab (same rails as chat shell). */
+  private async ensureSocialForLiveShell(): Promise<void> {
+    this.ensureSocialChatShell()
+    const social = this.socialChat?.getSocial()
+    if (!social) return
+    // Await PM + directory so LiveDirectoryView.subscribe is attached before GO LIVE.
+    const dir = await social.ensureLiveReady()
+    this.wireLiveSessionEnded(dir)
+  }
+
+  private openLivePip(session: LiveSession): void {
+    if (!this.livePip) {
+      this.livePip = new LivePip({
+        onClose: () => {
+          /* user closed */
+        },
+        onCastAttach: async (host, worldName, onUpdate, opts) => {
+          return this.startLiveDirectoryCastWatch(worldName, host, onUpdate, {
+            muted: opts.muted
+          })
+        }
+      })
+    }
+    this.livePip.open(session)
+    this.wireLiveSessionEnded(this.resolveLiveDirectory())
+  }
+
+  /**
+   * Shared Live directory (process singleton) — prefer whichever SocialService
+   * is warm, fall back to the singleton when a broadcast is already active
+   * mid 2D→3D handoff.
+   */
+  private resolveLiveDirectory(): import('../social/LiveDirectoryController').LiveDirectoryController | null {
+    return (
+      this.world?.social.getLiveDirectory() ??
+      this.socialChat?.getSocial()?.getLiveDirectory() ??
+      (() => {
+        const shared = getSharedLiveDirectory()
+        return shared.isBroadcasting() || shared.list().length > 0 ? shared : null
+      })()
+    )
+  }
+
+  /**
+   * Live directory / PiP cast watch — always join the target world's scene LiveKit.
+   * Uses an independent CastLiveKitRoom (NOT this.castWatchRoom) so Explorer/landing
+   * teardown does not kill an open PiP when navigating away from /live.
+   * Stream-consumer only; no chat room reuse.
+   */
+  private async startLiveDirectoryCastWatch(
+    worldName: string,
+    host: HTMLElement,
+    onUpdate?: (attached: boolean) => void,
+    opts?: { muted?: boolean; volume?: number }
+  ): Promise<() => void> {
+    if (!loginHasCommsIdentity(this.login)) {
+      try {
+        const guest = await ensureGuestSession()
+        this.login = guest
+        this.playSessionReady = true
+        this.applyLoginToSocialShellViews(guest)
+        this.ensureSocialChatShell()
+        this.socialChat?.applyLogin(guest)
+      } catch {
+        /* fall through */
+      }
+    }
+    if (!loginHasCommsIdentity(this.login)) {
+      throw new Error('Could not start a guest session to watch the live stream. Try signing in.')
+    }
+    const identity = this.login.identity
+    const target = {
+      kind: 'world' as const,
+      worldName,
+      segment: worldName
+    }
+
+    const { resolveSceneFromRoute } = await import('../dcl/content/resolveScene')
+    const { getSceneAdapter } = await import('../network/gatekeeper/GatekeeperClient')
+    const { CastLiveKitRoom } = await import('../network/comms/CastLiveKitRoom')
+    const { parseLiveKitConnectionString } = await import('../network/comms/livekitAdapter')
+    const { isParcelPointer, normalizePointer } = await import('../network/catalyst/pointer')
+
+    const scene = await resolveSceneFromRoute(target)
+    const sceneId = scene.entityId?.trim()
+    if (!sceneId) {
+      throw new Error('Could not resolve scene deployment id for this place.')
+    }
+
+    const isWorld = scene.source.kind === 'world'
+    const pointer = normalizePointer(scene.commsPointer)
+    const parcel = isWorld ? '0,0' : isParcelPointer(pointer) ? pointer : scene.baseParcel
+    const realmName = isWorld
+      ? pointer.toLowerCase()
+      : scene.realm.realmName?.trim() || 'main'
+
+    const adapterResult = await getSceneAdapter(identity, {
+      sceneId,
+      parcel,
+      realmName,
+      isWorld
+    })
+    if (!adapterResult.ok) {
+      clientDebugLog.log(
+        'social',
+        `Live cast watch adapter failed world=${realmName} ${adapterResult.error} (${adapterResult.status})`,
+        { level: 'warn', alsoConsole: true }
+      )
+      throw new Error(
+        `Could not join scene LiveKit for stream: ${adapterResult.error} (HTTP ${adapterResult.status})`
+      )
+    }
+
+    let url: string
+    let token: string
+    try {
+      ;({ url, token } = parseLiveKitConnectionString(adapterResult.adapter))
+    } catch {
+      throw new Error('Gatekeeper returned an invalid LiveKit adapter for this scene.')
+    }
+
+    // Independent of landing castWatchRoom — survives Explorer/Map/etc. navigation.
+    const room = new CastLiveKitRoom()
+    const ok = await room.connect(url, token)
+    if (!ok) {
+      throw new Error('Could not connect to scene LiveKit room for stream video.')
+    }
+    clientDebugLog.log(
+      'social',
+      `Live directory cast connected realm=${realmName} (pip/preview — independent of landing)`,
+      { alsoConsole: true }
+    )
+
+    const unbind = room.bindVideoToHost(host, onUpdate, opts)
+    return () => {
+      unbind()
+      room.disconnect()
+    }
+  }
+
+  private wireLiveSessionEnded(
+    dir: import('../social/LiveDirectoryController').LiveDirectoryController | null
+  ): void {
+    this.unsubLiveSessionEnded?.()
+    this.unsubLiveSessionEnded = null
+    if (!dir) return
+    this.unsubLiveSessionEnded = dir.onSessionEnded((sessionId) => {
+      this.livePip?.endIfSession(sessionId)
+    })
   }
 
   private teardownCommunitiesPage(): void {
@@ -1743,6 +1982,7 @@ export class AppController {
     this.teardownLanding()
     this.teardownMapPage()
     this.teardownEventsPage()
+    this.teardownLivePage()
     this.teardownLootBagPage()
     this.teardownCommunitiesPage()
     this.teardownProfilePage()
@@ -1866,6 +2106,7 @@ export class AppController {
    * Fresh get-scene-adapter join so we attach to the same room as in-world livekit-video://current-stream.
    * Wallet **or guest** identity can watch (signed gatekeeper + LiveKit).
    */
+  /** Landing Join Live only — uses castWatchRoom (torn down with landing). */
   private async startLandingCastWatch(
     target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>,
     host: HTMLElement,
@@ -1873,7 +2114,6 @@ export class AppController {
     opts?: { muted?: boolean; volume?: number }
   ): Promise<() => void> {
     if (!loginHasCommsIdentity(this.login)) {
-      // Edge case: no session yet — mint browser guest so Cast works without a wallet.
       try {
         const guest = await ensureGuestSession()
         this.login = guest
@@ -1907,15 +2147,13 @@ export class AppController {
     const isWorld = scene.source.kind === 'world'
     const pointer = normalizePointer(scene.commsPointer)
     const parcel = isWorld ? '0,0' : isParcelPointer(pointer) ? pointer : scene.baseParcel
-    // Must match buildCommsTarget / scene-stream-access realm (lowercase world id).
     const realmName = isWorld
       ? pointer.toLowerCase()
       : scene.realm.realmName?.trim() || 'main'
 
-    // Prefer existing scene-room session first (already joined for chat).
+    // Prefer existing scene-room session first (already joined for chat on landing).
     if (this.socialChat?.isLiveKitConnected()) {
       const unbindExisting = this.socialChat.bindRemoteCastVideoToHost(host, onUpdate, opts)
-      // Give existing room a moment; if video attaches, keep it.
       await new Promise((r) => setTimeout(r, 600))
       if (host.querySelector('video')) {
         return unbindExisting
@@ -2550,17 +2788,15 @@ export class AppController {
         if (from) this.trackNavigate(from, target, 'navigate', 'goto')
         this.softUpdatePlayRoute(target)
         void this.refreshLocationTitleForParcel(target.x, target.y)
+        // Compile default: aoiStandOnPromote() is false — no origin rebase on walk.
         void this.promotePrimary(target, reason)
       },
       // Feet parcel only — replaceState, never reload (fixes empty-land thrash + URL lag).
       onSoftRoute: (x, y) => {
         this.softUpdatePlayRoute({ kind: 'coords', x, y, segment: `${x},${y}` })
         void this.refreshLocationTitleForParcel(x, y)
-        // Pin under-feet for promote preference only.
-        // NEVER force-boot a secondary worker on every parcel step — that was the
-        // 1-step thrash (resolveScene + full SceneWorkerSlot.start mid-walk).
-        // Dwell promote / live-candidate reconcile boots serially when needed.
-        this.multiSceneRuntime.setSecondaryPriorityParcel(x, y)
+        // Soft-route is URL/title only. Do not pin live-boot to the cell under
+        // feet — that blocked nearby multi-parcel scenes (snow from plaza).
       },
       onPrefetch: (x, y) => {
         this.enqueueScriptWarm(x, y)
@@ -2574,12 +2810,18 @@ export class AppController {
       const TOAST_ID = 'remote-avatar-load'
       // Force 3D HUD placement (top-center) — not 2D shell top-right.
       notif.host.classList.add('social-mobile-notif-host--in-world-center')
-      if (p.total > 5 && p.pending > 0) {
+      // Show only while the load queue is actually working.
+      // Never gate on inRangePending alone — one peer that never composes (fail / hold /
+      // outside queue) left "5/6" up forever.
+      const busy = p.queuePending > 0 || p.composeActive > 0
+      if (busy) {
+        const denom = Math.max(1, p.inRangeTotal, p.inRangeLoaded + p.queuePending)
+        const num = p.inRangeLoaded
         notif.pushSystemToast({
           id: TOAST_ID,
           appName: 'DECENTRALAND · AVATARS',
-          title: `Loading remote avatars ${p.loaded}/${p.total}`,
-          sub: 'Please wait…',
+          title: `Loading remote avatars ${num}/${denom}`,
+          sub: 'Nearby peers…',
           dismissMs: 0
         })
       } else {
@@ -2588,6 +2830,32 @@ export class AppController {
     })
 
     this.profileUi?.dispose()
+    this.tradeUi?.dispose()
+    // Worlds: peers share world LiveKit (world-prd-*), not always private-messages.
+    // Bridge d3js-trade over world/scene rooms so in-world invites actually arrive.
+    const pm = getPrivateMessagesService()
+    pm.setWorldTradePublish((packet, peer) => world.comms.publishTradePacket(packet, peer))
+    this.worldTradeTopicUnsub?.()
+    this.worldTradeTopicUnsub = world.comms.addTopicListener((topic, sender, data) => {
+      if (topic.trim().toLowerCase() !== 'd3js-trade') return
+      pm.handleTradeFromWorldRoom(sender, data)
+    })
+    this.tradeUi = new TradeController({
+      session: world.session,
+      social: world.social,
+      getPeerUrl: () => this.sceneContentUrl,
+      onPrepareOverlay: () => this.world?.cancelCameraPointer(),
+      pushToast: (title, sub) => {
+        this.socialMobileNotifications?.pushSystemToast({
+          id: `trade-${Date.now()}`,
+          appName: 'DECENTRALAND · TRADE',
+          title,
+          sub: sub ?? '',
+          theme: 'purple',
+          dismissMs: 4500
+        })
+      }
+    })
     this.profileUi = new ProfileUiController({
       session: world.session,
       social: world.social,
@@ -2596,14 +2864,20 @@ export class AppController {
       getCamera: () => world.host.camera,
       onOpenChat: () => this.shell?.openChatPanel(),
       onPrepareOverlay: () => this.world?.cancelCameraPointer(),
-      isPassportDisabled: (address) => world.sceneScript.isPassportDisabled(address)
+      isPassportDisabled: (address) => world.sceneScript.isPassportDisabled(address),
+      onTrade: (address) => {
+        void this.tradeUi?.invitePeer(address)
+      }
     })
 
     if (!this.debugPanel) {
       this.debugPanel = new DebugPanel({
-        anchor: () => this.shell?.getButton('help')?.element,
+        // Help (debug tools) lives under Labs
+        anchor: () => this.shell?.getButton('labs')?.element,
         renderStats: world.host.renderStats,
-        onVisibilityChange: (visible) => this.shell?.getButton('help')?.setActive(visible),
+        onVisibilityChange: (visible) => {
+          this.shell?.setHelpActive(visible)
+        },
         getPlayerPosition: () => this.world?.getPlayerPosition() ?? null,
         getSceneOrigin: () => this.world?.comms.getSceneOrigin() ?? { x: 0, z: 0 },
         onRecookColliders: () => this.world?.recookPhysicsColliders({ force: true }),
@@ -2659,11 +2933,16 @@ export class AppController {
         onActivePetChange: () => world.onActivePetInventoryChange(),
         onPlayPetClipPreview: (hash, clip) => world.playPetClipPreview(hash, clip),
         onStopPetClipPreview: () => world.stopPetClipPreview(),
+        onWatchLive: (session) => this.openLivePip(session),
+        getLogin: () => this.login,
         onSignOut: () => this.signOut(),
         onExit: () => this.leavePlayMode()
       })
+      // Rebind shared Live directory identity for 3D (keeps GO LIVE / hb from 2D).
+      void world.social.ensureLiveReady().then((dir) => this.wireLiveSessionEnded(dir))
     } else {
       this.shell.updateWorldBindings(world.session, world.environment)
+      void world.social.ensureLiveReady().then((dir) => this.wireLiveSessionEnded(dir))
       this.shell.setEmoteHandler((emoteId) => world.playLocalEmote(emoteId, { loop: undefined }))
       this.shell.setPhotoCameraHandler(() => world.togglePhotoCamera())
       this.shell.setTourOptionsHandler(() => this.openTourOptionsPopup())
@@ -2795,13 +3074,13 @@ export class AppController {
         onJumpToGenesis:
           sceneConfig.source.kind === 'world'
             ? () => {
+                // In-world teleport to Genesis Plaza — same as chat /goto 0,0.
+                // navigateTo(coords) opens the 2D landing page (wrong while already in play).
                 if (document.pointerLockElement) document.exitPointerLock()
-                void this.navigateTo({
-                  kind: 'coords',
-                  x: 0,
-                  y: 0,
-                  segment: '0,0'
-                })
+                void this.jumpInToScene(
+                  { kind: 'coords', x: 0, y: 0, segment: '0,0' },
+                  { fastAssets: true, entry: 'teleport', source: 'goto' }
+                )
               }
             : undefined,
         mapToggle: this.locationMapStack
@@ -3285,7 +3564,10 @@ export class AppController {
   private ensureDevProgressPanel(): DevProgressPanel {
     if (!this.devProgressPanel) {
       this.devProgressPanel = new DevProgressPanel({
-        getSession: () => this.world?.session ?? this.shellSession ?? null
+        getSession: () => this.world?.session ?? this.shellSession ?? null,
+        onVisibilityChange: (visible) => {
+          this.shell?.setDevActive(visible)
+        }
       })
     }
     return this.devProgressPanel
@@ -3367,6 +3649,7 @@ export class AppController {
     // Leave primary footprint — don't keep the old scene name while resolving.
     const provisional = `Parcel ${x},${y}`
     this.applyLocationTitle(provisional, key)
+    clientDebugLog.consoleOnly('info', `[location] ${key} — resolving title (left primary)`)
 
     const gen = ++this.locationTitleGen
     try {
@@ -3380,6 +3663,7 @@ export class AppController {
       // Only paint if feet are still here (stale fetches still warm the cache).
       if (gen === this.locationTitleGen && this.lastLocationTitleKey === key) {
         this.applyLocationTitle(resolved, key)
+        clientDebugLog.consoleOnly('info', `[location] ${key} → “${resolved}”`)
       }
     } catch {
       this.locationTitleCache.set(key, provisional)
@@ -3500,6 +3784,12 @@ export class AppController {
     target: Extract<RouteTarget, { kind: 'coords' }>,
     reason: string
   ): Promise<void> {
+    if (!aoiStandOnPromote()) {
+      console.info(
+        `[promote] skipped @ ${target.x},${target.y} (${reason}) — stand-on promote off`
+      )
+      return
+    }
     const key = `${target.x},${target.y}`
     // Collapse concurrent dwells (logs showed promote spam every 200ms → dual seamless jumps).
     if (this.promoteInFlight) {
@@ -3651,6 +3941,11 @@ export class AppController {
     this.editorApp = null
     this.profileUi?.dispose()
     this.profileUi = null
+    this.tradeUi?.dispose()
+    this.tradeUi = null
+    this.worldTradeTopicUnsub?.()
+    this.worldTradeTopicUnsub = null
+    getPrivateMessagesService().setWorldTradePublish(null)
     this.mobileHud?.dispose()
     this.mobileHud = null
     this.unbindMinimapLayout()
@@ -3842,6 +4137,9 @@ export class AppController {
     clearStoredIdentity()
     this.leaveCommunityVoiceSession()
     this.disposeCommunityVoiceBar()
+    // End GO LIVE + clear directory so the next account does not inherit it.
+    resetSharedLiveDirectory()
+    this.livePip?.close()
     this.socialChat?.signOut()
     this.teardownSocialChatShell(true)
     this.disposeSocialMobileNotifications()
@@ -3868,6 +4166,7 @@ export class AppController {
     this.explorerView?.setLogin(login)
     this.mapPageView?.setLogin(login)
     this.eventsPageView?.setLogin(login)
+    this.livePageView?.setLogin(login)
     this.lootBagPageView?.setLogin(login)
     this.communitiesPageView?.setLogin(login)
     this.profilePageView?.setLogin(login)
@@ -3879,8 +4178,15 @@ export class AppController {
     this.leaveCommunityVoiceSession()
     this.disposeCommunityVoiceBar()
     this.disposeCommunityFollow()
+    resetSharedLiveDirectory()
+    this.livePip?.close()
     this.profileUi?.dispose()
     this.profileUi = null
+    this.tradeUi?.dispose()
+    this.tradeUi = null
+    this.worldTradeTopicUnsub?.()
+    this.worldTradeTopicUnsub = null
+    getPrivateMessagesService().setWorldTradePublish(null)
     this.chatPanel?.dispose()
     this.chatPanel = null
     this.settingsOverlay?.dispose()

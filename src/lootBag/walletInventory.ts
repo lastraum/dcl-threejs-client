@@ -10,6 +10,7 @@ import {
 } from '../client/ui/settings/backpackWearables'
 import { collectionItemThumbnailUrl } from './creatorCollections'
 import { ADDRESSES } from './config'
+import { resolveIssuedId } from './resolvePositionMedia'
 import type { Address } from 'viem'
 
 export type WalletNftItem = {
@@ -90,7 +91,8 @@ export async function fetchWalletDepositNfts(
     const urn = entry.urn?.trim()
     if (!urn) continue
     const parsed = parseCollectionsV2Urn(urn)
-    if (!parsed || !parsed.tokenId) continue
+    // Deposit requires a concrete ERC-721 token id (edition). Asset-only URNs cannot be deposited.
+    if (!parsed?.tokenId) continue
 
     const key = `${parsed.collection}:${parsed.tokenId}`
     if (seen.has(key)) continue
@@ -98,10 +100,9 @@ export async function fetchWalletDepositNfts(
 
     const assetUrn = assetUrnFromCompleteUrn(urn).toLowerCase()
     const meta = metaByAsset.get(assetUrn)
+    // Collection V2 packs itemId in high bits — never display the full marketplace token id as the issue #.
     const issuedId =
-      parsed.tokenId.length < 20 && /^\d+$/.test(parsed.tokenId)
-        ? parsed.tokenId
-        : undefined
+      resolveIssuedId(parsed.tokenId, { collection: parsed.collection }) ?? undefined
 
     out.push({
       id: key,

@@ -1,6 +1,6 @@
 import type { Entity, IEngine } from '@dcl/ecs'
-import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import { preregisterRendererInjectedComponents } from '../shim/worker/preregisterRendererInjectedComponents'
+import { resolveWorkerPointerEventsResult } from '../shim/worker/resolveBundledUiComponents'
 import { InputAction, PointerEventType, type InputActionValue } from '../input/pointerConstants'
 import type { InjectSceneInputBody } from './injectSceneInput'
 import { injectSceneKeyOnEngine } from './injectSceneInput'
@@ -62,7 +62,7 @@ export function isSceneInputPressedOnPlayer(
   playerEntity: Entity,
   action: InputActionValue
 ): boolean {
-  const PointerEventsResult = generated.PointerEventsResult(engine)
+  const PointerEventsResult = resolveWorkerPointerEventsResult(engine)
   const commands = PointerEventsResult.get(playerEntity)
   if (!commands) return false
   for (const command of Array.from(commands).reverse()) {

@@ -72,15 +72,21 @@ float islandBeachFbm01(vec2 p, int seed) {
     return v;
 }
 
-float islandBeachHeightAt(
+/**
+ * Procedural island beach height. When waterY is provided (FFT ocean), shore slopes
+ * to that mean sea level so editor Water To / play surface stay aligned.
+ * Legacy 4-arg form uses baked ISLAND_WATER_LEVEL_Y (Water.js / shore mesh).
+ */
+float islandBeachHeightAtWater(
     vec2 globalThreeXZ,
     vec2 islandCenterXZ,
     float flatRadiusM,
-    float outerRadiusM
+    float outerRadiusM,
+    float waterY
 ) {
     float distM = length(globalThreeXZ - islandCenterXZ);
     if (distM > outerRadiusM + 2.0) {
-        return ISLAND_WATER_LEVEL_Y - ISLAND_OFFSHORE_DEPTH_M;
+        return waterY - ISLAND_OFFSHORE_DEPTH_M;
     }
 
     if (distM <= flatRadiusM) {
@@ -89,7 +95,7 @@ float islandBeachHeightAt(
 
     float blendIn = smoothstep(flatRadiusM, flatRadiusM + ISLAND_HEIGHTMAP_BLEND_M, distM);
     float beachT = smoothstep(flatRadiusM, outerRadiusM, distM);
-    float shoreY = ISLAND_WATER_LEVEL_Y + ISLAND_SHORE_Y_OFFSET;
+    float shoreY = waterY + ISLAND_SHORE_Y_OFFSET;
     float radialBase = mix(ISLAND_TERRAIN_BASE_Y, shoreY, beachT * beachT * (3.0 - 2.0 * beachT));
 
     float dclX = -globalThreeXZ.x;
@@ -101,8 +107,73 @@ float islandBeachHeightAt(
     return radialBase + (dunes - edgeDrop) * blendIn;
 }
 
+float islandBeachHeightAt(
+    vec2 globalThreeXZ,
+    vec2 islandCenterXZ,
+    float flatRadiusM,
+    float outerRadiusM
+) {
+    return islandBeachHeightAtWater(
+        globalThreeXZ, islandCenterXZ, flatRadiusM, outerRadiusM, ISLAND_WATER_LEVEL_Y
+    );
+}
+
 float islandShoreWaveDampen(float terrainY, float shoreDampWidthM) {
     float landLift = terrainY - ISLAND_WATER_LEVEL_Y;
     return 1.0 - smoothstep(-shoreDampWidthM * 0.15, shoreDampWidthM * 0.2, landLift);
+}
+
+/**
+ * Wave damp near shore. Slightly wider underwater ramp so waves ease in before
+ * the cutout, instead of hard-zeroing and looking like the surface bottomed out.
+ */
+float shoreWaveDampenAt(float terrainY, float waterY, float shoreDampWidthM) {
+    float landLift = terrainY - waterY;
+    float w = max(0.5, shoreDampWidthM);
+    // Full waves well below MSL; ramp off through the wet zone; zero on land.
+    return 1.0 - smoothstep(-w * 0.55, w * 0.35, landLift);
+}
+`
+
+/**
+ * GLSL3 author height sample (`texture`). FFT ocean path only.
+ * Water.js uses GLSL1 — see `islandWaterShoreMask` for `texture2D` twin.
+ */
+export const AUTHOR_TERRAIN_HEIGHT_GLSL3 = /* glsl */ `
+float authorTerrainHeightAt(
+    vec2 globalThreeXZ,
+    sampler2D heightMap,
+    vec2 originDclXZ,
+    vec2 sizeM,
+    float waterY
+) {
+    float dclX = -globalThreeXZ.x;
+    float dclZ = globalThreeXZ.y;
+    vec2 uv = (vec2(dclX, dclZ) - originDclXZ) / max(sizeM, vec2(1e-4));
+    if (uv.x < -0.002 || uv.x > 1.002 || uv.y < -0.002 || uv.y > 1.002) {
+        return waterY - ISLAND_OFFSHORE_DEPTH_M;
+    }
+    uv = clamp(uv, vec2(0.0), vec2(1.0));
+    return texture(heightMap, uv).r;
+}
+`
+
+/** GLSL1 author height sample (`texture2D`) for three.js Water.js shore mask. */
+export const AUTHOR_TERRAIN_HEIGHT_GLSL1 = /* glsl */ `
+float authorTerrainHeightAt(
+    vec2 globalThreeXZ,
+    sampler2D heightMap,
+    vec2 originDclXZ,
+    vec2 sizeM,
+    float waterY
+) {
+    float dclX = -globalThreeXZ.x;
+    float dclZ = globalThreeXZ.y;
+    vec2 uv = (vec2(dclX, dclZ) - originDclXZ) / max(sizeM, vec2(1e-4));
+    if (uv.x < -0.002 || uv.x > 1.002 || uv.y < -0.002 || uv.y > 1.002) {
+        return waterY - ISLAND_OFFSHORE_DEPTH_M;
+    }
+    uv = clamp(uv, vec2(0.0), vec2(1.0));
+    return texture2D(heightMap, uv).r;
 }
 `

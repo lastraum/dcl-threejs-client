@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { validateOdkSkeleton } from './odkSkeleton'
 import { applyMmlAttachments, type LoadedOdkAttachment } from './odkAttachments'
 import type { MmlAttachmentSpec } from './parseMml'
+import { setMeshDesiredCastShadow } from '../../rendering/shadowCastPolicy'
 
 export type ParsedOdk = {
   root: THREE.Group
@@ -35,7 +36,7 @@ function prepScene(root: THREE.Group): void {
   root.traverse((obj) => {
     obj.visible = true
     if (!(obj instanceof THREE.Mesh)) return
-    obj.castShadow = true
+    setMeshDesiredCastShadow(obj, true, 'avatar')
     obj.receiveShadow = true
     obj.frustumCulled = false
     if (obj instanceof THREE.SkinnedMesh) {

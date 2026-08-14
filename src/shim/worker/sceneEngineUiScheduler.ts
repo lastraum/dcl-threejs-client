@@ -6,9 +6,19 @@ import { normalizePointerFilterMode, normalizeYGDisplay } from '../../ui/scene/y
 import { preregisterRendererInjectedComponents } from './preregisterRendererInjectedComponents'
 import { ensureWorkerLocomotionFreezePersisted } from './workerPlayerFrameEgress'
 import {
+  isLevelStatePointerEdgeActive,
+  isLevelStatePointerHeld,
   isPointerInteractiveTickActive,
+  isWorkerPointerButtonHeld,
   shouldSuppressCooperativeReactEcs as shouldSuppressPointerSessionReactEcs
 } from './sceneWorkerInputSession'
+import {
+  addReactWallMs,
+  addSystemsWallMs,
+  noteSystemRun,
+  noteSystemsLoopBegin,
+  noteSystemsLoopEnd
+} from './workerEngUpdatePhases'
 import {
   resolveWorkerUiBackground,
   resolveWorkerUiDropdown,
@@ -87,6 +97,29 @@ export function holdCooperativeReactEcs(ticks: number): void {
   cooperativeReactEcsHoldUntilMs = Math.max(cooperativeReactEcsHoldUntilMs, performance.now() + holdMs)
 }
 
+/** Drop the post-click menu hold so Color4.a / unmount reconciles can run. */
+export function releaseCooperativeReactEcsHold(): void {
+  cooperativeReactEcsHoldTicks = 0
+  cooperativeReactEcsHoldUntilMs = 0
+}
+
+/**
+ * After a scene-UI click that did not grow the mount (dismiss / fade), keep
+ * react-ecs live so JS-driven Color4.a (welcome dissolve) reaches the DOM.
+ */
+let cooperativeReactEcsPaintFollowupUntilMs = 0
+
+export function armCooperativeReactEcsPaintFollowup(ms: number): void {
+  cooperativeReactEcsPaintFollowupUntilMs = Math.max(
+    cooperativeReactEcsPaintFollowupUntilMs,
+    performance.now() + Math.max(0, ms)
+  )
+}
+
+export function isCooperativeReactEcsPaintFollowupActive(): boolean {
+  return performance.now() < cooperativeReactEcsPaintFollowupUntilMs
+}
+
 /** True while post-click hold is suppressing cooperative/PE eng.update UI reconcile. */
 export function isCooperativeReactEcsHeld(): boolean {
   if (cooperativeReactEcsHoldTicks > 0) return true
@@ -143,14 +176,20 @@ function workerHasUiDrivingTween(engine: IEngine | null): boolean {
  * Do NOT gate on freeze latch or inject-only pollEvents DEFER.
  */
 export function shouldDeferCooperativeReactEcs(): boolean {
+  // No-target pointer edge / hold: systems only (defer react-ecs). Any scene may use
+  // isPressed between DOWN and UP — do not thrash full UI reconcile on the hold window.
+  if (isLevelStatePointerEdgeActive() || isLevelStatePointerHeld()) return true
   // isPointerInteractiveTickActive is false during non-ui phase — fall through to session suppress.
   if (isPointerInteractiveTickActive()) return false
   // Tween-driven UI (tutorial scale, letterbox, cake/confetti slide) — full 60Hz reconcile.
   if (workerHasUiDrivingTween(boundWorkerEngine)) return false
+  // World PE / UI hold (not empty-ground): marquee and select HUD need live react-ecs.
+  if (isWorkerPointerButtonHeld()) return false
   if (shouldSuppressPointerSessionReactEcs()) return true
   // Wall-clock hold after PE/sceneUi phase-4 — suppress even when not in cooperative depth
   // (PE vehicle pump uses runSceneEngineUpdateNow without enterCooperativeSchedulerTick).
   // But never freeze scale animations mid-hold if a tween is live (checked above).
+  // Exception: pointer still held (marquee) — never suppress (checked above).
   if (performance.now() < cooperativeReactEcsHoldUntilMs) return true
   if (cooperativeSchedulerTickDepth > 0) {
     if (cooperativeReactEcsHoldTicks > 0) {
@@ -218,6 +257,7 @@ export function installEngineSystemLoopPartition(): void {
     // until async admin toolkit setUiRenderer) → permanent mount=0.
     let react: SystemItem | undefined
     let scale: SystemItem | undefined
+    const sceneSystems: SystemItem[] = []
     for (const system of systems) {
       const name = system.name
       if (name === '@dcl/react-ecs') {
@@ -228,17 +268,30 @@ export function installEngineSystemLoopPartition(): void {
         if (!scale) scale = system
         continue
       }
-      safeRunSystem(system, dt, runOne)
+      sceneSystems.push(system)
     }
+    // WSP v2 Phase 0 — measure only (same run order as before).
+    noteSystemsLoopBegin(sceneSystems.length + (scale ? 1 : 0) + (react ? 1 : 0))
+    const sysT0 = performance.now()
+    for (const system of sceneSystems) {
+      noteSystemRun(system.name, () => safeRunSystem(system, dt, runOne))
+    }
+    addSystemsWallMs(performance.now() - sysT0)
+
     const suppressReact = shouldDeferCooperativeReactEcs()
     if (suppressReact && cooperativeSchedulerTickDepth > 0 && !isPointerInteractiveTickActive()) {
       cooperativeReactEcsSkippedThisTick = true
     }
-    if (scale && !suppressReact) safeRunSystem(scale, dt, runOne)
+    const reactT0 = performance.now()
+    if (scale && !suppressReact) {
+      noteSystemRun(scale.name || '@dcl/react-ecs-ui-scale', () => safeRunSystem(scale!, dt, runOne))
+    }
     if (react && !suppressReact) {
-      safeRunSystem(react, dt, runOne)
+      noteSystemRun(react.name || '@dcl/react-ecs', () => safeRunSystem(react!, dt, runOne))
       if (cooperativeSchedulerTickDepth > 0) lastCooperativeReactEcsAt = performance.now()
     }
+    addReactWallMs(performance.now() - reactT0)
+    noteSystemsLoopEnd()
   }
 }
 
@@ -286,6 +339,9 @@ export const installWorkerEngineUiHooks = installSceneEngineUiScheduler
 
 export function resetWorkerUiFingerprint(): void {
   lastWorkerUiFingerprint = ''
+  cooperativeReactEcsHoldTicks = 0
+  cooperativeReactEcsHoldUntilMs = 0
+  cooperativeReactEcsPaintFollowupUntilMs = 0
 }
 
 export function seedWorkerUiFingerprint(engine: IEngine): void {
@@ -628,6 +684,17 @@ export type PlanSceneUiCrdtEmitOptions = {
  * Phase 2 of a scheduler tick — touch dirty Ui* when fingerprint changed.
  * Caller runs engine.update(0) for transport emit, then commitSceneUiCrdtBaseline.
  */
+/**
+ * Coalesce pure UiText thrash (pixelwars score spam) without starving 1 Hz clocks.
+ * Some scenes update UI timers once per second — 120ms was fine; content-blind
+ * main dedupe was the real skip. Keep a short floor so multi-text-frame score spam
+ * does not flood, but always allow after the floor when plan re-runs with new text.
+ */
+let lastTextOnlyUiFlushAt = 0
+const TEXT_ONLY_UI_FLUSH_MIN_MS = 50
+let lastUiFlushLogAt = 0
+const UI_FLUSH_LOG_MIN_MS = 2000
+
 export function planSceneUiCrdtEmit(
   engine: IEngine,
   log?: (message: string) => void,
@@ -664,12 +731,43 @@ export function planSceneUiCrdtEmit(
     )
     return false
   }
+
+  // Pure text dirties (countdown / % stats) — rate-limit CRDT + main paint thrash.
+  // Layout/bg/mount growth always flushes immediately.
+  if (!fullTouch && dirty.length > 0 && dirty.length <= 4 && !opts?.pointerTick) {
+    const prevLines = parseFingerprintEntityLines(lastWorkerUiFingerprint)
+    const currLines = parseFingerprintEntityLines(fingerprint)
+    let textOnly = true
+    for (const entity of dirty) {
+      const key = String(entity)
+      const prev = prevLines.get(key) ?? ''
+      const curr = currLines.get(key) ?? ''
+      // Strip text payload; if remainder matches, only UiText value changed.
+      const stripTx = (line: string) => line.replace(/:tx\d+:[^:]*/g, '')
+      if (stripTx(prev) !== stripTx(curr)) {
+        textOnly = false
+        break
+      }
+    }
+    if (textOnly) {
+      const now = performance.now()
+      if (now - lastTextOnlyUiFlushAt < TEXT_ONLY_UI_FLUSH_MIN_MS) {
+        return false
+      }
+      lastTextOnlyUiFlushAt = now
+    }
+  }
+
   lastPlannedUiDirtyEntities = dirty
   lastPlannedUiFullTouch = fullTouch
-  log?.(
-    `[sceneWorker] ui fingerprint flush — touched=${touched} dirtyEntities=${dirty.length || 'all'} ` +
-      `fp=${prevLen}→${fingerprint.length}B${fullTouch ? ' full' : ''}`
-  )
+  const now = performance.now()
+  if (now - lastUiFlushLogAt >= UI_FLUSH_LOG_MIN_MS) {
+    lastUiFlushLogAt = now
+    log?.(
+      `[sceneWorker] ui fingerprint flush — touched=${touched} dirtyEntities=${dirty.length || 'all'} ` +
+        `fp=${prevLen}→${fingerprint.length}B${fullTouch ? ' full' : ''}`
+    )
+  }
   return true
 }
 

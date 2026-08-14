@@ -3,6 +3,7 @@
  * EIP-712 sign via client ethereum provider → forge dcl-meta-tx POST /v1/transactions.
  */
 import { encodeFunctionData, type Abi, type Address, type Hex } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 import { getEthereumProvider } from '../auth/ethereumProvider'
 import { ADDRESSES, CHAIN_ID, META_TX_DOMAINS, META_TX_URL } from './config'
 import { polygonPublicClient } from './polygonClient'
@@ -17,10 +18,45 @@ const DOMAIN_TYPE = [
   { name: 'salt', type: 'bytes32' }
 ] as const
 
-const META_TRANSACTION_TYPE = [
+/** Classic DCL / Collection V2 / MANA meta-tx type (functionSignature). */
+const META_TRANSACTION_TYPE_FN_SIG = [
   { name: 'nonce', type: 'uint256' },
   { name: 'from', type: 'address' },
   { name: 'functionSignature', type: 'bytes' }
+] as const
+
+/**
+ * Off-chain marketplace NativeMetaTransaction type (functionData).
+ * @see decentraland/offchain-marketplace-contract NativeMetaTransaction.sol
+ */
+const META_TRANSACTION_TYPE_FN_DATA = [
+  { name: 'nonce', type: 'uint256' },
+  { name: 'from', type: 'address' },
+  { name: 'functionData', type: 'bytes' }
+] as const
+
+/** EIP-712 MetaTransaction calldata field name — marketplace uses functionData. */
+export type MetaTxCalldataField = 'functionSignature' | 'functionData'
+
+/**
+ * How `executeMetaTransaction` is ABI-encoded on the target contract:
+ * - `legacy-rsv` — DCL Collection / MANA / older: (user, fnData, r, s, v) selector 0x0c53c51c
+ * - `signature-bytes` — offchain marketplace: (user, fnData, signature) selector 0xd8ed1acc
+ */
+export type MetaTxExecuteStyle = 'legacy-rsv' | 'signature-bytes'
+
+const EXECUTE_META_TX_ABI_PACKED = [
+  {
+    type: 'function',
+    name: 'executeMetaTransaction',
+    stateMutability: 'payable',
+    inputs: [
+      { name: '_userAddress', type: 'address' },
+      { name: '_functionData', type: 'bytes' },
+      { name: '_signature', type: 'bytes' }
+    ],
+    outputs: [{ type: 'bytes' }]
+  }
 ] as const
 
 const GET_NONCE_SELECTOR = '2d0335ab'
@@ -43,6 +79,7 @@ function normalizeVersion(version: string): string {
   return parsed.toString(16)
 }
 
+/** Legacy DCL executeMetaTransaction(address,bytes,bytes32,bytes32,uint8). */
 export function getExecuteMetaTransactionData(
   account: string,
   fullSignature: string,
@@ -69,6 +106,30 @@ export function getExecuteMetaTransactionData(
   ].join('')
 }
 
+/**
+ * Marketplace-style executeMetaTransaction(address,bytes,bytes) — full 65-byte signature.
+ * Using the legacy r/s/v encoder against this ABI always reverts (and confuses MetaMask gas estimate).
+ */
+export function getExecuteMetaTransactionDataPacked(
+  account: string,
+  fullSignature: string,
+  functionData: string
+): Hex {
+  let sig = fullSignature.startsWith('0x') ? fullSignature : `0x${fullSignature}`
+  // Normalize v to 27/28 if needed (some signers return 0/1).
+  if (sig.length === 132) {
+    const vByte = parseInt(sig.slice(130, 132), 16)
+    if (vByte < 27) {
+      sig = `${sig.slice(0, 130)}${(vByte + 27).toString(16).padStart(2, '0')}`
+    }
+  }
+  return encodeFunctionData({
+    abi: EXECUTE_META_TX_ABI_PACKED,
+    functionName: 'executeMetaTransaction',
+    args: [account as Address, functionData as Hex, sig as Hex]
+  })
+}
+
 async function getNonce(account: string, contractAddress: string): Promise<string> {
   const data = (`0x${GET_NONCE_SELECTOR}${to32Bytes(account)}`) as Hex
   const result = await polygonPublicClient.call({
@@ -82,7 +143,9 @@ async function getNonce(account: string, contractAddress: string): Promise<strin
 type TypedDataPayload = {
   types: {
     EIP712Domain: typeof DOMAIN_TYPE
-    MetaTransaction: typeof META_TRANSACTION_TYPE
+    MetaTransaction:
+      | typeof META_TRANSACTION_TYPE_FN_SIG
+      | typeof META_TRANSACTION_TYPE_FN_DATA
   }
   domain: {
     name: string
@@ -94,7 +157,8 @@ type TypedDataPayload = {
   message: {
     nonce: number
     from: string
-    functionSignature: string
+    functionSignature?: string
+    functionData?: string
   }
 }
 
@@ -104,12 +168,14 @@ export function getDataToSign(
   functionSignature: string,
   verifyingContract: string,
   domainName: string,
-  domainVersion: string
+  domainVersion: string,
+  calldataField: MetaTxCalldataField = 'functionSignature'
 ): TypedDataPayload {
+  const isFnData = calldataField === 'functionData'
   return {
     types: {
       EIP712Domain: DOMAIN_TYPE,
-      MetaTransaction: META_TRANSACTION_TYPE
+      MetaTransaction: isFnData ? META_TRANSACTION_TYPE_FN_DATA : META_TRANSACTION_TYPE_FN_SIG
     },
     domain: {
       name: domainName,
@@ -118,11 +184,17 @@ export function getDataToSign(
       salt: getSalt(CHAIN_ID)
     },
     primaryType: 'MetaTransaction',
-    message: {
-      nonce: parseInt(nonceHex32, 16),
-      from: account,
-      functionSignature
-    }
+    message: isFnData
+      ? {
+          nonce: parseInt(nonceHex32, 16),
+          from: account,
+          functionData: functionSignature
+        }
+      : {
+          nonce: parseInt(nonceHex32, 16),
+          from: account,
+          functionSignature
+        }
   }
 }
 
@@ -159,6 +231,28 @@ async function ethSignTypedDataV4(account: string, dataToSign: TypedDataPayload)
   })) as string
 }
 
+/** Local EIP-712 sign with a private key (guest wallet) — never opens MetaMask. */
+async function signTypedDataWithPrivateKey(
+  privateKey: Hex,
+  dataToSign: TypedDataPayload
+): Promise<string> {
+  const account = privateKeyToAccount(privateKey)
+  const types = { ...dataToSign.types } as Record<string, readonly { name: string; type: string }[]>
+  // viem injects EIP712Domain itself — strip if present
+  delete types.EIP712Domain
+  return account.signTypedData({
+    domain: {
+      name: dataToSign.domain.name,
+      version: dataToSign.domain.version,
+      verifyingContract: dataToSign.domain.verifyingContract as Address,
+      salt: dataToSign.domain.salt as Hex
+    },
+    types,
+    primaryType: dataToSign.primaryType,
+    message: dataToSign.message as Record<string, unknown>
+  })
+}
+
 /** EIP-712 domain for NativeMetaTransaction (name + version). */
 export type MetaTxDomain = { name: string; version: string }
 
@@ -175,6 +269,7 @@ export const DCL_COLLECTION_V2_META_TX_DOMAIN: MetaTxDomain = {
  * Sign + relay a call on a NativeMetaTransaction contract.
  * Does NOT switch MetaMask network.
  * @param domainOverride — e.g. Collection V2 (`DCL_COLLECTION_V2_META_TX_DOMAIN`) when address is not in META_TX_DOMAINS
+ * @param calldataField — marketplace uses `functionData`; collections/MANA use `functionSignature`
  */
 export async function sendContractMetaTx(args: {
   address: Address
@@ -183,8 +278,27 @@ export async function sendContractMetaTx(args: {
   args?: readonly unknown[]
   from?: Address
   domainOverride?: MetaTxDomain
+  calldataField?: MetaTxCalldataField
+  /** Default legacy-rsv (collections/MANA). Marketplace needs signature-bytes. */
+  executeStyle?: MetaTxExecuteStyle
+  /**
+   * When set (e.g. guest local key), sign EIP-712 offline — never opens MetaMask.
+   * `from` must match the key's address.
+   */
+  privateKey?: Hex
 }): Promise<Hex> {
-  const from = ((args.from || (await requestAccounts())) as string).toLowerCase() as Address
+  let from: Address
+  if (args.privateKey) {
+    const acc = privateKeyToAccount(args.privateKey)
+    from = acc.address.toLowerCase() as Address
+    if (args.from && args.from.toLowerCase() !== from) {
+      throw new Error(
+        `Guest/private key address ${from.slice(0, 10)}… does not match session ${args.from.slice(0, 10)}…`
+      )
+    }
+  } else {
+    from = ((args.from || (await requestAccounts())) as string).toLowerCase() as Address
+  }
 
   const domain =
     args.domainOverride ?? META_TX_DOMAINS[args.address.toLowerCase()]
@@ -206,11 +320,18 @@ export async function sendContractMetaTx(args: {
     functionSignature,
     contract,
     domain.name,
-    domain.version
+    domain.version,
+    args.calldataField ?? 'functionSignature'
   )
 
-  const signature = await ethSignTypedDataV4(from, dataToSign)
-  const txData = getExecuteMetaTransactionData(from, signature, functionSignature)
+  const signature = args.privateKey
+    ? await signTypedDataWithPrivateKey(args.privateKey, dataToSign)
+    : await ethSignTypedDataV4(from, dataToSign)
+  const executeStyle = args.executeStyle ?? 'legacy-rsv'
+  const txData =
+    executeStyle === 'signature-bytes'
+      ? getExecuteMetaTransactionDataPacked(from, signature, functionSignature)
+      : (getExecuteMetaTransactionData(from, signature, functionSignature) as Hex)
 
   const body = {
     transactionData: {
@@ -268,19 +389,38 @@ export async function sendContractMetaTx(args: {
   return json.txHash as Hex
 }
 
-export async function ensureWalletAddress(preferred?: string | null): Promise<Address> {
-  if (preferred && /^0x[a-fA-F0-9]{40}$/.test(preferred)) {
-    // Still ensure provider is unlocked / accounts match when possible
-    try {
-      const connected = await requestAccounts()
-      if (connected.toLowerCase() === preferred.toLowerCase()) return connected
-      // Prefer session wallet only if provider has it; otherwise use connected
-      return connected
-    } catch {
-      return preferred.toLowerCase() as Address
-    }
+/**
+ * Resolve the address that will sign meta-tx (MetaMask / injected wallet).
+ *
+ * Guest login has a browser-only key for DCL identity — it does **not** sign
+ * Polygon loot bag txs. Meta-tx always uses the injected wallet. We therefore:
+ * - reject guest sessions for paid pool writes (caller should pass isGuest)
+ * - require MetaMask account === session wallet when a preferred address is set
+ *   (never silently use a different connected account)
+ */
+export async function ensureWalletAddress(
+  preferred?: string | null,
+  opts?: { isGuest?: boolean }
+): Promise<Address> {
+  if (opts?.isGuest) {
+    throw new Error(
+      'Guest accounts cannot claim or deposit on Loot Bag. ' +
+        'Log in with MetaMask (wallet) — guest identity is for chat/avatar only and has no Polygon mMANA. ' +
+        'If MetaMask popped up while you were a guest, the tx was signed by that MetaMask account, not Guest.'
+    )
   }
-  return requestAccounts()
+
+  const connected = await requestAccounts()
+  if (preferred && /^0x[a-fA-F0-9]{40}$/.test(preferred)) {
+    const want = preferred.toLowerCase() as Address
+    if (connected.toLowerCase() === want) return connected
+    throw new Error(
+      `Wrong wallet in MetaMask. This session is ${want.slice(0, 6)}…${want.slice(-4)} ` +
+        `but the connected account is ${connected.slice(0, 6)}…${connected.slice(-4)}. ` +
+        `Switch MetaMask to the session account, or log out of Guest and log in with that wallet.`
+    )
+  }
+  return connected
 }
 
 export async function getManaAllowance(owner: Address, spender: Address): Promise<bigint> {
@@ -289,6 +429,16 @@ export async function getManaAllowance(owner: Address, spender: Address): Promis
     abi: mockManaAbi,
     functionName: 'allowance',
     args: [owner, spender]
+  }) as Promise<bigint>
+}
+
+/** Wallet mMANA balance (wei). Always re-read before paid pulls — UI snapshot can be stale/0. */
+export async function getManaBalance(owner: Address): Promise<bigint> {
+  return polygonPublicClient.readContract({
+    address: ADDRESSES.mockMana,
+    abi: mockManaAbi,
+    functionName: 'balanceOf',
+    args: [owner]
   }) as Promise<bigint>
 }
 

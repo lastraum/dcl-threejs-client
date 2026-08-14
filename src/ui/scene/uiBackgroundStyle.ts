@@ -2,6 +2,7 @@ import type { PBUiBackground } from '@dcl/ecs/dist/components/generated/pb/decen
 import type { ResolvedScene } from '../../dcl/content/types'
 import { resolveSceneTextureUrl } from '../../bridge/material/resolveTexture'
 import { proxiedTextureUrl } from '../../rendering/textureProxy'
+import { fetchProfileFaceUrl } from '../../avatar/peerApi'
 import type { UiScreenScale } from './uiDomStyles'
 import { assignUiImageSrc } from './uiImageLoad'
 
@@ -16,6 +17,19 @@ const DEFAULT_SLICES = { top: 1 / 3, left: 1 / 3, right: 1 / 3, bottom: 1 / 3 }
 /** naturalWidth/Height cache for border-image nine-slice sizing. */
 const imageNaturalSize = new Map<string, { w: number; h: number }>()
 const imageSizeLoading = new Set<string>()
+
+/**
+ * `profile-images.decentraland.org/face/0x…` always 404s — Explorer resolves wallet
+ * addresses via Catalyst lambdas → face256 entity URLs (`/entities/{cid}/face.png`).
+ * Poker seat rows ship AvatarTexture.userId = 0x… and sometimes texture.src = face/0x….
+ */
+const WALLET_ADDR_RE = /^0x[a-fA-F0-9]{40}$/
+const LEGACY_FACE_PATH_RE =
+  /(?:^|\/\/)(?:[^/]*\.)?profile-images\.decentraland\.org\/face\/(0x[a-fA-F0-9]{40})(?:[/?#]|$)/i
+
+/** address lower → face256 URL, or null after a failed resolve. */
+const faceSnapshotUrlCache = new Map<string, string | null>()
+const faceSnapshotUrlLoading = new Set<string>()
 
 /**
  * Explorer multiplies UiBackground.color × texture (RGB + A).
@@ -122,28 +136,108 @@ export function hasUiVisualBackground(
   return true
 }
 
-/** SDK TextureUnion, react-ecs `{ src }`, and loose CRDT shapes. */
+/**
+ * Kick async face256 resolve for a wallet; returns cached URL or null while loading / on miss.
+ * Fires `scene-ui-image-loaded` when a real URL lands so SceneUiBridge repaints.
+ */
+function ensureFaceSnapshotUrlForAddress(address: string): string | null {
+  const key = address.toLowerCase()
+  if (faceSnapshotUrlCache.has(key)) return faceSnapshotUrlCache.get(key) ?? null
+  if (faceSnapshotUrlLoading.has(key)) return null
+  faceSnapshotUrlLoading.add(key)
+  void fetchProfileFaceUrl(key)
+    .then((url) => {
+      faceSnapshotUrlCache.set(key, url)
+      faceSnapshotUrlLoading.delete(key)
+      if (url) notifyUiImageReady()
+    })
+    .catch(() => {
+      faceSnapshotUrlCache.set(key, null)
+      faceSnapshotUrlLoading.delete(key)
+    })
+  return null
+}
+
+/**
+ * Rewrite legacy `…/face/0x…` (always 404) → face256 entity URL when resolved.
+ * Returns original src when not a legacy face path; null while async resolve is in flight.
+ */
+export function rewriteLegacyProfileFaceUrl(src: string): string | null {
+  const trimmed = src.trim()
+  if (!trimmed) return null
+  const match = trimmed.match(LEGACY_FACE_PATH_RE)
+  if (!match?.[1]) return trimmed
+  return ensureFaceSnapshotUrlForAddress(match[1])
+}
+
+/**
+ * Resolve AvatarTexture → public face snapshot URL for DOM UiBackground.
+ * Wallet addresses resolve async via Catalyst face256 (never `…/face/0x…`).
+ */
+export function resolveAvatarTextureUserIdToUrl(userId: string): string | null {
+  const id = userId.trim()
+  if (!id) return null
+  if (/^https?:\/\//i.test(id)) return rewriteLegacyProfileFaceUrl(id)
+  if (WALLET_ADDR_RE.test(id)) return ensureFaceSnapshotUrlForAddress(id)
+  // Catalyst entity id / face256 snapshot id
+  return `https://profile-images.decentraland.org/entities/${id}/face.png`
+}
+
+/** Normalize texture.src (and similar) — rewrite broken face/0x wallet shortcuts. */
+function normalizeUiTextureSrc(src: string | null | undefined): string | null {
+  if (src == null) return null
+  const trimmed = src.trim()
+  if (!trimmed) return null
+  return rewriteLegacyProfileFaceUrl(trimmed)
+}
+
+/** SDK TextureUnion, react-ecs `{ src }`, AvatarTexture, and loose CRDT shapes. */
 export function extractUiTextureSrc(texture: unknown): string | null {
   if (!texture) return null
-  if (typeof texture === 'string') return texture.trim() || null
+  if (typeof texture === 'string') return normalizeUiTextureSrc(texture)
 
   const t = texture as Record<string, unknown>
   const tex = t.tex as
-    | { $case?: string; texture?: { src?: string }; avatarTexture?: { userId?: string } }
+    | {
+        $case?: string
+        texture?: { src?: string }
+        avatarTexture?: { userId?: string }
+      }
     | undefined
   if (tex?.$case === 'texture' && typeof tex.texture?.src === 'string') {
-    return tex.texture.src.trim() || null
+    return normalizeUiTextureSrc(tex.texture.src)
   }
-  // Some CRDT decodes omit $case but still nest texture.src
+  if (tex?.$case === 'avatarTexture' && typeof tex.avatarTexture?.userId === 'string') {
+    return resolveAvatarTextureUserIdToUrl(tex.avatarTexture.userId)
+  }
+  // Some CRDT decodes omit $case but still nest texture.src / avatarTexture
   if (tex && typeof tex.texture?.src === 'string') {
-    return tex.texture.src.trim() || null
+    return normalizeUiTextureSrc(tex.texture.src)
   }
-  if (typeof t.src === 'string') return t.src.trim() || null
+  if (tex && typeof tex.avatarTexture?.userId === 'string') {
+    return resolveAvatarTextureUserIdToUrl(tex.avatarTexture.userId)
+  }
+  if (typeof t.src === 'string') return normalizeUiTextureSrc(t.src)
+  if (typeof (t as { userId?: string }).userId === 'string') {
+    return resolveAvatarTextureUserIdToUrl((t as { userId: string }).userId)
+  }
 
-  const nested = t.texture as { src?: string; tex?: { $case?: string; texture?: { src?: string } } } | undefined
-  if (typeof nested?.src === 'string') return nested.src.trim() || null
+  const nested = t.texture as
+    | {
+        src?: string
+        tex?: { $case?: string; texture?: { src?: string }; avatarTexture?: { userId?: string } }
+        avatarTexture?: { userId?: string }
+      }
+    | undefined
+  if (typeof nested?.src === 'string') return normalizeUiTextureSrc(nested.src)
   if (nested?.tex?.$case === 'texture' && typeof nested.tex.texture?.src === 'string') {
-    return nested.tex.texture.src.trim() || null
+    return normalizeUiTextureSrc(nested.tex.texture.src)
+  }
+  if (nested?.tex?.$case === 'avatarTexture' && typeof nested.tex.avatarTexture?.userId === 'string') {
+    return resolveAvatarTextureUserIdToUrl(nested.tex.avatarTexture.userId)
+  }
+  if (typeof nested?.avatarTexture?.userId === 'string') {
+    return resolveAvatarTextureUserIdToUrl(nested.avatarTexture.userId)
   }
 
   return null
@@ -825,6 +919,30 @@ export function applyUiBackgroundStyles(
   if (el.dataset.dclUiBgSig === pendingSig && c && needsTextureColorMultiply(c) && imageUrl) {
     const key = colorMultiplyKey(imageUrl, c)
     if (multipliedImageLoading.has(key) && !multipliedImageUrl.has(key)) return
+  }
+
+  // GP reeling: zone/fill UVs move every tick. Only the crop changes — do not tear down
+  // borderImage/background (that flashed wood bar BGs every frame).
+  const baseKey = `${imageUrl ?? ''}|${mode}|${tint}`
+  const prevSig = el.dataset.dclUiBgSig ?? ''
+  if (
+    imageUrl &&
+    uvsKey &&
+    mode === BackgroundTextureMode.STRETCH &&
+    prevSig.startsWith(`${baseKey}|`) &&
+    !prevSig.endsWith('|pending')
+  ) {
+    let paintUrlFast = imageUrl
+    let imgAlphaFast = effectiveUiBackgroundAlpha(c)
+    if (c && needsTextureColorMultiply(c)) {
+      const baked = resolveColorMultipliedImageUrl(imageUrl, c)
+      if (!baked) return
+      paintUrlFast = baked
+      imgAlphaFast = baked === imageUrl ? effectiveUiBackgroundAlpha(c) : 1
+    }
+    applyBgImg(el, paintUrlFast, mode, imgAlphaFast, bg?.uvs)
+    el.dataset.dclUiBgSig = sig
+    return
   }
 
   el.style.borderImage = ''

@@ -2,6 +2,7 @@ import type { Entity, IEngine } from '@dcl/ecs'
 import * as components from '@dcl/ecs/dist/components'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import { patchClearPlayerInputModifierBoundary } from './patchClearPlayerInputModifier'
+import { patchCrdtSendBufferSize } from './patchCrdtSendBufferSize'
 import { patchEngineSystemLoopPartition } from './patchEngineSystemLoop'
 import { patchInputModifierSdkSpread } from './patchInputModifierSdkSpread'
 import { patchProjectileSweptHits } from './patchProjectileSweptHits'
@@ -31,9 +32,9 @@ const PREREGISTER_CALL =
 const CAPTURE_ENGINE =
   `(function(__e){if(__e&&typeof __e.update==="function"&&typeof __e.addSystem==="function"){${PREREGISTER_CALL}globalThis.__THREEJS_SCENE_ENGINE__=__e}})`
 
-/** Minified bundles call `ae.addTransport(jP)` — capture scene engine at renderer registration. */
+/** Minified bundles call `ae.addTransport(jP)` — capture scene engine + wrap transport for WSP meters. */
 const CAPTURE_ADD_TRANSPORT =
-  `(function(__e,__t){if(__e&&typeof __e.update==="function"&&typeof __e.addSystem==="function"){${PREREGISTER_CALL}globalThis.__THREEJS_SCENE_ENGINE__=__e}return __e.addTransport(__t)})`
+  `(function(__e,__t){if(__e&&typeof __e.update==="function"&&typeof __e.addSystem==="function"){${PREREGISTER_CALL}globalThis.__THREEJS_SCENE_ENGINE__=__e;try{globalThis.__THREEJS_WRAP_CRDT_TRANSPORT__&&globalThis.__THREEJS_WRAP_CRDT_TRANSPORT__(__t)}catch(__w){}}return __e.addTransport(__t)})`
 
 const CHECKER_CALL_NEEDLE = 'pointerEventColliderChecker('
 const ADD_TRANSPORT_NEEDLE = '.addTransport('
@@ -448,6 +449,17 @@ export function patchSceneBundle(code: string, onStep?: PatchSceneBundleStepLog)
       0
     )
     return next
+  })
+
+  out = runStep('crdt send buffer size', () => {
+    const r = patchCrdtSendBufferSize(out)
+    onStep?.(
+      r.replacements > 0
+        ? `crdt send buffer size (patched ${r.replacements}× toBinary().byteLength→currentWriteOffset)`
+        : 'crdt send buffer size (missed)',
+      0
+    )
+    return r.code
   })
 
   out = runStep('input modifier sdk guard', () => {

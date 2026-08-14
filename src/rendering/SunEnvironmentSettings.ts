@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 
-const STORAGE_KEY = 'dcl-sun-environment-settings'
+/** Bump when defaults change so old chalk-wash prefs do not stick forever. */
+const STORAGE_KEY = 'dcl-sun-environment-settings-v4'
 
 export type SunEnvironmentSettingsState = {
   /** Directional sun + day hemi scene lighting (0–100) */
@@ -26,11 +27,24 @@ export const FIXED_SUN_DISC_CORE_GAIN = 0.55
 export const FIXED_SUN_DISC_GLOW_GAIN = 0.28
 
 const DEFAULTS: SunEnvironmentSettingsState = {
-  /** Scene mesh lighting (Reset lighting). Night moon exposure higher so 23:59 planes read. */
-  sceneSunLight: 52,
-  exposure: 70,
-  sceneMoonLight: 58,
-  moonExposure: 62
+  /**
+   * Scene mesh lighting (Reset lighting). Explorer outdoor key is brighter than our
+   * washout-era 44 default (users needed ~100% to match). ~82 ≈ strong mid-morning
+   * without maxing the slider; 100 still has headroom for dark rooms.
+   */
+  sceneSunLight: 82,
+  /**
+   * Day ACES multiplier. Slightly under mid so blue sky stays saturated while meshes
+   * read closer to Explorer (paired with higher sceneSunLight).
+   */
+  exposure: 56,
+  /** Moon light slider default — slightly under mid so 00:00 stays dark. */
+  sceneMoonLight: 48,
+  /**
+   * Night ACES multiplier default. Was 62 (~1.4×) which lifted midnight to dusk.
+   * ~48 ≈ neutral-low; slider still goes to 100 for board-readable night.
+   */
+  moonExposure: 48
 }
 
 type Listener = (state: SunEnvironmentSettingsState) => void
@@ -39,10 +53,14 @@ function clampSlider(value: number): number {
   return Math.round(THREE.MathUtils.clamp(value, SUN_SLIDER_MIN, SUN_SLIDER_MAX))
 }
 
-/** Multiplier on SUN_BRIGHTNESS + directional curve. */
+/**
+ * Multiplier on SUN_BRIGHTNESS + directional curve.
+ * Floor/ceiling raised so mid-morning (TOD 10:00, raw anim ~1.7) reads Explorer-bright
+ * around default slider 82 without requiring 100%.
+ */
 export function sceneSunLightMultiplier(sceneSunLight: number): number {
   const t = clampSlider(sceneSunLight) / SUN_SLIDER_MAX
-  return THREE.MathUtils.lerp(0.35, 1.45, t)
+  return THREE.MathUtils.lerp(0.42, 1.58, t)
 }
 
 /** Multiplier on MOON_BRIGHTNESS + night hemi. */
@@ -54,7 +72,8 @@ export function sceneMoonLightMultiplier(sceneMoonLight: number): number {
 /** Multiplier on tier tone-mapping exposure during day. */
 export function sunExposureMultiplier(exposure: number): number {
   const t = clampSlider(exposure) / SUN_SLIDER_MAX
-  return THREE.MathUtils.lerp(0.72, 1.18, t)
+  // Ceiling modest so sky blue + emissives don't chalk when sun key is raised.
+  return THREE.MathUtils.lerp(0.72, 1.1, t)
 }
 
 /** Multiplier on tier tone-mapping exposure during night (~1.32 at 50%). */

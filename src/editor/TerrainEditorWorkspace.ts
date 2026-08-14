@@ -19,13 +19,19 @@ import {
 import { readEnvironmentWindShader } from '../dcl/landscape/readEnvironmentWindShader'
 import { LANDSCAPE_ENVIRONMENTS } from '../dcl/landscape/EnvironmentCatalog'
 import { buildParcelLandscape } from '../dcl/landscape/Systems/RenderGroundSystem'
+import type { EzTreeGrassFieldHandle } from '../dcl/landscape/EzTreeGrassField'
 import { allHashesForProfile } from '../dcl/landscape/EnvironmentCatalog'
 import { catalystAssetUrl } from '../dcl/landscape/Data/EmptyLandCatalog'
 import { resolveFftOceanSettings } from '../environment/fftOcean/readFftOceanOverride'
 import { SpaceSkyField } from '../environment/SpaceSkyField'
+import { DclGenesisSky } from '../environment/DclGenesisSky'
+import { celestialDirection } from '../environment/sunCycleSampler'
 import type { DesertAtmosphere } from '../environment/DesertAtmosphere'
 import { resolveMountainsSettings } from '../environment/mountainsDefaults'
 import { resolveDesertSettings } from '../environment/desertDefaults'
+import { duneHeightAtDcl } from '../dcl/landscape/Systems/DesertGoldGround'
+import { EMPTY_LAND_GROUND_OFFSET } from '../dcl/landscape/Utils/SceneSpace'
+import { parseParcelKey } from '../dcl/content/parseParcel'
 import type {
   ResolvedScene,
   SceneEnvironmentConfig,
@@ -38,11 +44,16 @@ import { loadCompositeScene, type CompositeSceneHandle } from './composite/loadC
 import { EditorViewportCompass } from './EditorViewportCompass'
 import { EditorAxisGizmo } from './EditorAxisGizmo'
 import { EditorMaxHeightGuide } from './EditorMaxHeightGuide'
+import { EditorWorldBoundaryOutline } from './EditorWorldBoundaryOutline'
 import { EditorAvatarScaleGuides } from './EditorAvatarScaleGuides'
 import { EditorTerrainHeightHud } from './ui/EditorTerrainHeightHud'
 import { EditorCameraResetButton } from './ui/EditorCameraResetButton'
 import { PARCEL_SIZE } from '../dcl/content/types'
 import { dclBoundsToThreeDisplay, dclToThreePos } from '../bridge/dclTransform'
+import {
+  ARENA_WATER_SURFACE_Y,
+  TERRAIN_SEA_FLOOR_WORLD_Y
+} from './terrain/terrainSculptConstants'
 
 
 export type TerrainEditorWorkspaceCallbacks = {
@@ -68,6 +79,10 @@ function addEditorLighting(scene: THREE.Scene): {
   return { hemi, sun }
 }
 
+/** Midday TOD for editor outdoor sky (seconds since 00:00). */
+const EDITOR_SKY_SECONDS = 12 * 3600
+const _editorCelestial = new THREE.Vector3()
+
 export class TerrainEditorWorkspace {
   private wrap: HTMLDivElement | null = null
   private host: SceneHost | null = null
@@ -77,8 +92,14 @@ export class TerrainEditorWorkspace {
   private editorWater: EditorBiomeWater | null = null
   private editorGrass: EditorGrassPaint | null = null
   private spaceSky: SpaceSkyField | null = null
+  /** Outdoor Genesis sky dome (island / water / land / …) — not used for space. */
+  private outdoorSky: DclGenesisSky | null = null
+  private outdoorSkyLoad: Promise<void> | null = null
   /** Same landscape group the play client builds (`buildParcelLandscape`). */
   private landscapeRoot: THREE.Group | null = null
+  /** Land/forest ez-tree grass from landscape preview — needs per-frame wind update. */
+  private landscapeEzTreeGrass: EzTreeGrassFieldHandle | null = null
+  private landscapeEzTreeGrassElapsed = 0
   private desertAtmo: DesertAtmosphere | null = null
   private landscapeRebuildTimer = 0
   private landscapeBuildGen = 0
@@ -99,6 +120,8 @@ export class TerrainEditorWorkspace {
   private cameraReset: EditorCameraResetButton | null = null
   private axisGizmo: EditorAxisGizmo | null = null
   private maxHeightGuide: EditorMaxHeightGuide | null = null
+  /** True rectangular world footprint outline (+ parcel lines when small enough). */
+  private worldBoundary: EditorWorldBoundaryOutline | null = null
   private avatarScaleGuides: EditorAvatarScaleGuides | null = null
   private projectRoot: ProjectRoot | null = null
   private keyHandler: ((e: KeyboardEvent) => void) | null = null
@@ -207,7 +230,13 @@ export class TerrainEditorWorkspace {
       this.compass?.updateFromCamera(cam, this.flyCamera)
       this.editorWater?.update(delta, cam)
       this.editorGrass?.update(delta)
+      // Land biome outer grass patches — drive wind shader uTime (same as play client).
+      if (this.landscapeEzTreeGrass) {
+        this.landscapeEzTreeGrassElapsed += delta
+        this.landscapeEzTreeGrass.update(this.landscapeEzTreeGrassElapsed, cam.position)
+      }
       this.spaceSky?.update(delta, cam)
+      this.tickOutdoorSky(delta, cam)
       this.desertAtmo?.update(delta)
       if (this.maxHeightGuide?.getVisible() && this.terrain) {
         this.maxHeightGuide.update(this.terrain.getMaxHeightSample())
@@ -235,16 +264,26 @@ export class TerrainEditorWorkspace {
           originZ: bounds.minZ
         },
         host.renderer,
-        () =>
-          resolveFftOceanSettings({
-            environment: this.sceneEnv
-          } as SceneMetadata)
+        () => {
+          // Biome owns water — same law as play client / worlds.
+          const kind = readEnvironmentKind(this.sceneEnv)
+          const wants = LANDSCAPE_ENVIRONMENTS[kind]?.showWater === true
+          return resolveFftOceanSettings(
+            { environment: this.sceneEnv } as SceneMetadata,
+            { landscapeWantsWater: wants }
+          )
+        }
       )
       const kind = readEnvironmentKind(this.sceneEnv)
       const profile = LANDSCAPE_ENVIRONMENTS[kind]
       this.editorWater.setBorderPadding(profile.borderPadding)
-      this.editorWater.setWaterLevel(shading.waterToY)
+      if (kind !== 'island' && kind !== 'mountains' && kind !== 'water') {
+        this.editorWater.setWaterLevel(shading.waterToY)
+      }
       this.editorWater.setWaterColor(shading.waterColor)
+      if (kind === 'water') {
+        this.prepareWaterBiomeTerrain(this.terrain)
+      }
       await this.editorWater.applyKind(kind)
       void this.rebuildClientLandscapePreview()
     } catch (e) {
@@ -282,6 +321,12 @@ export class TerrainEditorWorkspace {
     )
     this.maxHeightGuide.mount(host.scene)
 
+    // Full world boundary from scene parcels (not square GridHelper max-span).
+    this.worldBoundary = new EditorWorldBoundaryOutline(bounds, {
+      showParcelLines: scene.parcels.length <= 400
+    })
+    this.worldBoundary.mount(host.scene)
+
     this.sculpt = new TerrainSculptSession(
       this.projectId,
       this.terrain,
@@ -291,8 +336,20 @@ export class TerrainEditorWorkspace {
       bounds.minX,
       bounds.minZ,
       {
-        onHeightCommitted: () => this.scheduleGrassRebuild(),
-        onGrassCommitted: () => this.scheduleGrassRebuild()
+        onHeightCommitted: () => {
+          this.scheduleGrassRebuild()
+          if (readEnvironmentKind(this.sceneEnv) === 'water') {
+            this.terrain?.syncOpenOceanMeshVisibility()
+          }
+        },
+        onGrassCommitted: () => this.scheduleGrassRebuild(),
+        onStarterApplied: () => {
+          if (readEnvironmentKind(this.sceneEnv) === 'water' && this.terrain) {
+            // Starters that raise land (island/hills) should show; pure flat stays under.
+            // Only re-hide if still fully submerged after the starter.
+            this.terrain.syncOpenOceanMeshVisibility()
+          }
+        }
       }
     )
     await this.sculpt.initialize()
@@ -300,7 +357,7 @@ export class TerrainEditorWorkspace {
     this.scheduleGrassRebuild()
 
     this.avatarScaleGuides = new EditorAvatarScaleGuides(terrainFootprint, (dclX, dclZ) =>
-      this.terrain!.probeSurfaceAtDcl(dclX, dclZ).heightM
+      this.sampleEditorSurfaceY(dclX, dclZ)
     )
     this.avatarScaleGuides.mount(host.scene)
 
@@ -327,7 +384,11 @@ export class TerrainEditorWorkspace {
       setProceduralShading: (patch) => {
         terrain.setProceduralShading(patch)
         const s = terrain.getProceduralShading()
-        this.editorWater?.setWaterLevel(s.waterToY)
+        // Island / water / mountains: ocean Y pinned in EditorBiomeWater (client sea level).
+        const kind = readEnvironmentKind(this.sceneEnv)
+        if (kind !== 'island' && kind !== 'mountains' && kind !== 'water') {
+          this.editorWater?.setWaterLevel(s.waterToY)
+        }
         this.editorWater?.setWaterColor(s.waterColor)
         this.sculpt?.persistEditorDraft()
         if (
@@ -387,6 +448,8 @@ export class TerrainEditorWorkspace {
         replaceDesert?: boolean
         land?: SceneEnvironmentConfig['land'] | null
         replaceLand?: boolean
+        forest?: SceneEnvironmentConfig['forest'] | null
+        replaceForest?: boolean
         mountains?: SceneEnvironmentConfig['mountains'] | null
         replaceMountains?: boolean
       }) => {
@@ -396,8 +459,17 @@ export class TerrainEditorWorkspace {
           const kind = readEnvironmentKind(this.sceneEnv)
           const profile = LANDSCAPE_ENVIRONMENTS[kind]
           this.editorWater?.setBorderPadding(profile.borderPadding)
-          const waterY = terrain.getProceduralShading().waterToY
-          this.editorWater?.setWaterLevel(waterY)
+          // Island / water / mountains pin sea level inside applyKind.
+          // Land-style plane biomes use sculpt Water To.
+          if (kind !== 'island' && kind !== 'mountains' && kind !== 'water') {
+            const waterY = terrain.getProceduralShading().waterToY
+            this.editorWater?.setWaterLevel(waterY)
+          }
+          if (kind === 'water') {
+            this.prepareWaterBiomeTerrain(terrain)
+          } else {
+            terrain.restoreFullMeshDraw()
+          }
           await this.editorWater?.applyKind(kind)
           // Rebuild the same landscape the play client uses for this environment.kind.
           this.scheduleClientLandscapePreview()
@@ -418,6 +490,10 @@ export class TerrainEditorWorkspace {
                 : backend === 'plane'
                   ? 'sculpt plane'
                   : 'off'
+          const waterYLabel =
+            kind === 'island' || kind === 'mountains'
+              ? 'island sea'
+              : `Y=${terrain.getProceduralShading().waterToY.toFixed(1)}`
           this.panel?.setStatus(
             kind === 'space'
               ? `space · void sky + stars · saved to scene.json`
@@ -426,7 +502,7 @@ export class TerrainEditorWorkspace {
                 : kind === 'mountains'
                   ? `mountains · client landscape · saved to scene.json`
                   : profile.showWater
-                    ? `${kind} · ${backendLabel} · Y=${waterY.toFixed(1)} · saved to scene.json`
+                    ? `${kind} · ${backendLabel} · ${waterYLabel} · saved to scene.json`
                     : `${kind} · no water · saved to scene.json`
           )
         } catch (e) {
@@ -518,6 +594,7 @@ export class TerrainEditorWorkspace {
     this.clearClientLandscapePreview()
     this.spaceSky?.dispose()
     this.spaceSky = null
+    this.disposeOutdoorSky()
     this.editorHemi = null
     this.editorSun = null
     this.terrain?.dispose()
@@ -532,6 +609,8 @@ export class TerrainEditorWorkspace {
     this.axisGizmo?.dispose()
     this.axisGizmo = null
     this.maxHeightGuide?.dispose()
+    this.worldBoundary?.dispose()
+    this.worldBoundary = null
     this.maxHeightGuide = null
     this.avatarScaleGuides?.dispose()
     this.avatarScaleGuides = null
@@ -585,6 +664,49 @@ export class TerrainEditorWorkspace {
     })
   }
 
+  /**
+   * Mannequin / HUD surface: max of author sculpt and the client landscape floor
+   * (desert gold plane + dunes, land/forest color plane). Empty sculpt defaults to
+   * seafloor (~−4 m) which left mannequins in a pit under desert dunes at y≈0.
+   */
+  private sampleEditorSurfaceY(dclX: number, dclZ: number): number {
+    const sculptY = this.terrain?.probeSurfaceAtDcl(dclX, dclZ).heightM ?? Number.NEGATIVE_INFINITY
+    const landscapeY = this.sampleLandscapeFloorY(dclX, dclZ)
+    if (!Number.isFinite(sculptY) && !Number.isFinite(landscapeY)) return 0
+    if (!Number.isFinite(sculptY)) return landscapeY
+    if (!Number.isFinite(landscapeY)) return sculptY
+    return Math.max(sculptY, landscapeY)
+  }
+
+  /** Client landscape floor Y at a DCL XZ (desert dunes / solid color planes). */
+  private sampleLandscapeFloorY(dclX: number, dclZ: number): number {
+    const kind = readEnvironmentKind(this.sceneEnv)
+    const baseY = EMPTY_LAND_GROUND_OFFSET.y
+
+    if (kind === 'land' || kind === 'forest') {
+      // Solid color expanse sits at the same base as desert gold.
+      return baseY
+    }
+
+    if (kind !== 'desert') return Number.NEGATIVE_INFINITY
+
+    const settings = resolveDesertSettings(this.sceneEnv.desert)
+    if (!settings.dunes || settings.duneHeight <= 0.001) return baseY
+
+    // Match DesertGoldGround: flat under scene parcels unless dunesOnParcels.
+    if (!settings.dunesOnParcels) {
+      const scene = this.localCache?.scene
+      if (scene?.parcels?.length && scene.baseParcel) {
+        const base = parseParcelKey(scene.baseParcel)
+        const px = base.x + Math.floor(dclX / PARCEL_SIZE)
+        const py = base.y + Math.floor(dclZ / PARCEL_SIZE)
+        if (scene.parcels.includes(`${px},${py}`)) return baseY
+      }
+    }
+
+    return baseY + duneHeightAtDcl(dclX, dclZ, settings)
+  }
+
   private clearClientLandscapePreview(): void {
     const scene = this.host?.scene
     // Prefer structured dispose for dust / tumbleweeds if present.
@@ -593,6 +715,10 @@ export class TerrainEditorWorkspace {
       | undefined
     atmo?.dispose?.()
     this.desertAtmo = null
+    // Dispose grass handle first (materials) before traverse dispose of the root.
+    this.landscapeEzTreeGrass?.dispose()
+    this.landscapeEzTreeGrass = null
+    this.landscapeEzTreeGrassElapsed = 0
     if (this.landscapeRoot) {
       this.landscapeRoot.removeFromParent()
       this.landscapeRoot.traverse((obj) => {
@@ -626,6 +752,7 @@ export class TerrainEditorWorkspace {
     // Space sky is separate (EnvironmentSystem path) — keep that live.
     if (kind === 'space') {
       this.clearClientLandscapePreview()
+      this.hideOutdoorSky()
       if (!this.spaceSky) {
         this.spaceSky = SpaceSkyField.create(this.sceneEnv.space)
         this.spaceSky.mount(threeScene)
@@ -641,7 +768,9 @@ export class TerrainEditorWorkspace {
     this.spaceSky?.unmount(threeScene)
     this.spaceSky?.dispose()
     this.spaceSky = null
-    threeScene.background = null
+    // Soft fallback while Genesis dome textures load (was pure black void).
+    threeScene.background = new THREE.Color(0x87b8e8)
+    void this.ensureOutdoorSky(threeScene)
 
     // none / genesis: no empty-land landscape (matches client catalog)
     if (kind === 'none' || kind === 'genesis') {
@@ -694,10 +823,17 @@ export class TerrainEditorWorkspace {
       root.renderOrder = -5
       threeScene.add(root)
 
+      this.landscapeEzTreeGrass =
+        (root.userData.ezTreeGrass as EzTreeGrassFieldHandle | undefined) ?? null
+      this.landscapeEzTreeGrassElapsed = 0
       this.desertAtmo =
         (root.userData.desertAtmosphere as DesertAtmosphere | undefined) ?? null
       if (this.desertAtmo) {
         this.desertAtmo.applyToScene(threeScene)
+      }
+      // Re-place mannequins on desert/land floor after landscape rebuild.
+      if (this.avatarScaleGuides?.getVisible()) {
+        this.avatarScaleGuides.setVisible(true)
       }
 
       if (kind === 'mountains') {
@@ -731,6 +867,90 @@ export class TerrainEditorWorkspace {
         e instanceof Error ? e.message : 'Landscape preview failed'
       )
     }
+  }
+
+  /**
+   * Water biome = open ocean canvas. Always put the heightmap on the deep seafloor
+   * and stop drawing the plate. Raise / island starters bring land back on purpose.
+   * (No more “smart keep hills” — that left Rolling Hills / Flat Land as a tan raft.)
+   */
+  private prepareWaterBiomeTerrain(terrain: EditorTerrainSystem): void {
+    terrain.setProceduralShading({
+      waterToY: ARENA_WATER_SURFACE_Y,
+      waterFromY: TERRAIN_SEA_FLOOR_WORLD_Y
+    })
+    terrain.fillSeafloor()
+    this.sculpt?.persistEditorDraft()
+    this.panel?.setStatus(
+      'water · open ocean · heightmap under sea (Raise or Island starter to surface land)'
+    )
+  }
+
+  /**
+   * Play-client Genesis sky dome for outdoor biomes (island / water / land / desert / …).
+   * Space uses {@link SpaceSkyField} instead.
+   */
+  private async ensureOutdoorSky(scene: THREE.Scene): Promise<void> {
+    const show = (sky: DclGenesisSky): void => {
+      sky.mesh.visible = true
+      if (sky.mesh.parent !== scene) scene.add(sky.mesh)
+      // Dome owns the look — clear solid fallback once ready.
+      scene.background = null
+    }
+
+    const existing = this.outdoorSky
+    if (existing) {
+      show(existing)
+      return
+    }
+
+    if (!this.outdoorSkyLoad) {
+      this.outdoorSkyLoad = (async () => {
+        const sky = new DclGenesisSky()
+        try {
+          await sky.loadTextures()
+        } catch (e) {
+          console.warn('[editor] outdoor sky textures failed — solid fallback', e)
+          sky.dispose()
+          return
+        }
+        this.outdoorSky = sky
+        scene.add(sky.mesh)
+        scene.background = null
+        // First paint at midday so the viewport is not empty until the next frame.
+        celestialDirection(EDITOR_SKY_SECONDS, _editorCelestial)
+        sky.update(EDITOR_SKY_SECONDS, _editorCelestial, 0, false)
+      })().finally(() => {
+        this.outdoorSkyLoad = null
+      })
+    }
+
+    await this.outdoorSkyLoad
+    const ready = this.outdoorSky
+    if (ready) show(ready)
+  }
+
+  private tickOutdoorSky(delta: number, camera: THREE.Camera): void {
+    const sky = this.outdoorSky
+    if (!sky || !sky.mesh.visible) return
+    sky.mesh.position.copy(camera.position)
+    celestialDirection(EDITOR_SKY_SECONDS, _editorCelestial)
+    sky.update(EDITOR_SKY_SECONDS, _editorCelestial, delta, false)
+  }
+
+  private hideOutdoorSky(): void {
+    const sky = this.outdoorSky
+    if (sky) sky.mesh.visible = false
+  }
+
+  private disposeOutdoorSky(): void {
+    const sky = this.outdoorSky
+    if (sky) {
+      sky.mesh.removeFromParent()
+      sky.dispose()
+    }
+    this.outdoorSky = null
+    this.outdoorSkyLoad = null
   }
 
   private scheduleGrassRebuild(): void {

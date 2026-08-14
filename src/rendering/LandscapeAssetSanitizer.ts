@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { isGltfInvisibleColliderName } from '../collision/gltfColliderNaming'
 import { isSceneNeonEmissiveMaterial } from './sceneGltfEmissives'
+import { applyOutdoorMaterialResponse } from '../bridge/material/pbrApply'
 
 /** Leave headroom for fog/tone mapping; scene shadows stay off (each shadow light adds a sampler). */
 const MAX_MATERIAL_TEXTURES = 8
@@ -70,8 +71,9 @@ function resetPhysicalScalars(material: THREE.MeshPhysicalMaterial): void {
 }
 
 function stripOptionalMaps(material: MapMaterial): void {
+  // Clear per-material envMap so scene.environment IBL can apply (AAA outdoor probe).
+  // Do NOT force envMapIntensity=0 — that killed Explorer-style soft sky fill on GLTFs.
   material.envMap = null
-  material.envMapIntensity = 0
 
   for (const key of STRIP_MAP_KEYS) {
     if (countMaterialTextures(material) <= MAX_MATERIAL_TEXTURES) return
@@ -109,10 +111,18 @@ function downgradePhysicalMaterial(material: THREE.MeshPhysicalMaterial): THREE.
 
 function simplifyMaterial(material: THREE.Material): THREE.Material {
   if (material instanceof THREE.MeshPhysicalMaterial) {
-    return downgradePhysicalMaterial(material)
+    const standard = downgradePhysicalMaterial(material)
+    if (standard instanceof THREE.MeshStandardMaterial) {
+      applyOutdoorMaterialResponse(standard)
+    }
+    return standard
   }
   if (material instanceof THREE.MeshStandardMaterial) {
     stripOptionalMaps(material)
+    // Skip pure emissive/unlit neon — outdoor soften would dull creator glow boards.
+    if (!isSceneNeonEmissiveMaterial(material)) {
+      applyOutdoorMaterialResponse(material)
+    }
     return material
   }
   if (material instanceof THREE.MeshBasicMaterial) {

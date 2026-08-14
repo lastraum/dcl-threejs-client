@@ -13,6 +13,8 @@ export type ResolvedDesertSettings = {
   /** Dust / tumbleweeds spawn on scene parcels as well as outer dunes. */
   acrossParcels: boolean
   dunes: boolean
+  /** When false (default), dune height is flattened under scene parcels. */
+  dunesOnParcels: boolean
   duneHeight: number
   duneWidth: number
   duneLength: number
@@ -32,6 +34,7 @@ export const DESERT_DEFAULTS: ResolvedDesertSettings = {
   tumbleweedCount: 12,
   acrossParcels: true,
   dunes: true,
+  dunesOnParcels: false,
   duneHeight: 1.1,
   duneWidth: 22,
   duneLength: 70,
@@ -54,6 +57,7 @@ export const DESERT_PRESETS: { id: string; label: string; desert: SceneDesertCon
       tumbleweedCount: 10,
       acrossParcels: true,
       dunes: true,
+      dunesOnParcels: false,
       duneHeight: 0.9,
       duneWidth: 28,
       duneLength: 90,
@@ -74,6 +78,7 @@ export const DESERT_PRESETS: { id: string; label: string; desert: SceneDesertCon
       tumbleweeds: false,
       acrossParcels: true,
       dunes: true,
+      dunesOnParcels: false,
       duneHeight: 1.6,
       duneWidth: 16,
       duneLength: 55,
@@ -96,6 +101,7 @@ export const DESERT_PRESETS: { id: string; label: string; desert: SceneDesertCon
       tumbleweedCount: 24,
       acrossParcels: true,
       dunes: true,
+      dunesOnParcels: false,
       duneHeight: 1.3,
       duneWidth: 20,
       duneLength: 65,
@@ -117,6 +123,7 @@ export const DESERT_PRESETS: { id: string; label: string; desert: SceneDesertCon
       tumbleweedCount: 6,
       acrossParcels: false,
       dunes: false,
+      dunesOnParcels: false,
       duneHeight: 0,
       duneWidth: 30,
       duneLength: 80,
@@ -159,6 +166,8 @@ export function resolveDesertSettings(raw?: SceneDesertConfig | null): ResolvedD
     tumbleweedCount: Math.round(clamp(raw.tumbleweedCount as number, 0, 80, d.tumbleweedCount)),
     acrossParcels: raw.acrossParcels !== false,
     dunes: raw.dunes !== false,
+    // Explicit true only — dunes stay off scene parcels by default.
+    dunesOnParcels: raw.dunesOnParcels === true,
     duneHeight: clamp(raw.duneHeight as number, 0, 16, d.duneHeight),
     duneWidth: clamp(raw.duneWidth as number, 4, 80, d.duneWidth),
     duneLength: clamp(raw.duneLength as number, 8, 200, d.duneLength),

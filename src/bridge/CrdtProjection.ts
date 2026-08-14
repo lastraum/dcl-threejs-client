@@ -227,7 +227,8 @@ export class CrdtProjection {
    * component replace of the entity.
    */
   applyWorkerUiMountSnapshot(
-    rows: readonly { entity: Entity; componentId: number; value: unknown }[]
+    rows: readonly { entity: Entity; componentId: number; value: unknown }[],
+    opts?: { stripMissingPe?: boolean }
   ): void {
     const tsBase = 1_000_000
     let seq = 0
@@ -246,17 +247,19 @@ export class CrdtProjection {
       const value = normalizeUiColorFields(row.componentId, row.value)
       this.storeComponentPut(row.entity, row.componentId, tsBase + ++seq, value)
     }
-    // Belt-and-suspenders: if clearLww skipped PE, drop PE on snapshot UI entities
-    // that no longer ship a PE row (scene removed PointerEvents, entity still mounted).
-    const peMap = this.components.get(POINTER_EVENTS_ID)
-    const peTs = this.timestamps.get(POINTER_EVENTS_ID)
-    if (peMap) {
-      for (const entity of entitiesWithTransform) {
-        if (entitiesWithPe.has(entity)) continue
-        if (!peMap.has(entity)) continue
-        peMap.delete(entity)
-        peTs?.delete(entity)
-        this.changes.push({ entity, componentId: POINTER_EVENTS_ID, kind: 'delete' })
+    // Full-mount only: drop PE on snapshot entities that no longer ship a PE row.
+    // Partial dirty reseeds omit PE rows by design — never strip then (COD C3).
+    if (opts?.stripMissingPe !== false) {
+      const peMap = this.components.get(POINTER_EVENTS_ID)
+      const peTs = this.timestamps.get(POINTER_EVENTS_ID)
+      if (peMap) {
+        for (const entity of entitiesWithTransform) {
+          if (entitiesWithPe.has(entity)) continue
+          if (!peMap.has(entity)) continue
+          peMap.delete(entity)
+          peTs?.delete(entity)
+          this.changes.push({ entity, componentId: POINTER_EVENTS_ID, kind: 'delete' })
+        }
       }
     }
   }
@@ -486,7 +489,8 @@ export class CrdtProjection {
 
   private virtualCameraTargetFromMain(value: unknown): Entity | null {
     const target = (value as { virtualCameraEntity?: number | null } | null)?.virtualCameraEntity
-    if (target === undefined || target === null) return null
+    // GP freeRevealCamera sets void 0; treat 0 / missing as unbound (not entity 0).
+    if (target === undefined || target === null || target === 0) return null
     return target as Entity
   }
 
@@ -580,6 +584,11 @@ export class CrdtProjection {
       tsMap.set(entity, ts - VC_LIVE_TS_BASE)
     }
     this.vcLiveEntities.delete(entity)
+  }
+
+  /** COD D2 — entity is on vc-pose-live / hydrate live lane (skip cold Transform peels). */
+  isVcLiveTransformEntity(entity: Entity): boolean {
+    return this.vcLiveEntities.has(entity)
   }
 
   private shouldRejectStaleInboundVcTransform(

@@ -5,6 +5,7 @@ import { IslandWater } from '../../environment/IslandWater'
 import { OpenOceanWater } from '../../environment/OpenOceanWater'
 import { FftOceanWater } from '../../environment/FftOceanWater'
 import type { FftOceanSettings } from '../../environment/fftOcean/readFftOceanOverride'
+import { ISLAND_WATER_SURFACE_Y } from '../../dcl/landscape/IslandShoreMaterial'
 import { EditorWaterPlane } from './EditorWaterPlane'
 import { ARENA_WATER_SURFACE_Y, TERRAIN_BIOME_COLORS } from './terrainSculptConstants'
 
@@ -85,6 +86,10 @@ export class EditorBiomeWater {
    * Rebuild preview for biome + current FFT settings from scene.json.
    * Call after kind or environment.water changes.
    * Honors LANDSCAPE_ENVIRONMENTS[kind].showWater — space/land/etc. get no water.
+   *
+   * Island / mountains pin sea level to {@link ISLAND_WATER_SURFACE_Y} so the land
+   * disc (≈ Y=0) sits above water. Sculpt "Water To" (default 5) is for heightmap
+   * bands — using it as ocean Y flooded the whole island circle.
    */
   async applyKind(kind: SceneEnvironmentKind): Promise<void> {
     this.lastKind = kind
@@ -94,6 +99,13 @@ export class EditorBiomeWater {
       if (kind === 'water' || profile.openOcean) next = 'open'
       else if (kind === 'island' || kind === 'mountains') next = 'island'
       else next = 'plane'
+    }
+    // Island + open ocean share client sea level so seafloor heightmaps sit under water.
+    // Plane biomes (rare) still use sculpt Water To via setWaterLevel from workspace.
+    if (next === 'island' || next === 'open') {
+      this.waterY = ISLAND_WATER_SURFACE_Y
+    } else if (next === 'plane') {
+      if (!Number.isFinite(this.waterY)) this.waterY = ARENA_WATER_SURFACE_Y
     }
     await this.rebuild(next)
   }
@@ -143,6 +155,18 @@ export class EditorBiomeWater {
     const settings = this.getFftSettings()
 
     try {
+      // mode already follows biome showWater. waterEnabled=false only after
+      // resolveFftOceanSettings with landscapeWantsWater — i.e. explicit scene/URL kill.
+      if (mode !== 'hidden' && settings.waterEnabled === false) {
+        this.mode = 'hidden'
+        this.backend = 'none'
+        console.info(
+          `[editor] water killed (environment.water.enabled=false or ?water=0), biomeMode was ${mode}`
+        )
+        this.applyVisibility()
+        return
+      }
+
       if (mode === 'hidden') {
         this.backend = 'none'
         // Biomes like space/land: dispose any prior mesh and stay empty.
@@ -158,7 +182,8 @@ export class EditorBiomeWater {
         this.plane.mount(this.scene)
         this.backend = 'plane'
       } else if (mode === 'island' || mode === 'open') {
-        const wantFft = settings.enabled && settings.waterEnabled !== false
+        // fft flag only picks backend; master enabled already handled above.
+        const wantFft = settings.enabled !== false
         const canFft = wantFft && this.renderer.capabilities.isWebGL2
 
         if (canFft) {
@@ -175,7 +200,7 @@ export class EditorBiomeWater {
           this.fft.group.position.y = this.waterY
           this.scene.add(this.fft.group)
           this.backend = 'fft'
-          console.info(`[editor] FFTOCEAN (dallapozza) preview — ${mode}`)
+          console.info(`[editor] FFTOCEAN (dallapozza) preview — ${mode} Y=${this.waterY.toFixed(2)}`)
         } else if (mode === 'island') {
           this.islandJs = await IslandWater.create(
             this.parcels,
@@ -187,6 +212,8 @@ export class EditorBiomeWater {
           this.backend = 'water.js'
           if (wantFft && !this.renderer.capabilities.isWebGL2) {
             console.warn('[editor] FFTOCEAN needs WebGL2 — Water.js island preview')
+          } else if (!wantFft) {
+            console.info('[editor] Water.js island preview (FFT off)')
           }
         } else {
           this.openJs = await OpenOceanWater.create(this.parcels, this.baseParcel)

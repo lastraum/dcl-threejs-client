@@ -12,6 +12,13 @@ export const SIDEBAR_ICONS = {
   smartWearable: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <path d="M13 2 4 14h7l-1 8 10-13h-7l0-7z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
   </svg>`,
+  live: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <circle cx="12" cy="12" r="3" fill="currentColor"/>
+    <path d="M12 5a7 7 0 0 1 7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M12 2a10 10 0 0 1 10 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M12 5a7 7 0 0 0-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M12 2a10 10 0 0 0-10 10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  </svg>`,
   skybox: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.5"/>
     <path d="M12 3.5a8.5 8.5 0 0 1 0 17" stroke="currentColor" stroke-width="1.5"/>
@@ -102,6 +109,16 @@ export const SIDEBAR_ICONS = {
   settings: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/>
     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.77 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`,
+  /**
+   * Labs — parity+ extras launcher (Live, Pets, Loot Bag, Help & Dev).
+   * 2×2 app grid so it reads as “more modules”, not Preferences.
+   */
+  labs: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <rect x="4.5" y="4.5" width="6" height="6" rx="1.6" stroke="currentColor" stroke-width="1.5"/>
+    <rect x="13.5" y="4.5" width="6" height="6" rx="1.6" stroke="currentColor" stroke-width="1.5"/>
+    <rect x="4.5" y="13.5" width="6" height="6" rx="1.6" stroke="currentColor" stroke-width="1.5"/>
+    <rect x="13.5" y="13.5" width="6" height="6" rx="1.6" stroke="currentColor" stroke-width="1.5"/>
   </svg>`,
   help: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <circle cx="12" cy="12" r="8.5" stroke="currentColor" stroke-width="1.5"/>

@@ -27,7 +27,7 @@ export type PerformanceTier = 'low' | 'medium' | 'high'
 export type SceneWorkerDebugFlags = {
   /** `?sceneinputsnapshot` — log scene-input-snapshot apply on the worker. */
   sceneInputSnapshot?: boolean
-  /** `?pointerverbose` — log pointer-crdt-deliver round-trips in the worker. */
+  /** `?pointerverbose` — log PE inject + light renderer inbound (historical: pointer-crdt-deliver) in the worker. */
   pointerDeliver?: boolean
   /** `?tweenverbose` — log tween-state inject / push in the worker. */
   tweenDeliver?: boolean
@@ -39,9 +39,34 @@ export type SceneWorkerDebugFlags = {
   sceneUiLog?: boolean
 }
 
+/** Host-owned reserved store seed — Explorer has these on the scene engine before the first tick. */
+export type HostReservedSceneStore = {
+  playerIdentity?: {
+    userId: string
+    displayName?: string
+    hasConnectedWeb3?: boolean
+  }
+  realmInfo?: {
+    baseUrl: string
+    realmName: string
+    networkId: number
+    commsAdapter: string
+    isPreview: boolean
+    room?: string
+    isConnectedSceneRoom: boolean
+  }
+}
+
 export type SceneWorkerBoot = {
   type: 'boot'
+  /** Live interactable px — worker seeds UiCanvasInformation (not SDK 7.26 1920×1080). */
+  canvas?: { width: number; height: number }
   debug?: SceneWorkerDebugFlags
+  /**
+   * PlayerIdentityData + RealmInfo for the worker scene store.
+   * SDK `@dcl/sdk/network` isRoomReady / joinRoster read these on the first sendBinary.
+   */
+  reserved?: HostReservedSceneStore
   scene: Pick<
     ResolvedScene,
     'title' | 'parcels' | 'baseParcel' | 'spawn' | 'contentsBaseUrl' | 'entityId' | 'mainEntry'
@@ -289,6 +314,8 @@ export type SceneWorkerOutbound =
   | { type: 'engine-api-unsubscribe'; eventId: string }
   | { type: 'crdt-get-state'; id: number }
   | { type: 'pointer-deliver-done' }
+  /** Worker finished the play-frame that SceneLoop marked in-flight (or declined a new tick). */
+  | { type: 'play-frame-done' }
   | { type: 'ui-virtual-canvas'; width: number; height: number }
   /** Bound VC world Transform — bypasses CRDT ack latency for lens + gizmo pose sync. */
   | {
@@ -360,11 +387,21 @@ export type MainToWorker =
        * and survive GLB FINISHED; force-clear was wiping freeze + breaking WASD flight).
        */
       portableExperience?: boolean
+      /** Late refresh of reserved identity / RealmInfo (scene room connect after boot). */
+      reserved?: HostReservedSceneStore
     }
+  /**
+   * Light main→worker renderer CRDT (grow-only / ambient LWW). Historical name —
+   * not PE edges (those are `inject-pointer-click` only). Does not open deliver-done.
+   */
   | { type: 'pointer-crdt-deliver'; data: Uint8Array[] }
   | { type: 'tween-state-deliver'; data: Uint8Array[] }
   | { type: 'renderer-append-deliver'; data: Uint8Array[] }
-  /** Phase C — main→worker renderer-owned inbound after async outbound apply. */
+  /**
+   * Main→worker renderer inbound that must not open the pointer pause path
+   * (e.g. GltfContainerLoadingState mid-onStart). Same light apply family as
+   * pointer-crdt-deliver; separate type for boot-safe routing.
+   */
   | { type: 'renderer-inbound-deliver'; data: Uint8Array[] }
   | { type: 'crdt-outbound-ack'; id: number }
   | { type: 'inject-pointer-click'; body: InjectPointerClickBody; injectOnly?: boolean }
@@ -386,6 +423,17 @@ export type MainToWorker =
       camera?: {
         position: { x: number; y: number; z: number }
         rotation: { x: number; y: number; z: number; w: number }
+      }
+      /**
+       * Host PrimaryPointerInfo for this frame (plaza fishing bobber aim).
+       * Applied before engine.update so systems see a live ray even when CRDT
+       * dirty-only outbound is delayed by a long scene tick.
+       */
+      primaryPointer?: {
+        pointerType: number
+        screenCoordinates: { x: number; y: number }
+        screenDelta: { x: number; y: number }
+        worldRayDirection: { x: number; y: number; z: number }
       }
     }
   /** Level keyboard state — authoritative worker input path (phase 2). */

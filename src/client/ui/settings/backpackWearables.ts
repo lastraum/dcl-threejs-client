@@ -65,6 +65,9 @@ const INVENTORY_MAX_PAGES = 50
  * Prefer `/users/{addr}/wearables` (includes individualData; PAGINATED — walk
  * every page or wallets with >100 wearables silently lose inventory). Fall back
  * to `wearables-by-owner` which often only returns asset URNs without tokens.
+ *
+ * When both an asset URN and instance URN(s) exist for the same item, drop the
+ * asset-only row — trade settle needs the packed ERC-721 token id.
  */
 export async function fetchOwnedWearableUrns(
   address: string,
@@ -73,7 +76,17 @@ export async function fetchOwnedWearableUrns(
   const base = lambdasUrl.replace(/\/$/, '')
   const addr = address.toLowerCase()
 
-  // Primary: has individualData[].id / tokenId (required for profile deploy).
+  const byKey = new Map<string, OwnedEntry>()
+  const addAll = (entries: OwnedEntry[]) => {
+    for (const e of entries) {
+      const u = e.urn?.trim()
+      if (!u) continue
+      const k = u.toLowerCase()
+      if (!byKey.has(k)) byKey.set(k, { urn: u, amount: e.amount })
+    }
+  }
+
+  // Primary: /users/{addr}/wearables (individualData + PAGINATED).
   try {
     const rows: OwnedWearableApiRow[] = []
     for (let pageNum = 1; pageNum <= INVENTORY_MAX_PAGES; pageNum++) {
@@ -95,22 +108,38 @@ export async function fetchOwnedWearableUrns(
       if (raw.elements.length < INVENTORY_PAGE_SIZE || rows.length >= total) break
     }
     if (rows.length) {
-      const expanded = expandOwnedWearableRows(rows).filter((e) => e.urn?.trim())
-      if (expanded.length) return expanded
+      addAll(expandOwnedWearableRows(rows))
     }
   } catch {
-    /* fall through */
+    /* continue to merge secondary */
   }
 
-  const res = await fetch(`${base}/collections/wearables-by-owner/${addr}`)
-  if (!res.ok) {
-    throw new Error(`wearables inventory failed (${res.status})`)
+  // Secondary: wearables-by-owner often has different individualData coverage — merge both.
+  try {
+    const res = await fetch(`${base}/collections/wearables-by-owner/${addr}`)
+    if (res.ok) {
+      const raw = (await res.json()) as OwnedWearableApiRow[] | { error?: string }
+      if (Array.isArray(raw)) {
+        addAll(expandOwnedWearableRows(raw))
+      }
+    }
+  } catch {
+    /* ignore */
   }
-  const raw = (await res.json()) as OwnedWearableApiRow[] | { error?: string }
-  if (!Array.isArray(raw)) {
-    throw new Error('wearables inventory returned unexpected payload')
+
+  // Prefer instance URNs over bare asset URNs (…:itemId without tokenId).
+  const assetsWithInstances = new Set<string>()
+  for (const e of byKey.values()) {
+    const asset = assetUrnFromCompleteUrn(e.urn).toLowerCase()
+    if (e.urn.toLowerCase() !== asset) assetsWithInstances.add(asset)
   }
-  return expandOwnedWearableRows(raw).filter((e) => e.urn?.trim())
+  const merged = [...byKey.values()].filter((e) => {
+    const asset = assetUrnFromCompleteUrn(e.urn).toLowerCase()
+    if (e.urn.toLowerCase() === asset && assetsWithInstances.has(asset)) return false
+    return true
+  })
+  if (merged.length) return merged
+  throw new Error('wearables inventory empty or failed')
 }
 
 function fallbackItem(urn: string, amount = 1): BackpackWearableItem {

@@ -20,9 +20,8 @@ export function isCorsSafeTextureUrl(url: string): boolean {
   if (!/^https?:/i.test(url)) return true
   if (typeof window !== 'undefined' && url.startsWith(window.location.origin)) return true
   // Hosts that send ACAO for WebGL Image uploads (verify before adding — marketing-files does NOT).
-  // Peer content / profiles.
-  if (/peer[^/]*\.decentraland\.(org|zone|today)\//i.test(url)) return true
-  if (/peer-ec\d*\.decentraland\./i.test(url)) return true
+  // peer.decentraland.org sends CORS. peer-ec1/ec2 do not — those must use /api/texture.
+  if (/\/\/peer\.decentraland\.(org|zone|today)\//i.test(url)) return true
   // Content CDN for scene assets.
   if (/^https?:\/\/[^/]*content\.decentraland\./i.test(url)) return true
   if (/gstatic\.com\//i.test(url)) return true

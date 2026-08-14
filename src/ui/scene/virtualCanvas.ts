@@ -1,6 +1,3 @@
-/** Virtual UI canvas — Yoga layout coordinate system (Explorer default). */
-export const DEFAULT_VIRTUAL_CANVAS = { width: 1920, height: 1080 } as const
-
 export type VirtualCanvasSize = {
   width: number
   height: number
@@ -14,12 +11,25 @@ export type ScreenUiRect = {
 }
 
 /**
+ * Virtual UI canvas — Yoga layout coordinate system.
+ *
+ * Pre-7.26 Explorer: omitted / {width:0,height:0} → live interactable pixels.
+ * SDK 7.26+ only applies 1920×1080 when the scene opts in via setUiRenderer.
+ */
+export function liveVirtualCanvas(interactable: ScreenUiRect): VirtualCanvasSize {
+  return {
+    width: Math.max(1, Math.round(interactable.width)),
+    height: Math.max(1, Math.round(interactable.height))
+  }
+}
+
+/**
  * Viewport mapping virtual Yoga space → screen pixels.
  *
- * Scene UI is **authored** in virtual px (default 1920×1080 / setUiRenderer).
- * We then **stretch-map** that rect onto the full interactable (WebGL canvas box) —
- * non-uniform scaleX/scaleY so the HUD fills the real screen (no letterbox black bars).
- * Typography/radii use `uniform` so text does not stretch weirdly.
+ * Scene UI is **authored** in virtual px (`setUiRenderer` virtualWidth/Height, else
+ * the live interactable box). We then **stretch-map** that rect onto the full
+ * interactable (WebGL canvas box) — non-uniform scaleX/scaleY so the HUD fills the
+ * real screen (no letterbox black bars). Typography/radii use `uniform`.
  */
 export type UiViewport = {
   scaleX: number
@@ -116,8 +126,8 @@ export function readInteractableArea(canvas?: HTMLElement | null): ScreenUiRect 
 
 /**
  * Pin #scene-ui-root to the WebGL canvas box.
- * Yoga laid out in virtual 1920×1080; this root is the **fullscreen overlay** of that
- * design space onto real pixels (see computeUiViewport stretch mapping).
+ * Yoga laid out in virtual design space; this root is the **fullscreen overlay** of that
+ * space onto real pixels (see computeUiViewport stretch mapping).
  */
 export function alignSceneUiRoot(root: HTMLElement, interactable: ScreenUiRect): void {
   root.style.position = 'fixed'

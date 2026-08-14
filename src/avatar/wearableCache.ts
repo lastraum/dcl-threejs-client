@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { normalizeGlbCacheKey } from '../rendering/glbByteCache'
 import { pruneWearableDisplayMeshes } from './wearableSanitize'
 import { repairSkinnedMesh } from '../rendering/skinnedMeshInstance'
+import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
 
 /** Content-hash key for Catalyst wearables; stable URL for bundled `/avatar/wearables/` GLBs. */
 export function wearableGlbCacheKey(url: string): string {
@@ -15,7 +16,7 @@ export function prepareWearableCacheRoot(root: THREE.Object3D): void {
   root.traverse((obj) => {
     if (obj instanceof THREE.Mesh) {
       // Default on; RemoteAvatarManager may disable cast for distant remotes (shadow budget).
-      obj.castShadow = true
+      setMeshDesiredCastShadow(obj, true, 'avatar')
       obj.receiveShadow = true
     }
     if (obj instanceof THREE.SkinnedMesh) {

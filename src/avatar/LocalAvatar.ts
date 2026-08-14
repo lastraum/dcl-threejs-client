@@ -15,11 +15,12 @@ import { updateNameTagAnchor } from './headAnchor'
 import { resolveAvatarProfile } from './peerApi'
 import { resolveProfileEmote, loadResolvedProfileEmote, isSceneEmoteUrn, type ResolvedProfileEmote } from './profileEmotes'
 import type { AssetCache } from '../rendering/AssetCache'
-import { yieldToNextFrame } from '../rendering/mainThreadYield'
+import { yieldToIdle } from '../rendering/mainThreadYield'
 import type { ComposeOptions } from './AvatarComposer'
 import type { BodyShape } from './types'
 import { VrmAvatar } from './vrm/VrmAvatar'
 import { VrmLocomotionAnimations } from './vrm/VrmLocomotionAnimations'
+import { buildEmotePropAttachment } from './emotePlayback'
 import { retargetGltfClipToVrm } from './vrm/mixamoRetarget'
 import { applyVrmPivotOffset } from './vrm/vrmFeetAlign'
 import { getEquippedCustomAvatar, type EquippedCustomAvatar } from './vrm/vrmEquipStorage'
@@ -54,6 +55,14 @@ export class LocalAvatar {
   private vfxScene: THREE.Scene | null = null
   private activeEmoteUrn: string | null = null
   private emotePlaySeq = 0
+  /**
+   * Last looped scene/profile emote to resume after a one-shot ends.
+   * Plaza fishing: Fishing_Idle (loop) then cast (one-shot) — cast must not leave the avatar
+   * in locomotion idle; resume the hold when the cast clip finishes.
+   */
+  private pendingLoopEmoteRef: string | null = null
+  /** Guard re-entrant one-shot finished → playEmote → stop cascades. */
+  private resumingLoopEmote = false
   /** Explorer GliderProp.glb — show while hold-Space gliding. */
   private readonly glider = new GliderProp()
 
@@ -98,6 +107,7 @@ export class LocalAvatar {
             prepareCustomAvatarScene(this.model)
             applyOdkPivotOffset(this.pivot, this.model)
             prepareCustomAvatarScene(this.model)
+            this.disableSkinnedFrustumCull()
 
             const odkBindPoseOnly =
               typeof window !== 'undefined' &&
@@ -108,6 +118,7 @@ export class LocalAvatar {
               this.odkLocomotion = new OdkLocomotionAnimations()
               try {
                 await this.odkLocomotion.bind(this.odkAvatar.root)
+                this.odkLocomotion.setOnOneShotFinished(this.onOneShotEmoteFinished)
                 console.info('[avatar] custom ODK/MML avatar equipped — locomotion active')
               } catch (err) {
                 console.warn('[avatar] ODK locomotion bind failed — bind pose only', err)
@@ -122,6 +133,7 @@ export class LocalAvatar {
             this.pivot.add(this.model)
             this.vrmAvatar.vrm.humanoid.autoUpdateHumanBones = false
             prepareCustomAvatarScene(this.model)
+            this.disableSkinnedFrustumCull()
 
             this.vrmLocomotion = new VrmLocomotionAnimations()
             try {
@@ -129,6 +141,7 @@ export class LocalAvatar {
               // idle hip tracks would skew soles. Offset is on model (not yaw pivot).
               applyVrmPivotOffset(this.pivot, this.vrmAvatar.vrm, this.model)
               await this.vrmLocomotion.bind(this.vrmAvatar.vrm, this.vrmAvatar.root)
+              this.vrmLocomotion.setOnOneShotFinished(this.onOneShotEmoteFinished)
               prepareCustomAvatarScene(this.model)
               console.info('[avatar] custom VRM equipped — locomotion active')
             } catch (err) {
@@ -163,6 +176,7 @@ export class LocalAvatar {
     this.renderMode = 'dcl'
     this.model = await composeAvatarFromProfile(profile, this.peerUrl, this.assetCache)
     this.pivot.add(this.model)
+    this.disableSkinnedFrustumCull()
 
     this.animations = new AvatarAnimations()
     try {
@@ -171,6 +185,7 @@ export class LocalAvatar {
         peerUrl: this.peerUrl,
         assetCache: this.assetCache
       })
+      this.animations.setOnOneShotFinished(this.onOneShotEmoteFinished)
       if (this.vfxScene) {
         this.animations.setVfxScene(this.vfxScene)
       }
@@ -216,6 +231,17 @@ export class LocalAvatar {
     this.glider.setBodyVisible(visible)
   }
 
+  /**
+   * Local player never frustum-culls skinned parts — close over-shoulder zoom was
+   * dropping hands/face when bind-pose spheres missed animated verts.
+   */
+  disableSkinnedFrustumCull(): void {
+    if (!this.model) return
+    this.model.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) obj.frustumCulled = false
+    })
+  }
+
   async playEmote(emoteId: string, options: PlayEmoteOptions = {}): Promise<ResolvedProfileEmote | null> {
     if (!this.model) return null
 
@@ -238,9 +264,16 @@ export class LocalAvatar {
       return null
     }
 
+    const loop = options.loop ?? resolved.loop
+    // Remember looped hold as soon as resolve succeeds so a cast that cancels mid-load
+    // Idle (plaza fishing: Idle then cast same second) still resumes after the one-shot.
+    if (loop) {
+      this.pendingLoopEmoteRef = emoteId.trim()
+    }
+
     try {
       // Yield so a frame paints before/after cold emote GLB fetch/parse (sit / watering freezes).
-      await yieldToNextFrame()
+      await yieldToIdle(24)
       if (seq !== this.emotePlaySeq) return null
 
       const cached = this.assetCache
@@ -252,10 +285,9 @@ export class LocalAvatar {
         return null
       }
 
-      await yieldToNextFrame()
+      await yieldToIdle(24)
       if (seq !== this.emotePlaySeq) return null
 
-      const loop = options.loop ?? resolved.loop
       const emoteKey = resolved.urn.trim().toLowerCase()
 
       if (this.renderMode === 'vrm' && this.vrmAvatar && this.vrmLocomotion) {
@@ -264,7 +296,10 @@ export class LocalAvatar {
           console.warn(`[avatar] VRM emote retarget produced no tracks: ${resolved.url}`)
           return null
         }
-        if (this.vrmLocomotion.playProfileEmote(clip, loop)) {
+        // Watering can / sit props / particles — DCL path clones Armature_Prop; VRM must too.
+        const propAtt = buildEmotePropAttachment(cached)
+        const props = propAtt ? { ...propAtt, attachParent: this.pivot } : null
+        if (this.vrmLocomotion.playProfileEmote(clip, loop, props)) {
           this.activeEmoteUrn = emoteKey
           return resolved
         }
@@ -279,7 +314,9 @@ export class LocalAvatar {
           console.warn(`[avatar] ODK emote retarget produced no tracks: ${resolved.url}`)
           return null
         }
-        if (this.odkLocomotion.playProfileEmote(clip, loop)) {
+        const propAtt = buildEmotePropAttachment(cached)
+        const props = propAtt ? { ...propAtt, attachParent: this.pivot } : null
+        if (this.odkLocomotion.playProfileEmote(clip, loop, props)) {
           this.activeEmoteUrn = emoteKey
           return resolved
         }
@@ -310,13 +347,30 @@ export class LocalAvatar {
   stopEmote(): void {
     this.emotePlaySeq++
     this.activeEmoteUrn = null
+    this.pendingLoopEmoteRef = null
+    // Explicit stop (scene cancel / walk) — do not re-fire pending loop via one-shot finished.
     if (this.renderMode === 'vrm') {
-      this.vrmLocomotion?.stopProfileEmote()
+      this.vrmLocomotion?.stopProfileEmote({ silent: true })
     } else if (this.renderMode === 'odk') {
-      this.odkLocomotion?.stopProfileEmote()
+      this.odkLocomotion?.stopProfileEmote({ silent: true })
     } else {
-      this.animations?.stopProfileEmote()
+      this.animations?.stopProfileEmote({ silent: true })
     }
+  }
+
+  /**
+   * One-shot profile emote released (cast / sit down). Resume last looped hold
+   * (Fishing_Idle) when the scene fired Idle before the one-shot and does not re-send it.
+   */
+  private onOneShotEmoteFinished = (): void => {
+    if (this.resumingLoopEmote) return
+    this.activeEmoteUrn = null
+    const pending = this.pendingLoopEmoteRef
+    if (!pending) return
+    this.resumingLoopEmote = true
+    void this.playEmote(pending, { loop: true }).finally(() => {
+      this.resumingLoopEmote = false
+    })
   }
 
   isProfileEmoteActive(): boolean {
@@ -364,6 +418,9 @@ export class LocalAvatar {
   private disposeModel(): void {
     this.pivot.position.set(0, 0, 0)
     this.glider.detach()
+    this.pendingLoopEmoteRef = null
+    this.activeEmoteUrn = null
+    this.emotePlaySeq++
     this.animations?.dispose()
     this.animations = null
     if (this.vrmAvatar) {

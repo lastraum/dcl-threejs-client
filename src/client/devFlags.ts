@@ -5,12 +5,28 @@ function readSearchParams(): URLSearchParams | null {
 
 /**
  * Skip remote avatar compose/load (comms may still connect).
- * Enabled by default; opt out with `?noremote`. `?remote` is accepted as an alias for the default.
+ * Default **on** — remotes are product. Force off with `?noremote` / `?skipremote` for A/B.
+ * `?remotes` / `?withremotes` force on.
  */
 export function skipRemoteAvatars(): boolean {
   const params = readSearchParams()
-  if (params?.has('noremote')) return true
+  if (params?.has('remotes') || params?.has('withremotes')) return false
+  if (params?.has('noremote') || params?.has('skipremote')) return true
   return false
+}
+
+/** Force bloom off for render A/B (`?nobloom` / `?skipbloom`). */
+export function forceNoBloom(): boolean {
+  const params = readSearchParams()
+  if (!params) return false
+  return params.has('nobloom') || params.has('skipbloom')
+}
+
+/** Force shadows off for render A/B (`?noshadow` / `?skipshadow`). */
+export function forceNoShadow(): boolean {
+  const params = readSearchParams()
+  if (!params) return false
+  return params.has('noshadow') || params.has('skipshadow')
 }
 
 /** Skip Genesis theatre `runShowSetup` + Scene 11/12 composite registration (`?notheatre` / `?skiptheatre`). */
@@ -82,6 +98,23 @@ export function skipSceneAnimators(): boolean {
 }
 
 /**
+ * Skip play-time scene collider extract / PhysX cook / pose slides (A/B async coll).
+ * CCT + infinite ground still init so you can walk; solids won't register.
+ *
+ * `?nophysx` · `?nocolliders` · `?skipcolliders`
+ */
+export function skipPhysxColliders(): boolean {
+  const params = readSearchParams()
+  if (!params) return false
+  return (
+    params.has('nophysx') ||
+    params.has('nocolliders') ||
+    params.has('skipcolliders') ||
+    params.has('nocol')
+  )
+}
+
+/**
  * Bottom-right animator sample HUD (bound/active/shared/fair Hz).
  * Opt-in: `?animatorhud` / `?perf` / `?perfdebug` / localStorage `animatorhud=1`.
  */
@@ -91,6 +124,22 @@ export function wantAnimatorSampleHud(): boolean {
   if (usePerfDebug()) return true
   try {
     if (localStorage.getItem('animatorhud') === '1') return true
+  } catch {
+    /* ignore */
+  }
+  return false
+}
+
+/**
+ * Top-left main-thread frame pie (sync/rem/part/render/loop+).
+ * Opt-in: `?framehud` / `?perf` / `?perfdebug` / localStorage `framehud=1`.
+ */
+export function wantMainFrameHud(): boolean {
+  const params = readSearchParams()
+  if (params?.has('framehud') || params?.has('framepie')) return true
+  if (usePerfDebug()) return true
+  try {
+    if (localStorage.getItem('framehud') === '1') return true
   } catch {
     /* ignore */
   }

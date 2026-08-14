@@ -272,7 +272,9 @@ export class VirtualCameraBridge {
       | { virtualCameraEntity?: number }
       | null
     const entity = main?.virtualCameraEntity
-    return entity === undefined || entity === null ? null : (entity as Entity)
+    // 0 / missing = unbound. GP freeRevealCamera sets void 0; some CRDT paths leave 0.
+    if (entity === undefined || entity === null || entity === 0) return null
+    return entity as Entity
   }
 
   private logInactiveIfBound(resolved: ResolveVcResult): void {

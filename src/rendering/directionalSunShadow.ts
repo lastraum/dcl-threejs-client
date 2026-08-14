@@ -1,15 +1,16 @@
 import * as THREE from 'three'
+import { AOI_SHELL_KEEP_M } from '../dcl/multiScene/caps'
 import { renderQuality, type ShadowQuality, SHADOW_MAP_SIZE } from './RenderQualitySettings'
 
-/** Ortho half-extent (m) around focus — wider = softer large-area contact, less dense texels. */
+/** Ortho half-extent (m) around focus — tracks the visual keep band, not 200 m. */
 const SUN_SHADOW_EXTENT_M: Record<Exclude<ShadowQuality, 'off'>, number> = {
-  low: 36,
-  medium: 52,
-  high: 60,
-  ultra: 72
+  low: 32,
+  medium: 40,
+  high: 48,
+  ultra: 56
 }
-/** Distance along sun direction from focus to the light. */
-const SUN_SHADOW_DISTANCE_M = 100
+/** Light sits this far along the sun from the player — same as neighbor visual keep. */
+const SUN_SHADOW_DISTANCE_M = AOI_SHELL_KEEP_M
 /** PCF blur radius — higher = broader, softer edges (Unity soft directional feel). */
 const SUN_SHADOW_RADIUS: Record<Exclude<ShadowQuality, 'off'>, number> = {
   low: 2.5,
@@ -32,8 +33,15 @@ export function configureDirectionalSunShadow(light: THREE.DirectionalLight): vo
   }
   light.castShadow = true
   applyDirectionalShadowQuality(light)
-  light.shadow.autoUpdate = true
+  light.shadow.autoUpdate = false
+  light.shadow.needsUpdate = true
 }
+
+const _lastFocus = new THREE.Vector3()
+const _lastSun = new THREE.Vector3()
+let lastShadowFocusAt = 0
+const SHADOW_RECAST_MOVE_M = 2.4
+const SHADOW_RECAST_MS = 250
 
 function applyDirectionalShadowQuality(light: THREE.DirectionalLight): void {
   const q = renderQuality.getShadowQuality()
@@ -52,7 +60,7 @@ function applyDirectionalShadowQuality(light: THREE.DirectionalLight): void {
 
   const cam = light.shadow.camera as THREE.OrthographicCamera
   cam.near = 1
-  cam.far = SUN_SHADOW_DISTANCE_M * 2.4
+  cam.far = AOI_SHELL_KEEP_M * 2
   cam.left = -extent
   cam.right = extent
   cam.top = extent
@@ -83,6 +91,16 @@ export function updateDirectionalSunShadowFocus(
   light.updateMatrixWorld()
   light.shadow.camera.updateMatrixWorld()
   light.shadow.camera.updateProjectionMatrix()
+
+  const now = performance.now()
+  const moved = _lastFocus.distanceToSquared(_focus) > SHADOW_RECAST_MOVE_M * SHADOW_RECAST_MOVE_M
+  const sunTurned = _lastSun.distanceToSquared(_dir) > 0.0004
+  if (moved || sunTurned || now - lastShadowFocusAt >= SHADOW_RECAST_MS) {
+    light.shadow.needsUpdate = true
+    _lastFocus.copy(_focus)
+    _lastSun.copy(_dir)
+    lastShadowFocusAt = now
+  }
 }
 
 export function refreshDirectionalSunShadowMapSize(light: THREE.DirectionalLight): void {

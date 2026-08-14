@@ -10,13 +10,6 @@ source: github
 base_branch: dev-latest
 workflow:
   - stage: pending_review
-    integration_ref: pr:63
-    title: host clock for primary and PE play-frames
-    owner: lastraum
-    pr: 63
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/63
-    updated: 2026-08-14
-  - stage: pending_review
     integration_ref: pr:62
     title: deploy confirmation on Barn cards + update-available refresh for library
       pets
@@ -31,6 +24,13 @@ workflow:
     pr: 56
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/56
     updated: 2026-07-29
+  - stage: merged
+    integration_ref: pr:63
+    title: host clock for primary and PE play-frames
+    owner: lastraum
+    pr: 63
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/63
+    updated: 2026-08-14
   - stage: merged
     integration_ref: pr:58
     title: update/delete actions in dispatch Worker
@@ -123,13 +123,6 @@ workflow:
     pr: 46
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/46
     updated: 2026-07-24
-  - stage: merged
-    integration_ref: pr:45
-    title: wallet-inventory mode for the wearable sweep harness
-    owner: awedjob
-    pr: 45
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/45
-    updated: 2026-07-22
   - stage: merged
     integration_ref: pr:43
     title: stop PE HUD flash from paint thrash

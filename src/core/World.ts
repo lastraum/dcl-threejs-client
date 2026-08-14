@@ -2921,7 +2921,7 @@ export class World {
     this.discoverMissingColliderActors()
   }
 
-  /** Queue entries that can cook now (skip Tween/tiny scale-in and vanished descs). */
+  /** Queue entries that can cook now (skip Tween/tiny scale-in and vanished descs). v2.0.1 */
   private cookableColliderQueueCount(): number {
     let n = 0
     for (const physId of this.colliderCookQueue) {

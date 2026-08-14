@@ -2761,7 +2761,7 @@ export class World {
       if (this.colliderCookQueue.size > 0) {
         clientDebugLog.log(
           'collision',
-          `[phys] prepare — ${this.colliderCookQueue.size} deferred (Tween/tiny scale); seal cookable now`,
+          `[phys] prepare — ${this.colliderCookQueue.size} deferred (Tween/tiny scale v201); seal cookable now`,
           { level: 'info', alsoConsole: true }
         )
       }

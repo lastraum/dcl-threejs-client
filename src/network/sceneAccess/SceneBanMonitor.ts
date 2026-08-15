@@ -50,7 +50,7 @@ export class SceneBanMonitor {
 
     const scene = this.getScene()
     const login = this.getLogin()
-    if (!scene || scene.source.kind === 'blank') return
+    if (!scene || scene.source.kind === 'blank' || scene.source.kind === 'preview') return
     if (!login || login.kind !== 'wallet') return
 
     this.probing = true

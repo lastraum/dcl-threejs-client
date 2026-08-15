@@ -35,7 +35,8 @@ export function placeFieldsFromRoute(target: RouteTarget | null | undefined): Pl
     target.kind === 'communities' ||
     target.kind === 'profile' ||
     target.kind === 'lootbag' ||
-    target.kind === 'editor'
+    target.kind === 'editor' ||
+    target.kind === 'preview'
   ) {
     const name = target.kind === 'blank' ? 'explore' : target.kind
     return {

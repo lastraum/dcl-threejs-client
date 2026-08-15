@@ -4,6 +4,51 @@
 
 ---
 
+## Fastest: load Creator Hub Preview in this client (`/preview`)
+
+If **the same machine** is running Creator Hub Preview (or `npm run start` in a scene folder), this client can load that scene **without deploying** — same loop as Bevy Web (`decentraland.org/bevy-web/?preview=true&realm=http://127.0.0.1:8000`).
+
+1. Click **Preview** in Creator Hub (or `npm run start` in the scene). Default listen address is `http://127.0.0.1:8000`.
+2. Open this client at **`/preview`**:
+
+```text
+http://localhost:5173/preview
+https://your-hosted-client.example/preview
+```
+
+3. If the browser asks to access apps on your device / local network, click **Allow** (Chrome Local Network Access — same prompt as Bevy Web).
+4. Guest login: append `?guest`.
+
+Custom preview port:
+
+```text
+/preview?port=8001
+/preview?realm=http://127.0.0.1:8001
+```
+
+Explorer-shaped query also works: `?preview=true&realm=http://127.0.0.1:8000` or `?local-scene=true&realm=http://127.0.0.1:8000`.
+
+**Limits**
+
+- The tab and Hub Preview must be **on the same computer** (loopback only). A friend on another machine cannot reach *your* `127.0.0.1`.
+- Play is **solo** (no LiveKit / mini-comms). Use a deployed world to test multiplayer.
+- `/editor` is a **disk snapshot** of a local project — it is not the Hub preview server and does not pick up Hub HMR. `/preview` talks to Hub’s HTTP server; reload the tab after a scene rebuild.
+
+### Local VFX (`tjs.vfx:`)
+
+This client plays the vendored [threejs-vfx](https://github.com/majidmanzarpour/threejs-vfx) pack from official ECS **Tags**. Other explorers ignore the tags.
+
+1. In Creator Hub, select a prop. Rotate it so **forward** is the shot direction.
+2. Tags → add `tjs.vfx:ice` (or `meteor`, `snare`, …).
+3. Looping prop: omit mode (default `loop`).
+4. Click-to-cast: add `tjs.vfx.mode:cast` **and** a PointerEvents / “when clicked” on that same entity. Or a TriggerArea for walk-in.
+5. Optional: `tjs.vfx.range:18`, `tjs.vfx.speed:24`, `tjs.vfx.intensity:0.8`.
+6. Preview the scene, then open this client at `/preview`.
+
+Shorthand: `tjs.vfx.cast:ice` ≡ id + cast. `tjs.vfx.off` suppresses. Unknown ids log once and skip. Budget is 8 concurrent casts.
+
+---
+
 ## Why your own world?
 
 | Approach | Pros | Cons |

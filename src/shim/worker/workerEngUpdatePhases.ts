@@ -1,3 +1,5 @@
+import { allowHashedHostRendererComponents } from './allowHashedHostRendererComponents'
+
 /**
  * WSP v2 Phase 0 / 0b / 0.5–0.5i — engine.update phase meters (+ sendBinary path tags).
  *
@@ -224,7 +226,9 @@ export function wrapCrdtTransportForMeters(transport: {
     send: (data: unknown) => unknown
     __wsp0Transport?: boolean
   }
-  if (!t || t.__wsp0Transport) return
+  if (!t) return
+  allowHashedHostRendererComponents(t)
+  if (t.__wsp0Transport) return
   t.__wsp0Transport = true
   const kind = String(t.type || '?')
   if (typeof t.filter === 'function') {

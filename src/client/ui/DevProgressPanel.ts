@@ -379,6 +379,7 @@ export class DevProgressPanel {
     if (route.kind === 'profile') return 'profile'
     if (route.kind === 'lootbag') return 'lootbag'
     if (route.kind === 'editor') return 'editor'
+    if (route.kind === 'preview') return 'preview'
     return undefined
   }
 

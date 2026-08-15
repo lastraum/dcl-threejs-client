@@ -9,6 +9,12 @@ import {
   parseCustomServerWorldRef,
   parseRealmParam
 } from '../../network/worlds/worldsServerConfig'
+import {
+  DEFAULT_PREVIEW_REALM,
+  isPreviewQuery,
+  parsePreviewRealmUrl,
+  previewRealmFromSearch
+} from './previewRealm'
 
 const ROUTE_SEGMENT_DENY = new Set(
   [
@@ -44,6 +50,8 @@ export type RouteTarget =
   | { kind: 'profile' }
   | { kind: 'lootbag' }
   | { kind: 'editor' }
+  /** Same-machine Creator Hub preview (`http://127.0.0.1:8000` by default). */
+  | { kind: 'preview'; realmUrl: string }
   | {
       kind: 'world'
       worldName: string
@@ -79,6 +87,7 @@ const APP_ROUTE_SEGMENTS = new Set([
 ])
 
 const EDITOR_ROUTE_SEGMENT = 'editor'
+const PREVIEW_ROUTE_SEGMENT = 'preview'
 
 /** Default parcel when visiting `/` with no route segment (Genesis Plaza). */
 export const DEFAULT_PARCEL_ROUTE: Extract<RouteTarget, { kind: 'coords' }> = {
@@ -118,6 +127,9 @@ export function parseRouteTarget(segment: string | null): RouteTarget {
   if (!segment) return { kind: 'blank' }
 
   if (segment.toLowerCase() === EDITOR_ROUTE_SEGMENT) return { kind: 'editor' }
+  if (segment.toLowerCase() === PREVIEW_ROUTE_SEGMENT) {
+    return { kind: 'preview', realmUrl: DEFAULT_PREVIEW_REALM }
+  }
   if (segment.toLowerCase() === EVENTS_ROUTE_SEGMENT) return { kind: 'events' }
   if (segment.toLowerCase() === LIVE_ROUTE_SEGMENT) return { kind: 'live' }
   if (segment.toLowerCase() === COMMUNITIES_ROUTE_SEGMENT) return { kind: 'communities' }
@@ -176,6 +188,13 @@ export function resolveRouteTarget(): RouteTarget {
     params.get('name')?.trim() ||
     ''
 
+  const fromPath = parseRouteTarget(readRouteSegmentFromPath())
+  // Hub / Bevy / Explorer local preview — must win over `?position=` (Genesis coords)
+  // and over `?realm=` as a custom worlds host.
+  if (fromPath.kind === 'preview' || isPreviewQuery(params)) {
+    return { kind: 'preview', realmUrl: previewRealmFromSearch(params) }
+  }
+
   // 1) `?realm=<domain>` + `?worldName=<name>` (preferred — no /world/ typing)
   const realmRaw = params.get('realm')?.trim()
   if (realmRaw) {
@@ -184,7 +203,6 @@ export function resolveRouteTarget(): RouteTarget {
   }
 
   // 2) Path segment (official worlds / parcels / app shells)
-  const fromPath = parseRouteTarget(readRouteSegmentFromPath())
   if (fromPath.kind === 'world' && realmRaw) {
     // Path world name with realm host override
     const host = normalizeCustomServerUrl(realmRaw.split(/[/?#]/)[0] ?? realmRaw)
@@ -229,6 +247,7 @@ export function routePathForTarget(target: RouteTarget): string {
   if (target.kind === 'profile') return '/profile'
   if (target.kind === 'lootbag') return '/lootbag'
   if (target.kind === 'editor') return '/editor'
+  if (target.kind === 'preview') return '/preview'
   if (target.kind === 'coords') return `/${encodeURIComponent(`${target.x},${target.y}`)}`
   // Custom server worlds: `/` + `?realm=host&worldName=Name`.
   if (target.customServer) return '/'
@@ -265,6 +284,7 @@ export function routeEquals(a: RouteTarget, b: RouteTarget): boolean {
   ) {
     return true
   }
+  if (a.kind === 'preview' && b.kind === 'preview') return a.realmUrl === b.realmUrl
   if (a.kind === 'coords' && b.kind === 'coords') return a.x === b.x && a.y === b.y
   if (a.kind === 'world' && b.kind === 'world') {
     const serverA = (a.customServer ?? '').toLowerCase()
@@ -283,6 +303,12 @@ export function routeEquals(a: RouteTarget, b: RouteTarget): boolean {
 export function parseTravelTarget(raw: string): RouteTarget | null {
   const text = raw.trim()
   if (!text) return null
+
+  if (text.toLowerCase() === PREVIEW_ROUTE_SEGMENT || text.toLowerCase() === `/${PREVIEW_ROUTE_SEGMENT}`) {
+    return { kind: 'preview', realmUrl: DEFAULT_PREVIEW_REALM }
+  }
+  const previewRealm = parsePreviewRealmUrl(text)
+  if (previewRealm) return { kind: 'preview', realmUrl: previewRealm }
 
   // Query blob or composite host/world/Name / full URL
   const realm = parseRealmParam(text)
@@ -332,8 +358,15 @@ export function applyRouteToHistory(target: RouteTarget, replace = false): void 
   url.searchParams.delete('worldServer')
   url.searchParams.delete('realm')
   url.searchParams.delete('position')
+  url.searchParams.delete('preview')
+  url.searchParams.delete('local-scene')
+  url.searchParams.delete('port')
 
-  if (target.kind === 'world' && target.customServer) {
+  if (target.kind === 'preview') {
+    if (target.realmUrl !== DEFAULT_PREVIEW_REALM) {
+      url.searchParams.set('realm', target.realmUrl)
+    }
+  } else if (target.kind === 'world' && target.customServer) {
     const realmHost = formatRealmParam(target.customServer)
     if (realmHost) url.searchParams.set('realm', realmHost)
     url.searchParams.set('worldName', target.worldName)

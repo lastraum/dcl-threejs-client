@@ -39,7 +39,7 @@ export async function assertSceneAccess(
   scene: ResolvedScene,
   login: LoginResult | null
 ): Promise<void> {
-  if (scene.source.kind === 'blank') return
+  if (scene.source.kind === 'blank' || scene.source.kind === 'preview') return
 
   const simulated = simulatedSceneAccessDenied(scene.title)
   if (simulated) {

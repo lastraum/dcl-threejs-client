@@ -104,6 +104,8 @@ type PointerDeps = {
    * Shared by hover tooltips and click (same raycast path).
    */
   ensurePointerMeshes?: () => void
+  /** Host VFX — PET_UP on a scene entity that already has PointerEvents. */
+  onScenePointerUp?: (entity: Entity, hit: PointerHit) => void
 }
 
 const _ray = new THREE.Ray()
@@ -1878,6 +1880,12 @@ export class PointerEventsSystem {
       const line = `${state === PointerEventType.PET_DOWN ? 'PET_DOWN' : 'PET_UP'} entity=${entityLabel} button=${button} ts=${result.timestamp}`
       console.log('[pointer]', line)
       clientDebugLog.log('pointer', line, { alsoConsole: false })
+    }
+    if (state === PointerEventType.PET_UP && !hit.isLevelState && !hit.isSceneUi) {
+      this.deps?.onScenePointerUp?.(targetEntity, hit)
+      for (const entity of targets) {
+        if (entity !== targetEntity) this.deps?.onScenePointerUp?.(entity, hit)
+      }
     }
   }
 

@@ -27,6 +27,25 @@ export function formatSceneLoadError(raw: string): SceneLoadErrorMessage {
     }
   }
 
+  if (/PREVIEW_UNREACHABLE/i.test(trimmed)) {
+    return {
+      title: 'Hub preview not running',
+      detail:
+        trimmed.replace(/^PREVIEW_UNREACHABLE:\s*/i, '') ||
+        'Start Preview in Creator Hub (or npm run start in the scene folder), then reload. ' +
+          'If the browser asks to access apps on your device, click Allow.'
+    }
+  }
+
+  if (/PREVIEW_EMPTY/i.test(trimmed)) {
+    return {
+      title: 'No scene on the preview server',
+      detail:
+        trimmed.replace(/^PREVIEW_EMPTY:\s*/i, '') ||
+        'The preview server is up but has no scene entity. Confirm Hub Preview is running a scene.'
+    }
+  }
+
   if (/SDK6_UNSUPPORTED/i.test(trimmed)) {
     const name = trimmed.match(/"([^"]+)"/)?.[1]
     const who = name ? `"${name}" is` : 'This location is'

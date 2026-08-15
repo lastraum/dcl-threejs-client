@@ -30,6 +30,7 @@ import { AnimatorBridge } from '../../bridge/AnimatorBridge'
 import { isEmoteAnchorGltfSrc } from '../../rendering/DclTextureResolver'
 import { TweenBridge } from '../../bridge/TweenBridge'
 import { ParticleSystemBridge } from '../../bridge/ParticleSystemBridge'
+import { VfxBridge } from '../../bridge/VfxBridge'
 import { fetchProfileFaceUrl } from '../../avatar/peerApi'
 import { isTweenVerbose } from '../../bridge/tweenConfig'
 import { dumpMotionFocusReport, isMotionFocusActive, resetBlimpPivotCache } from '../../bridge/motionFocus'
@@ -329,6 +330,7 @@ export class SceneScriptSystem {
   private animatorBridge: AnimatorBridge | null = null
   private tweenBridge: TweenBridge | null = null
   private particleBridge: ParticleSystemBridge | null = null
+  private vfxBridge: VfxBridge | null = null
   private sceneUiBridge: SceneUiBridge | null = null
   /** `#scene-ui-root` (primary) or `#pe-ui-root` (portable experience). */
   private uiRootId: 'scene-ui-root' | 'pe-ui-root' = 'scene-ui-root'
@@ -678,6 +680,16 @@ export class SceneScriptSystem {
       () => this.host?.camera ?? null,
       (pose, visual) => this.bridge?.bindEntityDrawSlot(pose, visual, 'dclDrawParticles'),
       (pose) => this.bridge?.unbindEntityDrawSlot(pose, 'dclDrawParticles')
+    )
+    this.vfxBridge = new VfxBridge(
+      this.readComponents,
+      () => this.bridge?.getEntityNodes(),
+      () => this.host?.scene ?? null,
+      () => this.host?.camera ?? null,
+      () => {
+        const el = this.host?.renderer.domElement
+        return { width: el?.clientWidth || 1, height: el?.clientHeight || 1 }
+      }
     )
     this.sceneUiBridge?.dispose()
     const uiDetached = opts?.uiDetached === true
@@ -4503,6 +4515,8 @@ export class SceneScriptSystem {
     }
     void this.particleBridge?.sync(this.view)
     this.particleBridge?.update(1 / 30)
+    void this.vfxBridge?.sync(this.view)
+    this.vfxBridge?.update()
     if (prefer.length > 0) {
       clientDebugLog.log(
         'pointer',
@@ -5140,7 +5154,8 @@ export class SceneScriptSystem {
       pickUiRegionHit: (clientX, clientY) =>
         this.sceneUiBridge?.pickUiRegionHit(clientX, clientY, this.host!.camera) ?? null,
       pickUiHoverHit: (clientX, clientY) =>
-        this.sceneUiBridge?.pickUiHoverHit(clientX, clientY, this.host!.camera) ?? null
+        this.sceneUiBridge?.pickUiHoverHit(clientX, clientY, this.host!.camera) ?? null,
+      onScenePointerUp: (entity) => this.vfxBridge?.notePointerUp(entity)
     })
     let pointerEntities = 0
     for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {
@@ -5162,7 +5177,8 @@ export class SceneScriptSystem {
       getWorldTransformDeps: () => this.getWorldTransformDeps(),
       getPlayerWorldPosition: getPlayerPosition,
       getPhysics,
-      recordAppend: this.recordRendererAppend
+      recordAppend: this.recordRendererAppend,
+      onTriggerEnter: (entity) => this.vfxBridge?.noteTriggerEnter(entity)
     })
     this.cameraModeAreas?.bind({
       ecs: this.readComponents,
@@ -6019,6 +6035,8 @@ export class SceneScriptSystem {
     }
     void this.particleBridge?.sync(this.view)
     this.particleBridge?.update(1 / 30)
+    void this.vfxBridge?.sync(this.view)
+    this.vfxBridge?.update()
     if (this.pointerStructureDirty) {
       const pe: Entity[] = []
       for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {
@@ -6936,6 +6954,7 @@ export class SceneScriptSystem {
     }
     // In-view particles at present rate with wall elapsed (not async rAF delta).
     this.particleBridge?.update()
+    this.vfxBridge?.update()
     // Primary scene stays fully live. 48/80 m is AOI neighbor shells only —
     // hiding plaza Gltfs (theatre, stage) was a residency bug, not a host-world win.
     if (!this.restoredGltfCull) {
@@ -6967,6 +6986,7 @@ export class SceneScriptSystem {
     // sync is async (texture load); throttle so we don't pile concurrent creates.
     if (this.bridgeSyncTick % 8 === 0) {
       void this.particleBridge?.sync(this.view)
+      void this.vfxBridge?.sync(this.view)
     }
     // PlayerEntity-parented scene meshes (Dead Surge path arrow) — re-parent each frame.
     this.bridge.syncReservedParentedTransforms(this.view)
@@ -7030,6 +7050,7 @@ export class SceneScriptSystem {
     // Particles are not the beauty pass — skip create/diag when the bridge pie is already spent.
     if (performance.now() - t0 < BRIDGE_BUDGET_MS) {
       await this.particleBridge?.sync(this.view)
+      await this.vfxBridge?.sync(this.view)
     }
   }
 
@@ -7177,6 +7198,8 @@ export class SceneScriptSystem {
     this.tweenBridge = null
     this.particleBridge?.dispose()
     this.particleBridge = null
+    this.vfxBridge?.dispose()
+    this.vfxBridge = null
     this.unbindSceneUiViewportSync()
     this.sceneUiBridge?.dispose()
     this.sceneUiBridge = null

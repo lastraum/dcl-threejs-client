@@ -15,7 +15,10 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "noUncheckedSideEffectImports": true
+    "noUncheckedSideEffectImports": true,
+    "paths": {
+      "@vfx/*": ["./vendor/threejs-vfx/src/*"]
+    }
   },
   "include": ["src", "src/virtual-camera"]
 }

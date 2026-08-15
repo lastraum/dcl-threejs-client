@@ -35,6 +35,8 @@ type TriggerDeps = {
   getPlayerWorldPosition: () => THREE.Vector3 | null
   getPhysics?: () => PhysXWorld | null
   recordAppend?: (componentId: number, entity: Entity, value: unknown) => void
+  /** Host VFX — local player entered a scene-authored TriggerArea. */
+  onTriggerEnter?: (entity: Entity) => void
 }
 
 type TriggerVolume = {
@@ -438,6 +440,7 @@ export class TriggerAreaSystem {
       this.timestamp++
     )
     appendTriggerAreaResult(this.deps.ecs, triggerEntity, result, this.deps.recordAppend)
+    if (eventType === TAET_ENTER) this.deps.onTriggerEnter?.(triggerEntity)
     const label = eventType === TAET_ENTER ? 'enter' : 'exit'
     const areaPos = areaTransform?.position
     // Always console — pad/trampoline debugging; enter/exit are infrequent.

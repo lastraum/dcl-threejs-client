@@ -45,6 +45,7 @@ import {
   patchSceneBundle,
   patchSceneBundleWithCheckerStrip
 } from './pointerEventColliderCheckerPatch'
+import { allowHashedHostRendererComponents } from './allowHashedHostRendererComponents'
 import {
   installCrdtEncodeComponentMeters,
   installCrdtTransportMeterHook,
@@ -3311,6 +3312,8 @@ function bindRendererInbound(
     }
     return
   }
+
+  allowHashedHostRendererComponents(transport)
 
   const applyBinding = (onmessage: (chunk: Uint8Array) => void) => {
     if (rendererInboundApply) return

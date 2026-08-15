@@ -69,7 +69,8 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      fs: fileURLToPath(new URL('./src/shim/browser/emptyFs.ts', import.meta.url))
+      fs: fileURLToPath(new URL('./src/shim/browser/emptyFs.ts', import.meta.url)),
+      '@vfx': fileURLToPath(new URL('./vendor/threejs-vfx/src', import.meta.url))
     }
   },
   appType: 'spa',

@@ -13,6 +13,8 @@
     "test:trigger": "node scripts/test-trigger-area-math.mjs",
     "test:locomotion": "node scripts/test-locomotion-input-modifier.mjs",
     "test:wearable-urns": "node scripts/test-wearable-urns.mjs",
+    "test:preview-realm": "node scripts/test-preview-realm.mjs",
+    "test:vfx-tags": "node scripts/test-vfx-tags.mjs",
     "bump": "npm version patch --no-git-tag-version",
     "release": "node scripts/release.mjs",
     "analytics:server": "node server/analytics.mjs",

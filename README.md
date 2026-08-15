@@ -36,7 +36,9 @@ Full claim workflow: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### Test with your own scene (recommended)
 
-Deploy a **minimal SDK7 scene** to **your own `.dcl.eth` world** for fast, isolated testing. World deployments are **live immediately** after a successful deploy — load `/yourname.dcl.eth` in the client (dev or preview). Full guide: **[docs/CONTRIBUTOR_TESTING.md](docs/CONTRIBUTOR_TESTING.md)**.
+**No deploy:** start Creator Hub Preview (or `npm run start` in the scene), then open **`/preview`** in this client — it loads `http://127.0.0.1:8000` on this machine. Same loop as Bevy Web.
+
+**Or deploy** a **minimal SDK7 scene** to **your own `.dcl.eth` world**. World deployments are **live immediately** after a successful deploy — load `/yourname.dcl.eth` in the client (dev or preview). Full guide: **[docs/CONTRIBUTOR_TESTING.md](docs/CONTRIBUTOR_TESTING.md)**.
 
 ```bash
 # In your SDK7 scene project

@@ -292,6 +292,11 @@ export class AppController {
       return
     }
 
+    if (postLoginRoute.kind === 'preview') {
+      await this.jumpInToScene(postLoginRoute, { replace: true, entry: 'deep_link' })
+      return
+    }
+
     if (postLoginRoute.kind === 'blank') {
       await this.showExplorer({ replace: true })
       return
@@ -448,6 +453,11 @@ export class AppController {
     }
 
     if (target.kind === 'editor') {
+      await this.jumpInToScene(target, opts)
+      return
+    }
+
+    if (target.kind === 'preview') {
       await this.jumpInToScene(target, opts)
       return
     }
@@ -2423,7 +2433,14 @@ export class AppController {
       source?: AnalyticsSource
     } = {}
   ): Promise<void> {
-    if (target.kind !== 'coords' && target.kind !== 'world' && target.kind !== 'editor') return
+    if (
+      target.kind !== 'coords' &&
+      target.kind !== 'world' &&
+      target.kind !== 'editor' &&
+      target.kind !== 'preview'
+    ) {
+      return
+    }
 
     // Leader tour hard pulse — intentional Jump In / /goto while leading only.
     // Soft parcel walk uses noteLeaderLocation (label only; no follower reloads).
@@ -2676,6 +2693,12 @@ export class AppController {
 
   private async leavePlayMode(): Promise<void> {
     if (this.appMode !== 'play' || !this.currentRoute) return
+    if (this.currentRoute.kind === 'preview') {
+      this.disposeCommunityFollow()
+      clearVrmRamCache()
+      await this.showExplorer({ replace: true })
+      return
+    }
     if (this.currentRoute.kind !== 'coords' && this.currentRoute.kind !== 'world') return
     this.disposeCommunityFollow()
     // Leaving 3D entirely — free multi‑MB peer VRM RAM (kept across in-play teleports).

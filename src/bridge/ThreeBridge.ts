@@ -32,7 +32,8 @@ import { resolveGltfSrcHash, GLTF_LOCAL_PREFIX, isEmoteAnchorGltfSrc } from '../
 import { syncGltfInstanceRenderState } from '../collision/gltfRenderMeshes'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionChangeKind } from './CrdtProjection'
-import { removeLightSource } from './LightSourceSync'
+import { removeLightSource, setLightTextureResolver } from './LightSourceSync'
+import { resolveSceneTextureUrl } from './material/resolveTexture'
 import {
   applyTextShapeFacingMirror,
   buildTextShapeMesh,
@@ -73,6 +74,7 @@ import type { PBGltfNodeModifiers } from '@dcl/ecs/dist/components/generated/pb/
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
 import type { DrawWorld } from '../rendering/DrawWorld'
+import { bindGltfWaterSurface } from '../rendering/gltfWaterSurface'
 
 import { gltfLoadingStateLabel, isGltfLoadingStateVerbose } from './gltfLoadingStateConfig'
 
@@ -404,6 +406,7 @@ export class ThreeBridge {
     this.materials = new MaterialApplier(sceneConfig, cache)
     this.instancer = new SceneGltfInstancer(() => this.drawWorld.drawRoot)
     this.meshRendererInstancer = new MeshRendererInstancer(() => this.drawWorld.drawRoot)
+    setLightTextureResolver((src) => resolveSceneTextureUrl(src, sceneConfig))
   }
 
   private getEntityVisual(obj: THREE.Group, mk: string): THREE.Object3D | undefined {
@@ -1483,7 +1486,49 @@ export class ThreeBridge {
   /** Keep a higher spawn cap briefly after the loading screen hides. */
   extendSoftHydration(durationMs: number): void {
     this.softHydrationUntil = Math.max(this.softHydrationUntil, performance.now() + durationMs)
-    window.setTimeout(() => this.queueAllMaterialEntities(), durationMs)
+  }
+
+  pendingMaterialWorkCount(): number {
+    return this.pendingMaterialEntities.size + this.pendingGltfNodeModEntities.size
+  }
+
+  /**
+   * Apply queued Material / GltfNodeModifiers on the loading screen (before play present).
+   * Hydration defers textures so attach can finish; this is the catch-up so orbit is not
+   * spiked by a 32ms/frame dump after `start()`.
+   */
+  async drainPendingMaterialsForLoad(opts?: {
+    onProgress?: (left: number) => void
+    maxWallMs?: number
+    sliceMs?: number
+  }): Promise<void> {
+    this.queueAllMaterialEntities()
+    const maxWallMs = opts?.maxWallMs ?? 12_000
+    const sliceMs = opts?.sliceMs ?? 20
+    const started = performance.now()
+    let stuck = 0
+    let lastLeft = -1
+    while (this.pendingMaterialWorkCount() > 0 && performance.now() - started < maxWallMs) {
+      const left = this.pendingMaterialWorkCount()
+      opts?.onProgress?.(left)
+      if (left === lastLeft) {
+        stuck++
+        if (stuck >= 4) break
+      } else {
+        stuck = 0
+        lastLeft = left
+      }
+      await this.runMaterialPass(this.ecs.Material, sliceMs, 64, false)
+      await this.runGltfNodeModifiersPass(sliceMs, 32)
+      await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    }
+    const left = this.pendingMaterialWorkCount()
+    if (left > 0) {
+      console.info(
+        `[ThreeBridge] pre-play material drain leftover=${left} ` +
+          `t=${((performance.now() - started) / 1000).toFixed(1)}s`
+      )
+    }
   }
 
   private resolveGltfBudget(): number {
@@ -2168,6 +2213,22 @@ export class ThreeBridge {
     // (Parented / motion MeshRenderers already promoted off the instancer above.)
     this.instancer.updateEntities(applied.upserts, this.store.nodes)
     this.meshRendererInstancer.updateEntities(applied.upserts, this.store.nodes)
+
+    // Draw-root GLB / MeshRenderer clones do not live under the pose Group.
+    // Without this extract, Transform.scale = 0 hides the collider path but the
+    // mesh stays (Rituals blocker / npc-toolkit hide).
+    const poseMoved: Entity[] = []
+    const transformId = this.ecs.Transform.componentId
+    const visibilityId = this.ecs.VisibilityComponent.componentId
+    for (const [entity, comps] of diff) {
+      if (comps.has(transformId) || comps.has(visibilityId)) poseMoved.push(entity)
+    }
+    if (poseMoved.length) {
+      for (const entity of poseMoved) {
+        this.store.nodes.get(entity)?.updateMatrixWorld(true)
+      }
+      this.extractMovedPoses(poseMoved)
+    }
 
     await this.runDiffMeshPass(meshEcs, deferMaterials)
     // Board flips: Material often arrives before GLTF instance attach (or during walk).
@@ -3024,21 +3085,20 @@ export class ThreeBridge {
     if (!this.pendingMaterialEntities.size && !this.pendingGltfNodeModEntities.size) return
     this.materialTickBusy = true
     // Prefer finishing textured MeshRenderer planes (ground/walls) under load.
+    // Play: never steal the present/orbit thread. Hydration may boost to drain the queue.
     const texturedPending = this.pendingMaterialEntities.size
-    const nodeModBoost = this.pendingGltfNodeModEntities.size > 0 ? 12 : 0
-    const entityBoost =
-      (this.pendingGltfNodeModEntities.size > 0 ? 16 : 0) +
-      (texturedPending > 32 ? 32 : 0)
-    const msBoost = texturedPending > 32 ? 24 : 0
+    const play = !this.hydrationMode
+    const nodeModBoost = play ? 0 : this.pendingGltfNodeModEntities.size > 0 ? 12 : 0
+    const entityBoost = play
+      ? 0
+      : (this.pendingGltfNodeModEntities.size > 0 ? 16 : 0) + (texturedPending > 32 ? 32 : 0)
+    const msBoost = play ? 0 : texturedPending > 32 ? 24 : 0
+    const passMs = play ? Math.min(budgetMs, 4) : budgetMs + nodeModBoost + msBoost
+    const passN = play ? Math.min(maxEntities, 6) : maxEntities + entityBoost
     // Fire-and-forget — must not be awaited from the async frame path.
     void Promise.all([
-      this.runMaterialPass(
-        this.ecs.Material,
-        budgetMs + nodeModBoost + msBoost,
-        maxEntities + entityBoost,
-        false
-      ),
-      this.runGltfNodeModifiersPass(budgetMs + nodeModBoost, maxEntities + entityBoost)
+      this.runMaterialPass(this.ecs.Material, passMs, passN, false),
+      this.runGltfNodeModifiersPass(play ? passMs : budgetMs + nodeModBoost, passN)
     ])
       .catch((err) => console.warn('[ThreeBridge] deferred material pass failed', err))
       .finally(() => {
@@ -3433,6 +3493,7 @@ export class ThreeBridge {
     this.instanceMotionHits.clear()
     this.instancer.dispose()
     this.meshRendererInstancer.dispose()
+    setLightTextureResolver(null)
   }
 
   /**
@@ -4150,6 +4211,7 @@ export class ThreeBridge {
         obj.userData.emoteAnchor = true
       } else {
         syncGltfInstanceRenderState(clone)
+        bindGltfWaterSurface(clone, src, (texUrl) => this.cache.loadTexture(texUrl))
         enableMeshShadows(clone)
       }
       // Static rest / no ECS Animator: freeze leaf matrices (scene graph of 3k+ meshes

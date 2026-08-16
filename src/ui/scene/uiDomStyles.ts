@@ -225,8 +225,11 @@ export function applyYogaLayoutBox(
   // Containing block for absolute content root + child entity shells.
   el.style.display = 'block'
   el.style.boxSizing = 'border-box'
-  // Default visible so non-clipping panels don't trap absolute children; clip when radius/overflow require it.
-  el.style.overflow = clipOverflow ? 'hidden' : 'visible'
+  // Default visible so non-clipping panels don't trap absolute children; clip when
+  // author overflow or a UV crop (reel / new-catch bars) already set hidden.
+  // Forcing visible every paint unclipped the oversized fill <img> and flashed bar BGs.
+  if (clipOverflow || el.style.overflow === 'hidden') el.style.overflow = 'hidden'
+  else el.style.overflow = 'visible'
   el.style.margin = '0'
   el.style.right = ''
   el.style.bottom = ''

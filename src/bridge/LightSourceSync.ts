@@ -8,6 +8,8 @@ export type LightSourceMeta = {
   ecsActive: boolean
   wantsShadow: boolean
   isSpot: boolean
+  /** Spot cookie (plaza aim highlight) — do not distance-cull. */
+  skipCull?: boolean
 }
 
 function spotTargetName(key: string): string {
@@ -57,6 +59,79 @@ function unregisterWithLightManager(
     | ((l: THREE.PointLight | THREE.SpotLight) => void)
     | undefined
   unreg?.(light)
+}
+
+type LightTextureResolver = (src: string) => string | null
+let resolveLightTextureUrl: LightTextureResolver | null = null
+
+/** Bind scene content URL resolve so Spot shadowMaskTexture (plaza aim cookie) can load. */
+export function setLightTextureResolver(fn: LightTextureResolver | null): void {
+  resolveLightTextureUrl = fn
+}
+
+function shadowMaskSrc(spec: PBLightSource): string | null {
+  const raw = spec.shadowMaskTexture as
+    | { src?: string; tex?: { texture?: { src?: string }; $case?: string } }
+    | undefined
+  if (!raw) return null
+  if (typeof raw.src === 'string' && raw.src.trim()) return raw.src.trim()
+  const inner = raw.tex?.texture?.src
+  if (typeof inner === 'string' && inner.trim()) return inner.trim()
+  return null
+}
+
+function goboName(key: string): string {
+  return `${key}-gobo`
+}
+
+function syncSpotGobo(
+  light: THREE.SpotLight,
+  key: string,
+  spec: PBLightSource,
+  active: boolean
+): void {
+  const src = shadowMaskSrc(spec)
+  const name = goboName(key)
+  let gobo = light.getObjectByName(name) as THREE.Mesh | undefined
+  if (!src) {
+    if (gobo) {
+      gobo.removeFromParent()
+      ;(gobo.material as THREE.Material).dispose()
+      gobo.geometry.dispose()
+    }
+    return
+  }
+  const dist = 0.95
+  const angle = light.angle || THREE.MathUtils.degToRad(30)
+  const diameter = 2 * Math.tan(angle) * dist
+  if (!gobo) {
+    gobo = new THREE.Mesh(
+      new THREE.PlaneGeometry(1, 1),
+      new THREE.MeshBasicMaterial({
+        transparent: true,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        toneMapped: false
+      })
+    )
+    gobo.name = name
+    gobo.renderOrder = 2
+    light.add(gobo)
+  }
+  gobo.position.set(0, 0, -dist)
+  gobo.lookAt(0, 0, 0)
+  gobo.scale.set(diameter, diameter, 1)
+  gobo.visible = active
+  const mat = gobo.material as THREE.MeshBasicMaterial
+  const url = resolveLightTextureUrl?.(src) ?? (/^https?:|^data:|^blob:/i.test(src) ? src : null)
+  if (url && mat.userData.dclGoboUrl !== url) {
+    mat.userData.dclGoboUrl = url
+    new THREE.TextureLoader().load(url, (tex) => {
+      tex.colorSpace = THREE.SRGBColorSpace
+      mat.map = tex
+      mat.needsUpdate = true
+    })
+  }
 }
 
 function existingLight(parent: THREE.Object3D, key: string): THREE.Light | undefined {
@@ -110,7 +185,8 @@ export function syncLightSource(
   light.userData.lightSource = {
     ecsActive: active,
     wantsShadow: spec.shadow === true,
-    isSpot
+    isSpot,
+    skipCull: isSpot && !!shadowMaskSrc(spec)
   } satisfies LightSourceMeta
   light.visible = active
   if (light instanceof THREE.PointLight || light instanceof THREE.SpotLight) {
@@ -130,6 +206,7 @@ export function syncLightSource(
       light.angle = outer
       light.penumbra = outer > 0 ? Math.max(0, 1 - inner / outer) : 0
     }
+    syncSpotGobo(light, key, spec, active)
   }
 }
 
@@ -142,6 +219,12 @@ export function removeLightSource(
   if (light) {
     if (light instanceof THREE.PointLight || light instanceof THREE.SpotLight) {
       unregisterWithLightManager(light, light)
+    }
+    const gobo = light.getObjectByName(goboName(key)) as THREE.Mesh | undefined
+    if (gobo) {
+      gobo.removeFromParent()
+      ;(gobo.material as THREE.Material).dispose()
+      gobo.geometry.dispose()
     }
     disposeLight(light as THREE.Light)
     unbindDrawVisual?.(parent)

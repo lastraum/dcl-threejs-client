@@ -27,7 +27,9 @@ const THREE_BOX_FACE_CORNER_TO_THREE: ReadonlyArray<readonly number[]> = [
  */
 const DEFAULT_DCL_PLANE_UVS = [
   0, 0, 1, 0, 1, 1, 0, 1,
-  1, 0, 0, 0, 0, 1, 1, 1
+  // South face (normal −Z): V inverted so Three BM_ALL lookAt (−Z toward camera)
+  // shows the texture upright. Unity Billboard presents +Z/north; we present −Z/south.
+  1, 1, 0, 1, 0, 0, 1, 0
 ]
 
 /**
@@ -51,7 +53,7 @@ const DCL_PLANE_NORTH_CORNER_TO_THREE = [3, 2, 0, 1]
 const DCL_PLANE_SOUTH_CORNER_TO_THREE = [2, 3, 1, 0]
 
 /** Bump when plane topology/UV layout changes — busts primitiveMeshKey mesh cache. */
-const PLANE_GEOMETRY_REVISION = 'v22'
+const PLANE_GEOMETRY_REVISION = 'v23'
 
 /**
  * userData: marquee atlas plane. MaterialApplier: flipY=false, FrontSide only.
@@ -295,7 +297,8 @@ function planeUvsMapTextAlongLocalY(rawUvs: readonly number[]): boolean {
 
 /**
  * Build south-face UVs (BR, BL, TL, TR) from north (BL, BR, TR, TL) with U mirrored.
- * Matches DEFAULT_DCL_PLANE_UVS south packing: full-tile north → 1,0, 0,0, 0,1, 1,1.
+ * Matches docs south packing (BR, BL, TL, TR) with U mirrored. Default full-tile
+ * south also inverts V so Three lookAt (−Z) billboards read upright.
  */
 function mirrorSouthPlaneUvs(north: readonly number[]): number[] {
   const blU = north[0] ?? 0

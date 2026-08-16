@@ -495,7 +495,7 @@ export class EnvironmentSystem {
     this.genesisSky.mesh.visible = useGenesis
 
     if (useGenesis) {
-      this.genesisSky.mesh.position.copy(this.host.camera.position)
+      this.host.camera.getWorldPosition(this.genesisSky.mesh.position)
       // Fixed TOD freezes the *sun clock*, not cloud drift — always scroll clouds.
       this.genesisSky.update(seconds, _celestial, delta, false)
       if (this.disableSun) {
@@ -611,14 +611,17 @@ export class EnvironmentSystem {
     )
 
     // Cheap outdoor IBL — Genesis day cycle only. Space/void/custom cube own their look.
+    // Probe the *visible* skybox (zenit / horizon / nadir), not the muted trilight
+    // ambient — Explorer bakes the sky into the reflection cubemap. Indirect ground
+    // is dark red and turned specular volumes (Rituals fog) brown.
     const useOutdoorIbl =
       !spaceSky && !voidSky && !this.customCube && !this.landscapeVisualSuppressed
     this.outdoorIbl?.sync(
       this.host.scene,
       {
-        sky: g.indirectSky,
-        ground: g.indirectGround,
-        equator: g.indirectEquator
+        sky: g.zenit,
+        ground: g.nadir,
+        equator: g.horizon
       },
       {
         daySeconds: seconds,

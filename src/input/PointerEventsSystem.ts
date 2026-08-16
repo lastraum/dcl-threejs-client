@@ -716,21 +716,26 @@ export class PointerEventsSystem {
 
     const coords = this.pointerClientCoords()
     // Keyboard interact (E/F/1–4) targets the world under the cursor, not scene UI.
-    const hit = this.resolveWorldInteractHit(action)
+    let hit = this.resolveWorldInteractHit(action)
     if (!this.canQueuePointerDown(action, hit)) {
-      if (hit) {
-        this.logInteractBlocked(label, action, hit)
-      } else if (!this.shouldLogNoTarget(action, coords.x, coords.y)) {
-        /* expected when the scene has no pointer targets */
+      const level = this.buildLevelStatePointerHit()
+      if (level && this.canQueuePointerDown(action, level)) {
+        hit = level
       } else {
-        this.rebuildPointerCacheIfNeeded()
-        clientDebugLog.log(
-          'pointer',
-          `${label} — no in-range target (entities=${this.pointerEntitySet.size} meshes=${this.pointerTargets.length})`,
-          { level: 'warn', alsoConsole: true }
-        )
+        if (hit) {
+          this.logInteractBlocked(label, action, hit)
+        } else if (!this.shouldLogNoTarget(action, coords.x, coords.y)) {
+          /* expected when the scene has no pointer targets */
+        } else {
+          this.rebuildPointerCacheIfNeeded()
+          clientDebugLog.log(
+            'pointer',
+            `${label} — no in-range target (entities=${this.pointerEntitySet.size} meshes=${this.pointerTargets.length})`,
+            { level: 'warn', alsoConsole: true }
+          )
+        }
+        return
       }
-      return
     }
 
     if (action === InputAction.IA_PRIMARY) this.primaryKeyDown = true
@@ -742,6 +747,7 @@ export class PointerEventsSystem {
       targetEntity !== hit!.entity ? `${label} → target ${targetEntity} (hit ${hit!.entity})` : `${label} → entity ${targetEntity}`,
       { alsoConsole: true }
     )
+    this.deps?.flushPointerCrdt?.()
   }
 
   private onKeyUp = (e: KeyboardEvent): void => {
@@ -784,10 +790,15 @@ export class PointerEventsSystem {
       if (this.deps.isPointerBlocked()) return
       const binding = inputActionBinding(action)
       if (!binding) return
-      const hit = this.resolveInteractHit(action)
+      let hit = this.resolveInteractHit(action)
       if (!this.canQueuePointerDown(action, hit)) {
-        if (hit) this.logInteractBlocked(binding.label, action, hit)
-        return
+        const level = this.buildLevelStatePointerHit()
+        if (level && this.canQueuePointerDown(action, level)) {
+          hit = level
+        } else {
+          if (hit) this.logInteractBlocked(binding.label, action, hit)
+          return
+        }
       }
       if (action === InputAction.IA_PRIMARY) this.primaryKeyDown = true
       const targetEntity = this.resolvePointerResultEntity(hit!.entity, action)
@@ -936,8 +947,9 @@ export class PointerEventsSystem {
 
   private canQueuePointerDown(button: InputActionValue, hit: PointerHit | null): boolean {
     if (!this.deps || !hit) return false
-    // Level-state IA_POINTER on PlayerEntity — no PE mesh required.
-    if (hit.isLevelState) return button === InputAction.IA_POINTER
+    // Global inputSystem edges on PlayerEntity — no PE mesh required.
+    // Plaza fishing bite is isTriggered(IA_PRIMARY, PET_DOWN) with no entity.
+    if (hit.isLevelState) return true
     const targetEntity = this.resolvePointerResultEntity(hit.entity, button)
     if (hit.isSceneUi) {
       const spec = this.uiPointerSpec(targetEntity)

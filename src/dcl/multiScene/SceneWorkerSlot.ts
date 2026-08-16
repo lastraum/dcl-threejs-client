@@ -491,9 +491,6 @@ export class SceneWorkerSlot {
     if (now - this.lastTickAt < minIntervalMs) return false
     this.lastTickAt = now
     this.system.syncClientEntities(this.toSceneLocal(player), this.toSceneLocal(camera))
-    if (this.kind === 'pe') {
-      this.system.updateTriggerAreas()
-    }
     // SceneLoop.send owns play-frame when skipPlayFrame (or manager flag) is set.
     if (!skipPlayFrame && !this.playFrameOwnedExternally) {
       this.system.tickPlayFrame()

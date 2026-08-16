@@ -47,10 +47,10 @@ export class DrawWorld {
     for (const [visual, pose] of this.links) {
       // Pose Visibility is law — static extract must not keep a pre-hide visible flag
       // (LO() hides plaza benches after the frozen clone was registered).
-      visual.visible = pose.visible
-      const billboardMode = (pose.userData.dclBillboardMode as number | undefined) ?? 0
-      if (billboardMode && camera) {
-        this.writeBillboard(visual, pose, camera, billboardMode)
+      visual.visible = isPoseChainVisible(pose)
+      const billed = camera ? findBillboardAncestor(pose) : null
+      if (billed) {
+        this.writeBillboard(visual, pose, billed.pose, camera!, billed.mode)
         continue
       }
       // dclDrawStatic means “skip when pose world is unchanged” — not “never
@@ -75,7 +75,7 @@ export class DrawWorld {
     pose.updateWorldMatrix(true, false)
     for (const [visual, linked] of this.links) {
       if (linked !== pose) continue
-      visual.visible = pose.visible
+      visual.visible = isPoseChainVisible(pose)
       if (visual.userData.dclDrawAnimated === true) this.writeAnimated(visual, pose)
       else this.writeMatrix(visual, pose)
     }
@@ -114,11 +114,14 @@ export class DrawWorld {
   private writeBillboard(
     visual: THREE.Object3D,
     pose: THREE.Object3D,
+    billedPose: THREE.Object3D,
     camera: THREE.Camera,
     mode: number
   ): void {
-    _billPos.setFromMatrixPosition(pose.matrixWorld)
-    pose.matrixWorld.decompose(_billDummy, _billQuat, _billScale)
+    if (billedPose.matrixWorldNeedsUpdate) billedPose.updateWorldMatrix(true, false)
+    if (pose !== billedPose && pose.matrixWorldNeedsUpdate) pose.updateWorldMatrix(true, false)
+    _billPos.setFromMatrixPosition(billedPose.matrixWorld)
+    billedPose.matrixWorld.decompose(_billDummy, _billQuat, _billScale)
     if (mode === 2 || mode === 3) {
       // BM_Y / BM_X|Y — yaw only (same as BillboardBridge).
       const dx = camera.position.x - _billPos.x
@@ -128,7 +131,14 @@ export class DrawWorld {
       _billLook.lookAt(_billPos, camera.position, _billUp)
       _billQuat.setFromRotationMatrix(_billLook)
     }
-    visual.matrixWorld.compose(_billPos, _billQuat, _billScale)
+    _billedWorld.compose(_billPos, _billQuat, _billScale)
+    if (pose === billedPose) {
+      visual.matrixWorld.copy(_billedWorld)
+    } else {
+      // Child MeshRenderer (plaza press_e on Billboard parent) must inherit facing.
+      _billLocal.copy(billedPose.matrixWorld).invert().multiply(pose.matrixWorld)
+      visual.matrixWorld.multiplyMatrices(_billedWorld, _billLocal)
+    }
     visual.matrix.copy(visual.matrixWorld)
     this.pushChildren(visual)
   }
@@ -163,3 +173,26 @@ const _billScale = new THREE.Vector3()
 const _billDummy = new THREE.Vector3()
 const _billUp = new THREE.Vector3(0, 1, 0)
 const _billLook = new THREE.Matrix4()
+const _billedWorld = new THREE.Matrix4()
+const _billLocal = new THREE.Matrix4()
+
+function isPoseChainVisible(pose: THREE.Object3D): boolean {
+  let o: THREE.Object3D | null = pose
+  while (o) {
+    if (o.visible === false) return false
+    o = o.parent
+  }
+  return true
+}
+
+function findBillboardAncestor(
+  pose: THREE.Object3D
+): { pose: THREE.Object3D; mode: number } | null {
+  let o: THREE.Object3D | null = pose
+  while (o) {
+    const mode = (o.userData.dclBillboardMode as number | undefined) ?? 0
+    if (mode) return { pose: o, mode }
+    o = o.parent
+  }
+  return null
+}

@@ -5,6 +5,7 @@ import type { PBUiTransform } from '@dcl/ecs/dist/components/generated/pb/decent
 import Yoga from 'yoga-layout-prebuilt'
 import { CANVAS_ROOT_ENTITY, type UiEntityRecord } from './uiTree'
 import { measureUiText } from './uiTextMeasure'
+import { parseUiBackgroundUvRect } from './uiBackgroundStyle'
 import {
   YGAlign,
   isYGDisplayNone,
@@ -17,7 +18,8 @@ import {
   normalizeYGAlign,
   normalizeYGFlexDirection,
   normalizeYGJustify,
-  normalizeYGPositionType
+  normalizeYGPositionType,
+  normalizeYGUnit
 } from './yogaEnums'
 
 export type LayoutBox = {
@@ -80,7 +82,7 @@ function applyUnit(
   unit: number | undefined,
   value: number | undefined
 ): void {
-  const u = unit ?? YGUnit.UNDEFINED
+  const u = normalizeYGUnit(unit)
   const v = value ?? 0
   if (u === YGUnit.AUTO) {
     setAuto()
@@ -105,7 +107,7 @@ function applyEdge(
   value: number | undefined,
   kind: 'margin' | 'padding' | 'position'
 ): void {
-  const u = unit ?? YGUnit.UNDEFINED
+  const u = normalizeYGUnit(unit)
   const v = value ?? 0
   if (kind === 'margin') {
     if (u === YGUnit.AUTO) node.setMarginAuto(edge)
@@ -128,16 +130,17 @@ function applyEdge(
 /** True when UiTransform gives Yoga a concrete horizontal size (points or %). */
 function hasExplicitWidth(t: PBUiTransform | null | undefined): boolean {
   if (!t) return false
-  const u = t.widthUnit ?? YGUnit.UNDEFINED
+  const u = normalizeYGUnit(t.widthUnit)
   if (u === YGUnit.PERCENT) return true
-  if (u === YGUnit.POINT && (t.width ?? 0) > 0) return true
+  if ((u === YGUnit.POINT || u === YGUnit.UNDEFINED) && (t.width ?? 0) > 0) return true
   return false
 }
 
 function applyTextMinSize(
   node: YogaNode,
   text: PBUiText | null | undefined,
-  transform?: PBUiTransform | null
+  transform?: PBUiTransform | null,
+  parentTransform?: PBUiTransform | null
 ): void {
   if (!text?.value?.trim()) return
   // TW_NO_WRAP = 1; default / TW_WRAP = 0 / unset → wrap (SDK default TW_WRAP).
@@ -155,6 +158,24 @@ function applyTextMinSize(
   // Wrap + explicit width (e.g. width: '100%'): let the node shrink to the parent.
   // minWidth = full unwrapped measure overflows long paragraphs (Planetangzaar, etc.).
   if (hasExplicitWidth(transform)) return
+
+  // Wrap + auto width under a sized parent (npc-toolkit dialog: left 22% + portrait).
+  // Unwrapped minWidth ate the portrait column and drew text under the image.
+  if (hasExplicitWidth(parentTransform) && (parentTransform?.width ?? 0) > 0) {
+    const pu = normalizeYGUnit(parentTransform!.widthUnit)
+    if (pu === YGUnit.POINT || pu === YGUnit.UNDEFINED) {
+      const parentW = parentTransform!.width ?? 0
+      let cap = parentW
+      const leftU = normalizeYGUnit(transform?.positionLeftUnit)
+      const leftV = transform?.positionLeft ?? 0
+      if (leftU === YGUnit.PERCENT && leftV > 0) cap = parentW * (1 - leftV / 100)
+      else if (leftU === YGUnit.POINT && leftV > 0) cap = parentW - leftV
+      cap = Math.max(40, cap)
+      node.setMaxWidth(cap)
+      node.setMinWidth(Math.min(measured.width, cap))
+      return
+    }
+  }
 
   // Wrap + auto/undefined width under alignItems:center (RickRoll CREATOR cards, modal titles):
   // without minWidth Yoga collapses the leaf to 0×h — borders paint, labels stay blank.
@@ -355,7 +376,8 @@ export function layoutUiTree(
   virtualWidth: number,
   virtualHeight: number,
   textOf?: (entity: Entity) => PBUiText | null,
-  inputOf?: (entity: Entity) => PBUiInput | null
+  inputOf?: (entity: Entity) => PBUiInput | null,
+  backgroundOf?: (entity: Entity) => { uvs?: number[] | ArrayLike<number> | null } | null
 ): { boxes: LayoutBox[]; dispose: () => void } {
   const transformOf = new Map<Entity, PBUiTransform>()
   for (const r of records) transformOf.set(r.entity, r.transform)
@@ -363,22 +385,29 @@ export function layoutUiTree(
   const yogaOf = new Map<Entity, YogaNode>()
   const allYoga: YogaNode[] = []
 
-  const build = (entity: Entity): YogaTreeNode => {
+  const build = (entity: Entity, parentEntity: Entity | null): YogaTreeNode => {
     const yoga = Yoga.Node.create()
     allYoga.push(yoga)
     yogaOf.set(entity, yoga)
     const transform = transformOf.get(entity)!
     applyUiTransform(yoga, transform)
-    if (textOf) applyTextMinSize(yoga, textOf(entity), transform)
+    if (textOf) {
+      applyTextMinSize(
+        yoga,
+        textOf(entity),
+        transform,
+        parentEntity != null ? transformOf.get(parentEntity) : undefined
+      )
+    }
     if (inputOf) applyInputMinSize(yoga, inputOf(entity))
     const childEntities = childrenOf.get(entity) ?? []
-    const children = childEntities.map((c) => build(c))
+    const children = childEntities.map((c) => build(c, entity))
     children.forEach((child, index) => yoga.insertChild(child.yoga, index))
     return { entity, yoga, children }
   }
 
   const roots = childrenOf.get(CANVAS_ROOT_ENTITY) ?? []
-  const forest = roots.map((e) => build(e))
+  const forest = roots.map((e) => build(e, null))
   const root = Yoga.Node.create()
   allYoga.push(root)
   // Fixed virtual screen — absolute HUD/shop roots position against this box.
@@ -394,6 +423,121 @@ export function layoutUiTree(
   forest.forEach((node, index) => root.insertChild(node.yoga, index))
 
   root.calculateLayout(virtualWidth, virtualHeight, Yoga.DIRECTION_LTR)
+
+  // Absolute width/height % is the parent's computed box after in-flow layout
+  // (Explorer / Unity Yoga). Yoga may resolve 100% of an auto-height parent
+  // against the root constraint (full canvas) — that stretched the npc-toolkit
+  // dialog card (absolute 100%×100% over height:auto) into a fullscreen slab.
+  // Always snap to the parent box; never leave the canvas-sized first pass.
+  const resolveAbsolutePercent = (node: YogaTreeNode, parent: YogaTreeNode | null): boolean => {
+    let changed = false
+    const t = transformOf.get(node.entity)
+    if (t && normalizeYGPositionType(t.positionType) === YGPositionType.ABSOLUTE) {
+      // Forest roots parent to the virtual canvas — Yoga 1.19 sometimes leaves width:"100%"
+      // as 100px. Snap against the canvas so new-catch / reel bars span the screen.
+      const pw = parent ? parent.yoga.getComputedWidth() : virtualWidth
+      const ph = parent ? parent.yoga.getComputedHeight() : virtualHeight
+      const widthUnit = normalizeYGUnit(t.widthUnit)
+      // react-ecs width:"100%" sometimes arrives as value=100 with unit omitted (0).
+      // Yoga then treats it as 100px — new-catch / letterbox bars become a stub.
+      const widthIsPercent =
+        widthUnit === YGUnit.PERCENT ||
+        (widthUnit === YGUnit.UNDEFINED &&
+          (t.width ?? 0) === 100 &&
+          normalizeYGPositionType(t.positionType) === YGPositionType.ABSOLUTE)
+      if (widthIsPercent && pw > 1) {
+        const want = (pw * (t.width ?? 100)) / 100
+        if (Math.abs(node.yoga.getComputedWidth() - want) > 0.5) {
+          node.yoga.setWidth(want)
+          changed = true
+        }
+      }
+      if (normalizeYGUnit(t.heightUnit) === YGUnit.PERCENT && ph > 1) {
+        const want = (ph * (t.height ?? 100)) / 100
+        if (Math.abs(node.yoga.getComputedHeight() - want) > 0.5) {
+          node.yoga.setHeight(want)
+          changed = true
+        }
+      }
+    }
+    for (const child of node.children) {
+      if (resolveAbsolutePercent(child, node)) changed = true
+    }
+    return changed
+  }
+  let percentPass = 0
+  while (percentPass < 3 && forest.some((n) => resolveAbsolutePercent(n, null))) {
+    root.calculateLayout(virtualWidth, virtualHeight, Yoga.DIRECTION_LTR)
+    percentPass++
+  }
+
+  // Auto-height panel + absolute 100% atlas sprite (npc-toolkit dialog): Explorer
+  // keeps the card at the sprite aspect. Yoga otherwise shrink-wraps the text run
+  // so the chrome changes size every line.
+  const applyAtlasPanelMinHeight = (node: YogaTreeNode): boolean => {
+    let changed = false
+    const t = transformOf.get(node.entity)
+    if (t && normalizeYGUnit(t.heightUnit) === YGUnit.AUTO) {
+      const pw = node.yoga.getComputedWidth()
+      if (pw > 8) {
+        for (const child of node.children) {
+          const ct = transformOf.get(child.entity)
+          if (!ct || normalizeYGPositionType(ct.positionType) !== YGPositionType.ABSOLUTE) continue
+          if (normalizeYGUnit(ct.widthUnit) !== YGUnit.PERCENT || (ct.width ?? 0) < 90) continue
+          if (normalizeYGUnit(ct.heightUnit) !== YGUnit.PERCENT || (ct.height ?? 0) < 90) continue
+          const rect = parseUiBackgroundUvRect(backgroundOf?.(child.entity)?.uvs ?? null)
+          if (!rect) continue
+          const uSpan = rect.u1 - rect.u0
+          const vSpan = rect.v1 - rect.v0
+          if (uSpan < 0.2 || vSpan < 0.08) continue
+          const want = pw * (vSpan / uSpan)
+          if (node.yoga.getComputedHeight() + 0.5 < want) {
+            node.yoga.setMinHeight(want)
+            changed = true
+          }
+        }
+      }
+    }
+    for (const child of node.children) {
+      if (applyAtlasPanelMinHeight(child)) changed = true
+    }
+    return changed
+  }
+  if (backgroundOf && forest.some((n) => applyAtlasPanelMinHeight(n))) {
+    root.calculateLayout(virtualWidth, virtualHeight, Yoga.DIRECTION_LTR)
+    forest.forEach((n) => resolveAbsolutePercent(n, null))
+    root.calculateLayout(virtualWidth, virtualHeight, Yoga.DIRECTION_LTR)
+  }
+
+  // yoga-layout-prebuilt (Yoga 1.19) leaves relative percent position as the raw
+  // number when the parent height is auto (npc-toolkit dialog: left 22% → 22px).
+  // Explorer resolves against the parent box. Convert after parent size is final.
+  const resolveRelativePercentPosition = (node: YogaTreeNode, parent: YogaTreeNode | null): boolean => {
+    let changed = false
+    const t = transformOf.get(node.entity)
+    if (t && parent && normalizeYGPositionType(t.positionType) !== YGPositionType.ABSOLUTE) {
+      const pw = parent.yoga.getComputedWidth()
+      const ph = parent.yoga.getComputedHeight()
+      const snap = (unit: number | undefined, value: number | undefined, edge: number, basis: number) => {
+        if (normalizeYGUnit(unit) !== YGUnit.PERCENT || basis <= 1) return
+        const current = node.yoga.getPosition(edge)
+        if (current.unit !== YGUnit.PERCENT) return
+        node.yoga.setPosition(edge, (basis * (value ?? 0)) / 100)
+        changed = true
+      }
+      snap(t.positionLeftUnit, t.positionLeft, Yoga.EDGE_LEFT, pw)
+      snap(t.positionRightUnit, t.positionRight, Yoga.EDGE_RIGHT, pw)
+      snap(t.positionTopUnit, t.positionTop, Yoga.EDGE_TOP, ph)
+      snap(t.positionBottomUnit, t.positionBottom, Yoga.EDGE_BOTTOM, ph)
+    }
+    for (const child of node.children) {
+      if (resolveRelativePercentPosition(child, node)) changed = true
+    }
+    return changed
+  }
+  if (forest.some((n) => resolveRelativePercentPosition(n, null))) {
+    root.calculateLayout(virtualWidth, virtualHeight, Yoga.DIRECTION_LTR)
+  }
 
   const boxes: LayoutBox[] = []
   const walk = (node: YogaTreeNode, offsetLeft: number, offsetTop: number): void => {

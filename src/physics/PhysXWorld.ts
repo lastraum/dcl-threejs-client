@@ -1260,6 +1260,7 @@ export class PhysXWorld {
     this.staticFp.delete(entity)
     this.staticPoseFp.delete(entity)
     this.actorWorldBaked.delete(entity)
+    this.invalidateControllerCache()
   }
 
   /** True when a cooked actor exists and geometry fingerprint still matches the live desc. */
@@ -1706,16 +1707,12 @@ export class PhysXWorld {
       const geomFp = desc.fingerprint
       if (this.staticFp.get(desc.entity) !== geomFp) return false
       // Expanded to one actor per shape — every cookable shape must be live.
+      // Permanently uncookable children (degenerate trimesh) are not expected:
+      // requiring them left boot drain recooking N-1/N forever (stuck at 97%).
       // Do NOT require exact poseFp match: float noise / Animator slides change pose
       // every frame and left the boot cook queue non-empty forever (stuck ~79% load,
       // no logs — main thread re-cooking multi-shape hulls).
-      let expected = 0
-      let live = 0
-      for (let i = 0; i < desc.shapes.length; i++) {
-        if (!desc.shapes[i]!.geometry) continue
-        expected++
-        if (this.staticActors.has(multiShapeChildPhysId(desc.entity, i))) live++
-      }
+      const { expected, live } = this.countCookableMultiShapeLive(desc)
       return expected > 0 && live === expected
     }
 
@@ -1763,13 +1760,8 @@ export class PhysXWorld {
         const geomFp = desc.fingerprint
         const poseFp = multiShapePoseFingerprint(desc)
         const prevGeomFp = this.staticFp.get(desc.entity)
-        let expectedShapes = 0
-        let liveShapes = 0
-        for (let i = 0; i < desc.shapes.length; i++) {
-          if (!desc.shapes[i]!.geometry) continue
-          expectedShapes++
-          if (this.staticActors.has(multiShapeChildPhysId(desc.entity, i))) liveShapes++
-        }
+        const { expected: expectedShapes, live: liveShapes } =
+          this.countCookableMultiShapeLive(desc)
         const shapeCountOk = expectedShapes > 0 && liveShapes === expectedShapes
 
         // Scale grow (tile tween) bakes into world-space verts — geom fp stays identical while
@@ -3494,7 +3486,30 @@ export class PhysXWorld {
     this.quaternion.set(0, 0, 0, 1)
   }
 
+  /**
+   * Cookable multi-shape children: has geometry and is not a permanent cook failure.
+   * Degenerate child hulls must not keep `expected` above `live` or boot recooks forever.
+   */
+  private countCookableMultiShapeLive(desc: PhysicsColliderDesc): {
+    expected: number
+    live: number
+  } {
+    let expected = 0
+    let live = 0
+    const shapes = desc.shapes
+    if (!shapes) return { expected, live }
+    for (let i = 0; i < shapes.length; i++) {
+      const shape = shapes[i]!
+      if (!shape.geometry) continue
+      if (this.failedCookFp.has(shape.fingerprint)) continue
+      expected++
+      if (this.staticActors.has(multiShapeChildPhysId(desc.entity, i))) live++
+    }
+    return { expected, live }
+  }
+
   private logCookFailedOnce(fingerprint: string, message: string, err?: unknown): void {
+    this.failedCookFp.add(fingerprint)
     if (this.loggedFailedCookFp.has(fingerprint)) return
     this.loggedFailedCookFp.add(fingerprint)
     if (err !== undefined) console.warn(message, fingerprint, err)
@@ -3532,6 +3547,8 @@ export class PhysXWorld {
     for (let i = 0; i < shapes.length; i++) {
       const shapeDesc = shapes[i]!
       if (!shapeDesc.geometry) continue
+      // Permanent child cook failure (degenerate trimesh) — do not re-bake.
+      if (this.failedCookFp.has(shapeDesc.fingerprint)) continue
       // mesh world = entity world × shape local (entity-relative extract)
       _meshWorld.copy(desc.matrix).multiply(shapeDesc.localMatrix)
       if (!this.matrixHasFinitePose(_meshWorld)) continue
@@ -3585,9 +3602,10 @@ export class PhysXWorld {
     desc.matrix.decompose(this._pos, this._quat, this._scale)
     this.actorCookScale.set(desc.entity, this._scale.clone())
 
-    if (attached < shapes.length) {
+    const { expected: cookable } = this.countCookableMultiShapeLive(desc)
+    if (attached < cookable) {
       console.warn(
-        `[PhysXWorld] multi-shape expand partial — parent=${desc.entity} attached=${attached}/${shapes.length} ` +
+        `[PhysXWorld] multi-shape expand partial — parent=${desc.entity} attached=${attached}/${cookable} ` +
           `(per-shape RigidStatic). fp=${desc.fingerprint.slice(0, 80)}`
       )
     } else {

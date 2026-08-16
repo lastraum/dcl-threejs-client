@@ -3144,6 +3144,10 @@ export class AppController {
         opts.onHydrationFinish?.(hydrationResult)
       }
 
+      // Hydration defers textures so attach can finish. Apply them on the overlay
+      // before PhysX cook / play present — not during the first orbit frames.
+      await world.drainPendingMaterialsForPlay(opts.onProgress)
+
       await world.prewarmPhysicsColliders(sceneConfig, opts.onProgress, {
         assetsTimedOut: hydrationTimedOut
       })
@@ -3153,6 +3157,10 @@ export class AppController {
       // Keep nearby voice muted for the whole load (landing + hydrate + spawn).
       world.voice.setInPlay(false)
       await world.spawnLocalPlayer(sceneConfig, opts.onProgress)
+
+      // Textures were deferred so GLB attach could finish. Apply them now — still on
+      // the loading overlay — so the first orbit frames are not a 32ms/frame dump.
+      await world.drainPendingMaterialsForPlay(opts.onProgress)
 
       // Seamless multi-scene: put feet back where the player was walking (Genesis meters).
       if (opts.restoreGenesisFeet) {

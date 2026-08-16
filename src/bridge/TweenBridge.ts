@@ -531,6 +531,15 @@ export class TweenBridge {
   private completionDeliverUrgent = false
   /** Entities whose scene-graph pose was interpolated this frame (collider pose slide). */
   private readonly transformMotionEntities = new Set<Entity>()
+  /** Last interpolated Transform poses — play-frame inject so the worker VM reads live TRS. */
+  private lastTransformBatch: Array<{
+    entity: number
+    position: { x: number; y: number; z: number }
+    rotation: { x: number; y: number; z: number; w: number }
+    scale: { x: number; y: number; z: number }
+    parent?: number
+  }> = []
+  private frameTransformWrites: typeof this.lastTransformBatch = []
   private readonly verbose = isTweenVerbose()
   private readonly marqueeVerbose = isMarqueeVerbose()
   private motionFocusView: ProjectionView | null = null
@@ -620,6 +629,33 @@ export class TweenBridge {
   /** Finite tween completed this frame — deliver without 100ms throttle (sequence restart). */
   hasUrgentCompletionDeliver(): boolean {
     return this.completionDeliverUrgent
+  }
+
+  /**
+   * Interpolated Transform poses from the last `update` — inject on the play-frame
+   * so worker `Transform.get` matches Explorer (UI scale, cinematic parents).
+   */
+  consumeTransformBatch(): Array<{
+    entity: number
+    position: { x: number; y: number; z: number }
+    rotation: { x: number; y: number; z: number; w: number }
+    scale: { x: number; y: number; z: number }
+    parent?: number
+  }> {
+    const batch = this.lastTransformBatch
+    this.lastTransformBatch = []
+    return batch
+  }
+
+  /** Latest interpolated poses without consuming (play-frame may read after update). */
+  peekTransformBatch(): ReadonlyArray<{
+    entity: number
+    position: { x: number; y: number; z: number }
+    rotation: { x: number; y: number; z: number; w: number }
+    scale: { x: number; y: number; z: number }
+    parent?: number
+  }> {
+    return this.lastTransformBatch
   }
 
   /** Consume and clear encoder dirty set (call before `CrdtEncoder.encode()`). */
@@ -800,6 +836,7 @@ export class TweenBridge {
   update(delta: number, view: ProjectionView): void {
     this.motionFocusView = view
     this.transformMotionEntities.clear()
+    this.frameTransformWrites = []
     if (!this.runtime.size) return
 
     const { Tween, TweenState, Transform, AvatarAttach } = this.ecs
@@ -1119,6 +1156,10 @@ export class TweenBridge {
       }
     }
 
+    if (this.frameTransformWrites.length) {
+      this.lastTransformBatch = this.frameTransformWrites
+    }
+
     if (this.marqueeVerbose) {
       if (now - this.marqueeSummaryAt > 5000) {
         this.marqueeSummaryAt = now
@@ -1430,6 +1471,13 @@ export class TweenBridge {
       rotation: { ..._scratchTransform.rotation },
       scale: { ..._scratchTransform.scale },
       parent: _scratchTransform.parent
+    })
+    this.frameTransformWrites.push({
+      entity: entity as number,
+      position: { ..._scratchTransform.position },
+      rotation: { ..._scratchTransform.rotation },
+      scale: { ..._scratchTransform.scale },
+      parent: _scratchTransform.parent as number | undefined
     })
     // Orbit pivots (Genesis blimp) must never stay frozen — children inherit world TRS.
     node.matrixAutoUpdate = true

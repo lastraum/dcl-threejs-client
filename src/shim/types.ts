@@ -19,6 +19,8 @@ export type AvatarAttachTransformEntry = {
   position: { x: number; y: number; z: number }
   rotation: { x: number; y: number; z: number; w: number }
   scale: { x: number; y: number; z: number }
+  /** PlayerEntity (or remote player) — worker Transform parent for Hle/getWorldPosition. */
+  parent?: number
 }
 
 /** Client hardware heuristic — passed to the scene worker for timing budgets. */
@@ -435,6 +437,16 @@ export type MainToWorker =
         screenDelta: { x: number; y: number }
         worldRayDirection: { x: number; y: number; z: number }
       }
+      /**
+       * AvatarAttach relative Transform — applied after PE write, before systems.
+       * Explorer: bone pose is on the store when getWorldPosition/Hle runs (fishing line).
+       */
+      avatarAttach?: AvatarAttachTransformEntry[]
+      /**
+       * Renderer Tween interpolated Transform — Explorer writes these on the scene
+       * store (`scale.y` UI, cinematic parents) before the next engine.update.
+       */
+      tweenTransforms?: AvatarAttachTransformEntry[]
     }
   /** Level keyboard state — authoritative worker input path (phase 2). */
   | { type: 'scene-input-snapshot'; body: import('../player/sceneInputSnapshot').SceneInputSnapshotBody }

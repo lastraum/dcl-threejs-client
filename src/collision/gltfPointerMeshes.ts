@@ -73,8 +73,10 @@ export function collectGltfLayerTargetMeshes(
   const includeInvisible = gltfInvisibleMeshLayerEnabled(gltfData, layerMask)
   if (!includeVisible && !includeInvisible) return
 
+  const before = out.length
   gltfRoot.traverse((node) => {
     if (!(node instanceof THREE.Mesh)) return
+    if ((node as THREE.InstancedMesh).isInstancedMesh) return
     if (isGltfInvisibleColliderMesh(node, gltfRoot)) {
       if (!includeInvisible) return
     } else if (isGltfVisibleClassMesh(node, gltfRoot)) {
@@ -87,6 +89,18 @@ export function collectGltfLayerTargetMeshes(
     node.userData.entity = entity
     out.push(node)
   })
+  // Plaza water_surface.glb: invisibleMeshesCollisionMask includes CL_CUSTOM8 but the
+  // GLB has no `*_collider` hulls. Pointer PE already falls back to visible art;
+  // scene Raycast must do the same or the aim cookie never sees entityId === water.
+  if (out.length === before && includeInvisible) {
+    gltfRoot.traverse((node) => {
+      if (!(node instanceof THREE.Mesh)) return
+      if ((node as THREE.InstancedMesh).isInstancedMesh) return
+      if (isGltfInvisibleColliderMesh(node, gltfRoot)) return
+      node.userData.entity = entity
+      out.push(node)
+    })
+  }
 }
 
 function gltfHasInvisibleColliderMesh(gltfRoot: THREE.Object3D): boolean {

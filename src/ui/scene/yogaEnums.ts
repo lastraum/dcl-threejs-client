@@ -22,6 +22,31 @@ export const YGUnit = {
   AUTO: 3
 } as const
 
+/** react-ecs / protobuf may emit `"percent"` / boxed enums for widthUnit. */
+export function normalizeYGUnit(value: unknown): number {
+  if (value === YGUnit.PERCENT || value === 2) return YGUnit.PERCENT
+  if (value === YGUnit.POINT || value === 1) return YGUnit.POINT
+  if (value === YGUnit.AUTO || value === 3) return YGUnit.AUTO
+  if (value === YGUnit.UNDEFINED || value === 0 || value == null) return YGUnit.UNDEFINED
+  if (typeof value === 'string') {
+    const key = value.toLowerCase().trim()
+    if (key === 'percent' || key === '%') return YGUnit.PERCENT
+    if (key === 'point' || key === 'px' || key === 'points') return YGUnit.POINT
+    if (key === 'auto') return YGUnit.AUTO
+  }
+  if (typeof value === 'object') {
+    const v = (value as { value?: unknown }).value ?? (value as { low?: unknown }).low
+    if (v === 2 || v === '2') return YGUnit.PERCENT
+    if (v === 1 || v === '1') return YGUnit.POINT
+    if (v === 3 || v === '3') return YGUnit.AUTO
+  }
+  const n = Number(value)
+  if (n === 2) return YGUnit.PERCENT
+  if (n === 1) return YGUnit.POINT
+  if (n === 3) return YGUnit.AUTO
+  return YGUnit.UNDEFINED
+}
+
 export const YGFlexDirection = {
   ROW: 0,
   COLUMN: 1,

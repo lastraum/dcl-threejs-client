@@ -2,9 +2,10 @@ import type { PBUiBackground } from '@dcl/ecs/dist/components/generated/pb/decen
 import type { ResolvedScene } from '../../dcl/content/types'
 import { resolveSceneTextureUrl } from '../../bridge/material/resolveTexture'
 import { proxiedTextureUrl } from '../../rendering/textureProxy'
+import { proxiedMediaConverterUrl, shouldUseMediaConverter } from '../../rendering/mediaConverter'
 import { fetchProfileFaceUrl } from '../../avatar/peerApi'
 import type { UiScreenScale } from './uiDomStyles'
-import { assignUiImageSrc } from './uiImageLoad'
+import { assignUiImageSrc, resolveDisplayableUiImageUrl } from './uiImageLoad'
 
 export const BackgroundTextureMode = {
   NINE_SLICES: 0,
@@ -248,6 +249,28 @@ export function hasUiBackgroundTexture(bg: PBUiBackground | null | undefined): b
 }
 
 /**
+ * UiBackground.texture wrapMode — SDK `TextureWrapMode`: REPEAT=0, CLAMP=1, MIRROR=2.
+ * react-ecs also sends `"repeat"` / `"clamp"`. Default when omitted is clamp (atlas cells).
+ */
+export function extractUiTextureWrapMode(texture: unknown): 'repeat' | 'clamp' | 'mirror' {
+  if (!texture || typeof texture !== 'object') return 'clamp'
+  const t = texture as Record<string, unknown>
+  const read = (v: unknown): 'repeat' | 'clamp' | 'mirror' | null => {
+    if (v === 0 || v === 'repeat' || v === 'REPEAT') return 'repeat'
+    if (v === 2 || v === 'mirror' || v === 'MIRROR') return 'mirror'
+    if (v === 1 || v === 'clamp' || v === 'CLAMP' || v === 'clamp_to_edge') return 'clamp'
+    return null
+  }
+  const direct = read(t.wrapMode)
+  if (direct) return direct
+  const tex = t.tex as { texture?: { wrapMode?: unknown } } | undefined
+  const nested = read(tex?.texture?.wrapMode)
+  if (nested) return nested
+  const inner = t.texture as { wrapMode?: unknown; tex?: { texture?: { wrapMode?: unknown } } } | undefined
+  return read(inner?.wrapMode) ?? read(inner?.tex?.texture?.wrapMode) ?? 'clamp'
+}
+
+/**
  * react-ecs may omit textureMode (CENTER intent). Protobuf enum default is NINE_SLICES (0).
  *
  * Atlas UV rects (non-full uvs) always win → STRETCH so applyBgImg crops the sheet.
@@ -320,6 +343,8 @@ export function resolveUiBackgroundImageUrl(
   if (/^(data:|blob:)/i.test(src)) return src
   if (/^https?:/i.test(src)) {
     if (typeof window !== 'undefined' && src.startsWith(window.location.origin)) return src
+    // Explorer: remote UI textures go through MediaConverter (cached KTX2).
+    if (shouldUseMediaConverter(src)) return proxiedMediaConverterUrl(src)
     return proxiedTextureUrl(src)
   }
   if (!scene) return null
@@ -532,7 +557,9 @@ export function parseUiBackgroundUvRect(
   const v1 = Math.max(...vs)
   if (u1 - u0 < 1e-5 || v1 - v0 < 1e-5) return null
   // Full-texture default — treat as no crop (object-fit path).
-  if (u0 <= 1e-5 && v0 <= 1e-5 && u1 >= 1 - 1e-5 && v1 >= 1 - 1e-5) return null
+  // Do NOT collapse wrapping windows (u outside 0..1 or span > 1) — new-catch scroll.
+  const wraps = u0 < -1e-3 || v0 < -1e-3 || u1 > 1 + 1e-3 || v1 > 1 + 1e-3 || u1 - u0 > 1.01 || v1 - v0 > 1.01
+  if (!wraps && u0 <= 1e-5 && v0 <= 1e-5 && u1 >= 1 - 1e-5 && v1 >= 1 - 1e-5) return null
   return { u0, v0, u1, v1 }
 }
 
@@ -549,7 +576,15 @@ function applyAtlasUvAsBackground(
   u1: number,
   v1: number,
   colorAlpha: number
-): void {
+): 'pending' | 'done' {
+  const displayUrl = resolveDisplayableUiImageUrl(imageUrl)
+  if (!displayUrl) {
+    // Converter KTX2 still decoding — keep transparent, never a solid white slab.
+    clearBgImg(el)
+    el.style.backgroundImage = ''
+    el.style.backgroundColor = 'transparent'
+    return 'pending'
+  }
   const uSpan = Math.max(1e-6, u1 - u0)
   const vSpan = Math.max(1e-6, v1 - v0)
   // GL V (0 bottom) → CSS background-position (0 top).
@@ -558,7 +593,7 @@ function applyAtlasUvAsBackground(
   const sizeY = 100 / vSpan
   const posX = uSpan >= 1 - 1e-6 ? 0 : (u0 / (1 - uSpan)) * 100
   const posY = vSpan >= 1 - 1e-6 ? 0 : (cssTop / (1 - vSpan)) * 100
-  const safeUrl = imageUrl.replace(/\\/g, '/').replace(/"/g, '%22')
+  const safeUrl = displayUrl.replace(/\\/g, '/').replace(/"/g, '%22')
 
   clearBgImg(el)
   el.style.overflow = 'hidden'
@@ -577,6 +612,7 @@ function applyAtlasUvAsBackground(
   el.style.borderWidth = ''
   el.style.borderStyle = ''
   el.style.borderColor = ''
+  return 'done'
 }
 
 /**
@@ -593,9 +629,16 @@ function applyAtlasUvAsImgStrip(
   u1: number,
   v1: number,
   colorAlpha: number
-): void {
+): 'pending' | 'done' {
+  const displayUrl = resolveDisplayableUiImageUrl(imageUrl)
+  if (!displayUrl) {
+    clearBgImg(el)
+    el.style.backgroundImage = ''
+    el.style.backgroundColor = 'transparent'
+    return 'pending'
+  }
   const img = ensureBgImg(el)
-  assignUiImageSrc(img, imageUrl)
+  assignUiImageSrc(img, displayUrl)
   const uSpan = Math.max(1e-6, u1 - u0)
   const vSpan = Math.max(1e-6, v1 - v0)
 
@@ -632,21 +675,89 @@ function applyAtlasUvAsImgStrip(
   img.style.height = `${(100 / vSpan).toFixed(5)}%`
   img.style.left = `${((-u0 / uSpan) * 100).toFixed(5)}%`
   img.style.top = `${((-(1 - v1) / vSpan) * 100).toFixed(5)}%`
+  return 'done'
 }
 
 /**
  * True only for animated fill/scroll windows (reeling bars), never shop atlas cells.
  * Small cells (both spans < 0.55) always use background-position crop.
+ *
+ * Full-width (or full-height) windows stay on the img-strip path at every fill amount —
+ * crossing 0.02 / 0.95 used to swap strip ↔ background-position and flash the bar BG.
  */
 function isUvFillOrScrollStrip(u0: number, v0: number, u1: number, v1: number): boolean {
   const uSpan = u1 - u0
   const vSpan = v1 - v0
   // Shop icons / rarity tags / tuto tiles — both axes are small atlas cells.
   if (uSpan < 0.55 && vSpan < 0.55) return false
-  // Reeling bars: full width + partial height window (or full height + partial width).
-  if (uSpan >= 0.85 && vSpan > 0.02 && vSpan < 0.95) return true
-  if (vSpan >= 0.85 && uSpan > 0.02 && uSpan < 0.95) return true
+  if (uSpan >= 0.85 && vSpan > 1e-5) return true
+  if (vSpan >= 0.85 && uSpan > 1e-5) return true
   return false
+}
+
+function isRepeatingUvWindow(
+  u0: number,
+  v0: number,
+  u1: number,
+  v1: number,
+  _wrapMode: 'repeat' | 'clamp' | 'mirror'
+): boolean {
+  // Only when the UV window itself tiles (new-catch uSpan 1.5). wrapMode:repeat on a
+  // 0–1 atlas cell (fishing rod/bait icons) must stay a crop — treating wrapMode alone
+  // as "tile the whole sheet" mashed every HUD sprite.
+  const uSpan = u1 - u0
+  const vSpan = v1 - v0
+  return uSpan > 1.01 || vSpan > 1.01 || u0 < -1e-3 || v0 < -1e-3 || u1 > 1 + 1e-3 || v1 > 1 + 1e-3
+}
+
+/**
+ * wrapMode:repeat + sliding UVs (plaza new-catch full-width bar).
+ * CSS background-repeat can tile; an <img> strip cannot and flashed empty gaps.
+ */
+function applyAtlasUvAsRepeatingBackground(
+  el: HTMLElement,
+  imageUrl: string,
+  u0: number,
+  v0: number,
+  u1: number,
+  v1: number,
+  colorAlpha: number,
+  wrapMode: 'repeat' | 'clamp' | 'mirror'
+): 'pending' | 'done' {
+  const displayUrl = resolveDisplayableUiImageUrl(imageUrl)
+  if (!displayUrl) {
+    clearBgImg(el)
+    el.style.backgroundImage = ''
+    el.style.backgroundColor = 'transparent'
+    return 'pending'
+  }
+  const uSpan = Math.max(1e-6, u1 - u0)
+  const vSpan = Math.max(1e-6, v1 - v0)
+  const cssTop = 1 - v1
+  const sizeX = 100 / uSpan
+  const sizeY = 100 / vSpan
+  const posX = (-u0 / uSpan) * 100
+  const posY = (-cssTop / vSpan) * 100
+  const safeUrl = displayUrl.replace(/\\/g, '/').replace(/"/g, '%22')
+
+  clearBgImg(el)
+  el.style.overflow = 'hidden'
+  el.style.backgroundImage = `url("${safeUrl}")`
+  el.style.backgroundRepeat = wrapMode === 'mirror' ? 'repeat' : 'repeat'
+  el.style.backgroundSize = `${sizeX.toFixed(4)}% ${sizeY.toFixed(4)}%`
+  el.style.backgroundPosition = `${posX.toFixed(4)}% ${posY.toFixed(4)}%`
+  el.style.backgroundColor = 'transparent'
+  el.style.backgroundBlendMode = ''
+  el.style.opacity = String(clamp01(colorAlpha))
+  el.style.borderImage = ''
+  el.style.borderImageSource = ''
+  el.style.borderImageSlice = ''
+  el.style.borderImageWidth = ''
+  el.style.borderImageRepeat = ''
+  el.style.borderWidth = ''
+  el.style.borderStyle = ''
+  el.style.borderColor = ''
+  return 'done'
 }
 
 function applyBgImg(
@@ -654,18 +765,29 @@ function applyBgImg(
   imageUrl: string,
   mode: number,
   colorAlpha = 1,
-  uvs?: number[] | ArrayLike<number> | null
-): void {
+  uvs?: number[] | ArrayLike<number> | null,
+  wrapMode: 'repeat' | 'clamp' | 'mirror' = 'clamp'
+): 'pending' | 'done' {
   if (getComputedStyle(el).position === 'static') el.style.position = 'relative'
 
   const rect = parseUiBackgroundUvRect(uvs)
   if (rect) {
-    if (isUvFillOrScrollStrip(rect.u0, rect.v0, rect.u1, rect.v1)) {
-      applyAtlasUvAsImgStrip(el, imageUrl, rect.u0, rect.v0, rect.u1, rect.v1, colorAlpha)
-    } else {
-      applyAtlasUvAsBackground(el, imageUrl, rect.u0, rect.v0, rect.u1, rect.v1, colorAlpha)
+    if (isRepeatingUvWindow(rect.u0, rect.v0, rect.u1, rect.v1, wrapMode)) {
+      return applyAtlasUvAsRepeatingBackground(
+        el,
+        imageUrl,
+        rect.u0,
+        rect.v0,
+        rect.u1,
+        rect.v1,
+        colorAlpha,
+        wrapMode
+      )
     }
-    return
+    if (isUvFillOrScrollStrip(rect.u0, rect.v0, rect.u1, rect.v1)) {
+      return applyAtlasUvAsImgStrip(el, imageUrl, rect.u0, rect.v0, rect.u1, rect.v1, colorAlpha)
+    }
+    return applyAtlasUvAsBackground(el, imageUrl, rect.u0, rect.v0, rect.u1, rect.v1, colorAlpha)
   }
 
   const img = ensureBgImg(el)
@@ -702,6 +824,7 @@ function applyBgImg(
   el.style.borderWidth = ''
   el.style.borderStyle = ''
   el.style.borderColor = ''
+  return 'done'
 }
 
 function slicePercent(v: number): string {
@@ -898,6 +1021,7 @@ export function applyUiBackgroundStyles(
   const c = bg?.color
   const tint = color4Css(c)
   const rawSrc = extractUiTextureSrc(bg?.texture)
+  const wrapMode = extractUiTextureWrapMode(bg?.texture)
   const mode = imageUrl
     ? normalizeBackgroundTextureMode(bg?.textureMode, rawSrc, bg?.textureSlices, bg?.uvs)
     : -1
@@ -912,7 +1036,7 @@ export function applyUiBackgroundStyles(
   // Final signature only after texture is actually applied. Pending color×texture bake
   // uses `|pending` so image-loaded → repaint re-enters and upgrades solid → texture
   // (COD: no permanent empty shop/detail icons after first paint).
-  const sig = `${imageUrl ?? ''}|${mode}|${tint}|${uvsKey}`
+  const sig = `${imageUrl ?? ''}|${mode}|${tint}|${uvsKey}|${wrapMode}`
   const pendingSig = `${sig}|pending`
   if (el.dataset.dclUiBgSig === sig) return
   // Already showing solid placeholder and bake still in flight — avoid style thrash.
@@ -940,8 +1064,8 @@ export function applyUiBackgroundStyles(
       paintUrlFast = baked
       imgAlphaFast = baked === imageUrl ? effectiveUiBackgroundAlpha(c) : 1
     }
-    applyBgImg(el, paintUrlFast, mode, imgAlphaFast, bg?.uvs)
-    el.dataset.dclUiBgSig = sig
+    const fastStatus = applyBgImg(el, paintUrlFast, mode, imgAlphaFast, bg?.uvs, wrapMode)
+    el.dataset.dclUiBgSig = fastStatus === 'pending' ? pendingSig : sig
     return
   }
 
@@ -1005,8 +1129,8 @@ export function applyUiBackgroundStyles(
   // Clear any leftover nine-slice opacity on this element (alpha lives on the img).
   el.style.opacity = ''
   el.style.backgroundColor = 'transparent'
-  applyBgImg(el, paintUrl, mode, imgAlpha, bg?.uvs)
-  el.dataset.dclUiBgSig = sig
+  const status = applyBgImg(el, paintUrl, mode, imgAlpha, bg?.uvs, wrapMode)
+  el.dataset.dclUiBgSig = status === 'pending' ? pendingSig : sig
 }
 
 /** Test helper — clear natural-size cache between tests. */

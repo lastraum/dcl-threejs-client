@@ -8,13 +8,13 @@
  * silently never happens. This middleware does the routing itself instead.
  */
 
-const TEXTURE_PROXY_RE = /^\/api\/texture\/(https?)\/([^/?#]+)(\/[^?#]*)?/
+const TEXTURE_PROXY_RE = /^\/api\/texture\/(https?)\/([^/?#]+)(\/[^?#]*)?(\?.*)?/
 
 export function resolveTextureProxyTarget(url) {
   const match = url.match(TEXTURE_PROXY_RE)
   if (!match) return null
-  const [, proto, host, rest = ''] = match
-  return `${proto}://${host}${rest}`
+  const [, proto, host, rest = '', query = ''] = match
+  return `${proto}://${host}${rest}${query}`
 }
 
 /** Magic-byte MIME for content CDN hashes (no extension) served as octet-stream. */

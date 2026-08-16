@@ -611,11 +611,13 @@ export class MaterialApplier {
 
     this.applyScalarsToMesh(mesh, pb)
     const m = mesh.material as THREE.MeshBasicMaterial | THREE.MeshPhysicalMaterial
-    // MeshRenderer planes: flipY on (TextureLoader). Marquee re-basis planes keep flipY off
-    // so TextureMove Y + atlas row order match Explorer.
+    // MeshRenderer planes: flipY on (TextureLoader / DCL V=0 bottom). Marquee re-basis
+    // and GltfNodeModifiers keep flipY off (glTF UV space). Do not gate MeshRenderer
+    // flipY on primitiveMeshKey — press_e / fold apply can land before the key is stamped,
+    // which uploaded the atlas upside-down over the fishing bobber.
     const geo = mesh.geometry as THREE.BufferGeometry | undefined
     const marqueeAtlas = !!geo?.userData?.dclTextAlongYBasis
-    const flipY = mesh.userData.primitiveMeshKey != null && !marqueeAtlas
+    const flipY = !marqueeAtlas && !options?.gltfNodeModifier
     // ── Plaza event-card law (from Genesis bin/index.js + event_card_thumbnail.glb) ──
     // Bundle: GltfContainer(event_card_thumbnail.glb) + GltfNodeModifiers path "" unlit
     //   Texture.Common({ src: event.thumbnailSrc }) — live events CDN poster (L→R correct).

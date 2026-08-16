@@ -27,7 +27,10 @@ export class PeSlotGuest implements SceneGuest {
   }
 
   sendTick(player: EntityPose, camera: EntityPose, _frame: number): void {
-    this.slot.tickSync(player, camera, 0)
+    // Rebase reserved poses, then SceneLoop play-frame (tickSync must not start the guest clock).
+    if (this.slot.tickSync(player, camera, 0, true)) {
+      this.slot.system.tickPlayFrame()
+    }
     this.sentAt = performance.now()
   }
 

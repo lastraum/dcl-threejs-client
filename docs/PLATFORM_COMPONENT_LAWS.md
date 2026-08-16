@@ -116,6 +116,21 @@ Client must run **platform Billboard + plane + Visibility**. No GP-specific Bill
 
 ---
 
+## 3b. Gltf `_collider` vs water visual
+
+### Verified
+
+| Rule | Status |
+|------|--------|
+| Name contains `_collider` → invisible physics/pointer hull | DCL glTF convention |
+| Never unhide collider meshes to “see” a texture | **Forbidden** (reverted) |
+
+### Client law
+
+Plaza `water_surface.glb` is a collider-only disk + sibling `water.png`. Pointer/physics stay on the hidden hull. The renderer adds a **visible-class** display mesh (`dclWaterVisual`, same geo, not named `_collider`) and applies Explorer `Pond.mat` (Stylized Water: dual caustics scroll, refraction/spec, WaterColor/ShallowColor) using `water.png`.
+
+---
+
 ## 4. AvatarAttach (1073)
 
 ### Verified (docs)
@@ -232,8 +247,14 @@ From Genesis Plaza `bin/index.js` (catalyst), **do not re-encode as client speci
 
 ## 10. Current open gaps (do not invent past these)
 
-1. **Plane texture under BM_ALL lookAt** vs Unity Explorer (press_e orientation).  
-2. **Explorer AvatarAttach / getWorldPosition** exact quaternion vs our matrix-relative (line tip).  
-3. **Reveal VirtualCamera** multi-entity lookAt chain pixel parity.
+1. **Plane UV vs Unity Explorer golden** — default south V flipped for Three lookAt (−Z). Convention until an Explorer capture.  
+2. **Reveal VirtualCamera** lookAt chain pixel parity (Tween parents must be on the worker store — see Tween law).  
+3. **AvatarAttach quaternion** vs Explorer bone sample — play-frame inject closed the timing hole; quat golden still open.
 
 Closing any gap = one Explorer measurement or one unityrenderer commit, then one client law change.
+
+---
+
+## 11. Tween → Transform (renderer-owned)
+
+Explorer interpolates Tween on the renderer and writes **Transform** on the same engine the scene reads (`m.get(nb).scale.y`, cinematic parents). Host TweenBridge owns interpolation; the guest store must see the live pose on the play-frame (same class as AvatarAttach / PE). Not a scene fork.

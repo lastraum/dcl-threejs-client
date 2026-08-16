@@ -68,6 +68,8 @@ type TweenRuntime = {
   localLoop?: {
     legs: PBTween[]
     index: number
+    /** TL_RESTART / YOYO wrap. One-shot paths (plaza cast arc) must not wrap. */
+    wrap: boolean
   }
 }
 
@@ -309,6 +311,42 @@ function isSequenceRestartLoop(loop: number | undefined): boolean {
 
 function isSequenceYoyoLoop(loop: number | undefined): boolean {
   return loop === 1
+}
+
+function tweenMoveEnd(tw: PBTween): Vec3 | null {
+  if (tw.mode?.$case === 'move' && tw.mode.move?.end) {
+    const e = tw.mode.move.end
+    return { x: e.x ?? 0, y: e.y ?? 0, z: e.z ?? 0 }
+  }
+  return null
+}
+
+function tweenMoveStart(tw: PBTween): Vec3 | null {
+  if (tw.mode?.$case === 'move' && tw.mode.move?.start) {
+    const s = tw.mode.move.start
+    return { x: s.x ?? 0, y: s.y ?? 0, z: s.z ?? 0 }
+  }
+  return null
+}
+
+/** Cast/reveal arcs: last end is far from first start. Orbit loops close. */
+function sequenceLooksLikePath(first: PBTween, queued: readonly PBTween[]): boolean {
+  if (queued.length < 2) return false
+  const start = tweenMoveStart(first)
+  const last = queued[queued.length - 1]!
+  const end = tweenMoveEnd(last) ?? tweenMoveStart(last)
+  if (!start || !end) return false
+  const dx = start.x - end.x
+  const dy = start.y - end.y
+  const dz = start.z - end.z
+  return dx * dx + dy * dy + dz * dz > 1
+}
+
+function incomingMatchesLocalLeg(runtime: TweenRuntime, tween: PBTween): boolean {
+  const loop = runtime.localLoop
+  if (!loop?.legs.length) return false
+  const sig = tweenSignature(tween)
+  return loop.legs.some((leg) => tweenSignature(leg) === sig)
 }
 
 function backwardsTween(tween: PBTween): PBTween {
@@ -702,6 +740,11 @@ export class TweenBridge {
       const signature = tweenSignature(tween)
       const prev = this.runtime.get(entity)
       if (!prev || prev.signature !== signature) {
+        // Plaza cast: 15×~60ms hops. Worker TweenSequence createOrReplace's the next
+        // hop every play-frame and zips the arc; play the authored path locally.
+        if (prev?.localLoop && !prev.localLoop.wrap && incomingMatchesLocalLeg(prev, tween)) {
+          continue
+        }
         // NeonScreen: worker often createOrReplace's the next row early (compressed pause
         // and/or scroll). Finish current scroll + wall hold before adopting the new signature.
         if (
@@ -742,7 +785,25 @@ export class TweenBridge {
         const marqueeRow = isPlazaMarqueeTextureMove(tween)
         const tm = tween.mode?.$case === 'textureMove' ? tween.mode.textureMove : undefined
         const durationMs = tween.duration ?? 0
-        // CRDT / worker delivered a real next Tween — drop client sequence loop for this entity.
+        // CRDT / worker delivered a real next Tween — drop client sequence loop unless
+        // this put is the first hop of a queued path (cast/reveal). Then snapshot all legs.
+        const { TweenSequence } = this.ecs
+        let localLoop: TweenRuntime['localLoop']
+        if (TweenSequence?.has(entity) && !isTextureMode(tween.mode)) {
+          const seq = TweenSequence.get(entity)
+          const queued = seq.sequence ?? []
+          const path = sequenceLooksLikePath(tween, queued)
+          const wrap =
+            !path &&
+            (isSequenceYoyoLoop(seq.loop) || isSequenceRestartLoop(seq.loop))
+          if (queued.length > 0 && (path || wrap || !isSequenceRestartLoop(seq.loop))) {
+            localLoop = {
+              legs: [cloneTween(tween), ...queued.map(cloneTween)],
+              index: 0,
+              wrap
+            }
+          }
+        }
         this.runtime.set(entity, {
           signature,
           completed: false,
@@ -766,7 +827,7 @@ export class TweenBridge {
           lastLoggedState: undefined,
           lastProgressMilestone: undefined,
           lastHoldLogPhase: undefined,
-          localLoop: undefined
+          localLoop
         })
         // Clear stale TS_COMPLETED immediately so worker TweenSequence does not treat the
         // next leg as already finished (blimp TL_RESTART would advance once and stall).
@@ -1236,13 +1297,18 @@ export class TweenBridge {
       if (isSequenceYoyoLoop(loop) && !hasQueued) {
         runtime.localLoop = {
           legs: [cloneTween(completedTween), backwardsTween(completedTween)],
-          index: 0
+          index: 0,
+          wrap: true
         }
       } else {
+        const path = sequenceLooksLikePath(completedTween, queued)
+        const wrap =
+          !path && (isSequenceYoyoLoop(loop) || isSequenceRestartLoop(loop))
         // Full cycle: completed leg + remaining sequence (RESTART rotates this forever).
         runtime.localLoop = {
           legs: [cloneTween(completedTween), ...queued.map(cloneTween)],
-          index: 0
+          index: 0,
+          wrap
         }
       }
       this.logTween(
@@ -1254,8 +1320,16 @@ export class TweenBridge {
     const loop = runtime.localLoop
     if (!loop.legs.length) return false
 
-    // Advance to next leg (wrap).
-    loop.index = (loop.index + 1) % loop.legs.length
+    // One-shot paths (plaza cast yv hops): stop after the last authored leg.
+    if (!loop.wrap && loop.index + 1 >= loop.legs.length) {
+      runtime.localLoop = undefined
+      return false
+    }
+
+    // Advance to next leg (wrap only RESTART / YOYO orbits).
+    loop.index = loop.wrap
+      ? (loop.index + 1) % loop.legs.length
+      : loop.index + 1
     const next = loop.legs[loop.index]!
     runtime.signature = tweenSignature(next)
     runtime.completed = false

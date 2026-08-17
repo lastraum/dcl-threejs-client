@@ -208,7 +208,11 @@ export class ParticleSystemBridge {
     type Marked = { entity: Entity; runtime: ParticleRuntime; parent: THREE.Group; inView: boolean }
     const marked: Marked[] = []
     let liveInView = 0
+    const { ParticleSystem } = this.ecs
     for (const [entity, runtime] of this.runtimes) {
+      if (ParticleSystem?.has(entity)) {
+        runtime.spec = ParticleSystem.get(entity) as ParticleSpec
+      }
       const parent = nodes.get(entity)
       if (!parent) continue
       parent.updateWorldMatrix(true, false)
@@ -233,6 +237,14 @@ export class ParticleSystemBridge {
       // so in-view systems get full budget, but keep simulating existing particles.
       const sceneAllows = spec.active !== false && !paused && !stopped && !runtime.finished
       const canEmit = sceneAllows && inView
+
+      if ((spec as { active?: boolean }).active === false) {
+        runtime.live.length = 0
+        runtime.emitCarry = 0
+        runtime.gpu.geometry.instanceCount = 0
+        runtime.gpu.mesh.visible = false
+        continue
+      }
 
       if (stopped) {
         runtime.live.length = 0

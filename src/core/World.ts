@@ -173,8 +173,12 @@ const _cookQuat = new THREE.Quaternion()
 
 /**
  * Tween scale-in (0.001 → authored) bakes degenerate trimeshes and then stamps
- * that geom fingerprint as a permanent cook failure. Keep the entity queued
- * until world scale is cookable.
+ * that geom fingerprint as a permanent cook failure. Keep never-cooked entities
+ * queued until world scale is cookable.
+ *
+ * Live actors at this scale are the opposite law: scenes disable blockers /
+ * doors / portals with `Transform.scale = Vector3.Zero()` (Rituals blocker1,
+ * Prugagoty-style hide). Pose slides are T+R only — drop the hull.
  */
 function isDegenerateCookScale(matrix: THREE.Matrix4): boolean {
   matrix.decompose(_cookPos, _cookQuat, _cookScale)
@@ -326,6 +330,13 @@ export class World {
   private runtimeColliderBurstUntil = 0
   /** True after prepareCollidersForPlay finishes cooking. */
   private spawnColliderSealComplete = false
+  /** Present frames since {@link start} — first N stay host-only so orbit isn't spiked. */
+  private playPresentFrames = 0
+  private postPlayNeighborsArmed = false
+  /** Skip SceneLoop/CRDT fold this many presents so the first orbit frames stay host-only. */
+  private static readonly PLAY_LOOP_GRACE_FRAMES = 12
+  /** Neighbor AOI / live guests after this many presents. */
+  private static readonly PLAY_PRESENT_GRACE_FRAMES = 45
   /**
    * Last PART hull fingerprint written to PhysX (cook-once + move).
    * Unchanged → skip (decorative loops with fixed hulls no-op).
@@ -1319,7 +1330,8 @@ export class World {
     const walkBounds =
       this.playerWalkBounds ?? { mode: 'rect', bounds: sceneWorldBounds(scene.parcels, scene.baseParcel) }
 
-    onProgress?.('Spawning player…')
+    // Do NOT stamp "Spawning player" (97%) here — comms + PhysX cook + avatar compose
+    // still run below. That left the bar frozen at 97% through the entire plaza cook.
     if (scene.spawn.fromSpawnPoints) {
       const label = scene.spawn.spawnPointName ? ` "${scene.spawn.spawnPointName}"` : ''
       console.info(
@@ -1408,6 +1420,7 @@ export class World {
     // Hold avatar + CCT out of the scene until authored colliders solidly under spawn.
     const provenFeet = await this.waitForSpawnFloorReady(scene.spawn, onProgress)
 
+    onProgress?.('Spawning player…')
     onProgress?.('Loading avatar…')
     this.player.setAssetCache(this.assets, scene.realm.contentUrl)
     await this.player.loadAvatar(onProgress)
@@ -1550,16 +1563,8 @@ export class World {
       plazaScale,
       engineTickIntervalMs: resolveEngineTickIntervalMs(this.sceneScript.getPerformanceTier())
     })
-    // AOI warm/live/visuals only after primary is play-ready — dual-boot kills CBD.
-    // Guests must be ON *before* the live emit or reconcile no-ops and stamps a
-    // signature that skips snow/Jarod until the player walks (then the wrong
-    // neighbor can steal the only boot lane).
-    if (!skipAoiNeighbors()) {
-      this.multiScene?.setSecondaryActivityEnabled(true)
-      this.aoiVisual.setNeighborActivityEnabled(true)
-      this.scenePromote.setNeighborActivityEnabled(true)
-      this.aoiVisual.kickLiveSecondaryReconcile()
-    }
+    // AOI neighbors wait until the first play presents settle — enabling here raced
+    // 535-parcel discover + leftover materials against orbit (rAF violations → frame 60).
     if (!skipRemoteAvatars()) {
       this.remoteAvatars?.setPlayReady(plazaScale)
     }
@@ -1567,6 +1572,20 @@ export class World {
       // Real pointer/key gesture — unmute scene video + re-issue play().
       this.sceneScript.setVideoUserGestureUnlocked(true, { allowSound: true })
     })
+  }
+
+  /**
+   * Neighbor AOI + live guests — after the first play presents so orbit is not
+   * spiked by 535-parcel discover / leftover cooks on the same thread.
+   */
+  private armPostPlayNeighbors(): void {
+    if (this.postPlayNeighborsArmed) return
+    this.postPlayNeighborsArmed = true
+    if (skipAoiNeighbors()) return
+    this.multiScene?.setSecondaryActivityEnabled(true)
+    this.aoiVisual.setNeighborActivityEnabled(true)
+    this.scenePromote.setNeighborActivityEnabled(true)
+    this.aoiVisual.kickLiveSecondaryReconcile()
   }
 
   private seedPosesFromSpawn(spawn: {
@@ -1838,6 +1857,49 @@ export class World {
     return hydration
   }
 
+  /**
+   * Apply deferred scene materials while the loading overlay is still up.
+   * Call after spawn, before {@link start} — not during orbit.
+   */
+  async drainPendingMaterialsForPlay(
+    onProgress?: (msg: string, fraction?: number) => void
+  ): Promise<void> {
+    const n = this.sceneScript.pendingMaterialWorkCount()
+    if (n <= 0) {
+      await this.sceneScript.drainPendingMaterialsForLoad({ maxWallMs: 2_000, sliceMs: 16 })
+      await this.warmPlayGpu(onProgress)
+      return
+    }
+    onProgress?.(`Applying scene materials… ${n} left`, 0.83)
+    await this.sceneScript.drainPendingMaterialsForLoad({
+      maxWallMs: 12_000,
+      sliceMs: 20,
+      onProgress: (left) => onProgress?.(`Applying scene materials… ${left} left`, 0.83)
+    })
+    await this.warmPlayGpu(onProgress)
+  }
+
+  /**
+   * Compile shaders + spin particle GPU while the overlay is still up.
+   * Orbit hitch after Jump In is first-draw program compile, not attach.
+   */
+  private async warmPlayGpu(
+    onProgress?: (msg: string, fraction?: number) => void
+  ): Promise<void> {
+    onProgress?.('Compiling scene shaders…', 0.84)
+    try {
+      this.sceneScript.pumpMotionBridges(1 / 60, 0, { visualOnly: true })
+    } catch {
+      /* particles / mixers may not be fully bound yet */
+    }
+    this.player?.snapCamera()
+    this.host.compileSceneShaders()
+    for (let i = 0; i < 4; i++) {
+      this.host.renderFrame()
+      await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    }
+  }
+
   /** One visible frame (sky/landscape/camera) before the loading overlay hides. */
   primeRender(): void {
     try {
@@ -1870,6 +1932,8 @@ export class World {
     // frames. Sound unlocks on the first real pointer/key gesture.
     this.sceneScript.setVideoUserGestureUnlocked(true, { allowSound: false })
     this.sceneScript.armSceneLoopReceive(true)
+    this.playPresentFrames = 0
+    this.postPlayNeighborsArmed = false
     // PE raycast/hover off for first 5s of the play loop — enter budget (env/async/bodies).
     this.pointerRaycastLiveAt = performance.now() + World.POINTER_RAYCAST_HOLD_MS
     let startFrame = 0
@@ -1878,6 +1942,8 @@ export class World {
     this.host.start({
       onSyncFrame: (delta) => {
         startFrame++
+        this.playPresentFrames = startFrame
+        if (startFrame === World.PLAY_PRESENT_GRACE_FRAMES) this.armPostPlayNeighbors()
         const loopMinimum = this.sceneLoop.lastApplyOverran(28)
         // Guest motion from last receive — apply before CCT so riding matches Bevy Update-then-present.
         this.sceneScript.applyPendingGuestMotion()
@@ -1959,7 +2025,6 @@ export class World {
           this.inputHub.sync(startFrame)
           this.sceneScript.syncClientEntities(playerPose, cameraPose)
           this.sceneScript.pumpAvatarAttach()
-          this.sceneScript.updateTriggerAreas()
           sceneTickMs = performance.now() - sceneT0
           // PE tween/billboard/attach motion + reserved-parent meshes (same as primary pump).
           const peT0 = performance.now()
@@ -1976,13 +2041,15 @@ export class World {
           // Soft-route + occupancy + AOI must run on present — leftover async
           // is skipped for whole CBD walks (asyncBusy / >33 ms present).
           const aoiT0 = performance.now()
-          this.scenePromote.tick(pos.x, pos.z)
-          this.sceneLoop.reconcilePe(this.multiScene?.pe ?? null)
-          this.sceneLoop.reconcileLiveGuests(
-            this.multiScene?.secondaryManager?.listSecondaryModeSystems() ?? []
-          )
-          this.syncCurrentSceneGuestAt(pos.x, pos.z)
-          this.aoiVisual.update(pos.x, pos.z)
+          if (startFrame >= World.PLAY_PRESENT_GRACE_FRAMES) {
+            this.scenePromote.tick(pos.x, pos.z)
+            this.sceneLoop.reconcilePe(this.multiScene?.pe ?? null)
+            this.sceneLoop.reconcileLiveGuests(
+              this.multiScene?.secondaryManager?.listSecondaryModeSystems() ?? []
+            )
+            this.syncCurrentSceneGuestAt(pos.x, pos.z)
+            this.aoiVisual.update(pos.x, pos.z)
+          }
           aoiMs = performance.now() - aoiT0
           const yaw = this.player.getNetworkYaw()
           const isEmoting = this.player.isProfileEmoteActive()
@@ -2108,11 +2175,12 @@ export class World {
         if (this.playerMode && this.player && this.isPointerRaycastLive()) {
           const ptrT0 = performance.now()
           const focus = this.focusScript()
-          focus.preparePointerRaycast(startFrame)
-          focus.updateRaycasts()
-          focus.updatePointerEvents(startFrame)
+          // Hover prepare: edges + ~80 ms (PointerEventsSystem.HOVER_PREPARE_MS). Not every rAF.
+          if (focus.needsPointerHoverPrepare(startFrame)) {
+            focus.preparePointerRaycast(startFrame)
+            focus.updatePointerVisuals(startFrame)
+          }
           pointerMs = performance.now() - ptrT0
-          // Hub already synced before scene/PE ticks; late edges still publish on keydown.
         }
         if (!this.editorPreviewMode) {
           this.sceneScript.syncAnimatedSprites()
@@ -2126,6 +2194,12 @@ export class World {
         const t0 = performance.now()
         const ASYNC_HARD_MS = 8
         const remain = (): number => ASYNC_HARD_MS - (performance.now() - t0)
+        // First presents: host camera/orbit only. Play-ready leftover (504 CRDT +
+        // deferred materials + 81 collider cooks) used to steal 30–70ms/rAF until frame 60.
+        if (this.playPresentFrames < World.PLAY_LOOP_GRACE_FRAMES) {
+          this.sceneScript.tickDeferredMaterials()
+          return
+        }
         // Guest VM clock — after present. Host already simulated + drew this rAF.
         this.sceneLoop.receive()
         if (this.playerMode && this.player && this.guestTickPlayer && this.guestTickCamera) {
@@ -2133,6 +2207,8 @@ export class World {
           this.sceneLoop.reconcileLiveGuests(
             this.multiScene?.secondaryManager?.listSecondaryModeSystems() ?? []
           )
+          // Rebase neighbor reserved poses before SceneLoop send (not after).
+          this.multiScene?.tickSync(this.guestTickPlayer, this.guestTickCamera, this.guestTickFrame)
           this.sceneLoop.send({
             now: performance.now(),
             fpsTarget: renderQuality.getFpsLimit() || 60,
@@ -2148,9 +2224,6 @@ export class World {
             await this.sceneLoop.applyOtherLiveGuests(Math.min(4, remain() - 1))
           }
           this.pumpSecondaryMotionBridges(_delta, this.guestTickFrame)
-          if (remain() > 2) {
-            this.multiScene?.tickSync(this.guestTickPlayer, this.guestTickCamera, this.guestTickFrame)
-          }
         }
         if (remain() > 2) {
           await this.sceneLoop.applyWorld(Math.min(8, remain()))
@@ -2173,7 +2246,10 @@ export class World {
           !this.sceneLoop.lastApplyOverran(28)
         ) {
           const ptrT0 = performance.now()
-          this.focusScript().preparePointerRaycast(startFrame)
+          const focus = this.focusScript()
+          if (focus.needsPointerHoverPrepare(startFrame)) {
+            focus.preparePointerRaycast(startFrame)
+          }
           asyncPtrMs = performance.now() - ptrT0
         }
 
@@ -2921,7 +2997,11 @@ export class World {
     this.discoverMissingColliderActors()
   }
 
-  /** Queue entries that can cook now (skip Tween/tiny scale-in and vanished descs). v2.0.1 */
+  /**
+   * Queue entries that can cook now. Skip Tween/tiny scale-in, vanished descs,
+   * permanent cook failures, and already-synced actors (partial multi-shape with
+   * only uncookable leftover children is synced — do not block 97% load).
+   */
   private cookableColliderQueueCount(): number {
     let n = 0
     for (const physId of this.colliderCookQueue) {
@@ -2929,6 +3009,7 @@ export class World {
       if (!desc) continue
       if (isDegenerateCookScale(desc.matrix)) continue
       if (this.physics.hasFailedCookFingerprint(desc.fingerprint)) continue
+      if (this.physics.isColliderSynced(desc)) continue
       n++
     }
     return n
@@ -2948,6 +3029,8 @@ export class World {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
       if (this.physics.hasStaticActor(desc.entity)) continue
+      // Hidden (scale≈0) — not missing. Recook when the scene scales it back up.
+      if (isDegenerateCookScale(desc.matrix)) continue
       // Permanent cook failure — re-queueing every 2s only thrashes and softs neighbors.
       if (this.physics.hasFailedCookFingerprint(desc.fingerprint)) continue
       // Play give-up for this geom fp — do not re-open the thrash queue.
@@ -2993,6 +3076,11 @@ export class World {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
       if (!this.physics.hasStaticActor(desc.entity)) continue
+      if (isDegenerateCookScale(desc.matrix)) {
+        this.physics.invalidateStaticCollider(desc.entity)
+        this.colliderCookQueue.delete(desc.entity)
+        continue
+      }
       const geomMatch = this.physics.geomFingerprintMatches(desc)
       const scaleDrift = this.physics.hasCookScaleDrift(desc)
       // Pose-only drift is slide path; only geom wipe or bake-scale mismatch recooks.
@@ -3231,9 +3319,19 @@ export class World {
     const descs = this.collectColliderDescs(physIds)
     const slideDescs: PhysicsColliderDesc[] = []
     let scaleDriftQueued = 0
+    let scaleHidden = 0
     for (const desc of descs) {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
+      // scale≈0 = scene hide (Vector3.Zero blockers). Never keep a full-size hull.
+      if (isDegenerateCookScale(desc.matrix)) {
+        if (this.physics.hasStaticActor(desc.entity)) {
+          this.physics.invalidateStaticCollider(desc.entity)
+          scaleHidden++
+        }
+        this.colliderCookQueue.delete(desc.entity)
+        continue
+      }
       // Scale grow bakes into verts — must recook (not T+R slide).
       if (this.physics.hasCookScaleDrift(desc)) {
         this.colliderCookQueue.add(desc.entity)
@@ -3253,6 +3351,9 @@ export class World {
         continue
       }
       slideDescs.push(desc)
+    }
+    if (scaleHidden > 0) {
+      this.physics.invalidateControllerCache()
     }
     if (scaleDriftQueued > 0) {
       this.maybeBeginRuntimeColliderBurst(this.colliderCookQueue.size - scaleDriftQueued)
@@ -3726,7 +3827,7 @@ export class World {
   /** Dynamic scene spawn (theatre) — short burst of higher PhysX cook budget. */
   private maybeBeginRuntimeColliderBurst(queueBefore: number): void {
     if (!this.collidersLoadingComplete) return
-    const pending = this.colliderCookQueue.size
+    const pending = this.cookableColliderQueueCount()
     const delta = pending - queueBefore
     const nearPlayer = this.countNearPlayerColliderQueue()
     if (
@@ -3958,7 +4059,15 @@ export class World {
       }
       // Late Tween scale-in — do not cook or fail-stamp while the actor is still a speck.
       // Stay queued for play; must not block the loading-screen drain (plaza 97% hang).
-      if (isDegenerateCookScale(fresh.matrix)) continue
+      // Already-cooked + scale≈0: scene hid the solid (blocker/door) — drop the hull.
+      if (isDegenerateCookScale(fresh.matrix)) {
+        if (this.physics.hasStaticActor(physId)) {
+          this.physics.invalidateStaticCollider(physId)
+          this.colliderCookQueue.delete(physId)
+          this.clearPlayCookTracking(physId)
+        }
+        continue
+      }
       if (this.physics.hasFailedCookFingerprint(fresh.fingerprint)) {
         this.colliderCookQueue.delete(physId)
         this.notePlayCookGiveUp(physId, fresh.fingerprint, 'failed-fp')
@@ -4555,9 +4664,9 @@ export class World {
     // waits forever (title moves, script GLBs never spawn).
     if (!skipAoiNeighbors() && this.player) {
       runtime.setSecondaryActivityEnabled(true)
-      this.aoiVisual.kickLiveSecondaryReconcile()
-      const p = this.player.getPosition()
-      this.aoiVisual.update(p.x, p.z)
+      if (this.postPlayNeighborsArmed) {
+        this.aoiVisual.kickLiveSecondaryReconcile()
+      }
     }
   }
 

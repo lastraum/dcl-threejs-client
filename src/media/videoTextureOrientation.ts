@@ -3,11 +3,14 @@ import * as THREE from 'three'
 /**
  * Scene video texture orientation.
  *
- * - **glTF / GltfNodeModifiers** (Creator Hub video screens): `flipY=false` — glTF UV space
- *   (V grows up). flipY=true makes the picture “calendar upside-down” on those planes.
- * - **MeshRenderer planes** (primitive UV layout): pass `flipY=true` to match our SW/SE/NE/NW corners.
+ * VideoTexture is **shared** (one decode, many screens). Never flipY / ST on
+ * the texture to fix one mesh — that inverts every other consumer.
  *
- * Default is `false` so the common Creator Hub screen path is correct.
+ * - Texture `flipY` stays **false** at create (LiveKit / ThrottledVideoTexture).
+ * - **glTF video** (GltfNodeModifiers): FrontSide + **geometry V** (1−v) only
+ *   when the VideoTexture is bound. Do not DoubleSide, geometry-U-flip, or
+ *   mutate UVs on the first unlit/black modifier pass.
+ * - **MeshRenderer planes**: apply path may set flipY=true for that plane's UVs.
  */
 export function configureSceneVideoTexture(tex: THREE.Texture, flipY = false): void {
   if (tex.flipY !== flipY) {

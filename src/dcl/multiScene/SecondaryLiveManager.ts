@@ -1016,7 +1016,7 @@ export class SecondaryLiveManager {
   }
 
   tickSync(player: EntityPose, camera: EntityPose): void {
-    const interval = this.playFrameOwnedExternally ? 0 : secondaryTickIntervalMs(this.tier)
+    const interval = secondaryTickIntervalMs(this.tier)
     for (const slot of this.slots.values()) {
       // Tertiary tickSync is a no-op (scripts off). Owned-externally never tickPlayFrame.
       slot.tickSync(player, camera, interval, this.playFrameOwnedExternally)
@@ -1029,7 +1029,7 @@ export class SecondaryLiveManager {
    * Must not become a tickPlayFrame back door while SceneLoop owns the clock.
    */
   tickStickySync(player: EntityPose, camera: EntityPose): void {
-    const interval = this.playFrameOwnedExternally ? 0 : secondaryTickIntervalMs(this.tier)
+    const interval = secondaryTickIntervalMs(this.tier)
     for (const [id, slot] of this.slots) {
       if (!this.stickyIds.has(id)) continue
       slot.tickSync(player, camera, interval, this.playFrameOwnedExternally)

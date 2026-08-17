@@ -66,6 +66,9 @@ export type XferMaterial = {
   transmission: number
   thickness: number
   ior: number
+  /** Linear RGB — KHR specularColorFactor can be >1; hex would clamp. */
+  specularColor: { r: number; g: number; b: number }
+  specularIntensity: number
   maps: Partial<Record<XferMapSlot, number>>
   userData: Record<string, unknown>
 }
@@ -80,6 +83,8 @@ export type XferMapSlot =
   | 'alphaMap'
   | 'bumpMap'
   | 'metalnessRoughnessMap'
+  | 'specularColorMap'
+  | 'specularMap'
 
 export type XferNode = {
   id: number
@@ -141,7 +146,9 @@ const MAP_SLOTS: XferMapSlot[] = [
   'emissiveMap',
   'aoMap',
   'alphaMap',
-  'bumpMap'
+  'bumpMap',
+  'specularColorMap',
+  'specularMap'
 ]
 
 function jsonUserData(data: unknown): Record<string, unknown> {
@@ -373,6 +380,10 @@ export async function flattenGltf(
       transmission: phys.transmission ?? 0,
       thickness: phys.thickness ?? 0,
       ior: phys.ior ?? 1.5,
+      specularColor: phys.specularColor
+        ? { r: phys.specularColor.r, g: phys.specularColor.g, b: phys.specularColor.b }
+        : { r: 1, g: 1, b: 1 },
+      specularIntensity: phys.specularIntensity ?? 1,
       maps,
       userData: jsonUserData(mat.userData)
     })
@@ -565,7 +576,8 @@ function makeMaterial(xfer: XferMaterial, textures: THREE.Texture[]): THREE.Mate
   mat.transparent = xfer.transparent
   mat.alphaTest = xfer.alphaTest
   mat.side = xfer.side as THREE.Side
-  mat.depthWrite = xfer.depthWrite
+  // ALPHA_BLEND volumes (fog, mist) must not write depth or the floor occludes them.
+  mat.depthWrite = xfer.transparent && xfer.opacity < 0.95 ? false : xfer.depthWrite
   mat.depthTest = xfer.depthTest
   if ('roughness' in mat) mat.roughness = xfer.roughness
   if ('metalness' in mat) mat.metalness = xfer.metalness
@@ -580,12 +592,33 @@ function makeMaterial(xfer: XferMaterial, textures: THREE.Texture[]): THREE.Mate
     mat.transmission = xfer.transmission
     mat.thickness = xfer.thickness
     mat.ior = xfer.ior
+    // KHR_materials_specular — keep authored RGB (may be >1). Hex clamp hid the tint.
+    if (xfer.specularColor) {
+      mat.specularColor.setRGB(xfer.specularColor.r, xfer.specularColor.g, xfer.specularColor.b)
+    }
+    if (typeof xfer.specularIntensity === 'number') mat.specularIntensity = xfer.specularIntensity
   }
   for (const slot of MAP_SLOTS) {
     const tid = xfer.maps[slot]
     if (tid === undefined) continue
     const tex = textures[tid]
     if (tex) (mat as unknown as Record<string, THREE.Texture>)[slot] = tex
+  }
+  // Three.js dielectric F0 is 0.04×specularColor — invisible on roughness-1 ALPHA_BLEND
+  // volumes (fog/mist). Explorer's lit shader still shows that tint as a wrap-around
+  // lobe. Sheen is the same authored specular color on the lobe Three actually shades.
+  if (
+    mat instanceof THREE.MeshPhysicalMaterial &&
+    mat.transparent &&
+    (mat.specularColorMap ||
+      mat.specularColor.r > 1.001 ||
+      mat.specularColor.g > 1.001 ||
+      mat.specularColor.b > 1.001)
+  ) {
+    mat.sheen = 1
+    mat.sheenRoughness = Math.min(1, Math.max(mat.sheenRoughness, mat.roughness))
+    mat.sheenColor.copy(mat.specularColor)
+    if (mat.specularColorMap && !mat.sheenColorMap) mat.sheenColorMap = mat.specularColorMap
   }
   Object.assign(mat.userData, xfer.userData)
   return mat

@@ -292,10 +292,19 @@ export class DclGenesisSky {
       toneMapped: false
     })
 
-    const geometry = new THREE.SphereGeometry(400, 64, 32)
+    // Cube, not UV sphere: a lat/long sphere pinwheels meridians at the zenith
+    // (visible vertical rays when looking up). Unity / Three.js Sky are cubes.
+    // Size ≫ near plane: a 1m cube + boom-zoom near (0.04–0.1) reprojects XY and
+    // the dome looks like it zooms with the player camera. Infinite-z still applies.
+    const geometry = new THREE.BoxGeometry(1, 1, 1)
     this.mesh = new THREE.Mesh(geometry, this.material)
+    this.mesh.scale.setScalar(200)
     this.mesh.frustumCulled = false
     this.mesh.renderOrder = -1000
+    // Snap after freecam/VC writes the lens — EnvironmentSystem can be a frame behind.
+    this.mesh.onBeforeRender = (_renderer, _scene, camera) => {
+      camera.getWorldPosition(this.mesh.position)
+    }
     // Full-screen bloom must not sample HDR sky/clouds (washes the whole frame).
     this.mesh.userData.dclBloomExclude = true
   }

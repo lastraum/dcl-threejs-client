@@ -39,8 +39,7 @@ function shouldBypassProxyHost(hostname) {
   }
   if (h.includes('worlds-content-server')) return true
   if (h.includes('content-assets')) return true
-  if (/^peer(-[a-z0-9]+)?\.decentraland\.org$/i.test(h)) return true
-  if (h.endsWith('.decentraland.zone') || h.endsWith('.decentraland.today')) return true
+  // peer.decentraland.org lambdas/collections omits CORS — must proxy (see sceneHttpProxy.ts).
   return false
 }
 

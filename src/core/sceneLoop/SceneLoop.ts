@@ -110,6 +110,7 @@ export class SceneLoop {
     let due = 0
     let sent = 0
     let inFlight = 0
+    let secondarySent = 0
     for (const guest of ordered) {
       if (guest.inFlight()) {
         inFlight++
@@ -117,6 +118,11 @@ export class SceneLoop {
       }
       if (!guest.isDue(input.now)) continue
       due++
+      // At most one secondary guest tick per SceneLoop send (primary + PE stay due).
+      if (guest.kind === 'secondary') {
+        if (secondarySent >= 1) continue
+        secondarySent++
+      }
       guest.sendTick(input.player, input.camera, input.frame)
       sent++
     }

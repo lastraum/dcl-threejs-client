@@ -13,7 +13,8 @@ const _force = new THREE.Vector3()
 
 export function specSignature(spec: ParticleSpec): string {
   return JSON.stringify({
-    active: spec.active,
+    // active / playbackState are live flags — toggling them must not dispose+recreate
+    // (plaza miss Ym() sets active=false; recreate left splash_ring emitting).
     rate: spec.rate,
     maxParticles: spec.maxParticles,
     lifetime: spec.lifetime,

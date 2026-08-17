@@ -61,13 +61,19 @@ type TweenRuntime = {
   /** Marquee debug — last hold phase logged. */
   lastHoldLogPhase?: 'holding' | 'expired' | 'armed' | 'defer-scroll'
   /**
-   * Client-driven sequence cycle (TL_RESTART / multi-leg). Keeps visuals moving when
-   * worker TweenSequence stalls (settings hitch, missed COMPLETED inject).
-   * Cleared when CRDT delivers a real new Tween signature.
+   * Explorer kernel TweenSequence (ADR-133 / Unity TweenSequenceUpdaterSystem).
+   * Scene authors Tween (first hop) + TweenSequence (rest). Kernel plays that
+   * path at renderer framerate. SDK Sequence is off (ENABLE_SDK_TWEEN_SEQUENCE=false).
+   * wrap only when loop is TL_RESTART / TL_YOYO — missing loop is one-shot.
    */
   localLoop?: {
     legs: PBTween[]
     index: number
+    wrap: boolean
+    /** Authored first hop — PBTween stays on this while the kernel walks later legs. */
+    firstSig: string
+    /** Authored TweenSequence snapshot; rebuild only when the scene dirties it. */
+    seqSig: string
   }
 }
 
@@ -311,6 +317,42 @@ function isSequenceYoyoLoop(loop: number | undefined): boolean {
   return loop === 1
 }
 
+function kernelSequenceWraps(loop: number | undefined): boolean {
+  return isSequenceRestartLoop(loop) || isSequenceYoyoLoop(loop)
+}
+
+function sequenceSignature(queued: readonly PBTween[], loop: number | undefined): string {
+  return JSON.stringify({ loop: loop ?? null, hops: queued.map(tweenSignature) })
+}
+
+/** Unity GetSequenceTweener(first, sequence, loop) — wrap only if loop is set. */
+function armKernelSequence(
+  first: PBTween,
+  queued: readonly PBTween[],
+  loop: number | undefined
+): TweenRuntime['localLoop'] | undefined {
+  const wrap = kernelSequenceWraps(loop)
+  if (queued.length === 0 && !wrap) return undefined
+  const seqSig = sequenceSignature(queued, loop)
+  const firstSig = tweenSignature(first)
+  if (isSequenceYoyoLoop(loop) && queued.length === 0) {
+    return {
+      legs: [cloneTween(first), backwardsTween(first)],
+      index: 0,
+      wrap: true,
+      firstSig,
+      seqSig
+    }
+  }
+  return {
+    legs: [cloneTween(first), ...queued.map(cloneTween)],
+    index: 0,
+    wrap,
+    firstSig,
+    seqSig
+  }
+}
+
 function backwardsTween(tween: PBTween): PBTween {
   const next = cloneTween(tween)
   const mode = next.mode
@@ -531,6 +573,15 @@ export class TweenBridge {
   private completionDeliverUrgent = false
   /** Entities whose scene-graph pose was interpolated this frame (collider pose slide). */
   private readonly transformMotionEntities = new Set<Entity>()
+  /** Last interpolated Transform poses — play-frame inject so the worker VM reads live TRS. */
+  private lastTransformBatch: Array<{
+    entity: number
+    position: { x: number; y: number; z: number }
+    rotation: { x: number; y: number; z: number; w: number }
+    scale: { x: number; y: number; z: number }
+    parent?: number
+  }> = []
+  private frameTransformWrites: typeof this.lastTransformBatch = []
   private readonly verbose = isTweenVerbose()
   private readonly marqueeVerbose = isMarqueeVerbose()
   private motionFocusView: ProjectionView | null = null
@@ -622,6 +673,33 @@ export class TweenBridge {
     return this.completionDeliverUrgent
   }
 
+  /**
+   * Interpolated Transform poses from the last `update` — inject on the play-frame
+   * so worker `Transform.get` matches Explorer (UI scale, cinematic parents).
+   */
+  consumeTransformBatch(): Array<{
+    entity: number
+    position: { x: number; y: number; z: number }
+    rotation: { x: number; y: number; z: number; w: number }
+    scale: { x: number; y: number; z: number }
+    parent?: number
+  }> {
+    const batch = this.lastTransformBatch
+    this.lastTransformBatch = []
+    return batch
+  }
+
+  /** Latest interpolated poses without consuming (play-frame may read after update). */
+  peekTransformBatch(): ReadonlyArray<{
+    entity: number
+    position: { x: number; y: number; z: number }
+    rotation: { x: number; y: number; z: number; w: number }
+    scale: { x: number; y: number; z: number }
+    parent?: number
+  }> {
+    return this.lastTransformBatch
+  }
+
   /** Consume and clear encoder dirty set (call before `CrdtEncoder.encode()`). */
   consumeEncodeDirty(): ReadonlySet<Entity> {
     const out = new Set(this.encodeDirty)
@@ -666,6 +744,14 @@ export class TweenBridge {
       const signature = tweenSignature(tween)
       const prev = this.runtime.get(entity)
       if (!prev || prev.signature !== signature) {
+        // Kernel Sequence walks later legs while scene PBTween stays on the first hop
+        // (Unity SequenceTweener). Rebuild only when the scene dirties Tween/Sequence.
+        if (prev?.localLoop && prev.localLoop.firstSig === signature) {
+          const { TweenSequence } = this.ecs
+          const seq = TweenSequence?.has(entity) ? TweenSequence.get(entity) : undefined
+          const seqSig = sequenceSignature(seq?.sequence ?? [], seq?.loop)
+          if (seqSig === prev.localLoop.seqSig) continue
+        }
         // NeonScreen: worker often createOrReplace's the next row early (compressed pause
         // and/or scroll). Finish current scroll + wall hold before adopting the new signature.
         if (
@@ -706,7 +792,14 @@ export class TweenBridge {
         const marqueeRow = isPlazaMarqueeTextureMove(tween)
         const tm = tween.mode?.$case === 'textureMove' ? tween.mode.textureMove : undefined
         const durationMs = tween.duration ?? 0
-        // CRDT / worker delivered a real next Tween — drop client sequence loop for this entity.
+        // Scene authored a new Tween. Kernel Sequence is first hop + queued legs
+        // (Unity TweenSequenceUpdaterSystem). Missing loop = one-shot (plaza yv).
+        const { TweenSequence } = this.ecs
+        let localLoop: TweenRuntime['localLoop']
+        if (TweenSequence?.has(entity) && !isTextureMode(tween.mode)) {
+          const seq = TweenSequence.get(entity)
+          localLoop = armKernelSequence(tween, seq.sequence ?? [], seq.loop)
+        }
         this.runtime.set(entity, {
           signature,
           completed: false,
@@ -730,7 +823,7 @@ export class TweenBridge {
           lastLoggedState: undefined,
           lastProgressMilestone: undefined,
           lastHoldLogPhase: undefined,
-          localLoop: undefined
+          localLoop
         })
         // Clear stale TS_COMPLETED immediately so worker TweenSequence does not treat the
         // next leg as already finished (blimp TL_RESTART would advance once and stall).
@@ -800,6 +893,7 @@ export class TweenBridge {
   update(delta: number, view: ProjectionView): void {
     this.motionFocusView = view
     this.transformMotionEntities.clear()
+    this.frameTransformWrites = []
     if (!this.runtime.size) return
 
     const { Tween, TweenState, Transform, AvatarAttach } = this.ecs
@@ -1119,6 +1213,10 @@ export class TweenBridge {
       }
     }
 
+    if (this.frameTransformWrites.length) {
+      this.lastTransformBatch = this.frameTransformWrites
+    }
+
     if (this.marqueeVerbose) {
       if (now - this.marqueeSummaryAt > 5000) {
         this.marqueeSummaryAt = now
@@ -1170,42 +1268,26 @@ export class TweenBridge {
   }
 
   /**
-   * After a finite leg completes, start the next TweenSequence leg on the client so
-   * continuous orbits (Genesis blimp TL_RESTART) never wait on worker CRDT / settings hitches.
-   * Returns true when a new leg is live (runtime.completed cleared).
+   * After a finite leg completes, start the next kernel Sequence hop.
+   * One-shot (no loop) stops after the last authored leg — COMPLETED stays on the wire.
+   * RESTART / YOYO wrap. Returns true when a new hop is live.
    */
   private tryArmLocalSequenceLoop(
     entity: Entity,
     completedTween: PBTween,
     runtime: TweenRuntime
   ): boolean {
-    // Texture marquee rows are driven by scene systems — do not invent a loop.
     if (isTextureMode(completedTween.mode)) return false
 
     const { TweenSequence } = this.ecs
     if (!runtime.localLoop) {
       if (!TweenSequence.has(entity)) return false
       const seq = TweenSequence.get(entity)
-      const loop = seq.loop
-      const queued = seq.sequence ?? []
-      const hasQueued = queued.length > 0
-      if (!hasQueued && !isSequenceRestartLoop(loop) && !isSequenceYoyoLoop(loop)) {
-        return false
-      }
-      if (isSequenceYoyoLoop(loop) && !hasQueued) {
-        runtime.localLoop = {
-          legs: [cloneTween(completedTween), backwardsTween(completedTween)],
-          index: 0
-        }
-      } else {
-        // Full cycle: completed leg + remaining sequence (RESTART rotates this forever).
-        runtime.localLoop = {
-          legs: [cloneTween(completedTween), ...queued.map(cloneTween)],
-          index: 0
-        }
-      }
+      const armed = armKernelSequence(completedTween, seq.sequence ?? [], seq.loop)
+      if (!armed) return false
+      runtime.localLoop = armed
       this.logTween(
-        `Tween local sequence armed — entity ${entity} · legs=${runtime.localLoop.legs.length} · loop=${loop ?? 'none'}`,
+        `Tween kernel sequence armed — entity ${entity} · legs=${armed.legs.length} · loop=${seq.loop ?? 'none'}`,
         { entity, level: 'success' }
       )
     }
@@ -1213,21 +1295,31 @@ export class TweenBridge {
     const loop = runtime.localLoop
     if (!loop.legs.length) return false
 
-    // Advance to next leg (wrap).
-    loop.index = (loop.index + 1) % loop.legs.length
+    if (!loop.wrap && loop.index + 1 >= loop.legs.length) {
+      // Keep the armed program so sync() does not rebuild hop 0 from leftover
+      // scene Tween+Sequence (Unity SequenceTweener stays finished until dirty).
+      return false
+    }
+
+    loop.index = loop.wrap
+      ? (loop.index + 1) % loop.legs.length
+      : loop.index + 1
     const next = loop.legs[loop.index]!
     runtime.signature = tweenSignature(next)
     runtime.completed = false
     runtime.progress = 0
     runtime.justReset = true
-    // Keep last COMPLETED dirty/urgent so the worker still receives the finish edge.
-    // Do not overwrite TweenState with ACTIVE here — that would swallow COMPLETED on the
-    // same encode (settings hitches left the blimp parked after one orbit).
     runtime.completedDirtySent = false
     runtime.lastWrittenProgress = 0
+    runtime.lastWrittenState = 0
     runtime.lastProgressMilestone = undefined
+    // Kernel hop: scene PBTween is still the first hop. ACTIVE so tweenCompleted()
+    // does not fire until the authored sequence is exhausted.
+    const { TweenState } = this.ecs
+    TweenState.createOrReplace(entity, { state: 0, currentTime: 0 })
+    this.encodeDirty.add(entity)
     this.logTween(
-      `Tween local sequence next — entity ${entity} · leg ${loop.index + 1}/${loop.legs.length} · ${tweenModeLabel(next)}`,
+      `Tween kernel sequence next — entity ${entity} · leg ${loop.index + 1}/${loop.legs.length} · ${tweenModeLabel(next)}`,
       { entity }
     )
     return true
@@ -1430,6 +1522,13 @@ export class TweenBridge {
       rotation: { ..._scratchTransform.rotation },
       scale: { ..._scratchTransform.scale },
       parent: _scratchTransform.parent
+    })
+    this.frameTransformWrites.push({
+      entity: entity as number,
+      position: { ..._scratchTransform.position },
+      rotation: { ..._scratchTransform.rotation },
+      scale: { ..._scratchTransform.scale },
+      parent: _scratchTransform.parent as number | undefined
     })
     // Orbit pivots (Genesis blimp) must never stay frozen — children inherit world TRS.
     node.matrixAutoUpdate = true

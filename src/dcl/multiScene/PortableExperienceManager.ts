@@ -513,8 +513,10 @@ export class PortableExperienceManager {
       if (!this.playFrameOwnedExternally) {
         worker.tickSync(player, camera, interval)
       }
-      // PE UI pointer inject (clicks) — primary loop alone never ticks PE PointerEventsSystem.
-      worker.system.updatePointerEvents(frame)
+      // PE hover at 80 ms / edges — not every async frame.
+      if (worker.system.needsPointerHoverPrepare(frame)) {
+        worker.system.updatePointerVisuals(frame)
+      }
       worker.system.syncPointerInput(frame, {
         processPendingDown: true,
         processPendingUp: true

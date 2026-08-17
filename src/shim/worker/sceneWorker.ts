@@ -66,11 +66,11 @@ import { nextWorkerPointerEventTimestamp } from './workerPointerEventTimestamp'
 import { PointerEventType } from '../../input/pointerConstants'
 import { InputAction, type InputActionValue } from '../../input/pointerConstants'
 import { injectRendererGrowOnlyAppendsOnEngine } from './injectRendererGrowOnlyAppends'
+import { injectRendererLwwPutsOnEngine } from './injectRendererLwwPuts'
 import {
-  injectRendererLwwPutsOnEngine,
-  rearmTweenStateAfterSequenceAdvance
-} from './injectRendererLwwPuts'
-import { applyAvatarAttachTransformsOnEngine } from './applyAvatarAttachTransforms'
+  applyAvatarAttachTransformsOnEngine,
+  applyHostTransformsOnEngine
+} from './applyAvatarAttachTransforms'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import {
   diagnoseLevelStateGroundRay,
@@ -180,22 +180,24 @@ import {
   forceRecoverStuckSceneEngineTick,
   getSceneEngineTickStartedAt,
   initSceneEngineScheduler,
-  isEngineUpdateInFlight,
   isSceneEngineTickInFlight,
   preemptSceneEngineTick,
   requestSceneEngineTick,
+  queueSceneEngineTick,
+  setSceneLoopOwnsPositiveDt,
+  isSceneLoopOwnsPositiveDt,
   runSceneEngineUpdateNow,
   resetSceneEngineDiagCount,
   resetSceneEngineScheduler,
   runSceneEngineBootTick,
   runSceneEnginePointerTick,
-  runSerializedEngineUpdateForPointer,
   countWorkerMeshRenderers,
   shouldAttachUiMountSnapshot,
   hostInjectNeedsSceneSystems,
   sceneEngineTickAfterInboundInject,
   sceneEngineTickDue,
-  syncSceneEngineHydrationTimer
+  syncSceneEngineHydrationTimer,
+  type RendererInboundInjectCounts
 } from './sceneEngineScheduler'
 import { hasGrowOnlyInjects } from './injectRendererGrowOnlyAppends'
 const VIDEO_PLAYER_NULL_MUTABLE = /VideoPlayer for null not found/
@@ -272,17 +274,12 @@ const SCENE_UPDATE_ABORT_MS = 2000
 const SCENE_UPDATE_ABORT_PLAY_MS = 600
 const SCENE_UPDATE_ABORT_PLAY_MEDIUM_MS = 1400
 const SCENE_UPDATE_ABORT_PLAY_LOW_MS = 2800
-const SCENE_UPDATE_ABORT_ADAPTIVE_WINDOW_MS = 20_000
-const SCENE_UPDATE_ABORT_ADAPTIVE_THRESHOLD = 4
 /** Abort pointer engine tick if sceneEngine.update / onUpdate stalls awaiting main-thread CRDT. */
 const POINTER_ENGINE_TICK_ABORT_MS = 4000
 /** Abort timer — shorter once the scene is interactive. */
 let sceneUpdateAbortMs = SCENE_UPDATE_ABORT_MS
 let sceneTickIntervalMs = SCENE_LOOP_POLL_MS
-let playReadyPerformanceTier: PerformanceTier | undefined
 let adaptiveLowPerfMode = false
-let sceneUpdateAbortStreak = 0
-let sceneUpdateAbortWindowStart = 0
 let sceneTicksPaused = false
 /** PET_UP deferred until after onUpdate in the pointer interactive tick. */
 let pendingSplitPointerInject: InjectPointerClickBody | null = null
@@ -487,19 +484,6 @@ function clearSceneUpdateAbortTimer(): void {
   }
 }
 
-function recordSceneUpdateAbort(): void {
-  const now = performance.now()
-  if (!sceneUpdateAbortWindowStart || now - sceneUpdateAbortWindowStart > SCENE_UPDATE_ABORT_ADAPTIVE_WINDOW_MS) {
-    sceneUpdateAbortWindowStart = now
-    sceneUpdateAbortStreak = 0
-  }
-  sceneUpdateAbortStreak++
-  if (sceneUpdateAbortStreak >= SCENE_UPDATE_ABORT_ADAPTIVE_THRESHOLD && !adaptiveLowPerfMode) {
-    adaptiveLowPerfMode = true
-    applyPlayReadyTiming(playReadyPerformanceTier, 'adaptive-abort-backoff')
-  }
-}
-
 function setCooperativeLoopInterval(intervalMs: number): void {
   sceneTickIntervalMs = intervalMs
   if (sceneTickTimer) clearInterval(sceneTickTimer)
@@ -546,30 +530,14 @@ function applyPlayReadyTiming(
   setCooperativeLoopInterval(engineTickIntervalMs)
 }
 
-function armSceneUpdateAbortTimer(): void {
-  clearSceneUpdateAbortTimer()
-  sceneUpdateAbortTimer = setTimeout(() => {
-    if (!sceneUpdateInFlight) return
-    workerLog(
-      'error',
-      `[sceneWorker] scene onUpdate exceeded ${sceneUpdateAbortMs}ms — aborting for pointer priority`
-    )
-    recordSceneUpdateAbort()
-    sceneUpdateInFlight = false
-    // sceneUpdatePromiseActive stays true until the promise finally() — no overlapping onUpdate.
-    // Do not set sceneTicksPaused here — pointer batches pause explicitly; a stuck pause
-    // freezes worker onUpdate (campfire sprite pool) while trigger delivers keep firing.
-    // Do not interrupt pending CRDT — empty responses drop composite/sprite diffs on main.
-    drainQueuedPointerDeliver()
-  }, sceneUpdateAbortMs)
-}
+
 
 /** Only call from main `pause-scene-ticks:false` — never from cooperative onUpdate / inbound paths. */
 function resumeSceneTicksAfterPointer(): void {
   if (pointerDeliveryInFlight || sceneUpdateInFlight || queuedPointerDeliver || pendingInjectPointer) return
   sceneTicksPaused = false
-  // Schedule on the scene-loop poll — do not synchronously drain here (races main InputModifier apply).
-  requestSceneEngineTick()
+  // Pointer edge may request the next due tick immediately. Do not stack a second update.
+  requestSceneEngineTick({ source: 'pointer-edge' })
 }
 
 function clearPointerEgressBuffers(): void {
@@ -946,33 +914,6 @@ function workerLog(level: 'log' | 'info' | 'warn' | 'error' | 'debug', message: 
 /** Bound-VC follow rig — pose keys for VC + lookAt/parent entities. */
 const boundVcPoseKeys = new Map<number, string>()
 const editFlightVcPoseKeys = new Map<number, string>()
-let lastFlightSceneUpdateAt = 0
-/** True while pump-scene-engine-tick runs flight — bypass sceneTicksPaused / pointer session. */
-let flightPumpBypassPause = false
-
-/** Scene keyboard relay actions that drive creator VC flight (MOVE CAMERA). */
-const SCENE_FLIGHT_INPUT_ACTIONS: ReadonlySet<InputActionValue> = new Set([
-  InputAction.IA_FORWARD,
-  InputAction.IA_BACKWARD,
-  InputAction.IA_RIGHT,
-  InputAction.IA_LEFT,
-  InputAction.IA_JUMP,
-  InputAction.IA_WALK,
-  InputAction.IA_MODIFIER, // camera-operator WALK_ACTION=14 — Shift descends
-  InputAction.IA_PRIMARY,
-  InputAction.IA_SECONDARY,
-  InputAction.IA_ACTION_3,
-  InputAction.IA_ACTION_4,
-  InputAction.IA_ACTION_5,
-  InputAction.IA_ACTION_6
-])
-
-function sceneSnapshotHasFlightKeys(body: SceneInputSnapshotBody): boolean {
-  for (const action of body.pressed) {
-    if (SCENE_FLIGHT_INPUT_ACTIONS.has(action)) return true
-  }
-  return false
-}
 
 function applySceneInputSnapshotNow(body: SceneInputSnapshotBody): boolean {
   if (!sceneEngine) return false
@@ -1005,19 +946,7 @@ function applySceneInputSnapshotNow(body: SceneInputSnapshotBody): boolean {
 function applyCoalescedKeyboardSnapshot(body: SceneInputSnapshotBody): void {
   if (!sceneEngine) return
   const changed = applySceneInputSnapshotNow(body)
-  // Flight pump only for MOVE CAMERA (freeze + unbound VC) — not character-select freeze+bound.
-  const flight = isEditFlightMode() && sceneSnapshotHasFlightKeys(body)
-  if (flight) {
-    scheduleSceneInputEngineTick({ flightPump: true })
-    return
-  }
-  // PE drone/vehicle: pump immediately on key edges (and holds via forceRepublish).
-  if (portableExperienceWorker && (changed || body.pressed.length > 0)) {
-    void runPeVehicleInputPump()
-    return
-  }
-  if (!changed) return
-  scheduleSceneInputEngineTick()
+  if (changed || body.pressed.length > 0) queueSceneEngineTick()
 }
 
 function executeSceneInputSnapshot(body: SceneInputSnapshotBody): void {
@@ -1353,7 +1282,9 @@ function applyPlayFrameReservedPoses(
     screenCoordinates: { x: number; y: number }
     screenDelta: { x: number; y: number }
     worldRayDirection: { x: number; y: number; z: number }
-  }
+  },
+  avatarAttach?: import('../types').AvatarAttachTransformEntry[],
+  tweenTransforms?: import('../types').AvatarAttachTransformEntry[]
 ): void {
   if (!sceneEngine) return
   const Transform = extended.Transform(sceneEngine)
@@ -1377,6 +1308,14 @@ function applyPlayFrameReservedPoses(
   if (player) write(sceneEngine.PlayerEntity as Entity, player)
   if (camera) write(sceneEngine.CameraEntity as Entity, camera)
   applyHostReservedSceneStore()
+  // Renderer Tweens write Transform on the store the VM reads (new-catch scale, reveal cam).
+  if (tweenTransforms?.length) {
+    applyHostTransformsOnEngine(sceneEngine, tweenTransforms)
+  }
+  // AvatarAttach after PE + tweens — Hle/nBe is player × relative (fishing line tip).
+  if (avatarAttach?.length) {
+    applyAvatarAttachTransformsOnEngine(sceneEngine, avatarAttach)
+  }
   // Live cursor ray before systems — fishing bobber aim reads PrimaryPointerInfo each tick.
   if (primaryPointer) {
     preregisterRendererInjectedComponents(sceneEngine)
@@ -1438,12 +1377,21 @@ function snapBoundPeFollowAnchorIfNearPlayer(): void {
   const anchor = Transform.getOrNull(parent as Entity)
   if (!pe || !anchor) return
 
-  Transform.createOrReplace(parent as Entity, {
+  const next = {
     position: { x: pe.position.x, y: pe.position.y, z: pe.position.z },
     rotation: anchor.rotation ?? { x: 0, y: 0, z: 0, w: 1 },
     scale: anchor.scale ?? { x: 1, y: 1, z: 1 },
     parent: (anchor.parent as Entity | undefined) ?? eng.RootEntity
-  })
+  }
+  const eps = 1e-4
+  if (
+    Math.abs(anchor.position.x - next.position.x) <= eps &&
+    Math.abs(anchor.position.y - next.position.y) <= eps &&
+    Math.abs(anchor.position.z - next.position.z) <= eps
+  ) {
+    return
+  }
+  writeHostLwwNoDirty(Transform, parent as number, next)
 }
 
 /**
@@ -1494,6 +1442,23 @@ function publishVcPoseLiveIfBound(): void {
     // Locked / select / cinematic — worker world pose under Root (main hierarchy is incomplete).
     const flat = worldFlattenedVcTransform(eng, vcEntity)
     maybePost(vcEntity, flat)
+    // Plaza fishing reveal cam: lookAt is a pure Transform (`vp`) that Tweens after bind.
+    // Hydrate only snapshots structure — without live lookAt the lens stays aimed at the
+    // spawn pose (0,-1,1) and the shot falls through the floor.
+    const spec = VirtualCamera.getOrNull(vcEntity) as { lookAtEntity?: number } | null
+    const lookAt = spec?.lookAtEntity
+    if (
+      lookAt !== undefined &&
+      lookAt !== null &&
+      lookAt !== (vc as number) &&
+      lookAt !== 0 &&
+      lookAt !== (eng.RootEntity as number) &&
+      lookAt !== (eng.PlayerEntity as number) &&
+      lookAt !== (eng.CameraEntity as number) &&
+      !isMeshBearing(lookAt as Entity)
+    ) {
+      maybePost(lookAt as Entity, worldFlattenedVcTransform(eng, lookAt as Entity))
+    }
   } else {
     // PE-follow — keep local hierarchy; pure-transform anchors only (never mesh lookAt).
     const tr = Transform.getOrNull(vcEntity)
@@ -1623,10 +1588,14 @@ initSceneEngineScheduler({
     publishVcBindHydrateIfNeeded()
     publishPlayerFrameIfChanged()
     publishVcPoseLiveEgress()
+    if (isEditFlightMode() && workerSnapshotPressed.size > 0) {
+      applyShimVcFlightFromRelay(1 / 20)
+    }
   },
   onUnifiedPlayFrameComplete: async (dt) => {
     if (!sceneOnUpdate || sceneTicksPaused || pointerBlocksEngineTick()) {
       completePlayFrameColdEgress()
+      ctx.postMessage({ type: 'play-frame-done' } satisfies SceneWorkerOutbound)
       return
     }
     sceneUpdateInFlight = true
@@ -1664,7 +1633,7 @@ initSceneEngineScheduler({
       `[sceneWorker] sceneUi inject complete — session ended, ticks unpaused (mountGrew=${mountGrew ? 1 : 0})`
     )
     if (sceneEngine && !sceneTicksPaused && !pointerBlocksEngineTick()) {
-      requestSceneEngineTick()
+      requestSceneEngineTick({ source: 'pointer-edge' })
     }
   }
 })
@@ -1686,23 +1655,15 @@ function workerVerboseLog(
  * play-frame eng.update while mouse is held. Block only mid-inject or explicit pause.
  */
 function pointerBlocksEngineTick(): boolean {
-  // Mid inject eng.update / queued deliver — must not interleave.
-  if (pointerDeliveryInFlight || queuedPointerDeliver) return true
   if (sceneOnUpdatePaused) return false
-  if (flightPumpBypassPause) return false
-  // pendingInjectPointer / deliver batch: short-lived only after edge.
+  // SceneLoop owns the clock: PET inject is a store write. Blocking here
+  // deferred the pointer-edge tick that EventSystem needs (getInputCommand miss).
+  if (isSceneLoopOwnsPositiveDt()) {
+    return sceneTicksPaused
+  }
+  if (pointerDeliveryInFlight || queuedPointerDeliver) return true
   return sceneTicksPaused || !!pendingInjectPointer || pointerDeliverBatchOpen
 }
-
-/** Matches camera-operator `Math.max(16, dt * 1000)` — do not outrun scene integration. */
-const SCENE_FLIGHT_TICK_MIN_MS = 16
-
-/**
- * MOVE CAMERA flight — engine.update only (VirtualCameraRig lives in addSystem, not exports.onUpdate).
- * SDK exports.onUpdate ends with pollEvents(sendBatch) which replays UI clicks and toggles flight off.
- * Bypasses sceneTicksPaused while main mount commit holds cooperative ticks after a UI click.
- */
-let lastFlightPumpLogAt = 0
 
 /**
  * Level-state reassert for keyboard relay + held pointer buttons.
@@ -1751,85 +1712,8 @@ function reassertPressedKeysOnEngine(): void {
   // isPressed(IA_POINTER) stays true from the original inject DOWN until browser UP.
 }
 
-/** PE vehicle/drone — engine.update even when residual pointer session would block primary ticks. */
-let lastPeInputPumpAt = 0
-
-async function runPeVehicleInputPump(): Promise<void> {
-  if (!sceneEngine || !portableExperienceWorker || sceneOnUpdatePaused) return
-  // Never interleave with pointer UI (menu open thrash) or mid-deliver batches.
-  if (
-    pointerDeliveryInFlight ||
-    pointerDeliverWorkInFlight ||
-    pointerDeliverBatchOpen ||
-    queuedPointerDeliver ||
-    pendingInjectPointer ||
-    isPointerInputSessionActive() ||
-    sceneTicksPaused
-  ) {
-    return
-  }
-  // Post-click hold: still run eng.update (systems/dt) but react-ecs is deferred via
-  // shouldDeferCooperativeReactEcs wall-clock hold — keeps open menu ECS mount stable.
-  if (sceneUpdateInFlight || sceneUpdatePromiseActive) return
-
-  const now = performance.now()
-  if (lastPeInputPumpAt > 0 && now - lastPeInputPumpAt < SCENE_FLIGHT_TICK_MIN_MS) return
-  const dt =
-    lastPeInputPumpAt > 0
-      ? Math.min((now - lastPeInputPumpAt) / 1000, 0.1)
-      : SCENE_FLIGHT_TICK_MIN_MS / 1000
-  lastPeInputPumpAt = now
-
-  reassertPressedKeysOnEngine()
-
-  if (now - lastFlightPumpLogAt > 500 && workerSnapshotPressed.size > 0) {
-    lastFlightPumpLogAt = now
-    const pressed = [...workerSnapshotPressed].join(',')
-    const player = sceneEngine.PlayerEntity as Entity
-    const isFwd = isSceneInputPressedOnPlayer(sceneEngine, player, InputAction.IA_FORWARD)
-    workerLog(
-      'log',
-      `[sceneWorker] pe-input pump — pressed=[${pressed}] isPressed F=${isFwd ? 1 : 0} dt=${dt.toFixed(3)}`
-    )
-  }
-
-  // Reuse flight bypass so pointerBlocksEngineTick does not starve PE systems mid-menu residual.
-  flightPumpBypassPause = true
-  sceneUpdateInFlight = true
-  sceneUpdatePromiseActive = true
-  sceneUpdateStartedAt = now
-  armSceneUpdateAbortTimer()
-  try {
-    await runSceneEngineUpdateNow(dt)
-    completePlayFrameColdEgress()
-  } catch (err) {
-    workerLog(
-      'error',
-      `[sceneWorker] pe-input pump failed — ${err instanceof Error ? err.message : String(err)}`
-    )
-  } finally {
-    clearSceneUpdateAbortTimer()
-    flightPumpBypassPause = false
-    sceneUpdateInFlight = false
-    sceneUpdatePromiseActive = false
-  }
-}
-
 /** Selected creator VC for shim flight — green emissive body (camera-operator SELECTED_COLOR). */
 let shimFlightVcEntity: number | null = null
-
-function captureAllVcPoseKeys(): string {
-  if (!sceneEngine) return ''
-  const VirtualCamera = generated.VirtualCamera(sceneEngine)
-  const Transform = extended.Transform(sceneEngine)
-  const parts: string[] = []
-  for (const [entity] of sceneEngine.getEntitiesWith(VirtualCamera)) {
-    const tr = Transform.getOrNull(entity as Entity)
-    if (!tr) continue
-    parts.push(`${entity as number}:${vcTransformPoseKey(tr)}`)
-  }
-  return parts.join('|')
-}
 
 /**
  * Resolve selected VirtualCamera: gizmo body is parented under VC with green emissive
@@ -2076,83 +1960,6 @@ function applyShimVcFlightFromRelay(dtSec: number): number {
   return 1
 }
 
-async function runSceneFlightPump(): Promise<void> {
-  if (!sceneEngine || sceneOnUpdatePaused) return
-  if (pointerDeliveryInFlight || queuedPointerDeliver || pointerDeliverWorkInFlight) return
-  // Only MOVE CAMERA (freeze + unbound MainCamera). Bound VC + freeze = fixed shot — no flight.
-  const editFlight = isEditFlightMode()
-  if (!editFlight && (sceneUpdateInFlight || sceneUpdatePromiseActive)) return
-  if (!editFlight) return
-
-  const now = performance.now()
-  if (lastFlightSceneUpdateAt > 0 && now - lastFlightSceneUpdateAt < SCENE_FLIGHT_TICK_MIN_MS) return
-  const dt =
-    lastFlightSceneUpdateAt > 0
-      ? Math.min((now - lastFlightSceneUpdateAt) / 1000, 0.1)
-      : SCENE_FLIGHT_TICK_MIN_MS / 1000
-  lastFlightSceneUpdateAt = now
-
-  reassertPressedKeysOnEngine()
-
-  const poseBefore = captureAllVcPoseKeys()
-
-  if (now - lastFlightPumpLogAt > 500) {
-    lastFlightPumpLogAt = now
-    const pressed = [...workerSnapshotPressed].join(',')
-    const player = sceneEngine.PlayerEntity as Entity
-    const isFwd = isSceneInputPressedOnPlayer(sceneEngine, player, InputAction.IA_FORWARD)
-    const isLeft = isSceneInputPressedOnPlayer(sceneEngine, player, InputAction.IA_LEFT)
-    workerLog(
-      'log',
-      `[sceneWorker] flight pump — editFlight pressed=[${pressed}] isPressed F/L=${isFwd}/${isLeft} dt=${dt.toFixed(3)}`
-    )
-  }
-
-  flightPumpBypassPause = true
-  sceneUpdateInFlight = true
-  sceneUpdatePromiseActive = true
-  sceneUpdateStartedAt = now
-  armSceneUpdateAbortTimer()
-  try {
-    await runSceneEngineUpdateNow(dt)
-    if (workerSnapshotPressed.size > 0) {
-      const poseAfter = captureAllVcPoseKeys()
-      if (poseBefore === poseAfter) {
-        // Scene flight system did not move VC (editFlightActive likely false after double-toggle).
-        const n = applyShimVcFlightFromRelay(dt)
-        if (n > 0 && now - lastFlightPumpLogAt > 500) {
-          workerLog(
-            'log',
-            `[sceneWorker] flight pump — shim moved selected VC e${shimFlightVcEntity} (scene flight idle)`
-          )
-        }
-      }
-    }
-    completePlayFrameColdEgress()
-    publishVcPoseLiveDuringEditFlight()
-  } catch (err) {
-    workerLog(
-      'error',
-      `[sceneWorker] scene flight pump failed — ${err instanceof Error ? err.message : String(err)}`
-    )
-  } finally {
-    clearSceneUpdateAbortTimer()
-    flightPumpBypassPause = false
-    sceneUpdateInFlight = false
-    sceneUpdatePromiseActive = false
-  }
-}
-
-/** Keyboard relay — pump scene onUpdate + engine.update while flight keys are held. */
-function scheduleSceneInputEngineTick(opts?: { flightPump?: boolean }): void {
-  if (!sceneEngine || pointerDeliveryInFlight) return
-  if (opts?.flightPump) {
-    void runSceneFlightPump()
-    return
-  }
-  requestSceneEngineTick()
-}
-
 /**
  * Lightweight tween-state path — no pointer pause / preempt / full deliver batch.
  * Inject TweenState then engine.update(0) so tweenCompleted can fire without advancing
@@ -2167,28 +1974,37 @@ function deliverTweenStateInbound(chunks: Uint8Array[]): void {
     'log',
     `[sceneWorker] tween-state-deliver — inject ${tweenPuts} TweenState PUT(s)`
   )
-  void (async () => {
-    await runSceneEngineUpdateNow(0)
-    // Sequence may have swapped Tween while state stayed COMPLETED — re-arm next leg
-    // so isCompleted does not fire again on the same COMPLETED snapshot (blimp loop).
-    if (!sceneEngine) return
-    const rearmed = rearmTweenStateAfterSequenceAdvance(sceneEngine)
-    if (rearmed > 0) {
-      workerVerboseLog(
-        debugTweenDeliver,
-        'log',
-        `[sceneWorker] tween-state re-arm after sequence — ${rearmed} entity(s)`
-      )
-      // Second transport tick so createTweenSystem cache sees ACTIVE for the new leg.
-      await runSceneEngineUpdateNow(0)
-    }
-  })()
+  // ENABLE_SDK_TWEEN_SEQUENCE=false: kernel (TweenBridge) owns hop advance.
+  // Do not rearm here — that ran *before* eng.update and swallowed COMPLETED
+  // so createTweenSystem never saw the edge (and would zip if the flag were on).
+  if (isSceneLoopOwnsPositiveDt()) {
+    queueSceneEngineTick()
+    return
+  }
+  void runSceneEngineUpdateNow(0)
 }
 
 /**
- * Host grow-only (TriggerArea / VideoEvent / Pointer / AudioEvent / AssetLoad) —
- * engine tick only; must not pause scene onUpdate (sprite pool).
+ * Host grow-only (TriggerArea / VideoEvent / Pointer / AudioEvent / AssetLoad).
+ * Apply into the guest store here; only SceneLoop starts engine.update(dt>0).
+ * A lone VideoEvent offset heartbeat is store-only — next play-frame sees it.
  */
+function isLoneVideoOffsetHeartbeat(counts: RendererInboundInjectCounts): boolean {
+  return (
+    counts.videoAppends === 1 &&
+    counts.triggerAppends === 0 &&
+    counts.pointerAppends === 0 &&
+    counts.audioAppends === 0 &&
+    counts.assetLoadAppends === 0 &&
+    counts.videoPlayerPuts === 0 &&
+    counts.audioSourcePuts === 0 &&
+    counts.gltfLoadingStatePuts === 0 &&
+    counts.uiInputResultPuts === 0 &&
+    counts.uiDropdownResultPuts === 0 &&
+    counts.tweenPuts === 0
+  )
+}
+
 function deliverRendererAppendInbound(chunks: Uint8Array[]): void {
   if (!sceneEngine || !sceneOnStartComplete) return
   const counts = applyRendererInboundChunks(chunks)
@@ -2207,16 +2023,10 @@ function deliverRendererAppendInbound(chunks: Uint8Array[]): void {
       `[sceneWorker] renderer-append-deliver — trigger=${counts.triggerAppends} videoEvent=${counts.videoAppends} audio=${counts.audioAppends} assetLoad=${counts.assetLoadAppends} pointer=${counts.pointerAppends}`
     )
   }
-  // Any host grow-only / LWW scene systems listen for must run same-message (onChange).
-  // requestSceneEngineTick() often no-ops when wall-clock debt is 0 (just after a play-frame
-  // tick) — Plaza bounce_parasol then never sees ENTER; Admin video src swap never sees LOADING.
-  // dt=0 runs systems without inventing NeonScreen wall time; flush cold CRDT for impulse egress.
-  if (growOnly || hostInjectNeedsSceneSystems(counts)) {
-    void runSceneEngineUpdateNow(0).then(() => {
-      if (counts.triggerAppends > 0) completePlayFrameColdEgress()
-    })
-    return
-  }
+  // Offset heartbeats must not steal the mutex with dt=0 (plaza Tweens / fishing timers).
+  if (isLoneVideoOffsetHeartbeat(counts)) return
+  // TriggerArea ENTER / video src swap land in the store now; the next SceneLoop tick
+  // (or the queued tick if this frame just ran) runs onChange with real dt.
   sceneEngineTickAfterInboundInject(counts)
 }
 
@@ -2379,33 +2189,6 @@ function chunkByteCount(chunks: Uint8Array[]): number {
  */
 const NO_TARGET_ENGINE_UPDATE_BUDGET_MS = 450
 
-async function runBudgetedPointerEngineUpdate(
-  label: string,
-  work: () => Promise<void>
-): Promise<'ok' | 'timeout'> {
-  // Race only for edge *ack* timing — never force-release the eng.update mutex.
-  // Releasing mid-update allowed concurrent eng.update and plaza 5s recovery thrash.
-  let timedOut = false
-  const workP = runSerializedEngineUpdateForPointer(work)
-  await Promise.race([
-    workP,
-    new Promise<void>((resolve) => {
-      setTimeout(() => {
-        timedOut = true
-        resolve()
-      }, NO_TARGET_ENGINE_UPDATE_BUDGET_MS)
-    })
-  ])
-  if (timedOut) {
-    workerLog(
-      'warn',
-      `[sceneWorker] ${label} — eng.update budget ${NO_TARGET_ENGINE_UPDATE_BUDGET_MS}ms; edge continues without mutex steal`
-    )
-    // Let workP settle in background; serial inject queue still awaits via mutex chain.
-  }
-  return timedOut ? 'timeout' : 'ok'
-}
-
 /**
  * No-target pointer edge (Explorer level-state) — scene-agnostic systems path.
  * PET on PlayerEntity hitEntity=0 + Camera/PPI + **one** eng.update. No UI settle.
@@ -2425,26 +2208,19 @@ async function runNoTargetPointerEdge(
   setPointerInteractiveTickActive(false)
   setPointerInteractivePhase('inject')
   try {
-    forceReleaseEngineUpdateMutex('no-target-edge')
     const ppi = body.primaryPointer
     if (ppi || body.camera) {
       applyPlayFrameReservedPoses(undefined, body.camera, ppi)
     }
 
     if (phase === 'down') {
-      // Single frame: optional sticky UP inject then DOWN inject, one eng.update.
-      // (Two full updates on plaza freezes the worker for 1–3s and blocks play ticks.)
       const sticky = isIaPointerPressedOnEngine(eng, button)
-      await runBudgetedPointerEngineUpdate('no-target-down', async () => {
-        if (ppi || body.camera) {
-          applyPlayFrameReservedPoses(undefined, body.camera, ppi)
-        }
-        if (sticky) {
-          injectLevelStatePointerEdgeOnEngine(eng, body, 'up')
-        }
-        injectLevelStatePointerEdgeOnEngine(eng, body, 'down')
-        await eng.update(0)
-      })
+      if (ppi || body.camera) {
+        applyPlayFrameReservedPoses(undefined, body.camera, ppi)
+      }
+      if (sticky) injectLevelStatePointerEdgeOnEngine(eng, body, 'up')
+      injectLevelStatePointerEdgeOnEngine(eng, body, 'down')
+      requestSceneEngineTick({ source: 'pointer-edge' })
       if (sticky) {
         workerLog('warn', '[sceneWorker] no-target DOWN sticky-clear — UP+DOWN same eng.update')
       }
@@ -2462,15 +2238,12 @@ async function runNoTargetPointerEdge(
       return
     }
 
-    // UP: one release eng.update. Positive-dt follow-up is cooperative (not edge-critical).
     const mrBefore = countWorkerMeshRenderers(eng)
-    await runBudgetedPointerEngineUpdate('no-target-up', async () => {
-      if (ppi || body.camera) {
-        applyPlayFrameReservedPoses(undefined, body.camera, ppi)
-      }
-      injectLevelStatePointerEdgeOnEngine(eng, body, 'up')
-      await eng.update(0)
-    })
+    if (ppi || body.camera) {
+      applyPlayFrameReservedPoses(undefined, body.camera, ppi)
+    }
+    injectLevelStatePointerEdgeOnEngine(eng, body, 'up')
+    requestSceneEngineTick({ source: 'pointer-edge' })
     const mrAfter = countWorkerMeshRenderers(eng)
     const delta = mrAfter - mrBefore
     const ground = diagnoseLevelStateGroundRay(eng)
@@ -2546,7 +2319,7 @@ async function executePointerHoverEdge(body: InjectPointerClickBody): Promise<vo
       body,
       enter ? PointerEventType.PET_HOVER_ENTER : PointerEventType.PET_HOVER_LEAVE
     )
-    await sceneEngine.update(0)
+    requestSceneEngineTick({ source: 'pointer-edge' })
   } catch (err) {
     workerLog(
       'warn',
@@ -2577,11 +2350,30 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
       (body.hitEntity === 0 || body.hitEntity === undefined) &&
       (body.entity === 1 ||
         (sceneEngine != null && body.entity === (sceneEngine.PlayerEntity as number))))
+  // Explorer: keyboard E/F without a PE mesh are InputHub + play-frame reassert.
+  // Do not run the no-target RTS edge (450ms budget + react-ecs hold).
+  if (
+    treatAsNoTargetEarly &&
+    (button === InputAction.IA_PRIMARY || button === InputAction.IA_SECONDARY)
+  ) {
+    workerLog(
+      'warn',
+      `[sceneWorker] ${label} — keyboard level-state button=${button} (snapshot/reassert; skip no-target)`
+    )
+    postPointerDeliverDone(`${label}-keyboard-level`)
+    return
+  }
   // Track held buttons for press lifecycle. No-target also defers cooperative
   // react-ecs between DOWN and UP so UI thrash does not starve systems on the hold window.
+  const keyboardLevelState =
+    treatAsNoTargetEarly &&
+    (button === InputAction.IA_PRIMARY || button === InputAction.IA_SECONDARY)
   if (phase === 'down' && !body.sceneUi) {
     setWorkerPointerButtonHeld(button, true)
-    if (treatAsNoTargetEarly || body.levelState) setLevelStatePointerHeld(true)
+    // E/F level-state must not hold react-ecs (plaza reel bar / isTriggered HUD).
+    if ((treatAsNoTargetEarly || body.levelState) && !keyboardLevelState) {
+      setLevelStatePointerHeld(true)
+    }
   } else if (phase === 'up' || phase === 'click' || body.sceneUi) {
     setWorkerPointerButtonHeld(button, false)
     if (treatAsNoTargetEarly || body.levelState || phase === 'up' || phase === 'click') {
@@ -2610,9 +2402,9 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
     return
   }
   const eng = sceneEngine
-  if (isEngineUpdateInFlight()) {
-    forceRecoverStuckSceneEngineTick(`${label}-preempt`)
-  }
+  // Do not epoch-kill a live engine.update — SceneLoop law: skip-if-busy, inject
+  // into the store, next pointer-edge tick sees PET. Preempt dropped the tick
+  // that would have consumed the click (plaza PET_UP / getInputCommand).
   pointerDeliveryInFlight = true
   setPointerDeliveryInFlight(true)
   // Main arms ~2s deliver-done watchdog. Scene UI DOWN must finish EventSystem
@@ -2673,8 +2465,9 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
       }
       await flushPointerDeferredOutboundsAsync()
     }
-    // Scene-UI DOWN: never budget-cut before EventSystem sees PET_DOWN.
-    const skipBudgetRace = !!body.sceneUi && phase === 'down'
+    // World PE + sceneUi: never budget-ack before PET lands (plaza Cast Line PET_UP).
+    // No-target still races — a hung plaza eng.update used to pin main 2s and drop to ~13fps.
+    const skipBudgetRace = !treatAsNoTarget
     const ackBudgetMs = treatAsNoTarget
       ? NO_TARGET_ENGINE_UPDATE_BUDGET_MS + 250
       : EDGE_ACK_BUDGET_MS
@@ -2729,7 +2522,7 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
     sceneTicksPaused = false
     postPointerDeliverDone(label)
     resumeSceneTicksAfterPointer()
-    requestSceneEngineTick()
+    requestSceneEngineTick({ source: 'pointer-edge' })
     // CRDT-only delivers queued while inject edge was in-flight must not sit forever
     // (main no longer arms deliver-done for CRDT-only, but residual queue still matters).
     drainQueuedPointerDeliver()
@@ -2812,6 +2605,11 @@ function afterHostLwwSystemsReact(
   if (!sceneEngine || gltfPuts <= 0) return
   const eng = sceneEngine
   const inSyncWindow = performance.now() < mainImClearSyncUntilMs
+  // LoadingState is already in the store. SceneLoop (or hydration) starts the real-dt
+  // tick — do not invent 1/30 extra clocks that steal the play-frame mutex.
+  if (playFrameTickMainDriven) queueSceneEngineTick()
+  else requestSceneEngineTick({ source: 'hydrate' })
+
   // Fast path: terminal GLBs while free-playing and not in freeze-recovery window.
   if (
     terminalPuts > 0 &&
@@ -2819,70 +2617,44 @@ function afterHostLwwSystemsReact(
     !inSyncWindow &&
     !isWorkerDisableAllFrozen(eng)
   ) {
-    // One tick so LoadingState-driven systems see FINISHED — no 3× engine + no forced PF.
-    void runSceneEngineUpdateNow(1 / 30).then(() => publishPlayerFrameIfChanged())
+    publishPlayerFrameIfChanged()
     return
   }
 
   // Invalidate player-frame dedupe so a freeze→clear transition always ships.
   resetPlayerFrameEgressBaseline()
-  void runSceneEngineUpdateNow(1 / 30)
-    .then(() => {
-      publishPlayerFrameIfChanged()
-      // Second tick: freeze-watch may need one more frame after LoadingState lands mid-update.
-      return runSceneEngineUpdateNow(1 / 30)
-    })
-    .then(() => {
-      publishPlayerFrameIfChanged()
-      try {
-        const desc = describeWorkerInputModifier(eng)
-        if (/disableAll=true|frozen=true|latched=true/i.test(desc)) {
-          workerLog('log', `[sceneWorker] InputModifier after ${label} — ${desc}`)
-        }
-      } catch {
-        /* best-effort */
-      }
-      // Third tick for systems that only arm after first LoadingState-visible frame.
-      return runSceneEngineUpdateNow(1 / 30)
-    })
-    .then(() => {
-      // Terminal load-gate: only when locomotion is actually frozen (or recovering).
-      // PE workers: never force-clear — drone/vehicle freezes are intentional after GLB FINISHED.
-      if (terminalPuts > 0 && !portableExperienceWorker) {
-        const cleared = forceClearDisableAllAfterLoadGate(
-          eng,
-          `${label} terminal=${terminalPuts}`
-        )
-        if (cleared) {
-          mainImClearSyncUntilMs = performance.now() + 4000
-          publishForcedPlayerFrameClear(
-            `${label} terminal=${terminalPuts} after load-gate clear`
-          )
-        } else if (performance.now() < mainImClearSyncUntilMs) {
-          publishForcedPlayerFrameClear(
-            `${label} terminal=${terminalPuts} main sync window`
-          )
-        } else {
-          publishPlayerFrameIfChanged()
-        }
-      } else {
-        if (terminalPuts > 0 && portableExperienceWorker) {
-          workerLog(
-            'log',
-            `[sceneWorker] load-gate skip force-clear — PE worker (intentional freeze) terminal=${terminalPuts}`
-          )
-        }
-        publishPlayerFrameIfChanged()
-      }
-      try {
-        const desc = describeWorkerInputModifier(eng)
-        if (/disableAll=true|frozen=true|latched=true/i.test(desc)) {
-          workerLog('log', `[sceneWorker] InputModifier final ${label} — ${desc}`)
-        }
-      } catch {
-        /* best-effort */
-      }
-    })
+  publishPlayerFrameIfChanged()
+  try {
+    const desc = describeWorkerInputModifier(eng)
+    if (/disableAll=true|frozen=true|latched=true/i.test(desc)) {
+      workerLog('log', `[sceneWorker] InputModifier after ${label} — ${desc}`)
+    }
+  } catch {
+    /* best-effort */
+  }
+  // Terminal load-gate: only when locomotion is actually frozen (or recovering).
+  // PE workers: never force-clear — drone/vehicle freezes are intentional after GLB FINISHED.
+  if (terminalPuts > 0 && !portableExperienceWorker) {
+    const cleared = forceClearDisableAllAfterLoadGate(
+      eng,
+      `${label} terminal=${terminalPuts}`
+    )
+    if (cleared) {
+      mainImClearSyncUntilMs = performance.now() + 4000
+      publishForcedPlayerFrameClear(
+        `${label} terminal=${terminalPuts} after load-gate clear`
+      )
+    } else if (performance.now() < mainImClearSyncUntilMs) {
+      publishForcedPlayerFrameClear(
+        `${label} terminal=${terminalPuts} main sync window`
+      )
+    }
+  } else if (terminalPuts > 0 && portableExperienceWorker) {
+    workerLog(
+      'log',
+      `[sceneWorker] load-gate skip force-clear — PE worker (intentional freeze) terminal=${terminalPuts}`
+    )
+  }
 }
 
 function isSealedEngineError(err: unknown): boolean {
@@ -3018,21 +2790,20 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
         } = counts
         const needsTimedSystems = hostInjectNeedsSceneSystems(counts)
         if (needsTimedSystems) {
-          // No sceneTicksPaused — run a one-shot tick; do not open pointer batch lifecycle.
+          // Store is updated. SceneLoop owns positive dt — do not steal the mutex with dt=0.
           workerVerboseLog(
             debugPointerDeliver,
             'log',
             `[sceneWorker] pointer-crdt-deliver — light inject trigger=${triggerAppends} videoEvent=${videoAppends} audio=${audioAppends} assetLoad=${assetLoadAppends} pointer=${pointerAppends} raycast=${raycastPuts} videoPlayer=${videoPlayerPuts} audioSrc=${audioSourcePuts} gltfLoad=${gltfLoadingStatePuts} uiInput=${uiInputResultPuts} uiDropdown=${uiDropdownResultPuts}`
           )
-          afterHostLwwSystemsReact(
-            'pointer-crdt timed systems',
-            gltfLoadingStatePuts,
-            gltfLoadingStateTerminalPuts
-          )
-          if (gltfLoadingStatePuts === 0) {
-            void runSceneEngineUpdateNow(0)
-            requestSceneEngineTick()
+          if (gltfLoadingStatePuts > 0) {
+            afterHostLwwSystemsReact(
+              'pointer-crdt timed systems',
+              gltfLoadingStatePuts,
+              gltfLoadingStateTerminalPuts
+            )
           }
+          requestSceneEngineTick()
           return
         }
         // Tween + host LWW: inject + systems without pause. Real dt when LoadingState lands
@@ -3059,6 +2830,8 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
               gltfLoadingStatePuts,
               gltfLoadingStateTerminalPuts
             )
+          } else if (isSceneLoopOwnsPositiveDt()) {
+            queueSceneEngineTick()
           } else {
             void runSceneEngineUpdateNow(0)
           }
@@ -3681,10 +3454,21 @@ function mergeSendBinaryResponse(body: SendBinaryResponse): SendBinaryResponse {
   return { data: merged }
 }
 
+function chunkHasBytes(chunk: unknown): boolean {
+  if (!chunk) return false
+  if (chunk instanceof Uint8Array) return chunk.byteLength > 0
+  if (chunk instanceof ArrayBuffer) return chunk.byteLength > 0
+  if (typeof (chunk as { byteLength?: number }).byteLength === 'number') {
+    return ((chunk as { byteLength: number }).byteLength || 0) > 0
+  }
+  return false
+}
+
 function sendBinaryBodyHasOutbound(body: SendBinaryRequest): boolean {
-  if (body.data?.some((c) => c.byteLength > 0)) return true
+  if (Array.isArray(body.data) && body.data.some(chunkHasBytes)) return true
+  if (!Array.isArray(body.data) && chunkHasBytes(body.data)) return true
   for (const entry of body.peerData ?? []) {
-    if (entry.data?.some((c) => c.byteLength > 0)) return true
+    if (Array.isArray(entry.data) && entry.data.some(chunkHasBytes)) return true
   }
   return false
 }
@@ -3776,16 +3560,10 @@ function rpcSendBinary(body: SendBinaryRequest): Promise<SendBinaryResponse> {
     maybeKickEmptySendBinaryPoll(performance.now())
     return Promise.resolve(mergeSendBinaryResponse({ data: buffered }))
   }
-  noteSendBinaryPath('wait')
-  const id = ++requestId
-  return new Promise((resolve) => {
-    pendingSendBinary.set(id, (response) => resolve(mergeSendBinaryResponse(response)))
-    ctx.postMessage({
-      type: 'comms-send-binary',
-      id,
-      body: { data: [], peerData: [] }
-    } satisfies SceneWorkerOutbound)
-  })
+  // Empty + no stash: do not await main (plaza postDump 80–400ms). Poll ≤20 Hz for inbound.
+  noteSendBinaryPath('fast')
+  maybeKickEmptySendBinaryPoll(performance.now())
+  return Promise.resolve({ data: [] })
 }
 
 function rpcGetUserData(): Promise<UserDataResponse> {
@@ -3973,7 +3751,7 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
     // Phase 2 — play mode engine ticks are main rAF-driven (play-frame-tick); hydration uses interval.
     const intervalDrivesEngineTick = sceneOnUpdatePaused || !playFrameTickMainDriven
     if (intervalDrivesEngineTick && !pointerBlocksEngineTick() && sceneEngineTickDue(now)) {
-      requestSceneEngineTick()
+      requestSceneEngineTick({ source: 'hydrate' })
     }
   }
 
@@ -4178,7 +3956,6 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
   if (msg.type === 'scene-play-ready') {
     cacheHostReserved(msg.reserved)
     applyHostReservedSceneStore()
-    playReadyPerformanceTier = msg.performanceTier
     portableExperienceWorker = msg.portableExperience === true
     // Do NOT set playFrameTickMainDriven yet — World often notifies play-ready while main still
     // has bootPhaseActive (eval-done resolved, worker `ready` not processed). Switching to
@@ -4194,38 +3971,48 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     )
     // Kick one engine tick so load-freeze systems can see GltfContainerLoadingState FINISHED.
     if (sceneOnStartComplete && sceneEngine) {
-      requestSceneEngineTick()
+      requestSceneEngineTick({ source: 'hydrate' })
     }
     return
   }
   if (msg.type === 'play-frame-tick') {
     if (!playFrameTickMainDriven) {
       playFrameTickMainDriven = true
+      setSceneLoopOwnsPositiveDt(true)
       workerLog('log', '[sceneWorker] first play-frame-tick — main now drives engine ticks')
     }
     // Reserved poses + pointer first — same message as the tick so CameraFollow /
     // fishing bobber systems see live PE + PrimaryPointerInfo before engine.update.
-    if (sceneEngine && (msg.player || msg.camera || msg.primaryPointer)) {
-      applyPlayFrameReservedPoses(msg.player, msg.camera, msg.primaryPointer)
+    if (
+      sceneEngine &&
+      (msg.player ||
+        msg.camera ||
+        msg.primaryPointer ||
+        msg.avatarAttach?.length ||
+        msg.tweenTransforms?.length)
+    ) {
+      applyPlayFrameReservedPoses(
+        msg.player,
+        msg.camera,
+        msg.primaryPointer,
+        msg.avatarAttach,
+        msg.tweenTransforms
+      )
     }
     // Snap active PE-follow anchors even when UI holds engine.update (pointer select / menus).
     snapBoundPeFollowAnchorIfNearPlayer()
     // Reassert level keys every play frame so pollEvents cannot drop isPressed mid-hold
     // AND so isTriggered(PET_DOWN) edges fire every tick (Neurolink drone latches).
     reassertPressedKeysOnEngine()
-    // PE drone/vehicle: residual pointer session after PE UI must not starve engine systems.
-    // Dedicated pump bypasses pointer session while still avoiding mid-inject races.
-    if (portableExperienceWorker && sceneEngine && !sceneOnUpdatePaused) {
-      void runPeVehicleInputPump()
-      ctx.postMessage({ type: 'play-frame-done' } satisfies SceneWorkerOutbound)
-      return
-    }
     // COD B1: play-frame is the sole cooperative clock. Always request eng.update when
     // scene is not fully paused. pointerBlocksTick() only defers mid-inject — not sessions.
     // Do not gate on sceneUpdateInFlight (poll is outside eng.update flight).
     if (sceneEngine && !sceneOnUpdatePaused) {
-      const tickReq = requestSceneEngineTick()
-      if (tickReq === 'idle') {
+      const tickReq = requestSceneEngineTick({ source: 'play-frame' })
+      // Deferred = a tick is already running. PPI/camera were applied above — ack so
+      // main keeps streaming play-frames (Explorer ~rAF). Holding done for 2s made
+      // fishing bobber/line Tweens and cast→idle timers step in multi-second jumps.
+      if (tickReq === 'idle' || tickReq === 'deferred') {
         ctx.postMessage({ type: 'play-frame-done' } satisfies SceneWorkerOutbound)
       }
       // If inject is mid-flight, request queues; still keep VC live poses hot.
@@ -4410,16 +4197,9 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     return
   }
   if (msg.type === 'pump-scene-engine-tick') {
-    // flightPump only for MOVE CAMERA (freeze + unbound). Bound VC + freeze = fixed shot.
-    // PE drone: dedicated pump so residual pointer session cannot drop isTriggered edges.
-    if (isEditFlightMode()) {
-      scheduleSceneInputEngineTick({ flightPump: true })
-    } else if (portableExperienceWorker) {
-      void runPeVehicleInputPump()
-    } else {
-      reassertPressedKeysOnEngine()
-      scheduleSceneInputEngineTick()
-    }
+    // Held keys stay in the store; SceneLoop play-frame is the only positive-dt starter.
+    reassertPressedKeysOnEngine()
+    queueSceneEngineTick()
     return
   }
   if (msg.type !== 'boot') return
@@ -4582,6 +4362,11 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     // Yield so main can paint progress and process heartbeats before the long new Function.
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     reportCompileProgress('compiling scene bundle (new Function) — may take minutes for multi-MB scripts')
+    // ADR-133 / Unity TweenPlugin / Bevy: kernel owns TweenSequence at renderer
+    // framerate. Must be false *before* bundle eval — createTweenSystem reads it
+    // at engine init. If unset, SDK Sequence hops on leftover COMPLETED and zips
+    // multi-leg paths (plaza cast 15×~60ms).
+    ;(globalThis as Record<string, unknown>).ENABLE_SDK_TWEEN_SEQUENCE = false
     sceneEvalInProgress = true
     // Heartbeat while compile runs — new Function is sync so we only tick around it.
     const compileHeartbeat = setInterval(() => {
@@ -4795,8 +4580,6 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
         `eng=${sceneEngine ? 1 : 0} onStart=${sceneOnStartComplete ? 1 : 0}`
     )
     try {
-      forceRecoverStuckSceneEngineTick('inject-received')
-      forceReleaseEngineUpdateMutex('inject-received')
       enqueuePointerInject(body)
     } catch (err) {
       workerLog(

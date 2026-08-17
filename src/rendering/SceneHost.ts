@@ -424,6 +424,19 @@ export class SceneHost {
     }
   }
 
+  /**
+   * Walk the live scene graph and compile GPU programs now (loading overlay).
+   * First-orbit hitch is usually shader compile, not CPU material apply.
+   */
+  compileSceneShaders(): void {
+    try {
+      this.drawWorld.sync(this.camera)
+      this.renderer.compile(this.scene, this.camera)
+    } catch (err) {
+      console.warn('[SceneHost] compileSceneShaders failed', err)
+    }
+  }
+
   /** Draw one frame without starting the animation loop (used after asset hydration). */
   renderFrame(): void {
     if (this.orbitEnabled) this.controls.update()

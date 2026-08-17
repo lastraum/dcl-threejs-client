@@ -104,6 +104,11 @@ export class LightManager {
         light.castShadow = false
         continue
       }
+      if (meta.skipCull) {
+        light.visible = true
+        light.castShadow = false
+        continue
+      }
 
       light.getWorldPosition(this.worldPos)
       const distSq = this.focusPos.distanceToSquared(this.worldPos)

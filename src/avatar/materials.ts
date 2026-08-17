@@ -69,7 +69,8 @@ function isStandardMaterial(mat: THREE.Material): mat is THREE.MeshStandardMater
 }
 
 function applyHex(mat: THREE.MeshStandardMaterial, hex: string): void {
-  mat.color.set(`#${hex}`)
+  // Guest profiles store `#rrggbb`; Catalyst lambdas store `rrggbb`. Always strip.
+  mat.color.copy(hexToColor(hex))
   mat.metalness = 0
   mat.roughness = 1
 }
@@ -141,6 +142,21 @@ export function prepareAvatarMaterials(root: THREE.Object3D): void {
         name.includes('eyelash') ||
         name.includes('fur')
       mat.side = needsDouble ? THREE.DoubleSide : THREE.FrontSide
+      // Wearables are Explorer matte, not scene outdoor PBR. Scene sanitize was
+      // enabling COLOR_0 (black silhouette) and IBL/metal that read as pitch black
+      // after a VRM → DCL swap.
+      if (isStandardMaterial(mat)) {
+        if (!(mat.userData as Record<string, unknown>).dclEmissiveBoosted) {
+          mat.metalness = 0
+          mat.roughness = Math.max(mat.roughness, 0.85)
+          mat.envMap = null
+          mat.envMapIntensity = 0
+        }
+        mat.vertexColors = false
+        if (mat.map) {
+          mat.map.colorSpace = THREE.SRGBColorSpace
+        }
+      }
     }
     // Skinned bounds repaired in repairSkinnedMesh — keep frustum cull on.
   })

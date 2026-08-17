@@ -1,7 +1,7 @@
 import type { Entity } from '@dcl/ecs'
 import type { PBUiTransform } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_transform.gen'
 import type { LayoutBox } from './yogaLayout'
-import { YGPositionType, YGUnit, normalizeYGPositionType } from './yogaEnums'
+import { YGPositionType, YGUnit, normalizeYGPositionType, normalizeYGUnit } from './yogaEnums'
 import { CANVAS_ROOT_ENTITY } from './uiTree'
 import type { VirtualCanvasSize } from './virtualCanvas'
 
@@ -198,12 +198,15 @@ export function repairCollapsedLayoutBoxes(
       h = Math.max(0, pb.height - topEdge - bottomEdge)
     }
 
-    // 100%-ish under a slot cell only — never under a modal/panel (that ballooned NEW badges).
+    // 100% fill: slot cells (shop icons) AND large panels (npc-toolkit dialog card).
+    // Restricting to slot cells left dialog backgrounds at 0×0 (portrait + text only).
     const parentIsSlotCell =
       pb.width >= 24 && pb.height >= 24 && pb.width <= 200 && pb.height <= 200
-    const widthUnit = t.widthUnit ?? YGUnit.UNDEFINED
-    const heightUnit = t.heightUnit ?? YGUnit.UNDEFINED
-    if (parentIsSlotCell) {
+    const parentIsPanel = pb.width > 200 || pb.height > 200
+    const widthUnit = normalizeYGUnit(t.widthUnit)
+    const heightUnit = normalizeYGUnit(t.heightUnit)
+    const isAbsFill = normalizeYGPositionType(t.positionType) === YGPositionType.ABSOLUTE
+    if (parentIsSlotCell || (parentIsPanel && isAbsFill)) {
       if ((w == null || w <= 0.5) && widthUnit === YGUnit.PERCENT && (t.width ?? 0) >= 90) {
         w = (pb.width * (t.width ?? 100)) / 100
       }

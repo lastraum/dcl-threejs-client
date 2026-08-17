@@ -13,6 +13,7 @@ import {
   sanitizeSceneGltfMaterials
 } from './LandscapeAssetSanitizer'
 import { applySceneGltfEmissives } from './sceneGltfEmissives'
+import { bindGltfWaterSurface } from './gltfWaterSurface'
 import { deleteGlbBytes, normalizeGlbCacheKey, readGlbBytes } from './glbByteCache'
 import { fetchGlbBytesOffThread, disposeGlbFetchPool } from './glbFetchPool'
 import { parseGlbOffThread, disposeGlbParsePool } from './glbParsePool'
@@ -376,7 +377,6 @@ export class AssetCache {
       animations: gltf.animations ?? []
     }
     if (options?.wearable) {
-      sanitizeSceneGltfMaterials(entry.root)
       prepareAvatarMaterials(entry.root)
       prepareWearableCacheRoot(entry.root)
     } else if (options?.landscape) {
@@ -385,6 +385,7 @@ export class AssetCache {
       sanitizeSceneGltfColliders(entry.root)
       sanitizeSceneGltfMaterials(entry.root)
       applySceneGltfEmissives(entry.root)
+      bindGltfWaterSurface(entry.root, url, (texUrl) => this.loadTexture(texUrl))
     } else {
       // Emote props (dontsee cards, money particles, hammer) need the same material
       // prep as wearables — sRGB maps + double-side alpha cards; hide colliders only.

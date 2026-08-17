@@ -74,7 +74,7 @@ export function gltfNodeModifiersApplyKey(
   mods: PBGltfNodeModifiers
 ): string {
   entityRoot.updateWorldMatrix(true, true)
-  return `${gltfNodeModifiersSignature(mods)}|${meshMirrorKey(entityRoot)}`
+  return `${gltfNodeModifiersSignature(mods)}|${meshMirrorKey(entityRoot)}|v3`
 }
 
 /** True when last apply used a different mirror fingerprint (e.g. scale.x landed late). */
@@ -133,12 +133,16 @@ export async function applyGltfNodeModifiersToEntity(
       if (mod.material) {
         const pb = mod.material as PbMaterial
 
-        // Video screens: visible from either side (Creator Hub plane GLBs).
+        // Video screens: Explorer FrontSide faces the house. DoubleSide showed the
+        // mirrored back when the camera was on the authored front.
         if (materialHasVideoTexture(pb)) {
-          mesh.userData.primitiveDoubleSided = true
+          mesh.userData.primitiveDoubleSided = false
+          const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+          for (const mat of mats) {
+            if (mat) mat.side = THREE.FrontSide
+          }
         }
 
-        // gltfNodeModifier: static maps may need U flip on LH-mirrored GLB UVs (event boards).
         // Material apply also sets mesh.castShadow from Material.castShadows — path override below wins.
         const ok = await materials.applyToMesh(mesh, pb, { gltfNodeModifier: true })
         if (!ok) allOk = false
@@ -271,8 +275,13 @@ function findNodesByPath(
   const [head, ...rest] = segments
   if (!head) return []
 
-  // First segment: search the whole subtree (modifier paths name Groups anywhere under root).
+  // First segment: Unity/glTF paths often include the asset root
+  // (`AnimatedBanner/AnimatedBanner02/...`). The clone root *is* that node —
+  // skip-self search would miss every modifier.
   const heads: THREE.Object3D[] = []
+  if (visual.name && namesEqual(visual.name, head, ignoreCase)) {
+    heads.push(visual)
+  }
   visual.traverse((obj) => {
     if (obj === visual) return
     if (obj.name && namesEqual(obj.name, head, ignoreCase)) heads.push(obj)
@@ -281,7 +290,9 @@ function findNodesByPath(
 
   if (rest.length === 0) return heads
 
-  // Remaining segments: direct-child name walk (hierarchy path).
+  // Remaining segments: prefer direct children (Unity Find), then any descendant.
+  // AnimatedBanner.glb inserts empties between authored path parts — direct-only
+  // missed every leaf and left the default astronaut albedo.
   const results: THREE.Object3D[] = []
   for (const start of heads) {
     let cursors: THREE.Object3D[] = [start]
@@ -292,12 +303,30 @@ function findNodesByPath(
           if (child.name && namesEqual(child.name, seg, ignoreCase)) next.push(child)
         }
       }
+      if (!next.length) {
+        for (const cur of cursors) {
+          cur.traverse((obj) => {
+            if (obj === cur) return
+            if (obj.name && namesEqual(obj.name, seg, ignoreCase)) next.push(obj)
+          })
+        }
+      }
       cursors = next
       if (!cursors.length) break
     }
     results.push(...cursors)
   }
-  return results
+  if (results.length) return results
+
+  // Last-segment unique leaf (path "A/B/Mesh" when only Mesh survived sanitize).
+  const leaf = segments[segments.length - 1]
+  if (!leaf) return []
+  const leaves: THREE.Object3D[] = []
+  visual.traverse((obj) => {
+    if (obj === visual) return
+    if (obj.name && namesEqual(obj.name, leaf, ignoreCase)) leaves.push(obj)
+  })
+  return leaves
 }
 
 function collectDescendantMeshes(root: THREE.Object3D): THREE.Mesh[] {

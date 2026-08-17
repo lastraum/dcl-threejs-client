@@ -268,6 +268,10 @@ pointerEventsSystem.onPointerDown(
 
 That **is** `ability.spawn(origin, direction, distance)`. `${}` is just JS inside the string.
 
+Add the spawn Tag **anywhere you want to trigger** the shader — a pointer callback, a timer, another system, not only a click.
+
+This client only — Unity / Bevy do not treat Tags as a shader bus.
+
 | You write | Role |
 | --- | --- |
 | `tjs.shader(ice, assets/shaders/IceAbility.js)` | Load that file as `ice` |

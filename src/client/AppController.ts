@@ -2035,11 +2035,8 @@ export class AppController {
       },
       onOpenUserProfile: (address) => this.socialChat?.openProfileForAddress(address),
       startCastWatch: (host, onUpdate, castOpts) =>
-        target.kind === 'localpreview'
-          ? Promise.resolve(() => {})
-          : this.startLandingCastWatch(target, host, onUpdate, castOpts),
+        this.startLandingCastWatch(target, host, onUpdate, castOpts),
       onLiveToolsMenu: (anchor) => {
-        if (target.kind === 'localpreview') return
         if (!this.liveToolsUi) {
           // LiveKit may still be connecting — start session now and open menu.
           void this.setupLandingLiveTools(target).then(() => this.liveToolsUi?.openMenuAt(anchor))

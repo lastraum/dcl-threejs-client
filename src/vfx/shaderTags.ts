@@ -81,7 +81,7 @@ export function expandScriptSource(source: string): string {
   try {
     const b64 = source.slice(idx + marker.length).trim().split(/\s/)[0] ?? ''
     const json = JSON.parse(decodeBase64(b64)) as { sourcesContent?: unknown }
-    const extra = (json.sourcesContent ?? [])
+    const extra = (Array.isArray(json.sourcesContent) ? json.sourcesContent : [])
       .filter((row): row is string => typeof row === 'string')
       .join('\n')
     return extra ? `${source}\n${extra}` : source

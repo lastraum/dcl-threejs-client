@@ -1403,14 +1403,16 @@ export class SceneScriptSystem {
       MeshRenderer,
       Animator,
       AvatarShape,
-      Billboard
+      Billboard,
+      VisibilityComponent
     } = this.readComponents
 
     if (spriteSlot) {
       if (
         componentId === PointerEvents.componentId ||
         componentId === MeshCollider.componentId ||
-        (componentId === MeshRenderer.componentId && PointerEvents.has(entity))
+        (componentId === MeshRenderer.componentId && PointerEvents.has(entity)) ||
+        (componentId === VisibilityComponent.componentId && PointerEvents.has(entity))
       ) {
         this.pointerStructureDirty = true
       }
@@ -1459,7 +1461,11 @@ export class SceneScriptSystem {
       componentId === PointerEvents.componentId ||
       componentId === GltfContainer.componentId ||
       (componentId === MeshRenderer.componentId && PointerEvents.has(entity)) ||
-      componentId === MeshCollider.componentId
+      componentId === MeshCollider.componentId ||
+      // Plaza close_button: Visibility false at spawn, true on open. Hidden visible-class
+      // meshes are omitted from pointerTargets — must rebuild when they reappear.
+      (componentId === VisibilityComponent.componentId &&
+        (PointerEvents.has(entity) || GltfContainer.has(entity) || MeshCollider.has(entity)))
     ) {
       this.pointerStructureDirty = true
     }
@@ -4051,6 +4057,7 @@ export class SceneScriptSystem {
         const tweenId = Tween.componentId
         const tweenSeqId = TweenSequence.componentId
         const visibilityId = VisibilityComponent.componentId
+        const particleId = this.readComponents.ParticleSystem.componentId
         // Pose-fast path: Transform/Tween **and** Visibility + TweenSequence.
         // GP fishing hide (press_e plane / bobber) is jI(): visible=false + tween deletes +
         // parent stash — if Visibility waits on the async otherMotion drain it sticks on screen
@@ -4066,7 +4073,8 @@ export class SceneScriptSystem {
               cid === transformId ||
               cid === tweenId ||
               cid === tweenSeqId ||
-              cid === visibilityId
+              cid === visibilityId ||
+              cid === particleId
             ) {
               pose.set(cid, kind)
               if (cid === tweenId) tweenEntities.push(entity)
@@ -4678,7 +4686,8 @@ export class SceneScriptSystem {
       componentId === c.Transform.componentId ||
       componentId === c.Tween.componentId ||
       componentId === c.TweenSequence.componentId ||
-      componentId === c.VisibilityComponent.componentId
+      componentId === c.VisibilityComponent.componentId ||
+      componentId === c.ParticleSystem.componentId
     )
   }
 
@@ -7170,6 +7179,9 @@ export class SceneScriptSystem {
   /** Sync-frame sprite UV only — tiny tracked set, not a full MeshRenderer walk. */
   syncAnimatedSprites(): void {
     this.bridge?.syncAnimatedPlaneUvs()
+    // Sprite setPlane (plaza qW fish rings) writes Visibility=false on the last
+    // cell. Re-apply after the UV patch so a mesh rebuild cannot leave the ring up.
+    this.bridge?.syncEcsVisibility(this.bridge.entitiesWithVisibility())
   }
 
   /** Budgeted material texture retries on the render thread — not tied to projection diff drain. */

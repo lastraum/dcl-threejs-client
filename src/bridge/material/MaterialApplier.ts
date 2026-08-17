@@ -618,21 +618,23 @@ export class MaterialApplier {
     const geo = mesh.geometry as THREE.BufferGeometry | undefined
     const marqueeAtlas = !!geo?.userData?.dclTextAlongYBasis
     const flipY = !marqueeAtlas && !options?.gltfNodeModifier
-    // ── Plaza event-card law (from Genesis bin/index.js + event_card_thumbnail.glb) ──
-    // Bundle: GltfContainer(event_card_thumbnail.glb) + GltfNodeModifiers path "" unlit
-    //   Texture.Common({ src: event.thumbnailSrc }) — live events CDN poster (L→R correct).
-    // GLB mesh `thumbnail_plane`: XY card, extent X=2 Y=1 Z=0; UVs LH-mirrored
-    //   (u@x=-1 → 1, u@x=+1 → 0). Parent scale is +ve (5,5,1) — not scale.x=-1.
-    // Texture ST flips were undone by Material re-apply / TextureMove. **Geometry U flip**
-    // normalizes LH UVs once (cloned buffer) and survives re-apply. Texture map-U flip is
-    // reserved for MeshRenderer planes with world scale.x < 0 (Poker boards, etc.).
+    // GltfNodeModifiers keep authored glTF UVs. Do not geometry-U-flip flat cards —
+    // that mirrored every event/calendar Texture.Common (Explorer uses the GLB as-is).
+    // VideoTexture is *shared* (one decode → many screens) so we never flipY on the
+    // texture. Per-mesh geometry V runs only when the video is actually bound —
+    // mutating UVs on the black unlit first pass made theatre first-paint wrong.
     const worldMirror = objectWorldMirrorX(mesh)
-    const uvMirror = meshUvMapsUMirroredHorizontal(mesh)
     const isGltfMaterialPath = !!options?.gltfNodeModifier && !marqueeAtlas
-    // Event-card quads only. Curved marquees (uvAnimScreen) fail the U-mirror heuristic
-    // and a geometry U flip slides the LED border onto the side faces.
+    const videoUnion = coerceTextureUnion(inner.texture)
+    const videoPlayerEntity =
+      videoUnion?.tex?.$case === 'videoTexture'
+        ? videoUnion.tex.videoTexture.videoPlayerEntity
+        : undefined
+    const videoBound =
+      videoPlayerEntity !== undefined && !!this.getVideoTexture?.(videoPlayerEntity)
     if (isGltfMaterialPath) {
-      ensureGeometryUFlipped(mesh, isFlatCardGeometry(mesh.geometry) && uvMirror)
+      ensureGeometryUFlipped(mesh, false)
+      ensureGeometryVFlipped(mesh, videoBound)
     }
     // After UV normalize, only cancel world reflection via texture ST.
     const flipMapU =
@@ -1004,22 +1006,6 @@ function getTextureDef(union?: TextureUnion): TextureDef | undefined {
   return coerced?.tex?.$case === 'texture' ? coerced.tex.texture : undefined
 }
 
-/** Event-card / poster quads — not curved marquees or furniture. */
-function isFlatCardGeometry(geo: THREE.BufferGeometry | undefined): boolean {
-  if (!geo) return false
-  const pos = geo.getAttribute('position')
-  if (!pos || pos.count > 12) return false
-  if (!geo.boundingBox) geo.computeBoundingBox()
-  const box = geo.boundingBox
-  if (!box) return false
-  const sx = box.max.x - box.min.x
-  const sy = box.max.y - box.min.y
-  const sz = box.max.z - box.min.z
-  const thick = Math.min(sx, sy, sz)
-  const wide = Math.max(sx, sy, sz)
-  return wide > 1e-4 && thick / wide < 0.08
-}
-
 /**
  * Flip geometry U in place (1−u). Idempotent via mesh.userData.dclGeomUFlipped.
  * Clones geometry first so shared GLB buffers are not mutated for every instance.
@@ -1042,6 +1028,26 @@ function ensureGeometryUFlipped(mesh: THREE.Mesh, want: boolean): void {
   }
   uv.needsUpdate = true
   mesh.userData.dclGeomUFlipped = want
+}
+
+/** Flip geometry V in place (1−v). Same clone rules as U. Does not touch VideoTexture. */
+function ensureGeometryVFlipped(mesh: THREE.Mesh, want: boolean): void {
+  const cur = !!mesh.userData.dclGeomVFlipped
+  if (cur === want) return
+  let geo = mesh.geometry as THREE.BufferGeometry | undefined
+  if (!geo) return
+  if (!mesh.userData.dclGeomUOwned) {
+    geo = geo.clone()
+    mesh.geometry = geo
+    mesh.userData.dclGeomUOwned = true
+  }
+  const uv = geo.getAttribute('uv') as THREE.BufferAttribute | undefined
+  if (!uv || uv.count < 1) return
+  for (let i = 0; i < uv.count; i++) {
+    uv.setY(i, 1 - uv.getY(i))
+  }
+  uv.needsUpdate = true
+  mesh.userData.dclGeomVFlipped = want
 }
 
 /**

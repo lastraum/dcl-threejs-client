@@ -671,10 +671,17 @@ function applyAtlasUvAsImgStrip(
   img.style.right = 'auto'
   img.style.bottom = 'auto'
   // UV quad → element: scale so (uSpan,vSpan) fills parent; offset so (u0, v1) is top-left.
-  img.style.width = `${(100 / uSpan).toFixed(5)}%`
-  img.style.height = `${(100 / vSpan).toFixed(5)}%`
-  img.style.left = `${((-u0 / uSpan) * 100).toFixed(5)}%`
-  img.style.top = `${((-(1 - v1) / vSpan) * 100).toFixed(5)}%`
+  const w = `${(100 / uSpan).toFixed(5)}%`
+  const h = `${(100 / vSpan).toFixed(5)}%`
+  const left = `${((-u0 / uSpan) * 100).toFixed(5)}%`
+  const top = `${((-(1 - v1) / vSpan) * 100).toFixed(5)}%`
+  const cropKey = `${w}|${h}|${left}|${top}|${clamp01(colorAlpha)}`
+  if (el.dataset.dclUiBgCrop === cropKey) return 'done'
+  img.style.width = w
+  img.style.height = h
+  img.style.left = left
+  img.style.top = top
+  el.dataset.dclUiBgCrop = cropKey
   return 'done'
 }
 

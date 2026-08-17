@@ -238,11 +238,10 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
 }
 
 /**
- * After TweenState COMPLETED inject + eng.update(0), TweenSequence may createOrReplace the
- * next leg while TweenState is still COMPLETED. SDK createTweenSystem then treats the new
- * tween as already finished (isCompleted) — Genesis blimp TL_RESTART only runs one orbit.
+ * Legacy helper for ENABLE_SDK_TWEEN_SEQUENCE=true (pre-7.13 scenes).
+ * Kernel Sequence (ADR-133) is the Explorer path — do not call this before eng.update
+ * (it swallows COMPLETED). Kept for old-SDK Sequence leftover COMPLETED after hop.
  *
- * Re-arm ACTIVE for playing sequence/loop tweens still marked COMPLETED.
  * @returns number of entities re-armed
  */
 export function rearmTweenStateAfterSequenceAdvance(engine: IEngine): number {

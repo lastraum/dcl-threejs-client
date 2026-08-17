@@ -74,7 +74,11 @@ import type { PBGltfNodeModifiers } from '@dcl/ecs/dist/components/generated/pb/
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
 import type { DrawWorld } from '../rendering/DrawWorld'
-import { bindGltfWaterSurface } from '../rendering/gltfWaterSurface'
+import {
+  bindGltfWaterSurface,
+  isGltfWaterSurfaceRoot,
+  isGltfWaterSurfaceSrc
+} from '../rendering/gltfWaterSurface'
 
 import { gltfLoadingStateLabel, isGltfLoadingStateVerbose } from './gltfLoadingStateConfig'
 
@@ -339,6 +343,8 @@ export class ThreeBridge {
   private readonly emptyGltfHashes = new Set<string>()
   private readonly loggedEmptyGltfSrcs = new Set<string>()
   private readonly loggedGltfAttachFailures = new Set<string>()
+  /** Content hashes that already have a clone or instance in the graph. */
+  private readonly seenGltfAttachHashes = new Set<string>()
   private onGltfAttached: ((entity: Entity) => void) | null = null
   /** Invalidate billboard facing cache (hide→show press_e / missed-it). */
   private invalidateBillboardFacing: ((entity: Entity) => void) | null = null
@@ -3214,9 +3220,9 @@ export class ThreeBridge {
       if (!ok && !obj.userData.dclGltfNodeModPathMissLogged) {
         obj.userData.dclGltfNodeModPathMissLogged = true
       }
-      if (ok || obj.userData.dclGltfNodeModPathMissLogged) {
-        this.pendingGltfNodeModEntities.delete(entity)
-      }
+      // Texture.Common (sheet banners) may miss the first tick — keep retrying.
+      // Path-miss log is diagnostic only; do not drop the pending.
+      if (ok) this.pendingGltfNodeModEntities.delete(entity)
       processed++
     }
   }
@@ -3906,6 +3912,7 @@ export class ThreeBridge {
     if (this.ecs.GltfContainer.has(entity)) {
       const src = this.ecs.GltfContainer.get(entity).src?.trim() ?? ''
       if (isFishingMotionGltfSrc(src)) return false
+      if (isGltfWaterSurfaceSrc(src) || isGltfWaterSurfaceRoot(template.root)) return false
     }
     // TextureMove / scale / move tweens need private hierarchy (bounce, bobber float).
     if (this.ecs.Tween.has(entity)) {
@@ -4151,6 +4158,7 @@ export class ThreeBridge {
           }
           this.notifyMeshComponent(entity, this.ecs.GltfContainer.componentId)
           this.notifyGltfAttached(entity)
+          this.seenGltfAttachHashes.add(hash)
           this.attachedSceneGltfCount++
           // Inventory: count template once per entity for HUD (instance draws share GPU geo).
           const tris = result.templateTris || templateTris
@@ -4221,20 +4229,23 @@ export class ThreeBridge {
       // Fishing bobber/line/rod: never freeze — setBobberPosition + float Tweens every frame;
       // frozen host matrices left aim/cast meshes invisible or stuck at origin under load.
       const fishingMotion = isFishingMotionGltfSrc(src)
+      const waterSurface = isGltfWaterSurfaceSrc(src) || isGltfWaterSurfaceRoot(clone)
       if (
         !fishingMotion &&
+        !waterSurface &&
         !this.ecs.Animator.has(entity) &&
         template.animations.length === 0
       ) {
         freezeStaticObject3D(clone)
-        // Unique GLBs (theatre, buildings) cannot instance. Merge same-material
-        // leaves including authored names — pointer still hits the entity.
-        mergeStaticGltfLeaves(clone, { namedOk: true })
+        // Generic exporter names only. Authored names are GltfNodeModifiers.path
+        // targets (Updates banners, store windows) — merging them leaves the
+        // default GLB albedo on every clone.
+        mergeStaticGltfLeaves(clone, { namedOk: false })
         obj.matrixAutoUpdate = false
         obj.updateMatrix()
       } else {
         obj.matrixAutoUpdate = true
-        if (fishingMotion) unfreezeObject3D(clone)
+        if (fishingMotion || waterSurface) unfreezeObject3D(clone)
       }
       this.bindDrawVisual(obj, clone)
       const visComp = this.ecs.VisibilityComponent
@@ -4244,6 +4255,7 @@ export class ThreeBridge {
       }
       this.notifyMeshComponent(entity, this.ecs.GltfContainer.componentId)
       this.notifyGltfAttached(entity)
+      this.seenGltfAttachHashes.add(hash)
       this.attachedSceneGltfCount++
       this.attachedSceneTris += templateTris
       // Same-frame GltfNodeModifiers (event card posters) — don't wait for deferred budget.
@@ -4370,10 +4382,10 @@ export class ThreeBridge {
     if (GltfContainer.has(entity)) {
       const { src } = GltfContainer.get(entity)
       const fishingMotion = isFishingMotionGltfSrc(src)
-      // Fishing bobber/line/rod — never instance; attach this frame even under play budget=1.
-      if (fishingMotion) obj.userData.dclForceCloneAttach = true
+      const waterSurface = isGltfWaterSurfaceSrc(src)
       const hash = hashFromSrc(src, this.sceneConfig)
       const srcKey = hash ?? src.trim()
+      const firstOfHash = !!hash && !this.seenGltfAttachHashes.has(hash)
       let mesh = this.getEntityVisual(obj, mk) as THREE.Object3D | undefined
 
       if (!hash) {
@@ -4426,9 +4438,6 @@ export class ThreeBridge {
         // In-flight / re-src — scene can poll LOADING until FINISHED.
         this.setGltfLoadingState(entity, 1 /* LOADING */)
 
-        // Non-fishing: respect per-frame budget. Fishing: always proceed (cast must show bobber).
-        if (!fishingMotion && this.gltfBudgetRemaining <= 0) return
-
         const template = this.cache.peekCached(cacheKey)
         const templateTris = template
           ? ((template.root.userData.dclTriCount as number | undefined) ??
@@ -4441,9 +4450,8 @@ export class ThreeBridge {
 
         // Cold: schedule parse off the frame path — never await load() here.
         if (!template) {
-          // Fishing: always schedule load even if budget exhausted.
-          if (fishingMotion || this.gltfBudgetRemaining > 0) {
-            if (!fishingMotion) this.gltfBudgetRemaining--
+          if (fishingMotion || waterSurface || this.gltfBudgetRemaining > 0) {
+            if (!fishingMotion && !waterSurface) this.gltfBudgetRemaining--
             this.scheduleBackgroundLoad(url, isLocal ? url : hash, cacheKey)
             if (fishingMotion) {
               const leaf = src.split('/').pop() ?? src
@@ -4457,9 +4465,16 @@ export class ThreeBridge {
           return
         }
 
-        // Large *clones* off the attach pass — except fishing (must not wait behind disco queue).
+        // First copy of a hash that cannot GPU-instance (high-leaf env kit, water,
+        // motion) attaches now. Repeat large clones wait in the idle queue.
+        const uniqueClone = firstOfHash && !this.canInstanceAttach(entity, template)
+        const attachNow = fishingMotion || waterSurface || uniqueClone
+        if (attachNow) obj.userData.dclForceCloneAttach = true
+
+        if (!attachNow && this.gltfBudgetRemaining <= 0) return
+
         if (
-          !fishingMotion &&
+          !attachNow &&
           !obj.userData.dclForceIdleAttach &&
           templateTris >= ThreeBridge.LARGE_TEMPLATE_TRIS &&
           !this.canInstanceAttach(entity, template)
@@ -4468,7 +4483,7 @@ export class ThreeBridge {
           return
         }
 
-        if (!fishingMotion) this.gltfBudgetRemaining--
+        if (!attachNow) this.gltfBudgetRemaining--
         if (!this.attachCachedGltf(entity, obj, mk, src, srcKey, hash, template, templateTris)) {
           if (fishingMotion) {
             clientDebugLog.log(

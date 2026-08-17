@@ -26,9 +26,12 @@ const THREE_BOX_FACE_CORNER_TO_THREE: ReadonlyArray<readonly number[]> = [
  * - South: lower-right, lower-left, upper-left, upper-right (BR, BL, TL, TR)
  */
 const DEFAULT_DCL_PLANE_UVS = [
+  // North: docs BL,BR,TR,TL — V=0 at the bottom. NftShape / TextShape / default
+  // MeshRenderer planes view +Z (FrontSide). Inverting north to “fix” one
+  // Billboard lookAt hung every NFT and canvas plane upside-down.
   0, 0, 1, 0, 1, 1, 0, 1,
-  // South face (normal −Z): V inverted so Three BM_ALL lookAt (−Z toward camera)
-  // shows the texture upright. Unity Billboard presents +Z/north; we present −Z/south.
+  // South (−Z): V inverted so Three BM_ALL lookAt (−Z toward camera) reads upright.
+  // Unity Billboard presents +Z/north; we present −Z/south.
   1, 1, 0, 1, 0, 0, 1, 0
 ]
 
@@ -53,7 +56,7 @@ const DCL_PLANE_NORTH_CORNER_TO_THREE = [3, 2, 0, 1]
 const DCL_PLANE_SOUTH_CORNER_TO_THREE = [2, 3, 1, 0]
 
 /** Bump when plane topology/UV layout changes — busts primitiveMeshKey mesh cache. */
-const PLANE_GEOMETRY_REVISION = 'v23'
+const PLANE_GEOMETRY_REVISION = 'v27'
 
 /**
  * userData: marquee atlas plane. MaterialApplier: flipY=false, FrontSide only.
@@ -297,8 +300,8 @@ function planeUvsMapTextAlongLocalY(rawUvs: readonly number[]): boolean {
 
 /**
  * Build south-face UVs (BR, BL, TL, TR) from north (BL, BR, TR, TL) with U mirrored.
- * Matches docs south packing (BR, BL, TL, TR) with U mirrored. Default full-tile
- * south also inverts V so Three lookAt (−Z) billboards read upright.
+ * Matches docs south packing (BR, BL, TL, TR) with U mirrored so both faces read L→R.
+ * Default full-tile south (16-float DEFAULT) also inverts V for BM_ALL lookAt.
  */
 function mirrorSouthPlaneUvs(north: readonly number[]): number[] {
   const blU = north[0] ?? 0
@@ -335,26 +338,25 @@ function buildMarqueePlaneGeometry(north: readonly number[]): THREE.BufferGeomet
   const vTop = Math.min(vA, vB)
   const vBot = Math.max(vA, vB)
 
-  const geometry = new THREE.PlaneGeometry(1, 1)
-  const normals = geometry.getAttribute('normal')
-  const uv = geometry.getAttribute('uv')
-  if (!(normals instanceof THREE.BufferAttribute) || !(uv instanceof THREE.BufferAttribute)) {
-    return geometry
-  }
-
-  // Inward front face (toward plaza / camera).
-  for (let i = 0; i < normals.count; i++) normals.setXYZ(i, 0, 0, -1)
-  normals.needsUpdate = true
-  // CCW when viewed from −Z (front).
-  geometry.setIndex([0, 1, 2, 1, 3, 2])
-
-  // From −Z, local +X is screen-left → text start (u0) on +X (TR/BR).
-  uv.setXY(0, u1, vTop) // TL −X
-  uv.setXY(1, u0, vTop) // TR +X
-  uv.setXY(2, u1, vBot) // BL −X
-  uv.setXY(3, u0, vBot) // BR +X
-  uv.needsUpdate = true
-
+  // Dual-face (Explorer MeshRenderer plane). Single inward FrontSide vanished
+  // when a facade's +Z already faced the street (Updates / uvAnimWords).
+  // −Z inward + +Z outward, U flipped on +X so both sides read L→R.
+  const positions = new Float32Array([
+    -0.5, 0.5, 0, 0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, -0.5, 0,
+    -0.5, 0.5, 0, 0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, -0.5, 0
+  ])
+  const normals = new Float32Array([
+    0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1
+  ])
+  const uvs = new Float32Array([
+    u1, vTop, u0, vTop, u1, vBot, u0, vBot,
+    u0, vTop, u1, vTop, u0, vBot, u1, vBot
+  ])
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2))
+  geometry.setIndex([0, 1, 2, 1, 3, 2, 4, 6, 5, 5, 6, 7])
   geometry.userData[DCL_TEXT_ALONG_Y_BASIS] = true
   return geometry
 }
@@ -431,10 +433,16 @@ export function updatePlaneGeometryUvs(geometry: THREE.BufferGeometry, uvs: numb
     const u1 = north[6] ?? 0
     const vTop = Math.min(vA, vB)
     const vBot = Math.max(vA, vB)
-    attr.setXY(0, u1, vTop) // TL −X
-    attr.setXY(1, u0, vTop) // TR +X
-    attr.setXY(2, u1, vBot) // BL −X
-    attr.setXY(3, u0, vBot) // BR +X
+    attr.setXY(0, u1, vTop) // −Z TL
+    attr.setXY(1, u0, vTop)
+    attr.setXY(2, u1, vBot)
+    attr.setXY(3, u0, vBot)
+    if (attr.count >= 8) {
+      attr.setXY(4, u0, vTop) // +Z TL (U flipped)
+      attr.setXY(5, u1, vTop)
+      attr.setXY(6, u0, vBot)
+      attr.setXY(7, u1, vBot)
+    }
     attr.needsUpdate = true
     geometry.userData[DCL_TEXT_ALONG_Y_BASIS] = true
     return true

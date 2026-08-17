@@ -720,6 +720,19 @@ export class PointerEventsSystem {
     if (!this.canQueuePointerDown(action, hit)) {
       const level = this.buildLevelStatePointerHit()
       if (level && this.canQueuePointerDown(action, level)) {
+        // Explorer: E/F without a PE mesh are level-state (InputHub snapshot +
+        // play-frame reassert → isTriggered). A no-target pointer inject on
+        // PlayerEntity holds react-ecs until UP (plaza reel bar) and runs the
+        // empty-ground edge (GAME ENDED / shrug).
+        if (action === InputAction.IA_PRIMARY || action === InputAction.IA_SECONDARY) {
+          if (action === InputAction.IA_PRIMARY) this.primaryKeyDown = true
+          clientDebugLog.log(
+            'pointer',
+            `${label} — level-state (no PE target; snapshot + reassert)`,
+            { alsoConsole: true }
+          )
+          return
+        }
         hit = level
       } else {
         if (hit) {
@@ -794,6 +807,10 @@ export class PointerEventsSystem {
       if (!this.canQueuePointerDown(action, hit)) {
         const level = this.buildLevelStatePointerHit()
         if (level && this.canQueuePointerDown(action, level)) {
+          if (action === InputAction.IA_PRIMARY || action === InputAction.IA_SECONDARY) {
+            if (action === InputAction.IA_PRIMARY) this.primaryKeyDown = true
+            return
+          }
           hit = level
         } else {
           if (hit) this.logInteractBlocked(binding.label, action, hit)

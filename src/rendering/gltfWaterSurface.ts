@@ -25,6 +25,17 @@ export function isGltfWaterSurfaceSrc(src: string | undefined | null): boolean {
   return !!src && WATER_SURFACE_RE.test(src)
 }
 
+/** Hash-only load URLs have no filename — detect the collider node instead. */
+export function isGltfWaterSurfaceRoot(root: THREE.Object3D | undefined | null): boolean {
+  if (!root) return false
+  let found = false
+  root.traverse((node) => {
+    if (found) return
+    if (WATER_SURFACE_RE.test(node.name || '')) found = true
+  })
+  return found
+}
+
 function findExistingWaterVisual(root: THREE.Object3D): THREE.Mesh | null {
   let hit: THREE.Mesh | null = null
   root.traverse((node) => {
@@ -89,6 +100,7 @@ function ensureVisibleWaterMesh(root: THREE.Object3D): THREE.Mesh | null {
   visual.userData.dclWaterVisual = true
   visual.userData.dclWaterSurface = true
   visual.visible = true
+  visual.frustumCulled = false
   visual.matrixAutoUpdate = true
   src.updateWorldMatrix(true, false)
   visual.position.set(0, 0, 0)
@@ -109,7 +121,13 @@ export function bindGltfWaterSurface(
   src: string,
   loadTexture: (url: string) => Promise<THREE.Texture>
 ): void {
-  if (!isGltfWaterSurfaceSrc(src) && !isGltfWaterSurfaceSrc(root.name)) return
+  if (
+    !isGltfWaterSurfaceSrc(src) &&
+    !isGltfWaterSurfaceSrc(root.name) &&
+    !isGltfWaterSurfaceRoot(root)
+  ) {
+    return
+  }
 
   // Law: collider class stays invisible even when this GLB is the water disk.
   root.traverse((node) => {

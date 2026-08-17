@@ -1074,13 +1074,10 @@ export async function runSceneEnginePointerTick(
     }
 
     if (phase === 'down') {
-      // One eng.update only — multi-update freezes plaza cooperative ticks.
       const sticky = isIaPointerPressedOnEngine(eng, splitPointerInject.button)
-      await runSerializedEngineUpdate(async () => {
-        if (sticky) injectLevelStatePointerEdgeOnEngine(eng, splitPointerInject, 'up')
-        injectLevelStatePointerEdgeOnEngine(eng, splitPointerInject, 'down')
-        await eng.update(0)
-      })
+      if (sticky) injectLevelStatePointerEdgeOnEngine(eng, splitPointerInject, 'up')
+      injectLevelStatePointerEdgeOnEngine(eng, splitPointerInject, 'down')
+      requestSceneEngineTick({ source: 'pointer-edge' })
       if (sticky) {
         pointerProofLog(
           '[sceneWorker] no-target DOWN sticky-clear — UP+DOWN same eng.update'
@@ -1108,13 +1105,9 @@ export async function runSceneEnginePointerTick(
       return
     }
 
-    // phase === 'up' — no-target only (world mesh returned above).
     const mrBefore = countWorkerMeshRenderer(eng)
-    await runSerializedEngineUpdate(async () => {
-      injectLevelStatePointerEdgeOnEngine(eng, splitPointerInject, 'up')
-      await eng.update(0)
-    })
-    // No-target: no second eng.update on the edge (plaza FPS). Cooperative tick follows.
+    injectLevelStatePointerEdgeOnEngine(eng, splitPointerInject, 'up')
+    requestSceneEngineTick({ source: 'pointer-edge' })
     cfg.onAfterEngineTick?.()
     if (isLevelState) {
       try {

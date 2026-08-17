@@ -11,7 +11,9 @@
  *
  * App-owned same-origin bases (/api/places, /api/marketplace, /api/dcl-auth-api, …)
  * stay as fixed contracts for main-thread UI — they are not replaced by this helper.
- * Absolute URLs from scene scripts always go through this one pipe when eligible.
+ * Scene worker `fetch` tries the real URL first (Explorer). This helper builds
+ * the fallback path for hosts that fail browser CORS. SignedFetch still
+ * transports via this pipe so the signature stays on the original URL.
  */
 
 export const SCENE_HTTP_PROXY_PREFIX = '/api/scene-http'

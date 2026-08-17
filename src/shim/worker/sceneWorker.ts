@@ -66,10 +66,7 @@ import { nextWorkerPointerEventTimestamp } from './workerPointerEventTimestamp'
 import { PointerEventType } from '../../input/pointerConstants'
 import { InputAction, type InputActionValue } from '../../input/pointerConstants'
 import { injectRendererGrowOnlyAppendsOnEngine } from './injectRendererGrowOnlyAppends'
-import {
-  injectRendererLwwPutsOnEngine,
-  rearmTweenStateAfterSequenceAdvance
-} from './injectRendererLwwPuts'
+import { injectRendererLwwPutsOnEngine } from './injectRendererLwwPuts'
 import {
   applyAvatarAttachTransformsOnEngine,
   applyHostTransformsOnEngine
@@ -183,7 +180,6 @@ import {
   forceRecoverStuckSceneEngineTick,
   getSceneEngineTickStartedAt,
   initSceneEngineScheduler,
-  isEngineUpdateInFlight,
   isSceneEngineTickInFlight,
   preemptSceneEngineTick,
   requestSceneEngineTick,
@@ -195,7 +191,6 @@ import {
   resetSceneEngineScheduler,
   runSceneEngineBootTick,
   runSceneEnginePointerTick,
-  runSerializedEngineUpdateForPointer,
   countWorkerMeshRenderers,
   shouldAttachUiMountSnapshot,
   hostInjectNeedsSceneSystems,
@@ -1660,10 +1655,13 @@ function workerVerboseLog(
  * play-frame eng.update while mouse is held. Block only mid-inject or explicit pause.
  */
 function pointerBlocksEngineTick(): boolean {
-  // Mid inject eng.update / queued deliver — must not interleave.
-  if (pointerDeliveryInFlight || queuedPointerDeliver) return true
   if (sceneOnUpdatePaused) return false
-  // pendingInjectPointer / deliver batch: short-lived only after edge.
+  // SceneLoop owns the clock: PET inject is a store write. Blocking here
+  // deferred the pointer-edge tick that EventSystem needs (getInputCommand miss).
+  if (isSceneLoopOwnsPositiveDt()) {
+    return sceneTicksPaused
+  }
+  if (pointerDeliveryInFlight || queuedPointerDeliver) return true
   return sceneTicksPaused || !!pendingInjectPointer || pointerDeliverBatchOpen
 }
 
@@ -1976,17 +1974,9 @@ function deliverTweenStateInbound(chunks: Uint8Array[]): void {
     'log',
     `[sceneWorker] tween-state-deliver — inject ${tweenPuts} TweenState PUT(s)`
   )
-  const rearmed = rearmTweenStateAfterSequenceAdvance(sceneEngine)
-  if (rearmed > 0) {
-    workerVerboseLog(
-      debugTweenDeliver,
-      'log',
-      `[sceneWorker] tween-state re-arm after sequence — ${rearmed} entity(s)`
-    )
-    // Sequence cache needs a transport tick. Ambient progress must not steal the mutex.
-    void runSceneEngineUpdateNow(0)
-    return
-  }
+  // ENABLE_SDK_TWEEN_SEQUENCE=false: kernel (TweenBridge) owns hop advance.
+  // Do not rearm here — that ran *before* eng.update and swallowed COMPLETED
+  // so createTweenSystem never saw the edge (and would zip if the flag were on).
   if (isSceneLoopOwnsPositiveDt()) {
     queueSceneEngineTick()
     return
@@ -2199,33 +2189,6 @@ function chunkByteCount(chunks: Uint8Array[]): number {
  */
 const NO_TARGET_ENGINE_UPDATE_BUDGET_MS = 450
 
-async function runBudgetedPointerEngineUpdate(
-  label: string,
-  work: () => Promise<void>
-): Promise<'ok' | 'timeout'> {
-  // Race only for edge *ack* timing — never force-release the eng.update mutex.
-  // Releasing mid-update allowed concurrent eng.update and plaza 5s recovery thrash.
-  let timedOut = false
-  const workP = runSerializedEngineUpdateForPointer(work)
-  await Promise.race([
-    workP,
-    new Promise<void>((resolve) => {
-      setTimeout(() => {
-        timedOut = true
-        resolve()
-      }, NO_TARGET_ENGINE_UPDATE_BUDGET_MS)
-    })
-  ])
-  if (timedOut) {
-    workerLog(
-      'warn',
-      `[sceneWorker] ${label} — eng.update budget ${NO_TARGET_ENGINE_UPDATE_BUDGET_MS}ms; edge continues without mutex steal`
-    )
-    // Let workP settle in background; serial inject queue still awaits via mutex chain.
-  }
-  return timedOut ? 'timeout' : 'ok'
-}
-
 /**
  * No-target pointer edge (Explorer level-state) — scene-agnostic systems path.
  * PET on PlayerEntity hitEntity=0 + Camera/PPI + **one** eng.update. No UI settle.
@@ -2245,26 +2208,19 @@ async function runNoTargetPointerEdge(
   setPointerInteractiveTickActive(false)
   setPointerInteractivePhase('inject')
   try {
-    forceReleaseEngineUpdateMutex('no-target-edge')
     const ppi = body.primaryPointer
     if (ppi || body.camera) {
       applyPlayFrameReservedPoses(undefined, body.camera, ppi)
     }
 
     if (phase === 'down') {
-      // Single frame: optional sticky UP inject then DOWN inject, one eng.update.
-      // (Two full updates on plaza freezes the worker for 1–3s and blocks play ticks.)
       const sticky = isIaPointerPressedOnEngine(eng, button)
-      await runBudgetedPointerEngineUpdate('no-target-down', async () => {
-        if (ppi || body.camera) {
-          applyPlayFrameReservedPoses(undefined, body.camera, ppi)
-        }
-        if (sticky) {
-          injectLevelStatePointerEdgeOnEngine(eng, body, 'up')
-        }
-        injectLevelStatePointerEdgeOnEngine(eng, body, 'down')
-        await eng.update(0)
-      })
+      if (ppi || body.camera) {
+        applyPlayFrameReservedPoses(undefined, body.camera, ppi)
+      }
+      if (sticky) injectLevelStatePointerEdgeOnEngine(eng, body, 'up')
+      injectLevelStatePointerEdgeOnEngine(eng, body, 'down')
+      requestSceneEngineTick({ source: 'pointer-edge' })
       if (sticky) {
         workerLog('warn', '[sceneWorker] no-target DOWN sticky-clear — UP+DOWN same eng.update')
       }
@@ -2282,15 +2238,12 @@ async function runNoTargetPointerEdge(
       return
     }
 
-    // UP: one release eng.update. Positive-dt follow-up is cooperative (not edge-critical).
     const mrBefore = countWorkerMeshRenderers(eng)
-    await runBudgetedPointerEngineUpdate('no-target-up', async () => {
-      if (ppi || body.camera) {
-        applyPlayFrameReservedPoses(undefined, body.camera, ppi)
-      }
-      injectLevelStatePointerEdgeOnEngine(eng, body, 'up')
-      await eng.update(0)
-    })
+    if (ppi || body.camera) {
+      applyPlayFrameReservedPoses(undefined, body.camera, ppi)
+    }
+    injectLevelStatePointerEdgeOnEngine(eng, body, 'up')
+    requestSceneEngineTick({ source: 'pointer-edge' })
     const mrAfter = countWorkerMeshRenderers(eng)
     const delta = mrAfter - mrBefore
     const ground = diagnoseLevelStateGroundRay(eng)
@@ -2366,7 +2319,7 @@ async function executePointerHoverEdge(body: InjectPointerClickBody): Promise<vo
       body,
       enter ? PointerEventType.PET_HOVER_ENTER : PointerEventType.PET_HOVER_LEAVE
     )
-    await sceneEngine.update(0)
+    requestSceneEngineTick({ source: 'pointer-edge' })
   } catch (err) {
     workerLog(
       'warn',
@@ -2397,11 +2350,30 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
       (body.hitEntity === 0 || body.hitEntity === undefined) &&
       (body.entity === 1 ||
         (sceneEngine != null && body.entity === (sceneEngine.PlayerEntity as number))))
+  // Explorer: keyboard E/F without a PE mesh are InputHub + play-frame reassert.
+  // Do not run the no-target RTS edge (450ms budget + react-ecs hold).
+  if (
+    treatAsNoTargetEarly &&
+    (button === InputAction.IA_PRIMARY || button === InputAction.IA_SECONDARY)
+  ) {
+    workerLog(
+      'warn',
+      `[sceneWorker] ${label} — keyboard level-state button=${button} (snapshot/reassert; skip no-target)`
+    )
+    postPointerDeliverDone(`${label}-keyboard-level`)
+    return
+  }
   // Track held buttons for press lifecycle. No-target also defers cooperative
   // react-ecs between DOWN and UP so UI thrash does not starve systems on the hold window.
+  const keyboardLevelState =
+    treatAsNoTargetEarly &&
+    (button === InputAction.IA_PRIMARY || button === InputAction.IA_SECONDARY)
   if (phase === 'down' && !body.sceneUi) {
     setWorkerPointerButtonHeld(button, true)
-    if (treatAsNoTargetEarly || body.levelState) setLevelStatePointerHeld(true)
+    // E/F level-state must not hold react-ecs (plaza reel bar / isTriggered HUD).
+    if ((treatAsNoTargetEarly || body.levelState) && !keyboardLevelState) {
+      setLevelStatePointerHeld(true)
+    }
   } else if (phase === 'up' || phase === 'click' || body.sceneUi) {
     setWorkerPointerButtonHeld(button, false)
     if (treatAsNoTargetEarly || body.levelState || phase === 'up' || phase === 'click') {
@@ -2430,9 +2402,9 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
     return
   }
   const eng = sceneEngine
-  if (isEngineUpdateInFlight()) {
-    forceRecoverStuckSceneEngineTick(`${label}-preempt`)
-  }
+  // Do not epoch-kill a live engine.update — SceneLoop law: skip-if-busy, inject
+  // into the store, next pointer-edge tick sees PET. Preempt dropped the tick
+  // that would have consumed the click (plaza PET_UP / getInputCommand).
   pointerDeliveryInFlight = true
   setPointerDeliveryInFlight(true)
   // Main arms ~2s deliver-done watchdog. Scene UI DOWN must finish EventSystem
@@ -4390,6 +4362,11 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     // Yield so main can paint progress and process heartbeats before the long new Function.
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     reportCompileProgress('compiling scene bundle (new Function) — may take minutes for multi-MB scripts')
+    // ADR-133 / Unity TweenPlugin / Bevy: kernel owns TweenSequence at renderer
+    // framerate. Must be false *before* bundle eval — createTweenSystem reads it
+    // at engine init. If unset, SDK Sequence hops on leftover COMPLETED and zips
+    // multi-leg paths (plaza cast 15×~60ms).
+    ;(globalThis as Record<string, unknown>).ENABLE_SDK_TWEEN_SEQUENCE = false
     sceneEvalInProgress = true
     // Heartbeat while compile runs — new Function is sync so we only tick around it.
     const compileHeartbeat = setInterval(() => {
@@ -4603,8 +4580,6 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
         `eng=${sceneEngine ? 1 : 0} onStart=${sceneOnStartComplete ? 1 : 0}`
     )
     try {
-      forceRecoverStuckSceneEngineTick('inject-received')
-      forceReleaseEngineUpdateMutex('inject-received')
       enqueuePointerInject(body)
     } catch (err) {
       workerLog(

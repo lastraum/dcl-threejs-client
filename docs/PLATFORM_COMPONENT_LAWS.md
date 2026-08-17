@@ -330,4 +330,5 @@ Explorer interpolates Tween on the renderer and writes **Transform** on the same
 | `/reload` → `World.reloadPrimaryScene` — **not** `teardownScene` / new World | Platform |
 | Keep `AssetCache`, PhysX world, player capsule, comms, AOI / neighbors | Platform |
 | Drop stale primary PhysX actors only after the new graph cooks | Platform — avoid falling through |
-| LSD / preview file-watch later: evict named hash only | Open — same recycle, extra evict |
+| LSD / preview file-watch: `LocalPreviewHotReload` on localhost realm WS | Platform — Unity `LocalSceneDevelopmentController` |
+| `UpdateModel.src` evicts one GLB (path-stable LSD hash); `UpdateScene` refreshes `/about` then recycles | Platform |

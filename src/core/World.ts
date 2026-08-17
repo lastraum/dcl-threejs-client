@@ -136,6 +136,13 @@ import {
 } from '../physics/geometryToPxMesh'
 import { clearPrimedPhysxCookStreams } from '../physics/physxCookByteCache'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
+import {
+  LocalPreviewHotReload,
+  isLocalPreviewScene,
+  localPreviewOriginForScene,
+  refreshPreviewRealmScene
+} from '../network/preview/localPreviewHotReload'
+import type { PreviewSceneUpdate } from '../network/preview/wsSceneMessage'
 import { isTextInputFocused } from '../client/ui/textInputFocus'
 import { skipRemoteAvatars } from '../client/devFlags'
 import { InputHub } from '../input/InputHub'
@@ -335,6 +342,8 @@ export class World {
   private postPlayNeighborsArmed = false
   /** In-place `/reload` — dispose primary facade only; World / kits stay. */
   private primarySceneReloadInFlight = false
+  private localPreviewHotReload: LocalPreviewHotReload | null = null
+  private previewReloadQueued: PreviewSceneUpdate | null = null
   /** Skip SceneLoop/CRDT fold this many presents so the first orbit frames stay host-only. */
   private static readonly PLAY_LOOP_GRACE_FRAMES = 12
   /** Neighbor AOI / live guests after this many presents. */
@@ -1221,6 +1230,7 @@ export class World {
         console.error(err)
       }
     }
+    this.startLocalPreviewHotReload(scene)
   }
 
   /**
@@ -1230,8 +1240,17 @@ export class World {
    *
    * Old PhysX actors stay until the new graph cooks so the player does not fall through.
    */
-  async reloadPrimaryScene(onProgress?: (msg: string) => void): Promise<boolean> {
-    const scene = this.loadedPrimaryScene
+  async reloadPrimaryScene(
+    opts?: ((msg: string) => void) | {
+      onProgress?: (msg: string) => void
+      scene?: ResolvedScene
+      evictSrc?: string
+      evictHash?: string
+    }
+  ): Promise<boolean> {
+    const options = typeof opts === 'function' ? { onProgress: opts } : opts ?? {}
+    const onProgress = options.onProgress
+    const scene = options.scene ?? this.loadedPrimaryScene
     if (!scene?.mainEntry || !scene.entityId) {
       console.warn('[reload] no primary SDK7 scene')
       return false
@@ -1243,6 +1262,10 @@ export class World {
     this.primarySceneReloadInFlight = true
     const started = performance.now()
     const oldPhysIds = this.sceneScript.getAllPhysicsColliderDescs().map((d) => d.entity)
+    if (options.evictSrc || options.evictHash) {
+      this.assets.evictSceneAsset(scene, { src: options.evictSrc, hash: options.evictHash })
+    }
+    this.loadedPrimaryScene = scene
     console.info(
       `[reload] recycle primary “${scene.title}” · keep ${oldPhysIds.length} PhysX actors until recook`
     )
@@ -1506,6 +1529,63 @@ export class World {
     })
     this.sceneScript.preparePointerRaycast()
     this.sceneScript.refreshPointerTargets()
+  }
+
+  /** Creator Hub / sdk-commands preview websocket — same recycle as `/reload`. */
+  startLocalPreviewHotReload(scene: ResolvedScene): void {
+    this.stopLocalPreviewHotReload()
+    const origin = localPreviewOriginForScene(scene)
+    if (!origin) return
+    this.localPreviewHotReload = new LocalPreviewHotReload(origin, (update) =>
+      this.onLocalPreviewSceneUpdate(update)
+    )
+    this.localPreviewHotReload.start()
+    console.info('[preview] watching', origin)
+  }
+
+  stopLocalPreviewHotReload(): void {
+    this.localPreviewHotReload?.stop()
+    this.localPreviewHotReload = null
+    this.previewReloadQueued = null
+  }
+
+  private async onLocalPreviewSceneUpdate(update: PreviewSceneUpdate): Promise<void> {
+    if (this.primarySceneReloadInFlight) {
+      this.previewReloadQueued = update
+      return
+    }
+    const current = this.loadedPrimaryScene
+    if (!current) return
+    if (
+      update.sceneId &&
+      current.entityId &&
+      update.sceneId !== current.entityId &&
+      !isLocalPreviewScene(current)
+    ) {
+      return
+    }
+    let next = current
+    try {
+      const refreshed = await refreshPreviewRealmScene(current)
+      if (refreshed) next = refreshed
+    } catch (err) {
+      console.warn('[preview] refresh /about failed — reloading with current entity', err)
+    }
+    const evictSrc = update.kind === 'model' ? update.src : undefined
+    const evictHash = update.kind === 'model' ? update.hash : undefined
+    console.info(
+      `[preview] ${update.kind} scene=${update.sceneId.slice(0, 16)}` +
+        (evictSrc ? ` src=${evictSrc}` : '')
+    )
+    const ok = await this.reloadPrimaryScene({
+      scene: next,
+      evictSrc,
+      evictHash,
+      onProgress: (msg) => console.info('[preview]', msg)
+    })
+    const queued = this.previewReloadQueued
+    this.previewReloadQueued = null
+    if (queued && ok) await this.onLocalPreviewSceneUpdate(queued)
   }
 
   /**
@@ -6381,6 +6461,7 @@ export class World {
     this.comms.dispose()
     this.social.dispose()
 
+    this.stopLocalPreviewHotReload()
     this.assets.clearScene()
     clearGeometryCookCache()
     clearPrimedPhysxCookStreams()

@@ -9,7 +9,7 @@ export enum RenderQualityTier {
 
 export type GraphicsPreset = 'low' | 'medium' | 'high' | 'ultra' | 'custom'
 export type ShadowQuality = 'off' | 'low' | 'medium' | 'high' | 'ultra'
-/** 0 = uncapped (display refresh). */
+/** 0 = Max — free-run (not display vsync). */
 export type FpsLimitOption = 30 | 60 | 120 | 0
 /** Multisample AA sample count (0 = off). WebGL2 RT path. */
 export type MsaaSamples = 0 | 2 | 4 | 8

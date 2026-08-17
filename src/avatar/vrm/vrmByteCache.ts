@@ -1,6 +1,8 @@
 /**
  * Persistent VRM byte cache (IndexedDB) — local library only.
  */
+import { openIdb } from '../../util/idbOpen'
+
 const DB_NAME = 'dcl-client-vrm-library'
 const DB_VERSION = 1
 const BYTES_STORE = 'bytes'
@@ -10,31 +12,22 @@ let dbPromise: Promise<IDBDatabase> | null = null
 
 function openDb(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise
-  dbPromise = new Promise((resolve, reject) => {
-    if (typeof indexedDB === 'undefined') {
-      dbPromise = null
-      reject(new Error('IndexedDB unavailable'))
-      return
-    }
-    const req = indexedDB.open(DB_NAME, DB_VERSION)
-    req.onupgradeneeded = () => {
-      const db = req.result
-      if (!db.objectStoreNames.contains(BYTES_STORE)) db.createObjectStore(BYTES_STORE)
-      if (!db.objectStoreNames.contains(META_STORE)) db.createObjectStore(META_STORE)
-    }
-    req.onsuccess = () => {
-      const db = req.result
+  dbPromise = openIdb(DB_NAME, DB_VERSION, (db) => {
+    if (!db.objectStoreNames.contains(BYTES_STORE)) db.createObjectStore(BYTES_STORE)
+    if (!db.objectStoreNames.contains(META_STORE)) db.createObjectStore(META_STORE)
+  }).then(
+    (db) => {
       db.onversionchange = () => {
         db.close()
         dbPromise = null
       }
-      resolve(db)
-    }
-    req.onerror = () => {
+      return db
+    },
+    (err) => {
       dbPromise = null
-      reject(req.error ?? new Error('VRM IndexedDB open failed'))
+      throw err
     }
-  })
+  )
   return dbPromise
 }
 

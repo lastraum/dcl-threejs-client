@@ -280,7 +280,8 @@ export class AppController {
     const postLoginRoute = resolveRouteTarget()
     this.login = await resolveInitialLogin()
     // Wallet resume or stable guest both get AuthIdentity — Jump In / LiveKit ready.
-    this.playSessionReady = hasResumedWalletSession() || this.login.kind === 'guest'
+    this.playSessionReady =
+      hasResumedWalletSession() || this.login.kind === 'guest' || this.login.kind === 'ephemeral'
     setAnalyticsLogin(this.login)
     recordLoginEvent(this.login)
 
@@ -559,7 +560,7 @@ export class AppController {
         // setLogin already refreshes owner gear; keep Jump-in CTA in sync for guests→wallet.
         this.sceneLandingView?.setPlaySessionReady(true)
         this.sceneLandingView?.setLogin(login)
-        if (login.kind === 'wallet' || login.kind === 'guest') {
+        if (login.kind === 'wallet' || login.kind === 'guest' || login.kind === 'ephemeral') {
           if (
             this.appMode === 'landing' &&
             this.currentRoute &&
@@ -770,7 +771,7 @@ export class AppController {
           return social.publishCommunityControl(communityId, msg)
         },
         getLocalAddress: () => {
-          const a = this.login?.kind === 'wallet' || this.login?.kind === 'guest' ? this.login.address : null
+          const a = loginHasCommsIdentity(this.login) ? this.login.address : null
           return a?.toLowerCase() ?? this.world?.social.getLocalAddress() ?? null
         },
         getCommunities: () => this.world?.social.getCommunities() ?? []
@@ -2248,10 +2249,8 @@ export class AppController {
       login: this.login!,
       // Prefer in-world social while playing so shell is not required for toasts.
       getSocial: () => this.world?.social ?? this.socialChat?.getSocial() ?? null,
-      getAuthIdentity: () =>
-        this.login?.kind === 'wallet' || this.login?.kind === 'guest' ? this.login.identity : null,
-      getUserAddress: () =>
-        this.login?.kind === 'wallet' || this.login?.kind === 'guest' ? this.login.address : null,
+      getAuthIdentity: () => (loginHasCommsIdentity(this.login) ? this.login.identity : null),
+      getUserAddress: () => (loginHasCommsIdentity(this.login) ? this.login.address : null),
       onEnsureSocial: async () => {
         if (this.appMode === 'play') {
           // World social is owned by World.spawnLocalPlayer — do not spin up 2D shell.
@@ -2902,7 +2901,7 @@ export class AppController {
         anchor: () => this.shell?.getButton('labs')?.element,
         renderStats: world.host.renderStats,
         onVisibilityChange: (visible) => {
-          this.shell?.setHelpActive(visible)
+          this.shell?.setDebugActive(visible)
         },
         getPlayerPosition: () => this.world?.getPlayerPosition() ?? null,
         getSceneOrigin: () => this.world?.comms.getSceneOrigin() ?? { x: 0, z: 0 },
@@ -3306,9 +3305,7 @@ export class AppController {
     const g = window as typeof window & { d3jsOpenProfile?: (address?: string) => void }
     g.d3jsOpenProfile = (address?: string) => {
       const own =
-        this.login?.kind === 'wallet' || this.login?.kind === 'guest'
-          ? this.login.address.toLowerCase()
-          : null
+        loginHasCommsIdentity(this.login) ? this.login.address.toLowerCase() : null
       const target = address?.trim().toLowerCase() || own
       if (!target) {
         console.warn('[dev] d3jsOpenProfile: no address given and no logged-in wallet')
@@ -4076,7 +4073,7 @@ export class AppController {
 
   private sessionParticipantAddress(): string | null {
     const login = this.login
-    if (login?.kind === 'wallet' || login?.kind === 'guest') {
+    if (loginHasCommsIdentity(login)) {
       const a = login.address.trim().toLowerCase()
       if (/^0x[a-f0-9]{40}$/.test(a)) return a
     }
@@ -4088,6 +4085,9 @@ export class AppController {
     if (login?.kind === 'wallet') return login.address.slice(0, 8)
     if (login?.kind === 'guest') {
       return login.displayName?.trim() || `Guest-${login.address.slice(2, 6)}`
+    }
+    if (login?.kind === 'ephemeral') {
+      return login.displayName?.trim() || `Peer-${login.address.slice(2, 6)}`
     }
     return null
   }

@@ -3,12 +3,24 @@ import { resumeStoredLogin } from '../../auth/AuthClient'
 import { ensureGuestLogin } from '../../auth/guestIdentity'
 import { ensureGuestCatalystProfile } from '../../avatar/guestProfile'
 import { clientDebugLog } from '../debug/ClientDebugLog'
+import { ensureEphemeralLogin, isEphemeralPreviewPeer } from '../preview/ephemeralPreview'
 
 /**
  * Session bootstrap — resume stored wallet, else stable browser guest + Catalyst profile.
  * One computer / origin = one guest account (localStorage root key).
+ * `?ephemeral=` preview tabs mint a session-only peer and skip guest/wallet storage.
  */
 export async function resolveInitialLogin(): Promise<LoginResult> {
+  if (isEphemeralPreviewPeer()) {
+    const peer = await ensureEphemeralLogin()
+    console.log(`[preview-peer] wallet=${peer.address} name=${peer.displayName}`)
+    clientDebugLog.log('client', `Ephemeral preview peer · ${peer.displayName}`, {
+      alsoConsole: true,
+      level: 'success'
+    })
+    return peer
+  }
+
   const wallet = resumeStoredLogin()
   if (wallet) return wallet
 

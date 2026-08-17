@@ -5,13 +5,14 @@ import { Authenticator } from '@dcl/crypto'
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import type { AuthChain } from '@dcl/schemas'
 import { EntityType } from '@dcl/schemas'
+import { BODY_SHAPE_URN, defaultGuestWearableUrns, PEER_URL } from './constants'
 import {
-  BODY_SHAPE_URN,
-  DEFAULT_WEARABLE_CATEGORIES,
-  defaultWearableUrn,
-  PEER_URL
-} from './constants'
-import { clearProfileCaches, fetchProfileLambdaEntryCached } from './peerApi'
+  avatarEntryToCommsEntity,
+  clearProfileCaches,
+  fetchProfileLambdaEntryCached,
+  type CommsProfileEntity,
+  type LambdaAvatarEntry
+} from './peerApi'
 import type { AvatarProfile, BodyShape } from './types'
 import { catalystRootFromContentUrl } from '../network/catalyst/CatalystClient'
 import { markGuestProfileDeployed, guestProfileDeployed } from '../auth/guestIdentity'
@@ -42,22 +43,29 @@ function hexToColor01(hex: string): { r: number; g: number; b: number } {
   }
 }
 
-/** Random base-only outfit for a new guest (no NFT wearables). */
-export function createRandomGuestAvatarProfile(address: string, displayName: string): AvatarProfile {
-  // Stick to defaultWearableUrn catalog — always valid off-chain base-avatars.
-  const bodyShape: BodyShape = Math.random() < 0.5 ? 'male' : 'female'
-  const wearables: string[] = []
-  for (const cat of DEFAULT_WEARABLE_CATEGORIES) {
-    const def = defaultWearableUrn(cat, bodyShape)
-    if (def) wearables.push(def)
+function hashPick<T>(arr: readonly T[], seed: string, salt: string): T {
+  let h = 2166136261
+  const s = `${seed.toLowerCase()}:${salt}`
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i)
+    h = Math.imul(h, 16777619)
   }
+  return arr[(h >>> 0) % arr.length]!
+}
+
+function guestOutfit(address: string, displayName: string, random: boolean): AvatarProfile {
+  const bodyShape: BodyShape = random
+    ? Math.random() < 0.5
+      ? 'male'
+      : 'female'
+    : hashPick(['male', 'female'] as const, address, 'shape')
 
   return {
     bodyShape,
-    skin: pick(SKIN_HEX),
-    hair: pick(HAIR_HEX),
-    eyes: pick(EYE_HEX),
-    wearables,
+    skin: random ? pick(SKIN_HEX) : hashPick(SKIN_HEX, address, 'skin'),
+    hair: random ? pick(HAIR_HEX) : hashPick(HAIR_HEX, address, 'hair'),
+    eyes: random ? pick(EYE_HEX) : hashPick(EYE_HEX, address, 'eyes'),
+    wearables: defaultGuestWearableUrns(bodyShape),
     forceRender: [],
     emotes: [],
     fromWallet: false,
@@ -65,6 +73,49 @@ export function createRandomGuestAvatarProfile(address: string, displayName: str
     displayName,
     hasClaimedName: false
   }
+}
+
+/** RFC4 announce from a local guest outfit — no lambdas fetch. */
+export function commsEntityFromGuestProfile(
+  profile: AvatarProfile,
+  contentUrl: string
+): CommsProfileEntity {
+  const address = (profile.address ?? '').toLowerCase()
+  const displayName = profile.displayName?.trim() || address.slice(0, 8) || 'Guest'
+  const entry: LambdaAvatarEntry = {
+    version: 1,
+    name: displayName,
+    unclaimedName: displayName,
+    hasClaimedName: false,
+    userId: address,
+    ethAddress: address,
+    avatar: {
+      bodyShape: BODY_SHAPE_URN[profile.bodyShape],
+      wearables: profile.wearables.length
+        ? profile.wearables
+        : defaultGuestWearableUrns(profile.bodyShape),
+      forceRender: profile.forceRender ?? [],
+      emotes: profile.emotes ?? [],
+      skin: { color: hexToColor01(profile.skin) },
+      hair: { color: hexToColor01(profile.hair) },
+      eyes: { color: hexToColor01(profile.eyes) }
+    }
+  }
+  return avatarEntryToCommsEntity(entry, contentUrl)
+}
+
+/** Random base-only outfit for a new guest (no NFT wearables). */
+export function createRandomGuestAvatarProfile(address: string, displayName: string): AvatarProfile {
+  // Stick to defaultWearableUrn catalog — always valid off-chain base-avatars.
+  return guestOutfit(address, displayName, true)
+}
+
+/**
+ * Deterministic dressed guest for remotes with no Catalyst profile.
+ * Avoids the grey body-only silhouette and stays stable across reloads.
+ */
+export function createFallbackGuestAvatarProfile(address: string, displayName: string): AvatarProfile {
+  return guestOutfit(address, displayName, false)
 }
 
 function contentBaseUrl(peerOrContentUrl: string): string {

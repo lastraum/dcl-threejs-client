@@ -289,7 +289,16 @@
       .debug-panel--embedded.is-open {
         display: flex;
       }
+      .debug-panel__header-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
       .debug-panel__header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
         font-size: 11px;
         font-weight: 700;
         letter-spacing: 0.12em;
@@ -9669,17 +9678,18 @@
       }
       .dev-progress.is-open {
         opacity: 1;
-        pointer-events: auto;
+        pointer-events: none;
       }
       .dev-progress__backdrop {
         position: absolute;
         inset: 0;
-        background: rgba(0, 0, 0, 0.62);
-        backdrop-filter: blur(4px);
+        background: rgba(0, 0, 0, 0.28);
+        pointer-events: none;
       }
       .dev-progress__panel {
         position: relative;
         z-index: 1;
+        pointer-events: auto;
         width: min(920px, 100%);
         height: min(86vh, 820px);
         max-height: min(86vh, 820px);
@@ -9729,6 +9739,7 @@
         gap: 8px;
         flex-shrink: 0;
       }
+      .dev-progress__header-peer,
       .dev-progress__header-suggest {
         border: 1px solid rgba(180, 140, 255, 0.45);
         background: rgba(180, 140, 255, 0.18);
@@ -9738,6 +9749,13 @@
         padding: 7px 12px;
         border-radius: 8px;
         cursor: pointer;
+      }
+      .dev-progress__header-peer {
+        border-color: rgba(110, 210, 170, 0.5);
+        background: rgba(70, 180, 140, 0.2);
+      }
+      .dev-progress__header-peer:hover {
+        background: rgba(70, 180, 140, 0.32);
       }
       .dev-progress__header-suggest:hover {
         background: rgba(180, 140, 255, 0.28);

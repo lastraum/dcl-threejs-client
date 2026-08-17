@@ -36,6 +36,13 @@ function readLock(address: string): WalletSessionLock | null {
 
 /** One active browser session per wallet — blocks a second tab on the same machine. */
 export function acquireWalletSessionLock(address: string): boolean {
+  // Extra /localpreview tabs mint a unique ephemeral wallet; do not take or
+  // fight the host tab's lock.
+  try {
+    if (new URLSearchParams(window.location.search).has('ephemeral')) return true
+  } catch {
+    /* ignore */
+  }
   const key = address.toLowerCase()
   if (!/^0x[a-f0-9]{40}$/.test(key)) return true
 

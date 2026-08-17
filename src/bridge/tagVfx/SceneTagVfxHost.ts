@@ -14,8 +14,9 @@ const SPEED_PREFIX = 'tjs.vfx.speed:'
 const DIR_PREFIX = 'tjs.vfx.dir:'
 const YAW_PREFIX = 'tjs.vfx.yaw:'
 const ORIGIN_PREFIX = 'tjs.vfx.origin:'
+const TARGET_PREFIX = 'tjs.vfx.target:'
 
-type VfxKind = 'ice'
+type VfxKind = 'ice' | 'hail' | 'meteor'
 type VfxMode = 'loop' | 'cast'
 
 type TagSpec = {
@@ -30,6 +31,8 @@ type TagSpec = {
   yawDeg: number | null
   /** DCL world start if authored (`tjs.vfx.origin:x,y,z`). */
   originDcl: THREE.Vector3 | null
+  /** DCL world impact if authored (`tjs.vfx.target:x,y,z`). */
+  targetDcl: THREE.Vector3 | null
 }
 
 type Caster = {
@@ -39,13 +42,17 @@ type Caster = {
 
 const _origin = new THREE.Vector3()
 const _dir = new THREE.Vector3()
+const _target = new THREE.Vector3()
 const _quat = new THREE.Quaternion()
 
 function parseKind(tag: string): VfxKind | null {
   if (!tag.startsWith(KIND_PREFIX)) return null
   const rest = tag.slice(KIND_PREFIX.length).trim().toLowerCase()
   if (rest.includes(':')) return null
-  return rest === 'ice' ? 'ice' : null
+  if (rest === 'ice' || rest === 'hail' || rest === 'meteor') return rest
+  if (rest === 'hailwraith') return 'hail'
+  if (rest === 'cinder' || rest === 'cinderfall' || rest === 'cinder-fall') return 'meteor'
+  return null
 }
 
 function parseDir(raw: string): THREE.Vector3 | null {
@@ -68,6 +75,7 @@ function parseSpec(entity: Entity, tags: readonly string[]): TagSpec | null {
   let dirDcl: THREE.Vector3 | null = null
   let yawDeg: number | null = null
   let originDcl: THREE.Vector3 | null = null
+  let targetDcl: THREE.Vector3 | null = null
   for (const raw of tags) {
     const tag = raw.trim()
     const parsed = parseKind(tag)
@@ -88,10 +96,12 @@ function parseSpec(entity: Entity, tags: readonly string[]): TagSpec | null {
       if (Number.isFinite(n)) yawDeg = n
     } else if (tag.startsWith(ORIGIN_PREFIX)) {
       originDcl = parseDir(tag.slice(ORIGIN_PREFIX.length))
+    } else if (tag.startsWith(TARGET_PREFIX)) {
+      targetDcl = parseDir(tag.slice(TARGET_PREFIX.length))
     }
   }
   if (!kind) return null
-  return { entity, kind, mode, range, speed, dirDcl, yawDeg, originDcl }
+  return { entity, kind, mode, range, speed, dirDcl, yawDeg, originDcl, targetDcl }
 }
 
 function specFromName(entity: Entity, name: string): TagSpec | null {
@@ -102,6 +112,7 @@ function specFromName(entity: Entity, name: string): TagSpec | null {
   if (!kind) return null
   const mode: VfxMode = parts[1] === 'cast' ? 'cast' : 'loop'
   const range = Number(parts[2])
+  const targetDcl = parts[3] ? parseDir(parts[3]) : null
   return {
     entity,
     kind,
@@ -110,24 +121,33 @@ function specFromName(entity: Entity, name: string): TagSpec | null {
     speed: 24,
     dirDcl: mode === 'cast' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 0, 1),
     yawDeg: null,
-    originDcl: null
+    originDcl: null,
+    targetDcl
   }
 }
 
-function defaultCastSpec(entity: Entity): TagSpec {
+function kindFromHover(hover: string): VfxKind | null {
+  if (hover.includes('hail')) return 'hail'
+  if (hover.includes('cinder') || hover.includes('meteor')) return 'meteor'
+  if (hover.includes('ice') || hover.includes('frost')) return 'ice'
+  return null
+}
+
+function defaultCastSpec(entity: Entity, kind: VfxKind): TagSpec {
   return {
     entity,
-    kind: 'ice',
+    kind,
     mode: 'cast',
     range: 32,
     speed: 24,
-    dirDcl: new THREE.Vector3(1, 0, 0),
+    dirDcl: kind === 'ice' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 0, 1),
     yawDeg: null,
-    originDcl: null
+    originDcl: null,
+    targetDcl: null
   }
 }
 
-function resolveDir(spec: TagSpec, node: THREE.Group): THREE.Vector3 {
+function resolveDir(spec: TagSpec, node: THREE.Group | undefined): THREE.Vector3 {
   if (spec.dirDcl) {
     dclToThreePos(spec.dirDcl.x, spec.dirDcl.y, spec.dirDcl.z, _dir)
     _dir.y = 0
@@ -141,11 +161,14 @@ function resolveDir(spec: TagSpec, node: THREE.Group): THREE.Vector3 {
     _dir.y = 0
     return _dir.normalize()
   }
-  node.getWorldQuaternion(_quat)
-  _dir.set(0, 0, 1).applyQuaternion(_quat)
-  _dir.y = 0
-  if (_dir.lengthSq() < 1e-8) _dir.set(0, 0, 1)
-  return _dir.normalize()
+  if (node) {
+    node.getWorldQuaternion(_quat)
+    _dir.set(0, 0, 1).applyQuaternion(_quat)
+    _dir.y = 0
+    if (_dir.lengthSq() < 1e-8) _dir.set(0, 0, 1)
+    return _dir.normalize()
+  }
+  return _dir.set(0, 0, 1)
 }
 
 /**
@@ -154,8 +177,13 @@ function resolveDir(spec: TagSpec, node: THREE.Group): THREE.Vector3 {
  */
 export class SceneTagVfxHost {
   private readonly casters = new Map<Entity, Caster>()
+  /** Cast-mode entities fire once when first seen, then never again. */
+  private readonly pendingCast = new Set<Entity>()
+  private readonly firedOnce = new Set<Entity>()
   private logged = 0
   private loggedEmpty = false
+  /** Three-space floor point of `anime-car` GLB if the scene spawned one. */
+  private carTarget: THREE.Vector3 | null = null
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -164,7 +192,8 @@ export class SceneTagVfxHost {
   ) {}
 
   sync(view: ProjectionView): void {
-    const { Tags, Name, PointerEvents } = this.ecs
+    const { Tags, Name, GltfContainer, Transform } = this.ecs
+    this.refreshCarTarget(view, GltfContainer, Transform)
     const seen = new Set<Entity>()
 
     for (const [entity] of view.getEntitiesWith(Tags)) {
@@ -184,23 +213,20 @@ export class SceneTagVfxHost {
       }
     }
 
-    if (PointerEvents) {
-      for (const [entity] of view.getEntitiesWith(PointerEvents)) {
-        if (seen.has(entity)) continue
-        const pe = PointerEvents.getOrNull(entity) as {
-          pointerEvents?: Array<{ eventInfo?: { hoverText?: string } }>
-        } | null
-        const hover = pe?.pointerEvents?.some((e) =>
-          (e.eventInfo?.hoverText ?? '').toLowerCase().includes('ice')
-        )
-        if (!hover) continue
-        this.upsert(entity, defaultCastSpec(entity), seen)
-      }
+    // Click cubes are buttons only (no Tags). Do not bind hover-text as a caster —
+    // each click already spawned a fresh tagged shot entity.
+
+    for (const [entity, caster] of this.casters) {
+      if (seen.has(entity)) continue
+      caster.live?.dispose()
+      this.casters.delete(entity)
+      this.pendingCast.delete(entity)
+      this.firedOnce.delete(entity)
     }
 
     if (this.casters.size === 0 && !this.loggedEmpty) {
       this.loggedEmpty = true
-      clientDebugLog.log('scene', 'tag-vfx sync — 0 casters (Tags/Name/PE ice not on projection)', {
+      clientDebugLog.log('scene', 'tag-vfx sync — 0 casters (Tags/Name ice not on projection)', {
         alsoConsole: true,
         level: 'warn'
       })
@@ -208,27 +234,36 @@ export class SceneTagVfxHost {
   }
 
   notifyPointerDown(entity: Entity): void {
-    let caster = this.casters.get(entity)
-    if (!caster) {
-      const tags = this.ecs.Tags.getOrNull(entity) as { tags?: string[] } | null
-      const named = this.ecs.Name?.getOrNull(entity) as { value?: string } | null
-      const spec =
-        parseSpec(entity, tags?.tags ?? []) ??
-        specFromName(entity, named?.value ?? '') ??
-        defaultCastSpec(entity)
-      caster = this.upsert(entity, spec, new Set())
-      clientDebugLog.log(
-        'scene',
-        `tag-vfx click-bind e${entity as number} mode=${spec.mode} range=${spec.range}`,
-        { alsoConsole: true }
-      )
-    }
+    const tags = this.ecs.Tags.getOrNull(entity) as { tags?: string[] } | null
+    const named = this.ecs.Name?.getOrNull(entity) as { value?: string } | null
+    const pe = this.ecs.PointerEvents?.getOrNull(entity) as {
+      pointerEvents?: Array<{ eventInfo?: { hoverText?: string } }>
+    } | null
+    const hover = (pe?.pointerEvents ?? [])
+      .map((e) => (e.eventInfo?.hoverText ?? '').toLowerCase())
+      .join(' ')
+    const spec =
+      parseSpec(entity, tags?.tags ?? []) ??
+      specFromName(entity, named?.value ?? '') ??
+      (kindFromHover(hover) ? defaultCastSpec(entity, kindFromHover(hover)!) : null)
+    if (!spec) return
+    const caster = this.casters.get(entity) ?? this.upsert(entity, spec, new Set())
     this.fire(caster, 'pointer')
   }
 
   update(dt: number): void {
     const step = Math.min(0.05, Math.max(0, dt))
     const ability = getSceneAbilityVfxHost()
+    if (this.pendingCast.size > 0) {
+      for (const entity of [...this.pendingCast]) {
+        const caster = this.casters.get(entity)
+        if (!caster) {
+          this.pendingCast.delete(entity)
+          continue
+        }
+        if (this.fire(caster, 'spawn')) this.pendingCast.delete(entity)
+      }
+    }
     for (const caster of this.casters.values()) {
       if (caster.live) {
         caster.live.update(step)
@@ -246,6 +281,8 @@ export class SceneTagVfxHost {
   dispose(): void {
     for (const caster of this.casters.values()) caster.live?.dispose()
     this.casters.clear()
+    this.pendingCast.clear()
+    this.firedOnce.clear()
   }
 
   private upsert(entity: Entity, spec: TagSpec, seen: Set<Entity>): Caster {
@@ -257,6 +294,10 @@ export class SceneTagVfxHost {
     }
     const caster: Caster = { spec, live: null }
     this.casters.set(entity, caster)
+    if (spec.mode === 'cast' && !this.firedOnce.has(entity)) {
+      const pe = this.ecs.PointerEvents?.getOrNull(entity)
+      if (!pe) this.pendingCast.add(entity)
+    }
     this.logged++
     if (this.logged <= 8) {
       const aim = spec.dirDcl
@@ -267,13 +308,45 @@ export class SceneTagVfxHost {
       const start = spec.originDcl
         ? ` origin=${spec.originDcl.x},${spec.originDcl.y},${spec.originDcl.z}`
         : ' origin=entity'
+      const target = spec.targetDcl
+        ? ` target=${spec.targetDcl.x},${spec.targetDcl.y},${spec.targetDcl.z}`
+        : this.carTarget
+          ? ' target=car'
+          : ''
       clientDebugLog.log(
         'scene',
-        `tag-vfx bind e${entity as number} ${spec.kind} mode=${spec.mode} ${aim}${start} range=${spec.range}`,
+        `tag-vfx bind e${entity as number} ${spec.kind} mode=${spec.mode} ${aim}${start}${target} range=${spec.range}`,
         { alsoConsole: true }
       )
     }
     return caster
+  }
+
+  private refreshCarTarget(
+    view: ProjectionView,
+    GltfContainer: MirrorComponents['GltfContainer'],
+    Transform: MirrorComponents['Transform']
+  ): void {
+    this.carTarget = null
+    if (!GltfContainer) return
+    for (const [entity] of view.getEntitiesWith(GltfContainer)) {
+      const gltf = GltfContainer.getOrNull(entity) as { src?: string } | null
+      if (!String(gltf?.src ?? '').toLowerCase().includes('anime-car')) continue
+      const node = this.getNodes()?.get(entity)
+      if (node) {
+        node.updateWorldMatrix(true, false)
+        node.getWorldPosition(_target)
+        _target.y = 0
+        this.carTarget = _target.clone()
+        return
+      }
+      const tr = Transform?.getOrNull(entity) as { position?: { x: number; y: number; z: number } } | null
+      if (tr?.position) {
+        dclToThreePos(tr.position.x, 0, tr.position.z, _target)
+        this.carTarget = _target.clone()
+      }
+      return
+    }
   }
 
   private resolveOrigin(spec: TagSpec, node: THREE.Group): THREE.Vector3 {
@@ -286,27 +359,60 @@ export class SceneTagVfxHost {
     return _origin
   }
 
-  private fire(caster: Caster, reason: 'loop' | 'pointer'): void {
+  /** Impact point in Three space — authored target, else the scene's anime-car. */
+  private resolveTargetThree(spec: TagSpec): THREE.Vector3 | null {
+    if (spec.targetDcl) {
+      dclToThreePos(spec.targetDcl.x, spec.targetDcl.y, spec.targetDcl.z, _target)
+      _target.y = 0
+      return _target
+    }
+    return this.carTarget
+  }
+
+  private fire(caster: Caster, reason: 'loop' | 'pointer' | 'spawn'): boolean {
     const nodes = this.getNodes()
     const node = nodes?.get(caster.spec.entity)
-    if (!node) return
-    node.updateWorldMatrix(true, false)
-    const origin = this.resolveOrigin(caster.spec, node)
-    const dir = resolveDir(caster.spec, node)
+    if (!node && !caster.spec.originDcl && !caster.spec.dirDcl && !caster.spec.targetDcl && !this.carTarget) {
+      return false
+    }
+    if (node) node.updateWorldMatrix(true, false)
+    const origin = node
+      ? this.resolveOrigin(caster.spec, node)
+      : caster.spec.originDcl
+        ? dclToThreePos(
+            caster.spec.originDcl.x,
+            caster.spec.originDcl.y,
+            caster.spec.originDcl.z,
+            _origin
+          )
+        : _origin.set(0, 0, 0)
+    const impact = this.resolveTargetThree(caster.spec)
+    let dir: THREE.Vector3
+    let range = caster.spec.range
+    if (impact) {
+      _dir.copy(impact).sub(origin)
+      _dir.y = 0
+      range = Math.max(8, _dir.length())
+      if (_dir.lengthSq() < 1e-8) _dir.set(0, 0, 1)
+      dir = _dir.normalize()
+    } else {
+      dir = resolveDir(caster.spec, node)
+    }
     caster.live?.dispose()
     caster.live = null
 
     const ability = getSceneAbilityVfxHost()
     if (ability) {
-      const ok = ability.cast(caster.spec.kind, origin, dir, caster.spec.range)
+      const ok = ability.cast(caster.spec.kind, origin, dir, range)
+      if (reason === 'spawn' || reason === 'pointer') this.firedOnce.add(caster.spec.entity)
       clientDebugLog.log(
         'scene',
-        `tag-vfx ${ok ? 'ice' : 'queued'} e${caster.spec.entity as number} ${reason} ` +
+        `tag-vfx ${ok ? caster.spec.kind : 'queued'} e${caster.spec.entity as number} ${reason} ` +
           `start=(${origin.x.toFixed(1)},${origin.y.toFixed(1)},${origin.z.toFixed(1)}) ` +
-          `dir=(${dir.x.toFixed(2)},${dir.z.toFixed(2)}) range=${caster.spec.range}`,
+          `dir=(${dir.x.toFixed(2)},${dir.z.toFixed(2)}) range=${range.toFixed(1)}`,
         { alsoConsole: true }
       )
-      return
+      return true
     }
 
     clientDebugLog.log(
@@ -314,5 +420,6 @@ export class SceneTagVfxHost {
       'tag-vfx no AbilityManager host — real ice cannot fire (World not ready)',
       { level: 'warn', alsoConsole: true }
     )
+    return false
   }
 }

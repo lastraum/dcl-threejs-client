@@ -1,3 +1,5 @@
+import { base64ToBytes, bytesToBase64 } from './commsBinaryWire'
+
 /** JSON payload broadcast for remote avatar transforms. */
 export type AvatarTransformPayload = {
   type: 'avatar-transform'
@@ -35,6 +37,38 @@ export function decodeTransformPayload(body: Uint8Array): AvatarTransformPayload
     const parsed = JSON.parse(new TextDecoder().decode(body)) as AvatarTransformPayload
     if (parsed?.type !== 'avatar-transform') return null
     return parsed
+  } catch {
+    return null
+  }
+}
+
+/** One-shot topics (ability VFX, etc.) over RFC-5 mini-comms peer updates. */
+export type Rfc5TopicPayload = {
+  type: 'topic'
+  topic: string
+  data: string
+}
+
+export function encodeRfc5TopicPayload(topic: string, packet: Uint8Array): Uint8Array {
+  return new TextEncoder().encode(
+    JSON.stringify({
+      type: 'topic',
+      topic: topic.trim(),
+      data: bytesToBase64(packet)
+    } satisfies Rfc5TopicPayload)
+  )
+}
+
+export function decodeRfc5TopicPayload(
+  body: Uint8Array
+): { topic: string; packet: Uint8Array } | null {
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(body)) as Partial<Rfc5TopicPayload>
+    if (parsed?.type !== 'topic' || typeof parsed.topic !== 'string' || !parsed.topic.trim()) {
+      return null
+    }
+    if (typeof parsed.data !== 'string') return null
+    return { topic: parsed.topic.trim(), packet: base64ToBytes(parsed.data) }
   } catch {
     return null
   }

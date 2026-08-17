@@ -1,9 +1,6 @@
 import * as THREE from 'three'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 
-/** First-session ids — same idea as genesis-lab `VFX_WARM_IDS`, ice first. */
-export const ABILITY_VFX_WARM_IDS = ['ice'] as const
-
 let currentHost: SceneAbilityVfxHost | null = null
 
 export function getSceneAbilityVfxHost(): SceneAbilityVfxHost | null {
@@ -16,6 +13,7 @@ export function setSceneAbilityVfxHost(host: SceneAbilityVfxHost | null): void {
 
 type AbilityManagerLike = {
   warm: (id: string) => Promise<boolean>
+  prewarm?: (id: string, n: number) => void
   select: (id: string) => void
   cast: (
     origin: THREE.Vector3,
@@ -30,7 +28,7 @@ type AbilityManagerLike = {
 
 /**
  * Genesis-lab `LabVfxHost` spine inside the play client.
- * Constructed only when the user enables Ability VFX — off by default.
+ * AbilityManager boots only when a scene bundle names `tjs.vfx:*`.
  */
 export class SceneAbilityVfxHost {
   private abilities: AbilityManagerLike | null = null
@@ -52,7 +50,10 @@ export class SceneAbilityVfxHost {
     origin: THREE.Vector3
     direction: THREE.Vector3
     distance: number
+    publish: boolean
   }> = []
+  private onLocalCast: ((id: string, origin: THREE.Vector3, dir: THREE.Vector3, range: number) => void) | null =
+    null
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -78,13 +79,14 @@ export class SceneAbilityVfxHost {
     )
   }
 
-  async prime(ids: readonly string[] = ABILITY_VFX_WARM_IDS): Promise<boolean> {
-    if (this.failed) return false
+  async prime(ids: readonly string[]): Promise<boolean> {
+    const wanted = [...new Set(ids.map((id) => id.trim().toLowerCase()).filter(Boolean))]
+    if (wanted.length === 0 || this.failed) return this.ready
     if (this.priming) {
       await this.priming
-      return this.ready
+      if (wanted.every((id) => this.primed.has(id))) return this.ready
     }
-    this.priming = this.primeInner(ids)
+    this.priming = this.primeInner(wanted)
     try {
       await this.priming
     } finally {
@@ -93,23 +95,37 @@ export class SceneAbilityVfxHost {
     return this.ready
   }
 
-  cast(id: string, origin: THREE.Vector3, direction: THREE.Vector3, distance: number): boolean {
+  setOnLocalCast(
+    fn: ((id: string, origin: THREE.Vector3, dir: THREE.Vector3, range: number) => void) | null
+  ): void {
+    this.onLocalCast = fn
+  }
+
+  cast(
+    id: string,
+    origin: THREE.Vector3,
+    direction: THREE.Vector3,
+    distance: number,
+    opts?: { publish?: boolean }
+  ): boolean {
     const dir = direction.clone()
     dir.y = 0
     if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1)
     dir.normalize()
     const reach = Math.max(8, distance)
+    const publish = opts?.publish !== false
     if (!this.abilities || !this.primed.has(id)) {
       this.pendingCasts.push({
         id,
         origin: origin.clone(),
         direction: dir,
-        distance: reach
+        distance: reach,
+        publish
       })
       void this.prime([id]).then(() => this.flushPending())
       return false
     }
-    return this.fireNow(id, origin, dir, reach)
+    return this.fireNow(id, origin, dir, reach, publish)
   }
 
   update(dt: number): void {
@@ -164,27 +180,29 @@ export class SceneAbilityVfxHost {
   private flushPending(): void {
     if (!this.abilities) return
     const queued = this.pendingCasts.splice(0)
-    for (const q of queued) this.fireNow(q.id, q.origin, q.direction, q.distance)
+    for (const q of queued) this.fireNow(q.id, q.origin, q.direction, q.distance, q.publish)
   }
 
   private fireNow(
     id: string,
     origin: THREE.Vector3,
     dir: THREE.Vector3,
-    reach: number
+    reach: number,
+    publish: boolean
   ): boolean {
     if (!this.abilities) return false
     this.abilities.select(id)
-    this.applyIceRange(reach)
+    this.applyIceRange(reach, id)
     const hit = this.abilities.cast(origin, dir, reach, id)
     if (!hit) {
       void this.abilities.warm(id)
       return false
     }
     if (!this.shadersCompiled) this.compileShadersOnce()
+    if (publish) this.onLocalCast?.(id, origin, dir, reach)
     clientDebugLog.log(
       'scene',
-      `ability-vfx ICE ${id} start=(${origin.x.toFixed(1)},${origin.y.toFixed(1)},${origin.z.toFixed(1)}) ` +
+      `ability-vfx ${id} start=(${origin.x.toFixed(1)},${origin.y.toFixed(1)},${origin.z.toFixed(1)}) ` +
         `dir=(${dir.x.toFixed(2)},${dir.z.toFixed(2)}) range=${reach}`,
       { alsoConsole: true }
     )
@@ -251,7 +269,7 @@ export class SceneAbilityVfxHost {
         bursts: this.bursts,
         shake: this.shake,
         flash: this.flash,
-        maxConcurrent: 4
+        maxConcurrent: 12
       }) as AbilityManagerLike
       return true
     } catch (err) {
@@ -265,12 +283,12 @@ export class SceneAbilityVfxHost {
     }
   }
 
-  /** IceAbility also reads `settings.ice.range` — keep it in sync with the tag. */
-  private applyIceRange(metres: number): void {
+  /** Ability settings blocks expose `range` — keep in sync with the tag. */
+  private applyIceRange(metres: number, id = 'ice'): void {
     void import('@vfx/config/settings.js')
       .then((mod) => {
-        const ice = (mod.settings as { ice?: { range?: number } })?.ice
-        if (ice) ice.range = metres
+        const block = (mod.settings as Record<string, { range?: number } | undefined>)?.[id]
+        if (block && typeof block.range === 'number') block.range = metres
       })
       .catch(() => {
         /* settings module optional until primed */

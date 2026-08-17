@@ -26,6 +26,7 @@ import {
 } from '../camera/cameraDepthPolicy'
 import { perfNoteFrameHost, perfNoteRenderSplit } from '../util/perfCounters'
 import { forceNoBloom, forceNoShadow } from '../client/devFlags'
+import { subscribeBackgroundTicks } from './backgroundTickHub'
 
 export class SceneHost {
   renderer: THREE.WebGLRenderer
@@ -46,11 +47,23 @@ export class SceneHost {
   private resizeObserver: ResizeObserver | null = null
   private viewportElement: HTMLElement | null = null
   private onViewportResize: ((width: number, height: number) => void) | null = null
-  /** Min ms between full frames; 0 = every rAF. */
+  /** Min ms between full frames; 0 = free-run (setTimeout 0, not display vsync). */
   private frameIntervalMs = 0
   private lastFrameTime = 0
-  /** When tab is hidden, cap to ~8 FPS so work drains without false “stuck” load. */
-  private static readonly HIDDEN_FRAME_INTERVAL_MS = 1000 / 8
+  private loopRunning = false
+  private uncapTimer: ReturnType<typeof setTimeout> | 0 = 0
+  private rafId = 0
+  /**
+   * Hidden-tab sim rate. rAF is paused in background; we use setTimeout + SharedWorker.
+   * Chrome may clamp timers to ~1s after a while; a focused sibling tab keeps the
+   * SharedWorker at this interval so preview multiplayer stays alive.
+   */
+  private static readonly HIDDEN_FRAME_INTERVAL_MS = 100
+  /** After tab focus, stay on rAF (not timeout-0) so GPU wake + orbit aren't a 2fps dump. */
+  private static readonly RESUME_RAF_FRAMES = 48
+  private resumeRafFrames = 0
+  private loopTick: (() => void) | null = null
+  private unsubBackgroundTicks: (() => void) | null = null
   /** Effective MSAA after GPU clamp (0 = render straight to canvas). */
   private msaaSamples: MsaaSamples = 0
   private msaaTarget: THREE.WebGLRenderTarget | null = null
@@ -121,6 +134,32 @@ export class SceneHost {
     // Mobile URL bar show/hide changes visualViewport without a window resize.
     window.visualViewport?.addEventListener('resize', () => this.applyViewportSize())
     window.visualViewport?.addEventListener('scroll', () => this.applyViewportSize())
+    document.addEventListener('visibilitychange', this.onVisibilityChange)
+  }
+
+  private readonly onVisibilityChange = (): void => {
+    if (typeof document === 'undefined') return
+    if (document.visibilityState === 'visible') {
+      this.resumeRafFrames = SceneHost.RESUME_RAF_FRAMES
+      this.lastFrameTime = 0
+      // Drain the huge hidden-tab delta so the first orbit frame isn't a 100ms step.
+      this.clock.getDelta()
+    }
+    // Hidden: rAF is frozen — switch to timeout/SharedWorker immediately.
+    this.kickLoop()
+  }
+
+  private kickLoop(): void {
+    if (!this.loopRunning || !this.loopTick) return
+    if (this.uncapTimer) {
+      clearTimeout(this.uncapTimer)
+      this.uncapTimer = 0
+    }
+    if (this.rafId) {
+      cancelAnimationFrame(this.rafId)
+      this.rafId = 0
+    }
+    this.scheduleNext(this.loopTick)
   }
 
   /** Size renderer/camera to a panel element (editor workspace) instead of the full window. */
@@ -271,8 +310,7 @@ export class SceneHost {
     // Avatar vs environment cast toggles (and shadow off/on) re-apply without reloading meshes.
     reapplySceneCastShadows(this.scene)
 
-    // VSync On + Max FPS → pure rAF (display-aligned). VSync Off still uses rAF (browser limit).
-    // Explicit FPS caps always apply.
+    // Max (0) → free-run via setTimeout(0). 30/60/120 cap via rAF + interval.
     if (options.fpsLimit > 0) {
       this.frameIntervalMs = 1000 / options.fpsLimit
     } else {
@@ -467,14 +505,15 @@ export class SceneHost {
     /** Don't console.warn every second at 40fps — DevTools logging itself tanks FPS. */
     let lastFpsWarnMs = 0
     this.lastFrameTime = 0
+    this.stopLoop()
+    this.loopRunning = true
 
-    this.renderer.setAnimationLoop(() => {
+    const tick = (): void => {
       const frameT0 = performance.now()
+      const hidden = typeof document !== 'undefined' && document.hidden
       const minInterval = Math.max(
         this.frameIntervalMs,
-        typeof document !== 'undefined' && document.hidden
-          ? SceneHost.HIDDEN_FRAME_INTERVAL_MS
-          : 0
+        hidden ? SceneHost.HIDDEN_FRAME_INTERVAL_MS : 0
       )
       if (minInterval > 0 && this.lastFrameTime > 0) {
         if (frameT0 - this.lastFrameTime < minInterval) return
@@ -501,34 +540,36 @@ export class SceneHost {
         }
       }
 
-      this.renderStats.begin()
-      if (this.orbitEnabled) this.controls.update()
-      this.renderer.info?.reset?.()
-      const renderT0 = performance.now()
-      const mainSplit = this.renderMainPass()
-      const mainMs = performance.now() - renderT0
-      const tagsT0 = performance.now()
-      this.nameTags.render(this.scene, this.camera)
-      const tagsMs = performance.now() - tagsT0
-      const renderMs = performance.now() - renderT0
-      const info = this.renderer.info.render
-      perfNoteRenderSplit({
-        mainMs,
-        tagsMs,
-        sceneMs: mainSplit.sceneMs,
-        extractMs: mainSplit.extractMs,
-        bloomMs: mainSplit.bloomMs,
-        blitMs: mainSplit.blitMs,
-        mode: mainSplit.mode,
-        shadowOn: this.renderer.shadowMap.enabled,
-        drawCalls: info.calls,
-        triangles: info.triangles
-      })
-      this.renderStats.end()
-      this.renderStats.update()
+      let renderMs = 0
+      if (!hidden) {
+        this.renderStats.begin()
+        if (this.orbitEnabled) this.controls.update()
+        this.renderer.info?.reset?.()
+        const renderT0 = performance.now()
+        const mainSplit = this.renderMainPass()
+        const mainMs = performance.now() - renderT0
+        const tagsT0 = performance.now()
+        this.nameTags.render(this.scene, this.camera)
+        const tagsMs = performance.now() - tagsT0
+        renderMs = performance.now() - renderT0
+        const info = this.renderer.info.render
+        perfNoteRenderSplit({
+          mainMs,
+          tagsMs,
+          sceneMs: mainSplit.sceneMs,
+          extractMs: mainSplit.extractMs,
+          bloomMs: mainSplit.bloomMs,
+          blitMs: mainSplit.blitMs,
+          mode: mainSplit.mode,
+          shadowOn: this.renderer.shadowMap.enabled,
+          drawCalls: info.calls,
+          triangles: info.triangles
+        })
+        this.renderStats.end()
+        this.renderStats.update()
+        this.adaptiveQuality.noteFrame()
+      }
       presentLock = false
-      // Count completed frames only (skipped interval frames never reach here).
-      this.adaptiveQuality.noteFrame()
 
       if (frameCount === 1) {
         console.info(
@@ -619,11 +660,51 @@ export class SceneHost {
           if (frameCount <= 3) console.error('[SceneHost] postFrameListener error:', err)
         }
       }
+      this.scheduleNext(tick)
+    }
+    this.loopTick = tick
+    this.unsubBackgroundTicks = subscribeBackgroundTicks(() => {
+      if (typeof document === 'undefined' || !document.hidden) return
+      tick()
     })
+    this.scheduleNext(tick)
+  }
+
+  /** Max FPS = free-run (timeout 0). Hidden tabs cannot use rAF — it is paused. */
+  private scheduleNext(tick: () => void): void {
+    if (!this.loopRunning) return
+    if (this.resumeRafFrames > 0) this.resumeRafFrames--
+    const hidden = typeof document !== 'undefined' && document.hidden
+    if (hidden) {
+      this.uncapTimer = setTimeout(tick, SceneHost.HIDDEN_FRAME_INTERVAL_MS)
+      return
+    }
+    const uncap = this.frameIntervalMs === 0 && this.resumeRafFrames <= 0
+    if (uncap) {
+      this.uncapTimer = setTimeout(tick, 0)
+      return
+    }
+    this.rafId = requestAnimationFrame(tick)
+  }
+
+  private stopLoop(): void {
+    this.loopRunning = false
+    this.loopTick = null
+    this.unsubBackgroundTicks?.()
+    this.unsubBackgroundTicks = null
+    if (this.uncapTimer) {
+      clearTimeout(this.uncapTimer)
+      this.uncapTimer = 0
+    }
+    if (this.rafId) {
+      cancelAnimationFrame(this.rafId)
+      this.rafId = 0
+    }
+    this.renderer.setAnimationLoop(null)
   }
 
   stop(): void {
-    this.renderer.setAnimationLoop(null)
+    this.stopLoop()
     this.adaptiveQuality.stop()
   }
 
@@ -633,6 +714,7 @@ export class SceneHost {
     this.resizeObserver = null
     this.viewportElement = null
     this.onViewportResize = null
+    document.removeEventListener('visibilitychange', this.onVisibilityChange)
     this.stop()
     this.bloom?.dispose()
     this.bloom = null

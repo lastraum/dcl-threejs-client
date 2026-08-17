@@ -462,6 +462,8 @@ export class SceneScriptSystem {
   private bootPhaseActive = false
   private bootProgressReporter: ((msg: string) => void) | null = null
   private scriptBlobUrl: string | null = null
+  /** Last fetched `bin/index.js` text — used to discover `tjs.vfx:*` before play. */
+  private lastScriptSource: string | null = null
   private compileProgressTimer: ReturnType<typeof setInterval> | null = null
   /** Set when inject-pointer-click is posted; cleared on pointer-deliver-done from worker. */
   private pointerDeliverAwaitingAck = false
@@ -534,6 +536,11 @@ export class SceneScriptSystem {
 
   getFocusPolicy(): import('../../dcl/multiScene/types').FocusPolicy {
     return this.focusPolicy
+  }
+
+  /** Latest scene `bin/index.js` source, if the worker boot fetched it. */
+  getLastScriptSource(): string | null {
+    return this.lastScriptSource
   }
 
   private applyFocusPolicy(policy: import('../../dcl/multiScene/types').FocusPolicy): void {
@@ -2187,6 +2194,7 @@ export class SceneScriptSystem {
           })
         }
         // Keep blob as fallback for older worker paths / hard refresh debugging.
+        this.lastScriptSource = codeForMirror || null
         this.revokeScriptBlobUrl()
         this.scriptBlobUrl = URL.createObjectURL(
           new Blob([buf as BlobPart], { type: 'application/javascript' })

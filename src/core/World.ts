@@ -115,7 +115,7 @@ import {
 import { shortenAddress } from '../avatar/displayName'
 import { buildPlayerMirrorIdentity, getOrCreateGuestAddress } from '../bridge/playerMirrorIdentity'
 import type { AvatarAttachTargetResolver } from '../avatar/AvatarAttachTargets'
-import { dclToThreePos, dclToThreeVec, type DclTransformValues } from '../bridge/dclTransform'
+import { dclToThreePos, dclToThreeVec, threeToDclPos, type DclTransformValues } from '../bridge/dclTransform'
 import { feetDclToPlayerEntityPosition } from '../player/dclPlayerEntity'
 import type { PhysicsColliderDesc } from '../physics/PhysXWorld'
 
@@ -143,12 +143,16 @@ import {
   refreshPreviewRealmScene
 } from '../network/preview/localPreviewHotReload'
 import type { PreviewSceneUpdate } from '../network/preview/wsSceneMessage'
-import { clientSettings } from '../rendering/ClientSettings'
 import {
   SceneAbilityVfxHost,
-  setSceneAbilityVfxHost,
-  ABILITY_VFX_WARM_IDS
+  setSceneAbilityVfxHost
 } from '../vfx/SceneAbilityVfxHost'
+import { discoverAbilityVfxIds } from '../vfx/discoverAbilityVfx'
+import {
+  ABILITY_VFX_TOPIC,
+  decodeAbilityVfxCast,
+  encodeAbilityVfxCast
+} from '../vfx/abilityVfxWire'
 import { isTextInputFocused } from '../client/ui/textInputFocus'
 import { skipRemoteAvatars } from '../client/devFlags'
 import { InputHub } from '../input/InputHub'
@@ -351,7 +355,7 @@ export class World {
   private localPreviewHotReload: LocalPreviewHotReload | null = null
   private previewReloadQueued: PreviewSceneUpdate | null = null
   private abilityVfx: SceneAbilityVfxHost | null = null
-  private unsubAbilityVfx: (() => void) | null = null
+  private unsubAbilityVfxTopic: (() => void) | null = null
   /** Skip SceneLoop/CRDT fold this many presents so the first orbit frames stay host-only. */
   private static readonly PLAY_LOOP_GRACE_FRAMES = 12
   /** Neighbor AOI / live guests after this many presents. */
@@ -481,10 +485,7 @@ export class World {
     })
 
     this.unsubEnvironmentDebug = environmentDebug.subscribe(() => this.applyEnvironmentDebugVisibility())
-    this.unsubAbilityVfx = clientSettings.subscribe(() => {
-      void this.syncAbilityVfxHost()
-    })
-    void this.syncAbilityVfxHost()
+    this.ensureAbilityVfxHost()
 
     this.petManager.bindScene(this.host.drawWorld.drawRoot)
     this.petManager.attachPeerSync(this.petPeerSync)
@@ -780,7 +781,7 @@ export class World {
   private loginIsGuest = false
 
   applyLogin(choice: LoginResult | null): void {
-    this.loginIsGuest = choice?.kind === 'guest'
+    this.loginIsGuest = choice?.kind === 'guest' || choice?.kind === 'ephemeral'
     this.session.applyLogin(choice)
     this.comms.setIdentity(this.session.getAddress(), this.session.getAuthIdentity())
     const addr = this.session.getAddress() ?? null
@@ -1235,6 +1236,7 @@ export class World {
       this.sceneScript.setBootProgressReporter((msg) => onProgress?.(msg))
       try {
         await this.sceneScript.start(scene, this.assets, this.host)
+        await this.primeSceneAbilityVfx(onProgress)
         onProgress?.('Loading scene assets…')
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
@@ -1308,6 +1310,7 @@ export class World {
 
       this.sceneScript.setBootProgressReporter((msg) => onProgress?.(msg))
       await this.sceneScript.start(scene, this.assets, this.host)
+      await this.primeSceneAbilityVfx(onProgress)
       onProgress?.('Reattaching scene…')
       await this.waitPrimaryAttachAfterReload()
 
@@ -1551,22 +1554,79 @@ export class World {
   }
 
   /**
-   * Always keep the genesis-lab AbilityManager host.
-   * Setting on = warm ice at boot. Setting off = first click primes (shader hitch once).
+   * Host is cheap until `prime`. AbilityManager + shaders load only for ids
+   * the scene bundle names (`tjs.vfx:*`), one at a time during scene load.
    */
-  private async syncAbilityVfxHost(): Promise<void> {
-    if (!this.abilityVfx) {
-      const host = new SceneAbilityVfxHost(this.host.scene, this.host.camera, this.host.renderer)
-      this.abilityVfx = host
-      setSceneAbilityVfxHost(host)
-    }
-    if (!clientSettings.getAbilityVfxEnabled()) return
-    const ok = await this.abilityVfx.prime([...ABILITY_VFX_WARM_IDS])
-    if (!ok) {
-      clientDebugLog.log('scene', 'ability-vfx prime failed — ice clicks will retry', {
-        level: 'warn',
+  private ensureAbilityVfxHost(): SceneAbilityVfxHost {
+    if (this.abilityVfx) return this.abilityVfx
+    const host = new SceneAbilityVfxHost(this.host.scene, this.host.camera, this.host.renderer)
+    this.abilityVfx = host
+    setSceneAbilityVfxHost(host)
+    host.setOnLocalCast((id, origin, dir, range) => {
+      const o = threeToDclPos(origin.x, origin.y, origin.z)
+      const d = threeToDclPos(dir.x, dir.y, dir.z)
+      void this.comms
+        .publishRawTopicData(
+          ABILITY_VFX_TOPIC,
+          encodeAbilityVfxCast({
+            id,
+            ox: o.x,
+            oy: o.y,
+            oz: o.z,
+            dx: d.x,
+            dy: d.y,
+            dz: d.z,
+            range
+          }),
+          true
+        )
+        .then((ok) => {
+          clientDebugLog.log(
+            'scene',
+            ok
+              ? `ability-vfx published ${id}`
+              : `ability-vfx publish skipped — no comms room (${id})`,
+            { level: ok ? 'info' : 'warn', alsoConsole: true }
+          )
+        })
+    })
+    this.unsubAbilityVfxTopic?.()
+    this.unsubAbilityVfxTopic = this.comms.addTopicListener((topic, sender, data) => {
+      if (topic !== ABILITY_VFX_TOPIC) return
+      const local = this.session.getAddress()?.trim().toLowerCase() ?? ''
+      if (local && sender.trim().toLowerCase() === local) return
+      const msg = decodeAbilityVfxCast(data)
+      if (!msg) return
+      clientDebugLog.log('scene', `ability-vfx recv ${msg.id} from ${sender.slice(0, 10)}…`, {
         alsoConsole: true
       })
+      const origin = dclToThreePos(msg.ox, msg.oy, msg.oz)
+      const dir = dclToThreePos(msg.dx, msg.dy, msg.dz)
+      this.abilityVfx?.cast(msg.id, origin, dir, msg.range, { publish: false })
+    })
+    return host
+  }
+
+  private async primeSceneAbilityVfx(onProgress?: (msg: string) => void): Promise<void> {
+    const source = this.sceneScript.getLastScriptSource()
+    const ids = source ? discoverAbilityVfxIds(source) : []
+    if (ids.length === 0) {
+      clientDebugLog.log('scene', 'ability-vfx skip — no tjs.vfx tags in scene bundle', {
+        alsoConsole: true
+      })
+      return
+    }
+    const host = this.ensureAbilityVfxHost()
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i]!
+      onProgress?.(`Loading ability VFX (${id}, ${i + 1}/${ids.length})…`)
+      const ok = await host.prime([id])
+      if (!ok) {
+        clientDebugLog.log('scene', `ability-vfx prime failed · ${id} — first cast will retry`, {
+          level: 'warn',
+          alsoConsole: true
+        })
+      }
     }
   }
 
@@ -1641,7 +1701,7 @@ export class World {
 
     this.comms.setIdentity(address, identity)
     this.comms.setCommsProfile(this.session.getCommsProfileEntity())
-    this.comms.setLambdasUrl(scene.realm.lambdasUrl)
+    this.comms.setLambdasUrl(this.session.getLambdasUrl())
     this.remoteAvatars?.setLocalAddress(address)
     this.vrmPeerSync.setLocalAddress(address)
     this.petPeerSync.setLocalAddress(address)
@@ -1757,7 +1817,7 @@ export class World {
         )
         this.comms.setIdentity(address, identity)
         this.comms.setCommsProfile(this.session.getCommsProfileEntity())
-        this.comms.setLambdasUrl(scene.realm.lambdasUrl)
+        this.comms.setLambdasUrl(this.session.getLambdasUrl())
         this.remoteAvatars?.setLocalAddress(address)
         this.vrmPeerSync.setLocalAddress(address)
         this.petPeerSync.setLocalAddress(address)
@@ -1800,10 +1860,10 @@ export class World {
           browserChatEnabled: chatOk
         },
         comms: this.comms,
-        contentUrl: scene.realm.contentUrl
+        contentUrl: this.session.getContentUrl()
       })
       if (profile) {
-        void fetchProfileFaceUrl(address, scene.realm.lambdasUrl).then((faceUrl) => {
+        void fetchProfileFaceUrl(address, this.session.getLambdasUrl()).then((faceUrl) => {
           this.social.setLocalProfile(
             address,
             profile.displayName ?? (this.loginIsGuest ? 'Guest' : 'You'),
@@ -1828,8 +1888,8 @@ export class World {
 
     onProgress?.('Spawning player…')
     onProgress?.('Loading avatar…')
-    this.player.setAssetCache(this.assets, scene.realm.contentUrl)
-    await this.player.loadAvatar(onProgress)
+    this.player.setAssetCache(this.assets, this.session.getContentUrl())
+    await this.player.loadAvatar(onProgress, this.session.getProfile())
     this.bindAvatarAttachTargets()
     // Avatar load can take seconds — slide poses only (no full-scene recook).
     await this.sceneScript.yieldForWorkerMessages()
@@ -6447,8 +6507,8 @@ export class World {
     this.overheadChatActive.clear()
     this.unsubEnvironmentDebug?.()
     this.unsubEnvironmentDebug = null
-    this.unsubAbilityVfx?.()
-    this.unsubAbilityVfx = null
+    this.unsubAbilityVfxTopic?.()
+    this.unsubAbilityVfxTopic = null
     this.abilityVfx?.dispose()
     this.abilityVfx = null
     setSceneAbilityVfxHost(null)

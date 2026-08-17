@@ -7,6 +7,7 @@ import {
 import { catalystPeerBaseUrl } from '../map/mapConfig'
 import { applyBundledWearableUrls, preloadBundledWearableManifests, tryBundledWearableDefinition } from './bundledWearables'
 import { catalystPointerForWearableUrn } from './wearablePointers'
+import { catalystContentUrlForWearables, isLocalPreviewCatalystUrl } from './catalystEndpoints'
 import { shortenAddress } from './displayName'
 import { getExtendedAvatarColors, normalizeExtendedColorHex } from './extendedColors'
 import { safeDecodeURIComponent } from '../util/safeDecodeURIComponent'
@@ -234,18 +235,24 @@ export async function fetchWearablesByUrns(urns: string[], peerUrl = PEER_URL): 
 
   const missingPointers = pointers.filter((pointer) => !bundledIds.has(pointer.toLowerCase()))
   let fetched: WearableDefinition[] = []
+  const catalystUrl = catalystContentUrlForWearables(peerUrl)
   if (missingPointers.length) {
-    const res = await fetch(`${peerUrl}/content/entities/active`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ pointers: missingPointers })
-    })
-    if (!res.ok) throw new Error(`Catalyst fetch failed: ${res.status}`)
-    const entities = (await res.json()) as CatalystEntity[]
-    fetched = entities
-      .map((e) => entityToWearable(e, peerUrl))
-      .filter((w): w is WearableDefinition => !!w)
-      .map((w) => applyBundledWearableUrls(w))
+    try {
+      const res = await fetch(`${catalystUrl}/content/entities/active`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pointers: missingPointers })
+      })
+      if (res.ok) {
+        const entities = (await res.json()) as CatalystEntity[]
+        fetched = entities
+          .map((e) => entityToWearable(e, catalystUrl))
+          .filter((w): w is WearableDefinition => !!w)
+          .map((w) => applyBundledWearableUrls(w))
+      }
+    } catch {
+      // Preview / offline — bundled wearables still compose; missing stay missing.
+    }
   }
 
   const byPointer = new Map<string, WearableDefinition>()
@@ -468,7 +475,8 @@ export async function fetchProfileCached(profileId: string, peerUrl = PEER_URL):
 export async function resolveRemotePeerProfile(
   address: string,
   lambdasUrl?: string,
-  timeoutMs = PROFILE_COMMS_WAIT_MS
+  timeoutMs = PROFILE_COMMS_WAIT_MS,
+  skipLambda = false
 ): Promise<AvatarProfile | null> {
   const key = address.toLowerCase()
   const commsHit = commsPeerProfiles.get(key)
@@ -477,6 +485,9 @@ export async function resolveRemotePeerProfile(
   // Still wait briefly for RFC4 — live peers often broadcast before lambda has a row.
   const broadcast = await waitForCommsPeerProfile(key, timeoutMs)
   if (broadcast) return broadcast
+
+  // Local preview lambdas are the scene server — no profile rows, no fan-out.
+  if (skipLambda || isLocalPreviewCatalystUrl(lambdasUrl)) return null
 
   // Skip lambda fan-out for wallets we already know have no Catalyst profile.
   if (isProfileKnownMissing(key)) return null
@@ -573,7 +584,8 @@ async function fetchLambdaAvatarEntry(
   // Prefer the session peer first. On 404 stop — multi-peer fan-out was 3–5× console
   // noise and latency for guests without profiles (common on plaza islands).
   // Only chain peers on network/5xx errors (catalyst down), not on missing.
-  const peers = profileCatalystCandidates(lambdasUrl)
+  const peers = profileCatalystCandidates(lambdasUrl).filter((peer) => !isLocalPreviewCatalystUrl(peer))
+  if (!peers.length) return null
   for (let i = 0; i < peers.length; i++) {
     const peer = peers[i]!
     const result = await fetchLambdaAvatarEntryFromPeer(address, peer)

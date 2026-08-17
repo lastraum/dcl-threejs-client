@@ -182,7 +182,9 @@ export async function refreshPreviewRealmScene(
     }
     content?: { publicUrl?: string }
     lambdas?: { publicUrl?: string }
+    comms?: { healthy?: boolean; protocol?: string; fixedAdapter?: string }
   }
+  const previewAdapter = aboutJson.comms?.fixedAdapter?.trim() || ''
   const contentPublic = (
     aboutJson.content?.publicUrl ?? `${origin.replace(/\/+$/, '')}/content`
   ).replace(/\/+$/, '')
@@ -227,7 +229,10 @@ export async function refreshPreviewRealmScene(
     ...prev.realm,
     realmName: aboutJson.configurations?.realmName?.trim() || prev.realm.realmName,
     networkId: aboutJson.configurations?.networkId ?? prev.realm.networkId,
-    contentUrl: aboutJson.content?.publicUrl?.replace(/\/contents\/?$/, '') || prev.realm.contentUrl
+    contentUrl: aboutJson.content?.publicUrl?.replace(/\/contents\/?$/, '') || prev.realm.contentUrl,
+    // sdk-commands mini-comms (`ws-room:ws://127.0.0.1:8000/mini-comms/room-1`).
+    commsAdapterHint: previewAdapter || prev.realm.commsAdapterHint,
+    commsEnabled: previewAdapter ? true : prev.realm.commsEnabled
   }
   return {
     ...prev,

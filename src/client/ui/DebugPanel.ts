@@ -4,6 +4,7 @@ import { physxColliderDebug, type PhysxColliderDebugOptions } from '../../debug/
 import { cameraCollisionDebug } from '../../debug/CameraCollisionDebug'
 import { platformMotionDebug } from '../../debug/PlatformMotionDebug'
 import type { RenderStats } from './RenderStats'
+import { isLocalPreviewPath, openEphemeralPreviewTab } from '../preview/ephemeralPreview'
 
 export type DebugPanelPosition = {
   x: number
@@ -17,7 +18,8 @@ export type DebugPanelSceneOrigin = {
 }
 
 export type DebugPanelOptions = {
-  anchor: () => HTMLElement | undefined
+  /** Unused — callers still pass a Labs button; scene clicks no longer dismiss. */
+  anchor?: () => HTMLElement | undefined
   renderStats: RenderStats
   onVisibilityChange?: (visible: boolean) => void
   getPlayerPosition?: () => DebugPanelPosition | null
@@ -46,12 +48,10 @@ export class DebugPanel {
   private readonly positionLocalEl: HTMLDivElement
   private readonly positionWorldEl: HTMLDivElement
   private readonly logsBody: HTMLDivElement
-  private readonly anchor: () => HTMLElement | undefined
   private readonly onVisibilityChange?: (visible: boolean) => void
   private readonly getPlayerPosition?: () => DebugPanelPosition | null
   private readonly getSceneOrigin?: () => DebugPanelSceneOrigin
   private visible = false
-  private ignoreOutsideClick = false
   /** When true, panel lives inside Help & Dev body (no fixed float / outside-click). */
   private embedded = false
   private positionRafId = 0
@@ -63,21 +63,7 @@ export class DebugPanel {
   private onCrowdClear: (() => void) | null = null
   private getCrowdCount: (() => { count: number; target: number; busy: boolean }) | null = null
   private crowdStatusEl: HTMLDivElement | null = null
-  private readonly onDocumentClick = (ev: MouseEvent) => {
-    if (this.embedded) return
-    if (this.ignoreOutsideClick) {
-      this.ignoreOutsideClick = false
-      return
-    }
-    if (!this.visible) return
-    const target = ev.target as Node | null
-    if (this.root.contains(target ?? null)) return
-    if (this.anchor()?.contains(target ?? null)) return
-    this.hide()
-  }
-
   constructor({
-    anchor,
     renderStats,
     onVisibilityChange,
     getPlayerPosition,
@@ -87,7 +73,6 @@ export class DebugPanel {
     onCrowdClear,
     getCrowdCount
   }: DebugPanelOptions) {
-    this.anchor = anchor
     this.onVisibilityChange = onVisibilityChange
     this.getPlayerPosition = getPlayerPosition
     this.getSceneOrigin = getSceneOrigin
@@ -99,7 +84,13 @@ export class DebugPanel {
     this.root.id = 'debug-panel'
     this.root.className = 'debug-panel'
     this.root.innerHTML = `
-      <div class="debug-panel__header">Debug</div>
+      <div class="debug-panel__header">
+        <span>Debug</span>
+        <div class="debug-panel__header-actions">
+          <button type="button" class="debug-panel__logs-btn" data-add-peer hidden>Add multiplayer</button>
+          <button type="button" class="debug-panel__logs-btn" data-debug-close aria-label="Close">Close</button>
+        </div>
+      </div>
       <div class="debug-panel__position">
         <div class="debug-panel__position-main">
           <div class="debug-panel__position-title">Position</div>
@@ -261,8 +252,21 @@ export class DebugPanel {
     this.wireEnvironmentDebugControls()
     this.wireCrowdControls()
 
+    const addPeerBtn = this.root.querySelector('[data-add-peer]') as HTMLButtonElement | null
+    if (addPeerBtn && isLocalPreviewPath()) {
+      addPeerBtn.hidden = false
+      addPeerBtn.addEventListener('click', (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        openEphemeralPreviewTab()
+      })
+    }
+    this.root.querySelector('[data-debug-close]')?.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.hide()
+    })
+
     document.body.appendChild(this.root)
-    document.addEventListener('click', this.onDocumentClick, true)
   }
 
   private wireCrowdControls(): void {
@@ -331,7 +335,6 @@ export class DebugPanel {
   show(): void {
     this.visible = true
     this.root.classList.add('is-open')
-    this.ignoreOutsideClick = true
     this.updatePositionHud()
     this.startPositionUpdates()
     this.logsBody.scrollTop = this.logsBody.scrollHeight
@@ -373,7 +376,6 @@ export class DebugPanel {
 
   dispose(): void {
     this.stopPositionUpdates()
-    document.removeEventListener('click', this.onDocumentClick, true)
     this.unsubscribeLogs?.()
     this.unsubscribeLogs = null
     this.unsubscribePhysxDebug?.()

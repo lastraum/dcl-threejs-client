@@ -12,6 +12,12 @@ import type { AvatarProfile } from '../avatar/types'
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import type { LoginResult } from '../auth/AuthClient'
 import { persistProfileAddress } from '../auth/identityStore'
+import { catalystEndpointsForRealm } from '../avatar/catalystEndpoints'
+import {
+  commsEntityFromGuestProfile,
+  createFallbackGuestAvatarProfile
+} from '../avatar/guestProfile'
+import { guestDisplayNameFromAddress } from '../auth/guestIdentity'
 
 /** Local session wallet + Catalyst profile — foundation for multiplayer login. */
 export class SessionIdentity {
@@ -21,6 +27,10 @@ export class SessionIdentity {
   private identity: AuthIdentity | null = null
   /** Guest login uses a browser-only key; Polygon loot bag meta-tx still needs MetaMask. */
   private guest = false
+  /** Extra /localpreview tab — no Catalyst row; do not lambda-fetch. */
+  private previewPeer = false
+  /** Preview scene server is not a Catalyst — keep the seeded guest outfit. */
+  private skipCatalystProfileFetch = false
   private contentUrl = PEER_URL
   private lambdasUrl = `${PEER_URL}/lambdas`
 
@@ -31,8 +41,10 @@ export class SessionIdentity {
   }
 
   setCatalystEndpoints(contentUrl: string, lambdasUrl: string): void {
-    this.contentUrl = contentUrl.replace(/\/$/, '')
-    this.lambdasUrl = lambdasUrl.replace(/\/$/, '')
+    const ends = catalystEndpointsForRealm(contentUrl, lambdasUrl)
+    this.contentUrl = ends.contentUrl
+    this.lambdasUrl = ends.lambdasUrl
+    this.skipCatalystProfileFetch = ends.skipProfileFetch
   }
 
   applyLogin(choice: LoginResult | null): void {
@@ -40,6 +52,8 @@ export class SessionIdentity {
       this.address = undefined
       this.identity = null
       this.guest = false
+      this.previewPeer = false
+      this.skipCatalystProfileFetch = false
       this.profile = null
       this.commsProfile = null
       return
@@ -47,10 +61,21 @@ export class SessionIdentity {
     // Wallet or stable guest both carry address + AuthIdentity for LiveKit / Catalyst.
     this.address = choice.address.toLowerCase()
     this.identity = choice.identity
-    this.guest = choice.kind === 'guest'
-    persistProfileAddress(this.address)
-    this.profile = null
+    this.guest = choice.kind === 'guest' || choice.kind === 'ephemeral'
+    this.previewPeer = choice.kind === 'ephemeral'
+    // Ephemeral preview peers must not overwrite the host tab's localStorage profile.
+    if (choice.kind !== 'ephemeral') persistProfileAddress(this.address)
     this.commsProfile = null
+    // Seed body + starter clothing (hoodie/pants/hair/face). Ephemeral never hits lambdas.
+    if (choice.kind === 'guest' || choice.kind === 'ephemeral') {
+      this.profile = createFallbackGuestAvatarProfile(
+        choice.address,
+        guestDisplayNameFromAddress(choice.address)
+      )
+      this.commsProfile = commsEntityFromGuestProfile(this.profile, this.contentUrl)
+    } else {
+      this.profile = null
+    }
   }
 
   /** Wallet from login; else optional ?profile= / localStorage preview (guest-only). */
@@ -115,17 +140,29 @@ export class SessionIdentity {
       return null
     }
 
+    if (this.previewPeer || (this.guest && this.skipCatalystProfileFetch)) {
+      if (!this.profile) {
+        this.profile = createFallbackGuestAvatarProfile(
+          this.address,
+          guestDisplayNameFromAddress(this.address)
+        )
+      }
+      this.commsProfile = commsEntityFromGuestProfile(this.profile, this.contentUrl)
+      onProgress?.('Preview peer — bundled guest avatar')
+      return this.profile
+    }
+
     onProgress?.(`Connecting to Catalyst for ${this.address.slice(0, 8)}…`)
     const [profile, commsProfile] = await Promise.all([
       fetchProfileCached(this.address, this.lambdasUrl),
       fetchCommsProfileEntityCached(this.address, this.lambdasUrl, this.contentUrl)
     ])
-    this.profile = profile
-    this.commsProfile = commsProfile
-    if (this.profile) {
-      onProgress?.(`Profile loaded: ${this.profile.displayName ?? this.address.slice(0, 8)}`)
+    if (profile) this.profile = profile
+    if (commsProfile) this.commsProfile = commsProfile
+    if (profile) {
+      onProgress?.(`Profile loaded: ${profile.displayName ?? this.address.slice(0, 8)}`)
     } else {
-      onProgress?.('Profile fetch failed — default avatar')
+      onProgress?.(this.profile ? 'Using local guest avatar' : 'Profile fetch failed — default avatar')
     }
     return this.profile
   }

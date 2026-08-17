@@ -111,7 +111,7 @@ export const SIDEBAR_ICONS = {
     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.77 1 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
   </svg>`,
   /**
-   * Labs — parity+ extras launcher (Live, Pets, Loot Bag, Help & Dev).
+   * Labs — parity+ extras launcher (Live, Pets, Loot Bag, Debug, Roadmap).
    * 2×2 app grid so it reads as “more modules”, not Preferences.
    */
   labs: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -125,9 +125,22 @@ export const SIDEBAR_ICONS = {
     <path d="M9.5 9.2a2.7 2.7 0 1 1 4.3 2.2c-.9.6-1.3 1.1-1.3 2.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
     <circle cx="12" cy="16.8" r="0.9" fill="currentColor"/>
   </svg>`,
+  debug: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <path d="M8 9.5h8v7.2a3.2 3.2 0 0 1-3.2 3.2h-1.6A3.2 3.2 0 0 1 8 16.7V9.5z" stroke="currentColor" stroke-width="1.5"/>
+    <path d="M10 9.5V7.2A2 2 0 0 1 12 5.2 2 2 0 0 1 14 7.2v2.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M8 12H5.5M18.5 12H16M8.5 15.5 6.2 17M15.5 15.5 17.8 17M8.5 9.8 6.2 7.8M15.5 9.8l2.3-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  </svg>`,
   dev: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <path d="M8 7 4 12l4 5M16 7l4 5-4 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
     <path d="M11 5.5 9 18.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+  </svg>`,
+  /** Labs → Roadmap — path + milestone flags. */
+  roadmap: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <path d="M5 18c2.2-3.2 3.6-4.6 5.2-4.6 2.2 0 2.4 3.2 4.6 3.2 1.6 0 2.8-1.2 4.2-3.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M7.2 7.2v5.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    <path d="M7.2 4.6h6.2l-1.3 2 1.3 2H7.2z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+    <circle cx="12.2" cy="13.4" r="1.15" fill="currentColor"/>
+    <circle cx="18.4" cy="13.2" r="1.15" fill="currentColor"/>
   </svg>`
 } as const
 

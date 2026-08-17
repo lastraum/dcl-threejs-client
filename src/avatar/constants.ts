@@ -76,6 +76,16 @@ export const DEFAULT_WEARABLE_CATEGORIES: WearableCategory[] = [
   'feet'
 ]
 
+/** Body + starter clothing/face. Bundled under `public/avatar/wearables/`. */
+export function defaultGuestWearableUrns(bodyShape: BodyShape): string[] {
+  const wearables = [BODY_SHAPE_URN[bodyShape]]
+  for (const cat of DEFAULT_WEARABLE_CATEGORIES) {
+    const def = defaultWearableUrn(cat, bodyShape)
+    if (def) wearables.push(def)
+  }
+  return wearables
+}
+
 /**
  * Profile resolve backfill only — face/hair (profiles store colors; missing these = bald/blank).
  * Clothing is NOT backfilled: empty upper/lower/feet shows base underwear (Explorer parity).

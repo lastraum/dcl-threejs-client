@@ -4,17 +4,11 @@ export type ClientSettingsState = {
   fov: number
   /** Percent of base look speed (10–200). 100 = default. */
   mouseSensitivity: number
-  /**
-   * Genesis-lab ability VFX (ice LINE, etc.). Off by default — warming
-   * AbilityManager + first shader compile is opt-in.
-   */
-  abilityVfxEnabled: boolean
 }
 
 const DEFAULTS: ClientSettingsState = {
   fov: 60,
-  mouseSensitivity: 100,
-  abilityVfxEnabled: false
+  mouseSensitivity: 100
 }
 
 export const FOV_MIN = 40
@@ -74,17 +68,6 @@ class ClientSettingsStore {
     this.notify()
   }
 
-  getAbilityVfxEnabled(): boolean {
-    return this.state.abilityVfxEnabled
-  }
-
-  setAbilityVfxEnabled(on: boolean): void {
-    if (on === this.state.abilityVfxEnabled) return
-    this.state = { ...this.state, abilityVfxEnabled: on }
-    this.persist()
-    this.notify()
-  }
-
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener)
     return () => { this.listeners.delete(listener) }
@@ -111,9 +94,6 @@ class ClientSettingsStore {
       }
       if (typeof parsed.mouseSensitivity === 'number') {
         this.state.mouseSensitivity = clampMouseSensitivity(parsed.mouseSensitivity)
-      }
-      if (typeof parsed.abilityVfxEnabled === 'boolean') {
-        this.state.abilityVfxEnabled = parsed.abilityVfxEnabled
       }
     } catch { /* corrupt data */ }
   }

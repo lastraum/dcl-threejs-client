@@ -2,6 +2,7 @@ import {
   assetUrnFromCompleteUrn,
   BACKFILL_WEARABLE_CATEGORIES,
   BODY_SHAPE_URN,
+  DEFAULT_WEARABLE_CATEGORIES,
   defaultWearableUrn,
   normalizeUrn
 } from './constants'
@@ -98,11 +99,12 @@ export async function buildComposeConfig(
   let wearables = await fetchWearablesByUrns(profileUrns, catalystUrl)
   wearables = wearables.filter((w) => hasRepresentation(w, profile.bodyShape))
 
-  // Profiles omit default face/hair items (only colors are stored) — backfill those only.
-  // Clothing slots stay empty on purpose: unequipped upper/lower/feet ⇒ base underwear
-  // (Explorer parity). Guest creation still equips a full DEFAULT_WEARABLE_CATEGORIES outfit.
+  // Wallet profiles omit default face/hair (colors only) — backfill those.
+  // Guest / ephemeral always keep the full starter outfit (hoodie/pants/hair/face).
   const missing: string[] = []
-  for (const category of BACKFILL_WEARABLE_CATEGORIES) {
+  const backfill =
+    profile.fromWallet === false ? DEFAULT_WEARABLE_CATEGORIES : BACKFILL_WEARABLE_CATEGORIES
+  for (const category of backfill) {
     if (wearables.some((w) => w.data.category === category && hasRepresentation(w, profile.bodyShape)))
       continue
     const urn = defaultWearableUrn(category, profile.bodyShape)

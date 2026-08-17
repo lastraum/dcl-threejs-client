@@ -35,8 +35,8 @@ export class IceLineCast {
     dir.normalize()
     this.group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir)
 
-    const geo = new THREE.ConeGeometry(0.18, 1, 5)
-    geo.translate(0, 0.5, 0)
+    const geo = new THREE.ConeGeometry(0.22, 1.4, 5)
+    geo.translate(0, 0.7, 0)
     const mat = new THREE.MeshStandardMaterial({
       color: 0xbfefff,
       emissive: 0x4ec8ff,

@@ -7043,6 +7043,7 @@ export class SceneScriptSystem {
     }
     // In-view particles at present rate with wall elapsed (not async rAF delta).
     this.particleBridge?.update()
+    this.tagVfxHost?.sync(this.view)
     this.tagVfxHost?.update(delta)
     // Primary scene stays fully live. 48/80 m is AOI neighbor shells only —
     // hiding plaza Gltfs (theatre, stage) was a residency bug, not a host-world win.

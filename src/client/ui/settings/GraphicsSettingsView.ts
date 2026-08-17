@@ -315,6 +315,12 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
           label: 'Full-rate scene animators',
           defaultOn: rq.primaryFullRateAnimators ?? false,
           onChange: (on) => renderQuality.setPrimaryFullRateAnimators(on)
+        },
+        {
+          type: 'toggle',
+          label: 'Ability VFX (ice / genesis-lab)',
+          defaultOn: clientSettings.getAbilityVfxEnabled(),
+          onChange: (on) => clientSettings.setAbilityVfxEnabled(on)
         }
       ]
     },

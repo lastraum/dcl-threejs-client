@@ -143,6 +143,12 @@ import {
   refreshPreviewRealmScene
 } from '../network/preview/localPreviewHotReload'
 import type { PreviewSceneUpdate } from '../network/preview/wsSceneMessage'
+import { clientSettings } from '../rendering/ClientSettings'
+import {
+  SceneAbilityVfxHost,
+  setSceneAbilityVfxHost,
+  ABILITY_VFX_WARM_IDS
+} from '../vfx/SceneAbilityVfxHost'
 import { isTextInputFocused } from '../client/ui/textInputFocus'
 import { skipRemoteAvatars } from '../client/devFlags'
 import { InputHub } from '../input/InputHub'
@@ -344,6 +350,8 @@ export class World {
   private primarySceneReloadInFlight = false
   private localPreviewHotReload: LocalPreviewHotReload | null = null
   private previewReloadQueued: PreviewSceneUpdate | null = null
+  private abilityVfx: SceneAbilityVfxHost | null = null
+  private unsubAbilityVfx: (() => void) | null = null
   /** Skip SceneLoop/CRDT fold this many presents so the first orbit frames stay host-only. */
   private static readonly PLAY_LOOP_GRACE_FRAMES = 12
   /** Neighbor AOI / live guests after this many presents. */
@@ -473,6 +481,10 @@ export class World {
     })
 
     this.unsubEnvironmentDebug = environmentDebug.subscribe(() => this.applyEnvironmentDebugVisibility())
+    this.unsubAbilityVfx = clientSettings.subscribe(() => {
+      void this.syncAbilityVfxHost()
+    })
+    void this.syncAbilityVfxHost()
 
     this.petManager.bindScene(this.host.drawWorld.drawRoot)
     this.petManager.attachPeerSync(this.petPeerSync)
@@ -1538,6 +1550,26 @@ export class World {
     this.sceneScript.refreshPointerTargets()
   }
 
+  /**
+   * Always keep the genesis-lab AbilityManager host.
+   * Setting on = warm ice at boot. Setting off = first click primes (shader hitch once).
+   */
+  private async syncAbilityVfxHost(): Promise<void> {
+    if (!this.abilityVfx) {
+      const host = new SceneAbilityVfxHost(this.host.scene, this.host.camera, this.host.renderer)
+      this.abilityVfx = host
+      setSceneAbilityVfxHost(host)
+    }
+    if (!clientSettings.getAbilityVfxEnabled()) return
+    const ok = await this.abilityVfx.prime([...ABILITY_VFX_WARM_IDS])
+    if (!ok) {
+      clientDebugLog.log('scene', 'ability-vfx prime failed — ice clicks will retry', {
+        level: 'warn',
+        alsoConsole: true
+      })
+    }
+  }
+
   /** Creator Hub / sdk-commands preview websocket — same recycle as `/reload`. */
   startLocalPreviewHotReload(scene: ResolvedScene): void {
     this.stopLocalPreviewHotReload()
@@ -2358,6 +2390,7 @@ export class World {
           this.environment.update(delta, this.sceneScript.view, this.sceneScript.readComponents)
           this.syncOutdoorLighting()
         }
+        this.abilityVfx?.update(delta)
         const envMs = performance.now() - envT0
 
         let sceneTickMs = 0
@@ -6414,6 +6447,11 @@ export class World {
     this.overheadChatActive.clear()
     this.unsubEnvironmentDebug?.()
     this.unsubEnvironmentDebug = null
+    this.unsubAbilityVfx?.()
+    this.unsubAbilityVfx = null
+    this.abilityVfx?.dispose()
+    this.abilityVfx = null
+    setSceneAbilityVfxHost(null)
     this.photoCamera?.dispose()
     this.photoCamera = null
     this.photoChromeHandler = null

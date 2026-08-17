@@ -319,6 +319,11 @@ export function parseGotoCommand(text: string): RouteTarget | null {
   return parseTravelTarget(match[1])
 }
 
+/** Unity `/reload` — recycle the current SDK7 scene facade. No travel args. */
+export function parseReloadCommand(text: string): boolean {
+  return /^\/reload\s*$/i.test(text.trim())
+}
+
 export function applyRouteToHistory(target: RouteTarget, replace = false): void {
   const url = new URL(window.location.href)
   url.pathname = routePathForTarget(target)

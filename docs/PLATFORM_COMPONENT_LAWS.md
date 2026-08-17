@@ -308,3 +308,26 @@ Closing any gap = one Explorer measurement or one unityrenderer commit, then one
 Explorer interpolates Tween on the renderer and writes **Transform** on the same engine the scene reads (`m.get(nb).scale.y`, cinematic parents). Host TweenBridge owns interpolation; the guest store must see the live pose on the play-frame (same class as AvatarAttach / PE). Not a scene fork.
 
 **TweenSequence is kernel-owned (ADR-133 / Unity TweenPlugin / Bevy).** Explorers set `ENABLE_SDK_TWEEN_SEQUENCE = false` before bundle eval so `@dcl/ecs` `createTweenSystem` does **not** hop on leftover `TweenState` COMPLETED (that zips plaza `yv` 15×~60ms hops). Scene authors `Tween` (first hop) + `TweenSequence` (rest, `loop` only if TL_RESTART/YOYO). Kernel plays that program at renderer framerate and writes `TweenState` + `Transform`. Rebuild only when the scene dirties Tween/Sequence — do not treat the still-authored first hop as a restart, and do not run a second hop owner.
+
+---
+
+## 12. Scene `/reload` (in-place facade recycle)
+
+### Verified (Unity `ReloadSceneChatCommand` + `ECSReloadScene`)
+
+| Rule | Source |
+|------|--------|
+| Chat `/reload` recycles the **current parcel** SDK7 scene only | Unity `ReloadSceneChatCommand` |
+| Dispose JS + scene ECS + that scene’s draw; keep realm, comms, avatars, other scenes | Unity `DeleteEntityIntention` + `UnloadSceneSystem` |
+| Scene definition / content list stay cached | Unity keeps `SceneDefinitionComponent` |
+| Live `/reload` does **not** drain wearable / GLB / texture caches | `ICacheCleaner.UnloadCache` is LSD-only |
+| Preview hot-reload is the same spine + optional single-hash GLB evict | Unity `TryReloadSceneAsync(ct, sceneId, changedModelSrc)` |
+
+### Client implementation law
+
+| Rule | Status |
+|------|--------|
+| `/reload` → `World.reloadPrimaryScene` — **not** `teardownScene` / new World | Platform |
+| Keep `AssetCache`, PhysX world, player capsule, comms, AOI / neighbors | Platform |
+| Drop stale primary PhysX actors only after the new graph cooks | Platform — avoid falling through |
+| LSD / preview file-watch later: evict named hash only | Open — same recycle, extra evict |

@@ -333,6 +333,8 @@ export class World {
   /** Present frames since {@link start} — first N stay host-only so orbit isn't spiked. */
   private playPresentFrames = 0
   private postPlayNeighborsArmed = false
+  /** In-place `/reload` — dispose primary facade only; World / kits stay. */
+  private primarySceneReloadInFlight = false
   /** Skip SceneLoop/CRDT fold this many presents so the first orbit frames stay host-only. */
   private static readonly PLAY_LOOP_GRACE_FRAMES = 12
   /** Neighbor AOI / live guests after this many presents. */
@@ -1219,6 +1221,291 @@ export class World {
         console.error(err)
       }
     }
+  }
+
+  /**
+   * Unity `/reload` / live-preview recycle: kill the primary scene facade (worker +
+   * scene ECS + that scene's meshes) and boot a new worker. Does **not** rebuild World,
+   * reconnect comms, reload the avatar, or recook neighbor / AOI / landscape hulls.
+   *
+   * Old PhysX actors stay until the new graph cooks so the player does not fall through.
+   */
+  async reloadPrimaryScene(onProgress?: (msg: string) => void): Promise<boolean> {
+    const scene = this.loadedPrimaryScene
+    if (!scene?.mainEntry || !scene.entityId) {
+      console.warn('[reload] no primary SDK7 scene')
+      return false
+    }
+    if (this.primarySceneReloadInFlight) {
+      console.info('[reload] already in flight')
+      return false
+    }
+    this.primarySceneReloadInFlight = true
+    const started = performance.now()
+    const oldPhysIds = this.sceneScript.getAllPhysicsColliderDescs().map((d) => d.entity)
+    console.info(
+      `[reload] recycle primary “${scene.title}” · keep ${oldPhysIds.length} PhysX actors until recook`
+    )
+    onProgress?.('Reloading scene…')
+
+    try {
+      this.sceneScript.dispose()
+      this.assets.setScene(scene)
+      this.sceneScript.prepare(scene, this.assets, this.host)
+      this.bindPrimarySceneRuntime(scene)
+
+      if (this.playerMode && this.player) {
+        this.sceneScript.seedRendererEntities(
+          this.player.getEntityPose(),
+          this.player.getCameraEntityPose()
+        )
+      } else {
+        const spawnPoses = this.seedPosesFromSpawn(scene.spawn)
+        this.sceneScript.seedRendererEntities(spawnPoses.player, spawnPoses.camera)
+      }
+
+      this.sceneScript.setBootProgressReporter((msg) => onProgress?.(msg))
+      await this.sceneScript.start(scene, this.assets, this.host)
+      onProgress?.('Reattaching scene…')
+      await this.waitPrimaryAttachAfterReload()
+
+      await this.sceneScript.yieldForWorkerMessages()
+      await this.sceneScript.syncRendererFull()
+      this.sceneScript.flushSceneGraphMatrices()
+      await this.extractCollidersChunked(undefined, 'Reload colliders', {
+        invalidateAll: true,
+        markAllDirty: true,
+        maxPasses: 16
+      })
+      this.discoverMissingColliderActors()
+      let passes = 0
+      while (this.colliderCookQueue.size > 0 && passes < 48) {
+        await this.drainColliderCookQueue({ mode: 'play' })
+        this.discoverMissingColliderActors()
+        passes++
+      }
+
+      const live = new Set(this.sceneScript.getAllPhysicsColliderDescs().map((d) => d.entity))
+      let dropped = 0
+      for (const id of oldPhysIds) {
+        if (live.has(id)) continue
+        if (this.physics.hasStaticActor(id)) {
+          this.physics.invalidateStaticCollider(id)
+          dropped++
+        }
+        this.colliderCookQueue.delete(id)
+      }
+      if (dropped > 0) this.physics.invalidateControllerCache()
+      this.physics.warmStaticScene()
+
+      this.rewirePrimaryPlaySurfaceAfterReload()
+      const ms = (performance.now() - started).toFixed(0)
+      console.info(
+        `[reload] primary ready in ${ms}ms · dropped ${dropped} stale actors · ` +
+          `static=${this.physics.staticColliderCount} gltf=${this.physics.gltfStaticActorCount}`
+      )
+      onProgress?.('Scene reloaded')
+      return true
+    } catch (err) {
+      console.error('[reload] failed', err)
+      onProgress?.('Scene reload failed')
+      return false
+    } finally {
+      this.sceneScript.setBootProgressReporter(null)
+      this.primarySceneReloadInFlight = false
+    }
+  }
+
+  /** RestrictedActions + comms + collider hooks after a fresh primary `prepare()`. */
+  private bindPrimarySceneRuntime(scene: ResolvedScene): void {
+    this.wireVoiceSpatial()
+    this.sceneScript.setLiveKitVideoBinder((video, onUpdate) =>
+      this.comms.bindLiveKitVideoSource(video, onUpdate)
+    )
+    this.sceneScript.setLiveKitRemoteLiveCheck(() => this.comms.hasSceneLiveKitVideoLive())
+    this.remoteAvatars?.setEntityStore(this.sceneScript.getEntityStore())
+    this.remoteAvatars?.setPeerMirrorIdentityHandler((entity, identity) =>
+      this.sceneScript.setRemotePlayerIdentity(entity, identity)
+    )
+    this.sceneScript.setCollidersCookCallback((entity) => this.onColliderCookRequest(entity))
+    this.sceneScript.setCollidersPoseCallback((entities) => this.applyColliderPoseSlides(entities))
+    this.sceneScript.setCollidersRemoveCallback((entity) => this.onColliderEntityRemoved(entity))
+    this.sceneScript.setRealmInfoProvider(() => this.comms.getRealmInfo())
+    this.comms.setAuthServerPresentHandler(() => {
+      this.sceneScript.resyncAuthServerNetworkRoom()
+    })
+    this.comms.setSceneBinaryIngressHold(true)
+    this.sceneScript.setSceneBinaryIngressRelease(() => {
+      this.comms.setSceneBinaryIngressHold(false)
+    })
+    this.sceneScript.setSceneBinaryCustomEventRelease(() => {
+      this.comms.setSceneBinaryCustomEventHold(false)
+    })
+    this.sceneScript.setCommsHandler({
+      setCommunicationsAdapter: async (body) => ({
+        success: await this.comms.connectAdapter(body.connectionString)
+      }),
+      sendBinary: async (body) => this.handleSendBinary(body),
+      send: async (body) => {
+        await this.comms.publishCommsMessage(body.message)
+        return {}
+      },
+      getUserData: async () => this.buildUserData(),
+      getRealm: async () => ({ realmInfo: this.comms.getRealmInfo() }),
+      subscribeToTopic: async (body) => {
+        this.comms.subscribeToTopic(body.topic)
+        return {}
+      },
+      unsubscribeFromTopic: async (body) => {
+        this.comms.unsubscribeFromTopic(body.topic)
+        return {}
+      },
+      publishData: async (body) => {
+        await this.comms.publishTopicData(body.topic, body.data)
+        return {}
+      },
+      consumeMessages: async (body) => this.comms.consumeMessages(body.topic),
+      getActiveVideoStreams: async () => this.comms.getActiveVideoStreams()
+    })
+    this.applySignedFetchSceneContext(scene)
+    this.sceneScript.setOpenExternalUrlHandler((request) => openExternalUrl(request))
+    this.sceneScript.setOpenNftDialogHandler((request) => openNftDialog(request))
+    this.sceneScript.setCopyToClipboardHandler((request) => copyToClipboard(request))
+    this.sceneScript.setTeleportToHandler((request) => {
+      const parcel = parseTeleportParcel(request)
+      if (!parcel) return false
+      this.navigateHandler?.({
+        kind: 'coords',
+        x: parcel.x,
+        y: parcel.y,
+        segment: `${parcel.x},${parcel.y}`
+      })
+      return true
+    })
+    this.sceneScript.setChangeRealmHandler(() => {
+      console.info('[World] changeRealm ignored (deprecated)')
+      return false
+    })
+    this.sceneScript.setPlayerIdentity(
+      buildPlayerMirrorIdentity({
+        address: this.session.getAddress(),
+        profile: this.session.getProfile()
+      })
+    )
+    this.sceneScript.setRealmInfo(this.comms.getRealmInfo())
+    this.sceneScript.setClientPoseProvider(() => ({
+      player: this.player?.getEntityPose() ?? {
+        position: new THREE.Vector3(),
+        rotation: new THREE.Quaternion()
+      },
+      camera: this.player?.getCameraEntityPose() ?? {
+        position: new THREE.Vector3(),
+        rotation: new THREE.Quaternion()
+      }
+    }))
+    if (!this.playerMode || !this.player) return
+    this.sceneScript.setMovePlayerHandler((request) => {
+      const ok = this.player!.movePlayerTo(request)
+      this.sceneScript.nudgePlayAfterSceneTeleport()
+      if (ok) this.kickPostTeleportColliderCatchup()
+      return ok
+    })
+    this.sceneScript.setSetCameraTransformHandler((request) =>
+      this.player!.setTestingCameraTransform(request)
+    )
+    this.sceneScript.setTriggerEmoteHandler((request) => {
+      const emote = request.predefinedEmote?.trim()
+      if (!emote) return false
+      void this.playLocalEmote(emote, { loop: undefined, sceneTriggered: true })
+      return true
+    })
+    this.sceneScript.setTriggerSceneEmoteHandler((request) => {
+      const src = request.src?.trim()
+      if (!src) return false
+      const resolved = resolveSceneEmoteFromSrc(src, request.loop ?? false)
+      if (!resolved) return false
+      void this.playLocalEmote(resolved.urn, { loop: resolved.loop, sceneTriggered: true })
+      return true
+    })
+    this.sceneScript.setAvatarEmoteHandler({
+      play: (emoteUrn, loop) => {
+        if (!emoteUrn.trim()) return false
+        void this.playLocalEmote(emoteUrn.trim(), { loop, broadcast: true, sceneTriggered: true })
+        return true
+      },
+      stop: () => this.player!.stopEmote()
+    })
+  }
+
+  /** Clone-from-cache attach only — no loading-screen settle / full plaza cook. */
+  private async waitPrimaryAttachAfterReload(): Promise<void> {
+    const deadline = performance.now() + 8_000
+    while (performance.now() < deadline) {
+      await this.sceneScript.yieldForWorkerMessages()
+      await this.sceneScript.syncRendererFull()
+      const pending = this.sceneScript.getAttachProgressLite()?.pendingMesh ?? 0
+      if (pending <= 0) return
+      await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    }
+    const leftover = this.sceneScript.getAttachProgressLite()?.pendingMesh ?? 0
+    if (leftover > 0) {
+      console.warn(`[reload] attach still pending=${leftover} after 8s — continuing`)
+    }
+  }
+
+  /** Pointer / VC / avatar-attach after a recycle — player capsule already exists. */
+  private rewirePrimaryPlaySurfaceAfterReload(): void {
+    if (!this.playerMode || !this.player) return
+    this.bindAvatarAttachTargets()
+    this.sceneScript.setVirtualCameraPoseProviders(
+      () => this.player!.getEntityPose(),
+      () => this.player!.getCameraEntityPose()
+    )
+    this.player.setVirtualCameraBridge(this.sceneScript.getVirtualCameraBridge())
+    this.sceneScript.setSpatialAudioPlayerRoot(() => this.player!.getPlayerRoot())
+    this.player.setImpulseLamportProvider(() => this.sceneScript.getPhysicsImpulseLamport())
+    this.startInputHub()
+    this.sceneScript.setInputHub(this.inputHub, 'primary')
+    this.sceneScript.bindPointerEvents(
+      () => this.player?.getWorldPosition() ?? null,
+      () => this.player?.isPointerBlocked() ?? true,
+      () => this.physics,
+      {
+        isRelayBlocked: () => this.player?.isSceneRelayBlocked() ?? true,
+        isLocomotionBlocked: () => this.player?.isLocomotionBlocked() ?? true,
+        clearPlayerMoveKeys: () => this.player?.clearMoveKeys()
+      },
+      (mode) => this.player?.setForcedCameraMode(mode)
+    )
+    this.sceneScript.setAvatarModifierProviders({
+      getSamples: () => {
+        const samples: { id: string; position: { x: number; y: number; z: number } }[] = []
+        const localPos = this.player?.getPosition()
+        if (localPos) {
+          const localId = this.session.getAddress()?.toLowerCase() ?? ''
+          samples.push({
+            id: localId,
+            position: { x: localPos.x, y: localPos.y, z: localPos.z }
+          })
+        }
+        this.remoteAvatars?.collectModifierSamples(samples)
+        return samples
+      },
+      apply: (id, effects) => {
+        const localId = this.session.getAddress()?.toLowerCase() ?? ''
+        if (!id || id === localId) {
+          this.player?.setModifierHidden(effects.hide)
+          return
+        }
+        this.remoteAvatars?.setModifierHidden(id, effects.hide)
+      }
+    })
+    this.sceneScript.notifyPlayReady({
+      plazaScale: (this.sceneScript.getHydrationStats()?.gltfEntities ?? 0) >= 400,
+      engineTickIntervalMs: resolveEngineTickIntervalMs(this.sceneScript.getPerformanceTier())
+    })
+    this.sceneScript.preparePointerRaycast()
+    this.sceneScript.refreshPointerTargets()
   }
 
   /**

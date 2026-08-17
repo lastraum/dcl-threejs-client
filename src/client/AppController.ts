@@ -2406,6 +2406,22 @@ export class AppController {
     })
   }
 
+  /** Unity `/reload` — recycle the live primary scene without leaving play. */
+  private async reloadCurrentScene(): Promise<void> {
+    const world = this.world
+    if (!world || this.appMode !== 'play') {
+      clientDebugLog.log('scene', '/reload ignored — not in play', { level: 'warn' })
+      return
+    }
+    const ok = await world.reloadPrimaryScene((msg) => {
+      clientDebugLog.log('scene', msg)
+    })
+    clientDebugLog.log('scene', ok ? '🟢 Current scene has been reloaded' : '🔴 Scene reload failed', {
+      alsoConsole: true,
+      level: ok ? 'success' : 'warn'
+    })
+  }
+
   private async jumpInToScene(
     target: RouteTarget,
     opts: {
@@ -3215,6 +3231,7 @@ export class AppController {
     this.chatPanel = new ChatPanel({
       social: world.social,
       onGoto: (target) => void this.jumpInToScene(target, { fastAssets: true }),
+      onReload: () => this.reloadCurrentScene(),
       onOpenProfile: (address) => this.profileUi?.openProfileForAddress(address),
       getCurrentRoute: () => this.currentRoute
     })

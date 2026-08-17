@@ -107,7 +107,8 @@ import {
   installVirtualCameraBindGuard
 } from './virtualCameraBindGuard'
 import { installAvatarAttachCreateGuard } from './patchAvatarAttachCreate'
-import type { Entity } from '@dcl/ecs'
+import type { Entity, IEngine } from '@dcl/ecs'
+import { parseShaderTriggers } from '../../vfx/shaderTags'
 import * as extended from '@dcl/ecs/dist/components'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import { ReadWriteByteBuffer } from '@dcl/ecs/dist/serialization/ByteBuffer'
@@ -203,6 +204,110 @@ import { hasGrowOnlyInjects } from './injectRendererGrowOnlyAppends'
 const VIDEO_PLAYER_NULL_MUTABLE = /VideoPlayer for null not found/
 
 const ctx = self
+
+function encodeTjsShaderParam(value: unknown): string {
+  if (Array.isArray(value) && value.length >= 3) return `${value[0]}:${value[1]}:${value[2]}`
+  if (value && typeof value === 'object' && 'x' in (value as object)) {
+    const v = value as { x: number; y: number; z: number }
+    return `${v.x}:${v.y}:${v.z}`
+  }
+  return String(value ?? '')
+}
+
+function tjsArgsToParams(args: unknown[]): Record<string, string> {
+  if (args.length === 1 && typeof args[0] === 'string') {
+    return { target: args[0] }
+  }
+  if (args.length >= 3 && typeof args[0] === 'number') {
+    return { at: `${args[0]}:${args[1]}:${args[2]}` }
+  }
+  const first = args[0]
+  if (Array.isArray(first) && first.length >= 3) {
+    return { at: encodeTjsShaderParam(first) }
+  }
+  if (first && typeof first === 'object') {
+    const out: Record<string, string> = {}
+    for (const [key, value] of Object.entries(first as Record<string, unknown>)) {
+      out[key] = encodeTjsShaderParam(value)
+    }
+    return out
+  }
+  return {}
+}
+
+/** `tjs.ice(54, 0, 38)` / `tjs.shader(name, fn, params)` — scene pointer callbacks. */
+function installTjsShaderApi(): void {
+  const g = globalThis as Record<string, unknown>
+  const post = (name: string, fn: string, params: Record<string, string>): void => {
+    ctx.postMessage({
+      type: 'tjs-shader',
+      name,
+      fn,
+      params
+    } satisfies SceneWorkerOutbound)
+  }
+  const base: Record<string, unknown> =
+    typeof g.tjs === 'object' && g.tjs ? { ...(g.tjs as Record<string, unknown>) } : {}
+  base.shader = (name: string, fn: string, params?: Record<string, unknown>) => {
+    post(String(name ?? ''), String(fn ?? 'cast'), tjsArgsToParams(params ? [params] : []))
+  }
+  g.tjs = new Proxy(base, {
+    get(target, prop, recv) {
+      if (typeof prop === 'symbol') return Reflect.get(target, prop, recv)
+      if (prop in target) return Reflect.get(target, prop, recv)
+      return (...args: unknown[]) => post('', String(prop), tjsArgsToParams(args))
+    }
+  })
+}
+installTjsShaderApi()
+
+const firedSceneShaderTags = new Set<string>()
+
+function resolveSceneTagsComponent(eng: IEngine): {
+  getOrNull: (entity: Entity) => { tags?: string[] } | null
+} | null {
+  const named = (eng as IEngine & {
+    getComponentOrNull?: (name: string) => unknown
+  }).getComponentOrNull?.('core-schema::Tags')
+  if (named && typeof (named as { getOrNull?: unknown }).getOrNull === 'function') {
+    return named as { getOrNull: (entity: Entity) => { tags?: string[] } | null }
+  }
+  for (const component of eng.componentsIter()) {
+    const name = (component as { componentName?: string }).componentName ?? ''
+    if (name === 'core-schema::Tags' || name === 'Tags') {
+      return component as { getOrNull: (entity: Entity) => { tags?: string[] } | null }
+    }
+  }
+  return null
+}
+
+/** Tag create = cast. Read Tags on the scene engine after systems; do not wait for host CRDT. */
+function flushShaderTagsFromScene(): void {
+  if (!sceneEngine) return
+  const Tags = resolveSceneTagsComponent(sceneEngine)
+  if (!Tags) return
+  for (const [entity] of sceneEngine.getEntitiesWith(Tags as never)) {
+    const tags = Tags.getOrNull(entity)?.tags ?? []
+    if (!tags.length) continue
+    for (const play of parseShaderTriggers(tags)) {
+      const fn = play.fn.toLowerCase()
+      if (fn === 'tick' || fn === 'shader' || play.name.toLowerCase() === 'shader') continue
+      const key = `${entity as number}:${play.name}:${play.fn}:${play.params.origin ?? ''}:${play.params.direction ?? ''}:${play.params.distance ?? ''}`
+      if (firedSceneShaderTags.has(key)) continue
+      firedSceneShaderTags.add(key)
+      ctx.postMessage({
+        type: 'tjs-shader',
+        name: play.name,
+        fn: play.fn,
+        params: play.params
+      } satisfies SceneWorkerOutbound)
+      workerLog(
+        'warn',
+        `[sceneWorker] VFXEDGE tag-create ${play.name}.${play.fn} e${entity as number}`
+      )
+    }
+  }
+}
 
 let requestId = 0
 const pendingCrdt = new Map<number, (data: Uint8Array[]) => void>()
@@ -1585,6 +1690,7 @@ initSceneEngineScheduler({
   },
   onAfterEngineTick: () => {
     flushPlayModeColdCrdtEgress(postPlayModeColdCrdtFireAndForget)
+    flushShaderTagsFromScene()
     publishVcBindHydrateIfNeeded()
     publishPlayerFrameIfChanged()
     publishVcPoseLiveEgress()

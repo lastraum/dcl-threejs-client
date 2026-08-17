@@ -4,6 +4,8 @@ A **browser-native Decentraland SDK7 Explorer** — Three.js renderer, Web Worke
 
 **Current release:** **v2.0.0** (host world + city walk). Latest tagged on `main`. QA continues on `dev-latest`.
 
+[Goals](#goals) · [Contributions](#contributions) · [Environments](#environments) · [Pets](#pets) · [Shaders](#shaders)
+
 ## Goals
 
 **Web-native scene runtime.** Ship a client that runs real DCL SDK7 scenes in the browser without a game-engine shell — Three.js on the main thread, scene scripts in a worker, content from Catalyst and the content network.
@@ -14,11 +16,11 @@ A **browser-native Decentraland SDK7 Explorer** — Three.js renderer, Web Worke
 
 **Focused scope.** This is not a full replica of the entire Decentraland stack. The priority is **in-scene runtime** plus **social/comms** where already integrated — not rebuilding every platform service or legacy kernel surface.
 
-**Open contribution.** Parity gaps live in the integration registry; contributors self-claim via GitHub issues — see [Community contributions](#community-contributions) below.
+**Open contribution.** Parity gaps live in the integration registry; contributors self-claim via GitHub issues — see [Contributions](#contributions) below.
 
 **Non-commercial license.** Free to use, fork, and contribute; commercial / for-profit use needs written permission — see [License](#license).
 
-## Community contributions
+## Contributions
 
 ### Who can contribute
 
@@ -112,7 +114,7 @@ Production build: `npm run build` → static SPA in `dist/`. Preview: `npm run p
 
 Dev overlay: `</>` sidebar → Community claims + parity gaps + `PROGRESS.md` from GitHub `dev-latest`.
 
-## Scene environments (landscape biomes)
+## Environments
 
 ThreejsClient-only backdrop for **worlds** and parcels: sky, ground package, and (for water biomes) ocean waves. Unity/Godot Explorer ignore these fields — they only affect this client.
 
@@ -207,6 +209,71 @@ npm run dev
 ### Terrain editor (sculpt + biomes)
 
 Open **`/editor`** for height / splat / Ez Grass brushes and the floating biome dock. Biome rail writes `environment.kind`; island/water also expose FFTOCEAN controls under `environment.water`. Latest notes: [docs/PROGRESS.md](docs/PROGRESS.md).
+
+## Pets
+
+Pets are companions that follow **you**. Anyone in the same place on this client can see them. Official Explorer does not show them, and scenes do not spawn them — you pick one from the HUD.
+
+### Open Pets
+
+1. Click **Labs** on the left rail (the 2×2 grid).
+2. Click **Pets**.
+
+You get a list of companions you already own (built-ins plus anything you imported or added from the Barn).
+
+### Browse the Pet Barn
+
+1. In the Pets panel, click **Barn**.
+2. The **Shop** tab is the public catalog (name, thumbnail, walking vs flying).
+3. Click **Add** on a card to download that pet into your local collection.
+4. Close the Barn and turn the pet **on** in your Pets list.
+
+You can also **Publish** your own GLB from the Barn (thumbnail is compressed for you). Listings show up in the shop after the catalog updates.
+
+### Use a pet
+
+- Toggle it **on** in the Pets list — it appears at your feet (walkers) or above you (flyers).
+- Walk or run — it follows. Stand still long enough and it sits, then idles AFK.
+- Right-click the pet in the world for the radial menu (dismiss, settings, …).
+- Import a GLB from your machine with the upload control in the Pets panel if you do not want the Barn.
+
+Nothing to add to `scene.json`. Other people using this client in the same place see your pet automatically.
+
+## Shaders
+
+There is no `tjs` in the scene. **Creating the Tag is the call.**
+
+```ts
+// load only (does not fire)
+Tags.createOrReplace(engine.RootEntity, {
+  tags: [
+    'tjs.shader(ice, assets/shaders/IceAbility.js)',
+    'tjs.shader(cinder, assets/shaders/MeteorAbility.js)'
+  ]
+})
+
+// fire — any time, any entity
+pointerEventsSystem.onPointerDown(
+  { entity: button, opts: { button: InputAction.IA_POINTER, hoverText: 'Cast Ice' } },
+  function () {
+    const ox = 42, oy = 0, oz = 46
+    const dx = 0.83, dy = 0, dz = -0.55
+    const distance = 14
+    Tags.createOrReplace(engine.addEntity(), {
+      tags: [`tjs.ice.spawn(${ox}, ${oy}, ${oz}, ${dx}, ${dy}, ${dz}, ${distance})`]
+    })
+  }
+)
+```
+
+That **is** `ability.spawn(origin, direction, distance)`. `${}` is just JS inside the string.
+
+| You write | Role |
+| --- | --- |
+| `tjs.shader(ice, assets/shaders/IceAbility.js)` | Load that file as `ice` |
+| `` tjs.ice.spawn(${ox}, ${oy}, ${oz}, ${dx}, ${dy}, ${dz}, ${distance}) `` | `spawn(origin, direction, distance)` |
+
+Copies: VFX scene `assets/shaders/`.
 
 ## Credits
 

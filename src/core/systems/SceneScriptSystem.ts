@@ -31,6 +31,7 @@ import { isEmoteAnchorGltfSrc } from '../../rendering/DclTextureResolver'
 import { TweenBridge } from '../../bridge/TweenBridge'
 import { ParticleSystemBridge } from '../../bridge/ParticleSystemBridge'
 import { SceneTagVfxHost } from '../../bridge/tagVfx/SceneTagVfxHost'
+import { buildShaderCtx, getShaderManager } from '../../vfx/ShaderManager'
 import { isLocalPreviewScene } from '../../dcl/content/refreshPreviewScene'
 import { fetchProfileFaceUrl } from '../../avatar/peerApi'
 import { isTweenVerbose } from '../../bridge/tweenConfig'
@@ -699,6 +700,14 @@ export class SceneScriptSystem {
       host.scene,
       () => this.bridge?.getEntityNodes()
     )
+    getShaderManager().setResolveUrl((src) => {
+      const trimmed = src.trim()
+      if (/^https?:\/\//i.test(trimmed)) return trimmed
+      const hit =
+        scene.content.find((c) => c.file === trimmed) ??
+        scene.content.find((c) => c.file.endsWith(`/${trimmed}`))
+      return hit ? scene.assetUrl(hit.hash) : null
+    })
     this.sceneUiBridge?.dispose()
     const uiDetached = opts?.uiDetached === true
     const uiRootId = uiDetached
@@ -2594,6 +2603,20 @@ export class SceneScriptSystem {
         id: msg.id,
         body: {} satisfies CopyToClipboardResponse
       } satisfies MainToWorker)
+      return
+    }
+    if (msg.type === 'tjs-shader') {
+      if (msg.fn === 'play' || msg.name === 'play') {
+        this.tagVfxHost?.playNamed(msg.params.target ?? msg.params.at ?? msg.name)
+        return
+      }
+      const ctx = buildShaderCtx(0, msg.fn, msg.params, null)
+      getShaderManager().trigger(msg.name, msg.fn, ctx)
+      clientDebugLog.log(
+        'scene',
+        `shader ${msg.name}.${msg.fn} from scene code at=${msg.params.at ?? '—'}`,
+        { alsoConsole: true }
+      )
       return
     }
     if (msg.type === 'trigger-emote') {

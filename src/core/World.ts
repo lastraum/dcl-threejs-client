@@ -148,6 +148,7 @@ import {
   setSceneAbilityVfxHost
 } from '../vfx/SceneAbilityVfxHost'
 import { discoverAbilityVfxIds } from '../vfx/discoverAbilityVfx'
+import { getShaderManager } from '../vfx/ShaderManager'
 import {
   ABILITY_VFX_TOPIC,
   decodeAbilityVfxCast,
@@ -1609,6 +1610,7 @@ export class World {
 
   private async primeSceneAbilityVfx(onProgress?: (msg: string) => void): Promise<void> {
     const source = this.sceneScript.getLastScriptSource()
+    if (source) getShaderManager().ingestSource(source)
     const ids = source ? discoverAbilityVfxIds(source) : []
     if (ids.length === 0) {
       clientDebugLog.log('scene', 'ability-vfx skip — no tjs.vfx tags in scene bundle', {

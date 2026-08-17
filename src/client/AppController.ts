@@ -295,6 +295,13 @@ export class AppController {
       return
     }
 
+    // Creator preview is play, not a 2D place card — scene hot-reload / Vite remount
+    // must land back in-world, not Explore/Jump In.
+    if (postLoginRoute.kind === 'localpreview') {
+      await this.jumpInToScene(postLoginRoute, { replace: true, entry: 'deep_link' })
+      return
+    }
+
     if (postLoginRoute.kind === 'blank') {
       await this.showExplorer({ replace: true })
       return
@@ -452,6 +459,11 @@ export class AppController {
 
     if (target.kind === 'editor') {
       await this.jumpInToScene(target, opts)
+      return
+    }
+
+    if (target.kind === 'localpreview') {
+      await this.jumpInToScene(target, { ...opts, entry: 'deep_link' })
       return
     }
 
@@ -1956,6 +1968,16 @@ export class AppController {
       source?: AnalyticsSource
     } = {}
   ): Promise<void> {
+    if (target.kind === 'localpreview') {
+      if (this.appMode === 'play') return
+      await this.jumpInToScene(target, {
+        fromHistory: opts.fromHistory,
+        replace: opts.replace,
+        entry: 'deep_link'
+      })
+      return
+    }
+
     if (this.appMode === 'play') {
       stopDwellTracking('landing')
       this.disposeCommunityFollow()

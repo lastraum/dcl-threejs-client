@@ -55,6 +55,29 @@ function pointerProofLog(message: string): void {
   else cfg?.log(message)
 }
 
+/** World-mesh PET waits here until the next engine.update — Bevy: host writes, tick reads. */
+const pendingWorldMeshPet: InjectPointerClickBody[] = []
+
+function queueWorldMeshPet(body: InjectPointerClickBody): void {
+  pendingWorldMeshPet.push(body)
+}
+
+function flushPendingWorldMeshPet(eng: IEngine): void {
+  if (pendingWorldMeshPet.length === 0) return
+  const batch = pendingWorldMeshPet.splice(0, pendingWorldMeshPet.length)
+  for (const body of batch) {
+    const phase = body.phase ?? 'down'
+    if (phase === 'down' || phase === 'click') {
+      injectPointerClickDownOnEngine(eng, body)
+      reconcileLocomotionLatchAfterInjectDown(eng)
+    }
+    if (phase === 'up' || phase === 'click') {
+      injectPointerClickUpOnEngine(eng, body)
+      injectGlobalPointerUpOnPlayer(eng, body)
+    }
+  }
+}
+
 /**
  * Single worker entry for sceneEngine.update — boot, hydration, play, inbound, pointer.
  *
@@ -200,7 +223,8 @@ function wrapEngineUpdateWithWallClock(eng: IEngine): void {
   const nativeUpdate = eng.update.bind(eng)
   wrapped.update = async (dt: number) => {
     config?.onBeforeEngineUpdate?.()
-    // WSP v2 Phase 0 — phase meters around every eng.update (incl. dt=0 transport).
+    // Store write before systems — same as Bevy reserved writers on the play-frame.
+    flushPendingWorldMeshPet(eng)
     if (!(dt > 0)) {
       beginEngUpdatePhase(0)
       try {
@@ -253,6 +277,7 @@ export function resetSceneEngineScheduler(): void {
   diagCount = 0
   tickEpoch = 0
   sceneLoopOwnsPositiveDt = false
+  pendingWorldMeshPet.length = 0
   resetPlayModePointerUiEgress()
   resetEngUpdatePhases()
 }
@@ -1055,21 +1080,10 @@ export async function runSceneEnginePointerTick(
       )
     }
 
-    // --- World mesh: inject PET only. Do not eng.update(0) — that is plaza's
-    // 80–400ms send (dt=0, sb=wait) and holds the mutex so aim play-frames never run.
+    // World mesh: append PET into the store only. The next play-frame update
+    // flushes it before systems (Bevy / SceneLoop — no stacked eng.update).
     if (!isLevelState && (phase === 'click' || phase === 'down' || phase === 'up')) {
-      if (phase === 'down' || phase === 'click') {
-        injectPointerClickDownOnEngine(eng, splitPointerInject)
-        reconcileLocomotionLatchAfterInjectDown(eng)
-      }
-      if (phase === 'up' || phase === 'click') {
-        injectPointerClickUpOnEngine(eng, splitPointerInject)
-        injectGlobalPointerUpOnPlayer(eng, splitPointerInject)
-      }
-      requestSceneEngineTick({ source: 'pointer-edge' })
-      cfg.log(
-        `[sceneWorker] pointer world-mesh inject-only phase=${phase} e${splitPointerInject.entity}`
-      )
+      queueWorldMeshPet(splitPointerInject)
       return
     }
 

@@ -1265,6 +1265,13 @@ export class World {
     if (options.evictSrc || options.evictHash) {
       this.assets.evictSceneAsset(scene, { src: options.evictSrc, hash: options.evictHash })
     }
+    if (isLocalPreviewScene(scene) && scene.mainEntry) {
+      const main = scene.content.find((c) => c.file === scene.mainEntry)
+      this.assets.evictSceneAsset(scene, {
+        src: scene.mainEntry,
+        hash: main?.hash ?? options.evictHash
+      })
+    }
     this.loadedPrimaryScene = scene
     console.info(
       `[reload] recycle primary “${scene.title}” · keep ${oldPhysIds.length} PhysX actors until recook`

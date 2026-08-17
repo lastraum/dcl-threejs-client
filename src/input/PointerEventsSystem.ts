@@ -70,6 +70,8 @@ type PointerDeps = {
   /** Worker mount snapshot fallback when projection PointerEvents lags paint. */
   pointerEventsOf?: (entity: Entity) => { pointerEvents: ReadonlyArray<PBPointerEvents_Entry> } | null | undefined
   flushPointerCrdt?: () => void
+  /** World PE hit (not level-state / UI) — client tag VFX etc. */
+  onWorldPointerDown?: (entity: Entity) => void
   /** Flush matrixWorld + collider poses immediately before a raycast (click / hover). */
   prepareRaycast?: () => void
   /**
@@ -584,6 +586,7 @@ export class PointerEventsSystem {
           ? `click → target ${targetEntity} (hit ${hit!.entity})`
           : `click → entity ${targetEntity}`
       clientDebugLog.log('pointer', label, { alsoConsole: true })
+      this.deps.onWorldPointerDown?.(targetEntity)
     }
     // Universal Explorer press edge: flush PET_DOWN immediately (world + UI + level-state).
     // Same-tick DOWN+UP on mouseup alone never leaves multi-frame isPressed for any scene.

@@ -30,6 +30,8 @@ import { AnimatorBridge } from '../../bridge/AnimatorBridge'
 import { isEmoteAnchorGltfSrc } from '../../rendering/DclTextureResolver'
 import { TweenBridge } from '../../bridge/TweenBridge'
 import { ParticleSystemBridge } from '../../bridge/ParticleSystemBridge'
+import { SceneTagVfxHost } from '../../bridge/tagVfx/SceneTagVfxHost'
+import { isLocalPreviewScene } from '../../dcl/content/refreshPreviewScene'
 import { fetchProfileFaceUrl } from '../../avatar/peerApi'
 import { isTweenVerbose } from '../../bridge/tweenConfig'
 import { dumpMotionFocusReport, isMotionFocusActive, resetBlimpPivotCache } from '../../bridge/motionFocus'
@@ -330,6 +332,7 @@ export class SceneScriptSystem {
   private animatorBridge: AnimatorBridge | null = null
   private tweenBridge: TweenBridge | null = null
   private particleBridge: ParticleSystemBridge | null = null
+  private tagVfxHost: SceneTagVfxHost | null = null
   private sceneUiBridge: SceneUiBridge | null = null
   /** `#scene-ui-root` (primary) or `#pe-ui-root` (portable experience). */
   private uiRootId: 'scene-ui-root' | 'pe-ui-root' = 'scene-ui-root'
@@ -682,6 +685,12 @@ export class SceneScriptSystem {
       () => this.host?.camera ?? null,
       (pose, visual) => this.bridge?.bindEntityDrawSlot(pose, visual, 'dclDrawParticles'),
       (pose) => this.bridge?.unbindEntityDrawSlot(pose, 'dclDrawParticles')
+    )
+    this.tagVfxHost?.dispose()
+    this.tagVfxHost = new SceneTagVfxHost(
+      this.readComponents,
+      host.scene,
+      () => this.bridge?.getEntityNodes()
     )
     this.sceneUiBridge?.dispose()
     const uiDetached = opts?.uiDetached === true
@@ -2157,12 +2166,12 @@ export class SceneScriptSystem {
     const mainFile = scene.content.find((c) => c.file === scene.mainEntry)
     if (!mainFile) throw new Error(`Main entry not in content: ${scene.mainEntry}`)
 
-    const scriptUrl = scene.assetUrl(mainFile.hash)
+    const scriptUrl = sceneContentFetchUrl(scene, scene.assetUrl(mainFile.hash))
     const scriptStarted = performance.now()
     this.bootProgressReporter?.('Fetching scene script…')
     clientDebugLog.log('scene', 'loading scene script and boot files…')
     const [fetchedScript, preloadedFiles, bootSnapshot] = await Promise.all([
-      fetch(scriptUrl).then(async (res) => {
+      fetch(scriptUrl, { cache: 'no-store' }).then(async (res) => {
         if (!res.ok) throw new Error(`Scene script fetch failed (${res.status}): ${scriptUrl}`)
         const buf = new Uint8Array(await res.arrayBuffer())
         const codeForMirror =
@@ -3388,7 +3397,9 @@ export class SceneScriptSystem {
     const entry = scene.content.find((file) => file.file === 'main.crdt')
     if (!entry?.hash) return
     try {
-      const res = await fetch(scene.assetUrl(entry.hash))
+      const res = await fetch(sceneContentFetchUrl(scene, scene.assetUrl(entry.hash)), {
+        cache: 'no-store'
+      })
       if (!res.ok) return
       const bytes = new Uint8Array(await res.arrayBuffer())
       if (!bytes.byteLength) return
@@ -3426,7 +3437,9 @@ export class SceneScriptSystem {
             : undefined)
         if (!entry?.hash) return
         try {
-          const res = await fetch(scene.assetUrl(entry.hash))
+          const res = await fetch(sceneContentFetchUrl(scene, scene.assetUrl(entry.hash)), {
+            cache: 'no-store'
+          })
           if (!res.ok) return
           const content = new Uint8Array(await res.arrayBuffer())
           out[fileName] = { hash: entry.hash, content }
@@ -4519,6 +4532,8 @@ export class SceneScriptSystem {
     }
     void this.particleBridge?.sync(this.view)
     this.particleBridge?.update(1 / 30)
+    this.tagVfxHost?.sync(this.view)
+    this.tagVfxHost?.update(1 / 30)
     if (prefer.length > 0) {
       clientDebugLog.log(
         'pointer',
@@ -5119,6 +5134,7 @@ export class SceneScriptSystem {
       flushPointerCrdt: () => {
         void this.flushPendingPointerCrdt()
       },
+      onWorldPointerDown: (entity) => this.tagVfxHost?.notifyPointerDown(entity),
       prepareRaycast: () => this.preparePointerRaycast(),
       resolveMeshRendererInstanceHit: (mesh, instanceId) =>
         this.bridge?.resolveMeshRendererInstanceEntity(mesh, instanceId) ?? null,
@@ -6061,6 +6077,8 @@ export class SceneScriptSystem {
     }
     void this.particleBridge?.sync(this.view)
     this.particleBridge?.update(1 / 30)
+    this.tagVfxHost?.sync(this.view)
+    this.tagVfxHost?.update(1 / 30)
     if (this.pointerStructureDirty) {
       const pe: Entity[] = []
       for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {
@@ -7025,6 +7043,7 @@ export class SceneScriptSystem {
     }
     // In-view particles at present rate with wall elapsed (not async rAF delta).
     this.particleBridge?.update()
+    this.tagVfxHost?.update(delta)
     // Primary scene stays fully live. 48/80 m is AOI neighbor shells only —
     // hiding plaza Gltfs (theatre, stage) was a residency bug, not a host-world win.
     if (!this.restoredGltfCull) {
@@ -7056,6 +7075,7 @@ export class SceneScriptSystem {
     // sync is async (texture load); throttle so we don't pile concurrent creates.
     if (this.bridgeSyncTick % 8 === 0) {
       void this.particleBridge?.sync(this.view)
+      this.tagVfxHost?.sync(this.view)
     }
     // PlayerEntity-parented scene meshes (Dead Surge path arrow) — re-parent each frame.
     this.bridge.syncReservedParentedTransforms(this.view)
@@ -7282,6 +7302,8 @@ export class SceneScriptSystem {
     this.tweenBridge = null
     this.particleBridge?.dispose()
     this.particleBridge = null
+    this.tagVfxHost?.dispose()
+    this.tagVfxHost = null
     this.unbindSceneUiViewportSync()
     this.sceneUiBridge?.dispose()
     this.sceneUiBridge = null
@@ -7351,4 +7373,11 @@ function emptyEntityPose(): EntityPose {
     position: new THREE.Vector3(),
     rotation: new THREE.Quaternion()
   }
+}
+
+/** LSD hashes are path-stable — bust HTTP cache so `/reload` and preview WS pick up new bytes. */
+function sceneContentFetchUrl(scene: ResolvedScene, url: string): string {
+  if (!isLocalPreviewScene(scene)) return url
+  const sep = url.includes('?') ? '&' : '?'
+  return `${url}${sep}t=${Date.now()}`
 }

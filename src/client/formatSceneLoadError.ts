@@ -27,6 +27,15 @@ export function formatSceneLoadError(raw: string): SceneLoadErrorMessage {
     }
   }
 
+  if (/LOCAL_PREVIEW_OFFLINE/i.test(trimmed)) {
+    return {
+      title: 'Preview server not running',
+      detail:
+        trimmed.replace(/^LOCAL_PREVIEW_OFFLINE:\s*/i, '').trim() ||
+        'Run `npm start` in the scene (sdk-commands) or Play from Creator Hub.'
+    }
+  }
+
   if (/SDK6_UNSUPPORTED/i.test(trimmed)) {
     const name = trimmed.match(/"([^"]+)"/)?.[1]
     const who = name ? `"${name}" is` : 'This location is'

@@ -1,6 +1,10 @@
 import { identityFromAvatarProfile } from '../avatar/displayName'
 import { fetchProfileCached } from '../avatar/peerApi'
-import type { RouteTarget } from '../dcl/content/route'
+import type { RouteTarget, SceneLandingRoute } from '../dcl/content/route'
+import {
+  previewLandingImageUrl,
+  resolveLocalPreviewScene
+} from '../dcl/content/refreshPreviewScene'
 import { fetchParcelInfo, isAtlasMapTileUrl } from '../map/parcelInfo'
 import {
   dedupeEventsById,
@@ -40,7 +44,7 @@ export type SceneLandingMeta = {
   description: string
   imageUrl: string | null
   pointerLabel: string
-  kind: 'parcel' | 'world'
+  kind: 'parcel' | 'world' | 'localpreview'
   /**
    * Custom worlds content server origin when this landing is not on the official host.
    * Landing UI shows kind label "Custom" instead of "World".
@@ -57,8 +61,9 @@ export type SceneLandingMeta = {
   categories: string[]
 }
 
-/** Landing card kind chip: Parcel | World | Custom (self-hosted worlds server). */
+/** Landing card kind chip: Parcel | World | Custom | Local preview. */
 export function sceneLandingKindLabel(meta: Pick<SceneLandingMeta, 'kind' | 'customServer'>): string {
+  if (meta.kind === 'localpreview') return 'Local preview'
   if (meta.kind === 'parcel') return 'Parcel'
   if (meta.customServer?.trim()) return 'Custom'
   return 'World'
@@ -268,9 +273,54 @@ export async function fetchSceneRelatedEvents(
   return out.slice(0, limit)
 }
 
-export async function fetchSceneLandingMeta(
-  route: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
-): Promise<SceneLandingMeta> {
+function localPreviewPointerLabel(origin: string): string {
+  return origin.replace(/^https?:\/\//i, '').replace(/\/+$/, '')
+}
+
+function localPreviewOfflineMeta(origin: string, detail: string): SceneLandingMeta {
+  const pointerLabel = localPreviewPointerLabel(origin)
+  return {
+    title: 'Local preview',
+    description: detail,
+    imageUrl: null,
+    pointerLabel,
+    kind: 'localpreview',
+    userCount: 0,
+    ownerAddress: null,
+    ownerAddresses: [],
+    ownerDisplayName: pointerLabel,
+    categories: []
+  }
+}
+
+export async function fetchSceneLandingMeta(route: SceneLandingRoute): Promise<SceneLandingMeta> {
+  if (route.kind === 'localpreview') {
+    const origin = route.origin.replace(/\/+$/, '')
+    try {
+      const scene = await resolveLocalPreviewScene(origin)
+      const pointerLabel = localPreviewPointerLabel(origin)
+      const description =
+        scene.metadata.display?.description?.trim() ||
+        `Preview server at ${pointerLabel}`
+      return {
+        title: scene.title?.trim() || 'Local preview',
+        description,
+        imageUrl: previewLandingImageUrl(scene),
+        pointerLabel,
+        kind: 'localpreview',
+        userCount: 0,
+        ownerAddress: null,
+        ownerAddresses: [],
+        ownerDisplayName: pointerLabel,
+        categories: []
+      }
+    } catch (err) {
+      const raw = err instanceof Error ? err.message : String(err)
+      const detail = raw.replace(/^LOCAL_PREVIEW_OFFLINE:\s*/i, '').trim() || raw
+      return localPreviewOfflineMeta(origin, detail)
+    }
+  }
+
   if (route.kind === 'coords') {
     const [parcel, place] = await Promise.all([
       fetchParcelInfo(route.x, route.y).catch(() => null),

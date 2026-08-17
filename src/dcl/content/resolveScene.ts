@@ -1,4 +1,5 @@
 import type { RouteTarget } from './route'
+import { resolveLocalPreviewScene } from './refreshPreviewScene'
 import type { ContentFile, RealmEndpoints, ResolvedScene, SceneMetadata } from './types'
 import { pickSceneSpawn } from './pickSceneSpawn'
 import { BLANK_SCENE_TEMPLATE } from './types'
@@ -455,6 +456,10 @@ export async function resolveSceneFromRoute(target: RouteTarget): Promise<Resolv
 
   if (target.kind === 'live') {
     throw new Error('Live route does not resolve a network scene')
+  }
+
+  if (target.kind === 'localpreview') {
+    return resolveLocalPreviewScene(target.origin)
   }
 
   if (target.kind === 'blank') {

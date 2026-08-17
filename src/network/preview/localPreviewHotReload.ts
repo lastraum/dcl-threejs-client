@@ -69,7 +69,16 @@ export class LocalPreviewHotReload {
     ws.onmessage = (ev) => {
       void (async () => {
         const update = await decodePreviewEvent(ev.data)
-        if (!update) return
+        if (!update) {
+          const hint =
+            typeof ev.data === 'string'
+              ? ev.data.slice(0, 80)
+              : ev.data instanceof ArrayBuffer
+                ? `bin ${ev.data.byteLength}B`
+                : typeof ev.data
+          console.info('[preview] ws frame ignored', hint)
+          return
+        }
         await this.onUpdate(update)
       })()
     }

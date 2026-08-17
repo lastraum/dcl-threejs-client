@@ -2,10 +2,12 @@ import { loginHasCommsIdentity, type LoginResult } from '../auth/AuthClient'
 import { clearStoredIdentity } from '../auth/identityStore'
 import {
   applyRouteToHistory,
+  isSceneLandingRoute,
   resolveRouteTarget,
   routeEquals,
   routePathForTarget,
-  type RouteTarget
+  type RouteTarget,
+  type SceneLandingRoute
 } from '../dcl/content/route'
 import { resolveSceneFromRoute, summarizeSceneContent } from '../dcl/content/resolveScene'
 import { EditorApp } from '../editor/EditorApp'
@@ -327,7 +329,7 @@ export class AppController {
       return
     }
 
-    if (postLoginRoute.kind === 'coords' || postLoginRoute.kind === 'world') {
+    if (isSceneLandingRoute(postLoginRoute)) {
       await this.showSceneLanding(postLoginRoute, { replace: true })
     }
   }
@@ -452,7 +454,7 @@ export class AppController {
       return
     }
 
-    if (target.kind === 'coords' || target.kind === 'world') {
+    if (isSceneLandingRoute(target)) {
       this.navigating = true
       try {
         await this.showSceneLanding(target, {
@@ -561,7 +563,7 @@ export class AppController {
           if (
             this.appMode === 'landing' &&
             this.currentRoute &&
-            (this.currentRoute.kind === 'coords' || this.currentRoute.kind === 'world')
+            isSceneLandingRoute(this.currentRoute)
           ) {
             this.ensureSocialChatShell()
             this.socialChat?.applyLogin(login)
@@ -683,7 +685,7 @@ export class AppController {
       },
       onEventViewScene: (target, _event: DclEvent) => {
         this.settingsOverlay?.hide()
-        if (target.kind === 'coords' || target.kind === 'world') {
+        if (isSceneLandingRoute(target)) {
           // Already in 3D — Jump-to-scene-page is 2D only; teleport instead.
           if (this.appMode === 'play') {
             void this.jumpInToScene(target, { fastAssets: true, entry: 'teleport', source: 'map' })
@@ -1545,7 +1547,7 @@ export class AppController {
       onNavigate: (tab) => this.navigateSocialShell(tab),
       onEventJumpIn: (target, _event) => void this.jumpInToScene(target),
       onEventViewScene: (target, _event) => {
-        if (target.kind === 'coords' || target.kind === 'world') {
+        if (isSceneLandingRoute(target)) {
           void this.showSceneLanding(target)
         }
       },
@@ -1940,12 +1942,12 @@ export class AppController {
   }
 
   private openSceneLanding(target: RouteTarget): void {
-    if (target.kind !== 'coords' && target.kind !== 'world') return
+    if (!isSceneLandingRoute(target)) return
     void this.showSceneLanding(target)
   }
 
   private async showSceneLanding(
-    target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>,
+    target: SceneLandingRoute,
     opts: {
       fromHistory?: boolean
       replace?: boolean
@@ -2004,13 +2006,17 @@ export class AppController {
       onNavigate: (tab) => this.navigateSocialShell(tab),
       onEventJumpIn: (jumpTarget) => void this.jumpInToScene(jumpTarget),
       onEventViewScene: (jumpTarget) => {
-        if (jumpTarget.kind === 'coords' || jumpTarget.kind === 'world') {
+        if (isSceneLandingRoute(jumpTarget)) {
           void this.showSceneLanding(jumpTarget)
         }
       },
       onOpenUserProfile: (address) => this.socialChat?.openProfileForAddress(address),
-      startCastWatch: (host, onUpdate, castOpts) => this.startLandingCastWatch(target, host, onUpdate, castOpts),
+      startCastWatch: (host, onUpdate, castOpts) =>
+        target.kind === 'localpreview'
+          ? Promise.resolve(() => {})
+          : this.startLandingCastWatch(target, host, onUpdate, castOpts),
       onLiveToolsMenu: (anchor) => {
+        if (target.kind === 'localpreview') return
         if (!this.liveToolsUi) {
           // LiveKit may still be connecting — start session now and open menu.
           void this.setupLandingLiveTools(target).then(() => this.liveToolsUi?.openMenuAt(anchor))
@@ -2038,9 +2044,13 @@ export class AppController {
     }
   }
 
-  private async connectSceneLandingChat(
-    target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
-  ): Promise<void> {
+  private async connectSceneLandingChat(target: SceneLandingRoute): Promise<void> {
+    // Local preview has no LiveKit / Places chat — unlock Jump in immediately.
+    if (target.kind === 'localpreview') {
+      this.sceneLandingView?.setJumpInUnlocked(true)
+      return
+    }
+
     // Jump in stays hidden until LiveKit is up or scene.json blocks browser chat.
     this.sceneLandingView?.setJumpInUnlocked(false)
 
@@ -2219,7 +2229,7 @@ export class AppController {
       this.socialChatDock = new SocialChatDock({
         controller: this.socialChat,
         onGoto: (gotoTarget) => {
-          if (gotoTarget.kind === 'coords' || gotoTarget.kind === 'world') {
+          if (isSceneLandingRoute(gotoTarget)) {
             void this.showSceneLanding(gotoTarget)
           }
         },
@@ -2439,7 +2449,7 @@ export class AppController {
       source?: AnalyticsSource
     } = {}
   ): Promise<void> {
-    if (target.kind !== 'coords' && target.kind !== 'world' && target.kind !== 'editor') return
+    if (target.kind !== 'coords' && target.kind !== 'world' && target.kind !== 'editor' && target.kind !== 'localpreview') return
 
     // Leader tour hard pulse — intentional Jump In / /goto while leading only.
     // Soft parcel walk uses noteLeaderLocation (label only; no follower reloads).
@@ -2692,7 +2702,7 @@ export class AppController {
 
   private async leavePlayMode(): Promise<void> {
     if (this.appMode !== 'play' || !this.currentRoute) return
-    if (this.currentRoute.kind !== 'coords' && this.currentRoute.kind !== 'world') return
+    if (!isSceneLandingRoute(this.currentRoute)) return
     this.disposeCommunityFollow()
     // Leaving 3D entirely — free multi‑MB peer VRM RAM (kept across in-play teleports).
     clearVrmRamCache()
@@ -3324,12 +3334,12 @@ export class AppController {
     })
   }
 
-  private async refreshMonitoredScene(
-    target: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
-  ): Promise<void> {
+  private async refreshMonitoredScene(target: SceneLandingRoute): Promise<void> {
     try {
       let scene = await resolveSceneFromRoute(target)
-      scene = await enrichResolvedScenePublicTitle(scene, target)
+      if (target.kind === 'coords' || target.kind === 'world') {
+        scene = await enrichResolvedScenePublicTitle(scene, target)
+      }
       this.monitoredScene = scene
     } catch {
       this.monitoredScene = null
@@ -3341,7 +3351,7 @@ export class AppController {
     if (!this.login || this.login.kind !== 'wallet') return
     if (this.appMode !== 'play' && this.appMode !== 'landing') return
     if (!this.monitoredScene) return
-    if (!this.currentRoute || (this.currentRoute.kind !== 'coords' && this.currentRoute.kind !== 'world')) {
+    if (!this.currentRoute || !isSceneLandingRoute(this.currentRoute) || this.currentRoute.kind === 'localpreview') {
       return
     }
 
@@ -3379,7 +3389,7 @@ export class AppController {
       this.sceneBanActive = true
 
       const route = this.currentRoute
-      if (!route || (route.kind !== 'coords' && route.kind !== 'world')) return
+      if (!route || !isSceneLandingRoute(route) || route.kind === 'localpreview') return
 
       clientDebugLog.log('client', `Mid-session scene ban · ${err.source}`, { level: 'warn' })
 

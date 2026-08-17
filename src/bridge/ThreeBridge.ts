@@ -3482,6 +3482,9 @@ export class ThreeBridge {
 
   /** Tear down bridge-owned resources (entity graph cleared via `EntityStore.dispose`). */
   dispose(): void {
+    // Draw meshes live on DrawWorld, not pose Groups. If we only dispose EntityStore,
+    // GLBs freeze in place (mixer dies, visual stays) — /reload looks like a hitch.
+    this.detachAllSceneDrawVisuals()
     this.videoPlayerBridge?.dispose()
     this.videoPlayerBridge = null
     this.audioSourceBridge?.dispose()
@@ -3539,6 +3542,19 @@ export class ThreeBridge {
       return true
     }
     return removedGltf
+  }
+
+  /** Unbind every scene draw slot so recycle /reload actually hides GLBs + primitives. */
+  private detachAllSceneDrawVisuals(): void {
+    let n = 0
+    for (const [entity, obj] of this.store.nodes) {
+      if (this.store.getOwner(entity) === 'avatar') continue
+      this.removeEntityVisuals(entity, obj)
+      n++
+    }
+    if (n > 0) {
+      console.info(`[reload] hid ${n} scene draw visual(s)`)
+    }
   }
 
   private removeEntityVisuals(entity: Entity, obj: THREE.Group): void {

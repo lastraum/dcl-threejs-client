@@ -127,7 +127,14 @@ export type ResolvedSceneEnvironment = {
 
 function defaultLandscapeEnvironmentForSource(source: SceneSource): LandscapeEnvironmentKind {
   // Local / blank / PE authoring: void sky (no dome). Everywhere else: Genesis skybox.
-  if (source.kind === 'local' || source.kind === 'blank' || source.kind === 'portable') return 'none'
+  if (
+    source.kind === 'local' ||
+    source.kind === 'preview' ||
+    source.kind === 'blank' ||
+    source.kind === 'portable'
+  ) {
+    return 'none'
+  }
   // Worlds + parcels: genesis sky (dome + sun/moon), no water / no island unless scene.json opts in.
   return 'genesis'
 }

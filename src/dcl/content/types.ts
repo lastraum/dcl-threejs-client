@@ -11,6 +11,8 @@ export type SceneSource =
     }
   | { kind: 'coords'; x: number; y: number }
   | { kind: 'local'; projectId: string }
+  /** Creator Hub / sdk-commands preview realm (`/localpreview`). */
+  | { kind: 'preview'; origin: string }
   /** Smart wearable / portable experience scene (not parcel-bound). */
   | { kind: 'portable'; urn: string }
 

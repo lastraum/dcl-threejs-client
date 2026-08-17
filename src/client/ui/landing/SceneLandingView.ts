@@ -1,7 +1,7 @@
 import type { SceneLoadErrorMessage } from '../../formatSceneLoadError'
 import type { LoginResult } from '../../../auth/AuthClient'
 import { fetchProfileFaceUrl } from '../../../avatar/peerApi'
-import type { RouteTarget } from '../../../dcl/content/route'
+import type { RouteTarget, SceneLandingRoute } from '../../../dcl/content/route'
 import { progressFromStatus } from '../loadingProgress'
 import {
   formatEventCardTimeShort,
@@ -35,7 +35,7 @@ import { isAnalyticsEnabled } from '../../../analytics/track'
 import Hls from 'hls.js'
 
 export type SceneLandingViewOptions = SocialShellChromeHandlers & {
-  route: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
+  route: SceneLandingRoute
   login: LoginResult
   /**
    * Live session from AppController — preferred over a stale constructor copy so the
@@ -497,6 +497,9 @@ export class SceneLandingView {
   }
 
   private streamTarget(): { pointer: string; kind: 'world' | 'parcel' } {
+    if (this.route.kind === 'localpreview') {
+      return { pointer: this.route.origin, kind: 'world' }
+    }
     return sceneStreamTargetFromRoute(this.route)
   }
 
@@ -703,6 +706,7 @@ export class SceneLandingView {
   }
 
   private openPlaceStatsModal(): void {
+    if (this.route.kind === 'localpreview') return
     const title = this.meta?.title?.trim() || 'This place'
     const pointer = this.meta?.pointerLabel?.trim() || ''
     this.placeStatsModal.open(this.route, title, pointer)
@@ -1035,6 +1039,7 @@ export class SceneLandingView {
     }
     pill?.querySelector('[data-scene-crowd]')?.addEventListener('click', () => {
       if (!this.meta || this.meta.userCount <= 0) return
+      if (this.route.kind === 'localpreview') return
       this.sceneUsersModal.open(this.route, this.meta.title, this.meta.userCount)
     })
 
@@ -1343,6 +1348,7 @@ export class SceneLandingView {
     if (!wallet) return
     this.teardownStreamPlayer()
     this.settingsModal?.dispose()
+    if (this.route.kind === 'localpreview') return
     const { pointer, kind } = this.streamTarget()
     this.settingsModal = new SceneStreamSettingsModal({
       route: this.route,
@@ -1387,6 +1393,7 @@ export class SceneLandingView {
   private bindCrowdBadge(): void {
     this.root.querySelector('[data-scene-crowd]')?.addEventListener('click', () => {
       if (!this.meta || this.meta.userCount <= 0) return
+      if (this.route.kind === 'localpreview') return
       this.sceneUsersModal.open(this.route, this.meta.title, this.meta.userCount)
     })
   }
@@ -1394,6 +1401,10 @@ export class SceneLandingView {
   private async loadRelatedEvents(): Promise<void> {
     const bannerEl = this.root.querySelector('[data-events-banner]') as HTMLElement | null
     if (!bannerEl || !this.meta) return
+    if (this.route.kind === 'localpreview') {
+      bannerEl.innerHTML = this.renderEventsBannerInner([], false)
+      return
+    }
 
     try {
       const events = await fetchSceneRelatedEvents(this.route)
@@ -1490,11 +1501,13 @@ export class SceneLandingView {
   private renderLayout(meta: SceneLandingMeta): string {
     const kindLabel = sceneLandingKindLabel(meta)
     const creatorLabel =
-      meta.kind === 'world'
-        ? meta.customServer?.trim()
-          ? 'Custom realm'
-          : 'World owner'
-        : 'Creator'
+      meta.kind === 'localpreview'
+        ? 'Preview server'
+        : meta.kind === 'world'
+          ? meta.customServer?.trim()
+            ? 'Custom realm'
+            : 'World owner'
+          : 'Creator'
     const inWorldLabel = meta.kind === 'world' ? 'in world' : 'here'
     const liveBadge = this.showLiveBadge()
       ? `<span class="scene-watch-cast-live-badge" data-cast-live-badge role="status">LIVE</span>`

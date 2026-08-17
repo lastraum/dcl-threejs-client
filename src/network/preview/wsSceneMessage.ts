@@ -33,9 +33,14 @@ export function previewWsUrlFromHttp(originOrUrl: string): string {
 }
 
 export function parsePreviewWsText(text: string): PreviewSceneUpdate | null {
+  const trimmed = text.trim()
+  // sdk-commands sends a bare `UPDATE` string before the JSON SCENE_UPDATE.
+  if (trimmed === 'UPDATE' || trimmed === 'SCENE_UPDATE') {
+    return { kind: 'scene', sceneId: '' }
+  }
   let value: unknown
   try {
-    value = JSON.parse(text)
+    value = JSON.parse(trimmed)
   } catch {
     return null
   }
@@ -57,8 +62,7 @@ export function parsePreviewWsText(text: string): PreviewSceneUpdate | null {
     }
   }
   if (type === 'SCENE_UPDATE' || type === 'UPDATE_SCENE' || type === 'RELOAD') {
-    if (!sceneId) return null
-    return { kind: 'scene', sceneId }
+    return { kind: 'scene', sceneId: sceneId ?? '' }
   }
   return null
 }

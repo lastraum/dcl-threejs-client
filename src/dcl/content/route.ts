@@ -44,6 +44,8 @@ export type RouteTarget =
   | { kind: 'profile' }
   | { kind: 'lootbag' }
   | { kind: 'editor' }
+  /** Creator Hub / sdk-commands local preview (`/localpreview`). */
+  | { kind: 'localpreview'; origin: string; segment: string }
   | {
       kind: 'world'
       worldName: string
@@ -79,6 +81,47 @@ const APP_ROUTE_SEGMENTS = new Set([
 ])
 
 const EDITOR_ROUTE_SEGMENT = 'editor'
+const LOCAL_PREVIEW_ROUTE_SEGMENT = 'localpreview'
+/** Old habit — same as localpreview, not the world `preview.dcl.eth`. */
+const LOCAL_PREVIEW_ROUTE_SEGMENT_LEGACY = 'preview'
+
+/** Default sdk-commands / Creator Hub Play origin. */
+export const DEFAULT_LOCAL_PREVIEW_ORIGIN = 'http://127.0.0.1:8000'
+
+export type SceneLandingRoute = Extract<
+  RouteTarget,
+  { kind: 'coords' } | { kind: 'world' } | { kind: 'localpreview' }
+>
+
+export function isSceneLandingRoute(target: RouteTarget): target is SceneLandingRoute {
+  return target.kind === 'coords' || target.kind === 'world' || target.kind === 'localpreview'
+}
+
+export function parseLocalPreviewOrigin(params: URLSearchParams): string {
+  const originRaw = (params.get('origin') ?? params.get('realm') ?? '').trim()
+  if (originRaw) {
+    try {
+      const url = new URL(/^https?:\/\//i.test(originRaw) ? originRaw : `http://${originRaw}`)
+      if (url.protocol === 'http:' || url.protocol === 'https:') {
+        return url.origin
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  const port = Number(params.get('port'))
+  if (Number.isFinite(port) && port > 0 && port < 65536) {
+    return `http://127.0.0.1:${Math.floor(port)}`
+  }
+  return DEFAULT_LOCAL_PREVIEW_ORIGIN
+}
+
+export function localPreviewRoute(origin = DEFAULT_LOCAL_PREVIEW_ORIGIN): Extract<
+  RouteTarget,
+  { kind: 'localpreview' }
+> {
+  return { kind: 'localpreview', origin, segment: LOCAL_PREVIEW_ROUTE_SEGMENT }
+}
 
 /** Default parcel when visiting `/` with no route segment (Genesis Plaza). */
 export const DEFAULT_PARCEL_ROUTE: Extract<RouteTarget, { kind: 'coords' }> = {
@@ -103,6 +146,13 @@ export function readRouteSegmentFromPath(pathname = window.location.pathname): s
   }
 
   if (APP_ROUTE_SEGMENTS.has(segment.toLowerCase())) return segment
+  // `/preview` and `/localpreview` are app routes, not the world `preview.dcl.eth`.
+  if (
+    segment.toLowerCase() === LOCAL_PREVIEW_ROUTE_SEGMENT ||
+    segment.toLowerCase() === LOCAL_PREVIEW_ROUTE_SEGMENT_LEGACY
+  ) {
+    return segment
+  }
   if (ROUTE_SEGMENT_DENY.has(segment.toLowerCase())) return null
   if (ROUTE_STATIC_ASSET_RE.test(segment) && !/^-?\d+\s*,\s*-?\d+$/.test(segment)) return null
 
@@ -118,6 +168,12 @@ export function parseRouteTarget(segment: string | null): RouteTarget {
   if (!segment) return { kind: 'blank' }
 
   if (segment.toLowerCase() === EDITOR_ROUTE_SEGMENT) return { kind: 'editor' }
+  if (
+    segment.toLowerCase() === LOCAL_PREVIEW_ROUTE_SEGMENT ||
+    segment.toLowerCase() === LOCAL_PREVIEW_ROUTE_SEGMENT_LEGACY
+  ) {
+    return localPreviewRoute()
+  }
   if (segment.toLowerCase() === EVENTS_ROUTE_SEGMENT) return { kind: 'events' }
   if (segment.toLowerCase() === LIVE_ROUTE_SEGMENT) return { kind: 'live' }
   if (segment.toLowerCase() === COMMUNITIES_ROUTE_SEGMENT) return { kind: 'communities' }
@@ -169,6 +225,15 @@ function worldTargetFromCustom(
  */
 export function resolveRouteTarget(): RouteTarget {
   const params = new URLSearchParams(window.location.search)
+
+  const pathSeg = readRouteSegmentFromPath()
+  if (
+    pathSeg &&
+    (pathSeg.toLowerCase() === LOCAL_PREVIEW_ROUTE_SEGMENT ||
+      pathSeg.toLowerCase() === LOCAL_PREVIEW_ROUTE_SEGMENT_LEGACY)
+  ) {
+    return localPreviewRoute(parseLocalPreviewOrigin(params))
+  }
 
   const worldNameQ =
     params.get('worldName')?.trim() ||
@@ -229,6 +294,7 @@ export function routePathForTarget(target: RouteTarget): string {
   if (target.kind === 'profile') return '/profile'
   if (target.kind === 'lootbag') return '/lootbag'
   if (target.kind === 'editor') return '/editor'
+  if (target.kind === 'localpreview') return `/${LOCAL_PREVIEW_ROUTE_SEGMENT}`
   if (target.kind === 'coords') return `/${encodeURIComponent(`${target.x},${target.y}`)}`
   // Custom server worlds: `/` + `?realm=host&worldName=Name`.
   if (target.customServer) return '/'
@@ -264,6 +330,9 @@ export function routeEquals(a: RouteTarget, b: RouteTarget): boolean {
     a.kind === 'lootbag'
   ) {
     return true
+  }
+  if (a.kind === 'localpreview' && b.kind === 'localpreview') {
+    return a.origin.toLowerCase() === b.origin.toLowerCase()
   }
   if (a.kind === 'coords' && b.kind === 'coords') return a.x === b.x && a.y === b.y
   if (a.kind === 'world' && b.kind === 'world') {
@@ -337,6 +406,8 @@ export function applyRouteToHistory(target: RouteTarget, replace = false): void 
   url.searchParams.delete('worldServer')
   url.searchParams.delete('realm')
   url.searchParams.delete('position')
+  url.searchParams.delete('origin')
+  url.searchParams.delete('port')
 
   if (target.kind === 'world' && target.customServer) {
     const realmHost = formatRealmParam(target.customServer)
@@ -347,6 +418,10 @@ export function applyRouteToHistory(target: RouteTarget, replace = false): void 
       customServer: target.customServer,
       worldName: target.worldName
     })
+  }
+
+  if (target.kind === 'localpreview' && target.origin !== DEFAULT_LOCAL_PREVIEW_ORIGIN) {
+    url.searchParams.set('origin', target.origin)
   }
 
   const state = { route: target }

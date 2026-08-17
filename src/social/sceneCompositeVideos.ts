@@ -2,7 +2,7 @@
  * Read scene VideoPlayer sources from main.composite for the 2D landing.
  * Covers custom HLS/mp4 screens that never go through LiveKit.
  */
-import type { RouteTarget } from '../dcl/content/route'
+import type { SceneLandingRoute } from '../dcl/content/route'
 import type { ContentFile, ResolvedScene } from '../dcl/content/types'
 import { resolveSceneFromRoute } from '../dcl/content/resolveScene'
 import { isLiveKitVideoSrc } from '../media/livekitVideoSource'
@@ -144,7 +144,7 @@ export function sceneCompositeVideoLabel(video: SceneCompositeVideo): string {
  * Safe for landing: no worker, no LiveKit.
  */
 export async function fetchSceneCompositeVideos(
-  route: Extract<RouteTarget, { kind: 'coords' } | { kind: 'world' }>
+  route: SceneLandingRoute
 ): Promise<SceneCompositeVideo[]> {
   try {
     const scene = await resolveSceneFromRoute(route)

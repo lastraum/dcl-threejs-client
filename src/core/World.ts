@@ -2527,8 +2527,9 @@ export class World {
           peMs = performance.now() - peT0
 
           const pos = this.player.getPosition()
-          // Soft-route + occupancy + AOI must run on present — leftover async
-          // is skipped for whole CBD walks (asyncBusy / >33 ms present).
+          // Soft-route (URL/pill/minimap) + Focus stay on present so they do not
+          // lag a frame behind feet. AOI visuals stay here until a stacked
+          // live-neighbor walk log proves a present hitch (p5 < 30).
           const aoiT0 = performance.now()
           if (startFrame >= World.PLAY_PRESENT_GRACE_FRAMES) {
             this.scenePromote.tick(pos.x, pos.z)

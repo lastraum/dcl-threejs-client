@@ -78,18 +78,34 @@ const peFn = caps.match(/export function peTickIntervalMs[\s\S]*?return\s+(\d+)/
 if (!peFn || peFn[1] !== '50') {
   fail(`caps.ts peTickIntervalMs must return 50, got ${peFn?.[1] ?? 'missing'}`)
 }
+const boot = caps.match(/export const SECONDARY_LIVE_BOOT_CONCURRENCY\s*=\s*(\d+)/)
+if (!boot || boot[1] !== '4') {
+  fail(
+    `SECONDARY_LIVE_BOOT_CONCURRENCY stays 4 until a pasted stacked-neighbor p5<30 log; got ${boot?.[1] ?? 'missing'}`
+  )
+}
 
 const slot = readFileSync(join(srcRoot, 'dcl/multiScene/SceneWorkerSlot.ts'), 'utf8')
 if (/this\.system\.tickPlayFrame\s*\(/.test(slot)) {
   fail('SceneWorkerSlot.tickSync must never call tickPlayFrame')
+}
+if (!/void skipPlayFrame/.test(slot)) {
+  fail('SceneWorkerSlot.tickSync must hard-skip play-frame (void skipPlayFrame)')
 }
 
 const secondary = readFileSync(join(srcRoot, 'dcl/multiScene/SecondaryLiveManager.ts'), 'utf8')
 if (/tickSync\([^)]*this\.playFrameOwnedExternally/.test(secondary)) {
   fail('SecondaryLiveManager tickSync/tickStickySync must hard-code skipPlayFrame=true')
 }
-if (!/tickSync\([^)]*,\s*true\s*\)/.test(secondary)) {
-  fail('SecondaryLiveManager must pass skipPlayFrame=true')
+const skipTrue = secondary.match(/slot\.tickSync\([^)]*,\s*true\s*\)/g) ?? []
+if (skipTrue.length < 2) {
+  fail(
+    `SecondaryLiveManager tickSync + tickStickySync must both pass skipPlayFrame=true, found ${skipTrue.length}`
+  )
+}
+const sticky = secondary.match(/tickStickySync\s*\([^)]*\)[\s\S]*?\n  [a-zA-Z_*]/)
+if (!sticky || !/tickSync\([^)]*,\s*true\s*\)/.test(sticky[0])) {
+  fail('tickStickySync must pass skipPlayFrame=true')
 }
 
 const pe = readFileSync(join(srcRoot, 'dcl/multiScene/PortableExperienceManager.ts'), 'utf8')
@@ -98,6 +114,20 @@ if (/tickSync\([^)]*\)\s*$/m.test(pe) && !/tickSync\([^)]*,\s*true\s*\)/.test(pe
 }
 if (/worker\.tickSync\([^)]*\)/.test(pe) && !/worker\.tickSync\([^)]*,\s*true\s*\)/.test(pe)) {
   fail('PE fallback tickSync must pass skipPlayFrame=true')
+}
+
+const world = readFileSync(join(srcRoot, 'core/World.ts'), 'utf8')
+const presentFeet = world.match(
+  /if \(startFrame >= World\.PLAY_PRESENT_GRACE_FRAMES\) \{[\s\S]*?this\.aoiVisual\.update/
+)
+if (!presentFeet) {
+  fail('present must still run aoiVisual.update with feet-on-parcel jobs (no flip without p5<30 log)')
+}
+if (!/this\.scenePromote\.tick/.test(presentFeet[0])) {
+  fail('scenePromote.tick (soft-route URL/minimap) must stay on present')
+}
+if (!/this\.syncCurrentSceneGuestAt/.test(presentFeet[0])) {
+  fail('syncCurrentSceneGuestAt (Focus) must stay on present')
 }
 
 const nudge = readFileSync(join(srcRoot, 'core/systems/SceneScriptSystem.ts'), 'utf8')

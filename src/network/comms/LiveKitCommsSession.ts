@@ -521,6 +521,11 @@ export class LiveKitCommsSession {
       const address = participant?.identity?.trim().toLowerCase() || ''
       if (!address) {
         const topicTrimEmpty = topic?.trim() ?? ''
+        // Named topics (ability VFX, trade, …) can still play without identity.
+        if (topicTrimEmpty && !topicTrimEmpty.startsWith('private:')) {
+          this.topicHandler?.(topicTrimEmpty, 'unknown', payload)
+          return
+        }
         if (topicTrimEmpty.startsWith('private:') || !topicTrimEmpty) {
           clientDebugLog.log(
             'comms',

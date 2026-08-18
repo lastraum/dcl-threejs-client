@@ -1,6 +1,7 @@
 /**
- * Ephemeral ability VFX — comms topic, not CRDT.
- * CRDT is lasting ECS state; a cast is a one-shot.
+ * Ephemeral ability VFX — comms topic, not CRDT / not syncEntity.
+ * CRDT is lasting ECS state; a cast is a one-shot event.
+ * Opt in from the scene with a sibling `tjs.sync` Tag. Default is local-only.
  * Preview mini-comms (RFC-5) carries the same topic as LiveKit rooms.
  */
 export const ABILITY_VFX_TOPIC = 'd3js-ability-vfx'

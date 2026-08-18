@@ -8,6 +8,7 @@ import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { dclToThreePos } from '../bridge/dclTransform'
 import { getSceneAbilityVfxHost } from './SceneAbilityVfxHost'
 import {
+  isShaderSyncParam,
   parseNumber,
   parseShaderDeclsFromSource,
   parseShaderPointerBindings,
@@ -28,6 +29,8 @@ export type ShaderCallCtx = {
   direction: THREE.Vector3
   distance: number
   node: THREE.Object3D | null
+  /** Opt onto `d3js-ability-vfx`. Default false — local only. */
+  sync?: boolean
   THREE?: typeof THREE
   scene?: THREE.Scene
 }
@@ -115,7 +118,16 @@ export function buildShaderCtx(
   }
 
   const distance = parseNumber(params.distance ?? params.range ?? '') ?? 32
-  return { entity, fn, params, origin, direction, distance, node }
+  return {
+    entity,
+    fn,
+    params,
+    origin,
+    direction,
+    distance,
+    node,
+    sync: isShaderSyncParam(params.sync)
+  }
 }
 
 export class ShaderManager {
@@ -230,7 +242,7 @@ export class ShaderManager {
       })
       return false
     }
-    host.cast(id, ctx.origin, ctx.direction, ctx.distance)
+    host.cast(id, ctx.origin, ctx.direction, ctx.distance, { publish: ctx.sync === true })
     return true
   }
 

@@ -3,7 +3,7 @@
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-08-18  
-> **Current phase:** **v2.1.0** — local preview + this-client shaders. **v2.0.0** (2026-08-14) was host world + city walk. **`dev-latest`** continues as QA. Invert clock proof: [V2.2_BEVY_PARITY.md](./V2.2_BEVY_PARITY.md).  
+> **Current phase:** **v2.1.0** on `main`. QA trunk is **`dev-latest`**. Invert clock proof (tag **2.2**) is still open — [V2.2_BEVY_PARITY.md](./V2.2_BEVY_PARITY.md).  
 > **Shipped:** **v2.1.0** `/localpreview` · stay-in-play reload · Tags shaders (`tjs.sync` opt-in) · shaders off until Jump In · preview tabs · **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
 
 > **After 2.0 (next):** CBD density/FPS with stacked live neighbors · RTS box-select / pad-drag polish · saved outfits · create-community / invites · gallery multi-page · graphics P3 culls · Social WS reliability · PE P3 pad/wind QA · multi-shape GLTF `40M+` riding. Scene UI = **one-off bugs only**. Shell marketplace browse ≠ **P2P peer trade**.  
@@ -16,6 +16,32 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## ✅ Milestone — platform QA after 2.1 (Snow Drift · plaza · `/goto` · VFX warm) (2026-08-18)
+
+**Status: on `fix/snowdrift-ui-sky-avatar-parity` (`7db8931`) — not a product release, not tag 2.2.** Official-scene QA after the 2.2 clock PRs (#64–#69). Merge to `dev-latest` when reviewed. SceneLoop stays 🟡.
+
+### What's new (parity / implementation — no version toast)
+
+- **Yoga / scene UI** — Explorer-only borders when width > 0; visibility is `display` + opacity (no off-canvas Yoga hide); Layer `showFrom` hold + paint follow-up
+- **Snow Drift walk** — MeshRenderer-only snow cubes recook on shrink; tile GLB 0.5 m floors; CCT step 0.55; do not cook MeshRenderer primitives as physics
+- **Plaza** — mural `Texture.Common` ST reset; hair slot-wide tint; chat bubble above name; emote prop meshes shown; `?sceneloop` log throttle
+- **`/goto` avatar** — drop parsed AssetCache GPU objects when the play renderer dies; wearable/emote cache keys isolated; `dclAvatarMatte` skips outdoor remap / COLOR_0
+- **Play shader warm** — `compileAsync` after play lighting/fog/IBL; first-orbit hitch reduced
+- **Ability VFX** — prime ice/meteor on the overlay (Ability groups only — no second grass compile); pool 50; **no client fire gate** (scene spawn is law)
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **SceneLoop invert clock** | 🟡 | Dual-clock landmine sealed. `?sceneloop` shows real `dt` + `pointer-edge`. **Walk-log not pasted** (Cast Line + Tween + timer) — do not flip 🟢 / do not tag 2.2 |
+| **`/goto` local avatar** | 🟢 | GPU epoch invalidate on World dispose |
+| **Ice / Cinder first cast** | 🟢 overlay prime | First Ice may still hitch once if world mats first see VFX PointLights |
+| **Release** | ⬜ not yet | `main` stays **v2.1.0** |
+
+**QA:** Snow Drift UI swipe + snow step · plaza mural / hair / chat / Zaara props · `/goto lastraum` avatar stays textured · Ice Storm first click after load · Cinder mash (scene owns spam; pool recycles at 50).
+
+**Tip:** Not 2.2. 2.2 is still “paste the invert walk-log, then tag.”
 
 ---
 

@@ -86,6 +86,7 @@ Also unproven until a pasted walk-log (PR-3): pointer PET_UP on an authored hit,
 - [x] Transport `dt === 0` does not stamp wall clock (`wrapEngineUpdateWithWallClock`)
 - [x] MainFrameHud SceneLoop line: last guest `dt` + `src=` next to `g=/due=/sent=/inflight=`
 - [ ] Pasted walk-log of pointer + Tween + scene timers on an official bundle — **SceneLoop stays 🟡**
+  - Plaza `?sceneloop=1` (2026-08-18) showed real `dt` and `source=pointer-edge` on **no-target ground** clicks. That is not Cast Line PET_UP + Tween + timer. Do not flip 🟢 from that paste.
 
 ---
 

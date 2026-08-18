@@ -471,17 +471,30 @@ export class CommsService {
   async publishRawTopicData(topic: string, packet: Uint8Array, reliable = true): Promise<boolean> {
     const t = topic.trim()
     if (!t) return false
+    const body = encodeRfc5TopicPayload(t, packet)
+    // LiveKit first. DCL world SFUs often drop unknown `topic` fields — also send
+    // the same envelope as bare data (same pipe as RFC4 movement).
+    const sessions = this.liveKitBroadcastSessions()
+    if (sessions.length) {
+      let sent = false
+      const bits: string[] = []
+      for (const session of sessions) {
+        const remotes = session.getRemotePeerAddresses().length
+        const named = await session.publishTopicData(t, body, reliable)
+        const bare = await session.publishBareData(body, reliable)
+        if (named || bare) sent = true
+        bits.push(`${session.getRoomName() || 'room'} remotes=${remotes} named=${named} bare=${bare}`)
+      }
+      clientDebugLog.log('comms', `topic-out ${t} · ${bits.join(' · ') || 'no rooms'}`, {
+        alsoConsole: true
+      })
+      return sent
+    }
     if (this.rfc5.isConnected()) {
-      this.rfc5.send(encodeRfc5TopicPayload(t, packet), !reliable)
+      this.rfc5.send(body, !reliable)
       return true
     }
-    const sessions = this.liveKitChatSessions()
-    if (!sessions.length) return false
-    let sent = false
-    for (const session of sessions) {
-      if (await session.publishTopicData(t, packet, reliable)) sent = true
-    }
-    return sent
+    return false
   }
 
   /**
@@ -2304,6 +2317,17 @@ export class CommsService {
    * peers join both rooms on worlds (world = chat, scene = Cast).
    * Worlds → world room; parcels → scene room (fallback world/island).
    */
+  /** World + scene when both are up — VFX/trade one-shots must hit whichever room the peer shares. */
+  private liveKitBroadcastSessions(): LiveKitCommsSession[] {
+    const out: LiveKitCommsSession[] = []
+    if (this.worldConnected && this.worldLiveKit.isConnected()) out.push(this.worldLiveKit)
+    if (this.sceneLiveKit.isConnected()) out.push(this.sceneLiveKit)
+    if (!out.length && this.islandConnected && this.islandLiveKit.isConnected()) {
+      out.push(this.islandLiveKit)
+    }
+    return out
+  }
+
   private liveKitChatSessions(): LiveKitCommsSession[] {
     if (this.isWorldComms()) {
       if (this.worldConnected && this.worldLiveKit.isConnected()) return [this.worldLiveKit]

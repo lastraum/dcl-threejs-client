@@ -175,7 +175,7 @@ export class ShaderManager {
     this.catalog.set(key, path)
     this.loaded.delete(key)
     this.modules.delete(key)
-    void this.ensure(key)
+    // Do not import AbilityManager / ice-cinder-hail here — first trigger loads.
   }
 
   async ensure(name: string): Promise<ShaderModule | null> {
@@ -327,13 +327,10 @@ export class ShaderManager {
         })
         return null
       }
-      const leaf = (src.split('/').pop() ?? src).replace(/\.(js|mjs|ts)$/i, '')
-      const fileId = shaderToVfxId(leaf)
-      const nameId = shaderToVfxId(name)
-      await getSceneAbilityVfxHost()?.prime([...new Set([fileId, nameId])])
       const stub: ShaderModule = {}
       this.modules.set(name, stub)
-      clientDebugLog.log('scene', `shader '${name}' loaded ${src} → vfx:${fileId}`, {
+      const leaf = (src.split('/').pop() ?? src).replace(/\.(js|mjs|ts)$/i, '')
+      clientDebugLog.log('scene', `shader '${name}' loaded ${src} → vfx:${shaderToVfxId(leaf)}`, {
         alsoConsole: true
       })
       return stub

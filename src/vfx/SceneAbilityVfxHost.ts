@@ -11,6 +11,14 @@ export function setSceneAbilityVfxHost(host: SceneAbilityVfxHost | null): void {
   currentHost = host
 }
 
+/** Lab LightPool keeps 6 PointLights visible at intensity 0. Hide them until a cast. */
+function hideUnusedVfxLights(pool: { lights?: Array<{ light: THREE.Light; inUse?: boolean }> }): void {
+  for (const entry of pool.lights ?? []) {
+    const on = entry.inUse === true && entry.light.intensity > 0.001
+    entry.light.visible = on
+  }
+}
+
 type AbilityManagerLike = {
   warm: (id: string) => Promise<boolean>
   prewarm?: (id: string, n: number) => void
@@ -33,7 +41,11 @@ type AbilityManagerLike = {
 export class SceneAbilityVfxHost {
   private abilities: AbilityManagerLike | null = null
   private particles: { flush: () => void; dispose: () => void } | null = null
-  private lights: { update: (dt: number) => void; dispose: () => void } | null = null
+  private lights: {
+    update: (dt: number) => void
+    dispose: () => void
+    lights?: Array<{ light: THREE.Light; inUse?: boolean }>
+  } | null = null
   private decals: { update: (dt: number) => void; dispose: () => void } | null = null
   private fissures: { update: (dt: number) => void; dispose: () => void } | null = null
   private bursts: { update: (dt: number) => void; dispose: () => void } | null = null
@@ -143,6 +155,7 @@ export class SceneAbilityVfxHost {
     this.fissures?.update(step)
     this.bursts?.update(step)
     this.lights?.update(step)
+    if (this.lights) hideUnusedVfxLights(this.lights)
     this.shake?.update(step)
     this.flash?.update(step)
   }
@@ -238,7 +251,15 @@ export class SceneAbilityVfxHost {
 
       this.frame = frame
       this.particles = new ParticleEngine(this.scene)
-      this.lights = new LightPool(this.scene)
+      const lights = new LightPool(this.scene) as {
+        update: (dt: number) => void
+        dispose: () => void
+        lights?: Array<{ light: THREE.Light; inUse?: boolean }>
+      }
+      // Intensity 0 is not enough — visible PointLights still enter Three's
+      // lighting list and recompile / shade every world material (grass, GLBs).
+      hideUnusedVfxLights(lights)
+      this.lights = lights
       this.decals = new DecalSystem(this.scene)
       this.fissures = new FissureSystem(this.scene)
       this.bursts = new BurstSystem(this.scene)

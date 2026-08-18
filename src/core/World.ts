@@ -534,6 +534,7 @@ export class World {
       this.social.rewireComms(this.comms)
       // Same LiveKit instance, but World just attached — re-seed peers + force local equip out.
       this.comms.notifyHandlersOfCurrentPeers()
+      this.bindAbilityVfxTopic()
       void this.reannounceDavAndPets(addr, 'adoptComms (same session)')
       return
     }
@@ -555,6 +556,7 @@ export class World {
     // Peers already in the room never re-fire join — push them into RemoteAvatarManager.
     this.comms.notifyHandlersOfCurrentPeers()
     this.syncVoiceRoom()
+    this.bindAbilityVfxTopic()
     // Local guest VRM + pet equip often announced before World handlers existed — re-push now.
     void this.reannounceDavAndPets(addr, 'adoptComms (new session)')
     const counts = this.comms.getLivePeerCounts()
@@ -1559,7 +1561,17 @@ export class World {
     const host = new SceneAbilityVfxHost(this.host.scene, this.host.camera, this.host.renderer)
     this.abilityVfx = host
     setSceneAbilityVfxHost(host)
-    // Only fires when the scene opted in (`tjs.sync`). Default casts stay local.
+    this.bindAbilityVfxTopic()
+    return host
+  }
+
+  /**
+   * Re-attach after `adoptComms`. loadScene registers on World's throwaway
+   * CommsService; landing handoff dispose()s that instance and the listener dies.
+   */
+  private bindAbilityVfxTopic(): void {
+    const host = this.abilityVfx
+    if (!host) return
     host.setOnLocalCast((id, origin, dir, range) => {
       const o = threeToDclPos(origin.x, origin.y, origin.z)
       const d = threeToDclPos(dir.x, dir.y, dir.z)
@@ -1582,19 +1594,32 @@ export class World {
           clientDebugLog.log(
             'scene',
             ok
-              ? `ability-vfx published ${id}`
-              : `ability-vfx publish skipped — no comms room (${id})`,
+              ? `ability-vfx published ${id} topic=${ABILITY_VFX_TOPIC}`
+              : `ability-vfx publish skipped — no LiveKit/rfc5 room (${id})`,
             { level: ok ? 'info' : 'warn', alsoConsole: true }
           )
         })
     })
     this.unsubAbilityVfxTopic?.()
+    let lastRecvKey = ''
+    let lastRecvAt = 0
     this.unsubAbilityVfxTopic = this.comms.addTopicListener((topic, sender, data) => {
-      if (topic !== ABILITY_VFX_TOPIC) return
+      if (topic !== ABILITY_VFX_TOPIC && topic.toLowerCase() !== ABILITY_VFX_TOPIC) return
       const local = this.session.getAddress()?.trim().toLowerCase() ?? ''
       if (local && sender.trim().toLowerCase() === local) return
       const msg = decodeAbilityVfxCast(data)
-      if (!msg) return
+      if (!msg) {
+        clientDebugLog.log('scene', `ability-vfx recv decode-fail from ${sender.slice(0, 10)}…`, {
+          level: 'warn',
+          alsoConsole: true
+        })
+        return
+      }
+      const key = `${msg.id}:${msg.ox.toFixed(1)}:${msg.oz.toFixed(1)}:${msg.range.toFixed(0)}`
+      const now = performance.now()
+      if (key === lastRecvKey && now - lastRecvAt < 400) return
+      lastRecvKey = key
+      lastRecvAt = now
       clientDebugLog.log('scene', `ability-vfx recv ${msg.id} from ${sender.slice(0, 10)}…`, {
         alsoConsole: true
       })
@@ -1602,10 +1627,9 @@ export class World {
       const dir = dclToThreePos(msg.dx, msg.dy, msg.dz)
       this.abilityVfx?.cast(msg.id, origin, dir, msg.range, { publish: false })
     })
-    return host
   }
 
-  private async primeSceneAbilityVfx(onProgress?: (msg: string) => void): Promise<void> {
+  private async primeSceneAbilityVfx(_onProgress?: (msg: string) => void): Promise<void> {
     const source = this.sceneScript.getLastScriptSource()
     const ids = source ? discoverAbilityVfxIds(source) : []
     if (ids.length === 0) {
@@ -1614,22 +1638,18 @@ export class World {
       })
       return
     }
-    onProgress?.('Loading scene shaders…')
+    // Catalog only. AbilityManager + LightPool + ice/meteor/hail meshes boot on
+    // the first cast — warming them here adds 6 PointLights that light 33k grass
+    // and lock the GPU at 0 fps before the player has clicked anything.
     await this.sceneScript.attachShaderVfx(source)
     const { getShaderManager } = await import('../vfx/ShaderManager')
     getShaderManager().ingestSource(source ?? '')
-    const host = await this.ensureAbilityVfxHost()
-    for (let i = 0; i < ids.length; i++) {
-      const id = ids[i]!
-      onProgress?.(`Loading ability VFX (${id}, ${i + 1}/${ids.length})…`)
-      const ok = await host.prime([id])
-      if (!ok) {
-        clientDebugLog.log('scene', `ability-vfx prime failed · ${id} — first cast will retry`, {
-          level: 'warn',
-          alsoConsole: true
-        })
-      }
-    }
+    await this.ensureAbilityVfxHost()
+    clientDebugLog.log(
+      'scene',
+      `ability-vfx catalog [${ids.join(', ')}] — warm on first cast`,
+      { alsoConsole: true }
+    )
   }
 
   /** Creator Hub / sdk-commands preview websocket — same recycle as `/reload`. */

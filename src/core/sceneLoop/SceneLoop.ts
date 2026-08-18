@@ -127,7 +127,7 @@ export class SceneLoop {
       if (!guest.isDue(input.now)) continue
       due++
       // At most one secondary guest tick per SceneLoop send (primary + PE stay due).
-      // FocusOwner under feet wins the slot over a due mute neighbor.
+      // Current guest (under feet) wins the slot over a due mute neighbor.
       if (guest.kind === 'secondary') {
         if (secondarySent >= 1) continue
         if (currentSecondaryDue && guest.id !== currentId) continue

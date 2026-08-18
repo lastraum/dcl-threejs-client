@@ -12,8 +12,6 @@ const root = process.cwd()
 const srcRoot = join(root, 'src')
 
 const ALLOWED_TICK_PLAY_FRAME = new Set([
-  // Definition, not a start.
-  'src/core/systems/SceneScriptSystem.ts',
   // SceneLoop.send adapters.
   'src/core/sceneLoop/SceneScriptGuest.ts',
   'src/core/sceneLoop/PeSlotGuest.ts',

@@ -12,7 +12,7 @@ export class SceneScriptGuest implements SceneGuest {
     readonly kind: GuestKind,
     private readonly getSystem: () => SceneScriptSystem,
     readonly priority = kind !== 'secondary',
-    /** Under-feet current / FocusOwner — leftover apply + immediate pointer wakeup. */
+    /** Current guest (under feet) — leftover apply + immediate pointer wakeup. */
     private readonly isCurrent: () => boolean = () => false
   ) {}
 
@@ -26,7 +26,7 @@ export class SceneScriptGuest implements SceneGuest {
 
   isDue(now: number): boolean {
     const cadenceDue = this.sentAt <= 0 || now - this.sentAt >= 50
-    // Mute non-focus secondaries at 50 ms. Immediate is primary or FocusOwner under feet.
+    // Mute non-current secondaries at 50 ms. Immediate is primary or current guest (under feet).
     if (this.kind === 'secondary' && !this.isCurrent()) return cadenceDue
     if (this.getSystem().needsImmediateGuestTick()) return true
     return cadenceDue

@@ -37,11 +37,6 @@ export function discoverAbilityVfxIds(source: string): string[] {
     const id = normalizeAbilityVfxId(m[1] ?? '')
     if (id) found.add(id)
   }
-  const builtins = source.matchAll(/builtin:([a-z0-9_-]+)/gi)
-  for (const m of builtins) {
-    const id = normalizeAbilityVfxId(m[1] ?? '')
-    if (id) found.add(id)
-  }
   const decls = source.matchAll(/tjs\.shader\s*\(\s*([a-zA-Z][\w-]*)\s*(?:,|\))/g)
   for (const m of decls) {
     const id = normalizeAbilityVfxId(m[1] ?? '')

@@ -131,6 +131,8 @@ export class MainFrameHud {
         `apply=${fmt1(snap.sceneLoopApplyMs)} ` +
         `g=${snap.sceneLoopGuests} due=${snap.sceneLoopDue} sent=${snap.sceneLoopSent} ` +
         `inflight=${snap.sceneLoopInFlight}` +
+        ` dt=${snap.sceneLoopLastSource ? formatGuestDt(snap.sceneLoopLastDt) : '-'}` +
+        ` src=${snap.sceneLoopLastSource || '-'}` +
         `</div>`,
       section('async~', snap.asyncMs, [
         ['peel', snap.asyncPeelMs],
@@ -214,6 +216,12 @@ function row(label: string, ms: number, hint = ''): string {
 function fmt1(n: number): string {
   if (!Number.isFinite(n)) return '0.0'
   return n.toFixed(1)
+}
+
+function formatGuestDt(dt: number): string {
+  if (!(dt > 0)) return '0.000'
+  const rounded = dt.toFixed(3)
+  return rounded === '0.000' ? dt.toFixed(6) : rounded
 }
 
 function msColor(ms: number): string {

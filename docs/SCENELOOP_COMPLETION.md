@@ -71,13 +71,21 @@ The old “still not the law” table described the **pre-P0** tree (Raycast eve
 
 | Leftover | Why it still matters | Seal |
 | --- | --- | --- |
-| `preemptSceneEngineTick` on pointer deliver | Epoch-kills a live `engine.update`. **No Bevy analog.** Bevy never aborts a live scene job (`skip in_flight`). | PR-2: skip/delete when `sceneLoopOwnsPositiveDt` / `engineUpdateInFlight` |
-| Unscoped `requestSceneEngineTick()` | Timed host inject can still call it without `source`. After first play-frame this queues; make it impossible to start. | PR-2: `queueSceneEngineTick` + required `source` |
-| `nudgePlayAfterSceneTeleport` → `tickPlayFrame()` | Extra play-frame **outside** `SceneLoop.send` (`movePlayerTo` / PE `movePlayer`). Comment says “do not stack.” *Guide:* SpaceRunner / Flagtag | PR-2: keep `forceResumeWorkerSceneTicks`; mark immediate / queue |
-| `peTickIntervalMs() === 0` | PE pump every async frame **if** the ownership flag drops. `secondaryTickIntervalMs()` is already **50**. | PR-2: return 50, never 0 |
-| `tickSync` can still `tickPlayFrame` | Dual-clock landmine if `!skipPlayFrame && !playFrameOwnedExternally`. Happy path sets the flag at attach. | PR-2: hard-code `skipPlayFrame: true` |
+| `preemptSceneEngineTick` on pointer deliver | Epoch-kills a live `engine.update`. **No Bevy analog.** | **Sealed (PR-2):** skip when `sceneLoopOwnsPositiveDt` / `engineUpdateInFlight` |
+| Unscoped `requestSceneEngineTick()` | Timed host inject could start without `source`. | **Sealed (PR-2):** `source` required; unscoped path is `queueSceneEngineTick` |
+| `nudgePlayAfterSceneTeleport` → `tickPlayFrame()` | Extra play-frame **outside** `SceneLoop.send`. | **Sealed (PR-2):** resume + immediate; SceneLoop.send starts |
+| `peTickIntervalMs() === 0` | PE pump every async frame **if** the ownership flag drops. | **Sealed (PR-2):** returns **50**, never 0 |
+| `tickSync` can still `tickPlayFrame` | Dual-clock landmine if `!skipPlayFrame && !playFrameOwnedExternally`. | **Sealed (PR-2):** `skipPlayFrame: true` hard-coded |
 
 Also unproven until a pasted walk-log (PR-3): pointer PET_UP on an authored hit, Tween duration ≈ wall, scene timers on real guest `dt`, no `dt=0.000` after the first `source=play-frame` line.
+
+### PR-3 observability (instrumentation in — walk-log open)
+
+- [x] `?sceneloop=1` (or existing worker verbose flag) play-frame line: `source` `dt` `inFlight` (HUD keeps live `g=`/`sent=`)
+- [x] Fail window is readable: `source` is logged; hydrate ticks before the first `source=play-frame` are not a fail; `dt=0.000` after that line is a fail
+- [x] Transport `dt === 0` does not stamp wall clock (`wrapEngineUpdateWithWallClock`)
+- [x] MainFrameHud SceneLoop line: last guest `dt` + `src=` next to `g=/due=/sent=/inflight=`
+- [ ] Pasted walk-log of pointer + Tween + scene timers on an official bundle — **SceneLoop stays 🟡**
 
 ---
 
@@ -220,7 +228,7 @@ Do not treat the phases as a re-implement plan. Verdicts are against this tree.
 - Soft-route (URL/minimap) and Focus (which parcel your feet are on) stay on present
 - Live guests stay default-on; shells / stand-on origin rebase stay default-off (separate residency chapter)
 
-**Landmines (must seal before SceneLoop 🟢):** `tickSync` can still call `tickPlayFrame` if the ownership flag is false; `peTickIntervalMs() === 0`.
+**Landmines (sealed in PR-2):** `tickSync` never calls `tickPlayFrame`; `peTickIntervalMs() === 50`. SceneLoop 🟢 still needs the pasted walk-log.
 
 ### P4 — Encode / apply leftovers — **in-tree**
 
@@ -252,7 +260,7 @@ Do not treat the phases as a re-implement plan. Verdicts are against this tree.
 | Raycast | `RaycastSystem.sync` from `tickPlayFrame` only | Unchanged |
 | Pointer inject | `inject-pointer-click`; leftover `preemptSceneEngineTick` | Inject + skip-if-in-flight; no abort |
 | Teleport nudge | `nudgePlayAfterSceneTeleport` still `tickPlayFrame()` | Resume + immediate; SceneLoop.send starts |
-| Dual clock | `tickSync` can still `tickPlayFrame`; `peTickIntervalMs === 0` | `skipPlayFrame: true`; PE interval 50 |
+| Dual clock | **Sealed (PR-2):** `skipPlayFrame: true`; `peTickIntervalMs === 50` | Unchanged |
 | Present | `SceneHost` rAF | Unchanged |
 | Guests | `SceneLoop.ts` | Unchanged API; current guest wins ≤1-secondary cap |
 
@@ -265,6 +273,7 @@ Do not treat the phases as a re-implement plan. Verdicts are against this tree.
 - [ ] Continuous ray recast ≤ once per guest tick
 - [ ] Pointer DOWN/UP both land on the authored entity before ack
 - [ ] Walk-log of pointer + Tween + scene timers pasted before SceneLoop 🟢 (*guide:* Genesis Plaza fishing — any official bundle that covers the same APIs is valid)
-- [ ] Dual-clock landmine sealed (`tickSync` never `tickPlayFrame`; `peTickIntervalMs === 50`) before SceneLoop 🟢
+- [x] Dual-clock landmine sealed (`tickSync` never `tickPlayFrame`; `peTickIntervalMs === 50`) before SceneLoop 🟢
+- [x] Play-frame `source`/`dt`/`inFlight` log + HUD last guest dt (instrumentation only — not a green)
 - [ ] No scene-name branch
 - [ ] Present rAF does not wait on the guest

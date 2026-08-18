@@ -117,16 +117,31 @@ if (/worker\.tickSync\([^)]*\)/.test(pe) && !/worker\.tickSync\([^)]*,\s*true\s*
 }
 
 const world = readFileSync(join(srcRoot, 'core/World.ts'), 'utf8')
-const presentFeet = world.match(
-  /if \(startFrame >= World\.PLAY_PRESENT_GRACE_FRAMES\) \{[\s\S]*?this\.aoiVisual\.update/
-)
-if (!presentFeet) {
+const graceNeedle = 'if (startFrame >= World.PLAY_PRESENT_GRACE_FRAMES)'
+const graceAt = world.indexOf(graceNeedle)
+const graceOpen = graceAt < 0 ? -1 : world.indexOf('{', graceAt)
+let presentFeet = null
+if (graceOpen >= 0) {
+  let depth = 0
+  for (let i = graceOpen; i < world.length; i++) {
+    const ch = world[i]
+    if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      if (depth === 0) {
+        presentFeet = world.slice(graceAt, i + 1)
+        break
+      }
+    }
+  }
+}
+if (!presentFeet || !/this\.aoiVisual\.update/.test(presentFeet)) {
   fail('present must still run aoiVisual.update with feet-on-parcel jobs (no flip without p5<30 log)')
 }
-if (!/this\.scenePromote\.tick/.test(presentFeet[0])) {
+if (!/this\.scenePromote\.tick/.test(presentFeet)) {
   fail('scenePromote.tick (soft-route URL/minimap) must stay on present')
 }
-if (!/this\.syncCurrentSceneGuestAt/.test(presentFeet[0])) {
+if (!/this\.syncCurrentSceneGuestAt/.test(presentFeet)) {
   fail('syncCurrentSceneGuestAt (Focus) must stay on present')
 }
 

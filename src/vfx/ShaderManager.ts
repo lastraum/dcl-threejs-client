@@ -190,13 +190,7 @@ export class ShaderManager {
     return pending
   }
 
-  private readonly lastFireAt = new Map<string, number>()
-
   trigger(name: string, fn: string, ctx: ShaderCallCtx): boolean {
-    const key = `${name}:${fn}:${ctx.origin.x.toFixed(1)}:${ctx.direction.x.toFixed(2)}:${ctx.distance.toFixed(1)}`
-    const now = performance.now()
-    if (now - (this.lastFireAt.get(key) ?? 0) < 280) return false
-    this.lastFireAt.set(key, now)
     void this.fire(name, fn, ctx)
     return true
   }

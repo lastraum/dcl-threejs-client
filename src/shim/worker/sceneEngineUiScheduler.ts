@@ -202,6 +202,10 @@ export function shouldDeferCooperativeReactEcs(): boolean {
   // (R3.barHeight + UiBackground.uvs) or skip miss unmount (reelingUIVisible=false).
   if (workerHasUiDrivingTween(boundWorkerEngine)) return false
   if (workerHasUvDrivenUi(boundWorkerEngine)) return false
+  // react-ecs Layer/Toast kits tween UiTransform.position via engine.addSystem
+  // (showFrom / hideTo) — not core::Tween. After a scene-UI click the followup
+  // window must reconcile every tick or the panel stays parked off-canvas.
+  if (isCooperativeReactEcsPaintFollowupActive()) return false
   // No-target pointer edge / hold: systems only (defer react-ecs). Any scene may use
   // isPressed between DOWN and UP — do not thrash full UI reconcile on the hold window.
   if (isLevelStatePointerEdgeActive() || isLevelStatePointerHeld()) return true

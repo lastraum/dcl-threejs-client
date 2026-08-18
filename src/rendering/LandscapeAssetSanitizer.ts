@@ -96,6 +96,7 @@ function hasAuthoredKhrSpecular(material: THREE.MeshPhysicalMaterial): boolean {
  * Material.setPbrMaterial / glTF PBR + KHR_materials_specular stay on MeshPhysicalMaterial.
  */
 function simplifyMaterial(material: THREE.Material): THREE.Material {
+  if (material.userData.dclAvatarMatte === true) return material
   if (material instanceof THREE.MeshPhysicalMaterial) {
     material.envMap = null
     if (countMaterialTextures(material) > MAX_MATERIAL_TEXTURES) {
@@ -207,7 +208,7 @@ export function enableSceneMeshVertexColors(mesh: THREE.Mesh): void {
   if (isAuthorTerrainMesh(mesh)) return
   if (!meshHasVertexPaint(mesh) || meshHasAlbedoMap(mesh)) return
   for (const material of meshMaterials(mesh)) {
-    if (!material) continue
+    if (!material || material.userData.dclAvatarMatte === true) continue
     if (
       material instanceof THREE.MeshStandardMaterial ||
       material instanceof THREE.MeshPhysicalMaterial ||

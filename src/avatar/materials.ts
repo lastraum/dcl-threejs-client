@@ -149,7 +149,9 @@ export function prepareAvatarMaterials(root: THREE.Object3D): void {
       // enabling COLOR_0 (black silhouette) and IBL/metal that read as pitch black
       // after a VRM → DCL swap.
       if (isStandardMaterial(mat)) {
-        if (!(mat.userData as Record<string, unknown>).dclEmissiveBoosted) {
+        const userData = mat.userData as Record<string, unknown>
+        userData.dclAvatarMatte = true
+        if (!userData.dclEmissiveBoosted) {
           mat.metalness = 0
           mat.roughness = Math.max(mat.roughness, 0.85)
           mat.envMap = null
@@ -228,6 +230,10 @@ export function applyWearableEmissives(root: THREE.Object3D): void {
 export function tintWearableMaterials(root: THREE.Object3D, skin?: string, hair?: string): void {
   if (!skin && !hair) return
   ownInstanceMaterials(root)
+  const category = root.name.startsWith('wearable:') ? root.name.slice('wearable:'.length) : ''
+  // Hair/facial_hair GLBs often name mats lambert/AvatarWearable — not "hair".
+  // Explorer tints the whole slot; name-only matching left colorful albedo (green/orange).
+  const tintAllHair = category === 'hair' || category === 'facial_hair'
   root.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return
     const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
@@ -235,7 +241,7 @@ export function tintWearableMaterials(root: THREE.Object3D, skin?: string, hair?
       if (!isStandardMaterial(mat)) continue
       const name = mat.name.toLowerCase()
       if (EMISSIVE_NAME.test(name)) continue
-      if (name.includes('hair') && hair) applyHex(mat, hair)
+      if (hair && (tintAllHair || name.includes('hair'))) applyHex(mat, hair)
       if (name.includes('skin') && skin) applyHex(mat, skin)
     }
   })

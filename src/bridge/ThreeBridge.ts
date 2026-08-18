@@ -2889,20 +2889,23 @@ export class ThreeBridge {
     const { MeshRenderer, Animator, Billboard, Tween, AvatarAttach, Transform } = this.ecs
     for (const [entity, comps] of diff) {
       if (!MeshRenderer.has(entity)) continue
-      // Continuous script motion (DecentraCraft temple spin/orbit/pulse) mutates Transform
-      // every tick via getMutable — not Tween/Animator. Transform put must unfreeze too.
-      const motion =
-        comps.has(Transform.componentId) ||
+      // Continuous script motion mutates Transform every tick via getMutable.
+      // Instancer.updateEntities already writes instance matrices from those puts —
+      // do not promote Transform-only boards off GPU InstancedMesh (paint/melt
+      // grids would detach dozens of boxes per brush and hitch the player).
+      const scriptMotion =
         (Animator && comps.has(Animator.componentId)) ||
         (Billboard && comps.has(Billboard.componentId)) ||
         (Tween && comps.has(Tween.componentId)) ||
         (AvatarAttach && comps.has(AvatarAttach.componentId))
-      if (!motion) continue
+      const transformOnly = comps.has(Transform.componentId)
+      if (!scriptMotion && !transformOnly) continue
       const obj = this.store.nodes.get(entity)
       if (!obj) continue
       unfreezeObject3D(obj)
-      // Promote only while still on GPU InstancedMesh — never re-attach private leaves every
-      // frame (that rebuilt temple dishes each tick and killed spin/orbit motion).
+      if (!scriptMotion) continue
+      // Promote only for Tween/Animator/Billboard/AvatarAttach — never re-attach
+      // private leaves every Transform (that rebuilt temple dishes each tick).
       if (this.meshRendererInstancer.has(entity) || obj.userData.dclMeshRendererInstanced) {
         this.promoteMeshRendererForPointerOrMotion(entity, obj)
       }

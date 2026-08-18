@@ -948,7 +948,7 @@ export class MaterialApplier {
   private applyUvTransform(
     tex: THREE.Texture,
     def?: TextureDef,
-    previous?: THREE.Texture | null,
+    _previous?: THREE.Texture | null,
     mesh?: THREE.Mesh
   ): void {
     const held = mesh?.userData?.dclTextureMoveST as
@@ -967,10 +967,10 @@ export class MaterialApplier {
       tex.repeat.set(def.tiling.x ?? 1, def.tiling.y ?? 1)
       tex.userData.dclMapUFlipped = false
       orientationKnown = true
-    } else if (previous && previous !== tex && !held) {
-      tex.repeat.copy(previous.repeat)
-      tex.userData.dclMapUFlipped = !!previous.userData.dclMapUFlipped
-      orientationKnown = true
+    } else if (!held) {
+      // Omitted tiling = 1×1. Do not copy previous.repeat — that leaked marquee
+      // atlas ST onto plaza photo-mural Texture.Common planes (zoomed/scrambled UVs).
+      tex.repeat.set(1, 1)
     }
 
     if (held && !held.tiling) {
@@ -986,12 +986,8 @@ export class MaterialApplier {
         tex.userData.dclMapUFlipped = false
         orientationKnown = true
       }
-    } else if (previous && previous !== tex && !held) {
-      tex.offset.copy(previous.offset)
-      if (!orientationKnown) {
-        tex.userData.dclMapUFlipped = !!previous.userData.dclMapUFlipped
-        orientationKnown = true
-      }
+    } else if (!held) {
+      tex.offset.set(0, 0)
     }
 
     if (!orientationKnown) {

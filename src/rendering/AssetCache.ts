@@ -36,16 +36,23 @@ import {
 } from './textureProxy'
 
 const LANDSCAPE_CACHE_SUFFIX = '#landscape'
+const WEARABLE_CACHE_SUFFIX = '#wearable'
+const EMOTE_CACHE_SUFFIX = '#emote'
+const GPU_KIND_SUFFIX_RE = /#(landscape|wearable|emote)$/
 
-function glbCacheKey(hashOrUrl: string, landscape?: boolean): string {
+function glbCacheKey(
+  hashOrUrl: string,
+  options?: { landscape?: boolean; wearable?: boolean; emote?: boolean }
+): string {
   const base = normalizeGlbCacheKey(hashOrUrl)
-  return landscape ? `${base}${LANDSCAPE_CACHE_SUFFIX}` : base
+  if (options?.landscape) return `${base}${LANDSCAPE_CACHE_SUFFIX}`
+  if (options?.wearable) return `${base}${WEARABLE_CACHE_SUFFIX}`
+  if (options?.emote) return `${base}${EMOTE_CACHE_SUFFIX}`
+  return base
 }
 
 function glbBytesKey(cacheKey: string): string {
-  return cacheKey.endsWith(LANDSCAPE_CACHE_SUFFIX)
-    ? cacheKey.slice(0, -LANDSCAPE_CACHE_SUFFIX.length)
-    : cacheKey
+  return cacheKey.replace(GPU_KIND_SUFFIX_RE, '')
 }
 
 export type CachedGltf = {
@@ -155,6 +162,8 @@ export class AssetCache {
   private failedUntil = new Map<string, number>()
   private failCount = new Map<string, number>()
   private givenUp = new Set<string>()
+  /** Bumped when the play WebGL context dies — in-flight parses must not re-insert. */
+  private gpuEpoch = 0
   /**
    * Cap concurrent GLB parses. Was 1 → only ~1 asset finished at a time (5+ min plaza).
    * Loading screen can absorb a few parallel main-thread parses; off-thread uses workers.
@@ -192,22 +201,38 @@ export class AssetCache {
   }
 
   /**
-   * Release cached GLBs/textures. Only call from `disposeSessionAssetCache` on sign-out —
-   * parcel navigation keeps the session cache alive and only clears the scene manifest.
+   * Drop parsed Three.js GPU objects after the play renderer is destroyed.
+   * `/goto` rebuilds World + WebGLRenderer (`forceContextLoss`); ImageBitmap
+   * maps uploaded to the dead context render as a black silhouette. IDB GLB
+   * bytes stay warm so the next compose re-inflates without a network hit.
    */
-  dispose(): void {
+  invalidateGpuResources(reason = 'renderer-rebuild'): void {
+    this.gpuEpoch++
+    const dropped = this.cache.size + this.textures.size
     for (const entry of this.cache.values()) {
       disposeCachedRoot(entry.root)
     }
     this.cache.clear()
     this.inflight.clear()
-    this.bytesInflight.clear()
-
     for (const texture of this.textures.values()) {
-      texture.dispose()
+      disposeTexture(texture)
     }
     this.textures.clear()
     this.textureInflight.clear()
+    if (dropped > 0) {
+      console.info(
+        `[AssetCache] dropped ${dropped} parsed GPU entries after ${reason} — IDB bytes stay warm`
+      )
+    }
+  }
+
+  /**
+   * Release cached GLBs/textures. Only call from `disposeSessionAssetCache` on sign-out —
+   * parcel navigation keeps the session cache alive and only clears the scene manifest.
+   */
+  dispose(): void {
+    this.invalidateGpuResources('session-dispose')
+    this.bytesInflight.clear()
     clearSceneContent()
   }
 
@@ -261,7 +286,7 @@ export class AssetCache {
       const url = hash ? scene.assetUrl(hash) : src
       const tex = this.textures.get(url)
       if (tex) {
-        tex.dispose()
+        disposeTexture(tex)
         this.textures.delete(url)
       }
       this.textureInflight.delete(url)
@@ -350,15 +375,21 @@ export class AssetCache {
     hash?: string,
     options?: { emote?: boolean; wearable?: boolean; quiet?: boolean; landscape?: boolean }
   ): Promise<CachedGltf> {
-    const key = glbCacheKey(hash ?? url, options?.landscape)
+    const key = glbCacheKey(hash ?? url, options)
     const hit = this.cache.get(key)
     if (hit) return hit
 
     const pending = this.inflight.get(key)
     if (pending) return pending
 
+    const epoch = this.gpuEpoch
     const task = this.loadFromDbOrNetwork(url, key, options)
       .then((entry) => {
+        if (epoch !== this.gpuEpoch) {
+          disposeCachedRoot(entry.root)
+          this.inflight.delete(key)
+          return entry
+        }
         markSharedAssetResources(entry.root)
         this.cache.set(key, entry)
         this.inflight.delete(key)
@@ -688,13 +719,61 @@ function loadImageFromBlob(blob: Blob): Promise<HTMLImageElement> {
   })
 }
 
+const TEXTURE_SLOTS = [
+  'map',
+  'normalMap',
+  'roughnessMap',
+  'metalnessMap',
+  'aoMap',
+  'emissiveMap',
+  'alphaMap',
+  'bumpMap',
+  'displacementMap',
+  'lightMap',
+  'envMap',
+  'clearcoatMap',
+  'clearcoatNormalMap',
+  'clearcoatRoughnessMap',
+  'transmissionMap',
+  'thicknessMap',
+  'specularIntensityMap',
+  'specularColorMap',
+  'sheenColorMap',
+  'sheenRoughnessMap',
+  'iridescenceMap',
+  'iridescenceThicknessMap',
+  'anisotropyMap'
+] as const
+
+function disposeTexture(texture: THREE.Texture): void {
+  const image = texture.image as { close?: () => void } | undefined
+  texture.dispose()
+  if (image && typeof image.close === 'function') {
+    try {
+      image.close()
+    } catch {
+      /* already closed / detached */
+    }
+  }
+}
+
 function disposeCachedRoot(root: THREE.Object3D): void {
+  const seen = new Set<THREE.Texture>()
   root.traverse((node) => {
     if (!(node instanceof THREE.Mesh)) return
     node.geometry?.dispose()
     const materials = Array.isArray(node.material) ? node.material : [node.material]
     for (const material of materials) {
-      material?.dispose()
+      if (!material) continue
+      const rec = material as unknown as Record<string, unknown>
+      for (const slot of TEXTURE_SLOTS) {
+        const tex = rec[slot]
+        if (tex instanceof THREE.Texture && !seen.has(tex)) {
+          seen.add(tex)
+          disposeTexture(tex)
+        }
+      }
+      material.dispose()
     }
   })
 }

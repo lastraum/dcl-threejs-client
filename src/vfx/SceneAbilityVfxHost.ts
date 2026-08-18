@@ -69,7 +69,7 @@ export class SceneAbilityVfxHost {
   constructor(
     private readonly scene: THREE.Scene,
     private readonly camera: THREE.PerspectiveCamera,
-    _renderer: THREE.WebGLRenderer
+    private readonly renderer: THREE.WebGLRenderer
   ) {
     this.camera.layers.enable(1)
   }
@@ -181,12 +181,50 @@ export class SceneAbilityVfxHost {
       const ready = await this.abilities!.warm(id)
       if (ready) this.primed.add(id)
     }
+    this.compileWarmedGroups()
     clientDebugLog.log(
       'scene',
       `ability-vfx primed [${[...this.primed].join(', ') || 'none'}]`,
       { alsoConsole: true }
     )
     this.flushPending()
+  }
+
+  /**
+   * Point lights in the compile light list (intensity 0). First cast used to
+   * flip `visible` and recompile every world material.
+   */
+  armLightsForCompile(): void {
+    for (const entry of this.lights?.lights ?? []) {
+      entry.light.intensity = 0
+      entry.light.visible = true
+    }
+  }
+
+  hideIdleLights(): void {
+    if (this.lights) hideUnusedVfxLights(this.lights)
+  }
+
+  /**
+   * Compile only warmed ability groups — never the landscape grass graph.
+   * `targetScene` keeps play lights / fog / IBL on the program key.
+   */
+  compileWarmedGroups(): void {
+    for (const root of this.collectAbilityRoots()) {
+      try {
+        this.renderer.compile(root, this.camera, this.scene)
+      } catch {
+        /* first present still compiles if this program is skipped */
+      }
+    }
+  }
+
+  private collectAbilityRoots(): THREE.Object3D[] {
+    const roots: THREE.Object3D[] = []
+    for (const child of this.scene.children) {
+      if (typeof child.name === 'string' && child.name.startsWith('Ability:')) roots.push(child)
+    }
+    return roots
   }
 
   private flushPending(): void {
@@ -210,8 +248,6 @@ export class SceneAbilityVfxHost {
       void this.abilities.warm(id)
       return false
     }
-    // Do not renderer.compile(scene) — that walks landscape grass (30k+ blades)
-    // and freezes the other multiplayer tab. Three compiles VFX materials on first draw.
     if (publish) this.onLocalCast?.(id, origin, dir, reach)
     clientDebugLog.log(
       'scene',
@@ -290,7 +326,7 @@ export class SceneAbilityVfxHost {
         bursts: this.bursts,
         shake: this.shake,
         flash: this.flash,
-        maxConcurrent: 12
+        maxConcurrent: 50
       }) as AbilityManagerLike
       return true
     } catch (err) {

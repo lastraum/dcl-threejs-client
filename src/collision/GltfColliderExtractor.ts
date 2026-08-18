@@ -509,6 +509,16 @@ export class GltfColliderExtractor {
     const colliderMeshes: THREE.Mesh[] = []
     gltfRoot.traverse((node) => {
       if (!(node instanceof THREE.Mesh)) return
+      // MeshRenderer primitives / GPU instances are not GltfContainer visible art.
+      // Cooking them here invents CL_PHYSICS on setBox snow cells (scene never adds MeshCollider).
+      if ((node as THREE.InstancedMesh).isInstancedMesh) return
+      if (
+        node.userData.primitiveMeshKey ||
+        node.userData.dclMeshRendererInstance ||
+        node.userData.dclMeshRendererInstanced
+      ) {
+        return
+      }
       // Skinned render meshes are unstable hulls; skinned `_collider` names still extract
       // (bind-pose geo + bone matrixWorld after mixer — rigid door panels under bones).
       const skinned = (node as THREE.SkinnedMesh).isSkinnedMesh === true

@@ -27,6 +27,7 @@ import {
 import { perfNoteFrameHost, perfNoteRenderSplit } from '../util/perfCounters'
 import { forceNoBloom, forceNoShadow } from '../client/devFlags'
 import { subscribeBackgroundTicks } from './backgroundTickHub'
+import { getSessionAssetCache } from './AssetCache'
 
 export class SceneHost {
   renderer: THREE.WebGLRenderer
@@ -100,6 +101,7 @@ export class SceneHost {
         return
       }
       console.error('[SceneHost] WebGL context lost unexpectedly — GPU memory or driver reset?', e)
+      getSessionAssetCache().invalidateGpuResources('webgl-context-lost')
     })
 
     this.scene = new THREE.Scene()
@@ -469,13 +471,25 @@ export class SceneHost {
   }
 
   /**
-   * Walk the live scene graph and compile GPU programs now (loading overlay).
-   * First-orbit hitch is usually shader compile, not CPU material apply.
+   * Compile beauty programs for the live graph. Three.js keys programs on the
+   * current lights / fog / environment / tone mapping — those must already match
+   * play. `compile()` only *starts* work (KHR_parallel_shader_compile); first
+   * `render()` is what waits unless we await `compileAsync`.
    */
-  compileSceneShaders(): void {
+  async compileSceneShaders(): Promise<void> {
     try {
       this.drawWorld.sync(this.camera)
-      this.renderer.compile(this.scene, this.camera)
+      const started = performance.now()
+      const compileAsync = this.renderer.compileAsync?.bind(this.renderer)
+      if (compileAsync) {
+        await Promise.race([
+          compileAsync(this.scene, this.camera),
+          new Promise<void>((resolve) => setTimeout(resolve, 8_000))
+        ])
+      } else {
+        this.renderer.compile(this.scene, this.camera)
+      }
+      console.info(`[SceneHost] shader compile ${(performance.now() - started).toFixed(0)}ms`)
     } catch (err) {
       console.warn('[SceneHost] compileSceneShaders failed', err)
     }

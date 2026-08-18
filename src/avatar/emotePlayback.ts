@@ -103,7 +103,7 @@ export function bindEmoteParticleMeshes(propRoot: THREE.Object3D): void {
 /** Hide duplicate body shell + `_collider` meshes; keep prop geometry visible and culled safely. */
 const EMOTE_BODY_MESH = /^male$|^female$|bodyshape|basebody|avatar_body|_body_/i
 
-export function prepareEmotePropRoot(propRoot: THREE.Object3D, propTrackTargets: Set<string>): void {
+export function prepareEmotePropRoot(propRoot: THREE.Object3D, _propTrackTargets: Set<string>): void {
   propRoot.traverse((obj) => {
     if (/collider/i.test(obj.name)) {
       obj.visible = false
@@ -123,20 +123,30 @@ export function prepareEmotePropRoot(propRoot: THREE.Object3D, propTrackTargets:
     if (!(obj instanceof THREE.Mesh)) return
 
     obj.frustumCulled = false
-    const name = normalizeBoneName(obj.name)
-    if (propTrackTargets.has(name) || isEmotePropMesh(obj.name)) {
-      obj.visible = true
-      cloneEmoteMeshMaterials(obj)
-      return
-    }
-
     if (EMOTE_BODY_MESH.test(obj.name)) {
       obj.visible = false
       return
     }
 
-    // Static sit anchors / collision proxies (e.g. sittingChair2 "Cube") — hide unless animated prop.
-    obj.visible = false
+    const name = normalizeBoneName(obj.name)
+    // Sit-emote collision proxies (sittingChair2 "Cube") — no albedo, not a prop.
+    if (/^cube(\.\d+)?$/i.test(name) && !meshHasAlbedoMap(obj)) {
+      obj.visible = false
+      return
+    }
+
+    // cloneEmotePropRoots already dropped the embedded Avatar Armature.
+    // Remaining meshes are emote GLB props (cape, guitar, wings, …) — show them.
+    obj.visible = true
+    cloneEmoteMeshMaterials(obj)
+  })
+}
+
+function meshHasAlbedoMap(mesh: THREE.Mesh): boolean {
+  const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+  return mats.some((mat) => {
+    if (!mat || !('map' in mat)) return false
+    return !!(mat as THREE.MeshStandardMaterial).map
   })
 }
 

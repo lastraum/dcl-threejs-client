@@ -16,9 +16,9 @@ import {
   didSkipCooperativeReactEcsThisTick,
   enterCooperativeSchedulerTick,
   getLastPlannedUiDirtyEntities,
-  holdCooperativeReactEcs,
   leaveCooperativeSchedulerTick,
   releaseCooperativeReactEcsHold,
+  armCooperativeReactEcsPaintFollowup,
   notePlayModePointerUiEgress,
   planSceneUiCrdtEmit,
   resetPlayModePointerUiEgress,
@@ -986,7 +986,8 @@ async function runPointerNonUiPhase(eng: IEngine): Promise<void> {
  * 2. PET_UP (PlayerEntity + click leaf) with react-ecs **OFF** — clear isPressed
  *    without multi-pass fingerprint flush (that re-ran eng.update and toggled closed)
  * 3. phase-4 snapshot of the OPEN mount immediately
- * 4. hold cooperative react-ecs so residual ticks cannot collapse the panel
+ * 4. arm react-ecs followup so Layer showFrom/hideTo position tweens swipe
+ *    (do not hold reconcile — that parks the first off-canvas pose)
  * 5. non-ui phase
  *
  * Browser may still send phase=up later — that is a no-op for sceneUi (already cleared).
@@ -1021,11 +1022,13 @@ async function runSceneUiPointerDownBatch(
   const mountGrew = mountAfter > mountBefore
   // Full rows only when a panel opened. Fade / same-size = dirty Color4.a.
   runPointerUiPhase4Egress(eng, { fullMount: mountGrew })
-  if (mountGrew) {
-    holdCooperativeReactEcs(12)
-  } else {
-    releaseCooperativeReactEcsHold()
-  }
+  // Last-slice / react-ecs Layer.toggle() starts an engine.addSystem tween of
+  // UiTransform.position (showFrom:"top" etc., typically 200–350ms). A 12-tick
+  // react-ecs hold freezes the first off-canvas snapshot, so the panel never
+  // swipes — it snaps or stays hidden. Keep reconcile live for the swipe window.
+  // DOWN+UP in this same batch already prevents Neurolink double-toggle collapse.
+  releaseCooperativeReactEcsHold()
+  armCooperativeReactEcsPaintFollowup(450)
   cfg.log(
     `[sceneWorker] pointer sceneUi phase4 — mount=${mountAfter} grew=${mountGrew ? 1 : 0}`
   )

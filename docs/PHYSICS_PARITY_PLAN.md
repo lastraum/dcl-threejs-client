@@ -1,8 +1,8 @@
 # Physics parity plan — Unity Explorer vs ThreejsClient
 
-**Status:** **PE P0+P1+P2 ✅** · **scene collider PART/ROOT ✅ (v1.5.0)** · **MeshCollider platform riding + CCT ground law ✅ (2026-08-09, `dev-latest`, no release)** · PE P3 pad/wind manual QA still open · multi-shape GLTF `40M+` ride follow-up  
+**Status:** **PE P0+P1+P2 ✅** · **scene collider PART/ROOT ✅ (v1.5.0)** · **MeshCollider platform riding + CCT ground law ✅ (2026-08-09, `dev-latest`, no release)** · **PE P3 pad/wind checklist ready, QA still open** (no Explorer delta in-tree — do not retune `EXTERNAL_SCENE_SCALE`) · multi-shape GLTF `40M+` ride follow-up  
 **Branch context:** `dev-latest`  
-**Last updated:** 2026-08-09  
+**Last updated:** 2026-08-18  
 
 Related code:
 
@@ -176,17 +176,43 @@ Options:
 10. ✅ Multi-scene PE: N/A for single-worker client — only current PE; noted in code.  
 11. ✅ Order: gravity → impulse (fall cancel) → force XZ → jump → damp external → move.
 
-### P3 — Verify (manual)
+### P3 — Verify (manual QA vs Explorer)
 
-12. Manual checklist vs Explorer (smoke when ready):  
-    - [ ] Launch pad impulse `(0, 50, 0)`  
-    - [ ] Wind tunnel continuous force X  
-    - [ ] Glide + wind → 1.5×  
-    - [ ] Updraft while gliding lifts  
-    - [ ] Grounded continuous up force lifts off  
-    - [ ] Knockback / repulsion (scene helpers; PE sum already)  
-    - [ ] Leave scene / re-enter pad — impulse still fires (stale latch)  
-    - [ ] Teleport / drown respawn — no stuck external velocity
+**Optional after-clock QA.** Does **not** gate SceneLoop 🟢 or tag 2.2. Do not flip those rows from this PR. Do not retune `EXTERNAL_SCENE_SCALE` / `IMPULSE_CLIENT_SCALE` without a measured Explorer delta pasted below.
+
+**Law:** same official `bin/scene.js` in Explorer and this client. Compare PE feel, not scene names. Named places (plaza bounce parasols, SpaceRunner pads, any wind tunnel) are **guides** — bundles that happen to write `PhysicsCombinedImpulse` / `PhysicsCombinedForce`. No `if Genesis Plaza`, no per-scene scale, no invented `getClick` / y=0 PE hits.
+
+**How:** same bundle, same stand pose, same authored vector. Record Explorer first, then this client. Pass = same family of motion (apex, drift, latch), not pixel identity. Fail = miss large enough to justify one **global** factor change.
+
+12. Manual checklist vs Explorer:
+
+    | Check | Scene API / PE | Pass | Guide (not law) |
+    | --- | --- | --- | --- |
+    | [ ] Launch pad impulse `(0, 50, 0)` | `Physics.applyImpulseToPlayer` → `PhysicsCombinedImpulse` | Apex / hang / land ≈ Explorer. Unground + fall cancel. **No** glide ×1.5 on impulse | Any authored pad with that vector (plaza bounce is one) |
+    | [ ] Wind tunnel continuous force X | `Physics.applyForceToPlayer` → `PhysicsCombinedForce` | XZ accel while inside; stops when the scene removes the force | Any continuous-force volume |
+    | [ ] Glide + wind → 1.5× | force only × `GlideWindResponse` | Gliding is visibly stronger than walk in the same wind; impulse still unscaled | Any glider + force volume |
+    | [ ] Updraft while gliding lifts | force Y → effective-g | Continuous up force lifts a gliding avatar | Any updraft + glide |
+    | [ ] Grounded continuous up force lifts off | `g' = \|g\| - a_y ≤ 0` ungrounds | Standing in up-force leaves the floor (no Y-strip) | Any grounded lift volume |
+    | [ ] Knockback / repulsion | scene helpers; PE sum already | Horizontal shove matches Explorer family; no second hit from latch | Any knockback / repulsion helper |
+    | [ ] Leave scene / re-enter pad (stale latch) | P2: re-arm on missing component or `eventId === 0` | Pad fires again on re-enter. No burst of a stale impulse | Any pad scene you can walk out of and back into |
+    | [ ] Teleport / drown respawn | `resetExternalPhysicsState` | No leftover `_externalVelocity` after teleport / drown | Any `movePlayerTo` / drown respawn |
+
+**Retune gate (closed until a delta is pasted):** no Explorer capture is in-tree as of 2026-08-18. `EXTERNAL_SCENE_SCALE = 20/9.8` and `IMPULSE_CLIENT_SCALE = 9.8/20` stay. If a walk records a systematic miss (e.g. this client apex is N× Explorer on the same `(0, 50, 0)` pad), change **one** global constant in [`externalPhysics.ts`](../src/player/externalPhysics.ts) — never a scene-name fork.
+
+**Walk-log (paste when run — still empty):**
+
+```text
+date:
+bundle (catalyst pointer or world, not a nickname):
+Explorer build:
+this client tip:
+pad (0,50,0) Explorer apex / this client apex:
+wind X Explorer feel / this client feel:
+glide ×1.5 confirmed (force only):
+leave/re-enter pad fires again:
+teleport/drown residual ext vel:
+scale change? no | yes — measured ratio:
+```
 
 ### Likely files
 
@@ -245,7 +271,7 @@ Explorer-parity **implementation gap close** on `dev-latest` — **not a release
 - **Impulse:** raw scene J (Explorer)  
 - jump height still `sqrt(2 * 20 * h)`  
 
-Next (PE only): **P3** pad/wind scene smoke vs Explorer (plaza bounce height QA), then tweak force scale only if needed.  
+Next (PE only): run the **P3** checklist vs Explorer (pad `(0, 50, 0)`, wind, glide ×1.5, leave/re-enter latch). Tweak force/impulse scale only if a measured Explorer delta is pasted above. Not required to tag 2.2 / SceneLoop 🟢.  
 Scene solids PART/ROOT: **done for v1.5.0 RC** — expand only if new scene classes fail QA.
 
 ---

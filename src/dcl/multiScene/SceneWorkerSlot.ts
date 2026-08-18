@@ -536,7 +536,7 @@ export class SceneWorkerSlot {
       return this.takeDirtyCollidersOnly()
     }
 
-    // Secondary scripts run on tickSync every frame; full renderer/bridges can stagger.
+    // Secondary scripts run on SceneLoop.send; full renderer/bridges can stagger.
     // When not selected this frame, still push dirty colliders (boot/demote/structure).
     if (options?.fullWork === false) {
       return this.takeDirtyCollidersOnly()

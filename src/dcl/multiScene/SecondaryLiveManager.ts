@@ -1041,7 +1041,7 @@ export class SecondaryLiveManager {
 
   /**
    * Async projection + bridges for live secondaries.
-   * Scripts still run every sync frame (tickSync); full renderer/bridges are staggered
+   * Scripts run on SceneLoop.send; full renderer/bridges are staggered
    * so N neighbors cannot each pay plaza-scale attach/animator cost on the same rAF.
    *
    * COD F1 — when `applyBudgetMs` is exhausted (PE already spent remainder), all

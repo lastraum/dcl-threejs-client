@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { renderQuality } from '../rendering/RenderQualitySettings'
+import { ownInstanceMaterials } from '../rendering/sharedAsset'
 import { EMISSIVE_FACTOR_BOOST, EMISSIVE_INTENSITY } from './constants'
 
 const EMISSIVE_NAME = /^em\.|emissive|glow|neon|em_/
@@ -40,6 +41,7 @@ export function isAvatarToonEnabled(): boolean {
 /** Match the official matte/toon avatar look — banded color, no specular response. */
 export function applyAvatarToonShading(root: THREE.Object3D): void {
   if (!isAvatarToonEnabled()) return
+  ownInstanceMaterials(root)
   root.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return
     const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
@@ -129,6 +131,7 @@ function boostEmissiveColor(mat: THREE.MeshStandardMaterial, isEmNamed: boolean)
 }
 
 export function prepareAvatarMaterials(root: THREE.Object3D): void {
+  ownInstanceMaterials(root)
   root.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return
     const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
@@ -224,14 +227,9 @@ export function applyWearableEmissives(root: THREE.Object3D): void {
 
 export function tintWearableMaterials(root: THREE.Object3D, skin?: string, hair?: string): void {
   if (!skin && !hair) return
+  ownInstanceMaterials(root)
   root.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return
-    // SkeletonUtils / AssetCache share materials — clone before skin/hair tint.
-    if (Array.isArray(obj.material)) {
-      obj.material = obj.material.map((m) => m.clone())
-    } else {
-      obj.material = obj.material.clone()
-    }
     const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
     for (const mat of materials) {
       if (!isStandardMaterial(mat)) continue

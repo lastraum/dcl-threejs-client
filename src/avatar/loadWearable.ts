@@ -4,7 +4,7 @@ import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
 import type { AssetCache } from '../rendering/AssetCache'
 import { resolveDclAssetUrl, wearableMappingKeyVariants } from '../rendering/DclTextureResolver'
 import { repairSkinnedMesh } from '../rendering/skinnedMeshInstance'
-import { disposeOwnedObject3D } from '../rendering/sharedAsset'
+import { disposeOwnedObject3D, ownInstanceMaterials } from '../rendering/sharedAsset'
 import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
 
 import { contentMappings, getMainFileUrl } from './peerApi'
@@ -101,6 +101,8 @@ export async function loadWearableSceneCached(
   const hash = wearableGlbCacheKey(url)
   const root = await cache.loadWearableClone(url, mappings, hash)
   root.name = `wearable:${wearable.data.category}`
+  // Instance-own materials before tint/prepare — shared cache mats must stay untouched.
+  ownInstanceMaterials(root)
   // Cached roots may still carry visible=false from older prune rules — compose prep resets again.
   root.traverse((obj) => {
     if (obj instanceof THREE.Mesh) obj.visible = true

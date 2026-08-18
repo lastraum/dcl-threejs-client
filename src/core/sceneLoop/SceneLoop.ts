@@ -111,6 +111,14 @@ export class SceneLoop {
     let sent = 0
     let inFlight = 0
     let secondarySent = 0
+    const currentId = this.currentGuestId
+    const currentSecondary = currentId ? this.guests.get(currentId) : undefined
+    const currentSecondaryDue = !!(
+      currentSecondary &&
+      currentSecondary.kind === 'secondary' &&
+      !currentSecondary.inFlight() &&
+      currentSecondary.isDue(input.now)
+    )
     for (const guest of ordered) {
       if (guest.inFlight()) {
         inFlight++
@@ -119,8 +127,10 @@ export class SceneLoop {
       if (!guest.isDue(input.now)) continue
       due++
       // At most one secondary guest tick per SceneLoop send (primary + PE stay due).
+      // FocusOwner under feet wins the slot over a due mute neighbor.
       if (guest.kind === 'secondary') {
         if (secondarySent >= 1) continue
+        if (currentSecondaryDue && guest.id !== currentId) continue
         secondarySent++
       }
       guest.sendTick(input.player, input.camera, input.frame)

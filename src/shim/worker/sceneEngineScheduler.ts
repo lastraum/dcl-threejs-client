@@ -718,6 +718,8 @@ export function forceRecoverStuckSceneEngineTick(reason: string): void {
 }
 
 export function preemptSceneEngineTick(): void {
+  // Bevy: never abort a live engine.update — skip-if-in-flight after SceneLoop owns dt.
+  if (sceneLoopOwnsPositiveDt || engineUpdateInFlight) return
   if (!tickInFlight) return
   tickEpoch++
   tickInFlight = false
@@ -769,16 +771,16 @@ export function queueSceneEngineTick(): void {
   tickQueued = true
 }
 
-function sceneLoopAllowsStart(source: SceneEngineTickSource | undefined): boolean {
+function sceneLoopAllowsStart(source: SceneEngineTickSource): boolean {
   if (!sceneLoopOwnsPositiveDt) return true
   return source === 'play-frame' || source === 'pointer-edge'
 }
 
 export function requestSceneEngineTick(
-  opts?: { source?: SceneEngineTickSource }
+  opts: { source: SceneEngineTickSource }
 ): SceneEngineTickRequest {
   if (!engine || !bootSealed || !config) return 'idle'
-  if (!sceneLoopAllowsStart(opts?.source)) {
+  if (!sceneLoopAllowsStart(opts.source)) {
     tickQueued = true
     return 'deferred'
   }

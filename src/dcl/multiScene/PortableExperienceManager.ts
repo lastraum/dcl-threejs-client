@@ -509,9 +509,9 @@ export class PortableExperienceManager {
   tickSync(player: EntityPose, camera: EntityPose, frame = 0): void {
     const interval = peTickIntervalMs(this.tier)
     for (const worker of this.workers.values()) {
-      // SceneLoop.send owns play-frame when wired; otherwise keep the old combined tick.
+      // SceneLoop.send owns play-frame. Fallback is pose rebase only — never tickPlayFrame.
       if (!this.playFrameOwnedExternally) {
-        worker.tickSync(player, camera, interval)
+        worker.tickSync(player, camera, interval, true)
       }
       // PE hover at 80 ms / edges — not every async frame.
       if (worker.system.needsPointerHoverPrepare(frame)) {

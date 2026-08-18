@@ -182,6 +182,7 @@ import {
   getSceneEngineTickStartedAt,
   initSceneEngineScheduler,
   isSceneEngineTickInFlight,
+  isEngineUpdateInFlight,
   preemptSceneEngineTick,
   requestSceneEngineTick,
   queueSceneEngineTick,
@@ -697,6 +698,15 @@ function drainQueuedPointerDeliver(): void {
   executePointerDelivery(chunks)
 }
 
+/** Bevy: never abort a live engine.update for pointer (skip-if-in-flight). */
+function canPreemptSceneEngineTick(): boolean {
+  return (
+    !isSceneLoopOwnsPositiveDt() &&
+    !isEngineUpdateInFlight() &&
+    !isSceneEngineTickInFlight()
+  )
+}
+
 function preemptForPointerDelivery(): void {
   if (!isPointerInputSessionActive()) enterPointerInputSession()
   // Prior batch may be stuck in flushPointerDeferredOutboundsAsync awaiting main acks — unblock so
@@ -704,7 +714,7 @@ function preemptForPointerDelivery(): void {
   interruptPendingOutboundAcks()
   const hadSceneUpdate = sceneUpdateInFlight
   sceneUpdateInFlight = false
-  preemptSceneEngineTick()
+  if (canPreemptSceneEngineTick()) preemptSceneEngineTick()
   forceReleaseEngineUpdateMutex('pointer-deliver-preempt')
   clearSceneUpdateAbortTimer()
   // Never abort an in-flight pointer engine tick CRDT flush (post-onUpdate Tween sync depends on it).
@@ -953,7 +963,7 @@ function schedulePointerDeliverWork(label: string): void {
       workerLog('log', `[sceneWorker] pointer deliver — ${label}`)
       interruptPendingCrdtRoundTrips()
       interruptPendingOutboundAcks()
-      preemptSceneEngineTick()
+      if (canPreemptSceneEngineTick()) preemptSceneEngineTick()
       forceReleaseEngineUpdateMutex('pointer-deliver')
       await awaitEngineUpdateIdle(800)
       await runPointerEngineTickSync(label, { holdSceneTicksUntilBatchDrain: true })
@@ -2909,7 +2919,7 @@ function executePointerDelivery(chunks: Uint8Array[]): void {
               gltfLoadingStateTerminalPuts
             )
           }
-          requestSceneEngineTick()
+          queueSceneEngineTick()
           return
         }
         // Tween + host LWW: inject + systems without pause. Real dt when LoadingState lands

@@ -358,6 +358,8 @@ export class SceneScriptSystem {
   /** SceneLoop: a play-frame-tick is outstanding until play-frame-done. */
   private playFrameInFlight = false
   private playFrameInFlightAt = 0
+  /** SceneLoop.send should start the next play-frame (movePlayerTo / PE movePlayer). */
+  private immediateGuestTickRequested = false
   /** When true, gameplay crdt-outbound waits for SceneLoop.receive. */
   private sceneLoopReceiveArmed = false
   private lastSentPlayerPos = { x: Number.NaN, y: Number.NaN, z: Number.NaN }
@@ -1748,8 +1750,8 @@ export class SceneScriptSystem {
     this.pendingUiEntities = undefined
     this.clearProjectionUiLag()
     this.forceResumeWorkerSceneTicks('move-player-to')
-    // Next SceneLoop send (or this one if idle) — do not stack a second play-frame.
-    if (!this.isPlayFrameInFlight()) this.tickPlayFrame()
+    // SceneLoop.send starts the next play-frame — do not stack one here.
+    this.immediateGuestTickRequested = true
   }
 
   /** Clear stuck sit/stool mode-freeze on the worker (WASD escape). */
@@ -5618,10 +5620,12 @@ export class SceneScriptSystem {
     if (!armed && this.crdtOutboundPending.length) this.flushCrdtOutboundPendingSynchronously()
   }
 
-  /** Guest must tick now (pointer edge). Otherwise SceneLoop may stay at 20 Hz. */
+  /** Guest must tick now (pointer edge or movePlayerTo nudge). Otherwise SceneLoop may stay at 20 Hz. */
   needsImmediateGuestTick(): boolean {
     return !!(
-      this.pointerEvents?.hasPendingInput() || this.pointerEvents?.hasPendingInjectPayload()
+      this.immediateGuestTickRequested ||
+      this.pointerEvents?.hasPendingInput() ||
+      this.pointerEvents?.hasPendingInjectPayload()
     )
   }
 
@@ -5678,6 +5682,7 @@ export class SceneScriptSystem {
     if (!this.running || !this.worker) return
     // Never stack a play-frame while poll/egress is live (second engine.update).
     if (this.isPlayFrameInFlight()) return
+    this.immediateGuestTickRequested = false
     if (this.reservedPoseStreaming) this.refreshClientPosesFromProvider()
     this.refreshRealmInfoFromProvider()
     const player = this.reservedPoseStreaming ? this.clientPlayerPose : null

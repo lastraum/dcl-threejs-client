@@ -12,8 +12,8 @@ export class SceneScriptGuest implements SceneGuest {
     readonly kind: GuestKind,
     private readonly getSystem: () => SceneScriptSystem,
     readonly priority = kind !== 'secondary',
-    /** Under-feet current scene — leftover apply, same 20 Hz clock as other live guests. */
-    _isCurrent: () => boolean = () => false
+    /** Under-feet current / FocusOwner — leftover apply + immediate pointer wakeup. */
+    private readonly isCurrent: () => boolean = () => false
   ) {}
 
   inFlight(): boolean {
@@ -25,9 +25,11 @@ export class SceneScriptGuest implements SceneGuest {
   }
 
   isDue(now: number): boolean {
-    // All guests 20 Hz. Pointer inject may request this turn. Display rAF is the presenter.
+    const cadenceDue = this.sentAt <= 0 || now - this.sentAt >= 50
+    // Mute non-focus secondaries at 50 ms. Immediate is primary or FocusOwner under feet.
+    if (this.kind === 'secondary' && !this.isCurrent()) return cadenceDue
     if (this.getSystem().needsImmediateGuestTick()) return true
-    return this.sentAt <= 0 || now - this.sentAt >= 50
+    return cadenceDue
   }
 
   sendTick(_player: EntityPose, _camera: EntityPose, _frame: number): void {

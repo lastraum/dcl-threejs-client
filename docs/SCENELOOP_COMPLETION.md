@@ -79,6 +79,14 @@ The old “still not the law” table described the **pre-P0** tree (Raycast eve
 
 Also unproven until a pasted walk-log (PR-3): pointer PET_UP on an authored hit, Tween duration ≈ wall, scene timers on real guest `dt`, no `dt=0.000` after the first `source=play-frame` line.
 
+### PR-3 observability (instrumentation in — walk-log open)
+
+- [x] `?sceneloop=1` (or existing worker verbose flag) play-frame line: `source` `dt` `inFlight` (`guests`/`sent` suffix)
+- [x] Fail window is readable: `source` is logged; hydrate ticks before the first `source=play-frame` are not a fail; `dt=0.000` after that line is a fail
+- [x] Transport `dt === 0` does not stamp wall clock (`wrapEngineUpdateWithWallClock`)
+- [x] MainFrameHud SceneLoop line: last guest `dt` + `src=` next to `g=/due=/sent=/inflight=`
+- [ ] Pasted walk-log of pointer + Tween + scene timers on an official bundle — **SceneLoop stays 🟡**
+
 ---
 
 ## Target shape (full invert clock)
@@ -265,6 +273,7 @@ Do not treat the phases as a re-implement plan. Verdicts are against this tree.
 - [ ] Continuous ray recast ≤ once per guest tick
 - [ ] Pointer DOWN/UP both land on the authored entity before ack
 - [ ] Walk-log of pointer + Tween + scene timers pasted before SceneLoop 🟢 (*guide:* Genesis Plaza fishing — any official bundle that covers the same APIs is valid)
-- [ ] Dual-clock landmine sealed (`tickSync` never `tickPlayFrame`; `peTickIntervalMs === 50`) before SceneLoop 🟢
+- [x] Dual-clock landmine sealed (`tickSync` never `tickPlayFrame`; `peTickIntervalMs === 50`) before SceneLoop 🟢
+- [x] Play-frame `source`/`dt`/`inFlight` log + HUD last guest dt (instrumentation only — not a green)
 - [ ] No scene-name branch
 - [ ] Present rAF does not wait on the guest

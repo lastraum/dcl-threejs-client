@@ -455,6 +455,11 @@ let mainImClearSyncUntilMs = 0
 const SCENE_UI_OUTBOUND_LOG_LIMIT = 12
 let debugTweenDeliver = false
 let debugMessageArrival = false
+/** `?sceneloop=1` or an existing worker verbose flag — play-frame source/dt walk-log. */
+let debugSceneLoop = false
+/** Last host SceneLoop send meters (stale by one send — debug suffix only). */
+let lastLoopGuests = 0
+let lastLoopSent = 0
 /**
  * SDK7 entry-points register `main` as an Infinity-priority system so it runs on the first
  * `engine.update` *after* transport `receiveMessages` applies onStart CRDT (main.crdt Names,
@@ -1650,9 +1655,31 @@ function publishVcPoseLiveEgress(): void {
   publishVcPoseLiveDuringEditFlight()
 }
 
+function emitSceneLoopGuestTick(tick: {
+  source: 'play-frame' | 'pointer-edge' | 'hydrate'
+  dt: number
+  inFlight: number
+}): void {
+  ctx.postMessage({
+    type: 'scene-loop-tick',
+    source: tick.source,
+    dt: tick.dt,
+    inFlight: tick.inFlight
+  } satisfies SceneWorkerOutbound)
+  if (!debugSceneLoop) return
+  // Fail window: after the first source=play-frame line, dt=0.000 is a fail.
+  // Hydrate ticks before that line are not a fail — source makes that unambiguous.
+  workerLog(
+    'warn',
+    `[sceneloop] play-frame source=${tick.source} dt=${tick.dt.toFixed(3)} inFlight=${tick.inFlight}` +
+      ` guests=${lastLoopGuests} sent=${lastLoopSent}`
+  )
+}
+
 initSceneEngineScheduler({
   log: (message) => workerLog('log', message),
   logWarn: (message) => workerLog('warn', message),
+  onGuestTick: emitSceneLoopGuestTick,
   hydrationIntervalMs: HYDRATION_ENGINE_TICK_INTERVAL_MS,
   tickAbortMs: ENGINE_TICK_ABORT_MS,
   isHydration: () => sceneOnUpdatePaused,
@@ -4092,6 +4119,8 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     return
   }
   if (msg.type === 'play-frame-tick') {
+    if (typeof msg.guests === 'number') lastLoopGuests = msg.guests
+    if (typeof msg.sent === 'number') lastLoopSent = msg.sent
     if (!playFrameTickMainDriven) {
       playFrameTickMainDriven = true
       setSceneLoopOwnsPositiveDt(true)
@@ -4345,6 +4374,14 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     debugTweenDeliver = msg.debug?.tweenDeliver === true
     debugMessageArrival = msg.debug?.messageArrival === true
     debugSceneUiLog = msg.debug?.sceneUiLog === true
+    debugSceneLoop =
+      msg.debug?.sceneLoop === true ||
+      debugPointerDeliver ||
+      debugTweenDeliver ||
+      debugSceneUiLog ||
+      debugMessageArrival
+    lastLoopGuests = 0
+    lastLoopSent = 0
     sceneUiOutboundLogCount = 0
     deferredRendererInbound.length = 0
     installSceneWorkerFetchProxy()

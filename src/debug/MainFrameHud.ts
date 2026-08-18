@@ -131,6 +131,8 @@ export class MainFrameHud {
         `apply=${fmt1(snap.sceneLoopApplyMs)} ` +
         `g=${snap.sceneLoopGuests} due=${snap.sceneLoopDue} sent=${snap.sceneLoopSent} ` +
         `inflight=${snap.sceneLoopInFlight}` +
+        ` dt=${snap.sceneLoopLastSource ? snap.sceneLoopLastDt.toFixed(3) : '-'}` +
+        ` src=${snap.sceneLoopLastSource || '-'}` +
         `</div>`,
       section('async~', snap.asyncMs, [
         ['peel', snap.asyncPeelMs],

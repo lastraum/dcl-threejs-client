@@ -91,10 +91,12 @@ import {
   perfNoteApplyMs,
   perfNotePeels,
   perfNotePointerEdge,
+  perfNoteSceneLoopGuestTick,
   perfNoteUiMountPost,
   perfNoteUiMountReseedSkip,
   perfNoteVcHydrate,
   perfNoteVcPoseLive,
+  perfSceneLoopGuestCounts,
   perfSetPendingDiff
 } from '../../util/perfCounters'
 import { skipSceneAnimators, skipTheatreSceneScript } from '../../client/devFlags'
@@ -158,6 +160,15 @@ const POINTER_VERBOSE = ((): boolean => {
 const SCENE_UI_LOG = ((): boolean => {
   try {
     return typeof location !== 'undefined' && new URLSearchParams(location.search).has('sceneuilog')
+  } catch {
+    return false
+  }
+})()
+
+/** Play-frame `source`/`dt` walk-log (`?sceneloop`). */
+const SCENELOOP_LOG = ((): boolean => {
+  try {
+    return typeof location !== 'undefined' && new URLSearchParams(location.search).has('sceneloop')
   } catch {
     return false
   }
@@ -2283,7 +2294,8 @@ export class SceneScriptSystem {
         pointerDeliver: POINTER_VERBOSE,
         tweenDeliver: isTweenVerbose(),
         skipTheatre: skipTheatreSceneScript(),
-        sceneUiLog: SCENE_UI_LOG
+        sceneUiLog: SCENE_UI_LOG,
+        sceneLoop: SCENELOOP_LOG
       },
       scene: {
         title: scene.title,
@@ -2545,7 +2557,7 @@ export class SceneScriptSystem {
       // Pointer / ground-ray diagnostics must not share the global 100ms scene-worker-log key
       // (was swallowing level-state isPressed-path lines during click bursts).
       const pointerDiag =
-        /level-state edge done|no-target|inject RECEIVED|noTarget=|isPressed-path|isPressed-arm|sticky-clear|pointer-edge-|levelState=|edge-VFX peel|pointer ui egress|planeY0|VFXEDGE/i.test(
+        /\[sceneloop\]|level-state edge done|no-target|inject RECEIVED|noTarget=|isPressed-path|isPressed-arm|sticky-clear|pointer-edge-|levelState=|edge-VFX peel|pointer ui egress|planeY0|VFXEDGE/i.test(
           cleaned
         )
       const joinPaint =
@@ -2815,6 +2827,10 @@ export class SceneScriptSystem {
     if (msg.type === 'play-frame-done') {
       this.playFrameInFlight = false
       this.playFrameInFlightAt = 0
+      return
+    }
+    if (msg.type === 'scene-loop-tick') {
+      perfNoteSceneLoopGuestTick({ dt: msg.dt, source: msg.source })
       return
     }
     if (msg.type === 'crdt-outbound') {
@@ -5700,8 +5716,11 @@ export class SceneScriptSystem {
     if (poseMoved) this.rememberPlayFramePose(player, camera, primaryPointer)
     this.playFrameInFlight = true
     this.playFrameInFlightAt = performance.now()
+    const loopCounts = perfSceneLoopGuestCounts()
     this.worker.postMessage({
       type: 'play-frame-tick',
+      guests: loopCounts.guests,
+      sent: loopCounts.sent,
       ...(poseMoved && player
         ? {
             player: {

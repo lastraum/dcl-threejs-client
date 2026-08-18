@@ -41,7 +41,7 @@ Create in the tab. Same host world as 2.0. New: stay-in-play reload, preview roo
 | **Local preview / reload** | 🟢 | Stay in play · current-parcel recycle |
 | **Tags shaders** | 🟢 this client | Load + spawn Tags; `tjs.sync` opt-in |
 | **Preview comms** | 🟢 | RFC-5 when advertised; prod stays LiveKit |
-| **SceneLoop invert clock** | 🟡 | Target shape in-tree with leftovers — [V2.2_BEVY_PARITY.md](./V2.2_BEVY_PARITY.md) · [SCENELOOP_COMPLETION.md](./SCENELOOP_COMPLETION.md). Do not flip 🟢 without walk-log + dual-clock seal |
+| **SceneLoop invert clock** | 🟡 | Dual-clock landmine sealed (PR-2). Play-frame `source`/`dt` log + HUD last guest dt in (PR-3). Walk-log **not pasted** — do not flip 🟢. [V2.2_BEVY_PARITY.md](./V2.2_BEVY_PARITY.md) · [SCENELOOP_COMPLETION.md](./SCENELOOP_COMPLETION.md) |
 | **Host world (2.0)** | 🟢 | Unchanged |
 
 **QA:** `/localpreview` two tabs · ice/cinder/hailwraith after hot reload · Genesis walk · plaza clicks · published-world `/reload`.

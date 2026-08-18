@@ -94,6 +94,15 @@ function flushPendingWorldMeshPet(eng: IEngine): void {
  * Inject path skips exports.onUpdate. Skipped onUpdate is not replayed in the deliver chain.
  */
 
+/** Named starters. After first play-frame only `play-frame` | `pointer-edge` may start dt>0. */
+export type SceneEngineTickSource = 'play-frame' | 'pointer-edge' | 'hydrate'
+
+export type SceneEngineGuestTick = {
+  source: SceneEngineTickSource
+  dt: number
+  inFlight: number
+}
+
 export type SceneEngineSchedulerConfig = {
   log: (message: string) => void
   /**
@@ -101,6 +110,8 @@ export type SceneEngineSchedulerConfig = {
    * Prefer workerLog('warn') so main pointerDiag + DevTools always show the line.
    */
   logWarn?: (message: string) => void
+  /** Applied guest tick — HUD last dt/source + `?sceneloop=1` play-frame line. */
+  onGuestTick?: (tick: SceneEngineGuestTick) => void
   hydrationIntervalMs: number
   tickAbortMs: number
   isHydration: () => boolean
@@ -180,6 +191,10 @@ let tickEpoch = 0
  * start engine.update(dt>0). Inbound LWW / cooperative interval only queue.
  */
 let sceneLoopOwnsPositiveDt = false
+/** Source of the in-flight cooperative start — applied dt is logged after clamp. */
+let pendingGuestTickSource: SceneEngineTickSource | null = null
+let pendingGuestTickInFlight = 0
+let lastGuestTick: SceneEngineGuestTick | null = null
 /** Serialize engine.update — cooperative ticks must not interleave with pointer interactive ticks. */
 let engineUpdateMutex: Promise<void> = Promise.resolve()
 let engineUpdateRelease: (() => void) | null = null
@@ -225,6 +240,7 @@ function wrapEngineUpdateWithWallClock(eng: IEngine): void {
     config?.onBeforeEngineUpdate?.()
     // Store write before systems — same as Bevy reserved writers on the play-frame.
     flushPendingWorldMeshPet(eng)
+    // Transport-only: do not stamp lastExecutedAt / sceneTime (NeonScreen pauseDuration).
     if (!(dt > 0)) {
       beginEngUpdatePhase(0)
       try {
@@ -277,6 +293,9 @@ export function resetSceneEngineScheduler(): void {
   diagCount = 0
   tickEpoch = 0
   sceneLoopOwnsPositiveDt = false
+  pendingGuestTickSource = null
+  pendingGuestTickInFlight = 0
+  lastGuestTick = null
   pendingWorldMeshPet.length = 0
   resetPlayModePointerUiEgress()
   resetEngUpdatePhases()
@@ -622,6 +641,7 @@ async function runCooperativeEngineTickPhases(engineDt: number): Promise<void> {
     // setTimeout(500) cannot stall forever under thrash (Explorer keeps advancing).
     dt = Math.min(1 / 120, MAX_ENGINE_DT_SEC)
   }
+  emitGuestTickIfNamed(dt)
   const epoch = tickEpoch
   if (diagCount < 8) {
     diagCount++
@@ -755,7 +775,17 @@ export async function runSceneEngineUpdateNow(engineDt?: number): Promise<void> 
 /** started = wait for play-frame-done; deferred = in-flight/queued (do not done); idle = no tick. */
 export type SceneEngineTickRequest = 'started' | 'deferred' | 'idle'
 
-export type SceneEngineTickSource = 'play-frame' | 'pointer-edge' | 'hydrate'
+function emitGuestTickIfNamed(dt: number): void {
+  const source = pendingGuestTickSource
+  pendingGuestTickSource = null
+  if (!source) return
+  lastGuestTick = { source, dt, inFlight: pendingGuestTickInFlight }
+  config?.onGuestTick?.(lastGuestTick)
+}
+
+export function getLastSceneEngineGuestTick(): SceneEngineGuestTick | null {
+  return lastGuestTick
+}
 
 export function setSceneLoopOwnsPositiveDt(on: boolean): void {
   sceneLoopOwnsPositiveDt = on
@@ -800,6 +830,8 @@ export function requestSceneEngineTick(
     return 'deferred'
   }
   if (dt <= 0) dt = Math.min(1 / 60, MAX_ENGINE_DT_SEC)
+  pendingGuestTickSource = opts.source
+  pendingGuestTickInFlight = 0
   const epoch = tickEpoch
   // This start satisfies any inbound queue (store already updated).
   tickQueued = false

@@ -295,11 +295,23 @@ From Genesis Plaza `bin/index.js` (catalyst), **do not re-encode as client speci
 
 ## 10. Current open gaps (do not invent past these)
 
-1. **Plane UV vs Unity Explorer golden** — default south V flipped for Three lookAt (−Z). Convention until an Explorer capture.  
-2. **Reveal VirtualCamera** lookAt chain pixel parity (Tween parents must be on the worker store — see Tween law).  
-3. **AvatarAttach quaternion** vs Explorer bone sample — play-frame inject closed the timing hole; quat golden still open.
+These three stay **Open** until **one** Explorer capture or **one** unityrenderer commit exists. Measure-only until then. They are **not** required to tag 2.2 (SceneLoop 🟢 does not wait on these goldens).
 
-Closing any gap = one Explorer measurement or one unityrenderer commit, then one client law change.
+Named scenes (Genesis Plaza, Genesis CBD, SpaceRunner, Flagtag, NeonScreen, CREATOR Hub) are **guides / repros**, not law. A capture may use any official scene bundle that exercises the API. No scene-name forks.
+
+| # | Gap | Status | What would close it | Forbidden until then |
+|---|-----|--------|---------------------|----------------------|
+| 1 | **Plane UV vs Unity Explorer golden** — default south V flipped for Three lookAt (−Z). Client convention only. | **Open** | One Explorer capture, or one unityrenderer UV-packing commit, of a dual-face plane + texture | Invented north-V invert, extra UV rolls, Billboard-only flips |
+| 2 | **VirtualCamera lookAt** — reveal / multi-hop chain pixel parity (Tween parents must be on the worker store — see Tween law) | **Open** | One Explorer capture of a bound VirtualCamera lookAt / transition | Invented lookAt offsets, iso lifts, scene-named camera forks |
+| 3 | **AvatarAttach quaternion** vs Explorer bone sample — play-frame inject closed the timing hole; quat golden still open | **Open** | One Explorer capture, or one unityrenderer bone-sample commit, of attach-local quat | Invented relative-pos hacks, scene-local attach math |
+
+**Closing a gap = one measurement, then one client law change.**
+
+1. Capture Explorer (or cite a unityrenderer commit) for that one API.
+2. Promote the row to **Verified** with the measurement cited.
+3. Change the client law **once**, universally — any official `bin/scene.js` that uses the API.
+
+Do not close a gap from a named-scene screenshot alone, a “looks better” flip, or a fishing-session trial rotation. Do not change bridge code for these three until the measurement exists.
 
 ---
 

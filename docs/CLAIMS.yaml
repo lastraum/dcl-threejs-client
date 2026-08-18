@@ -10,6 +10,13 @@ source: github
 base_branch: dev-latest
 workflow:
   - stage: pending_review
+    integration_ref: pr:70
+    title: Snow Drift UI borders, sky wash, name tags, avatar materials
+    owner: lastraum
+    pr: 70
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/70
+    updated: 2026-08-18
+  - stage: pending_review
     integration_ref: pr:62
     title: deploy confirmation on Barn cards + update-available refresh for library
       pets

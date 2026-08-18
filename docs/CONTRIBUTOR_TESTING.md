@@ -60,6 +60,8 @@ https://your-host.example/yourname.dcl.eth
 
 Guest dev login (no wallet): append `?guest` or `?skipLogin`.
 
+To test **without** deploying: start Explorer Play (Bevy), then swap the host to this client — **[README → Local preview](../README.md#local-preview)**.
+
 ---
 
 ## Parcel deploys (Genesis grid)

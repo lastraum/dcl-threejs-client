@@ -25,6 +25,13 @@ workflow:
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/56
     updated: 2026-07-29
   - stage: merged
+    integration_ref: pr:64
+    title: SceneLoop invert is in-tree with leftovers; 2.2 proves it
+    owner: lastraum
+    pr: 64
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/64
+    updated: 2026-08-18
+  - stage: merged
     integration_ref: pr:63
     title: host clock for primary and PE play-frames
     owner: lastraum
@@ -150,13 +157,6 @@ workflow:
     owner: lastraum
     pr: 40
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/40
-    updated: 2026-07-21
-  - stage: merged
-    integration_ref: pr:41
-    title: Genesis multi-scene AOI, Explorer roads, empty land
-    owner: lastraum
-    pr: 41
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/41
     updated: 2026-07-21
   - stage: merged
     integration_ref: ecs:TriggerArea

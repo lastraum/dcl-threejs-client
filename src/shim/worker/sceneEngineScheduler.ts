@@ -100,7 +100,6 @@ export type SceneEngineTickSource = 'play-frame' | 'pointer-edge' | 'hydrate'
 export type SceneEngineGuestTick = {
   source: SceneEngineTickSource
   dt: number
-  inFlight: number
 }
 
 export type SceneEngineSchedulerConfig = {
@@ -191,10 +190,8 @@ let tickEpoch = 0
  * start engine.update(dt>0). Inbound LWW / cooperative interval only queue.
  */
 let sceneLoopOwnsPositiveDt = false
-/** Source of the in-flight cooperative start — applied dt is logged after clamp. */
+/** Source of the in-flight cooperative start — applied dt is logged from the wrap. */
 let pendingGuestTickSource: SceneEngineTickSource | null = null
-let pendingGuestTickInFlight = 0
-let lastGuestTick: SceneEngineGuestTick | null = null
 /** Serialize engine.update — cooperative ticks must not interleave with pointer interactive ticks. */
 let engineUpdateMutex: Promise<void> = Promise.resolve()
 let engineUpdateRelease: (() => void) | null = null
@@ -241,6 +238,7 @@ function wrapEngineUpdateWithWallClock(eng: IEngine): void {
     // Store write before systems — same as Bevy reserved writers on the play-frame.
     flushPendingWorldMeshPet(eng)
     // Transport-only: do not stamp lastExecutedAt / sceneTime (NeonScreen pauseDuration).
+    // Do not emit here — a pending named start may still be waiting on the mutex.
     if (!(dt > 0)) {
       beginEngUpdatePhase(0)
       try {
@@ -259,6 +257,7 @@ function wrapEngineUpdateWithWallClock(eng: IEngine): void {
     }
     // Wall since last positive tick *start* (or prior stamp).
     const applied = clampDtToWallClock(dt)
+    emitGuestTickIfNamed(applied)
     // Stamp at START so this frame's eng.update work is not "lost" from scene time.
     const now = performance.now()
     if (wallClockOriginMs <= 0) wallClockOriginMs = now
@@ -294,8 +293,6 @@ export function resetSceneEngineScheduler(): void {
   tickEpoch = 0
   sceneLoopOwnsPositiveDt = false
   pendingGuestTickSource = null
-  pendingGuestTickInFlight = 0
-  lastGuestTick = null
   pendingWorldMeshPet.length = 0
   resetPlayModePointerUiEgress()
   resetEngUpdatePhases()
@@ -631,7 +628,10 @@ function runPointerUiPhase4Egress(eng: IEngine, opts?: { fullMount?: boolean }):
 async function runCooperativeEngineTickPhases(engineDt: number): Promise<void> {
   const cfg = config!
   const eng = engine!
-  if (cfg.pointerBlocksTick()) return
+  if (cfg.pointerBlocksTick()) {
+    pendingGuestTickSource = null
+    return
+  }
   // Re-clamp at execution time (async gap since resolveDt). Always run systems when
   // we still have wall elapsed — never drop a positive request to a no-op skip that
   // freezes timers for the whole interval.
@@ -641,7 +641,6 @@ async function runCooperativeEngineTickPhases(engineDt: number): Promise<void> {
     // setTimeout(500) cannot stall forever under thrash (Explorer keeps advancing).
     dt = Math.min(1 / 120, MAX_ENGINE_DT_SEC)
   }
-  emitGuestTickIfNamed(dt)
   const epoch = tickEpoch
   if (diagCount < 8) {
     diagCount++
@@ -698,6 +697,8 @@ async function executeTickWork(engineDt: number): Promise<void> {
     cfg.log(`[sceneWorker] engine tick failed — ${msg}`)
   } finally {
     if (abortTimer) clearTimeout(abortTimer)
+    // Skip/fail without wrap: do not attach a later transport update(0) to this source.
+    pendingGuestTickSource = null
   }
 }
 
@@ -777,14 +778,9 @@ export type SceneEngineTickRequest = 'started' | 'deferred' | 'idle'
 
 function emitGuestTickIfNamed(dt: number): void {
   const source = pendingGuestTickSource
-  pendingGuestTickSource = null
   if (!source) return
-  lastGuestTick = { source, dt, inFlight: pendingGuestTickInFlight }
-  config?.onGuestTick?.(lastGuestTick)
-}
-
-export function getLastSceneEngineGuestTick(): SceneEngineGuestTick | null {
-  return lastGuestTick
+  pendingGuestTickSource = null
+  config?.onGuestTick?.({ source, dt })
 }
 
 export function setSceneLoopOwnsPositiveDt(on: boolean): void {
@@ -831,7 +827,6 @@ export function requestSceneEngineTick(
   }
   if (dt <= 0) dt = Math.min(1 / 60, MAX_ENGINE_DT_SEC)
   pendingGuestTickSource = opts.source
-  pendingGuestTickInFlight = 0
   const epoch = tickEpoch
   // This start satisfies any inbound queue (store already updated).
   tickQueued = false

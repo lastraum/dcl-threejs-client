@@ -488,10 +488,6 @@ export function perfNoteSceneLoopGuestTick(opts: { dt: number; source: string })
   state.sceneLoopLastSource = opts.source
 }
 
-export function perfSceneLoopGuestCounts(): { guests: number; sent: number } {
-  return { guests: state.sceneLoopGuests, sent: state.sceneLoopSent }
-}
-
 /** SceneHost render sub-split (main pass vs name tags + scene/bloom/extract). */
 export function perfNoteRenderSplit(opts: {
   mainMs: number

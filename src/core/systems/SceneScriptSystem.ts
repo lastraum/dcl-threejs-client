@@ -96,7 +96,6 @@ import {
   perfNoteUiMountReseedSkip,
   perfNoteVcHydrate,
   perfNoteVcPoseLive,
-  perfSceneLoopGuestCounts,
   perfSetPendingDiff
 } from '../../util/perfCounters'
 import { skipSceneAnimators, skipTheatreSceneScript } from '../../client/devFlags'
@@ -5716,11 +5715,8 @@ export class SceneScriptSystem {
     if (poseMoved) this.rememberPlayFramePose(player, camera, primaryPointer)
     this.playFrameInFlight = true
     this.playFrameInFlightAt = performance.now()
-    const loopCounts = perfSceneLoopGuestCounts()
     this.worker.postMessage({
       type: 'play-frame-tick',
-      guests: loopCounts.guests,
-      sent: loopCounts.sent,
       ...(poseMoved && player
         ? {
             player: {

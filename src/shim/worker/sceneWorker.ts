@@ -457,9 +457,6 @@ let debugTweenDeliver = false
 let debugMessageArrival = false
 /** `?sceneloop=1` or an existing worker verbose flag — play-frame source/dt walk-log. */
 let debugSceneLoop = false
-/** Last host SceneLoop send meters (stale by one send — debug suffix only). */
-let lastLoopGuests = 0
-let lastLoopSent = 0
 /**
  * SDK7 entry-points register `main` as an Infinity-priority system so it runs on the first
  * `engine.update` *after* transport `receiveMessages` applies onStart CRDT (main.crdt Names,
@@ -1655,24 +1652,29 @@ function publishVcPoseLiveEgress(): void {
   publishVcPoseLiveDuringEditFlight()
 }
 
+function formatSceneLoopDt(dt: number): string {
+  if (!(dt > 0)) return '0.000'
+  const rounded = dt.toFixed(3)
+  // Fail token is dt=0.000 — a legal sub-ms step must not print as that.
+  return rounded === '0.000' ? dt.toFixed(6) : rounded
+}
+
 function emitSceneLoopGuestTick(tick: {
   source: 'play-frame' | 'pointer-edge' | 'hydrate'
   dt: number
-  inFlight: number
 }): void {
   ctx.postMessage({
     type: 'scene-loop-tick',
     source: tick.source,
-    dt: tick.dt,
-    inFlight: tick.inFlight
+    dt: tick.dt
   } satisfies SceneWorkerOutbound)
   if (!debugSceneLoop) return
   // Fail window: after the first source=play-frame line, dt=0.000 is a fail.
   // Hydrate ticks before that line are not a fail — source makes that unambiguous.
+  // inFlight=0: this line is a start (deferred/idle do not emit). Host inflight stays on HUD.
   workerLog(
     'warn',
-    `[sceneloop] play-frame source=${tick.source} dt=${tick.dt.toFixed(3)} inFlight=${tick.inFlight}` +
-      ` guests=${lastLoopGuests} sent=${lastLoopSent}`
+    `[sceneloop] play-frame source=${tick.source} dt=${formatSceneLoopDt(tick.dt)} inFlight=0`
   )
 }
 
@@ -4119,8 +4121,6 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     return
   }
   if (msg.type === 'play-frame-tick') {
-    if (typeof msg.guests === 'number') lastLoopGuests = msg.guests
-    if (typeof msg.sent === 'number') lastLoopSent = msg.sent
     if (!playFrameTickMainDriven) {
       playFrameTickMainDriven = true
       setSceneLoopOwnsPositiveDt(true)
@@ -4380,8 +4380,6 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       debugTweenDeliver ||
       debugSceneUiLog ||
       debugMessageArrival
-    lastLoopGuests = 0
-    lastLoopSent = 0
     sceneUiOutboundLogCount = 0
     deferredRendererInbound.length = 0
     installSceneWorkerFetchProxy()

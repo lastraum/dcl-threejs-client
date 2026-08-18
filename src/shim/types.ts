@@ -334,7 +334,6 @@ export type SceneWorkerOutbound =
       type: 'scene-loop-tick'
       source: 'play-frame' | 'pointer-edge' | 'hydrate'
       dt: number
-      inFlight: number
     }
   | { type: 'ui-virtual-canvas'; width: number; height: number }
   /** Bound VC world Transform — bypasses CRDT ack latency for lens + gizmo pose sync. */
@@ -465,9 +464,6 @@ export type MainToWorker =
        * store (`scale.y` UI, cinematic parents) before the next engine.update.
        */
       tweenTransforms?: AvatarAttachTransformEntry[]
-      /** Last SceneLoop send meters — appended to `?sceneloop=1` play-frame line. */
-      guests?: number
-      sent?: number
     }
   /** Level keyboard state — authoritative worker input path (phase 2). */
   | { type: 'scene-input-snapshot'; body: import('../player/sceneInputSnapshot').SceneInputSnapshotBody }

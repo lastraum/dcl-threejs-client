@@ -135,6 +135,12 @@ export class SceneHost {
     window.visualViewport?.addEventListener('resize', () => this.applyViewportSize())
     window.visualViewport?.addEventListener('scroll', () => this.applyViewportSize())
     document.addEventListener('visibilitychange', this.onVisibilityChange)
+    window.addEventListener('focus', this.onWindowFocusChange)
+    window.addEventListener('blur', this.onWindowFocusChange)
+  }
+
+  private readonly onWindowFocusChange = (): void => {
+    this.kickLoop()
   }
 
   private readonly onVisibilityChange = (): void => {
@@ -686,7 +692,8 @@ export class SceneHost {
       this.uncapTimer = setTimeout(tick, SceneHost.HIDDEN_FRAME_INTERVAL_MS)
       return
     }
-    const uncap = this.frameIntervalMs === 0 && this.resumeRafFrames <= 0
+    const focused = typeof document === 'undefined' || document.hasFocus()
+    const uncap = this.frameIntervalMs === 0 && this.resumeRafFrames <= 0 && focused
     if (uncap) {
       this.uncapTimer = setTimeout(tick, 0)
       return
@@ -722,6 +729,8 @@ export class SceneHost {
     this.viewportElement = null
     this.onViewportResize = null
     document.removeEventListener('visibilitychange', this.onVisibilityChange)
+    window.removeEventListener('focus', this.onWindowFocusChange)
+    window.removeEventListener('blur', this.onWindowFocusChange)
     this.stop()
     this.bloom?.dispose()
     this.bloom = null

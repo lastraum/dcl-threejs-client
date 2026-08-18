@@ -11,7 +11,7 @@ import {
 } from '../dcl/content/route'
 import { resolveSceneFromRoute, summarizeSceneContent } from '../dcl/content/resolveScene'
 import { EditorApp } from '../editor/EditorApp'
-import { World } from '../core/World'
+import type { World } from '../core/World'
 import { MultiSceneRuntime } from '../dcl/multiScene/MultiSceneRuntime'
 import { PortableExperienceManager } from '../dcl/multiScene/PortableExperienceManager'
 import { resolvePortableExperiencesPolicy } from '../dcl/multiScene/resolvePortableExperiences'
@@ -2810,6 +2810,7 @@ export class AppController {
     opts.onProgress?.('Building world…')
     if (!this.container) throw new Error('App container missing')
 
+    const { World } = await import('../core/World')
     const world = new World(this.container)
     this.world = world
     world.applyLogin(this.login)

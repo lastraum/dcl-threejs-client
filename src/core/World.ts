@@ -143,12 +143,8 @@ import {
   refreshPreviewRealmScene
 } from '../network/preview/localPreviewHotReload'
 import type { PreviewSceneUpdate } from '../network/preview/wsSceneMessage'
-import {
-  SceneAbilityVfxHost,
-  setSceneAbilityVfxHost
-} from '../vfx/SceneAbilityVfxHost'
+import type { SceneAbilityVfxHost } from '../vfx/SceneAbilityVfxHost'
 import { discoverAbilityVfxIds } from '../vfx/discoverAbilityVfx'
-import { getShaderManager } from '../vfx/ShaderManager'
 import {
   ABILITY_VFX_TOPIC,
   decodeAbilityVfxCast,
@@ -486,7 +482,6 @@ export class World {
     })
 
     this.unsubEnvironmentDebug = environmentDebug.subscribe(() => this.applyEnvironmentDebugVisibility())
-    this.ensureAbilityVfxHost()
 
     this.petManager.bindScene(this.host.drawWorld.drawRoot)
     this.petManager.attachPeerSync(this.petPeerSync)
@@ -1555,11 +1550,12 @@ export class World {
   }
 
   /**
-   * Host is cheap until `prime`. AbilityManager + shaders load only for ids
-   * the scene bundle names (`tjs.vfx:*`), one at a time during scene load.
+   * AbilityManager + shader files load only after Jump In, and only when the
+   * running bundle names `tjs.shader` / `tjs.vfx`. Landing never touches this.
    */
-  private ensureAbilityVfxHost(): SceneAbilityVfxHost {
+  private async ensureAbilityVfxHost(): Promise<SceneAbilityVfxHost> {
     if (this.abilityVfx) return this.abilityVfx
+    const { SceneAbilityVfxHost, setSceneAbilityVfxHost } = await import('../vfx/SceneAbilityVfxHost')
     const host = new SceneAbilityVfxHost(this.host.scene, this.host.camera, this.host.renderer)
     this.abilityVfx = host
     setSceneAbilityVfxHost(host)
@@ -1611,15 +1607,18 @@ export class World {
 
   private async primeSceneAbilityVfx(onProgress?: (msg: string) => void): Promise<void> {
     const source = this.sceneScript.getLastScriptSource()
-    if (source) getShaderManager().ingestSource(source)
     const ids = source ? discoverAbilityVfxIds(source) : []
     if (ids.length === 0) {
-      clientDebugLog.log('scene', 'ability-vfx skip — no tjs.vfx tags in scene bundle', {
+      clientDebugLog.log('scene', 'ability-vfx skip — no tjs.shader / tjs.vfx in scene bundle', {
         alsoConsole: true
       })
       return
     }
-    const host = this.ensureAbilityVfxHost()
+    onProgress?.('Loading scene shaders…')
+    await this.sceneScript.attachShaderVfx(source)
+    const { getShaderManager } = await import('../vfx/ShaderManager')
+    getShaderManager().ingestSource(source ?? '')
+    const host = await this.ensureAbilityVfxHost()
     for (let i = 0; i < ids.length; i++) {
       const id = ids[i]!
       onProgress?.(`Loading ability VFX (${id}, ${i + 1}/${ids.length})…`)
@@ -6514,7 +6513,7 @@ export class World {
     this.unsubAbilityVfxTopic = null
     this.abilityVfx?.dispose()
     this.abilityVfx = null
-    setSceneAbilityVfxHost(null)
+    void import('../vfx/SceneAbilityVfxHost').then((m) => m.setSceneAbilityVfxHost(null))
     this.photoCamera?.dispose()
     this.photoCamera = null
     this.photoChromeHandler = null

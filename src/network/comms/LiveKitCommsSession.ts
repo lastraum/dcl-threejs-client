@@ -21,6 +21,7 @@ import {
 import { encodeRfc4ChatPacket, oleTimestampNow } from '../../social/dclRfc4Chat'
 import { DCM_SCENE_ID } from '../../social/dcmChatMedia'
 import { encodeRfc4SceneBinaryPacket } from './Rfc4Router'
+import { decodeRfc5TopicPayload } from './types'
 import {
   playerYawToMovementRotationDeg,
   sceneLocalToGenesis,
@@ -538,10 +539,21 @@ export class LiveKitCommsSession {
       const me = (this.localAddress || this.room?.localParticipant?.identity || '').toLowerCase()
       if (me && address === me) return
       const topicTrim = topic?.trim() ?? ''
-      // Topic-scoped: community SFU, private:{to}, follow — topicHandler only.
-      // Bare (no topic): 1:1 DMs → packetHandler.
-      if (topicTrim) {
-        this.topicHandler?.(topicTrim, address, payload)
+      const wrapped = decodeRfc5TopicPayload(payload)
+      const topicName = (wrapped?.topic || topicTrim).trim()
+      const data = wrapped?.packet ?? payload
+      // Topic-scoped: community SFU, private:{to}, follow, ability VFX — topicHandler only.
+      // Bare (no topic): 1:1 DMs → packetHandler. DCL SFUs often drop unknown topics,
+      // so ability VFX also arrives as a `{type:topic}` envelope with no topic field.
+      if (topicName) {
+        if (topicName.includes('ability-vfx') || wrapped) {
+          clientDebugLog.log(
+            'comms',
+            `topic-in ${topicName} via=${this.transport} from=${address.slice(0, 10)}… attr=${topicTrim || 'none'} wrap=${wrapped ? 1 : 0}`,
+            { alsoConsole: true }
+          )
+        }
+        this.topicHandler?.(topicName, address, data)
         return
       }
       this.packetHandler?.(this.transport, address, payload)
@@ -884,14 +896,13 @@ export class LiveKitCommsSession {
    * @returns true when the SFU accepted the packet; false if room was down or publish threw.
    */
   async publishTopicData(topic: string, packet: Uint8Array, reliable = true): Promise<boolean> {
-    if (!this.room || this.room.state !== ConnectionState.Connected) return false
-    try {
-      await this.room.localParticipant.publishData(packet, { reliable, topic })
-      return true
-    } catch {
-      /* room tore down mid-publish — ignore PC manager closed */
-      return false
-    }
+    const t = topic.trim()
+    return this.safePublishData(packet, reliable, undefined, t || undefined)
+  }
+
+  /** Same LiveKit data pipe as RFC4 movement — no topic field (DCL SFUs drop unknown topics). */
+  async publishBareData(packet: Uint8Array, reliable = true): Promise<boolean> {
+    return this.safePublishData(packet, reliable)
   }
 
   /**

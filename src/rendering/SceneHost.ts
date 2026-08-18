@@ -516,7 +516,11 @@ export class SceneHost {
         hidden ? SceneHost.HIDDEN_FRAME_INTERVAL_MS : 0
       )
       if (minInterval > 0 && this.lastFrameTime > 0) {
-        if (frameT0 - this.lastFrameTime < minInterval) return
+        if (frameT0 - this.lastFrameTime < minInterval) {
+          // Must reschedule — a bare return kills the loop (incognito default is 60fps + rAF).
+          this.scheduleNext(tick)
+          return
+        }
       }
       this.lastFrameTime = frameT0
 
@@ -670,7 +674,10 @@ export class SceneHost {
     this.scheduleNext(tick)
   }
 
-  /** Max FPS = free-run (timeout 0). Hidden tabs cannot use rAF — it is paused. */
+  /**
+   * 30/60/120 → rAF (display-paced). Max (fpsLimit 0) → setTimeout(0) free-run.
+   * Hidden tabs cannot use rAF — it is paused.
+   */
   private scheduleNext(tick: () => void): void {
     if (!this.loopRunning) return
     if (this.resumeRafFrames > 0) this.resumeRafFrames--

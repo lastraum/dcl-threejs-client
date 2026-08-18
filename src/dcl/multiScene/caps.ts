@@ -142,6 +142,7 @@ export function secondaryTickIntervalMs(_tier: PerformanceTier): number {
   return 50
 }
 
+/** PE workers are SceneLoop 20 Hz — never a 0 ms present pump. */
 export function peTickIntervalMs(_tier: PerformanceTier): number {
-  return 0
+  return 50
 }

@@ -1018,8 +1018,8 @@ export class SecondaryLiveManager {
   tickSync(player: EntityPose, camera: EntityPose): void {
     const interval = secondaryTickIntervalMs(this.tier)
     for (const slot of this.slots.values()) {
-      // Tertiary tickSync is a no-op (scripts off). Owned-externally never tickPlayFrame.
-      slot.tickSync(player, camera, interval, this.playFrameOwnedExternally)
+      // Tertiary tickSync is a no-op (scripts off). Always skip play-frame (SceneLoop.send owns it).
+      slot.tickSync(player, camera, interval, true)
     }
   }
 
@@ -1032,7 +1032,7 @@ export class SecondaryLiveManager {
     const interval = secondaryTickIntervalMs(this.tier)
     for (const [id, slot] of this.slots) {
       if (!this.stickyIds.has(id)) continue
-      slot.tickSync(player, camera, interval, this.playFrameOwnedExternally)
+      slot.tickSync(player, camera, interval, true)
     }
   }
 

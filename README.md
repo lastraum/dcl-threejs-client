@@ -2,7 +2,7 @@
 
 A **browser-native Decentraland SDK7 Explorer** — Three.js renderer, Web Worker scene runtime, PhysX, and LiveKit/RFC4 multiplayer. Runs published scene bundles (`bin/index.js`) with CRDT sync, avatars, and an Explorer-style HUD. Built for the open web.
 
-**Current release:** **v2.0.0** (host world + city walk). Latest tagged on `main`. QA continues on `dev-latest`.
+**Current release:** **v2.1.0** (local preview + this-client shaders). **v2.0.0** was host world + city walk. Latest tagged on `main`. QA continues on `dev-latest`.
 
 [Goals](#goals) · [Contributions](#contributions) · [Environments](#environments) · [Pets](#pets) · [Shaders](#shaders)
 
@@ -252,7 +252,7 @@ Tags.createOrReplace(engine.RootEntity, {
   ]
 })
 
-// fire — any time, any entity
+// fire — any time, any entity (this tab only)
 pointerEventsSystem.onPointerDown(
   { entity: button, opts: { button: InputAction.IA_POINTER, hoverText: 'Cast Ice' } },
   function () {
@@ -264,18 +264,29 @@ pointerEventsSystem.onPointerDown(
     })
   }
 )
+
+// same cast, other people in this client also see it
+Tags.createOrReplace(engine.addEntity(), {
+  tags: [
+    `tjs.ice.spawn(${ox}, ${oy}, ${oz}, ${dx}, ${dy}, ${dz}, ${distance})`,
+    'tjs.sync'
+  ]
+})
 ```
 
 That **is** `ability.spawn(origin, direction, distance)`. `${}` is just JS inside the string.
 
 Add the spawn Tag **anywhere you want to trigger** the shader — a pointer callback, a timer, another system, not only a click.
 
+**Default is local-only.** Add sibling Tag `tjs.sync` to put that one cast on the comms topic so other ThreejsClient tabs see it. Do not `syncEntity` the spawn entity — a cast is a one-shot, not lasting ECS state.
+
 This client only — Unity / Bevy do not treat Tags as a shader bus.
 
 | You write | Role |
 | --- | --- |
 | `tjs.shader(ice, assets/shaders/IceAbility.js)` | Load that file as `ice` |
-| `` tjs.ice.spawn(${ox}, ${oy}, ${oz}, ${dx}, ${dy}, ${dz}, ${distance}) `` | `spawn(origin, direction, distance)` |
+| `` tjs.ice.spawn(${ox}, ${oy}, ${oz}, ${dx}, ${dy}, ${dz}, ${distance}) `` | `spawn(origin, direction, distance)` — this tab |
+| `tjs.sync` | Sibling Tag — other ThreejsClient tabs see that cast |
 
 Copies: VFX scene `assets/shaders/`.
 

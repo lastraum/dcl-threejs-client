@@ -13,12 +13,27 @@ export type ShaderTrigger = {
   params: Record<string, string>
 }
 
+/** Sibling Tag — opt the cast onto the comms topic. Default is local-only. */
+export function tagsRequestSync(tags: readonly string[]): boolean {
+  for (const raw of tags) {
+    const t = raw.trim().toLowerCase()
+    if (t === 'tjs.sync' || t === 'tjs.sync:true' || t === 'tjs.sync(true)') return true
+  }
+  return false
+}
+
+export function isShaderSyncParam(raw: string | undefined): boolean {
+  if (!raw) return false
+  const s = raw.trim().toLowerCase()
+  return s === '1' || s === 'true' || s === 'yes' || s === 'sync'
+}
+
 export type ShaderPointerBinding = {
   hover: string
   triggers: ShaderTrigger[]
 }
 
-const RESERVED = new Set(['shader', 'vfx'])
+const RESERVED = new Set(['shader', 'vfx', 'sync'])
 const PARAM_KEYS = new Set(['origin', 'direction', 'distance', 'range'])
 
 const LEGACY_DECL = /^tjs\.shader:([a-zA-Z][\w-]*)=(.+)$/
@@ -311,11 +326,12 @@ export function parseShaderTriggers(tags: readonly string[]): ShaderTrigger[] {
       fns.push({ name, fn: t[2]! })
     }
   }
-  return fns.map((row) => ({
-    name: row.name,
-    fn: row.fn,
-    params: row.params ?? paramsByName.get(row.name) ?? {}
-  }))
+  const sync = tagsRequestSync(tags)
+  return fns.map((row) => {
+    const params = { ...(row.params ?? paramsByName.get(row.name) ?? {}) }
+    if (sync) params.sync = '1'
+    return { name: row.name, fn: row.fn, params }
+  })
 }
 
 export function parseVec3(raw: string): { x: number; y: number; z: number } | null {

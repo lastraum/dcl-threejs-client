@@ -113,7 +113,8 @@ export class SceneAbilityVfxHost {
     if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1)
     dir.normalize()
     const reach = Math.max(8, distance)
-    const publish = opts?.publish !== false
+    // Local-only unless the scene opted in (`tjs.sync` / `{ publish: true }`).
+    const publish = opts?.publish === true
     if (!this.abilities || !this.primed.has(id)) {
       this.pendingCasts.push({
         id,

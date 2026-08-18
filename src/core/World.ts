@@ -1563,6 +1563,7 @@ export class World {
     const host = new SceneAbilityVfxHost(this.host.scene, this.host.camera, this.host.renderer)
     this.abilityVfx = host
     setSceneAbilityVfxHost(host)
+    // Only fires when the scene opted in (`tjs.sync`). Default casts stay local.
     host.setOnLocalCast((id, origin, dir, range) => {
       const o = threeToDclPos(origin.x, origin.y, origin.z)
       const d = threeToDclPos(dir.x, dir.y, dir.z)

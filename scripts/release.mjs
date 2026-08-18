@@ -78,7 +78,8 @@ if (pkg.version !== version) {
 console.log('Running build…')
 run('SKIP_VERSION_BUMP=1 npm run build')
 
-const statusAfter = runSilent('git status --porcelain')
+// Same as the pre-cut check: untracked local junk must not force an empty commit.
+const statusAfter = runSilent('git status --porcelain -uno')
 if (statusAfter) {
   run(`git add package.json`)
   run(`git commit -m "Release ${tag}."`)

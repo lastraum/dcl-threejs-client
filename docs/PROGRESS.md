@@ -3,8 +3,8 @@
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-08-17  
-> **Current phase:** **v2.1.1** — shaders off until Jump In. **v2.1.0** was local preview + this-client shaders. **v2.0.0** (2026-08-14) was host world + city walk. **`dev-latest`** continues as QA.  
-> **Shipped:** **v2.1.1** lazy shaders · **v2.1.0** `/localpreview` · stay-in-play reload · Tags shaders (`tjs.sync` opt-in) · preview tabs · **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
+> **Current phase:** **v2.1.0** — local preview + this-client shaders. **v2.0.0** (2026-08-14) was host world + city walk. **`dev-latest`** continues as QA.  
+> **Shipped:** **v2.1.0** `/localpreview` · stay-in-play reload · Tags shaders (`tjs.sync` opt-in) · shaders off until Jump In · preview tabs · **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
 
 > **After 2.0 (next):** CBD density/FPS with stacked live neighbors · RTS box-select / pad-drag polish · saved outfits · create-community / invites · gallery multi-page · graphics P3 culls · Social WS reliability · PE P3 pad/wind QA · multi-shape GLTF `40M+` riding. Scene UI = **one-off bugs only**. Shell marketplace browse ≠ **P2P peer trade**.  
 
@@ -16,22 +16,6 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
-
----
-
-## 🎉 Milestone — v2.1.1 release (lazy shaders) (2026-08-17)
-
-**Status: release cut** — `dev-latest` → `main` · tag `v2.1.1`.
-
-World landing no longer waits on the shader pack. Ability files boot only after Jump In, and only if that scene names them.
-
-### What's new
-
-- **Landing stays light** — 2D place card does not load World / AbilityManager / ice-cinder-hail
-- **Shaders on demand** — Jump In + `tjs.shader` / `tjs.vfx` in the bundle, then load only those ids
-- **`tjs.sync` unchanged** — default local; sibling Tag if other ThreejsClient tabs should see the shot
-
-**Tip:** `v2.1.1` on `main`. Hard-refresh remote worlds to drop the old landing freeze.
 
 ---
 
@@ -49,6 +33,7 @@ Create in the tab. Same host world as 2.0. New: stay-in-play reload, preview roo
 - **Preview tabs** — extra tab, guest avatar, same-session identity; RFC-5 `ws-room` only when `/about` says so
 - **Shaders** — Tag create is the cast; `tjs.ice.spawn(ox, oy, oz, dx, dy, dz, dist)` is `ability.spawn`
 - **Shaders default local** — add sibling Tag `tjs.sync` if other ThreejsClient tabs should see that one shot. Not `syncEntity`. Not Unity/Bevy.
+- **Shaders stay off until Jump In** — landing does not load World / AbilityManager; only named `tjs.shader` / `tjs.vfx` ids boot
 - **Compact debug panel**
 
 | Area | Status | Notes |

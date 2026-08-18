@@ -55,7 +55,6 @@ export class SceneAbilityVfxHost {
   private elapsed = 0
   private readonly primed = new Set<string>()
   private priming: Promise<void> | null = null
-  private shadersCompiled = false
   private failed = false
   private readonly pendingCasts: Array<{
     id: string
@@ -70,7 +69,7 @@ export class SceneAbilityVfxHost {
   constructor(
     private readonly scene: THREE.Scene,
     private readonly camera: THREE.PerspectiveCamera,
-    private readonly renderer: THREE.WebGLRenderer
+    _renderer: THREE.WebGLRenderer
   ) {
     this.camera.layers.enable(1)
   }
@@ -170,7 +169,6 @@ export class SceneAbilityVfxHost {
     this.abilities = null
     this.failed = false
     this.primed.clear()
-    this.shadersCompiled = false
   }
 
   private async primeInner(ids: readonly string[]): Promise<void> {
@@ -185,7 +183,7 @@ export class SceneAbilityVfxHost {
     }
     clientDebugLog.log(
       'scene',
-      `ability-vfx primed [${[...this.primed].join(', ') || 'none'}] shaders=${this.shadersCompiled ? 'hot' : 'on-first-cast'}`,
+      `ability-vfx primed [${[...this.primed].join(', ') || 'none'}]`,
       { alsoConsole: true }
     )
     this.flushPending()
@@ -212,7 +210,8 @@ export class SceneAbilityVfxHost {
       void this.abilities.warm(id)
       return false
     }
-    if (!this.shadersCompiled) this.compileShadersOnce()
+    // Do not renderer.compile(scene) — that walks landscape grass (30k+ blades)
+    // and freezes the other multiplayer tab. Three compiles VFX materials on first draw.
     if (publish) this.onLocalCast?.(id, origin, dir, reach)
     clientDebugLog.log(
       'scene',
@@ -317,19 +316,4 @@ export class SceneAbilityVfxHost {
       })
   }
 
-  /** First visible cast compiles GLSL. Genesis-lab avoids doing this at boot. */
-  private compileShadersOnce(): void {
-    if (this.shadersCompiled) return
-    this.shadersCompiled = true
-    try {
-      this.renderer.compile(this.scene, this.camera)
-      clientDebugLog.log('scene', 'ability-vfx shaders compiled (first cast)', { alsoConsole: true })
-    } catch (err) {
-      clientDebugLog.log(
-        'scene',
-        `ability-vfx shader compile skipped — ${err instanceof Error ? err.message : String(err)}`,
-        { level: 'warn' }
-      )
-    }
-  }
 }

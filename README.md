@@ -4,7 +4,7 @@ A **browser-native Decentraland SDK7 Explorer** — Three.js renderer, Web Worke
 
 **Current release:** **v2.1.0** (local preview + this-client shaders). **v2.0.0** was host world + city walk. Latest tagged on `main`. QA continues on `dev-latest`.
 
-[Goals](#goals) · [Contributions](#contributions) · [Environments](#environments) · [Pets](#pets) · [Shaders](#shaders)
+[Goals](#goals) · [Contributions](#contributions) · [Local preview](#local-preview) · [Environments](#environments) · [Pets](#pets) · [Shaders](#shaders)
 
 ## Goals
 
@@ -48,6 +48,8 @@ npm run build && dcl deploy --target-content yourname.dcl.eth
 npm run dev
 # → http://localhost:5173/yourname.dcl.eth
 ```
+
+To play the scene **before** you deploy, use **[Local preview](#local-preview)** — start Explorer Play, then swap the host to this client.
 
 Still smoke **Genesis Plaza** or **RickRoll** for heavy-scene parity; use **your world** to prove task-specific behavior.
 
@@ -238,6 +240,42 @@ You can also **Publish** your own GLB from the Barn (thumbnail is compressed for
 - Import a GLB from your machine with the upload control in the Pets panel if you do not want the Barn.
 
 Nothing to add to `scene.json`. Other people using this client in the same place see your pet automatically.
+
+## Local preview
+
+Play an unpublished SDK7 scene in this client. Start the official **Bevy Explorer** preview so `sdk-commands` / Creator Hub is serving on your machine, then point **this** client at the same preview server.
+
+1. In the scene project, start Play the usual way:
+   - Creator Hub → **Play**, or
+   - `npm start` (`@dcl/sdk-commands`)
+2. Explorer opens (Bevy), typically something like:
+
+```text
+https://decentraland.org/play/?realm=http://127.0.0.1:8000
+```
+
+3. Change **only the site** to this client. Keep the `realm` / `origin` query if the port is not `8000`.
+
+| You want | Open |
+| --- | --- |
+| Local Vite | `http://localhost:5173/localpreview` |
+| Staging | `https://dev.decentraland.social/localpreview` |
+| Production | `https://decentraland.social/localpreview` |
+
+Same scene, other port:
+
+```text
+http://localhost:5173/localpreview?origin=http://127.0.0.1:8000
+https://dev.decentraland.social/localpreview?port=8001
+```
+
+`/preview` is the same route as `/localpreview`. Default preview origin is `http://127.0.0.1:8000`.
+
+The tab jumps **straight into play** (no 2D landing). Scene save / Hub hot reload recycles the parcel in place.
+
+**Two tabs for multiplayer.** Open the same `/localpreview` URL again (or Incognito). The extra tab is a guest in the preview `ws-room`. Prod LiveKit is not used.
+
+Leave the scene `npm start` / Hub Play running. Closing it stops `/about` and this client cannot load the scene.
 
 ## Shaders
 

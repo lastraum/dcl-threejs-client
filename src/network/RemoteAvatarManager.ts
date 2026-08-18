@@ -3,7 +3,10 @@ import * as THREE from 'three'
 import { AvatarAnimations } from '../avatar/AvatarAnimations'
 import { composeAvatarFromProfile } from '../avatar/AvatarComposer'
 import { disposeWearableInstance } from '../avatar/loadWearable'
-import { AVATAR_YAW_OFFSET, BODY_SHAPE_URN, PEER_URL } from '../avatar/constants'
+import { AVATAR_YAW_OFFSET, PEER_URL } from '../avatar/constants'
+import { catalystEndpointsForRealm } from '../avatar/catalystEndpoints'
+import { createFallbackGuestAvatarProfile } from '../avatar/guestProfile'
+import { guestDisplayNameFromAddress } from '../auth/guestIdentity'
 import { applyAvatarPivotOffset } from '../avatar/feetAlign'
 import { findHeadBone, updateNameTagAnchor } from '../avatar/headAnchor'
 import { defaultProfileIdentity, identityFromAvatarProfile, type ProfileIdentity } from '../avatar/displayName'
@@ -228,18 +231,13 @@ const _locoState: {
   gliding: false
 }
 
-function blankProfile(address: string): AvatarProfile {
-  return {
-    bodyShape: 'male',
-    skin: '949494',
-    hair: '3a3a3a',
-    eyes: '3a3a3a',
-    wearables: [BODY_SHAPE_URN.male],
-    forceRender: [],
-    emotes: [],
-    fromWallet: false,
-    address: address.toLowerCase()
-  }
+function guestFallbackProfile(address: string, displayName?: string): AvatarProfile {
+  const name = displayName?.trim() ?? ''
+  const stable =
+    name && !name.startsWith('0x') && name.toLowerCase() !== address.slice(0, 8).toLowerCase()
+      ? name
+      : guestDisplayNameFromAddress(address)
+  return createFallbackGuestAvatarProfile(address, stable)
 }
 
 const REMOTE_LOCO_SPEED_CAP = DCL_LOCOMOTION_DEFAULTS.runSpeed * 1.15
@@ -278,6 +276,8 @@ export class RemoteAvatarManager {
   private readonly peers = new Map<string, RemotePeerRecord>()
   private contentUrl = ''
   private lambdasUrl = ''
+  /** Preview scene server is not a Catalyst — skip lambda profile fetches. */
+  private skipCatalystProfileFetch = false
   private assetCache: AssetCache | null = null
   private readonly scene: THREE.Scene
   private readonly loadQueue = new RemoteAvatarLoadQueue()
@@ -484,8 +484,10 @@ export class RemoteAvatarManager {
   }
 
   setCatalystEndpoints(contentUrl: string, lambdasUrl: string): void {
-    this.contentUrl = contentUrl.replace(/\/$/, '')
-    this.lambdasUrl = lambdasUrl.replace(/\/$/, '')
+    const ends = catalystEndpointsForRealm(contentUrl, lambdasUrl)
+    this.contentUrl = ends.contentUrl
+    this.lambdasUrl = ends.lambdasUrl
+    this.skipCatalystProfileFetch = ends.skipProfileFetch
   }
 
   setAssetCache(cache: AssetCache | null): void {
@@ -1190,7 +1192,7 @@ export class RemoteAvatarManager {
         customAvatarFormat: null,
         vrmLoadedHash: null,
         nameTag: null,
-        identity: defaultProfileIdentity(key.slice(0, 8)),
+        identity: defaultProfileIdentity(guestDisplayNameFromAddress(key)),
         bodyShape: 'male',
         loading: null,
         hasPosition: false,
@@ -1996,8 +1998,13 @@ export class RemoteAvatarManager {
 
       const profile =
         record.pendingProfile ??
-        (await resolveRemotePeerProfile(address, this.lambdasUrl || undefined)) ??
-        blankProfile(address)
+        (await resolveRemotePeerProfile(
+          address,
+          this.lambdasUrl || undefined,
+          this.skipCatalystProfileFetch ? 400 : undefined,
+          this.skipCatalystProfileFetch
+        )) ??
+        guestFallbackProfile(address, record.identity.displayName)
       record.identity = identityFromAvatarProfile(profile, address)
       record.bodyShape = profile.bodyShape
       record.pendingProfile = profile

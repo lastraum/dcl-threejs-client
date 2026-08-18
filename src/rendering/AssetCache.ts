@@ -13,6 +13,7 @@ import {
   sanitizeSceneGltfMaterials
 } from './LandscapeAssetSanitizer'
 import { applySceneGltfEmissives } from './sceneGltfEmissives'
+import { bindGltfWaterSurface } from './gltfWaterSurface'
 import { deleteGlbBytes, normalizeGlbCacheKey, readGlbBytes } from './glbByteCache'
 import { fetchGlbBytesOffThread, disposeGlbFetchPool } from './glbFetchPool'
 import { parseGlbOffThread, disposeGlbParsePool } from './glbParsePool'
@@ -242,6 +243,29 @@ export class AssetCache {
     this.failedUntil.delete(cacheKey)
     this.failCount.delete(cacheKey)
     this.warnedFailed.delete(cacheKey)
+    void deleteGlbBytes(cacheKey)
+  }
+
+  /** LSD UpdateModel: drop one scene file (GLB or texture) by hash and/or src. */
+  evictSceneAsset(scene: { content: Array<{ file: string; hash: string }>; assetUrl: (hash: string) => string }, opts: { src?: string; hash?: string }): void {
+    let hash = opts.hash?.trim() || ''
+    const src = opts.src?.trim() || ''
+    if (!hash && src) {
+      const hit = scene.content.find(
+        (c) => c.file === src || c.file.endsWith(`/${src}`) || src.endsWith(c.file)
+      )
+      if (hit) hash = hit.hash
+    }
+    if (hash) this.evict(hash)
+    if (src) {
+      const url = hash ? scene.assetUrl(hash) : src
+      const tex = this.textures.get(url)
+      if (tex) {
+        tex.dispose()
+        this.textures.delete(url)
+      }
+      this.textureInflight.delete(url)
+    }
   }
 
   /** True when bytes or parse is in flight — used to prioritize attach passes. */
@@ -376,7 +400,6 @@ export class AssetCache {
       animations: gltf.animations ?? []
     }
     if (options?.wearable) {
-      sanitizeSceneGltfMaterials(entry.root)
       prepareAvatarMaterials(entry.root)
       prepareWearableCacheRoot(entry.root)
     } else if (options?.landscape) {
@@ -385,6 +408,7 @@ export class AssetCache {
       sanitizeSceneGltfColliders(entry.root)
       sanitizeSceneGltfMaterials(entry.root)
       applySceneGltfEmissives(entry.root)
+      bindGltfWaterSurface(entry.root, url, (texUrl) => this.loadTexture(texUrl))
     } else {
       // Emote props (dontsee cards, money particles, hammer) need the same material
       // prep as wearables — sRGB maps + double-side alpha cards; hide colliders only.

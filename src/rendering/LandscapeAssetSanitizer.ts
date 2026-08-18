@@ -49,26 +49,23 @@ function countMaterialTextures(material: MapMaterial): number {
   return count
 }
 
-function resetPhysicalScalars(material: THREE.MeshPhysicalMaterial): void {
-  material.clearcoat = 0
-  material.transmission = 0
-  material.sheen = 0
-  material.iridescence = 0
-  material.anisotropy = 0
-  material.dispersion = 0
-  material.specularColorMap = null
-  material.specularIntensityMap = null
-  material.clearcoatMap = null
-  material.clearcoatNormalMap = null
-  material.clearcoatRoughnessMap = null
-  material.sheenColorMap = null
-  material.sheenRoughnessMap = null
-  material.iridescenceMap = null
-  material.iridescenceThicknessMap = null
-  material.transmissionMap = null
-  material.thicknessMap = null
-  material.anisotropyMap = null
-}
+/** Optional extras — never albedo / emissive / normal / specular (Material PBR + KHR specular). */
+const OVER_BUDGET_STRIP: ReadonlyArray<keyof THREE.MeshPhysicalMaterial> = [
+  'anisotropyMap',
+  'iridescenceThicknessMap',
+  'iridescenceMap',
+  'sheenRoughnessMap',
+  'sheenColorMap',
+  'clearcoatRoughnessMap',
+  'clearcoatNormalMap',
+  'clearcoatMap',
+  'thicknessMap',
+  'transmissionMap',
+  'displacementMap',
+  'bumpMap',
+  'lightMap',
+  'aoMap'
+]
 
 function stripOptionalMaps(material: MapMaterial): void {
   // Clear per-material envMap so scene.environment IBL can apply (AAA outdoor probe).
@@ -82,40 +79,38 @@ function stripOptionalMaps(material: MapMaterial): void {
   }
 }
 
-function downgradePhysicalMaterial(material: THREE.MeshPhysicalMaterial): THREE.MeshStandardMaterial {
-  resetPhysicalScalars(material)
-
-  const standard = new THREE.MeshStandardMaterial()
-  standard.name = material.name
-  standard.map = material.map
-  standard.normalMap = material.normalMap
-  standard.normalScale.copy(material.normalScale)
-  standard.roughnessMap = material.roughnessMap
-  standard.metalnessMap = material.metalnessMap
-  standard.aoMap = material.aoMap
-  standard.emissiveMap = material.emissiveMap
-  standard.emissive.copy(material.emissive)
-  standard.emissiveIntensity = material.emissiveIntensity
-  standard.color.copy(material.color)
-  standard.roughness = material.roughness
-  standard.metalness = material.metalness
-  standard.transparent = material.transparent
-  standard.opacity = material.opacity
-  standard.alphaMap = material.alphaMap
-  standard.side = material.side
-  standard.vertexColors = material.vertexColors
-  stripOptionalMaps(standard)
-  material.dispose()
-  return standard
+function hasAuthoredKhrSpecular(material: THREE.MeshPhysicalMaterial): boolean {
+  if (material.specularColorMap) return true
+  if (typeof material.specularIntensity === 'number' && Math.abs(material.specularIntensity - 1) > 1e-3) {
+    return true
+  }
+  const c = material.specularColor
+  if (c && (Math.abs(c.r - 1) > 1e-3 || Math.abs(c.g - 1) > 1e-3 || Math.abs(c.b - 1) > 1e-3)) {
+    return true
+  }
+  return false
 }
 
+/**
+ * Stay under WebGL sampler limits without destroying authored PBR.
+ * Material.setPbrMaterial / glTF PBR + KHR_materials_specular stay on MeshPhysicalMaterial.
+ */
 function simplifyMaterial(material: THREE.Material): THREE.Material {
   if (material instanceof THREE.MeshPhysicalMaterial) {
-    const standard = downgradePhysicalMaterial(material)
-    if (standard instanceof THREE.MeshStandardMaterial) {
-      applyOutdoorMaterialResponse(standard)
+    material.envMap = null
+    if (countMaterialTextures(material) > MAX_MATERIAL_TEXTURES) {
+      for (const key of OVER_BUDGET_STRIP) {
+        if (countMaterialTextures(material) <= MAX_MATERIAL_TEXTURES) break
+        ;(material as unknown as Record<string, unknown>)[key as string] = null
+      }
     }
-    return standard
+    if (material.transparent && material.opacity < 0.95) material.depthWrite = false
+    // KHR_materials_specular volumes (Rituals fog): authored metal/rough/spec/IBL are law.
+    // Outdoor remap crushed envMapIntensity and hid zenith/horizon color in the sheen.
+    if (!isSceneNeonEmissiveMaterial(material) && !hasAuthoredKhrSpecular(material)) {
+      applyOutdoorMaterialResponse(material)
+    }
+    return material
   }
   if (material instanceof THREE.MeshStandardMaterial) {
     stripOptionalMaps(material)

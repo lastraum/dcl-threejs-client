@@ -28,6 +28,12 @@ export function placeFieldsFromRoute(target: RouteTarget | null | undefined): Pl
       world_name
     }
   }
+  if (target.kind === 'localpreview') {
+    return {
+      place_kind: 'shell',
+      place_key: `localpreview:${target.origin.trim().toLowerCase()}`
+    }
+  }
   if (
     target.kind === 'blank' ||
     target.kind === 'map' ||

@@ -749,7 +749,8 @@ export class SceneUiBridge {
         this.virtual.width,
         this.virtual.height,
         textOf,
-        inputOf
+        inputOf,
+        backgroundOf
       )
       dispose()
       this.layoutCache.set(layoutKey, boxes)

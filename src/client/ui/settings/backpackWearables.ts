@@ -138,8 +138,9 @@ export async function fetchOwnedWearableUrns(
     if (e.urn.toLowerCase() === asset && assetsWithInstances.has(asset)) return false
     return true
   })
-  if (merged.length) return merged
-  throw new Error('wearables inventory empty or failed')
+  // Empty is valid — guests and new wallets own no NFT wearables.
+  // The backpack still shows the free base-avatars catalog.
+  return merged
 }
 
 function fallbackItem(urn: string, amount = 1): BackpackWearableItem {

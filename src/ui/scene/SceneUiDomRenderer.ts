@@ -732,8 +732,8 @@ export class SceneUiDomRenderer {
       } else {
         el.querySelector('.scene-ui-node__bg')?.remove()
         el.style.backgroundColor = 'transparent'
-        // Stretch/center may have left nine-slice opacity on el — reset; alpha lives on img.
-        el.style.opacity = ''
+        // Do not clear el.opacity here — applyUiBackgroundStyles owns it. Clearing every
+        // paint then early-returning on a stable sig left reel bar BGs flashing.
         applyUiBackgroundStyles(el, bg, imageUrl, scale)
       }
     } else {

@@ -16,15 +16,16 @@ export { openAuthWindow, AUTH_WINDOW_NAME } from './authDappLogin'
 
 export type LoginResult =
   | { kind: 'guest'; address: string; identity: AuthIdentity; displayName: string }
+  | { kind: 'ephemeral'; address: string; identity: AuthIdentity; displayName: string }
   | { kind: 'wallet'; address: string; identity: AuthIdentity }
 
-/** Guest or wallet with a usable AuthChain (LiveKit / signed fetch). */
+/** Guest, ephemeral preview peer, or wallet with a usable AuthChain (LiveKit / signed fetch). */
 export function loginHasCommsIdentity(
   login: LoginResult | null | undefined
 ): login is LoginResult & { address: string; identity: AuthIdentity } {
   return (
     !!login &&
-    (login.kind === 'wallet' || login.kind === 'guest') &&
+    (login.kind === 'wallet' || login.kind === 'guest' || login.kind === 'ephemeral') &&
     typeof login.address === 'string' &&
     !!login.identity
   )

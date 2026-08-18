@@ -369,8 +369,8 @@ export class SocialChatController {
         await this.session.connect()
       }
       this.comms.setCommsProfile(this.session.getCommsProfileEntity())
-      this.comms.setLambdasUrl(scene.realm.lambdasUrl)
-      this.chatPool.setLambdasUrl(scene.realm.lambdasUrl)
+      this.comms.setLambdasUrl(this.session.getLambdasUrl())
+      this.chatPool.setLambdasUrl(this.session.getLambdasUrl())
 
       // connectSceneRoom disconnects previous primary — migrate that room into the pool after.
       const connectResult = await this.comms.connectSceneRoom(buildCommsTarget(scene))

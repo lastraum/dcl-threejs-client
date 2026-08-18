@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-08-14 (**v2.0.0** on `main`). Host world + instanced city + live neighbors · MeshCollider riding · CCT ground · scene-http · TextShape width · lighting · PART curtains · auth-server join/paint. **In-scene ECS UI = production / smoke-pass** (one-off bugs only). See [PROGRESS.md](./PROGRESS.md)
+> **Last updated:** 2026-08-17 (**v2.1.0**). Local preview + stay-in-play reload + Tags shaders (this client; `tjs.sync` opt-in). **v2.0.0** was host world + city walk. **In-scene ECS UI = production / smoke-pass** (one-off bugs only). See [PROGRESS.md](./PROGRESS.md)
 
 ---
 

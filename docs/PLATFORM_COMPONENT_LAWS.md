@@ -83,13 +83,15 @@ Client must run **platform Billboard + plane + Visibility**. No GP-specific Bill
 |------|--------|
 | Dual-face BufferGeometry, north + south | Verified — `primitiveShapes.ts` |
 | Docs UV corner order with **L–R compensation** for DCL→Three X reflection | Client convention (plaza JUMP IN / atlas) — documented in code; Explorer golden TBD |
+| Default north is docs **V=0 bottom** (`0,0,1,0,1,1,0,1`). South lookAt face is V-inverted | Verified — NftShape / TextShape / default planes view +Z |
 | Marquee / flipbook special cases stay on their own packing | Client law for those UV patterns |
+| **Do not** invert default north V to fix one Billboard | Forbidden — hung every NFT + canvas plane upside-down |
 
 ### Open gap
 
 | Gap | Note |
 |-----|------|
-| Press_e upside-down under stock lookAt | Likely **plane UV × Three lookAt −Z** mismatch vs Unity plane front, **not** a Billboard mode bug. Close via Explorer capture or Unity plane facing docs — **not** Billboard forks. |
+| Press_e under stock lookAt | South face of the default 16-UV plane is V-inverted for Three BM_ALL lookAt (−Z). Do not invert north. |
 
 ---
 
@@ -113,6 +115,67 @@ Client must run **platform Billboard + plane + Visibility**. No GP-specific Bill
 | Do **not** invent scale rewrites on show/hide | Forbidden (broke missed-it Scale tweens) |
 | Do **not** force-show fishing rods ignoring Visibility | Forbidden (reverted) |
 | Visibility puts must not starve behind slow peel (same class as Transform motion) | Client COD drain policy |
+| Visibility show/hide on PE / GltfContainer must rebuild pointer targets | Platform — hidden visible-class meshes are omitted from the raycast list |
+| InstancedMesh lives off the pose graph — hide = zero-scale instance slot (`writeMatrix`) | Verified — `SceneGltfInstancer` |
+| InstancedMesh is for **repeated low-leaf** props (≤12 render leaves). High-leaf kits clone | Platform — `templateIsInstancable` |
+| First clone of a hash that cannot instance is not idle-queued | Platform — runtime-created unique GLBs |
+
+---
+
+## 3c. Scene `fetch` (worker)
+
+### Verified (Explorer)
+
+| Rule | Source |
+|------|--------|
+| Scene `fetch(url)` is the **browser** request (page origin, user IP) | Explorer worker |
+| Hosts that reflect `Origin` / send ACAO work without a server hop | browser CORS |
+| `/api/scene-http` is only a **CORS fallback** (no ACAO on the real host) | this client |
+
+### Client implementation law
+
+| Rule | Status |
+|------|--------|
+| Try the real URL first; on `TypeError` (CORS / failed to fetch) retry proxy and remember the host | Platform |
+| Do **not** proxy-first — server IP 403s origins the browser is allowed to read | Forbidden |
+| Do **not** special-case scene filenames or sheet names | Forbidden |
+
+---
+
+## 3b. Gltf `_collider` vs water visual
+
+### Verified
+
+| Rule | Status |
+|------|--------|
+| Name contains `_collider` → invisible physics/pointer hull | DCL glTF convention |
+| Never unhide collider meshes to “see” a texture | **Forbidden** (reverted) |
+
+### Client law
+
+Plaza `water_surface.glb` is a collider-only disk + sibling `water.png`. Pointer/physics stay on the hidden hull. The renderer adds a **visible-class** display mesh (`dclWaterVisual`, same geo, not named `_collider`) and applies Explorer `Pond.mat` (Stylized Water: dual caustics scroll, refraction/spec, WaterColor/ShallowColor) using `water.png`.
+
+---
+
+## 3d. GltfNodeModifiers (path + Texture.Common)
+
+### Verified (SDK + Explorer)
+
+| Rule | Source |
+|------|--------|
+| `path` is a Unity/glTF node path; `""` = every mesh under the visual | `@dcl/ecs` GltfNodeModifiers |
+| Paths may **include the asset root** (`AnimatedBanner/Child/Mesh`) | Unity Transform.Find / scene bundles |
+| `Texture.Common({ src })` may be a scene file **or an https URL** | plaza / event cards / store boards |
+
+### Client implementation law
+
+| Rule | Status |
+|------|--------|
+| Resolve first path segment against the visual root **and** descendants | Platform |
+| Merge static leaves only for generic exporter names — never authored names | Platform — named nodes are modifier targets |
+| Keep retrying apply until textures land — do not drop pending on first miss | Platform |
+| Authored glTF UVs stay as-exported — **no geometry U flip** on Texture.Common cards | Platform — Explorer uses the GLB as-is |
+| VideoTexture is shared (`flipY=false`). Per-mesh geometry V only when the video is **bound** | Platform — first unlit pass must not mutate UVs |
 
 ---
 
@@ -133,7 +196,7 @@ Client must run **platform Billboard + plane + Visibility**. No GP-specific Bill
 | Rule | Status |
 |------|--------|
 | Sample bone world pose from skeleton after mixer update | Verified |
-| Write **matrix-relative** Transform: `playerWorld * relative ≈ boneWorld` | Verified — Tier B + docs |
+| Write **DCL `iBe` inverse**: `local` so `PE × local = bone` (`Fle` / `getWorldPosition`) | Verified — SDK compose, not Three-display invert |
 | Parent to `PlayerEntity` for worker `getWorldPosition` = PE × relative | Verified — SDK nBe path |
 | Apply composed world pose under **scene root** (never PE chest +0.88 attach root) | Verified — comment in bridge |
 | Sample attach **after** local avatar locomotion/emote that frame | Verified — frame order law |
@@ -232,8 +295,40 @@ From Genesis Plaza `bin/index.js` (catalyst), **do not re-encode as client speci
 
 ## 10. Current open gaps (do not invent past these)
 
-1. **Plane texture under BM_ALL lookAt** vs Unity Explorer (press_e orientation).  
-2. **Explorer AvatarAttach / getWorldPosition** exact quaternion vs our matrix-relative (line tip).  
-3. **Reveal VirtualCamera** multi-entity lookAt chain pixel parity.
+1. **Plane UV vs Unity Explorer golden** — default south V flipped for Three lookAt (−Z). Convention until an Explorer capture.  
+2. **Reveal VirtualCamera** lookAt chain pixel parity (Tween parents must be on the worker store — see Tween law).  
+3. **AvatarAttach quaternion** vs Explorer bone sample — play-frame inject closed the timing hole; quat golden still open.
 
 Closing any gap = one Explorer measurement or one unityrenderer commit, then one client law change.
+
+---
+
+## 11. Tween → Transform (renderer-owned)
+
+Explorer interpolates Tween on the renderer and writes **Transform** on the same engine the scene reads (`m.get(nb).scale.y`, cinematic parents). Host TweenBridge owns interpolation; the guest store must see the live pose on the play-frame (same class as AvatarAttach / PE). Not a scene fork.
+
+**TweenSequence is kernel-owned (ADR-133 / Unity TweenPlugin / Bevy).** Explorers set `ENABLE_SDK_TWEEN_SEQUENCE = false` before bundle eval so `@dcl/ecs` `createTweenSystem` does **not** hop on leftover `TweenState` COMPLETED (that zips plaza `yv` 15×~60ms hops). Scene authors `Tween` (first hop) + `TweenSequence` (rest, `loop` only if TL_RESTART/YOYO). Kernel plays that program at renderer framerate and writes `TweenState` + `Transform`. Rebuild only when the scene dirties Tween/Sequence — do not treat the still-authored first hop as a restart, and do not run a second hop owner.
+
+---
+
+## 12. Scene `/reload` (in-place facade recycle)
+
+### Verified (Unity `ReloadSceneChatCommand` + `ECSReloadScene`)
+
+| Rule | Source |
+|------|--------|
+| Chat `/reload` recycles the **current parcel** SDK7 scene only | Unity `ReloadSceneChatCommand` |
+| Dispose JS + scene ECS + that scene’s draw; keep realm, comms, avatars, other scenes | Unity `DeleteEntityIntention` + `UnloadSceneSystem` |
+| Scene definition / content list stay cached | Unity keeps `SceneDefinitionComponent` |
+| Live `/reload` does **not** drain wearable / GLB / texture caches | `ICacheCleaner.UnloadCache` is LSD-only |
+| Preview hot-reload is the same spine + optional single-hash GLB evict | Unity `TryReloadSceneAsync(ct, sceneId, changedModelSrc)` |
+
+### Client implementation law
+
+| Rule | Status |
+|------|--------|
+| `/reload` → `World.reloadPrimaryScene` — **not** `teardownScene` / new World | Platform |
+| Keep `AssetCache`, PhysX world, player capsule, comms, AOI / neighbors | Platform |
+| Drop stale primary PhysX actors only after the new graph cooks | Platform — avoid falling through |
+| LSD / preview file-watch: `LocalPreviewHotReload` on localhost realm WS | Platform — Unity `LocalSceneDevelopmentController` |
+| `UpdateModel.src` evicts one GLB (path-stable LSD hash); `UpdateScene` refreshes `/about` then recycles | Platform |

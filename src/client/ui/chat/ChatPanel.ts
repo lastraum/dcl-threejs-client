@@ -14,7 +14,7 @@ import {
   type MentionCandidate
 } from '../../../social/chatMentions'
 import type { RouteTarget } from '../../../dcl/content/route'
-import { parseGotoCommand } from '../../../dcl/content/route'
+import { parseGotoCommand, parseReloadCommand } from '../../../dcl/content/route'
 import { sceneChatRailIcon } from '../shell/icons'
 import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 import { followTargetLabel } from '../../../social/communityFollowWire'
@@ -46,6 +46,8 @@ export type ChatPanelOptions = {
   social: SocialService
   onVisibilityChange?: (visible: boolean) => void
   onGoto?: (target: RouteTarget) => void | Promise<void>
+  /** Unity `/reload` — recycle the current scene facade without leaving play. */
+  onReload?: () => void | Promise<void>
   onOpenProfile?: (address: string) => void
   /** Current play route — seeds tour start + leader pulses. */
   getCurrentRoute?: () => RouteTarget | null
@@ -78,6 +80,7 @@ export class ChatPanel {
   private readonly social: SocialService
   private readonly channelMenu: ChatChannelMenu
   private readonly onGoto?: ChatPanelOptions['onGoto']
+  private readonly onReload?: ChatPanelOptions['onReload']
   private readonly onOpenProfile?: ChatPanelOptions['onOpenProfile']
   private onVisibilityChange: ((visible: boolean) => void) | null = null
   /** Fired when open+pinned vs closed/scene-mode changes (HUD unread badge). */
@@ -122,9 +125,10 @@ export class ChatPanel {
   private voiceRosterTab: 'speakers' | 'listeners' = 'speakers'
   private readonly voiceProfiles = new ChatPeerProfiles()
 
-  constructor({ social, onVisibilityChange, onGoto, onOpenProfile }: ChatPanelOptions) {
+  constructor({ social, onVisibilityChange, onGoto, onReload, onOpenProfile }: ChatPanelOptions) {
     this.social = social
     this.onGoto = onGoto
+    this.onReload = onReload
     this.onOpenProfile = onOpenProfile
     this.onVisibilityChange = onVisibilityChange ?? null
     this.sceneCanvas = document.querySelector('#app canvas')
@@ -607,6 +611,12 @@ export class ChatPanel {
       this.inputEl.value = ''
       this.updateComposerUi()
       await this.onGoto?.(goto)
+      return
+    }
+    if (parseReloadCommand(text)) {
+      this.inputEl.value = ''
+      this.updateComposerUi()
+      await this.onReload?.()
       return
     }
 

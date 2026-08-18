@@ -1595,7 +1595,12 @@ export class BackpackView {
       // Wallet inventory + free base-avatars catalog in parallel. Guests get the
       // base catalog alone; a base-catalog failure degrades to owned-only.
       const [owned, baseCatalog] = await Promise.all([
-        address ? loadBackpackWearables(address, lambdasUrl) : Promise.resolve([]),
+        address
+          ? loadBackpackWearables(address, lambdasUrl).catch((err) => {
+              console.warn('[backpack] owned inventory failed — base catalog only', err)
+              return [] as BackpackWearableItem[]
+            })
+          : Promise.resolve([]),
         loadBaseWearableCatalog(lambdasUrl).catch((err) => {
           console.warn('[backpack] base wearables catalog failed', err)
           return [] as BackpackWearableItem[]

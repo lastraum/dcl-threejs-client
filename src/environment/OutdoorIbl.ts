@@ -4,9 +4,11 @@ import { PMREMGenerator } from 'three'
 /**
  * AAA outdoor IBL — low-rate sky probe, not full GI / per-frame PMREM.
  *
- * Explorer bakes skybox → cubemap for ambient reflections. We approximate with a
- * tiny hemi-lit probe scene from Trilight colors, re-baked only when TOD bucket
- * changes (~12 buckets / day). scene.environmentIntensity scales contribution.
+ * Explorer bakes the visible skybox → cubemap for ambient reflections. We
+ * approximate with a tiny probe from zenit / horizon / nadir (not the muted
+ * trilight ambient — that made specular volumes read as dirt). Re-baked only
+ * when TOD bucket or sky colors change. scene.environmentIntensity scales
+ * contribution.
  */
 
 /** Daytime soft fill — keep below 0.5 so ACES + sun stay primary. */
@@ -23,10 +25,33 @@ export type OutdoorIblColors = {
   equator: THREE.Color
 }
 
+const SKY_PROBE_VERT = /* glsl */ `
+varying vec3 vDir;
+void main() {
+  vDir = position;
+  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+}
+`
+
+const SKY_PROBE_FRAG = /* glsl */ `
+uniform vec3 uZenit;
+uniform vec3 uHorizon;
+uniform vec3 uNadir;
+varying vec3 vDir;
+void main() {
+  float y = normalize(vDir).y;
+  vec3 col = y >= 0.0
+    ? mix(uHorizon, uZenit, pow(clamp(y, 0.0, 1.0), 0.65))
+    : mix(uHorizon, uNadir, pow(clamp(-y, 0.0, 1.0), 0.55));
+  gl_FragColor = vec4(col, 1.0);
+}
+`
+
 export class OutdoorIbl {
   private readonly pmrem: PMREMGenerator
   private envRT: THREE.WebGLRenderTarget | null = null
   private lastBucket = -1
+  private lastColorKey = ''
   private enabled = true
 
   constructor(renderer: THREE.WebGLRenderer) {
@@ -51,13 +76,15 @@ export class OutdoorIbl {
 
     const t = ((opts.daySeconds % 86400) + 86400) % 86400
     const bucket = Math.floor((t / 86400) * TOD_BUCKETS) % TOD_BUCKETS
-    if (!opts.force && bucket === this.lastBucket && this.envRT) {
+    const colorKey = `${colors.sky.getHexString()}${colors.ground.getHexString()}${colors.equator.getHexString()}`
+    if (!opts.force && bucket === this.lastBucket && colorKey === this.lastColorKey && this.envRT) {
       scene.environmentIntensity = opts.isDay
         ? OUTDOOR_IBL_INTENSITY_DAY
         : OUTDOOR_IBL_INTENSITY_NIGHT
       return
     }
     this.lastBucket = bucket
+    this.lastColorKey = colorKey
     this.rebuild(scene, colors, opts.isDay)
   }
 
@@ -81,16 +108,18 @@ export class OutdoorIbl {
     this.envRT?.dispose()
     this.envRT = null
     this.lastBucket = -1
+    this.lastColorKey = ''
   }
 
   private rebuild(scene: THREE.Scene, colors: OutdoorIblColors, isDay: boolean): void {
-    // Disposable probe scene — hemi + soft equator ambient only (no geometry thrash).
+    // Disposable probe — visible skybox gradient (zenit / horizon / nadir), not a
+    // two-color hemi. Explorer bakes the full dome; a flat zenit dome dropped the
+    // pink/cyan horizon that tinted rough specular volumes.
     const probe = new THREE.Scene()
     const hemi = new THREE.HemisphereLight(colors.sky, colors.ground, isDay ? 1.0 : 0.75)
     probe.add(hemi)
-    const eq = new THREE.AmbientLight(colors.equator, isDay ? 0.35 : 0.45)
+    const eq = new THREE.AmbientLight(colors.equator, isDay ? 0.55 : 0.5)
     probe.add(eq)
-    // Large ground plane for bounce in PMREM (cheap).
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(40, 40),
       new THREE.MeshStandardMaterial({
@@ -103,14 +132,19 @@ export class OutdoorIbl {
     ground.rotation.x = -Math.PI / 2
     ground.position.y = -0.5
     probe.add(ground)
-    const skyDome = new THREE.Mesh(
-      new THREE.SphereGeometry(20, 16, 12),
-      new THREE.MeshBasicMaterial({
-        color: colors.sky,
-        side: THREE.BackSide,
-        depthWrite: false
-      })
-    )
+    const skyMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uZenit: { value: colors.sky.clone() },
+        uHorizon: { value: colors.equator.clone() },
+        uNadir: { value: colors.ground.clone() }
+      },
+      vertexShader: SKY_PROBE_VERT,
+      fragmentShader: SKY_PROBE_FRAG,
+      side: THREE.BackSide,
+      depthWrite: false,
+      toneMapped: false
+    })
+    const skyDome = new THREE.Mesh(new THREE.SphereGeometry(20, 24, 16), skyMat)
     probe.add(skyDome)
 
     const prev = this.envRT
@@ -125,7 +159,7 @@ export class OutdoorIbl {
       ground.geometry.dispose()
       ;(ground.material as THREE.Material).dispose()
       skyDome.geometry.dispose()
-      ;(skyDome.material as THREE.Material).dispose()
+      skyMat.dispose()
       prev?.dispose()
     }
   }

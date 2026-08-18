@@ -2,7 +2,7 @@ import type { SidebarIconId } from './icons'
 import { SIDEBAR_ICONS } from './icons'
 
 /** Parity+ extras under the Labs rail icon. */
-export type LabsMenuItemId = 'live' | 'pets' | 'lootbag' | 'help' | 'dev'
+export type LabsMenuItemId = 'live' | 'pets' | 'lootbag' | 'debug' | 'dev'
 
 export type LabsMenuItem = {
   id: LabsMenuItemId
@@ -19,7 +19,7 @@ export type LabsMenuPanelOptions = {
 }
 
 /**
- * Flyout under the Labs rail icon — Live, Pets, Loot Bag, Help, Dev.
+ * Flyout under the Labs rail icon — Live, Pets, Loot Bag, Debug, Roadmap.
  * (Settings gear stays Preferences-only.)
  */
 export class LabsMenuPanel {

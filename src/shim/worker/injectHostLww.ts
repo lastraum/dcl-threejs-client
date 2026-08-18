@@ -56,7 +56,10 @@ const HOST_LWW_ONCHANGE_IDS = new Set([
   1054, // UiCanvasInformation
   1072, // CameraMode
   1074, // PointerLock
-  1106 // RealmInfo
+  1106, // RealmInfo
+  1043, // VideoPlayer
+  1020, // AudioSource
+  1212 // AudioAnalysis
 ])
 
 /** Put host value on the guest store. Does not add the entity to dirtyIterator. */

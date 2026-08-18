@@ -32,7 +32,8 @@ import { resolveGltfSrcHash, GLTF_LOCAL_PREFIX, isEmoteAnchorGltfSrc } from '../
 import { syncGltfInstanceRenderState } from '../collision/gltfRenderMeshes'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionChangeKind } from './CrdtProjection'
-import { removeLightSource } from './LightSourceSync'
+import { removeLightSource, setLightTextureResolver } from './LightSourceSync'
+import { resolveSceneTextureUrl } from './material/resolveTexture'
 import {
   applyTextShapeFacingMirror,
   buildTextShapeMesh,
@@ -73,6 +74,11 @@ import type { PBGltfNodeModifiers } from '@dcl/ecs/dist/components/generated/pb/
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
 import type { DrawWorld } from '../rendering/DrawWorld'
+import {
+  bindGltfWaterSurface,
+  isGltfWaterSurfaceRoot,
+  isGltfWaterSurfaceSrc
+} from '../rendering/gltfWaterSurface'
 
 import { gltfLoadingStateLabel, isGltfLoadingStateVerbose } from './gltfLoadingStateConfig'
 
@@ -337,6 +343,8 @@ export class ThreeBridge {
   private readonly emptyGltfHashes = new Set<string>()
   private readonly loggedEmptyGltfSrcs = new Set<string>()
   private readonly loggedGltfAttachFailures = new Set<string>()
+  /** Content hashes that already have a clone or instance in the graph. */
+  private readonly seenGltfAttachHashes = new Set<string>()
   private onGltfAttached: ((entity: Entity) => void) | null = null
   /** Invalidate billboard facing cache (hide→show press_e / missed-it). */
   private invalidateBillboardFacing: ((entity: Entity) => void) | null = null
@@ -404,6 +412,7 @@ export class ThreeBridge {
     this.materials = new MaterialApplier(sceneConfig, cache)
     this.instancer = new SceneGltfInstancer(() => this.drawWorld.drawRoot)
     this.meshRendererInstancer = new MeshRendererInstancer(() => this.drawWorld.drawRoot)
+    setLightTextureResolver((src) => resolveSceneTextureUrl(src, sceneConfig))
   }
 
   private getEntityVisual(obj: THREE.Group, mk: string): THREE.Object3D | undefined {
@@ -1483,7 +1492,49 @@ export class ThreeBridge {
   /** Keep a higher spawn cap briefly after the loading screen hides. */
   extendSoftHydration(durationMs: number): void {
     this.softHydrationUntil = Math.max(this.softHydrationUntil, performance.now() + durationMs)
-    window.setTimeout(() => this.queueAllMaterialEntities(), durationMs)
+  }
+
+  pendingMaterialWorkCount(): number {
+    return this.pendingMaterialEntities.size + this.pendingGltfNodeModEntities.size
+  }
+
+  /**
+   * Apply queued Material / GltfNodeModifiers on the loading screen (before play present).
+   * Hydration defers textures so attach can finish; this is the catch-up so orbit is not
+   * spiked by a 32ms/frame dump after `start()`.
+   */
+  async drainPendingMaterialsForLoad(opts?: {
+    onProgress?: (left: number) => void
+    maxWallMs?: number
+    sliceMs?: number
+  }): Promise<void> {
+    this.queueAllMaterialEntities()
+    const maxWallMs = opts?.maxWallMs ?? 12_000
+    const sliceMs = opts?.sliceMs ?? 20
+    const started = performance.now()
+    let stuck = 0
+    let lastLeft = -1
+    while (this.pendingMaterialWorkCount() > 0 && performance.now() - started < maxWallMs) {
+      const left = this.pendingMaterialWorkCount()
+      opts?.onProgress?.(left)
+      if (left === lastLeft) {
+        stuck++
+        if (stuck >= 4) break
+      } else {
+        stuck = 0
+        lastLeft = left
+      }
+      await this.runMaterialPass(this.ecs.Material, sliceMs, 64, false)
+      await this.runGltfNodeModifiersPass(sliceMs, 32)
+      await new Promise<void>((r) => requestAnimationFrame(() => r()))
+    }
+    const left = this.pendingMaterialWorkCount()
+    if (left > 0) {
+      console.info(
+        `[ThreeBridge] pre-play material drain leftover=${left} ` +
+          `t=${((performance.now() - started) / 1000).toFixed(1)}s`
+      )
+    }
   }
 
   private resolveGltfBudget(): number {
@@ -2168,6 +2219,22 @@ export class ThreeBridge {
     // (Parented / motion MeshRenderers already promoted off the instancer above.)
     this.instancer.updateEntities(applied.upserts, this.store.nodes)
     this.meshRendererInstancer.updateEntities(applied.upserts, this.store.nodes)
+
+    // Draw-root GLB / MeshRenderer clones do not live under the pose Group.
+    // Without this extract, Transform.scale = 0 hides the collider path but the
+    // mesh stays (Rituals blocker / npc-toolkit hide).
+    const poseMoved: Entity[] = []
+    const transformId = this.ecs.Transform.componentId
+    const visibilityId = this.ecs.VisibilityComponent.componentId
+    for (const [entity, comps] of diff) {
+      if (comps.has(transformId) || comps.has(visibilityId)) poseMoved.push(entity)
+    }
+    if (poseMoved.length) {
+      for (const entity of poseMoved) {
+        this.store.nodes.get(entity)?.updateMatrixWorld(true)
+      }
+      this.extractMovedPoses(poseMoved)
+    }
 
     await this.runDiffMeshPass(meshEcs, deferMaterials)
     // Board flips: Material often arrives before GLTF instance attach (or during walk).
@@ -3024,21 +3091,20 @@ export class ThreeBridge {
     if (!this.pendingMaterialEntities.size && !this.pendingGltfNodeModEntities.size) return
     this.materialTickBusy = true
     // Prefer finishing textured MeshRenderer planes (ground/walls) under load.
+    // Play: never steal the present/orbit thread. Hydration may boost to drain the queue.
     const texturedPending = this.pendingMaterialEntities.size
-    const nodeModBoost = this.pendingGltfNodeModEntities.size > 0 ? 12 : 0
-    const entityBoost =
-      (this.pendingGltfNodeModEntities.size > 0 ? 16 : 0) +
-      (texturedPending > 32 ? 32 : 0)
-    const msBoost = texturedPending > 32 ? 24 : 0
+    const play = !this.hydrationMode
+    const nodeModBoost = play ? 0 : this.pendingGltfNodeModEntities.size > 0 ? 12 : 0
+    const entityBoost = play
+      ? 0
+      : (this.pendingGltfNodeModEntities.size > 0 ? 16 : 0) + (texturedPending > 32 ? 32 : 0)
+    const msBoost = play ? 0 : texturedPending > 32 ? 24 : 0
+    const passMs = play ? Math.min(budgetMs, 4) : budgetMs + nodeModBoost + msBoost
+    const passN = play ? Math.min(maxEntities, 6) : maxEntities + entityBoost
     // Fire-and-forget — must not be awaited from the async frame path.
     void Promise.all([
-      this.runMaterialPass(
-        this.ecs.Material,
-        budgetMs + nodeModBoost + msBoost,
-        maxEntities + entityBoost,
-        false
-      ),
-      this.runGltfNodeModifiersPass(budgetMs + nodeModBoost, maxEntities + entityBoost)
+      this.runMaterialPass(this.ecs.Material, passMs, passN, false),
+      this.runGltfNodeModifiersPass(play ? passMs : budgetMs + nodeModBoost, passN)
     ])
       .catch((err) => console.warn('[ThreeBridge] deferred material pass failed', err))
       .finally(() => {
@@ -3154,9 +3220,9 @@ export class ThreeBridge {
       if (!ok && !obj.userData.dclGltfNodeModPathMissLogged) {
         obj.userData.dclGltfNodeModPathMissLogged = true
       }
-      if (ok || obj.userData.dclGltfNodeModPathMissLogged) {
-        this.pendingGltfNodeModEntities.delete(entity)
-      }
+      // Texture.Common (sheet banners) may miss the first tick — keep retrying.
+      // Path-miss log is diagnostic only; do not drop the pending.
+      if (ok) this.pendingGltfNodeModEntities.delete(entity)
       processed++
     }
   }
@@ -3416,6 +3482,9 @@ export class ThreeBridge {
 
   /** Tear down bridge-owned resources (entity graph cleared via `EntityStore.dispose`). */
   dispose(): void {
+    // Draw meshes live on DrawWorld, not pose Groups. If we only dispose EntityStore,
+    // GLBs freeze in place (mixer dies, visual stays) — /reload looks like a hitch.
+    this.detachAllSceneDrawVisuals()
     this.videoPlayerBridge?.dispose()
     this.videoPlayerBridge = null
     this.audioSourceBridge?.dispose()
@@ -3433,6 +3502,7 @@ export class ThreeBridge {
     this.instanceMotionHits.clear()
     this.instancer.dispose()
     this.meshRendererInstancer.dispose()
+    setLightTextureResolver(null)
   }
 
   /**
@@ -3472,6 +3542,19 @@ export class ThreeBridge {
       return true
     }
     return removedGltf
+  }
+
+  /** Unbind every scene draw slot so recycle /reload actually hides GLBs + primitives. */
+  private detachAllSceneDrawVisuals(): void {
+    let n = 0
+    for (const [entity, obj] of this.store.nodes) {
+      if (this.store.getOwner(entity) === 'avatar') continue
+      this.removeEntityVisuals(entity, obj)
+      n++
+    }
+    if (n > 0) {
+      console.info(`[reload] hid ${n} scene draw visual(s)`)
+    }
   }
 
   private removeEntityVisuals(entity: Entity, obj: THREE.Group): void {
@@ -3845,6 +3928,7 @@ export class ThreeBridge {
     if (this.ecs.GltfContainer.has(entity)) {
       const src = this.ecs.GltfContainer.get(entity).src?.trim() ?? ''
       if (isFishingMotionGltfSrc(src)) return false
+      if (isGltfWaterSurfaceSrc(src) || isGltfWaterSurfaceRoot(template.root)) return false
     }
     // TextureMove / scale / move tweens need private hierarchy (bounce, bobber float).
     if (this.ecs.Tween.has(entity)) {
@@ -4090,6 +4174,7 @@ export class ThreeBridge {
           }
           this.notifyMeshComponent(entity, this.ecs.GltfContainer.componentId)
           this.notifyGltfAttached(entity)
+          this.seenGltfAttachHashes.add(hash)
           this.attachedSceneGltfCount++
           // Inventory: count template once per entity for HUD (instance draws share GPU geo).
           const tris = result.templateTris || templateTris
@@ -4150,6 +4235,7 @@ export class ThreeBridge {
         obj.userData.emoteAnchor = true
       } else {
         syncGltfInstanceRenderState(clone)
+        bindGltfWaterSurface(clone, src, (texUrl) => this.cache.loadTexture(texUrl))
         enableMeshShadows(clone)
       }
       // Static rest / no ECS Animator: freeze leaf matrices (scene graph of 3k+ meshes
@@ -4159,20 +4245,23 @@ export class ThreeBridge {
       // Fishing bobber/line/rod: never freeze — setBobberPosition + float Tweens every frame;
       // frozen host matrices left aim/cast meshes invisible or stuck at origin under load.
       const fishingMotion = isFishingMotionGltfSrc(src)
+      const waterSurface = isGltfWaterSurfaceSrc(src) || isGltfWaterSurfaceRoot(clone)
       if (
         !fishingMotion &&
+        !waterSurface &&
         !this.ecs.Animator.has(entity) &&
         template.animations.length === 0
       ) {
         freezeStaticObject3D(clone)
-        // Unique GLBs (theatre, buildings) cannot instance. Merge same-material
-        // leaves including authored names — pointer still hits the entity.
-        mergeStaticGltfLeaves(clone, { namedOk: true })
+        // Generic exporter names only. Authored names are GltfNodeModifiers.path
+        // targets (Updates banners, store windows) — merging them leaves the
+        // default GLB albedo on every clone.
+        mergeStaticGltfLeaves(clone, { namedOk: false })
         obj.matrixAutoUpdate = false
         obj.updateMatrix()
       } else {
         obj.matrixAutoUpdate = true
-        if (fishingMotion) unfreezeObject3D(clone)
+        if (fishingMotion || waterSurface) unfreezeObject3D(clone)
       }
       this.bindDrawVisual(obj, clone)
       const visComp = this.ecs.VisibilityComponent
@@ -4182,6 +4271,7 @@ export class ThreeBridge {
       }
       this.notifyMeshComponent(entity, this.ecs.GltfContainer.componentId)
       this.notifyGltfAttached(entity)
+      this.seenGltfAttachHashes.add(hash)
       this.attachedSceneGltfCount++
       this.attachedSceneTris += templateTris
       // Same-frame GltfNodeModifiers (event card posters) — don't wait for deferred budget.
@@ -4308,10 +4398,10 @@ export class ThreeBridge {
     if (GltfContainer.has(entity)) {
       const { src } = GltfContainer.get(entity)
       const fishingMotion = isFishingMotionGltfSrc(src)
-      // Fishing bobber/line/rod — never instance; attach this frame even under play budget=1.
-      if (fishingMotion) obj.userData.dclForceCloneAttach = true
+      const waterSurface = isGltfWaterSurfaceSrc(src)
       const hash = hashFromSrc(src, this.sceneConfig)
       const srcKey = hash ?? src.trim()
+      const firstOfHash = !!hash && !this.seenGltfAttachHashes.has(hash)
       let mesh = this.getEntityVisual(obj, mk) as THREE.Object3D | undefined
 
       if (!hash) {
@@ -4364,9 +4454,6 @@ export class ThreeBridge {
         // In-flight / re-src — scene can poll LOADING until FINISHED.
         this.setGltfLoadingState(entity, 1 /* LOADING */)
 
-        // Non-fishing: respect per-frame budget. Fishing: always proceed (cast must show bobber).
-        if (!fishingMotion && this.gltfBudgetRemaining <= 0) return
-
         const template = this.cache.peekCached(cacheKey)
         const templateTris = template
           ? ((template.root.userData.dclTriCount as number | undefined) ??
@@ -4379,9 +4466,8 @@ export class ThreeBridge {
 
         // Cold: schedule parse off the frame path — never await load() here.
         if (!template) {
-          // Fishing: always schedule load even if budget exhausted.
-          if (fishingMotion || this.gltfBudgetRemaining > 0) {
-            if (!fishingMotion) this.gltfBudgetRemaining--
+          if (fishingMotion || waterSurface || this.gltfBudgetRemaining > 0) {
+            if (!fishingMotion && !waterSurface) this.gltfBudgetRemaining--
             this.scheduleBackgroundLoad(url, isLocal ? url : hash, cacheKey)
             if (fishingMotion) {
               const leaf = src.split('/').pop() ?? src
@@ -4395,9 +4481,16 @@ export class ThreeBridge {
           return
         }
 
-        // Large *clones* off the attach pass — except fishing (must not wait behind disco queue).
+        // First copy of a hash that cannot GPU-instance (high-leaf env kit, water,
+        // motion) attaches now. Repeat large clones wait in the idle queue.
+        const uniqueClone = firstOfHash && !this.canInstanceAttach(entity, template)
+        const attachNow = fishingMotion || waterSurface || uniqueClone
+        if (attachNow) obj.userData.dclForceCloneAttach = true
+
+        if (!attachNow && this.gltfBudgetRemaining <= 0) return
+
         if (
-          !fishingMotion &&
+          !attachNow &&
           !obj.userData.dclForceIdleAttach &&
           templateTris >= ThreeBridge.LARGE_TEMPLATE_TRIS &&
           !this.canInstanceAttach(entity, template)
@@ -4406,7 +4499,7 @@ export class ThreeBridge {
           return
         }
 
-        if (!fishingMotion) this.gltfBudgetRemaining--
+        if (!attachNow) this.gltfBudgetRemaining--
         if (!this.attachCachedGltf(entity, obj, mk, src, srcKey, hash, template, templateTris)) {
           if (fishingMotion) {
             clientDebugLog.log(

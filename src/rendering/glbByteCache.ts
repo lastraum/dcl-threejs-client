@@ -6,6 +6,7 @@
  * instance before PhysX cook (`GltfColliderExtractor.ensureIndexedGeometry`).
  */
 import { safeDecodeURIComponent } from '../util/safeDecodeURIComponent'
+import { openIdb } from '../util/idbOpen'
 
 const DB_NAME = 'dcl-client-glb-cache'
 const DB_VERSION = 1
@@ -28,32 +29,21 @@ export function normalizeGlbCacheKey(keyOrHashOrUrl: string): string {
 
 function openDb(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise
-  dbPromise = new Promise((resolve, reject) => {
-    if (typeof indexedDB === 'undefined') {
-      dbPromise = null
-      reject(new Error('IndexedDB unavailable'))
-      return
-    }
-    const req = indexedDB.open(DB_NAME, DB_VERSION)
-    req.onupgradeneeded = () => {
-      const db = req.result
-      if (!db.objectStoreNames.contains(STORE)) {
-        db.createObjectStore(STORE)
-      }
-    }
-    req.onsuccess = () => {
-      const db = req.result
+  dbPromise = openIdb(DB_NAME, DB_VERSION, (db) => {
+    if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE)
+  }).then(
+    (db) => {
       db.onversionchange = () => {
         db.close()
         dbPromise = null
       }
-      resolve(db)
-    }
-    req.onerror = () => {
+      return db
+    },
+    (err) => {
       dbPromise = null
-      reject(req.error ?? new Error('IndexedDB open failed'))
+      throw err
     }
-  })
+  )
   return dbPromise
 }
 

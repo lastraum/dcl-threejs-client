@@ -1,5 +1,5 @@
 import type { RouteTarget } from '../../../dcl/content/route'
-import { parseGotoCommand } from '../../../dcl/content/route'
+import { parseGotoCommand, parseReloadCommand } from '../../../dcl/content/route'
 import {
   appendChatTextWithSelfMentions,
   selfMentionTokens,
@@ -1397,6 +1397,11 @@ export class SocialChatDock {
       this.inputEl.value = ''
       this.updateComposerUi()
       await this.onGoto?.(goto)
+      return
+    }
+    if (parseReloadCommand(text)) {
+      this.inputEl.value = ''
+      this.updateComposerUi()
       return
     }
 

@@ -3,7 +3,50 @@ import { alignPreviewAvatarToGround } from '../../../avatar/avatarPreviewAlign'
 import { AvatarAnimations, type AvatarLocomotionState } from '../../../avatar/AvatarAnimations'
 import { composeAvatarFromProfile } from '../../../avatar/AvatarComposer'
 import { disposeWearableInstance } from '../../../avatar/loadWearable'
+import { prepareAvatarMaterials } from '../../../avatar/materials'
 import type { AvatarProfile } from '../../../avatar/types'
+
+/**
+ * Isolated preview is not the world IBL stage. Three r155+ lights are physical
+ * (old 1.0 ≈ π now). Explorer wearable-preview is high-fill matte — without
+ * ambient + stronger keys, MeshStandard avatars render as a black silhouette.
+ */
+function addAvatarPreviewLights(scene: THREE.Scene): void {
+  scene.add(new THREE.AmbientLight(0xffffff, 2.2))
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x6a5a88, 1.6)
+  scene.add(hemi)
+  const key = new THREE.DirectionalLight(0xffffff, 3.2)
+  key.position.set(2.4, 4.2, 3.2)
+  scene.add(key)
+  const fill = new THREE.DirectionalLight(0xfff4e8, 1.4)
+  fill.position.set(-2.2, 2.4, 1.6)
+  scene.add(fill)
+  const rim = new THREE.DirectionalLight(0xc9a0ff, 1.1)
+  rim.position.set(-2.6, 2.2, -2.4)
+  scene.add(rim)
+}
+
+/** Second WebGL context — upload maps here or they stay black until a later hitch. */
+function bindPreviewTextures(renderer: THREE.WebGLRenderer, root: THREE.Object3D): void {
+  root.traverse((obj) => {
+    if (!(obj as THREE.Mesh).isMesh) return
+    const mats = Array.isArray((obj as THREE.Mesh).material)
+      ? ((obj as THREE.Mesh).material as THREE.Material[])
+      : [(obj as THREE.Mesh).material]
+    for (const mat of mats) {
+      if (!mat) continue
+      const slots = [
+        (mat as THREE.MeshStandardMaterial).map,
+        (mat as THREE.MeshStandardMaterial).emissiveMap,
+        (mat as THREE.MeshStandardMaterial).normalMap,
+        (mat as THREE.MeshStandardMaterial).alphaMap
+      ]
+      for (const tex of slots) {
+        if (tex) renderer.initTexture(tex)
+      }
+    }
+  })
+}
 
 export type AvatarPreviewOptions = {
   /** Values above 1 move the camera closer (larger subject). Default 1. */
@@ -65,15 +108,13 @@ export class AvatarPreviewMini {
       alpha: true,
       antialias: true
     })
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping
+    this.renderer.toneMappingExposure = 1.15
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.scene = new THREE.Scene()
     this.camera = new THREE.PerspectiveCamera(28, 1, 0.1, 100)
-
-    const hemi = new THREE.HemisphereLight(0xffffff, 0x2a1a44, 1.1)
-    this.scene.add(hemi)
-    const key = new THREE.DirectionalLight(0xffffff, 0.9)
-    key.position.set(2, 4, 3)
-    this.scene.add(key)
+    addAvatarPreviewLights(this.scene)
 
     this.pivot = new THREE.Group()
     this.scene.add(this.pivot)
@@ -94,6 +135,8 @@ export class AvatarPreviewMini {
     if (!avatar) return false
 
     this.avatar = avatar
+    prepareAvatarMaterials(avatar)
+    if (this.renderer) bindPreviewTextures(this.renderer, avatar)
     const alignedSize = alignPreviewAvatarToGround(avatar, 'dcl')
     this.subjectSize = alignedSize
     this.subjectCenterY = alignedSize.y * 0.5

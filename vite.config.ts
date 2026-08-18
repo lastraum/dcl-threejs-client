@@ -1,4 +1,6 @@
 import { defineConfig } from 'vite'
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { patchYogaNbindSource } from './src/shim/vite/yogaNbindFix'
 import { createSuggestionProxyMiddleware } from './scripts/suggestion-dispatch-proxy.mjs'
@@ -6,6 +8,12 @@ import { createTextureProxyMiddleware } from './scripts/texture-dispatch-proxy.m
 import { createAnalyticsProxyMiddleware } from './scripts/analytics-dispatch-proxy.mjs'
 import { createSceneFetchProxyMiddleware } from './scripts/scene-fetch-proxy.mjs'
 import { sceneBundleMirrorPlugin } from './vite-plugins/sceneBundleMirror'
+
+const vfxSrcCandidates = [
+  resolve(__dirname, '../../../../threejs-vfx/src'),
+  resolve(__dirname, '../../../threejs-vfx/src')
+]
+const vfxSrc = vfxSrcCandidates.find((p) => existsSync(p)) ?? null
 
 const ARCHIPELAGO_PEERS = 'https://archipelago-ea-stats.decentraland.org/peers'
 const PARCELS_API = 'https://api.decentraland.org/v2/parcels'
@@ -68,14 +76,17 @@ export default defineConfig({
     __BUILD_DATE__: JSON.stringify(new Date().toISOString().slice(0, 10))
   },
   resolve: {
+    dedupe: ['three'],
     alias: {
-      fs: fileURLToPath(new URL('./src/shim/browser/emptyFs.ts', import.meta.url))
+      fs: fileURLToPath(new URL('./src/shim/browser/emptyFs.ts', import.meta.url)),
+      ...(vfxSrc ? { '@vfx': vfxSrc } : {})
     }
   },
   appType: 'spa',
   server: {
     port: 5173,
     open: true,
+    fs: vfxSrc ? { allow: ['..', vfxSrc] } : undefined,
     proxy: {
       '/api/peers': {
         target: ARCHIPELAGO_PEERS,

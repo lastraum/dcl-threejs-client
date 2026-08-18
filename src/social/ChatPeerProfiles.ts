@@ -1,4 +1,5 @@
 import { identityFromAvatarProfile, shortenAddress } from '../avatar/displayName'
+import { catalystContentUrlForWearables } from '../avatar/catalystEndpoints'
 import {
   fetchProfileFaceUrl,
   getCommsPeerProfile,
@@ -57,7 +58,7 @@ export class ChatPeerProfiles {
   private notifyAll = false
 
   setPeerUrl(url: string): void {
-    this.peerUrl = url.replace(/\/$/, '')
+    this.peerUrl = catalystContentUrlForWearables(url)
   }
 
   setLocal(address: string, displayName: string, faceUrl: string | null, nameColor = '#b8ff66'): void {

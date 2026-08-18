@@ -531,6 +531,11 @@ export class PlayerSystem {
     } catch (err) {
       if (gen !== this.avatarLoadGen) return
       console.warn('Avatar load failed — continuing with invisible capsule', err)
+      clientDebugLog.log(
+        'avatar',
+        `load failed — invisible capsule · ${err instanceof Error ? err.message : String(err)}`,
+        { alsoConsole: true, level: 'error' }
+      )
     }
 
     if (gen !== this.avatarLoadGen) return

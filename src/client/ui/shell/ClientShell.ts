@@ -68,7 +68,8 @@ const TOP_BUTTONS: TopButtonConfig[] = [
   { id: 'marketplace', icon: 'marketplace', label: 'Marketplace' },
   { id: 'pictures', icon: 'pictures', label: 'Pictures', shortcut: 'K' },
   { id: 'settings', icon: 'settings', label: 'Settings' },
-  // Parity+ extras — Live, Pets, Loot Bag, Help, Dev (not Preferences)
+  { id: 'help', icon: 'help', label: 'Help' },
+  // Parity+ extras — Live, Pets, Loot Bag, Debug, Roadmap (not Preferences)
   { id: 'labs', icon: 'labs', label: 'Labs' }
 ]
 
@@ -77,9 +78,11 @@ const LABS_MENU_SIDEBAR_IDS: SidebarButtonConfig[] = [
   { id: 'pets', icon: 'pets', label: 'Pets' },
   { id: 'lootbag', icon: 'lootbag', label: 'Loot Bag' },
   { id: 'live', icon: 'live', label: 'Live' },
-  { id: 'help', icon: 'help', label: 'Help' },
-  { id: 'dev', icon: 'dev', label: 'Dev' }
+  { id: 'debug', icon: 'debug', label: 'Debug' },
+  { id: 'dev', icon: 'roadmap', label: 'Roadmap' }
 ]
+
+const DECENTRALAND_HELP_URL = 'https://docs.decentraland.org/player/'
 
 const BOTTOM_BUTTONS: SidebarButtonConfig[] = [
   {
@@ -389,8 +392,8 @@ export class ClientShell {
         { id: 'live', icon: 'live', label: 'Live' },
         { id: 'pets', icon: 'pets', label: 'Pets' },
         { id: 'lootbag', icon: 'lootbag', label: 'Loot Bag' },
-        { id: 'help', icon: 'help', label: 'Help' },
-        { id: 'dev', icon: 'dev', label: 'Dev' }
+        { id: 'debug', icon: 'debug', label: 'Debug' },
+        { id: 'dev', icon: 'roadmap', label: 'Roadmap' }
       ],
       onSelect: (id) => this.onLabsMenuSelect(id),
       onClose: () => this.syncLabsRailActive()
@@ -801,7 +804,15 @@ export class ClientShell {
         ev.preventDefault()
         ev.stopPropagation()
         this.closeMobileDrawerForOverlay()
-        this.openHelpFromMenu()
+        this.openDecentralandHelp()
+      }
+    }
+    if (id === 'debug') {
+      return (ev) => {
+        ev.preventDefault()
+        ev.stopPropagation()
+        this.closeMobileDrawerForOverlay()
+        this.openDebugFromMenu()
       }
     }
     if (id === 'dev') {
@@ -1039,8 +1050,8 @@ export class ClientShell {
       case 'lootbag':
         this.openLootBagFromMenu()
         break
-      case 'help':
-        this.openHelpFromMenu()
+      case 'debug':
+        this.openDebugFromMenu()
         break
       case 'dev':
         this.openDevFromMenu()
@@ -1087,7 +1098,7 @@ export class ClientShell {
       this.buttons.get('lootbag')?.setActive(false)
       this.labsMenu.setItemActive('pets', false)
       this.labsMenu.setItemActive('lootbag', false)
-      this.labsMenu.setItemActive('help', false)
+      this.labsMenu.setItemActive('debug', false)
       this.labsMenu.setItemActive('dev', false)
     }
     this.syncLabsRailActive()
@@ -1144,8 +1155,13 @@ export class ClientShell {
     this.syncLabsRailActive()
   }
 
-  /** Help = Debug tools panel (floating). */
-  private openHelpFromMenu(): void {
+  /** HUD Help — official Decentraland player docs (not the debug panel). */
+  private openDecentralandHelp(): void {
+    window.open(DECENTRALAND_HELP_URL, '_blank', 'noopener,noreferrer')
+  }
+
+  /** Labs → Debug = client debug tools panel (floating). */
+  private openDebugFromMenu(): void {
     this.labsMenu.hide()
     this.skyboxPanel.hide()
     this.chatPanel?.hide()
@@ -1158,7 +1174,7 @@ export class ClientShell {
     // Ensure not stuck embedded from an old combined session
     if (this.debugPanel.isEmbedded()) this.debugPanel.detach()
     const open = this.debugPanel.toggle()
-    this.setHelpActive(open)
+    this.setDebugActive(open)
   }
 
   /** Dev = progress / community / parity matrix modal. */
@@ -1170,16 +1186,16 @@ export class ClientShell {
     this.debugPanel.hide()
     this.buttons.get('skybox')?.setActive(false)
     this.buttons.get('chat')?.setActive(false)
-    this.buttons.get('help')?.setActive(false)
-    this.labsMenu.setItemActive('help', false)
+    this.buttons.get('debug')?.setActive(false)
+    this.labsMenu.setItemActive('debug', false)
     if (!this.devProgressPanel) return
     const open = this.devProgressPanel.toggle()
     this.setDevActive(open)
   }
 
-  setHelpActive(active: boolean): void {
-    this.buttons.get('help')?.setActive(active)
-    this.labsMenu.setItemActive('help', active)
+  setDebugActive(active: boolean): void {
+    this.buttons.get('debug')?.setActive(active)
+    this.labsMenu.setItemActive('debug', active)
     if (active) {
       this.buttons.get('dev')?.setActive(false)
       this.labsMenu.setItemActive('dev', false)
@@ -1191,8 +1207,8 @@ export class ClientShell {
     this.buttons.get('dev')?.setActive(active)
     this.labsMenu.setItemActive('dev', active)
     if (active) {
-      this.buttons.get('help')?.setActive(false)
-      this.labsMenu.setItemActive('help', false)
+      this.buttons.get('debug')?.setActive(false)
+      this.labsMenu.setItemActive('debug', false)
     }
     this.syncLabsRailActive()
   }

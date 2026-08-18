@@ -30,10 +30,14 @@ import { AnimatorBridge } from '../../bridge/AnimatorBridge'
 import { isEmoteAnchorGltfSrc } from '../../rendering/DclTextureResolver'
 import { TweenBridge } from '../../bridge/TweenBridge'
 import { ParticleSystemBridge } from '../../bridge/ParticleSystemBridge'
+import { SceneTagVfxHost } from '../../bridge/tagVfx/SceneTagVfxHost'
+import { buildShaderCtx, getShaderManager } from '../../vfx/ShaderManager'
+import { isLocalPreviewScene } from '../../dcl/content/refreshPreviewScene'
 import { fetchProfileFaceUrl } from '../../avatar/peerApi'
 import { isTweenVerbose } from '../../bridge/tweenConfig'
 import { dumpMotionFocusReport, isMotionFocusActive, resetBlimpPivotCache } from '../../bridge/motionFocus'
 import { AvatarAttachBridge } from '../../bridge/AvatarAttachBridge'
+import { tickGltfWaterSurfaces } from '../../rendering/gltfWaterSurface'
 import type { AvatarAttachTargetResolver } from '../../avatar/AvatarAttachTargets'
 import { AudioSourceBridge } from '../../media/AudioSourceBridge'
 import { AudioStreamBridge } from '../../media/AudioStreamBridge'
@@ -329,6 +333,7 @@ export class SceneScriptSystem {
   private animatorBridge: AnimatorBridge | null = null
   private tweenBridge: TweenBridge | null = null
   private particleBridge: ParticleSystemBridge | null = null
+  private tagVfxHost: SceneTagVfxHost | null = null
   private sceneUiBridge: SceneUiBridge | null = null
   /** `#scene-ui-root` (primary) or `#pe-ui-root` (portable experience). */
   private uiRootId: 'scene-ui-root' | 'pe-ui-root' = 'scene-ui-root'
@@ -361,6 +366,9 @@ export class SceneScriptSystem {
   private lastSentCamRot = { x: Number.NaN, y: Number.NaN, z: Number.NaN, w: Number.NaN }
   private lastSentPpiDir = { x: Number.NaN, y: Number.NaN, z: Number.NaN }
   private lastSentPpiScreen = { x: Number.NaN, y: Number.NaN }
+  /** Last AvatarAttach relative batch — sent on play-frame so Hle sees bone pose. */
+  private lastAvatarAttachBatch: import('../../bridge/AvatarAttachBridge').AvatarAttachWorkerEntry[] =
+    []
   private prepared = false
   private crdtTick = 0
   /** Renderer frame counter for EngineInfo (ADR-148). */
@@ -455,6 +463,8 @@ export class SceneScriptSystem {
   private bootPhaseActive = false
   private bootProgressReporter: ((msg: string) => void) | null = null
   private scriptBlobUrl: string | null = null
+  /** Last fetched `bin/index.js` text — used to discover `tjs.vfx:*` before play. */
+  private lastScriptSource: string | null = null
   private compileProgressTimer: ReturnType<typeof setInterval> | null = null
   /** Set when inject-pointer-click is posted; cleared on pointer-deliver-done from worker. */
   private pointerDeliverAwaitingAck = false
@@ -527,6 +537,11 @@ export class SceneScriptSystem {
 
   getFocusPolicy(): import('../../dcl/multiScene/types').FocusPolicy {
     return this.focusPolicy
+  }
+
+  /** Latest scene `bin/index.js` source, if the worker boot fetched it. */
+  getLastScriptSource(): string | null {
+    return this.lastScriptSource
   }
 
   private applyFocusPolicy(policy: import('../../dcl/multiScene/types').FocusPolicy): void {
@@ -679,6 +694,20 @@ export class SceneScriptSystem {
       (pose, visual) => this.bridge?.bindEntityDrawSlot(pose, visual, 'dclDrawParticles'),
       (pose) => this.bridge?.unbindEntityDrawSlot(pose, 'dclDrawParticles')
     )
+    this.tagVfxHost?.dispose()
+    this.tagVfxHost = new SceneTagVfxHost(
+      this.readComponents,
+      host.scene,
+      () => this.bridge?.getEntityNodes()
+    )
+    getShaderManager().setResolveUrl((src) => {
+      const trimmed = src.trim()
+      if (/^https?:\/\//i.test(trimmed)) return trimmed
+      const hit =
+        scene.content.find((c) => c.file === trimmed) ??
+        scene.content.find((c) => c.file.endsWith(`/${trimmed}`))
+      return hit ? scene.assetUrl(hit.hash) : null
+    })
     this.sceneUiBridge?.dispose()
     const uiDetached = opts?.uiDetached === true
     const uiRootId = uiDetached
@@ -1399,14 +1428,16 @@ export class SceneScriptSystem {
       MeshRenderer,
       Animator,
       AvatarShape,
-      Billboard
+      Billboard,
+      VisibilityComponent
     } = this.readComponents
 
     if (spriteSlot) {
       if (
         componentId === PointerEvents.componentId ||
         componentId === MeshCollider.componentId ||
-        (componentId === MeshRenderer.componentId && PointerEvents.has(entity))
+        (componentId === MeshRenderer.componentId && PointerEvents.has(entity)) ||
+        (componentId === VisibilityComponent.componentId && PointerEvents.has(entity))
       ) {
         this.pointerStructureDirty = true
       }
@@ -1440,6 +1471,9 @@ export class SceneScriptSystem {
         return
       }
       this.linkTransformEntity(entity, Transform.get(entity).parent as Entity)
+      // Explorer: Transform.scale ≈ 0 disables the solid (Rituals blocker1, portals).
+      // Do this on the put — pose-fp slides can miss the same frame the mesh vanishes.
+      this.dropHiddenScaleColliders(entity)
       if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
         this.colliderPoseDirty.add(entity)
       }
@@ -1452,7 +1486,11 @@ export class SceneScriptSystem {
       componentId === PointerEvents.componentId ||
       componentId === GltfContainer.componentId ||
       (componentId === MeshRenderer.componentId && PointerEvents.has(entity)) ||
-      componentId === MeshCollider.componentId
+      componentId === MeshCollider.componentId ||
+      // Plaza close_button: Visibility false at spawn, true on open. Hidden visible-class
+      // meshes are omitted from pointerTargets — must rebuild when they reappear.
+      (componentId === VisibilityComponent.componentId &&
+        (PointerEvents.has(entity) || GltfContainer.has(entity) || MeshCollider.has(entity)))
     ) {
       this.pointerStructureDirty = true
     }
@@ -1690,8 +1728,8 @@ export class SceneScriptSystem {
     this.pendingUiEntities = undefined
     this.clearProjectionUiLag()
     this.forceResumeWorkerSceneTicks('move-player-to')
-    // Drive one play frame immediately so PE pose + systems advance this rAF.
-    this.tickPlayFrame()
+    // Next SceneLoop send (or this one if idle) — do not stack a second play-frame.
+    if (!this.isPlayFrameInFlight()) this.tickPlayFrame()
   }
 
   /** Clear stuck sit/stool mode-freeze on the worker (WASD escape). */
@@ -2144,12 +2182,12 @@ export class SceneScriptSystem {
     const mainFile = scene.content.find((c) => c.file === scene.mainEntry)
     if (!mainFile) throw new Error(`Main entry not in content: ${scene.mainEntry}`)
 
-    const scriptUrl = scene.assetUrl(mainFile.hash)
+    const scriptUrl = sceneContentFetchUrl(scene, scene.assetUrl(mainFile.hash))
     const scriptStarted = performance.now()
     this.bootProgressReporter?.('Fetching scene script…')
     clientDebugLog.log('scene', 'loading scene script and boot files…')
     const [fetchedScript, preloadedFiles, bootSnapshot] = await Promise.all([
-      fetch(scriptUrl).then(async (res) => {
+      fetch(scriptUrl, { cache: 'no-store' }).then(async (res) => {
         if (!res.ok) throw new Error(`Scene script fetch failed (${res.status}): ${scriptUrl}`)
         const buf = new Uint8Array(await res.arrayBuffer())
         const codeForMirror =
@@ -2165,6 +2203,7 @@ export class SceneScriptSystem {
           })
         }
         // Keep blob as fallback for older worker paths / hard refresh debugging.
+        this.lastScriptSource = codeForMirror || null
         this.revokeScriptBlobUrl()
         this.scriptBlobUrl = URL.createObjectURL(
           new Blob([buf as BlobPart], { type: 'application/javascript' })
@@ -2564,6 +2603,20 @@ export class SceneScriptSystem {
         id: msg.id,
         body: {} satisfies CopyToClipboardResponse
       } satisfies MainToWorker)
+      return
+    }
+    if (msg.type === 'tjs-shader') {
+      if (msg.fn === 'play' || msg.name === 'play') {
+        this.tagVfxHost?.playNamed(msg.params.target ?? msg.params.at ?? msg.name)
+        return
+      }
+      const ctx = buildShaderCtx(0, msg.fn, msg.params, null)
+      getShaderManager().trigger(msg.name, msg.fn, ctx)
+      clientDebugLog.log(
+        'scene',
+        `shader ${msg.name}.${msg.fn} from scene code at=${msg.params.at ?? '—'}`,
+        { alsoConsole: true }
+      )
       return
     }
     if (msg.type === 'trigger-emote') {
@@ -3270,10 +3323,10 @@ export class SceneScriptSystem {
           this.assetLoadBridge?.sync(this.view)
         }
 
-        // WSP 0.5k4 — pointer/input + TriggerArea/raycast already driven every rAF
-        // (updatePointerEvents / updateTriggerAreas / updateRaycasts / inputHub).
+        // WSP 0.5k4 — pointer/input + TriggerArea already driven on present rAF.
+        // Continuous Raycast is SceneLoop prepare (tickPlayFrame), not CRDT apply.
         // Re-running on every worker CRDT apply was ptr 8–30ms + trg 7–18ms on [wsp05].
-        // Keep them only on live pointer edge (inject session) so PE edges stay correct.
+        // Keep pointer sync only on live pointer edge (inject session) so PE edges stay correct.
         let t = performance.now()
         if (this.pointerAwaitingWorkerApply || this.pointerDeliverAwaitingAck) {
           this.syncPointerInput(this.crdtTick, {
@@ -3375,7 +3428,9 @@ export class SceneScriptSystem {
     const entry = scene.content.find((file) => file.file === 'main.crdt')
     if (!entry?.hash) return
     try {
-      const res = await fetch(scene.assetUrl(entry.hash))
+      const res = await fetch(sceneContentFetchUrl(scene, scene.assetUrl(entry.hash)), {
+        cache: 'no-store'
+      })
       if (!res.ok) return
       const bytes = new Uint8Array(await res.arrayBuffer())
       if (!bytes.byteLength) return
@@ -3413,7 +3468,9 @@ export class SceneScriptSystem {
             : undefined)
         if (!entry?.hash) return
         try {
-          const res = await fetch(scene.assetUrl(entry.hash))
+          const res = await fetch(sceneContentFetchUrl(scene, scene.assetUrl(entry.hash)), {
+            cache: 'no-store'
+          })
           if (!res.ok) return
           const content = new Uint8Array(await res.arrayBuffer())
           out[fileName] = { hash: entry.hash, content }
@@ -4044,6 +4101,7 @@ export class SceneScriptSystem {
         const tweenId = Tween.componentId
         const tweenSeqId = TweenSequence.componentId
         const visibilityId = VisibilityComponent.componentId
+        const particleId = this.readComponents.ParticleSystem.componentId
         // Pose-fast path: Transform/Tween **and** Visibility + TweenSequence.
         // GP fishing hide (press_e plane / bobber) is jI(): visible=false + tween deletes +
         // parent stash — if Visibility waits on the async otherMotion drain it sticks on screen
@@ -4059,7 +4117,8 @@ export class SceneScriptSystem {
               cid === transformId ||
               cid === tweenId ||
               cid === tweenSeqId ||
-              cid === visibilityId
+              cid === visibilityId ||
+              cid === particleId
             ) {
               pose.set(cid, kind)
               if (cid === tweenId) tweenEntities.push(entity)
@@ -4080,6 +4139,7 @@ export class SceneScriptSystem {
               this.bridge?.noteReservedParentedEntity(entity, parent, v)
             }
           })
+          for (const entity of poseDiff.keys()) this.dropHiddenScaleColliders(entity)
           // Group + __mesh_* + instancer matrix (zero scale when hidden).
           const motionEntities = this.expandMotionExtractEntities(poseDiff.keys())
           this.bridge.syncEcsVisibility(motionEntities)
@@ -4503,6 +4563,8 @@ export class SceneScriptSystem {
     }
     void this.particleBridge?.sync(this.view)
     this.particleBridge?.update(1 / 30)
+    this.tagVfxHost?.sync(this.view)
+    this.tagVfxHost?.update(1 / 30)
     if (prefer.length > 0) {
       clientDebugLog.log(
         'pointer',
@@ -4670,7 +4732,8 @@ export class SceneScriptSystem {
       componentId === c.Transform.componentId ||
       componentId === c.Tween.componentId ||
       componentId === c.TweenSequence.componentId ||
-      componentId === c.VisibilityComponent.componentId
+      componentId === c.VisibilityComponent.componentId ||
+      componentId === c.ParticleSystem.componentId
     )
   }
 
@@ -4710,7 +4773,12 @@ export class SceneScriptSystem {
     const trsDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
     for (const [entity, comps] of poseDiff) {
       if (comps.has(tweenId)) tweenEntities.push(entity)
-      if (comps.has(transformId) || comps.has(tweenId) || comps.has(tweenSeqId)) {
+      if (
+        comps.has(transformId) ||
+        comps.has(tweenId) ||
+        comps.has(tweenSeqId) ||
+        comps.has(this.readComponents.VisibilityComponent.componentId)
+      ) {
         trsDiff.set(entity, comps)
       }
     }
@@ -5097,6 +5165,7 @@ export class SceneScriptSystem {
       flushPointerCrdt: () => {
         void this.flushPendingPointerCrdt()
       },
+      onWorldPointerDown: (entity) => this.tagVfxHost?.notifyPointerDown(entity),
       prepareRaycast: () => this.preparePointerRaycast(),
       resolveMeshRendererInstanceHit: (mesh, instanceId) =>
         this.bridge?.resolveMeshRendererInstanceEntity(mesh, instanceId) ?? null,
@@ -5188,7 +5257,11 @@ export class SceneScriptSystem {
       collision: this.collision,
       getEntityNodes: () => this.bridge!.getEntityNodes(),
       getWorldTransformDeps: () => this.getWorldTransformDeps(),
-      recordLww: this.recordRendererLww
+      recordLww: this.recordRendererLww,
+      getInstanceMeshesFor: (entities) =>
+        this.bridge?.getInstancePointerMeshesForEntities(entities) ?? [],
+      resolveInstanceEntity: (mesh, instanceId) =>
+        this.bridge?.resolveMeshRendererInstanceEntity(mesh, instanceId) ?? null
     })
     if (this.sceneInputRelay && sceneInput) {
       const consumer = {
@@ -5292,13 +5365,11 @@ export class SceneScriptSystem {
   }
 
   private lastGrowOnlyFlushAt = 0
-  private lastRaycastFlushAt = 0
   /**
    * Min interval between grow-only worker delivers (TriggerAreaResult, VideoEvent).
    * Keep short in play — trampoline/pad enter→impulse must not wait a full 100ms tick.
    */
   private static readonly GROW_ONLY_FLUSH_MIN_MS = 16
-  private static readonly RAYCAST_FLUSH_MIN_MS = 100
   /** While GLTFs stream in, avoid light-renderer-inbound storms (each can run worker onUpdate). */
   private static readonly HYDRATION_CRDT_FLUSH_MIN_MS = 500
   private lastTweenDeliverAt = 0
@@ -5357,19 +5428,15 @@ export class SceneScriptSystem {
   }
 
   /**
-   * Per-frame Raycast execution + push RaycastResult LWW to the worker.
-   * CRDT round-trips alone are too sparse when the scene worker is idle.
+   * SceneLoop prepare — recast continuous / one-shot Raycast once per guest tick
+   * and push changed RaycastResult LWW before play-frame-tick.
+   * Unchanged continuous payloads skip the PUT (RaycastSystem.lastContinuousSig).
    */
   updateRaycasts(): void {
     if (!this.running || !this.raycasts) return
     this.syncRaycasts()
     if (!this.canDeliverRendererCrdtToWorker()) return
     if (this.encoder.pendingLwwPutCount === 0) return
-    const now = performance.now()
-    if (now - this.lastRaycastFlushAt < this.rendererCrdtFlushMinMs(SceneScriptSystem.RAYCAST_FLUSH_MIN_MS)) {
-      return
-    }
-    this.lastRaycastFlushAt = now
     this.deliverRendererLwwToWorker()
   }
 
@@ -5465,11 +5532,13 @@ export class SceneScriptSystem {
     const lwwBytes = this.encoder.encodeLwwPutsOnly()
     if (!lwwBytes?.byteLength) return
     const copy = lwwBytes.slice()
-    clientDebugLog.log(
-      'input',
-      `Raycast CRDT deliver — ${pending} PUT(s), ${copy.byteLength} bytes`,
-      { level: 'info', alsoConsole: isRaycastVerbose() }
-    )
+    if (isRaycastVerbose()) {
+      clientDebugLog.log(
+        'input',
+        `Raycast CRDT deliver — ${pending} PUT(s), ${copy.byteLength} bytes`,
+        { level: 'info', alsoConsole: true }
+      )
+    }
     // Light renderer inbound (historical message type name).
     this.worker.postMessage(
       { type: 'pointer-crdt-deliver', data: [copy] } satisfies MainToWorker,
@@ -5597,6 +5666,10 @@ export class SceneScriptSystem {
       this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
     }
     this.crdtTick++
+    // Host query prepare: Raycast + TriggerArea land in the guest store before engine.update.
+    this.updateRaycasts()
+    this.updateTriggerAreas()
+    this.flushHoverInjects()
     if (poseMoved) this.rememberPlayFramePose(player, camera, primaryPointer)
     this.playFrameInFlight = true
     this.playFrameInFlightAt = performance.now()
@@ -5636,7 +5709,13 @@ export class SceneScriptSystem {
             }
           }
         : {}),
-      ...(primaryPointer ? { primaryPointer } : {})
+      ...(primaryPointer ? { primaryPointer } : {}),
+      ...(this.lastAvatarAttachBatch.length
+        ? { avatarAttach: this.lastAvatarAttachBatch }
+        : {}),
+      ...(this.tweenBridge && this.tweenBridge.peekTransformBatch().length
+        ? { tweenTransforms: [...this.tweenBridge.peekTransformBatch()] }
+        : {})
     } satisfies MainToWorker)
   }
 
@@ -5741,10 +5820,20 @@ export class SceneScriptSystem {
     }
   }
 
-  updatePointerEvents(tickNumber: number): void {
+  /** Host tooltip / highlight only — no worker inject. */
+  updatePointerVisuals(tickNumber: number): void {
     this.pointerEvents?.updateVisuals(tickNumber)
+  }
+
+  /** Queue hover PET for the next SceneLoop tick (not present rAF). */
+  flushHoverInjects(): void {
     const hovers = this.pointerEvents?.consumeHoverInjects() ?? []
     for (const inject of hovers) this.deliverHoverToWorker(inject)
+  }
+
+  /** Edges + ~80 ms hover — present must not prepare every rAF. */
+  needsPointerHoverPrepare(tickNumber: number): boolean {
+    return !!this.pointerEvents?.needsRaycastPrepare(tickNumber)
   }
 
   /** Flush queued pointer down/up after worker CRDT apply — ADR-214 executeRaycast stage. */
@@ -6019,6 +6108,8 @@ export class SceneScriptSystem {
     }
     void this.particleBridge?.sync(this.view)
     this.particleBridge?.update(1 / 30)
+    this.tagVfxHost?.sync(this.view)
+    this.tagVfxHost?.update(1 / 30)
     if (this.pointerStructureDirty) {
       const pe: Entity[] = []
       for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {
@@ -6444,6 +6535,51 @@ export class SceneScriptSystem {
     } satisfies MainToWorker)
   }
 
+  /** True when authored / local scale has no volume (Vector3.Zero hide). */
+  private transformScaleIsHidden(scale: { x?: number; y?: number; z?: number } | null | undefined): boolean {
+    if (!scale) return false
+    const ax = Math.abs(Number(scale.x))
+    const ay = Math.abs(Number(scale.y))
+    const az = Math.abs(Number(scale.z))
+    const minAbs = Math.min(
+      Number.isFinite(ax) ? ax : 1,
+      Number.isFinite(ay) ? ay : 1,
+      Number.isFinite(az) ? az : 1
+    )
+    return minAbs < 0.05
+  }
+
+  /**
+   * Drop PhysX hulls for this entity and collider-bearing descendants when scale is hidden.
+   * Keeps GLB extracts so a later scale-up recooks; only the live actors go away.
+   */
+  private dropHiddenScaleColliders(root: Entity): void {
+    try {
+      const { Transform, MeshCollider, GltfContainer } = this.readComponents
+      const t = Transform.getOrNull(root) as DclTransformValues | null
+      const node = this.entityStore?.nodes.get(root)
+      const localHidden = this.transformScaleIsHidden(t?.scale)
+      const nodeHidden =
+        !!node &&
+        Math.min(Math.abs(node.scale.x), Math.abs(node.scale.y), Math.abs(node.scale.z)) < 0.05
+      if (!localHidden && !nodeHidden) return
+
+      const stack: Entity[] = [root]
+      while (stack.length > 0) {
+        const entity = stack.pop()!
+        if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
+          this.collidersRemoveCallback?.(entity)
+        }
+        const children = this.transformChildren.get(entity)
+        if (children) {
+          for (const child of children) stack.push(child)
+        }
+      }
+    } catch {
+      /* never block Transform / extract */
+    }
+  }
+
   /** Parent transform moved — mark collider poses dirty down the subtree only. */
   private markDescendantColliderPosesDirty(ancestor: Entity): void {
     const stack: Entity[] = [...(this.transformChildren.get(ancestor) ?? [])]
@@ -6717,6 +6853,7 @@ export class SceneScriptSystem {
     const { MeshCollider, GltfContainer } = this.readComponents
     for (const entity of moved) {
       this.lastTweenMotionEntities.add(entity)
+      this.dropHiddenScaleColliders(entity)
       if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
         this.colliderPoseDirty.add(entity)
       }
@@ -6905,6 +7042,7 @@ export class SceneScriptSystem {
     opts?: { skipAvatarAttach?: boolean; ridingOnly?: boolean; visualOnly?: boolean }
   ): void {
     if (!this.running || !this.bridge) return
+    tickGltfWaterSurfaces(delta)
     this.maybeDumpMotionFocus()
     const ridingOnly = opts?.ridingOnly === true
     const visualOnly = opts?.visualOnly === true
@@ -6936,6 +7074,8 @@ export class SceneScriptSystem {
     }
     // In-view particles at present rate with wall elapsed (not async rAF delta).
     this.particleBridge?.update()
+    this.tagVfxHost?.sync(this.view)
+    this.tagVfxHost?.update(delta)
     // Primary scene stays fully live. 48/80 m is AOI neighbor shells only —
     // hiding plaza Gltfs (theatre, stage) was a residency bug, not a host-world win.
     if (!this.restoredGltfCull) {
@@ -6967,6 +7107,7 @@ export class SceneScriptSystem {
     // sync is async (texture load); throttle so we don't pile concurrent creates.
     if (this.bridgeSyncTick % 8 === 0) {
       void this.particleBridge?.sync(this.view)
+      this.tagVfxHost?.sync(this.view)
     }
     // PlayerEntity-parented scene meshes (Dead Surge path arrow) — re-parent each frame.
     this.bridge.syncReservedParentedTransforms(this.view)
@@ -6994,6 +7135,7 @@ export class SceneScriptSystem {
     // can animate independently while following bones.
     const attachBatch = this.avatarAttachBridge.consumeWorkerBatch()
     if (attachBatch.length) {
+      this.lastAvatarAttachBatch = attachBatch
       this.bridge.promoteAvatarAttachGltfs(attachBatch.map((e) => e.entity as Entity))
       this.flushAvatarAttachTransformsFromBatch(attachBatch)
     }
@@ -7089,11 +7231,26 @@ export class SceneScriptSystem {
   /** Sync-frame sprite UV only — tiny tracked set, not a full MeshRenderer walk. */
   syncAnimatedSprites(): void {
     this.bridge?.syncAnimatedPlaneUvs()
+    // Sprite setPlane (plaza qW fish rings) writes Visibility=false on the last
+    // cell. Re-apply after the UV patch so a mesh rebuild cannot leave the ring up.
+    this.bridge?.syncEcsVisibility(this.bridge.entitiesWithVisibility())
   }
 
   /** Budgeted material texture retries on the render thread — not tied to projection diff drain. */
   tickDeferredMaterials(): void {
     this.bridge?.tickDeferredMaterials()
+  }
+
+  pendingMaterialWorkCount(): number {
+    return this.bridge?.pendingMaterialWorkCount() ?? 0
+  }
+
+  async drainPendingMaterialsForLoad(opts?: {
+    onProgress?: (left: number) => void
+    maxWallMs?: number
+    sliceMs?: number
+  }): Promise<void> {
+    await this.bridge?.drainPendingMaterialsForLoad(opts)
   }
 
   async update(delta: number): Promise<void> {
@@ -7177,6 +7334,8 @@ export class SceneScriptSystem {
     this.tweenBridge = null
     this.particleBridge?.dispose()
     this.particleBridge = null
+    this.tagVfxHost?.dispose()
+    this.tagVfxHost = null
     this.unbindSceneUiViewportSync()
     this.sceneUiBridge?.dispose()
     this.sceneUiBridge = null
@@ -7246,4 +7405,11 @@ function emptyEntityPose(): EntityPose {
     position: new THREE.Vector3(),
     rotation: new THREE.Quaternion()
   }
+}
+
+/** LSD hashes are path-stable — bust HTTP cache so `/reload` and preview WS pick up new bytes. */
+function sceneContentFetchUrl(scene: ResolvedScene, url: string): string {
+  if (!isLocalPreviewScene(scene)) return url
+  const sep = url.includes('?') ? '&' : '?'
+  return `${url}${sep}t=${Date.now()}`
 }

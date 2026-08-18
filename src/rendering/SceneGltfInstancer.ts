@@ -76,10 +76,18 @@ function geometryHasMorphTargets(geometry: THREE.BufferGeometry | undefined): bo
   return !!(ma.position?.length || ma.normal?.length || ma.color?.length)
 }
 
+/**
+ * InstancedMesh is for repeated low-leaf props (chairs, pipes). Multi-mesh
+ * environment kits share one hash but one entity — GPU slots + combined leaf
+ * bounds vanish the only copy (Object3D.visible does not hide InstancedMesh).
+ */
+export const MAX_INSTANCER_LEAVES = 12
+
 export function templateIsInstancable(root: THREE.Object3D): boolean {
   let hasRenderMesh = false
   let hasSkinned = false
   let hasMorph = false
+  let leaves = 0
   root.traverse((node) => {
     if (!(node as THREE.Mesh).isMesh) return
     if ((node as THREE.SkinnedMesh).isSkinnedMesh) {
@@ -93,12 +101,15 @@ export function templateIsInstancable(root: THREE.Object3D): boolean {
       return
     }
     const pos = mesh.geometry?.getAttribute('position')
-    if (pos && pos.count >= 3) hasRenderMesh = true
+    if (pos && pos.count >= 3) {
+      hasRenderMesh = true
+      leaves++
+    }
   })
   // Morph targets need per-instance morphTargetInfluences + AnimationMixer (weights tracks).
   // InstancedMesh shares geometry with morphAttributes but no influences → WebGL crash
   // (objectInfluences.length on undefined) — Dead Surge arrow.glb / blinking path arrows.
-  return hasRenderMesh && !hasSkinned && !hasMorph
+  return hasRenderMesh && !hasSkinned && !hasMorph && leaves <= MAX_INSTANCER_LEAVES
 }
 
 /**

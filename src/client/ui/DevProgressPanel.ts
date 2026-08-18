@@ -20,6 +20,7 @@ import {
 } from '../dev/submitSuggestion'
 import { identityFromAvatarProfile, shortenAddress } from '../../avatar/displayName'
 import { resolveRouteTarget } from '../../dcl/content/route'
+import { isLocalPreviewPath, openEphemeralPreviewTab } from '../preview/ephemeralPreview'
 import type { SessionIdentity } from '../../network/SessionIdentity'
 import {
   ALL_INTEGRATION_ENTRIES,
@@ -98,6 +99,7 @@ export class DevProgressPanel {
           </p>
         </div>
         <div class="dev-progress__header-actions">
+          <button type="button" class="dev-progress__header-peer" data-add-peer hidden>Add multiplayer</button>
           <button type="button" class="dev-progress__header-suggest" data-suggest-toggle>💡 Suggest</button>
           <button type="button" class="dev-progress__close" aria-label="Close">&times;</button>
         </div>
@@ -131,7 +133,14 @@ export class DevProgressPanel {
 
     this.panel.querySelector('.dev-progress__close')!.addEventListener('click', () => this.hide())
     this.panel.querySelector('[data-suggest-toggle]')!.addEventListener('click', () => this.openSuggestionForm())
-    this.backdrop.addEventListener('click', () => this.hide())
+    const addPeerBtn = this.panel.querySelector('[data-add-peer]') as HTMLButtonElement
+    if (isLocalPreviewPath()) {
+      addPeerBtn.hidden = false
+      addPeerBtn.addEventListener('click', () => {
+        openEphemeralPreviewTab()
+      })
+    }
+    // Persist while using the world — scene clicks must not dismiss (no backdrop close).
     this.tabCommunity.addEventListener('click', () => this.setTab('community'))
     this.tabStatus.addEventListener('click', () => this.setTab('status'))
     this.tabProgress.addEventListener('click', () => this.setTab('progress'))

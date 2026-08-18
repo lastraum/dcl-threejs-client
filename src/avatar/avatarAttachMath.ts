@@ -12,19 +12,7 @@ const _playerPos = new THREE.Vector3()
 const _playerQuat = new THREE.Quaternion()
 const _playerScale = new THREE.Vector3(1, 1, 1)
 const _playerMat = new THREE.Matrix4()
-const _playerInv = new THREE.Matrix4()
-const _anchorPos = new THREE.Vector3()
-const _anchorQuat = new THREE.Quaternion()
-const _anchorScale = new THREE.Vector3(1, 1, 1)
-const _anchorMat = new THREE.Matrix4()
-const _relativeMat = new THREE.Matrix4()
-const _worldMat = new THREE.Matrix4()
-const _relativePos = new THREE.Vector3()
 const _relativeQuat = new THREE.Quaternion()
-const _relativeScale = new THREE.Vector3()
-const _worldPos = new THREE.Vector3()
-const _worldQuat = new THREE.Quaternion()
-const _worldScale = new THREE.Vector3()
 
 export type AvatarAttachRelativeTransform = DclTransformValues
 
@@ -36,12 +24,18 @@ export function playerMatrixFromDclTransform(player: DclTransformValues): THREE.
   return _playerMat.compose(_playerPos, _playerQuat, _playerScale)
 }
 
+const _peQ = new THREE.Quaternion()
+const _boneQ = new THREE.Quaternion()
+const _invPeQ = new THREE.Quaternion()
+const _dclDelta = new THREE.Vector3()
+
 /**
- * Anchor world (Three.js) → avatar-relative DCL Transform.
+ * Anchor world (Three.js display) → avatar-relative **DCL** Transform.
  *
- * **Law (docs + Tier B):** AvatarAttach overwrites Transform with pose relative to the
- * avatar so `playerWorld * relative ≈ boneWorld`. Scene `getWorldPosition` uses PE × rel
- * (SDK nBe). Do not invent GP-only world-offset positions for fishing I5e.
+ * SDK `getWorldPosition` (`Fle` / `iBe`): AvatarAttach entities compose
+ * `world = PE × local` in DCL space (no parent walk). Inverse must use that
+ * product. Three-display invert + component convert is not the same — rod
+ * tip (`I5e` + `$m`) misses the hand.
  */
 export function anchorWorldToRelativeTransform(
   player: DclTransformValues,
@@ -49,46 +43,48 @@ export function anchorWorldToRelativeTransform(
   anchorQuaternion: THREE.Quaternion,
   existing?: DclTransformValues
 ): AvatarAttachRelativeTransform {
-  playerMatrixFromDclTransform(player)
-  _playerInv.copy(_playerMat).invert()
-
-  _anchorPos.copy(anchorPosition)
-  _anchorQuat.copy(anchorQuaternion)
-  _anchorMat.compose(_anchorPos, _anchorQuat, _anchorScale)
-
-  _relativeMat.multiplyMatrices(_playerInv, _anchorMat)
-  _relativeMat.decompose(_relativePos, _relativeQuat, _relativeScale)
-
-  const dclPos = threeToDclPos(_relativePos.x, _relativePos.y, _relativePos.z, new THREE.Vector3())
-  const dclRot = threeToDclQuat(_relativeQuat, new THREE.Quaternion())
+  threeToDclPos(anchorPosition.x, anchorPosition.y, anchorPosition.z, _dclDelta)
+  threeToDclQuat(anchorQuaternion, _boneQ)
+  _peQ.set(player.rotation.x, player.rotation.y, player.rotation.z, player.rotation.w)
+  _invPeQ.copy(_peQ).invert()
+  _dclDelta.x -= player.position.x
+  _dclDelta.y -= player.position.y
+  _dclDelta.z -= player.position.z
+  _dclDelta.applyQuaternion(_invPeQ)
+  _relativeQuat.copy(_invPeQ).multiply(_boneQ)
 
   return {
-    position: { x: dclPos.x, y: dclPos.y, z: dclPos.z },
-    rotation: { x: dclRot.x, y: dclRot.y, z: dclRot.z, w: dclRot.w },
+    position: { x: _dclDelta.x, y: _dclDelta.y, z: _dclDelta.z },
+    rotation: {
+      x: _relativeQuat.x,
+      y: _relativeQuat.y,
+      z: _relativeQuat.z,
+      w: _relativeQuat.w
+    },
     scale: existing?.scale ?? { x: 1, y: 1, z: 1 },
     parent: existing?.parent
   }
 }
 
-/** Compose player + avatar-relative → world DCL Transform. */
+/** Compose player + avatar-relative → world DCL Transform (SDK `iBe`). */
 export function composeAvatarAttachedWorldTransform(
   player: DclTransformValues,
   relative: DclTransformValues
 ): DclTransformValues {
-  playerMatrixFromDclTransform(player)
-  dclToThreePos(relative.position.x, relative.position.y, relative.position.z, _relativePos)
-  dclToThreeQuat(relative.rotation.x, relative.rotation.y, relative.rotation.z, relative.rotation.w, _relativeQuat)
-  _relativeScale.set(relative.scale.x, relative.scale.y, relative.scale.z)
-  _relativeMat.compose(_relativePos, _relativeQuat, _relativeScale)
-  _worldMat.multiplyMatrices(_playerMat, _relativeMat)
-  _worldMat.decompose(_worldPos, _worldQuat, _worldScale)
-
-  const dclPos = threeToDclPos(_worldPos.x, _worldPos.y, _worldPos.z, new THREE.Vector3())
-  const dclRot = threeToDclQuat(_worldQuat, new THREE.Quaternion())
+  _peQ.set(player.rotation.x, player.rotation.y, player.rotation.z, player.rotation.w)
+  _dclDelta.set(relative.position.x, relative.position.y, relative.position.z)
+  _dclDelta.applyQuaternion(_peQ)
+  _relativeQuat
+    .set(relative.rotation.x, relative.rotation.y, relative.rotation.z, relative.rotation.w)
+  _boneQ.copy(_peQ).multiply(_relativeQuat)
   return {
-    position: { x: dclPos.x, y: dclPos.y, z: dclPos.z },
-    rotation: { x: dclRot.x, y: dclRot.y, z: dclRot.z, w: dclRot.w },
-    scale: { x: _worldScale.x, y: _worldScale.y, z: _worldScale.z },
+    position: {
+      x: player.position.x + _dclDelta.x,
+      y: player.position.y + _dclDelta.y,
+      z: player.position.z + _dclDelta.z
+    },
+    rotation: { x: _boneQ.x, y: _boneQ.y, z: _boneQ.z, w: _boneQ.w },
+    scale: { x: relative.scale.x, y: relative.scale.y, z: relative.scale.z },
     parent: relative.parent
   }
 }

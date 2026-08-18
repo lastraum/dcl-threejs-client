@@ -1,4 +1,4 @@
-import type { Entity, IEngine } from '@dcl/ecs'
+import type { IEngine } from '@dcl/ecs'
 import * as extended from '@dcl/ecs/dist/components'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import { preregisterRendererInjectedComponents } from './preregisterRendererInjectedComponents'
@@ -159,17 +159,17 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
         } else if (msg.componentId === VIDEO_PLAYER_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = VideoPlayer.schema.deserialize(valueBuf)
-          VideoPlayer.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(VideoPlayer, msg.entityId as number, value)
           videoPlayerPuts++
         } else if (msg.componentId === AUDIO_SOURCE_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = AudioSource.schema.deserialize(valueBuf)
-          AudioSource.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(AudioSource, msg.entityId as number, value)
           audioSourcePuts++
         } else if (msg.componentId === AUDIO_ANALYSIS_ID) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
           const value = AudioAnalysis.schema.deserialize(valueBuf)
-          AudioAnalysis.createOrReplace(msg.entityId as Entity, value)
+          writeHostLwwNoDirty(AudioAnalysis, msg.entityId as number, value)
           audioAnalysisPuts++
         } else if (msg.componentId === UI_CANVAS_INFORMATION_ID && msg.entityId === 0) {
           const valueBuf = new ReadWriteByteBuffer(msg.data)
@@ -238,11 +238,10 @@ export function injectRendererLwwPutsOnEngine(engine: IEngine, chunks: Uint8Arra
 }
 
 /**
- * After TweenState COMPLETED inject + eng.update(0), TweenSequence may createOrReplace the
- * next leg while TweenState is still COMPLETED. SDK createTweenSystem then treats the new
- * tween as already finished (isCompleted) — Genesis blimp TL_RESTART only runs one orbit.
+ * Legacy helper for ENABLE_SDK_TWEEN_SEQUENCE=true (pre-7.13 scenes).
+ * Kernel Sequence (ADR-133) is the Explorer path — do not call this before eng.update
+ * (it swallows COMPLETED). Kept for old-SDK Sequence leftover COMPLETED after hop.
  *
- * Re-arm ACTIVE for playing sequence/loop tweens still marked COMPLETED.
  * @returns number of entities re-armed
  */
 export function rearmTweenStateAfterSequenceAdvance(engine: IEngine): number {

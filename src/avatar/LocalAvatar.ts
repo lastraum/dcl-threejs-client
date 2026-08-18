@@ -24,6 +24,7 @@ import { buildEmotePropAttachment } from './emotePlayback'
 import { retargetGltfClipToVrm } from './vrm/mixamoRetarget'
 import { applyVrmPivotOffset } from './vrm/vrmFeetAlign'
 import { getEquippedCustomAvatar, type EquippedCustomAvatar } from './vrm/vrmEquipStorage'
+import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { getVrmLibraryEntry, loadVrmLibraryBytes } from './vrm/VrmLibrary'
 import { prepareCustomAvatarScene } from './vrm/VrmLoader'
 import { OdkAvatar } from './odk/OdkAvatar'
@@ -157,9 +158,19 @@ export class LocalAvatar {
           this.pivot.visible = true
           updateNameTagAnchor(this.nameTagAnchor, this.model)
           this.ensureGlider()
+          clientDebugLog.log(
+            'avatar',
+            `custom ${format} ready · ${equipped.contentHash.slice(0, 12)}…`,
+            { alsoConsole: true, level: 'success' }
+          )
           return this.identity
         } catch (err) {
           console.warn('[avatar] custom avatar load failed — falling back to DCL compose', err)
+          clientDebugLog.log(
+            'avatar',
+            `custom avatar failed — DCL fallback · ${err instanceof Error ? err.message : String(err)}`,
+            { alsoConsole: true, level: 'warn' }
+          )
           this.vrmAvatar?.dispose()
           this.vrmAvatar = null
           this.odkAvatar?.dispose()
@@ -169,6 +180,11 @@ export class LocalAvatar {
         console.warn(
           '[avatar] equipped custom avatar hash has no library bytes — falling back to DCL',
           equipped.contentHash.slice(0, 12)
+        )
+        clientDebugLog.log(
+          'avatar',
+          `VRM library miss ${equipped.contentHash.slice(0, 12)}… — DCL fallback (re-import the file)`,
+          { alsoConsole: true, level: 'warn' }
         )
       }
     }
@@ -198,6 +214,11 @@ export class LocalAvatar {
 
     updateNameTagAnchor(this.nameTagAnchor, this.model)
     this.ensureGlider()
+    clientDebugLog.log(
+      'avatar',
+      `DCL compose ready · ${this.identity.displayName} · ${profile.wearables.length} wearables`,
+      { alsoConsole: true, level: 'success' }
+    )
     return this.identity
   }
 

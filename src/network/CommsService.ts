@@ -60,7 +60,9 @@ import { isLiveKitAdapter } from './comms/livekitAdapter'
 import type { ActiveVideoStream } from './comms/livekitVideoStreams'
 import { TransportType } from './comms/Transport'
 import {
+  decodeRfc5TopicPayload,
   decodeTransformPayload,
+  encodeRfc5TopicPayload,
   encodeTransformPayload,
   type AvatarTransformPayload,
   type CommsRealmInfo
@@ -258,15 +260,7 @@ export class CommsService {
         this.router.handlePacket(transport, address, data)
       })
       session.setTopicHandler((topic, address, data) => {
-        this.topicService.enqueue(topic, address, data)
-        this.topicMessageHandler?.(topic, address, data)
-        for (const listener of this.topicListeners) {
-          try {
-            listener(topic, address, data)
-          } catch {
-            /* ignore listener errors */
-          }
-        }
+        this.dispatchTopic(topic, address, data)
       })
       session.setPeerHandlers({
         onPeerJoin: (address, transport) => this.trackPeerJoin(address, transport),
@@ -458,6 +452,18 @@ export class CommsService {
     }
   }
 
+  private dispatchTopic(topic: string, address: string, data: Uint8Array): void {
+    this.topicService.enqueue(topic, address, data)
+    this.topicMessageHandler?.(topic, address, data)
+    for (const listener of this.topicListeners) {
+      try {
+        listener(topic, address, data)
+      } catch {
+        /* ignore listener errors */
+      }
+    }
+  }
+
   /**
    * Publish raw bytes on a LiveKit topic across chat-capable rooms.
    * Must use a non-empty topic so packets never hit RFC4 Chat / scene chat UI.
@@ -465,6 +471,10 @@ export class CommsService {
   async publishRawTopicData(topic: string, packet: Uint8Array, reliable = true): Promise<boolean> {
     const t = topic.trim()
     if (!t) return false
+    if (this.rfc5.isConnected()) {
+      this.rfc5.send(encodeRfc5TopicPayload(t, packet), !reliable)
+      return true
+    }
     const sessions = this.liveKitChatSessions()
     if (!sessions.length) return false
     let sent = false
@@ -773,6 +783,32 @@ export class CommsService {
     const isWorld = target.isWorld ?? !isParcelPointer(normalizePointer(target.pointer))
     const adapterHint =
       target.commsAdapterHint?.trim() || this.realmCommsHint || this.realm.commsAdapter || ''
+    const parsedHint = this.adapterManager.parse(adapterHint)
+    // sdk-commands preview: `/about` advertises `ws-room:…/mini-comms/room-1`.
+    // Join that mock RFC-5 room — do not hit production gatekeeper LiveKit.
+    if (parsedHint?.kind === 'ws-room') {
+      if (!acquireWalletSessionLock(this.localAddress)) {
+        clientDebugLog.log('comms', 'Blocked second client — wallet already active in another tab', {
+          level: 'error'
+        })
+        return { ok: false, reason: 'duplicate_wallet' }
+      }
+      this.walletSessionLockHeld = true
+      const ok = this.connectWsRoom(parsedHint.url, target.pointer)
+      if (!ok) {
+        this.releaseWalletSessionIfHeld()
+        clientDebugLog.log('comms', `Preview mini-comms connect failed · ${parsedHint.url}`, {
+          level: 'warn',
+          alsoConsole: true
+        })
+        return { ok: false, reason: 'comms_disabled' }
+      }
+      clientDebugLog.log('comms', `Preview mini-comms · ${parsedHint.url}`, {
+        level: 'success',
+        alsoConsole: true
+      })
+      return { ok: true }
+    }
     // World server owner can omit LiveKit — still load scene content solo (no chat/peers).
     if (isWorld && (target.commsEnabled === false || !adapterHint)) {
       clientDebugLog.log(
@@ -1983,7 +2019,12 @@ export class CommsService {
         const address = this.rfc5.getAddressForAlias(fromAlias)
         if (!address || address === this.localAddress) return
         const payload = decodeTransformPayload(body)
-        if (payload) this.handlers?.onPeerTransform(address, payload)
+        if (payload) {
+          this.handlers?.onPeerTransform(address, payload)
+          return
+        }
+        const topic = decodeRfc5TopicPayload(body)
+        if (topic) this.dispatchTopic(topic.topic, address, topic.packet)
       },
       onDisconnect: () => {
         this.realm.isConnectedSceneRoom = false

@@ -164,6 +164,28 @@ function workerHasUiDrivingTween(engine: IEngine | null): boolean {
   return false
 }
 
+/** True when any mounted UiBackground has crop/fill UVs (reeling bars, atlas sprites). */
+function workerHasUvDrivenUi(engine: IEngine | null): boolean {
+  if (!engine) return false
+  try {
+    const UiBackground = resolveWorkerUiBackground(engine)
+    if (!UiBackground) return false
+    for (const [_e, bg] of engine.getEntitiesWith(UiBackground)) {
+      const uvs = (bg as { uvs?: ArrayLike<number> | Record<string, number> }).uvs
+      if (!uvs) continue
+      let n = (uvs as { length?: number }).length ?? 0
+      if (!n && typeof uvs === 'object' && !Array.isArray(uvs) && !ArrayBuffer.isView(uvs)) {
+        const o = uvs as Record<string, unknown>
+        while (Object.prototype.hasOwnProperty.call(o, String(n))) n++
+      }
+      if (n >= 8) return true
+    }
+  } catch {
+    /* component not registered yet */
+  }
+  return false
+}
+
 /**
  * Play-mode react-ecs gate.
  *
@@ -176,13 +198,15 @@ function workerHasUiDrivingTween(engine: IEngine | null): boolean {
  * Do NOT gate on freeze latch or inject-only pollEvents DEFER.
  */
 export function shouldDeferCooperativeReactEcs(): boolean {
+  // Tween / UV HUD first — pointer-hold suppress must not freeze reeling bars
+  // (R3.barHeight + UiBackground.uvs) or skip miss unmount (reelingUIVisible=false).
+  if (workerHasUiDrivingTween(boundWorkerEngine)) return false
+  if (workerHasUvDrivenUi(boundWorkerEngine)) return false
   // No-target pointer edge / hold: systems only (defer react-ecs). Any scene may use
   // isPressed between DOWN and UP — do not thrash full UI reconcile on the hold window.
   if (isLevelStatePointerEdgeActive() || isLevelStatePointerHeld()) return true
   // isPointerInteractiveTickActive is false during non-ui phase — fall through to session suppress.
   if (isPointerInteractiveTickActive()) return false
-  // Tween-driven UI (tutorial scale, letterbox, cake/confetti slide) — full 60Hz reconcile.
-  if (workerHasUiDrivingTween(boundWorkerEngine)) return false
   // World PE / UI hold (not empty-ground): marquee and select HUD need live react-ecs.
   if (isWorkerPointerButtonHeld()) return false
   if (shouldSuppressPointerSessionReactEcs()) return true

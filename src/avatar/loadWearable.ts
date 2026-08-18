@@ -6,7 +6,7 @@ import { resolveDclAssetUrl, wearableMappingKeyVariants } from '../rendering/Dcl
 import { repairSkinnedMesh } from '../rendering/skinnedMeshInstance'
 import { disposeOwnedObject3D } from '../rendering/sharedAsset'
 import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
-import { sanitizeSceneGltfMaterials } from '../rendering/LandscapeAssetSanitizer'
+
 import { contentMappings, getMainFileUrl } from './peerApi'
 import { prepareAvatarMaterials, tintWearableMaterials } from './materials'
 import { wearableGlbCacheKey } from './wearableCache'
@@ -589,7 +589,8 @@ export function attachWearableFallback(
 }
 
 export function sanitizeWearableRoot(root: THREE.Object3D): void {
-  sanitizeSceneGltfMaterials(root)
+  // Do not run scene/landscape sanitizer here — outdoor remap + COLOR_0 enable
+  // turns DCL wearables into a black silhouette (Explorer avatars are matte).
   pruneWearableDisplayMeshes(root)
   root.traverse((obj) => {
     if (obj instanceof THREE.Mesh) {

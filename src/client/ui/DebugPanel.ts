@@ -4,6 +4,7 @@ import { physxColliderDebug, type PhysxColliderDebugOptions } from '../../debug/
 import { cameraCollisionDebug } from '../../debug/CameraCollisionDebug'
 import { platformMotionDebug } from '../../debug/PlatformMotionDebug'
 import type { RenderStats } from './RenderStats'
+import { isLocalPreviewPath, openEphemeralPreviewTab } from '../preview/ephemeralPreview'
 
 export type DebugPanelPosition = {
   x: number
@@ -17,7 +18,8 @@ export type DebugPanelSceneOrigin = {
 }
 
 export type DebugPanelOptions = {
-  anchor: () => HTMLElement | undefined
+  /** Unused — callers still pass a Labs button; scene clicks no longer dismiss. */
+  anchor?: () => HTMLElement | undefined
   renderStats: RenderStats
   onVisibilityChange?: (visible: boolean) => void
   getPlayerPosition?: () => DebugPanelPosition | null
@@ -46,12 +48,10 @@ export class DebugPanel {
   private readonly positionLocalEl: HTMLDivElement
   private readonly positionWorldEl: HTMLDivElement
   private readonly logsBody: HTMLDivElement
-  private readonly anchor: () => HTMLElement | undefined
   private readonly onVisibilityChange?: (visible: boolean) => void
   private readonly getPlayerPosition?: () => DebugPanelPosition | null
   private readonly getSceneOrigin?: () => DebugPanelSceneOrigin
   private visible = false
-  private ignoreOutsideClick = false
   /** When true, panel lives inside Help & Dev body (no fixed float / outside-click). */
   private embedded = false
   private positionRafId = 0
@@ -62,22 +62,8 @@ export class DebugPanel {
   private onCrowdDelta: ((delta: number) => void) | null = null
   private onCrowdClear: (() => void) | null = null
   private getCrowdCount: (() => { count: number; target: number; busy: boolean }) | null = null
-  private crowdStatusEl: HTMLDivElement | null = null
-  private readonly onDocumentClick = (ev: MouseEvent) => {
-    if (this.embedded) return
-    if (this.ignoreOutsideClick) {
-      this.ignoreOutsideClick = false
-      return
-    }
-    if (!this.visible) return
-    const target = ev.target as Node | null
-    if (this.root.contains(target ?? null)) return
-    if (this.anchor()?.contains(target ?? null)) return
-    this.hide()
-  }
-
+  private crowdStatusEl: HTMLElement | null = null
   constructor({
-    anchor,
     renderStats,
     onVisibilityChange,
     getPlayerPosition,
@@ -87,7 +73,6 @@ export class DebugPanel {
     onCrowdClear,
     getCrowdCount
   }: DebugPanelOptions) {
-    this.anchor = anchor
     this.onVisibilityChange = onVisibilityChange
     this.getPlayerPosition = getPlayerPosition
     this.getSceneOrigin = getSceneOrigin
@@ -99,7 +84,13 @@ export class DebugPanel {
     this.root.id = 'debug-panel'
     this.root.className = 'debug-panel'
     this.root.innerHTML = `
-      <div class="debug-panel__header">Debug</div>
+      <div class="debug-panel__header">
+        <span>Debug</span>
+        <div class="debug-panel__header-actions">
+          <button type="button" class="debug-panel__logs-btn" data-add-peer hidden>Add multiplayer</button>
+          <button type="button" class="debug-panel__logs-btn" data-debug-close aria-label="Close">Close</button>
+        </div>
+      </div>
       <div class="debug-panel__position">
         <div class="debug-panel__position-main">
           <div class="debug-panel__position-title">Position</div>
@@ -108,6 +99,10 @@ export class DebugPanel {
         </div>
         <div class="debug-panel__stats" data-debug-stats></div>
       </div>
+      <details class="debug-panel__fold">
+        <summary>Perf meters</summary>
+        <div data-debug-perf></div>
+      </details>
       <div class="debug-panel__logs">
         <div class="debug-panel__logs-header">
           <span class="debug-panel__logs-title">Client log</span>
@@ -116,72 +111,71 @@ export class DebugPanel {
             <button type="button" class="debug-panel__logs-btn debug-panel__logs-clear">Clear</button>
           </div>
         </div>
-        <label class="debug-panel__check debug-panel__check--log">
-          <input type="checkbox" data-panel-record />
-          <span>Record client logs in this panel</span>
-        </label>
-        <label class="debug-panel__check debug-panel__check--log">
-          <input type="checkbox" data-all-client-logs />
-          <span>Include all categories (comms, etc.)</span>
-        </label>
-        <label class="debug-panel__check debug-panel__check--log">
-          <input type="checkbox" data-console-capture />
-          <span>Capture console.log / warn / error here</span>
-        </label>
-        <label class="debug-panel__check debug-panel__check--log">
-          <input type="checkbox" data-console-mirror />
-          <span>Mirror → browser console (<code>?consolelogs</code>)</span>
-        </label>
+        <div class="debug-panel__log-filters">
+          <label class="debug-panel__check debug-panel__check--log" title="Record client logs in this panel">
+            <input type="checkbox" data-panel-record />
+            <span>Record</span>
+          </label>
+          <label class="debug-panel__check debug-panel__check--log" title="Include all categories (comms, etc.)">
+            <input type="checkbox" data-all-client-logs />
+            <span>All cats</span>
+          </label>
+          <label class="debug-panel__check debug-panel__check--log" title="Capture console.log / warn / error here">
+            <input type="checkbox" data-console-capture />
+            <span>Console</span>
+          </label>
+          <label class="debug-panel__check debug-panel__check--log" title="Mirror to browser console (?consolelogs)">
+            <input type="checkbox" data-console-mirror />
+            <span>Mirror</span>
+          </label>
+        </div>
         <div class="debug-panel__logs-body" role="log" aria-live="polite"></div>
       </div>
       <div class="debug-panel__tools">
-        <div class="debug-panel__environment">
-          <div class="debug-panel__physx-title">Environment</div>
-          <label class="debug-panel__check">
+        <details class="debug-panel__fold">
+        <summary>Options</summary>
+        <div class="debug-panel__options-grid">
+          <label class="debug-panel__check" title="Hide loaded landscape / ocean / sky">
             <input type="checkbox" data-env-disable />
-            <span>Disable loaded environment</span>
+            <span>Hide env</span>
           </label>
-          <div class="debug-panel__render-quality-hint" data-env-hint></div>
-        </div>
-        <div class="debug-panel__physx">
-          <div class="debug-panel__physx-title">PhysX colliders</div>
-          <label class="debug-panel__check">
+          <label class="debug-panel__check" title="Scene MeshColliders">
             <input type="checkbox" data-physx-scene />
-            <span>Scene MeshColliders</span>
+            <span>Scene</span>
           </label>
-          <label class="debug-panel__check">
+          <label class="debug-panel__check" title="GLTF colliders (magenta = _collider source + cooked)">
             <input type="checkbox" data-physx-gltf />
-            <span>GLTF colliders (magenta = _collider source + cooked)</span>
+            <span>GLTF</span>
           </label>
-          <label class="debug-panel__check">
+          <label class="debug-panel__check" title="Solid filled hulls (off = wireframe only)">
             <input type="checkbox" data-physx-gltf-solid />
-            <span>Solid filled hulls (off = wireframe only)</span>
+            <span>Solid</span>
           </label>
-          <label class="debug-panel__check">
+          <label class="debug-panel__check" title="Local player capsule">
             <input type="checkbox" data-physx-player />
-            <span>Local player capsule</span>
+            <span>Player</span>
           </label>
-          <label class="debug-panel__check">
+          <label class="debug-panel__check" title="Log PhysX probe (?collidersphys)">
             <input type="checkbox" data-physx-probe />
-            <span>Log PhysX probe (collidersphys)</span>
+            <span>Probe</span>
           </label>
-          <label class="debug-panel__check">
+          <label class="debug-panel__check" title="Runtime drift recook (?colliderrecook)">
             <input type="checkbox" data-physx-runtime-recook />
-            <span>Runtime drift recook (colliderrecook)</span>
+            <span>Drift</span>
           </label>
-          <label class="debug-panel__check">
+          <label class="debug-panel__check" title="Platform velocity transfer log">
             <input type="checkbox" data-platform-motion />
-            <span>Platform velocity transfer log</span>
+            <span>Platform</span>
           </label>
-          <label class="debug-panel__check">
+          <label class="debug-panel__check" title="Third-person camera wall sweep (on; ?nocamerasweep)">
             <input type="checkbox" data-camera-wall-occlusion />
-            <span>Third-person camera wall sweep (on; ?nocamerasweep)</span>
+            <span>Cam sweep</span>
           </label>
-          <button type="button" class="debug-panel__logs-btn" data-physx-recook>Force recook all colliders</button>
         </div>
-        <div class="debug-panel__crowd">
-          <div class="debug-panel__physx-title">Avatar crowd (perf)</div>
-          <div class="debug-panel__render-quality-hint" data-crowd-status>0 / 0</div>
+        <div class="debug-panel__render-quality-hint" data-env-hint></div>
+        <div class="debug-panel__tools-row">
+          <button type="button" class="debug-panel__logs-btn" data-physx-recook>Recook</button>
+          <span class="debug-panel__crowd-label" data-crowd-status>0 / 0</span>
           <div class="debug-panel__crowd-row">
             <button type="button" class="debug-panel__logs-btn" data-crowd-minus5 title="Remove 5">−5</button>
             <button type="button" class="debug-panel__logs-btn" data-crowd-minus1 title="Remove 1">−1</button>
@@ -191,6 +185,7 @@ export class DebugPanel {
             <button type="button" class="debug-panel__logs-btn" data-crowd-clear title="Clear all">Clear</button>
           </div>
         </div>
+        </details>
       </div>
     `
 
@@ -212,6 +207,7 @@ export class DebugPanel {
     this.logsBody = this.root.querySelector('.debug-panel__logs-body') as HTMLDivElement
     const statsHost = this.root.querySelector('[data-debug-stats]') as HTMLDivElement
     statsHost.appendChild(renderStats.dom)
+    this.parkPerfMeters(renderStats.dom)
 
     const panelRecordToggle = this.root.querySelector('[data-panel-record]') as HTMLInputElement
     panelRecordToggle.checked = clientDebugLog.isPanelRecord()
@@ -261,12 +257,25 @@ export class DebugPanel {
     this.wireEnvironmentDebugControls()
     this.wireCrowdControls()
 
+    const addPeerBtn = this.root.querySelector('[data-add-peer]') as HTMLButtonElement | null
+    if (addPeerBtn && isLocalPreviewPath()) {
+      addPeerBtn.hidden = false
+      addPeerBtn.addEventListener('click', (e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        openEphemeralPreviewTab()
+      })
+    }
+    this.root.querySelector('[data-debug-close]')?.addEventListener('click', (e) => {
+      e.stopPropagation()
+      this.hide()
+    })
+
     document.body.appendChild(this.root)
-    document.addEventListener('click', this.onDocumentClick, true)
   }
 
   private wireCrowdControls(): void {
-    this.crowdStatusEl = this.root.querySelector('[data-crowd-status]') as HTMLDivElement
+    this.crowdStatusEl = this.root.querySelector('[data-crowd-status]') as HTMLElement
     const bind = (sel: string, delta: number | 'clear') => {
       const btn = this.root.querySelector(sel) as HTMLButtonElement | null
       btn?.addEventListener('click', (e) => {
@@ -316,6 +325,14 @@ export class DebugPanel {
   replaceRenderStats(renderStats: RenderStats): void {
     const host = this.root.querySelector('[data-debug-stats]') as HTMLDivElement
     host.replaceChildren(renderStats.dom)
+    this.parkPerfMeters(renderStats.dom)
+  }
+
+  /** FPS graphs stay in the position row; the long meter dump lives in the Perf fold. */
+  private parkPerfMeters(statsDom: HTMLElement): void {
+    const extra = statsDom.querySelector('#render-stats-extra')
+    const fold = this.root.querySelector('[data-debug-perf]')
+    if (extra && fold) fold.replaceChildren(extra)
   }
 
   setRecookCollidersHandler(handler: (() => void | Promise<void>) | null): void {
@@ -331,7 +348,6 @@ export class DebugPanel {
   show(): void {
     this.visible = true
     this.root.classList.add('is-open')
-    this.ignoreOutsideClick = true
     this.updatePositionHud()
     this.startPositionUpdates()
     this.logsBody.scrollTop = this.logsBody.scrollHeight
@@ -373,7 +389,6 @@ export class DebugPanel {
 
   dispose(): void {
     this.stopPositionUpdates()
-    document.removeEventListener('click', this.onDocumentClick, true)
     this.unsubscribeLogs?.()
     this.unsubscribeLogs = null
     this.unsubscribePhysxDebug?.()
@@ -490,7 +505,7 @@ export class DebugPanel {
       if (this.physxRecookBtn.disabled) return
       this.physxRecookBtn.disabled = true
       this.physxRecookBtn.textContent = 'Recooking…'
-      clientDebugLog.log('collision', 'Manual collider recook started (Debug → Force recook all colliders)', {
+      clientDebugLog.log('collision', 'Manual collider recook started', {
         level: 'info',
         alsoConsole: true
       })
@@ -505,7 +520,7 @@ export class DebugPanel {
         })
         .finally(() => {
           this.physxRecookBtn.disabled = false
-          this.physxRecookBtn.textContent = 'Force recook all colliders'
+          this.physxRecookBtn.textContent = 'Recook'
         })
     })
 
@@ -518,10 +533,9 @@ export class DebugPanel {
       this.environmentDisableToggle.disabled = !available
       this.environmentDisableToggle.checked = available && state.disabled
       if (!available) {
-        this.environmentHint.textContent =
-          'No client environment on this scene — add scene.json "environment" or use ?environment=island'
+        this.environmentHint.textContent = 'No env on this scene'
       } else {
-        this.environmentHint.textContent = `Loaded: ${state.loadedKind} · force biome at load with ?environment=`
+        this.environmentHint.textContent = state.loadedKind ?? ''
       }
     }
 

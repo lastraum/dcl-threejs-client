@@ -37,6 +37,10 @@ declare module 'yoga-layout-prebuilt' {
     EDGE_TOP: number
     EDGE_RIGHT: number
     EDGE_BOTTOM: number
+    UNIT_UNDEFINED: number
+    UNIT_POINT: number
+    UNIT_PERCENT: number
+    UNIT_AUTO: number
   }
   export default Yoga
 
@@ -80,6 +84,7 @@ declare module 'yoga-layout-prebuilt' {
     setPositionType(type: number): void
     setPosition(edge: number, value: number): void
     setPositionPercent(edge: number, percent: number): void
+    getPosition(edge: number): { unit: number; value: number }
     setMargin(edge: number, value: number): void
     setMarginPercent(edge: number, percent: number): void
     setMarginAuto(edge: number): void

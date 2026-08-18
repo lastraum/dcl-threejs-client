@@ -124,7 +124,8 @@ export function secondaryLiveRadiusM(): number {
   return secondaryLiveEnterRadiusM()
 }
 
-/** After play-ready, start every live-band guest (desktop = 4 scene threads). */
+/** After play-ready, start every live-band guest (desktop = 4 scene threads).
+ *  Measure-only: do not lower without a stacked live-neighbor walk log of p5 < 30. */
 export const SECONDARY_LIVE_BOOT_CONCURRENCY = 4
 
 export function tertiaryResidentCap(_tier: PerformanceTier): number {

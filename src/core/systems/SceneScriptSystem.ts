@@ -30,8 +30,7 @@ import { AnimatorBridge } from '../../bridge/AnimatorBridge'
 import { isEmoteAnchorGltfSrc } from '../../rendering/DclTextureResolver'
 import { TweenBridge } from '../../bridge/TweenBridge'
 import { ParticleSystemBridge } from '../../bridge/ParticleSystemBridge'
-import { SceneTagVfxHost } from '../../bridge/tagVfx/SceneTagVfxHost'
-import { buildShaderCtx, getShaderManager } from '../../vfx/ShaderManager'
+import type { SceneTagVfxHost } from '../../bridge/tagVfx/SceneTagVfxHost'
 import { isLocalPreviewScene } from '../../dcl/content/refreshPreviewScene'
 import { fetchProfileFaceUrl } from '../../avatar/peerApi'
 import { isTweenVerbose } from '../../bridge/tweenConfig'
@@ -334,6 +333,7 @@ export class SceneScriptSystem {
   private tweenBridge: TweenBridge | null = null
   private particleBridge: ParticleSystemBridge | null = null
   private tagVfxHost: SceneTagVfxHost | null = null
+  private shaderResolveUrl: ((src: string) => string | null) | null = null
   private sceneUiBridge: SceneUiBridge | null = null
   /** `#scene-ui-root` (primary) or `#pe-ui-root` (portable experience). */
   private uiRootId: 'scene-ui-root' | 'pe-ui-root' = 'scene-ui-root'
@@ -544,6 +544,30 @@ export class SceneScriptSystem {
     return this.lastScriptSource
   }
 
+  /**
+   * Load the Tag→shader host only when this bundle names shaders.
+   * Landing / shader-less Jump In must not import AbilityManager.
+   */
+  async attachShaderVfx(source: string | null): Promise<boolean> {
+    const { sceneBundleMentionsAbilityVfx } = await import('../../vfx/discoverAbilityVfx')
+    if (!source || !sceneBundleMentionsAbilityVfx(source)) return false
+    return (await this.ensureTagVfxHost()) != null
+  }
+
+  private async ensureTagVfxHost(): Promise<SceneTagVfxHost | null> {
+    if (this.tagVfxHost) return this.tagVfxHost
+    if (!this.host) return null
+    const { SceneTagVfxHost } = await import('../../bridge/tagVfx/SceneTagVfxHost')
+    const { getShaderManager } = await import('../../vfx/ShaderManager')
+    this.tagVfxHost = new SceneTagVfxHost(
+      this.readComponents,
+      this.host.scene,
+      () => this.bridge?.getEntityNodes()
+    )
+    if (this.shaderResolveUrl) getShaderManager().setResolveUrl(this.shaderResolveUrl)
+    return this.tagVfxHost
+  }
+
   private applyFocusPolicy(policy: import('../../dcl/multiScene/types').FocusPolicy): void {
     const mediaOn = policy !== 'secondary'
     this.videoPlayerBridge?.setMediaEnabled(mediaOn)
@@ -695,19 +719,15 @@ export class SceneScriptSystem {
       (pose) => this.bridge?.unbindEntityDrawSlot(pose, 'dclDrawParticles')
     )
     this.tagVfxHost?.dispose()
-    this.tagVfxHost = new SceneTagVfxHost(
-      this.readComponents,
-      host.scene,
-      () => this.bridge?.getEntityNodes()
-    )
-    getShaderManager().setResolveUrl((src) => {
+    this.tagVfxHost = null
+    this.shaderResolveUrl = (src) => {
       const trimmed = src.trim()
       if (/^https?:\/\//i.test(trimmed)) return trimmed
       const hit =
         scene.content.find((c) => c.file === trimmed) ??
         scene.content.find((c) => c.file.endsWith(`/${trimmed}`))
       return hit ? scene.assetUrl(hit.hash) : null
-    })
+    }
     this.sceneUiBridge?.dispose()
     const uiDetached = opts?.uiDetached === true
     const uiRootId = uiDetached
@@ -2606,8 +2626,10 @@ export class SceneScriptSystem {
       return
     }
     if (msg.type === 'tjs-shader') {
+      const host = await this.ensureTagVfxHost()
+      const { buildShaderCtx, getShaderManager } = await import('../../vfx/ShaderManager')
       if (msg.fn === 'play' || msg.name === 'play') {
-        this.tagVfxHost?.playNamed(msg.params.target ?? msg.params.at ?? msg.name)
+        host?.playNamed(msg.params.target ?? msg.params.at ?? msg.name)
         return
       }
       const ctx = buildShaderCtx(0, msg.fn, msg.params, null)
@@ -7336,6 +7358,7 @@ export class SceneScriptSystem {
     this.particleBridge = null
     this.tagVfxHost?.dispose()
     this.tagVfxHost = null
+    this.shaderResolveUrl = null
     this.unbindSceneUiViewportSync()
     this.sceneUiBridge?.dispose()
     this.sceneUiBridge = null

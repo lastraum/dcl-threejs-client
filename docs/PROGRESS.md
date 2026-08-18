@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-08-17  
-> **Current phase:** **v2.1.0** — local preview + this-client shaders. **v2.0.0** (2026-08-14) was host world + city walk. **`dev-latest`** continues as QA.  
+> **Last updated:** 2026-08-18  
+> **Current phase:** **v2.1.0** — local preview + this-client shaders. **v2.0.0** (2026-08-14) was host world + city walk. **`dev-latest`** continues as QA. Invert clock proof: [V2.2_BEVY_PARITY.md](./V2.2_BEVY_PARITY.md).  
 > **Shipped:** **v2.1.0** `/localpreview` · stay-in-play reload · Tags shaders (`tjs.sync` opt-in) · shaders off until Jump In · preview tabs · **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
 
 > **After 2.0 (next):** CBD density/FPS with stacked live neighbors · RTS box-select / pad-drag polish · saved outfits · create-community / invites · gallery multi-page · graphics P3 culls · Social WS reliability · PE P3 pad/wind QA · multi-shape GLTF `40M+` riding. Scene UI = **one-off bugs only**. Shell marketplace browse ≠ **P2P peer trade**.  
@@ -41,7 +41,7 @@ Create in the tab. Same host world as 2.0. New: stay-in-play reload, preview roo
 | **Local preview / reload** | 🟢 | Stay in play · current-parcel recycle |
 | **Tags shaders** | 🟢 this client | Load + spawn Tags; `tjs.sync` opt-in |
 | **Preview comms** | 🟢 | RFC-5 when advertised; prod stays LiveKit |
-| **SceneLoop invert clock** | 🟡 | Not this cut — still one guest clock to finish |
+| **SceneLoop invert clock** | 🟡 | Target shape in-tree with leftovers — [V2.2_BEVY_PARITY.md](./V2.2_BEVY_PARITY.md) · [SCENELOOP_COMPLETION.md](./SCENELOOP_COMPLETION.md). Do not flip 🟢 without walk-log + dual-clock seal |
 | **Host world (2.0)** | 🟢 | Unchanged |
 
 **QA:** `/localpreview` two tabs · ice/cinder/hailwraith after hot reload · Genesis walk · plaza clicks · published-world `/reload`.

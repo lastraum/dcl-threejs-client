@@ -62,7 +62,7 @@ export class RaycastSystem {
     this.lastContinuousSig.clear()
   }
 
-  /** Run each frame before encoder flush / worker deliver. */
+  /** Run once per guest tick before encoder flush / worker deliver. */
   sync(tickNumber: number): void {
     if (!this.deps) return
     const { ecs, view, collision } = this.deps

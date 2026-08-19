@@ -6,6 +6,7 @@ import { SocialShellTopNav, type SocialShellChromeHandlers, type SocialShellTab 
 export type ExplorerViewOptions = SocialShellChromeHandlers & {
   login: LoginResult
   onOpenScene: (target: RouteTarget) => void
+  onJumpIn?: (target: RouteTarget) => void
   onNavigate: (tab: SocialShellTab) => void
 }
 
@@ -48,6 +49,7 @@ export class ExplorerView {
       variant: 'explorer',
       scrollRoot: this.scrollEl,
       onOpenScene: opts.onOpenScene,
+      onJumpIn: opts.onJumpIn,
       getAuthIdentity: () => (this.login.kind === 'wallet' ? this.login.identity : null)
     })
     this.scrollEl.appendChild(this.placesView.root)

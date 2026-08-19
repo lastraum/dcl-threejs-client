@@ -35,25 +35,24 @@ const DEFAULT_DCL_PLANE_UVS = [
 /**
  * Spatial verts: 0=TL(−X,+Y) 1=TR(+X,+Y) 2=BL(−X,−Y) 3=BR(+X,−Y).
  *
- * DCL docs map BL,BR,TR,TL → [2,3,1,0] and BR,BL,TL,TR → [3,2,0,1].
+ * Docs would map BL,BR,TR,TL → [2,3,1,0] and BR,BL,TL,TR → [3,2,0,1].
+ * `dclToThreePos` reflects DCL +X → Three −X, so those maps L–R-mirror every
+ * default plane (Jump Zone board, TextShape, JUMP IN). Corner maps below are
+ * docs order with L–R swapped — that is the X-reflection law, not a plaza fork.
  *
- * The client reflects DCL +X → Three −X (`dclToThreePos`). MeshRenderer atlas PNGs
- * (Genesis JUMP IN, open/interested buttons) read L–R mirrored under pure docs maps.
- * Corner maps below are docs order with L–R swapped so plane textures match Explorer.
- *
- * TextShape paints its own canvas in Three UV space — it compensates with map U flip
- * in TextShapeSync so glyphs stay L→R under the same geometry.
+ * TextShape paints a canvas in texture space. It must NOT also flip map U
+ * (v31+flip mirrored Jump Zone). Only flip map U when Transform.scale.x &lt; 0.
  *
  * Marquee atlas planes (`buildMarqueePlaneGeometry`) keep their own inward-face U flip.
  */
-/** North face: BL, BR, TR, TL → verts (L–R compensated for dcl→Three X). */
+/** North face: BL, BR, TR, TL → verts (docs + X-reflection). */
 const DCL_PLANE_NORTH_CORNER_TO_THREE = [3, 2, 0, 1]
 
-/** South face: BR, BL, TL, TR → verts (L–R compensated). */
+/** South face: BR, BL, TL, TR → verts (docs + X-reflection). */
 const DCL_PLANE_SOUTH_CORNER_TO_THREE = [2, 3, 1, 0]
 
 /** Bump when plane topology/UV layout changes — busts primitiveMeshKey mesh cache. */
-const PLANE_GEOMETRY_REVISION = 'v31'
+const PLANE_GEOMETRY_REVISION = 'v34'
 
 /**
  * userData: marquee atlas plane. MaterialApplier: flipY=false, FrontSide only.
@@ -234,9 +233,31 @@ export function buildDclPlaneGeometry(width = 1, height = 1): THREE.BufferGeomet
   return geometry
 }
 
-/** @deprecated Use {@link buildDclPlaneGeometry} — same docs-order dual-face plane. */
+/**
+ * TextShape canvas quad. Same L–R UV maps as MeshRenderer, but both faces stay
+ * at z=0. MeshRenderer planes use a z-hair to stop opaque slivers; that split
+ * ghosts every glyph (Jump Zone “oldoldguyguy”).
+ */
 export function buildTextShapePlaneGeometry(width = 1, height = 1): THREE.BufferGeometry {
-  return buildDclPlaneGeometry(width, height)
+  const north = DEFAULT_DCL_PLANE_UVS
+  const south = northStyleToSouthPacking(north)
+  const positions = new Float32Array([
+    -0.5, 0.5, 0, 0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, -0.5, 0,
+    -0.5, 0.5, 0, 0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, -0.5, 0
+  ])
+  const normals = new Float32Array([
+    0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1
+  ])
+  const uvAttr = new THREE.BufferAttribute(new Float32Array(16), 2)
+  applyFaceUvs(uvAttr, 0, DCL_PLANE_NORTH_CORNER_TO_THREE, north)
+  applyFaceUvs(uvAttr, 1, DCL_PLANE_SOUTH_CORNER_TO_THREE, south)
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3))
+  geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3))
+  geometry.setAttribute('uv', uvAttr)
+  geometry.setIndex([0, 2, 1, 2, 3, 1, 4, 5, 6, 5, 7, 6])
+  if (width !== 1 || height !== 1) geometry.scale(width, height, 1)
+  return geometry
 }
 
 /**
@@ -342,9 +363,10 @@ function buildMarqueePlaneGeometry(north: readonly number[]): THREE.BufferGeomet
   // Dual-face (Explorer MeshRenderer plane). Single inward FrontSide vanished
   // when a facade's +Z already faced the street (Updates / uvAnimWords).
   // −Z inward + +Z outward, U flipped on +X so both sides read L→R.
+  const z = 5e-4
   const positions = new Float32Array([
-    -0.5, 0.5, 0, 0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, -0.5, 0,
-    -0.5, 0.5, 0, 0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, -0.5, 0
+    -0.5, 0.5, -z, 0.5, 0.5, -z, -0.5, -0.5, -z, 0.5, -0.5, -z,
+    -0.5, 0.5, z, 0.5, 0.5, z, -0.5, -0.5, z, 0.5, -0.5, z
   ])
   const normals = new Float32Array([
     0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1
@@ -377,9 +399,11 @@ function buildPlaneGeometryWithUvs(uvs: number[]): THREE.BufferGeometry {
   // R4e's authored south is the same cell after flipbook normalize.
   const south = northStyleToSouthPacking(north)
 
+  // Separate north/south by a hair so grazing views do not z-fight a white sliver.
+  const z = 5e-4
   const positions = new Float32Array([
-    -0.5, 0.5, 0, 0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, -0.5, 0,
-    -0.5, 0.5, 0, 0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, -0.5, 0
+    -0.5, 0.5, z, 0.5, 0.5, z, -0.5, -0.5, z, 0.5, -0.5, z,
+    -0.5, 0.5, -z, 0.5, 0.5, -z, -0.5, -0.5, -z, 0.5, -0.5, -z
   ])
   const normals = new Float32Array([
     0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1

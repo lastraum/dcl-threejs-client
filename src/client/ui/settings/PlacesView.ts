@@ -1,6 +1,10 @@
 import type { AuthIdentity } from '@dcl/crypto/dist/types'
 import type { RouteTarget } from '../../../dcl/content/route'
 import { fetchProfileFaceUrl } from '../../../avatar/peerApi'
+import { ArchipelagoPeersPoller } from '../../../map/archipelagoPeers'
+import { fetchCatalystProfiles, getCachedProfile } from '../../../map/catalystProfiles'
+import { normalizeWallet, parcelIndicesFromPeer, parcelKeyFromPeer } from '../../../map/peerParcel'
+import type { LivePeer, PlayerProfile } from '../../../map/types'
 import { rewriteCatalystUrl } from '../../../network/catalyst/rewriteCatalystUrl'
 import {
   EXPLORER_FEATURED_LIMIT,
@@ -31,6 +35,16 @@ import { listCustomWorldFavorites } from '../../../network/worlds/customWorldFav
 
 type PlacesSubTab = 'explore' | 'recent' | 'favorites'
 type CardLayout = 'grid'
+
+const MAX_PLAYER_SEARCH_HITS = 8
+
+type PlayerSearchHit = {
+  peer: LivePeer
+  name: string
+  faceUrl: string | null
+  parcelKey: string
+  route: RouteTarget
+}
 
 
 export type PlacesViewOptions = {
@@ -64,13 +78,13 @@ const OVERLAY_SHELL = `
     <button type="button" class="places-view__subtab" data-subtab="favorites" role="tab" aria-selected="false">Favorites</button>
   </nav>
   <div class="places-view__toolbar">
-    <input type="search" class="places-view__search" data-search placeholder="Search places and worlds…" aria-label="Search places and worlds" autocomplete="off" spellcheck="false" />
+    <input type="search" class="places-view__search" data-search placeholder="Search places, worlds, and people…" aria-label="Search places, worlds, and people" autocomplete="off" spellcheck="false" />
   </div>
   <div class="places-view__cat-bar" data-cat-bar role="toolbar" aria-label="Filter by category"></div>
   <p class="places-view__status" data-status hidden></p>
   <div class="places-view__results" data-results>
     <div class="places-view__grid" data-grid role="list"></div>
-    <p class="places-view__empty" data-empty hidden>No scenes or worlds match your search.</p>
+    <p class="places-view__empty" data-empty hidden>No scenes, worlds, or people match your search.</p>
     <p class="places-view__load-more" data-load-more hidden>Loading more…</p>
     <div class="places-view__sentinel" data-sentinel aria-hidden></div>
   </div>
@@ -85,7 +99,7 @@ const EXPLORER_SHELL = `
         <button type="button" class="places-view__subtab" data-subtab="recent" role="tab" aria-selected="false">My Places</button>
       </nav>
       <div class="places-view__browse-filters">
-        <input type="search" class="places-view__search" data-search placeholder="Search places" aria-label="Search places" autocomplete="off" spellcheck="false" />
+        <input type="search" class="places-view__search" data-search placeholder="Search places, worlds, and people" aria-label="Search places, worlds, and people" autocomplete="off" spellcheck="false" />
         <select class="places-view__sort" data-sort aria-label="Sort list">
           <option value="most_users">Most visiting now</option>
           <option value="name_az">A–Z</option>
@@ -113,7 +127,7 @@ const EXPLORER_SHELL = `
     <p class="places-view__status" data-status hidden></p>
     <div class="places-view__results" data-results>
       <div class="places-view__grid" data-grid role="list"></div>
-      <p class="places-view__empty" data-empty hidden>No scenes or worlds match your search.</p>
+      <p class="places-view__empty" data-empty hidden>No scenes, worlds, or people match your search.</p>
       <p class="places-view__load-more" data-load-more hidden>Loading more…</p>
       <div class="places-view__sentinel" data-sentinel aria-hidden></div>
     </div>
@@ -173,6 +187,13 @@ export class PlacesView {
   private readonly faceCache = new Map<string, string | null>()
   private readonly facePending = new Set<string>()
 
+  private readonly peersPoller = new ArchipelagoPeersPoller()
+  private unsubscribePeers: (() => void) | null = null
+  private livePlayers: LivePeer[] = []
+  private readonly profileCache = new Map<string, PlayerProfile>()
+  private profileFetchGen = 0
+  private readonly playerRouteByAddress = new Map<string, RouteTarget>()
+
   constructor(opts: PlacesViewOptions = {}) {
     this.onJumpIn = opts.onJumpIn
     this.onOpenScene = opts.onOpenScene
@@ -203,6 +224,12 @@ export class PlacesView {
 
   mount(): void {
     this.setupInfiniteScroll()
+    this.unsubscribePeers = this.peersPoller.subscribe((state) => {
+      this.livePlayers = state.players
+      void this.ensurePlayerProfiles(state.players.map((p) => p.address))
+      if (this.searchDebounced.trim() && this.subTab === 'explore') this.renderGrid()
+    })
+    this.peersPoller.start()
     if (this.variant === 'explorer') void this.reloadSpotlight()
     void this.reloadAll()
   }
@@ -217,12 +244,16 @@ export class PlacesView {
     window.clearTimeout(this.searchTimer)
     this.observer?.disconnect()
     this.observer = null
+    this.unsubscribePeers?.()
+    this.unsubscribePeers = null
+    this.peersPoller.stop()
     this.root.remove()
   }
 
   private bindEvents(): void {
     this.searchInput.addEventListener('input', () => {
       this.searchQuery = this.searchInput.value
+      this.syncSpotlightForSearch()
       window.clearTimeout(this.searchTimer)
       this.searchTimer = window.setTimeout(() => {
         this.searchDebounced = this.searchQuery
@@ -268,6 +299,12 @@ export class PlacesView {
       const kind = jumpBtn.dataset.jumpKind
       const id = jumpBtn.dataset.jumpId
       if (!kind || !id) return
+      if (kind === 'player') {
+        const route = this.playerRouteByAddress.get(normalizeWallet(id))
+        if (!route) return
+        ;(this.onJumpIn ?? this.onOpenScene)?.(route)
+        return
+      }
       const item = this.itemById.get(`${kind}:${id}`)
       if (!item) return
       const open = this.onOpenScene ?? this.onJumpIn
@@ -547,12 +584,65 @@ export class PlacesView {
     return buildUnifiedExplorerItems(placesFiltered, worldsFiltered, sort)
   }
 
+  private async ensurePlayerProfiles(wallets: string[]): Promise<void> {
+    const unique = [...new Set(wallets.map(normalizeWallet).filter(Boolean))]
+    const missing = unique.filter((w) => !this.profileCache.has(w))
+    if (!missing.length) return
+    const gen = ++this.profileFetchGen
+    const fetched = await fetchCatalystProfiles(missing)
+    if (this.disposed || gen !== this.profileFetchGen) return
+    for (const [wallet, profile] of fetched) this.profileCache.set(wallet, profile)
+    if (this.searchDebounced.trim() && this.subTab === 'explore') this.renderGrid()
+  }
+
+  private matchedPlayers(): PlayerSearchHit[] {
+    if (this.subTab !== 'explore') return []
+    const q = this.searchDebounced.trim().toLowerCase()
+    if (!q) return []
+    const hits: PlayerSearchHit[] = []
+    for (const peer of this.livePlayers) {
+      const profile = getCachedProfile(this.profileCache, peer.address)
+      const parcelKey = parcelKeyFromPeer(peer)
+      const haystack = `${profile.displayName} ${peer.address} ${parcelKey}`.toLowerCase()
+      if (!haystack.includes(q)) continue
+      const parcel = parcelIndicesFromPeer(peer)
+      if (!parcel) continue
+      hits.push({
+        peer,
+        name: profile.displayName,
+        faceUrl: profile.faceUrl,
+        parcelKey,
+        route: {
+          kind: 'coords',
+          x: parcel.px,
+          y: parcel.py,
+          segment: `${parcel.px},${parcel.py}`
+        }
+      })
+      if (hits.length >= MAX_PLAYER_SEARCH_HITS) break
+    }
+    return hits
+  }
+
+  /** Live Now + Featured only when the search box is empty. */
+  private syncSpotlightForSearch(): void {
+    const spotlight = this.root.querySelector<HTMLElement>('.places-view__spotlight')
+    if (!spotlight) return
+    spotlight.hidden = this.searchQuery.trim().length > 0
+  }
+
   private renderGrid(): void {
     const emptyEl = this.root.querySelector('[data-empty]') as HTMLElement
     const items = this.getFilteredItems()
+    const players = this.matchedPlayers()
     this.registerItems(items)
+    this.playerRouteByAddress.clear()
+    for (const hit of players) {
+      this.playerRouteByAddress.set(normalizeWallet(hit.peer.address), hit.route)
+    }
+    this.syncSpotlightForSearch()
 
-    if (items.length === 0) {
+    if (items.length === 0 && players.length === 0) {
       this.gridEl.innerHTML = ''
       emptyEl.hidden = this.loading || Boolean(this.error)
       if (!this.loading && !this.error) {
@@ -560,7 +650,7 @@ export class PlacesView {
           emptyEl.textContent =
             'No favourites yet. Heart places in-world, or open a custom realm (?realm=host&worldName=Name) to save it here.'
         } else if (this.searchQuery.trim()) {
-          emptyEl.textContent = 'No scenes or worlds match your search.'
+          emptyEl.textContent = 'No scenes, worlds, or people match your search.'
         } else {
           emptyEl.textContent = 'No scenes or worlds returned.'
         }
@@ -569,8 +659,11 @@ export class PlacesView {
     }
 
     emptyEl.hidden = true
-    this.gridEl.innerHTML = items.map((item) => this.renderCard(item, 'grid')).join('')
+    const playerHtml = players.map((hit) => this.renderPlayerCard(hit)).join('')
+    const placeHtml = items.map((item) => this.renderCard(item, 'grid')).join('')
+    this.gridEl.innerHTML = playerHtml + placeHtml
     void this.hydrateFaceUrls(items)
+    void this.hydratePlayerFaces(players)
   }
 
   private renderFeaturedPage(): void {
@@ -646,8 +739,7 @@ export class PlacesView {
       .join('')}${extra > 0 ? `<span class="places-view__card-cat places-view__card-cat--more">+${extra}</span>` : ''}</span>`
   }
 
-  private renderVisitButton(jumpKind: string, jumpId: string): string {
-    const label = this.visitActionLabel()
+  private renderVisitButton(jumpKind: string, jumpId: string, label = this.visitActionLabel()): string {
     return `
       <button
         type="button"
@@ -657,6 +749,92 @@ export class PlacesView {
         data-jump-id="${escapeHtml(jumpId)}"
       >${label}</button>
     `
+  }
+
+  private renderPlayerCard(hit: PlayerSearchHit): string {
+    const addr = normalizeWallet(hit.peer.address)
+    const location = hit.parcelKey
+    const initial = (hit.name.trim()[0] ?? '?').toUpperCase()
+    const face = hit.faceUrl
+      ? `<img class="places-view__card-img" src="${escapeHtml(hit.faceUrl)}" alt="" loading="lazy" decoding="async" />`
+      : `<div class="places-view__card-placeholder places-view__card-placeholder--face" aria-hidden>${escapeHtml(initial)}</div>`
+
+    if (this.variant === 'explorer') {
+      return `
+        <article class="places-view__card places-view__card--grid places-view__card--player" role="listitem">
+          <div class="places-view__card-media" data-player-face="${escapeHtml(addr)}">
+            ${face}
+            <div class="places-view__live-top">
+              <span></span>
+              <span class="places-view__crowd-pill" aria-label="Online now">
+                <span class="places-view__crowd-pill-dot" aria-hidden="true"></span>
+                Online
+              </span>
+            </div>
+          </div>
+          <div class="places-view__card-body places-view__card-body--grid">
+            <h3 class="places-view__card-title">${escapeHtml(hit.name)}</h3>
+            <div class="places-view__card-action">
+              <div class="places-view__card-footer places-view__card-footer--live">
+                <span class="places-view__card-creator">
+                  <span class="places-view__card-owner">Player</span>
+                </span>
+                <span class="places-view__card-location" title="${escapeHtml(location)}">${escapeHtml(location)}</span>
+              </div>
+              ${this.renderVisitButton('player', addr, 'Jump In')}
+            </div>
+          </div>
+        </article>
+      `
+    }
+
+    return `
+      <article class="places-view__card places-view__card--grid places-view__card--player" role="listitem">
+        <div class="places-view__card-media" data-player-face="${escapeHtml(addr)}">
+          ${face}
+        </div>
+        <div class="places-view__card-body">
+          <h3 class="places-view__card-title">${escapeHtml(hit.name)}</h3>
+          <div class="places-view__card-footer">
+            <span class="places-view__card-location" title="${escapeHtml(location)}">${escapeHtml(location)}</span>
+            <span class="places-view__card-footer-right">
+              <button type="button" class="places-view__jump" data-jump-route data-jump-kind="player" data-jump-id="${escapeHtml(addr)}">Jump In</button>
+            </span>
+          </div>
+        </div>
+      </article>
+    `
+  }
+
+  private async hydratePlayerFaces(hits: PlayerSearchHit[]): Promise<void> {
+    for (const hit of hits) {
+      if (hit.faceUrl) continue
+      const address = normalizeWallet(hit.peer.address)
+      if (this.faceCache.has(address) || this.facePending.has(address)) continue
+      this.facePending.add(address)
+      const faceUrl = await fetchProfileFaceUrl(address)
+      this.faceCache.set(address, faceUrl)
+      this.facePending.delete(address)
+      if (this.disposed) return
+      if (!faceUrl) continue
+      const cached = this.profileCache.get(address)
+      if (cached) cached.faceUrl = faceUrl
+      const media = this.root.querySelector<HTMLElement>(`[data-player-face="${address}"]`)
+      if (media) {
+        const img = media.querySelector('img')
+        if (img) img.src = faceUrl
+        else {
+          media.querySelector('.places-view__card-placeholder')?.remove()
+          const el = document.createElement('img')
+          el.className = 'places-view__card-img'
+          el.src = faceUrl
+          el.alt = ''
+          el.loading = 'lazy'
+          el.decoding = 'async'
+          media.prepend(el)
+        }
+      }
+    }
   }
 
   private creatorFallbackLabel(item: DclExploreItem): string {

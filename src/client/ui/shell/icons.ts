@@ -63,9 +63,16 @@ export const SIDEBAR_ICONS = {
     <rect x="5" y="6" width="14" height="13" rx="1.5" stroke="currentColor" stroke-width="1.5"/>
     <path d="M8 4.5V7M16 4.5V7M5 10h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
   </svg>`,
+  explore: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <rect x="4.1" y="4.7" width="3.3" height="2.8" rx="0.6" stroke="currentColor" stroke-width="1.3"/>
+    <rect x="16.6" y="4.7" width="3.3" height="2.8" rx="0.6" stroke="currentColor" stroke-width="1.3"/>
+    <path d="M4.1 7.5h3.3l1.1 3.8v5.6a1.2 1.2 0 0 1-1.2 1.2H4.2A1.2 1.2 0 0 1 3 16.9v-5.4z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+    <path d="M19.9 7.5h-3.3l-1.1 3.8v5.6a1.2 1.2 0 0 0 1.2 1.2h3.1a1.2 1.2 0 0 0 1.2-1.2v-5.4z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+    <path d="M8.5 11.3h7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+  </svg>`,
   map: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-    <path d="M12 21s6-4.35 6-10a6 6 0 1 0-12 0c0 5.65 6 10 6 10z" stroke="currentColor" stroke-width="1.5"/>
-    <circle cx="12" cy="11" r="2" fill="currentColor"/>
+    <path d="M3.5 6.75v13.5L9 17.75l6 2.5 5.5-2.5V4.25L15 6.75l-6-2.5-5.5 2.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>
+    <path d="M9 4.25v13.5M15 6.75v13.5" stroke="currentColor" stroke-width="1.3"/>
   </svg>`,
   communities: `<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
     <circle cx="9" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5"/>

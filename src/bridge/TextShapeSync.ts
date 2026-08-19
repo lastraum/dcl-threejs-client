@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import type { PBTextShape } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/text_shape.gen'
-import { buildDclPlaneGeometry } from './primitiveShapes'
+import { buildTextShapePlaneGeometry } from './primitiveShapes'
 import { color3ToThree, color4Alpha, color4ToThree } from './pbColor'
 
 /** TextAlignMode numeric values (const enum — avoid isolatedModules import). */
@@ -20,15 +20,11 @@ const TAM = {
  * DCL TextShape is world-space text (Unity TMP-like).
  *
  * - fontSize N → N/10 m glyph height (then × entity Transform.scale).
- * - **width / height omitted**: content-sized plane (no 1 m default cap — that clipped
- *   "STAND HERE", "AURA LEADERBOARD", leaderboard rows when only fontSize is set).
- * - **width authored, no wrap**: content-sized up to that max width (slack box).
- * - **wrap + width**: wrap to width; height content-sized unless height authored.
- * - **wrap + width + height**: full auth box, glyphs paint with textAlign inside.
- * - textAlign is a **pivot** on the entity Transform (DCL local):
- *     left → left edge on origin; center → center; right → right edge.
- *   Mesh local X uses DCL→Three flip (−meshX) so pivot matches dclToThreePos.
- * - Default textAlign when omitted: MIDDLE_CENTER (SDK).
+ * - **width omitted**: content-sized plane (no 1 m default cap).
+ * - **width authored, no wrap**: still hug the glyphs. Authored width is a max,
+ *   not a 20 m mesh — that hung Jump Zone names into the sky / logo.
+ *   textAlign pivots the *content* quad (left edge on the entity).
+ * - **wrap + width + height**: full auth box, centered, glyphs paint inside.
  */
 
 const PIXELS_PER_METER = 160
@@ -62,9 +58,20 @@ type TextLayout = {
   meshY: number
 }
 
-/** Entity TRS uses dclToThreePos (X negated); child mesh offsets must match. */
+/**
+ * Bake left/right hang into verts. DrawWorld static extract copies
+ * `pose.matrixWorld` onto the visual and drops local position — a mesh.position
+ * hang never reaches the GPU, so every TextShape sat on the entity origin
+ * (looked “centered”) regardless of textAlign.
+ */
 function applyTextShapeMeshOffset(mesh: THREE.Mesh, layout: TextLayout): void {
-  mesh.position.set(-layout.meshX, layout.meshY, 0)
+  mesh.position.set(0, 0, 0)
+  mesh.rotation.set(0, 0, 0)
+  mesh.scale.set(1, 1, 1)
+  const dx = -layout.meshX
+  const dy = layout.meshY
+  if (dx === 0 && dy === 0) return
+  mesh.geometry.translate(dx, dy, 0)
 }
 
 export function buildTextShapeMesh(spec: PBTextShape): THREE.Mesh {
@@ -83,10 +90,11 @@ export function buildTextShapeMesh(spec: PBTextShape): THREE.Mesh {
   texture.generateMipmaps = false
   texture.colorSpace = THREE.SRGBColorSpace
 
-  const geometry = buildDclPlaneGeometry(layout.planeW, layout.planeH)
+  const geometry = buildTextShapePlaneGeometry(layout.planeW, layout.planeH)
   const material = new THREE.MeshBasicMaterial({
     map: texture,
     transparent: true,
+    alphaTest: 0.08,
     side: THREE.FrontSide,
     depthWrite: false
   })
@@ -95,8 +103,7 @@ export function buildTextShapeMesh(spec: PBTextShape): THREE.Mesh {
   applyTextShapeMeshOffset(mesh, layout)
   mesh.userData.textShapeSignature = textShapeSignature(spec)
   mesh.userData.textShapeCanvas = canvas
-  // Plane geometry uses L–R-compensated UV corners (dcl→Three X). Canvas is painted
-  // L→R in texture space — flip map U so glyphs still read correctly.
+  // Plane UVs already include dcl→Three X-reflection. Do not flip map U here.
   applyTextShapeFacingMirror(mesh, false)
   return mesh
 }
@@ -130,31 +137,27 @@ export function updateTextShapeMesh(mesh: THREE.Mesh, spec: PBTextShape): void {
   paintLaidOutText(ctx, spec, layout)
   if (map) map.needsUpdate = true
   mat.side = THREE.FrontSide
+  mat.transparent = true
+  mat.alphaTest = 0.08
   mat.needsUpdate = true
 
   mesh.geometry.dispose()
-  mesh.geometry = buildDclPlaneGeometry(layout.planeW, layout.planeH)
+  mesh.geometry = buildTextShapePlaneGeometry(layout.planeW, layout.planeH)
   applyTextShapeMeshOffset(mesh, layout)
 
-  // Re-apply orientation after geometry rebuild (default L–R + optional entity scale.x=-1).
   applyTextShapeFacingMirror(mesh, !!mesh.userData.dclTextShapeEntityMirrorX)
 }
 
 /**
- * Map U orientation for TextShape under L–R-compensated plane geometry.
- *
- * Base: geometry corners already swap U for dcl→Three X, so canvas needs map U flip
- * to read L→R. Scenes that set Transform.scale.x = −1 (Poker boards) reflect the mesh
- * again — XOR so text stays correct.
- *
- * @param entityMirrorX product of parent scale.x &lt; 0
+ * Map U for TextShape. Geometry already L–R-compensates dcl→Three X.
+ * Extra default flip re-mirrors Jump Zone / every stock board. Only flip
+ * when an ancestor Transform.scale.x &lt; 0 (Poker Night).
  */
 export function applyTextShapeFacingMirror(mesh: THREE.Mesh, entityMirrorX: boolean): void {
   const mat = mesh.material as THREE.MeshBasicMaterial
   const map = mat.map
   if (!map) return
-  // Base flip (true) XOR entity scale mirror.
-  const wantFlip = !entityMirrorX
+  const wantFlip = entityMirrorX
   if (wantFlip) {
     map.repeat.x = -1
     map.offset.x = 1
@@ -200,11 +203,15 @@ function layoutTextShape(spec: PBTextShape): TextLayout {
   const align = alignFromSpec(spec)
   const plain = stripTextShapeMarkup(spec.text ?? '')
 
-  // Measure/wrap width in px. Omitted width → large measure budget (content-sized, not 1 m).
+  // Fit authored meters into the canvas cap so a 20 m Jump Zone box is not stretched.
+  const ppmW = authW != null ? Math.min(PIXELS_PER_METER, CANVAS_MAX / authW) : PIXELS_PER_METER
+  const ppmH = authH != null ? Math.min(PIXELS_PER_METER, CANVAS_MAX / authH) : PIXELS_PER_METER
+  const ppm = Math.min(ppmW, ppmH)
+
   const measureWm = authW ?? (wrap ? 10 : 64)
   const measureHm = authH ?? 64
-  const boxW = Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.round(measureWm * PIXELS_PER_METER)))
-  const boxH = Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.round(measureHm * PIXELS_PER_METER)))
+  const boxW = Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.round(measureWm * ppm)))
+  const boxH = Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.round(measureHm * ppm)))
 
   const padL0 = Math.max(0, (spec.paddingLeft ?? 0) * boxW * 0.5)
   const padR0 = Math.max(0, (spec.paddingRight ?? 0) * boxW * 0.5)
@@ -213,9 +220,8 @@ function layoutTextShape(spec: PBTextShape): TextLayout {
   const innerW0 = Math.max(1, boxW - padL0 - padR0)
   const innerH0 = Math.max(1, boxH - padT0 - padB0)
 
-  // fontSize N → N/10 m → N * 16 px at PIXELS_PER_METER
   const fontSizeSpec = spec.fontSize ?? 10
-  let fontPx = Math.max(4, fontSizeSpec * FONT_SIZE_TO_METERS * PIXELS_PER_METER)
+  let fontPx = Math.max(4, fontSizeSpec * FONT_SIZE_TO_METERS * ppm)
 
   const mcanvas = document.createElement('canvas')
   mcanvas.width = 4
@@ -260,34 +266,31 @@ function layoutTextShape(spec: PBTextShape): TextLayout {
   let meshY = 0
 
   if (fullBox && authW != null && authH != null) {
-    // Full authored box — multi-line wrap + align inside (mesh stays centered).
-    canvasW = Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.round(authW * PIXELS_PER_METER)))
-    canvasH = Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.round(authH * PIXELS_PER_METER)))
     planeW = authW
     planeH = authH
+    canvasW = Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.round(planeW * ppm)))
+    canvasH = Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.round(planeH * ppm)))
     meshX = 0
     meshY = 0
   } else {
-    // Content-sized plane. Authored width is an optional max; omitted width is unbounded.
     const padX = Math.max(padL0 + padR0, fontPx * 0.25) + strokePad * 2
     const padY = Math.max(padT0 + padB0, fontPx * 0.25) + strokePad * 2
-    const maxWpx = authW != null ? Math.round(authW * PIXELS_PER_METER) : CANVAS_MAX
-    const maxHpx = authH != null ? Math.round(authH * PIXELS_PER_METER) : CANVAS_MAX
-    // Wrap: keep wrap column width; non-wrap: hug measured line width.
+    const maxWpx = authW != null ? Math.round(authW * ppm) : CANVAS_MAX
+    const maxHpx = authH != null ? Math.round(authH * ppm) : CANVAS_MAX
     const contentWpx = wrap
       ? Math.min(maxWpx, boxW)
       : Math.min(maxWpx, Math.max(CANVAS_MIN, Math.ceil(widest + padX)))
     const contentHpx = Math.min(maxHpx, Math.max(CANVAS_MIN, Math.ceil(blockH + padY)))
     canvasW = Math.min(CANVAS_MAX, contentWpx)
     canvasH = Math.min(CANVAS_MAX, contentHpx)
-    planeW = Math.max(PLANE_MIN, canvasW / PIXELS_PER_METER)
-    planeH = Math.max(PLANE_MIN, canvasH / PIXELS_PER_METER)
-
-    // textAlign = pivot on entity origin (not placement inside a default 1 m box).
+    planeW = Math.max(PLANE_MIN, canvasW / ppm)
+    planeH = Math.max(PLANE_MIN, canvasH / ppm)
+    // Explorer/Godot (text_layout.gd): no wrap → width_meter = 0, no box offset.
+    // Label3D LEFT = left edge on the entity (grows +X); RIGHT = right edge on
+    // the entity. That is a content-quad pivot, not a 20 m hang.
     if (align.h === 'left') meshX = planeW * 0.5
     else if (align.h === 'right') meshX = -planeW * 0.5
     else meshX = 0
-
     if (align.v === 'top') meshY = -planeH * 0.5
     else if (align.v === 'bottom') meshY = planeH * 0.5
     else meshY = 0

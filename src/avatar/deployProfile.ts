@@ -271,11 +271,19 @@ export async function resolveItemWearableUrnsForDeploy(
   return resolved
 }
 
+export type ProfileNamePatch = {
+  /** Shown name when hasClaimedName is true (owned DCL name). */
+  name: string
+  unclaimedName: string
+  hasClaimedName: boolean
+}
+
 function buildMetadataFromProfile(
   entry: LambdaAvatarEntry,
   profile: AvatarProfile,
   address: string,
-  wearables: string[]
+  wearables: string[],
+  namePatch?: ProfileNamePatch
 ): { avatars: unknown[] } {
   const avatar = entry.avatar ?? ({} as LambdaAvatarEntry['avatar'])
   // Omit snapshots so we don't re-upload face/body images (auth-site pattern).
@@ -290,8 +298,15 @@ function buildMetadataFromProfile(
         version: (typeof entry.version === 'number' ? entry.version : 0) + 1,
         userId: address,
         ethAddress: address,
-        name: entry.name?.trim() || profile.displayName || entry.unclaimedName || address.slice(0, 8),
-        hasClaimedName: entry.hasClaimedName ?? profile.hasClaimedName ?? false,
+        name: namePatch
+          ? namePatch.name
+          : entry.name?.trim() || profile.displayName || entry.unclaimedName || address.slice(0, 8),
+        unclaimedName: namePatch
+          ? namePatch.unclaimedName
+          : entry.unclaimedName || profile.displayName || address.slice(0, 8),
+        hasClaimedName: namePatch
+          ? namePatch.hasClaimedName
+          : (entry.hasClaimedName ?? profile.hasClaimedName ?? false),
         avatar: {
           ...avatarRest,
           bodyShape: BODY_SHAPE_URN[profile.bodyShape],
@@ -384,6 +399,7 @@ export async function deployAvatarProfile(opts: {
   identity: AuthIdentity
   profile: AvatarProfile
   peerUrl?: string
+  namePatch?: ProfileNamePatch
 }): Promise<DeployProfileResult> {
   const address = opts.address.trim().toLowerCase()
   if (!/^0x[a-f0-9]{40}$/.test(address)) {
@@ -400,18 +416,22 @@ export async function deployAvatarProfile(opts: {
 
   const lambdasUrl = peerUrl.endsWith('/lambdas') ? peerUrl : `${peerUrl}/lambdas`
   const deployedWearables = Array.isArray(entry.avatar.wearables) ? entry.avatar.wearables : []
-  const wearables = await resolveItemWearableUrnsForDeploy(
+  let wearables = await resolveItemWearableUrnsForDeploy(
     address,
     opts.profile,
     lambdasUrl,
     deployedWearables
   )
 
+  if (!wearables.length && opts.namePatch && deployedWearables.length) {
+    wearables = deployedWearables
+  }
+
   if (!wearables.length) {
     throw new Error('No valid wearables to deploy — could not resolve owned token IDs')
   }
 
-  const metadata = buildMetadataFromProfile(entry, opts.profile, address, wearables)
+  const metadata = buildMetadataFromProfile(entry, opts.profile, address, wearables, opts.namePatch)
   const { entityId, entityFile } = await buildProfileEntity({
     pointer: address,
     metadata,

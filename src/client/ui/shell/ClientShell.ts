@@ -53,20 +53,22 @@ export type ClientShellOptions = {
   getLogin?: () => import('../../../auth/AuthClient').LoginResult | null
   onSignOut: () => void | Promise<void>
   onExit: () => void | Promise<void>
+  onSaveDisplayName?: (choice: import('../../../avatar/displayNameDeploy').DisplayNameChoice) => Promise<void>
 }
 
 type TopButtonConfig = SidebarButtonConfig & { dividerAfter?: boolean }
 
 const TOP_BUTTONS: TopButtonConfig[] = [
   { id: 'notifications', icon: 'notifications', label: 'Notifications' },
-  { id: 'marketplace-credits', icon: 'marketplaceCredits', label: 'Marketplace credits', dividerAfter: true },
-  { id: 'events', icon: 'events', label: 'Events', shortcut: 'X' },
+  { id: 'explore', icon: 'explore', label: 'Explore' },
   { id: 'map', icon: 'map', label: 'Map', shortcut: 'M' },
+  { id: 'events', icon: 'events', label: 'Events', shortcut: 'X' },
   { id: 'communities', icon: 'communities', label: 'Communities', shortcut: 'O' },
-  { id: 'tour-options', icon: 'tourOptions', label: 'Tour Options' },
   { id: 'backpack', icon: 'backpack', label: 'Backpack', shortcut: 'I' },
+  { id: 'pictures', icon: 'pictures', label: 'Gallery', shortcut: 'K' },
+  { id: 'marketplace-credits', icon: 'marketplaceCredits', label: 'Marketplace credits', dividerAfter: true },
+  { id: 'tour-options', icon: 'tourOptions', label: 'Tour Options' },
   { id: 'marketplace', icon: 'marketplace', label: 'Marketplace' },
-  { id: 'pictures', icon: 'pictures', label: 'Pictures', shortcut: 'K' },
   { id: 'settings', icon: 'settings', label: 'Settings' },
   { id: 'help', icon: 'help', label: 'Help' },
   // Parity+ extras — Live, Pets, Loot Bag, Debug, Roadmap (not Preferences)
@@ -181,7 +183,8 @@ export class ClientShell {
     onWatchLive,
     getLogin,
     onSignOut,
-    onExit
+    onExit,
+    onSaveDisplayName
   }: ClientShellOptions) {
     this.session = session
     this.onEmoteSelected = onEmoteSelected ?? null
@@ -409,7 +412,12 @@ export class ClientShell {
         profile: this.session.getProfile(),
         isGuest: !this.session.getAddress()
       }),
-      { onSignOut, onExit }
+      {
+        onSignOut,
+        onExit,
+        onSaveDisplayName,
+        getPeerUrl: () => this.session.getLambdasUrl().replace(/\/lambdas\/?$/i, '')
+      }
     )
 
     for (const cfg of TOP_BUTTONS) {
@@ -1012,8 +1020,9 @@ export class ClientShell {
     }
 
     const overlayTabs: Record<string, SettingsTab> = {
-      events: 'events',
+      explore: 'explore',
       map: 'map',
+      events: 'events',
       communities: 'communities',
       backpack: 'backpack',
       pictures: 'gallery'

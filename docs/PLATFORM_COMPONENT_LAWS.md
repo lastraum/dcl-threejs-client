@@ -82,9 +82,10 @@ Client must run **platform Billboard + plane + Visibility**. No GP-specific Bill
 | Rule | Status |
 |------|--------|
 | Dual-face BufferGeometry, north + south | Verified — `primitiveShapes.ts` |
-| Docs UV corner order with **L–R compensation** for DCL→Three X reflection | Client convention (plaza JUMP IN / atlas) — documented in code; Explorer golden TBD |
-| Default north is docs **V=0 bottom** (`0,0,1,0,1,1,0,1`). South uses the same V (BM_ALL −Z to camera) | Verified — NftShape / TextShape / default planes view +Z; press_e south was over-inverted |
-| Dual-face south is **same-cell docs south from normalized north** (`northStyleToSouthPacking`). Authored second octuple is not trusted (plaza missed-it copies north-order; R4e GET BAIT is south flipbook of the same cell). Never `1−u` except marquee | Verified — v31 |
+| Docs UV *values* + **X-reflection corner maps** north **[3,2,0,1]**, south **[2,3,1,0]** | Verified — `dclToThreePos` reflects +X; pure docs maps L–R-mirror Jump Zone / TextShape / JUMP IN |
+| Default north is docs **V=0 bottom** (`0,0,1,0,1,1,0,1`). South is same-cell docs south | Verified — NftShape / TextShape / default planes |
+| Dual-face south is **same-cell docs south from normalized north** (`northStyleToSouthPacking`). Authored second octuple is not trusted (plaza missed-it copies north-order; R4e GET BAIT is south flipbook of the same cell). Never `1−u` except marquee | Verified — v31 packing / v33 X-reflection corners |
+| TextShape canvas uses the same plane. **Do not** also flip `map.repeat.x` by default | Forbidden — v31+flip re-mirrored Jump Zone (−130,91) |
 | Marquee / flipbook special cases stay on their own packing | Client law for those UV patterns |
 | **Do not** invert default north V to fix one Billboard | Forbidden — hung every NFT + canvas plane upside-down |
 | **Do not** treat authored 16-UV south as a second north face | Forbidden — L–R mirrored GET BAIT while default-UV press_e stayed upright |

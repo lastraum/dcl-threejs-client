@@ -3,7 +3,14 @@ import { loginWithMetaMask, loginWithProvider, openAuthWindow } from '../../../a
 import { getGuestPrivateKeyHex } from '../../../auth/guestIdentity'
 import { ensureGuestSession } from '../../auth/resolveInitialLogin'
 import { identityFromAvatarProfile } from '../../../avatar/displayName'
+import {
+  deployDisplayName,
+  resolveClaimedName,
+  type DisplayNameChoice
+} from '../../../avatar/displayNameDeploy'
+import { createFallbackGuestAvatarProfile } from '../../../avatar/guestProfile'
 import { fetchProfileCached, fetchProfileFaceUrl } from '../../../avatar/peerApi'
+import { DisplayNameEditor } from '../profile/DisplayNameEditor'
 import { notificationPrefs } from '../../../social/notificationPrefs'
 import {
   ICON_APPLE,
@@ -56,6 +63,7 @@ export class SocialProfileMenu {
   private open = false
   private busy = false
   private displayName: string | null = null
+  private nameEditor: DisplayNameEditor | null = null
   private readonly onLoginChange?: (login: LoginResult) => void
   private readonly onSignOut?: () => void
   private readonly onOpenSettings?: () => void
@@ -133,6 +141,7 @@ export class SocialProfileMenu {
     window.removeEventListener('scroll', this.onViewportChange, true)
     this.unsubPrefs?.()
     this.unsubPrefs = null
+    this.disposeNameEditor()
     this.restoreDropdownParent()
     this.wrap.remove()
   }
@@ -169,6 +178,7 @@ export class SocialProfileMenu {
 
   private close(): void {
     this.open = false
+    this.disposeNameEditor()
     this.menuEl.hidden = true
     this.menuEl.classList.remove('social-profile-menu__dropdown--portaled')
     this.restoreDropdownParent()
@@ -466,7 +476,11 @@ export class SocialProfileMenu {
           <span class="social-profile-menu__pill-dot" aria-hidden="true"></span>
           Wallet
         </div>
-        <p class="social-profile-menu__connection-primary">${escapeHtml(name)}</p>
+        <div class="social-profile-menu__name-row">
+          <p class="social-profile-menu__connection-primary">${escapeHtml(name)}</p>
+          <button type="button" class="social-profile-menu__edit-name" data-edit-name aria-label="Edit display name">✎</button>
+        </div>
+        <div class="social-profile-menu__name-edit" data-name-edit hidden></div>
         <button
           type="button"
           class="social-profile-menu__connection-meta social-profile-menu__wallet-copy"
@@ -537,6 +551,67 @@ export class SocialProfileMenu {
     })
   }
 
+  private disposeNameEditor(): void {
+    this.nameEditor?.dispose()
+    this.nameEditor = null
+  }
+
+  private wireNameEditor(): void {
+    this.menuBody.querySelector('[data-edit-name]')?.addEventListener('click', (ev) => {
+      ev.preventDefault()
+      ev.stopPropagation()
+      void this.toggleNameEditor()
+    })
+  }
+
+  private async toggleNameEditor(): Promise<void> {
+    const host = this.menuBody.querySelector('[data-name-edit]') as HTMLElement | null
+    if (!host) return
+    if (this.nameEditor) {
+      this.disposeNameEditor()
+      host.hidden = true
+      host.innerHTML = ''
+      return
+    }
+    const address = this.login.address
+    const current =
+      this.displayName ||
+      (this.login.kind === 'guest' ? this.login.displayName : address.slice(0, 8))
+    const claimedName = await resolveClaimedName(address)
+    const editor = new DisplayNameEditor({
+      currentName: current,
+      claimedName,
+      hasClaimedName: !!claimedName && claimedName === current,
+      onSave: (choice) => this.saveDisplayName(choice)
+    })
+    this.nameEditor = editor
+    host.hidden = false
+    host.appendChild(editor.root)
+  }
+
+  private async saveDisplayName(choice: DisplayNameChoice): Promise<void> {
+    if (this.login.kind !== 'wallet') {
+      throw new Error('Sign in with a wallet to change your name')
+    }
+    const address = this.login.address
+    const identity = this.login.identity
+    const profile =
+      (await fetchProfileCached(address)) ??
+      createFallbackGuestAvatarProfile(address, address.slice(0, 8))
+    const result = await deployDisplayName({
+      address,
+      identity,
+      profile,
+      choice
+    })
+    const displayName =
+      (result.entry.hasClaimedName
+        ? result.entry.name?.trim()
+        : result.entry.unclaimedName?.trim() || result.entry.name?.trim()) || this.displayName || 'Guest'
+    this.displayName = displayName
+    this.renderMenu()
+  }
+
   private wireWhatsNewItem(): void {
     this.menuBody.querySelector('[data-open-whats-new]')?.addEventListener('click', () => {
       this.close()
@@ -545,6 +620,7 @@ export class SocialProfileMenu {
   }
 
   private wireSignedInMenu(): void {
+    this.wireNameEditor()
     this.wireWhatsNewItem()
     const notifToggle = this.menuBody.querySelector<HTMLInputElement>('[data-notifications-toggle]')
     notifToggle?.addEventListener('change', () => {

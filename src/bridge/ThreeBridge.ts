@@ -4555,8 +4555,8 @@ export class ThreeBridge {
   }
 
   /**
-   * Product of Transform.scale.x up the parent chain. Odd negatives (Poker Night boards use −1)
-   * mirror TextShape canvas vs docs-order UVs — caller flips map U to compensate.
+   * Product of Transform.scale.x up the parent chain. Odd negatives (Poker Night −1)
+   * mirror docs-order TextShape UVs — caller flips map U only for that case.
    */
   private textShapeWorldMirrorX(entity: Entity): boolean {
     const { Transform } = this.ecs
@@ -4616,7 +4616,7 @@ export class ThreeBridge {
         updateTextShapeMesh(textMesh, spec)
         this.notifyMeshComponent(entity, TextShape.componentId)
       }
-      // Poker Night casual board uses scale.x=-1 so Unity text faces the wall; compensate map U.
+      // scale.x=-1 (Poker Night) mirrors docs-order UVs; flip map U only then.
       applyTextShapeFacingMirror(textMesh, this.textShapeWorldMirrorX(entity))
       return
     }

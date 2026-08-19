@@ -1473,6 +1473,12 @@ export class AppController {
     this.explorerView = new ExplorerView({
       login: this.login,
       onOpenScene: (target) => void this.openSceneLanding(target),
+      onJumpIn: (target) =>
+        void this.jumpInToScene(target, {
+          entry: this.appMode === 'play' ? 'teleport' : 'map',
+          source: 'map',
+          fastAssets: this.appMode === 'play'
+        }),
       onNavigate: (tab) => this.navigateSocialShell(tab),
       ...this.socialShellLoginHandlers()
     })

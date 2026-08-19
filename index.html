@@ -27098,12 +27098,38 @@
         border-bottom: 1px solid rgba(255, 255, 255, 0.08);
         margin-bottom: 12px;
       }
-      .social-profile-menu__name {
+      .social-profile-menu__name-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
         margin: 0 0 4px;
+      }
+      .social-profile-menu__name {
+        margin: 0;
         font-size: 0.9375rem;
         font-weight: 700;
         color: #fff;
         line-height: 1.3;
+        min-width: 0;
+      }
+      .social-profile-menu__edit-name {
+        flex-shrink: 0;
+        width: 26px;
+        height: 26px;
+        border: 0;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.85);
+        cursor: pointer;
+        font-size: 13px;
+        line-height: 1;
+      }
+      .social-profile-menu__edit-name:hover {
+        background: rgba(255, 255, 255, 0.16);
+        color: #fff;
+      }
+      .social-profile-menu__name-edit {
+        margin: 0 0 8px;
       }
       .social-profile-menu__sub {
         margin: 0 0 8px;

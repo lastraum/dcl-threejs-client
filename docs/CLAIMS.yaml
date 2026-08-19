@@ -5,7 +5,7 @@
 # Dev panel Community tab renders this as a single workflow table.
 
 schema_version: 2
-updated: 2026-08-18
+updated: 2026-08-19
 source: github
 base_branch: dev-latest
 workflow:
@@ -15,7 +15,7 @@ workflow:
     owner: lastraum
     pr: 70
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/70
-    updated: 2026-08-18
+    updated: 2026-08-19
   - stage: pending_review
     integration_ref: pr:62
     title: deploy confirmation on Barn cards + update-available refresh for library

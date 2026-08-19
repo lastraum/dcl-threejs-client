@@ -51,9 +51,9 @@ GUEST (SceneLoop, after present, one in-flight)
 | --- | --- |
 | Host store (`CrdtProjection` + `EntityStore` + `PhysXWorld`) | Law |
 | Worker = official `scene.js` VM | Law |
-| SceneLoop guests (primary / PE / secondary) | Target shape in-tree — leftover extra-clock APIs remain |
+| SceneLoop guests (primary / PE / secondary) | Law (v2.2.0) — extra-clock landmines sealed |
 | Play-frame reserved poses (PE, Camera, PPI) | In-tree — proven on 2026-08-19 walk-log |
-| Inject-only pointer | In-tree — leftover live-tick preempt; no-target 700 ms race remains |
+| Inject-only pointer | Law — preempt gated after first play-frame; no-target 700 ms race remains |
 | Pose vs draw (`poseRoot` / `drawRoot`) | Law |
 | One outbound blob, no host echo | Law |
 | Kernel TweenSequence (`ENABLE_SDK_TWEEN_SEQUENCE = false`) | Law |
@@ -61,11 +61,11 @@ GUEST (SceneLoop, after present, one in-flight)
 | Hover prepare edges + ~80 ms | Law |
 | WSP systems pie | **Parked** — encode/send was the bill, not systems |
 
-Do **not** re-implement P0–P4. Prove the invert and seal the leftovers ([V2.2_BEVY_PARITY.md](./V2.2_BEVY_PARITY.md)).
+Do **not** re-implement P0–P4. Invert is proven ([V2.2_BEVY_PARITY.md](./V2.2_BEVY_PARITY.md)). Remaining city/FPS work is residency (`v3`), not a second clock.
 
 ---
 
-## Leftovers (named — not sealed)
+## Leftovers (clock landmines sealed; observe-only remains)
 
 The old “still not the law” table described the **pre-P0** tree (Raycast every rAF, `runSceneEngineUpdateNow(0)` on every host inject, play-frame-done held 2 s, pointer 1500 ms drop). Those specific symptoms are mitigated here. What remains:
 
@@ -218,7 +218,7 @@ Do not treat the phases as a re-implement plan. Verdicts are against this tree.
 - World PE / scene UI never budget-ack before PET lands
 - Continuous rays recast on `tickPlayFrame`, not present rAF
 
-**Named leftover:** `preemptSceneEngineTick` still runs on pointer deliver. That is a live-tick abort. Bevy never does this.
+**Sealed (PR-2):** `preemptSceneEngineTick` skips when `sceneLoopOwnsPositiveDt` / `engineUpdateInFlight`. Observe-only: no-target 700 ms budget-ack.
 
 ### P1 — SceneLoop is the only positive-dt starter — **in-tree with named leftovers**
 
@@ -227,7 +227,7 @@ Do not treat the phases as a re-implement plan. Verdicts are against this tree.
 - PE vehicle / flight pumps deleted as clocks (shim flight runs on the play-frame tick)
 - Skip-if-in-flight is the law; leftover preempt still violates it
 
-**Named leftovers:** unscoped `requestSceneEngineTick()` after timed host inject; `nudgePlayAfterSceneTeleport` still calls `tickPlayFrame()` outside `SceneLoop.send`.
+**Sealed (PR-2):** `source` required on `requestSceneEngineTick`; `nudgePlayAfterSceneTeleport` resumes + immediate; SceneLoop.send starts the play-frame.
 
 ### P2 — Host query prepare — **in-tree**
 
@@ -244,7 +244,7 @@ Do not treat the phases as a re-implement plan. Verdicts are against this tree.
 - Soft-route (URL/minimap) and Focus (which parcel your feet are on) stay on present
 - Live guests stay default-on; shells / stand-on origin rebase stay default-off (separate residency chapter)
 
-**Landmines (sealed in PR-2):** `tickSync` never calls `tickPlayFrame`; `peTickIntervalMs() === 50`. SceneLoop 🟢 still needs the pasted walk-log.
+**Landmines (sealed in PR-2):** `tickSync` never calls `tickPlayFrame`; `peTickIntervalMs() === 50`. Walk-log pasted 2026-08-19 — SceneLoop 🟢.
 
 ### P4 — Encode / apply leftovers — **in-tree**
 
@@ -263,7 +263,7 @@ Do not treat the phases as a re-implement plan. Verdicts are against this tree.
 - Inventing `getClick` / y=0 PE hits
 - Calling this another engine’s name
 - Full open-world residency (shells, stand-on origin rebase)
-- Flipping SceneLoop 🟢 without a pasted walk-log **and** the dual-clock seal
+- Re-opening SceneLoop after the 2026-08-19 walk-log without a new clock bug
 
 ---
 
@@ -274,8 +274,8 @@ Do not treat the phases as a re-implement plan. Verdicts are against this tree.
 | Guest clock | `sceneEngineScheduler.ts` + `sceneWorker.ts` play-frame; leftover unscoped + preempt | SceneLoop.send + named `pointer-edge` only |
 | Reserved writers | `applyPlayFrameReservedPoses` | Unchanged, once per tick |
 | Raycast | `RaycastSystem.sync` from `tickPlayFrame` only | Unchanged |
-| Pointer inject | `inject-pointer-click`; leftover `preemptSceneEngineTick` | Inject + skip-if-in-flight; no abort |
-| Teleport nudge | `nudgePlayAfterSceneTeleport` still `tickPlayFrame()` | Resume + immediate; SceneLoop.send starts |
+| Pointer inject | `inject-pointer-click`; preempt gated after first play-frame | Inject + skip-if-in-flight; no abort |
+| Teleport nudge | Resume + immediate; SceneLoop.send starts | Unchanged |
 | Dual clock | **Sealed (PR-2):** `skipPlayFrame: true`; `peTickIntervalMs === 50` | Unchanged |
 | Present | `SceneHost` rAF | Unchanged |
 | Guests | `SceneLoop.ts` | Unchanged API; current guest wins ≤1-secondary cap |

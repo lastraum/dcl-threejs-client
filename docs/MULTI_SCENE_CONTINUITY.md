@@ -1,8 +1,8 @@
 # Multi-scene continuity (FocusOwner + sticky residents)
 
-**Status:** Open-world residency on `dev-latest` — extract shells + SceneLoop live guests + stand-on promote (see [OPEN_WORLD_RESIDENCY.md](./OPEN_WORLD_RESIDENCY.md)). `?noaoi` still kills all neighbor load. Continuity handoff: FocusOwner + `bindSceneTarget` before feet.  
-**Last updated:** 2026-08-11  
-**Bar:** spawn primary runs forever; neighbors = composite GLBs over Scene Distance; **30–60 FPS** without dual-worker thrash  
+**Status:** **v2.2.0** live guests **on**. **`v3`** neighbor shells **on**. Stand-on promote **off**. `?noaoi` / `?aoishells=0` still kill neighbor load. Soft-route URL on present. See [OPEN_WORLD_RESIDENCY.md](./OPEN_WORLD_RESIDENCY.md).  
+**Last updated:** 2026-08-19  
+**Bar:** spawn primary runs forever; neighbors = composite GLB shells over Scene Distance + near live guests; **30–60 FPS** without dual-clock thrash  
 
 Quick rules for agents: [AGENTS.md § Multi-scene continuity](./AGENTS.md#multi-scene-continuity-non-negotiable).  
 Architecture context: [ARCHITECTURE.md](./ARCHITECTURE.md) · milestones: [PROGRESS.md](./PROGRESS.md).
@@ -19,16 +19,16 @@ PRIMARY (spawn only)
   Full scene worker + scripts — **never demoted / never replaced on walk**
 
 NEIGHBORS (Scene Distance)
-  main.composite **GLB shells only** — no worker, no scripts, no promote
+  main.composite **GLB shells** (`v3` default-on) — walk-through, no PhysX
   Roads + empty/scatter fill
-  Soft-route URL updates under feet (address bar) — not a primary swap
+  Soft-route URL updates under feet — not a primary swap
+  Live SceneLoop secondaries inside ~20 m (muted FocusOwner)
 
-DISABLED by default (code still present)
-  Live secondary workers, sticky demote, stand-on promote handoff
-  Flip: aoiGlbShellsOnly() → false in caps.ts for continuity experiments
+DISABLED
+  Stand-on promote / origin rebase (`AOI_STAND_ON_PROMOTE = false`)
 ```
 
-**Never** cold-boot a full neighbor worker just because the player walked near or onto its parcel (default).
+Do **not** cold-boot a full neighbor worker for every parcel in Scene Distance. Live band is adjacency-capped. Shells fill the rest.
 
 Primary + PE play-frames are **SceneLoop guests** (one in-flight tick, host receive/apply). Shells are not guests. Do not re-enable live secondaries as N dual-runtimes.
 

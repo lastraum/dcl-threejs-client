@@ -13,6 +13,7 @@ import { hashParcelCoords, mulberry32, pickInt } from './Utils/SeededRandom'
 import { dclSceneToLandscapeThree, EMPTY_LAND_GROUND_OFFSET, parcelKeyFromDclScene } from './Utils/SceneSpace'
 import { sceneParcelBounds } from './Utils/ParcelGrid'
 import { appendGrassWindShader, setGrassWindElapsed } from './grassWindShader'
+import { landscapeLodRangeM } from '../../rendering/RenderQualitySettings'
 
 /**
  * Mirrors ez-tree `GrassOptions` defaults.
@@ -44,8 +45,6 @@ const GRASS_BLADE_TINT = new THREE.Color(
   EZ_TREE_GRASS_TINT_RGB.b / 255
 )
 
-const LOD_NEAR_M = 80
-const LOD_FAR_M = 420
 const LOD_MIN_FRACTION = 0.18
 
 type GrassInstance = {
@@ -334,7 +333,13 @@ export async function buildEzTreeGrassField(
     lastLodUpdate = now
 
     const camDist = cameraPos.distanceTo(centerThree)
-    const lodT = THREE.MathUtils.clamp((camDist - LOD_NEAR_M) / (LOD_FAR_M - LOD_NEAR_M), 0, 1)
+    const { near, far } = landscapeLodRangeM()
+    if (far <= 0) {
+      grassMesh.count = 0
+      grassMesh.instanceMatrix.needsUpdate = true
+      return
+    }
+    const lodT = THREE.MathUtils.clamp((camDist - near) / Math.max(1, far - near), 0, 1)
     const lodFraction = THREE.MathUtils.lerp(1, LOD_MIN_FRACTION, lodT * lodT)
     const targetCount = Math.max(1, Math.floor(instances.length * lodFraction))
 

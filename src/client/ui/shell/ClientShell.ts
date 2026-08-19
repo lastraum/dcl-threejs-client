@@ -53,6 +53,7 @@ export type ClientShellOptions = {
   getLogin?: () => import('../../../auth/AuthClient').LoginResult | null
   onSignOut: () => void | Promise<void>
   onExit: () => void | Promise<void>
+  onSaveDisplayName?: (choice: import('../../../avatar/displayNameDeploy').DisplayNameChoice) => Promise<void>
 }
 
 type TopButtonConfig = SidebarButtonConfig & { dividerAfter?: boolean }
@@ -181,7 +182,8 @@ export class ClientShell {
     onWatchLive,
     getLogin,
     onSignOut,
-    onExit
+    onExit,
+    onSaveDisplayName
   }: ClientShellOptions) {
     this.session = session
     this.onEmoteSelected = onEmoteSelected ?? null
@@ -409,7 +411,12 @@ export class ClientShell {
         profile: this.session.getProfile(),
         isGuest: !this.session.getAddress()
       }),
-      { onSignOut, onExit }
+      {
+        onSignOut,
+        onExit,
+        onSaveDisplayName,
+        getPeerUrl: () => this.session.getLambdasUrl().replace(/\/lambdas\/?$/i, '')
+      }
     )
 
     for (const cfg of TOP_BUTTONS) {

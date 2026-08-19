@@ -98,7 +98,8 @@ import {
   clearProfileCaches,
   fetchProfileFaceUrl,
   seedCommsPeerProfile,
-  seedLocalProfileCache
+  seedLocalProfileCache,
+  type LambdaAvatarEntry
 } from '../avatar/peerApi'
 import type { LoginResult } from '../auth/AuthClient'
 import type { SendBinaryRequest } from '../shim/types'
@@ -112,7 +113,7 @@ import {
   maybeLogLiveSceneAdminSignedFetch,
   probeSceneAdminForAdminTools
 } from '../network/gatekeeper/adminToolsDiagnostics'
-import { shortenAddress } from '../avatar/displayName'
+import { identityFromAvatarProfile, shortenAddress } from '../avatar/displayName'
 import { buildPlayerMirrorIdentity, getOrCreateGuestAddress } from '../bridge/playerMirrorIdentity'
 import type { AvatarAttachTargetResolver } from '../avatar/AvatarAttachTargets'
 import { dclToThreePos, dclToThreeVec, threeToDclPos, type DclTransformValues } from '../bridge/dclTransform'
@@ -6249,6 +6250,39 @@ export class World {
       .finally(() => {
         this.remoteAvatars?.setLocalEmoteLoadBusy(false)
       })
+  }
+
+  /** Name-only profile deploy landed — refresh tags/comms without rebuilding the VRM. */
+  applyLocalDisplayName(entry: LambdaAvatarEntry): void {
+    const address = this.session.getAddress()
+    const profile = this.session.getProfile()
+    const displayName =
+      entry.name?.trim() && entry.hasClaimedName
+        ? entry.name.trim()
+        : entry.unclaimedName?.trim() || entry.name?.trim() || profile?.displayName || 'Guest'
+    const hasClaimedName = !!entry.hasClaimedName
+    if (profile) {
+      this.session.setProfile({ ...profile, displayName, hasClaimedName })
+    }
+    this.session.applyDeployedProfileEntry(entry)
+    if (address) {
+      clearProfileCaches(address)
+      const next = this.session.getProfile()
+      if (next) seedLocalProfileCache(address, next)
+    }
+    this.comms.setCommsProfile(this.session.getCommsProfileEntity())
+    this.comms.announceProfile('connect')
+    const next = this.session.getProfile()
+    if (next) {
+      this.player?.setProfileIdentity(identityFromAvatarProfile(next, address ?? undefined))
+      this.sceneScript.setPlayerIdentity(
+        buildPlayerMirrorIdentity({ address: address ?? undefined, profile: next })
+      )
+    }
+    this.social.setDisplayName(displayName)
+    if (address) {
+      this.social.setLocalProfile(address, displayName, this.social.getLocalDisplay().faceUrl)
+    }
   }
 
   /** Reload local avatar after backpack equip / profile save (session profile, not stale Catalyst). */

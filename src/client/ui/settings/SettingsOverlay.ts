@@ -3,6 +3,8 @@ import {
   deployAvatarProfile,
   profileDeployFingerprint
 } from '../../../avatar/deployProfile'
+import { resolveClaimedName, type DisplayNameChoice } from '../../../avatar/displayNameDeploy'
+import { DisplayNameEditor } from '../profile/DisplayNameEditor'
 import {
   CommunitiesBrowseView,
   type CommunitiesBrowseViewOptions
@@ -78,6 +80,7 @@ export type SettingsOverlayOptions = {
   onJoinedCommunity?: (community: { id: string; name: string; role?: string }) => void
   /** Leave the 3D overlay for the 2D Explore shell (the top-left "2D" dot). */
   onExitTo2D?: () => void
+  onSaveDisplayName?: (choice: DisplayNameChoice) => Promise<void>
   getFollow?: CommunitiesBrowseViewOptions['getFollow']
   getCurrentRoute?: CommunitiesBrowseViewOptions['getCurrentRoute']
 }
@@ -114,6 +117,8 @@ export class SettingsOverlay {
   private onOpenCommunityChat?: SettingsOverlayOptions['onOpenCommunityChat']
   private onJoinedCommunity?: SettingsOverlayOptions['onJoinedCommunity']
   private onExitTo2D?: () => void
+  private onSaveDisplayName?: (choice: DisplayNameChoice) => Promise<void>
+  private nameEditor: DisplayNameEditor | null = null
   private getFollow?: SettingsOverlayOptions['getFollow']
   private getCurrentRoute?: SettingsOverlayOptions['getCurrentRoute']
 
@@ -134,6 +139,7 @@ export class SettingsOverlay {
     this.onOpenCommunityChat = opts.onOpenCommunityChat
     this.onJoinedCommunity = opts.onJoinedCommunity
     this.onExitTo2D = opts.onExitTo2D
+    this.onSaveDisplayName = opts.onSaveDisplayName
     this.getFollow = opts.getFollow
     this.getCurrentRoute = opts.getCurrentRoute
 
@@ -153,7 +159,7 @@ export class SettingsOverlay {
             <span class="settings-overlay__title-count" data-title-count hidden></span>
           </div>
           <div class="settings-overlay__header-slot" data-header-slot></div>
-          <span class="settings-overlay__user-name"></span>
+          <button type="button" class="settings-overlay__user-name" aria-label="Edit display name"></button>
           <button class="settings-overlay__close" type="button" aria-label="Close">&times;</button>
         </div>
         <div class="settings-overlay__body">
@@ -169,6 +175,9 @@ export class SettingsOverlay {
 
     this.buildTabs()
     this.closeBtn.addEventListener('click', () => this.hide())
+    this.root.querySelector('.settings-overlay__user-name')?.addEventListener('click', () => {
+      void this.toggleNameEditor()
+    })
     this.root.querySelector('[data-logo]')?.addEventListener('click', () => {
       if (this.onExitTo2D) this.onExitTo2D()
       else this.hide()
@@ -687,8 +696,44 @@ export class SettingsOverlay {
     nameEl.textContent = profile?.displayName ?? 'Guest'
   }
 
+  private async toggleNameEditor(): Promise<void> {
+    if (!this.onSaveDisplayName) return
+    let host = this.root.querySelector('.settings-overlay__name-edit') as HTMLElement | null
+    if (this.nameEditor) {
+      this.nameEditor.dispose()
+      this.nameEditor = null
+      host?.remove()
+      return
+    }
+    if (!host) {
+      host = document.createElement('div')
+      host.className = 'settings-overlay__name-edit'
+      this.root.querySelector('.settings-overlay__header')?.after(host)
+    }
+    const profile = this.session.getProfile()
+    const address = this.session.getAddress()
+    const current = profile?.displayName?.trim() || 'Guest'
+    const claimedName =
+      (profile?.hasClaimedName ? current : null) ||
+      (address
+        ? await resolveClaimedName(address, this.session.getLambdasUrl().replace(/\/lambdas\/?$/i, ''))
+        : null)
+    this.nameEditor = new DisplayNameEditor({
+      currentName: current,
+      claimedName,
+      hasClaimedName: !!profile?.hasClaimedName,
+      onSave: async (choice) => {
+        await this.onSaveDisplayName!(choice)
+        this.updateUserInfo()
+      }
+    })
+    host.appendChild(this.nameEditor.root)
+  }
+
   dispose(): void {
     window.removeEventListener('keydown', this.onKeyDown)
+    this.nameEditor?.dispose()
+    this.nameEditor = null
     this.backpackView?.dispose()
     this.eventsView?.dispose()
     this.placesView?.dispose()

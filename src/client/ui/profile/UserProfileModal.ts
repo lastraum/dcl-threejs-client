@@ -1,5 +1,7 @@
 import { shortenAddress } from '../../../avatar/displayName'
+import { resolveClaimedName, type DisplayNameChoice } from '../../../avatar/displayNameDeploy'
 import { resolveRemotePeerProfile } from '../../../avatar/peerApi'
+import { DisplayNameEditor } from './DisplayNameEditor'
 import type { AvatarProfile } from '../../../avatar/types'
 import type { SessionIdentity } from '../../../network/SessionIdentity'
 import { fetchUserBadges, type UserBadge } from '../../../social/badgesApi'
@@ -58,12 +60,14 @@ export class UserProfileModal {
   private photosError: string | null = null
   /** Address the loaded photos belong to, so a re-opened modal refetches. */
   private photosAddress: string | null = null
+  private nameEditor: DisplayNameEditor | null = null
 
   constructor(
     private readonly session: SessionIdentity,
     private readonly social: SocialService,
     private readonly getPeerUrl: () => string,
-    private readonly onHide?: () => void
+    private readonly onHide?: () => void,
+    private readonly onSaveDisplayName?: (choice: DisplayNameChoice) => Promise<void>
   ) {
     this.backdrop = document.createElement('div')
     this.backdrop.className = 'user-profile-modal-backdrop'
@@ -120,6 +124,8 @@ export class UserProfileModal {
     this.loadToken++
     this.preview?.dispose()
     this.preview = null
+    this.nameEditor?.dispose()
+    this.nameEditor = null
     this.root.innerHTML = ''
     this.root.hidden = true
     this.backdrop.hidden = true
@@ -271,6 +277,8 @@ export class UserProfileModal {
   private renderChrome(): void {
     const data = this.loaded
     if (!data) return
+    this.nameEditor?.dispose()
+    this.nameEditor = null
 
     const { address, displayName, nameColor, claimed, isSelf, relation, profileUrl } = data
     const friendBtn = isSelf ? null : friendshipActionLabel(relation)
@@ -286,7 +294,13 @@ export class UserProfileModal {
         <div class="user-profile-modal__title-row">
           <h2 class="user-profile-modal__title" style="color:${nameColor}">${escapeHtml(displayName)}</h2>
           ${claimed ? '<span class="user-profile-modal__verified" title="Verified name">✓</span>' : ''}
+          ${
+            isSelf && this.onSaveDisplayName
+              ? `<button type="button" class="user-profile-modal__edit-name" aria-label="Edit display name">✎</button>`
+              : ''
+          }
         </div>
+        <div class="user-profile-modal__name-edit" hidden></div>
         ${
           address
             ? `<div class="user-profile-modal__wallet-row">
@@ -311,6 +325,9 @@ export class UserProfileModal {
       </div>
     `
 
+    header.querySelector('.user-profile-modal__edit-name')?.addEventListener('click', () => {
+      void this.toggleNameEditor(data)
+    })
     header.querySelector('.user-profile-modal__close')?.addEventListener('click', () => this.hide())
     header.querySelector('[data-action="external"]')?.addEventListener('click', () => {
       window.open(profileUrl, '_blank', 'noopener,noreferrer')
@@ -326,6 +343,37 @@ export class UserProfileModal {
         console.warn('[profile] clipboard copy failed')
       }
     })
+    this._bindAddFriend(header, address)
+  }
+
+  private async toggleNameEditor(data: LoadedProfile): Promise<void> {
+    const host = this.root.querySelector('.user-profile-modal__name-edit') as HTMLElement | null
+    if (!host || !this.onSaveDisplayName) return
+    if (this.nameEditor) {
+      this.nameEditor.dispose()
+      this.nameEditor = null
+      host.hidden = true
+      host.innerHTML = ''
+      return
+    }
+    const claimedName =
+      (data.claimed ? data.displayName : null) ||
+      (data.address ? await resolveClaimedName(data.address, this.getPeerUrl()) : null)
+    const editor = new DisplayNameEditor({
+      currentName: data.displayName,
+      claimedName,
+      hasClaimedName: data.claimed,
+      onSave: async (choice) => {
+        await this.onSaveDisplayName!(choice)
+        await this.loadContent(true)
+      }
+    })
+    this.nameEditor = editor
+    host.hidden = false
+    host.appendChild(editor.root)
+  }
+
+  private _bindAddFriend(header: Element, address: string | undefined): void {
     const addFriendBtn = header.querySelector('.user-profile-modal__add-friend') as HTMLButtonElement | null
     addFriendBtn?.addEventListener('click', () => {
       if (addFriendBtn.disabled || !address) return

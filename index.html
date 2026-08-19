@@ -7679,6 +7679,82 @@
         font-size: 14px;
         line-height: 1;
       }
+      .profile-popup__edit-name,
+      .user-profile-modal__edit-name {
+        border: 0;
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.8);
+        width: 26px;
+        height: 26px;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 13px;
+        line-height: 1;
+        flex-shrink: 0;
+      }
+      .profile-popup__edit-name:hover,
+      .user-profile-modal__edit-name:hover {
+        background: rgba(255, 255, 255, 0.16);
+        color: #fff;
+      }
+      .profile-popup__name-edit,
+      .user-profile-modal__name-edit {
+        width: 100%;
+        margin-top: 8px;
+      }
+      .display-name-editor {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .display-name-editor__claimed {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.78);
+      }
+      .display-name-editor__row {
+        display: flex;
+        gap: 8px;
+      }
+      .display-name-editor__input {
+        flex: 1;
+        min-width: 0;
+        height: 34px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.35);
+        color: #fff;
+        padding: 0 10px;
+        font-size: 14px;
+      }
+      .display-name-editor__input:disabled {
+        opacity: 0.55;
+      }
+      .display-name-editor__save {
+        height: 34px;
+        padding: 0 12px;
+        border: 0;
+        border-radius: 8px;
+        background: #ff2d55;
+        color: #fff;
+        font-weight: 700;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .display-name-editor__save:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+      .display-name-editor__status {
+        margin: 0;
+        min-height: 1.1em;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.62);
+      }
+      .display-name-editor__status[data-kind='error'] { color: #ff8a8a; }
+      .display-name-editor__status[data-kind='ok'] { color: #57e389; }
       .profile-popup__wallet-row {
         display: flex;
         align-items: center;
@@ -10519,6 +10595,18 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        border: 0;
+        background: transparent;
+        cursor: pointer;
+        padding: 0;
+        font-family: inherit;
+      }
+      .settings-overlay__user-name:hover {
+        color: #fff;
+      }
+      .settings-overlay__name-edit {
+        padding: 8px 16px 10px;
+        background: rgba(0, 0, 0, 0.28);
       }
       .settings-overlay__close {
         width: 32px;

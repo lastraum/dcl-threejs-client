@@ -551,6 +551,12 @@ export class PlayerSystem {
     this.syncCamera(true)
   }
 
+  /** Name-only update — do not rebuild the VRM. */
+  setProfileIdentity(identity: ProfileIdentity): void {
+    this.playerIdentity = identity
+    this.syncNameTag()
+  }
+
   /** Reload avatar after backpack equip / profile save. Pass session profile so a
    *  just-deployed outfit renders even before Catalyst lambdas propagate it. */
   async reloadAvatar(

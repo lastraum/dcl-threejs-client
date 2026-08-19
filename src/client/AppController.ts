@@ -74,6 +74,7 @@ import type { MapPlayerState } from './ui/settings/MapView'
 import { genesisMetersToParcel } from '../map/genesisMapViewport'
 import type { ResolvedScene } from '../dcl/content/types'
 import { fetchProfileFaceUrl } from '../avatar/peerApi'
+import { deployDisplayName, type DisplayNameChoice } from '../avatar/displayNameDeploy'
 import { hydrateEmoteWheelSlots } from '../avatar/profileEmotes'
 import { InputAction } from '../input/pointerConstants'
 import { MobileGameHud } from './ui/MobileGameHud'
@@ -735,6 +736,7 @@ export class AppController {
       onVrmEquipChange: () => {
         void this.world?.reloadLocalAvatar()
       },
+      onSaveDisplayName: (choice) => this.saveDisplayName(choice),
       onOpenCommunityChat: (community) => {
         this.openCommunityChatChannel(community.id, community.name)
       },
@@ -751,6 +753,27 @@ export class AppController {
         void this.navigateTo({ kind: 'blank' })
       }
     })
+  }
+
+  /** Signed Catalyst name update + local/comms refresh. */
+  private async saveDisplayName(choice: DisplayNameChoice): Promise<void> {
+    const session = this.world?.session
+    if (!session) throw new Error('No active session')
+    const address = session.getAddress()
+    const identity = session.getAuthIdentity()
+    const profile = session.getProfile()
+    if (!address || !identity || !profile) {
+      throw new Error('Sign in to change your name')
+    }
+    const peerRoot = session.getLambdasUrl().replace(/\/lambdas\/?$/i, '') || undefined
+    const result = await deployDisplayName({
+      address,
+      identity,
+      profile,
+      peerUrl: peerRoot,
+      choice
+    })
+    this.world?.applyLocalDisplayName(result.entry)
   }
 
   /** Community modal 💬 → in-world ChatPanel or 2D SocialChatDock. */
@@ -2912,7 +2935,8 @@ export class AppController {
       isPassportDisabled: (address) => world.sceneScript.isPassportDisabled(address),
       onTrade: (address) => {
         void this.tradeUi?.invitePeer(address)
-      }
+      },
+      onSaveDisplayName: (choice) => this.saveDisplayName(choice)
     })
 
     if (!this.debugPanel) {
@@ -2981,7 +3005,8 @@ export class AppController {
         onWatchLive: (session) => this.openLivePip(session),
         getLogin: () => this.login,
         onSignOut: () => this.signOut(),
-        onExit: () => this.leavePlayMode()
+        onExit: () => this.leavePlayMode(),
+        onSaveDisplayName: (choice) => this.saveDisplayName(choice)
       })
       // Rebind shared Live directory identity for 3D (keeps GO LIVE / hb from 2D).
       void world.social.ensureLiveReady().then((dir) => this.wireLiveSessionEnded(dir))

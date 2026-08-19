@@ -167,6 +167,8 @@ function isFishingMotionGltfSrc(src: string): boolean {
   // Explicit fishing assets only (leaf or path).
   if (s.includes('bobber') || s.includes('fishing_line') || s.includes('fishing-line')) return true
   if (s.includes('lure') || s.includes('hook')) return true
+  // Held catch GLBs (undeadSardine, mediumFish, …) parent under LEFT_HAND attach.
+  if (s.includes('/catch/') || s.includes('catch/')) return true
   // *_rod.glb / wood_rod / sniper_rod / beggar_rod — not "prod" or "broadcast".
   if (/(^|\/|_)(rod|bait)(_|\.|\/|$)/i.test(s) || s.includes('_rod') || s.includes('rod.glb')) {
     return true
@@ -997,6 +999,12 @@ export class ThreeBridge {
         const leaf = obj.getObjectByName(meshKey(entity))
         if (leaf) leaf.visible = true
       }
+      // Same law as MeshRenderer leaf: a visible GltfContainer must have a live
+      // clone/instance. Plaza n0 starts hidden; s7e only flips Visibility — if the
+      // hash was never fetched (budget 0, not a fishing-src path) the catch is empty.
+      if (visible && this.ecs.GltfContainer?.has(entity)) {
+        this.ensureGltfVisual(entity)
+      }
       if (this.meshRendererInstancer.has(entity) || obj.userData.dclMeshRendererInstanced) {
         instanced.push(entity)
       }
@@ -1070,10 +1078,14 @@ export class ThreeBridge {
    * DCL sprite pool pattern — plane + animated UVs, non-interactive (any scene).
    */
   private isSpritePoolEntity(entity: Entity): boolean {
-    const { MeshRenderer, PointerEvents, MeshCollider } = this.ecs
+    const { MeshRenderer, PointerEvents, MeshCollider, Billboard } = this.ecs
     const spec = meshRendererGetOrNull(MeshRenderer, entity)
     if (!spec || !hasAnimatedPlaneUvs(spec)) return false
-    return !PointerEvents.has(entity) && !MeshCollider.has(entity)
+    if (PointerEvents.has(entity) || MeshCollider.has(entity)) return false
+    // Billboard-facing planes (press_e child of BM_ALL, GET BAIT) are world props.
+    // Sprite-pool peel skips Billboard extract + Tween pop-in.
+    if (Billboard?.has(entity) || this.hasBillboardAncestor(entity)) return false
+    return true
   }
 
   private isSpriteDiffEntity(
@@ -1164,6 +1176,14 @@ export class ThreeBridge {
     }
 
     this.syncBillboardFlagsFromDiff(diff, this.ecs.Billboard)
+    // Draw-root extract: replacePrimitiveMesh binds a new visible mesh after
+    // applySceneDiff hid the previous draw visual. Plaza I0 last cell writes
+    // Visibility=false — without this the splash sheet stays on the pond.
+    const visEntities = new Set<Entity>()
+    for (const entity of applied.upserts) visEntities.add(entity)
+    for (const entity of applied.meshDirty) visEntities.add(entity)
+    for (const [entity] of diff) visEntities.add(entity)
+    if (visEntities.size) this.syncEcsVisibility(visEntities)
   }
 
   setVideoPlayerBridge(bridge: VideoPlayerBridge): void {
@@ -2085,15 +2105,29 @@ export class ThreeBridge {
     // land in this frame's upserts if GLB attach already ran.
     this.syncEcsVisibility(this.entitiesWithVisibility())
 
-    // AvatarAttach put this frame — promote self (+ Transform children) off GPU instances.
-    if (AvatarAttach) {
-      const attachTouched: Entity[] = []
+    // AvatarAttach / Billboard / motion Tween — promote self + Transform descendants
+    // off GPU instances. Plaza new-catch: d7e puts BM_Y + Move on z0; n0 (pool/*.glb)
+    // is the child GltfContainer. Repeat reveal: c7e Move-tweens z0 (Billboard deleted)
+    // and Scale-tweens n0 — instanced slots ignore parent world.
+    {
+      const motionRoots: Entity[] = []
+      const { Transform, Tween } = this.ecs
       for (const [entity, comps] of diff) {
-        if (comps.has(AvatarAttach.componentId) && AvatarAttach.has(entity)) {
-          attachTouched.push(entity)
+        if (AvatarAttach && comps.has(AvatarAttach.componentId) && AvatarAttach.has(entity)) {
+          motionRoots.push(entity)
+        } else if (
+          Transform &&
+          comps.has(Transform.componentId) &&
+          this.isAvatarAttachDriven(entity)
+        ) {
+          motionRoots.push(entity)
+        } else if (Billboard && comps.has(Billboard.componentId) && Billboard.has(entity)) {
+          motionRoots.push(entity)
+        } else if (Tween && comps.has(Tween.componentId) && Tween.has(entity)) {
+          motionRoots.push(entity)
         }
       }
-      if (attachTouched.length) this.promoteAvatarAttachGltfs(attachTouched)
+      if (motionRoots.length) this.promoteAvatarAttachGltfs(motionRoots)
     }
 
     // Animator put on an already-instanced GLB (Spring flowers, banners) — clone now
@@ -2283,7 +2317,7 @@ export class ThreeBridge {
     for (const entity of this.pendingMeshEntities) {
       if (!GltfContainer.has(entity)) continue
       const src = GltfContainer.get(entity).src?.trim() ?? ''
-      if (isFishingMotionGltfSrc(src)) fish.push(entity)
+      if (isFishingMotionGltfSrc(src) || this.gltfMustPresent(entity)) fish.push(entity)
     }
     if (!fish.length) return
     // Temporarily ensure budget for fishing attaches.
@@ -2572,6 +2606,103 @@ export class ThreeBridge {
     const obj = this.store.getOrCreateNode(entity, 'scene')
     this.attachOrUpdateMeshRenderer(entity, obj, meshKey(entity), Material.has(entity))
     return this.hasMeshRendererLeaf(entity)
+  }
+
+  /**
+   * Near-zero Transform scale = authored stash / LO() hide (plaza watering
+   * clickboxes at 0.001). Those must not force-clone.
+   */
+  private isNearZeroScaleEntity(entity: Entity): boolean {
+    const { Transform } = this.ecs
+    if (!Transform?.has(entity)) return false
+    const s = (Transform.get(entity) as DclTransformValues).scale
+    return (
+      Math.abs(s?.x ?? 1) < 0.05 &&
+      Math.abs(s?.y ?? 1) < 0.05 &&
+      Math.abs(s?.z ?? 1) < 0.05
+    )
+  }
+
+  /**
+   * GltfContainer that must load+attach even when the disco budget is 0.
+   * Hidden catch/loot (Visibility=false, normal scale) still needs a mesh —
+   * s7e only flips visible. LO() 0.001-scale stashes stay out.
+   */
+  private gltfMustPresent(entity: Entity): boolean {
+    if (this.isNearZeroScaleEntity(entity)) return false
+    if (this.isAvatarAttachDriven(entity)) return true
+    if (this.hasBillboardAncestor(entity)) return true
+    if (this.hasTweenAncestor(entity)) return true
+    // Authored Visibility (show/hide) = MeshRenderer-leaf class, even while false.
+    return !!this.ecs.VisibilityComponent?.has(entity)
+  }
+
+  private meshEcsBundle(): Pick<
+    MirrorComponents,
+    'MeshRenderer' | 'Material' | 'GltfContainer' | 'TextShape'
+  > {
+    return {
+      MeshRenderer: this.ecs.MeshRenderer,
+      Material: this.ecs.Material,
+      GltfContainer: this.ecs.GltfContainer,
+      TextShape: this.ecs.TextShape
+    }
+  }
+
+  /** Attach (or promote) a GltfContainer this frame — bypass idle/budget skip. */
+  private ensureGltfVisual(entity: Entity): void {
+    const { GltfContainer } = this.ecs
+    if (!GltfContainer.has(entity)) return
+    const obj = this.store.nodes.get(entity) ?? this.store.getOrCreateNode(entity, 'scene')
+    const src = GltfContainer.get(entity).src?.trim() ?? ''
+    if (!src) return
+    const hash = hashFromSrc(src, this.sceneConfig)
+    if (!hash) return
+
+    if (
+      obj.userData.dclInstanced &&
+      (this.isAvatarAttachDriven(entity) ||
+        this.hasBillboardAncestor(entity) ||
+        this.hasTweenAncestor(entity))
+    ) {
+      this.promoteInstancedForMotion(entity, obj)
+    }
+
+    const mk = meshKey(entity)
+    const mesh = this.getEntityVisual(obj, mk)
+    const needsAttach =
+      !mesh ||
+      !!mesh.userData.dclInstanceMarker ||
+      obj.userData.gltfSrcKey !== hash
+    if (!needsAttach) {
+      obj.matrixAutoUpdate = true
+      unfreezeObject3D(obj)
+      if (mesh) unfreezeObject3D(mesh)
+      return
+    }
+
+    obj.userData.dclForceCloneAttach = true
+    obj.matrixAutoUpdate = true
+    if (obj.userData.dclInstanced) {
+      this.instancer.detach(entity, obj)
+      this.instanceMotionHits.delete(entity)
+      delete obj.userData.dclInstanced
+    }
+    this.removeMeshSlot(obj, mk)
+    this.pendingMeshEntities.add(entity)
+    const saved = this.gltfBudgetRemaining
+    this.gltfBudgetRemaining = Math.max(this.gltfBudgetRemaining, 2)
+    this.syncMeshSync(entity, obj, this.meshEcsBundle(), true)
+    this.gltfBudgetRemaining = saved
+    if (!this.entityNeedsMeshWork(entity, obj, { includeMaterial: false })) {
+      this.pendingMeshEntities.delete(entity)
+    }
+    const live = this.getEntityVisual(obj, mk)
+    if (live) {
+      unfreezeObject3D(live)
+      live.visible = true
+    }
+    obj.visible = true
   }
 
   /**
@@ -2889,20 +3020,23 @@ export class ThreeBridge {
     const { MeshRenderer, Animator, Billboard, Tween, AvatarAttach, Transform } = this.ecs
     for (const [entity, comps] of diff) {
       if (!MeshRenderer.has(entity)) continue
-      // Continuous script motion (DecentraCraft temple spin/orbit/pulse) mutates Transform
-      // every tick via getMutable — not Tween/Animator. Transform put must unfreeze too.
-      const motion =
-        comps.has(Transform.componentId) ||
+      // Continuous script motion mutates Transform every tick via getMutable.
+      // Instancer.updateEntities already writes instance matrices from those puts —
+      // do not promote Transform-only boards off GPU InstancedMesh (paint/melt
+      // grids would detach dozens of boxes per brush and hitch the player).
+      const scriptMotion =
         (Animator && comps.has(Animator.componentId)) ||
         (Billboard && comps.has(Billboard.componentId)) ||
         (Tween && comps.has(Tween.componentId)) ||
         (AvatarAttach && comps.has(AvatarAttach.componentId))
-      if (!motion) continue
+      const transformOnly = comps.has(Transform.componentId)
+      if (!scriptMotion && !transformOnly) continue
       const obj = this.store.nodes.get(entity)
       if (!obj) continue
       unfreezeObject3D(obj)
-      // Promote only while still on GPU InstancedMesh — never re-attach private leaves every
-      // frame (that rebuilt temple dishes each tick and killed spin/orbit motion).
+      if (!scriptMotion) continue
+      // Promote only for Tween/Animator/Billboard/AvatarAttach — never re-attach
+      // private leaves every Transform (that rebuilt temple dishes each tick).
       if (this.meshRendererInstancer.has(entity) || obj.userData.dclMeshRendererInstanced) {
         this.promoteMeshRendererForPointerOrMotion(entity, obj)
       }
@@ -2946,6 +3080,10 @@ export class ThreeBridge {
     setMeshDesiredCastShadow(primitive, wantCast, 'environment')
     primitive.receiveShadow = true
     this.bindDrawVisual(obj, primitive)
+    if (entity !== undefined && this.ecs.VisibilityComponent?.has(entity)) {
+      const vis = this.ecs.VisibilityComponent.get(entity).visible !== false
+      primitive.visible = vis
+    }
     return primitive
   }
 
@@ -3762,7 +3900,13 @@ export class ThreeBridge {
       if (!obj) continue
 
       // GP y_() hide rod (leave pond) — do not cold-load / force-show hidden rods.
-      if (VisibilityComponent?.has(entity) && VisibilityComponent.get(entity).visible === false) {
+      // Catch / attach / billboard children still need a private mesh while hidden
+      // (plaza n0 starts visible=false at (0,-10); s7e only flips Visibility).
+      const hidden =
+        VisibilityComponent?.has(entity) && VisibilityComponent.get(entity).visible === false
+      const keepHiddenMesh =
+        this.isAvatarAttachDriven(entity) || this.hasBillboardAncestor(entity)
+      if (hidden && !keepHiddenMesh) {
         obj.visible = false
         obj.traverse((o) => {
           if ((o as THREE.Mesh).isMesh) o.visible = false
@@ -3805,6 +3949,13 @@ export class ThreeBridge {
         }
       } else if (mesh) {
         unfreezeObject3D(mesh)
+      }
+
+      if (hidden) {
+        obj.visible = false
+        obj.traverse((o) => {
+          if ((o as THREE.Mesh).isMesh) o.visible = false
+        })
       }
 
       // Bobber: unstash force-show. Rod: re-sync ECS Visibility after promote/attach.
@@ -3920,8 +4071,12 @@ export class ThreeBridge {
     // InstancedMesh — they stay at bind scale and fill the sky.
     if (template.animations.length > 0) return false
     // Billboard rotates the entity group. InstancedMesh lives under the scene root —
-    // rotating the marker leaves the GPU slot world-fixed.
-    if (this.ecs.Billboard?.has(entity)) return false
+    // rotating the marker leaves the GPU slot world-fixed. Parent Billboard (plaza
+    // new-catch z0) must clone the child Gltf the same way.
+    if (this.ecs.Billboard?.has(entity) || this.hasBillboardAncestor(entity)) return false
+    // Parent Move / Scale tween (plaza repeat-reveal z0 → n0) — instance matrices
+    // do not inherit ancestor world. Clone the same way as AvatarAttach children.
+    if (this.hasTweenAncestor(entity)) return false
     // Material maps live on the shared template. Scalar albedo uses instanceColor.
     // Per-entity unique maps used to force a clone of every plaza pipe/chair.
     // Plaza fishing bobber/line/rod — always private clone (never GPU instance).
@@ -3984,30 +4139,18 @@ export class ThreeBridge {
   }
 
   /**
-   * When AvatarAttach is added/updated, promote any GPU-instanced self + Transform
-   * children to private clones so they can track bones / animate independently.
+   * Promote GPU-instanced self + Transform descendants to private clones.
+   * AvatarAttach (rod / repeat-reveal hand), Billboard+Tween parents (plaza
+   * new-catch z0 → n0), and later parent hops onto those roots all share this walk.
    */
   promoteAvatarAttachGltfs(entities: Iterable<Entity>): void {
-    const { Transform, GltfContainer } = this.ecs
-    const queue: Entity[] = []
-    const seen = new Set<Entity>()
-    for (const e of entities) {
-      if (!seen.has(e)) {
-        seen.add(e)
-        queue.push(e)
-      }
-    }
-    // One-level fan-out: children whose parent is in the seed set (rod → line, etc.).
-    if (Transform) {
-      for (const [child] of this.store.nodes) {
-        if (seen.has(child)) continue
-        if (!Transform.has(child)) continue
-        const parent = Transform.get(child).parent as Entity | undefined
-        if (parent !== undefined && seen.has(parent)) {
-          seen.add(child)
-          queue.push(child)
-        }
-      }
+    const { GltfContainer } = this.ecs
+    const queue = this.collectTransformDescendants(entities)
+    const meshEcs = {
+      MeshRenderer: this.ecs.MeshRenderer,
+      Material: this.ecs.Material,
+      GltfContainer: this.ecs.GltfContainer,
+      TextShape: this.ecs.TextShape
     }
     for (const entity of queue) {
       if (!GltfContainer.has(entity)) continue
@@ -4015,14 +4158,104 @@ export class ThreeBridge {
       if (!obj) continue
       if (obj.userData.dclInstanced) {
         this.promoteInstancedForMotion(entity, obj)
-      } else if (!obj.userData.dclForceCloneAttach) {
-        // Not yet attached or already a clone — force clone on next attach.
-        obj.userData.dclForceCloneAttach = true
-        if (this.entityNeedsMeshWork(entity, obj, { includeMaterial: false })) {
-          this.pendingMeshEntities.add(entity)
+        continue
+      }
+      obj.userData.dclForceCloneAttach = true
+      const mk = meshKey(entity)
+      const mesh = this.getEntityVisual(obj, mk)
+      const needsAttach =
+        !mesh ||
+        !!mesh.userData.dclInstanceMarker ||
+        this.entityNeedsMeshWork(entity, obj, { includeMaterial: false })
+      if (!needsAttach) continue
+      this.pendingMeshEntities.add(entity)
+      const savedBudget = this.gltfBudgetRemaining
+      this.gltfBudgetRemaining = Math.max(this.gltfBudgetRemaining, 2)
+      this.syncMeshSync(entity, obj, meshEcs, true)
+      this.gltfBudgetRemaining = savedBudget
+      if (!this.entityNeedsMeshWork(entity, obj, { includeMaterial: false })) {
+        this.pendingMeshEntities.delete(entity)
+      }
+    }
+    if (queue.length) this.syncEcsVisibility(queue)
+  }
+
+  /** Entity + Transform children/grandchildren (plaza YI → z0 → n0). */
+  private collectTransformDescendants(roots: Iterable<Entity>): Entity[] {
+    const { Transform } = this.ecs
+    const queue: Entity[] = []
+    const seen = new Set<Entity>()
+    for (const e of roots) {
+      if (!seen.has(e)) {
+        seen.add(e)
+        queue.push(e)
+      }
+    }
+    if (!Transform) return queue
+    let grew = true
+    while (grew) {
+      grew = false
+      for (const [child] of this.store.nodes) {
+        if (seen.has(child) || !Transform.has(child)) continue
+        const parent = Transform.get(child).parent as Entity | undefined
+        if (parent !== undefined && seen.has(parent)) {
+          seen.add(child)
+          queue.push(child)
+          grew = true
         }
       }
     }
+    return queue
+  }
+
+  /** Billboard on this entity or a Transform ancestor (plaza new-catch z0). */
+  private hasBillboardAncestor(entity: Entity): boolean {
+    const { Transform, Billboard } = this.ecs
+    if (!Billboard) return false
+    let current: Entity | undefined = entity
+    const seen = new Set<Entity>()
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current)
+      if (Billboard.has(current)) return true
+      if (!Transform?.has(current)) break
+      const parent = Transform.get(current).parent as Entity | undefined
+      if (parent === undefined || parent === 0 || parent === (SDK_RESERVED.root as Entity)) break
+      current = parent
+    }
+    return false
+  }
+
+  /**
+   * Tween on this entity or a Transform ancestor.
+   * Repeat-reveal c7e Move-tweens z0 while n0 is a child Gltf — GPU instances
+   * do not inherit that parent world.
+   */
+  private hasTweenAncestor(entity: Entity): boolean {
+    const { Transform, Tween } = this.ecs
+    if (!Tween) return false
+    let current: Entity | undefined = entity
+    const seen = new Set<Entity>()
+    while (current !== undefined && !seen.has(current)) {
+      seen.add(current)
+      if (Tween.has(current)) {
+        const mode = Tween.get(current).mode?.$case
+        if (
+          mode === 'scale' ||
+          mode === 'moveRotateScale' ||
+          mode === 'move' ||
+          mode === 'moveContinuous' ||
+          mode === 'rotate' ||
+          mode === 'rotateContinuous'
+        ) {
+          return true
+        }
+      }
+      if (!Transform?.has(current)) break
+      const parent = Transform.get(current).parent as Entity | undefined
+      if (parent === undefined || parent === 0 || parent === (SDK_RESERVED.root as Entity)) break
+      current = parent
+    }
+    return false
   }
 
   /**
@@ -4322,8 +4555,8 @@ export class ThreeBridge {
   }
 
   /**
-   * Product of Transform.scale.x up the parent chain. Odd negatives (Poker Night boards use −1)
-   * mirror TextShape canvas vs docs-order UVs — caller flips map U to compensate.
+   * Product of Transform.scale.x up the parent chain. Odd negatives (Poker Night −1)
+   * mirror docs-order TextShape UVs — caller flips map U only for that case.
    */
   private textShapeWorldMirrorX(entity: Entity): boolean {
     const { Transform } = this.ecs
@@ -4383,7 +4616,7 @@ export class ThreeBridge {
         updateTextShapeMesh(textMesh, spec)
         this.notifyMeshComponent(entity, TextShape.componentId)
       }
-      // Poker Night casual board uses scale.x=-1 so Unity text faces the wall; compensate map U.
+      // scale.x=-1 (Poker Night) mirrors docs-order UVs; flip map U only then.
       applyTextShapeFacingMirror(textMesh, this.textShapeWorldMirrorX(entity))
       return
     }
@@ -4410,7 +4643,12 @@ export class ThreeBridge {
           clientDebugLog.log(
             'pointer',
             `fish-gltf e${entity as number} NOT_FOUND hash — src=${src}`,
-            { level: 'warn', alsoConsole: true }
+            {
+              level: 'warn',
+              alsoConsole: true,
+              throttleMs: 8_000,
+              throttleKey: `fish-hash-${src}`
+            }
           )
         }
         return
@@ -4465,26 +4703,21 @@ export class ThreeBridge {
           : 0
 
         // Cold: schedule parse off the frame path — never await load() here.
+        // Visible / attach / tween / billboard GLBs must fetch even when the
+        // disco budget is 0 — otherwise n0 stays an empty group for the whole reveal.
+        const presentNow = fishingMotion || waterSurface || this.gltfMustPresent(entity)
         if (!template) {
-          if (fishingMotion || waterSurface || this.gltfBudgetRemaining > 0) {
-            if (!fishingMotion && !waterSurface) this.gltfBudgetRemaining--
-            this.scheduleBackgroundLoad(url, isLocal ? url : hash, cacheKey)
-            if (fishingMotion) {
-              const leaf = src.split('/').pop() ?? src
-              clientDebugLog.log(
-                'pointer',
-                `fish-gltf COLD load scheduled — src=${leaf}`,
-                { alsoConsole: true, throttleMs: 8_000, throttleKey: `fish-cold-${cacheKey}` }
-              )
-            }
-          }
+          // Fetch is not attach. Budget must never drop a known-hash parse —
+          // plaza n0 is created hidden at reel start; if we wait for s7e the
+          // 5s reveal is over before Sardine.glb is in the cache.
+          this.scheduleBackgroundLoad(url, isLocal ? url : hash, cacheKey)
           return
         }
 
         // First copy of a hash that cannot GPU-instance (high-leaf env kit, water,
         // motion) attaches now. Repeat large clones wait in the idle queue.
         const uniqueClone = firstOfHash && !this.canInstanceAttach(entity, template)
-        const attachNow = fishingMotion || waterSurface || uniqueClone
+        const attachNow = presentNow || uniqueClone
         if (attachNow) obj.userData.dclForceCloneAttach = true
 
         if (!attachNow && this.gltfBudgetRemaining <= 0) return

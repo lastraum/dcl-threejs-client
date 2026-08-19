@@ -39,6 +39,8 @@ export type SceneWorkerDebugFlags = {
   skipTheatre?: boolean
   /** `?sceneuilog` — throttled worker outbound + main repaint logs for scene UI sync. */
   sceneUiLog?: boolean
+  /** `?sceneloop=1` — play-frame `source`/`dt`/`inFlight` walk-log line. */
+  sceneLoop?: boolean
 }
 
 /** Host-owned reserved store seed — Explorer has these on the scene engine before the first tick. */
@@ -282,10 +284,11 @@ export type PlayerFrameBoundVc = {
   /**
    * VC Transform for main.
    * - Follow rig (parent===lookAt): local + parent hierarchy via `anchors`.
-   * - Locked/cinematic shot: **worker world pose under Root** (`worldFlattened`).
+   * - Cinematic tween rig (VC child of Transform-only parents): locals + ancestor anchors.
+   * - Locked/select stage: **worker world pose under Root** (`worldFlattened`).
    */
   transform: PlayerFrameBoundVcTransform
-  /** Parent / lookAt anchors (follow rig, or non-mesh lookAt world under Root). */
+  /** Parent / lookAt anchors (follow, cinematic tween chain, or flattened lookAt). */
   anchors: Array<{ entity: number; transform: PlayerFrameBoundVcTransform }>
   /** True when `transform` is already world-space under RootEntity (do not re-parent on main). */
   worldFlattened?: boolean
@@ -327,6 +330,12 @@ export type SceneWorkerOutbound =
   | { type: 'pointer-deliver-done' }
   /** Worker finished the play-frame that SceneLoop marked in-flight (or declined a new tick). */
   | { type: 'play-frame-done' }
+  /** Applied guest tick — HUD last dt/source. Not a second clock. */
+  | {
+      type: 'scene-loop-tick'
+      source: 'play-frame' | 'pointer-edge' | 'hydrate'
+      dt: number
+    }
   | { type: 'ui-virtual-canvas'; width: number; height: number }
   /** Bound VC world Transform — bypasses CRDT ack latency for lens + gizmo pose sync. */
   | {

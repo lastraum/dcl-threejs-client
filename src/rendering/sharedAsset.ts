@@ -18,6 +18,30 @@ export function isSharedAssetResource(resource: { userData?: Record<string, unkn
   return resource?.userData?.[SHARED] === true
 }
 
+function cloneOwnedMaterial(material: THREE.Material): THREE.Material {
+  const next = material.clone()
+  if (next.userData) delete next.userData[SHARED]
+  return next
+}
+
+/**
+ * Wearable/avatar instances must own their materials. AssetCache + SkeletonUtils
+ * share GPU materials — tint / prepare / toon on a new peer would paint every
+ * already-rendered avatar that still pointed at the cache prototype.
+ */
+export function ownInstanceMaterials(root: THREE.Object3D): void {
+  root.traverse((node) => {
+    if (!(node instanceof THREE.Mesh) || !node.material) return
+    if (Array.isArray(node.material)) {
+      node.material = node.material.map((m) =>
+        isSharedAssetResource(m) ? cloneOwnedMaterial(m) : m
+      )
+    } else if (isSharedAssetResource(node.material)) {
+      node.material = cloneOwnedMaterial(node.material)
+    }
+  })
+}
+
 /** Remove an instance from the scene graph without touching cached GPU resources. */
 export function detachObject3D(obj: THREE.Object3D): void {
   obj.removeFromParent()

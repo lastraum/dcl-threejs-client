@@ -4,9 +4,33 @@ import { remapClipToAvatar } from './emoteBoneMap'
 
 const cache = new Map<string, THREE.AnimationClip>()
 
-function cacheKey(bodyShape: BodyShape, clip: THREE.AnimationClip, keepHipBob: boolean): string {
+function boneFingerprint(root: THREE.Object3D): string {
+  const names: string[] = []
+  root.traverse((obj) => {
+    if (obj.name && (obj as THREE.Bone).isBone) names.push(obj.name)
+  })
+  if (names.length === 0) {
+    root.traverse((obj) => {
+      if (obj.name) names.push(obj.name)
+    })
+  }
+  names.sort()
+  let hash = 5381
+  for (const name of names) {
+    for (let i = 0; i < name.length; i++) hash = ((hash << 5) + hash) ^ name.charCodeAt(i)
+    hash = ((hash << 5) + hash) ^ 124
+  }
+  return `${names.length}:${hash >>> 0}`
+}
+
+function cacheKey(
+  bodyShape: BodyShape,
+  clip: THREE.AnimationClip,
+  keepHipBob: boolean,
+  avatarRoot: THREE.Object3D
+): string {
   const posMode = keepHipBob ? 'hipBob' : 'noHipPos'
-  return `${bodyShape}:${clip.name}:${clip.duration}:${clip.tracks.length}:${posMode}`
+  return `${bodyShape}:${boneFingerprint(avatarRoot)}:${clip.name}:${clip.duration}:${clip.tracks.length}:${posMode}`
 }
 
 const ROOT_POSITION_BONE = /^(Hips|hip|Armature|Root|root|Pelvis)$/i
@@ -108,7 +132,7 @@ export function getRemappedLocomotionClip(
 ): THREE.AnimationClip | null {
   if (!clip) return null
   const keepHipBob = options?.keepHipBob === true
-  const key = cacheKey(bodyShape, clip, keepHipBob)
+  const key = cacheKey(bodyShape, clip, keepHipBob, avatarRoot)
   let template = cache.get(key)
   if (!template) {
     const remapped = remapClipToAvatar(clip, avatarRoot)

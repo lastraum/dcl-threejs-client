@@ -145,6 +145,23 @@ export function configureEmissiveRendering(
     return
   }
 
+  // Prize / logo cutouts (Jump Zone goggles): same albedo+emissive map + ALPHA_BLEND.
+  // Intensity is often 0.8 (below the flame ≥1.5 gate). Lit PBR + ACES made them grey.
+  if (sharedAlbedoEmissive && alphaBlend) {
+    if (emissiveLum < 1e-4) material.emissive.setRGB(1, 1, 1)
+    material.color.setRGB(1, 1, 1)
+    material.metalness = 0
+    material.roughness = 1
+    material.envMapIntensity = 0
+    material.toneMapped = false
+    material.emissiveIntensity = Math.max(intensity, 0.85)
+    material.transparent = true
+    material.depthWrite = false
+    material.blending = THREE.NormalBlending
+    applyDirectIntensity(material, 0)
+    return
+  }
+
   // Opaque shared albedo+emissive (asset-pack floors): lit diffuse is primary;
   // keep a soft bake only — full intensity on both channels washes + blooms out.
   if (sharedAlbedoEmissive && !alphaBlend) {
@@ -199,6 +216,13 @@ export function applyOutdoorMaterialResponse(
   material: THREE.MeshStandardMaterial,
   opts?: { metalness?: number; roughness?: number }
 ): void {
+  // Wearable/emote mats are Explorer matte. Outdoor remap raised envMapIntensity
+  // off 0 and COLOR_0/metal read as a black silhouette after /goto or a cache hit.
+  if (material.userData.dclAvatarMatte === true) {
+    material.envMap = null
+    material.envMapIntensity = 0
+    return
+  }
   const metalIn = opts?.metalness ?? material.metalness
   const roughIn = opts?.roughness ?? material.roughness
   material.metalness = Math.min(1, metalIn * 0.55)

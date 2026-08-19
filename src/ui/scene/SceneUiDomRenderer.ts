@@ -88,7 +88,8 @@ function pushLayoutHitRegion(
   depth: number
 ): void {
   if (layoutBox.width <= 0.5 || layoutBox.height <= 0.5) return
-  // Skip off-virtual-canvas hit regions (second shop root at x=2146, etc.).
+  // Pointer only (not paint). overflow:hidden clips off-canvas nodes; a fully
+  // outside box cannot receive clicks. Display/opacity still decide visibility.
   const vw = input.virtual?.width ?? input.interactable.width
   const vh = input.virtual?.height ?? input.interactable.height
   if (
@@ -548,33 +549,11 @@ export class SceneUiDomRenderer {
     const borders = borderCss(transform, scale)
     const radius = borderRadiusCss(transform, scale)
     const layoutBox = input.layoutBoxes.get(entity)
-    // Completely outside the virtual canvas (e.g. e4857@x=2146 on 1920 design) — hide.
-    // Dual off-canvas shop roots were painting a second full inventory over the plaza.
-    const vw = input.virtual.width
-    const vh = input.virtual.height
-    if (
-      layoutBox &&
-      (layoutBox.left >= vw - 1 ||
-        layoutBox.top >= vh - 1 ||
-        layoutBox.left + layoutBox.width <= 1 ||
-        layoutBox.top + layoutBox.height <= 1)
-    ) {
-      this.applyHiddenDomState(shell)
-      shell.dataset.uiUnusable = '1'
-      const hideOff = (e: Entity): void => {
-        for (const child of input.forest.get(e) ?? []) {
-          visited.add(child)
-          const node = this.nodes.get(child)
-          if (node) {
-            this.applyHiddenDomState(node)
-            node.dataset.uiUnusable = '1'
-          }
-          hideOff(child)
-        }
-      }
-      hideOff(entity)
-      return
-    }
+    // Visibility is UiTransform.display + opacity (isUiEntityVisible above), not
+    // canvas bounds. Explorer keeps display:flex nodes in the tree while they sit
+    // off-canvas (Layer showFrom, plaza letterbox at top:100%, cake strip at
+    // bottom:-20%). Host overflow:hidden clips; hiding here parked swipe panels
+    // and invented a second visibility law.
     if (!layoutBox || layoutBox.width <= 0.5 || layoutBox.height <= 0.5) {
       // Collapsed yoga box — hide shell AND entire subtree. Painting children as
       // canvas-absolute orphans scattered fishing shop icons across the 3D view.

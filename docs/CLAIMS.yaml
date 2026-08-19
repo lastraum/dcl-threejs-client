@@ -5,7 +5,7 @@
 # Dev panel Community tab renders this as a single workflow table.
 
 schema_version: 2
-updated: 2026-08-18
+updated: 2026-08-19
 source: github
 base_branch: dev-latest
 workflow:
@@ -24,6 +24,56 @@ workflow:
     pr: 56
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/56
     updated: 2026-07-29
+  - stage: merged
+    integration_ref: pr:70
+    title: Snow Drift UI borders, sky wash, name tags, avatar materials
+    owner: lastraum
+    pr: 70
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/70
+    updated: 2026-08-19
+  - stage: merged
+    integration_ref: pr:69
+    title: PE P3 pad/wind manual QA vs Explorer
+    owner: lastraum
+    pr: 69
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/69
+    updated: 2026-08-18
+  - stage: merged
+    integration_ref: pr:68
+    title: "clock: stacked live-guest FPS soak (measure-only)"
+    owner: lastraum
+    pr: 68
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/68
+    updated: 2026-08-18
+  - stage: merged
+    integration_ref: pr:67
+    title: "clock: walk-log proves SceneLoop (pointer + Tween + timers)"
+    owner: lastraum
+    pr: 67
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/67
+    updated: 2026-08-18
+  - stage: merged
+    integration_ref: pr:66
+    title: "clock: named sources play-frame|pointer-edge; tickSync never
+      tickPlayFrame"
+    owner: lastraum
+    pr: 66
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/66
+    updated: 2026-08-18
+  - stage: merged
+    integration_ref: pr:65
+    title: "platform: Explorer goldens stay measure-first"
+    owner: lastraum
+    pr: 65
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/65
+    updated: 2026-08-18
+  - stage: merged
+    integration_ref: pr:64
+    title: SceneLoop invert is in-tree with leftovers; 2.2 proves it
+    owner: lastraum
+    pr: 64
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/64
+    updated: 2026-08-18
   - stage: merged
     integration_ref: pr:63
     title: host clock for primary and PE play-frames
@@ -116,52 +166,3 @@ workflow:
     pr: 47
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/47
     updated: 2026-07-24
-  - stage: merged
-    integration_ref: pr:46
-    title: Tour v2 — locations, circular flag, end-tour export
-    owner: lastraum
-    pr: 46
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/46
-    updated: 2026-07-24
-  - stage: merged
-    integration_ref: pr:43
-    title: stop PE HUD flash from paint thrash
-    owner: lastraum
-    pr: 43
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/43
-    updated: 2026-07-21
-  - stage: merged
-    integration_ref: pr:42
-    title: stop PE HUD flash on every click
-    owner: lastraum
-    pr: 42
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/42
-    updated: 2026-07-21
-  - stage: merged
-    integration_ref: pr:39
-    title: parallel-skeleton fallback + facial-hair tint order
-    owner: lastraum
-    pr: 39
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/39
-    updated: 2026-07-21
-  - stage: merged
-    integration_ref: pr:40
-    title: opt-in toon shading via Graphics settings
-    owner: lastraum
-    pr: 40
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/40
-    updated: 2026-07-21
-  - stage: merged
-    integration_ref: pr:41
-    title: Genesis multi-scene AOI, Explorer roads, empty land
-    owner: lastraum
-    pr: 41
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/41
-    updated: 2026-07-21
-  - stage: merged
-    integration_ref: ecs:TriggerArea
-    title: TriggerArea Tier A — volume enter/exit and scene callbacks
-    owner: lastraum
-    pr: 2
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/2
-    updated: 2026-06-17

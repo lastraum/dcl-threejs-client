@@ -11,8 +11,8 @@ import { PMREMGenerator } from 'three'
  * contribution.
  */
 
-/** Daytime soft fill — keep below 0.5 so ACES + sun stay primary. */
-export const OUTDOOR_IBL_INTENSITY_DAY = 0.32
+/** Daytime soft fill — keep low so ACES + sun stay primary (was 0.32, washed snow/sky). */
+export const OUTDOOR_IBL_INTENSITY_DAY = 0.18
 /** Night probe — low so moon/hemi own the key; was 0.22 and washed 00:00. */
 export const OUTDOOR_IBL_INTENSITY_NIGHT = 0.1
 

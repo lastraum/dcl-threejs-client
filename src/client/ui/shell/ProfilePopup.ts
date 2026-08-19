@@ -1,6 +1,8 @@
 import { shortenAddress } from '../../../avatar/displayName'
+import { resolveClaimedName, type DisplayNameChoice } from '../../../avatar/displayNameDeploy'
 import { fetchProfileFaceUrl } from '../../../avatar/peerApi'
 import type { AvatarProfile } from '../../../avatar/types'
+import { DisplayNameEditor } from '../profile/DisplayNameEditor'
 
 export type ProfilePopupData = {
   address?: string
@@ -12,6 +14,8 @@ export type ProfilePopupHandlers = {
   onViewProfile?: () => void
   onSignOut: () => void | Promise<void>
   onExit: () => void | Promise<void>
+  onSaveDisplayName?: (choice: DisplayNameChoice) => Promise<void>
+  getPeerUrl?: () => string
 }
 
 /** Explorer-style profile card anchored to the sidebar avatar button. */
@@ -19,6 +23,7 @@ export class ProfilePopup {
   private readonly root: HTMLElement
   private readonly backdrop: HTMLElement
   private open = false
+  private nameEditor: DisplayNameEditor | null = null
 
   constructor(
     private readonly anchor: () => HTMLElement | undefined,
@@ -49,6 +54,8 @@ export class ProfilePopup {
 
   hide(): void {
     this.open = false
+    this.nameEditor?.dispose()
+    this.nameEditor = null
     this.root.hidden = true
     this.backdrop.hidden = true
   }
@@ -147,7 +154,13 @@ export class ProfilePopup {
           <div class="profile-popup__name-row">
             <span class="profile-popup__name" style="color:${nameColor}">${escapeHtml(displayName)}</span>
             ${claimed ? '<span class="profile-popup__verified" title="Verified name">✓</span>' : ''}
+            ${
+              this.handlers.onSaveDisplayName && !data.isGuest
+                ? `<button type="button" class="profile-popup__edit-name" aria-label="Edit display name">✎</button>`
+                : ''
+            }
           </div>
+          <div class="profile-popup__name-edit" hidden></div>
           ${
             address
               ? `<div class="profile-popup__wallet-row">
@@ -189,6 +202,11 @@ export class ProfilePopup {
       </div>
     `
 
+    this.root.querySelector('.profile-popup__edit-name')?.addEventListener('click', (ev) => {
+      ev.stopPropagation()
+      void this.toggleNameEditor(data, displayName, claimed)
+    })
+
     this.root.querySelector('.profile-popup__view-btn')?.addEventListener('click', () => {
       if (this.handlers.onViewProfile) {
         this.hide()
@@ -220,6 +238,38 @@ export class ProfilePopup {
       this.hide()
       void Promise.resolve(this.handlers.onExit())
     })
+  }
+
+  private async toggleNameEditor(
+    data: ProfilePopupData,
+    displayName: string,
+    claimed: boolean
+  ): Promise<void> {
+    const host = this.root.querySelector('.profile-popup__name-edit') as HTMLElement | null
+    if (!host || !this.handlers.onSaveDisplayName) return
+    if (this.nameEditor) {
+      this.nameEditor.dispose()
+      this.nameEditor = null
+      host.hidden = true
+      host.innerHTML = ''
+      return
+    }
+    const claimedName =
+      (claimed ? displayName : null) ||
+      (data.address ? await resolveClaimedName(data.address, this.handlers.getPeerUrl?.()) : null)
+    const editor = new DisplayNameEditor({
+      currentName: displayName,
+      claimedName,
+      hasClaimedName: claimed,
+      onSave: async (choice) => {
+        await this.handlers.onSaveDisplayName!(choice)
+        this.hide()
+        void this.show()
+      }
+    })
+    this.nameEditor = editor
+    host.hidden = false
+    host.appendChild(editor.root)
   }
 }
 

@@ -195,6 +195,9 @@ export class AvatarAnimations {
     // Grounded gaits keep the authored hip bob; air clips stay position-stripped
     // (physics owns vertical travel there and clip offsets would fight the capsule).
     this.idleAction = this.playLoop(idleClip, animationRoot, bodyShape, 1, { keepHipBob: true })
+    if (!this.idleAction) {
+      throw new Error('locomotion idle remapped to 0 tracks — avatar stays bind-pose without this')
+    }
     this.walkAction = this.playLoop(walkClip ?? undefined, animationRoot, bodyShape, 0, {
       keepHipBob: true
     })
@@ -496,6 +499,9 @@ export class AvatarAnimations {
   private advancePose(delta: number): void {
     this.mixer?.update(delta)
     this.propMixer?.update(delta)
+    if (!this.parallelWearables.length && this.avatarRoot) {
+      this.parallelWearables = collectParallelWearableStates(this.avatarRoot)
+    }
     if (this.parallelWearables.length) syncParallelWearableStates(this.parallelWearables)
   }
 

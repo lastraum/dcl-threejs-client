@@ -267,8 +267,12 @@
         font-size: 12px;
         line-height: 1.45;
         box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
-        pointer-events: auto;
+        /* Panel chrome only — gaps pass through so scene pointer still works. */
+        pointer-events: none;
         overflow: hidden;
+      }
+      .debug-panel.is-open > * {
+        pointer-events: auto;
       }
       .debug-panel.is-open {
         display: flex;
@@ -1822,8 +1826,10 @@
         }
       }
       .avatar-name-tag--has-chat {
+        /* Name on top, chat under it. Pill grows down from the head (`translate(-50%,-100%)`). */
+        flex-direction: column;
         border-radius: 14px;
-        padding: 5px 12px 6px;
+        padding: 8px 14px 10px;
       }
       .avatar-name-tag__header {
         display: inline-flex;
@@ -1875,12 +1881,11 @@
         width: max-content;
         min-width: 100%;
         max-width: var(--avatar-name-tag-chat-max-w);
-        margin-top: 3px;
-        padding-top: 3px;
-        border-top: 1px solid rgba(255, 255, 255, 0.14);
+        margin-top: 4px;
+        padding: 6px 4px 2px;
         font-size: 11px;
         font-weight: 500;
-        line-height: 1.35;
+        line-height: 1.4;
         color: rgba(255, 255, 255, 0.94);
         text-align: center;
         white-space: normal;
@@ -1889,6 +1894,9 @@
       }
       .avatar-name-tag--has-chat .avatar-name-tag__chat {
         display: block;
+        margin-top: 6px;
+        margin-bottom: 0;
+        padding: 6px 4px 2px;
       }
       .avatar-name-tag--interactive {
         position: relative;
@@ -7675,6 +7683,82 @@
         font-size: 14px;
         line-height: 1;
       }
+      .profile-popup__edit-name,
+      .user-profile-modal__edit-name {
+        border: 0;
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.8);
+        width: 26px;
+        height: 26px;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 13px;
+        line-height: 1;
+        flex-shrink: 0;
+      }
+      .profile-popup__edit-name:hover,
+      .user-profile-modal__edit-name:hover {
+        background: rgba(255, 255, 255, 0.16);
+        color: #fff;
+      }
+      .profile-popup__name-edit,
+      .user-profile-modal__name-edit {
+        width: 100%;
+        margin-top: 8px;
+      }
+      .display-name-editor {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .display-name-editor__claimed {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.78);
+      }
+      .display-name-editor__row {
+        display: flex;
+        gap: 8px;
+      }
+      .display-name-editor__input {
+        flex: 1;
+        min-width: 0;
+        height: 34px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.35);
+        color: #fff;
+        padding: 0 10px;
+        font-size: 14px;
+      }
+      .display-name-editor__input:disabled {
+        opacity: 0.55;
+      }
+      .display-name-editor__save {
+        height: 34px;
+        padding: 0 12px;
+        border: 0;
+        border-radius: 8px;
+        background: #ff2d55;
+        color: #fff;
+        font-weight: 700;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .display-name-editor__save:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+      .display-name-editor__status {
+        margin: 0;
+        min-height: 1.1em;
+        font-size: 12px;
+        color: rgba(255, 255, 255, 0.62);
+      }
+      .display-name-editor__status[data-kind='error'] { color: #ff8a8a; }
+      .display-name-editor__status[data-kind='ok'] { color: #57e389; }
       .profile-popup__wallet-row {
         display: flex;
         align-items: center;
@@ -10515,6 +10599,18 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        border: 0;
+        background: transparent;
+        cursor: pointer;
+        padding: 0;
+        font-family: inherit;
+      }
+      .settings-overlay__user-name:hover {
+        color: #fff;
+      }
+      .settings-overlay__name-edit {
+        padding: 8px 16px 10px;
+        background: rgba(0, 0, 0, 0.28);
       }
       .settings-overlay__close {
         width: 32px;
@@ -21429,6 +21525,9 @@
         gap: 28px;
         width: 100%;
       }
+      .places-view--explorer .places-view__spotlight[hidden] {
+        display: none !important;
+      }
       .places-view--explorer .places-view__spotlight-block {
         display: flex;
         flex-direction: column;
@@ -21662,6 +21761,20 @@
       .places-view--explorer .places-view__card--grid:focus-within .places-view__card-footer--live {
         opacity: 0;
         pointer-events: none;
+      }
+      .places-view--explorer .places-view__card--player .places-view__card-img {
+        object-fit: cover;
+        object-position: center top;
+      }
+      .places-view__card-placeholder--face {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 42px;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        color: rgba(255, 255, 255, 0.85);
+        background: linear-gradient(160deg, #5b2dff 0%, #2a1058 100%);
       }
       .places-view--explorer .places-view__card--live-tile .places-view__jump,
       .places-view--explorer .places-view__card--grid .places-view__jump {
@@ -27006,12 +27119,38 @@
         border-bottom: 1px solid rgba(255, 255, 255, 0.08);
         margin-bottom: 12px;
       }
-      .social-profile-menu__name {
+      .social-profile-menu__name-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
         margin: 0 0 4px;
+      }
+      .social-profile-menu__name {
+        margin: 0;
         font-size: 0.9375rem;
         font-weight: 700;
         color: #fff;
         line-height: 1.3;
+        min-width: 0;
+      }
+      .social-profile-menu__edit-name {
+        flex-shrink: 0;
+        width: 26px;
+        height: 26px;
+        border: 0;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(255, 255, 255, 0.85);
+        cursor: pointer;
+        font-size: 13px;
+        line-height: 1;
+      }
+      .social-profile-menu__edit-name:hover {
+        background: rgba(255, 255, 255, 0.16);
+        color: #fff;
+      }
+      .social-profile-menu__name-edit {
+        margin: 0 0 8px;
       }
       .social-profile-menu__sub {
         margin: 0 0 8px;

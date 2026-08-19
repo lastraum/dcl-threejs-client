@@ -60,6 +60,7 @@ import {
 
 const _celestial = new THREE.Vector3()
 const _hemiGround = new THREE.Color()
+const _iblGround = new THREE.Color()
 const _moonCool = new THREE.Color(0.55, 0.62, 0.95)
 const _blackBackground = new THREE.Color(0x000000)
 /** Neutral void for blank scenes — no genesis dome nadir showing as a cyan “floor”. */
@@ -597,7 +598,9 @@ export class EnvironmentSystem {
     } else if (skylightOff && this.host.scene.background instanceof THREE.Color) {
       this.host.scene.background.copy(_blackBackground)
     } else if (useGenesis && this.host.scene.background instanceof THREE.Color) {
-      this.host.scene.background.copy(g.indirectSky)
+      // Dome is the sky. Background only shows through gaps — use zenit, not
+      // washed trilight indirectSky (pink/lavender chalk on snow and clouds).
+      this.host.scene.background.copy(g.zenit)
     }
 
     syncOutdoorLightingFromLights(
@@ -620,7 +623,8 @@ export class EnvironmentSystem {
       this.host.scene,
       {
         sky: g.zenit,
-        ground: g.nadir,
+        // Visible sky bounce — nadir ramps pink/cyan and wash snow/albedo.
+        ground: _iblGround.copy(g.horizon).multiplyScalar(0.35),
         equator: g.horizon
       },
       {

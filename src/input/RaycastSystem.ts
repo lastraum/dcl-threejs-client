@@ -62,7 +62,7 @@ export class RaycastSystem {
     this.lastContinuousSig.clear()
   }
 
-  /** Run each frame before encoder flush / worker deliver. */
+  /** Run once per guest tick before encoder flush / worker deliver. */
   sync(tickNumber: number): void {
     if (!this.deps) return
     const { ecs, view, collision } = this.deps
@@ -265,12 +265,19 @@ function continuousResultSignature(result: {
   timestamp?: number
   globalOrigin?: { x?: number; y?: number; z?: number }
   direction?: { x?: number; y?: number; z?: number }
-  hits?: Array<{ entityId?: number; length?: number }>
+  hits?: Array<{ entityId?: number; length?: number; position?: { x?: number; z?: number } }>
 }): string {
   const o = result.globalOrigin
   const d = result.direction
   const hits = (result.hits ?? [])
-    .map((h) => `${h.entityId ?? 0}:${(h.length ?? 0).toFixed(2)}`)
+    .map((h) => {
+      const p = h.position
+      const px = p?.x ?? 0
+      const pz = p?.z ?? 0
+      // Include XZ (10 cm) so plaza aim-cookie Transform updates as the cursor
+      // moves. Length+entity alone stayed still while the pointer crossed the pond.
+      return `${h.entityId ?? 0}:${(h.length ?? 0).toFixed(2)}:${px.toFixed(1)},${pz.toFixed(1)}`
+    })
     .join(',')
   return `${result.timestamp ?? 0}|${(o?.x ?? 0).toFixed(2)},${(o?.y ?? 0).toFixed(2)},${(o?.z ?? 0).toFixed(2)}|${(d?.x ?? 0).toFixed(2)},${(d?.y ?? 0).toFixed(2)},${(d?.z ?? 0).toFixed(2)}|${hits}`
 }

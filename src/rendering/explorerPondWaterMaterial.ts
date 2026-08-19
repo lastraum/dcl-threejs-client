@@ -54,14 +54,16 @@ export function createExplorerPondWaterMaterial(caustics: THREE.Texture): THREE.
   caustics.needsUpdate = true
 
   const uTime = { value: 0 }
+  // No MeshPhysicalMaterial.transmission — that forces Three's
+  // renderTransmissionPass every frame and texSubImage2D-uploads the whole
+  // scene (Overload resolution failed on a closed ImageBitmap = hitch).
+  // Explorer Pond.mat refraction is the albedo/caustics shader below.
   const material = new THREE.MeshPhysicalMaterial({
     map: caustics,
     color: WATER_COLOR,
     roughness: 0.18,
     metalness: 0.04,
-    transmission: 0.28,
-    thickness: 0.55,
-    ior: 1.333,
+    transmission: 0,
     transparent: true,
     opacity: 0.92,
     depthWrite: false,
@@ -71,7 +73,7 @@ export function createExplorerPondWaterMaterial(caustics: THREE.Texture): THREE.
     specularColor: new THREE.Color(0.85, 0.95, 1)
   })
   material.name = 'dclExplorerPondWater'
-  material.customProgramCacheKey = () => 'dcl-explorer-pond-water-v1'
+  material.customProgramCacheKey = () => 'dcl-explorer-pond-water-v2'
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uPondTime = uTime
     shader.uniforms.uPondWaterColor = { value: WATER_COLOR }
@@ -114,11 +116,16 @@ ${WATER_GLSL}
   return material
 }
 
-export function tickExplorerPondWater(dt: number): void {
-  if (!(dt > 0) || live.size === 0) return
-  const step = Math.min(dt, 0.1)
+let pondClockOriginMs = 0
+
+export function tickExplorerPondWater(_dt: number): void {
+  if (live.size === 0) return
+  // Wall clock — pumpMotionBridges can run 0–3× per rAF with hitchy scene dt.
+  // Incremental steps made caustics stutter or 2×-speed on the plaza pond.
+  if (!pondClockOriginMs) pondClockOriginMs = performance.now()
+  const t = (performance.now() - pondClockOriginMs) / 1000
   for (const entry of live) {
-    entry.uTime.value += step
+    entry.uTime.value = t
   }
 }
 

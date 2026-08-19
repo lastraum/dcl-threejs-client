@@ -1018,8 +1018,8 @@ export class SecondaryLiveManager {
   tickSync(player: EntityPose, camera: EntityPose): void {
     const interval = secondaryTickIntervalMs(this.tier)
     for (const slot of this.slots.values()) {
-      // Tertiary tickSync is a no-op (scripts off). Owned-externally never tickPlayFrame.
-      slot.tickSync(player, camera, interval, this.playFrameOwnedExternally)
+      // Tertiary tickSync is a no-op (scripts off). Always skip play-frame (SceneLoop.send owns it).
+      slot.tickSync(player, camera, interval, true)
     }
   }
 
@@ -1032,7 +1032,7 @@ export class SecondaryLiveManager {
     const interval = secondaryTickIntervalMs(this.tier)
     for (const [id, slot] of this.slots) {
       if (!this.stickyIds.has(id)) continue
-      slot.tickSync(player, camera, interval, this.playFrameOwnedExternally)
+      slot.tickSync(player, camera, interval, true)
     }
   }
 
@@ -1041,7 +1041,7 @@ export class SecondaryLiveManager {
 
   /**
    * Async projection + bridges for live secondaries.
-   * Scripts still run every sync frame (tickSync); full renderer/bridges are staggered
+   * Scripts run on SceneLoop.send; full renderer/bridges are staggered
    * so N neighbors cannot each pay plaza-scale attach/animator cost on the same rAF.
    *
    * COD F1 — when `applyBudgetMs` is exhausted (PE already spent remainder), all

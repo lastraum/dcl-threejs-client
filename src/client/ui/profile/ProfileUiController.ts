@@ -11,6 +11,7 @@ import {
 import { setNameTagContextMenuHandler } from '../NameTag'
 import { UserContextMenu, type UserContextMenuAction } from './UserContextMenu'
 import { UserProfileModal, type UserProfileModalTarget } from './UserProfileModal'
+import type { DisplayNameChoice } from '../../../avatar/displayNameDeploy'
 
 export type ProfileUiControllerOptions = {
   session: SessionIdentity
@@ -24,6 +25,7 @@ export type ProfileUiControllerOptions = {
   isPassportDisabled?: (address: string) => boolean
   /** P2P trade invite (from avatar context menu). */
   onTrade?: (address: string) => void
+  onSaveDisplayName?: (choice: DisplayNameChoice) => Promise<void>
 }
 
 /** Central hub for user pill context menus and the shared profile modal. */
@@ -53,7 +55,8 @@ export class ProfileUiController {
       options.session,
       options.social,
       options.getPeerUrl,
-      () => this.onOverlayDismissed()
+      () => this.onOverlayDismissed(),
+      options.onSaveDisplayName
     )
     setNameTagContextMenuHandler((address, x, y) => this.openContextMenu(address, x, y))
     document.addEventListener('contextmenu', this.onDocumentContextMenu, true)

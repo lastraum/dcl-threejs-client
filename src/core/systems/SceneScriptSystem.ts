@@ -91,6 +91,7 @@ import {
   perfNoteApplyMs,
   perfNotePeels,
   perfNotePointerEdge,
+  perfNoteSceneLoopGuestTick,
   perfNoteUiMountPost,
   perfNoteUiMountReseedSkip,
   perfNoteVcHydrate,
@@ -158,6 +159,15 @@ const POINTER_VERBOSE = ((): boolean => {
 const SCENE_UI_LOG = ((): boolean => {
   try {
     return typeof location !== 'undefined' && new URLSearchParams(location.search).has('sceneuilog')
+  } catch {
+    return false
+  }
+})()
+
+/** Play-frame `source`/`dt` walk-log (`?sceneloop`). */
+const SCENELOOP_LOG = ((): boolean => {
+  try {
+    return typeof location !== 'undefined' && new URLSearchParams(location.search).has('sceneloop')
   } catch {
     return false
   }
@@ -358,6 +368,8 @@ export class SceneScriptSystem {
   /** SceneLoop: a play-frame-tick is outstanding until play-frame-done. */
   private playFrameInFlight = false
   private playFrameInFlightAt = 0
+  /** SceneLoop.send should start the next play-frame (movePlayerTo / PE movePlayer). */
+  private immediateGuestTickRequested = false
   /** When true, gameplay crdt-outbound waits for SceneLoop.receive. */
   private sceneLoopReceiveArmed = false
   private lastSentPlayerPos = { x: Number.NaN, y: Number.NaN, z: Number.NaN }
@@ -1748,8 +1760,8 @@ export class SceneScriptSystem {
     this.pendingUiEntities = undefined
     this.clearProjectionUiLag()
     this.forceResumeWorkerSceneTicks('move-player-to')
-    // Next SceneLoop send (or this one if idle) — do not stack a second play-frame.
-    if (!this.isPlayFrameInFlight()) this.tickPlayFrame()
+    // SceneLoop.send starts the next play-frame — do not stack one here.
+    this.immediateGuestTickRequested = true
   }
 
   /** Clear stuck sit/stool mode-freeze on the worker (WASD escape). */
@@ -2281,7 +2293,8 @@ export class SceneScriptSystem {
         pointerDeliver: POINTER_VERBOSE,
         tweenDeliver: isTweenVerbose(),
         skipTheatre: skipTheatreSceneScript(),
-        sceneUiLog: SCENE_UI_LOG
+        sceneUiLog: SCENE_UI_LOG,
+        sceneLoop: SCENELOOP_LOG
       },
       scene: {
         title: scene.title,
@@ -2543,7 +2556,7 @@ export class SceneScriptSystem {
       // Pointer / ground-ray diagnostics must not share the global 100ms scene-worker-log key
       // (was swallowing level-state isPressed-path lines during click bursts).
       const pointerDiag =
-        /level-state edge done|no-target|inject RECEIVED|noTarget=|isPressed-path|isPressed-arm|sticky-clear|pointer-edge-|levelState=|edge-VFX peel|pointer ui egress|planeY0|VFXEDGE/i.test(
+        /\[sceneloop\]|level-state edge done|no-target|inject RECEIVED|noTarget=|isPressed-path|isPressed-arm|sticky-clear|pointer-edge-|levelState=|edge-VFX peel|pointer ui egress|planeY0|VFXEDGE/i.test(
           cleaned
         )
       const joinPaint =
@@ -2813,6 +2826,10 @@ export class SceneScriptSystem {
     if (msg.type === 'play-frame-done') {
       this.playFrameInFlight = false
       this.playFrameInFlightAt = 0
+      return
+    }
+    if (msg.type === 'scene-loop-tick') {
+      perfNoteSceneLoopGuestTick({ dt: msg.dt, source: msg.source })
       return
     }
     if (msg.type === 'crdt-outbound') {
@@ -5618,10 +5635,12 @@ export class SceneScriptSystem {
     if (!armed && this.crdtOutboundPending.length) this.flushCrdtOutboundPendingSynchronously()
   }
 
-  /** Guest must tick now (pointer edge). Otherwise SceneLoop may stay at 20 Hz. */
+  /** Guest must tick now (pointer edge or movePlayerTo nudge). Otherwise SceneLoop may stay at 20 Hz. */
   needsImmediateGuestTick(): boolean {
     return !!(
-      this.pointerEvents?.hasPendingInput() || this.pointerEvents?.hasPendingInjectPayload()
+      this.immediateGuestTickRequested ||
+      this.pointerEvents?.hasPendingInput() ||
+      this.pointerEvents?.hasPendingInjectPayload()
     )
   }
 
@@ -5678,6 +5697,7 @@ export class SceneScriptSystem {
     if (!this.running || !this.worker) return
     // Never stack a play-frame while poll/egress is live (second engine.update).
     if (this.isPlayFrameInFlight()) return
+    this.immediateGuestTickRequested = false
     if (this.reservedPoseStreaming) this.refreshClientPosesFromProvider()
     this.refreshRealmInfoFromProvider()
     const player = this.reservedPoseStreaming ? this.clientPlayerPose : null
@@ -7158,7 +7178,13 @@ export class SceneScriptSystem {
     const attachBatch = this.avatarAttachBridge.consumeWorkerBatch()
     if (attachBatch.length) {
       this.lastAvatarAttachBatch = attachBatch
-      this.bridge.promoteAvatarAttachGltfs(attachBatch.map((e) => e.entity as Entity))
+      const roots = attachBatch.map((e) => e.entity as Entity)
+      this.bridge.promoteAvatarAttachGltfs(roots)
+      // Draw visuals live on the draw root, not under the pose Group. Tween
+      // extract covers fly-in; after f7e parents z0 → LEFT_HAND the bone
+      // moves every mixer frame and the GLB would stay at the last extract
+      // (empty hand / floating off-socket). Same law as Tween extract.
+      this.bridge.extractMovedPoses(roots)
       this.flushAvatarAttachTransformsFromBatch(attachBatch)
     }
   }

@@ -16,9 +16,9 @@ import {
   didSkipCooperativeReactEcsThisTick,
   enterCooperativeSchedulerTick,
   getLastPlannedUiDirtyEntities,
-  holdCooperativeReactEcs,
   leaveCooperativeSchedulerTick,
   releaseCooperativeReactEcsHold,
+  armCooperativeReactEcsPaintFollowup,
   notePlayModePointerUiEgress,
   planSceneUiCrdtEmit,
   resetPlayModePointerUiEgress,
@@ -94,6 +94,14 @@ function flushPendingWorldMeshPet(eng: IEngine): void {
  * Inject path skips exports.onUpdate. Skipped onUpdate is not replayed in the deliver chain.
  */
 
+/** Named starters. After first play-frame only `play-frame` | `pointer-edge` may start dt>0. */
+export type SceneEngineTickSource = 'play-frame' | 'pointer-edge' | 'hydrate'
+
+export type SceneEngineGuestTick = {
+  source: SceneEngineTickSource
+  dt: number
+}
+
 export type SceneEngineSchedulerConfig = {
   log: (message: string) => void
   /**
@@ -101,6 +109,8 @@ export type SceneEngineSchedulerConfig = {
    * Prefer workerLog('warn') so main pointerDiag + DevTools always show the line.
    */
   logWarn?: (message: string) => void
+  /** Applied guest tick — HUD last dt/source + `?sceneloop=1` play-frame line. */
+  onGuestTick?: (tick: SceneEngineGuestTick) => void
   hydrationIntervalMs: number
   tickAbortMs: number
   isHydration: () => boolean
@@ -180,6 +190,8 @@ let tickEpoch = 0
  * start engine.update(dt>0). Inbound LWW / cooperative interval only queue.
  */
 let sceneLoopOwnsPositiveDt = false
+/** Source of the in-flight cooperative start — applied dt is logged from the wrap. */
+let pendingGuestTickSource: SceneEngineTickSource | null = null
 /** Serialize engine.update — cooperative ticks must not interleave with pointer interactive ticks. */
 let engineUpdateMutex: Promise<void> = Promise.resolve()
 let engineUpdateRelease: (() => void) | null = null
@@ -225,6 +237,8 @@ function wrapEngineUpdateWithWallClock(eng: IEngine): void {
     config?.onBeforeEngineUpdate?.()
     // Store write before systems — same as Bevy reserved writers on the play-frame.
     flushPendingWorldMeshPet(eng)
+    // Transport-only: do not stamp lastExecutedAt / sceneTime (NeonScreen pauseDuration).
+    // Do not emit here — a pending named start may still be waiting on the mutex.
     if (!(dt > 0)) {
       beginEngUpdatePhase(0)
       try {
@@ -243,6 +257,7 @@ function wrapEngineUpdateWithWallClock(eng: IEngine): void {
     }
     // Wall since last positive tick *start* (or prior stamp).
     const applied = clampDtToWallClock(dt)
+    emitGuestTickIfNamed(applied)
     // Stamp at START so this frame's eng.update work is not "lost" from scene time.
     const now = performance.now()
     if (wallClockOriginMs <= 0) wallClockOriginMs = now
@@ -277,6 +292,7 @@ export function resetSceneEngineScheduler(): void {
   diagCount = 0
   tickEpoch = 0
   sceneLoopOwnsPositiveDt = false
+  pendingGuestTickSource = null
   pendingWorldMeshPet.length = 0
   resetPlayModePointerUiEgress()
   resetEngUpdatePhases()
@@ -612,7 +628,10 @@ function runPointerUiPhase4Egress(eng: IEngine, opts?: { fullMount?: boolean }):
 async function runCooperativeEngineTickPhases(engineDt: number): Promise<void> {
   const cfg = config!
   const eng = engine!
-  if (cfg.pointerBlocksTick()) return
+  if (cfg.pointerBlocksTick()) {
+    pendingGuestTickSource = null
+    return
+  }
   // Re-clamp at execution time (async gap since resolveDt). Always run systems when
   // we still have wall elapsed — never drop a positive request to a no-op skip that
   // freezes timers for the whole interval.
@@ -678,6 +697,8 @@ async function executeTickWork(engineDt: number): Promise<void> {
     cfg.log(`[sceneWorker] engine tick failed — ${msg}`)
   } finally {
     if (abortTimer) clearTimeout(abortTimer)
+    // Skip/fail without wrap: do not attach a later transport update(0) to this source.
+    pendingGuestTickSource = null
   }
 }
 
@@ -718,6 +739,8 @@ export function forceRecoverStuckSceneEngineTick(reason: string): void {
 }
 
 export function preemptSceneEngineTick(): void {
+  // Bevy: never abort a live engine.update — skip-if-in-flight after SceneLoop owns dt.
+  if (sceneLoopOwnsPositiveDt || engineUpdateInFlight) return
   if (!tickInFlight) return
   tickEpoch++
   tickInFlight = false
@@ -753,7 +776,12 @@ export async function runSceneEngineUpdateNow(engineDt?: number): Promise<void> 
 /** started = wait for play-frame-done; deferred = in-flight/queued (do not done); idle = no tick. */
 export type SceneEngineTickRequest = 'started' | 'deferred' | 'idle'
 
-export type SceneEngineTickSource = 'play-frame' | 'pointer-edge' | 'hydrate'
+function emitGuestTickIfNamed(dt: number): void {
+  const source = pendingGuestTickSource
+  if (!source) return
+  pendingGuestTickSource = null
+  config?.onGuestTick?.({ source, dt })
+}
 
 export function setSceneLoopOwnsPositiveDt(on: boolean): void {
   sceneLoopOwnsPositiveDt = on
@@ -769,16 +797,16 @@ export function queueSceneEngineTick(): void {
   tickQueued = true
 }
 
-function sceneLoopAllowsStart(source: SceneEngineTickSource | undefined): boolean {
+function sceneLoopAllowsStart(source: SceneEngineTickSource): boolean {
   if (!sceneLoopOwnsPositiveDt) return true
   return source === 'play-frame' || source === 'pointer-edge'
 }
 
 export function requestSceneEngineTick(
-  opts?: { source?: SceneEngineTickSource }
+  opts: { source: SceneEngineTickSource }
 ): SceneEngineTickRequest {
   if (!engine || !bootSealed || !config) return 'idle'
-  if (!sceneLoopAllowsStart(opts?.source)) {
+  if (!sceneLoopAllowsStart(opts.source)) {
     tickQueued = true
     return 'deferred'
   }
@@ -798,6 +826,7 @@ export function requestSceneEngineTick(
     return 'deferred'
   }
   if (dt <= 0) dt = Math.min(1 / 60, MAX_ENGINE_DT_SEC)
+  pendingGuestTickSource = opts.source
   const epoch = tickEpoch
   // This start satisfies any inbound queue (store already updated).
   tickQueued = false
@@ -957,7 +986,8 @@ async function runPointerNonUiPhase(eng: IEngine): Promise<void> {
  * 2. PET_UP (PlayerEntity + click leaf) with react-ecs **OFF** — clear isPressed
  *    without multi-pass fingerprint flush (that re-ran eng.update and toggled closed)
  * 3. phase-4 snapshot of the OPEN mount immediately
- * 4. hold cooperative react-ecs so residual ticks cannot collapse the panel
+ * 4. arm react-ecs followup so Layer showFrom/hideTo position tweens swipe
+ *    (do not hold reconcile — that parks the first off-canvas pose)
  * 5. non-ui phase
  *
  * Browser may still send phase=up later — that is a no-op for sceneUi (already cleared).
@@ -992,11 +1022,13 @@ async function runSceneUiPointerDownBatch(
   const mountGrew = mountAfter > mountBefore
   // Full rows only when a panel opened. Fade / same-size = dirty Color4.a.
   runPointerUiPhase4Egress(eng, { fullMount: mountGrew })
-  if (mountGrew) {
-    holdCooperativeReactEcs(12)
-  } else {
-    releaseCooperativeReactEcsHold()
-  }
+  // Last-slice / react-ecs Layer.toggle() starts an engine.addSystem tween of
+  // UiTransform.position (showFrom:"top" etc., typically 200–350ms). A 12-tick
+  // react-ecs hold freezes the first off-canvas snapshot, so the panel never
+  // swipes — it snaps or stays hidden. Keep reconcile live for the swipe window.
+  // DOWN+UP in this same batch already prevents Neurolink double-toggle collapse.
+  releaseCooperativeReactEcsHold()
+  armCooperativeReactEcsPaintFollowup(450)
   cfg.log(
     `[sceneWorker] pointer sceneUi phase4 — mount=${mountAfter} grew=${mountGrew ? 1 : 0}`
   )

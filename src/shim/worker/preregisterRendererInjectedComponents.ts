@@ -88,6 +88,17 @@ export function installPreregisterRendererComponentsHook(): void {
   }
 }
 
+let lastAuthoredVirtualCanvas: { width: number; height: number } | null = null
+
+/** Last scene `setUiRenderer` / `addUiRenderer` virtualWidth×virtualHeight, if any. */
+export function getLastAuthoredVirtualCanvas(): { width: number; height: number } | null {
+  return lastAuthoredVirtualCanvas
+}
+
+export function resetLastAuthoredVirtualCanvas(): void {
+  lastAuthoredVirtualCanvas = null
+}
+
 export function installUiVirtualCanvasHook(
   post: (width: number, height: number) => void
 ): void {
@@ -95,6 +106,8 @@ export function installUiVirtualCanvasHook(
   g[UI_VIRTUAL_CANVAS_KEY] = (width: number, height: number) => {
     if (!Number.isFinite(width) || !Number.isFinite(height)) return
     if (width <= 0 || height <= 0) return
-    post(Math.floor(width), Math.floor(height))
+    const next = { width: Math.floor(width), height: Math.floor(height) }
+    lastAuthoredVirtualCanvas = next
+    post(next.width, next.height)
   }
 }

@@ -157,6 +157,23 @@ export function markGuestProfileDeployed(): void {
   writeGuestRecord({ ...rec, profileDeployedAt: new Date().toISOString() })
 }
 
+/** Persist a typed guest display name on this browser wallet. */
+export function setGuestDisplayName(displayName: string): GuestLogin | null {
+  const rec = readGuestRecord()
+  const root = rec ? rootFromRecord(rec) : null
+  if (!rec || !root) return null
+  const name = displayName.trim() || guestDisplayNameFromAddress(root.address)
+  writeGuestRecord({ ...rec, displayName: name })
+  const identity = reviveIdentity(rec.identity)
+  if (!identity) return null
+  return {
+    kind: 'guest',
+    address: root.address,
+    identity,
+    displayName: name
+  }
+}
+
 /** Drop guest wallet (rare — new guest on this browser). */
 export function clearGuestWallet(): void {
   if (typeof window === 'undefined') return

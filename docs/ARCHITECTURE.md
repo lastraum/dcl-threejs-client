@@ -101,7 +101,8 @@ Do not resurrect `crdt-renderer-push` or a main-thread SDK engine.
 |-----|------|
 | [AGENTS.md](./AGENTS.md) | scene-bundle-is-law · FocusOwner |
 | [FRAME_PIPELINE_COD.md](./FRAME_PIPELINE_COD.md) | leftover async attach pie (not a second store) |
-| [SCENELOOP_COMPLETION.md](./SCENELOOP_COMPLETION.md) | finish invert clock — one guest tick, host queries, no extra `update(0)` |
+| [SCENELOOP_COMPLETION.md](./SCENELOOP_COMPLETION.md) | invert clock target shape — in-tree with named leftovers |
+| [V2.2_BEVY_PARITY.md](./V2.2_BEVY_PARITY.md) | 2.2 plan — invert shipped **v2.2.0** (walk-log 2026-08-19) |
 | [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) | FocusOwner · shells |
 | [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) | PART vs ROOT |
 | [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md) | one CCT Δ |

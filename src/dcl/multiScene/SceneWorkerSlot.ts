@@ -491,10 +491,9 @@ export class SceneWorkerSlot {
     if (now - this.lastTickAt < minIntervalMs) return false
     this.lastTickAt = now
     this.system.syncClientEntities(this.toSceneLocal(player), this.toSceneLocal(camera))
-    // SceneLoop.send owns play-frame when skipPlayFrame (or manager flag) is set.
-    if (!skipPlayFrame && !this.playFrameOwnedExternally) {
-      this.system.tickPlayFrame()
-    }
+    // SceneLoop.send owns play-frame. tickSync is pose rebase only — never start a play-frame.
+    void skipPlayFrame
+    void this.playFrameOwnedExternally
     return true
   }
 
@@ -536,7 +535,7 @@ export class SceneWorkerSlot {
       return this.takeDirtyCollidersOnly()
     }
 
-    // Secondary scripts run on tickSync every frame; full renderer/bridges can stagger.
+    // Secondary scripts run on SceneLoop.send; full renderer/bridges can stagger.
     // When not selected this frame, still push dirty colliders (boot/demote/structure).
     if (options?.fullWork === false) {
       return this.takeDirtyCollidersOnly()

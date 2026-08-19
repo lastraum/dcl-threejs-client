@@ -114,6 +114,10 @@ export type PerfSnapshot = {
   sceneLoopDue: number
   sceneLoopGuests: number
   sceneLoopSent: number
+  /** Last applied guest engine.update dt (seconds). 0 until first named tick. */
+  sceneLoopLastDt: number
+  /** Last named tick source: play-frame | pointer-edge | hydrate. */
+  sceneLoopLastSource: string
   // --- render sub-split ---
   /** WebGL scene pass (forward or bloom path). */
   renderMainMs: number
@@ -233,6 +237,8 @@ const state = {
   sceneLoopDue: 0,
   sceneLoopGuests: 0,
   sceneLoopSent: 0,
+  sceneLoopLastDt: 0,
+  sceneLoopLastSource: '',
   renderMainMs: 0,
   renderTagsMs: 0,
   renderSceneMs: 0,
@@ -476,6 +482,12 @@ export function perfNoteSceneLoop(opts: {
   state.sceneLoopSent = opts.sent
 }
 
+/** Last applied guest tick — HUD `dt=` / `src=` on the SceneLoop line. */
+export function perfNoteSceneLoopGuestTick(opts: { dt: number; source: string }): void {
+  state.sceneLoopLastDt = opts.dt
+  state.sceneLoopLastSource = opts.source
+}
+
 /** SceneHost render sub-split (main pass vs name tags + scene/bloom/extract). */
 export function perfNoteRenderSplit(opts: {
   mainMs: number
@@ -697,6 +709,8 @@ export function perfSnapshot(): PerfSnapshot {
     sceneLoopDue: state.sceneLoopDue,
     sceneLoopGuests: state.sceneLoopGuests,
     sceneLoopSent: state.sceneLoopSent,
+    sceneLoopLastDt: state.sceneLoopLastDt,
+    sceneLoopLastSource: state.sceneLoopLastSource,
     renderMainMs: state.renderMainMs,
     renderTagsMs: state.renderTagsMs,
     renderSceneMs: state.renderSceneMs,

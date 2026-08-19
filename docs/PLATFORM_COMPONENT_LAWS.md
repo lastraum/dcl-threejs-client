@@ -82,16 +82,20 @@ Client must run **platform Billboard + plane + Visibility**. No GP-specific Bill
 | Rule | Status |
 |------|--------|
 | Dual-face BufferGeometry, north + south | Verified — `primitiveShapes.ts` |
-| Docs UV corner order with **L–R compensation** for DCL→Three X reflection | Client convention (plaza JUMP IN / atlas) — documented in code; Explorer golden TBD |
-| Default north is docs **V=0 bottom** (`0,0,1,0,1,1,0,1`). South lookAt face is V-inverted | Verified — NftShape / TextShape / default planes view +Z |
+| Docs UV *values* + **X-reflection corner maps** north **[3,2,0,1]**, south **[2,3,1,0]** | Verified — `dclToThreePos` reflects +X; pure docs maps L–R-mirror Jump Zone / TextShape / JUMP IN |
+| Default north is docs **V=0 bottom** (`0,0,1,0,1,1,0,1`). South is same-cell docs south | Verified — NftShape / TextShape / default planes |
+| Dual-face south is **same-cell docs south from normalized north** (`northStyleToSouthPacking`). Authored second octuple is not trusted (plaza missed-it copies north-order; R4e GET BAIT is south flipbook of the same cell). Never `1−u` except marquee | Verified — v31 packing / v33 X-reflection corners |
+| TextShape canvas uses the same plane. **Do not** also flip `map.repeat.x` by default | Forbidden — v31+flip re-mirrored Jump Zone (−130,91) |
 | Marquee / flipbook special cases stay on their own packing | Client law for those UV patterns |
 | **Do not** invert default north V to fix one Billboard | Forbidden — hung every NFT + canvas plane upside-down |
+| **Do not** treat authored 16-UV south as a second north face | Forbidden — L–R mirrored GET BAIT while default-UV press_e stayed upright |
 
 ### Open gap
 
 | Gap | Note |
 |-----|------|
-| Press_e under stock lookAt | South face of the default 16-UV plane is V-inverted for Three BM_ALL lookAt (−Z). Do not invert north. |
+| Press_e under stock lookAt | **Closed (v28)** — default south keeps north V (V=0 bottom). Extra south-V invert + Matrix4.lookAt (−Z to camera) read the start-reeling plane upside-down. Do not invert north. |
+| 16-UV atlas south L–R mirror | **Closed (v30)** — authored south is south packing. `northStyleToSouthPacking(normalizeNorth(south))` double-packed GET BAIT. |
 
 ---
 
@@ -112,6 +116,8 @@ Client must run **platform Billboard + plane + Visibility**. No GP-specific Bill
 |------|--------|
 | `obj.visible = Visibility.visible !== false` when component present | Verified — `entityStoreApply` |
 | Apply to private `__mesh_*` leaves and Gltf meshes when component present | Verified — needed for private clones |
+| Visibility `true` on a GltfContainer must load+attach this frame (budget bypass) | Verified — MeshRenderer already had `ensureMeshRendererLeaf`; catch/loot GLBs only flip Visibility |
+| GltfContainer **fetch** is never budget-gated (only attach is). Visibility + normal scale (not LO() 0.001) attaches even while `visible=false` | Verified — plaza n0 is created hidden at reel start; 5s reveal cannot wait for a late parse |
 | Do **not** invent scale rewrites on show/hide | Forbidden (broke missed-it Scale tweens) |
 | Do **not** force-show fishing rods ignoring Visibility | Forbidden (reverted) |
 | Visibility puts must not starve behind slow peel (same class as Transform motion) | Client COD drain policy |
@@ -200,6 +206,7 @@ Plaza `water_surface.glb` is a collider-only disk + sibling `water.png`. Pointer
 | Parent to `PlayerEntity` for worker `getWorldPosition` = PE × relative | Verified — SDK nBe path |
 | Apply composed world pose under **scene root** (never PE chest +0.88 attach root) | Verified — comment in bridge |
 | Sample attach **after** local avatar locomotion/emote that frame | Verified — frame order law |
+| After bone sample, **extract** the attach socket + Transform descendants onto the draw root (same as Tween). Pose Groups are not the GPU objects | Verified — plaza `YI → z0 → n0` left-hand catch |
 
 ### Explicitly not law
 
@@ -295,11 +302,23 @@ From Genesis Plaza `bin/index.js` (catalyst), **do not re-encode as client speci
 
 ## 10. Current open gaps (do not invent past these)
 
-1. **Plane UV vs Unity Explorer golden** — default south V flipped for Three lookAt (−Z). Convention until an Explorer capture.  
-2. **Reveal VirtualCamera** lookAt chain pixel parity (Tween parents must be on the worker store — see Tween law).  
-3. **AvatarAttach quaternion** vs Explorer bone sample — play-frame inject closed the timing hole; quat golden still open.
+These three stay **Open** until **one** Explorer capture or **one** unityrenderer commit exists. Measure-only until then. They are **not** required to tag 2.2 (SceneLoop 🟢 does not wait on these goldens).
 
-Closing any gap = one Explorer measurement or one unityrenderer commit, then one client law change.
+Named scenes (Genesis Plaza, Genesis CBD, SpaceRunner, Flagtag, NeonScreen, CREATOR Hub) are **guides / repros**, not law. A capture may use any official scene bundle that exercises the API. No scene-name forks.
+
+| # | Gap | Status | What would close it | Forbidden until then |
+|---|-----|--------|---------------------|----------------------|
+| 1 | **Plane UV vs Unity Explorer golden** — default south V flipped for Three lookAt (−Z). Client convention only. | **Open** | One Explorer capture, or one unityrenderer UV-packing commit, of a dual-face plane + texture | Invented north-V invert, extra UV rolls, Billboard-only flips |
+| 2 | **VirtualCamera lookAt** — reveal / multi-hop chain pixel parity (Tween parents must be on the worker store — see Tween law) | **Open** | One Explorer capture of a bound VirtualCamera lookAt / transition | Invented lookAt offsets, iso lifts, scene-named camera forks |
+| 3 | **AvatarAttach quaternion** vs Explorer bone sample — play-frame inject closed the timing hole; quat golden still open | **Open** | One Explorer capture, or one unityrenderer bone-sample commit, of attach-local quat | Invented relative-pos hacks, scene-local attach math |
+
+**Closing a gap = one measurement, then one client law change.**
+
+1. Capture Explorer (or cite a unityrenderer commit) for that one API.
+2. Promote the row to **Verified** with the measurement cited.
+3. Change the client law **once**, universally — any official `bin/scene.js` that uses the API.
+
+Do not close a gap from a named-scene screenshot alone, a “looks better” flip, or a fishing-session trial rotation. Do not change bridge code for these three until the measurement exists.
 
 ---
 

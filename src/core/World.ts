@@ -98,7 +98,8 @@ import {
   clearProfileCaches,
   fetchProfileFaceUrl,
   seedCommsPeerProfile,
-  seedLocalProfileCache
+  seedLocalProfileCache,
+  type LambdaAvatarEntry
 } from '../avatar/peerApi'
 import type { LoginResult } from '../auth/AuthClient'
 import type { SendBinaryRequest } from '../shim/types'
@@ -112,7 +113,7 @@ import {
   maybeLogLiveSceneAdminSignedFetch,
   probeSceneAdminForAdminTools
 } from '../network/gatekeeper/adminToolsDiagnostics'
-import { shortenAddress } from '../avatar/displayName'
+import { identityFromAvatarProfile, shortenAddress } from '../avatar/displayName'
 import { buildPlayerMirrorIdentity, getOrCreateGuestAddress } from '../bridge/playerMirrorIdentity'
 import type { AvatarAttachTargetResolver } from '../avatar/AvatarAttachTargets'
 import { dclToThreePos, dclToThreeVec, threeToDclPos, type DclTransformValues } from '../bridge/dclTransform'
@@ -1638,16 +1639,17 @@ export class World {
       })
       return
     }
-    // Catalog only. AbilityManager + LightPool + ice/meteor/hail meshes boot on
-    // the first cast — warming them here adds 6 PointLights that light 33k grass
-    // and lock the GPU at 0 fps before the player has clicked anything.
     await this.sceneScript.attachShaderVfx(source)
     const { getShaderManager } = await import('../vfx/ShaderManager')
     getShaderManager().ingestSource(source ?? '')
-    await this.ensureAbilityVfxHost()
+    const host = await this.ensureAbilityVfxHost()
+    // Lights stay hidden (intensity 0 + visible=false) so 33k grass is not lit.
+    // Meshes + materials build here so the first click is not a module parse.
+    _onProgress?.('Warming ability VFX…')
+    await host.prime(ids)
     clientDebugLog.log(
       'scene',
-      `ability-vfx catalog [${ids.join(', ')}] — warm on first cast`,
+      `ability-vfx catalog [${ids.join(', ')}] — primed on load`,
       { alsoConsole: true }
     )
   }
@@ -2369,7 +2371,8 @@ export class World {
 
   /**
    * Compile shaders + spin particle GPU while the overlay is still up.
-   * Orbit hitch after Jump In is first-draw program compile, not attach.
+   * Three.js program keys include lights / fog / IBL / tone map — compile without
+   * that state just means the first play present builds a new variant (orbit hitch).
    */
   private async warmPlayGpu(
     onProgress?: (msg: string, fraction?: number) => void
@@ -2380,24 +2383,33 @@ export class World {
     } catch {
       /* particles / mixers may not be fully bound yet */
     }
-    this.player?.snapCamera()
-    this.host.compileSceneShaders()
+    this.syncPresentState()
+    await this.host.compileSceneShaders()
+    // Ability groups only — never re-compile the landscape with VFX PointLights
+    // visible (that walk recompiled every grass program and froze the overlay).
+    this.abilityVfx?.compileWarmedGroups()
+    // Shadow-depth + bloom blit are not covered by compileAsync — first real presents.
     for (let i = 0; i < 4; i++) {
       this.host.renderFrame()
       await new Promise<void>((r) => requestAnimationFrame(() => r()))
     }
   }
 
+  /** Lights / fog / IBL / camera for the play present — required before shader compile. */
+  private syncPresentState(): void {
+    this.ocean?.update(0, this.host.camera)
+    updateFoliageWind(this.foliageWindElapsed)
+    // Cull ECS lights by avatar (not camera) so freecam/orbit doesn't re-pick distant lights.
+    this.lightManager.update(this.player?.getWorldPosition() ?? this.host.camera.position)
+    this.environment.update(0, this.sceneScript.view, this.sceneScript.readComponents)
+    this.syncOutdoorLighting()
+    this.player?.snapCamera()
+  }
+
   /** One visible frame (sky/landscape/camera) before the loading overlay hides. */
   primeRender(): void {
     try {
-      this.ocean?.update(0, this.host.camera)
-      updateFoliageWind(this.foliageWindElapsed)
-      // Cull ECS lights by avatar (not camera) so freecam/orbit doesn't re-pick distant lights.
-      this.lightManager.update(this.player?.getWorldPosition() ?? this.host.camera.position)
-      this.environment.update(0, this.sceneScript.view, this.sceneScript.readComponents)
-      this.syncOutdoorLighting()
-      this.player?.snapCamera()
+      this.syncPresentState()
       this.host.renderFrame()
     } catch (err) {
       console.warn('[World] primeRender failed', err)
@@ -2527,8 +2539,9 @@ export class World {
           peMs = performance.now() - peT0
 
           const pos = this.player.getPosition()
-          // Soft-route + occupancy + AOI must run on present — leftover async
-          // is skipped for whole CBD walks (asyncBusy / >33 ms present).
+          // Soft-route (URL/pill/minimap) + Focus stay on present so they do not
+          // lag a frame behind feet. AOI visuals stay here until a stacked
+          // live-neighbor walk log proves a present hitch (p5 < 30).
           const aoiT0 = performance.now()
           if (startFrame >= World.PLAY_PRESENT_GRACE_FRAMES) {
             this.scenePromote.tick(pos.x, pos.z)
@@ -3561,7 +3574,6 @@ export class World {
     const now = performance.now()
     let scaleQueued = 0
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
-      if (!desc.shapes?.length) continue
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
       if (!this.physics.hasStaticActor(desc.entity)) continue
@@ -3575,9 +3587,14 @@ export class World {
       // Pose-only drift is slide path; only geom wipe or bake-scale mismatch recooks.
       if (geomMatch && !scaleDrift) continue
       const last = this.scaleDriftRecookAt.get(desc.entity) ?? 0
-      const cooldown = scaleDrift
-        ? World.COOK_SCALE_DRIFT_RECOOK_COOLDOWN_MS
-        : World.SCALE_DRIFT_RECOOK_COOLDOWN_MS
+      // Shrink must recook now — a stale larger hull is a wall (snow melt 1.5→0.02).
+      // Grow keeps a short cooldown so a 500ms Scale tween does not recook every frame.
+      const shrinking = scaleDrift && this.physics.hasCookScaleShrink(desc)
+      const cooldown = shrinking
+        ? 0
+        : scaleDrift
+          ? World.COOK_SCALE_DRIFT_RECOOK_COOLDOWN_MS
+          : World.SCALE_DRIFT_RECOOK_COOLDOWN_MS
       if (now - last < cooldown) continue
       this.scaleDriftRecookAt.set(desc.entity, now)
       this.colliderCookQueue.add(desc.entity)
@@ -6235,6 +6252,39 @@ export class World {
       })
   }
 
+  /** Name-only profile deploy landed — refresh tags/comms without rebuilding the VRM. */
+  applyLocalDisplayName(entry: LambdaAvatarEntry): void {
+    const address = this.session.getAddress()
+    const profile = this.session.getProfile()
+    const displayName =
+      entry.name?.trim() && entry.hasClaimedName
+        ? entry.name.trim()
+        : entry.unclaimedName?.trim() || entry.name?.trim() || profile?.displayName || 'Guest'
+    const hasClaimedName = !!entry.hasClaimedName
+    if (profile) {
+      this.session.setProfile({ ...profile, displayName, hasClaimedName })
+    }
+    this.session.applyDeployedProfileEntry(entry)
+    if (address) {
+      clearProfileCaches(address)
+      const next = this.session.getProfile()
+      if (next) seedLocalProfileCache(address, next)
+    }
+    this.comms.setCommsProfile(this.session.getCommsProfileEntity())
+    this.comms.announceProfile('connect')
+    const next = this.session.getProfile()
+    if (next) {
+      this.player?.setProfileIdentity(identityFromAvatarProfile(next, address ?? undefined))
+      this.sceneScript.setPlayerIdentity(
+        buildPlayerMirrorIdentity({ address: address ?? undefined, profile: next })
+      )
+    }
+    this.social.setDisplayName(displayName)
+    if (address) {
+      this.social.setLocalProfile(address, displayName, this.social.getLocalDisplay().faceUrl)
+    }
+  }
+
   /** Reload local avatar after backpack equip / profile save (session profile, not stale Catalyst). */
   async reloadLocalAvatar(): Promise<void> {
     const gen = ++this.reloadLocalAvatarGen
@@ -6590,6 +6640,9 @@ export class World {
 
     this.stopLocalPreviewHotReload()
     this.assets.clearScene()
+    // Play renderer is about to forceContextLoss — parsed ImageBitmaps/textures
+    // bound to that context would remount as a black avatar on the next World.
+    this.assets.invalidateGpuResources('world-dispose')
     clearGeometryCookCache()
     clearPrimedPhysxCookStreams()
     disposePhysxCookPool()

@@ -84,6 +84,8 @@ export class SceneUiBridge {
   private readonly layoutCache = new UiLayoutCache()
   private scene: ResolvedScene | null = null
   private virtual: VirtualCanvasSize = { width: 1, height: 1 }
+  /** Scene `setUiRenderer` / `addUiRenderer` virtualWidth×virtualHeight (plaza 1920×1080). */
+  private authoredVirtual: VirtualCanvasSize | null = null
   private lastCanvasKey = ''
   private writeback: SceneUiWriteback | null = null
   private mirrorEcs: MirrorComponents | null = null
@@ -466,11 +468,19 @@ export class SceneUiBridge {
   }
 
   /**
-   * Scene `setUiRenderer` virtual size is for react-ecs ui-scale on the worker.
-   * Yoga + UiCanvasInformation stay live interactable px (Explorer 7.25).
+   * Scene `setUiRenderer` / `addUiRenderer` virtual design size.
+   * Pre-7.26 omit → live interactable px. Plaza opts in at 1920×1080 — Yoga +
+   * fontSize (NICE CATCH name is `40 * nameScale`) must share that space.
    */
-  setVirtualSize(_width: number, _height: number): void {
-    /* intentionally unused — do not replace the live canvas with 1920×1080 */
+  setVirtualSize(width: number, height: number): void {
+    if (!(width > 0) || !(height > 0)) return
+    const next = { width: Math.round(width), height: Math.round(height) }
+    const prev = this.authoredVirtual
+    if (prev && prev.width === next.width && prev.height === next.height) return
+    this.authoredVirtual = next
+    this.virtual = next
+    this.layoutCache.clear()
+    this.markContentDirty()
   }
 
   dispose(): void {
@@ -494,7 +504,7 @@ export class SceneUiBridge {
   }
 
   private applyVirtual(interactable: ReturnType<typeof readInteractableArea>): void {
-    const next = liveVirtualCanvas(interactable)
+    const next = this.authoredVirtual ?? liveVirtualCanvas(interactable)
     if (next.width !== this.virtual.width || next.height !== this.virtual.height) {
       this.virtual = next
       this.layoutCache.clear()

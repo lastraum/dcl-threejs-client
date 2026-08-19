@@ -1,6 +1,6 @@
 import type { AuthDappLoginMethod, AuthProgress, LoginResult } from '../../../auth/AuthClient'
 import { loginWithMetaMask, loginWithProvider, openAuthWindow } from '../../../auth/AuthClient'
-import { getGuestPrivateKeyHex, setGuestDisplayName } from '../../../auth/guestIdentity'
+import { getGuestPrivateKeyHex } from '../../../auth/guestIdentity'
 import { ensureGuestSession } from '../../auth/resolveInitialLogin'
 import { identityFromAvatarProfile } from '../../../avatar/displayName'
 import {
@@ -284,11 +284,7 @@ export class SocialProfileMenu {
     const hasKey = Boolean(getGuestPrivateKeyHex())
     return `
       <div class="social-profile-menu__identity">
-        <div class="social-profile-menu__name-row">
-          <div class="social-profile-menu__name">${escapeHtml(name)}</div>
-          <button type="button" class="social-profile-menu__edit-name" data-edit-name aria-label="Edit display name">✎</button>
-        </div>
-        <div class="social-profile-menu__name-edit" data-name-edit hidden></div>
+        <div class="social-profile-menu__name">${escapeHtml(name)}</div>
         <div class="social-profile-menu__sub">Guest on this device</div>
         <button type="button" class="social-profile-menu__wallet-copy social-profile-menu__guest-addr" data-copy-guest-wallet data-wallet="${escapeHtml(address)}" title="Click to copy full address">
           <code class="social-profile-menu__wallet-code">${escapeHtml(address)}</code>
@@ -356,7 +352,6 @@ export class SocialProfileMenu {
   }
 
   private wireGuestMenu(): void {
-    this.wireNameEditor()
     this.wireWhatsNewItem()
     // Full provider set (same as signed-out sign-in sheet).
     for (const btn of this.menuBody.querySelectorAll<HTMLButtonElement>('[data-login-method]')) {
@@ -595,17 +590,14 @@ export class SocialProfileMenu {
   }
 
   private async saveDisplayName(choice: DisplayNameChoice): Promise<void> {
-    if (this.login.kind !== 'guest' && this.login.kind !== 'wallet') {
-      throw new Error('Sign in to change your name')
+    if (this.login.kind !== 'wallet') {
+      throw new Error('Sign in with a wallet to change your name')
     }
     const address = this.login.address
     const identity = this.login.identity
     const profile =
       (await fetchProfileCached(address)) ??
-      createFallbackGuestAvatarProfile(
-        address,
-        this.login.kind === 'guest' ? this.login.displayName : address.slice(0, 8)
-      )
+      createFallbackGuestAvatarProfile(address, address.slice(0, 8))
     const result = await deployDisplayName({
       address,
       identity,
@@ -617,13 +609,7 @@ export class SocialProfileMenu {
         ? result.entry.name?.trim()
         : result.entry.unclaimedName?.trim() || result.entry.name?.trim()) || this.displayName || 'Guest'
     this.displayName = displayName
-    if (this.login.kind === 'guest') {
-      const next = setGuestDisplayName(displayName) ?? { ...this.login, displayName }
-      this.onLoginChange?.(next)
-      this.setLogin(next)
-    } else {
-      this.renderMenu()
-    }
+    this.renderMenu()
   }
 
   private wireWhatsNewItem(): void {

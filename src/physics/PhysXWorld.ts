@@ -233,6 +233,8 @@ export class PhysXWorld {
   private lastCctShapeContact: { entity: number; point: THREE.Vector3 } | null = null
   /** Last move() reported eCOLLISION_SIDES (wall/prop contact). */
   private lastCctHitSides = false
+  /** Feet pose at start of this movePlayer — jam detection vs actual travel. */
+  private readonly _cctMoveStart = new THREE.Vector3()
   private pendingCctGroundEntity: number | null = null
   private pendingCctGroundY = Number.NEGATIVE_INFINITY
   private pendingCctGroundContact: { entity: number; point: THREE.Vector3 } | null = null
@@ -2493,6 +2495,7 @@ export class PhysXWorld {
     this.pendingCctGroundEntity = null
     this.pendingCctGroundY = Number.NEGATIVE_INFINITY
     this.pendingCctGroundContact = null
+    this._cctMoveStart.copy(this.position)
 
     // Stick-to-ground: pure horizontal moves often omit eCOLLISION_DOWN (PlayerSystem strips
     // gravity while grounded). A tiny downward bias keeps ground hits + wall contacts reliable.
@@ -2535,6 +2538,15 @@ export class PhysXWorld {
     }
     this.syncPlayerTransform()
     this.lastCctHitSides = hitSides
+
+    // High-speed wall slam + mid-frame collider insert can leave the capsule overlapping
+    // statics. Unity CharacterController skin-width keeps a legal pose; we finish the
+    // same move with an XZ separation so the CCT is never left embedded ("mud").
+    const wantedH = Math.hypot(displacement.x, displacement.z)
+    const actualH = Math.hypot(this.position.x - this._cctMoveStart.x, this.position.z - this._cctMoveStart.z)
+    if (hitSides && wantedH > 0.05 && actualH < 0.012) {
+      this.separateCctFromOverlappingStatics()
+    }
 
     if (hitUp && this.correctDescendingPlatformHeadCrush()) {
       grounded = true
@@ -3401,6 +3413,95 @@ export class PhysXWorld {
     return this.lastCctHitSides
   }
 
+  /**
+   * Legal CCT pose after a wall slam or collider insert: if the capsule overlaps
+   * static solids, slide feet on XZ out of the hull (Explorer skin-width).
+   * Returns true when the pose was corrected.
+   */
+  separateCctFromOverlappingStatics(): boolean {
+    if (!this.scene || !this.controller || !this.playerCapsuleOverlapGeometry || !this.overlapPose) {
+      return false
+    }
+
+    const foot = this.footPositionFromController(this._v1)
+    const halfHeight = (this.capsuleHeight - this.capsuleRadius * 2) / 2
+    const centerY = foot.y + this.capsuleRadius + halfHeight
+    this._pos.set(foot.x, centerY, foot.z)
+    this._pos.toPxTransform(this.overlapPose)
+    this._quat.setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2)
+    this._quat.toPxTransform(this.overlapPose)
+
+    this.applySceneQueryFilter(0)
+    try {
+      this.queryFilterData.flags = new PHYSX.PxQueryFlags(
+        PHYSX.PxQueryFlagEnum.eSTATIC | PHYSX.PxQueryFlagEnum.eDYNAMIC
+      )
+    } catch {
+      /* older bindings */
+    }
+    const didHit = this.scene.overlap(
+      this.playerCapsuleOverlapGeometry,
+      this.overlapPose,
+      this.overlapResult,
+      this.queryFilterData
+    )
+    if (!didHit) return false
+
+    const pad = this.capsuleRadius + CONTROLLER_CONTACT_OFFSET
+    let pushX = 0
+    let pushZ = 0
+    let n = 0
+    const nbHits = this.overlapResult.getNbAnyHits()
+    for (let i = 0; i < nbHits; i++) {
+      const hit = this.overlapResult.getAnyHit(i)
+      const actor = hit?.actor
+      if (!actor?.ptr) continue
+      if (this.triggerEntityByActorPtr.has(actor.ptr)) continue
+      const entity = this.staticEntityByActorPtr.get(actor.ptr)
+      if (entity === undefined || entity === INFINITE_GROUND_ENTITY) continue
+      if (typeof actor.getWorldBounds !== 'function') continue
+      let min: { x: number; y: number; z: number }
+      let max: { x: number; y: number; z: number }
+      try {
+        const bounds = actor.getWorldBounds()
+        min = bounds.get_minimum()
+        max = bounds.get_maximum()
+      } catch {
+        continue
+      }
+      if (!min || !max) continue
+      // Only hulls that intersect the capsule column (walls / thick props).
+      if (max.y < foot.y + 0.15 || min.y > foot.y + this.capsuleHeight) continue
+      const cx = Math.min(Math.max(foot.x, min.x), max.x)
+      const cz = Math.min(Math.max(foot.z, min.z), max.z)
+      let dx = foot.x - cx
+      let dz = foot.z - cz
+      if (dx * dx + dz * dz < 1e-8) {
+        dx = foot.x - (min.x + max.x) * 0.5
+        dz = foot.z - (min.z + max.z) * 0.5
+      }
+      const len = Math.hypot(dx, dz)
+      if (len < 1e-5) continue
+      const inv = 1 / len
+      const need = pad - len
+      if (need <= 0) continue
+      pushX += dx * inv * need
+      pushZ += dz * inv * need
+      n++
+    }
+    if (!n) return false
+    const mag = Math.hypot(pushX, pushZ)
+    if (mag < 1e-4) return false
+    const maxPush = 0.28
+    const scale = mag > maxPush ? maxPush / mag : 1
+    this.invalidateControllerCache()
+    this.position.x += pushX * scale
+    this.position.z += pushZ * scale
+    this.controller.setFootPosition(this.position.toPxExtVec3())
+    this.syncPlayerTransform()
+    return true
+  }
+
   getStandingPlatformEntity(): number | null {
     return this.standingPlatformEntity
   }
@@ -3642,6 +3743,9 @@ export class PhysXWorld {
         )
       }
     }
+    // New hulls can spawn overlapping the capsule (Snowdrift run-into-prop). Legal pose.
+    this.invalidateControllerCache()
+    this.separateCctFromOverlappingStatics()
     return true
   }
 

@@ -762,8 +762,8 @@ export class AppController {
     const address = session.getAddress()
     const identity = session.getAuthIdentity()
     const profile = session.getProfile()
-    if (!address || !identity || !profile) {
-      throw new Error('Sign in to change your name')
+    if (!address || !identity || !profile || session.isGuest()) {
+      throw new Error('Sign in with a wallet to change your name')
     }
     const peerRoot = session.getLambdasUrl().replace(/\/lambdas\/?$/i, '') || undefined
     const result = await deployDisplayName({

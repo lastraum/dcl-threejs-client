@@ -676,7 +676,7 @@ export class SettingsOverlay {
   }
 
   private async toggleNameEditor(): Promise<void> {
-    if (!this.onSaveDisplayName) return
+    if (!this.onSaveDisplayName || this.session.isGuest()) return
     let host = this.root.querySelector('.settings-overlay__name-edit') as HTMLElement | null
     if (this.nameEditor) {
       this.nameEditor.dispose()

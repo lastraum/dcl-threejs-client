@@ -621,6 +621,10 @@ export class PointerEventsSystem {
     }
 
     // Left-drag orbit — never hijack canvas clicks without an interactive scene-ui node.
+    // Debug HUD is client chrome, not scene UI — never treat it as overlay that
+    // stopPropagation's world clicks (Labs Debug must leave canvas pointer live).
+    if (e.target instanceof Element && e.target.closest('#debug-panel')) return
+
     const overUi =
       isUiOverlayPointerEvent(e) ||
       isPointerOverSceneUi(e.clientX, e.clientY) ||

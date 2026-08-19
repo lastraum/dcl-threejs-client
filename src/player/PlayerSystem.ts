@@ -678,11 +678,14 @@ export class PlayerSystem {
     } else if (now - this.lastStallLogAt > 2000) {
       this.lastStallLogAt = now
       const loc = this.getLocomotionConfig()
+      const unstuck = this.physics.separateCctFromOverlappingStatics()
+      if (unstuck) this.root.position.copy(this.physics.positionOut)
       console.warn(
         `[player] STALL ${stalledMs.toFixed(0)}ms keys held feet stuck but free ` +
           `disableAll=${loc.disableAll} collidersBlock=${this.collidersReadyBlock} ` +
           `vc=${this.isSceneVirtualCameraDriving()} delta=${(delta * 1000).toFixed(1)}ms ` +
-          `pos=(${this.root.position.x.toFixed(1)},${this.root.position.y.toFixed(2)},${this.root.position.z.toFixed(1)})`
+          `pos=(${this.root.position.x.toFixed(1)},${this.root.position.y.toFixed(2)},${this.root.position.z.toFixed(1)})` +
+          (unstuck ? ' · separated from overlapping statics' : '')
       )
     }
   }
@@ -1684,6 +1687,17 @@ export class PlayerSystem {
 
     const moveResult = this.physics.movePlayer(_displacement, delta)
     this.grounded = moveResult.grounded
+    // Wall jam: do not keep ramming residual XZ into an overlapping hull.
+    if (this.physics.getLastCctHitSides() && moving) {
+      const afterH = Math.hypot(
+        this.physics.positionOut.x - this.root.position.x,
+        this.physics.positionOut.z - this.root.position.z
+      )
+      if (afterH < 0.008) {
+        _velocity.x *= 0.15
+        _velocity.z *= 0.15
+      }
+    }
     if (this.impulseLaunchGrace > 0) {
       this.impulseLaunchGrace = Math.max(0, this.impulseLaunchGrace - delta)
     }

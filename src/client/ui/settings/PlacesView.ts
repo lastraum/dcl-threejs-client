@@ -253,6 +253,7 @@ export class PlacesView {
   private bindEvents(): void {
     this.searchInput.addEventListener('input', () => {
       this.searchQuery = this.searchInput.value
+      this.syncSpotlightForSearch()
       window.clearTimeout(this.searchTimer)
       this.searchTimer = window.setTimeout(() => {
         this.searchDebounced = this.searchQuery
@@ -623,6 +624,13 @@ export class PlacesView {
     return hits
   }
 
+  /** Live Now + Featured only when the search box is empty. */
+  private syncSpotlightForSearch(): void {
+    const spotlight = this.root.querySelector<HTMLElement>('.places-view__spotlight')
+    if (!spotlight) return
+    spotlight.hidden = this.searchQuery.trim().length > 0
+  }
+
   private renderGrid(): void {
     const emptyEl = this.root.querySelector('[data-empty]') as HTMLElement
     const items = this.getFilteredItems()
@@ -632,8 +640,7 @@ export class PlacesView {
     for (const hit of players) {
       this.playerRouteByAddress.set(normalizeWallet(hit.peer.address), hit.route)
     }
-    const spotlight = this.root.querySelector<HTMLElement>('.places-view__spotlight')
-    if (spotlight) spotlight.hidden = this.searchDebounced.trim().length > 0
+    this.syncSpotlightForSearch()
 
     if (items.length === 0 && players.length === 0) {
       this.gridEl.innerHTML = ''

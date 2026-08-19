@@ -267,8 +267,12 @@
         font-size: 12px;
         line-height: 1.45;
         box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
-        pointer-events: auto;
+        /* Panel chrome only — gaps pass through so scene pointer still works. */
+        pointer-events: none;
         overflow: hidden;
+      }
+      .debug-panel.is-open > * {
+        pointer-events: auto;
       }
       .debug-panel.is-open {
         display: flex;
@@ -21520,6 +21524,9 @@
         flex-direction: column;
         gap: 28px;
         width: 100%;
+      }
+      .places-view--explorer .places-view__spotlight[hidden] {
+        display: none !important;
       }
       .places-view--explorer .places-view__spotlight-block {
         display: flex;

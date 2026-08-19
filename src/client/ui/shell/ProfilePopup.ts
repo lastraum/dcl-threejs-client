@@ -155,7 +155,7 @@ export class ProfilePopup {
             <span class="profile-popup__name" style="color:${nameColor}">${escapeHtml(displayName)}</span>
             ${claimed ? '<span class="profile-popup__verified" title="Verified name">✓</span>' : ''}
             ${
-              this.handlers.onSaveDisplayName
+              this.handlers.onSaveDisplayName && !data.isGuest
                 ? `<button type="button" class="profile-popup__edit-name" aria-label="Edit display name">✎</button>`
                 : ''
             }

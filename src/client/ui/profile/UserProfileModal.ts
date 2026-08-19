@@ -295,7 +295,7 @@ export class UserProfileModal {
           <h2 class="user-profile-modal__title" style="color:${nameColor}">${escapeHtml(displayName)}</h2>
           ${claimed ? '<span class="user-profile-modal__verified" title="Verified name">✓</span>' : ''}
           ${
-            isSelf && this.onSaveDisplayName
+            isSelf && this.onSaveDisplayName && !this.session.isGuest()
               ? `<button type="button" class="user-profile-modal__edit-name" aria-label="Edit display name">✎</button>`
               : ''
           }

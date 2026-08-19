@@ -3,8 +3,8 @@
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-08-19  
-> **Current phase:** **v2.1.0** on `main`. QA trunk is **`dev-latest`**. SceneLoop invert clock **🟢** (walk-log pasted). Tag **2.2** is still a release cut — [V2.2_BEVY_PARITY.md](./V2.2_BEVY_PARITY.md).  
-> **Shipped:** **v2.1.0** `/localpreview` · stay-in-play reload · Tags shaders (`tjs.sync` opt-in) · shaders off until Jump In · preview tabs · **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
+> **Current phase:** **v2.2.0** on `main`. QA trunk is **`dev-latest`**. SceneLoop invert clock **🟢**.  
+> **Shipped:** **v2.2.0** one guest clock · plaza Cast Line walk-log · Genesis sky · Explore live search · **v2.1.0** `/localpreview` · stay-in-play reload · Tags shaders (`tjs.sync` opt-in) · shaders off until Jump In · preview tabs · **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
 
 > **After 2.0 (next):** CBD density/FPS with stacked live neighbors · RTS box-select / pad-drag polish · saved outfits · create-community / invites · gallery multi-page · graphics P3 culls · Social WS reliability · PE P3 pad/wind QA · multi-shape GLTF `40M+` riding. Scene UI = **one-off bugs only**. Shell marketplace browse ≠ **P2P peer trade**.  
 
@@ -19,27 +19,58 @@
 
 ---
 
+## 🎉 Milestone — v2.2.0 release (one guest clock) (2026-08-19)
+
+**Status: release cut** — `dev-latest` → `main` · tag `v2.2.0`.
+
+v2.1 shipped preview and shaders and left the invert clock yellow. v2.2 is that clock: after the first play-frame, only named sources `play-frame` | `pointer-edge` start `engine.update(dt > 0)`. Proven on Genesis Plaza Cast Line. Also in this cut: sky, Jump Zone text, Explore people search, wallet display name, and the 2.1.x official-scene QA that was already on `dev-latest`.
+
+### What's new
+
+- **One guest clock** — scene JS ticks on SceneLoop only (`play-frame` | `pointer-edge`)
+- **Pointer + Tweens + timers** — Cast Line, bobber, and Fishing_Idle run on real guest `dt`
+- **Genesis sky** — camera-ray skybox; no zenith meridians; moon disc clipped
+- **Jump Zone text** — TextShape hang, plane UVs, emissive blend
+- **Explore search** — live players by name; Jump In goes to them
+- **3D menu** — Explore 2nd, Map 3rd; Places lives on Explore
+- **Wallet display name** — edit on settings and passport; guests stay Guest-xxxx
+- **Plaza / Snow Drift / `/goto`** — UI borders, snow step, avatar GPU cache, ability VFX prime
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **SceneLoop invert clock** | 🟢 | Walk-log 2026-08-19 plaza Cast Line e3385 + `Fishing_Idle` + `BITING STEP`. Dual-clock landmine sealed (PR-2). [SCENELOOP_COMPLETION.md](./SCENELOOP_COMPLETION.md) |
+| **Local preview / shaders (2.1)** | 🟢 | Unchanged |
+| **Host world (2.0)** | 🟢 | Unchanged |
+| **Stacked-neighbor FPS** | measure-only | Not the 2.2 headline |
+
+**QA:** plaza Cast Line (`?sceneloop=1`) · Snow Drift walk · Explore name search · wallet name edit · Genesis sky look-up.
+
+**Known leftover:** plaza `beggar_rod.glb` hash miss (fishing still casts). CCT unstick after a wall slam is new in this cut.
+
+**Tip:** `v2.2.0` on `main`. Neighbor FPS / residency stay on `dev-latest`.
+
+---
+
 ## ✅ Milestone — SceneLoop invert clock proven (2026-08-19)
 
-**Status: on `dev-latest` — SceneLoop 🟢. Not a product tag.** Dual-clock landmine was already sealed (PR-2 / #66). Walk-log pasted on Genesis Plaza (`?sceneloop=1`): Cast Line PET on authored entity `3385`, bobber at the hit, `Fishing_Idle` ~1 s later, `BITING STEP` at +11 s. No `dt=0.000`. Sources only `play-frame` | `pointer-edge`. [SCENELOOP_COMPLETION.md](./SCENELOOP_COMPLETION.md).
+**Status: folded into v2.2.0.** Dual-clock landmine sealed (PR-2 / #66). Walk-log pasted on Genesis Plaza (`?sceneloop=1`): Cast Line PET on authored entity `3385`, bobber at the hit, `Fishing_Idle` ~1 s later, `BITING STEP` at +11 s. No `dt=0.000`. Sources only `play-frame` | `pointer-edge`. [SCENELOOP_COMPLETION.md](./SCENELOOP_COMPLETION.md).
 
 ### What's new (parity / implementation — no version toast)
 
 - **SceneLoop 🟢** — one guest clock proven on an official bundle (pointer + Tween/timer path + named sources)
-- **Not tag 2.2** — `main` stays **v2.1.0** until a release cut
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
 | **SceneLoop invert clock** | 🟢 | Walk-log 2026-08-19 plaza Cast Line e3385 + `Fishing_Idle` + `BITING STEP`. Landmine sealed. |
-| **Release** | ⬜ not yet | `main` stays **v2.1.0**. Tag 2.2 is a separate cut. |
+| **Release** | 🟢 | Shipped as **v2.2.0** |
 
-**Tip:** Clock is law. Tagging 2.2 still means `dev-latest` → `main` + version.
+**Tip:** Proof record. The product cut is the v2.2.0 milestone above.
 
 ---
 
 ## ✅ Milestone — platform QA after 2.1 (Snow Drift · plaza · `/goto` · VFX warm) (2026-08-18)
 
-**Status: merged to `dev-latest` — not a product release, not tag 2.2.** Official-scene QA after the 2.2 clock PRs (#64–#69). SceneLoop later flipped 🟢 on the 2026-08-19 walk-log.
+**Status: folded into v2.2.0.** Official-scene QA after the 2.2 clock PRs (#64–#69). SceneLoop flipped 🟢 on the 2026-08-19 walk-log.
 
 ### What's new (parity / implementation — no version toast)
 
@@ -55,7 +86,7 @@
 | **SceneLoop invert clock** | 🟢 | Walk-log pasted 2026-08-19 (see milestone above). Dual-clock landmine sealed. |
 | **`/goto` local avatar** | 🟢 | GPU epoch invalidate on World dispose |
 | **Ice / Cinder first cast** | 🟢 overlay prime | First Ice may still hitch once if world mats first see VFX PointLights |
-| **Release** | ⬜ not yet | `main` stays **v2.1.0** |
+| **Release** | 🟢 | Folded into **v2.2.0** |
 
 **QA:** Snow Drift UI swipe + snow step · plaza mural / hair / chat / Zaara props · `/goto lastraum` avatar stays textured · Ice Storm first click after load · Cinder mash (scene owns spam; pool recycles at 50).
 

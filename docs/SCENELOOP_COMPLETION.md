@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | SceneLoop **🟢** (2026-08-19 walk-log). P0–P4 in-tree; dual-clock landmine sealed. Not a second engine. |
+| **Status** | SceneLoop **🟢**. Shipped **v2.2.0**. P0–P4 in-tree; dual-clock landmine sealed. Not a second engine. |
 | **Branch** | `feat/hot-reload` (target shape merged `perfv2` → `dev-latest`) |
 | **Proof plan** | [V2.2_BEVY_PARITY.md](./V2.2_BEVY_PARITY.md) |
 | **Law** | [ARCHITECTURE.md](./ARCHITECTURE.md) — host store is the world; worker is a guest VM |
 | **Does not replace** | [WORKER_SYSTEM_PIE_V2.md](./WORKER_SYSTEM_PIE_V2.md) (parked), [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md), [FRAME_PIPELINE_COD.md](./FRAME_PIPELINE_COD.md) |
 
-This is the missing half of invert. v2.0 shipped **who owns truth**. Official Explorer desktop does the same split: native host writes reserved/input components, scene JS consumes them on the next **real-dt** tick. We already named that clock `SceneLoop`. Dual-clock landmine sealed (PR-2). Walk-log pasted 2026-08-19 (plaza Cast Line + `Fishing_Idle` + `BITING STEP`). SceneLoop is **🟢**. Tag 2.2 is a separate release cut.
+This is the missing half of invert. v2.0 shipped **who owns truth**. Official Explorer desktop does the same split: native host writes reserved/input components, scene JS consumes them on the next **real-dt** tick. We already named that clock `SceneLoop`. Dual-clock landmine sealed (PR-2). Walk-log pasted 2026-08-19 (plaza Cast Line + `Fishing_Idle` + `BITING STEP`). SceneLoop is **🟢**. Shipped as **v2.2.0**.
 
 **Named scenes are guides, not law.** Genesis Plaza, Genesis CBD, SpaceRunner, Flagtag, NeonScreen, CREATOR Hub are example official bundles that happen to exercise the platform. Implementation is universal: no `if Genesis Plaza`, no CBD-only FPS path, no fishing-only pointer. If a law only makes sense on one of those names, it is the wrong law. Scene bundle is law.
 

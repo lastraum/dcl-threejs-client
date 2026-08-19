@@ -2,13 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | P0–P4 **in-tree with named leftovers**. Not a second engine. Not “landed.” |
+| **Status** | SceneLoop **🟢** (2026-08-19 walk-log). P0–P4 in-tree; dual-clock landmine sealed. Not a second engine. |
 | **Branch** | `feat/hot-reload` (target shape merged `perfv2` → `dev-latest`) |
 | **Proof plan** | [V2.2_BEVY_PARITY.md](./V2.2_BEVY_PARITY.md) |
 | **Law** | [ARCHITECTURE.md](./ARCHITECTURE.md) — host store is the world; worker is a guest VM |
 | **Does not replace** | [WORKER_SYSTEM_PIE_V2.md](./WORKER_SYSTEM_PIE_V2.md) (parked), [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md), [FRAME_PIPELINE_COD.md](./FRAME_PIPELINE_COD.md) |
 
-This is the missing half of invert. v2.0 shipped **who owns truth**. The **target shape** for **one guest clock** is already in this tree. Official Explorer desktop does the same split: native host writes reserved/input components, scene JS consumes them on the next **real-dt** tick. We already named that clock `SceneLoop`. Leftover extra-clock APIs and the pointer + Tween + timer walk-log are **not sealed**. Do not flip SceneLoop 🟢 without that walk-log **and** the dual-clock landmine sealed.
+This is the missing half of invert. v2.0 shipped **who owns truth**. Official Explorer desktop does the same split: native host writes reserved/input components, scene JS consumes them on the next **real-dt** tick. We already named that clock `SceneLoop`. Dual-clock landmine sealed (PR-2). Walk-log pasted 2026-08-19 (plaza Cast Line + `Fishing_Idle` + `BITING STEP`). SceneLoop is **🟢**. Tag 2.2 is a separate release cut.
 
 **Named scenes are guides, not law.** Genesis Plaza, Genesis CBD, SpaceRunner, Flagtag, NeonScreen, CREATOR Hub are example official bundles that happen to exercise the platform. Implementation is universal: no `if Genesis Plaza`, no CBD-only FPS path, no fishing-only pointer. If a law only makes sense on one of those names, it is the wrong law. Scene bundle is law.
 
@@ -52,7 +52,7 @@ GUEST (SceneLoop, after present, one in-flight)
 | Host store (`CrdtProjection` + `EntityStore` + `PhysXWorld`) | Law |
 | Worker = official `scene.js` VM | Law |
 | SceneLoop guests (primary / PE / secondary) | Target shape in-tree — leftover extra-clock APIs remain |
-| Play-frame reserved poses (PE, Camera, PPI) | In-tree — prove on a walk-log |
+| Play-frame reserved poses (PE, Camera, PPI) | In-tree — proven on 2026-08-19 walk-log |
 | Inject-only pointer | In-tree — leftover live-tick preempt; no-target 700 ms race remains |
 | Pose vs draw (`poseRoot` / `drawRoot`) | Law |
 | One outbound blob, no host echo | Law |
@@ -77,16 +77,31 @@ The old “still not the law” table described the **pre-P0** tree (Raycast eve
 | `peTickIntervalMs() === 0` | PE pump every async frame **if** the ownership flag drops. | **Sealed (PR-2):** returns **50**, never 0 |
 | `tickSync` can still `tickPlayFrame` | Dual-clock landmine if `!skipPlayFrame && !playFrameOwnedExternally`. | **Sealed (PR-2):** `skipPlayFrame: true` hard-coded |
 
-Also unproven until a pasted walk-log (PR-3): pointer PET_UP on an authored hit, Tween duration ≈ wall, scene timers on real guest `dt`, no `dt=0.000` after the first `source=play-frame` line.
+Walk-log **pasted** (PR-3, 2026-08-19): pointer PET_UP on authored hit `3385`, bobber at that hit, `Fishing_Idle` ~1 s later, `BITING STEP` at +11 s, no `dt=0.000` after `source=play-frame`.
 
-### PR-3 observability (instrumentation in — walk-log open)
+### PR-3 observability (instrumentation in — walk-log pasted)
 
 - [x] `?sceneloop=1` (or existing worker verbose flag) play-frame line: `source` `dt` `inFlight` (HUD keeps live `g=`/`sent=`)
 - [x] Fail window is readable: `source` is logged; hydrate ticks before the first `source=play-frame` are not a fail; `dt=0.000` after that line is a fail
 - [x] Transport `dt === 0` does not stamp wall clock (`wrapEngineUpdateWithWallClock`)
 - [x] MainFrameHud SceneLoop line: last guest `dt` + `src=` next to `g=/due=/sent=/inflight=`
-- [ ] Pasted walk-log of pointer + Tween + scene timers on an official bundle — **SceneLoop stays 🟡**
-  - Plaza `?sceneloop=1` (2026-08-18) showed real `dt` and `source=pointer-edge` on **no-target ground** clicks. That is not Cast Line PET_UP + Tween + timer. Do not flip 🟢 from that paste.
+- [x] Pasted walk-log of pointer + Tween + scene timers on an official bundle — **SceneLoop 🟢**
+  - Plaza `?sceneloop=1` (2026-08-18) no-target ground clicks — **not** the proof.
+  - Plaza `?sceneloop=1` (2026-08-19) Cast Line on entity `3385` — **the proof.** Condensed:
+
+```text
+11:00:31 pointer click → entity 3385
+11:00:31 PET_DOWN entity=3385 hitEntity=3385 noTarget=0 hit=(52.9,1.2,45.8)
+11:00:31 PET_UP   entity=3385 hitEntity=3385 noTarget=0 hit=(52.9,1.2,45.8)
+11:00:32 [sceneloop] play-frame source=pointer-edge dt=0.139 inFlight=0
+11:00:32 setBobberPosition {x:52.88,y:1.20,z:45.78}   ← same hit
+11:00:32 [server-msg] fishing started
+11:00:33 triggerSceneEmote → Fishing_Idle_emote.glb
+11:00:33..43 play-frame source=play-frame dt=0.053..0.083 (no dt=0.000)
+11:00:43 BITING STEP STARTED : 10
+```
+
+    Sources in the window are only `play-frame` | `pointer-edge`. `inFlight=0`. `movePlayerTo` after the cast resumed ticks without stacking `tickPlayFrame`. `beggar_rod.glb` hash miss is a plaza asset leftover, not a clock fail.
 
 ---
 
@@ -273,7 +288,7 @@ Do not treat the phases as a re-implement plan. Verdicts are against this tree.
 - [ ] Does not epoch-kill a live `engine.update` (Bevy: skip-if-in-flight)
 - [ ] Continuous ray recast ≤ once per guest tick
 - [ ] Pointer DOWN/UP both land on the authored entity before ack
-- [ ] Walk-log of pointer + Tween + scene timers pasted before SceneLoop 🟢 (*guide:* Genesis Plaza fishing — any official bundle that covers the same APIs is valid)
+- [x] Walk-log of pointer + Tween + scene timers pasted before SceneLoop 🟢 (*guide:* Genesis Plaza fishing — any official bundle that covers the same APIs is valid)
 - [x] Dual-clock landmine sealed (`tickSync` never `tickPlayFrame`; `peTickIntervalMs === 50`) before SceneLoop 🟢
 - [x] Play-frame `source`/`dt`/`inFlight` log + HUD last guest dt (instrumentation only — not a green)
 - [ ] No scene-name branch

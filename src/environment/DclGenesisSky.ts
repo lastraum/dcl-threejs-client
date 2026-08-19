@@ -11,14 +11,13 @@ import {
 } from '../rendering/SunEnvironmentSettings'
 
 const SKY_VERTEX = /* glsl */ `
-// Model-space ray — dome is centered on the camera each frame (see EnvironmentSystem).
-varying vec3 vDirection;
+// Full-screen triangle in clip space. Unity RenderSettings.skybox and Bevy
+// AtmosphereCamera both color the sky from the camera ray — not mesh vertices.
+// A UV sphere (or interpolated cube edges) imprints meridians at the zenith.
+varying vec2 vNdc;
 void main() {
-  vDirection = position;
-  vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
-  vec4 clipPos = projectionMatrix * mvPosition;
-  // Infinite sky — push to far plane after projection (Three.js Sky / envmap pattern).
-  gl_Position = vec4(clipPos.x, clipPos.y, clipPos.w, clipPos.w);
+  vNdc = position.xy;
+  gl_Position = vec4(position.xy, 1.0, 1.0);
 }
 `
 
@@ -48,8 +47,10 @@ uniform samplerCube uFarCloudsCube;
 uniform samplerCube uNearCloudsCube;
 uniform samplerCube uHorizonCloudsCube;
 uniform samplerCube uTopCloudsCube;
+uniform mat4 uInvProjection;
+uniform mat4 uInvView;
 
-varying vec3 vDirection;
+varying vec2 vNdc;
 
 vec3 sampleGradient(vec3 dir, vec3 zenit, vec3 horizon, vec3 nadir) {
   float y = clamp(dir.y, -1.0, 1.0);
@@ -93,11 +94,14 @@ vec3 moonDisc(vec3 dir, vec3 moonDir, sampler2D map, float mask) {
   float softCore = pow(max(moonDot, 0.0), 220.0) * 0.35;
   float softHalo = pow(max(moonDot, 0.0), 90.0) * 0.12;
 
-  // Optional texture detail inside the crescent (does not force a full circle).
+  // Crater detail from SkyboxMoon.png (circle on a black square). Clip to a
+  // disc — a square inUv / ClampToEdge quad is the visible box around the moon.
   vec2 uv = vec2(dot(v, tang), dot(v, bitang)) / max(sin(moonSize * 1.4), 1e-4) * 0.5 + 0.5;
-  vec4 tex = texture2D(map, uv);
-  float inUv = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
-  vec3 surface = mix(vec3(1.9, 1.95, 2.15), tex.rgb * 1.6, clamp(tex.a * inUv * 0.35, 0.0, 1.0));
+  vec2 q = uv * 2.0 - 1.0;
+  float inCircle = 1.0 - smoothstep(0.82, 0.98, length(q));
+  vec4 tex = texture2D(map, clamp(uv, 0.0, 1.0));
+  float texAmt = inCircle * clamp(max(tex.a, max(tex.r, max(tex.g, tex.b))), 0.0, 1.0) * 0.35;
+  vec3 surface = mix(vec3(1.9, 1.95, 2.15), tex.rgb * 1.6, texAmt);
 
   float opacity = clamp(mask * 6.25, 0.0, 1.0);
   return surface * (crescent * 2.4 + companion * 1.6 + softCore + softHalo) * opacity;
@@ -129,12 +133,24 @@ vec3 sunDisc(vec3 dir, vec3 sunDir, vec3 sunColor, float radiance) {
   return warm * rad * (core * uSunDiscCoreGain + corona + bloom);
 }
 
+// Unity SkyboxUV: atan2(x,z)/2π, asin(y)/π. Equirect dFdx(u) explodes at the
+// poles — that is the zenith pinwheel. Bias lod by |y| so mips go black, not
+// meridians. Tiling (8,3) is GenesisStars TilingAndOffset.
+vec2 skyboxUv(vec3 dir) {
+  return vec2(
+    atan(dir.x, dir.z) * 0.15915494309 + 0.5,
+    asin(clamp(dir.y, -1.0, 1.0)) * 0.31830988618 + 0.5
+  );
+}
+
 vec3 starField(vec3 dir, sampler2D map, float night) {
   if (night <= 0.01) return vec3(0.0);
-  vec2 uv = vec2(atan(dir.z, dir.x) / 6.2831853 + 0.5, dir.y * 0.5 + 0.5);
-  vec3 stars = texture2D(map, uv * 3.0).rgb;
+  vec2 uv = skyboxUv(dir) * vec2(8.0, 3.0);
+  float pole = abs(dir.y);
+  float lodBias = pole * pole * pole * pole * 12.0;
+  vec3 stars = texture2D(map, uv, lodBias).rgb;
   float aboveHorizon = smoothstep(-0.05, 0.15, dir.y);
-  return stars * night * aboveHorizon * 2.5;
+  return stars * night * aboveHorizon * (1.0 - smoothstep(0.92, 0.998, pole)) * 2.5;
 }
 
 vec3 rotateY(vec3 dir, float angle) {
@@ -166,7 +182,9 @@ float cloudLayerMask(
 ) {
   if (dir.y < yMin) return 0.0;
   vec3 sampleDir = rotateY(normalize(dir), angle);
-  float n = textureCube(map, sampleDir, -1.0).r;
+  // Unity RotatingCubemap: Sample Cubemap (hardware cube, implicit lod, mipBias 0).
+  // A negative bias on a 2048² face aliases as vertical hairlines.
+  float n = textureCube(map, sampleDir).r;
   float density = 1.0 - uCloudDensity;
   float falloff = 0.62;
   float mask = smoothstep(density, density + falloff, n);
@@ -194,7 +212,9 @@ vec3 blendCloudLayer(
 }
 
 void main() {
-  vec3 dir = normalize(vDirection);
+  vec4 view = uInvProjection * vec4(vNdc, 1.0, 1.0);
+  vec3 viewDir = normalize(view.xyz / max(abs(view.w), 1e-6));
+  vec3 dir = normalize((uInvView * vec4(viewDir, 0.0)).xyz);
   vec3 sky = sampleGradient(dir, uZenitColor, uHorizonColor, uNadirColor);
 
   float night = 1.0 - smoothstep(-0.08, 0.12, uSunDirection.y);
@@ -241,6 +261,8 @@ export type GenesisSkyUniforms = {
   uNearCloudsCube: THREE.IUniform<THREE.CubeTexture | null>
   uHorizonCloudsCube: THREE.IUniform<THREE.CubeTexture | null>
   uTopCloudsCube: THREE.IUniform<THREE.CubeTexture | null>
+  uInvProjection: THREE.IUniform<THREE.Matrix4>
+  uInvView: THREE.IUniform<THREE.Matrix4>
 }
 
 const _zeroSun = new THREE.Vector3(0, -1, 0)
@@ -252,6 +274,8 @@ export class DclGenesisSky {
   readonly uniforms: GenesisSkyUniforms
   private elapsed = 0
   private cubeTextures: THREE.CubeTexture[] = []
+  private readonly invProjection = new THREE.Matrix4()
+  private readonly invView = new THREE.Matrix4()
 
   constructor() {
     this.uniforms = {
@@ -279,31 +303,33 @@ export class DclGenesisSky {
       uFarCloudsCube: { value: null },
       uNearCloudsCube: { value: null },
       uHorizonCloudsCube: { value: null },
-      uTopCloudsCube: { value: null }
+      uTopCloudsCube: { value: null },
+      uInvProjection: { value: this.invProjection },
+      uInvView: { value: this.invView }
     }
 
     this.material = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
       vertexShader: SKY_VERTEX,
       fragmentShader: SKY_FRAGMENT,
-      side: THREE.BackSide,
       depthWrite: false,
       fog: false,
       toneMapped: false
     })
 
-    // Cube, not UV sphere: a lat/long sphere pinwheels meridians at the zenith
-    // (visible vertical rays when looking up). Unity / Three.js Sky are cubes.
-    // Size ≫ near plane: a 1m cube + boom-zoom near (0.04–0.1) reprojects XY and
-    // the dome looks like it zooms with the player camera. Infinite-z still applies.
-    const geometry = new THREE.BoxGeometry(1, 1, 1)
+    // Clip-space triangle covering the screen (Unity skybox / Bevy atmosphere).
+    const geometry = new THREE.BufferGeometry()
+    geometry.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3)
+    )
     this.mesh = new THREE.Mesh(geometry, this.material)
-    this.mesh.scale.setScalar(200)
     this.mesh.frustumCulled = false
     this.mesh.renderOrder = -1000
-    // Snap after freecam/VC writes the lens — EnvironmentSystem can be a frame behind.
     this.mesh.onBeforeRender = (_renderer, _scene, camera) => {
-      camera.getWorldPosition(this.mesh.position)
+      camera.updateMatrixWorld()
+      this.invProjection.copy(camera.projectionMatrixInverse)
+      this.invView.copy(camera.matrixWorld)
     }
     // Full-screen bloom must not sample HDR sky/clouds (washes the whole frame).
     this.mesh.userData.dclBloomExclude = true
@@ -320,16 +346,13 @@ export class DclGenesisSky {
       loadCrossCubemap(ENVIRONMENT_TEXTURES.topClouds)
     ])
 
-    for (const tex of [moon, stars]) {
-      tex.colorSpace = THREE.SRGBColorSpace
-      tex.wrapS = THREE.RepeatWrapping
-      tex.wrapT = THREE.ClampToEdgeWrapping
-    }
-
-    const maxAniso = 8
-    for (const cube of [farClouds, nearClouds, horizonClouds, topClouds]) {
-      cube.anisotropy = maxAniso
-    }
+    moon.colorSpace = THREE.SRGBColorSpace
+    moon.wrapS = THREE.ClampToEdgeWrapping
+    moon.wrapT = THREE.ClampToEdgeWrapping
+    // Unity GenesisStars tiles SkyboxUV by (8, 3) — both axes wrap.
+    stars.colorSpace = THREE.SRGBColorSpace
+    stars.wrapS = THREE.RepeatWrapping
+    stars.wrapT = THREE.RepeatWrapping
 
     this.cubeTextures = [farClouds, nearClouds, horizonClouds, topClouds]
     this.uniforms.uMoonMap.value = moon

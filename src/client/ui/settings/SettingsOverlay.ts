@@ -17,13 +17,12 @@ import { GalleryView } from './GalleryView'
 import { PlacesView, type PlacesViewOptions } from './PlacesView'
 
 export type SettingsTab =
-  | 'events'
-  | 'places'
-  | 'communities'
+  | 'explore'
   | 'map'
+  | 'events'
+  | 'communities'
   | 'backpack'
   | 'gallery'
-  | 'explore'
 
 /** Binoculars — experimental in-3D Explore tab. Matches the backpack line-icon style. */
 const BINOCULARS_ICON = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4.1" y="4.7" width="3.3" height="2.8" rx="0.6" stroke="currentColor" stroke-width="1.3"/><rect x="16.6" y="4.7" width="3.3" height="2.8" rx="0.6" stroke="currentColor" stroke-width="1.3"/><path d="M4.1 7.5h3.3l1.1 3.8v5.6a1.2 1.2 0 0 1-1.2 1.2H4.2A1.2 1.2 0 0 1 3 16.9v-5.4z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M19.9 7.5h-3.3l-1.1 3.8v5.6a1.2 1.2 0 0 0 1.2 1.2h3.1a1.2 1.2 0 0 0 1.2-1.2v-5.4z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8.5 11.3h7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>`
@@ -36,17 +35,14 @@ type TabDef = {
 }
 
 const TABS: TabDef[] = [
-  { id: 'events', label: 'EVENTS', shortcut: 'X', icon: `<svg viewBox="0 0 24 24" fill="none"><rect x="5" y="6" width="14" height="13" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V7M16 4.5V7M5 10h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>` },
-  { id: 'places', label: 'PLACES', shortcut: '?', icon: `<svg viewBox="0 0 24 24" fill="none"><path d="M12 21s6-4.35 6-10a6 6 0 1 0-12 0c0 5.65 6 10 6 10z" stroke="currentColor" stroke-width="1.5"/><circle cx="12" cy="11" r="2" fill="currentColor"/></svg>` },
-  { id: 'communities', label: 'COMMUNITIES', shortcut: 'O', icon: `<svg viewBox="0 0 24 24" fill="none"><circle cx="9" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M4.5 17c0-2.2 2-4 4.5-4s4.5 1.8 4.5 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="16.5" cy="9" r="2" stroke="currentColor" stroke-width="1.3"/><path d="M13.5 17c.4-1.6 1.7-2.8 3.3-2.8 1 0 1.9.4 2.5 1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>` },
-  // Folded-map glyph — distinct from the PLACES pin above.
-  { id: 'map', label: 'MAP', shortcut: 'M', icon: `<svg viewBox="0 0 24 24" fill="none"><path d="M3.5 6.75v13.5L9 17.75l6 2.5 5.5-2.5V4.25L15 6.75l-6-2.5-5.5 2.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M9 4.25v13.5M15 6.75v13.5" stroke="currentColor" stroke-width="1.3"/></svg>` },
-  // Shared "accepted" backpack mark — same glyph as the backpack categories "All" row.
-  { id: 'backpack', label: 'BACKPACK', shortcut: 'I', icon: backpackCategoryIcon('all') },
-  { id: 'gallery', label: 'GALLERY', shortcut: 'K', icon: `<svg viewBox="0 0 24 24" fill="none"><rect x="4" y="6" width="16" height="12" rx="1.5" stroke="currentColor" stroke-width="1.5"/><circle cx="9" cy="10.5" r="1.5" fill="currentColor"/><path d="m6 16 4-3 3 2.5 2-1.5 3 3" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>` },
-  // Experimental: the full 2D Explore experience surfaced inside the 3D overlay.
+  // Header logo sits above the rail — Explore is 2nd from the top of the menu.
   // No keyboard shortcut — KeyE is IA_PRIMARY (in-world interact) and must stay free.
-  { id: 'explore', label: 'EXPLORE', shortcut: '', icon: BINOCULARS_ICON }
+  { id: 'explore', label: 'EXPLORE', shortcut: '', icon: BINOCULARS_ICON },
+  { id: 'map', label: 'MAP', shortcut: 'M', icon: `<svg viewBox="0 0 24 24" fill="none"><path d="M3.5 6.75v13.5L9 17.75l6 2.5 5.5-2.5V4.25L15 6.75l-6-2.5-5.5 2.5z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M9 4.25v13.5M15 6.75v13.5" stroke="currentColor" stroke-width="1.3"/></svg>` },
+  { id: 'events', label: 'EVENTS', shortcut: 'X', icon: `<svg viewBox="0 0 24 24" fill="none"><rect x="5" y="6" width="14" height="13" rx="1.5" stroke="currentColor" stroke-width="1.5"/><path d="M8 4.5V7M16 4.5V7M5 10h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>` },
+  { id: 'communities', label: 'COMMUNITIES', shortcut: 'O', icon: `<svg viewBox="0 0 24 24" fill="none"><circle cx="9" cy="8" r="2.5" stroke="currentColor" stroke-width="1.5"/><path d="M4.5 17c0-2.2 2-4 4.5-4s4.5 1.8 4.5 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="16.5" cy="9" r="2" stroke="currentColor" stroke-width="1.3"/><path d="M13.5 17c.4-1.6 1.7-2.8 3.3-2.8 1 0 1.9.4 2.5 1" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>` },
+  { id: 'backpack', label: 'BACKPACK', shortcut: 'I', icon: backpackCategoryIcon('all') },
+  { id: 'gallery', label: 'GALLERY', shortcut: 'K', icon: `<svg viewBox="0 0 24 24" fill="none"><rect x="4" y="6" width="16" height="12" rx="1.5" stroke="currentColor" stroke-width="1.5"/><circle cx="9" cy="10.5" r="1.5" fill="currentColor"/><path d="m6 16 4-3 3 2.5 2-1.5 3 3" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>` }
 ]
 
 /** Simplified Decentraland mark (two pyramids + two suns); overlay-header fallback. */
@@ -585,23 +581,6 @@ export class SettingsOverlay {
       if (actions) this.headerSlotEl().appendChild(actions)
       if (eventsSearch) this.headerSlotEl().appendChild(eventsSearch)
       this.eventsView.mount()
-    } else if (this.activeTab === 'places') {
-      this.placesView = new PlacesView({
-        onJumpIn: this.onPlaceJumpIn,
-        getAuthIdentity: () => this.session.getAuthIdentity()
-      })
-      this.contentArea.appendChild(this.placesView.root)
-      // Merged top bar: sub-tabs left, sort + search right; emptied wrappers collapse.
-      const slot = this.headerSlotEl()
-      const subtabs = this.placesView.root.querySelector('[data-subtabs]')
-      const sort = this.placesView.root.querySelector('[data-sort]')
-      const search = this.placesView.root.querySelector('[data-search]')
-      if (subtabs) slot.appendChild(subtabs)
-      if (sort) slot.appendChild(sort)
-      if (search) slot.appendChild(search)
-      this.placesView.root.querySelector('.places-view__header')?.remove()
-      this.placesView.root.querySelector('.places-view__toolbar')?.remove()
-      this.placesView.mount()
     } else if (this.activeTab === 'communities') {
       this.communitiesView = new CommunitiesBrowseView({
         getAuthIdentity: () => this.session.getAuthIdentity(),

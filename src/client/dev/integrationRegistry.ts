@@ -149,7 +149,7 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
     category: 'client-ui',
     notes: 'Preferred translate language (10 locales); per-channel auto-translate via chat header A 文'
   },
-  { id: 'ui:settings-places', name: 'Settings → Places', status: 'render', category: 'client-ui', notes: 'Explore tab — Places + Worlds APIs, category filters, Jump In' },
+  { id: 'ui:settings-explore', name: 'Settings → Explore', status: 'render', category: 'client-ui', notes: 'In-3D Explore (Live / Featured / places+worlds+people search). Places tab removed.' },
   {
     id: 'ui:settings-communities',
     name: 'Settings → Communities',

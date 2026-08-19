@@ -510,6 +510,14 @@ export class ThreeBridge {
         this.promoteMeshRendererForPointerOrMotion(entity, obj)
         continue
       }
+      // Transform.getMutable VFX (blood bursts) — private clone so removeEntity
+      // tears down the draw visual instead of leaving a GPU instance slot.
+      const mrHits = (this.instanceMotionHits.get(entity) ?? 0) + 1
+      this.instanceMotionHits.set(entity, mrHits)
+      if (mrHits >= ThreeBridge.INSTANCE_MOTION_PROMOTE_HITS) {
+        this.promoteMeshRendererForPointerOrMotion(entity, obj)
+        continue
+      }
       meshRendererUpdate.push(entity)
     }
     if (meshRendererUpdate.length) {
@@ -721,6 +729,7 @@ export class ThreeBridge {
             if (this.ecs.Material.has(entity)) {
               this.pendingMaterialEntities.add(entity)
             }
+            this.applyAuthoredVisibility(entity, obj)
             return
           }
         }
@@ -2698,11 +2707,8 @@ export class ThreeBridge {
       this.pendingMeshEntities.delete(entity)
     }
     const live = this.getEntityVisual(obj, mk)
-    if (live) {
-      unfreezeObject3D(live)
-      live.visible = true
-    }
-    obj.visible = true
+    if (live) unfreezeObject3D(live)
+    this.applyAuthoredVisibility(entity, obj)
   }
 
   /**
@@ -3728,10 +3734,10 @@ export class ThreeBridge {
       nftVis.removeFromParent()
     }
     // Primitive MeshRenderer mesh (not glTF) — clearGltfVisual leaves these alone.
-    // Also strip instancer markers left under __mesh_* if detach missed them.
+    // Capture the draw visual before unbind so one-shot VFX (blood boxes) dispose.
     const primitive = this.getEntityVisual(obj, mk)
+    this.unbindDrawVisual(obj)
     if (primitive) {
-      this.unbindDrawVisual(obj)
       if (primitive.userData[MESH_RENDERER_INSTANCE_MARKER] || primitive.userData.dclInstanceMarker) {
         primitive.removeFromParent()
       } else if (
@@ -3870,16 +3876,27 @@ export class ThreeBridge {
       return
     }
 
-    // Rod (and other non-bobber fishing GLBs): re-apply ECS visibility after mesh promote
-    // so a private clone never stays lit when the scene authored visible=false.
-    if (/(^|\/|_)(rod)(_|\.|\/|$)/i.test(src) || src.toLowerCase().includes('_rod') || src.toLowerCase().includes('rod.glb')) {
-      const { VisibilityComponent } = this.ecs
-      const visible = VisibilityComponent.has(entity)
-        ? VisibilityComponent.get(entity).visible !== false
-        : true
-      obj.visible = visible
-      const mesh = obj.getObjectByName(meshKey(entity))
-      if (mesh) mesh.visible = visible
+    this.applyAuthoredVisibility(entity, obj)
+  }
+
+  /**
+   * VisibilityComponent is law on pose + DrawWorld extract + GPU instance slots.
+   * Attach/promote must not force-show (collectible hide, one-shot VFX).
+   */
+  private applyAuthoredVisibility(entity: Entity, obj: THREE.Object3D): void {
+    const { VisibilityComponent } = this.ecs
+    const visible =
+      !VisibilityComponent?.has(entity) || VisibilityComponent.get(entity).visible !== false
+    obj.visible = visible
+    const drawn = obj.userData.dclDrawVisual as THREE.Object3D | undefined
+    if (drawn) drawn.visible = visible
+    if (this.ecs.GltfContainer?.has(entity)) {
+      obj.traverse((o) => {
+        if (o !== obj && (o as THREE.Mesh).isMesh) o.visible = visible
+      })
+    }
+    if (obj.userData.dclInstanced && obj instanceof THREE.Group) {
+      this.instancer.update(entity, obj)
     }
   }
 

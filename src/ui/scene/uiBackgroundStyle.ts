@@ -702,6 +702,50 @@ function isUvFillOrScrollStrip(u0: number, v0: number, u1: number, v1: number): 
   return false
 }
 
+/**
+ * Plaza reel fill: element height is already `t%` and UVs are
+ * `[0,0, 0,t/100, 1,t/100, 1,0]` (bottom-aligned). A giant overflowing
+ * <img> strip leaked the unused texture into the empty track.
+ */
+function isBottomAlignedUvFill(u0: number, v0: number, u1: number, v1: number): boolean {
+  return u0 <= 1e-3 && u1 >= 1 - 1e-3 && v0 <= 1e-3 && v1 > 1e-5 && v1 <= 1 + 1e-3
+}
+
+function applyBottomAlignedFill(
+  el: HTMLElement,
+  imageUrl: string,
+  v1: number,
+  colorAlpha: number
+): 'pending' | 'done' {
+  const displayUrl = resolveDisplayableUiImageUrl(imageUrl)
+  if (!displayUrl) {
+    clearBgImg(el)
+    el.style.backgroundImage = ''
+    el.style.backgroundColor = 'transparent'
+    return 'pending'
+  }
+  const vSpan = Math.max(1e-6, v1)
+  const safeUrl = displayUrl.replace(/\\/g, '/').replace(/"/g, '%22')
+  clearBgImg(el)
+  el.style.overflow = 'hidden'
+  el.style.backgroundImage = `url("${safeUrl}")`
+  el.style.backgroundRepeat = 'no-repeat'
+  el.style.backgroundSize = `100% ${(100 / vSpan).toFixed(4)}%`
+  el.style.backgroundPosition = '0% 100%'
+  el.style.backgroundColor = 'transparent'
+  el.style.backgroundBlendMode = ''
+  el.style.opacity = String(clamp01(colorAlpha))
+  el.style.borderImage = ''
+  el.style.borderImageSource = ''
+  el.style.borderImageSlice = ''
+  el.style.borderImageWidth = ''
+  el.style.borderImageRepeat = ''
+  el.style.borderWidth = ''
+  el.style.borderStyle = ''
+  el.style.borderColor = ''
+  return 'done'
+}
+
 function isRepeatingUvWindow(
   u0: number,
   v0: number,
@@ -767,6 +811,40 @@ function applyAtlasUvAsRepeatingBackground(
   return 'done'
 }
 
+function uvArrayLength(uvs: number[] | ArrayLike<number> | Record<string, number>): number {
+  const len = (uvs as { length?: number }).length
+  if (typeof len === 'number' && Number.isFinite(len)) return len
+  let n = 0
+  const o = uvs as Record<string, unknown>
+  while (Object.prototype.hasOwnProperty.call(o, String(n))) n++
+  return n
+}
+
+function uvReadAt(
+  uvs: number[] | ArrayLike<number> | Record<string, number>,
+  i: number
+): number {
+  if (Array.isArray(uvs) || ArrayBuffer.isView(uvs)) return Number((uvs as ArrayLike<number>)[i])
+  return Number((uvs as Record<string, number>)[String(i)])
+}
+
+/** True when 8 UVs exist but min/max U or V collapse (0-height reel fill). */
+function uvSpanIsDegenerate(uvs: number[] | ArrayLike<number> | Record<string, number>): boolean {
+  if (uvArrayLength(uvs) < 8) return false
+  const us: number[] = []
+  const vs: number[] = []
+  for (let i = 0; i < 8; i += 2) {
+    const u = uvReadAt(uvs, i)
+    const v = uvReadAt(uvs, i + 1)
+    if (!Number.isFinite(u) || !Number.isFinite(v)) return false
+    us.push(u)
+    vs.push(v)
+  }
+  const uSpan = Math.max(...us) - Math.min(...us)
+  const vSpan = Math.max(...vs) - Math.min(...vs)
+  return uSpan < 1e-5 || vSpan < 1e-5
+}
+
 function applyBgImg(
   el: HTMLElement,
   imageUrl: string,
@@ -778,6 +856,13 @@ function applyBgImg(
   if (getComputedStyle(el).position === 'static') el.style.position = 'relative'
 
   const rect = parseUiBackgroundUvRect(uvs)
+  // Authored 8-UV fill/zone with ~0 height (reel bar at 0%) must not fall through
+  // to full-texture stretch — that swapped the wood/atlas sheet in for one paint.
+  if (!rect && uvs && uvArrayLength(uvs) >= 8 && uvSpanIsDegenerate(uvs)) {
+    const img = el.querySelector('.scene-ui-node__bg-img') as HTMLImageElement | null
+    if (img) img.style.height = '0%'
+    return 'done'
+  }
   if (rect) {
     if (isRepeatingUvWindow(rect.u0, rect.v0, rect.u1, rect.v1, wrapMode)) {
       return applyAtlasUvAsRepeatingBackground(
@@ -790,6 +875,9 @@ function applyBgImg(
         colorAlpha,
         wrapMode
       )
+    }
+    if (isBottomAlignedUvFill(rect.u0, rect.v0, rect.u1, rect.v1)) {
+      return applyBottomAlignedFill(el, imageUrl, rect.v1, colorAlpha)
     }
     if (isUvFillOrScrollStrip(rect.u0, rect.v0, rect.u1, rect.v1)) {
       return applyAtlasUvAsImgStrip(el, imageUrl, rect.u0, rect.v0, rect.u1, rect.v1, colorAlpha)

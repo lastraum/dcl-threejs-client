@@ -498,9 +498,16 @@ export class VirtualCameraBridge {
       lookAt !== (CameraEntity as number)
     ) {
       const targetWorld = resolveEntityWorldPose(lookAt as Entity, this.worldDeps())
-      if (targetWorld && cameraLookAtQuat(_targetPos, targetWorld.position, _targetQuat)) {
-        _lookAtPoint.copy(targetWorld.position)
-        return { position: _targetPos, rotation: _targetQuat, lookAtPoint: _lookAtPoint }
+      if (targetWorld) {
+        // Plaza reveal `vp` is created at (0,-1,1) and only later tweened to the
+        // catch / player. Aiming at that spawn pose pulls the lens through the floor.
+        const playerY = this.playerPose().position.y
+        const lookY = targetWorld.position.y
+        const lookAtReady = !(lookY < -0.25 && playerY > 0.4)
+        if (lookAtReady && cameraLookAtQuat(_targetPos, targetWorld.position, _targetQuat)) {
+          _lookAtPoint.copy(targetWorld.position)
+          return { position: _targetPos, rotation: _targetQuat, lookAtPoint: _lookAtPoint }
+        }
       }
     }
 

@@ -278,74 +278,55 @@ export function sanitizeSceneGltfMaterials(root: THREE.Object3D): void {
   })
 }
 
-function isPlantMeshName(meshName: string): boolean {
-  return /leaf|foliage|petal|flower|tree|plant|grass|bush|fern|vine|canopy|branch/i.test(meshName)
+function isStandardLike(
+  material: THREE.Material
+): material is THREE.MeshStandardMaterial | THREE.MeshBasicMaterial | THREE.MeshLambertMaterial {
+  return (
+    material instanceof THREE.MeshStandardMaterial ||
+    material instanceof THREE.MeshBasicMaterial ||
+    material instanceof THREE.MeshLambertMaterial
+  )
 }
 
-function meshOrAncestorIsPlant(mesh: THREE.Mesh): boolean {
-  let node: THREE.Object3D | null = mesh
-  while (node) {
-    if (isPlantMeshName(node.name)) return true
-    node = node.parent
-  }
-  return false
-}
-
-function foliageMaterialHasCutout(material: THREE.Material): boolean {
-  if (material instanceof THREE.MeshStandardMaterial) {
-    return !!(material.map || material.alphaMap)
-  }
-  if (material instanceof THREE.MeshBasicMaterial || material instanceof THREE.MeshLambertMaterial) {
-    return !!material.map
-  }
-  return false
-}
-
-/** Landscape + scene tree/bush cards — alpha cutout + double-sided (Unity MASK parity). */
-function tuneFoliageCutoutMaterial(
-  material: THREE.Material,
-  meshName = '',
-  mesh?: THREE.Mesh
-): void {
-  const plantContext =
-    isPlantMeshName(meshName) ||
-    isPlantMeshName(material.name) ||
-    (mesh !== undefined && meshOrAncestorIsPlant(mesh))
-  if (!plantContext) return
-  if (
-    !(material instanceof THREE.MeshStandardMaterial) &&
-    !(material instanceof THREE.MeshBasicMaterial) &&
-    !(material instanceof THREE.MeshLambertMaterial)
-  ) {
-    return
-  }
-  if (!foliageMaterialHasCutout(material)) return
-
-  material.side = THREE.DoubleSide
+/**
+ * glTF `alphaMode` law (Explorer / glTF 2.0):
+ * - MASK: keep `alphaTest` (cutoff), opaque depth write — unused atlas texels discard
+ * - BLEND: keep transparent
+ * - OPAQUE: do not invent cutout from mesh/file names
+ *
+ * GLTFLoader already stamps `alphaTest` for MASK. Sanitize / outdoor remap must
+ * not strip it; this only re-asserts what the file authored.
+ */
+function honorGltfAuthoredAlpha(material: THREE.Material): void {
+  if (!isStandardLike(material)) return
+  const cutoff =
+    typeof material.userData.gltfAlphaCutoff === 'number'
+      ? material.userData.gltfAlphaCutoff
+      : material.alphaTest
+  const mode = material.userData.gltfAlphaMode as string | undefined
+  const isMask = mode === 'MASK' || (typeof cutoff === 'number' && cutoff > 0)
+  if (!isMask) return
+  if (mode) material.userData.gltfAlphaMode = mode
+  material.userData.gltfAlphaCutoff = cutoff
+  material.alphaTest = cutoff
   material.transparent = false
   material.opacity = 1
-  material.alphaTest = material.alphaMap ? 0.5 : 0.35
   material.depthWrite = true
   material.needsUpdate = true
 }
 
-/** Landscape tree cards — alpha cutout + double-sided. */
-export function tuneLandscapeFoliageMaterial(material: THREE.Material, meshName = ''): void {
-  tuneFoliageCutoutMaterial(material, meshName)
+/** Landscape tree cards — re-assert authored MASK only (no name heuristic). */
+export function tuneLandscapeFoliageMaterial(material: THREE.Material, _meshName = ''): void {
+  honorGltfAuthoredAlpha(material)
 }
 
-/**
- * Scene GLB plant cutout — convert alpha-blend foliage cards to MASK cutout.
- * Shared tree hashes may load via scene cache before landscape instancing — apply on mesh.
- */
 function tuneScenePlantCutoutMaterial(mesh: THREE.Mesh): void {
-  const materials = meshMaterials(mesh)
-  for (const material of materials) {
-    tuneFoliageCutoutMaterial(material, mesh.name, mesh)
+  for (const material of meshMaterials(mesh)) {
+    honorGltfAuthoredAlpha(material)
   }
 }
 
-/** Re-apply plant cutout on hydrated scene instances (shared materials from cache). */
+/** Re-assert authored glTF MASK after clone / hydration (shared materials). */
 export function retuneScenePlantCutoutMaterials(root: THREE.Object3D): void {
   root.traverse((node) => {
     if (!(node instanceof THREE.Mesh)) return

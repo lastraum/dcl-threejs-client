@@ -1822,8 +1822,8 @@
         }
       }
       .avatar-name-tag--has-chat {
-        /* Chat above the name so the pill stays at the head and the bubble grows up. */
-        flex-direction: column-reverse;
+        /* Name on top, chat under it. Pill grows down from the head (`translate(-50%,-100%)`). */
+        flex-direction: column;
         border-radius: 14px;
         padding: 8px 14px 10px;
       }
@@ -1890,9 +1890,9 @@
       }
       .avatar-name-tag--has-chat .avatar-name-tag__chat {
         display: block;
-        margin-top: 0;
-        margin-bottom: 6px;
-        padding: 2px 4px 6px;
+        margin-top: 6px;
+        margin-bottom: 0;
+        padding: 6px 4px 2px;
       }
       .avatar-name-tag--interactive {
         position: relative;

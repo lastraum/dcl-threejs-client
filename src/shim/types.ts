@@ -284,10 +284,11 @@ export type PlayerFrameBoundVc = {
   /**
    * VC Transform for main.
    * - Follow rig (parent===lookAt): local + parent hierarchy via `anchors`.
-   * - Locked/cinematic shot: **worker world pose under Root** (`worldFlattened`).
+   * - Cinematic tween rig (VC child of Transform-only parents): locals + ancestor anchors.
+   * - Locked/select stage: **worker world pose under Root** (`worldFlattened`).
    */
   transform: PlayerFrameBoundVcTransform
-  /** Parent / lookAt anchors (follow rig, or non-mesh lookAt world under Root). */
+  /** Parent / lookAt anchors (follow, cinematic tween chain, or flattened lookAt). */
   anchors: Array<{ entity: number; transform: PlayerFrameBoundVcTransform }>
   /** True when `transform` is already world-space under RootEntity (do not re-parent on main). */
   worldFlattened?: boolean

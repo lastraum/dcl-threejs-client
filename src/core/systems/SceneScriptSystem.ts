@@ -7178,7 +7178,13 @@ export class SceneScriptSystem {
     const attachBatch = this.avatarAttachBridge.consumeWorkerBatch()
     if (attachBatch.length) {
       this.lastAvatarAttachBatch = attachBatch
-      this.bridge.promoteAvatarAttachGltfs(attachBatch.map((e) => e.entity as Entity))
+      const roots = attachBatch.map((e) => e.entity as Entity)
+      this.bridge.promoteAvatarAttachGltfs(roots)
+      // Draw visuals live on the draw root, not under the pose Group. Tween
+      // extract covers fly-in; after f7e parents z0 → LEFT_HAND the bone
+      // moves every mixer frame and the GLB would stay at the last extract
+      // (empty hand / floating off-socket). Same law as Tween extract.
+      this.bridge.extractMovedPoses(roots)
       this.flushAvatarAttachTransformsFromBatch(attachBatch)
     }
   }

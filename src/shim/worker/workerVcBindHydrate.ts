@@ -76,6 +76,60 @@ function isPeFollowRig(
 }
 
 /**
+ * Cinematic / reveal cam: VC is a child of a Transform-only tween rig
+ * (plaza `Il` → `B3` → `Iu`, lookAt `vp`). Local Tweens on the VC
+ * (`ib` → `Jfe` = (0, -0.15, -1.9)) are parent-relative. Flattening Iu
+ * under Root then applying that Tween as world dumps the lens at the
+ * origin underground, far from the player.
+ */
+export function isCinematicTweenRig(
+  engine: IEngine,
+  parent: number | undefined,
+  lookAt: number | undefined | null
+): boolean {
+  if (parent === undefined || parent === null) return false
+  if (isReserved(engine, parent)) return false
+  if (lookAt !== undefined && lookAt !== null && parent === lookAt) return false
+  return true
+}
+
+function localTransformOf(
+  engine: IEngine,
+  entity: Entity
+): PlayerFrameBoundVcTransform | null {
+  const Transform = extended.Transform(engine)
+  if (!Transform.has(entity)) return null
+  return cloneTransform(Transform.get(entity))
+}
+
+/** Walk parent chain to Root (exclusive). Closest parent first. */
+export function collectTransformAncestorAnchors(
+  engine: IEngine,
+  startParent: number | undefined
+): PlayerFrameBoundVc['anchors'] {
+  const Transform = extended.Transform(engine)
+  const out: PlayerFrameBoundVc['anchors'] = []
+  const seen = new Set<number>()
+  let cur = startParent
+  while (
+    cur !== undefined &&
+    cur !== null &&
+    !isReserved(engine, cur) &&
+    !seen.has(cur) &&
+    Transform.has(cur as Entity)
+  ) {
+    seen.add(cur)
+    const tr = localTransformOf(engine, cur as Entity)
+    if (!tr) break
+    out.push({ entity: cur, transform: tr })
+    cur = tr.parent
+  }
+  // Root-nearest first so host can parent B3 under Il before Iu under B3.
+  out.reverse()
+  return out
+}
+
+/**
  * Snapshot bound VC for main.
  * Follow rig → local hierarchy. Locked shot → worker world pose under Root.
  */
@@ -104,6 +158,7 @@ export function collectVcBindHydratePackage(engine: IEngine): PlayerFrameBoundVc
   const parent = tr.parent as number | undefined
   const lookAt = spec?.lookAtEntity
   const follow = isPeFollowRig(engine, parent, lookAt)
+  const cinematic = !follow && isCinematicTweenRig(engine, parent, lookAt)
 
   const virtualCamera: Record<string, unknown> = {}
   if (lookAt !== undefined && lookAt !== null) virtualCamera.lookAtEntity = lookAt
@@ -123,6 +178,32 @@ export function collectVcBindHydratePackage(engine: IEngine): PlayerFrameBoundVc
       virtualCamera,
       transform: cloneTransform(tr),
       anchors: [],
+      worldFlattened: false
+    }
+  }
+
+  if (cinematic) {
+    // Keep Il/B3/Iu locals. Flattening Iu then tweening Iu.position to Jfe
+    // (0, -0.15, -1.9) applied that offset as world — lens under the map.
+    const anchors = collectTransformAncestorAnchors(engine, parent)
+    if (
+      lookAt !== undefined &&
+      lookAt !== null &&
+      lookAt !== vcId &&
+      !isReserved(engine, lookAt) &&
+      Transform.has(lookAt as Entity) &&
+      !GltfContainer.has(lookAt as Entity) &&
+      !MeshRenderer.has(lookAt as Entity) &&
+      !anchors.some((a) => a.entity === lookAt)
+    ) {
+      const lookTr = localTransformOf(engine, lookAt as Entity)
+      if (lookTr) anchors.push({ entity: lookAt, transform: lookTr })
+    }
+    return {
+      entity: vcId,
+      virtualCamera,
+      transform: cloneTransform(tr),
+      anchors,
       worldFlattened: false
     }
   }

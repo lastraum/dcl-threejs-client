@@ -70,11 +70,20 @@ function isStandardMaterial(mat: THREE.Material): mat is THREE.MeshStandardMater
   return 'isMeshStandardMaterial' in mat && (mat as THREE.MeshStandardMaterial).isMeshStandardMaterial
 }
 
-function applyHex(mat: THREE.MeshStandardMaterial, hex: string): void {
+function isTintableMaterial(
+  mat: THREE.Material
+): mat is THREE.Material & { color: THREE.Color } {
+  const rec = mat as THREE.Material & { color?: THREE.Color }
+  return !!rec.color && (rec.color as THREE.Color).isColor === true
+}
+
+function applyHex(mat: THREE.Material & { color: THREE.Color }, hex: string): void {
   // Guest profiles store `#rrggbb`; Catalyst lambdas store `rrggbb`. Always strip.
   mat.color.copy(hexToColor(hex))
-  mat.metalness = 0
-  mat.roughness = 1
+  if (isStandardMaterial(mat)) {
+    mat.metalness = 0
+    mat.roughness = 1
+  }
 }
 
 function resolveEmissiveTint(mat: THREE.MeshStandardMaterial): THREE.Color {
@@ -238,8 +247,8 @@ export function tintWearableMaterials(root: THREE.Object3D, skin?: string, hair?
     if (!(obj instanceof THREE.Mesh)) return
     const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
     for (const mat of materials) {
-      if (!isStandardMaterial(mat)) continue
-      const name = mat.name.toLowerCase()
+      if (!isTintableMaterial(mat)) continue
+      const name = (mat.name ?? '').toLowerCase()
       if (EMISSIVE_NAME.test(name)) continue
       if (hair && (tintAllHair || name.includes('hair'))) applyHex(mat, hair)
       if (name.includes('skin') && skin) applyHex(mat, skin)

@@ -2280,6 +2280,7 @@ export class RemoteAvatarManager {
       vrmAvatar.vrm.humanoid.autoUpdateHumanBones = false
       record.vrmAvatar = vrmAvatar
       record.model = vrmAvatar.root
+      ;(vrmAvatar.root.userData as { vrm?: typeof vrmAvatar.vrm }).vrm = vrmAvatar.vrm
       record.renderMode = 'vrm'
       record.vrmLoadedHash = record.vrmContentHash
       record.customAvatarFormat = 'vrm'

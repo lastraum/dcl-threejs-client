@@ -697,7 +697,7 @@ export async function loadLocomotionEmoteGltf(
   const bundled = bundledEmoteUrl(slug)
   if (bundled) {
     try {
-      const gltf = await cache.load(bundled, undefined, { quiet: true })
+      const gltf = await cache.load(bundled, undefined, { emote: true, quiet: true })
       if (gltf?.animations[0]) return gltf
     } catch {
       /* try Catalyst */

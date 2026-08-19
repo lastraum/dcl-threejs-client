@@ -85,6 +85,8 @@ export function applyBodyShapeVisibility(
   const hideUpper = covered('upper_body')
   const hideLower = covered('lower_body')
   const hideFeet = covered('feet')
+  const hideHair = covered('hair')
+  const hideFacialHair = covered('facial_hair')
   const hideHead = hasSkin || isHiddenCategory(effective, 'head')
   const hideHands = isHandsHidden(effective)
 
@@ -103,6 +105,23 @@ export function applyBodyShapeVisibility(
     if (name.endsWith('mask_eyebrows') && hideHead) obj.visible = false
     if (name.endsWith('mask_mouth') && hideHead) obj.visible = false
     if (name.endsWith('hands_basemesh') && hideHands) obj.visible = false
+    // Base hair cards stay on the body GLB; a hair wearable must hide them or
+    // the head reads as two colors (authored hair + wearable).
+    if (
+      hideHair &&
+      (name.endsWith('hair_basemesh') ||
+        name === 'hair' ||
+        name.endsWith('_hair') ||
+        name.includes('hair_basemesh'))
+    ) {
+      obj.visible = false
+    }
+    if (
+      hideFacialHair &&
+      (name.includes('beard') || name.includes('mustache') || name.includes('facial_hair'))
+    ) {
+      obj.visible = false
+    }
     if (name.includes('collider')) obj.visible = false
   })
 }

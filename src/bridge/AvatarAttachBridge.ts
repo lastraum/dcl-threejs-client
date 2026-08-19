@@ -7,7 +7,7 @@ import {
   composeAvatarAttachedWorldTransform
 } from '../avatar/avatarAttachMath'
 import type { AvatarAttachTargetResolver } from '../avatar/AvatarAttachTargets'
-import type { DclTransformValues } from './dclTransform'
+import { applyDclLocalTransform, type DclTransformValues } from './dclTransform'
 import type { CrdtProjection } from './CrdtProjection'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionView } from './ProjectionView'
@@ -115,7 +115,8 @@ export class AvatarAttachBridge {
 
       this.projection.setRenderer(Transform.componentId, entity, relativeWithParent)
 
-      // Mesh optional — lights / VC-adjacent attach entities may have no store node yet.
+      // Socket-only attach (plaza YI / p_ have no mesh) still needs a Group so
+      // Transform children (catch GLB, rod) can parent under the bone pose.
       const node = nodes.get(entity)
       if (node) {
         const sceneRoot = this.getSceneRoot?.()
@@ -126,6 +127,13 @@ export class AvatarAttachBridge {
         const scale = relativeWithParent.scale
         applyWorldDclTransformToObject(node, world)
         node.scale.set(scale.x, scale.y, scale.z)
+        // Frozen attach sockets (matrixAutoUpdate=false) must bake world so
+        // Transform children (catch GLB) compose PE × local this frame.
+        node.updateMatrixWorld(true)
+        // Plaza f7e: z0 (catch root) + n0 (GLB) are Transform children of YI.
+        // Attach owns the socket world pose; children keep ECS local TRS.
+        this.syncAttachSubtreeLocals(entity, node, nodes)
+        node.updateMatrixWorld(true)
       }
 
       workerBatch.push({
@@ -156,6 +164,31 @@ export class AvatarAttachBridge {
     this.lastWorkerBatch = workerBatch
   }
 
+  /**
+   * Keep ECS-local children (and grandchildren) under the posed attach socket.
+   * Plaza catch: YI (LEFT_HAND) → z0 → n0 GLB. Skip would leave the fish at root.
+   */
+  private syncAttachSubtreeLocals(
+    parentEntity: Entity,
+    parentNode: THREE.Group,
+    nodes: Map<Entity, THREE.Group>,
+    depth = 0
+  ): void {
+    if (depth > 6) return
+    const { Transform } = this.ecs
+    if (!Transform) return
+    for (const [child, node] of nodes) {
+      if (child === parentEntity) continue
+      if (!Transform.has(child)) continue
+      const parent = Transform.get(child).parent as Entity | undefined
+      if (parent !== parentEntity) continue
+      if (node.parent !== parentNode) parentNode.add(node)
+      applyDclLocalTransform(node, Transform.get(child) as DclTransformValues)
+      node.matrixAutoUpdate = true
+      this.syncAttachSubtreeLocals(child, node, nodes, depth + 1)
+    }
+  }
+
   /** Honor VisibilityComponent on Transform children of an AvatarAttach root (rod GLB). */
   private syncAttachChildVisibility(
     attachRoot: Entity,
@@ -180,9 +213,10 @@ export class AvatarAttachBridge {
   }
 
   /**
-   * Owner of an AvatarAttach. Empty avatarId is NOT "always local" — plaza fishing
-   * syncs catch/rod entities with parent = that player's entity. Binding those to
-   * the local skeleton put someone else's fish on our head.
+   * Owner of an AvatarAttach.
+   * Explorer: empty avatarId = local player (plaza `p_` rod / `YI` catch).
+   * Remotes always set avatarId (or parent = that player's entity). Empty+no-parent
+   * must not skip — that left the won fish unposed while z0 parented to YI.
    */
   private resolveAttachOwnerId(
     entity: Entity,
@@ -194,15 +228,17 @@ export class AvatarAttachBridge {
     if (id) return id
 
     const { Transform, PlayerIdentityData } = this.ecs
-    if (!Transform?.has(entity)) return undefined
-    const parent = Transform.get(entity).parent as Entity | undefined
-    if (parent == null || parent === 0) return undefined
-    if (parent === view.PlayerEntity) return resolver.getLocalWallet()?.toLowerCase()
-    if (PlayerIdentityData?.has(parent)) {
-      const address = (PlayerIdentityData.get(parent) as { address?: string }).address
-      if (address) return address.toLowerCase()
+    if (Transform?.has(entity)) {
+      const parent = Transform.get(entity).parent as Entity | undefined
+      if (parent != null && parent !== 0) {
+        if (parent === view.PlayerEntity) return resolver.getLocalWallet()?.toLowerCase()
+        if (PlayerIdentityData?.has(parent)) {
+          const address = (PlayerIdentityData.get(parent) as { address?: string }).address
+          if (address) return address.toLowerCase()
+        }
+      }
     }
-    return undefined
+    return resolver.getLocalWallet()?.toLowerCase()
   }
 
   private resolveAttachOwnerEntity(

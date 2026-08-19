@@ -115,9 +115,11 @@ import { ReadWriteByteBuffer } from '@dcl/ecs/dist/serialization/ByteBuffer'
 import { readMessage } from '@dcl/ecs/dist/serialization/crdt/message'
 import { CrdtMessageType } from '@dcl/ecs/dist/serialization/crdt/types'
 import {
+  getLastAuthoredVirtualCanvas,
   installPreregisterRendererComponentsHook,
   installUiVirtualCanvasHook,
-  preregisterRendererInjectedComponents
+  preregisterRendererInjectedComponents,
+  resetLastAuthoredVirtualCanvas
 } from './preregisterRendererInjectedComponents'
 import { installSceneWorkerFetchProxy } from './installSceneWorkerFetchProxy'
 import { collectWorkerUiTransformEntityIds } from './resolveBundledUiComponents'
@@ -161,7 +163,9 @@ import {
   takeForcedPlayerFrameClearSnapshot
 } from './workerPlayerFrameEgress'
 import {
+  collectTransformAncestorAnchors,
   isBoundVcPeFollowRig,
+  isCinematicTweenRig,
   requestVcBindHydrateFromMain,
   resetVcBindHydrateBaseline,
   takeVcBindHydrateIfNeeded,
@@ -455,8 +459,9 @@ let mainImClearSyncUntilMs = 0
 const SCENE_UI_OUTBOUND_LOG_LIMIT = 12
 let debugTweenDeliver = false
 let debugMessageArrival = false
-/** `?sceneloop=1` or an existing worker verbose flag — play-frame source/dt walk-log. */
+/** `?sceneloop=1` — play-frame source/dt walk-log (throttled). */
 let debugSceneLoop = false
+let lastSceneLoopPlayFrameLogAt = 0
 /**
  * SDK7 entry-points register `main` as an Infinity-priority system so it runs on the first
  * `engine.update` *after* transport `receiveMessages` applies onStart CRDT (main.crdt Names,
@@ -1554,15 +1559,53 @@ function publishVcPoseLiveIfBound(): void {
 
   const vcEntity = vc as Entity
   const follow = isBoundVcPeFollowRig(eng)
+  const vcTr = Transform.getOrNull(vcEntity)
+  const spec = VirtualCamera.getOrNull(vcEntity) as { lookAtEntity?: number } | null
+  const cinematic =
+    !follow && isCinematicTweenRig(eng, vcTr?.parent as number | undefined, spec?.lookAtEntity)
 
-  if (!follow) {
-    // Locked / select / cinematic — worker world pose under Root (main hierarchy is incomplete).
+  if (cinematic && vcTr) {
+    // Reveal / tween-parent rig — post locals so Iu.position Jfe stays parent-relative.
+    for (const anchor of collectTransformAncestorAnchors(eng, vcTr.parent as number | undefined)) {
+      maybePost(anchor.entity as Entity, anchor.transform)
+    }
+    maybePost(vcEntity, {
+      position: { x: vcTr.position.x, y: vcTr.position.y, z: vcTr.position.z },
+      rotation: { x: vcTr.rotation.x, y: vcTr.rotation.y, z: vcTr.rotation.z, w: vcTr.rotation.w },
+      scale: {
+        x: vcTr.scale?.x ?? 1,
+        y: vcTr.scale?.y ?? 1,
+        z: vcTr.scale?.z ?? 1
+      },
+      parent: vcTr.parent as number | undefined
+    })
+    const lookAt = spec?.lookAtEntity
+    if (
+      lookAt !== undefined &&
+      lookAt !== null &&
+      lookAt !== (vc as number) &&
+      !isMeshBearing(lookAt as Entity)
+    ) {
+      const atr = Transform.getOrNull(lookAt as Entity)
+      if (atr) {
+        maybePost(lookAt as Entity, {
+          position: { x: atr.position.x, y: atr.position.y, z: atr.position.z },
+          rotation: { x: atr.rotation.x, y: atr.rotation.y, z: atr.rotation.z, w: atr.rotation.w },
+          scale: {
+            x: atr.scale?.x ?? 1,
+            y: atr.scale?.y ?? 1,
+            z: atr.scale?.z ?? 1
+          },
+          parent: atr.parent as number | undefined
+        })
+      }
+    }
+  } else if (!follow) {
+    // Locked / select stage — worker world pose under Root (main hierarchy is incomplete).
     const flat = worldFlattenedVcTransform(eng, vcEntity)
     maybePost(vcEntity, flat)
-    // Plaza fishing reveal cam: lookAt is a pure Transform (`vp`) that Tweens after bind.
-    // Hydrate only snapshots structure — without live lookAt the lens stays aimed at the
-    // spawn pose (0,-1,1) and the shot falls through the floor.
-    const spec = VirtualCamera.getOrNull(vcEntity) as { lookAtEntity?: number } | null
+    // Pure-transform lookAt (plaza `vp`) Tweens after bind — keep it live or the
+    // lens stays aimed at the spawn pose (0,-1,1).
     const lookAt = spec?.lookAtEntity
     if (
       lookAt !== undefined &&
@@ -1672,6 +1715,12 @@ function emitSceneLoopGuestTick(tick: {
   // Fail window: after the first source=play-frame line, dt=0.000 is a fail.
   // Hydrate ticks before that line are not a fail — source makes that unambiguous.
   // inFlight=0: this line is a start (deferred/idle do not emit). Host inflight stays on HUD.
+  // Play-frame is ~60 Hz — log every tick freezes plaza (17→9 FPS). Pointer-edge is rare.
+  if (tick.source === 'play-frame') {
+    const now = performance.now()
+    if (now - lastSceneLoopPlayFrameLogAt < 1000) return
+    lastSceneLoopPlayFrameLogAt = now
+  }
   workerLog(
     'warn',
     `[sceneloop] play-frame source=${tick.source} dt=${formatSceneLoopDt(tick.dt)} inFlight=0`
@@ -3940,8 +3989,15 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
   applyHostReservedSceneStore()
   // Before the boot tick: plaza fetch-pages → Ztt → fishing init does Transform.get(PlayerEntity).
   ensureReservedEntityTransforms(sceneEngine)
-  // Pre-7.26 scenes omit virtualWidth/Height — seed the live canvas, never 1920×1080.
-  if (bootCanvas) seedWorkerUiCanvasInformation(sceneEngine, bootCanvas.width, bootCanvas.height)
+  // Scene addUiRenderer/setUiRenderer virtual size wins over the live boot canvas.
+  // Overwriting 1920×1080 with CSS px made react-ecs-ui-scale (fontSize*H) and host
+  // Yoga (authored 1920) double-scale — plaza NICE CATCH title collapsed to ~8px.
+  const authoredVirtual = getLastAuthoredVirtualCanvas()
+  if (authoredVirtual) {
+    seedWorkerUiCanvasInformation(sceneEngine, authoredVirtual.width, authoredVirtual.height)
+  } else if (bootCanvas) {
+    seedWorkerUiCanvasInformation(sceneEngine, bootCanvas.width, bootCanvas.height)
+  }
   try {
     guardVideoPlayerGetMutable(sceneEngine)
   } catch (err) {
@@ -4361,6 +4417,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     clearPlayModeColdCrdtBuffer()
     resetSceneEngineScheduler()
     resetWorkerUiFingerprint()
+    resetLastAuthoredVirtualCanvas()
     pendingOutboundAck.clear()
     pendingBootPriority.length = 0
     debugSceneInputSnapshot = msg.debug?.sceneInputSnapshot === true
@@ -4374,12 +4431,9 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     debugTweenDeliver = msg.debug?.tweenDeliver === true
     debugMessageArrival = msg.debug?.messageArrival === true
     debugSceneUiLog = msg.debug?.sceneUiLog === true
-    debugSceneLoop =
-      msg.debug?.sceneLoop === true ||
-      debugPointerDeliver ||
-      debugTweenDeliver ||
-      debugSceneUiLog ||
-      debugMessageArrival
+    // Only `?sceneloop` owns the per-tick walk-log. Other verbose flags used to
+    // enable it too and printed ~120 lines/s (worker + main) on a busy plaza.
+    debugSceneLoop = msg.debug?.sceneLoop === true
     sceneUiOutboundLogCount = 0
     deferredRendererInbound.length = 0
     installSceneWorkerFetchProxy()
@@ -4488,6 +4542,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     }
     installUiVirtualCanvasHook((width, height) => {
       if (sceneEngine) seedWorkerUiCanvasInformation(sceneEngine, width, height)
+      workerLog('log', `[sceneWorker] ui virtual canvas ${width}×${height}`)
       ctx.postMessage({ type: 'ui-virtual-canvas', width, height } satisfies SceneWorkerOutbound)
     })
     const evalStarted = performance.now()

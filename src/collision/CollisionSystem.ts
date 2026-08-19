@@ -238,10 +238,16 @@ export class CollisionSystem {
   /** Raycast scene colliders with a DCL layer mask (default CL_POINTER). */
   raycast(ray: THREE.Ray, layerMask: number = ColliderLayer.CL_POINTER): ColliderHit[] {
     const targets: THREE.Object3D[] = []
-    for (const { mesh } of this.colliders.values()) {
-      if (hasColliderLayer(mesh.userData.collisionMask as number, layerMask)) {
-        targets.push(mesh)
-      }
+    for (const { mesh, root } of this.colliders.values()) {
+      if (!hasColliderLayer(mesh.userData.collisionMask as number, layerMask)) continue
+      // Scene hide-by-scale (plaza LO() 0.001 watering boxes while fishing_pond is on).
+      root.updateMatrixWorld(true)
+      const e = root.matrixWorld.elements
+      const lx = Math.hypot(e[0]!, e[1]!, e[2]!)
+      const ly = Math.hypot(e[4]!, e[5]!, e[6]!)
+      const lz = Math.hypot(e[8]!, e[9]!, e[10]!)
+      if (lx < 0.05 && ly < 0.05 && lz < 0.05) continue
+      targets.push(mesh)
     }
     if (!targets.length) return []
 

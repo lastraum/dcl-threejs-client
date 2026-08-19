@@ -83,15 +83,18 @@ Client must run **platform Billboard + plane + Visibility**. No GP-specific Bill
 |------|--------|
 | Dual-face BufferGeometry, north + south | Verified — `primitiveShapes.ts` |
 | Docs UV corner order with **L–R compensation** for DCL→Three X reflection | Client convention (plaza JUMP IN / atlas) — documented in code; Explorer golden TBD |
-| Default north is docs **V=0 bottom** (`0,0,1,0,1,1,0,1`). South lookAt face is V-inverted | Verified — NftShape / TextShape / default planes view +Z |
+| Default north is docs **V=0 bottom** (`0,0,1,0,1,1,0,1`). South uses the same V (BM_ALL −Z to camera) | Verified — NftShape / TextShape / default planes view +Z; press_e south was over-inverted |
+| Dual-face south is **same-cell docs south from normalized north** (`northStyleToSouthPacking`). Authored second octuple is not trusted (plaza missed-it copies north-order; R4e GET BAIT is south flipbook of the same cell). Never `1−u` except marquee | Verified — v31 |
 | Marquee / flipbook special cases stay on their own packing | Client law for those UV patterns |
 | **Do not** invert default north V to fix one Billboard | Forbidden — hung every NFT + canvas plane upside-down |
+| **Do not** treat authored 16-UV south as a second north face | Forbidden — L–R mirrored GET BAIT while default-UV press_e stayed upright |
 
 ### Open gap
 
 | Gap | Note |
 |-----|------|
-| Press_e under stock lookAt | South face of the default 16-UV plane is V-inverted for Three BM_ALL lookAt (−Z). Do not invert north. |
+| Press_e under stock lookAt | **Closed (v28)** — default south keeps north V (V=0 bottom). Extra south-V invert + Matrix4.lookAt (−Z to camera) read the start-reeling plane upside-down. Do not invert north. |
+| 16-UV atlas south L–R mirror | **Closed (v30)** — authored south is south packing. `northStyleToSouthPacking(normalizeNorth(south))` double-packed GET BAIT. |
 
 ---
 
@@ -112,6 +115,8 @@ Client must run **platform Billboard + plane + Visibility**. No GP-specific Bill
 |------|--------|
 | `obj.visible = Visibility.visible !== false` when component present | Verified — `entityStoreApply` |
 | Apply to private `__mesh_*` leaves and Gltf meshes when component present | Verified — needed for private clones |
+| Visibility `true` on a GltfContainer must load+attach this frame (budget bypass) | Verified — MeshRenderer already had `ensureMeshRendererLeaf`; catch/loot GLBs only flip Visibility |
+| GltfContainer **fetch** is never budget-gated (only attach is). Visibility + normal scale (not LO() 0.001) attaches even while `visible=false` | Verified — plaza n0 is created hidden at reel start; 5s reveal cannot wait for a late parse |
 | Do **not** invent scale rewrites on show/hide | Forbidden (broke missed-it Scale tweens) |
 | Do **not** force-show fishing rods ignoring Visibility | Forbidden (reverted) |
 | Visibility puts must not starve behind slow peel (same class as Transform motion) | Client COD drain policy |
@@ -200,6 +205,7 @@ Plaza `water_surface.glb` is a collider-only disk + sibling `water.png`. Pointer
 | Parent to `PlayerEntity` for worker `getWorldPosition` = PE × relative | Verified — SDK nBe path |
 | Apply composed world pose under **scene root** (never PE chest +0.88 attach root) | Verified — comment in bridge |
 | Sample attach **after** local avatar locomotion/emote that frame | Verified — frame order law |
+| After bone sample, **extract** the attach socket + Transform descendants onto the draw root (same as Tween). Pose Groups are not the GPU objects | Verified — plaza `YI → z0 → n0` left-hand catch |
 
 ### Explicitly not law
 

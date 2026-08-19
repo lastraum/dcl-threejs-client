@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { renderQuality } from '../rendering/RenderQualitySettings'
+import { ownInstanceMaterials } from '../rendering/sharedAsset'
 import { EMISSIVE_FACTOR_BOOST, EMISSIVE_INTENSITY } from './constants'
 
 const EMISSIVE_NAME = /^em\.|emissive|glow|neon|em_/
@@ -40,6 +41,7 @@ export function isAvatarToonEnabled(): boolean {
 /** Match the official matte/toon avatar look — banded color, no specular response. */
 export function applyAvatarToonShading(root: THREE.Object3D): void {
   if (!isAvatarToonEnabled()) return
+  ownInstanceMaterials(root)
   root.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return
     const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
@@ -68,11 +70,20 @@ function isStandardMaterial(mat: THREE.Material): mat is THREE.MeshStandardMater
   return 'isMeshStandardMaterial' in mat && (mat as THREE.MeshStandardMaterial).isMeshStandardMaterial
 }
 
-function applyHex(mat: THREE.MeshStandardMaterial, hex: string): void {
+function isTintableMaterial(
+  mat: THREE.Material
+): mat is THREE.Material & { color: THREE.Color } {
+  const rec = mat as THREE.Material & { color?: THREE.Color }
+  return !!rec.color && (rec.color as THREE.Color).isColor === true
+}
+
+function applyHex(mat: THREE.Material & { color: THREE.Color }, hex: string): void {
   // Guest profiles store `#rrggbb`; Catalyst lambdas store `rrggbb`. Always strip.
   mat.color.copy(hexToColor(hex))
-  mat.metalness = 0
-  mat.roughness = 1
+  if (isStandardMaterial(mat)) {
+    mat.metalness = 0
+    mat.roughness = 1
+  }
 }
 
 function resolveEmissiveTint(mat: THREE.MeshStandardMaterial): THREE.Color {
@@ -129,6 +140,7 @@ function boostEmissiveColor(mat: THREE.MeshStandardMaterial, isEmNamed: boolean)
 }
 
 export function prepareAvatarMaterials(root: THREE.Object3D): void {
+  ownInstanceMaterials(root)
   root.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return
     const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
@@ -146,7 +158,9 @@ export function prepareAvatarMaterials(root: THREE.Object3D): void {
       // enabling COLOR_0 (black silhouette) and IBL/metal that read as pitch black
       // after a VRM → DCL swap.
       if (isStandardMaterial(mat)) {
-        if (!(mat.userData as Record<string, unknown>).dclEmissiveBoosted) {
+        const userData = mat.userData as Record<string, unknown>
+        userData.dclAvatarMatte = true
+        if (!userData.dclEmissiveBoosted) {
           mat.metalness = 0
           mat.roughness = Math.max(mat.roughness, 0.85)
           mat.envMap = null
@@ -224,20 +238,19 @@ export function applyWearableEmissives(root: THREE.Object3D): void {
 
 export function tintWearableMaterials(root: THREE.Object3D, skin?: string, hair?: string): void {
   if (!skin && !hair) return
+  ownInstanceMaterials(root)
+  const category = root.name.startsWith('wearable:') ? root.name.slice('wearable:'.length) : ''
+  // Hair/facial_hair GLBs often name mats lambert/AvatarWearable — not "hair".
+  // Explorer tints the whole slot; name-only matching left colorful albedo (green/orange).
+  const tintAllHair = category === 'hair' || category === 'facial_hair'
   root.traverse((obj) => {
     if (!(obj instanceof THREE.Mesh)) return
-    // SkeletonUtils / AssetCache share materials — clone before skin/hair tint.
-    if (Array.isArray(obj.material)) {
-      obj.material = obj.material.map((m) => m.clone())
-    } else {
-      obj.material = obj.material.clone()
-    }
     const materials = Array.isArray(obj.material) ? obj.material : [obj.material]
     for (const mat of materials) {
-      if (!isStandardMaterial(mat)) continue
-      const name = mat.name.toLowerCase()
+      if (!isTintableMaterial(mat)) continue
+      const name = (mat.name ?? '').toLowerCase()
       if (EMISSIVE_NAME.test(name)) continue
-      if (name.includes('hair') && hair) applyHex(mat, hair)
+      if (hair && (tintAllHair || name.includes('hair'))) applyHex(mat, hair)
       if (name.includes('skin') && skin) applyHex(mat, skin)
     }
   })

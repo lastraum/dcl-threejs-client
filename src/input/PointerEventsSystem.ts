@@ -15,7 +15,11 @@ import {
 import type { CollisionSystem } from '../collision/CollisionSystem'
 import { ColliderLayer } from '../collision/ColliderLayer'
 import { isGltfInvisibleColliderMesh } from '../collision/gltfColliderNaming'
-import { collectGltfPointerTargetMeshes, gltfEntityDrawRoot } from '../collision/gltfPointerMeshes'
+import {
+  collectGltfLayerTargetMeshes,
+  collectGltfPointerTargetMeshes,
+  gltfEntityDrawRoot
+} from '../collision/gltfPointerMeshes'
 import { PointerHighlightFeedback, pointerShowHighlight } from './PointerHighlightFeedback'
 import { PointerHoverFeedback } from './PointerHoverFeedback'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
@@ -1342,7 +1346,37 @@ export class PointerEventsSystem {
       }
     }
 
-    if (!best) {
+    // CL_POINTER hulls without PointerEvents still occlude (dock planks, walls).
+    // Explorer: closest collider wins — a non-PE hit in front of a watering box
+    // is no hover, not "click through the walkway".
+    const occluderHits = this.raycastPointerOccluders(collision, ray)
+    let closestBlock: { distance: number; entity: Entity } | null = null
+    for (const hit of occluderHits) {
+      if (!closestBlock || hit.distance < closestBlock.distance) {
+        closestBlock = hit
+      }
+    }
+    if (closestBlock && (!best || closestBlock.distance < best.distance - 1e-4)) {
+      const target = this.resolveColliderPointerEntity(closestBlock.entity) ?? closestBlock.entity
+      const spec = this.deps.ecs.PointerEvents.getOrNull(target)
+      if (spec && this.pointerEntitySet.has(target)) {
+        const fromCollider = collision.raycast(ray, ColliderLayer.CL_POINTER)
+        const match = fromCollider.find((h) => h.entity === closestBlock!.entity)
+        if (match) {
+          const pointerHit = buildPointerHitFromCollider(
+            this.deps.ecs,
+            match,
+            spec,
+            cameraPos,
+            playerPos
+          )
+          pointerHit.entity = target
+          best = pointerHit
+        }
+      } else {
+        best = null
+      }
+    } else if (!best) {
       const colliderHits = collision.raycast(ray, ColliderLayer.CL_POINTER)
       for (const hit of colliderHits) {
         const targetEntity = this.resolveColliderPointerEntity(hit.entity)
@@ -1362,6 +1396,68 @@ export class PointerEventsSystem {
     }
 
     return best
+  }
+
+  /**
+   * World CL_POINTER geometry: MeshCollider primitives + Gltf `*_collider` hulls
+   * (and renderer water visual when the authored invisible mask includes POINTER).
+   */
+  private raycastPointerOccluders(
+    collision: CollisionSystem,
+    ray: THREE.Ray
+  ): { distance: number; entity: Entity }[] {
+    if (!this.deps) return []
+    const { ecs, view, getEntityNodes } = this.deps
+    const nodes = getEntityNodes()
+    const colliderHits = collision.raycast(ray, ColliderLayer.CL_POINTER)
+    const out: { distance: number; entity: Entity }[] = colliderHits.map((h) => ({
+      distance: h.distance,
+      entity: h.entity
+    }))
+
+    const gltfTargets: THREE.Object3D[] = []
+    for (const [entity] of view.getEntitiesWith(ecs.GltfContainer)) {
+      const obj = nodes.get(entity)
+      const root = poseDrawVisual(obj, entity) ?? obj
+      if (!root) continue
+      collectGltfLayerTargetMeshes(
+        root,
+        ecs.GltfContainer.get(entity),
+        entity,
+        ColliderLayer.CL_POINTER,
+        gltfTargets
+      )
+    }
+    if (!gltfTargets.length) return out
+
+    const visibilityRestore: { obj: THREE.Object3D; visible: boolean }[] = []
+    for (const obj of gltfTargets) {
+      if (obj.visible === false) {
+        visibilityRestore.push({ obj, visible: false })
+        obj.visible = true
+      }
+      let p: THREE.Object3D | null = obj.parent
+      while (p) {
+        if (p.visible === false) {
+          visibilityRestore.push({ obj: p, visible: false })
+          p.visible = true
+        }
+        p = p.parent
+      }
+    }
+    try {
+      this.raycaster.layers.set(0)
+      this.raycaster.set(ray.origin, ray.direction)
+      const hits = this.raycaster.intersectObjects(gltfTargets, true)
+      for (const hit of hits) {
+        const entity = hit.object.userData.entity as Entity | undefined
+        if (entity === undefined) continue
+        out.push({ distance: hit.distance, entity })
+      }
+    } finally {
+      for (const { obj, visible } of visibilityRestore) obj.visible = visible
+    }
+    return out
   }
 
   /** Closest in-range PROXIMITY PointerEvents target (Genesis planters, E-key interact). */
@@ -1468,15 +1564,14 @@ export class PointerEventsSystem {
     if (feet) _playerPos.copy(feet)
 
     for (const entity of this.pointerEntitySet) {
-      if (feet) {
-        const obj = nodes.get(entity)
-        if (obj) {
-          obj.getWorldPosition(_entityPos)
-          const dx = _entityPos.x - _playerPos.x
-          const dy = _entityPos.y - _playerPos.y
-          const dz = _entityPos.z - _playerPos.z
-          if (dx * dx + dy * dy + dz * dz > POINTER_TARGET_KEEP_M2) continue
-        }
+      const obj = nodes.get(entity)
+      if (this.isPointerEntityInactive(entity, obj)) continue
+      if (feet && obj) {
+        obj.getWorldPosition(_entityPos)
+        const dx = _entityPos.x - _playerPos.x
+        const dy = _entityPos.y - _playerPos.y
+        const dz = _entityPos.z - _playerPos.z
+        if (dx * dx + dy * dy + dz * dz > POINTER_TARGET_KEEP_M2) continue
       }
       if (ecs.GltfContainer.has(entity)) {
         const obj = nodes.get(entity)
@@ -1566,6 +1661,33 @@ export class PointerEventsSystem {
     }
   }
 
+  /**
+   * Scene hide signals that drop PE: Visibility=false, or Transform.scale collapsed
+   * (plaza LO() sets watering clickboxes to 0.001 while fishing_pond is scheduled).
+   */
+  private isPointerEntityInactive(
+    entity: Entity,
+    obj: THREE.Object3D | undefined
+  ): boolean {
+    const { ecs } = this.deps!
+    if (ecs.VisibilityComponent?.has(entity) && ecs.VisibilityComponent.get(entity).visible === false) {
+      return true
+    }
+    if (obj) {
+      obj.updateMatrixWorld(true)
+      const e = obj.matrixWorld.elements
+      const lx = Math.hypot(e[0]!, e[1]!, e[2]!)
+      const ly = Math.hypot(e[4]!, e[5]!, e[6]!)
+      const lz = Math.hypot(e[8]!, e[9]!, e[10]!)
+      if (lx < 0.05 && ly < 0.05 && lz < 0.05) return true
+    }
+    if (ecs.Transform?.has(entity)) {
+      const s = ecs.Transform.get(entity).scale
+      if (Math.abs(s.x) < 0.05 && Math.abs(s.y) < 0.05 && Math.abs(s.z) < 0.05) return true
+    }
+    return false
+  }
+
   /** Asset-pack Triggers: MeshCollider / GLTF on child entities under a PointerEvents parent. */
   private collectDescendantPointerTargets(
     entity: Entity,
@@ -1593,7 +1715,7 @@ export class PointerEventsSystem {
             gltfRoot,
             ecs.GltfContainer.get(child),
             child,
-            true,
+            false,
             this.pointerTargets
           )
         }

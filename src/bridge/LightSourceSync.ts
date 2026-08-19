@@ -71,11 +71,17 @@ export function setLightTextureResolver(fn: LightTextureResolver | null): void {
 
 function shadowMaskSrc(spec: PBLightSource): string | null {
   const raw = spec.shadowMaskTexture as
-    | { src?: string; tex?: { texture?: { src?: string }; $case?: string } }
+    | {
+        src?: string
+        tex?: { texture?: { src?: string }; $case?: string }
+        texture?: { src?: string }
+      }
     | undefined
   if (!raw) return null
   if (typeof raw.src === 'string' && raw.src.trim()) return raw.src.trim()
-  const inner = raw.tex?.texture?.src
+  const fromUnion = raw.tex?.$case === 'texture' ? raw.tex.texture?.src : raw.tex?.texture?.src
+  if (typeof fromUnion === 'string' && fromUnion.trim()) return fromUnion.trim()
+  const inner = raw.texture?.src
   if (typeof inner === 'string' && inner.trim()) return inner.trim()
   return null
 }

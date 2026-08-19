@@ -75,11 +75,6 @@ export function borderRadiusCss(t: PBUiTransform, scale: UiScreenScale): string 
   return `${tl} ${tr} ${br} ${bl}`
 }
 
-function hasVisibleColor(c: { r?: number; g?: number; b?: number; a?: number } | undefined): boolean {
-  if (!c) return false
-  return (c.a ?? 1) > 0.01
-}
-
 export function borderCss(t: PBUiTransform, scale: UiScreenScale): {
   width: string
   style: string
@@ -88,22 +83,12 @@ export function borderCss(t: PBUiTransform, scale: UiScreenScale): {
   bottomColor: string
   leftColor: string
 } {
-  let top = scaledPx(t.borderTopWidth, t.borderTopWidthUnit, scale.scaleY)
-  let right = scaledPx(t.borderRightWidth, t.borderRightWidthUnit, scale.scaleX)
-  let bottom = scaledPx(t.borderBottomWidth, t.borderBottomWidthUnit, scale.scaleY)
-  let left = scaledPx(t.borderLeftWidth, t.borderLeftWidthUnit, scale.scaleX)
-  const colored =
-    hasVisibleColor(t.borderTopColor) ||
-    hasVisibleColor(t.borderRightColor) ||
-    hasVisibleColor(t.borderBottomColor) ||
-    hasVisibleColor(t.borderLeftColor)
-  const minStroke = `${Math.max(1, scale.uniform)}px`
-  if (colored) {
-    if (top === '0') top = minStroke
-    if (right === '0') right = minStroke
-    if (bottom === '0') bottom = minStroke
-    if (left === '0') left = minStroke
-  }
+  // Explorer: no stroke unless the scene authors a width > 0.
+  // A default / leftover Color4 (often black a=1) must not invent a 1px frame.
+  const top = scaledPx(t.borderTopWidth, t.borderTopWidthUnit, scale.scaleY)
+  const right = scaledPx(t.borderRightWidth, t.borderRightWidthUnit, scale.scaleX)
+  const bottom = scaledPx(t.borderBottomWidth, t.borderBottomWidthUnit, scale.scaleY)
+  const left = scaledPx(t.borderLeftWidth, t.borderLeftWidthUnit, scale.scaleX)
   const hasBorder = top !== '0' || right !== '0' || bottom !== '0' || left !== '0'
   return {
     width: hasBorder ? `${top} ${right} ${bottom} ${left}` : '',

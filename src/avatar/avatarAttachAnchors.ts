@@ -1,6 +1,34 @@
 import * as THREE from 'three'
-import { buildBoneNameSet, normalizeBoneName, resolveBoneName } from './emoteBoneMap'
+import type { VRM } from '@pixiv/three-vrm'
+import { normalizeBoneName, resolveBoneName } from './emoteBoneMap'
 import { findHeadBone, NAME_TAG_HEAD_OFFSET_Y } from './headAnchor'
+
+/** Mixamo / DCL short name → VRM humanoid key (same map as mixamo retarget). */
+const MIXAMO_TO_VRM: Record<string, string> = {
+  Head: 'head',
+  Neck: 'neck',
+  Hips: 'hips',
+  LeftHand: 'leftHand',
+  RightHand: 'rightHand',
+  LeftHandIndex1: 'leftIndexProximal',
+  RightHandIndex1: 'rightIndexProximal',
+  LeftShoulder: 'leftShoulder',
+  RightShoulder: 'rightShoulder',
+  LeftArm: 'leftUpperArm',
+  RightArm: 'rightUpperArm',
+  LeftForeArm: 'leftLowerArm',
+  RightForeArm: 'rightLowerArm'
+}
+
+const MIXAMO_TO_ODK: Record<string, string> = {
+  Head: 'head',
+  Neck: 'neck_01',
+  Hips: 'pelvis',
+  LeftHand: 'hand_l',
+  RightHand: 'hand_r',
+  LeftHandIndex1: 'hand_l',
+  RightHandIndex1: 'hand_r'
+}
 
 /** Matches `@dcl/ecs` AvatarAnchorPointType numeric ids. */
 export const AAPT_NAME_TAG = 1
@@ -65,16 +93,54 @@ export type AvatarAttachAnchorPose = {
   quaternion: THREE.Quaternion
 }
 
+function collectNamedNodes(model: THREE.Object3D): Map<string, THREE.Object3D> {
+  const byName = new Map<string, THREE.Object3D>()
+  model.traverse((obj) => {
+    if (obj.name) byName.set(normalizeBoneName(obj.name), obj)
+    if (obj instanceof THREE.SkinnedMesh && obj.skeleton) {
+      for (const bone of obj.skeleton.bones) {
+        if (bone.name) byName.set(normalizeBoneName(bone.name), bone)
+      }
+    }
+  })
+  return byName
+}
+
+function findVrmOnModel(model: THREE.Object3D): VRM | null {
+  let node: THREE.Object3D | null = model
+  while (node) {
+    const vrm = (node.userData as { vrm?: VRM }).vrm
+    if (vrm?.humanoid) return vrm
+    node = node.parent
+  }
+  let found: VRM | null = null
+  model.traverse((obj) => {
+    if (found) return
+    const vrm = (obj.userData as { vrm?: VRM }).vrm
+    if (vrm?.humanoid) found = vrm
+  })
+  return found
+}
+
 function findAnchorBone(model: THREE.Object3D, aliases: string[]): THREE.Object3D | null {
-  const bones = buildBoneNameSet(model)
+  const named = collectNamedNodes(model)
+  const bones = new Set(named.keys())
   for (const alias of aliases) {
     const resolved = resolveBoneName(alias, bones)
-    if (!resolved) continue
-    let hit: THREE.Object3D | null = null
-    model.traverse((obj) => {
-      if (!hit && normalizeBoneName(obj.name) === resolved) hit = obj
-    })
-    if (hit) return hit
+    if (resolved) {
+      const hit = named.get(resolved)
+      if (hit) return hit
+    }
+    const odk = MIXAMO_TO_ODK[alias]
+    if (odk && named.has(odk)) return named.get(odk)!
+    const vrmKey = MIXAMO_TO_VRM[alias]
+    const vrm = vrmKey ? findVrmOnModel(model) : null
+    if (vrm && vrmKey) {
+      const node =
+        vrm.humanoid.getNormalizedBoneNode(vrmKey as never) ??
+        vrm.humanoid.getRawBoneNode(vrmKey as never)
+      if (node) return node
+    }
   }
   return null
 }

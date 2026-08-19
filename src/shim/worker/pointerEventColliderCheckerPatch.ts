@@ -281,6 +281,8 @@ const SET_UI_RENDERER_PRETTY_RE =
   /setUiRenderer\((\w+),\s*(\w+)\)\s*\{\s*(\w+)\s*=\s*\1;\s*(\w+)\s*=\s*\2;?\s*\}/g
 const ADD_UI_RENDERER_RE =
   /addUiRenderer\((\w+),(\w+),(\w+)\)\{(\w+)\.set\(\1,\{ui:\2,options:\3\}\)\}/g
+/** Any 3-arg addUiRenderer body — plaza FA() plus pretty-printed kits. */
+const ADD_UI_RENDERER_OPEN_RE = /addUiRenderer\((\w+),(\w+),(\w+)\)\{/g
 
 /**
  * Closing `)` indices of `recv.addSystem(fn, …, "@dcl/react-ecs")` — skips ui-scale.
@@ -401,6 +403,13 @@ function patchUiVirtualCanvasHooks(code: string): string {
       (_match, entityArg, uiArg, optionsArg, mapVar) =>
         `addUiRenderer(${entityArg},${uiArg},${optionsArg}){${injectVirtualCanvasReport(optionsArg)}${mapVar}.set(${entityArg},{ui:${uiArg},options:${optionsArg}})}`
     )
+    // Second pass: any remaining 3-arg definition the exact set() shape missed.
+    ADD_UI_RENDERER_OPEN_RE.lastIndex = 0
+    out = out.replace(ADD_UI_RENDERER_OPEN_RE, (match, _entityArg, _uiArg, optionsArg, offset) => {
+      const after = out.slice(offset + match.length, offset + match.length + 120)
+      if (after.includes('__THREEJS_UI_VIRTUAL_CANVAS__')) return match
+      return `${match}${injectVirtualCanvasReport(optionsArg)}`
+    })
   }
   return out
 }

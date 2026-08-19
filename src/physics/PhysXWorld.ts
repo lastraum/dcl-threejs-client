@@ -65,7 +65,8 @@ const GROUND_CONTACT_COLUMN_RADIUS = 0.3 + 0.28
 /** Unity CharacterController defaults — DCL Foundation uses PhysX CCT with similar tuning. */
 const DEG2RAD = Math.PI / 180
 const CONTROLLER_SLOPE_LIMIT_DEG = 45
-const CONTROLLER_STEP_OFFSET = 0.45
+/** Must clear 0.5 m GLTF floor slabs (visibleMeshesCollisionMask: CL_PHYSICS). 0.45 left a lip. */
+const CONTROLLER_STEP_OFFSET = 0.55
 const CONTROLLER_CONTACT_OFFSET = 0.08
 /** Descending platform overhead — max gap from feet to walk surface to start transfer (≈ capsule). */
 const PLATFORM_OVERHEAD_CATCH = 1.88 + CONTROLLER_STEP_OFFSET + 0.35
@@ -1293,6 +1294,23 @@ export class PhysXWorld {
     )
   }
 
+  /** True when live scale is smaller than the cooked hull on any axis (stale solid is a wall). */
+  hasCookScaleShrink(desc: PhysicsColliderDesc, relTol = 0.04): boolean {
+    const cookScale = this.actorCookScale.get(desc.entity)
+    if (!cookScale) return false
+    if (!this.matrixHasFinitePose(desc.matrix)) return false
+    desc.matrix.decompose(this._pos, this._quat, this._scale)
+    const smaller = (live: number, cooked: number) => {
+      const den = Math.max(Math.abs(cooked), 1e-4)
+      return cooked - live > relTol * den
+    }
+    return (
+      smaller(this._scale.x, cookScale.x) ||
+      smaller(this._scale.y, cookScale.y) ||
+      smaller(this._scale.z, cookScale.z)
+    )
+  }
+
   /** Entity-local multi-shape cooks store baselines for relative door/lift slides. */
   hasShapeBaselines(entity: number): boolean {
     const bas = this.shapeBaselineLocal.get(entity)
@@ -1468,6 +1486,11 @@ export class PhysXWorld {
       const actor = this.staticActors.get(desc.entity)
       if (!actor || this.actorWorldBaked.get(desc.entity)) continue
       if (!this.matrixHasFinitePose(desc.matrix)) continue
+      // Box/sphere extents are cooked from scale — T+R slide cannot shrink a 1.5 m hull.
+      if (this.hasCookScaleDrift(desc)) {
+        if (this.staticFp.has(desc.entity)) this.staticFp.delete(desc.entity)
+        continue
+      }
       try {
         desc.matrix.decompose(this._pos, this._quat, this._scale)
         this._pos.toPxTransform(this.actorPoseTransform)
@@ -4201,6 +4224,7 @@ export class PhysXWorld {
     this.scene.addActor(actor)
     this.staticActors.set(desc.entity, actor)
     this.registerStaticActor(desc.entity, actor)
+    this.actorCookScale.set(desc.entity, this._scale.clone())
     // After seal: plain addActor only. NEVER remove+add here — late AOI/road thrash of
     // remove+add killed plaza SQ (didHit=true at seal, didHit=false a few seconds later).
     return true

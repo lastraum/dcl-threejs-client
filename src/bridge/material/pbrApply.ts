@@ -199,6 +199,13 @@ export function applyOutdoorMaterialResponse(
   material: THREE.MeshStandardMaterial,
   opts?: { metalness?: number; roughness?: number }
 ): void {
+  // Wearable/emote mats are Explorer matte. Outdoor remap raised envMapIntensity
+  // off 0 and COLOR_0/metal read as a black silhouette after /goto or a cache hit.
+  if (material.userData.dclAvatarMatte === true) {
+    material.envMap = null
+    material.envMapIntensity = 0
+    return
+  }
   const metalIn = opts?.metalness ?? material.metalness
   const roughIn = opts?.roughness ?? material.roughness
   material.metalness = Math.min(1, metalIn * 0.55)

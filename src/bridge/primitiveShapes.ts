@@ -26,13 +26,10 @@ const THREE_BOX_FACE_CORNER_TO_THREE: ReadonlyArray<readonly number[]> = [
  * - South: lower-right, lower-left, upper-left, upper-right (BR, BL, TL, TR)
  */
 const DEFAULT_DCL_PLANE_UVS = [
-  // North: docs BL,BR,TR,TL — V=0 at the bottom. NftShape / TextShape / default
-  // MeshRenderer planes view +Z (FrontSide). Inverting north to “fix” one
-  // Billboard lookAt hung every NFT and canvas plane upside-down.
-  0, 0, 1, 0, 1, 1, 0, 1,
-  // South (−Z): V inverted so Three BM_ALL lookAt (−Z toward camera) reads upright.
-  // Unity Billboard presents +Z/north; we present −Z/south.
-  1, 1, 0, 1, 0, 0, 1, 0
+  // North only (docs BL,BR,TR,TL). South is generated as same-cell docs south
+  // (northStyleToSouthPacking). Do not feed a 16-float default through that
+  // helper as if the second 8 were another north face.
+  0, 0, 1, 0, 1, 1, 0, 1
 ]
 
 /**
@@ -56,7 +53,7 @@ const DCL_PLANE_NORTH_CORNER_TO_THREE = [3, 2, 0, 1]
 const DCL_PLANE_SOUTH_CORNER_TO_THREE = [2, 3, 1, 0]
 
 /** Bump when plane topology/UV layout changes — busts primitiveMeshKey mesh cache. */
-const PLANE_GEOMETRY_REVISION = 'v27'
+const PLANE_GEOMETRY_REVISION = 'v31'
 
 /**
  * userData: marquee atlas plane. MaterialApplier: flipY=false, FrontSide only.
@@ -299,21 +296,25 @@ function planeUvsMapTextAlongLocalY(rawUvs: readonly number[]): boolean {
 }
 
 /**
- * Build south-face UVs (BR, BL, TL, TR) from north (BL, BR, TR, TL) with U mirrored.
- * Matches docs south packing (BR, BL, TL, TR) with U mirrored so both faces read L→R.
- * Default full-tile south (16-float DEFAULT) also inverts V for BM_ALL lookAt.
+ * Docs north BL,BR,TR,TL → docs south BR,BL,TL,TR (same cell, south winding).
+ *
+ * Dual-face atlas planes often copy north-order UVs onto the second octuple
+ * (plaza missed-it `new_catch_atlas`) or emit a true south flipbook (R4e GET BAIT).
+ * Interpreting authored south as a second north face, or generating `1−u` (whole
+ * texture), L–R mirrors BM_ALL −Z boards. Same-cell south from *normalized north*
+ * is the single packing for both.
  */
-function mirrorSouthPlaneUvs(north: readonly number[]): number[] {
-  const blU = north[0] ?? 0
-  const blV = north[1] ?? 0
-  const brU = north[2] ?? 0
-  const brV = north[3] ?? 0
-  const trU = north[4] ?? 0
-  const trV = north[5] ?? 0
-  const tlU = north[6] ?? 0
-  const tlV = north[7] ?? 0
-  // South corner order BR, BL, TL, TR — U mirrored so both faces read correctly.
-  return [1 - blU, blV, 1 - brU, brV, 1 - trU, trV, 1 - tlU, tlV]
+function northStyleToSouthPacking(north: readonly number[]): number[] {
+  return [
+    north[2]!,
+    north[3]!,
+    north[0]!,
+    north[1]!,
+    north[6]!,
+    north[7]!,
+    north[4]!,
+    north[5]!
+  ]
 }
 
 /**
@@ -371,13 +372,10 @@ function buildPlaneGeometryWithUvs(uvs: number[]): THREE.BufferGeometry {
   }
 
   const north = normalizeNorthPlaneUvs(uvs.slice(0, 8))
-
-  // Flipbook sprites usually send 8 UVs (north only); south is mirrored.
-  // When 16 are authored, normalize the second face the same way then pack as south.
-  const south =
-    uvs.length >= 16
-      ? northStyleToSouthPacking(normalizeNorthPlaneUvs(uvs.slice(8, 16)))
-      : mirrorSouthPlaneUvs(north)
+  // Marquee already returned. All other planes: same-cell docs south from north.
+  // Do not read the second octuple — plaza missed-it copies north-order there;
+  // R4e's authored south is the same cell after flipbook normalize.
+  const south = northStyleToSouthPacking(north)
 
   const positions = new Float32Array([
     -0.5, 0.5, 0, 0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, -0.5, 0,
@@ -396,20 +394,6 @@ function buildPlaneGeometryWithUvs(uvs: number[]): THREE.BufferGeometry {
   geometry.setAttribute('uv', uvAttr)
   geometry.setIndex([0, 2, 1, 2, 3, 1, 4, 5, 6, 5, 7, 6])
   return geometry
-}
-
-/** Docs north BL,BR,TR,TL → south BR,BL,TL,TR (same corners, south winding). */
-function northStyleToSouthPacking(north: readonly number[]): number[] {
-  return [
-    north[2]!,
-    north[3]!,
-    north[0]!,
-    north[1]!,
-    north[6]!,
-    north[7]!,
-    north[4]!,
-    north[5]!
-  ]
 }
 
 /**
@@ -451,10 +435,7 @@ export function updatePlaneGeometryUvs(geometry: THREE.BufferGeometry, uvs: numb
   if (attr.count < 8) return false
 
   const north = normalizeNorthPlaneUvs(uvs.slice(0, 8))
-  const south =
-    uvs.length >= 16
-      ? northStyleToSouthPacking(normalizeNorthPlaneUvs(uvs.slice(8, 16)))
-      : mirrorSouthPlaneUvs(north)
+  const south = northStyleToSouthPacking(north)
   applyFaceUvs(attr, 0, DCL_PLANE_NORTH_CORNER_TO_THREE, north)
   applyFaceUvs(attr, 1, DCL_PLANE_SOUTH_CORNER_TO_THREE, south)
   attr.needsUpdate = true

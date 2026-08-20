@@ -48,7 +48,9 @@ export class ThrottledVideoTexture {
     this.canvas = document.createElement('canvas')
     this.canvas.width = 1
     this.canvas.height = 1
-    const ctx = this.canvas.getContext('2d', { alpha: false, desynchronized: true })
+    // Do not use `desynchronized: true` — Chrome WebGL texSubImage2D then throws
+    // "Overload resolution failed" and plaza HLS/mp4 screens stay black.
+    const ctx = this.canvas.getContext('2d', { alpha: false })
     if (!ctx) throw new Error('[ThrottledVideoTexture] 2d context unavailable')
     this.ctx = ctx
 
@@ -143,11 +145,20 @@ export class ThrottledVideoTexture {
     this.lastUploadMs = nowMs
 
     const { width, height } = fitWithin(vw, vh, SCENE_VIDEO_MAX_WIDTH, SCENE_VIDEO_MAX_HEIGHT)
+    if (width <= 0 || height <= 0) {
+      this.clearToBlack()
+      return
+    }
     if (this.canvas.width !== width || this.canvas.height !== height) {
       this.canvas.width = width
       this.canvas.height = height
     }
-    this.ctx.drawImage(this.video, 0, 0, width, height)
+    try {
+      this.ctx.drawImage(this.video, 0, 0, width, height)
+    } catch {
+      // Closed / 0×0 / CORS video — keep last good frame (or black).
+      return
+    }
     this.texture.needsUpdate = true
   }
 }

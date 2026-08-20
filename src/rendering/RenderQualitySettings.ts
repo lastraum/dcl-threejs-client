@@ -27,7 +27,7 @@ export type RenderQualityOptions = {
   shadowQuality: ShadowQuality
   sceneLightsEnabled: boolean
   maxSceneLights: number
-  /** Percent of devicePixelRatio (50–200). */
+  /** Percent of devicePixelRatio (50–120). */
   resolutionScale: number
   fpsLimit: FpsLimitOption
   /** MSAA samples for the main color buffer (0/2/4/8). Bloom path uses FXAA instead. */
@@ -96,13 +96,14 @@ export type RenderQualityOptions = {
 
 /** Min/max for Preferences → Scene Distance (AOI neighbor load radius). */
 export const SCENE_LOAD_RADIUS_MIN_M = 0
-export const SCENE_LOAD_RADIUS_MAX_M = 200
+/** Explorer ~20 parcels × 16 m. Bevy `--distance` default is 100 m. */
+export const SCENE_LOAD_RADIUS_MAX_M = 320
 /**
- * Default AOI warm/visual band (~4 parcels).
+ * Default AOI warm/visual band (~6 parcels / Bevy `--distance` 100 m).
  * 0 = primary only. Live workers stay adjacency-capped (see multiScene/caps).
  * Isolate single-scene CBD with `?noaoi` or slider 0.
  */
-export const SCENE_LOAD_RADIUS_DEFAULT_M = 64
+export const SCENE_LOAD_RADIUS_DEFAULT_M = 100
 
 export const LANDSCAPE_DISTANCE_MIN_M = 0
 export const LANDSCAPE_DISTANCE_MAX_M = 10000
@@ -135,7 +136,8 @@ export const LIGHT_CULL_DISTANCE_M = 40
 export const RESOLUTION_SCALE_MIN = 50
 /** Preferences slider ceiling — 120% is enough for sharp DPR without 2× pixel thrash. */
 export const RESOLUTION_SCALE_MAX = 120
-export const MAX_SCENE_LIGHTS_CAP = 20
+/** Explorer concurrent scene lights — Custom must not exceed High/Ultra. */
+export const MAX_SCENE_LIGHTS_CAP = 10
 
 /** Spot / directional shadow map resolution by shadow quality (not overall tier). */
 export const SHADOW_MAP_SIZE: Record<Exclude<ShadowQuality, 'off'>, number> = {

@@ -245,7 +245,7 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
       items: [
         {
           type: 'slider',
-          // Warm/visual ring: composites + roads + empty. Live workers = 16m scene adjacency (capped).
+          // Warm/visual ring: composites + roads + empty. Live workers stay 20 m enter (capped).
           label: 'Scene Distance',
           min: SCENE_LOAD_RADIUS_MIN_M,
           max: SCENE_LOAD_RADIUS_MAX_M,

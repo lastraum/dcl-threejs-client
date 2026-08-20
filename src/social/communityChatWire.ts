@@ -35,5 +35,16 @@ export function isMessageRouterIdentity(identity: string): boolean {
   )
 }
 
+/**
+ * Fake sender when message-router omitted `forwardedFrom`.
+ * Must not be treated as a wallet — `getPeerDisplay('community')` used to
+ * middle-ellipsis it to `commun…nity`.
+ */
+export const COMMUNITY_CHAT_ROUTER_SENDER = 'community'
+
+export function isCommunityChatRouterSender(address: string | undefined | null): boolean {
+  return (address?.trim().toLowerCase() ?? '') === COMMUNITY_CHAT_ROUTER_SENDER
+}
+
 /** Fallback when SFU not yet visible in remoteParticipants. */
 export const MESSAGE_ROUTER_FALLBACK_IDENTITIES = ['message-router-0', 'message-router-1'] as const

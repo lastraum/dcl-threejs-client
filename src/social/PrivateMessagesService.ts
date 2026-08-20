@@ -6,6 +6,7 @@ import { LiveKitCommsSession } from '../network/comms/LiveKitCommsSession'
 import { TransportType } from '../network/comms/Transport'
 import { getPrivateMessagesToken } from '../network/gatekeeper/privateMessages'
 import {
+  COMMUNITY_CHAT_ROUTER_SENDER,
   communityChatTopic,
   isMessageRouterIdentity,
   MESSAGE_ROUTER_FALLBACK_IDENTITIES,
@@ -512,8 +513,8 @@ class PrivateMessagesServiceImpl {
       extractForwardedFrom(data) ??
       (isMessageRouterIdentity(address) ? null : address.trim().toLowerCase())
     let from = fromRaw?.trim().toLowerCase() ?? ''
-    // Still surface the line if SFU omitted forwardedFrom (show as community member).
-    if (!from && isMessageRouterIdentity(address)) from = 'community'
+    // Still surface the line if SFU omitted forwardedFrom (community announcement).
+    if (!from && isMessageRouterIdentity(address)) from = COMMUNITY_CHAT_ROUTER_SENDER
     if (!from || from === this.localAddress) return
     const text = chat.text.trim()
     if (!text) return

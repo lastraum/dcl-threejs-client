@@ -479,11 +479,12 @@ export class CommsService {
     const t = topic.trim()
     if (!t) return false
     const body = encodeRfc5TopicPayload(t, packet)
-    // LiveKit first. DCL world SFUs often drop unknown `topic` fields — also send
-    // the same envelope as bare data (same pipe as RFC4 movement).
-    const sessions = this.liveKitBroadcastSessions()
+    // Scene LiveKit is the RFC4 Packet bus (Movement / Profile / scene-binary).
+    // Hammurabi Packet.decode()s every data payload — JSON topic envelopes log
+    // `index out of range` and can starve movement (player Transform stuck at y=0 → below deck).
+    const sessions = this.liveKitBroadcastSessions().filter((s) => s !== this.sceneLiveKit)
+    let sent = false
     if (sessions.length) {
-      let sent = false
       const bits: string[] = []
       for (const session of sessions) {
         const remotes = session.getRemotePeerAddresses().length
@@ -495,13 +496,12 @@ export class CommsService {
       clientDebugLog.log('comms', `topic-out ${t} · ${bits.join(' · ') || 'no rooms'}`, {
         alsoConsole: true
       })
-      return sent
     }
     if (this.rfc5.isConnected()) {
       this.rfc5.send(body, !reliable)
-      return true
+      sent = true
     }
-    return false
+    return sent
   }
 
   /**

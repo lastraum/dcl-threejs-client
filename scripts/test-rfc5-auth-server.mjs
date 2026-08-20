@@ -102,6 +102,9 @@ function u8From(text) {
   if (!comms.includes("parsed?.kind === 'ws-room'")) {
     fail('connectRealmComms must not re-join ws-room (kills hammurabi LiveKit)')
   } else ok('connectRealmComms skips ws-room reconnect')
+  if (!comms.includes('s !== this.sceneLiveKit')) {
+    fail('JSON topics must not go on scene LiveKit (hammurabi RFC4 Packet.decode)')
+  } else ok('JSON topics skip scene LiveKit')
 
   const rfc5 = readFileSync(join(root, 'src/network/comms/Rfc5RoomClient.ts'), 'utf8')
   if (!rfc5.includes('hasRemoteAddress(')) fail('Rfc5RoomClient.hasRemoteAddress')

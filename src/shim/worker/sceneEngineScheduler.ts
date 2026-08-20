@@ -191,6 +191,12 @@ let tickEpoch = 0
  * start engine.update(dt>0). Inbound LWW / cooperative interval only queue.
  */
 let sceneLoopOwnsPositiveDt = false
+/**
+ * Host loading overlay (or hydration) is covering the player-visible canvas/UI.
+ * Cooperative ticks still run so CRDT / react-ecs can mount, but dt stays 0 so
+ * scene splash / addSystem timers do not burn under the overlay.
+ */
+let hostOverlayHoldsSceneTime = false
 /** Source of the in-flight cooperative start — applied dt is logged from the wrap. */
 let pendingGuestTickSource: SceneEngineTickSource | null = null
 /** Serialize engine.update — cooperative ticks must not interleave with pointer interactive ticks. */
@@ -293,6 +299,7 @@ export function resetSceneEngineScheduler(): void {
   diagCount = 0
   tickEpoch = 0
   sceneLoopOwnsPositiveDt = false
+  hostOverlayHoldsSceneTime = false
   pendingGuestTickSource = null
   pendingWorldMeshPet.length = 0
   resetPlayModePointerUiEgress()
@@ -639,6 +646,7 @@ async function runCooperativeEngineTickPhases(engineDt: number): Promise<void> {
     diagCount++
     cfg.log(
       `[sceneWorker] engine tick #${diagCount} dt=${dt.toFixed(3)} hydration=${cfg.isHydration()}` +
+        ` hold=${shouldHoldSceneVisibleTime() ? 1 : 0}` +
         ` sceneT=${sceneTimeSec.toFixed(2)}s elapsed=${wallElapsedSinceLastTickSec().toFixed(3)}`
     )
   }
@@ -784,6 +792,25 @@ export function isSceneLoopOwnsPositiveDt(): boolean {
   return sceneLoopOwnsPositiveDt
 }
 
+/** True when host overlay / hydration must not advance scene-visible timers. */
+export function shouldHoldSceneVisibleTime(): boolean {
+  return hostOverlayHoldsSceneTime || config?.isHydration() === true
+}
+
+/**
+ * Freeze addSystem / splash clocks while the host loading overlay covers the scene.
+ * Release stamps lastExecutedAt so the first play-frame is one step, not overlay wall debt.
+ */
+export function setHostOverlayHoldsSceneTime(held: boolean): void {
+  const was = hostOverlayHoldsSceneTime
+  hostOverlayHoldsSceneTime = held
+  if (was && !held) {
+    const now = performance.now()
+    lastExecutedAt = now
+    if (wallClockOriginMs <= 0) wallClockOriginMs = now
+  }
+}
+
 /** Mark a real-dt tick needed; SceneLoop play-frame starts it. */
 export function queueSceneEngineTick(): void {
   if (!engine || !bootSealed) return
@@ -811,20 +838,27 @@ export function requestSceneEngineTick(
     tickQueued = true
     return 'deferred'
   }
-  let dt = resolveDt()
+  const holdTime = shouldHoldSceneVisibleTime()
+  let dt = holdTime ? 0 : resolveDt()
   // Same-frame re-entry: no wall elapsed yet — do not invent large time, but queue so
   // the next play-frame-tick can run (was a hard return that starved timers).
-  if (dt <= 0 && lastExecutedAt > 0) {
-    tickQueued = true
-    return 'deferred'
+  // Overlay/hydration hold is an intentional dt=0 tick (mount UI, do not burn splash).
+  if (!holdTime) {
+    if (dt <= 0 && lastExecutedAt > 0) {
+      tickQueued = true
+      return 'deferred'
+    }
+    if (dt <= 0) dt = Math.min(1 / 60, MAX_ENGINE_DT_SEC)
   }
-  if (dt <= 0) dt = Math.min(1 / 60, MAX_ENGINE_DT_SEC)
   pendingGuestTickSource = opts.source
   const epoch = tickEpoch
   // This start satisfies any inbound queue (store already updated).
   tickQueued = false
   tickInFlight = true
   tickStartedAt = performance.now()
+  // dt=0 hold ticks do not stamp inside wrapEngineUpdate — space the interval
+  // without advancing sceneTimeSec / splash clocks.
+  if (holdTime) lastExecutedAt = tickStartedAt
   void executeTickWork(dt)
     .finally(() => {
       // Always clear if we still own this epoch. If preempt bumped epoch, it already
@@ -859,9 +893,10 @@ export function requestSceneEngineTick(
       if (epoch !== tickEpoch || !config) return
       if (config.isHydration() || !config.onUnifiedPlayFrameComplete) return
       const pollDt = lastCompletedEngineDt
-      if (!(pollDt > 0)) return
+      // Held overlay starts play-frames at dt=0 — still ack or SceneLoop stalls in-flight.
+      if (!(pollDt > 0) && !holdTime) return
       try {
-        await config.onUnifiedPlayFrameComplete(pollDt)
+        await config.onUnifiedPlayFrameComplete(pollDt > 0 ? pollDt : 0)
       } catch (err) {
         config.log(
           `[sceneWorker] play frame poll after tick failed — ${

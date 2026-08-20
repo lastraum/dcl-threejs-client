@@ -7331,6 +7331,12 @@
       body.client-loading #hud {
         pointer-events: none !important;
       }
+      /* Scene ECS splash lives under this overlay — hide it until the host loader is gone. */
+      body.client-loading #scene-ui-root,
+      body.client-loading #pe-ui-root {
+        display: none !important;
+        pointer-events: none !important;
+      }
       /* Never let the 2D voice pill paint over loading, or show in-world (chat strip instead). */
       body.client-loading .community-voice-float,
       body.client-in-world .community-voice-float {
@@ -26949,9 +26955,9 @@
           top: calc(var(--social-shell-header-height) + 8px);
           left: auto;
           right: max(18px, env(safe-area-inset-right, 0px));
-          width: clamp(240px, 16vw, 320px);
+          width: clamp(280px, 22vw, 380px);
           min-width: 0;
-          max-width: clamp(240px, 16vw, 320px);
+          max-width: clamp(280px, 22vw, 380px);
           padding: 0;
           align-items: stretch;
         }

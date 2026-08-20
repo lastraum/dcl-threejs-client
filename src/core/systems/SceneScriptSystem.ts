@@ -352,6 +352,11 @@ export class SceneScriptSystem {
    * Survives `prepare()` recreating the bridge (constructor always starts hidden).
    */
   private sceneUiDesiredVisible = false
+  /**
+   * Host loading overlay covering play — worker engine.update(dt=0) until overlay gone.
+   * Stashed so boot can seed the worker before postMessage is available.
+   */
+  private hostOverlayHoldsSceneTime = false
   /** FocusOwner — secondary hard-mutes media and never shows scene UI. */
   private focusPolicy: import('../../dcl/multiScene/types').FocusPolicy = 'primary'
   private sceneUiResizeObserver: ResizeObserver | null = null
@@ -2287,6 +2292,7 @@ export class SceneScriptSystem {
     const boot: SceneWorkerBoot = {
       type: 'boot',
       canvas: liveVirtualCanvas(readInteractableArea(this.host?.renderer.domElement ?? null)),
+      holdSceneTime: this.hostOverlayHoldsSceneTime,
       reserved: this.hostReservedForWorker(),
       debug: {
         sceneInputSnapshot: SCENE_INPUT_SNAPSHOT_VERBOSE,
@@ -6604,6 +6610,18 @@ export class SceneScriptSystem {
     this.worker?.postMessage({ type: 'pause-scene-onupdate', paused } satisfies MainToWorker)
   }
 
+  /**
+   * Freeze scene-visible dt while the host loading overlay covers canvas/UI.
+   * Must be set before `prepare()`/boot so splash clocks do not start under the overlay.
+   */
+  setHostOverlayHoldsSceneTime(held: boolean): void {
+    this.hostOverlayHoldsSceneTime = held
+    this.worker?.postMessage({
+      type: 'hold-scene-time-for-host-overlay',
+      held
+    } satisfies MainToWorker)
+  }
+
   /** Scene + PhysX colliders ready — throttle worker onUpdate (called from World after boot cook). */
   notifyPlayReady(options?: {
     plazaScale?: boolean
@@ -7412,6 +7430,7 @@ export class SceneScriptSystem {
   }
 
   dispose(): void {
+    this.hostOverlayHoldsSceneTime = false
     // Next scene load re-arms hold via World.prepare; clear release hook so stale ready cannot open early.
     this.sceneBinaryIngressRelease = null
     resetBlimpPivotCache()

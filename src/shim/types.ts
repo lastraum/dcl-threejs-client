@@ -65,6 +65,11 @@ export type SceneWorkerBoot = {
   type: 'boot'
   /** Live interactable px — worker seeds UiCanvasInformation (not SDK 7.26 1920×1080). */
   canvas?: { width: number; height: number }
+  /**
+   * Host loading overlay is covering the canvas — freeze scene-visible dt until release.
+   * Primary Jump In / teleport only; PE / secondary boots leave this unset.
+   */
+  holdSceneTime?: boolean
   debug?: SceneWorkerDebugFlags
   /**
    * PlayerIdentityData + RealmInfo for the worker scene store.
@@ -394,6 +399,11 @@ export type MainToWorker =
   | { type: 'pause-scene-ticks'; paused?: boolean }
   /** Hydration — skip exports.onUpdate only; engine.update still runs for composite CRDT. */
   | { type: 'pause-scene-onupdate'; paused?: boolean }
+  /**
+   * Host loading overlay covering play — engine.update(0) so splash/addSystem clocks
+   * do not burn under the overlay. Release after overlay dismiss + scene UI reveal.
+   */
+  | { type: 'hold-scene-time-for-host-overlay'; held: boolean }
   | {
       type: 'scene-play-ready'
       performanceTier?: PerformanceTier

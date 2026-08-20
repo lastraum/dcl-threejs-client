@@ -2684,13 +2684,16 @@ export class AppController {
         // Dispose 2D chat dock only — keep SocialMobileNotifications for peer toasts.
         this.teardownSocialChatShell(true)
         this.revealPlayChrome()
+        this.releaseSceneTimeAfterHostOverlay()
       } else if (loading) {
         await loading.finish(Promise.resolve(), { skipHold: !hydrationTimedOut })
         // In-play / follow teleports: loading.finish does not call revealPlayChrome.
         this.revealPlayChrome()
+        this.releaseSceneTimeAfterHostOverlay()
       } else {
         // Seamless promote — chrome already visible.
         this.revealPlayChrome()
+        this.releaseSceneTimeAfterHostOverlay()
       }
       // Re-bind toast host after any shell teardown so pool-claim / tour listeners stay live.
       this.ensureSocialMobileNotifications()
@@ -2842,6 +2845,9 @@ export class AppController {
     const { World } = await import('../core/World')
     const world = new World(this.container)
     this.world = world
+    // Freeze splash / addSystem clocks until play chrome is actually shown.
+    // Host overlay (or hidden scene UI during settle) must not burn scene-visible time.
+    world.setHostOverlayHoldsSceneTime(true)
     world.applyLogin(this.login)
     world.setNavigateHandler((target) => {
       const from = this.currentRoute
@@ -3465,6 +3471,13 @@ export class AppController {
     if (this.locationMapStack) this.locationMapStack.hidden = true
     this.mobileHud?.setShellVisible(false)
     this.world?.setSceneUiVisible(false)
+  }
+
+  /**
+   * Overlay is gone and scene UI is visible — scene splash / addSystem clocks may run.
+   */
+  private releaseSceneTimeAfterHostOverlay(): void {
+    this.world?.setHostOverlayHoldsSceneTime(false)
   }
 
   private revealPlayChrome(): void {

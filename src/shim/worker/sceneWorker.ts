@@ -192,6 +192,7 @@ import {
   queueSceneEngineTick,
   setSceneLoopOwnsPositiveDt,
   isSceneLoopOwnsPositiveDt,
+  setHostOverlayHoldsSceneTime,
   runSceneEngineUpdateNow,
   resetSceneEngineDiagCount,
   resetSceneEngineScheduler,
@@ -4129,6 +4130,14 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
 }
 
 async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
+  if (msg.type === 'hold-scene-time-for-host-overlay') {
+    setHostOverlayHoldsSceneTime(msg.held === true)
+    workerLog(
+      'log',
+      `[sceneWorker] host overlay ${msg.held === true ? 'holds' : 'releases'} scene time`
+    )
+    return
+  }
   if (msg.type === 'force-locomotion-clear') {
     if (sceneEngine) {
       const ok = forceUnfreezeModeOnlyFromMain(
@@ -4417,6 +4426,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     portableExperienceWorker = false
     clearPlayModeColdCrdtBuffer()
     resetSceneEngineScheduler()
+    setHostOverlayHoldsSceneTime(msg.holdSceneTime === true)
+    if (msg.holdSceneTime === true) {
+      workerLog('log', '[sceneWorker] boot — host overlay holds scene time (dt=0 until overlay gone)')
+    }
     resetWorkerUiFingerprint()
     resetLastAuthoredVirtualCanvas()
     pendingOutboundAck.clear()

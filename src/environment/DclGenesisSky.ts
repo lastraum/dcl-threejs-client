@@ -315,6 +315,7 @@ export class DclGenesisSky {
       uniforms: this.uniforms,
       vertexShader: SKY_VERTEX,
       fragmentShader: SKY_FRAGMENT,
+      depthTest: false,
       depthWrite: false,
       fog: false,
       toneMapped: false

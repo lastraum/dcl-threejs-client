@@ -81,7 +81,7 @@ export class SceneHost {
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' })
     this.renderer.setPixelRatio(effectivePixelRatio(renderQuality.getResolutionScale()))
     this.renderer.setSize(window.innerWidth, window.innerHeight)
-    this.renderer.setClearColor(0x1a1a2e)
+    this.renderer.setClearColor(0x1c6bd9)
     // Bloom composer calls renderer.render() per pass; autoReset made HUD draws:1.
     this.renderer.info.autoReset = false
     container.appendChild(this.renderer.domElement)

@@ -24,12 +24,12 @@ export const MOON_BRIGHTNESS = 0.92
  * Unity Trilight ambient (SkyboxRenderController.UpdateIndirectLight):
  * Hemisphere = sky + ground; AmbientLight = equator band (soft fill on vertical surfaces).
  */
-/** Day hemi sky/ground — keep below ~0.4 so sun key + emissives stay primary (Explorer outdoor). */
-export const HEMI_DAY_INTENSITY = 0.36
+/** Day hemi sky/ground — Explorer 10:00 outdoor fill (washout 0.36 crushed wood/GLB). */
+export const HEMI_DAY_INTENSITY = 0.42
 /** Night sky/ground ambient — purple fill, darker than day (Explorer 00:00, not washed). */
 export const HEMI_NIGHT_INTENSITY = 0.38
-/** Day equator fill on verticals — was 0.48 and lifted midtones chalk-white under ACES+bloom. */
-export const EQUATOR_AMBIENT_DAY = 0.38
+/** Day equator fill on verticals — lavender bounce; 0.38 was too dark vs Explorer locked TOD. */
+export const EQUATOR_AMBIENT_DAY = 0.46
 /** Night equator — soft cool fill without lifting marble/grass to day levels. */
 export const EQUATOR_AMBIENT_NIGHT = 0.32
 /**

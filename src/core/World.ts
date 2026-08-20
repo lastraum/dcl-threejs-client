@@ -852,6 +852,12 @@ export class World {
     scene.landscapeEnvironment = resolvedEnv.landscapeEnvironment
     scene.skyLighting = resolvedEnv.skyLighting
     environmentDebug.setSceneEnvironment(resolvedEnv.landscapeEnvironment)
+    clientDebugLog.log(
+      'client',
+      `[environment] kind=${resolvedEnv.landscapeEnvironment} source=${scene.source.kind} ` +
+        `disableSun=${resolvedEnv.skyLighting.disableSun} disableMoon=${resolvedEnv.skyLighting.disableMoon}`,
+      { alsoConsole: true }
+    )
 
     onProgress?.('Setting up sky…')
     await this.environment.init(scene)
@@ -4890,6 +4896,14 @@ export class World {
 
   setSceneUiVisible(visible: boolean): void {
     this.sceneScript.setSceneUiVisible(visible)
+  }
+
+  /**
+   * Host loading overlay covering play — freeze scene-visible dt (splash / addSystem)
+   * until the overlay is dismissed. Set before loadScene so boot seeds the worker.
+   */
+  setHostOverlayHoldsSceneTime(held: boolean): void {
+    this.sceneScript.setHostOverlayHoldsSceneTime(held)
   }
 
   /**

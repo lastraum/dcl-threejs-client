@@ -13,7 +13,12 @@ import {
   gatekeeperRealmNameForComms,
   isAddressMetadataBlacklisted
 } from './sceneAccess/sceneAccessCommon'
-import { fetchSceneParticipants, getSceneAdapter } from './gatekeeper/GatekeeperClient'
+import {
+  fetchSceneParticipants,
+  GATEKEEPER_LOCAL_URL,
+  getSceneAdapter,
+  LOCAL_PREVIEW_REALM_NAME
+} from './gatekeeper/GatekeeperClient'
 import {
   acquireWalletSessionLock,
   refreshWalletSessionLock,
@@ -56,14 +61,16 @@ import { encodeRfc4SceneBinaryPacket, Rfc4Router } from './comms/Rfc4Router'
 import { DAV_SCENE_ID } from '../avatar/vrm/dclClientAvatar'
 import { DPET_SCENE_ID } from '../pets/dclClientPet'
 import { Rfc5RoomClient } from './comms/Rfc5RoomClient'
-import { isLiveKitAdapter } from './comms/livekitAdapter'
+import { isLiveKitAdapter, isUnusableLiveKitAdapter } from './comms/livekitAdapter'
 import type { ActiveVideoStream } from './comms/livekitVideoStreams'
 import { TransportType } from './comms/Transport'
 import {
+  classifyRfc5PeerUpdateBody,
   decodeRfc5TopicPayload,
   decodeTransformPayload,
   encodeRfc5TopicPayload,
   encodeTransformPayload,
+  isLocalPreviewComms,
   type AvatarTransformPayload,
   type CommsRealmInfo
 } from './comms/types'
@@ -597,9 +604,14 @@ export class CommsService {
     // paint never writes Material (crdt-outbound bytes=0 while walking).
     const sceneRoom =
       this.transport === 'livekit' ? this.sceneLiveKit.isConnected() : this.rfc5.isConnected()
+    const preview =
+      this.realm.isPreview === true ||
+      this.transport === 'rfc5' ||
+      isLocalPreviewComms(this.realm.commsAdapter, this.realm.realmName)
     return {
       ...this.realm,
       room: this.sceneTarget?.pointer ?? this.realm.room,
+      isPreview: preview,
       isConnectedSceneRoom: sceneRoom
     }
   }
@@ -627,6 +639,12 @@ export class CommsService {
       `Realm comms adapter · ${parsed?.kind ?? 'unknown'} · ${hint.slice(0, 80)}`,
       { level: 'info', alsoConsole: true }
     )
+
+    // Preview mini-comms is not Genesis archipelago. Re-connecting ws-room calls
+    // disconnectAllTransports and kills the hammurabi scene LiveKit (AUTH_RES / CUSTOM_EVENT).
+    if (parsed?.kind === 'ws-room') {
+      return this.rfc5.isConnected() || this.sceneLiveKit.isConnected()
+    }
 
     const connected = await this.adapterManager.connect(hint, 'world')
     this.worldConnected = this.worldLiveKit.isConnected()
@@ -798,7 +816,9 @@ export class CommsService {
       target.commsAdapterHint?.trim() || this.realmCommsHint || this.realm.commsAdapter || ''
     const parsedHint = this.adapterManager.parse(adapterHint)
     // sdk-commands preview: `/about` advertises `ws-room:…/mini-comms/room-1`.
-    // Join that mock RFC-5 room — do not hit production gatekeeper LiveKit.
+    // That RFC-5 room is two-tab avatars only. Hammurabi (`@dcl/sdk@auth-server`)
+    // stripped ws-room and joins LiveKit via comms-gatekeeper-local — same room
+    // Explorer uses for CUSTOM_EVENT / AUTH_RES. Join both.
     if (parsedHint?.kind === 'ws-room') {
       if (!acquireWalletSessionLock(this.localAddress)) {
         clientDebugLog.log('comms', 'Blocked second client — wallet already active in another tab', {
@@ -820,6 +840,7 @@ export class CommsService {
         level: 'success',
         alsoConsole: true
       })
+      await this.joinLocalPreviewAuthLiveKit(target)
       return { ok: true }
     }
     // World server owner can omit LiveKit — still load scene content solo (no chat/peers).
@@ -1379,7 +1400,12 @@ export class CommsService {
       // RFC5 has no directed peer targeting — broadcast only (rare fallback path).
       if (addresses.length) logSyncDirectedFallback(addresses, 'rfc5-broadcast')
       if (!this.rfc5.isConnected()) return this.inboundQueue.drain()
-      for (const chunk of data) this.rfc5.send(chunk, false)
+      this.maybeNoteMissingAuthServer()
+      for (const chunk of data) {
+        const unwrapped = unwrapCraftedCommsMessage(chunk)
+        const reliable = !unwrapped || isReliableCommsWireType(unwrapped.messageType)
+        this.rfc5.send(chunk, !reliable)
+      }
       return this.inboundQueue.drain()
     }
 
@@ -1395,7 +1421,7 @@ export class CommsService {
     }
 
     // Throttled hint: auth-server games never paint without this peer.
-    this.maybeLogMissingAuthServer(session)
+    this.maybeNoteMissingAuthServer()
 
     for (const chunk of data) {
       // Parity with @dcl/ecs LIVEKIT_MAX_SIZE — SDK chunks; refuse runaway single blobs.
@@ -1450,10 +1476,14 @@ export class CommsService {
   private onAuthServerPresent: (() => void) | null = null
 
   /**
-   * True when peer identity `authoritative-server` is in the **scene** LiveKit room.
-   * Pixelwars paint / Flagtag combat require this peer for isRoomReady + teamAssigned.
+   * True when peer identity `authoritative-server` is in the scene room
+   * (LiveKit Cast/scene room, or sdk-commands mini-comms / RFC5).
+   * Pixelwars paint / Flagtag combat / Last Call Dock require this peer for isRoomReady.
    */
   hasAuthServerPeer(): boolean {
+    if (this.transport === 'rfc5') {
+      return this.rfc5.hasRemoteAddress(AUTH_SERVER_PEER_IDENTITY)
+    }
     if (!this.sceneLiveKit.isConnected()) return false
     return this.sceneLiveKit.hasRemoteIdentity(AUTH_SERVER_PEER_IDENTITY)
   }
@@ -1474,33 +1504,41 @@ export class CommsService {
     }
   }
 
+  private noteAuthServerPeer(address: string): void {
+    if (address.trim().toLowerCase() !== AUTH_SERVER_PEER_IDENTITY) return
+    if (this.authServerSeen) return
+    this.authServerSeen = true
+    const via = this.transport === 'rfc5' ? 'mini-comms' : 'scene LiveKit'
+    clientDebugLog.log(
+      'sync',
+      `authoritative-server present in ${via} — isRoomReady / CUSTOM_EVENT can drain`,
+      { level: 'success', alsoConsole: true }
+    )
+    try {
+      this.onAuthServerPresent?.()
+    } catch {
+      /* ignore */
+    }
+  }
+
   /** Once per 15s while scene room is live but auth-server peer is absent. */
-  private maybeLogMissingAuthServer(session: LiveKitCommsSession): void {
-    if (!this.sceneLiveKit.isConnected()) return
-    if (session.hasRemoteIdentity(AUTH_SERVER_PEER_IDENTITY)) {
-      if (!this.authServerSeen) {
-        this.authServerSeen = true
-        clientDebugLog.log(
-          'sync',
-          `authoritative-server present in scene room — remotes=${session.getRemotePeerAddresses().length}`,
-          { level: 'success', alsoConsole: true }
-        )
-        try {
-          this.onAuthServerPresent?.()
-        } catch {
-          /* ignore */
-        }
-      }
+  private maybeNoteMissingAuthServer(): void {
+    const live =
+      this.transport === 'rfc5' ? this.rfc5.isConnected() : this.sceneLiveKit.isConnected()
+    if (!live) return
+    if (this.hasAuthServerPeer()) {
+      this.noteAuthServerPeer(AUTH_SERVER_PEER_IDENTITY)
       return
     }
     const now = performance.now()
     if (now - this.lastMissingAuthServerLogMs < 15_000) return
     this.lastMissingAuthServerLogMs = now
+    const via = this.transport === 'rfc5' ? 'mini-comms room' : 'scene LiveKit room'
     clientDebugLog.log(
       'sync',
-      'authoritative-server peer not in scene LiveKit room — auth-server games ' +
-        '(pixelwars paint/team, Flagtag) will not isRoomReady / teamAssigned until it joins. ' +
-        `remotes=${session.getRemotePeerAddresses().length} sceneId=${this.sceneId.slice(0, 16)}…`,
+      `authoritative-server peer not in ${via} — auth-server games ` +
+        '(Last Call Dock deck, pixelwars paint/team, Flagtag) will not isRoomReady until it joins. ' +
+        `sceneId=${this.sceneId.slice(0, 16)}…`,
       { level: 'warn', alsoConsole: true }
     )
   }
@@ -2008,28 +2046,116 @@ export class CommsService {
     return connected
   }
 
+  /**
+   * Hammurabi local-preview law: `/about` ws-room is not the auth-server bus.
+   * Server calls `comms-gatekeeper-local/get-server-scene-adapter` with
+   * realmName=LocalPreview + scene entity id and sits in that LiveKit room as
+   * `authoritative-server`. The player must `get-scene-adapter` the same pair.
+   */
+  private async joinLocalPreviewAuthLiveKit(target: SceneCommsTarget): Promise<void> {
+    const sceneId = (this.sceneId || target.sceneId).trim()
+    if (!this.identity || !sceneId) {
+      clientDebugLog.log(
+        'sync',
+        'Preview auth LiveKit skipped — missing identity or sceneId (hammurabi will not see this client)',
+        { level: 'warn', alsoConsole: true }
+      )
+      return
+    }
+    const parcel = gatekeeperParcelForComms(target)
+    clientDebugLog.log(
+      'comms',
+      `Preview auth LiveKit handshake · scene=${sceneId.slice(0, 20)}… realm=${LOCAL_PREVIEW_REALM_NAME} parcel=${parcel}`,
+      { level: 'info', alsoConsole: true }
+    )
+    const result = await getSceneAdapter(
+      this.identity,
+      {
+        sceneId,
+        parcel,
+        realmName: LOCAL_PREVIEW_REALM_NAME,
+        isWorld: false
+      },
+      GATEKEEPER_LOCAL_URL
+    )
+    if (!result.ok) {
+      clientDebugLog.log(
+        'sync',
+        `Preview auth LiveKit handshake failed (${result.status} ${result.error}) — ` +
+          'authoritative-server is on gatekeeper-local LiveKit, not mini-comms. ' +
+          'Need internet to comms-gatekeeper-local.decentraland.org.',
+        { level: 'warn', alsoConsole: true }
+      )
+      return
+    }
+    if (!isLiveKitAdapter(result.adapter) || isUnusableLiveKitAdapter(result.adapter)) {
+      clientDebugLog.log(
+        'sync',
+        'Preview auth handshake returned a non-LiveKit adapter — staying on mini-comms only',
+        { level: 'warn', alsoConsole: true }
+      )
+      return
+    }
+    const connected = await this.connectLiveKitLabel(result.adapter, 'scene')
+    if (!connected) {
+      clientDebugLog.log(
+        'sync',
+        'Preview scene LiveKit connect failed — staying on mini-comms',
+        { level: 'warn', alsoConsole: true }
+      )
+      return
+    }
+    this.transport = 'livekit'
+    this.realm.isConnectedSceneRoom = true
+    this.maybeNoteMissingAuthServer()
+    clientDebugLog.log(
+      'sync',
+      'Preview scene LiveKit connected — CUSTOM_EVENT / AUTH_RES use this room (not mini-comms)',
+      { level: 'success', alsoConsole: true }
+    )
+  }
+
   private connectWsRoom(wsUrl: string, roomHint?: string): boolean {
     if (!this.localAddress || !this.identity) return false
-    this.disconnectAllTransports()
+    const already =
+      this.rfc5.isConnected() && this.realm.commsAdapter === `ws-room:${wsUrl}`
+    if (already) {
+      this.realm.room = roomHint ?? this.realm.room
+      return true
+    }
+    // Keep scene LiveKit (hammurabi) if we are only (re)joining mini-comms avatars.
+    const keepSceneLiveKit = this.sceneLiveKit.isConnected()
+    if (keepSceneLiveKit) {
+      this.rfc5.disconnect()
+    } else {
+      this.disconnectAllTransports()
+    }
     this.realm = {
       ...this.realm,
       commsAdapter: `ws-room:${wsUrl}`,
       room: roomHint ?? this.realm.room,
+      isPreview: true,
       isConnectedSceneRoom: false
     }
 
     this.rfc5.connect(wsUrl, this.localAddress, this.identity, {
       onWelcome: (_alias, peers) => {
-        this.transport = 'rfc5'
-        this.realm.isConnectedSceneRoom = true
+        // Scene LiveKit (hammurabi) owns sendBinary when connected — do not clobber.
+        if (this.transport !== 'livekit') {
+          this.transport = 'rfc5'
+          this.realm.isConnectedSceneRoom = true
+        }
+        this.realm.isPreview = true
         for (const address of peers.values()) {
           if (address === this.localAddress) continue
           this.handlers?.onPeerJoin(address)
+          this.noteAuthServerPeer(address)
         }
       },
       onPeerJoin: (_alias, address) => {
         if (address === this.localAddress) return
         this.handlers?.onPeerJoin(address)
+        this.noteAuthServerPeer(address)
       },
       onPeerLeave: (alias) => {
         const address = this.rfc5.getAddressForAlias(alias)
@@ -2038,15 +2164,28 @@ export class CommsService {
       onPeerUpdate: (fromAlias, body) => {
         const address = this.rfc5.getAddressForAlias(fromAlias)
         if (!address || address === this.localAddress) return
-        const payload = decodeTransformPayload(body)
-        if (payload) {
-          this.handlers?.onPeerTransform(address, payload)
+        const kind = classifyRfc5PeerUpdateBody(body)
+        if (kind === 'transform') {
+          const payload = decodeTransformPayload(body)
+          if (payload) this.handlers?.onPeerTransform(address, payload)
           return
         }
-        const topic = decodeRfc5TopicPayload(body)
-        if (topic) this.dispatchTopic(topic.topic, address, topic.packet)
+        if (kind === 'topic') {
+          const topic = decodeRfc5TopicPayload(body)
+          if (topic) this.dispatchTopic(topic.topic, address, topic.packet)
+          return
+        }
+        if (!body.byteLength) return
+        this.noteAuthServerPeer(address)
+        this.inboundQueue.pushSceneBinary(address, body)
+        this.sceneBinaryHandler?.(address, body)
       },
       onDisconnect: () => {
+        if (this.sceneLiveKit.isConnected()) {
+          this.transport = 'livekit'
+          this.realm.isConnectedSceneRoom = true
+          return
+        }
         this.realm.isConnectedSceneRoom = false
         if (this.transport === 'rfc5') this.transport = 'none'
       },

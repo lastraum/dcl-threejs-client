@@ -53,6 +53,14 @@ export class Rfc5RoomClient {
     return this.addressByAlias.get(alias)
   }
 
+  hasRemoteAddress(address: string): boolean {
+    const normalized = address.trim().toLowerCase()
+    if (!normalized) return false
+    const alias = this.aliasByAddress.get(normalized)
+    if (alias == null) return false
+    return this.myAlias === null || alias !== this.myAlias
+  }
+
   send(body: Uint8Array, unreliable = true): void {
     if (this.myAlias === null) return
     this.sendPacket({

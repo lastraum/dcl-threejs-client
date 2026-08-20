@@ -45,6 +45,7 @@ import {
   endEngUpdatePhase,
   resetEngUpdatePhases
 } from './workerEngUpdatePhases'
+import { engineDtToSeconds, MAX_ENGINE_DT_SEC } from './engineDtSeconds'
 
 let lastUiDirtySnapshotLogAt = 0
 
@@ -404,16 +405,6 @@ export function setSceneEngineLastExecutedAt(ms: number): void {
 }
 
 /**
- * Explorer-style max frame step (seconds). Timers (`accumulatedTime += 1000*dt`) and
- * continuous systems need hitch recovery; 33ms was too tight and leftover “debt skips”
- * froze SDK setTimeout (Spring flower scale 0.1→1 after 500ms).
- *
- * Cap at 250ms so sustained heavy ticks (fishing cast/reel UI + plaza systems) still
- * advance scene time near wall clock. A 100ms cap with 5Hz ticks ran animations at ~½ speed.
- */
-const MAX_ENGINE_DT_SEC = 0.25
-
-/**
  * Wall elapsed still available for a positive system step (seconds).
  * Based on last positive update — not a cumulative ledger that can go permanently flat.
  */
@@ -451,15 +442,17 @@ function resolveDt(): number {
  */
 function clampDtToWallClock(requested: number): number {
   if (!(requested > 0)) return 0
+  const seconds = engineDtToSeconds(requested)
+  if (!(seconds > 0)) return 0
   if (wallClockOriginMs <= 0 || lastExecutedAt <= 0) {
     wallClockOriginMs = performance.now()
     lastExecutedAt = wallClockOriginMs
     sceneTimeSec = 0
-    return Math.min(requested, MAX_ENGINE_DT_SEC)
+    return Math.min(seconds, MAX_ENGINE_DT_SEC)
   }
   const elapsed = wallElapsedSinceLastTickSec()
-  if (elapsed <= 1e-5) return Math.min(requested, 1 / 120, MAX_ENGINE_DT_SEC)
-  return Math.min(requested, elapsed, MAX_ENGINE_DT_SEC)
+  if (elapsed <= 1e-5) return Math.min(seconds, 1 / 120, MAX_ENGINE_DT_SEC)
+  return Math.min(seconds, elapsed, MAX_ENGINE_DT_SEC)
 }
 
 function resolveIntervalMs(): number {

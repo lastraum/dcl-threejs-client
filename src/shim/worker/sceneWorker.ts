@@ -2785,8 +2785,8 @@ const EMPTY_RENDERER_INJECT_COUNTS = {
  * Platform: host LWW (e.g. GltfContainerLoadingState) landed → run systems so scenes can
  * react (InputModifier deleteFrom, UI, etc.) → egress player-frame so main matches worker.
  *
- * When terminal LoadingState PUTs land and the scene still leaves disableAll after systems
- * tick, release the load-gate freeze (SpaceRunner map portal). Mode-only freezes untouched.
+ * When terminal LoadingState PUTs land, only a **platform** load-gate freeze may be
+ * force-cleared. Scene lock-all (`latchSrc=scene`) stays until the scene deletes it.
  *
  * Free-play late attaches (pool cells etc.): one engine tick only — never the 3-tick
  * load-gate path (that flooded player-frame + tanked plaza FPS/colliders).
@@ -4180,6 +4180,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     if (!playFrameTickMainDriven) {
       playFrameTickMainDriven = true
       setSceneLoopOwnsPositiveDt(true)
+      resetSceneEngineDiagCount()
       workerLog('log', '[sceneWorker] first play-frame-tick — main now drives engine ticks')
     }
     // Reserved poses + pointer first — same message as the tick so CameraFollow /

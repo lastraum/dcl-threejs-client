@@ -8,7 +8,6 @@ import type { ProjectionView } from '../bridge/ProjectionView'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import {
   dclToThreePos,
-  dclToThreeQuat,
   entityDisplayQuatToThreeCameraQuat,
   threeToDclPos,
   type DclTransformValues
@@ -38,10 +37,6 @@ const _lookUp = new THREE.Vector3()
 const _camZ = new THREE.Vector3()
 const _entityDisplayQuat = new THREE.Quaternion()
 const _worldUp = new THREE.Vector3(0, 1, 0)
-const _followParentMat = new THREE.Matrix4()
-const _followLocalMat = new THREE.Matrix4()
-const _followWorldMat = new THREE.Matrix4()
-const _followScale = new THREE.Vector3()
 const _gizmoWorld = new THREE.Vector3()
 const _gizmoWorldQuat = new THREE.Quaternion()
 let lastFollowDiagMs = 0
@@ -82,16 +77,6 @@ export class VirtualCameraBridge {
   /** Last target we applied — distinguishes teleport (accept) from single-frame CRDT spikes (hold). */
   private readonly lastAppliedTargetPos = new THREE.Vector3()
   private hasAppliedTarget = false
-  /**
-   * Dummy follow-root (no lookAtEntity): scene lerps a non-reserved parent toward the
-   * avatar. Live PE + local boom while that parent is tracking; a parked hub root never
-   * arms (proximity alone is not a camera API).
-   */
-  private boomFollowArmed = false
-  private boomFollowParent: number | null = null
-  private lastBoomParent = { x: 0, y: 0, z: 0, set: false }
-  private lastBoomPlayer = { x: 0, y: 0, z: 0, set: false }
-  private lastBoomParentMoveAt = 0
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -164,7 +149,6 @@ export class VirtualCameraBridge {
         this.transition = null
         this.parityFramesAfterBind = 0
         this.hasAppliedTarget = false
-        this.resetBoomFollow()
       }
       return false
     }
@@ -454,18 +438,15 @@ export class VirtualCameraBridge {
     const { RootEntity, PlayerEntity, CameraEntity } = this.view
     const player = this.playerPose()
 
-    const followParent = isNonReservedFollowParent(
-      parent,
-      RootEntity as number,
-      PlayerEntity as number,
-      CameraEntity as number
-    )
-
-    // Classic CameraFollow: parent === lookAtEntity === cameraParent (not reserved).
-    // Parent is driven toward the player by the scene; use live PE + local offset so the lens
-    // does not hitch on lagging cameraParent CRDT (Planet Angzaar / gameplay follow).
-    const isPeFollowShape =
-      followParent &&
+    // CameraFollow (SDK): parent === lookAtEntity, not reserved / not the VC itself.
+    // Lens is f(live PE)+local; aim at the avatar. Same-process Explorer CameraFollow.
+    const isCameraFollow =
+      parent !== undefined &&
+      parent !== null &&
+      parent !== 0 &&
+      parent !== (RootEntity as number) &&
+      parent !== (PlayerEntity as number) &&
+      parent !== (CameraEntity as number) &&
       lookAt !== undefined &&
       lookAt !== null &&
       lookAt !== 0 &&
@@ -473,7 +454,7 @@ export class VirtualCameraBridge {
       lookAt !== (virtualEntity as number) &&
       lookAt !== (CameraEntity as number)
 
-    if (isPeFollowShape) {
+    if (isCameraFollow) {
       const wx = player.position.x + local.position.x
       const wy = player.position.y + local.position.y
       const wz = player.position.z + local.position.z
@@ -485,23 +466,9 @@ export class VirtualCameraBridge {
       }
     }
 
-    // No lookAtEntity: Transform hierarchy is law. If the scene is driving a dummy
-    // parent toward the avatar (player-follow boom), present live PE + local offset
-    // so the lens is not stuck on 20–30 Hz CRDT. A parked parent (hub shot) never
-    // tracks, so it never arms.
-    if (followParent && (lookAt === undefined || lookAt === null || lookAt === 0)) {
-      const parentT = this.ecs.Transform.getOrNull(parent as Entity) as DclTransformValues | null
-      if (parentT && this.updateBoomFollowArmed(parent as number, parentT.position, player.position)) {
-        const posed = this.composeLiveFollowBoom(player, parentT, local)
-        if (posed) {
-          this.logFollowDiag(virtualEntity, parent as number, player, local)
-          return posed
-        }
-      }
-    }
-
-    // Scene-authored hierarchy: world pose from Transform parent chain (VC may be a child of
-    // a lookAt/follow entity that tracks the player — Angzaar-style — or a root-level shot).
+    // All other binds: Transform parent chain. PlayerEntity / CameraEntity ancestors
+    // already resolve to live reserved pose (SDK parent field). Dummy follow roots
+    // and parked shots use their authored Transform (vc-pose-live / CRDT).
     if (
       !resolveEntityWorldPose(virtualEntity, this.worldDeps(), {
         position: _targetPos,
@@ -533,91 +500,6 @@ export class VirtualCameraBridge {
     }
 
     // No lookAtEntity: scene drives aim via Transform rotation (entity +Z = look, DCL/Unity).
-    return this.aimAlongEntityPlusZ()
-  }
-
-  private resetBoomFollow(): void {
-    this.boomFollowArmed = false
-    this.boomFollowParent = null
-    this.lastBoomParent.set = false
-    this.lastBoomPlayer.set = false
-    this.lastBoomParentMoveAt = 0
-  }
-
-  /**
-   * Arm only after the dummy parent and the avatar move together (scene follow lerp).
-   * Hold while they stay near. Disarm when the parent parks (hub) or the player leaves.
-   */
-  private updateBoomFollowArmed(
-    parent: number,
-    parentPos: { x: number; y: number; z: number },
-    playerPos: { x: number; y: number; z: number }
-  ): boolean {
-    if (this.boomFollowParent !== parent) {
-      this.resetBoomFollow()
-      this.boomFollowParent = parent
-    }
-    const dx = parentPos.x - playerPos.x
-    const dz = parentPos.z - playerPos.z
-    const distSq = dx * dx + dz * dz
-    const nearArm = distSq <= 3.5 * 3.5
-    const nearHold = distSq <= 8 * 8
-    const now = performance.now()
-
-    let playerMoved = false
-    if (this.lastBoomParent.set && this.lastBoomPlayer.set) {
-      const pdx = parentPos.x - this.lastBoomParent.x
-      const pdz = parentPos.z - this.lastBoomParent.z
-      const udx = playerPos.x - this.lastBoomPlayer.x
-      const udz = playerPos.z - this.lastBoomPlayer.z
-      const pSpeed = Math.hypot(pdx, pdz)
-      const uSpeed = Math.hypot(udx, udz)
-      playerMoved = uSpeed > 0.002
-      if (pSpeed > 0.002) this.lastBoomParentMoveAt = now
-      const aligned = pSpeed > 0.002 && playerMoved && pdx * udx + pdz * udz > 0
-      if (nearArm && aligned) this.boomFollowArmed = true
-      // Dummy parent CRDT parked: drop only if the avatar is also still (hub). Keep
-      // the live boom while running so strafe is not stuck on 30 Hz ECS.
-      if (this.lastBoomParentMoveAt > 0 && now - this.lastBoomParentMoveAt > 400 && !playerMoved) {
-        this.boomFollowArmed = false
-      }
-    }
-
-    this.lastBoomParent = { x: parentPos.x, y: parentPos.y, z: parentPos.z, set: true }
-    this.lastBoomPlayer = { x: playerPos.x, y: playerPos.y, z: playerPos.z, set: true }
-
-    if (!nearHold) this.boomFollowArmed = false
-    return this.boomFollowArmed
-  }
-
-  /** Live CCT position + parent rotation + VC local boom. Aim from scene Transform. */
-  private composeLiveFollowBoom(
-    player: EntityPose,
-    parentT: DclTransformValues,
-    local: DclTransformValues
-  ): TargetPose | null {
-    dclToThreePos(player.position.x, player.position.y, player.position.z, _targetPos)
-    dclToThreeQuat(
-      parentT.rotation.x,
-      parentT.rotation.y,
-      parentT.rotation.z,
-      parentT.rotation.w,
-      _targetQuat
-    )
-    _followScale.set(parentT.scale?.x ?? 1, parentT.scale?.y ?? 1, parentT.scale?.z ?? 1)
-    _followParentMat.compose(_targetPos, _targetQuat, _followScale)
-    dclToThreePos(local.position.x, local.position.y, local.position.z, _targetPos)
-    dclToThreeQuat(
-      local.rotation.x,
-      local.rotation.y,
-      local.rotation.z,
-      local.rotation.w,
-      _entityDisplayQuat
-    )
-    _followScale.set(local.scale?.x ?? 1, local.scale?.y ?? 1, local.scale?.z ?? 1)
-    _followLocalMat.compose(_targetPos, _entityDisplayQuat, _followScale)
-    _followWorldMat.multiplyMatrices(_followParentMat, _followLocalMat)
-    _followWorldMat.decompose(_targetPos, _entityDisplayQuat, _followScale)
     return this.aimAlongEntityPlusZ()
   }
 
@@ -690,22 +572,6 @@ export class VirtualCameraBridge {
       )
     }
   }
-}
-
-function isNonReservedFollowParent(
-  parent: number | undefined,
-  root: number,
-  player: number,
-  camera: number
-): boolean {
-  return (
-    parent !== undefined &&
-    parent !== null &&
-    parent !== 0 &&
-    parent !== root &&
-    parent !== player &&
-    parent !== camera
-  )
 }
 
 /**

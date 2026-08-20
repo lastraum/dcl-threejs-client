@@ -11,8 +11,8 @@ import { PMREMGenerator } from 'three'
  * contribution.
  */
 
-/** Daytime sky bounce — Explorer cubemap fill. 0.18 crushed wood/water vs locked 10:00. */
-export const OUTDOOR_IBL_INTENSITY_DAY = 0.30
+/** Daytime soft fill — keep low so ACES + sun stay primary (was 0.32, washed snow/sky). */
+export const OUTDOOR_IBL_INTENSITY_DAY = 0.18
 /** Night probe — low so moon/hemi own the key; was 0.22 and washed 00:00. */
 export const OUTDOOR_IBL_INTENSITY_NIGHT = 0.1
 

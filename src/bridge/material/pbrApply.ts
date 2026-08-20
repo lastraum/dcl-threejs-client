@@ -210,7 +210,7 @@ export function configureEmissiveRendering(
  * Explorer-ish: less chrome, roughness floor, modest IBL from scene.environment.
  * Does not assign envMap — null keeps Three.js scene.environment (cheap outdoor IBL).
  */
-export const OUTDOOR_ENV_MAP_INTENSITY = 0.55
+export const OUTDOOR_ENV_MAP_INTENSITY = 0.35
 
 export function applyOutdoorMaterialResponse(
   material: THREE.MeshStandardMaterial,

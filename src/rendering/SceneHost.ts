@@ -81,7 +81,7 @@ export class SceneHost {
     this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' })
     this.renderer.setPixelRatio(effectivePixelRatio(renderQuality.getResolutionScale()))
     this.renderer.setSize(window.innerWidth, window.innerHeight)
-    this.renderer.setClearColor(0x1c6bd9)
+    this.renderer.setClearColor(0x1a1a2e)
     // Bloom composer calls renderer.render() per pass; autoReset made HUD draws:1.
     this.renderer.info.autoReset = false
     container.appendChild(this.renderer.domElement)
@@ -344,17 +344,11 @@ export class SceneHost {
     const strength =
       options.tier === 'ultra' ? 0.09 : options.tier === 'high' ? 0.08 : 0.06
     const bloomOn = renderQuality.getBloomEnabled() && !forceNoBloom()
-    const pref = options.bloomMode ?? 'fast'
-    const mode =
-      pref === 'selective' ||
-      (pref === 'auto' && (options.tier === 'high' || options.tier === 'ultra'))
-        ? 'selective'
-        : 'fast'
     this.bloom.configure(
       {
         enabled: bloomOn,
         hdr: options.hdrEnabled,
-        mode,
+        mode: 'fast',
         strength,
         threshold: 0.15,
         radius: 0.26

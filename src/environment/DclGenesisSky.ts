@@ -223,13 +223,10 @@ void main() {
   sky += moonDisc(dir, uMoonDirection, uMoonMap, uMoonMask);
 
   float cloudAngle = uTime * uCloudsRotationSpeed;
-  // Painted cubemap puffs (Far / Near) — same lighting for every layer.
-  // top_clouds.png is a sheet of rectangular photo crops, not a cubemap; sampling
-  // it as Cube put hard-edged "sticker" clouds next to the one real puff.
-  // Horizon bank stays for the low sky; zenith is Far+Near only.
-  sky = blendCloudLayer(sky, dir, uHorizonCloudsCube, cloudAngle * 0.5, 0.55, 0.02, 0.28);
-  sky = blendCloudLayer(sky, dir, uFarCloudsCube, cloudAngle, 0.62, 0.05, 0.95);
-  sky = blendCloudLayer(sky, dir, uNearCloudsCube, cloudAngle * 1.15, 0.82, 0.06, 1.0);
+  sky = blendCloudLayer(sky, dir, uHorizonCloudsCube, cloudAngle * 0.5, 0.85, 0.02, 0.42);
+  sky = blendCloudLayer(sky, dir, uFarCloudsCube, cloudAngle, 0.55, 0.05, 0.95);
+  sky = blendCloudLayer(sky, dir, uNearCloudsCube, cloudAngle * 2.0, 0.75, 0.08, 1.0);
+  sky = blendCloudLayer(sky, dir, uTopCloudsCube, cloudAngle * 1.5, 0.45, 0.35, 1.0);
 
   float rim = pow(max(1.0 - abs(dir.y), 0.0), 3.0) * 0.25;
   sky += uRimColor * rim;
@@ -315,7 +312,6 @@ export class DclGenesisSky {
       uniforms: this.uniforms,
       vertexShader: SKY_VERTEX,
       fragmentShader: SKY_FRAGMENT,
-      depthTest: false,
       depthWrite: false,
       fog: false,
       toneMapped: false
@@ -341,12 +337,13 @@ export class DclGenesisSky {
 
   async loadTextures(): Promise<void> {
     const loader = new THREE.TextureLoader()
-    const [moon, stars, farClouds, nearClouds, horizonClouds] = await Promise.all([
+    const [moon, stars, farClouds, nearClouds, horizonClouds, topClouds] = await Promise.all([
       loader.loadAsync(ENVIRONMENT_TEXTURES.moon),
       loader.loadAsync(ENVIRONMENT_TEXTURES.stars),
       loadCrossCubemap(ENVIRONMENT_TEXTURES.farClouds),
       loadCrossCubemap(ENVIRONMENT_TEXTURES.nearClouds),
-      loadCrossCubemap(ENVIRONMENT_TEXTURES.horizonClouds)
+      loadCrossCubemap(ENVIRONMENT_TEXTURES.horizonClouds),
+      loadCrossCubemap(ENVIRONMENT_TEXTURES.topClouds)
     ])
 
     moon.colorSpace = THREE.SRGBColorSpace
@@ -357,13 +354,13 @@ export class DclGenesisSky {
     stars.wrapS = THREE.RepeatWrapping
     stars.wrapT = THREE.RepeatWrapping
 
-    this.cubeTextures = [farClouds, nearClouds, horizonClouds]
+    this.cubeTextures = [farClouds, nearClouds, horizonClouds, topClouds]
     this.uniforms.uMoonMap.value = moon
     this.uniforms.uStarsMap.value = stars
     this.uniforms.uFarCloudsCube.value = farClouds
     this.uniforms.uNearCloudsCube.value = nearClouds
     this.uniforms.uHorizonCloudsCube.value = horizonClouds
-    this.uniforms.uTopCloudsCube.value = null
+    this.uniforms.uTopCloudsCube.value = topClouds
   }
 
   update(

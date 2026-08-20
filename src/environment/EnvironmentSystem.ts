@@ -205,7 +205,6 @@ export class EnvironmentSystem {
     await this.applyCustomSkybox(scene.skybox, scene.assetUrl)
     const hideSkyDome = landscapeProfile.spaceSky === true || landscapeProfile.voidSky === true
     if (!this.customCube && !this.customBackground && !hideSkyDome) {
-      this.genesisSky.mesh.visible = true
       await this.genesisSky.loadTextures()
     } else if (landscapeProfile.spaceSky) {
       this.genesisSky.mesh.visible = false

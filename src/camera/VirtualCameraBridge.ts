@@ -8,6 +8,7 @@ import type { ProjectionView } from '../bridge/ProjectionView'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import {
   dclToThreePos,
+  dclToThreeQuat,
   entityDisplayQuatToThreeCameraQuat,
   threeToDclPos,
   type DclTransformValues
@@ -39,9 +40,16 @@ const _entityDisplayQuat = new THREE.Quaternion()
 const _worldUp = new THREE.Vector3(0, 1, 0)
 const _gizmoWorld = new THREE.Vector3()
 const _gizmoWorldQuat = new THREE.Quaternion()
+const _followParentMat = new THREE.Matrix4()
+const _followLocalMat = new THREE.Matrix4()
+const _followWorldMat = new THREE.Matrix4()
+const _followScale = new THREE.Vector3()
 let lastFollowDiagMs = 0
 let lastApplyDiagMs = 0
 let lastBindYawLogMs = 0
+
+/** Parent ECS vs live PE — closer than this is a follow root, not a hub/lane shot. */
+const LIVE_FOLLOW_PARENT_RADIUS_M = 4
 
 type TargetPose = {
   position: THREE.Vector3
@@ -436,46 +444,59 @@ export class VirtualCameraBridge {
     const lookAt = spec.lookAtEntity
     const parent = local.parent as number | undefined
     const { RootEntity, PlayerEntity, CameraEntity } = this.view
+    const player = this.playerPose()
 
-    // Classic CameraFollow third-person: parent === lookAtEntity === cameraParent (not reserved).
+    const followParent = isNonReservedFollowParent(
+      parent,
+      RootEntity as number,
+      PlayerEntity as number,
+      CameraEntity as number
+    )
+
+    // Classic CameraFollow: parent === lookAtEntity === cameraParent (not reserved).
     // Parent is driven toward the player by the scene; use live PE + local offset so the lens
     // does not hitch on lagging cameraParent CRDT (Planet Angzaar / gameplay follow).
     const isPeFollowShape =
+      followParent &&
       lookAt !== undefined &&
       lookAt !== null &&
-      parent !== undefined &&
-      parent !== null &&
-      parent !== 0 &&
-      parent !== (RootEntity as number) &&
-      parent !== (PlayerEntity as number) &&
-      parent !== (CameraEntity as number) &&
+      lookAt !== 0 &&
       (parent as number) === (lookAt as number) &&
       lookAt !== (virtualEntity as number) &&
       lookAt !== (CameraEntity as number)
 
     if (isPeFollowShape) {
-      const player = this.playerPose()
       const wx = player.position.x + local.position.x
       const wy = player.position.y + local.position.y
       const wz = player.position.z + local.position.z
       dclToThreePos(wx, wy, wz, _targetPos)
-      // Aim at the follow parent (lookAtEntity) — usually PE/cameraParent at the player.
       dclToThreePos(player.position.x, player.position.y, player.position.z, _lookAtPoint)
       if (cameraLookAtQuat(_targetPos, _lookAtPoint, _targetQuat)) {
-        if (vcDebugVerbose()) {
-          const now = performance.now()
-          if (now - lastFollowDiagMs > 2000) {
-            lastFollowDiagMs = now
-            clientDebugLog.log(
-              'vc-lens',
-              `PE-follow rig vc=e${virtualEntity} parent=e${parent} pe=(${player.position.x.toFixed(1)},${player.position.y.toFixed(1)},${player.position.z.toFixed(1)}) ` +
-                `local=(${local.position.x.toFixed(1)},${local.position.y.toFixed(1)},${local.position.z.toFixed(1)}) ` +
-                `lensThree=(${_targetPos.x.toFixed(1)},${_targetPos.y.toFixed(1)},${_targetPos.z.toFixed(1)})`,
-              { alsoConsole: true, throttleMs: 2000, throttleKey: 'vc-pe-follow' }
-            )
-          }
-        }
+        this.logFollowDiag(
+          virtualEntity,
+          parent as number,
+          player,
+          local,
+          'lookAt'
+        )
         return { position: _targetPos, rotation: _targetQuat, lookAtPoint: _lookAtPoint }
+      }
+    }
+
+    // Boom on a follow root (Last Call Dock player cam): no lookAtEntity, parent near live PE.
+    // Same live PE + local offset; aim stays scene Transform rotation (not invented look-at-player).
+    // Hub / lane shots keep the ECS parent — their root is not at the avatar.
+    if (followParent && (lookAt === undefined || lookAt === null || lookAt === 0)) {
+      const parentT = this.ecs.Transform.getOrNull(parent as Entity) as DclTransformValues | null
+      if (
+        parentT &&
+        parentNearPlayer(parentT.position, player.position, LIVE_FOLLOW_PARENT_RADIUS_M)
+      ) {
+        const posed = this.composeLiveFollowBoom(player, parentT, local)
+        if (posed) {
+          this.logFollowDiag(virtualEntity, parent as number, player, local, 'boom')
+          return posed
+        }
       }
     }
 
@@ -512,7 +533,44 @@ export class VirtualCameraBridge {
     }
 
     // No lookAtEntity: scene drives aim via Transform rotation (entity +Z = look, DCL/Unity).
-    // Map to Three by aiming along display-space +Z (avoids euler→camera-quat pitch flips).
+    return this.aimAlongEntityPlusZ()
+  }
+
+  /**
+   * Live CCT position + parent rotation + VC local boom. Same present pose as
+   * parent===lookAt CameraFollow, without inventing a lookAtEntity.
+   */
+  private composeLiveFollowBoom(
+    player: EntityPose,
+    parentT: DclTransformValues,
+    local: DclTransformValues
+  ): TargetPose | null {
+    dclToThreePos(player.position.x, player.position.y, player.position.z, _targetPos)
+    dclToThreeQuat(
+      parentT.rotation.x,
+      parentT.rotation.y,
+      parentT.rotation.z,
+      parentT.rotation.w,
+      _targetQuat
+    )
+    _followScale.set(parentT.scale?.x ?? 1, parentT.scale?.y ?? 1, parentT.scale?.z ?? 1)
+    _followParentMat.compose(_targetPos, _targetQuat, _followScale)
+    dclToThreePos(local.position.x, local.position.y, local.position.z, _targetPos)
+    dclToThreeQuat(
+      local.rotation.x,
+      local.rotation.y,
+      local.rotation.z,
+      local.rotation.w,
+      _entityDisplayQuat
+    )
+    _followScale.set(local.scale?.x ?? 1, local.scale?.y ?? 1, local.scale?.z ?? 1)
+    _followLocalMat.compose(_targetPos, _entityDisplayQuat, _followScale)
+    _followWorldMat.multiplyMatrices(_followParentMat, _followLocalMat)
+    _followWorldMat.decompose(_targetPos, _entityDisplayQuat, _followScale)
+    return this.aimAlongEntityPlusZ()
+  }
+
+  private aimAlongEntityPlusZ(): TargetPose {
     _lookDir.set(0, 0, 1).applyQuaternion(_entityDisplayQuat)
     if (_lookDir.lengthSq() < 1e-12) {
       entityDisplayQuatToThreeCameraQuat(_entityDisplayQuat, _targetQuat)
@@ -525,6 +583,26 @@ export class VirtualCameraBridge {
       return { position: _targetPos, rotation: _targetQuat }
     }
     return { position: _targetPos, rotation: _targetQuat, lookAtPoint: _lookAtPoint }
+  }
+
+  private logFollowDiag(
+    virtualEntity: Entity,
+    parent: number,
+    player: EntityPose,
+    local: DclTransformValues,
+    kind: 'lookAt' | 'boom'
+  ): void {
+    if (!vcDebugVerbose()) return
+    const now = performance.now()
+    if (now - lastFollowDiagMs <= 2000) return
+    lastFollowDiagMs = now
+    clientDebugLog.log(
+      'vc-lens',
+      `PE-follow ${kind} vc=e${virtualEntity} parent=e${parent} pe=(${player.position.x.toFixed(1)},${player.position.y.toFixed(1)},${player.position.z.toFixed(1)}) ` +
+        `local=(${local.position.x.toFixed(1)},${local.position.y.toFixed(1)},${local.position.z.toFixed(1)}) ` +
+        `lensThree=(${_targetPos.x.toFixed(1)},${_targetPos.y.toFixed(1)},${_targetPos.z.toFixed(1)})`,
+      { alsoConsole: true, throttleMs: 2000, throttleKey: 'vc-pe-follow' }
+    )
   }
 
   private beginTransition(camera: THREE.Camera, virtualEntity: Entity, target: TargetPose): void {
@@ -562,6 +640,33 @@ export class VirtualCameraBridge {
       )
     }
   }
+}
+
+function isNonReservedFollowParent(
+  parent: number | undefined,
+  root: number,
+  player: number,
+  camera: number
+): boolean {
+  return (
+    parent !== undefined &&
+    parent !== null &&
+    parent !== 0 &&
+    parent !== root &&
+    parent !== player &&
+    parent !== camera
+  )
+}
+
+function parentNearPlayer(
+  parentPos: { x: number; y: number; z: number },
+  playerPos: { x: number; y: number; z: number },
+  radiusM: number
+): boolean {
+  const dx = parentPos.x - playerPos.x
+  const dy = parentPos.y - playerPos.y
+  const dz = parentPos.z - playerPos.z
+  return dx * dx + dy * dy + dz * dz <= radiusM * radiusM
 }
 
 /**

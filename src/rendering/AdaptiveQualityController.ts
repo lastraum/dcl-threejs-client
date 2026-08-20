@@ -14,7 +14,7 @@ import {
  */
 export class AdaptiveQualityController {
   /** Need this many consecutive low windows before stepping down. */
-  private static readonly BAD_WINDOWS = 1
+  private static readonly BAD_WINDOWS = 3
   /** Need this many consecutive healthy windows before stepping up. */
   private static readonly GOOD_WINDOWS = 4
   private static readonly LOW_FPS = 28

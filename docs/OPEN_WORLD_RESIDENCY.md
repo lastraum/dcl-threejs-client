@@ -4,15 +4,15 @@
 | --- | --- |
 | **Author** | LastSlice (perfv2 city chapter) |
 | **Date** | 2026-08-13 |
-| **Status** | Draft |
-| **Branch** | `perfv2` (stay here — this is the 2.0 city chapter *after* host invert) |
+| **Status** | Live guests + Scene Distance disc **on**. Shells **on `v3`**. Promote **off**. |
+| **Branch** | `v3` (city chapter after v2.2.0 clock) |
 | **Audience** | Senior engineers who already know FocusOwner, SceneLoop, extract, and the multi-scene handoff |
 
 ---
 
 ## Overview
 
-Genesis City currently walks as a **single FocusOwner plus city fill**. Soft-route updates the address bar, the empty plane and Explorer roads paint a disc, and vacant parcels get scatter — but **neighbor deployments are not drawn**, **no live guest ticks beside the spawn primary**, and **stand-on never promotes**. The result is dirt voids where estates sit, a FocusOwner that is forever the spawn scene, and a city that reloads in the player's head even though the URL already moved.
+As of **v2.2.0** the clock is 🟢 and **live SceneLoop guests are compile-default on** (enter ≤20 m, cap 4). Scene Distance disc (roads / empty) is on. **`v3` turns neighbor composite shells on** so claimed estates are extract GLBs, not dirt. Stand-on promote stays **off**. Soft-route already updates the URL without a reload.
 
 This document is the phased plan to make plaza → street → neighbor estate feel like one continuous verse: **no void, no loading screen, no full reload**, neighbor buildings actually there, FocusOwner correct under feet. It does that on `perfv2` by turning the existing (disabled) residency machine back on **in the host-invert shape**: pose vs draw, 20 Hz SceneLoop guests, extract-registered shells, leftover apply. Kill-switches that we invented (80 m GLB cliff, 16/8 clone caps used as “never show”, `LOAD_AOI_SCENE_VISUALS = false`, never-promote) are replaced by **budgets inside official Scene Distance**.
 

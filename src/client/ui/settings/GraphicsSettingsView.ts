@@ -6,12 +6,18 @@ import {
   type SunEnvironmentSettingsState
 } from '../../../rendering/SunEnvironmentSettings'
 import {
+  LANDSCAPE_DISTANCE_DEFAULT_M,
+  LANDSCAPE_DISTANCE_MAX_M,
+  LANDSCAPE_DISTANCE_MIN_M,
   MAX_SCENE_LIGHTS_CAP,
   RESOLUTION_SCALE_MAX,
   RESOLUTION_SCALE_MIN,
   SCENE_LOAD_RADIUS_DEFAULT_M,
   SCENE_LOAD_RADIUS_MAX_M,
   SCENE_LOAD_RADIUS_MIN_M,
+  SHADOWS_DISTANCE_DEFAULT_M,
+  SHADOWS_DISTANCE_MAX_M,
+  SHADOWS_DISTANCE_MIN_M,
   renderQuality,
   type BloomModePreference,
   type FpsLimitOption,
@@ -247,7 +253,15 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
           suffix: ' m',
           onChange: (v) => renderQuality.setSceneLoadRadiusM(v)
         },
-        { type: 'slider', label: 'Landscape Distance', min: 0, max: 10000, defaultValue: 7000, stub: true }
+        {
+          type: 'slider',
+          label: 'Landscape Distance',
+          min: LANDSCAPE_DISTANCE_MIN_M,
+          max: LANDSCAPE_DISTANCE_MAX_M,
+          defaultValue: rq.landscapeDistanceM ?? LANDSCAPE_DISTANCE_DEFAULT_M,
+          suffix: ' m',
+          onChange: (v) => renderQuality.setLandscapeDistanceM(v)
+        }
       ]
     },
     {
@@ -296,7 +310,15 @@ function buildSections(rq: RenderQualityOptions): SectionDef[] {
           defaultOn: rq.environmentShadowsEnabled ?? true,
           onChange: (on) => renderQuality.setEnvironmentShadowsEnabled(on)
         },
-        { type: 'slider', label: 'Shadows Distance', min: 0, max: 200, defaultValue: 100, stub: true }
+        {
+          type: 'slider',
+          label: 'Shadows Distance',
+          min: SHADOWS_DISTANCE_MIN_M,
+          max: SHADOWS_DISTANCE_MAX_M,
+          defaultValue: rq.shadowsDistanceM ?? SHADOWS_DISTANCE_DEFAULT_M,
+          suffix: ' m',
+          onChange: (v) => renderQuality.setShadowsDistanceM(v)
+        }
       ]
     },
     {
@@ -495,6 +517,20 @@ export class GraphicsSettingsView {
             if (control.kind === 'slider') {
               control.input.value = String(opts.sceneLoadRadiusM)
               control.label.textContent = `${opts.sceneLoadRadiusM}${control.suffix ?? ''}`
+              this.setSliderPct(control.input, control.min, control.max)
+            }
+            break
+          case 'Landscape Distance':
+            if (control.kind === 'slider') {
+              control.input.value = String(opts.landscapeDistanceM)
+              control.label.textContent = `${opts.landscapeDistanceM}${control.suffix ?? ''}`
+              this.setSliderPct(control.input, control.min, control.max)
+            }
+            break
+          case 'Shadows Distance':
+            if (control.kind === 'slider') {
+              control.input.value = String(opts.shadowsDistanceM)
+              control.label.textContent = `${opts.shadowsDistanceM}${control.suffix ?? ''}`
               this.setSliderPct(control.input, control.min, control.max)
             }
             break

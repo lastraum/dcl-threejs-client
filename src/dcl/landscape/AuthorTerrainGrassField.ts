@@ -13,6 +13,7 @@ import {
   type AuthorTerrainBuffers
 } from './loadAuthorTerrainBuffers'
 import type { EzTreeGrassFieldHandle } from './EzTreeGrassField'
+import { landscapeLodRangeM } from '../../rendering/RenderQualitySettings'
 
 const WORLD_SIZE_MULTIPLIER = 0.12
 const BLADE_SIZE = { x: 5, y: 4, z: 5 }
@@ -20,8 +21,6 @@ const BLADE_VAR = { x: 1, y: 2, z: 1 }
 const SAMPLE_STEP_M = 1.15
 const GRASS_THRESHOLD = 0.28
 const MAX_SLOPE = 0.55
-const LOD_NEAR_M = 80
-const LOD_FAR_M = 420
 const LOD_MIN_FRACTION = 0.18
 
 const GRASS_TINT = new THREE.Color(
@@ -241,7 +240,13 @@ export async function buildAuthorTerrainGrassField(
     lastLodUpdate = now
 
     const camDist = cameraPos.distanceTo(centerThree)
-    const lodT = THREE.MathUtils.clamp((camDist - LOD_NEAR_M) / (LOD_FAR_M - LOD_NEAR_M), 0, 1)
+    const { near, far } = landscapeLodRangeM()
+    if (far <= 0) {
+      grassMesh.count = 0
+      grassMesh.instanceMatrix.needsUpdate = true
+      return
+    }
+    const lodT = THREE.MathUtils.clamp((camDist - near) / Math.max(1, far - near), 0, 1)
     const lodFraction = THREE.MathUtils.lerp(1, LOD_MIN_FRACTION, lodT * lodT)
     const targetCount = Math.max(1, Math.floor(blades.length * lodFraction))
 

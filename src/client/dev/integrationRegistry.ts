@@ -139,7 +139,7 @@ export const CLIENT_UI_INTEGRATION: IntegrationEntry[] = [
   { id: 'ui:settings-map', name: 'Settings → Map (M)', status: 'render', category: 'client-ui', notes: 'Genesis tiles, peers, Jump In; embedded mode hides page HUD when opened from minimap/shell' },
   { id: 'ui:settings-backpack', name: 'Settings → Backpack (I)', status: 'render', category: 'client-ui', notes: 'Avatar preview, equipped wearables, Export VRM (DCL→VRM0)' },
   { id: 'ui:preferences-panel', name: 'Preferences panel (P / ⚙)', status: 'render', category: 'client-ui', notes: 'Right rail; world input passes through' },
-  { id: 'ui:preferences-graphics', name: 'Preferences → Graphics', status: 'partial', category: 'client-ui', notes: 'Preset L/M/H/Custom, shadows, lights, res scale, FPS, MSAA, FOV, lighting, Bloom + HDR live (P4); VSync hidden; Resolution/Fullscreen stub; P3 distance stubs' },
+  { id: 'ui:preferences-graphics', name: 'Preferences → Graphics', status: 'partial', category: 'client-ui', notes: 'Preset L/M/H/Custom, shadows, lights, res scale, FPS, MSAA, FOV, lighting, Bloom + HDR live (P4); Scene / Landscape / Shadows Distance wired on v3; FXAA when bloom zeros MSAA; bloom mode honored; adaptive default off; VSync hidden; Resolution/Fullscreen stub' },
   { id: 'ui:preferences-sounds', name: 'Preferences → Sounds', status: 'render', category: 'client-ui', notes: 'Volume sliders; mic device; PTT vs open-mic; mute-in-background wired to VoiceChatService' },
   { id: 'ui:preferences-controls', name: 'Preferences → Controls', status: 'partial', category: 'client-ui', notes: 'Mouse sensitivity live (10–200%); keybinds still pending' },
   {

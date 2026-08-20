@@ -3,19 +3,48 @@
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-08-19  
-> **Current phase:** **v2.2.0** on `main`. QA trunk is **`dev-latest`**. SceneLoop invert clock **🟢**.  
+> **Current phase:** **v2.2.0** on `main`. Butter work on **`v3`**. QA trunk is **`dev-latest`**. SceneLoop invert clock **🟢**.  
 > **Shipped:** **v2.2.0** one guest clock · plaza Cast Line walk-log · Genesis sky · Explore live search · **v2.1.0** `/localpreview` · stay-in-play reload · Tags shaders (`tjs.sync` opt-in) · shaders off until Jump In · preview tabs · **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
 
-> **After 2.0 (next):** CBD density/FPS with stacked live neighbors · RTS box-select / pad-drag polish · saved outfits · create-community / invites · gallery multi-page · graphics P3 culls · Social WS reliability · PE P3 pad/wind QA · multi-shape GLTF `40M+` riding. Scene UI = **one-off bugs only**. Shell marketplace browse ≠ **P2P peer trade**.  
+> **After 2.2 (next / `v3`):** neighbor composite **shells on** · Landscape + Shadows Distance live · FXAA when bloom is on · GPU warm covers shadow+bloom · stacked live-guest FPS measure. Promote stays off.  
+> **After 2.0 (parked shell):** RTS box-select / pad-drag · saved outfits · create-community / invites · gallery multi-page · Social WS reliability · PE P3 pad/wind QA · multi-shape GLTF `40M+` riding. Scene UI = **one-off bugs only**. Shell marketplace browse ≠ **P2P peer trade**.  
 
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). PM LiveKit survives teleports. Community voice LiveKit survives Jump In.  
-> **Graphics next:** **P3** distance culls (Scene / Landscape / Shadows Distance stubs). P4 bloom/HDR **shipped**; outdoor washout rebalance **on `dev-latest`**.  
+> **Graphics next (`v3`):** Scene Distance already wired. Landscape + Shadows Distance were stubs — live on `v3`. P4 bloom/HDR shipped; FXAA when bloom kills MSAA. Outdoor washout rebalance is in-tree.  
 > **Physics motion:** [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) · **Riding law:** [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md) · **Static COD:** [STATIC_COLLIDER_COD.md](./STATIC_COLLIDER_COD.md) · **Multi-scene continuity:** [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) · **PE force plan:** [PHYSICS_PARITY_PLAN.md](./PHYSICS_PARITY_PLAN.md)  
 > **Integration checklist:** [INTEGRATION.md](./INTEGRATION.md) · **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) · **Place analytics:** [CREATOR_ANALYTICS.md](./CREATOR_ANALYTICS.md)
 >
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## ✅ Milestone — v3 Explorer butter (shells · P3 distances · AA · warm) (2026-08-19)
+
+**Status: on `v3` — not a product tag.** Post-2.2 city/look butter. Clock stays 🟢. Promote stays off.
+
+### What's new (parity / implementation — no version toast)
+
+- **Docs tell the truth** — SceneLoop 🟢 / v2.2.0 shipped; live guests on; shells on `v3`; P3 landscape/shadows were stubs
+- **Landscape + Shadows Distance** — sliders persist and drive grass LOD + sun ortho / caster keep
+- **FXAA when bloom is on** — MSAA still zeros on the Unreal path; edges via FXAA. Bloom mode is honored
+- **Adaptive quality default off** — no look-pop from one 28 FPS window. FPS Max is display rAF
+- **GPU warm** — dummy presents run shadow + bloom so first orbit is not a new program
+- **Neighbor shells default-on** — `AOI_NEIGHBOR_SHELLS = true`; `?aoishells=0` / `?noaoi` remain. One clone per leftover drain
+- **FPS soak** — protocol only; boot concurrency stays 4 until a pasted p5 < 30
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **SceneLoop** | 🟢 | Unchanged since v2.2.0 |
+| **Neighbor shells** | 🟢 default-on | Walk-through extract; no PhysX |
+| **Stand-on promote** | ⬜ off | After FPS measure |
+| **Stacked FPS** | measure-only | No cap flip without a log |
+| **P3 Landscape / Shadows Distance** | 🟢 | Scene Distance was already live |
+
+**QA:** `?aoishells=0` dirt vs shells on · Landscape/Shadows sliders change grass pop and shadow reach · bloom on is not smeared · Jump In first orbit.
+
+**Tip:** Do not retune PE scale. Do not flip promote on this branch.
 
 ---
 

@@ -36,7 +36,23 @@ export class DrawWorld {
 
   unregister(visual: THREE.Object3D): void {
     if (!this.links.delete(visual)) return
-    if (visual.parent === this.drawRoot) this.drawRoot.remove(visual)
+    // Always detach — a reparented extract (not a direct drawRoot child) still renders
+    // if left in the scene after engine.removeEntity.
+    visual.removeFromParent()
+  }
+
+  /**
+   * Drop every GPU extract whose pose is this entity Group.
+   * `engine.removeEntity` must not leave DrawWorld ghosts at the last matrixWorld
+   * (blood bursts / splat GLBs stay visible after Transform DELETE if we only
+   * hide the pose graph).
+   */
+  unregisterPose(pose: THREE.Object3D): void {
+    const doomed: THREE.Object3D[] = []
+    for (const [visual, linked] of this.links) {
+      if (linked === pose) doomed.push(visual)
+    }
+    for (const visual of doomed) this.unregister(visual)
   }
 
   /**

@@ -318,14 +318,14 @@ export class SceneHost {
     // Avatar vs environment cast toggles (and shadow off/on) re-apply without reloading meshes.
     reapplySceneCastShadows(this.scene)
 
-    // Max (0) → free-run via setTimeout(0). 30/60/120 cap via rAF + interval.
+    // Max (0) → uncapped rAF. 30/60/120 cap via rAF + interval.
     if (options.fpsLimit > 0) {
       this.frameIntervalMs = 1000 / options.fpsLimit
     } else {
       this.frameIntervalMs = 0
     }
 
-    // Bloom uses EffectComposer (no MSAA samples on that path).
+    // Bloom Unreal path cannot take MSAA samples — FXAA runs on the bloom blit instead.
     // Effective bloom includes adaptive step-down; `?nobloom` forces off for A/B.
     const bloomOn = renderQuality.getBloomEnabled() && !forceNoBloom()
     const maxSamples = this.renderer.capabilities?.maxSamples ?? 0
@@ -344,11 +344,17 @@ export class SceneHost {
     const strength =
       options.tier === 'ultra' ? 0.09 : options.tier === 'high' ? 0.08 : 0.06
     const bloomOn = renderQuality.getBloomEnabled() && !forceNoBloom()
+    const pref = options.bloomMode ?? 'fast'
+    const mode =
+      pref === 'selective' ||
+      (pref === 'auto' && (options.tier === 'high' || options.tier === 'ultra'))
+        ? 'selective'
+        : 'fast'
     this.bloom.configure(
       {
         enabled: bloomOn,
         hdr: options.hdrEnabled,
-        mode: 'fast',
+        mode,
         strength,
         threshold: 0.15,
         radius: 0.26
@@ -493,6 +499,14 @@ export class SceneHost {
     } catch (err) {
       console.warn('[SceneHost] compileSceneShaders failed', err)
     }
+  }
+
+  /**
+   * Force the next present to recast sun shadows so dummy Jump In frames compile
+   * the shadow-depth program, not just the beauty pass.
+   */
+  warmShadowAndBloomPresents(): void {
+    this.renderer.shadowMap.needsUpdate = true
   }
 
   /** Draw one frame without starting the animation loop (used after asset hydration). */
@@ -695,8 +709,8 @@ export class SceneHost {
   }
 
   /**
-   * 30/60/120 → rAF (display-paced). Max (fpsLimit 0) → setTimeout(0) free-run.
-   * Hidden tabs cannot use rAF — it is paused.
+   * 30/60/120 → rAF + interval. Max (fpsLimit 0) → rAF uncapped (display-paced).
+   * Hidden tabs cannot use rAF — 100 ms timer instead.
    */
   private scheduleNext(tick: () => void): void {
     if (!this.loopRunning) return
@@ -704,12 +718,6 @@ export class SceneHost {
     const hidden = typeof document !== 'undefined' && document.hidden
     if (hidden) {
       this.uncapTimer = setTimeout(tick, SceneHost.HIDDEN_FRAME_INTERVAL_MS)
-      return
-    }
-    const focused = typeof document === 'undefined' || document.hasFocus()
-    const uncap = this.frameIntervalMs === 0 && this.resumeRafFrames <= 0 && focused
-    if (uncap) {
-      this.uncapTimer = setTimeout(tick, 0)
       return
     }
     this.rafId = requestAnimationFrame(tick)

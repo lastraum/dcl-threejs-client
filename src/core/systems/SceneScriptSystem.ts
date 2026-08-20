@@ -2947,6 +2947,7 @@ export class SceneScriptSystem {
    * The async outbound handler still owns UI mount, inbound encode, and ack.
    */
   private foldQueuedGuestMotionNow(): void {
+    const frozenMountIds = this.resolveFrozenWorkerMountIds()
     for (const item of this.crdtOutboundPending) {
       if (item.motionFolded) continue
       if (item.uiMountSnapshot !== undefined) continue
@@ -2955,6 +2956,9 @@ export class SceneScriptSystem {
       const mayCarryInboundUi = item.uiEntities !== undefined && item.uiMountSnapshot === undefined
       if (!mayCarryInboundUi) {
         data = stripSceneUiCrdtBytes(data)
+        if (frozenMountIds?.size) {
+          data = stripEntityDeletesFromCrdtBytes(data, frozenMountIds)
+        }
         if (!data.byteLength) {
           item.motionFolded = true
           continue
@@ -3168,6 +3172,16 @@ export class SceneScriptSystem {
         const foldT0 = performance.now()
         for (const item of batch) {
           if (item.uiMountSnapshot !== undefined) continue
+          // SceneLoop already applied+folded gameplay CRDT. Re-applying the same
+          // PUT after DELETE_ENTITY revives the projection (timestamps were cleared)
+          // without a second consumeDiff — blood splat GLBs / burst boxes stayed.
+          if (
+            item.motionFolded &&
+            item.uiEntities === undefined &&
+            item.uiMountSnapshot === undefined
+          ) {
+            continue
+          }
           let data = item.data
           if (!data?.byteLength) continue
           const mayCarryInboundUi =
@@ -4170,25 +4184,41 @@ export class SceneScriptSystem {
         }
         if (poseDiff.size) {
           const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
-          applySceneDiff(this.entityStore, poseDiff, view, this.readComponents, tweenRefresh, {
-            skipTransformApply: (entity) =>
-              this.readComponents.AvatarAttach.has(entity) ||
-              this.projection.isVcLiveTransformEntity(entity),
-            onReservedParent: (entity, parent, v) => {
-              this.bridge?.noteReservedParentedEntity(entity, parent, v)
+          const applied = applySceneDiff(
+            this.entityStore,
+            poseDiff,
+            view,
+            this.readComponents,
+            tweenRefresh,
+            {
+              skipTransformApply: (entity) =>
+                this.readComponents.AvatarAttach.has(entity) ||
+                this.projection.isVcLiveTransformEntity(entity),
+              onReservedParent: (entity, parent, v) => {
+                this.bridge?.noteReservedParentedEntity(entity, parent, v)
+              }
             }
-          })
-          for (const entity of poseDiff.keys()) this.dropHiddenScaleColliders(entity)
+          )
+          if (applied.removals.length) this.bridge.disposeRemovedEntities(applied.removals)
+          const removed = new Set(applied.removals)
+          for (const entity of poseDiff.keys()) {
+            if (!removed.has(entity)) this.dropHiddenScaleColliders(entity)
+          }
           // Group + __mesh_* + instancer matrix (zero scale when hidden).
-          const motionEntities = this.expandMotionExtractEntities(poseDiff.keys())
-          this.bridge.syncEcsVisibility(motionEntities)
+          const motionEntities = this.expandMotionExtractEntities(
+            [...poseDiff.keys()].filter((entity) => !removed.has(entity))
+          )
+          this.bridge.syncEcsVisibility(this.bridge.entitiesWithVisibility())
+          const tweenPromote = tweenEntities.filter((entity) => !removed.has(entity))
+          if (tweenPromote.length) this.bridge.promoteAvatarAttachGltfs(tweenPromote)
           this.bridge.syncInstancedTransforms(motionEntities)
           this.bridge.extractMovedPoses(motionEntities)
-          for (const entity of tweenEntities) {
+          for (const entity of tweenPromote) {
             this.bridge.ensureMeshRendererTweenVisual(entity)
           }
           // Re-apply visibility after tween promote (leaf attach can leave mesh.visible=true).
-          this.bridge.syncEcsVisibility([...poseDiff.keys()])
+          // Must include Transform descendants — bob-parent Tween promote clones the coin child.
+          this.bridge.syncEcsVisibility(this.bridge.entitiesWithVisibility())
           this.tweenBridge?.sync(view)
           this.pointerStructureDirty = true
         }
@@ -4821,8 +4851,9 @@ export class SceneScriptSystem {
         trsDiff.set(entity, comps)
       }
     }
+    const removed = new Set<Entity>()
     if (trsDiff.size) {
-      applySceneDiff(this.entityStore, trsDiff, view, this.readComponents, [], {
+      const applied = applySceneDiff(this.entityStore, trsDiff, view, this.readComponents, [], {
         skipTransformApply: (entity) =>
           this.readComponents.AvatarAttach.has(entity) ||
           this.projection.isVcLiveTransformEntity(entity),
@@ -4832,10 +4863,18 @@ export class SceneScriptSystem {
           this.bridge?.noteReservedParentedEntity(entity, parent, v)
         }
       })
+      // engine.removeEntity deletes Transform — Explorer drops the visual the same
+      // fold. Ignoring applySceneDiff.removals left DrawWorld extracts (blood burst
+      // boxes / Blood*.glb splats / SlimeExplode) at the last matrixWorld.
+      if (applied.removals.length) {
+        this.bridge.disposeRemovedEntities(applied.removals)
+        for (const entity of applied.removals) removed.add(entity)
+      }
       // Same as Tween orbit: extract copies pose.matrixWorld onto draw-root GLB
       // clones. Incremental poseRoot.updateMatrixWorld(false) can miss a
       // getMutable write this fold — MeshRenderer rings follow ECS, the GLB stays.
       for (const entity of trsDiff.keys()) {
+        if (removed.has(entity)) continue
         if (
           this.readComponents.AvatarAttach.has(entity) ||
           this.projection.isVcLiveTransformEntity(entity)
@@ -4847,12 +4886,19 @@ export class SceneScriptSystem {
         node.updateMatrixWorld(true)
       }
     }
-    const entities = this.expandMotionExtractEntities(poseDiff.keys())
+    const entities = this.expandMotionExtractEntities(
+      [...poseDiff.keys()].filter((entity) => !removed.has(entity))
+    )
     this.bridge.syncEcsVisibility(this.bridge.entitiesWithVisibility())
+    // Tween on a parent (coin bob wrapper) must clone GltfContainer children off
+    // GPU InstancedMesh — instance slots ignore ancestor Visibility/world.
+    const tweenPromote = tweenEntities.filter((entity) => !removed.has(entity))
+    if (tweenPromote.length) this.bridge.promoteAvatarAttachGltfs(tweenPromote)
     // Promote InstancedMesh → clone before extract so the new GLB gets this pose.
     this.bridge.syncInstancedTransforms(entities)
     if (trsDiff.size) this.bridge.extractMovedPoses(entities)
     for (const entity of tweenEntities) {
+      if (removed.has(entity)) continue
       this.bridge.ensureMeshRendererTweenVisual(entity)
     }
     this.bridge.syncEcsVisibility(this.bridge.entitiesWithVisibility())
@@ -4879,7 +4925,14 @@ export class SceneScriptSystem {
     componentId: number,
     kind: ProjectionChangeKind
   ): boolean {
-    if (!this.bridge || kind === 'delete') return false
+    if (!this.bridge) return false
+    if (kind === 'delete') {
+      if (componentId === this.readComponents.MeshRenderer.componentId) {
+        this.bridge.admitMeshRendererHandle(entity, 'delete')
+        return true
+      }
+      return false
+    }
     const { Material, MeshRenderer, GltfContainer } = this.readComponents
     if (GltfContainer.has(entity)) return false
     if (componentId === MeshRenderer.componentId) {

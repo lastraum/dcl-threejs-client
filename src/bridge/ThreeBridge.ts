@@ -625,11 +625,15 @@ export class ThreeBridge {
     if (kind === 'delete') {
       const obj = this.store.nodes.get(entity)
       if (obj) {
-        if (this.instancer.has(entity)) this.instancer.detach(entity, obj)
+        this.drawWorld.unregisterPose(obj)
+        if (this.instancer.has(entity) || obj.userData.dclInstanced) {
+          this.instancer.detach(entity, obj)
+        }
         this.unbindDrawVisual(obj)
         this.removeMeshSlot(obj, meshKey(entity))
       }
       this.pendingMeshEntities.delete(entity)
+      this.dropQueuedGltfAttach(entity)
       return
     }
     this.pendingMeshEntities.add(entity)
@@ -637,6 +641,33 @@ export class ThreeBridge {
     if (!key || key.ready) return
     if (this.cache.isResolving(key.cacheKey) || this.cache.hasGivenUp(key.cacheKey)) return
     this.scheduleBackgroundLoad(key.url, key.hash, key.cacheKey)
+  }
+
+  /**
+   * MeshRenderer delete — drop private extract + GPU instance immediately.
+   * Transform.getMutable VFX (blood burst boxes) expire via engine.removeEntity;
+   * waiting on pendingDiff left the draw-root mesh after Transform DELETE.
+   */
+  admitMeshRendererHandle(entity: Entity, kind: 'put' | 'delete'): void {
+    if (kind !== 'delete') {
+      this.pendingMeshEntities.add(entity)
+      return
+    }
+    const obj = this.store.nodes.get(entity)
+    if (obj) {
+      this.drawWorld.unregisterPose(obj)
+      if (
+        this.meshRendererInstancer.has(entity) ||
+        obj.userData.dclMeshRendererInstanced ||
+        obj.userData[MESH_RENDERER_INSTANCE_MARKER]
+      ) {
+        this.meshRendererInstancer.detach(entity, obj)
+      }
+      this.unbindDrawVisual(obj)
+      this.removeMeshSlot(obj, meshKey(entity))
+    }
+    this.pendingMeshEntities.delete(entity)
+    this.instanceMotionHits.delete(entity)
   }
 
   /**
@@ -1021,6 +1052,9 @@ export class ThreeBridge {
       if (!wasVisible && visible && Billboard?.has(entity)) {
         this.invalidateBillboardFacing?.(entity)
       }
+      if (wasVisible !== visible) {
+        this.drawWorld.syncLinkedPose(obj)
+      }
     }
     if (instanced.length) {
       this.meshRendererInstancer.updateEntities(instanced, this.store.nodes)
@@ -1028,6 +1062,32 @@ export class ThreeBridge {
     if (gltfInstanced.length) {
       this.instancer.updateEntities(gltfInstanced, this.store.nodes)
     }
+    // InstancedMesh lives under drawRoot — Object3D.visible on a bob-parent does not
+    // hide the slot. Zero any instance whose pose or ancestor was just hidden
+    // (Flagtag coins: Visibility on bobParent + Coin_01.glb child).
+    this.zeroHiddenGltfInstances()
+  }
+
+  /** GPU instance slots whose pose chain is hidden must be zero-scale. */
+  private zeroHiddenGltfInstances(): void {
+    const extra: Entity[] = []
+    for (const entity of this.instancer.entities()) {
+      const obj = this.store.nodes.get(entity)
+      if (!obj) continue
+      if (!obj.visible) {
+        extra.push(entity)
+        continue
+      }
+      let p: THREE.Object3D | null = obj.parent
+      while (p) {
+        if (!p.visible) {
+          extra.push(entity)
+          break
+        }
+        p = p.parent
+      }
+    }
+    if (extra.length) this.instancer.updateEntities(extra, this.store.nodes)
   }
 
   /**
@@ -3606,11 +3666,31 @@ export class ThreeBridge {
     }
   }
 
+  /**
+   * Transform DELETE / engine.removeEntity — drop pose + every draw-root extract.
+   * Host-motion fold must call this; applySceneDiff removals were previously ignored
+   * and one-shot VFX (blood boxes / splat GLBs) stayed in DrawWorld.
+   */
+  disposeRemovedEntities(entities: Iterable<Entity>): void {
+    for (const entity of entities) this.removeEntityNode(entity)
+  }
+
+  private dropQueuedGltfAttach(entity: Entity): void {
+    this.largeAttachQueued.delete(entity)
+    const q = this.largeAttachQueue
+    if (!q.length) return
+    for (let i = q.length - 1; i >= 0; i--) {
+      if (q[i] === entity) q.splice(i, 1)
+    }
+  }
+
   private removeEntityNode(entity: Entity): void {
     if (!this.store.isSceneOwned(entity)) return
     this.pendingMeshEntities.delete(entity)
     this.pendingMaterialEntities.delete(entity)
     this.attachedGltfEntities.delete(entity)
+    this.dropQueuedGltfAttach(entity)
+    this.instanceMotionHits.delete(entity)
     this.store.setSpritePool(entity, false)
     this.store.setBillboard(entity, false)
     this.store.setTween(entity, false)
@@ -3705,6 +3785,8 @@ export class ThreeBridge {
     const mk = meshKey(entity)
     const tk = textKey(entity)
     const lk = lightKey(entity)
+    // Pose-linked extracts first — GPU InstancedMesh slots are not in DrawWorld.links.
+    this.drawWorld.unregisterPose(obj)
     this.clearGltfVisual(entity, obj)
     // MeshRenderer GPU instances only have a marker Group — not a private Mesh.
     // Must detach or round-reset / tile teardown leaves colored instances visible forever

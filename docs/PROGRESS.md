@@ -3,10 +3,11 @@
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-08-19  
-> **Current phase:** **v2.2.0** on `main`. Butter work on **`v3`**. QA trunk is **`dev-latest`**. SceneLoop invert clock **🟢**.  
+> **Current phase:** **v2.2.0** on `main`. City soak on **`v4`**. QA trunk is **`dev-latest`**. SceneLoop invert clock **🟢**.  
 > **Shipped:** **v2.2.0** one guest clock · plaza Cast Line walk-log · Genesis sky · Explore live search · **v2.1.0** `/localpreview` · stay-in-play reload · Tags shaders (`tjs.sync` opt-in) · shaders off until Jump In · preview tabs · **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
 
-> **After 2.2 (next / `v3`):** neighbor composite **shells on** · Landscape + Shadows Distance live · FXAA when bloom is on · GPU warm covers shadow+bloom · stacked live-guest FPS measure. Promote stays off.  
+> **After 2.2 (`v3` landed on `dev-latest`):** neighbor shells on · Landscape + Shadows Distance live · FXAA when bloom is on · GPU warm · Scene Distance default 100 / max 320 · Max Lights 10. Promote still off.  
+> **After v3 (`v4`):** stacked live-guest FPS log → stand-on promote soak → PE P3 QA → goldens by capture. No tag. Plan: [V4_ATTACK.md](./V4_ATTACK.md).  
 > **After 2.0 (parked shell):** RTS box-select / pad-drag · saved outfits · create-community / invites · gallery multi-page · Social WS reliability · PE P3 pad/wind QA · multi-shape GLTF `40M+` riding. Scene UI = **one-off bugs only**. Shell marketplace browse ≠ **P2P peer trade**.  
 
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). PM LiveKit survives teleports. Community voice LiveKit survives Jump In.  
@@ -17,6 +18,27 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## ✅ Milestone — v4 city soak opened (FPS log → promote) (2026-08-19)
+
+**Status: on `v4` — not a product tag.** Clock stays 🟢. Shells stay on. Promote stays off until a stacked FPS log.
+
+### What's new (parity / implementation — no version toast)
+
+- **Branch** — `v4` off `dev-latest`. Attack order is law: [V4_ATTACK.md](./V4_ATTACK.md)
+- **Scene Distance** — default **100 m** (Bevy), max **320 m** (~20 parcels)
+- **Max Lights** — slider cap **10** (Explorer High/Ultra)
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Stacked live-guest FPS** | measure-only | Gate 1 — paste p5 before any cap/promote flip |
+| **Stand-on promote** | ⬜ off | Gate 2 — `?aoipromote=1` only after gate 1 |
+| **Far shells PhysX** | law: none | Colliders with live guest only |
+| **PE P3 / goldens / clock observe** | QA / capture / observe | Not a recode chapter |
+
+**Tip:** Do not retune PE scale. Do not flip promote on a hitchy city.
 
 ---
 

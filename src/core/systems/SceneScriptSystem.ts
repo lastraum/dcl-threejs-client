@@ -2562,7 +2562,7 @@ export class SceneScriptSystem {
       // Pointer / ground-ray diagnostics must not share the global 100ms scene-worker-log key
       // (was swallowing level-state isPressed-path lines during click bursts).
       const pointerDiag =
-        /\[sceneloop\]|level-state edge done|no-target|inject RECEIVED|noTarget=|isPressed-path|isPressed-arm|sticky-clear|pointer-edge-|levelState=|edge-VFX peel|pointer ui egress|planeY0|VFXEDGE/i.test(
+        /\[sceneloop\]|level-state edge done|no-target|inject RECEIVED|noTarget=|isPressed-path|isPressed-arm|sticky-clear|pointer-edge-|pointer edge|world-mesh PET|world-mesh CRDT|pointer leftover CRDT|pointer deferred CRDT|levelState=|edge-VFX peel|pointer ui egress|planeY0|VFXEDGE/i.test(
           cleaned
         )
       const joinPaint =
@@ -2902,8 +2902,20 @@ export class SceneScriptSystem {
     uiEntities?: number[]
     uiMountSnapshot?: WorkerUiMountSnapshotRow[]
   }): void {
-    // Hold non-UI pointer chunks until the atomic uiEntities egress arrives.
+    // Scene UI: hold non-UI until the atomic uiEntities chunk.
+    // World mesh: no uiEntities will follow — Animator/States/Transform must apply now
+    // (dropping them on pointer-deliver-done left Door Open on the worker only).
     if (this.pointerAwaitingWorkerApply && item.uiEntities === undefined) {
+      if ((item.data?.byteLength ?? 0) > 0 && this.pointerEdgeVisualCollect) {
+        clientDebugLog.log(
+          'pointer',
+          `pointer world-mesh CRDT apply bytes=${item.data.byteLength}`,
+          { alsoConsole: true }
+        )
+        this.crdtOutboundPending.unshift(item)
+        this.flushCrdtOutboundPendingSynchronously()
+        return
+      }
       this.pointerOutboundDeferBuffer.push(item)
       return
     }
@@ -6201,7 +6213,11 @@ export class SceneScriptSystem {
           `post-pointer peel failed — ${err instanceof Error ? err.message : String(err)}`
         )
       })
-    // Light time advance for click Tweens / particles.
+    // Light time advance for click Tweens / particles / one-shot Animator (door).
+    if (!skipSceneAnimators()) {
+      this.animatorBridge?.applyDirtyBoundStates(this.view)
+      this.animatorBridge?.update(0, this.view)
+    }
     this.tweenBridge?.sync(this.view)
     if (this.tweenBridge?.hasLiveTweens()) {
       this.tweenBridge.update(1 / 30, this.view)
@@ -6280,8 +6296,18 @@ export class SceneScriptSystem {
     if (!this.pointerAwaitingWorkerApply && !this.pointerDeliverAwaitingAck) return
     clientDebugLog.log('pointer', `delivery complete — ${source}`, { alsoConsole: false })
     this.pointerAwaitingWorkerApply = false
-    this.pointerOutboundDeferBuffer = []
+    const leftover = this.pointerOutboundDeferBuffer.splice(0)
     this.clearPointerDeliverWatchdog()
+    if (leftover.length) {
+      const bytes = leftover.reduce((n, item) => n + (item.data?.byteLength ?? 0), 0)
+      clientDebugLog.log(
+        'pointer',
+        `pointer leftover CRDT applied n=${leftover.length} bytes=${bytes}`,
+        { alsoConsole: true }
+      )
+      this.crdtOutboundPending.unshift(...leftover)
+      this.flushCrdtOutboundPendingSynchronously()
+    }
     // Resume worker ticks FIRST — never leave the scene frozen while main paints Yoga
     // or awaits crdtOutboundSerial (that was an indefinite click freeze).
     this.forceResumeWorkerSceneTicks(source)
@@ -6323,8 +6349,7 @@ export class SceneScriptSystem {
     console.error('[pointer]', message)
     clientDebugLog.log('pointer', message, { level: 'error', alsoConsole: true })
     this.pointerHoldTicksUntilMount = false
-    this.pointerOutboundDeferBuffer = []
-    // finishPointerDeliveryAsync resumes ticks before any paint await — no indefinite freeze.
+    // Leftover CRDT is applied in finishPointerDeliveryAsync — do not drop Door Open.
     void this.finishPointerDeliveryAsync('pointer-delivery-failed')
   }
 

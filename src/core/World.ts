@@ -2681,7 +2681,12 @@ export class World {
           this.sceneScript.pumpMotionBridges(delta, startFrame)
         }
         let pointerMs = 0
-        if (this.playerMode && this.player && this.isPointerRaycastLive()) {
+        if (
+          this.playerMode &&
+          this.player &&
+          this.isPointerRaycastLive() &&
+          !this.player.isPointerBlocked()
+        ) {
           const ptrT0 = performance.now()
           const focus = this.focusScript()
           // Hover prepare: edges + ~80 ms (PointerEventsSystem.HOVER_PREPARE_MS). Not every rAF.
@@ -2752,6 +2757,7 @@ export class World {
           this.playerMode &&
           this.player &&
           this.isPointerRaycastLive() &&
+          !this.player.isPointerBlocked() &&
           !this.sceneLoop.lastApplyOverran(28)
         ) {
           const ptrT0 = performance.now()

@@ -1026,13 +1026,17 @@ export class ThreeBridge {
           if (visible) unfreezeObject3D(child)
         }
       }
-      // GltfContainer private clones (fishing rod) — hide whole subtree, not just __mesh_*.
+      // Gltf clone root only — never per-mesh. Traversing unhides `*_collider`
+      // hulls and skips click_area volumes (Winterfest door / Creator Hub Invis).
       if (this.ecs.GltfContainer?.has(entity)) {
-        obj.traverse((o) => {
-          if (o !== obj && (o as THREE.Mesh).isMesh) {
-            o.visible = visible
+        const visual = this.getEntityVisual(obj, meshKey(entity))
+        if (visual) {
+          visual.visible = visible
+          if (visible) {
+            unfreezeObject3D(visual)
+            syncGltfInstanceRenderState(visual)
           }
-        })
+        }
       }
       if (visible && this.ecs.MeshRenderer?.has(entity) && !this.hasMeshRendererLeaf(entity)) {
         this.ensureMeshRendererLeaf(entity)
@@ -3964,6 +3968,10 @@ export class ThreeBridge {
   /**
    * VisibilityComponent is law on pose + DrawWorld extract + GPU instance slots.
    * Attach/promote must not force-show (collectible hide, one-shot VFX).
+   *
+   * Entity visibility is the clone root only. Per-mesh rewrite unhides
+   * `*_collider` hulls (ice-rink Glass_collider) and would skip click_area
+   * volumes when hiding (mesh.visible=false drops them from pointer collect).
    */
   private applyAuthoredVisibility(entity: Entity, obj: THREE.Object3D): void {
     const { VisibilityComponent } = this.ecs
@@ -3972,10 +3980,9 @@ export class ThreeBridge {
     obj.visible = visible
     const drawn = obj.userData.dclDrawVisual as THREE.Object3D | undefined
     if (drawn) drawn.visible = visible
-    if (this.ecs.GltfContainer?.has(entity)) {
-      obj.traverse((o) => {
-        if (o !== obj && (o as THREE.Mesh).isMesh) o.visible = visible
-      })
+    if (visible && this.ecs.GltfContainer?.has(entity)) {
+      const visual = this.getEntityVisual(obj as THREE.Group, meshKey(entity))
+      if (visual) syncGltfInstanceRenderState(visual)
     }
     if (obj.userData.dclInstanced && obj instanceof THREE.Group) {
       this.instancer.update(entity, obj)

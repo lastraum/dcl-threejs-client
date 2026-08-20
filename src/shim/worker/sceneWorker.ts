@@ -816,6 +816,13 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
     else ctx.postMessage(msg)
   }
 
+  if (nonUiChunks.length) {
+    const bytes = nonUiChunks.reduce((n, c) => n + c.byteLength, 0)
+    workerLog(
+      'warn',
+      `[sceneWorker] pointer deferred CRDT flush n=${nonUiChunks.length} bytes=${bytes}`
+    )
+  }
   for (const chunk of nonUiChunks) {
     postOutbound(chunk, undefined, { awaitAck: true })
   }
@@ -1115,6 +1122,8 @@ const PHYSICS_COMBINED_COMPONENT_IDS = new Set([1215, 1216])
 const PAINT_BOARD_HOT_COMPONENT_IDS = new Set([1017, 1018])
 /** core::VisibilityComponent — LO() / hide must present; InstancedMesh is off the pose graph. */
 const VISIBILITY_HOT_COMPONENT_IDS = new Set([1081])
+/** core::Animator — Door Open / one-shots must present this pointer edge, not wait for UI mount. */
+const ANIMATOR_HOT_COMPONENT_IDS = new Set([1042])
 
 function crdtChunkHasComponentIds(data: Uint8Array, ids: ReadonlySet<number>): boolean {
   if (!data.byteLength) return false
@@ -1152,11 +1161,16 @@ function crdtChunkHasVisibility(data: Uint8Array): boolean {
   return crdtChunkHasComponentIds(data, VISIBILITY_HOT_COMPONENT_IDS)
 }
 
+function crdtChunkHasAnimator(data: Uint8Array): boolean {
+  return crdtChunkHasComponentIds(data, ANIMATOR_HOT_COMPONENT_IDS)
+}
+
 function crdtChunkIsHotPresent(data: Uint8Array): boolean {
   return (
     crdtChunkHasPhysicsCombined(data) ||
     crdtChunkHasPaintBoardMaterial(data) ||
-    crdtChunkHasVisibility(data)
+    crdtChunkHasVisibility(data) ||
+    crdtChunkHasAnimator(data)
   )
 }
 
@@ -3356,7 +3370,11 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
       const hot = stripHostOwnedLwwBytes(stripSceneUiCrdtBytes(copy))
       if (hot.byteLength) {
         const outLen = hot.byteLength
-        const path: CrdtSendPath = crdtChunkHasVisibility(hot) ? 'hot-vis' : 'hot-phys'
+        const path: CrdtSendPath = crdtChunkHasVisibility(hot)
+          ? 'hot-vis'
+          : crdtChunkHasAnimator(hot)
+            ? 'hot-anim'
+            : 'hot-phys'
         flushPlayModeColdCrdtEgress(postPlayModeColdCrdtFireAndForget)
         postPlayModeColdCrdtFireAndForget(hot)
         note(false, path, outLen)
@@ -4797,7 +4815,7 @@ function dispatchPriorityMessageCore(msg: SceneWorkerPriorityMessage): void {
       `[sceneWorker] inject RECEIVED e${body?.entity ?? '?'} sceneUi=${body?.sceneUi ? 1 : 0} ` +
         `levelState=${body?.levelState ? 1 : 0} phase=${phase} ` +
         `hitEntity=${body?.hitEntity ?? '∅'} noTarget=${noTarget ? 1 : 0} ` +
-        `eng=${sceneEngine ? 1 : 0} onStart=${sceneOnStartComplete ? 1 : 0}`
+        `eng=${sceneEngine ? 1 : 0} onStart=${sceneOnStartComplete ? 1 : 0} meshWake=1`
     )
     try {
       enqueuePointerInject(body)

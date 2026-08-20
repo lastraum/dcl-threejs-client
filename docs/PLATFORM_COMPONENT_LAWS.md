@@ -115,13 +115,16 @@ Client must run **platform Billboard + plane + Visibility**. No GP-specific Bill
 | Rule | Status |
 |------|--------|
 | `obj.visible = Visibility.visible !== false` when component present | Verified — `entityStoreApply` |
-| Apply to private `__mesh_*` leaves and Gltf meshes when component present | Verified — needed for private clones |
+| Apply to pose group + DrawWorld / `__mesh_*` **clone root** — never every descendant mesh | Verified — per-mesh rewrite unhides `*_collider` (ice-rink door) and drops click_area from pointer collect |
 | Visibility `true` on a GltfContainer must load+attach this frame (budget bypass) | Verified — MeshRenderer already had `ensureMeshRendererLeaf`; catch/loot GLBs only flip Visibility |
 | GltfContainer **fetch** is never budget-gated (only attach is). Visibility + normal scale (not LO() 0.001) attaches even while `visible=false` | Verified — plaza n0 is created hidden at reel start; 5s reveal cannot wait for a late parse |
 | Do **not** invent scale rewrites on show/hide | Forbidden (broke missed-it Scale tweens) |
 | Do **not** force-show fishing rods ignoring Visibility | Forbidden (reverted) |
 | Visibility puts must not starve behind slow peel (same class as Transform motion) | Client COD drain policy |
 | Visibility show/hide on PE / GltfContainer must rebuild pointer targets | Platform — hidden visible-class meshes are omitted from the raycast list |
+| Do **not** cull PE meshes by player↔Transform origin (or any keep-radius) | Forbidden — Explorer raycasts the PE set; `maxDistance` is the only range gate |
+| World-mesh PET: host inject writes 1063, then **one** serialized `eng.update` this edge | Verified — Bevy/Explorer: write then tick. Asset-pack `on_click` is `getInputCommand` **this frame**. Do not queue-until-play-frame; do not stack two updates on one edge |
+| World-mesh Animator (1042) CRDT from that tick must apply on main **this edge** | Verified — scene-UI holds non-UI until `uiEntities`; world-mesh never sends that. Dropping the buffer on deliver-done left Door Open on the worker mixer only |
 | InstancedMesh lives off the pose graph — hide = zero-scale instance slot (`writeMatrix`) | Verified — `SceneGltfInstancer` |
 | InstancedMesh is for **repeated low-leaf** props (≤12 render leaves). High-leaf kits clone | Platform — `templateIsInstancable` |
 | First clone of a hash that cannot instance is not idle-queued | Platform — runtime-created unique GLBs |
@@ -156,6 +159,7 @@ Client must run **platform Billboard + plane + Visibility**. No GP-specific Bill
 |------|--------|
 | Name contains `_collider` → invisible physics/pointer hull | DCL glTF convention |
 | Never unhide collider meshes to “see” a texture | **Forbidden** (reverted) |
+| Creator Hub **Invis** (MASK + baseColor alpha 0, no map) stays discarded — do not force `opacity=1` | Verified — Winterfest `Entry_Door_1` click hull |
 
 ### Client law
 

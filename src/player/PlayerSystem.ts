@@ -2322,12 +2322,16 @@ export class PlayerSystem {
       this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible() && !fpv
     }
 
+    // Walk follow may lerp. Mouse look / left-drag orbit must snap — exp(-14Δ)
+    // at 90fps is ~70ms lag (feels like 10–20fps) while present stays at 90.
+    const lookSnap = hardSnap || this.input?.looking === true
+
     if (fpv) {
       _pivot.copy(this.root.position)
       _pivot.y += CAM_EYE_HEIGHT + 0.3
       _camEuler.set(this.camPitch, this.camYaw, 0)
       _camQuat.setFromEuler(_camEuler)
-      const alpha = hardSnap ? 1 : 1 - Math.exp(-14 * delta)
+      const alpha = lookSnap ? 1 : 1 - Math.exp(-14 * delta)
       this.host.camera.position.lerp(_pivot, alpha)
       this.host.camera.quaternion.slerp(_camQuat, alpha)
       this.applyCameraNearForBoom(0)
@@ -2368,7 +2372,7 @@ export class PlayerSystem {
     _offset.setLength(safeDist)
 
     _camPos.copy(_pivot).add(_offset)
-    const alpha = hardSnap ? 1 : 1 - Math.exp(-14 * delta)
+    const alpha = lookSnap ? 1 : 1 - Math.exp(-14 * delta)
 
     this.host.camera.position.lerp(_camPos, alpha)
     this.host.camera.lookAt(_lookAt)

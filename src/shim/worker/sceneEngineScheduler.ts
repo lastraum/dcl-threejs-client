@@ -1,4 +1,4 @@
-import type { IEngine } from '@dcl/ecs'
+import type { Entity, IEngine } from '@dcl/ecs'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import {
@@ -25,7 +25,10 @@ import {
   seedWorkerUiFingerprint,
   shouldUsePartialUiMountSnapshot
 } from './sceneEngineUiScheduler'
-import { resolveWorkerUiTransform } from './resolveBundledUiComponents'
+import {
+  resolveWorkerPointerEventsResult,
+  resolveWorkerUiTransform
+} from './resolveBundledUiComponents'
 import {
   collectWorkerUiMountEntityIds,
   collectWorkerUiMountSnapshot,
@@ -56,27 +59,63 @@ function pointerProofLog(message: string): void {
   else cfg?.log(message)
 }
 
-/** World-mesh PET waits here until the next engine.update — Bevy: host writes, tick reads. */
-const pendingWorldMeshPet: InjectPointerClickBody[] = []
-
-function queueWorldMeshPet(body: InjectPointerClickBody): void {
-  pendingWorldMeshPet.push(body)
+/**
+ * One serialized wakeup after a world-mesh PET write.
+ * Do not require bootSealed — onStart scenes still need EventSystem this edge.
+ * Mutex waits if a play-frame is in native update (skip-if-in-flight, no stack).
+ */
+async function runPointerWakeupTick(): Promise<boolean> {
+  const eng = engine
+  const cfg = config
+  if (!eng || !cfg) {
+    pointerProofLog('[sceneWorker] world-mesh PET wakeup skipped — no engine')
+    return false
+  }
+  try {
+    await runSerializedEngineUpdate(async () => {
+      await eng.update(0)
+    })
+  } catch (err) {
+    pointerProofLog(
+      `[sceneWorker] world-mesh PET wakeup failed — ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    )
+    return false
+  }
+  cfg.onAfterEngineTick?.()
+  return true
 }
 
-function flushPendingWorldMeshPet(eng: IEngine): void {
-  if (pendingWorldMeshPet.length === 0) return
-  const batch = pendingWorldMeshPet.splice(0, pendingWorldMeshPet.length)
-  for (const body of batch) {
-    const phase = body.phase ?? 'down'
-    if (phase === 'down' || phase === 'click') {
-      injectPointerClickDownOnEngine(eng, body)
-      reconcileLocomotionLatchAfterInjectDown(eng)
+/** Pointer vs later sync: PER on the entity vs Animator clip playing after the wakeup tick. */
+function diagnoseWorldMeshPet(eng: IEngine, entity: number, tag: string): void {
+  const PER = resolveWorkerPointerEventsResult(eng)
+  let perN = 0
+  let last = 'none'
+  try {
+    for (const cmd of PER.get(entity as Entity)) {
+      perN++
+      last = `btn=${cmd.button} st=${cmd.state} ts=${cmd.timestamp}`
     }
-    if (phase === 'up' || phase === 'click') {
-      injectPointerClickUpOnEngine(eng, body)
-      injectGlobalPointerUpOnPlayer(eng, body)
-    }
+  } catch (err) {
+    last = err instanceof Error ? err.message : String(err)
   }
+  let anim = 'no-Animator'
+  try {
+    const Animator = generated.Animator(eng)
+    if (Animator.has(entity as Entity)) {
+      const states = Animator.get(entity as Entity).states ?? []
+      anim =
+        states.map((s) => `${s.clip ?? '?'}:${s.playing !== false ? 'on' : 'off'}`).join(',') ||
+        'empty'
+    }
+  } catch (err) {
+    anim = err instanceof Error ? err.message : String(err)
+  }
+  const line =
+    `[sceneWorker] world-mesh PET ${tag} e${entity} per=${perN} last=(${last}) animator=[${anim}]`
+  pointerProofLog(line)
+  config?.log(line)
 }
 
 /**
@@ -242,8 +281,6 @@ function wrapEngineUpdateWithWallClock(eng: IEngine): void {
   const nativeUpdate = eng.update.bind(eng)
   wrapped.update = async (dt: number) => {
     config?.onBeforeEngineUpdate?.()
-    // Store write before systems — same as Bevy reserved writers on the play-frame.
-    flushPendingWorldMeshPet(eng)
     // Transport-only: do not stamp lastExecutedAt / sceneTime (NeonScreen pauseDuration).
     // Do not emit here — a pending named start may still be waiting on the mutex.
     if (!(dt > 0)) {
@@ -301,7 +338,6 @@ export function resetSceneEngineScheduler(): void {
   sceneLoopOwnsPositiveDt = false
   hostOverlayHoldsSceneTime = false
   pendingGuestTickSource = null
-  pendingWorldMeshPet.length = 0
   resetPlayModePointerUiEgress()
   resetEngUpdatePhases()
 }
@@ -1140,10 +1176,29 @@ export async function runSceneEnginePointerTick(
       )
     }
 
-    // World mesh: append PET into the store only. The next play-frame update
-    // flushes it before systems (Bevy / SceneLoop — no stacked eng.update).
+    // World mesh — Bevy / Unity: write PET, then **one** serialized wakeup tick.
+    // Never queue-until-play-frame: asset-pack on_click is getInputCommand this tick.
+    // Mutex waits if a play-frame is in native update (skip-if-in-flight, no stack).
     if (!isLevelState && (phase === 'click' || phase === 'down' || phase === 'up')) {
-      queueWorldMeshPet(splitPointerInject)
+      pointerProofLog(
+        `[sceneWorker] world-mesh PET enter e${splitPointerInject.entity} phase=${phase} ` +
+          `sealed=${bootSealed ? 1 : 0} tickInFlight=${tickInFlight ? 1 : 0}`
+      )
+      if (phase === 'down' || phase === 'click') {
+        injectPointerClickDownOnEngine(eng, splitPointerInject)
+        reconcileLocomotionLatchAfterInjectDown(eng)
+      }
+      if (phase === 'up' || phase === 'click') {
+        injectPointerClickUpOnEngine(eng, splitPointerInject)
+        injectGlobalPointerUpOnPlayer(eng, splitPointerInject)
+      }
+      diagnoseWorldMeshPet(eng, splitPointerInject.entity, `pre-tick ${phase}`)
+      const woke = await runPointerWakeupTick()
+      diagnoseWorldMeshPet(
+        eng,
+        splitPointerInject.entity,
+        `post-tick ${phase} woke=${woke ? 1 : 0}`
+      )
       return
     }
 

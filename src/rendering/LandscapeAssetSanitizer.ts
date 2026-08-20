@@ -296,6 +296,11 @@ function isStandardLike(
  *
  * GLTFLoader already stamps `alphaTest` for MASK. Sanitize / outdoor remap must
  * not strip it; this only re-asserts what the file authored.
+ *
+ * Do **not** rewrite opacity on untextured MASK. Creator Hub "Invis" hulls
+ * (ice-rink door) are MASK + baseColorFactor alpha 0 with no map — opacity 1
+ * makes the click box opaque. Textured cutout cards keep opacity 1 so the
+ * atlas alpha is the mask.
  */
 function honorGltfAuthoredAlpha(material: THREE.Material): void {
   if (!isStandardLike(material)) return
@@ -310,7 +315,14 @@ function honorGltfAuthoredAlpha(material: THREE.Material): void {
   material.userData.gltfAlphaCutoff = cutoff
   material.alphaTest = cutoff
   material.transparent = false
-  material.opacity = 1
+  const std = material as THREE.MeshStandardMaterial
+  const hasCutoutMap = !!(std.map || std.alphaMap)
+  if (hasCutoutMap) {
+    material.opacity = 1
+  } else if (/^invis$/i.test(material.name) && material.opacity >= 1 - 1e-4) {
+    // Creator Hub click hull: previous sanitize forced opacity 1 on cached MASK.
+    material.opacity = 0
+  }
   material.depthWrite = true
   material.needsUpdate = true
 }

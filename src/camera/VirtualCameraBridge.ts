@@ -38,18 +38,15 @@ const _lookUp = new THREE.Vector3()
 const _camZ = new THREE.Vector3()
 const _entityDisplayQuat = new THREE.Quaternion()
 const _worldUp = new THREE.Vector3(0, 1, 0)
-const _gizmoWorld = new THREE.Vector3()
-const _gizmoWorldQuat = new THREE.Quaternion()
 const _followParentMat = new THREE.Matrix4()
 const _followLocalMat = new THREE.Matrix4()
 const _followWorldMat = new THREE.Matrix4()
 const _followScale = new THREE.Vector3()
+const _gizmoWorld = new THREE.Vector3()
+const _gizmoWorldQuat = new THREE.Quaternion()
 let lastFollowDiagMs = 0
 let lastApplyDiagMs = 0
 let lastBindYawLogMs = 0
-
-/** Parent ECS vs live PE — closer than this is a follow root, not a hub/lane shot. */
-const LIVE_FOLLOW_PARENT_RADIUS_M = 4
 
 type TargetPose = {
   position: THREE.Vector3
@@ -85,6 +82,16 @@ export class VirtualCameraBridge {
   /** Last target we applied — distinguishes teleport (accept) from single-frame CRDT spikes (hold). */
   private readonly lastAppliedTargetPos = new THREE.Vector3()
   private hasAppliedTarget = false
+  /**
+   * Dummy follow-root (no lookAtEntity): scene lerps a non-reserved parent toward the
+   * avatar. Live PE + local boom while that parent is tracking; a parked hub root never
+   * arms (proximity alone is not a camera API).
+   */
+  private boomFollowArmed = false
+  private boomFollowParent: number | null = null
+  private lastBoomParent = { x: 0, y: 0, z: 0, set: false }
+  private lastBoomPlayer = { x: 0, y: 0, z: 0, set: false }
+  private lastBoomParentMoveAt = 0
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -157,6 +164,7 @@ export class VirtualCameraBridge {
         this.transition = null
         this.parityFramesAfterBind = 0
         this.hasAppliedTarget = false
+        this.resetBoomFollow()
       }
       return false
     }
@@ -472,29 +480,21 @@ export class VirtualCameraBridge {
       dclToThreePos(wx, wy, wz, _targetPos)
       dclToThreePos(player.position.x, player.position.y, player.position.z, _lookAtPoint)
       if (cameraLookAtQuat(_targetPos, _lookAtPoint, _targetQuat)) {
-        this.logFollowDiag(
-          virtualEntity,
-          parent as number,
-          player,
-          local,
-          'lookAt'
-        )
+        this.logFollowDiag(virtualEntity, parent as number, player, local)
         return { position: _targetPos, rotation: _targetQuat, lookAtPoint: _lookAtPoint }
       }
     }
 
-    // Boom on a follow root (Last Call Dock player cam): no lookAtEntity, parent near live PE.
-    // Same live PE + local offset; aim stays scene Transform rotation (not invented look-at-player).
-    // Hub / lane shots keep the ECS parent — their root is not at the avatar.
+    // No lookAtEntity: Transform hierarchy is law. If the scene is driving a dummy
+    // parent toward the avatar (player-follow boom), present live PE + local offset
+    // so the lens is not stuck on 20–30 Hz CRDT. A parked parent (hub shot) never
+    // tracks, so it never arms.
     if (followParent && (lookAt === undefined || lookAt === null || lookAt === 0)) {
       const parentT = this.ecs.Transform.getOrNull(parent as Entity) as DclTransformValues | null
-      if (
-        parentT &&
-        parentNearPlayer(parentT.position, player.position, LIVE_FOLLOW_PARENT_RADIUS_M)
-      ) {
+      if (parentT && this.updateBoomFollowArmed(parent as number, parentT.position, player.position)) {
         const posed = this.composeLiveFollowBoom(player, parentT, local)
         if (posed) {
-          this.logFollowDiag(virtualEntity, parent as number, player, local, 'boom')
+          this.logFollowDiag(virtualEntity, parent as number, player, local)
           return posed
         }
       }
@@ -536,10 +536,61 @@ export class VirtualCameraBridge {
     return this.aimAlongEntityPlusZ()
   }
 
+  private resetBoomFollow(): void {
+    this.boomFollowArmed = false
+    this.boomFollowParent = null
+    this.lastBoomParent.set = false
+    this.lastBoomPlayer.set = false
+    this.lastBoomParentMoveAt = 0
+  }
+
   /**
-   * Live CCT position + parent rotation + VC local boom. Same present pose as
-   * parent===lookAt CameraFollow, without inventing a lookAtEntity.
+   * Arm only after the dummy parent and the avatar move together (scene follow lerp).
+   * Hold while they stay near. Disarm when the parent parks (hub) or the player leaves.
    */
+  private updateBoomFollowArmed(
+    parent: number,
+    parentPos: { x: number; y: number; z: number },
+    playerPos: { x: number; y: number; z: number }
+  ): boolean {
+    if (this.boomFollowParent !== parent) {
+      this.resetBoomFollow()
+      this.boomFollowParent = parent
+    }
+    const dx = parentPos.x - playerPos.x
+    const dz = parentPos.z - playerPos.z
+    const distSq = dx * dx + dz * dz
+    const nearArm = distSq <= 3.5 * 3.5
+    const nearHold = distSq <= 8 * 8
+    const now = performance.now()
+
+    let playerMoved = false
+    if (this.lastBoomParent.set && this.lastBoomPlayer.set) {
+      const pdx = parentPos.x - this.lastBoomParent.x
+      const pdz = parentPos.z - this.lastBoomParent.z
+      const udx = playerPos.x - this.lastBoomPlayer.x
+      const udz = playerPos.z - this.lastBoomPlayer.z
+      const pSpeed = Math.hypot(pdx, pdz)
+      const uSpeed = Math.hypot(udx, udz)
+      playerMoved = uSpeed > 0.002
+      if (pSpeed > 0.002) this.lastBoomParentMoveAt = now
+      const aligned = pSpeed > 0.002 && playerMoved && pdx * udx + pdz * udz > 0
+      if (nearArm && aligned) this.boomFollowArmed = true
+      // Dummy parent CRDT parked: drop only if the avatar is also still (hub). Keep
+      // the live boom while running so strafe is not stuck on 30 Hz ECS.
+      if (this.lastBoomParentMoveAt > 0 && now - this.lastBoomParentMoveAt > 400 && !playerMoved) {
+        this.boomFollowArmed = false
+      }
+    }
+
+    this.lastBoomParent = { x: parentPos.x, y: parentPos.y, z: parentPos.z, set: true }
+    this.lastBoomPlayer = { x: playerPos.x, y: playerPos.y, z: playerPos.z, set: true }
+
+    if (!nearHold) this.boomFollowArmed = false
+    return this.boomFollowArmed
+  }
+
+  /** Live CCT position + parent rotation + VC local boom. Aim from scene Transform. */
   private composeLiveFollowBoom(
     player: EntityPose,
     parentT: DclTransformValues,
@@ -589,8 +640,7 @@ export class VirtualCameraBridge {
     virtualEntity: Entity,
     parent: number,
     player: EntityPose,
-    local: DclTransformValues,
-    kind: 'lookAt' | 'boom'
+    local: DclTransformValues
   ): void {
     if (!vcDebugVerbose()) return
     const now = performance.now()
@@ -598,7 +648,7 @@ export class VirtualCameraBridge {
     lastFollowDiagMs = now
     clientDebugLog.log(
       'vc-lens',
-      `PE-follow ${kind} vc=e${virtualEntity} parent=e${parent} pe=(${player.position.x.toFixed(1)},${player.position.y.toFixed(1)},${player.position.z.toFixed(1)}) ` +
+      `PE-follow lookAt vc=e${virtualEntity} parent=e${parent} pe=(${player.position.x.toFixed(1)},${player.position.y.toFixed(1)},${player.position.z.toFixed(1)}) ` +
         `local=(${local.position.x.toFixed(1)},${local.position.y.toFixed(1)},${local.position.z.toFixed(1)}) ` +
         `lensThree=(${_targetPos.x.toFixed(1)},${_targetPos.y.toFixed(1)},${_targetPos.z.toFixed(1)})`,
       { alsoConsole: true, throttleMs: 2000, throttleKey: 'vc-pe-follow' }
@@ -656,17 +706,6 @@ function isNonReservedFollowParent(
     parent !== player &&
     parent !== camera
   )
-}
-
-function parentNearPlayer(
-  parentPos: { x: number; y: number; z: number },
-  playerPos: { x: number; y: number; z: number },
-  radiusM: number
-): boolean {
-  const dx = parentPos.x - playerPos.x
-  const dy = parentPos.y - playerPos.y
-  const dz = parentPos.z - playerPos.z
-  return dx * dx + dy * dy + dz * dz <= radiusM * radiusM
 }
 
 /**

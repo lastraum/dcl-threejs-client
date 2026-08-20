@@ -26,6 +26,8 @@ type TweenRuntime = {
   progress: number
   /** Accumulated UV for textureMoveContinuous. */
   textureUv?: Vec2
+  /** Kernel-owned rotateContinuous quat — do not re-integrate from inbound CRDT. */
+  continuousRotation?: Quat
   /** Cached texture targets — avoids per-frame Object3D traverse. */
   textureTargets?: THREE.Texture[]
   /** Reset progress on the frame after signature change. */
@@ -1498,15 +1500,14 @@ export class TweenBridge {
           }
           // speed is degrees/sec (Explorer + all production scene authors).
           _qB.setFromAxisAngle(_v3a, THREE.MathUtils.degToRad(speed) * delta)
-          _qA.set(
-            _scratchTransform.rotation.x,
-            _scratchTransform.rotation.y,
-            _scratchTransform.rotation.z,
-            _scratchTransform.rotation.w
-          )
+          const rt = this.runtime.get(entity)
+          const cur = rt?.continuousRotation ?? _scratchTransform.rotation
+          _qA.set(cur.x, cur.y, cur.z, cur.w)
           // Parent-space: delta * current (not current * delta / local).
           _qOut.copy(_qB).multiply(_qA)
-          _scratchTransform.rotation = { x: _qOut.x, y: _qOut.y, z: _qOut.z, w: _qOut.w }
+          const next = { x: _qOut.x, y: _qOut.y, z: _qOut.z, w: _qOut.w }
+          _scratchTransform.rotation = next
+          if (rt) rt.continuousRotation = next
           applied = true
         }
         break

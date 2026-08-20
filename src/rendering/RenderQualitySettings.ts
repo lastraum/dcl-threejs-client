@@ -9,9 +9,9 @@ export enum RenderQualityTier {
 
 export type GraphicsPreset = 'low' | 'medium' | 'high' | 'ultra' | 'custom'
 export type ShadowQuality = 'off' | 'low' | 'medium' | 'high' | 'ultra'
-/** 0 = Max — free-run (not display vsync). */
+/** 0 = Max — display rAF, uncapped (not setTimeout free-run). */
 export type FpsLimitOption = 30 | 60 | 120 | 0
-/** Multisample AA sample count (0 = off). WebGL2 RT path. */
+/** Multisample AA sample count (0 = off). WebGL2 RT path. Bloom uses FXAA instead. */
 export type MsaaSamples = 0 | 2 | 4 | 8
 /**
  * Bloom pipeline when {@link RenderQualityOptions.bloomEnabled} is on.
@@ -30,7 +30,7 @@ export type RenderQualityOptions = {
   /** Percent of devicePixelRatio (50–200). */
   resolutionScale: number
   fpsLimit: FpsLimitOption
-  /** MSAA samples for the main color buffer (0/2/4/8). Skipped when bloom is on. */
+  /** MSAA samples for the main color buffer (0/2/4/8). Bloom path uses FXAA instead. */
   msaaSamples: MsaaSamples
   /**
    * Prefer display-aligned pacing when FPS is Max.
@@ -61,6 +61,16 @@ export type RenderQualityOptions = {
    * FocusOwner (UI/audio/video/inputs) is always primary only.
    */
   sceneLoadRadiusM: number
+  /**
+   * Grass / terrain LOD far plane (m). Independent of Scene Distance (AOI).
+   * 0 = hide landscape foliage.
+   */
+  landscapeDistanceM: number
+  /**
+   * Sun/moon ortho shadow reach + env caster keep (m). Quality still sets map size.
+   * 0 = no env casters (avatars still follow the avatar-shadow toggle).
+   */
+  shadowsDistanceM: number
   /**
    * When true, runtime may temporarily lower resolution scale + shadow quality
    * under sustained low FPS (see AdaptiveQualityController). User slider values
@@ -93,6 +103,14 @@ export const SCENE_LOAD_RADIUS_MAX_M = 200
  * Isolate single-scene CBD with `?noaoi` or slider 0.
  */
 export const SCENE_LOAD_RADIUS_DEFAULT_M = 64
+
+export const LANDSCAPE_DISTANCE_MIN_M = 0
+export const LANDSCAPE_DISTANCE_MAX_M = 10000
+export const LANDSCAPE_DISTANCE_DEFAULT_M = 7000
+
+export const SHADOWS_DISTANCE_MIN_M = 0
+export const SHADOWS_DISTANCE_MAX_M = 200
+export const SHADOWS_DISTANCE_DEFAULT_M = 100
 
 /** Max ECS LightSource lights active at once (nearest to avatar) — Explorer docs: 4/6/10. */
 export const LIGHT_LIMITS: Record<RenderQualityTier, number> = {
@@ -142,6 +160,8 @@ type PresetBundle = Omit<
   RenderQualityOptions,
   | 'preset'
   | 'sceneLoadRadiusM'
+  | 'landscapeDistanceM'
+  | 'shadowsDistanceM'
   | 'avatarToonEnabled'
   | 'adaptiveQualityEnabled'
   | 'primaryFullRateAnimators'
@@ -209,8 +229,10 @@ const DEFAULT_OPTIONS: RenderQualityOptions = {
   // Explicit — not flipped by named presets.
   avatarToonEnabled: false,
   sceneLoadRadiusM: SCENE_LOAD_RADIUS_DEFAULT_M,
-  /** On by default — steps down only under load; never raises above user settings. */
-  adaptiveQualityEnabled: true,
+  landscapeDistanceM: LANDSCAPE_DISTANCE_DEFAULT_M,
+  shadowsDistanceM: SHADOWS_DISTANCE_DEFAULT_M,
+  /** Off by default — one hitch must not dump shadows/bloom/res. */
+  adaptiveQualityEnabled: false,
   /** Off by default — fair sample budget. `?fullanim` or Advanced toggle for every mixer. */
   primaryFullRateAnimators: false,
   /** Split cast toggles — test avatar vs env shadow cost independently. */
@@ -251,6 +273,20 @@ function clampSceneLoadRadiusM(value: number): number {
   if (!Number.isFinite(value)) return SCENE_LOAD_RADIUS_DEFAULT_M
   return Math.round(
     Math.max(SCENE_LOAD_RADIUS_MIN_M, Math.min(SCENE_LOAD_RADIUS_MAX_M, value))
+  )
+}
+
+function clampLandscapeDistanceM(value: number): number {
+  if (!Number.isFinite(value)) return LANDSCAPE_DISTANCE_DEFAULT_M
+  return Math.round(
+    Math.max(LANDSCAPE_DISTANCE_MIN_M, Math.min(LANDSCAPE_DISTANCE_MAX_M, value))
+  )
+}
+
+function clampShadowsDistanceM(value: number): number {
+  if (!Number.isFinite(value)) return SHADOWS_DISTANCE_DEFAULT_M
+  return Math.round(
+    Math.max(SHADOWS_DISTANCE_MIN_M, Math.min(SHADOWS_DISTANCE_MAX_M, value))
   )
 }
 
@@ -528,6 +564,22 @@ class RenderQualityStore {
     this.patch({ sceneLoadRadiusM: clampSceneLoadRadiusM(sceneLoadRadiusM) })
   }
 
+  getLandscapeDistanceM(): number {
+    return this.options.landscapeDistanceM
+  }
+
+  setLandscapeDistanceM(landscapeDistanceM: number): void {
+    this.patch({ landscapeDistanceM: clampLandscapeDistanceM(landscapeDistanceM) })
+  }
+
+  getShadowsDistanceM(): number {
+    return this.options.shadowsDistanceM
+  }
+
+  setShadowsDistanceM(shadowsDistanceM: number): void {
+    this.patch({ shadowsDistanceM: clampShadowsDistanceM(shadowsDistanceM) })
+  }
+
   getPrimaryFullRateAnimators(): boolean {
     return this.options.primaryFullRateAnimators
   }
@@ -545,6 +597,8 @@ class RenderQualityStore {
       ...bundle,
       avatarToonEnabled: this.options.avatarToonEnabled,
       sceneLoadRadiusM: this.options.sceneLoadRadiusM,
+      landscapeDistanceM: this.options.landscapeDistanceM,
+      shadowsDistanceM: this.options.shadowsDistanceM,
       adaptiveQualityEnabled: this.options.adaptiveQualityEnabled,
       primaryFullRateAnimators: this.options.primaryFullRateAnimators,
       avatarShadowsEnabled: this.options.avatarShadowsEnabled,
@@ -654,6 +708,8 @@ class RenderQualityStore {
     next.maxSceneLights = clampMaxLights(next.maxSceneLights)
     next.resolutionScale = clampResolutionScale(next.resolutionScale)
     next.sceneLoadRadiusM = clampSceneLoadRadiusM(next.sceneLoadRadiusM)
+    next.landscapeDistanceM = clampLandscapeDistanceM(next.landscapeDistanceM)
+    next.shadowsDistanceM = clampShadowsDistanceM(next.shadowsDistanceM)
     if (!isFpsLimit(next.fpsLimit)) next.fpsLimit = this.options.fpsLimit
     if (!isShadowQuality(next.shadowQuality)) next.shadowQuality = this.options.shadowQuality
     if (!isTier(next.tier)) next.tier = this.options.tier
@@ -722,6 +778,8 @@ class RenderQualityStore {
       a.hdrEnabled === b.hdrEnabled &&
       a.avatarToonEnabled === b.avatarToonEnabled &&
       a.sceneLoadRadiusM === b.sceneLoadRadiusM &&
+      a.landscapeDistanceM === b.landscapeDistanceM &&
+      a.shadowsDistanceM === b.shadowsDistanceM &&
       a.adaptiveQualityEnabled === b.adaptiveQualityEnabled &&
       a.primaryFullRateAnimators === b.primaryFullRateAnimators &&
       a.avatarShadowsEnabled === b.avatarShadowsEnabled &&
@@ -785,6 +843,12 @@ class RenderQualityStore {
       if (typeof parsed.sceneLoadRadiusM === 'number') {
         next.sceneLoadRadiusM = clampSceneLoadRadiusM(parsed.sceneLoadRadiusM)
       }
+      if (typeof parsed.landscapeDistanceM === 'number') {
+        next.landscapeDistanceM = clampLandscapeDistanceM(parsed.landscapeDistanceM)
+      }
+      if (typeof parsed.shadowsDistanceM === 'number') {
+        next.shadowsDistanceM = clampShadowsDistanceM(parsed.shadowsDistanceM)
+      }
 
       if (isPreset(parsed.preset)) {
         next.preset = parsed.preset === 'custom' ? this.inferPreset(next) : parsed.preset
@@ -829,3 +893,14 @@ class RenderQualityStore {
 }
 
 export const renderQuality = new RenderQualityStore()
+
+/** Grass LOD near/far from the Landscape Distance slider. far=0 → hide. */
+export function landscapeLodRangeM(distanceM = renderQuality.getLandscapeDistanceM()): {
+  near: number
+  far: number
+} {
+  if (distanceM <= 0) return { near: 0, far: 0 }
+  const far = Math.max(40, distanceM)
+  const near = Math.min(80, Math.max(20, far * 0.19))
+  return { near, far: Math.max(near + 40, far) }
+}

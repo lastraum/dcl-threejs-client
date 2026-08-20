@@ -185,6 +185,11 @@ export class SceneGltfInstancer {
     return this.entityHash.has(entity)
   }
 
+  /** All entities currently in a GPU instance bucket. */
+  entities(): Iterable<Entity> {
+    return this.entityHash.keys()
+  }
+
   stats(): { buckets: number; instances: number; draws: number } {
     let draws = 0
     for (const b of this.buckets.values()) draws += b.meshes.length

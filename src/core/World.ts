@@ -2388,7 +2388,8 @@ export class World {
     // Ability groups only — never re-compile the landscape with VFX PointLights
     // visible (that walk recompiled every grass program and froze the overlay).
     this.abilityVfx?.compileWarmedGroups()
-    // Shadow-depth + bloom blit are not covered by compileAsync — first real presents.
+    // compileAsync misses shadow-depth + bloom/FXAA blit — run the real present path.
+    this.host.warmShadowAndBloomPresents()
     for (let i = 0; i < 4; i++) {
       this.host.renderFrame()
       await new Promise<void>((r) => requestAnimationFrame(() => r()))

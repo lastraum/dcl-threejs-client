@@ -1245,14 +1245,21 @@ export class CommsService {
   }
 
   /**
-   * RFC4 Movement + Profile rooms. Explorer peers publish on the archipelago
-   * island; our scene room only has people who also joined gatekeeper LiveKit.
+   * RFC4 Movement + Profile rooms. Explorer/Bevy publish Movement on **scene + world**
+   * LiveKit (`global_crdt`). Worlds used to send only the world room — the scene-room
+   * `authoritative-server` never saw player Transform, so Flagtag `requestCoinPickup`
+   * (and similar proximity checks) silently returned (`getPlayerPosition` null / too far).
    * Voice / scene-binary stay on {@link mediaLiveKitSession}.
    */
   private movementLiveKitSessions(): LiveKitCommsSession[] {
     if (this.isWorldComms()) {
+      const out: LiveKitCommsSession[] = []
       const media = this.mediaLiveKitSession()
-      return media ? [media] : []
+      if (media) out.push(media)
+      if (this.sceneLiveKit.isConnected() && media !== this.sceneLiveKit) {
+        out.push(this.sceneLiveKit)
+      }
+      return out
     }
     const out: LiveKitCommsSession[] = []
     if (this.sceneLiveKit.isConnected()) out.push(this.sceneLiveKit)

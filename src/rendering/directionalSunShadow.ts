@@ -1,16 +1,18 @@
 import * as THREE from 'three'
-import { AOI_SHELL_KEEP_M } from '../dcl/multiScene/caps'
 import { renderQuality, type ShadowQuality, SHADOW_MAP_SIZE } from './RenderQualitySettings'
 
-/** Ortho half-extent (m) around focus — tracks the visual keep band, not 200 m. */
-const SUN_SHADOW_EXTENT_M: Record<Exclude<ShadowQuality, 'off'>, number> = {
-  low: 32,
-  medium: 40,
-  high: 48,
-  ultra: 56
+function shadowKeepM(): number {
+  const slider = renderQuality.getShadowsDistanceM()
+  if (slider <= 0) return 0
+  return Math.max(16, slider)
 }
-/** Light sits this far along the sun from the player — same as neighbor visual keep. */
-const SUN_SHADOW_DISTANCE_M = AOI_SHELL_KEEP_M
+
+function shadowExtentM(quality: Exclude<ShadowQuality, 'off'>): number {
+  const keep = shadowKeepM()
+  if (keep <= 0) return 0
+  const byQuality = { low: 0.4, medium: 0.5, high: 0.56, ultra: 0.7 }[quality]
+  return Math.max(16, keep * byQuality)
+}
 /** PCF blur radius — higher = broader, softer edges (Unity soft directional feel). */
 const SUN_SHADOW_RADIUS: Record<Exclude<ShadowQuality, 'off'>, number> = {
   low: 2.5,
@@ -50,7 +52,9 @@ function applyDirectionalShadowQuality(light: THREE.DirectionalLight): void {
     return
   }
   const size = SHADOW_MAP_SIZE[q]
-  const extent = SUN_SHADOW_EXTENT_M[q]
+  const keep = shadowKeepM()
+  const extent = keep > 0 ? shadowExtentM(q) : 16
+  const lightDist = keep > 0 ? keep : 32
   light.shadow.mapSize.set(size, size)
   // Slightly positive-leaning normal bias + small constant bias reduces acne without
   // lifting shadows off the ground (peter-panning) as badly as large constant bias alone.
@@ -60,7 +64,7 @@ function applyDirectionalShadowQuality(light: THREE.DirectionalLight): void {
 
   const cam = light.shadow.camera as THREE.OrthographicCamera
   cam.near = 1
-  cam.far = AOI_SHELL_KEEP_M * 2
+  cam.far = lightDist * 2
   cam.left = -extent
   cam.right = extent
   cam.top = extent
@@ -86,7 +90,8 @@ export function updateDirectionalSunShadowFocus(
   _dir.copy(sunDirFromSurface).normalize()
   // Place light along celestial direction from focus so the ortho frustum covers the player.
   light.target.position.copy(_focus)
-  light.position.copy(_focus).addScaledVector(_dir, SUN_SHADOW_DISTANCE_M)
+  const keep = shadowKeepM()
+  light.position.copy(_focus).addScaledVector(_dir, keep > 0 ? keep : 32)
   light.target.updateMatrixWorld()
   light.updateMatrixWorld()
   light.shadow.camera.updateMatrixWorld()

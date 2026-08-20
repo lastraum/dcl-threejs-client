@@ -2,7 +2,7 @@
 
 > Browser-native Decentraland client: load deployed Worlds/scenes, shim SDK7 runtime, mirror ECS → Three.js, expand to open world.
 
-**Status:** **v2.0.0** on `main` ✅ (host world + city walk; still not full Explorer parity). **`dev-latest`:** QA for post-2.0 (neighbor density, RTS drag, outfits, create-community — see [`PROGRESS.md`](./PROGRESS.md)). Shipped in 2.0: host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · 1.7 social/tools.  
+**Status:** **v2.2.0** on `main` ✅ (one guest clock). **`v3`:** Explorer butter — neighbor shells, P3 distances, FXAA+bloom, GPU warm. **`dev-latest`:** QA trunk. Still not full Explorer parity. See [`PROGRESS.md`](./PROGRESS.md).  
 **ECS reference:** [`INTEGRATION.md`](./INTEGRATION.md)  
 **Note:** Historical phase plan. Prefer [PROGRESS.md](./PROGRESS.md) + [ARCHITECTURE.md](./ARCHITECTURE.md) + [INTEGRATION.md](./INTEGRATION.md) + [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) + [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md) for current work.
 

@@ -21,10 +21,13 @@ const TAM = {
  *
  * - fontSize N → N/10 m glyph height (then × entity Transform.scale).
  * - **width omitted**: content-sized plane (no 1 m default cap).
- * - **width authored, no wrap**: still hug the glyphs. Authored width is a max,
- *   not a 20 m mesh — that hung Jump Zone names into the sky / logo.
- *   textAlign pivots the *content* quad (left edge on the entity).
+ * - **no wrap**: hug glyphs + padding/stroke/shadow. Authored width is **not**
+ *   a clip box (Explorer/Godot `width_meter = 0` when wrap is off). Using it
+ *   as a max clipped lobby titles (`Players Joined: 1/5` → `layers Joined: 1/`).
+ *   Huge authored width (Jump Zone 20 m) still does not size the mesh — hug
+ *   only. textAlign pivots the content quad on the entity.
  * - **wrap + width + height**: full auth box, centered, glyphs paint inside.
+ * - padding* is meters (same as width/height), not a fraction of the canvas.
  */
 
 const PIXELS_PER_METER = 160
@@ -213,10 +216,11 @@ function layoutTextShape(spec: PBTextShape): TextLayout {
   const boxW = Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.round(measureWm * ppm)))
   const boxH = Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.round(measureHm * ppm)))
 
-  const padL0 = Math.max(0, (spec.paddingLeft ?? 0) * boxW * 0.5)
-  const padR0 = Math.max(0, (spec.paddingRight ?? 0) * boxW * 0.5)
-  const padT0 = Math.max(0, (spec.paddingTop ?? 0) * boxH * 0.5)
-  const padB0 = Math.max(0, (spec.paddingBottom ?? 0) * boxH * 0.5)
+  // Padding is meters (SDK TextShape), same as width/height — not a % of canvas.
+  const padL0 = Math.max(0, (spec.paddingLeft ?? 0) * ppm)
+  const padR0 = Math.max(0, (spec.paddingRight ?? 0) * ppm)
+  const padT0 = Math.max(0, (spec.paddingTop ?? 0) * ppm)
+  const padB0 = Math.max(0, (spec.paddingBottom ?? 0) * ppm)
   const innerW0 = Math.max(1, boxW - padL0 - padR0)
   const innerH0 = Math.max(1, boxH - padT0 - padB0)
 
@@ -251,12 +255,22 @@ function layoutTextShape(spec: PBTextShape): TextLayout {
 
   const lineHeight = fontPx * (1.15 + (spec.lineSpacing ?? 0) * 0.1)
   const blockH = Math.max(lineHeight, lines.length * lineHeight)
-  const widest = Math.max(fontPx * 0.5, ...lines.map((ln) => mctx.measureText(ln || ' ').width))
+  const widest = Math.max(
+    fontPx * 0.5,
+    ...lines.map((ln) => {
+      const m = mctx.measureText(ln || ' ')
+      const left = Math.max(0, -(m.actualBoundingBoxLeft ?? 0))
+      const right = Math.max(m.width, m.actualBoundingBoxRight ?? m.width)
+      return left + right
+    })
+  )
 
   // Outline/stroke extends past measureText — pad so strokes are not canvas-clipped.
   const outlineWidth = spec.outlineWidth ?? 0
   const strokePad =
     outlineWidth > 0 ? Math.max(2, outlineWidth * fontPx * 0.35) : 0
+  const shadowPadX = Math.abs(spec.shadowOffsetX ?? 0) * ppm + (spec.shadowBlur ?? 0) * fontPx * 0.5
+  const shadowPadY = Math.abs(spec.shadowOffsetY ?? 0) * ppm + (spec.shadowBlur ?? 0) * fontPx * 0.5
 
   let canvasW: number
   let canvasH: number
@@ -273,14 +287,14 @@ function layoutTextShape(spec: PBTextShape): TextLayout {
     meshX = 0
     meshY = 0
   } else {
-    const padX = Math.max(padL0 + padR0, fontPx * 0.25) + strokePad * 2
-    const padY = Math.max(padT0 + padB0, fontPx * 0.25) + strokePad * 2
-    const maxWpx = authW != null ? Math.round(authW * ppm) : CANVAS_MAX
-    const maxHpx = authH != null ? Math.round(authH * ppm) : CANVAS_MAX
-    const contentWpx = wrap
-      ? Math.min(maxWpx, boxW)
-      : Math.min(maxWpx, Math.max(CANVAS_MIN, Math.ceil(widest + padX)))
-    const contentHpx = Math.min(maxHpx, Math.max(CANVAS_MIN, Math.ceil(blockH + padY)))
+    const padX = Math.max(padL0 + padR0, fontPx * 0.25) + strokePad * 2 + shadowPadX
+    const padY = Math.max(padT0 + padB0, fontPx * 0.25) + strokePad * 2 + shadowPadY
+    const contentWpx = wrap && authW != null
+      ? Math.min(CANVAS_MAX, Math.round(authW * ppm))
+      : Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.ceil(widest + padX)))
+    const contentHpx = wrap && authH != null
+      ? Math.min(CANVAS_MAX, Math.round(authH * ppm))
+      : Math.min(CANVAS_MAX, Math.max(CANVAS_MIN, Math.ceil(blockH + padY)))
     canvasW = Math.min(CANVAS_MAX, contentWpx)
     canvasH = Math.min(CANVAS_MAX, contentHpx)
     planeW = Math.max(PLANE_MIN, canvasW / ppm)
@@ -296,10 +310,10 @@ function layoutTextShape(spec: PBTextShape): TextLayout {
     else meshY = 0
   }
 
-  const padL = Math.max(0, (spec.paddingLeft ?? 0) * canvasW * 0.5)
-  const padR = Math.max(0, (spec.paddingRight ?? 0) * canvasW * 0.5)
-  const padT = Math.max(0, (spec.paddingTop ?? 0) * canvasH * 0.5)
-  const padB = Math.max(0, (spec.paddingBottom ?? 0) * canvasH * 0.5)
+  const padL = Math.max(0, (spec.paddingLeft ?? 0) * ppm)
+  const padR = Math.max(0, (spec.paddingRight ?? 0) * ppm)
+  const padT = Math.max(0, (spec.paddingTop ?? 0) * ppm)
+  const padB = Math.max(0, (spec.paddingBottom ?? 0) * ppm)
 
   return {
     planeW,

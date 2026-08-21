@@ -160,7 +160,7 @@ export type SceneEngineSchedulerConfig = {
   queuePointerUiEgress?: (snapshot: WorkerUiMountSnapshotRow[]) => void
   /**
    * Immediate structured UI mount post (hydration + play dirty).
-   * Bypasses play-mode cold CRDT buffer which drops uiEntities/snapshot metadata.
+   * Gameplay CRDT is a separate crdt-outbound; this carries uiEntities/snapshot metadata.
    * `mountEntityIds` is always the full worker mount set; snapshot may be dirty-only.
    */
   postUiMountSnapshot?: (
@@ -175,7 +175,7 @@ export type SceneEngineSchedulerConfig = {
   onBeforeEngineUpdate?: () => void
   onAfterEngineTick?: () => void
   /**
-   * Phase 2 — play mode only: pollEvents + cold CRDT flush after cooperative engine.update.
+   * Phase 2 — play mode only: pollEvents after cooperative engine.update.
    * Replaces a second exports.onUpdate engine.update leg on the cooperative interval.
    */
   onUnifiedPlayFrameComplete?: (dt: number) => Promise<void>

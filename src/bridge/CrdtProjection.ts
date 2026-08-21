@@ -6,6 +6,7 @@ import { AppendValueOperation } from '@dcl/ecs/dist/serialization/crdt/appendVal
 import { CrdtMessageType } from '@dcl/ecs/dist/serialization/crdt/types'
 import type { CrdtMessage } from '@dcl/ecs/dist/serialization/crdt/types'
 import { fixTransformParent } from '@dcl/ecs/dist/serialization/crdt/network/utils'
+import { dataCompare } from '@dcl/ecs/dist/systems/crdt/utils'
 import type { MirrorComponents } from './mirrorComponents'
 
 /** Network identity stored on a local entity (`NetworkEntity` / `NetworkParent` value). */
@@ -45,38 +46,6 @@ export const WORKER_OWNED_UI_COMPONENT_IDS = new Set([
 ])
 
 /** UiBackground / UiText — ensure color.a is a concrete number (0 must not become "missing"). */
-function transformTrsEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true
-  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false
-  const ta = a as {
-    position?: { x?: number; y?: number; z?: number }
-    rotation?: { x?: number; y?: number; z?: number; w?: number }
-    scale?: { x?: number; y?: number; z?: number }
-    parent?: number
-  }
-  const tb = b as {
-    position?: { x?: number; y?: number; z?: number }
-    rotation?: { x?: number; y?: number; z?: number; w?: number }
-    scale?: { x?: number; y?: number; z?: number }
-    parent?: number
-  }
-  const eps = 1e-5
-  const n = (v: number | undefined): number => (typeof v === 'number' ? v : 0)
-  return (
-    Math.abs(n(ta.position?.x) - n(tb.position?.x)) < eps &&
-    Math.abs(n(ta.position?.y) - n(tb.position?.y)) < eps &&
-    Math.abs(n(ta.position?.z) - n(tb.position?.z)) < eps &&
-    Math.abs(n(ta.rotation?.x) - n(tb.rotation?.x)) < eps &&
-    Math.abs(n(ta.rotation?.y) - n(tb.rotation?.y)) < eps &&
-    Math.abs(n(ta.rotation?.z) - n(tb.rotation?.z)) < eps &&
-    Math.abs(n(ta.rotation?.w) - n(tb.rotation?.w)) < eps &&
-    Math.abs(n(ta.scale?.x) - n(tb.scale?.x)) < eps &&
-    Math.abs(n(ta.scale?.y) - n(tb.scale?.y)) < eps &&
-    Math.abs(n(ta.scale?.z) - n(tb.scale?.z)) < eps &&
-    (ta.parent ?? 0) === (tb.parent ?? 0)
-  )
-}
-
 function normalizeUiColorFields(componentId: number, value: unknown): unknown {
   if (componentId !== 1052 && componentId !== 1053) return value
   if (value == null || typeof value !== 'object') return value
@@ -158,6 +127,8 @@ export class CrdtProjection {
   readonly components = new Map<number, Map<Entity, unknown>>()
   /** componentId → (entity → last applied Lamport timestamp). */
   private readonly timestamps = new Map<number, Map<Entity, number>>()
+  /** Last applied LWW payload bytes — equal-timestamp compare matches @dcl/ecs / Bevy. */
+  private readonly lastLwwPayload = new Map<number, Map<Entity, Uint8Array>>()
   private vcLiveSeq = 0
   /** Entities holding live Transform priority (bound VC + lookAt/parent follow rig). */
   private readonly vcLiveEntities = new Set<Entity>()
@@ -340,15 +311,6 @@ export class CrdtProjection {
     const existing = tsMap.get(entity)
     const forceUi =
       this.forceWorkerUiPuts && WORKER_OWNED_UI_COMPONENT_IDS.has(componentId)
-    // LWW: skip older. Same-timestamp PUTs are AUTH_RES / leftover re-dumps —
-    // re-applying them was the 23–240ms snow-touch hitch. Transform melt
-    // (getMutable scale 1.5→0.02) often reuses a tick timestamp; still apply
-    // when TRS actually changed.
-    if (!forceUi && existing !== undefined) {
-      if (timestamp < existing) return
-      if (!opts?.growOnly && timestamp === existing && componentId !== this.transformId) return
-    }
-
     // Network-parented Transform: strip sender-local wire parent, then inject the
     // local entity that owns matching NetworkEntity (renderer hierarchy parity).
     const effectiveData =
@@ -356,20 +318,20 @@ export class CrdtProjection {
         ? fixTransformParent({ data } as never)
         : data
 
+    // Explorer LWW (@dcl/ecs createUpdateLwwFromCrdt / Bevy try_update):
+    // older ts ignore; newer apply; equal ts → byte-compare (keep current if >= incoming).
+    if (!forceUi && existing !== undefined) {
+      if (timestamp < existing) return
+      if (!opts?.growOnly && timestamp === existing) {
+        const current = this.getLastLwwPayload(componentId, entity, meta)
+        if (dataCompare(current as Uint8Array | null, effectiveData) >= 0) return
+      }
+    }
+
     let value: unknown
     try {
       value = meta.deserialize(new ReadWriteByteBuffer(effectiveData))
     } catch {
-      return
-    }
-
-    if (
-      !forceUi &&
-      existing !== undefined &&
-      timestamp === existing &&
-      componentId === this.transformId &&
-      transformTrsEqual(this.components.get(componentId)?.get(entity), value)
-    ) {
       return
     }
 
@@ -382,6 +344,7 @@ export class CrdtProjection {
     // late / out of order (planet-angzaar select stage). VirtualCameraBridge.isActive()
     // already no-ops until the target VC is fully hydrated.
     this.storeComponentPut(entity, componentId, timestamp, value)
+    this.setLastLwwPayload(componentId, entity, effectiveData)
     this.pendingMainCameraBind = null
 
     // Late NetworkParent / NetworkEntity arrival — rebind child Transform parent.
@@ -537,6 +500,33 @@ export class CrdtProjection {
     this.changes.push({ entity, componentId, kind: 'put' })
   }
 
+  private getLastLwwPayload(
+    componentId: number,
+    entity: Entity,
+    meta: ComponentMeta
+  ): Uint8Array | null {
+    const stored = this.lastLwwPayload.get(componentId)?.get(entity)
+    if (stored) return stored
+    const value = this.components.get(componentId)?.get(entity)
+    if (value === undefined || !meta.serialize) return null
+    const buf = new ReadWriteByteBuffer()
+    meta.serialize(value, buf)
+    return buf.toBinary()
+  }
+
+  private setLastLwwPayload(componentId: number, entity: Entity, data: Uint8Array): void {
+    let map = this.lastLwwPayload.get(componentId)
+    if (!map) {
+      map = new Map()
+      this.lastLwwPayload.set(componentId, map)
+    }
+    map.set(entity, data.slice())
+  }
+
+  private clearLastLwwPayload(componentId: number, entity: Entity): void {
+    this.lastLwwPayload.get(componentId)?.delete(entity)
+  }
+
   private isMainCameraOnCameraEntity(entity: Entity, componentId: number): boolean {
     const gate = this.virtualCameraGate
     return gate != null && entity === gate.cameraEntity && componentId === gate.mainCameraComponentId
@@ -576,7 +566,11 @@ export class CrdtProjection {
 
     const tsMap = this.timestamps.get(componentId)!
     const existing = tsMap.get(entity)
+    // Bevy/SDK: older ignore; equal-ts DELETE does not beat an existing PUT.
     if (existing !== undefined && timestamp < existing) return
+    if (existing !== undefined && timestamp === existing && this.components.get(componentId)?.has(entity)) {
+      return
+    }
 
     if (this.isMainCameraOnCameraEntity(entity, componentId)) {
       this.pendingMainCameraBind = null
@@ -584,6 +578,7 @@ export class CrdtProjection {
     this.clearPendingMainCameraBindForEntity(entity)
 
     tsMap.set(entity, timestamp)
+    this.clearLastLwwPayload(componentId, entity)
     if (this.components.get(componentId)!.delete(entity)) {
       this.changes.push({ entity, componentId, kind: 'delete' })
     }
@@ -597,6 +592,7 @@ export class CrdtProjection {
         this.changes.push({ entity, componentId, kind: 'delete' })
       }
       this.timestamps.get(componentId)!.delete(entity)
+      this.clearLastLwwPayload(componentId, entity)
     }
   }
 

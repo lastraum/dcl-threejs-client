@@ -62,7 +62,8 @@ import type { MovePlayerToRequest } from './movePlayerTo'
 import {
   DCL_PLAYER_ENTITY_Y_OFFSET,
   playerEntityPositionFromThreeFeet,
-  resolveMovePlayerToTargetFeetDcl
+  resolveMovePlayerToTargetFeetDcl,
+  threePlayerYawToDclEntityQuat
 } from './dclPlayerEntity'
 import { clampToWalkBounds, type PlayerWalkBounds } from './SceneBounds'
 import { formatWalkBounds, physLog } from '../physics/physicsDiag'
@@ -72,7 +73,6 @@ import {
   dclToThreePos,
   dclToThreeQuat,
   dclToThreeVec,
-  threeToDclQuat,
   threeToDclVec,
   threeYawToDclYaw
 } from '../bridge/dclTransform'
@@ -125,7 +125,7 @@ const CAM_EYE_HEIGHT = 1.82
 const CAM_LOOK_HEIGHT_FAR = 1.42
 /** Look-at Y near zoom — head focus. */
 const CAM_LOOK_HEIGHT_NEAR = 1.7
-const CAM_DISTANCE_DEFAULT = 4.5
+const CAM_DISTANCE_DEFAULT = 3.5
 const CAM_DISTANCE_MIN = 0
 const CAM_FPV_MAX_DISTANCE = 0.35
 const CAM_DISTANCE_MAX = 16
@@ -757,7 +757,7 @@ export class PlayerSystem {
     return playerEntityPositionFromThreeFeet(this.root.position)
   }
 
-  /** PlayerEntity pose for CRDT / scene reads — position is feet; rotation is wire yaw. */
+  /** PlayerEntity pose for CRDT / scene reads — position is feet; rotation aims DCL Forward at body facing. */
   getEntityPose(): EntityPose {
     if (!this.enabled && this.stagedPlayerPose) {
       return {
@@ -767,7 +767,7 @@ export class PlayerSystem {
     }
     return {
       position: this.getPlayerEntityPositionDcl(),
-      rotation: threeToDclQuat(ReservedEntitiesSync.playerRotationFromYaw(this.getNetworkYaw()))
+      rotation: threePlayerYawToDclEntityQuat(this.playerYaw)
     }
   }
 
@@ -1083,10 +1083,12 @@ export class PlayerSystem {
           this.lastLongTeleportFeet = target.clone()
           this.lastLongTeleportAt = performance.now()
         }
-        // Pin authored feet while InputModifier.disableAll (map rebuild / load gate).
-        // Scene freeze holds pose; on unfreeze gravity drops onto cooked colliders.
-        if (!canLocomote(this.getLocomotionConfig())) {
-          this.disableAllHoldFeet = (longRespawn ? target : this.root.position).clone()
+        // Pin authored feet while InputModifier.disableAll (map rebuild / freeze death).
+        // Retarget an already-armed hold even if this frame's IM mirror still says
+        // canLocomote — otherwise the next disableAll tick snaps back to snow feet
+        // and the campfire movePlayerTo never sticks.
+        if (this.disableAllHoldFeet || !canLocomote(this.getLocomotionConfig())) {
+          this.disableAllHoldFeet = target.clone()
           const f = this.disableAllHoldFeet
           physLog(
             'freeze-hold-set',

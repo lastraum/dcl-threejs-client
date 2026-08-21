@@ -70,6 +70,19 @@ export function syncWireTypeName(type: number): SyncWireTypeName {
 }
 
 /** True when type is full-state RES (serverless or auth-server). */
+const CUSTOM_EVENT_NAME_RE =
+  /teamAssigned|weatherState|paintDelta|snapshot|joinRoster|paintTick|botPositions|roundReset|requestSnapshot|updateName/
+
+export function peekCustomEventName(payload: Uint8Array): string {
+  const n = Math.min(payload.byteLength, 96)
+  let ascii = ''
+  for (let i = 0; i < n; i++) {
+    const b = payload[i]!
+    ascii += b >= 32 && b < 127 ? String.fromCharCode(b) : ' '
+  }
+  return ascii.match(CUSTOM_EVENT_NAME_RE)?.[0] ?? '?'
+}
+
 export function isResCrdtStateType(type: number): boolean {
   return (
     type === CommsWireMessageType.RES_CRDT_STATE ||

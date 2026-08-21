@@ -448,7 +448,7 @@ export function beginEngUpdatePhase(dt: number): void {
  * Phase 0.5i — tag network sendBinary path for slow [wsp0] lines.
  * `fast` = empty resolve without await · `poll` = kicked empty main hop · `wait` = outbound await.
  */
-export function noteSendBinaryPath(tag: 'fast' | 'poll' | 'wait'): void {
+export function noteSendBinaryPath(tag: 'fast' | 'poll' | 'wait' | 'async'): void {
   if (!gate.active) return
   if (!gate.sendBinaryNote) {
     gate.sendBinaryNote = tag

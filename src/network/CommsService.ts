@@ -33,6 +33,7 @@ import {
   logSyncDirectedFallback,
   logSyncDirectedPublish,
   logSyncOversizedSkip,
+  peekCustomEventName,
   unwrapCraftedCommsMessage
 } from './comms/syncDebug'
 
@@ -686,8 +687,11 @@ export class CommsService {
     opts?: { preserveHostOrigin?: boolean }
   ): Promise<SceneCommsConnectResult> {
     this.sceneRoomConnectInFlight = true
-    // Re-arm hold for each scene join — early AUTH_RES must not race async main/syncEntity.
-    this.setSceneBinaryIngressHold(true)
+    // First join: hold AUTH_RES until main/syncEntity. Already playing: do not re-hold —
+    // worker-ready release never runs again, so reconnect used to freeze teamAssigned/paintTick.
+    if (this.inboundQueue.isHoldDrain()) {
+      this.setSceneBinaryIngressHold(true)
+    }
     try {
       return await this.connectSceneRoomImpl(target, opts)
     } finally {
@@ -1352,7 +1356,7 @@ export class CommsService {
       clientDebugLog.log(
         'sync',
         n > 0
-          ? `scene-binary ingress released — ${n} buffered packet(s) will drain on next sendBinary`
+          ? `scene-binary ingress released — ${n} buffered packet(s) push to worker`
           : 'scene-binary ingress released (queue empty)',
         { level: 'info', alsoConsole: true }
       )
@@ -1380,7 +1384,7 @@ export class CommsService {
       clientDebugLog.log(
         'sync',
         n > 0
-          ? `CUSTOM_EVENT ingress live — ${n} join/snapshot packet(s) drain next sendBinary`
+          ? `CUSTOM_EVENT ingress live — ${n} join/snapshot packet(s) push to worker`
           : 'CUSTOM_EVENT ingress live (queue empty)',
         { level: 'info', alsoConsole: true }
       )
@@ -1395,22 +1399,35 @@ export class CommsService {
     return this.inboundQueue.drain()
   }
 
+  /**
+   * LiveKit / RFC5 publish only — does **not** drain inbound.
+   * Guest `eng.update` must not await this (paintTick RTT was 200–400ms → ~11 FPS).
+   */
+  async publishSceneBinary(data: Uint8Array[], addresses: string[] = []): Promise<void> {
+    await this.publishSceneBinaryInner(data, addresses)
+  }
+
   async sendBinary(data: Uint8Array[], addresses: string[] = []): Promise<Uint8Array[]> {
+    await this.publishSceneBinaryInner(data, addresses)
+    return this.inboundQueue.drain()
+  }
+
+  private async publishSceneBinaryInner(data: Uint8Array[], addresses: string[] = []): Promise<void> {
     if (this.transport !== 'livekit' || !this.sceneId) {
       // RFC5 has no directed peer targeting — broadcast only (rare fallback path).
       if (addresses.length) logSyncDirectedFallback(addresses, 'rfc5-broadcast')
-      if (!this.rfc5.isConnected()) return this.inboundQueue.drain()
+      if (!this.rfc5.isConnected()) return
       this.maybeNoteMissingAuthServer()
       for (const chunk of data) {
         const unwrapped = unwrapCraftedCommsMessage(chunk)
         const reliable = !unwrapped || isReliableCommsWireType(unwrapped.messageType)
         this.rfc5.send(chunk, !reliable)
       }
-      return this.inboundQueue.drain()
+      return
     }
 
     const session = this.activeDataSession()
-    if (!session) return this.inboundQueue.drain()
+    if (!session) return
 
     // Directed peerData → LiveKit destinationIdentities. Empty addresses = room broadcast
     // (unless CUSTOM_EVENT / REQ can be pinned to the authoritative-server peer below).
@@ -1458,6 +1475,14 @@ export class CommsService {
           chunkDest = authDest
         }
       }
+      if (unwrapped?.messageType === CommsWireMessageType.CUSTOM_EVENT) {
+        const name = peekCustomEventName(unwrapped.payload)
+        if (name === 'joinRoster' || name === 'teamAssigned' || name === 'paintTick') {
+          console.info(
+            `[sync] CUSTOM_EVENT out ${name} → ${chunkDest?.length ? 'authoritative-server' : 'broadcast'} ${unwrapped.payload.byteLength}B`
+          )
+        }
+      }
       // Directed packets always reliable. RES/REQ + CUSTOM_EVENT need reliable DC —
       // lossy broadcast drops combat/lobby event sequences under load.
       const reliable =
@@ -1468,7 +1493,6 @@ export class CommsService {
         destinationIdentities: chunkDest
       })
     }
-    return this.inboundQueue.drain()
   }
 
   private lastMissingAuthServerLogMs = 0

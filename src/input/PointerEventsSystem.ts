@@ -71,6 +71,12 @@ type PointerDeps = {
   camera: THREE.Camera
   getPlayerPosition: () => THREE.Vector3 | null
   isPointerBlocked: () => boolean
+  /**
+   * Pointer-lock look. Unlocked LMB is camera orbit (PlayerInput) — not IA_POINTER.
+   * Sending level-state PET_DOWN on orbit drag froze the worker while the player
+   * was only looking / running.
+   */
+  isPointerLocked?: () => boolean
   /** Worker mount snapshot fallback when projection PointerEvents lags paint. */
   pointerEventsOf?: (entity: Entity) => { pointerEvents: ReadonlyArray<PBPointerEvents_Entry> } | null | undefined
   flushPointerCrdt?: () => void
@@ -521,6 +527,16 @@ export class PointerEventsSystem {
     }
 
     const button = mouseButtonToInputAction(e.button)
+    // Unlocked left button is camera orbit, not a scene click. Explorer IA_POINTER
+    // is left-click while looking (pointer lock). Dual-use LMB was injecting
+    // PET_DOWN on every orbit drag → pointer-deliver hitch with no user click.
+    if (
+      button === InputAction.IA_POINTER &&
+      this.deps.isPointerLocked &&
+      !this.deps.isPointerLocked()
+    ) {
+      return
+    }
     const coords = this.pointerClientCoords(e.clientX, e.clientY)
     const hit = this.resolveWorldInteractHit(button)
     // Real PE / UI when in range. On IA_POINTER miss/OOR: level-state PET on PlayerEntity so

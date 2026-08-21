@@ -340,6 +340,10 @@ const pendingSignedFetch = new Map<number, (body: SignedFetchResponse) => void>(
 const pendingSignedFetchGetHeaders = new Map<number, (body: SignedFetchGetHeadersResponse) => void>()
 const pendingCommsSend = new Map<number, (body: Record<string, never>) => void>()
 const pendingInboundBinaries: Uint8Array[] = []
+/** First AUTH_RES/RES opens the room. Later unsolicited snapshots are 12KB no-ops that
+ *  can LWW-overwrite live AUTH_CRDT paint (Snow Drift jog 8→1 dip). Explorer stays on CRDT. */
+let authResConsumedAt = 0
+let lastAuthResSkipLogAt = 0
 let lastUserData: NonNullable<UserDataResponse['data']> | null = null
 let lastRealmInfo: NonNullable<HostReservedSceneStore['realmInfo']> | null = null
 let rendererInboundApply: ((chunks: Uint8Array[]) => void) | null = null
@@ -3607,7 +3611,7 @@ function takeBufferedSendBinaryInbound(): Uint8Array[] {
 }
 
 const CUSTOM_EVENT_NAME_RE =
-  /teamAssigned|paintDelta|snapshot|joinRoster|paintTick|botPositions|roundReset|requestSnapshot|updateName/
+  /teamAssigned|weatherState|paintDelta|snapshot|joinRoster|paintTick|botPositions|roundReset|requestSnapshot|updateName/
 
 function peekCustomEventName(payload: Uint8Array): string {
   const n = Math.min(payload.byteLength, 96)
@@ -3626,10 +3630,29 @@ function isolateSendBinaryInbound(chunks: Uint8Array[] | undefined): Uint8Array[
 
 let sendBinaryInboundLogCount = 0
 
+function inboundHasRoomReadyTypes(chunks: Uint8Array[]): boolean {
+  for (const chunk of chunks) {
+    const decoded = decodeCommsBinaryMessage(chunk)
+    if (!decoded) continue
+    if (
+      decoded.messageType === 6 ||
+      decoded.messageType === 9 ||
+      decoded.messageType === 3 ||
+      decoded.messageType === 7
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
 function noteSendBinaryInbound(chunks: Uint8Array[]): void {
   if (!chunks.length) return
   sendBinaryInboundLogCount++
-  if (sendBinaryInboundLogCount > 8 && sendBinaryInboundLogCount % 30 !== 0) return
+  const important = inboundHasRoomReadyTypes(chunks)
+  if (!important && sendBinaryInboundLogCount > 8 && sendBinaryInboundLogCount % 30 !== 0) {
+    return
+  }
   const types = new Map<string, number>()
   const senders = new Set<string>()
   const events: string[] = []
@@ -3661,8 +3684,62 @@ function noteSendBinaryInbound(chunks: Uint8Array[]): void {
   )
 }
 
+function resCrdtFirst(chunks: Uint8Array[]): Uint8Array[] {
+  const res: Uint8Array[] = []
+  const rest: Uint8Array[] = []
+  for (const chunk of chunks) {
+    const decoded = decodeCommsBinaryMessage(chunk)
+    if (decoded && (decoded.messageType === 9 || decoded.messageType === 3)) res.push(chunk)
+    else rest.push(chunk)
+  }
+  return res.length ? [...res, ...rest] : chunks
+}
+
+function isAuthResChunk(chunk: Uint8Array): boolean {
+  const decoded = decodeCommsBinaryMessage(chunk)
+  return !!decoded && (decoded.messageType === 9 || decoded.messageType === 3)
+}
+
+/** Keep the first AUTH_RES that opens the room. Drop repeats (often ×2 per batch, then 12KB/s). */
+function dropRedundantAuthRes(chunks: Uint8Array[]): Uint8Array[] {
+  if (!chunks.length) return chunks
+  const now = performance.now()
+  const alreadyOpen = authResConsumedAt > 0
+  const out: Uint8Array[] = []
+  let keptRes = false
+  let dropped = 0
+  for (const chunk of chunks) {
+    if (!isAuthResChunk(chunk)) {
+      out.push(chunk)
+      continue
+    }
+    if (alreadyOpen || keptRes) {
+      dropped++
+      continue
+    }
+    keptRes = true
+    authResConsumedAt = now
+    out.push(chunk)
+  }
+  if (dropped > 0 && now - lastAuthResSkipLogAt > 4000) {
+    lastAuthResSkipLogAt = now
+    workerLog(
+      'log',
+      `[sceneWorker] AUTH_RES skipped ×${dropped} — room already synced, live path is AUTH_CRDT`
+    )
+  }
+  return out
+}
+
 function mergeSendBinaryResponse(body: SendBinaryResponse): SendBinaryResponse {
-  const merged = isolateSendBinaryInbound([...(body.data ?? []), ...takeBufferedSendBinaryInbound()])
+  // RealmInfo must exist before AUTH_RES is processed or isRoomReady never flips
+  // (joinRoster stays queued → no team → Snow Drift look-ahead melt never starts).
+  applyHostReservedSceneStore()
+  const merged = dropRedundantAuthRes(
+    resCrdtFirst(
+      isolateSendBinaryInbound([...(body.data ?? []), ...takeBufferedSendBinaryInbound()])
+    )
+  )
   noteSendBinaryInbound(merged)
   return { data: merged }
 }
@@ -3704,13 +3781,13 @@ function sendBinaryBodyHasOutbound(body: SendBinaryRequest): boolean {
  *   (one in-flight) so queue still drains without flooding main.
  * - **Real outbound**: await main (correct multiplayer publish + drain).
  * - Stuck-flight watchdog clears empty inFlight if response lost (>2s).
+ * 0.5j:
+ * - **Real outbound**: post to main and resolve immediately (stash inbound on response).
+ *   Awaiting main queued behind PhysX cooks / crdt-apply (Snow Drift ~11 FPS, postDump 100–270ms).
+ * 0.5k:
+ * - **Inbound push**: main posts `comms-inbound-push` on LiveKit arrival. Empty sendBinary
+ *   returns that stash (no 50ms poll). AUTH_CRDT reaches AZ the same eng.update as Explorer.
  */
-const SEND_BINARY_EMPTY_POLL_MS = 50
-const SEND_BINARY_EMPTY_STUCK_MS = 2_000
-let lastEmptySendBinaryPostAt = 0
-let emptySendBinaryInFlight = false
-let emptySendBinaryInFlightSince = 0
-
 function stashSendBinaryInbound(chunks: Uint8Array[] | undefined): void {
   if (!chunks?.length) return
   for (const chunk of chunks) {
@@ -3718,64 +3795,28 @@ function stashSendBinaryInbound(chunks: Uint8Array[] | undefined): void {
   }
 }
 
-function clearEmptySendBinaryInFlight(): void {
-  emptySendBinaryInFlight = false
-  emptySendBinaryInFlightSince = 0
-}
-
-function maybeKickEmptySendBinaryPoll(now: number): boolean {
-  if (emptySendBinaryInFlight) {
-    if (
-      emptySendBinaryInFlightSince > 0 &&
-      now - emptySendBinaryInFlightSince >= SEND_BINARY_EMPTY_STUCK_MS
-    ) {
-      // Response dropped or main hung — allow a new poll; do not leave poll permanently stuck.
-      clearEmptySendBinaryInFlight()
-    } else {
-      return false
-    }
-  }
-  if (now - lastEmptySendBinaryPostAt < SEND_BINARY_EMPTY_POLL_MS) return false
-
-  emptySendBinaryInFlight = true
-  emptySendBinaryInFlightSince = now
-  lastEmptySendBinaryPostAt = now
-  const id = ++requestId
-  pendingSendBinary.set(id, (response) => {
-    clearEmptySendBinaryInFlight()
-    stashSendBinaryInbound(response.data)
-  })
-  ctx.postMessage({
-    type: 'comms-send-binary',
-    id,
-    body: { data: [], peerData: [] }
-  } satisfies SceneWorkerOutbound)
-  return true
-}
-
 function rpcSendBinary(body: SendBinaryRequest): Promise<SendBinaryResponse> {
   if (sendBinaryBodyHasOutbound(body)) {
-    // Real multiplayer / peer bytes — must reach LiveKit this tick; await main.
-    noteSendBinaryPath('wait')
+    // Publish on main without stalling eng.update. Awaiting the RPC waited on the
+    // main-thread queue (PhysX cooks / crdt-apply) — Snow Drift paintTick was
+    // postDump 100–270ms and ~11 FPS even after LiveKit publish was async.
+    noteSendBinaryPath('async')
     const id = ++requestId
-    return new Promise((resolve) => {
-      pendingSendBinary.set(id, (response) => resolve(mergeSendBinaryResponse(response)))
-      ctx.postMessage({ type: 'comms-send-binary', id, body } satisfies SceneWorkerOutbound)
+    pendingSendBinary.set(id, (response) => {
+      stashSendBinaryInbound(response.data)
     })
+    ctx.postMessage({ type: 'comms-send-binary', id, body } satisfies SceneWorkerOutbound)
+    return Promise.resolve(mergeSendBinaryResponse({ data: takeBufferedSendBinaryInbound() }))
   }
 
   // Empty: official SDK still awaits sendBinary then __processMessages(response).
-  // Fire-and-forget poll left CUSTOM_EVENT (team/snapshot/paint) in a stash the
-  // current send() never saw — joinRoster ran, replies never hit EventBus.
+  // Inbound arrives via comms-inbound-push (not a 50ms main poll).
   const buffered = takeBufferedSendBinaryInbound()
   if (buffered.length) {
     noteSendBinaryPath('fast')
-    maybeKickEmptySendBinaryPoll(performance.now())
     return Promise.resolve(mergeSendBinaryResponse({ data: buffered }))
   }
-  // Empty + no stash: do not await main (plaza postDump 80–400ms). Poll ≤20 Hz for inbound.
   noteSendBinaryPath('fast')
-  maybeKickEmptySendBinaryPoll(performance.now())
   return Promise.resolve({ data: [] })
 }
 
@@ -4388,6 +4429,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     pendingCommsSend.delete(msg.id)
     return
   }
+  if (msg.type === 'comms-inbound-push') {
+    stashSendBinaryInbound(msg.data)
+    return
+  }
   if (msg.type === 'comms-receive-binary') {
     // LiveKit body is craftCommsMessage: [messageType:u8][payload…]. Do not force CRDT —
     // auth-server types 4–9 (AUTH_RES, CUSTOM_EVENT, …) must reach BinaryMessageBus handlers.
@@ -4439,6 +4484,8 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     resetInboundGuestLwwForward()
     lastUserData = null
     lastRealmInfo = null
+    authResConsumedAt = 0
+    lastAuthResSkipLogAt = 0
     cacheHostReserved(msg.reserved)
     playFrameTickMainDriven = false
     portableExperienceWorker = false

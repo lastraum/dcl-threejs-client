@@ -1,6 +1,11 @@
 import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
 import { releasePrimitiveGeometry } from '../bridge/primitiveShapes'
+import {
+  dclToThreePos,
+  dclToThreeQuat,
+  type DclTransformValues
+} from '../bridge/dclTransform'
 
 /**
  * GPU instancing for dense MeshRenderer boards (land tiles, grids).
@@ -28,8 +33,10 @@ type Bucket = {
 }
 
 const _mat = new THREE.Matrix4()
+const _pos = new THREE.Vector3()
+const _quat = new THREE.Quaternion()
+const _scale = new THREE.Vector3()
 const _color = new THREE.Color()
-const _boundBox = new THREE.Box3()
 const _leafBox = new THREE.Box3()
 const _boundSphere = new THREE.Sphere()
 
@@ -106,7 +113,7 @@ export class MeshRendererInstancer {
     entityObj.userData[MESH_RENDERER_INSTANCE_BUCKET_KEY] = bucketKey
 
     this.writeMatrix(bucket, index, entityObj)
-    this.refreshBucketBounds(bucket)
+    bucket.mesh.count = Math.max(bucket.used, 1)
     if (opts?.color && bucket.useInstanceColor) {
       _color.setRGB(opts.color.r, opts.color.g, opts.color.b)
       bucket.mesh.setColorAt(index, _color)
@@ -151,17 +158,58 @@ export class MeshRendererInstancer {
   }
 
   updateEntities(entities: Iterable<Entity>, nodes: Map<Entity, THREE.Group>): void {
-    const dirty = new Set<Bucket>()
     for (const entity of entities) {
       if (!this.entityBucket.has(entity)) continue
       const obj = nodes.get(entity)
       if (!obj) continue
       this.update(entity, obj)
-      const key = this.entityBucket.get(entity)
-      const bucket = key ? this.buckets.get(key) : undefined
-      if (bucket) dirty.add(bucket)
     }
-    for (const bucket of dirty) this.refreshBucketBounds(bucket)
+  }
+
+  /**
+   * Dense board path — instance matrix from ECS Transform, no scene-graph walk.
+   * Snow melt / land paint: parent=0 boxes. One invert per bucket, not per tile.
+   */
+  writeEcsTransforms(entries: Iterable<{ entity: Entity; transform: DclTransformValues }>): void {
+    const invByBucket = new Map<Bucket, THREE.Matrix4>()
+    const dirty = new Set<Bucket>()
+    for (const { entity, transform } of entries) {
+      const key = this.entityBucket.get(entity)
+      if (!key) continue
+      const bucket = this.buckets.get(key)
+      if (!bucket) continue
+      const index = bucket.entityIndex.get(entity)
+      if (index === undefined) continue
+      let inv = invByBucket.get(bucket)
+      if (!inv) {
+        bucket.mesh.updateWorldMatrix(true, false)
+        inv = new THREE.Matrix4().copy(bucket.mesh.matrixWorld).invert()
+        invByBucket.set(bucket, inv)
+      }
+      dclToThreePos(transform.position.x, transform.position.y, transform.position.z, _pos)
+      dclToThreeQuat(
+        transform.rotation.x,
+        transform.rotation.y,
+        transform.rotation.z,
+        transform.rotation.w,
+        _quat
+      )
+      _scale.set(transform.scale.x, transform.scale.y, transform.scale.z)
+      if (
+        Math.abs(_scale.x) < 1e-4 &&
+        Math.abs(_scale.y) < 1e-4 &&
+        Math.abs(_scale.z) < 1e-4
+      ) {
+        _mat.makeScale(0, 0, 0)
+      } else {
+        _mat.compose(_pos, _quat, _scale)
+        _mat.premultiply(inv)
+      }
+      bucket.mesh.setMatrixAt(index, _mat)
+      dirty.add(bucket)
+      this.expandSphereForMatrix(bucket, _mat)
+    }
+    for (const bucket of dirty) bucket.mesh.instanceMatrix.needsUpdate = true
   }
 
   /**
@@ -248,7 +296,6 @@ export class MeshRendererInstancer {
       }
     }
     if (bucket.entityIndex.size === 0) this.disposeBucket(key)
-    else this.refreshBucketBounds(bucket)
   }
 
   dispose(): void {
@@ -280,7 +327,7 @@ export class MeshRendererInstancer {
     const mesh = new THREE.InstancedMesh(geometry, mat, INITIAL_CAP)
     mesh.castShadow = false
     mesh.receiveShadow = true
-    // Mesh-local sphere is filled by refreshBucketBounds after the first write.
+    // Mesh-local sphere is filled by expandSphereForMatrix after the first write.
     mesh.frustumCulled = true
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
     if (useInstanceColor) {
@@ -293,6 +340,8 @@ export class MeshRendererInstancer {
     _mat.makeScale(0, 0, 0)
     for (let i = 0; i < INITIAL_CAP; i++) mesh.setMatrixAt(i, _mat)
     mesh.instanceMatrix.needsUpdate = true
+    mesh.count = 0
+    if (!geometry.boundingBox) geometry.computeBoundingBox()
     mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(0, 0, 0), 0)
     root.add(mesh)
 
@@ -342,47 +391,12 @@ export class MeshRendererInstancer {
     for (let i = bucket.capacity; i < nextCap; i++) mesh.setMatrixAt(i, _mat)
     mesh.instanceMatrix.needsUpdate = true
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true
+    mesh.count = Math.max(bucket.used, 1)
     bucket.root.add(mesh)
     old.removeFromParent()
     old.dispose()
     bucket.mesh = mesh
     bucket.capacity = nextCap
-    this.refreshBucketBounds(bucket)
-  }
-
-  /**
-   * Mesh-local sphere from live instance matrices. Three applies matrixWorld —
-   * a world-space AABB here double-transforms and culls the board.
-   */
-  private refreshBucketBounds(bucket: Bucket): void {
-    const mesh = bucket.mesh
-    const geo = mesh.geometry
-    if (!geo.boundingBox) geo.computeBoundingBox()
-    const srcBox = geo.boundingBox
-    if (!srcBox) {
-      mesh.frustumCulled = false
-      return
-    }
-    _boundBox.makeEmpty()
-    let any = false
-    for (const index of bucket.entityIndex.values()) {
-      mesh.getMatrixAt(index, _mat)
-      const te = _mat.elements
-      if (te[0] === 0 && te[5] === 0 && te[10] === 0) continue
-      _leafBox.copy(srcBox).applyMatrix4(_mat)
-      _boundBox.union(_leafBox)
-      any = true
-    }
-    if (!mesh.boundingSphere) mesh.boundingSphere = new THREE.Sphere()
-    if (!any) {
-      mesh.boundingSphere.center.set(0, 0, 0)
-      mesh.boundingSphere.radius = 0
-    } else {
-      _boundBox.getBoundingSphere(_boundSphere)
-      mesh.boundingSphere.copy(_boundSphere)
-      mesh.boundingSphere.radius += 2
-    }
-    mesh.frustumCulled = true
   }
 
   private writeMatrix(bucket: Bucket, index: number, entityObj: THREE.Group): void {
@@ -398,6 +412,33 @@ export class MeshRendererInstancer {
     _mat.copy(bucket.mesh.matrixWorld).invert().multiply(entityObj.matrixWorld)
     bucket.mesh.setMatrixAt(index, _mat)
     bucket.mesh.instanceMatrix.needsUpdate = true
+    this.expandSphereForMatrix(bucket, _mat)
+  }
+
+  /**
+   * Melt/paint only shrinks or recolors — stay inside the board sphere.
+   * Grow the sphere in O(1) if a tile walks outside; never walk all 7k slots.
+   * A 0-radius sphere (new bucket / Three makeEmpty) must init from this matrix
+   * only — refreshBucketBounds here was the snow-touch 24ms hitch.
+   */
+  private expandSphereForMatrix(bucket: Bucket, instanceMat: THREE.Matrix4): void {
+    const mesh = bucket.mesh
+    const srcBox = mesh.geometry.boundingBox
+    if (!srcBox) return
+    const te = instanceMat.elements
+    if (te[0] === 0 && te[5] === 0 && te[10] === 0) return
+    _leafBox.copy(srcBox).applyMatrix4(instanceMat)
+    _leafBox.getBoundingSphere(_boundSphere)
+    if (!mesh.boundingSphere) mesh.boundingSphere = new THREE.Sphere()
+    if (mesh.boundingSphere.radius <= 0) {
+      mesh.boundingSphere.copy(_boundSphere)
+      mesh.boundingSphere.radius += 2
+      return
+    }
+    const dist = mesh.boundingSphere.center.distanceTo(_boundSphere.center) + _boundSphere.radius
+    if (dist > mesh.boundingSphere.radius) {
+      mesh.boundingSphere.radius = dist + 2
+    }
   }
 
   private disposeBucket(key: string): void {

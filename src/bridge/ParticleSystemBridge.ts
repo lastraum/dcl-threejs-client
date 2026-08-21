@@ -7,7 +7,13 @@ import { usePerfDebug } from '../client/devFlags'
 import { resolveSceneTextureUrl } from './material/resolveTexture'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionView } from './ProjectionView'
-import { PSS_WORLD, PS_PAUSED, PS_STOPPED, SCENE_PARTICLE_BUDGET } from './particles/constants'
+import {
+  PSS_WORLD,
+  PS_PAUSED,
+  PS_STOPPED,
+  SCENE_PARTICLE_BUDGET,
+  particleLiveCap
+} from './particles/constants'
 import {
   applyParticleTexture,
   createParticleGpuMesh,
@@ -25,6 +31,7 @@ import {
   resetBurstRuntimes,
   simulateParticles,
   specSignature,
+  trimLiveToBudget,
   type SpawnContext
 } from './particles/simulation'
 import type { BurstRuntime, LiveParticle, ParticleSpec } from './particles/types'
@@ -229,7 +236,9 @@ export class ParticleSystemBridge {
     const rateScaleIn =
       liveInView > SCENE_PARTICLE_BUDGET ? SCENE_PARTICLE_BUDGET / Math.max(1, liveInView) : 1
 
-    for (const { runtime, parent, inView } of marked) {
+    const toUpload: Marked[] = []
+    for (const row of marked) {
+      const { runtime, parent, inView } = row
       const spec = runtime.spec
       const paused = spec.playbackState === PS_PAUSED
       const stopped = spec.playbackState === PS_STOPPED
@@ -317,6 +326,24 @@ export class ParticleSystemBridge {
         if (burstsDone && rateDone) runtime.finished = true
       }
 
+      toUpload.push(row)
+    }
+
+    // Scene-wide live cap (Explorer). Trim the largest systems first so a 512 m
+    // snowfall box cannot keep 6000 sprites and zero a hand torch.
+    if (toUpload.length) {
+      const lengths = toUpload.map((row) => row.runtime.live.length)
+      const capped = trimLiveToBudget(lengths, SCENE_PARTICLE_BUDGET)
+      for (let i = 0; i < toUpload.length; i++) {
+        const keep = capped[i] ?? 0
+        const live = toUpload[i]!.runtime.live
+        if (live.length > keep) live.length = keep
+      }
+    }
+
+    for (const { runtime, parent, inView } of toUpload) {
+      const spec = runtime.spec
+      const stopped = spec.playbackState === PS_STOPPED
       let inv: THREE.Matrix4 | null = null
       if (runtime.worldSpace) {
         runtime.invParent.copy(parent.matrixWorld).invert()
@@ -342,7 +369,7 @@ export class ParticleSystemBridge {
   }
 
   private async createRuntime(spec: ParticleSpec, sig: string): Promise<ParticleRuntime | null> {
-    const capacity = Math.max(1, Math.floor(spec.maxParticles ?? 1000))
+    const capacity = particleLiveCap(spec.maxParticles)
     const gpu = createParticleGpuMesh(capacity, spec)
     const loop = spec.loop !== false
 

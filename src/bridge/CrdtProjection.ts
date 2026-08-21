@@ -273,7 +273,9 @@ export class CrdtProjection {
       case CrdtMessageType.APPEND_VALUE:
         // Grow-only set append — keep the latest decoded value (Phase 1 does not
         // drive rendering from grow-only sets; excluded from parity).
-        this.putComponent(msg.entityId, msg.componentId, msg.timestamp, msg.data)
+        this.putComponent(msg.entityId, msg.componentId, msg.timestamp, msg.data, {
+          growOnly: true
+        })
         return
       case CrdtMessageType.DELETE_COMPONENT:
       case CrdtMessageType.DELETE_COMPONENT_NETWORK:
@@ -288,7 +290,13 @@ export class CrdtProjection {
     }
   }
 
-  private putComponent(entity: Entity, componentId: number, timestamp: number, data: Uint8Array): void {
+  private putComponent(
+    entity: Entity,
+    componentId: number,
+    timestamp: number,
+    data: Uint8Array,
+    opts?: { growOnly?: boolean }
+  ): void {
     // DCL recycles entity ids after DELETE_ENTITY — next PUT revives the slot (campfire sprite pool, etc.).
     this.deletedEntities.delete(entity)
     if (componentId === this.transformId && this.reservedEntities.has(entity)) return
@@ -300,9 +308,13 @@ export class CrdtProjection {
     const existing = tsMap.get(entity)
     const forceUi =
       this.forceWorkerUiPuts && WORKER_OWNED_UI_COMPONENT_IDS.has(componentId)
-    // LWW: only a single worker writes scene components, so timestamps are
-    // monotonic per (entity, component). Reject strictly-older messages.
-    if (!forceUi && existing !== undefined && timestamp < existing) return
+    // LWW: single writer; skip older. Same-timestamp PUTs are AUTH_RES / leftover
+    // re-dumps of a version we already folded — applying them again is the 23–240ms
+    // snow-touch hitch. Grow-only APPEND may reuse a timestamp for a new value.
+    if (!forceUi && existing !== undefined) {
+      if (timestamp < existing) return
+      if (!opts?.growOnly && timestamp === existing) return
+    }
 
     // Network-parented Transform: strip sender-local wire parent, then inject the
     // local entity that owns matching NetworkEntity (renderer hierarchy parity).

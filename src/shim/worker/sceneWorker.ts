@@ -8,7 +8,11 @@ import {
   encodeCommsBinaryMessage,
   isolateCommsBinaryMessage
 } from '../../network/comms/commsBinaryWire'
-import { unwrapCraftedCommsMessage } from '../../network/comms/syncDebug'
+import {
+  isReqCrdtStateType,
+  isResCrdtStateType,
+  unwrapCraftedCommsMessage
+} from '../../network/comms/syncDebug'
 import { createEngineApiEventState, type EngineApiEventState } from '../engine/EngineApiEventState'
 import type {
   ActiveVideoStreamsResponse,
@@ -340,9 +344,16 @@ const pendingSignedFetch = new Map<number, (body: SignedFetchResponse) => void>(
 const pendingSignedFetchGetHeaders = new Map<number, (body: SignedFetchGetHeadersResponse) => void>()
 const pendingCommsSend = new Map<number, (body: Record<string, never>) => void>()
 const pendingInboundBinaries: Uint8Array[] = []
-/** First AUTH_RES/RES opens the room. Later unsolicited snapshots are 12KB no-ops that
- *  can LWW-overwrite live AUTH_CRDT paint (Snow Drift jog 8→1 dip). Explorer stays on CRDT. */
-let authResConsumedAt = 0
+/**
+ * AUTH_RES/RES (type 9 / 3) is the only packet that sets SDK `isStateSyncronized`.
+ * Unsolicited repeats after the room is ready are 12KB no-ops that LWW-stomp live
+ * AUTH_CRDT paint (Snow Drift jog 8→1). Skip those — but never before EventBus
+ * has sent (isRoomReady), and re-open when the scene emits REQ (2s timeout retry
+ * or RealmInfo re-pulse). Dropping retries left `[Client] waiting for
+ * isStateSyncronized` forever (no joinRoster → PI=0 → no paintTick / local melt).
+ */
+let authResAwaiting = true
+let authResRoomReady = false
 let lastAuthResSkipLogAt = 0
 let lastUserData: NonNullable<UserDataResponse['data']> | null = null
 let lastRealmInfo: NonNullable<HostReservedSceneStore['realmInfo']> | null = null
@@ -1124,6 +1135,8 @@ const PHYSICS_COMBINED_COMPONENT_IDS = new Set([1215, 1216])
  */
 /** Paint boards only — ambient Tween/TweenSequence stay cold (SceneLoop guest clock). */
 const PAINT_BOARD_HOT_COMPONENT_IDS = new Set([1017, 1018])
+/** core::Transform — snow cube melt getMutable must present this tick, not cold-buffer. */
+const TRANSFORM_HOT_COMPONENT_IDS = new Set([1])
 /** core::VisibilityComponent — LO() / hide must present; InstancedMesh is off the pose graph. */
 const VISIBILITY_HOT_COMPONENT_IDS = new Set([1081])
 /** core::Animator — Door Open / one-shots must present this pointer edge, not wait for UI mount. */
@@ -1169,12 +1182,17 @@ function crdtChunkHasAnimator(data: Uint8Array): boolean {
   return crdtChunkHasComponentIds(data, ANIMATOR_HOT_COMPONENT_IDS)
 }
 
+function crdtChunkHasTransform(data: Uint8Array): boolean {
+  return crdtChunkHasComponentIds(data, TRANSFORM_HOT_COMPONENT_IDS)
+}
+
 function crdtChunkIsHotPresent(data: Uint8Array): boolean {
   return (
     crdtChunkHasPhysicsCombined(data) ||
     crdtChunkHasPaintBoardMaterial(data) ||
     crdtChunkHasVisibility(data) ||
-    crdtChunkHasAnimator(data)
+    crdtChunkHasAnimator(data) ||
+    crdtChunkHasTransform(data)
   )
 }
 
@@ -3689,7 +3707,7 @@ function resCrdtFirst(chunks: Uint8Array[]): Uint8Array[] {
   const rest: Uint8Array[] = []
   for (const chunk of chunks) {
     const decoded = decodeCommsBinaryMessage(chunk)
-    if (decoded && (decoded.messageType === 9 || decoded.messageType === 3)) res.push(chunk)
+    if (decoded && isResCrdtStateType(decoded.messageType)) res.push(chunk)
     else rest.push(chunk)
   }
   return res.length ? [...res, ...rest] : chunks
@@ -3697,30 +3715,64 @@ function resCrdtFirst(chunks: Uint8Array[]): Uint8Array[] {
 
 function isAuthResChunk(chunk: Uint8Array): boolean {
   const decoded = decodeCommsBinaryMessage(chunk)
-  return !!decoded && (decoded.messageType === 9 || decoded.messageType === 3)
+  return !!decoded && isResCrdtStateType(decoded.messageType)
 }
 
-/** Keep the first AUTH_RES that opens the room. Drop repeats (often ×2 per batch, then 12KB/s). */
+function outboundCommsMessageType(chunk: unknown): number | null {
+  if (!(chunk instanceof Uint8Array) || chunk.byteLength === 0) return null
+  const crafted = unwrapCraftedCommsMessage(chunk)
+  if (crafted && crafted.messageType > 0 && crafted.messageType <= 9) return crafted.messageType
+  const decoded = decodeCommsBinaryMessage(chunk)
+  return decoded?.messageType ?? null
+}
+
+/** REQ re-opens AUTH_RES; CUSTOM_EVENT outbound means EventBus saw isRoomReady. */
+function noteSendBinaryOutbound(body: SendBinaryRequest): void {
+  const visit = (chunk: unknown): void => {
+    const type = outboundCommsMessageType(chunk)
+    if (type == null) return
+    if (isReqCrdtStateType(type) && !authResAwaiting) {
+      authResAwaiting = true
+      workerLog('log', '[sceneWorker] AUTH_RES re-opened — scene REQ_CRDT_STATE (retry / RealmInfo pulse)')
+    }
+    // EventBus.send is queued until isRoomReadyAtom — first CUSTOM_EVENT is joinRoster.
+    if (type === 6 && !authResRoomReady) {
+      authResRoomReady = true
+      workerLog('log', '[sceneWorker] AUTH_RES gate closed — EventBus outbound (isRoomReady)')
+    }
+  }
+  if (Array.isArray(body.data)) body.data.forEach(visit)
+  else visit(body.data)
+  for (const entry of body.peerData ?? []) {
+    if (Array.isArray(entry.data)) entry.data.forEach(visit)
+  }
+}
+
+/**
+ * Deliver AUTH_RES until the room is actually ready. After EventBus has sent,
+ * drop unsolicited snapshots so they cannot LWW-stomp live AUTH_CRDT paint.
+ * A later REQ (SDK 2s retry / RealmInfo pulse) re-opens delivery.
+ */
 function dropRedundantAuthRes(chunks: Uint8Array[]): Uint8Array[] {
   if (!chunks.length) return chunks
   const now = performance.now()
-  const alreadyOpen = authResConsumedAt > 0
+  const skipUnsolicited = authResRoomReady && !authResAwaiting
   const out: Uint8Array[] = []
-  let keptRes = false
   let dropped = 0
+  let kept = 0
   for (const chunk of chunks) {
     if (!isAuthResChunk(chunk)) {
       out.push(chunk)
       continue
     }
-    if (alreadyOpen || keptRes) {
+    if (skipUnsolicited) {
       dropped++
       continue
     }
-    keptRes = true
-    authResConsumedAt = now
+    kept++
     out.push(chunk)
   }
+  if (kept > 0) authResAwaiting = false
   if (dropped > 0 && now - lastAuthResSkipLogAt > 4000) {
     lastAuthResSkipLogAt = now
     workerLog(
@@ -3797,6 +3849,7 @@ function stashSendBinaryInbound(chunks: Uint8Array[] | undefined): void {
 
 function rpcSendBinary(body: SendBinaryRequest): Promise<SendBinaryResponse> {
   if (sendBinaryBodyHasOutbound(body)) {
+    noteSendBinaryOutbound(body)
     // Publish on main without stalling eng.update. Awaiting the RPC waited on the
     // main-thread queue (PhysX cooks / crdt-apply) — Snow Drift paintTick was
     // postDump 100–270ms and ~11 FPS even after LiveKit publish was async.
@@ -4484,7 +4537,8 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     resetInboundGuestLwwForward()
     lastUserData = null
     lastRealmInfo = null
-    authResConsumedAt = 0
+    authResAwaiting = true
+    authResRoomReady = false
     lastAuthResSkipLogAt = 0
     cacheHostReserved(msg.reserved)
     playFrameTickMainDriven = false

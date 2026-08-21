@@ -45,6 +45,38 @@ export const WORKER_OWNED_UI_COMPONENT_IDS = new Set([
 ])
 
 /** UiBackground / UiText — ensure color.a is a concrete number (0 must not become "missing"). */
+function transformTrsEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false
+  const ta = a as {
+    position?: { x?: number; y?: number; z?: number }
+    rotation?: { x?: number; y?: number; z?: number; w?: number }
+    scale?: { x?: number; y?: number; z?: number }
+    parent?: number
+  }
+  const tb = b as {
+    position?: { x?: number; y?: number; z?: number }
+    rotation?: { x?: number; y?: number; z?: number; w?: number }
+    scale?: { x?: number; y?: number; z?: number }
+    parent?: number
+  }
+  const eps = 1e-5
+  const n = (v: number | undefined): number => (typeof v === 'number' ? v : 0)
+  return (
+    Math.abs(n(ta.position?.x) - n(tb.position?.x)) < eps &&
+    Math.abs(n(ta.position?.y) - n(tb.position?.y)) < eps &&
+    Math.abs(n(ta.position?.z) - n(tb.position?.z)) < eps &&
+    Math.abs(n(ta.rotation?.x) - n(tb.rotation?.x)) < eps &&
+    Math.abs(n(ta.rotation?.y) - n(tb.rotation?.y)) < eps &&
+    Math.abs(n(ta.rotation?.z) - n(tb.rotation?.z)) < eps &&
+    Math.abs(n(ta.rotation?.w) - n(tb.rotation?.w)) < eps &&
+    Math.abs(n(ta.scale?.x) - n(tb.scale?.x)) < eps &&
+    Math.abs(n(ta.scale?.y) - n(tb.scale?.y)) < eps &&
+    Math.abs(n(ta.scale?.z) - n(tb.scale?.z)) < eps &&
+    (ta.parent ?? 0) === (tb.parent ?? 0)
+  )
+}
+
 function normalizeUiColorFields(componentId: number, value: unknown): unknown {
   if (componentId !== 1052 && componentId !== 1053) return value
   if (value == null || typeof value !== 'object') return value
@@ -308,12 +340,13 @@ export class CrdtProjection {
     const existing = tsMap.get(entity)
     const forceUi =
       this.forceWorkerUiPuts && WORKER_OWNED_UI_COMPONENT_IDS.has(componentId)
-    // LWW: single writer; skip older. Same-timestamp PUTs are AUTH_RES / leftover
-    // re-dumps of a version we already folded — applying them again is the 23–240ms
-    // snow-touch hitch. Grow-only APPEND may reuse a timestamp for a new value.
+    // LWW: skip older. Same-timestamp PUTs are AUTH_RES / leftover re-dumps —
+    // re-applying them was the 23–240ms snow-touch hitch. Transform melt
+    // (getMutable scale 1.5→0.02) often reuses a tick timestamp; still apply
+    // when TRS actually changed.
     if (!forceUi && existing !== undefined) {
       if (timestamp < existing) return
-      if (!opts?.growOnly && timestamp === existing) return
+      if (!opts?.growOnly && timestamp === existing && componentId !== this.transformId) return
     }
 
     // Network-parented Transform: strip sender-local wire parent, then inject the
@@ -327,6 +360,16 @@ export class CrdtProjection {
     try {
       value = meta.deserialize(new ReadWriteByteBuffer(effectiveData))
     } catch {
+      return
+    }
+
+    if (
+      !forceUi &&
+      existing !== undefined &&
+      timestamp === existing &&
+      componentId === this.transformId &&
+      transformTrsEqual(this.components.get(componentId)?.get(entity), value)
+    ) {
       return
     }
 

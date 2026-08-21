@@ -16,7 +16,7 @@
  * Phase 0.5 — split send when total ≥ SLOW_MS:
  *   encode  = systemsLoopEnd → first rpcCrdt entry
  *   xport   = sum of rpcCrdt walls (postMessage / ack wait)
- *   path=   = rpcCrdt outcome histogram (cold / ack / skip / …)
+ *   path=   = rpcCrdt outcome histogram (present / ack / skip / …)
  *
  * Phase 0.5c — split encode further (Genesis: getCrdt body ~0ms, enc still 80–200ms):
  *   preDump = systemsLoopEnd → start of componentsIter (sendMessages dirty dump)
@@ -70,10 +70,7 @@ export type CrdtSendPath =
   | 'empty-dup'
   | 'empty-coal'
   | 'empty-nudge'
-  | 'hot-phys'
-  | 'hot-vis'
-  | 'hot-anim'
-  | 'cold'
+  | 'present'
   | 'ack'
   | 'boot'
   | 'other'
@@ -448,7 +445,7 @@ export function beginEngUpdatePhase(dt: number): void {
  * Phase 0.5i — tag network sendBinary path for slow [wsp0] lines.
  * `fast` = empty resolve without await · `poll` = kicked empty main hop · `wait` = outbound await.
  */
-export function noteSendBinaryPath(tag: 'fast' | 'poll' | 'wait'): void {
+export function noteSendBinaryPath(tag: 'fast' | 'poll' | 'wait' | 'async'): void {
   if (!gate.active) return
   if (!gate.sendBinaryNote) {
     gate.sendBinaryNote = tag

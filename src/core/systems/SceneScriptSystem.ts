@@ -18,6 +18,7 @@ import { applySceneDiff } from '../../bridge/entityStoreApply'
 import { materialIsScalarOnly, type PbMaterial } from '../../bridge/material/MaterialApplier'
 import {
   expandTransformAncestors,
+  isSceneRootParent,
   sortEntitiesByTransformDepth,
   type DclTransformValues
 } from '../../bridge/dclTransform'
@@ -2201,6 +2202,29 @@ export class SceneScriptSystem {
     )
   }
 
+  /** True when LiveKit inbound can be posted (hold release / per-packet flush). */
+  canPushCommsInbound(): boolean {
+    return !!this.worker && this.running
+  }
+
+  /**
+   * Explorer: inbound CRDT is on the isolate queue before the next eng.update.
+   * Push encoded sendBinary envelopes so AUTH paint/team events land this tick.
+   */
+  pushCommsInbound(chunks: Uint8Array[]): void {
+    if (!this.worker || !chunks.length) return
+    const data: Uint8Array[] = []
+    const transfer: ArrayBuffer[] = []
+    for (const chunk of chunks) {
+      if (!chunk.byteLength) continue
+      const copy = chunk.slice()
+      data.push(copy)
+      transfer.push(copy.buffer)
+    }
+    if (!data.length) return
+    this.worker.postMessage({ type: 'comms-inbound-push', data } satisfies MainToWorker, transfer)
+  }
+
   async start(scene: ResolvedScene, cache: AssetCache, host: SceneHost): Promise<void> {
     if (!scene.mainEntry || !scene.entityId) return
     if (!this.prepared) this.prepare(scene, cache, host)
@@ -2902,18 +2926,27 @@ export class SceneScriptSystem {
     uiEntities?: number[]
     uiMountSnapshot?: WorkerUiMountSnapshotRow[]
   }): void {
-    // Scene UI: hold non-UI until the atomic uiEntities chunk.
-    // World mesh: no uiEntities will follow — Animator/States/Transform must apply now
-    // (dropping them on pointer-deliver-done left Door Open on the worker only).
+    // Scene UI: hold empty / mount-only until the atomic uiEntities chunk.
+    // World-mesh melt during pointer: GPU slot write on this stack + ack. Do not
+    // enqueue handleCrdtOutboundBatch (encode/UI/tween) — that serialized 4KB dumps
+    // onto pointer-deliver-done (86ms leftover, click hitch).
     if (this.pointerAwaitingWorkerApply && item.uiEntities === undefined) {
-      if ((item.data?.byteLength ?? 0) > 0 && this.pointerEdgeVisualCollect) {
+      if ((item.data?.byteLength ?? 0) > 0) {
         clientDebugLog.log(
           'pointer',
           `pointer world-mesh CRDT apply bytes=${item.data.byteLength}`,
           { alsoConsole: true }
         )
         this.crdtOutboundPending.unshift(item)
-        this.flushCrdtOutboundPendingSynchronously()
+        this.foldQueuedGuestMotionNow()
+        const idx = this.crdtOutboundPending.indexOf(item)
+        if (idx >= 0) this.crdtOutboundPending.splice(idx, 1)
+        if (item.id !== undefined) {
+          this.worker?.postMessage({
+            type: 'crdt-outbound-ack',
+            id: item.id
+          } satisfies MainToWorker)
+        }
         return
       }
       this.pointerOutboundDeferBuffer.push(item)
@@ -2938,6 +2971,9 @@ export class SceneScriptSystem {
     const hasGameplayPayload = (item.data?.byteLength ?? 0) > 0 && item.uiEntities === undefined
     if (hasGameplayPayload) {
       this.crdtOutboundPending.unshift(item)
+      // Cube melt Transform: fold GPU instance slots on this stack (Explorer same-store
+      // getMutable). Waiting for the next SceneLoop receive left 1.5 m boxes in front.
+      this.foldQueuedGuestMotionNow()
     } else {
       this.crdtOutboundPending.push(item)
     }
@@ -3011,6 +3047,7 @@ export class SceneScriptSystem {
    */
   private lastWsp05Split = {
     foldMs: 0,
+    incMs: 0,
     uiMs: 0,
     drainMs: 0,
     syncMs: 0,
@@ -3018,7 +3055,10 @@ export class SceneScriptSystem {
     trgMs: 0,
     rayMs: 0,
     twMs: 0,
-    ptrMs: 0
+    ptrMs: 0,
+    boardMs: 0,
+    boardN: 0,
+    motionN: 0
   }
 
   /** Worker outbound (post-onStart) — ack + renderer-inbound-deliver. */
@@ -3044,6 +3084,7 @@ export class SceneScriptSystem {
     }
     this.lastWsp05Split = {
       foldMs: 0,
+      incMs: 0,
       uiMs: 0,
       drainMs: 0,
       syncMs: 0,
@@ -3051,7 +3092,10 @@ export class SceneScriptSystem {
       trgMs: 0,
       rayMs: 0,
       twMs: 0,
-      ptrMs: 0
+      ptrMs: 0,
+      boardMs: 0,
+      boardN: 0,
+      motionN: 0
     }
     try {
       if (!this.running) return
@@ -3079,12 +3123,15 @@ export class SceneScriptSystem {
         if (now - this.lastWsp05MainApplyLogAt >= 1_500) {
           this.lastWsp05MainApplyLogAt = now
           const s = this.lastWsp05Split
+          const mr = this.bridge?.meshRendererInstanceStats()
           console.warn(
             `[wsp05] main crdt-apply ${applyMs.toFixed(0)}ms n=${batch.length} b=${batchBytes} ` +
               `ui=${uiN} snap=${snapRows} ack=${ackIds.length} inbound=${inbound.length} ` +
-              `fold=${s.foldMs.toFixed(0)} uiA=${s.uiMs.toFixed(0)} drain=${s.drainMs.toFixed(0)} ` +
+              `fold=${s.foldMs.toFixed(0)} inc=${s.incMs.toFixed(0)} uiA=${s.uiMs.toFixed(0)} drain=${s.drainMs.toFixed(0)} ` +
               `sync=${s.syncMs.toFixed(0)}(trg=${s.trgMs.toFixed(0)} ray=${s.rayMs.toFixed(0)} ` +
-              `tw=${s.twMs.toFixed(0)} ptr=${s.ptrMs.toFixed(0)}) enc=${s.encMs.toFixed(0)}`
+              `tw=${s.twMs.toFixed(0)} ptr=${s.ptrMs.toFixed(0)}) enc=${s.encMs.toFixed(0)} ` +
+              `board=${s.boardN}/${s.boardMs.toFixed(0)}ms trs=${s.motionN}` +
+              (mr ? ` mrInst=${mr.buckets}b/${mr.instances}i` : '')
           )
         }
       }
@@ -3124,8 +3171,13 @@ export class SceneScriptSystem {
     }[]
   ): Promise<Uint8Array[]> {
     const hasPayload = batch.some((item) => item.data?.byteLength > 0)
+    const hasUi =
+      batch.some((item) => (item.uiEntities?.length ?? 0) > 0) ||
+      batch.some((item) => item.uiMountSnapshot !== undefined)
     const split = this.lastWsp05Split
     try {
+      // Empty leftover / fingerprint-only: do not encode the whole renderer (86ms hitch).
+      if (!hasPayload && !hasUi) return []
       this.prepareRendererOutboundState()
       const projectionDeletes: ProjectionChange[] = []
       const { UiTransform, UiText, UiBackground, UiInput, UiDropdown, PointerEvents } =
@@ -3211,7 +3263,9 @@ export class SceneScriptSystem {
             }
             if (!data.byteLength) continue
           }
+          const incT0 = performance.now()
           this.projection.applyIncoming(data)
+          split.incMs += performance.now() - incT0
           for (const change of this.projection.changes) {
             if (change.kind === 'delete' && change.componentId === uiTransformId) {
               projectionDeletes.push(change)
@@ -4202,43 +4256,67 @@ export class SceneScriptSystem {
         }
         if (poseDiff.size) {
           const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
-          const applied = applySceneDiff(
-            this.entityStore,
-            poseDiff,
-            view,
-            this.readComponents,
-            tweenRefresh,
-            {
-              skipTransformApply: (entity) =>
-                this.readComponents.AvatarAttach.has(entity) ||
-                this.projection.isVcLiveTransformEntity(entity),
-              onReservedParent: (entity, parent, v) => {
-                this.bridge?.noteReservedParentedEntity(entity, parent, v)
+          const instancedBoard: Array<{ entity: Entity; transform: DclTransformValues }> = []
+          const restPose = new Map<Entity, Map<number, ProjectionChangeKind>>()
+          for (const [entity, comps] of poseDiff) {
+            const trsOnly =
+              comps.has(transformId) &&
+              !comps.has(tweenId) &&
+              !comps.has(tweenSeqId) &&
+              !comps.has(visibilityId)
+            if (
+              trsOnly &&
+              this.bridge.ensureMeshRendererGpuInstance(entity) &&
+              Transform.has(entity)
+            ) {
+              const t = Transform.get(entity) as DclTransformValues
+              if (isSceneRootParent(t.parent, view)) {
+                instancedBoard.push({ entity, transform: t })
+                continue
               }
             }
-          )
+            restPose.set(entity, comps)
+          }
+          const applied = restPose.size
+            ? applySceneDiff(
+                this.entityStore,
+                restPose,
+                view,
+                this.readComponents,
+                tweenRefresh,
+                {
+                  skipTransformApply: (entity) =>
+                    this.readComponents.AvatarAttach.has(entity) ||
+                    this.projection.isVcLiveTransformEntity(entity),
+                  onReservedParent: (entity, parent, v) => {
+                    this.bridge?.noteReservedParentedEntity(entity, parent, v)
+                  }
+                }
+              )
+            : { removals: [] as Entity[], upserts: [] as Entity[], meshDirty: [] as Entity[] }
           if (applied.removals.length) this.bridge.disposeRemovedEntities(applied.removals)
           const removed = new Set(applied.removals)
-          for (const entity of poseDiff.keys()) {
+          for (const entity of restPose.keys()) {
             if (!removed.has(entity)) this.dropHiddenScaleColliders(entity)
           }
           // Group + __mesh_* + instancer matrix (zero scale when hidden).
           const motionEntities = this.expandMotionExtractEntities(
-            [...poseDiff.keys()].filter((entity) => !removed.has(entity))
+            [...restPose.keys()].filter((entity) => !removed.has(entity))
           )
-          this.bridge.syncEcsVisibility(this.bridge.entitiesWithVisibility())
+          this.syncVisibilityForMotion(poseDiff)
           const tweenPromote = tweenEntities.filter((entity) => !removed.has(entity))
           if (tweenPromote.length) this.bridge.promoteAvatarAttachGltfs(tweenPromote)
           this.bridge.syncInstancedTransforms(motionEntities)
+          if (instancedBoard.length) this.bridge.writeInstancedEcsTransforms(instancedBoard)
           this.bridge.extractMovedPoses(motionEntities)
           for (const entity of tweenPromote) {
             this.bridge.ensureMeshRendererTweenVisual(entity)
           }
           // Re-apply visibility after tween promote (leaf attach can leave mesh.visible=true).
-          // Must include Transform descendants — bob-parent Tween promote clones the coin child.
-          this.bridge.syncEcsVisibility(this.bridge.entitiesWithVisibility())
+          if (tweenPromote.length) this.syncVisibilityForMotion(poseDiff)
           this.tweenBridge?.sync(view)
-          this.pointerStructureDirty = true
+          this.markPointerStructureIfNeeded(motionEntities)
+          this.syncParticlesIfDirty(poseDiff)
         }
         if (otherMotion.size && performance.now() < wallDeadline) {
           const tweenRefresh = this.tweenBridge?.getActiveTweenEntities() ?? []
@@ -4679,8 +4757,16 @@ export class SceneScriptSystem {
       InputModifier
     } = this.readComponents
     const motionNow = new Map<Entity, Map<number, ProjectionChangeKind>>()
+    const boardT0 = performance.now()
+    const boardWritten = this.writeInstancedBoardPutsFromChanges()
+    this.lastWsp05Split.boardMs += performance.now() - boardT0
+    this.lastWsp05Split.boardN += boardWritten.size
+    const transformId = Transform.componentId
 
     for (const change of this.projection.changes) {
+      if (boardWritten.has(change.entity) && change.componentId === transformId) {
+        continue
+      }
       if (
         change.entity === PlayerEntity &&
         change.componentId === InputModifier.componentId &&
@@ -4809,7 +4895,10 @@ export class SceneScriptSystem {
       }
       comps.set(change.componentId, change.kind)
     }
-    if (motionNow.size) this.applyHostMotionNow(motionNow)
+    if (motionNow.size) {
+      this.lastWsp05Split.motionN += motionNow.size
+      this.applyHostMotionNow(motionNow)
+    }
     this.publishPendingDiffPerf()
   }
 
@@ -4844,6 +4933,39 @@ export class SceneScriptSystem {
   }
 
   /**
+   * MeshRenderer GPU board (snow cubes, land tiles): Transform PUTs update the
+   * instance slot only. Mixed dumps (frost on PlayerEntity, one new cube, AUTH)
+   * used to abort the whole fold back into applySceneDiff (~23–90ms).
+   * Attach eligible cubes that have not joined a bucket yet (spawn+melt same dump).
+   */
+  private writeInstancedBoardPutsFromChanges(): Set<Entity> {
+    const written = new Set<Entity>()
+    if (!this.bridge) return written
+    const transformId = this.readComponents.Transform.componentId
+    const Transform = this.readComponents.Transform
+    const view = this.view
+    const entries: Array<{ entity: Entity; transform: DclTransformValues }> = []
+    for (const change of this.projection.changes) {
+      if (change.kind !== 'put' || change.componentId !== transformId) continue
+      if (
+        change.entity === view.PlayerEntity ||
+        change.entity === view.CameraEntity ||
+        change.entity === view.RootEntity
+      ) {
+        continue
+      }
+      if (!this.bridge.ensureMeshRendererGpuInstance(change.entity)) continue
+      if (!Transform.has(change.entity)) continue
+      const t = Transform.get(change.entity) as DclTransformValues
+      if (!isSceneRootParent(t.parent, view)) continue
+      entries.push({ entity: change.entity, transform: t })
+      written.add(change.entity)
+    }
+    if (entries.length) this.bridge.writeInstancedEcsTransforms(entries)
+    return written
+  }
+
+  /**
    * Fold-time UpdateWorld for pose. AvatarAttach + VC live lane skip Transform
    * (rod/line / reveal cam). Same extract path as the old motion peel.
    */
@@ -4858,13 +4980,32 @@ export class SceneScriptSystem {
     const tweenSeqId = this.readComponents.TweenSequence.componentId
     const tweenEntities: Entity[] = []
     const trsDiff = new Map<Entity, Map<number, ProjectionChangeKind>>()
+    const instancedBoard: Array<{ entity: Entity; transform: DclTransformValues }> = []
+    const visId = this.readComponents.VisibilityComponent.componentId
+    const Transform = this.readComponents.Transform
     for (const [entity, comps] of poseDiff) {
       if (comps.has(tweenId)) tweenEntities.push(entity)
+      const trsOnly =
+        comps.has(transformId) &&
+        !comps.has(tweenId) &&
+        !comps.has(tweenSeqId) &&
+        !comps.has(visId)
+      if (
+        trsOnly &&
+        this.bridge.ensureMeshRendererGpuInstance(entity) &&
+        Transform.has(entity)
+      ) {
+        const t = Transform.get(entity) as DclTransformValues
+        if (isSceneRootParent(t.parent, view)) {
+          instancedBoard.push({ entity, transform: t })
+          continue
+        }
+      }
       if (
         comps.has(transformId) ||
         comps.has(tweenId) ||
         comps.has(tweenSeqId) ||
-        comps.has(this.readComponents.VisibilityComponent.componentId)
+        comps.has(visId)
       ) {
         trsDiff.set(entity, comps)
       }
@@ -4899,38 +5040,88 @@ export class SceneScriptSystem {
         ) {
           continue
         }
+        // Instanced board tiles: instance matrix is written in syncInstancedTransforms.
+        if (this.bridge.isMeshRendererGpuInstanced(entity)) continue
         const node = this.entityStore.getNode(entity)
         if (!node) continue
         node.updateMatrixWorld(true)
       }
     }
+    const instancedSet = new Set(instancedBoard.map((row) => row.entity))
     const entities = this.expandMotionExtractEntities(
-      [...poseDiff.keys()].filter((entity) => !removed.has(entity))
+      [...poseDiff.keys()].filter(
+        (entity) => !removed.has(entity) && !instancedSet.has(entity)
+      )
     )
-    this.bridge.syncEcsVisibility(this.bridge.entitiesWithVisibility())
+    this.syncVisibilityForMotion(poseDiff)
     // Tween on a parent (coin bob wrapper) must clone GltfContainer children off
     // GPU InstancedMesh — instance slots ignore ancestor Visibility/world.
     const tweenPromote = tweenEntities.filter((entity) => !removed.has(entity))
     if (tweenPromote.length) this.bridge.promoteAvatarAttachGltfs(tweenPromote)
     // Promote InstancedMesh → clone before extract so the new GLB gets this pose.
     this.bridge.syncInstancedTransforms(entities)
+    if (instancedBoard.length) this.bridge.writeInstancedEcsTransforms(instancedBoard)
     if (trsDiff.size) this.bridge.extractMovedPoses(entities)
     for (const entity of tweenEntities) {
       if (removed.has(entity)) continue
       this.bridge.ensureMeshRendererTweenVisual(entity)
     }
-    this.bridge.syncEcsVisibility(this.bridge.entitiesWithVisibility())
+    if (tweenPromote.length) this.syncVisibilityForMotion(poseDiff)
     this.tweenBridge?.sync(view)
-    this.pointerStructureDirty = true
-    this.sceneGraphMatrixDirty = true
+    this.markPointerStructureIfNeeded(entities)
+    this.syncParticlesIfDirty(poseDiff)
     this.lastSyncFrameTransformEntities.clear()
     for (const entity of entities) {
       this.lastTweenMotionEntities.add(entity)
       this.lastSyncFrameTransformEntities.add(entity)
+      const colliderDirtyBefore = this.colliderPoseDirty.size
       if (MeshCollider.has(entity) || GltfContainer.has(entity)) {
         this.colliderPoseDirty.add(entity)
       }
       this.markDescendantColliderPosesDirty(entity)
+      if (this.colliderPoseDirty.size > colliderDirtyBefore) this.sceneGraphMatrixDirty = true
+    }
+  }
+
+  /**
+   * Pointer raycast targets are MeshCollider / PointerEvents / GltfContainer.
+   * MeshRenderer-only snow cubes (scale melt) must not rebuild the pointer cache
+   * or walk the full scene graph every fold — that is the Snow Drift touch hitch.
+   */
+  private markPointerStructureIfNeeded(entities: Iterable<Entity>): void {
+    const { PointerEvents, MeshCollider, GltfContainer } = this.readComponents
+    for (const entity of entities) {
+      if (PointerEvents.has(entity) || MeshCollider.has(entity) || GltfContainer.has(entity)) {
+        this.pointerStructureDirty = true
+        return
+      }
+    }
+  }
+
+  /**
+   * Visibility puts only — snow-cube Transform folds must not walk every
+   * VisibilityComponent in the scene (torch / UI / stashes).
+   */
+  private syncVisibilityForMotion(
+    poseDiff: Map<Entity, Map<number, ProjectionChangeKind>>
+  ): void {
+    const visId = this.readComponents.VisibilityComponent.componentId
+    const vis: Entity[] = []
+    for (const [entity, comps] of poseDiff) {
+      if (comps.has(visId)) vis.push(entity)
+    }
+    if (vis.length) this.bridge?.syncEcsVisibility(vis)
+  }
+
+  /** playbackState / Visibility on ParticleSystem is a live flag — do not wait 8 rAF. */
+  private syncParticlesIfDirty(
+    poseDiff: Map<Entity, Map<number, ProjectionChangeKind>>
+  ): void {
+    const particleId = this.readComponents.ParticleSystem.componentId
+    for (const comps of poseDiff.values()) {
+      if (!comps.has(particleId)) continue
+      void this.particleBridge?.sync(this.view)
+      return
     }
   }
 
@@ -5250,6 +5441,7 @@ export class SceneScriptSystem {
       clearPlayerMoveKeys?: () => void
       /** PE drone / freeze — republish pressed keys every frame. */
       forceRepublishSnapshot?: () => boolean
+      isPointerLocked?: () => boolean
     },
     setForcedCameraMode?: (mode: ForcedCameraMode | null) => void
   ): void {
@@ -5271,6 +5463,7 @@ export class SceneScriptSystem {
       // Do not block world pointer while awaiting split-press ack (was freezing DecentraCraft
       // input for the full multi-second pointer-deliver batch). UI still uses full batch.
       isPointerBlocked: () => isPointerBlocked(),
+      isPointerLocked: () => sceneInput?.isPointerLocked?.() === true,
       pointerEventsOf: (entity) => this.sceneUiBridge?.pointerEventsOf(entity) ?? null,
       flushPointerCrdt: () => {
         void this.flushPendingPointerCrdt()
@@ -5788,7 +5981,8 @@ export class SceneScriptSystem {
     this.playFrameInFlightAt = performance.now()
     this.worker.postMessage({
       type: 'play-frame-tick',
-      ...(poseMoved && player
+      // Always write PlayerEntity before scene systems (snow look-ahead 1.2m × facing).
+      ...(player
         ? {
             player: {
               position: {
@@ -6298,15 +6492,24 @@ export class SceneScriptSystem {
     this.pointerAwaitingWorkerApply = false
     const leftover = this.pointerOutboundDeferBuffer.splice(0)
     this.clearPointerDeliverWatchdog()
-    if (leftover.length) {
-      const bytes = leftover.reduce((n, item) => n + (item.data?.byteLength ?? 0), 0)
+    const leftoverLive = leftover.filter(
+      (item) => (item.data?.byteLength ?? 0) > 0 || item.uiEntities !== undefined
+    )
+    if (leftoverLive.length) {
+      const bytes = leftoverLive.reduce((n, item) => n + (item.data?.byteLength ?? 0), 0)
       clientDebugLog.log(
         'pointer',
-        `pointer leftover CRDT applied n=${leftover.length} bytes=${bytes}`,
+        `pointer leftover CRDT applied n=${leftoverLive.length} bytes=${bytes}`,
         { alsoConsole: true }
       )
-      this.crdtOutboundPending.unshift(...leftover)
+      this.crdtOutboundPending.unshift(...leftoverLive)
       this.flushCrdtOutboundPendingSynchronously()
+    } else if (leftover.length) {
+      clientDebugLog.log(
+        'pointer',
+        `pointer leftover CRDT applied n=${leftover.length} bytes=0`,
+        { alsoConsole: true }
+      )
     }
     // Resume worker ticks FIRST — never leave the scene frozen while main paints Yoga
     // or awaits crdtOutboundSerial (that was an indefinite click freeze).

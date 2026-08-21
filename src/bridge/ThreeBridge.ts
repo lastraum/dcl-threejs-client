@@ -394,6 +394,34 @@ export class ThreeBridge {
    * Private-mesh recolor of 11k planes was ~20s lag then death — keep instancing ON.
    */
   private static readonly MESH_RENDERER_GPU_INSTANCE = true
+
+  meshRendererInstanceStats(): { buckets: number; instances: number } {
+    return this.meshRendererInstancer.stats()
+  }
+
+  isMeshRendererGpuInstanced(entity: Entity): boolean {
+    return this.meshRendererInstancer.has(entity)
+  }
+
+  /**
+   * Scalar MeshRenderer boards (snow cubes / land tiles): GPU slot must exist
+   * before Transform.getMutable can skip applySceneDiff. Spawn+melt in the same
+   * dump used to miss instancer.has and fall through to 7k Groups.
+   */
+  ensureMeshRendererGpuInstance(entity: Entity): boolean {
+    if (this.meshRendererInstancer.has(entity)) return true
+    if (!this.meshRendererIsInstanceEligible(entity)) return false
+    const obj = this.store.getOrCreateNode(entity, 'scene')
+    this.attachOrUpdateMeshRenderer(entity, obj, meshKey(entity), true)
+    return this.meshRendererInstancer.has(entity)
+  }
+
+  /** Snow/land boards: instance matrix from ECS, no 7k-Group applySceneDiff. */
+  writeInstancedEcsTransforms(
+    entries: Iterable<{ entity: Entity; transform: DclTransformValues }>
+  ): void {
+    this.meshRendererInstancer.writeEcsTransforms(entries)
+  }
   /**
    * Unique cold hashes to kick parse on per drain.
    * Was 4 → UI showed ~2–4 assets loading forever. Match AssetCache parse slots + fetch pool.
@@ -485,17 +513,19 @@ export class ThreeBridge {
   }
 
   /**
-   * Transform CRDT / Tween motion hits per instanced entity — sustained motion promotes
-   * to a private clone so hierarchy TRS drives the mesh (death coins bob/spin, projectiles).
-   * Static multi-instance tiles only get 1–2 puts and stay on GPU InstancedMesh.
-   * Scale / moveRotateScale / textureMove promote immediately (plaza bounce squash).
+   * GltfContainer GPU instances only (plaza coins / projectiles). Unrelated to
+   * MeshRenderer snow cubes. Tween / fishing promote this fold; Billboard stays
+   * instanced; other Transform motion promotes after 3 puts (pre-existing).
    */
   private readonly instanceMotionHits = new Map<Entity, number>()
   private static readonly INSTANCE_MOTION_PROMOTE_HITS = 3
 
   /** After Transform apply — refresh GPU instance matrices for instanced GltfContainers. */
   syncInstancedTransforms(entities: Iterable<Entity>): void {
-    // MeshRenderer: PE / Tween / parented hierarchy leave GPU instancing.
+    // MeshRenderer: stay on InstancedMesh while eligible. Promote only when
+    // eligibility is lost (PE, Tween, parent, textured/emissive) — not a hit-count
+    // or bucket-size heuristic. Transform.getMutable is slot-matrix motion.
+    // removeEntity still detaches the GPU slot (admitMeshRendererHandle delete).
     const meshRendererUpdate: Entity[] = []
     for (const entity of entities) {
       if (!this.meshRendererInstancer.has(entity)) continue
@@ -506,15 +536,6 @@ export class ThreeBridge {
         this.ecs.Tween?.has(entity) ||
         !this.meshRendererIsInstanceEligible(entity)
       ) {
-        // Re-check eligibility (e.g. parented temple parts) and promote off GPU instance.
-        this.promoteMeshRendererForPointerOrMotion(entity, obj)
-        continue
-      }
-      // Transform.getMutable VFX (blood bursts) — private clone so removeEntity
-      // tears down the draw visual instead of leaving a GPU instance slot.
-      const mrHits = (this.instanceMotionHits.get(entity) ?? 0) + 1
-      this.instanceMotionHits.set(entity, mrHits)
-      if (mrHits >= ThreeBridge.INSTANCE_MOTION_PROMOTE_HITS) {
         this.promoteMeshRendererForPointerOrMotion(entity, obj)
         continue
       }
@@ -558,16 +579,13 @@ export class ThreeBridge {
           continue
         }
       }
-      // Billboard yaw follows the camera every walk frame. Stay on GPU instance —
-      // 3 hits used to clone every plaza sign and hitch the present thread.
+      // Billboard yaw follows the camera every walk frame. Stay on GPU instance.
       if (this.ecs.Billboard?.has(entity)) {
         toUpdate.push(entity)
         continue
       }
       const hits = (this.instanceMotionHits.get(entity) ?? 0) + 1
       this.instanceMotionHits.set(entity, hits)
-      // Script-animated props (Transform.getMutable every tick / continuous Tween) —
-      // private clone follows the entity group without relying on per-frame instance rewrites.
       if (hits >= ThreeBridge.INSTANCE_MOTION_PROMOTE_HITS) {
         const obj = this.store.nodes.get(entity)
         if (obj) this.promoteInstancedForMotion(entity, obj)
@@ -592,6 +610,8 @@ export class ThreeBridge {
       for (const child of pose.children) visit(child)
     }
     for (const entity of entities) {
+      // GPU InstancedMesh is the draw visual — pose.matrixWorld is already in the slot.
+      if (this.meshRendererInstancer.has(entity)) continue
       const obj = this.store.nodes.get(entity)
       if (obj) visit(obj)
     }

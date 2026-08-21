@@ -767,9 +767,9 @@ export class World {
         }
       })
 
-    // Inbound scene-binary is delivered only via CommsInboundQueue → sendBinary response.
-    // Do not also postMessage `comms-receive-binary` here: that double-delivered every packet
-    // (and used to force type=CRDT, which broke AUTH_RES / CUSTOM_EVENT handlers).
+    // Inbound scene-binary is queued, then pushed to the worker (not sendBinary RTT).
+    // Do not also postMessage `comms-receive-binary` here: that used to force type=CRDT.
+    this.comms.setSceneBinaryHandler(() => this.flushSceneBinaryInboundToWorker())
     this.comms.setTopicMessageHandler((topic, sender, payload) => {
       if (topic !== 'comms') return
       const message = new TextDecoder().decode(payload)
@@ -1095,11 +1095,14 @@ export class World {
       // AUTH_RES before async main/syncEntity creates orphan SeedHolder → white paint tiles.
       // Hold ingress until worker ready (main settled); re-arm on each scene prepare.
       this.comms.setSceneBinaryIngressHold(true)
+      this.comms.setSceneBinaryHandler(() => this.flushSceneBinaryInboundToWorker())
       this.sceneScript.setSceneBinaryIngressRelease(() => {
         this.comms.setSceneBinaryIngressHold(false)
+        this.flushSceneBinaryInboundToWorker()
       })
       this.sceneScript.setSceneBinaryCustomEventRelease(() => {
         this.comms.setSceneBinaryCustomEventHold(false)
+        this.flushSceneBinaryInboundToWorker()
       })
       this.sceneScript.setCommsHandler({
         setCommunicationsAdapter: async (body) => ({
@@ -1385,11 +1388,14 @@ export class World {
       this.sceneScript.resyncAuthServerNetworkRoom()
     })
     this.comms.setSceneBinaryIngressHold(true)
+    this.comms.setSceneBinaryHandler(() => this.flushSceneBinaryInboundToWorker())
     this.sceneScript.setSceneBinaryIngressRelease(() => {
       this.comms.setSceneBinaryIngressHold(false)
+      this.flushSceneBinaryInboundToWorker()
     })
     this.sceneScript.setSceneBinaryCustomEventRelease(() => {
       this.comms.setSceneBinaryCustomEventHold(false)
+      this.flushSceneBinaryInboundToWorker()
     })
     this.sceneScript.setCommsHandler({
       setCommunicationsAdapter: async (body) => ({
@@ -1523,7 +1529,8 @@ export class World {
       {
         isRelayBlocked: () => this.player?.isSceneRelayBlocked() ?? true,
         isLocomotionBlocked: () => this.player?.isLocomotionBlocked() ?? true,
-        clearPlayerMoveKeys: () => this.player?.clearMoveKeys()
+        clearPlayerMoveKeys: () => this.player?.clearMoveKeys(),
+        isPointerLocked: () => this.player?.isPointerLocked() ?? false
       },
       (mode) => this.player?.setForcedCameraMode(mode)
     )
@@ -2022,7 +2029,8 @@ export class World {
       {
         isRelayBlocked: () => this.player?.isSceneRelayBlocked() ?? true,
         isLocomotionBlocked: () => this.player?.isLocomotionBlocked() ?? true,
-        clearPlayerMoveKeys: () => this.player?.clearMoveKeys()
+        clearPlayerMoveKeys: () => this.player?.clearMoveKeys(),
+        isPointerLocked: () => this.player?.isPointerLocked() ?? false
       },
       // Optional: dispose tears down scene after/with player — CameraModeArea clear must not throw.
       (mode) => this.player?.setForcedCameraMode(mode)
@@ -5256,7 +5264,8 @@ export class World {
           (this.player?.isLocomotionBlocked() ?? false),
         clearPlayerMoveKeys: () => this.player?.clearMoveKeys(),
         // PE drone freeze — republish every hub.sync so worker isPressed stays live.
-        forceRepublishSnapshot: () => this.multiScene?.pe.isAvatarLocomotionFrozenByPe() === true
+        forceRepublishSnapshot: () => this.multiScene?.pe.isAvatarLocomotionFrozenByPe() === true,
+        isPointerLocked: () => this.player?.isPointerLocked() ?? false
       },
       (mode) => this.player?.setForcedCameraMode(mode)
     )
@@ -6684,24 +6693,46 @@ export class World {
       }
     }
     const broadcast = [...(body.data ?? []), ...broadcastFromPeers]
-    const sent: Uint8Array[] = []
 
-    // WSP postDump: network transport await sendBinary every eng.update even when empty
-    // (xsend=n:0). Drain inbound only — do not round-trip LiveKit publish path.
-    // Worker still awaits this RPC, but main work is O(queue drain) not publish.
+    // Inbound is pushed to the worker on LiveKit arrival (flushSceneBinaryInboundToWorker).
+    // Returning drain here double-delivered AUTH_CRDT and also stalled empty sendBinary
+    // behind a 50ms poll — paint state lagged look-ahead (jog 8 m/s vs 1.2m melt).
     if (broadcast.length === 0 && directed.length === 0) {
-      return { data: this.comms.drainSceneBinaryInbound() }
+      return { data: [] }
     }
 
     logSyncOutbound({ broadcast, directed })
 
-    if (broadcast.length) {
-      sent.push(...(await this.comms.sendBinary(broadcast)))
+    // Publish LiveKit off the guest clock. Awaiting publishData RTT stalled eng.update
+    // 200–400ms on every paintTick / syncEntity (Snow Drift 11fps).
+    void this.publishSceneBinaryFireAndForget(broadcast, directed)
+    return { data: [] }
+  }
+
+  /**
+   * Explorer: scene-room bytes hit the isolate queue before the next eng.update.
+   * Drain hold-aware inbound and post to the worker so AUTH_CRDT applies this tick.
+   */
+  private flushSceneBinaryInboundToWorker(): void {
+    if (!this.sceneScript.canPushCommsInbound()) return
+    const chunks = this.comms.drainSceneBinaryInbound()
+    if (!chunks.length) return
+    this.sceneScript.pushCommsInbound(chunks)
+  }
+
+  private async publishSceneBinaryFireAndForget(
+    broadcast: Uint8Array[],
+    directed: Array<{ chunk: Uint8Array; addresses: string[] }>
+  ): Promise<void> {
+    try {
+      if (broadcast.length) await this.comms.publishSceneBinary(broadcast)
+      for (const entry of directed) {
+        await this.comms.publishSceneBinary([entry.chunk], entry.addresses)
+      }
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      clientDebugLog.log('comms', `scene binary publish failed — ${detail}`, { level: 'warn' })
     }
-    for (const entry of directed) {
-      sent.push(...(await this.comms.sendBinary([entry.chunk], entry.addresses)))
-    }
-    return { data: sent }
   }
 
   private buildUserDataLogged = false

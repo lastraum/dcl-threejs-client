@@ -15,6 +15,7 @@
     "test:tick-sources": "node scripts/test-scene-engine-tick-sources.mjs",
     "test:rfc5-auth": "node scripts/test-rfc5-auth-server.mjs",
     "test:wearable-urns": "node scripts/test-wearable-urns.mjs",
+    "test:particles": "node scripts/test-particle-budget.mjs",
     "bump": "npm version patch --no-git-tag-version",
     "release": "node scripts/release.mjs",
     "analytics:server": "node server/analytics.mjs",

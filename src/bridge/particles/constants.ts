@@ -8,6 +8,15 @@ export const DCL_SCENE_GRAVITY = -9.81
 /** Explorer caps total live particles per scene; scale rates when exceeded. */
 export const SCENE_PARTICLE_BUDGET = 1000
 
+/**
+ * Per-system GPU / live cap — never allocate more sprites than the scene budget.
+ * Authored `maxParticles` (snowdrift snowfall asks 6000) is a request, not a GPU size.
+ */
+export function particleLiveCap(specMax: number | undefined): number {
+  const requested = Math.max(1, Math.floor(specMax ?? 1000))
+  return Math.min(requested, SCENE_PARTICLE_BUDGET)
+}
+
 /** Matches `PBParticleSystem_PlaybackState` (const enum — literals under isolatedModules). */
 export const PS_PLAYING = 0
 export const PS_PAUSED = 1

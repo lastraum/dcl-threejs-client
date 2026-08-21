@@ -396,6 +396,12 @@ export type MainToWorker =
   | { type: 'comms-send-response'; id: number; body: Record<string, never> }
   | { type: 'engine-api-enqueue'; events: EngineApiEvent[] }
   | { type: 'comms-receive-binary'; sender: string; data: Uint8Array }
+  /**
+   * LiveKit scene-binary already encoded for BinaryMessageBus (same bytes as
+   * sendBinary response). Push on arrival so AUTH_CRDT / CUSTOM_EVENT do not wait
+   * for the next empty sendBinary poll.
+   */
+  | { type: 'comms-inbound-push'; data: Uint8Array[] }
   | { type: 'pause-scene-ticks'; paused?: boolean }
   /** Hydration — skip exports.onUpdate only; engine.update still runs for composite CRDT. */
   | { type: 'pause-scene-onupdate'; paused?: boolean }

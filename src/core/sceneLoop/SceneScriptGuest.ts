@@ -25,11 +25,13 @@ export class SceneScriptGuest implements SceneGuest {
   }
 
   isDue(now: number): boolean {
-    const cadenceDue = this.sentAt <= 0 || now - this.sentAt >= 50
-    // Mute non-current secondaries at 50 ms. Immediate is primary or current guest (under feet).
-    if (this.kind === 'secondary' && !this.isCurrent()) return cadenceDue
+    // Mute non-current secondaries at 20 Hz.
+    if (this.kind === 'secondary' && !this.isCurrent()) {
+      return this.sentAt <= 0 || now - this.sentAt >= 50
+    }
     if (this.getSystem().needsImmediateGuestTick()) return true
-    return cadenceDue
+    // Primary / current: host rAF (~16 ms). 50 ms left Snow Drift look-ahead 0.4 m late at jog 8.
+    return this.sentAt <= 0 || now - this.sentAt >= 16
   }
 
   sendTick(_player: EntityPose, _camera: EntityPose, _frame: number): void {

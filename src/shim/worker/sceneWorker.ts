@@ -8,7 +8,7 @@ import {
   encodeCommsBinaryMessage,
   isolateCommsBinaryMessage
 } from '../../network/comms/commsBinaryWire'
-import { unwrapCraftedCommsMessage } from '../../network/comms/syncDebug'
+import { isResCrdtStateType, unwrapCraftedCommsMessage } from '../../network/comms/syncDebug'
 import { createEngineApiEventState, type EngineApiEventState } from '../engine/EngineApiEventState'
 import type {
   ActiveVideoStreamsResponse,
@@ -111,9 +111,6 @@ import type { Entity, IEngine } from '@dcl/ecs'
 import { parseShaderTriggers } from '../../vfx/shaderTags'
 import * as extended from '@dcl/ecs/dist/components'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
-import { ReadWriteByteBuffer } from '@dcl/ecs/dist/serialization/ByteBuffer'
-import { readMessage } from '@dcl/ecs/dist/serialization/crdt/message'
-import { CrdtMessageType } from '@dcl/ecs/dist/serialization/crdt/types'
 import {
   getLastAuthoredVirtualCanvas,
   installPreregisterRendererComponentsHook,
@@ -171,12 +168,7 @@ import {
   takeVcBindHydrateIfNeeded,
   worldFlattenedVcTransform
 } from './workerVcBindHydrate'
-import {
-  bufferPlayModeColdCrdt,
-  clearPlayModeColdCrdtBuffer,
-  flushPlayModeColdCrdtEgress,
-  runPlayFramePollPhase
-} from './workerPlayFrameScheduler'
+import { runPlayFramePollPhase } from './workerPlayFrameScheduler'
 import {
   awaitEngineUpdateIdle,
   forceReleaseEngineUpdateMutex,
@@ -764,10 +756,9 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
       nonUiChunks = nonUiChunks
         .map((chunk) => stripPlayerFrameComponentsFromCrdt(chunk))
         .filter((chunk) => chunk.byteLength > 0)
-      // Phase 4 — VC hydrate then player-frame before cold CRDT in the same pointer batch.
+      // Phase 4 — VC hydrate then player-frame in the same pointer batch.
       publishVcBindHydrateIfNeeded()
       publishPlayerFrameIfChanged()
-      flushPlayModeColdCrdtEgress(postPlayModeColdCrdtFireAndForget)
     }
   }
   const uiSnapshot = pointerUiMountSnapshot
@@ -1097,88 +1088,18 @@ function postPlayModeColdCrdtFireAndForget(data: Uint8Array): void {
   ctx.postMessage({ type: 'crdt-outbound', data } satisfies SceneWorkerOutbound, [data.buffer])
 }
 
-/** Inbound guest LWW (Material etc.) must present now — same hot path as scene-authored paint. */
+/** Inbound guest LWW (Material etc.) must present now — Explorer has no cold CRDT buffer. */
 function postInboundGuestLwwToHost(data: Uint8Array): void {
   if (!data.byteLength) return
-  if (crdtChunkIsHotPresent(data)) {
-    postPlayModeColdCrdtFireAndForget(data)
-    return
-  }
-  bufferPlayModeColdCrdt(data)
+  postPlayModeColdCrdtFireAndForget(data)
 }
 
 function bindInboundGuestLwwHostForward(engine: object): void {
   installInboundGuestLwwHostForward(engine, postInboundGuestLwwToHost, workerLog)
 }
 
-/** core::PhysicsCombinedImpulse / Force — pad/bounce must not wait cold-frame batching. */
-const PHYSICS_COMBINED_COMPONENT_IDS = new Set([1215, 1216])
-/**
- * core::Material (1017) + core::MeshRenderer (1018) — dense paint boards (pixelwars).
- * core::Tween (1102) + TweenSequence (1104) — scene motion / bounce anims.
- * Must not sit in cold CRDT buffer until end-of-frame / serial UI queue (felt as 3–5s lag).
- */
-/** Paint boards only — ambient Tween/TweenSequence stay cold (SceneLoop guest clock). */
-const PAINT_BOARD_HOT_COMPONENT_IDS = new Set([1017, 1018])
-/** core::VisibilityComponent — LO() / hide must present; InstancedMesh is off the pose graph. */
-const VISIBILITY_HOT_COMPONENT_IDS = new Set([1081])
-/** core::Animator — Door Open / one-shots must present this pointer edge, not wait for UI mount. */
-const ANIMATOR_HOT_COMPONENT_IDS = new Set([1042])
-
-function crdtChunkHasComponentIds(data: Uint8Array, ids: ReadonlySet<number>): boolean {
-  if (!data.byteLength) return false
-  try {
-    const buf = new ReadWriteByteBuffer(data)
-    let msg = readMessage(buf)
-    while (msg) {
-      if (
-        (msg.type === CrdtMessageType.PUT_COMPONENT ||
-          msg.type === CrdtMessageType.PUT_COMPONENT_NETWORK ||
-          msg.type === CrdtMessageType.DELETE_COMPONENT ||
-          msg.type === CrdtMessageType.DELETE_COMPONENT_NETWORK) &&
-        'componentId' in msg &&
-        ids.has(msg.componentId)
-      ) {
-        return true
-      }
-      msg = readMessage(buf)
-    }
-  } catch {
-    return false
-  }
-  return false
-}
-
-function crdtChunkHasPhysicsCombined(data: Uint8Array): boolean {
-  return crdtChunkHasComponentIds(data, PHYSICS_COMBINED_COMPONENT_IDS)
-}
-
-function crdtChunkHasPaintBoardMaterial(data: Uint8Array): boolean {
-  return crdtChunkHasComponentIds(data, PAINT_BOARD_HOT_COMPONENT_IDS)
-}
-
-function crdtChunkHasVisibility(data: Uint8Array): boolean {
-  return crdtChunkHasComponentIds(data, VISIBILITY_HOT_COMPONENT_IDS)
-}
-
-function crdtChunkHasAnimator(data: Uint8Array): boolean {
-  return crdtChunkHasComponentIds(data, ANIMATOR_HOT_COMPONENT_IDS)
-}
-
-function crdtChunkIsHotPresent(data: Uint8Array): boolean {
-  return (
-    crdtChunkHasPhysicsCombined(data) ||
-    crdtChunkHasPaintBoardMaterial(data) ||
-    crdtChunkHasVisibility(data) ||
-    crdtChunkHasAnimator(data)
-  )
-}
-
-/** Phase 3 — coalesced cold CRDT + VC hydrate + player-frame after pollEvents (play mode). */
+/** VC hydrate + player-frame after pollEvents (play mode). Scene CRDT already posted this tick. */
 function completePlayFrameColdEgress(): void {
-  // Always publish buffered scene CRDT. Skipping while onUpdate is paused (plaza
-  // hydration) left Visibility PUTs on the worker — pond furniture stayed drawn.
-  flushPlayModeColdCrdtEgress(postPlayModeColdCrdtFireAndForget)
   if (sceneOnUpdatePaused) return
   // Graph-hash hydrate (independent of player-frame change) then IM/MainCamera hot path.
   publishVcBindHydrateIfNeeded()
@@ -1792,7 +1713,6 @@ initSceneEngineScheduler({
     clearInjectOnlySdkPollEventsDeferred()
   },
   onAfterEngineTick: () => {
-    flushPlayModeColdCrdtEgress(postPlayModeColdCrdtFireAndForget)
     flushShaderTagsFromScene()
     publishVcBindHydrateIfNeeded()
     publishPlayerFrameIfChanged()
@@ -3364,20 +3284,13 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
         return Promise.resolve([])
       }
     }
-    // Visibility / impulse / paint: present now. Do not wait for play-frame flush
-    // (skipped during hydration) or a pointer-session defer.
-    if (copy.byteLength > 0 && crdtChunkIsHotPresent(copy)) {
-      const hot = stripHostOwnedLwwBytes(stripSceneUiCrdtBytes(copy))
-      if (hot.byteLength) {
-        const outLen = hot.byteLength
-        const path: CrdtSendPath = crdtChunkHasVisibility(hot)
-          ? 'hot-vis'
-          : crdtChunkHasAnimator(hot)
-            ? 'hot-anim'
-            : 'hot-phys'
-        flushPlayModeColdCrdtEgress(postPlayModeColdCrdtFireAndForget)
-        postPlayModeColdCrdtFireAndForget(hot)
-        note(false, path, outLen)
+    // Explorer: scene CRDT presents this tick (Bevy take_updates). No cold buffer.
+    if (!sceneOnUpdatePaused && copy.byteLength > 0) {
+      const present = stripHostOwnedLwwBytes(stripSceneUiCrdtBytes(copy))
+      if (present.byteLength) {
+        const outLen = present.byteLength
+        postPlayModeColdCrdtFireAndForget(present)
+        note(false, 'present', outLen)
         return Promise.resolve([])
       }
     }
@@ -3440,13 +3353,10 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
       note(false, 'empty-nudge', 0)
       return Promise.resolve([])
     }
-    // Phase 3 — play mode cold CRDT batched per unified frame (no ack).
-    // Physics force/impulse + Material/MeshRenderer paint boards must not wait for the
-    // next cooperative tick / empty UI serial queue (pixelwars felt 3–5s recolor lag).
     if (!sceneOnUpdatePaused) {
       const outLen = copy.byteLength
-      bufferPlayModeColdCrdt(copy)
-      note(false, 'cold', outLen)
+      postPlayModeColdCrdtFireAndForget(copy)
+      note(false, 'present', outLen)
       return Promise.resolve([])
     }
     logSceneUiOutbound(copy, uiEntities, uiMountSnapshot?.length ?? 0)
@@ -3607,7 +3517,7 @@ function takeBufferedSendBinaryInbound(): Uint8Array[] {
 }
 
 const CUSTOM_EVENT_NAME_RE =
-  /teamAssigned|paintDelta|snapshot|joinRoster|paintTick|botPositions|roundReset|requestSnapshot|updateName/
+  /teamAssigned|weatherState|paintDelta|snapshot|joinRoster|paintTick|botPositions|roundReset|requestSnapshot|updateName/
 
 function peekCustomEventName(payload: Uint8Array): string {
   const n = Math.min(payload.byteLength, 96)
@@ -3626,10 +3536,29 @@ function isolateSendBinaryInbound(chunks: Uint8Array[] | undefined): Uint8Array[
 
 let sendBinaryInboundLogCount = 0
 
+function inboundHasRoomReadyTypes(chunks: Uint8Array[]): boolean {
+  for (const chunk of chunks) {
+    const decoded = decodeCommsBinaryMessage(chunk)
+    if (!decoded) continue
+    if (
+      decoded.messageType === 6 ||
+      decoded.messageType === 9 ||
+      decoded.messageType === 3 ||
+      decoded.messageType === 7
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
 function noteSendBinaryInbound(chunks: Uint8Array[]): void {
   if (!chunks.length) return
   sendBinaryInboundLogCount++
-  if (sendBinaryInboundLogCount > 8 && sendBinaryInboundLogCount % 30 !== 0) return
+  const important = inboundHasRoomReadyTypes(chunks)
+  if (!important && sendBinaryInboundLogCount > 8 && sendBinaryInboundLogCount % 30 !== 0) {
+    return
+  }
   const types = new Map<string, number>()
   const senders = new Set<string>()
   const events: string[] = []
@@ -3661,8 +3590,26 @@ function noteSendBinaryInbound(chunks: Uint8Array[]): void {
   )
 }
 
+function resCrdtFirst(chunks: Uint8Array[]): Uint8Array[] {
+  const res: Uint8Array[] = []
+  const rest: Uint8Array[] = []
+  for (const chunk of chunks) {
+    const decoded = decodeCommsBinaryMessage(chunk)
+    if (decoded && isResCrdtStateType(decoded.messageType)) res.push(chunk)
+    else rest.push(chunk)
+  }
+  return res.length ? [...res, ...rest] : chunks
+}
+
 function mergeSendBinaryResponse(body: SendBinaryResponse): SendBinaryResponse {
-  const merged = isolateSendBinaryInbound([...(body.data ?? []), ...takeBufferedSendBinaryInbound()])
+  // RealmInfo must exist before AUTH_RES is processed or isRoomReady never flips
+  // (joinRoster stays queued → no team → Snow Drift look-ahead melt never starts).
+  applyHostReservedSceneStore()
+  // Explorer: drain the inbound queue as-is (Bevy sendBinary → recv_binary).
+  // RES-first is order only so snapshot sets isRoomReady before same-batch CRDT.
+  const merged = resCrdtFirst(
+    isolateSendBinaryInbound([...(body.data ?? []), ...takeBufferedSendBinaryInbound()])
+  )
   noteSendBinaryInbound(merged)
   return { data: merged }
 }
@@ -3704,13 +3651,13 @@ function sendBinaryBodyHasOutbound(body: SendBinaryRequest): boolean {
  *   (one in-flight) so queue still drains without flooding main.
  * - **Real outbound**: await main (correct multiplayer publish + drain).
  * - Stuck-flight watchdog clears empty inFlight if response lost (>2s).
+ * 0.5j:
+ * - **Real outbound**: post to main and resolve immediately (stash inbound on response).
+ *   Awaiting main queued behind PhysX cooks / crdt-apply (Snow Drift ~11 FPS, postDump 100–270ms).
+ * 0.5k:
+ * - **Inbound push**: main posts `comms-inbound-push` on LiveKit arrival. Empty sendBinary
+ *   returns that stash (no 50ms poll). AUTH_CRDT reaches AZ the same eng.update as Explorer.
  */
-const SEND_BINARY_EMPTY_POLL_MS = 50
-const SEND_BINARY_EMPTY_STUCK_MS = 2_000
-let lastEmptySendBinaryPostAt = 0
-let emptySendBinaryInFlight = false
-let emptySendBinaryInFlightSince = 0
-
 function stashSendBinaryInbound(chunks: Uint8Array[] | undefined): void {
   if (!chunks?.length) return
   for (const chunk of chunks) {
@@ -3718,64 +3665,28 @@ function stashSendBinaryInbound(chunks: Uint8Array[] | undefined): void {
   }
 }
 
-function clearEmptySendBinaryInFlight(): void {
-  emptySendBinaryInFlight = false
-  emptySendBinaryInFlightSince = 0
-}
-
-function maybeKickEmptySendBinaryPoll(now: number): boolean {
-  if (emptySendBinaryInFlight) {
-    if (
-      emptySendBinaryInFlightSince > 0 &&
-      now - emptySendBinaryInFlightSince >= SEND_BINARY_EMPTY_STUCK_MS
-    ) {
-      // Response dropped or main hung — allow a new poll; do not leave poll permanently stuck.
-      clearEmptySendBinaryInFlight()
-    } else {
-      return false
-    }
-  }
-  if (now - lastEmptySendBinaryPostAt < SEND_BINARY_EMPTY_POLL_MS) return false
-
-  emptySendBinaryInFlight = true
-  emptySendBinaryInFlightSince = now
-  lastEmptySendBinaryPostAt = now
-  const id = ++requestId
-  pendingSendBinary.set(id, (response) => {
-    clearEmptySendBinaryInFlight()
-    stashSendBinaryInbound(response.data)
-  })
-  ctx.postMessage({
-    type: 'comms-send-binary',
-    id,
-    body: { data: [], peerData: [] }
-  } satisfies SceneWorkerOutbound)
-  return true
-}
-
 function rpcSendBinary(body: SendBinaryRequest): Promise<SendBinaryResponse> {
   if (sendBinaryBodyHasOutbound(body)) {
-    // Real multiplayer / peer bytes — must reach LiveKit this tick; await main.
-    noteSendBinaryPath('wait')
+    // Publish on main without stalling eng.update. Awaiting the RPC waited on the
+    // main-thread queue (PhysX cooks / crdt-apply) — Snow Drift paintTick was
+    // postDump 100–270ms and ~11 FPS even after LiveKit publish was async.
+    noteSendBinaryPath('async')
     const id = ++requestId
-    return new Promise((resolve) => {
-      pendingSendBinary.set(id, (response) => resolve(mergeSendBinaryResponse(response)))
-      ctx.postMessage({ type: 'comms-send-binary', id, body } satisfies SceneWorkerOutbound)
+    pendingSendBinary.set(id, (response) => {
+      stashSendBinaryInbound(response.data)
     })
+    ctx.postMessage({ type: 'comms-send-binary', id, body } satisfies SceneWorkerOutbound)
+    return Promise.resolve(mergeSendBinaryResponse({ data: takeBufferedSendBinaryInbound() }))
   }
 
   // Empty: official SDK still awaits sendBinary then __processMessages(response).
-  // Fire-and-forget poll left CUSTOM_EVENT (team/snapshot/paint) in a stash the
-  // current send() never saw — joinRoster ran, replies never hit EventBus.
+  // Inbound arrives via comms-inbound-push (not a 50ms main poll).
   const buffered = takeBufferedSendBinaryInbound()
   if (buffered.length) {
     noteSendBinaryPath('fast')
-    maybeKickEmptySendBinaryPoll(performance.now())
     return Promise.resolve(mergeSendBinaryResponse({ data: buffered }))
   }
-  // Empty + no stash: do not await main (plaza postDump 80–400ms). Poll ≤20 Hz for inbound.
   noteSendBinaryPath('fast')
-  maybeKickEmptySendBinaryPoll(performance.now())
   return Promise.resolve({ data: [] })
 }
 
@@ -4388,6 +4299,10 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     pendingCommsSend.delete(msg.id)
     return
   }
+  if (msg.type === 'comms-inbound-push') {
+    stashSendBinaryInbound(msg.data)
+    return
+  }
   if (msg.type === 'comms-receive-binary') {
     // LiveKit body is craftCommsMessage: [messageType:u8][payload…]. Do not force CRDT —
     // auth-server types 4–9 (AUTH_RES, CUSTOM_EVENT, …) must reach BinaryMessageBus handlers.
@@ -4442,7 +4357,6 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     cacheHostReserved(msg.reserved)
     playFrameTickMainDriven = false
     portableExperienceWorker = false
-    clearPlayModeColdCrdtBuffer()
     resetSceneEngineScheduler()
     setHostOverlayHoldsSceneTime(msg.holdSceneTime === true)
     if (msg.holdSceneTime === true) {

@@ -212,6 +212,8 @@ export class PhysXWorld {
   private readonly multiShapeChildCount = new Map<number, number>()
   /** Rate-limit multi-shape expand console spam (thrash diagnosis). */
   private readonly multiShapeExpandLogAt = new Map<number, number>()
+  /** Coalesce CCT overlap separate after a burst of tile cooks (not per expand). */
+  private pendingCctOverlapSeparate = false
   /** Reverse lookup — platform transfer + CCT grounding probes. */
   private readonly staticEntityByActorPtr = new Map<number, number>()
   /** Last descriptor world position per PhysX entity — tweened platform delta tracking. */
@@ -2486,6 +2488,10 @@ export class PhysXWorld {
   /** Unity/DCL-style CCT move — displacement in metres for this frame. */
   movePlayer(displacement: THREE.Vector3, delta: number): ControllerMoveResult {
     if (!this.controller) return { grounded: false }
+    if (this.pendingCctOverlapSeparate) {
+      this.pendingCctOverlapSeparate = false
+      this.separateCctFromOverlappingStatics()
+    }
 
     // Always re-assert y=0 floor before any move (scene cook churn must not strand the avatar).
     this.ensureInfiniteGroundPlane()
@@ -3744,8 +3750,9 @@ export class PhysXWorld {
       }
     }
     // New hulls can spawn overlapping the capsule (Snowdrift run-into-prop). Legal pose.
+    // Do not run CCT overlap separate per tile cook — 30 expands at load was a hitch.
     this.invalidateControllerCache()
-    this.separateCctFromOverlappingStatics()
+    this.pendingCctOverlapSeparate = true
     return true
   }
 

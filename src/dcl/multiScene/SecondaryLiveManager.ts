@@ -1145,17 +1145,29 @@ export class SecondaryLiveManager {
     setTimeout(pump, 0)
   }
 
+  /** Live secondaries the player is standing in (footprint ≤2 m) — keep floors. */
+  standingInPhysGuestIds(): string[] {
+    const out: string[] = []
+    for (const [id, dist] of this.lastDistM) {
+      if (!Number.isFinite(dist) || dist > 2) continue
+      const slot = this.slots.get(id)
+      if (!slot || slot.residentMode !== 'secondary') continue
+      out.push(`secondary:${id}`)
+    }
+    return out
+  }
+
   async tickAsync(opts?: {
     applyBudgetMs?: number
-    /** SceneLoop current guest (`secondary:<id>`) — only this slot cooks PhysX. */
-    physGuestId?: string | null
+    /** SceneLoop guests that may cook PhysX (`secondary:<id>`). Empty = none. */
+    physGuestIds?: string[]
   }): Promise<PhysicsColliderDesc[]> {
     if (!this.cache) return []
     const descs: PhysicsColliderDesc[] = []
     const slots = [...this.slots.values()]
     const secondaries = slots.filter((s) => !s.isTertiary)
     const budgetMs = opts?.applyBudgetMs
-    const physGuestId = opts?.physGuestId ?? null
+    const physGuestIds = opts?.physGuestIds
     const MIN_FULL_MS = 2
     const hydrating = secondaries.filter((s) => s.needsHydrationApply())
     for (const slot of hydrating) this.kickHydrate(slot)
@@ -1169,9 +1181,7 @@ export class SecondaryLiveManager {
     const t0 = performance.now()
 
     for (const slot of slots) {
-      const pushPhys =
-        physGuestId != null &&
-        (physGuestId === slot.id || physGuestId === `secondary:${slot.id}`)
+      const pushPhys = this.slotMatchesPhysGuest(slot.id, physGuestIds)
       if (slot.isTertiary) {
         descs.push(
           ...(await slot.tickAsync(this.primaryScene, this.cache, { pushPhys }))
@@ -1205,18 +1215,21 @@ export class SecondaryLiveManager {
     return descs
   }
 
-  allRegisteredPhysIds(physGuestId?: string | null): number[] {
+  allRegisteredPhysIds(physGuestIds?: string[]): number[] {
     const out: number[] = []
-    const filter = physGuestId !== undefined
     for (const [id, slot] of this.slots) {
-      const keep =
-        !filter ||
-        (physGuestId != null &&
-          (physGuestId === id || physGuestId === `secondary:${id}`))
-      if (!keep) continue
+      if (!this.slotMatchesPhysGuest(id, physGuestIds)) continue
       out.push(...slot.registeredPhysicsEntities())
     }
     return out
+  }
+
+  private slotMatchesPhysGuest(slotId: string, physGuestIds?: string[]): boolean {
+    if (physGuestIds === undefined) return true
+    for (const g of physGuestIds) {
+      if (g === slotId || g === `secondary:${slotId}`) return true
+    }
+    return false
   }
 
   dispose(): void {

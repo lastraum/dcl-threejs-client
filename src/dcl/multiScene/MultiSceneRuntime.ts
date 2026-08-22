@@ -274,7 +274,7 @@ export class MultiSceneRuntime {
 
   async tickAsync(opts?: {
     applyBudgetMs?: number
-    physGuestId?: string | null
+    physGuestIds?: string[]
   }): Promise<{
     colliders: PhysicsColliderDesc[]
     invalidatePhysIds: number[]
@@ -290,7 +290,7 @@ export class MultiSceneRuntime {
       colliders.push(
         ...((await this.secondary?.tickAsync({
           applyBudgetMs: secondaryBudget,
-          physGuestId: opts?.physGuestId
+          physGuestIds: opts?.physGuestIds
         })) ?? [])
       )
     } else {
@@ -307,7 +307,7 @@ export class MultiSceneRuntime {
     // colliders look "gone" next frame → invalidateStaticCollider → soft floor holes.
     const next = new Set<number>()
     for (const d of colliders) next.add(d.entity)
-    for (const id of this.secondary?.allRegisteredPhysIds(opts?.physGuestId) ?? []) {
+    for (const id of this.secondary?.allRegisteredPhysIds(opts?.physGuestIds) ?? []) {
       next.add(id)
     }
     for (const id of this.pe.allRegisteredPhysIds()) {

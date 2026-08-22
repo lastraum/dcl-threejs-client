@@ -252,6 +252,10 @@ export class World {
   private occupancyDwellSinceMs = 0
   private static readonly OCCUPANCY_DWELL_MS = 1500
   private static readonly LOCOMOTION_MS = 0.45
+  /** Keep previous neighbor floors briefly so a current flip cannot void-fall to hub. */
+  private physHoldGuestId: string | null = null
+  private physHoldUntilMs = 0
+  private static readonly PHYS_HOLD_MS = 2500
   /** Occupancy log — parcel + current guest (avoid per-frame spam). */
   private lastOccupancyLogKey = ''
   private remoteAvatars: RemoteAvatarManager | null = null
@@ -2858,7 +2862,7 @@ export class World {
           const applyBudgetMs = remainder >= MIN_FULL_MS ? remainder : 0
           const { colliders, invalidatePhysIds } = await this.multiScene.tickAsync({
             applyBudgetMs,
-            physGuestId: this.sceneLoop.getCurrentGuestId()
+            physGuestIds: this.resolvePhysGuestIds()
           })
           if (!skipPhysxColliders()) {
             for (const id of invalidatePhysIds) {
@@ -5429,6 +5433,31 @@ export class World {
    */
   private isPlayerLocomoting(): boolean {
     return (this.player?.getHorizontalSpeed() ?? 0) > World.LOCOMOTION_MS
+  }
+
+  /**
+   * Neighbor floors stay while standing in the footprint, plus 2.5s after leave.
+   * Dropping PhysX the instant current flipped to plaza was the void-fall → hub death.
+   */
+  private resolvePhysGuestIds(): string[] {
+    const ids = new Set<string>()
+    const current = this.sceneLoop.getCurrentGuestId()
+    if (current && current !== PRIMARY_GUEST_ID) {
+      ids.add(current)
+      this.physHoldGuestId = current
+      this.physHoldUntilMs = performance.now() + World.PHYS_HOLD_MS
+    }
+    for (const id of this.multiScene?.secondaryManager?.standingInPhysGuestIds() ?? []) {
+      ids.add(id)
+    }
+    if (
+      this.physHoldGuestId &&
+      performance.now() < this.physHoldUntilMs &&
+      this.physHoldGuestId !== PRIMARY_GUEST_ID
+    ) {
+      ids.add(this.physHoldGuestId)
+    }
+    return [...ids]
   }
 
   private syncCurrentSceneGuestAt(dclX: number, dclZ: number): void {

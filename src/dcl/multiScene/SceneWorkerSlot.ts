@@ -509,9 +509,9 @@ export class SceneWorkerSlot {
   }
 
   /**
-   * Cold attach: keep pumping until the first mesh, then a short window while
-   * more GLBs are still pending. Do not key off unbounded hasContentApplyWork
-   * (snow sat at gpu=771 pending=1 forever).
+   * Cold attach: pump until the first GPU mesh, then at most 1.5 s while more
+   * GLBs are still pending. An 8 s window with pending=1 (BrandonManus) stole
+   * leftover every frame. Do not key off unbounded hasContentApplyWork.
    */
   needsHydrationApply(): boolean {
     if (!this.running || this.disposed || this.detached || this.mode === 'tertiary') return false
@@ -520,25 +520,32 @@ export class SceneWorkerSlot {
     if (this.firstGpuAt <= 0) this.firstGpuAt = performance.now()
     const lite = this.system.getAttachProgressLite()
     if ((lite?.pendingMesh ?? 0) <= 0) return false
-    return performance.now() - this.firstGpuAt < 8_000
+    return performance.now() - this.firstGpuAt < 1_500
+  }
+
+  /** True until the first mesh exists — leftover steal is only for empty graphs. */
+  needsEmptyGraphHydration(): boolean {
+    if (!this.needsHydrationApply()) return false
+    return this.system.countGpuVisuals() <= 0
   }
 
   async tickAsync(
     primaryScene: ResolvedScene | null,
     cache: AssetCache,
-    options?: { fullWork?: boolean; deadlineMs?: number }
+    options?: { fullWork?: boolean; deadlineMs?: number; hydrateLite?: boolean; pushPhys?: boolean }
   ): Promise<PhysicsColliderDesc[]> {
     if (!this.running || this.disposed || this.detached) return []
+    const pushPhys = options?.pushPhys !== false
     // Tertiary: scripts off — only re-push colliders when dirty (demote/retarget once).
     // Returning hundreds of descs every frame was 2–3fps death with freezeRemoval still cooking.
     if (this.mode === 'tertiary') {
-      return this.takeDirtyCollidersOnly()
+      return pushPhys ? this.takeDirtyCollidersOnly() : []
     }
 
     // Secondary scripts run on SceneLoop.send; full renderer/bridges can stagger.
-    // When not selected this frame, still push dirty colliders (boot/demote/structure).
+    // Mute neighbors must not dump PhysX (3515 static / multi-shape expand on CBD walk).
     if (options?.fullWork === false) {
-      return this.takeDirtyCollidersOnly()
+      return pushPhys ? this.takeDirtyCollidersOnly() : []
     }
 
     cache.setScene(this.scene)
@@ -548,6 +555,8 @@ export class SceneWorkerSlot {
       await this.system.syncRenderer(
         options?.deadlineMs !== undefined ? { deadlineMs: options.deadlineMs } : undefined
       )
+      // Empty-graph hydrate: meshes only. Animator/video/PhysX expand waits for leftover.
+      if (options?.hydrateLite) return []
       let structureOrPoseChanged = false
       if (this.system.hasColliderWorkPending()) {
         this.system.syncCollision()
@@ -559,6 +568,11 @@ export class SceneWorkerSlot {
       // every secondary was multi-second "bridges=" death (hundreds of actors × N neighbors).
       if (structureOrPoseChanged) {
         this.captureRemappedColliders()
+      }
+      if (!pushPhys) {
+        // Keep dirty so standing-in can cook later (ids were dropped from PhysX).
+        if (this.lastRemappedColliders.length > 0) this.collidersDirty = true
+        return []
       }
       if (!this.collidersDirty || this.lastRemappedColliders.length === 0) return []
       this.collidersDirty = false

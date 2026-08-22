@@ -100,6 +100,7 @@ import {
   perfSetPendingDiff
 } from '../../util/perfCounters'
 import { skipSceneAnimators, skipTheatreSceneScript } from '../../client/devFlags'
+import { lastFrameOverBudget } from '../../rendering/mainThreadYield'
 import { mirrorSceneBundle } from '../../dev/mirrorSceneBundle'
 import { PointerEventsSystem } from '../../input/PointerEventsSystem'
 import type { InputHub } from '../../input/InputHub'
@@ -360,6 +361,11 @@ export class SceneScriptSystem {
   private hostOverlayHoldsSceneTime = false
   /** FocusOwner — secondary hard-mutes media and never shows scene UI. */
   private focusPolicy: import('../../dcl/multiScene/types').FocusPolicy = 'primary'
+  /**
+   * HLS / AudioStream stay off until leftover is healthy. Input/Focus can
+   * land first so a walk-on does not decode two videos on a 7 FPS rAF.
+   */
+  private occupancyMediaEnabled = true
   private sceneUiResizeObserver: ResizeObserver | null = null
   private unbindSceneUiWindowResize: (() => void) | null = null
   private avatarAttachBridge: AvatarAttachBridge | null = null
@@ -480,6 +486,8 @@ export class SceneScriptSystem {
   /** True from worker boot until `ready` — keeps fast CRDT path during onStart after eval-done. */
   private bootPhaseActive = false
   private bootProgressReporter: ((msg: string) => void) | null = null
+  private bootCompileTitle = 'scene'
+  private bootCompileKb = 0
   private scriptBlobUrl: string | null = null
   /** Last fetched `bin/index.js` text — used to discover `tjs.vfx:*` before play. */
   private lastScriptSource: string | null = null
@@ -586,8 +594,26 @@ export class SceneScriptSystem {
     return this.tagVfxHost
   }
 
+  /**
+   * Occupancy media (HLS / AudioStream) — off until leftover recovers so a
+   * Focus grant does not decode videos on a dying rAF.
+   */
+  setOccupancyMediaEnabled(enabled: boolean): void {
+    if (this.occupancyMediaEnabled === enabled) {
+      this.applyFocusPolicy(this.focusPolicy)
+      return
+    }
+    this.occupancyMediaEnabled = enabled
+    this.applyFocusPolicy(this.focusPolicy)
+  }
+
+  private leftoverBlocksUiPaint(): boolean {
+    if (this.pointerAwaitingWorkerApply || this.pointerDeliverAwaitingAck) return false
+    return lastFrameOverBudget(28)
+  }
+
   private applyFocusPolicy(policy: import('../../dcl/multiScene/types').FocusPolicy): void {
-    const mediaOn = policy !== 'secondary'
+    const mediaOn = policy !== 'secondary' && this.occupancyMediaEnabled
     this.videoPlayerBridge?.setMediaEnabled(mediaOn)
     this.audioSourceBridge?.setMediaEnabled(mediaOn)
     this.audioStreamBridge?.setMediaEnabled(mediaOn)
@@ -599,12 +625,13 @@ export class SceneScriptSystem {
       // or drive CameraModeArea / AvatarModifierArea (ice-cream hide / vending-machine look).
       this.clearPlayerFocusState()
       this.setAvatarModifierProviders(null)
-      // Drop AvatarAttach so demoted scene props cannot stick to the player.
+      // Drop AvatarAttach + Transform.parent=PlayerEntity (BrandonManus paper planes).
       try {
         this.setAvatarAttachTargets(null)
       } catch {
         /* optional */
       }
+      this.setSpatialAudioPlayerRoot(null)
     }
   }
 
@@ -655,6 +682,14 @@ export class SceneScriptSystem {
     this.bootProgressReporter = fn
   }
 
+  private formatCompileProgress(seconds: number, phase?: string): string {
+    const title = this.bootCompileTitle || 'scene'
+    const kb = this.bootCompileKb
+    const size = kb > 0 ? ` · ${kb.toFixed(0)} KB` : ''
+    const extra = phase ? ` · ${phase}` : ''
+    return `Compiling “${title}”… ${seconds}s${size}${extra}`
+  }
+
   private clearCompileProgressTimer(): void {
     if (!this.compileProgressTimer) return
     clearInterval(this.compileProgressTimer)
@@ -666,7 +701,7 @@ export class SceneScriptSystem {
     const compileStarted = performance.now()
     this.compileProgressTimer = setInterval(() => {
       const seconds = Math.floor((performance.now() - compileStarted) / 1000)
-      this.bootProgressReporter?.(`Compiling scene script… (${seconds}s)`)
+      this.bootProgressReporter?.(this.formatCompileProgress(seconds))
     }, 1000)
   }
 
@@ -2245,7 +2280,8 @@ export class SceneScriptSystem {
 
     const scriptUrl = sceneContentFetchUrl(scene, scene.assetUrl(mainFile.hash))
     const scriptStarted = performance.now()
-    this.bootProgressReporter?.('Fetching scene script…')
+    this.bootCompileTitle = scene.title?.trim() || scene.baseParcel || 'scene'
+    this.bootProgressReporter?.(`Fetching “${this.bootCompileTitle}” script…`)
     clientDebugLog.log('scene', 'loading scene script and boot files…')
     const [fetchedScript, preloadedFiles, bootSnapshot] = await Promise.all([
       fetch(scriptUrl, { cache: 'no-store' }).then(async (res) => {
@@ -2400,7 +2436,9 @@ export class SceneScriptSystem {
         armBootTimer()
         const sec = ((elapsedMs ?? performance.now() - compileStartedAt) / 1000).toFixed(0)
         const size = scriptKb != null ? ` · ${scriptKb} KB` : ''
-        this.bootProgressReporter?.(`Compiling scene… ${phase} (${sec}s${size})`)
+        this.bootProgressReporter?.(
+          this.formatCompileProgress(Number(sec), `${phase}${size}`.trim())
+        )
         clientDebugLog.log('scene', `compile-progress — ${phase} @ ${sec}s${size}`, {
           throttleMs: 2000,
           throttleKey: 'compile-progress'
@@ -2480,8 +2518,9 @@ export class SceneScriptSystem {
       }
       this.worker.onerror = (err) => finish(() => reject(err instanceof ErrorEvent ? err : new Error('Scene worker error')))
 
+      this.bootCompileKb = sizeKb
       this.startCompileProgressTimer()
-      this.bootProgressReporter?.(`Compiling scene script… (0s, ${sizeKb.toFixed(0)} KB)`)
+      this.bootProgressReporter?.(this.formatCompileProgress(0))
       // Yield so the loading screen can paint before the (still non-trivial) boot postMessage.
       requestAnimationFrame(() => {
         try {
@@ -3228,6 +3267,9 @@ export class SceneScriptSystem {
         }
         if (withTx === 0) skipUiMountReseed = false
       }
+      // 15-widget Yoga (BrandonManus timer) is ~30ms — never reseed on a dying rAF.
+      const leftoverDying = this.leftoverBlocksUiPaint()
+      if (leftoverDying) skipUiMountReseed = true
       if (skipUiMountReseed) {
         perfNoteUiMountReseedSkip()
       }
@@ -3396,7 +3438,10 @@ export class SceneScriptSystem {
             )
           }
           // Never defer DOM paint during pointer delivery when this batch touched UI (modal open/close).
-          if (mountEntitiesForFrame !== undefined || !this.pointerHoldTicksUntilMount || batchTouchesUi) {
+          if (
+            !leftoverDying &&
+            (mountEntitiesForFrame !== undefined || !this.pointerHoldTicksUntilMount || batchTouchesUi)
+          ) {
             this.applyUiFrame(projectionDeletes, mountEntitiesForFrame)
           }
         } else if (this.projectionLagPendingUi && batchTouchesUi) {
@@ -3692,6 +3737,7 @@ export class SceneScriptSystem {
     // FocusOwner: secondary never mutates DOM (demoted primary still holds SceneUiBridge
     // for promote resume — must not fight #scene-ui-root with the new primary).
     if (this.focusPolicy === 'secondary') return
+    if (this.leftoverBlocksUiPaint()) return
 
     // Asset hydration: commit mount only — no Yoga/DOM thrash (was flooding "paint deferred"
     // and stealing main-thread from GLB attach → 60s hang at ~79%).
@@ -3763,8 +3809,9 @@ export class SceneScriptSystem {
     const mountUpdate = uiEntities ?? this.pendingUiEntities
     this.pendingUiEntities = undefined
 
-    // Hydration: never paint / Yoga — attach bandwidth only.
-    const hydrationFreeze = this.bridge?.isAssetHydrationMode() === true
+    // Hydration / dying leftover: never paint / Yoga — attach bandwidth only.
+    const hydrationFreeze =
+      this.bridge?.isAssetHydrationMode() === true || this.leftoverBlocksUiPaint()
 
     if (mountUpdate !== undefined) {
       const nextSet = new Set(mountUpdate.map((e) => e as Entity))

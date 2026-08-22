@@ -16,6 +16,7 @@ import {
   tertiaryResidentCap
 } from './caps'
 import type { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
+import { lastFrameOverBudget } from '../../rendering/mainThreadYield'
 import { secondaryPhysOffset } from './physOffsets'
 import { SceneWorkerSlot, type ResidentMode } from './SceneWorkerSlot'
 import type { SecondaryLiveRequest } from './types'
@@ -73,6 +74,10 @@ export class SecondaryLiveManager {
    * non-base cells; occupancy must use the same pointers AOI ranked.
    */
   private readonly footprints = new Map<string, Set<string>>()
+  /** Last player→footprint meters from AOI (updated even when boot reconcile is throttled). */
+  private readonly lastDistM = new Map<string, number>()
+  /** Jog: only boot the parcel under feet (first snappy walk = no extra isolates). */
+  private locomoting = false
 
   bind(opts: {
     primaryScene: ResolvedScene
@@ -138,13 +143,19 @@ export class SecondaryLiveManager {
    * Running secondary-mode slots for SceneLoop.reconcileLiveGuests.
    * Tertiary is not a guest.
    */
-  listSecondaryModeSystems(): Array<{ id: string; getSystem: () => SceneScriptSystem }> {
-    const out: Array<{ id: string; getSystem: () => SceneScriptSystem }> = []
+  listSecondaryModeSystems(): Array<{
+    id: string
+    getSystem: () => SceneScriptSystem
+    distM: number
+  }> {
+    const out: Array<{ id: string; getSystem: () => SceneScriptSystem; distM: number }> = []
     for (const [entityId, slot] of this.slots) {
       if (slot.residentMode !== 'secondary') continue
+      const dist = this.lastDistM.get(entityId)
       out.push({
         id: `secondary:${entityId}`,
-        getSystem: () => slot.system
+        getSystem: () => slot.system,
+        distM: Number.isFinite(dist) ? (dist as number) : Number.POSITIVE_INFINITY
       })
     }
     return out
@@ -351,9 +362,21 @@ export class SecondaryLiveManager {
     return `secondary:${slot.id}`
   }
 
+  /** Focus/LiveKit only after the first GPU mesh — empty hydrate must not swap rooms. */
+  liveGuestGraphReady(guestId: string): boolean {
+    const entityId = guestId.startsWith('secondary:') ? guestId.slice('secondary:'.length) : guestId
+    const slot = this.slots.get(entityId)
+    if (!slot || slot.residentMode !== 'secondary') return false
+    return slot.system.countGpuVisuals() > 0
+  }
+
   /** Prefer booting a live secondary that covers this absolute parcel (under feet). */
   setPriorityParcel(x: number, y: number | null): void {
     this.priorityParcelKey = x != null && y != null ? `${x},${y}` : null
+  }
+
+  setLocomoting(locomoting: boolean): void {
+    this.locomoting = locomoting
   }
 
   private findSlotForParcel(x: number, y: number): SceneWorkerSlot | null {
@@ -803,6 +826,7 @@ export class SecondaryLiveManager {
         `${c.resolveX},${c.resolveY}`,
         ...(c.parcels ?? [])
       ])
+      if (Number.isFinite(c.distM)) this.lastDistM.set(c.entityId, c.distM)
     }
     // Single-primary + composite shells only — never boot live secondary workers.
     if (aoiGlbShellsOnly()) {
@@ -902,6 +926,9 @@ export class SecondaryLiveManager {
       if (started >= bootSlots) break
       if (this.slots.has(req.entityId) || this.booting.has(req.entityId)) continue
       if (req.distM > enterM && !coversPri(req)) continue
+      // Dying rAF / jog: only boot the parcel under feet. Approaching BrandonManus
+      // while Snow was hydrating stacked a third isolate on 7 FPS.
+      if ((lastFrameOverBudget(28) || this.locomoting) && !coversPri(req)) continue
       if (this.countMode('secondary') + this.booting.size >= cap) {
         this.demoteOneSecondaryToTertiary({ preferNonSticky: true })
         if (this.countMode('secondary') + this.booting.size >= cap) break
@@ -1054,6 +1081,14 @@ export class SecondaryLiveManager {
     return false
   }
 
+  /** Empty GPU graph only — do not steal leftover for pending=1 after first mesh. */
+  hasEmptyGraphHydrating(): boolean {
+    for (const slot of this.slots.values()) {
+      if (slot.needsEmptyGraphHydration()) return true
+    }
+    return false
+  }
+
   /**
    * Off-play attach pump — plaza leftover is often 0 ms so new guests never
    * get syncRenderer and stay empty (snow worker started, 0 GLBs).
@@ -1091,21 +1126,36 @@ export class SecondaryLiveManager {
             `gpu=${slot.system.countGpuVisuals()} pending=${slot.system.hasContentApplyWork() ? 1 : 0}`
         )
       }
+      if (lastFrameOverBudget(22)) {
+        setTimeout(pump, 200)
+        return
+      }
+      const lite = slot.needsEmptyGraphHydration()
       void slot
-        .tickAsync(this.primaryScene, this.cache, { fullWork: true, deadlineMs: 12 })
+        .tickAsync(this.primaryScene, this.cache, {
+          fullWork: true,
+          deadlineMs: lite ? 6 : 8,
+          hydrateLite: lite,
+          pushPhys: false
+        })
         .finally(() => {
-          setTimeout(pump, 32)
+          setTimeout(pump, lite ? 80 : 64)
         })
     }
     setTimeout(pump, 0)
   }
 
-  async tickAsync(opts?: { applyBudgetMs?: number }): Promise<PhysicsColliderDesc[]> {
+  async tickAsync(opts?: {
+    applyBudgetMs?: number
+    /** SceneLoop current guest (`secondary:<id>`) — only this slot cooks PhysX. */
+    physGuestId?: string | null
+  }): Promise<PhysicsColliderDesc[]> {
     if (!this.cache) return []
     const descs: PhysicsColliderDesc[] = []
     const slots = [...this.slots.values()]
     const secondaries = slots.filter((s) => !s.isTertiary)
     const budgetMs = opts?.applyBudgetMs
+    const physGuestId = opts?.physGuestId ?? null
     const MIN_FULL_MS = 2
     const hydrating = secondaries.filter((s) => s.needsHydrationApply())
     for (const slot of hydrating) this.kickHydrate(slot)
@@ -1119,8 +1169,13 @@ export class SecondaryLiveManager {
     const t0 = performance.now()
 
     for (const slot of slots) {
+      const pushPhys =
+        physGuestId != null &&
+        (physGuestId === slot.id || physGuestId === `secondary:${slot.id}`)
       if (slot.isTertiary) {
-        descs.push(...(await slot.tickAsync(this.primaryScene, this.cache)))
+        descs.push(
+          ...(await slot.tickAsync(this.primaryScene, this.cache, { pushPhys }))
+        )
         continue
       }
       const spent = performance.now() - t0
@@ -1130,7 +1185,8 @@ export class SecondaryLiveManager {
       descs.push(
         ...(await slot.tickAsync(this.primaryScene, this.cache, {
           fullWork,
-          deadlineMs: fullWork ? rem : undefined
+          deadlineMs: fullWork ? rem : undefined,
+          pushPhys
         }))
       )
     }
@@ -1149,9 +1205,15 @@ export class SecondaryLiveManager {
     return descs
   }
 
-  allRegisteredPhysIds(): number[] {
+  allRegisteredPhysIds(physGuestId?: string | null): number[] {
     const out: number[] = []
-    for (const slot of this.slots.values()) {
+    const filter = physGuestId !== undefined
+    for (const [id, slot] of this.slots) {
+      const keep =
+        !filter ||
+        (physGuestId != null &&
+          (physGuestId === id || physGuestId === `secondary:${id}`))
+      if (!keep) continue
       out.push(...slot.registeredPhysicsEntities())
     }
     return out
@@ -1161,6 +1223,7 @@ export class SecondaryLiveManager {
     this.disposed = true
     this.hydratePumps.clear()
     this.footprints.clear()
+    this.lastDistM.clear()
     for (const slot of this.slots.values()) slot.dispose()
     this.slots.clear()
     this.stickyIds.clear()

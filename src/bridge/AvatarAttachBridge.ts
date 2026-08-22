@@ -50,7 +50,23 @@ export class AvatarAttachBridge {
   ) {}
 
   setTargets(resolver: AvatarAttachTargetResolver | null): void {
+    if (!resolver) this.detachAll()
     this.targets = resolver
+  }
+
+  /** Walk-off Focus: freeze-follow leftover papers must leave the avatar. */
+  private detachAll(): void {
+    const nodes = this.getNodes()
+    const root = this.getSceneRoot?.() ?? null
+    if (nodes && root) {
+      for (const entity of this.attached) {
+        const node = nodes.get(entity)
+        if (node && node.parent !== root) root.add(node)
+      }
+    }
+    this.attached.clear()
+    this.cache.clear()
+    this.lastWorkerBatch = []
   }
 
   isAttachDriven(entity: Entity): boolean {

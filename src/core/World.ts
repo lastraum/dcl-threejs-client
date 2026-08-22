@@ -26,8 +26,8 @@ import { absoluteParcelAtSceneLocal } from '../dcl/aoi/parcelAoi'
 import { ScenePromoteController } from '../dcl/aoi/ScenePromoteController'
 import type { MultiSceneRuntime } from '../dcl/multiScene/MultiSceneRuntime'
 import { PeMainThreadMirror } from '../dcl/multiScene/PeMainThreadMirror'
-import { aoiStandOnPromote } from '../dcl/multiScene/caps'
-import { scheduleOffPlayRaf } from '../rendering/mainThreadYield'
+import { aoiStandOnPromote, sceneLoopFairMute } from '../dcl/multiScene/caps'
+import { lastFrameOverBudget, scheduleOffPlayRaf } from '../rendering/mainThreadYield'
 import {
   resolvePortableExperiencesPolicy,
   type PortableExperiencesPolicy
@@ -240,6 +240,18 @@ export class World {
   private focusGuestId: string | null = PRIMARY_GUEST_ID
   private focusGrantInFlight = false
   private pendingFocusGuestId: string | null | undefined = undefined
+  /**
+   * Walk-on Focus already switched input; UI + HLS + LiveKit wait until leftover
+   * is healthy so BrandonManus occupancy cannot dump 31ms Yoga on a 7 FPS rAF.
+   */
+  private occupancyPendingGuestId: string | null = null
+  private occupancyHealthyStreak = 0
+  private static readonly OCCUPANCY_HEALTHY_FRAMES = 8
+  /** Stand still on the same guest this long before Focus/LiveKit/HLS. */
+  private occupancyDwellGuestId: string | null = null
+  private occupancyDwellSinceMs = 0
+  private static readonly OCCUPANCY_DWELL_MS = 1500
+  private static readonly LOCOMOTION_MS = 0.45
   /** Occupancy log — parcel + current guest (avoid per-frame spam). */
   private lastOccupancyLogKey = ''
   private remoteAvatars: RemoteAvatarManager | null = null
@@ -1036,7 +1048,8 @@ export class World {
         },
         onSecondaryCandidates: (candidates) => {
           this.multiScene?.reconcileSecondaries(candidates)
-        }
+        },
+        getCamera: () => this.host.camera
       })
       this.scenePromote.bind(scene)
       // Prewarm default ground + roads + scatter for Scene Distance while primary hydrates.
@@ -2565,6 +2578,7 @@ export class World {
               this.multiScene?.secondaryManager?.listSecondaryModeSystems() ?? []
             )
             this.syncCurrentSceneGuestAt(pos.x, pos.z)
+            this.tickOccupancyArm()
             this.aoiVisual.update(pos.x, pos.z)
           }
           aoiMs = performance.now() - aoiT0
@@ -2731,17 +2745,25 @@ export class World {
           )
           // Rebase neighbor reserved poses before SceneLoop send (not after).
           this.multiScene?.tickSync(this.guestTickPlayer, this.guestTickCamera, this.guestTickFrame)
+          const fair = sceneLoopFairMute()
+          const frameDying = lastFrameOverBudget(28) || this.sceneLoop.lastApplyOverran(12)
+          const locomoting = this.isPlayerLocomoting()
           this.sceneLoop.send({
             now: performance.now(),
             fpsTarget: renderQuality.getFpsLimit() || 60,
             player: this.guestTickPlayer,
             camera: this.guestTickCamera,
-            frame: this.guestTickFrame
+            frame: this.guestTickFrame,
+            exclusiveSecondarySlot: !fair,
+            // lastApplyOverran misses a 140ms rAF whose apply was 6ms — mute still
+            // ticked BrandonManus and stacked hydrate on a dying frame.
+            // Jog: first snappy walk had no mute clocks — keep that.
+            allowMuteSecondary: fair && !frameDying && !locomoting
           })
           this.sceneLoop.peelMotion(2)
           // Under-feet guest apply is not leftover-gated — snow flowers / drone
           // Tweens never reached the GPU when plaza leftover was 0.
-          await this.sceneLoop.applyCurrentGuest(6)
+          await this.sceneLoop.applyCurrentGuest(frameDying ? 2 : 6)
           if (remain() > 2) {
             await this.sceneLoop.applyOtherLiveGuests(Math.min(4, remain() - 1))
           }
@@ -2833,12 +2855,10 @@ export class World {
           const MIN_FULL_MS = 2
           const primarySpent = t3 - t0
           const remainder = ASYNC_MULTI_BUDGET_MS - primarySpent
-          const guestHydrating =
-            this.multiScene?.secondaryManager?.hasHydratingSecondary() === true
-          const applyBudgetMs =
-            remainder >= MIN_FULL_MS ? remainder : guestHydrating ? 6 : 0
+          const applyBudgetMs = remainder >= MIN_FULL_MS ? remainder : 0
           const { colliders, invalidatePhysIds } = await this.multiScene.tickAsync({
-            applyBudgetMs
+            applyBudgetMs,
+            physGuestId: this.sceneLoop.getCurrentGuestId()
           })
           if (!skipPhysxColliders()) {
             for (const id of invalidatePhysIds) {
@@ -5407,10 +5427,18 @@ export class World {
    * cell wins over the plaza parcel list (holes inside a large primary).
    * Vacant/road keeps last Focus (no mute flicker). Origin is never rebased.
    */
+  private isPlayerLocomoting(): boolean {
+    return (this.player?.getHorizontalSpeed() ?? 0) > World.LOCOMOTION_MS
+  }
+
   private syncCurrentSceneGuestAt(dclX: number, dclZ: number): void {
     const next = this.resolveCurrentGuestIdAt(dclX, dclZ)
     this.sceneLoop.setCurrentGuestId(next)
-    if (next !== this.focusGuestId) void this.grantFocusToGuest(next)
+    this.multiScene?.secondaryManager?.setLocomoting(this.isPlayerLocomoting())
+    // Grant immediately so AvatarAttach / PE-parented planes unbind. LiveKit + HLS
+    // still wait on occupancy dwell — delaying the whole grant left papers on the avatar.
+    const focusNext = this.resolveFocusGuestIdAt(dclX, dclZ, next)
+    if (focusNext !== this.focusGuestId) void this.grantFocusToGuest(focusNext)
   }
 
   private resolveCurrentGuestIdAt(dclX: number, dclZ: number): string {
@@ -5423,7 +5451,7 @@ export class World {
     const live = this.multiScene?.liveGuestIdForParcel(parcel.x, parcel.y) ?? null
     const onPrimary =
       scene.baseParcel.trim() === key || scene.parcels.some((p) => p.trim() === key)
-    // Live guest under feet is Current/Focus. Plaza only when no neighbor covers.
+    // Scripts may tick before GPU exists. Focus waits for meshes (no LiveKit/UI hitch).
     const next = live ?? (onPrimary ? PRIMARY_GUEST_ID : this.focusGuestId ?? PRIMARY_GUEST_ID)
     const sig = `${key}|${next}|${live ?? 'none'}|${onPrimary ? 'p' : 'n'}`
     if (sig !== this.lastOccupancyLogKey) {
@@ -5437,6 +5465,20 @@ export class World {
       )
     }
     return next
+  }
+
+  /** Focus/LiveKit only when the under-feet live guest has GPU meshes. */
+  private resolveFocusGuestIdAt(dclX: number, dclZ: number, currentGuestId: string): string {
+    const scene = this.loadedPrimaryScene
+    if (!scene || scene.source.kind !== 'coords') return PRIMARY_GUEST_ID
+    if (currentGuestId === PRIMARY_GUEST_ID) return PRIMARY_GUEST_ID
+    if (this.multiScene?.liveGuestGraphReady(currentGuestId)) return currentGuestId
+    const parcel = absoluteParcelAtSceneLocal(dclX, dclZ, scene.baseParcel)
+    const key = `${parcel.x},${parcel.y}`
+    const onPrimary =
+      scene.baseParcel.trim() === key || scene.parcels.some((p) => p.trim() === key)
+    if (onPrimary) return PRIMARY_GUEST_ID
+    return this.focusGuestId ?? PRIMARY_GUEST_ID
   }
 
   private focusScript(): SceneScriptSystem {
@@ -5455,6 +5497,7 @@ export class World {
     }
     if (guestId === this.focusGuestId) return
     this.focusGrantInFlight = true
+    this.comms.bumpSceneRoomConnectEpoch()
     const prev = this.focusGuestId
     try {
       const prevSys = this.systemForFocusGuest(prev)
@@ -5463,10 +5506,6 @@ export class World {
 
       if (prevSys && prevSys !== nextSys) {
         prevSys.setReservedPoseStreaming(false)
-        const prevScene = this.sceneForFocusGuest(prev)
-        if ((prevScene?.parcels.length ?? 0) > 16) {
-          prevSys.setSceneWorkerOnUpdatePaused(true)
-        }
         prevSys.clearAvatarModifierEffects()
         prevSys.setFocusPolicy('secondary')
         prevSys.setInputHub(null)
@@ -5490,9 +5529,13 @@ export class World {
           engineTickIntervalMs: resolveEngineTickIntervalMs(this.performanceTier)
         })
         nextSys.clearPlayerFocusState()
+        const leavingNeighbor = prev != null && prev !== PRIMARY_GUEST_ID
+        // Occupancy media before setFocusPolicy — otherwise primary policy starts HLS.
+        // Plaza return is occupancy-held too (walk-back started sinfulmeatstick).
+        const holdOccupancy = guestId !== PRIMARY_GUEST_ID || leavingNeighbor
+        nextSys.setOccupancyMediaEnabled(!holdOccupancy)
         nextSys.setFocusPolicy('primary')
         nextSys.setInputHub(this.inputHub, guestId === PRIMARY_GUEST_ID ? 'primary' : `focus:${guestId}`)
-        nextSys.setSceneUiVisible(true)
         this.player?.releaseSceneFreezeHold('focus-grant')
         this.player?.setModifierHidden(false)
         this.player?.setForcedCameraMode(null)
@@ -5500,28 +5543,44 @@ export class World {
         this.installFocusAvatarModifiers(nextSys)
         this.player?.setVirtualCameraBridge(nextSys.getVirtualCameraBridge())
         if (guestId === PRIMARY_GUEST_ID) {
+          nextSys.setSceneUiVisible(!holdOccupancy)
           this.installPlazaFocusComms()
         } else {
+          nextSys.setSceneUiVisible(false)
           this.multiScene?.secondaryManager?.setFocusSendBinary(guestId, (body) =>
             this.handleSendBinary(body)
           )
         }
+        if (holdOccupancy) {
+          this.occupancyPendingGuestId = guestId
+          this.occupancyHealthyStreak = 0
+          this.occupancyDwellGuestId = null
+          this.occupancyDwellSinceMs = 0
+        } else {
+          this.occupancyPendingGuestId = null
+        }
       }
 
-      if (nextScene) {
+      if (nextScene && guestId === PRIMARY_GUEST_ID && this.occupancyPendingGuestId == null) {
         this.applySignedFetchSceneContext(nextScene)
         const target = this.buildCommsTarget(nextScene)
         const prevTarget = this.comms.getSceneTarget()
         if (this.comms.sceneRoomIdentityChanged(prevTarget, target)) {
+          const epoch = this.comms.getSceneRoomConnectEpoch()
           scheduleOffPlayRaf(() => {
+            if (this.focusGuestId !== PRIMARY_GUEST_ID) return
+            if (epoch !== this.comms.getSceneRoomConnectEpoch()) return
             void this.comms.connectFocusSceneRoom(target)
           })
         }
+      } else if (nextScene) {
+        this.applySignedFetchSceneContext(nextScene)
       }
 
       this.focusGuestId = guestId
       console.info(
-        `[focus] grant ${prev ?? 'none'} → ${guestId} “${nextScene?.title ?? '?'}” (origin held)`
+        `[focus] grant ${prev ?? 'none'} → ${guestId} “${nextScene?.title ?? '?'}” (origin held)` +
+          (this.occupancyPendingGuestId ? ' — occupancy hold ui/media/livekit' : '')
       )
     } catch (err) {
       console.warn('[focus] grant failed', err)
@@ -5533,6 +5592,63 @@ export class World {
         void this.grantFocusToGuest(queued)
       }
     }
+  }
+
+  /**
+   * Arm UI + HLS + LiveKit only after leftover recovered. Walking onto
+   * BrandonManus at 7 FPS used to first-paint 15 widgets (31ms) + two videos.
+   */
+  private tickOccupancyArm(): void {
+    const pending = this.occupancyPendingGuestId
+    if (!pending) return
+    if (pending !== this.focusGuestId) {
+      this.occupancyPendingGuestId = null
+      this.occupancyDwellGuestId = null
+      return
+    }
+    if (this.isPlayerLocomoting()) {
+      this.occupancyHealthyStreak = 0
+      this.occupancyDwellGuestId = null
+      this.occupancyDwellSinceMs = 0
+      return
+    }
+    const now = performance.now()
+    if (this.occupancyDwellGuestId !== pending) {
+      this.occupancyDwellGuestId = pending
+      this.occupancyDwellSinceMs = now
+      this.occupancyHealthyStreak = 0
+      return
+    }
+    if (now - this.occupancyDwellSinceMs < World.OCCUPANCY_DWELL_MS) return
+    const dying = lastFrameOverBudget(28) || this.sceneLoop.lastApplyOverran(16)
+    this.occupancyHealthyStreak = dying ? 0 : this.occupancyHealthyStreak + 1
+    if (this.occupancyHealthyStreak < World.OCCUPANCY_HEALTHY_FRAMES) return
+    this.armOccupancy(pending)
+  }
+
+  private armOccupancy(guestId: string): void {
+    if (guestId !== this.focusGuestId) {
+      this.occupancyPendingGuestId = null
+      return
+    }
+    const sys = this.systemForFocusGuest(guestId)
+    const scene = this.sceneForFocusGuest(guestId)
+    sys?.setOccupancyMediaEnabled(true)
+    sys?.setSceneUiVisible(true)
+    this.occupancyPendingGuestId = null
+    if (scene) {
+      const target = this.buildCommsTarget(scene)
+      const prevTarget = this.comms.getSceneTarget()
+      if (this.comms.sceneRoomIdentityChanged(prevTarget, target)) {
+        const epoch = this.comms.getSceneRoomConnectEpoch()
+        scheduleOffPlayRaf(() => {
+          if (this.focusGuestId !== guestId) return
+          if (epoch !== this.comms.getSceneRoomConnectEpoch()) return
+          void this.comms.connectFocusSceneRoom(target)
+        })
+      }
+    }
+    console.info(`[focus] occupancy armed ${guestId} “${scene?.title ?? '?'}”`)
   }
 
   private systemForFocusGuest(guestId: string | null): SceneScriptSystem | null {

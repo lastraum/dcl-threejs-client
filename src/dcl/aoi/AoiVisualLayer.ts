@@ -179,6 +179,8 @@ export type AoiVisualLayerContext = {
       parcels?: string[]
     }>
   ) => void
+  /** View camera for frustum-first shell drain. */
+  getCamera?: () => THREE.Camera | null
 }
 
 /**
@@ -296,6 +298,11 @@ export class AoiVisualLayer {
    * until play-ready so primary hydrate is alone.
    */
   private liveReconcileEnabled = false
+  private readonly scratchFrustum = new THREE.Frustum()
+  private readonly scratchProjView = new THREE.Matrix4()
+  private readonly scratchBox = new THREE.Box3()
+  private readonly scratchWorld = new THREE.Vector3()
+  private readonly scratchSize = new THREE.Vector3(48, 24, 48)
 
   constructor() {
     this.root.name = 'aoi-visual-layer'
@@ -1843,18 +1850,20 @@ export class AoiVisualLayer {
     }
 
     if (this.pendingCompositeIds.size > 0 && this.loadedShells.size < COMPOSITE_MAX_RETAINED) {
+      const frustum = this.cameraFrustum()
       const ranked = [...this.pendingCompositeIds]
         .map((id) => this.cachedEntities.find((e) => e.id === id))
         .filter((e): e is ActiveSceneEntity => !!e)
         .sort((a, b) => {
-          const aParcels = a.parcels.length || a.pointers.length
-          const bParcels = b.parcels.length || b.pointers.length
-          const aMega = aParcels >= 16 ? 1 : 0
-          const bMega = bParcels >= 16 ? 1 : 0
-          if (bMega !== aMega) return bMega - aMega
+          const aView = this.entityLikelyInView(a, frustum) ? 0 : 1
+          const bView = this.entityLikelyInView(b, frustum) ? 0 : 1
+          if (aView !== bView) return aView - bView
           const da = this.entityDistM(a, dclX, dclZ, this.cachedPrimaryBase || ctx.scene.baseParcel)
           const db = this.entityDistM(b, dclX, dclZ, this.cachedPrimaryBase || ctx.scene.baseParcel)
-          return da - db
+          if (da !== db) return da - db
+          const aParcels = a.parcels.length || a.pointers.length
+          const bParcels = b.parcels.length || b.pointers.length
+          return bParcels - aParcels
         })
       const ent = ranked[0]
       if (ent) {
@@ -1865,13 +1874,50 @@ export class AoiVisualLayer {
 
     if (!this.prewarmActive && !allowOverBudget && lastFrameOverBudget(33)) return
 
+    const frustum = this.cameraFrustum()
+    const attachOrder = [...this.loadedShells.values()].sort((a, b) => {
+      const aView = this.poseInFrustum(a.pose, frustum) ? 0 : 1
+      const bView = this.poseInFrustum(b.pose, frustum) ? 0 : 1
+      if (aView !== bView) return aView - bView
+      return a.lastDistM - b.lastDistM
+    })
     let attached = 0
-    for (const rec of this.loadedShells.values()) {
+    for (const rec of attachOrder) {
       if (attached >= COMPOSITE_LOAD_PER_DRAIN) break
       if (rec.attachedCount >= rec.targetCount || rec.pendingSrcs.length === 0) continue
       await this.attachOneShellClone(rec, ctx, gen)
       attached++
     }
+  }
+
+  private cameraFrustum(): THREE.Frustum | null {
+    const cam = this.ctx?.getCamera?.()
+    if (!cam) return null
+    cam.updateMatrixWorld(true)
+    this.scratchProjView.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse)
+    this.scratchFrustum.setFromProjectionMatrix(this.scratchProjView)
+    return this.scratchFrustum
+  }
+
+  private poseInFrustum(pose: THREE.Object3D, frustum: THREE.Frustum | null): boolean {
+    if (!frustum) return true
+    pose.updateWorldMatrix(true, false)
+    pose.getWorldPosition(this.scratchWorld)
+    this.scratchBox.setFromCenterAndSize(this.scratchWorld, this.scratchSize)
+    return frustum.intersectsBox(this.scratchBox)
+  }
+
+  private entityLikelyInView(ent: ActiveSceneEntity, frustum: THREE.Frustum | null): boolean {
+    if (!frustum) return true
+    const rec = this.loadedShells.get(ent.id)
+    if (rec) return this.poseInFrustum(rec.pose, frustum)
+    const primaryBase = this.cachedPrimaryBase || this.ctx?.scene.baseParcel || '0,0'
+    const origin = neighborOriginOffset(ent.base, primaryBase)
+    dclToThreePos(origin.x, 0, origin.z, this.scratchWorld)
+    this.aoiPoseRoot.updateWorldMatrix(true, false)
+    this.aoiPoseRoot.localToWorld(this.scratchWorld)
+    this.scratchBox.setFromCenterAndSize(this.scratchWorld, this.scratchSize)
+    return frustum.intersectsBox(this.scratchBox)
   }
 
   /**

@@ -149,7 +149,7 @@ export class RenderStats {
         `${perf.renderMode} sh=${perf.renderShadowOn ? 'on' : 'off'}`,
       `  scene-loop: send=${perf.sceneLoopSendMs.toFixed(1)} recv=${perf.sceneLoopReceiveMs.toFixed(1)} ` +
         `apply=${perf.sceneLoopApplyMs.toFixed(1)} g=${perf.sceneLoopGuests} ` +
-        `sent=${perf.sceneLoopSent} inflight=${perf.sceneLoopInFlight}`,
+        `sent=${perf.sceneLoopSent} mute=${perf.sceneLoopMuteSent} inflight=${perf.sceneLoopInFlight}`,
       `  apply=${perf.applyMs.toFixed(1)} async~=${perf.asyncMs.toFixed(1)} ` +
         `peel=${perf.asyncPeelMs.toFixed(1)} coll=${perf.asyncCollisionMs.toFixed(1)} ` +
         `bridge=${perf.asyncBridgesMs.toFixed(1)}`,

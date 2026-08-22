@@ -87,6 +87,8 @@ export type SceneCommsFailureReason =
   | 'livekit'
   /** World /about (or /status) has no LiveKit adapter — solo play is fine. */
   | 'comms_disabled'
+  /** Focus left before the join ran — do not tear down the current room. */
+  | 'cancelled'
 
 export type SceneCommsConnectResult = { ok: true } | { ok: false; reason: SceneCommsFailureReason }
 
@@ -175,6 +177,8 @@ export class CommsService {
   /** Serialize scene-room joins so cast retry + route switch cannot abort each other. */
   private sceneRoomConnectChain: Promise<unknown> = Promise.resolve()
   private sceneRoomConnectInFlight = false
+  /** Bumped on Focus grant so a stale occupancy join cannot land after we left. */
+  private sceneRoomConnectEpoch = 0
   /** Throttle RFC4 ProfileRequest per peer — version heartbeats used to flood lossy DC. */
   private readonly profileRequestAt = new Map<string, number>()
   private static readonly PROFILE_REQUEST_COOLDOWN_MS = 5_000
@@ -661,11 +665,21 @@ export class CommsService {
     return connected
   }
 
+  bumpSceneRoomConnectEpoch(): void {
+    this.sceneRoomConnectEpoch++
+  }
+
+  getSceneRoomConnectEpoch(): number {
+    return this.sceneRoomConnectEpoch
+  }
+
   /** Focus walk: join under-feet scene LiveKit; keep host origin / movement frame. */
   async connectFocusSceneRoom(target: SceneCommsTarget): Promise<SceneCommsConnectResult> {
-    const run = this.sceneRoomConnectChain.then(() =>
-      this.connectSceneRoomExclusive(target, { preserveHostOrigin: true })
-    )
+    const epoch = this.sceneRoomConnectEpoch
+    const run = this.sceneRoomConnectChain.then(() => {
+      if (epoch !== this.sceneRoomConnectEpoch) return { ok: false as const, reason: 'cancelled' as const }
+      return this.connectSceneRoomExclusive(target, { preserveHostOrigin: true, epoch })
+    })
     this.sceneRoomConnectChain = run.then(
       () => undefined,
       () => undefined
@@ -684,8 +698,11 @@ export class CommsService {
 
   private async connectSceneRoomExclusive(
     target: SceneCommsTarget,
-    opts?: { preserveHostOrigin?: boolean }
+    opts?: { preserveHostOrigin?: boolean; epoch?: number }
   ): Promise<SceneCommsConnectResult> {
+    if (opts?.epoch !== undefined && opts.epoch !== this.sceneRoomConnectEpoch) {
+      return { ok: false, reason: 'cancelled' }
+    }
     this.sceneRoomConnectInFlight = true
     // First join: hold AUTH_RES until main/syncEntity. Already playing: do not re-hold —
     // worker-ready release never runs again, so reconnect used to freeze teamAssigned/paintTick.

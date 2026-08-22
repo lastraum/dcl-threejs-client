@@ -32,7 +32,8 @@ export {
   peLiveCap,
   secondaryTickIntervalMs,
   peTickIntervalMs,
-  tertiaryResidentCap
+  tertiaryResidentCap,
+  sceneLoopFairMute
 } from './caps'
 export type { ResidentMode } from './SceneWorkerSlot'
 export {

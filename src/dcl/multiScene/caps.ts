@@ -124,9 +124,8 @@ export function secondaryLiveRadiusM(): number {
   return secondaryLiveEnterRadiusM()
 }
 
-/** After play-ready, start every live-band guest (desktop = 4 scene threads).
- *  Measure-only: do not lower without a stacked live-neighbor walk log of p5 < 30. */
-export const SECONDARY_LIVE_BOOT_CONCURRENCY = 4
+/** One cold boot at a time — stacked neighbor hydrate was 7 FPS on CBD walk. */
+export const SECONDARY_LIVE_BOOT_CONCURRENCY = 1
 
 export function tertiaryResidentCap(_tier: PerformanceTier): number {
   return TERTIARY_RESIDENT_HARD_CAP
@@ -136,6 +135,17 @@ export function peLiveCap(tier: PerformanceTier): number {
   if (tier === 'low') return 1
   if (tier === 'medium') return 1
   return 2
+}
+
+/**
+ * Standing-in + one leftover mute secondary per send.
+ * `?sceneloopfair=0` restores exclusive one-secondary slot.
+ */
+const SCENE_LOOP_FAIR_MUTE = true
+
+export function sceneLoopFairMute(): boolean {
+  if (skipAoiNeighbors()) return false
+  return urlBool('sceneloopfair', SCENE_LOOP_FAIR_MUTE)
 }
 
 /** Live guests are SceneLoop 20 Hz — never a 0 ms present pump. */

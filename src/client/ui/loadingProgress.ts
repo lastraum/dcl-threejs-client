@@ -7,6 +7,19 @@
  * a lightweight fallback for the asset range.
  */
 export function progressFromStatus(message: string, previous: number): number {
+  const lower = message.toLowerCase()
+  // Shaders checkpoint is later — do not treat it as bundle compile.
+  if (lower.includes('compiling scene shaders')) {
+    return Math.max(previous, 0.84)
+  }
+  // Bundle compile can take a minute; creep 35% → ~38% so the bar is not frozen.
+  if (lower.includes('compiling') && (lower.includes('scene') || lower.includes('bundle'))) {
+    const secMatch = message.match(/(\d+)\s*s\b/i)
+    const sec = secMatch ? Number(secMatch[1]) : 0
+    const creep = Math.min(0.028, (Math.max(0, sec) / 90) * 0.028)
+    return Math.max(previous, 0.35 + creep)
+  }
+
   const checkpoints: Array<[prefix: string, value: number]> = [
     ['Resolving destination', 0.04],
     ['Preparing scene', 0.06],
@@ -18,7 +31,7 @@ export function progressFromStatus(message: string, previous: number): number {
     ['Guest mode', 0.3],
     ['Profile loaded', 0.32],
     ['Booting scene script', 0.34],
-    ['Compiling scene', 0.35],
+    ['Fetching scene script', 0.345],
     ['compile-progress', 0.35],
     ['Scene script compiled', 0.36],
     ['Scene script running', 0.36],
@@ -43,7 +56,6 @@ export function progressFromStatus(message: string, previous: number): number {
     ['Starting experience', 0.99]
   ]
 
-  const lower = message.toLowerCase()
   for (const [prefix, value] of checkpoints) {
     if (lower.includes(prefix.toLowerCase())) {
       return Math.max(previous, value)

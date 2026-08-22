@@ -130,7 +130,7 @@ export class MainFrameHud {
         `loop send=${fmt1(snap.sceneLoopSendMs)} recv=${fmt1(snap.sceneLoopReceiveMs)} ` +
         `apply=${fmt1(snap.sceneLoopApplyMs)} ` +
         `g=${snap.sceneLoopGuests} due=${snap.sceneLoopDue} sent=${snap.sceneLoopSent} ` +
-        `inflight=${snap.sceneLoopInFlight}` +
+        `mute=${snap.sceneLoopMuteSent} inflight=${snap.sceneLoopInFlight}` +
         ` dt=${snap.sceneLoopLastSource ? formatGuestDt(snap.sceneLoopLastDt) : '-'}` +
         ` src=${snap.sceneLoopLastSource || '-'}` +
         `</div>`,

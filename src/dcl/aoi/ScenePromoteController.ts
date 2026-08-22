@@ -50,7 +50,7 @@ export type ScenePromoteControllerOptions = {
  * - Soft-updates the SPA URL as you walk (no reload).
  * - Full promote only when dwelling on a **real SDK7 scene** that is not primary.
  * - Empty land and roads never trigger a scene reload (that was thrashing promote).
- * - FocusOwner stays primary; secondaries (if live) are hard-muted media / no UI.
+ * - After handoff the under-feet deployment is FocusOwner (origin + LiveKit + UI).
  */
 type PendingWarmEntry = {
   entityId: string

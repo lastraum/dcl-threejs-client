@@ -6186,6 +6186,13 @@ export class World {
     // CRITICAL: rebind player locomotion reads to the NEW primary MirrorComponents.
     this.player.setReadComponents(this.sceneScript.readComponents)
     this.player.setImpulseLamportProvider(() => this.sceneScript.getPhysicsImpulseLamport())
+    // Occupancy hold may have paused this guest's media while it was a secondary.
+    this.sceneScript.setOccupancyMediaEnabled(true)
+    this.occupancyPendingGuestId = null
+    this.focusGuestId = PRIMARY_GUEST_ID
+    this.sceneLoop.setCurrentGuestId(PRIMARY_GUEST_ID)
+    this.physHoldGuestId = null
+    this.lastPlazaPhysFeet = { x: Number.NaN, z: Number.NaN }
     // Clear freeze + arm grace (worker freezes stripped on player-frame).
     this.sceneScript.clearPlayerFocusState()
     this.sceneScript.setFocusPolicy('primary')
@@ -6232,6 +6239,7 @@ export class World {
     const originBefore = { ...this.comms.getSceneOrigin() }
     const prevSceneTarget = this.comms.getSceneTarget()
     const nextSceneTarget = this.buildCommsTarget(newScene)
+    this.comms.bumpSceneRoomConnectEpoch()
     this.comms.applyRealmAbout(newScene.realm, newScene.commsPointer)
     this.comms.bindSceneTarget(nextSceneTarget)
     this.session.setCatalystEndpoints(newScene.realm.contentUrl, newScene.realm.lambdasUrl)
@@ -6344,16 +6352,18 @@ export class World {
       }
       this.reconcileColliderCookQueue()
       try {
-        const descs = this.sceneScript.getAllPhysicsColliderDescs?.() ?? []
+        const descs = (this.sceneScript.getAllPhysicsColliderDescs?.() ?? []).filter(
+          (d) => !this.isPlazaScenePhysFar(d, ROAD_PHYS_RADIUS_M)
+        )
         if (descs.length > 0) {
-          // Bounded first push — remaining cooks trickle via cook queue (not 128 main-thread).
+          // Near-ring only — do not dump the whole estate into SQ on handoff.
           this.physics.syncStaticColliders(descs, {
             cookBudget: Math.min(48, descs.length),
             freezeRemoval: true,
             forceRecookOnPoseChange: false,
             geometryCache: true
           })
-          console.info(`[promote] primary colliders force-sync n=${descs.length}`)
+          console.info(`[promote] primary colliders force-sync n=${descs.length} (48m ring)`)
         }
       } catch {
         /* optional API */

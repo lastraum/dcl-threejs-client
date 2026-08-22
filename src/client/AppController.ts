@@ -2868,7 +2868,7 @@ export class AppController {
         if (from) this.trackNavigate(from, target, 'navigate', 'goto')
         this.softUpdatePlayRoute(target)
         void this.refreshLocationTitleForParcel(target.x, target.y)
-        // Compile default: aoiStandOnPromote() is false — no origin rebase on walk.
+        // Stand-on: in-world handoff + origin rebase (FocusOwner = under-feet deployment).
         void this.promotePrimary(target, reason)
       },
       // Feet parcel only — replaceState, never reload (fixes empty-land thrash + URL lag).

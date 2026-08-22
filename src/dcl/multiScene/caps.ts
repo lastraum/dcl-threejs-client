@@ -4,14 +4,14 @@ import { skipAoiNeighbors } from '../../client/devFlags'
 
 /**
  * Open-world residency (docs/OPEN_WORLD_RESIDENCY.md).
- * Compile defaults: shells + disc + live guests ON; promote OFF.
+ * Compile defaults: shells + disc + live guests + stand-on promote ON.
  * `?noaoi` still wins. URL: ?aoishells=0|1  ?aoidisc=0|1  ?aoilive=0|1  ?aoipromote=0|1
  */
 const AOI_NEIGHBOR_SHELLS = true
 const AOI_SCENE_DISTANCE_VISUALS = true
 const AOI_LIVE_GUESTS = true
-/** Walk never rebases origin / never handoff-promotes. */
-const AOI_STAND_ON_PROMOTE = false
+/** Stand-on a live SDK7 footprint → in-world primary handoff (origin rebase). */
+const AOI_STAND_ON_PROMOTE = true
 
 /**
  * Live JS workers (scripts + CRDT). Official desktop: ~10 m load + ~10 m extra

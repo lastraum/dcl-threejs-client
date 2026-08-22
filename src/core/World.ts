@@ -5680,16 +5680,7 @@ export class World {
 
       if (nextScene && guestId === PRIMARY_GUEST_ID && this.occupancyPendingGuestId == null) {
         this.applySignedFetchSceneContext(nextScene)
-        const target = this.buildCommsTarget(nextScene)
-        const prevTarget = this.comms.getSceneTarget()
-        if (this.comms.sceneRoomIdentityChanged(prevTarget, target)) {
-          const epoch = this.comms.getSceneRoomConnectEpoch()
-          scheduleOffPlayRaf(() => {
-            if (this.focusGuestId !== PRIMARY_GUEST_ID) return
-            if (epoch !== this.comms.getSceneRoomConnectEpoch()) return
-            void this.comms.connectFocusSceneRoom(target)
-          })
-        }
+        this.syncFocusSceneRoom(nextScene, PRIMARY_GUEST_ID)
       } else if (nextScene) {
         this.applySignedFetchSceneContext(nextScene)
       }
@@ -5753,24 +5744,29 @@ export class World {
     sys?.setOccupancyMediaEnabled(true)
     sys?.setSceneUiVisible(true)
     this.occupancyPendingGuestId = null
-    if (scene) {
-      const target = this.buildCommsTarget(scene)
-      const prevTarget = this.comms.getSceneTarget()
-      if (this.comms.sceneRoomIdentityChanged(prevTarget, target)) {
-        const epoch = this.comms.getSceneRoomConnectEpoch()
-        scheduleOffPlayRaf(() => {
-          if (this.focusGuestId !== guestId) return
-          if (epoch !== this.comms.getSceneRoomConnectEpoch()) return
-          void this.comms.connectFocusSceneRoom(target)
-        })
-      }
-    }
+    if (scene) this.syncFocusSceneRoom(scene, guestId)
     console.info(`[focus] occupancy armed ${guestId} “${scene?.title ?? '?'}”`)
   }
 
   private systemForFocusGuest(guestId: string | null): SceneScriptSystem | null {
     if (!guestId || guestId === PRIMARY_GUEST_ID) return this.sceneScript
     return this.multiScene?.secondaryManager?.motionSystemForGuestId(guestId) ?? null
+  }
+
+  /** Origin-held Focus: reconnect LiveKit only when sceneId changes. */
+  private syncFocusSceneRoom(scene: ResolvedScene, guestId: string): void {
+    const target = this.buildCommsTarget(scene)
+    const prevTarget = this.comms.getSceneTarget()
+    if (!this.comms.focusSceneRoomChanged(prevTarget, target)) {
+      this.comms.bindFocusRoomIdentity(target)
+      return
+    }
+    const epoch = this.comms.getSceneRoomConnectEpoch()
+    scheduleOffPlayRaf(() => {
+      if (this.focusGuestId !== guestId) return
+      if (epoch !== this.comms.getSceneRoomConnectEpoch()) return
+      void this.comms.connectFocusSceneRoom(target)
+    })
   }
 
   private sceneForFocusGuest(guestId: string | null): ResolvedScene | null {

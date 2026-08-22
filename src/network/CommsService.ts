@@ -741,6 +741,19 @@ export class CommsService {
   }
 
   /**
+   * Origin-held Focus / occupancy: same deployment keeps the socket.
+   * Soft-route updates commsPointer every parcel; reconnecting plaza for
+   * pointer-only change was the walk-back LiveKit hitch.
+   */
+  focusSceneRoomChanged(
+    prev: Pick<SceneCommsTarget, 'sceneId'> | null | undefined,
+    next: Pick<SceneCommsTarget, 'sceneId'>
+  ): boolean {
+    if (!prev) return true
+    return (prev.sceneId?.trim() ?? '') !== (next.sceneId?.trim() ?? '')
+  }
+
+  /**
    * Swap Focus scene-room identity (sceneId + pointer) without moving the host
    * origin / PhysX frame. Walk Focus grant must not rebase Genesis.
    */

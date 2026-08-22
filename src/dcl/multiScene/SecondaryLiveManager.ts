@@ -1230,20 +1230,17 @@ export class SecondaryLiveManager {
 
   /** Sticky-only async (settle window) — colliders for demoted residents. */
   async tickStickyAsync(): Promise<PhysicsColliderDesc[]> {
-    if (!this.cache) return []
-    const descs: PhysicsColliderDesc[] = []
-    // Settle: only dirty collider push — no full secondary thrash during promote handoff.
-    for (const [id, slot] of this.slots) {
-      if (!this.stickyIds.has(id)) continue
-      descs.push(...slot.takeDirtyCollidersOnly())
-    }
-    return descs
+    // World already rekey+translated sticky hulls. setPrimaryScene recapture used
+    // to dirty-push the whole plaza into syncStaticColliders (52M expand → 4fps).
+    return []
   }
 
   allRegisteredPhysIds(physGuestIds?: string[]): number[] {
     const out: number[] = []
     for (const [id, slot] of this.slots) {
-      if (!this.slotMatchesPhysGuest(id, physGuestIds)) continue
+      // Sticky always stays in `next`. Empty physGuestIds during promote-settle
+      // used to drop them → invalidateStaticCollider → static=2 → recook.
+      if (!this.stickyIds.has(id) && !this.slotMatchesPhysGuest(id, physGuestIds)) continue
       out.push(...slot.registeredPhysicsEntities())
     }
     return out

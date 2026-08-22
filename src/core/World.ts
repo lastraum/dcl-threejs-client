@@ -2884,6 +2884,8 @@ export class World {
           })
           if (!skipPhysxColliders()) {
             for (const id of invalidatePhysIds) {
+              // Sticky offset hulls stay until the slot is gone — never recook plaza.
+              if (id >= SECONDARY_PHYS_BASE && this.physics.hasStaticActor(id)) continue
               this.physics.invalidateStaticCollider(id)
             }
             if (colliders.length && this.collidersLoadingComplete && !this.deferPhysxCooks) {
@@ -5526,7 +5528,13 @@ export class World {
         }
         continue
       }
-      if (d2 > keep2 && has && desc.entity !== ground && !this.physics.isKinematicActor(desc.entity)) {
+      if (
+        d2 > keep2 &&
+        has &&
+        desc.entity !== ground &&
+        !this.physics.isKinematicActor(desc.entity) &&
+        !this.isPlayerLocomoting()
+      ) {
         this.physics.invalidateStaticCollider(desc.entity)
       }
     }
@@ -6347,6 +6355,9 @@ export class World {
     // Re-assert demoted mesh offsets after origin change. Colliders already registered
     // once above — do NOT forceRecook here (that was the CBD→snow→CBD 3fps death spiral).
     multi.notifyPrimaryChanged(newScene)
+    // setPrimaryScene recaptures remapped descs (dirty). Do not stream them
+    // into syncStaticColliders — World already translated existing actors.
+    multi.markResidentCollidersSynced()
     // Sticky hulls already translated with the demoted root. Do NOT
     // syncStaticColliders here — that re-expanded plaza multi-shape (6 fps).
 

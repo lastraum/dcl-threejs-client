@@ -26,6 +26,7 @@ import {
   EMPTY_LAND_AOI_COLLIDER_ENTITY_BASE,
   EMPTY_LAND_AOI_COLLIDER_ID_SPAN
 } from '../dcl/aoi/emptyParcelLayer'
+import { SECONDARY_PHYS_BASE } from '../dcl/multiScene/physOffsets'
 
 export type PhysicsColliderShapeDesc = {
   fingerprint: string
@@ -1909,6 +1910,19 @@ export class PhysXWorld {
 
         if (cooksRemaining <= 0) {
           pendingCooks++
+          continue
+        }
+
+        // Sticky/PE offset hulls already in SQ (rekey+translate). Expanding them
+        // after promote recooked plaza 144-shape GLBs on the main thread (4fps).
+        if (
+          desc.entity >= SECONDARY_PHYS_BASE &&
+          this.hasStaticActor(desc.entity) &&
+          !options?.forceRecookOnPoseChange &&
+          !bootStyleCook
+        ) {
+          this.staticPoseFp.set(desc.entity, poseFp)
+          if (prevGeomFp !== geomFp) this.staticFp.set(desc.entity, geomFp)
           continue
         }
 

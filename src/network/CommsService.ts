@@ -822,6 +822,9 @@ export class CommsService {
   /** Force archipelago heartbeat at the bound scene (overwrites 0,0,0 shell seed). */
   seedArchipelagoPresenceFromScene(reason = 'scene'): void {
     if (this.isWorldComms()) return
+    // Stand-on origin rebase must not snap the island to the new SW (plaza
+    // center vs feet at the estate edge → 23t4→242m→abort).
+    if (this.archipelago.hasLivePosition()) return
     const seed = this.presenceSeedGenesisMeters()
     if (!seed) return
     this.archipelago.ensurePresenceSeed(seed)

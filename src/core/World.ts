@@ -6389,7 +6389,8 @@ export class World {
 
     // Soft-route URL to feet parcel under new origin (not stale -135,107 warp).
     this.promoteSoftRoute?.(softPx, softPy)
-    // Archipelago island seed uses genesis from new origin + local feet.
+    // Keep the live island. Parcel-center bind seed is skipped when we already
+    // have genesis; this only refreshes heartbeat at actual feet (no SW snap).
     this.comms.seedArchipelagoSceneLocal(feetAfter.x, genesis.y, feetAfter.z)
 
     console.info(

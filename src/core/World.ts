@@ -422,6 +422,13 @@ export class World {
   private performanceTier: PerformanceTier = 'high'
   private loadedPrimaryScene: ResolvedScene | null = null
   /**
+   * Occupancy keys for the current primary (scene.parcels + base + the cell we
+   * handed off + origin-rebase feet). `ResolvedScene.parcels` can miss non-base
+   * cells; without this, stand-on queues a second promote to the next parcel
+   * of the same 2×2 and force-boots (5 fps).
+   */
+  private readonly primaryOccupancyParcels = new Set<string>()
+  /**
    * Multi-scene Phase B — stand-on-parcel promotes that scene to primary
    * (full scripts). Wired to navigateHandler after load.
    */
@@ -1038,6 +1045,7 @@ export class World {
         : { mode: 'rect', bounds: sceneWorldBounds(scene.parcels, scene.baseParcel) }
 
     this.loadedPrimaryScene = scene
+    this.rememberPrimaryOccupancy(scene)
     // Neighbors stay off until notifyPlayReady (setNeighborActivityEnabled).
     // ?noaoi=1 — never bind AOI / promote / live secondaries (primary-only CBD debug).
     this.multiScene?.setSecondaryActivityEnabled(false)
@@ -1321,6 +1329,7 @@ export class World {
       })
     }
     this.loadedPrimaryScene = scene
+    this.rememberPrimaryOccupancy(scene)
     console.info(
       `[reload] recycle primary “${scene.title}” · keep ${oldPhysIds.length} PhysX actors until recook`
     )
@@ -5913,6 +5922,30 @@ export class World {
     return this.loadedPrimaryScene
   }
 
+  /** True when (x,y) is already this primary's occupancy (no second handoff). */
+  primaryCoversParcel(x: number, y: number): boolean {
+    const key = `${x},${y}`
+    if (this.primaryOccupancyParcels.has(key)) return true
+    const scene = this.loadedPrimaryScene
+    if (!scene) return false
+    if (scene.baseParcel.trim() === key) return true
+    return scene.parcels?.some((p) => p.trim() === key) === true
+  }
+
+  private rememberPrimaryOccupancy(
+    scene: ResolvedScene,
+    extraKeys: readonly string[] = []
+  ): void {
+    this.primaryOccupancyParcels.clear()
+    const add = (k: string | undefined): void => {
+      const t = k?.trim()
+      if (t) this.primaryOccupancyParcels.add(t)
+    }
+    add(scene.baseParcel)
+    for (const p of scene.parcels ?? []) add(p)
+    for (const k of extraKeys) add(k)
+  }
+
   /**
    * PE has full capability but lower priority. Intents submitted to the arbiter
    * during PE tick are applied here if still pending (primary already ran and
@@ -5979,6 +6012,14 @@ export class World {
     const multi = this.multiScene
     if (!multi || !this.player) return false
 
+    // Same-entity second promote (next cell of a 2×2) must not force-boot.
+    if (this.primaryCoversParcel(target.x, target.y)) {
+      console.info(
+        `[promote] already primary @ ${target.x},${target.y} — skip (no force-boot)`
+      )
+      return true
+    }
+
     const handoff = multi.takeSecondaryForPromote(target.x, target.y)
     if (!handoff) {
       console.info(
@@ -5987,7 +6028,7 @@ export class World {
       return false
     }
 
-    return this.applyPromoteHandoff(handoff)
+    return this.applyPromoteHandoff(handoff, [`${target.x},${target.y}`])
   }
 
   /**
@@ -6000,13 +6041,16 @@ export class World {
   /**
    * Adopt secondary as primary; demote old primary to sticky secondary for resume.
    */
-  private async applyPromoteHandoff(handoff: {
-    entityId: string
-    scene: ResolvedScene
-    system: import('./systems/SceneScriptSystem').SceneScriptSystem
-    physIds: number[]
-    physOffset: number
-  }): Promise<boolean> {
+  private async applyPromoteHandoff(
+    handoff: {
+      entityId: string
+      scene: ResolvedScene
+      system: import('./systems/SceneScriptSystem').SceneScriptSystem
+      physIds: number[]
+      physOffset: number
+    },
+    extraParcelKeys: readonly string[] = []
+  ): Promise<boolean> {
     const multi = this.multiScene
     if (!multi || !this.player) return false
 
@@ -6122,6 +6166,7 @@ export class World {
 
     this.sceneScript = newSystem
     this.loadedPrimaryScene = newScene
+    this.rememberPrimaryOccupancy(newScene, extraParcelKeys)
     this.assets.setScene(newScene)
     // Snow sat at neighbor offset as a guest; origin is now its SW — rewrite GPU.
     this.sceneScript.rebakeGpuAfterOriginChange()
@@ -6264,10 +6309,12 @@ export class World {
     const baseY = Number.isFinite(baseParts[1]) ? baseParts[1]! : 0
     const softPx = baseX + Math.floor(feetAfter.x / 16)
     const softPy = baseY + Math.floor(feetAfter.z / 16)
+    const softKey = `${softPx},${softPy}`
+    this.primaryOccupancyParcels.add(softKey)
     console.info(
       `[promote] origin (${originBefore.x},${originBefore.z})→(${originAfter.x},${originAfter.z}) ` +
         `feetLocal=(${feetAfter.x.toFixed(1)},${feetAfter.z.toFixed(1)}) ` +
-        `softParcel=${softPx},${softPy} restoreOk=${ok} ` +
+        `softParcel=${softKey} restoreOk=${ok} ` +
         `genesis=(${genesis.x.toFixed(1)},${genesis.z.toFixed(1)})`
     )
 
@@ -6323,6 +6370,8 @@ export class World {
     this.aoiVisual.retargetPrimary(newScene, feetAfter.x, feetAfter.z)
     // retargetPrimary already liveReconcileEnabled=false; visuals neighborActivity on.
     this.scenePromote.bind(newScene)
+    this.scenePromote.coverPrimaryParcel(softKey)
+    for (const k of extraParcelKeys) this.scenePromote.coverPrimaryParcel(k)
     // Promote evaluate OK; soft-route force-boot gated by isSecondaryActivityEnabled().
     this.scenePromote.setNeighborActivityEnabled(true)
 
@@ -6884,6 +6933,7 @@ export class World {
     this.aoiVisual.dispose()
     this.scenePromote.unbind()
     this.loadedPrimaryScene = null
+    this.primaryOccupancyParcels.clear()
     this.ezTreeGrass?.dispose()
     this.ezTreeGrass = null
     this.desertAtmosphere = null

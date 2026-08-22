@@ -23,6 +23,12 @@ const LIVE_SCENE_UNLOAD_EXTRA_M = 16
 /** Concurrent live isolates — desktop uses 4 threads; Three.js is costlier. */
 const AOI_LIVE_SECONDARY_HARD_CAP = 4
 const TERTIARY_RESIDENT_HARD_CAP = 8
+/**
+ * Sticky restore after promote-settle turns scripts back on. Plaza-scale
+ * deployments stay tertiary (meshes + LOD). Stand-on still promotes from
+ * tertiary via takeForPromote. Matches SceneWorkerSlot modest cutoff.
+ */
+export const STICKY_RESTORE_MAX_PARCELS = 16
 
 export const ROAD_PHYS_RADIUS_M = 48
 export const EMPTY_LAND_PHYS_RADIUS_M = 48

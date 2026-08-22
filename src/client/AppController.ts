@@ -3893,8 +3893,13 @@ export class AppController {
         await this.promoteInFlight
         return
       }
-      // Different parcel — wait for current then re-evaluate if still under feet later.
+      // Different parcel — wait, then skip if the in-flight handoff already covers us
+      // (next cell of the same 2×2; force-boot was the 5 fps death).
       await this.promoteInFlight
+      if (this.world?.primaryCoversParcel(target.x, target.y)) {
+        console.info(`[promote] skip @ ${key} — already primary after in-flight`)
+        return
+      }
     }
     const run = this.promotePrimaryBody(target, reason)
     this.promoteInFlight = run
@@ -3916,6 +3921,12 @@ export class AppController {
     const world = this.world
     if (!world) {
       console.warn('[promote] no world — cannot handoff')
+      return
+    }
+    if (world.primaryCoversParcel(target.x, target.y)) {
+      console.info(
+        `[promote] already primary @ ${target.x},${target.y} — skip`
+      )
       return
     }
 

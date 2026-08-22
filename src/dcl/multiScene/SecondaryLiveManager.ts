@@ -198,6 +198,13 @@ export class SecondaryLiveManager {
     return out
   }
 
+  /** Every resident graph (live secondary + tertiary sticky) — UI hide/release. */
+  allResidentSystems(): SceneScriptSystem[] {
+    const out: SceneScriptSystem[] = []
+    for (const slot of this.slots.values()) out.push(slot.system)
+    return out
+  }
+
   motionSystemForGuestId(guestId: string): SceneScriptSystem | null {
     return this.slotForGuestId(guestId)?.system ?? null
   }

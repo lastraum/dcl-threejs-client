@@ -545,6 +545,19 @@ export class SceneScriptSystem {
     this.sceneUiBridge?.setVisible(visible)
   }
 
+  /** Attach this guest's ECS UI to the on-document `#scene-ui-root` (feet owner). */
+  adoptSceneUiPlayRoot(): void {
+    if (this.uiRootId === 'pe-ui-root') return
+    this.sceneUiBridge?.adoptDocumentPlayRoot()
+  }
+
+  /** Detach from `#scene-ui-root` so another feet-owner can paint. */
+  releaseSceneUiPlayRoot(): void {
+    if (this.uiRootId === 'pe-ui-root') return
+    this.sceneUiBridge?.releaseDocumentPlayRoot()
+    this.sceneUiDesiredVisible = false
+  }
+
   /**
    * FocusOwner policy for multi-scene:
    * - primary: media on; UI may show when play chrome asks
@@ -620,7 +633,7 @@ export class SceneScriptSystem {
     this.audioAnalysisBridge?.setMediaEnabled(mediaOn)
     if (policy === 'secondary') {
       this.sceneUiDesiredVisible = false
-      this.sceneUiBridge?.setVisible(false)
+      this.sceneUiBridge?.releaseDocumentPlayRoot()
       // Demoted / muted secondary must never pin freecam, freeze locomotion, hide avatar,
       // or drive CameraModeArea / AvatarModifierArea (ice-cream hide / vending-machine look).
       this.clearPlayerFocusState()
@@ -794,7 +807,7 @@ export class SceneScriptSystem {
       detached: uiDetached
     })
     // Bridge constructor starts hidden — re-apply play-chrome desire (teleport / re-prepare).
-    // Secondary focus never reveals UI.
+    // Secondary (non-feet) never reveals UI; World adopts `#scene-ui-root` on occupancy.
     this.sceneUiBridge.setVisible(
       this.focusPolicy === 'secondary' ? false : this.sceneUiDesiredVisible
     )

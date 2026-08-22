@@ -267,6 +267,13 @@ export class World {
   private static readonly PLAZA_PHYS_STEP_M = 8
   /** Occupancy log — parcel + current guest (avoid per-frame spam). */
   private lastOccupancyLogKey = ''
+  /**
+   * AppController play chrome / [U] / photo mode — scene ECS UI is still
+   * feet-gated even when chrome is on.
+   */
+  private playChromeAllowsSceneUi = true
+  /** Last applied `#scene-ui-root` owner (`PRIMARY` / `secondary:…` / null). */
+  private lastSceneUiOwnerId: string | null | undefined = undefined
   private remoteAvatars: RemoteAvatarManager | null = null
   /** Help → Debug crowd harness (local composed avatars for multi-avatar FPS tests). */
   private debugAvatarCrowd: DebugAvatarCrowd | null = null
@@ -4963,7 +4970,15 @@ export class World {
 
 
   setSceneUiVisible(visible: boolean): void {
-    this.sceneScript.setSceneUiVisible(visible)
+    this.playChromeAllowsSceneUi = visible
+    this.lastSceneUiOwnerId = undefined
+    if (!visible) {
+      this.applySceneUiOwnership(null)
+      return
+    }
+    const pos = this.player?.getPosition()
+    if (pos) this.syncSceneUiToFeet(pos.x, pos.z)
+    else this.applySceneUiOwnership(null)
   }
 
   /**
@@ -5573,6 +5588,65 @@ export class World {
     // still wait on occupancy dwell — delaying the whole grant left papers on the avatar.
     const focusNext = this.resolveFocusGuestIdAt(dclX, dclZ, next)
     if (focusNext !== this.focusGuestId) void this.grantFocusToGuest(focusNext)
+    this.syncSceneUiToFeet(dclX, dclZ)
+  }
+
+  /**
+   * Scene ECS UI follows the parcel under the feet — not origin-held primary
+   * and not a live neighbor the player already walked off.
+   * Occupancy still holds enable until dwell + healthy frames.
+   */
+  private syncSceneUiToFeet(dclX: number, dclZ: number): void {
+    const owner = this.resolveSceneUiGuestAt(dclX, dclZ)
+    if (owner === this.lastSceneUiOwnerId) return
+    this.lastSceneUiOwnerId = owner
+    this.applySceneUiOwnership(owner)
+  }
+
+  /** Live scene whose footprint contains the feet, else null (road / tertiary / chrome off). */
+  private resolveSceneUiGuestAt(dclX: number, dclZ: number): string | null {
+    if (!this.playChromeAllowsSceneUi) return null
+    const scene = this.loadedPrimaryScene
+    if (!scene || scene.source.kind !== 'coords') {
+      if (this.occupancyPendingGuestId) return null
+      return this.focusGuestId === PRIMARY_GUEST_ID ? PRIMARY_GUEST_ID : null
+    }
+    const parcel = absoluteParcelAtSceneLocal(dclX, dclZ, scene.baseParcel)
+    const key = `${parcel.x},${parcel.y}`
+    const onPrimary =
+      scene.baseParcel.trim() === key || scene.parcels.some((p) => p.trim() === key)
+    const live = this.multiScene?.liveGuestIdForParcel(parcel.x, parcel.y) ?? null
+    const feetGuest = onPrimary ? PRIMARY_GUEST_ID : live
+    if (!feetGuest) return null
+    if (this.occupancyPendingGuestId) return null
+    if (feetGuest !== this.focusGuestId) return null
+    return feetGuest
+  }
+
+  private applySceneUiOwnership(ownerId: string | null): void {
+    const ownerSys = ownerId == null ? null : this.systemForFocusGuest(ownerId)
+    const seen = new Set<SceneScriptSystem>()
+    const hide = (sys: SceneScriptSystem | null | undefined) => {
+      if (!sys || seen.has(sys) || sys === ownerSys) return
+      seen.add(sys)
+      sys.releaseSceneUiPlayRoot()
+      sys.setSceneUiVisible(false)
+    }
+    hide(this.sceneScript)
+    for (const sys of this.multiScene?.secondaryManager?.allResidentSystems() ?? []) {
+      hide(sys)
+    }
+    if (ownerId == null || !ownerSys) {
+      console.info('[focus] scene-ui owner=none')
+      return
+    }
+    ownerSys.adoptSceneUiPlayRoot()
+    ownerSys.setSceneUiVisible(true)
+    const title =
+      ownerId === PRIMARY_GUEST_ID
+        ? this.loadedPrimaryScene?.title
+        : this.multiScene?.secondaryManager?.sceneForGuestId(ownerId)?.title
+    console.info(`[focus] scene-ui owner=${ownerId} “${title ?? '?'}”`)
   }
 
   private resolveCurrentGuestIdAt(dclX: number, dclZ: number): string {
@@ -5677,14 +5751,13 @@ export class World {
         this.installFocusAvatarModifiers(nextSys)
         this.player?.setVirtualCameraBridge(nextSys.getVirtualCameraBridge())
         if (guestId === PRIMARY_GUEST_ID) {
-          nextSys.setSceneUiVisible(!holdOccupancy)
           this.installPlazaFocusComms()
         } else {
-          nextSys.setSceneUiVisible(false)
           this.multiScene?.secondaryManager?.setFocusSendBinary(guestId, (body) =>
             this.handleSendBinary(body)
           )
         }
+        // Scene UI is feet + occupancy — never leave the previous origin HUD up.
         if (holdOccupancy) {
           this.occupancyPendingGuestId = guestId
           this.occupancyHealthyStreak = 0
@@ -5715,6 +5788,9 @@ export class World {
       this.pendingFocusGuestId = undefined
       if (queued != null && queued !== this.focusGuestId) {
         void this.grantFocusToGuest(queued)
+      } else {
+        const pos = this.player?.getPosition()
+        if (pos) this.syncSceneUiToFeet(pos.x, pos.z)
       }
     }
   }
@@ -5729,6 +5805,7 @@ export class World {
     if (pending !== this.focusGuestId) {
       this.occupancyPendingGuestId = null
       this.occupancyDwellGuestId = null
+      this.lastSceneUiOwnerId = undefined
       return
     }
     if (this.isPlayerLocomoting()) {
@@ -5759,8 +5836,10 @@ export class World {
     const sys = this.systemForFocusGuest(guestId)
     const scene = this.sceneForFocusGuest(guestId)
     sys?.setOccupancyMediaEnabled(true)
-    sys?.setSceneUiVisible(true)
     this.occupancyPendingGuestId = null
+    this.lastSceneUiOwnerId = undefined
+    const pos = this.player?.getPosition()
+    if (pos) this.syncSceneUiToFeet(pos.x, pos.z)
     if (scene) this.syncFocusSceneRoom(scene, guestId)
     console.info(`[focus] occupancy armed ${guestId} “${scene?.title ?? '?'}”`)
   }
@@ -6256,7 +6335,8 @@ export class World {
     this.sceneScript.clearPlayerFocusState()
     this.sceneScript.setFocusPolicy('primary')
     this.sceneScript.setInputHub(this.inputHub, 'primary')
-    this.sceneScript.setSceneUiVisible(true)
+    this.lastSceneUiOwnerId = undefined
+    this.syncSceneUiToFeet(pos.x, pos.z)
     // Sticky adopt: play-ready so the first tick is present/fire-and-forget, not
     // hydration ack of the whole plaza CRDT dump (was ~2s FPS stall).
     this.sceneScript.notifyPlayReady({

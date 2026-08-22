@@ -518,10 +518,8 @@ export class SecondaryLiveManager {
       }
       this.stickyIds.add(id)
       existing.retargetPrimaryBase(primaryBase)
-      // Re-assert secondary scripts (muted) — never leave sticky stuck tertiary by size.
-      if (existing.residentMode === 'tertiary') {
-        existing.setResidentMode('secondary')
-      }
+      // Stay tertiary until promote-settle ends. Flipping secondary here ran
+      // scripts for one frame then forceAllResidentsTertiary turned them off.
       this.emitLiveIds()
       return { entityId: id, primaryPhysIds: [] }
     }

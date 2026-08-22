@@ -642,6 +642,9 @@ function applyPlayReadyTiming(
 function resumeSceneTicksAfterPointer(): void {
   if (pointerDeliveryInFlight || sceneUpdateInFlight || queuedPointerDeliver || pendingInjectPointer) return
   sceneTicksPaused = false
+  // Sticky promote used to unpause ticks while onUpdate was still paused → first
+  // engine.update dumped the whole plaza CRDT and awaited ack (~2s FPS stall).
+  if (sceneOnUpdatePaused) return
   // Pointer edge may request the next due tick immediately. Do not stack a second update.
   requestSceneEngineTick({ source: 'pointer-edge' })
 }

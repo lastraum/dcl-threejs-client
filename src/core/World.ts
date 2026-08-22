@@ -6255,6 +6255,12 @@ export class World {
     this.sceneScript.setFocusPolicy('primary')
     this.sceneScript.setInputHub(this.inputHub, 'primary')
     this.sceneScript.setSceneUiVisible(true)
+    // Sticky adopt: play-ready so the first tick is present/fire-and-forget, not
+    // hydration ack of the whole plaza CRDT dump (was ~2s FPS stall).
+    this.sceneScript.notifyPlayReady({
+      plazaScale: (newScene.parcels?.length ?? 0) >= 16,
+      engineTickIntervalMs: resolveEngineTickIntervalMs(this.performanceTier)
+    })
     this.player.releaseSceneFreezeHold('promote-handoff')
     // Never leave AvatarModifier hide or CameraModeArea from the previous primary.
     this.player.setModifierHidden(false)

@@ -639,10 +639,11 @@ export class SceneWorkerSlot {
   detachForPromote(): SceneScriptSystem {
     this.detached = true
     this.running = false
-    // Ensure scripts unpaused for primary life (was tertiary or secondary).
+    // Unpause onUpdate BEFORE ticks. Ticks-first left the first engine.update in
+    // hydration/ack mode (plaza dump 453 msgs, 2s CRDT ack, FPS stall).
     try {
-      this.system.setSceneWorkerTicksPaused(false)
       this.system.setSceneWorkerOnUpdatePaused(false)
+      this.system.setSceneWorkerTicksPaused(false)
     } catch {
       /* ignore */
     }

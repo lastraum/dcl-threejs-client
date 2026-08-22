@@ -6075,11 +6075,13 @@ export class World {
     const newSystem = handoff.system
 
     // Secondary→primary: rekey offset phys ids back to native (keep actors, no recook).
+    let stickyPhysKept = 0
     if (handoff.physOffset !== 0 && handoff.physIds.length > 0) {
       let rekeyed = 0
       for (const id of handoff.physIds) {
         rekeyed += this.physics.rekeyStaticColliderFamily(id, id - handoff.physOffset)
       }
+      stickyPhysKept = rekeyed
       console.info(
         `[promote] handoff colliders rekey offset→native “${newScene.title}” ` +
           `n=${handoff.physIds.length} rekeyed=${rekeyed} (no recook)`
@@ -6396,13 +6398,17 @@ export class World {
         `newPrimary="${newScene.title}" base=${newScene.baseParcel} soft=${softPx},${softPy}`
     )
 
-    // Re-register colliders under primary entity ids (secondary-offset actors were
-    // invalidated above). Prefer geometryCache + no forceRecook — walk-back must not
-    // re-trimesh the entire plaza (that was continuous 3fps with Missing-actors thrash).
+    // Sticky walk-back already rekeyed offset→native. Force-sync + syncCollisionForce
+    // orphaned live hulls (e524…) and expanded the 48m ring (few-second FPS dip).
     this.colliderCookQueue.clear()
     if (skipPhysxColliders()) {
       this.pendingColliderCooks = 0
       console.info('[promote] colliders skipped (?nocolliders) — no primary re-cook')
+    } else if (stickyPhysKept > 0) {
+      this.pendingColliderCooks = 0
+      console.info(
+        `[promote] primary colliders keep rekey n=${stickyPhysKept} (no force-sync)`
+      )
     } else {
       try {
         this.sceneScript.syncCollisionForce()
@@ -6415,7 +6421,6 @@ export class World {
           (d) => !this.isPlazaScenePhysFar(d, ROAD_PHYS_RADIUS_M)
         )
         if (descs.length > 0) {
-          // Near-ring only — do not dump the whole estate into SQ on handoff.
           this.physics.syncStaticColliders(descs, {
             cookBudget: Math.min(48, descs.length),
             freezeRemoval: true,

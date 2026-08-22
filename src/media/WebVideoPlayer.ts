@@ -95,6 +95,8 @@ export class WebVideoPlayer {
    */
   private soundUnlocked = false
   private visibilityPaused = false
+  /** Occupancy hold — pause decode, keep texture bound (do not dispose). */
+  private occupancyPaused = false
   private budgetPaused = false
   private wantsPlaying = true
   private playGeneration = 0
@@ -478,6 +480,12 @@ export class WebVideoPlayer {
     this.syncPlaybackPause()
   }
 
+  setOccupancyPaused(paused: boolean): void {
+    if (this.occupancyPaused === paused) return
+    this.occupancyPaused = paused
+    this.syncPlaybackPause()
+  }
+
   applySpec(
     spec: PBVideoPlayer,
     options?: {
@@ -727,7 +735,7 @@ export class WebVideoPlayer {
   }
 
   private isPlaybackBlocked(): boolean {
-    return this.visibilityPaused || this.budgetPaused
+    return this.visibilityPaused || this.budgetPaused || this.occupancyPaused
   }
 
   private syncPlaybackPause(): void {

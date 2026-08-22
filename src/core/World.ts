@@ -6438,8 +6438,10 @@ export class World {
       }
     }
 
-    // Longer settle: dual full workers after walk-back thrash freeze locomotion.
-    const SETTLE_LIVE_SECONDARIES_MS = 8_000
+    // Primary already play-ready (sticky rekey, no plaza recook/ack). 8s was for
+    // dual-worker freeze; mega plaza stays script-off anyway. 3s covers the
+    // scene-room LiveKit swap before neighbor JS wakes.
+    const SETTLE_LIVE_SECONDARIES_MS = 3_000
     window.setTimeout(() => {
       if (this.loadedPrimaryScene?.entityId !== newScene.entityId) return
       // Re-assert free locomotion when settle ends (in case worker re-froze mid-grace).

@@ -6115,14 +6115,18 @@ export class World {
         }
         if (remapped.length > 0) {
           try {
-            const slid = this.physics.applyStaticColliderPoseUpdates(remapped, { force: true })
+            const root = oldPrimary.getEntityStore()?.root
+            const dx = root?.position.x ?? 0
+            const dy = root?.position.y ?? 0
+            const dz = root?.position.z ?? 0
+            const slid = this.physics.translateWorldBakedColliders(remapped, dx, dy, dz)
             multi.markResidentCollidersSynced()
             console.info(
-              `[promote] sticky colliders rekey+pose “${oldScene.title}” remapped=${remapped.length} ` +
-                `rekeyed=${rekeyed} slid=${slid} offset=${physOffset} (no recook)`
+              `[promote] sticky colliders rekey+translate “${oldScene.title}” remapped=${remapped.length} ` +
+                `rekeyed=${rekeyed} slid=${slid} delta=(${dx.toFixed(1)},${dz.toFixed(1)}) offset=${physOffset} (no recook)`
             )
           } catch (err) {
-            console.warn('[promote] sticky collider rekey/pose failed', err)
+            console.warn('[promote] sticky collider rekey/translate failed', err)
           }
         } else {
           console.warn(
@@ -6317,6 +6321,9 @@ export class World {
         `softParcel=${softKey} restoreOk=${ok} ` +
         `genesis=(${genesis.x.toFixed(1)},${genesis.z.toFixed(1)})`
     )
+    this.remoteAvatars?.rebaseSceneOrigin(originBefore, originAfter)
+    const worldFeet = this.player.getWorldPosition()
+    if (worldFeet) this.remoteAvatars?.setLocalPlayerPosition(worldFeet)
 
     // Sticky secondaries already retargeted before demote; re-sync live ids + AOI hide.
     multi.setOnLiveSecondaryIds((ids) => {
@@ -6328,6 +6335,7 @@ export class World {
       this.aoiVisual.markLiveSecondaryGraphReady(entityId)
     })
     multi.syncLiveSecondaryVisibility()
+    if (oldScene?.entityId) this.aoiVisual.markLiveSecondaryGraphReady(oldScene.entityId)
     // CRITICAL: register demoted plaza parcels BEFORE retarget refresh paints scatter/empty.
     // Include prior primary parcels explicitly (sticky demote) so CBD never gets trees.
     const residentKeys = new Set(multi.residentParcelKeys())
@@ -6339,23 +6347,8 @@ export class World {
     // Re-assert demoted mesh offsets after origin change. Colliders already registered
     // once above — do NOT forceRecook here (that was the CBD→snow→CBD 3fps death spiral).
     multi.notifyPrimaryChanged(newScene)
-    // Pose-only refresh if retarget dirtied colliders (cheap; fingerprints unchanged → no recook).
-    {
-      const remapped = multi.collectResidentColliders()
-      if (remapped.length > 0) {
-        try {
-          this.physics.syncStaticColliders(remapped, {
-            cookBudget: 8,
-            freezeRemoval: true,
-            forceRecookOnPoseChange: false,
-            geometryCache: true
-          })
-          multi.markResidentCollidersSynced()
-        } catch (err) {
-          console.warn('[promote] sticky collider retarget sync failed', err)
-        }
-      }
-    }
+    // Sticky hulls already translated with the demoted root. Do NOT
+    // syncStaticColliders here — that re-expanded plaza multi-shape (6 fps).
 
     // AOI: retarget with CORRECTED local feet (after restore) — no unbind wipe.
     // Kill live secondary reconcile during settle (dual-worker freeze). Visuals OK.

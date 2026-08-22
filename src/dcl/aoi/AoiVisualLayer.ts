@@ -1165,6 +1165,7 @@ export class AoiVisualLayer {
     if (warmM <= 0 || !this.ctx?.host) return
     for (const e of entities) {
       if (primaryId && e.id === primaryId) continue
+      if (this.liveGraphReadyIds.has(e.id) || this.liveSecondaryIds.has(e.id)) continue
       if (!isSecondarySceneCandidate(e) || !findCompositeFile(e.content)) continue
       if (this.loadedShells.has(e.id)) {
         this.pendingCompositeIds.delete(e.id)
@@ -1334,6 +1335,11 @@ export class AoiVisualLayer {
   ): Promise<void> {
     const host = ctx.host
     if (!host) {
+      this.pendingCompositeIds.delete(ent.id)
+      return
+    }
+    // Sticky / live graph already on host — a second 24-GLB plaza shell is 6 fps.
+    if (this.liveGraphReadyIds.has(ent.id) || this.liveSecondaryIds.has(ent.id)) {
       this.pendingCompositeIds.delete(ent.id)
       return
     }

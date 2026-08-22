@@ -54,6 +54,7 @@ import {
 } from './comms/livekitVideoStreams'
 import {
   parseCommsSceneOrigin,
+  GENESIS_CITY_REALM_BOUNDS,
   realmBoundsFromParcels,
   sceneLocalToGenesis,
   type RealmBounds
@@ -783,7 +784,12 @@ export class CommsService {
     this.realm.room = normalizePointer(target.pointer)
     this.contentUrl = target.contentUrl.replace(/\/$/, '')
     this.adapterManager.setContentUrl(this.contentUrl)
-    this.realmBounds = realmBoundsFromParcels(target.parcels ?? [target.baseParcel])
+    const isWorld = target.isWorld ?? !isParcelPointer(normalizePointer(target.pointer))
+    // Island MovementCompressed is city-wide. Scene parcels as bounds (snow 2×2)
+    // decoded every remote into the new SW.
+    this.realmBounds = isWorld
+      ? realmBoundsFromParcels(target.parcels ?? [target.baseParcel])
+      : GENESIS_CITY_REALM_BOUNDS
     this.sceneOrigin = parseCommsSceneOrigin(target.baseParcel)
     const [bxStr, bzStr] = target.baseParcel.split(',')
     this.sceneOriginMeters = {

@@ -1516,6 +1516,58 @@ export class PhysXWorld {
   }
 
   /**
+   * Sticky demote / origin rebase: world-baked hulls sit at actor identity with
+   * verts in the old world. Slide the actor T by the new scene-root offset —
+   * never recook (that re-expanded plaza 144-shape GLBs → 6 fps).
+   */
+  translateWorldBakedColliders(
+    descs: PhysicsColliderDesc[],
+    dx: number,
+    dy: number,
+    dz: number
+  ): number {
+    if (!descs.length) return 0
+    if (dx === 0 && dy === 0 && dz === 0) return 0
+    const seen = new Set<number>()
+    let n = 0
+    for (const desc of descs) {
+      const childCount = this.multiShapeChildCount.get(desc.entity) ?? 0
+      const ids = [desc.entity]
+      for (let i = 0; i < childCount; i++) ids.push(multiShapeChildPhysId(desc.entity, i))
+      for (const id of ids) {
+        if (seen.has(id)) continue
+        seen.add(id)
+        if (this.translateOneStaticActor(id, dx, dy, dz)) n++
+      }
+      this.staticPoseFp.set(desc.entity, multiShapePoseFingerprint(desc))
+    }
+    if (n > 0) this.invalidateControllerCache()
+    return n
+  }
+
+  private translateOneStaticActor(entity: number, dx: number, dy: number, dz: number): boolean {
+    const actor = this.staticActors.get(entity)
+    if (!actor) return false
+    if (!this.readActorWorldPosition(entity, this._pos)) {
+      this._pos.set(0, 0, 0)
+    }
+    this._pos.x += dx
+    this._pos.y += dy
+    this._pos.z += dz
+    this._quat.set(0, 0, 0, 1)
+    try {
+      this._pos.toPxTransform(this.actorPoseTransform)
+      this._quat.toPxTransform(this.actorPoseTransform)
+      actor.setGlobalPose(this.actorPoseTransform)
+      this.reinsertStaticActorForSceneQuery(actor)
+      return true
+    } catch (err) {
+      console.warn('[PhysXWorld] world-baked translate failed:', entity, err)
+      return false
+    }
+  }
+
+  /**
    * Runtime no-op after seal. Prefer {@link invalidateControllerCache}.
    * Boot seal owns the single SQ commit (see {@link sealStaticSceneQuery}).
    */

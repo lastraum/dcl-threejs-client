@@ -396,7 +396,7 @@ export class ScenePromoteController {
 
       deferredWarm = this.pendingWarm.size
 
-      if (warmed > 0 || skippedRoad > 0 || deferredWarm > 0 || skippedCovered > 0) {
+      if (warmed > 0 || skippedRoad > 0 || deferredWarm > 0) {
         console.info(
           `[promote] script-warm scan feet=${center.x},${center.y} ring=${pointers.length}` +
             ` coveredSkip=${skippedCovered} entities=${entitiesLen} warmed=${warmed}/${MAX_SCRIPT_WARM_PER_SCAN}` +

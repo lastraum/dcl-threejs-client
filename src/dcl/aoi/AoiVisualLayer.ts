@@ -266,6 +266,8 @@ export class AoiVisualLayer {
   private lastLiveCandidateSignature = ''
   /** Console line only when the bootable set changes (not every meter). */
   private lastLiveLogSignature = ''
+  /** Avoid reprinting the same AOI budget line every retarget/discover. */
+  private lastBudgetLogSignature = ''
   /** Cached after last discovery — composite drain without re-fetch. */
   private cachedEntities: ActiveSceneEntity[] = []
   private cachedPrimaryId = ''
@@ -839,6 +841,16 @@ export class AoiVisualLayer {
       const dist = minPlayerToFootprintDistanceM(opts.dclX, opts.dclZ, keys, opts.primaryBase)
       if (Number.isFinite(dist) && dist <= enterM) liveEligible++
     }
+    const sig = [
+      opts.warmParcels,
+      opts.uniqueEntities,
+      scriptableInWarm,
+      liveEligible,
+      this.liveSecondaryIds.size,
+      opts.radiusM
+    ].join('|')
+    if (sig === this.lastBudgetLogSignature) return
+    this.lastBudgetLogSignature = sig
     console.info(
       `[aoi] budget warmParcels=${opts.warmParcels} (playerDisc=${opts.playerParcels}` +
         ` +primaryCollar=${opts.primaryAdjacentParcels}) ` +

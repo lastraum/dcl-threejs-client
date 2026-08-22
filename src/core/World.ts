@@ -26,7 +26,12 @@ import { absoluteParcelAtSceneLocal } from '../dcl/aoi/parcelAoi'
 import { ScenePromoteController } from '../dcl/aoi/ScenePromoteController'
 import type { MultiSceneRuntime } from '../dcl/multiScene/MultiSceneRuntime'
 import { PeMainThreadMirror } from '../dcl/multiScene/PeMainThreadMirror'
-import { aoiStandOnPromote, sceneLoopFairMute } from '../dcl/multiScene/caps'
+import {
+  aoiStandOnPromote,
+  sceneLoopFairMute,
+  ROAD_PHYS_RADIUS_M
+} from '../dcl/multiScene/caps'
+import { SECONDARY_PHYS_BASE } from '../dcl/multiScene/physOffsets'
 import { lastFrameOverBudget, scheduleOffPlayRaf } from '../rendering/mainThreadYield'
 import {
   resolvePortableExperiencesPolicy,
@@ -256,6 +261,10 @@ export class World {
   private physHoldGuestId: string | null = null
   private physHoldUntilMs = 0
   private static readonly PHYS_HOLD_MS = 2500
+  /** Plaza scene solids stream with road furniture (48 m enter / 64 m keep). */
+  private lastPlazaPhysFeet = { x: Number.NaN, z: Number.NaN }
+  private static readonly PLAZA_PHYS_KEEP_M = ROAD_PHYS_RADIUS_M + 16
+  private static readonly PLAZA_PHYS_STEP_M = 8
   /** Occupancy log — parcel + current guest (avoid per-frame spam). */
   private lastOccupancyLogKey = ''
   private remoteAvatars: RemoteAvatarManager | null = null
@@ -3188,6 +3197,8 @@ export class World {
       watchMs = performance.now() - tWatch
     }
 
+    this.maybeStreamPlazaScenePhys()
+
     // Health log: static count drop or rare summary — NOT O(n) soft diagnostics every 8s
     // while standing on infinite ground (expected on Genesis roads / empty land).
     {
@@ -3204,6 +3215,7 @@ export class World {
         for (const d of descs) {
           if (this.physics.isAoiRoadColliderEntity(d.entity)) continue
           if (this.physics.isAoiEmptyLandColliderEntity(d.entity)) continue
+          if (this.isPlazaScenePhysFar(d, ROAD_PHYS_RADIUS_M)) continue
           if (!this.physics.hasStaticActor(d.entity)) missing++
         }
         const ground = this.physics.getLastGroundPhysEntity()
@@ -3489,6 +3501,7 @@ export class World {
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
+      if (this.isPlazaScenePhysFar(desc, ROAD_PHYS_RADIUS_M)) continue
       if (!this.physics.hasStaticActor(desc.entity)) {
         this.colliderCookQueue.add(desc.entity)
         continue
@@ -3511,6 +3524,7 @@ export class World {
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
+      if (this.isPlazaScenePhysFar(desc, ROAD_PHYS_RADIUS_M)) continue
       if (!this.physics.hasStaticActor(desc.entity)) {
         missing++
         continue
@@ -3582,6 +3596,7 @@ export class World {
       if (this.physics.hasFailedCookFingerprint(desc.fingerprint)) continue
       // Play give-up for this geom fp — do not re-open the thrash queue.
       if (this.isPlayCookGivenUp(desc.entity, desc.fingerprint)) continue
+      if (this.isPlazaScenePhysFar(desc, ROAD_PHYS_RADIUS_M)) continue
       if (!this.colliderCookQueue.has(desc.entity)) {
         added++
         if (missingIds.length < 4) missingIds.push(desc.entity)
@@ -4491,6 +4506,10 @@ export class World {
       this.sceneScript.syncCollisionPoses()
       for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
         if (this.physics.hasFailedCookFingerprint(desc.fingerprint)) {
+          this.colliderCookQueue.delete(desc.entity)
+          continue
+        }
+        if (this.isPlazaScenePhysFar(desc, ROAD_PHYS_RADIUS_M)) {
           this.colliderCookQueue.delete(desc.entity)
           continue
         }
@@ -5433,6 +5452,75 @@ export class World {
    */
   private isPlayerLocomoting(): boolean {
     return (this.player?.getHorizontalSpeed() ?? 0) > World.LOCOMOTION_MS
+  }
+
+  private plazaPhysFeetXZ(): { x: number; z: number } | null {
+    const p = this.player?.getWorldPosition()
+    if (p) return { x: p.x, z: p.z }
+    const spawn = this.loadedPrimaryScene?.spawn
+    if (!spawn) return null
+    const feetY = spawn.fromSpawnPoints ? spawn.y : spawn.y <= 0.01 ? 1 : spawn.y
+    const t = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
+    return { x: t.x, z: t.z }
+  }
+
+  private isPlazaScenePhysEntity(entity: number): boolean {
+    if (entity < 0 || entity >= SECONDARY_PHYS_BASE) return false
+    if (this.physics.isAoiRoadColliderEntity(entity)) return false
+    if (this.physics.isAoiEmptyLandColliderEntity(entity)) return false
+    return true
+  }
+
+  private isPlazaScenePhysFar(
+    desc: import('../physics/PhysXWorld').PhysicsColliderDesc,
+    radiusM: number
+  ): boolean {
+    if (!this.isPlazaScenePhysEntity(desc.entity)) return false
+    const feet = this.plazaPhysFeetXZ()
+    if (!feet) return false
+    const e = desc.matrix.elements
+    const dx = e[12]! - feet.x
+    const dz = e[14]! - feet.z
+    return dx * dx + dz * dz > radiusM * radiusM
+  }
+
+  /**
+   * Cook plaza solids inside 48 m of feet; drop them past 64 m.
+   * Same ring as road furniture — the 3400-actor SQ tree was the 25 FPS wall.
+   */
+  private maybeStreamPlazaScenePhys(): void {
+    if (!this.collidersReady || skipPhysxColliders() || this.deferPhysxCooks) return
+    const feet = this.plazaPhysFeetXZ()
+    if (!feet) return
+    const step = World.PLAZA_PHYS_STEP_M
+    if (Number.isFinite(this.lastPlazaPhysFeet.x)) {
+      const mx = feet.x - this.lastPlazaPhysFeet.x
+      const mz = feet.z - this.lastPlazaPhysFeet.z
+      if (mx * mx + mz * mz < step * step) return
+    }
+    this.lastPlazaPhysFeet = { x: feet.x, z: feet.z }
+    const enter2 = ROAD_PHYS_RADIUS_M * ROAD_PHYS_RADIUS_M
+    const keep2 = World.PLAZA_PHYS_KEEP_M * World.PLAZA_PHYS_KEEP_M
+    const ground = this.physics.getLastGroundPhysEntity()
+    for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+      if (!this.isPlazaScenePhysEntity(desc.entity)) continue
+      const e = desc.matrix.elements
+      const d2 = (e[12]! - feet.x) * (e[12]! - feet.x) + (e[14]! - feet.z) * (e[14]! - feet.z)
+      const has = this.physics.hasStaticActor(desc.entity)
+      if (d2 <= enter2) {
+        if (
+          !has &&
+          !this.physics.hasFailedCookFingerprint(desc.fingerprint) &&
+          !this.isPlayCookGivenUp(desc.entity, desc.fingerprint)
+        ) {
+          this.colliderCookQueue.add(desc.entity)
+        }
+        continue
+      }
+      if (d2 > keep2 && has && desc.entity !== ground && !this.physics.isKinematicActor(desc.entity)) {
+        this.physics.invalidateStaticCollider(desc.entity)
+      }
+    }
   }
 
   /**

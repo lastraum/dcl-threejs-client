@@ -64,6 +64,8 @@
          */
         --z-canvas: 1;
         --z-name-tags: 6;
+        /* Below scene UI so plaza widgets still receive hits; above canvas. */
+        --z-touch-move: 35;
         --z-scene-ui: 40;
         --z-pointer-reticle: 50;
         --z-client-hud: 100;
@@ -7141,6 +7143,126 @@
           width: min(100%, var(--client-panel-max-w));
         }
       }
+
+      /*
+       * Touch / iPad play chrome — class-driven so landscape tablets are not
+       * stuck on the 767px window-width gate.
+       */
+      html.client-mobile .minimap,
+      html.client-mobile .world-location-card,
+      html.client-mobile .location-map-stack {
+        display: none !important;
+      }
+      html.client-mobile .client-shell {
+        width: 52px;
+        padding: max(8px, env(safe-area-inset-top, 0px)) 0 max(12px, env(safe-area-inset-bottom, 0px));
+        border-right: 1px solid rgba(255, 255, 255, 0.06);
+        transform: translateX(calc(-100% - 8px));
+        transition: transform 0.22s ease;
+        box-shadow: 8px 0 28px rgba(0, 0, 0, 0.35);
+      }
+      html.client-mobile .client-shell.is-drawer-open {
+        transform: translateX(0);
+      }
+      html.client-mobile .mobile-game-hud {
+        position: fixed;
+        right: max(12px, env(safe-area-inset-right, 0px));
+        bottom: max(12px, env(safe-area-inset-bottom, 0px));
+        z-index: var(--z-client-hud-raised);
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        pointer-events: none;
+      }
+      html.client-mobile .mobile-game-hud[hidden],
+      html.client-mobile .touch-move-pad[hidden] {
+        display: none !important;
+      }
+      html.client-mobile .mobile-game-hud__btn {
+        width: 48px;
+        height: 48px;
+        padding: 0;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 14px;
+        background: rgba(12, 12, 16, 0.88);
+        color: rgba(255, 255, 255, 0.92);
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+        cursor: pointer;
+        pointer-events: auto;
+        touch-action: manipulation;
+      }
+      html.client-mobile .mobile-game-hud__btn.is-active {
+        background: rgba(255, 255, 255, 0.14);
+        color: #fff;
+      }
+      html.client-mobile .mobile-game-hud__btn:disabled,
+      html.client-mobile .mobile-game-hud__btn.is-disabled {
+        opacity: 0.38;
+        cursor: not-allowed;
+        pointer-events: none;
+      }
+      html.client-mobile .mobile-game-hud__icon {
+        display: grid;
+        place-items: center;
+        width: 100%;
+        height: 100%;
+      }
+      html.client-mobile .mobile-game-hud__icon svg {
+        width: 22px;
+        height: 22px;
+      }
+      html.client-mobile .mobile-game-hud__key {
+        font-size: 16px;
+        font-weight: 800;
+        letter-spacing: 0.02em;
+      }
+      html.client-mobile .mobile-game-hud__icon--jump {
+        font-size: 22px;
+        font-weight: 800;
+        line-height: 1;
+      }
+      html.client-mobile .touch-move-pad {
+        display: block;
+        position: fixed;
+        left: 0;
+        top: 0;
+        width: 42%;
+        height: 100%;
+        z-index: var(--z-touch-move);
+        pointer-events: auto;
+        touch-action: none;
+        background: transparent;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+      html.client-tablet .mobile-game-hud {
+        gap: 14px;
+        right: max(20px, env(safe-area-inset-right, 0px));
+        bottom: max(20px, env(safe-area-inset-bottom, 0px));
+      }
+      html.client-tablet .mobile-game-hud__btn {
+        width: 64px;
+        height: 64px;
+        border-radius: 18px;
+      }
+      html.client-tablet .mobile-game-hud__icon svg {
+        width: 28px;
+        height: 28px;
+      }
+      html.client-tablet .mobile-game-hud__key {
+        font-size: 20px;
+      }
+      html.client-tablet .mobile-game-hud__icon--jump {
+        font-size: 28px;
+      }
+      html.client-tablet .mobile-profile-fab {
+        width: 56px;
+        height: 56px;
+      }
+      html.client-tablet {
+        --client-mobile-profile-w: 56px;
+      }
+
       @media (max-height: 700px) {
         :root {
           --client-chat-max-h: min(360px, calc(100vh - var(--client-safe-top) - var(--client-safe-bottom) - 64px));

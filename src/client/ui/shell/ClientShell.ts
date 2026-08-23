@@ -27,6 +27,11 @@ import type { DevProgressPanel } from '../DevProgressPanel'
 import { ChatPanel } from '../chat/ChatPanel'
 import type { SocialService } from '../../../social/SocialService'
 import { EmoteWheelPanel } from '../EmoteWheelPanel'
+import {
+  isTabletPlayLayout,
+  isTouchPlayLayout,
+  subscribeTouchPlayLayout
+} from '../touchPlayLayout'
 import type { EmoteWheelSlot } from '../../../avatar/profileEmotes'
 import type { SettingsOverlay, SettingsTab } from '../settings/SettingsOverlay'
 import type { PreferencesPanel } from '../settings/PreferencesPanel'
@@ -101,8 +106,6 @@ const BOTTOM_BUTTONS: SidebarButtonConfig[] = [
   { id: 'chat', icon: 'chat', label: 'Chat' }
 ]
 
-const MOBILE_LAYOUT_QUERY = '(max-width: 767px)'
-
 /**
  * Client chrome — left sidebar; layout tokens in index.html + ClientUiLayout.
  */
@@ -149,8 +152,7 @@ export class ClientShell {
   private unsubChatChannelBadge: (() => void) | null = null
   private unsubFriendBadge: (() => void) | null = null
   private onEmoteWheelVisibility: ((visible: boolean) => void) | null = null
-  private readonly mobileQuery = window.matchMedia(MOBILE_LAYOUT_QUERY)
-  private readonly onMobileQueryChange = (): void => this.applyMobileLayout()
+  private readonly unsubTouchLayout: () => void
   private mobileDrawerOpen = false
   private readonly mobileProfileFab: HTMLButtonElement
   private readonly mobileProfileFabImg: HTMLImageElement
@@ -517,7 +519,7 @@ export class ClientShell {
     this.mobileProfileFab.hidden = true
     this.mobileChatFab.hidden = true
     this.uiLayout.attach(this.root)
-    this.mobileQuery.addEventListener('change', this.onMobileQueryChange)
+    this.unsubTouchLayout = subscribeTouchPlayLayout(() => this.applyMobileLayout())
     this.applyMobileLayout()
   }
 
@@ -707,7 +709,7 @@ export class ClientShell {
   }
 
   private isMobileLayout(): boolean {
-    return this.mobileQuery.matches
+    return isTouchPlayLayout()
   }
 
   setSceneLocation(title: string, getCoordsLabel: () => string): void {
@@ -725,7 +727,11 @@ export class ClientShell {
 
   private applyMobileLayout(): void {
     const mobile = this.isMobileLayout()
+    const tablet = mobile && isTabletPlayLayout()
     document.documentElement.classList.toggle('client-mobile', mobile)
+    document.documentElement.classList.toggle('client-tablet', tablet)
+    document.body.classList.toggle('client-mobile', mobile)
+    document.body.classList.toggle('client-tablet', tablet)
     this.root.classList.toggle('client-shell--drawer', mobile)
     this.repositionProfileButton(mobile)
     this.mobileProfileFab.hidden = !mobile || this.root.hidden
@@ -766,7 +772,7 @@ export class ClientShell {
       clearInterval(this.unreadPollTimer)
       this.unreadPollTimer = null
     }
-    this.mobileQuery.removeEventListener('change', this.onMobileQueryChange)
+    this.unsubTouchLayout()
     this.unsubChatUnread?.()
     this.unsubChatUnread = null
     this.unsubChatChannelBadge?.()
@@ -795,7 +801,12 @@ export class ClientShell {
     this.mobileProfileFab.remove()
     this.mobileChatFab.remove()
     this.root.remove()
-    document.documentElement.classList.remove('client-mobile', 'client-drawer-open')
+    document.documentElement.classList.remove(
+      'client-mobile',
+      'client-tablet',
+      'client-drawer-open'
+    )
+    document.body.classList.remove('client-mobile', 'client-tablet')
   }
 
   private actionHandler(id: string): (ev: MouseEvent) => void {

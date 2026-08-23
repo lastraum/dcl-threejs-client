@@ -27,8 +27,7 @@ import type { SocialChatController, SocialChatStatus } from './SocialChatControl
 import { wireChatImageExpand } from './chatImageLightbox'
 import { ChatChannelMenu } from './ChatChannelMenu'
 import { appendTranslateControls } from './chatTranslateUi'
-
-const SOCIAL_CHAT_MOBILE_MQ = '(max-width: 767px)'
+import { isTouchPlayLayout, subscribeTouchPlayLayout } from '../touchPlayLayout'
 
 export type SocialChatDockOptions = {
   controller: SocialChatController
@@ -61,10 +60,7 @@ export class SocialChatDock {
   private readonly mobileFab: HTMLButtonElement
   private readonly mobileFabBadge: HTMLElement
   private readonly mobileBackdrop: HTMLElement
-  private readonly mobileMq: MediaQueryList
-  private readonly onMobileMqChange = (): void => {
-    this.syncLayout()
-  }
+  private unsubTouchLayout: (() => void) | null = null
   private visible = false
   private mounted = false
   private threadOpen = false
@@ -243,8 +239,7 @@ export class SocialChatDock {
     this.mobileFab.appendChild(this.mobileFabBadge)
     this.mobileFab.addEventListener('click', () => this.togglePanel())
 
-    this.mobileMq = window.matchMedia(SOCIAL_CHAT_MOBILE_MQ)
-    this.mobileMq.addEventListener('change', this.onMobileMqChange)
+    this.unsubTouchLayout = subscribeTouchPlayLayout(() => this.syncLayout())
   }
 
   show(): void {
@@ -374,7 +369,8 @@ export class SocialChatDock {
     this.hide()
     this.channelMenu?.dispose()
     this.channelMenu = null
-    this.mobileMq.removeEventListener('change', this.onMobileMqChange)
+    this.unsubTouchLayout?.()
+    this.unsubTouchLayout = null
     if (this.mounted) {
       this.root.remove()
       this.pillTipFloatEl.remove()
@@ -394,7 +390,7 @@ export class SocialChatDock {
   }
 
   private isMobileLayout(): boolean {
-    return this.mobileMq.matches
+    return isTouchPlayLayout()
   }
 
   private togglePanel(): void {

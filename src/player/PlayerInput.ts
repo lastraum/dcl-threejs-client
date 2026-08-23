@@ -15,6 +15,9 @@ import { isSceneUiTypingFocus } from '../ui/scene/sceneUiTyping'
 export class PlayerInput {
   readonly keys = { w: false, a: false, s: false, d: false, space: false, shift: false, ctrl: false }
   readonly actionKeys = { digit1: false, digit2: false, digit3: false, digit4: false }
+  /** Touch joystick — strafe (x) and forward (z), each in [-1, 1]. */
+  analogX = 0
+  analogZ = 0
   readonly pointer = { locked: false, dx: 0, dy: 0 }
   scrollDelta = 0
   pinchZoomDelta = 0
@@ -85,6 +88,24 @@ export class PlayerInput {
     this.keys.space = down
   }
 
+  /** Invisible left-stick analog (touch). 0,0 when released. */
+  setAnalogMove(x: number, z: number): void {
+    const nx = Number.isFinite(x) ? x : 0
+    const nz = Number.isFinite(z) ? z : 0
+    const mag = Math.hypot(nx, nz)
+    if (mag > 1) {
+      this.analogX = nx / mag
+      this.analogZ = nz / mag
+      return
+    }
+    this.analogX = nx
+    this.analogZ = nz
+  }
+
+  analogMagnitude(): number {
+    return Math.hypot(this.analogX, this.analogZ)
+  }
+
   get looking(): boolean {
     if (this.isLookBlocked()) return false
     return this.pointer.locked || this.orbiting
@@ -93,10 +114,10 @@ export class PlayerInput {
   /** Snapshot for SceneInputRelay — scene worker inputSystem; separate from avatar InputModifier. */
   getSceneKeyboardSnapshot(): SceneKeyboardSnapshot {
     return {
-      forward: this.keys.w,
-      backward: this.keys.s,
-      left: this.keys.a,
-      right: this.keys.d,
+      forward: this.keys.w || this.analogZ > 0.35,
+      backward: this.keys.s || this.analogZ < -0.35,
+      left: this.keys.a || this.analogX < -0.35,
+      right: this.keys.d || this.analogX > 0.35,
       jump: this.keys.space,
       ctrl: this.keys.ctrl,
       action3: this.actionKeys.digit1,
@@ -376,6 +397,8 @@ export class PlayerInput {
     this.actionKeys.digit3 = false
     this.actionKeys.digit4 = false
     this.spacePressed = false
+    this.analogX = 0
+    this.analogZ = 0
   }
 
   private isMoveKeyCode(code: string): boolean {

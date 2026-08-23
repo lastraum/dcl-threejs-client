@@ -5177,6 +5177,10 @@ export class World {
     this.player?.setJumpHeld(down)
   }
 
+  setAnalogMove(x: number, z: number): void {
+    this.player?.setAnalogMove(x, z)
+  }
+
   cancelCameraPointer(): void {
     this.player?.cancelCameraPointer()
   }

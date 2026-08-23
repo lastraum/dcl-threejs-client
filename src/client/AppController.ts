@@ -3329,7 +3329,8 @@ export class AppController {
       onSecondaryDown: () => world.triggerPointerAction(InputAction.IA_SECONDARY, 'down'),
       onSecondaryUp: () => world.triggerPointerAction(InputAction.IA_SECONDARY, 'up'),
       onJumpDown: () => world.setJumpHeld(true),
-      onJumpUp: () => world.setJumpHeld(false)
+      onJumpUp: () => world.setJumpHeld(false),
+      onAnalogMove: (x, z) => world.setAnalogMove(x, z)
     })
     this.shell.setOnEmoteWheelVisibility((visible) => this.mobileHud?.setEmoteActive(visible))
     world.setVoluntaryEmoteAllowedHandler((allowed) => {

@@ -652,7 +652,8 @@ export class PlayerSystem {
       this.input.keys.a ||
       this.input.keys.s ||
       this.input.keys.d ||
-      this.input.spacePressed
+      this.input.spacePressed ||
+      this.input.analogMagnitude() > 0.2
     const now = performance.now()
     if (!keys) {
       this.stallKeysSince = 0
@@ -931,6 +932,10 @@ export class PlayerSystem {
 
   setJumpHeld(down: boolean): void {
     this.input?.setJumpHeld(down)
+  }
+
+  setAnalogMove(x: number, z: number): void {
+    this.input?.setAnalogMove(x, z)
   }
 
   setOnUserGestureUnlock(callback: () => void): void {
@@ -1216,7 +1221,8 @@ export class PlayerSystem {
           this.input.keys.a ||
           this.input.keys.s ||
           this.input.keys.d ||
-          this.input.spacePressed)
+          this.input.spacePressed ||
+          this.input.analogMagnitude() > 0.2)
       if (wantEscape && this.modeFreezeEscapeHandler) {
         const now = performance.now()
         if (now - this.lastModeFreezeEscapeAt > 350) {
@@ -1490,7 +1496,14 @@ export class PlayerSystem {
       _forward.set(Math.sin(this.camYaw), 0, Math.cos(this.camYaw)).multiplyScalar(-1)
       _right.set(Math.cos(this.camYaw), 0, -Math.sin(this.camYaw))
     }
+    const analogMag = this.input.analogMagnitude()
+    const wasd =
+      this.input.keys.w || this.input.keys.a || this.input.keys.s || this.input.keys.d
     if (locomotionAllowed) {
+      if (analogMag > 0.18) {
+        _moveDir.addScaledVector(_forward, this.input.analogZ)
+        _moveDir.addScaledVector(_right, this.input.analogX)
+      }
       if (this.input.keys.w) _moveDir.add(_forward)
       if (this.input.keys.s) _moveDir.sub(_forward)
       if (this.input.keys.a) _moveDir.sub(_right)
@@ -1531,6 +1544,15 @@ export class PlayerSystem {
 
     this.locomotionMode = resolveLocomotionMode(this.input.keys, locomotion)
     let moveSpeed = speedForMode(this.locomotionMode, locomotion)
+    if (moving && !wasd && analogMag > 0.18) {
+      this.locomotionMode =
+        analogMag >= 0.55 && !locomotion.disableJog
+          ? 'jog'
+          : !locomotion.disableWalk
+            ? 'walk'
+            : this.locomotionMode
+      moveSpeed = speedForMode(this.locomotionMode, locomotion) * Math.max(0.35, Math.min(1, analogMag))
+    }
     if (moving && (locomotion.disableJog || locomotion.disableRun || locomotion.disableWalk)) {
       const now = performance.now()
       if (now - lastLocomotionDiagMs > 2500) {

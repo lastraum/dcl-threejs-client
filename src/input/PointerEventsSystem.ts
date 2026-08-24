@@ -527,22 +527,21 @@ export class PointerEventsSystem {
     }
 
     const button = mouseButtonToInputAction(e.button)
-    // Unlocked left button is camera orbit, not a scene click. Explorer IA_POINTER
-    // is left-click while looking (pointer lock). Dual-use LMB was injecting
-    // PET_DOWN on every orbit drag → pointer-deliver hitch with no user click.
-    if (
+    // Unlocked LMB is camera orbit on empty ground. Explorer still fires IA_POINTER
+    // on in-range PointerEvents (Creator Hub on_click / getClick). Skipping all
+    // unlocked clicks ate VoxBoards halfpipe teleports. Misses stay orbit-only —
+    // do not inject level-state PET_DOWN on PlayerEntity (that spammed every drag).
+    const unlockedPointer =
       button === InputAction.IA_POINTER &&
-      this.deps.isPointerLocked &&
+      !!this.deps.isPointerLocked &&
       !this.deps.isPointerLocked()
-    ) {
-      return
-    }
     const coords = this.pointerClientCoords(e.clientX, e.clientY)
     const hit = this.resolveWorldInteractHit(button)
     // Real PE / UI when in range. On IA_POINTER miss/OOR: level-state PET on PlayerEntity so
     // inputSystem.isPressed / isTriggered work (Explorer global button). Aim stays PPI ×
     // CameraEntity in the scene — never invent a y=0 ground PE hit.position.
     if (!this.canQueuePointerDown(button, hit)) {
+      if (unlockedPointer) return
       if (button === InputAction.IA_POINTER) {
         const levelHit = this.buildLevelStatePointerHit()
         if (levelHit) {
@@ -613,6 +612,7 @@ export class PointerEventsSystem {
       clientDebugLog.log('pointer', label, { alsoConsole: true })
       this.deps.onWorldPointerDown?.(targetEntity)
     }
+    if (unlockedPointer) e.stopPropagation()
     // Universal Explorer press edge: flush PET_DOWN immediately (world + UI + level-state).
     // Same-tick DOWN+UP on mouseup alone never leaves multi-frame isPressed for any scene.
     this.deps.flushPointerCrdt?.()

@@ -13,7 +13,7 @@ import type { MirrorComponents } from '../../bridge/mirrorComponents'
 import type { ResolvedScene } from '../../dcl/content/types'
 import type { PointerHit } from '../../input/PointerEventsSystem'
 import { buildUiForest, filterMountedUiRecords, type UiEntityRecord } from './uiTree'
-import { SceneUiDomRenderer, ensureSceneUiRoot } from './SceneUiDomRenderer'
+import { SceneUiDomRenderer, ensureSceneUiRoot, makeDetachedSceneUiHost } from './SceneUiDomRenderer'
 import { SceneUiInputController } from './SceneUiInputController'
 import {
   alignSceneUiRoot,
@@ -77,7 +77,7 @@ export type SceneUiWriteback = {
 
 /** In-scene ECS UI — Yoga layout + DOM paint; DOM is the sole hit-test surface. */
 export class SceneUiBridge {
-  private readonly root: HTMLElement
+  private root: HTMLElement
   private readonly dom: SceneUiDomRenderer
   private readonly input!: SceneUiInputController
   private readonly hitMap = new SceneUiHitMap()
@@ -129,6 +129,10 @@ export class SceneUiBridge {
   private paintedEpoch = -1
   /** False until AppController reveals 3D play chrome — avoids UI on 2D landing during hydration. */
   private domVisible = false
+  /** True while this bridge owns the on-document `#scene-ui-root` (or PE root). */
+  private playRootAttached = false
+  /** True when this instance registered the global scene-UI pick check. */
+  private registeredScenePick = false
   private readonly unbindImageLoaded: () => void
   private imageRepaintQueued = false
   /** Latest pointer phase-4 rows — fill-in when projection PE lags (menu open). */
@@ -147,8 +151,8 @@ export class SceneUiBridge {
     opts?: {
       rootId?: string
       /**
-       * Off-DOM UI host for non-focus workers (secondary live). Never paints into
-       * `#scene-ui-root` and does not register global authoritative pick checks.
+       * Off-DOM UI host for non-feet workers (secondary live). Adopts
+       * `#scene-ui-root` only when World occupancy-arms the under-feet guest.
        */
       detached?: boolean
     }
@@ -157,12 +161,11 @@ export class SceneUiBridge {
     this.getCanvas = getCanvas
     if (opts?.detached) {
       // Isolated host — never share primary/PE document roots.
-      this.root = document.createElement('div')
-      this.root.id = opts.rootId ?? `secondary-ui-detached-${Math.random().toString(36).slice(2, 10)}`
-      this.root.hidden = true
-      this.root.style.display = 'none'
+      this.root = makeDetachedSceneUiHost(opts.rootId)
+      this.playRootAttached = false
     } else {
       this.root = ensureSceneUiRoot(opts?.rootId ?? 'scene-ui-root')
+      this.playRootAttached = true
     }
     this.setVisible(false)
     this.dom = new SceneUiDomRenderer(this.root, {
@@ -193,7 +196,7 @@ export class SceneUiBridge {
       if (isPeRoot) {
         setPeUiAuthoritativeEntityCheck((entity) => this.isAuthoritativeUiEntity(entity))
       } else {
-        setSceneUiAuthoritativeEntityCheck((entity) => this.isAuthoritativeUiEntity(entity))
+        this.registerScenePick()
       }
     }
     this.unbindImageLoaded = onSceneUiImageLoaded(() => this.scheduleImageRepaint())
@@ -225,6 +228,59 @@ export class SceneUiBridge {
   /** True when a paint is needed (content changed since last successful paint). */
   isContentDirty(): boolean {
     return this.paintedEpoch !== this.contentEpoch
+  }
+
+  isPlayRootAttached(): boolean {
+    return this.playRootAttached
+  }
+
+  /**
+   * Own the on-document `#scene-ui-root` so this guest can paint.
+   * PE `#pe-ui-root` is never stolen. Caller must release any previous owner first.
+   */
+  adoptDocumentPlayRoot(): void {
+    if (this.root.id === 'pe-ui-root') return
+    if (this.playRootAttached && this.root.id === 'scene-ui-root') {
+      this.registerScenePick()
+      return
+    }
+    const play = ensureSceneUiRoot('scene-ui-root')
+    play.style.display = ''
+    this.rebindRoot(play)
+    this.playRootAttached = true
+    this.registerScenePick()
+  }
+
+  /**
+   * Drop `#scene-ui-root` and hide into an off-DOM host. Does not remove the
+   * document play root — the next feet-owner adopts it.
+   */
+  releaseDocumentPlayRoot(): void {
+    if (this.root.id === 'pe-ui-root') return
+    this.setVisible(false)
+    if (!this.playRootAttached && this.root.id !== 'scene-ui-root') return
+    this.unregisterScenePick()
+    const detached = makeDetachedSceneUiHost()
+    this.rebindRoot(detached)
+    this.playRootAttached = false
+  }
+
+  private rebindRoot(next: HTMLElement): void {
+    if (this.root === next) return
+    this.dom.rebindHost(next)
+    this.root = next
+  }
+
+  private registerScenePick(): void {
+    if (this.registeredScenePick) return
+    setSceneUiAuthoritativeEntityCheck((entity) => this.isAuthoritativeUiEntity(entity))
+    this.registeredScenePick = true
+  }
+
+  private unregisterScenePick(): void {
+    if (!this.registeredScenePick) return
+    setSceneUiAuthoritativeEntityCheck(null)
+    this.registeredScenePick = false
   }
 
   /** Show/hide scene ECS UI overlay — primary `#scene-ui-root` or PE `#pe-ui-root`. */
@@ -484,7 +540,7 @@ export class SceneUiBridge {
   }
 
   dispose(): void {
-    setSceneUiAuthoritativeEntityCheck(null)
+    this.unregisterScenePick()
     this.input.dispose()
     this.dom.dispose()
     this.hitMap.clear()
@@ -500,7 +556,13 @@ export class SceneUiBridge {
     this.lastView = null
     disposeSceneUiDebug()
     this.unbindImageLoaded()
-    this.root.remove()
+    if (this.playRootAttached && this.root.id === 'scene-ui-root') {
+      this.root.replaceChildren()
+      this.root.hidden = true
+    } else {
+      this.root.remove()
+    }
+    this.playRootAttached = false
   }
 
   private applyVirtual(interactable: ReturnType<typeof readInteractableArea>): void {

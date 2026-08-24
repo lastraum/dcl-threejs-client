@@ -28,6 +28,7 @@ import type {
   WorldsLiveData
 } from '../../../map/types'
 import { WorldsLiveDataPoller } from '../../../map/worldsLiveData'
+import { isTouchPlayLayout, subscribeTouchPlayLayout } from '../touchPlayLayout'
 import {
   fetchWorldMapDetail,
   loadWorldMapCatalog,
@@ -88,7 +89,6 @@ const INITIAL_VIEW: MapViewState = {
 }
 
 const DRAG_THRESHOLD_PX = 6
-const MOBILE_MAP_QUERY = '(max-width: 767px)'
 
 function playerSortKey(displayName: string, address: string): string {
   const name = displayName.trim()
@@ -187,8 +187,7 @@ export class MapView {
   private worldPopupGen = 0
   /** Keep viewport centered on local player until the user pans the map. */
   private followPlayer = true
-  private readonly mobileQuery = window.matchMedia(MOBILE_MAP_QUERY)
-  private readonly onMobileLayoutChange = (): void => this.syncMobileSidebarLayout()
+  private unsubTouchLayout: (() => void) | null = null
   private readonly sidebarToggleBtn: HTMLButtonElement
   private readonly sidebarBackdrop: HTMLDivElement
   private readonly sidebarCloseBtn: HTMLButtonElement
@@ -329,7 +328,7 @@ export class MapView {
       ev.stopPropagation()
       this.setSidebarOpen(false)
     })
-    this.mobileQuery.addEventListener('change', this.onMobileLayoutChange)
+    this.unsubTouchLayout = subscribeTouchPlayLayout(() => this.syncMobileSidebarLayout())
     this.syncMobileSidebarLayout()
 
     this.root.querySelector('[data-center-plaza]')?.addEventListener('click', () => {
@@ -439,7 +438,7 @@ export class MapView {
   }
 
   private isMobileLayout(): boolean {
-    return this.mobileQuery.matches
+    return isTouchPlayLayout()
   }
 
   private syncMobileSidebarLayout(): void {
@@ -474,7 +473,8 @@ export class MapView {
   }
 
   dispose(): void {
-    this.mobileQuery.removeEventListener('change', this.onMobileLayoutChange)
+    this.unsubTouchLayout?.()
+    this.unsubTouchLayout = null
     this.disposed = true
     this.active = false
     this.stopRenderLoop()

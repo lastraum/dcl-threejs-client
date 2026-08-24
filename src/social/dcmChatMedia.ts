@@ -4,6 +4,7 @@
  * Chunked for LiveKit reliable data packet limits; full payload may be up to 1 MiB.
  */
 import type { PreparedChatImage } from './prepareChatImage'
+import { randomUuid } from '../util/randomUuid'
 
 export const DCM_SCENE_ID = 'dcl.chat.media'
 export const DCM_MAX_IMAGE_BYTES = 1_048_576
@@ -29,7 +30,7 @@ export type DecodedDcmImage = {
 }
 
 export function createDcmMessageId(): string {
-  return crypto.randomUUID()
+  return randomUuid()
 }
 
 export function messageIdToBytes(id: string): Uint8Array {

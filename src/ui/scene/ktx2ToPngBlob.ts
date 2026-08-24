@@ -32,7 +32,9 @@ function ensureDecoder(): NonNullable<typeof decoder> {
     alpha: true,
     antialias: false,
     premultipliedAlpha: false,
-    preserveDrawingBuffer: true
+    preserveDrawingBuffer: true,
+    powerPreference: 'low-power',
+    failIfMajorPerformanceCaveat: false
   })
   renderer.setClearColor(0x000000, 0)
   renderer.setSize(4, 4, false)

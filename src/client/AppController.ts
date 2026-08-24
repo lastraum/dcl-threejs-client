@@ -2868,7 +2868,7 @@ export class AppController {
         if (from) this.trackNavigate(from, target, 'navigate', 'goto')
         this.softUpdatePlayRoute(target)
         void this.refreshLocationTitleForParcel(target.x, target.y)
-        // Compile default: aoiStandOnPromote() is false — no origin rebase on walk.
+        // Stand-on: in-world handoff + origin rebase (FocusOwner = under-feet deployment).
         void this.promotePrimary(target, reason)
       },
       // Feet parcel only — replaceState, never reload (fixes empty-land thrash + URL lag).
@@ -3329,8 +3329,11 @@ export class AppController {
       onSecondaryDown: () => world.triggerPointerAction(InputAction.IA_SECONDARY, 'down'),
       onSecondaryUp: () => world.triggerPointerAction(InputAction.IA_SECONDARY, 'up'),
       onJumpDown: () => world.setJumpHeld(true),
-      onJumpUp: () => world.setJumpHeld(false)
+      onJumpUp: () => world.setJumpHeld(false),
+      onAnalogMove: (x, z) => world.setAnalogMove(x, z),
+      onAnalogLook: (x, y) => world.setAnalogLook(x, y)
     })
+    this.mobileHud.attachChatFab(this.shell.getMobileChatFab())
     this.shell.setOnEmoteWheelVisibility((visible) => this.mobileHud?.setEmoteActive(visible))
     world.setVoluntaryEmoteAllowedHandler((allowed) => {
       this.shell?.setEmoteWheelEnabled(allowed)
@@ -3893,8 +3896,13 @@ export class AppController {
         await this.promoteInFlight
         return
       }
-      // Different parcel — wait for current then re-evaluate if still under feet later.
+      // Different parcel — wait, then skip if the in-flight handoff already covers us
+      // (next cell of the same 2×2; force-boot was the 5 fps death).
       await this.promoteInFlight
+      if (this.world?.primaryCoversParcel(target.x, target.y)) {
+        console.info(`[promote] skip @ ${key} — already primary after in-flight`)
+        return
+      }
     }
     const run = this.promotePrimaryBody(target, reason)
     this.promoteInFlight = run
@@ -3916,6 +3924,12 @@ export class AppController {
     const world = this.world
     if (!world) {
       console.warn('[promote] no world — cannot handoff')
+      return
+    }
+    if (world.primaryCoversParcel(target.x, target.y)) {
+      console.info(
+        `[promote] already primary @ ${target.x},${target.y} — skip`
+      )
       return
     }
 

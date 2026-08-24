@@ -9,6 +9,7 @@ import {
   type SceneLoopPhaseMeters,
   type SceneLoopTickInput
 } from './types'
+import { pickGuestsToSend } from './pickGuestsToSend'
 
 const emptyMeters = (): SceneLoopPhaseMeters => ({
   sendMs: 0,
@@ -18,7 +19,8 @@ const emptyMeters = (): SceneLoopPhaseMeters => ({
   inFlight: 0,
   due: 0,
   guests: 0,
-  sent: 0
+  sent: 0,
+  muteSent: 0
 })
 
 /**
@@ -29,12 +31,13 @@ export class SceneLoop {
   private readonly guests = new Map<string, SceneGuest>()
   private meters: SceneLoopPhaseMeters = emptyMeters()
   private lastApplyMs = 0
+  private lastCurrentApplyMs = 0
   /** Live guest whose footprint contains the player — current scene, not FocusOwner. */
   private currentGuestId: GuestId | null = null
 
   /** True when the last apply overran the display budget — next rAF should be minimum. */
   lastApplyOverran(budgetMs = 28): boolean {
-    return this.lastApplyMs > budgetMs
+    return this.lastApplyMs > budgetMs || this.lastCurrentApplyMs > budgetMs
   }
 
   setPrimary(getSystem: () => SceneScriptSystem): void {
@@ -68,15 +71,25 @@ export class SceneLoop {
     return this.currentGuestId
   }
 
-  reconcileLiveGuests(getters: Array<{ id: string; getSystem: () => SceneScriptSystem }>): void {
+  reconcileLiveGuests(
+    getters: Array<{ id: string; getSystem: () => SceneScriptSystem; distM?: number }>
+  ): void {
     const live = new Set(getters.map((g) => g.id))
     for (const g of getters) {
       const existing = this.guests.get(g.id)
-      if (existing instanceof SceneScriptGuest) continue
-      this.guests.set(
+      if (existing instanceof SceneScriptGuest) {
+        existing.setDistM(g.distM)
+        continue
+      }
+      const guest = new SceneScriptGuest(
         g.id,
-        new SceneScriptGuest(g.id, 'secondary', g.getSystem, false, () => this.currentGuestId === g.id)
+        'secondary',
+        g.getSystem,
+        false,
+        () => this.currentGuestId === g.id
       )
+      guest.setDistM(g.distM)
+      this.guests.set(g.id, guest)
     }
     for (const [id, guest] of this.guests) {
       if (guest.kind === 'secondary' && !live.has(id)) this.guests.delete(id)
@@ -101,49 +114,36 @@ export class SceneLoop {
 
   send(input: SceneLoopTickInput): void {
     const t0 = performance.now()
-    const ordered = [...this.guests.values()].sort((a, b) => {
-      if (a.priority !== b.priority) return a.priority ? -1 : 1
-      if (a.kind === 'primary') return -1
-      if (b.kind === 'primary') return 1
-      return 0
+    const exclusive = input.exclusiveSecondarySlot === true
+    const allowMute = !exclusive && input.allowMuteSecondary === true
+    const snapshots = [...this.guests.values()].map((g) => ({
+      id: g.id,
+      kind: g.kind,
+      priority: g.priority,
+      inFlight: g.inFlight(),
+      due: g.isDue(input.now),
+      lastSentMs: g.lastSentMs(),
+      distM: g instanceof SceneScriptGuest ? g.distM : Number.POSITIVE_INFINITY
+    }))
+    const picked = pickGuestsToSend(snapshots, {
+      now: input.now,
+      currentGuestId: this.currentGuestId,
+      exclusiveSecondarySlot: exclusive,
+      allowMuteSecondary: allowMute
     })
-    let due = 0
-    let sent = 0
-    let inFlight = 0
-    let secondarySent = 0
-    const currentId = this.currentGuestId
-    const currentSecondary = currentId ? this.guests.get(currentId) : undefined
-    const currentSecondaryDue = !!(
-      currentSecondary &&
-      currentSecondary.kind === 'secondary' &&
-      !currentSecondary.inFlight() &&
-      currentSecondary.isDue(input.now)
-    )
-    for (const guest of ordered) {
-      if (guest.inFlight()) {
-        inFlight++
-        continue
-      }
-      if (!guest.isDue(input.now)) continue
-      due++
-      // At most one secondary guest tick per SceneLoop send (primary + PE stay due).
-      // Current guest (under feet) wins the slot over a due mute neighbor.
-      if (guest.kind === 'secondary') {
-        if (secondarySent >= 1) continue
-        if (currentSecondaryDue && guest.id !== currentId) continue
-        secondarySent++
-      }
-      guest.sendTick(input.player, input.camera, input.frame)
-      sent++
+    const byId = new Map([...this.guests.values()].map((g) => [g.id, g]))
+    for (const id of picked.sendIds) {
+      byId.get(id)?.sendTick(input.player, input.camera, input.frame)
     }
     this.meters = {
       ...this.meters,
       sendMs: performance.now() - t0,
       leftoverMs: 0,
-      inFlight,
-      due,
+      inFlight: picked.inFlight,
+      due: picked.due,
       guests: this.guests.size,
-      sent
+      sent: picked.sendIds.length,
+      muteSent: picked.muteSent
     }
   }
 
@@ -177,8 +177,13 @@ export class SceneLoop {
   /** Apply the under-feet guest even when plaza leftover is 0 (new flower GLBs). */
   async applyCurrentGuest(deadlineMs: number): Promise<void> {
     const cur = this.currentGuest()
-    if (!cur || cur.id === PRIMARY_GUEST_ID) return
+    if (!cur || cur.id === PRIMARY_GUEST_ID) {
+      this.lastCurrentApplyMs = 0
+      return
+    }
+    const t0 = performance.now()
     await cur.applyWorld(deadlineMs)
+    this.lastCurrentApplyMs = performance.now() - t0
   }
 
   /**

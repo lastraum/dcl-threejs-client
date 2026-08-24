@@ -34,6 +34,8 @@ import { DCL_LOCOMOTION_DEFAULTS } from '../player/locomotion'
 import { loadLocomotionEmoteGltf, type LocomotionEmoteSlug } from './profileEmotes'
 import { DoubleJumpTwirl } from './doubleJumpTwirl'
 import type { BodyShape } from './types'
+import { isAvatarVerbose } from '../client/debug/ClientDebugLog'
+import { isAppleTouchDevice } from '../util/appleTouch'
 
 export type AvatarLocomotionState = {
   horizontalSpeed: number
@@ -94,6 +96,7 @@ export class AvatarAnimations {
   private bindGeneration = 0
   /** Parallel-skeleton wearable states cached at bind (no traverse per frame). */
   private parallelWearables: ParallelWearableState[] = []
+  private poseLogFrames = 0
 
   setVfxScene(scene: THREE.Scene | null): void {
     this.vfxScene = scene
@@ -502,7 +505,58 @@ export class AvatarAnimations {
     if (!this.parallelWearables.length && this.avatarRoot) {
       this.parallelWearables = collectParallelWearableStates(this.avatarRoot)
     }
-    if (this.parallelWearables.length) syncParallelWearableStates(this.parallelWearables)
+    if (this.parallelWearables.length) {
+      this.avatarRoot.updateMatrixWorld(true)
+      syncParallelWearableStates(this.parallelWearables)
+    } else if (isAppleTouchDevice()) {
+      // iOS: mixer writes bone locals; force world matrices so merged hair skins this frame.
+      this.avatarRoot?.updateMatrixWorld(true)
+    }
+    this.maybeLogHeadPose()
+  }
+
+  private maybeLogHeadPose(): void {
+    if (!isAvatarVerbose() || !isAppleTouchDevice() || !this.avatarRoot) return
+    this.poseLogFrames++
+    if (this.poseLogFrames % 45 !== 1) return
+    const root = this.avatarRoot
+    let head: THREE.Bone | null = null
+    let hips: THREE.Bone | null = null
+    const extras: string[] = []
+    root.traverse((obj) => {
+      if (obj instanceof THREE.Bone) {
+        if (!head && /^(Avatar_Head|Head)$/i.test(obj.name)) head = obj
+        if (!hips && /Hips/i.test(obj.name)) hips = obj
+      }
+      const parallel = obj.userData?.dclParallelWearable
+      const named = /hair|facial|hat|helmet|head_base|skeleton_head|mesh0/i.test(obj.name)
+      const mergedChild = obj instanceof THREE.SkinnedMesh && obj.parent === root
+      if (
+        obj instanceof THREE.SkinnedMesh &&
+        (parallel || named || mergedChild || /head/i.test(obj.name))
+      ) {
+        obj.updateWorldMatrix(false, false)
+        const y = new THREE.Vector3().setFromMatrixPosition(obj.matrixWorld).y
+        extras.push(
+          `${obj.name}<${obj.parent?.name ?? 'null'}>y=${y.toFixed(3)}par=${parallel ? '1' : '0'}`
+        )
+      }
+    })
+    head?.updateWorldMatrix(true, false)
+    hips?.updateWorldMatrix(true, false)
+    const headY = head
+      ? new THREE.Vector3().setFromMatrixPosition(head.matrixWorld).y
+      : null
+    const hipsY = hips
+      ? new THREE.Vector3().setFromMatrixPosition(hips.matrixWorld).y
+      : null
+    const dy = headY != null && hipsY != null ? (headY - hipsY).toFixed(3) : '?'
+    console.info(
+      `[avatar] pose parallel=${this.parallelWearables.length} ` +
+        `head=${head?.name ?? 'none'}@${headY?.toFixed(3) ?? '?'} ` +
+        `hips=${hips?.name ?? 'none'}@${hipsY?.toFixed(3) ?? '?'} dy=${dy} ` +
+        `extras=${extras.slice(0, 8).join('|') || 'none'}`
+    )
   }
 
   update(delta: number, state: AvatarLocomotionState): void {

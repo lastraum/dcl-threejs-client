@@ -224,7 +224,7 @@ type SceneUiDomCallbacks = {
 
 /** DOM pool renderer — nested by ECS parent for z-index; yoga boxes mapped to screen px (DFS). */
 export class SceneUiDomRenderer {
-  private readonly host: HTMLElement
+  private host: HTMLElement
   private readonly nodes = new Map<Entity, HTMLElement>()
   private readonly callbacks: SceneUiDomCallbacks
   private readonly boundInputs = new WeakSet<HTMLInputElement>()
@@ -233,6 +233,16 @@ export class SceneUiDomRenderer {
   constructor(host: HTMLElement, callbacks: SceneUiDomCallbacks = {}) {
     this.host = host
     this.callbacks = callbacks
+  }
+
+  /**
+   * Move pooled nodes to a new overlay host (detached ↔ `#scene-ui-root`).
+   * Does not dispose — occupancy/feet ownership swaps the document root.
+   */
+  rebindHost(next: HTMLElement): void {
+    if (this.host === next) return
+    for (const child of [...this.host.children]) next.appendChild(child)
+    this.host = next
   }
 
   /** Scene teardown only — react-ecs `destroy()` / `update(null)` equivalent. */
@@ -990,5 +1000,14 @@ export function ensureSceneUiRoot(rootId = 'scene-ui-root'): HTMLElement {
     root.id = rootId
     document.body.appendChild(root)
   }
+  return root
+}
+
+/** Off-document host for non-feet scene UI — never paints into `#scene-ui-root`. */
+export function makeDetachedSceneUiHost(rootId?: string): HTMLElement {
+  const root = document.createElement('div')
+  root.id = rootId ?? `secondary-ui-detached-${Math.random().toString(36).slice(2, 10)}`
+  root.hidden = true
+  root.style.display = 'none'
   return root
 }

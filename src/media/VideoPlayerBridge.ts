@@ -110,16 +110,15 @@ export class VideoPlayerBridge {
   }
 
   /**
-   * FocusOwner media gate. false → hard-stop video (dispose decoders); true → next sync may recreate.
+   * FocusOwner media gate. false → pause decode (keep texture on the mesh);
+   * true → resume. Disposing on occupancy hold left plaza HLS audio-only after rebind.
    * Never mutates ECS VideoPlayer.playing.
    */
   setMediaEnabled(enabled: boolean): void {
     if (this.mediaEnabled === enabled) return
     this.mediaEnabled = enabled
-    if (!enabled) {
-      for (const entity of [...this.decoders.keys()]) {
-        this.removeDecoder(entity)
-      }
+    for (const entry of this.decoders.values()) {
+      entry.player.setOccupancyPaused(!enabled)
     }
   }
 
@@ -153,8 +152,8 @@ export class VideoPlayerBridge {
   sync(view: ProjectionView): void {
     if (this.drainIfVideoSkipped()) return
     if (!this.mediaEnabled) {
-      if (this.decoders.size) {
-        for (const entity of [...this.decoders.keys()]) this.removeDecoder(entity)
+      for (const entry of this.decoders.values()) {
+        entry.player.setOccupancyPaused(true)
       }
       return
     }

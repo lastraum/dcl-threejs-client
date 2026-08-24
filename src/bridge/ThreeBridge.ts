@@ -1133,9 +1133,20 @@ export class ThreeBridge {
     anchors: import('./dclTransform').ReservedTransformAnchors | null,
     view?: ProjectionView
   ): void {
+    if (!anchors) this.detachReservedParented()
     this.reservedTransformAnchors = anchors
     // Anchors usually appear after first player-parent CRDT — one full pass, not per-frame scan.
     if (anchors && view) this.reparentAllReservedParented(view)
+  }
+
+  /** Focus demote — MeshRenderer planes parented to PlayerEntity must not follow the walk. */
+  private detachReservedParented(): void {
+    const root = this.store.root
+    if (!root) return
+    for (const entity of this.reservedParentedEntities) {
+      const obj = this.store.nodes.get(entity)
+      if (obj && obj.parent !== root) root.add(obj)
+    }
   }
 
   private sceneDiffOptions(extra?: Partial<ApplySceneDiffOptions>): ApplySceneDiffOptions {

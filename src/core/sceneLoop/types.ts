@@ -12,6 +12,10 @@ export type SceneLoopTickInput = {
   player: EntityPose
   camera: EntityPose
   frame: number
+  /** Exclusive one-secondary slot (rollback `?sceneloopfair=0`). */
+  exclusiveSecondarySlot?: boolean
+  /** Fair path: one starved mute after standing-in. */
+  allowMuteSecondary?: boolean
 }
 
 /** Last SceneLoop send/apply walls — Help HUD / RenderStats. */
@@ -24,4 +28,5 @@ export type SceneLoopPhaseMeters = {
   due: number
   guests: number
   sent: number
+  muteSent: number
 }

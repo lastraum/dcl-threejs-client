@@ -26,8 +26,13 @@ import { absoluteParcelAtSceneLocal } from '../dcl/aoi/parcelAoi'
 import { ScenePromoteController } from '../dcl/aoi/ScenePromoteController'
 import type { MultiSceneRuntime } from '../dcl/multiScene/MultiSceneRuntime'
 import { PeMainThreadMirror } from '../dcl/multiScene/PeMainThreadMirror'
-import { aoiStandOnPromote } from '../dcl/multiScene/caps'
-import { scheduleOffPlayRaf } from '../rendering/mainThreadYield'
+import {
+  aoiStandOnPromote,
+  sceneLoopFairMute,
+  ROAD_PHYS_RADIUS_M
+} from '../dcl/multiScene/caps'
+import { SECONDARY_PHYS_BASE } from '../dcl/multiScene/physOffsets'
+import { lastFrameOverBudget, scheduleOffPlayRaf } from '../rendering/mainThreadYield'
 import {
   resolvePortableExperiencesPolicy,
   type PortableExperiencesPolicy
@@ -240,8 +245,35 @@ export class World {
   private focusGuestId: string | null = PRIMARY_GUEST_ID
   private focusGrantInFlight = false
   private pendingFocusGuestId: string | null | undefined = undefined
+  /**
+   * Walk-on Focus already switched input; UI + HLS + LiveKit wait until leftover
+   * is healthy so BrandonManus occupancy cannot dump 31ms Yoga on a 7 FPS rAF.
+   */
+  private occupancyPendingGuestId: string | null = null
+  private occupancyHealthyStreak = 0
+  private static readonly OCCUPANCY_HEALTHY_FRAMES = 8
+  /** Stand still on the same guest this long before Focus/LiveKit/HLS. */
+  private occupancyDwellGuestId: string | null = null
+  private occupancyDwellSinceMs = 0
+  private static readonly OCCUPANCY_DWELL_MS = 1500
+  private static readonly LOCOMOTION_MS = 0.45
+  /** Keep previous neighbor floors briefly so a current flip cannot void-fall to hub. */
+  private physHoldGuestId: string | null = null
+  private physHoldUntilMs = 0
+  private static readonly PHYS_HOLD_MS = 2500
+  /** Plaza scene solids stream with road furniture (48 m enter / 64 m keep). */
+  private lastPlazaPhysFeet = { x: Number.NaN, z: Number.NaN }
+  private static readonly PLAZA_PHYS_KEEP_M = ROAD_PHYS_RADIUS_M + 16
+  private static readonly PLAZA_PHYS_STEP_M = 8
   /** Occupancy log — parcel + current guest (avoid per-frame spam). */
   private lastOccupancyLogKey = ''
+  /**
+   * AppController play chrome / [U] / photo mode — scene ECS UI is still
+   * feet-gated even when chrome is on.
+   */
+  private playChromeAllowsSceneUi = true
+  /** Last applied `#scene-ui-root` owner (`PRIMARY` / `secondary:…` / null). */
+  private lastSceneUiOwnerId: string | null | undefined = undefined
   private remoteAvatars: RemoteAvatarManager | null = null
   /** Help → Debug crowd harness (local composed avatars for multi-avatar FPS tests). */
   private debugAvatarCrowd: DebugAvatarCrowd | null = null
@@ -396,6 +428,13 @@ export class World {
   readonly inputHub = new InputHub()
   private performanceTier: PerformanceTier = 'high'
   private loadedPrimaryScene: ResolvedScene | null = null
+  /**
+   * Occupancy keys for the current primary (scene.parcels + base + the cell we
+   * handed off + origin-rebase feet). `ResolvedScene.parcels` can miss non-base
+   * cells; without this, stand-on queues a second promote to the next parcel
+   * of the same 2×2 and force-boots (5 fps).
+   */
+  private readonly primaryOccupancyParcels = new Set<string>()
   /**
    * Multi-scene Phase B — stand-on-parcel promotes that scene to primary
    * (full scripts). Wired to navigateHandler after load.
@@ -1013,6 +1052,7 @@ export class World {
         : { mode: 'rect', bounds: sceneWorldBounds(scene.parcels, scene.baseParcel) }
 
     this.loadedPrimaryScene = scene
+    this.rememberPrimaryOccupancy(scene)
     // Neighbors stay off until notifyPlayReady (setNeighborActivityEnabled).
     // ?noaoi=1 — never bind AOI / promote / live secondaries (primary-only CBD debug).
     this.multiScene?.setSecondaryActivityEnabled(false)
@@ -1036,7 +1076,8 @@ export class World {
         },
         onSecondaryCandidates: (candidates) => {
           this.multiScene?.reconcileSecondaries(candidates)
-        }
+        },
+        getCamera: () => this.host.camera
       })
       this.scenePromote.bind(scene)
       // Prewarm default ground + roads + scatter for Scene Distance while primary hydrates.
@@ -1295,6 +1336,7 @@ export class World {
       })
     }
     this.loadedPrimaryScene = scene
+    this.rememberPrimaryOccupancy(scene)
     console.info(
       `[reload] recycle primary “${scene.title}” · keep ${oldPhysIds.length} PhysX actors until recook`
     )
@@ -2405,7 +2447,12 @@ export class World {
     // compileAsync misses shadow-depth + bloom/FXAA blit — run the real present path.
     this.host.warmShadowAndBloomPresents()
     for (let i = 0; i < 4; i++) {
-      this.host.renderFrame()
+      try {
+        this.host.renderFrame()
+      } catch (err) {
+        console.warn('[World] warmPlayGpu present failed', err)
+        break
+      }
       await new Promise<void>((r) => requestAnimationFrame(() => r()))
     }
   }
@@ -2565,6 +2612,7 @@ export class World {
               this.multiScene?.secondaryManager?.listSecondaryModeSystems() ?? []
             )
             this.syncCurrentSceneGuestAt(pos.x, pos.z)
+            this.tickOccupancyArm()
             this.aoiVisual.update(pos.x, pos.z)
           }
           aoiMs = performance.now() - aoiT0
@@ -2731,17 +2779,25 @@ export class World {
           )
           // Rebase neighbor reserved poses before SceneLoop send (not after).
           this.multiScene?.tickSync(this.guestTickPlayer, this.guestTickCamera, this.guestTickFrame)
+          const fair = sceneLoopFairMute()
+          const frameDying = lastFrameOverBudget(28) || this.sceneLoop.lastApplyOverran(12)
+          const locomoting = this.isPlayerLocomoting()
           this.sceneLoop.send({
             now: performance.now(),
             fpsTarget: renderQuality.getFpsLimit() || 60,
             player: this.guestTickPlayer,
             camera: this.guestTickCamera,
-            frame: this.guestTickFrame
+            frame: this.guestTickFrame,
+            exclusiveSecondarySlot: !fair,
+            // lastApplyOverran misses a 140ms rAF whose apply was 6ms — mute still
+            // ticked BrandonManus and stacked hydrate on a dying frame.
+            // Jog: first snappy walk had no mute clocks — keep that.
+            allowMuteSecondary: fair && !frameDying && !locomoting
           })
           this.sceneLoop.peelMotion(2)
           // Under-feet guest apply is not leftover-gated — snow flowers / drone
           // Tweens never reached the GPU when plaza leftover was 0.
-          await this.sceneLoop.applyCurrentGuest(6)
+          await this.sceneLoop.applyCurrentGuest(frameDying ? 2 : 6)
           if (remain() > 2) {
             await this.sceneLoop.applyOtherLiveGuests(Math.min(4, remain() - 1))
           }
@@ -2833,15 +2889,15 @@ export class World {
           const MIN_FULL_MS = 2
           const primarySpent = t3 - t0
           const remainder = ASYNC_MULTI_BUDGET_MS - primarySpent
-          const guestHydrating =
-            this.multiScene?.secondaryManager?.hasHydratingSecondary() === true
-          const applyBudgetMs =
-            remainder >= MIN_FULL_MS ? remainder : guestHydrating ? 6 : 0
+          const applyBudgetMs = remainder >= MIN_FULL_MS ? remainder : 0
           const { colliders, invalidatePhysIds } = await this.multiScene.tickAsync({
-            applyBudgetMs
+            applyBudgetMs,
+            physGuestIds: this.resolvePhysGuestIds()
           })
           if (!skipPhysxColliders()) {
             for (const id of invalidatePhysIds) {
+              // Sticky offset hulls stay until the slot is gone — never recook plaza.
+              if (id >= SECONDARY_PHYS_BASE && this.physics.hasStaticActor(id)) continue
               this.physics.invalidateStaticCollider(id)
             }
             if (colliders.length && this.collidersLoadingComplete && !this.deferPhysxCooks) {
@@ -3164,6 +3220,8 @@ export class World {
       watchMs = performance.now() - tWatch
     }
 
+    this.maybeStreamPlazaScenePhys()
+
     // Health log: static count drop or rare summary — NOT O(n) soft diagnostics every 8s
     // while standing on infinite ground (expected on Genesis roads / empty land).
     {
@@ -3180,6 +3238,7 @@ export class World {
         for (const d of descs) {
           if (this.physics.isAoiRoadColliderEntity(d.entity)) continue
           if (this.physics.isAoiEmptyLandColliderEntity(d.entity)) continue
+          if (this.isPlazaScenePhysFar(d, ROAD_PHYS_RADIUS_M)) continue
           if (!this.physics.hasStaticActor(d.entity)) missing++
         }
         const ground = this.physics.getLastGroundPhysEntity()
@@ -3465,6 +3524,7 @@ export class World {
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
+      if (this.isPlazaScenePhysFar(desc, ROAD_PHYS_RADIUS_M)) continue
       if (!this.physics.hasStaticActor(desc.entity)) {
         this.colliderCookQueue.add(desc.entity)
         continue
@@ -3487,6 +3547,7 @@ export class World {
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
       if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
+      if (this.isPlazaScenePhysFar(desc, ROAD_PHYS_RADIUS_M)) continue
       if (!this.physics.hasStaticActor(desc.entity)) {
         missing++
         continue
@@ -3558,6 +3619,7 @@ export class World {
       if (this.physics.hasFailedCookFingerprint(desc.fingerprint)) continue
       // Play give-up for this geom fp — do not re-open the thrash queue.
       if (this.isPlayCookGivenUp(desc.entity, desc.fingerprint)) continue
+      if (this.isPlazaScenePhysFar(desc, ROAD_PHYS_RADIUS_M)) continue
       if (!this.colliderCookQueue.has(desc.entity)) {
         added++
         if (missingIds.length < 4) missingIds.push(desc.entity)
@@ -4470,6 +4532,10 @@ export class World {
           this.colliderCookQueue.delete(desc.entity)
           continue
         }
+        if (this.isPlazaScenePhysFar(desc, ROAD_PHYS_RADIUS_M)) {
+          this.colliderCookQueue.delete(desc.entity)
+          continue
+        }
         if (this.physics.isColliderSynced(desc)) {
           this.colliderCookQueue.delete(desc.entity)
           this.clearPlayCookTracking(desc.entity)
@@ -4909,7 +4975,15 @@ export class World {
 
 
   setSceneUiVisible(visible: boolean): void {
-    this.sceneScript.setSceneUiVisible(visible)
+    this.playChromeAllowsSceneUi = visible
+    this.lastSceneUiOwnerId = undefined
+    if (!visible) {
+      this.applySceneUiOwnership(null)
+      return
+    }
+    const pos = this.player?.getPosition()
+    if (pos) this.syncSceneUiToFeet(pos.x, pos.z)
+    else this.applySceneUiOwnership(null)
   }
 
   /**
@@ -5106,6 +5180,14 @@ export class World {
 
   setJumpHeld(down: boolean): void {
     this.player?.setJumpHeld(down)
+  }
+
+  setAnalogMove(x: number, z: number): void {
+    this.player?.setAnalogMove(x, z)
+  }
+
+  setAnalogLook(x: number, y: number): void {
+    this.player?.setAnalogLook(x, y)
   }
 
   cancelCameraPointer(): void {
@@ -5407,10 +5489,177 @@ export class World {
    * cell wins over the plaza parcel list (holes inside a large primary).
    * Vacant/road keeps last Focus (no mute flicker). Origin is never rebased.
    */
+  private isPlayerLocomoting(): boolean {
+    return (this.player?.getHorizontalSpeed() ?? 0) > World.LOCOMOTION_MS
+  }
+
+  private plazaPhysFeetXZ(): { x: number; z: number } | null {
+    const p = this.player?.getWorldPosition()
+    if (p) return { x: p.x, z: p.z }
+    const spawn = this.loadedPrimaryScene?.spawn
+    if (!spawn) return null
+    const feetY = spawn.fromSpawnPoints ? spawn.y : spawn.y <= 0.01 ? 1 : spawn.y
+    const t = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
+    return { x: t.x, z: t.z }
+  }
+
+  private isPlazaScenePhysEntity(entity: number): boolean {
+    if (entity < 0 || entity >= SECONDARY_PHYS_BASE) return false
+    if (this.physics.isAoiRoadColliderEntity(entity)) return false
+    if (this.physics.isAoiEmptyLandColliderEntity(entity)) return false
+    return true
+  }
+
+  private isPlazaScenePhysFar(
+    desc: import('../physics/PhysXWorld').PhysicsColliderDesc,
+    radiusM: number
+  ): boolean {
+    if (!this.isPlazaScenePhysEntity(desc.entity)) return false
+    const feet = this.plazaPhysFeetXZ()
+    if (!feet) return false
+    const e = desc.matrix.elements
+    const dx = e[12]! - feet.x
+    const dz = e[14]! - feet.z
+    return dx * dx + dz * dz > radiusM * radiusM
+  }
+
+  /**
+   * Cook plaza solids inside 48 m of feet; drop them past 64 m.
+   * Same ring as road furniture — the 3400-actor SQ tree was the 25 FPS wall.
+   */
+  private maybeStreamPlazaScenePhys(): void {
+    if (!this.collidersReady || skipPhysxColliders() || this.deferPhysxCooks) return
+    const feet = this.plazaPhysFeetXZ()
+    if (!feet) return
+    const step = World.PLAZA_PHYS_STEP_M
+    if (Number.isFinite(this.lastPlazaPhysFeet.x)) {
+      const mx = feet.x - this.lastPlazaPhysFeet.x
+      const mz = feet.z - this.lastPlazaPhysFeet.z
+      if (mx * mx + mz * mz < step * step) return
+    }
+    this.lastPlazaPhysFeet = { x: feet.x, z: feet.z }
+    const enter2 = ROAD_PHYS_RADIUS_M * ROAD_PHYS_RADIUS_M
+    const keep2 = World.PLAZA_PHYS_KEEP_M * World.PLAZA_PHYS_KEEP_M
+    const ground = this.physics.getLastGroundPhysEntity()
+    for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
+      if (!this.isPlazaScenePhysEntity(desc.entity)) continue
+      const e = desc.matrix.elements
+      const d2 = (e[12]! - feet.x) * (e[12]! - feet.x) + (e[14]! - feet.z) * (e[14]! - feet.z)
+      const has = this.physics.hasStaticActor(desc.entity)
+      if (d2 <= enter2) {
+        if (
+          !has &&
+          !this.physics.hasFailedCookFingerprint(desc.fingerprint) &&
+          !this.isPlayCookGivenUp(desc.entity, desc.fingerprint)
+        ) {
+          this.colliderCookQueue.add(desc.entity)
+        }
+        continue
+      }
+      if (
+        d2 > keep2 &&
+        has &&
+        desc.entity !== ground &&
+        !this.physics.isKinematicActor(desc.entity) &&
+        !this.isPlayerLocomoting()
+      ) {
+        this.physics.invalidateStaticCollider(desc.entity)
+      }
+    }
+  }
+
+  /**
+   * Neighbor floors stay while standing in the footprint, plus 2.5s after leave.
+   * Dropping PhysX the instant current flipped to plaza was the void-fall → hub death.
+   */
+  private resolvePhysGuestIds(): string[] {
+    const ids = new Set<string>()
+    const current = this.sceneLoop.getCurrentGuestId()
+    if (current && current !== PRIMARY_GUEST_ID) {
+      ids.add(current)
+      this.physHoldGuestId = current
+      this.physHoldUntilMs = performance.now() + World.PHYS_HOLD_MS
+    }
+    for (const id of this.multiScene?.secondaryManager?.standingInPhysGuestIds() ?? []) {
+      ids.add(id)
+    }
+    if (
+      this.physHoldGuestId &&
+      performance.now() < this.physHoldUntilMs &&
+      this.physHoldGuestId !== PRIMARY_GUEST_ID
+    ) {
+      ids.add(this.physHoldGuestId)
+    }
+    return [...ids]
+  }
+
   private syncCurrentSceneGuestAt(dclX: number, dclZ: number): void {
     const next = this.resolveCurrentGuestIdAt(dclX, dclZ)
     this.sceneLoop.setCurrentGuestId(next)
-    if (next !== this.focusGuestId) void this.grantFocusToGuest(next)
+    this.multiScene?.secondaryManager?.setLocomoting(this.isPlayerLocomoting())
+    // Grant immediately so AvatarAttach / PE-parented planes unbind. LiveKit + HLS
+    // still wait on occupancy dwell — delaying the whole grant left papers on the avatar.
+    const focusNext = this.resolveFocusGuestIdAt(dclX, dclZ, next)
+    if (focusNext !== this.focusGuestId) void this.grantFocusToGuest(focusNext)
+    this.syncSceneUiToFeet(dclX, dclZ)
+  }
+
+  /**
+   * Scene ECS UI follows the parcel under the feet — not origin-held primary
+   * and not a live neighbor the player already walked off.
+   * Occupancy still holds enable until dwell + healthy frames.
+   */
+  private syncSceneUiToFeet(dclX: number, dclZ: number): void {
+    const owner = this.resolveSceneUiGuestAt(dclX, dclZ)
+    if (owner === this.lastSceneUiOwnerId) return
+    this.lastSceneUiOwnerId = owner
+    this.applySceneUiOwnership(owner)
+  }
+
+  /** Live scene whose footprint contains the feet, else null (road / tertiary / chrome off). */
+  private resolveSceneUiGuestAt(dclX: number, dclZ: number): string | null {
+    if (!this.playChromeAllowsSceneUi) return null
+    const scene = this.loadedPrimaryScene
+    if (!scene || scene.source.kind !== 'coords') {
+      if (this.occupancyPendingGuestId) return null
+      return this.focusGuestId === PRIMARY_GUEST_ID ? PRIMARY_GUEST_ID : null
+    }
+    const parcel = absoluteParcelAtSceneLocal(dclX, dclZ, scene.baseParcel)
+    const key = `${parcel.x},${parcel.y}`
+    const onPrimary =
+      scene.baseParcel.trim() === key || scene.parcels.some((p) => p.trim() === key)
+    const live = this.multiScene?.liveGuestIdForParcel(parcel.x, parcel.y) ?? null
+    const feetGuest = onPrimary ? PRIMARY_GUEST_ID : live
+    if (!feetGuest) return null
+    if (this.occupancyPendingGuestId) return null
+    if (feetGuest !== this.focusGuestId) return null
+    return feetGuest
+  }
+
+  private applySceneUiOwnership(ownerId: string | null): void {
+    const ownerSys = ownerId == null ? null : this.systemForFocusGuest(ownerId)
+    const seen = new Set<SceneScriptSystem>()
+    const hide = (sys: SceneScriptSystem | null | undefined) => {
+      if (!sys || seen.has(sys) || sys === ownerSys) return
+      seen.add(sys)
+      sys.releaseSceneUiPlayRoot()
+      sys.setSceneUiVisible(false)
+    }
+    hide(this.sceneScript)
+    for (const sys of this.multiScene?.secondaryManager?.allResidentSystems() ?? []) {
+      hide(sys)
+    }
+    if (ownerId == null || !ownerSys) {
+      console.info('[focus] scene-ui owner=none')
+      return
+    }
+    ownerSys.adoptSceneUiPlayRoot()
+    ownerSys.setSceneUiVisible(true)
+    const title =
+      ownerId === PRIMARY_GUEST_ID
+        ? this.loadedPrimaryScene?.title
+        : this.multiScene?.secondaryManager?.sceneForGuestId(ownerId)?.title
+    console.info(`[focus] scene-ui owner=${ownerId} “${title ?? '?'}”`)
   }
 
   private resolveCurrentGuestIdAt(dclX: number, dclZ: number): string {
@@ -5423,7 +5672,7 @@ export class World {
     const live = this.multiScene?.liveGuestIdForParcel(parcel.x, parcel.y) ?? null
     const onPrimary =
       scene.baseParcel.trim() === key || scene.parcels.some((p) => p.trim() === key)
-    // Live guest under feet is Current/Focus. Plaza only when no neighbor covers.
+    // Scripts may tick before GPU exists. Focus waits for meshes (no LiveKit/UI hitch).
     const next = live ?? (onPrimary ? PRIMARY_GUEST_ID : this.focusGuestId ?? PRIMARY_GUEST_ID)
     const sig = `${key}|${next}|${live ?? 'none'}|${onPrimary ? 'p' : 'n'}`
     if (sig !== this.lastOccupancyLogKey) {
@@ -5437,6 +5686,20 @@ export class World {
       )
     }
     return next
+  }
+
+  /** Focus/LiveKit only when the under-feet live guest has GPU meshes. */
+  private resolveFocusGuestIdAt(dclX: number, dclZ: number, currentGuestId: string): string {
+    const scene = this.loadedPrimaryScene
+    if (!scene || scene.source.kind !== 'coords') return PRIMARY_GUEST_ID
+    if (currentGuestId === PRIMARY_GUEST_ID) return PRIMARY_GUEST_ID
+    if (this.multiScene?.liveGuestGraphReady(currentGuestId)) return currentGuestId
+    const parcel = absoluteParcelAtSceneLocal(dclX, dclZ, scene.baseParcel)
+    const key = `${parcel.x},${parcel.y}`
+    const onPrimary =
+      scene.baseParcel.trim() === key || scene.parcels.some((p) => p.trim() === key)
+    if (onPrimary) return PRIMARY_GUEST_ID
+    return this.focusGuestId ?? PRIMARY_GUEST_ID
   }
 
   private focusScript(): SceneScriptSystem {
@@ -5455,6 +5718,7 @@ export class World {
     }
     if (guestId === this.focusGuestId) return
     this.focusGrantInFlight = true
+    this.comms.bumpSceneRoomConnectEpoch()
     const prev = this.focusGuestId
     try {
       const prevSys = this.systemForFocusGuest(prev)
@@ -5463,10 +5727,6 @@ export class World {
 
       if (prevSys && prevSys !== nextSys) {
         prevSys.setReservedPoseStreaming(false)
-        const prevScene = this.sceneForFocusGuest(prev)
-        if ((prevScene?.parcels.length ?? 0) > 16) {
-          prevSys.setSceneWorkerOnUpdatePaused(true)
-        }
         prevSys.clearAvatarModifierEffects()
         prevSys.setFocusPolicy('secondary')
         prevSys.setInputHub(null)
@@ -5490,9 +5750,13 @@ export class World {
           engineTickIntervalMs: resolveEngineTickIntervalMs(this.performanceTier)
         })
         nextSys.clearPlayerFocusState()
+        const leavingNeighbor = prev != null && prev !== PRIMARY_GUEST_ID
+        // Occupancy media before setFocusPolicy — otherwise primary policy starts HLS.
+        // Plaza return is occupancy-held too (walk-back started sinfulmeatstick).
+        const holdOccupancy = guestId !== PRIMARY_GUEST_ID || leavingNeighbor
+        nextSys.setOccupancyMediaEnabled(!holdOccupancy)
         nextSys.setFocusPolicy('primary')
         nextSys.setInputHub(this.inputHub, guestId === PRIMARY_GUEST_ID ? 'primary' : `focus:${guestId}`)
-        nextSys.setSceneUiVisible(true)
         this.player?.releaseSceneFreezeHold('focus-grant')
         this.player?.setModifierHidden(false)
         this.player?.setForcedCameraMode(null)
@@ -5506,22 +5770,28 @@ export class World {
             this.handleSendBinary(body)
           )
         }
+        // Scene UI is feet + occupancy — never leave the previous origin HUD up.
+        if (holdOccupancy) {
+          this.occupancyPendingGuestId = guestId
+          this.occupancyHealthyStreak = 0
+          this.occupancyDwellGuestId = null
+          this.occupancyDwellSinceMs = 0
+        } else {
+          this.occupancyPendingGuestId = null
+        }
       }
 
-      if (nextScene) {
+      if (nextScene && guestId === PRIMARY_GUEST_ID && this.occupancyPendingGuestId == null) {
         this.applySignedFetchSceneContext(nextScene)
-        const target = this.buildCommsTarget(nextScene)
-        const prevTarget = this.comms.getSceneTarget()
-        if (this.comms.sceneRoomIdentityChanged(prevTarget, target)) {
-          scheduleOffPlayRaf(() => {
-            void this.comms.connectFocusSceneRoom(target)
-          })
-        }
+        this.syncFocusSceneRoom(nextScene, PRIMARY_GUEST_ID)
+      } else if (nextScene) {
+        this.applySignedFetchSceneContext(nextScene)
       }
 
       this.focusGuestId = guestId
       console.info(
-        `[focus] grant ${prev ?? 'none'} → ${guestId} “${nextScene?.title ?? '?'}” (origin held)`
+        `[focus] grant ${prev ?? 'none'} → ${guestId} “${nextScene?.title ?? '?'}” (origin held)` +
+          (this.occupancyPendingGuestId ? ' — occupancy hold ui/media/livekit' : '')
       )
     } catch (err) {
       console.warn('[focus] grant failed', err)
@@ -5531,13 +5801,81 @@ export class World {
       this.pendingFocusGuestId = undefined
       if (queued != null && queued !== this.focusGuestId) {
         void this.grantFocusToGuest(queued)
+      } else {
+        const pos = this.player?.getPosition()
+        if (pos) this.syncSceneUiToFeet(pos.x, pos.z)
       }
     }
+  }
+
+  /**
+   * Arm UI + HLS + LiveKit only after leftover recovered. Walking onto
+   * BrandonManus at 7 FPS used to first-paint 15 widgets (31ms) + two videos.
+   */
+  private tickOccupancyArm(): void {
+    const pending = this.occupancyPendingGuestId
+    if (!pending) return
+    if (pending !== this.focusGuestId) {
+      this.occupancyPendingGuestId = null
+      this.occupancyDwellGuestId = null
+      this.lastSceneUiOwnerId = undefined
+      return
+    }
+    if (this.isPlayerLocomoting()) {
+      this.occupancyHealthyStreak = 0
+      this.occupancyDwellGuestId = null
+      this.occupancyDwellSinceMs = 0
+      return
+    }
+    const now = performance.now()
+    if (this.occupancyDwellGuestId !== pending) {
+      this.occupancyDwellGuestId = pending
+      this.occupancyDwellSinceMs = now
+      this.occupancyHealthyStreak = 0
+      return
+    }
+    if (now - this.occupancyDwellSinceMs < World.OCCUPANCY_DWELL_MS) return
+    const dying = lastFrameOverBudget(28) || this.sceneLoop.lastApplyOverran(16)
+    this.occupancyHealthyStreak = dying ? 0 : this.occupancyHealthyStreak + 1
+    if (this.occupancyHealthyStreak < World.OCCUPANCY_HEALTHY_FRAMES) return
+    this.armOccupancy(pending)
+  }
+
+  private armOccupancy(guestId: string): void {
+    if (guestId !== this.focusGuestId) {
+      this.occupancyPendingGuestId = null
+      return
+    }
+    const sys = this.systemForFocusGuest(guestId)
+    const scene = this.sceneForFocusGuest(guestId)
+    sys?.setOccupancyMediaEnabled(true)
+    this.occupancyPendingGuestId = null
+    this.lastSceneUiOwnerId = undefined
+    const pos = this.player?.getPosition()
+    if (pos) this.syncSceneUiToFeet(pos.x, pos.z)
+    if (scene) this.syncFocusSceneRoom(scene, guestId)
+    console.info(`[focus] occupancy armed ${guestId} “${scene?.title ?? '?'}”`)
   }
 
   private systemForFocusGuest(guestId: string | null): SceneScriptSystem | null {
     if (!guestId || guestId === PRIMARY_GUEST_ID) return this.sceneScript
     return this.multiScene?.secondaryManager?.motionSystemForGuestId(guestId) ?? null
+  }
+
+  /** Origin-held Focus: reconnect LiveKit only when sceneId changes. */
+  private syncFocusSceneRoom(scene: ResolvedScene, guestId: string): void {
+    const target = this.buildCommsTarget(scene)
+    const prevTarget = this.comms.getSceneTarget()
+    if (!this.comms.focusSceneRoomChanged(prevTarget, target)) {
+      this.comms.bindFocusRoomIdentity(target)
+      return
+    }
+    const epoch = this.comms.getSceneRoomConnectEpoch()
+    scheduleOffPlayRaf(() => {
+      if (this.focusGuestId !== guestId) return
+      if (epoch !== this.comms.getSceneRoomConnectEpoch()) return
+      void this.comms.connectFocusSceneRoom(target)
+    })
   }
 
   private sceneForFocusGuest(guestId: string | null): ResolvedScene | null {
@@ -5684,6 +6022,30 @@ export class World {
     return this.loadedPrimaryScene
   }
 
+  /** True when (x,y) is already this primary's occupancy (no second handoff). */
+  primaryCoversParcel(x: number, y: number): boolean {
+    const key = `${x},${y}`
+    if (this.primaryOccupancyParcels.has(key)) return true
+    const scene = this.loadedPrimaryScene
+    if (!scene) return false
+    if (scene.baseParcel.trim() === key) return true
+    return scene.parcels?.some((p) => p.trim() === key) === true
+  }
+
+  private rememberPrimaryOccupancy(
+    scene: ResolvedScene,
+    extraKeys: readonly string[] = []
+  ): void {
+    this.primaryOccupancyParcels.clear()
+    const add = (k: string | undefined): void => {
+      const t = k?.trim()
+      if (t) this.primaryOccupancyParcels.add(t)
+    }
+    add(scene.baseParcel)
+    for (const p of scene.parcels ?? []) add(p)
+    for (const k of extraKeys) add(k)
+  }
+
   /**
    * PE has full capability but lower priority. Intents submitted to the arbiter
    * during PE tick are applied here if still pending (primary already ran and
@@ -5750,6 +6112,14 @@ export class World {
     const multi = this.multiScene
     if (!multi || !this.player) return false
 
+    // Same-entity second promote (next cell of a 2×2) must not force-boot.
+    if (this.primaryCoversParcel(target.x, target.y)) {
+      console.info(
+        `[promote] already primary @ ${target.x},${target.y} — skip (no force-boot)`
+      )
+      return true
+    }
+
     const handoff = multi.takeSecondaryForPromote(target.x, target.y)
     if (!handoff) {
       console.info(
@@ -5758,7 +6128,7 @@ export class World {
       return false
     }
 
-    return this.applyPromoteHandoff(handoff)
+    return this.applyPromoteHandoff(handoff, [`${target.x},${target.y}`])
   }
 
   /**
@@ -5771,13 +6141,16 @@ export class World {
   /**
    * Adopt secondary as primary; demote old primary to sticky secondary for resume.
    */
-  private async applyPromoteHandoff(handoff: {
-    entityId: string
-    scene: ResolvedScene
-    system: import('./systems/SceneScriptSystem').SceneScriptSystem
-    physIds: number[]
-    physOffset: number
-  }): Promise<boolean> {
+  private async applyPromoteHandoff(
+    handoff: {
+      entityId: string
+      scene: ResolvedScene
+      system: import('./systems/SceneScriptSystem').SceneScriptSystem
+      physIds: number[]
+      physOffset: number
+    },
+    extraParcelKeys: readonly string[] = []
+  ): Promise<boolean> {
     const multi = this.multiScene
     if (!multi || !this.player) return false
 
@@ -5794,11 +6167,13 @@ export class World {
     const newSystem = handoff.system
 
     // Secondary→primary: rekey offset phys ids back to native (keep actors, no recook).
+    let stickyPhysKept = 0
     if (handoff.physOffset !== 0 && handoff.physIds.length > 0) {
       let rekeyed = 0
       for (const id of handoff.physIds) {
         rekeyed += this.physics.rekeyStaticColliderFamily(id, id - handoff.physOffset)
       }
+      stickyPhysKept = rekeyed
       console.info(
         `[promote] handoff colliders rekey offset→native “${newScene.title}” ` +
           `n=${handoff.physIds.length} rekeyed=${rekeyed} (no recook)`
@@ -5842,14 +6217,18 @@ export class World {
         }
         if (remapped.length > 0) {
           try {
-            const slid = this.physics.applyStaticColliderPoseUpdates(remapped, { force: true })
+            const root = oldPrimary.getEntityStore()?.root
+            const dx = root?.position.x ?? 0
+            const dy = root?.position.y ?? 0
+            const dz = root?.position.z ?? 0
+            const slid = this.physics.translateWorldBakedColliders(remapped, dx, dy, dz)
             multi.markResidentCollidersSynced()
             console.info(
-              `[promote] sticky colliders rekey+pose “${oldScene.title}” remapped=${remapped.length} ` +
-                `rekeyed=${rekeyed} slid=${slid} offset=${physOffset} (no recook)`
+              `[promote] sticky colliders rekey+translate “${oldScene.title}” remapped=${remapped.length} ` +
+                `rekeyed=${rekeyed} slid=${slid} delta=(${dx.toFixed(1)},${dz.toFixed(1)}) offset=${physOffset} (no recook)`
             )
           } catch (err) {
-            console.warn('[promote] sticky collider rekey/pose failed', err)
+            console.warn('[promote] sticky collider rekey/translate failed', err)
           }
         } else {
           console.warn(
@@ -5893,6 +6272,7 @@ export class World {
 
     this.sceneScript = newSystem
     this.loadedPrimaryScene = newScene
+    this.rememberPrimaryOccupancy(newScene, extraParcelKeys)
     this.assets.setScene(newScene)
     // Snow sat at neighbor offset as a guest; origin is now its SW — rewrite GPU.
     this.sceneScript.rebakeGpuAfterOriginChange()
@@ -5957,11 +6337,25 @@ export class World {
     // CRITICAL: rebind player locomotion reads to the NEW primary MirrorComponents.
     this.player.setReadComponents(this.sceneScript.readComponents)
     this.player.setImpulseLamportProvider(() => this.sceneScript.getPhysicsImpulseLamport())
+    // Occupancy hold may have paused this guest's media while it was a secondary.
+    this.sceneScript.setOccupancyMediaEnabled(true)
+    this.occupancyPendingGuestId = null
+    this.focusGuestId = PRIMARY_GUEST_ID
+    this.sceneLoop.setCurrentGuestId(PRIMARY_GUEST_ID)
+    this.physHoldGuestId = null
+    this.lastPlazaPhysFeet = { x: Number.NaN, z: Number.NaN }
     // Clear freeze + arm grace (worker freezes stripped on player-frame).
     this.sceneScript.clearPlayerFocusState()
     this.sceneScript.setFocusPolicy('primary')
     this.sceneScript.setInputHub(this.inputHub, 'primary')
-    this.sceneScript.setSceneUiVisible(true)
+    this.lastSceneUiOwnerId = undefined
+    this.syncSceneUiToFeet(pos.x, pos.z)
+    // Sticky adopt: play-ready so the first tick is present/fire-and-forget, not
+    // hydration ack of the whole plaza CRDT dump (was ~2s FPS stall).
+    this.sceneScript.notifyPlayReady({
+      plazaScale: (newScene.parcels?.length ?? 0) >= 16,
+      engineTickIntervalMs: resolveEngineTickIntervalMs(this.performanceTier)
+    })
     this.player.releaseSceneFreezeHold('promote-handoff')
     // Never leave AvatarModifier hide or CameraModeArea from the previous primary.
     this.player.setModifierHidden(false)
@@ -6003,6 +6397,7 @@ export class World {
     const originBefore = { ...this.comms.getSceneOrigin() }
     const prevSceneTarget = this.comms.getSceneTarget()
     const nextSceneTarget = this.buildCommsTarget(newScene)
+    this.comms.bumpSceneRoomConnectEpoch()
     this.comms.applyRealmAbout(newScene.realm, newScene.commsPointer)
     this.comms.bindSceneTarget(nextSceneTarget)
     this.session.setCatalystEndpoints(newScene.realm.contentUrl, newScene.realm.lambdasUrl)
@@ -6027,12 +6422,17 @@ export class World {
     const baseY = Number.isFinite(baseParts[1]) ? baseParts[1]! : 0
     const softPx = baseX + Math.floor(feetAfter.x / 16)
     const softPy = baseY + Math.floor(feetAfter.z / 16)
+    const softKey = `${softPx},${softPy}`
+    this.primaryOccupancyParcels.add(softKey)
     console.info(
       `[promote] origin (${originBefore.x},${originBefore.z})→(${originAfter.x},${originAfter.z}) ` +
         `feetLocal=(${feetAfter.x.toFixed(1)},${feetAfter.z.toFixed(1)}) ` +
-        `softParcel=${softPx},${softPy} restoreOk=${ok} ` +
+        `softParcel=${softKey} restoreOk=${ok} ` +
         `genesis=(${genesis.x.toFixed(1)},${genesis.z.toFixed(1)})`
     )
+    this.remoteAvatars?.rebaseSceneOrigin(originBefore, originAfter)
+    const worldFeet = this.player.getWorldPosition()
+    if (worldFeet) this.remoteAvatars?.setLocalPlayerPosition(worldFeet)
 
     // Sticky secondaries already retargeted before demote; re-sync live ids + AOI hide.
     multi.setOnLiveSecondaryIds((ids) => {
@@ -6044,6 +6444,7 @@ export class World {
       this.aoiVisual.markLiveSecondaryGraphReady(entityId)
     })
     multi.syncLiveSecondaryVisibility()
+    if (oldScene?.entityId) this.aoiVisual.markLiveSecondaryGraphReady(oldScene.entityId)
     // CRITICAL: register demoted plaza parcels BEFORE retarget refresh paints scatter/empty.
     // Include prior primary parcels explicitly (sticky demote) so CBD never gets trees.
     const residentKeys = new Set(multi.residentParcelKeys())
@@ -6055,23 +6456,11 @@ export class World {
     // Re-assert demoted mesh offsets after origin change. Colliders already registered
     // once above — do NOT forceRecook here (that was the CBD→snow→CBD 3fps death spiral).
     multi.notifyPrimaryChanged(newScene)
-    // Pose-only refresh if retarget dirtied colliders (cheap; fingerprints unchanged → no recook).
-    {
-      const remapped = multi.collectResidentColliders()
-      if (remapped.length > 0) {
-        try {
-          this.physics.syncStaticColliders(remapped, {
-            cookBudget: 8,
-            freezeRemoval: true,
-            forceRecookOnPoseChange: false,
-            geometryCache: true
-          })
-          multi.markResidentCollidersSynced()
-        } catch (err) {
-          console.warn('[promote] sticky collider retarget sync failed', err)
-        }
-      }
-    }
+    // setPrimaryScene recaptures remapped descs (dirty). Do not stream them
+    // into syncStaticColliders — World already translated existing actors.
+    multi.markResidentCollidersSynced()
+    // Sticky hulls already translated with the demoted root. Do NOT
+    // syncStaticColliders here — that re-expanded plaza multi-shape (6 fps).
 
     // AOI: retarget with CORRECTED local feet (after restore) — no unbind wipe.
     // Kill live secondary reconcile during settle (dual-worker freeze). Visuals OK.
@@ -6086,12 +6475,15 @@ export class World {
     this.aoiVisual.retargetPrimary(newScene, feetAfter.x, feetAfter.z)
     // retargetPrimary already liveReconcileEnabled=false; visuals neighborActivity on.
     this.scenePromote.bind(newScene)
+    this.scenePromote.coverPrimaryParcel(softKey)
+    for (const k of extraParcelKeys) this.scenePromote.coverPrimaryParcel(k)
     // Promote evaluate OK; soft-route force-boot gated by isSecondaryActivityEnabled().
     this.scenePromote.setNeighborActivityEnabled(true)
 
     // Soft-route URL to feet parcel under new origin (not stale -135,107 warp).
     this.promoteSoftRoute?.(softPx, softPy)
-    // Archipelago island seed uses genesis from new origin + local feet.
+    // Keep the live island. Parcel-center bind seed is skipped when we already
+    // have genesis; this only refreshes heartbeat at actual feet (no SW snap).
     this.comms.seedArchipelagoSceneLocal(feetAfter.x, genesis.y, feetAfter.z)
 
     console.info(
@@ -6100,13 +6492,17 @@ export class World {
         `newPrimary="${newScene.title}" base=${newScene.baseParcel} soft=${softPx},${softPy}`
     )
 
-    // Re-register colliders under primary entity ids (secondary-offset actors were
-    // invalidated above). Prefer geometryCache + no forceRecook — walk-back must not
-    // re-trimesh the entire plaza (that was continuous 3fps with Missing-actors thrash).
+    // Sticky walk-back already rekeyed offset→native. Force-sync + syncCollisionForce
+    // orphaned live hulls (e524…) and expanded the 48m ring (few-second FPS dip).
     this.colliderCookQueue.clear()
     if (skipPhysxColliders()) {
       this.pendingColliderCooks = 0
       console.info('[promote] colliders skipped (?nocolliders) — no primary re-cook')
+    } else if (stickyPhysKept > 0) {
+      this.pendingColliderCooks = 0
+      console.info(
+        `[promote] primary colliders keep rekey n=${stickyPhysKept} (no force-sync)`
+      )
     } else {
       try {
         this.sceneScript.syncCollisionForce()
@@ -6115,16 +6511,17 @@ export class World {
       }
       this.reconcileColliderCookQueue()
       try {
-        const descs = this.sceneScript.getAllPhysicsColliderDescs?.() ?? []
+        const descs = (this.sceneScript.getAllPhysicsColliderDescs?.() ?? []).filter(
+          (d) => !this.isPlazaScenePhysFar(d, ROAD_PHYS_RADIUS_M)
+        )
         if (descs.length > 0) {
-          // Bounded first push — remaining cooks trickle via cook queue (not 128 main-thread).
           this.physics.syncStaticColliders(descs, {
             cookBudget: Math.min(48, descs.length),
             freezeRemoval: true,
             forceRecookOnPoseChange: false,
             geometryCache: true
           })
-          console.info(`[promote] primary colliders force-sync n=${descs.length}`)
+          console.info(`[promote] primary colliders force-sync n=${descs.length} (48m ring)`)
         }
       } catch {
         /* optional API */
@@ -6134,8 +6531,10 @@ export class World {
       }
     }
 
-    // Longer settle: dual full workers after walk-back thrash freeze locomotion.
-    const SETTLE_LIVE_SECONDARIES_MS = 8_000
+    // Primary already play-ready (sticky rekey, no plaza recook/ack). 8s was for
+    // dual-worker freeze; mega plaza stays script-off anyway. 3s covers the
+    // scene-room LiveKit swap before neighbor JS wakes.
+    const SETTLE_LIVE_SECONDARIES_MS = 3_000
     window.setTimeout(() => {
       if (this.loadedPrimaryScene?.entityId !== newScene.entityId) return
       // Re-assert free locomotion when settle ends (in case worker re-froze mid-grace).
@@ -6645,6 +7044,7 @@ export class World {
     this.aoiVisual.dispose()
     this.scenePromote.unbind()
     this.loadedPrimaryScene = null
+    this.primaryOccupancyParcels.clear()
     this.ezTreeGrass?.dispose()
     this.ezTreeGrass = null
     this.desertAtmosphere = null

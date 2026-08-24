@@ -485,6 +485,18 @@ export function encodeMovementCompressed(
   }
 }
 
+/**
+ * Genesis City map union (ADR-250 sizes). Island RFC4 MovementCompressed parcel
+ * index is city-wide — never the current scene's 4 parcels (that piled remotes
+ * onto the new SW on stand-on promote).
+ */
+export const GENESIS_CITY_REALM_BOUNDS: RealmBounds = {
+  minX: -150,
+  minY: -150,
+  maxX: 163,
+  maxY: 158
+}
+
 export function realmBoundsFromParcels(parcels: string[]): RealmBounds | null {
   if (!parcels.length) return null
   let minX = Infinity

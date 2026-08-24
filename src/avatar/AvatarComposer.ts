@@ -25,6 +25,7 @@ import { isModelWearable } from './slots'
 import { yieldToIdle } from '../rendering/mainThreadYield'
 import { stabilizeSkinnedMeshes } from '../rendering/skinnedMeshInstance'
 import { isAvatarVerbose } from '../client/debug/ClientDebugLog'
+import { isAppleTouchDevice } from '../util/appleTouch'
 import type {
   AvatarComposeConfig,
   AvatarProfile,
@@ -160,15 +161,29 @@ async function composeFromConfig(
         bodyRoot
       }
       const isFeet = category === 'feet'
-      if (isFeet && isAvatarVerbose()) {
-        console.info(`[avatar] composing feet — ${entry.wearable.id}`)
+      const isHeadSlot =
+        category === 'hair' ||
+        category === 'facial_hair' ||
+        category === 'hat' ||
+        category === 'helmet' ||
+        category === 'mask' ||
+        category === 'tiara' ||
+        category === 'eyewear' ||
+        category === 'earring' ||
+        category === 'top_head'
+      if (isAvatarVerbose() && (isFeet || isHeadSlot || category === 'hair')) {
+        console.info(`[avatar] composing ${category} — ${entry.wearable.id}`)
       }
 
       // Probe bone quality on the pristine layer. Low quality → skip prepare/merge and go
       // straight to parallel-skeleton fallback (avoids mutating authored transforms).
       const quality = probeWearableMergeQuality(entry.layer, skeleton, mergeOpts)
       const threshold = mergeThreshold(mergeOpts)
-      const tryMerge = quality >= threshold || isFeet
+      // iPhone main-thread GLB bindMatrix ≠ body skeleton: merging hair/hat skins to
+      // Avatar_Head still leaves the mesh bobbing (Head bone dy stays locked). Keep the
+      // wearable rig and drive it from the body (parallel + world pose copy).
+      const tryMerge =
+        (quality >= threshold || isFeet) && !(isHeadSlot && isAppleTouchDevice())
 
       let merged = false
       if (tryMerge) {
@@ -185,6 +200,13 @@ async function composeFromConfig(
           prepareWearableForCompose(entry.layer, bodyRoot, category)
           merged = mergeWearableMeshes(entry.layer, skeleton, avatar, mergeOpts)
         }
+      }
+
+      if (isAvatarVerbose()) {
+        console.info(
+          `[avatar] ${category} quality=${quality.toFixed(2)} threshold=${threshold.toFixed(2)} ` +
+            `tryMerge=${tryMerge} merged=${merged} appleTouch=${isAppleTouchDevice()} — ${entry.wearable.id}`
+        )
       }
 
       if (!merged) {
@@ -224,6 +246,9 @@ async function composeFromConfig(
   // Opt-in via Preferences → Graphics → Toon shaders (default off).
   applyAvatarToonShading(avatar)
   stabilizeSkinnedMeshes(avatar)
+  avatar.traverse((obj) => {
+    obj.matrixAutoUpdate = true
+  })
   // Opaque atlas is opt-in — default off until flipY/UV/incomplete-texture issues are solid.
   // Enable with ?avataratlas=1 (or session storage dcl.avatar.opaqueAtlas=1).
   if (isAvatarOpaqueAtlasEnabled()) {

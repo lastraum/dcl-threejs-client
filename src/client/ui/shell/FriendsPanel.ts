@@ -315,12 +315,9 @@ export class FriendsPanel {
     const root = getComputedStyle(document.documentElement)
     const isMobile = document.body.classList.contains('client-mobile')
     if (isMobile) {
-      // Match .client-mobile .chat-panel-wrap
-      const fab = root.getPropertyValue('--scene-chat-fab-size').trim() || '48px'
-      const gap = root.getPropertyValue('--scene-chat-fab-gap').trim() || '10px'
-      this.element.style.left = `calc(max(12px, env(safe-area-inset-left, 0px)) + ${fab} + ${gap})`
-      this.element.style.right = 'var(--client-safe-right)'
-      this.element.style.bottom = `calc(max(12px, env(safe-area-inset-bottom, 0px)) + ${fab} + ${gap})`
+      this.element.style.left = 'max(12px, env(safe-area-inset-left, 0px))'
+      this.element.style.right = 'calc(max(12px, env(safe-area-inset-right, 0px)) + 60px)'
+      this.element.style.bottom = 'max(12px, env(safe-area-inset-bottom, 0px))'
       this.element.style.width = 'auto'
       this.element.style.height = 'var(--client-chat-max-h)'
       this.element.style.maxHeight = 'var(--client-chat-max-h)'

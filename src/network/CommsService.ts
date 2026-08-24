@@ -54,6 +54,7 @@ import {
 } from './comms/livekitVideoStreams'
 import {
   parseCommsSceneOrigin,
+  GENESIS_CITY_REALM_BOUNDS,
   realmBoundsFromParcels,
   sceneLocalToGenesis,
   type RealmBounds
@@ -87,6 +88,8 @@ export type SceneCommsFailureReason =
   | 'livekit'
   /** World /about (or /status) has no LiveKit adapter — solo play is fine. */
   | 'comms_disabled'
+  /** Focus left before the join ran — do not tear down the current room. */
+  | 'cancelled'
 
 export type SceneCommsConnectResult = { ok: true } | { ok: false; reason: SceneCommsFailureReason }
 
@@ -175,6 +178,8 @@ export class CommsService {
   /** Serialize scene-room joins so cast retry + route switch cannot abort each other. */
   private sceneRoomConnectChain: Promise<unknown> = Promise.resolve()
   private sceneRoomConnectInFlight = false
+  /** Bumped on Focus grant so a stale occupancy join cannot land after we left. */
+  private sceneRoomConnectEpoch = 0
   /** Throttle RFC4 ProfileRequest per peer — version heartbeats used to flood lossy DC. */
   private readonly profileRequestAt = new Map<string, number>()
   private static readonly PROFILE_REQUEST_COOLDOWN_MS = 5_000
@@ -661,11 +666,21 @@ export class CommsService {
     return connected
   }
 
+  bumpSceneRoomConnectEpoch(): void {
+    this.sceneRoomConnectEpoch++
+  }
+
+  getSceneRoomConnectEpoch(): number {
+    return this.sceneRoomConnectEpoch
+  }
+
   /** Focus walk: join under-feet scene LiveKit; keep host origin / movement frame. */
   async connectFocusSceneRoom(target: SceneCommsTarget): Promise<SceneCommsConnectResult> {
-    const run = this.sceneRoomConnectChain.then(() =>
-      this.connectSceneRoomExclusive(target, { preserveHostOrigin: true })
-    )
+    const epoch = this.sceneRoomConnectEpoch
+    const run = this.sceneRoomConnectChain.then(() => {
+      if (epoch !== this.sceneRoomConnectEpoch) return { ok: false as const, reason: 'cancelled' as const }
+      return this.connectSceneRoomExclusive(target, { preserveHostOrigin: true, epoch })
+    })
     this.sceneRoomConnectChain = run.then(
       () => undefined,
       () => undefined
@@ -684,8 +699,11 @@ export class CommsService {
 
   private async connectSceneRoomExclusive(
     target: SceneCommsTarget,
-    opts?: { preserveHostOrigin?: boolean }
+    opts?: { preserveHostOrigin?: boolean; epoch?: number }
   ): Promise<SceneCommsConnectResult> {
+    if (opts?.epoch !== undefined && opts.epoch !== this.sceneRoomConnectEpoch) {
+      return { ok: false, reason: 'cancelled' }
+    }
     this.sceneRoomConnectInFlight = true
     // First join: hold AUTH_RES until main/syncEntity. Already playing: do not re-hold —
     // worker-ready release never runs again, so reconnect used to freeze teamAssigned/paintTick.
@@ -724,6 +742,19 @@ export class CommsService {
   }
 
   /**
+   * Origin-held Focus / occupancy: same deployment keeps the socket.
+   * Soft-route updates commsPointer every parcel; reconnecting plaza for
+   * pointer-only change was the walk-back LiveKit hitch.
+   */
+  focusSceneRoomChanged(
+    prev: Pick<SceneCommsTarget, 'sceneId'> | null | undefined,
+    next: Pick<SceneCommsTarget, 'sceneId'>
+  ): boolean {
+    if (!prev) return true
+    return (prev.sceneId?.trim() ?? '') !== (next.sceneId?.trim() ?? '')
+  }
+
+  /**
    * Swap Focus scene-room identity (sceneId + pointer) without moving the host
    * origin / PhysX frame. Walk Focus grant must not rebase Genesis.
    */
@@ -753,7 +784,12 @@ export class CommsService {
     this.realm.room = normalizePointer(target.pointer)
     this.contentUrl = target.contentUrl.replace(/\/$/, '')
     this.adapterManager.setContentUrl(this.contentUrl)
-    this.realmBounds = realmBoundsFromParcels(target.parcels ?? [target.baseParcel])
+    const isWorld = target.isWorld ?? !isParcelPointer(normalizePointer(target.pointer))
+    // Island MovementCompressed is city-wide. Scene parcels as bounds (snow 2×2)
+    // decoded every remote into the new SW.
+    this.realmBounds = isWorld
+      ? realmBoundsFromParcels(target.parcels ?? [target.baseParcel])
+      : GENESIS_CITY_REALM_BOUNDS
     this.sceneOrigin = parseCommsSceneOrigin(target.baseParcel)
     const [bxStr, bzStr] = target.baseParcel.split(',')
     this.sceneOriginMeters = {
@@ -786,6 +822,9 @@ export class CommsService {
   /** Force archipelago heartbeat at the bound scene (overwrites 0,0,0 shell seed). */
   seedArchipelagoPresenceFromScene(reason = 'scene'): void {
     if (this.isWorldComms()) return
+    // Stand-on origin rebase must not snap the island to the new SW (plaza
+    // center vs feet at the estate edge → 23t4→242m→abort).
+    if (this.archipelago.hasLivePosition()) return
     const seed = this.presenceSeedGenesisMeters()
     if (!seed) return
     this.archipelago.ensurePresenceSeed(seed)

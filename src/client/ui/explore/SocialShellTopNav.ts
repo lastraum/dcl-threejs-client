@@ -1,6 +1,7 @@
 import type { LoginResult } from '../../../auth/AuthClient'
 import type { SocialService } from '../../../social/SocialService'
 import { SocialProfileMenu } from './SocialProfileMenu'
+import { applyTouchPlayDocumentClasses, subscribeTouchPlayLayout } from '../touchPlayLayout'
 
 export type SocialShellTab =
   | 'explore'
@@ -52,6 +53,7 @@ export class SocialShellTopNav {
   private readonly profileMenu: SocialProfileMenu
   private readonly enter3dBtn: HTMLButtonElement
   private readonly tabButtons: Partial<Record<SocialShellTab, HTMLButtonElement>> = {}
+  private readonly unsubLayout: () => void
   private activeTab: SocialShellTab | null
   private login: LoginResult
 
@@ -108,6 +110,8 @@ export class SocialShellTopNav {
 
     this.applyEnter3dVisibility()
     this.applyActiveTab()
+    this.unsubLayout = subscribeTouchPlayLayout(() => applyTouchPlayDocumentClasses())
+    applyTouchPlayDocumentClasses()
   }
 
   mount(): void {
@@ -136,6 +140,7 @@ export class SocialShellTopNav {
   }
 
   dispose(): void {
+    this.unsubLayout()
     this.profileMenu.dispose()
     this.el.remove()
   }

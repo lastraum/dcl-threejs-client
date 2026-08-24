@@ -29,10 +29,12 @@ export {
   SECONDARY_LIVE_MAX_RADIUS_M,
   SECONDARY_LIVE_SCENE_PROXIMITY_M,
   SECONDARY_LIVE_BOOT_CONCURRENCY,
+  STICKY_RESTORE_MAX_PARCELS,
   peLiveCap,
   secondaryTickIntervalMs,
   peTickIntervalMs,
-  tertiaryResidentCap
+  tertiaryResidentCap,
+  sceneLoopFairMute
 } from './caps'
 export type { ResidentMode } from './SceneWorkerSlot'
 export {

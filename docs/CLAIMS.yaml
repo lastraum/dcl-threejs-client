@@ -9,15 +9,7 @@ updated: 2026-08-24
 source: github
 base_branch: dev-latest
 workflow:
-  - stage: pending_review
-    integration_ref: pr:62
-    title: deploy confirmation on Barn cards + update-available refresh for library
-      pets
-    owner: awedjob
-    pr: 62
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/62
-    updated: 2026-08-24
-  - stage: pending_review
+  - stage: merged
     integration_ref: pr:71
     title: confirm deploys and refresh stale barn pets
     owner: lastraum
@@ -159,10 +151,3 @@ workflow:
     pr: 48
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/48
     updated: 2026-07-25
-  - stage: merged
-    integration_ref: pr:47
-    title: export equipped DCL avatar as VRM 0.0
-    owner: lastraum
-    pr: 47
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/47
-    updated: 2026-07-24

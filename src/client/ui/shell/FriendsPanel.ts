@@ -312,7 +312,6 @@ export class FriendsPanel {
     }
 
     // Default: identical CSS vars as .chat-panel-wrap / .chat-panel
-    const root = getComputedStyle(document.documentElement)
     const isMobile = document.body.classList.contains('client-mobile')
     if (isMobile) {
       this.element.style.left = 'max(12px, env(safe-area-inset-left, 0px))'

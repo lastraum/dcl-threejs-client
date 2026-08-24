@@ -171,7 +171,7 @@ async function composeFromConfig(
         category === 'eyewear' ||
         category === 'earring' ||
         category === 'top_head'
-      if (isAvatarVerbose() && (isFeet || isHeadSlot || category === 'hair')) {
+      if (isAvatarVerbose() && (isFeet || isHeadSlot)) {
         console.info(`[avatar] composing ${category} — ${entry.wearable.id}`)
       }
 

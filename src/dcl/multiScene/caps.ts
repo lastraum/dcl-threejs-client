@@ -4,14 +4,14 @@ import { skipAoiNeighbors } from '../../client/devFlags'
 
 /**
  * Open-world residency (docs/OPEN_WORLD_RESIDENCY.md).
- * Compile defaults: shells + disc + live guests ON; promote OFF.
+ * Compile defaults: shells + disc + live guests + stand-on promote ON.
  * `?noaoi` still wins. URL: ?aoishells=0|1  ?aoidisc=0|1  ?aoilive=0|1  ?aoipromote=0|1
  */
 const AOI_NEIGHBOR_SHELLS = true
 const AOI_SCENE_DISTANCE_VISUALS = true
 const AOI_LIVE_GUESTS = true
-/** Walk never rebases origin / never handoff-promotes. */
-const AOI_STAND_ON_PROMOTE = false
+/** Stand-on a live SDK7 footprint → in-world primary handoff (origin rebase). */
+const AOI_STAND_ON_PROMOTE = true
 
 /**
  * Live JS workers (scripts + CRDT). Official desktop: ~10 m load + ~10 m extra
@@ -23,6 +23,12 @@ const LIVE_SCENE_UNLOAD_EXTRA_M = 16
 /** Concurrent live isolates — desktop uses 4 threads; Three.js is costlier. */
 const AOI_LIVE_SECONDARY_HARD_CAP = 4
 const TERTIARY_RESIDENT_HARD_CAP = 8
+/**
+ * Sticky restore after promote-settle turns scripts back on. Plaza-scale
+ * deployments stay tertiary (meshes + LOD). Stand-on still promotes from
+ * tertiary via takeForPromote. Matches SceneWorkerSlot modest cutoff.
+ */
+export const STICKY_RESTORE_MAX_PARCELS = 16
 
 export const ROAD_PHYS_RADIUS_M = 48
 export const EMPTY_LAND_PHYS_RADIUS_M = 48
@@ -124,9 +130,8 @@ export function secondaryLiveRadiusM(): number {
   return secondaryLiveEnterRadiusM()
 }
 
-/** After play-ready, start every live-band guest (desktop = 4 scene threads).
- *  Measure-only: do not lower without a stacked live-neighbor walk log of p5 < 30. */
-export const SECONDARY_LIVE_BOOT_CONCURRENCY = 4
+/** One cold boot at a time — stacked neighbor hydrate was 7 FPS on CBD walk. */
+export const SECONDARY_LIVE_BOOT_CONCURRENCY = 1
 
 export function tertiaryResidentCap(_tier: PerformanceTier): number {
   return TERTIARY_RESIDENT_HARD_CAP
@@ -136,6 +141,17 @@ export function peLiveCap(tier: PerformanceTier): number {
   if (tier === 'low') return 1
   if (tier === 'medium') return 1
   return 2
+}
+
+/**
+ * Standing-in + one leftover mute secondary per send.
+ * `?sceneloopfair=0` restores exclusive one-secondary slot.
+ */
+const SCENE_LOOP_FAIR_MUTE = true
+
+export function sceneLoopFairMute(): boolean {
+  if (skipAoiNeighbors()) return false
+  return urlBool('sceneloopfair', SCENE_LOOP_FAIR_MUTE)
 }
 
 /** Live guests are SceneLoop 20 Hz — never a 0 ms present pump. */

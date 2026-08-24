@@ -15,6 +15,7 @@ import { EventsView, type EventsViewOptions } from './EventsView'
 import { MapView, type MapPlayerState } from './MapView'
 import { GalleryView } from './GalleryView'
 import { PlacesView, type PlacesViewOptions } from './PlacesView'
+import { isTouchPlayLayout } from '../touchPlayLayout'
 
 export type SettingsTab =
   | 'explore'
@@ -530,7 +531,7 @@ export class SettingsOverlay {
     // Red-dot mark mirrors the active rail tab's icon (its hover state swaps to "2D").
     const logoIcon = this.root.querySelector('[data-logo-icon]') as HTMLElement | null
     if (logoIcon && tabDef) logoIcon.innerHTML = tabDef.icon
-    if (activeBtn && window.matchMedia('(max-width: 767px)').matches) {
+    if (activeBtn && isTouchPlayLayout()) {
       activeBtn.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' })
     }
     this.renderContent()

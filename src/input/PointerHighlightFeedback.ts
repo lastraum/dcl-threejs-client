@@ -15,12 +15,12 @@ export function pointerShowHighlight(info?: { showHighlight?: boolean | number }
 
 const HIGHLIGHT_IN_RANGE = 0x44ff66
 const HIGHLIGHT_OUT_OF_RANGE = 0xff4444
-const OUTLINE_SCALE = 1.025
 
 /** Entity mesh outline — green in range, red when too far (Explorer desktop parity). */
 export class PointerHighlightFeedback {
-  private readonly shells: THREE.Mesh[] = []
-  private readonly materials: THREE.MeshBasicMaterial[] = []
+  private readonly shells: THREE.Object3D[] = []
+  private readonly materials: THREE.LineBasicMaterial[] = []
+  private readonly edgeGeoms: THREE.BufferGeometry[] = []
   private activeKey = ''
 
   dispose(): void {
@@ -57,24 +57,24 @@ export class PointerHighlightFeedback {
 
     for (const mesh of meshes) {
       if (!mesh.geometry) continue
-      const mat = new THREE.MeshBasicMaterial({
+      // Back-face inflated mesh reads as a solid fill on thin door/glass planes.
+      // Explorer showHighlight is an edge silhouette.
+      const edges = new THREE.EdgesGeometry(mesh.geometry, 40)
+      const mat = new THREE.LineBasicMaterial({
         color,
-        side: THREE.BackSide,
-        transparent: true,
-        opacity: 0.85,
         depthTest: true,
-        depthWrite: false
+        depthWrite: false,
+        transparent: true,
+        opacity: 0.95
       })
-      const shell = new THREE.Mesh(mesh.geometry, mat)
-      shell.name = '__pointer_highlight__'
-      shell.renderOrder = mesh.renderOrder + 20
-      shell.frustumCulled = mesh.frustumCulled
-      shell.scale.set(OUTLINE_SCALE, OUTLINE_SCALE, OUTLINE_SCALE)
-      shell.position.set(0, 0, 0)
-      shell.quaternion.identity()
-      mesh.add(shell)
-      this.shells.push(shell)
+      const lines = new THREE.LineSegments(edges, mat)
+      lines.name = '__pointer_highlight__'
+      lines.renderOrder = mesh.renderOrder + 20
+      lines.frustumCulled = mesh.frustumCulled
+      mesh.add(lines)
+      this.shells.push(lines)
       this.materials.push(mat)
+      this.edgeGeoms.push(edges)
     }
   }
 
@@ -83,8 +83,10 @@ export class PointerHighlightFeedback {
       shell.parent?.remove(shell)
     }
     for (const mat of this.materials) mat.dispose()
+    for (const geom of this.edgeGeoms) geom.dispose()
     this.shells.length = 0
     this.materials.length = 0
+    this.edgeGeoms.length = 0
     this.activeKey = ''
   }
 }

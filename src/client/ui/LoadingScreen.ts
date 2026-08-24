@@ -7,7 +7,10 @@ import { progressFromStatus } from './loadingProgress'
 import type { WaitForSceneAssetsResult, SceneHydrationStats } from '../../rendering/sceneHydration'
 
 const POST_LOAD_HOLD_MS = 800
-/** After world.start() — let composite spawn / colliders settle before revealing UI. */
+/**
+ * After world.start() — let composite spawn / colliders settle before revealing UI.
+ * Overlay still covers the canvas; scene-visible dt stays frozen until `finish()`.
+ */
 export const POST_SPAWN_SETTLE_MS = 5000
 export const POST_SPAWN_SETTLE_FAST_MS = 1500
 const SLIDE_INTERVAL_MS = 5500

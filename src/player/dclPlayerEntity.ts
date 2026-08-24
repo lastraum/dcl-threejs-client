@@ -1,6 +1,25 @@
 import * as THREE from 'three'
 import { dclToThreeVec, threeToDclVec } from '../bridge/dclTransform'
 
+const _peEuler = new THREE.Euler(0, 0, 0, 'YXZ')
+
+/**
+ * PlayerEntity Transform.rotation for scene reads.
+ * SDK `Vector3.rotate(Forward(), rotation)` must equal body facing in DCL
+ * (+X east, +Z north). Three locomotion yaw is `atan2(-vx, -vz)`; DCL yaw that
+ * aims Forward at that walk dir is `π - threeYaw`.
+ *
+ * Do **not** pipe RFC4 `getNetworkYaw()` through `threeToDclQuat(eulerY(yaw))` —
+ * that aims north/south 180° opposite (Snow Drift look-ahead painted behind).
+ */
+export function threePlayerYawToDclEntityQuat(
+  threeYaw: number,
+  out = new THREE.Quaternion()
+): THREE.Quaternion {
+  _peEuler.set(0, Math.PI - threeYaw, 0)
+  return out.setFromEuler(_peEuler)
+}
+
 /**
  * Chest height above feet for **Three.js PE attach** (weapons / Transform.parent=PlayerEntity
  * meshes authored against Explorer’s chest-relative PE). Not applied to the CRDT

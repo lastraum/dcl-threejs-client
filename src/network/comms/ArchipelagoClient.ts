@@ -53,6 +53,13 @@ export class ArchipelagoClient {
     return this.islandId
   }
 
+  /** True after a real genesis pose (not the 0,0,0 friends shell seed). */
+  hasLivePosition(): boolean {
+    const p = this.lastPosition
+    if (!p) return false
+    return p.x !== 0 || p.z !== 0
+  }
+
   describe(): string {
     const ws =
       this.socket?.readyState === WebSocket.OPEN

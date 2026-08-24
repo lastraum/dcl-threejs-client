@@ -356,11 +356,12 @@ export function formatDebugTime(at: number): string {
   })
 }
 
-/** Avatar compose spam — only when `?avatarverbose` or localStorage.avatarverbose=1. */
+/** Avatar compose spam — `?avatarverbose`, `?phonelogs`, or localStorage.avatarverbose=1. */
 export function isAvatarVerbose(): boolean {
   try {
     if (typeof window === 'undefined') return false
-    if (new URLSearchParams(window.location.search).has('avatarverbose')) return true
+    const p = new URLSearchParams(window.location.search)
+    if (p.has('avatarverbose') || p.has('phonelogs')) return true
     return localStorage.getItem('avatarverbose') === '1'
   } catch {
     return false

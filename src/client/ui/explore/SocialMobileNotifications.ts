@@ -12,6 +12,9 @@ import {
   type CommunityAnnouncementToast,
   type CommunityVoiceToast
 } from './CommunityHudToastWatcher'
+import { isCommunityChatRouterSender } from '../../../social/communityChatWire'
+import { fetchCommunityByIdPublic } from '../../../social/socialApi'
+import { communityDisplayImageUrl } from '../../../social/communityThumbnails'
 
 export type SocialMobileNotificationsOptions = {
   login: LoginResult
@@ -496,6 +499,11 @@ export class SocialMobileNotifications {
     this.showBanner(banner, `friend:${peer.address}`)
   }
 
+  private isGenericCommunityLabel(name: string): boolean {
+    const n = name.trim().toLowerCase()
+    return !n || n === 'community' || n === 'chat'
+  }
+
   private async resolveMessageSender(
     line: SocialChatEvent['line'],
     social: SocialService | null
@@ -506,6 +514,9 @@ export class SocialMobileNotifications {
       if (maybeAddress && /^0x[a-f0-9]{40}$/i.test(maybeAddress)) {
         address = maybeAddress
       }
+    }
+    if (address && isCommunityChatRouterSender(address)) {
+      return { address: '', displayName: 'Community', faceUrl: null }
     }
     if (address) return resolveNotificationPeer(address, social)
 
@@ -526,17 +537,52 @@ export class SocialMobileNotifications {
     else if (isChatTextLine(line)) preview = line.text.trim() || preview
     if (preview.length > 72) preview = `${preview.slice(0, 69)}…`
 
-    const channelLabel = social?.labelForChannelKey(event.channelKey) ?? 'Chat'
-    const channelKind = event.channelKey.startsWith('community:')
+    const communityId = event.channelKey.startsWith('community:')
+      ? event.channelKey.slice('community:'.length)
+      : ''
+    let communityName = communityId
+      ? social?.getCommunityDisplayName(communityId) ?? 'Community'
+      : ''
+    if (communityId && this.isGenericCommunityLabel(communityName)) {
+      try {
+        const detail = await fetchCommunityByIdPublic(communityId)
+        const fetched = detail?.name?.trim()
+        if (fetched) {
+          communityName = fetched
+          social?.rememberCommunityName(communityId, fetched)
+        }
+      } catch {
+        /* keep list/fallback name */
+      }
+      if (!this.canShow()) return
+    }
+
+    const channelKind = communityId
       ? 'Community'
       : event.channelKey === 'messages'
         ? 'Private'
-        : 'Scene'
+        : event.channelKey.startsWith('scene:')
+          ? 'Scene'
+          : 'Chat'
+    const channelLabel = communityId
+      ? communityName
+      : (social?.labelForChannelKey(event.channelKey) ?? 'Chat')
     const channelLine = `${channelKind} · ${channelLabel}`
 
-    const initial = displayName.trim().charAt(0).toUpperCase() || '?'
-    const avatar = faceUrl
-      ? `<img class="social-mobile-notif__avatar-img" src="${escapeHtml(faceUrl)}" alt="" width="40" height="40" loading="lazy" />`
+    const routerSender = isCommunityChatRouterSender(line.senderAddress)
+    const title = routerSender && communityName ? communityName : displayName
+    const communityThumb =
+      communityId && routerSender
+        ? communityDisplayImageUrl(
+            communityId,
+            social?.getCommunities().find((c) => c.id.toLowerCase() === communityId.toLowerCase())
+              ?.thumbnails
+          )
+        : null
+    const initial = title.trim().charAt(0).toUpperCase() || '?'
+    const avatarSrc = routerSender ? communityThumb : faceUrl
+    const avatar = avatarSrc
+      ? `<img class="social-mobile-notif__avatar-img" src="${escapeHtml(avatarSrc)}" alt="" width="40" height="40" loading="lazy" />`
       : `<span class="social-mobile-notif__avatar-fallback" aria-hidden="true">${escapeHtml(initial)}</span>`
 
     const banner = document.createElement('button')
@@ -544,7 +590,7 @@ export class SocialMobileNotifications {
     banner.className = 'social-mobile-notif'
     banner.setAttribute(
       'aria-label',
-      `Message from ${displayName} in ${channelLabel}: ${preview}`
+      `Message from ${title} in ${channelLabel}: ${preview}`
     )
     banner.innerHTML = `
       <div class="social-mobile-notif__card">
@@ -556,7 +602,7 @@ export class SocialMobileNotifications {
         <div class="social-mobile-notif__body">
           <span class="social-mobile-notif__avatar">${avatar}</span>
           <span class="social-mobile-notif__text">
-            <span class="social-mobile-notif__title">${escapeHtml(displayName)}</span>
+            <span class="social-mobile-notif__title">${escapeHtml(title)}</span>
             <span class="social-mobile-notif__sub">${escapeHtml(preview)}</span>
           </span>
         </div>
@@ -565,7 +611,8 @@ export class SocialMobileNotifications {
 
     banner.addEventListener('click', () => {
       this.dismissBanner(banner)
-      this.onOpenChat?.()
+      if (communityId) this.onOpenCommunity?.(communityId, 'announcement')
+      else this.onOpenChat?.()
     })
 
     this.showBanner(banner, `msg:${line.id}`)

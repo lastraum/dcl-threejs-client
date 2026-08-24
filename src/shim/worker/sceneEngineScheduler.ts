@@ -1,4 +1,4 @@
-import type { IEngine } from '@dcl/ecs'
+import type { Entity, IEngine } from '@dcl/ecs'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import type { InjectPointerClickBody } from '../../player/injectPointerClick'
 import {
@@ -25,7 +25,10 @@ import {
   seedWorkerUiFingerprint,
   shouldUsePartialUiMountSnapshot
 } from './sceneEngineUiScheduler'
-import { resolveWorkerUiTransform } from './resolveBundledUiComponents'
+import {
+  resolveWorkerPointerEventsResult,
+  resolveWorkerUiTransform
+} from './resolveBundledUiComponents'
 import {
   collectWorkerUiMountEntityIds,
   collectWorkerUiMountSnapshot,
@@ -45,6 +48,7 @@ import {
   endEngUpdatePhase,
   resetEngUpdatePhases
 } from './workerEngUpdatePhases'
+import { engineDtToSeconds, MAX_ENGINE_DT_SEC } from './engineDtSeconds'
 
 let lastUiDirtySnapshotLogAt = 0
 
@@ -55,27 +59,63 @@ function pointerProofLog(message: string): void {
   else cfg?.log(message)
 }
 
-/** World-mesh PET waits here until the next engine.update — Bevy: host writes, tick reads. */
-const pendingWorldMeshPet: InjectPointerClickBody[] = []
-
-function queueWorldMeshPet(body: InjectPointerClickBody): void {
-  pendingWorldMeshPet.push(body)
+/**
+ * One serialized wakeup after a world-mesh PET write.
+ * Do not require bootSealed — onStart scenes still need EventSystem this edge.
+ * Mutex waits if a play-frame is in native update (skip-if-in-flight, no stack).
+ */
+async function runPointerWakeupTick(): Promise<boolean> {
+  const eng = engine
+  const cfg = config
+  if (!eng || !cfg) {
+    pointerProofLog('[sceneWorker] world-mesh PET wakeup skipped — no engine')
+    return false
+  }
+  try {
+    await runSerializedEngineUpdate(async () => {
+      await eng.update(0)
+    })
+  } catch (err) {
+    pointerProofLog(
+      `[sceneWorker] world-mesh PET wakeup failed — ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    )
+    return false
+  }
+  cfg.onAfterEngineTick?.()
+  return true
 }
 
-function flushPendingWorldMeshPet(eng: IEngine): void {
-  if (pendingWorldMeshPet.length === 0) return
-  const batch = pendingWorldMeshPet.splice(0, pendingWorldMeshPet.length)
-  for (const body of batch) {
-    const phase = body.phase ?? 'down'
-    if (phase === 'down' || phase === 'click') {
-      injectPointerClickDownOnEngine(eng, body)
-      reconcileLocomotionLatchAfterInjectDown(eng)
+/** Pointer vs later sync: PER on the entity vs Animator clip playing after the wakeup tick. */
+function diagnoseWorldMeshPet(eng: IEngine, entity: number, tag: string): void {
+  const PER = resolveWorkerPointerEventsResult(eng)
+  let perN = 0
+  let last = 'none'
+  try {
+    for (const cmd of PER.get(entity as Entity)) {
+      perN++
+      last = `btn=${cmd.button} st=${cmd.state} ts=${cmd.timestamp}`
     }
-    if (phase === 'up' || phase === 'click') {
-      injectPointerClickUpOnEngine(eng, body)
-      injectGlobalPointerUpOnPlayer(eng, body)
-    }
+  } catch (err) {
+    last = err instanceof Error ? err.message : String(err)
   }
+  let anim = 'no-Animator'
+  try {
+    const Animator = generated.Animator(eng)
+    if (Animator.has(entity as Entity)) {
+      const states = Animator.get(entity as Entity).states ?? []
+      anim =
+        states.map((s) => `${s.clip ?? '?'}:${s.playing !== false ? 'on' : 'off'}`).join(',') ||
+        'empty'
+    }
+  } catch (err) {
+    anim = err instanceof Error ? err.message : String(err)
+  }
+  const line =
+    `[sceneWorker] world-mesh PET ${tag} e${entity} per=${perN} last=(${last}) animator=[${anim}]`
+  pointerProofLog(line)
+  config?.log(line)
 }
 
 /**
@@ -120,7 +160,7 @@ export type SceneEngineSchedulerConfig = {
   queuePointerUiEgress?: (snapshot: WorkerUiMountSnapshotRow[]) => void
   /**
    * Immediate structured UI mount post (hydration + play dirty).
-   * Bypasses play-mode cold CRDT buffer which drops uiEntities/snapshot metadata.
+   * Gameplay CRDT is a separate crdt-outbound; this carries uiEntities/snapshot metadata.
    * `mountEntityIds` is always the full worker mount set; snapshot may be dirty-only.
    */
   postUiMountSnapshot?: (
@@ -135,7 +175,7 @@ export type SceneEngineSchedulerConfig = {
   onBeforeEngineUpdate?: () => void
   onAfterEngineTick?: () => void
   /**
-   * Phase 2 — play mode only: pollEvents + cold CRDT flush after cooperative engine.update.
+   * Phase 2 — play mode only: pollEvents after cooperative engine.update.
    * Replaces a second exports.onUpdate engine.update leg on the cooperative interval.
    */
   onUnifiedPlayFrameComplete?: (dt: number) => Promise<void>
@@ -190,6 +230,12 @@ let tickEpoch = 0
  * start engine.update(dt>0). Inbound LWW / cooperative interval only queue.
  */
 let sceneLoopOwnsPositiveDt = false
+/**
+ * Host loading overlay (or hydration) is covering the player-visible canvas/UI.
+ * Cooperative ticks still run so CRDT / react-ecs can mount, but dt stays 0 so
+ * scene splash / addSystem timers do not burn under the overlay.
+ */
+let hostOverlayHoldsSceneTime = false
 /** Source of the in-flight cooperative start — applied dt is logged from the wrap. */
 let pendingGuestTickSource: SceneEngineTickSource | null = null
 /** Serialize engine.update — cooperative ticks must not interleave with pointer interactive ticks. */
@@ -235,8 +281,6 @@ function wrapEngineUpdateWithWallClock(eng: IEngine): void {
   const nativeUpdate = eng.update.bind(eng)
   wrapped.update = async (dt: number) => {
     config?.onBeforeEngineUpdate?.()
-    // Store write before systems — same as Bevy reserved writers on the play-frame.
-    flushPendingWorldMeshPet(eng)
     // Transport-only: do not stamp lastExecutedAt / sceneTime (NeonScreen pauseDuration).
     // Do not emit here — a pending named start may still be waiting on the mutex.
     if (!(dt > 0)) {
@@ -292,8 +336,8 @@ export function resetSceneEngineScheduler(): void {
   diagCount = 0
   tickEpoch = 0
   sceneLoopOwnsPositiveDt = false
+  hostOverlayHoldsSceneTime = false
   pendingGuestTickSource = null
-  pendingWorldMeshPet.length = 0
   resetPlayModePointerUiEgress()
   resetEngUpdatePhases()
 }
@@ -404,16 +448,6 @@ export function setSceneEngineLastExecutedAt(ms: number): void {
 }
 
 /**
- * Explorer-style max frame step (seconds). Timers (`accumulatedTime += 1000*dt`) and
- * continuous systems need hitch recovery; 33ms was too tight and leftover “debt skips”
- * froze SDK setTimeout (Spring flower scale 0.1→1 after 500ms).
- *
- * Cap at 250ms so sustained heavy ticks (fishing cast/reel UI + plaza systems) still
- * advance scene time near wall clock. A 100ms cap with 5Hz ticks ran animations at ~½ speed.
- */
-const MAX_ENGINE_DT_SEC = 0.25
-
-/**
  * Wall elapsed still available for a positive system step (seconds).
  * Based on last positive update — not a cumulative ledger that can go permanently flat.
  */
@@ -451,15 +485,17 @@ function resolveDt(): number {
  */
 function clampDtToWallClock(requested: number): number {
   if (!(requested > 0)) return 0
+  const seconds = engineDtToSeconds(requested)
+  if (!(seconds > 0)) return 0
   if (wallClockOriginMs <= 0 || lastExecutedAt <= 0) {
     wallClockOriginMs = performance.now()
     lastExecutedAt = wallClockOriginMs
     sceneTimeSec = 0
-    return Math.min(requested, MAX_ENGINE_DT_SEC)
+    return Math.min(seconds, MAX_ENGINE_DT_SEC)
   }
   const elapsed = wallElapsedSinceLastTickSec()
-  if (elapsed <= 1e-5) return Math.min(requested, 1 / 120, MAX_ENGINE_DT_SEC)
-  return Math.min(requested, elapsed, MAX_ENGINE_DT_SEC)
+  if (elapsed <= 1e-5) return Math.min(seconds, 1 / 120, MAX_ENGINE_DT_SEC)
+  return Math.min(seconds, elapsed, MAX_ENGINE_DT_SEC)
 }
 
 function resolveIntervalMs(): number {
@@ -646,6 +682,7 @@ async function runCooperativeEngineTickPhases(engineDt: number): Promise<void> {
     diagCount++
     cfg.log(
       `[sceneWorker] engine tick #${diagCount} dt=${dt.toFixed(3)} hydration=${cfg.isHydration()}` +
+        ` hold=${shouldHoldSceneVisibleTime() ? 1 : 0}` +
         ` sceneT=${sceneTimeSec.toFixed(2)}s elapsed=${wallElapsedSinceLastTickSec().toFixed(3)}`
     )
   }
@@ -791,6 +828,25 @@ export function isSceneLoopOwnsPositiveDt(): boolean {
   return sceneLoopOwnsPositiveDt
 }
 
+/** True when host overlay / hydration must not advance scene-visible timers. */
+export function shouldHoldSceneVisibleTime(): boolean {
+  return hostOverlayHoldsSceneTime || config?.isHydration() === true
+}
+
+/**
+ * Freeze addSystem / splash clocks while the host loading overlay covers the scene.
+ * Release stamps lastExecutedAt so the first play-frame is one step, not overlay wall debt.
+ */
+export function setHostOverlayHoldsSceneTime(held: boolean): void {
+  const was = hostOverlayHoldsSceneTime
+  hostOverlayHoldsSceneTime = held
+  if (was && !held) {
+    const now = performance.now()
+    lastExecutedAt = now
+    if (wallClockOriginMs <= 0) wallClockOriginMs = now
+  }
+}
+
 /** Mark a real-dt tick needed; SceneLoop play-frame starts it. */
 export function queueSceneEngineTick(): void {
   if (!engine || !bootSealed) return
@@ -818,20 +874,27 @@ export function requestSceneEngineTick(
     tickQueued = true
     return 'deferred'
   }
-  let dt = resolveDt()
+  const holdTime = shouldHoldSceneVisibleTime()
+  let dt = holdTime ? 0 : resolveDt()
   // Same-frame re-entry: no wall elapsed yet — do not invent large time, but queue so
   // the next play-frame-tick can run (was a hard return that starved timers).
-  if (dt <= 0 && lastExecutedAt > 0) {
-    tickQueued = true
-    return 'deferred'
+  // Overlay/hydration hold is an intentional dt=0 tick (mount UI, do not burn splash).
+  if (!holdTime) {
+    if (dt <= 0 && lastExecutedAt > 0) {
+      tickQueued = true
+      return 'deferred'
+    }
+    if (dt <= 0) dt = Math.min(1 / 60, MAX_ENGINE_DT_SEC)
   }
-  if (dt <= 0) dt = Math.min(1 / 60, MAX_ENGINE_DT_SEC)
   pendingGuestTickSource = opts.source
   const epoch = tickEpoch
   // This start satisfies any inbound queue (store already updated).
   tickQueued = false
   tickInFlight = true
   tickStartedAt = performance.now()
+  // dt=0 hold ticks do not stamp inside wrapEngineUpdate — space the interval
+  // without advancing sceneTimeSec / splash clocks.
+  if (holdTime) lastExecutedAt = tickStartedAt
   void executeTickWork(dt)
     .finally(() => {
       // Always clear if we still own this epoch. If preempt bumped epoch, it already
@@ -866,9 +929,10 @@ export function requestSceneEngineTick(
       if (epoch !== tickEpoch || !config) return
       if (config.isHydration() || !config.onUnifiedPlayFrameComplete) return
       const pollDt = lastCompletedEngineDt
-      if (!(pollDt > 0)) return
+      // Held overlay starts play-frames at dt=0 — still ack or SceneLoop stalls in-flight.
+      if (!(pollDt > 0) && !holdTime) return
       try {
-        await config.onUnifiedPlayFrameComplete(pollDt)
+        await config.onUnifiedPlayFrameComplete(pollDt > 0 ? pollDt : 0)
       } catch (err) {
         config.log(
           `[sceneWorker] play frame poll after tick failed — ${
@@ -1112,10 +1176,29 @@ export async function runSceneEnginePointerTick(
       )
     }
 
-    // World mesh: append PET into the store only. The next play-frame update
-    // flushes it before systems (Bevy / SceneLoop — no stacked eng.update).
+    // World mesh — Bevy / Unity: write PET, then **one** serialized wakeup tick.
+    // Never queue-until-play-frame: asset-pack on_click is getInputCommand this tick.
+    // Mutex waits if a play-frame is in native update (skip-if-in-flight, no stack).
     if (!isLevelState && (phase === 'click' || phase === 'down' || phase === 'up')) {
-      queueWorldMeshPet(splitPointerInject)
+      pointerProofLog(
+        `[sceneWorker] world-mesh PET enter e${splitPointerInject.entity} phase=${phase} ` +
+          `sealed=${bootSealed ? 1 : 0} tickInFlight=${tickInFlight ? 1 : 0}`
+      )
+      if (phase === 'down' || phase === 'click') {
+        injectPointerClickDownOnEngine(eng, splitPointerInject)
+        reconcileLocomotionLatchAfterInjectDown(eng)
+      }
+      if (phase === 'up' || phase === 'click') {
+        injectPointerClickUpOnEngine(eng, splitPointerInject)
+        injectGlobalPointerUpOnPlayer(eng, splitPointerInject)
+      }
+      diagnoseWorldMeshPet(eng, splitPointerInject.entity, `pre-tick ${phase}`)
+      const woke = await runPointerWakeupTick()
+      diagnoseWorldMeshPet(
+        eng,
+        splitPointerInject.entity,
+        `post-tick ${phase} woke=${woke ? 1 : 0}`
+      )
       return
     }
 

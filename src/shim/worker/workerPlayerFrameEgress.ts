@@ -402,6 +402,12 @@ export function isWorkerDisableAllFrozen(engine: IEngine): boolean {
 
 export function forceClearDisableAllAfterLoadGate(engine: IEngine, reason: string): boolean {
   preregisterRendererInjectedComponents(engine)
+  // Scene lock-all (countdown, Flagtag lobby, Last Call Dock match prep) is not a
+  // load-gate. Terminal GltfContainerLoadingState from spawning visuals must not
+  // delete it — that unfreezes the CCT while MeshColliders recook (fall-through).
+  if (locomotionFreezeLatchSource === 'scene') {
+    return false
+  }
   const InputModifier = generated.InputModifier(engine)
   const player = engine.PlayerEntity as Entity
   const live = InputModifier.getOrNull(player)

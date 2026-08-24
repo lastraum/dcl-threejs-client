@@ -114,6 +114,7 @@ export type PerfSnapshot = {
   sceneLoopDue: number
   sceneLoopGuests: number
   sceneLoopSent: number
+  sceneLoopMuteSent: number
   /** Last applied guest engine.update dt (seconds). 0 until first named tick. */
   sceneLoopLastDt: number
   /** Last named tick source: play-frame | pointer-edge | hydrate. */
@@ -237,6 +238,7 @@ const state = {
   sceneLoopDue: 0,
   sceneLoopGuests: 0,
   sceneLoopSent: 0,
+  sceneLoopMuteSent: 0,
   sceneLoopLastDt: 0,
   sceneLoopLastSource: '',
   renderMainMs: 0,
@@ -472,6 +474,7 @@ export function perfNoteSceneLoop(opts: {
   due: number
   guests: number
   sent: number
+  muteSent?: number
 }): void {
   state.sceneLoopSendMs = opts.sendMs
   state.sceneLoopReceiveMs = opts.receiveMs
@@ -480,6 +483,7 @@ export function perfNoteSceneLoop(opts: {
   state.sceneLoopDue = opts.due
   state.sceneLoopGuests = opts.guests
   state.sceneLoopSent = opts.sent
+  if (opts.muteSent !== undefined) state.sceneLoopMuteSent = opts.muteSent
 }
 
 /** Last applied guest tick — HUD `dt=` / `src=` on the SceneLoop line. */
@@ -709,6 +713,7 @@ export function perfSnapshot(): PerfSnapshot {
     sceneLoopDue: state.sceneLoopDue,
     sceneLoopGuests: state.sceneLoopGuests,
     sceneLoopSent: state.sceneLoopSent,
+    sceneLoopMuteSent: state.sceneLoopMuteSent,
     sceneLoopLastDt: state.sceneLoopLastDt,
     sceneLoopLastSource: state.sceneLoopLastSource,
     renderMainMs: state.renderMainMs,

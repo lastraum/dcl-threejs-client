@@ -6,6 +6,7 @@ import { AppendValueOperation } from '@dcl/ecs/dist/serialization/crdt/appendVal
 import { CrdtMessageType } from '@dcl/ecs/dist/serialization/crdt/types'
 import type { CrdtMessage } from '@dcl/ecs/dist/serialization/crdt/types'
 import { fixTransformParent } from '@dcl/ecs/dist/serialization/crdt/network/utils'
+import { dataCompare } from '@dcl/ecs/dist/systems/crdt/utils'
 import type { MirrorComponents } from './mirrorComponents'
 
 /** Network identity stored on a local entity (`NetworkEntity` / `NetworkParent` value). */
@@ -126,6 +127,8 @@ export class CrdtProjection {
   readonly components = new Map<number, Map<Entity, unknown>>()
   /** componentId → (entity → last applied Lamport timestamp). */
   private readonly timestamps = new Map<number, Map<Entity, number>>()
+  /** Last applied LWW payload bytes — equal-timestamp compare matches @dcl/ecs / Bevy. */
+  private readonly lastLwwPayload = new Map<number, Map<Entity, Uint8Array>>()
   private vcLiveSeq = 0
   /** Entities holding live Transform priority (bound VC + lookAt/parent follow rig). */
   private readonly vcLiveEntities = new Set<Entity>()
@@ -273,7 +276,9 @@ export class CrdtProjection {
       case CrdtMessageType.APPEND_VALUE:
         // Grow-only set append — keep the latest decoded value (Phase 1 does not
         // drive rendering from grow-only sets; excluded from parity).
-        this.putComponent(msg.entityId, msg.componentId, msg.timestamp, msg.data)
+        this.putComponent(msg.entityId, msg.componentId, msg.timestamp, msg.data, {
+          growOnly: true
+        })
         return
       case CrdtMessageType.DELETE_COMPONENT:
       case CrdtMessageType.DELETE_COMPONENT_NETWORK:
@@ -288,7 +293,13 @@ export class CrdtProjection {
     }
   }
 
-  private putComponent(entity: Entity, componentId: number, timestamp: number, data: Uint8Array): void {
+  private putComponent(
+    entity: Entity,
+    componentId: number,
+    timestamp: number,
+    data: Uint8Array,
+    opts?: { growOnly?: boolean }
+  ): void {
     // DCL recycles entity ids after DELETE_ENTITY — next PUT revives the slot (campfire sprite pool, etc.).
     this.deletedEntities.delete(entity)
     if (componentId === this.transformId && this.reservedEntities.has(entity)) return
@@ -300,16 +311,22 @@ export class CrdtProjection {
     const existing = tsMap.get(entity)
     const forceUi =
       this.forceWorkerUiPuts && WORKER_OWNED_UI_COMPONENT_IDS.has(componentId)
-    // LWW: only a single worker writes scene components, so timestamps are
-    // monotonic per (entity, component). Reject strictly-older messages.
-    if (!forceUi && existing !== undefined && timestamp < existing) return
-
     // Network-parented Transform: strip sender-local wire parent, then inject the
     // local entity that owns matching NetworkEntity (renderer hierarchy parity).
     const effectiveData =
       componentId === this.transformId && this.hasNetworkParent(entity)
         ? fixTransformParent({ data } as never)
         : data
+
+    // Explorer LWW (@dcl/ecs createUpdateLwwFromCrdt / Bevy try_update):
+    // older ts ignore; newer apply; equal ts → byte-compare (keep current if >= incoming).
+    if (!forceUi && existing !== undefined) {
+      if (timestamp < existing) return
+      if (!opts?.growOnly && timestamp === existing) {
+        const current = this.getLastLwwPayload(componentId, entity, meta)
+        if (dataCompare(current as Uint8Array | null, effectiveData) >= 0) return
+      }
+    }
 
     let value: unknown
     try {
@@ -327,6 +344,7 @@ export class CrdtProjection {
     // late / out of order (planet-angzaar select stage). VirtualCameraBridge.isActive()
     // already no-ops until the target VC is fully hydrated.
     this.storeComponentPut(entity, componentId, timestamp, value)
+    this.setLastLwwPayload(componentId, entity, effectiveData)
     this.pendingMainCameraBind = null
 
     // Late NetworkParent / NetworkEntity arrival — rebind child Transform parent.
@@ -482,6 +500,33 @@ export class CrdtProjection {
     this.changes.push({ entity, componentId, kind: 'put' })
   }
 
+  private getLastLwwPayload(
+    componentId: number,
+    entity: Entity,
+    meta: ComponentMeta
+  ): Uint8Array | null {
+    const stored = this.lastLwwPayload.get(componentId)?.get(entity)
+    if (stored) return stored
+    const value = this.components.get(componentId)?.get(entity)
+    if (value === undefined || !meta.serialize) return null
+    const buf = new ReadWriteByteBuffer()
+    meta.serialize(value, buf)
+    return buf.toBinary()
+  }
+
+  private setLastLwwPayload(componentId: number, entity: Entity, data: Uint8Array): void {
+    let map = this.lastLwwPayload.get(componentId)
+    if (!map) {
+      map = new Map()
+      this.lastLwwPayload.set(componentId, map)
+    }
+    map.set(entity, data.slice())
+  }
+
+  private clearLastLwwPayload(componentId: number, entity: Entity): void {
+    this.lastLwwPayload.get(componentId)?.delete(entity)
+  }
+
   private isMainCameraOnCameraEntity(entity: Entity, componentId: number): boolean {
     const gate = this.virtualCameraGate
     return gate != null && entity === gate.cameraEntity && componentId === gate.mainCameraComponentId
@@ -521,7 +566,11 @@ export class CrdtProjection {
 
     const tsMap = this.timestamps.get(componentId)!
     const existing = tsMap.get(entity)
+    // Bevy/SDK: older ignore; equal-ts DELETE does not beat an existing PUT.
     if (existing !== undefined && timestamp < existing) return
+    if (existing !== undefined && timestamp === existing && this.components.get(componentId)?.has(entity)) {
+      return
+    }
 
     if (this.isMainCameraOnCameraEntity(entity, componentId)) {
       this.pendingMainCameraBind = null
@@ -529,6 +578,7 @@ export class CrdtProjection {
     this.clearPendingMainCameraBindForEntity(entity)
 
     tsMap.set(entity, timestamp)
+    this.clearLastLwwPayload(componentId, entity)
     if (this.components.get(componentId)!.delete(entity)) {
       this.changes.push({ entity, componentId, kind: 'delete' })
     }
@@ -542,6 +592,7 @@ export class CrdtProjection {
         this.changes.push({ entity, componentId, kind: 'delete' })
       }
       this.timestamps.get(componentId)!.delete(entity)
+      this.clearLastLwwPayload(componentId, entity)
     }
   }
 

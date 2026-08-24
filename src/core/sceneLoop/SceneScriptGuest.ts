@@ -7,6 +7,9 @@ import type { GuestId, GuestKind } from './types'
 export class SceneScriptGuest implements SceneGuest {
   private sentAt = 0
 
+  /** Player → footprint meters for leftover mute ranking. */
+  distM = Number.POSITIVE_INFINITY
+
   constructor(
     readonly id: GuestId,
     readonly kind: GuestKind,
@@ -15,6 +18,10 @@ export class SceneScriptGuest implements SceneGuest {
     /** Current guest (under feet) — leftover apply + immediate pointer wakeup. */
     private readonly isCurrent: () => boolean = () => false
   ) {}
+
+  setDistM(distM: number | undefined): void {
+    this.distM = Number.isFinite(distM) ? (distM as number) : Number.POSITIVE_INFINITY
+  }
 
   inFlight(): boolean {
     return this.getSystem().isPlayFrameInFlight()
@@ -25,11 +32,20 @@ export class SceneScriptGuest implements SceneGuest {
   }
 
   isDue(now: number): boolean {
-    const cadenceDue = this.sentAt <= 0 || now - this.sentAt >= 50
-    // Mute non-current secondaries at 50 ms. Immediate is primary or current guest (under feet).
-    if (this.kind === 'secondary' && !this.isCurrent()) return cadenceDue
+    // Mute non-current secondaries at 20 Hz. Empty-graph hydrate only needs
+    // a few ticks to emit CRDT — 20 Hz stacked on plaza rAF was 7 FPS.
+    if (this.kind === 'secondary' && !this.isCurrent()) {
+      let interval = 50
+      try {
+        if (this.getSystem().countGpuVisuals() <= 0) interval = 200
+      } catch {
+        /* system not ready */
+      }
+      return this.sentAt <= 0 || now - this.sentAt >= interval
+    }
     if (this.getSystem().needsImmediateGuestTick()) return true
-    return cadenceDue
+    // Primary / current: host rAF (~16 ms). 50 ms left Snow Drift look-ahead 0.4 m late at jog 8.
+    return this.sentAt <= 0 || now - this.sentAt >= 16
   }
 
   sendTick(_player: EntityPose, _camera: EntityPose, _frame: number): void {

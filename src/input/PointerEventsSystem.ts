@@ -71,6 +71,12 @@ type PointerDeps = {
   camera: THREE.Camera
   getPlayerPosition: () => THREE.Vector3 | null
   isPointerBlocked: () => boolean
+  /**
+   * Pointer-lock look. Unlocked LMB is camera orbit (PlayerInput) — not IA_POINTER.
+   * Sending level-state PET_DOWN on orbit drag froze the worker while the player
+   * was only looking / running.
+   */
+  isPointerLocked?: () => boolean
   /** Worker mount snapshot fallback when projection PointerEvents lags paint. */
   pointerEventsOf?: (entity: Entity) => { pointerEvents: ReadonlyArray<PBPointerEvents_Entry> } | null | undefined
   flushPointerCrdt?: () => void
@@ -118,9 +124,6 @@ const _camPos = new THREE.Vector3()
 const _playerPos = new THREE.Vector3()
 const _entityPos = new THREE.Vector3()
 const _worldNormal = new THREE.Vector3()
-/** Do not raycast plaza-wide PE (576 entities / 812 meshes). Fishing / click stay inside this. */
-const POINTER_TARGET_KEEP_M = 40
-const POINTER_TARGET_KEEP_M2 = POINTER_TARGET_KEEP_M * POINTER_TARGET_KEEP_M
 
 /** DrawWorld parents `__mesh_*` under drawRoot — pose children are empty. */
 function poseDrawVisual(
@@ -290,6 +293,9 @@ export class PointerEventsSystem {
    */
   needsRaycastPrepare(_tickNumber: number): boolean {
     if (!this.deps) return false
+    // Left-drag orbit / look — camera owns the pointer. Hover raycast + GLTF
+    // occluder walks are not Explorer look; they hitch orbit at 100 FPS present.
+    if (this.deps.isPointerBlocked()) return false
     if (this.pointerDirty || this.primaryKeyDown) return true
     if (this.hasPendingInput()) return true
     const locked = document.pointerLockElement === this.canvas
@@ -310,6 +316,11 @@ export class PointerEventsSystem {
     if (!this.deps) return
 
     this.tickNumber = tickNumber
+    if (this.deps.isPointerBlocked()) {
+      this.hoverFeedback.hide()
+      this.highlightFeedback.clear()
+      return
+    }
     this.rebuildPointerCacheIfNeeded()
 
     const needsRaycast = this.needsRaycastPrepare(tickNumber)
@@ -516,12 +527,21 @@ export class PointerEventsSystem {
     }
 
     const button = mouseButtonToInputAction(e.button)
+    // Unlocked LMB is camera orbit on empty ground. Explorer still fires IA_POINTER
+    // on in-range PointerEvents (Creator Hub on_click / getClick). Skipping all
+    // unlocked clicks ate VoxBoards halfpipe teleports. Misses stay orbit-only —
+    // do not inject level-state PET_DOWN on PlayerEntity (that spammed every drag).
+    const unlockedPointer =
+      button === InputAction.IA_POINTER &&
+      !!this.deps.isPointerLocked &&
+      !this.deps.isPointerLocked()
     const coords = this.pointerClientCoords(e.clientX, e.clientY)
     const hit = this.resolveWorldInteractHit(button)
     // Real PE / UI when in range. On IA_POINTER miss/OOR: level-state PET on PlayerEntity so
     // inputSystem.isPressed / isTriggered work (Explorer global button). Aim stays PPI ×
     // CameraEntity in the scene — never invent a y=0 ground PE hit.position.
     if (!this.canQueuePointerDown(button, hit)) {
+      if (unlockedPointer) return
       if (button === InputAction.IA_POINTER) {
         const levelHit = this.buildLevelStatePointerHit()
         if (levelHit) {
@@ -592,6 +612,7 @@ export class PointerEventsSystem {
       clientDebugLog.log('pointer', label, { alsoConsole: true })
       this.deps.onWorldPointerDown?.(targetEntity)
     }
+    if (unlockedPointer) e.stopPropagation()
     // Universal Explorer press edge: flush PET_DOWN immediately (world + UI + level-state).
     // Same-tick DOWN+UP on mouseup alone never leaves multi-frame isPressed for any scene.
     this.deps.flushPointerCrdt?.()
@@ -1564,19 +1585,10 @@ export class PointerEventsSystem {
     const { ecs, getEntityNodes } = this.deps
     const nodes = getEntityNodes()
     this.pointerTargets.length = 0
-    const feet = this.deps.getPlayerPosition()
-    if (feet) _playerPos.copy(feet)
 
     for (const entity of this.pointerEntitySet) {
       const obj = nodes.get(entity)
       if (this.isPointerEntityInactive(entity, obj)) continue
-      if (feet && obj) {
-        obj.getWorldPosition(_entityPos)
-        const dx = _entityPos.x - _playerPos.x
-        const dy = _entityPos.y - _playerPos.y
-        const dz = _entityPos.z - _playerPos.z
-        if (dx * dx + dy * dy + dz * dz > POINTER_TARGET_KEEP_M2) continue
-      }
       if (ecs.GltfContainer.has(entity)) {
         const obj = nodes.get(entity)
         // GPU-instanced GLTF: empty marker only — InstancedMeshes added below for raycast.

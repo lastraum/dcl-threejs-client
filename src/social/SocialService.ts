@@ -14,6 +14,8 @@ import {
   type FriendshipSnapshot
 } from './friendshipsApi'
 import { fetchMemberCommunitiesSigned } from './socialApi'
+import { isCommunityChatRouterSender } from './communityChatWire'
+import { shortenAddress } from '../avatar/displayName'
 import { CHAT_MAX_LENGTH, type MentionCandidate } from './chatMentions'
 import { isEvmAddress } from './walletLabel'
 import {
@@ -562,9 +564,7 @@ export class SocialService {
       return tab?.label?.trim() || sceneKey
     }
     if (key.startsWith('community:')) {
-      const id = key.slice('community:'.length)
-      const row = this.communities.find((c) => c.id.toLowerCase() === id)
-      return row?.name?.trim() || 'Community'
+      return this.getCommunityDisplayName(key.slice('community:'.length))
     }
     if (key.startsWith('dm:')) {
       const addr = key.slice('dm:'.length)
@@ -1133,16 +1133,47 @@ export class SocialService {
   getPeerDisplay(address: string | undefined): PeerChatProfile {
     const hit = this.peerProfiles.get(address)
     if (hit) return hit
+    if (isCommunityChatRouterSender(address)) {
+      return { displayName: 'Community', nameColor: '#ff6ad5', faceUrl: null }
+    }
     if (address) {
       // Do not kick a network storm from pure getters used in list render.
       // Callers that need a fetch should use ensurePeerProfile / ensurePeerProfilesBatch.
       return {
-        displayName: `${address.slice(0, 6)}…${address.slice(-4)}`,
+        displayName: shortenAddress(address),
         nameColor: '#ff6ad5',
         faceUrl: null
       }
     }
     return { displayName: 'Player', nameColor: '#ff6ad5', faceUrl: null }
+  }
+
+  /** Member-list / open-channel name for a community id — never a wallet ellipsis. */
+  getCommunityDisplayName(communityId: string): string {
+    const id = communityId.trim().toLowerCase()
+    if (!id) return 'Community'
+    const row = this.communities.find((c) => c.id.toLowerCase() === id)
+    const fromRow = row?.name?.trim()
+    if (fromRow) return fromRow
+    if (
+      this.channel.kind === 'community' &&
+      this.channel.communityId.toLowerCase() === id
+    ) {
+      const fromChannel = this.channel.displayName.trim()
+      if (fromChannel) return fromChannel
+    }
+    return 'Community'
+  }
+
+  /** Fill a missing / placeholder community name after a detail fetch. */
+  rememberCommunityName(communityId: string, name: string): void {
+    const id = communityId.trim()
+    const trimmed = name.trim()
+    if (!id || !trimmed) return
+    const key = id.toLowerCase()
+    const row = this.communities.find((c) => c.id.toLowerCase() === key)
+    if (!row) return
+    if (!row.name.trim() || row.name.trim() === 'Community') row.name = trimmed
   }
 
   /** Prefer scheduleEnsurePeer when displaying unknown addresses (lazy, fast path). */
@@ -1414,7 +1445,9 @@ export class SocialService {
       time,
       self: false,
       senderAddress: peer,
-      senderName: profile?.displayName
+      senderName: isCommunityChatRouterSender(peer)
+        ? this.getCommunityDisplayName(id)
+        : profile?.displayName
     })
     const viewing =
       this.channel.kind === 'community' &&
@@ -1425,7 +1458,9 @@ export class SocialService {
       this.unreadCounts.set(key, prev + 1)
       this.notifyChannelChange()
     }
-    void this.peerProfiles.ensurePeer(peer, { fast: true })
+    if (!isCommunityChatRouterSender(peer)) {
+      void this.peerProfiles.ensurePeer(peer, { fast: true })
+    }
   }
 
   /**

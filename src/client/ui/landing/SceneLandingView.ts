@@ -33,6 +33,7 @@ import { SceneUsersModal } from './SceneUsersModal'
 import { ScenePlaceStatsModal } from './ScenePlaceStatsModal'
 import { isAnalyticsEnabled } from '../../../analytics/track'
 import Hls from 'hls.js'
+import { createBrowserHls, probeHttpsHlsPlaylist } from '../../../media/hlsFactory'
 
 export type SceneLandingViewOptions = SocialShellChromeHandlers & {
   route: SceneLandingRoute
@@ -107,6 +108,7 @@ export class SceneLandingView {
   private progressStatusEl: HTMLElement | null = null
   private pendingBan: SceneLoadErrorMessage | null = null
   private hlsPlayer: Hls | null = null
+  private hlsLiveProbeTimer = 0
   private liveKitVideoCleanup: (() => void) | null = null
   private streamDocClickBound = false
   private settingsModal: SceneStreamSettingsModal | null = null
@@ -274,6 +276,7 @@ export class SceneLandingView {
 
   dispose(): void {
     this.disposed = true
+    this.stopHlsLiveProbe()
     this.exitStreamWatchMode()
     this.teardownStreamPlayer()
     this.settingsModal?.dispose()
@@ -473,6 +476,8 @@ export class SceneLandingView {
       this.sceneVideos = sceneVideos
       // Seed options before first paint so JOIN LIVE is visible without a flash.
       this.refreshJoinLiveOptions()
+      void this.probeSceneHlsLiveness()
+      this.startHlsLiveProbe()
       loadingEl.remove()
       this.mainEl.innerHTML = this.renderLayout(this.meta)
       this.refreshJoinLiveOptions()
@@ -540,16 +545,18 @@ export class SceneLandingView {
   private refreshJoinLiveOptions(): void {
     const { pointer, kind } = this.streamTarget()
     const userOpts = listJoinLiveOptions(pointer, kind)
-    const sceneOpts: JoinLiveOption[] = this.sceneVideos.map((v) => ({
-      id: `scene-video:${v.entityId}`,
-      label: sceneCompositeVideoLabel(v),
-      kind: 'scene-video' as const,
-      mediaUrl: v.mediaUrl,
-      isHls: v.isHls,
-      playing: v.playing,
-      loop: v.loop,
-      entityId: v.entityId
-    }))
+    const sceneOpts: JoinLiveOption[] = this.sceneVideos
+      .filter((v) => this.sceneVideoIsJoinable(v))
+      .map((v) => ({
+        id: `scene-video:${v.entityId}`,
+        label: sceneCompositeVideoLabel(v),
+        kind: 'scene-video' as const,
+        mediaUrl: v.mediaUrl,
+        isHls: v.isHls,
+        playing: v.playing,
+        loop: v.loop,
+        entityId: v.entityId
+      }))
     // Order: LiveKit cast (if live) → composite scene screens → user listings.
     this.joinLiveOptions = []
     if (this.castLive) {
@@ -565,10 +572,63 @@ export class SceneLandingView {
     this.syncLiveBadge()
   }
 
-  /** True when composite has a playing HLS screen or LiveKit has remote video. */
+  /** HLS JOIN LIVE / LIVE badge only while the playlist is actually up. */
+  private sceneVideoIsJoinable(v: SceneCompositeVideo): boolean {
+    if (!v.isHls) return true
+    return v.hlsLive === true
+  }
+
+  private startHlsLiveProbe(): void {
+    this.stopHlsLiveProbe()
+    if (this.sceneVideos.every((v) => !v.isHls)) return
+    this.hlsLiveProbeTimer = window.setInterval(() => {
+      void this.probeSceneHlsLiveness()
+    }, 15_000)
+  }
+
+  private stopHlsLiveProbe(): void {
+    if (this.hlsLiveProbeTimer) {
+      window.clearInterval(this.hlsLiveProbeTimer)
+      this.hlsLiveProbeTimer = 0
+    }
+  }
+
+  private async probeSceneHlsLiveness(): Promise<void> {
+    const hlsVideos = this.sceneVideos.filter((v) => v.isHls)
+    if (hlsVideos.length === 0) return
+    const results = await Promise.all(
+      hlsVideos.map(async (v) => ({
+        entityId: v.entityId,
+        live: await probeHttpsHlsPlaylist(v.mediaUrl)
+      }))
+    )
+    if (this.disposed) return
+    let changed = false
+    let watchingDied = false
+    for (const row of results) {
+      const v = this.sceneVideos.find((s) => s.entityId === row.entityId)
+      if (!v || v.hlsLive === row.live) continue
+      v.hlsLive = row.live
+      changed = true
+      if (
+        !row.live &&
+        this.streamWatchActive &&
+        this.streamWatchKind === 'http' &&
+        this.joinLiveOptions.some(
+          (o) => o.kind === 'scene-video' && o.entityId === row.entityId
+        )
+      ) {
+        watchingDied = true
+      }
+    }
+    if (changed) this.refreshJoinLiveOptions()
+    if (watchingDied) this.returnToSceneDetailsAfterStreamEnd()
+  }
+
+  /** True when LiveKit has remote video, or a composite HLS playlist is actually up. */
   private showLiveBadge(): boolean {
     if (this.castLive) return true
-    return this.sceneVideos.some((v) => v.isHls && v.playing)
+    return this.sceneVideos.some((v) => v.isHls && v.playing && v.hlsLive === true)
   }
 
   private syncLiveBadge(): void {
@@ -1290,15 +1350,46 @@ export class SceneLandingView {
 
     const isHls = isHttpsM3u8(mediaUrl)
     if (isHls && Hls.isSupported()) {
-      const hls = new Hls({ enableWorker: true })
+      const hls = createBrowserHls()
       this.hlsPlayer = hls
       hls.loadSource(mediaUrl)
       hls.attachMedia(video)
+      let mediaErrorRecoveries = 0
       hls.on(Hls.Events.ERROR, (_e, data) => {
-        if (data.fatal && hint) {
-          hint.hidden = false
-          hint.textContent = 'Could not play this stream (network or codec error).'
+        if (!data.fatal) return
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR && mediaErrorRecoveries < 3) {
+          mediaErrorRecoveries += 1
+          try {
+            hls.recoverMediaError()
+            void video.play().catch(() => {})
+            return
+          } catch {
+            /* fall through */
+          }
         }
+        const httpCode = data.response?.code
+        if (
+          data.type === Hls.ErrorTypes.NETWORK_ERROR &&
+          httpCode !== 404 &&
+          httpCode !== 410
+        ) {
+          try {
+            hls.startLoad(-1)
+            return
+          } catch {
+            /* fall through */
+          }
+        }
+        const watching = this.sceneVideos.find(
+          (v) => v.isHls && v.mediaUrl === mediaUrl
+        )
+        if (watching) watching.hlsLive = false
+        this.refreshJoinLiveOptions()
+        if (this.castLive) {
+          this.openLiveKitCastPlayer('LIVE · Cast')
+          return
+        }
+        this.returnToSceneDetailsAfterStreamEnd()
       })
       // HLS VOD may still fire `ended` even with loop=true; restart for ECS parity.
       if (options?.loop === true) {

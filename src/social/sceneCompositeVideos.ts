@@ -19,6 +19,8 @@ export type SceneCompositeVideo = {
   /** Matches ECS VideoPlayer.loop (default false) — same as in-world WebVideoPlayer. */
   loop: boolean
   isHls: boolean
+  /** Landing probe: true only while the HLS playlist is actually reachable. */
+  hlsLive?: boolean
 }
 
 function unwrap(value: unknown): unknown {

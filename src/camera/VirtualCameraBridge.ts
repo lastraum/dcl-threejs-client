@@ -436,51 +436,39 @@ export class VirtualCameraBridge {
     const lookAt = spec.lookAtEntity
     const parent = local.parent as number | undefined
     const { RootEntity, PlayerEntity, CameraEntity } = this.view
+    const player = this.playerPose()
 
-    // Classic CameraFollow third-person: parent === lookAtEntity === cameraParent (not reserved).
-    // Parent is driven toward the player by the scene; use live PE + local offset so the lens
-    // does not hitch on lagging cameraParent CRDT (Planet Angzaar / gameplay follow).
-    const isPeFollowShape =
-      lookAt !== undefined &&
-      lookAt !== null &&
+    // CameraFollow (SDK): parent === lookAtEntity, not reserved / not the VC itself.
+    // Lens is f(live PE)+local; aim at the avatar. Same-process Explorer CameraFollow.
+    const isCameraFollow =
       parent !== undefined &&
       parent !== null &&
       parent !== 0 &&
       parent !== (RootEntity as number) &&
       parent !== (PlayerEntity as number) &&
       parent !== (CameraEntity as number) &&
+      lookAt !== undefined &&
+      lookAt !== null &&
+      lookAt !== 0 &&
       (parent as number) === (lookAt as number) &&
       lookAt !== (virtualEntity as number) &&
       lookAt !== (CameraEntity as number)
 
-    if (isPeFollowShape) {
-      const player = this.playerPose()
+    if (isCameraFollow) {
       const wx = player.position.x + local.position.x
       const wy = player.position.y + local.position.y
       const wz = player.position.z + local.position.z
       dclToThreePos(wx, wy, wz, _targetPos)
-      // Aim at the follow parent (lookAtEntity) — usually PE/cameraParent at the player.
       dclToThreePos(player.position.x, player.position.y, player.position.z, _lookAtPoint)
       if (cameraLookAtQuat(_targetPos, _lookAtPoint, _targetQuat)) {
-        if (vcDebugVerbose()) {
-          const now = performance.now()
-          if (now - lastFollowDiagMs > 2000) {
-            lastFollowDiagMs = now
-            clientDebugLog.log(
-              'vc-lens',
-              `PE-follow rig vc=e${virtualEntity} parent=e${parent} pe=(${player.position.x.toFixed(1)},${player.position.y.toFixed(1)},${player.position.z.toFixed(1)}) ` +
-                `local=(${local.position.x.toFixed(1)},${local.position.y.toFixed(1)},${local.position.z.toFixed(1)}) ` +
-                `lensThree=(${_targetPos.x.toFixed(1)},${_targetPos.y.toFixed(1)},${_targetPos.z.toFixed(1)})`,
-              { alsoConsole: true, throttleMs: 2000, throttleKey: 'vc-pe-follow' }
-            )
-          }
-        }
+        this.logFollowDiag(virtualEntity, parent as number, player, local)
         return { position: _targetPos, rotation: _targetQuat, lookAtPoint: _lookAtPoint }
       }
     }
 
-    // Scene-authored hierarchy: world pose from Transform parent chain (VC may be a child of
-    // a lookAt/follow entity that tracks the player — Angzaar-style — or a root-level shot).
+    // All other binds: Transform parent chain. PlayerEntity / CameraEntity ancestors
+    // already resolve to live reserved pose (SDK parent field). Dummy follow roots
+    // and parked shots use their authored Transform (vc-pose-live / CRDT).
     if (
       !resolveEntityWorldPose(virtualEntity, this.worldDeps(), {
         position: _targetPos,
@@ -512,7 +500,10 @@ export class VirtualCameraBridge {
     }
 
     // No lookAtEntity: scene drives aim via Transform rotation (entity +Z = look, DCL/Unity).
-    // Map to Three by aiming along display-space +Z (avoids euler→camera-quat pitch flips).
+    return this.aimAlongEntityPlusZ()
+  }
+
+  private aimAlongEntityPlusZ(): TargetPose {
     _lookDir.set(0, 0, 1).applyQuaternion(_entityDisplayQuat)
     if (_lookDir.lengthSq() < 1e-12) {
       entityDisplayQuatToThreeCameraQuat(_entityDisplayQuat, _targetQuat)
@@ -525,6 +516,25 @@ export class VirtualCameraBridge {
       return { position: _targetPos, rotation: _targetQuat }
     }
     return { position: _targetPos, rotation: _targetQuat, lookAtPoint: _lookAtPoint }
+  }
+
+  private logFollowDiag(
+    virtualEntity: Entity,
+    parent: number,
+    player: EntityPose,
+    local: DclTransformValues
+  ): void {
+    if (!vcDebugVerbose()) return
+    const now = performance.now()
+    if (now - lastFollowDiagMs <= 2000) return
+    lastFollowDiagMs = now
+    clientDebugLog.log(
+      'vc-lens',
+      `PE-follow lookAt vc=e${virtualEntity} parent=e${parent} pe=(${player.position.x.toFixed(1)},${player.position.y.toFixed(1)},${player.position.z.toFixed(1)}) ` +
+        `local=(${local.position.x.toFixed(1)},${local.position.y.toFixed(1)},${local.position.z.toFixed(1)}) ` +
+        `lensThree=(${_targetPos.x.toFixed(1)},${_targetPos.y.toFixed(1)},${_targetPos.z.toFixed(1)})`,
+      { alsoConsole: true, throttleMs: 2000, throttleKey: 'vc-pe-follow' }
+    )
   }
 
   private beginTransition(camera: THREE.Camera, virtualEntity: Entity, target: TargetPose): void {

@@ -3,6 +3,10 @@ import signedFetch from 'decentraland-crypto-fetch'
 import { isParcelPointer, normalizePointer } from '../catalyst/pointer'
 
 export const GATEKEEPER_URL = 'https://comms-gatekeeper.decentraland.org'
+/** Hammurabi local-preview handshake — same LiveKit cloud as `@dcl/hammurabi-server`. */
+export const GATEKEEPER_LOCAL_URL = 'https://comms-gatekeeper-local.decentraland.org'
+/** Explorer / hammurabi realm name for sdk-commands preview (not parcel `main`). */
+export const LOCAL_PREVIEW_REALM_NAME = 'LocalPreview'
 
 export type SceneAdapterParams = {
   sceneId: string

@@ -707,9 +707,21 @@ function loadImageFromBlob(blob: Blob): Promise<HTMLImageElement> {
     const objectUrl = URL.createObjectURL(blob)
     const img = new Image()
     img.onload = () => {
-      // Delay revoke so the decoder / GPU can finish sampling (Safari).
-      setTimeout(() => URL.revokeObjectURL(objectUrl), 0)
-      resolve(img)
+      const finish = (): void => {
+        // iOS Safari uploads WebGL on a later frame — revoke-on-0 leaves white textures.
+        const ios =
+          typeof navigator !== 'undefined' &&
+          (/iPad|iPhone|iPod/i.test(navigator.userAgent) ||
+            ((navigator.maxTouchPoints ?? 0) > 1 && /Mac/i.test(navigator.platform || '')))
+        // Never revoke on iOS — GPU may sample the blob URL on later frames.
+        if (!ios) setTimeout(() => URL.revokeObjectURL(objectUrl), 0)
+        resolve(img)
+      }
+      if (typeof img.decode === 'function') {
+        void img.decode().then(finish, finish)
+        return
+      }
+      finish()
     }
     img.onerror = () => {
       URL.revokeObjectURL(objectUrl)

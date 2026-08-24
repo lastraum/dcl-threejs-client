@@ -1,15 +1,12 @@
 import * as THREE from 'three'
-import { UniformsUtils } from 'three'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js'
-import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js'
 
 /**
  * Bevy-shaped present: **one** geometry pass into an HDR beauty buffer,
  * then bloom is a fullscreen filter on that texture (no second scene walk).
  *
- * `fast` = half-res Unreal extract. `selective` = full-res extract (heavier neon).
- * FXAA runs on the canvas blit because MSAA cannot ride the Unreal path.
+ * `mode` is kept for HUD/prefs compatibility — both paths are the same post now.
  */
 export type BloomMode = 'fast' | 'selective'
 
@@ -81,7 +78,7 @@ export class BloomPipeline {
   private beauty: THREE.WebGLRenderTarget | null = null
   private bloomPass: UnrealBloomPass | null = null
   private blitQuad: FullScreenQuad | null = null
-  private blitMaterial: THREE.ShaderMaterial | null = null
+  private blitMaterial: THREE.MeshBasicMaterial | null = null
   private readonly resolution = new THREE.Vector2(1, 1)
   private opts: BloomPipelineOptions = {
     enabled: false,
@@ -107,7 +104,7 @@ export class BloomPipeline {
   }
 
   getMode(): BloomMode {
-    return this.opts.mode
+    return 'fast'
   }
 
   configure(
@@ -119,7 +116,7 @@ export class BloomPipeline {
     const next: BloomPipelineOptions = {
       enabled: options.enabled ?? this.opts.enabled,
       hdr: options.hdr ?? this.opts.hdr,
-      mode: options.mode ?? this.opts.mode,
+      mode: 'fast',
       strength: options.strength ?? this.opts.strength,
       radius: options.radius ?? this.opts.radius,
       threshold: options.threshold ?? this.opts.threshold
@@ -128,7 +125,6 @@ export class BloomPipeline {
     const w = Math.max(1, Math.floor(widthPx * pixelRatio))
     const h = Math.max(1, Math.floor(heightPx * pixelRatio))
     const sizeChanged = this.resolution.x !== w || this.resolution.y !== h
-    const modeChanged = next.mode !== this.opts.mode
     this.resolution.set(w, h)
     this.opts = next
 
@@ -137,25 +133,20 @@ export class BloomPipeline {
       return
     }
 
-    if (!this.beauty || sizeChanged || modeChanged || !this.bloomPass) {
+    if (!this.beauty || sizeChanged || !this.bloomPass) {
       this.disposeTargets()
-      this.build(w, h, next)
+      this.build(w, h, next.hdr)
     }
 
     if (this.bloomPass) {
-      const extract = next.mode === 'selective' ? 1 : EXTRACT_SCALE
-      const bw = Math.max(1, Math.floor(w * extract))
-      const bh = Math.max(1, Math.floor(h * extract))
+      const bw = Math.max(1, Math.floor(w * EXTRACT_SCALE))
+      const bh = Math.max(1, Math.floor(h * EXTRACT_SCALE))
       this.bloomPass.strength = next.strength
       this.bloomPass.radius = next.radius
-      this.bloomPass.threshold =
-        next.mode === 'selective'
-          ? Math.max(next.threshold, 1.15)
-          : Math.max(next.threshold, FAST_THRESHOLD)
+      this.bloomPass.threshold = Math.max(next.threshold, FAST_THRESHOLD)
       this.bloomPass.resolution.set(bw, bh)
       this.bloomPass.setSize(bw, bh)
     }
-    this.syncFxaaResolution(w, h)
   }
 
   /**
@@ -164,7 +155,7 @@ export class BloomPipeline {
    */
   render(): { extractMs: number; beautyMs: number; compositeMs: number; mode: BloomMode } {
     if (!this.opts.enabled || !this.beauty || !this.bloomPass || !this.blitQuad || !this.blitMaterial) {
-        return { extractMs: 0, beautyMs: 0, compositeMs: 0, mode: this.opts.mode }
+      return { extractMs: 0, beautyMs: 0, compositeMs: 0, mode: 'fast' }
     }
 
     const renderer = this.renderer
@@ -188,9 +179,7 @@ export class BloomPipeline {
     const extractMs = performance.now() - t1
 
     const t2 = performance.now()
-    if (this.blitMaterial.uniforms.tDiffuse) {
-      this.blitMaterial.uniforms.tDiffuse.value = this.beauty.texture
-    }
+    this.blitMaterial.map = this.beauty.texture
     renderer.setRenderTarget(null)
     renderer.toneMapping = THREE.ACESFilmicToneMapping
     renderer.outputColorSpace = THREE.SRGBColorSpace
@@ -203,15 +192,15 @@ export class BloomPipeline {
     renderer.outputColorSpace = prevCs
     renderer.autoClear = prevAutoClear
 
-    return { extractMs, beautyMs, compositeMs, mode: this.opts.mode }
+    return { extractMs, beautyMs, compositeMs, mode: 'fast' }
   }
 
   dispose(): void {
     this.disposeTargets()
   }
 
-  private build(w: number, h: number, opts: BloomPipelineOptions): void {
-    const type = opts.hdr ? THREE.HalfFloatType : THREE.UnsignedByteType
+  private build(w: number, h: number, hdr: boolean): void {
+    const type = hdr ? THREE.HalfFloatType : THREE.UnsignedByteType
     this.beauty = new THREE.WebGLRenderTarget(w, h, {
       type,
       format: THREE.RGBAFormat,
@@ -221,39 +210,24 @@ export class BloomPipeline {
     })
     this.beauty.texture.name = 'beauty-hdr'
 
-    const extract = opts.mode === 'selective' ? 1 : EXTRACT_SCALE
     this.bloomPass = new UnrealBloomPass(
       new THREE.Vector2(
-        Math.max(1, Math.floor(w * extract)),
-        Math.max(1, Math.floor(h * extract))
+        Math.max(1, Math.floor(w * EXTRACT_SCALE)),
+        Math.max(1, Math.floor(h * EXTRACT_SCALE))
       ),
-      opts.strength,
-      opts.radius,
-      opts.mode === 'selective'
-        ? Math.max(opts.threshold, 1.15)
-        : Math.max(opts.threshold, FAST_THRESHOLD)
+      this.opts.strength,
+      this.opts.radius,
+      Math.max(this.opts.threshold, FAST_THRESHOLD)
     )
     this.bloomPass.renderToScreen = false
 
-    this.blitMaterial = new THREE.ShaderMaterial({
-      uniforms: UniformsUtils.clone(FXAAShader.uniforms),
-      vertexShader: FXAAShader.vertexShader,
-      fragmentShader: FXAAShader.fragmentShader,
+    this.blitMaterial = new THREE.MeshBasicMaterial({
+      map: this.beauty.texture,
       depthTest: false,
       depthWrite: false,
       toneMapped: true
     })
-    if (this.blitMaterial.uniforms.tDiffuse) {
-      this.blitMaterial.uniforms.tDiffuse.value = this.beauty.texture
-    }
-    this.syncFxaaResolution(w, h)
     this.blitQuad = new FullScreenQuad(this.blitMaterial)
-  }
-
-  private syncFxaaResolution(w: number, h: number): void {
-    const res = this.blitMaterial?.uniforms.resolution
-    if (!res) return
-    res.value.set(1 / Math.max(1, w), 1 / Math.max(1, h))
   }
 
   private disposeTargets(): void {

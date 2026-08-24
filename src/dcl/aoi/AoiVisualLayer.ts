@@ -179,6 +179,8 @@ export type AoiVisualLayerContext = {
       parcels?: string[]
     }>
   ) => void
+  /** View camera for frustum-first shell drain. */
+  getCamera?: () => THREE.Camera | null
 }
 
 /**
@@ -264,6 +266,8 @@ export class AoiVisualLayer {
   private lastLiveCandidateSignature = ''
   /** Console line only when the bootable set changes (not every meter). */
   private lastLiveLogSignature = ''
+  /** Avoid reprinting the same AOI budget line every retarget/discover. */
+  private lastBudgetLogSignature = ''
   /** Cached after last discovery — composite drain without re-fetch. */
   private cachedEntities: ActiveSceneEntity[] = []
   private cachedPrimaryId = ''
@@ -296,6 +300,11 @@ export class AoiVisualLayer {
    * until play-ready so primary hydrate is alone.
    */
   private liveReconcileEnabled = false
+  private readonly scratchFrustum = new THREE.Frustum()
+  private readonly scratchProjView = new THREE.Matrix4()
+  private readonly scratchBox = new THREE.Box3()
+  private readonly scratchWorld = new THREE.Vector3()
+  private readonly scratchSize = new THREE.Vector3(48, 24, 48)
 
   constructor() {
     this.root.name = 'aoi-visual-layer'
@@ -832,6 +841,16 @@ export class AoiVisualLayer {
       const dist = minPlayerToFootprintDistanceM(opts.dclX, opts.dclZ, keys, opts.primaryBase)
       if (Number.isFinite(dist) && dist <= enterM) liveEligible++
     }
+    const sig = [
+      opts.warmParcels,
+      opts.uniqueEntities,
+      scriptableInWarm,
+      liveEligible,
+      this.liveSecondaryIds.size,
+      opts.radiusM
+    ].join('|')
+    if (sig === this.lastBudgetLogSignature) return
+    this.lastBudgetLogSignature = sig
     console.info(
       `[aoi] budget warmParcels=${opts.warmParcels} (playerDisc=${opts.playerParcels}` +
         ` +primaryCollar=${opts.primaryAdjacentParcels}) ` +
@@ -1158,6 +1177,7 @@ export class AoiVisualLayer {
     if (warmM <= 0 || !this.ctx?.host) return
     for (const e of entities) {
       if (primaryId && e.id === primaryId) continue
+      if (this.liveGraphReadyIds.has(e.id) || this.liveSecondaryIds.has(e.id)) continue
       if (!isSecondarySceneCandidate(e) || !findCompositeFile(e.content)) continue
       if (this.loadedShells.has(e.id)) {
         this.pendingCompositeIds.delete(e.id)
@@ -1327,6 +1347,11 @@ export class AoiVisualLayer {
   ): Promise<void> {
     const host = ctx.host
     if (!host) {
+      this.pendingCompositeIds.delete(ent.id)
+      return
+    }
+    // Sticky / live graph already on host — a second 24-GLB plaza shell is 6 fps.
+    if (this.liveGraphReadyIds.has(ent.id) || this.liveSecondaryIds.has(ent.id)) {
       this.pendingCompositeIds.delete(ent.id)
       return
     }
@@ -1843,18 +1868,20 @@ export class AoiVisualLayer {
     }
 
     if (this.pendingCompositeIds.size > 0 && this.loadedShells.size < COMPOSITE_MAX_RETAINED) {
+      const frustum = this.cameraFrustum()
       const ranked = [...this.pendingCompositeIds]
         .map((id) => this.cachedEntities.find((e) => e.id === id))
         .filter((e): e is ActiveSceneEntity => !!e)
         .sort((a, b) => {
-          const aParcels = a.parcels.length || a.pointers.length
-          const bParcels = b.parcels.length || b.pointers.length
-          const aMega = aParcels >= 16 ? 1 : 0
-          const bMega = bParcels >= 16 ? 1 : 0
-          if (bMega !== aMega) return bMega - aMega
+          const aView = this.entityLikelyInView(a, frustum) ? 0 : 1
+          const bView = this.entityLikelyInView(b, frustum) ? 0 : 1
+          if (aView !== bView) return aView - bView
           const da = this.entityDistM(a, dclX, dclZ, this.cachedPrimaryBase || ctx.scene.baseParcel)
           const db = this.entityDistM(b, dclX, dclZ, this.cachedPrimaryBase || ctx.scene.baseParcel)
-          return da - db
+          if (da !== db) return da - db
+          const aParcels = a.parcels.length || a.pointers.length
+          const bParcels = b.parcels.length || b.pointers.length
+          return bParcels - aParcels
         })
       const ent = ranked[0]
       if (ent) {
@@ -1865,13 +1892,50 @@ export class AoiVisualLayer {
 
     if (!this.prewarmActive && !allowOverBudget && lastFrameOverBudget(33)) return
 
+    const frustum = this.cameraFrustum()
+    const attachOrder = [...this.loadedShells.values()].sort((a, b) => {
+      const aView = this.poseInFrustum(a.pose, frustum) ? 0 : 1
+      const bView = this.poseInFrustum(b.pose, frustum) ? 0 : 1
+      if (aView !== bView) return aView - bView
+      return a.lastDistM - b.lastDistM
+    })
     let attached = 0
-    for (const rec of this.loadedShells.values()) {
+    for (const rec of attachOrder) {
       if (attached >= COMPOSITE_LOAD_PER_DRAIN) break
       if (rec.attachedCount >= rec.targetCount || rec.pendingSrcs.length === 0) continue
       await this.attachOneShellClone(rec, ctx, gen)
       attached++
     }
+  }
+
+  private cameraFrustum(): THREE.Frustum | null {
+    const cam = this.ctx?.getCamera?.()
+    if (!cam) return null
+    cam.updateMatrixWorld(true)
+    this.scratchProjView.multiplyMatrices(cam.projectionMatrix, cam.matrixWorldInverse)
+    this.scratchFrustum.setFromProjectionMatrix(this.scratchProjView)
+    return this.scratchFrustum
+  }
+
+  private poseInFrustum(pose: THREE.Object3D, frustum: THREE.Frustum | null): boolean {
+    if (!frustum) return true
+    pose.updateWorldMatrix(true, false)
+    pose.getWorldPosition(this.scratchWorld)
+    this.scratchBox.setFromCenterAndSize(this.scratchWorld, this.scratchSize)
+    return frustum.intersectsBox(this.scratchBox)
+  }
+
+  private entityLikelyInView(ent: ActiveSceneEntity, frustum: THREE.Frustum | null): boolean {
+    if (!frustum) return true
+    const rec = this.loadedShells.get(ent.id)
+    if (rec) return this.poseInFrustum(rec.pose, frustum)
+    const primaryBase = this.cachedPrimaryBase || this.ctx?.scene.baseParcel || '0,0'
+    const origin = neighborOriginOffset(ent.base, primaryBase)
+    dclToThreePos(origin.x, 0, origin.z, this.scratchWorld)
+    this.aoiPoseRoot.updateWorldMatrix(true, false)
+    this.aoiPoseRoot.localToWorld(this.scratchWorld)
+    this.scratchBox.setFromCenterAndSize(this.scratchWorld, this.scratchSize)
+    return frustum.intersectsBox(this.scratchBox)
   }
 
   /**

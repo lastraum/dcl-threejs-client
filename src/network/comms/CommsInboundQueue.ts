@@ -60,6 +60,8 @@ export class CommsInboundQueue {
   private holdDrain = true
   /** Sandbox clock must start before warm-room join/snapshot (Explorer order). */
   private holdCustomEvents = true
+  /** Once the 2s sandbox head-start opens events, reconnect must not re-hold them. */
+  private customEventsOpened = false
   private holdLogged = false
   private customHoldLogged = false
 
@@ -93,14 +95,22 @@ export class CommsInboundQueue {
     this.holdDrain = hold
     if (hold) {
       this.holdLogged = false
-      this.holdCustomEvents = true
-      this.customHoldLogged = false
+      // Re-arming CUSTOM_EVENT here on scene-room reconnect dropped teamAssigned /
+      // paintTick forever (sandbox already ticking; worker-ready release never re-runs).
+      if (!this.customEventsOpened) {
+        this.holdCustomEvents = true
+        this.customHoldLogged = false
+      }
     }
   }
 
   setHoldCustomEvents(hold: boolean): void {
     this.holdCustomEvents = hold
-    if (hold) this.customHoldLogged = false
+    if (hold) {
+      this.customHoldLogged = false
+    } else {
+      this.customEventsOpened = true
+    }
   }
 
   isHoldDrain(): boolean {
@@ -135,14 +145,32 @@ export class CommsInboundQueue {
         if (encodedCommsMessageType(msg) === CommsWireMessageType.CUSTOM_EVENT) rest.push(msg)
         else crdt.push(msg)
       }
-      this.pending.length = 0
-      this.pending.push(...rest)
-      toDrain = crdt
-      if (rest.length > 0 && !this.customHoldLogged) {
-        this.customHoldLogged = true
-        console.info(
-          `[sync] CUSTOM_EVENT held — ${rest.length} packet(s) until sandbox clock leads join`
-        )
+      const hasRes = crdt.some((msg) => {
+        const t = encodedCommsMessageType(msg)
+        return t === CommsWireMessageType.AUTH_RES_CRDT_STATE || t === CommsWireMessageType.RES_CRDT_STATE
+      })
+      // Explorer: AUTH_RES makes isRoomReady, then join/team CUSTOM_EVENT. Deliver both
+      // in this drain so joinRoster is not queued behind a 2s event hold.
+      if (hasRes) {
+        this.holdCustomEvents = false
+        this.customEventsOpened = true
+        this.pending.length = 0
+        toDrain = [...crdt, ...rest]
+        if (rest.length) {
+          console.info(
+            `[sync] CUSTOM_EVENT released with AUTH_RES — ${rest.length} event(s) + ${crdt.length} CRDT`
+          )
+        }
+      } else {
+        this.pending.length = 0
+        this.pending.push(...rest)
+        toDrain = crdt
+        if (rest.length > 0 && !this.customHoldLogged) {
+          this.customHoldLogged = true
+          console.info(
+            `[sync] CUSTOM_EVENT held — ${rest.length} packet(s) until AUTH_RES / sandbox join`
+          )
+        }
       }
     } else {
       // Must splice — `toDrain = this.pending; this.pending.length = 0` aliases
@@ -158,5 +186,8 @@ export class CommsInboundQueue {
 
   clear(): void {
     this.pending.length = 0
+    this.customEventsOpened = false
+    this.holdCustomEvents = true
+    this.customHoldLogged = false
   }
 }

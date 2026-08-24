@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { DCL_SCENE_GRAVITY } from './constants'
+import { DCL_SCENE_GRAVITY, particleLiveCap } from './constants'
 import type { BurstRuntime, LiveParticle, ParticleSpec } from './types'
 
 const _scratchColor = new THREE.Color(1, 1, 1)
@@ -15,6 +15,7 @@ export function specSignature(spec: ParticleSpec): string {
   return JSON.stringify({
     // active / playbackState are live flags — toggling them must not dispose+recreate
     // (plaza miss Ym() sets active=false; recreate left splash_ring emitting).
+    // Torch flame (Snow Drift) flips PS_STOPPED ↔ PS_PLAYING on the same Cone emitter.
     rate: spec.rate,
     maxParticles: spec.maxParticles,
     lifetime: spec.lifetime,
@@ -37,9 +38,28 @@ export function specSignature(spec: ParticleSpec): string {
     prewarm: spec.prewarm,
     simulationSpace: spec.simulationSpace,
     limitVelocity: spec.limitVelocity,
-    bursts: spec.bursts,
-    playbackState: spec.playbackState
+    bursts: spec.bursts
   })
+}
+
+/**
+ * Drop sprites from the largest systems first so a world-scale snowfall
+ * (6000 requested) cannot starve a hand torch (160) or campfire plume.
+ */
+export function trimLiveToBudget(lengths: number[], budget: number): number[] {
+  const next = lengths.slice()
+  let total = 0
+  for (const n of next) total += n
+  if (total <= budget) return next
+  const order = next.map((_, i) => i).sort((a, b) => next[b]! - next[a]!)
+  let overflow = total - budget
+  for (const i of order) {
+    if (overflow <= 0) break
+    const cut = Math.min(next[i]!, overflow)
+    next[i]! -= cut
+    overflow -= cut
+  }
+  return next
 }
 
 export function createBurstRuntimes(spec: ParticleSpec, loop: boolean): BurstRuntime[] {
@@ -253,7 +273,7 @@ export type SpawnContext = {
 }
 
 function maxParticles(spec: ParticleSpec): number {
-  return Math.max(1, Math.floor(spec.maxParticles ?? 1000))
+  return particleLiveCap(spec.maxParticles)
 }
 
 function buildParticle(spec: ParticleSpec, ctx: SpawnContext, lifetime: number, age: number): LiveParticle {

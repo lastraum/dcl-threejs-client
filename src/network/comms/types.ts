@@ -74,6 +74,32 @@ export function decodeRfc5TopicPayload(
   }
 }
 
+/**
+ * sdk-commands mini-comms (`ws-room`) carries three peer-update payloads:
+ * our JSON avatar transform, our JSON topic envelope, and SDK craftCommsMessage
+ * (`[type][payload]`) for CRDT / CUSTOM_EVENT / REQ/RES.
+ *
+ * Auth-server games (Last Call Dock deck rows, Flagtag, pixelwars) publish the
+ * third kind. Dropping it means `room.send` never reaches isRoomReady.
+ */
+export type Rfc5PeerUpdateKind = 'transform' | 'topic' | 'scene-binary'
+
+export function classifyRfc5PeerUpdateBody(body: Uint8Array): Rfc5PeerUpdateKind {
+  if (decodeTransformPayload(body)) return 'transform'
+  if (decodeRfc5TopicPayload(body)) return 'topic'
+  return 'scene-binary'
+}
+
+export function isLocalPreviewComms(adapter: string, realmName: string): boolean {
+  const a = adapter.trim()
+  const name = realmName.trim()
+  return (
+    a.startsWith('ws-room:') ||
+    a.includes('/mini-comms/') ||
+    name === 'LocalPreview'
+  )
+}
+
 /** ADR-180 `ws-room:ws://host/path` → browser WebSocket URL. */
 export function parseCommsAdapter(connectionString: string): string | null {
   const trimmed = connectionString.trim()

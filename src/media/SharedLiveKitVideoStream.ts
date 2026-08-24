@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import type { LiveKitVideoBinder } from './WebVideoPlayer'
-import { configureSceneVideoTexture } from './videoTextureOrientation'
+import { configureSceneVideoTexture, guardVideoTextureUploads } from './videoTextureOrientation'
 
 type Subscriber = {
   onUpdate?: () => void
@@ -74,7 +74,7 @@ class SharedLiveKitVideoStream {
     tex.magFilter = THREE.LinearFilter
     // MeshRenderer reconfigures flipY on material apply; default false for glTF screens.
     configureSceneVideoTexture(tex, false)
-    tex.needsUpdate = true
+    guardVideoTextureUploads(tex, this.video)
     this.videoTexture = tex
     return tex
   }

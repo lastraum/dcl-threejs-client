@@ -1,6 +1,7 @@
 import { BODY_SHAPE_URN } from '../avatar/constants'
 import { normalizeProfileWearables } from '../avatar/peerApi'
 import type { AvatarProfile } from '../avatar/types'
+import { randomUuid } from '../util/randomUuid'
 
 const GUEST_ID_KEY = 'dcl-client-guest-id'
 
@@ -31,11 +32,11 @@ export function getOrCreateGuestAddress(): string {
   if (typeof sessionStorage !== 'undefined') {
     const stored = sessionStorage.getItem(GUEST_ID_KEY)?.trim()
     if (stored) return stored
-    const id = crypto.randomUUID()
+    const id = randomUuid()
     sessionStorage.setItem(GUEST_ID_KEY, id)
     return id
   }
-  return crypto.randomUUID()
+  return randomUuid()
 }
 
 function defaultGuestProfile(address: string): AvatarProfile {

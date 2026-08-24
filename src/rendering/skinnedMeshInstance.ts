@@ -138,7 +138,10 @@ export function repairSkinnedMesh(mesh: THREE.SkinnedMesh): void {
     n.includes('mask_') ||
     n.includes('eye') ||
     n.includes('mouth') ||
-    n.includes('hair')
+    n.includes('hair') ||
+    n.includes('visor') ||
+    n.includes('hat') ||
+    n.includes('cylinder')
   mesh.frustumCulled = !faceOrHands
   repairSkinWeights(mesh.geometry)
 }

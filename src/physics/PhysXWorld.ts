@@ -26,6 +26,7 @@ import {
   EMPTY_LAND_AOI_COLLIDER_ENTITY_BASE,
   EMPTY_LAND_AOI_COLLIDER_ID_SPAN
 } from '../dcl/aoi/emptyParcelLayer'
+import { SECONDARY_PHYS_BASE } from '../dcl/multiScene/physOffsets'
 
 export type PhysicsColliderShapeDesc = {
   fingerprint: string
@@ -212,6 +213,8 @@ export class PhysXWorld {
   private readonly multiShapeChildCount = new Map<number, number>()
   /** Rate-limit multi-shape expand console spam (thrash diagnosis). */
   private readonly multiShapeExpandLogAt = new Map<number, number>()
+  /** Coalesce CCT overlap separate after a burst of tile cooks (not per expand). */
+  private pendingCctOverlapSeparate = false
   /** Reverse lookup — platform transfer + CCT grounding probes. */
   private readonly staticEntityByActorPtr = new Map<number, number>()
   /** Last descriptor world position per PhysX entity — tweened platform delta tracking. */
@@ -1514,6 +1517,58 @@ export class PhysXWorld {
   }
 
   /**
+   * Sticky demote / origin rebase: world-baked hulls sit at actor identity with
+   * verts in the old world. Slide the actor T by the new scene-root offset —
+   * never recook (that re-expanded plaza 144-shape GLBs → 6 fps).
+   */
+  translateWorldBakedColliders(
+    descs: PhysicsColliderDesc[],
+    dx: number,
+    dy: number,
+    dz: number
+  ): number {
+    if (!descs.length) return 0
+    if (dx === 0 && dy === 0 && dz === 0) return 0
+    const seen = new Set<number>()
+    let n = 0
+    for (const desc of descs) {
+      const childCount = this.multiShapeChildCount.get(desc.entity) ?? 0
+      const ids = [desc.entity]
+      for (let i = 0; i < childCount; i++) ids.push(multiShapeChildPhysId(desc.entity, i))
+      for (const id of ids) {
+        if (seen.has(id)) continue
+        seen.add(id)
+        if (this.translateOneStaticActor(id, dx, dy, dz)) n++
+      }
+      this.staticPoseFp.set(desc.entity, multiShapePoseFingerprint(desc))
+    }
+    if (n > 0) this.invalidateControllerCache()
+    return n
+  }
+
+  private translateOneStaticActor(entity: number, dx: number, dy: number, dz: number): boolean {
+    const actor = this.staticActors.get(entity)
+    if (!actor) return false
+    if (!this.readActorWorldPosition(entity, this._pos)) {
+      this._pos.set(0, 0, 0)
+    }
+    this._pos.x += dx
+    this._pos.y += dy
+    this._pos.z += dz
+    this._quat.set(0, 0, 0, 1)
+    try {
+      this._pos.toPxTransform(this.actorPoseTransform)
+      this._quat.toPxTransform(this.actorPoseTransform)
+      actor.setGlobalPose(this.actorPoseTransform)
+      this.reinsertStaticActorForSceneQuery(actor)
+      return true
+    } catch (err) {
+      console.warn('[PhysXWorld] world-baked translate failed:', entity, err)
+      return false
+    }
+  }
+
+  /**
    * Runtime no-op after seal. Prefer {@link invalidateControllerCache}.
    * Boot seal owns the single SQ commit (see {@link sealStaticSceneQuery}).
    */
@@ -1855,6 +1910,19 @@ export class PhysXWorld {
 
         if (cooksRemaining <= 0) {
           pendingCooks++
+          continue
+        }
+
+        // Sticky/PE offset hulls already in SQ (rekey+translate). Expanding them
+        // after promote recooked plaza 144-shape GLBs on the main thread (4fps).
+        if (
+          desc.entity >= SECONDARY_PHYS_BASE &&
+          this.hasStaticActor(desc.entity) &&
+          !options?.forceRecookOnPoseChange &&
+          !bootStyleCook
+        ) {
+          this.staticPoseFp.set(desc.entity, poseFp)
+          if (prevGeomFp !== geomFp) this.staticFp.set(desc.entity, geomFp)
           continue
         }
 
@@ -2486,6 +2554,10 @@ export class PhysXWorld {
   /** Unity/DCL-style CCT move — displacement in metres for this frame. */
   movePlayer(displacement: THREE.Vector3, delta: number): ControllerMoveResult {
     if (!this.controller) return { grounded: false }
+    if (this.pendingCctOverlapSeparate) {
+      this.pendingCctOverlapSeparate = false
+      this.separateCctFromOverlappingStatics()
+    }
 
     // Always re-assert y=0 floor before any move (scene cook churn must not strand the avatar).
     this.ensureInfiniteGroundPlane()
@@ -3744,8 +3816,9 @@ export class PhysXWorld {
       }
     }
     // New hulls can spawn overlapping the capsule (Snowdrift run-into-prop). Legal pose.
+    // Do not run CCT overlap separate per tile cook — 30 expands at load was a hitch.
     this.invalidateControllerCache()
-    this.separateCctFromOverlappingStatics()
+    this.pendingCctOverlapSeparate = true
     return true
   }
 

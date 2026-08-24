@@ -1,4 +1,5 @@
 import { fetchSceneParticipants } from './gatekeeper/GatekeeperClient'
+import { randomUuid } from '../util/randomUuid'
 
 const LOCK_KEY_PREFIX = 'dcl-wallet-session:'
 const LOCK_STALE_MS = 12_000
@@ -12,7 +13,7 @@ function tabId(): string {
   const key = 'dcl-client-tab-id'
   let id = sessionStorage.getItem(key)
   if (!id) {
-    id = crypto.randomUUID()
+    id = randomUuid()
     sessionStorage.setItem(key, id)
   }
   return id

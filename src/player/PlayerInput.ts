@@ -15,6 +15,12 @@ import { isSceneUiTypingFocus } from '../ui/scene/sceneUiTyping'
 export class PlayerInput {
   readonly keys = { w: false, a: false, s: false, d: false, space: false, shift: false, ctrl: false }
   readonly actionKeys = { digit1: false, digit2: false, digit3: false, digit4: false }
+  /** Touch joystick — strafe (x) and forward (z), each in [-1, 1]. */
+  analogX = 0
+  analogZ = 0
+  /** Touch right stick — yaw (x, right+) and pitch (y, down+), each in [-1, 1]. */
+  analogLookX = 0
+  analogLookY = 0
   readonly pointer = { locked: false, dx: 0, dy: 0 }
   scrollDelta = 0
   pinchZoomDelta = 0
@@ -26,7 +32,10 @@ export class PlayerInput {
   private orbitPointerId: number | null = null
   private lastPointerX = 0
   private lastPointerY = 0
-  private readonly activePointers = new Map<number, { x: number; y: number }>()
+  private readonly activePointers = new Map<
+    number,
+    { x: number; y: number; analog: boolean; pinch: boolean }
+  >()
   private lastPinchSpan = 0
   private isLocomotionBlocked: () => boolean = () => false
   /** Scene VirtualCamera owns MainCamera — block freecam orbit / pointer-lock look. */
@@ -45,9 +54,12 @@ export class PlayerInput {
     document.addEventListener('pointerlockchange', this.onLockChange)
     this.canvas.addEventListener('pointerdown', this.onPointerDown)
     this.canvas.addEventListener('pointermove', this.onPointerMove)
+    window.addEventListener('pointerdown', this.onWindowTouchPointerDown, true)
+    window.addEventListener('pointermove', this.onWindowTouchPointerMove, true)
     window.addEventListener('pointerup', this.onPointerUp)
     window.addEventListener('pointercancel', this.onPointerUp)
-    this.canvas.addEventListener('contextmenu', this.onContextMenu)
+    document.addEventListener('contextmenu', this.onContextMenu, true)
+    this.canvas.addEventListener('touchstart', this.onTouchPrevent, { passive: false })
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false })
     // Sync if lock already active (rare).
     this.onLockChange()
@@ -63,9 +75,12 @@ export class PlayerInput {
     document.removeEventListener('pointerlockchange', this.onLockChange)
     this.canvas.removeEventListener('pointerdown', this.onPointerDown)
     this.canvas.removeEventListener('pointermove', this.onPointerMove)
+    window.removeEventListener('pointerdown', this.onWindowTouchPointerDown, true)
+    window.removeEventListener('pointermove', this.onWindowTouchPointerMove, true)
     window.removeEventListener('pointerup', this.onPointerUp)
     window.removeEventListener('pointercancel', this.onPointerUp)
-    this.canvas.removeEventListener('contextmenu', this.onContextMenu)
+    document.removeEventListener('contextmenu', this.onContextMenu, true)
+    this.canvas.removeEventListener('touchstart', this.onTouchPrevent)
     this.canvas.removeEventListener('wheel', this.onWheel)
     this.reticle.dispose()
     if (document.pointerLockElement === this.canvas) document.exitPointerLock()
@@ -85,18 +100,54 @@ export class PlayerInput {
     this.keys.space = down
   }
 
+  /** Invisible left-stick analog (touch). 0,0 when released. */
+  setAnalogMove(x: number, z: number): void {
+    const nx = Number.isFinite(x) ? x : 0
+    const nz = Number.isFinite(z) ? z : 0
+    const mag = Math.hypot(nx, nz)
+    if (mag > 1) {
+      this.analogX = nx / mag
+      this.analogZ = nz / mag
+      return
+    }
+    this.analogX = nx
+    this.analogZ = nz
+  }
+
+  analogMagnitude(): number {
+    return Math.hypot(this.analogX, this.analogZ)
+  }
+
+  /** Invisible right-stick analog look (touch). 0,0 when released. */
+  setAnalogLook(x: number, y: number): void {
+    const nx = Number.isFinite(x) ? x : 0
+    const ny = Number.isFinite(y) ? y : 0
+    const mag = Math.hypot(nx, ny)
+    if (mag > 1) {
+      this.analogLookX = nx / mag
+      this.analogLookY = ny / mag
+      return
+    }
+    this.analogLookX = nx
+    this.analogLookY = ny
+  }
+
+  analogLookMagnitude(): number {
+    return Math.hypot(this.analogLookX, this.analogLookY)
+  }
+
   get looking(): boolean {
     if (this.isLookBlocked()) return false
-    return this.pointer.locked || this.orbiting
+    return this.pointer.locked || this.orbiting || this.analogLookMagnitude() > 0
   }
 
   /** Snapshot for SceneInputRelay — scene worker inputSystem; separate from avatar InputModifier. */
   getSceneKeyboardSnapshot(): SceneKeyboardSnapshot {
     return {
-      forward: this.keys.w,
-      backward: this.keys.s,
-      left: this.keys.a,
-      right: this.keys.d,
+      forward: this.keys.w || this.analogZ > 0.35,
+      backward: this.keys.s || this.analogZ < -0.35,
+      left: this.keys.a || this.analogX < -0.35,
+      right: this.keys.d || this.analogX > 0.35,
       jump: this.keys.space,
       ctrl: this.keys.ctrl,
       action3: this.actionKeys.digit1,
@@ -202,12 +253,70 @@ export class PlayerInput {
     if (this.pointer.locked) this.reticle.syncLayout()
   }
 
+  /** Pads sit over the canvas — capture-phase so upper-half pinch sees both fingers. */
+  private onWindowTouchPointerDown = (e: PointerEvent): void => {
+    if (e.pointerType !== 'touch') return
+    if (this.isPinchExcluded(e.target)) return
+    const analog = this.isAnalogPadTarget(e.target)
+    const pinch = !analog && e.clientY < window.innerHeight * 0.5
+    this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY, analog, pinch })
+    if (this.pinchPointerCount() >= 2) {
+      this.stopOrbit()
+      this.lastPinchSpan = this.pointerSpan()
+    }
+  }
+
+  private onWindowTouchPointerMove = (e: PointerEvent): void => {
+    if (e.pointerType !== 'touch') return
+    const prev = this.activePointers.get(e.pointerId)
+    if (!prev) return
+    this.activePointers.set(e.pointerId, {
+      x: e.clientX,
+      y: e.clientY,
+      analog: prev.analog,
+      pinch: prev.pinch
+    })
+    if (this.pinchPointerCount() >= 2) this.applyPinchZoom()
+  }
+
+  private onTouchPrevent = (e: TouchEvent): void => {
+    e.preventDefault()
+  }
+
+  private isPinchExcluded(target: EventTarget | null): boolean {
+    if (isClientOverlayTarget(target)) return true
+    if (isSceneUiInteractiveTarget(target)) return true
+    if (!(target instanceof Element)) return false
+    return !!target.closest(
+      '.mobile-game-hud__btn, .mobile-profile-fab, .scene-chat-fab, #phone-log-hud, .client-shell, .settings-overlay, .social-chat-dock, input, textarea, [contenteditable="true"]'
+    )
+  }
+
+  private isAnalogPadTarget(target: EventTarget | null): boolean {
+    return (
+      target instanceof Element && !!target.closest('.touch-move-pad, .touch-look-pad')
+    )
+  }
+
+  private pinchPointerCount(): number {
+    let n = 0
+    for (const p of this.activePointers.values()) if (p.pinch) n++
+    return n
+  }
+
   private onPointerMove = (e: PointerEvent) => {
+    if (e.pointerType === 'touch') return
     if (this.activePointers.has(e.pointerId)) {
-      this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+      const prev = this.activePointers.get(e.pointerId)!
+      this.activePointers.set(e.pointerId, {
+        x: e.clientX,
+        y: e.clientY,
+        analog: prev.analog,
+        pinch: prev.pinch
+      })
     }
 
-    if (this.activePointers.size >= 2) {
+    if (this.pinchPointerCount() >= 2) {
       this.applyPinchZoom()
       return
     }
@@ -248,22 +357,37 @@ export class PlayerInput {
       this.clearMovementKeys()
     }
 
-    this.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
-    if (this.activePointers.size >= 2) {
+    if (!this.activePointers.has(e.pointerId)) {
+      const pinch = e.pointerType === 'touch' && e.clientY < window.innerHeight * 0.5
+      this.activePointers.set(e.pointerId, {
+        x: e.clientX,
+        y: e.clientY,
+        analog: false,
+        pinch
+      })
+    }
+    if (this.pinchPointerCount() >= 2) {
       this.stopOrbit()
       this.lastPinchSpan = this.pointerSpan()
       return
     }
 
-    if (e.button === 0) {
+    if (e.pointerType === 'touch' || e.button === 0) {
+      if (e.pointerType === 'touch') {
+        e.preventDefault()
+        this.notifyUserGesture()
+        return
+      }
       this.notifyUserGesture()
       // Left-click drag orbit only when unlocked. In pointer lock, movement alone orbits.
       if (this.pointer.locked) return
       // Peer options win over orbit: pill rect first, then avatar body screen-bounds.
       // (Body hit used to require a visible name-tag DOM node and broke after tag culling.)
+      // Touch hold is look/orbit — do not open the peer menu (and Safari callout).
       if (
-        tryOpenPeerContextMenuFromPillRect(e.clientX, e.clientY) ||
-        tryOpenPeerContextMenu(e.clientX, e.clientY)
+        e.pointerType !== 'touch' &&
+        (tryOpenPeerContextMenuFromPillRect(e.clientX, e.clientY) ||
+          tryOpenPeerContextMenu(e.clientX, e.clientY))
       ) {
         e.preventDefault()
         return
@@ -297,13 +421,13 @@ export class PlayerInput {
 
   private onPointerUp = (e: PointerEvent) => {
     this.activePointers.delete(e.pointerId)
-    if (this.activePointers.size < 2) this.lastPinchSpan = 0
+    if (this.pinchPointerCount() < 2) this.lastPinchSpan = 0
     if (e.pointerId !== this.orbitPointerId) return
     this.stopOrbit()
   }
 
   private pointerSpan(): number {
-    const pts = [...this.activePointers.values()]
+    const pts = [...this.activePointers.values()].filter((p) => p.pinch)
     if (pts.length < 2) return 0
     return Math.hypot(pts[0]!.x - pts[1]!.x, pts[0]!.y - pts[1]!.y)
   }
@@ -314,7 +438,8 @@ export class PlayerInput {
       this.lastPinchSpan = span
       return
     }
-    this.pinchZoomDelta += span - this.lastPinchSpan
+    // Spread fingers → zoom in (smaller boom), same as mobile maps.
+    this.pinchZoomDelta += this.lastPinchSpan - span
     this.lastPinchSpan = span
   }
 
@@ -331,7 +456,17 @@ export class PlayerInput {
   }
 
   private onContextMenu = (e: Event) => {
-    e.preventDefault()
+    const t = e.target
+    if (t === this.canvas) {
+      e.preventDefault()
+      return
+    }
+    if (
+      t instanceof Element &&
+      (this.canvas.contains(t) || t.closest('.touch-move-pad, .touch-look-pad'))
+    ) {
+      e.preventDefault()
+    }
   }
 
   private onWheel = (e: WheelEvent) => {
@@ -376,6 +511,10 @@ export class PlayerInput {
     this.actionKeys.digit3 = false
     this.actionKeys.digit4 = false
     this.spacePressed = false
+    this.analogX = 0
+    this.analogZ = 0
+    this.analogLookX = 0
+    this.analogLookY = 0
   }
 
   private isMoveKeyCode(code: string): boolean {

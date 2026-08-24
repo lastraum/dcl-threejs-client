@@ -498,6 +498,35 @@ export class RemoteAvatarManager {
    * Distance reference for load radius, LOD, name tags, and shadow budget.
    * Must be **local player feet** (not orbit/freecam) so looking away does not unload peers.
    */
+  /**
+   * Stand-on origin rebase: cached peer poses are scene-local. Convert through
+   * genesis so remotes stay put in the world instead of jumping to the new SW.
+   */
+  rebaseSceneOrigin(
+    oldOriginMeters: { x: number; z: number },
+    newOriginMeters: { x: number; z: number }
+  ): void {
+    const dclDx = oldOriginMeters.x - newOriginMeters.x
+    const dclDz = oldOriginMeters.z - newOriginMeters.z
+    if (dclDx === 0 && dclDz === 0) return
+    let n = 0
+    for (const record of this.peers.values()) {
+      if (!record.hasPosition) continue
+      // three.x = -dcl.x, three.z = dcl.z
+      record.root.position.x -= dclDx
+      record.root.position.z += dclDz
+      record.targetPosition.copy(record.root.position)
+      n++
+    }
+    if (n > 0) {
+      clientDebugLog.log(
+        'network',
+        `Remote origin rebase n=${n} dclΔ=(${dclDx.toFixed(1)},${dclDz.toFixed(1)}) ` +
+          `origin (${oldOriginMeters.x},${oldOriginMeters.z})→(${newOriginMeters.x},${newOriginMeters.z})`
+      )
+    }
+  }
+
   setLocalPlayerPosition(position: THREE.Vector3): void {
     this.localPlayerWorldPos.copy(position)
     this.hasLocalPlayerPos = true

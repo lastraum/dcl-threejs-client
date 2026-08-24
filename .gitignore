@@ -7,3 +7,4 @@ remote
 .env.*
 !.env.example
 dev/scene-bundles/
+data/phone-logs.jsonl

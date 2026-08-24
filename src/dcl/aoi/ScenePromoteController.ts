@@ -50,7 +50,7 @@ export type ScenePromoteControllerOptions = {
  * - Soft-updates the SPA URL as you walk (no reload).
  * - Full promote only when dwelling on a **real SDK7 scene** that is not primary.
  * - Empty land and roads never trigger a scene reload (that was thrashing promote).
- * - FocusOwner stays primary; secondaries (if live) are hard-muted media / no UI.
+ * - After handoff the under-feet deployment is FocusOwner (origin + LiveKit + UI).
  */
 type PendingWarmEntry = {
   entityId: string
@@ -156,6 +156,9 @@ export class ScenePromoteController {
     this.neighborActivityEnabled = false
     this.lastSoftKey = ''
     this.lastWarmScanAt = 0
+    // Restart dwell cooldown so origin-rebase feet on the next cell of this
+    // same deployment cannot evaluate+force-boot before occupancy is folded.
+    this.lastPromoteAt = performance.now()
     this.evalGen++
     console.info(
       `[promote] bound primary “${scene.title}” base=${scene.baseParcel} parcels=${this.primaryParcels.size} entity=${scene.entityId?.slice(0, 12) ?? 'none'} scriptWarm=${this.getScriptWarmRadiusM()}m (warm deferred until play-ready)`
@@ -178,6 +181,17 @@ export class ScenePromoteController {
 
   setNeighborActivityEnabled(enabled: boolean): void {
     this.neighborActivityEnabled = enabled
+  }
+
+  /**
+   * Fold a cell into the bound primary footprint (origin-rebase feet, handoff
+   * target). `ResolvedScene.parcels` can miss non-base cells.
+   */
+  coverPrimaryParcel(key: string): void {
+    const k = key.trim()
+    if (!k) return
+    this.primaryParcels.add(k)
+    this.coveredEntityParcels.add(k)
   }
 
   /**
@@ -382,7 +396,7 @@ export class ScenePromoteController {
 
       deferredWarm = this.pendingWarm.size
 
-      if (warmed > 0 || skippedRoad > 0 || deferredWarm > 0 || skippedCovered > 0) {
+      if (warmed > 0 || skippedRoad > 0 || deferredWarm > 0) {
         console.info(
           `[promote] script-warm scan feet=${center.x},${center.y} ring=${pointers.length}` +
             ` coveredSkip=${skippedCovered} entities=${entitiesLen} warmed=${warmed}/${MAX_SCRIPT_WARM_PER_SCAN}` +

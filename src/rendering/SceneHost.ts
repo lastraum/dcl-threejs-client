@@ -28,6 +28,7 @@ import { perfNoteFrameHost, perfNoteRenderSplit } from '../util/perfCounters'
 import { forceNoBloom, forceNoShadow } from '../client/devFlags'
 import { subscribeBackgroundTicks } from './backgroundTickHub'
 import { getSessionAssetCache } from './AssetCache'
+import { isAppleTouchDevice, isIphoneDevice } from '../util/appleTouch'
 
 export class SceneHost {
   renderer: THREE.WebGLRenderer
@@ -78,8 +79,17 @@ export class SceneHost {
 
   constructor(container: HTMLElement) {
     // Canvas AA off — sample count is controlled via multisample render target (runtime prefs).
-    this.renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' })
-    this.renderer.setPixelRatio(effectivePixelRatio(renderQuality.getResolutionScale()))
+    const appleTouch = isAppleTouchDevice()
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: false,
+      // iOS: extra high-performance contexts steal/lose the play context (shaderSource arg 1).
+      powerPreference: appleTouch ? 'default' : 'high-performance',
+      failIfMajorPerformanceCaveat: false,
+      alpha: false,
+      stencil: false
+    })
+    const pr = effectivePixelRatio(renderQuality.getResolutionScale())
+    this.renderer.setPixelRatio(appleTouch ? Math.min(pr, isIphoneDevice() ? 1.25 : 1.5) : pr)
     this.renderer.setSize(window.innerWidth, window.innerHeight)
     this.renderer.setClearColor(0x1a1a2e)
     // Bloom composer calls renderer.render() per pass; autoReset made HUD draws:1.
@@ -96,10 +106,9 @@ export class SceneHost {
     this.blitScene.add(blitMesh)
 
     this.renderer.domElement.addEventListener('webglcontextlost', (e) => {
-      if (this.disposing) {
-        e.preventDefault()
-        return
-      }
+      if (this.disposing) return
+      // Without preventDefault Safari never restores — shaders then fail "not from this context".
+      e.preventDefault()
       console.error('[SceneHost] WebGL context lost unexpectedly — GPU memory or driver reset?', e)
       getSessionAssetCache().invalidateGpuResources('webgl-context-lost')
     })
@@ -133,9 +142,12 @@ export class SceneHost {
     })
 
     window.addEventListener('resize', () => this.applyViewportSize())
-    // Mobile URL bar show/hide changes visualViewport without a window resize.
-    window.visualViewport?.addEventListener('resize', () => this.applyViewportSize())
-    window.visualViewport?.addEventListener('scroll', () => this.applyViewportSize())
+    // iOS URL-bar / keyboard fire visualViewport scroll constantly — resizing WebGL
+    // mid-walk hitches the camera (looks like a laggy head).
+    if (!isAppleTouchDevice()) {
+      window.visualViewport?.addEventListener('resize', () => this.applyViewportSize())
+      window.visualViewport?.addEventListener('scroll', () => this.applyViewportSize())
+    }
     document.addEventListener('visibilitychange', this.onVisibilityChange)
     window.addEventListener('focus', this.onWindowFocusChange)
     window.addEventListener('blur', this.onWindowFocusChange)
@@ -182,6 +194,7 @@ export class SceneHost {
 
   setViewportSize(width: number, height: number): void {
     if (width < 1 || height < 1) return
+    if (Math.abs(width - this.viewportCssW) < 2 && Math.abs(height - this.viewportCssH) < 2) return
     this.viewportCssW = width
     this.viewportCssH = height
     if (this.camera) {
@@ -215,7 +228,7 @@ export class SceneHost {
     // 100dvh vs layout chrome) left a solid black strip under the HUD while scene-ui
     // mapped to 1920×884 of a taller window (logs: e1835 1920×884).
     const app = document.getElementById('app')
-    const vv = window.visualViewport
+    const vv = isAppleTouchDevice() ? null : window.visualViewport
     const targetW = Math.max(
       1,
       Math.round(vv?.width ?? 0),
@@ -327,7 +340,9 @@ export class SceneHost {
 
     // Bloom Unreal path cannot take MSAA samples — FXAA runs on the bloom blit instead.
     // Effective bloom includes adaptive step-down; `?nobloom` forces off for A/B.
-    const bloomOn = renderQuality.getBloomEnabled() && !forceNoBloom()
+    // iOS: Linear beauty + ACES blit reads as solid white even without HDR.
+    const bloomOn =
+      renderQuality.getBloomEnabled() && !forceNoBloom() && !isAppleTouchDevice()
     const maxSamples = this.renderer.capabilities?.maxSamples ?? 0
     this.msaaSamples = bloomOn ? 0 : clampMsaaSamples(options.msaaSamples, maxSamples)
     this.rebuildMsaaTarget()
@@ -343,11 +358,13 @@ export class SceneHost {
     // Keep modest: outdoor sunlit beauty + low threshold washed brainrot chalk-white vs Explorer.
     const strength =
       options.tier === 'ultra' ? 0.09 : options.tier === 'high' ? 0.08 : 0.06
-    const bloomOn = renderQuality.getBloomEnabled() && !forceNoBloom()
+    const bloomOn =
+      renderQuality.getBloomEnabled() && !forceNoBloom() && !isAppleTouchDevice()
     this.bloom.configure(
       {
         enabled: bloomOn,
-        hdr: options.hdrEnabled,
+        // iOS Safari HalfFloat beauty blit often samples as solid white.
+        hdr: options.hdrEnabled && !isAppleTouchDevice(),
         mode: 'fast',
         strength,
         threshold: 0.15,
@@ -448,7 +465,8 @@ export class SceneHost {
     const bloomWanted =
       !!this.bloom?.isActive() &&
       renderQuality.getBloomEnabled() &&
-      !forceNoBloom()
+      !forceNoBloom() &&
+      !isAppleTouchDevice()
     if (!bloomWanted) {
       const fwd = this.renderForwardPass()
       return {
@@ -481,7 +499,9 @@ export class SceneHost {
       this.drawWorld.sync(this.camera)
       const started = performance.now()
       const compileAsync = this.renderer.compileAsync?.bind(this.renderer)
-      if (compileAsync) {
+      // iOS KHR_parallel_shader_compile / compileAsync often throws
+      // "shaderSource: argument 1 is not a WebGLShader".
+      if (compileAsync && !isAppleTouchDevice()) {
         await Promise.race([
           compileAsync(this.scene, this.camera),
           new Promise<void>((resolve) => setTimeout(resolve, 8_000))

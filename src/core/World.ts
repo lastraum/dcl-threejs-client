@@ -2447,7 +2447,12 @@ export class World {
     // compileAsync misses shadow-depth + bloom/FXAA blit — run the real present path.
     this.host.warmShadowAndBloomPresents()
     for (let i = 0; i < 4; i++) {
-      this.host.renderFrame()
+      try {
+        this.host.renderFrame()
+      } catch (err) {
+        console.warn('[World] warmPlayGpu present failed', err)
+        break
+      }
       await new Promise<void>((r) => requestAnimationFrame(() => r()))
     }
   }
@@ -5179,6 +5184,10 @@ export class World {
 
   setAnalogMove(x: number, z: number): void {
     this.player?.setAnalogMove(x, z)
+  }
+
+  setAnalogLook(x: number, y: number): void {
+    this.player?.setAnalogLook(x, y)
   }
 
   cancelCameraPointer(): void {

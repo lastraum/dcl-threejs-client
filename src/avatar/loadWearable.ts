@@ -23,6 +23,8 @@ import {
   wearableUnitScaleFactor
 } from './wearableSanitize'
 import type { BodyShape, WearableCategory, WearableDefinition } from './types'
+import { isAppleTouchDevice } from '../util/appleTouch'
+import { isAvatarVerbose } from '../client/debug/ClientDebugLog'
 
 export { wearableGlbCacheKey } from './wearableCache'
 export {
@@ -45,6 +47,10 @@ export type MergeWearableOptions = {
 export const PARALLEL_WEARABLE_USERDATA = 'dclParallelWearable'
 
 type ParallelBonePair = { body: THREE.Bone; wearable: THREE.Bone }
+
+const _worldPos = new THREE.Vector3()
+const _worldQuat = new THREE.Quaternion()
+const _parentQuat = new THREE.Quaternion()
 
 export type ParallelWearableState = {
   pairs: ParallelBonePair[]
@@ -391,6 +397,7 @@ export function mergeWearableMeshes(
 ): boolean {
   const threshold = mergeThresholdForCategory(options.category, options.wearableId)
   let merged = 0
+  const mergedNames: string[] = []
 
   // RTFKT/L1 feet: Armature×10 + cm verts must be baked into body unit space before bind.
   const unitFactor =
@@ -435,11 +442,23 @@ export function mergeWearableMeshes(
     // f*(M*v)=M*(f*v), so keep M when baking unitFactor into positions.
     // Do NOT multiply mesh.matrix here — folding local TRS after unit bake caused
     // L1/RTFKT shoes to land huge and ~180° flipped vs body bind space.
-    bindSkinnedMesh(mesh, skeleton, obj.bindMatrix.clone())
+    const bindMat = obj.bindMatrix.clone()
+    bindSkinnedMesh(mesh, skeleton, bindMat)
     repairSkinnedMesh(mesh)
+    // Same parent as desktop: avatar root. Parenting merged skin to Armature
+    // double-applies armature motion (iPhone hair/head hitch with Head bone still locked).
     target.add(mesh)
+    mergedNames.push(obj.name || mesh.uuid.slice(0, 8))
     merged++
   })
+
+  if (isAvatarVerbose() && (merged > 0 || isHeadSlotCategory(options.category))) {
+    console.info(
+      `[avatar] merge ${options.category ?? '?'} meshes=${merged} apple=${isAppleTouchDevice()} ` +
+        `parent=${target.name} names=${mergedNames.join(',') || 'none'} ` +
+        `— ${options.wearableId ?? ''}`
+    )
+  }
 
   return merged > 0
 }
@@ -460,32 +479,77 @@ function collectWearableSkeletons(root: THREE.Object3D): THREE.Skeleton[] {
  * Map wearable bones → body bones by name (explorer parallel-rig style).
  * Unmapped wearable bones are left at authored bind pose.
  */
+function findBodyHeadBone(bodySkeleton: THREE.Skeleton): THREE.Bone | null {
+  const bodyNames = skeletonBoneSet(bodySkeleton)
+  const resolved = resolveBoneName('Head', bodyNames) ?? resolveBoneName('Avatar_Head', bodyNames)
+  if (!resolved) return null
+  for (const bone of bodySkeleton.bones) {
+    if (normalizeBoneName(bone.name) === resolved) return bone
+  }
+  return null
+}
+
+function isHeadSlotCategory(category?: WearableCategory): boolean {
+  return (
+    category === 'hair' ||
+    category === 'facial_hair' ||
+    category === 'hat' ||
+    category === 'helmet' ||
+    category === 'mask' ||
+    category === 'tiara' ||
+    category === 'eyewear' ||
+    category === 'earring' ||
+    category === 'top_head'
+  )
+}
+
 function buildParallelBonePairs(
   wearableSkeleton: THREE.Skeleton,
-  bodySkeleton: THREE.Skeleton
+  bodySkeleton: THREE.Skeleton,
+  options: MergeWearableOptions = {}
 ): ParallelBonePair[] {
   const bodyNames = skeletonBoneSet(bodySkeleton)
   const bodyByName = new Map<string, THREE.Bone>()
   for (const bone of bodySkeleton.bones) {
     bodyByName.set(normalizeBoneName(bone.name), bone)
   }
+  const headBone = findBodyHeadBone(bodySkeleton)
+  const headSlot = isHeadSlotCategory(options.category)
   const pairs: ParallelBonePair[] = []
   for (const wearBone of wearableSkeleton.bones) {
     const resolved = resolveBoneName(wearBone.name, bodyNames)
-    if (!resolved) continue
-    const bodyBone = bodyByName.get(resolved)
-    if (!bodyBone || bodyBone === wearBone) continue
-    pairs.push({ body: bodyBone, wearable: wearBone })
+    const bodyBone = resolved ? bodyByName.get(resolved) : undefined
+    if (bodyBone && bodyBone !== wearBone) {
+      pairs.push({ body: bodyBone, wearable: wearBone })
+      continue
+    }
+    // Hair GLBs skin to spring bones that are not on body_shape — pin those to Head
+    // or the mesh stays in bind pose while the body walks away.
+    if (headSlot && headBone && headBone !== wearBone && isSecondaryHeadBone(wearBone.name)) {
+      pairs.push({ body: headBone, wearable: wearBone })
+    }
   }
   return pairs
 }
 
 function applyParallelBonePairs(pairs: ParallelBonePair[]): void {
+  const useWorld = isAppleTouchDevice()
   for (const { body, wearable } of pairs) {
-    // Local TRS copy: standard DCL wearables share the Avatar_* hierarchy, so matching
-    // bones animate with the body. Wearable bone scale is left alone (unit differences).
-    wearable.position.copy(body.position)
-    wearable.quaternion.copy(body.quaternion)
+    if (!useWorld || !wearable.parent) {
+      wearable.position.copy(body.position)
+      wearable.quaternion.copy(body.quaternion)
+      continue
+    }
+    // iOS: hair armature parent chain ≠ body — local copy leaves the head in bind pose.
+    const parent = wearable.parent
+    body.updateWorldMatrix(true, false)
+    parent.updateWorldMatrix(true, false)
+    body.getWorldPosition(_worldPos)
+    parent.worldToLocal(_worldPos)
+    wearable.position.copy(_worldPos)
+    body.getWorldQuaternion(_worldQuat)
+    parent.getWorldQuaternion(_parentQuat)
+    wearable.quaternion.copy(_parentQuat.invert().multiply(_worldQuat))
   }
 }
 
@@ -562,7 +626,7 @@ export function attachWearableFallback(
   const skeletons = collectWearableSkeletons(wearableRoot)
   const pairs: ParallelBonePair[] = []
   for (const wearSkel of skeletons) {
-    pairs.push(...buildParallelBonePairs(wearSkel, skeleton))
+    pairs.push(...buildParallelBonePairs(wearSkel, skeleton, options))
   }
 
   wearableRoot.position.set(0, 0, 0)
@@ -572,6 +636,17 @@ export function attachWearableFallback(
 
   const state: ParallelWearableState = { pairs, skeletons }
   wearableRoot.userData[PARALLEL_WEARABLE_USERDATA] = state
+  if (isAvatarVerbose()) {
+    const pairNames = pairs
+      .slice(0, 12)
+      .map((p) => `${p.wearable.name}->${p.body.name}`)
+      .join(',')
+    console.info(
+      `[avatar] fallback ${options.category ?? '?'} parent=${target.name} ` +
+        `pairs=${pairs.length} skels=${skeletons.length} apple=${isAppleTouchDevice()} ` +
+        `map=${pairNames} — ${options.wearableId ?? wearableRoot.name}`
+    )
+  }
 
   // Initial pose so the first rendered frame is not a pre-animation bind mismatch.
   if (pairs.length) {
@@ -580,7 +655,10 @@ export function attachWearableFallback(
   }
 
   wearableRoot.traverse((obj) => {
-    if (obj instanceof THREE.SkinnedMesh) repairSkinnedMesh(obj)
+    if (obj instanceof THREE.SkinnedMesh) {
+      repairSkinnedMesh(obj)
+      if (isHeadSlotCategory(options.category)) obj.frustumCulled = false
+    }
     if (obj instanceof THREE.Mesh) {
       setMeshDesiredCastShadow(obj, true, 'avatar')
       obj.receiveShadow = true

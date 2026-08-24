@@ -8,6 +8,7 @@ import { createTextureProxyMiddleware } from './scripts/texture-dispatch-proxy.m
 import { createAnalyticsProxyMiddleware } from './scripts/analytics-dispatch-proxy.mjs'
 import { createSceneFetchProxyMiddleware } from './scripts/scene-fetch-proxy.mjs'
 import { sceneBundleMirrorPlugin } from './vite-plugins/sceneBundleMirror'
+import { phoneLogSinkPlugin } from './vite-plugins/phoneLogSink'
 
 const vfxSrcCandidates = [
   resolve(__dirname, '../../../../threejs-vfx/src'),
@@ -60,6 +61,8 @@ export default defineConfig({
     },
     // Dev-only: POST /api/mirror-scene-bundle → dev/scene-bundles/ (inspect scene scripts).
     sceneBundleMirrorPlugin(),
+    // Dev-only: POST /__phone-logs → data/phone-logs.jsonl (iPhone log shipper).
+    phoneLogSinkPlugin(),
     // Production + dev: yoga nbind assigns `_a` without declaring it (strict ESM crash).
     // optimizeDeps alone only covers prebundle — rollup must patch too.
     {

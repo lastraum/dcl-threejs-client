@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#FF2D55" />
     <meta
       name="description"
@@ -122,6 +122,10 @@
         max-width: none !important;
         max-height: none !important;
         z-index: var(--z-canvas);
+        touch-action: none;
+        -webkit-touch-callout: none;
+        -webkit-user-select: none;
+        user-select: none;
       }
       /* Canvas-center aim mark while pointer-locked (clicks raycast from center). */
       .pointer-lock-reticle {
@@ -5978,11 +5982,9 @@
       }
       @media (max-width: 767px) {
         .client-mobile .friends-panel-wrap {
-          left: calc(max(12px, env(safe-area-inset-left, 0px)) + var(--scene-chat-fab-size) + var(--scene-chat-fab-gap));
-          right: var(--client-safe-right);
-          bottom: calc(
-            max(12px, env(safe-area-inset-bottom, 0px)) + var(--scene-chat-fab-size) + var(--scene-chat-fab-gap)
-          );
+          left: max(12px, env(safe-area-inset-left, 0px));
+          right: calc(max(12px, env(safe-area-inset-right, 0px)) + 60px);
+          bottom: max(12px, env(safe-area-inset-bottom, 0px));
           width: auto;
           max-width: none;
           height: var(--client-chat-max-h);
@@ -7107,7 +7109,7 @@
           background: rgba(0, 0, 0, 0.45);
           pointer-events: auto;
         }
-        /* 3D mobile: bottom-left chat FAB; panel sits to its right. */
+        /* 3D mobile: chat FAB lives in the right HUD stack; panel uses left+bottom insets. */
         .client-mobile .scene-chat-fab {
           left: max(12px, env(safe-area-inset-left, 0px));
           right: auto;
@@ -7121,11 +7123,9 @@
           height: 22px;
         }
         .client-mobile .chat-panel-wrap {
-          left: calc(max(12px, env(safe-area-inset-left, 0px)) + var(--scene-chat-fab-size) + var(--scene-chat-fab-gap));
-          right: var(--client-safe-right);
-          bottom: calc(
-            max(12px, env(safe-area-inset-bottom, 0px)) + var(--scene-chat-fab-size) + var(--scene-chat-fab-gap)
-          );
+          left: max(12px, env(safe-area-inset-left, 0px));
+          right: calc(max(12px, env(safe-area-inset-right, 0px)) + 60px);
+          bottom: max(12px, env(safe-area-inset-bottom, 0px));
           width: auto;
           height: var(--client-chat-max-h);
           transform-origin: bottom left;
@@ -7148,6 +7148,34 @@
        * Touch / iPad play chrome — class-driven so landscape tablets are not
        * stuck on the 767px window-width gate.
        */
+      html.client-mobile {
+        touch-action: manipulation;
+        -webkit-text-size-adjust: 100%;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+      }
+      html.client-mobile input,
+      html.client-mobile textarea,
+      html.client-mobile [contenteditable='true'] {
+        -webkit-user-select: text;
+        user-select: text;
+      }
+      html.client-mobile button,
+      html.client-mobile a,
+      html.client-mobile .social-chat-dock,
+      html.client-mobile .social-chat-dock__fab,
+      html.client-mobile .mobile-game-hud {
+        touch-action: manipulation;
+      }
+      html.client-mobile input,
+      html.client-mobile textarea,
+      html.client-mobile [contenteditable='true'],
+      html.client-mobile .chat-panel__input,
+      html.client-mobile .social-chat-dock__input {
+        font-size: 16px !important;
+        touch-action: manipulation;
+      }
       html.client-mobile .minimap,
       html.client-mobile .world-location-card,
       html.client-mobile .location-map-stack {
@@ -7174,8 +7202,16 @@
         gap: 10px;
         pointer-events: none;
       }
+      html.client-mobile .chat-panel-wrap,
+      html.client-mobile .friends-panel-wrap {
+        left: max(12px, env(safe-area-inset-left, 0px));
+        right: calc(max(12px, env(safe-area-inset-right, 0px)) + 60px);
+        bottom: max(12px, env(safe-area-inset-bottom, 0px));
+        width: auto;
+      }
       html.client-mobile .mobile-game-hud[hidden],
-      html.client-mobile .touch-move-pad[hidden] {
+      html.client-mobile .touch-move-pad[hidden],
+      html.client-mobile .touch-look-pad[hidden] {
         display: none !important;
       }
       html.client-mobile .mobile-game-hud__btn {
@@ -7189,7 +7225,18 @@
         box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
         cursor: pointer;
         pointer-events: auto;
-        touch-action: manipulation;
+        touch-action: none;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      html.client-mobile .mobile-game-hud__icon,
+      html.client-mobile .mobile-game-hud__key {
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+        pointer-events: none;
       }
       html.client-mobile .mobile-game-hud__btn.is-active {
         background: rgba(255, 255, 255, 0.14);
@@ -7221,19 +7268,88 @@
         font-weight: 800;
         line-height: 1;
       }
-      html.client-mobile .touch-move-pad {
+      html.client-mobile .mobile-game-hud .scene-chat-fab {
+        position: relative;
+        left: auto;
+        right: auto;
+        top: auto;
+        bottom: auto;
+        width: 48px;
+        height: 48px;
+        margin: 0;
+        z-index: auto;
+        flex-shrink: 0;
+        pointer-events: auto;
+        border-radius: 14px;
+        background: rgba(12, 12, 16, 0.88);
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+      }
+      html.client-mobile .mobile-game-hud .scene-chat-fab__icon svg {
+        width: 22px;
+        height: 22px;
+      }
+      html.client-mobile .touch-move-pad,
+      html.client-mobile .touch-look-pad {
         display: block;
         position: fixed;
-        left: 0;
-        top: 0;
-        width: 42%;
-        height: 100%;
+        bottom: 0;
+        top: auto;
+        width: 50%;
+        height: 42%;
         z-index: var(--z-touch-move);
         pointer-events: auto;
         touch-action: none;
         background: transparent;
         -webkit-user-select: none;
         user-select: none;
+        -webkit-touch-callout: none;
+      }
+      html.client-mobile .touch-move-pad {
+        left: 0;
+        right: auto;
+      }
+      html.client-mobile .touch-look-pad {
+        right: 0;
+        left: auto;
+      }
+      html.client-mobile .touch-stick {
+        position: absolute;
+        width: 96px;
+        height: 96px;
+        pointer-events: none;
+        opacity: 0;
+        visibility: hidden;
+      }
+      html.client-mobile .touch-stick__base,
+      html.client-mobile .touch-stick__knob {
+        position: absolute;
+        border-radius: 50%;
+        box-sizing: border-box;
+      }
+      html.client-mobile .touch-stick__base {
+        inset: 0;
+        border: 2px solid rgba(255, 255, 255, 0.42);
+        background: rgba(8, 8, 12, 0.32);
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 8px 24px rgba(0, 0, 0, 0.28);
+      }
+      html.client-mobile .touch-stick__knob {
+        left: 50%;
+        top: 50%;
+        width: 40px;
+        height: 40px;
+        margin: -20px 0 0 -20px;
+        border: 2px solid rgba(255, 255, 255, 0.7);
+        background: rgba(255, 255, 255, 0.28);
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+      }
+      html.client-mobile .touch-move-pad.is-held .touch-stick,
+      html.client-mobile .touch-look-pad.is-held .touch-stick {
+        opacity: 1;
+        visibility: visible;
+      }
+      html.client-mobile .touch-move-pad.is-held .touch-stick__knob,
+      html.client-mobile .touch-look-pad.is-held .touch-stick__knob {
+        background: rgba(255, 255, 255, 0.5);
       }
       html.client-tablet .mobile-game-hud {
         gap: 14px;
@@ -7255,12 +7371,240 @@
       html.client-tablet .mobile-game-hud__icon--jump {
         font-size: 28px;
       }
+      html.client-tablet .mobile-game-hud .scene-chat-fab {
+        width: 64px;
+        height: 64px;
+        border-radius: 18px;
+      }
+      html.client-tablet .mobile-game-hud .scene-chat-fab__icon svg {
+        width: 28px;
+        height: 28px;
+      }
+      html.client-tablet .touch-stick {
+        width: 116px;
+        height: 116px;
+      }
+      html.client-tablet .touch-stick__knob {
+        width: 48px;
+        height: 48px;
+        margin: -24px 0 0 -24px;
+      }
       html.client-tablet .mobile-profile-fab {
         width: 56px;
         height: 56px;
       }
       html.client-tablet {
         --client-mobile-profile-w: 56px;
+      }
+
+      /*
+       * iPad / tablet 2D social shell.
+       * Phone chrome stays behind 767px; JS already treats iPad as touch, so
+       * gutters, Explore grid, and chat overlay are class-driven here.
+       */
+      html.client-tablet {
+        --social-2d-gutter: max(56px, env(safe-area-inset-left, 0px), env(safe-area-inset-right, 0px));
+      }
+      html.client-tablet.client-landscape {
+        --social-2d-gutter: max(
+          clamp(96px, 12vw, 168px),
+          env(safe-area-inset-left, 0px),
+          env(safe-area-inset-right, 0px)
+        );
+      }
+      html.client-tablet body.social-shell-with-chat,
+      html.client-tablet body.social-shell-with-chat:has(.social-chat-dock--panel-open),
+      html.client-tablet body.social-shell-with-chat:has(
+          .social-chat-dock--panel-open.social-chat-dock--list-expanded
+        ),
+      html.client-tablet body.social-shell-with-chat:has(
+          .social-chat-dock--panel-open.social-chat-dock--thread-open
+        ) {
+        --social-chat-dock-width: 0px;
+      }
+      html.client-tablet .explorer-view__main,
+      html.client-tablet .events-page-view__main,
+      html.client-tablet .communities-page-view__main,
+      html.client-tablet .profile-page-view__main,
+      html.client-tablet .lootbag-page-view__main,
+      html.client-tablet .live-page-view__main,
+      html.client-tablet .scene-landing-view__main,
+      .explorer-view--touch .explorer-view__main {
+        padding-left: var(--social-2d-gutter, var(--explorer-page-gutter, 24px));
+        padding-right: var(--social-2d-gutter, var(--explorer-page-gutter, 24px));
+        padding-bottom: max(40px, var(--social-chat-fab-stack, 80px));
+        box-sizing: border-box;
+      }
+      html.client-tablet .social-shell-topnav,
+      html.client-tablet .scene-landing-view__topnav,
+      .explorer-view--touch .social-shell-topnav {
+        padding-left: var(--social-2d-gutter, 32px);
+        padding-right: var(--social-2d-gutter, 32px);
+      }
+      html.client-tablet.client-landscape .social-shell-topnav__nav,
+      html.client-tablet.client-landscape .scene-landing-view__nav {
+        flex-wrap: nowrap;
+        gap: 6px;
+      }
+      html.client-tablet.client-landscape .social-shell-topnav__link,
+      html.client-tablet.client-landscape .scene-landing-view__navlink {
+        padding: 10px 14px;
+        font-size: 13px;
+      }
+      html.client-tablet.client-landscape .places-view--explorer .places-view__grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 20px;
+      }
+      html.client-tablet.client-landscape .places-view--explorer .places-view__carousel--live,
+      html.client-tablet.client-landscape .places-view--explorer .places-view__carousel--featured {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+      html.client-tablet.client-landscape .places-view--explorer .places-view__carousel--featured {
+        grid-template-rows: repeat(2, 110px);
+        min-height: calc(110px * 2 + 12px);
+      }
+      html.client-tablet.client-landscape .places-view--explorer .places-view__pill--featured-rect {
+        height: 110px;
+        min-height: 110px;
+        max-height: 110px;
+      }
+      html.client-tablet body.social-chat-mobile-open {
+        overflow: hidden;
+      }
+      html.client-tablet .social-chat-dock__mobile-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: calc(var(--social-chat-dock-z, 25) - 1);
+        background: rgba(0, 0, 0, 0.45);
+        -webkit-tap-highlight-color: transparent;
+      }
+      html.client-tablet .social-chat-dock__mobile-backdrop[hidden] {
+        display: none !important;
+      }
+      html.client-tablet .social-chat-dock.social-chat-dock--mobile {
+        top: auto;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        width: 100%;
+        height: min(78vh, 680px);
+        max-height: calc(100vh - var(--social-shell-header-height) - 12px);
+        border-radius: 18px 18px 0 0;
+        background: rgba(12, 8, 20, 0.97);
+        backdrop-filter: blur(14px);
+        border-top: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.45);
+        pointer-events: auto;
+        transition: transform 0.24s ease, opacity 0.2s ease;
+      }
+      html.client-tablet .social-chat-dock.social-chat-dock--mobile:not(.social-chat-dock--mobile-open) {
+        transform: translateY(110%);
+        opacity: 0;
+        pointer-events: none;
+      }
+      html.client-tablet .social-chat-dock.social-chat-dock--mobile.social-chat-dock--mobile-open {
+        transform: translateY(0);
+        opacity: 1;
+      }
+      html.client-tablet .social-chat-dock--mobile .social-chat-dock__status {
+        margin: 10px 14px 0;
+      }
+      html.client-tablet .social-chat-dock--mobile.social-chat-dock--list-expanded .social-chat-dock__pills {
+        width: 100%;
+      }
+      html.client-tablet .social-chat-dock--mobile .social-chat-dock__pills .chat-panel__rail-scroll {
+        padding: 4px 12px calc(16px + env(safe-area-inset-bottom, 0px));
+      }
+      html.client-tablet .social-chat-dock--mobile .social-chat-dock__thread-header {
+        padding: 12px 14px 10px;
+      }
+      html.client-tablet .social-chat-dock--mobile .social-chat-dock__composer {
+        margin: 0 12px calc(14px + var(--social-chat-mobile-fab-stack));
+      }
+      html.client-tablet .social-chat-dock--mobile .chat-panel__bubble {
+        max-width: min(100%, 320px);
+      }
+      html.client-tablet .social-chat-dock.social-chat-dock--mobile-peek {
+        top: auto !important;
+        left: max(14px, env(safe-area-inset-left, 0px));
+        right: max(14px, env(safe-area-inset-right, 0px));
+        bottom: var(--social-chat-mobile-fab-stack);
+        width: auto !important;
+        height: auto !important;
+        max-height: none;
+        border-radius: 0;
+        background: transparent;
+        border: none;
+        box-shadow: none;
+        pointer-events: none;
+        z-index: calc(var(--social-chat-dock-z, 25) + 1);
+      }
+      html.client-tablet .social-chat-dock--mobile-peek .social-chat-dock__status,
+      html.client-tablet .social-chat-dock--mobile-peek .social-chat-dock__pills,
+      html.client-tablet .social-chat-dock--mobile-peek .social-chat-dock__thread-header,
+      html.client-tablet .social-chat-dock--mobile-peek .social-chat-dock__messages {
+        display: none !important;
+      }
+      html.client-tablet .social-chat-dock--mobile-peek .social-chat-dock__body {
+        display: block;
+        pointer-events: none;
+      }
+      html.client-tablet .social-chat-dock--mobile-peek .social-chat-dock__thread {
+        display: block;
+        height: auto;
+        min-height: 0;
+        pointer-events: none;
+      }
+      html.client-tablet .social-chat-dock--mobile-peek .social-chat-dock__composer {
+        margin: 0;
+        pointer-events: auto;
+        border-radius: 16px;
+        background: rgba(12, 8, 20, 0.96);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+        padding: 8px 10px;
+      }
+      html.client-tablet .social-chat-dock--mobile-peek .social-chat-dock__input,
+      html.client-tablet .social-chat-dock--mobile-peek .chat-panel__input {
+        background: rgba(0, 0, 0, 0.28) !important;
+        border-radius: 12px;
+      }
+      html.client-tablet.client-landscape .social-chat-dock.social-chat-dock--mobile {
+        top: calc(var(--social-shell-header-height) + 12px);
+        left: max(16px, env(safe-area-inset-left, 0px));
+        right: auto;
+        bottom: var(--social-chat-fab-stack);
+        width: min(400px, 38vw);
+        height: auto;
+        max-height: none;
+        border-radius: 18px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5);
+      }
+      html.client-tablet.client-landscape .social-chat-dock.social-chat-dock--mobile:not(.social-chat-dock--mobile-open) {
+        transform: translateX(-110%);
+        opacity: 0;
+        pointer-events: none;
+      }
+      html.client-tablet.client-landscape .social-chat-dock.social-chat-dock--mobile.social-chat-dock--mobile-open {
+        transform: translateX(0);
+        opacity: 1;
+      }
+      html.client-tablet.client-landscape .social-chat-dock.social-chat-dock--mobile-peek {
+        left: max(16px, env(safe-area-inset-left, 0px));
+        right: auto;
+        width: min(400px, 38vw) !important;
+      }
+
+      .explorer-view--touch {
+        --explorer-page-gutter: max(56px, env(safe-area-inset-left, 0px), env(safe-area-inset-right, 0px));
+      }
+      .explorer-view--tablet {
+        --explorer-page-gutter: max(
+          clamp(96px, 12vw, 168px),
+          env(safe-area-inset-left, 0px),
+          env(safe-area-inset-right, 0px)
+        );
       }
 
       @media (max-height: 700px) {
@@ -20561,6 +20905,28 @@
         padding-right: 0;
         box-sizing: border-box;
         transition: padding-left 0.2s ease;
+      }
+      /* iPad: the rule above zeros sides; 767px restore never hits landscape tablets. */
+      html.client-tablet body.social-shell-with-chat .explorer-view__main,
+      html.client-tablet body.social-shell-with-chat .events-page-view__main,
+      html.client-tablet body.social-shell-with-chat .communities-page-view__main,
+      html.client-tablet body.social-shell-with-chat .profile-page-view__main,
+      html.client-tablet body.social-shell-with-chat .lootbag-page-view__main,
+      html.client-tablet body.social-shell-with-chat .live-page-view__main,
+      html.client-tablet body.social-shell-with-chat .scene-landing-view__main,
+      html.client-tablet .explorer-view__main,
+      body.social-shell-with-chat .explorer-view--touch .explorer-view__main,
+      .explorer-view--touch .explorer-view__main {
+        padding-left: var(--social-2d-gutter, var(--explorer-page-gutter, 96px));
+        padding-right: var(--social-2d-gutter, var(--explorer-page-gutter, 96px));
+      }
+      html.client-tablet body.social-shell-with-chat .social-shell-topnav,
+      html.client-tablet .social-shell-topnav,
+      html.client-tablet .scene-landing-view__topnav,
+      body.social-shell-with-chat .explorer-view--touch .social-shell-topnav,
+      .explorer-view--touch .social-shell-topnav {
+        padding-left: var(--social-2d-gutter, var(--explorer-page-gutter, 96px));
+        padding-right: var(--social-2d-gutter, var(--explorer-page-gutter, 96px));
       }
       body.social-shell-with-chat .social-shell-topnav {
         width: 100%;

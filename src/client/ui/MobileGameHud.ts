@@ -16,18 +16,29 @@ export type MobileGameHudHandlers = {
   onJumpDown: () => void
   onJumpUp: () => void
   onAnalogMove?: (x: number, z: number) => void
+  /** Right stick — yaw (x, right+) and pitch (y, down+), each in [-1, 1]. */
+  onAnalogLook?: (x: number, y: number) => void
 }
 
-/** Touch: invisible left stick + E/F/jump/emotes on the right. Phone + iPad. */
+type InvisibleStickState = {
+  pointerId: number | null
+  originX: number
+  originY: number
+  stick: HTMLDivElement
+  knob: HTMLDivElement
+}
+
+/** Touch: left move + right look analog sticks; E/F/jump/emotes on top. Phone + iPad. */
 export class MobileGameHud {
   private readonly root: HTMLDivElement
   private readonly movePad: HTMLDivElement
+  private readonly lookPad: HTMLDivElement
   private readonly unsubLayout: () => void
   private handlers: MobileGameHudHandlers
   private shellVisible = false
-  private analogPointerId: number | null = null
-  private analogOriginX = 0
-  private analogOriginY = 0
+  private chatFab: HTMLElement | null = null
+  private readonly moveStick: InvisibleStickState
+  private readonly lookStick: InvisibleStickState
 
   constructor(handlers: MobileGameHudHandlers) {
     this.handlers = handlers
@@ -49,11 +60,16 @@ export class MobileGameHud {
       </button>
     `
 
-    this.movePad = document.createElement('div')
-    this.movePad.className = 'touch-move-pad'
-    this.movePad.setAttribute('aria-hidden', 'true')
-    this.movePad.hidden = true
-    this.bindMovePad()
+    this.movePad = this.createPad('touch-move-pad')
+    this.lookPad = this.createPad('touch-look-pad')
+    this.moveStick = this.attachStick(this.movePad)
+    this.lookStick = this.attachStick(this.lookPad)
+    this.bindInvisibleStick(this.movePad, this.moveStick, (x, yDown) => {
+      this.handlers.onAnalogMove?.(x, -yDown)
+    })
+    this.bindInvisibleStick(this.lookPad, this.lookStick, (x, yDown) => {
+      this.handlers.onAnalogLook?.(x, yDown)
+    })
 
     this.root.querySelector('.mobile-game-hud__btn--emote')?.addEventListener('click', (ev) => {
       ev.stopPropagation()
@@ -77,6 +93,7 @@ export class MobileGameHud {
     )
 
     document.body.appendChild(this.movePad)
+    document.body.appendChild(this.lookPad)
     document.body.appendChild(this.root)
     this.unsubLayout = subscribeTouchPlayLayout(() => this.syncVisibility())
     this.syncVisibility()
@@ -84,6 +101,21 @@ export class MobileGameHud {
 
   setHandlers(handlers: MobileGameHudHandlers): void {
     this.handlers = handlers
+  }
+
+  /** Park the 3D chat FAB in the right HUD stack (emote → chat → E/F/jump). */
+  attachChatFab(fab: HTMLElement): void {
+    this.releaseChatFab()
+    this.chatFab = fab
+    const emote = this.root.querySelector('.mobile-game-hud__btn--emote')
+    if (emote?.nextSibling) this.root.insertBefore(fab, emote.nextSibling)
+    else this.root.appendChild(fab)
+  }
+
+  private releaseChatFab(): void {
+    if (!this.chatFab) return
+    if (this.chatFab.parentElement === this.root) document.body.appendChild(this.chatFab)
+    this.chatFab = null
   }
 
   setShellVisible(visible: boolean): void {
@@ -107,71 +139,145 @@ export class MobileGameHud {
     const show = isTouchPlayLayout() && this.shellVisible
     this.root.hidden = !show
     this.movePad.hidden = !show
-    if (!show) this.releaseAnalog()
+    this.lookPad.hidden = !show
+    if (!show) this.releaseSticks()
   }
 
   private analogMaxRadius(): number {
-    return isTabletPlayLayout() ? 88 : 56
+    return isTabletPlayLayout() ? 72 : 48
   }
 
-  private bindMovePad(): void {
-    this.movePad.addEventListener('pointerdown', (ev) => {
+  private createPad(className: string): HTMLDivElement {
+    const pad = document.createElement('div')
+    pad.className = className
+    pad.setAttribute('aria-hidden', 'true')
+    pad.hidden = true
+    return pad
+  }
+
+  private attachStick(pad: HTMLDivElement): InvisibleStickState {
+    const stick = document.createElement('div')
+    stick.className = 'touch-stick'
+    const base = document.createElement('div')
+    base.className = 'touch-stick__base'
+    const knob = document.createElement('div')
+    knob.className = 'touch-stick__knob'
+    stick.append(base, knob)
+    pad.appendChild(stick)
+    return { pointerId: null, originX: 0, originY: 0, stick, knob }
+  }
+
+  private placeStickAt(pad: HTMLDivElement, state: InvisibleStickState, clientX: number, clientY: number): void {
+    const rect = pad.getBoundingClientRect()
+    state.stick.style.left = `${clientX - rect.left}px`
+    state.stick.style.top = `${clientY - rect.top}px`
+    state.stick.style.bottom = 'auto'
+    state.stick.style.right = 'auto'
+    state.stick.style.transform = 'translate(-50%, -50%)'
+    pad.classList.add('is-held')
+  }
+
+  private resetStickVisual(pad: HTMLDivElement, state: InvisibleStickState): void {
+    pad.classList.remove('is-held')
+    state.stick.style.left = ''
+    state.stick.style.top = ''
+    state.stick.style.bottom = ''
+    state.stick.style.right = ''
+    state.stick.style.transform = ''
+    state.knob.style.transform = ''
+  }
+
+  private bindInvisibleStick(
+    pad: HTMLDivElement,
+    state: InvisibleStickState,
+    onAxis: (x: number, yDown: number) => void
+  ): void {
+    pad.addEventListener('contextmenu', (ev) => ev.preventDefault())
+    pad.addEventListener('touchstart', (ev) => ev.preventDefault(), { passive: false })
+    pad.addEventListener('pointerdown', (ev) => {
       if (ev.button !== 0 && ev.pointerType === 'mouse') return
-      if (this.analogPointerId != null) return
+      if (state.pointerId != null) return
       ev.preventDefault()
       ev.stopPropagation()
-      this.analogPointerId = ev.pointerId
-      this.analogOriginX = ev.clientX
-      this.analogOriginY = ev.clientY
+      state.pointerId = ev.pointerId
+      state.originX = ev.clientX
+      state.originY = ev.clientY
+      this.placeStickAt(pad, state, ev.clientX, ev.clientY)
       try {
-        this.movePad.setPointerCapture(ev.pointerId)
+        pad.setPointerCapture(ev.pointerId)
       } catch {
         /* unsupported */
       }
-      this.applyAnalog(ev.clientX, ev.clientY)
+      this.applyStick(state, ev.clientX, ev.clientY, onAxis)
     })
-    this.movePad.addEventListener('pointermove', (ev) => {
-      if (ev.pointerId !== this.analogPointerId) return
-      this.applyAnalog(ev.clientX, ev.clientY)
+    pad.addEventListener('pointermove', (ev) => {
+      if (ev.pointerId !== state.pointerId) return
+      this.applyStick(state, ev.clientX, ev.clientY, onAxis)
     })
     const up = (ev: PointerEvent): void => {
-      if (ev.pointerId !== this.analogPointerId) return
-      this.releaseAnalog()
+      if (ev.pointerId !== state.pointerId) return
+      this.releaseStick(pad, state, onAxis)
     }
-    this.movePad.addEventListener('pointerup', up)
-    this.movePad.addEventListener('pointercancel', up)
+    pad.addEventListener('pointerup', up)
+    pad.addEventListener('pointercancel', up)
   }
 
-  private applyAnalog(clientX: number, clientY: number): void {
+  private applyStick(
+    state: InvisibleStickState,
+    clientX: number,
+    clientY: number,
+    onAxis: (x: number, yDown: number) => void
+  ): void {
     const maxR = this.analogMaxRadius()
-    const dx = clientX - this.analogOriginX
-    const dy = clientY - this.analogOriginY
-    let x = dx / maxR
-    let z = -dy / maxR
-    const mag = Math.hypot(x, z)
-    if (mag < ANALOG_DEADZONE) {
-      this.handlers.onAnalogMove?.(0, 0)
+    const dx = clientX - state.originX
+    const dy = clientY - state.originY
+    const dist = Math.hypot(dx, dy)
+    if (dist > 0) {
+      const usedDist = Math.min(dist, maxR)
+      state.knob.style.transform = `translate(${(dx / dist) * usedDist}px, ${(dy / dist) * usedDist}px)`
+    } else {
+      state.knob.style.transform = ''
+    }
+    if (dist < ANALOG_DEADZONE * maxR) {
+      onAxis(0, 0)
       return
     }
+    let x = dx / maxR
+    let yDown = dy / maxR
+    const mag = dist / maxR
     if (mag > 1) {
       x /= mag
-      z /= mag
+      yDown /= mag
     }
     const used = (Math.min(mag, 1) - ANALOG_DEADZONE) / (1 - ANALOG_DEADZONE)
     const scale = used / Math.min(mag, 1)
-    this.handlers.onAnalogMove?.(x * scale, z * scale)
+    onAxis(x * scale, yDown * scale)
   }
 
-  private releaseAnalog(): void {
-    if (this.analogPointerId != null) {
+  private releaseStick(
+    pad: HTMLDivElement,
+    state: InvisibleStickState,
+    onAxis: (x: number, yDown: number) => void
+  ): void {
+    if (state.pointerId != null) {
       try {
-        this.movePad.releasePointerCapture(this.analogPointerId)
+        pad.releasePointerCapture(state.pointerId)
       } catch {
         /* ignore */
       }
     }
-    this.analogPointerId = null
-    this.handlers.onAnalogMove?.(0, 0)
+    state.pointerId = null
+    this.resetStickVisual(pad, state)
+    onAxis(0, 0)
+  }
+
+  private releaseSticks(): void {
+    this.releaseStick(this.movePad, this.moveStick, (x, yDown) => {
+      this.handlers.onAnalogMove?.(x, -yDown)
+    })
+    this.releaseStick(this.lookPad, this.lookStick, (x, yDown) => {
+      this.handlers.onAnalogLook?.(x, yDown)
+    })
   }
 
   private bindHoldButton(btn: HTMLButtonElement, onDown: () => void, onUp: () => void): void {
@@ -190,9 +296,11 @@ export class MobileGameHud {
   }
 
   dispose(): void {
-    this.releaseAnalog()
+    this.releaseSticks()
+    this.releaseChatFab()
     this.unsubLayout()
     this.movePad.remove()
+    this.lookPad.remove()
     this.root.remove()
   }
 }

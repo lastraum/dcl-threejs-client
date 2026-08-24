@@ -2,6 +2,11 @@ import type { LoginResult } from '../../../auth/AuthClient'
 import type { RouteTarget } from '../../../dcl/content/route'
 import { PlacesView } from '../settings/PlacesView'
 import { SocialShellTopNav, type SocialShellChromeHandlers, type SocialShellTab } from './SocialShellTopNav'
+import {
+  isTabletPlayLayout,
+  isTouchPlayLayout,
+  subscribeTouchPlayLayout
+} from '../touchPlayLayout'
 
 export type ExplorerViewOptions = SocialShellChromeHandlers & {
   login: LoginResult
@@ -17,6 +22,7 @@ export class ExplorerView {
   private readonly scrollEl: HTMLElement
   private readonly topNav: SocialShellTopNav
   private readonly placesView: PlacesView
+  private readonly unsubLayout: () => void
   private login: LoginResult
 
   constructor(opts: ExplorerViewOptions) {
@@ -53,6 +59,13 @@ export class ExplorerView {
       getAuthIdentity: () => (this.login.kind === 'wallet' ? this.login.identity : null)
     })
     this.scrollEl.appendChild(this.placesView.root)
+    this.unsubLayout = subscribeTouchPlayLayout(() => this.syncTouchLayout())
+    this.syncTouchLayout()
+  }
+
+  private syncTouchLayout(): void {
+    this.root.classList.toggle('explorer-view--touch', isTouchPlayLayout())
+    this.root.classList.toggle('explorer-view--tablet', isTabletPlayLayout())
   }
 
   mount(container: HTMLElement): void {
@@ -70,6 +83,7 @@ export class ExplorerView {
   }
 
   dispose(): void {
+    this.unsubLayout()
     document.body.classList.remove('explorer-route')
     this.topNav.dispose()
     this.placesView.dispose()

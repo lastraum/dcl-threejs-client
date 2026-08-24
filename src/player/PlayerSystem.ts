@@ -116,6 +116,9 @@ const _camEuler = new THREE.Euler(0, 0, 0, 'YXZ')
 const _camPos = new THREE.Vector3()
 
 const POINTER_LOOK_SPEED = 0.003
+/** Full right-stick deflection — yaw / pitch rad per second. */
+const ANALOG_LOOK_YAW_SPEED = 2.4
+const ANALOG_LOOK_PITCH_SPEED = 1.8
 /** Boom pivot Y (m above feet) — far 3rd person (chest/shoulders). */
 const CAM_PIVOT_HEIGHT_FAR = 1.48
 /** Boom pivot when zoomed in — sit higher, behind the head. */
@@ -938,6 +941,10 @@ export class PlayerSystem {
     this.input?.setAnalogMove(x, z)
   }
 
+  setAnalogLook(x: number, y: number): void {
+    this.input?.setAnalogLook(x, y)
+  }
+
   setOnUserGestureUnlock(callback: () => void): void {
     this.input?.setOnUserGestureUnlock(callback)
   }
@@ -1292,7 +1299,7 @@ export class PlayerSystem {
         moveAxisZ: 0
       })
       // Freecam always allowed when not VC-bound (multi-scene walk must orbit).
-      this.applyCameraInputFromPointer()
+      this.applyCameraInputFromPointer(delta)
       this.syncCamera(false, delta)
       this.input.endFrame()
       this.wasLocomotionAllowed = false
@@ -1379,7 +1386,7 @@ export class PlayerSystem {
           doubleJumpTriggered: false,
           falling: false
         })
-        this.applyCameraInputFromPointer()
+        this.applyCameraInputFromPointer(delta)
         this.syncCamera(false, delta)
         this.input.endFrame()
         if (t >= 1) {
@@ -1415,7 +1422,7 @@ export class PlayerSystem {
         doubleJumpTriggered: false,
         falling: false
       })
-      this.applyCameraInputFromPointer()
+      this.applyCameraInputFromPointer(delta)
       this.syncCamera(false, delta)
       this.input.endFrame()
       return
@@ -1469,7 +1476,7 @@ export class PlayerSystem {
       return
     }
 
-    this.applyCameraInputFromPointer()
+    this.applyCameraInputFromPointer(delta)
 
     _moveDir.set(0, 0, 0)
     // Bound VirtualCamera owns the lens — WASD from camera world basis (matrix columns).
@@ -2090,21 +2097,30 @@ export class PlayerSystem {
    * InputModifier freezes avatar locomotion only — does not gate player look.
    * Freecam yaw/pitch/dist are durable player state (survive FocusOwner handoff).
    */
-  private applyCameraInputFromPointer(): void {
+  private applyCameraInputFromPointer(delta = 1 / 60): void {
     if (!this.input) return
     if (this.isSceneVirtualCameraDriving()) {
       this.releaseFreecamLookForVirtualCamera()
       return
     }
 
+    const sensitivity = clientSettings.getMouseSensitivityScale()
     if (this.input.looking) {
-      const look = POINTER_LOOK_SPEED * clientSettings.getMouseSensitivityScale()
+      const look = POINTER_LOOK_SPEED * sensitivity
       this.camYaw -= this.input.pointer.dx * look
       this.camYaw = normalizeAngle(this.camYaw)
       const pitchDelta = this.input.pointer.dy * look
       // FPV mouse-up looks up; 3rd mouse-up raises boom (look down ring).
       // Distance still gates how far you can look into the sky (pitchMinForDistance).
       this.camPitch += this.isFirstPerson() ? -pitchDelta : pitchDelta
+
+      if (this.input.analogLookMagnitude() > 0) {
+        const dt = Number.isFinite(delta) && delta > 0 ? Math.min(delta, 0.05) : 1 / 60
+        this.camYaw -= this.input.analogLookX * ANALOG_LOOK_YAW_SPEED * sensitivity * dt
+        this.camYaw = normalizeAngle(this.camYaw)
+        const analogPitch = this.input.analogLookY * ANALOG_LOOK_PITCH_SPEED * sensitivity * dt
+        this.camPitch += this.isFirstPerson() ? -analogPitch : analogPitch
+      }
     }
 
     const zoomDelta = this.input.scrollDelta + this.input.pinchZoomDelta * 3

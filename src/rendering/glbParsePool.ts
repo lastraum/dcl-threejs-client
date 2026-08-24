@@ -18,6 +18,10 @@ type Pending = {
 
 const POOL_SIZE = (() => {
   if (typeof navigator === 'undefined') return 2
+  const appleTouch =
+    /iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+    ((navigator.maxTouchPoints ?? 0) > 1 && /Mac/i.test(navigator.platform || navigator.userAgent))
+  if (appleTouch) return 1
   const cores = navigator.hardwareConcurrency ?? 4
   return Math.min(4, Math.max(2, cores - 2))
 })()

@@ -1,5 +1,5 @@
 /**
- * 3D play touch chrome (phone + iPad) — not window-width 767 alone.
+ * Phone + iPad chrome (3D play and 2D social shell) — not window-width 767 alone.
  *
  * iPadOS 13+ often reports as Macintosh desktop UA; maxTouchPoints is the tell.
  * Force: `?touch=1` / `?mobile=1` / `?ipad=1`. Off: `?notouch` / `?nomobile`.
@@ -59,9 +59,41 @@ export function isTouchPlayLayout(): boolean {
   if (forceOff()) return false
   if (forceOn()) return true
   if (isIpadDevice()) return true
+  // iPhone landscape is 844–932px — the 767 gate would drop stick/HUD.
+  if (typeof navigator !== 'undefined' && /iPhone|iPod/i.test(navigator.userAgent)) return true
   if (window.matchMedia(`(max-width: ${PHONE_MAX_WIDTH_PX}px)`).matches) return true
   if (isTabletPlayLayout()) return true
+  if (isCoarseNoHover()) return true
   return false
+}
+
+export function isLandscapeLayout(): boolean {
+  if (typeof window === 'undefined') return false
+  return window.matchMedia('(orientation: landscape)').matches
+}
+
+function syncViewportZoomLock(lock: boolean): void {
+  const meta = document.querySelector('meta[name="viewport"]')
+  if (!(meta instanceof HTMLMetaElement)) return
+  meta.content = lock
+    ? 'width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover'
+    : 'width=device-width, initial-scale=1, viewport-fit=cover'
+}
+
+/** html/body flags for 2D + 3D chrome. Safe to call from multiple subscribers. */
+export function applyTouchPlayDocumentClasses(): void {
+  if (typeof document === 'undefined') return
+  const touch = isTouchPlayLayout()
+  const tablet = touch && isTabletPlayLayout()
+  const landscape = isLandscapeLayout()
+  const html = document.documentElement
+  html.classList.toggle('client-mobile', touch)
+  html.classList.toggle('client-tablet', tablet)
+  html.classList.toggle('client-landscape', landscape)
+  document.body.classList.toggle('client-mobile', touch)
+  document.body.classList.toggle('client-tablet', tablet)
+  document.body.classList.toggle('client-landscape', landscape)
+  syncViewportZoomLock(touch)
 }
 
 /** Subscribe to width / pointer / orientation so iPad rotation re-applies chrome. */
@@ -70,7 +102,8 @@ export function subscribeTouchPlayLayout(onChange: () => void): () => void {
   const mqs = [
     window.matchMedia(`(max-width: ${PHONE_MAX_WIDTH_PX}px)`),
     window.matchMedia('(pointer: coarse)'),
-    window.matchMedia('(hover: none)')
+    window.matchMedia('(hover: none)'),
+    window.matchMedia('(orientation: landscape)')
   ]
   const handler = (): void => onChange()
   for (const mq of mqs) mq.addEventListener('change', handler)

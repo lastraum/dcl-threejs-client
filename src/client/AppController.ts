@@ -3330,8 +3330,10 @@ export class AppController {
       onSecondaryUp: () => world.triggerPointerAction(InputAction.IA_SECONDARY, 'up'),
       onJumpDown: () => world.setJumpHeld(true),
       onJumpUp: () => world.setJumpHeld(false),
-      onAnalogMove: (x, z) => world.setAnalogMove(x, z)
+      onAnalogMove: (x, z) => world.setAnalogMove(x, z),
+      onAnalogLook: (x, y) => world.setAnalogLook(x, y)
     })
+    this.mobileHud.attachChatFab(this.shell.getMobileChatFab())
     this.shell.setOnEmoteWheelVisibility((visible) => this.mobileHud?.setEmoteActive(visible))
     world.setVoluntaryEmoteAllowedHandler((allowed) => {
       this.shell?.setEmoteWheelEnabled(allowed)

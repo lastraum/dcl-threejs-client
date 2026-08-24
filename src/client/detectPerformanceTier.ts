@@ -1,6 +1,7 @@
 import type * as THREE from 'three'
 import { effectivePixelRatio, renderQuality, RenderQualityTier } from '../rendering/RenderQualitySettings'
 import type { PerformanceTier } from '../shim/types'
+import { isAppleTouchDevice, isIphoneDevice } from '../util/appleTouch'
 
 export type { PerformanceTier } from '../shim/types'
 
@@ -74,6 +75,11 @@ export function detectPerformanceTier(
 
   if (gl) score += scoreWebGlRenderer(gl)
 
+  // iPhone Safari kills the tab ~1.2–1.8GB; iPad survives the same plaza.
+  if (isIphoneDevice()) return 'low'
+  // iPadOS desktop UA looks like a Mac (8 cores) and would pick High/HDR.
+  if (isAppleTouchDevice()) score = Math.max(score, 2)
+
   if (score >= 4) return 'low'
   if (score >= 2) return 'medium'
   return 'high'
@@ -89,8 +95,16 @@ export function applyClientPerformanceDefaults(
   renderer: THREE.WebGLRenderer,
   tier: PerformanceTier
 ): void {
+  const pr = effectivePixelRatio(renderQuality.getResolutionScale())
+  if (isIphoneDevice()) {
+    if (!renderQuality.hasPersistedSettings()) {
+      renderQuality.setTier(RenderQualityTier.Low)
+    }
+    renderer.setPixelRatio(Math.min(effectivePixelRatio(renderQuality.getResolutionScale()), 1.25))
+    return
+  }
   if (renderQuality.hasPersistedSettings()) {
-    renderer.setPixelRatio(effectivePixelRatio(renderQuality.getResolutionScale()))
+    renderer.setPixelRatio(pr)
     return
   }
   if (tier === 'low') {
@@ -98,5 +112,5 @@ export function applyClientPerformanceDefaults(
     return
   }
   // medium/high: SceneHost already applied store defaults + pixel ratio via subscribe
-  renderer.setPixelRatio(effectivePixelRatio(renderQuality.getResolutionScale()))
+  renderer.setPixelRatio(pr)
 }

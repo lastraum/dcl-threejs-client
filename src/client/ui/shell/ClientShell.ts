@@ -28,7 +28,7 @@ import { ChatPanel } from '../chat/ChatPanel'
 import type { SocialService } from '../../../social/SocialService'
 import { EmoteWheelPanel } from '../EmoteWheelPanel'
 import {
-  isTabletPlayLayout,
+  applyTouchPlayDocumentClasses,
   isTouchPlayLayout,
   subscribeTouchPlayLayout
 } from '../touchPlayLayout'
@@ -674,6 +674,10 @@ export class ClientShell {
     })
   }
 
+  getMobileChatFab(): HTMLButtonElement {
+    return this.mobileChatFab
+  }
+
   private syncChatFabState(visible: boolean): void {
     this.buttons.get('chat')?.setActive(visible)
     this.mobileChatFab.classList.toggle('is-active', visible)
@@ -727,11 +731,7 @@ export class ClientShell {
 
   private applyMobileLayout(): void {
     const mobile = this.isMobileLayout()
-    const tablet = mobile && isTabletPlayLayout()
-    document.documentElement.classList.toggle('client-mobile', mobile)
-    document.documentElement.classList.toggle('client-tablet', tablet)
-    document.body.classList.toggle('client-mobile', mobile)
-    document.body.classList.toggle('client-tablet', tablet)
+    applyTouchPlayDocumentClasses()
     this.root.classList.toggle('client-shell--drawer', mobile)
     this.repositionProfileButton(mobile)
     this.mobileProfileFab.hidden = !mobile || this.root.hidden
@@ -801,12 +801,7 @@ export class ClientShell {
     this.mobileProfileFab.remove()
     this.mobileChatFab.remove()
     this.root.remove()
-    document.documentElement.classList.remove(
-      'client-mobile',
-      'client-tablet',
-      'client-drawer-open'
-    )
-    document.body.classList.remove('client-mobile', 'client-tablet')
+    document.documentElement.classList.remove('client-drawer-open')
   }
 
   private actionHandler(id: string): (ev: MouseEvent) => void {

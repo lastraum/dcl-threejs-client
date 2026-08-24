@@ -16,7 +16,14 @@ workflow:
     owner: awedjob
     pr: 62
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/62
-    updated: 2026-08-12
+    updated: 2026-08-24
+  - stage: pending_review
+    integration_ref: pr:71
+    title: confirm deploys and refresh stale barn pets
+    owner: lastraum
+    pr: 71
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/71
+    updated: 2026-08-24
   - stage: merged
     integration_ref: pr:70
     title: Snow Drift UI borders, sky wash, name tags, avatar materials

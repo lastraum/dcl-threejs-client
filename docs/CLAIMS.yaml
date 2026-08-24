@@ -5,7 +5,7 @@
 # Dev panel Community tab renders this as a single workflow table.
 
 schema_version: 2
-updated: 2026-08-23
+updated: 2026-08-24
 source: github
 base_branch: dev-latest
 workflow:
@@ -17,13 +17,6 @@ workflow:
     pr: 62
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/62
     updated: 2026-08-12
-  - stage: pending_review
-    integration_ref: pr:56
-    title: re-add foil pack and retriever, compressed (1.1 MB total)
-    owner: awedjob
-    pr: 56
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/56
-    updated: 2026-07-29
   - stage: merged
     integration_ref: pr:70
     title: Snow Drift UI borders, sky wash, name tags, avatar materials

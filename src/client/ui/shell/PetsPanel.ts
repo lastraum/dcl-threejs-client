@@ -33,6 +33,15 @@ import {
   ensureBuiltinPetBytes,
   isBuiltinPetHash
 } from '../../../pets/builtinPets'
+import {
+  fetchPetBarnCatalog,
+  getCachedPetBarnCatalog,
+  listPetBarnAdded,
+  preloadPetBarnCatalog,
+  refreshPetFromBarn,
+  subscribePetBarnCatalog,
+  type PetBarnListing
+} from '../../../pets/petBarn'
 import type { PetAnimClipMap, PetAnimState, PetCategory, PetLibraryEntry } from '../../../pets/types'
 import { PET_ANIM_STATES } from '../../../pets/types'
 
@@ -66,6 +75,7 @@ export class PetsPanel {
   private readonly statusEl: HTMLElement
   private readonly onKeyDown: (ev: KeyboardEvent) => void
   private readonly onResize: () => void
+  private catalogUnsub: (() => void) | null = null
 
   constructor(private readonly options: PetsPanelOptions) {
     this.element = document.createElement('div')
@@ -141,6 +151,8 @@ export class PetsPanel {
 
   dispose(): void {
     this.hide()
+    this.catalogUnsub?.()
+    this.catalogUnsub = null
     this.clearPreviewUi()
     this.element.remove()
     window.removeEventListener('keydown', this.onKeyDown)
@@ -162,6 +174,13 @@ export class PetsPanel {
     this.positionPanel()
     window.addEventListener('keydown', this.onKeyDown)
     window.addEventListener('resize', this.onResize)
+    this.catalogUnsub?.()
+    this.catalogUnsub = subscribePetBarnCatalog(() => {
+      if (this.visible) void this.refresh()
+    })
+    void fetchPetBarnCatalog().catch(() => {
+      /* staleBarnPets keeps using cache / preload */
+    })
     await this.render()
   }
 
@@ -169,6 +188,8 @@ export class PetsPanel {
     if (!this.visible) return
     this.visible = false
     this.editHash = null
+    this.catalogUnsub?.()
+    this.catalogUnsub = null
     this.clearPreviewUi()
     this.options.onStopClipPreview?.()
     this.element.hidden = true
@@ -267,6 +288,24 @@ export class PetsPanel {
     )
   }
 
+  /** Barn-adopted pets whose listing glbCid no longer matches the local snapshot. */
+  private staleBarnPets(): Map<string, PetBarnListing> {
+    const out = new Map<string, PetBarnListing>()
+    const catalog = getCachedPetBarnCatalog()
+    if (!catalog) {
+      preloadPetBarnCatalog()
+      return out
+    }
+    const byId = new Map(catalog.pets.map((p) => [p.id, p]))
+    for (const row of listPetBarnAdded()) {
+      const listing = byId.get(row.barnId)
+      if (listing?.glbCid && row.glbCid && listing.glbCid !== row.glbCid) {
+        out.set(row.contentHash, listing)
+      }
+    }
+    return out
+  }
+
   private async render(): Promise<void> {
     if (this.editHash) {
       await this.renderEdit(this.editHash)
@@ -276,6 +315,7 @@ export class PetsPanel {
     const address = this.wallet()
     const rows = await this.collectRows()
     const active = getActivePetEntry(address)
+    const stale = this.staleBarnPets()
 
     if (!rows.length) {
       this.bodyEl.innerHTML = `<div class="pets-panel__empty">No pets yet. Upload a .glb and pick Walking or Flying.</div>`
@@ -288,6 +328,16 @@ export class PetsPanel {
         const label = escapeHtml(e.nickname || e.fileName)
         const typeLabel = e.category === 'flying' ? 'Flying' : 'Walking'
         const meta = `${typeLabel} · ${formatPetByteSize(e.byteSize)}`
+        const updateBtn = stale.has(e.contentHash)
+          ? `
+                <button
+                  type="button"
+                  class="pets-panel__icon-btn pets-panel__barn-update-btn"
+                  data-refresh-barn="${e.contentHash}"
+                  title="Update available — this pet's Barn listing has a newer model"
+                  aria-label="Update ${label} from the Pet Barn"
+                >↻</button>`
+          : ''
         return `
           <article class="pets-panel__row${isActive ? ' is-active' : ''}" data-hash="${e.contentHash}">
             <div class="pets-panel__row-top">
@@ -295,7 +345,7 @@ export class PetsPanel {
                 <div class="pets-panel__row-name">${label}</div>
                 <div class="pets-panel__row-meta">${escapeHtml(meta)}</div>
               </div>
-              <div class="pets-panel__row-actions">
+              <div class="pets-panel__row-actions">${updateBtn}
                 <button
                   type="button"
                   class="pets-panel__toggle${isActive ? ' is-on' : ''}"
@@ -578,6 +628,13 @@ export class PetsPanel {
       return
     }
 
+    const barnRefresh = t.closest<HTMLElement>('[data-refresh-barn]')
+    if (barnRefresh?.dataset.refreshBarn) {
+      ev.preventDefault()
+      await this.handleBarnRefresh(address, barnRefresh.dataset.refreshBarn)
+      return
+    }
+
     const play = t.closest<HTMLElement>('[data-play-clip]')
     if (play?.dataset.playClip && this.editHash) {
       ev.preventDefault()
@@ -625,6 +682,32 @@ export class PetsPanel {
       if (this.editHash === hash) this.editHash = null
       await this.render()
       if (wasActive) await this.options.onActivePetChange?.()
+    }
+  }
+
+  /** Swap a stale barn pet for the listing's current build, keeping settings. */
+  private async handleBarnRefresh(address: string, hash: string): Promise<void> {
+    if (this.busy) return
+    this.busy = true
+    try {
+      const listing = this.staleBarnPets().get(hash)
+      const catalog = getCachedPetBarnCatalog()
+      if (!listing || !catalog) {
+        this.setStatus('Could not find this pet in the Barn catalog — try again in a moment.')
+        return
+      }
+      this.setStatus(`Updating ${listing.petName}…`)
+      const result = await refreshPetFromBarn(listing, catalog.contentBaseUrl, address, hash)
+      if (!result.ok) {
+        this.setStatus(result.error)
+        return
+      }
+      if (this.editHash === hash) this.editHash = null
+      this.setStatus(`✓ ${result.entry.nickname || listing.petName} updated to the latest version`)
+      await this.render()
+      if (result.wasActive) await this.options.onActivePetChange?.()
+    } finally {
+      this.busy = false
     }
   }
 }

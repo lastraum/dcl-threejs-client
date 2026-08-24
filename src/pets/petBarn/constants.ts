@@ -19,3 +19,13 @@ export const PETBARN_CONTENT_BASE_DEFAULT =
 export const PETBARN_POLL_MS = 30_000
 
 export const PETBARN_ADDED_STORAGE_KEY = 'dcl-client-petbarn-added'
+
+/** Poll cadence while waiting for a queued publish/update/delete to reach the catalog. */
+export const PETBARN_DEPLOY_POLL_MS = 20_000
+
+/**
+ * Give up watching a queued action after this long. The raw.githubusercontent
+ * CDN adds ~1 min of cache latency on top of the ~1 min Action run, so a healthy
+ * deploy confirms in 2–3 minutes; six covers a queue that had to retry.
+ */
+export const PETBARN_DEPLOY_TIMEOUT_MS = 6 * 60_000

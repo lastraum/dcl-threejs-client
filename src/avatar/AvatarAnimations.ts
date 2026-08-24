@@ -506,7 +506,7 @@ export class AvatarAnimations {
       this.parallelWearables = collectParallelWearableStates(this.avatarRoot)
     }
     if (this.parallelWearables.length) {
-      this.avatarRoot.updateMatrixWorld(true)
+      this.avatarRoot?.updateMatrixWorld(true)
       syncParallelWearableStates(this.parallelWearables)
     } else if (isAppleTouchDevice()) {
       // iOS: mixer writes bone locals; force world matrices so merged hair skins this frame.
@@ -520,13 +520,15 @@ export class AvatarAnimations {
     this.poseLogFrames++
     if (this.poseLogFrames % 45 !== 1) return
     const root = this.avatarRoot
-    let head: THREE.Bone | null = null
-    let hips: THREE.Bone | null = null
+    const found: { head: THREE.Bone | null; hips: THREE.Bone | null } = {
+      head: null,
+      hips: null
+    }
     const extras: string[] = []
     root.traverse((obj) => {
       if (obj instanceof THREE.Bone) {
-        if (!head && /^(Avatar_Head|Head)$/i.test(obj.name)) head = obj
-        if (!hips && /Hips/i.test(obj.name)) hips = obj
+        if (!found.head && /^(Avatar_Head|Head)$/i.test(obj.name)) found.head = obj
+        if (!found.hips && /Hips/i.test(obj.name)) found.hips = obj
       }
       const parallel = obj.userData?.dclParallelWearable
       const named = /hair|facial|hat|helmet|head_base|skeleton_head|mesh0/i.test(obj.name)
@@ -542,6 +544,8 @@ export class AvatarAnimations {
         )
       }
     })
+    const head = found.head
+    const hips = found.hips
     head?.updateWorldMatrix(true, false)
     hips?.updateWorldMatrix(true, false)
     const headY = head

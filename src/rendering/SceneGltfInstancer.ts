@@ -264,13 +264,22 @@ export class SceneGltfInstancer {
   }
 
   /** Extract: instance matrix from a world matrix (billboard) — pose quat untouched. */
-  writeWorldMatrix(entity: Entity, world: THREE.Matrix4): boolean {
+  writeWorldMatrix(entity: Entity, world: THREE.Matrix4, entityObj?: THREE.Group): boolean {
     const hash = this.entityHash.get(entity)
     if (!hash) return false
     const bucket = this.buckets.get(hash)
     if (!bucket) return false
     const index = bucket.entityIndex.get(entity)
     if (index === undefined) return false
+    // Same law as writeMatrix — InstancedMesh does not inherit Object3D.visible.
+    if (entityObj && (!entityObj.visible || !poseAncestryVisible(entityObj))) {
+      _instance.makeScale(0, 0, 0)
+      for (const mesh of bucket.meshes) {
+        mesh.setMatrixAt(index, _instance)
+        mesh.instanceMatrix.needsUpdate = true
+      }
+      return true
+    }
     for (let i = 0; i < bucket.meshes.length; i++) {
       const leaf = bucket.leaves[i]!
       const mesh = bucket.meshes[i]!

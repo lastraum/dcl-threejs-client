@@ -1132,10 +1132,13 @@ export class AnimatorBridge {
     // Door open/close CRDT often lands between async sync ticks — apply dirty before sample.
     if (view) this.applyDirtyBoundStates(view)
 
-    // Present rAF: PART hulls every frame + in-view looping props (shared-hash).
+    // Present rAF: PART hulls every frame + looping décor.
+    // Play's player frame always comes here (`ridingOnly` / presentDecor) — it must
+    // honor full-rate. Falling through to the loop below never happens in play.
     if (opts?.partOnly || opts?.presentDecor) {
       this.presentSampleGen++
       const now = performance.now()
+      const fullRate = primaryFullRateAnimators()
       let sampled = 0
       for (const [entity, entry] of this.entries) {
         if (!needsPartPhysxWork(entry, now) && !isPartPhysxCandidate(entry)) continue
@@ -1151,14 +1154,24 @@ export class AnimatorBridge {
         sampled++
       }
       if (opts?.presentDecor && sampleCtx) {
-        this.retryPendingBinds(2)
-        sampled += this.samplePresentDecoratives(delta, sampleCtx)
+        this.captureSampleCamera(sampleCtx)
+        if (fullRate) {
+          this.retryPendingBinds(MAX_DEFAULT_BINDS_FULL_RATE, sampleCtx)
+          sampled += this.sampleFullRateMixers(delta, { skipPresentSampled: true })
+        } else {
+          // Prefer GLBs the camera is looking at (zeppelin) over FIFO plaza flowers.
+          this.retryPendingBinds(6, sampleCtx)
+          sampled += this.samplePresentDecoratives(delta, sampleCtx)
+        }
       }
       this.lastStats = {
         ...this.lastStats,
         sampled,
         frameDt: delta,
-        displayFps: delta > 1e-6 ? 1 / delta : 0
+        displayFps: delta > 1e-6 ? 1 / delta : 0,
+        near: fullRate ? sampled : this.lastStats.near,
+        fair: fullRate ? 0 : this.lastStats.fair,
+        budget: fullRate ? sampled : this.lastStats.budget
       }
       return
     }
@@ -1212,50 +1225,16 @@ export class AnimatorBridge {
 
     // --- Full-rate primary path: every active mixer, every frame, full delta ---
     if (fullRate) {
-      let sampled = 0
-      let active = 0
-      const now = performance.now()
-      const skipPresent = opts?.skipPresentSampled === true
-      for (const [entity, entry] of this.entries) {
-        if (skipPresent && entry.lastPresentGen === this.presentSampleGen) {
-          entry.deferredSampleDt = 0
-          continue
-        }
-        if (entry.sleeping) {
-          entry.sleeping = false
-          entry.mixer.timeScale = 1
-          entry.deferredSampleDt = 0
-        }
-        const settleOnly =
-          !mixerHasActiveWork(entry) &&
-          entry.partSettleUntil != null &&
-          now < entry.partSettleUntil
-        if (!mixerHasActiveWork(entry) && !settleOnly) {
-          entry.deferredSampleDt = 0
-          continue
-        }
-        active++
-        entry.deferredSampleDt = 0
-        if (settleOnly) {
-          // Clip finished — hold end pose, still PART-cook hull to match visuals.
-          entry.mixer.update(0)
-          this.markShapeMotionAfterSample(entity, entry)
-          sampled++
-          continue
-        }
-        if (delta > 1e-8) {
-          entry.mixer.update(delta)
-          sampled++
-          this.markShapeMotionAfterSample(entity, entry)
-        }
-      }
+      const sampled = this.sampleFullRateMixers(delta, {
+        skipPresentSampled: opts?.skipPresentSampled === true
+      })
       this.prevFrameDt = delta
       const displayFps = delta > 1e-6 ? 1 / delta : 0
       this.lastStats = {
         bound: this.entries.size,
-        active,
+        active: sampled,
         sleeping: 0,
-        near: active,
+        near: sampled,
         fair: 0,
         sharedGroups: 0,
         sharedFanout: 0,
@@ -1588,10 +1567,87 @@ export class AnimatorBridge {
    * Present: finish a few already-pending mixer binds. Do not scan every
    * static-no-clip GLB — that promoted the whole plaza on rAF (~1 fps).
    */
-  private retryPendingBinds(cap: number): void {
+  /**
+   * Every bound mixer with active work, no frustum / distance skip.
+   * Play present (`ridingOnly`) must call this when full-rate is on — that path
+   * never reaches the later `if (fullRate)` block.
+   */
+  private sampleFullRateMixers(
+    delta: number,
+    opts?: { skipPresentSampled?: boolean }
+  ): number {
+    const now = performance.now()
+    const skipPresent = opts?.skipPresentSampled === true
+    let sampled = 0
+    for (const [entity, entry] of this.entries) {
+      if (skipPresent && entry.lastPresentGen === this.presentSampleGen) {
+        entry.deferredSampleDt = 0
+        continue
+      }
+      if (entry.sleeping) {
+        entry.sleeping = false
+        entry.mixer.timeScale = 1
+        entry.deferredSampleDt = 0
+      }
+      const settleOnly =
+        !mixerHasActiveWork(entry) &&
+        entry.partSettleUntil != null &&
+        now < entry.partSettleUntil
+      if (!mixerHasActiveWork(entry) && !settleOnly) {
+        entry.deferredSampleDt = 0
+        continue
+      }
+      entry.deferredSampleDt = 0
+      if (settleOnly) {
+        entry.mixer.update(0)
+        this.markShapeMotionAfterSample(entity, entry)
+        entry.lastPresentGen = this.presentSampleGen
+        sampled++
+        continue
+      }
+      if (delta > 1e-8) {
+        entry.mixer.update(delta)
+        this.markShapeMotionAfterSample(entity, entry)
+        entry.lastPresentGen = this.presentSampleGen
+        sampled++
+      }
+    }
+    return sampled
+  }
+
+  private captureSampleCamera(sampleCtx: AnimatorSampleContext): void {
+    sampleCtx.camera.updateMatrixWorld(true)
+    _camPos.setFromMatrixPosition(sampleCtx.camera.matrixWorld)
+    _projScreen.multiplyMatrices(
+      sampleCtx.camera.projectionMatrix,
+      sampleCtx.camera.matrixWorldInverse
+    )
+    _frustum.setFromProjectionMatrix(_projScreen)
+  }
+
+  private objectInSampleFrustum(obj: THREE.Object3D, radiusM: number): boolean {
+    obj.updateWorldMatrix(true, false)
+    _worldPos.setFromMatrixPosition(obj.matrixWorld)
+    _sphere.center.copy(_worldPos)
+    _sphere.radius = radiusM
+    return _frustum.intersectsSphere(_sphere)
+  }
+
+  private retryPendingBinds(cap: number, sampleCtx?: AnimatorSampleContext): void {
     if (cap <= 0) return
+    const nodes = this.getNodes()
+    let pending = [...this.pendingBind]
+    if (sampleCtx && nodes && pending.length > cap) {
+      pending.sort((a, b) => {
+        const na = nodes.get(a)
+        const nb = nodes.get(b)
+        const ia = na && this.objectInSampleFrustum(na, 24) ? 0 : 1
+        const ib = nb && this.objectInSampleFrustum(nb, 24) ? 0 : 1
+        return ia - ib
+      })
+    }
     let bound = 0
-    for (const entity of [...this.pendingBind]) {
+    for (const entity of pending) {
       if (bound >= cap) return
       if (this.entries.has(entity)) {
         this.pendingBind.delete(entity)
@@ -1613,13 +1669,7 @@ export class AnimatorBridge {
    */
   private samplePresentDecoratives(delta: number, sampleCtx: AnimatorSampleContext): number {
     if (delta <= 1e-8) return 0
-    sampleCtx.camera.updateMatrixWorld(true)
-    _camPos.setFromMatrixPosition(sampleCtx.camera.matrixWorld)
-    _projScreen.multiplyMatrices(
-      sampleCtx.camera.projectionMatrix,
-      sampleCtx.camera.matrixWorldInverse
-    )
-    _frustum.setFromProjectionMatrix(_projScreen)
+    this.captureSampleCamera(sampleCtx)
 
     type DecorCand = { entity: Entity; entry: AnimEntry; distSq: number }
     const shareable: DecorCand[] = []
@@ -1722,17 +1772,18 @@ export class AnimatorBridge {
     entry: AnimEntry,
     _ctx: AnimatorSampleContext
   ): { priority: number; distSq: number; inFrustum: boolean } {
-    // Draw visual world is written every present. Pose matrixWorld is only
-    // refreshed in renderMainPass *after* this sample — using it slept plaza
-    // props at the origin (~60 m off-frustum) so they only advanced on async
-    // with a 16 ms delta → ~⅓ speed.
+    // Present samples *before* extract writes draw-visual matrixWorld. Pose local
+    // TRS is already current (Tween this pump). Flush pose world here — using a
+    // draw visual still at the origin slept the zeppelin (~60 m off-frustum) so
+    // looking up never woke the props.
     const pose =
       entry.poseNode ?? (entry.root.userData.dclPoseNode as THREE.Object3D | undefined)
+    if (pose) pose.updateWorldMatrix(true, false)
     const visual = entry.root
-    const visualAlive =
-      visual.matrixWorld.elements[12] !== 0 ||
-      visual.matrixWorld.elements[13] !== 0 ||
-      visual.matrixWorld.elements[14] !== 0
+    const visTx = visual.matrixWorld.elements[12]
+    const visTy = visual.matrixWorld.elements[13]
+    const visTz = visual.matrixWorld.elements[14]
+    const visualAlive = visTx !== 0 || visTy !== 0 || visTz !== 0
     const anchor = visualAlive ? visual : (pose ?? visual)
     _worldPos.setFromMatrixPosition(anchor.matrixWorld)
 
@@ -1754,6 +1805,12 @@ export class AnimatorBridge {
     _sphere.radius =
       (entry.cullRadius > 0 ? entry.cullRadius : FRUSTUM_EXPAND_M) * worldScale + FRUSTUM_EXPAND_M
     let inFrustum = _frustum.intersectsSphere(_sphere)
+    if (!inFrustum && pose) {
+      _worldPos.setFromMatrixPosition(pose.matrixWorld)
+      _sphere.center.copy(_worldPos)
+      _sphere.radius = Math.max(24, (entry.cullRadius > 0 ? entry.cullRadius : FRUSTUM_EXPAND_M) * worldScale)
+      inFrustum = _frustum.intersectsSphere(_sphere)
+    }
     // In-flight: current travel-node locals (not the whole clip AABB).
     if (!inFrustum && entry.travelNodes.length) {
       _sphere.radius = FRUSTUM_EXPAND_M * worldScale

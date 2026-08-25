@@ -126,6 +126,8 @@ Client must run **platform Billboard + plane + Visibility**. No GP-specific Bill
 | World-mesh PET: host inject writes 1063, then **one** serialized `eng.update` this edge | Verified — Bevy/Explorer: write then tick. Asset-pack `on_click` is `getInputCommand` **this frame**. Do not queue-until-play-frame; do not stack two updates on one edge |
 | World-mesh Animator (1042) CRDT from that tick must apply on main **this edge** | Verified — scene-UI holds non-UI until `uiEntities`; world-mesh never sends that. Dropping the buffer on deliver-done left Door Open on the worker mixer only |
 | InstancedMesh lives off the pose graph — hide = zero-scale instance slot (`writeMatrix`) | Verified — `SceneGltfInstancer` |
+| First GPU-instance write must see pose Visibility (LO() hides plaza pond benches, then GLB attaches) | Platform — apply authored vis **before** `instancer.attach` |
+| `writeWorldMatrix` (billboard extract) must not unhide a `visible=false` pose | Platform |
 | InstancedMesh is for **repeated low-leaf** props (≤12 render leaves). High-leaf kits clone | Platform — `templateIsInstancable` |
 | First clone of a hash that cannot instance is not idle-queued | Platform — runtime-created unique GLBs |
 
@@ -145,7 +147,8 @@ Client must run **platform Billboard + plane + Visibility**. No GP-specific Bill
 
 | Rule | Status |
 |------|--------|
-| Try the real URL first; on `TypeError` (CORS / failed to fetch) retry proxy and remember the host | Platform |
+| Try the real URL first; on `TypeError` (CORS / failed to fetch) or HTTP 404 retry `/api/scene-http` | Platform |
+| Remember the host only when the proxy recovers (later polls skip the direct miss) | Platform |
 | Do **not** proxy-first — server IP 403s origins the browser is allowed to read | Forbidden |
 | Do **not** special-case scene filenames or sheet names | Forbidden |
 

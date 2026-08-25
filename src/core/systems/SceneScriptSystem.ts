@@ -7490,8 +7490,9 @@ export class SceneScriptSystem {
     this.deliverTweenStateToWorker()
     }
     if (ridingOnly) return
-    // Do not sample mixers here. Present already advanced PART + in-view looping
-    // (wall-clock). Re-running with the last rAF delta made props crawl at ~⅓ speed.
+    // Do not sample mixers here. Present already advanced PART + looping décor
+    // (in-view, or every mixer when full-rate scene animators is on). Re-running
+    // with the last rAF delta made props crawl at ~⅓ speed.
     if (this.bridgeSyncTick % 2 === 0) {
       this.videoPlayerBridge?.sync(this.view)
       this.audioSourceBridge?.sync(this.view)
@@ -7624,6 +7625,9 @@ export class SceneScriptSystem {
   extractBillboards(camera: import('three').Camera): void {
     if (!this.bridge) return
     this.bridge.syncEcsVisibility(this.bridge.entitiesWithVisibility())
+    // DrawWorld.sync hides clones from pose.visible. GPU instances live on
+    // drawRoot and need the same extract — plaza LO() pond benches.
+    this.bridge.syncInstancedVisibilityExtract()
     this.billboardBridge?.applyExtract(camera, (entity, world) =>
       this.bridge!.setInstancedWorldMatrix(entity, world)
     )

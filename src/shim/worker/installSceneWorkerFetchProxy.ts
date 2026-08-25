@@ -1,18 +1,22 @@
 /**
- * Scene worker `fetch` — same-origin `/api/scene-http` egress.
+ * Scene worker `fetch` — Explorer-parity egress (PLATFORM_COMPONENT_LAWS §3c).
  *
- * This client is a website: cross-origin `fetch` from the worker hits CORS
- * (NASA Horizons, GDACS, many CDNs). Direct-first logged a false CORS error
- * on every first request even when the retry succeeded.
+ * Law: the scene's URL is a **browser** request first (page origin, user IP).
+ * `/api/scene-http` is only the CORS / 404 fallback. Proxy-first is forbidden —
+ * datacenter IP 403s hosts the browser is allowed to read (Google gviz, etc.).
  *
- * Cross-origin http(s) always goes through `/api/scene-http` (Vite + nginx).
- * Same-origin / relative / bypass hosts stay direct. SSRF guards live in
- * `toSceneHttpProxyUrl`.
+ * On TypeError (CORS) or HTTP 404, retry the same-origin proxy and remember the
+ * host when the proxy recovers so later polls do not re-trip the browser CORS
+ * console. Bypass hosts (bulk content) stay direct-only.
  */
 import {
   isPlacesUpstreamUrl,
+  sceneFetchShouldFallbackToProxy,
   toSceneHttpProxyUrl
 } from '../../network/sceneHttpProxy'
+
+/** Hosts whose last direct attempt needed the proxy (CORS or recovered 404). */
+const preferProxyHosts = new Set<string>()
 
 /** Places lookups assume `data` is an array — normalize empty/error bodies. */
 async function normalizePlacesJsonResponse(res: Response): Promise<Response> {
@@ -37,6 +41,43 @@ function requestUrl(input: RequestInfo | URL): string | null {
   return null
 }
 
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase()
+  } catch {
+    return ''
+  }
+}
+
+function proxyAbsoluteUrl(rewritten: string): string {
+  const origin =
+    typeof location !== 'undefined' && location.origin.startsWith('http')
+      ? location.origin
+      : ''
+  return rewritten.startsWith('/') && origin ? `${origin}${rewritten}` : rewritten
+}
+
+function asRequest(input: RequestInfo | URL, init?: RequestInit): Request {
+  return input instanceof Request ? input : new Request(input, init)
+}
+
+function replayAt(nativeFetch: typeof fetch, targetUrl: string, src: Request): Promise<Response> {
+  const copy = src.clone()
+  const method = copy.method.toUpperCase()
+  const init: RequestInit = {
+    method: copy.method,
+    headers: copy.headers,
+    redirect: copy.redirect
+  }
+  if (method !== 'GET' && method !== 'HEAD') init.body = copy.body
+  return nativeFetch(targetUrl, init)
+}
+
+/** Test helper. */
+export function resetSceneFetchPreferProxyHosts(): void {
+  preferProxyHosts.clear()
+}
+
 /** Patch worker global fetch before scene bundle eval — idempotent. */
 export function installSceneWorkerFetchProxy(): void {
   const g = globalThis as typeof globalThis & { __sceneWorkerFetchProxy?: boolean }
@@ -53,26 +94,36 @@ export function installSceneWorkerFetchProxy(): void {
 
     const rewritten = toSceneHttpProxyUrl(url)
     if (!rewritten) return nativeFetch(input, init)
-    // Dedicated workers must fetch an absolute same-origin URL (blob workers
-    // resolve `/api/...` against the worker script, not the page).
-    const origin =
-      typeof location !== 'undefined' && location.origin.startsWith('http')
-        ? location.origin
-        : ''
-    const proxyAbsolute =
-      rewritten.startsWith('/') && origin ? `${origin}${rewritten}` : rewritten
 
-    const wrapPlaces = (target: RequestInfo | URL, promise: Promise<Response>) =>
-      isPlacesUpstreamUrl(url) || isPlacesUpstreamUrl(String(target))
+    const proxyUrl = proxyAbsoluteUrl(rewritten)
+    const host = hostnameOf(url)
+    const src = asRequest(input, init)
+
+    const runDirect = () => replayAt(nativeFetch, url, src)
+    const runProxy = () => replayAt(nativeFetch, proxyUrl, src)
+
+    const wrapPlaces = (promise: Promise<Response>) =>
+      isPlacesUpstreamUrl(url) || isPlacesUpstreamUrl(proxyUrl)
         ? promise.then(normalizePlacesJsonResponse)
         : promise
 
-    if (typeof input === 'string' || input instanceof URL) {
-      return wrapPlaces(proxyAbsolute, nativeFetch(proxyAbsolute, init))
+    if (host && preferProxyHosts.has(host)) {
+      return wrapPlaces(runProxy())
     }
-    if (input instanceof Request) {
-      return wrapPlaces(proxyAbsolute, nativeFetch(new Request(proxyAbsolute, input)))
-    }
-    return wrapPlaces(proxyAbsolute, nativeFetch(proxyAbsolute, init))
+
+    return wrapPlaces(
+      (async () => {
+        try {
+          const res = await runDirect()
+          if (!sceneFetchShouldFallbackToProxy(res.status)) return res
+          const proxied = await runProxy()
+          if (proxied.ok && host) preferProxyHosts.add(host)
+          return proxied
+        } catch {
+          if (host) preferProxyHosts.add(host)
+          return runProxy()
+        }
+      })()
+    )
   }) as typeof fetch
 }

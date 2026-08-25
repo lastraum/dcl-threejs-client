@@ -43,6 +43,11 @@ function shouldBypassProxyHost(hostname) {
   return false
 }
 
+/** Keep in sync with sceneHttpProxy.ts `sceneFetchShouldFallbackToProxy`. */
+export function sceneFetchShouldFallbackToProxy(status) {
+  return status === 'network-error' || status === 0 || status === 404
+}
+
 /** Absolute URL → proxy path (same rules as TS client helper). */
 export function toSceneHttpProxyUrl(absoluteUrl) {
   try {

@@ -53,6 +53,31 @@ export function isTabletPlayLayout(): boolean {
   return short >= 600 && long >= 900 && window.innerWidth > PHONE_MAX_WIDTH_PX
 }
 
+/**
+ * Handset only (iPhone / Android phone) — not iPad or a resized desktop window.
+ * Force on: `?mobile=1` / `?touch=1` (not `?ipad=1`). Off: `?notouch` / `?nomobile`.
+ */
+export function isMobilePhone(): boolean {
+  if (typeof window === 'undefined') return false
+  if (forceOff()) return false
+  const params = readSearch()
+  if (params?.has('ipad')) return false
+  if (typeof navigator !== 'undefined') {
+    const ua = navigator.userAgent || ''
+    if (/iPhone|iPod/i.test(ua)) return true
+    // Android tablets typically omit "Mobile" in the UA.
+    if (/Android/i.test(ua) && /Mobile/i.test(ua)) return true
+  }
+  // `?mobile=1` on desktop so we can preview the Mobile App CTA.
+  if (params?.has('mobile') || (params?.has('touch') && !isIpadDevice())) return true
+  if (isIpadDevice() || isTabletPlayLayout()) return false
+  // "Request Desktop Website" on a phone: coarse pointer + phone-sized viewport.
+  if (isCoarseNoHover() && window.matchMedia(`(max-width: ${PHONE_MAX_WIDTH_PX}px)`).matches) {
+    return true
+  }
+  return false
+}
+
 /** Phone, iPad, or forced touch — 3D FABs, joystick, mobile HUD. */
 export function isTouchPlayLayout(): boolean {
   if (typeof window === 'undefined') return false
@@ -85,13 +110,16 @@ export function applyTouchPlayDocumentClasses(): void {
   if (typeof document === 'undefined') return
   const touch = isTouchPlayLayout()
   const tablet = touch && isTabletPlayLayout()
+  const phone = isMobilePhone()
   const landscape = isLandscapeLayout()
   const html = document.documentElement
   html.classList.toggle('client-mobile', touch)
   html.classList.toggle('client-tablet', tablet)
+  html.classList.toggle('client-phone', phone)
   html.classList.toggle('client-landscape', landscape)
   document.body.classList.toggle('client-mobile', touch)
   document.body.classList.toggle('client-tablet', tablet)
+  document.body.classList.toggle('client-phone', phone)
   document.body.classList.toggle('client-landscape', landscape)
   syncViewportZoomLock(touch)
 }

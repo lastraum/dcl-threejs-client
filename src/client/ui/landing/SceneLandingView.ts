@@ -28,9 +28,11 @@ import {
 } from '../../../social/sceneStreams'
 import { EventModal } from '../events/EventModal'
 import { SocialShellTopNav, type SocialShellChromeHandlers, type SocialShellTab } from '../explore/SocialShellTopNav'
+import { isMobilePhone } from '../touchPlayLayout'
 import { SceneStreamSettingsModal } from './SceneStreamSettingsModal'
 import { SceneUsersModal } from './SceneUsersModal'
 import { ScenePlaceStatsModal } from './ScenePlaceStatsModal'
+import { dclMobileAppSchemeHref, openDclMobileApp } from './dclMobileAppJump'
 import { isAnalyticsEnabled } from '../../../analytics/track'
 import Hls from 'hls.js'
 import { createBrowserHls, probeHttpsHlsPlaylist } from '../../../media/hlsFactory'
@@ -1458,10 +1460,24 @@ export class SceneLandingView {
   private bindJumpIn(): void {
     this.syncJumpInLabel()
     this.syncJumpInVisibility()
+    this.syncMobileAppCta()
     this.root.querySelector('[data-jump-in]')?.addEventListener('click', () => {
       if (this.jumpInLoading || !this.jumpInUnlocked) return
       this.onJumpIn()
     })
+    this.root.querySelector('[data-mobile-app]')?.addEventListener('click', (ev) => {
+      if (this.jumpInLoading) return
+      ev.preventDefault()
+      openDclMobileApp(this.route)
+    })
+  }
+
+  private syncMobileAppCta(): void {
+    const btn = this.root.querySelector('[data-mobile-app]') as HTMLAnchorElement | null
+    const href = dclMobileAppSchemeHref(this.route)
+    const show = Boolean(href) && isMobilePhone()
+    if (btn && href) btn.href = href
+    this.setControlVisible(btn, show)
   }
 
   private syncJumpInLabel(): void {
@@ -1733,14 +1749,33 @@ export class SceneLandingView {
                                 </button>
                                 <div class="scene-watch-join-live-split-menu" data-join-live-menu role="menu" hidden></div>
                               </div>
-                              <button type="button" class="scene-watch-dest-jump-in-bar" data-jump-in ${this.jumpInUnlocked ? '' : 'hidden'} aria-busy="${this.jumpInUnlocked ? 'false' : 'true'}">
-                                <span class="scene-watch-dest-jump-in-bar-label">${this.playSessionReady ? 'Jump in' : 'Sign in'}</span>
-                                <span class="scene-watch-dest-jump-in-arrow-box" aria-hidden>
-                                  <svg class="scene-watch-dest-jump-in-arrow-svg" viewBox="0 0 24 24" width="14" height="14" fill="none">
-                                    <path d="M5 12h12M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                                  </svg>
-                                </span>
-                              </button>
+                              <div class="scene-watch-dest-jump-in-pair">
+                                <button type="button" class="scene-watch-dest-jump-in-bar" data-jump-in ${this.jumpInUnlocked ? '' : 'hidden'} aria-busy="${this.jumpInUnlocked ? 'false' : 'true'}">
+                                  <span class="scene-watch-dest-jump-in-bar-label">${this.playSessionReady ? 'Jump in' : 'Sign in'}</span>
+                                  <span class="scene-watch-dest-jump-in-arrow-box" aria-hidden>
+                                    <svg class="scene-watch-dest-jump-in-arrow-svg" viewBox="0 0 24 24" width="14" height="14" fill="none">
+                                      <path d="M5 12h12M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                    </svg>
+                                  </span>
+                                </button>
+                                <a
+                                  class="scene-watch-dest-mobile-app-bar"
+                                  data-mobile-app
+                                  hidden
+                                  href="${escapeHtml(dclMobileAppSchemeHref(this.route) ?? 'decentraland://')}"
+                                  rel="noopener"
+                                  aria-label="Open this place in the Decentraland mobile app"
+                                  title="Open in the Decentraland mobile app"
+                                >
+                                  <span class="scene-watch-dest-jump-in-bar-label">Mobile App</span>
+                                  <span class="scene-watch-dest-jump-in-arrow-box" aria-hidden>
+                                    <svg class="scene-watch-dest-jump-in-arrow-svg" viewBox="0 0 24 24" width="14" height="14" fill="none">
+                                      <rect x="7" y="2.5" width="10" height="19" rx="2" stroke="currentColor" stroke-width="2"/>
+                                      <circle cx="12" cy="17.75" r="1" fill="currentColor"/>
+                                    </svg>
+                                  </span>
+                                </a>
+                              </div>
                             </div>
                           </div>
                         </div>

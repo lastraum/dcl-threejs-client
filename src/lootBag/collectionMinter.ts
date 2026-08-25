@@ -263,6 +263,14 @@ export function humanizeStockError(err: unknown): string {
     )
   }
 
+  if (raw.includes('ClaimsPaused') || lower.includes('claimspaused')) {
+    return 'Claiming is paused — you can still add loot to the bag.'
+  }
+
+  if (raw.includes('EnforcedPause') || lower.includes('enforcedpause')) {
+    return 'Loot Bag is paused (emergency freeze). Deposits and claims are both blocked.'
+  }
+
   if (lower.includes('user rejected') || lower.includes('user denied') || lower.includes('rejected the request')) {
     return 'Signature / transaction rejected in wallet.'
   }

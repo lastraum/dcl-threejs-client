@@ -42,6 +42,8 @@ export type PoolSnapshot = {
   activePackCount: bigint
   nextPositionId: bigint
   paused: boolean
+  /** Operational: new pulls blocked; deposits still open. Independent of `paused`. */
+  claimsPaused: boolean
   testFulfillEnabled: boolean
   /**
    * On-chain share of backing paid to claimer on Take MANA (bps, e.g. 8500 = 85%).
@@ -51,6 +53,18 @@ export type PoolSnapshot = {
   /** Protocol cut on settlement (bps). */
   protocolSettlementCutBps: number
   positions: LootBagPosition[]
+}
+
+/** Emergency `paused` blocks deposits + claims. `claimsPaused` only blocks new pulls. */
+export function lootBagClaimingBlocked(pool: PoolSnapshot | null | undefined): boolean {
+  return Boolean(pool?.paused || pool?.claimsPaused)
+}
+
+export function lootBagClaimingBlockedReason(pool: PoolSnapshot | null | undefined): string | null {
+  if (!pool) return null
+  if (pool.paused) return 'Loot Bag is paused'
+  if (pool.claimsPaused) return 'Claiming is paused — you can still add loot'
+  return null
 }
 
 /** Depositable NFT from wallet (real Collection V2 or mock). */

@@ -78,6 +78,24 @@ export const lootBagPoolAbi = [
     "type": "function"
   },
   {
+    "inputs": [],
+    "name": "ClaimsPaused",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "claimsPaused",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
     "inputs": [
       {
         "internalType": "uint256",
@@ -363,6 +381,13 @@ export const lootBagPoolAbi = [
   {
     "inputs": [],
     "name": "pause",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "pauseClaims",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"
@@ -675,6 +700,13 @@ export const lootBagPoolAbi = [
   {
     "inputs": [],
     "name": "unpause",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "unpauseClaims",
     "outputs": [],
     "stateMutability": "nonpayable",
     "type": "function"

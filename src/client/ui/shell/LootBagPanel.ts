@@ -30,6 +30,8 @@ import {
   type FlowApi,
   type LootBagPosition,
   type PendingWin,
+  lootBagClaimingBlocked,
+  lootBagClaimingBlockedReason,
   type PoolSnapshot,
   type TxStep,
   type WalletSnapshot
@@ -479,6 +481,7 @@ export class LootBagPanel {
     this.footerEl.querySelectorAll('button').forEach((b) => {
       ;(b as HTMLButtonElement).disabled = on
     })
+    this.syncClaimButton()
     this.element.classList.toggle('is-busy', on)
     if (!on) {
       const inFlight = this.steps.some((s) => s.status === 'active' || s.status === 'error')
@@ -561,7 +564,7 @@ export class LootBagPanel {
       } else {
         this.renderMainBody()
         this.status = this.pool.positions.length
-          ? ''
+          ? lootBagClaimingBlockedReason(this.pool) || ''
           : 'Empty Loot Bag — deposit a wearable or MANA pack'
         this.renderStatus()
       }
@@ -586,6 +589,20 @@ export class LootBagPanel {
     const { feeLabel, balLabel } = this.manaCostBalance()
     this.feeEl.textContent = feeLabel
     this.balanceEl.textContent = balLabel
+    this.syncClaimButton()
+  }
+
+  private syncClaimButton(): void {
+    const btn = this.element.querySelector('[data-claim]') as HTMLButtonElement | null
+    if (!btn) return
+    const blocked = lootBagClaimingBlocked(this.pool)
+    btn.disabled = this.busy || this.claiming || blocked
+    btn.textContent = this.pool?.paused
+      ? 'Loot Bag paused'
+      : this.pool?.claimsPaused
+        ? 'Claiming paused'
+        : 'Claim Loot Pack'
+    btn.title = lootBagClaimingBlockedReason(this.pool) ?? 'Claim a Loot Pack'
   }
 
   private setMode(mode: PanelMode): void {
@@ -1705,6 +1722,13 @@ export class LootBagPanel {
     } finally {
       this.claiming = false
       this.setBusy(false)
+    }
+
+    const blockedReason = lootBagClaimingBlockedReason(this.pool)
+    if (blockedReason) {
+      this.error = blockedReason
+      this.renderStatus()
+      return
     }
 
     if (!this.pool || this.pool.positions.length === 0 || this.pool.activeCount === 0n) {

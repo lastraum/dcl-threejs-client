@@ -222,6 +222,7 @@ export async function fetchPoolSnapshot(): Promise<PoolSnapshot> {
     activePackCount,
     nextPositionId,
     paused,
+    claimsPaused,
     testFulfillEnabled,
     depositorBidRateBpsRaw,
     protocolSettlementCutBpsRaw
@@ -232,6 +233,9 @@ export async function fetchPoolSnapshot(): Promise<PoolSnapshot> {
     client.readContract({ address: pool, abi: lootBagPoolAbi, functionName: 'activePackCount' }),
     client.readContract({ address: pool, abi: lootBagPoolAbi, functionName: 'nextPositionId' }),
     client.readContract({ address: pool, abi: lootBagPoolAbi, functionName: 'paused' }),
+    client
+      .readContract({ address: pool, abi: lootBagPoolAbi, functionName: 'claimsPaused' })
+      .catch(() => false),
     client.readContract({ address: pool, abi: lootBagPoolAbi, functionName: 'testFulfillEnabled' }),
     client.readContract({ address: pool, abi: lootBagPoolAbi, functionName: 'depositorBidRateBps' }),
     client.readContract({ address: pool, abi: lootBagPoolAbi, functionName: 'protocolSettlementCutBps' })
@@ -299,6 +303,7 @@ export async function fetchPoolSnapshot(): Promise<PoolSnapshot> {
     activePackCount: activePackCount as bigint,
     nextPositionId: nextPositionId as bigint,
     paused: paused as boolean,
+    claimsPaused: Boolean(claimsPaused),
     testFulfillEnabled: testFulfillEnabled as boolean,
     depositorBidRateBps: Number.isFinite(depositorBidRateBps)
       ? depositorBidRateBps

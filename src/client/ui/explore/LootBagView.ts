@@ -37,6 +37,8 @@ import {
   type FlowApi,
   type LootBagPosition,
   type PendingWin,
+  lootBagClaimingBlocked,
+  lootBagClaimingBlockedReason,
   type PoolSnapshot,
   type TxStep,
   type WalletSnapshot
@@ -685,7 +687,7 @@ export class LootBagView {
 
   private setBusy(on: boolean): void {
     this.busy = on
-    this.claimBtn.disabled = on || this.claiming || this.packPhase === 'tearing'
+    this.syncClaimButton(on)
     this.depositBtn.disabled = on
     this.refreshBtn.disabled = on
     this.claimableChipBtn.disabled = on || this.claiming
@@ -786,14 +788,11 @@ export class LootBagView {
       if (this.mode === 'play') {
         this.renderShelf(this.pool.positions, { scrollToEnd: !this.pendingWin })
         this.status =
-          this.pool.positions.length > 0 || this.pool.activeCount > 0n
-            ? this.pendingWin
-              ? this.status ||
-                `Pos #${this.pendingWin.positionId} — Keep NFT or Take tokens`
-              : ''
-            : this.pendingWin
-              ? this.status ||
-                `Pos #${this.pendingWin.positionId} — Keep NFT or Take tokens`
+          this.pendingWin
+            ? this.status ||
+              `Pos #${this.pendingWin.positionId} — Keep NFT or Take tokens`
+            : this.pool.positions.length > 0 || this.pool.activeCount > 0n
+              ? lootBagClaimingBlockedReason(this.pool) || ''
               : 'Empty Loot Bag — deposit a wearable or MANA pack to fill the Loot Bag'
         this.renderStatus()
         // Restore unsettled prize after refresh / remount (FWA-style)
@@ -951,8 +950,23 @@ export class LootBagView {
         ? Math.max(Number(this.pool.activeCount), this.pool.positions.length)
         : 0
     this.poolCountEl.textContent = n === 1 ? '1 item' : `${n} items`
+    this.syncClaimButton(this.busy)
     // Keep fees modal amount in sync if open
     if (!this.feesModalEl.hidden) this.syncFeesModal()
+  }
+
+  private syncClaimButton(busy: boolean): void {
+    const blocked = lootBagClaimingBlocked(this.pool)
+    this.claimBtn.disabled = busy || this.claiming || this.packPhase === 'tearing' || blocked
+    const label = this.claimBtn.querySelector('.lootbag__claim-label')
+    const text = this.pool?.paused
+      ? 'Loot Bag paused'
+      : this.pool?.claimsPaused
+        ? 'Claiming paused'
+        : 'Claim Loot Pack'
+    if (label) label.textContent = text
+    else this.claimBtn.textContent = text
+    this.claimBtn.title = lootBagClaimingBlockedReason(this.pool) ?? 'Claim a Loot Pack'
   }
 
   private openFeesModal(): void {
@@ -2156,6 +2170,7 @@ export class LootBagView {
     this.settleKeepBtn.textContent = 'Keep NFT'
     this.settleTakeBtn.innerHTML = '<span class="lootbag__claim-label">Take tokens</span>'
     this.settleTakeBtn.removeAttribute('title')
+    this.syncClaimButton(this.busy)
     this.drawPackIdle()
   }
 
@@ -2278,6 +2293,13 @@ export class LootBagView {
     } finally {
       this.claiming = false
       this.setBusy(false)
+    }
+
+    const blockedReason = lootBagClaimingBlockedReason(this.pool)
+    if (blockedReason) {
+      this.error = blockedReason
+      this.renderStatus()
+      return
     }
 
     if (!this.pool || this.pool.activeCount === 0n || (this.pool.positions?.length ?? 0) === 0) {

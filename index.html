@@ -29937,11 +29937,12 @@
       }
       .scene-watch-dest-jump-in-pair {
         display: flex;
-        flex-direction: column;
-        align-items: stretch;
+        flex-direction: row;
+        flex-wrap: nowrap;
+        align-items: center;
         gap: 10px;
         flex: 1 1 10rem;
-        min-width: 8rem;
+        min-width: 0;
         width: 100%;
         box-sizing: border-box;
       }
@@ -29951,9 +29952,9 @@
         align-items: center;
         justify-content: center;
         gap: 12px;
-        width: 100%;
-        flex: 0 0 auto;
-        min-width: 0;
+        flex: 1 1 auto;
+        min-width: 8rem;
+        min-height: 52px;
         box-sizing: border-box;
         padding: 14px 20px;
         border-radius: 10px;
@@ -29984,10 +29985,45 @@
         color: #fff;
         filter: brightness(1.06);
       }
+      .scene-watch-dest-mobile-qr {
+        display: flex;
+        flex: 0 0 72px;
+        align-items: center;
+        justify-content: center;
+        width: 72px;
+        height: 72px;
+        box-sizing: border-box;
+        padding: 4px;
+        border-radius: 10px;
+        background: #fff;
+        overflow: hidden;
+      }
+      .scene-watch-dest-mobile-qr img {
+        display: block;
+        position: static;
+        width: 64px !important;
+        height: 64px !important;
+        max-width: 64px !important;
+        max-height: 64px !important;
+        aspect-ratio: 1 / 1;
+        object-fit: contain;
+      }
+      body.client-phone .scene-watch-dest-jump-in-pair {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      body.client-phone .scene-watch-dest-jump-in-bar,
+      body.client-phone .scene-watch-dest-mobile-app-bar {
+        flex: 0 0 auto;
+        width: 100%;
+        min-width: 0;
+      }
       .scene-watch-dest-jump-in-bar[hidden],
       .scene-watch-dest-mobile-app-bar[hidden],
+      .scene-watch-dest-mobile-qr[hidden],
       body.scene-landing-jump-in-loading .scene-watch-dest-jump-in-bar,
       body.scene-landing-jump-in-loading .scene-watch-dest-mobile-app-bar,
+      body.scene-landing-jump-in-loading .scene-watch-dest-mobile-qr,
       body.scene-landing-jump-in-loading .scene-watch-dest-jump-in-pair,
       body.scene-landing-jump-in-loading .scene-watch-dest-scene-card-cta-row > .scene-watch-dest-jump-in-bar,
       body.scene-landing-jump-in-loading .scene-watch-join-live-split,
@@ -30334,8 +30370,8 @@
           flex: 0 0 auto;
           min-width: 0;
         }
-        .scene-watch-dest-jump-in-pair > .scene-watch-dest-jump-in-bar,
-        .scene-watch-dest-jump-in-pair > .scene-watch-dest-mobile-app-bar {
+        body.client-phone .scene-watch-dest-jump-in-pair > .scene-watch-dest-jump-in-bar,
+        body.client-phone .scene-watch-dest-jump-in-pair > .scene-watch-dest-mobile-app-bar {
           width: 100%;
           min-height: 48px;
         }

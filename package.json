@@ -39,6 +39,7 @@
     "jszip": "^3.10.1",
     "livekit-client": "^2.19.2",
     "protobufjs": "^8.6.3",
+    "qrcode": "^1.5.4",
     "three": "^0.185.1",
     "viem": "^2.55.8",
     "yaml": "^2.9.0",

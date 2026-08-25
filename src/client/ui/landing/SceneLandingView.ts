@@ -32,7 +32,11 @@ import { isMobilePhone } from '../touchPlayLayout'
 import { SceneStreamSettingsModal } from './SceneStreamSettingsModal'
 import { SceneUsersModal } from './SceneUsersModal'
 import { ScenePlaceStatsModal } from './ScenePlaceStatsModal'
-import { dclMobileAppSchemeHref, openDclMobileApp } from './dclMobileAppJump'
+import {
+  dclMobileAppSchemeHref,
+  openDclMobileApp,
+  paintDclMobileAppQr
+} from './dclMobileAppJump'
 import { isAnalyticsEnabled } from '../../../analytics/track'
 import Hls from 'hls.js'
 import { createBrowserHls, probeHttpsHlsPlaylist } from '../../../media/hlsFactory'
@@ -1461,6 +1465,7 @@ export class SceneLandingView {
     this.syncJumpInLabel()
     this.syncJumpInVisibility()
     this.syncMobileAppCta()
+    this.syncMobileAppQr()
     this.root.querySelector('[data-jump-in]')?.addEventListener('click', () => {
       if (this.jumpInLoading || !this.jumpInUnlocked) return
       this.onJumpIn()
@@ -1478,6 +1483,18 @@ export class SceneLandingView {
     const show = Boolean(href) && isMobilePhone()
     if (btn && href) btn.href = href
     this.setControlVisible(btn, show)
+  }
+
+  private syncMobileAppQr(): void {
+    const panel = this.root.querySelector('[data-mobile-qr]') as HTMLElement | null
+    const img = this.root.querySelector('[data-mobile-qr-img]') as HTMLImageElement | null
+    const href = dclMobileAppSchemeHref(this.route)
+    const show = Boolean(href) && !isMobilePhone()
+    this.setControlVisible(panel, show)
+    if (!show || !img || !href) return
+    void paintDclMobileAppQr(img, href).catch(() => {
+      this.setControlVisible(panel, false)
+    })
   }
 
   private syncJumpInLabel(): void {
@@ -1775,6 +1792,19 @@ export class SceneLandingView {
                                     </svg>
                                   </span>
                                 </a>
+                                <div
+                                  class="scene-watch-dest-mobile-qr"
+                                  data-mobile-qr
+                                  hidden
+                                  title="Scan to open in the Decentraland mobile app"
+                                >
+                                  <img
+                                    data-mobile-qr-img
+                                    alt="QR code to open this place in the Decentraland mobile app"
+                                    width="72"
+                                    height="72"
+                                  />
+                                </div>
                               </div>
                             </div>
                           </div>

@@ -8,6 +8,7 @@
  * https://decentraland.org/jump/ is a download interstitial on phones and
  * does not hand off to the app — do not send mobile users there.
  */
+import QRCode from 'qrcode'
 import type { SceneLandingRoute } from '../../../dcl/content/route'
 import { isOfficialWorldsServer } from '../../../network/worlds/worldsServerConfig'
 
@@ -37,6 +38,16 @@ export function dclMobileAppSchemeHref(route: SceneLandingRoute): string | null 
     return `decentraland://?position=${route.x},${route.y}`
   }
   return null
+}
+
+/** Desktop QR payload — same `decentraland://` deep link the Mobile App button uses. */
+export async function paintDclMobileAppQr(img: HTMLImageElement, href: string): Promise<void> {
+  img.src = await QRCode.toDataURL(href, {
+    width: 160,
+    margin: 1,
+    errorCorrectionLevel: 'M',
+    color: { dark: '#11081c', light: '#ffffff' }
+  })
 }
 
 /**

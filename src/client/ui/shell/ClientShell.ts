@@ -10,6 +10,7 @@ import { ProfilePopup } from './ProfilePopup'
 import { SkyboxPanel } from './SkyboxPanel'
 import { NearbyVoicePanel } from './NearbyVoicePanel'
 import { MarketplaceCreditsPanel } from './MarketplaceCreditsPanel'
+import { InWorldMarketplacePanel } from '../marketplace/InWorldMarketplacePanel'
 import { NotificationsPanel } from './NotificationsPanel'
 import { PortableExperiencePanel } from './PortableExperiencePanel'
 import { LivePanel } from './LivePanel'
@@ -120,6 +121,7 @@ export class ClientShell {
   private readonly livePanel: LivePanel
   private readonly notificationsPanel: NotificationsPanel
   private readonly marketplaceCreditsPanel: MarketplaceCreditsPanel
+  private readonly marketplacePanel: InWorldMarketplacePanel
   private readonly friendsPanel: FriendsPanel
   private readonly petsPanel: PetsPanel
   private readonly petBarnPanel: PetBarnPanel
@@ -293,6 +295,11 @@ export class ClientShell {
     this.marketplaceCreditsPanel = new MarketplaceCreditsPanel({
       getSession: () => this.session,
       onClose: () => this.buttons.get('marketplace-credits')?.setActive(false)
+    })
+
+    this.marketplacePanel = new InWorldMarketplacePanel({
+      getSession: () => this.session,
+      onClose: () => this.buttons.get('marketplace')?.setActive(false)
     })
 
     this.friendsPanel = new FriendsPanel({
@@ -786,6 +793,7 @@ export class ClientShell {
     this.nearbyVoicePanel.hide()
     this.notificationsPanel.dispose()
     this.marketplaceCreditsPanel.dispose()
+    this.marketplacePanel.dispose()
     this.friendsPanel.dispose()
     this.petsPanel.dispose()
     this.petBarnPanel.dispose()
@@ -970,6 +978,8 @@ export class ClientShell {
         ev.stopPropagation()
         this.closeMobileDrawerForOverlay()
         this.marketplaceCreditsPanel.hide()
+        this.marketplacePanel.hide()
+        this.buttons.get('marketplace')?.setActive(false)
         this.buttons.get('marketplace-credits')?.setActive(false)
         this.notificationsPanel.toggle()
         this.buttons.get('notifications')?.setActive(this.notificationsPanel.isVisible())
@@ -982,10 +992,25 @@ export class ClientShell {
         this.closeMobileDrawerForOverlay()
         this.notificationsPanel.hide()
         this.buttons.get('notifications')?.setActive(false)
+        this.marketplacePanel.hide()
+        this.buttons.get('marketplace')?.setActive(false)
         this.marketplaceCreditsPanel.toggle()
         this.buttons
           .get('marketplace-credits')
           ?.setActive(this.marketplaceCreditsPanel.isVisible())
+      }
+    }
+
+    if (id === 'marketplace') {
+      return (ev) => {
+        ev.stopPropagation()
+        this.closeMobileDrawerForOverlay()
+        this.notificationsPanel.hide()
+        this.buttons.get('notifications')?.setActive(false)
+        this.marketplaceCreditsPanel.hide()
+        this.buttons.get('marketplace-credits')?.setActive(false)
+        this.marketplacePanel.toggle()
+        this.buttons.get('marketplace')?.setActive(this.marketplacePanel.isVisible())
       }
     }
 
@@ -996,6 +1021,8 @@ export class ClientShell {
         this.notificationsPanel.hide()
         this.buttons.get('notifications')?.setActive(false)
         this.marketplaceCreditsPanel.hide()
+        this.marketplacePanel.hide()
+        this.buttons.get('marketplace')?.setActive(false)
         this.buttons.get('marketplace-credits')?.setActive(false)
         this.chatPanel?.hide()
         this.buttons.get('chat')?.setActive(false)
@@ -1039,17 +1066,16 @@ export class ClientShell {
         this.closeMobileDrawerForOverlay()
         this.preferencesPanel?.hide()
         this.buttons.get('settings')?.setActive(false)
+        this.marketplacePanel.hide()
+        this.buttons.get('marketplace')?.setActive(false)
         this.settingsOverlay?.show(overlayTabs[id])
       }
     }
 
-    const labels: Record<string, string> = {
-      marketplace: 'Marketplace'
-    }
     return (ev) => {
       ev.stopPropagation()
       if (this.isMobileLayout()) this.setMobileDrawerOpen(false)
-      this.stub(labels[id] ?? id)
+      this.stub(id)
     }
   }
 

@@ -2324,6 +2324,9 @@ export class AppController {
         }
         this.socialChat?.openProfileForAddress(address)
       },
+      onOpenMarketplaceItem: (intent) => {
+        this.shell?.openMarketplaceItem(intent)
+      },
       onOpenCommunity: (communityId, kind) => {
         if (this.appMode === 'play' && kind === 'announcement') {
           // Tour / community toast in 3D → in-world community chat, not Settings.

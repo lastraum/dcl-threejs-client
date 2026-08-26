@@ -12,7 +12,7 @@ import {
 } from '../trade/marketplaceConfig'
 import { sendContractMetaTx, waitReceipt } from '../../../lootBag/metaTx'
 import { polygonPublicClient } from '../../../lootBag/polygonClient'
-import { fetchTrade, type CatalogItem } from './marketplaceApi'
+import { fetchTrade, listingPayWei, type CatalogItem } from './marketplaceApi'
 
 const COLLECTION_STORE = '0x214ffC0f0103735728dc66b61A22e4F163e275ae' as Address
 
@@ -42,6 +42,9 @@ export type CartLine = {
   item: CatalogItem
   source: 'store' | 'listing' | 'legacy'
   tradeId?: string | null
+  /** Primary mints only. Secondary listings stay at 1. */
+  quantity: number
+  creatorName?: string
 }
 
 function asAddr(s: string): Address {
@@ -169,7 +172,11 @@ export async function checkoutBatchableCart(args: {
   const storeOnly = batchable.filter((l) => !l.tradeId && l.source === 'store')
 
   let manaNeed = 0n
-  for (const l of batchable) manaNeed += asBig(l.item.price)
+  for (const l of batchable) {
+    const qty = BigInt(Math.max(1, l.quantity || 1))
+    const unit = l.source === 'store' ? asBig(l.item.price) : asBig(listingPayWei(l.item))
+    manaNeed += unit * qty
+  }
 
   if (withTrade.length > 0) {
     await ensureManaAllowance(from, MARKETPLACE_POLYGON, manaNeed, pk, note)
@@ -200,13 +207,19 @@ export async function checkoutBatchableCart(args: {
 
   if (storeOnly.length > 0) {
     await ensureManaAllowance(from, COLLECTION_STORE, manaNeed, pk, note)
-    const itemsToBuy = storeOnly.map((l) => ({
-      collection: asAddr(l.item.contractAddress),
-      ids: [asBig(l.item.itemId)],
-      prices: [asBig(l.item.price)],
-      beneficiaries: [args.beneficiary]
-    }))
-    note(`Mint ${storeOnly.length} from creator store…`)
+    const itemsToBuy = storeOnly.map((l) => {
+      const n = Math.max(1, l.quantity || 1)
+      const id = asBig(l.item.itemId)
+      const price = asBig(l.item.price)
+      return {
+        collection: asAddr(l.item.contractAddress),
+        ids: Array.from({ length: n }, () => id),
+        prices: Array.from({ length: n }, () => price),
+        beneficiaries: Array.from({ length: n }, () => args.beneficiary)
+      }
+    })
+    const units = storeOnly.reduce((s, l) => s + Math.max(1, l.quantity || 1), 0)
+    note(`Mint ${units} from creator store…`)
     const hash = await sendContractMetaTx({
       address: COLLECTION_STORE,
       abi: collectionStoreAbi as unknown as import('viem').Abi,

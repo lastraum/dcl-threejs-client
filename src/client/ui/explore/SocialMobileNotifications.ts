@@ -3,7 +3,10 @@ import type { LoginResult } from '../../../auth/AuthClient'
 import { clientDebugLog } from '../../../client/debug/ClientDebugLog'
 import { notificationPrefs } from '../../../social/notificationPrefs'
 import { getPrivateMessagesService } from '../../../social/PrivateMessagesService'
+import type { MarketplacePurchaseDataEvent } from '../../../social/PrivateMessagesService'
 import type { PoolClaimDataEvent } from '../../../social/PrivateMessagesService'
+import type { MarketplaceItemIntent } from '../../../social/marketplacePurchaseWire'
+import { purchaseIntentFromWire } from '../../../social/marketplacePurchaseWire'
 import { resolveNotificationPeer } from '../../../social/resolveNotificationPeer'
 import type { SocialChatEvent, SocialService } from '../../../social/SocialService'
 import { isChatImageLine, isChatTextLine } from '../../../social/types'
@@ -26,6 +29,8 @@ export type SocialMobileNotificationsOptions = {
   onOpenUserProfile?: (address: string) => void
   /** Open community detail (announcement / voice toast click). */
   onOpenCommunity?: (communityId: string, kind: 'announcement' | 'voice') => void
+  /** Marketplace purchase toast → in-world item details. */
+  onOpenMarketplaceItem?: (intent: MarketplaceItemIntent) => void
   /**
    * Skip chat banners while the user is actively reading that channel's thread.
    * `channelKey` is the SocialService key for the incoming message (`scene:…`).
@@ -64,6 +69,7 @@ export class SocialMobileNotifications {
   private readonly onOpenChat?: SocialMobileNotificationsOptions['onOpenChat']
   private readonly onOpenUserProfile?: SocialMobileNotificationsOptions['onOpenUserProfile']
   private readonly onOpenCommunity?: SocialMobileNotificationsOptions['onOpenCommunity']
+  private readonly onOpenMarketplaceItem?: SocialMobileNotificationsOptions['onOpenMarketplaceItem']
   private readonly isChatNotificationSuppressed?: SocialMobileNotificationsOptions['isChatNotificationSuppressed']
 
   private readonly desktopMq = window.matchMedia(DESKTOP_MQ)
@@ -76,6 +82,7 @@ export class SocialMobileNotifications {
   private unsubChat: (() => void) | null = null
   private unsubPrefs: (() => void) | null = null
   private unsubPoolClaim: (() => void) | null = null
+  private unsubMarketplacePurchase: (() => void) | null = null
   private communityWatcher: CommunityHudToastWatcher | null = null
 
   private baselineReady = false
@@ -91,6 +98,7 @@ export class SocialMobileNotifications {
     this.onOpenChat = opts.onOpenChat
     this.onOpenUserProfile = opts.onOpenUserProfile
     this.onOpenCommunity = opts.onOpenCommunity
+    this.onOpenMarketplaceItem = opts.onOpenMarketplaceItem
     this.isChatNotificationSuppressed = opts.isChatNotificationSuppressed
 
     this.host = document.createElement('div')
@@ -117,6 +125,10 @@ export class SocialMobileNotifications {
     this.unsubPoolClaim = getPrivateMessagesService().subscribePoolClaim((ev) => {
       this.pushPoolClaimBanner(ev)
     })
+    this.unsubMarketplacePurchase?.()
+    this.unsubMarketplacePurchase = getPrivateMessagesService().subscribeMarketplacePurchase((ev) => {
+      this.pushMarketplacePurchaseBanner(ev)
+    })
     clientDebugLog.log('social', 'Pool claim toast listener attached', {
       level: 'success',
       alsoConsole: true
@@ -140,6 +152,8 @@ export class SocialMobileNotifications {
     this.unsubPrefs = null
     this.unsubPoolClaim?.()
     this.unsubPoolClaim = null
+    this.unsubMarketplacePurchase?.()
+    this.unsubMarketplacePurchase = null
     this.unbindSocialListeners()
     this.communityWatcher?.dispose()
     this.communityWatcher = null
@@ -240,6 +254,51 @@ export class SocialMobileNotifications {
     this.showBanner(
       banner,
       `pool-claim:${ev.fromAddress}:${ev.msg.p}:${ev.msg.at}`,
+      COMMUNITY_AUTO_DISMISS_MS
+    )
+  }
+
+  private pushMarketplacePurchaseBanner(ev: MarketplacePurchaseDataEvent): void {
+    if (!this.canShow()) return
+    const buyer = ev.msg.n?.trim() || `${ev.fromAddress.slice(0, 6)}…${ev.fromAddress.slice(-4)}`
+    const itemName = ev.msg.name?.trim() || 'Collectible'
+    const rarity = (ev.msg.r || 'common').toLowerCase()
+    const media = ev.msg.img
+      ? `<img class="social-mobile-notif__loot-img" src="${escapeHtml(ev.msg.img)}" alt="" loading="lazy" decoding="async" />`
+      : `<span class="social-mobile-notif__loot-fallback" aria-hidden="true">✦</span>`
+    const sub = `${buyer} purchased`
+    const intent = purchaseIntentFromWire(ev.msg)
+
+    const banner = document.createElement('button')
+    banner.type = 'button'
+    banner.className = 'social-mobile-notif social-mobile-notif--loot social-mobile-notif--market'
+    banner.setAttribute('aria-label', `${itemName}. ${sub}. Click to view.`)
+    banner.innerHTML = `
+      <div class="social-mobile-notif__card social-mobile-notif__card--loot">
+        <div class="social-mobile-notif__header social-mobile-notif__header--loot">
+          <span class="social-mobile-notif__app-icon social-mobile-notif__app-icon--loot" aria-hidden="true">✦</span>
+          <span class="social-mobile-notif__app-name">MARKETPLACE</span>
+          <span class="social-mobile-notif__time">now</span>
+        </div>
+        <div class="social-mobile-notif__body social-mobile-notif__body--loot">
+          <span class="social-mobile-notif__loot-media lootbag-rarity-bg--${escapeHtml(rarity)}">${media}</span>
+          <span class="social-mobile-notif__text">
+            <span class="social-mobile-notif__sub">${escapeHtml(sub)}</span>
+            <span class="social-mobile-notif__title">${escapeHtml(itemName)}</span>
+            <span class="social-mobile-notif__loot-meta">
+              <span class="social-mobile-notif__market-cta">Click to view</span>
+            </span>
+          </span>
+        </div>
+      </div>
+    `
+    banner.addEventListener('click', () => {
+      this.dismissBanner(banner)
+      this.onOpenMarketplaceItem?.(intent)
+    })
+    this.showBanner(
+      banner,
+      `market-buy:${ev.fromAddress}:${ev.msg.ca}:${ev.msg.iid}:${ev.msg.at}`,
       COMMUNITY_AUTO_DISMISS_MS
     )
   }

@@ -131,6 +131,12 @@ export default defineConfig({
         secure: true,
         rewrite: (path) => path.replace(/^\/api\/marketplace/, '')
       },
+      '/api/credits': {
+        target: 'https://credits.decentraland.org',
+        changeOrigin: true,
+        secure: true,
+        rewrite: (path) => path.replace(/^\/api\/credits/, '')
+      },
       // Loot Bag meta-tx — same-origin (CORS broken on transactions.lastslice.co)
       // Local self-relayer: change target to http://localhost:5356
       '/api/meta-tx': {

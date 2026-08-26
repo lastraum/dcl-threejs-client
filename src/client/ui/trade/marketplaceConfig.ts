@@ -9,6 +9,9 @@ export const MARKETPLACE_POLYGON_ALT = '0xa40b1d129b8906888720686f3a01921ddf3771
 /** Polygon MANA (bridged). */
 export const POLYGON_MANA = '0xA1c57f48F0Deb89f569dFbE6E2B7f46D33606fD4' as Address
 
+/** Ethereum mainnet MANA. */
+export const ETHEREUM_MANA = '0x0f5d2fb29fb7d3cfee444a200298f468908cc942' as Address
+
 export const POLYGON_CHAIN_ID = 137 as const
 export const POLYGON_CHAIN_ID_HEX = '0x89' as const
 

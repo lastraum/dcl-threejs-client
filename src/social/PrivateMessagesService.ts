@@ -27,6 +27,13 @@ import {
   type PoolClaimWireMsg
 } from './poolClaimWire'
 import {
+  encodeMarketplacePurchasePacket,
+  isMarketplacePurchaseTopic,
+  MARKETPLACE_PURCHASE_TOPIC,
+  tryParseMarketplacePurchasePacket,
+  type MarketplacePurchaseWireMsg
+} from './marketplacePurchaseWire'
+import {
   COMMUNITY_VOICE_SIGNAL_TOPIC,
   encodeCommunityVoiceSignalPacket,
   isCommunityVoiceSignalTopic,
@@ -96,6 +103,13 @@ export type PoolClaimDataEvent = {
   msg: PoolClaimWireMsg
 }
 
+export type MarketplacePurchaseDataEvent = {
+  fromAddress: string
+  msg: MarketplacePurchaseWireMsg
+  /** True when this client just published (LiveKit does not echo to sender). */
+  local?: boolean
+}
+
 export type CommunityVoiceSignalEvent = {
   fromAddress: string
   msg: CommunityVoiceSignalMsg
@@ -118,6 +132,7 @@ export type TradeDataEvent = {
  *   dest = message-router-*, topic = `community:{id}`
  * - Community Follow/Tour control (non-chat data, topic `d3js-follow:{id}`)
  * - Loot Bag claims (non-chat data, topic `d3js-lootbag:claims`)
+ * - Marketplace purchases (non-chat data, topic `d3js-marketplace:purchases`)
  * - Community voice started/ended (non-chat data, topic `d3js-community-voice`)
  * - Global Live directory (non-chat data, topic `d3js-live`)
  *
@@ -144,6 +159,7 @@ class PrivateMessagesServiceImpl {
   private readonly communityInbound = new Set<(ev: CommunityMessageEvent) => void>()
   private readonly followInbound = new Set<(ev: CommunityFollowDataEvent) => void>()
   private readonly poolClaimInbound = new Set<(ev: PoolClaimDataEvent) => void>()
+  private readonly marketplacePurchaseInbound = new Set<(ev: MarketplacePurchaseDataEvent) => void>()
   private readonly voiceSignalInbound = new Set<(ev: CommunityVoiceSignalEvent) => void>()
   private readonly globalLiveInbound = new Set<(ev: GlobalLiveDataEvent) => void>()
   private readonly tradeInbound = new Set<(ev: TradeDataEvent) => void>()
@@ -158,6 +174,8 @@ class PrivateMessagesServiceImpl {
   private readonly recentDmKeys = new Map<string, number>()
   /** Dedupe pool claim rebroadcasts: claimer|pos|at-bucket */
   private readonly recentPoolClaimKeys = new Map<string, number>()
+  /** Dedupe marketplace purchases: buyer|contract|item|at-bucket */
+  private readonly recentMarketplacePurchaseKeys = new Map<string, number>()
   /** Dedupe voice signals: community|status|at-bucket */
   private readonly recentVoiceSignalKeys = new Map<string, number>()
   /** Dedupe trade packets seen on PM + world rooms: t|id|from|to|at → now */
@@ -228,6 +246,13 @@ class PrivateMessagesServiceImpl {
     this.poolClaimInbound.add(listener)
     return () => {
       this.poolClaimInbound.delete(listener)
+    }
+  }
+
+  subscribeMarketplacePurchase(listener: (ev: MarketplacePurchaseDataEvent) => void): () => void {
+    this.marketplacePurchaseInbound.add(listener)
+    return () => {
+      this.marketplacePurchaseInbound.delete(listener)
     }
   }
 
@@ -483,6 +508,12 @@ class PrivateMessagesServiceImpl {
     // Loot Bag claims — room broadcast, peer toasts (not self).
     if (isPoolClaimTopic(topic)) {
       this.handlePoolClaimDataPacket(address, data)
+      return
+    }
+
+    // Marketplace purchases — room broadcast, toast (local echo is injected on send).
+    if (isMarketplacePurchaseTopic(topic)) {
+      this.handleMarketplacePurchasePacket(address, data)
       return
     }
 
@@ -898,6 +929,94 @@ class PrivateMessagesServiceImpl {
       })
       return false
     }
+  }
+
+  /**
+   * Marketplace purchase — room-broadcast on `d3js-marketplace:purchases`.
+   * Peers toast from the packet; sender is toasted via a local emit (no LiveKit echo).
+   */
+  async sendMarketplacePurchase(msg: MarketplacePurchaseWireMsg): Promise<boolean> {
+    if (!this.session || !this.isConnected()) {
+      this.lastError = 'private messages room not connected'
+      clientDebugLog.log('social', 'Marketplace purchase publish skipped — PM room not connected', {
+        level: 'warn',
+        alsoConsole: true
+      })
+      this.emitMarketplacePurchase(msg.a, msg, true)
+      return false
+    }
+    const packet = encodeMarketplacePurchasePacket(msg)
+    const remotes = this.session.getRemoteParticipantIdentities().filter((id) => !isMessageRouterIdentity(id))
+    try {
+      const published = await this.session.publishTopicData(MARKETPLACE_PURCHASE_TOPIC, packet, true)
+      if (!published) {
+        this.lastError = 'LiveKit publishTopicData returned false'
+        clientDebugLog.log('social', 'Marketplace purchase publish failed — room not ready or publish rejected', {
+          level: 'warn',
+          alsoConsole: true
+        })
+        this.emitMarketplacePurchase(msg.a, msg, true)
+        return false
+      }
+      clientDebugLog.log(
+        'social',
+        `Marketplace purchase → PM room topic=${MARKETPLACE_PURCHASE_TOPIC} item=${msg.name} remotes=${remotes.length}`,
+        { level: remotes.length === 0 ? 'warn' : 'success', alsoConsole: true }
+      )
+      this.emitMarketplacePurchase(msg.a, msg, true)
+      return true
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err)
+      this.lastError = detail
+      clientDebugLog.log('social', `Marketplace purchase publish failed: ${detail}`, {
+        level: 'warn',
+        alsoConsole: true
+      })
+      this.emitMarketplacePurchase(msg.a, msg, true)
+      return false
+    }
+  }
+
+  private handleMarketplacePurchasePacket(address: string, data: Uint8Array): void {
+    if (isMessageRouterIdentity(address)) return
+    const from = address.trim().toLowerCase()
+    const me = this.selfAddress()
+    if (!from) return
+    if (me && from === me) return
+    const msg = tryParseMarketplacePurchasePacket(data)
+    if (!msg) return
+    const buyer = (msg.a || from).toLowerCase()
+    if (me && buyer === me) return
+    this.emitMarketplacePurchase(buyer, { ...msg, a: buyer }, false)
+  }
+
+  private emitMarketplacePurchase(
+    fromAddress: string,
+    msg: MarketplacePurchaseWireMsg,
+    local: boolean
+  ): void {
+    const bucket = Math.floor(msg.at / 5000)
+    const dedupeKey = `${fromAddress}|${msg.ca}|${msg.iid}|${bucket}`
+    const now = Date.now()
+    const prev = this.recentMarketplacePurchaseKeys.get(dedupeKey)
+    if (prev != null && now - prev < 8000) return
+    this.recentMarketplacePurchaseKeys.set(dedupeKey, now)
+    if (this.recentMarketplacePurchaseKeys.size > 100) {
+      for (const [k, t] of this.recentMarketplacePurchaseKeys) {
+        if (now - t > 60_000) this.recentMarketplacePurchaseKeys.delete(k)
+      }
+    }
+    const n = this.marketplacePurchaseInbound.size
+    if (n === 0) {
+      clientDebugLog.log(
+        'social',
+        'Marketplace purchase dropped — toast host not subscribed',
+        { level: 'warn', alsoConsole: true }
+      )
+      return
+    }
+    const ev: MarketplacePurchaseDataEvent = { fromAddress, msg, local }
+    for (const listener of this.marketplacePurchaseInbound) listener(ev)
   }
 
   async sendTo(peerAddress: string, text: string): Promise<boolean> {

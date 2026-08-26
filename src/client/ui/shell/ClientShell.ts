@@ -11,6 +11,7 @@ import { SkyboxPanel } from './SkyboxPanel'
 import { NearbyVoicePanel } from './NearbyVoicePanel'
 import { MarketplaceCreditsPanel } from './MarketplaceCreditsPanel'
 import { InWorldMarketplacePanel } from '../marketplace/InWorldMarketplacePanel'
+import type { MarketplaceItemIntent } from '../../../social/marketplacePurchaseWire'
 import { NotificationsPanel } from './NotificationsPanel'
 import { PortableExperiencePanel } from './PortableExperiencePanel'
 import { LivePanel } from './LivePanel'
@@ -1295,6 +1296,20 @@ export class ClientShell {
   openChatPanel(): void {
     this.chatPanel?.show()
     this.syncChatFabState(true)
+  }
+
+  openMarketplaceItem(intent: MarketplaceItemIntent): void {
+    this.closeMobileDrawerForOverlay()
+    this.notificationsPanel.hide()
+    this.marketplaceCreditsPanel.hide()
+    this.friendsPanel.hide()
+    this.chatPanel?.hide()
+    this.buttons.get('notifications')?.setActive(false)
+    this.buttons.get('marketplace-credits')?.setActive(false)
+    this.buttons.get('friend-requests')?.setActive(false)
+    this.buttons.get('chat')?.setActive(false)
+    this.buttons.get('marketplace')?.setActive(true)
+    void this.marketplacePanel.openFromIntent(intent)
   }
 
   openCommunityChat(communityId: string, displayName: string): void {

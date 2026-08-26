@@ -12,6 +12,8 @@ interface ImportMetaEnv {
   readonly VITE_POLYGON_RPC?: string
   /** Marketplace API base (default same-origin /api/marketplace/v1) */
   readonly VITE_MARKETPLACE_API?: string
+  /** Credits server base (default same-origin /api/credits) */
+  readonly VITE_CREDITS_URL?: string
   /** Set to "false" to disable client fake claim (use real meta-tx pull) */
   readonly VITE_LOOTBAG_FAKE_CLAIM?: string
   /** @deprecated Use VITE_LOOTBAG_FAKE_CLAIM */

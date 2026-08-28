@@ -13,7 +13,11 @@ import { SceneHost } from '../rendering/SceneHost'
 import { setSceneNameTagsVisible } from '../client/ui/nameTagVisibility'
 
 import { GLTF_COLLIDER_ENTITY_BASE } from '../collision/GltfColliderExtractor'
-import { isPlausibleSpawnSurfaceY, PhysXWorld } from '../physics/PhysXWorld'
+import {
+  colliderHorizDistSq,
+  isPlausibleSpawnSurfaceY,
+  PhysXWorld
+} from '../physics/PhysXWorld'
 import { PlayerSystem } from '../player/PlayerSystem'
 import {
   islandCircularWalkBounds,
@@ -5510,6 +5514,11 @@ export class World {
     return true
   }
 
+  /**
+   * Primary-scene PhysX streaming ring (same 48 m as road furniture).
+   * Distance is hull AABB → feet, not entity pivot. Huge floors whose origin sits
+   * at a far corner (Winterfest Ice-Rink-1) must still cook under the player.
+   */
   private isPlazaScenePhysFar(
     desc: import('../physics/PhysXWorld').PhysicsColliderDesc,
     radiusM: number
@@ -5517,10 +5526,7 @@ export class World {
     if (!this.isPlazaScenePhysEntity(desc.entity)) return false
     const feet = this.plazaPhysFeetXZ()
     if (!feet) return false
-    const e = desc.matrix.elements
-    const dx = e[12]! - feet.x
-    const dz = e[14]! - feet.z
-    return dx * dx + dz * dz > radiusM * radiusM
+    return colliderHorizDistSq(desc, feet.x, feet.z) > radiusM * radiusM
   }
 
   /**
@@ -5543,8 +5549,7 @@ export class World {
     const ground = this.physics.getLastGroundPhysEntity()
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (!this.isPlazaScenePhysEntity(desc.entity)) continue
-      const e = desc.matrix.elements
-      const d2 = (e[12]! - feet.x) * (e[12]! - feet.x) + (e[14]! - feet.z) * (e[14]! - feet.z)
+      const d2 = colliderHorizDistSq(desc, feet.x, feet.z)
       const has = this.physics.hasStaticActor(desc.entity)
       if (d2 <= enter2) {
         if (

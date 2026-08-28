@@ -620,10 +620,8 @@ export class AnimatorBridge {
       const entry = this.entries.get(entity)
       if (!entry || !Animator.has(entity)) continue
       const states = (Animator.get(entity).states ?? []) as readonly AnimatorStateView[]
-      const sig = animatorStateSignature(states, false)
-      // Same authored state already on the mixer (running or clamped) — do not
-      // stop+reset. Open/Close clip *changes* still apply below.
-      if (entry.lastAppliedSignature === sig && mixerMatchesAppliedStates(entry, states)) {
+      if (mixerMatchesAppliedStates(entry, states)) {
+        entry.lastAppliedSignature = animatorStateSignature(states, false)
         this.dirtyReplay.delete(entity)
         continue
       }
@@ -696,8 +694,12 @@ export class AnimatorBridge {
   ): void {
     const stateSignature = animatorStateSignature(states, usingDefaultAutoPlay)
     this.dirtyReplay.delete(entity)
-    if (!forceApply && bound.lastAppliedSignature === stateSignature) {
-      if (mixerMatchesAppliedStates(bound, states)) return
+    // Hold running/clamped one-shots even when shouldReset in the CRDT signature
+    // flips (asset-pack play_animation leaves shouldReset true). Signature-only
+    // compare restarted Door Open every world-mesh PUT → chopping + snap shut.
+    if (!forceApply && mixerMatchesAppliedStates(bound, states)) {
+      bound.lastAppliedSignature = stateSignature
+      return
     }
 
     for (const action of bound.actions.values()) {
@@ -1317,8 +1319,7 @@ export class AnimatorBridge {
       // forceApply+reset here restarted Door Open from bind (closed) on wake.
       if (!entry.shareableLooping && this.ecs.Animator.has(entity)) {
         const states = (this.ecs.Animator.get(entity).states ?? []) as readonly AnimatorStateView[]
-        const sig = animatorStateSignature(states, false)
-        if (entry.lastAppliedSignature !== sig || !mixerMatchesAppliedStates(entry, states)) {
+        if (!mixerMatchesAppliedStates(entry, states)) {
           this.applyStatesToEntry(entity, entry, states, entry.gltfSrc, false, false)
         }
         entry.mixer.update(0)

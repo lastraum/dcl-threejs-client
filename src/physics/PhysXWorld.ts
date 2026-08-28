@@ -55,6 +55,63 @@ export type PhysicsColliderDesc = {
   shapes?: PhysicsColliderShapeDesc[]
 }
 
+const _ringShapeBox = new THREE.Box3()
+const _ringMat = new THREE.Matrix4()
+
+/**
+ * Horizontal distance² from feet to the collider **hull**, not the entity pivot.
+ *
+ * Winterfest Ice-Rink-1 / Entry_Door_1: authored pivot at local (112, 32) while the
+ * mesh AABB covers spawn (~50, 2). A 48 m pivot ring skipped the floor the player
+ * was standing on (`groundPhys=-1`). Inside the AABB → 0.
+ */
+export function colliderHorizDistSq(
+  desc: PhysicsColliderDesc,
+  feetX: number,
+  feetZ: number
+): number {
+  let minX = Infinity
+  let maxX = -Infinity
+  let minZ = Infinity
+  let maxZ = -Infinity
+  let any = false
+
+  const addGeometry = (geometry: THREE.BufferGeometry | undefined, world: THREE.Matrix4): void => {
+    if (!geometry) return
+    if (!geometry.boundingBox) geometry.computeBoundingBox()
+    const bb = geometry.boundingBox
+    if (!bb || bb.isEmpty()) return
+    _ringShapeBox.copy(bb).applyMatrix4(world)
+    if (!Number.isFinite(_ringShapeBox.min.x) || !Number.isFinite(_ringShapeBox.min.z)) return
+    minX = Math.min(minX, _ringShapeBox.min.x)
+    maxX = Math.max(maxX, _ringShapeBox.max.x)
+    minZ = Math.min(minZ, _ringShapeBox.min.z)
+    maxZ = Math.max(maxZ, _ringShapeBox.max.z)
+    any = true
+  }
+
+  if (desc.shapes?.length) {
+    for (const shape of desc.shapes) {
+      _ringMat.copy(desc.matrix).multiply(shape.localMatrix)
+      addGeometry(shape.geometry, _ringMat)
+    }
+  } else {
+    addGeometry(desc.geometry, desc.matrix)
+  }
+
+  if (!any) {
+    const dx = desc.matrix.elements[12]! - feetX
+    const dz = desc.matrix.elements[14]! - feetZ
+    return dx * dx + dz * dz
+  }
+
+  const cx = feetX < minX ? minX : feetX > maxX ? maxX : feetX
+  const cz = feetZ < minZ ? minZ : feetZ > maxZ ? maxZ : feetZ
+  const dx = feetX - cx
+  const dz = feetZ - cz
+  return dx * dx + dz * dz
+}
+
 /** Min normal.y to count as walkable floor on CCT shape hits (steep wall bases are ignored). */
 const WALKABLE_NORMAL_Y = 0.55
 /**

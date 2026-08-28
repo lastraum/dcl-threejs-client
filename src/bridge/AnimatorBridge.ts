@@ -48,6 +48,12 @@ type AnimEntry = {
   partSettleUntil?: number
   /** Mixer 'finished' listener — one-shot PART settle. */
   partFinishedHooked?: boolean
+  /** performance.now() when this mixer was created — late-join one-shots snap to end. */
+  boundAt: number
+  /** Clips `playing=true` on the last apply — rising edge starts from t=0. */
+  lastPlayingClips: Set<string>
+  /** At least one applyStatesToEntry has run on this mixer. */
+  hasAppliedStatesOnce: boolean
   /** Present-rAF sample generation — async skips so we do not double-advance. */
   lastPresentGen: number
   /**
@@ -325,6 +331,22 @@ function hasRunningClip(entry: AnimEntry): boolean {
  * playing=true, loop=false, shouldReset left true. Explorer holds the clamp;
  * re-applying that same state must not restart.
  */
+/** Late-join / first GLB bind: one-shots already playing on the network are finished. */
+const JOIN_ONESHOT_SNAP_MS = 2500
+
+function seekActionToEnd(action: THREE.AnimationAction): void {
+  const duration = Math.max(action.getClip().duration - 1e-4, 0)
+  action.enabled = true
+  action.paused = false
+  action.setLoop(THREE.LoopOnce, 1)
+  action.clampWhenFinished = true
+  action.reset()
+  action.time = duration
+  action.play()
+  action.paused = true
+  action.time = duration
+}
+
 function mixerMatchesAppliedStates(
   bound: AnimEntry,
   states: readonly AnimatorStateView[]
@@ -697,12 +719,27 @@ export class AnimatorBridge {
     // Hold running/clamped one-shots even when shouldReset in the CRDT signature
     // flips (asset-pack play_animation leaves shouldReset true). Signature-only
     // compare restarted Door Open every world-mesh PUT → chopping + snap shut.
-    if (!forceApply && mixerMatchesAppliedStates(bound, states)) {
+    if (!forceApply && bound.hasAppliedStatesOnce && mixerMatchesAppliedStates(bound, states)) {
       bound.lastAppliedSignature = stateSignature
       return
     }
 
-    for (const action of bound.actions.values()) {
+    const prevPlaying = bound.lastPlayingClips
+    const nextPlaying = new Set<string>()
+    for (const state of states) {
+      if (state.playing !== false && state.clip) nextPlaying.add(state.clip)
+    }
+    const joinWindow =
+      !bound.hasAppliedStatesOnce || performance.now() - bound.boundAt < JOIN_ONESHOT_SNAP_MS
+
+    for (const [clipName, action] of bound.actions) {
+      if (nextPlaying.has(clipName)) continue
+      // playing=false after a finished one-shot: keep the last frame (Explorer).
+      // stop() would snap to GLB bind pose — Winterfest join saw a closed door
+      // while synced States was already Open.
+      if (action.clampWhenFinished && action.time > 1e-4 && nextPlaying.size === 0) {
+        continue
+      }
       action.stop()
       action.enabled = false
       action.paused = false
@@ -720,21 +757,27 @@ export class AnimatorBridge {
       }
       const loop = state.loop !== false
       const weight = state.weight ?? 1
-      action.enabled = true
-      action.paused = false
       action.setEffectiveWeight(weight)
       action.setEffectiveTimeScale(state.speed ?? 1)
+      if (state.playing === false) continue
+
+      action.enabled = true
       action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity)
       action.clampWhenFinished = !loop
-      if (state.playing !== false) {
-        // One-shots (Spring flower mesh scale tracks, doors): always start at t=0 even when
-        // shouldReset is omitted — otherwise re-bind can sit at clamp end (rest scale ~0.003).
-        // Default autoplay loops also reset on first apply so fire/FX don't sit on a dead
-        // keyframe after a deferred near-camera bind (ABC fireparticles rest scale ~0.001).
-        if (state.shouldReset || !loop || usingDefaultAutoPlay) action.reset()
+      const rising = !prevPlaying.has(clipName)
+      if (!loop && (joinWindow || !bound.hasAppliedStatesOnce)) {
+        // Late join / first bind: the clip already finished on the network.
+        // Playing from t=0 would replay Open; bind pose is Closed.
+        seekActionToEnd(action)
+      } else if (rising || state.shouldReset || usingDefaultAutoPlay) {
+        action.paused = false
+        action.reset()
         action.play()
-        playingClips.push(clipName)
+      } else {
+        action.paused = false
+        action.play()
       }
+      playingClips.push(clipName)
     }
 
     if (missingClips.length) {
@@ -752,6 +795,8 @@ export class AnimatorBridge {
       )
     }
     bound.lastAppliedSignature = stateSignature
+    bound.lastPlayingClips = nextPlaying
+    bound.hasAppliedStatesOnce = true
     // Looping-only decorative: no PART; rigid also share one mixer sample across clones.
     bound.loopingOnly =
       playingClips.length > 0 &&
@@ -1030,6 +1075,9 @@ export class AnimatorBridge {
         shareableLooping: false,
         partSettleUntil: undefined,
         partFinishedHooked: false,
+        boundAt: performance.now(),
+        lastPlayingClips: new Set(),
+        hasAppliedStatesOnce: false,
         lastPresentGen: 0,
         cullCenter: new THREE.Vector3(),
         cullRadius: FRUSTUM_EXPAND_M,

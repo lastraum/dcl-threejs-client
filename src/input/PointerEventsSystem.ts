@@ -1678,17 +1678,16 @@ export class PointerEventsSystem {
   }
 
   /**
-   * Scene hide signals that drop PE: Visibility=false, or Transform.scale collapsed
-   * (plaza LO() sets watering clickboxes to 0.001 while fishing_pond is scheduled).
+   * Drop PE only when the scene collapsed the volume (plaza LO() scale 0.001).
+   * VisibilityComponent hides drawing, not colliders / PointerEvents — Creator Hub
+   * `click_area` (Winterfest X/Twitch/marketplace) is authored `visible: false`
+   * with `visibleMeshesCollisionMask: CL_POINTER`.
    */
   private isPointerEntityInactive(
     entity: Entity,
     obj: THREE.Object3D | undefined
   ): boolean {
     const { ecs } = this.deps!
-    if (ecs.VisibilityComponent?.has(entity) && ecs.VisibilityComponent.get(entity).visible === false) {
-      return true
-    }
     if (obj) {
       obj.updateMatrixWorld(true)
       const e = obj.matrixWorld.elements

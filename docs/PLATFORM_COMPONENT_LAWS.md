@@ -121,7 +121,7 @@ Client must run **platform Billboard + plane + Visibility**. No GP-specific Bill
 | Do **not** invent scale rewrites on show/hide | Forbidden (broke missed-it Scale tweens) |
 | Do **not** force-show fishing rods ignoring Visibility | Forbidden (reverted) |
 | Visibility puts must not starve behind slow peel (same class as Transform motion) | Client COD drain policy |
-| Visibility show/hide on PE / GltfContainer must rebuild pointer targets | Platform — hidden visible-class meshes are omitted from the raycast list |
+| Visibility hides drawing, not PointerEvents / colliders | Platform — Creator Hub `click_area` is `visible: false` + `CL_POINTER`; scale collapse (plaza LO() 0.001) is the PE-drop signal |
 | Do **not** cull PE meshes by player↔Transform origin (or any keep-radius) | Forbidden — Explorer raycasts the PE set; `maxDistance` is the only range gate |
 | World-mesh PET: host inject writes 1063, then **one** serialized `eng.update` this edge | Verified — Bevy/Explorer: write then tick. Asset-pack `on_click` is `getInputCommand` **this frame**. Do not queue-until-play-frame; do not stack two updates on one edge |
 | World-mesh Animator (1042) CRDT from that tick must apply on main **this edge** | Verified — scene-UI holds non-UI until `uiEntities`; world-mesh never sends that. Dropping the buffer on deliver-done left Door Open on the worker mixer only |

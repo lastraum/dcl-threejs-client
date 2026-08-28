@@ -317,6 +317,35 @@ function hasRunningClip(entry: AnimEntry): boolean {
 }
 
 /**
+ * Mixer already matches ECS playing/stopped clips (running, scheduled, or
+ * LoopOnce+clampWhenFinished at the last frame). Used to skip stop+reset+play
+ * on Animator CRDT echoes / wake — otherwise Door Open snaps back to bind pose.
+ *
+ * Asset-pack `play_animation` (Winterfest Entry_Door_1): stopAllAnimations then
+ * playing=true, loop=false, shouldReset left true. Explorer holds the clamp;
+ * re-applying that same state must not restart.
+ */
+function mixerMatchesAppliedStates(
+  bound: AnimEntry,
+  states: readonly AnimatorStateView[]
+): boolean {
+  for (const state of states) {
+    const clip = state.clip ?? ''
+    if (!clip) continue
+    const action = bound.actions.get(clip)
+    const wantPlay = state.playing !== false
+    if (wantPlay) {
+      if (!action?.enabled) return false
+      if (action.isRunning() || action.isScheduled()) continue
+      if (action.clampWhenFinished && action.time > 1e-4) continue
+      return false
+    }
+    if (action?.isRunning() || action?.isScheduled()) return false
+  }
+  return true
+}
+
+/**
  * PART PhysX candidates — **doors / one-shots only** (non-loop running clips).
  *
  * CBD tax: every decorative looping mixer used to enter PART via getActiveMixerEntities,
@@ -591,8 +620,14 @@ export class AnimatorBridge {
       const entry = this.entries.get(entity)
       if (!entry || !Animator.has(entity)) continue
       const states = (Animator.get(entity).states ?? []) as readonly AnimatorStateView[]
-      // forceApply: CRDT markDirty always re-applies (door open/close).
-      this.applyStatesToEntry(entity, entry, states, entry.gltfSrc, false, true)
+      const sig = animatorStateSignature(states, false)
+      // Same authored state already on the mixer (running or clamped) — do not
+      // stop+reset. Open/Close clip *changes* still apply below.
+      if (entry.lastAppliedSignature === sig && mixerMatchesAppliedStates(entry, states)) {
+        this.dirtyReplay.delete(entity)
+        continue
+      }
+      this.applyStatesToEntry(entity, entry, states, entry.gltfSrc, false, false)
       this.dirtyReplay.delete(entity)
     }
   }
@@ -660,12 +695,9 @@ export class AnimatorBridge {
     forceApply = false
   ): void {
     const stateSignature = animatorStateSignature(states, usingDefaultAutoPlay)
-    const forceReplay = forceApply || this.dirtyReplay.has(entity)
     this.dirtyReplay.delete(entity)
     if (!forceApply && bound.lastAppliedSignature === stateSignature) {
-      const oneShotRefire =
-        forceReplay && states.some((s) => s.shouldReset === true && s.playing !== false)
-      if (!oneShotRefire) return
+      if (mixerMatchesAppliedStates(bound, states)) return
     }
 
     for (const action of bound.actions.values()) {
@@ -1281,10 +1313,14 @@ export class AnimatorBridge {
       entry.deferredSampleDt = 0
       // Looping decorative clips: wall-clock phase (shared-hash groups rejoin in sync).
       snapLoopingActionsToWallClock(entry, performance.now() / 1000)
-      // One-shots / doors: re-apply ECS Animator so end pose is correct after sleep.
+      // One-shots / doors: restore ECS pose only if the mixer lost the clip.
+      // forceApply+reset here restarted Door Open from bind (closed) on wake.
       if (!entry.shareableLooping && this.ecs.Animator.has(entity)) {
         const states = (this.ecs.Animator.get(entity).states ?? []) as readonly AnimatorStateView[]
-        this.applyStatesToEntry(entity, entry, states, entry.gltfSrc, false, true)
+        const sig = animatorStateSignature(states, false)
+        if (entry.lastAppliedSignature !== sig || !mixerMatchesAppliedStates(entry, states)) {
+          this.applyStatesToEntry(entity, entry, states, entry.gltfSrc, false, false)
+        }
         entry.mixer.update(0)
       } else {
         entry.mixer.update(0)

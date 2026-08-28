@@ -1573,8 +1573,8 @@ export class SceneScriptSystem {
       componentId === GltfContainer.componentId ||
       (componentId === MeshRenderer.componentId && PointerEvents.has(entity)) ||
       componentId === MeshCollider.componentId ||
-      // Plaza close_button: Visibility false at spawn, true on open. Hidden visible-class
-      // meshes are omitted from pointerTargets — must rebuild when they reappear.
+      // Visibility still rebuilds PE targets (draw extract hide/show). Hidden
+      // click_area volumes stay in the set — Visibility does not drop PointerEvents.
       (componentId === VisibilityComponent.componentId &&
         (PointerEvents.has(entity) || GltfContainer.has(entity) || MeshCollider.has(entity)))
     ) {

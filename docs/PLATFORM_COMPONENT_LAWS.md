@@ -188,7 +188,7 @@ Plaza `water_surface.glb` is a collider-only disk + sibling `water.png`. Pointer
 | Merge static leaves only for generic exporter names — never authored names | Platform — named nodes are modifier targets |
 | Keep retrying apply until textures land — do not drop pending on first miss | Platform |
 | Authored glTF UVs stay as-exported — **no geometry U flip** on Texture.Common cards | Platform — Explorer uses the GLB as-is |
-| VideoTexture is shared (`flipY=false`). Per-mesh geometry V only when the video is **bound** | Platform — first unlit pass must not mutate UVs |
+| VideoTexture is shared (`flipY=false`). Per-mesh geometry V only when bound **and** authored V=0 is at mesh bottom | Platform — Creator Hub `video_player.glb` already has V=0 at top (Pink Oasis / Los Cat). MeshRenderer planes (neat) use flipY=true |
 
 ---
 

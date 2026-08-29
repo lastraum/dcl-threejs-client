@@ -41,6 +41,7 @@ import {
   isExplorerRoadParcel
 } from './explorerRoadCatalog'
 import { buildEmptyParcelScatter, isVacantForEmptyLayer } from './emptyParcelLayer'
+import type { EzTreeGrassFieldHandle } from '../landscape/EzTreeGrassField'
 import { SecondaryFirstFrameSampler } from './SecondaryFirstFrameSampler'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 import {
@@ -117,6 +118,8 @@ type StickyScatterLayer = {
   /** Genesis DCL meters (parcel 0,0 origin — not FocusOwner-local). */
   centerX: number
   centerZ: number
+  /** Explorer-style GPU blades on vacant parcels; null if mesh load failed. */
+  grass: EzTreeGrassFieldHandle | null
 }
 
 type AoiShellBand = 'near' | 'mid' | 'far' | 'hidden'
@@ -189,8 +192,8 @@ export type AoiVisualLayerContext = {
 
 /**
  * Phase A2+ — coords-only AOI (radius = user Scene Distance warm band):
- * - Empty layer: **one Genesis City empty plane** + **sticky** trees/rocks/grass
- *   (load once in Scene Distance, add on walk, hide LOD, purge only >1km)
+ * - Empty layer: **one Genesis City empty plane** + **sticky** trees/rocks +
+ *   ez-tree GPU grass (load once in Scene Distance, add on walk, hide LOD, purge only >1km)
  * - Genesis roads via **Explorer catalog + OriginalAssets FBX** (tile + street
  *   furniture), not runtime SDK6 game.js
  * - Neighbor main.composite GLBs (render-only, no colliders / anim) — full Scene Distance
@@ -309,6 +312,9 @@ export class AoiVisualLayer {
   private readonly scratchBox = new THREE.Box3()
   private readonly scratchWorld = new THREE.Vector3()
   private readonly scratchSize = new THREE.Vector3(48, 24, 48)
+  /** Seconds accumulated for vacant-grass wind. */
+  private grassElapsed = 0
+  private grassElapsedAt = 0
 
   constructor() {
     this.root.name = 'aoi-visual-layer'
@@ -742,6 +748,7 @@ export class AoiVisualLayer {
     }
 
     this.updateStickyScatterLod(dclX, dclZ)
+    this.tickVacantGrass()
     this.maybeSyncNearEmptyLandPhys(dclX, dclZ)
     this.maybeSyncNearRoadPhys(dclX, dclZ)
     this.updateShellLod(dclX, dclZ)
@@ -1803,15 +1810,14 @@ export class AoiVisualLayer {
     for (const [, chunkKeys] of byChunk) {
       if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
       try {
-        const { root, colliders } = await buildEmptyParcelScatter({
+        const { root, colliders, grass } = await buildEmptyParcelScatter({
           cache: ctx.cache,
           parcelKeys: chunkKeys,
           primaryBase: GENESIS_CITY_FILL_ORIGIN
         })
         if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) {
-          root.traverse((o) => {
-            if (o instanceof THREE.InstancedMesh) o.geometry?.dispose()
-          })
+          grass?.dispose()
+          disposeScatterInstancedGeometry(root)
           root.clear()
           return
         }
@@ -1846,7 +1852,8 @@ export class AoiVisualLayer {
           colliders,
           parcelKeys: chunkKeys,
           centerX: cx,
-          centerZ: cz
+          centerZ: cz,
+          grass
         }
         this.scatterLayers.push(layer)
         this.scatterRoot.add(root)
@@ -1972,6 +1979,32 @@ export class AoiVisualLayer {
     }
   }
 
+  /** Wind + camera LOD for vacant GPU blades. Camera in cityFillRoot local. */
+  private tickVacantGrass(): void {
+    let any = false
+    for (const layer of this.scatterLayers) {
+      if (layer.grass && layer.root.visible) {
+        any = true
+        break
+      }
+    }
+    if (!any) return
+    const now = performance.now()
+    if (this.grassElapsedAt <= 0) this.grassElapsedAt = now
+    const dt = Math.min(0.1, (now - this.grassElapsedAt) / 1000)
+    this.grassElapsedAt = now
+    this.grassElapsed += dt
+    const cam = this.ctx?.getCamera?.()
+    if (!cam) return
+    this.cityFillRoot.updateMatrixWorld(false)
+    this.scratchWorld.copy(cam.position)
+    this.cityFillRoot.worldToLocal(this.scratchWorld)
+    for (const layer of this.scatterLayers) {
+      if (!layer.grass || !layer.root.visible) continue
+      layer.grass.update(this.grassElapsed, this.scratchWorld)
+    }
+  }
+
   /** Dispose only when player is very far (teleport / cross-city walk). */
   private purgeFarScatterLayers(
     ctx: NonNullable<typeof this.ctx>,
@@ -1989,11 +2022,7 @@ export class AoiVisualLayer {
       const dz = layer.centerZ - feet.z
       if (dx * dx + dz * dz <= purgeR2) continue
       for (const c of layer.colliders) dropEntities.push(c.entity)
-      layer.root.removeFromParent()
-      layer.root.traverse((o) => {
-        if (o instanceof THREE.InstancedMesh) o.geometry?.dispose()
-      })
-      layer.root.clear()
+      disposeStickyScatterLayer(layer)
       for (const k of layer.parcelKeys) this.loadedScatterParcels.delete(k)
       this.scatterLayers.splice(i, 1)
       purged++
@@ -2353,21 +2382,35 @@ export class AoiVisualLayer {
 
   private clearScatter(): void {
     for (const layer of this.scatterLayers) {
-      layer.root.removeFromParent()
-      layer.root.traverse((o) => {
-        if (o instanceof THREE.InstancedMesh) o.geometry?.dispose()
-      })
-      layer.root.clear()
+      disposeStickyScatterLayer(layer)
     }
     this.scatterLayers.length = 0
     this.loadedScatterParcels.clear()
     this.pendingScatterParcels.clear()
     this.lastNearEmptyLandIds.clear()
     this.lastEmptyLandPhysFeet = { x: Number.NaN, z: Number.NaN }
+    this.grassElapsed = 0
+    this.grassElapsedAt = 0
     this.scatterRoot.clear()
     // scatterRoot stays attached under cityFillRoot for sticky adds.
     this.ctx?.clearEmptyLandColliders?.()
   }
+}
+
+function disposeStickyScatterLayer(layer: StickyScatterLayer): void {
+  layer.grass?.dispose()
+  layer.grass = null
+  layer.root.removeFromParent()
+  disposeScatterInstancedGeometry(layer.root)
+  layer.root.clear()
+}
+
+function disposeScatterInstancedGeometry(root: THREE.Object3D): void {
+  root.traverse((o) => {
+    if (o instanceof THREE.InstancedMesh && o.name !== 'aoi-vacant-grass') {
+      o.geometry?.dispose()
+    }
+  })
 }
 
 function disposeRoadInstancedRoot(root: THREE.Object3D): void {

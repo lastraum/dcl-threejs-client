@@ -2,6 +2,10 @@ import * as THREE from 'three'
 import type { AssetCache } from '../../rendering/AssetCache'
 import type { PhysicsColliderDesc } from '../../physics/PhysXWorld'
 import { EMPTY_LAND } from '../landscape/Data/EmptyLandCatalog'
+import {
+  buildVacantParcelGrassField,
+  type EzTreeGrassFieldHandle
+} from '../landscape/EzTreeGrassField'
 import { buildInstancedScatter, type ScatterInstance } from '../landscape/gltfInstancing'
 import { distributedParcelPositions } from '../landscape/parcelDistribution'
 import { dclSceneToLandscapeThree } from '../landscape/Utils/SceneSpace'
@@ -38,36 +42,39 @@ type EmptyScatterCounts = {
   trees: [number, number]
   bushes: [number, number]
   rocks: [number, number]
-  grass: [number, number]
 }
 
-/** Sparse Genesis City empty-land look (not forest density). */
+/** Sparse Genesis City empty-land look (not forest density). Grass is GPU blades. */
 const EMPTY_SCATTER: EmptyScatterCounts = {
   trees: [0, 2],
   bushes: [2, 5],
-  rocks: [0, 1],
-  grass: [4, 9]
+  rocks: [0, 1]
 }
 
 /** Simple box half-size in meters (scale multiplies) for tree trunks / rock boulders. */
 const TREE_COLLIDER = { w: 0.55, h: 2.4, d: 0.55 }
 const ROCK_COLLIDER = { w: 0.7, h: 0.55, d: 0.7 }
 
-type ScatterKind = 'tree' | 'rock' | 'bush' | 'grass'
+type ScatterKind = 'tree' | 'rock' | 'bush'
 
 /**
- * Build instanced trees/bushes/rocks/grass on vacant AOI parcels + simple box colliders
+ * Build instanced trees/bushes/rocks on vacant AOI parcels + simple box colliders
  * for trees and rocks (instanced positions, not full mesh cooks).
+ * Grass is ez-tree GPU blades (Explorer occupancy field), not EMPTY_LAND glTF tufts.
  */
 export async function buildEmptyParcelScatter(opts: {
   cache: AssetCache
   parcelKeys: string[]
   primaryBase: string
-}): Promise<{ root: THREE.Group; colliders: PhysicsColliderDesc[] }> {
+}): Promise<{
+  root: THREE.Group
+  colliders: PhysicsColliderDesc[]
+  grass: EzTreeGrassFieldHandle | null
+}> {
   const root = new THREE.Group()
   root.name = 'aoi-empty-scatter'
   const colliders: PhysicsColliderDesc[] = []
-  if (!opts.parcelKeys.length) return { root, colliders }
+  if (!opts.parcelKeys.length) return { root, colliders, grass: null }
 
   const base = parseParcelKey(opts.primaryBase)
   const byHash = new Map<string, ScatterInstance[]>()
@@ -118,7 +125,6 @@ export async function buildEmptyParcelScatter(opts: {
     place(EMPTY_LAND.landscapeTrees, 'tree', EMPTY_SCATTER.trees, 4.5, 2.2, 0.75, 0.35)
     place(EMPTY_LAND.bushes, 'bush', EMPTY_SCATTER.bushes, 2.2, 1.4, 0.7, 0.4)
     place(EMPTY_LAND.rocks, 'rock', EMPTY_SCATTER.rocks, 3, 1.6, 0.6, 0.5)
-    place(EMPTY_LAND.grass, 'grass', EMPTY_SCATTER.grass, 1.4, 1.0, 0.85, 0.3)
   }
 
   // Cap total instances per prop type for large radii
@@ -132,7 +138,7 @@ export async function buildEmptyParcelScatter(opts: {
   await Promise.all(
     [...byHash.entries()].map(async ([hash, instances]) => {
       const slice = instances.slice(0, MAX_PER_HASH)
-      const kind = kindByHash.get(hash) ?? 'grass'
+      const kind = kindByHash.get(hash) ?? 'bush'
       try {
         const group = await buildInstancedScatter(
           opts.cache,
@@ -169,8 +175,18 @@ export async function buildEmptyParcelScatter(opts: {
     })
   )
 
+  let grass: EzTreeGrassFieldHandle | null = null
+  try {
+    grass = await buildVacantParcelGrassField(opts.parcelKeys, opts.primaryBase)
+    if (grass) root.add(grass.group)
+  } catch (err) {
+    console.warn('[aoi] vacant grass field failed', err)
+    grass = null
+  }
+
   root.userData.emptyParcelCount = opts.parcelKeys.length
   root.userData.instanceHashes = byHash.size
   root.userData.colliderCount = colliders.length
-  return { root, colliders }
+  root.userData.grassInstanceCount = grass?.group.userData.grassInstanceCount ?? 0
+  return { root, colliders, grass }
 }

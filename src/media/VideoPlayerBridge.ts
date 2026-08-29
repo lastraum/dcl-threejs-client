@@ -110,9 +110,8 @@ export class VideoPlayerBridge {
   }
 
   /**
-   * FocusOwner media gate. false → pause decode (keep texture on the mesh);
-   * true → resume. Disposing on occupancy hold left plaza HLS audio-only after rebind.
-   * Never mutates ECS VideoPlayer.playing.
+   * FocusOwner media gate. false → pause decode (keep last frame, or GLB if none);
+   * true → resume. Never mutates ECS VideoPlayer.playing. Do not paint black on hold.
    */
   setMediaEnabled(enabled: boolean): void {
     if (this.mediaEnabled === enabled) return
@@ -129,8 +128,9 @@ export class VideoPlayerBridge {
   getTexture(entity: Entity): THREE.Texture | null {
     const entry = this.decoders.get(entity)
     if (!entry) return null
-    // Always bind the canvas map (black idle / loading, or live frames).
-    // Gating on canAttachTexture left materials with null map → default white albedo.
+    // Explorer keeps authored GLB albedo until a decoded frame exists.
+    // Binding a 1×1 black canvas on decoder create is what flashed Burj in the camera.
+    if (!entry.player.canAttachTexture()) return null
     return entry.player.texture
   }
 
@@ -342,8 +342,6 @@ export class VideoPlayerBridge {
       lastLength: -1,
       lastEventAtMs: 0
     })
-    // Bind black placeholder immediately so video screens never render white.
-    this.onTextureReady?.(entity)
   }
 
   private syncPlayingToEcs(entity: Entity, playing: boolean): void {
@@ -409,8 +407,8 @@ export class VideoPlayerBridge {
     entry.lastSpecKey = specKey
     entry.lastAppliedPlaying = ecsPlaying
     entry.player.applySpec(spec, { fromUserToggle, liveKitRemoteLive })
-    // Rebind materials after src swap / idle black / first frame.
-    this.onTextureReady?.(entity)
+    // Rebind only when a drawable frame (or ECS idle black) is actually attachable.
+    if (entry.player.canAttachTexture()) this.onTextureReady?.(entity)
     return fromUserToggle && (playingChanged || entry.player.isHoldingAtEnd())
   }
 

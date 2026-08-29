@@ -16,7 +16,6 @@ import {
   hasUiBackgroundTexture,
   hasUiVisualBackground,
   normalizeBackgroundTextureMode,
-  parseUiBackgroundUvRect,
   resolveUiBackgroundImageUrl
 } from './uiBackgroundStyle'
 import {
@@ -695,11 +694,8 @@ export class SceneUiDomRenderer {
       bg && (imageUrl || rawTexSrc)
         ? normalizeBackgroundTextureMode(bg.textureMode, rawTexSrc, bg.textureSlices, bg.uvs)
         : BackgroundTextureMode.STRETCH
-    // Atlas UV sprites must never take the nine-slice border-image path.
-    const useNineSlice =
-      imageUrl &&
-      texMode === BackgroundTextureMode.NINE_SLICES &&
-      !parseUiBackgroundUvRect(bg?.uvs)
+    // Same UiBackground law as every scene: crop UVs, then textureMode (nine-slice or stretch).
+    const useNineSlice = !!(imageUrl && texMode === BackgroundTextureMode.NINE_SLICES)
     if (hasBg) {
       if (colorOnlyBg) {
         el.querySelector('.scene-ui-node__bg')?.remove()

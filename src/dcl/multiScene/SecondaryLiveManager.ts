@@ -80,6 +80,10 @@ export class SecondaryLiveManager {
   private readonly lastDistM = new Map<string, number>()
   /** Jog: only boot the parcel under feet (first snappy walk = no extra isolates). */
   private locomoting = false
+  /** Loading overlay — skip reconcile throttle so live-guest GLBs attach before Jump In. */
+  private loadBoot = false
+  /** Last reconcile boot list size (loading-screen progress). */
+  private lastBootTarget = 0
 
   bind(opts: {
     primaryScene: ResolvedScene
@@ -398,6 +402,29 @@ export class SecondaryLiveManager {
 
   setLocomoting(locomoting: boolean): void {
     this.locomoting = locomoting
+  }
+
+  /** Loading overlay: boot live guests without walk/throttle gates. */
+  setLoadBoot(enabled: boolean): void {
+    this.loadBoot = enabled
+    if (enabled) this.lastReconcileAt = 0
+  }
+
+  /**
+   * Loading-screen progress: live guests with at least one GPU mesh vs the
+   * last boot target (capped occupied neighbors).
+   */
+  liveGuestLoadStats(): { ready: number; target: number; booting: number } {
+    let ready = 0
+    for (const slot of this.slots.values()) {
+      if (slot.residentMode !== 'secondary') continue
+      if (slot.system.countGpuVisuals() > 0) ready++
+    }
+    return {
+      ready,
+      target: this.lastBootTarget,
+      booting: this.booting.size
+    }
   }
 
   private findSlotForParcel(x: number, y: number): SceneWorkerSlot | null {
@@ -857,12 +884,11 @@ export class SecondaryLiveManager {
     const cap = this.maxSecondarySlots()
     if (cap <= 0) return
     const now = performance.now()
-    // Faster when under-feet priority is pinned (promote path needs quick boot).
-    const minGap = this.priorityParcelKey ? 200 : 800
+    const minGap = this.loadBoot ? 0 : this.priorityParcelKey ? 200 : 800
     if (now - this.lastReconcileAt < minGap) return
     this.lastReconcileAt = now
 
-    // distM = player → scene footprint (any parcel). Enter = Scene Distance.
+    // distM = occupied-scene distance (empty/road excluded). Enter = Scene Distance.
     const enterM = secondaryLiveEnterRadiusM()
     const keepM = secondaryLiveKeepRadiusM()
     const pri = this.priorityParcelKey
@@ -881,7 +907,7 @@ export class SecondaryLiveManager {
       const bp = coversPri(b) ? 0 : 1
       if (ap !== bp) return ap - bp
       if (a.distM !== b.distM) return a.distM - b.distM
-      return (a.parcelCount ?? 1) - (b.parcelCount ?? 1)
+      return (b.parcelCount ?? 1) - (a.parcelCount ?? 1)
     })
 
     const bootList: SecondaryLiveRequest[] = []
@@ -893,6 +919,7 @@ export class SecondaryLiveManager {
       if (bootList.length >= Math.max(cap, 0)) break
       bootList.push(c)
     }
+    this.lastBootTarget = bootList.length
 
     const wantSecondary = new Set(bootList.map((c) => c.entityId))
     // Hysteresis: already-loaded (or sticky) stay secondary while player ≤ keepM.
@@ -958,7 +985,9 @@ export class SecondaryLiveManager {
       if (req.distM > enterM && !coversPri(req)) continue
       // Dying rAF / jog: only boot the parcel under feet. Approaching BrandonManus
       // while Snow was hydrating stacked a third isolate on 7 FPS.
-      if ((lastFrameOverBudget(28) || this.locomoting) && !coversPri(req)) continue
+      if (!this.loadBoot && (lastFrameOverBudget(28) || this.locomoting) && !coversPri(req)) {
+        continue
+      }
       if (this.countMode('secondary') + this.booting.size >= cap) {
         this.demoteOneSecondaryToTertiary({ preferNonSticky: true })
         if (this.countMode('secondary') + this.booting.size >= cap) break

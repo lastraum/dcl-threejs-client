@@ -95,7 +95,7 @@ export class WebVideoPlayer {
    */
   private soundUnlocked = false
   private visibilityPaused = false
-  /** Occupancy hold — pause decode, keep texture bound (do not dispose). */
+  /** Occupancy hold — pause decode, keep last frame (do not dispose, do not paint black). */
   private occupancyPaused = false
   private budgetPaused = false
   private wantsPlaying = true
@@ -132,19 +132,18 @@ export class WebVideoPlayer {
   get texture(): THREE.Texture {
     // LiveKit only paints while VideoPlayer.playing AND remote frames exist.
     // playing=false / ended / stream-gone → solid black (Explorer parity).
+    // Occupancy pause must not drop a live frame for a local black canvas.
     if (this.shouldPaintLiveKit()) {
       return getSharedLiveKitVideoStream().getTexture() ?? this.ensureLocalTexture().texture
     }
-    // Always create local canvas (constructor clears to black) so idle screens bind a map.
     return this.ensureLocalTexture().texture
   }
 
-  /** Paint LiveKit frames only when ECS playing=true and the remote stream has drawable data. */
+  /** Paint LiveKit frames while ECS playing=true and the remote stream has drawable data. */
   private shouldPaintLiveKit(): boolean {
     return (
       this.usesSharedLiveKit &&
       this.wantsPlaying &&
-      !this.isPlaybackBlocked() &&
       !this.holdingAtEnd &&
       getSharedLiveKitVideoStream().hasDrawableFrame()
     )
@@ -356,25 +355,17 @@ export class WebVideoPlayer {
   }
 
   canAttachTexture(): boolean {
-    // Idle/black map is always attachable (deactivate / pre-frame).
     if (!this.loadedEcsSrc && !this.loadedSrc) return false
     if (this.state === VS_ERROR) return false
+    // ECS playing=false / natural end → Explorer black screen (not GLB, not last frame).
+    if (!this.wantsPlaying || this.holdingAtEnd) return true
     if (this.shouldPaintLiveKit()) return true
-    // Black canvas idle texture for LiveKit deactivated or progressive idle.
     if (this.usesSharedLiveKit || isLiveKitVideoSrc(this.loadedEcsSrc)) {
-      return !this.wantsPlaying || !getSharedLiveKitVideoStream().hasDrawableFrame()
+      return getSharedLiveKitVideoStream().hasDrawableFrame()
     }
-    const video = this.video
-    // Require real dimensions — HAVE_METADATA alone can bind a 1×1 canvas forever.
-    if (video.videoWidth <= 0 || video.videoHeight <= 0) {
-      // End-of-video / not playing: black placeholder is valid.
-      return !this.wantsPlaying || this.holdingAtEnd
-    }
-    return (
-      video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA ||
-      this.hasHadRenderableFrame ||
-      this.liveKitSource
-    )
+    // playing=true: wait for a painted canvas frame. A 1×1 black bind is what
+    // flashed Creator Hub video_player.glb in the camera (Burj / place_on_camera).
+    return this.throttledTexture?.hasPaintedFrame === true
   }
 
   /**
@@ -588,7 +579,8 @@ export class WebVideoPlayer {
     }
 
     if (this.isPlaybackBlocked()) {
-      this.paintIdleBlack()
+      if (!this.usesSharedLiveKit) this.video.pause()
+      this.syncThrottledPlayback()
       return
     }
 
@@ -611,8 +603,6 @@ export class WebVideoPlayer {
       // Always re-issue play on the correct element (shared LiveKit vs progressive/HLS).
       void this.issuePlay()
       this.syncThrottledPlayback()
-      // Rebind materials — may switch black idle → live VideoTexture.
-      this.onFrameReady?.()
     } else {
       // playing=false: stop paint + decode/audio. Explorer black screen.
       this.bumpPlayGeneration()
@@ -741,13 +731,7 @@ export class WebVideoPlayer {
   private syncPlaybackPause(): void {
     if (this.isPlaybackBlocked()) {
       this.bumpPlayGeneration()
-      if (this.usesSharedLiveKit) {
-        // Visibility/budget pause: drop paint (other screens may still be subscribed).
-        this.paintIdleBlack()
-      } else {
-        this.video.pause()
-        this.paintIdleBlack()
-      }
+      if (!this.usesSharedLiveKit) this.video.pause()
       this.syncThrottledPlayback()
     } else if (this.wantsPlaying) {
       if (
@@ -920,17 +904,16 @@ export class WebVideoPlayer {
     const shared = getSharedLiveKitVideoStream()
     const onTrackUpdate = (): void => {
       if (gen !== this.sourceGeneration) return
-      // playing=false while bound — paint black, do not promote live texture.
-      if (!this.wantsPlaying || this.isPlaybackBlocked()) {
+      if (!this.wantsPlaying) {
         this.paintIdleBlack()
         return
       }
+      if (this.isPlaybackBlocked()) return
       if (shared.hasDrawableFrame()) {
         if (this.state !== VS_ERROR) {
           this.setState(shared.video.paused ? VS_READY : VS_PLAYING)
         }
         this.hasHadRenderableFrame = true
-        // Live frames → rebind materials from idle black to VideoTexture.
         this.onFrameReady?.()
       } else {
         // Stream ended / unpublished while still playing=true — black screen.
@@ -1063,6 +1046,10 @@ export class WebVideoPlayer {
   private ensureLocalTexture(): ThrottledVideoTexture {
     if (!this.throttledTexture) {
       this.throttledTexture = new ThrottledVideoTexture(this.video)
+      this.throttledTexture.onFrameUploaded = () => {
+        this.hasHadRenderableFrame = true
+        this.onFrameReady?.()
+      }
     }
     return this.throttledTexture
   }
@@ -1153,12 +1140,14 @@ export class WebVideoPlayer {
     }
   }
 
-  /** Push canvas uploads and re-queue materials once the decoder has drawable dimensions. */
+  /** Push canvas uploads and re-queue materials once a decoded frame is attachable. */
   private notifyDrawableFrame(): void {
     const video = this.usesSharedLiveKit ? getSharedLiveKitVideoStream().video : this.video
     if (video.videoWidth > 0 && video.videoHeight > 0) {
-      this.hasHadRenderableFrame = true
       if (!this.usesSharedLiveKit) this.throttledTexture?.notifySourceChanged()
+      if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+        this.hasHadRenderableFrame = true
+      }
     }
     if (this.canAttachTexture()) this.onFrameReady?.()
   }

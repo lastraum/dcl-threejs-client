@@ -21,6 +21,7 @@ import { disconnectAll } from '../network/SessionConnections'
 import { clearVrmRamCache } from '../avatar/vrm/vrmRamCache'
 import { SessionIdentity } from '../network/SessionIdentity'
 import { ClientShell } from './ui/shell/ClientShell'
+import { whenDocumentVisible } from '../util/documentVisibility'
 import { isTextInputFocused } from './ui/textInputFocus'
 import { isNameTagsSceneLocked, toggleUserNameTagsVisible } from './ui/nameTagVisibility'
 import { clientDebugLog } from './debug/ClientDebugLog'
@@ -3255,11 +3256,13 @@ export class AppController {
         )
       }
 
-      world.start()
-
-      // Multi-scene: bind PE + live secondaries (PE prefs survive this attach).
+      await whenDocumentVisible()
+      // Bind live guests before start so their GLBs attach on the loading overlay.
+      // Neighbor shells / tertiary keep filling in the background.
       world.attachMultiScene(this.multiSceneRuntime)
       this.shell?.bindPortableExperiences(this.peManager)
+      await world.drainLiveGuestsForLoad(opts.onProgress)
+      world.start()
 
       const settleMs = opts.seamless
         ? 0

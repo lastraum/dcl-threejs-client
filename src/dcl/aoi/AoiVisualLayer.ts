@@ -94,8 +94,12 @@ const REFRESH_DEBOUNCE_MS = 600
  * ~8 parcels — brief walks must not re-scan 500 pointers.
  */
 const DISCOVER_MIN_MOVE_M = 128
-/** Clones to attach per leftover drain turn (not one estate). */
+/** Clones to attach per leftover drain turn after play. */
 const COMPOSITE_LOAD_PER_DRAIN = 1
+/** Clones per drain while the loading overlay is up (first-ring neighbor shells). */
+const COMPOSITE_LOAD_PER_PREWARM = 8
+/** New occupied-scene shells to open per prewarm drain. */
+const COMPOSITE_SHELLS_PER_PREWARM = 6
 /** Feet move (m²) that counts as locomotion. */
 const WALK_MOVE_EPS2 = 0.04 // ~0.2m
 /**
@@ -191,7 +195,7 @@ export type AoiVisualLayerContext = {
  *   furniture), not runtime SDK6 game.js
  * - Neighbor main.composite GLBs (render-only, no colliders / anim) — full Scene Distance
  * - First-frame samples for script-built scenes (tertiary when no live worker)
- * - Live secondary: **player** ≤16m boots; keep until player ≤80m (cap ≤3)
+ * - Live secondary: nearest occupied scenes inside Scene Distance (empty/road excluded)
  */
 export class AoiVisualLayer {
   private root = new THREE.Group()
@@ -390,10 +394,9 @@ export class AoiVisualLayer {
     this.neighborActivityEnabled = enabled
     this.liveReconcileEnabled = enabled
     if (enabled) {
-      console.info('[aoi] neighbor activity ON (primary play-ready — visuals + live)')
-      // Kill background prewarm force-drain — it was still meshing after Jump In.
-      this.cancelPrewarm('play-ready')
-      // Prefer re-emit from prewarm cache (no 550-parcel rediscover hitch at unlock).
+      console.info('[aoi] neighbor activity ON (live guests + background shells)')
+      // Stop uncapped scatter; keep background shell/tertiary drain.
+      this.prewarmActive = false
       if (this.hasDiscoveredOnce && this.cachedEntities.length > 0) {
         const feet = this.liveEmitFeet()
         if (feet) {
@@ -469,12 +472,12 @@ export class AoiVisualLayer {
   }
 
   /**
-   * Loading-phase warm: city plane + full warm-band scatter + composite shells
-   * **before** play-ready. Live secondary **workers** stay off (capped + expensive).
-   * Awaits until scatter queue is empty so play does not drain trees mid-walk.
+   * Discover the warm disc, then drain neighbor shells + scatter in the
+   * **background**. Live-guest GLBs are a separate loading-screen wait.
+   * Resolves after the first catalyst discover (not after every shell).
    */
-  prewarmVisuals(dclX: number, dclZ: number): void {
-    if (this.disposed || !this.enabled || !this.ctx) return
+  prewarmVisuals(dclX: number, dclZ: number): Promise<void> {
+    if (this.disposed || !this.enabled || !this.ctx) return Promise.resolve()
     this.neighborActivityEnabled = true
     this.liveReconcileEnabled = false
     this.lastParcelKey = ''
@@ -482,49 +485,62 @@ export class AoiVisualLayer {
     const gen = ++this.prewarmGen
     this.prewarmActive = true
     console.info(
-      `[aoi] prewarm visuals @ feet=(${dclX.toFixed(1)},${dclZ.toFixed(1)}) ` +
-        `radius=${radius}m (live workers gated — drain only while prewarmActive)`
+      `[aoi] discover neighbors @ feet=(${dclX.toFixed(1)},${dclZ.toFixed(1)}) ` +
+        `radius=${radius}m — live-guest GLBs on load, shells/tertiary in background`
     )
-    void this.runPrewarm(dclX, dclZ, radius, gen)
+    return this.runDiscoverThenBackgroundDrain(dclX, dclZ, radius, gen)
   }
 
-  private async runPrewarm(
+  /** Allow live-guest candidate emit during the loading overlay (after discover). */
+  enableLiveGuestReconcile(): void {
+    this.liveReconcileEnabled = true
+  }
+
+  private async runDiscoverThenBackgroundDrain(
     dclX: number,
     dclZ: number,
     radiusM: number,
     gen: number
   ): Promise<void> {
-    if (!this.prewarmActive || gen !== this.prewarmGen) return
+    if (gen !== this.prewarmGen || this.disposed) return
     this.allowDrainOnce = true
     await this.refresh(dclX, dclZ, radiusM, 'full')
-    if (!this.prewarmActive || gen !== this.prewarmGen || this.disposed) return
+    if (gen !== this.prewarmGen || this.disposed) return
+    console.info(
+      `[aoi] neighbor discover ready entities=${this.cachedEntities.length} ` +
+        `shells pending=${this.pendingCompositeIds.size} — background drain starts`
+    )
+    void this.runBackgroundNeighborDrain(dclX, dclZ, gen)
+  }
 
-    // Drain only while still in loading (prewarmActive). Play-ready cancels this.
+  /** Neighbor shells + scatter + tertiary fill — does not block Jump In. */
+  private async runBackgroundNeighborDrain(
+    dclX: number,
+    dclZ: number,
+    gen: number
+  ): Promise<void> {
     let guard = 0
     while (
-      this.prewarmActive &&
       gen === this.prewarmGen &&
       !this.disposed &&
       this.ctx &&
-      (this.pendingScatterParcels.size > 0 || this.pendingCompositeIds.size > 0) &&
-      guard++ < 80
+      this.hasOutstandingWork() &&
+      guard++ < 200
     ) {
       await this.drainOutstandingWork(
         dclX,
         dclZ,
         this.refreshGen,
-        /*forceUncapped*/ true,
-        /*allow*/ true
+        /*forceUncapped*/ this.prewarmActive,
+        /*allow*/ true,
+        /*allowOverBudget*/ true
       )
+      await new Promise<void>((r) => setTimeout(r, this.prewarmActive ? 0 : 32))
     }
-
-    if (gen !== this.prewarmGen) return // cancelled mid-loop
-    this.prewarmActive = false
+    if (gen !== this.prewarmGen) return
     console.info(
-      `[aoi] prewarm complete scatter=${this.loadedScatterParcels.size} ` +
-        `pendingScatter=${this.pendingScatterParcels.size} ` +
-        `shells=${this.loadedShells.size} ` +
-        `pendingComposite=${this.pendingCompositeIds.size}`
+      `[aoi] background neighbor drain done scatter=${this.loadedScatterParcels.size} ` +
+        `shells=${this.loadedShells.size} pendingComposite=${this.pendingCompositeIds.size}`
     )
   }
 
@@ -809,7 +825,7 @@ export class AoiVisualLayer {
    * Dev budget line: how big the warm ring is vs how many scripts we might run.
    * - warmParcels = player Scene Distance disc (+ primary collar)
    * - uniqueEntities = catalyst deployments returned for that pointer set
-   * - liveEligible = player→scene footprint ≤ Scene Distance
+   * - liveEligible = occupied-scene distance ≤ Scene Distance (empty/road excluded)
    * - liveRunning = currently loaded secondary workers (cap is separate)
    */
   private logAoiBudget(opts: {
@@ -858,8 +874,15 @@ export class AoiVisualLayer {
         `liveEligible=${liveEligible} liveRunning=${this.liveSecondaryIds.size} liveCap=${liveCap} ` +
         `sceneDist=${opts.radiusM}m liveEnter=${enterM}m liveKeep=${keepM}m ` +
         `shells=${this.loadedShells.size} ` +
-        `(warm=player feet · live=player→scene enter/keep)`
+        `(warm=player feet · live guests=player→occupied footprint, empty excluded)`
     )
+  }
+
+  private hasPendingShellAttaches(): boolean {
+    for (const rec of this.loadedShells.values()) {
+      if (rec.attachedCount < rec.targetCount && rec.pendingSrcs.length > 0) return true
+    }
+    return false
   }
 
   private hasOutstandingWork(): boolean {
@@ -869,9 +892,7 @@ export class AoiVisualLayer {
       if (this.pendingCompositeIds.size > 0 && this.loadedShells.size < COMPOSITE_MAX_RETAINED) {
         return true
       }
-      for (const rec of this.loadedShells.values()) {
-        if (rec.attachedCount < rec.targetCount && rec.pendingSrcs.length > 0) return true
-      }
+      if (this.hasPendingShellAttaches()) return true
     }
     return false
   }
@@ -1210,12 +1231,8 @@ export class AoiVisualLayer {
     dclZ: number,
     primaryBase: string
   ): number {
-    return minPlayerToFootprintDistanceM(
-      dclX,
-      dclZ,
-      (e.pointers.length ? e.pointers : e.parcels).map((k) => k.trim()).filter(Boolean),
-      primaryBase
-    )
+    const keys = (e.pointers.length ? e.pointers : e.parcels).map((k) => k.trim()).filter(Boolean)
+    return minPlayerToFootprintDistanceM(dclX, dclZ, keys, primaryBase)
   }
 
   private evictShellsIfNeeded(dclX: number, dclZ: number): void {
@@ -1507,8 +1524,8 @@ export class AoiVisualLayer {
   }
 
   /**
-   * Live-secondary candidates by **player → scene footprint** (not parcel rings).
-   * A multi-parcel estate is in-range if any of its parcels is within enter/keep.
+   * Live-guest candidates: occupied scenes only (empty/road excluded).
+   * Distance = player feet → neighbor footprint (not the whole primary estate).
    */
   private emitLiveSecondaryCandidatesOnly(
     entities: ActiveSceneEntity[],
@@ -1551,7 +1568,8 @@ export class AoiVisualLayer {
       .filter((x) => Number.isFinite(x.dist) && x.dist <= keepM)
       .sort((a, b) => {
         if (a.dist !== b.dist) return a.dist - b.dist
-        return a.parcelCount - b.parcelCount
+        // Larger occupied scenes first — 1×1 interiors must not starve Winterfest / plaza.
+        return b.parcelCount - a.parcelCount
       })
 
     const liveCandidates: Array<{
@@ -1610,7 +1628,7 @@ export class AoiVisualLayer {
       if (logSig === this.lastLiveLogSignature) return
       this.lastLiveLogSignature = logSig
       console.info(
-        `[aoi] live-secondary (player enter≤${enterM}m keep≤${keepM ?? '?'}m) ` +
+        `[aoi] live guests (player enter≤${enterM}m keep≤${keepM ?? '?'}m) ` +
           `n=${liveCandidates.length} bootable=${bootable.length} nearest=${liveCandidates
             .slice(0, 5)
             .map(
@@ -1883,8 +1901,8 @@ export class AoiVisualLayer {
           const bParcels = b.parcels.length || b.pointers.length
           return bParcels - aParcels
         })
-      const ent = ranked[0]
-      if (ent) {
+      const openN = this.prewarmActive ? COMPOSITE_SHELLS_PER_PREWARM : 1
+      for (const ent of ranked.slice(0, openN)) {
         await this.createEmptyShell(ent, ctx, gen, dclX, dclZ)
         if (gen !== this.refreshGen || this.disposed || this.ctx !== ctx) return
       }
@@ -1900,8 +1918,9 @@ export class AoiVisualLayer {
       return a.lastDistM - b.lastDistM
     })
     let attached = 0
+    const attachBudget = this.prewarmActive ? COMPOSITE_LOAD_PER_PREWARM : COMPOSITE_LOAD_PER_DRAIN
     for (const rec of attachOrder) {
-      if (attached >= COMPOSITE_LOAD_PER_DRAIN) break
+      if (attached >= attachBudget) break
       if (rec.attachedCount >= rec.targetCount || rec.pendingSrcs.length === 0) continue
       await this.attachOneShellClone(rec, ctx, gen)
       attached++

@@ -7,33 +7,10 @@ import { distributedParcelPositions } from '../landscape/parcelDistribution'
 import { dclSceneToLandscapeThree } from '../landscape/Utils/SceneSpace'
 import { hashParcelCoords, mulberry32, pickInt } from '../landscape/Utils/SeededRandom'
 import { parseParcelKey } from '../content/parseParcel'
-import type { ActiveSceneEntity } from './fetchActiveEntities'
+import { isCatalystEmptyLandEntity, type ActiveSceneEntity } from './fetchActiveEntities'
 import { parcelSwSceneLocal } from './parcelAoi'
 
-/**
- * Catalyst "empty land" placeholders (Builder interactive-text + SCENE.glb)
- * and true vacant parcels (no entity) — visual fill only, no scripts.
- */
-export function isCatalystEmptyLandEntity(ent: ActiveSceneEntity): boolean {
-  const title = ent.title.trim().toLowerCase()
-  if (title === 'interactive-text' || title === 'empty' || title === 'empty parcel') {
-    return true
-  }
-  const main = ent.main.toLowerCase()
-  if (!(main === 'game.js' || main.endsWith('/game.js') || main === 'bin/game.js')) {
-    return false
-  }
-  // Single-parcel SDK6 with only floor / scene.json — treat as empty land.
-  const parcels = ent.parcels.length ? ent.parcels : ent.pointers
-  if (parcels.length !== 1) return false
-  const glbs = ent.content.filter((c) => /\.glb$/i.test(c.file))
-  if (glbs.length === 0) return true
-  if (glbs.length === 1) {
-    const f = (glbs[0]!.file.split('/').pop() ?? '').toLowerCase()
-    if (f === 'scene.glb' || f.includes('floorbase') || f.includes('empty')) return true
-  }
-  return false
-}
+export { isCatalystEmptyLandEntity }
 
 /** Parcel should get client empty-land prop scatter (trees/rocks). */
 export function isVacantForEmptyLayer(ent: ActiveSceneEntity | undefined): boolean {

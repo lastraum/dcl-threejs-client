@@ -270,6 +270,31 @@ export function findCompositeFile(
   )
 }
 
+/**
+ * Catalyst "empty land" placeholders (Builder interactive-text + SCENE.glb)
+ * and titled Empty parcels — visual fill only, never a nearby-scene live/shell slot.
+ */
+export function isCatalystEmptyLandEntity(ent: ActiveSceneEntity): boolean {
+  const title = ent.title.trim().toLowerCase()
+  if (title === 'interactive-text' || title === 'empty' || title === 'empty parcel') {
+    return true
+  }
+  const main = ent.main.toLowerCase()
+  if (!(main === 'game.js' || main.endsWith('/game.js') || main === 'bin/game.js')) {
+    return false
+  }
+  // Single-parcel SDK6 with only floor / scene.json — treat as empty land.
+  const parcels = ent.parcels.length ? ent.parcels : ent.pointers
+  if (parcels.length !== 1) return false
+  const glbs = ent.content.filter((c) => /\.glb$/i.test(c.file))
+  if (glbs.length === 0) return true
+  if (glbs.length === 1) {
+    const f = (glbs[0]!.file.split('/').pop() ?? '').toLowerCase()
+    if (f === 'scene.glb' || f.includes('floorbase') || f.includes('empty')) return true
+  }
+  return false
+}
+
 /** Classic single-parcel foundation open-road tile (game.js + OpenRoad_*.glb). */
 export function isClassicOpenRoadContent(ent: ActiveSceneEntity): boolean {
   const main = ent.main.toLowerCase()
@@ -299,9 +324,10 @@ export function isCompositeVisualCandidate(ent: ActiveSceneEntity): boolean {
   return false
 }
 
-/** Multi-parcel (or multi-glb) scene worth a secondary slot — not a 1×1 road/empty. */
+/** Occupied SDK7/composite scene worth a nearby live/shell slot — not road or empty land. */
 export function isSecondarySceneCandidate(ent: ActiveSceneEntity): boolean {
   if (isClassicOpenRoadContent(ent)) return false
+  if (isCatalystEmptyLandEntity(ent)) return false
   if (!isCompositeVisualCandidate(ent)) return false
   if (findCompositeFile(ent.content)) return true
   const parcels = ent.parcels.length ? ent.parcels : ent.pointers

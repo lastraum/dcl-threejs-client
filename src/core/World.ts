@@ -2862,8 +2862,6 @@ export class World {
             allowMuteSecondary: fair && !frameDying && !locomoting
           })
           this.sceneLoop.peelMotion(2)
-          // PE occupancy is always true — apply before occupancy so the world scene wins hide/IM.
-          await this.sceneLoop.applyPeGuests(frameDying ? 2 : 6)
           if (this.loadedPrimaryScene) this.assets.setScene(this.loadedPrimaryScene)
           // Under-feet guest apply is not leftover-gated — snow flowers / drone
           // Tweens never reached the GPU when plaza leftover was 0.

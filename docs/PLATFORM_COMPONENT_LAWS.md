@@ -192,6 +192,30 @@ Plaza `water_surface.glb` is a collider-only disk + sibling `water.png`. Pointer
 
 ---
 
+## 3e. VideoPlayer + VideoTexture
+
+### Verified (Explorer desktop + scene bundles)
+
+| Rule | Source |
+|------|--------|
+| `VideoPlayer.playing=true` decodes `src` (mp4 / HLS / LiveKit) onto materials that reference `Texture.Video({ videoPlayerEntity })` | `@dcl/ecs` VideoPlayer + Material |
+| Creator Hub `video_player.glb` (Burj, Pink Oasis, Los Cat) ships an authored albedo | scene GLB |
+| Explorer **keeps that albedo until a decoded video frame exists** | Explorer desktop — Burj `-148,97` has no black quad in the camera while HLS buffers |
+| `playing=false` / natural end / empty src → black screen (theatre idle / Admin deactivate) | Explorer |
+| Occupancy / FocusOwner media pause **pauses decode** and keeps the last frame (or the GLB if none) | this client — painting black on occupancy flashed Burj `place_on_camera` in the face |
+
+### Client implementation law
+
+| Rule | Status |
+|------|--------|
+| `getTexture` is `null` until `canAttachTexture` (painted canvas frame, or LiveKit drawable, or ECS idle black) | Platform |
+| Do **not** bind a 1×1 black canvas on decoder create / HLS load / occupancy pause | **Forbidden** |
+| `Material` / `GltfNodeModifiers` skip apply while video is unresolved — do not replace GLB maps with map-less unlit/PBR | Platform |
+| Occupancy `setMediaEnabled(false)` pauses the element; `ThrottledVideoTexture.stop` does **not** `clearToBlack` | Platform |
+| First `drawImage` of decoded pixels fires `onTextureReady` → then bind the canvas map | Platform |
+
+---
+
 ## 4. AvatarAttach (1073)
 
 ### Verified (docs)

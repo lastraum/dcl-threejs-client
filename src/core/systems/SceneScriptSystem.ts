@@ -560,9 +560,9 @@ export class SceneScriptSystem {
 
   /**
    * FocusOwner policy for multi-scene:
-   * - primary: media on; UI may show when play chrome asks
+   * - primary: occupancy under feet — media on; UI may show when play chrome asks
    * - secondary: hard mute + video stop + UI forced off
-   * - pe: media on; UI owned by PE manager
+   * - pe: occupancy always true — media on; UI owned by PE manager (`pe-ui-root`)
    */
   setFocusPolicy(policy: import('../../dcl/multiScene/types').FocusPolicy): void {
     if (this.focusPolicy === policy) {
@@ -626,7 +626,8 @@ export class SceneScriptSystem {
   }
 
   private applyFocusPolicy(policy: import('../../dcl/multiScene/types').FocusPolicy): void {
-    const mediaOn = policy !== 'secondary' && this.occupancyMediaEnabled
+    // PE occupancy is always true — never wait on parcel dwell / leftover hold.
+    const mediaOn = policy === 'pe' || (policy !== 'secondary' && this.occupancyMediaEnabled)
     this.videoPlayerBridge?.setMediaEnabled(mediaOn)
     this.audioSourceBridge?.setMediaEnabled(mediaOn)
     this.audioStreamBridge?.setMediaEnabled(mediaOn)

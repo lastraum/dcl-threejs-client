@@ -9,7 +9,7 @@ export enum RenderQualityTier {
 
 export type GraphicsPreset = 'low' | 'medium' | 'high' | 'ultra' | 'custom'
 export type ShadowQuality = 'off' | 'low' | 'medium' | 'high' | 'ultra'
-/** 0 = Max — display rAF, uncapped (not setTimeout free-run). */
+/** 0 = Max — display rAF, 240 Hz floor (not setTimeout free-run). */
 export type FpsLimitOption = 30 | 60 | 120 | 0
 /** Multisample AA sample count (0 = off). WebGL2 RT path. Bloom uses FXAA instead. */
 export type MsaaSamples = 0 | 2 | 4 | 8
@@ -99,7 +99,8 @@ export const SCENE_LOAD_RADIUS_MIN_M = 0
 export const SCENE_LOAD_RADIUS_MAX_M = 200
 /**
  * Default AOI warm/visual band (~4 parcels).
- * 0 = primary only. Live workers stay adjacency-capped (see multiScene/caps).
+ * 0 = primary only. Live workers use this same disc, ranked among occupied
+ * scenes only (empty/road excluded; see multiScene/caps).
  * Isolate single-scene CBD with `?noaoi` or slider 0.
  */
 export const SCENE_LOAD_RADIUS_DEFAULT_M = 64

@@ -6,7 +6,9 @@ import { PARCEL_SIZE } from '../content/types'
  * - **Warm + visual band** = user Scene Distance (`sceneLoadRadiusM`): roads, empty,
  *   composites, first-frame, script/manifest prefetch.
  * - **FocusOwner** = primary only (UI / audio / video / inputs / locomotion).
- * - **Live secondaries** = player→footprint ≤ enter (16m) boots; keep until player ≤ exit (80m).
+ * - **Live secondaries** = nearest occupied scenes inside Scene Distance (empty/road
+ *   excluded). Distance is min(player→footprint, primary-footprint→neighbor-footprint)
+ *   so standing on Burj still ranks adjacent Winterfest / CBD Plaza as 16 m.
  *
  * @deprecated Prefer `renderQuality.getSceneLoadRadiusM()`. Kept as fallback when
  * settings are unavailable (tests / early init). Default matches Scene Distance default (100m).
@@ -142,9 +144,27 @@ export function minSceneFootprintDistanceM(
 }
 
 /**
+ * Nearby occupied-scene distance (meters).
+ * Min of player→neighbor footprint and primary-footprint→neighbor-footprint.
+ * Empty parcels are not scenes — do not pass them as either footprint.
+ * Adjacent occupied land stays 16 m from anywhere on the primary (Burj → Winterfest).
+ */
+export function minNearbySceneDistanceM(
+  dclX: number,
+  dclZ: number,
+  neighborKeys: readonly string[],
+  primaryKeys: readonly string[],
+  baseParcel: string
+): number {
+  const player = minPlayerToFootprintDistanceM(dclX, dclZ, neighborKeys, baseParcel)
+  if (player === 0) return 0
+  const scene = minSceneFootprintDistanceM(primaryKeys, neighborKeys)
+  return Math.min(player, scene)
+}
+
+/**
  * Min distance (meters) from **player feet** (scene-local DCL) to a scene footprint
  * as axis-aligned parcel squares. Inside any covered parcel → 0.
- * Live secondary enter/keep radii use this (not scene-to-scene).
  */
 export function minPlayerToFootprintDistanceM(
   dclX: number,

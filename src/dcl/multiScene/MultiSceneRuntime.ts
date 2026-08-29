@@ -26,7 +26,7 @@ export type MultiSceneRuntimeOptions = {
  * World-attached multi-scene runtime: secondary live workers + PE tick hooks.
  * Primary remains World.sceneScript (not managed here) until promote handoff.
  *
- * Priority: primary (World) > PE > secondary > tertiary (AOI, no workers).
+ * Priority: occupancy world scene (World) > PE (always occupied) > secondary > tertiary.
  */
 export class MultiSceneRuntime {
   readonly arbiter = new PrivilegedIntentArbiter()
@@ -218,6 +218,14 @@ export class MultiSceneRuntime {
   reconcileSecondaries(candidates: SecondaryLiveRequest[]): void {
     if (!this.secondaryActivityEnabled) return
     this.secondary?.reconcile(candidates)
+  }
+
+  setLiveGuestLoadBoot(enabled: boolean): void {
+    this.secondary?.setLoadBoot(enabled)
+  }
+
+  liveGuestLoadStats(): { ready: number; target: number; booting: number } {
+    return this.secondary?.liveGuestLoadStats() ?? { ready: 0, target: 0, booting: 0 }
   }
 
   /** Prefer live-secondary boot for the parcel under feet (promote without /goto). */

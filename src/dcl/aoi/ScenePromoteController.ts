@@ -7,6 +7,7 @@ import { renderQuality } from '../../rendering/RenderQualitySettings'
 import { distanceToParcelCenterM } from './parcelAoi'
 import {
   fetchActiveEntitiesForPointers,
+  isCatalystEmptyLandEntity,
   isOpenRoadEntity,
   type ActiveSceneEntity
 } from './fetchActiveEntities'
@@ -327,14 +328,14 @@ export class ScenePromoteController {
 
         const owned = new Set<string>()
 
-        // Prefer nearest / smaller footprints first so huge multi-parcel deploys don't starve neighbors.
+        // Prefer nearest occupied footprints first so empty land does not starve Winterfest / plaza.
         const ranked = [...entities].sort((a, b) => {
           const da = minEntityDistanceM(a, dclX, dclZ, baseParcel)
           const db = minEntityDistanceM(b, dclX, dclZ, baseParcel)
           if (da !== db) return da - db
           const pa = (a.parcels.length || a.pointers.length) || 999
           const pb = (b.parcels.length || b.pointers.length) || 999
-          return pa - pb
+          return pb - pa
         })
 
         for (const ent of ranked) {
@@ -528,9 +529,10 @@ export class ScenePromoteController {
   }
 }
 
-/** Real SDK7 scene worth warming scripts/manifests for (not roads). */
+/** Real SDK7 scene worth warming scripts/manifests for (not roads or empty land). */
 function isScriptWarmCandidate(ent: ActiveSceneEntity): boolean {
   if (isOpenRoadEntity(ent)) return false
+  if (isCatalystEmptyLandEntity(ent)) return false
   const rv = ent.runtimeVersion
   if (rv === '7' || rv.startsWith('7.')) return true
   const main = ent.main.toLowerCase()

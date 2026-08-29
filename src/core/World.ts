@@ -37,6 +37,7 @@ import {
 } from '../dcl/multiScene/caps'
 import { SECONDARY_PHYS_BASE } from '../dcl/multiScene/physOffsets'
 import { lastFrameOverBudget, scheduleOffPlayRaf } from '../rendering/mainThreadYield'
+import { whenDocumentVisible } from '../util/documentVisibility'
 import {
   resolvePortableExperiencesPolicy,
   type PortableExperiencesPolicy
@@ -413,6 +414,8 @@ export class World {
   private playerWalkBounds: PlayerWalkBounds | null = null
   /** Phase A2 — coords AOI blank ground + composite secondary visuals (tertiary). */
   private readonly aoiVisual = new AoiVisualLayer()
+  /** First-ring neighbor shells started at bind; awaited before play. */
+  private neighborShellsPrewarm: Promise<void> | null = null
   /**
    * Multi-scene runtime (secondary live workers + PE ticks). Owned by AppController
    * so PE preferences survive World rebuild on /goto.
@@ -1088,7 +1091,7 @@ export class World {
       const spawnFeet = scene.spawn
         ? { x: scene.spawn.x, z: scene.spawn.z }
         : { x: 8, z: 8 }
-      this.aoiVisual.prewarmVisuals(spawnFeet.x, spawnFeet.z)
+      this.neighborShellsPrewarm = this.aoiVisual.prewarmVisuals(spawnFeet.x, spawnFeet.z)
       console.info(
         `[aoi] Genesis walk — Scene Distance warm=${renderQuality.getSceneLoadRadiusM()}m · FocusOwner=primary · base=${scene.baseParcel}`
       )
@@ -2125,8 +2128,8 @@ export class World {
   }
 
   /**
-   * Neighbor AOI + live guests — after the first play presents so orbit is not
-   * spiked by 535-parcel discover / leftover cooks on the same thread.
+   * After the first play presents: keep live guests ticking and let neighbor
+   * shells / tertiary finish in the background (already started during load).
    */
   private armPostPlayNeighbors(): void {
     if (this.postPlayNeighborsArmed) return
@@ -2408,12 +2411,61 @@ export class World {
   }
 
   /**
+   * Loading overlay: wait for live-guest GLBs (scripted neighbors).
+   * Neighbor shells / tertiary keep draining in the background.
+   */
+  async drainLiveGuestsForLoad(
+    onProgress?: (msg: string, fraction?: number) => void
+  ): Promise<void> {
+    if (skipAoiNeighbors()) return
+    const discover = this.neighborShellsPrewarm
+    if (discover) {
+      onProgress?.('Finding nearby scenes…', 0.81)
+      await discover
+    }
+    const multi = this.multiScene
+    if (!multi?.secondaryManager) return
+    this.aoiVisual.enableLiveGuestReconcile()
+    multi.setSecondaryActivityEnabled(true)
+    multi.setLiveGuestLoadBoot(true)
+    this.aoiVisual.kickLiveSecondaryReconcile()
+    const started = performance.now()
+    const timeoutMs = 25_000
+    let lastReady = -1
+    while (performance.now() - started < timeoutMs) {
+      const { ready, target, booting } = multi.liveGuestLoadStats()
+      if (ready !== lastReady) {
+        lastReady = ready
+        const denom = Math.max(target, ready, 1)
+        onProgress?.(
+          `Loading nearby scenes… ${ready}/${denom}`,
+          0.82 + 0.03 * Math.min(1, ready / denom)
+        )
+        console.info(
+          `[aoi] live-guest load ready=${ready} target=${target} booting=${booting}`
+        )
+      }
+      if (target > 0 && ready >= target && booting === 0) break
+      if (target === 0 && performance.now() - started > 1_200) break
+      try {
+        await multi.secondaryManager.tickAsync({ applyBudgetMs: 12 })
+      } catch {
+        /* hydrate pump also runs */
+      }
+      await new Promise<void>((r) => setTimeout(r, 50))
+      this.aoiVisual.kickLiveSecondaryReconcile()
+    }
+    multi.setLiveGuestLoadBoot(false)
+  }
+
+  /**
    * Apply deferred scene materials while the loading overlay is still up.
    * Call after spawn, before {@link start} — not during orbit.
    */
   async drainPendingMaterialsForPlay(
     onProgress?: (msg: string, fraction?: number) => void
   ): Promise<void> {
+    await whenDocumentVisible()
     const n = this.sceneScript.pendingMaterialWorkCount()
     if (n <= 0) {
       await this.sceneScript.drainPendingMaterialsForLoad({ maxWallMs: 2_000, sliceMs: 16 })
@@ -2437,6 +2489,9 @@ export class World {
   private async warmPlayGpu(
     onProgress?: (msg: string, fraction?: number) => void
   ): Promise<void> {
+    // Hidden-tab rAF is frozen and the GPU is cold — compiling here then
+    // presenting on resume dumped a hitch storm (e.g. -149,99 after 3s away).
+    await whenDocumentVisible()
     onProgress?.('Compiling scene shaders…', 0.84)
     try {
       this.sceneScript.pumpMotionBridges(1 / 60, 0, { visualOnly: true })
@@ -2451,6 +2506,7 @@ export class World {
     // compileAsync misses shadow-depth + bloom/FXAA blit — run the real present path.
     this.host.warmShadowAndBloomPresents()
     for (let i = 0; i < 4; i++) {
+      await whenDocumentVisible()
       try {
         this.host.renderFrame()
       } catch (err) {
@@ -2754,6 +2810,13 @@ export class World {
             focus.preparePointerRaycast(startFrame)
             focus.updatePointerVisuals(startFrame)
           }
+          // PE occupancy is always true — same hover class as the feet owner.
+          for (const sys of this.multiScene?.pe.getRunningSystems() ?? []) {
+            if (sys === focus) continue
+            if (!sys.needsPointerHoverPrepare(startFrame)) continue
+            sys.preparePointerRaycast(startFrame)
+            sys.updatePointerVisuals(startFrame)
+          }
           pointerMs = performance.now() - ptrT0
         }
         if (!this.editorPreviewMode) {
@@ -2799,6 +2862,9 @@ export class World {
             allowMuteSecondary: fair && !frameDying && !locomoting
           })
           this.sceneLoop.peelMotion(2)
+          // PE occupancy is always true — apply before occupancy so the world scene wins hide/IM.
+          await this.sceneLoop.applyPeGuests(frameDying ? 2 : 6)
+          if (this.loadedPrimaryScene) this.assets.setScene(this.loadedPrimaryScene)
           // Under-feet guest apply is not leftover-gated — snow flowers / drone
           // Tweens never reached the GPU when plaza leftover was 0.
           await this.sceneLoop.applyCurrentGuest(frameDying ? 2 : 6)
@@ -2832,6 +2898,10 @@ export class World {
           const focus = this.focusScript()
           if (focus.needsPointerHoverPrepare(startFrame)) {
             focus.preparePointerRaycast(startFrame)
+          }
+          for (const sys of this.multiScene?.pe.getRunningSystems() ?? []) {
+            if (sys === focus) continue
+            if (sys.needsPointerHoverPrepare(startFrame)) sys.preparePointerRaycast(startFrame)
           }
           asyncPtrMs = performance.now() - ptrT0
         }
@@ -5245,8 +5315,9 @@ export class World {
     })
     // Impulse Lamport = max(primary, all PE) so PE bounce pads / thrusters fire once.
     this.player?.setImpulseLamportProvider(() => {
-      if (!this.multiScene) return this.sceneScript.getPhysicsImpulseLamport()
-      return this.peMirror.impulseLamportAcross(this.sceneScript, this.multiScene.pe)
+      const occupancy = this.focusScript()
+      if (!this.multiScene) return occupancy.getPhysicsImpulseLamport()
+      return this.peMirror.impulseLamportAcross(occupancy, this.multiScene.pe)
     })
     const pePolicy: PortableExperiencesPolicy =
       this.loadedPrimaryScene.portableExperiencesPolicy ??
@@ -5338,6 +5409,11 @@ export class World {
     this.startInputHub()
     // Same keyboard bus as primary — subscribe as pe:<physOffset>, no second window listener.
     system.setInputHub(this.inputHub, `pe:${physOffset}`)
+    // Occupancy is always true for PE — attach / parent=PlayerEntity like a focused scene.
+    this.bindAvatarAttachTargets(system)
+    if (this.player) {
+      system.setSpatialAudioPlayerRoot(() => this.player!.getPlayerRoot())
+    }
     system.bindPointerEvents(
       () => this.player?.getWorldPosition() ?? null,
       () => this.player?.isPointerBlocked() ?? false,
@@ -5427,15 +5503,27 @@ export class World {
     })
   }
 
-  /** Last selected lens owner for one-shot logs (primary vs pe). */
-  private lastVcBridgeOwner: 'none' | 'primary' | 'pe' = 'none'
+  /** Last selected lens owner for one-shot logs (occupancy scene vs pe). */
+  private lastVcBridgeOwner: 'none' | 'occupancy' | 'pe' = 'none'
 
   /**
-   * PlayerSystem only had the primary VirtualCameraBridge. PE drone/vehicle cameras live on the
-   * PE SceneScriptSystem — switch the player lens to any PE that has MainCamera→VC bound.
+   * Occupancy scene wins the lens if it has MainCamera→VC bound.
+   * Else PE (always occupied) may drive drone/vehicle cameras.
    */
-  private selectActiveVirtualCameraBridge(): void {
+  private selectActiveVirtualCameraBridge(occupancySys?: SceneScriptSystem): void {
     if (!this.player) return
+    const occupancy = occupancySys ?? this.focusScript()
+    const occBridge = occupancy.getVirtualCameraBridge()
+    if (occBridge && (occBridge.isMainCameraVcBound() || occBridge.isActive())) {
+      this.player.setVirtualCameraBridge(occBridge)
+      if (this.lastVcBridgeOwner !== 'occupancy') {
+        this.lastVcBridgeOwner = 'occupancy'
+        console.info(
+          `[focus] VirtualCamera lens → occupancy (mainBound=${occBridge.isMainCameraVcBound()} active=${occBridge.isActive()})`
+        )
+      }
+      return
+    }
     const peSystems = this.multiScene?.pe.getRunningSystems() ?? []
     for (const sys of peSystems) {
       const bridge = sys.getVirtualCameraBridge()
@@ -5445,23 +5533,23 @@ export class World {
         if (this.lastVcBridgeOwner !== 'pe') {
           this.lastVcBridgeOwner = 'pe'
           console.info(
-            `[pe] VirtualCamera lens → PE bridge (mainBound=${bridge.isMainCameraVcBound()} active=${bridge.isActive()})`
+            `[pe] VirtualCamera lens → PE (mainBound=${bridge.isMainCameraVcBound()} active=${bridge.isActive()})`
           )
         }
         return
       }
     }
-    this.player.setVirtualCameraBridge(this.sceneScript.getVirtualCameraBridge())
+    if (occBridge) this.player.setVirtualCameraBridge(occBridge)
     if (this.lastVcBridgeOwner === 'pe') {
-      this.lastVcBridgeOwner = 'primary'
-      console.info('[pe] VirtualCamera lens → primary (PE VC unbound)')
+      this.lastVcBridgeOwner = 'occupancy'
+      console.info('[pe] VirtualCamera lens → occupancy (PE VC unbound)')
     } else if (this.lastVcBridgeOwner === 'none') {
-      this.lastVcBridgeOwner = 'primary'
+      this.lastVcBridgeOwner = 'occupancy'
     }
   }
 
   private isAnyVirtualCameraActive(): boolean {
-    if (this.sceneScript.getVirtualCameraBridge()?.isActive() === true) return true
+    if (this.focusScript().getVirtualCameraBridge()?.isActive() === true) return true
     for (const sys of this.multiScene?.pe.getRunningSystems() ?? []) {
       if (sys.getVirtualCameraBridge()?.isActive() === true) return true
     }
@@ -5658,6 +5746,8 @@ export class World {
       console.info('[focus] scene-ui owner=none')
       return
     }
+    // Steal #scene-ui-root + pick after hide so leftover HUD from a previous
+    // live guest cannot intercept clicks on the feet-owned scene.
     ownerSys.adoptSceneUiPlayRoot()
     ownerSys.setSceneUiVisible(true)
     const title =
@@ -5768,6 +5858,9 @@ export class World {
         this.bindAvatarAttachTargets(nextSys)
         this.installFocusAvatarModifiers(nextSys)
         this.player?.setVirtualCameraBridge(nextSys.getVirtualCameraBridge())
+        // Occupancy grant must not steal a PE drone lens; occupancy scene still wins if bound.
+        // Pass nextSys — focusGuestId is not updated until the end of this grant.
+        this.selectActiveVirtualCameraBridge(nextSys)
         if (guestId === PRIMARY_GUEST_ID) {
           this.installPlazaFocusComms()
         } else {
@@ -6012,12 +6105,12 @@ export class World {
     this.physics.invalidateControllerCache()
   }
 
-  /** PE worker → primary projection + player (InputModifier, forces, intents). */
+  /** PE worker → occupancy FocusOwner + player (InputModifier, forces, intents). */
   private applyPeMainThreadMirror(): void {
     if (!this.multiScene) return
     this.peMirror.apply({
       pe: this.multiScene.pe,
-      primary: this.sceneScript,
+      occupancy: this.focusScript(),
       player: this.player,
       drainPrivilegedIntents: () => this.drainPePrivilegedIntents()
     })
@@ -6052,10 +6145,10 @@ export class World {
   }
 
   /**
-   * PE has full capability but lower priority. Intents submitted to the arbiter
-   * during PE tick are applied here if still pending (primary already ran and
-   * would have applied its own handlers directly — so remaining = PE wins only
-   * when primary was silent on that channel).
+   * PE has full capability but lower priority. Occupancy world scene wins.
+   * Intents submitted to the arbiter during PE tick apply here if still pending
+   * (origin primary already ran its handlers — remaining = PE wins only when
+   * the occupancy scene was silent on that channel).
    *
    * - movePlayerTo: scene-local feet
    * - teleportTo: global Genesis parcel → navigate (distinct from movePlayerTo)
@@ -6341,7 +6434,10 @@ export class World {
     // FocusOwner swap: media + UI for adopted primary; InputHub primary subscriber.
     // CRITICAL: rebind player locomotion reads to the NEW primary MirrorComponents.
     this.player.setReadComponents(this.sceneScript.readComponents)
-    this.player.setImpulseLamportProvider(() => this.sceneScript.getPhysicsImpulseLamport())
+    this.player.setImpulseLamportProvider(() => {
+      if (!this.multiScene) return this.sceneScript.getPhysicsImpulseLamport()
+      return this.peMirror.impulseLamportAcross(this.sceneScript, this.multiScene.pe)
+    })
     // Occupancy hold may have paused this guest's media while it was a secondary.
     this.sceneScript.setOccupancyMediaEnabled(true)
     this.occupancyPendingGuestId = null
@@ -6419,6 +6515,7 @@ export class World {
     // new primary, clear MainCamera (already in clearPlayerFocusState), snap boom to feet.
     // Never reseed yaw/pitch/dist from scene VC (that was the "reset mode" snap).
     this.player.setVirtualCameraBridge(this.sceneScript.getVirtualCameraBridge())
+    this.selectActiveVirtualCameraBridge()
     this.player.notifySceneFocusHandoff()
     const originAfter = this.comms.getSceneOrigin()
     const feetAfter = this.player.getPosition()

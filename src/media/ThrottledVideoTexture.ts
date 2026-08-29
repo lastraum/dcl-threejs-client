@@ -39,6 +39,7 @@ export class ThrottledVideoTexture {
   private rvfHandle = 0
   private lastUploadMs = 0
   private rafHandle = 0
+  private paintedFrame = false
 
   constructor(
     private readonly video: HTMLVideoElement,
@@ -61,9 +62,18 @@ export class ThrottledVideoTexture {
     this.texture.magFilter = THREE.LinearFilter
     // glTF video screens (default path) — flipY false; MeshRenderer reconfigures on apply.
     configureSceneVideoTexture(this.texture, false)
-    // Idle / no-frame screens must be black (not uninit white × material albedo).
+    // Internal idle fill only. Do not bind this texture until hasPaintedFrame (or ECS
+    // playing=false, which explicitly wants a black screen).
     this.clearToBlack()
   }
+
+  /** True after at least one successful drawImage of decoded video pixels. */
+  get hasPaintedFrame(): boolean {
+    return this.paintedFrame
+  }
+
+  /** Fired the first time a decoded video frame lands on the canvas. */
+  onFrameUploaded?: () => void
 
   start(): void {
     if (this.running) return
@@ -81,13 +91,12 @@ export class ThrottledVideoTexture {
       cancelAnimationFrame(this.rafHandle)
       this.rafHandle = 0
     }
-    // Paused / idle: Explorer-like black, not last-frame flash or white.
-    this.clearToBlack()
+    // Occupancy / visibility pause: keep last frame. ECS playing=false calls clearToBlack.
   }
 
   /**
    * Fill the canvas solid black and mark the texture dirty.
-   * Used for idle screens, src clear, and pre-first-frame so materials never show white.
+   * Used for ECS playing=false / ended / empty src — not for loading or occupancy pause.
    */
   clearToBlack(): void {
     const w = Math.max(1, this.canvas.width)
@@ -98,15 +107,13 @@ export class ThrottledVideoTexture {
     }
     this.ctx.fillStyle = '#000000'
     this.ctx.fillRect(0, 0, w, h)
+    this.paintedFrame = false
     this.texture.needsUpdate = true
   }
 
   /** Called when the underlying video element reports new metadata / track attach. */
   notifySourceChanged(): void {
-    if (this.video.videoWidth <= 0 || this.video.videoHeight <= 0) {
-      this.clearToBlack()
-      return
-    }
+    if (this.video.videoWidth <= 0 || this.video.videoHeight <= 0) return
     if (this.running) this.uploadFrame(performance.now(), true)
   }
 
@@ -137,18 +144,14 @@ export class ThrottledVideoTexture {
     const vw = this.video.videoWidth
     const vh = this.video.videoHeight
     if (vw <= 0 || vh <= 0) {
-      // No decoded frame yet — keep black placeholder (never leave uninit/white).
-      this.clearToBlack()
+      // No decoded frame yet — keep last pixels (or unbound). Never paint black here.
       return
     }
     if (!force && nowMs - this.lastUploadMs < this.minFrameMs) return
     this.lastUploadMs = nowMs
 
     const { width, height } = fitWithin(vw, vh, SCENE_VIDEO_MAX_WIDTH, SCENE_VIDEO_MAX_HEIGHT)
-    if (width <= 0 || height <= 0) {
-      this.clearToBlack()
-      return
-    }
+    if (width <= 0 || height <= 0) return
     if (this.canvas.width !== width || this.canvas.height !== height) {
       this.canvas.width = width
       this.canvas.height = height
@@ -156,9 +159,13 @@ export class ThrottledVideoTexture {
     try {
       this.ctx.drawImage(this.video, 0, 0, width, height)
     } catch {
-      // Closed / 0×0 / CORS video — keep last good frame (or black).
+      // Closed / 0×0 / CORS video — keep last good frame.
       return
     }
     this.texture.needsUpdate = true
+    if (!this.paintedFrame) {
+      this.paintedFrame = true
+      this.onFrameUploaded?.()
+    }
   }
 }

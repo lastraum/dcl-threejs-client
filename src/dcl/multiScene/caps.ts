@@ -14,15 +14,14 @@ const AOI_LIVE_GUESTS = true
 const AOI_STAND_ON_PROMOTE = true
 
 /**
- * Live JS workers (scripts + CRDT). Official desktop: ~10 m load + ~10 m extra
- * keep, 4 scene threads. Player → scene footprint (any parcel), not a ring.
- * Snow @ 14 m from plaza still enters. Scene Distance is the visual disc.
+ * Live guests (secondary workers with scripts). Enter = Scene Distance; keep =
+ * enter + extra. Ranking is player→occupied-footprint (empty/road excluded).
+ * Hard cap is the number of scripted neighbors, not shells.
  */
-const LIVE_SCENE_MAX_M = 20
 const LIVE_SCENE_UNLOAD_EXTRA_M = 16
-/** Concurrent live isolates — desktop uses 4 threads; Three.js is costlier. */
-const AOI_LIVE_SECONDARY_HARD_CAP = 4
-const TERTIARY_RESIDENT_HARD_CAP = 8
+/** Concurrent live guests — nearest occupied scenes (Winterfest / plaza / HEX…). */
+const AOI_LIVE_SECONDARY_HARD_CAP = 8
+const TERTIARY_RESIDENT_HARD_CAP = 16
 /**
  * Sticky restore after promote-settle turns scripts back on. Plaza-scale
  * deployments stay tertiary (meshes + LOD). Stand-on still promotes from
@@ -114,9 +113,7 @@ export const SECONDARY_LIVE_MAX_RADIUS_M = SECONDARY_LIVE_ENTER_M
 
 export function secondaryLiveEnterRadiusM(): number {
   if (!aoiLiveGuests()) return 0
-  const d = visualWarmRadiusM()
-  if (d <= 0) return 0
-  return Math.min(d, LIVE_SCENE_MAX_M)
+  return visualWarmRadiusM()
 }
 
 export function secondaryLiveKeepRadiusM(): number {
@@ -130,8 +127,8 @@ export function secondaryLiveRadiusM(): number {
   return secondaryLiveEnterRadiusM()
 }
 
-/** One cold boot at a time — stacked neighbor hydrate was 7 FPS on CBD walk. */
-export const SECONDARY_LIVE_BOOT_CONCURRENCY = 1
+/** Two cold boots at a time — first-ring live guests while loading / walking. */
+export const SECONDARY_LIVE_BOOT_CONCURRENCY = 2
 
 export function tertiaryResidentCap(_tier: PerformanceTier): number {
   return TERTIARY_RESIDENT_HARD_CAP
@@ -159,7 +156,10 @@ export function secondaryTickIntervalMs(_tier: PerformanceTier): number {
   return 50
 }
 
-/** PE workers are SceneLoop 20 Hz — never a 0 ms present pump. */
+/**
+ * Fallback pose-rebase interval when SceneLoop does not own the PE clock.
+ * Occupied PE send due is 16 ms in PeSlotGuest — this must stay 50 (never 0).
+ */
 export function peTickIntervalMs(_tier: PerformanceTier): number {
   return 50
 }

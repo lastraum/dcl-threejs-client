@@ -463,6 +463,10 @@ export class MaterialApplier {
 
   /** Sync color / PBR scalars only — safe during hydration before textures are ready. */
   applyScalarsToObject3D(root: THREE.Object3D, entity: number, pb: PbMaterial): void {
+    // VideoTexture must swap material + map together. A scalar-only pass replaces
+    // GLB MeshStandardMaterial with map-less PBR/unlit (white or black) — Explorer
+    // keeps the authored albedo until a decoded frame exists (Burj video_player.glb).
+    if (this.materialHasVideoTexture(pb)) return
     root.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) this.applyScalarsToMesh(child as THREE.Mesh, pb)
     })
@@ -608,6 +612,8 @@ export class MaterialApplier {
     const isPbr = materialCase === 'pbr'
     const inner = materialInner(pb)
     if (!inner) return true
+    // Keep authored maps until the decoder has a drawable frame (or ECS idle black).
+    if (this.hasUnresolvedVideo(pb)) return false
 
     this.applyScalarsToMesh(mesh, pb)
     const m = mesh.material as THREE.MeshBasicMaterial | THREE.MeshPhysicalMaterial
@@ -621,8 +627,7 @@ export class MaterialApplier {
     // GltfNodeModifiers keep authored glTF UVs. Do not geometry-U-flip flat cards —
     // that mirrored every event/calendar Texture.Common (Explorer uses the GLB as-is).
     // VideoTexture is *shared* (one decode → many screens) so we never flipY on the
-    // texture. Per-mesh geometry V runs only when the video is actually bound —
-    // mutating UVs on the black unlit first pass made theatre first-paint wrong.
+    // texture. Per-mesh geometry V runs only when the video is actually bound.
     const worldMirror = objectWorldMirrorX(mesh)
     const isGltfMaterialPath = !!options?.gltfNodeModifier && !marqueeAtlas
     const videoUnion = coerceTextureUnion(inner.texture)
@@ -913,6 +918,13 @@ export class MaterialApplier {
       const userId = slot.tex.avatarTexture.userId?.trim()
       if (!userId) continue
       if (!this.resolvedAvatarTextures.has(userId)) return true
+    }
+    return false
+  }
+
+  private materialHasVideoTexture(pb: PbMaterial): boolean {
+    for (const slot of materialTextureSlots(pb)) {
+      if (slot?.tex?.$case === 'videoTexture') return true
     }
     return false
   }

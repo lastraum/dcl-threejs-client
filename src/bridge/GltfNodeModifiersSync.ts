@@ -133,6 +133,12 @@ export async function applyGltfNodeModifiersToEntity(
       if (mod.material) {
         const pb = mod.material as PbMaterial
 
+        // Keep GLB albedo until the video decoder has a drawable frame.
+        if (materialHasVideoTexture(pb) && materials.texturesPending(pb)) {
+          allOk = false
+          continue
+        }
+
         // Video screens: Explorer FrontSide faces the house. DoubleSide showed the
         // mirrored back when the camera was on the authored front.
         if (materialHasVideoTexture(pb)) {

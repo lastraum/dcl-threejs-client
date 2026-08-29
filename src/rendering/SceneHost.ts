@@ -26,9 +26,9 @@ import {
 } from '../camera/cameraDepthPolicy'
 import { perfNoteFrameHost, perfNoteRenderSplit } from '../util/perfCounters'
 import { forceNoBloom, forceNoShadow } from '../client/devFlags'
-import { subscribeBackgroundTicks } from './backgroundTickHub'
 import { getSessionAssetCache } from './AssetCache'
 import { isAppleTouchDevice, isIphoneDevice } from '../util/appleTouch'
+import { isDocumentHidden } from '../util/documentVisibility'
 
 export class SceneHost {
   renderer: THREE.WebGLRenderer
@@ -49,23 +49,22 @@ export class SceneHost {
   private resizeObserver: ResizeObserver | null = null
   private viewportElement: HTMLElement | null = null
   private onViewportResize: ((width: number, height: number) => void) | null = null
-  /** Min ms between full frames; 0 = free-run (setTimeout 0, not display vsync). */
-  private frameIntervalMs = 0
+  /**
+   * Min ms between full presents. Max FPS still rAF-paced with a 240 Hz floor so
+   * PhysX CCT / mixers never see a 700 Hz free-run (1/dt HUD lie + ground jackhammer).
+   * 144/165/240 Hz panels stay display-paced; the floor only bites when vsync is off.
+   */
+  private frameIntervalMs = 1000 / 240
+  /** Ceiling for fpsLimit 0 (Max). Display rAF is usually slower; this only bites when vsync is off. */
+  private static readonly MAX_PRESENT_INTERVAL_MS = 1000 / 240
   private lastFrameTime = 0
   private loopRunning = false
   private uncapTimer: ReturnType<typeof setTimeout> | 0 = 0
   private rafId = 0
-  /**
-   * Hidden-tab sim rate. rAF is paused in background; we use setTimeout + SharedWorker.
-   * Chrome may clamp timers to ~1s after a while; a focused sibling tab keeps the
-   * SharedWorker at this interval so preview multiplayer stays alive.
-   */
-  private static readonly HIDDEN_FRAME_INTERVAL_MS = 100
-  /** After tab focus, stay on rAF (not timeout-0) so GPU wake + orbit aren't a 2fps dump. */
+  /** After tab focus, stay on rAF so GPU wake + orbit aren't a 2fps dump. */
   private static readonly RESUME_RAF_FRAMES = 48
   private resumeRafFrames = 0
   private loopTick: (() => void) | null = null
-  private unsubBackgroundTicks: (() => void) | null = null
   /** Effective MSAA after GPU clamp (0 = render straight to canvas). */
   private msaaSamples: MsaaSamples = 0
   private msaaTarget: THREE.WebGLRenderTarget | null = null
@@ -165,7 +164,7 @@ export class SceneHost {
       // Drain the huge hidden-tab delta so the first orbit frame isn't a 100ms step.
       this.clock.getDelta()
     }
-    // Hidden: rAF is frozen — switch to timeout/SharedWorker immediately.
+    // Hidden: pause the loop. Visible: rAF again.
     this.kickLoop()
   }
 
@@ -331,20 +330,23 @@ export class SceneHost {
     // Avatar vs environment cast toggles (and shadow off/on) re-apply without reloading meshes.
     reapplySceneCastShadows(this.scene)
 
-    // Max (0) → uncapped rAF. 30/60/120 cap via rAF + interval.
+    // 30/60/120 cap via rAF + interval. Max (0) stays display-paced with a 240 Hz floor
+    // so a vsync-less compositor cannot free-run PhysX at 700 Hz.
     if (options.fpsLimit > 0) {
       this.frameIntervalMs = 1000 / options.fpsLimit
     } else {
-      this.frameIntervalMs = 0
+      this.frameIntervalMs = SceneHost.MAX_PRESENT_INTERVAL_MS
     }
 
     // Bloom Unreal path cannot take MSAA samples — FXAA runs on the bloom blit instead.
     // Effective bloom includes adaptive step-down; `?nobloom` forces off for A/B.
     // iOS: Linear beauty + ACES blit reads as solid white even without HDR.
+    // iPad: MSAA offscreen FBO paints skinned avatars black (High prefs still request 4×).
+    const appleTouch = isAppleTouchDevice()
     const bloomOn =
-      renderQuality.getBloomEnabled() && !forceNoBloom() && !isAppleTouchDevice()
+      renderQuality.getBloomEnabled() && !forceNoBloom() && !appleTouch
     const maxSamples = this.renderer.capabilities?.maxSamples ?? 0
-    this.msaaSamples = bloomOn ? 0 : clampMsaaSamples(options.msaaSamples, maxSamples)
+    this.msaaSamples = bloomOn || appleTouch ? 0 : clampMsaaSamples(options.msaaSamples, maxSamples)
     this.rebuildMsaaTarget()
     // Re-apply size so backing store matches new pixel ratio / MSAA / bloom buffers.
     this.applyViewportSize()
@@ -558,11 +560,15 @@ export class SceneHost {
 
     const tick = (): void => {
       const frameT0 = performance.now()
-      const hidden = typeof document !== 'undefined' && document.hidden
-      const minInterval = Math.max(
-        this.frameIntervalMs,
-        hidden ? SceneHost.HIDDEN_FRAME_INTERVAL_MS : 0
-      )
+      // Hidden: rAF is frozen and the GPU is cold. Do not run world/AOI/SceneLoop
+      // (was 10Hz timeout + SharedWorker — 3s background during load dumped a hitch
+      // storm on the first visible frames). visibilitychange resumes via kickLoop.
+      if (isDocumentHidden()) {
+        this.clock.getDelta()
+        this.scheduleNext(tick)
+        return
+      }
+      const minInterval = this.frameIntervalMs
       if (minInterval > 0 && this.lastFrameTime > 0) {
         if (frameT0 - this.lastFrameTime < minInterval) {
           // Must reschedule — a bare return kills the loop (incognito default is 60fps + rAF).
@@ -593,34 +599,32 @@ export class SceneHost {
       }
 
       let renderMs = 0
-      if (!hidden) {
-        this.renderStats.begin()
-        if (this.orbitEnabled) this.controls.update()
-        this.renderer.info?.reset?.()
-        const renderT0 = performance.now()
-        const mainSplit = this.renderMainPass()
-        const mainMs = performance.now() - renderT0
-        const tagsT0 = performance.now()
-        this.nameTags.render(this.scene, this.camera)
-        const tagsMs = performance.now() - tagsT0
-        renderMs = performance.now() - renderT0
-        const info = this.renderer.info.render
-        perfNoteRenderSplit({
-          mainMs,
-          tagsMs,
-          sceneMs: mainSplit.sceneMs,
-          extractMs: mainSplit.extractMs,
-          bloomMs: mainSplit.bloomMs,
-          blitMs: mainSplit.blitMs,
-          mode: mainSplit.mode,
-          shadowOn: this.renderer.shadowMap.enabled,
-          drawCalls: info.calls,
-          triangles: info.triangles
-        })
-        this.renderStats.end()
-        this.renderStats.update()
-        this.adaptiveQuality.noteFrame()
-      }
+      this.renderStats.begin()
+      if (this.orbitEnabled) this.controls.update()
+      this.renderer.info?.reset?.()
+      const renderT0 = performance.now()
+      const mainSplit = this.renderMainPass()
+      const mainMs = performance.now() - renderT0
+      const tagsT0 = performance.now()
+      this.nameTags.render(this.scene, this.camera)
+      const tagsMs = performance.now() - tagsT0
+      renderMs = performance.now() - renderT0
+      const info = this.renderer.info.render
+      perfNoteRenderSplit({
+        mainMs,
+        tagsMs,
+        sceneMs: mainSplit.sceneMs,
+        extractMs: mainSplit.extractMs,
+        bloomMs: mainSplit.bloomMs,
+        blitMs: mainSplit.blitMs,
+        mode: mainSplit.mode,
+        shadowOn: this.renderer.shadowMap.enabled,
+        drawCalls: info.calls,
+        triangles: info.triangles
+      })
+      this.renderStats.end()
+      this.renderStats.update()
+      this.adaptiveQuality.noteFrame()
       presentLock = false
 
       if (frameCount === 1) {
@@ -715,33 +719,24 @@ export class SceneHost {
       this.scheduleNext(tick)
     }
     this.loopTick = tick
-    this.unsubBackgroundTicks = subscribeBackgroundTicks(() => {
-      if (typeof document === 'undefined' || !document.hidden) return
-      tick()
-    })
     this.scheduleNext(tick)
   }
 
   /**
-   * 30/60/120 → rAF + interval. Max (fpsLimit 0) → rAF uncapped (display-paced).
-   * Hidden tabs cannot use rAF — 100 ms timer instead.
+   * 30/60/120 → rAF + interval. Max (fpsLimit 0) → rAF with a 240 Hz floor.
+   * Hidden tabs: do not timeout-tick (that stacked AOI/SceneLoop work). Resume via
+   * visibilitychange → kickLoop.
    */
   private scheduleNext(tick: () => void): void {
     if (!this.loopRunning) return
     if (this.resumeRafFrames > 0) this.resumeRafFrames--
-    const hidden = typeof document !== 'undefined' && document.hidden
-    if (hidden) {
-      this.uncapTimer = setTimeout(tick, SceneHost.HIDDEN_FRAME_INTERVAL_MS)
-      return
-    }
+    if (isDocumentHidden()) return
     this.rafId = requestAnimationFrame(tick)
   }
 
   private stopLoop(): void {
     this.loopRunning = false
     this.loopTick = null
-    this.unsubBackgroundTicks?.()
-    this.unsubBackgroundTicks = null
     if (this.uncapTimer) {
       clearTimeout(this.uncapTimer)
       this.uncapTimer = 0

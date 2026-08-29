@@ -65,6 +65,7 @@ Descending platform **head-crush** (`eCOLLISION_UP` while surface descends) may 
 | DCL **cylinder** → vertical capsule (shape local rot X→Y) or box if flat | PhysX capsule is X-axis; wrong orientation = wild hulls / launches |
 | Capsule half-height = `H/2 − R` (caps excluded) | Double-counting caps over-tall colliders |
 | CCT `nonWalkableMode = PREVENT_CLIMBING_AND_FORCE_SLIDING` | Sphere sides / steep faces are not ladders |
+| CCT slopeLimit **50°** (`WALKABLE_NORMAL_Y = cos 50°`) | Docs 45°; Creator Hub stair ramps are ~47°. 45° + FORCE_SLIDING snaps jump-climbs back down the flight. Grounded-contact uses the same cosine. |
 | **Grounded ⇔ walkable support under capsule** | `eCOLLISION_DOWN` alone is not enough — need walkable hit this move, under-column XZ, contact within step of feet. Else freefall + gravity (walk off elevated pad into lower floor). |
 
 ## Code

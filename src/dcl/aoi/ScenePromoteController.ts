@@ -7,6 +7,7 @@ import { renderQuality } from '../../rendering/RenderQualitySettings'
 import { distanceToParcelCenterM } from './parcelAoi'
 import {
   fetchActiveEntitiesForPointers,
+  entityFootprintKeys,
   isCatalystEmptyLandEntity,
   isOpenRoadEntity,
   type ActiveSceneEntity
@@ -130,12 +131,11 @@ export class ScenePromoteController {
   }
 
   /**
-   * Catalyst active entity footprint: prefer content-server pointers (authoritative for
-   * multi-parcel deployments), else metadata scene.parcels.
+   * Catalyst active entity footprint: pointers ∪ scene.parcels ∪ base.
+   * Pointer index can omit a claimed cell (125,104 empty vs 125,103 listing both).
    */
   private entityKeys(ent: ActiveSceneEntity): string[] {
-    const raw = ent.pointers.length ? ent.pointers : ent.parcels
-    return raw.map((p) => p.trim()).filter(Boolean)
+    return entityFootprintKeys(ent)
   }
 
   bind(scene: ResolvedScene): void {
@@ -548,7 +548,7 @@ function minEntityDistanceM(
   dclZ: number,
   baseParcel: string
 ): number {
-  const keys = ent.pointers.length ? ent.pointers : ent.parcels
+  const keys = entityFootprintKeys(ent)
   let best = Infinity
   for (const key of keys) {
     try {

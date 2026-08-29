@@ -170,6 +170,25 @@ Plaza `water_surface.glb` is a collider-only disk + sibling `water.png`. Pointer
 
 ---
 
+## 3b2. GltfContainer collision masks (ADR-215)
+
+### Verified (SDK docs + ADR-215 + `@dcl/ecs` PBGltfContainer)
+
+| Rule | Source |
+|------|--------|
+| `visibleMeshesCollisionMask` omitted → **0** (visible art is not physics/pointer) | ADR-215 / docs |
+| `invisibleMeshesCollisionMask` omitted → **CL_PHYSICS \| CL_POINTER** (`*_collider` hulls) | ADR-215 / docs |
+| Explicit **0** is CL_NONE — not “use the default”. Protobuf encodes 0; do not `|| default` | `@dcl/ecs` optional uint32 |
+| Inv-class = mesh or ancestor name contains `_collider` (case insensitive) | ADR-215 |
+| Inv mask with CL_PHYSICS and **zero** `_collider` meshes → **no actor** | docs: assign vis mask to make vis art collide |
+| Material name (`Collider_MAT`) / exporter name (`Cube`) does **not** make a mesh inv-class | ADR-215 name rule only |
+
+### Client law
+
+A decorative waterfall GLB whose only node is `Cube` (no `_collider`) must not cook PhysX even when Creator Hub left `invisibleMeshesCollisionMask: 3` (default). Walk-blockers on that art are vis-mask physics or a different entity (MeshCollider / invisible-wall vis=2), never an invented Cube hull.
+
+---
+
 ## 3d. GltfNodeModifiers (path + Texture.Common)
 
 ### Verified (SDK + Explorer)

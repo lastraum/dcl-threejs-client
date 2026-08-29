@@ -61,7 +61,6 @@ import type { SceneSpawn } from '../dcl/content/types'
 import type { MovePlayerToRequest } from './movePlayerTo'
 import {
   DCL_PLAYER_ENTITY_Y_OFFSET,
-  playerEntityPositionFromThreeFeet,
   resolveMovePlayerToTargetFeetDcl,
   threePlayerYawToDclEntityQuat
 } from './dclPlayerEntity'
@@ -282,6 +281,12 @@ export class PlayerSystem {
   private avatarLoadGen = 0
   private playerIdentity: ProfileIdentity | null = null
   private walkBounds: PlayerWalkBounds | null = null
+  /**
+   * FocusOwner SW in Genesis meters. Capsule / PhysX / scene graphs are genesis-stable;
+   * scene.js and RFC4 still speak FocusOwner-local DCL via this origin.
+   */
+  private focusOriginX = 0
+  private focusOriginZ = 0
   private moveTask: {
     from: THREE.Vector3
     to: THREE.Vector3
@@ -453,8 +458,8 @@ export class PlayerSystem {
       : spawn.y <= 0.01
         ? DEFAULT_SPAWN_FEET_Y
         : spawn.y
-    // Authored scene.json feet — no CCT settle; gravity lands on cooked colliders.
-    const spawnThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
+    // Authored scene.json feet (FocusOwner-local) → genesis Three for the CCT.
+    const spawnThree = this.genesisThreeFromSceneLocalDcl(new THREE.Vector3(spawn.x, feetY, spawn.z))
     this.root.position.copy(spawnThree)
     this.physics.spawnPlayer(spawnThree)
     this.physics.warmStaticScene()
@@ -481,8 +486,14 @@ export class PlayerSystem {
     this.syncCamera(true)
     this.clearStagedSpawnPoses()
     const feet = this.physics.positionOut
+    const local = this.sceneLocalDclFromGenesisThree(feet)
+    const parcelX = Math.floor((local.x + this.focusOriginX) / 16)
+    const parcelZ = Math.floor((local.z + this.focusOriginZ) / 16)
     console.info(
-      `[player] spawn drop-in — feet=(${feet.x.toFixed(1)}, ${feet.y.toFixed(2)}, ${feet.z.toFixed(1)})` +
+      `[player] spawn drop-in — feet three=(${feet.x.toFixed(1)}, ${feet.y.toFixed(2)}, ${feet.z.toFixed(1)})` +
+        ` local=(${local.x.toFixed(1)}, ${local.y.toFixed(2)}, ${local.z.toFixed(1)})` +
+        ` parcel=${parcelX},${parcelZ}` +
+        ` origin=(${this.focusOriginX.toFixed(0)},${this.focusOriginZ.toFixed(0)})` +
         ` scene.jsonY=${feetY.toFixed(2)} grounded=false`
     )
     onProgress?.('Player ready')
@@ -754,11 +765,39 @@ export class PlayerSystem {
    * `Transform.get(PlayerEntity).position` — **feet** in scene-relative DCL meters.
    * (Chest attach for PE-parented meshes lives on {@link getPlayerRoot}, not here.)
    */
+  /**
+   * FocusOwner SW (Genesis meters). Does **not** move the capsule — PhysX stays put
+   * on promote; scene-local getters subtract the new origin.
+   */
+  setFocusOriginMeters(x: number, z: number): void {
+    this.focusOriginX = x
+    this.focusOriginZ = z
+  }
+
+  /** FocusOwner-local walk box — clamp converts genesis Three ↔ this space. */
+  setWalkBounds(walkBounds: PlayerWalkBounds): void {
+    this.walkBounds = walkBounds
+  }
+
+  private sceneLocalDclFromGenesisThree(feetThree: THREE.Vector3, out = new THREE.Vector3()): THREE.Vector3 {
+    const g = threeToDclVec(feetThree)
+    return out.set(g.x - this.focusOriginX, g.y, g.z - this.focusOriginZ)
+  }
+
+  private genesisThreeFromSceneLocalDcl(feetDcl: THREE.Vector3, out = new THREE.Vector3()): THREE.Vector3 {
+    return dclToThreePos(
+      feetDcl.x + this.focusOriginX,
+      feetDcl.y,
+      feetDcl.z + this.focusOriginZ,
+      out
+    )
+  }
+
   getPlayerEntityPositionDcl(): THREE.Vector3 {
     if (!this.enabled && this.stagedPlayerPose) {
       return this.stagedPlayerPose.position.clone()
     }
-    return playerEntityPositionFromThreeFeet(this.root.position)
+    return this.sceneLocalDclFromGenesisThree(this.root.position)
   }
 
   /** PlayerEntity pose for CRDT / scene reads — position is feet; rotation aims DCL Forward at body facing. */
@@ -789,7 +828,6 @@ export class PlayerSystem {
     return this.root
   }
 
-  /** Scene-local DCL meters (+X east, +Z north). */
   /** Apply PhysX foot position to the avatar root (after prewarm / teleport snap). */
   syncFromPhysics(): void {
     this.root.position.copy(this.physics.positionOut)
@@ -797,8 +835,9 @@ export class PlayerSystem {
     this.syncCamera(true)
   }
 
+  /** Scene-local DCL meters (+X east, +Z north). */
   getPosition(): THREE.Vector3 {
-    return threeToDclVec(this.root.position)
+    return this.sceneLocalDclFromGenesisThree(this.root.position)
   }
 
   /** Three.js world position for renderer raycast distance checks. */
@@ -1050,7 +1089,7 @@ export class PlayerSystem {
     const pos = request.newRelativePosition
     if (!pos) return false
 
-    const currentFeetDcl = threeToDclVec(this.root.position)
+    const currentFeetDcl = this.sceneLocalDclFromGenesisThree(this.root.position)
     const requestedFeetDcl = new THREE.Vector3(
       pos.x ?? currentFeetDcl.x,
       pos.y ?? currentFeetDcl.y,
@@ -1062,7 +1101,7 @@ export class PlayerSystem {
       request.avatarTarget
     )
     clampToWalkBounds(targetFeetDcl, this.walkBounds)
-    const target = dclToThreeVec(targetFeetDcl)
+    const target = this.genesisThreeFromSceneLocalDcl(targetFeetDcl)
     const reposition =
       Math.hypot(target.x - this.root.position.x, target.z - this.root.position.z) > 1e-3 ||
       Math.abs(target.y - this.root.position.y) > 1e-3
@@ -1171,7 +1210,10 @@ export class PlayerSystem {
         rotation: this.stagedCameraPose.rotation.clone()
       }
     }
-    return ReservedEntitiesSync.cameraPose(this.host.camera)
+    const pose = ReservedEntitiesSync.cameraPose(this.host.camera)
+    pose.position.x -= this.focusOriginX
+    pose.position.z -= this.focusOriginZ
+    return pose
   }
 
   /**
@@ -1182,7 +1224,12 @@ export class PlayerSystem {
     const pos = request.position
     const rot = request.rotation
     if (!pos || !rot) return false
-    dclToThreePos(pos.x ?? 0, pos.y ?? 0, pos.z ?? 0, this.host.camera.position)
+    dclToThreePos(
+      (pos.x ?? 0) + this.focusOriginX,
+      pos.y ?? 0,
+      (pos.z ?? 0) + this.focusOriginZ,
+      this.host.camera.position
+    )
     dclToThreeQuat(rot.x ?? 0, rot.y ?? 0, rot.z ?? 0, rot.w ?? 1, this.host.camera.quaternion)
     this.host.camera.updateMatrixWorld(true)
     // Align freecam orbit so release of the hold does not hard-snap.
@@ -1788,7 +1835,7 @@ export class PlayerSystem {
 
     this.root.position.copy(this.physics.positionOut)
     if (this.walkBounds) {
-      const dclPos = threeToDclVec(this.root.position)
+      const dclPos = this.sceneLocalDclFromGenesisThree(this.root.position)
       const beforeX = dclPos.x
       const beforeZ = dclPos.z
       if (clampToWalkBounds(dclPos, this.walkBounds)) {
@@ -1809,7 +1856,7 @@ export class PlayerSystem {
             this.physics.logStaticCollidersNear(three.x, three.y, three.z, 14, 'walk-clamp-probe')
           }
         }
-        this.physics.teleport(dclToThreeVec(dclPos))
+        this.physics.teleport(this.genesisThreeFromSceneLocalDcl(dclPos))
         this.root.position.copy(this.physics.positionOut)
         _velocity.x = 0
         _velocity.z = 0
@@ -2470,9 +2517,9 @@ export class PlayerSystem {
    */
   private teleportTo(positionThree: THREE.Vector3, settle = true, longRespawn = false): void {
     if (this.walkBounds) {
-      const dclPos = threeToDclVec(positionThree)
+      const dclPos = this.sceneLocalDclFromGenesisThree(positionThree)
       clampToWalkBounds(dclPos, this.walkBounds)
-      positionThree.copy(dclToThreeVec(dclPos))
+      this.genesisThreeFromSceneLocalDcl(dclPos, positionThree)
     }
     this.physics.teleport(positionThree)
     _velocity.set(0, 0, 0)
@@ -2592,12 +2639,12 @@ export class PlayerSystem {
     from: THREE.Vector3,
     targetDcl: { x?: number; y?: number; z?: number }
   ): { dx: number; dz: number } {
-    const fromDcl = threeToDclVec(from)
-    const targetThree = dclToThreeVec(
+    const fromLocal = this.sceneLocalDclFromGenesisThree(from)
+    const targetThree = this.genesisThreeFromSceneLocalDcl(
       new THREE.Vector3(
-        targetDcl.x ?? fromDcl.x,
-        targetDcl.y ?? fromDcl.y,
-        targetDcl.z ?? fromDcl.z
+        targetDcl.x ?? fromLocal.x,
+        targetDcl.y ?? fromLocal.y,
+        targetDcl.z ?? fromLocal.z
       )
     )
     return { dx: targetThree.x - from.x, dz: targetThree.z - from.z }

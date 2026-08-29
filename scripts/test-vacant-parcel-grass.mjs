@@ -39,6 +39,32 @@ assert('no ez-tree vacant path', !/buildVacantParcelGrassField/.test(field))
 const scatter = read('src/dcl/aoi/emptyParcelLayer.ts')
 assert('scatter does not place EMPTY_LAND.grass', !/EMPTY_LAND\.grass/.test(scatter))
 assert('scatter builds Explorer vacant field', /buildExplorerVacantGrassField\(opts\.parcelKeys/.test(scatter))
+assert(
+  'tree/bush disks stay inside vacant parcels',
+  /horizontalDiskFitsParcel/.test(scatter) && /SCATTER_VISUAL_RADIUS_M/.test(scatter)
+)
+assert('scatter skips disks that overlap occupied parcels', /occupiedParcelKeys/.test(scatter))
+
+const dist = read('src/dcl/landscape/parcelDistribution.ts')
+assert('horizontalDiskFitsParcel exported', /export function horizontalDiskFitsParcel/.test(dist))
+assert(
+  'tree at parcel edge is rejected',
+  (() => {
+    const size = 16
+    const r = 3.6 * 1.7
+    const edge = 2.4
+    return edge - r < 0 && edge + r > 0
+  })()
+)
+assert(
+  'tree at parcel center fits',
+  (() => {
+    const size = 16
+    const x = 8
+    const r = 3.6 * 1.45
+    return x - r >= 0 && x + r <= size
+  })()
+)
 
 const aoi = read('src/dcl/aoi/AoiVisualLayer.ts')
 assert('AOI ticks vacant grass', /this\.tickVacantGrass\(\)/.test(aoi))

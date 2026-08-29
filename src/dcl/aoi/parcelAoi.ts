@@ -67,8 +67,8 @@ export function parcelsInLoadRadius(
 }
 
 /**
- * Stable SW for city-fill local space (Explorer roads, dirt plane, vacant scatter).
- * Parcel 0,0 — not the FocusOwner base. Scene graphs still offset from FocusOwner.
+ * Stable SW for city-fill **and** scene-graph / PhysX space (Explorer roads, dirt,
+ * vacant scatter, live guests). Parcel 0,0 — FocusOwner is a conversion, not a rebase.
  */
 export const GENESIS_CITY_FILL_ORIGIN = '0,0'
 

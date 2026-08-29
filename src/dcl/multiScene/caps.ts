@@ -31,6 +31,12 @@ export const STICKY_RESTORE_MAX_PARCELS = 16
 
 export const ROAD_PHYS_RADIUS_M = 48
 export const EMPTY_LAND_PHYS_RADIUS_M = 48
+/**
+ * Occupied-scene PhysX (floors/walls) — same 48 m ring as empty-land trees.
+ * Live guests cook from the worker; SDK6/composite shells cook `_collider`
+ * hulls from the attached GLB (CityTiles like JR Art are never live guests).
+ */
+export const LIVE_SCENE_PHYS_RADIUS_M = EMPTY_LAND_PHYS_RADIUS_M
 
 /** Shadow / env-caster / near-PhysX keep. Also the visual cliff while !aoiSceneDistanceVisuals(). */
 export const AOI_SHELL_ENTER_M = 48

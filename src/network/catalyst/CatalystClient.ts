@@ -73,26 +73,89 @@ export async function fetchEntityContentById(
   return tryFetch(`${WORLDS}/contents/${encodeURIComponent(trimmed)}`)
 }
 
+function parcelCoordFromPointer(pointer: string): { x: number; y: number } | null {
+  const n = normalizePointer(pointer)
+  if (!isParcelPointer(n)) return null
+  const [xs, ys] = n.split(',')
+  const x = Number(xs)
+  const y = Number(ys)
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null
+  return { x, y }
+}
+
+/** True when the catalyst entity lists `pointer` on pointers, scene.parcels, or base. */
+export function catalystEntityClaimsPointer(
+  entity: Record<string, unknown>,
+  pointer: string
+): boolean {
+  const want = normalizePointer(pointer)
+  const pointers = Array.isArray(entity.pointers)
+    ? entity.pointers.filter((p): p is string => typeof p === 'string')
+    : []
+  if (pointers.some((p) => normalizePointer(p) === want)) return true
+  const meta =
+    entity.metadata && typeof entity.metadata === 'object'
+      ? (entity.metadata as Record<string, unknown>)
+      : {}
+  const scene =
+    meta.scene && typeof meta.scene === 'object' ? (meta.scene as Record<string, unknown>) : {}
+  const parcels = Array.isArray(scene.parcels)
+    ? scene.parcels.filter((p): p is string => typeof p === 'string')
+    : []
+  if (parcels.some((p) => normalizePointer(p) === want)) return true
+  const base = typeof scene.base === 'string' ? scene.base : ''
+  return base.length > 0 && normalizePointer(base) === want
+}
+
+function pickClaimingEntity(
+  data: unknown,
+  pointer: string
+): { id: string; entity: Record<string, unknown> } | null {
+  if (!Array.isArray(data)) return null
+  for (const row of data) {
+    if (!row || typeof row !== 'object') continue
+    const entity = row as Record<string, unknown>
+    if (!catalystEntityClaimsPointer(entity, pointer)) continue
+    const id = typeof entity.id === 'string' ? entity.id : null
+    if (!id) continue
+    return { id, entity: { ...entity, id } }
+  }
+  return null
+}
+
+async function postEntitiesActive(
+  contentUrl: string,
+  pointers: string[]
+): Promise<unknown> {
+  const res = await fetchWithTimeout(catalystEntitiesActiveUrl(contentUrl), {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pointers: pointers.map(normalizePointer) }),
+    timeoutMs: CATALYST_FETCH_TIMEOUT_MS
+  })
+  if (!res.ok) return null
+  return res.json().catch(() => null)
+}
+
 export async function fetchSceneEntityByPointer(
   contentUrl: string,
   pointer: string
 ): Promise<{ id: string; entity: Record<string, unknown> } | null> {
-  const res = await fetchWithTimeout(catalystEntitiesActiveUrl(contentUrl), {
-    method: 'POST',
-    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ pointers: [normalizePointer(pointer)] }),
-    timeoutMs: CATALYST_FETCH_TIMEOUT_MS
-  })
-  if (!res.ok) return null
+  const want = normalizePointer(pointer)
+  const direct = pickClaimingEntity(await postEntitiesActive(contentUrl, [want]), want)
+  if (direct) return direct
 
-  const data = (await res.json()) as unknown
-  if (!Array.isArray(data) || data.length === 0) return null
-
-  const entity = data[0] as Record<string, unknown>
-  const id = typeof entity.id === 'string' ? entity.id : null
-  if (!id) return null
-
-  return { id, entity: { ...entity, id } }
+  // Catalyst pointer index can omit a cell the deployment still claims
+  // (POST `125,104` empty; the entity at `125,103` lists both parcels).
+  const coord = parcelCoordFromPointer(want)
+  if (!coord) return null
+  const neighbors = [
+    `${coord.x + 1},${coord.y}`,
+    `${coord.x - 1},${coord.y}`,
+    `${coord.x},${coord.y + 1}`,
+    `${coord.x},${coord.y - 1}`
+  ]
+  return pickClaimingEntity(await postEntitiesActive(contentUrl, neighbors), want)
 }
 
 /** Deployment entity id at a Genesis base parcel via Catalyst content API. */

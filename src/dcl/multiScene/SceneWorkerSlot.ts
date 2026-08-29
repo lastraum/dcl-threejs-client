@@ -8,7 +8,7 @@ import type { PerformanceTier, RealmResponse, UserDataResponse } from '../../shi
 import { openExternalUrl } from '../../player/openExternalUrl'
 import type { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
 import {
-  applySecondarySceneRootOrigin,
+  applyGenesisSceneRootOrigin,
   clearSecondarySceneRootOrigin,
   hostPoseToSceneLocal
 } from './secondarySceneOrigin'
@@ -87,6 +87,8 @@ export class SceneWorkerSlot {
   private playFrameOwnedExternally = false
   /** Wall clock of first GPU attach — trickle remaining meshes for a short window. */
   private firstGpuAt = 0
+  /** When hydrate pumps started — empty graphs (0 GLBs) must not pump forever. */
+  private hydrateStartedAt = 0
 
   constructor(private readonly opts: SceneWorkerSlotOptions) {
     this.id = opts.id
@@ -135,7 +137,7 @@ export class SceneWorkerSlot {
     const root = this.system.getEntityStore()?.root
     if (!root) return
     const before = root.position.clone()
-    applySecondarySceneRootOrigin(root, this.scene.baseParcel, this.primaryBaseParcel)
+    applyGenesisSceneRootOrigin(root, this.scene.baseParcel)
     if (before.distanceToSquared(root.position) > 1e-4) {
       this.system.rebakeGpuAfterOriginChange()
     }
@@ -521,10 +523,17 @@ export class SceneWorkerSlot {
   needsHydrationApply(): boolean {
     if (!this.running || this.disposed || this.detached || this.mode === 'tertiary') return false
     const gpu = this.system.countGpuVisuals()
-    if (gpu <= 0) return true
-    if (this.firstGpuAt <= 0) this.firstGpuAt = performance.now()
     const lite = this.system.getAttachProgressLite()
-    if ((lite?.pendingMesh ?? 0) <= 0) return false
+    const pending = lite?.pendingMesh ?? 0
+    if (gpu <= 0) {
+      if (this.hydrateStartedAt <= 0) this.hydrateStartedAt = performance.now()
+      // AETHERIA-class 0-GLB guests: pending=0 forever. Stop stealing leftover
+      // after a short empty-queue window (was 30s × hundreds of pumps).
+      if (pending <= 0 && performance.now() - this.hydrateStartedAt > 2_500) return false
+      return true
+    }
+    if (this.firstGpuAt <= 0) this.firstGpuAt = performance.now()
+    if (pending <= 0) return false
     return performance.now() - this.firstGpuAt < 1_500
   }
 

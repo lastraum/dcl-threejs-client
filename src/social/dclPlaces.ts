@@ -47,6 +47,8 @@ export type DclGenesisPlace = {
   image: string | null
   baseX: number
   baseY: number
+  /** All claimed parcels (`positions` from Places). Used for coord search. */
+  positions: string[]
   userCount: number
   likePercent: number | null
   owner: string | null
@@ -77,6 +79,8 @@ export type DclExploreItem =
 
 export type FetchPlacesGenesisOpts = {
   search?: string
+  /** Parcel keys (`x,y`) — Places `positions=` covering-scene lookup. */
+  positions?: string[]
   orderBy?: PlacesOrderBy
   categories?: string[]
   limit?: number
@@ -127,6 +131,13 @@ function parseBasePosition(raw: unknown): { x: number; y: number } | null {
   const y = Number(m[2])
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null
   return { x, y }
+}
+
+/**
+ * Whole-query Genesis parcel (`125,104` / `125, 104`). Not a substring of a title search.
+ */
+export function parsePlaceCoordQuery(raw: string): { x: number; y: number } | null {
+  return parseBasePosition(raw.trim())
 }
 
 const parcelBasePositionCache = new Map<string, { x: number; y: number } | null>()
@@ -197,6 +208,14 @@ function mapGenesisPlace(item: unknown): DclGenesisPlace | null {
   const categories = Array.isArray(o.categories)
     ? o.categories.filter((c): c is string => typeof c === 'string' && c.trim().length > 0)
     : []
+  const positions = Array.isArray(o.positions)
+    ? o.positions
+        .filter((p): p is string => typeof p === 'string' && /^-?\d+\s*,\s*-?\d+$/.test(p.trim()))
+        .map((p) => p.trim().replace(/\s*,\s*/g, ','))
+    : []
+  if (!positions.includes(`${coords.x},${coords.y}`)) {
+    positions.unshift(`${coords.x},${coords.y}`)
+  }
   const isMostActive = o.is_most_active_place === 1 || o.is_most_active_place === true
   return {
     id,
@@ -204,6 +223,7 @@ function mapGenesisPlace(item: unknown): DclGenesisPlace | null {
     image,
     baseX: coords.x,
     baseY: coords.y,
+    positions,
     userCount,
     likePercent: likePercentFromRow(o),
     owner: ownerRaw.length > 0 ? ownerRaw : null,
@@ -287,6 +307,10 @@ export async function fetchDclGenesisPlaces(opts?: FetchPlacesGenesisOpts): Prom
   if (offset > 0) qs.set('offset', String(offset))
   const s = opts?.search?.trim() ?? ''
   if (s.length >= 3) qs.set('search', s)
+  for (const raw of opts?.positions ?? []) {
+    const pos = typeof raw === 'string' ? raw.trim().replace(/\s*,\s*/g, ',') : ''
+    if (/^-?\d+,-?\d+$/.test(pos)) qs.append('positions', pos)
+  }
   for (const raw of opts?.categories ?? []) {
     const c = typeof raw === 'string' ? raw.trim() : ''
     if (c.length > 0 && /^[a-z0-9_-]+$/i.test(c)) qs.append('categories', c)
@@ -369,7 +393,11 @@ export function matchesPlaceSearch(
   const title = place.title.toLowerCase()
   const owner = (place.owner ?? '').toLowerCase()
   const coords = `${place.baseX},${place.baseY}`.replace(/\s/g, '')
-  return title.includes(queryLower) || owner.includes(queryLower) || coords.includes(compactQuery)
+  if (title.includes(queryLower) || owner.includes(queryLower) || coords.includes(compactQuery)) {
+    return true
+  }
+  const compact = compactQuery.replace(/\s/g, '')
+  return place.positions.some((p) => p.replace(/\s/g, '').toLowerCase() === compact)
 }
 
 export function matchesWorldSearch(world: DclPlacesWorld, queryLower: string): boolean {
@@ -380,12 +408,17 @@ export function matchesWorldSearch(world: DclPlacesWorld, queryLower: string): b
   return title.includes(queryLower) || worldName.includes(queryLower) || id.includes(queryLower)
 }
 
-export function genesisPlaceJumpRoute(place: DclGenesisPlace): RouteTarget {
+export function genesisPlaceJumpRoute(
+  place: DclGenesisPlace,
+  landing?: { x: number; y: number }
+): RouteTarget {
+  const x = landing?.x ?? place.baseX
+  const y = landing?.y ?? place.baseY
   return {
     kind: 'coords',
-    x: place.baseX,
-    y: place.baseY,
-    segment: `${place.baseX},${place.baseY}`
+    x,
+    y,
+    segment: `${x},${y}`
   }
 }
 

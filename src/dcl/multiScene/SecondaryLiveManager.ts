@@ -14,7 +14,8 @@ import {
   secondaryLiveEnterRadiusM,
   secondaryLiveKeepRadiusM,
   secondaryTickIntervalMs,
-  tertiaryResidentCap
+  tertiaryResidentCap,
+  LIVE_SCENE_PHYS_RADIUS_M
 } from './caps'
 import { sceneParcelCount } from './sceneWeight'
 import type { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
@@ -84,6 +85,8 @@ export class SecondaryLiveManager {
   private loadBoot = false
   /** Last reconcile boot list size (loading-screen progress). */
   private lastBootTarget = 0
+  /** Last boot-list titles (loading overlay / `[aoi] live-guest load` log). */
+  private lastBootTitles: string[] = []
 
   bind(opts: {
     primaryScene: ResolvedScene
@@ -347,6 +350,22 @@ export class SecondaryLiveManager {
     return out
   }
 
+  collectCachedCollidersFor(entityId: string): PhysicsColliderDesc[] {
+    const slot = this.slots.get(entityId)
+    if (!slot) return []
+    return [...slot.getCachedRemappedColliders()]
+  }
+
+  recaptureColliders(entityId: string): PhysicsColliderDesc[] {
+    const slot = this.slots.get(entityId)
+    if (!slot) return []
+    try {
+      return slot.captureRemappedColliders()
+    } catch {
+      return [...slot.getCachedRemappedColliders()]
+    }
+  }
+
   /** After World pushes sticky colliders once — stop re-streaming them every async frame. */
   markAllCollidersSynced(): void {
     for (const slot of this.slots.values()) {
@@ -414,7 +433,12 @@ export class SecondaryLiveManager {
    * Loading-screen progress: live guests with at least one GPU mesh vs the
    * last boot target (capped occupied neighbors).
    */
-  liveGuestLoadStats(): { ready: number; target: number; booting: number } {
+  liveGuestLoadStats(): {
+    ready: number
+    target: number
+    booting: number
+    titles: string[]
+  } {
     let ready = 0
     for (const slot of this.slots.values()) {
       if (slot.residentMode !== 'secondary') continue
@@ -423,7 +447,8 @@ export class SecondaryLiveManager {
     return {
       ready,
       target: this.lastBootTarget,
-      booting: this.booting.size
+      booting: this.booting.size,
+      titles: this.lastBootTitles
     }
   }
 
@@ -920,6 +945,7 @@ export class SecondaryLiveManager {
       bootList.push(c)
     }
     this.lastBootTarget = bootList.length
+    this.lastBootTitles = bootList.map((c) => c.title || c.base)
 
     const wantSecondary = new Set(bootList.map((c) => c.entityId))
     // Hysteresis: already-loaded (or sticky) stay secondary while player ≤ keepM.
@@ -1020,12 +1046,25 @@ export class SecondaryLiveManager {
           /* keep base */
         }
       }
-      const scene = await resolveSceneFromRoute({
+      let scene = await resolveSceneFromRoute({
         kind: 'coords',
         x: rx,
         y: ry,
         segment: `${rx},${ry}`
       })
+      // Under-feet parcel can miss the catalyst pointer index (125,104 empty;
+      // covering scene is indexed at 125,103). Retry the deployment base.
+      if (
+        (!scene?.mainEntry || !scene.entityId) &&
+        (rx !== req.resolveX || ry !== req.resolveY)
+      ) {
+        scene = await resolveSceneFromRoute({
+          kind: 'coords',
+          x: req.resolveX,
+          y: req.resolveY,
+          segment: `${req.resolveX},${req.resolveY}`
+        })
+      }
       if (this.disposed || !scene?.mainEntry || !scene.entityId) return
       if (this.primaryScene?.entityId === scene.entityId) return
       this.rememberFootprint(req.entityId, [req.base, ...(req.parcels ?? scene.parcels)])
@@ -1204,16 +1243,29 @@ export class SecondaryLiveManager {
     setTimeout(pump, 0)
   }
 
-  /** Live secondaries the player is standing in (footprint ≤2 m) — keep floors. */
-  standingInPhysGuestIds(): string[] {
+  /**
+   * Live secondaries close enough to cook PhysX (floors/walls).
+   * Radius matches empty-land trees ({@link LIVE_SCENE_PHYS_RADIUS_M}) so adjacent
+   * occupied land is solid — not only the cell under the feet (old ≤2 m gate).
+   */
+  nearbyPhysGuestIds(): string[] {
     const out: string[] = []
     for (const [id, dist] of this.lastDistM) {
-      if (!Number.isFinite(dist) || dist > 2) continue
+      if (!Number.isFinite(dist) || dist > LIVE_SCENE_PHYS_RADIUS_M) continue
       const slot = this.slots.get(id)
-      if (!slot || slot.residentMode !== 'secondary') continue
+      if (!slot) continue
+      // Promote-settle forces tertiary (scripts off). Atelier hulls must stay
+      // solid while walking into JR Art — plaza-scale sticky never dumps PhysX.
+      if (this.megaSticky(slot)) continue
+      if (slot.residentMode !== 'secondary' && slot.residentMode !== 'tertiary') continue
       out.push(`secondary:${id}`)
     }
     return out
+  }
+
+  /** @deprecated Use {@link nearbyPhysGuestIds}. */
+  standingInPhysGuestIds(): string[] {
+    return this.nearbyPhysGuestIds()
   }
 
   async tickAsync(opts?: {

@@ -21323,6 +21323,8 @@
       }
       :root {
         --social-shell-header-height: calc(58px + env(safe-area-inset-top, 0px));
+        --scene-landing-shell-max: min(96vw, 1728px);
+        --scene-landing-shell-left: max(0px, calc((100vw - var(--scene-landing-shell-max)) / 2));
         --social-chat-dock-panel-width: clamp(280px, 28vw, 420px);
         --social-chat-dock-pills-width: 72px;
         /* Collapsed until bottom-right FAB expands the dock. */
@@ -21445,6 +21447,44 @@
         display: none !important;
       }
       /* 2D social shell — big bottom-left chat expand / collapse (dock is left) */
+      /* Landing: one centered column for nav + chat + scene card (not viewport-wide). */
+      body.scene-landing-route:not(.scene-landing-stream-watch) .scene-landing-view .social-shell-topnav,
+      body.scene-landing-route:not(.scene-landing-stream-watch) .scene-landing-view__topnav {
+        padding-left: max(clamp(20px, 3.5vw, 52px), var(--scene-landing-shell-left));
+        padding-right: max(clamp(20px, 3.5vw, 52px), var(--scene-landing-shell-left));
+      }
+      body.scene-landing-route:not(.scene-landing-stream-watch) .scene-landing-view__main {
+        width: 100%;
+        max-width: var(--scene-landing-shell-max);
+        margin-left: auto;
+        margin-right: auto;
+        box-sizing: border-box;
+      }
+      body.scene-landing-route:not(.scene-landing-stream-watch) .social-chat-dock {
+        left: var(--scene-landing-shell-left);
+      }
+      body.scene-landing-route:not(.scene-landing-stream-watch) .social-chat-dock__fab {
+        left: max(
+          var(--social-chat-fab-left),
+          calc(var(--scene-landing-shell-left) + 16px)
+        );
+      }
+      html.client-tablet body.scene-landing-route .social-chat-dock,
+      html.client-mobile body.scene-landing-route .social-chat-dock {
+        left: 0;
+      }
+      html.client-tablet body.scene-landing-route .social-chat-dock__fab,
+      html.client-mobile body.scene-landing-route .social-chat-dock__fab {
+        left: var(--social-chat-fab-left);
+      }
+      @media (max-width: 767px) {
+        body.scene-landing-route .social-chat-dock {
+          left: 0;
+        }
+        body.scene-landing-route .social-chat-dock__fab {
+          left: var(--social-chat-fab-left);
+        }
+      }
       .social-chat-dock__fab {
         position: fixed;
         left: var(--social-chat-fab-left);
@@ -28563,7 +28603,7 @@
       .scene-watch-root.scene-watch-root--social {
         --scene-dest-mock-accent: #7a3cff;
         --scene-dest-mock-surface: rgba(14, 10, 22, 0.72);
-        --scene-watch-dest-main-max: min(92vw, 1420px);
+        --scene-watch-dest-main-max: 100%;
         min-height: 100%;
       }
       .scene-watch-dest-v2-vert {
@@ -28580,7 +28620,7 @@
         justify-content: center;
         align-items: stretch;
         gap: clamp(20px, 2.8vw, 40px);
-        padding: 0 clamp(10px, 2vw, 28px);
+        padding: 0 clamp(12px, 2vw, 28px);
         box-sizing: border-box;
         width: 100%;
       }
@@ -29564,7 +29604,7 @@
       .scene-landing-view--stream-watch .scene-watch-dest-v2-shell {
         padding: 10px 16px 14px;
         box-sizing: border-box;
-        max-width: min(1400px, 100%);
+        max-width: min(1120px, 100%);
         margin: 0 auto;
       }
       /* Companion scene info pill above cast video card */

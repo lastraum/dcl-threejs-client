@@ -89,6 +89,18 @@ export class MultiSceneRuntime {
     return this.secondary?.collectAllCachedColliders() ?? []
   }
 
+  collectResidentCollidersFor(
+    entityId: string
+  ): import('../../physics/PhysXWorld').PhysicsColliderDesc[] {
+    return this.secondary?.collectCachedCollidersFor(entityId) ?? []
+  }
+
+  recaptureResidentColliders(
+    entityId: string
+  ): import('../../physics/PhysXWorld').PhysicsColliderDesc[] {
+    return this.secondary?.recaptureColliders(entityId) ?? []
+  }
+
   markResidentCollidersSynced(): void {
     this.secondary?.markAllCollidersSynced()
     // Seed tracking immediately so the next tickAsync does not treat sticky ids as gone
@@ -224,8 +236,20 @@ export class MultiSceneRuntime {
     this.secondary?.setLoadBoot(enabled)
   }
 
-  liveGuestLoadStats(): { ready: number; target: number; booting: number } {
-    return this.secondary?.liveGuestLoadStats() ?? { ready: 0, target: 0, booting: 0 }
+  liveGuestLoadStats(): {
+    ready: number
+    target: number
+    booting: number
+    titles: string[]
+  } {
+    return (
+      this.secondary?.liveGuestLoadStats() ?? {
+        ready: 0,
+        target: 0,
+        booting: 0,
+        titles: []
+      }
+    )
   }
 
   /** Prefer live-secondary boot for the parcel under feet (promote without /goto). */

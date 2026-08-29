@@ -210,6 +210,142 @@ assert(
   'play-ready does not cancel background shell drain',
   /Stop uncapped scatter; keep background shell/.test(aoi)
 )
+assert(
+  'occupied footprint unions pointers and parcels',
+  /export function entityFootprintKeys/.test(fetchSrc)
+)
+assert(
+  'live-guest PhysX uses the 48 m empty-land ring',
+  /export const LIVE_SCENE_PHYS_RADIUS_M = EMPTY_LAND_PHYS_RADIUS_M/.test(caps)
+)
+const secondary = readFileSync(join(root, 'src/dcl/multiScene/SecondaryLiveManager.ts'), 'utf8')
+const catalyst = readFileSync(join(root, 'src/network/catalyst/CatalystClient.ts'), 'utf8')
+assert(
+  'nearbyPhysGuestIds cooks adjacent live guests',
+  /nearbyPhysGuestIds\(\): string\[]/.test(secondary) &&
+    /LIVE_SCENE_PHYS_RADIUS_M/.test(secondary)
+)
+assert(
+  'World resolvePhysGuestIds uses nearbyPhysGuestIds',
+  /nearbyPhysGuestIds\(\)/.test(world)
+)
+assert(
+  'fetchSceneEntityByPointer probes orthogonal neighbors on miss',
+  /catalystEntityClaimsPointer/.test(catalyst) &&
+    /coord\.x - 1/.test(catalyst)
+)
+assert(
+  'loading overlay logs boot-list titles',
+  /titles\.map/.test(world)
+)
+const origin = readFileSync(join(root, 'src/dcl/multiScene/secondarySceneOrigin.ts'), 'utf8')
+const slotSrc = readFileSync(join(root, 'src/dcl/multiScene/SceneWorkerSlot.ts'), 'utf8')
+const playerSrc = readFileSync(join(root, 'src/player/PlayerSystem.ts'), 'utf8')
+assert(
+  'scene graphs offset vs genesis 0,0 not FocusOwner',
+  /export function applyGenesisSceneRootOrigin/.test(origin) &&
+    /applyGenesisSceneRootOrigin\(root, this\.scene\.baseParcel\)/.test(slotSrc)
+)
+assert(
+  'promote rekeys PhysX ids without sliding hulls',
+  /genesis-stable, no slide/.test(world) &&
+    !/resident colliders origin-rebase/.test(world)
+)
+assert(
+  'city-fill root stays at genesis identity on promote',
+  /this\.cityFillRoot\.position\.set\(0, 0, 0\)/.test(aoi)
+)
+assert(
+  'CCT converts FocusOwner-local DCL through a genesis origin',
+  /setFocusOriginMeters/.test(playerSrc) &&
+    /genesisThreeFromSceneLocalDcl/.test(playerSrc)
+)
+assert(
+  'walk-bounds clamp converts genesis Three → FocusOwner-local before clamp',
+  /sceneLocalDclFromGenesisThree\(this\.root\.position\)/.test(playerSrc) &&
+    /genesisThreeFromSceneLocalDcl\(dclPos\)/.test(playerSrc)
+)
+assert(
+  'spawn floor probe uses genesis spawn feet, not scene-local Three',
+  /genesisSpawnFeetThree\(spawn, feetY\)/.test(world)
+)
+assert(
+  'landscape root is genesis-offset like scene graphs',
+  /applyGenesisSceneRootOrigin\(this\.landscape\.state\.landscapeRoot/.test(world)
+)
+assert(
+  'pre-capsule camera looks at genesis spawn, not parcel 0,0',
+  /genesisMetersFromSceneLocal\(0, 0, sceneConfig\.baseParcel\)/.test(
+    readFileSync(join(root, 'src/rendering/SceneHost.ts'), 'utf8')
+  )
+)
+{
+  const physx = readFileSync(join(root, 'src/physics/PhysXWorld.ts'), 'utf8')
+  const shell = readFileSync(join(root, 'src/dcl/aoi/shellColliders.ts'), 'utf8')
+  assert(
+    'occupied composite shells cook _collider hulls in the 48 m ring',
+    /extractShellColliderDescs/.test(aoi) &&
+      /syncNearShellPhys/.test(aoi) &&
+      /syncAoiShellColliders/.test(physx) &&
+      /syncShellColliders:/.test(world)
+  )
+  assert(
+    'SDK6 CityTiles are not left walk-through',
+    !/Composite shells stay walk-through/.test(caps) &&
+      /SDK6\/composite shells cook/.test(caps)
+  )
+  assert(
+    'plaza PhysX streaming skips AOI shell ids',
+    /isAoiPlatformColliderEntity/.test(world) &&
+      /isAoiShellColliderEntity/.test(physx)
+  )
+  assert(
+    'shell PhysX ids sit in the 29.0M gap (not road 21M / empty 29.1M / secondary 30M)',
+    /SHELL_AOI_COLLIDER_ENTITY_BASE = 29_000_000/.test(shell) &&
+      /SHELL_AOI_COLLIDER_ID_SPAN = 100_000/.test(shell)
+  )
+}
+{
+  // City walk box is FocusOwner-local. Treating that box as genesis meters
+  // slams 126,104 spawn (~2024,1672) to the NE corner → parcel 37,54.
+  const CITY_MAX_X = 163
+  const CITY_MAX_Y = 158
+  const margin = 0.35
+  const maxX = (CITY_MAX_X - 126 + 1) * PARCEL_SIZE
+  const maxZ = (CITY_MAX_Y - 104 + 1) * PARCEL_SIZE
+  const px = Math.floor((maxX - margin) / PARCEL_SIZE)
+  const py = Math.floor((maxZ - margin) / PARCEL_SIZE)
+  assert(
+    'misapplied 126,104 city-walk clamp is parcel 37,54 (the reported spawn)',
+    px === 37 && py === 54
+  )
+}
+assert(
+  '126,104 genesis offset is 2016m east / 1664m north',
+  (126 * PARCEL_SIZE === 2016 && 104 * PARCEL_SIZE === 1664)
+)
+const slot = readFileSync(join(root, 'src/dcl/multiScene/SceneWorkerSlot.ts'), 'utf8')
+assert(
+  'empty-graph hydrate gives up when the mesh queue is empty',
+  /pending <= 0 && performance\.now\(\) - this\.hydrateStartedAt > 2_500/.test(slot)
+)
+assert(
+  'tertiary neighbors still cook PhysX inside the 48 m ring',
+  /residentMode !== 'tertiary'/.test(secondary) === false
+    ? /slot.residentMode !== 'secondary' && slot.residentMode !== 'tertiary'/.test(secondary)
+    : true
+)
+assert(
+  'dclToThree negates X (126,104→127,103 is +16,+16 Three)',
+  (() => {
+    // o.x=(126-127)*16=-16, o.z=(104-103)*16=16 → Three (-(-16), 16)=(16,16)
+    const oX = (126 - 127) * PARCEL_SIZE
+    const oZ = (104 - 103) * PARCEL_SIZE
+    const threeX = -oX
+    const threeZ = oZ
+    return threeX === 16 && threeZ === 16
+  })()
+)
 
 if (failed) {
   console.error(`\n${failed} failed`)

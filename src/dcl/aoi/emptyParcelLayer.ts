@@ -5,10 +5,15 @@ import { EMPTY_LAND } from '../landscape/Data/EmptyLandCatalog'
 import type { EzTreeGrassFieldHandle } from '../landscape/EzTreeGrassField'
 import { buildExplorerVacantGrassField } from '../landscape/ExplorerVacantGrassField'
 import { buildInstancedScatter, type ScatterInstance } from '../landscape/gltfInstancing'
-import { distributedParcelPositions } from '../landscape/parcelDistribution'
+import {
+  distributedParcelPositions,
+  horizontalDiskFitsParcel,
+  horizontalDiskHitsAabb
+} from '../landscape/parcelDistribution'
 import { dclSceneToLandscapeThree } from '../landscape/Utils/SceneSpace'
 import { hashParcelCoords, mulberry32, pickInt } from '../landscape/Utils/SeededRandom'
 import { parseParcelKey } from '../content/parseParcel'
+import { PARCEL_SIZE } from '../content/types'
 import { isCatalystEmptyLandEntity, type ActiveSceneEntity } from './fetchActiveEntities'
 import { parcelSwSceneLocal } from './parcelAoi'
 
@@ -49,11 +54,21 @@ const EMPTY_SCATTER: EmptyScatterCounts = {
   rocks: [0, 1]
 }
 
+type ScatterKind = 'tree' | 'rock' | 'bush'
+
 /** Simple box half-size in meters (scale multiplies) for tree trunks / rock boulders. */
 const TREE_COLLIDER = { w: 0.55, h: 2.4, d: 0.55 }
 const ROCK_COLLIDER = { w: 0.7, h: 0.55, d: 0.7 }
-
-type ScatterKind = 'tree' | 'rock' | 'bush'
+/**
+ * Horizontal visual radius at scale 1 — canopy/bush volume, not the thin trunk box.
+ * Placement must keep this disk inside the vacant parcel so trees do not hang into
+ * occupied scenes (Atelier walls with a tree through the window).
+ */
+const SCATTER_VISUAL_RADIUS_M: Record<ScatterKind, number> = {
+  tree: 3.6,
+  bush: 1.4,
+  rock: 0.85
+}
 
 /**
  * Build instanced trees/bushes/rocks on vacant AOI parcels + simple box colliders
@@ -64,6 +79,8 @@ export async function buildEmptyParcelScatter(opts: {
   cache: AssetCache
   parcelKeys: string[]
   primaryBase: string
+  /** Occupied scene parcels — scatter disks must not overlap these. */
+  occupiedParcelKeys?: Iterable<string>
 }): Promise<{
   root: THREE.Group
   colliders: PhysicsColliderDesc[]
@@ -75,6 +92,25 @@ export async function buildEmptyParcelScatter(opts: {
   if (!opts.parcelKeys.length) return { root, colliders, grass: null }
 
   const base = parseParcelKey(opts.primaryBase)
+  const occupied = new Set<string>()
+  for (const raw of opts.occupiedParcelKeys ?? []) {
+    const k = raw.trim()
+    if (k) occupied.add(k)
+  }
+  const occupiedAabbs: Array<{ minX: number; minZ: number; maxX: number; maxZ: number }> = []
+  for (const key of occupied) {
+    try {
+      const sw = parcelSwSceneLocal(key, opts.primaryBase)
+      occupiedAabbs.push({
+        minX: sw.x,
+        minZ: sw.z,
+        maxX: sw.x + PARCEL_SIZE,
+        maxZ: sw.z + PARCEL_SIZE
+      })
+    } catch {
+      /* skip */
+    }
+  }
   const byHash = new Map<string, ScatterInstance[]>()
   const kindByHash = new Map<string, ScatterKind>()
 
@@ -109,20 +145,33 @@ export async function buildEmptyParcelScatter(opts: {
         inset,
         minSeparation: sep
       })
+      const r0 = SCATTER_VISUAL_RADIUS_M[kind]
       for (const loc of locals) {
+        const scale = scaleMin + rng() * scaleSpan
+        const radius = r0 * scale
+        if (!horizontalDiskFitsParcel(loc.x, loc.z, radius)) continue
+        const wx = sw.x + loc.x
+        const wz = sw.z + loc.z
+        if (
+          occupiedAabbs.some((b) =>
+            horizontalDiskHitsAabb(wx, wz, radius, b.minX, b.minZ, b.maxX, b.maxZ)
+          )
+        ) {
+          continue
+        }
         const hash = pool[Math.floor(rng() * pool.length)]!
         push(hash, kind, {
-          x: sw.x + loc.x,
-          z: sw.z + loc.z,
+          x: wx,
+          z: wz,
           rotY: rng() * Math.PI * 2,
-          scale: scaleMin + rng() * scaleSpan
+          scale
         })
       }
     }
 
-    place(EMPTY_LAND.landscapeTrees, 'tree', EMPTY_SCATTER.trees, 5.5, 2.4, 1.45, 0.5)
-    place(EMPTY_LAND.bushes, 'bush', EMPTY_SCATTER.bushes, 2.8, 1.6, 1.15, 0.4)
-    place(EMPTY_LAND.rocks, 'rock', EMPTY_SCATTER.rocks, 3, 1.6, 0.85, 0.4)
+    place(EMPTY_LAND.landscapeTrees, 'tree', EMPTY_SCATTER.trees, 5.5, 5.8, 1.45, 0.5)
+    place(EMPTY_LAND.bushes, 'bush', EMPTY_SCATTER.bushes, 2.8, 2.2, 1.15, 0.4)
+    place(EMPTY_LAND.rocks, 'rock', EMPTY_SCATTER.rocks, 3, 1.8, 0.85, 0.4)
   }
 
   // Cap total instances per prop type for large radii

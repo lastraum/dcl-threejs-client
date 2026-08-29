@@ -26,7 +26,7 @@ import {
 } from '../player/SceneBounds'
 import { genesisCityWalkBounds } from '../player/genesisCityBounds'
 import { AoiVisualLayer } from '../dcl/aoi/AoiVisualLayer'
-import { absoluteParcelAtSceneLocal } from '../dcl/aoi/parcelAoi'
+import { absoluteParcelAtSceneLocal, genesisMetersFromSceneLocal } from '../dcl/aoi/parcelAoi'
 import { ScenePromoteController } from '../dcl/aoi/ScenePromoteController'
 import type { MultiSceneRuntime } from '../dcl/multiScene/MultiSceneRuntime'
 import { PeMainThreadMirror } from '../dcl/multiScene/PeMainThreadMirror'
@@ -36,6 +36,7 @@ import {
   ROAD_PHYS_RADIUS_M
 } from '../dcl/multiScene/caps'
 import { SECONDARY_PHYS_BASE } from '../dcl/multiScene/physOffsets'
+import { applyGenesisSceneRootOrigin } from '../dcl/multiScene/secondarySceneOrigin'
 import { lastFrameOverBudget, scheduleOffPlayRaf } from '../rendering/mainThreadYield'
 import { whenDocumentVisible } from '../util/documentVisibility'
 import {
@@ -941,6 +942,7 @@ export class World {
           | undefined) ?? null
       if (this.landscape.state.landscapeRoot) {
         this.landscape.state.landscapeRoot.visible = true
+        applyGenesisSceneRootOrigin(this.landscape.state.landscapeRoot, scene.baseParcel)
         this.host.scene.add(this.landscape.state.landscapeRoot)
       }
       // Mountains atmospheric haze (exp2 fog).
@@ -1060,6 +1062,7 @@ export class World {
 
     this.loadedPrimaryScene = scene
     this.rememberPrimaryOccupancy(scene)
+    this.syncGenesisFrameOrigin(scene)
     // Neighbors stay off until notifyPlayReady (setNeighborActivityEnabled).
     // ?noaoi=1 — never bind AOI / promote / live secondaries (primary-only CBD debug).
     this.multiScene?.setSecondaryActivityEnabled(false)
@@ -1080,6 +1083,13 @@ export class World {
         clearEmptyLandColliders: () => this.physics.clearAoiEmptyLandColliders(),
         purgeEmptyLandColliders: (entityIds) => {
           this.physics.purgeAoiEmptyLandColliders(entityIds)
+        },
+        syncShellColliders: (descs) => {
+          this.physics.syncAoiShellColliders(descs)
+        },
+        clearShellColliders: () => this.physics.clearAoiShellColliders(),
+        purgeShellColliders: (entityIds) => {
+          this.physics.purgeAoiShellColliders(entityIds)
         },
         onSecondaryCandidates: (candidates) => {
           this.multiScene?.reconcileSecondaries(candidates)
@@ -1116,6 +1126,7 @@ export class World {
     if (scene.mainEntry && scene.entityId) {
       this.resetColliderBootState()
       this.sceneScript.prepare(scene, this.assets, this.host)
+      this.applyPrimaryGenesisRoot(scene)
       // Scene audio listener is created in prepare — wire spatial voice now.
       this.wireVoiceSpatial()
       this.sceneScript.setLiveKitVideoBinder((video, onUpdate) =>
@@ -1128,7 +1139,11 @@ export class World {
         this.sceneScript.setRemotePlayerIdentity(entity, identity)
       )
       dclToThreeVec(
-        new THREE.Vector3(scene.spawn.x, scene.spawn.y, scene.spawn.z),
+        new THREE.Vector3(
+          scene.spawn.x + genesisMetersFromSceneLocal(0, 0, scene.baseParcel).x,
+          scene.spawn.y,
+          scene.spawn.z + genesisMetersFromSceneLocal(0, 0, scene.baseParcel).z
+        ),
         this.colliderCookPriority
       )
       this.sceneScript.setCollidersCookCallback((entity) => this.onColliderCookRequest(entity))
@@ -1353,6 +1368,7 @@ export class World {
       this.sceneScript.dispose()
       this.assets.setScene(scene)
       this.sceneScript.prepare(scene, this.assets, this.host)
+      this.applyPrimaryGenesisRoot(scene)
       this.bindPrimarySceneRuntime(scene)
 
       if (this.playerMode && this.player) {
@@ -1798,6 +1814,7 @@ export class World {
       this.sceneCommsConnected = true
       const target = this.buildCommsTarget(scene)
       this.comms.bindSceneTarget(target)
+      this.syncGenesisFrameOrigin()
       this.comms.applyRealmAbout(scene.realm, scene.commsPointer)
       this.comms.pruneUnusedLiveKitForTarget({ isWorld: target.isWorld === true })
       // Landing may have scene LiveKit without archipelago island — force realm path.
@@ -1967,6 +1984,7 @@ export class World {
     }
 
     // ONE platform prep: settle graph → entity-local cook → ready. No integrity ladder.
+    this.syncGenesisFrameOrigin(scene)
     await this.prepareCollidersForPlay(scene, onProgress)
 
     // Hold avatar + CCT out of the scene until authored colliders solidly under spawn.
@@ -1986,6 +2004,7 @@ export class World {
     // After seal: only cook truly missing actors (never force-recook — kills plaza SQ).
     await this.ensurePrimaryColliderIntegrity('post-avatar', 48, { postSeal: true })
     this.physics.warmStaticScene()
+    this.syncGenesisFrameOrigin()
     await this.player.initCapsule(
       scene.spawn,
       walkBounds,
@@ -2153,7 +2172,14 @@ export class World {
     const feetDcl = new THREE.Vector3(spawn.x, feetY, spawn.z)
     const playerEntityDcl = feetDclToPlayerEntityPosition(feetDcl)
     const rotation = ReservedEntitiesSync.playerRotationFromYaw(0)
-    const feetThree = dclToThreeVec(feetDcl.clone())
+    const origin = genesisMetersFromSceneLocal(
+      0,
+      0,
+      this.loadedPrimaryScene?.baseParcel ?? '0,0'
+    )
+    const feetThree = dclToThreeVec(
+      new THREE.Vector3(feetDcl.x + origin.x, feetDcl.y, feetDcl.z + origin.z)
+    )
     return {
       player: {
         position: playerEntityDcl,
@@ -2433,7 +2459,7 @@ export class World {
     const timeoutMs = 25_000
     let lastReady = -1
     while (performance.now() - started < timeoutMs) {
-      const { ready, target, booting } = multi.liveGuestLoadStats()
+      const { ready, target, booting, titles } = multi.liveGuestLoadStats()
       if (ready !== lastReady) {
         lastReady = ready
         const denom = Math.max(target, ready, 1)
@@ -2441,8 +2467,9 @@ export class World {
           `Loading nearby scenes… ${ready}/${denom}`,
           0.82 + 0.03 * Math.min(1, ready / denom)
         )
+        const named = titles.length ? ` ${titles.map((t) => `“${t}”`).join(' · ')}` : ''
         console.info(
-          `[aoi] live-guest load ready=${ready} target=${target} booting=${booting}`
+          `[aoi] live-guest load ready=${ready} target=${target} booting=${booting}${named}`
         )
       }
       if (target > 0 && ready >= target && booting === 0) break
@@ -3308,8 +3335,7 @@ export class World {
         const extracted = descs.length
         let missing = 0
         for (const d of descs) {
-          if (this.physics.isAoiRoadColliderEntity(d.entity)) continue
-          if (this.physics.isAoiEmptyLandColliderEntity(d.entity)) continue
+          if (this.physics.isAoiPlatformColliderEntity(d.entity)) continue
           if (this.isPlazaScenePhysFar(d, ROAD_PHYS_RADIUS_M)) continue
           if (!this.physics.hasStaticActor(d.entity)) missing++
         }
@@ -3402,10 +3428,7 @@ export class World {
   ): Promise<void> {
     if (!this.playerMode) return
     const started = performance.now()
-    dclToThreeVec(
-      new THREE.Vector3(scene.spawn.x, scene.spawn.y, scene.spawn.z),
-      this.colliderCookPriority
-    )
+    this.genesisSpawnFeetThree(scene.spawn, scene.spawn.y, scene.baseParcel, this.colliderCookPriority)
 
     // A/B: skip full boot extract+cook. CCT walks infinite ground only.
     if (skipPhysxColliders()) {
@@ -3594,8 +3617,7 @@ export class World {
     // Pre-seal: re-cook geom-mismatched actors (scale settle).
     // Post-seal: missing actors only — force-recook replaceStatic thrash softs plaza SQ.
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
-      if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
-      if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
+      if (this.physics.isAoiPlatformColliderEntity(desc.entity)) continue
       if (this.isPlazaScenePhysFar(desc, ROAD_PHYS_RADIUS_M)) continue
       if (!this.physics.hasStaticActor(desc.entity)) {
         this.colliderCookQueue.add(desc.entity)
@@ -3617,8 +3639,7 @@ export class World {
     let missing = 0
     let geomMismatch = 0
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
-      if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
-      if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
+      if (this.physics.isAoiPlatformColliderEntity(desc.entity)) continue
       if (this.isPlazaScenePhysFar(desc, ROAD_PHYS_RADIUS_M)) continue
       if (!this.physics.hasStaticActor(desc.entity)) {
         missing++
@@ -3682,8 +3703,7 @@ export class World {
     let added = 0
     const missingIds: number[] = []
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
-      if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
-      if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
+      if (this.physics.isAoiPlatformColliderEntity(desc.entity)) continue
       if (this.physics.hasStaticActor(desc.entity)) continue
       // Hidden (scale≈0) — not missing. Recook when the scene scales it back up.
       if (isDegenerateCookScale(desc.matrix)) continue
@@ -3729,8 +3749,7 @@ export class World {
     const now = performance.now()
     let scaleQueued = 0
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
-      if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
-      if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
+      if (this.physics.isAoiPlatformColliderEntity(desc.entity)) continue
       if (!this.physics.hasStaticActor(desc.entity)) continue
       if (isDegenerateCookScale(desc.matrix)) {
         this.physics.invalidateStaticCollider(desc.entity)
@@ -3973,8 +3992,7 @@ export class World {
   private applyColliderPoseSlidesForPhysIds(physIds: number[]): void {
     if (!this.playerMode || !physIds.length) return
     for (const physId of physIds) {
-      if (this.physics.isAoiRoadColliderEntity(physId)) continue
-      if (this.physics.isAoiEmptyLandColliderEntity(physId)) continue
+      if (this.physics.isAoiPlatformColliderEntity(physId)) continue
       this.sceneScript.refreshColliderPose(physId)
     }
     const descs = this.collectColliderDescs(physIds)
@@ -3982,8 +4000,7 @@ export class World {
     let scaleDriftQueued = 0
     let scaleHidden = 0
     for (const desc of descs) {
-      if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
-      if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
+      if (this.physics.isAoiPlatformColliderEntity(desc.entity)) continue
       // scale≈0 = scene hide (Vector3.Zero blockers). Never keep a full-size hull.
       if (isDegenerateCookScale(desc.matrix)) {
         if (this.physics.hasStaticActor(desc.entity)) {
@@ -4076,7 +4093,7 @@ export class World {
     onProgress?: (msg: string) => void
   ): Promise<THREE.Vector3 | null> {
     const feetY = spawn.fromSpawnPoints ? spawn.y : spawn.y <= 0.01 ? 1 : spawn.y
-    const spawnThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
+    const spawnThree = this.genesisSpawnFeetThree(spawn, feetY)
     const elevated = spawnThree.y > 8
     // Seal already completed in sealBootCollidersBeforeSpawn — do not hang 30s on towers.
     const maxWaitMs = elevated ? 8_000 : 5_000
@@ -4404,8 +4421,7 @@ export class World {
     this.sceneScript.flushSceneGraphMatrices()
     let added = 0
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
-      if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
-      if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
+      if (this.physics.isAoiPlatformColliderEntity(desc.entity)) continue
       if (this.physics.isColliderSynced(desc)) {
         this.colliderCookQueue.delete(desc.entity)
         continue
@@ -4514,8 +4530,7 @@ export class World {
     entities.add(ecsEntity)
     for (const entity of entities) {
       for (const physId of this.sceneScript.collectPhysCookTargets(entity)) {
-        if (this.physics.isAoiRoadColliderEntity(physId)) continue
-        if (this.physics.isAoiEmptyLandColliderEntity(physId)) continue
+        if (this.physics.isAoiPlatformColliderEntity(physId)) continue
         const hasActor = this.physics.hasStaticActor(physId)
         if (hasActor) {
           // ALWAYS refresh extract from live matrixWorld then pose-slide PhysX.
@@ -4897,8 +4912,7 @@ export class World {
 
     // Full re-enqueue (do not rely on post-boot reconcile — it only prunes the live queue).
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
-      if (this.physics.isAoiRoadColliderEntity(desc.entity)) continue
-      if (this.physics.isAoiEmptyLandColliderEntity(desc.entity)) continue
+      if (this.physics.isAoiPlatformColliderEntity(desc.entity)) continue
       this.colliderCookQueue.add(desc.entity)
     }
     this.pendingColliderCooks = this.colliderCookQueue.size
@@ -5205,12 +5219,60 @@ export class World {
    */
   restoreGenesisFeet(genesis: { x: number; y: number; z: number }): boolean {
     if (!this.playerMode || !this.player) return false
-    const origin = this.comms.getSceneOrigin()
-    const localX = genesis.x - origin.x
-    const localZ = genesis.z - origin.z
-    return this.player.movePlayerTo({
-      newRelativePosition: { x: localX, y: genesis.y, z: localZ }
-    })
+    this.syncGenesisFrameOrigin()
+    // Capsule is genesis-stable — origin swap must not teleport feet.
+    void genesis
+    return true
+  }
+
+  /** PhysX / CCT / scene graphs stay in Genesis; FocusOwner origin is a conversion only. */
+  private syncGenesisFrameOrigin(scene?: ResolvedScene | null): void {
+    const s = scene ?? this.loadedPrimaryScene
+    let x = 0
+    let z = 0
+    if (s?.source.kind === 'coords' && s.baseParcel) {
+      const g = genesisMetersFromSceneLocal(0, 0, s.baseParcel)
+      x = g.x
+      z = g.z
+    } else {
+      const o = this.comms.getSceneOrigin()
+      x = o.x
+      z = o.z
+    }
+    this.player?.setFocusOriginMeters(x, z)
+    this.remoteAvatars?.setFocusOriginMeters(x, z)
+  }
+
+  private applyPrimaryGenesisRoot(scene: ResolvedScene): void {
+    const root = this.sceneScript.getEntityStore()?.root
+    if (!root) return
+    applyGenesisSceneRootOrigin(root, scene.baseParcel)
+    this.sceneScript.rebakeGpuAfterOriginChange()
+  }
+
+  /** Authored spawn feet in genesis Three (same frame as CCT / graphs). */
+  private genesisSpawnFeetThree(
+    spawn: { x: number; y: number; z: number },
+    feetY: number,
+    baseParcel?: string,
+    out = new THREE.Vector3()
+  ): THREE.Vector3 {
+    const origin = genesisMetersFromSceneLocal(
+      0,
+      0,
+      baseParcel ?? this.loadedPrimaryScene?.baseParcel ?? '0,0'
+    )
+    return dclToThreeVec(new THREE.Vector3(spawn.x + origin.x, feetY, spawn.z + origin.z), out)
+  }
+
+  private applyWalkBoundsForScene(scene: ResolvedScene): void {
+    if (this.playerWalkBounds?.mode === 'circle') return
+    const openCityWalk =
+      scene.source.kind === 'coords' && renderQuality.getSceneLoadRadiusM() > 0
+    this.playerWalkBounds = openCityWalk
+      ? genesisCityWalkBounds(scene.baseParcel)
+      : { mode: 'rect', bounds: sceneWorldBounds(scene.parcels, scene.baseParcel) }
+    this.player?.setWalkBounds(this.playerWalkBounds)
   }
 
   /**
@@ -5589,14 +5651,13 @@ export class World {
     const spawn = this.loadedPrimaryScene?.spawn
     if (!spawn) return null
     const feetY = spawn.fromSpawnPoints ? spawn.y : spawn.y <= 0.01 ? 1 : spawn.y
-    const t = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
+    const t = this.genesisSpawnFeetThree(spawn, feetY)
     return { x: t.x, z: t.z }
   }
 
   private isPlazaScenePhysEntity(entity: number): boolean {
     if (entity < 0 || entity >= SECONDARY_PHYS_BASE) return false
-    if (this.physics.isAoiRoadColliderEntity(entity)) return false
-    if (this.physics.isAoiEmptyLandColliderEntity(entity)) return false
+    if (this.physics.isAoiPlatformColliderEntity(entity)) return false
     return true
   }
 
@@ -5660,8 +5721,8 @@ export class World {
   }
 
   /**
-   * Neighbor floors stay while standing in the footprint, plus 2.5s after leave.
-   * Dropping PhysX the instant current flipped to plaza was the void-fall → hub death.
+   * Neighbor floors/walls: live secondaries within LIVE_SCENE_PHYS_RADIUS_M (48 m),
+   * plus 2.5s hold after leave so a current-guest flip does not void-fall.
    */
   private resolvePhysGuestIds(): string[] {
     const ids = new Set<string>()
@@ -5671,7 +5732,7 @@ export class World {
       this.physHoldGuestId = current
       this.physHoldUntilMs = performance.now() + World.PHYS_HOLD_MS
     }
-    for (const id of this.multiScene?.secondaryManager?.standingInPhysGuestIds() ?? []) {
+    for (const id of this.multiScene?.secondaryManager?.nearbyPhysGuestIds() ?? []) {
       ids.add(id)
     }
     if (
@@ -6263,6 +6324,7 @@ export class World {
     const newSystem = handoff.system
 
     // Secondary→primary: rekey offset phys ids back to native (keep actors, no recook).
+    // Genesis-stable world — do **not** translate hulls; FocusOwner is a conversion only.
     let stickyPhysKept = 0
     if (handoff.physOffset !== 0 && handoff.physIds.length > 0) {
       let rekeyed = 0
@@ -6272,13 +6334,12 @@ export class World {
       stickyPhysKept = rekeyed
       console.info(
         `[promote] handoff colliders rekey offset→native “${newScene.title}” ` +
-          `n=${handoff.physIds.length} rekeyed=${rekeyed} (no recook)`
+          `n=${handoff.physIds.length} rekeyed=${rekeyed} (genesis-stable, no slide)`
       )
     }
 
-    // Point multi-scene at NEW primary SW *before* demote so sticky offset is correct.
-    // (Demoted prior primary must leave host origin; host origin becomes new SW.)
     multi.notifyPrimaryChanged(newScene)
+    multi.markResidentCollidersSynced()
 
     // Demote old primary → sticky secondary (meshes MUST stay — never dispose into void).
     // Do this before wiring new primary so entity roots stay valid.
@@ -6299,38 +6360,20 @@ export class World {
       if (demoted) {
         // Primary→secondary: rekey existing PhysX actors native→offset + pose-slide.
         // Never invalidate+syncStaticColliders (multi-shape expand thrash / 6fps walk-back).
-        const remapped = multi.collectResidentColliders()
         const physOffset =
-          multi.secondaryManager?.physOffsetForEntityId(demoted.entityId) ??
-          (remapped[0] && demoted.primaryPhysIds[0] != null
-            ? remapped[0]!.entity - demoted.primaryPhysIds[0]!
-            : 0)
+          multi.secondaryManager?.physOffsetForEntityId(demoted.entityId) ?? 0
         let rekeyed = 0
         if (physOffset !== 0) {
           for (const id of demoted.primaryPhysIds) {
             rekeyed += this.physics.rekeyStaticColliderFamily(id, id + physOffset)
           }
         }
-        if (remapped.length > 0) {
-          try {
-            const root = oldPrimary.getEntityStore()?.root
-            const dx = root?.position.x ?? 0
-            const dy = root?.position.y ?? 0
-            const dz = root?.position.z ?? 0
-            const slid = this.physics.translateWorldBakedColliders(remapped, dx, dy, dz)
-            multi.markResidentCollidersSynced()
-            console.info(
-              `[promote] sticky colliders rekey+translate “${oldScene.title}” remapped=${remapped.length} ` +
-                `rekeyed=${rekeyed} slid=${slid} delta=(${dx.toFixed(1)},${dz.toFixed(1)}) offset=${physOffset} (no recook)`
-            )
-          } catch (err) {
-            console.warn('[promote] sticky collider rekey/translate failed', err)
-          }
-        } else {
-          console.warn(
-            `[promote] sticky colliders EMPTY “${oldScene.title}” — plaza PhysX may void until recook`
-          )
-        }
+        multi.recaptureResidentColliders(demoted.entityId)
+        multi.markResidentCollidersSynced()
+        console.info(
+          `[promote] sticky colliders rekey “${oldScene.title}” ` +
+            `n=${demoted.primaryPhysIds.length} rekeyed=${rekeyed} offset=${physOffset} (genesis-stable, no slide)`
+        )
         console.info(
           `[promote] prior primary sticky resident “${oldScene.title}” parcels=${oldScene.parcels?.length ?? '?'} ` +
             `base=${oldScene.baseParcel} → offset vs ${newScene.baseParcel}`
@@ -6368,6 +6411,7 @@ export class World {
 
     this.sceneScript = newSystem
     this.loadedPrimaryScene = newScene
+    this.applyWalkBoundsForScene(newScene)
     this.rememberPrimaryOccupancy(newScene, extraParcelKeys)
     this.assets.setScene(newScene)
     // Snow sat at neighbor offset as a guest; origin is now its SW — rewrite GPU.
@@ -6499,9 +6543,10 @@ export class World {
     this.comms.bumpSceneRoomConnectEpoch()
     this.comms.applyRealmAbout(newScene.realm, newScene.commsPointer)
     this.comms.bindSceneTarget(nextSceneTarget)
+    this.syncGenesisFrameOrigin()
     this.session.setCatalystEndpoints(newScene.realm.contentUrl, newScene.realm.lambdasUrl)
 
-    // Feet stay put in Genesis space under the NEW origin.
+    // Capsule already genesis-stable — origin swap is a conversion only.
     const ok = this.restoreGenesisFeet(genesis)
     if (this.comms.sceneRoomIdentityChanged(prevSceneTarget, nextSceneTarget)) {
       // Hitch-defer socket swap off present; keep publishing on the old room for one RTT.

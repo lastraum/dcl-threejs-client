@@ -303,6 +303,9 @@ export class RemoteAvatarManager {
   /** Local player feet (Three world) — LOD / load / tags / shadows; not freecam. */
   private readonly localPlayerWorldPos = new THREE.Vector3()
   private hasLocalPlayerPos = false
+  /** FocusOwner SW meters — inbound RFC4 is scene-local; Three world is genesis. */
+  private focusOriginX = 0
+  private focusOriginZ = 0
   /** Active camera for frustum anim skip (looking away from a huddle). */
   private camera: THREE.Camera | null = null
 
@@ -502,29 +505,32 @@ export class RemoteAvatarManager {
    * Stand-on origin rebase: cached peer poses are scene-local. Convert through
    * genesis so remotes stay put in the world instead of jumping to the new SW.
    */
+  setFocusOriginMeters(x: number, z: number): void {
+    this.focusOriginX = x
+    this.focusOriginZ = z
+  }
+
+  /**
+   * Genesis-stable remotes: inbound scene-local is converted at ingest.
+   * Promote must not slide peer roots.
+   */
   rebaseSceneOrigin(
-    oldOriginMeters: { x: number; z: number },
+    _oldOriginMeters: { x: number; z: number },
     newOriginMeters: { x: number; z: number }
   ): void {
-    const dclDx = oldOriginMeters.x - newOriginMeters.x
-    const dclDz = oldOriginMeters.z - newOriginMeters.z
-    if (dclDx === 0 && dclDz === 0) return
-    let n = 0
-    for (const record of this.peers.values()) {
-      if (!record.hasPosition) continue
-      // three.x = -dcl.x, three.z = dcl.z
-      record.root.position.x -= dclDx
-      record.root.position.z += dclDz
-      record.targetPosition.copy(record.root.position)
-      n++
-    }
-    if (n > 0) {
-      clientDebugLog.log(
-        'network',
-        `Remote origin rebase n=${n} dclΔ=(${dclDx.toFixed(1)},${dclDz.toFixed(1)}) ` +
-          `origin (${oldOriginMeters.x},${oldOriginMeters.z})→(${newOriginMeters.x},${newOriginMeters.z})`
-      )
-    }
+    this.focusOriginX = newOriginMeters.x
+    this.focusOriginZ = newOriginMeters.z
+  }
+
+  private genesisThreeFromSceneLocalDcl(positionDcl: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
+    return dclToThreeVec(
+      new THREE.Vector3(
+        positionDcl.x + this.focusOriginX,
+        positionDcl.y,
+        positionDcl.z + this.focusOriginZ
+      ),
+      out
+    )
   }
 
   setLocalPlayerPosition(position: THREE.Vector3): void {
@@ -851,7 +857,14 @@ export class RemoteAvatarManager {
     for (const [key, record] of this.peers) {
       if (!record.hasPosition) continue
       const pos = threeToDclVec(record.root.position)
-      out.push({ id: key, position: { x: pos.x, y: pos.y, z: pos.z } })
+      out.push({
+        id: key,
+        position: {
+          x: pos.x - this.focusOriginX,
+          y: pos.y,
+          z: pos.z - this.focusOriginZ
+        }
+      })
     }
   }
 
@@ -1263,7 +1276,7 @@ export class RemoteAvatarManager {
     }
 
     if (positionDcl) {
-      const position = dclToThreeVec(positionDcl)
+      const position = this.genesisThreeFromSceneLocalDcl(positionDcl, new THREE.Vector3())
       record.hasPosition = true
       record.targetPosition.copy(position)
       record.root.position.copy(position)
@@ -1356,7 +1369,7 @@ export class RemoteAvatarManager {
       if (this.peers.has(key)) this.removePeer(key)
       return
     }
-    const position = dclToThreeVec(positionDcl)
+    const position = this.genesisThreeFromSceneLocalDcl(positionDcl, new THREE.Vector3())
     const yaw = dclYawToThreeYaw(yawDcl)
     if (!this.peers.has(key)) {
       this.upsertPeer(key, positionDcl)

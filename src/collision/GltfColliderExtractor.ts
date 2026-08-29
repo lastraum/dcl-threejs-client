@@ -5,7 +5,11 @@ import type { ProjectionView } from '../bridge/ProjectionView'
 import type { PhysicsColliderDesc, PhysicsColliderShapeDesc } from '../physics/PhysXWorld'
 import { physxColliderDebug } from '../debug/PhysxColliderDebug'
 import { ColliderLayer, hasColliderLayer } from './ColliderLayer'
-import { isGltfInvisibleColliderMesh, isGltfVisibleClassMesh } from './gltfColliderNaming'
+import {
+  gltfMeshContributesPhysics,
+  isGltfInvisibleColliderMesh,
+  isGltfVisibleClassMesh
+} from './gltfColliderNaming'
 import { gltfEntityDrawRoot } from './gltfPointerMeshes'
 import {
   INSTANCE_COLLIDER_SHAPES_KEY,
@@ -519,23 +523,11 @@ export class GltfColliderExtractor {
       ) {
         return
       }
-      // Skinned render meshes are unstable hulls; skinned `_collider` names still extract
-      // (bind-pose geo + bone matrixWorld after mixer — rigid door panels under bones).
-      const skinned = (node as THREE.SkinnedMesh).isSkinnedMesh === true
-      const invClass = isGltfInvisibleColliderMesh(node, gltfRoot)
-      if (skinned && !invClass) return
-      // Ancestry-first (Explorer): `_collider` group children are invisible-class even when
-      // the leaf is named `Floor` / `Wall` without `_collider` in its own name.
-      if (invClass) {
-        if (hasInvisiblePhysics) colliderMeshes.push(node)
-        return
+      // ADR-215: inv = `*_collider` name/ancestry only. vis/unnamed never cook from
+      // invisibleMeshesCollisionMask (water_cube_wrap Cube @ 126,104 vis=0 inv=3).
+      if (gltfMeshContributesPhysics(node, gltfRoot, hasVisiblePhysics, hasInvisiblePhysics)) {
+        colliderMeshes.push(node)
       }
-      if (isGltfVisibleClassMesh(node, gltfRoot)) {
-        if (hasVisiblePhysics) colliderMeshes.push(node)
-        return
-      }
-      // Unnamed non-collider meshes — only when visible mask requests physics.
-      if (hasVisiblePhysics && !skinned) colliderMeshes.push(node)
     })
     return colliderMeshes
   }
@@ -1211,9 +1203,14 @@ export class GltfColliderExtractor {
   ): PhysicsColliderDesc | null {
     const shapes: PhysicsColliderShapeDesc[] = []
     for (const shape of instanceShapes) {
-      if (shape.kind === 'inv' && !hasInvisiblePhysics) continue
-      if (shape.kind === 'vis' && !hasVisiblePhysics) continue
-      if (shape.kind === 'unnamed' && !hasVisiblePhysics) continue
+      // Exhaustive — unknown kind must not fall through into PhysX (invented hulls).
+      if (shape.kind === 'inv') {
+        if (!hasInvisiblePhysics) continue
+      } else if (shape.kind === 'vis' || shape.kind === 'unnamed') {
+        if (!hasVisiblePhysics) continue
+      } else {
+        continue
+      }
       shapes.push({
         fingerprint: shape.fingerprint,
         geometry: shape.geometry,

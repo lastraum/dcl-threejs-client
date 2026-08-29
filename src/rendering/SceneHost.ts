@@ -3,6 +3,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { ResolvedScene } from '../dcl/content/types'
 import type { SceneWorldBounds } from '../player/SceneBounds'
 import { dclToThreePos } from '../bridge/dclTransform'
+import { genesisMetersFromSceneLocal } from '../dcl/aoi/parcelAoi'
 import { NameTagRenderer } from '../client/ui/NameTagRenderer'
 import { RenderStats } from '../client/ui/RenderStats'
 import {
@@ -258,7 +259,12 @@ export class SceneHost {
   }
 
   focusSpawn(sceneConfig: ResolvedScene): void {
-    const target = dclToThreePos(sceneConfig.spawn.x, sceneConfig.spawn.y + 1.5, sceneConfig.spawn.z)
+    const origin = genesisMetersFromSceneLocal(0, 0, sceneConfig.baseParcel)
+    const target = dclToThreePos(
+      sceneConfig.spawn.x + origin.x,
+      sceneConfig.spawn.y + 1.5,
+      sceneConfig.spawn.z + origin.z
+    )
     this.camera.position.set(target.x + 14, target.y + 10, target.z + 18)
     this.controls.target.copy(target)
     this.controls.update()

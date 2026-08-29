@@ -73,6 +73,7 @@ import { SettingsOverlay, type SettingsTab } from './ui/settings/SettingsOverlay
 import { warmBackpackProvenance } from './ui/settings/backpackProvenance'
 import type { MapPlayerState } from './ui/settings/MapView'
 import { genesisMetersToParcel } from '../map/genesisMapViewport'
+import { threeToDclVec } from '../bridge/dclTransform'
 import type { ResolvedScene } from '../dcl/content/types'
 import { fetchProfileFaceUrl } from '../avatar/peerApi'
 import { deployDisplayName, type DisplayNameChoice } from '../avatar/displayNameDeploy'
@@ -3831,12 +3832,12 @@ export class AppController {
   private getMapPlayerState(): MapPlayerState | null {
     const world = this.world
     if (!world) return this.lastMapPlayerState
+    const worldPos = world.getPlayerWorldPosition()
     const pos = world.getPlayerPosition()
-    if (!pos) return this.lastMapPlayerState
-    const origin = world.comms.getSceneOrigin()
-    // Genesis City meters = scene-local DCL feet + base parcel origin (×16).
-    const genesisX = pos.x + origin.x
-    const genesisZ = pos.z + origin.z
+    if (!worldPos || !pos) return this.lastMapPlayerState
+    const genesis = threeToDclVec(worldPos)
+    const genesisX = genesis.x
+    const genesisZ = genesis.z
     // Prefer continuous genesis → parcel (same path soft URL / promote use).
     const { parcelKey } = genesisMetersToParcel(genesisX, genesisZ)
     const profile = world.session.getProfile()

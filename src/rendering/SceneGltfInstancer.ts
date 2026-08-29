@@ -1,9 +1,8 @@
 import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
 import {
-  isGltfInvisibleColliderMesh,
-  isGltfInvisibleColliderName,
-  isGltfVisibleClassMesh
+  classifyGltfCollisionMesh,
+  isGltfInvisibleColliderName
 } from '../collision/gltfColliderNaming'
 import type { PhysicsColliderShapeDesc } from '../physics/PhysXWorld'
 import { setMeshDesiredCastShadow } from './shadowCastPolicy'
@@ -128,12 +127,8 @@ export function collectTemplateColliderShapes(
     if (!(node instanceof THREE.Mesh)) return
     if ((node as THREE.SkinnedMesh).isSkinnedMesh) return
 
-    // Ancestry-first (Explorer): `_collider` group children are inv even without leaf `_collider` name.
-    let kind: InstanceColliderShape['kind'] | null = null
-    if (isGltfInvisibleColliderMesh(node, root)) kind = 'inv'
-    else if (isGltfVisibleClassMesh(node, root)) kind = 'vis'
-    else if (node.name.length === 0) kind = 'unnamed'
-    else return
+    // ADR-215 class only — per-entity vis/inv masks filter at extract (not here).
+    const kind = classifyGltfCollisionMesh(node, root)
 
     const sourceGeo = node.geometry
     const posAttr = sourceGeo?.getAttribute('position')

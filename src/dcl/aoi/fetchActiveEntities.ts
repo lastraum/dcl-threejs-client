@@ -101,10 +101,29 @@ function pruneExpired(now: number): void {
   }
 }
 
+/**
+ * Occupied footprint = catalyst pointers ∪ scene.parcels ∪ base.
+ * Catalyst's pointer index can omit a cell that metadata.scene.parcels still
+ * claims (POST `125,104` empty while the entity at `125,103` lists both).
+ */
+export function entityFootprintKeys(
+  ent: Pick<ActiveSceneEntity, 'pointers' | 'parcels' | 'base'>
+): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const raw of [...ent.pointers, ...ent.parcels, ent.base]) {
+    const p = normalizePointer(typeof raw === 'string' ? raw : '')
+    if (!p || seen.has(p)) continue
+    seen.add(p)
+    out.push(p)
+  }
+  return out
+}
+
 function rememberEntity(ent: ActiveSceneEntity, now: number): void {
   const expiresAt = now + ENTITY_CACHE_TTL_MS
   entityById.set(ent.id, { entity: ent, expiresAt })
-  const keys = ent.pointers.length ? ent.pointers : ent.parcels
+  const keys = entityFootprintKeys(ent)
   for (const raw of keys) {
     const p = normalizePointer(raw)
     // Prefer higher-rank owners when writing (same as buildPointerOwnershipMap intent).
@@ -198,8 +217,58 @@ export async function fetchActiveEntitiesForPointers(
     }
   }
 
+  // Single-pointer lookups: catalyst index can miss a cell the entity still claims
+  // (POST `125,104` empty; POST `125,103` returns the 2-parcel scene listing both).
+  // AOI rings already include neighbors — only probe when the original set is tiny.
+  if (unique.length <= 2) {
+    const stillNeed = unique.filter((p) => {
+      const hit = pointerOwner.get(p)
+      return !(hit && hit.expiresAt > performance.now() && entityById.get(hit.entityId))
+    })
+    if (stillNeed.length) {
+      const extra = adjacentParcelPointers(stillNeed).filter((p) => !unique.includes(p))
+      for (let i = 0; i < extra.length; i += chunkSize) {
+        const chunk = extra.slice(i, i + chunkSize)
+        const fresh = await fetchChunk(url, chunk, contentUrl)
+        const t = performance.now()
+        for (const ent of fresh) {
+          rememberEntity(ent, t)
+          if (entityFootprintKeys(ent).some((k) => unique.includes(k))) {
+            byId.set(ent.id, ent)
+          }
+        }
+      }
+    }
+  }
+
   // Multi-parcel entities from cache may cover more pointers than we requested — fine.
   return [...byId.values()]
+}
+
+const ORTHOGONAL: ReadonlyArray<readonly [number, number]> = [
+  [1, 0],
+  [-1, 0],
+  [0, 1],
+  [0, -1]
+]
+
+function adjacentParcelPointers(pointers: string[]): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const raw of pointers) {
+    const p = normalizePointer(raw)
+    const m = /^(-?\d+),(-?\d+)$/.exec(p)
+    if (!m) continue
+    const x = Number(m[1])
+    const y = Number(m[2])
+    for (const [dx, dy] of ORTHOGONAL) {
+      const k = `${x + dx},${y + dy}`
+      if (seen.has(k)) continue
+      seen.add(k)
+      out.push(k)
+    }
+  }
+  return out
 }
 
 /** Dev / diagnostics — cache effectiveness for AOI spam. */
@@ -358,7 +427,7 @@ export function buildPointerOwnershipMap(
   const rankAt = new Map<string, number>()
   for (const ent of entities) {
     const rank = entityParcelClaimRank(ent)
-    const keys = ent.pointers.length ? ent.pointers : ent.parcels
+    const keys = entityFootprintKeys(ent)
     for (const p of keys) {
       const prev = rankAt.get(p) ?? -1
       if (rank >= prev) {

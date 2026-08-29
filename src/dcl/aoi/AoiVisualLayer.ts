@@ -2407,7 +2407,11 @@ function disposeStickyScatterLayer(layer: StickyScatterLayer): void {
 
 function disposeScatterInstancedGeometry(root: THREE.Object3D): void {
   root.traverse((o) => {
-    if (o instanceof THREE.InstancedMesh && o.name !== 'aoi-vacant-grass') {
+    if (
+      o instanceof THREE.InstancedMesh &&
+      o.name !== 'aoi-vacant-grass' &&
+      !o.name.startsWith('aoi-explorer-')
+    ) {
       o.geometry?.dispose()
     }
   })

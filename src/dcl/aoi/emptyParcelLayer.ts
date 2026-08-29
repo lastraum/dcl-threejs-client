@@ -2,10 +2,8 @@ import * as THREE from 'three'
 import type { AssetCache } from '../../rendering/AssetCache'
 import type { PhysicsColliderDesc } from '../../physics/PhysXWorld'
 import { EMPTY_LAND } from '../landscape/Data/EmptyLandCatalog'
-import {
-  buildVacantParcelGrassField,
-  type EzTreeGrassFieldHandle
-} from '../landscape/EzTreeGrassField'
+import type { EzTreeGrassFieldHandle } from '../landscape/EzTreeGrassField'
+import { buildExplorerVacantGrassField } from '../landscape/ExplorerVacantGrassField'
 import { buildInstancedScatter, type ScatterInstance } from '../landscape/gltfInstancing'
 import { distributedParcelPositions } from '../landscape/parcelDistribution'
 import { dclSceneToLandscapeThree } from '../landscape/Utils/SceneSpace'
@@ -60,7 +58,7 @@ type ScatterKind = 'tree' | 'rock' | 'bush'
 /**
  * Build instanced trees/bushes/rocks on vacant AOI parcels + simple box colliders
  * for trees and rocks (instanced positions, not full mesh cooks).
- * Grass is ez-tree GPU blades (Explorer occupancy field), not EMPTY_LAND glTF tufts.
+ * Grass is Unity Explorer tufts + wildflowers, not ez-tree blades or EMPTY_LAND glTF.
  */
 export async function buildEmptyParcelScatter(opts: {
   cache: AssetCache
@@ -122,9 +120,9 @@ export async function buildEmptyParcelScatter(opts: {
       }
     }
 
-    place(EMPTY_LAND.landscapeTrees, 'tree', EMPTY_SCATTER.trees, 4.5, 2.2, 0.75, 0.35)
-    place(EMPTY_LAND.bushes, 'bush', EMPTY_SCATTER.bushes, 2.2, 1.4, 0.7, 0.4)
-    place(EMPTY_LAND.rocks, 'rock', EMPTY_SCATTER.rocks, 3, 1.6, 0.6, 0.5)
+    place(EMPTY_LAND.landscapeTrees, 'tree', EMPTY_SCATTER.trees, 5.5, 2.4, 1.45, 0.5)
+    place(EMPTY_LAND.bushes, 'bush', EMPTY_SCATTER.bushes, 2.8, 1.6, 1.15, 0.4)
+    place(EMPTY_LAND.rocks, 'rock', EMPTY_SCATTER.rocks, 3, 1.6, 0.85, 0.4)
   }
 
   // Cap total instances per prop type for large radii
@@ -177,7 +175,7 @@ export async function buildEmptyParcelScatter(opts: {
 
   let grass: EzTreeGrassFieldHandle | null = null
   try {
-    grass = await buildVacantParcelGrassField(opts.parcelKeys, opts.primaryBase)
+    grass = await buildExplorerVacantGrassField(opts.parcelKeys, opts.primaryBase)
     if (grass) root.add(grass.group)
   } catch (err) {
     console.warn('[aoi] vacant grass field failed', err)

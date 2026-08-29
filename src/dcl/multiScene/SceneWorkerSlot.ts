@@ -503,6 +503,11 @@ export class SceneWorkerSlot {
    */
   takeDirtyCollidersOnly(): PhysicsColliderDesc[] {
     if (!this.running || this.disposed || this.detached) return []
+    // Mute hydrate never pushed PhysX — capture now that occupancy wants this guest.
+    if (this.lastRemappedColliders.length === 0) {
+      this.system.syncCollision()
+      this.captureRemappedColliders()
+    }
     if (!this.collidersDirty || this.lastRemappedColliders.length === 0) return []
     this.collidersDirty = false
     return this.lastRemappedColliders

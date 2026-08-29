@@ -3751,7 +3751,8 @@ export class SceneScriptSystem {
     // FocusOwner: secondary never mutates DOM (demoted primary still holds SceneUiBridge
     // for promote resume — must not fight #scene-ui-root with the new primary).
     if (this.focusPolicy === 'secondary') return
-    if (this.leftoverBlocksUiPaint()) return
+    // PE HUD must paint even when plaza PhysX leftover is dying.
+    if (this.focusPolicy !== 'pe' && this.leftoverBlocksUiPaint()) return
 
     // Asset hydration: commit mount only — no Yoga/DOM thrash (was flooding "paint deferred"
     // and stealing main-thread from GLB attach → 60s hang at ~79%).

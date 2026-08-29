@@ -1231,7 +1231,8 @@ export class SecondaryLiveManager {
     const hydrating = secondaries.filter((s) => s.needsHydrationApply())
     for (const slot of hydrating) this.kickHydrate(slot)
     const allowFull = budgetMs === undefined || budgetMs >= MIN_FULL_MS || hydrating.length > 0
-    const prefer = hydrating[0]
+    const physStanding = secondaries.find((s) => this.slotMatchesPhysGuest(s.id, physGuestIds))
+    const prefer = hydrating[0] ?? physStanding
     const fullIdx =
       allowFull && secondaries.length > 0
         ? this.asyncFullWorkCursor++ % secondaries.length

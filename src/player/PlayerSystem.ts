@@ -359,6 +359,10 @@ export class PlayerSystem {
   private photoModeActive = false
   /** Tour Focus follower — blocks locomotion + freecam; external controller owns the lens. */
   private tourFocusActive = false
+  /** In-world teleport rune — freeze WASD/look until Jump In tears the World down. */
+  private teleportLock = false
+  /** Hide local mesh + name tag at the seal burst beat. */
+  private ritualHidden = false
   /**
    * Authored scene.json spawn for PlayerEntity/CameraEntity **before** the CCT exists.
    * Without this, clientPoseProvider reports origin (y≈0) during script boot/hydration and
@@ -445,12 +449,14 @@ export class PlayerSystem {
         this.collidersReadyBlock ||
         this.photoModeActive ||
         this.tourFocusActive ||
+        this.teleportLock ||
         !canLocomote(this.getLocomotionConfig())
     )
     this.input.setLookBlocked(
       () =>
         this.photoModeActive ||
         this.tourFocusActive ||
+        this.teleportLock ||
         this.isSceneVirtualCameraDriving()
     )
     const feetY = spawn.fromSpawnPoints
@@ -597,7 +603,7 @@ export class PlayerSystem {
   forceRefreshBodyVisibility(): void {
     if (!this.avatar) return
     const fpv = this.isFirstPerson()
-    this.avatar.setBodyVisible(!this.modifierHidden && !fpv)
+    this.avatar.setBodyVisible(!this.modifierHidden && !this.ritualHidden && !fpv)
     this.syncNameTag()
   }
 
@@ -606,7 +612,10 @@ export class PlayerSystem {
     this.syncNameTag()
     if (this.nameTag) {
       this.nameTag.object.visible =
-        !this.modifierHidden && areSceneNameTagsVisible() && !this.isFirstPerson()
+        !this.modifierHidden &&
+        !this.ritualHidden &&
+        areSceneNameTagsVisible() &&
+        !this.isFirstPerson()
     }
   }
 
@@ -996,10 +1005,31 @@ export class PlayerSystem {
    */
   setModifierHidden(hidden: boolean): void {
     this.modifierHidden = hidden
-    this.avatar?.setBodyVisible(!hidden && !this.isFirstPerson())
+    this.avatar?.setBodyVisible(!hidden && !this.ritualHidden && !this.isFirstPerson())
     if (this.nameTag) {
-      this.nameTag.object.visible = !hidden && areSceneNameTagsVisible() && !this.isFirstPerson()
+      this.nameTag.object.visible =
+        !hidden && !this.ritualHidden && areSceneNameTagsVisible() && !this.isFirstPerson()
     }
+  }
+
+  /**
+   * Lock WASD / look for the in-world teleport rune. Camera still follows;
+   * World applies rumble after {@link syncCamera}.
+   */
+  setTeleportLock(locked: boolean): void {
+    this.teleportLock = locked
+    if (locked) {
+      this.clearMoveKeys()
+      this.input?.stopOrbitIfActive()
+    }
+  }
+
+  /** Hide local body + name tag as the teleport beam rises. */
+  setRitualHidden(hidden: boolean): void {
+    this.ritualHidden = hidden
+    // Whole player group (mesh, name tag, PlayerEntity attach) — camera is not a child.
+    this.root.visible = !hidden
+    this.forceRefreshBodyVisibility()
   }
 
   setNameTagVoiceLevel(level: number): void {
@@ -1246,6 +1276,31 @@ export class PlayerSystem {
   update(delta: number): void {
     if (!this.enabled || !this.input) return
     delta = Math.min(delta, 1 / 20)
+
+    // In-world teleport rune: freeze WASD / look; camera still tracks so rumble can apply.
+    if (this.teleportLock) {
+      this.physics.step(delta)
+      this.root.position.copy(this.physics.positionOut)
+      this.syncNameTag()
+      this.avatar?.setYaw(this.playerYaw)
+      this.avatar?.update(delta, {
+        horizontalSpeed: 0,
+        grounded: this.grounded,
+        nearGround: this.nearGround,
+        verticalVelocity: 0,
+        locomotionMode: this.locomotionMode,
+        jumping: false,
+        doubleJumping: false,
+        doubleJumpTriggered: false,
+        falling: false,
+        gliding: false,
+        moveAxisX: 0,
+        moveAxisZ: 0
+      })
+      this.syncCamera(false, delta)
+      this.input.endFrame()
+      return
+    }
 
     // Escape while MainCamera→VC is bound (plaza theater stuck, VIEW SHOT hang).
     this.pollVirtualCameraEscape()
@@ -2349,9 +2404,10 @@ export class PlayerSystem {
     // Testing hold: keep the authored Testing.setCameraTransform lens for a few frames.
     if (this.testingCameraHoldFrames > 0) {
       this.testingCameraHoldFrames--
-      this.avatar?.setBodyVisible(!this.modifierHidden)
+      this.avatar?.setBodyVisible(!this.modifierHidden && !this.ritualHidden)
       if (this.nameTag) {
-        this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
+        this.nameTag.object.visible =
+          !this.modifierHidden && !this.ritualHidden && areSceneNameTagsVisible()
       }
       return
     }
@@ -2377,9 +2433,10 @@ export class PlayerSystem {
           this.camPitch = CAM_PITCH_DEFAULT
         }
       }
-      this.avatar?.setBodyVisible(!this.modifierHidden)
+      this.avatar?.setBodyVisible(!this.modifierHidden && !this.ritualHidden)
       if (this.nameTag) {
-        this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
+        this.nameTag.object.visible =
+          !this.modifierHidden && !this.ritualHidden && areSceneNameTagsVisible()
       }
       return
     }
@@ -2387,9 +2444,10 @@ export class PlayerSystem {
     // hold last lens pose; do not let freecam/orbit steal the shot.
     if (this.virtualCamera?.isMainCameraVcBound()) {
       this.wasVirtualCameraActive = true
-      this.avatar?.setBodyVisible(!this.modifierHidden)
+      this.avatar?.setBodyVisible(!this.modifierHidden && !this.ritualHidden)
       if (this.nameTag) {
-        this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
+        this.nameTag.object.visible =
+          !this.modifierHidden && !this.ritualHidden && areSceneNameTagsVisible()
       }
       return
     }
@@ -2407,9 +2465,10 @@ export class PlayerSystem {
     if (this.freecamSnapAfterVc) this.freecamSnapAfterVc = false
 
     const fpv = this.isFirstPerson()
-    this.avatar?.setBodyVisible(!this.modifierHidden && !fpv)
+    this.avatar?.setBodyVisible(!this.modifierHidden && !this.ritualHidden && !fpv)
     if (this.nameTag) {
-      this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible() && !fpv
+      this.nameTag.object.visible =
+        !this.modifierHidden && !this.ritualHidden && areSceneNameTagsVisible() && !fpv
     }
 
     // Walk follow may lerp. Mouse look / left-drag orbit must snap — exp(-14Δ)

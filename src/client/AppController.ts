@@ -2692,6 +2692,13 @@ export class AppController {
     }
 
     this.navigating = true
+    if (fromPlay && !seamless && this.world) {
+      try {
+        await this.world.playLocalTeleportRune()
+      } catch (err) {
+        console.warn('[client] in-world teleport rune failed', err)
+      }
+    }
     let loading: LoadingScreen | null = null
     // Seamless promote: keep feet; optional loading chrome for cold large-scene jumps.
     // Everything else (landing Jump In, map Jump In, teleports) shows a loading affordance.

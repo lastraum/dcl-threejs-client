@@ -105,6 +105,15 @@ export class PetManager {
     }
   }
 
+  setLocalVisible(visible: boolean): void {
+    if (this.localInstance) this.localInstance.root.visible = visible
+  }
+
+  setRemoteVisible(address: string, visible: boolean): void {
+    const remote = this.remotes.get(address.toLowerCase())
+    if (remote) remote.instance.root.visible = visible
+  }
+
   getLocalSpec(): ActivePetSpec | null {
     return this.localSpec
   }

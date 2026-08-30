@@ -163,6 +163,7 @@ import {
   decodeAbilityVfxCast,
   encodeAbilityVfxCast
 } from '../vfx/abilityVfxWire'
+import { TeleportRuneHost } from '../vfx/TeleportRuneHost'
 import { isTextInputFocused } from '../client/ui/textInputFocus'
 import { skipRemoteAvatars } from '../client/devFlags'
 import { InputHub } from '../input/InputHub'
@@ -393,6 +394,12 @@ export class World {
   private previewReloadQueued: PreviewSceneUpdate | null = null
   private abilityVfx: SceneAbilityVfxHost | null = null
   private unsubAbilityVfxTopic: (() => void) | null = null
+  private teleportRunes: TeleportRuneHost | null = null
+  private teleportRuneTime = 0
+  private readonly teleportRuneResolution = new THREE.Vector2(1, 1)
+  /** Bump to cancel a leave-rune cleanup if the peer rejoins mid-ritual. */
+  private readonly peerLeaveGen = new Map<string, number>()
+  private localTeleportPromise: Promise<void> | null = null
   /** Skip SceneLoop/CRDT fold this many presents so the first orbit frames stay host-only. */
   private static readonly PLAY_LOOP_GRACE_FRAMES = 12
   /** Neighbor AOI / live guests after this many presents. */
@@ -520,6 +527,7 @@ export class World {
       camera: this.player!.getCameraEntityPose()
     }))
     this.remoteAvatars = new RemoteAvatarManager(this.host.drawWorld.drawRoot)
+    this.teleportRunes = new TeleportRuneHost(this.host.scene)
     this.host.setExtractHook((camera) => this.sceneScript.extractBillboards(camera))
     // Do not place pose-less remotes on local feet (ghost stick). Provider unused for shells;
     // peers appear when first RFC4 Movement lands at their scene pose.
@@ -767,6 +775,7 @@ export class World {
         onPeerJoin: (address) => {
           if (skipRemoteAvatars()) return
           if (address === this.session.getAddress()?.toLowerCase()) return
+          this.cancelPeerLeaveRune(address)
           this.remoteAvatars?.upsertPeer(address)
           if (this.remoteAvatars) {
             this.vrmPeerSync.syncPeerToRemoteAvatars(address, this.remoteAvatars)
@@ -782,9 +791,8 @@ export class World {
           if (skipRemoteAvatars()) return
           this.vrmPeerSync.onPeerLeave(address)
           this.petPeerSync.onPeerLeave(address)
-          this.petManager.removeRemote(address)
-          this.remoteAvatars?.removePeer(address)
           this.social.onRemotePeerLeft(address)
+          void this.beginPeerLeaveRune(address)
         },
         onPeerTransform: (address, payload) => {
           if (skipRemoteAvatars()) return
@@ -2520,6 +2528,11 @@ export class World {
     }
     this.syncPresentState()
     await this.host.compileSceneShaders()
+    try {
+      await this.teleportRunes?.prewarm(this.host.renderer, this.host.camera, this.host.scene)
+    } catch {
+      /* first /goto still compiles if this program is skipped */
+    }
     // Ability groups only — never re-compile the landscape with VFX PointLights
     // visible (that walk recompiled every grass program and froze the overlay).
     this.abilityVfx?.compileWarmedGroups()
@@ -2627,6 +2640,14 @@ export class World {
           this.syncOutdoorLighting()
         }
         this.abilityVfx?.update(delta)
+        this.teleportRuneTime += delta
+        this.host.renderer.getSize(this.teleportRuneResolution)
+        this.teleportRunes?.update(
+          delta,
+          this.teleportRuneTime,
+          this.teleportRuneResolution,
+          this.host.camera
+        )
         const envMs = performance.now() - envT0
 
         let sceneTickMs = 0
@@ -2647,6 +2668,7 @@ export class World {
           const platformMs = performance.now() - platformT0
           const playerT0 = performance.now()
           this.player.update(delta)
+          this.teleportRunes?.applyCameraShake(this.host.camera)
           if (this.photoCamera?.isActive()) {
             this.photoCamera.update(delta)
           }
@@ -6875,6 +6897,81 @@ export class World {
     this.remoteAvatars?.removePeer(address)
   }
 
+  /**
+   * Local /goto / Jump In — play the cyan seal at our feet, lock input, hide
+   * the avatar as the beam rises. Caller waits, then tears the World down.
+   */
+  playLocalTeleportRune(): Promise<void> {
+    if (this.localTeleportPromise) return this.localTeleportPromise
+    const runes = this.teleportRunes
+    const player = this.player
+    if (!runes || !player) return Promise.resolve()
+    player.setTeleportLock(true)
+    const pos = player.getWorldPosition()
+    this.localTeleportPromise = runes
+      .play({
+        x: pos.x,
+        y: pos.y,
+        z: pos.z,
+        yaw: player.getPlayerYaw(),
+        radius: 2.8,
+        rumble: true,
+        onDischarge: () => {
+          this.player?.setRitualHidden(true)
+          this.petManager.setLocalVisible(false)
+        }
+      })
+      .catch((err) => {
+        console.warn('[world] teleport rune failed', err)
+      })
+    return this.localTeleportPromise
+  }
+
+  private bumpPeerLeaveGen(address: string): number {
+    const key = address.toLowerCase()
+    const next = (this.peerLeaveGen.get(key) ?? 0) + 1
+    this.peerLeaveGen.set(key, next)
+    return next
+  }
+
+  private cancelPeerLeaveRune(address: string): void {
+    this.bumpPeerLeaveGen(address)
+    this.remoteAvatars?.resumeDepartingPeer(address)
+  }
+
+  private async beginPeerLeaveRune(address: string): Promise<void> {
+    const key = address.toLowerCase()
+    const gen = this.bumpPeerLeaveGen(key)
+    const pose = this.remoteAvatars?.holdPeerForDepart(key)
+    if (!pose || !this.teleportRunes) {
+      this.finishPeerLeave(key)
+      return
+    }
+    try {
+      await this.teleportRunes.play({
+        x: pose.x,
+        y: pose.y,
+        z: pose.z,
+        yaw: pose.yaw,
+        radius: 2.8,
+        onDischarge: () => {
+          if (this.peerLeaveGen.get(key) !== gen) return
+          this.remoteAvatars?.hideDepartingPeer(key)
+          this.petManager.setRemoteVisible(key, false)
+        }
+      })
+    } catch (err) {
+      console.warn('[world] peer-leave rune failed', err)
+    }
+    if (this.peerLeaveGen.get(key) !== gen) return
+    this.finishPeerLeave(key)
+  }
+
+  private finishPeerLeave(address: string): void {
+    this.petManager.removeRemote(address)
+    this.remoteAvatars?.removePeer(address)
+  }
+
 
   private wireAvatarChatOverhead(): void {
     this.unsubAvatarChat?.()
@@ -7134,6 +7231,10 @@ export class World {
     this.abilityVfx?.dispose()
     this.abilityVfx = null
     void import('../vfx/SceneAbilityVfxHost').then((m) => m.setSceneAbilityVfxHost(null))
+    this.teleportRunes?.dispose()
+    this.teleportRunes = null
+    this.peerLeaveGen.clear()
+    this.localTeleportPromise = null
     this.photoCamera?.dispose()
     this.photoCamera = null
     this.photoChromeHandler = null

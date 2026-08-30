@@ -247,6 +247,7 @@ export class LocalAvatar {
   }
 
   setBodyVisible(visible: boolean): void {
+    this.pivot.visible = visible
     if (this.model) this.model.visible = visible
     // Glider is pivot child (not under model) — hide with body (FPV / modifier hide).
     this.glider.setBodyVisible(visible)

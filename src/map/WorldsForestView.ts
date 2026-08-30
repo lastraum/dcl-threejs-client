@@ -688,7 +688,10 @@ export class WorldsForestView {
       yaw: 0,
       radius,
       onBurst: () => this.hidePlayer(),
-      onDischarge: () => this.shake.add(0.92, 1 / 0.65, 20)
+      onDischarge: () => {
+        this.hidePlayer()
+        this.shake.add(0.92, 1 / 0.65, 20)
+      }
     })
   }
 

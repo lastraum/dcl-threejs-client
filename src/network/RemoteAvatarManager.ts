@@ -163,6 +163,8 @@ type RemotePeerRecord = {
   bodyShape: BodyShape
   loading: Promise<void> | null
   hasPosition: boolean
+  /** Held in-scene for the leave rune; ignore new RFC4 until removePeer. */
+  departing: boolean
   /** AvatarModifierArea hide — keeps peer but invisible. */
   modifierHidden: boolean
   pendingProfile: AvatarProfile | null
@@ -788,6 +790,46 @@ export class RemoteAvatarManager {
     return record.currentYaw + AVATAR_YAW_OFFSET
   }
 
+  /**
+   * Freeze a leaving peer at their last RFC4 pose for the teleport rune.
+   * Returns null when there is no mesh pose — caller should remove immediately.
+   */
+  holdPeerForDepart(address: string): { x: number; y: number; z: number; yaw: number } | null {
+    const record = this.peers.get(address.toLowerCase())
+    if (!record || !record.hasPosition) return null
+    record.departing = true
+    record.velocity.set(0, 0, 0)
+    record.horizontalSpeed = 0
+    record.smoothedSpeed = 0
+    record.verticalVelocity = 0
+    record.remoteJumping = false
+    record.targetPosition.copy(record.root.position)
+    record.targetYaw = record.currentYaw
+    return {
+      x: record.root.position.x,
+      y: record.root.position.y,
+      z: record.root.position.z,
+      yaw: record.currentYaw
+    }
+  }
+
+  hideDepartingPeer(address: string): void {
+    const record = this.peers.get(address.toLowerCase())
+    if (!record) return
+    record.root.visible = false
+    if (record.model) record.model.visible = false
+    if (record.placeholder) record.placeholder.visible = false
+    if (record.nameTag) record.nameTag.object.visible = false
+  }
+
+  /** Rejoin while the leave rune is still playing — unfreeze as a live peer. */
+  resumeDepartingPeer(address: string): void {
+    const record = this.peers.get(address.toLowerCase())
+    if (!record || !record.departing) return
+    record.departing = false
+    record.root.visible = !record.modifierHidden
+  }
+
   /** World Y of the peer nametag anchor (for tour flag badge above the name). */
   getPeerNameTagWorldY(address: string): number | null {
     const record = this.peers.get(address.toLowerCase())
@@ -1238,6 +1280,7 @@ export class RemoteAvatarManager {
         bodyShape: 'male',
         loading: null,
         hasPosition: false,
+        departing: false,
         modifierHidden: false,
         pendingProfile: null,
         lastEmoteId: -1,
@@ -1273,6 +1316,11 @@ export class RemoteAvatarManager {
       odkNetInfo('remote peer record created', { peer: shortAddr(key) })
       // Flush DAV equip that arrived before the peer record existed.
       this.flushPendingVrmHash(key)
+    }
+
+    if (record.departing) {
+      record.departing = false
+      record.root.visible = !record.modifierHidden
     }
 
     if (positionDcl) {
@@ -1381,7 +1429,7 @@ export class RemoteAvatarManager {
       return
     }
     const record = this.peers.get(key)
-    if (!record) return
+    if (!record || record.departing) return
 
     const now = performance.now()
     const prevTargetX = record.targetPosition.x
@@ -1544,6 +1592,10 @@ export class RemoteAvatarManager {
     this.loadQueue.setIgnoreDistance(fullRateCrowd)
 
     for (const [key, record] of this.peers.entries()) {
+      if (record.departing) {
+        if (record.nameTag) record.nameTag.object.visible = false
+        continue
+      }
       const remoteGlidingEarly =
         glideStateWantsOpen(record.glideState) ||
         record.glideState === GlideStateWire.CLOSING_PROP

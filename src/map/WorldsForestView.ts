@@ -99,7 +99,7 @@ export class WorldsForestView {
   private readonly landingRimMat: THREE.MeshStandardMaterial
   private readonly poolGeo: THREE.CircleGeometry
   private readonly shoreGeo: THREE.RingGeometry
-  private readonly poolRimGeo: THREE.CircleGeometry
+  private readonly poolRimGeo: THREE.RingGeometry
   private readonly poolRimMat: THREE.ShaderMaterial
   private readonly curtainGeo: THREE.CylinderGeometry
   private readonly curtainMat: THREE.ShaderMaterial

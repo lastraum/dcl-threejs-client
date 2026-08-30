@@ -6019,6 +6019,19 @@ export class SceneScriptSystem {
     }
   }
 
+  /**
+   * CameraEntity PointerLock bit for the worker store.
+   * Browser lock, or (VC owns look AND IA_POINTER physically down) so scenes that
+   * orbit from `isPointerLocked && screenDelta` still see mouse-look without
+   * stealing getClick from unlocked ground clicks.
+   */
+  private scenePointerLockBit(): boolean {
+    const pe = this.pointerEvents
+    if (!pe) return false
+    if (pe.isBrowserPointerLocked()) return true
+    return pe.isLookOwnedByScene() && pe.isPointerActionHeld()
+  }
+
   /** Phase 2 — one unified worker play frame per main rAF (engine.update + pollEvents). */
   tickPlayFrame(): void {
     // Do not gate on bootPhaseActive: eval-done sets running while onStart continues, and
@@ -6033,6 +6046,7 @@ export class SceneScriptSystem {
     const player = this.reservedPoseStreaming ? this.clientPlayerPose : null
     const camera = this.reservedPoseStreaming ? this.clientCameraPose : null
     const primaryPointer = this.pointerEvents?.getPrimaryPointerSnapshot() ?? undefined
+    const pointerLock = this.scenePointerLockBit()
     const poseMoved = this.playFramePoseMoved(player, camera, primaryPointer)
     if (this.pointerEvents?.hasPendingInput()) {
       this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
@@ -6083,6 +6097,7 @@ export class SceneScriptSystem {
           }
         : {}),
       ...(primaryPointer ? { primaryPointer } : {}),
+      pointerLock,
       ...(this.lastAvatarAttachBatch.length
         ? { avatarAttach: this.lastAvatarAttachBatch }
         : {}),
@@ -6382,6 +6397,7 @@ export class SceneScriptSystem {
     const ppi =
       this.pointerEvents?.getPrimaryPointerSnapshot() ?? inject.primaryPointer ?? undefined
     if (ppi) inject.primaryPointer = ppi
+    inject.pointerLock = this.scenePointerLockBit()
     inject.camera = this.capturePointerEdgeCameraDcl()
     const sc = inject.primaryPointer?.screenCoordinates
     const ray = inject.primaryPointer?.worldRayDirection
@@ -6401,7 +6417,8 @@ export class SceneScriptSystem {
         ? ` ppi=(${sc.x.toFixed(0)},${sc.y.toFixed(0)})` +
           (ray ? ` ray=(${ray.x.toFixed(2)},${ray.y.toFixed(2)},${ray.z.toFixed(2)})` : '')
         : ' ppi=missing') +
-      (cam ? ` cam=(${cam.x.toFixed(1)},${cam.y.toFixed(1)},${cam.z.toFixed(1)})` : ' cam=missing')
+      (cam ? ` cam=(${cam.x.toFixed(1)},${cam.y.toFixed(1)},${cam.z.toFixed(1)})` : ' cam=missing') +
+      ` lock=${inject.pointerLock ? 1 : 0}`
     console.log('[pointer]', injectLine)
     this.logPointer(injectLine)
     this.worker.postMessage({

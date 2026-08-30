@@ -472,6 +472,11 @@ export type MainToWorker =
         worldRayDirection: { x: number; y: number; z: number }
       }
       /**
+       * Host PointerLock on CameraEntity before engine.update.
+       * Scenes read `PointerLock.get(CameraEntity).isPointerLocked` + PPI.screenDelta.
+       */
+      pointerLock?: boolean
+      /**
        * AvatarAttach relative Transform — applied after PE write, before systems.
        * Explorer: bone pose is on the store when getWorldPosition/Hle runs (fishing line).
        */

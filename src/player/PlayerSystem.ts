@@ -2136,10 +2136,10 @@ export class PlayerSystem {
 
   private releaseFreecamLookForVirtualCamera(): void {
     if (!this.input) return
+    // Stop client freecam orbit so it cannot fight the VC lens. Do **not** exit
+    // pointer lock: PointerLock on CameraEntity is a scene-readable API
+    // (isPointerLocked + PrimaryPointerInfo.screenDelta). VC owns pose, not lock.
     this.input.stopOrbitIfActive()
-    if (this.input.pointer.locked) {
-      document.exitPointerLock()
-    }
   }
 
   /**

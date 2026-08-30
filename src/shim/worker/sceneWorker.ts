@@ -1334,6 +1334,21 @@ function applyHostReservedSceneStore(): void {
   }
 }
 
+/** Host PointerLock on CameraEntity — skip identical so onChange does not pulse. */
+function applyPointerLockOnEngine(locked: boolean): void {
+  if (!sceneEngine) return
+  preregisterRendererInjectedComponents(sceneEngine)
+  const PointerLock = generated.PointerLock(sceneEngine)
+  const cur = PointerLock.getOrNull(sceneEngine.CameraEntity) as
+    | { isPointerLocked?: boolean }
+    | null
+  if (cur?.isPointerLocked === locked) return
+  writeHostLwwNoDirty(PointerLock, sceneEngine.CameraEntity as number, {
+    isPointerLocked: locked
+  })
+  workerLog('log', `[sceneWorker] PointerLock isPointerLocked=${locked ? 1 : 0}`)
+}
+
 /** Same-tick PlayerEntity / CameraEntity for scene systems (CameraFollowSystem, etc.). */
 function applyPlayFrameReservedPoses(
   player?: {
@@ -1351,7 +1366,8 @@ function applyPlayFrameReservedPoses(
     worldRayDirection: { x: number; y: number; z: number }
   },
   avatarAttach?: import('../types').AvatarAttachTransformEntry[],
-  tweenTransforms?: import('../types').AvatarAttachTransformEntry[]
+  tweenTransforms?: import('../types').AvatarAttachTransformEntry[],
+  pointerLock?: boolean
 ): void {
   if (!sceneEngine) return
   const Transform = extended.Transform(sceneEngine)
@@ -1374,6 +1390,7 @@ function applyPlayFrameReservedPoses(
   ensureReservedEntityTransforms(sceneEngine)
   if (player) write(sceneEngine.PlayerEntity as Entity, player)
   if (camera) write(sceneEngine.CameraEntity as Entity, camera)
+  if (pointerLock !== undefined) applyPointerLockOnEngine(pointerLock)
   applyHostReservedSceneStore()
   // Renderer Tweens write Transform on the store the VM reads (new-catch scale, reveal cam).
   if (tweenTransforms?.length) {
@@ -2505,8 +2522,15 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
   // (450ms budget, MeshRenderer census, react-ecs hold for the whole LMB drag)
   // starved Gulp play-frames (~13fps) while isPressed was already armed.
   if (treatAsNoTargetEarly && button === InputAction.IA_POINTER) {
-    if (ppi || body.camera) {
-      applyPlayFrameReservedPoses(undefined, body.camera, ppi)
+    if (ppi || body.camera || body.pointerLock !== undefined) {
+      applyPlayFrameReservedPoses(
+        undefined,
+        body.camera,
+        ppi,
+        undefined,
+        undefined,
+        body.pointerLock
+      )
     }
     if (sceneEngine) {
       injectLevelStatePointerEdgeOnEngine(
@@ -4174,6 +4198,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       (msg.player ||
         msg.camera ||
         msg.primaryPointer ||
+        msg.pointerLock !== undefined ||
         msg.avatarAttach?.length ||
         msg.tweenTransforms?.length)
     ) {
@@ -4182,7 +4207,8 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
         msg.camera,
         msg.primaryPointer,
         msg.avatarAttach,
-        msg.tweenTransforms
+        msg.tweenTransforms,
+        msg.pointerLock
       )
     }
     // Snap active PE-follow anchors even when UI holds engine.update (pointer select / menus).

@@ -844,6 +844,24 @@ export class PointerEventsSystem {
     return this.pendingInjectPayload !== null
   }
 
+  /** Browser pointer lock on the game canvas (Explorer PointerLock component). */
+  isBrowserPointerLocked(): boolean {
+    return this.deps?.isPointerLocked?.() === true
+  }
+
+  /** Scene VirtualCamera owns the lens — unlocked LMB is scene input, not freecam. */
+  isLookOwnedByScene(): boolean {
+    return this.deps?.isLookBlocked?.() === true
+  }
+
+  /**
+   * Physical press still open (browser down, PET not yet UP).
+   * Default IA_POINTER — scene `isPressed(POINTER)` / PointerLock-while-held.
+   */
+  isPointerActionHeld(button: InputActionValue = InputAction.IA_POINTER): boolean {
+    return this.downEntityByButton.has(button) || this.pendingPointerDown.has(button)
+  }
+
   /** Mobile HUD — same path as E/F keyboard interact. */
   triggerInputAction(action: InputActionValue, phase: 'down' | 'up'): void {
     if (!this.deps) return

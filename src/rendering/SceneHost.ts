@@ -644,7 +644,11 @@ export class SceneHost {
           'bloom:',
           this.bloom?.isActive() ? 'post' : 'off',
           'drawVisuals:',
-          this.drawWorld.visualCount
+          this.drawWorld.visualCount,
+          'drawCalls:',
+          info.calls,
+          'tris:',
+          info.triangles
         )
       }
 

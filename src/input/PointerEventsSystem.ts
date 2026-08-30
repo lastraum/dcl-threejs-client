@@ -77,6 +77,11 @@ type PointerDeps = {
    * was only looking / running.
    */
   isPointerLocked?: () => boolean
+  /**
+   * Scene VirtualCamera owns the lens (MainCamera bound). Unlocked LMB is then
+   * scene `isPressed(IA_POINTER)` + PPI drag — not freecam orbit.
+   */
+  isLookBlocked?: () => boolean
   /** Worker mount snapshot fallback when projection PointerEvents lags paint. */
   pointerEventsOf?: (entity: Entity) => { pointerEvents: ReadonlyArray<PBPointerEvents_Entry> } | null | undefined
   flushPointerCrdt?: () => void
@@ -444,9 +449,14 @@ export class PointerEventsSystem {
   private computeCurrentHit(): PointerHit | null {
     if (!this.deps) return null
 
+    // Hit-map UI hover first — Explorer cursor-over-control. Do not require DOM
+    // `--interactive` (partial UI snapshots can drop that class while PE still exists).
+    // react-ecs desktop buttons (Sky Chaser Start / How To Play close) fire onMouseUp
+    // only after onMouseEnter; missing hover-enter means the overlay never dismisses.
+    const uiHoverHit = this.deps.pickUiHoverHit?.(this.screenX, this.screenY)
+    if (uiHoverHit) return uiHoverHit
+
     if (isPointerOverSceneUi(this.screenX, this.screenY)) {
-      const uiHoverHit = this.deps.pickUiHoverHit?.(this.screenX, this.screenY)
-      if (uiHoverHit) return uiHoverHit
       const uiRegionHit = this.deps.pickUiRegionHit?.(this.screenX, this.screenY)
       if (uiRegionHit) return uiRegionHit
       // DOM has an interactive node under the cursor but hit-map did not claim a BLOCK
@@ -531,10 +541,13 @@ export class PointerEventsSystem {
     // on in-range PointerEvents (Creator Hub on_click / getClick). Skipping all
     // unlocked clicks ate VoxBoards halfpipe teleports. Misses stay orbit-only —
     // do not inject level-state PET_DOWN on PlayerEntity (that spammed every drag).
+    // Exception: scene VirtualCamera owns look — LMB is scene orbit (isPressed + PPI).
+    const sceneLookOwnsPointer = this.deps.isLookBlocked?.() === true
     const unlockedPointer =
       button === InputAction.IA_POINTER &&
       !!this.deps.isPointerLocked &&
-      !this.deps.isPointerLocked()
+      !this.deps.isPointerLocked() &&
+      !sceneLookOwnsPointer
     const coords = this.pointerClientCoords(e.clientX, e.clientY)
     const hit = this.resolveWorldInteractHit(button)
     // Real PE / UI when in range. On IA_POINTER miss/OOR: level-state PET on PlayerEntity so
@@ -686,6 +699,9 @@ export class PointerEventsSystem {
     this.uiPointerButtons.add(button)
     this.downEntityByButton.set(button, targetEntity)
     this.pendingPointerDown.set(button, hit)
+    // Click implies the cursor is over the control — deliver PET_HOVER_ENTER before DOWN
+    // so react-ecs onMouseUp (desktop: callback only while hovered) can fire.
+    if (hit.isSceneUi) this.syncSceneUiHover(hit)
     if (button === InputAction.IA_POINTER) {
       const owner = uiPointerOwnerOf(e) ?? ownRoot ?? '?'
       clientDebugLog.log(

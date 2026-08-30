@@ -33,6 +33,7 @@ import {
   logSyncDirectedFallback,
   logSyncDirectedPublish,
   logSyncOversizedSkip,
+  logSyncOutboundCustomEvent,
   peekCustomEventName,
   unwrapCraftedCommsMessage
 } from './comms/syncDebug'
@@ -1516,6 +1517,11 @@ export class CommsService {
       }
       if (unwrapped?.messageType === CommsWireMessageType.CUSTOM_EVENT) {
         const name = peekCustomEventName(unwrapped.payload)
+        logSyncOutboundCustomEvent({
+          payloadBytes: unwrapped.payload.byteLength,
+          name,
+          directed: Boolean(chunkDest?.length)
+        })
         if (name === 'joinRoster' || name === 'teamAssigned' || name === 'paintTick') {
           console.info(
             `[sync] CUSTOM_EVENT out ${name} → ${chunkDest?.length ? 'authoritative-server' : 'broadcast'} ${unwrapped.payload.byteLength}B`

@@ -49,6 +49,11 @@ export type LiveKitVideoBinder = (video: HTMLVideoElement, onUpdate?: () => void
  * Older heuristic treated every external https URL without a video extension as
  * m3u8 — progressive CDN mp4s then failed ~1s into demux.
  */
+/** HTMLVideoElement cannot decode youtube.com/watch pages — retrying play() every 400ms stalls rAF. */
+function isYoutubePageUrl(url: string): boolean {
+  return /(?:youtube\.com\/(?:watch|embed|shorts)|youtu\.be\/)/i.test(url)
+}
+
 function isHlsUrl(url: string): boolean {
   if (/\.m3u8(\?|#|$)/i.test(url)) return true
   if (/[?&](?:format|ext|type)=m3u8\b/i.test(url)) return true
@@ -374,6 +379,7 @@ export class WebVideoPlayer {
    * Also recovers shared LiveKit after playing=true / late track attach.
    */
   tickPlayback(): void {
+    if (this.state === VS_ERROR) return
     if (this.isPlaybackBlocked() || !this.wantsPlaying) return
     if (this.usesSharedLiveKit) {
       const video = getSharedLiveKitVideoStream().video
@@ -943,6 +949,17 @@ export class WebVideoPlayer {
     if (mediaUrl !== url) {
       console.warn('[WebVideoPlayer] unwrapped texture-proxy media URL', url, '→', mediaUrl)
     }
+    if (isYoutubePageUrl(mediaUrl)) {
+      this.loadedEcsSrc = this.loadedEcsSrc || url
+      this.loadedSrc = mediaUrl
+      this.paintIdleBlack()
+      this.setState(VS_ERROR)
+      console.warn(
+        '[WebVideoPlayer] YouTube watch/embed URLs are not a <video> source — screen idle (no play retry)',
+        shortSrc(mediaUrl)
+      )
+      return
+    }
     // Preserve ECS key — clearMediaSource resets loadedEcsSrc; applySpec already set it.
     const ecsKey = this.loadedEcsSrc
     this.clearMediaSource()
@@ -1133,6 +1150,11 @@ export class WebVideoPlayer {
           console.warn('[WebVideoPlayer] play() blocked or failed', retryErr, this.loadedSrc)
           return
         }
+      }
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/no supported sources/i.test(msg) || (err instanceof DOMException && err.name === 'NotSupportedError')) {
+        this.setState(VS_ERROR)
+        this.wantsPlaying = false
       }
       console.warn('[WebVideoPlayer] play() blocked or failed', err, this.loadedSrc)
     } finally {

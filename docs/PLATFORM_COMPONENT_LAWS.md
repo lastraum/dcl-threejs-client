@@ -38,7 +38,7 @@
 
 | Rule | Status |
 |------|--------|
-| **BM_Y / X\|Y:** `yaw = atan2(cam.x − worldPos.x, cam.z − worldPos.z)` in **display** space | Verified — original bridge + aefccaf |
+| **BM_Y / X\|Y:** yaw-only BM_ALL: `atan2(cam.x − pos.x, cam.z − pos.z) + π` so Three **−Z** faces the camera | Verified — Gulp TextShape names; matches lookAt azimuth |
 | **BM_ALL:** Three.js **lookAt** worldPos → camera (object **−Z** toward camera) | Verified — original bridge; Three convention |
 | Sample **world** position of the entity (parent chain), not local `obj.position` | Client convention (required for parented roots) |
 | Write rotation as **parent-local** quaternion | Client convention (hierarchy) |

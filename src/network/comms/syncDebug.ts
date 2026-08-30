@@ -1,6 +1,7 @@
 /** SyncEntities host instrumentation — enable with `?syncdebug` or localStorage DEBUG_SYNC=1. */
 
 import { CommsWireMessageType } from './CommsInboundQueue'
+import { decodeCommsBinaryMessage } from './commsBinaryWire'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 
 export type SyncWireTypeName =
@@ -71,7 +72,7 @@ export function syncWireTypeName(type: number): SyncWireTypeName {
 
 /** True when type is full-state RES (serverless or auth-server). */
 const CUSTOM_EVENT_NAME_RE =
-  /teamAssigned|weatherState|paintDelta|snapshot|joinRoster|paintTick|botPositions|roundReset|requestSnapshot|updateName/
+  /teamAssigned|weatherState|paintDelta|snapshot|joinRoster|paintTick|botPositions|roundReset|requestSnapshot|updateName|move|join|split|eatFood|eatPlayer|respawn|blobKnock|massUpdate|foodSpawn|foodGone|leaderboard|boostStart|spikeStart|spikeHit/
 
 export function peekCustomEventName(payload: Uint8Array): string {
   const n = Math.min(payload.byteLength, 96)
@@ -88,6 +89,75 @@ export function isResCrdtStateType(type: number): boolean {
     type === CommsWireMessageType.RES_CRDT_STATE ||
     type === CommsWireMessageType.AUTH_RES_CRDT_STATE
   )
+}
+
+function isIncrementalCrdtType(type: number): boolean {
+  return (
+    type === CommsWireMessageType.CRDT ||
+    type === CommsWireMessageType.AUTH_CRDT ||
+    type === CommsWireMessageType.CRDT_SERVER ||
+    type === CommsWireMessageType.CRDT_AUTHORITATIVE
+  )
+}
+
+/**
+ * Full CRDT snapshots (RES / AUTH_RES) obsolete every older snapshot and every
+ * incremental CRDT that arrived before them. LiveKit + stalled sendBinary can
+ * dump AUTH_RES×6 into one engine tick — SDK reapplies whole state and networked
+ * entities hitch. Keep the latest snapshot + later deltas.
+ *
+ * Repeat AUTH_RES across ticks: RealmInfo.onChange(connected) calls requestState
+ * on every identical PUT. After the first snapshot, incremental AUTH_CRDT is the
+ * live path — applying a 12KB RES every 1–2s rewinds local prediction / visuals.
+ */
+const REPEAT_AUTH_RES_MS = 4000
+let lastKeptAuthResAt = 0
+
+export function resetAuthResCoalesceClock(): void {
+  lastKeptAuthResAt = 0
+}
+
+export function dropObsoleteAuthSnapshots(chunks: Uint8Array[]): Uint8Array[] {
+  if (!chunks.length) return chunks
+  let lastRes = -1
+  const types = new Array<number>(chunks.length)
+  for (let i = 0; i < chunks.length; i++) {
+    const decoded = decodeCommsBinaryMessage(chunks[i]!)
+    const t = decoded?.messageType ?? -1
+    types[i] = t
+    if (isResCrdtStateType(t)) lastRes = i
+  }
+  let out: Uint8Array[]
+  if (lastRes < 0) {
+    out = chunks
+  } else {
+    out = []
+    for (let i = 0; i < chunks.length; i++) {
+      const t = types[i]!
+      if (isResCrdtStateType(t)) {
+        if (i === lastRes) out.push(chunks[i]!)
+        continue
+      }
+      if (i < lastRes && isIncrementalCrdtType(t)) continue
+      out.push(chunks[i]!)
+    }
+  }
+  const now = performance.now()
+  const keptRes = lastRes >= 0
+  if (keptRes && lastKeptAuthResAt > 0 && now - lastKeptAuthResAt < REPEAT_AUTH_RES_MS) {
+    const filtered = out.filter((chunk) => {
+      const decoded = decodeCommsBinaryMessage(chunk)
+      return !decoded || !isResCrdtStateType(decoded.messageType)
+    })
+    if (filtered.length !== out.length) {
+      console.info(
+        `[sync] drop repeat AUTH_RES — last ${(now - lastKeptAuthResAt).toFixed(0)}ms ago, keep ${filtered.length}/${chunks.length} chunk(s)`
+      )
+    }
+    return filtered
+  }
+  if (keptRes) lastKeptAuthResAt = now
+  return out
 }
 
 /** True when type is REQ (serverless or auth-server). */
@@ -150,6 +220,58 @@ function formatTypeCounts(counts: Record<string, number>): string {
       .map(([k, v]) => `${k}=${v}`)
       .join(' ') || 'none'
   )
+}
+
+/** 1s outbound CUSTOM_EVENT (move/join/…) — prove room.send is leaving. */
+let outCustomCount = 0
+let outCustomBytes = 0
+let outCustomWindowStart = 0
+const outCustomNames = new Map<string, number>()
+let outCustomDirected = 0
+let outCustomBroadcast = 0
+
+function flushOutboundCustomEventSummary(): void {
+  if (outCustomCount <= 0) return
+  const names = [...outCustomNames.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([k, v]) => `${k}×${v}`)
+    .join(' ')
+  const dest =
+    outCustomDirected && !outCustomBroadcast
+      ? 'directed'
+      : outCustomBroadcast && !outCustomDirected
+        ? 'broadcast'
+        : `directed=${outCustomDirected} broadcast=${outCustomBroadcast}`
+  const line =
+    `[sync] outbound CUSTOM_EVENT ×${outCustomCount} ${names || 'names=?'} ` +
+    `${dest} ~${outCustomBytes}B (1s window)`
+  console.info(line)
+  clientDebugLog.log('sync', line, { alsoConsole: false, throttleMs: 0, throttleKey: 'sync-out:CUSTOM_EVENT' })
+  outCustomCount = 0
+  outCustomBytes = 0
+  outCustomNames.clear()
+  outCustomDirected = 0
+  outCustomBroadcast = 0
+}
+
+export function logSyncOutboundCustomEvent(opts: {
+  payloadBytes: number
+  name: string
+  directed: boolean
+}): void {
+  const now = performance.now()
+  if (outCustomWindowStart === 0) outCustomWindowStart = now
+  if (now - outCustomWindowStart >= 1000) {
+    flushOutboundCustomEventSummary()
+    outCustomWindowStart = now
+  }
+  outCustomCount++
+  outCustomBytes += opts.payloadBytes
+  const key = opts.name || '?'
+  outCustomNames.set(key, (outCustomNames.get(key) ?? 0) + 1)
+  if (opts.directed) outCustomDirected++
+  else outCustomBroadcast++
 }
 
 export function logSyncOutbound(opts: {

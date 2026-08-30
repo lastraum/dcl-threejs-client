@@ -242,7 +242,16 @@ export class VirtualCameraBridge {
       const jumpM = camera.position.distanceTo(target.position)
       const targetMoved =
         !this.hasAppliedTarget || this.lastAppliedTargetPos.distanceTo(target.position) > 2
-      if (!bindChanged && worldFlat && jumpM > 25 && !targetMoved) {
+      // Follow / lookAtEntity booms move every frame (Gulp). Suppressing jumps
+      // when the authored eye hasn't moved 2m left the lens parked, then it
+      // teleported 25m+ when the target finally crossed the threshold.
+      if (
+        !bindChanged &&
+        worldFlat &&
+        jumpM > 25 &&
+        !targetMoved &&
+        !target.lookAtPoint
+      ) {
         return true
       }
       this.applyLensPose(camera, target.position, target.rotation, target.lookAtPoint)

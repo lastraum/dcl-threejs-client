@@ -8,7 +8,12 @@ import {
   encodeCommsBinaryMessage,
   isolateCommsBinaryMessage
 } from '../../network/comms/commsBinaryWire'
-import { isResCrdtStateType, unwrapCraftedCommsMessage } from '../../network/comms/syncDebug'
+import {
+  dropObsoleteAuthSnapshots,
+  resetAuthResCoalesceClock,
+  isResCrdtStateType,
+  unwrapCraftedCommsMessage
+} from '../../network/comms/syncDebug'
 import { createEngineApiEventState, type EngineApiEventState } from '../engine/EngineApiEventState'
 import type {
   ActiveVideoStreamsResponse,
@@ -144,6 +149,7 @@ import {
 } from './workerSceneUiCrdtOutbound'
 import { writeHostLwwNoDirty } from './injectHostLww'
 import {
+  flushInboundGuestLwwApplyProof,
   installInboundGuestLwwHostForward,
   resetInboundGuestLwwForward
 } from './forwardInboundGuestLww'
@@ -2495,6 +2501,30 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
     postPointerDeliverDone(`${label}-keyboard-level`)
     return
   }
+  // IA_POINTER empty-ground / scene-VC orbit: PET + PPI only. The RTS no-target path
+  // (450ms budget, MeshRenderer census, react-ecs hold for the whole LMB drag)
+  // starved Gulp play-frames (~13fps) while isPressed was already armed.
+  if (treatAsNoTargetEarly && button === InputAction.IA_POINTER) {
+    if (ppi || body.camera) {
+      applyPlayFrameReservedPoses(undefined, body.camera, ppi)
+    }
+    if (sceneEngine) {
+      injectLevelStatePointerEdgeOnEngine(
+        sceneEngine,
+        body,
+        phase === 'up' ? 'up' : 'down'
+      )
+      requestSceneEngineTick({ source: 'pointer-edge' })
+    }
+    if (phase === 'down' && !body.sceneUi) setWorkerPointerButtonHeld(button, true)
+    else setWorkerPointerButtonHeld(button, false)
+    workerLog(
+      'warn',
+      `[sceneWorker] ${label} — IA_POINTER level-state (PET+PPI; skip no-target RTS)`
+    )
+    postPointerDeliverDone(`${label}-pointer-level`)
+    return
+  }
   // Track held buttons for press lifecycle. No-target also defers cooperative
   // react-ecs between DOWN and UP so UI thrash does not starve systems on the hold window.
   const keyboardLevelState =
@@ -3520,7 +3550,7 @@ function takeBufferedSendBinaryInbound(): Uint8Array[] {
 }
 
 const CUSTOM_EVENT_NAME_RE =
-  /teamAssigned|weatherState|paintDelta|snapshot|joinRoster|paintTick|botPositions|roundReset|requestSnapshot|updateName/
+  /teamAssigned|weatherState|paintDelta|snapshot|joinRoster|paintTick|botPositions|roundReset|requestSnapshot|updateName|move|join|split|eatFood|eatPlayer|respawn|blobKnock|massUpdate|foodSpawn|foodGone|leaderboard|boostStart|spikeStart|spikeHit/
 
 function peekCustomEventName(payload: Uint8Array): string {
   const n = Math.min(payload.byteLength, 96)
@@ -3543,12 +3573,10 @@ function inboundHasRoomReadyTypes(chunks: Uint8Array[]): boolean {
   for (const chunk of chunks) {
     const decoded = decodeCommsBinaryMessage(chunk)
     if (!decoded) continue
-    if (
-      decoded.messageType === 6 ||
-      decoded.messageType === 9 ||
-      decoded.messageType === 3 ||
-      decoded.messageType === 7
-    ) {
+    // AUTH_RES / RES only. AUTH_CRDT (7) and ongoing CUSTOM_EVENT are the
+    // play hot path — treating them as join-critical logged every packet and
+    // stalled the debug panel / main thread (auth-server combat rooms).
+    if (decoded.messageType === 9 || decoded.messageType === 3 || decoded.messageType === 8) {
       return true
     }
   }
@@ -3611,7 +3639,9 @@ function mergeSendBinaryResponse(body: SendBinaryResponse): SendBinaryResponse {
   // Explorer: drain the inbound queue as-is (Bevy sendBinary → recv_binary).
   // RES-first is order only so snapshot sets isRoomReady before same-batch CRDT.
   const merged = resCrdtFirst(
-    isolateSendBinaryInbound([...(body.data ?? []), ...takeBufferedSendBinaryInbound()])
+    dropObsoleteAuthSnapshots(
+      isolateSendBinaryInbound([...(body.data ?? []), ...takeBufferedSendBinaryInbound()])
+    )
   )
   noteSendBinaryInbound(merged)
   return { data: merged }
@@ -3863,10 +3893,23 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
       forceRecoverStuckSceneEngineTick('heartbeat-stuck-engine-tick')
     }
     lastHeartbeatAt = now
+    let realmConnected = '-'
+    if (sceneEngine) {
+      try {
+        const RealmInfo = generated.RealmInfo(sceneEngine)
+        const realm = RealmInfo.getOrNull(sceneEngine.RootEntity) as
+          | { isConnectedSceneRoom?: boolean }
+          | null
+        realmConnected = realm?.isConnectedSceneRoom === true ? '1' : '0'
+      } catch {
+        realmConnected = '?'
+      }
+    }
     workerLog(
       'log',
-      `[sceneWorker] heartbeat — tick=${heartbeatPass} sceneUpdateInFlight=${sceneUpdateInFlight} sceneUpdatePromiseActive=${sceneUpdatePromiseActive} pointerDeliveryInFlight=${pointerDeliveryInFlight} engineTickInFlight=${isSceneEngineTickInFlight()} pendingCrdt=${pendingCrdt.size} sceneEngine=${sceneEngine ? 'ok' : 'missing'} sceneTickIntervalMs=${sceneTickIntervalMs}`
+      `[sceneWorker] heartbeat — tick=${heartbeatPass} sceneUpdateInFlight=${sceneUpdateInFlight} sceneUpdatePromiseActive=${sceneUpdatePromiseActive} pointerDeliveryInFlight=${pointerDeliveryInFlight} engineTickInFlight=${isSceneEngineTickInFlight()} pendingCrdt=${pendingCrdt.size} sceneEngine=${sceneEngine ? 'ok' : 'missing'} sceneTickIntervalMs=${sceneTickIntervalMs} realmConnected=${realmConnected}`
     )
+    flushInboundGuestLwwApplyProof()
   }, 5000)
 
   const runCooperativeTick = (): void => {
@@ -4355,6 +4398,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     sceneOnStartComplete = false
     sceneBootInProgress = true
     resetInboundGuestLwwForward()
+    resetAuthResCoalesceClock()
     lastUserData = null
     lastRealmInfo = null
     cacheHostReserved(msg.reserved)

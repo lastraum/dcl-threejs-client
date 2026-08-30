@@ -12969,9 +12969,45 @@
       .map-view.is-worlds-grid-mode .dcl-map__tiles,
       .map-view.is-worlds-grid-mode .dcl-map__parcel-tiles,
       .map-view.is-worlds-grid-mode .dcl-map__highlights,
-      .map-view.is-worlds-grid-mode .dcl-map__markers {
+      .map-view.is-worlds-grid-mode .dcl-map__markers,
+      .map-view.is-worlds-forest-mode .dcl-map__tiles,
+      .map-view.is-worlds-forest-mode .dcl-map__parcel-tiles,
+      .map-view.is-worlds-forest-mode .dcl-map__highlights,
+      .map-view.is-worlds-forest-mode .dcl-map__markers {
         visibility: hidden;
         pointer-events: none;
+      }
+      /* Worlds forest — isolated 3D catalog (blockout trees + pools) */
+      .map-view .dcl-map__worlds-forest {
+        position: absolute;
+        inset: 0;
+        z-index: 4;
+        overflow: hidden;
+        background: radial-gradient(ellipse at 50% 30%, #d7e0b0 0%, #8aa36a 55%, #3e5a36 100%);
+      }
+      .map-view .dcl-map__worlds-forest[hidden] {
+        display: none !important;
+      }
+      .map-view .dcl-map__worlds-forest-hint {
+        position: absolute;
+        left: 12px;
+        bottom: 12px;
+        z-index: 3;
+        margin: 0;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        background: rgba(12, 18, 10, 0.62);
+        color: rgba(255, 255, 255, 0.88);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        pointer-events: none;
+      }
+      .map-view.is-worlds-forest-mode .dcl-map__viewport {
+        touch-action: none;
+        cursor: default;
+        overflow: hidden;
       }
       /* Worlds map — same card grid as Explorer Places (worlds only) */
       .map-view .dcl-map__worlds-grid.places-view.places-view--explorer {
@@ -13207,7 +13243,17 @@
         align-items: center;
         justify-content: space-between;
         gap: 0.75rem;
+        width: 100%;
         padding: 0.5rem 1rem;
+        border: 0;
+        background: transparent;
+        text-align: left;
+        cursor: pointer;
+        color: inherit;
+        font: inherit;
+      }
+      .map-view .dcl-map__world-row:hover {
+        background: rgba(255, 255, 255, 0.08);
       }
       .map-view .dcl-map__world-name {
         font-size: 0.82rem;
@@ -26091,6 +26137,388 @@
       body.map-route,
       body.map-route #app {
         overflow: hidden;
+      }
+
+      /* ===== Worlds catalog (/worlds) — fullscreen 3D forest, not /map ===== */
+      .forest-page-view {
+        position: fixed;
+        inset: 0;
+        z-index: 20;
+        display: flex;
+        width: 100%;
+        height: 100%;
+        background: #2a1638;
+        overflow: hidden;
+      }
+      .forest-page-view__viewport {
+        position: relative;
+        flex: 1;
+        min-width: 0;
+        min-height: 0;
+        width: 100%;
+        height: 100%;
+      }
+      .forest-page-view .dcl-map__worlds-forest {
+        position: absolute;
+        inset: 0;
+        z-index: 1;
+      }
+      .forest-page-view .name-tag-layer,
+      .dcl-map__worlds-forest .name-tag-layer {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        z-index: 6;
+        pointer-events: none;
+      }
+      .forest-page-view__leave {
+        position: absolute;
+        top: 14px;
+        left: 14px;
+        z-index: 30;
+        margin: 0;
+        padding: 8px 14px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        background: rgba(12, 18, 10, 0.72);
+        color: #fff;
+        font: 650 12px/1.2 inherit;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        cursor: pointer;
+      }
+      .forest-page-view__leave:hover {
+        border-color: rgba(255, 255, 255, 0.45);
+        background: rgba(12, 18, 10, 0.88);
+      }
+      .forest-page-view .dcl-map__worlds-pins {
+        display: none !important;
+      }
+      .forest-world-list {
+        position: absolute;
+        top: 14px;
+        right: 14px;
+        bottom: 14px;
+        z-index: 30;
+        display: flex;
+        flex-direction: column;
+        width: min(300px, 42vw);
+        max-width: 320px;
+        border-radius: 16px;
+        border: 1px solid rgba(196, 160, 255, 0.28);
+        background: linear-gradient(180deg, rgba(42, 18, 72, 0.42), rgba(18, 8, 36, 0.32));
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        box-shadow: 0 12px 40px rgba(8, 0, 24, 0.28);
+        color: #f3e9ff;
+        overflow: hidden;
+        transform: translateX(0);
+        opacity: 1;
+        transition: transform 0.38s ease, opacity 0.28s ease;
+      }
+      .forest-world-list.is-collapsed {
+        transform: translateX(calc(100% + 28px));
+        opacity: 0;
+        pointer-events: none;
+      }
+      .forest-world-list__head {
+        flex: none;
+        padding: 14px 16px 10px;
+        font: 700 13px/1.2 inherit;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #e4c7ff;
+      }
+      .forest-world-list__search {
+        flex: none;
+        padding: 0 12px 10px;
+        border-bottom: 1px solid rgba(196, 160, 255, 0.18);
+      }
+      .forest-world-list__search-input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(196, 160, 255, 0.28);
+        background: rgba(8, 0, 24, 0.4);
+        color: #f3e9ff;
+        font-size: 13px;
+      }
+      .forest-world-list__search-input::placeholder {
+        color: rgba(228, 199, 255, 0.5);
+      }
+      .forest-world-list__search-input:focus {
+        outline: none;
+        border-color: rgba(122, 240, 255, 0.6);
+        box-shadow: 0 0 0 2px rgba(62, 200, 224, 0.22);
+      }
+      .forest-world-list__empty {
+        margin: 18px 10px;
+        font-size: 13px;
+        color: rgba(228, 199, 255, 0.55);
+      }
+      .forest-world-list__scroll {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 8px;
+        background: transparent;
+      }
+      .forest-world-list__scroll::-webkit-scrollbar {
+        width: 8px;
+      }
+      .forest-world-list__scroll::-webkit-scrollbar-thumb {
+        background: rgba(196, 160, 255, 0.35);
+        border-radius: 999px;
+      }
+      .forest-world-list__row {
+        display: grid;
+        grid-template-columns: 40px minmax(0, 1fr) auto;
+        gap: 10px;
+        align-items: center;
+        width: 100%;
+        margin: 0 0 4px;
+        padding: 8px;
+        border: 1px solid transparent;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.08);
+        color: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+      .forest-world-list__row:hover {
+        background: rgba(180, 120, 255, 0.16);
+        border-color: rgba(196, 160, 255, 0.22);
+      }
+      .forest-world-list__row.is-selected {
+        background: rgba(120, 70, 220, 0.35);
+        border-color: rgba(180, 230, 255, 0.55);
+        box-shadow: 0 0 12px rgba(80, 220, 255, 0.18);
+      }
+      .forest-world-list__thumb {
+        width: 40px;
+        height: 40px;
+        border-radius: 8px;
+        overflow: hidden;
+        background: rgba(80, 40, 120, 0.5);
+      }
+      .forest-world-list__thumb img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .forest-world-list__name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font: 650 13px/1.25 inherit;
+      }
+      .forest-world-list__count {
+        font: 700 12px/1 inherit;
+        color: #9fefff;
+        min-width: 1.4em;
+        text-align: right;
+      }
+      .forest-world-panel {
+        position: absolute;
+        top: 14px;
+        right: 14px;
+        bottom: 14px;
+        z-index: 31;
+        display: flex;
+        flex-direction: column;
+        width: min(300px, 42vw);
+        max-width: 320px;
+        border-radius: 16px;
+        border: 1px solid rgba(196, 160, 255, 0.28);
+        background: linear-gradient(180deg, rgba(42, 18, 72, 0.5), rgba(18, 8, 36, 0.38));
+        backdrop-filter: blur(14px);
+        -webkit-backdrop-filter: blur(14px);
+        box-shadow: 0 12px 40px rgba(8, 0, 24, 0.28);
+        color: #f3e9ff;
+        overflow: hidden;
+        transform: translateX(calc(100% + 28px));
+        opacity: 0;
+        pointer-events: none;
+        transition: transform 0.38s ease, opacity 0.28s ease;
+      }
+      .forest-world-panel.is-open {
+        transform: translateX(0);
+        opacity: 1;
+        pointer-events: auto;
+      }
+      .forest-world-panel__hero {
+        flex: none;
+        height: 148px;
+        background: rgba(80, 40, 120, 0.45);
+        overflow: hidden;
+      }
+      .forest-world-panel__hero img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .forest-world-panel__body {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        padding: 14px 14px 0;
+      }
+      .forest-world-panel__title {
+        margin: 0;
+        font: 750 18px/1.25 inherit;
+        color: #f6edff;
+      }
+      .forest-world-panel__creator {
+        display: grid;
+        grid-template-columns: 28px minmax(0, 1fr);
+        gap: 8px;
+        align-items: center;
+        margin: 8px 0 0;
+      }
+      .forest-world-panel__creator-face {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        overflow: hidden;
+        background: rgba(80, 40, 120, 0.5);
+      }
+      .forest-world-panel__creator-face img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .forest-world-panel__creator-meta {
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 1px;
+      }
+      .forest-world-panel__creator-label {
+        font: 650 10px/1 inherit;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: rgba(228, 199, 255, 0.62);
+      }
+      .forest-world-panel__creator-name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font: 650 13px/1.2 inherit;
+        color: #f3e9ff;
+      }
+      .forest-world-panel__desc {
+        margin: 10px 0 0;
+        font: 500 13px/1.4 inherit;
+        color: rgba(243, 233, 255, 0.78);
+        max-height: 6.4em;
+        overflow-y: auto;
+      }
+      .forest-world-panel__desc::-webkit-scrollbar {
+        width: 6px;
+      }
+      .forest-world-panel__desc::-webkit-scrollbar-thumb {
+        background: rgba(196, 160, 255, 0.35);
+        border-radius: 999px;
+      }
+      .forest-world-panel__count {
+        margin: 10px 0 10px;
+        font: 650 13px/1.2 inherit;
+        color: #9fefff;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      .forest-world-panel__users {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 0 0 8px;
+        background: transparent;
+      }
+      .forest-world-panel__users::-webkit-scrollbar {
+        width: 8px;
+      }
+      .forest-world-panel__users::-webkit-scrollbar-thumb {
+        background: rgba(196, 160, 255, 0.35);
+        border-radius: 999px;
+      }
+      .forest-world-panel__empty {
+        margin: 8px 0;
+        color: rgba(243, 233, 255, 0.62);
+        font: 500 13px/1.4 inherit;
+      }
+      .forest-world-panel__user {
+        display: grid;
+        grid-template-columns: 36px minmax(0, 1fr);
+        gap: 10px;
+        align-items: center;
+        margin: 0 0 4px;
+        padding: 6px 8px;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.08);
+      }
+      .forest-world-panel__face {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        overflow: hidden;
+        background: rgba(80, 40, 120, 0.5);
+      }
+      .forest-world-panel__face img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .forest-world-panel__user-name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font: 650 13px/1.25 inherit;
+      }
+      .forest-world-panel__jump {
+        flex: none;
+        margin: 10px;
+        padding: 14px 16px;
+        border-radius: 12px;
+        border: 1px solid rgba(120, 230, 255, 0.55);
+        background: linear-gradient(180deg, #7af0ff, #3ec8e0);
+        color: #041018;
+        font: 800 14px/1 inherit;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        cursor: pointer;
+      }
+      .forest-world-panel__jump:hover {
+        filter: brightness(1.08);
+      }
+      .forest-world-panel__jump:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      .forest-page-view.is-jumping .forest-page-view__leave {
+        opacity: 0;
+        pointer-events: none;
+      }
+      @media (max-width: 720px) {
+        .forest-world-list,
+        .forest-world-panel {
+          width: min(240px, 78vw);
+          top: 56px;
+        }
+      }
+      body.forest-route,
+      body.forest-route #app {
+        overflow: hidden;
+        height: 100%;
       }
 
       /* ===== Profile page (/profile) — decentraland.org profile parity ===== */

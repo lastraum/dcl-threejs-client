@@ -22,6 +22,8 @@ export function isCorsSafeTextureUrl(url: string): boolean {
   // Hosts that send ACAO for WebGL Image uploads (verify before adding — marketing-files does NOT).
   // peer.decentraland.org sends CORS. peer-ec1/ec2 do not — those must use /api/texture.
   if (/\/\/peer\.decentraland\.(org|zone|today)\//i.test(url)) return true
+  // Worlds content hashes (ACAO:*). Proxy fetch without a browser UA gets 403 → blank UiImage.
+  if (/worlds-content-server\.decentraland\.(org|zone|today)\//i.test(url)) return true
   // Content CDN for scene assets.
   if (/^https?:\/\/[^/]*content\.decentraland\./i.test(url)) return true
   if (/gstatic\.com\//i.test(url)) return true

@@ -339,15 +339,32 @@ export class SceneUiBridge {
     this.writeback = writeback
   }
 
-  /** Pointer phase-4 structured mount — feed DOM paint + hit tests before projection fold. */
-  ingestMountSnapshot(rows: readonly WorkerUiMountSnapshotRow[]): void {
-    this.mountSnapshotPointerEvents.clear()
+  /**
+   * Pointer phase-4 structured mount — feed DOM paint + hit tests before projection fold.
+   *
+   * Partial dirty snapshots (timer text, 2–8 rows) omit unchanged PointerEvents by design.
+   * Clearing the whole PE map on those payloads left How To Play / Start buttons with no
+   * lag-fill PE, so DOM `--interactive` dropped and desktop onMouseUp never fired.
+   * `replace` is full-mount only; empty rows still wipe (welcome unmount).
+   */
+  ingestMountSnapshot(
+    rows: readonly WorkerUiMountSnapshotRow[],
+    opts?: { replace?: boolean }
+  ): void {
+    if (rows.length === 0 || opts?.replace) {
+      this.mountSnapshotPointerEvents.clear()
+    }
     for (const row of rows) {
       if (row.componentId !== POINTER_EVENTS_COMPONENT_ID) continue
       const entity = row.entity as Entity
       this.mountSnapshotPointerEvents.set(entity, row.value)
       // New snapshot may re-open PE on an entity that previously lost it — allow snapshot lead.
       this.livePointerEventsSeen.delete(entity)
+    }
+    if (this.workerUiEntitiesKnown && this.workerUiEntities) {
+      for (const entity of [...this.mountSnapshotPointerEvents.keys()]) {
+        if (!this.workerUiEntities.has(entity)) this.mountSnapshotPointerEvents.delete(entity)
+      }
     }
   }
 

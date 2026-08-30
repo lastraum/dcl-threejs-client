@@ -111,6 +111,11 @@ export default defineConfig({
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/places/, '')
       },
+      '/api/scene-participants': {
+        target: 'https://comms-gatekeeper.decentraland.org',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/scene-participants/, '/scene-participants')
+      },
       // Same-origin auth-api proxy (matches nginx /api/dcl-auth-api/)
       '/api/dcl-auth-api': {
         target: 'https://auth-api.decentraland.org',

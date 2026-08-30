@@ -98,6 +98,7 @@ import { EventsPageView } from './ui/explore/EventsPageView'
 import { ExplorerView } from './ui/explore/ExplorerView'
 import { LivePageView } from './ui/explore/LivePageView'
 import { LootBagPageView } from './ui/explore/LootBagPageView'
+import { ForestPageView } from './ui/explore/ForestPageView'
 import { MapPageView } from './ui/explore/MapPageView'
 import { ProfilePageView } from './ui/explore/ProfilePageView'
 import type { SocialShellTab } from './ui/explore/SocialShellTopNav'
@@ -200,6 +201,7 @@ export class AppController {
   private editorApp: EditorApp | null = null
   private explorerView: ExplorerView | null = null
   private mapPageView: MapPageView | null = null
+  private forestPageView: ForestPageView | null = null
   private eventsPageView: EventsPageView | null = null
   private livePageView: LivePageView | null = null
   private livePip: LivePip | null = null
@@ -330,6 +332,11 @@ export class AppController {
       return
     }
 
+    if (postLoginRoute.kind === 'forest') {
+      await this.showForestPage({ replace: true })
+      return
+    }
+
     if (postLoginRoute.kind === 'communities') {
       await this.showCommunitiesPage({ replace: true })
       return
@@ -440,6 +447,16 @@ export class AppController {
       return
     }
 
+    if (target.kind === 'forest') {
+      this.navigating = true
+      try {
+        await this.showForestPage({ fromHistory: opts.fromHistory, replace: opts.replace })
+      } finally {
+        this.navigating = false
+      }
+      return
+    }
+
     if (target.kind === 'communities') {
       this.navigating = true
       try {
@@ -508,6 +525,7 @@ export class AppController {
     await this.teardownScene({ clearVrmCache: true })
     this.teardownLanding()
     this.teardownMapPage()
+    this.teardownForestPage()
     this.teardownEventsPage()
     this.teardownLivePage()
     this.teardownLootBagPage()
@@ -1461,6 +1479,7 @@ export class AppController {
     await this.teardownScene({ clearVrmCache: true })
     this.teardownLanding()
     this.teardownMapPage()
+    this.teardownForestPage()
     this.teardownEventsPage()
     this.teardownLivePage()
     this.teardownLootBagPage()
@@ -1517,6 +1536,7 @@ export class AppController {
     this.teardownExplorer()
     this.teardownLanding()
     this.teardownMapPage()
+    this.teardownForestPage()
     this.teardownEventsPage()
     this.teardownLivePage()
     this.teardownLootBagPage()
@@ -1555,6 +1575,53 @@ export class AppController {
     this.collapseSocialChatThread()
   }
 
+  private async showForestPage(
+    opts: { fromHistory?: boolean; replace?: boolean } = {}
+  ): Promise<void> {
+    if (this.appMode === 'play') {
+      stopDwellTracking('shell')
+      this.disposeCommunityFollow()
+      await this.teardownScene({ clearVrmCache: true })
+    }
+
+    if (!opts.fromHistory) {
+      applyRouteToHistory({ kind: 'forest' }, opts.replace ?? false)
+    }
+    this.currentRoute = { kind: 'forest' }
+    this.appMode = 'forest'
+    this.syncCommunityVoiceBarVisibility()
+    this.clearSceneBanWatch()
+
+    this.teardownExplorer()
+    this.teardownLanding()
+    this.teardownMapPage()
+    this.teardownForestPage()
+    this.teardownEventsPage()
+    this.teardownLivePage()
+    this.teardownLootBagPage()
+    this.teardownCommunitiesPage()
+    this.teardownProfilePage()
+
+    if (!this.container || !this.login) return
+
+    const hudEl = document.getElementById('hud')
+    if (hudEl) hudEl.hidden = true
+
+    this.forestPageView = new ForestPageView({
+      onLeave: () => void this.navigateTo({ kind: 'blank' }),
+      profileId: this.login.address,
+      onJumpInWorld: (worldName) => {
+        const name = worldName.trim()
+        if (!name) return
+        void this.jumpInToScene(
+          { kind: 'world', worldName: name, segment: name },
+          { entry: 'teleport', source: 'goto', fastAssets: true }
+        )
+      }
+    })
+    this.forestPageView.mount(this.container)
+  }
+
   private async showEventsPage(
     opts: { fromHistory?: boolean; replace?: boolean } = {}
   ): Promise<void> {
@@ -1575,6 +1642,7 @@ export class AppController {
     this.teardownExplorer()
     this.teardownLanding()
     this.teardownMapPage()
+    this.teardownForestPage()
     this.teardownEventsPage()
     this.teardownLivePage()
     this.teardownLootBagPage()
@@ -1622,6 +1690,7 @@ export class AppController {
     this.teardownExplorer()
     this.teardownLanding()
     this.teardownMapPage()
+    this.teardownForestPage()
     this.teardownEventsPage()
     this.teardownLivePage()
     this.teardownLootBagPage()
@@ -1667,6 +1736,7 @@ export class AppController {
     this.teardownExplorer()
     this.teardownLanding()
     this.teardownMapPage()
+    this.teardownForestPage()
     this.teardownEventsPage()
     this.teardownLivePage()
     this.teardownLootBagPage()
@@ -1708,6 +1778,7 @@ export class AppController {
     this.teardownExplorer()
     this.teardownLanding()
     this.teardownMapPage()
+    this.teardownForestPage()
     this.teardownEventsPage()
     this.teardownLivePage()
     this.teardownLootBagPage()
@@ -1757,6 +1828,7 @@ export class AppController {
     this.teardownExplorer()
     this.teardownLanding()
     this.teardownMapPage()
+    this.teardownForestPage()
     this.teardownEventsPage()
     this.teardownLivePage()
     this.teardownLootBagPage()
@@ -1790,6 +1862,11 @@ export class AppController {
   private teardownMapPage(): void {
     this.mapPageView?.dispose()
     this.mapPageView = null
+  }
+
+  private teardownForestPage(): void {
+    this.forestPageView?.dispose()
+    this.forestPageView = null
   }
 
   private teardownEventsPage(): void {
@@ -2037,6 +2114,7 @@ export class AppController {
     // Ends prior landing engaged-session (if any) before remount.
     this.teardownLanding()
     this.teardownMapPage()
+    this.teardownForestPage()
     this.teardownEventsPage()
     this.teardownLivePage()
     this.teardownLootBagPage()
@@ -2630,8 +2708,8 @@ export class AppController {
       this.sceneLandingView!.beginJumpInLoading()
     } else {
       loading = new LoadingScreen(
-        this.appMode === 'play' ? 'Teleporting…' : 'Preparing your experience…',
-        { fast: this.appMode === 'play' || opts.entry === 'map' }
+        this.appMode === 'play' || opts.entry === 'teleport' ? 'Teleporting…' : 'Preparing your experience…',
+        { fast: this.appMode === 'play' || opts.entry === 'map' || opts.entry === 'teleport' }
       )
       loading.mount()
       loading.startLoadingTimer()
@@ -2644,6 +2722,7 @@ export class AppController {
       if (!seamless) {
         this.teardownExplorer()
         this.teardownMapPage()
+        this.teardownForestPage()
       }
       const hydrationTimedOut = await this.loadRoute(target, {
         ...opts,

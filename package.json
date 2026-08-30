@@ -12,6 +12,7 @@
     "bundle:wearables": "node scripts/bundle-base-wearables.mjs",
     "test:trigger": "node scripts/test-trigger-area-math.mjs",
     "test:gltf-collider": "node scripts/test-gltf-collider-class.mjs",
+    "test:static-gltf-perf": "node scripts/test-static-gltf-perf-law.mjs",
     "test:locomotion": "node scripts/test-locomotion-input-modifier.mjs",
     "test:tick-sources": "node scripts/test-scene-engine-tick-sources.mjs",
     "test:sceneloop-send": "node scripts/test-sceneloop-send.mjs",

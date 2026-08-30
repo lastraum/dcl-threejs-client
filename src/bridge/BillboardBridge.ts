@@ -24,7 +24,7 @@ const _extractWorld = new THREE.Matrix4()
  * ## Verified client law (git history: initial → aefccaf live ECS scan)
  *
  * - `billboardMode ?? 7` → BM_ALL when omitted (matches scene `Billboard.create` / ECS default).
- * - **BM_Y** / X|Y: yaw only via `atan2(cam−pos)` on **world** XZ.
+ * - **BM_Y** / X|Y: yaw-only BM_ALL — `atan2(cam−pos)+π` so Three **−Z** faces the camera.
  * - **BM_ALL**: Three.js **lookAt** — object **−Z** faces the camera (Three convention).
  *
  * ## Hierarchy (required engineering — parented roots)
@@ -115,7 +115,7 @@ export class BillboardBridge {
       if (mode === BM_Y || mode === (BM_X | BM_Y)) {
         const dx = camPos.x - _worldPos.x
         const dz = camPos.z - _worldPos.z
-        const nextYaw = Math.atan2(dx, dz)
+        const nextYaw = Math.atan2(dx, dz) + Math.PI
         const prev = this.lastYaw.get(entity)
         if (prev !== undefined && Math.abs(nextYaw - prev) <= YAW_EPS) continue
         _worldQuat.setFromAxisAngle(_worldUp, nextYaw)

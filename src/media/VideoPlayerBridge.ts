@@ -33,6 +33,11 @@ type DecoderEntry = {
   lastLength: number
   /** Wall-clock of last VideoEvent append — throttle offset spam to worker. */
   lastEventAtMs: number
+  /**
+   * Last material-bind key (`play|idle:src`). Canvas uploads update in place —
+   * rebinding every spec/frame walk walked every scene entity.
+   */
+  materialsBoundKey: string
 }
 
 /** ECS VideoPlayer → HTML decoders (one per playing entity); grow-only VideoEvent back to mirror. */
@@ -220,7 +225,7 @@ export class VideoPlayerBridge {
         if (!entry.player.isHoldingAtEnd()) continue
         entry.player.replayFromUserClick()
         entry.lastAppliedPlaying = true
-        this.onTextureReady?.(entity)
+        this.notifyMaterialsForVideo(entity, true)
         userToggleConsumed = true
         break
       }
@@ -326,7 +331,7 @@ export class VideoPlayerBridge {
     player.setUserGestureUnlocked(this.userGestureUnlocked, {
       allowSound: this.soundUnlocked
     })
-    player.onFrameReady = () => this.onTextureReady?.(entity)
+    player.onFrameReady = () => this.notifyMaterialsForVideo(entity)
     player.onNaturalEnd = () => this.syncPlayingToEcs(entity, false)
     player.onReplayStarted = () => this.syncPlayingToEcs(entity, true)
     this.decoders.set(entity, {
@@ -340,8 +345,24 @@ export class VideoPlayerBridge {
       lastState: VS_NONE,
       lastOffset: -1,
       lastLength: -1,
-      lastEventAtMs: 0
+      lastEventAtMs: 0,
+      materialsBoundKey: ''
     })
+  }
+
+  /**
+   * Bind VideoTexture onto Material / GltfNodeModifiers once per play/idle+src.
+   * Later decoded frames already sit on the same CanvasTexture (`needsUpdate`).
+   */
+  private notifyMaterialsForVideo(entity: Entity, force = false): void {
+    const entry = this.decoders.get(entity)
+    if (!entry) return
+    if (!force && !entry.player.canAttachTexture()) return
+    const playing = entry.lastAppliedPlaying !== false && !entry.player.isHoldingAtEnd()
+    const key = `${playing ? 'play' : 'idle'}:${entry.lastSrc}`
+    if (!force && entry.materialsBoundKey === key) return
+    entry.materialsBoundKey = key
+    this.onTextureReady?.(entity)
   }
 
   private syncPlayingToEcs(entity: Entity, playing: boolean): void {
@@ -386,6 +407,7 @@ export class VideoPlayerBridge {
     if (srcChanged) {
       entry.lastSrc = src
       entry.lastSpecKey = ''
+      entry.materialsBoundKey = ''
       // Explorer videoEventsSystem: fire immediately on source swap so scene onChange /
       // registerVideoEventsEntity sees LOADING (or NONE) before the next decoder state.
       entry.lastState = src ? VS_LOADING : VS_NONE
@@ -408,7 +430,7 @@ export class VideoPlayerBridge {
     entry.lastAppliedPlaying = ecsPlaying
     entry.player.applySpec(spec, { fromUserToggle, liveKitRemoteLive })
     // Rebind only when a drawable frame (or ECS idle black) is actually attachable.
-    if (entry.player.canAttachTexture()) this.onTextureReady?.(entity)
+    this.notifyMaterialsForVideo(entity, fromUserToggle)
     return fromUserToggle && (playingChanged || entry.player.isHoldingAtEnd())
   }
 

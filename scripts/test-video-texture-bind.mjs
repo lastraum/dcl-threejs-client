@@ -33,11 +33,14 @@ assert(
 assert(
   'ensureDecoder does not fire onTextureReady before a frame',
   !/Bind black placeholder immediately/.test(bridge) &&
-    /this\.decoders\.set\(entity, \{[\s\S]*?lastEventAtMs: 0\s*\}\)\s*\}/.test(bridge)
+    /this\.decoders\.set\(entity, \{[\s\S]*?materialsBoundKey: ''\s*\}\)/.test(bridge) &&
+    /player\.onFrameReady = \(\) => this\.notifyMaterialsForVideo\(entity\)/.test(bridge)
 )
 assert(
-  'applySpec only rebinds when the texture is attachable',
-  /if \(entry\.player\.canAttachTexture\(\)\) this\.onTextureReady\?\.\(entity\)/.test(bridge)
+  'applySpec only rebinds when the texture is attachable (once per play/idle+src)',
+  /notifyMaterialsForVideo\(entity, fromUserToggle\)/.test(bridge) &&
+    /if \(!force && !entry\.player\.canAttachTexture\(\)\) return/.test(bridge) &&
+    /materialsBoundKey === key/.test(bridge)
 )
 assert(
   'playing=true waits for a painted canvas frame, not 1×1 black',

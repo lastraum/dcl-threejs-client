@@ -139,10 +139,11 @@ export class DrawWorld {
     _billPos.setFromMatrixPosition(billedPose.matrixWorld)
     billedPose.matrixWorld.decompose(_billDummy, _billQuat, _billScale)
     if (mode === 2 || mode === 3) {
-      // BM_Y / BM_X|Y — yaw only (same as BillboardBridge).
+      // BM_Y / BM_X|Y — yaw-only BM_ALL: Three −Z toward camera, no pitch.
+      // atan2 without π aimed +Z (180° from lookAt) and turned TextShape names around.
       const dx = camera.position.x - _billPos.x
       const dz = camera.position.z - _billPos.z
-      _billQuat.setFromAxisAngle(_billUp, Math.atan2(dx, dz))
+      _billQuat.setFromAxisAngle(_billUp, Math.atan2(dx, dz) + Math.PI)
     } else {
       _billLook.lookAt(_billPos, camera.position, _billUp)
       _billQuat.setFromRotationMatrix(_billLook)

@@ -16,6 +16,7 @@ import {
   type InstanceColliderShape
 } from '../rendering/SceneGltfInstancer'
 import { bakeTrimeshGeometry } from '../physics/bakeTrimeshGeometry'
+import { filterAndMaybeCompactGltfColliderShapes } from './compactGltfColliderShapes'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import {
   isSignificantPlatformDelta,
@@ -218,6 +219,9 @@ export class GltfColliderExtractor {
       return true
     }
 
+    // Animator PART needs per-mesh locals. Static rest may compact vis/inv hulls.
+    const compactStatic = !ecs.Animator?.has(entity)
+
     // Instanced: template shapes + entity world pose. Clone: traverse __mesh_* tree.
     const desc = instanceShapes?.length
       ? this.extractColliderDescFromInstanceShapes(
@@ -225,10 +229,18 @@ export class GltfColliderExtractor {
           obj,
           instanceShapes,
           hasVisiblePhysics,
-          hasInvisiblePhysics
+          hasInvisiblePhysics,
+          compactStatic
         )
       : gltfMesh
-        ? this.extractColliderDesc(entity, gltfMesh, obj, hasVisiblePhysics, hasInvisiblePhysics)
+        ? this.extractColliderDesc(
+            entity,
+            gltfMesh,
+            obj,
+            hasVisiblePhysics,
+            hasInvisiblePhysics,
+            compactStatic
+          )
         : null
 
     if (
@@ -255,6 +267,8 @@ export class GltfColliderExtractor {
     }
 
     if (desc) {
+      const prev = this.extracted.get(entity)
+      if (prev && prev !== desc) disposeCompactedColliderShapes(prev)
       this.extracted.set(entity, desc)
       this.syncState.set(entity, {
         geomKey,
@@ -665,6 +679,7 @@ export class GltfColliderExtractor {
 
   removeColliderEntity(entity: Entity): boolean {
     if (!this.extracted.has(entity) && !this.fingerprints.has(entity)) return false
+    disposeCompactedColliderShapes(this.extracted.get(entity))
     this.extracted.delete(entity)
     this.fingerprints.delete(entity)
     this.poseFingerprints.delete(entity)
@@ -1135,7 +1150,8 @@ export class GltfColliderExtractor {
     gltfRoot: THREE.Object3D,
     entityObj: THREE.Object3D,
     hasVisiblePhysics: boolean,
-    hasInvisiblePhysics: boolean
+    hasInvisiblePhysics: boolean,
+    compactStatic = false
   ): PhysicsColliderDesc | null {
     // Same classification as collectColliderMeshes (ancestry-first _collider → inv).
     const colliderMeshes = this.collectColliderMeshes(
@@ -1176,9 +1192,22 @@ export class GltfColliderExtractor {
       })
     }
 
-    if (!shapes.length) return null
+    const compacted = filterAndMaybeCompactGltfColliderShapes(
+      entity as number,
+      shapes,
+      compactStatic
+    )
+    if (!compacted.length) return null
+    if (compacted.length !== shapes.length) {
+      clientDebugLog.log(
+        'collision',
+        `[GltfCollider] compact e${entity as number} shapes ${shapes.length} → ${compacted.length}` +
+          (compactStatic ? ' (static hull)' : ' (uncookable dropped)'),
+        { alsoConsole: true, throttleMs: 5000, throttleKey: `gltf-compact:${entity as number}` }
+      )
+    }
 
-    const geomKey = shapes.map((s) => s.fingerprint).join('|')
+    const geomKey = compacted.map((s) => s.fingerprint).join('|')
 
     return {
       entity: GLTF_COLLIDER_ENTITY_BASE + entity,
@@ -1186,7 +1215,7 @@ export class GltfColliderExtractor {
       // v3 — entity-local baked geometry + relative per-shape pose slides (Animator walk surfaces).
       fingerprint: `gltf-entity:v3:${entity}:${geomKey}`,
       matrix: entityObj.matrixWorld.clone(),
-      shapes
+      shapes: compacted
     }
   }
 
@@ -1199,7 +1228,8 @@ export class GltfColliderExtractor {
     entityObj: THREE.Object3D,
     instanceShapes: InstanceColliderShape[],
     hasVisiblePhysics: boolean,
-    hasInvisiblePhysics: boolean
+    hasInvisiblePhysics: boolean,
+    compactStatic = false
   ): PhysicsColliderDesc | null {
     const shapes: PhysicsColliderShapeDesc[] = []
     for (const shape of instanceShapes) {
@@ -1217,18 +1247,31 @@ export class GltfColliderExtractor {
         localMatrix: shape.localMatrix
       })
     }
-    if (!shapes.length) return null
+    const compacted = filterAndMaybeCompactGltfColliderShapes(
+      entity as number,
+      shapes,
+      compactStatic
+    )
+    if (!compacted.length) return null
 
     entityObj.updateMatrixWorld(true)
-    const geomKey = shapes.map((s) => s.fingerprint).join('|')
+    const geomKey = compacted.map((s) => s.fingerprint).join('|')
     return {
       entity: GLTF_COLLIDER_ENTITY_BASE + entity,
       kind: 'gltf-multi',
       // Shared geom key (no entity id) — cook cache reuses trimeshes across instances.
       fingerprint: `gltf-entity:v3-inst:${geomKey}`,
       matrix: entityObj.matrixWorld.clone(),
-      shapes
+      shapes: compacted
     }
+  }
+}
+
+function disposeCompactedColliderShapes(desc: PhysicsColliderDesc | undefined): void {
+  if (!desc?.shapes) return
+  for (const shape of desc.shapes) {
+    if (!shape.fingerprint.includes(':compact:')) continue
+    shape.geometry?.dispose()
   }
 }
 

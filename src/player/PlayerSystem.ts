@@ -1117,8 +1117,13 @@ export class PlayerSystem {
         // Ground-level long jumps: one-shot CCT settle when floor already under feet.
         const horiz = Math.hypot(target.x - from.x, target.z - from.z)
         const vert = Math.abs(target.y - from.y)
-        const longRespawn = horiz > 2.5 || vert > 2
-        const settle = longRespawn || !avatarTarget
+        // Ground-follow snaps (agar / lock-avatar-under-cell) are duration-0 feet
+        // puts, not Flagtag drown respawns. Treating horiz>2.5 as longRespawn
+        // settled the CCT every ~0.4s and made locomotion glitchy.
+        const authoredY = requestedFeetDcl.y
+        const groundFollow = vert < 1.25 && authoredY < 3
+        const longRespawn = !groundFollow && (horiz > 2.5 || vert > 2)
+        const settle = groundFollow ? false : longRespawn || !avatarTarget
         const reqDcl = requestedFeetDcl
         const tgtDcl = threeToDclVec(target)
         clientDebugLog.consoleOnly(
@@ -1134,11 +1139,9 @@ export class PlayerSystem {
           this.lastLongTeleportFeet = target.clone()
           this.lastLongTeleportAt = performance.now()
         }
-        // Pin authored feet while InputModifier.disableAll (map rebuild / freeze death).
-        // Retarget an already-armed hold even if this frame's IM mirror still says
-        // canLocomote — otherwise the next disableAll tick snaps back to snow feet
-        // and the campfire movePlayerTo never sticks.
-        if (this.disableAllHoldFeet || !canLocomote(this.getLocomotionConfig())) {
+        // Pin authored feet only for intentional InputModifier.disableAll
+        // (SpaceRunner lobby). Walk/jog/run freeze must not arm this hold.
+        if (this.getLocomotionConfig().disableAll) {
           this.disableAllHoldFeet = target.clone()
           const f = this.disableAllHoldFeet
           physLog(

@@ -422,7 +422,7 @@ export class MapView {
       this.worldsUpdatedAtMs = state.updatedAtMs
       this.renderHud()
       this.renderSidebar()
-      if (this.mapMode === 'worlds' || this.mapMode === 'worlds-grid') {
+      if (this.isWorldsMode()) {
         void this.refreshWorldsCatalog()
       }
     })
@@ -817,13 +817,23 @@ export class MapView {
         .map(
           (world) => `
           <li>
-            <div class="dcl-map__world-row">
+            <button type="button" class="dcl-map__world-row" data-world="${escapeAttr(world.worldName)}">
               <span class="dcl-map__world-name">${escapeHtml(world.worldName)}</span>
               <span class="dcl-map__world-count">${world.users}</span>
-            </div>
+            </button>
           </li>`
         )
         .join('')
+
+      for (const btn of this.worldList.querySelectorAll<HTMLButtonElement>('.dcl-map__world-row')) {
+        btn.addEventListener('click', () => {
+          const worldName = btn.dataset.world
+          if (!worldName) return
+          if (this.mapMode === 'worlds') this.worldsSpace.focusWorld(worldName)
+          else if (this.mapMode === 'worlds-grid') this.worldsGrid.focusWorld(worldName)
+          else void this.openWorldPopup(worldName)
+        })
+      }
     }
   }
 

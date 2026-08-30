@@ -43,8 +43,19 @@ type EngineLike = {
 
 const wrappedComponents = new WeakSet<object>()
 
+const TRANSFORM_COMPONENT_ID = 1
+const TRANSFORM_JUMP_M = 20
+
 /** Last bytes posted to the host per (component, entity) — skip echoes. */
 const lastForwarded = new Map<string, Uint8Array>()
+const lastTransformXz = new Map<number, { x: number; z: number }>()
+let applyWindowStart = 0
+let applyTransformPuts = 0
+let applyOtherPuts = 0
+let applyJumpN = 0
+let applyMaxJump = 0
+let applyMaxJumpEntity = 0
+let lastJumpLogAt = 0
 const pendingChunks: Uint8Array[] = []
 let flushScheduled = false
 let postChunk: ((data: Uint8Array) => void) | null = null
@@ -100,6 +111,64 @@ function enqueueHostCrdt(chunk: Uint8Array): void {
   scheduleFlush()
 }
 
+function readTransformXz(data: Uint8Array): { x: number; z: number } | null {
+  if (data.byteLength < 12) return null
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+  return { x: view.getFloat32(0, true), z: view.getFloat32(8, true) }
+}
+
+function maybeFlushApplyProof(force = false): void {
+  const now = performance.now()
+  if (applyWindowStart === 0) applyWindowStart = now
+  if (!force && now - applyWindowStart < 1000) return
+  if (applyTransformPuts === 0 && applyOtherPuts === 0 && applyJumpN === 0) {
+    applyWindowStart = now
+    return
+  }
+  if (log) {
+    log(
+      'warn',
+      `[sceneWorker] net-proof apply 1s — transformPuts=${applyTransformPuts} otherPuts=${applyOtherPuts} ` +
+        `jump>${TRANSFORM_JUMP_M}m×${applyJumpN} maxJump=${applyMaxJump.toFixed(1)}m` +
+        (applyMaxJumpEntity ? ` e${applyMaxJumpEntity}` : '')
+    )
+  }
+  applyTransformPuts = 0
+  applyOtherPuts = 0
+  applyJumpN = 0
+  applyMaxJump = 0
+  applyMaxJumpEntity = 0
+  applyWindowStart = now
+}
+
+function noteInboundTransformApply(entityId: number, data: Uint8Array): void {
+  const xz = readTransformXz(data)
+  applyTransformPuts++
+  if (!xz) return
+  const prev = lastTransformXz.get(entityId)
+  lastTransformXz.set(entityId, xz)
+  if (!prev) return
+  const jump = Math.hypot(xz.x - prev.x, xz.z - prev.z)
+  if (jump > applyMaxJump) {
+    applyMaxJump = jump
+    applyMaxJumpEntity = entityId
+  }
+  if (jump <= TRANSFORM_JUMP_M) return
+  applyJumpN++
+  const now = performance.now()
+  if (!log || now - lastJumpLogAt < 250) return
+  lastJumpLogAt = now
+  log(
+    'warn',
+    `[sceneWorker] net-proof Transform jump ${jump.toFixed(1)}m e${entityId} ` +
+      `(${prev.x.toFixed(1)},${prev.z.toFixed(1)})→(${xz.x.toFixed(1)},${xz.z.toFixed(1)})`
+  )
+}
+
+export function flushInboundGuestLwwApplyProof(): void {
+  maybeFlushApplyProof(true)
+}
+
 function shouldForward(componentId: number, entityId: number): boolean {
   return !isHostOwnedLwwEgress(componentId, entityId)
 }
@@ -128,6 +197,9 @@ function wrapUpdateFromCrdt(comp: WrappableLww): void {
         const prev = lastForwarded.get(key)
         if (prev && dataCompare(prev, data) === 0) return result
         lastForwarded.set(key, data)
+        if (componentId === TRANSFORM_COMPONENT_ID) noteInboundTransformApply(entityId, data)
+        else applyOtherPuts++
+        maybeFlushApplyProof()
         enqueueHostCrdt(encodePut(entityId, componentId, ts, data))
       } else if (
         type === CrdtMessageType.DELETE_COMPONENT ||
@@ -160,8 +232,15 @@ function wrapDefine(
 
 export function resetInboundGuestLwwForward(): void {
   lastForwarded.clear()
+  lastTransformXz.clear()
   pendingChunks.length = 0
   flushScheduled = false
+  applyWindowStart = 0
+  applyTransformPuts = 0
+  applyOtherPuts = 0
+  applyJumpN = 0
+  applyMaxJump = 0
+  applyMaxJumpEntity = 0
 }
 
 export function installInboundGuestLwwHostForward(

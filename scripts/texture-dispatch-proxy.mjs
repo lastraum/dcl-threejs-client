@@ -48,7 +48,9 @@ export function createTextureProxyMiddleware() {
       return
     }
     try {
-      const upstream = await fetch(target)
+      const upstream = await fetch(target, {
+        headers: { 'User-Agent': 'Mozilla/5.0 ThreejsClient-texture-proxy' }
+      })
       if (!upstream.ok) {
         res.statusCode = upstream.status
         res.end()

@@ -1806,12 +1806,13 @@ export class SceneScriptSystem {
   }
 
   /**
-   * After RestrictedActions.movePlayerTo (Flagtag drown / round reset) — ensure worker
-   * cooperative ticks are not left paused by a prior UI mount lag, so scene systems can
-   * clear InputModifier and advance timers.
+   * After RestrictedActions.movePlayerTo: if pointer-open held worker ticks,
+   * resume them so scene systems can run. No-op when ticks are already running
+   * — every duration-0 put is a feet teleport; this is not a move classifier.
    */
   nudgePlayAfterSceneTeleport(): void {
     if (!this.running || !this.worker) return
+    if (!this.pointerHoldTicksUntilMount) return
     this.pendingUiEntities = undefined
     this.clearProjectionUiLag()
     this.forceResumeWorkerSceneTicks('move-player-to')
@@ -2122,7 +2123,7 @@ export class SceneScriptSystem {
     this.refreshRealmInfoFromProvider()
   }
 
-  private authServerResyncAt = 0
+  private authServerResyncDone = false
 
   /**
    * Auth-server scenes (pixelwars paint, Flagtag): SDK sets isRoomReady only when
@@ -2131,16 +2132,14 @@ export class SceneScriptSystem {
    * queued forever → no teamAssigned → no Material recolors (crdt-outbound bytes=0).
    *
    * Pulse isConnectedSceneRoom false→true so RealmInfo.onChange re-runs requestState and
-   * a later RES can open the room. Debounced (once per 8s).
+   * a later RES can open the room. Once per worker boot — repeating it during play
+   * re-requests AUTH_RES every interval and rewinds predicted entities.
    */
   resyncAuthServerNetworkRoom(): void {
     if (!this.worker || !this.running) return
     if (!this.realmInfoProvider) return
-    const now = performance.now()
-    // Was 8s — still saw AUTH_RES storms every ~4s from SDK retries + ready pulse.
-    // Keep this rare: each false→true pulse clears stateIsSyncronized and re-fetches RES.
-    if (now - this.authServerResyncAt < 30_000) return
-    this.authServerResyncAt = now
+    if (this.authServerResyncDone) return
+    this.authServerResyncDone = true
 
     const live = this.realmInfoProvider()
     if (!live?.isConnectedSceneRoom) return
@@ -3367,7 +3366,9 @@ export class SceneScriptSystem {
             }
             projectionDeletes.length = 0
             this.projection.changes.length = 0
-            this.sceneUiBridge?.ingestMountSnapshot(latestUiMountSnapshot)
+            this.sceneUiBridge?.ingestMountSnapshot(latestUiMountSnapshot, {
+              replace: fullMount
+            })
             this.projection.applyWorkerUiMountSnapshot(
               latestUiMountSnapshot.map((row) => ({
                 entity: row.entity as Entity,
@@ -5504,6 +5505,8 @@ export class SceneScriptSystem {
       /** PE drone / freeze — republish pressed keys every frame. */
       forceRepublishSnapshot?: () => boolean
       isPointerLocked?: () => boolean
+      /** Scene VirtualCamera owns the lens — unlocked LMB is scene IA_POINTER, not freecam. */
+      isLookBlocked?: () => boolean
     },
     setForcedCameraMode?: (mode: ForcedCameraMode | null) => void
   ): void {
@@ -5526,6 +5529,7 @@ export class SceneScriptSystem {
       // input for the full multi-second pointer-deliver batch). UI still uses full batch.
       isPointerBlocked: () => isPointerBlocked(),
       isPointerLocked: () => sceneInput?.isPointerLocked?.() === true,
+      isLookBlocked: () => sceneInput?.isLookBlocked?.() === true,
       pointerEventsOf: (entity) => this.sceneUiBridge?.pointerEventsOf(entity) ?? null,
       flushPointerCrdt: () => {
         void this.flushPendingPointerCrdt()
@@ -6260,6 +6264,9 @@ export class SceneScriptSystem {
       clientDebugLog.log('pointer', `flush pending input tick=${this.crdtTick}`, {
         alsoConsole: POINTER_VERBOSE
       })
+      // UI click queued PET_HOVER_ENTER first (cursor-over-control). Deliver it before
+      // DOWN so react-ecs onMouseEnter runs before onMouseDown / onMouseUp.
+      this.flushHoverInjects()
       // Explorer press lifecycle: one edge per flush.
       // CRITICAL: process UP before DOWN when both are pending. Preferring DOWN under
       // click-spam left PET_DOWN without PET_UP → getClick never fired (no VFX) and a
@@ -7812,6 +7819,7 @@ export class SceneScriptSystem {
     }
     this.running = false
     this.prepared = false
+    this.authServerResyncDone = false
   }
 }
 

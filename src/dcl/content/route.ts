@@ -21,6 +21,8 @@ const ROUTE_SEGMENT_DENY = new Set(
     'live',
     'communities',
     'map',
+    'forest',
+    'worlds',
     'profile',
     'lootbag',
     'gacha', // legacy path alias for lootbag
@@ -38,6 +40,7 @@ const ROUTE_STATIC_ASSET_RE =
 export type RouteTarget =
   | { kind: 'blank' }
   | { kind: 'map' }
+  | { kind: 'forest' }
   | { kind: 'events' }
   | { kind: 'live' }
   | { kind: 'communities' }
@@ -64,6 +67,10 @@ const EVENTS_ROUTE_SEGMENT = 'events'
 const LIVE_ROUTE_SEGMENT = 'live'
 const COMMUNITIES_ROUTE_SEGMENT = 'communities'
 const MAP_ROUTE_SEGMENT = 'map'
+/** Canonical URL path for the 3D Worlds catalog. */
+const WORLDS_ROUTE_SEGMENT = 'worlds'
+/** Previous path — still parsed so old /forest links work. */
+const WORLDS_ROUTE_SEGMENT_LEGACY = 'forest'
 const PROFILE_ROUTE_SEGMENT = 'profile'
 /** Canonical URL path for the 2D Loot Bag page. */
 const LOOTBAG_ROUTE_SEGMENT = 'lootbag'
@@ -75,6 +82,8 @@ const APP_ROUTE_SEGMENTS = new Set([
   LIVE_ROUTE_SEGMENT,
   COMMUNITIES_ROUTE_SEGMENT,
   MAP_ROUTE_SEGMENT,
+  WORLDS_ROUTE_SEGMENT,
+  WORLDS_ROUTE_SEGMENT_LEGACY,
   PROFILE_ROUTE_SEGMENT,
   LOOTBAG_ROUTE_SEGMENT,
   LOOTBAG_ROUTE_SEGMENT_LEGACY
@@ -178,6 +187,12 @@ export function parseRouteTarget(segment: string | null): RouteTarget {
   if (segment.toLowerCase() === LIVE_ROUTE_SEGMENT) return { kind: 'live' }
   if (segment.toLowerCase() === COMMUNITIES_ROUTE_SEGMENT) return { kind: 'communities' }
   if (segment.toLowerCase() === MAP_ROUTE_SEGMENT) return { kind: 'map' }
+  if (
+    segment.toLowerCase() === WORLDS_ROUTE_SEGMENT ||
+    segment.toLowerCase() === WORLDS_ROUTE_SEGMENT_LEGACY
+  ) {
+    return { kind: 'forest' }
+  }
   if (segment.toLowerCase() === PROFILE_ROUTE_SEGMENT) return { kind: 'profile' }
   if (
     segment.toLowerCase() === LOOTBAG_ROUTE_SEGMENT ||
@@ -291,6 +306,7 @@ export function routePathForTarget(target: RouteTarget): string {
   if (target.kind === 'live') return '/live'
   if (target.kind === 'communities') return '/communities'
   if (target.kind === 'map') return '/map'
+  if (target.kind === 'forest') return '/worlds'
   if (target.kind === 'profile') return '/profile'
   if (target.kind === 'lootbag') return '/lootbag'
   if (target.kind === 'editor') return '/editor'
@@ -326,6 +342,7 @@ export function routeEquals(a: RouteTarget, b: RouteTarget): boolean {
     a.kind === 'events' ||
     a.kind === 'communities' ||
     a.kind === 'map' ||
+    a.kind === 'forest' ||
     a.kind === 'profile' ||
     a.kind === 'lootbag'
   ) {

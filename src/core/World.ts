@@ -19,6 +19,7 @@ import {
   PhysXWorld
 } from '../physics/PhysXWorld'
 import { PlayerSystem } from '../player/PlayerSystem'
+import type { MovePlayerToRequest } from '../player/movePlayerTo'
 import {
   islandCircularWalkBounds,
   sceneWorldBounds,
@@ -1232,16 +1233,7 @@ export class World {
       )
       this.sceneScript.setRealmInfo(this.comms.getRealmInfo())
 
-      this.sceneScript.setMovePlayerHandler((request) => {
-        const ok = this.player!.movePlayerTo(request)
-        // Round-reset teleports often land while InputModifier is frozen / ticks held after UI.
-        // Nudge worker play so scene systems can clear freeze and advance reset timers.
-        this.sceneScript.nudgePlayAfterSceneTeleport()
-        // SpaceRunner map↔lobby: lobby/map GLBs re-attach after teleport. Kick a missing-actor
-        // cook burst so gravity can land on real floors once the scene freeze clears.
-        if (ok) this.kickPostTeleportColliderCatchup()
-        return ok
-      })
+      this.sceneScript.setMovePlayerHandler((request) => this.applyRestrictedMovePlayerTo(request))
       this.sceneScript.setSetCameraTransformHandler((request) =>
         this.player!.setTestingCameraTransform(request)
       )
@@ -1525,12 +1517,7 @@ export class World {
       }
     }))
     if (!this.playerMode || !this.player) return
-    this.sceneScript.setMovePlayerHandler((request) => {
-      const ok = this.player!.movePlayerTo(request)
-      this.sceneScript.nudgePlayAfterSceneTeleport()
-      if (ok) this.kickPostTeleportColliderCatchup()
-      return ok
-    })
+    this.sceneScript.setMovePlayerHandler((request) => this.applyRestrictedMovePlayerTo(request))
     this.sceneScript.setSetCameraTransformHandler((request) =>
       this.player!.setTestingCameraTransform(request)
     )
@@ -1595,7 +1582,8 @@ export class World {
         isRelayBlocked: () => this.player?.isSceneRelayBlocked() ?? true,
         isLocomotionBlocked: () => this.player?.isLocomotionBlocked() ?? true,
         clearPlayerMoveKeys: () => this.player?.clearMoveKeys(),
-        isPointerLocked: () => this.player?.isPointerLocked() ?? false
+        isPointerLocked: () => this.player?.isPointerLocked() ?? false,
+        isLookBlocked: () => this.player?.isSceneVirtualCameraBoundOrDriving() ?? false
       },
       (mode) => this.player?.setForcedCameraMode(mode)
     )
@@ -2098,7 +2086,8 @@ export class World {
         isRelayBlocked: () => this.player?.isSceneRelayBlocked() ?? true,
         isLocomotionBlocked: () => this.player?.isLocomotionBlocked() ?? true,
         clearPlayerMoveKeys: () => this.player?.clearMoveKeys(),
-        isPointerLocked: () => this.player?.isPointerLocked() ?? false
+        isPointerLocked: () => this.player?.isPointerLocked() ?? false,
+        isLookBlocked: () => this.player?.isSceneVirtualCameraBoundOrDriving() ?? false
       },
       // Optional: dispose tears down scene after/with player — CameraModeArea clear must not throw.
       (mode) => this.player?.setForcedCameraMode(mode)
@@ -2154,6 +2143,9 @@ export class World {
     if (this.postPlayNeighborsArmed) return
     this.postPlayNeighborsArmed = true
     if (skipAoiNeighbors()) return
+    // Worlds occupy virtual parcels (often 0,0–N,N) that collide with Genesis.
+    // Neighbor AOI would load city shells on top of the world and stall FPS.
+    if (this.loadedPrimaryScene?.source.kind === 'world') return
     this.multiScene?.setSecondaryActivityEnabled(true)
     this.aoiVisual.setNeighborActivityEnabled(true)
     this.scenePromote.setNeighborActivityEnabled(true)
@@ -2444,6 +2436,7 @@ export class World {
     onProgress?: (msg: string, fraction?: number) => void
   ): Promise<void> {
     if (skipAoiNeighbors()) return
+    if (this.loadedPrimaryScene?.source.kind === 'world') return
     const discover = this.neighborShellsPrewarm
     if (discover) {
       onProgress?.('Finding nearby scenes…', 0.81)
@@ -3785,27 +3778,15 @@ export class World {
   }
 
   /**
-   * After RestrictedActions.movePlayerTo (SpaceRunner map↔lobby, Flagtag drown-respawn):
-   * re-scan never-cooked extracts near the new feet and open a short cook burst so gravity
-   * can land on real floors once the scene load freeze clears (no mid-air soft-hold).
+   * RestrictedActions.movePlayerTo — put feet. Tick-resume only if the worker
+   * is actually held (pointer UI mount). Collider discovery is periodic / on
+   * freeze-clear, not a side effect of this API.
    */
-  private kickPostTeleportColliderCatchup(): void {
-    if (!this.playerMode || !this.collidersLoadingComplete || this.deferPhysxCooks) return
-    this.sceneScript.flushSceneGraphMatrices()
-    // Force never-cooked scan even if the periodic throttle would skip — teleports are rare.
-    this.lastNeverCookedScanMs = 0
-    this.discoverMissingColliderActors()
-    this.runtimeColliderBurstUntil = Math.max(
-      this.runtimeColliderBurstUntil,
-      performance.now() + World.RUNTIME_COLLIDER_BURST_MS
-    )
-    const near = this.countNearPlayerColliderQueue(40)
-    if (near > 0 || this.colliderCookQueue.size > 0) {
-      clientDebugLog.consoleOnly(
-        'info',
-        `[phys] post-teleport cook catch-up — queue=${this.colliderCookQueue.size} near40m=${near}`
-      )
-    }
+  private applyRestrictedMovePlayerTo(request: MovePlayerToRequest): boolean {
+    if (!this.player) return false
+    const ok = this.player.movePlayerTo(request)
+    if (ok) this.sceneScript.nudgePlayAfterSceneTeleport()
+    return ok
   }
 
   /**
@@ -5414,7 +5395,7 @@ export class World {
     // setSecondaryActivityEnabled(true) was a no-op (multiScene was null).
     // Without this, reconcile + force-boot stay off and stand-on promote
     // waits forever (title moves, script GLBs never spawn).
-    if (!skipAoiNeighbors() && this.player) {
+    if (!skipAoiNeighbors() && this.player && this.loadedPrimaryScene?.source.kind !== 'world') {
       runtime.setSecondaryActivityEnabled(true)
       if (this.postPlayNeighborsArmed) {
         this.aoiVisual.kickLiveSecondaryReconcile()
@@ -5487,7 +5468,8 @@ export class World {
         clearPlayerMoveKeys: () => this.player?.clearMoveKeys(),
         // PE drone freeze — republish every hub.sync so worker isPressed stays live.
         forceRepublishSnapshot: () => this.multiScene?.pe.isAvatarLocomotionFrozenByPe() === true,
-        isPointerLocked: () => this.player?.isPointerLocked() ?? false
+        isPointerLocked: () => this.player?.isPointerLocked() ?? false,
+        isLookBlocked: () => this.player?.isSceneVirtualCameraBoundOrDriving() ?? false
       },
       (mode) => this.player?.setForcedCameraMode(mode)
     )
@@ -6221,8 +6203,7 @@ export class World {
     const move = arbiter.take('movePlayer')
     if (move && move.kind === 'pe') {
       try {
-        this.player.movePlayerTo(move.payload as Parameters<PlayerSystem['movePlayerTo']>[0])
-        this.sceneScript.nudgePlayAfterSceneTeleport()
+        this.applyRestrictedMovePlayerTo(move.payload as MovePlayerToRequest)
       } catch (err) {
         console.warn('[pe] movePlayer apply failed', err)
       }
@@ -6458,12 +6439,7 @@ export class World {
       console.info('[World] changeRealm ignored (deprecated)')
       return false
     })
-    this.sceneScript.setMovePlayerHandler((request) => {
-      const ok = this.player!.movePlayerTo(request)
-      this.sceneScript.nudgePlayAfterSceneTeleport()
-      if (ok) this.kickPostTeleportColliderCatchup()
-      return ok
-    })
+    this.sceneScript.setMovePlayerHandler((request) => this.applyRestrictedMovePlayerTo(request))
     this.sceneScript.setSetCameraTransformHandler((request) =>
       this.player!.setTestingCameraTransform(request)
     )

@@ -2,6 +2,8 @@ import { PEER_URL } from '../avatar/constants'
 
 export const ARCHIPELAGO_POLL_MS = 15_000
 export const WORLDS_POLL_MS = 15_000
+/** Forest occupancy — live-data + gatekeeper wallets so sitters add/remove. */
+export const FOREST_OCCUPANCY_POLL_MS = 8_000
 
 export function archipelagoPeersUrl(): string {
   const fromEnv = import.meta.env.VITE_ARCHIPELAGO_PEERS_URL?.trim()
@@ -39,4 +41,9 @@ export function placesApiBase(): string {
   const fromEnv = import.meta.env.VITE_PLACES_API_BASE?.trim()
   if (fromEnv) return fromEnv.replace(/\/+$/, '')
   return '/api/places'
+}
+
+/** Same-origin proxy — gatekeeper has no CORS for custom domains / localhost. */
+export function sceneParticipantsUrl(worldName: string): string {
+  return `/api/scene-participants?realm_name=${encodeURIComponent(worldName.trim())}`
 }

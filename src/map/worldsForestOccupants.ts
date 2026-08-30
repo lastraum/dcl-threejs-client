@@ -4,7 +4,7 @@
 import * as THREE from 'three'
 import { composeAvatarFromProfile } from '../avatar/AvatarComposer'
 import { AVATAR_YAW_OFFSET } from '../avatar/constants'
-import { identityFromAvatarProfile } from '../avatar/displayName'
+import { identityFromAvatarProfile, shortenAddress } from '../avatar/displayName'
 import { remapClipToAvatar } from '../avatar/emoteBoneMap'
 import { applyAvatarPivotOffset } from '../avatar/feetAlign'
 import { findHeadBone, updateNameTagAnchor } from '../avatar/headAnchor'
@@ -121,9 +121,27 @@ export class ForestPoolOccupants {
     this.scene.add(root)
     this.byKey.set(slot.key, rec)
 
+    if (!slot.placeholder) {
+      rec.nameTag = NameTag.attach(nameTagAnchor, shortenAddress(slot.address), {
+        textColor: '#ffffff',
+        claimed: false,
+        address: slot.address
+      })
+    }
+
     try {
-      const profile = slot.placeholder ? await resolveAvatarProfile(undefined) : await resolveAvatarProfile(slot.address)
+      const profile = slot.placeholder
+        ? await resolveAvatarProfile(undefined)
+        : await resolveAvatarProfile(slot.address)
       if (this.disposed || !this.byKey.has(slot.key)) return
+      if (!slot.placeholder) {
+        const identity = identityFromAvatarProfile(profile, slot.address)
+        rec.nameTag?.setText(identity.displayName)
+        rec.nameTag?.setStyle({
+          textColor: identity.nameColor || '#ffffff',
+          claimed: identity.hasClaimedName
+        })
+      }
       const model = await composeAvatarFromProfile(profile, undefined, getSessionAssetCache())
       if (this.disposed || !this.byKey.has(slot.key)) {
         disposeWearableInstance(model)
@@ -135,16 +153,8 @@ export class ForestPoolOccupants {
       root.add(pivot)
       pivot.rotation.y = AVATAR_YAW_OFFSET
 
-      const identity = slot.placeholder
-        ? { displayName: 'Visitor', nameColor: '#ffffff', hasClaimedName: false }
-        : identityFromAvatarProfile(profile, slot.address)
       rec.model = model
       rec.head = findHeadBone(model)
-      rec.nameTag = NameTag.attach(nameTagAnchor, identity.displayName, {
-        textColor: identity.nameColor || '#ffffff',
-        claimed: identity.hasClaimedName,
-        address: slot.placeholder ? undefined : slot.address
-      })
       updateNameTagAnchor(nameTagAnchor, model, 1.72, undefined, rec.head)
 
       const clip = await this.sitClip()
@@ -208,24 +218,19 @@ function planOccupants(pools: ForestPoolPose[], catalog: WorldMapEntry[]): Occup
   for (const pool of occupied) {
     const entry = byWorld.get(pool.worldName.toLowerCase())
     const addrs = entry?.connectedAddresses ?? []
-    const seats = Math.max(addrs.length, Math.max(0, Math.floor(pool.users)))
-    if (seats <= 0) continue
-    const poses = layoutPoolSitters(pool, seats)
-    for (let i = 0; i < seats; i++) {
+    if (!addrs.length) continue
+    const poses = layoutPoolSitters(pool, addrs.length)
+    for (let i = 0; i < addrs.length; i++) {
       const pose = poses[i]
-      if (!pose) continue
       const address = addrs[i]
-      const placeholder = !address
+      if (!pose || !address) continue
       out.push({
-        key: placeholder
-          ? `${pool.worldName.toLowerCase()}:seat:${i}`
-          : `${pool.worldName.toLowerCase()}:${address}`,
-        address: address ?? `seat:${i}`,
+        key: `${pool.worldName.toLowerCase()}:${address}`,
+        address,
         worldName: pool.worldName,
         x: pose.x,
         z: pose.z,
-        yaw: pose.yaw,
-        placeholder
+        yaw: pose.yaw
       })
     }
   }

@@ -69,6 +69,7 @@ export type ForestRuneSealOpts = {
   yaw: number
   radius: number
   onBurst?: () => void
+  onDischarge?: () => void
 }
 
 export class ForestRuneSeal {
@@ -100,11 +101,13 @@ export class ForestRuneSeal {
   }
   private age = 0
   private burstFired = false
+  private dischargeFired = false
   private done = false
   private seed = Math.random() * 1000
   private radius = 3.6
   private yaw = 0
   private onBurst: (() => void) | null = null
+  private onDischarge: (() => void) | null = null
   private warmed = false
 
   constructor(scene: THREE.Scene) {
@@ -186,11 +189,13 @@ export class ForestRuneSeal {
     this.age = 0
     this.done = false
     this.burstFired = false
+    this.dischargeFired = false
     this.seed = Math.random() * 1000
     this.radius = Math.max(2.4, opts.radius)
     this.yaw = opts.yaw
     this.centre.set(opts.x, 0, opts.z)
     this.onBurst = opts.onBurst ?? null
+    this.onDischarge = opts.onDischarge ?? null
     this.light.position.set(opts.x, 1.4, opts.z)
     this.column.visible = false
     this.wave.visible = false
@@ -234,6 +239,10 @@ export class ForestRuneSeal {
       this.burstFired = true
       this.onBurst?.()
     }
+    if (!this.dischargeFired && discharge > 0.002) {
+      this.dischargeFired = true
+      this.onDischarge?.()
+    }
 
     this.writeField(inscribe, ignite, discharge, fade)
     this.syncDischarge(discharge, fade)
@@ -248,6 +257,12 @@ export class ForestRuneSeal {
     )
 
     if (this.age >= DONE_AT + HOLD + FADE * 0.35) this.finish()
+  }
+
+  /** True while the column is rising / standing — for camera rumble. */
+  isBeamLive(): boolean {
+    if (this.done) return false
+    return this.age >= INSCRIBE + IGNITE && this.age < DONE_AT + HOLD + FADE * 0.45
   }
 
   dispose(): void {

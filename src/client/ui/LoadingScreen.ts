@@ -54,9 +54,14 @@ export class LoadingScreen {
   /** Hydration hard-timeout — adds warning styling once elapsed, does not stop the clock. */
   private hydrationTimeoutMs = 0
   private hydrationTimedOut = false
+  private readonly slides: LoadingFeaturedSlide[]
 
-  constructor(initialStatus = 'Loading world…', options: { fast?: boolean } = {}) {
+  constructor(
+    initialStatus = 'Loading world…',
+    options: { fast?: boolean; slides?: LoadingFeaturedSlide[] } = {}
+  ) {
     this.fast = options.fast ?? false
+    this.slides = options.slides?.length ? options.slides : LOADING_FEATURED_SLIDES
     this.root = document.createElement('div')
     this.root.className = 'loading-screen'
     this.root.innerHTML = `
@@ -100,7 +105,7 @@ export class LoadingScreen {
     this.idleSlideEl = this.slideB
 
     this.renderDots()
-    this.paintSlide(this.activeSlideEl, LOADING_FEATURED_SLIDES[0]!)
+    this.paintSlide(this.activeSlideEl, this.slides[0]!)
   }
 
   mount(): void {
@@ -109,7 +114,11 @@ export class LoadingScreen {
     this.targetProgress = 0.02
     this.displayedProgress = 0
     this.updateProgressBar()
-    this.slideTimer = window.setInterval(() => this.advanceSlide(), SLIDE_INTERVAL_MS)
+    if (this.slides.length > 1) {
+      this.slideTimer = window.setInterval(() => this.advanceSlide(), SLIDE_INTERVAL_MS)
+    } else {
+      this.dotsEl.hidden = true
+    }
     this.tickProgress()
   }
 
@@ -265,7 +274,7 @@ export class LoadingScreen {
   }
 
   private renderDots(): void {
-    this.dotsEl.innerHTML = LOADING_FEATURED_SLIDES.map(
+    this.dotsEl.innerHTML = this.slides.map(
       (_, index) =>
         `<span class="loading-screen__dot${index === 0 ? ' is-active' : ''}" role="presentation"></span>`
     ).join('')
@@ -308,8 +317,8 @@ export class LoadingScreen {
 
   private advanceSlide(): void {
     if (this.disposed || this.flipping) return
-    const nextIndex = (this.slideIndex + 1) % LOADING_FEATURED_SLIDES.length
-    const nextSlide = LOADING_FEATURED_SLIDES[nextIndex]
+    const nextIndex = (this.slideIndex + 1) % this.slides.length
+    const nextSlide = this.slides[nextIndex]
     if (!nextSlide) return
 
     this.flipping = true

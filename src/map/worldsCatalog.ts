@@ -369,31 +369,58 @@ async function enrichConnectedAddresses(entries: WorldMapEntry[]): Promise<void>
   }
 }
 
+function participantRealmNames(worldName: string): string[] {
+  const n = worldName.trim()
+  if (!n) return []
+  const short = n.replace(/\.dcl\.eth$/i, '')
+  const out: string[] = []
+  const add = (s: string) => {
+    if (s && !out.includes(s)) out.push(s)
+  }
+  add(n)
+  add(n.toLowerCase())
+  add(`${short}.dcl.eth`)
+  add(`${short.toLowerCase()}.dcl.eth`)
+  return out
+}
+
+function parseParticipantAddresses(body: {
+  data?: { addresses?: unknown } | unknown[]
+}): string[] {
+  const raw = Array.isArray(body?.data)
+    ? body.data
+    : Array.isArray((body.data as { addresses?: unknown })?.addresses)
+      ? (body.data as { addresses: unknown[] }).addresses
+      : []
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const item of raw) {
+    const addr = String(item ?? '').trim().toLowerCase()
+    if (!/^0x[a-f0-9]{40}$/.test(addr) || seen.has(addr)) continue
+    seen.add(addr)
+    out.push(addr)
+  }
+  return out
+}
+
 /** Live wallets in a world — Comms Gatekeeper `/scene-participants?realm_name=`. */
 export async function fetchWorldParticipants(worldName: string): Promise<string[] | null> {
-  const name = worldName.trim()
-  if (!name) return null
-  try {
-    const res = await fetch(sceneParticipantsUrl(name), { headers: { Accept: 'application/json' } })
-    if (!res.ok) return null
-    const body = (await res.json()) as { data?: { addresses?: unknown } | unknown[]; ok?: boolean }
-    const raw = Array.isArray(body?.data)
-      ? body.data
-      : Array.isArray((body.data as { addresses?: unknown })?.addresses)
-        ? (body.data as { addresses: unknown[] }).addresses
-        : []
-    const out: string[] = []
-    const seen = new Set<string>()
-    for (const item of raw) {
-      const addr = String(item ?? '').trim().toLowerCase()
-      if (!/^0x[a-f0-9]{40}$/.test(addr) || seen.has(addr)) continue
-      seen.add(addr)
-      out.push(addr)
+  const names = participantRealmNames(worldName)
+  if (!names.length) return null
+  let empty = false
+  for (const name of names) {
+    try {
+      const res = await fetch(sceneParticipantsUrl(name), { headers: { Accept: 'application/json' } })
+      if (!res.ok) continue
+      const body = (await res.json()) as { data?: { addresses?: unknown } | unknown[]; ok?: boolean }
+      const out = parseParticipantAddresses(body)
+      if (out.length) return out
+      empty = true
+    } catch {
+      /* try next casing */
     }
-    return out
-  } catch {
-    return null
   }
+  return empty ? [] : null
 }
 
 export function worldDisplayName(entry: WorldMapEntry): string {

@@ -26416,10 +26416,10 @@
       }
       .forest-world-panel__desc {
         margin: 10px 0 0;
+        flex: none;
         font: 500 13px/1.4 inherit;
         color: rgba(243, 233, 255, 0.78);
-        max-height: 6.4em;
-        overflow-y: auto;
+        overflow: visible;
       }
       .forest-world-panel__desc::-webkit-scrollbar {
         width: 6px;
@@ -26504,7 +26504,13 @@
         opacity: 0.45;
         cursor: default;
       }
-      .forest-page-view.is-jumping .forest-page-view__leave {
+      .forest-page-view.is-jumping {
+        cursor: none;
+      }
+      .forest-page-view.is-jumping .forest-page-view__leave,
+      .forest-page-view.is-jumping .forest-world-list,
+      .forest-page-view.is-jumping .forest-world-panel,
+      .forest-page-view.is-jumping .dcl-map__parcel-popup-backdrop {
         opacity: 0;
         pointer-events: none;
       }

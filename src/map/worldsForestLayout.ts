@@ -15,6 +15,10 @@ export const FOREST_MIN_LANDING_GAP_M = 10
 export const FOREST_TREE_COUNT = 85
 export const FOREST_TREE_TILE_M = 48
 export const FOREST_TREE_STREAM_RADIUS_M = 200
+/** Inner water disc as a fraction of the outer cyan rim. */
+export const FOREST_POOL_WATER_FRAC = 0.68
+/** Sitters sit in the cyan ring, between water and outer glow. */
+export const FOREST_POOL_SIT_FRAC = 0.86
 const FOREST_TREE_SEED = 0xf04e57
 const FOREST_TREES_PER_TILE = 5
 
@@ -61,7 +65,7 @@ function mulberry32(seed: number): () => number {
 }
 
 export function poolRadiusForUsers(users: number): number {
-  return 2.35 + Math.log2(1 + Math.max(0, users)) * 0.42
+  return 3.2 + Math.log2(1 + Math.max(0, users)) * 0.52
 }
 
 export function minPoolDistanceFromOrigin(poolRadius: number): number {
@@ -248,7 +252,7 @@ export function layoutPoolSitters(pool: ForestPoolPose, count: number): ForestSi
       : ((h % 360) / 360) * Math.PI * 2
   const usedStep = n <= 4 ? Math.min(step, (Math.PI * 0.72) / Math.max(1, n - 1)) : step
   const minArc = 0.85
-  const rim = Math.max(pool.radius + 0.7, (n * minArc) / (Math.PI * 2))
+  const rim = Math.max(pool.radius * FOREST_POOL_SIT_FRAC, (n * minArc) / (Math.PI * 2))
   const out: ForestSitterPose[] = []
   for (let i = 0; i < n; i++) {
     const ang = base + i * usedStep

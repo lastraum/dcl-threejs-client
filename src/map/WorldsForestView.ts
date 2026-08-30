@@ -10,6 +10,7 @@ import { clientSettings } from '../rendering/ClientSettings'
 import { worldDisplayName, type WorldMapEntry } from './worldsCatalog'
 import {
   FOREST_LANDING_RADIUS_M,
+  FOREST_POOL_WATER_FRAC,
   layoutForestTrees,
   layoutWorldPools,
   type ForestPoolPose,
@@ -28,6 +29,7 @@ import {
 import { ForestPoolOccupants } from './worldsForestOccupants'
 import { NameTagRenderer } from '../client/ui/NameTagRenderer'
 import { ForestRuneSeal } from './forestRuneSeal'
+import { CameraShake } from '@vfx/effects/CameraShake.js'
 
 type PoolBody = {
   entry: WorldMapEntry
@@ -125,6 +127,8 @@ export class WorldsForestView {
   private runeSeal: ForestRuneSeal | null = null
   private locomotionLocked = false
   private readonly sealResolution = new THREE.Vector2(1, 1)
+  private readonly shakeRig = { shakeOffset: new THREE.Vector3(), shakeRoll: 0 }
+  private readonly shake = new CameraShake(this.shakeRig)
 
   private active = false
   private disposed = false
@@ -182,19 +186,19 @@ export class WorldsForestView {
       powerPreference: 'high-performance'
     })
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2))
-    this.renderer.setClearColor(0x2a1638, 1)
+    this.renderer.setClearColor(0x321c44, 1)
     this.renderer.outputColorSpace = THREE.SRGBColorSpace
 
     this.scene = new THREE.Scene()
-    this.scene.fog = new THREE.FogExp2(0x4a0070, 0.009)
-    this.scene.background = new THREE.Color(0x2a1638)
+    this.scene.fog = new THREE.FogExp2(0x4a0070, 0.0076)
+    this.scene.background = new THREE.Color(0x321c44)
 
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.12, 1400)
     this.nightSky = new ForestNightSky(this.scene, this.camera)
 
     this.groundGeo = new THREE.PlaneGeometry(2400, 2400)
     this.groundMat = new THREE.MeshStandardMaterial({
-      color: 0x22182c,
+      color: 0x2c223a,
       roughness: 0.94,
       metalness: 0.02
     })
@@ -238,10 +242,9 @@ export class WorldsForestView {
     this.landingGlb = new ForestLanding(this.scene, landing, landingRim)
 
     this.poolGeo = new THREE.CircleGeometry(1, 40)
-    this.shoreGeo = new THREE.RingGeometry(0.92, 1.18, 40)
-    this.poolRimGeo = new THREE.CircleGeometry(1.06, 64)
-    this.poolRimGeo.rotateX(-Math.PI / 2)
-    this.poolRimMat = createForestRimMaterial()
+    this.shoreGeo = new THREE.RingGeometry(FOREST_POOL_WATER_FRAC, 1, 40)
+    this.poolRimGeo = new THREE.RingGeometry(FOREST_POOL_WATER_FRAC, 1, 64)
+    this.poolRimMat = createForestRimMaterial(FOREST_POOL_WATER_FRAC)
     this.curtainGeo = new THREE.CylinderGeometry(1, 1, 1, 96, 1, true)
     this.curtainMat = createForestCurtainMaterial()
     this.curtain = new THREE.Mesh(this.curtainGeo, this.curtainMat)
@@ -258,7 +261,7 @@ export class WorldsForestView {
     })
     this.fallbackPoolMat = createForestPoolDiscMaterial()
     this.shoreMat = new THREE.MeshStandardMaterial({
-      color: 0x22182c,
+      color: 0x2c223a,
       roughness: 0.95,
       metalness: 0.02
     })
@@ -435,6 +438,7 @@ export class WorldsForestView {
     this.active = false
     this.stopLoop()
     this.keys.clear()
+    this.shake.reset()
     this.unbindKeys()
     this.canvas.removeEventListener('pointerdown', this.onPointerDown)
     this.canvas.removeEventListener('pointermove', this.onPointerMove)
@@ -500,7 +504,7 @@ export class WorldsForestView {
     const mesh = new THREE.Mesh(this.poolGeo, mat)
     mesh.rotation.x = -Math.PI / 2
     mesh.position.set(pose.x, 0.04, pose.z)
-    mesh.scale.setScalar(pose.radius)
+    mesh.scale.setScalar(pose.radius * FOREST_POOL_WATER_FRAC)
     mesh.userData.worldName = entry.worldName
     mesh.userData.worldKey = entry.worldName.toLowerCase()
 
@@ -511,6 +515,7 @@ export class WorldsForestView {
     shore.raycast = () => {}
 
     const rim = new THREE.Mesh(this.poolRimGeo, this.poolRimMat)
+    rim.rotation.x = -Math.PI / 2
     rim.position.set(pose.x, 0.055, pose.z)
     rim.scale.setScalar(pose.radius)
     rim.renderOrder = 4
@@ -578,6 +583,8 @@ export class WorldsForestView {
       this.nightSky?.update(dt)
       this.landingGlb?.update(this.clock.elapsedTime)
       this.runeSeal?.update(dt, this.clock.elapsedTime, this.sealResolution, this.camera)
+      if (this.runeSeal?.isBeamLive()) this.shake.rumble(0.085, dt)
+      this.shake.update(dt)
       this.poolFieldTime.value = this.clock.elapsedTime
       this.poolRimMat.uniforms.uTime.value = this.clock.elapsedTime
       this.updateApproach(dt)
@@ -621,6 +628,10 @@ export class WorldsForestView {
 
   private onKeyDown = (ev: KeyboardEvent): void => {
     if (!this.active || this.disposed) return
+    if (this.locomotionLocked) {
+      ev.preventDefault()
+      return
+    }
     if (isTypingTarget()) return
     if (ev.metaKey || ev.ctrlKey || ev.altKey) return
     const code = ev.code
@@ -669,14 +680,15 @@ export class WorldsForestView {
       (this.focusedKey ? this.pools.get(this.focusedKey) : null)
     const x = approached ? approached.mesh.position.x : this.playerX
     const z = approached ? approached.mesh.position.z : this.playerZ
-    const radius = approached ? Math.max(2.4, approached.mesh.scale.x * 1.1) : 3.6
+    const radius = approached ? Math.max(2.4, approached.pose.radius * 1.05) : 3.6
     if (!this.runeSeal) this.runeSeal = new ForestRuneSeal(this.scene)
     return this.runeSeal.play({
       x,
       z,
       yaw: 0,
       radius,
-      onBurst: () => this.hidePlayer()
+      onBurst: () => this.hidePlayer(),
+      onDischarge: () => this.shake.add(0.92, 1 / 0.65, 20)
     })
   }
 
@@ -806,7 +818,7 @@ export class WorldsForestView {
     if (best) {
       this.curtainX = best.mesh.position.x
       this.curtainZ = best.mesh.position.z
-      this.curtainR = Math.max(0.8, best.mesh.scale.x)
+      this.curtainR = Math.max(0.8, best.pose.radius)
     }
     const want = best ? 1 : 0
     this.curtainOn += (want - this.curtainOn) * (1 - Math.exp(-dt * 7.5))
@@ -830,14 +842,15 @@ export class WorldsForestView {
       const p = body.pose
       body.mesh.position.x += (p.x - body.mesh.position.x) * k
       body.mesh.position.z += (p.z - body.mesh.position.z) * k
-      const s = body.mesh.scale.x + (p.radius - body.mesh.scale.x) * k
+      const water = p.radius * FOREST_POOL_WATER_FRAC
+      const s = body.mesh.scale.x + (water - body.mesh.scale.x) * k
       body.mesh.scale.setScalar(s)
       body.shore.position.x = body.mesh.position.x
       body.shore.position.z = body.mesh.position.z
-      body.shore.scale.setScalar(s)
+      body.shore.scale.setScalar(p.radius)
       body.rim.position.x = body.mesh.position.x
       body.rim.position.z = body.mesh.position.z
-      body.rim.scale.setScalar(s)
+      body.rim.scale.setScalar(p.radius)
     }
   }
 
@@ -861,16 +874,21 @@ export class WorldsForestView {
     }
     this.camera.position.set(this.playerX + ox, h.pivotY + oy, this.playerZ + oz)
     this.camera.lookAt(this.playerX, h.lookY, this.playerZ)
+    if (this.shakeRig.shakeOffset.lengthSq() > 0) {
+      this.camera.position.add(this.shakeRig.shakeOffset)
+      this.camera.rotateZ(this.shakeRig.shakeRoll)
+    }
   }
 
   private onPointerDown = (ev: PointerEvent): void => {
-    if (!this.active || this.disposed || ev.button !== 0) return
+    if (!this.active || this.disposed || this.locomotionLocked || ev.button !== 0) return
     this.canvas.setPointerCapture(ev.pointerId)
     this.drag = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, looking: false }
     this.canvas.focus({ preventScroll: true })
   }
 
   private onPointerMove = (ev: PointerEvent): void => {
+    if (this.locomotionLocked) return
     const drag = this.drag
     if (!drag || ev.pointerId !== drag.id) return
     const dx = ev.clientX - drag.x
@@ -885,7 +903,7 @@ export class WorldsForestView {
   }
 
   private onWheel = (ev: WheelEvent): void => {
-    if (!this.active || this.disposed) return
+    if (!this.active || this.disposed || this.locomotionLocked) return
     ev.preventDefault()
     this.camDistance += ev.deltaY * ZOOM_WHEEL_SPEED
     this.camDistance = Math.max(CAM_DISTANCE_MIN, Math.min(CAM_DISTANCE_MAX, this.camDistance))
@@ -899,7 +917,7 @@ export class WorldsForestView {
     if (this.canvas.hasPointerCapture(ev.pointerId)) {
       this.canvas.releasePointerCapture(ev.pointerId)
     }
-    if (looking) return
+    if (this.locomotionLocked || looking) return
     this.pickPoolAt(ev.clientX, ev.clientY)
   }
 
@@ -1094,7 +1112,8 @@ class PoolSparkles {
         this.keepOnGroundBand(arr, i)
       } else {
         arr[i * 3 + 1]! += (0.55 + this.lives[i]! * 0.35) * dt
-        this.keepOutsideDiscs(arr, i)
+        if (i < this.ranges().poolRise) this.keepOnDonut(arr, i)
+        else this.keepOutsideDiscs(arr, i)
       }
     }
     pos.needsUpdate = true
@@ -1145,7 +1164,9 @@ class PoolSparkles {
     const p = this.poolList[i % this.poolList.length]!
     const live = p.entry.users > 0
     const ang = Math.random() * Math.PI * 2
-    const rim = p.pose.radius + 0.22 + Math.random() * 0.28
+    const inner = p.pose.radius * FOREST_POOL_WATER_FRAC + 0.06
+    const outer = p.pose.radius * 0.97
+    const rim = inner + Math.random() * Math.max(0.05, outer - inner)
     this.kind[i] = 0
     const life = live ? 1.1 + Math.random() * 1.4 : 1.6 + Math.random() * 1.8
     this.lives[i] = life
@@ -1206,6 +1227,25 @@ class PoolSparkles {
     arr[i * 3] = p.mesh.position.x + Math.cos(ang) * rim
     arr[i * 3 + 1] = 0.045
     arr[i * 3 + 2] = p.mesh.position.z + Math.sin(ang) * rim
+  }
+
+  /** Pool rise sparks stay on the cyan donut, not in the pond. */
+  private keepOnDonut(arr: Float32Array, i: number): void {
+    const p = this.poolList[i % Math.max(1, this.poolList.length)]
+    if (!p) return
+    let x = arr[i * 3]!
+    let z = arr[i * 3 + 2]!
+    const dx = x - p.mesh.position.x
+    const dz = z - p.mesh.position.z
+    const d = Math.hypot(dx, dz)
+    const inner = p.pose.radius * FOREST_POOL_WATER_FRAC + 0.04
+    const outer = p.pose.radius * 0.98
+    if (d < 1e-4) return
+    let s = 1
+    if (d < inner) s = inner / d
+    else if (d > outer) s = outer / d
+    arr[i * 3] = p.mesh.position.x + dx * s
+    arr[i * 3 + 2] = p.mesh.position.z + dz * s
   }
 
   /** Rising sparks stay off water / pad interior. */

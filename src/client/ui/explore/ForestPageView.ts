@@ -74,6 +74,7 @@ export class ForestPageView {
     })
     this.viewport.appendChild(this.forest.root)
     this.worldList.setOnPick((worldName) => {
+      if (this.jumping) return
       if (!worldName) {
         this.forest.focusVein(null)
         return
@@ -104,7 +105,16 @@ export class ForestPageView {
     this.resizeObserver.observe(this.viewport)
     window.addEventListener('keydown', this.onKeyDown)
 
-    this.loading = new LoadingScreen('Loading forest…')
+    this.loading = new LoadingScreen('Loading forest…', {
+      slides: [
+        {
+          tag: 'Worlds',
+          title: 'Worlds Forest',
+          subtitle: 'Walk the clearing. Step onto a pool. Jump In.',
+          imageUrl: '/forest/splash.jpg'
+        }
+      ]
+    })
     this.loading.mount()
     this.loading.startLoadingTimer()
     this.loading.setStatus('Growing the forest…')
@@ -256,8 +266,10 @@ export class ForestPageView {
     if (!name || this.disposed || this.jumping) return
     this.jumping = true
     this.root.classList.add('is-jumping')
+    this.closeWorldPopup()
     this.worldPanel.hide()
     this.worldList.setCollapsed(true)
+    this.worldList.setSelected(null)
     try {
       await Promise.all([
         this.forest.playJumpSeal(),
@@ -271,6 +283,7 @@ export class ForestPageView {
   }
 
   private onApproachWorld(entry: WorldMapEntry | null): void {
+    if (this.jumping) return
     if (!entry) {
       this.worldPanel.hide()
       this.worldList.setCollapsed(false)
@@ -336,7 +349,7 @@ export class ForestPageView {
   }
 
   private onKeyDown = (ev: KeyboardEvent): void => {
-    if (this.disposed) return
+    if (this.disposed || this.jumping) return
     if (ev.code !== 'Escape') return
     if (this.popup.isVisible()) {
       this.closeWorldPopup()

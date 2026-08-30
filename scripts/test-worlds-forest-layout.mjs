@@ -21,7 +21,7 @@ function hashString(s) {
 }
 
 function poolRadius(users) {
-  return 2.35 + Math.log2(1 + Math.max(0, users)) * 0.42
+  return 3.2 + Math.log2(1 + Math.max(0, users)) * 0.52
 }
 
 function poolDistance(users, maxUsers, scatter = 0.5) {

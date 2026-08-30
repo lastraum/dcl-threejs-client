@@ -57,40 +57,35 @@ float ridged(vec3 p) {
 `
 
 const RIM_VERT = /* glsl */ `
-varying vec2 vUv;
+varying vec2 vP;
 void main() {
-  vUv = uv;
+  vP = position.xy;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }
 `
 
 const RIM_FRAG = /* glsl */ `
 uniform float uTime;
-varying vec2 vUv;
+uniform float uInner;
+varying vec2 vP;
 ${FOREST_NOISE_GLSL}
 void main() {
-  vec2 p = vUv * 2.0 - 1.0;
-  float r = length(p);
-  vec2 bearing = r > 1e-4 ? p / r : vec2(1.0, 0.0);
-  float tear = 0.045 * (vnoise(vec3(bearing * 2.7, 0.31)) * 2.0 - 1.0);
-  float innerR = 0.72 + tear;
-  float outerR = 1.04 + tear;
-  float inner = smoothstep(innerR - 0.16, innerR + 0.02, r);
-  float outer = 1.0 - smoothstep(outerR - 0.06, outerR + 0.02, r);
-  float band = inner * outer;
-  if (band < 0.008) discard;
-  float warp = fbm3(vec3(p * 2.4, uTime * 0.18)) * 0.35;
-  float fil = ridged(vec3(p * 5.1 + warp, uTime * 0.42));
-  float veins = smoothstep(0.58, 0.9, fil);
-  float lip = exp(-abs(r - mix(innerR, outerR, 0.72)) * 28.0);
-  float crawl = pow(max(0.0, sin((atan(bearing.y, bearing.x) * 3.2 + r * 9.0) - uTime * 1.7)), 10.0);
-  float pulse = 0.86 + 0.14 * sin(uTime * 1.65);
-  float light = band * (0.42 + veins * 0.7 + lip * 1.1 + crawl * 0.35) * pulse;
-  vec3 core = vec3(0.5, 0.94, 1.0);
-  vec3 edge = vec3(0.12, 0.36, 0.58);
-  vec3 hot = vec3(0.82, 0.98, 1.0);
-  vec3 col = mix(edge, core, clamp(veins + lip, 0.0, 1.0));
-  col = mix(col, hot, clamp(lip * 0.65 + crawl * 0.4, 0.0, 1.0));
+  float r = length(vP);
+  vec2 bearing = r > 1e-4 ? vP / r : vec2(1.0, 0.0);
+  float innerR = uInner;
+  float outerR = 1.0;
+  float t = clamp((r - innerR) / max(0.02, outerR - innerR), 0.0, 1.0);
+  float wall = smoothstep(0.0, 0.1, t) * (1.0 - smoothstep(0.78, 1.0, t));
+  if (wall < 0.02) discard;
+  float warp = fbm3(vec3(vP * 3.1, uTime * 0.22)) * 0.28;
+  float fil = ridged(vec3(vP * 4.4 + warp, uTime * 0.48));
+  float veins = smoothstep(0.5, 0.88, fil);
+  float crawl = pow(max(0.0, sin((atan(bearing.y, bearing.x) * 5.0 + r * 8.0) - uTime * 2.1)), 8.0);
+  float pulse = 0.88 + 0.12 * sin(uTime * 1.7);
+  float light = wall * (0.72 + veins * 0.45 + crawl * 0.28) * pulse;
+  vec3 core = vec3(0.55, 0.96, 1.0);
+  vec3 edge = vec3(0.08, 0.42, 0.62);
+  vec3 col = mix(edge, core, clamp(veins + t * 0.35, 0.0, 1.0));
   gl_FragColor = vec4(col * pulse, clamp(light, 0.0, 1.0));
 }
 `
@@ -109,9 +104,9 @@ function patchPadSap(mat: THREE.MeshStandardMaterial): void {
   mat.customProgramCacheKey = () => 'forest-landing-center-v3'
 }
 
-export function createForestRimMaterial(): THREE.ShaderMaterial {
+export function createForestRimMaterial(innerFrac = 0.72): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 } },
+    uniforms: { uTime: { value: 0 }, uInner: { value: innerFrac } },
     vertexShader: RIM_VERT,
     fragmentShader: RIM_FRAG,
     transparent: true,
@@ -369,12 +364,13 @@ export class ForestLanding {
   }
 
   private addRimGradient(): void {
-    const geo = new THREE.CircleGeometry(FOREST_LANDING_RADIUS_M * 1.06, 80)
-    geo.rotateX(-Math.PI / 2)
-    this.rimMat = createForestRimMaterial()
+    const geo = new THREE.RingGeometry(0.72, 1, 80)
+    this.rimMat = createForestRimMaterial(0.72)
     this.rim = new THREE.Mesh(geo, this.rimMat)
     this.rim.name = 'forest-landing-rim-gradient'
+    this.rim.rotation.x = -Math.PI / 2
     this.rim.position.y = 0.09
+    this.rim.scale.setScalar(FOREST_LANDING_RADIUS_M)
     this.rim.renderOrder = 4
     this.rim.frustumCulled = false
     this.scene.add(this.rim)

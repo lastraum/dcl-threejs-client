@@ -28,7 +28,7 @@ export class ForestNightSky {
   private readonly moonTarget = new THREE.Object3D()
   private readonly hemi = new THREE.HemisphereLight(0xb48cff, 0x1a1228, HEMI_NIGHT_INTENSITY)
   private readonly equator = new THREE.AmbientLight(0x9a78c8, EQUATOR_AMBIENT_NIGHT)
-  private readonly sapFill = new THREE.DirectionalLight(0x3ec8e0, 0.12)
+  private readonly sapFill = new THREE.DirectionalLight(0x3ec8e0, 0.18)
   private ready = false
 
   constructor(
@@ -73,25 +73,25 @@ export class ForestNightSky {
     this.sky.update(seconds, _celestial, dt, false)
 
     const moonLit = moonLightIntensity(seconds)
-    this.moon.intensity = Math.max(0.48, moonLit * MOON_BRIGHTNESS) * 1.12
+    this.moon.intensity = Math.max(0.48, moonLit * MOON_BRIGHTNESS) * 1.28
     this.moon.color.copy(g.directional).lerp(_moonCool, 0.45)
     this.moonTarget.position.copy(this.camera.position)
     this.moon.position.copy(this.camera.position).addScaledVector(_celestial, 90)
     this.moonTarget.updateMatrixWorld()
 
-    this.hemi.intensity = HEMI_NIGHT_INTENSITY * 1.12
+    this.hemi.intensity = HEMI_NIGHT_INTENSITY * 1.28
     this.hemi.color.copy(g.indirectSky).lerp(_purpleSky, 0.28)
     _hemiGround.copy(g.indirectGround).lerp(new THREE.Color(0x2a1638), 0.35)
     _hemiGround.multiplyScalar(NIGHT_GROUND_HEMI_BOOST)
     this.hemi.groundColor.copy(_hemiGround)
-    this.equator.intensity = EQUATOR_AMBIENT_NIGHT * 1.08
+    this.equator.intensity = EQUATOR_AMBIENT_NIGHT * 1.22
     this.equator.color.copy(g.indirectEquator).lerp(_purpleEquator, 0.3)
 
     if (this.scene.fog instanceof THREE.FogExp2) {
       this.scene.fog.color.copy(g.fog).lerp(_purpleFog, 0.25)
-      this.scene.fog.density = 0.009
+      this.scene.fog.density = 0.0076
     } else {
-      this.scene.fog = new THREE.FogExp2(g.fog.clone().lerp(_purpleFog, 0.25), 0.009)
+      this.scene.fog = new THREE.FogExp2(g.fog.clone().lerp(_purpleFog, 0.25), 0.0076)
     }
     this.scene.background = this.ready ? null : g.nadir
   }

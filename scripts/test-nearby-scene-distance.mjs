@@ -176,10 +176,15 @@ const parcel = readFileSync(join(root, 'src/dcl/aoi/parcelAoi.ts'), 'utf8')
 const world = readFileSync(join(root, 'src/core/World.ts'), 'utf8')
 const app = readFileSync(join(root, 'src/client/AppController.ts'), 'utf8')
 
-assert('live enter follows Scene Distance (no 20 m cliff)', /LIVE_SCENE_MAX_M/.test(caps) === false)
 assert(
-  'secondaryLiveEnterRadiusM returns visualWarmRadiusM',
-  /export function secondaryLiveEnterRadiusM\(\)[\s\S]{0,180}return visualWarmRadiusM\(\)/.test(caps)
+  'live enter is fraction of SD capped at 32m',
+  /export function secondaryLiveEnterRadiusM\(\)[\s\S]{0,280}return Math\.min\(d \* 0\.35, 32\)/.test(
+    caps
+  )
+)
+assert(
+  'secondaryLiveKeepRadiusM uses enter + 16 hysteresis band',
+  /Math\.min\(d, Math\.max\(enter \+ LIVE_SCENE_UNLOAD_EXTRA_M, d \* 0\.6\)\)/.test(caps)
 )
 assert(
   'isSecondarySceneCandidate skips catalyst empty land',
@@ -187,10 +192,35 @@ assert(
     /export function isSecondarySceneCandidate/.test(fetchSrc)
 )
 assert(
+  'first-frame queues script-built neighbors without composite',
+  /queueFirstFrameSecondaries/.test(aoi) &&
+    /if \(findCompositeFile\(e\.content\)\) return false/.test(aoi) &&
+    /this\.firstFrameSampler\.enqueue/.test(aoi)
+)
+assert(
+  'first-frame samples only in the near band (aoiNearBandRadiusM)',
+  /aoiNearBandRadiusM\(\)/.test(aoi) && /dist > nearM/.test(aoi)
+)
+assert(
+  'composite shells skip first-frame path (findCompositeFile)',
+  /if \(findCompositeFile\(e\.content\)\) return false/.test(aoi) &&
+    /findCompositeFile\(e\.content\)/.test(aoi)
+)
+assert(
+  'first-frame registers DrawWorld pose like composite shells',
+  /host\.drawWorld\.register\(group, pose\)/.test(aoi) &&
+    /aoi-ff-pose:/.test(aoi)
+)
+assert(
+  'first-frame near meshes castShadow false',
+  /node\.castShadow = false/.test(aoi)
+)
+assert('live guest hard cap is 3', /AOI_LIVE_SECONDARY_HARD_CAP = 3/.test(caps))
+assert('live boot concurrency is 1', /SECONDARY_LIVE_BOOT_CONCURRENCY = 1/.test(caps))
+assert(
   'live guests rank by player-to-footprint (not primary-estate 0 m)',
   /minPlayerToFootprintDistanceM\(/.test(aoi) && /b\.parcelCount - a\.parcelCount/.test(aoi)
 )
-assert('live guest hard cap is 8', /AOI_LIVE_SECONDARY_HARD_CAP = 8/.test(caps))
 assert(
   'neighbor discover is awaitable; shells drain in background',
   /prewarmVisuals\(dclX: number, dclZ: number\): Promise<void>/.test(aoi) &&

@@ -15,6 +15,7 @@ export {
   aoiStandOnPromote,
   aoiGlbShellsOnly,
   aoiLiveSecondariesOnly,
+  aoiNearBandRadiusM,
   secondaryLiveCap,
   secondaryLiveRadiusM,
   secondaryLiveEnterRadiusM,

@@ -79,9 +79,9 @@ if (!peFn || peFn[1] !== '50') {
   fail(`caps.ts peTickIntervalMs must return 50, got ${peFn?.[1] ?? 'missing'}`)
 }
 const boot = caps.match(/export const SECONDARY_LIVE_BOOT_CONCURRENCY\s*=\s*(\d+)/)
-if (!boot || boot[1] !== '4') {
+if (!boot || boot[1] !== '1') {
   fail(
-    `SECONDARY_LIVE_BOOT_CONCURRENCY stays 4 until a pasted stacked-neighbor p5<30 log; got ${boot?.[1] ?? 'missing'}`
+    `SECONDARY_LIVE_BOOT_CONCURRENCY must be 1 (stacked isolate guard); got ${boot?.[1] ?? 'missing'}`
   )
 }
 

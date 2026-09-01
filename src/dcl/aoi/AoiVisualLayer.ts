@@ -44,12 +44,13 @@ import {
 } from './explorerRoadCatalog'
 import { buildEmptyParcelScatter, isVacantForEmptyLayer } from './emptyParcelLayer'
 import type { EzTreeGrassFieldHandle } from '../landscape/EzTreeGrassField'
-import { SecondaryFirstFrameSampler } from './SecondaryFirstFrameSampler'
+import { SecondaryFirstFrameSampler, FF_HIERARCHY_VERSION } from './SecondaryFirstFrameSampler'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 import {
   aoiLiveGuests,
   aoiNeighborShells,
   aoiSceneDistanceVisuals,
+  aoiNearBandRadiusM,
   COMPOSITE_MAX_RETAINED,
   compositeMaxGltfsForDistance,
   visualWarmRadiusM,
@@ -149,6 +150,13 @@ type AoiShellRecord = {
   placements: AoiShellPlacement[]
   lastDistM: number
   colliderDescs: PhysicsColliderDesc[]
+}
+
+type FirstFrameRecord = {
+  entityId: string
+  neighborBase: string
+  pose: THREE.Group
+  visual: THREE.Group
 }
 
 export type AoiVisualHost = {
@@ -296,6 +304,7 @@ export class AoiVisualLayer {
   private cachedPointerSet = new Set<string>()
   /** entityId → first-frame visual group (may be hidden for LOD retain). */
   private readonly firstFrameGroups = new Map<string, THREE.Group>()
+  private readonly firstFrameRecords = new Map<string, FirstFrameRecord>()
   /** Last time the group was wanted in the inner ring (LRU for eviction). */
   private readonly firstFrameLastUse = new Map<string, number>()
   private readonly primaryParcelSet = new Set<string>()
@@ -383,7 +392,11 @@ export class AoiVisualLayer {
         !this.liveGraphReadyIds.has(rec.entityId)
     }
     for (const [id, group] of this.firstFrameGroups) {
-      group.visible = id !== primaryId && !this.liveGraphReadyIds.has(id)
+      const rec = this.firstFrameRecords.get(id)
+      if (id === primaryId || this.liveGraphReadyIds.has(id)) {
+        group.visible = false
+        if (rec) rec.pose.visible = false
+      }
     }
   }
 
@@ -916,7 +929,7 @@ export class AoiVisualLayer {
     if (this.pendingScatterParcels.size > 0) return true
     if (this.pendingRoadParcels.size > 0) return true
     if (aoiNeighborShells() && this.ctx?.host) {
-      if (this.pendingCompositeIds.size > 0 && this.loadedShells.size < COMPOSITE_MAX_RETAINED) {
+      if (this.pendingCompositeIds.size > 0 && this.sharedRetainCount() < COMPOSITE_MAX_RETAINED) {
         return true
       }
       if (this.hasPendingShellAttaches()) return true
@@ -1269,23 +1282,42 @@ export class AoiVisualLayer {
   }
 
   private evictShellsIfNeeded(dclX: number, dclZ: number): void {
-    const primaryBase = this.cachedPrimaryBase || this.ctx?.scene.baseParcel || '0,0'
-    while (this.loadedShells.size >= COMPOSITE_MAX_RETAINED) {
-      const ranked = [...this.loadedShells.values()]
-        .map((rec) => {
-          const ent = this.cachedEntities.find((c) => c.id === rec.entityId)
-          const parcels = ent ? ent.parcels.length || ent.pointers.length : 0
-          const dist = ent ? this.entityDistM(ent, dclX, dclZ, primaryBase) : rec.lastDistM
-          return { rec, dist, mega: parcels >= 16 }
-        })
-        .sort((a, b) => {
-          if (a.mega !== b.mega) return a.mega ? 1 : -1
-          return b.dist - a.dist
-        })
-      const drop = ranked[0]
-      if (!drop) break
-      this.disposeShell(drop.rec.entityId)
+    while (this.sharedRetainCount() >= COMPOSITE_MAX_RETAINED) {
+      if (!this.evictFarthestSharedRetain(dclX, dclZ)) break
     }
+  }
+
+  private sharedRetainCount(): number {
+    return this.loadedShells.size + this.firstFrameRecords.size
+  }
+
+  /** Evict farthest hidden shell or hidden first-frame group when over shared retain cap. */
+  private evictFarthestSharedRetain(dclX: number, dclZ: number): boolean {
+    const primaryBase = this.cachedPrimaryBase || this.ctx?.scene.baseParcel || '0,0'
+    type Cand =
+      | { kind: 'shell'; dist: number; entityId: string }
+      | { kind: 'ff'; dist: number; entityId: string }
+    const cands: Cand[] = []
+    for (const rec of this.loadedShells.values()) {
+      const ent = this.cachedEntities.find((c) => c.id === rec.entityId)
+      const dist = ent ? this.entityDistM(ent, dclX, dclZ, primaryBase) : rec.lastDistM
+      cands.push({ kind: 'shell', dist, entityId: rec.entityId })
+    }
+    for (const [id, rec] of this.firstFrameRecords) {
+      if (rec.pose.visible) continue
+      const ent = this.cachedEntities.find((c) => c.id === id)
+      const dist = ent ? this.entityDistM(ent, dclX, dclZ, primaryBase) : Infinity
+      cands.push({ kind: 'ff', dist, entityId: id })
+    }
+    if (!cands.length) return false
+    cands.sort((a, b) => b.dist - a.dist)
+    const drop = cands[0]!
+    if (drop.kind === 'shell') {
+      this.disposeShell(drop.entityId)
+    } else {
+      this.disposeFirstFrameRecord(drop.entityId, /*forgetSampler*/ true)
+    }
+    return true
   }
 
   private disposeShell(entityId: string): void {
@@ -1788,19 +1820,198 @@ export class AoiVisualLayer {
     const ctx = this.ctx
     if (!ctx || this.disposed) return
     if (!aoiNeighborShells()) return
-    // Isolated SceneHost per sample is a second WebGL context — off for soak.
-    // Composite shells cover Creator Hub estates; script-only neighbors stay plane.
-    void entities
-    void primaryId
-    void primaryBase
-    void dclX
-    void dclZ
-    void pointerSet
-    return
+    const host = ctx.host
+    if (!host) return
+
+    const nearM = aoiNearBandRadiusM()
+    if (nearM <= 0) return
+
+    const scriptBuilt = entities.filter((e) => {
+      if (primaryId && e.id === primaryId) return false
+      if (!isSecondarySceneCandidate(e)) return false
+      if (findCompositeFile(e.content)) return false
+      if (isOpenRoadEntity(e)) return false
+      if (this.liveGraphReadyIds.has(e.id) || this.liveSecondaryIds.has(e.id)) return false
+      const keys = entityFootprintKeys(e)
+      const inRing = keys.filter((p) => pointerSet.has(p.trim()))
+      if (!inRing.length) return false
+      if (
+        !this.primaryIsEmpty &&
+        inRing.every((p) => this.primaryParcelSet.has(p.trim()))
+      ) {
+        return false
+      }
+      return true
+    })
+
+    const ranked = [...scriptBuilt].sort((a, b) => {
+      const da = this.entityDistM(a, dclX, dclZ, primaryBase)
+      const db = this.entityDistM(b, dclX, dclZ, primaryBase)
+      if (da !== db) return da - db
+      return (a.parcels.length || a.pointers.length) - (b.parcels.length || b.pointers.length)
+    })
+
+    const wantFf = new Set<string>()
+    let visibleSlots = 0
+    const now = performance.now()
+
+    for (const ent of ranked) {
+      const dist = this.entityDistM(ent, dclX, dclZ, primaryBase)
+      if (!Number.isFinite(dist) || dist > nearM) continue
+      if (this.liveSecondaryIds.has(ent.id) || this.liveGraphReadyIds.has(ent.id)) continue
+
+      const showVisible = visibleSlots < FF_MAX_VISIBLE
+      if (showVisible) {
+        wantFf.add(ent.id)
+        visibleSlots++
+      }
+      this.firstFrameLastUse.set(ent.id, now)
+
+      const cached = this.firstFrameGroups.get(ent.id)
+      if (cached) {
+        if (cached.userData.ffHierarchyVer === FF_HIERARCHY_VERSION) {
+          cached.visible = showVisible && !this.liveGraphReadyIds.has(ent.id)
+          const rec = this.firstFrameRecords.get(ent.id)
+          if (rec) {
+            rec.pose.visible =
+              showVisible && !this.liveGraphReadyIds.has(ent.id) && ent.id !== primaryId
+          }
+          continue
+        }
+        this.disposeFirstFrameRecord(ent.id, /*forgetSampler*/ true)
+      }
+
+      if (this.firstFrameSampler.knows(ent.id)) continue
+
+      let baseCoord
+      try {
+        baseCoord = parseParcelKey(ent.base)
+      } catch {
+        continue
+      }
+
+      this.evictShellsIfNeeded(dclX, dclZ)
+
+      this.firstFrameSampler.enqueue({
+        entityId: ent.id,
+        title: ent.title || ent.base,
+        base: ent.base,
+        primaryBase,
+        resolveX: baseCoord.x,
+        resolveY: baseCoord.y,
+        cache: ctx.cache,
+        contentBaseUrl: ctx.scene.realm.contentUrl,
+        onReady: (entityId, group) => {
+          if (this.disposed || this.ctx !== ctx) {
+            group.clear()
+            return
+          }
+          this.evictShellsIfNeeded(dclX, dclZ)
+          this.disposeFirstFrameRecord(entityId, /*forgetSampler*/ false)
+
+          group.position.set(0, 0, 0)
+          group.name = `aoi-ff-visual:${entityId}`
+          group.traverse((node) => {
+            if ((node as THREE.Mesh).isMesh) {
+              node.castShadow = false
+              node.userData.dclDrawStatic = true
+              node.matrixAutoUpdate = false
+              node.updateMatrix()
+            }
+          })
+
+          const pose = new THREE.Group()
+          pose.name = `aoi-ff-pose:${entityId}`
+          pose.userData.aoiEntityId = entityId
+          pose.userData.neighborBase = ent.base
+          const origin = neighborOriginOffset(ent.base, GENESIS_CITY_FILL_ORIGIN)
+          dclToThreePos(origin.x, 0, origin.z, pose.position)
+
+          const wantShow =
+            wantFf.has(entityId) &&
+            entityId !== primaryId &&
+            !this.liveGraphReadyIds.has(entityId)
+          pose.visible = wantShow
+          group.visible = wantShow
+
+          this.aoiPoseRoot.add(pose)
+          host.drawWorld.register(group, pose)
+          this.firstFrameRecords.set(entityId, {
+            entityId,
+            neighborBase: ent.base,
+            pose,
+            visual: group
+          })
+          this.firstFrameGroups.set(entityId, group)
+          this.firstFrameLastUse.set(entityId, performance.now())
+          this.firstFrameSampler.markLoaded(entityId)
+          this.pruneFirstFrameRetain()
+          this.applyShellVisibility()
+        },
+        onFail: (entityId, reason) => {
+          console.info(
+            `[aoi-ff] give up “${ent.title || ent.base}” entity=${entityId.slice(0, 12)}… (${reason})`
+          )
+        }
+      })
+    }
+
+    for (const [id, group] of this.firstFrameGroups) {
+      const rec = this.firstFrameRecords.get(id)
+      if (wantFf.has(id) && !this.liveGraphReadyIds.has(id) && id !== primaryId) {
+        group.visible = true
+        if (rec) rec.pose.visible = true
+      } else {
+        group.visible = false
+        if (rec) rec.pose.visible = false
+      }
+    }
+
+    this.pruneFirstFrameRetain()
   }
 
+  private disposeFirstFrameRecord(entityId: string, forgetSampler: boolean): void {
+    const rec = this.firstFrameRecords.get(entityId)
+    const group = this.firstFrameGroups.get(entityId)
+    if (rec) {
+      this.ctx?.host?.drawWorld.unregister(rec.visual)
+      rec.pose.removeFromParent()
+      disposeObject3D(rec.visual)
+      this.firstFrameRecords.delete(entityId)
+    } else if (group) {
+      group.removeFromParent()
+      disposeObject3D(group)
+    }
+    this.firstFrameGroups.delete(entityId)
+    this.firstFrameLastUse.delete(entityId)
+    if (forgetSampler) this.firstFrameSampler.forget(entityId)
+  }
+
+  /** Evict oldest hidden first-frame groups when over retain cap. */
+  private pruneFirstFrameRetain(): void {
+    if (this.firstFrameRecords.size <= FF_MAX_RETAINED) return
+    const hidden = [...this.firstFrameRecords.entries()]
+      .filter(([, rec]) => !rec.pose.visible)
+      .sort(
+        (a, b) =>
+          (this.firstFrameLastUse.get(a[0]) ?? 0) - (this.firstFrameLastUse.get(b[0]) ?? 0)
+      )
+    while (this.firstFrameRecords.size > FF_MAX_RETAINED && hidden.length) {
+      const [id] = hidden.shift()!
+      this.disposeFirstFrameRecord(id, /*forgetSampler*/ true)
+      console.info(
+        `[aoi-ff] LRU evict first-frame secondary ${id.slice(0, 12)}… (retain>${FF_MAX_RETAINED})`
+      )
+    }
+    while (this.sharedRetainCount() > COMPOSITE_MAX_RETAINED) {
+      if (!this.evictFarthestSharedRetain(this.lastFeetSample.x, this.lastFeetSample.z)) break
+    }
+  }
 
   private clearFirstFrameGroups(): void {
+    for (const id of [...this.firstFrameRecords.keys()]) {
+      this.disposeFirstFrameRecord(id, /*forgetSampler*/ false)
+    }
     for (const group of this.firstFrameGroups.values()) {
       group.removeFromParent()
       disposeObject3D(group)

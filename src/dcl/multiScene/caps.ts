@@ -14,13 +14,13 @@ const AOI_LIVE_GUESTS = true
 const AOI_STAND_ON_PROMOTE = true
 
 /**
- * Live guests (secondary workers with scripts). Enter = Scene Distance; keep =
- * enter + extra. Ranking is player→occupied-footprint (empty/road excluded).
- * Hard cap is the number of scripted neighbors, not shells.
+ * Live guests (secondary workers with scripts). Enter is a fraction of Scene
+ * Distance (not the full visual disc); keep = hysteresis band. Ranking is
+ * player→occupied-footprint (empty/road excluded).
  */
 const LIVE_SCENE_UNLOAD_EXTRA_M = 16
-/** Concurrent live guests — nearest occupied scenes (Winterfest / plaza / HEX…). */
-const AOI_LIVE_SECONDARY_HARD_CAP = 8
+/** Concurrent live guests — nearest occupied scenes in the inner ring only. */
+const AOI_LIVE_SECONDARY_HARD_CAP = 3
 const TERTIARY_RESIDENT_HARD_CAP = 16
 /**
  * Sticky restore after promote-settle turns scripts back on. Plaza-scale
@@ -111,6 +111,13 @@ export function secondaryLiveCap(tier: PerformanceTier): number {
   return AOI_LIVE_SECONDARY_HARD_CAP
 }
 
+/** Near band edge — same as composite shell near LOD (min(48, SD×0.35)). */
+export function aoiNearBandRadiusM(): number {
+  const d = visualWarmRadiusM()
+  if (d <= 0) return 0
+  return Math.min(48, d * 0.35)
+}
+
 /** @deprecated Prefer secondaryLiveEnterRadiusM — kept for call sites. */
 export const SECONDARY_LIVE_ENTER_M = 16
 export const SECONDARY_LIVE_KEEP_M = 80
@@ -119,22 +126,26 @@ export const SECONDARY_LIVE_MAX_RADIUS_M = SECONDARY_LIVE_ENTER_M
 
 export function secondaryLiveEnterRadiusM(): number {
   if (!aoiLiveGuests()) return 0
-  return visualWarmRadiusM()
+  const d = renderQuality.getSceneLoadRadiusM()
+  if (d <= 0) return 0
+  return Math.min(d * 0.35, 32)
 }
 
 export function secondaryLiveKeepRadiusM(): number {
   if (!aoiLiveGuests()) return 0
+  const d = renderQuality.getSceneLoadRadiusM()
+  if (d <= 0) return 0
   const enter = secondaryLiveEnterRadiusM()
   if (enter <= 0) return 0
-  return enter + LIVE_SCENE_UNLOAD_EXTRA_M
+  return Math.min(d, Math.max(enter + LIVE_SCENE_UNLOAD_EXTRA_M, d * 0.6))
 }
 
 export function secondaryLiveRadiusM(): number {
   return secondaryLiveEnterRadiusM()
 }
 
-/** Two cold boots at a time — first-ring live guests while loading / walking. */
-export const SECONDARY_LIVE_BOOT_CONCURRENCY = 2
+/** One cold boot at a time — stacked isolate soak guard. */
+export const SECONDARY_LIVE_BOOT_CONCURRENCY = 1
 
 export function tertiaryResidentCap(_tier: PerformanceTier): number {
   return TERTIARY_RESIDENT_HARD_CAP

@@ -18,7 +18,6 @@ import {
   entityFootprintKeys,
   fetchActiveEntitiesForPointers,
   findCompositeFile,
-  isCompositeShellCandidate,
   isFirstFrameSecondaryCandidate,
   isOpenRoadEntity,
   isSdk7ScriptEntry,
@@ -1249,8 +1248,7 @@ export class AoiVisualLayer {
     for (const e of entities) {
       if (primaryId && e.id === primaryId) continue
       if (this.liveGraphReadyIds.has(e.id) || this.liveSecondaryIds.has(e.id)) continue
-      if (!isCompositeShellCandidate(e)) continue
-      if (this.firstFrameRecords.has(e.id) || this.firstFrameGroups.has(e.id)) continue
+      if (!isSecondarySceneCandidate(e) || !findCompositeFile(e.content)) continue
       if (this.loadedShells.has(e.id)) {
         this.pendingCompositeIds.delete(e.id)
         continue
@@ -1528,10 +1526,6 @@ export class AoiVisualLayer {
     }
     // Sticky / live graph already on host — a second 24-GLB plaza shell is 6 fps.
     if (this.liveGraphReadyIds.has(ent.id) || this.liveSecondaryIds.has(ent.id)) {
-      this.pendingCompositeIds.delete(ent.id)
-      return
-    }
-    if (isFirstFrameSecondaryCandidate(ent)) {
       this.pendingCompositeIds.delete(ent.id)
       return
     }
@@ -1814,8 +1808,8 @@ export class AoiVisualLayer {
 
   /**
    * Inner radius: queue Explorer-style first-frame sampling for SDK7 script
-   * scenes (`bin/index.js`). Includes composite+lava estates (CBD Plaza) —
-   * CityTiles/SDK6 `game.js` composites use the shell path only.
+   * scenes (`bin/index.js`). Runs **alongside** composite shells when
+   * `main.composite` exists (CBD Plaza: composite ground + script GLBs).
    *
    * LOD retain: leaving the ring **hides** the group; re-enter shows it again
    * without re-running the worker. True dispose only on LRU over FF_MAX_RETAINED
@@ -1902,18 +1896,12 @@ export class AoiVisualLayer {
         continue
       }
 
-      // SDK7 script path owns visuals — drop any lava-only composite shell.
-      if (this.loadedShells.has(ent.id) || this.pendingCompositeIds.has(ent.id)) {
-        this.disposeShell(ent.id)
-        this.pendingCompositeIds.delete(ent.id)
-      }
-
       const parcelCount = ent.parcels.length || ent.pointers.length
       const hasComposite = !!findCompositeFile(ent.content)
       const glbCount = ent.content.filter((c) => /\.glb$/i.test(c.file)).length
       console.info(
         `[aoi-ff] enqueue “${ent.title || ent.base}” dist≈${dist.toFixed(0)}m parcels=${parcelCount}` +
-          ` glbs=${glbCount} composite=${hasComposite ? 'yes→ff' : 'no'} main=${ent.main || '?'}` +
+          ` glbs=${glbCount} composite=${hasComposite ? 'yes+shell' : 'no'} main=${ent.main || '?'}` +
           ` entity=${ent.id.slice(0, 12)}…`
       )
 

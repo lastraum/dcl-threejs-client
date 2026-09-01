@@ -410,18 +410,11 @@ export function isSdk7ScriptEntry(
   return !main.includes('game.js')
 }
 
-/** Explorer first-frame bake — SDK7 script scenes (incl. composite+lava estates like CBD Plaza). */
+/** Explorer first-frame bake — SDK7 script scenes (runs alongside composite shell when present). */
 export function isFirstFrameSecondaryCandidate(ent: ActiveSceneEntity): boolean {
   if (!isSecondarySceneCandidate(ent)) return false
   if (isOpenRoadEntity(ent)) return false
   return isSdk7ScriptEntry(ent)
-}
-
-/** SDK6 / CityTiles composite shell — not SDK7 script-first-frame. */
-export function isCompositeShellCandidate(ent: ActiveSceneEntity): boolean {
-  if (!isSecondarySceneCandidate(ent)) return false
-  if (!findCompositeFile(ent.content)) return false
-  return !isSdk7ScriptEntry(ent)
 }
 
 /** Occupied SDK7/composite scene worth a nearby live/shell slot — not road or empty land. */

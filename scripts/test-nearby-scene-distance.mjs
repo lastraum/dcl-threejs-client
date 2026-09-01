@@ -192,16 +192,22 @@ assert(
     /export function isSecondarySceneCandidate/.test(fetchSrc)
 )
 assert(
-  'SDK7 script scenes are first-frame candidates (incl. composite+lava)',
+  'SDK7+composite is a first-frame candidate (bin/index.js)',
   /export function isFirstFrameSecondaryCandidate/.test(fetchSrc) &&
     /isSdk7ScriptEntry\(ent\)/.test(fetchSrc) &&
     /isFirstFrameSecondaryCandidate\(e\)/.test(aoi)
 )
 assert(
-  'SDK6 game.js composites use shell path only (not first-frame)',
-  /export function isCompositeShellCandidate/.test(fetchSrc) &&
-    /!isSdk7ScriptEntry\(ent\)/.test(fetchSrc) &&
-    /isCompositeShellCandidate\(e\)/.test(aoi)
+  'SDK7+composite is also a composite-shell candidate (coexist)',
+  /!isSecondarySceneCandidate\(e\) \|\| !findCompositeFile\(e\.content\)\) continue/.test(aoi) &&
+    !/isCompositeShellCandidate/.test(fetchSrc) &&
+    !/isFirstFrameSecondaryCandidate\(ent\)/.test(aoi.split('createEmptyShell')[1] ?? '')
+)
+assert(
+  'SDK6 game.js composite is shell-only (no first-frame)',
+  /export function isSdk7ScriptEntry/.test(fetchSrc) &&
+    /game\.js/.test(fetchSrc) &&
+    !/if \(findCompositeFile\(e\.content\)\) return false/.test(aoi)
 )
 assert(
   'first-frame ranks nearer then larger parcelCount',

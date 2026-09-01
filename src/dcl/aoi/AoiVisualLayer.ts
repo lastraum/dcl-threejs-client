@@ -18,7 +18,10 @@ import {
   entityFootprintKeys,
   fetchActiveEntitiesForPointers,
   findCompositeFile,
+  isCompositeShellCandidate,
+  isFirstFrameSecondaryCandidate,
   isOpenRoadEntity,
+  isSdk7ScriptEntry,
   isSecondarySceneCandidate,
   type ActiveSceneEntity
 } from './fetchActiveEntities'
@@ -59,7 +62,8 @@ import {
   ROAD_PHYS_RADIUS_M,
   secondaryLiveCap,
   secondaryLiveEnterRadiusM,
-  secondaryLiveKeepRadiusM
+  secondaryLiveKeepRadiusM,
+  STICKY_RESTORE_MAX_PARCELS
 } from '../multiScene/caps'
 import { lastFrameOverBudget, scheduleOffPlayRaf, yieldToIdle } from '../../rendering/mainThreadYield'
 
@@ -1245,7 +1249,8 @@ export class AoiVisualLayer {
     for (const e of entities) {
       if (primaryId && e.id === primaryId) continue
       if (this.liveGraphReadyIds.has(e.id) || this.liveSecondaryIds.has(e.id)) continue
-      if (!isSecondarySceneCandidate(e) || !findCompositeFile(e.content)) continue
+      if (!isCompositeShellCandidate(e)) continue
+      if (this.firstFrameRecords.has(e.id) || this.firstFrameGroups.has(e.id)) continue
       if (this.loadedShells.has(e.id)) {
         this.pendingCompositeIds.delete(e.id)
         continue
@@ -1526,6 +1531,10 @@ export class AoiVisualLayer {
       this.pendingCompositeIds.delete(ent.id)
       return
     }
+    if (isFirstFrameSecondaryCandidate(ent)) {
+      this.pendingCompositeIds.delete(ent.id)
+      return
+    }
     const comp = findCompositeFile(ent.content)
     if (!comp) {
       this.pendingCompositeIds.delete(ent.id)
@@ -1745,6 +1754,8 @@ export class AoiVisualLayer {
     }> = []
 
     for (const { ent, dist, parcelCount, keys } of ranked) {
+      // Plaza-scale SDK7 — first-frame visuals, not a live 116-parcel worker.
+      if (isSdk7ScriptEntry(ent) && parcelCount >= STICKY_RESTORE_MAX_PARCELS) continue
       try {
         const baseCoord = parseParcelKey(ent.base)
         liveCandidates.push({
@@ -1802,8 +1813,9 @@ export class AoiVisualLayer {
   }
 
   /**
-   * Inner radius: queue Explorer-style first-frame sampling for SDK7 secondaries
-   * that have no main.composite (script creates GltfContainers on boot).
+   * Inner radius: queue Explorer-style first-frame sampling for SDK7 script
+   * scenes (`bin/index.js`). Includes composite+lava estates (CBD Plaza) —
+   * CityTiles/SDK6 `game.js` composites use the shell path only.
    *
    * LOD retain: leaving the ring **hides** the group; re-enter shows it again
    * without re-running the worker. True dispose only on LRU over FF_MAX_RETAINED
@@ -1828,9 +1840,7 @@ export class AoiVisualLayer {
 
     const scriptBuilt = entities.filter((e) => {
       if (primaryId && e.id === primaryId) return false
-      if (!isSecondarySceneCandidate(e)) return false
-      if (findCompositeFile(e.content)) return false
-      if (isOpenRoadEntity(e)) return false
+      if (!isFirstFrameSecondaryCandidate(e)) return false
       if (this.liveGraphReadyIds.has(e.id) || this.liveSecondaryIds.has(e.id)) return false
       const keys = entityFootprintKeys(e)
       const inRing = keys.filter((p) => pointerSet.has(p.trim()))
@@ -1848,7 +1858,9 @@ export class AoiVisualLayer {
       const da = this.entityDistM(a, dclX, dclZ, primaryBase)
       const db = this.entityDistM(b, dclX, dclZ, primaryBase)
       if (da !== db) return da - db
-      return (a.parcels.length || a.pointers.length) - (b.parcels.length || b.pointers.length)
+      const pa = a.parcels.length || a.pointers.length
+      const pb = b.parcels.length || b.pointers.length
+      return pb - pa
     })
 
     const wantFf = new Set<string>()
@@ -1889,6 +1901,21 @@ export class AoiVisualLayer {
       } catch {
         continue
       }
+
+      // SDK7 script path owns visuals — drop any lava-only composite shell.
+      if (this.loadedShells.has(ent.id) || this.pendingCompositeIds.has(ent.id)) {
+        this.disposeShell(ent.id)
+        this.pendingCompositeIds.delete(ent.id)
+      }
+
+      const parcelCount = ent.parcels.length || ent.pointers.length
+      const hasComposite = !!findCompositeFile(ent.content)
+      const glbCount = ent.content.filter((c) => /\.glb$/i.test(c.file)).length
+      console.info(
+        `[aoi-ff] enqueue “${ent.title || ent.base}” dist≈${dist.toFixed(0)}m parcels=${parcelCount}` +
+          ` glbs=${glbCount} composite=${hasComposite ? 'yes→ff' : 'no'} main=${ent.main || '?'}` +
+          ` entity=${ent.id.slice(0, 12)}…`
+      )
 
       this.evictShellsIfNeeded(dclX, dclZ)
 

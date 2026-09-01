@@ -192,19 +192,32 @@ assert(
     /export function isSecondarySceneCandidate/.test(fetchSrc)
 )
 assert(
-  'first-frame queues script-built neighbors without composite',
-  /queueFirstFrameSecondaries/.test(aoi) &&
-    /if \(findCompositeFile\(e\.content\)\) return false/.test(aoi) &&
-    /this\.firstFrameSampler\.enqueue/.test(aoi)
+  'SDK7 script scenes are first-frame candidates (incl. composite+lava)',
+  /export function isFirstFrameSecondaryCandidate/.test(fetchSrc) &&
+    /isSdk7ScriptEntry\(ent\)/.test(fetchSrc) &&
+    /isFirstFrameSecondaryCandidate\(e\)/.test(aoi)
+)
+assert(
+  'SDK6 game.js composites use shell path only (not first-frame)',
+  /export function isCompositeShellCandidate/.test(fetchSrc) &&
+    /!isSdk7ScriptEntry\(ent\)/.test(fetchSrc) &&
+    /isCompositeShellCandidate\(e\)/.test(aoi)
+)
+assert(
+  'first-frame ranks nearer then larger parcelCount',
+  /return pb - pa/.test(aoi)
+)
+assert(
+  'first-frame logs enqueue with title and dist',
+  /\[aoi-ff\] enqueue/.test(aoi)
 )
 assert(
   'first-frame samples only in the near band (aoiNearBandRadiusM)',
   /aoiNearBandRadiusM\(\)/.test(aoi) && /dist > nearM/.test(aoi)
 )
 assert(
-  'composite shells skip first-frame path (findCompositeFile)',
-  /if \(findCompositeFile\(e\.content\)\) return false/.test(aoi) &&
-    /findCompositeFile\(e\.content\)/.test(aoi)
+  'mega SDK7 excluded from live guest boot list',
+  /isSdk7ScriptEntry\(ent\) && parcelCount >= STICKY_RESTORE_MAX_PARCELS/.test(aoi)
 )
 assert(
   'first-frame registers DrawWorld pose like composite shells',

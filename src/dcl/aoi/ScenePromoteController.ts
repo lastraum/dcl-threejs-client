@@ -8,6 +8,7 @@ import { distanceToParcelCenterM } from './parcelAoi'
 import {
   fetchActiveEntitiesForPointers,
   entityFootprintKeys,
+  footprintKeysFromCatalystRecord,
   isCatalystEmptyLandEntity,
   isOpenRoadEntity,
   type ActiveSceneEntity
@@ -35,6 +36,8 @@ export type ScenePromoteControllerOptions = {
    * Warm script/manifest assets for real scenes in Scene Distance warm band.
    */
   onPrefetch?: (x: number, y: number) => void
+  /** Catalyst footprint keys folded into primary occupancy (multi-parcel deployments). */
+  onFootprintFold?: (keys: readonly string[]) => void
   dwellMs?: number
   cooldownMs?: number
   /**
@@ -94,11 +97,13 @@ export class ScenePromoteController {
   private warmScanInFlight = false
   private inFlight = false
   private evalGen = 0
+  private footprintProbeKey = ''
   /** When false, skip warm scan + promote evaluate (primary still booting). */
   private neighborActivityEnabled = false
   private readonly onPromote: ScenePromoteControllerOptions['onPromote']
   private readonly onSoftRoute: ScenePromoteControllerOptions['onSoftRoute']
   private readonly onPrefetch: ScenePromoteControllerOptions['onPrefetch']
+  private readonly onFootprintFold: ScenePromoteControllerOptions['onFootprintFold']
   private readonly dwellMs: number
   private readonly cooldownMs: number
   private readonly scriptWarmRadiusOpt: number | (() => number) | undefined
@@ -107,6 +112,7 @@ export class ScenePromoteController {
     this.onPromote = opts.onPromote
     this.onSoftRoute = opts.onSoftRoute
     this.onPrefetch = opts.onPrefetch
+    this.onFootprintFold = opts.onFootprintFold
     this.dwellMs = opts.dwellMs ?? 320
     this.cooldownMs = opts.cooldownMs ?? 2_000
     this.scriptWarmRadiusOpt = opts.scriptWarmRadiusM
@@ -164,6 +170,7 @@ export class ScenePromoteController {
     console.info(
       `[promote] bound primary “${scene.title}” base=${scene.baseParcel} parcels=${this.primaryParcels.size} entity=${scene.entityId?.slice(0, 12) ?? 'none'} scriptWarm=${this.getScriptWarmRadiusM()}m (warm deferred until play-ready)`
     )
+    void this.expandPrimaryFootprintFromCatalyst(scene)
   }
 
   unbind(): void {
@@ -195,6 +202,63 @@ export class ScenePromoteController {
     this.coveredEntityParcels.add(k)
   }
 
+  private foldFootprintKeys(keys: readonly string[]): void {
+    const folded: string[] = []
+    for (const raw of keys) {
+      const k = raw.trim()
+      if (!k) continue
+      this.primaryParcels.add(k)
+      this.coveredEntityParcels.add(k)
+      folded.push(k)
+    }
+    if (folded.length) this.onFootprintFold?.(folded)
+  }
+
+  /** Catalyst pointers ∪ scene.parcels — scene.json alone can miss plaza cells. */
+  private async expandPrimaryFootprintFromCatalyst(scene: ResolvedScene): Promise<void> {
+    if (scene.source.kind !== 'coords' || !scene.entityId?.trim()) return
+    const gen = this.evalGen
+    try {
+      const hit = await fetchSceneEntityByPointer(scene.realm.contentUrl, scene.baseParcel)
+      if (gen !== this.evalGen || this.primary !== scene) return
+      if (!hit || hit.id !== scene.entityId) return
+      const keys = footprintKeysFromCatalystRecord(hit.entity, hit.id)
+      const before = this.primaryParcels.size
+      this.foldFootprintKeys(keys)
+      if (this.primaryParcels.size > before) {
+        console.info(
+          `[promote] catalyst footprint folded n=${this.primaryParcels.size - before} ` +
+            `total=${this.primaryParcels.size} entity=${scene.entityId.slice(0, 12)}`
+        )
+      }
+    } catch (err) {
+      console.warn('[promote] catalyst footprint expand failed', err)
+    }
+  }
+
+  /** Soft-route cell not in scene.parcels — fold without dwell if same catalyst entity. */
+  private probeSameEntityFootprint(px: number, py: number, key: string): void {
+    const scene = this.primary
+    if (!scene?.entityId?.trim() || this.footprintProbeKey === key) return
+    this.footprintProbeKey = key
+    const gen = this.evalGen
+    void (async () => {
+      try {
+        const hit = await fetchSceneEntityByPointer(scene.realm.contentUrl, key)
+        if (gen !== this.evalGen || this.primary !== scene) return
+        if (!hit?.id || hit.id !== scene.entityId) return
+        const keys = footprintKeysFromCatalystRecord(hit.entity, hit.id)
+        this.foldFootprintKeys(keys)
+        this.dwellKey = ''
+        console.info(`[promote] same-entity fold @ ${key} footprint=${keys.length}`)
+      } catch {
+        /* ignore */
+      } finally {
+        if (this.footprintProbeKey === key) this.footprintProbeKey = ''
+      }
+    })()
+  }
+
   /**
    * Per-frame — scene-local DCL feet.
    * Soft-routes URL every parcel; warms scripts in the inner radius;
@@ -215,6 +279,10 @@ export class ScenePromoteController {
       this.lastSoftKey = key
       this.onSoftRoute?.(px, py)
       console.info(`[promote] soft-route ${key}`)
+    }
+
+    if (!this.primaryParcels.has(key) && scene.entityId?.trim()) {
+      this.probeSameEntityFootprint(px, py, key)
     }
 
     if (!this.neighborActivityEnabled) return
@@ -497,9 +565,8 @@ export class ScenePromoteController {
       }
 
       if (hit.id && scene.entityId && hit.id === scene.entityId) {
-        // Multi-parcel primary: fold this parcel into primary footprint (no re-load).
-        this.primaryParcels.add(key)
-        this.coveredEntityParcels.add(key)
+        // Multi-parcel primary: fold full catalyst footprint (no re-load).
+        this.foldFootprintKeys(footprintKeysFromCatalystRecord(hit.entity, hit.id))
         this.dwellKey = ''
         this.inFlight = false
         return

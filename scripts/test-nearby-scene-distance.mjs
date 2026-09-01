@@ -375,6 +375,42 @@ assert(
   '126,104 genesis offset is 2016m east / 1664m north',
   (126 * PARCEL_SIZE === 2016 && 104 * PARCEL_SIZE === 1664)
 )
+const promote = readFileSync(join(root, 'src/dcl/aoi/ScenePromoteController.ts'), 'utf8')
+const comms = readFileSync(join(root, 'src/network/CommsService.ts'), 'utf8')
+assert(
+  'catalyst footprint helper unions pointers and scene.parcels',
+  /export function footprintKeysFromCatalystRecord/.test(fetchSrc)
+)
+assert(
+  'promote expands primary footprint from catalyst on bind',
+  /expandPrimaryFootprintFromCatalyst/.test(promote) &&
+    /footprintKeysFromCatalystRecord/.test(promote)
+)
+assert(
+  'soft-route probes same-entity parcel before dwell promote',
+  /probeSameEntityFootprint/.test(promote) &&
+    /same-entity fold/.test(promote)
+)
+assert(
+  'intra-deployment handoff is blocked when entityId matches primary',
+  /same-entity intra-deployment — soft-route only/.test(world) &&
+    /skip handoff — same entity as primary/.test(secondary)
+)
+assert(
+  'promote handoff keeps LiveKit when sceneId unchanged (pointer soft-route)',
+  /focusSceneRoomChanged\(prevSceneTarget, nextSceneTarget\)/.test(world) &&
+    /connectFocusSceneRoom/.test(world) &&
+    /focusSceneRoomChanged/.test(comms)
+)
+assert(
+  'AppController promote resolves same deployment before force-boot',
+  /same deployment @ .* — fold only/.test(app) &&
+    /foldPrimaryParcel/.test(app)
+)
+assert(
+  'focus occupancy uses expanded primaryCoversParcel not scene.parcels only',
+  /primaryCoversParcel\(parcel\.x, parcel\.y\)/.test(world)
+)
 const slot = readFileSync(join(root, 'src/dcl/multiScene/SceneWorkerSlot.ts'), 'utf8')
 assert(
   'empty-graph hydrate gives up when the mesh queue is empty',

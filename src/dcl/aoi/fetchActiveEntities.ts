@@ -120,6 +120,17 @@ export function entityFootprintKeys(
   return out
 }
 
+/** Catalyst `/entities/active` row → full occupied footprint (pointers ∪ scene.parcels). */
+export function footprintKeysFromCatalystRecord(
+  raw: Record<string, unknown>,
+  id?: string
+): string[] {
+  const withId =
+    typeof id === 'string' && id.trim() ? { ...raw, id: id.trim() } : raw
+  const ent = normalizeEntity(withId)
+  return ent ? entityFootprintKeys(ent) : []
+}
+
 function rememberEntity(ent: ActiveSceneEntity, now: number): void {
   const expiresAt = now + ENTITY_CACHE_TTL_MS
   entityById.set(ent.id, { entity: ent, expiresAt })

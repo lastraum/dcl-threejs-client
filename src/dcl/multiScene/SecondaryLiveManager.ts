@@ -461,7 +461,15 @@ export class SecondaryLiveManager {
    */
   takeForPromote(x: number, y: number): PromoteHandoffPayload | null {
     const key = `${x},${y}`
+    const primaryId = this.primaryScene?.entityId?.trim()
     for (const [entityId, slot] of this.slots) {
+      if (primaryId && entityId === primaryId) {
+        this.rememberFootprint(entityId, [key])
+        console.info(
+          `[multi-scene] skip handoff — same entity as primary @ ${key}`
+        )
+        return null
+      }
       if (this.slotCoversParcel(slot, key)) {
         const fromMode = slot.residentMode
         this.slots.delete(entityId)

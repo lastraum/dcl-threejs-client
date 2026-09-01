@@ -467,15 +467,15 @@ export class World {
       else this.navigateHandler?.(target)
     },
     onSoftRoute: (x, y) => {
-      const scene = this.loadedPrimaryScene
-      const key = `${x},${y}`
-      const onPrimary =
-        !!scene &&
-        (scene.baseParcel.trim() === key || scene.parcels.some((p) => p.trim() === key))
+      const onPrimary = this.primaryCoversParcel(x, y)
       // Pin under-feet only when it is a *neighbor* footprint so SceneLoop
       // boots that guest first. Pinning a plaza cell is a no-op (primary).
       this.multiScene?.setSecondaryPriorityParcel(x, onPrimary ? null : y)
       this.promoteSoftRoute?.(x, y)
+    },
+    onFootprintFold: (keys) => {
+      const scene = this.loadedPrimaryScene
+      if (scene) this.rememberPrimaryOccupancy(scene, keys)
     },
     // Inner radius: warm scripts/manifests. Outer Scene Distance = composite GLBs (AoiVisualLayer).
     onPrefetch: (x, y) => this.promotePrefetch?.(x, y),
@@ -5782,8 +5782,7 @@ export class World {
     }
     const parcel = absoluteParcelAtSceneLocal(dclX, dclZ, scene.baseParcel)
     const key = `${parcel.x},${parcel.y}`
-    const onPrimary =
-      scene.baseParcel.trim() === key || scene.parcels.some((p) => p.trim() === key)
+    const onPrimary = this.primaryCoversParcel(parcel.x, parcel.y)
     const live = this.multiScene?.liveGuestIdForParcel(parcel.x, parcel.y) ?? null
     const feetGuest = onPrimary ? PRIMARY_GUEST_ID : live
     if (!feetGuest) return null
@@ -5828,8 +5827,7 @@ export class World {
     const parcel = absoluteParcelAtSceneLocal(dclX, dclZ, scene.baseParcel)
     const key = `${parcel.x},${parcel.y}`
     const live = this.multiScene?.liveGuestIdForParcel(parcel.x, parcel.y) ?? null
-    const onPrimary =
-      scene.baseParcel.trim() === key || scene.parcels.some((p) => p.trim() === key)
+    const onPrimary = this.primaryCoversParcel(parcel.x, parcel.y)
     // Scripts may tick before GPU exists. Focus waits for meshes (no LiveKit/UI hitch).
     const next = live ?? (onPrimary ? PRIMARY_GUEST_ID : this.focusGuestId ?? PRIMARY_GUEST_ID)
     const sig = `${key}|${next}|${live ?? 'none'}|${onPrimary ? 'p' : 'n'}`
@@ -5854,8 +5852,7 @@ export class World {
     if (this.multiScene?.liveGuestGraphReady(currentGuestId)) return currentGuestId
     const parcel = absoluteParcelAtSceneLocal(dclX, dclZ, scene.baseParcel)
     const key = `${parcel.x},${parcel.y}`
-    const onPrimary =
-      scene.baseParcel.trim() === key || scene.parcels.some((p) => p.trim() === key)
+    const onPrimary = this.primaryCoversParcel(parcel.x, parcel.y)
     if (onPrimary) return PRIMARY_GUEST_ID
     return this.focusGuestId ?? PRIMARY_GUEST_ID
   }
@@ -6193,6 +6190,13 @@ export class World {
     return scene.parcels?.some((p) => p.trim() === key) === true
   }
 
+  /** Fold a cell into primary occupancy (intra-deployment soft-route). */
+  foldPrimaryParcel(x: number, y: number): void {
+    const key = `${x},${y}`
+    this.primaryOccupancyParcels.add(key)
+    this.scenePromote.coverPrimaryParcel(key)
+  }
+
   private rememberPrimaryOccupancy(
     scene: ResolvedScene,
     extraKeys: readonly string[] = []
@@ -6288,6 +6292,15 @@ export class World {
       return false
     }
 
+    const primaryId = this.loadedPrimaryScene?.entityId?.trim()
+    if (primaryId && handoff.entityId === primaryId) {
+      this.foldPrimaryParcel(target.x, target.y)
+      console.info(
+        `[promote] same entity as primary @ ${target.x},${target.y} — fold only (no handoff)`
+      )
+      return true
+    }
+
     return this.applyPromoteHandoff(handoff, [`${target.x},${target.y}`])
   }
 
@@ -6325,6 +6338,25 @@ export class World {
     const oldScene = this.loadedPrimaryScene
     const newScene = handoff.scene
     const newSystem = handoff.system
+
+    if (
+      oldScene?.entityId?.trim() &&
+      newScene.entityId?.trim() &&
+      oldScene.entityId === newScene.entityId
+    ) {
+      for (const k of extraParcelKeys) {
+        const parts = k.split(',')
+        if (parts.length !== 2) continue
+        const px = Number.parseInt(parts[0]!.trim(), 10)
+        const py = Number.parseInt(parts[1]!.trim(), 10)
+        if (Number.isFinite(px) && Number.isFinite(py)) this.foldPrimaryParcel(px, py)
+      }
+      console.info(
+        `[promote] same-entity intra-deployment — soft-route only “${newScene.title}” ` +
+          `entity=${newScene.entityId.slice(0, 12)}`
+      )
+      return true
+    }
 
     // Secondary→primary: rekey offset phys ids back to native (keep actors, no recook).
     // Genesis-stable world — do **not** translate hulls; FocusOwner is a conversion only.
@@ -6546,11 +6578,12 @@ export class World {
 
     // Capsule already genesis-stable — origin swap is a conversion only.
     const ok = this.restoreGenesisFeet(genesis)
-    if (this.comms.sceneRoomIdentityChanged(prevSceneTarget, nextSceneTarget)) {
-      // Hitch-defer socket swap off present; keep publishing on the old room for one RTT.
+    if (this.comms.focusSceneRoomChanged(prevSceneTarget, nextSceneTarget)) {
       scheduleOffPlayRaf(() => {
-        void this.comms.connectSceneRoom(nextSceneTarget)
+        void this.comms.connectFocusSceneRoom(nextSceneTarget)
       })
+    } else {
+      this.comms.bindFocusRoomIdentity(nextSceneTarget)
     }
     // Platform camera: freecam orbit is durable player state — rebind VC bridge for the
     // new primary, clear MainCamera (already in clearPlayerFocusState), snap boom to feet.

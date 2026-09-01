@@ -20,7 +20,6 @@ import {
   findCompositeFile,
   isFirstFrameSecondaryCandidate,
   isOpenRoadEntity,
-  isSdk7ScriptEntry,
   isSecondarySceneCandidate,
   type ActiveSceneEntity
 } from './fetchActiveEntities'
@@ -61,8 +60,7 @@ import {
   ROAD_PHYS_RADIUS_M,
   secondaryLiveCap,
   secondaryLiveEnterRadiusM,
-  secondaryLiveKeepRadiusM,
-  STICKY_RESTORE_MAX_PARCELS
+  secondaryLiveKeepRadiusM
 } from '../multiScene/caps'
 import { lastFrameOverBudget, scheduleOffPlayRaf, yieldToIdle } from '../../rendering/mainThreadYield'
 
@@ -1748,8 +1746,6 @@ export class AoiVisualLayer {
     }> = []
 
     for (const { ent, dist, parcelCount, keys } of ranked) {
-      // Plaza-scale SDK7 — first-frame visuals, not a live 116-parcel worker.
-      if (isSdk7ScriptEntry(ent) && parcelCount >= STICKY_RESTORE_MAX_PARCELS) continue
       try {
         const baseCoord = parseParcelKey(ent.base)
         liveCandidates.push({

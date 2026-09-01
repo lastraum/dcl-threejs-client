@@ -222,9 +222,12 @@ assert(
   /aoiNearBandRadiusM\(\)/.test(aoi) && /dist > nearM/.test(aoi)
 )
 assert(
-  'mega SDK7 excluded from live guest boot list',
-  /isSdk7ScriptEntry\(ent\) && parcelCount >= STICKY_RESTORE_MAX_PARCELS/.test(aoi)
+  'live guests are distance+cap gated not parcel-count',
+  !/STICKY_RESTORE_MAX_PARCELS/.test(caps) &&
+    !/megaSticky/.test(readFileSync(join(root, 'src/dcl/multiScene/SecondaryLiveManager.ts'), 'utf8')) &&
+    !/parcelCount >=/.test(aoi.split('emitLiveSecondaryCandidatesOnly')[1] ?? '')
 )
+assert('live guest hard cap is 4', /AOI_LIVE_SECONDARY_HARD_CAP = 4/.test(caps))
 assert(
   'first-frame registers DrawWorld pose like composite shells',
   /host\.drawWorld\.register\(group, pose\)/.test(aoi) &&
@@ -234,7 +237,6 @@ assert(
   'first-frame near meshes castShadow false',
   /node\.castShadow = false/.test(aoi)
 )
-assert('live guest hard cap is 3', /AOI_LIVE_SECONDARY_HARD_CAP = 3/.test(caps))
 assert('live boot concurrency is 1', /SECONDARY_LIVE_BOOT_CONCURRENCY = 1/.test(caps))
 assert(
   'live guests rank by player-to-footprint (not primary-estate 0 m)',

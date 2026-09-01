@@ -9,7 +9,6 @@ import type { ResolvedScene } from '../content/types'
 import {
   aoiGlbShellsOnly,
   SECONDARY_LIVE_BOOT_CONCURRENCY,
-  STICKY_RESTORE_MAX_PARCELS,
   secondaryLiveCap,
   secondaryLiveEnterRadiusM,
   secondaryLiveKeepRadiusM,
@@ -17,7 +16,6 @@ import {
   tertiaryResidentCap,
   LIVE_SCENE_PHYS_RADIUS_M
 } from './caps'
-import { sceneParcelCount } from './sceneWeight'
 import type { PrivilegedIntentArbiter } from './PrivilegedIntentArbiter'
 import { lastFrameOverBudget } from '../../rendering/mainThreadYield'
 import { secondaryPhysOffset } from './physOffsets'
@@ -300,21 +298,10 @@ export class SecondaryLiveManager {
     )
   }
 
-  /** Plaza-scale sticky stays tertiary (scripts off) until stand-on takeForPromote. */
-  private megaSticky(slot: SceneWorkerSlot): boolean {
-    return sceneParcelCount(slot.scene) >= STICKY_RESTORE_MAX_PARCELS
-  }
-
   /** Settle-end: scripts back on for sticky residents so SceneLoop guests return. */
   restoreStickySecondaries(): void {
     for (const [entityId, slot] of this.slots) {
       if (!this.stickyIds.has(entityId) || slot.residentMode !== 'tertiary' || !slot.isRunning) {
-        continue
-      }
-      if (this.megaSticky(slot)) {
-        console.info(
-          `[promote] sticky restore skip mega “${slot.scene.title}” parcels=${sceneParcelCount(slot.scene)} (scripts stay off)`
-        )
         continue
       }
       slot.setResidentMode('secondary')
@@ -957,21 +944,14 @@ export class SecondaryLiveManager {
       if (this.stickyIds.has(id) && (dist == null || dist <= keepM)) {
         wantSecondary.add(id)
       }
-      // Under-feet always secondary while standing on it (not plaza-scale sticky —
-      // those stay tertiary until takeForPromote; waking 116-parcel JS is 5 fps).
-      if (pri && this.slotCoversParcel(slot, pri) && !(this.stickyIds.has(id) && this.megaSticky(slot))) {
+      // Under-feet always secondary while standing on footprint.
+      if (pri && this.slotCoversParcel(slot, pri)) {
         wantSecondary.add(id)
       }
     }
     for (const id of this.stickyIds) {
-      const slot = this.slots.get(id)
-      if (slot && this.megaSticky(slot)) continue
       const cand = candidates.find((c) => c.entityId === id)
       if (!cand || cand.distM <= keepM) wantSecondary.add(id)
-    }
-    // Plaza-scale sticky never re-enters the live JS ring (meshes stay).
-    for (const [id, slot] of this.slots) {
-      if (this.stickyIds.has(id) && this.megaSticky(slot)) wantSecondary.delete(id)
     }
 
     // Mode transitions — never dispose on leave keep radius.
@@ -979,11 +959,6 @@ export class SecondaryLiveManager {
       const isPri = !!pri && this.slotCoversParcel(slot, pri)
       if (wantSecondary.has(id) || isPri) {
         if (slot.residentMode === 'tertiary') {
-          if (this.stickyIds.has(id) && this.megaSticky(slot)) {
-            // Plaza-scale sticky: meshes stay; scripts stay off until stand-on handoff.
-            continue
-          }
-          // Re-enter enter/keep band: scripts only, no GLB reload.
           slot.setResidentMode('secondary')
         }
       } else {
@@ -1254,9 +1229,6 @@ export class SecondaryLiveManager {
       if (!Number.isFinite(dist) || dist > LIVE_SCENE_PHYS_RADIUS_M) continue
       const slot = this.slots.get(id)
       if (!slot) continue
-      // Promote-settle forces tertiary (scripts off). Atelier hulls must stay
-      // solid while walking into JR Art — plaza-scale sticky never dumps PhysX.
-      if (this.megaSticky(slot)) continue
       if (slot.residentMode !== 'secondary' && slot.residentMode !== 'tertiary') continue
       out.push(`secondary:${id}`)
     }

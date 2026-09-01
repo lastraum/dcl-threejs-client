@@ -20,14 +20,8 @@ const AOI_STAND_ON_PROMOTE = true
  */
 const LIVE_SCENE_UNLOAD_EXTRA_M = 16
 /** Concurrent live guests — nearest occupied scenes in the inner ring only. */
-const AOI_LIVE_SECONDARY_HARD_CAP = 3
+const AOI_LIVE_SECONDARY_HARD_CAP = 4
 const TERTIARY_RESIDENT_HARD_CAP = 16
-/**
- * Sticky restore after promote-settle turns scripts back on. Plaza-scale
- * deployments stay tertiary (meshes + LOD). Stand-on still promotes from
- * tertiary via takeForPromote. Matches SceneWorkerSlot modest cutoff.
- */
-export const STICKY_RESTORE_MAX_PARCELS = 16
 
 export const ROAD_PHYS_RADIUS_M = 48
 export const EMPTY_LAND_PHYS_RADIUS_M = 48

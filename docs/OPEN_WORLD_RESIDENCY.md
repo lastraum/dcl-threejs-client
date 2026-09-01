@@ -499,7 +499,7 @@ Default Scene Distance **stays 64 m**. Players who want 100 set the slider. Do n
 
 Near-band shells **do not cast shadows** (`castShadow = false`). Measure before giving them a caster cap.
 
-**Status:** First-frame sampling is **on** under this budget (`queueFirstFrameSecondaries` + `SecondaryFirstFrameSampler`). SDK7 script scenes (`bin/index.js`) bake via first-frame even when `main.composite` exists; the **composite shell still attaches** on the same entity (Explorer path: composite + script GLBs). CityTiles/SDK6 `game.js` composites are shell-only. Live secondary enter is `min(Scene Distance×0.35, 32)` — not the full visual disc; plaza-scale SDK7 (≥`STICKY_RESTORE_MAX_PARCELS`) is excluded from live boot.
+**Status:** First-frame sampling is **on** under this budget (`queueFirstFrameSecondaries` + `SecondaryFirstFrameSampler`). SDK7 script scenes (`bin/index.js`) bake via first-frame even when `main.composite` exists; the **composite shell still attaches** on the same entity (Explorer path: composite + script GLBs). CityTiles/SDK6 `game.js` composites are shell-only. Live secondary boot is **distance + hard cap** (`min(Scene Distance×0.35, 32)` enter, cap 4) — not parcel count.
 
 ---
 

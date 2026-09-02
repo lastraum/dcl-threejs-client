@@ -31,7 +31,7 @@ import { AnimatorBridge } from '../../bridge/AnimatorBridge'
 import { isEmoteAnchorGltfSrc } from '../../rendering/DclTextureResolver'
 import { TweenBridge } from '../../bridge/TweenBridge'
 import { ParticleSystemBridge } from '../../bridge/ParticleSystemBridge'
-import type { SceneTagVfxHost } from '../../bridge/tagVfx/SceneTagVfxHost'
+import type { SceneTjsBridge } from '../../bridge/tjs/SceneTjsBridge'
 import { isLocalPreviewScene } from '../../dcl/content/refreshPreviewScene'
 import { fetchProfileFaceUrl } from '../../avatar/peerApi'
 import { isTweenVerbose } from '../../bridge/tweenConfig'
@@ -344,7 +344,7 @@ export class SceneScriptSystem {
   private animatorBridge: AnimatorBridge | null = null
   private tweenBridge: TweenBridge | null = null
   private particleBridge: ParticleSystemBridge | null = null
-  private tagVfxHost: SceneTagVfxHost | null = null
+  private tjsBridge: SceneTjsBridge | null = null
   private shaderResolveUrl: ((src: string) => string | null) | null = null
   private sceneUiBridge: SceneUiBridge | null = null
   /** `#scene-ui-root` (primary) or `#pe-ui-root` (portable experience). */
@@ -489,7 +489,7 @@ export class SceneScriptSystem {
   private bootCompileTitle = 'scene'
   private bootCompileKb = 0
   private scriptBlobUrl: string | null = null
-  /** Last fetched `bin/index.js` text — used to discover `tjs.vfx:*` before play. */
+  /** Last fetched `bin/index.js` text (diagnostics / hot reload). */
   private lastScriptSource: string | null = null
   private compileProgressTimer: ReturnType<typeof setInterval> | null = null
   /** Set when inject-pointer-click is posted; cleared on pointer-deliver-done from worker. */
@@ -583,28 +583,52 @@ export class SceneScriptSystem {
     return this.lastScriptSource
   }
 
-  /**
-   * Load the Tag→shader host only when this bundle names shaders.
-   * Landing / shader-less Jump In must not import AbilityManager.
-   */
-  async attachShaderVfx(source: string | null): Promise<boolean> {
-    const { sceneBundleMentionsAbilityVfx } = await import('../../vfx/discoverAbilityVfx')
-    if (!source || !sceneBundleMentionsAbilityVfx(source)) return false
-    return (await this.ensureTagVfxHost()) != null
+  getProjectionView(): ProjectionView {
+    return this.view
   }
 
-  private async ensureTagVfxHost(): Promise<SceneTagVfxHost | null> {
-    if (this.tagVfxHost) return this.tagVfxHost
+  getMirrorComponents(): MirrorComponents {
+    return this.readComponents
+  }
+
+  /**
+   * Load the `tjs` bridge when projection has shader rows.
+   * Landing / shader-less Jump In must not import AbilityManager.
+   */
+  async attachTjsBridge(): Promise<boolean> {
+    const { sceneUsesTjsComponent } = await import('../../vfx/discoverAbilityVfx')
+    if (!sceneUsesTjsComponent(this.view, this.readComponents.Tjs)) return false
+    return (await this.ensureTjsBridge()) != null
+  }
+
+  private syncTjsBridge(): void {
+    if (this.tjsBridge) {
+      this.tjsBridge.sync(this.view)
+      return
+    }
+    void import('../../vfx/discoverAbilityVfx').then(({ sceneUsesTjsComponent }) => {
+      if (!sceneUsesTjsComponent(this.view, this.readComponents.Tjs)) return
+      void this.ensureTjsBridge().then((bridge) => bridge?.sync(this.view))
+    })
+  }
+
+  private updateTjsBridge(dt: number): void {
+    this.tjsBridge?.update(dt)
+  }
+
+  private async ensureTjsBridge(): Promise<SceneTjsBridge | null> {
+    if (this.tjsBridge) return this.tjsBridge
     if (!this.host) return null
-    const { SceneTagVfxHost } = await import('../../bridge/tagVfx/SceneTagVfxHost')
+    const { SceneTjsBridge } = await import('../../bridge/tjs/SceneTjsBridge')
     const { getShaderManager } = await import('../../vfx/ShaderManager')
-    this.tagVfxHost = new SceneTagVfxHost(
+    this.tjsBridge = new SceneTjsBridge(
       this.readComponents,
       this.host.scene,
+      this.host.renderer,
       () => this.bridge?.getEntityNodes()
     )
     if (this.shaderResolveUrl) getShaderManager().setResolveUrl(this.shaderResolveUrl)
-    return this.tagVfxHost
+    return this.tjsBridge
   }
 
   /**
@@ -785,8 +809,8 @@ export class SceneScriptSystem {
       (pose, visual) => this.bridge?.bindEntityDrawSlot(pose, visual, 'dclDrawParticles'),
       (pose) => this.bridge?.unbindEntityDrawSlot(pose, 'dclDrawParticles')
     )
-    this.tagVfxHost?.dispose()
-    this.tagVfxHost = null
+    this.tjsBridge?.dispose()
+    this.tjsBridge = null
     this.shaderResolveUrl = (src) => {
       const trimmed = src.trim()
       if (/^https?:\/\//i.test(trimmed)) return trimmed
@@ -2718,22 +2742,6 @@ export class SceneScriptSystem {
         id: msg.id,
         body: {} satisfies CopyToClipboardResponse
       } satisfies MainToWorker)
-      return
-    }
-    if (msg.type === 'tjs-shader') {
-      const host = await this.ensureTagVfxHost()
-      const { buildShaderCtx, getShaderManager } = await import('../../vfx/ShaderManager')
-      if (msg.fn === 'play' || msg.name === 'play') {
-        host?.playNamed(msg.params.target ?? msg.params.at ?? msg.name)
-        return
-      }
-      const ctx = buildShaderCtx(0, msg.fn, msg.params, null)
-      getShaderManager().trigger(msg.name, msg.fn, ctx)
-      clientDebugLog.log(
-        'scene',
-        `shader ${msg.name}.${msg.fn} from scene code at=${msg.params.at ?? '—'}`,
-        { alsoConsole: true }
-      )
       return
     }
     if (msg.type === 'trigger-emote') {
@@ -4802,8 +4810,8 @@ export class SceneScriptSystem {
     }
     void this.particleBridge?.sync(this.view)
     this.particleBridge?.update(1 / 30)
-    this.tagVfxHost?.sync(this.view)
-    this.tagVfxHost?.update(1 / 30)
+    this.syncTjsBridge()
+    this.updateTjsBridge(1 / 30)
     if (prefer.length > 0) {
       clientDebugLog.log(
         'pointer',
@@ -5545,7 +5553,6 @@ export class SceneScriptSystem {
       flushPointerCrdt: () => {
         void this.flushPendingPointerCrdt()
       },
-      onWorldPointerDown: (entity) => this.tagVfxHost?.notifyPointerDown(entity),
       prepareRaycast: () => this.preparePointerRaycast(),
       resolveMeshRendererInstanceHit: (mesh, instanceId) =>
         this.bridge?.resolveMeshRendererInstanceEntity(mesh, instanceId) ?? null,
@@ -6516,8 +6523,8 @@ export class SceneScriptSystem {
     }
     void this.particleBridge?.sync(this.view)
     this.particleBridge?.update(1 / 30)
-    this.tagVfxHost?.sync(this.view)
-    this.tagVfxHost?.update(1 / 30)
+    this.syncTjsBridge()
+    this.updateTjsBridge(1 / 30)
     if (this.pointerStructureDirty) {
       const pe: Entity[] = []
       for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {
@@ -7512,8 +7519,8 @@ export class SceneScriptSystem {
     }
     // In-view particles at present rate with wall elapsed (not async rAF delta).
     this.particleBridge?.update()
-    this.tagVfxHost?.sync(this.view)
-    this.tagVfxHost?.update(delta)
+    this.syncTjsBridge()
+    this.updateTjsBridge(delta)
     // Primary scene stays fully live. 48/80 m is AOI neighbor shells only —
     // hiding plaza Gltfs (theatre, stage) was a residency bug, not a host-world win.
     if (!this.restoredGltfCull) {
@@ -7546,7 +7553,7 @@ export class SceneScriptSystem {
     // sync is async (texture load); throttle so we don't pile concurrent creates.
     if (this.bridgeSyncTick % 8 === 0) {
       void this.particleBridge?.sync(this.view)
-      this.tagVfxHost?.sync(this.view)
+      this.syncTjsBridge()
     }
     // PlayerEntity-parented scene meshes (Dead Surge path arrow) — re-parent each frame.
     this.bridge.syncReservedParentedTransforms(this.view)
@@ -7783,8 +7790,8 @@ export class SceneScriptSystem {
     this.tweenBridge = null
     this.particleBridge?.dispose()
     this.particleBridge = null
-    this.tagVfxHost?.dispose()
-    this.tagVfxHost = null
+    this.tjsBridge?.dispose()
+    this.tjsBridge = null
     this.shaderResolveUrl = null
     this.unbindSceneUiViewportSync()
     this.sceneUiBridge?.dispose()

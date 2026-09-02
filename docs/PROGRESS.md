@@ -2,9 +2,9 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-08-19  
+> **Last updated:** 2026-09-02  
 > **Current phase:** **v2.2.0** on `main`. Butter work on **`v3`**. QA trunk is **`dev-latest`**. SceneLoop invert clock **🟢**.  
-> **Shipped:** **v2.2.0** one guest clock · plaza Cast Line walk-log · Genesis sky · Explore live search · **v2.1.0** `/localpreview` · stay-in-play reload · Tags shaders (`tjs.sync` opt-in) · shaders off until Jump In · preview tabs · **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
+> **Shipped:** **`tjs` ECS shaders/CCTV** · **v2.2.0** one guest clock · plaza Cast Line walk-log · Genesis sky · Explore live search · **v2.1.0** `/localpreview` · stay-in-play reload · shaders off until Jump In · preview tabs · **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
 
 > **After 2.2 (next / `v3`):** neighbor composite **shells on** · Landscape + Shadows Distance live · FXAA when bloom is on · GPU warm covers shadow+bloom · stacked live-guest FPS measure. Promote stays off.  
 > **After 2.0 (parked shell):** RTS box-select / pad-drag · saved outfits · create-community / invites · gallery multi-page · Social WS reliability · PE P3 pad/wind QA · multi-shape GLTF `40M+` riding. Scene UI = **one-off bugs only**. Shell marketplace browse ≠ **P2P peer trade**.  
@@ -17,6 +17,25 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## Milestone — `tjs` ECS component (2026-09-02)
+
+**Status: on `dev-latest`.** First-class mirrored LWW component for client shaders and CCTV textures.
+
+### What's new
+
+- **`tjs` component** — `kind: shader | texture`, `name`, `enabled`, `sync`, spawn vecs, `camera` for CCTV
+- **No Tags string bus** — removed `tjs.ice.spawn` Tags, bundle comment scans, worker `globalThis.tjs` proxy
+- **AbilityManager gate** — boots only when projection has `tjs` shader rows (not `bin/index.js` text)
+- **CCTV** — `kind: texture`, `name: cctv` renders a VirtualCamera entity to the screen plane via RenderTarget; `enabled` toggles on/off
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **tjs mirror + bridge** | 🟢 | `src/dcl/ecs/tjsComponent.ts` + `SceneTjsBridge` |
+| **Shader one-shot** | 🟢 | `enabled: true` on LWW put fires once per distinct payload |
+| **CCTV texture** | 🟢 | Real RT → material map hook |
 
 ---
 

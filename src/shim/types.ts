@@ -172,14 +172,6 @@ export type SceneWorkerTriggerEmote = {
   body: TriggerEmoteRequest
 }
 
-/** Scene code → ShaderManager. Fire-and-forget (`tjs.shader(name, fn, params)`). */
-export type SceneWorkerTjsShader = {
-  type: 'tjs-shader'
-  name: string
-  fn: string
-  params: Record<string, string>
-}
-
 export type SceneWorkerTriggerSceneEmote = {
   type: 'trigger-scene-emote'
   id: number
@@ -312,7 +304,6 @@ export type SceneWorkerOutbound =
   | SceneWorkerChangeRealm
   | SceneWorkerCopyToClipboard
   | SceneWorkerTriggerEmote
-  | SceneWorkerTjsShader
   | SceneWorkerTriggerSceneEmote
   | SceneWorkerOpenExternalUrl
   | SceneWorkerOpenNftDialog

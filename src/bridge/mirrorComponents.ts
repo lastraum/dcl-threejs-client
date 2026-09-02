@@ -2,6 +2,7 @@ import * as extended from '@dcl/ecs/dist/components'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import type { IEngine, LastWriteWinElementSetComponentDefinition } from '@dcl/ecs'
 import { PBMapPin } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/map_pin.gen'
+import { defineTjsComponent, type TjsComponent } from '../dcl/ecs/tjsComponent'
 
 /** MapPin is not re-exported from index.gen (deprecated SDK surface) — define from PB schema. */
 type MapPinComponent = LastWriteWinElementSetComponentDefinition<PBMapPin>
@@ -100,6 +101,8 @@ export type MirrorComponents = {
   PhysicsCombinedForce: ReturnType<typeof generated.PhysicsCombinedForce>
   /** One-shot impulse summary on PlayerEntity (Physics.applyImpulseToPlayer / knockback). */
   PhysicsCombinedImpulse: ReturnType<typeof generated.PhysicsCombinedImpulse>
+  /** Client-only shader / CCTV texture bus (scene `defineComponent('tjs', …)`). */
+  Tjs: TjsComponent
 }
 
 /** Register mirror ECS components so incoming scene CRDT can be applied. */
@@ -167,6 +170,7 @@ export function registerMirrorComponents(engine: IEngine): MirrorComponents {
     NftShape: generated.NftShape(engine),
     GltfNodeModifiers: generated.GltfNodeModifiers(engine),
     PhysicsCombinedForce: generated.PhysicsCombinedForce(engine),
-    PhysicsCombinedImpulse: generated.PhysicsCombinedImpulse(engine)
+    PhysicsCombinedImpulse: generated.PhysicsCombinedImpulse(engine),
+    Tjs: defineTjsComponent(engine)
   }
 }

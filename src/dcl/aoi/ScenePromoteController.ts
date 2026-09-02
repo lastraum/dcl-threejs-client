@@ -246,7 +246,7 @@ export class ScenePromoteController {
   }
 
   /** Soft-route cell not in scene.parcels — fold without dwell if same catalyst entity. */
-  private probeSameEntityFootprint(px: number, py: number, key: string): void {
+  private probeSameEntityFootprint(_px: number, _py: number, key: string): void {
     const scene = this.primary
     if (!scene?.entityId?.trim() || this.footprintProbeKey === key) return
     this.footprintProbeKey = key

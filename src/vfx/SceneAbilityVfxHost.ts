@@ -36,7 +36,7 @@ type AbilityManagerLike = {
 
 /**
  * Genesis-lab `LabVfxHost` spine inside the play client.
- * AbilityManager boots only when a scene bundle names `tjs.vfx:*`.
+ * AbilityManager boots only when mirrored `tjs` shader rows exist on projection.
  */
 export class SceneAbilityVfxHost {
   private abilities: AbilityManagerLike | null = null

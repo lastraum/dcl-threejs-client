@@ -279,52 +279,60 @@ Leave the scene `npm start` / Hub Play running. Closing it stops `/about` and th
 
 ## Shaders
 
-There is no `tjs` in the scene. **Creating the Tag is the call.**
+Scenes drive client shaders and CCTV textures with a first-class ECS component:
 
 ```ts
-// load only (does not fire)
-Tags.createOrReplace(engine.RootEntity, {
-  tags: [
-    'tjs.shader(ice, assets/shaders/IceAbility.js)',
-    'tjs.shader(cinder, assets/shaders/MeteorAbility.js)'
-  ]
+const tjs = engine.defineComponent('tjs', {
+  kind: Schemas.String,    // 'shader' | 'texture'
+  name: Schemas.String,    // shader: ice | meteor | hail — texture: cctv
+  sync: Schemas.Boolean,   // opt-in comms topic d3js-ability-vfx (one-shot casts)
+  enabled: Schemas.Boolean,
+  path: Schemas.String,    // shader file; empty = bundled Ice/Meteor/HailAbility.js
+  ox: Schemas.Float,
+  oy: Schemas.Float,
+  oz: Schemas.Float,
+  dx: Schemas.Float,
+  dy: Schemas.Float,
+  dz: Schemas.Float,
+  dist: Schemas.Float,
+  camera: Schemas.Int      // texture/cctv: VirtualCamera entity id
 })
 
-// fire — any time, any entity (this tab only)
-pointerEventsSystem.onPointerDown(
-  { entity: button, opts: { button: InputAction.IA_POINTER, hoverText: 'Cast Ice' } },
-  function () {
-    const ox = 42, oy = 0, oz = 46
-    const dx = 0.83, dy = 0, dz = -0.55
-    const distance = 14
-    Tags.createOrReplace(engine.addEntity(), {
-      tags: [`tjs.ice.spawn(${ox}, ${oy}, ${oz}, ${dx}, ${dy}, ${dz}, ${distance})`]
-    })
-  }
-)
-
-// same cast, other people in this client also see it
-Tags.createOrReplace(engine.addEntity(), {
-  tags: [
-    `tjs.ice.spawn(${ox}, ${oy}, ${oz}, ${dx}, ${dy}, ${dz}, ${distance})`,
-    'tjs.sync'
-  ]
+// load + fire ice (one-shot when enabled:true on create)
+tjs.create(shot, {
+  kind: 'shader',
+  name: 'ice',
+  path: '',
+  enabled: true,
+  sync: true,
+  camera: 0,
+  ox: 42, oy: 0, oz: 46,
+  dx: 0.83, dy: 0, dz: -0.55,
+  dist: 14
 })
+
+// CCTV screen — toggle without deleting the mesh
+tjs.createOrReplace(screen, {
+  kind: 'texture',
+  name: 'cctv',
+  path: '',
+  enabled: true,
+  sync: false,
+  camera: camEntity,
+  ox: 0, oy: 0, oz: 0,
+  dx: 0, dy: 0, dz: 0,
+  dist: 0
+})
+tjs.getMutable(screen).enabled = false
 ```
 
-That **is** `ability.spawn(origin, direction, distance)`. `${}` is just JS inside the string.
-
-Add the spawn Tag **anywhere you want to trigger** the shader — a pointer callback, a timer, another system, not only a click.
-
-**Default is local-only.** Add sibling Tag `tjs.sync` to put that one cast on the comms topic so other ThreejsClient tabs see it. Do not `syncEntity` the spawn entity — a cast is a one-shot, not lasting ECS state.
-
-This client only — Unity / Bevy do not treat Tags as a shader bus.
-
-| You write | Role |
+| Field | Role |
 | --- | --- |
-| `tjs.shader(ice, assets/shaders/IceAbility.js)` | Load that file as `ice` |
-| `` tjs.ice.spawn(${ox}, ${oy}, ${oz}, ${dx}, ${dy}, ${dz}, ${distance}) `` | `spawn(origin, direction, distance)` — this tab |
-| `tjs.sync` | Sibling Tag — other ThreejsClient tabs see that cast |
+| `kind: 'shader'` + `name: 'ice'` | Client loads bundled/file shader, fires when `enabled: true` |
+| `sync: true` | That cast is published on `d3js-ability-vfx` for other ThreejsClient tabs |
+| `kind: 'texture'` + `name: 'cctv'` | Renders the bound camera entity to the screen plane while `enabled` |
+
+AbilityManager boots only after Jump In and only when the scene has `tjs` shader rows — not from bundle text scans. Unknown `tjs` ids are ignored by other explorers (no crash).
 
 Copies: VFX scene `assets/shaders/`.
 

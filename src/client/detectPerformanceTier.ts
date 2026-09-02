@@ -1,7 +1,13 @@
 import type * as THREE from 'three'
-import { effectivePixelRatio, renderQuality, RenderQualityTier } from '../rendering/RenderQualitySettings'
+import {
+  effectivePixelRatio,
+  renderQuality,
+  RenderQualityTier,
+  SCENE_LOAD_RADIUS_MOBILE_LITE_M
+} from '../rendering/RenderQualitySettings'
 import type { PerformanceTier } from '../shim/types'
-import { isAppleTouchDevice, isIphoneDevice } from '../util/appleTouch'
+import { isAppleTouchDevice } from '../util/appleTouch'
+import { isHandheldDevice } from './ui/touchPlayLayout'
 
 export type { PerformanceTier } from '../shim/types'
 
@@ -75,8 +81,8 @@ export function detectPerformanceTier(
 
   if (gl) score += scoreWebGlRenderer(gl)
 
-  // iPhone Safari kills the tab ~1.2–1.8GB; iPad survives the same plaza.
-  if (isIphoneDevice()) return 'low'
+  // Handheld (phone + iPad): always Low. `?nomobile` skips this profile.
+  if (isHandheldDevice()) return 'low'
   // iPadOS desktop UA looks like a Mac (8 cores) and would pick High/HDR.
   if (isAppleTouchDevice()) score = Math.max(score, 2)
 
@@ -85,20 +91,28 @@ export function detectPerformanceTier(
   return 'high'
 }
 
+function aoiForcedOn(): boolean {
+  if (typeof window === 'undefined') return false
+  const params = new URLSearchParams(window.location.search)
+  return params.has('aoi') || params.has('withaoi')
+}
+
 /**
- * Apply auto render defaults on first visit (no saved Preferences).
- * When the user has persisted graphics settings, only re-apply pixel ratio from store.
- * Low devices get the Low preset (persisted so Preferences matches). Medium/high leave
- * in-memory Medium defaults without writing localStorage (user can still raise to High/Ultra).
+ * Apply auto render defaults. Handheld (phone + iPad) forces the Low preset and
+ * a lite Scene Distance every load / Jump In — not once-ever, no localStorage skip.
+ * `?aoi` / `?withaoi` keep neighbor radius. Medium/high desktops without a save
+ * leave in-memory Medium defaults.
  */
 export function applyClientPerformanceDefaults(
   renderer: THREE.WebGLRenderer,
   tier: PerformanceTier
 ): void {
   const pr = effectivePixelRatio(renderQuality.getResolutionScale())
-  if (isIphoneDevice()) {
-    if (!renderQuality.hasPersistedSettings()) {
-      renderQuality.setTier(RenderQualityTier.Low)
+  if (isHandheldDevice()) {
+    renderQuality.setTier(RenderQualityTier.Low)
+    // Keep walk open (never 0). Skip neighbor AOI while the slider stays here.
+    if (!aoiForcedOn()) {
+      renderQuality.setSceneLoadRadiusM(SCENE_LOAD_RADIUS_MOBILE_LITE_M)
     }
     renderer.setPixelRatio(Math.min(effectivePixelRatio(renderQuality.getResolutionScale()), 1.25))
     return

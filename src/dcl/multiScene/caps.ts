@@ -1,6 +1,7 @@
 import type { PerformanceTier } from '../../shim/types'
 import { renderQuality } from '../../rendering/RenderQualitySettings'
 import { skipAoiNeighbors } from '../../client/devFlags'
+import { isHandheldDevice } from '../../client/ui/touchPlayLayout'
 
 /**
  * Open-world residency (docs/OPEN_WORLD_RESIDENCY.md).
@@ -106,6 +107,9 @@ export function visualWarmRadiusM(): number {
   const pref = renderQuality.getSceneLoadRadiusM()
   if (pref <= 0) return 0
   if (!aoiSceneDistanceVisuals()) return Math.min(pref, AOI_SHELL_KEEP_M)
+  // Handheld: honor the slider (do not max to the 200 m plaza look ring).
+  // Raising Scene Distance above the auto default undoes neighbor skip.
+  if (isHandheldDevice()) return pref
   // Product look ring is 200m. Preferences SD may be 64 (default) — do not clip
   // Winterfest / nested plaza neighbors to the collide arm.
   return Math.max(pref, AOI_VISUAL_LOOK_RADIUS_M)
@@ -113,6 +117,8 @@ export function visualWarmRadiusM(): number {
 
 export function secondaryLiveCap(tier: PerformanceTier): number {
   if (!aoiLiveGuests()) return 0
+  // Phone + iPad stay at 1 even if `?aoi` re-enables neighbor guests.
+  if (isHandheldDevice()) return 1
   if (tier === 'low') return 1
   if (tier === 'medium') return 2
   return AOI_LIVE_SECONDARY_HARD_CAP

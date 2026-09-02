@@ -10,6 +10,13 @@ source: github
 base_branch: dev-latest
 workflow:
   - stage: merged
+    integration_ref: pr:73
+    title: plaza nested look at 200m, nearest live JS, walk-safe collide
+    owner: lastraum
+    pr: 73
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/73
+    updated: 2026-09-02
+  - stage: merged
     integration_ref: pr:71
     title: confirm deploys and refresh stale barn pets
     owner: lastraum
@@ -143,11 +150,3 @@ workflow:
     pr: 50
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/50
     updated: 2026-07-26
-  - stage: merged
-    integration_ref: pr:48
-    title: item provenance in detail panes + clickable filter chips; official exotic
-      color
-    owner: awedjob
-    pr: 48
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/48
-    updated: 2026-07-25

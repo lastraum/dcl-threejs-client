@@ -279,13 +279,11 @@ Leave the scene `npm start` / Hub Play running. Closing it stops `/about` and th
 
 ## Shaders
 
-Scenes drive this client's shaders and projection screens (CCTV) with one mirrored custom component named **`tjs`**. `kind` is a string. Kinds in use: `shader`, `texture`, `camera`, `projection`. CCTV uses `camera` + `projection` (`texture` is unused for CCTV).
+Scenes drive this client's shaders and cameras with one mirrored custom component named **`tjs`**. `kind` is a string. Kinds in use: `shader`, `texture`, `camera`, `projection`. Other explorers ignore unknown custom components, so a published SDK7 scene that defines `tjs` stays valid.
 
-Other explorers ignore unknown custom components, so a published SDK7 scene that defines `tjs` stays valid.
+**Field order must match this client.** Copy the spec below (including `layers`, `background`, `fov`). A helper that fills defaults keeps rows short.
 
 ### Declare `tjs`
-
-Copy this once in the scene (typically `src/index.ts`):
 
 ```ts
 import {
@@ -294,7 +292,8 @@ import {
   VirtualCamera,
   Schemas
 } from '@dcl/sdk/ecs'
-import { Quaternion, Vector3 } from '@dcl/sdk/math'
+import type { Entity } from '@dcl/sdk/ecs'
+import { Color4, Quaternion, Vector3 } from '@dcl/sdk/math'
 
 const tjs = engine.defineComponent(
   'tjs',
@@ -311,7 +310,10 @@ const tjs = engine.defineComponent(
     dy: Schemas.Float,
     dz: Schemas.Float,
     dist: Schemas.Float,
-    camera: Schemas.Int
+    camera: Schemas.Entity,
+    layers: Schemas.String,
+    background: Schemas.Color4,
+    fov: Schemas.Float
   },
   {
     kind: '',
@@ -326,33 +328,49 @@ const tjs = engine.defineComponent(
     dy: 0,
     dz: 0,
     dist: 0,
-    camera: 0
+    camera: 0 as Entity,
+    layers: '',
+    background: Color4.create(0, 0, 0, 1),
+    fov: 60
   }
 )
+
+function tjsFields(partial: Record<string, unknown>) {
+  return {
+    kind: '',
+    name: '',
+    sync: false,
+    enabled: false,
+    path: '',
+    ox: 0,
+    oy: 0,
+    oz: 0,
+    dx: 0,
+    dy: 0,
+    dz: 0,
+    dist: 0,
+    camera: 0 as Entity,
+    layers: '',
+    background: Color4.create(0, 0, 0, 1),
+    fov: 60,
+    ...partial
+  }
+}
 ```
 
-A `kind: 'shader'` row **loads** when the component appears (even with `enabled: false`). Ice / meteor / hail use `name`: `ice`, `cinder` (or `meteor`), `hailwraith` (or `hail`). Leave `path` empty to use the bundled file, or set a scene file such as `assets/shaders/IceAbility.js`.
+A `kind: 'shader'` row **loads** when the component appears (even with `enabled: false`). Ice / meteor / hail use `name`: `ice`, `cinder` (or `meteor`), `hailwraith` (or `hail`). Leave `path` empty to use the bundled file, or set a scene file such as `assets/shaders/IceAbility.js`. Already-warmed shaders are not fetched again on `/reload` or HMR.
 
 ### Shader example
 
 Preload, then fire. Ice / meteor / hail are one-shots: create a new `enabled: true` row each cast. Looping shaders stay on one entity — toggle `enabled`.
 
 ```ts
-tjs.create(engine.addEntity(), {
+tjs.create(engine.addEntity(), tjsFields({
   kind: 'shader',
   name: 'ice',
   path: 'assets/shaders/IceAbility.js',
-  enabled: false,
-  sync: false,
-  ox: 0,
-  oy: 0,
-  oz: 0,
-  dx: 0,
-  dy: 0,
-  dz: 0,
-  dist: 0,
-  camera: 0
-})
+  enabled: false
+}))
 
 function castIce(
   origin: ReturnType<typeof Vector3.create>,
@@ -361,21 +379,18 @@ function castIce(
   const dx = target.x - origin.x
   const dz = target.z - origin.z
   const distance = Math.sqrt(dx * dx + dz * dz) || 1
-  tjs.create(engine.addEntity(), {
+  tjs.create(engine.addEntity(), tjsFields({
     kind: 'shader',
     name: 'ice',
-    path: '',
     enabled: true,
-    sync: false,
     ox: origin.x,
     oy: origin.y,
     oz: origin.z,
     dx: dx / distance,
     dy: 0,
     dz: dz / distance,
-    dist: distance,
-    camera: 0
-  })
+    dist: distance
+  }))
 }
 
 castIce(Vector3.create(42, 0, 46), Vector3.create(54, 0, 38))
@@ -387,29 +402,33 @@ Looping shader on one entity:
 
 ```ts
 const loop = engine.addEntity()
-tjs.create(loop, {
+tjs.create(loop, tjsFields({
   kind: 'shader',
   name: 'ice',
   path: 'assets/shaders/IceAbility.js',
-  enabled: false,
-  sync: false,
-  ox: 0,
-  oy: 0,
-  oz: 0,
-  dx: 0,
-  dy: 0,
-  dz: 0,
-  dist: 0,
-  camera: 0
-})
+  enabled: false
+}))
 
 tjs.getMutable(loop).enabled = true
 tjs.getMutable(loop).enabled = false
 ```
 
-### Projection screens (CCTV)
+### Cameras and projection screens
 
-**Lens dummy** — `Transform` + SDK `VirtualCamera` + `tjs` `kind: 'camera'`. VirtualCamera is the viewpoint (`lookAtEntity`, or Transform **+Z** if `lookAtEntity` is omitted). Camera `enabled` typically starts `true`.
+Each **`kind: 'camera'`** lens is a full extra render of the world every frame (512×512 RT). Two lenses means the city is drawn three times (your view plus both feeds). More cameras and screens cost FPS. Keep the count small.
+
+Draw bits live on the **camera** row (comma-separated string), not the screen:
+
+| Token | What the lens sees |
+| --- | --- |
+| `0` | Buildings, GLBs, MeshRenderer, terrain |
+| `1` | Avatars (local, remote, AvatarShape) |
+| `2` | SFX / `tjs` shaders |
+| omit / `""` | All three (`0,1,2`) |
+
+Examples: `"0,1,2"` full feed, `"1"` avatars only, `"0,2"` world + SFX (no avatars).
+
+**Lens** — `Transform` + SDK `VirtualCamera` + `tjs` `kind: 'camera'`. Do **not** set `tjs.camera` on this entity (that field is only for screens). Viewpoint is `VirtualCamera.lookAtEntity`, or Transform **+Z** if omitted. `enabled` typically starts `true`.
 
 ```ts
 const lookAt = engine.addEntity()
@@ -421,25 +440,18 @@ Transform.create(cam, {
   rotation: Quaternion.fromEulerDegrees(-20, 0, 0)
 })
 VirtualCamera.create(cam, { lookAtEntity: lookAt })
-// Or omit lookAtEntity to aim the Transform +Z axis.
-tjs.create(cam, {
+tjs.create(cam, tjsFields({
   kind: 'camera',
-  name: '',
-  path: '',
   enabled: true,
-  sync: false,
-  ox: 0,
-  oy: 0,
-  oz: 0,
-  dx: 0,
-  dy: 0,
-  dz: 0,
-  dist: 0,
-  camera: 0
-})
+  layers: '0,1,2',
+  fov: 40,
+  background: Color4.create(0, 0, 0, 1)
+}))
 ```
 
-**Screen** — **only** `Transform` + `tjs` `kind: 'projection'` with `camera` = the lens entity id. Do **not** put `MeshRenderer`, SDK `Material`, or `MeshCollider` on the screen. This client draws the plane and sizes it from the Transform.
+`fov` is vertical degrees (default `60`, clamped 1–170). `background` is the RT clear / empty-feed color (default black).
+
+**World screen** — `Transform` + `tjs` `kind: 'projection'` with **`camera: cam`** (the lens **entity**, not a dummy number). Do **not** put `MeshRenderer`, SDK `Material`, or `MeshCollider` on the screen. This client draws the plane from the Transform.
 
 ```ts
 const screen = engine.addEntity()
@@ -448,21 +460,11 @@ Transform.create(screen, {
   rotation: Quaternion.fromEulerDegrees(0, 35, 0),
   scale: Vector3.create(4.2, 2.6, 1)
 })
-tjs.create(screen, {
+tjs.create(screen, tjsFields({
   kind: 'projection',
-  name: '',
-  path: '',
-  enabled: false,
-  sync: false,
-  ox: 0,
-  oy: 0,
-  oz: 0,
-  dx: 0,
-  dy: 0,
-  dz: 0,
-  dist: 0,
-  camera: cam as number
-})
+  enabled: true,
+  camera: cam
+}))
 ```
 
 Toggle the picture on the **projection** (leave the camera `enabled`):
@@ -472,15 +474,32 @@ const row = tjs.getMutable(screen)
 row.enabled = !row.enabled
 ```
 
+**UI screen** — same lens, no second `kind: 'projection'`. On a `UiEntity` background, set `texture.src` to `tjs:${cam}`. This client never file-loads that src. If the lens is not up yet, the panel stays on `uiBackground.color` until it is.
+
+```ts
+<UiEntity
+  uiTransform={{ width: 420, height: 236 }}
+  uiBackground={{
+    color: Color4.create(0, 0, 0, 1),
+    textureMode: 'stretch',
+    texture: { src: `tjs:${cam}` }
+  }}
+/>
+```
+
 | Field | Role |
 | --- | --- |
 | `kind: 'shader'` + `name` | Loads when the row appears. Ice / meteor / hail fire when `enabled: true`. |
 | `path` | Shader file. Empty uses the bundled file for that `name`. |
 | `ox, oy, oz` / `dx, dy, dz` / `dist` | Cast origin, direction, distance. |
 | `sync: true` | That one-shot is shared with other ThreejsClient sessions. |
-| `kind: 'camera'` | Same entity as `Transform` + `VirtualCamera`. `enabled` starts/stops capture. |
-| `kind: 'projection'` + `camera` | Host-drawn plane. `camera` is the lens entity id. `enabled` shows/hides the live picture. |
-| `kind: 'texture'` | Reserved. Unused for CCTV. |
+| `kind: 'camera'` | Same entity as `Transform` + `VirtualCamera`. `layers`, `fov`, `background` live here. Do not set `camera`. |
+| `layers` | Camera only. `"0,1,2"` string. Empty = all. |
+| `fov` | Camera only. Vertical FOV, default 60. |
+| `background` | Color4 clear for empty feeds. Default black. |
+| `kind: 'projection'` + `camera` | Host-drawn world plane. `camera` is the **lens entity**. |
+| UI `texture.src` `tjs:${cam}` | Same RT on a UiBackground. No file loader. |
+| `kind: 'texture'` | Reserved. Unused for cameras. |
 
 ## Credits
 

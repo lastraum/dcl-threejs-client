@@ -28,14 +28,14 @@
 
 - **`tjs` component** — one mirrored LWW component; `kind` is a string: `shader`, `texture`, `camera`, `projection`
 - **Shaders** — load when the row appears; ice / meteor / hail use `name`; fire with `enabled: true` (new row per one-shot cast)
-- **Projection screens** — lens: Transform + SDK `VirtualCamera` + `kind: camera`; screen: Transform + `kind: projection` only (`camera` = lens entity id). Host draws the plane. Toggle `tjs.getMutable(screen).enabled`. Camera `enabled` typically starts true; screen starts `enabled: false`.
+- **Projection screens** — lens: Transform + SDK `VirtualCamera` + `kind: camera` (`layers` "0,1,2", `fov`, `background` Color4). Screen: Transform + `kind: projection` with `camera` = the **lens entity** (not a number). UI: `UiBackground.texture.src = tjs:${cam}`. Each camera is a full extra world render (keep the count small). Toggle `tjs.getMutable(screen).enabled`.
 - **`texture` kind** — reserved; unused for CCTV
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
 | **tjs mirror + bridge** | 🟢 | `src/dcl/ecs/tjsComponent.ts` + `SceneTjsBridge` |
 | **Shader one-shot** | 🟢 | `enabled: true` fires once per distinct payload |
-| **CCTV camera + projection** | 🟢 | VirtualCamera viewpoint; host-drawn projection plane |
+| **CCTV camera + projection** | 🟢 | layers 0,1,2; fov; Color4 background; world plane + UI tjs:src; extra cameras cost FPS |
 
 ---
 

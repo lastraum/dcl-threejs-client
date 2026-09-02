@@ -16,9 +16,6 @@ const _dir = new THREE.Vector3()
 const _lookAt = new THREE.Vector3()
 const _quat = new THREE.Quaternion()
 
-/** Same shader name spammed via tjs.create — coalesce to the latest put. */
-const SHADER_BURST_MS = 100
-
 type CctvRuntime = {
   entity: Entity
   cameraEntity: Entity
@@ -74,12 +71,6 @@ function restoreMeshMaps(meshes: THREE.Mesh[], savedMaps: WeakMap<THREE.Material
  */
 export class SceneTjsBridge {
   private readonly shaderFireFp = new Map<Entity, string>()
-  private readonly shaderLastPutAt = new Map<string, number>()
-  private readonly shaderCoalesceLatest = new Map<
-    string,
-    { entity: Entity; row: TjsValue; fp: string }
-  >()
-  private readonly shaderCoalesceTimer = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly declared = new Set<string>()
   private readonly cctv = new Map<Entity, CctvRuntime>()
 
@@ -149,9 +140,7 @@ export class SceneTjsBridge {
   dispose(): void {
     for (const entity of [...this.cctv.keys()]) this.teardownCctv(entity)
     this.cctv.clear()
-    this.clearShaderCoalesce()
     this.shaderFireFp.clear()
-    this.shaderLastPutAt.clear()
     this.declared.clear()
     getShaderManager().dispose()
   }
@@ -173,50 +162,6 @@ export class SceneTjsBridge {
     const fp = tjsValueFingerprint(row)
     if (this.shaderFireFp.get(entity) === fp) return
     this.shaderFireFp.set(entity, fp)
-
-    const now = performance.now()
-    const lastPut = this.shaderLastPutAt.get(name) ?? 0
-    this.shaderLastPutAt.set(name, now)
-    if (now - lastPut >= SHADER_BURST_MS) {
-      this.clearShaderCoalesce(name)
-      this.fireShaderSpawn(entity, row, name)
-      return
-    }
-    this.shaderCoalesceLatest.set(name, { entity, row, fp })
-    this.armShaderCoalesceFlush(name)
-  }
-
-  private armShaderCoalesceFlush(name: string): void {
-    const existing = this.shaderCoalesceTimer.get(name)
-    if (existing) clearTimeout(existing)
-    const timer = setTimeout(() => this.flushShaderCoalesce(name), SHADER_BURST_MS)
-    this.shaderCoalesceTimer.set(name, timer)
-  }
-
-  private flushShaderCoalesce(name: string): void {
-    const timer = this.shaderCoalesceTimer.get(name)
-    if (timer) clearTimeout(timer)
-    this.shaderCoalesceTimer.delete(name)
-    const pending = this.shaderCoalesceLatest.get(name)
-    this.shaderCoalesceLatest.delete(name)
-    if (!pending) return
-    this.fireShaderSpawn(pending.entity, pending.row, name)
-  }
-
-  private clearShaderCoalesce(name?: string): void {
-    if (name !== undefined) {
-      const timer = this.shaderCoalesceTimer.get(name)
-      if (timer) clearTimeout(timer)
-      this.shaderCoalesceTimer.delete(name)
-      this.shaderCoalesceLatest.delete(name)
-      return
-    }
-    for (const timer of this.shaderCoalesceTimer.values()) clearTimeout(timer)
-    this.shaderCoalesceTimer.clear()
-    this.shaderCoalesceLatest.clear()
-  }
-
-  private fireShaderSpawn(entity: Entity, row: TjsValue, name: string): void {
     const nodes = this.getNodes()
     const node = nodes?.get(entity) ?? null
     if (node) node.updateWorldMatrix(true, false)
@@ -243,7 +188,7 @@ export class SceneTjsBridge {
       `tjs shader spawn e${entity as number} name=${name} sync=${row.sync}`,
       { alsoConsole: true }
     )
-    getShaderManager().trigger(name, 'spawn', ctx)
+    mgr.trigger(name, 'spawn', ctx)
   }
 
   private syncTexture(entity: Entity, row: TjsValue): void {

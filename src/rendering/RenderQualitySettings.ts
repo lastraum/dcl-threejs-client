@@ -104,6 +104,12 @@ export const SCENE_LOAD_RADIUS_MAX_M = 200
  * Isolate single-scene CBD with `?noaoi` or slider 0.
  */
 export const SCENE_LOAD_RADIUS_DEFAULT_M = 64
+/**
+ * Phone / iPad auto Scene Distance (not 0 — 0 walls the parcel / kills open-city walk).
+ * Neighbor AOI stays skipped while the slider is left here; raising it this session
+ * restores neighbors at the slider value (no 200m look floor).
+ */
+export const SCENE_LOAD_RADIUS_MOBILE_LITE_M = 16
 
 export const LANDSCAPE_DISTANCE_MIN_M = 0
 export const LANDSCAPE_DISTANCE_MAX_M = 10000

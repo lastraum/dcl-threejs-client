@@ -28,8 +28,19 @@ import {
 import { perfNoteFrameHost, perfNoteRenderSplit } from '../util/perfCounters'
 import { forceNoBloom, forceNoShadow } from '../client/devFlags'
 import { getSessionAssetCache } from './AssetCache'
-import { isAppleTouchDevice, isIphoneDevice } from '../util/appleTouch'
+import { isAppleTouchDevice } from '../util/appleTouch'
+import { isHandheldDevice, isMobilePhone } from '../client/ui/touchPlayLayout'
 import { isDocumentHidden } from '../util/documentVisibility'
+
+/** Handheld Low path (phone + iPad). `?nomobile` skips. */
+function isPhoneLowGfx(): boolean {
+  return isHandheldDevice()
+}
+
+/** Bloom / HDR / MSAA cuts: phones + all Apple touch (iPad included). */
+function skipBloomHdrMsaa(): boolean {
+  return isAppleTouchDevice() || isMobilePhone()
+}
 
 export class SceneHost {
   renderer: THREE.WebGLRenderer
@@ -89,7 +100,9 @@ export class SceneHost {
       stencil: false
     })
     const pr = effectivePixelRatio(renderQuality.getResolutionScale())
-    this.renderer.setPixelRatio(appleTouch ? Math.min(pr, isIphoneDevice() ? 1.25 : 1.5) : pr)
+    this.renderer.setPixelRatio(
+      isPhoneLowGfx() ? Math.min(pr, 1.25) : appleTouch ? Math.min(pr, 1.5) : pr
+    )
     this.renderer.setSize(window.innerWidth, window.innerHeight)
     this.renderer.setClearColor(0x1a1a2e)
     // Bloom composer calls renderer.render() per pass; autoReset made HUD draws:1.
@@ -331,7 +344,8 @@ export class SceneHost {
       shadowQ === 'ultra' || shadowQ === 'high' || shadowQ === 'medium'
         ? THREE.PCFShadowMap
         : THREE.BasicShadowMap
-    this.renderer.setPixelRatio(effectivePixelRatio(resScale))
+    const pr = effectivePixelRatio(resScale)
+    this.renderer.setPixelRatio(isPhoneLowGfx() ? Math.min(pr, 1.25) : pr)
 
     // Avatar vs environment cast toggles (and shadow off/on) re-apply without reloading meshes.
     reapplySceneCastShadows(this.scene)
@@ -348,11 +362,11 @@ export class SceneHost {
     // Effective bloom includes adaptive step-down; `?nobloom` forces off for A/B.
     // iOS: Linear beauty + ACES blit reads as solid white even without HDR.
     // iPad: MSAA offscreen FBO paints skinned avatars black (High prefs still request 4×).
-    const appleTouch = isAppleTouchDevice()
+    const cutPost = skipBloomHdrMsaa()
     const bloomOn =
-      renderQuality.getBloomEnabled() && !forceNoBloom() && !appleTouch
+      renderQuality.getBloomEnabled() && !forceNoBloom() && !cutPost
     const maxSamples = this.renderer.capabilities?.maxSamples ?? 0
-    this.msaaSamples = bloomOn || appleTouch ? 0 : clampMsaaSamples(options.msaaSamples, maxSamples)
+    this.msaaSamples = bloomOn || cutPost ? 0 : clampMsaaSamples(options.msaaSamples, maxSamples)
     this.rebuildMsaaTarget()
     // Re-apply size so backing store matches new pixel ratio / MSAA / bloom buffers.
     this.applyViewportSize()
@@ -367,12 +381,13 @@ export class SceneHost {
     const strength =
       options.tier === 'ultra' ? 0.09 : options.tier === 'high' ? 0.08 : 0.06
     const bloomOn =
-      renderQuality.getBloomEnabled() && !forceNoBloom() && !isAppleTouchDevice()
+      renderQuality.getBloomEnabled() && !forceNoBloom() && !skipBloomHdrMsaa()
     this.bloom.configure(
       {
         enabled: bloomOn,
         // iOS Safari HalfFloat beauty blit often samples as solid white.
-        hdr: options.hdrEnabled && !isAppleTouchDevice(),
+        // Phones (incl. Android) stay on the Low path — bloom/HDR off.
+        hdr: options.hdrEnabled && !skipBloomHdrMsaa(),
         mode: 'fast',
         strength,
         threshold: 0.15,
@@ -474,7 +489,7 @@ export class SceneHost {
       !!this.bloom?.isActive() &&
       renderQuality.getBloomEnabled() &&
       !forceNoBloom() &&
-      !isAppleTouchDevice()
+      !skipBloomHdrMsaa()
     if (!bloomWanted) {
       const fwd = this.renderForwardPass()
       return {

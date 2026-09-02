@@ -426,6 +426,8 @@ export class World {
   private readonly aoiVisual = new AoiVisualLayer()
   /** First-ring neighbor shells started at bind; awaited before play. */
   private neighborShellsPrewarm: Promise<void> | null = null
+  private aoiNeighborsBound = false
+  private unsubRenderQuality: (() => void) | null = null
   /**
    * Multi-scene runtime (secondary live workers + PE ticks). Owned by AppController
    * so PE preferences survive World rebuild on /goto.
@@ -1059,8 +1061,8 @@ export class World {
       )
     }
     // Coords + Scene Distance > 0: open Genesis walk (infinite ground plane) — no parcel walls.
-    // ?noaoi keeps walk open if radius > 0, but skips neighbor systems.
-    const aoiOff = skipAoiNeighbors()
+    // skipAoiNeighbors keeps walk open if radius > 0, but skips neighbor systems.
+    // Handheld auto-skip does not set the slider to 0 (that would wall the parcel).
     const openCityWalk =
       scene.source.kind === 'coords' && renderQuality.getSceneLoadRadiusM() > 0
     this.physics.syncLandscapeGround(terrain.landscapeParcelKeys, scene.baseParcel, scene.parcels, {
@@ -1076,60 +1078,18 @@ export class World {
     this.rememberPrimaryOccupancy(scene)
     this.syncGenesisFrameOrigin(scene)
     // Neighbors stay off until notifyPlayReady (setNeighborActivityEnabled).
-    // ?noaoi=1 — never bind AOI / promote / live secondaries (primary-only CBD debug).
+    // skipAoiNeighbors (?noaoi or handheld AOI-lite at auto radius) — no bind until
+    // they raise Scene Distance (or ?aoi).
     this.multiScene?.setSecondaryActivityEnabled(false)
-    if (openCityWalk && !aoiOff) {
-      this.aoiVisual.bind({
-        scene,
-        cache: this.assets,
-        host: this.host,
-        hostScene: this.host.scene,
-        syncRoadColliders: (descs) => {
-          // Runtime road rebuilds use cache-invalidate only (no simulate(0) — see PhysXWorld).
-          this.physics.syncAoiRoadColliders(descs)
-        },
-        clearRoadColliders: () => this.physics.clearAoiRoadColliders(),
-        syncEmptyLandColliders: (descs) => {
-          this.physics.syncAoiEmptyLandColliders(descs)
-        },
-        clearEmptyLandColliders: () => this.physics.clearAoiEmptyLandColliders(),
-        purgeEmptyLandColliders: (entityIds) => {
-          this.physics.purgeAoiEmptyLandColliders(entityIds)
-        },
-        syncShellColliders: (descs, opts) => {
-          this.physics.syncAoiShellColliders(descs, opts)
-        },
-        clearShellColliders: () => this.physics.clearAoiShellColliders(),
-        purgeShellColliders: (entityIds) => {
-          this.physics.purgeAoiShellColliders(entityIds)
-        },
-        setShellCollidersEnabled: (entityIds, enabled) => {
-          for (const id of entityIds) {
-            this.physics.setStaticColliderFamilySimulationEnabled(id, enabled)
-          }
-        },
-        onSecondaryCandidates: (candidates) => {
-          this.multiScene?.reconcileSecondaries(candidates)
-        },
-        getCamera: () => this.host.camera
-      })
-      this.scenePromote.bind(scene)
-      // Prewarm default ground + roads + scatter for Scene Distance while primary hydrates.
-      const spawnFeet = scene.spawn
-        ? { x: scene.spawn.x, z: scene.spawn.z }
-        : { x: 8, z: 8 }
-      this.neighborShellsPrewarm = this.aoiVisual.prewarmVisuals(spawnFeet.x, spawnFeet.z)
-      console.info(
-        `[aoi] Genesis walk — Scene Distance warm=${renderQuality.getSceneLoadRadiusM()}m · FocusOwner=primary · base=${scene.baseParcel}`
-      )
-    } else if (aoiOff) {
-      this.aoiVisual.unbind()
-      this.scenePromote.unbind()
-      this.multiScene?.disposeSecondariesOnly()
-      console.info(
-        `[aoi] DISABLED (?noaoi) — primary only · base=${scene.baseParcel} parcels=${scene.parcels.length}`
-      )
-    }
+    this.syncGenesisNeighborAoi(scene)
+    this.unsubRenderQuality?.()
+    let skipQualityNotify = true
+    this.unsubRenderQuality = renderQuality.subscribe(() => {
+      if (skipQualityNotify) return
+      const s = this.loadedPrimaryScene
+      if (s) this.syncGenesisNeighborAoi(s)
+    })
+    skipQualityNotify = false
     if (skipSceneAnimators()) {
       console.info(
         '[perf] scene animators OFF (?noanim) — AnimatorBridge bind/update skipped'
@@ -2162,6 +2122,94 @@ export class World {
   }
 
   /**
+   * Bind / unbind neighbor AOI when skipAoiNeighbors() or Scene Distance changes.
+   * Handheld auto-skip undoes when the user raises radius above the 64 m default.
+   */
+  private syncGenesisNeighborAoi(scene: ResolvedScene): void {
+    const aoiOff = skipAoiNeighbors()
+    const openCityWalk =
+      scene.source.kind === 'coords' && renderQuality.getSceneLoadRadiusM() > 0
+    const wantBind = openCityWalk && !aoiOff
+    if (wantBind) {
+      const wasBound = this.aoiNeighborsBound
+      if (!wasBound) this.bindGenesisNeighborAoi(scene)
+      if (!wasBound && this.postPlayNeighborsArmed) this.enableNeighborAoiAfterPlay()
+      return
+    }
+    if (this.aoiNeighborsBound) {
+      this.unbindGenesisNeighborAoi(scene)
+    }
+  }
+
+  private bindGenesisNeighborAoi(scene: ResolvedScene): void {
+    this.aoiVisual.bind({
+      scene,
+      cache: this.assets,
+      host: this.host,
+      hostScene: this.host.scene,
+      syncRoadColliders: (descs) => {
+        // Runtime road rebuilds use cache-invalidate only (no simulate(0) — see PhysXWorld).
+        this.physics.syncAoiRoadColliders(descs)
+      },
+      clearRoadColliders: () => this.physics.clearAoiRoadColliders(),
+      syncEmptyLandColliders: (descs) => {
+        this.physics.syncAoiEmptyLandColliders(descs)
+      },
+      clearEmptyLandColliders: () => this.physics.clearAoiEmptyLandColliders(),
+      purgeEmptyLandColliders: (entityIds) => {
+        this.physics.purgeAoiEmptyLandColliders(entityIds)
+      },
+      syncShellColliders: (descs, opts) => {
+        this.physics.syncAoiShellColliders(descs, opts)
+      },
+      clearShellColliders: () => this.physics.clearAoiShellColliders(),
+      purgeShellColliders: (entityIds) => {
+        this.physics.purgeAoiShellColliders(entityIds)
+      },
+      setShellCollidersEnabled: (entityIds, enabled) => {
+        for (const id of entityIds) {
+          this.physics.setStaticColliderFamilySimulationEnabled(id, enabled)
+        }
+      },
+      onSecondaryCandidates: (candidates) => {
+        this.multiScene?.reconcileSecondaries(candidates)
+      },
+      getCamera: () => this.host.camera
+    })
+    this.scenePromote.bind(scene)
+    const pos = this.getPlayerPosition()
+    const spawnFeet = pos
+      ? { x: pos.x, z: pos.z }
+      : scene.spawn
+        ? { x: scene.spawn.x, z: scene.spawn.z }
+        : { x: 8, z: 8 }
+    this.neighborShellsPrewarm = this.aoiVisual.prewarmVisuals(spawnFeet.x, spawnFeet.z)
+    this.aoiNeighborsBound = true
+    console.info(
+      `[aoi] Genesis walk — Scene Distance warm=${renderQuality.getSceneLoadRadiusM()}m · FocusOwner=primary · base=${scene.baseParcel}`
+    )
+  }
+
+  private unbindGenesisNeighborAoi(scene: ResolvedScene): void {
+    this.aoiVisual.unbind()
+    this.scenePromote.unbind()
+    this.multiScene?.disposeSecondariesOnly()
+    this.aoiNeighborsBound = false
+    this.neighborShellsPrewarm = null
+    console.info(
+      `[aoi] DISABLED — primary only · base=${scene.baseParcel} parcels=${scene.parcels.length}`
+    )
+  }
+
+  private enableNeighborAoiAfterPlay(): void {
+    if (this.loadedPrimaryScene?.source.kind === 'world') return
+    this.multiScene?.setSecondaryActivityEnabled(true)
+    this.aoiVisual.setNeighborActivityEnabled(true)
+    this.scenePromote.setNeighborActivityEnabled(true)
+    this.aoiVisual.kickLiveSecondaryReconcile()
+  }
+
+  /**
    * After the first play presents: keep live guests ticking and let neighbor
    * shells / tertiary finish in the background (already started during load).
    */
@@ -2171,11 +2219,7 @@ export class World {
     if (skipAoiNeighbors()) return
     // Worlds occupy virtual parcels (often 0,0–N,N) that collide with Genesis.
     // Neighbor AOI would load city shells on top of the world and stall FPS.
-    if (this.loadedPrimaryScene?.source.kind === 'world') return
-    this.multiScene?.setSecondaryActivityEnabled(true)
-    this.aoiVisual.setNeighborActivityEnabled(true)
-    this.scenePromote.setNeighborActivityEnabled(true)
-    this.aoiVisual.kickLiveSecondaryReconcile()
+    this.enableNeighborAoiAfterPlay()
   }
 
   private seedPosesFromSpawn(spawn: {
@@ -7302,6 +7346,8 @@ export class World {
     this.overheadChatActive.clear()
     this.unsubEnvironmentDebug?.()
     this.unsubEnvironmentDebug = null
+    this.unsubRenderQuality?.()
+    this.unsubRenderQuality = null
     this.unsubAbilityVfxTopic?.()
     this.unsubAbilityVfxTopic = null
     this.abilityVfx?.dispose()

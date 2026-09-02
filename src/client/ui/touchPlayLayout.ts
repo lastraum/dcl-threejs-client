@@ -78,6 +78,17 @@ export function isMobilePhone(): boolean {
   return false
 }
 
+/**
+ * Phone + iPad graphics / AOI-lite profile (not desktop).
+ * Off: `?nomobile` / `?notouch`. On: real handset/iPad, or `?ipad` / `?mobile` / `?touch`.
+ */
+export function isHandheldDevice(): boolean {
+  if (typeof window === 'undefined') return false
+  if (forceOff()) return false
+  if (readSearch()?.has('ipad')) return true
+  return isMobilePhone() || isIpadDevice()
+}
+
 /** Phone, iPad, or forced touch — 3D FABs, joystick, mobile HUD. */
 export function isTouchPlayLayout(): boolean {
   if (typeof window === 'undefined') return false

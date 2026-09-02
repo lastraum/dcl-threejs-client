@@ -103,6 +103,7 @@ import { MapPageView } from './ui/explore/MapPageView'
 import { ProfilePageView } from './ui/explore/ProfilePageView'
 import type { SocialShellTab } from './ui/explore/SocialShellTopNav'
 import { SocialMobileNotifications } from './ui/explore/SocialMobileNotifications'
+import { isHandheldDevice } from './ui/touchPlayLayout'
 import { CommunityVoiceFloatingBar } from './ui/communities/CommunityVoiceFloatingBar'
 import { getCommunityVoiceSession } from '../social/CommunityVoiceSession'
 import { SceneLandingView } from './ui/landing/SceneLandingView'
@@ -2371,6 +2372,27 @@ export class AppController {
     void this.socialChat.ensureShellInit()
   }
 
+  /**
+   * Every Jump In / load on phone + iPad: no localStorage skip.
+   * `?nomobile` skips the profile (and this toast).
+   */
+  private toastHandheldQualityProfile(): void {
+    if (!isHandheldDevice()) return
+    this.ensureSocialMobileNotifications()
+    const notif = this.socialMobileNotifications
+    if (!notif) return
+    notif.host.classList.add('social-mobile-notif-host--in-world-center')
+    const id = 'handheld-device-quality'
+    notif.dismissSystemToast(id)
+    notif.pushSystemToast({
+      id,
+      appName: 'DECENTRALAND',
+      title: 'Quality and scene distance were lowered for this device',
+      sub: 'Raise Scene Distance in Settings to load nearby scenes.',
+      dismissMs: 8000
+    })
+  }
+
   private ensureSocialMobileNotifications(): void {
     if (this.socialMobileNotifications) return
     this.socialMobileNotifications = new SocialMobileNotifications({
@@ -2790,6 +2812,7 @@ export class AppController {
       this.ensureSocialMobileNotifications()
       if (this.login) this.socialMobileNotifications?.setLogin(this.login)
       this.ensureInWorldChromeOnly()
+      if (!seamless) this.toastHandheldQualityProfile()
     } catch (err) {
       if (err instanceof SceneAccessDeniedError) {
         const ui = formatSceneBanMessage(err)

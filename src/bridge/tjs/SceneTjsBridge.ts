@@ -148,9 +148,7 @@ export class SceneTjsBridge {
 
   /** Live RT for Material.Texture.Video({ videoPlayerEntity: cam }). */
   getTexture(entity: Entity): THREE.Texture | null {
-    const runtime = this.cameras.get(entity)
-    if (!runtime || !this.ecs.VirtualCamera.has(entity)) return null
-    return runtime.rt.texture
+    return this.cameras.get(entity)?.rt.texture ?? null
   }
 
   sync(view: ProjectionView): void {
@@ -280,6 +278,5 @@ export class SceneTjsBridge {
     runtime.rt.dispose()
     this.cameras.delete(entity)
     clientDebugLog.log('scene', `tjs camera off e${entity as number}`, { alsoConsole: true })
-    this.onTextureReady?.(entity)
   }
 }

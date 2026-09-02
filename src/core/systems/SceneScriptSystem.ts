@@ -639,6 +639,7 @@ export class SceneScriptSystem {
       })
     )
     if (this.shaderResolveUrl) getShaderManager().setResolveUrl(this.shaderResolveUrl)
+    this.bridge?.setTjsTextureGetter((entity) => this.tjsBridge?.getTexture(entity) ?? null)
     this.tjsBridge.onTextureReady = (entity) => this.bridge?.notifyVideoTextureReady(entity)
     return this.tjsBridge
   }
@@ -897,7 +898,6 @@ export class SceneScriptSystem {
     )
     this.videoPlayerBridge.onLwwFlush = () => this.flushRendererLwwToWorker()
     this.bridge.setVideoPlayerBridge(this.videoPlayerBridge)
-    this.bridge.setTjsCameraTextureSource((entity) => this.tjsBridge?.getTexture(entity) ?? null)
     this.audioSourceBridge = new AudioSourceBridge(
       this.readComponents,
       scene,

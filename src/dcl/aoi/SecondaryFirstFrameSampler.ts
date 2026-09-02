@@ -303,14 +303,6 @@ export class SecondaryFirstFrameSampler {
           ` waited=${((performance.now() - started) / 1000).toFixed(1)}s base=${neighborBase}`
       )
 
-      system.setAssetHydrationMode(false)
-      system.dispose()
-      system = null
-      host.dispose()
-      host = null
-      hostEl.remove()
-      hostEl = null
-
       if (gen !== this.gen || this.disposed) {
         group.clear()
         return
@@ -329,6 +321,14 @@ export class SecondaryFirstFrameSampler {
         `[aoi] first-frame secondary “${label}” gltfs=${gltfCount} base=${neighborBase} (hierarchy v${FF_HIERARCHY_VERSION})`
       )
       req.onReady(req.entityId, group, gltfCount)
+
+      system.setAssetHydrationMode(false)
+      system.dispose()
+      system = null
+      host.dispose()
+      host = null
+      hostEl.remove()
+      hostEl = null
     } catch (err) {
       this.doneIds.add(this.doneKey(req.entityId))
       const msg = err instanceof Error ? err.message : String(err)

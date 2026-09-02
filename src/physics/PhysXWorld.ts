@@ -282,6 +282,8 @@ export class PhysXWorld {
   private readonly multiShapeChildCount = new Map<number, number>()
   /** Distance-gated statics — cooked but not simulating (toggle without recook). */
   private readonly simulationDisabledEntities = new Set<number>()
+  /** Walk / play: do not first-expand multi-shape (227-actor hitch). Toggle only. */
+  private deferWalkMultiShapeExpand = false
   /** Rate-limit multi-shape expand console spam (thrash diagnosis). */
   private readonly multiShapeExpandLogAt = new Map<number, number>()
   /** Coalesce CCT overlap separate after a burst of tile cooks (not per expand). */
@@ -1339,6 +1341,11 @@ export class PhysXWorld {
     this.invalidateControllerCache()
   }
 
+  /** Walking plaza: skip first multi-shape expand; enable/disable already-cooked only. */
+  setDeferWalkMultiShapeExpand(defer: boolean): void {
+    this.deferWalkMultiShapeExpand = defer
+  }
+
   /** True when a cooked actor participates in simulation (not distance-gated off). */
   isStaticColliderSimulationEnabled(entity: number): boolean {
     const childCount = this.multiShapeChildCount.get(entity) ?? 0
@@ -2113,6 +2120,13 @@ export class PhysXWorld {
           continue
         }
 
+        // Walking: never first-expand or finish-expand 16+ shape families (plaza 227 hitch).
+        // Stay pending — do not fail-stamp, or standing still could never cook.
+        if (this.deferWalkMultiShapeExpand && desc.shapes.length > 16 && !shapeCountOk) {
+          pendingCooks++
+          continue
+        }
+
         try {
           // Expand multi-shape → one single-mesh RigidStatic per shape (CCT-solid path).
           const ok = this.addMultiShapeStatic(desc, {
@@ -2121,6 +2135,10 @@ export class PhysXWorld {
             skipWorkerStream
           })
           if (!ok) {
+            if (this.deferWalkMultiShapeExpand && desc.shapes.length > 16) {
+              pendingCooks++
+              continue
+            }
             this.failedCookFp.add(geomFp)
             continue
           }
@@ -4030,6 +4048,10 @@ export class PhysXWorld {
     if (already > 0) {
       const { expected, live } = this.countCookableMultiShapeLive(desc)
       if (expected > 0 && live === expected) return true
+    }
+    if (this.deferWalkMultiShapeExpand && shapes.length > 16) {
+      // Caller must treat this as pending, not a permanent cook failure.
+      return already > 0
     }
 
     const _meshWorld = new THREE.Matrix4()

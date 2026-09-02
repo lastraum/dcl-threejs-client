@@ -471,8 +471,41 @@ assert(
     !/wantFf\.has\(entityId\) &&/.test(aoi)
 )
 assert(
-  'island LiveKit does not bounce on same-island plaza walk',
-  /islandId === this\.lastIslandId && this\.islandConnected/.test(comms)
+  'look disc is 200m even when Preferences Scene Distance defaults to 64m',
+  /export const AOI_VISUAL_LOOK_RADIUS_M = 200/.test(caps) &&
+    /Math\.max\(pref, AOI_VISUAL_LOOK_RADIUS_M\)/.test(caps) &&
+    /return visualWarmRadiusM\(\)/.test(promote)
+)
+{
+  const physxWalk = readFileSync(join(root, 'src/physics/PhysXWorld.ts'), 'utf8')
+  assert(
+    'walk defers first multi-shape expand (no 227-actor hitch / fail-stamp)',
+    /setDeferWalkMultiShapeExpand/.test(world) &&
+      /deferWalkMultiShapeExpand/.test(physxWalk) &&
+      /deferWalkMultiShapeExpand && desc\.shapes\.length > 16 && !shapeCountOk/.test(
+        physxWalk
+      ) &&
+      /this\.isPlayerLocomoting\(\) &&\s*shapeN > 16/.test(world)
+  )
+}
+{
+  const sampler = readFileSync(join(root, 'src/dcl/aoi/SecondaryFirstFrameSampler.ts'), 'utf8')
+  const readyIdx = sampler.indexOf('req.onReady(req.entityId, group, gltfCount)')
+  const disposeIdx = sampler.indexOf('system.dispose()', readyIdx)
+  assert(
+    'first-frame onReady runs before sampler host dispose',
+    readyIdx > 0 && disposeIdx > readyIdx
+  )
+}
+assert(
+  'sampler teardown does not log [reload] hid',
+  !/\[reload\] hid/.test(readFileSync(join(root, 'src/bridge/ThreeBridge.ts'), 'utf8'))
+)
+assert(
+  'island LiveKit does not bounce on same-primary plaza walk',
+  /islandId === this\.lastIslandId && this\.islandConnected/.test(comms) &&
+    /sceneId === this\.lastIslandSceneId/.test(comms) &&
+    !/lastIslandConnectAt < 8_000/.test(comms)
 )
 const sceneUiBridge = readFileSync(join(root, 'src/ui/scene/SceneUiBridge.ts'), 'utf8')
 const sceneScript = readFileSync(join(root, 'src/core/systems/SceneScriptSystem.ts'), 'utf8')

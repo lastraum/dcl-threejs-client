@@ -3343,6 +3343,7 @@ export class World {
       watchMs = performance.now() - tWatch
     }
 
+    this.physics.setDeferWalkMultiShapeExpand(this.isPlayerLocomoting())
     this.maybeStreamPlazaScenePhys()
 
     // Health log: static count drop or rare summary — NOT O(n) soft diagnostics every 8s
@@ -4698,6 +4699,7 @@ export class World {
       options?.hydration === true ||
       options?.integrity === true
     const playMode = !bootMode
+    this.physics.setDeferWalkMultiShapeExpand(playMode && this.isPlayerLocomoting())
     const budget = bootMode
       ? World.LOADING_COLLIDER_COOK_BUDGET
       : burstActive
@@ -4740,6 +4742,15 @@ export class World {
       if (playMode && this.physics.isColliderSynced(desc)) {
         this.colliderCookQueue.delete(physId)
         this.clearPlayCookTracking(physId)
+        continue
+      }
+      const shapeN = desc.shapes?.length ?? 0
+      if (
+        playMode &&
+        this.isPlayerLocomoting() &&
+        shapeN > 16 &&
+        !this.physics.hasStaticActor(physId)
+      ) {
         continue
       }
       this.sceneScript.flushSceneGraphMatrices()

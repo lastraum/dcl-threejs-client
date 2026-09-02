@@ -40,6 +40,9 @@ export const NEIGHBOR_SCENE_PHYS_COLLIDE_KEEP_M = 72
  */
 export const LIVE_SCENE_PHYS_RADIUS_M = NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M
 
+/** 200m look disc — GLBs + textures stay loaded regardless of the 64m collide arm. */
+export const AOI_VISUAL_LOOK_RADIUS_M = 200
+
 /** Shadow / env-caster / near-PhysX keep. Also the visual cliff while !aoiSceneDistanceVisuals(). */
 export const AOI_SHELL_ENTER_M = 48
 export const AOI_SHELL_KEEP_M = 80
@@ -103,7 +106,9 @@ export function visualWarmRadiusM(): number {
   const pref = renderQuality.getSceneLoadRadiusM()
   if (pref <= 0) return 0
   if (!aoiSceneDistanceVisuals()) return Math.min(pref, AOI_SHELL_KEEP_M)
-  return pref
+  // Product look ring is 200m. Preferences SD may be 64 (default) — do not clip
+  // Winterfest / nested plaza neighbors to the collide arm.
+  return Math.max(pref, AOI_VISUAL_LOOK_RADIUS_M)
 }
 
 export function secondaryLiveCap(tier: PerformanceTier): number {

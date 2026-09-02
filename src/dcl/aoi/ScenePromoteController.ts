@@ -3,7 +3,6 @@ import type { ResolvedScene } from '../content/types'
 import { parseParcelKey } from '../content/parseParcel'
 import { PARCEL_SIZE } from '../content/types'
 import { fetchSceneEntityByPointer } from '../../network/catalyst/CatalystClient'
-import { renderQuality } from '../../rendering/RenderQualitySettings'
 import { distanceToParcelCenterM } from './parcelAoi'
 import {
   fetchActiveEntitiesForPointers,
@@ -13,7 +12,7 @@ import {
   isOpenRoadEntity,
   type ActiveSceneEntity
 } from './fetchActiveEntities'
-import { aoiStandOnPromote } from '../multiScene/caps'
+import { aoiStandOnPromote, visualWarmRadiusM } from '../multiScene/caps'
 
 /**
  * Dense Genesis (CBD) can have 30–50+ SDK7 scenes inside Scene Distance.
@@ -120,11 +119,11 @@ export class ScenePromoteController {
     this.scriptWarmRadiusOpt = opts.scriptWarmRadiusM
   }
 
-  /** Live warm radius — tracks Preferences Scene Distance unless overridden. */
+  /** Live warm radius — 200m look disc (not the 64m collide arm). */
   private getScriptWarmRadiusM(): number {
     if (typeof this.scriptWarmRadiusOpt === 'function') return this.scriptWarmRadiusOpt()
     if (typeof this.scriptWarmRadiusOpt === 'number') return this.scriptWarmRadiusOpt
-    return renderQuality.getSceneLoadRadiusM()
+    return visualWarmRadiusM()
   }
 
   /**

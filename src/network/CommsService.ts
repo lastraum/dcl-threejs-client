@@ -2041,21 +2041,19 @@ export class CommsService {
   }
 
   private lastIslandId = ''
-  private lastIslandConnectAt = 0
+  private lastIslandSceneId = ''
 
   private async onIslandChanged(event: { islandId: string; connStr: string }): Promise<void> {
     const connStr = event.connStr
     const islandId = event.islandId?.trim() ?? ''
-    // Same-primary plaza walk: archipelago can flap island ids. Keep the live
-    // room unless the assignment actually changed and we've been on it a bit.
+    const sceneId = this.sceneId?.trim() ?? ''
+    // Same island assignment — keep the socket.
     if (islandId && islandId === this.lastIslandId && this.islandConnected) {
       return
     }
-    if (
-      this.islandConnected &&
-      this.lastIslandConnectAt > 0 &&
-      performance.now() - this.lastIslandConnectAt < 8_000
-    ) {
+    // Same-primary plaza walk: archipelago reassigns island-* ids as you cross
+    // cells. Disconnect/reconnect is the LiveKit bounce; stay until Focus sceneId changes.
+    if (this.islandConnected && sceneId && sceneId === this.lastIslandSceneId) {
       return
     }
     this.islandLiveKit.disconnect()
@@ -2070,7 +2068,7 @@ export class CommsService {
     this.islandConnected = connected
     if (connected) {
       this.lastIslandId = islandId
-      this.lastIslandConnectAt = performance.now()
+      this.lastIslandSceneId = sceneId
     }
     clientDebugLog.log(
       'network',

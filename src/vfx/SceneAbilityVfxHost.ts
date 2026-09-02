@@ -19,6 +19,11 @@ function hideUnusedVfxLights(pool: { lights?: Array<{ light: THREE.Light; inUse?
   }
 }
 
+/** In-flight ability instances — spam-click localpreview stays smooth. */
+const MAX_CONCURRENT_ABILITIES = 6
+/** Queued while AbilityManager primes — drop oldest on overflow. */
+const MAX_PENDING_CASTS = 2
+
 type AbilityManagerLike = {
   warm: (id: string) => Promise<boolean>
   prewarm?: (id: string, n: number) => void
@@ -134,6 +139,7 @@ export class SceneAbilityVfxHost {
         distance: reach,
         publish
       })
+      while (this.pendingCasts.length > MAX_PENDING_CASTS) this.pendingCasts.shift()
       void this.prime([id]).then(() => this.flushPending())
       return false
     }
@@ -252,8 +258,7 @@ export class SceneAbilityVfxHost {
     clientDebugLog.log(
       'scene',
       `ability-vfx ${id} start=(${origin.x.toFixed(1)},${origin.y.toFixed(1)},${origin.z.toFixed(1)}) ` +
-        `dir=(${dir.x.toFixed(2)},${dir.z.toFixed(2)}) range=${reach}`,
-      { alsoConsole: true }
+        `dir=(${dir.x.toFixed(2)},${dir.z.toFixed(2)}) range=${reach}`
     )
     return true
   }
@@ -326,7 +331,7 @@ export class SceneAbilityVfxHost {
         bursts: this.bursts,
         shake: this.shake,
         flash: this.flash,
-        maxConcurrent: 50
+        maxConcurrent: MAX_CONCURRENT_ABILITIES
       }) as AbilityManagerLike
       return true
     } catch (err) {

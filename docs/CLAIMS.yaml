@@ -9,7 +9,7 @@ updated: 2026-09-02
 source: github
 base_branch: dev-latest
 workflow:
-  - stage: pending_review
+  - stage: merged
     integration_ref: pr:74
     title: "plaza open-world three rings (dev-latest, PR #73)"
     owner: lastraum
@@ -149,11 +149,4 @@ workflow:
     owner: awedjob
     pr: 52
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/52
-    updated: 2026-07-26
-  - stage: merged
-    integration_ref: pr:51
-    title: rest DCL shoes on the ground disc instead of clipping through
-    owner: awedjob
-    pr: 51
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/51
     updated: 2026-07-26

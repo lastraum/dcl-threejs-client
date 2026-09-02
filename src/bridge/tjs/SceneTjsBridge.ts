@@ -31,7 +31,7 @@ const _projPosB = new THREE.Vector3()
 const TJS_CAMERA_RT_SIZE = 512
 const TJS_CAMERA_FOV = 60
 const TJS_CAMERA_FAR = 256
-const TJS_PROJECTION_BLANK = 0x111111
+const TJS_PROJECTION_BLANK = 0xbbbbbb
 const TJS_PROJECTION_PROXIMITY_M = 0.2
 
 type TjsCameraRuntime = {
@@ -317,7 +317,6 @@ export class SceneTjsBridge {
     }
     if (!runtime) {
       const mesh = createProjectionPlane()
-      this.bindDrawSlot(screenNode, mesh)
       runtime = { entity, cameraEntity, pose: screenNode, mesh }
       this.projections.set(entity, runtime)
       clientDebugLog.log(
@@ -325,9 +324,24 @@ export class SceneTjsBridge {
         `tjs projection plane e${entity as number} camera=e${cameraEntity as number}`,
         { alsoConsole: true }
       )
+    } else if (runtime.pose !== screenNode) {
+      runtime.pose = screenNode
     }
 
+    this.ensureProjectionBound(runtime)
     this.applyProjectionMap(runtime, row)
+  }
+
+  private ensureProjectionBound(runtime: TjsProjectionRuntime): void {
+    if (runtime.mesh.parent?.name === 'draw-root') return
+    runtime.pose.updateWorldMatrix(true, false)
+    this.bindDrawSlot(runtime.pose, runtime.mesh)
+    const parentName = runtime.mesh.parent?.name ?? 'null'
+    clientDebugLog.log(
+      'scene',
+      `tjs projection bind e${runtime.entity as number} parent=${parentName}`,
+      { alsoConsole: true }
+    )
   }
 
   private applyProjectionMap(runtime: TjsProjectionRuntime, row: TjsValue): void {
@@ -348,6 +362,9 @@ export class SceneTjsBridge {
       mat.map = null
       mat.color.setHex(TJS_PROJECTION_BLANK)
       mat.needsUpdate = true
+      clientDebugLog.log('scene', `tjs projection map e${runtime.entity as number} off`, {
+        alsoConsole: true
+      })
     }
   }
 

@@ -9,6 +9,20 @@ updated: 2026-09-02
 source: github
 base_branch: dev-latest
 workflow:
+  - stage: pending_review
+    integration_ref: pr:74
+    title: "plaza open-world three rings (dev-latest, PR #73)"
+    owner: lastraum
+    pr: 74
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/74
+    updated: 2026-09-02
+  - stage: merged
+    integration_ref: pr:75
+    title: first-class ECS component for shaders and CCTV
+    owner: lastraum
+    pr: 75
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/75
+    updated: 2026-09-02
   - stage: merged
     integration_ref: pr:73
     title: plaza nested look at 200m, nearest live JS, walk-safe collide
@@ -142,11 +156,4 @@ workflow:
     owner: awedjob
     pr: 51
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/51
-    updated: 2026-07-26
-  - stage: merged
-    integration_ref: pr:50
-    title: drop duplicate bone tracks and honor the Catalyst loop flag
-    owner: awedjob
-    pr: 50
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/50
     updated: 2026-07-26

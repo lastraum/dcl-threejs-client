@@ -31,6 +31,8 @@
  * @see docs/WORKER_SYSTEM_PIE_V2.md
  */
 
+import { patchRendererTransportGuestLww } from './patchRendererTransportGuestLww'
+
 export type EngUpdatePhaseSnapshot = {
   totalMs: number
   preMs: number
@@ -223,6 +225,7 @@ export function wrapCrdtTransportForMeters(transport: {
     __wsp0Transport?: boolean
   }
   if (!t || t.__wsp0Transport) return
+  patchRendererTransportGuestLww(t)
   t.__wsp0Transport = true
   const kind = String(t.type || '?')
   if (typeof t.filter === 'function') {

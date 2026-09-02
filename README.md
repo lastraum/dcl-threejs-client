@@ -279,54 +279,208 @@ Leave the scene `npm start` / Hub Play running. Closing it stops `/about` and th
 
 ## Shaders
 
-There is no `tjs` in the scene. **Creating the Tag is the call.**
+Scenes drive this client's shaders and projection screens (CCTV) with one mirrored custom component named **`tjs`**. `kind` is a string. Kinds in use: `shader`, `texture`, `camera`, `projection`. CCTV uses `camera` + `projection` (`texture` is unused for CCTV).
+
+Other explorers ignore unknown custom components, so a published SDK7 scene that defines `tjs` stays valid.
+
+### Declare `tjs`
+
+Copy this once in the scene (typically `src/index.ts`):
 
 ```ts
-// load only (does not fire)
-Tags.createOrReplace(engine.RootEntity, {
-  tags: [
-    'tjs.shader(ice, assets/shaders/IceAbility.js)',
-    'tjs.shader(cinder, assets/shaders/MeteorAbility.js)'
-  ]
-})
+import {
+  engine,
+  Transform,
+  VirtualCamera,
+  Schemas
+} from '@dcl/sdk/ecs'
+import { Quaternion, Vector3 } from '@dcl/sdk/math'
 
-// fire — any time, any entity (this tab only)
-pointerEventsSystem.onPointerDown(
-  { entity: button, opts: { button: InputAction.IA_POINTER, hoverText: 'Cast Ice' } },
-  function () {
-    const ox = 42, oy = 0, oz = 46
-    const dx = 0.83, dy = 0, dz = -0.55
-    const distance = 14
-    Tags.createOrReplace(engine.addEntity(), {
-      tags: [`tjs.ice.spawn(${ox}, ${oy}, ${oz}, ${dx}, ${dy}, ${dz}, ${distance})`]
-    })
+const tjs = engine.defineComponent(
+  'tjs',
+  {
+    kind: Schemas.String,
+    name: Schemas.String,
+    sync: Schemas.Boolean,
+    enabled: Schemas.Boolean,
+    path: Schemas.String,
+    ox: Schemas.Float,
+    oy: Schemas.Float,
+    oz: Schemas.Float,
+    dx: Schemas.Float,
+    dy: Schemas.Float,
+    dz: Schemas.Float,
+    dist: Schemas.Float,
+    camera: Schemas.Int
+  },
+  {
+    kind: '',
+    name: '',
+    sync: false,
+    enabled: false,
+    path: '',
+    ox: 0,
+    oy: 0,
+    oz: 0,
+    dx: 0,
+    dy: 0,
+    dz: 0,
+    dist: 0,
+    camera: 0
   }
 )
+```
 
-// same cast, other people in this client also see it
-Tags.createOrReplace(engine.addEntity(), {
-  tags: [
-    `tjs.ice.spawn(${ox}, ${oy}, ${oz}, ${dx}, ${dy}, ${dz}, ${distance})`,
-    'tjs.sync'
-  ]
+A `kind: 'shader'` row **loads** when the component appears (even with `enabled: false`). Ice / meteor / hail use `name`: `ice`, `cinder` (or `meteor`), `hailwraith` (or `hail`). Leave `path` empty to use the bundled file, or set a scene file such as `assets/shaders/IceAbility.js`.
+
+### Shader example
+
+Preload, then fire. Ice / meteor / hail are one-shots: create a new `enabled: true` row each cast. Looping shaders stay on one entity — toggle `enabled`.
+
+```ts
+tjs.create(engine.addEntity(), {
+  kind: 'shader',
+  name: 'ice',
+  path: 'assets/shaders/IceAbility.js',
+  enabled: false,
+  sync: false,
+  ox: 0,
+  oy: 0,
+  oz: 0,
+  dx: 0,
+  dy: 0,
+  dz: 0,
+  dist: 0,
+  camera: 0
+})
+
+function castIce(
+  origin: ReturnType<typeof Vector3.create>,
+  target: { x: number; y: number; z: number }
+) {
+  const dx = target.x - origin.x
+  const dz = target.z - origin.z
+  const distance = Math.sqrt(dx * dx + dz * dz) || 1
+  tjs.create(engine.addEntity(), {
+    kind: 'shader',
+    name: 'ice',
+    path: '',
+    enabled: true,
+    sync: false,
+    ox: origin.x,
+    oy: origin.y,
+    oz: origin.z,
+    dx: dx / distance,
+    dy: 0,
+    dz: dz / distance,
+    dist: distance,
+    camera: 0
+  })
+}
+
+castIce(Vector3.create(42, 0, 46), Vector3.create(54, 0, 38))
+```
+
+Set `sync: true` on a cast if other ThreejsClient sessions should see that one shot.
+
+Looping shader on one entity:
+
+```ts
+const loop = engine.addEntity()
+tjs.create(loop, {
+  kind: 'shader',
+  name: 'ice',
+  path: 'assets/shaders/IceAbility.js',
+  enabled: false,
+  sync: false,
+  ox: 0,
+  oy: 0,
+  oz: 0,
+  dx: 0,
+  dy: 0,
+  dz: 0,
+  dist: 0,
+  camera: 0
+})
+
+tjs.getMutable(loop).enabled = true
+tjs.getMutable(loop).enabled = false
+```
+
+### Projection screens (CCTV)
+
+**Lens dummy** — `Transform` + SDK `VirtualCamera` + `tjs` `kind: 'camera'`. VirtualCamera is the viewpoint (`lookAtEntity`, or Transform **+Z** if `lookAtEntity` is omitted). Camera `enabled` typically starts `true`.
+
+```ts
+const lookAt = engine.addEntity()
+Transform.create(lookAt, { position: Vector3.create(54, 0, 38) })
+
+const cam = engine.addEntity()
+Transform.create(cam, {
+  position: Vector3.create(54, 5, 52),
+  rotation: Quaternion.fromEulerDegrees(-20, 0, 0)
+})
+VirtualCamera.create(cam, { lookAtEntity: lookAt })
+// Or omit lookAtEntity to aim the Transform +Z axis.
+tjs.create(cam, {
+  kind: 'camera',
+  name: '',
+  path: '',
+  enabled: true,
+  sync: false,
+  ox: 0,
+  oy: 0,
+  oz: 0,
+  dx: 0,
+  dy: 0,
+  dz: 0,
+  dist: 0,
+  camera: 0
 })
 ```
 
-That **is** `ability.spawn(origin, direction, distance)`. `${}` is just JS inside the string.
+**Screen** — **only** `Transform` + `tjs` `kind: 'projection'` with `camera` = the lens entity id. Do **not** put `MeshRenderer`, SDK `Material`, or `MeshCollider` on the screen. This client draws the plane and sizes it from the Transform.
 
-Add the spawn Tag **anywhere you want to trigger** the shader — a pointer callback, a timer, another system, not only a click.
+```ts
+const screen = engine.addEntity()
+Transform.create(screen, {
+  position: Vector3.create(46, 2.2, 42),
+  rotation: Quaternion.fromEulerDegrees(0, 35, 0),
+  scale: Vector3.create(4.2, 2.6, 1)
+})
+tjs.create(screen, {
+  kind: 'projection',
+  name: '',
+  path: '',
+  enabled: false,
+  sync: false,
+  ox: 0,
+  oy: 0,
+  oz: 0,
+  dx: 0,
+  dy: 0,
+  dz: 0,
+  dist: 0,
+  camera: cam as number
+})
+```
 
-**Default is local-only.** Add sibling Tag `tjs.sync` to put that one cast on the comms topic so other ThreejsClient tabs see it. Do not `syncEntity` the spawn entity — a cast is a one-shot, not lasting ECS state.
+Toggle the picture on the **projection** (leave the camera `enabled`):
 
-This client only — Unity / Bevy do not treat Tags as a shader bus.
+```ts
+const row = tjs.getMutable(screen)
+row.enabled = !row.enabled
+```
 
-| You write | Role |
+| Field | Role |
 | --- | --- |
-| `tjs.shader(ice, assets/shaders/IceAbility.js)` | Load that file as `ice` |
-| `` tjs.ice.spawn(${ox}, ${oy}, ${oz}, ${dx}, ${dy}, ${dz}, ${distance}) `` | `spawn(origin, direction, distance)` — this tab |
-| `tjs.sync` | Sibling Tag — other ThreejsClient tabs see that cast |
-
-Copies: VFX scene `assets/shaders/`.
+| `kind: 'shader'` + `name` | Loads when the row appears. Ice / meteor / hail fire when `enabled: true`. |
+| `path` | Shader file. Empty uses the bundled file for that `name`. |
+| `ox, oy, oz` / `dx, dy, dz` / `dist` | Cast origin, direction, distance. |
+| `sync: true` | That one-shot is shared with other ThreejsClient sessions. |
+| `kind: 'camera'` | Same entity as `Transform` + `VirtualCamera`. `enabled` starts/stops capture. |
+| `kind: 'projection'` + `camera` | Host-drawn plane. `camera` is the lens entity id. `enabled` shows/hides the live picture. |
+| `kind: 'texture'` | Reserved. Unused for CCTV. |
 
 ## Credits
 

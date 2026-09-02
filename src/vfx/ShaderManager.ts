@@ -1,23 +1,11 @@
 /**
- * Name a file, then call that name:
- *   // tjs.shader(ice, assets/shaders/IceAbility.js)
- *   tjs.ice()  — platform fills origin/direction/distance from the entity, then the file runs
+ * Name a file, then the scene `tjs` component references that name.
  */
 import * as THREE from 'three'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { dclToThreePos } from '../bridge/dclTransform'
 import { getSceneAbilityVfxHost } from './SceneAbilityVfxHost'
-import {
-  isShaderSyncParam,
-  parseNumber,
-  parseShaderDeclsFromSource,
-  parseShaderPointerBindings,
-  parseShaderTriggersFromSource,
-  parseVec3,
-  shaderToVfxId,
-  type ShaderPointerBinding,
-  type ShaderTrigger
-} from './shaderTags'
+import { isShaderSyncParam, parseNumber, parseVec3, shaderToVfxId } from './tjsVfxIds'
 
 export type ShaderResolveUrl = (src: string) => string | null
 
@@ -137,8 +125,6 @@ export class ShaderManager {
   private readonly loaded = new Map<string, Promise<ShaderModule | null>>()
   private readonly modules = new Map<string, ShaderModule>()
   private readonly blobs: string[] = []
-  private sourceTriggers: ShaderTrigger[] = []
-  private pointerBindings: ShaderPointerBinding[] = []
 
   setResolveUrl(fn: ShaderResolveUrl | null): void {
     this.resolveUrl = fn
@@ -148,24 +134,7 @@ export class ShaderManager {
     this.worldScene = scene
   }
 
-  /** Pickup `// tjs.shader(alias, path)` and `// tjs.alias.fn(…)` from the scene bundle. */
-  ingestSource(source: string): void {
-    for (const decl of parseShaderDeclsFromSource(source)) this.declare(decl.name, decl.src)
-    this.sourceTriggers = parseShaderTriggersFromSource(source)
-    this.pointerBindings = parseShaderPointerBindings(source)
-  }
-
-  getSourceTriggers(): readonly ShaderTrigger[] {
-    return this.sourceTriggers
-  }
-
-  getPointerBindings(hover: string): readonly ShaderTrigger[] {
-    const key = hover.trim().toLowerCase()
-    if (!key) return []
-    return this.pointerBindings.find((row) => row.hover.trim().toLowerCase() === key)?.triggers ?? []
-  }
-
-  /** Root (or any) entity declared `tjs:shader:name:path`. */
+  /** Scene `tjs` component declares shaders — no bundle comment scan. */
   declare(name: string, src: string): void {
     const key = name.trim().toLowerCase()
     const path = src.trim()
@@ -262,8 +231,6 @@ export class ShaderManager {
     this.blobs.length = 0
     this.catalog.clear()
     this.loaded.clear()
-    this.sourceTriggers = []
-    this.pointerBindings = []
   }
 
   /** `tjs.ice(...)` finds `ice` on any loaded file; `tjs.cinder.cast(...)` hits that alias. */

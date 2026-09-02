@@ -34,7 +34,6 @@ import { PeMainThreadMirror } from '../dcl/multiScene/PeMainThreadMirror'
 import {
   aoiStandOnPromote,
   sceneLoopFairMute,
-  ROAD_PHYS_RADIUS_M,
   NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M,
   NEIGHBOR_SCENE_PHYS_COLLIDE_KEEP_M
 } from '../dcl/multiScene/caps'
@@ -1167,6 +1166,9 @@ export class World {
       this.sceneScript.setCollidersCookCallback((entity) => this.onColliderCookRequest(entity))
       this.sceneScript.setCollidersPoseCallback((entities) => this.applyColliderPoseSlides(entities))
       this.sceneScript.setCollidersRemoveCallback((entity) => this.onColliderEntityRemoved(entity))
+      this.sceneScript.setWarmAbilityVfxCallback(async () => {
+        await this.warmAbilityVfxFromProjection()
+      })
       this.sceneScript.setRealmInfoProvider(() => this.comms.getRealmInfo())
       // Pixelwars / Flagtag: when authoritative-server joins, re-pulse RealmInfo so
       // SDK isRoomReady + joinRoster cannot stay stuck (no team → no paint Materials).
@@ -1636,8 +1638,8 @@ export class World {
   }
 
   /**
-   * AbilityManager + shader files load only after Jump In, and only when the
-   * running bundle names `tjs.shader` / `tjs.vfx`. Landing never touches this.
+   * AbilityManager + shader files load only after Jump In, and only when mirrored
+   * `tjs` shader rows exist on projection. Landing never touches this.
    */
   private async ensureAbilityVfxHost(): Promise<SceneAbilityVfxHost> {
     if (this.abilityVfx) return this.abilityVfx
@@ -1713,28 +1715,35 @@ export class World {
     })
   }
 
-  private async primeSceneAbilityVfx(_onProgress?: (msg: string) => void): Promise<void> {
-    const source = this.sceneScript.getLastScriptSource()
-    const ids = source ? discoverAbilityVfxIds(source) : []
-    if (ids.length === 0) {
-      clientDebugLog.log('scene', 'ability-vfx skip — no tjs.shader / tjs.vfx in scene bundle', {
+  private async warmAbilityVfxFromProjection(opts?: {
+    onProgress?: (msg: string) => void
+    logCatalog?: boolean
+  }): Promise<boolean> {
+    const view = this.sceneScript.getProjectionView()
+    const Tjs = this.sceneScript.getMirrorComponents()?.Tjs
+    const ids = view && Tjs ? discoverAbilityVfxIds(view, Tjs) : []
+    if (ids.length === 0) return false
+    await this.sceneScript.attachTjsBridge()
+    const host = await this.ensureAbilityVfxHost()
+    opts?.onProgress?.('Warming ability VFX…')
+    await host.prime(ids)
+    if (opts?.logCatalog) {
+      clientDebugLog.log(
+        'scene',
+        `ability-vfx catalog [${ids.join(', ')}] — primed on load`,
+        { alsoConsole: true }
+      )
+    }
+    return true
+  }
+
+  private async primeSceneAbilityVfx(onProgress?: (msg: string) => void): Promise<void> {
+    const warmed = await this.warmAbilityVfxFromProjection({ onProgress, logCatalog: true })
+    if (!warmed) {
+      clientDebugLog.log('scene', 'ability-vfx skip — no tjs shader rows on projection', {
         alsoConsole: true
       })
-      return
     }
-    await this.sceneScript.attachShaderVfx(source)
-    const { getShaderManager } = await import('../vfx/ShaderManager')
-    getShaderManager().ingestSource(source ?? '')
-    const host = await this.ensureAbilityVfxHost()
-    // Lights stay hidden (intensity 0 + visible=false) so 33k grass is not lit.
-    // Meshes + materials build here so the first click is not a module parse.
-    _onProgress?.('Warming ability VFX…')
-    await host.prime(ids)
-    clientDebugLog.log(
-      'scene',
-      `ability-vfx catalog [${ids.join(', ')}] — primed on load`,
-      { alsoConsole: true }
-    )
   }
 
   /** Creator Hub / sdk-commands preview websocket — same recycle as `/reload`. */
@@ -5809,7 +5818,6 @@ export class World {
       return this.focusGuestId === PRIMARY_GUEST_ID ? PRIMARY_GUEST_ID : null
     }
     const parcel = absoluteParcelAtSceneLocal(dclX, dclZ, scene.baseParcel)
-    const key = `${parcel.x},${parcel.y}`
     const onPrimary = this.primaryCoversParcel(parcel.x, parcel.y)
     const live = this.multiScene?.liveGuestIdForParcel(parcel.x, parcel.y) ?? null
     const feetGuest = onPrimary ? PRIMARY_GUEST_ID : live
@@ -5879,7 +5887,6 @@ export class World {
     if (currentGuestId === PRIMARY_GUEST_ID) return PRIMARY_GUEST_ID
     if (this.multiScene?.liveGuestGraphReady(currentGuestId)) return currentGuestId
     const parcel = absoluteParcelAtSceneLocal(dclX, dclZ, scene.baseParcel)
-    const key = `${parcel.x},${parcel.y}`
     const onPrimary = this.primaryCoversParcel(parcel.x, parcel.y)
     if (onPrimary) return PRIMARY_GUEST_ID
     return this.focusGuestId ?? PRIMARY_GUEST_ID

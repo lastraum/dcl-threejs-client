@@ -15,6 +15,7 @@ export const DCL_ECS_COMPONENTS: EcsComponentEntry[] = [
   { name: 'Transform', coreId: 1, phase: 1, status: 'render', category: 'core' },
   { name: 'Name', phase: 1, status: 'render', category: 'core' },
   { name: 'Tags', phase: 1, status: 'render', category: 'core' },
+  { name: 'Tjs', phase: 1, status: 'client-only', category: 'render' },
   { name: 'VisibilityComponent', coreId: 1081, phase: 1, status: 'render', category: 'core' },
   { name: 'GltfContainer', coreId: 1041, phase: 1, status: 'render', category: 'render' },
   {

@@ -30,6 +30,7 @@ import { ForestPoolOccupants } from './worldsForestOccupants'
 import { NameTagRenderer } from '../client/ui/NameTagRenderer'
 import { ForestRuneSeal } from './forestRuneSeal'
 import { CameraShake } from '@vfx/effects/CameraShake.js'
+import { enableDrawLayers } from '../rendering/drawLayers'
 
 type PoolBody = {
   entry: WorldMapEntry
@@ -194,6 +195,7 @@ export class WorldsForestView {
     this.scene.background = new THREE.Color(0x321c44)
 
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.12, 1400)
+    enableDrawLayers(this.camera)
     this.nightSky = new ForestNightSky(this.scene, this.camera)
 
     this.groundGeo = new THREE.PlaneGeometry(2400, 2400)

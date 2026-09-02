@@ -23,6 +23,11 @@ import type { AvatarSkeletonTarget } from '../avatar/AvatarAttachTargets'
 import type { MirrorComponents } from './mirrorComponents'
 import type { ProjectionView } from './ProjectionView'
 
+type AvatarDrawBind = {
+  bind: (pose: THREE.Object3D, visual: THREE.Object3D) => void
+  unbind: (pose: THREE.Object3D) => void
+}
+
 type AvatarEntry = {
   avatar: SceneAvatar
   nameTag: NameTag | null
@@ -86,13 +91,14 @@ export class AvatarShapeBridge {
   /** During hydration keep 1; after play-ready allow a small burst so plaza NPCs appear. */
   private maxComposeInFlight = 1
   private static readonly MAX_COMPOSE_HYDRATION = 1
-  private static readonly MAX_COMPOSE_PLAY = 2
+  private static readonly MAX_COMPOSE_PLAY = 6
   private readonly composeFailedUntil = new Map<Entity, number>()
   private static readonly COMPOSE_RETRY_MS = 8_000
 
   constructor(
     private readonly ecs: MirrorComponents,
-    private readonly getNode: (entity: Entity) => THREE.Group | undefined
+    private readonly getNode: (entity: Entity) => THREE.Group | undefined,
+    private readonly draw?: AvatarDrawBind
   ) {}
 
   setAssetCache(cache: AssetCache | null, peerUrl?: string): void {
@@ -191,6 +197,7 @@ export class AvatarShapeBridge {
 
     for (const [entity, entry] of this.avatars) {
       if (!active.has(entity)) {
+        this.draw?.unbind(entry.avatar.getPivot())
         entry.nameTag?.dispose()
         entry.avatar.dispose()
         this.avatars.delete(entity)
@@ -224,10 +231,13 @@ export class AvatarShapeBridge {
     entry.signature = signature
     entry.pendingSignatureReload = null
     this.composeInFlight++
+    this.draw?.unbind(entry.avatar.getPivot())
     const profile = profileFromAvatarShape(shape)
     void entry.avatar
       .load(profile, entry.identity.displayName)
       .then(async () => {
+        const model = entry.avatar.getModel()
+        if (model) this.draw?.bind(entry.avatar.getPivot(), model)
         syncNameTag(entry, await resolveShapeIdentity(shape))
         this.composeFailedUntil.delete(entity)
       })

@@ -16,6 +16,7 @@ import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { buildRaycastResult, hitFromCollider, putRaycastResult } from './raycastEmit'
 import { buildSceneRay, raycastRequestKey, type SceneRay } from './raycastMath'
 import { isRaycastVerbose } from './raycastConfig'
+import { enablePickLayers } from '../rendering/drawLayers'
 import type { EntityWorldTransformDeps } from '../transform/entityWorldTransform'
 
 type RaycastDeps = {
@@ -187,7 +188,7 @@ export class RaycastSystem {
     }
 
     try {
-      this.raycaster.layers.set(0)
+      enablePickLayers(this.raycaster)
       this.raycaster.set(ray.origin, ray.direction)
       const hits = this.raycaster.intersectObjects(targets, false)
       const out: ColliderHit[] = []
@@ -231,7 +232,7 @@ export class RaycastSystem {
     const meshes = deps.getInstanceMeshesFor(allowed)
     if (!meshes.length) return []
 
-    this.raycaster.layers.set(0)
+    enablePickLayers(this.raycaster)
     this.raycaster.set(ray.origin, ray.direction)
     const hits = this.raycaster.intersectObjects(meshes, false)
     const out: ColliderHit[] = []

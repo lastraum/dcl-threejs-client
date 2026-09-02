@@ -793,8 +793,13 @@ export class SceneScriptSystem {
     this.entityStoreUnsub = this.entityStore.subscribe((change) => this.onEntityStoreChange(change))
     this.bridge = new ThreeBridge(scene, cache, this.entityStore, this.readComponents, host.drawWorld)
     if (opts?.focusPolicy) this.focusPolicy = opts.focusPolicy
-    this.avatarShapes = new AvatarShapeBridge(this.readComponents, (entity) =>
-      this.bridge?.getEntityNodes().get(entity)
+    this.avatarShapes = new AvatarShapeBridge(
+      this.readComponents,
+      (entity) => this.bridge?.getEntityNodes().get(entity),
+      {
+        bind: (pose, visual) => this.bridge?.bindEntityDrawSlot(pose, visual, 'dclDrawAvatar'),
+        unbind: (pose) => this.bridge?.unbindEntityDrawSlot(pose, 'dclDrawAvatar')
+      }
     )
     // AvatarEmoteCommand is a grow-only value-set the projection doesn't model yet — keep it
     // on the engine defs + engine-backed view (migrated in a later sub-step).

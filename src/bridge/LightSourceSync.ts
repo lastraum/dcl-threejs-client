@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import type { PBLightSource } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/light_source.gen'
 import { color3ToThree, lightIntensityFromCandelas, lightRangeMeters } from './pbColor'
 import { configureSpotLightShadow } from '../rendering/spotLightShadow'
+import { enableDrawLayers } from '../rendering/drawLayers'
 
 /** Stored on `light.userData.lightSource` for LightManager culling. */
 export type LightSourceMeta = {
@@ -200,6 +201,7 @@ export function syncLightSource(
     light.decay = 2
     registerWithLightManager(light, light)
   }
+  enableDrawLayers(light)
   // LightManager enables castShadow on up to 3 nearest spot lights when shadow: true.
   light.castShadow = false
 

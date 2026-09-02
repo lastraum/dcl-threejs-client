@@ -4,6 +4,7 @@ import { createGltfLoader, sanitizeWearableRoot } from './loadWearable'
 import { normalizeWearableWorldScale } from './wearableSanitize'
 import { remapClipToAvatar } from './emoteBoneMap'
 import { measureAvatarStance } from './feetAlign'
+import { DRAW_LAYER_AVATAR, setLayer } from '../rendering/drawLayers'
 
 /**
  * Shared GPU resources for remote loading stand-ins.
@@ -156,6 +157,7 @@ function fillPlaceholderBody(root: THREE.Group, template: PlaceholderTemplate): 
   body.scale.copy(template.root.scale)
 
   root.add(body)
+  setLayer(root, DRAW_LAYER_AVATAR)
 
   if (template.idleClip.tracks.length > 0) {
     const mixer = new THREE.AnimationMixer(body)
@@ -199,6 +201,7 @@ export function createRemoteAvatarPlaceholder(_showPill = true): THREE.Group {
     })
   }
 
+  setLayer(root, DRAW_LAYER_AVATAR)
   return root
 }
 

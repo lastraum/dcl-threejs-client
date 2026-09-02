@@ -23,6 +23,7 @@ import {
 import { PointerHighlightFeedback, pointerShowHighlight } from './PointerHighlightFeedback'
 import { PointerHoverFeedback } from './PointerHoverFeedback'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
+import { enablePickLayers } from '../rendering/drawLayers'
 import { findPeerPillAtPointer, tryOpenPeerContextMenu } from '../client/ui/overlayHitTest'
 import type { InjectPointerClickBody } from '../player/injectPointerClick'
 import {
@@ -1366,7 +1367,7 @@ export class PointerEventsSystem {
         }
       }
       try {
-        this.raycaster.layers.set(0)
+        enablePickLayers(this.raycaster)
         this.raycaster.set(ray.origin, ray.direction)
         const hits = this.raycaster.intersectObjects(this.pointerTargets, true)
 
@@ -1505,7 +1506,7 @@ export class PointerEventsSystem {
       }
     }
     try {
-      this.raycaster.layers.set(0)
+      enablePickLayers(this.raycaster)
       this.raycaster.set(ray.origin, ray.direction)
       const hits = this.raycaster.intersectObjects(gltfTargets, true)
       for (const hit of hits) {

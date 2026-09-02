@@ -1,6 +1,6 @@
 import { componentNumberFromName } from '@dcl/ecs/dist/components/component-number'
 import { Schemas } from '@dcl/ecs'
-import type { IEngine, LastWriteWinElementSetComponentDefinition } from '@dcl/ecs'
+import type { Color4Type, Entity, IEngine, LastWriteWinElementSetComponentDefinition } from '@dcl/ecs'
 
 /** Locked component name — hashed id > 2048 (same class as Tags). */
 export const TJS_COMPONENT_NAME = 'tjs'
@@ -21,7 +21,14 @@ export type TjsValue = {
   dy: number
   dz: number
   dist: number
-  camera: number
+  /** Lens entity (kind=camera + VirtualCamera). Unused except kind=projection. 0 = none. */
+  camera: Entity
+  /** Comma-separated draw bits: "0,1,2" (world, avatar, sfx). Empty = all three. */
+  layers: string
+  /** RT / unmapped-screen clear. Default opaque black so empty feeds aren't sky-blue. */
+  background: Color4Type
+  /** Vertical FOV degrees (kind=camera). 0 / missing / NaN → 60. Clamped 1–170. */
+  fov: number
 }
 
 export const tjsSpec = {
@@ -37,7 +44,10 @@ export const tjsSpec = {
   dy: Schemas.Float,
   dz: Schemas.Float,
   dist: Schemas.Float,
-  camera: Schemas.Int
+  camera: Schemas.Entity,
+  layers: Schemas.String,
+  background: Schemas.Color4,
+  fov: Schemas.Float
 } as const
 
 export type TjsComponent = LastWriteWinElementSetComponentDefinition<TjsValue>
@@ -56,7 +66,10 @@ export function emptyTjsValue(): TjsValue {
     dy: 0,
     dz: 0,
     dist: 0,
-    camera: 0
+    camera: 0 as Entity,
+    layers: '',
+    background: { r: 0, g: 0, b: 0, a: 1 },
+    fov: 60
   }
 }
 
@@ -108,6 +121,12 @@ export function tjsValueFingerprint(row: TjsValue): string {
     row.dy,
     row.dz,
     row.dist,
-    row.camera
+    row.camera,
+    row.layers,
+    row.background?.r,
+    row.background?.g,
+    row.background?.b,
+    row.background?.a,
+    row.fov
   ].join('|')
 }

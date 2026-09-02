@@ -11,6 +11,7 @@ import {
   NIGHT_GROUND_HEMI_BOOST
 } from '../environment/skyboxTime'
 import { celestialDirection, moonLightIntensity } from '../environment/sunCycleSampler'
+import { enableDrawLayers } from '../rendering/drawLayers'
 
 /** Midnight — moon up, no sun disc. Genesis fog/sky are deepest purple here. */
 export const FOREST_SKY_SECONDS = 0
@@ -39,6 +40,10 @@ export class ForestNightSky {
     this.moon.target = this.moonTarget
     this.sapFill.position.set(-18, 10, -14)
     this.sky.mesh.renderOrder = -1000
+    enableDrawLayers(this.hemi)
+    enableDrawLayers(this.equator)
+    enableDrawLayers(this.moon)
+    enableDrawLayers(this.sapFill)
     scene.add(this.sky.mesh, this.hemi, this.equator, this.moon, this.moonTarget, this.sapFill)
     this.apply(0)
     void this.sky.loadTextures().then(() => {

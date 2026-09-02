@@ -26,16 +26,16 @@
 
 ### What's new
 
-- **`tjs` component** — `kind: shader | texture`, `name`, `enabled`, `sync`, spawn vecs, `camera` for CCTV
+- **`tjs` component** — `kind: shader | camera | projection | texture`, `name`, `enabled`, `sync`, spawn vecs, `camera` for projection
 - **No Tags string bus** — removed `tjs.ice.spawn` Tags, bundle comment scans, worker `globalThis.tjs` proxy
 - **AbilityManager gate** — boots only when projection has `tjs` shader rows (not `bin/index.js` text)
-- **CCTV** — `kind: texture`, `name: cctv` renders a VirtualCamera entity to the screen plane via RenderTarget; `enabled` toggles on/off
+- **CCTV** — lens entity: Transform + SDK `VirtualCamera` (`lookAtEntity` optional) + `kind: camera` (host RT); screen: `kind: projection` (`camera` = lens entity id); `enabled` toggles each side
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
 | **tjs mirror + bridge** | 🟢 | `src/dcl/ecs/tjsComponent.ts` + `SceneTjsBridge` |
 | **Shader one-shot** | 🟢 | `enabled: true` on LWW put fires once per distinct payload |
-| **CCTV texture** | 🟢 | Real RT → material map hook |
+| **CCTV camera + projection** | 🟢 | VirtualCamera viewpoint → RT; screen `map` bind |
 
 ---
 

@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
-import { dclToThreePos } from '../dclTransform'
+import type { PBVirtualCamera } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/virtual_camera.gen'
+import { dclToThreePos, entityDisplayQuatToThreeCameraQuat } from '../dclTransform'
 import { clientDebugLog } from '../../client/debug/ClientDebugLog'
 import type { MirrorComponents } from '../mirrorComponents'
 import type { ProjectionView } from '../ProjectionView'
@@ -10,18 +11,34 @@ import {
   type TjsValue
 } from '../../dcl/ecs/tjsComponent'
 import { buildShaderCtx, getShaderManager } from '../../vfx/ShaderManager'
+import { resolveEntityWorldPose, type EntityWorldTransformDeps } from '../../transform/entityWorldTransform'
 
 const _origin = new THREE.Vector3()
 const _dir = new THREE.Vector3()
 const _lookAt = new THREE.Vector3()
-const _quat = new THREE.Quaternion()
+const _lookDir = new THREE.Vector3()
+const _lookRight = new THREE.Vector3()
+const _lookUp = new THREE.Vector3()
+const _camZ = new THREE.Vector3()
+const _worldUp = new THREE.Vector3(0, 1, 0)
+const _lookMat = new THREE.Matrix4()
+const _targetPos = new THREE.Vector3()
+const _targetQuat = new THREE.Quaternion()
+const _entityDisplayQuat = new THREE.Quaternion()
 
-type CctvRuntime = {
+const TJS_CAMERA_RT_SIZE = 512
+const TJS_CAMERA_FOV = 60
+const TJS_CAMERA_FAR = 256
+
+type TjsCameraRuntime = {
   entity: Entity
-  cameraEntity: Entity
   rt: THREE.WebGLRenderTarget
   cam: THREE.PerspectiveCamera
-  lookAtEntity: Entity | null
+}
+
+type TjsProjectionRuntime = {
+  entity: Entity
+  cameraEntity: Entity
   boundMeshes: THREE.Mesh[]
   savedMaps: WeakMap<THREE.Material, THREE.Texture | null>
 }
@@ -65,20 +82,110 @@ function restoreMeshMaps(meshes: THREE.Mesh[], savedMaps: WeakMap<THREE.Material
   }
 }
 
+function withSubtreeHidden(root: THREE.Object3D | null | undefined, fn: () => void): void {
+  if (!root) {
+    fn()
+    return
+  }
+  const hidden: THREE.Object3D[] = []
+  root.traverse((obj) => {
+    if (obj.visible) {
+      obj.visible = false
+      hidden.push(obj)
+    }
+  })
+  try {
+    fn()
+  } finally {
+    for (const obj of hidden) obj.visible = true
+  }
+}
+
+/** Same basis as VirtualCameraBridge — local -Z aims at target, world +Y up. */
+function cameraLookAtQuat(
+  eye: THREE.Vector3,
+  target: THREE.Vector3,
+  out: THREE.Quaternion
+): boolean {
+  _camZ.subVectors(eye, target)
+  if (_camZ.lengthSq() < 1e-12) return false
+  _camZ.normalize()
+  _lookRight.crossVectors(_worldUp, _camZ)
+  if (_lookRight.lengthSq() < 1e-12) {
+    if (Math.abs(_worldUp.z) === 1) _camZ.x += 1e-4
+    else _camZ.z += 1e-4
+    _camZ.normalize()
+    _lookRight.crossVectors(_worldUp, _camZ)
+  }
+  _lookRight.normalize()
+  _lookUp.crossVectors(_camZ, _lookRight)
+  _lookMat.makeBasis(_lookRight, _lookUp, _camZ)
+  out.setFromRotationMatrix(_lookMat)
+  return true
+}
+
+function resolveCctvLensPose(
+  entity: Entity,
+  ecs: MirrorComponents,
+  deps: EntityWorldTransformDeps
+): { position: THREE.Vector3; quaternion: THREE.Quaternion } | null {
+  const { VirtualCamera } = ecs
+  if (!VirtualCamera.has(entity)) return null
+  if (!ecs.Transform.has(entity)) return null
+
+  const world = resolveEntityWorldPose(entity, deps, {
+    position: _targetPos,
+    rotation: _entityDisplayQuat
+  })
+  if (!world) return null
+
+  const spec = VirtualCamera.getOrNull(entity) as PBVirtualCamera | null
+  const lookAt = spec?.lookAtEntity
+  const { CameraEntity } = deps.view
+
+  if (
+    lookAt !== undefined &&
+    lookAt !== null &&
+    lookAt !== 0 &&
+    lookAt !== (entity as number) &&
+    lookAt !== (CameraEntity as number)
+  ) {
+    const targetWorld = resolveEntityWorldPose(lookAt as Entity, deps)
+    if (targetWorld && cameraLookAtQuat(_targetPos, targetWorld.position, _targetQuat)) {
+      return { position: _targetPos, quaternion: _targetQuat }
+    }
+  }
+
+  _lookDir.set(0, 0, 1).applyQuaternion(_entityDisplayQuat)
+  if (_lookDir.lengthSq() < 1e-12) {
+    entityDisplayQuatToThreeCameraQuat(_entityDisplayQuat, _targetQuat)
+    return { position: _targetPos, quaternion: _targetQuat }
+  }
+  _lookDir.normalize()
+  _lookAt.copy(_targetPos).addScaledVector(_lookDir, 8)
+  if (cameraLookAtQuat(_targetPos, _lookAt, _targetQuat)) {
+    return { position: _targetPos, quaternion: _targetQuat }
+  }
+  entityDisplayQuatToThreeCameraQuat(_entityDisplayQuat, _targetQuat)
+  return { position: _targetPos, quaternion: _targetQuat }
+}
+
 /**
  * Host apply for mirrored `tjs` LWW — shaders via ShaderManager / AbilityManager,
- * CCTV texture feeds via per-entity RenderTarget.
+ * CCTV via VirtualCamera viewpoint + camera RT + projection screen bind.
  */
 export class SceneTjsBridge {
   private readonly shaderFireFp = new Map<Entity, string>()
   private readonly declared = new Set<string>()
-  private readonly cctv = new Map<Entity, CctvRuntime>()
+  private readonly cameras = new Map<Entity, TjsCameraRuntime>()
+  private readonly projections = new Map<Entity, TjsProjectionRuntime>()
 
   constructor(
     private readonly ecs: MirrorComponents,
     private readonly worldScene: THREE.Scene,
     private readonly renderer: THREE.WebGLRenderer,
-    private readonly getNodes: () => Map<Entity, THREE.Group> | undefined
+    private readonly getNodes: () => Map<Entity, THREE.Group> | undefined,
+    private readonly getWorldDeps: () => EntityWorldTransformDeps | null
   ) {
     getShaderManager().setScene(worldScene)
   }
@@ -93,11 +200,15 @@ export class SceneTjsBridge {
       if (!row?.kind) continue
       const kind = row.kind.trim().toLowerCase()
       if (kind === 'shader') this.syncShader(entity, row)
-      else if (kind === 'texture') this.syncTexture(entity, row)
+      else if (kind === 'camera') this.syncCamera(entity, row)
+      else if (kind === 'projection') this.syncProjection(entity, row)
     }
 
-    for (const entity of [...this.cctv.keys()]) {
-      if (!seen.has(entity)) this.teardownCctv(entity)
+    for (const entity of [...this.cameras.keys()]) {
+      if (!seen.has(entity)) this.teardownCamera(entity)
+    }
+    for (const entity of [...this.projections.keys()]) {
+      if (!seen.has(entity)) this.teardownProjection(entity)
     }
     for (const entity of [...this.shaderFireFp.keys()]) {
       if (!seen.has(entity)) this.shaderFireFp.delete(entity)
@@ -107,39 +218,35 @@ export class SceneTjsBridge {
   update(dt: number): void {
     const step = Math.min(0.05, Math.max(0, dt))
     getShaderManager().update(step)
-    if (this.cctv.size === 0) return
+    if (this.cameras.size === 0) return
     const nodes = this.getNodes()
-    if (!nodes) return
+    const deps = this.getWorldDeps()
+    if (!nodes || !deps) return
     const prevTarget = this.renderer.getRenderTarget()
     const prevAutoClear = this.renderer.autoClear
     this.renderer.autoClear = true
-    for (const runtime of this.cctv.values()) {
-      const cameraNode = nodes.get(runtime.cameraEntity)
-      if (!cameraNode) continue
-      cameraNode.updateWorldMatrix(true, false)
-      cameraNode.getWorldPosition(_origin)
-      cameraNode.getWorldQuaternion(_quat)
-      runtime.cam.position.copy(_origin)
-      runtime.cam.quaternion.copy(_quat)
-      if (runtime.lookAtEntity != null) {
-        const lookNode = nodes.get(runtime.lookAtEntity)
-        if (lookNode) {
-          lookNode.updateWorldMatrix(true, false)
-          lookNode.getWorldPosition(_lookAt)
-          runtime.cam.lookAt(_lookAt)
-        }
-      }
-      this.renderer.setRenderTarget(runtime.rt)
-      this.renderer.clear()
-      this.renderer.render(this.worldScene, runtime.cam)
+    for (const runtime of this.cameras.values()) {
+      if (!this.ecs.VirtualCamera.has(runtime.entity)) continue
+      const pose = resolveCctvLensPose(runtime.entity, this.ecs, deps)
+      if (!pose) continue
+      runtime.cam.position.copy(pose.position)
+      runtime.cam.quaternion.copy(pose.quaternion)
+      const lensNode = nodes.get(runtime.entity)
+      withSubtreeHidden(lensNode, () => {
+        this.renderer.setRenderTarget(runtime.rt)
+        this.renderer.clear()
+        this.renderer.render(this.worldScene, runtime.cam)
+      })
     }
     this.renderer.setRenderTarget(prevTarget)
     this.renderer.autoClear = prevAutoClear
   }
 
   dispose(): void {
-    for (const entity of [...this.cctv.keys()]) this.teardownCctv(entity)
-    this.cctv.clear()
+    for (const entity of [...this.projections.keys()]) this.teardownProjection(entity)
+    for (const entity of [...this.cameras.keys()]) this.teardownCamera(entity)
+    this.projections.clear()
+    this.cameras.clear()
     this.shaderFireFp.clear()
     this.declared.clear()
     getShaderManager().dispose()
@@ -191,75 +298,76 @@ export class SceneTjsBridge {
     mgr.trigger(name, 'spawn', ctx)
   }
 
-  private syncTexture(entity: Entity, row: TjsValue): void {
-    const name = row.name.trim().toLowerCase()
-    if (name !== 'cctv') return
+  private syncCamera(entity: Entity, row: TjsValue): void {
     if (!row.enabled) {
-      this.teardownCctv(entity)
+      this.teardownCamera(entity)
+      return
+    }
+    if (!this.ecs.VirtualCamera.has(entity)) return
+    if (this.cameras.has(entity)) return
+    const rt = new THREE.WebGLRenderTarget(TJS_CAMERA_RT_SIZE, TJS_CAMERA_RT_SIZE, {
+      depthBuffer: true,
+      stencilBuffer: false
+    })
+    rt.texture.colorSpace = THREE.SRGBColorSpace
+    const cam = new THREE.PerspectiveCamera(TJS_CAMERA_FOV, 1, 0.1, TJS_CAMERA_FAR)
+    this.cameras.set(entity, { entity, rt, cam })
+    clientDebugLog.log('scene', `tjs camera on e${entity as number}`, { alsoConsole: true })
+  }
+
+  private syncProjection(entity: Entity, row: TjsValue): void {
+    if (!row.enabled) {
+      this.teardownProjection(entity)
       return
     }
     const cameraEntity = row.camera as Entity
-    if (!cameraEntity) {
-      clientDebugLog.log('scene', `tjs cctv e${entity as number} missing camera entity`, {
-        level: 'warn',
-        alsoConsole: true
-      })
-      return
-    }
+    if (!cameraEntity) return
+    const cameraRt = this.cameras.get(cameraEntity)
+    if (!cameraRt) return
     const nodes = this.getNodes()
     const screenNode = nodes?.get(entity)
-    const cameraNode = nodes?.get(cameraEntity)
-    if (!screenNode || !cameraNode) return
+    if (!screenNode) return
 
-    const { VirtualCamera } = this.ecs
-    const vc = VirtualCamera?.getOrNull(cameraEntity) as { lookAtEntity?: number } | null
-    const lookAtEntity =
-      vc?.lookAtEntity !== undefined && vc.lookAtEntity !== null
-        ? (vc.lookAtEntity as Entity)
-        : null
-
-    let runtime = this.cctv.get(entity)
-    if (
-      runtime &&
-      (runtime.cameraEntity !== cameraEntity || runtime.lookAtEntity !== lookAtEntity)
-    ) {
-      this.teardownCctv(entity)
+    let runtime = this.projections.get(entity)
+    if (runtime && runtime.cameraEntity !== cameraEntity) {
+      this.teardownProjection(entity)
       runtime = undefined
     }
     if (!runtime) {
-      const rt = new THREE.WebGLRenderTarget(512, 512, {
-        depthBuffer: true,
-        stencilBuffer: false
-      })
-      rt.texture.colorSpace = THREE.SRGBColorSpace
-      const cam = new THREE.PerspectiveCamera(60, 1, 0.1, 256)
       const meshes = collectMeshes(screenNode)
       const savedMaps = new WeakMap<THREE.Material, THREE.Texture | null>()
-      bindRtToMeshes(meshes, rt.texture, savedMaps)
-      runtime = {
-        entity,
-        cameraEntity,
-        rt,
-        cam,
-        lookAtEntity,
-        boundMeshes: meshes,
-        savedMaps
-      }
-      this.cctv.set(entity, runtime)
+      bindRtToMeshes(meshes, cameraRt.rt.texture, savedMaps)
+      runtime = { entity, cameraEntity, boundMeshes: meshes, savedMaps }
+      this.projections.set(entity, runtime)
       clientDebugLog.log(
         'scene',
-        `tjs cctv on e${entity as number} camera=e${cameraEntity as number}`,
+        `tjs projection on e${entity as number} camera=e${cameraEntity as number}`,
         { alsoConsole: true }
       )
+      return
+    }
+    const sample = runtime.boundMeshes[0]?.material
+    const currentMap = sample
+      ? ((Array.isArray(sample) ? sample[0] : sample) as THREE.MeshStandardMaterial)
+      : null
+    if (currentMap?.map !== cameraRt.rt.texture) {
+      bindRtToMeshes(runtime.boundMeshes, cameraRt.rt.texture, runtime.savedMaps)
     }
   }
 
-  private teardownCctv(entity: Entity): void {
-    const runtime = this.cctv.get(entity)
+  private teardownCamera(entity: Entity): void {
+    const runtime = this.cameras.get(entity)
+    if (!runtime) return
+    runtime.rt.dispose()
+    this.cameras.delete(entity)
+    clientDebugLog.log('scene', `tjs camera off e${entity as number}`, { alsoConsole: true })
+  }
+
+  private teardownProjection(entity: Entity): void {
+    const runtime = this.projections.get(entity)
     if (!runtime) return
     restoreMeshMaps(runtime.boundMeshes, runtime.savedMaps)
-    runtime.rt.dispose()
-    this.cctv.delete(entity)
-    clientDebugLog.log('scene', `tjs cctv off e${entity as number}`, { alsoConsole: true })
+    this.projections.delete(entity)
+    clientDebugLog.log('scene', `tjs projection off e${entity as number}`, { alsoConsole: true })
   }
 }

@@ -631,7 +631,12 @@ export class SceneScriptSystem {
       this.readComponents,
       this.host.scene,
       this.host.renderer,
-      () => this.bridge?.getEntityNodes()
+      () => this.bridge?.getEntityNodes(),
+      () => ({
+        view: this.view,
+        playerPose: () => this.virtualCameraPlayerPose?.() ?? this.clientPlayerPose ?? emptyEntityPose(),
+        cameraPose: () => this.virtualCameraCameraPose?.() ?? this.clientCameraPose ?? emptyEntityPose()
+      })
     )
     if (this.shaderResolveUrl) getShaderManager().setResolveUrl(this.shaderResolveUrl)
     return this.tjsBridge

@@ -48,7 +48,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | --------- | -- | ------ | ----- |
 | Transform | 1 | 🟢 | EntityStore + `dclTransform.ts` |
 | Tags | — | 🟢 | Mirror CRDT; `getEntitiesByTag()` |
-| Tjs | — | 🔵 | Client-only shader / CCTV texture bus (`defineComponent('tjs')`) |
+| Tjs | — | 🔵 | Client-only shader / CCTV bus (`kind`: shader, camera, projection; camera pairs with VirtualCamera) |
 | Name | — | 🟢 | `core-schema::Name` → Three.js `Group.name` (debug / tooling) |
 | VisibilityComponent | 1081 | 🟢 | `obj.visible` |
 | GltfContainer | 1041 | 🟢 | Budgeted attach + reload on src change |

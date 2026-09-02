@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-09-02 (**dev-latest**). **`tjs` ECS component** replaces Tags-string / bundle-scan shader bus. **v2.2.0** one guest clock (SceneLoop). **v2.1.0** was local preview + stay-in-play reload. **v2.0.0** was host world + city walk. **In-scene ECS UI = production / smoke-pass** (one-off bugs only). See [PROGRESS.md](./PROGRESS.md)
+> **Last updated:** 2026-09-02 (**dev-latest**). **`tjs`** custom component (shaders + projection screens). **v2.2.0** one guest clock (SceneLoop). **v2.1.0** was local preview + stay-in-play reload. **v2.0.0** was host world + city walk. **In-scene ECS UI = production / smoke-pass** (one-off bugs only). See [PROGRESS.md](./PROGRESS.md)
 
 ---
 
@@ -48,7 +48,7 @@ Source of truth for IDs: `@dcl/sdk` + `registry.ts`. When adding support: update
 | --------- | -- | ------ | ----- |
 | Transform | 1 | 🟢 | EntityStore + `dclTransform.ts` |
 | Tags | — | 🟢 | Mirror CRDT; `getEntitiesByTag()` |
-| Tjs | — | 🔵 | Client-only shader / CCTV bus (`kind`: shader, camera, projection) |
+| Tjs | — | 🔵 | Scene-defined custom component `tjs` (`kind`: shader, texture, camera, projection). Camera entity: Transform + VirtualCamera + `kind: camera`. Screen: Transform + `kind: projection` only (host draws the plane; no MeshRenderer / Material / MeshCollider). See [README Shaders](../README.md#shaders). |
 | Name | — | 🟢 | `core-schema::Name` → Three.js `Group.name` (debug / tooling) |
 | VisibilityComponent | 1081 | 🟢 | `obj.visible` |
 | GltfContainer | 1041 | 🟢 | Budgeted attach + reload on src change |

@@ -22,20 +22,20 @@
 
 ## Milestone — `tjs` ECS component (2026-09-02)
 
-**Status: on `dev-latest`.** First-class mirrored LWW component for client shaders and CCTV textures.
+**Status: on `dev-latest`.** Scene-defined custom component `tjs` for shaders and projection screens. Scene API: [README Shaders](../README.md#shaders).
 
 ### What's new
 
-- **`tjs` component** — `kind: shader | camera | projection | texture`, `name`, `enabled`, `sync`, spawn vecs, `camera` for projection
-- **No Tags string bus** — removed `tjs.ice.spawn` Tags, bundle comment scans, worker `globalThis.tjs` proxy
-- **AbilityManager gate** — boots only when projection has `tjs` shader rows (not `bin/index.js` text)
-- **CCTV** — lens: Transform + SDK `VirtualCamera` + `kind: camera`; screen: Transform + `kind: projection` (blank host plane; `enabled` maps lens RT onto `drawRoot` slot)
+- **`tjs` component** — one mirrored LWW component; `kind` is a string: `shader`, `texture`, `camera`, `projection`
+- **Shaders** — load when the row appears; ice / meteor / hail use `name`; fire with `enabled: true` (new row per one-shot cast)
+- **Projection screens** — lens: Transform + SDK `VirtualCamera` + `kind: camera`; screen: Transform + `kind: projection` only (`camera` = lens entity id). Host draws the plane. Toggle `tjs.getMutable(screen).enabled`. Camera `enabled` typically starts true; screen starts `enabled: false`.
+- **`texture` kind** — reserved; unused for CCTV
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
 | **tjs mirror + bridge** | 🟢 | `src/dcl/ecs/tjsComponent.ts` + `SceneTjsBridge` |
-| **Shader one-shot** | 🟢 | `enabled: true` on LWW put fires once per distinct payload |
-| **CCTV camera + projection** | 🟢 | Lens RT (LinearFilter, no mipmaps); blank plane; dedupe overlapping hydration duplicates |
+| **Shader one-shot** | 🟢 | `enabled: true` fires once per distinct payload |
+| **CCTV camera + projection** | 🟢 | VirtualCamera viewpoint; host-drawn projection plane |
 
 ---
 

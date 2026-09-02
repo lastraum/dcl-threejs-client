@@ -279,70 +279,208 @@ Leave the scene `npm start` / Hub Play running. Closing it stops `/about` and th
 
 ## Shaders
 
-Scenes drive client shaders and CCTV textures with a first-class ECS component:
+Scenes drive this client's shaders and projection screens (CCTV) with one mirrored custom component named **`tjs`**. `kind` is a string. Kinds in use: `shader`, `texture`, `camera`, `projection`. CCTV uses `camera` + `projection` (`texture` is unused for CCTV).
+
+Other explorers ignore unknown custom components, so a published SDK7 scene that defines `tjs` stays valid.
+
+### Declare `tjs`
+
+Copy this once in the scene (typically `src/index.ts`):
 
 ```ts
-const tjs = engine.defineComponent('tjs', {
-  kind: Schemas.String,    // 'shader' | 'camera' | 'projection' | 'texture'
-  name: Schemas.String,    // shader: ice | meteor | hail
-  sync: Schemas.Boolean,   // opt-in comms topic d3js-ability-vfx (one-shot casts)
-  enabled: Schemas.Boolean,
-  path: Schemas.String,    // shader file; empty = bundled Ice/Meteor/HailAbility.js
-  ox: Schemas.Float,
-  oy: Schemas.Float,
-  oz: Schemas.Float,
-  dx: Schemas.Float,
-  dy: Schemas.Float,
-  dz: Schemas.Float,
-  dist: Schemas.Float,
-  camera: Schemas.Int      // projection: tjs camera entity id
-})
+import {
+  engine,
+  Transform,
+  VirtualCamera,
+  Schemas
+} from '@dcl/sdk/ecs'
+import { Quaternion, Vector3 } from '@dcl/sdk/math'
 
-// load + fire ice (one-shot when enabled:true on create)
-tjs.create(shot, {
+const tjs = engine.defineComponent(
+  'tjs',
+  {
+    kind: Schemas.String,
+    name: Schemas.String,
+    sync: Schemas.Boolean,
+    enabled: Schemas.Boolean,
+    path: Schemas.String,
+    ox: Schemas.Float,
+    oy: Schemas.Float,
+    oz: Schemas.Float,
+    dx: Schemas.Float,
+    dy: Schemas.Float,
+    dz: Schemas.Float,
+    dist: Schemas.Float,
+    camera: Schemas.Int
+  },
+  {
+    kind: '',
+    name: '',
+    sync: false,
+    enabled: false,
+    path: '',
+    ox: 0,
+    oy: 0,
+    oz: 0,
+    dx: 0,
+    dy: 0,
+    dz: 0,
+    dist: 0,
+    camera: 0
+  }
+)
+```
+
+A `kind: 'shader'` row **loads** when the component appears (even with `enabled: false`). Ice / meteor / hail use `name`: `ice`, `cinder` (or `meteor`), `hailwraith` (or `hail`). Leave `path` empty to use the bundled file, or set a scene file such as `assets/shaders/IceAbility.js`.
+
+### Shader example
+
+Preload, then fire. Ice / meteor / hail are one-shots: create a new `enabled: true` row each cast. Looping shaders stay on one entity — toggle `enabled`.
+
+```ts
+tjs.create(engine.addEntity(), {
   kind: 'shader',
   name: 'ice',
-  path: '',
-  enabled: true,
-  sync: true,
-  camera: 0,
-  ox: 42, oy: 0, oz: 46,
-  dx: 0.83, dy: 0, dz: -0.55,
-  dist: 14
+  path: 'assets/shaders/IceAbility.js',
+  enabled: false,
+  sync: false,
+  ox: 0,
+  oy: 0,
+  oz: 0,
+  dx: 0,
+  dy: 0,
+  dz: 0,
+  dist: 0,
+  camera: 0
 })
 
-// CCTV — do NOT use Material.Texture.Video (VideoPlayer slot only; not valid for VC entities)
-const cam = engine.addEntity()
-Transform.create(cam, { position, rotation })
-VirtualCamera.create(cam, { lookAtEntity: target }) // optional
-tjs.create(cam, { kind: 'camera', enabled: true, name: '', path: '', sync: false, camera: 0, ox: 0, oy: 0, oz: 0, dx: 0, dy: 0, dz: 0, dist: 0 })
+function castIce(
+  origin: ReturnType<typeof Vector3.create>,
+  target: { x: number; y: number; z: number }
+) {
+  const dx = target.x - origin.x
+  const dz = target.z - origin.z
+  const distance = Math.sqrt(dx * dx + dz * dz) || 1
+  tjs.create(engine.addEntity(), {
+    kind: 'shader',
+    name: 'ice',
+    path: '',
+    enabled: true,
+    sync: false,
+    ox: origin.x,
+    oy: origin.y,
+    oz: origin.z,
+    dx: dx / distance,
+    dy: 0,
+    dz: dz / distance,
+    dist: distance,
+    camera: 0
+  })
+}
 
-// CCTV screen — Transform + tjs projection only (no MeshRenderer / Material / MeshCollider)
-Transform.create(screen, { position, rotation, scale })
-tjs.create(screen, {
-  kind: 'projection',
-  enabled: true,
-  camera: cam,
+castIce(Vector3.create(42, 0, 46), Vector3.create(54, 0, 38))
+```
+
+Set `sync: true` on a cast if other ThreejsClient sessions should see that one shot.
+
+Looping shader on one entity:
+
+```ts
+const loop = engine.addEntity()
+tjs.create(loop, {
+  kind: 'shader',
+  name: 'ice',
+  path: 'assets/shaders/IceAbility.js',
+  enabled: false,
+  sync: false,
+  ox: 0,
+  oy: 0,
+  oz: 0,
+  dx: 0,
+  dy: 0,
+  dz: 0,
+  dist: 0,
+  camera: 0
+})
+
+tjs.getMutable(loop).enabled = true
+tjs.getMutable(loop).enabled = false
+```
+
+### Projection screens (CCTV)
+
+**Lens dummy** — `Transform` + SDK `VirtualCamera` + `tjs` `kind: 'camera'`. VirtualCamera is the viewpoint (`lookAtEntity`, or Transform **+Z** if `lookAtEntity` is omitted). Camera `enabled` typically starts `true`.
+
+```ts
+const lookAt = engine.addEntity()
+Transform.create(lookAt, { position: Vector3.create(54, 0, 38) })
+
+const cam = engine.addEntity()
+Transform.create(cam, {
+  position: Vector3.create(54, 5, 52),
+  rotation: Quaternion.fromEulerDegrees(-20, 0, 0)
+})
+VirtualCamera.create(cam, { lookAtEntity: lookAt })
+// Or omit lookAtEntity to aim the Transform +Z axis.
+tjs.create(cam, {
+  kind: 'camera',
   name: '',
   path: '',
+  enabled: true,
   sync: false,
-  ox: 0, oy: 0, oz: 0,
-  dx: 0, dy: 0, dz: 0,
-  dist: 0
+  ox: 0,
+  oy: 0,
+  oz: 0,
+  dx: 0,
+  dy: 0,
+  dz: 0,
+  dist: 0,
+  camera: 0
 })
-tjs.getMutable(cam).enabled = false // toggle lens RT
+```
+
+**Screen** — **only** `Transform` + `tjs` `kind: 'projection'` with `camera` = the lens entity id. Do **not** put `MeshRenderer`, SDK `Material`, or `MeshCollider` on the screen. This client draws the plane and sizes it from the Transform.
+
+```ts
+const screen = engine.addEntity()
+Transform.create(screen, {
+  position: Vector3.create(46, 2.2, 42),
+  rotation: Quaternion.fromEulerDegrees(0, 35, 0),
+  scale: Vector3.create(4.2, 2.6, 1)
+})
+tjs.create(screen, {
+  kind: 'projection',
+  name: '',
+  path: '',
+  enabled: false,
+  sync: false,
+  ox: 0,
+  oy: 0,
+  oz: 0,
+  dx: 0,
+  dy: 0,
+  dz: 0,
+  dist: 0,
+  camera: cam as number
+})
+```
+
+Toggle the picture on the **projection** (leave the camera `enabled`):
+
+```ts
+const row = tjs.getMutable(screen)
+row.enabled = !row.enabled
 ```
 
 | Field | Role |
 | --- | --- |
-| `kind: 'shader'` + `name: 'ice'` | Client loads bundled/file shader, fires when `enabled: true` |
-| `sync: true` | That cast is published on `d3js-ability-vfx` for other ThreejsClient tabs |
-| `kind: 'camera'` | Lens dummy: Transform + SDK `VirtualCamera` + host RT (`enabled` toggles capture) |
-| `kind: 'projection'` + `camera` | Host blank plane on `drawRoot` (`tjsProjection` slot); `enabled` maps lens RT (no MeshRenderer/Material) |
-
-AbilityManager boots only after Jump In and only when the scene has `tjs` shader rows — not from bundle text scans. Unknown `tjs` ids are ignored by other explorers (no crash).
-
-Copies: VFX scene `assets/shaders/`.
+| `kind: 'shader'` + `name` | Loads when the row appears. Ice / meteor / hail fire when `enabled: true`. |
+| `path` | Shader file. Empty uses the bundled file for that `name`. |
+| `ox, oy, oz` / `dx, dy, dz` / `dist` | Cast origin, direction, distance. |
+| `sync: true` | That one-shot is shared with other ThreejsClient sessions. |
+| `kind: 'camera'` | Same entity as `Transform` + `VirtualCamera`. `enabled` starts/stops capture. |
+| `kind: 'projection'` + `camera` | Host-drawn plane. `camera` is the lens entity id. `enabled` shows/hides the live picture. |
+| `kind: 'texture'` | Reserved. Unused for CCTV. |
 
 ## Credits
 

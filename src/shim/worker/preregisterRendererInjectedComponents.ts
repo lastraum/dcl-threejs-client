@@ -1,4 +1,5 @@
 import type { IEngine } from '@dcl/ecs'
+import { ensureTjsComponent } from '../../dcl/ecs/tjsComponent'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import { guardVideoPlayerGetMutable } from './guardVideoPlayerGetMutable'
 import { guardGltfContainerGetMutable } from './guardGltfContainerGetMutable'
@@ -65,6 +66,7 @@ export const RENDERER_PREREGISTER_FACTORIES: readonly RendererComponentFactory[]
 export function preregisterRendererInjectedComponents(engine: IEngine): void {
   if (preregistered.has(engine)) return
   preregistered.add(engine)
+  ensureTjsComponent(engine)
   installSceneEngineUiScheduler(engine)
   for (const register of RENDERER_PREREGISTER_FACTORIES) {
     register(engine)

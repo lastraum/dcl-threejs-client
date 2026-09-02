@@ -1166,6 +1166,9 @@ export class World {
       this.sceneScript.setCollidersCookCallback((entity) => this.onColliderCookRequest(entity))
       this.sceneScript.setCollidersPoseCallback((entities) => this.applyColliderPoseSlides(entities))
       this.sceneScript.setCollidersRemoveCallback((entity) => this.onColliderEntityRemoved(entity))
+      this.sceneScript.setWarmAbilityVfxCallback(async () => {
+        await this.warmAbilityVfxFromProjection()
+      })
       this.sceneScript.setRealmInfoProvider(() => this.comms.getRealmInfo())
       // Pixelwars / Flagtag: when authoritative-server joins, re-pulse RealmInfo so
       // SDK isRoomReady + joinRoster cannot stay stuck (no team → no paint Materials).
@@ -1712,25 +1715,35 @@ export class World {
     })
   }
 
-  private async primeSceneAbilityVfx(_onProgress?: (msg: string) => void): Promise<void> {
+  private async warmAbilityVfxFromProjection(opts?: {
+    onProgress?: (msg: string) => void
+    logCatalog?: boolean
+  }): Promise<boolean> {
     const view = this.sceneScript.getProjectionView()
     const Tjs = this.sceneScript.getMirrorComponents()?.Tjs
     const ids = view && Tjs ? discoverAbilityVfxIds(view, Tjs) : []
-    if (ids.length === 0) {
+    if (ids.length === 0) return false
+    await this.sceneScript.attachTjsBridge()
+    const host = await this.ensureAbilityVfxHost()
+    opts?.onProgress?.('Warming ability VFX…')
+    await host.prime(ids)
+    if (opts?.logCatalog) {
+      clientDebugLog.log(
+        'scene',
+        `ability-vfx catalog [${ids.join(', ')}] — primed on load`,
+        { alsoConsole: true }
+      )
+    }
+    return true
+  }
+
+  private async primeSceneAbilityVfx(onProgress?: (msg: string) => void): Promise<void> {
+    const warmed = await this.warmAbilityVfxFromProjection({ onProgress, logCatalog: true })
+    if (!warmed) {
       clientDebugLog.log('scene', 'ability-vfx skip — no tjs shader rows on projection', {
         alsoConsole: true
       })
-      return
     }
-    await this.sceneScript.attachTjsBridge()
-    const host = await this.ensureAbilityVfxHost()
-    _onProgress?.('Warming ability VFX…')
-    await host.prime(ids)
-    clientDebugLog.log(
-      'scene',
-      `ability-vfx catalog [${ids.join(', ')}] — primed on load`,
-      { alsoConsole: true }
-    )
   }
 
   /** Creator Hub / sdk-commands preview websocket — same recycle as `/reload`. */

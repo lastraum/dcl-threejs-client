@@ -32,6 +32,7 @@ import { isEmoteAnchorGltfSrc } from '../../rendering/DclTextureResolver'
 import { TweenBridge } from '../../bridge/TweenBridge'
 import { ParticleSystemBridge } from '../../bridge/ParticleSystemBridge'
 import type { SceneTjsBridge } from '../../bridge/tjs/SceneTjsBridge'
+import { TJS_COMPONENT_ID } from '../../dcl/ecs/tjsComponent'
 import { isLocalPreviewScene } from '../../dcl/content/refreshPreviewScene'
 import { fetchProfileFaceUrl } from '../../avatar/peerApi'
 import { isTweenVerbose } from '../../bridge/tweenConfig'
@@ -345,6 +346,8 @@ export class SceneScriptSystem {
   private tweenBridge: TweenBridge | null = null
   private particleBridge: ParticleSystemBridge | null = null
   private tjsBridge: SceneTjsBridge | null = null
+  private loggedTjsProjection = false
+  private warmAbilityVfxCallback: (() => Promise<void>) | null = null
   private shaderResolveUrl: ((src: string) => string | null) | null = null
   private sceneUiBridge: SceneUiBridge | null = null
   /** `#scene-ui-root` (primary) or `#pe-ui-root` (portable experience). */
@@ -608,7 +611,10 @@ export class SceneScriptSystem {
     }
     void import('../../vfx/discoverAbilityVfx').then(({ sceneUsesTjsComponent }) => {
       if (!sceneUsesTjsComponent(this.view, this.readComponents.Tjs)) return
-      void this.ensureTjsBridge().then((bridge) => bridge?.sync(this.view))
+      void this.ensureTjsBridge().then((bridge) => {
+        bridge?.sync(this.view)
+        void this.warmAbilityVfxCallback?.()
+      })
     })
   }
 
@@ -720,6 +726,11 @@ export class SceneScriptSystem {
     this.bootProgressReporter = fn
   }
 
+  /** Lazy AbilityManager warm when `tjs` shader rows land after load-time prime skipped. */
+  setWarmAbilityVfxCallback(fn: (() => Promise<void>) | null): void {
+    this.warmAbilityVfxCallback = fn
+  }
+
   private formatCompileProgress(seconds: number, phase?: string): string {
     const title = this.bootCompileTitle || 'scene'
     const kb = this.bootCompileKb
@@ -811,6 +822,7 @@ export class SceneScriptSystem {
     )
     this.tjsBridge?.dispose()
     this.tjsBridge = null
+    this.loggedTjsProjection = false
     this.shaderResolveUrl = (src) => {
       const trimmed = src.trim()
       if (/^https?:\/\//i.test(trimmed)) return trimmed
@@ -3253,6 +3265,7 @@ export class SceneScriptSystem {
         PointerEvents.componentId
       ])
       let batchTouchesUi = false
+      let batchTouchesTjs = false
       const uiTransformId = UiTransform.componentId
       const latestUiMountSnapshot = [...batch]
         .reverse()
@@ -3335,6 +3348,9 @@ export class SceneScriptSystem {
             }
             if (uiComponentIds.has(change.componentId)) {
               batchTouchesUi = true
+            }
+            if (change.componentId === TJS_COMPONENT_ID) {
+              batchTouchesTjs = true
             }
           }
           // Sync clock already folded motion for CCT; do not rewind tweens / restamp TRS.
@@ -3506,6 +3522,19 @@ export class SceneScriptSystem {
           )
         }
         split.drainMs += performance.now() - drainT0
+      }
+
+      if (batchTouchesTjs) {
+        if (!this.loggedTjsProjection) {
+          this.loggedTjsProjection = true
+          let tjsCount = 0
+          for (const [_entity] of this.view.getEntitiesWith(this.readComponents.Tjs)) tjsCount++
+          clientDebugLog.log('scene', `tjs projection — ${tjsCount} row(s) after first CRDT`, {
+            alsoConsole: true
+          })
+        }
+        this.syncTjsBridge()
+        void this.warmAbilityVfxCallback?.()
       }
 
       {
@@ -7792,6 +7821,8 @@ export class SceneScriptSystem {
     this.particleBridge = null
     this.tjsBridge?.dispose()
     this.tjsBridge = null
+    this.loggedTjsProjection = false
+    this.warmAbilityVfxCallback = null
     this.shaderResolveUrl = null
     this.unbindSceneUiViewportSync()
     this.sceneUiBridge?.dispose()

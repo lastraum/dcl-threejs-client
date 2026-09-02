@@ -279,9 +279,9 @@ Leave the scene `npm start` / Hub Play running. Closing it stops `/about` and th
 
 ## Shaders
 
-Scenes drive this client's shaders and cameras with one mirrored custom component named **`tjs`**. `kind` is a string. Kinds in use: `shader`, `texture`, `camera`, `projection`. Other explorers ignore unknown custom components, so a published SDK7 scene that defines `tjs` stays valid.
+Scenes drive this client's shaders and cameras with one mirrored custom component named **`tjs`**. `kind` is a string: `shader`, `texture`, `camera`, `projection`. Other explorers ignore unknown custom components, so a published SDK7 scene that defines `tjs` stays valid.
 
-Copy this spec once. **Field order must match.** The third argument is the default row — `tjs.create` only needs the fields you actually set; the rest fill in from here.
+Copy this spec once. **Field order must match.** The third argument is SDK defaults — `tjs.create` only needs the fields that row uses.
 
 ### Declare `tjs`
 
@@ -336,23 +336,23 @@ const tjs = engine.defineComponent(
 )
 ```
 
-A `kind: 'shader'` row **loads** when the component appears (even with `enabled: false`). Ice / meteor / hail use `name`: `ice`, `cinder` (or `meteor`), `hailwraith` (or `hail`). Leave `path` empty to use the bundled file, or set a scene file such as `assets/shaders/IceAbility.js`. Already-warmed shaders are not fetched again on `/reload` or HMR.
+A `kind: 'shader'` row **loads** when the component appears (even with `enabled: false`). `path` is the shader file. `name` is the export that file exposes (whatever that file calls it). Already-warmed shaders are not fetched again on `/reload` or HMR.
 
 `ox, oy, oz` / `dx, dy, dz` / `dist` are only for shaders that fire from a point toward a target. Omit them otherwise — they default to `0`, and this client then uses the entity Transform (or a 32 m default distance). Same for `layers`, `background`, `fov`, `camera`: skip them on rows that do not use them.
 
 ### Shader example
 
-Preload, then fire. Ice / meteor / hail are one-shots: create a new `enabled: true` row each cast. Looping shaders stay on one entity — toggle `enabled`.
+Preload, then fire. One-shots: create a new `enabled: true` row each cast. Looping shaders stay on one entity — toggle `enabled`.
 
 ```ts
 tjs.create(engine.addEntity(), {
   kind: 'shader',
-  name: 'ice',
-  path: 'assets/shaders/IceAbility.js',
+  name: 'geyser',
+  path: 'assets/shaders/GeyserAbility.js',
   enabled: false
 })
 
-function castIce(
+function cast(
   origin: ReturnType<typeof Vector3.create>,
   target: { x: number; y: number; z: number }
 ) {
@@ -361,7 +361,8 @@ function castIce(
   const distance = Math.sqrt(dx * dx + dz * dz) || 1
   tjs.create(engine.addEntity(), {
     kind: 'shader',
-    name: 'ice',
+    name: 'geyser',
+    path: 'assets/shaders/GeyserAbility.js',
     enabled: true,
     ox: origin.x,
     oy: origin.y,
@@ -373,7 +374,7 @@ function castIce(
   })
 }
 
-castIce(Vector3.create(42, 0, 46), Vector3.create(54, 0, 38))
+cast(Vector3.create(42, 0, 46), Vector3.create(54, 0, 38))
 ```
 
 Set `sync: true` on a cast if other ThreejsClient sessions should see that one shot.
@@ -384,8 +385,8 @@ Looping shader on one entity:
 const loop = engine.addEntity()
 tjs.create(loop, {
   kind: 'shader',
-  name: 'ice',
-  path: 'assets/shaders/IceAbility.js'
+  name: 'geyser',
+  path: 'assets/shaders/GeyserAbility.js'
 })
 
 tjs.getMutable(loop).enabled = true
@@ -468,8 +469,9 @@ row.enabled = !row.enabled
 
 | Field | Role |
 | --- | --- |
-| `kind: 'shader'` + `name` | Loads when the row appears. Ice / meteor / hail fire when `enabled: true`. |
-| `path` | Shader file. Empty uses the bundled file for that `name`. |
+| `kind: 'shader'` | Loads when the row appears. `enabled: true` fires it. |
+| `path` | Shader file. |
+| `name` | Export in that file (the function it exposes). |
 | `ox, oy, oz` / `dx, dy, dz` / `dist` | Cast origin, direction, distance. **Optional.** Omit unless that shader fires from a point. `0` means unused (distance then defaults to 32 m). |
 | `sync: true` | That one-shot is shared with other ThreejsClient sessions. |
 | `kind: 'camera'` | Same entity as `Transform` + `VirtualCamera`. `layers`, `fov`, `background` live here. Do not set `camera`. |

@@ -27,7 +27,7 @@
 ### What's new
 
 - **`tjs` component** — one mirrored LWW component; `kind` is a string: `shader`, `texture`, `camera`, `projection`
-- **Shaders** — load when the row appears; ice / meteor / hail use `name`; fire with `enabled: true` (new row per one-shot cast)
+- **Shaders** — load when the row appears; `path` is the file, `name` is the export that file exposes; fire with `enabled: true` (new row per one-shot cast)
 - **Projection screens** — lens: Transform + SDK `VirtualCamera` + `kind: camera` (`layers` "0,1,2", `fov`, `background` Color4). Screen: Transform + `kind: projection` with `camera` = the **lens entity** (not a number). UI: `UiBackground.texture.src = tjs:${cam}`. Each camera is a full extra world render (keep the count small). Toggle `tjs.getMutable(screen).enabled`.
 - **`texture` kind** — reserved; unused for CCTV
 

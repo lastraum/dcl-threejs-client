@@ -3,10 +3,10 @@
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-09-02  
-> **Current phase:** **v2.2.0** on `main`. Butter work on **`v3`**. QA trunk is **`dev-latest`**. SceneLoop invert clock **🟢**.  
-> **Shipped:** **`tjs` ECS shaders/CCTV** · **v2.2.0** one guest clock · plaza Cast Line walk-log · Genesis sky · Explore live search · **v2.1.0** `/localpreview` · stay-in-play reload · shaders off until Jump In · preview tabs · **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
+> **Current phase:** **`tjs` shaders/CCTV** + **plaza open-world three rings** on **`dev-latest`**. **v2.2.0** on `main`. QA: https://dev.decentraland.social  
+> **Shipped:** **`tjs` ECS shaders/CCTV** · **plaza rings** 200 m look · 64 m collide toggle · ~22 m live JS (cap 4) · nested plaza first-class · **v2.2.0** one guest clock · plaza Cast Line walk-log · Genesis sky · Explore live search · **v2.1.0** `/localpreview` · stay-in-play reload · shaders off until Jump In · preview tabs · **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
 
-> **After 2.2 (next / `v3`):** neighbor composite **shells on** · Landscape + Shadows Distance live · FXAA when bloom is on · GPU warm covers shadow+bloom · stacked live-guest FPS measure. Promote stays off.  
+> **After 2.2 (`v3` butter — historical):** neighbor composite **shells on** · Landscape + Shadows Distance live · FXAA when bloom is on · GPU warm covers shadow+bloom · stacked live-guest FPS measure. Superseded for open-world policy by plaza rings on `dev-latest` (2026-09-01).  
 > **After 2.0 (parked shell):** RTS box-select / pad-drag · saved outfits · create-community / invites · gallery multi-page · Social WS reliability · PE P3 pad/wind QA · multi-shape GLTF `40M+` riding. Scene UI = **one-off bugs only**. Shell marketplace browse ≠ **P2P peer trade**.  
 
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). PM LiveKit survives teleports. Community voice LiveKit survives Jump In.  
@@ -39,9 +39,38 @@
 
 ---
 
+## ✅ Milestone — Plaza open-world three rings (2026-09-01)
+
+**Status: on `dev-latest`** — squash-merge PR #73 (`f14c7f34`). Product law for Genesis CBD / nested plaza walks.
+
+Open-world loading is **three rings**. Distance is always **player → that scene’s occupied footprint** (empty land and roads excluded). Nested plaza parcels (Hockey, BrandonManus, Spring in the Snow, Jarod, …) are first-class — no `coveredSkip` hiding inner estates.
+
+### What's new
+
+- **200 m look** — neighbor scene GLBs load with their textures (not on-demand beige shells). Scene Distance preference no longer clips Winterfest / nested plaza neighbors to the collide arm.
+- **64 m collide** — enable/disable already-cooked PhysX hulls. No recook, no compact, no first-walk expand of 16+ shape families into hundreds of shapes. Walk inside a plaza must not hitch on PhysX expand.
+- **~22 m live JS, cap 4** — under-feet always runs. Nested plaza scenes are live guests. **Parcel count never gates JS.** Boot concurrency 1; closer guests win the cap (Spring at ~7 m beats Mewland at ~22 m). First-frame sampling does not consume a live slot. Reconcile retries after the exclusive boot slot frees. LiveKit hold on same-primary plaza walk (no remount/rejoin). Splash ghost overlay after unmount is purged.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Look ring** | 🟢 200 m | `AOI_VISUAL_LOOK_RADIUS_M` · GLBs + textures · nested plazas not skipped |
+| **Collide ring** | 🟢 64 m toggle | `NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M` · cooked hulls enable/disable only |
+| **Live JS ring** | 🟢 ~22 m enter, cap 4 | `secondaryLiveEnterRadiusM()` · boot concurrency 1 · nearest footprint wins |
+| **Parcel-count gate** | 🟢 off | Budget = distance + cap + boot slot — never parcel size |
+| **Stand-on promote** | 🟢 on | `AOI_STAND_ON_PROMOTE` · handoff + sticky demote · origin rebind |
+| **SceneLoop clock** | 🟢 | Unchanged since v2.2.0 |
+
+**QA:** https://dev.decentraland.social — walk plaza → nested Spring in the Snow (~7 m) → confirm `[multi-scene] secondary live "Spring in the Snow"` · Winterfest / neighbors visible to 200 m with textures · no PhysX hitch on first plaza step · same-primary walk does not bounce LiveKit.
+
+**Open leftovers (honest):** small PhysX CCT parent→1 expands still log (not a merge stopper). Official `npm run build` `tsc` `noUnusedLocals` cleanup (`ROAD_PHYS_RADIUS_M`, unused `key`/`px`/`py`) may still be in flight on a local Mac — not claimed merged here.
+
+**Tip:** Three rings are **our** open-world implementation on `dev-latest`. Older docs that say shells-only / promote-off / 80 m cliff describe pre–PR #73 state.
+
+---
+
 ## ✅ Milestone — v3 Explorer butter (shells · P3 distances · AA · warm) (2026-08-19)
 
-**Status: on `v3` — not a product tag.** Post-2.2 city/look butter. Clock stays 🟢. Promote stays off.
+**Status: historical (`v3` branch era).** Superseded for open-world policy by plaza three rings on `dev-latest` (2026-09-01). Post-2.2 city/look butter. Clock stays 🟢.
 
 ### What's new (parity / implementation — no version toast)
 
@@ -57,7 +86,7 @@
 | ---- | ------ | ----- |
 | **SceneLoop** | 🟢 | Unchanged since v2.2.0 |
 | **Neighbor shells** | 🟢 default-on | Walk-through extract; no PhysX |
-| **Stand-on promote** | ⬜ off | After FPS measure |
+| **Stand-on promote** | ⬜ off (2026-08-19) | Superseded — on `dev-latest` since PR #73 |
 | **Stacked FPS** | measure-only | No cap flip without a log |
 | **P3 Landscape / Shadows Distance** | 🟢 | Scene Distance was already live |
 

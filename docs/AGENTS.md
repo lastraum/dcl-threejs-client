@@ -47,11 +47,12 @@ Worked example: DecentraCraft at **`-16,124`** uses `isPressed` + Camera×PPI pl
 | **Rebind origin on promote** | `comms.bindSceneTarget(newPrimary)` **before** `restoreGenesisFeet`. Missing this warps soft-route (old local + new base → wrong parcel like -135,107) and voids CBD. |
 | **Prior primary stays resident** | Demote keeps mesh graph sticky as **secondary** (muted scripts) regardless of parcel count. Tertiary only via leave-ring / cap pressure. Re-promote unpauses. **Never** `system.dispose()` into void. |
 | **Freeze hold pin** | `disableAllHoldFeet` only for intentional `InputModifier.disableAll`. Never pin for colliders-ready or multi-scene thrash. Stall auto-recover if keys held + free + feet stuck. |
-| **Guests are scheduled** | Scene JS ticks only when SceneLoop sends (`!inFlight`). Default AOI is GLB shells — no live neighbor workers. If a neighbor guest is ever enabled, it shares the same queue (does not own rAF). |
+| **Guests are scheduled** | Scene JS ticks only when SceneLoop sends (`!inFlight`). **Live neighbors on** inside ~22 m (cap 4, boot concurrency 1, nearest footprint wins). Shells/first-frame fill the 200 m look ring without workers. All guests share the same queue (does not own rAF). |
 | **Secondary FocusOwner mute** | No video, audio, scene UI, privileged pointers/nav — `FocusPolicy = 'secondary'`. |
 | **Primary FocusOwner** | Only primary owns UI / media / inputs / locomotion. |
-| **Tertiary residents** | Only when **leave 16m live ring** or **secondary-cap pressure** (prefer non-sticky). Scripts OFF + LOD. Re-enter → scripts on only (**no GLB reload**). |
-| **No parcel-size gate** | Parcel count never refuses secondary boot or picks tertiary. Budget = live radius + hard secondary cap + boot concurrency. |
+| **Tertiary residents** | Only when **leave ~22 m live ring** or **secondary-cap pressure** (prefer non-sticky). Scripts OFF + LOD. Re-enter → scripts on only (**no GLB reload**). |
+| **No parcel-size gate** | Parcel count never refuses secondary boot or picks tertiary. Budget = look/collide/live rings + hard secondary cap + boot concurrency. |
+| **Three rings** | **200 m look** (GLBs + textures) · **64 m collide** (cooked PhysX toggle) · **~22 m live JS** (cap 4). Distance = player → occupied footprint. Nested plaza parcels are first-class. |
 | **Tertiary composites** | Roads / empty / AOI shells fill the world without workers; distance-budgeted. |
 | **Default ground everywhere** | Default parcel GLB on **all** non-road AOI parcels. Procedural trees/rocks **only** on vacant / catalyst-empty. |
 | **Freecam always free** | Only feet-primary FocusOwner applies InputModifier / MainCamera / video / UI. Demoted secondaries never apply player-frame. Clear freeze on demote + promote handoff. |

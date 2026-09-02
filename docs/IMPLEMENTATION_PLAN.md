@@ -2,9 +2,21 @@
 
 > Browser-native Decentraland client: load deployed Worlds/scenes, shim SDK7 runtime, mirror ECS → Three.js, expand to open world.
 
-**Status:** **v2.2.0** on `main` ✅ (one guest clock). **`v3`:** Explorer butter — neighbor shells, P3 distances, FXAA+bloom, GPU warm. **`dev-latest`:** QA trunk. Still not full Explorer parity. See [`PROGRESS.md`](./PROGRESS.md).  
+**Status:** **v2.2.0** on `main` ✅ (one guest clock). **`dev-latest`:** plaza open-world **three rings** shipped (PR #73 · `f14c7f34`, 2026-09-01). QA: https://dev.decentraland.social. See [`PROGRESS.md`](./PROGRESS.md).  
 **ECS reference:** [`INTEGRATION.md`](./INTEGRATION.md)  
-**Note:** Historical phase plan. Prefer [PROGRESS.md](./PROGRESS.md) + [ARCHITECTURE.md](./ARCHITECTURE.md) + [INTEGRATION.md](./INTEGRATION.md) + [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) + [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md) for current work.
+**Note:** Historical phase plan. Prefer [PROGRESS.md](./PROGRESS.md) + [ARCHITECTURE.md](./ARCHITECTURE.md) + [INTEGRATION.md](./INTEGRATION.md) + [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) + [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md) + [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) for current work.
+
+## Current implementation (`dev-latest`, 2026-09-01)
+
+Genesis plaza open-world loading is **three rings** — product law in `src/dcl/multiScene/caps.ts` and AOI layers:
+
+| Ring | Radius | What the client does |
+| ---- | ------ | -------------------- |
+| **Look** | **200 m** | Neighbor scene GLBs + textures stay loaded. Distance = player → scene footprint. Nested plaza parcels are not skipped. |
+| **Collide** | **64 m** | Enable/disable already-cooked PhysX statics. No recook / compact / first-walk shape-family expand. |
+| **Live JS** | **~22 m enter**, **cap 4** | Scene workers with scripts for nearest occupied footprints. Under-feet primary always runs. Boot concurrency **1**; closer guests win the cap. First-frame sampling does not eat a live slot. Parcel count **never** gates JS. |
+
+Stand-on promote, sticky demote, and soft-route are on. Same-primary plaza walks hold LiveKit (no remount). Full continuity contract: [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md). Residency chapter: [OPEN_WORLD_RESIDENCY.md](./OPEN_WORLD_RESIDENCY.md).
 
 **Related repos in workspace:** `dcl-companion` (content resolution), `dcl-avatar-hyperfy` (VRM/Three.js), `colyseus-scene` (multiplayer), `blank-scene` (test deploy)
 
@@ -373,13 +385,16 @@ Bundled scenes ship their own `@dcl/ecs` engine; we mirror CRDT on main via `Eng
 
 ---
 
-## Phase 6 — Open world expansion (Week 14+)
+## Phase 6 — Open world expansion (Week 14+) — **in progress on `dev-latest`**
 
-- Parcel grid loader with load/unload radius
-- Global asset cache across scenes
-- Instancing, LOD, frustum culling
+**Shipped (2026-09-01, PR #73):** three-ring plaza loading — **200 m look**, **64 m collide toggle**, **~22 m live JS (cap 4)**. See [Current implementation](#current-implementation-dev-latest-2026-09-01) and [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md).
+
+**Still open:**
+
+- Density / FPS soak with multiple live guests + sticky plaza solids
 - Asset Bundle Registry for converted glTFs
-- Unified `resolveScene(pointer)` for Genesis + Worlds
+- Broader Worlds parity beyond Genesis CBD rings
+- Global asset cache tuning, instancing LOD, frustum culling refinements
 
 ---
 

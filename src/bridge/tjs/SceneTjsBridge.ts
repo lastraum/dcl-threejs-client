@@ -392,7 +392,10 @@ export class SceneTjsBridge {
         }
       }
     }
-    if (!row.enabled) return
+    if (!row.enabled) {
+      this.shaderFireFp.delete(entity)
+      return
+    }
     const fp = tjsValueFingerprint(row)
     if (this.shaderFireFp.get(entity) === fp) return
     this.shaderFireFp.set(entity, fp)

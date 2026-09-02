@@ -320,10 +320,11 @@ A `kind: 'shader'` row **loads** when the component appears (even with `enabled:
 
 ### Shader example
 
-Preload, then fire. One-shots: create a new `enabled: true` row each cast. Looping shaders stay on one entity — toggle `enabled`.
+Load once (`enabled: false`). That fetches the file. `enabled: true` is the trigger — the file is not fetched again. Set `enabled: false` to stop / to fire again on the same entity.
 
 ```ts
-tjs.create(engine.addEntity(), {
+const fx = engine.addEntity()
+tjs.create(fx, {
   kind: 'shader',
   name: 'geyser',
   path: 'assets/shaders/GeyserAbility.js',
@@ -337,39 +338,29 @@ function cast(
   const dx = target.x - origin.x
   const dz = target.z - origin.z
   const distance = Math.sqrt(dx * dx + dz * dz) || 1
-  tjs.create(engine.addEntity(), {
-    kind: 'shader',
-    name: 'geyser',
-    path: 'assets/shaders/GeyserAbility.js',
-    enabled: true,
-    ox: origin.x,
-    oy: origin.y,
-    oz: origin.z,
-    dx: dx / distance,
-    dy: 0,
-    dz: dz / distance,
-    dist: distance
-  })
+  const row = tjs.getMutable(fx)
+  row.ox = origin.x
+  row.oy = origin.y
+  row.oz = origin.z
+  row.dx = dx / distance
+  row.dy = 0
+  row.dz = dz / distance
+  row.dist = distance
+  row.enabled = true
+}
+
+function stop() {
+  tjs.getMutable(fx).enabled = false
 }
 
 cast(Vector3.create(42, 0, 46), Vector3.create(54, 0, 38))
+stop()
+cast(Vector3.create(42, 0, 46), Vector3.create(60, 0, 40))
 ```
 
-Set `sync: true` on a cast if other ThreejsClient sessions should see that one shot.
+Set `sync: true` on the row if other ThreejsClient sessions should see that shot.
 
-Looping shader on one entity:
-
-```ts
-const loop = engine.addEntity()
-tjs.create(loop, {
-  kind: 'shader',
-  name: 'geyser',
-  path: 'assets/shaders/GeyserAbility.js'
-})
-
-tjs.getMutable(loop).enabled = true
-tjs.getMutable(loop).enabled = false
-```
+Need two of the same effect at once? Create a second entity. The file is already warm, so skip `path` on the extra row.
 
 ### Cameras and projection screens
 

@@ -71,6 +71,8 @@ export class SecondaryFirstFrameSampler {
   private readonly queued: FirstFrameSampleRequest[] = []
   private readonly inFlightIds = new Set<string>()
   private readonly doneIds = new Set<string>()
+  /** Live JS owns this entity — do not finish a first-frame bake. */
+  private readonly cancelledIds = new Set<string>()
   private active = 0
   private disposed = false
   private gen = 0
@@ -93,10 +95,23 @@ export class SecondaryFirstFrameSampler {
 
   forget(entityId: string): void {
     this.doneIds.delete(this.doneKey(entityId))
+    this.cancelledIds.delete(entityId)
+  }
+
+  /**
+   * Live guest is about to own this scene. Drop queued/in-flight first-frame
+   * so we do not wait on an 820-GLTF bake before JS, or hide the shell.
+   */
+  cancel(entityId: string): void {
+    this.cancelledIds.add(entityId)
+    for (let i = this.queued.length - 1; i >= 0; i--) {
+      if (this.queued[i]!.entityId === entityId) this.queued.splice(i, 1)
+    }
   }
 
   enqueue(req: FirstFrameSampleRequest): void {
     if (this.disposed) return
+    if (this.cancelledIds.has(req.entityId)) return
     if (this.knows(req.entityId)) return
     if (this.active + this.queued.length >= FF_MAX_ACTIVE_SECONDARIES) {
       console.info(
@@ -113,6 +128,7 @@ export class SecondaryFirstFrameSampler {
     this.queued.length = 0
     this.inFlightIds.clear()
     this.doneIds.clear()
+    this.cancelledIds.clear()
     this.active = 0
   }
 
@@ -160,7 +176,7 @@ export class SecondaryFirstFrameSampler {
           y: req.resolveY,
           segment: `${req.resolveX},${req.resolveY}`
         }))
-      if (gen !== this.gen || this.disposed) return
+      if (gen !== this.gen || this.disposed || this.cancelledIds.has(req.entityId)) return
       if (!scene?.mainEntry) {
         this.doneIds.add(this.doneKey(req.entityId))
         req.onFail?.(req.entityId, 'no main entry')
@@ -197,7 +213,7 @@ export class SecondaryFirstFrameSampler {
       system.setAssetHydrationMode(false)
 
       await system.start(scene, req.cache, host)
-      if (gen !== this.gen || this.disposed) return
+      if (gen !== this.gen || this.disposed || this.cancelledIds.has(req.entityId)) return
 
       const started = performance.now()
       let peak = 0
@@ -209,7 +225,7 @@ export class SecondaryFirstFrameSampler {
       let overBudgetStreak = 0
 
       while (performance.now() - started < TIMEOUT_MS) {
-        if (gen !== this.gen || this.disposed) return
+        if (gen !== this.gen || this.disposed || this.cancelledIds.has(req.entityId)) return
         if (lastFrameOverBudget(33)) {
           overBudgetStreak++
           if (overBudgetStreak >= 3 && peak < 1) {
@@ -303,7 +319,7 @@ export class SecondaryFirstFrameSampler {
           ` waited=${((performance.now() - started) / 1000).toFixed(1)}s base=${neighborBase}`
       )
 
-      if (gen !== this.gen || this.disposed) {
+      if (gen !== this.gen || this.disposed || this.cancelledIds.has(req.entityId)) {
         group.clear()
         return
       }

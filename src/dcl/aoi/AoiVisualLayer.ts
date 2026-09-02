@@ -374,7 +374,10 @@ export class AoiVisualLayer {
    */
   setLiveSecondaryIds(ids: ReadonlySet<string>): void {
     this.liveSecondaryIds.clear()
-    for (const id of ids) this.liveSecondaryIds.add(id)
+    for (const id of ids) {
+      this.liveSecondaryIds.add(id)
+      this.firstFrameSampler.cancel(id)
+    }
     // Drop ready marks for workers that left.
     for (const id of [...this.liveGraphReadyIds]) {
       if (!this.liveSecondaryIds.has(id)) this.liveGraphReadyIds.delete(id)
@@ -1769,6 +1772,13 @@ export class AoiVisualLayer {
       }
     }
     this.emitLiveCandidatesIfChanged(liveCandidates, enterM, keepM)
+    // Live JS owns the enter ring — cancel first-frame so we do not wait on
+    // an 820-GLTF bake (Spring) before the worker, or hide the composite shell.
+    if (aoiLiveGuests()) {
+      for (const c of liveCandidates) {
+        if (c.distM <= enterM) this.firstFrameSampler.cancel(c.entityId)
+      }
+    }
   }
 
   private emitLiveCandidatesIfChanged(
@@ -1833,6 +1843,7 @@ export class AoiVisualLayer {
 
     const nearM = aoiNearBandRadiusM()
     if (nearM <= 0) return
+    const liveEnterM = aoiLiveGuests() ? secondaryLiveEnterRadiusM() : 0
 
     const scriptBuilt = entities.filter((e) => {
       if (primaryId && e.id === primaryId) return false
@@ -1861,6 +1872,11 @@ export class AoiVisualLayer {
       const dist = this.entityDistM(ent, dclX, dclZ, primaryBase)
       if (!Number.isFinite(dist) || dist > nearM) continue
       if (this.liveSecondaryIds.has(ent.id) || this.liveGraphReadyIds.has(ent.id)) continue
+      // Enter-ring scenes get a live worker, not first-frame. Shell stays up.
+      if (liveEnterM > 0 && dist <= liveEnterM) {
+        this.firstFrameSampler.cancel(ent.id)
+        continue
+      }
 
       const showVisible = visibleSlots < FF_MAX_VISIBLE
       if (showVisible) {

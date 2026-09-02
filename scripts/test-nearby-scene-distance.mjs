@@ -244,6 +244,29 @@ assert(
   'live guests rank by player-to-footprint (not primary-estate 0 m)',
   /minPlayerToFootprintDistanceM\(/.test(aoi) && /b\.parcelCount - a\.parcelCount/.test(aoi)
 )
+{
+  const liveMgr = readFileSync(join(root, 'src/dcl/multiScene/SecondaryLiveManager.ts'), 'utf8')
+  const runtime = readFileSync(join(root, 'src/dcl/multiScene/MultiSceneRuntime.ts'), 'utf8')
+  assert(
+    'live boot sorts closer first (Spring 7m before Mewland 22m)',
+    /if \(a\.distM !== b\.distM\) return a\.distM - b\.distM/.test(liveMgr) &&
+      /c\.entityId !== primaryId/.test(liveMgr)
+  )
+  assert(
+    'exclusive boot slot retries nearest missing after finish',
+    /kickReconcileAfterBoot/.test(liveMgr) && /nearestMissing/.test(liveMgr)
+  )
+  assert(
+    'first-frame skips the live-enter ring so JS boots without 820-GLTF bake',
+    /liveEnterM > 0 && dist <= liveEnterM/.test(aoi) &&
+      /firstFrameSampler\.cancel/.test(aoi)
+  )
+  assert(
+    'activity-off still stores live candidates for flush on enable',
+    /pendingSecondaryCandidates/.test(runtime) &&
+      /if \(!this\.secondaryActivityEnabled\) return/.test(runtime)
+  )
+}
 assert(
   'neighbor discover is awaitable; shells drain in background',
   /prewarmVisuals\(dclX: number, dclZ: number\): Promise<void>/.test(aoi) &&

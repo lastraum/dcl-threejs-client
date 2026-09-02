@@ -13,6 +13,7 @@ import { updateNameTagAnchor } from './headAnchor'
 import { resolveProfileEmote, loadResolvedProfileEmote, isSceneEmoteUrn } from './profileEmotes'
 import type { AssetCache } from '../rendering/AssetCache'
 import type { AvatarProfile, BodyShape } from './types'
+import { DRAW_LAYER_AVATAR, setLayer } from '../rendering/drawLayers'
 
 const warnedUnknownEmotes = new Set<string>()
 
@@ -32,6 +33,19 @@ export class SceneAvatar {
     this.nameTagAnchor.name = 'name-tag-anchor'
     parent.add(this.pivot)
     parent.add(this.nameTagAnchor)
+    this.stampAvatarLayer()
+  }
+
+  getPivot(): THREE.Group {
+    return this.pivot
+  }
+
+  private stampAvatarLayer(): void {
+    this.pivot.userData.dclDrawLayer = DRAW_LAYER_AVATAR
+    if (this.model) this.model.userData.dclDrawLayer = DRAW_LAYER_AVATAR
+    setLayer(this.pivot, DRAW_LAYER_AVATAR)
+    setLayer(this.nameTagAnchor, DRAW_LAYER_AVATAR)
+    if (this.model) setLayer(this.model, DRAW_LAYER_AVATAR)
   }
 
   setAssetCache(cache: AssetCache | null, peerUrl?: string): void {
@@ -43,6 +57,7 @@ export class SceneAvatar {
     this.disposeModel()
     this.model = await composeAvatarFromProfile(profile, this.peerUrl, this.assetCache)
     this.pivot.add(this.model)
+    this.stampAvatarLayer()
     this.identity = identityFromAvatarProfile(profile, profile.address)
     this.bodyShape = profile.bodyShape
     if (fallbackName !== 'NPC' && !profile.fromWallet) {

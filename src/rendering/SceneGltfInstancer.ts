@@ -6,6 +6,7 @@ import {
 } from '../collision/gltfColliderNaming'
 import type { PhysicsColliderShapeDesc } from '../physics/PhysXWorld'
 import { setMeshDesiredCastShadow } from './shadowCastPolicy'
+import { DRAW_LAYER_WORLD, setLayer } from './drawLayers'
 
 /**
  * GPU instancing for scene GltfContainers that share a content hash.
@@ -493,6 +494,7 @@ export class SceneGltfInstancer {
         ? leaf.material.map((m) => m.clone())
         : leaf.material.clone()
       const mesh = new THREE.InstancedMesh(leaf.geometry, mat, capacity)
+      setLayer(mesh, DRAW_LAYER_WORLD)
       mesh.name = `inst:${i}`
       mesh.count = 0
       // Ultra only (gltfDefaultCaster): high/medium stay receive-only so plaza instancing
@@ -554,6 +556,7 @@ export class SceneGltfInstancer {
       const old = bucket.meshes[i]!
       // Keep the (possibly whitened) material already on the old mesh.
       const mesh = new THREE.InstancedMesh(leaf.geometry, old.material, nextCap)
+      setLayer(mesh, DRAW_LAYER_WORLD)
       mesh.name = old.name
       mesh.count = bucket.used
       setMeshDesiredCastShadow(mesh, true, 'environment', { gltfDefaultCaster: true })

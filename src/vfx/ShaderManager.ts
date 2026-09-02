@@ -6,6 +6,7 @@ import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { dclToThreePos } from '../bridge/dclTransform'
 import { getSceneAbilityVfxHost } from './SceneAbilityVfxHost'
 import { isShaderSyncParam, parseNumber, parseVec3, shaderToVfxId } from './tjsVfxIds'
+import { clearShaderWarmCache, isShaderWarmed, stampShaderWarmed } from './shaderWarmCache'
 
 export type ShaderResolveUrl = (src: string) => string | null
 
@@ -142,6 +143,8 @@ export class ShaderManager {
     const prev = this.catalog.get(key)
     if (prev === path) return
     this.catalog.set(key, path)
+    // Same id+path already compiled this session (/reload / HMR) — keep the module.
+    if (isShaderWarmed(key, path) && this.modules.has(key)) return
     this.loaded.delete(key)
     this.modules.delete(key)
     // Do not import AbilityManager / ice-cinder-hail here — first trigger loads.
@@ -275,13 +278,23 @@ export class ShaderManager {
   }
 
   private async load(name: string, src: string): Promise<ShaderModule | null> {
+    if (isShaderWarmed(name, src)) {
+      const existing = this.modules.get(name)
+      if (existing) return existing
+    }
     const fileKey = normalizeVfxPath(src)
     const vfxImport = VFX_FILES[fileKey]
     if (vfxImport) {
+      if (isShaderWarmed(name, src)) {
+        const stub: ShaderModule = {}
+        this.modules.set(name, stub)
+        return stub
+      }
       try {
         await vfxImport()
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
+        this.loaded.delete(name)
         clientDebugLog.log('scene', `shader '${name}' failed to load file ${src}: ${msg}`, {
           level: 'warn',
           alsoConsole: true
@@ -290,6 +303,7 @@ export class ShaderManager {
       }
       const stub: ShaderModule = {}
       this.modules.set(name, stub)
+      stampShaderWarmed(name, src)
       const leaf = (src.split('/').pop() ?? src).replace(/\.(js|mjs|ts)$/i, '')
       clientDebugLog.log('scene', `shader '${name}' loaded ${src} → vfx:${shaderToVfxId(leaf)}`, {
         alsoConsole: true
@@ -298,6 +312,7 @@ export class ShaderManager {
     }
     const url = this.resolveUrl?.(src)
     if (!url) {
+      this.loaded.delete(name)
       clientDebugLog.log('scene', `shader '${name}' missing file ${src}`, {
         level: 'warn',
         alsoConsole: true
@@ -323,10 +338,12 @@ export class ShaderManager {
       const instance = bindShaderExports(raw)
       if (!instance) throw new Error('shader file must export functions (ice, cinder, …)')
       this.modules.set(name, instance)
+      stampShaderWarmed(name, src)
       clientDebugLog.log('scene', `shader '${name}' loaded ${src}`, { alsoConsole: true })
       return instance
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
+      this.loaded.delete(name)
       clientDebugLog.log('scene', `shader '${name}' load failed: ${msg}`, {
         level: 'warn',
         alsoConsole: true
@@ -346,4 +363,5 @@ export function getShaderManager(): ShaderManager {
 export function resetShaderManager(): void {
   current?.dispose()
   current = null
+  clearShaderWarmCache()
 }

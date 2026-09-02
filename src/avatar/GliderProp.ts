@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { clone as cloneSkinnedRoot } from 'three/examples/jsm/utils/SkeletonUtils.js'
 import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
+import { DRAW_LAYER_AVATAR, setLayer } from '../rendering/drawLayers'
 
 /** Explorer CharacterMotion asset — same GLB as unity-explorer GliderProp.glb. */
 export const GLIDER_PROP_URL = '/avatar/glider/GliderProp.glb'
@@ -204,6 +205,7 @@ export class GliderProp {
       clone.visible = false
       clone.position.set(GLIDER_LOCAL_OFFSET.x, GLIDER_LOCAL_OFFSET.y, GLIDER_LOCAL_OFFSET.z)
       parent.add(clone)
+      setLayer(clone, DRAW_LAYER_AVATAR)
       this.root = clone
 
       this.propellers = []

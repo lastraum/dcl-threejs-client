@@ -11,6 +11,7 @@ import { Shell, ShellMode } from '@vfx/vfx/Shell.js'
 import { runeseal } from '@vfx/config/abilities/runeseal.js'
 import { globals } from '@vfx/config/globals.js'
 import { frame } from '@vfx/core/FrameUniforms.js'
+import { DRAW_LAYER_WORLD, setLayer } from '../rendering/drawLayers'
 
 const INSCRIBE = 1.25
 const IGNITE = 0.55
@@ -58,7 +59,7 @@ function easeInCubic(t: number): number {
 }
 
 function worldLayer(root: THREE.Object3D): void {
-  root.traverse((node) => node.layers.set(0))
+  setLayer(root, DRAW_LAYER_WORLD)
 }
 
 let farDepth: THREE.DataTexture | null = null

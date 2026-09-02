@@ -6,6 +6,7 @@ import {
   dclToThreeQuat,
   type DclTransformValues
 } from '../bridge/dclTransform'
+import { DRAW_LAYER_WORLD, setLayer } from './drawLayers'
 
 /**
  * GPU instancing for dense MeshRenderer boards (land tiles, grids).
@@ -325,6 +326,7 @@ export class MeshRendererInstancer {
     }
 
     const mesh = new THREE.InstancedMesh(geometry, mat, INITIAL_CAP)
+    setLayer(mesh, DRAW_LAYER_WORLD)
     mesh.castShadow = false
     mesh.receiveShadow = true
     // Mesh-local sphere is filled by expandSphereForMatrix after the first write.
@@ -370,6 +372,7 @@ export class MeshRendererInstancer {
     const nextCap = bucket.capacity * 2
     const old = bucket.mesh
     const mesh = new THREE.InstancedMesh(bucket.geometry, bucket.material, nextCap)
+    setLayer(mesh, DRAW_LAYER_WORLD)
     mesh.castShadow = false
     mesh.receiveShadow = true
     mesh.frustumCulled = true

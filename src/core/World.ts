@@ -1420,6 +1420,9 @@ export class World {
     this.sceneScript.setCollidersCookCallback((entity) => this.onColliderCookRequest(entity))
     this.sceneScript.setCollidersPoseCallback((entities) => this.applyColliderPoseSlides(entities))
     this.sceneScript.setCollidersRemoveCallback((entity) => this.onColliderEntityRemoved(entity))
+    this.sceneScript.setWarmAbilityVfxCallback(async () => {
+      await this.warmAbilityVfxFromProjection()
+    })
     this.sceneScript.setRealmInfoProvider(() => this.comms.getRealmInfo())
     this.comms.setAuthServerPresentHandler(() => {
       this.sceneScript.resyncAuthServerNetworkRoom()
@@ -7360,6 +7363,7 @@ export class World {
     this.abilityVfx?.dispose()
     this.abilityVfx = null
     void import('../vfx/SceneAbilityVfxHost').then((m) => m.setSceneAbilityVfxHost(null))
+    void import('../vfx/ShaderManager').then((m) => m.resetShaderManager())
     this.teleportRunes?.dispose()
     this.teleportRunes = null
     this.peerLeaveGen.clear()

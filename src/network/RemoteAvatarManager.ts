@@ -63,6 +63,7 @@ import { GliderProp, GlideStateWire, glideStateWantsOpen } from '../avatar/Glide
 import { perfNoteComposeMs } from '../util/perfCounters'
 import { logMainHitch } from '../debug/MainHitchLog'
 import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
+import { DRAW_LAYER_AVATAR, setLayer } from '../rendering/drawLayers'
 
 /** Packet / lerp settle epsilon (meters / radians). */
 const POSE_EPS = 0.02
@@ -329,6 +330,10 @@ export class RemoteAvatarManager {
     this.scene = parent instanceof THREE.Scene ? parent : (drawRoot as unknown as THREE.Scene)
     this.root.name = 'remote-avatars'
     drawRoot.add(this.root)
+  }
+
+  private stampAvatarLayer(root: THREE.Object3D): void {
+    setLayer(root, DRAW_LAYER_AVATAR)
   }
 
   setOnComposeSettled(handler: (() => void) | null): void {
@@ -1257,6 +1262,7 @@ export class RemoteAvatarManager {
       // EntityStore lives on poseRoot (not rendered). Remotes must stay under
       // this.root on the live scene or only CSS name tags appear.
       if (root.parent !== this.root) this.root.add(root)
+      this.stampAvatarLayer(root)
 
       record = {
         address: key,
@@ -2049,6 +2055,7 @@ export class RemoteAvatarManager {
     if (!record.placeholder) {
       record.placeholder = createRemoteAvatarPlaceholder()
       record.pivot.add(record.placeholder)
+      this.stampAvatarLayer(record.root)
     }
     // No name tag / spinner until the full avatar mesh is ready.
     if (record.nameTag) {
@@ -2195,6 +2202,7 @@ export class RemoteAvatarManager {
       this.clearLoadingPresentation(record)
 
       record.pivot.add(record.model)
+      this.stampAvatarLayer(record.root)
       applyAvatarPivotOffset(record.pivot, record.model)
       record.model.visible = true
       record.pivot.visible = true
@@ -2287,6 +2295,7 @@ export class RemoteAvatarManager {
 
       this.clearLoadingPresentation(record)
       record.pivot.add(odkAvatar.root)
+      this.stampAvatarLayer(record.root)
       prepareCustomAvatarScene(odkAvatar.root)
       applyOdkPivotOffset(record.pivot, odkAvatar.root)
       prepareCustomAvatarScene(odkAvatar.root)
@@ -2383,6 +2392,7 @@ export class RemoteAvatarManager {
 
       this.clearLoadingPresentation(record)
       record.pivot.add(vrmAvatar.root)
+      this.stampAvatarLayer(record.root)
       prepareCustomAvatarScene(vrmAvatar.root)
       this.setModelCastShadow(vrmAvatar.root, false)
       this.applyRemoteShadowBudget()

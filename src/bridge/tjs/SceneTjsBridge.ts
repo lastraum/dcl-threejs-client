@@ -11,7 +11,9 @@ import {
   type TjsValue
 } from '../../dcl/ecs/tjsComponent'
 import { buildShaderCtx, getShaderManager } from '../../vfx/ShaderManager'
+import { isShaderWarmed } from '../../vfx/shaderWarmCache'
 import { resolveEntityWorldPose, type EntityWorldTransformDeps } from '../../transform/entityWorldTransform'
+import { applyCameraDrawLayers } from '../../rendering/drawLayers'
 
 const _origin = new THREE.Vector3()
 const _dir = new THREE.Vector3()
@@ -43,9 +45,47 @@ type TjsProjectionRuntime = {
   pose: THREE.Object3D
 }
 
+/**
+ * Projection `camera` is the lens entity (kind=camera + VirtualCamera), not a slot index.
+ * CRDT Entity is a branded number; coerce so object-ish values cannot collapse to 0.
+ */
+const TJS_BG_BLACK = { r: 0, g: 0, b: 0, a: 1 }
+
+function lensEntityFromRow(camera: TjsValue['camera']): Entity | null {
+  if (typeof camera === 'number') {
+    if (!Number.isFinite(camera) || camera === 0) return null
+    return camera as Entity
+  }
+  const n = Number(camera)
+  if (!Number.isFinite(n) || n === 0) return null
+  return n as Entity
+}
+
+function resolveCameraFov(fov: unknown): number {
+  const n = typeof fov === 'number' ? fov : TJS_CAMERA_FOV
+  if (!Number.isFinite(n) || n === 0) return TJS_CAMERA_FOV
+  return Math.min(170, Math.max(1, n))
+}
+
+function rgbaFromBackground(row: TjsValue | null | undefined): {
+  r: number
+  g: number
+  b: number
+  a: number
+} {
+  const c = row?.background
+  if (!c) return TJS_BG_BLACK
+  return {
+    r: typeof c.r === 'number' ? c.r : 0,
+    g: typeof c.g === 'number' ? c.g : 0,
+    b: typeof c.b === 'number' ? c.b : 0,
+    a: typeof c.a === 'number' ? c.a : 1
+  }
+}
+
 function spawnProjectionPlane(): THREE.Mesh {
   const mat = new THREE.MeshBasicMaterial({
-    color: 0xbbbbbb,
+    color: 0x000000,
     toneMapped: false,
     side: THREE.DoubleSide
   })
@@ -57,17 +97,32 @@ function spawnProjectionPlane(): THREE.Mesh {
 
 const _projPosA = new THREE.Vector3()
 const _projPosB = new THREE.Vector3()
+const _prevClearColor = new THREE.Color()
+const _rtClearColor = new THREE.Color()
 
 function projectionMapped(mesh: THREE.Mesh): boolean {
   return !!(mesh.material as THREE.MeshBasicMaterial).map
 }
 
-function applyProjectionMap(mesh: THREE.Mesh, texture: THREE.Texture | null): void {
+function applyProjectionMap(
+  mesh: THREE.Mesh,
+  texture: THREE.Texture | null,
+  bg: { r: number; g: number; b: number; a: number }
+): void {
   const mat = mesh.material as THREE.MeshBasicMaterial
-  if (mat.map === texture) return
-  mat.map = texture
-  mat.color.setHex(texture ? 0xffffff : 0xbbbbbb)
-  mat.needsUpdate = true
+  if (mat.map !== texture) {
+    mat.map = texture
+    mat.needsUpdate = true
+  }
+  if (texture) {
+    mat.color.setRGB(1, 1, 1)
+    mat.opacity = 1
+    mat.transparent = false
+  } else {
+    mat.color.setRGB(bg.r, bg.g, bg.b)
+    mat.opacity = bg.a
+    mat.transparent = bg.a < 0.999
+  }
 }
 
 function disposeProjectionPlane(mesh: THREE.Mesh): void {
@@ -178,6 +233,9 @@ export class SceneTjsBridge {
   private readonly declared = new Set<string>()
   private readonly cameras = new Map<Entity, TjsCameraRuntime>()
   private readonly projections = new Map<Entity, TjsProjectionRuntime>()
+  /** Scratch for UI canvas blit (512×512 RGBA, reused). */
+  private uiBlitPixels: Uint8Array | null = null
+  private uiBlitFlipped: Uint8ClampedArray | null = null
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -195,6 +253,50 @@ export class SceneTjsBridge {
 
   getTexture(entity: Entity): THREE.Texture | null {
     return this.cameras.get(entity)?.rt.texture ?? null
+  }
+
+  /** True when the lens entity has a live camera RT. */
+  hasCamera(entity: Entity): boolean {
+    return this.cameras.has(entity)
+  }
+
+  /**
+   * Copy the camera RT into a 2d canvas (UI projection).
+   * Early-returns false when the lens is not in `this.cameras` yet — never throws, never fetches.
+   */
+  blitCameraToCanvas(cameraEntity: Entity, canvas: HTMLCanvasElement): boolean {
+    if (!cameraEntity) return false
+    const runtime = this.cameras.get(cameraEntity)
+    if (!runtime) return false
+    const w = runtime.rt.width
+    const h = runtime.rt.height
+    if (w < 1 || h < 1) return false
+    const bytes = w * h * 4
+    if (!this.uiBlitPixels || this.uiBlitPixels.byteLength !== bytes) {
+      this.uiBlitPixels = new Uint8Array(bytes)
+      this.uiBlitFlipped = new Uint8ClampedArray(bytes)
+    }
+    const src = this.uiBlitPixels
+    const dst = this.uiBlitFlipped!
+    try {
+      this.renderer.readRenderTargetPixels(runtime.rt, 0, 0, w, h, src)
+    } catch {
+      return false
+    }
+    // GL origin is bottom-left; canvas ImageData is top-left.
+    const stride = w * 4
+    for (let y = 0; y < h; y++) {
+      const srcOff = (h - 1 - y) * stride
+      dst.set(src.subarray(srcOff, srcOff + stride), y * stride)
+    }
+    if (canvas.width !== w) canvas.width = w
+    if (canvas.height !== h) canvas.height = h
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return false
+    const imageData = ctx.createImageData(w, h)
+    imageData.data.set(dst)
+    ctx.putImageData(imageData, 0, 0)
+    return true
   }
 
   sync(view: ProjectionView): void {
@@ -232,6 +334,8 @@ export class SceneTjsBridge {
     if (!nodes || !deps) return
     const prevTarget = this.renderer.getRenderTarget()
     const prevAutoClear = this.renderer.autoClear
+    const prevClearAlpha = this.renderer.getClearAlpha()
+    this.renderer.getClearColor(_prevClearColor)
     this.renderer.autoClear = true
     for (const proj of this.projections.values()) proj.mesh.visible = false
     for (const runtime of this.cameras.values()) {
@@ -244,6 +348,9 @@ export class SceneTjsBridge {
       const lensNode = nodes.get(runtime.entity)
       const prevTone = this.renderer.toneMapping
       this.renderer.toneMapping = THREE.NoToneMapping
+      const bg = this.resolveCameraClearColor(runtime.entity)
+      _rtClearColor.setRGB(bg.r, bg.g, bg.b)
+      this.renderer.setClearColor(_rtClearColor, bg.a)
       withSubtreeHidden(lensNode, () => {
         this.renderer.setRenderTarget(runtime.rt)
         this.renderer.clear()
@@ -254,6 +361,7 @@ export class SceneTjsBridge {
     this.revealProjectionMeshes()
     this.renderer.setRenderTarget(prevTarget)
     this.renderer.autoClear = prevAutoClear
+    this.renderer.setClearColor(_prevClearColor, prevClearAlpha)
   }
 
   dispose(): void {
@@ -263,7 +371,9 @@ export class SceneTjsBridge {
     this.cameras.clear()
     this.shaderFireFp.clear()
     this.declared.clear()
-    getShaderManager().dispose()
+    this.uiBlitPixels = null
+    this.uiBlitFlipped = null
+    // Keep ShaderManager warm cache across scene /reload — World.dispose resets it.
   }
 
   private syncShader(entity: Entity, row: TjsValue): void {
@@ -274,9 +384,12 @@ export class SceneTjsBridge {
     if (path) {
       const declKey = `${name}:${path}`
       if (!this.declared.has(declKey)) {
+        const already = isShaderWarmed(name, path)
         mgr.declare(name, path)
         this.declared.add(declKey)
-        clientDebugLog.log('scene', `tjs declare shader '${name}' path=${path}`, { alsoConsole: true })
+        if (!already) {
+          clientDebugLog.log('scene', `tjs declare shader '${name}' path=${path}`, { alsoConsole: true })
+        }
       }
     }
     if (!row.enabled) return
@@ -318,39 +431,48 @@ export class SceneTjsBridge {
       return
     }
     if (!this.ecs.VirtualCamera.has(entity)) return
-    if (this.cameras.has(entity)) return
-    const rt = new THREE.WebGLRenderTarget(TJS_CAMERA_RT_SIZE, TJS_CAMERA_RT_SIZE, {
-      depthBuffer: true,
-      stencilBuffer: false,
-      generateMipmaps: false,
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter
-    })
-    rt.texture.generateMipmaps = false
-    rt.texture.minFilter = THREE.LinearFilter
-    rt.texture.magFilter = THREE.LinearFilter
-    rt.texture.colorSpace = THREE.SRGBColorSpace
-    const cam = new THREE.PerspectiveCamera(TJS_CAMERA_FOV, 1, 0.1, TJS_CAMERA_FAR)
-    cam.matrixAutoUpdate = true
-    this.cameras.set(entity, { entity, rt, cam })
-    clientDebugLog.log('scene', `tjs camera on e${entity as number}`, { alsoConsole: true })
-    this.onTextureReady?.(entity)
+    let runtime = this.cameras.get(entity)
+    if (!runtime) {
+      const rt = new THREE.WebGLRenderTarget(TJS_CAMERA_RT_SIZE, TJS_CAMERA_RT_SIZE, {
+        depthBuffer: true,
+        stencilBuffer: false,
+        generateMipmaps: false,
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter
+      })
+      rt.texture.generateMipmaps = false
+      rt.texture.minFilter = THREE.LinearFilter
+      rt.texture.magFilter = THREE.LinearFilter
+      rt.texture.colorSpace = THREE.SRGBColorSpace
+      const cam = new THREE.PerspectiveCamera(TJS_CAMERA_FOV, 1, 0.1, TJS_CAMERA_FAR)
+      cam.matrixAutoUpdate = true
+      runtime = { entity, rt, cam }
+      this.cameras.set(entity, runtime)
+      clientDebugLog.log('scene', `tjs camera on e${entity as number}`, { alsoConsole: true })
+      this.onTextureReady?.(entity)
+    }
+    // Omit / "" → 0+1+2 so Kenney CCTV shows Geyser without a scene layers field.
+    applyCameraDrawLayers(runtime.cam, row.layers)
+    const n = resolveCameraFov(row.fov)
+    runtime.cam.fov = n
+    runtime.cam.updateProjectionMatrix()
   }
 
   private syncProjection(entity: Entity, row: TjsValue): void {
-    const cameraEntity = row.camera as Entity
+    const cameraEntity = lensEntityFromRow(row.camera)
     const nodes = this.getNodes()
+    // Transform pose is enough — MeshRenderer is not required (tjs-only screens).
     const screenNode = nodes?.get(entity)
     if (!screenNode) return
 
     let runtime = this.projections.get(entity)
     if (!runtime) {
       const mesh = spawnProjectionPlane()
-      runtime = { entity, cameraEntity, mesh, pose: screenNode }
+      runtime = { entity, cameraEntity: cameraEntity ?? (0 as Entity), mesh, pose: screenNode }
       this.projections.set(entity, runtime)
       clientDebugLog.log(
         'scene',
-        `tjs projection plane e${entity as number} camera=e${cameraEntity as number || 0}`,
+        `tjs projection plane e${entity as number} camera=e${(cameraEntity as number | null) ?? 0}`,
         { alsoConsole: true }
       )
     } else {
@@ -369,14 +491,15 @@ export class SceneTjsBridge {
       )
     }
 
+    // RT is keyed by the same entity syncCamera registered (the tjs kind=camera entity).
     const cameraRt = cameraEntity ? this.cameras.get(cameraEntity) : undefined
     const tex = row.enabled && cameraRt ? cameraRt.rt.texture : null
     const was = (runtime.mesh.material as THREE.MeshBasicMaterial).map
-    applyProjectionMap(runtime.mesh, tex)
+    applyProjectionMap(runtime.mesh, tex, rgbaFromBackground(row))
     if (was !== tex) {
       clientDebugLog.log(
         'scene',
-        `tjs projection map e${entity as number} ${tex ? 'on' : 'off'}`,
+        `tjs projection map e${entity as number} ${tex ? 'on' : 'off'} lens=e${(cameraEntity as number | null) ?? 0}`,
         { alsoConsole: true }
       )
     }
@@ -403,6 +526,24 @@ export class SceneTjsBridge {
         else b.mesh.visible = false
       }
     }
+  }
+
+  /** Projection row that binds this camera, else the camera row, else opaque black. */
+  private resolveCameraClearColor(cameraEntity: Entity): {
+    r: number
+    g: number
+    b: number
+    a: number
+  } {
+    const { Tjs } = this.ecs
+    for (const proj of this.projections.values()) {
+      if (proj.cameraEntity !== cameraEntity) continue
+      const projRow = Tjs.getOrNull(proj.entity) as TjsValue | null
+      if (projRow?.background) return rgbaFromBackground(projRow)
+    }
+    const camRow = Tjs.getOrNull(cameraEntity) as TjsValue | null
+    if (camRow?.background) return rgbaFromBackground(camRow)
+    return TJS_BG_BLACK
   }
 
   private teardownCamera(entity: Entity): void {

@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { DRAW_LAYER_WORLD, setLayer } from './drawLayers'
 
 /**
  * Present extract list (Bevy-shaped).
@@ -24,6 +25,12 @@ export class DrawWorld {
     visual.matrixWorldAutoUpdate = false
     this.drawRoot.add(visual)
     this.links.set(visual, pose)
+    // ECS lights keep extra bits (they must share layers with avatars + SFX).
+    // Avatar extracts stamp `dclDrawLayer` so register does not shove them onto world 0.
+    if (!(visual as THREE.Light).isLight) {
+      const bit = visual.userData.dclDrawLayer
+      setLayer(visual, typeof bit === 'number' ? bit : DRAW_LAYER_WORLD)
+    }
     if (visual.userData.dclDrawAnimated === true) {
       visual.matrixAutoUpdate = true
       prepareAnimatedDrawLocal(visual)

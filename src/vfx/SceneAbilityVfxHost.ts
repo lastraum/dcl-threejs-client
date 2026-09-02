@@ -1,5 +1,7 @@
 import * as THREE from 'three'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
+import { DRAW_LAYER_SFX, enableDrawLayers, setLayer } from '../rendering/drawLayers'
+import { isShaderWarmed, stampShaderWarmed } from './shaderWarmCache'
 
 let currentHost: SceneAbilityVfxHost | null = null
 
@@ -21,6 +23,7 @@ function hideUnusedVfxLights(pool: { lights?: Array<{ light: THREE.Light; inUse?
 
 type AbilityManagerLike = {
   warm: (id: string) => Promise<boolean>
+  isReady?: (id: string) => boolean
   prewarm?: (id: string, n: number) => void
   select: (id: string) => void
   cast: (
@@ -71,7 +74,7 @@ export class SceneAbilityVfxHost {
     private readonly camera: THREE.PerspectiveCamera,
     private readonly renderer: THREE.WebGLRenderer
   ) {
-    this.camera.layers.enable(1)
+    enableDrawLayers(this.camera)
   }
 
   get ready(): boolean {
@@ -93,6 +96,11 @@ export class SceneAbilityVfxHost {
   async prime(ids: readonly string[]): Promise<boolean> {
     const wanted = [...new Set(ids.map((id) => id.trim().toLowerCase()).filter(Boolean))]
     if (wanted.length === 0 || this.failed) return this.ready
+    const already = wanted.every((id) => this.primed.has(id) || isShaderWarmed(id))
+    if (already && this.ready) {
+      for (const id of wanted) this.primed.add(id)
+      return true
+    }
     if (this.priming) {
       await this.priming
       if (wanted.every((id) => this.primed.has(id))) return this.ready
@@ -157,6 +165,7 @@ export class SceneAbilityVfxHost {
     if (this.lights) hideUnusedVfxLights(this.lights)
     this.shake?.update(step)
     this.flash?.update(step)
+    this.stampSfxLayers()
   }
 
   dispose(): void {
@@ -176,15 +185,23 @@ export class SceneAbilityVfxHost {
       const ok = await this.bootManager()
       if (!ok) return
     }
+    let compiledNew = false
     for (const id of ids) {
       if (this.primed.has(id)) continue
-      const ready = await this.abilities!.warm(id)
-      if (ready) this.primed.add(id)
+      const cached = isShaderWarmed(id) && this.abilities!.isReady?.(id) === true
+      const ready = cached ? true : await this.abilities!.warm(id)
+      if (ready) {
+        this.primed.add(id)
+        stampShaderWarmed(id)
+        if (!cached) compiledNew = true
+      }
     }
-    this.compileWarmedGroups()
+    if (compiledNew) this.compileWarmedGroups()
     clientDebugLog.log(
       'scene',
-      `ability-vfx primed [${[...this.primed].join(', ') || 'none'}]`,
+      compiledNew
+        ? `ability-vfx primed [${[...this.primed].join(', ') || 'none'}]`
+        : `ability-vfx already warm [${[...this.primed].join(', ') || 'none'}]`,
       { alsoConsole: true }
     )
     this.flushPending()
@@ -210,6 +227,7 @@ export class SceneAbilityVfxHost {
    * `targetScene` keeps play lights / fog / IBL on the program key.
    */
   compileWarmedGroups(): void {
+    this.stampSfxLayers()
     for (const root of this.collectAbilityRoots()) {
       try {
         this.renderer.compile(root, this.camera, this.scene)
@@ -315,6 +333,8 @@ export class SceneAbilityVfxHost {
         sun: null
       }
 
+      this.stampSfxLayers()
+
       this.abilities = new AbilityManager({
         scene: this.scene,
         camera: this.camera,
@@ -337,6 +357,28 @@ export class SceneAbilityVfxHost {
         { level: 'warn', alsoConsole: true }
       )
       return false
+    }
+  }
+
+  /**
+   * AbilityManager / ParticleEngine / decals / fissures / bursts hardcode VFX bit 1.
+   * Client SFX is bit 2 so avatars can own bit 1 — stamp after spawn every tick.
+   */
+  private stampSfxLayers(): void {
+    for (const child of this.scene.children) {
+      const name = typeof child.name === 'string' ? child.name : ''
+      if (
+        name.startsWith('Ability:') ||
+        name.startsWith('Particles:') ||
+        name === 'GroundDecals' ||
+        name === 'Fissures' ||
+        name === 'Bursts'
+      ) {
+        setLayer(child, DRAW_LAYER_SFX)
+      }
+    }
+    for (const entry of this.lights?.lights ?? []) {
+      enableDrawLayers(entry.light)
     }
   }
 

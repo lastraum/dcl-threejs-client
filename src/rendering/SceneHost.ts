@@ -17,6 +17,7 @@ import {
 import { reapplySceneCastShadows } from './shadowCastPolicy'
 import { BloomPipeline } from './BloomPipeline'
 import { DrawWorld } from './DrawWorld'
+import { enableDrawLayers } from './drawLayers'
 import { clientSettings } from './ClientSettings'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
 import { AdaptiveQualityController } from './AdaptiveQualityController'
@@ -137,6 +138,7 @@ export class SceneHost {
       CLIENT_CAMERA_NEAR,
       500
     )
+    enableDrawLayers(this.camera)
     this.controls = new OrbitControls(this.camera, this.renderer.domElement)
     this.controls.enableDamping = true
     this.controls.maxPolarAngle = Math.PI * 0.49

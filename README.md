@@ -338,7 +338,7 @@ tjs.getMutable(cam).enabled = false // toggle lens RT
 | `kind: 'shader'` + `name: 'ice'` | Client loads bundled/file shader, fires when `enabled: true` |
 | `sync: true` | That cast is published on `d3js-ability-vfx` for other ThreejsClient tabs |
 | `kind: 'camera'` | Lens dummy: Transform + SDK `VirtualCamera` + host RT (`enabled` toggles capture) |
-| `kind: 'projection'` + `camera` | Host plane via `drawRoot` bind (Transform pose only; no MeshRenderer/Material); lens RT as map |
+| `kind: 'projection'` + `camera` | Host blank plane on `drawRoot` (`tjsProjection` slot); `enabled` maps lens RT (no MeshRenderer/Material) |
 
 AbilityManager boots only after Jump In and only when the scene has `tjs` shader rows — not from bundle text scans. Unknown `tjs` ids are ignored by other explorers (no crash).
 

@@ -25,10 +25,14 @@ const _lookMat = new THREE.Matrix4()
 const _targetPos = new THREE.Vector3()
 const _targetQuat = new THREE.Quaternion()
 const _entityDisplayQuat = new THREE.Quaternion()
+const _projPosA = new THREE.Vector3()
+const _projPosB = new THREE.Vector3()
 
 const TJS_CAMERA_RT_SIZE = 512
 const TJS_CAMERA_FOV = 60
 const TJS_CAMERA_FAR = 256
+const TJS_PROJECTION_BLANK = 0x111111
+const TJS_PROJECTION_PROXIMITY_M = 0.2
 
 type TjsCameraRuntime = {
   entity: Entity
@@ -46,11 +50,11 @@ type TjsProjectionRuntime = {
 type BindDrawSlot = (pose: THREE.Object3D, visual: THREE.Object3D) => void
 type UnbindDrawSlot = (pose: THREE.Object3D) => void
 
-function createProjectionPlane(texture: THREE.Texture): THREE.Mesh {
+function createProjectionPlane(): THREE.Mesh {
   const mesh = new THREE.Mesh(
     new THREE.PlaneGeometry(1, 1),
     new THREE.MeshBasicMaterial({
-      map: texture,
+      color: TJS_PROJECTION_BLANK,
       toneMapped: false,
       side: THREE.DoubleSide
     })
@@ -60,22 +64,12 @@ function createProjectionPlane(texture: THREE.Texture): THREE.Mesh {
   return mesh
 }
 
-function withProjectionMeshesHidden(
-  projections: Map<Entity, TjsProjectionRuntime>,
-  fn: () => void
-): void {
-  const hidden: THREE.Mesh[] = []
-  for (const proj of projections.values()) {
-    if (proj.mesh.visible) {
-      proj.mesh.visible = false
-      hidden.push(proj.mesh)
-    }
-  }
-  try {
-    fn()
-  } finally {
-    for (const mesh of hidden) mesh.visible = true
-  }
+function hideProjectionMeshesForRt(projections: Map<Entity, TjsProjectionRuntime>): void {
+  for (const proj of projections.values()) proj.mesh.visible = false
+}
+
+function projectionIsMapped(mesh: THREE.Mesh): boolean {
+  return (mesh.material as THREE.MeshBasicMaterial).map != null
 }
 
 /** Same basis as VirtualCameraBridge — local -Z aims at target, world +Y up. */
@@ -199,6 +193,8 @@ export class SceneTjsBridge {
     for (const entity of [...this.shaderFireFp.keys()]) {
       if (!seen.has(entity)) this.shaderFireFp.delete(entity)
     }
+
+    this.revealProjectionMeshes()
   }
 
   update(dt: number): void {
@@ -209,21 +205,25 @@ export class SceneTjsBridge {
     if (!deps) return
     const prevTarget = this.renderer.getRenderTarget()
     const prevAutoClear = this.renderer.autoClear
+    const prevToneMapping = this.renderer.toneMapping
     this.renderer.autoClear = true
+    this.renderer.toneMapping = THREE.NoToneMapping
+    hideProjectionMeshesForRt(this.projections)
     for (const runtime of this.cameras.values()) {
       if (!this.ecs.VirtualCamera.has(runtime.entity)) continue
       const pose = resolveCctvLensPose(runtime.entity, this.ecs, deps)
       if (!pose) continue
       runtime.cam.position.copy(pose.position)
       runtime.cam.quaternion.copy(pose.quaternion)
-      withProjectionMeshesHidden(this.projections, () => {
-        this.renderer.setRenderTarget(runtime.rt)
-        this.renderer.clear()
-        this.renderer.render(this.worldScene, runtime.cam)
-      })
+      runtime.cam.updateMatrixWorld(true)
+      this.renderer.setRenderTarget(runtime.rt)
+      this.renderer.clear()
+      this.renderer.render(this.worldScene, runtime.cam)
     }
     this.renderer.setRenderTarget(prevTarget)
     this.renderer.autoClear = prevAutoClear
+    this.renderer.toneMapping = prevToneMapping
+    this.revealProjectionMeshes()
   }
 
   dispose(): void {
@@ -292,8 +292,11 @@ export class SceneTjsBridge {
     if (this.cameras.has(entity)) return
     const rt = new THREE.WebGLRenderTarget(TJS_CAMERA_RT_SIZE, TJS_CAMERA_RT_SIZE, {
       depthBuffer: true,
-      stencilBuffer: false
+      stencilBuffer: false,
+      generateMipmaps: false
     })
+    rt.texture.minFilter = THREE.LinearFilter
+    rt.texture.magFilter = THREE.LinearFilter
     rt.texture.colorSpace = THREE.SRGBColorSpace
     const cam = new THREE.PerspectiveCamera(TJS_CAMERA_FOV, 1, 0.1, TJS_CAMERA_FAR)
     this.cameras.set(entity, { entity, rt, cam })
@@ -302,14 +305,7 @@ export class SceneTjsBridge {
   }
 
   private syncProjection(entity: Entity, row: TjsValue): void {
-    if (!row.enabled) {
-      this.teardownProjection(entity)
-      return
-    }
     const cameraEntity = row.camera as Entity
-    if (!cameraEntity) return
-    const cameraRt = this.cameras.get(cameraEntity)
-    if (!cameraRt) return
     const nodes = this.getNodes()
     const screenNode = nodes?.get(entity)
     if (!screenNode) return
@@ -320,21 +316,68 @@ export class SceneTjsBridge {
       runtime = undefined
     }
     if (!runtime) {
-      const mesh = createProjectionPlane(cameraRt.rt.texture)
+      const mesh = createProjectionPlane()
       this.bindDrawSlot(screenNode, mesh)
       runtime = { entity, cameraEntity, pose: screenNode, mesh }
       this.projections.set(entity, runtime)
       clientDebugLog.log(
         'scene',
-        `tjs projection on e${entity as number} camera=e${cameraEntity as number}`,
+        `tjs projection plane e${entity as number} camera=e${cameraEntity as number}`,
         { alsoConsole: true }
       )
+    }
+
+    this.applyProjectionMap(runtime, row)
+  }
+
+  private applyProjectionMap(runtime: TjsProjectionRuntime, row: TjsValue): void {
+    const mat = runtime.mesh.material as THREE.MeshBasicMaterial
+    const cameraRt = row.camera ? this.cameras.get(row.camera as Entity) : undefined
+    if (row.enabled && cameraRt) {
+      if (mat.map !== cameraRt.rt.texture) {
+        mat.map = cameraRt.rt.texture
+        mat.color.setHex(0xffffff)
+        mat.needsUpdate = true
+        clientDebugLog.log('scene', `tjs projection map e${runtime.entity as number} on`, {
+          alsoConsole: true
+        })
+      }
       return
     }
-    const mat = runtime.mesh.material as THREE.MeshBasicMaterial
-    if (mat.map !== cameraRt.rt.texture) {
-      mat.map = cameraRt.rt.texture
+    if (mat.map !== null) {
+      mat.map = null
+      mat.color.setHex(TJS_PROJECTION_BLANK)
       mat.needsUpdate = true
+    }
+  }
+
+  private revealProjectionMeshes(): void {
+    const entries = [...this.projections.values()]
+    for (const proj of entries) {
+      const mapped = projectionIsMapped(proj.mesh)
+      proj.mesh.visible = true
+      proj.mesh.renderOrder = mapped ? 2 : 0
+    }
+
+    for (let i = 0; i < entries.length; i++) {
+      for (let j = i + 1; j < entries.length; j++) {
+        const a = entries[i]
+        const b = entries[j]
+        a.pose.getWorldPosition(_projPosA)
+        b.pose.getWorldPosition(_projPosB)
+        if (_projPosA.distanceTo(_projPosB) > TJS_PROJECTION_PROXIMITY_M) continue
+
+        const aMapped = projectionIsMapped(a.mesh)
+        const bMapped = projectionIsMapped(b.mesh)
+        if (aMapped && !bMapped) {
+          b.mesh.visible = false
+        } else if (!aMapped && bMapped) {
+          a.mesh.visible = false
+        } else if (!aMapped && !bMapped) {
+          if ((a.entity as number) > (b.entity as number)) a.mesh.visible = false
+          else b.mesh.visible = false
+        }
+      }
     }
   }
 
@@ -343,9 +386,6 @@ export class SceneTjsBridge {
     if (!runtime) return
     runtime.rt.dispose()
     this.cameras.delete(entity)
-    for (const [projEntity, proj] of [...this.projections.entries()]) {
-      if (proj.cameraEntity === entity) this.teardownProjection(projEntity)
-    }
     clientDebugLog.log('scene', `tjs camera off e${entity as number}`, { alsoConsole: true })
     this.onCameraReady?.(entity)
   }

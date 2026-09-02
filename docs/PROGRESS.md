@@ -29,13 +29,13 @@
 - **`tjs` component** — `kind: shader | camera | projection | texture`, `name`, `enabled`, `sync`, spawn vecs, `camera` for projection
 - **No Tags string bus** — removed `tjs.ice.spawn` Tags, bundle comment scans, worker `globalThis.tjs` proxy
 - **AbilityManager gate** — boots only when projection has `tjs` shader rows (not `bin/index.js` text)
-- **CCTV** — lens: Transform + SDK `VirtualCamera` + `kind: camera`; screen: Transform + `kind: projection` (drawRoot plane via `tjsProjection` slot; no MeshRenderer/Material)
+- **CCTV** — lens: Transform + SDK `VirtualCamera` + `kind: camera`; screen: Transform + `kind: projection` (blank host plane; `enabled` maps lens RT onto `drawRoot` slot)
 
 | Area | Status | Notes |
 | ---- | ------ | ----- |
 | **tjs mirror + bridge** | 🟢 | `src/dcl/ecs/tjsComponent.ts` + `SceneTjsBridge` |
 | **Shader one-shot** | 🟢 | `enabled: true` on LWW put fires once per distinct payload |
-| **CCTV camera + projection** | 🟢 | VirtualCamera lens RT; projection plane on drawRoot (`tjsProjection` slot) |
+| **CCTV camera + projection** | 🟢 | Lens RT (LinearFilter, no mipmaps); blank plane; dedupe overlapping hydration duplicates |
 
 ---
 

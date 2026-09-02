@@ -7375,6 +7375,11 @@
         backdrop-filter: blur(10px);
         -webkit-backdrop-filter: blur(10px);
       }
+      html.client-tablet .mobile-scene-location-pill,
+      html.client-tablet .location-map-stack,
+      html.client-tablet .world-location-card {
+        display: none !important;
+      }
       html.client-mobile .mobile-game-hud {
         position: fixed;
         right: max(12px, env(safe-area-inset-right, 0px));

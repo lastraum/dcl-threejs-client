@@ -53,7 +53,27 @@ function createProjectionPlane(texture: THREE.Texture): THREE.Mesh {
   )
   mesh.name = 'tjs-projection'
   mesh.userData.dclTjsProjectionPlane = true
+  mesh.matrixAutoUpdate = false
+  mesh.matrixWorldAutoUpdate = false
   return mesh
+}
+
+function withProjectionMeshesHidden(
+  projections: Map<Entity, TjsProjectionRuntime>,
+  fn: () => void
+): void {
+  const hidden: THREE.Mesh[] = []
+  for (const proj of projections.values()) {
+    if (proj.mesh.visible) {
+      proj.mesh.visible = false
+      hidden.push(proj.mesh)
+    }
+  }
+  try {
+    fn()
+  } finally {
+    for (const mesh of hidden) mesh.visible = true
+  }
 }
 
 function withSubtreeHidden(root: THREE.Object3D | null | undefined, fn: () => void): void {
@@ -199,8 +219,9 @@ export class SceneTjsBridge {
   update(dt: number): void {
     const step = Math.min(0.05, Math.max(0, dt))
     getShaderManager().update(step)
-    if (this.cameras.size === 0) return
     const nodes = this.getNodes()
+    if (nodes && this.projections.size > 0) this.syncProjectionMatrices(nodes)
+    if (this.cameras.size === 0) return
     const deps = this.getWorldDeps()
     if (!nodes || !deps) return
     const prevTarget = this.renderer.getRenderTarget()
@@ -214,9 +235,11 @@ export class SceneTjsBridge {
       runtime.cam.quaternion.copy(pose.quaternion)
       const lensNode = nodes.get(runtime.entity)
       withSubtreeHidden(lensNode, () => {
-        this.renderer.setRenderTarget(runtime.rt)
-        this.renderer.clear()
-        this.renderer.render(this.worldScene, runtime.cam)
+        withProjectionMeshesHidden(this.projections, () => {
+          this.renderer.setRenderTarget(runtime.rt)
+          this.renderer.clear()
+          this.renderer.render(this.worldScene, runtime.cam)
+        })
       })
     }
     this.renderer.setRenderTarget(prevTarget)
@@ -318,7 +341,10 @@ export class SceneTjsBridge {
     }
     if (!runtime) {
       const mesh = createProjectionPlane(cameraRt.rt.texture)
-      screenNode.add(mesh)
+      this.worldScene.add(mesh)
+      screenNode.updateWorldMatrix(true, false)
+      mesh.matrix.copy(screenNode.matrixWorld)
+      mesh.matrixWorld.copy(screenNode.matrixWorld)
       runtime = { entity, cameraEntity, mesh }
       this.projections.set(entity, runtime)
       clientDebugLog.log(
@@ -345,6 +371,16 @@ export class SceneTjsBridge {
     }
     clientDebugLog.log('scene', `tjs camera off e${entity as number}`, { alsoConsole: true })
     this.onCameraReady?.(entity)
+  }
+
+  private syncProjectionMatrices(nodes: Map<Entity, THREE.Group>): void {
+    for (const proj of this.projections.values()) {
+      const screenNode = nodes.get(proj.entity)
+      if (!screenNode) continue
+      screenNode.updateWorldMatrix(true, false)
+      proj.mesh.matrix.copy(screenNode.matrixWorld)
+      proj.mesh.matrixWorld.copy(screenNode.matrixWorld)
+    }
   }
 
   private teardownProjection(entity: Entity): void {

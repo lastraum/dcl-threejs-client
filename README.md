@@ -317,9 +317,8 @@ Transform.create(cam, { position, rotation })
 VirtualCamera.create(cam, { lookAtEntity: target }) // optional
 tjs.create(cam, { kind: 'camera', enabled: true, name: '', path: '', sync: false, camera: 0, ox: 0, oy: 0, oz: 0, dx: 0, dy: 0, dz: 0, dist: 0 })
 
-// CCTV screen — Transform + Name + tjs projection only (no MeshRenderer / Material / MeshCollider)
+// CCTV screen — Transform + tjs projection only (no MeshRenderer / Material / MeshCollider)
 Transform.create(screen, { position, rotation, scale })
-Name.create(screen, { value: 'cctv-screen' })
 tjs.create(screen, {
   kind: 'projection',
   enabled: true,
@@ -339,7 +338,7 @@ tjs.getMutable(cam).enabled = false // toggle lens RT
 | `kind: 'shader'` + `name: 'ice'` | Client loads bundled/file shader, fires when `enabled: true` |
 | `sync: true` | That cast is published on `d3js-ability-vfx` for other ThreejsClient tabs |
 | `kind: 'camera'` | Lens dummy: Transform + SDK `VirtualCamera` + host RT (`enabled` toggles capture) |
-| `kind: 'projection'` + `camera` | Host spawns a 1×1 plane child on Transform (no MeshRenderer/Material); lens RT as map |
+| `kind: 'projection'` + `camera` | Host spawns a 1×1 plane in worldScene (no MeshRenderer/Material); follows Transform; lens RT as map |
 
 AbilityManager boots only after Jump In and only when the scene has `tjs` shader rows — not from bundle text scans. Unknown `tjs` ids are ignored by other explorers (no crash).
 

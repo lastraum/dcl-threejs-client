@@ -35,7 +35,7 @@
 | ---- | ------ | ----- |
 | **tjs mirror + bridge** | 🟢 | `src/dcl/ecs/tjsComponent.ts` + `SceneTjsBridge` |
 | **Shader one-shot** | 🟢 | `enabled: true` on LWW put fires once per distinct payload |
-| **CCTV camera + projection** | 🟢 | VirtualCamera lens RT; host-owned projection plane |
+| **CCTV camera + projection** | 🟢 | VirtualCamera lens RT; host plane in worldScene (pose Groups not rendered) |
 
 ---
 

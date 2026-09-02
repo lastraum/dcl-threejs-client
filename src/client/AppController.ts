@@ -3825,7 +3825,7 @@ export class AppController {
     if (key === this.lastLocationTitleKey && this.locationTitleCache.has(key)) return
 
     const primary = this.world?.getLoadedPrimaryScene()
-    if (primary?.source.kind === 'coords' && primary.parcels.includes(key)) {
+    if (primary?.source.kind === 'coords' && this.world?.primaryCoversParcel(x, y)) {
       const title = sceneDisplayTitle(primary)
       this.seedLocationTitleCache(primary, title)
       this.applyLocationTitle(title, key)
@@ -4026,6 +4026,22 @@ export class AppController {
       return
     }
 
+    const primary = world.getLoadedPrimaryScene()
+    if (primary?.entityId?.trim()) {
+      try {
+        const resolved = await resolveSceneFromRoute(target)
+        if (resolved?.entityId?.trim() === primary.entityId.trim()) {
+          world.foldPrimaryParcel(target.x, target.y)
+          console.info(
+            `[promote] same deployment @ ${target.x},${target.y} — fold only (no handoff)`
+          )
+          return
+        }
+      } catch {
+        /* fall through to handoff path */
+      }
+    }
+
     // Pin under-feet parcel so live secondary boots first (handoff, no loading screen).
     this.multiSceneRuntime.setSecondaryPriorityParcel(target.x, target.y)
     try {
@@ -4079,6 +4095,7 @@ export class AppController {
       `[promote] ABORT seamless jump @ ${target.x},${target.y} (${reason}) — ` +
         `no live secondary after wait; prior primary stays resident`
     )
+    world.notifyPromoteHandoffFailed(target.x, target.y)
     this.multiSceneRuntime.setSecondaryPriorityParcel(target.x, null)
   }
 

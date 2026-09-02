@@ -42,6 +42,8 @@ export class MultiSceneRuntime {
   private lastMultiPhysIds = new Set<number>()
   /** Live secondary tick/reconcile gated until primary play-ready. */
   private secondaryActivityEnabled = false
+  /** Last AOI candidates — flushed when activity turns on (do not drop Spring). */
+  private pendingSecondaryCandidates: SecondaryLiveRequest[] | null = null
 
   constructor(opts: MultiSceneRuntimeOptions) {
     this.pe = opts.peManager
@@ -217,9 +219,17 @@ export class MultiSceneRuntime {
   }
 
   setSecondaryActivityEnabled(enabled: boolean): void {
-    if (this.secondaryActivityEnabled === enabled) return
+    if (this.secondaryActivityEnabled === enabled) {
+      if (enabled && this.pendingSecondaryCandidates) {
+        this.secondary?.reconcile(this.pendingSecondaryCandidates)
+      }
+      return
+    }
     this.secondaryActivityEnabled = enabled
     console.info(`[multi-scene] secondary activity ${enabled ? 'ON' : 'OFF'}`)
+    if (enabled && this.pendingSecondaryCandidates) {
+      this.secondary?.reconcile(this.pendingSecondaryCandidates)
+    }
   }
 
   /** When false, soft-route must not force-boot neighbors (promote settle). */
@@ -228,6 +238,7 @@ export class MultiSceneRuntime {
   }
 
   reconcileSecondaries(candidates: SecondaryLiveRequest[]): void {
+    this.pendingSecondaryCandidates = candidates
     if (!this.secondaryActivityEnabled) return
     this.secondary?.reconcile(candidates)
   }

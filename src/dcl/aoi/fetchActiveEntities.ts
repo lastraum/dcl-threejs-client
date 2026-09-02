@@ -20,7 +20,7 @@ const MAX_CACHED_POINTERS = 8_000
 const MAX_CACHED_ENTITIES = 2_000
 
 type TimedEntity = { entity: ActiveSceneEntity; expiresAt: number }
-type TimedPointer = { entityId: string; expiresAt: number }
+type TimedPointer = { entityIds: Set<string>; expiresAt: number }
 
 const entityById = new Map<string, TimedEntity>()
 const pointerOwner = new Map<string, TimedPointer>()
@@ -120,19 +120,33 @@ export function entityFootprintKeys(
   return out
 }
 
+/** Catalyst `/entities/active` row → full occupied footprint (pointers ∪ scene.parcels). */
+export function footprintKeysFromCatalystRecord(
+  raw: Record<string, unknown>,
+  id?: string
+): string[] {
+  const withId =
+    typeof id === 'string' && id.trim() ? { ...raw, id: id.trim() } : raw
+  const ent = normalizeEntity(withId)
+  return ent ? entityFootprintKeys(ent) : []
+}
+
 function rememberEntity(ent: ActiveSceneEntity, now: number): void {
   const expiresAt = now + ENTITY_CACHE_TTL_MS
   entityById.set(ent.id, { entity: ent, expiresAt })
-  const keys = entityFootprintKeys(ent)
-  for (const raw of keys) {
+  // Index catalyst pointers only — never inflate plaza scene.parcels over nested
+  // deployments that own those cells in the pointer index (Hockey / BrandonManus).
+  const pointerKeys = ent.pointers.length ? ent.pointers : [ent.base]
+  for (const raw of pointerKeys) {
     const p = normalizePointer(raw)
-    // Prefer higher-rank owners when writing (same as buildPointerOwnershipMap intent).
+    if (!p) continue
     const prev = pointerOwner.get(p)
     if (prev && prev.expiresAt > now) {
-      const prevEnt = entityById.get(prev.entityId)?.entity
-      if (prevEnt && entityParcelClaimRank(prevEnt) > entityParcelClaimRank(ent)) continue
+      prev.entityIds.add(ent.id)
+      prev.expiresAt = Math.max(prev.expiresAt, expiresAt)
+    } else {
+      pointerOwner.set(p, { entityIds: new Set([ent.id]), expiresAt })
     }
-    pointerOwner.set(p, { entityId: ent.id, expiresAt })
   }
 }
 
@@ -194,13 +208,16 @@ export async function fetchActiveEntitiesForPointers(
 
   for (const p of unique) {
     const hit = pointerOwner.get(p)
-    if (hit && hit.expiresAt > now) {
-      const ent = entityById.get(hit.entityId)?.entity
-      if (ent && entityById.get(hit.entityId)!.expiresAt > now) {
+    if (hit && hit.expiresAt > now && hit.entityIds.size) {
+      let any = false
+      for (const id of hit.entityIds) {
+        const timed = entityById.get(id)
+        if (!timed || timed.expiresAt <= now) continue
         cacheHits++
-        byId.set(ent.id, ent)
-        continue
+        byId.set(id, timed.entity)
+        any = true
       }
+      if (any) continue
     }
     cacheMisses++
     needFetch.push(p)
@@ -223,7 +240,8 @@ export async function fetchActiveEntitiesForPointers(
   if (unique.length <= 2) {
     const stillNeed = unique.filter((p) => {
       const hit = pointerOwner.get(p)
-      return !(hit && hit.expiresAt > performance.now() && entityById.get(hit.entityId))
+      if (!hit || hit.expiresAt <= performance.now() || hit.entityIds.size === 0) return true
+      return ![...hit.entityIds].some((id) => entityById.get(id))
     })
     if (stillNeed.length) {
       const extra = adjacentParcelPointers(stillNeed).filter((p) => !unique.includes(p))
@@ -391,6 +409,30 @@ export function isCompositeVisualCandidate(ent: ActiveSceneEntity): boolean {
   const main = ent.main.toLowerCase()
   if (main.includes('bin/index.js') || main.endsWith('index.js')) return true
   return false
+}
+
+/**
+ * SDK7 script entry (`bin/index.js` / `index.js`) — not classic SDK6 `game.js` CityTiles.
+ * Composite + game.js estates use the composite shell path only.
+ */
+export function isSdk7ScriptEntry(
+  ent: Pick<ActiveSceneEntity, 'main' | 'runtimeVersion'>
+): boolean {
+  const main = ent.main.toLowerCase().trim()
+  if (!main) return false
+  if (main === 'game.js' || main.endsWith('/game.js') || main === 'bin/game.js') return false
+  const rv = ent.runtimeVersion
+  if (rv === '6' || rv.startsWith('6.')) return false
+  if (rv === '7' || rv.startsWith('7.')) return true
+  if (main.includes('bin/index.js') || main.endsWith('/index.js')) return true
+  return !main.includes('game.js')
+}
+
+/** Explorer first-frame bake — SDK7 script scenes (runs alongside composite shell when present). */
+export function isFirstFrameSecondaryCandidate(ent: ActiveSceneEntity): boolean {
+  if (!isSecondarySceneCandidate(ent)) return false
+  if (isOpenRoadEntity(ent)) return false
+  return isSdk7ScriptEntry(ent)
 }
 
 /** Occupied SDK7/composite scene worth a nearby live/shell slot — not road or empty land. */

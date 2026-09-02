@@ -8,7 +8,12 @@ import { resolveBrowserChatEnabled } from './resolveBrowserChat'
 import { resolveNameTagsVisible } from './resolveNameTags'
 import { resolvePortableExperiencesPolicy } from '../multiScene/resolvePortableExperiences'
 import { resolveSceneEnvironment } from '../landscape/resolveLandscapeEnvironment'
-import { catalystContentAssetUrl, catalystRootFromContentUrl, fetchSceneEntityByPointer } from '../../network/catalyst/CatalystClient'
+import {
+  catalystContentAssetUrl,
+  catalystRootFromContentUrl,
+  fetchSceneEntityById,
+  fetchSceneEntityByPointer
+} from '../../network/catalyst/CatalystClient'
 import { fetchCatalystRealmAbout, fetchWorldRealmAbout } from '../../network/catalyst/realmAbout'
 import {
   contentBaseFromScenesUrn,
@@ -168,6 +173,32 @@ async function fetchParcelEntity(x: number, y: number): Promise<{
     entity: result.entity,
     realm: realmFromAbout(realmAbout)
   }
+}
+
+/**
+ * Resolve a nested deployment by entity id. Parcel-pointer resolve returns the
+ * covering plaza when both list the same cell — never use that for Hockey / Jarod.
+ */
+export async function resolveSceneFromEntityId(
+  entityId: string,
+  fallback: { x: number; y: number }
+): Promise<ResolvedScene | null> {
+  const id = entityId.trim()
+  if (!id) return null
+  const realmAbout = await fetchCatalystRealmAbout().catch(() => null)
+  if (!realmAbout) return null
+  const hit = await fetchSceneEntityById(realmAbout.contentUrl, id)
+  if (!hit) return null
+  const pointer = `${fallback.x},${fallback.y}`
+  if (isOpenRoadOrNonRunnableSdk6Entity(hit.entity)) return null
+  return resolvedFromEntity(hit.entity, {
+    title: pointer,
+    commsPointer: pointer,
+    realm: realmFromAbout(realmAbout),
+    source: { kind: 'coords', x: fallback.x, y: fallback.y },
+    contentsBaseUrl: catalystRootFromContentUrl(realmAbout.contentUrl),
+    assetUrl: (hash) => catalystContentAssetUrl(realmAbout.contentUrl, hash)
+  })
 }
 
 const FALLBACK_GENESIS_REALM: RealmEndpoints = {

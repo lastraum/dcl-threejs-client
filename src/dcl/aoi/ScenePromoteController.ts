@@ -3,16 +3,16 @@ import type { ResolvedScene } from '../content/types'
 import { parseParcelKey } from '../content/parseParcel'
 import { PARCEL_SIZE } from '../content/types'
 import { fetchSceneEntityByPointer } from '../../network/catalyst/CatalystClient'
-import { renderQuality } from '../../rendering/RenderQualitySettings'
 import { distanceToParcelCenterM } from './parcelAoi'
 import {
   fetchActiveEntitiesForPointers,
   entityFootprintKeys,
+  footprintKeysFromCatalystRecord,
   isCatalystEmptyLandEntity,
   isOpenRoadEntity,
   type ActiveSceneEntity
 } from './fetchActiveEntities'
-import { aoiStandOnPromote } from '../multiScene/caps'
+import { aoiStandOnPromote, visualWarmRadiusM } from '../multiScene/caps'
 
 /**
  * Dense Genesis (CBD) can have 30–50+ SDK7 scenes inside Scene Distance.
@@ -35,6 +35,8 @@ export type ScenePromoteControllerOptions = {
    * Warm script/manifest assets for real scenes in Scene Distance warm band.
    */
   onPrefetch?: (x: number, y: number) => void
+  /** Catalyst footprint keys folded into primary occupancy (multi-parcel deployments). */
+  onFootprintFold?: (keys: readonly string[]) => void
   dwellMs?: number
   cooldownMs?: number
   /**
@@ -94,11 +96,15 @@ export class ScenePromoteController {
   private warmScanInFlight = false
   private inFlight = false
   private evalGen = 0
+  private footprintProbeKey = ''
+  /** Cooldown after failed handoff — stops promote→ABORT loops on nested parcels. */
+  private readonly promoteAbortUntil = new Map<string, number>()
   /** When false, skip warm scan + promote evaluate (primary still booting). */
   private neighborActivityEnabled = false
   private readonly onPromote: ScenePromoteControllerOptions['onPromote']
   private readonly onSoftRoute: ScenePromoteControllerOptions['onSoftRoute']
   private readonly onPrefetch: ScenePromoteControllerOptions['onPrefetch']
+  private readonly onFootprintFold: ScenePromoteControllerOptions['onFootprintFold']
   private readonly dwellMs: number
   private readonly cooldownMs: number
   private readonly scriptWarmRadiusOpt: number | (() => number) | undefined
@@ -107,16 +113,17 @@ export class ScenePromoteController {
     this.onPromote = opts.onPromote
     this.onSoftRoute = opts.onSoftRoute
     this.onPrefetch = opts.onPrefetch
+    this.onFootprintFold = opts.onFootprintFold
     this.dwellMs = opts.dwellMs ?? 320
     this.cooldownMs = opts.cooldownMs ?? 2_000
     this.scriptWarmRadiusOpt = opts.scriptWarmRadiusM
   }
 
-  /** Live warm radius — tracks Preferences Scene Distance unless overridden. */
+  /** Live warm radius — 200m look disc (not the 64m collide arm). */
   private getScriptWarmRadiusM(): number {
     if (typeof this.scriptWarmRadiusOpt === 'function') return this.scriptWarmRadiusOpt()
     if (typeof this.scriptWarmRadiusOpt === 'number') return this.scriptWarmRadiusOpt
-    return renderQuality.getSceneLoadRadiusM()
+    return visualWarmRadiusM()
   }
 
   /**
@@ -145,6 +152,7 @@ export class ScenePromoteController {
     this.warmedEntityIds.clear()
     this.coveredEntityParcels.clear()
     this.pendingWarm.clear()
+    this.promoteAbortUntil.clear()
     for (const p of scene.parcels) this.primaryParcels.add(p.trim())
     this.primaryParcels.add(scene.baseParcel.trim())
     // Whole multi-parcel primary deployment is already loaded — never AOI-warm it again.
@@ -164,6 +172,7 @@ export class ScenePromoteController {
     console.info(
       `[promote] bound primary “${scene.title}” base=${scene.baseParcel} parcels=${this.primaryParcels.size} entity=${scene.entityId?.slice(0, 12) ?? 'none'} scriptWarm=${this.getScriptWarmRadiusM()}m (warm deferred until play-ready)`
     )
+    void this.expandPrimaryFootprintFromCatalyst(scene)
   }
 
   unbind(): void {
@@ -184,6 +193,13 @@ export class ScenePromoteController {
     this.neighborActivityEnabled = enabled
   }
 
+  /** AppController / World — back off promote evaluate after handoff failure. */
+  notePromoteHandoffFailed(x: number, y: number, cooldownMs = 30_000): void {
+    this.promoteAbortUntil.set(`${x},${y}`, performance.now() + cooldownMs)
+    this.dwellKey = ''
+    this.inFlight = false
+  }
+
   /**
    * Fold a cell into the bound primary footprint (origin-rebase feet, handoff
    * target). `ResolvedScene.parcels` can miss non-base cells.
@@ -193,6 +209,63 @@ export class ScenePromoteController {
     if (!k) return
     this.primaryParcels.add(k)
     this.coveredEntityParcels.add(k)
+  }
+
+  private foldFootprintKeys(keys: readonly string[]): void {
+    const folded: string[] = []
+    for (const raw of keys) {
+      const k = raw.trim()
+      if (!k) continue
+      this.primaryParcels.add(k)
+      this.coveredEntityParcels.add(k)
+      folded.push(k)
+    }
+    if (folded.length) this.onFootprintFold?.(folded)
+  }
+
+  /** Catalyst pointers ∪ scene.parcels — scene.json alone can miss plaza cells. */
+  private async expandPrimaryFootprintFromCatalyst(scene: ResolvedScene): Promise<void> {
+    if (scene.source.kind !== 'coords' || !scene.entityId?.trim()) return
+    const gen = this.evalGen
+    try {
+      const hit = await fetchSceneEntityByPointer(scene.realm.contentUrl, scene.baseParcel)
+      if (gen !== this.evalGen || this.primary !== scene) return
+      if (!hit || hit.id !== scene.entityId) return
+      const keys = footprintKeysFromCatalystRecord(hit.entity, hit.id)
+      const before = this.primaryParcels.size
+      this.foldFootprintKeys(keys)
+      if (this.primaryParcels.size > before) {
+        console.info(
+          `[promote] catalyst footprint folded n=${this.primaryParcels.size - before} ` +
+            `total=${this.primaryParcels.size} entity=${scene.entityId.slice(0, 12)}`
+        )
+      }
+    } catch (err) {
+      console.warn('[promote] catalyst footprint expand failed', err)
+    }
+  }
+
+  /** Soft-route cell not in scene.parcels — fold without dwell if same catalyst entity. */
+  private probeSameEntityFootprint(px: number, py: number, key: string): void {
+    const scene = this.primary
+    if (!scene?.entityId?.trim() || this.footprintProbeKey === key) return
+    this.footprintProbeKey = key
+    const gen = this.evalGen
+    void (async () => {
+      try {
+        const hit = await fetchSceneEntityByPointer(scene.realm.contentUrl, key)
+        if (gen !== this.evalGen || this.primary !== scene) return
+        if (!hit?.id || hit.id !== scene.entityId) return
+        const keys = footprintKeysFromCatalystRecord(hit.entity, hit.id)
+        this.foldFootprintKeys(keys)
+        this.dwellKey = ''
+        console.info(`[promote] same-entity fold @ ${key} footprint=${keys.length}`)
+      } catch {
+        /* ignore */
+      } finally {
+        if (this.footprintProbeKey === key) this.footprintProbeKey = ''
+      }
+    })()
   }
 
   /**
@@ -215,6 +288,10 @@ export class ScenePromoteController {
       this.lastSoftKey = key
       this.onSoftRoute?.(px, py)
       console.info(`[promote] soft-route ${key}`)
+    }
+
+    if (!this.primaryParcels.has(key) && scene.entityId?.trim()) {
+      this.probeSameEntityFootprint(px, py, key)
     }
 
     if (!this.neighborActivityEnabled) return
@@ -252,6 +329,9 @@ export class ScenePromoteController {
     }
 
     if (now - this.dwellSince < this.dwellMs) return
+
+    const abortUntil = this.promoteAbortUntil.get(key) ?? 0
+    if (now < abortUntil) return
 
     void this.evaluate(px, py, key)
   }
@@ -294,19 +374,15 @@ export class ScenePromoteController {
         y: parseParcelKey(baseParcel).y + Math.floor(dclZ / PARCEL_SIZE)
       }
 
-      // 2) Only query parcels not already owned by a known deployment / primary / empty/road.
+      // 2) Query every parcel in the warm ring. Plaza footprint must NOT skip
+      // nested deployments that sit on those same cells (Hockey / Jarod).
       const pointers: string[] = []
       let skippedCovered = 0
       for (let dx = -ring; dx <= ring; dx++) {
         for (let dy = -ring; dy <= ring; dy++) {
           const parcel = { x: center.x + dx, y: center.y + dy }
           const key = `${parcel.x},${parcel.y}`
-          if (this.primaryParcels.has(key)) continue
           if (this.skipPromoteKeys.has(key)) continue
-          if (this.coveredEntityParcels.has(key)) {
-            skippedCovered++
-            continue
-          }
           const dist = distanceToParcelCenterM(dclX, dclZ, parcel, baseParcel)
           if (dist > scriptWarmRadiusM) continue
           pointers.push(key)
@@ -497,9 +573,8 @@ export class ScenePromoteController {
       }
 
       if (hit.id && scene.entityId && hit.id === scene.entityId) {
-        // Multi-parcel primary: fold this parcel into primary footprint (no re-load).
-        this.primaryParcels.add(key)
-        this.coveredEntityParcels.add(key)
+        // Multi-parcel primary: fold full catalyst footprint (no re-load).
+        this.foldFootprintKeys(footprintKeysFromCatalystRecord(hit.entity, hit.id))
         this.dwellKey = ''
         this.inFlight = false
         return
@@ -519,6 +594,12 @@ export class ScenePromoteController {
   }
 
   private fire(x: number, y: number, reason: string): void {
+    const key = `${x},${y}`
+    const abortUntil = this.promoteAbortUntil.get(key) ?? 0
+    if (performance.now() < abortUntil) {
+      this.inFlight = false
+      return
+    }
     this.lastPromoteAt = performance.now()
     this.dwellKey = ''
     console.info(`[promote] → primary ${x},${y} (${reason})`)

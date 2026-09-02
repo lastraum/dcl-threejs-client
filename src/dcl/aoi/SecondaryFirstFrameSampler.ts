@@ -11,7 +11,7 @@ import {
 import type { EntityPose } from '../../bridge/ReservedEntitiesSync'
 import { SceneScriptSystem } from '../../core/systems/SceneScriptSystem'
 import type { ResolvedScene } from '../content/types'
-import { resolveSceneFromRoute } from '../content/resolveScene'
+import { resolveSceneFromEntityId, resolveSceneFromRoute } from '../content/resolveScene'
 import {
   isAoiSecondaryGroundSrc,
   neighborOriginOffset,
@@ -71,6 +71,8 @@ export class SecondaryFirstFrameSampler {
   private readonly queued: FirstFrameSampleRequest[] = []
   private readonly inFlightIds = new Set<string>()
   private readonly doneIds = new Set<string>()
+  /** Live JS owns this entity — do not finish a first-frame bake. */
+  private readonly cancelledIds = new Set<string>()
   private active = 0
   private disposed = false
   private gen = 0
@@ -93,10 +95,23 @@ export class SecondaryFirstFrameSampler {
 
   forget(entityId: string): void {
     this.doneIds.delete(this.doneKey(entityId))
+    this.cancelledIds.delete(entityId)
+  }
+
+  /**
+   * Live guest is about to own this scene. Drop queued/in-flight first-frame
+   * so we do not wait on an 820-GLTF bake before JS, or hide the shell.
+   */
+  cancel(entityId: string): void {
+    this.cancelledIds.add(entityId)
+    for (let i = this.queued.length - 1; i >= 0; i--) {
+      if (this.queued[i]!.entityId === entityId) this.queued.splice(i, 1)
+    }
   }
 
   enqueue(req: FirstFrameSampleRequest): void {
     if (this.disposed) return
+    if (this.cancelledIds.has(req.entityId)) return
     if (this.knows(req.entityId)) return
     if (this.active + this.queued.length >= FF_MAX_ACTIVE_SECONDARIES) {
       console.info(
@@ -113,6 +128,7 @@ export class SecondaryFirstFrameSampler {
     this.queued.length = 0
     this.inFlightIds.clear()
     this.doneIds.clear()
+    this.cancelledIds.clear()
     this.active = 0
   }
 
@@ -149,16 +165,26 @@ export class SecondaryFirstFrameSampler {
     let system: SceneScriptSystem | null = null
 
     try {
-      const scene = await resolveSceneFromRoute({
-        kind: 'coords',
-        x: req.resolveX,
-        y: req.resolveY,
-        segment: `${req.resolveX},${req.resolveY}`
-      })
-      if (gen !== this.gen || this.disposed) return
+      const scene =
+        (await resolveSceneFromEntityId(req.entityId, {
+          x: req.resolveX,
+          y: req.resolveY
+        })) ??
+        (await resolveSceneFromRoute({
+          kind: 'coords',
+          x: req.resolveX,
+          y: req.resolveY,
+          segment: `${req.resolveX},${req.resolveY}`
+        }))
+      if (gen !== this.gen || this.disposed || this.cancelledIds.has(req.entityId)) return
       if (!scene?.mainEntry) {
         this.doneIds.add(this.doneKey(req.entityId))
         req.onFail?.(req.entityId, 'no main entry')
+        return
+      }
+      if (scene.entityId && req.entityId && scene.entityId !== req.entityId) {
+        this.doneIds.add(this.doneKey(req.entityId))
+        req.onFail?.(req.entityId, 'pointer resolved covering plaza, not this entity')
         return
       }
 
@@ -187,7 +213,7 @@ export class SecondaryFirstFrameSampler {
       system.setAssetHydrationMode(false)
 
       await system.start(scene, req.cache, host)
-      if (gen !== this.gen || this.disposed) return
+      if (gen !== this.gen || this.disposed || this.cancelledIds.has(req.entityId)) return
 
       const started = performance.now()
       let peak = 0
@@ -199,10 +225,10 @@ export class SecondaryFirstFrameSampler {
       let overBudgetStreak = 0
 
       while (performance.now() - started < TIMEOUT_MS) {
-        if (gen !== this.gen || this.disposed) return
+        if (gen !== this.gen || this.disposed || this.cancelledIds.has(req.entityId)) return
         if (lastFrameOverBudget(33)) {
           overBudgetStreak++
-          if (overBudgetStreak >= 3) {
+          if (overBudgetStreak >= 3 && peak < 1) {
             this.doneIds.add(this.doneKey(req.entityId))
             req.onFail?.(req.entityId, 'over-budget')
             return
@@ -293,15 +319,7 @@ export class SecondaryFirstFrameSampler {
           ` waited=${((performance.now() - started) / 1000).toFixed(1)}s base=${neighborBase}`
       )
 
-      system.setAssetHydrationMode(false)
-      system.dispose()
-      system = null
-      host.dispose()
-      host = null
-      hostEl.remove()
-      hostEl = null
-
-      if (gen !== this.gen || this.disposed) {
+      if (gen !== this.gen || this.disposed || this.cancelledIds.has(req.entityId)) {
         group.clear()
         return
       }
@@ -319,6 +337,14 @@ export class SecondaryFirstFrameSampler {
         `[aoi] first-frame secondary “${label}” gltfs=${gltfCount} base=${neighborBase} (hierarchy v${FF_HIERARCHY_VERSION})`
       )
       req.onReady(req.entityId, group, gltfCount)
+
+      system.setAssetHydrationMode(false)
+      system.dispose()
+      system = null
+      host.dispose()
+      host = null
+      hostEl.remove()
+      hostEl = null
     } catch (err) {
       this.doneIds.add(this.doneKey(req.entityId))
       const msg = err instanceof Error ? err.message : String(err)

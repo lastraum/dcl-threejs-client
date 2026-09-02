@@ -280,6 +280,10 @@ export class PhysXWorld {
    * Parent has no single RigidStatic; children are MULTI_SHAPE_CHILD_BASE+…
    */
   private readonly multiShapeChildCount = new Map<number, number>()
+  /** Distance-gated statics — cooked but not simulating (toggle without recook). */
+  private readonly simulationDisabledEntities = new Set<number>()
+  /** Walk / play: do not first-expand multi-shape (227-actor hitch). Toggle only. */
+  private deferWalkMultiShapeExpand = false
   /** Rate-limit multi-shape expand console spam (thrash diagnosis). */
   private readonly multiShapeExpandLogAt = new Map<number, number>()
   /** Coalesce CCT overlap separate after a burst of tile cooks (not per expand). */
@@ -1333,7 +1337,97 @@ export class PhysXWorld {
     this.staticFp.delete(entity)
     this.staticPoseFp.delete(entity)
     this.actorWorldBaked.delete(entity)
+    this.simulationDisabledEntities.delete(entity)
     this.invalidateControllerCache()
+  }
+
+  /** Walking plaza: skip first multi-shape expand; enable/disable already-cooked only. */
+  setDeferWalkMultiShapeExpand(defer: boolean): void {
+    this.deferWalkMultiShapeExpand = defer
+  }
+
+  /** True when a cooked actor participates in simulation (not distance-gated off). */
+  isStaticColliderSimulationEnabled(entity: number): boolean {
+    const childCount = this.multiShapeChildCount.get(entity) ?? 0
+    if (childCount > 0) {
+      for (let i = 0; i < childCount; i++) {
+        const id = multiShapeChildPhysId(entity, i)
+        if (this.staticActors.has(id) && !this.simulationDisabledEntities.has(id)) return true
+      }
+      return false
+    }
+    if (!this.staticActors.has(entity)) return false
+    return !this.simulationDisabledEntities.has(entity)
+  }
+
+  /**
+   * Toggle simulation + scene-query on cooked static actors without recook/destroy.
+   * Multi-shape parents toggle all expanded child RigidStatics.
+   */
+  setStaticColliderFamilySimulationEnabled(entity: number, enabled: boolean): boolean {
+    if (entity === INFINITE_GROUND_ENTITY) return false
+    let changed = false
+    const childCount = this.multiShapeChildCount.get(entity) ?? 0
+    if (childCount > 0) {
+      for (let i = 0; i < childCount; i++) {
+        const id = multiShapeChildPhysId(entity, i)
+        if (this.setOneStaticActorSimulationEnabled(id, enabled)) changed = true
+      }
+    } else if (this.staticActors.has(entity)) {
+      if (this.setOneStaticActorSimulationEnabled(entity, enabled)) changed = true
+    }
+    if (changed) this.invalidateControllerCache()
+    return changed
+  }
+
+  /** Static actors with simulation shapes enabled (distance-gated count for health). */
+  get simulationActiveStaticColliderCount(): number {
+    let n = 0
+    for (const entity of this.staticActors.keys()) {
+      if (!this.simulationDisabledEntities.has(entity)) n++
+    }
+    return n
+  }
+
+  private setOneStaticActorSimulationEnabled(entity: number, enabled: boolean): boolean {
+    const actor = this.staticActors.get(entity)
+    if (!actor) return false
+    const wasEnabled = !this.simulationDisabledEntities.has(entity)
+    if (wasEnabled === enabled) return false
+    if (!this.setActorShapesSimulationEnabled(actor, enabled)) return false
+    if (enabled) this.simulationDisabledEntities.delete(entity)
+    else this.simulationDisabledEntities.add(entity)
+    return true
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private setActorShapesSimulationEnabled(actor: any, enabled: boolean): boolean {
+    if (!this.physics || !actor) return false
+    try {
+      const nb = actor.getNbShapes?.() ?? 0
+      if (nb <= 0) return false
+      const buf = new PHYSX.PxArray_PxShapePtr(nb)
+      actor.getShapes(buf.begin(), nb, 0)
+      const flags = enabled
+        ? new PHYSX.PxShapeFlags(
+            PHYSX.PxShapeFlagEnum.eSCENE_QUERY_SHAPE | PHYSX.PxShapeFlagEnum.eSIMULATION_SHAPE
+          )
+        : new PHYSX.PxShapeFlags(0)
+      for (let i = 0; i < nb; i++) {
+        const shape = buf.get(i)
+        if (shape) shape.setFlags(flags)
+      }
+      try {
+        PHYSX.destroy(buf)
+        PHYSX.destroy(flags)
+      } catch {
+        /* ignore */
+      }
+      return true
+    } catch (err) {
+      console.warn('[PhysXWorld] setActorShapesSimulationEnabled failed:', err)
+      return false
+    }
   }
 
   /** True when a cooked actor exists and geometry fingerprint still matches the live desc. */
@@ -2026,6 +2120,13 @@ export class PhysXWorld {
           continue
         }
 
+        // Walking: never first-expand or finish-expand 16+ shape families (plaza 227 hitch).
+        // Stay pending — do not fail-stamp, or standing still could never cook.
+        if (this.deferWalkMultiShapeExpand && desc.shapes.length > 16 && !shapeCountOk) {
+          pendingCooks++
+          continue
+        }
+
         try {
           // Expand multi-shape → one single-mesh RigidStatic per shape (CCT-solid path).
           const ok = this.addMultiShapeStatic(desc, {
@@ -2034,6 +2135,10 @@ export class PhysXWorld {
             skipWorkerStream
           })
           if (!ok) {
+            if (this.deferWalkMultiShapeExpand && desc.shapes.length > 16) {
+              pendingCooks++
+              continue
+            }
             this.failedCookFp.add(geomFp)
             continue
           }
@@ -2662,7 +2767,10 @@ export class PhysXWorld {
     )
   }
 
-  syncAoiShellColliders(descs: PhysicsColliderDesc[]): {
+  syncAoiShellColliders(
+    descs: PhysicsColliderDesc[],
+    opts?: { simulationEnabled?: boolean }
+  ): {
     geometryChanged: boolean
     pendingCooks: number
   } {
@@ -2693,6 +2801,13 @@ export class PhysXWorld {
       geometryCache: true,
       cookBudget: Math.min(48, Math.max(8, toCook.length || 1))
     })
+    if (opts?.simulationEnabled === false) {
+      for (const d of toCook) {
+        if (this.hasStaticActor(d.entity)) {
+          this.setStaticColliderFamilySimulationEnabled(d.entity, false)
+        }
+      }
+    }
     if (result.geometryChanged) {
       this.refreshStaticAfterRuntimeGeometryChange()
     }
@@ -2712,6 +2827,16 @@ export class PhysXWorld {
     this.invalidateControllerCache()
   }
 
+  /** Distance-gate shell hulls off — keep cooked actors for cheap re-enable. */
+  disableAoiShellColliders(entityIds: Iterable<number>): void {
+    let n = 0
+    for (const entity of entityIds) {
+      if (!this.isAoiShellColliderEntity(entity)) continue
+      if (this.setStaticColliderFamilySimulationEnabled(entity, false)) n++
+    }
+    if (n > 0) this.invalidateControllerCache()
+  }
+
   purgeAoiShellColliders(entityIds: Iterable<number>): void {
     let n = 0
     for (const entity of entityIds) {
@@ -2723,6 +2848,7 @@ export class PhysXWorld {
         /* ignore */
       }
       this.aoiShellEntityIds.delete(entity)
+      this.simulationDisabledEntities.delete(entity)
     }
     if (n > 0) this.invalidateControllerCache()
   }
@@ -3918,6 +4044,15 @@ export class PhysXWorld {
     const skipWorkerStream = options?.skipWorkerStream === true
     const shapes = desc.shapes
     if (!shapes?.length || !this.physics || !this.scene) return false
+    const already = this.multiShapeChildCount.get(desc.entity) ?? 0
+    if (already > 0) {
+      const { expected, live } = this.countCookableMultiShapeLive(desc)
+      if (expected > 0 && live === expected) return true
+    }
+    if (this.deferWalkMultiShapeExpand && shapes.length > 16) {
+      // Caller must treat this as pending, not a permanent cook failure.
+      return already > 0
+    }
 
     const _meshWorld = new THREE.Matrix4()
     let attached = 0
@@ -4660,6 +4795,7 @@ export class PhysXWorld {
     this.actorIsKinematic.delete(entity)
     this.shapeBaselineLocal.delete(entity)
     this.actorCookScale.delete(entity)
+    this.simulationDisabledEntities.delete(entity)
     const pmeshList = this.pmeshHandles.get(entity)
     this.pmeshHandles.delete(entity)
 

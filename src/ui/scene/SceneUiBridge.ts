@@ -437,6 +437,8 @@ export class SceneUiBridge {
     if (next.size === 0) {
       this.dom.releaseAll()
       this.hitMap.clear()
+      this.mountSnapshotPointerEvents.clear()
+      this.livePointerEventsSeen.clear()
       this.lastMountedUiEntities.clear()
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
@@ -613,6 +615,7 @@ export class SceneUiBridge {
 
     if (!this.workerUiEntitiesKnown || !this.workerUiEntities?.size) {
       this.scrubUnauthoritativeDom()
+      this.hitMap.clear()
       disposeSceneUiDebug()
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
@@ -633,6 +636,7 @@ export class SceneUiBridge {
 
     if (records.length === 0) {
       this.scrubUnauthoritativeDom()
+      this.hitMap.clear()
       disposeSceneUiDebug()
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
@@ -1513,6 +1517,10 @@ export class SceneUiBridge {
     this.lastPointerClientX = clientX
     this.lastPointerClientY = clientY
     if (!this.domVisible) return null
+    // Worker mount=[] — no ghost PE/DOM after welcome dissolve (CBD Plaza spawn).
+    if (this.workerUiEntitiesKnown && (this.workerUiEntities?.size ?? 0) === 0) {
+      return null
+    }
     // Primary hit-map still covers the full screen under a PX enable/close popup.
     // Only the topmost interactive root (`#pe-ui-root` vs `#scene-ui-root`) may inject.
     if (isForeignUiRootOnTop(this.root.id, clientX, clientY, eventTarget)) return null

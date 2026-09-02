@@ -137,6 +137,32 @@ async function postEntitiesActive(
   return res.json().catch(() => null)
 }
 
+/** Fetch a deployment by entity id (nested plaza scenes must not resolve as CBD). */
+export async function fetchSceneEntityById(
+  contentUrl: string,
+  entityId: string
+): Promise<{ id: string; entity: Record<string, unknown> } | null> {
+  const want = entityId.trim()
+  if (!want) return null
+  const res = await fetchWithTimeout(catalystEntitiesActiveUrl(contentUrl), {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: [want] }),
+    timeoutMs: CATALYST_FETCH_TIMEOUT_MS
+  })
+  if (!res.ok) return null
+  const data = await res.json().catch(() => null)
+  if (!Array.isArray(data)) return null
+  for (const row of data) {
+    if (!row || typeof row !== 'object') continue
+    const entity = row as Record<string, unknown>
+    const id = typeof entity.id === 'string' ? entity.id : want
+    if (id !== want) continue
+    return { id, entity: { ...entity, id } }
+  }
+  return null
+}
+
 export async function fetchSceneEntityByPointer(
   contentUrl: string,
   pointer: string

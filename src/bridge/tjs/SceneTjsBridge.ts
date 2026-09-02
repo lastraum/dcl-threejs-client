@@ -36,52 +36,6 @@ type TjsCameraRuntime = {
   cam: THREE.PerspectiveCamera
 }
 
-type TjsProjectionRuntime = {
-  entity: Entity
-  cameraEntity: Entity
-  boundMeshes: THREE.Mesh[]
-  savedMaps: WeakMap<THREE.Material, THREE.Texture | null>
-}
-
-function collectMeshes(root: THREE.Object3D): THREE.Mesh[] {
-  const out: THREE.Mesh[] = []
-  root.traverse((obj) => {
-    if ((obj as THREE.Mesh).isMesh) out.push(obj as THREE.Mesh)
-  })
-  return out
-}
-
-function bindRtToMeshes(
-  meshes: THREE.Mesh[],
-  texture: THREE.Texture,
-  savedMaps: WeakMap<THREE.Material, THREE.Texture | null>
-): void {
-  for (const mesh of meshes) {
-    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
-    for (const mat of mats) {
-      if (!mat) continue
-      const mapped = mat as THREE.MeshStandardMaterial
-      if (!('map' in mapped)) continue
-      if (!savedMaps.has(mat)) savedMaps.set(mat, mapped.map ?? null)
-      mapped.map = texture
-      mapped.needsUpdate = true
-    }
-  }
-}
-
-function restoreMeshMaps(meshes: THREE.Mesh[], savedMaps: WeakMap<THREE.Material, THREE.Texture | null>): void {
-  for (const mesh of meshes) {
-    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
-    for (const mat of mats) {
-      if (!mat || !savedMaps.has(mat)) continue
-      const mapped = mat as THREE.MeshStandardMaterial
-      if ('map' in mapped) mapped.map = savedMaps.get(mat) ?? null
-      mapped.needsUpdate = true
-      savedMaps.delete(mat)
-    }
-  }
-}
-
 function withSubtreeHidden(root: THREE.Object3D | null | undefined, fn: () => void): void {
   if (!root) {
     fn()
@@ -172,13 +126,15 @@ function resolveCctvLensPose(
 
 /**
  * Host apply for mirrored `tjs` LWW — shaders via ShaderManager / AbilityManager,
- * CCTV via VirtualCamera viewpoint + camera RT + projection screen bind.
+ * CCTV camera RT exposed for Material VideoTexture (same path as VideoPlayer).
  */
 export class SceneTjsBridge {
   private readonly shaderFireFp = new Map<Entity, string>()
   private readonly declared = new Set<string>()
   private readonly cameras = new Map<Entity, TjsCameraRuntime>()
-  private readonly projections = new Map<Entity, TjsProjectionRuntime>()
+
+  /** MaterialApplier rebind when a camera RT is created or torn down. */
+  onTextureReady?: (entity: Entity) => void
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -188,6 +144,13 @@ export class SceneTjsBridge {
     private readonly getWorldDeps: () => EntityWorldTransformDeps | null
   ) {
     getShaderManager().setScene(worldScene)
+  }
+
+  /** Live RT for Material.Texture.Video({ videoPlayerEntity: cam }). */
+  getTexture(entity: Entity): THREE.Texture | null {
+    const runtime = this.cameras.get(entity)
+    if (!runtime || !this.ecs.VirtualCamera.has(entity)) return null
+    return runtime.rt.texture
   }
 
   sync(view: ProjectionView): void {
@@ -201,14 +164,10 @@ export class SceneTjsBridge {
       const kind = row.kind.trim().toLowerCase()
       if (kind === 'shader') this.syncShader(entity, row)
       else if (kind === 'camera') this.syncCamera(entity, row)
-      else if (kind === 'projection') this.syncProjection(entity, row)
     }
 
     for (const entity of [...this.cameras.keys()]) {
       if (!seen.has(entity)) this.teardownCamera(entity)
-    }
-    for (const entity of [...this.projections.keys()]) {
-      if (!seen.has(entity)) this.teardownProjection(entity)
     }
     for (const entity of [...this.shaderFireFp.keys()]) {
       if (!seen.has(entity)) this.shaderFireFp.delete(entity)
@@ -243,12 +202,11 @@ export class SceneTjsBridge {
   }
 
   dispose(): void {
-    for (const entity of [...this.projections.keys()]) this.teardownProjection(entity)
     for (const entity of [...this.cameras.keys()]) this.teardownCamera(entity)
-    this.projections.clear()
     this.cameras.clear()
     this.shaderFireFp.clear()
     this.declared.clear()
+    this.onTextureReady = undefined
     getShaderManager().dispose()
   }
 
@@ -313,46 +271,7 @@ export class SceneTjsBridge {
     const cam = new THREE.PerspectiveCamera(TJS_CAMERA_FOV, 1, 0.1, TJS_CAMERA_FAR)
     this.cameras.set(entity, { entity, rt, cam })
     clientDebugLog.log('scene', `tjs camera on e${entity as number}`, { alsoConsole: true })
-  }
-
-  private syncProjection(entity: Entity, row: TjsValue): void {
-    if (!row.enabled) {
-      this.teardownProjection(entity)
-      return
-    }
-    const cameraEntity = row.camera as Entity
-    if (!cameraEntity) return
-    const cameraRt = this.cameras.get(cameraEntity)
-    if (!cameraRt) return
-    const nodes = this.getNodes()
-    const screenNode = nodes?.get(entity)
-    if (!screenNode) return
-
-    let runtime = this.projections.get(entity)
-    if (runtime && runtime.cameraEntity !== cameraEntity) {
-      this.teardownProjection(entity)
-      runtime = undefined
-    }
-    if (!runtime) {
-      const meshes = collectMeshes(screenNode)
-      const savedMaps = new WeakMap<THREE.Material, THREE.Texture | null>()
-      bindRtToMeshes(meshes, cameraRt.rt.texture, savedMaps)
-      runtime = { entity, cameraEntity, boundMeshes: meshes, savedMaps }
-      this.projections.set(entity, runtime)
-      clientDebugLog.log(
-        'scene',
-        `tjs projection on e${entity as number} camera=e${cameraEntity as number}`,
-        { alsoConsole: true }
-      )
-      return
-    }
-    const sample = runtime.boundMeshes[0]?.material
-    const currentMap = sample
-      ? ((Array.isArray(sample) ? sample[0] : sample) as THREE.MeshStandardMaterial)
-      : null
-    if (currentMap?.map !== cameraRt.rt.texture) {
-      bindRtToMeshes(runtime.boundMeshes, cameraRt.rt.texture, runtime.savedMaps)
-    }
+    this.onTextureReady?.(entity)
   }
 
   private teardownCamera(entity: Entity): void {
@@ -361,13 +280,6 @@ export class SceneTjsBridge {
     runtime.rt.dispose()
     this.cameras.delete(entity)
     clientDebugLog.log('scene', `tjs camera off e${entity as number}`, { alsoConsole: true })
-  }
-
-  private teardownProjection(entity: Entity): void {
-    const runtime = this.projections.get(entity)
-    if (!runtime) return
-    restoreMeshMaps(runtime.boundMeshes, runtime.savedMaps)
-    this.projections.delete(entity)
-    clientDebugLog.log('scene', `tjs projection off e${entity as number}`, { alsoConsole: true })
+    this.onTextureReady?.(entity)
   }
 }

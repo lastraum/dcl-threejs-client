@@ -355,6 +355,7 @@ export class ThreeBridge {
   /** entity → last LoadingState written (dirty-only; avoids CREATE spam). */
   private readonly gltfLoadingStates = new Map<Entity, number>()
   private videoPlayerBridge: VideoPlayerBridge | null = null
+  private getTjsCameraTexture: ((entity: Entity) => THREE.Texture | null) | null = null
   private audioSourceBridge: AudioSourceBridge | null = null
   private audioStreamBridge: AudioStreamBridge | null = null
   private skipTransformApply?: (entity: Entity) => boolean
@@ -1306,10 +1307,24 @@ export class ThreeBridge {
 
   setVideoPlayerBridge(bridge: VideoPlayerBridge): void {
     this.videoPlayerBridge = bridge
-    this.materials.setVideoTextureResolver((entity) => bridge.getTexture(entity as Entity))
-    bridge.onTextureReady = (videoPlayerEntity) => {
-      this.invalidateMaterialsForVideoPlayer(videoPlayerEntity)
-    }
+    this.materials.setVideoTextureResolver((entity) => {
+      const e = entity as Entity
+      if (this.ecs.VideoPlayer.has(e)) {
+        return bridge.getTexture(e)
+      }
+      return this.getTjsCameraTexture?.(e) ?? null
+    })
+    bridge.onTextureReady = (videoEntity) => this.invalidateMaterialsForVideoPlayer(videoEntity)
+  }
+
+  /** CCTV `tjs` camera RT — chained after VideoPlayer in Material VideoTexture resolver. */
+  setTjsCameraTextureSource(getter: (entity: Entity) => THREE.Texture | null): void {
+    this.getTjsCameraTexture = getter
+  }
+
+  /** Rebind Material VideoTexture consumers (VideoPlayer or tjs camera entity id). */
+  notifyVideoTextureReady(entity: Entity): void {
+    this.invalidateMaterialsForVideoPlayer(entity)
   }
 
   setAvatarTextureResolver(resolver: (userId: string) => Promise<THREE.Texture | null>): void {

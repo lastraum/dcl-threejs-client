@@ -6,7 +6,7 @@ import type { IEngine, LastWriteWinElementSetComponentDefinition } from '@dcl/ec
 export const TJS_COMPONENT_NAME = 'tjs'
 export const TJS_COMPONENT_ID = componentNumberFromName(TJS_COMPONENT_NAME)
 
-export type TjsKind = 'shader' | 'texture' | 'camera' | 'projection'
+export type TjsKind = 'shader' | 'texture' | 'camera'
 
 export type TjsValue = {
   kind: string

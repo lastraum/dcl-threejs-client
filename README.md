@@ -283,7 +283,7 @@ Scenes drive client shaders and CCTV textures with a first-class ECS component:
 
 ```ts
 const tjs = engine.defineComponent('tjs', {
-  kind: Schemas.String,    // 'shader' | 'camera' | 'projection' | 'texture'
+  kind: Schemas.String,    // 'shader' | 'camera' | 'texture'
   name: Schemas.String,    // shader: ice | meteor | hail
   sync: Schemas.Boolean,   // opt-in comms topic d3js-ability-vfx (one-shot casts)
   enabled: Schemas.Boolean,
@@ -295,7 +295,7 @@ const tjs = engine.defineComponent('tjs', {
   dy: Schemas.Float,
   dz: Schemas.Float,
   dist: Schemas.Float,
-  camera: Schemas.Int      // projection: tjs camera entity id
+  camera: Schemas.Int      // reserved (CCTV uses Material VideoTexture entity id)
 })
 
 // load + fire ice (one-shot when enabled:true on create)
@@ -311,32 +311,23 @@ tjs.create(shot, {
   dist: 14
 })
 
-// CCTV — VirtualCamera defines viewpoint; tjs camera marks RT capture; projection binds screen
+// CCTV — lens RT exposed as Material VideoTexture (same path as VideoPlayer screens)
 const cam = engine.addEntity()
 Transform.create(cam, { position, rotation })
-VirtualCamera.create(cam, { lookAtEntity: target }) // optional — omit to aim from Transform rotation
+VirtualCamera.create(cam, { lookAtEntity: target }) // optional
 tjs.create(cam, { kind: 'camera', enabled: true, name: '', path: '', sync: false, camera: 0, ox: 0, oy: 0, oz: 0, dx: 0, dy: 0, dz: 0, dist: 0 })
 
-tjs.create(screen, {
-  kind: 'projection',
-  enabled: true,
-  camera: cam,
-  name: '',
-  path: '',
-  sync: false,
-  ox: 0, oy: 0, oz: 0,
-  dx: 0, dy: 0, dz: 0,
-  dist: 0
+Material.setPbrMaterial(screen, {
+  texture: Material.Texture.Video({ videoPlayerEntity: cam })
 })
-tjs.getMutable(screen).enabled = false
+tjs.getMutable(cam).enabled = false // toggle lens RT
 ```
 
 | Field | Role |
 | --- | --- |
 | `kind: 'shader'` + `name: 'ice'` | Client loads bundled/file shader, fires when `enabled: true` |
 | `sync: true` | That cast is published on `d3js-ability-vfx` for other ThreejsClient tabs |
-| `kind: 'camera'` | Requires SDK `VirtualCamera` on the same entity; host RT from VC viewpoint (`enabled` toggles RT) |
-| `kind: 'projection'` + `camera` | Screen mesh `map` = that camera's RT texture |
+| `kind: 'camera'` | Requires SDK `VirtualCamera`; host RT via Material `VideoTexture` (`videoPlayerEntity: cam`) |
 
 AbilityManager boots only after Jump In and only when the scene has `tjs` shader rows — not from bundle text scans. Unknown `tjs` ids are ignored by other explorers (no crash).
 

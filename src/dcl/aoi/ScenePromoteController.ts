@@ -98,6 +98,8 @@ export class ScenePromoteController {
   private inFlight = false
   private evalGen = 0
   private footprintProbeKey = ''
+  /** Cooldown after failed handoff — stops promote→ABORT loops on nested parcels. */
+  private readonly promoteAbortUntil = new Map<string, number>()
   /** When false, skip warm scan + promote evaluate (primary still booting). */
   private neighborActivityEnabled = false
   private readonly onPromote: ScenePromoteControllerOptions['onPromote']
@@ -151,6 +153,7 @@ export class ScenePromoteController {
     this.warmedEntityIds.clear()
     this.coveredEntityParcels.clear()
     this.pendingWarm.clear()
+    this.promoteAbortUntil.clear()
     for (const p of scene.parcels) this.primaryParcels.add(p.trim())
     this.primaryParcels.add(scene.baseParcel.trim())
     // Whole multi-parcel primary deployment is already loaded — never AOI-warm it again.
@@ -189,6 +192,13 @@ export class ScenePromoteController {
 
   setNeighborActivityEnabled(enabled: boolean): void {
     this.neighborActivityEnabled = enabled
+  }
+
+  /** AppController / World — back off promote evaluate after handoff failure. */
+  notePromoteHandoffFailed(x: number, y: number, cooldownMs = 30_000): void {
+    this.promoteAbortUntil.set(`${x},${y}`, performance.now() + cooldownMs)
+    this.dwellKey = ''
+    this.inFlight = false
   }
 
   /**
@@ -320,6 +330,9 @@ export class ScenePromoteController {
     }
 
     if (now - this.dwellSince < this.dwellMs) return
+
+    const abortUntil = this.promoteAbortUntil.get(key) ?? 0
+    if (now < abortUntil) return
 
     void this.evaluate(px, py, key)
   }
@@ -586,6 +599,12 @@ export class ScenePromoteController {
   }
 
   private fire(x: number, y: number, reason: string): void {
+    const key = `${x},${y}`
+    const abortUntil = this.promoteAbortUntil.get(key) ?? 0
+    if (performance.now() < abortUntil) {
+      this.inFlight = false
+      return
+    }
     this.lastPromoteAt = performance.now()
     this.dwellKey = ''
     console.info(`[promote] → primary ${x},${y} (${reason})`)

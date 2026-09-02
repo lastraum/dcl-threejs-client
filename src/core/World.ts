@@ -34,7 +34,9 @@ import { PeMainThreadMirror } from '../dcl/multiScene/PeMainThreadMirror'
 import {
   aoiStandOnPromote,
   sceneLoopFairMute,
-  ROAD_PHYS_RADIUS_M
+  ROAD_PHYS_RADIUS_M,
+  NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M,
+  NEIGHBOR_SCENE_PHYS_COLLIDE_KEEP_M
 } from '../dcl/multiScene/caps'
 import { SECONDARY_PHYS_BASE } from '../dcl/multiScene/physOffsets'
 import { applyGenesisSceneRootOrigin } from '../dcl/multiScene/secondarySceneOrigin'
@@ -269,9 +271,9 @@ export class World {
   private physHoldGuestId: string | null = null
   private physHoldUntilMs = 0
   private static readonly PHYS_HOLD_MS = 2500
-  /** Plaza scene solids stream with road furniture (48 m enter / 64 m keep). */
+  /** Plaza scene solids stream — 64 m collide arm (enable/disable, no recook). */
   private lastPlazaPhysFeet = { x: Number.NaN, z: Number.NaN }
-  private static readonly PLAZA_PHYS_KEEP_M = ROAD_PHYS_RADIUS_M + 16
+  private static readonly PLAZA_PHYS_KEEP_M = NEIGHBOR_SCENE_PHYS_COLLIDE_KEEP_M
   private static readonly PLAZA_PHYS_STEP_M = 8
   /** Occupancy log — parcel + current guest (avoid per-frame spam). */
   private lastOccupancyLogKey = ''
@@ -460,6 +462,8 @@ export class World {
     | null = null
   private promoteSoftRoute: ((x: number, y: number) => void) | null = null
   private promotePrefetch: ((x: number, y: number) => void) | null = null
+  private lastPromoteWaitLogKey = ''
+  private lastPromoteWaitLogAt = 0
   private readonly scenePromote = new ScenePromoteController({
     onPromote: (target, reason) => {
       console.info(`[World] promote primary → ${target.x},${target.y} (${reason})`)
@@ -1093,12 +1097,17 @@ export class World {
         purgeEmptyLandColliders: (entityIds) => {
           this.physics.purgeAoiEmptyLandColliders(entityIds)
         },
-        syncShellColliders: (descs) => {
-          this.physics.syncAoiShellColliders(descs)
+        syncShellColliders: (descs, opts) => {
+          this.physics.syncAoiShellColliders(descs, opts)
         },
         clearShellColliders: () => this.physics.clearAoiShellColliders(),
         purgeShellColliders: (entityIds) => {
           this.physics.purgeAoiShellColliders(entityIds)
+        },
+        setShellCollidersEnabled: (entityIds, enabled) => {
+          for (const id of entityIds) {
+            this.physics.setStaticColliderFamilySimulationEnabled(id, enabled)
+          }
         },
         onSecondaryCandidates: (candidates) => {
           this.multiScene?.reconcileSecondaries(candidates)
@@ -3342,6 +3351,7 @@ export class World {
       const tHealth = performance.now()
       const now = performance.now()
       const staticN = this.physics.staticColliderCount
+      const activeN = this.physics.simulationActiveStaticColliderCount
       const staticDropped =
         this.lastLoggedStaticCount >= 0 && staticN < this.lastLoggedStaticCount - 5
       if (staticDropped || now - this.lastColliderHealthLogMs > 30_000) {
@@ -3351,7 +3361,7 @@ export class World {
         let missing = 0
         for (const d of descs) {
           if (this.physics.isAoiPlatformColliderEntity(d.entity)) continue
-          if (this.isPlazaScenePhysFar(d, ROAD_PHYS_RADIUS_M)) continue
+          if (this.isPlazaScenePhysFar(d, NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M)) continue
           if (!this.physics.hasStaticActor(d.entity)) missing++
         }
         const ground = this.physics.getLastGroundPhysEntity()
@@ -3360,7 +3370,7 @@ export class World {
         // Only log when something is wrong or count changed — skip spam on healthy infinite ground.
         if (missing > 0 || staticDropped || staticN !== this.lastLoggedStaticCount) {
           console.info(
-            `[phys] health static=${staticN} extracted≈${extracted} missing≈${missing} ` +
+            `[phys] health static=${staticN} active=${activeN} extracted≈${extracted} missing≈${missing} ` +
               `queue=${this.colliderCookQueue.size} seal=${this.spawnColliderSealComplete} ` +
               `groundPhys=${ground ?? 'none'} sides=${sides ? 'yes' : 'no'} feet=${
                 feet
@@ -3633,7 +3643,7 @@ export class World {
     // Post-seal: missing actors only — force-recook replaceStatic thrash softs plaza SQ.
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (this.physics.isAoiPlatformColliderEntity(desc.entity)) continue
-      if (this.isPlazaScenePhysFar(desc, ROAD_PHYS_RADIUS_M)) continue
+      if (this.isPlazaScenePhysFar(desc, NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M)) continue
       if (!this.physics.hasStaticActor(desc.entity)) {
         this.colliderCookQueue.add(desc.entity)
         continue
@@ -3655,7 +3665,7 @@ export class World {
     let geomMismatch = 0
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
       if (this.physics.isAoiPlatformColliderEntity(desc.entity)) continue
-      if (this.isPlazaScenePhysFar(desc, ROAD_PHYS_RADIUS_M)) continue
+      if (this.isPlazaScenePhysFar(desc, NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M)) continue
       if (!this.physics.hasStaticActor(desc.entity)) {
         missing++
         continue
@@ -3726,7 +3736,7 @@ export class World {
       if (this.physics.hasFailedCookFingerprint(desc.fingerprint)) continue
       // Play give-up for this geom fp — do not re-open the thrash queue.
       if (this.isPlayCookGivenUp(desc.entity, desc.fingerprint)) continue
-      if (this.isPlazaScenePhysFar(desc, ROAD_PHYS_RADIUS_M)) continue
+      if (this.isPlazaScenePhysFar(desc, NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M)) continue
       if (!this.colliderCookQueue.has(desc.entity)) {
         added++
         if (missingIds.length < 4) missingIds.push(desc.entity)
@@ -4622,7 +4632,7 @@ export class World {
           this.colliderCookQueue.delete(desc.entity)
           continue
         }
-        if (this.isPlazaScenePhysFar(desc, ROAD_PHYS_RADIUS_M)) {
+        if (this.isPlazaScenePhysFar(desc, NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M)) {
           this.colliderCookQueue.delete(desc.entity)
           continue
         }
@@ -5681,8 +5691,8 @@ export class World {
   }
 
   /**
-   * Cook plaza solids inside 48 m of feet; drop them past 64 m.
-   * Same ring as road furniture — the 3400-actor SQ tree was the 25 FPS wall.
+   * Cook plaza solids inside the 64 m collide arm; disable past keep ring (no recook).
+   * Primary under feet always cooks/enables inside the arm.
    */
   private maybeStreamPlazaScenePhys(): void {
     if (!this.collidersReady || skipPhysxColliders() || this.deferPhysxCooks) return
@@ -5695,7 +5705,7 @@ export class World {
       if (mx * mx + mz * mz < step * step) return
     }
     this.lastPlazaPhysFeet = { x: feet.x, z: feet.z }
-    const enter2 = ROAD_PHYS_RADIUS_M * ROAD_PHYS_RADIUS_M
+    const enter2 = NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M * NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M
     const keep2 = World.PLAZA_PHYS_KEEP_M * World.PLAZA_PHYS_KEEP_M
     const ground = this.physics.getLastGroundPhysEntity()
     for (const desc of this.sceneScript.getAllPhysicsColliderDescs()) {
@@ -5709,6 +5719,8 @@ export class World {
           !this.isPlayCookGivenUp(desc.entity, desc.fingerprint)
         ) {
           this.colliderCookQueue.add(desc.entity)
+        } else if (has && !this.physics.isStaticColliderSimulationEnabled(desc.entity)) {
+          this.physics.setStaticColliderFamilySimulationEnabled(desc.entity, true)
         }
         continue
       }
@@ -5719,13 +5731,13 @@ export class World {
         !this.physics.isKinematicActor(desc.entity) &&
         !this.isPlayerLocomoting()
       ) {
-        this.physics.invalidateStaticCollider(desc.entity)
+        this.physics.setStaticColliderFamilySimulationEnabled(desc.entity, false)
       }
     }
   }
 
   /**
-   * Neighbor floors/walls: live secondaries within LIVE_SCENE_PHYS_RADIUS_M (48 m),
+   * Neighbor floors/walls: live secondaries within {@link LIVE_SCENE_PHYS_RADIUS_M} (64 m),
    * plus 2.5s hold after leave so a current-guest flip does not void-fall.
    */
   private resolvePhysGuestIds(): string[] {
@@ -6197,6 +6209,11 @@ export class World {
     this.scenePromote.coverPrimaryParcel(key)
   }
 
+  /** Back off stand-on promote after a failed in-world handoff (nested parcel loops). */
+  notifyPromoteHandoffFailed(x: number, y: number): void {
+    this.scenePromote.notePromoteHandoffFailed(x, y)
+  }
+
   private rememberPrimaryOccupancy(
     scene: ResolvedScene,
     extraKeys: readonly string[] = []
@@ -6278,17 +6295,20 @@ export class World {
 
     // Same-entity second promote (next cell of a 2×2) must not force-boot.
     if (this.primaryCoversParcel(target.x, target.y)) {
-      console.info(
-        `[promote] already primary @ ${target.x},${target.y} — skip (no force-boot)`
-      )
       return true
     }
 
     const handoff = multi.takeSecondaryForPromote(target.x, target.y)
     if (!handoff) {
-      console.info(
-        `[promote] no live secondary @ ${target.x},${target.y} — wait for force-boot (no unload)`
-      )
+      const key = `${target.x},${target.y}`
+      const now = performance.now()
+      if (key !== this.lastPromoteWaitLogKey || now - this.lastPromoteWaitLogAt > 8_000) {
+        this.lastPromoteWaitLogKey = key
+        this.lastPromoteWaitLogAt = now
+        console.info(
+          `[promote] no live secondary @ ${key} — wait for force-boot (no unload)`
+        )
+      }
       return false
     }
 
@@ -6688,7 +6708,7 @@ export class World {
       this.reconcileColliderCookQueue()
       try {
         const descs = (this.sceneScript.getAllPhysicsColliderDescs?.() ?? []).filter(
-          (d) => !this.isPlazaScenePhysFar(d, ROAD_PHYS_RADIUS_M)
+          (d) => !this.isPlazaScenePhysFar(d, NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M)
         )
         if (descs.length > 0) {
           this.physics.syncStaticColliders(descs, {

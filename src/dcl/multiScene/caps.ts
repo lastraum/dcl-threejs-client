@@ -26,11 +26,19 @@ const TERTIARY_RESIDENT_HARD_CAP = 16
 export const ROAD_PHYS_RADIUS_M = 48
 export const EMPTY_LAND_PHYS_RADIUS_M = 48
 /**
- * Occupied-scene PhysX (floors/walls) — same 48 m ring as empty-land trees.
+ * Occupied-neighbor collision arm — enable/disable already-cooked hulls.
+ * Visual shells may cook out to Scene Distance (~200 m) but stay disabled until
+ * the player is within this ring. Walk out → disable (no destroy/recook).
+ */
+export const NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M = 64
+/** Hysteresis past the collide ring before disabling (reduces edge flicker). */
+export const NEIGHBOR_SCENE_PHYS_COLLIDE_KEEP_M = 72
+/**
+ * Occupied-scene PhysX (floors/walls / live guests / composite shells).
  * Live guests cook from the worker; SDK6/composite shells cook `_collider`
  * hulls from the attached GLB (CityTiles like JR Art are never live guests).
  */
-export const LIVE_SCENE_PHYS_RADIUS_M = EMPTY_LAND_PHYS_RADIUS_M
+export const LIVE_SCENE_PHYS_RADIUS_M = NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M
 
 /** Shadow / env-caster / near-PhysX keep. Also the visual cliff while !aoiSceneDistanceVisuals(). */
 export const AOI_SHELL_ENTER_M = 48
@@ -122,7 +130,7 @@ export function secondaryLiveEnterRadiusM(): number {
   if (!aoiLiveGuests()) return 0
   const d = renderQuality.getSceneLoadRadiusM()
   if (d <= 0) return 0
-  return Math.min(d * 0.35, 32)
+  return Math.min(d * 0.35, 22)
 }
 
 export function secondaryLiveKeepRadiusM(): number {

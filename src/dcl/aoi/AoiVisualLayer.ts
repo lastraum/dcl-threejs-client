@@ -57,6 +57,8 @@ import {
   visualWarmRadiusM,
   EMPTY_LAND_PHYS_RADIUS_M,
   LIVE_SCENE_PHYS_RADIUS_M,
+  NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M,
+  NEIGHBOR_SCENE_PHYS_COLLIDE_KEEP_M,
   ROAD_PHYS_RADIUS_M,
   secondaryLiveCap,
   secondaryLiveEnterRadiusM,
@@ -185,9 +187,15 @@ export type AoiVisualLayerContext = {
   /** Force-remove sticky scatter colliders after >1km purge (works post-seal). */
   purgeEmptyLandColliders?: (entityIds: number[]) => void
   /** Occupied composite-shell `_collider` hulls (SDK6 CityTiles / unbooted SDK7). */
-  syncShellColliders?: (descs: PhysicsColliderDesc[]) => void
+  syncShellColliders?: (
+    descs: PhysicsColliderDesc[],
+    opts?: { simulationEnabled?: boolean }
+  ) => void
   clearShellColliders?: () => void
+  /** Force-remove shell colliders when the visual shell is disposed (post-seal). */
   purgeShellColliders?: (entityIds: number[]) => void
+  /** Distance-gate shell hulls — disable simulation without destroy/recook. */
+  setShellCollidersEnabled?: (entityIds: number[], enabled: boolean) => void
   /**
    * Inner-ring secondary candidates for live workers (MultiSceneRuntime).
    * Called after each AOI refresh; does not start workers itself.
@@ -215,7 +223,7 @@ export type AoiVisualLayerContext = {
  * - Genesis roads via **Explorer catalog + OriginalAssets FBX** (tile + street
  *   furniture), not runtime SDK6 game.js
  * - Neighbor main.composite GLBs — full Scene Distance visuals; `_collider` hulls
- *   cook inside the 48 m phys ring (SDK6 CityTiles never boot as live guests)
+ *   cook once in background then enable inside the 64 m collide arm
  * - First-frame samples for script-built scenes (tertiary when no live worker)
  * - Live secondary: nearest occupied scenes inside Scene Distance (empty/road excluded)
  */
@@ -1361,7 +1369,7 @@ export class AoiVisualLayer {
   private maybeSyncNearShellPhys(dclX: number, dclZ: number): void {
     const ctx = this.ctx
     if (!ctx || this.loadedShells.size === 0) return
-    const step = LIVE_SCENE_PHYS_RADIUS_M * 0.5
+    const step = NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M * 0.5
     const step2 = step * step
     if (Number.isFinite(this.lastShellPhysFeet.x)) {
       const dx = dclX - this.lastShellPhysFeet.x
@@ -1382,9 +1390,12 @@ export class AoiVisualLayer {
     const g = this.genesisFeet(dclX, dclZ)
     const threeX = -g.x
     const threeZ = g.z
-    const r2 = LIVE_SCENE_PHYS_RADIUS_M * LIVE_SCENE_PHYS_RADIUS_M
-    const near: PhysicsColliderDesc[] = []
-    const nearIds = new Set<number>()
+    const collideR2 = NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M * NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M
+    const keepR2 = NEIGHBOR_SCENE_PHYS_COLLIDE_KEEP_M * NEIGHBOR_SCENE_PHYS_COLLIDE_KEEP_M
+    const cookDescs: PhysicsColliderDesc[] = []
+    const enableIds: number[] = []
+    const disableIds: number[] = []
+    const enableSet = new Set<number>()
 
     for (const rec of this.loadedShells.values()) {
       if (rec.entityId === primaryId || this.liveGraphReadyIds.has(rec.entityId)) continue
@@ -1394,21 +1405,20 @@ export class AoiVisualLayer {
         }
       }
       for (const d of rec.colliderDescs) {
-        if (colliderHorizDistSq(d, threeX, threeZ) > r2) continue
-        near.push(d)
-        nearIds.add(d.entity)
+        cookDescs.push(d)
+        const d2 = colliderHorizDistSq(d, threeX, threeZ)
+        if (d2 <= collideR2) {
+          enableSet.add(d.entity)
+          enableIds.push(d.entity)
+        } else if (d2 > keepR2 && this.lastNearShellIds.has(d.entity)) {
+          disableIds.push(d.entity)
+        }
       }
     }
 
-    const drop: number[] = []
-    for (const id of this.lastNearShellIds) {
-      if (!nearIds.has(id)) drop.push(id)
-    }
-    if (drop.length) ctx.purgeShellColliders?.(drop)
-
-    if (!force && drop.length === 0 && nearIds.size === this.lastNearShellIds.size) {
+    if (!force && disableIds.length === 0 && enableSet.size === this.lastNearShellIds.size) {
       let same = true
-      for (const id of nearIds) {
+      for (const id of enableSet) {
         if (!this.lastNearShellIds.has(id)) {
           same = false
           break
@@ -1417,10 +1427,14 @@ export class AoiVisualLayer {
       if (same) return
     }
 
-    this.lastNearShellIds = nearIds
+    this.lastNearShellIds = enableSet
     this.lastShellPhysFeet = { x: dclX, z: dclZ }
-    if (near.length === 0) return
-    ctx.syncShellColliders(near)
+
+    if (cookDescs.length) {
+      ctx.syncShellColliders(cookDescs, { simulationEnabled: false })
+    }
+    if (enableIds.length) ctx.setShellCollidersEnabled?.(enableIds, true)
+    if (disableIds.length) ctx.setShellCollidersEnabled?.(disableIds, false)
   }
 
   private teardownShells(): void {

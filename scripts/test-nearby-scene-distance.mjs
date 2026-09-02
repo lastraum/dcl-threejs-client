@@ -175,10 +175,12 @@ const aoi = readFileSync(join(root, 'src/dcl/aoi/AoiVisualLayer.ts'), 'utf8')
 const parcel = readFileSync(join(root, 'src/dcl/aoi/parcelAoi.ts'), 'utf8')
 const world = readFileSync(join(root, 'src/core/World.ts'), 'utf8')
 const app = readFileSync(join(root, 'src/client/AppController.ts'), 'utf8')
+const secondary = readFileSync(join(root, 'src/dcl/multiScene/SecondaryLiveManager.ts'), 'utf8')
+const catalyst = readFileSync(join(root, 'src/network/catalyst/CatalystClient.ts'), 'utf8')
 
 assert(
-  'live enter is fraction of SD capped at 32m',
-  /export function secondaryLiveEnterRadiusM\(\)[\s\S]{0,280}return Math\.min\(d \* 0\.35, 32\)/.test(
+  'live enter is fraction of SD capped at 22m',
+  /export function secondaryLiveEnterRadiusM\(\)[\s\S]{0,280}return Math\.min\(d \* 0\.35, 22\)/.test(
     caps
   )
 )
@@ -266,11 +268,10 @@ assert(
   /export function entityFootprintKeys/.test(fetchSrc)
 )
 assert(
-  'live-guest PhysX uses the 48 m empty-land ring',
-  /export const LIVE_SCENE_PHYS_RADIUS_M = EMPTY_LAND_PHYS_RADIUS_M/.test(caps)
+  'occupied-neighbor PhysX collide arm is 64m (not empty-land 48m)',
+  /NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M = 64/.test(caps) &&
+    /LIVE_SCENE_PHYS_RADIUS_M = NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M/.test(caps)
 )
-const secondary = readFileSync(join(root, 'src/dcl/multiScene/SecondaryLiveManager.ts'), 'utf8')
-const catalyst = readFileSync(join(root, 'src/network/catalyst/CatalystClient.ts'), 'utf8')
 assert(
   'nearbyPhysGuestIds cooks adjacent live guests',
   /nearbyPhysGuestIds\(\): string\[]/.test(secondary) &&
@@ -334,7 +335,28 @@ assert(
   const physx = readFileSync(join(root, 'src/physics/PhysXWorld.ts'), 'utf8')
   const shell = readFileSync(join(root, 'src/dcl/aoi/shellColliders.ts'), 'utf8')
   assert(
-    'occupied composite shells cook _collider hulls in the 48 m ring',
+    'occupied composite shells cook in background then enable at 64m',
+    /syncNearShellPhys/.test(aoi) &&
+      /NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M/.test(aoi) &&
+      /simulationEnabled: false/.test(aoi) &&
+      /setShellCollidersEnabled/.test(aoi) &&
+      /syncAoiShellColliders/.test(physx)
+  )
+  const plazaPhysStream = world
+    .split('private maybeStreamPlazaScenePhys(): void')[1]
+    ?.split('resolvePhysGuestIds')[0] ?? ''
+  assert(
+    'plaza PhysX streams with enable/disable (no invalidate on walk-out)',
+    /setStaticColliderFamilySimulationEnabled\(desc\.entity, false\)/.test(plazaPhysStream) &&
+      !/invalidateStaticCollider\(desc\.entity\)/.test(plazaPhysStream)
+  )
+  assert(
+    'distance-gated statics toggle shape flags without recook',
+    /setStaticColliderFamilySimulationEnabled/.test(physx) &&
+      /simulationDisabledEntities/.test(physx)
+  )
+  assert(
+    'occupied composite shells cook _collider hulls in the 64 m ring',
     /extractShellColliderDescs/.test(aoi) &&
       /syncNearShellPhys/.test(aoi) &&
       /syncAoiShellColliders/.test(physx) &&
@@ -392,9 +414,17 @@ assert(
     /same-entity fold/.test(promote)
 )
 assert(
-  'intra-deployment handoff is blocked when entityId matches primary',
+  'intra-deployment handoff is blocked only when covering slot matches primary entity',
   /same-entity intra-deployment — soft-route only/.test(world) &&
-    /skip handoff — same entity as primary/.test(secondary)
+    /if \(!this\.slotCoversParcel\(slot, key\)\) continue/.test(secondary) &&
+    /entityId === primaryId/.test(secondary)
+)
+assert(
+  'failed promote handoff backs off evaluate (no ABORT loop)',
+  /notePromoteHandoffFailed/.test(promote) &&
+    /promoteAbortUntil/.test(promote) &&
+    /notifyPromoteHandoffFailed/.test(world) &&
+    /notifyPromoteHandoffFailed/.test(app)
 )
 assert(
   'promote handoff keeps LiveKit when sceneId unchanged (pointer soft-route)',
@@ -444,7 +474,7 @@ assert(
   /pending <= 0 && performance\.now\(\) - this\.hydrateStartedAt > 2_500/.test(slot)
 )
 assert(
-  'tertiary neighbors still cook PhysX inside the 48 m ring',
+  'tertiary neighbors still cook PhysX inside the 64 m ring',
   /residentMode !== 'tertiary'/.test(secondary) === false
     ? /slot.residentMode !== 'secondary' && slot.residentMode !== 'tertiary'/.test(secondary)
     : true

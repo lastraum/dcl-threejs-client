@@ -4095,6 +4095,7 @@ export class AppController {
       `[promote] ABORT seamless jump @ ${target.x},${target.y} (${reason}) — ` +
         `no live secondary after wait; prior primary stays resident`
     )
+    world.notifyPromoteHandoffFailed(target.x, target.y)
     this.multiSceneRuntime.setSecondaryPriorityParcel(target.x, null)
   }
 

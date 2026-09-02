@@ -463,31 +463,27 @@ export class SecondaryLiveManager {
     const key = `${x},${y}`
     const primaryId = this.primaryScene?.entityId?.trim()
     for (const [entityId, slot] of this.slots) {
+      if (!this.slotCoversParcel(slot, key)) continue
       if (primaryId && entityId === primaryId) {
         this.rememberFootprint(entityId, [key])
-        console.info(
-          `[multi-scene] skip handoff — same entity as primary @ ${key}`
-        )
         return null
       }
-      if (this.slotCoversParcel(slot, key)) {
-        const fromMode = slot.residentMode
-        this.slots.delete(entityId)
-        this.stickyIds.delete(entityId)
-        this.emitLiveIds()
-        const physIds = [...slot.registeredPhysicsEntities()]
-        const physOffset = slot.physOffset
-        const system = slot.detachForPromote()
-        console.info(
-          `[multi-scene] handoff ${fromMode} → primary “${slot.scene.title}” base=${slot.scene.baseParcel} parcel=${key}`
-        )
-        return {
-          entityId,
-          scene: slot.scene,
-          system,
-          physIds,
-          physOffset
-        }
+      const fromMode = slot.residentMode
+      this.slots.delete(entityId)
+      this.stickyIds.delete(entityId)
+      this.emitLiveIds()
+      const physIds = [...slot.registeredPhysicsEntities()]
+      const physOffset = slot.physOffset
+      const system = slot.detachForPromote()
+      console.info(
+        `[multi-scene] handoff ${fromMode} → primary “${slot.scene.title}” base=${slot.scene.baseParcel} parcel=${key}`
+      )
+      return {
+        entityId,
+        scene: slot.scene,
+        system,
+        physIds,
+        physOffset
       }
     }
     return null

@@ -316,7 +316,15 @@ const tjs = engine.defineComponent('tjs', {
 
 A `kind: 'shader'` row **loads** when the component appears (even with `enabled: false`). `path` is the shader file. `name` is the export that file exposes (whatever that file calls it). Already-warmed shaders are not fetched again on `/reload` or HMR.
 
-`ox, oy, oz` / `dx, dy, dz` / `dist` are only for shaders that fire from a point toward a target. Omit them otherwise — they default to `0`, and this client then uses the entity Transform (or a 32 m default distance). Same for `layers`, `background`, `fov`, `camera`: skip them on rows that do not use them.
+Cast pose fields are only for shaders that fire from a point toward a target. Omit them otherwise (`0` / empty means unused: origin and direction come from the entity Transform, distance is 32 m). Same for `layers`, `background`, `fov`, `camera`: skip them on rows that do not use them.
+
+- `ox` — origin X (where the effect starts, scene meters)
+- `oy` — origin Y
+- `oz` — origin Z
+- `dx` — direction X (toward the target, usually normalized)
+- `dy` — direction Y
+- `dz` — direction Z
+- `dist` — how far it travels, in meters (`0` / omit → 32)
 
 ### Shader example
 
@@ -441,7 +449,13 @@ row.enabled = !row.enabled
 | `kind: 'shader'` | Loads when the row appears. `enabled: true` fires it. |
 | `path` | Shader file. |
 | `name` | Export in that file (the function it exposes). |
-| `ox, oy, oz` / `dx, dy, dz` / `dist` | Cast origin, direction, distance. **Optional.** Omit unless that shader fires from a point. `0` means unused (distance then defaults to 32 m). |
+| `ox` | Origin X. Where the effect starts (scene meters). Optional. |
+| `oy` | Origin Y. Optional. |
+| `oz` | Origin Z. Optional. |
+| `dx` | Direction X. Toward the target (usually normalized). Optional. |
+| `dy` | Direction Y. Optional. |
+| `dz` | Direction Z. Optional. |
+| `dist` | Travel distance in meters. Optional. `0` / omit → 32 m. |
 | `sync: true` | That one-shot is shared with other ThreejsClient sessions. |
 | `kind: 'camera'` | Same entity as `Transform` + `VirtualCamera`. `layers`, `fov`, `background` live here. Do not set `camera`. |
 | `layers` | Camera only. `"0,1,2"` string. Empty / omit = all. |

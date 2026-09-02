@@ -281,7 +281,7 @@ Leave the scene `npm start` / Hub Play running. Closing it stops `/about` and th
 
 Scenes drive this client's shaders and cameras with one mirrored custom component named **`tjs`**. `kind` is a string. Kinds in use: `shader`, `texture`, `camera`, `projection`. Other explorers ignore unknown custom components, so a published SDK7 scene that defines `tjs` stays valid.
 
-**Field order must match this client.** Copy the spec below (including `layers`, `background`, `fov`). A helper that fills defaults keeps rows short.
+Copy this spec once. **Field order must match.** The third argument is the default row — `tjs.create` only needs the fields you actually set; the rest fill in from here.
 
 ### Declare `tjs`
 
@@ -334,43 +334,23 @@ const tjs = engine.defineComponent(
     fov: 60
   }
 )
-
-function tjsFields(partial: Record<string, unknown>) {
-  return {
-    kind: '',
-    name: '',
-    sync: false,
-    enabled: false,
-    path: '',
-    ox: 0,
-    oy: 0,
-    oz: 0,
-    dx: 0,
-    dy: 0,
-    dz: 0,
-    dist: 0,
-    camera: 0 as Entity,
-    layers: '',
-    background: Color4.create(0, 0, 0, 1),
-    fov: 60,
-    ...partial
-  }
-}
 ```
 
 A `kind: 'shader'` row **loads** when the component appears (even with `enabled: false`). Ice / meteor / hail use `name`: `ice`, `cinder` (or `meteor`), `hailwraith` (or `hail`). Leave `path` empty to use the bundled file, or set a scene file such as `assets/shaders/IceAbility.js`. Already-warmed shaders are not fetched again on `/reload` or HMR.
+
+`ox, oy, oz` / `dx, dy, dz` / `dist` are only for shaders that fire from a point toward a target. Omit them otherwise — they default to `0`, and this client then uses the entity Transform (or a 32 m default distance). Same for `layers`, `background`, `fov`, `camera`: skip them on rows that do not use them.
 
 ### Shader example
 
 Preload, then fire. Ice / meteor / hail are one-shots: create a new `enabled: true` row each cast. Looping shaders stay on one entity — toggle `enabled`.
 
 ```ts
-tjs.create(engine.addEntity(), tjsFields({
+tjs.create(engine.addEntity(), {
   kind: 'shader',
   name: 'ice',
   path: 'assets/shaders/IceAbility.js',
   enabled: false
-}))
+})
 
 function castIce(
   origin: ReturnType<typeof Vector3.create>,
@@ -379,7 +359,7 @@ function castIce(
   const dx = target.x - origin.x
   const dz = target.z - origin.z
   const distance = Math.sqrt(dx * dx + dz * dz) || 1
-  tjs.create(engine.addEntity(), tjsFields({
+  tjs.create(engine.addEntity(), {
     kind: 'shader',
     name: 'ice',
     enabled: true,
@@ -390,7 +370,7 @@ function castIce(
     dy: 0,
     dz: dz / distance,
     dist: distance
-  }))
+  })
 }
 
 castIce(Vector3.create(42, 0, 46), Vector3.create(54, 0, 38))
@@ -402,12 +382,11 @@ Looping shader on one entity:
 
 ```ts
 const loop = engine.addEntity()
-tjs.create(loop, tjsFields({
+tjs.create(loop, {
   kind: 'shader',
   name: 'ice',
-  path: 'assets/shaders/IceAbility.js',
-  enabled: false
-}))
+  path: 'assets/shaders/IceAbility.js'
+})
 
 tjs.getMutable(loop).enabled = true
 tjs.getMutable(loop).enabled = false
@@ -440,13 +419,13 @@ Transform.create(cam, {
   rotation: Quaternion.fromEulerDegrees(-20, 0, 0)
 })
 VirtualCamera.create(cam, { lookAtEntity: lookAt })
-tjs.create(cam, tjsFields({
+tjs.create(cam, {
   kind: 'camera',
   enabled: true,
   layers: '0,1,2',
   fov: 40,
   background: Color4.create(0, 0, 0, 1)
-}))
+})
 ```
 
 `fov` is vertical degrees (default `60`, clamped 1–170). `background` is the RT clear / empty-feed color (default black).
@@ -460,11 +439,11 @@ Transform.create(screen, {
   rotation: Quaternion.fromEulerDegrees(0, 35, 0),
   scale: Vector3.create(4.2, 2.6, 1)
 })
-tjs.create(screen, tjsFields({
+tjs.create(screen, {
   kind: 'projection',
   enabled: true,
   camera: cam
-}))
+})
 ```
 
 Toggle the picture on the **projection** (leave the camera `enabled`):
@@ -491,10 +470,10 @@ row.enabled = !row.enabled
 | --- | --- |
 | `kind: 'shader'` + `name` | Loads when the row appears. Ice / meteor / hail fire when `enabled: true`. |
 | `path` | Shader file. Empty uses the bundled file for that `name`. |
-| `ox, oy, oz` / `dx, dy, dz` / `dist` | Cast origin, direction, distance. |
+| `ox, oy, oz` / `dx, dy, dz` / `dist` | Cast origin, direction, distance. **Optional.** Omit unless that shader fires from a point. `0` means unused (distance then defaults to 32 m). |
 | `sync: true` | That one-shot is shared with other ThreejsClient sessions. |
 | `kind: 'camera'` | Same entity as `Transform` + `VirtualCamera`. `layers`, `fov`, `background` live here. Do not set `camera`. |
-| `layers` | Camera only. `"0,1,2"` string. Empty = all. |
+| `layers` | Camera only. `"0,1,2"` string. Empty / omit = all. |
 | `fov` | Camera only. Vertical FOV, default 60. |
 | `background` | Color4 clear for empty feeds. Default black. |
 | `kind: 'projection'` + `camera` | Host-drawn world plane. `camera` is the **lens entity**. |
@@ -503,6 +482,8 @@ row.enabled = !row.enabled
 
 ## Credits
 
+- **Kenney** ([@KenneyNL](https://x.com/KenneyNL)) — CC0 3D kits (city, roads, cars). [kenney.nl](https://kenney.nl)
+- **Chiro Visuals** ([@chirovisuals](https://x.com/chirovisuals)) — Three.js ability VFX shaders. [LinearAbiltyCastingThreeJS](https://github.com/achrefelouafi/LinearAbiltyCastingThreeJS)
 - **FFT ocean / waves** — GPGPU Phillips-spectrum water ported from [gioeledallapozza/FFTOCEAN](https://github.com/gioeledallapozza/FFTOCEAN). Scene knobs: `scene.json` → `environment.water` (ThreejsClient-only; ignored by Unity/Godot Explorer).
 
 ## License

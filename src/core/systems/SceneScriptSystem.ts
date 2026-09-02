@@ -637,11 +637,15 @@ export class SceneScriptSystem {
         playerPose: () => this.virtualCameraPlayerPose?.() ?? this.clientPlayerPose ?? emptyEntityPose(),
         cameraPose: () => this.virtualCameraCameraPose?.() ?? this.clientCameraPose ?? emptyEntityPose()
       }),
-      (pose, visual) => this.bridge?.bindEntityDrawSlot(pose, visual, 'tjsProjection'),
-      (pose) => this.bridge?.unbindEntityDrawSlot(pose, 'tjsProjection')
+      (pose, visual) => {
+        this.bridge?.bindEntityDrawSlot(pose, visual, 'tjsProjection')
+      },
+      (pose) => {
+        this.bridge?.unbindEntityDrawSlot(pose, 'tjsProjection')
+      }
     )
     if (this.shaderResolveUrl) getShaderManager().setResolveUrl(this.shaderResolveUrl)
-    this.tjsBridge.onCameraReady = () => this.tjsBridge?.sync(this.view)
+    this.bridge?.setTjsTextureGetter((entity) => this.tjsBridge?.getTexture(entity as Entity) ?? null)
     return this.tjsBridge
   }
 

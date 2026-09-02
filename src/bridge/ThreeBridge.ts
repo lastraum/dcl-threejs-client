@@ -1304,10 +1304,33 @@ export class ThreeBridge {
     if (visEntities.size) this.syncEcsVisibility(visEntities)
   }
 
+  private tjsGetTexture: ((entity: number) => THREE.Texture | null) | null = null
+
+  setTjsTextureGetter(getter: (entity: number) => THREE.Texture | null): void {
+    this.tjsGetTexture = getter
+    this.bindVideoTextureResolver()
+  }
+
   setVideoPlayerBridge(bridge: VideoPlayerBridge): void {
     this.videoPlayerBridge = bridge
-    this.materials.setVideoTextureResolver((entity) => bridge.getTexture(entity as Entity))
-    bridge.onTextureReady = (videoEntity) => this.invalidateMaterialsForVideoPlayer(videoEntity)
+    this.bindVideoTextureResolver()
+    bridge.onTextureReady = (videoPlayerEntity) => {
+      this.invalidateMaterialsForVideoPlayer(videoPlayerEntity)
+    }
+  }
+
+  notifyVideoTextureReady(entity: Entity): void {
+    this.invalidateMaterialsForVideoPlayer(entity)
+  }
+
+  private bindVideoTextureResolver(): void {
+    this.materials.setVideoTextureResolver((entity) => {
+      return (
+        this.videoPlayerBridge?.getTexture(entity as Entity) ??
+        this.tjsGetTexture?.(entity) ??
+        null
+      )
+    })
   }
 
   setAvatarTextureResolver(resolver: (userId: string) => Promise<THREE.Texture | null>): void {

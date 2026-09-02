@@ -39,47 +39,21 @@ type TjsCameraRuntime = {
 type TjsProjectionRuntime = {
   entity: Entity
   cameraEntity: Entity
-  boundMeshes: THREE.Mesh[]
-  savedMaps: WeakMap<THREE.Material, THREE.Texture | null>
+  mesh: THREE.Mesh
 }
 
-function collectMeshes(root: THREE.Object3D): THREE.Mesh[] {
-  const out: THREE.Mesh[] = []
-  root.traverse((obj) => {
-    if ((obj as THREE.Mesh).isMesh) out.push(obj as THREE.Mesh)
-  })
-  return out
-}
-
-function bindRtToMeshes(
-  meshes: THREE.Mesh[],
-  texture: THREE.Texture,
-  savedMaps: WeakMap<THREE.Material, THREE.Texture | null>
-): void {
-  for (const mesh of meshes) {
-    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
-    for (const mat of mats) {
-      if (!mat) continue
-      const mapped = mat as THREE.MeshStandardMaterial
-      if (!('map' in mapped)) continue
-      if (!savedMaps.has(mat)) savedMaps.set(mat, mapped.map ?? null)
-      mapped.map = texture
-      mapped.needsUpdate = true
-    }
-  }
-}
-
-function restoreMeshMaps(meshes: THREE.Mesh[], savedMaps: WeakMap<THREE.Material, THREE.Texture | null>): void {
-  for (const mesh of meshes) {
-    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
-    for (const mat of mats) {
-      if (!mat || !savedMaps.has(mat)) continue
-      const mapped = mat as THREE.MeshStandardMaterial
-      if ('map' in mapped) mapped.map = savedMaps.get(mat) ?? null
-      mapped.needsUpdate = true
-      savedMaps.delete(mat)
-    }
-  }
+function createProjectionPlane(texture: THREE.Texture): THREE.Mesh {
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(1, 1),
+    new THREE.MeshBasicMaterial({
+      map: texture,
+      toneMapped: false,
+      side: THREE.DoubleSide
+    })
+  )
+  mesh.name = 'tjs-projection'
+  mesh.userData.dclTjsProjectionPlane = true
+  return mesh
 }
 
 function withSubtreeHidden(root: THREE.Object3D | null | undefined, fn: () => void): void {
@@ -172,7 +146,7 @@ function resolveCctvLensPose(
 
 /**
  * Host apply for mirrored `tjs` LWW — shaders via ShaderManager / AbilityManager,
- * CCTV via camera RT + projection screen bind (not Material.VideoTexture).
+ * CCTV via camera RT + host-owned projection plane (not MeshRenderer / Material).
  */
 export class SceneTjsBridge {
   private readonly shaderFireFp = new Map<Entity, string>()
@@ -343,10 +317,9 @@ export class SceneTjsBridge {
       runtime = undefined
     }
     if (!runtime) {
-      const meshes = collectMeshes(screenNode)
-      const savedMaps = new WeakMap<THREE.Material, THREE.Texture | null>()
-      bindRtToMeshes(meshes, cameraRt.rt.texture, savedMaps)
-      runtime = { entity, cameraEntity, boundMeshes: meshes, savedMaps }
+      const mesh = createProjectionPlane(cameraRt.rt.texture)
+      screenNode.add(mesh)
+      runtime = { entity, cameraEntity, mesh }
       this.projections.set(entity, runtime)
       clientDebugLog.log(
         'scene',
@@ -355,12 +328,10 @@ export class SceneTjsBridge {
       )
       return
     }
-    const sample = runtime.boundMeshes[0]?.material
-    const currentMap = sample
-      ? ((Array.isArray(sample) ? sample[0] : sample) as THREE.MeshStandardMaterial)
-      : null
-    if (currentMap?.map !== cameraRt.rt.texture) {
-      bindRtToMeshes(runtime.boundMeshes, cameraRt.rt.texture, runtime.savedMaps)
+    const mat = runtime.mesh.material as THREE.MeshBasicMaterial
+    if (mat.map !== cameraRt.rt.texture) {
+      mat.map = cameraRt.rt.texture
+      mat.needsUpdate = true
     }
   }
 
@@ -379,7 +350,14 @@ export class SceneTjsBridge {
   private teardownProjection(entity: Entity): void {
     const runtime = this.projections.get(entity)
     if (!runtime) return
-    restoreMeshMaps(runtime.boundMeshes, runtime.savedMaps)
+    runtime.mesh.removeFromParent()
+    runtime.mesh.geometry.dispose()
+    const mat = runtime.mesh.material
+    if (Array.isArray(mat)) {
+      for (const m of mat) m.dispose()
+    } else {
+      mat.dispose()
+    }
     this.projections.delete(entity)
     clientDebugLog.log('scene', `tjs projection off e${entity as number}`, { alsoConsole: true })
   }

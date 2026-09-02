@@ -639,8 +639,7 @@ export class SceneScriptSystem {
       })
     )
     if (this.shaderResolveUrl) getShaderManager().setResolveUrl(this.shaderResolveUrl)
-    this.bridge?.setTjsTextureGetter((entity) => this.tjsBridge?.getTexture(entity) ?? null)
-    this.tjsBridge.onTextureReady = (entity) => this.bridge?.notifyVideoTextureReady(entity)
+    this.tjsBridge.onCameraReady = () => this.tjsBridge?.sync(this.view)
     return this.tjsBridge
   }
 

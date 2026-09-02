@@ -204,7 +204,7 @@ export class CommsService {
     })
 
     this.archipelago.setIslandHandler((event) => {
-      void this.onIslandChanged(event.connStr)
+      void this.onIslandChanged(event)
     })
 
     this.router.setHandlers({
@@ -2040,7 +2040,24 @@ export class CommsService {
     this.archipelago.connect(url, this.localAddress, this.identity)
   }
 
-  private async onIslandChanged(connStr: string): Promise<void> {
+  private lastIslandId = ''
+  private lastIslandConnectAt = 0
+
+  private async onIslandChanged(event: { islandId: string; connStr: string }): Promise<void> {
+    const connStr = event.connStr
+    const islandId = event.islandId?.trim() ?? ''
+    // Same-primary plaza walk: archipelago can flap island ids. Keep the live
+    // room unless the assignment actually changed and we've been on it a bit.
+    if (islandId && islandId === this.lastIslandId && this.islandConnected) {
+      return
+    }
+    if (
+      this.islandConnected &&
+      this.lastIslandConnectAt > 0 &&
+      performance.now() - this.lastIslandConnectAt < 8_000
+    ) {
+      return
+    }
     this.islandLiveKit.disconnect()
     this.islandConnected = false
     if (!isLiveKitAdapter(connStr)) {
@@ -2051,6 +2068,10 @@ export class CommsService {
     // (voice stays on the scene room).
     const connected = await this.islandLiveKit.connect(connStr, { autoSubscribe: false })
     this.islandConnected = connected
+    if (connected) {
+      this.lastIslandId = islandId
+      this.lastIslandConnectAt = performance.now()
+    }
     clientDebugLog.log(
       'network',
       connected

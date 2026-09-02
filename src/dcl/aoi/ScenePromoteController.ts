@@ -375,19 +375,15 @@ export class ScenePromoteController {
         y: parseParcelKey(baseParcel).y + Math.floor(dclZ / PARCEL_SIZE)
       }
 
-      // 2) Only query parcels not already owned by a known deployment / primary / empty/road.
+      // 2) Query every parcel in the warm ring. Plaza footprint must NOT skip
+      // nested deployments that sit on those same cells (Hockey / Jarod).
       const pointers: string[] = []
       let skippedCovered = 0
       for (let dx = -ring; dx <= ring; dx++) {
         for (let dy = -ring; dy <= ring; dy++) {
           const parcel = { x: center.x + dx, y: center.y + dy }
           const key = `${parcel.x},${parcel.y}`
-          if (this.primaryParcels.has(key)) continue
           if (this.skipPromoteKeys.has(key)) continue
-          if (this.coveredEntityParcels.has(key)) {
-            skippedCovered++
-            continue
-          }
           const dist = distanceToParcelCenterM(dclX, dclZ, parcel, baseParcel)
           if (dist > scriptWarmRadiusM) continue
           pointers.push(key)

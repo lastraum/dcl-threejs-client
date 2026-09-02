@@ -4026,6 +4026,11 @@ export class PhysXWorld {
     const skipWorkerStream = options?.skipWorkerStream === true
     const shapes = desc.shapes
     if (!shapes?.length || !this.physics || !this.scene) return false
+    const already = this.multiShapeChildCount.get(desc.entity) ?? 0
+    if (already > 0) {
+      const { expected, live } = this.countCookableMultiShapeLive(desc)
+      if (expected > 0 && live === expected) return true
+    }
 
     const _meshWorld = new THREE.Matrix4()
     let attached = 0

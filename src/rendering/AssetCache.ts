@@ -88,10 +88,9 @@ export function disposeSessionAssetCache(): void {
 const prefetchedSceneIds = new Set<string>()
 
 /**
- * Warm only GLB **bytes** into IndexedDB (worker pool). Never bulk-decode PNGs/MP3s
- * (TextureLoader on main for ~200 PNGs → 70+ rAF violations / ~1fps). Never
- * transfer all IDB-hit buffers onto main just to drop them (GC thrash).
- * Textures/audio load on demand at attach.
+ * Warm GLB **and PNG/JPG bytes** into IndexedDB with the scene manifest.
+ * Decode still happens at attach (TextureLoader); bytes must be local so
+ * neighbor meshes are textured on first appear — not beige-then-later.
  */
 export function prefetchSceneManifestAssets(cache: AssetCache, scene: ResolvedScene): void {
   const sceneKey = scene.entityId ?? scene.title
@@ -102,34 +101,37 @@ export function prefetchSceneManifestAssets(cache: AssetCache, scene: ResolvedSc
 
   if (sceneKey) prefetchedSceneIds.add(sceneKey)
 
+  const byteJobs = [...glbs, ...textures]
   const parts: string[] = []
-  if (textures.length) parts.push(`${textures.length} PNG(s) on-demand`)
+  if (textures.length) parts.push(`${textures.length} PNG(s) with GLBs`)
   if (audio.length) parts.push(`${audio.length} MP3(s) on-demand`)
 
-  if (!glbs.length) {
+  if (!byteJobs.length) {
     console.info(`[assets] scene manifest — ${parts.join(', ') || 'empty'}`)
     return
   }
 
   void (async () => {
     try {
-      if (await isSceneBytesWarm(scene)) {
+      const glbsWarm = await isSceneBytesWarm(scene)
+      const jobs = glbsWarm ? textures : byteJobs
+      if (!jobs.length) {
         console.info(
           `[assets] IDB warm — skip main-thread transfer of ${glbs.length} GLB(s)` +
             (parts.length ? `; ${parts.join(', ')}` : '')
         )
         return
       }
-      // Cold: parallel IDB warm (worker pool is 6–8). Was concurrency=4 → multi-minute plaza loads.
       const CONCURRENCY = 12
       console.info(
-        `[assets] prefetching ${glbs.length} GLB(s) into IDB (concurrency=${CONCURRENCY})` +
-          (parts.length ? `; ${parts.join(', ')}` : '')
+        `[assets] prefetching ${glbsWarm ? 0 : glbs.length} GLB(s)` +
+          (textures.length ? ` + ${textures.length} PNG(s)` : '') +
+          ` into IDB (concurrency=${CONCURRENCY})` +
+          (audio.length ? `; ${audio.length} MP3(s) on-demand` : '')
       )
-      for (let i = 0; i < glbs.length; i += CONCURRENCY) {
-        const batch = glbs.slice(i, i + CONCURRENCY)
+      for (let i = 0; i < jobs.length; i += CONCURRENCY) {
+        const batch = jobs.slice(i, i + CONCURRENCY)
         await Promise.all(batch.map(({ url, hash }) => cache.prefetchBytesSettled(url, hash)))
-        // Yield so rAF / UI can run between batches.
         await new Promise<void>((r) => setTimeout(r, 0))
       }
     } catch {

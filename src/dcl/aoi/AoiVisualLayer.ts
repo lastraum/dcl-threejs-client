@@ -1260,14 +1260,6 @@ export class AoiVisualLayer {
         continue
       }
       const keys = entityFootprintKeys(e)
-      const inRing = keys.filter((p) => pointerSet.has(p.trim()))
-      if (
-        inRing.length > 0 &&
-        inRing.every((p) => this.primaryParcelSet.has(p.trim())) &&
-        !this.primaryIsEmpty
-      ) {
-        continue
-      }
       if (!keys.some((p) => pointerSet.has(p.trim()))) continue
       const best = minPlayerToFootprintDistanceM(
         dclX,
@@ -1849,12 +1841,6 @@ export class AoiVisualLayer {
       const keys = entityFootprintKeys(e)
       const inRing = keys.filter((p) => pointerSet.has(p.trim()))
       if (!inRing.length) return false
-      if (
-        !this.primaryIsEmpty &&
-        inRing.every((p) => this.primaryParcelSet.has(p.trim()))
-      ) {
-        return false
-      }
       return true
     })
 
@@ -1953,9 +1939,7 @@ export class AoiVisualLayer {
           dclToThreePos(origin.x, 0, origin.z, pose.position)
 
           const wantShow =
-            wantFf.has(entityId) &&
-            entityId !== primaryId &&
-            !this.liveGraphReadyIds.has(entityId)
+            entityId !== primaryId && !this.liveGraphReadyIds.has(entityId)
           pose.visible = wantShow
           group.visible = wantShow
 
@@ -1983,13 +1967,9 @@ export class AoiVisualLayer {
 
     for (const [id, group] of this.firstFrameGroups) {
       const rec = this.firstFrameRecords.get(id)
-      if (wantFf.has(id) && !this.liveGraphReadyIds.has(id) && id !== primaryId) {
-        group.visible = true
-        if (rec) rec.pose.visible = true
-      } else {
-        group.visible = false
-        if (rec) rec.pose.visible = false
-      }
+      const show = !this.liveGraphReadyIds.has(id) && id !== primaryId
+      group.visible = show
+      if (rec) rec.pose.visible = show
     }
 
     this.pruneFirstFrameRetain()

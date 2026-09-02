@@ -471,10 +471,10 @@ export class World {
       else this.navigateHandler?.(target)
     },
     onSoftRoute: (x, y) => {
-      const onPrimary = this.primaryCoversParcel(x, y)
-      // Pin under-feet only when it is a *neighbor* footprint so SceneLoop
-      // boots that guest first. Pinning a plaza cell is a no-op (primary).
-      this.multiScene?.setSecondaryPriorityParcel(x, onPrimary ? null : y)
+      // Always pin the cell under feet so nested plaza-parcel scenes
+      // (Hockey / BrandonManus) boot from player distance even while CBD
+      // remains the covering primary.
+      this.multiScene?.setSecondaryPriorityParcel(x, y)
       this.promoteSoftRoute?.(x, y)
     },
     onFootprintFold: (keys) => {
@@ -5718,7 +5718,12 @@ export class World {
           !this.physics.hasFailedCookFingerprint(desc.fingerprint) &&
           !this.isPlayCookGivenUp(desc.entity, desc.fingerprint)
         ) {
-          this.colliderCookQueue.add(desc.entity)
+          // First multi-shape expand on the walk path is the 227-actor hitch.
+          // Cook while standing; walking only enables already-cooked hulls.
+          const shapeN = desc.shapes?.length ?? 0
+          if (!(this.isPlayerLocomoting() && shapeN > 16)) {
+            this.colliderCookQueue.add(desc.entity)
+          }
         } else if (has && !this.physics.isStaticColliderSimulationEnabled(desc.entity)) {
           this.physics.setStaticColliderFamilySimulationEnabled(desc.entity, true)
         }

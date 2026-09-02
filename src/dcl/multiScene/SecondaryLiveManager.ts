@@ -4,7 +4,7 @@ import type { SceneHost } from '../../rendering/SceneHost'
 import type { PhysicsColliderDesc } from '../../physics/PhysXWorld'
 import type { PerformanceTier, RealmResponse, UserDataResponse } from '../../shim/types'
 import type { SceneScriptSystem } from '../../core/systems/SceneScriptSystem'
-import { resolveSceneFromRoute } from '../content/resolveScene'
+import { resolveSceneFromEntityId, resolveSceneFromRoute } from '../content/resolveScene'
 import type { ResolvedScene } from '../content/types'
 import {
   aoiGlbShellsOnly,
@@ -85,6 +85,8 @@ export class SecondaryLiveManager {
   private lastBootTarget = 0
   /** Last boot-list titles (loading overlay / `[aoi] live-guest load` log). */
   private lastBootTitles: string[] = []
+  /** Last AOI live-guest candidates (nested plaza scenes keep their own entity id). */
+  private lastCandidates: SecondaryLiveRequest[] = []
 
   bind(opts: {
     primaryScene: ResolvedScene
@@ -441,10 +443,19 @@ export class SecondaryLiveManager {
 
   private findSlotForParcel(x: number, y: number): SceneWorkerSlot | null {
     const key = `${x},${y}`
+    const primaryId = this.primaryScene?.entityId?.trim()
+    let best: SceneWorkerSlot | null = null
+    let bestParcels = Infinity
     for (const slot of this.slots.values()) {
-      if (this.slotCoversParcel(slot, key)) return slot
+      if (!this.slotCoversParcel(slot, key)) continue
+      if (primaryId && slot.id === primaryId) continue
+      const n = this.footprints.get(slot.id)?.size ?? slot.scene.parcels.length ?? 999
+      if (n < bestParcels) {
+        best = slot
+        bestParcels = n
+      }
     }
-    return null
+    return best
   }
 
   private countMode(mode: ResidentMode): number {
@@ -692,12 +703,19 @@ export class SecondaryLiveManager {
     }
     this.booting.add(key)
     try {
-      const scene = await resolveSceneFromRoute({
-        kind: 'coords',
-        x,
-        y,
-        segment: key
-      })
+      const nested = this.lastCandidates.find(
+        (c) =>
+          this.requestCoversParcel(c, key) &&
+          c.entityId !== this.primaryScene?.entityId
+      )
+      const scene = nested
+        ? await resolveSceneFromEntityId(nested.entityId, { x, y })
+        : await resolveSceneFromRoute({
+            kind: 'coords',
+            x,
+            y,
+            segment: key
+          })
       if (this.disposed || !scene?.mainEntry || !scene.entityId) return false
       if (this.primaryScene?.entityId === scene.entityId) return false
       this.rememberFootprint(scene.entityId, [scene.baseParcel, ...scene.parcels, key])
@@ -882,6 +900,7 @@ export class SecondaryLiveManager {
 
   reconcile(candidates: SecondaryLiveRequest[]): void {
     if (this.disposed || !this.cache || !this.host || !this.arbiter || !this.poseProvider) return
+    this.lastCandidates = candidates
     for (const c of candidates) {
       this.rememberFootprint(c.entityId, [
         c.base,
@@ -988,9 +1007,14 @@ export class SecondaryLiveManager {
       if (started >= bootSlots) break
       if (this.slots.has(req.entityId) || this.booting.has(req.entityId)) continue
       if (req.distM > enterM && !coversPri(req)) continue
-      // Dying rAF / jog: only boot the parcel under feet. Approaching BrandonManus
-      // while Snow was hydrating stacked a third isolate on 7 FPS.
-      if (!this.loadBoot && (lastFrameOverBudget(28) || this.locomoting) && !coversPri(req)) {
+      // Dying rAF / jog: keep the nearest inner neighbor bootable (plaza covering
+      // that cell is not exclusive). Skip only farther extras.
+      if (
+        !this.loadBoot &&
+        (lastFrameOverBudget(28) || this.locomoting) &&
+        !coversPri(req) &&
+        started > 0
+      ) {
         continue
       }
       if (this.countMode('secondary') + this.booting.size >= cap) {
@@ -1025,26 +1049,40 @@ export class SecondaryLiveManager {
           /* keep base */
         }
       }
-      let scene = await resolveSceneFromRoute({
-        kind: 'coords',
-        x: rx,
-        y: ry,
-        segment: `${rx},${ry}`
-      })
+      let scene =
+        (await resolveSceneFromEntityId(req.entityId, { x: rx, y: ry })) ??
+        (await resolveSceneFromRoute({
+          kind: 'coords',
+          x: rx,
+          y: ry,
+          segment: `${rx},${ry}`
+        }))
       // Under-feet parcel can miss the catalyst pointer index (125,104 empty;
       // covering scene is indexed at 125,103). Retry the deployment base.
       if (
-        (!scene?.mainEntry || !scene.entityId) &&
+        (!scene?.mainEntry || !scene.entityId || scene.entityId !== req.entityId) &&
         (rx !== req.resolveX || ry !== req.resolveY)
       ) {
-        scene = await resolveSceneFromRoute({
-          kind: 'coords',
-          x: req.resolveX,
-          y: req.resolveY,
-          segment: `${req.resolveX},${req.resolveY}`
-        })
+        scene =
+          (await resolveSceneFromEntityId(req.entityId, {
+            x: req.resolveX,
+            y: req.resolveY
+          })) ??
+          (await resolveSceneFromRoute({
+            kind: 'coords',
+            x: req.resolveX,
+            y: req.resolveY,
+            segment: `${req.resolveX},${req.resolveY}`
+          }))
       }
       if (this.disposed || !scene?.mainEntry || !scene.entityId) return
+      if (scene.entityId !== req.entityId) {
+        console.info(
+          `[multi-scene] skip boot “${req.title}” — pointer resolved “${scene.title}” ` +
+            `(${scene.entityId.slice(0, 12)}) not ${req.entityId.slice(0, 12)}`
+        )
+        return
+      }
       if (this.primaryScene?.entityId === scene.entityId) return
       this.rememberFootprint(req.entityId, [req.base, ...(req.parcels ?? scene.parcels)])
       this.rememberFootprint(scene.entityId, [scene.baseParcel, ...scene.parcels, ...(req.parcels ?? [])])

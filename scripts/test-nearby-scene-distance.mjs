@@ -441,6 +441,39 @@ assert(
   'focus occupancy uses expanded primaryCoversParcel not scene.parcels only',
   /primaryCoversParcel\(parcel\.x, parcel\.y\)/.test(world)
 )
+assert(
+  'script-warm queries plaza cells (no coveredSkip of nested neighbors)',
+  /Plaza footprint must NOT skip/.test(promote) &&
+    !/if \(this\.primaryParcels\.has\(key\)\) continue/.test(promote) &&
+    !/if \(this\.coveredEntityParcels\.has\(key\)\)/.test(promote)
+)
+assert(
+  'composite/first-frame do not skip nested scenes whose parcels sit in the plaza rect',
+  !/inRing\.every\(\(p\) => this\.primaryParcelSet\.has/.test(aoi)
+)
+assert(
+  'live boot resolves nested scenes by entity id, not covering plaza pointer',
+  /resolveSceneFromEntityId/.test(secondary) &&
+    /pointer resolved/.test(secondary)
+)
+assert(
+  'pointer cache keeps multiple entities per cell (plaza + Hockey)',
+  /entityIds: Set/.test(fetchSrc) &&
+    /Index catalyst pointers only/.test(fetchSrc)
+)
+assert(
+  'manifest prefetch warms PNG bytes with GLBs',
+  /PNG\(s\) with GLBs/.test(readFileSync(join(root, 'src/rendering/AssetCache.ts'), 'utf8'))
+)
+assert(
+  'first-frame groups stay visible after sample timeout',
+  /entityId !== primaryId && !this\.liveGraphReadyIds\.has\(entityId\)/.test(aoi) &&
+    !/wantFf\.has\(entityId\) &&/.test(aoi)
+)
+assert(
+  'island LiveKit does not bounce on same-island plaza walk',
+  /islandId === this\.lastIslandId && this\.islandConnected/.test(comms)
+)
 const sceneUiBridge = readFileSync(join(root, 'src/ui/scene/SceneUiBridge.ts'), 'utf8')
 const sceneScript = readFileSync(join(root, 'src/core/systems/SceneScriptSystem.ts'), 'utf8')
 const sceneWorker = readFileSync(join(root, 'src/shim/worker/sceneWorker.ts'), 'utf8')

@@ -11,7 +11,7 @@ import {
 import type { EntityPose } from '../../bridge/ReservedEntitiesSync'
 import { SceneScriptSystem } from '../../core/systems/SceneScriptSystem'
 import type { ResolvedScene } from '../content/types'
-import { resolveSceneFromRoute } from '../content/resolveScene'
+import { resolveSceneFromEntityId, resolveSceneFromRoute } from '../content/resolveScene'
 import {
   isAoiSecondaryGroundSrc,
   neighborOriginOffset,
@@ -149,16 +149,26 @@ export class SecondaryFirstFrameSampler {
     let system: SceneScriptSystem | null = null
 
     try {
-      const scene = await resolveSceneFromRoute({
-        kind: 'coords',
-        x: req.resolveX,
-        y: req.resolveY,
-        segment: `${req.resolveX},${req.resolveY}`
-      })
+      const scene =
+        (await resolveSceneFromEntityId(req.entityId, {
+          x: req.resolveX,
+          y: req.resolveY
+        })) ??
+        (await resolveSceneFromRoute({
+          kind: 'coords',
+          x: req.resolveX,
+          y: req.resolveY,
+          segment: `${req.resolveX},${req.resolveY}`
+        }))
       if (gen !== this.gen || this.disposed) return
       if (!scene?.mainEntry) {
         this.doneIds.add(this.doneKey(req.entityId))
         req.onFail?.(req.entityId, 'no main entry')
+        return
+      }
+      if (scene.entityId && req.entityId && scene.entityId !== req.entityId) {
+        this.doneIds.add(this.doneKey(req.entityId))
+        req.onFail?.(req.entityId, 'pointer resolved covering plaza, not this entity')
         return
       }
 
@@ -202,7 +212,7 @@ export class SecondaryFirstFrameSampler {
         if (gen !== this.gen || this.disposed) return
         if (lastFrameOverBudget(33)) {
           overBudgetStreak++
-          if (overBudgetStreak >= 3) {
+          if (overBudgetStreak >= 3 && peak < 1) {
             this.doneIds.add(this.doneKey(req.entityId))
             req.onFail?.(req.entityId, 'over-budget')
             return

@@ -20,7 +20,7 @@ const MAX_CACHED_POINTERS = 8_000
 const MAX_CACHED_ENTITIES = 2_000
 
 type TimedEntity = { entity: ActiveSceneEntity; expiresAt: number }
-type TimedPointer = { entityId: string; expiresAt: number }
+type TimedPointer = { entityIds: Set<string>; expiresAt: number }
 
 const entityById = new Map<string, TimedEntity>()
 const pointerOwner = new Map<string, TimedPointer>()
@@ -134,16 +134,19 @@ export function footprintKeysFromCatalystRecord(
 function rememberEntity(ent: ActiveSceneEntity, now: number): void {
   const expiresAt = now + ENTITY_CACHE_TTL_MS
   entityById.set(ent.id, { entity: ent, expiresAt })
-  const keys = entityFootprintKeys(ent)
-  for (const raw of keys) {
+  // Index catalyst pointers only — never inflate plaza scene.parcels over nested
+  // deployments that own those cells in the pointer index (Hockey / BrandonManus).
+  const pointerKeys = ent.pointers.length ? ent.pointers : [ent.base]
+  for (const raw of pointerKeys) {
     const p = normalizePointer(raw)
-    // Prefer higher-rank owners when writing (same as buildPointerOwnershipMap intent).
+    if (!p) continue
     const prev = pointerOwner.get(p)
     if (prev && prev.expiresAt > now) {
-      const prevEnt = entityById.get(prev.entityId)?.entity
-      if (prevEnt && entityParcelClaimRank(prevEnt) > entityParcelClaimRank(ent)) continue
+      prev.entityIds.add(ent.id)
+      prev.expiresAt = Math.max(prev.expiresAt, expiresAt)
+    } else {
+      pointerOwner.set(p, { entityIds: new Set([ent.id]), expiresAt })
     }
-    pointerOwner.set(p, { entityId: ent.id, expiresAt })
   }
 }
 
@@ -205,13 +208,16 @@ export async function fetchActiveEntitiesForPointers(
 
   for (const p of unique) {
     const hit = pointerOwner.get(p)
-    if (hit && hit.expiresAt > now) {
-      const ent = entityById.get(hit.entityId)?.entity
-      if (ent && entityById.get(hit.entityId)!.expiresAt > now) {
+    if (hit && hit.expiresAt > now && hit.entityIds.size) {
+      let any = false
+      for (const id of hit.entityIds) {
+        const timed = entityById.get(id)
+        if (!timed || timed.expiresAt <= now) continue
         cacheHits++
-        byId.set(ent.id, ent)
-        continue
+        byId.set(id, timed.entity)
+        any = true
       }
+      if (any) continue
     }
     cacheMisses++
     needFetch.push(p)
@@ -234,7 +240,8 @@ export async function fetchActiveEntitiesForPointers(
   if (unique.length <= 2) {
     const stillNeed = unique.filter((p) => {
       const hit = pointerOwner.get(p)
-      return !(hit && hit.expiresAt > performance.now() && entityById.get(hit.entityId))
+      if (!hit || hit.expiresAt <= performance.now() || hit.entityIds.size === 0) return true
+      return ![...hit.entityIds].some((id) => entityById.get(id))
     })
     if (stillNeed.length) {
       const extra = adjacentParcelPointers(stillNeed).filter((p) => !unique.includes(p))

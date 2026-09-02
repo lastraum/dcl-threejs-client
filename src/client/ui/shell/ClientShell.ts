@@ -31,7 +31,6 @@ import type { SocialService } from '../../../social/SocialService'
 import { EmoteWheelPanel } from '../EmoteWheelPanel'
 import {
   applyTouchPlayDocumentClasses,
-  isTabletPlayLayout,
   isTouchPlayLayout,
   subscribeTouchPlayLayout
 } from '../touchPlayLayout'
@@ -748,10 +747,8 @@ export class ClientShell {
     this.mobileChatFab.hidden = !mobile || this.root.hidden
     if (!mobile) {
       this.setMobileDrawerOpen(false)
-      this.mobileLocationPill.hidden = true
-    } else if (isTabletPlayLayout()) {
-      this.mobileLocationPill.hidden = true
     }
+    this.mobileLocationPill.hidden = true
     this.uiLayout.attach(this.root)
   }
 
@@ -771,7 +768,7 @@ export class ClientShell {
     this.root.classList.toggle('is-drawer-open', open)
     this.drawerBackdrop.hidden = !open
     document.documentElement.classList.toggle('client-drawer-open', open)
-    this.mobileLocationPill.hidden = !open || isTabletPlayLayout()
+    this.mobileLocationPill.hidden = true
     this.mobileProfileFab.setAttribute('aria-expanded', open ? 'true' : 'false')
     if (!open) this.profilePopup.hide()
   }

@@ -7226,7 +7226,8 @@
       }
       html.client-mobile .minimap,
       html.client-mobile .world-location-card,
-      html.client-mobile .location-map-stack {
+      html.client-mobile .location-map-stack,
+      html.client-mobile .mobile-scene-location-pill {
         display: none !important;
       }
       html.client-mobile .client-shell {
@@ -7352,29 +7353,11 @@
         pointer-events: auto;
       }
       html.client-mobile .mobile-scene-location-pill {
-        position: fixed;
-        top: max(10px, env(safe-area-inset-top, 0px));
-        left: 50%;
-        transform: translateX(-50%);
-        z-index: var(--z-client-hud);
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        max-width: min(320px, calc(100vw - 96px));
-        padding: 8px 14px;
-        border-radius: 999px;
-        background: rgba(12, 12, 16, 0.9);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
-        color: rgba(255, 255, 255, 0.92);
-        font-size: 12px;
-        font-weight: 600;
-        line-height: 1.2;
-        pointer-events: none;
-        user-select: none;
-        backdrop-filter: blur(10px);
-        -webkit-backdrop-filter: blur(10px);
+        display: none !important;
       }
+      html.client-mobile .mobile-scene-location-pill,
+      html.client-mobile .location-map-stack,
+      html.client-mobile .world-location-card,
       html.client-tablet .mobile-scene-location-pill,
       html.client-tablet .location-map-stack,
       html.client-tablet .world-location-card {

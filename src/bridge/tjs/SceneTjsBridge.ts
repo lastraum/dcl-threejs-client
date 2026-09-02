@@ -39,8 +39,12 @@ type TjsCameraRuntime = {
 type TjsProjectionRuntime = {
   entity: Entity
   cameraEntity: Entity
+  pose: THREE.Group
   mesh: THREE.Mesh
 }
+
+type BindDrawSlot = (pose: THREE.Object3D, visual: THREE.Object3D) => void
+type UnbindDrawSlot = (pose: THREE.Object3D) => void
 
 function createProjectionPlane(texture: THREE.Texture): THREE.Mesh {
   const mesh = new THREE.Mesh(
@@ -53,8 +57,6 @@ function createProjectionPlane(texture: THREE.Texture): THREE.Mesh {
   )
   mesh.name = 'tjs-projection'
   mesh.userData.dclTjsProjectionPlane = true
-  mesh.matrixAutoUpdate = false
-  mesh.matrixWorldAutoUpdate = false
   return mesh
 }
 
@@ -73,25 +75,6 @@ function withProjectionMeshesHidden(
     fn()
   } finally {
     for (const mesh of hidden) mesh.visible = true
-  }
-}
-
-function withSubtreeHidden(root: THREE.Object3D | null | undefined, fn: () => void): void {
-  if (!root) {
-    fn()
-    return
-  }
-  const hidden: THREE.Object3D[] = []
-  root.traverse((obj) => {
-    if (obj.visible) {
-      obj.visible = false
-      hidden.push(obj)
-    }
-  })
-  try {
-    fn()
-  } finally {
-    for (const obj of hidden) obj.visible = true
   }
 }
 
@@ -182,7 +165,9 @@ export class SceneTjsBridge {
     private readonly worldScene: THREE.Scene,
     private readonly renderer: THREE.WebGLRenderer,
     private readonly getNodes: () => Map<Entity, THREE.Group> | undefined,
-    private readonly getWorldDeps: () => EntityWorldTransformDeps | null
+    private readonly getWorldDeps: () => EntityWorldTransformDeps | null,
+    private readonly bindDrawSlot: BindDrawSlot,
+    private readonly unbindDrawSlot: UnbindDrawSlot
   ) {
     getShaderManager().setScene(worldScene)
   }
@@ -219,11 +204,9 @@ export class SceneTjsBridge {
   update(dt: number): void {
     const step = Math.min(0.05, Math.max(0, dt))
     getShaderManager().update(step)
-    const nodes = this.getNodes()
-    if (nodes && this.projections.size > 0) this.syncProjectionMatrices(nodes)
     if (this.cameras.size === 0) return
     const deps = this.getWorldDeps()
-    if (!nodes || !deps) return
+    if (!deps) return
     const prevTarget = this.renderer.getRenderTarget()
     const prevAutoClear = this.renderer.autoClear
     this.renderer.autoClear = true
@@ -233,13 +216,10 @@ export class SceneTjsBridge {
       if (!pose) continue
       runtime.cam.position.copy(pose.position)
       runtime.cam.quaternion.copy(pose.quaternion)
-      const lensNode = nodes.get(runtime.entity)
-      withSubtreeHidden(lensNode, () => {
-        withProjectionMeshesHidden(this.projections, () => {
-          this.renderer.setRenderTarget(runtime.rt)
-          this.renderer.clear()
-          this.renderer.render(this.worldScene, runtime.cam)
-        })
+      withProjectionMeshesHidden(this.projections, () => {
+        this.renderer.setRenderTarget(runtime.rt)
+        this.renderer.clear()
+        this.renderer.render(this.worldScene, runtime.cam)
       })
     }
     this.renderer.setRenderTarget(prevTarget)
@@ -341,11 +321,8 @@ export class SceneTjsBridge {
     }
     if (!runtime) {
       const mesh = createProjectionPlane(cameraRt.rt.texture)
-      this.worldScene.add(mesh)
-      screenNode.updateWorldMatrix(true, false)
-      mesh.matrix.copy(screenNode.matrixWorld)
-      mesh.matrixWorld.copy(screenNode.matrixWorld)
-      runtime = { entity, cameraEntity, mesh }
+      this.bindDrawSlot(screenNode, mesh)
+      runtime = { entity, cameraEntity, pose: screenNode, mesh }
       this.projections.set(entity, runtime)
       clientDebugLog.log(
         'scene',
@@ -373,20 +350,10 @@ export class SceneTjsBridge {
     this.onCameraReady?.(entity)
   }
 
-  private syncProjectionMatrices(nodes: Map<Entity, THREE.Group>): void {
-    for (const proj of this.projections.values()) {
-      const screenNode = nodes.get(proj.entity)
-      if (!screenNode) continue
-      screenNode.updateWorldMatrix(true, false)
-      proj.mesh.matrix.copy(screenNode.matrixWorld)
-      proj.mesh.matrixWorld.copy(screenNode.matrixWorld)
-    }
-  }
-
   private teardownProjection(entity: Entity): void {
     const runtime = this.projections.get(entity)
     if (!runtime) return
-    runtime.mesh.removeFromParent()
+    this.unbindDrawSlot(runtime.pose)
     runtime.mesh.geometry.dispose()
     const mat = runtime.mesh.material
     if (Array.isArray(mat)) {

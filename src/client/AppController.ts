@@ -104,6 +104,7 @@ import { ProfilePageView } from './ui/explore/ProfilePageView'
 import type { SocialShellTab } from './ui/explore/SocialShellTopNav'
 import { SocialMobileNotifications } from './ui/explore/SocialMobileNotifications'
 import { isHandheldDevice } from './ui/touchPlayLayout'
+import { isAoiForcedOn } from './devFlags'
 import { CommunityVoiceFloatingBar } from './ui/communities/CommunityVoiceFloatingBar'
 import { getCommunityVoiceSession } from '../social/CommunityVoiceSession'
 import { SceneLandingView } from './ui/landing/SceneLandingView'
@@ -2378,6 +2379,7 @@ export class AppController {
    */
   private toastHandheldQualityProfile(): void {
     if (!isHandheldDevice()) return
+    if (isAoiForcedOn()) return
     this.ensureSocialMobileNotifications()
     const notif = this.socialMobileNotifications
     if (!notif) return

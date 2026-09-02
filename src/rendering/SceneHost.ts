@@ -29,7 +29,7 @@ import { perfNoteFrameHost, perfNoteRenderSplit } from '../util/perfCounters'
 import { forceNoBloom, forceNoShadow } from '../client/devFlags'
 import { getSessionAssetCache } from './AssetCache'
 import { isAppleTouchDevice } from '../util/appleTouch'
-import { isHandheldDevice, isMobilePhone } from '../client/ui/touchPlayLayout'
+import { isHandheldDevice } from '../client/ui/touchPlayLayout'
 import { isDocumentHidden } from '../util/documentVisibility'
 
 /** Handheld Low path (phone + iPad). `?nomobile` skips. */
@@ -39,7 +39,7 @@ function isPhoneLowGfx(): boolean {
 
 /** Bloom / HDR / MSAA cuts: phones + all Apple touch (iPad included). */
 function skipBloomHdrMsaa(): boolean {
-  return isAppleTouchDevice() || isMobilePhone()
+  return isHandheldDevice() || isAppleTouchDevice()
 }
 
 export class SceneHost {

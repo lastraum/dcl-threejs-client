@@ -427,6 +427,7 @@ export class World {
   /** First-ring neighbor shells started at bind; awaited before play. */
   private neighborShellsPrewarm: Promise<void> | null = null
   private aoiNeighborsBound = false
+  private aoiSkipLogged = false
   private unsubRenderQuality: (() => void) | null = null
   /**
    * Multi-scene runtime (secondary live workers + PE ticks). Owned by AppController
@@ -2123,7 +2124,7 @@ export class World {
 
   /**
    * Bind / unbind neighbor AOI when skipAoiNeighbors() or Scene Distance changes.
-   * Handheld auto-skip undoes when the user raises radius above the 64 m default.
+   * Handheld auto-skip undoes when the user raises radius above the 16 m lite default.
    */
   private syncGenesisNeighborAoi(scene: ResolvedScene): void {
     const aoiOff = skipAoiNeighbors()
@@ -2138,6 +2139,11 @@ export class World {
     }
     if (this.aoiNeighborsBound) {
       this.unbindGenesisNeighborAoi(scene)
+    } else if (aoiOff && !this.aoiSkipLogged) {
+      this.aoiSkipLogged = true
+      console.info(
+        `[aoi] DISABLED — primary only · base=${scene.baseParcel} parcels=${scene.parcels.length}`
+      )
     }
   }
 
@@ -2185,6 +2191,7 @@ export class World {
         : { x: 8, z: 8 }
     this.neighborShellsPrewarm = this.aoiVisual.prewarmVisuals(spawnFeet.x, spawnFeet.z)
     this.aoiNeighborsBound = true
+    this.aoiSkipLogged = false
     console.info(
       `[aoi] Genesis walk — Scene Distance warm=${renderQuality.getSceneLoadRadiusM()}m · FocusOwner=primary · base=${scene.baseParcel}`
     )

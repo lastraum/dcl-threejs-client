@@ -776,7 +776,11 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
   pointerUiMountEgressPending = false
   const snapshotMountIds =
     uiSnapshot?.length ? extractSnapshotMountEntityIds(uiSnapshot) : []
-  const uiEntities = snapshotMountIds.length ? snapshotMountIds : collectWorkerUiEntityIds()
+  const uiEntities = eng
+    ? collectWorkerUiMountEntityIds(eng)
+    : snapshotMountIds.length
+      ? snapshotMountIds
+      : collectWorkerUiEntityIds()
   const ackWaits: Promise<void>[] = []
 
   const postOutbound = (
@@ -808,7 +812,7 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
           id,
           data,
           uiEntities: attachUi.uiEntities,
-          ...(attachUi.uiMountSnapshot?.length ? { uiMountSnapshot: attachUi.uiMountSnapshot } : {})
+          uiMountSnapshot: attachUi.uiMountSnapshot ?? []
         } satisfies SceneWorkerOutbound)
       : ({ type: 'crdt-outbound', id, data } satisfies SceneWorkerOutbound)
     logSceneUiOutbound(data, attachUi?.uiEntities, attachUi?.uiMountSnapshot?.length ?? 0)
@@ -830,11 +834,7 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
   if (uiMountPending) {
     // Prefer full mount id list from worker engine (not only entities present in this snap)
     // so main commitMountSet matches phase-4 authority even if a row is briefly missing.
-    const fullMountIds =
-      sceneEngine && uiSnapshot?.length
-        ? collectWorkerUiMountEntityIds(sceneEngine)
-        : uiEntities
-    const mountIds = fullMountIds.length > 0 ? fullMountIds : uiEntities
+    const mountIds = sceneEngine ? collectWorkerUiMountEntityIds(sceneEngine) : uiEntities
     lastOutboundUiEntitiesKey = mountIds.join(',')
     // Content fp so cooperative postUiMountSnapshot does not drop as "identical" forever.
     const snapFp = uiMountSnapshotContentFp(uiSnapshot ?? [])
@@ -3364,12 +3364,12 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
     // Wire CRDT alone often lands partial UiTransform (Planetangzaar: 1/255) while mount=255.
     const uiMountSnapshot =
       attachUiMount && sceneEngine ? collectWorkerUiMountSnapshot(sceneEngine) : undefined
-    const snapshotMountIds =
-      uiMountSnapshot?.length ? extractSnapshotMountEntityIds(uiMountSnapshot) : []
     const uiEntities = attachUiMount
-      ? snapshotMountIds.length
-        ? snapshotMountIds
-        : collectWorkerUiEntityIds()
+      ? sceneEngine
+        ? collectWorkerUiMountEntityIds(sceneEngine)
+        : uiMountSnapshot?.length
+          ? extractSnapshotMountEntityIds(uiMountSnapshot)
+          : collectWorkerUiEntityIds()
       : undefined
     const uiKey = attachUiMount ? uiEntities!.join(',') : lastOutboundUiEntitiesKey
     if (copy.byteLength === 0) {
@@ -3403,7 +3403,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
             type: 'crdt-outbound',
             data: copy,
             uiEntities,
-            ...(uiMountSnapshot?.length ? { uiMountSnapshot } : {})
+            uiMountSnapshot: uiMountSnapshot ?? []
           } satisfies SceneWorkerOutbound)
         : ({ type: 'crdt-outbound', data: copy } satisfies SceneWorkerOutbound)
       ctx.postMessage(msg)
@@ -3436,7 +3436,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
             id,
             data: copy,
             uiEntities,
-            ...(uiMountSnapshot?.length ? { uiMountSnapshot } : {})
+            uiMountSnapshot: uiMountSnapshot ?? []
           } satisfies SceneWorkerOutbound)
         : ({ type: 'crdt-outbound', id, data: copy } satisfies SceneWorkerOutbound)
       ctx.postMessage(msg, [copy.buffer])

@@ -411,6 +411,33 @@ assert(
   'focus occupancy uses expanded primaryCoversParcel not scene.parcels only',
   /primaryCoversParcel\(parcel\.x, parcel\.y\)/.test(world)
 )
+const sceneUiBridge = readFileSync(join(root, 'src/ui/scene/SceneUiBridge.ts'), 'utf8')
+const sceneScript = readFileSync(join(root, 'src/core/systems/SceneScriptSystem.ts'), 'utf8')
+const sceneWorker = readFileSync(join(root, 'src/shim/worker/sceneWorker.ts'), 'utf8')
+assert(
+  'worker always ships uiMountSnapshot (including empty welcome unmount)',
+  /uiMountSnapshot: uiMountSnapshot \?\? \[\]/.test(sceneWorker) &&
+    !/uiMountSnapshot\?\.length \? \{ uiMountSnapshot/.test(sceneWorker)
+)
+assert(
+  'empty mount snapshot forces commitMountSet([]) on main',
+  /mountEntitiesForFrame = \[\]/.test(sceneScript) &&
+    /ingestMountSnapshot\(\[\], \{ replace: true \}\)/.test(sceneScript)
+)
+assert(
+  'welcome unmount clears hitmap + phase-4 PE snapshot',
+  /mountSnapshotPointerEvents\.clear\(\)/.test(sceneUiBridge) &&
+    /hitMap\.clear\(\)/.test(sceneUiBridge)
+)
+assert(
+  'ghost splash cannot pick when worker mount is empty',
+  /workerUiEntities\?\.size \?\? 0\) === 0/.test(sceneUiBridge)
+)
+assert(
+  'splash Color4.a fade paints during asset hydration',
+  /commitAndPaintUiMount\(bridge, nextSet\)/.test(sceneScript) &&
+    /Splash Color4\.a fade must reach DOM/.test(sceneScript)
+)
 const slot = readFileSync(join(root, 'src/dcl/multiScene/SceneWorkerSlot.ts'), 'utf8')
 assert(
   'empty-graph hydrate gives up when the mesh queue is empty',

@@ -3398,11 +3398,13 @@ export class SceneScriptSystem {
             }
           } else if (hasUiMountSnapshot) {
             // Empty mount snapshot (welcome unmount) — still touch UI so commitMountSet([]) runs.
+            mountEntitiesForFrame = []
             projectionDeletes.length = 0
-            this.sceneUiBridge?.ingestMountSnapshot([])
+            this.sceneUiBridge?.ingestMountSnapshot([], { replace: true })
             perfNoteUiMountPost()
             batchTouchesUi = true
             this.lastAppliedUiMountContentFp = '0'
+            this.foldProjectionChanges()
           }
         }
         split.uiMs += performance.now() - uiT0
@@ -3762,7 +3764,13 @@ export class SceneScriptSystem {
       if (uiEntities !== undefined) {
         const nextSet = new Set(uiEntities.map((e) => e as Entity))
         if (bridge.isMountSetReady(this.view, nextSet)) {
-          bridge.commitMountSet(nextSet)
+          if (nextSet.size === 0) {
+            bridge.commitMountSet(nextSet)
+            this.purgeProjectionUiOutsideWorkerMount()
+          } else {
+            // Splash Color4.a fade must reach DOM while GLBs hydrate (spawn CBD Plaza).
+            this.commitAndPaintUiMount(bridge, nextSet)
+          }
           this.pendingUiEntities = undefined
         } else {
           this.pendingUiEntities = uiEntities
@@ -3810,7 +3818,10 @@ export class SceneScriptSystem {
       return extractSnapshotMountEntityIds(snap?.uiMountSnapshot ?? [])
     }
     for (const item of [...batch].reverse()) {
-      if (item.uiEntities === undefined || item.uiMountSnapshot !== undefined) continue
+      if (item.uiEntities === undefined) continue
+      // Welcome unmount: explicit mount=[] with empty snapshot (wire always carries uiMountSnapshot).
+      if (item.uiMountSnapshot !== undefined && item.uiEntities.length === 0) return []
+      if (item.uiMountSnapshot !== undefined) continue
       if (!item.data?.byteLength) continue
       return item.uiEntities
     }

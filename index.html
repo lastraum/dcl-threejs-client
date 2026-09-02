@@ -7194,6 +7194,9 @@
        * stuck on the 767px window-width gate.
        */
       html.client-mobile {
+        --client-mobile-profile-w: 48px;
+        --client-sidebar-w: 0px;
+        --client-safe-left: calc(var(--client-mobile-profile-w) + var(--client-ui-gap));
         touch-action: manipulation;
         -webkit-text-size-adjust: 100%;
         -webkit-user-select: none;
@@ -7236,6 +7239,141 @@
       }
       html.client-mobile .client-shell.is-drawer-open {
         transform: translateX(0);
+      }
+      html.client-mobile.client-drawer-open .mobile-profile-fab {
+        opacity: 0;
+        pointer-events: none;
+      }
+      html.client-mobile .client-shell__drawer-head {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 0 8px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      html.client-mobile .client-shell__drawer-profile {
+        display: flex;
+        justify-content: center;
+      }
+      html.client-mobile .client-shell__drawer-profile .client-sidebar__btn--profile {
+        display: flex;
+        width: 40px;
+        height: 40px;
+        min-width: 40px;
+        min-height: 40px;
+        padding: 0;
+        border-radius: 50%;
+        box-shadow: 0 0 0 2px #57e389;
+      }
+      html.client-mobile .client-shell__drawer-profile .client-sidebar__avatar {
+        width: 100%;
+        height: 100%;
+        border-radius: 50%;
+      }
+      html.client-mobile .client-shell__drawer-title {
+        display: none;
+      }
+      html.client-mobile .client-shell__drawer-close {
+        width: 32px;
+        height: 32px;
+        font-size: 18px;
+      }
+      html.client-mobile .client-shell__drawer-scroll {
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        padding: 0 0 max(8px, env(safe-area-inset-bottom, 0px));
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      html.client-mobile .client-shell__drawer-scroll::-webkit-scrollbar {
+        display: none;
+        width: 0;
+        height: 0;
+      }
+      html.client-mobile .client-shell__top,
+      html.client-mobile .client-shell__bottom {
+        align-items: center;
+        padding: 0;
+        gap: 6px;
+      }
+      html.client-mobile .client-shell__bottom {
+        margin-top: auto;
+        padding-top: 8px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+      }
+      html.client-mobile .client-sidebar__btn[data-tooltip]::after {
+        display: none;
+      }
+      html.client-mobile .client-sidebar__btn {
+        width: 40px;
+        height: 40px;
+        min-width: 40px;
+        min-height: 40px;
+        justify-content: center;
+        padding: 0;
+        border-radius: 10px;
+      }
+      html.client-mobile .client-shell__top .client-sidebar__btn--profile {
+        display: none;
+      }
+      html.client-mobile .client-shell [data-shell-id='chat'],
+      html.client-mobile .client-shell [data-shell-id='emotes'] {
+        display: none;
+      }
+      html.client-mobile .mobile-profile-fab {
+        position: fixed;
+        top: max(10px, env(safe-area-inset-top, 0px));
+        left: max(10px, env(safe-area-inset-left, 0px));
+        z-index: var(--z-client-hud);
+        width: var(--client-mobile-profile-w);
+        height: var(--client-mobile-profile-w);
+        padding: 0;
+        border: 0;
+        border-radius: 50%;
+        background: rgba(12, 12, 16, 0.88);
+        box-shadow: 0 0 0 2px #57e389, 0 6px 20px rgba(0, 0, 0, 0.35);
+        cursor: pointer;
+        pointer-events: auto;
+      }
+      html.client-mobile .mobile-profile-fab__avatar {
+        width: 100%;
+        height: 100%;
+        border-radius: 50%;
+        object-fit: cover;
+        image-rendering: pixelated;
+        background: #2a2a34;
+      }
+      html.client-mobile .client-mobile-drawer-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: calc(var(--z-client-hud) - 1);
+        background: rgba(0, 0, 0, 0.45);
+        pointer-events: auto;
+      }
+      html.client-mobile .mobile-scene-location-pill {
+        position: fixed;
+        top: max(10px, env(safe-area-inset-top, 0px));
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: var(--z-client-hud);
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        max-width: min(320px, calc(100vw - 96px));
+        padding: 8px 14px;
+        border-radius: 999px;
+        background: rgba(12, 12, 16, 0.9);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+        color: rgba(255, 255, 255, 0.92);
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1.2;
+        pointer-events: none;
+        user-select: none;
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
       }
       html.client-mobile .mobile-game-hud {
         position: fixed;

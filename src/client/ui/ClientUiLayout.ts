@@ -24,16 +24,20 @@ export class ClientUiLayout {
   }
 
   private syncSidebarWidth(): void {
-    if (document.documentElement.classList.contains('client-mobile')) {
-      const profileW = 48
-      document.documentElement.style.setProperty('--client-sidebar-w', '0px')
-      document.documentElement.style.setProperty('--client-mobile-profile-w', `${profileW}px`)
+    const root = document.documentElement
+    // Phone + iPad: no persistent rail. Profile FAB width lives in CSS
+    // (`html.client-mobile` / `html.client-tablet`) so inline 48px does not
+    // clobber the tablet token. `--client-safe-left` follows the FAB.
+    if (root.classList.contains('client-mobile')) {
+      root.style.setProperty('--client-sidebar-w', '0px')
+      root.style.removeProperty('--client-mobile-profile-w')
       return
     }
     const el = this.sidebar
     if (!el) return
     const w = el.getBoundingClientRect().width
     if (w <= 0) return
-    document.documentElement.style.setProperty('--client-sidebar-w', `${w}px`)
+    root.style.setProperty('--client-sidebar-w', `${w}px`)
+    root.style.removeProperty('--client-mobile-profile-w')
   }
 }

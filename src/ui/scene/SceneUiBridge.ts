@@ -300,6 +300,11 @@ export class SceneUiBridge {
     // on every setUiVisible(true) from PE policy ticks.
   }
 
+  /** Blit `tjs:<entity>` UI backgrounds after SceneTjsBridge renders cameras. */
+  blitTjsProjections(blit: (cameraEntity: number, canvas: HTMLCanvasElement) => boolean): void {
+    this.dom.blitTjsProjections(blit)
+  }
+
   /** Force Yoga+DOM rebuild + interactive hit regions (rare: late mount / debug). */
   forceRepaint(): void {
     if (!this.domVisible) return

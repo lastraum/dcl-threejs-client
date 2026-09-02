@@ -620,6 +620,11 @@ export class SceneScriptSystem {
 
   private updateTjsBridge(dt: number): void {
     this.tjsBridge?.update(dt)
+    const tjs = this.tjsBridge
+    if (!tjs) return
+    this.sceneUiBridge?.blitTjsProjections((cameraEntity, canvas) =>
+      tjs.blitCameraToCanvas(cameraEntity as Entity, canvas)
+    )
   }
 
   private async ensureTjsBridge(): Promise<SceneTjsBridge | null> {

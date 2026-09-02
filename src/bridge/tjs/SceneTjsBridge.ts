@@ -233,6 +233,9 @@ export class SceneTjsBridge {
   private readonly declared = new Set<string>()
   private readonly cameras = new Map<Entity, TjsCameraRuntime>()
   private readonly projections = new Map<Entity, TjsProjectionRuntime>()
+  /** Scratch for UI canvas blit (512×512 RGBA, reused). */
+  private uiBlitPixels: Uint8Array | null = null
+  private uiBlitFlipped: Uint8ClampedArray | null = null
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -250,6 +253,50 @@ export class SceneTjsBridge {
 
   getTexture(entity: Entity): THREE.Texture | null {
     return this.cameras.get(entity)?.rt.texture ?? null
+  }
+
+  /** True when the lens entity has a live camera RT. */
+  hasCamera(entity: Entity): boolean {
+    return this.cameras.has(entity)
+  }
+
+  /**
+   * Copy the camera RT into a 2d canvas (UI projection).
+   * Early-returns false when the lens is not in `this.cameras` yet — never throws, never fetches.
+   */
+  blitCameraToCanvas(cameraEntity: Entity, canvas: HTMLCanvasElement): boolean {
+    if (!cameraEntity) return false
+    const runtime = this.cameras.get(cameraEntity)
+    if (!runtime) return false
+    const w = runtime.rt.width
+    const h = runtime.rt.height
+    if (w < 1 || h < 1) return false
+    const bytes = w * h * 4
+    if (!this.uiBlitPixels || this.uiBlitPixels.byteLength !== bytes) {
+      this.uiBlitPixels = new Uint8Array(bytes)
+      this.uiBlitFlipped = new Uint8ClampedArray(bytes)
+    }
+    const src = this.uiBlitPixels
+    const dst = this.uiBlitFlipped!
+    try {
+      this.renderer.readRenderTargetPixels(runtime.rt, 0, 0, w, h, src)
+    } catch {
+      return false
+    }
+    // GL origin is bottom-left; canvas ImageData is top-left.
+    const stride = w * 4
+    for (let y = 0; y < h; y++) {
+      const srcOff = (h - 1 - y) * stride
+      dst.set(src.subarray(srcOff, srcOff + stride), y * stride)
+    }
+    if (canvas.width !== w) canvas.width = w
+    if (canvas.height !== h) canvas.height = h
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return false
+    const imageData = ctx.createImageData(w, h)
+    imageData.data.set(dst)
+    ctx.putImageData(imageData, 0, 0)
+    return true
   }
 
   sync(view: ProjectionView): void {
@@ -324,6 +371,8 @@ export class SceneTjsBridge {
     this.cameras.clear()
     this.shaderFireFp.clear()
     this.declared.clear()
+    this.uiBlitPixels = null
+    this.uiBlitFlipped = null
     // Keep ShaderManager warm cache across scene /reload — World.dispose resets it.
   }
 

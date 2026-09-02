@@ -187,11 +187,38 @@ export function resolveAvatarTextureUserIdToUrl(userId: string): string | null {
   return `https://profile-images.decentraland.org/entities/${id}/face.png`
 }
 
+/** `tjs:<entityId>` — camera RT projection, never a file / HTTP texture. */
+const TJS_PROJECTION_PREFIX = 'tjs:'
+
+/**
+ * True when a UiBackground texture.src is a tjs camera projection scheme.
+ * Any `tjs:` prefix (incl. `tjs:0` / junk) must skip the file loader.
+ */
+export function isTjsProjectionSrc(src: string | null | undefined): boolean {
+  if (src == null) return false
+  const trimmed = src.trim()
+  return trimmed.length >= TJS_PROJECTION_PREFIX.length && trimmed.toLowerCase().startsWith(TJS_PROJECTION_PREFIX)
+}
+
+/**
+ * Parse `tjs:<digits>` → camera entity id.
+ * `tjs:0`, empty, or non-digits after the prefix → null (not-ready / ignore, never fetch).
+ */
+export function parseTjsProjectionEntity(src: string | null | undefined): number | null {
+  if (!isTjsProjectionSrc(src)) return null
+  const rest = String(src).trim().slice(TJS_PROJECTION_PREFIX.length).trim()
+  if (!/^[0-9]+$/.test(rest)) return null
+  const n = Number(rest)
+  if (!Number.isFinite(n) || n === 0) return null
+  return n
+}
+
 /** Normalize texture.src (and similar) — rewrite broken face/0x wallet shortcuts. */
 function normalizeUiTextureSrc(src: string | null | undefined): string | null {
   if (src == null) return null
   const trimmed = src.trim()
   if (!trimmed) return null
+  if (isTjsProjectionSrc(trimmed)) return trimmed
   return rewriteLegacyProfileFaceUrl(trimmed)
 }
 
@@ -368,6 +395,8 @@ export function resolveUiBackgroundImageUrl(
 ): string | null {
   const src = extractUiTextureSrc(bg?.texture)
   if (!src) return null
+  // Never file-load / HTTP-fetch tjs camera projections — DOM blits the RT instead.
+  if (isTjsProjectionSrc(src)) return null
   if (/^(data:|blob:)/i.test(src)) return src
   if (/^https?:/i.test(src)) {
     if (typeof window !== 'undefined' && src.startsWith(window.location.origin)) return src
@@ -1271,6 +1300,8 @@ export function applyUiBackgroundStyles(
   const c = bg?.color
   const tint = color4Css(c)
   const rawSrc = extractUiTextureSrc(bg?.texture)
+  // tjs: src is not a paintable URL — keep color fallback, never assign as img.src.
+  if (isTjsProjectionSrc(rawSrc) || isTjsProjectionSrc(imageUrl)) imageUrl = null
   const wrapMode = extractUiTextureWrapMode(bg?.texture)
   const mode = imageUrl
     ? normalizeBackgroundTextureMode(bg?.textureMode, rawSrc, bg?.textureSlices, bg?.uvs)

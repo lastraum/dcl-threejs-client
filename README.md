@@ -281,7 +281,7 @@ Leave the scene `npm start` / Hub Play running. Closing it stops `/about` and th
 
 Scenes drive this client's shaders and cameras with one mirrored custom component named **`tjs`**. `kind` is a string: `shader`, `texture`, `camera`, `projection`. Other explorers ignore unknown custom components, so a published SDK7 scene that defines `tjs` stays valid.
 
-Copy this spec once. **Field order must match.** The third argument is SDK defaults — `tjs.create` only needs the fields that row uses.
+Copy this spec once. **Field order must match.** Skip any field on `tjs.create` you do not use — the SDK fills zeros / empty / false.
 
 ### Declare `tjs`
 
@@ -292,48 +292,26 @@ import {
   VirtualCamera,
   Schemas
 } from '@dcl/sdk/ecs'
-import type { Entity } from '@dcl/sdk/ecs'
 import { Color4, Quaternion, Vector3 } from '@dcl/sdk/math'
 
-const tjs = engine.defineComponent(
-  'tjs',
-  {
-    kind: Schemas.String,
-    name: Schemas.String,
-    sync: Schemas.Boolean,
-    enabled: Schemas.Boolean,
-    path: Schemas.String,
-    ox: Schemas.Float,
-    oy: Schemas.Float,
-    oz: Schemas.Float,
-    dx: Schemas.Float,
-    dy: Schemas.Float,
-    dz: Schemas.Float,
-    dist: Schemas.Float,
-    camera: Schemas.Entity,
-    layers: Schemas.String,
-    background: Schemas.Color4,
-    fov: Schemas.Float
-  },
-  {
-    kind: '',
-    name: '',
-    sync: false,
-    enabled: false,
-    path: '',
-    ox: 0,
-    oy: 0,
-    oz: 0,
-    dx: 0,
-    dy: 0,
-    dz: 0,
-    dist: 0,
-    camera: 0 as Entity,
-    layers: '',
-    background: Color4.create(0, 0, 0, 1),
-    fov: 60
-  }
-)
+const tjs = engine.defineComponent('tjs', {
+  kind: Schemas.String,
+  name: Schemas.String,
+  sync: Schemas.Boolean,
+  enabled: Schemas.Boolean,
+  path: Schemas.String,
+  ox: Schemas.Float,
+  oy: Schemas.Float,
+  oz: Schemas.Float,
+  dx: Schemas.Float,
+  dy: Schemas.Float,
+  dz: Schemas.Float,
+  dist: Schemas.Float,
+  camera: Schemas.Entity,
+  layers: Schemas.String,
+  background: Schemas.Color4,
+  fov: Schemas.Float
+})
 ```
 
 A `kind: 'shader'` row **loads** when the component appears (even with `enabled: false`). `path` is the shader file. `name` is the export that file exposes (whatever that file calls it). Already-warmed shaders are not fetched again on `/reload` or HMR.

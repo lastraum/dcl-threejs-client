@@ -3,10 +3,10 @@ import { isBraveBrowser } from '../util/braveBrowser'
 
 /**
  * Off-thread GLB parse is on by default.
- * Escape hatch: `?mainglb` / `?glbparse=main` forces parseAsync on the present thread.
- * iOS: worker transfers ImageBitmaps — Safari WebGL uploads those as solid white.
- * Brave: shields/farbling + transferable skeleton buffers mis-bind skinned meshes
- * (feet detach from ankles). Same main-thread parse as iOS.
+ * Escape hatch: `?mainglb` / `?glbparse=main` forces the main-thread path.
+ * iOS / Brave: skip the worker. Main thread still runs the same flatten→inflate
+ * bind as desktop — only the worker hop (ImageBitmap / buffer transfer) is avoided.
+ * Safari paints transferred worker ImageBitmaps solid white; Brave mis-binds skinned feet.
  */
 export function isGlbOffThreadParseEnabled(): boolean {
   if (typeof location === 'undefined') return true

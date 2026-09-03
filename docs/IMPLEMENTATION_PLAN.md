@@ -2,11 +2,15 @@
 
 > Browser-native Decentraland client: load deployed Worlds/scenes, shim SDK7 runtime, mirror ECS → Three.js, expand to open world.
 
-**Status:** **v2.2.0** on `main` ✅ (one guest clock). **`dev-latest`:** plaza open-world **three rings** shipped (PR #73 · `f14c7f34`, 2026-09-01). QA: https://dev.decentraland.social. See [`PROGRESS.md`](./PROGRESS.md).  
+**Status:** **v2.2.0** on `main` ✅ (one guest clock). **`dev-latest`:** plaza open-world **three rings** shipped (PR #73 · `f14c7f34`, 2026-09-01). **iPad / Apple-touch texture + avatar bind parity** (2026-09-03). QA: https://dev.decentraland.social. See [`PROGRESS.md`](./PROGRESS.md).  
 **ECS reference:** [`INTEGRATION.md`](./INTEGRATION.md)  
 **Note:** Historical phase plan. Prefer [PROGRESS.md](./PROGRESS.md) + [ARCHITECTURE.md](./ARCHITECTURE.md) + [INTEGRATION.md](./INTEGRATION.md) + [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) + [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md) + [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) for current work.
 
-## Current implementation (`dev-latest`, 2026-09-01)
+## Current implementation (`dev-latest`, 2026-09-03)
+
+### Apple touch / iPad (WebKit)
+
+Chrome on iPad is **WebKit**, not Blink. Desktop GLTF goes through the worker; on Apple touch the client uses main-thread `parseAsync`, then the **same** `flattenGltf` → `inflateGltf` bind (`AssetCache.rebuildGltfOnMainThread`) — no ImageBitmap transfer. Head wearables use the same `tryMerge` as desktop (no head-slot skip). Sidecar textures load via fetch+MIME (`gltfSidecarTexture.ts`) for **image URIs only**.
 
 Genesis plaza open-world loading is **three rings** — product law in `src/dcl/multiScene/caps.ts` and AOI layers:
 

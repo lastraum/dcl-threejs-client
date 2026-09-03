@@ -2,8 +2,8 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-09-02  
-> **Current phase:** **`tjs` shaders/CCTV** + **plaza open-world three rings** on **`dev-latest`**. **v2.2.0** on `main`. QA: https://dev.decentraland.social  
+> **Last updated:** 2026-09-03  
+> **Current phase:** **iPad / Apple-touch texture + avatar bind parity** (merging to `dev-latest`) + **`tjs` shaders/CCTV** + **plaza open-world three rings** on **`dev-latest`**. **v2.2.0** on `main`. QA: https://dev.decentraland.social  
 > **Shipped:** **`tjs` ECS shaders/CCTV** · **plaza rings** 200 m look · 64 m collide toggle · ~22 m live JS (cap 4) · nested plaza first-class · **v2.2.0** one guest clock · plaza Cast Line walk-log · Genesis sky · Explore live search · **v2.1.0** `/localpreview` · stay-in-play reload · shaders off until Jump In · preview tabs · **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
 
 > **After 2.2 (`v3` butter — historical):** neighbor composite **shells on** · Landscape + Shadows Distance live · FXAA when bloom is on · GPU warm covers shadow+bloom · stacked live-guest FPS measure. Superseded for open-world policy by plaza rings on `dev-latest` (2026-09-01).  
@@ -17,6 +17,32 @@
 > **Toast convention:** Each shipped milestone starts with `### What's new` + short user-facing bullets.
 > Version toast shows the **latest** block when `APP_VERSION` changes.
 > `WHATS_NEW_PERSIST_ACK = true` — dismiss writes `threejs-client:lastSeenVersion`.
+
+---
+
+## Milestone — iPad / Apple-touch load + avatar bind parity (2026-09-03)
+
+**Status: merging to `dev-latest`.** QA: https://dev.decentraland.social
+
+iPad Chrome is WebKit. Texture decode and avatar bind now match desktop instead of a separate Apple path that skipped head merge and transferred ImageBitmaps.
+
+### What's new
+
+- **Sky textures capped at 1024** — 8k genesis sky hung the load bar at ~12% on iPad
+- **GLTF sidecar textures via fetch+MIME** — `gltfSidecarTexture.ts`; **image URIs only** — no `/contents/` catch-all
+- **Apple head merge** — same `tryMerge` as desktop (no head-slot skip)
+- **Main-thread flattenGltf → inflateGltf** — `AssetCache.rebuildGltfOnMainThread`; same bind as the desktop worker, no ImageBitmap transfer
+- **`npm run build:qa`** — rsync script to QA
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Sky 1024 cap** | 🟢 | genesis sky no longer 8k hang on iPad |
+| **Sidecar fetch+MIME** | 🟢 | image URIs only; `gltfSidecarTexture.ts` |
+| **Head tryMerge** | 🟢 | same path as desktop; no head-slot skip |
+| **flatten → inflate** | 🟢 | main-thread rebuild; no ImageBitmap transfer |
+| **Head detach on iPad QA** | 🟢 | verified head no longer detaches |
+
+**Tip:** iPad Chrome is WebKit. Do not reinstall a `/contents/` LoadingManager handler.
 
 ---
 

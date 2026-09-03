@@ -18,6 +18,7 @@ import { deleteGlbBytes, normalizeGlbCacheKey, readGlbBytes } from './glbByteCac
 import { fetchGlbBytesOffThread, disposeGlbFetchPool } from './glbFetchPool'
 import { parseGlbOffThread, disposeGlbParsePool } from './glbParsePool'
 import { isGlbOffThreadParseEnabled } from './gltfWorkerTransfer'
+import { flattenGltf, inflateGltf } from './gltfTransferable'
 import { prepareGlbBytes } from './glbSanitizer'
 import { clampObject3DTextures, clampTextureSize } from './clampTextureSize'
 import { markSharedAssetResources } from './sharedAsset'
@@ -34,6 +35,10 @@ import {
   preferFetchTextureLoad,
   proxiedTextureUrl
 } from './textureProxy'
+import {
+  installGltfSidecarTextureHandler,
+  registerGltfSidecarTexturePlugin
+} from './gltfSidecarTexture'
 
 const LANDSCAPE_CACHE_SUFFIX = '#landscape'
 const WEARABLE_CACHE_SUFFIX = '#wearable'
@@ -180,11 +185,14 @@ export class AssetCache {
   constructor() {
     const manager = new THREE.LoadingManager()
     manager.setURLModifier((url) => resolveDclAssetUrl(url))
+    // Image extensions only — GLTFLoader asks getHandler() for image URIs, not .bin.
+    installGltfSidecarTextureHandler(manager)
 
     const draco = new DRACOLoader()
     draco.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/')
     this.loader = new GLTFLoader(manager)
     this.loader.setDRACOLoader(draco)
+    registerGltfSidecarTexturePlugin(this.loader)
     this.textureLoader = new THREE.TextureLoader(manager)
   }
 
@@ -538,6 +546,20 @@ export class AssetCache {
     if (next) next()
   }
 
+  /**
+   * Same pipeline as the parse worker: GLTFLoader.parseAsync → flattenGltf → inflateGltf.
+   * Runs on this thread so Apple/WebKit never transfers ImageBitmaps across workers
+   * (that upload path paints solid white). Skeleton bind matches desktop inflate.
+   */
+  private async rebuildGltfOnMainThread(
+    buffer: ArrayBuffer,
+    resourcePath: string
+  ): Promise<{ scene: THREE.Group; animations: THREE.AnimationClip[] }> {
+    const parsed = await this.loader.parseAsync(buffer, resourcePath)
+    const payload = await flattenGltf(parsed.scene, parsed.animations ?? [])
+    return inflateGltf(payload)
+  }
+
   private async fetchAndParseGltf(url: string, cacheKey: string, quiet?: boolean) {
     let buffer = await this.resolveGlbBytes(url, cacheKey, quiet)
 
@@ -553,18 +575,19 @@ export class AssetCache {
           const parsed = await parseGlbOffThread(buffer, resourcePath, buildParseUrlMappings())
           result = { scene: parsed.scene, animations: parsed.animations }
         } catch (err) {
-          // Worker init / flatten miss — one parse on main, then keep trying worker.
+          // Worker init / flatten miss — same path as Apple: parse + flatten + inflate on main.
           if (!this.loggedWorkerFallback) {
             this.loggedWorkerFallback = true
             console.warn(
-              '[assets] GLB parse worker failed — main-thread fallback',
+              '[assets] GLB parse worker failed — main-thread flatten/inflate',
               err instanceof Error ? err.message : err
             )
           }
-          result = await this.loader.parseAsync(buffer, resourcePath)
+          result = await this.rebuildGltfOnMainThread(buffer, resourcePath)
         }
       } else {
-        result = await this.loader.parseAsync(buffer, resourcePath)
+        // Apple / Brave / ?mainglb: exact same flatten→inflate as the worker, no transfer.
+        result = await this.rebuildGltfOnMainThread(buffer, resourcePath)
       }
       clampObject3DTextures(result.scene)
       await new Promise<void>((r) => setTimeout(r, 0))

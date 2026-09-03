@@ -3,7 +3,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
 import type { AssetCache } from '../rendering/AssetCache'
 import { resolveDclAssetUrl, wearableMappingKeyVariants } from '../rendering/DclTextureResolver'
-import { repairSkinnedMesh } from '../rendering/skinnedMeshInstance'
+import { repairSkinnedMesh, unifySkinnedMeshesToPrimarySkeleton } from '../rendering/skinnedMeshInstance'
 import { disposeOwnedObject3D, ownInstanceMaterials } from '../rendering/sharedAsset'
 import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
 
@@ -47,10 +47,6 @@ export type MergeWearableOptions = {
 export const PARALLEL_WEARABLE_USERDATA = 'dclParallelWearable'
 
 type ParallelBonePair = { body: THREE.Bone; wearable: THREE.Bone }
-
-const _worldPos = new THREE.Vector3()
-const _worldQuat = new THREE.Quaternion()
-const _parentQuat = new THREE.Quaternion()
 
 export type ParallelWearableState = {
   pairs: ParallelBonePair[]
@@ -533,23 +529,10 @@ function buildParallelBonePairs(
 }
 
 function applyParallelBonePairs(pairs: ParallelBonePair[]): void {
-  const useWorld = isAppleTouchDevice()
+  // Same as desktop: copy local TRS. World-space copy on Apple left the head in bind pose.
   for (const { body, wearable } of pairs) {
-    if (!useWorld || !wearable.parent) {
-      wearable.position.copy(body.position)
-      wearable.quaternion.copy(body.quaternion)
-      continue
-    }
-    // iOS: hair armature parent chain ≠ body — local copy leaves the head in bind pose.
-    const parent = wearable.parent
-    body.updateWorldMatrix(true, false)
-    parent.updateWorldMatrix(true, false)
-    body.getWorldPosition(_worldPos)
-    parent.worldToLocal(_worldPos)
-    wearable.position.copy(_worldPos)
-    body.getWorldQuaternion(_worldQuat)
-    parent.getWorldQuaternion(_parentQuat)
-    wearable.quaternion.copy(_parentQuat.invert().multiply(_worldQuat))
+    wearable.position.copy(body.position)
+    wearable.quaternion.copy(body.quaternion)
   }
 }
 
@@ -697,6 +680,16 @@ export function findSkeleton(root: THREE.Object3D): THREE.Skeleton | null {
     }
   })
   return skeleton
+}
+
+/**
+ * After SkeletonUtils.clone, some body meshes (often head / face masks) stay bound to
+ * the cache template's bones — those don't receive the mixer, so the head sits in bind
+ * pose while the rest of the body walks. Rebind every skinned mesh onto `skeleton`.
+ */
+export function bindBodyMeshesToSkeleton(root: THREE.Object3D, _skeleton: THREE.Skeleton): void {
+  // Same main-thread bind desktop gets from inflateGltf (shared primary skeleton).
+  unifySkinnedMeshesToPrimarySkeleton(root)
 }
 
 /** Locomotion mixer must target body_shape only — not parallel wearable rigs. */

@@ -5,6 +5,7 @@ import { applyBodyShapeVisibility } from './bodyShape'
 import { applyFacialFeatures } from './face'
 import {
   attachWearableFallback,
+  bindBodyMeshesToSkeleton,
   findSkeleton,
   loadWearableSceneCached,
   mergeThreshold,
@@ -120,6 +121,7 @@ async function composeFromConfig(
 
     const skeleton = findSkeleton(bodyRoot)
     if (!skeleton) throw new Error('Body shape has no skeleton')
+    bindBodyMeshesToSkeleton(bodyRoot, skeleton)
 
     const modelWearables = config.wearables.filter(
       (w) => w.data.category !== 'body_shape' && isModelWearable(w)
@@ -177,13 +179,10 @@ async function composeFromConfig(
 
       // Probe bone quality on the pristine layer. Low quality → skip prepare/merge and go
       // straight to parallel-skeleton fallback (avoids mutating authored transforms).
+      // Same merge path on Apple touch as desktop — no head-slot skip.
       const quality = probeWearableMergeQuality(entry.layer, skeleton, mergeOpts)
       const threshold = mergeThreshold(mergeOpts)
-      // iPhone main-thread GLB bindMatrix ≠ body skeleton: merging hair/hat skins to
-      // Avatar_Head still leaves the mesh bobbing (Head bone dy stays locked). Keep the
-      // wearable rig and drive it from the body (parallel + world pose copy).
-      const tryMerge =
-        (quality >= threshold || isFeet) && !(isHeadSlot && isAppleTouchDevice())
+      const tryMerge = quality >= threshold || isFeet
 
       let merged = false
       if (tryMerge) {

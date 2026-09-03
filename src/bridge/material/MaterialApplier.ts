@@ -463,6 +463,10 @@ export class MaterialApplier {
 
   /** Sync color / PBR scalars only — safe during hydration before textures are ready. */
   applyScalarsToObject3D(root: THREE.Object3D, entity: number, pb: PbMaterial): void {
+    // VideoTexture must swap material + map together. A scalar-only pass replaces
+    // GLB MeshStandardMaterial with map-less PBR/unlit (white or black) — Explorer
+    // keeps the authored albedo until a decoded frame exists (Burj video_player.glb).
+    if (this.materialHasVideoTexture(pb)) return
     root.traverse((child) => {
       if ((child as THREE.Mesh).isMesh) this.applyScalarsToMesh(child as THREE.Mesh, pb)
     })
@@ -608,6 +612,8 @@ export class MaterialApplier {
     const isPbr = materialCase === 'pbr'
     const inner = materialInner(pb)
     if (!inner) return true
+    // Keep authored maps until the decoder has a drawable frame (or ECS idle black).
+    if (this.hasUnresolvedVideo(pb)) return false
 
     this.applyScalarsToMesh(mesh, pb)
     const m = mesh.material as THREE.MeshBasicMaterial | THREE.MeshPhysicalMaterial
@@ -621,8 +627,7 @@ export class MaterialApplier {
     // GltfNodeModifiers keep authored glTF UVs. Do not geometry-U-flip flat cards —
     // that mirrored every event/calendar Texture.Common (Explorer uses the GLB as-is).
     // VideoTexture is *shared* (one decode → many screens) so we never flipY on the
-    // texture. Per-mesh geometry V runs only when the video is actually bound —
-    // mutating UVs on the black unlit first pass made theatre first-paint wrong.
+    // texture. Per-mesh geometry V runs only when the video is actually bound.
     const worldMirror = objectWorldMirrorX(mesh)
     const isGltfMaterialPath = !!options?.gltfNodeModifier && !marqueeAtlas
     const videoUnion = coerceTextureUnion(inner.texture)
@@ -634,7 +639,12 @@ export class MaterialApplier {
       videoPlayerEntity !== undefined && !!this.getVideoTexture?.(videoPlayerEntity)
     if (isGltfMaterialPath) {
       ensureGeometryUFlipped(mesh, false)
-      ensureGeometryVFlipped(mesh, videoBound)
+      // Shared VideoTexture is flipY=false. Invert geometry V only when the GLB
+      // authored V=0 at the mesh bottom (standard glTF). Creator Hub
+      // video_player.glb (Pink Oasis / Los Cat) already maps V=0 to the top —
+      // a blanket 1−v made those screens upside-down. MeshRenderer planes
+      // (neat.dcl.eth) use flipY=true instead and must not take this path.
+      ensureGeometryVFlipped(mesh, videoBound && meshAuthoredUvV0AtBottom(mesh))
     }
     // After UV normalize, only cancel world reflection via texture ST.
     const flipMapU =
@@ -912,6 +922,13 @@ export class MaterialApplier {
     return false
   }
 
+  private materialHasVideoTexture(pb: PbMaterial): boolean {
+    for (const slot of materialTextureSlots(pb)) {
+      if (slot?.tex?.$case === 'videoTexture') return true
+    }
+    return false
+  }
+
   private hasUnresolvedVideo(pb: PbMaterial): boolean {
     const materialCase = pb.material?.$case
     const inner =
@@ -1024,6 +1041,71 @@ function ensureGeometryUFlipped(mesh: THREE.Mesh, want: boolean): void {
   }
   uv.needsUpdate = true
   mesh.userData.dclGeomUFlipped = want
+}
+
+/**
+ * Authored glTF V=0 at the **bottom** of the mesh (standard glTF).
+ * Honors `dclGeomVFlipped` so a previous 1−v does not invert the test.
+ *
+ * Creator Hub `video_player.glb` (base16_9 Plane): bottom y=0 → V=1, top y=0.9 → V=0.
+ */
+export function meshAuthoredUvV0AtBottom(mesh: THREE.Mesh): boolean {
+  const alreadyFlipped = !!mesh.userData.dclGeomVFlipped
+  const current = meshUvV0AtBottom(mesh)
+  return alreadyFlipped ? !current : current
+}
+
+/** True when current UV V increases with mesh-local up (Y if present). */
+function meshUvV0AtBottom(mesh: THREE.Mesh): boolean {
+  const pos = mesh.geometry?.getAttribute('position')
+  const uv = mesh.geometry?.getAttribute('uv')
+  if (!pos || !uv || pos.count < 2 || uv.count < 2) return true
+
+  let minY = Infinity
+  let maxY = -Infinity
+  let minX = Infinity
+  let maxX = -Infinity
+  let minZ = Infinity
+  let maxZ = -Infinity
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i)
+    const y = pos.getY(i)
+    const z = pos.getZ(i)
+    if (x < minX) minX = x
+    if (x > maxX) maxX = x
+    if (y < minY) minY = y
+    if (y > maxY) maxY = y
+    if (z < minZ) minZ = z
+    if (z > maxZ) maxZ = z
+  }
+  const extX = maxX - minX
+  const extY = maxY - minY
+  const extZ = maxZ - minZ
+  // Screen "up" is local Y when the plane has height; otherwise the larger non-thin axis
+  // that is not the smallest (normal).
+  let axis: 'x' | 'y' | 'z' = 'y'
+  if (extY <= 1e-5) {
+    axis = extX >= extZ ? 'x' : 'z'
+  }
+
+  let minA = Infinity
+  let maxA = -Infinity
+  let vAtMin = 0
+  let vAtMax = 0
+  for (let i = 0; i < pos.count; i++) {
+    const a = axis === 'y' ? pos.getY(i) : axis === 'x' ? pos.getX(i) : pos.getZ(i)
+    const v = uv.getY(i)
+    if (a < minA) {
+      minA = a
+      vAtMin = v
+    }
+    if (a > maxA) {
+      maxA = a
+      vAtMax = v
+    }
+  }
+  if (!(maxA - minA > 1e-5)) return true
+  return vAtMin < vAtMax + 1e-5
 }
 
 /** Flip geometry V in place (1−v). Same clone rules as U. Does not touch VideoTexture. */

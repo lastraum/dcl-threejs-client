@@ -1,8 +1,8 @@
 # Multi-scene continuity (FocusOwner + sticky residents)
 
-**Status:** **v2.2.0** live guests **on**. **`v3`** neighbor shells **on**. Stand-on promote **off**. `?noaoi` / `?aoishells=0` still kill neighbor load. Soft-route URL on present. See [OPEN_WORLD_RESIDENCY.md](./OPEN_WORLD_RESIDENCY.md).  
-**Last updated:** 2026-08-19  
-**Bar:** spawn primary runs forever; neighbors = composite GLB shells over Scene Distance + near live guests; **30–60 FPS** without dual-clock thrash  
+**Status:** **Plaza three rings** on **`dev-latest`** (PR #73 · `f14c7f34`, 2026-09-01). **200 m look** · **64 m collide toggle** · **~22 m live JS (cap 4)**. Stand-on promote **on**. `?noaoi` / `?aoishells=0` still kill neighbor load. Soft-route URL on present. See [OPEN_WORLD_RESIDENCY.md](./OPEN_WORLD_RESIDENCY.md).  
+**Last updated:** 2026-09-01  
+**Bar:** spawn primary runs forever; neighbors = textured GLBs to 200 m + cooked collide to 64 m + live guests inside ~22 m; **30–60 FPS** without dual-clock thrash  
 
 Quick rules for agents: [AGENTS.md § Multi-scene continuity](./AGENTS.md#multi-scene-continuity-non-negotiable).  
 Architecture context: [ARCHITECTURE.md](./ARCHITECTURE.md) · milestones: [PROGRESS.md](./PROGRESS.md).
@@ -14,23 +14,27 @@ Architecture context: [ARCHITECTURE.md](./ARCHITECTURE.md) · milestones: [PROGR
 ## Product model (shipping)
 
 ```text
-PRIMARY (spawn only)
+PRIMARY (spawn + under-feet)
   FocusOwner — UI, media, privileged input, locomotion modifiers
-  Full scene worker + scripts — **never demoted / never replaced on walk**
+  Full scene worker + scripts — stand-on promote handoff when you enter a live footprint
 
-NEIGHBORS (Scene Distance)
-  main.composite **GLB shells** (`v3` default-on) — walk-through, no PhysX
+THREE RINGS (player → occupied footprint; empty/road excluded)
+  LOOK 200 m     — neighbor GLBs + textures (nested plaza parcels first-class)
+  COLLIDE 64 m   — enable/disable already-cooked PhysX (no recook on walk-in)
+  LIVE ~22 m     — SceneLoop secondaries, cap 4, boot concurrency 1, nearest wins
+
+NEIGHBORS outside live ring
+  Composite / first-frame shells still visible inside look ring
   Roads + empty/scatter fill
-  Soft-route URL updates under feet — not a primary swap
-  Live SceneLoop secondaries inside ~20 m (muted FocusOwner)
+  Soft-route URL updates under feet
 
 DISABLED
-  Stand-on promote / origin rebase (`AOI_STAND_ON_PROMOTE = false`)
+  Parcel-count JS gate · coveredSkip of nested plaza estates · shells-only default
 ```
 
-Do **not** cold-boot a full neighbor worker for every parcel in Scene Distance. Live band is adjacency-capped. Shells fill the rest.
+Do **not** cold-boot a full neighbor worker for every parcel in the look ring. Live band is distance-ranked and cap-limited. Shells and first-frame fills fill the 200 m disc without workers.
 
-Primary + PE play-frames are **SceneLoop guests** (one in-flight tick, host receive/apply). Shells are not guests. Do not re-enable live secondaries as N dual-runtimes.
+Primary + PE play-frames are **SceneLoop guests** (one in-flight tick, host receive/apply). Shells are not guests. Live secondaries share the same SceneLoop queue (does not own rAF).
 
 ---
 
@@ -73,16 +77,19 @@ Primary + PE play-frames are **SceneLoop guests** (one in-flight tick, host rece
 | Lever | Policy |
 |-------|--------|
 | **Parcel count** | **Never** refuses secondary boot or picks tertiary. |
-| Live **enter** | Player → footprint ≤ **16m** (`SECONDARY_LIVE_ENTER_M`) boots / re-promotes |
-| Live **keep** | Player → footprint ≤ **80m** (`SECONDARY_LIVE_KEEP_M`) keeps scripts on |
-| Live secondary cap | Hard ≤3 (`AOI_LIVE_SECONDARY_HARD_CAP`) |
-| Boot concurrency | 1 at a time (`SECONDARY_LIVE_BOOT_CONCURRENCY`) |
-| Composite shells | Full Scene Distance (up to 200m); no extra 80m gate |
-| Tertiary residents | Cap 8; dispose farthest **non-sticky** only |
+| **Look** | Player → footprint ≤ **200 m** (`AOI_VISUAL_LOOK_RADIUS_M`) — GLBs + textures |
+| Live **enter** | Player → footprint ≤ **~22 m** (`secondaryLiveEnterRadiusM()` = min(Scene Distance×0.35, 22)) |
+| Live **keep** | Hysteresis band past enter (`secondaryLiveKeepRadiusM()`) |
+| Live secondary cap | Hard ≤ **4** (`AOI_LIVE_SECONDARY_HARD_CAP`) |
+| Boot concurrency | **1** at a time (`SECONDARY_LIVE_BOOT_CONCURRENCY`) — closer guests win; reconcile retries when slot frees |
+| First-frame sampling | Does **not** consume a live slot; skipped inside live enter ring |
+| **Collide** | Player → footprint ≤ **64 m** — toggle cooked PhysX (`NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M`); no recook |
+| Composite shells | Inside look ring; textures at 200 m |
+| Tertiary residents | Cap 16; dispose farthest **non-sticky** only |
 | Sticky demoted | Never auto-evicted |
 
-**Shipped:** policy + FocusOwner mute + secondary Animator pump.  
-**Not done:** proving CBD ring stays ≥30 FPS with multiple live secondaries + sticky plaza solids (density pass after **v2.0.0**).
+**Shipped:** three rings + FocusOwner mute + secondary Animator pump + stand-on promote.  
+**Open:** proving CBD ring stays ≥30 FPS with multiple live secondaries + sticky plaza solids (density pass).
 
 ---
 
@@ -185,7 +192,7 @@ After adopting sticky → primary: invalidate secondary-offset actors, extract u
 - [ ] No procedural trees on CBD / resident footprints
 - [ ] Avatar not permanently hidden after demote (AvatarModifier clear)
 - [ ] `?noaoi=1` still primary-only debug path
-- [ ] **Density:** stand in CBD with ≥2 live secondaries + sticky plaza — interactive FPS (target ≥30)
+- [ ] Stand in CBD near Spring in the Snow (~7 m): log shows `[multi-scene] secondary live "Spring in the Snow"` (beats farther cap contender)
 
 ---
 

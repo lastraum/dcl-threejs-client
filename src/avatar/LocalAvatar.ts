@@ -32,6 +32,7 @@ import { OdkLocomotionAnimations } from './odk/OdkLocomotionAnimations'
 import { applyOdkRestCorrection, retargetGltfClipToOdk } from './odk/odkRetarget'
 import { applyOdkPivotOffset } from './odk/odkFeetAlign'
 import type { CustomAvatarFormat } from './vrm/constants'
+import { DRAW_LAYER_AVATAR, setLayer } from '../rendering/drawLayers'
 
 export type PlayEmoteOptions = {
   loop?: boolean
@@ -72,6 +73,12 @@ export class LocalAvatar {
     this.nameTagAnchor.name = 'name-tag-anchor'
     parent.add(this.pivot)
     parent.add(this.nameTagAnchor)
+    this.stampAvatarLayer()
+  }
+
+  private stampAvatarLayer(): void {
+    setLayer(this.pivot, DRAW_LAYER_AVATAR)
+    setLayer(this.nameTagAnchor, DRAW_LAYER_AVATAR)
   }
 
   setAssetCache(cache: AssetCache | null, peerUrl?: string): void {
@@ -157,6 +164,7 @@ export class LocalAvatar {
           this.model.visible = true
           this.pivot.visible = true
           updateNameTagAnchor(this.nameTagAnchor, this.model)
+          this.stampAvatarLayer()
           this.ensureGlider()
           clientDebugLog.log(
             'avatar',
@@ -213,6 +221,7 @@ export class LocalAvatar {
     }
 
     updateNameTagAnchor(this.nameTagAnchor, this.model)
+    this.stampAvatarLayer()
     this.ensureGlider()
     clientDebugLog.log(
       'avatar',
@@ -247,6 +256,7 @@ export class LocalAvatar {
   }
 
   setBodyVisible(visible: boolean): void {
+    this.pivot.visible = visible
     if (this.model) this.model.visible = visible
     // Glider is pivot child (not under model) — hide with body (FPV / modifier hide).
     this.glider.setBodyVisible(visible)

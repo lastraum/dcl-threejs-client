@@ -19,6 +19,8 @@ const _euler = new THREE.Euler(0, 0, 0, 'YXZ')
 export class ReservedEntitiesSync {
   private playerIdentity: PlayerMirrorIdentity | null = null
   private realmInfo: CommsRealmInfo | null = null
+  /** Skip identical RealmInfo PUTs — each PUT fires SDK onChange → requestState → AUTH_RES. */
+  private lastRealmInfoKey = ''
   /** Wall-clock when scene reserved entities were first initialized. */
   private sceneStartMs = 0
   private frameNumber = 0
@@ -161,6 +163,17 @@ export class ReservedEntitiesSync {
   private applyRealmInfo(): void {
     const info = this.realmInfo
     if (!info) return
+    const key = [
+      info.baseUrl || info.domain || '',
+      info.realmName || '',
+      Number.isFinite(info.networkId) ? info.networkId : 1,
+      info.commsAdapter || '',
+      info.isPreview === true ? '1' : '0',
+      info.room || '',
+      info.isConnectedSceneRoom === true ? '1' : '0'
+    ].join('|')
+    if (key === this.lastRealmInfoKey) return
+    this.lastRealmInfoKey = key
     const { RealmInfo } = this.components
     this.projection.setRenderer(RealmInfo.componentId, this.reserved.root, {
       baseUrl: info.baseUrl || info.domain || '',

@@ -21,6 +21,7 @@ import { disconnectAll } from '../network/SessionConnections'
 import { clearVrmRamCache } from '../avatar/vrm/vrmRamCache'
 import { SessionIdentity } from '../network/SessionIdentity'
 import { ClientShell } from './ui/shell/ClientShell'
+import { whenDocumentVisible } from '../util/documentVisibility'
 import { isTextInputFocused } from './ui/textInputFocus'
 import { isNameTagsSceneLocked, toggleUserNameTagsVisible } from './ui/nameTagVisibility'
 import { clientDebugLog } from './debug/ClientDebugLog'
@@ -72,6 +73,7 @@ import { SettingsOverlay, type SettingsTab } from './ui/settings/SettingsOverlay
 import { warmBackpackProvenance } from './ui/settings/backpackProvenance'
 import type { MapPlayerState } from './ui/settings/MapView'
 import { genesisMetersToParcel } from '../map/genesisMapViewport'
+import { threeToDclVec } from '../bridge/dclTransform'
 import type { ResolvedScene } from '../dcl/content/types'
 import { fetchProfileFaceUrl } from '../avatar/peerApi'
 import { deployDisplayName, type DisplayNameChoice } from '../avatar/displayNameDeploy'
@@ -96,10 +98,13 @@ import { EventsPageView } from './ui/explore/EventsPageView'
 import { ExplorerView } from './ui/explore/ExplorerView'
 import { LivePageView } from './ui/explore/LivePageView'
 import { LootBagPageView } from './ui/explore/LootBagPageView'
+import { ForestPageView } from './ui/explore/ForestPageView'
 import { MapPageView } from './ui/explore/MapPageView'
 import { ProfilePageView } from './ui/explore/ProfilePageView'
 import type { SocialShellTab } from './ui/explore/SocialShellTopNav'
 import { SocialMobileNotifications } from './ui/explore/SocialMobileNotifications'
+import { isHandheldDevice } from './ui/touchPlayLayout'
+import { isAoiForcedOn } from './devFlags'
 import { CommunityVoiceFloatingBar } from './ui/communities/CommunityVoiceFloatingBar'
 import { getCommunityVoiceSession } from '../social/CommunityVoiceSession'
 import { SceneLandingView } from './ui/landing/SceneLandingView'
@@ -198,6 +203,7 @@ export class AppController {
   private editorApp: EditorApp | null = null
   private explorerView: ExplorerView | null = null
   private mapPageView: MapPageView | null = null
+  private forestPageView: ForestPageView | null = null
   private eventsPageView: EventsPageView | null = null
   private livePageView: LivePageView | null = null
   private livePip: LivePip | null = null
@@ -328,6 +334,11 @@ export class AppController {
       return
     }
 
+    if (postLoginRoute.kind === 'forest') {
+      await this.showForestPage({ replace: true })
+      return
+    }
+
     if (postLoginRoute.kind === 'communities') {
       await this.showCommunitiesPage({ replace: true })
       return
@@ -438,6 +449,16 @@ export class AppController {
       return
     }
 
+    if (target.kind === 'forest') {
+      this.navigating = true
+      try {
+        await this.showForestPage({ fromHistory: opts.fromHistory, replace: opts.replace })
+      } finally {
+        this.navigating = false
+      }
+      return
+    }
+
     if (target.kind === 'communities') {
       this.navigating = true
       try {
@@ -506,6 +527,7 @@ export class AppController {
     await this.teardownScene({ clearVrmCache: true })
     this.teardownLanding()
     this.teardownMapPage()
+    this.teardownForestPage()
     this.teardownEventsPage()
     this.teardownLivePage()
     this.teardownLootBagPage()
@@ -1459,6 +1481,7 @@ export class AppController {
     await this.teardownScene({ clearVrmCache: true })
     this.teardownLanding()
     this.teardownMapPage()
+    this.teardownForestPage()
     this.teardownEventsPage()
     this.teardownLivePage()
     this.teardownLootBagPage()
@@ -1515,6 +1538,7 @@ export class AppController {
     this.teardownExplorer()
     this.teardownLanding()
     this.teardownMapPage()
+    this.teardownForestPage()
     this.teardownEventsPage()
     this.teardownLivePage()
     this.teardownLootBagPage()
@@ -1553,6 +1577,53 @@ export class AppController {
     this.collapseSocialChatThread()
   }
 
+  private async showForestPage(
+    opts: { fromHistory?: boolean; replace?: boolean } = {}
+  ): Promise<void> {
+    if (this.appMode === 'play') {
+      stopDwellTracking('shell')
+      this.disposeCommunityFollow()
+      await this.teardownScene({ clearVrmCache: true })
+    }
+
+    if (!opts.fromHistory) {
+      applyRouteToHistory({ kind: 'forest' }, opts.replace ?? false)
+    }
+    this.currentRoute = { kind: 'forest' }
+    this.appMode = 'forest'
+    this.syncCommunityVoiceBarVisibility()
+    this.clearSceneBanWatch()
+
+    this.teardownExplorer()
+    this.teardownLanding()
+    this.teardownMapPage()
+    this.teardownForestPage()
+    this.teardownEventsPage()
+    this.teardownLivePage()
+    this.teardownLootBagPage()
+    this.teardownCommunitiesPage()
+    this.teardownProfilePage()
+
+    if (!this.container || !this.login) return
+
+    const hudEl = document.getElementById('hud')
+    if (hudEl) hudEl.hidden = true
+
+    this.forestPageView = new ForestPageView({
+      onLeave: () => void this.navigateTo({ kind: 'blank' }),
+      profileId: this.login.address,
+      onJumpInWorld: (worldName) => {
+        const name = worldName.trim()
+        if (!name) return
+        void this.jumpInToScene(
+          { kind: 'world', worldName: name, segment: name },
+          { entry: 'teleport', source: 'goto', fastAssets: true }
+        )
+      }
+    })
+    this.forestPageView.mount(this.container)
+  }
+
   private async showEventsPage(
     opts: { fromHistory?: boolean; replace?: boolean } = {}
   ): Promise<void> {
@@ -1573,6 +1644,7 @@ export class AppController {
     this.teardownExplorer()
     this.teardownLanding()
     this.teardownMapPage()
+    this.teardownForestPage()
     this.teardownEventsPage()
     this.teardownLivePage()
     this.teardownLootBagPage()
@@ -1620,6 +1692,7 @@ export class AppController {
     this.teardownExplorer()
     this.teardownLanding()
     this.teardownMapPage()
+    this.teardownForestPage()
     this.teardownEventsPage()
     this.teardownLivePage()
     this.teardownLootBagPage()
@@ -1665,6 +1738,7 @@ export class AppController {
     this.teardownExplorer()
     this.teardownLanding()
     this.teardownMapPage()
+    this.teardownForestPage()
     this.teardownEventsPage()
     this.teardownLivePage()
     this.teardownLootBagPage()
@@ -1706,6 +1780,7 @@ export class AppController {
     this.teardownExplorer()
     this.teardownLanding()
     this.teardownMapPage()
+    this.teardownForestPage()
     this.teardownEventsPage()
     this.teardownLivePage()
     this.teardownLootBagPage()
@@ -1755,6 +1830,7 @@ export class AppController {
     this.teardownExplorer()
     this.teardownLanding()
     this.teardownMapPage()
+    this.teardownForestPage()
     this.teardownEventsPage()
     this.teardownLivePage()
     this.teardownLootBagPage()
@@ -1788,6 +1864,11 @@ export class AppController {
   private teardownMapPage(): void {
     this.mapPageView?.dispose()
     this.mapPageView = null
+  }
+
+  private teardownForestPage(): void {
+    this.forestPageView?.dispose()
+    this.forestPageView = null
   }
 
   private teardownEventsPage(): void {
@@ -2035,6 +2116,7 @@ export class AppController {
     // Ends prior landing engaged-session (if any) before remount.
     this.teardownLanding()
     this.teardownMapPage()
+    this.teardownForestPage()
     this.teardownEventsPage()
     this.teardownLivePage()
     this.teardownLootBagPage()
@@ -2291,6 +2373,28 @@ export class AppController {
     void this.socialChat.ensureShellInit()
   }
 
+  /**
+   * Every Jump In / load on phone + iPad: no localStorage skip.
+   * `?nomobile` skips the profile (and this toast).
+   */
+  private toastHandheldQualityProfile(): void {
+    if (!isHandheldDevice()) return
+    if (isAoiForcedOn()) return
+    this.ensureSocialMobileNotifications()
+    const notif = this.socialMobileNotifications
+    if (!notif) return
+    notif.host.classList.add('social-mobile-notif-host--in-world-center')
+    const id = 'handheld-device-quality'
+    notif.dismissSystemToast(id)
+    notif.pushSystemToast({
+      id,
+      appName: 'DECENTRALAND',
+      title: 'Quality and scene distance were lowered for this device',
+      sub: 'Raise Scene Distance in Settings to load nearby scenes.',
+      dismissMs: 8000
+    })
+  }
+
   private ensureSocialMobileNotifications(): void {
     if (this.socialMobileNotifications) return
     this.socialMobileNotifications = new SocialMobileNotifications({
@@ -2322,6 +2426,9 @@ export class AppController {
           return
         }
         this.socialChat?.openProfileForAddress(address)
+      },
+      onOpenMarketplaceItem: (intent) => {
+        this.shell?.openMarketplaceItem(intent)
       },
       onOpenCommunity: (communityId, kind) => {
         if (this.appMode === 'play' && kind === 'announcement') {
@@ -2609,6 +2716,13 @@ export class AppController {
     }
 
     this.navigating = true
+    if (fromPlay && !seamless && this.world) {
+      try {
+        await this.world.playLocalTeleportRune()
+      } catch (err) {
+        console.warn('[client] in-world teleport rune failed', err)
+      }
+    }
     let loading: LoadingScreen | null = null
     // Seamless promote: keep feet; optional loading chrome for cold large-scene jumps.
     // Everything else (landing Jump In, map Jump In, teleports) shows a loading affordance.
@@ -2625,8 +2739,8 @@ export class AppController {
       this.sceneLandingView!.beginJumpInLoading()
     } else {
       loading = new LoadingScreen(
-        this.appMode === 'play' ? 'Teleporting…' : 'Preparing your experience…',
-        { fast: this.appMode === 'play' || opts.entry === 'map' }
+        this.appMode === 'play' || opts.entry === 'teleport' ? 'Teleporting…' : 'Preparing your experience…',
+        { fast: this.appMode === 'play' || opts.entry === 'map' || opts.entry === 'teleport' }
       )
       loading.mount()
       loading.startLoadingTimer()
@@ -2639,6 +2753,7 @@ export class AppController {
       if (!seamless) {
         this.teardownExplorer()
         this.teardownMapPage()
+        this.teardownForestPage()
       }
       const hydrationTimedOut = await this.loadRoute(target, {
         ...opts,
@@ -2699,6 +2814,7 @@ export class AppController {
       this.ensureSocialMobileNotifications()
       if (this.login) this.socialMobileNotifications?.setLogin(this.login)
       this.ensureInWorldChromeOnly()
+      if (!seamless) this.toastHandheldQualityProfile()
     } catch (err) {
       if (err instanceof SceneAccessDeniedError) {
         const ui = formatSceneBanMessage(err)
@@ -3252,11 +3368,13 @@ export class AppController {
         )
       }
 
-      world.start()
-
-      // Multi-scene: bind PE + live secondaries (PE prefs survive this attach).
+      await whenDocumentVisible()
+      // Bind live guests before start so their GLBs attach on the loading overlay.
+      // Neighbor shells / tertiary keep filling in the background.
       world.attachMultiScene(this.multiSceneRuntime)
       this.shell?.bindPortableExperiences(this.peManager)
+      await world.drainLiveGuestsForLoad(opts.onProgress)
+      world.start()
 
       const settleMs = opts.seamless
         ? 0
@@ -3732,7 +3850,7 @@ export class AppController {
     if (key === this.lastLocationTitleKey && this.locationTitleCache.has(key)) return
 
     const primary = this.world?.getLoadedPrimaryScene()
-    if (primary?.source.kind === 'coords' && primary.parcels.includes(key)) {
+    if (primary?.source.kind === 'coords' && this.world?.primaryCoversParcel(x, y)) {
       const title = sceneDisplayTitle(primary)
       this.seedLocationTitleCache(primary, title)
       this.applyLocationTitle(title, key)
@@ -3825,12 +3943,12 @@ export class AppController {
   private getMapPlayerState(): MapPlayerState | null {
     const world = this.world
     if (!world) return this.lastMapPlayerState
+    const worldPos = world.getPlayerWorldPosition()
     const pos = world.getPlayerPosition()
-    if (!pos) return this.lastMapPlayerState
-    const origin = world.comms.getSceneOrigin()
-    // Genesis City meters = scene-local DCL feet + base parcel origin (×16).
-    const genesisX = pos.x + origin.x
-    const genesisZ = pos.z + origin.z
+    if (!worldPos || !pos) return this.lastMapPlayerState
+    const genesis = threeToDclVec(worldPos)
+    const genesisX = genesis.x
+    const genesisZ = genesis.z
     // Prefer continuous genesis → parcel (same path soft URL / promote use).
     const { parcelKey } = genesisMetersToParcel(genesisX, genesisZ)
     const profile = world.session.getProfile()
@@ -3933,6 +4051,22 @@ export class AppController {
       return
     }
 
+    const primary = world.getLoadedPrimaryScene()
+    if (primary?.entityId?.trim()) {
+      try {
+        const resolved = await resolveSceneFromRoute(target)
+        if (resolved?.entityId?.trim() === primary.entityId.trim()) {
+          world.foldPrimaryParcel(target.x, target.y)
+          console.info(
+            `[promote] same deployment @ ${target.x},${target.y} — fold only (no handoff)`
+          )
+          return
+        }
+      } catch {
+        /* fall through to handoff path */
+      }
+    }
+
     // Pin under-feet parcel so live secondary boots first (handoff, no loading screen).
     this.multiSceneRuntime.setSecondaryPriorityParcel(target.x, target.y)
     try {
@@ -3986,6 +4120,7 @@ export class AppController {
       `[promote] ABORT seamless jump @ ${target.x},${target.y} (${reason}) — ` +
         `no live secondary after wait; prior primary stays resident`
     )
+    world.notifyPromoteHandoffFailed(target.x, target.y)
     this.multiSceneRuntime.setSecondaryPriorityParcel(target.x, null)
   }
 

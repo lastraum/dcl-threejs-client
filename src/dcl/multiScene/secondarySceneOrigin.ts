@@ -1,6 +1,7 @@
 import type { Object3D, Vector3 } from 'three'
 import { dclToThreePos } from '../../bridge/dclTransform'
 import { neighborOriginOffset } from '../aoi/compositeVisuals'
+import { GENESIS_CITY_FILL_ORIGIN } from '../aoi/parcelAoi'
 import type { EntityPose } from '../../bridge/ReservedEntitiesSync'
 
 /**
@@ -15,30 +16,51 @@ function bakeWorldMatrix(root: Object3D): void {
 }
 
 /**
- * Live secondary workers author content in **their** scene-local DCL space
- * (SW of neighbor base = 0,0). The Three host graph uses **primary** SW as
- * origin. Without this offset, every secondary dumps meshes on the primary
- * footprint — the classic “rogue GLBs” AOI bug.
- *
- * Tertiary composites / first-frame already apply the same math via
- * {@link neighborOriginOffset}. Keep these in lockstep.
+ * Scene graphs author content in **their** scene-local DCL space (SW = 0,0).
+ * The Three / PhysX world is **Genesis-stable** (parcel 0,0). Offset the entity
+ * root by (sceneBase − 0,0) so hulls never move on FocusOwner promote.
+ */
+export function applyGenesisSceneRootOrigin(
+  root: Object3D | null | undefined,
+  sceneBase: string
+): void {
+  applySecondarySceneRootOrigin(root, sceneBase, GENESIS_CITY_FILL_ORIGIN)
+}
+
+/**
+ * @param primaryBase Ignored for pose — kept so call sites that still pass the
+ *   FocusOwner base compile. Offset is always vs genesis 0,0.
  */
 export function applySecondarySceneRootOrigin(
   root: Object3D | null | undefined,
   neighborBase: string,
-  primaryBase: string
+  _primaryBase?: string
 ): void {
   if (!root) return
   const n = neighborBase.trim()
-  const p = primaryBase.trim()
-  if (!n || !p) {
+  if (!n) {
     root.position.set(0, 0, 0)
     bakeWorldMatrix(root)
     return
   }
-  const o = neighborOriginOffset(n, p)
+  const o = neighborOriginOffset(n, GENESIS_CITY_FILL_ORIGIN)
   dclToThreePos(o.x, 0, o.z, root.position)
   bakeWorldMatrix(root)
+}
+
+/**
+ * Three.js world delta to keep genesis-baked PhysX/meshes in place when FocusOwner
+ * SW jumps `oldPrimaryBase` → `newPrimaryBase`. Same math as a demoted root offset
+ * (`dclToThree(old − new)`). Apply **once** to every world-baked hull that lived in
+ * the old frame — incoming primary, demoted primary, and other residents.
+ */
+export function originRebaseThreeDelta(
+  oldPrimaryBase: string,
+  newPrimaryBase: string
+): { x: number; y: number; z: number } {
+  const o = neighborOriginOffset(oldPrimaryBase.trim(), newPrimaryBase.trim())
+  const v = dclToThreePos(o.x, 0, o.z)
+  return { x: v.x, y: v.y, z: v.z }
 }
 
 /**
@@ -60,9 +82,7 @@ export function hostPoseToSceneLocal(
   return { position, rotation: pose.rotation }
 }
 
-/** Promote handoff — primary must sit at host origin again. */
-export function clearSecondarySceneRootOrigin(root: Object3D | null | undefined): void {
-  if (!root) return
-  root.position.set(0, 0, 0)
-  bakeWorldMatrix(root)
+/** @deprecated Genesis-stable roots stay put on promote — do not zero the graph. */
+export function clearSecondarySceneRootOrigin(_root: Object3D | null | undefined): void {
+  /* genesis-stable: no-op */
 }

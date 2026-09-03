@@ -1,12 +1,12 @@
 import * as THREE from 'three'
 import type { Entity } from '@dcl/ecs'
 import {
-  isGltfInvisibleColliderMesh,
-  isGltfInvisibleColliderName,
-  isGltfVisibleClassMesh
+  classifyGltfCollisionMesh,
+  isGltfInvisibleColliderName
 } from '../collision/gltfColliderNaming'
 import type { PhysicsColliderShapeDesc } from '../physics/PhysXWorld'
 import { setMeshDesiredCastShadow } from './shadowCastPolicy'
+import { DRAW_LAYER_WORLD, setLayer } from './drawLayers'
 
 /**
  * GPU instancing for scene GltfContainers that share a content hash.
@@ -128,12 +128,8 @@ export function collectTemplateColliderShapes(
     if (!(node instanceof THREE.Mesh)) return
     if ((node as THREE.SkinnedMesh).isSkinnedMesh) return
 
-    // Ancestry-first (Explorer): `_collider` group children are inv even without leaf `_collider` name.
-    let kind: InstanceColliderShape['kind'] | null = null
-    if (isGltfInvisibleColliderMesh(node, root)) kind = 'inv'
-    else if (isGltfVisibleClassMesh(node, root)) kind = 'vis'
-    else if (node.name.length === 0) kind = 'unnamed'
-    else return
+    // ADR-215 class only — per-entity vis/inv masks filter at extract (not here).
+    const kind = classifyGltfCollisionMesh(node, root)
 
     const sourceGeo = node.geometry
     const posAttr = sourceGeo?.getAttribute('position')
@@ -264,13 +260,22 @@ export class SceneGltfInstancer {
   }
 
   /** Extract: instance matrix from a world matrix (billboard) — pose quat untouched. */
-  writeWorldMatrix(entity: Entity, world: THREE.Matrix4): boolean {
+  writeWorldMatrix(entity: Entity, world: THREE.Matrix4, entityObj?: THREE.Group): boolean {
     const hash = this.entityHash.get(entity)
     if (!hash) return false
     const bucket = this.buckets.get(hash)
     if (!bucket) return false
     const index = bucket.entityIndex.get(entity)
     if (index === undefined) return false
+    // Same law as writeMatrix — InstancedMesh does not inherit Object3D.visible.
+    if (entityObj && (!entityObj.visible || !poseAncestryVisible(entityObj))) {
+      _instance.makeScale(0, 0, 0)
+      for (const mesh of bucket.meshes) {
+        mesh.setMatrixAt(index, _instance)
+        mesh.instanceMatrix.needsUpdate = true
+      }
+      return true
+    }
     for (let i = 0; i < bucket.meshes.length; i++) {
       const leaf = bucket.leaves[i]!
       const mesh = bucket.meshes[i]!
@@ -489,6 +494,7 @@ export class SceneGltfInstancer {
         ? leaf.material.map((m) => m.clone())
         : leaf.material.clone()
       const mesh = new THREE.InstancedMesh(leaf.geometry, mat, capacity)
+      setLayer(mesh, DRAW_LAYER_WORLD)
       mesh.name = `inst:${i}`
       mesh.count = 0
       // Ultra only (gltfDefaultCaster): high/medium stay receive-only so plaza instancing
@@ -550,6 +556,7 @@ export class SceneGltfInstancer {
       const old = bucket.meshes[i]!
       // Keep the (possibly whitened) material already on the old mesh.
       const mesh = new THREE.InstancedMesh(leaf.geometry, old.material, nextCap)
+      setLayer(mesh, DRAW_LAYER_WORLD)
       mesh.name = old.name
       mesh.count = bucket.used
       setMeshDesiredCastShadow(mesh, true, 'environment', { gltfDefaultCaster: true })

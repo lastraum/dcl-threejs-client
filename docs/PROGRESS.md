@@ -2,11 +2,11 @@
 
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
-> **Last updated:** 2026-08-19  
-> **Current phase:** **v2.2.0** on `main`. Butter work on **`v3`**. QA trunk is **`dev-latest`**. SceneLoop invert clock **🟢**.  
-> **Shipped:** **v2.2.0** one guest clock · plaza Cast Line walk-log · Genesis sky · Explore live search · **v2.1.0** `/localpreview` · stay-in-play reload · Tags shaders (`tjs.sync` opt-in) · shaders off until Jump In · preview tabs · **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
+> **Last updated:** 2026-09-03  
+> **Current phase:** **v2.3.0** on `main` (plaza rings · tjs · handheld · iPad parity). Prior **v2.2.0** sealed the guest clock. QA: https://dev.decentraland.social  
+> **Shipped:** **v2.3.0** plaza three rings · `tjs` shaders/projection · handheld/iPad parity · Worlds catalog · marketplace v1 · teleport anim · **v2.2.0** one guest clock · plaza Cast Line walk-log · Genesis sky · Explore live search · **v2.1.0** `/localpreview` · stay-in-play reload · shaders off until Jump In · preview tabs · **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
 
-> **After 2.2 (next / `v3`):** neighbor composite **shells on** · Landscape + Shadows Distance live · FXAA when bloom is on · GPU warm covers shadow+bloom · stacked live-guest FPS measure. Promote stays off.  
+> **After 2.2 (`v3` butter — historical):** neighbor composite **shells on** · Landscape + Shadows Distance live · FXAA when bloom is on · GPU warm covers shadow+bloom · stacked live-guest FPS measure. Superseded for open-world policy by plaza rings on `dev-latest` (2026-09-01).  
 > **After 2.0 (parked shell):** RTS box-select / pad-drag · saved outfits · create-community / invites · gallery multi-page · Social WS reliability · PE P3 pad/wind QA · multi-shape GLTF `40M+` riding. Scene UI = **one-off bugs only**. Shell marketplace browse ≠ **P2P peer trade**.  
 
 > **Note:** in-world `/goto` via 3D chat is wired (full scene reload). PM LiveKit survives teleports. Community voice LiveKit survives Jump In.  
@@ -20,9 +20,116 @@
 
 ---
 
+## 🎉 Milestone — v2.3.0 release (plaza rings · tjs · handheld) (2026-09-03)
+
+**Status: release cut** — `dev-latest` → `main` · tag `v2.3.0`.
+
+v2.2 sealed the guest clock. v2.3 is the open city plus creators and phones: plaza walks without the slideshow, Three.js scene tools, a 3D catalog you can Jump Into, and iPad/phone that actually load and keep their head on.
+
+### What's new
+
+- **Plaza three rings** — 200 m textured look, 64 m collide toggle, ~22 m live JS (cap 4); nested plazas are first-class
+- **`tjs` (Three.js) for creators** — one ECS component for Three.js shaders and projection cameras; fire with `enabled`, project with `tjs:${entity}`
+- **Projection cameras** — lens layers / fov / background; blit to screens or UI via `tjs:${entity}`; each camera is a full extra world render (keep the count small)
+- **Handheld that survives Jump In** — phones + iPad auto-Low, smarter neighbors, collapsed HUD, profile FAB, no top location pill
+- **iPad load + head parity** — sky at 1024 (no 12% hang), GLTF textures on first load, hair/head merge like desktop, head stays on when you walk
+- **3D Worlds catalog viewer** — browse worlds in 3D at `/worlds` and Jump In from the scene
+- **Marketplace v1.0** — in-world purchasing: browse, details, cart, credits / listing MANA
+- **Genesis vacant parcels** — Explorer-style GPU grass + flowers; live-guest GLBs on the overlay
+- **Mobile landing** — QR beside Jump In + deep link into the DCL app at the current place
+- **Teleport animation** — plays on `/goto` and when a peer leaves
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Plaza three rings** | 🟢 | PR #73 · 200 / 64 / ~22 m |
+| **`tjs` + projection cameras** | 🟢 | #75 · shaders + CCTV-as-projection |
+| **Handheld / iPad** | 🟢 | Low AOI · HUD · load + head bind |
+| **Worlds catalog / market v1** | 🟢 | `/worlds` · in-world purchasing |
+| **SceneLoop (2.2)** | 🟢 | Unchanged |
+
+**QA:** https://dev.decentraland.social — plaza nested walk · iPad Jump In head stays on · Kenney/`tjs` projection · `/worlds` Jump In · marketplace cart.
+
+**Tip:** `v2.3.0` on `main`. Toast reads this first What's new block.
+
+---
+
+## Milestone — iPad / Apple-touch load + avatar bind parity (2026-09-03)
+
+**Status: folded into v2.3.0.** QA: https://dev.decentraland.social
+
+iPad Chrome is WebKit. Texture decode and avatar bind now match desktop instead of a separate Apple path that skipped head merge and transferred ImageBitmaps.
+
+### What's new
+
+- **Sky textures capped at 1024** — 8k genesis sky hung the load bar at ~12% on iPad
+- **GLTF sidecar textures via fetch+MIME** — `gltfSidecarTexture.ts`; **image URIs only** — no `/contents/` catch-all
+- **Apple head merge** — same `tryMerge` as desktop (no head-slot skip)
+- **Main-thread flattenGltf → inflateGltf** — `AssetCache.rebuildGltfOnMainThread`; same bind as the desktop worker, no ImageBitmap transfer
+- **`npm run build:qa`** — rsync script to QA
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Sky 1024 cap** | 🟢 | genesis sky no longer 8k hang on iPad |
+| **Sidecar fetch+MIME** | 🟢 | image URIs only; `gltfSidecarTexture.ts` |
+| **Head tryMerge** | 🟢 | same path as desktop; no head-slot skip |
+| **flatten → inflate** | 🟢 | main-thread rebuild; no ImageBitmap transfer |
+| **Head detach on iPad QA** | 🟢 | verified head no longer detaches |
+
+**Tip:** iPad Chrome is WebKit. Do not reinstall a `/contents/` LoadingManager handler.
+
+---
+
+## Milestone — `tjs` ECS component (2026-09-02)
+
+**Status: on `dev-latest`.** Scene-defined custom component `tjs` for shaders and projection screens. Scene API: [README Shaders](../README.md#shaders).
+
+### What's new
+
+- **`tjs` component** — one mirrored LWW component; `kind` is a string: `shader`, `texture`, `camera`, `projection`
+- **Shaders** — load when the row appears; `path` is the file, `name` is the export that file exposes; fire with `enabled: true` (new row per one-shot cast)
+- **Projection screens** — lens: Transform + SDK `VirtualCamera` + `kind: camera` (`layers` "0,1,2", `fov`, `background` Color4). Screen: Transform + `kind: projection` with `camera` = the **lens entity** (not a number). UI: `UiBackground.texture.src = tjs:${cam}`. Each camera is a full extra world render (keep the count small). Toggle `tjs.getMutable(screen).enabled`.
+- **`texture` kind** — reserved; unused for CCTV
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **tjs mirror + bridge** | 🟢 | `src/dcl/ecs/tjsComponent.ts` + `SceneTjsBridge` |
+| **Shader one-shot** | 🟢 | `enabled: true` fires once per distinct payload |
+| **CCTV camera + projection** | 🟢 | layers 0,1,2; fov; Color4 background; world plane + UI tjs:src; extra cameras cost FPS |
+
+---
+
+## ✅ Milestone — Plaza open-world three rings (2026-09-01)
+
+**Status: on `dev-latest`** — squash-merge PR #73 (`f14c7f34`). Product law for Genesis CBD / nested plaza walks.
+
+Open-world loading is **three rings**. Distance is always **player → that scene’s occupied footprint** (empty land and roads excluded). Nested plaza parcels (Hockey, BrandonManus, Spring in the Snow, Jarod, …) are first-class — no `coveredSkip` hiding inner estates.
+
+### What's new
+
+- **200 m look** — neighbor scene GLBs load with their textures (not on-demand beige shells). Scene Distance preference no longer clips Winterfest / nested plaza neighbors to the collide arm.
+- **64 m collide** — enable/disable already-cooked PhysX hulls. No recook, no compact, no first-walk expand of 16+ shape families into hundreds of shapes. Walk inside a plaza must not hitch on PhysX expand.
+- **~22 m live JS, cap 4** — under-feet always runs. Nested plaza scenes are live guests. **Parcel count never gates JS.** Boot concurrency 1; closer guests win the cap (Spring at ~7 m beats Mewland at ~22 m). First-frame sampling does not consume a live slot. Reconcile retries after the exclusive boot slot frees. LiveKit hold on same-primary plaza walk (no remount/rejoin). Splash ghost overlay after unmount is purged.
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Look ring** | 🟢 200 m | `AOI_VISUAL_LOOK_RADIUS_M` · GLBs + textures · nested plazas not skipped |
+| **Collide ring** | 🟢 64 m toggle | `NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M` · cooked hulls enable/disable only |
+| **Live JS ring** | 🟢 ~22 m enter, cap 4 | `secondaryLiveEnterRadiusM()` · boot concurrency 1 · nearest footprint wins |
+| **Parcel-count gate** | 🟢 off | Budget = distance + cap + boot slot — never parcel size |
+| **Stand-on promote** | 🟢 on | `AOI_STAND_ON_PROMOTE` · handoff + sticky demote · origin rebind |
+| **SceneLoop clock** | 🟢 | Unchanged since v2.2.0 |
+
+**QA:** https://dev.decentraland.social — walk plaza → nested Spring in the Snow (~7 m) → confirm `[multi-scene] secondary live "Spring in the Snow"` · Winterfest / neighbors visible to 200 m with textures · no PhysX hitch on first plaza step · same-primary walk does not bounce LiveKit.
+
+**Open leftovers (honest):** small PhysX CCT parent→1 expands still log (not a merge stopper). Official `npm run build` `tsc` `noUnusedLocals` cleanup (`ROAD_PHYS_RADIUS_M`, unused `key`/`px`/`py`) may still be in flight on a local Mac — not claimed merged here.
+
+**Tip:** Three rings are **our** open-world implementation on `dev-latest`. Older docs that say shells-only / promote-off / 80 m cliff describe pre–PR #73 state.
+
+---
+
 ## ✅ Milestone — v3 Explorer butter (shells · P3 distances · AA · warm) (2026-08-19)
 
-**Status: on `v3` — not a product tag.** Post-2.2 city/look butter. Clock stays 🟢. Promote stays off.
+**Status: historical (`v3` branch era).** Superseded for open-world policy by plaza three rings on `dev-latest` (2026-09-01). Post-2.2 city/look butter. Clock stays 🟢.
 
 ### What's new (parity / implementation — no version toast)
 
@@ -38,7 +145,7 @@
 | ---- | ------ | ----- |
 | **SceneLoop** | 🟢 | Unchanged since v2.2.0 |
 | **Neighbor shells** | 🟢 default-on | Walk-through extract; no PhysX |
-| **Stand-on promote** | ⬜ off | After FPS measure |
+| **Stand-on promote** | ⬜ off (2026-08-19) | Superseded — on `dev-latest` since PR #73 |
 | **Stacked FPS** | measure-only | No cap flip without a log |
 | **P3 Landscape / Shadows Distance** | 🟢 | Scene Distance was already live |
 

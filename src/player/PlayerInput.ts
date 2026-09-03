@@ -38,7 +38,10 @@ export class PlayerInput {
   >()
   private lastPinchSpan = 0
   private isLocomotionBlocked: () => boolean = () => false
-  /** Scene VirtualCamera owns MainCamera — block freecam orbit / pointer-lock look. */
+  /**
+   * Scene VirtualCamera owns MainCamera — block **freecam** orbit / look.
+   * Pointer lock itself stays available (scenes read CameraEntity PointerLock).
+   */
   private isLookBlocked: () => boolean = () => false
   private readonly reticle: PointerLockReticle
 
@@ -203,9 +206,10 @@ export class PlayerInput {
     if (handled) e.preventDefault()
 
     // Tab defaults to pointer-lock toggle only when not remapped to a DCL action (e.g. Walk).
+    // VC owns the lens pose, not PointerLock — still allow lock for scene mouse-look.
     if (e.code === 'Tab' && !keybinds.bindIdForCode('Tab')) {
       e.preventDefault()
-      if (!this.isLookBlocked()) this.togglePointerLock()
+      this.togglePointerLock()
     }
     if (e.code === 'Escape' && this.pointer.locked) {
       document.exitPointerLock()
@@ -392,6 +396,8 @@ export class PlayerInput {
         e.preventDefault()
         return
       }
+      // VC owns the lens — do not freecam-orbit. LMB is scene IA_POINTER + PPI
+      // (and PointerLock is reported while held; see play-frame reserved poses).
       if (this.isLookBlocked()) return
       this.orbiting = true
       this.orbitPointerId = e.pointerId
@@ -412,8 +418,7 @@ export class PlayerInput {
       // While already locked, right-click keeps its unlock role.
       if (!this.pointer.locked && tryOpenPeerContextMenu(e.clientX, e.clientY)) return
       // Right-click toggles pointer lock (look without holding a button).
-      // Scene VC owns the lens — do not enter freecam look.
-      if (this.isLookBlocked()) return
+      // Freecam look is blocked while VC drives; lock itself is scene-readable.
       this.togglePointerLock()
       return
     }

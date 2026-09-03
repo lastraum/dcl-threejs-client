@@ -89,10 +89,10 @@ export function collectGltfLayerTargetMeshes(
       if (!includeInvisible) return
     } else if (isGltfVisibleClassMesh(node, gltfRoot)) {
       if (!includeVisible) return
-      if (node.visible === false) return
+      // Visibility / DrawWorld may hide the pose (click_area). Authored layer
+      // masks still query — Explorer colliders ignore VisibilityComponent.
     } else {
       if (!includeVisible) return
-      if (node.visible === false) return
     }
     node.userData.entity = entity
     out.push(node)
@@ -130,11 +130,10 @@ export function collectGltfPointerTargetMeshes(
       // Keep even when visible=false — CL_POINTER hulls must still hit.
     } else if (isGltfVisibleClassMesh(node, gltfRoot)) {
       if (!includeVisible) return
-      // Opacity-0 proxy hulls stay raycastable; truly culled art does not.
-      if (node.visible === false) return
+      // Creator Hub click_area: visible-class cube, Visibility=false, vis mask
+      // CL_POINTER. DrawWorld sets the extract `visible=false`; the hull still hits.
     } else {
       if (!includeVisible) return
-      if (node.visible === false) return
     }
     node.userData.entity = entity
     out.push(node)

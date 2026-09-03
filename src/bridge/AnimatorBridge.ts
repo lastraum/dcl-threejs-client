@@ -48,6 +48,12 @@ type AnimEntry = {
   partSettleUntil?: number
   /** Mixer 'finished' listener — one-shot PART settle. */
   partFinishedHooked?: boolean
+  /** performance.now() when this mixer was created — late-join one-shots snap to end. */
+  boundAt: number
+  /** Clips `playing=true` on the last apply — rising edge starts from t=0. */
+  lastPlayingClips: Set<string>
+  /** At least one applyStatesToEntry has run on this mixer. */
+  hasAppliedStatesOnce: boolean
   /** Present-rAF sample generation — async skips so we do not double-advance. */
   lastPresentGen: number
   /**
@@ -314,6 +320,51 @@ function hasRunningClip(entry: AnimEntry): boolean {
     if (action.isRunning() || action.isScheduled()) return true
   }
   return false
+}
+
+/**
+ * Mixer already matches ECS playing/stopped clips (running, scheduled, or
+ * LoopOnce+clampWhenFinished at the last frame). Used to skip stop+reset+play
+ * on Animator CRDT echoes / wake — otherwise Door Open snaps back to bind pose.
+ *
+ * Asset-pack `play_animation` (Winterfest Entry_Door_1): stopAllAnimations then
+ * playing=true, loop=false, shouldReset left true. Explorer holds the clamp;
+ * re-applying that same state must not restart.
+ */
+/** Late-join / first GLB bind: one-shots already playing on the network are finished. */
+const JOIN_ONESHOT_SNAP_MS = 2500
+
+function seekActionToEnd(action: THREE.AnimationAction): void {
+  const duration = Math.max(action.getClip().duration - 1e-4, 0)
+  action.enabled = true
+  action.paused = false
+  action.setLoop(THREE.LoopOnce, 1)
+  action.clampWhenFinished = true
+  action.reset()
+  action.time = duration
+  action.play()
+  action.paused = true
+  action.time = duration
+}
+
+function mixerMatchesAppliedStates(
+  bound: AnimEntry,
+  states: readonly AnimatorStateView[]
+): boolean {
+  for (const state of states) {
+    const clip = state.clip ?? ''
+    if (!clip) continue
+    const action = bound.actions.get(clip)
+    const wantPlay = state.playing !== false
+    if (wantPlay) {
+      if (!action?.enabled) return false
+      if (action.isRunning() || action.isScheduled()) continue
+      if (action.clampWhenFinished && action.time > 1e-4) continue
+      return false
+    }
+    if (action?.isRunning() || action?.isScheduled()) return false
+  }
+  return true
 }
 
 /**
@@ -591,8 +642,12 @@ export class AnimatorBridge {
       const entry = this.entries.get(entity)
       if (!entry || !Animator.has(entity)) continue
       const states = (Animator.get(entity).states ?? []) as readonly AnimatorStateView[]
-      // forceApply: CRDT markDirty always re-applies (door open/close).
-      this.applyStatesToEntry(entity, entry, states, entry.gltfSrc, false, true)
+      if (mixerMatchesAppliedStates(entry, states)) {
+        entry.lastAppliedSignature = animatorStateSignature(states, false)
+        this.dirtyReplay.delete(entity)
+        continue
+      }
+      this.applyStatesToEntry(entity, entry, states, entry.gltfSrc, false, false)
       this.dirtyReplay.delete(entity)
     }
   }
@@ -660,15 +715,31 @@ export class AnimatorBridge {
     forceApply = false
   ): void {
     const stateSignature = animatorStateSignature(states, usingDefaultAutoPlay)
-    const forceReplay = forceApply || this.dirtyReplay.has(entity)
     this.dirtyReplay.delete(entity)
-    if (!forceApply && bound.lastAppliedSignature === stateSignature) {
-      const oneShotRefire =
-        forceReplay && states.some((s) => s.shouldReset === true && s.playing !== false)
-      if (!oneShotRefire) return
+    // Hold running/clamped one-shots even when shouldReset in the CRDT signature
+    // flips (asset-pack play_animation leaves shouldReset true). Signature-only
+    // compare restarted Door Open every world-mesh PUT → chopping + snap shut.
+    if (!forceApply && bound.hasAppliedStatesOnce && mixerMatchesAppliedStates(bound, states)) {
+      bound.lastAppliedSignature = stateSignature
+      return
     }
 
-    for (const action of bound.actions.values()) {
+    const prevPlaying = bound.lastPlayingClips
+    const nextPlaying = new Set<string>()
+    for (const state of states) {
+      if (state.playing !== false && state.clip) nextPlaying.add(state.clip)
+    }
+    const joinWindow =
+      !bound.hasAppliedStatesOnce || performance.now() - bound.boundAt < JOIN_ONESHOT_SNAP_MS
+
+    for (const [clipName, action] of bound.actions) {
+      if (nextPlaying.has(clipName)) continue
+      // playing=false after a finished one-shot: keep the last frame (Explorer).
+      // stop() would snap to GLB bind pose — Winterfest join saw a closed door
+      // while synced States was already Open.
+      if (action.clampWhenFinished && action.time > 1e-4 && nextPlaying.size === 0) {
+        continue
+      }
       action.stop()
       action.enabled = false
       action.paused = false
@@ -686,21 +757,27 @@ export class AnimatorBridge {
       }
       const loop = state.loop !== false
       const weight = state.weight ?? 1
-      action.enabled = true
-      action.paused = false
       action.setEffectiveWeight(weight)
       action.setEffectiveTimeScale(state.speed ?? 1)
+      if (state.playing === false) continue
+
+      action.enabled = true
       action.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity)
       action.clampWhenFinished = !loop
-      if (state.playing !== false) {
-        // One-shots (Spring flower mesh scale tracks, doors): always start at t=0 even when
-        // shouldReset is omitted — otherwise re-bind can sit at clamp end (rest scale ~0.003).
-        // Default autoplay loops also reset on first apply so fire/FX don't sit on a dead
-        // keyframe after a deferred near-camera bind (ABC fireparticles rest scale ~0.001).
-        if (state.shouldReset || !loop || usingDefaultAutoPlay) action.reset()
+      const rising = !prevPlaying.has(clipName)
+      if (!loop && (joinWindow || !bound.hasAppliedStatesOnce)) {
+        // Late join / first bind: the clip already finished on the network.
+        // Playing from t=0 would replay Open; bind pose is Closed.
+        seekActionToEnd(action)
+      } else if (rising || state.shouldReset || usingDefaultAutoPlay) {
+        action.paused = false
+        action.reset()
         action.play()
-        playingClips.push(clipName)
+      } else {
+        action.paused = false
+        action.play()
       }
+      playingClips.push(clipName)
     }
 
     if (missingClips.length) {
@@ -718,6 +795,8 @@ export class AnimatorBridge {
       )
     }
     bound.lastAppliedSignature = stateSignature
+    bound.lastPlayingClips = nextPlaying
+    bound.hasAppliedStatesOnce = true
     // Looping-only decorative: no PART; rigid also share one mixer sample across clones.
     bound.loopingOnly =
       playingClips.length > 0 &&
@@ -996,6 +1075,9 @@ export class AnimatorBridge {
         shareableLooping: false,
         partSettleUntil: undefined,
         partFinishedHooked: false,
+        boundAt: performance.now(),
+        lastPlayingClips: new Set(),
+        hasAppliedStatesOnce: false,
         lastPresentGen: 0,
         cullCenter: new THREE.Vector3(),
         cullRadius: FRUSTUM_EXPAND_M,
@@ -1132,10 +1214,13 @@ export class AnimatorBridge {
     // Door open/close CRDT often lands between async sync ticks — apply dirty before sample.
     if (view) this.applyDirtyBoundStates(view)
 
-    // Present rAF: PART hulls every frame + in-view looping props (shared-hash).
+    // Present rAF: PART hulls every frame + looping décor.
+    // Play's player frame always comes here (`ridingOnly` / presentDecor) — it must
+    // honor full-rate. Falling through to the loop below never happens in play.
     if (opts?.partOnly || opts?.presentDecor) {
       this.presentSampleGen++
       const now = performance.now()
+      const fullRate = primaryFullRateAnimators()
       let sampled = 0
       for (const [entity, entry] of this.entries) {
         if (!needsPartPhysxWork(entry, now) && !isPartPhysxCandidate(entry)) continue
@@ -1151,14 +1236,24 @@ export class AnimatorBridge {
         sampled++
       }
       if (opts?.presentDecor && sampleCtx) {
-        this.retryPendingBinds(2)
-        sampled += this.samplePresentDecoratives(delta, sampleCtx)
+        this.captureSampleCamera(sampleCtx)
+        if (fullRate) {
+          this.retryPendingBinds(MAX_DEFAULT_BINDS_FULL_RATE, sampleCtx)
+          sampled += this.sampleFullRateMixers(delta, { skipPresentSampled: true })
+        } else {
+          // Prefer GLBs the camera is looking at (zeppelin) over FIFO plaza flowers.
+          this.retryPendingBinds(6, sampleCtx)
+          sampled += this.samplePresentDecoratives(delta, sampleCtx)
+        }
       }
       this.lastStats = {
         ...this.lastStats,
         sampled,
         frameDt: delta,
-        displayFps: delta > 1e-6 ? 1 / delta : 0
+        displayFps: delta > 1e-6 ? 1 / delta : 0,
+        near: fullRate ? sampled : this.lastStats.near,
+        fair: fullRate ? 0 : this.lastStats.fair,
+        budget: fullRate ? sampled : this.lastStats.budget
       }
       return
     }
@@ -1212,50 +1307,16 @@ export class AnimatorBridge {
 
     // --- Full-rate primary path: every active mixer, every frame, full delta ---
     if (fullRate) {
-      let sampled = 0
-      let active = 0
-      const now = performance.now()
-      const skipPresent = opts?.skipPresentSampled === true
-      for (const [entity, entry] of this.entries) {
-        if (skipPresent && entry.lastPresentGen === this.presentSampleGen) {
-          entry.deferredSampleDt = 0
-          continue
-        }
-        if (entry.sleeping) {
-          entry.sleeping = false
-          entry.mixer.timeScale = 1
-          entry.deferredSampleDt = 0
-        }
-        const settleOnly =
-          !mixerHasActiveWork(entry) &&
-          entry.partSettleUntil != null &&
-          now < entry.partSettleUntil
-        if (!mixerHasActiveWork(entry) && !settleOnly) {
-          entry.deferredSampleDt = 0
-          continue
-        }
-        active++
-        entry.deferredSampleDt = 0
-        if (settleOnly) {
-          // Clip finished — hold end pose, still PART-cook hull to match visuals.
-          entry.mixer.update(0)
-          this.markShapeMotionAfterSample(entity, entry)
-          sampled++
-          continue
-        }
-        if (delta > 1e-8) {
-          entry.mixer.update(delta)
-          sampled++
-          this.markShapeMotionAfterSample(entity, entry)
-        }
-      }
+      const sampled = this.sampleFullRateMixers(delta, {
+        skipPresentSampled: opts?.skipPresentSampled === true
+      })
       this.prevFrameDt = delta
       const displayFps = delta > 1e-6 ? 1 / delta : 0
       this.lastStats = {
         bound: this.entries.size,
-        active,
+        active: sampled,
         sleeping: 0,
-        near: active,
+        near: sampled,
         fair: 0,
         sharedGroups: 0,
         sharedFanout: 0,
@@ -1302,10 +1363,13 @@ export class AnimatorBridge {
       entry.deferredSampleDt = 0
       // Looping decorative clips: wall-clock phase (shared-hash groups rejoin in sync).
       snapLoopingActionsToWallClock(entry, performance.now() / 1000)
-      // One-shots / doors: re-apply ECS Animator so end pose is correct after sleep.
+      // One-shots / doors: restore ECS pose only if the mixer lost the clip.
+      // forceApply+reset here restarted Door Open from bind (closed) on wake.
       if (!entry.shareableLooping && this.ecs.Animator.has(entity)) {
         const states = (this.ecs.Animator.get(entity).states ?? []) as readonly AnimatorStateView[]
-        this.applyStatesToEntry(entity, entry, states, entry.gltfSrc, false, true)
+        if (!mixerMatchesAppliedStates(entry, states)) {
+          this.applyStatesToEntry(entity, entry, states, entry.gltfSrc, false, false)
+        }
         entry.mixer.update(0)
       } else {
         entry.mixer.update(0)
@@ -1588,10 +1652,87 @@ export class AnimatorBridge {
    * Present: finish a few already-pending mixer binds. Do not scan every
    * static-no-clip GLB — that promoted the whole plaza on rAF (~1 fps).
    */
-  private retryPendingBinds(cap: number): void {
+  /**
+   * Every bound mixer with active work, no frustum / distance skip.
+   * Play present (`ridingOnly`) must call this when full-rate is on — that path
+   * never reaches the later `if (fullRate)` block.
+   */
+  private sampleFullRateMixers(
+    delta: number,
+    opts?: { skipPresentSampled?: boolean }
+  ): number {
+    const now = performance.now()
+    const skipPresent = opts?.skipPresentSampled === true
+    let sampled = 0
+    for (const [entity, entry] of this.entries) {
+      if (skipPresent && entry.lastPresentGen === this.presentSampleGen) {
+        entry.deferredSampleDt = 0
+        continue
+      }
+      if (entry.sleeping) {
+        entry.sleeping = false
+        entry.mixer.timeScale = 1
+        entry.deferredSampleDt = 0
+      }
+      const settleOnly =
+        !mixerHasActiveWork(entry) &&
+        entry.partSettleUntil != null &&
+        now < entry.partSettleUntil
+      if (!mixerHasActiveWork(entry) && !settleOnly) {
+        entry.deferredSampleDt = 0
+        continue
+      }
+      entry.deferredSampleDt = 0
+      if (settleOnly) {
+        entry.mixer.update(0)
+        this.markShapeMotionAfterSample(entity, entry)
+        entry.lastPresentGen = this.presentSampleGen
+        sampled++
+        continue
+      }
+      if (delta > 1e-8) {
+        entry.mixer.update(delta)
+        this.markShapeMotionAfterSample(entity, entry)
+        entry.lastPresentGen = this.presentSampleGen
+        sampled++
+      }
+    }
+    return sampled
+  }
+
+  private captureSampleCamera(sampleCtx: AnimatorSampleContext): void {
+    sampleCtx.camera.updateMatrixWorld(true)
+    _camPos.setFromMatrixPosition(sampleCtx.camera.matrixWorld)
+    _projScreen.multiplyMatrices(
+      sampleCtx.camera.projectionMatrix,
+      sampleCtx.camera.matrixWorldInverse
+    )
+    _frustum.setFromProjectionMatrix(_projScreen)
+  }
+
+  private objectInSampleFrustum(obj: THREE.Object3D, radiusM: number): boolean {
+    obj.updateWorldMatrix(true, false)
+    _worldPos.setFromMatrixPosition(obj.matrixWorld)
+    _sphere.center.copy(_worldPos)
+    _sphere.radius = radiusM
+    return _frustum.intersectsSphere(_sphere)
+  }
+
+  private retryPendingBinds(cap: number, sampleCtx?: AnimatorSampleContext): void {
     if (cap <= 0) return
+    const nodes = this.getNodes()
+    let pending = [...this.pendingBind]
+    if (sampleCtx && nodes && pending.length > cap) {
+      pending.sort((a, b) => {
+        const na = nodes.get(a)
+        const nb = nodes.get(b)
+        const ia = na && this.objectInSampleFrustum(na, 24) ? 0 : 1
+        const ib = nb && this.objectInSampleFrustum(nb, 24) ? 0 : 1
+        return ia - ib
+      })
+    }
     let bound = 0
-    for (const entity of [...this.pendingBind]) {
+    for (const entity of pending) {
       if (bound >= cap) return
       if (this.entries.has(entity)) {
         this.pendingBind.delete(entity)
@@ -1613,13 +1754,7 @@ export class AnimatorBridge {
    */
   private samplePresentDecoratives(delta: number, sampleCtx: AnimatorSampleContext): number {
     if (delta <= 1e-8) return 0
-    sampleCtx.camera.updateMatrixWorld(true)
-    _camPos.setFromMatrixPosition(sampleCtx.camera.matrixWorld)
-    _projScreen.multiplyMatrices(
-      sampleCtx.camera.projectionMatrix,
-      sampleCtx.camera.matrixWorldInverse
-    )
-    _frustum.setFromProjectionMatrix(_projScreen)
+    this.captureSampleCamera(sampleCtx)
 
     type DecorCand = { entity: Entity; entry: AnimEntry; distSq: number }
     const shareable: DecorCand[] = []
@@ -1722,17 +1857,18 @@ export class AnimatorBridge {
     entry: AnimEntry,
     _ctx: AnimatorSampleContext
   ): { priority: number; distSq: number; inFrustum: boolean } {
-    // Draw visual world is written every present. Pose matrixWorld is only
-    // refreshed in renderMainPass *after* this sample — using it slept plaza
-    // props at the origin (~60 m off-frustum) so they only advanced on async
-    // with a 16 ms delta → ~⅓ speed.
+    // Present samples *before* extract writes draw-visual matrixWorld. Pose local
+    // TRS is already current (Tween this pump). Flush pose world here — using a
+    // draw visual still at the origin slept the zeppelin (~60 m off-frustum) so
+    // looking up never woke the props.
     const pose =
       entry.poseNode ?? (entry.root.userData.dclPoseNode as THREE.Object3D | undefined)
+    if (pose) pose.updateWorldMatrix(true, false)
     const visual = entry.root
-    const visualAlive =
-      visual.matrixWorld.elements[12] !== 0 ||
-      visual.matrixWorld.elements[13] !== 0 ||
-      visual.matrixWorld.elements[14] !== 0
+    const visTx = visual.matrixWorld.elements[12]
+    const visTy = visual.matrixWorld.elements[13]
+    const visTz = visual.matrixWorld.elements[14]
+    const visualAlive = visTx !== 0 || visTy !== 0 || visTz !== 0
     const anchor = visualAlive ? visual : (pose ?? visual)
     _worldPos.setFromMatrixPosition(anchor.matrixWorld)
 
@@ -1754,6 +1890,12 @@ export class AnimatorBridge {
     _sphere.radius =
       (entry.cullRadius > 0 ? entry.cullRadius : FRUSTUM_EXPAND_M) * worldScale + FRUSTUM_EXPAND_M
     let inFrustum = _frustum.intersectsSphere(_sphere)
+    if (!inFrustum && pose) {
+      _worldPos.setFromMatrixPosition(pose.matrixWorld)
+      _sphere.center.copy(_worldPos)
+      _sphere.radius = Math.max(24, (entry.cullRadius > 0 ? entry.cullRadius : FRUSTUM_EXPAND_M) * worldScale)
+      inFrustum = _frustum.intersectsSphere(_sphere)
+    }
     // In-flight: current travel-node locals (not the whole clip AABB).
     if (!inFrustum && entry.travelNodes.length) {
       _sphere.radius = FRUSTUM_EXPAND_M * worldScale

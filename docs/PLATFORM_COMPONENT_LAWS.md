@@ -38,7 +38,7 @@
 
 | Rule | Status |
 |------|--------|
-| **BM_Y / X\|Y:** `yaw = atan2(cam.x − worldPos.x, cam.z − worldPos.z)` in **display** space | Verified — original bridge + aefccaf |
+| **BM_Y / X\|Y:** yaw-only BM_ALL: `atan2(cam.x − pos.x, cam.z − pos.z) + π` so Three **−Z** faces the camera | Verified — Gulp TextShape names; matches lookAt azimuth |
 | **BM_ALL:** Three.js **lookAt** worldPos → camera (object **−Z** toward camera) | Verified — original bridge; Three convention |
 | Sample **world** position of the entity (parent chain), not local `obj.position` | Client convention (required for parented roots) |
 | Write rotation as **parent-local** quaternion | Client convention (hierarchy) |
@@ -121,11 +121,13 @@ Client must run **platform Billboard + plane + Visibility**. No GP-specific Bill
 | Do **not** invent scale rewrites on show/hide | Forbidden (broke missed-it Scale tweens) |
 | Do **not** force-show fishing rods ignoring Visibility | Forbidden (reverted) |
 | Visibility puts must not starve behind slow peel (same class as Transform motion) | Client COD drain policy |
-| Visibility show/hide on PE / GltfContainer must rebuild pointer targets | Platform — hidden visible-class meshes are omitted from the raycast list |
+| Visibility hides drawing, not PointerEvents / colliders | Platform — Creator Hub `click_area` is `visible: false` + `CL_POINTER`; scale collapse (plaza LO() 0.001) is the PE-drop signal |
 | Do **not** cull PE meshes by player↔Transform origin (or any keep-radius) | Forbidden — Explorer raycasts the PE set; `maxDistance` is the only range gate |
 | World-mesh PET: host inject writes 1063, then **one** serialized `eng.update` this edge | Verified — Bevy/Explorer: write then tick. Asset-pack `on_click` is `getInputCommand` **this frame**. Do not queue-until-play-frame; do not stack two updates on one edge |
 | World-mesh Animator (1042) CRDT from that tick must apply on main **this edge** | Verified — scene-UI holds non-UI until `uiEntities`; world-mesh never sends that. Dropping the buffer on deliver-done left Door Open on the worker mixer only |
 | InstancedMesh lives off the pose graph — hide = zero-scale instance slot (`writeMatrix`) | Verified — `SceneGltfInstancer` |
+| First GPU-instance write must see pose Visibility (LO() hides plaza pond benches, then GLB attaches) | Platform — apply authored vis **before** `instancer.attach` |
+| `writeWorldMatrix` (billboard extract) must not unhide a `visible=false` pose | Platform |
 | InstancedMesh is for **repeated low-leaf** props (≤12 render leaves). High-leaf kits clone | Platform — `templateIsInstancable` |
 | First clone of a hash that cannot instance is not idle-queued | Platform — runtime-created unique GLBs |
 
@@ -145,7 +147,8 @@ Client must run **platform Billboard + plane + Visibility**. No GP-specific Bill
 
 | Rule | Status |
 |------|--------|
-| Try the real URL first; on `TypeError` (CORS / failed to fetch) retry proxy and remember the host | Platform |
+| Try the real URL first; on `TypeError` (CORS / failed to fetch) or HTTP 404 retry `/api/scene-http` | Platform |
+| Remember the host only when the proxy recovers (later polls skip the direct miss) | Platform |
 | Do **not** proxy-first — server IP 403s origins the browser is allowed to read | Forbidden |
 | Do **not** special-case scene filenames or sheet names | Forbidden |
 
@@ -167,6 +170,25 @@ Plaza `water_surface.glb` is a collider-only disk + sibling `water.png`. Pointer
 
 ---
 
+## 3b2. GltfContainer collision masks (ADR-215)
+
+### Verified (SDK docs + ADR-215 + `@dcl/ecs` PBGltfContainer)
+
+| Rule | Source |
+|------|--------|
+| `visibleMeshesCollisionMask` omitted → **0** (visible art is not physics/pointer) | ADR-215 / docs |
+| `invisibleMeshesCollisionMask` omitted → **CL_PHYSICS \| CL_POINTER** (`*_collider` hulls) | ADR-215 / docs |
+| Explicit **0** is CL_NONE — not “use the default”. Protobuf encodes 0; do not `|| default` | `@dcl/ecs` optional uint32 |
+| Inv-class = mesh or ancestor name contains `_collider` (case insensitive) | ADR-215 |
+| Inv mask with CL_PHYSICS and **zero** `_collider` meshes → **no actor** | docs: assign vis mask to make vis art collide |
+| Material name (`Collider_MAT`) / exporter name (`Cube`) does **not** make a mesh inv-class | ADR-215 name rule only |
+
+### Client law
+
+A decorative waterfall GLB whose only node is `Cube` (no `_collider`) must not cook PhysX even when Creator Hub left `invisibleMeshesCollisionMask: 3` (default). Walk-blockers on that art are vis-mask physics or a different entity (MeshCollider / invisible-wall vis=2), never an invented Cube hull.
+
+---
+
 ## 3d. GltfNodeModifiers (path + Texture.Common)
 
 ### Verified (SDK + Explorer)
@@ -185,7 +207,31 @@ Plaza `water_surface.glb` is a collider-only disk + sibling `water.png`. Pointer
 | Merge static leaves only for generic exporter names — never authored names | Platform — named nodes are modifier targets |
 | Keep retrying apply until textures land — do not drop pending on first miss | Platform |
 | Authored glTF UVs stay as-exported — **no geometry U flip** on Texture.Common cards | Platform — Explorer uses the GLB as-is |
-| VideoTexture is shared (`flipY=false`). Per-mesh geometry V only when the video is **bound** | Platform — first unlit pass must not mutate UVs |
+| VideoTexture is shared (`flipY=false`). Per-mesh geometry V only when bound **and** authored V=0 is at mesh bottom | Platform — Creator Hub `video_player.glb` already has V=0 at top (Pink Oasis / Los Cat). MeshRenderer planes (neat) use flipY=true |
+
+---
+
+## 3e. VideoPlayer + VideoTexture
+
+### Verified (Explorer desktop + scene bundles)
+
+| Rule | Source |
+|------|--------|
+| `VideoPlayer.playing=true` decodes `src` (mp4 / HLS / LiveKit) onto materials that reference `Texture.Video({ videoPlayerEntity })` | `@dcl/ecs` VideoPlayer + Material |
+| Creator Hub `video_player.glb` (Burj, Pink Oasis, Los Cat) ships an authored albedo | scene GLB |
+| Explorer **keeps that albedo until a decoded video frame exists** | Explorer desktop — Burj `-148,97` has no black quad in the camera while HLS buffers |
+| `playing=false` / natural end / empty src → black screen (theatre idle / Admin deactivate) | Explorer |
+| Occupancy / FocusOwner media pause **pauses decode** and keeps the last frame (or the GLB if none) | this client — painting black on occupancy flashed Burj `place_on_camera` in the face |
+
+### Client implementation law
+
+| Rule | Status |
+|------|--------|
+| `getTexture` is `null` until `canAttachTexture` (painted canvas frame, or LiveKit drawable, or ECS idle black) | Platform |
+| Do **not** bind a 1×1 black canvas on decoder create / HLS load / occupancy pause | **Forbidden** |
+| `Material` / `GltfNodeModifiers` skip apply while video is unresolved — do not replace GLB maps with map-less unlit/PBR | Platform |
+| Occupancy `setMediaEnabled(false)` pauses the element; `ThrottledVideoTexture.stop` does **not** `clearToBlack` | Platform |
+| First `drawImage` of decoded pixels fires `onTextureReady` → then bind the canvas map | Platform |
 
 ---
 

@@ -18,6 +18,7 @@ import { deleteGlbBytes, normalizeGlbCacheKey, readGlbBytes } from './glbByteCac
 import { fetchGlbBytesOffThread, disposeGlbFetchPool } from './glbFetchPool'
 import { parseGlbOffThread, disposeGlbParsePool } from './glbParsePool'
 import { isGlbOffThreadParseEnabled } from './gltfWorkerTransfer'
+import { flattenGltf, inflateGltf } from './gltfTransferable'
 import { prepareGlbBytes } from './glbSanitizer'
 import { clampObject3DTextures, clampTextureSize } from './clampTextureSize'
 import { markSharedAssetResources } from './sharedAsset'
@@ -34,6 +35,10 @@ import {
   preferFetchTextureLoad,
   proxiedTextureUrl
 } from './textureProxy'
+import {
+  installGltfSidecarTextureHandler,
+  registerGltfSidecarTexturePlugin
+} from './gltfSidecarTexture'
 
 const LANDSCAPE_CACHE_SUFFIX = '#landscape'
 const WEARABLE_CACHE_SUFFIX = '#wearable'
@@ -88,10 +93,9 @@ export function disposeSessionAssetCache(): void {
 const prefetchedSceneIds = new Set<string>()
 
 /**
- * Warm only GLB **bytes** into IndexedDB (worker pool). Never bulk-decode PNGs/MP3s
- * (TextureLoader on main for ~200 PNGs → 70+ rAF violations / ~1fps). Never
- * transfer all IDB-hit buffers onto main just to drop them (GC thrash).
- * Textures/audio load on demand at attach.
+ * Warm GLB **and PNG/JPG bytes** into IndexedDB with the scene manifest.
+ * Decode still happens at attach (TextureLoader); bytes must be local so
+ * neighbor meshes are textured on first appear — not beige-then-later.
  */
 export function prefetchSceneManifestAssets(cache: AssetCache, scene: ResolvedScene): void {
   const sceneKey = scene.entityId ?? scene.title
@@ -102,34 +106,37 @@ export function prefetchSceneManifestAssets(cache: AssetCache, scene: ResolvedSc
 
   if (sceneKey) prefetchedSceneIds.add(sceneKey)
 
+  const byteJobs = [...glbs, ...textures]
   const parts: string[] = []
-  if (textures.length) parts.push(`${textures.length} PNG(s) on-demand`)
+  if (textures.length) parts.push(`${textures.length} PNG(s) with GLBs`)
   if (audio.length) parts.push(`${audio.length} MP3(s) on-demand`)
 
-  if (!glbs.length) {
+  if (!byteJobs.length) {
     console.info(`[assets] scene manifest — ${parts.join(', ') || 'empty'}`)
     return
   }
 
   void (async () => {
     try {
-      if (await isSceneBytesWarm(scene)) {
+      const glbsWarm = await isSceneBytesWarm(scene)
+      const jobs = glbsWarm ? textures : byteJobs
+      if (!jobs.length) {
         console.info(
           `[assets] IDB warm — skip main-thread transfer of ${glbs.length} GLB(s)` +
             (parts.length ? `; ${parts.join(', ')}` : '')
         )
         return
       }
-      // Cold: parallel IDB warm (worker pool is 6–8). Was concurrency=4 → multi-minute plaza loads.
       const CONCURRENCY = 12
       console.info(
-        `[assets] prefetching ${glbs.length} GLB(s) into IDB (concurrency=${CONCURRENCY})` +
-          (parts.length ? `; ${parts.join(', ')}` : '')
+        `[assets] prefetching ${glbsWarm ? 0 : glbs.length} GLB(s)` +
+          (textures.length ? ` + ${textures.length} PNG(s)` : '') +
+          ` into IDB (concurrency=${CONCURRENCY})` +
+          (audio.length ? `; ${audio.length} MP3(s) on-demand` : '')
       )
-      for (let i = 0; i < glbs.length; i += CONCURRENCY) {
-        const batch = glbs.slice(i, i + CONCURRENCY)
+      for (let i = 0; i < jobs.length; i += CONCURRENCY) {
+        const batch = jobs.slice(i, i + CONCURRENCY)
         await Promise.all(batch.map(({ url, hash }) => cache.prefetchBytesSettled(url, hash)))
-        // Yield so rAF / UI can run between batches.
         await new Promise<void>((r) => setTimeout(r, 0))
       }
     } catch {
@@ -178,11 +185,14 @@ export class AssetCache {
   constructor() {
     const manager = new THREE.LoadingManager()
     manager.setURLModifier((url) => resolveDclAssetUrl(url))
+    // Image extensions only — GLTFLoader asks getHandler() for image URIs, not .bin.
+    installGltfSidecarTextureHandler(manager)
 
     const draco = new DRACOLoader()
     draco.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/')
     this.loader = new GLTFLoader(manager)
     this.loader.setDRACOLoader(draco)
+    registerGltfSidecarTexturePlugin(this.loader)
     this.textureLoader = new THREE.TextureLoader(manager)
   }
 
@@ -536,6 +546,20 @@ export class AssetCache {
     if (next) next()
   }
 
+  /**
+   * Same pipeline as the parse worker: GLTFLoader.parseAsync → flattenGltf → inflateGltf.
+   * Runs on this thread so Apple/WebKit never transfers ImageBitmaps across workers
+   * (that upload path paints solid white). Skeleton bind matches desktop inflate.
+   */
+  private async rebuildGltfOnMainThread(
+    buffer: ArrayBuffer,
+    resourcePath: string
+  ): Promise<{ scene: THREE.Group; animations: THREE.AnimationClip[] }> {
+    const parsed = await this.loader.parseAsync(buffer, resourcePath)
+    const payload = await flattenGltf(parsed.scene, parsed.animations ?? [])
+    return inflateGltf(payload)
+  }
+
   private async fetchAndParseGltf(url: string, cacheKey: string, quiet?: boolean) {
     let buffer = await this.resolveGlbBytes(url, cacheKey, quiet)
 
@@ -551,18 +575,19 @@ export class AssetCache {
           const parsed = await parseGlbOffThread(buffer, resourcePath, buildParseUrlMappings())
           result = { scene: parsed.scene, animations: parsed.animations }
         } catch (err) {
-          // Worker init / flatten miss — one parse on main, then keep trying worker.
+          // Worker init / flatten miss — same path as Apple: parse + flatten + inflate on main.
           if (!this.loggedWorkerFallback) {
             this.loggedWorkerFallback = true
             console.warn(
-              '[assets] GLB parse worker failed — main-thread fallback',
+              '[assets] GLB parse worker failed — main-thread flatten/inflate',
               err instanceof Error ? err.message : err
             )
           }
-          result = await this.loader.parseAsync(buffer, resourcePath)
+          result = await this.rebuildGltfOnMainThread(buffer, resourcePath)
         }
       } else {
-        result = await this.loader.parseAsync(buffer, resourcePath)
+        // Apple / Brave / ?mainglb: exact same flatten→inflate as the worker, no transfer.
+        result = await this.rebuildGltfOnMainThread(buffer, resourcePath)
       }
       clampObject3DTextures(result.scene)
       await new Promise<void>((r) => setTimeout(r, 0))

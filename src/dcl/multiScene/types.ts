@@ -1,10 +1,15 @@
 /**
  * Multi-scene FocusOwner + LOD rings (product model):
- * - primary: parcel under feet — **FocusOwner** (UI, audio, video, inputs, locomotion)
- * - secondary (live): muted workers when **player** ≤16m of that scene; keep until 80m
- *   (hard-capped; no media/UI). Stand-on / sticky demote still promote-safe.
+ * - primary: parcel under feet — occupancy FocusOwner (UI, audio, video, inputs)
+ * - live guest (secondary): muted worker for a nearby occupied scene. GLBs attach
+ *   during the loading overlay. Scripts stay muted until FocusOwner.
+ * - neighbor shells: composite GLBs with no worker — background fill after discover.
+ * - tertiary: leftover meshes after you walk away (scripts off). Background.
  * - tertiary: Scene Distance disc — roads, empty land, composite shells (no worker)
- * - pe: portable experience / smart wearable (own UI root; arbiter below primary)
+ * - pe: portable experience / smart wearable — **a scene whose occupancy is always
+ *   true**. Same runtime as primary; never demotes to secondary/tertiary; runs
+ *   everywhere the avatar goes. Own UI root. Privileged channels lose to the
+ *   occupancy world scene (arbiter primary 100 > pe 50).
  *
  * Warm/visual band = user Scene Distance (`sceneLoadRadiusM`). Live workers use
  * player enter/keep radii (caps.ts) — warm-all ≠ live-all.
@@ -14,9 +19,10 @@ export type SceneWorkerKind = 'primary' | 'secondary' | 'pe'
 
 /**
  * Focus policy for a SceneScriptSystem.
- * - primary: media on, UI may show (play-chrome gates visibility)
+ * - primary: occupancy under feet — media on, UI may show (play-chrome gates visibility)
  * - secondary: hard mute + video stop + UI never shown
- * - pe: media on; UI owned by PortableExperienceManager
+ * - pe: occupancy always true — media on; UI owned by PortableExperienceManager
+ *   (`pe-ui-root`). Never muted by parcel grant/revoke.
  */
 export type FocusPolicy = 'primary' | 'secondary' | 'pe'
 

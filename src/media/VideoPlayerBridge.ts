@@ -33,6 +33,11 @@ type DecoderEntry = {
   lastLength: number
   /** Wall-clock of last VideoEvent append — throttle offset spam to worker. */
   lastEventAtMs: number
+  /**
+   * Last material-bind key (`play|idle:src`). Canvas uploads update in place —
+   * rebinding every spec/frame walk walked every scene entity.
+   */
+  materialsBoundKey: string
 }
 
 /** ECS VideoPlayer → HTML decoders (one per playing entity); grow-only VideoEvent back to mirror. */
@@ -110,9 +115,8 @@ export class VideoPlayerBridge {
   }
 
   /**
-   * FocusOwner media gate. false → pause decode (keep texture on the mesh);
-   * true → resume. Disposing on occupancy hold left plaza HLS audio-only after rebind.
-   * Never mutates ECS VideoPlayer.playing.
+   * FocusOwner media gate. false → pause decode (keep last frame, or GLB if none);
+   * true → resume. Never mutates ECS VideoPlayer.playing. Do not paint black on hold.
    */
   setMediaEnabled(enabled: boolean): void {
     if (this.mediaEnabled === enabled) return
@@ -129,8 +133,9 @@ export class VideoPlayerBridge {
   getTexture(entity: Entity): THREE.Texture | null {
     const entry = this.decoders.get(entity)
     if (!entry) return null
-    // Always bind the canvas map (black idle / loading, or live frames).
-    // Gating on canAttachTexture left materials with null map → default white albedo.
+    // Explorer keeps authored GLB albedo until a decoded frame exists.
+    // Binding a 1×1 black canvas on decoder create is what flashed Burj in the camera.
+    if (!entry.player.canAttachTexture()) return null
     return entry.player.texture
   }
 
@@ -220,7 +225,7 @@ export class VideoPlayerBridge {
         if (!entry.player.isHoldingAtEnd()) continue
         entry.player.replayFromUserClick()
         entry.lastAppliedPlaying = true
-        this.onTextureReady?.(entity)
+        this.notifyMaterialsForVideo(entity, true)
         userToggleConsumed = true
         break
       }
@@ -326,7 +331,7 @@ export class VideoPlayerBridge {
     player.setUserGestureUnlocked(this.userGestureUnlocked, {
       allowSound: this.soundUnlocked
     })
-    player.onFrameReady = () => this.onTextureReady?.(entity)
+    player.onFrameReady = () => this.notifyMaterialsForVideo(entity)
     player.onNaturalEnd = () => this.syncPlayingToEcs(entity, false)
     player.onReplayStarted = () => this.syncPlayingToEcs(entity, true)
     this.decoders.set(entity, {
@@ -340,9 +345,23 @@ export class VideoPlayerBridge {
       lastState: VS_NONE,
       lastOffset: -1,
       lastLength: -1,
-      lastEventAtMs: 0
+      lastEventAtMs: 0,
+      materialsBoundKey: ''
     })
-    // Bind black placeholder immediately so video screens never render white.
+  }
+
+  /**
+   * Bind VideoTexture onto Material / GltfNodeModifiers once per play/idle+src.
+   * Later decoded frames already sit on the same CanvasTexture (`needsUpdate`).
+   */
+  private notifyMaterialsForVideo(entity: Entity, force = false): void {
+    const entry = this.decoders.get(entity)
+    if (!entry) return
+    if (!force && !entry.player.canAttachTexture()) return
+    const playing = entry.lastAppliedPlaying !== false && !entry.player.isHoldingAtEnd()
+    const key = `${playing ? 'play' : 'idle'}:${entry.lastSrc}`
+    if (!force && entry.materialsBoundKey === key) return
+    entry.materialsBoundKey = key
     this.onTextureReady?.(entity)
   }
 
@@ -388,6 +407,7 @@ export class VideoPlayerBridge {
     if (srcChanged) {
       entry.lastSrc = src
       entry.lastSpecKey = ''
+      entry.materialsBoundKey = ''
       // Explorer videoEventsSystem: fire immediately on source swap so scene onChange /
       // registerVideoEventsEntity sees LOADING (or NONE) before the next decoder state.
       entry.lastState = src ? VS_LOADING : VS_NONE
@@ -409,8 +429,8 @@ export class VideoPlayerBridge {
     entry.lastSpecKey = specKey
     entry.lastAppliedPlaying = ecsPlaying
     entry.player.applySpec(spec, { fromUserToggle, liveKitRemoteLive })
-    // Rebind materials after src swap / idle black / first frame.
-    this.onTextureReady?.(entity)
+    // Rebind only when a drawable frame (or ECS idle black) is actually attachable.
+    this.notifyMaterialsForVideo(entity, fromUserToggle)
     return fromUserToggle && (playingChanged || entry.player.isHoldingAtEnd())
   }
 

@@ -1,3 +1,6 @@
+import { isHandheldDevice } from './ui/touchPlayLayout'
+import { renderQuality, SCENE_LOAD_RADIUS_MOBILE_LITE_M } from '../rendering/RenderQualitySettings'
+
 function readSearchParams(): URLSearchParams | null {
   if (typeof window === 'undefined') return null
   return new URLSearchParams(window.location.search)
@@ -69,18 +72,44 @@ export function wantConsoleLogs(): boolean {
 }
 
 /**
+ * Phone or iPad AOI-lite candidate: handheld profile and not `?aoi` / `?withaoi`.
+ * `?nomobile` / `?notouch` skip the profile (via isHandheldDevice).
+ */
+export function isHandheldAoiLite(): boolean {
+  const params = readSearchParams()
+  if (params?.has('aoi') || params?.has('withaoi')) return false
+  return isHandheldDevice()
+}
+
+/** @deprecated Use {@link isHandheldAoiLite} — phones and iPad share the lite path. */
+export function isPhoneAoiLite(): boolean {
+  return isHandheldAoiLite()
+}
+
+/**
  * Kill multi-scene AOI: no neighbor visuals, live secondaries, or promote.
  * Primary scene only. Use for CBD isolation: `?noaoi=1`.
  *
  * - Default: AOI **ON** (when Scene Distance > 0)
  * - `?noaoi` / `?skipaoi` → force off
  * - `?aoi` / `?withaoi` → force on (still needs Scene Distance > 0)
+ * - Handheld (phone or iPad): skip while Scene Distance is left at the auto
+ *   lite default (16 m). Raising the slider this session undoes skip. Walk stays
+ *   open (do not set the slider to 0).
  */
 export function skipAoiNeighbors(): boolean {
   const params = readSearchParams()
   if (params?.has('aoi') || params?.has('withaoi')) return false
   if (params?.has('noaoi') || params?.has('skipaoi')) return true
-  return false
+  if (!isHandheldAoiLite()) return false
+  // Auto-skip only while they leave radius at the auto-reduced default.
+  return renderQuality.getSceneLoadRadiusM() <= SCENE_LOAD_RADIUS_MOBILE_LITE_M
+}
+
+/** `?aoi` / `?withaoi` — keep neighbor AOI (still Low + live cap 1). */
+export function isAoiForcedOn(): boolean {
+  const params = readSearchParams()
+  return !!(params?.has('aoi') || params?.has('withaoi'))
 }
 
 /**

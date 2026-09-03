@@ -1,54 +1,31 @@
 /**
- * Scene-bundle scan for client ability VFX (`tjs.vfx:*`).
- * Only ids the running script actually names — never a global warm list.
+ * Ability warm list from mirrored `tjs` ECS rows — never a global warm list.
  */
-import { expandScriptSource, shaderToVfxId } from './shaderTags'
+import type { MirrorComponents } from '../bridge/mirrorComponents'
+import type { ProjectionView } from '../bridge/ProjectionView'
+import type { TjsValue } from '../dcl/ecs/tjsComponent'
+import { normalizeAbilityVfxId } from './tjsVfxIds'
 
-const KIND_PREFIX = 'tjs.vfx:'
-
-export function normalizeAbilityVfxId(raw: string): string | null {
-  const key = raw.trim().toLowerCase()
-  if (!key) return null
-  return shaderToVfxId(key)
+export function sceneUsesTjsComponent(
+  view: ProjectionView,
+  Tjs: MirrorComponents['Tjs']
+): boolean {
+  for (const [_entity] of view.getEntitiesWith(Tjs)) return true
+  return false
 }
 
-/** True when this bundle talks to the client tag VFX host. */
-export function sceneBundleMentionsAbilityVfx(source: string): boolean {
-  return (
-    source.includes(KIND_PREFIX) ||
-    source.includes('tjs:shader:') ||
-    source.includes('tjs.shader:') ||
-    source.includes('tjs.shader(') ||
-    /\/\/[^\n]*\btjs\.[a-zA-Z]/.test(source)
-  )
-}
-
-/**
- * Ids to warm for this bundle. Empty → do not boot AbilityManager.
- * Handles both `tjs.vfx:ice` literals and `tjs.vfx:${kind}` + `'ice'` splits.
- */
-export function discoverAbilityVfxIds(source: string): string[] {
-  source = expandScriptSource(source)
-  if (!source || !sceneBundleMentionsAbilityVfx(source)) return []
-
+/** Shader kind names to warm for this scene. Empty → do not boot AbilityManager. */
+export function discoverAbilityVfxIds(
+  view: ProjectionView,
+  Tjs: MirrorComponents['Tjs']
+): string[] {
   const found = new Set<string>()
-  const tagged = source.matchAll(/tjs\.vfx:([a-z0-9_-]+)/gi)
-  for (const m of tagged) {
-    const id = normalizeAbilityVfxId(m[1] ?? '')
+  for (const [entity] of view.getEntitiesWith(Tjs)) {
+    void entity
+    const row = Tjs.getOrNull(entity) as TjsValue | null
+    if (!row || row.kind !== 'shader') continue
+    const id = normalizeAbilityVfxId(row.name)
     if (id) found.add(id)
   }
-  const decls = source.matchAll(/tjs\.shader\s*\(\s*([a-zA-Z][\w-]*)\s*(?:,|\))/g)
-  for (const m of decls) {
-    const id = normalizeAbilityVfxId(m[1] ?? '')
-    if (id) found.add(id)
-  }
-  const calls = source.matchAll(/\/\/[^\n]*\btjs\.([a-zA-Z][\w-]*)\s*\(/g)
-  for (const m of calls) {
-    const fn = (m[1] ?? '').toLowerCase()
-    if (fn === 'shader') continue
-    const id = normalizeAbilityVfxId(fn)
-    if (id) found.add(id)
-  }
-
   return [...found]
 }

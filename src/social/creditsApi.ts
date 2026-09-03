@@ -2,11 +2,55 @@
  * Decentraland Credits Server API.
  * @see https://docs.decentraland.org/apis/apis/credits-server/credits
  * @see https://docs.decentraland.org/apis/apis/credits-server/seasons
+ *
+ * Same-origin only by default — credits.decentraland.org CORS rejects localhost
+ * and custom domains. Vite + nginx:
+ *   /api/credits/... → credits.decentraland.org/...
+ * Signed requests sign the upstream path (`/users/…`), then transport via the proxy.
  */
 
+import type { AuthIdentity } from '@dcl/crypto/dist/types'
+import signedFetch from 'decentraland-crypto-fetch'
+import { signedHeaderFactory } from 'decentraland-crypto-fetch/lib/factory'
+
+const CREDITS_PROXY = '/api/credits'
 const CREDITS_URL =
   (import.meta.env.VITE_CREDITS_URL as string | undefined)?.trim().replace(/\/$/, '') ||
-  'https://credits.decentraland.org'
+  CREDITS_PROXY
+
+const signedHeader = signedHeaderFactory()
+
+function creditsPath(pathAndQuery: string): string {
+  return pathAndQuery.startsWith('/') ? pathAndQuery : `/${pathAndQuery}`
+}
+
+function creditsTransport(pathAndQuery: string): string {
+  return `${CREDITS_URL}${creditsPath(pathAndQuery)}`
+}
+
+function creditsSignPath(pathAndQuery: string): string {
+  return creditsPath(pathAndQuery).split('?')[0]
+}
+
+function isProxiedCredits(): boolean {
+  return CREDITS_URL.startsWith('/')
+}
+
+async function creditsGet(pathAndQuery: string, identity?: AuthIdentity | null): Promise<Response> {
+  const transport = creditsTransport(pathAndQuery)
+  const headers: Record<string, string> = { Accept: 'application/json' }
+  if (identity) {
+    if (isProxiedCredits()) {
+      const signed = signedHeader(identity, 'GET', creditsSignPath(pathAndQuery), {}, headers)
+      signed.forEach((value, key) => {
+        headers[key] = value
+      })
+      return fetch(transport, { method: 'GET', headers })
+    }
+    return signedFetch(transport, { method: 'GET', identity, metadata: {} })
+  }
+  return fetch(transport, { method: 'GET', headers })
+}
 
 export const MARKETPLACE_URL =
   (import.meta.env.VITE_MARKETPLACE_URL as string | undefined)?.trim().replace(/\/$/, '') ||
@@ -25,9 +69,16 @@ export type UserCredit = {
   goalId?: string
 }
 
+export type ShopUsdBalance = {
+  balanceCents: number
+  credits: number
+}
+
 export type UserCreditsResponse = {
   credits: UserCredit[]
   totalCredits: number
+  /** New shop USD credits (1 credit = $0.10). Absent on older servers. */
+  usd?: ShopUsdBalance
 }
 
 export type SeasonInfo = {
@@ -98,12 +149,12 @@ function parseSeason(raw: unknown): SeasonInfo | null {
 }
 
 /**
- * GET /users/{address}/credits — public (no signed fetch).
- * Optional status filter: AVAILABLE | PARTIALLY_USED.
+ * GET /users/{address}/credits.
+ * Signed fetch when identity is present (shop `usd` block). Optional status filter.
  */
 export async function fetchUserCredits(
   address: string,
-  opts?: { status?: 'AVAILABLE' | 'PARTIALLY_USED' }
+  opts?: { status?: 'AVAILABLE' | 'PARTIALLY_USED'; identity?: AuthIdentity | null }
 ): Promise<FetchCreditsResult> {
   const addr = normalizeAddress(address)
   if (!addr) return { ok: false, status: 400, error: 'Invalid address' }
@@ -111,11 +162,11 @@ export async function fetchUserCredits(
   const params = new URLSearchParams()
   if (opts?.status) params.set('status', opts.status)
   const qs = params.toString()
-  const url = `${CREDITS_URL}/users/${addr}/credits${qs ? `?${qs}` : ''}`
+  const path = `/users/${addr}/credits${qs ? `?${qs}` : ''}`
 
   let res: Response
   try {
-    res = await fetch(url, { method: 'GET', headers: { Accept: 'application/json' } })
+    res = await creditsGet(path, opts?.identity)
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
     return { ok: false, status: 503, error: `credits_unreachable: ${detail}` }
@@ -158,15 +209,26 @@ export async function fetchUserCredits(
       ? (body as { totalCredits: number }).totalCredits
       : credits.reduce((s, c) => s + c.amount, 0)
 
-  return { ok: true, data: { credits, totalCredits } }
+  const usdRaw = body && typeof body === 'object' ? (body as { usd?: unknown }).usd : undefined
+  let usd: ShopUsdBalance | undefined
+  if (usdRaw && typeof usdRaw === 'object') {
+    const u = usdRaw as { balanceCents?: unknown; credits?: unknown }
+    if (typeof u.credits === 'number' && Number.isFinite(u.credits)) {
+      usd = {
+        balanceCents: typeof u.balanceCents === 'number' ? u.balanceCents : u.credits * 10,
+        credits: Math.floor(u.credits)
+      }
+    }
+  }
+
+  return { ok: true, data: { credits, totalCredits, usd } }
 }
 
 /** GET /seasons — past / current / next. */
 export async function fetchSeasons(): Promise<FetchSeasonsResult> {
-  const url = `${CREDITS_URL}/seasons`
   let res: Response
   try {
-    res = await fetch(url, { method: 'GET', headers: { Accept: 'application/json' } })
+    res = await creditsGet('/seasons')
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err)
     return { ok: false, status: 503, error: `seasons_unreachable: ${detail}` }

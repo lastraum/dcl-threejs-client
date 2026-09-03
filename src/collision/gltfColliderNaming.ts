@@ -30,3 +30,35 @@ export function isGltfVisibleClassMesh(mesh: THREE.Mesh, stopBefore?: THREE.Obje
   if (stopBefore && isGltfInvisibleColliderMesh(mesh, stopBefore)) return false
   return mesh.name.length > 0
 }
+
+/** ADR-215: every mesh is inv (`*_collider` name/ancestry) or vis (everything else, including unnamed). */
+export type GltfCollisionMeshClass = 'inv' | 'vis' | 'unnamed'
+
+/**
+ * Collision class for one GLB mesh. Explorer never invents physics on vis art
+ * just because `invisibleMeshesCollisionMask` has CL_PHYSICS — a waterfall Cube
+ * with vis=0 and no `_collider` node must not cook (parcel 126,104).
+ */
+export function classifyGltfCollisionMesh(
+  mesh: THREE.Mesh,
+  gltfRoot: THREE.Object3D
+): GltfCollisionMeshClass {
+  if (isGltfInvisibleColliderMesh(mesh, gltfRoot)) return 'inv'
+  if (isGltfVisibleClassMesh(mesh, gltfRoot)) return 'vis'
+  return 'unnamed'
+}
+
+/** True when this mesh should become a PhysX hull for the entity's GltfContainer masks. */
+export function gltfMeshContributesPhysics(
+  mesh: THREE.Mesh,
+  gltfRoot: THREE.Object3D,
+  hasVisiblePhysics: boolean,
+  hasInvisiblePhysics: boolean
+): boolean {
+  const skinned = (mesh as THREE.SkinnedMesh).isSkinnedMesh === true
+  const kind = classifyGltfCollisionMesh(mesh, gltfRoot)
+  if (skinned && kind !== 'inv') return false
+  if (kind === 'inv') return hasInvisiblePhysics
+  return hasVisiblePhysics
+}
+

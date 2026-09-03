@@ -33,6 +33,7 @@ import {
   logSyncDirectedFallback,
   logSyncDirectedPublish,
   logSyncOversizedSkip,
+  logSyncOutboundCustomEvent,
   peekCustomEventName,
   unwrapCraftedCommsMessage
 } from './comms/syncDebug'
@@ -203,7 +204,7 @@ export class CommsService {
     })
 
     this.archipelago.setIslandHandler((event) => {
-      void this.onIslandChanged(event.connStr)
+      void this.onIslandChanged(event)
     })
 
     this.router.setHandlers({
@@ -1516,6 +1517,11 @@ export class CommsService {
       }
       if (unwrapped?.messageType === CommsWireMessageType.CUSTOM_EVENT) {
         const name = peekCustomEventName(unwrapped.payload)
+        logSyncOutboundCustomEvent({
+          payloadBytes: unwrapped.payload.byteLength,
+          name,
+          directed: Boolean(chunkDest?.length)
+        })
         if (name === 'joinRoster' || name === 'teamAssigned' || name === 'paintTick') {
           console.info(
             `[sync] CUSTOM_EVENT out ${name} → ${chunkDest?.length ? 'authoritative-server' : 'broadcast'} ${unwrapped.payload.byteLength}B`
@@ -2034,7 +2040,22 @@ export class CommsService {
     this.archipelago.connect(url, this.localAddress, this.identity)
   }
 
-  private async onIslandChanged(connStr: string): Promise<void> {
+  private lastIslandId = ''
+  private lastIslandSceneId = ''
+
+  private async onIslandChanged(event: { islandId: string; connStr: string }): Promise<void> {
+    const connStr = event.connStr
+    const islandId = event.islandId?.trim() ?? ''
+    const sceneId = this.sceneId?.trim() ?? ''
+    // Same island assignment — keep the socket.
+    if (islandId && islandId === this.lastIslandId && this.islandConnected) {
+      return
+    }
+    // Same-primary plaza walk: archipelago reassigns island-* ids as you cross
+    // cells. Disconnect/reconnect is the LiveKit bounce; stay until Focus sceneId changes.
+    if (this.islandConnected && sceneId && sceneId === this.lastIslandSceneId) {
+      return
+    }
     this.islandLiveKit.disconnect()
     this.islandConnected = false
     if (!isLiveKitAdapter(connStr)) {
@@ -2045,6 +2066,10 @@ export class CommsService {
     // (voice stays on the scene room).
     const connected = await this.islandLiveKit.connect(connStr, { autoSubscribe: false })
     this.islandConnected = connected
+    if (connected) {
+      this.lastIslandId = islandId
+      this.lastIslandSceneId = sceneId
+    }
     clientDebugLog.log(
       'network',
       connected

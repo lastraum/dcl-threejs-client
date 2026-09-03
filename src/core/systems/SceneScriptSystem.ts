@@ -31,7 +31,8 @@ import { AnimatorBridge } from '../../bridge/AnimatorBridge'
 import { isEmoteAnchorGltfSrc } from '../../rendering/DclTextureResolver'
 import { TweenBridge } from '../../bridge/TweenBridge'
 import { ParticleSystemBridge } from '../../bridge/ParticleSystemBridge'
-import type { SceneTagVfxHost } from '../../bridge/tagVfx/SceneTagVfxHost'
+import type { SceneTjsBridge } from '../../bridge/tjs/SceneTjsBridge'
+import { TJS_COMPONENT_ID } from '../../dcl/ecs/tjsComponent'
 import { isLocalPreviewScene } from '../../dcl/content/refreshPreviewScene'
 import { fetchProfileFaceUrl } from '../../avatar/peerApi'
 import { isTweenVerbose } from '../../bridge/tweenConfig'
@@ -344,7 +345,9 @@ export class SceneScriptSystem {
   private animatorBridge: AnimatorBridge | null = null
   private tweenBridge: TweenBridge | null = null
   private particleBridge: ParticleSystemBridge | null = null
-  private tagVfxHost: SceneTagVfxHost | null = null
+  private tjsBridge: SceneTjsBridge | null = null
+  private loggedTjsProjection = false
+  private warmAbilityVfxCallback: (() => Promise<void>) | null = null
   private shaderResolveUrl: ((src: string) => string | null) | null = null
   private sceneUiBridge: SceneUiBridge | null = null
   /** `#scene-ui-root` (primary) or `#pe-ui-root` (portable experience). */
@@ -489,7 +492,7 @@ export class SceneScriptSystem {
   private bootCompileTitle = 'scene'
   private bootCompileKb = 0
   private scriptBlobUrl: string | null = null
-  /** Last fetched `bin/index.js` text — used to discover `tjs.vfx:*` before play. */
+  /** Last fetched `bin/index.js` text (diagnostics / hot reload). */
   private lastScriptSource: string | null = null
   private compileProgressTimer: ReturnType<typeof setInterval> | null = null
   /** Set when inject-pointer-click is posted; cleared on pointer-deliver-done from worker. */
@@ -560,9 +563,9 @@ export class SceneScriptSystem {
 
   /**
    * FocusOwner policy for multi-scene:
-   * - primary: media on; UI may show when play chrome asks
+   * - primary: occupancy under feet — media on; UI may show when play chrome asks
    * - secondary: hard mute + video stop + UI forced off
-   * - pe: media on; UI owned by PE manager
+   * - pe: occupancy always true — media on; UI owned by PE manager (`pe-ui-root`)
    */
   setFocusPolicy(policy: import('../../dcl/multiScene/types').FocusPolicy): void {
     if (this.focusPolicy === policy) {
@@ -583,28 +586,72 @@ export class SceneScriptSystem {
     return this.lastScriptSource
   }
 
-  /**
-   * Load the Tag→shader host only when this bundle names shaders.
-   * Landing / shader-less Jump In must not import AbilityManager.
-   */
-  async attachShaderVfx(source: string | null): Promise<boolean> {
-    const { sceneBundleMentionsAbilityVfx } = await import('../../vfx/discoverAbilityVfx')
-    if (!source || !sceneBundleMentionsAbilityVfx(source)) return false
-    return (await this.ensureTagVfxHost()) != null
+  getProjectionView(): ProjectionView {
+    return this.view
   }
 
-  private async ensureTagVfxHost(): Promise<SceneTagVfxHost | null> {
-    if (this.tagVfxHost) return this.tagVfxHost
+  getMirrorComponents(): MirrorComponents {
+    return this.readComponents
+  }
+
+  /**
+   * Load the `tjs` bridge when projection has shader rows.
+   * Landing / shader-less Jump In must not import AbilityManager.
+   */
+  async attachTjsBridge(): Promise<boolean> {
+    const { sceneUsesTjsComponent } = await import('../../vfx/discoverAbilityVfx')
+    if (!sceneUsesTjsComponent(this.view, this.readComponents.Tjs)) return false
+    return (await this.ensureTjsBridge()) != null
+  }
+
+  private syncTjsBridge(): void {
+    if (this.tjsBridge) {
+      this.tjsBridge.sync(this.view)
+      return
+    }
+    void import('../../vfx/discoverAbilityVfx').then(({ sceneUsesTjsComponent }) => {
+      if (!sceneUsesTjsComponent(this.view, this.readComponents.Tjs)) return
+      void this.ensureTjsBridge().then((bridge) => {
+        bridge?.sync(this.view)
+        void this.warmAbilityVfxCallback?.()
+      })
+    })
+  }
+
+  private updateTjsBridge(dt: number): void {
+    this.tjsBridge?.update(dt)
+    const tjs = this.tjsBridge
+    if (!tjs) return
+    this.sceneUiBridge?.blitTjsProjections((cameraEntity, canvas) =>
+      tjs.blitCameraToCanvas(cameraEntity as Entity, canvas)
+    )
+  }
+
+  private async ensureTjsBridge(): Promise<SceneTjsBridge | null> {
+    if (this.tjsBridge) return this.tjsBridge
     if (!this.host) return null
-    const { SceneTagVfxHost } = await import('../../bridge/tagVfx/SceneTagVfxHost')
+    const { SceneTjsBridge } = await import('../../bridge/tjs/SceneTjsBridge')
     const { getShaderManager } = await import('../../vfx/ShaderManager')
-    this.tagVfxHost = new SceneTagVfxHost(
+    this.tjsBridge = new SceneTjsBridge(
       this.readComponents,
       this.host.scene,
-      () => this.bridge?.getEntityNodes()
+      this.host.renderer,
+      () => this.bridge?.getEntityNodes(),
+      () => ({
+        view: this.view,
+        playerPose: () => this.virtualCameraPlayerPose?.() ?? this.clientPlayerPose ?? emptyEntityPose(),
+        cameraPose: () => this.virtualCameraCameraPose?.() ?? this.clientCameraPose ?? emptyEntityPose()
+      }),
+      (pose, visual) => {
+        this.bridge?.bindEntityDrawSlot(pose, visual, 'tjsProjection')
+      },
+      (pose) => {
+        this.bridge?.unbindEntityDrawSlot(pose, 'tjsProjection')
+      }
     )
     if (this.shaderResolveUrl) getShaderManager().setResolveUrl(this.shaderResolveUrl)
-    return this.tagVfxHost
+    this.bridge?.setTjsTextureGetter((entity) => this.tjsBridge?.getTexture(entity as Entity) ?? null)
+    return this.tjsBridge
   }
 
   /**
@@ -626,7 +673,8 @@ export class SceneScriptSystem {
   }
 
   private applyFocusPolicy(policy: import('../../dcl/multiScene/types').FocusPolicy): void {
-    const mediaOn = policy !== 'secondary' && this.occupancyMediaEnabled
+    // PE occupancy is always true — never wait on parcel dwell / leftover hold.
+    const mediaOn = policy === 'pe' || (policy !== 'secondary' && this.occupancyMediaEnabled)
     this.videoPlayerBridge?.setMediaEnabled(mediaOn)
     this.audioSourceBridge?.setMediaEnabled(mediaOn)
     this.audioStreamBridge?.setMediaEnabled(mediaOn)
@@ -695,6 +743,11 @@ export class SceneScriptSystem {
     this.bootProgressReporter = fn
   }
 
+  /** Lazy AbilityManager warm when `tjs` shader rows land after load-time prime skipped. */
+  setWarmAbilityVfxCallback(fn: (() => Promise<void>) | null): void {
+    this.warmAbilityVfxCallback = fn
+  }
+
   private formatCompileProgress(seconds: number, phase?: string): string {
     const title = this.bootCompileTitle || 'scene'
     const kb = this.bootCompileKb
@@ -745,8 +798,13 @@ export class SceneScriptSystem {
     this.entityStoreUnsub = this.entityStore.subscribe((change) => this.onEntityStoreChange(change))
     this.bridge = new ThreeBridge(scene, cache, this.entityStore, this.readComponents, host.drawWorld)
     if (opts?.focusPolicy) this.focusPolicy = opts.focusPolicy
-    this.avatarShapes = new AvatarShapeBridge(this.readComponents, (entity) =>
-      this.bridge?.getEntityNodes().get(entity)
+    this.avatarShapes = new AvatarShapeBridge(
+      this.readComponents,
+      (entity) => this.bridge?.getEntityNodes().get(entity),
+      {
+        bind: (pose, visual) => this.bridge?.bindEntityDrawSlot(pose, visual, 'dclDrawAvatar'),
+        unbind: (pose) => this.bridge?.unbindEntityDrawSlot(pose, 'dclDrawAvatar')
+      }
     )
     // AvatarEmoteCommand is a grow-only value-set the projection doesn't model yet — keep it
     // on the engine defs + engine-backed view (migrated in a later sub-step).
@@ -784,8 +842,9 @@ export class SceneScriptSystem {
       (pose, visual) => this.bridge?.bindEntityDrawSlot(pose, visual, 'dclDrawParticles'),
       (pose) => this.bridge?.unbindEntityDrawSlot(pose, 'dclDrawParticles')
     )
-    this.tagVfxHost?.dispose()
-    this.tagVfxHost = null
+    this.tjsBridge?.dispose()
+    this.tjsBridge = null
+    this.loggedTjsProjection = false
     this.shaderResolveUrl = (src) => {
       const trimmed = src.trim()
       if (/^https?:\/\//i.test(trimmed)) return trimmed
@@ -1573,8 +1632,8 @@ export class SceneScriptSystem {
       componentId === GltfContainer.componentId ||
       (componentId === MeshRenderer.componentId && PointerEvents.has(entity)) ||
       componentId === MeshCollider.componentId ||
-      // Plaza close_button: Visibility false at spawn, true on open. Hidden visible-class
-      // meshes are omitted from pointerTargets — must rebuild when they reappear.
+      // Visibility still rebuilds PE targets (draw extract hide/show). Hidden
+      // click_area volumes stay in the set — Visibility does not drop PointerEvents.
       (componentId === VisibilityComponent.componentId &&
         (PointerEvents.has(entity) || GltfContainer.has(entity) || MeshCollider.has(entity)))
     ) {
@@ -1805,12 +1864,13 @@ export class SceneScriptSystem {
   }
 
   /**
-   * After RestrictedActions.movePlayerTo (Flagtag drown / round reset) — ensure worker
-   * cooperative ticks are not left paused by a prior UI mount lag, so scene systems can
-   * clear InputModifier and advance timers.
+   * After RestrictedActions.movePlayerTo: if pointer-open held worker ticks,
+   * resume them so scene systems can run. No-op when ticks are already running
+   * — every duration-0 put is a feet teleport; this is not a move classifier.
    */
   nudgePlayAfterSceneTeleport(): void {
     if (!this.running || !this.worker) return
+    if (!this.pointerHoldTicksUntilMount) return
     this.pendingUiEntities = undefined
     this.clearProjectionUiLag()
     this.forceResumeWorkerSceneTicks('move-player-to')
@@ -2121,7 +2181,7 @@ export class SceneScriptSystem {
     this.refreshRealmInfoFromProvider()
   }
 
-  private authServerResyncAt = 0
+  private authServerResyncDone = false
 
   /**
    * Auth-server scenes (pixelwars paint, Flagtag): SDK sets isRoomReady only when
@@ -2130,16 +2190,14 @@ export class SceneScriptSystem {
    * queued forever → no teamAssigned → no Material recolors (crdt-outbound bytes=0).
    *
    * Pulse isConnectedSceneRoom false→true so RealmInfo.onChange re-runs requestState and
-   * a later RES can open the room. Debounced (once per 8s).
+   * a later RES can open the room. Once per worker boot — repeating it during play
+   * re-requests AUTH_RES every interval and rewinds predicted entities.
    */
   resyncAuthServerNetworkRoom(): void {
     if (!this.worker || !this.running) return
     if (!this.realmInfoProvider) return
-    const now = performance.now()
-    // Was 8s — still saw AUTH_RES storms every ~4s from SDK retries + ready pulse.
-    // Keep this rare: each false→true pulse clears stateIsSyncronized and re-fetches RES.
-    if (now - this.authServerResyncAt < 30_000) return
-    this.authServerResyncAt = now
+    if (this.authServerResyncDone) return
+    this.authServerResyncDone = true
 
     const live = this.realmInfoProvider()
     if (!live?.isConnectedSceneRoom) return
@@ -2720,22 +2778,6 @@ export class SceneScriptSystem {
       } satisfies MainToWorker)
       return
     }
-    if (msg.type === 'tjs-shader') {
-      const host = await this.ensureTagVfxHost()
-      const { buildShaderCtx, getShaderManager } = await import('../../vfx/ShaderManager')
-      if (msg.fn === 'play' || msg.name === 'play') {
-        host?.playNamed(msg.params.target ?? msg.params.at ?? msg.name)
-        return
-      }
-      const ctx = buildShaderCtx(0, msg.fn, msg.params, null)
-      getShaderManager().trigger(msg.name, msg.fn, ctx)
-      clientDebugLog.log(
-        'scene',
-        `shader ${msg.name}.${msg.fn} from scene code at=${msg.params.at ?? '—'}`,
-        { alsoConsole: true }
-      )
-      return
-    }
     if (msg.type === 'trigger-emote') {
       const success = this.triggerEmoteHandler?.(msg.body) ?? false
       this.worker?.postMessage({
@@ -3245,6 +3287,7 @@ export class SceneScriptSystem {
         PointerEvents.componentId
       ])
       let batchTouchesUi = false
+      let batchTouchesTjs = false
       const uiTransformId = UiTransform.componentId
       const latestUiMountSnapshot = [...batch]
         .reverse()
@@ -3328,6 +3371,9 @@ export class SceneScriptSystem {
             if (uiComponentIds.has(change.componentId)) {
               batchTouchesUi = true
             }
+            if (change.componentId === TJS_COMPONENT_ID) {
+              batchTouchesTjs = true
+            }
           }
           // Sync clock already folded motion for CCT; do not rewind tweens / restamp TRS.
           if (!item.motionFolded) this.foldProjectionChanges()
@@ -3366,7 +3412,9 @@ export class SceneScriptSystem {
             }
             projectionDeletes.length = 0
             this.projection.changes.length = 0
-            this.sceneUiBridge?.ingestMountSnapshot(latestUiMountSnapshot)
+            this.sceneUiBridge?.ingestMountSnapshot(latestUiMountSnapshot, {
+              replace: fullMount
+            })
             this.projection.applyWorkerUiMountSnapshot(
               latestUiMountSnapshot.map((row) => ({
                 entity: row.entity as Entity,
@@ -3396,11 +3444,13 @@ export class SceneScriptSystem {
             }
           } else if (hasUiMountSnapshot) {
             // Empty mount snapshot (welcome unmount) — still touch UI so commitMountSet([]) runs.
+            mountEntitiesForFrame = []
             projectionDeletes.length = 0
-            this.sceneUiBridge?.ingestMountSnapshot([])
+            this.sceneUiBridge?.ingestMountSnapshot([], { replace: true })
             perfNoteUiMountPost()
             batchTouchesUi = true
             this.lastAppliedUiMountContentFp = '0'
+            this.foldProjectionChanges()
           }
         }
         split.uiMs += performance.now() - uiT0
@@ -3494,6 +3544,19 @@ export class SceneScriptSystem {
           )
         }
         split.drainMs += performance.now() - drainT0
+      }
+
+      if (batchTouchesTjs) {
+        if (!this.loggedTjsProjection) {
+          this.loggedTjsProjection = true
+          let tjsCount = 0
+          for (const [_entity] of this.view.getEntitiesWith(this.readComponents.Tjs)) tjsCount++
+          clientDebugLog.log('scene', `tjs projection — ${tjsCount} row(s) after first CRDT`, {
+            alsoConsole: true
+          })
+        }
+        this.syncTjsBridge()
+        void this.warmAbilityVfxCallback?.()
       }
 
       {
@@ -3750,7 +3813,8 @@ export class SceneScriptSystem {
     // FocusOwner: secondary never mutates DOM (demoted primary still holds SceneUiBridge
     // for promote resume — must not fight #scene-ui-root with the new primary).
     if (this.focusPolicy === 'secondary') return
-    if (this.leftoverBlocksUiPaint()) return
+    // PE HUD must paint even when plaza PhysX leftover is dying.
+    if (this.focusPolicy !== 'pe' && this.leftoverBlocksUiPaint()) return
 
     // Asset hydration: commit mount only — no Yoga/DOM thrash (was flooding "paint deferred"
     // and stealing main-thread from GLB attach → 60s hang at ~79%).
@@ -3759,7 +3823,13 @@ export class SceneScriptSystem {
       if (uiEntities !== undefined) {
         const nextSet = new Set(uiEntities.map((e) => e as Entity))
         if (bridge.isMountSetReady(this.view, nextSet)) {
-          bridge.commitMountSet(nextSet)
+          if (nextSet.size === 0) {
+            bridge.commitMountSet(nextSet)
+            this.purgeProjectionUiOutsideWorkerMount()
+          } else {
+            // Splash Color4.a fade must reach DOM while GLBs hydrate (spawn CBD Plaza).
+            this.commitAndPaintUiMount(bridge, nextSet)
+          }
           this.pendingUiEntities = undefined
         } else {
           this.pendingUiEntities = uiEntities
@@ -3807,7 +3877,10 @@ export class SceneScriptSystem {
       return extractSnapshotMountEntityIds(snap?.uiMountSnapshot ?? [])
     }
     for (const item of [...batch].reverse()) {
-      if (item.uiEntities === undefined || item.uiMountSnapshot !== undefined) continue
+      if (item.uiEntities === undefined) continue
+      // Welcome unmount: explicit mount=[] with empty snapshot (wire always carries uiMountSnapshot).
+      if (item.uiMountSnapshot !== undefined && item.uiEntities.length === 0) return []
+      if (item.uiMountSnapshot !== undefined) continue
       if (!item.data?.byteLength) continue
       return item.uiEntities
     }
@@ -4788,8 +4861,8 @@ export class SceneScriptSystem {
     }
     void this.particleBridge?.sync(this.view)
     this.particleBridge?.update(1 / 30)
-    this.tagVfxHost?.sync(this.view)
-    this.tagVfxHost?.update(1 / 30)
+    this.syncTjsBridge()
+    this.updateTjsBridge(1 / 30)
     if (prefer.length > 0) {
       clientDebugLog.log(
         'pointer',
@@ -5502,6 +5575,8 @@ export class SceneScriptSystem {
       /** PE drone / freeze — republish pressed keys every frame. */
       forceRepublishSnapshot?: () => boolean
       isPointerLocked?: () => boolean
+      /** Scene VirtualCamera owns the lens — unlocked LMB is scene IA_POINTER, not freecam. */
+      isLookBlocked?: () => boolean
     },
     setForcedCameraMode?: (mode: ForcedCameraMode | null) => void
   ): void {
@@ -5524,11 +5599,11 @@ export class SceneScriptSystem {
       // input for the full multi-second pointer-deliver batch). UI still uses full batch.
       isPointerBlocked: () => isPointerBlocked(),
       isPointerLocked: () => sceneInput?.isPointerLocked?.() === true,
+      isLookBlocked: () => sceneInput?.isLookBlocked?.() === true,
       pointerEventsOf: (entity) => this.sceneUiBridge?.pointerEventsOf(entity) ?? null,
       flushPointerCrdt: () => {
         void this.flushPendingPointerCrdt()
       },
-      onWorldPointerDown: (entity) => this.tagVfxHost?.notifyPointerDown(entity),
       prepareRaycast: () => this.preparePointerRaycast(),
       resolveMeshRendererInstanceHit: (mesh, instanceId) =>
         this.bridge?.resolveMeshRendererInstanceEntity(mesh, instanceId) ?? null,
@@ -6013,6 +6088,19 @@ export class SceneScriptSystem {
     }
   }
 
+  /**
+   * CameraEntity PointerLock bit for the worker store.
+   * Browser lock, or (VC owns look AND IA_POINTER physically down) so scenes that
+   * orbit from `isPointerLocked && screenDelta` still see mouse-look without
+   * stealing getClick from unlocked ground clicks.
+   */
+  private scenePointerLockBit(): boolean {
+    const pe = this.pointerEvents
+    if (!pe) return false
+    if (pe.isBrowserPointerLocked()) return true
+    return pe.isLookOwnedByScene() && pe.isPointerActionHeld()
+  }
+
   /** Phase 2 — one unified worker play frame per main rAF (engine.update + pollEvents). */
   tickPlayFrame(): void {
     // Do not gate on bootPhaseActive: eval-done sets running while onStart continues, and
@@ -6027,6 +6115,7 @@ export class SceneScriptSystem {
     const player = this.reservedPoseStreaming ? this.clientPlayerPose : null
     const camera = this.reservedPoseStreaming ? this.clientCameraPose : null
     const primaryPointer = this.pointerEvents?.getPrimaryPointerSnapshot() ?? undefined
+    const pointerLock = this.scenePointerLockBit()
     const poseMoved = this.playFramePoseMoved(player, camera, primaryPointer)
     if (this.pointerEvents?.hasPendingInput()) {
       this.syncPointerInput(this.crdtTick, { processPendingDown: false, processPendingUp: false })
@@ -6077,6 +6166,7 @@ export class SceneScriptSystem {
           }
         : {}),
       ...(primaryPointer ? { primaryPointer } : {}),
+      pointerLock,
       ...(this.lastAvatarAttachBatch.length
         ? { avatarAttach: this.lastAvatarAttachBatch }
         : {}),
@@ -6258,6 +6348,9 @@ export class SceneScriptSystem {
       clientDebugLog.log('pointer', `flush pending input tick=${this.crdtTick}`, {
         alsoConsole: POINTER_VERBOSE
       })
+      // UI click queued PET_HOVER_ENTER first (cursor-over-control). Deliver it before
+      // DOWN so react-ecs onMouseEnter runs before onMouseDown / onMouseUp.
+      this.flushHoverInjects()
       // Explorer press lifecycle: one edge per flush.
       // CRITICAL: process UP before DOWN when both are pending. Preferring DOWN under
       // click-spam left PET_DOWN without PET_UP → getClick never fired (no VFX) and a
@@ -6373,6 +6466,7 @@ export class SceneScriptSystem {
     const ppi =
       this.pointerEvents?.getPrimaryPointerSnapshot() ?? inject.primaryPointer ?? undefined
     if (ppi) inject.primaryPointer = ppi
+    inject.pointerLock = this.scenePointerLockBit()
     inject.camera = this.capturePointerEdgeCameraDcl()
     const sc = inject.primaryPointer?.screenCoordinates
     const ray = inject.primaryPointer?.worldRayDirection
@@ -6392,7 +6486,8 @@ export class SceneScriptSystem {
         ? ` ppi=(${sc.x.toFixed(0)},${sc.y.toFixed(0)})` +
           (ray ? ` ray=(${ray.x.toFixed(2)},${ray.y.toFixed(2)},${ray.z.toFixed(2)})` : '')
         : ' ppi=missing') +
-      (cam ? ` cam=(${cam.x.toFixed(1)},${cam.y.toFixed(1)},${cam.z.toFixed(1)})` : ' cam=missing')
+      (cam ? ` cam=(${cam.x.toFixed(1)},${cam.y.toFixed(1)},${cam.z.toFixed(1)})` : ' cam=missing') +
+      ` lock=${inject.pointerLock ? 1 : 0}`
     console.log('[pointer]', injectLine)
     this.logPointer(injectLine)
     this.worker.postMessage({
@@ -6479,8 +6574,8 @@ export class SceneScriptSystem {
     }
     void this.particleBridge?.sync(this.view)
     this.particleBridge?.update(1 / 30)
-    this.tagVfxHost?.sync(this.view)
-    this.tagVfxHost?.update(1 / 30)
+    this.syncTjsBridge()
+    this.updateTjsBridge(1 / 30)
     if (this.pointerStructureDirty) {
       const pe: Entity[] = []
       for (const [entity] of this.view.getEntitiesWith(this.readComponents.PointerEvents)) {
@@ -7475,8 +7570,8 @@ export class SceneScriptSystem {
     }
     // In-view particles at present rate with wall elapsed (not async rAF delta).
     this.particleBridge?.update()
-    this.tagVfxHost?.sync(this.view)
-    this.tagVfxHost?.update(delta)
+    this.syncTjsBridge()
+    this.updateTjsBridge(delta)
     // Primary scene stays fully live. 48/80 m is AOI neighbor shells only —
     // hiding plaza Gltfs (theatre, stage) was a residency bug, not a host-world win.
     if (!this.restoredGltfCull) {
@@ -7490,8 +7585,9 @@ export class SceneScriptSystem {
     this.deliverTweenStateToWorker()
     }
     if (ridingOnly) return
-    // Do not sample mixers here. Present already advanced PART + in-view looping
-    // (wall-clock). Re-running with the last rAF delta made props crawl at ~⅓ speed.
+    // Do not sample mixers here. Present already advanced PART + looping décor
+    // (in-view, or every mixer when full-rate scene animators is on). Re-running
+    // with the last rAF delta made props crawl at ~⅓ speed.
     if (this.bridgeSyncTick % 2 === 0) {
       this.videoPlayerBridge?.sync(this.view)
       this.audioSourceBridge?.sync(this.view)
@@ -7508,7 +7604,7 @@ export class SceneScriptSystem {
     // sync is async (texture load); throttle so we don't pile concurrent creates.
     if (this.bridgeSyncTick % 8 === 0) {
       void this.particleBridge?.sync(this.view)
-      this.tagVfxHost?.sync(this.view)
+      this.syncTjsBridge()
     }
     // PlayerEntity-parented scene meshes (Dead Surge path arrow) — re-parent each frame.
     this.bridge.syncReservedParentedTransforms(this.view)
@@ -7624,6 +7720,9 @@ export class SceneScriptSystem {
   extractBillboards(camera: import('three').Camera): void {
     if (!this.bridge) return
     this.bridge.syncEcsVisibility(this.bridge.entitiesWithVisibility())
+    // DrawWorld.sync hides clones from pose.visible. GPU instances live on
+    // drawRoot and need the same extract — plaza LO() pond benches.
+    this.bridge.syncInstancedVisibilityExtract()
     this.billboardBridge?.applyExtract(camera, (entity, world) =>
       this.bridge!.setInstancedWorldMatrix(entity, world)
     )
@@ -7742,8 +7841,10 @@ export class SceneScriptSystem {
     this.tweenBridge = null
     this.particleBridge?.dispose()
     this.particleBridge = null
-    this.tagVfxHost?.dispose()
-    this.tagVfxHost = null
+    this.tjsBridge?.dispose()
+    this.tjsBridge = null
+    this.loggedTjsProjection = false
+    this.warmAbilityVfxCallback = null
     this.shaderResolveUrl = null
     this.unbindSceneUiViewportSync()
     this.sceneUiBridge?.dispose()
@@ -7806,6 +7907,7 @@ export class SceneScriptSystem {
     }
     this.running = false
     this.prepared = false
+    this.authServerResyncDone = false
   }
 }
 

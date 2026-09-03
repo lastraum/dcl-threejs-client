@@ -27,6 +27,38 @@ export function distributedParcelPositions(
   return out
 }
 
+/** Horizontal disk stays inside a parcel square [0, size]×[0, size] (DCL local). */
+export function horizontalDiskFitsParcel(
+  x: number,
+  z: number,
+  radius: number,
+  size = PARCEL_SIZE
+): boolean {
+  const r = Math.max(0, radius)
+  return x - r >= 0 && z - r >= 0 && x + r <= size && z + r <= size
+}
+
+/**
+ * Disk vs axis-aligned parcel square in the same DCL scene-local space as
+ * {@link parcelSwSceneLocal} (SW + 0..16). True when the disk overlaps the parcel.
+ */
+export function horizontalDiskHitsAabb(
+  cx: number,
+  cz: number,
+  radius: number,
+  minX: number,
+  minZ: number,
+  maxX: number,
+  maxZ: number
+): boolean {
+  const r = Math.max(0, radius)
+  const qx = Math.min(maxX, Math.max(minX, cx))
+  const qz = Math.min(maxZ, Math.max(minZ, cz))
+  const dx = qx - cx
+  const dz = qz - cz
+  return dx * dx + dz * dz < r * r
+}
+
 /**
  * Bias props toward the outer edge of a padding parcel (beach ring faces the ocean).
  * `towardOuter` 0 = random, 1 = strongly pushed to parcel edge away from scene center.

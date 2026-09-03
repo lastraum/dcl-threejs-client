@@ -39,6 +39,9 @@ const faceSnapshotUrlLoading = new Set<string>()
  */
 const multipliedImageUrl = new Map<string, string>()
 const multipliedImageLoading = new Set<string>()
+/** Atlas UV crop → PNG blob (nine-slice the sprite, not the whole sheet). */
+const uvCroppedImageUrl = new Map<string, string>()
+const uvCroppedImageLoading = new Set<string>()
 
 function clamp01(v: number): number {
   return Math.min(1, Math.max(0, v))
@@ -184,11 +187,38 @@ export function resolveAvatarTextureUserIdToUrl(userId: string): string | null {
   return `https://profile-images.decentraland.org/entities/${id}/face.png`
 }
 
+/** `tjs:<entityId>` — camera RT projection, never a file / HTTP texture. */
+const TJS_PROJECTION_PREFIX = 'tjs:'
+
+/**
+ * True when a UiBackground texture.src is a tjs camera projection scheme.
+ * Any `tjs:` prefix (incl. `tjs:0` / junk) must skip the file loader.
+ */
+export function isTjsProjectionSrc(src: string | null | undefined): boolean {
+  if (src == null) return false
+  const trimmed = src.trim()
+  return trimmed.length >= TJS_PROJECTION_PREFIX.length && trimmed.toLowerCase().startsWith(TJS_PROJECTION_PREFIX)
+}
+
+/**
+ * Parse `tjs:<digits>` → camera entity id.
+ * `tjs:0`, empty, or non-digits after the prefix → null (not-ready / ignore, never fetch).
+ */
+export function parseTjsProjectionEntity(src: string | null | undefined): number | null {
+  if (!isTjsProjectionSrc(src)) return null
+  const rest = String(src).trim().slice(TJS_PROJECTION_PREFIX.length).trim()
+  if (!/^[0-9]+$/.test(rest)) return null
+  const n = Number(rest)
+  if (!Number.isFinite(n) || n === 0) return null
+  return n
+}
+
 /** Normalize texture.src (and similar) — rewrite broken face/0x wallet shortcuts. */
 function normalizeUiTextureSrc(src: string | null | undefined): string | null {
   if (src == null) return null
   const trimmed = src.trim()
   if (!trimmed) return null
+  if (isTjsProjectionSrc(trimmed)) return trimmed
   return rewriteLegacyProfileFaceUrl(trimmed)
 }
 
@@ -271,14 +301,17 @@ export function extractUiTextureWrapMode(texture: unknown): 'repeat' | 'clamp' |
 }
 
 /**
- * react-ecs may omit textureMode (CENTER intent). Protobuf enum default is NINE_SLICES (0).
+ * Explorer UiBackground law (every ECS UI: primary scene and PE — same paint path).
  *
- * Atlas UV rects (non-full uvs) always win → STRETCH so applyBgImg crops the sheet.
+ * 1. `uvs` crop the source first (8 floats, GL V=0 at the bottom).
+ * 2. Then `textureMode` is applied to that cropped sprite:
+ *    STRETCH fill, CENTER contain, NINE_SLICES + `textureSlices` (0–1 of the sprite).
  *
- * Critical: PB always serializes textureSlices with default 1/3 when mode is 0. Treating
- * "mode 0 + any slices object" as nine-slice made every fishing wood slot / shop icon use
- * border-image (blank brown panels + doubled mash). Only honor nine-slice when slices are
- * **non-default** (authored) or the mode string is explicitly nine_slices.
+ * react-ecs may omit textureMode (CENTER). Protobuf default is NINE_SLICES (0) and
+ * always writes textureSlices={1/3…}. That default is **not** authored nine-slice:
+ * treating “mode 0 + any slices object” as border-image mashed atlas cells (wood
+ * slots, shop icons). Non-default slices, or mode 0 on a large UV window (a panel
+ * sprite, not a cell), are real nine-slice after the crop.
  */
 function isDefaultThirdSlices(slices: PBUiBackground['textureSlices'] | null | undefined): boolean {
   if (slices == null || typeof slices !== 'object') return true
@@ -290,14 +323,36 @@ function isDefaultThirdSlices(slices: PBUiBackground['textureSlices'] | null | u
   return near(t, 1 / 3) && near(r, 1 / 3) && near(b, 1 / 3) && near(l, 1 / 3)
 }
 
+function isAuthoredNineSlice(
+  mode: number | string | undefined,
+  textureSlices?: PBUiBackground['textureSlices']
+): boolean {
+  if (typeof mode === 'string' && mode.toLowerCase().replace(/-/g, '_') === 'nine_slices') {
+    return true
+  }
+  if (mode !== BackgroundTextureMode.NINE_SLICES) return false
+  return textureSlices != null && typeof textureSlices === 'object' && !isDefaultThirdSlices(textureSlices)
+}
+
 export function normalizeBackgroundTextureMode(
   mode: number | string | undefined,
   _src: string | null,
   textureSlices?: PBUiBackground['textureSlices'],
   uvs?: number[] | null
 ): number {
-  // Atlas sprite UVs — never nine-slice (would border-image the whole sheet).
-  if (parseUiBackgroundUvRect(uvs)) {
+  // Authored slices (not protobuf 1/3) — crop then nine-slice.
+  if (isAuthoredNineSlice(mode, textureSlices)) return BackgroundTextureMode.NINE_SLICES
+
+  const uvRect = parseUiBackgroundUvRect(uvs)
+  if (uvRect) {
+    // Mode 0 on a panel-sized UV window is still nine-slice after crop (protobuf
+    // 1/3 slices are valid on a full sprite). Cell-sized UVs keep STRETCH crop.
+    const uSpan = uvRect.u1 - uvRect.u0
+    const vSpan = uvRect.v1 - uvRect.v0
+    const nineMode =
+      mode === BackgroundTextureMode.NINE_SLICES ||
+      (typeof mode === 'string' && mode.toLowerCase().replace(/-/g, '_') === 'nine_slices')
+    if (nineMode && uSpan >= 0.55 && vSpan >= 0.55) return BackgroundTextureMode.NINE_SLICES
     return BackgroundTextureMode.STRETCH
   }
 
@@ -340,6 +395,8 @@ export function resolveUiBackgroundImageUrl(
 ): string | null {
   const src = extractUiTextureSrc(bg?.texture)
   if (!src) return null
+  // Never file-load / HTTP-fetch tjs camera projections — DOM blits the RT instead.
+  if (isTjsProjectionSrc(src)) return null
   if (/^(data:|blob:)/i.test(src)) return src
   if (/^https?:/i.test(src)) {
     if (typeof window !== 'undefined' && src.startsWith(window.location.origin)) return src
@@ -563,6 +620,92 @@ export function parseUiBackgroundUvRect(
   return { u0, v0, u1, v1 }
 }
 
+function uvCropKey(
+  imageUrl: string,
+  u0: number,
+  v0: number,
+  u1: number,
+  v1: number
+): string {
+  return `${imageUrl}|${u0.toFixed(4)},${v0.toFixed(4)},${u1.toFixed(4)},${v1.toFixed(4)}`
+}
+
+/**
+ * Crop a UI texture to a GL UV rect (V=0 bottom) for nine-slice.
+ * Returns a blob URL, `null` while decoding, or the original URL if crop fails.
+ */
+function resolveUvCroppedImageUrl(
+  imageUrl: string,
+  rect: { u0: number; v0: number; u1: number; v1: number }
+): string | null {
+  const key = uvCropKey(imageUrl, rect.u0, rect.v0, rect.u1, rect.v1)
+  const hit = uvCroppedImageUrl.get(key)
+  if (hit) return hit
+  if (uvCroppedImageLoading.has(key)) return null
+  uvCroppedImageLoading.add(key)
+
+  const fail = (): void => {
+    uvCroppedImageUrl.set(key, imageUrl)
+    uvCroppedImageLoading.delete(key)
+    notifyUiImageReady()
+  }
+
+  const bake = (img: HTMLImageElement): void => {
+    try {
+      const w = img.naturalWidth || img.width
+      const h = img.naturalHeight || img.height
+      if (w < 1 || h < 1) throw new Error('empty image')
+      const sx = rect.u0 * w
+      const sy = (1 - rect.v1) * h
+      const sw = Math.max(1, (rect.u1 - rect.u0) * w)
+      const sh = Math.max(1, (rect.v1 - rect.v0) * h)
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, Math.round(sw))
+      canvas.height = Math.max(1, Math.round(sh))
+      const ctx = canvas.getContext('2d')
+      if (!ctx) throw new Error('no 2d')
+      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height)
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          fail()
+          return
+        }
+        const url = URL.createObjectURL(blob)
+        uvCroppedImageUrl.set(key, url)
+        uvCroppedImageLoading.delete(key)
+        notifyUiImageReady()
+      }, 'image/png')
+    } catch {
+      fail()
+    }
+  }
+
+  const img = new Image()
+  img.decoding = 'async'
+  img.crossOrigin = 'anonymous'
+  img.onload = () => bake(img)
+  img.onerror = () => {
+    void fetch(imageUrl)
+      .then((res) => (res.ok ? res.blob() : Promise.reject()))
+      .then((blob) => {
+        const blobUrl = URL.createObjectURL(blob)
+        const retry = new Image()
+        retry.onload = () => {
+          bake(retry)
+          URL.revokeObjectURL(blobUrl)
+        }
+        retry.onerror = () => {
+          URL.revokeObjectURL(blobUrl)
+          fail()
+        }
+        retry.src = blobUrl
+      })
+      .catch(() => fail())
+  }
+  img.src = imageUrl
+  return null
+}
+
 /**
  * Small atlas sprites (shop icons, rarity tags, tutoE/F) — CSS background-size/position.
  * Nested absolute % <img> crop glitches on equip/vending cells (mashed multi-icon sheet).
@@ -697,8 +840,10 @@ function isUvFillOrScrollStrip(u0: number, v0: number, u1: number, v1: number): 
   const vSpan = v1 - v0
   // Shop icons / rarity tags / tuto tiles — both axes are small atlas cells.
   if (uSpan < 0.55 && vSpan < 0.55) return false
-  if (uSpan >= 0.85 && vSpan > 1e-5) return true
-  if (vSpan >= 0.85 && uSpan > 1e-5) return true
+  // Horizontal / vertical *bars* only. Panel-sized atlas windows (both spans
+  // large) crop as a sprite, not a fishing fill-strip.
+  if (uSpan >= 0.85 && vSpan > 1e-5 && vSpan < 0.55) return true
+  if (vSpan >= 0.85 && uSpan > 1e-5 && uSpan < 0.55) return true
   return false
 }
 
@@ -708,7 +853,16 @@ function isUvFillOrScrollStrip(u0: number, v0: number, u1: number, v1: number): 
  * <img> strip leaked the unused texture into the empty track.
  */
 function isBottomAlignedUvFill(u0: number, v0: number, u1: number, v1: number): boolean {
-  return u0 <= 1e-3 && u1 >= 1 - 1e-3 && v0 <= 1e-3 && v1 > 1e-5 && v1 <= 1 + 1e-3
+  const vSpan = v1 - v0
+  // Reel fill bars only (thin v window from v=0). A HUD panel using the bottom
+  // of an atlas (vSpan ≥ 0.55) is a sprite crop, not a fishing fill.
+  return (
+    u0 <= 1e-3 &&
+    u1 >= 1 - 1e-3 &&
+    v0 <= 1e-3 &&
+    v1 > 1e-5 &&
+    vSpan < 0.55
+  )
 }
 
 function applyBottomAlignedFill(
@@ -1021,6 +1175,36 @@ function applyNineSlice(
   scale: UiScreenScale
 ): 'pending' | 'done' {
   clearBgImg(el)
+  const uvRect = parseUiBackgroundUvRect(bg.uvs)
+  let spriteUrl = imageUrl
+  if (uvRect) {
+    const cropped = resolveUvCroppedImageUrl(imageUrl, uvRect)
+    if (!cropped) {
+      // Do not 9-slice the whole atlas while the crop bakes — stretch-crop placeholder.
+      applyBgImg(
+        el,
+        imageUrl,
+        BackgroundTextureMode.STRETCH,
+        effectiveUiBackgroundAlpha(bg.color),
+        bg.uvs,
+        extractUiTextureWrapMode(bg.texture)
+      )
+      return 'pending'
+    }
+    if (cropped === imageUrl) {
+      // Crop failed — keep the stretch-crop, never 9-slice the full sheet.
+      applyBgImg(
+        el,
+        imageUrl,
+        BackgroundTextureMode.STRETCH,
+        effectiveUiBackgroundAlpha(bg.color),
+        bg.uvs,
+        extractUiTextureWrapMode(bg.texture)
+      )
+      return 'done'
+    }
+    spriteUrl = cropped
+  }
   const slices = bg.textureSlices ?? DEFAULT_SLICES
   const topF = clamp01(slices.top ?? DEFAULT_SLICES.top)
   const rightF = clamp01(slices.right ?? DEFAULT_SLICES.right)
@@ -1033,9 +1217,9 @@ function applyNineSlice(
   // Never paint the raw white texture — that flashes white/purple for ~1s. Solid tint is
   // instant and correct for opaque tints; upgrade to pre-multiplied nine-slice only when
   // the bake is already cached (same session).
-  let paintUrl = imageUrl
+  let paintUrl = spriteUrl
   if (multiply && bg.color) {
-    const baked = resolveColorMultipliedImageUrl(imageUrl, bg.color)
+    const baked = resolveColorMultipliedImageUrl(spriteUrl, bg.color)
     if (!baked) {
       applySolidColorPanel(el, tint, topF, rightF, bottomF, leftF)
       return 'pending'
@@ -1044,7 +1228,7 @@ function applyNineSlice(
   }
 
   const safeUrl = paintUrl.replace(/"/g, '%22')
-  const natural = probeImageNaturalSize(imageUrl)
+  const natural = probeImageNaturalSize(spriteUrl)
   const u = Math.max(0.2, scale.uniform)
 
   // Source-image pixel borders when known; else fall back to modest screen px.
@@ -1116,12 +1300,14 @@ export function applyUiBackgroundStyles(
   const c = bg?.color
   const tint = color4Css(c)
   const rawSrc = extractUiTextureSrc(bg?.texture)
+  // tjs: src is not a paintable URL — keep color fallback, never assign as img.src.
+  if (isTjsProjectionSrc(rawSrc) || isTjsProjectionSrc(imageUrl)) imageUrl = null
   const wrapMode = extractUiTextureWrapMode(bg?.texture)
   const mode = imageUrl
     ? normalizeBackgroundTextureMode(bg?.textureMode, rawSrc, bg?.textureSlices, bg?.uvs)
     : -1
-  // Skip full style thrash when paint re-visits stable PE HUD panels every tick.
-  // Clearing borderImage / swapping solid→texture every frame is the PX UI flash.
+  // Skip full style thrash when paint re-visits a stable panel every tick.
+  // Clearing borderImage / swapping solid→texture every frame flashes the BG.
   // uvs may be number[] or post-JSON `{0:…}` — never rely on .length alone.
   let uvsKey = ''
   const rectForSig = parseUiBackgroundUvRect(bg?.uvs as ArrayLike<number> | null | undefined)
@@ -1241,4 +1427,13 @@ export function clearUiBackgroundImageSizeCache(): void {
   }
   multipliedImageUrl.clear()
   multipliedImageLoading.clear()
+  for (const url of uvCroppedImageUrl.values()) {
+    try {
+      URL.revokeObjectURL(url)
+    } catch {
+      /* ignore */
+    }
+  }
+  uvCroppedImageUrl.clear()
+  uvCroppedImageLoading.clear()
 }

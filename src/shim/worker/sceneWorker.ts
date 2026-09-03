@@ -8,7 +8,12 @@ import {
   encodeCommsBinaryMessage,
   isolateCommsBinaryMessage
 } from '../../network/comms/commsBinaryWire'
-import { isResCrdtStateType, unwrapCraftedCommsMessage } from '../../network/comms/syncDebug'
+import {
+  dropObsoleteAuthSnapshots,
+  resetAuthResCoalesceClock,
+  isResCrdtStateType,
+  unwrapCraftedCommsMessage
+} from '../../network/comms/syncDebug'
 import { createEngineApiEventState, type EngineApiEventState } from '../engine/EngineApiEventState'
 import type {
   ActiveVideoStreamsResponse,
@@ -108,7 +113,7 @@ import {
 } from './virtualCameraBindGuard'
 import { installAvatarAttachCreateGuard } from './patchAvatarAttachCreate'
 import type { Entity, IEngine } from '@dcl/ecs'
-import { parseShaderTriggers } from '../../vfx/shaderTags'
+import { ensureTjsComponent } from '../../dcl/ecs/tjsComponent'
 import * as extended from '@dcl/ecs/dist/components'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import {
@@ -144,6 +149,7 @@ import {
 } from './workerSceneUiCrdtOutbound'
 import { writeHostLwwNoDirty } from './injectHostLww'
 import {
+  flushInboundGuestLwwApplyProof,
   installInboundGuestLwwHostForward,
   resetInboundGuestLwwForward
 } from './forwardInboundGuestLww'
@@ -203,107 +209,14 @@ const VIDEO_PLAYER_NULL_MUTABLE = /VideoPlayer for null not found/
 
 const ctx = self
 
-function encodeTjsShaderParam(value: unknown): string {
-  if (Array.isArray(value) && value.length >= 3) return `${value[0]}:${value[1]}:${value[2]}`
-  if (value && typeof value === 'object' && 'x' in (value as object)) {
-    const v = value as { x: number; y: number; z: number }
-    return `${v.x}:${v.y}:${v.z}`
-  }
-  return String(value ?? '')
-}
-
-function tjsArgsToParams(args: unknown[]): Record<string, string> {
-  if (args.length === 1 && typeof args[0] === 'string') {
-    return { target: args[0] }
-  }
-  if (args.length >= 3 && typeof args[0] === 'number') {
-    return { at: `${args[0]}:${args[1]}:${args[2]}` }
-  }
-  const first = args[0]
-  if (Array.isArray(first) && first.length >= 3) {
-    return { at: encodeTjsShaderParam(first) }
-  }
-  if (first && typeof first === 'object') {
-    const out: Record<string, string> = {}
-    for (const [key, value] of Object.entries(first as Record<string, unknown>)) {
-      out[key] = encodeTjsShaderParam(value)
-    }
-    return out
-  }
-  return {}
-}
-
-/** `tjs.ice(54, 0, 38)` / `tjs.shader(name, fn, params)` — scene pointer callbacks. */
-function installTjsShaderApi(): void {
-  const g = globalThis as Record<string, unknown>
-  const post = (name: string, fn: string, params: Record<string, string>): void => {
-    ctx.postMessage({
-      type: 'tjs-shader',
-      name,
-      fn,
-      params
-    } satisfies SceneWorkerOutbound)
-  }
-  const base: Record<string, unknown> =
-    typeof g.tjs === 'object' && g.tjs ? { ...(g.tjs as Record<string, unknown>) } : {}
-  base.shader = (name: string, fn: string, params?: Record<string, unknown>) => {
-    post(String(name ?? ''), String(fn ?? 'cast'), tjsArgsToParams(params ? [params] : []))
-  }
-  g.tjs = new Proxy(base, {
-    get(target, prop, recv) {
-      if (typeof prop === 'symbol') return Reflect.get(target, prop, recv)
-      if (prop in target) return Reflect.get(target, prop, recv)
-      return (...args: unknown[]) => post('', String(prop), tjsArgsToParams(args))
-    }
-  })
-}
-installTjsShaderApi()
-
-const firedSceneShaderTags = new Set<string>()
-
-function resolveSceneTagsComponent(eng: IEngine): {
-  getOrNull: (entity: Entity) => { tags?: string[] } | null
-} | null {
-  const named = (eng as IEngine & {
-    getComponentOrNull?: (name: string) => unknown
-  }).getComponentOrNull?.('core-schema::Tags')
-  if (named && typeof (named as { getOrNull?: unknown }).getOrNull === 'function') {
-    return named as { getOrNull: (entity: Entity) => { tags?: string[] } | null }
-  }
-  for (const component of eng.componentsIter()) {
-    const name = (component as { componentName?: string }).componentName ?? ''
-    if (name === 'core-schema::Tags' || name === 'Tags') {
-      return component as { getOrNull: (entity: Entity) => { tags?: string[] } | null }
-    }
-  }
-  return null
-}
-
-/** Tag create = cast. Read Tags on the scene engine after systems; do not wait for host CRDT. */
-function flushShaderTagsFromScene(): void {
-  if (!sceneEngine) return
-  const Tags = resolveSceneTagsComponent(sceneEngine)
-  if (!Tags) return
-  for (const [entity] of sceneEngine.getEntitiesWith(Tags as never)) {
-    const tags = Tags.getOrNull(entity)?.tags ?? []
-    if (!tags.length) continue
-    for (const play of parseShaderTriggers(tags)) {
-      const fn = play.fn.toLowerCase()
-      if (fn === 'tick' || fn === 'shader' || play.name.toLowerCase() === 'shader') continue
-      const key = `${entity as number}:${play.name}:${play.fn}:${play.params.origin ?? ''}:${play.params.direction ?? ''}:${play.params.distance ?? ''}`
-      if (firedSceneShaderTags.has(key)) continue
-      firedSceneShaderTags.add(key)
-      ctx.postMessage({
-        type: 'tjs-shader',
-        name: play.name,
-        fn: play.fn,
-        params: play.params
-      } satisfies SceneWorkerOutbound)
-      workerLog(
-        'warn',
-        `[sceneWorker] VFXEDGE tag-create ${play.name}.${play.fn} e${entity as number}`
-      )
-    }
+function registerWorkerTjsComponent(eng: IEngine): void {
+  try {
+    ensureTjsComponent(eng)
+  } catch (err) {
+    workerLog(
+      'warn',
+      `[sceneWorker] tjs component register skipped — ${err instanceof Error ? err.message : String(err)}`
+    )
   }
 }
 
@@ -770,7 +683,11 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
   pointerUiMountEgressPending = false
   const snapshotMountIds =
     uiSnapshot?.length ? extractSnapshotMountEntityIds(uiSnapshot) : []
-  const uiEntities = snapshotMountIds.length ? snapshotMountIds : collectWorkerUiEntityIds()
+  const uiEntities = eng
+    ? collectWorkerUiMountEntityIds(eng)
+    : snapshotMountIds.length
+      ? snapshotMountIds
+      : collectWorkerUiEntityIds()
   const ackWaits: Promise<void>[] = []
 
   const postOutbound = (
@@ -802,7 +719,7 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
           id,
           data,
           uiEntities: attachUi.uiEntities,
-          ...(attachUi.uiMountSnapshot?.length ? { uiMountSnapshot: attachUi.uiMountSnapshot } : {})
+          uiMountSnapshot: attachUi.uiMountSnapshot ?? []
         } satisfies SceneWorkerOutbound)
       : ({ type: 'crdt-outbound', id, data } satisfies SceneWorkerOutbound)
     logSceneUiOutbound(data, attachUi?.uiEntities, attachUi?.uiMountSnapshot?.length ?? 0)
@@ -824,11 +741,7 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
   if (uiMountPending) {
     // Prefer full mount id list from worker engine (not only entities present in this snap)
     // so main commitMountSet matches phase-4 authority even if a row is briefly missing.
-    const fullMountIds =
-      sceneEngine && uiSnapshot?.length
-        ? collectWorkerUiMountEntityIds(sceneEngine)
-        : uiEntities
-    const mountIds = fullMountIds.length > 0 ? fullMountIds : uiEntities
+    const mountIds = sceneEngine ? collectWorkerUiMountEntityIds(sceneEngine) : uiEntities
     lastOutboundUiEntitiesKey = mountIds.join(',')
     // Content fp so cooperative postUiMountSnapshot does not drop as "identical" forever.
     const snapFp = uiMountSnapshotContentFp(uiSnapshot ?? [])
@@ -1328,6 +1241,21 @@ function applyHostReservedSceneStore(): void {
   }
 }
 
+/** Host PointerLock on CameraEntity — skip identical so onChange does not pulse. */
+function applyPointerLockOnEngine(locked: boolean): void {
+  if (!sceneEngine) return
+  preregisterRendererInjectedComponents(sceneEngine)
+  const PointerLock = generated.PointerLock(sceneEngine)
+  const cur = PointerLock.getOrNull(sceneEngine.CameraEntity) as
+    | { isPointerLocked?: boolean }
+    | null
+  if (cur?.isPointerLocked === locked) return
+  writeHostLwwNoDirty(PointerLock, sceneEngine.CameraEntity as number, {
+    isPointerLocked: locked
+  })
+  workerLog('log', `[sceneWorker] PointerLock isPointerLocked=${locked ? 1 : 0}`)
+}
+
 /** Same-tick PlayerEntity / CameraEntity for scene systems (CameraFollowSystem, etc.). */
 function applyPlayFrameReservedPoses(
   player?: {
@@ -1345,7 +1273,8 @@ function applyPlayFrameReservedPoses(
     worldRayDirection: { x: number; y: number; z: number }
   },
   avatarAttach?: import('../types').AvatarAttachTransformEntry[],
-  tweenTransforms?: import('../types').AvatarAttachTransformEntry[]
+  tweenTransforms?: import('../types').AvatarAttachTransformEntry[],
+  pointerLock?: boolean
 ): void {
   if (!sceneEngine) return
   const Transform = extended.Transform(sceneEngine)
@@ -1368,6 +1297,7 @@ function applyPlayFrameReservedPoses(
   ensureReservedEntityTransforms(sceneEngine)
   if (player) write(sceneEngine.PlayerEntity as Entity, player)
   if (camera) write(sceneEngine.CameraEntity as Entity, camera)
+  if (pointerLock !== undefined) applyPointerLockOnEngine(pointerLock)
   applyHostReservedSceneStore()
   // Renderer Tweens write Transform on the store the VM reads (new-catch scale, reveal cam).
   if (tweenTransforms?.length) {
@@ -1716,7 +1646,6 @@ initSceneEngineScheduler({
     clearInjectOnlySdkPollEventsDeferred()
   },
   onAfterEngineTick: () => {
-    flushShaderTagsFromScene()
     publishVcBindHydrateIfNeeded()
     publishPlayerFrameIfChanged()
     publishVcPoseLiveEgress()
@@ -2493,6 +2422,37 @@ async function executePointerEdge(body: InjectPointerClickBody): Promise<void> {
       `[sceneWorker] ${label} — keyboard level-state button=${button} (snapshot/reassert; skip no-target)`
     )
     postPointerDeliverDone(`${label}-keyboard-level`)
+    return
+  }
+  // IA_POINTER empty-ground / scene-VC orbit: PET + PPI only. The RTS no-target path
+  // (450ms budget, MeshRenderer census, react-ecs hold for the whole LMB drag)
+  // starved Gulp play-frames (~13fps) while isPressed was already armed.
+  if (treatAsNoTargetEarly && button === InputAction.IA_POINTER) {
+    if (ppi || body.camera || body.pointerLock !== undefined) {
+      applyPlayFrameReservedPoses(
+        undefined,
+        body.camera,
+        ppi,
+        undefined,
+        undefined,
+        body.pointerLock
+      )
+    }
+    if (sceneEngine) {
+      injectLevelStatePointerEdgeOnEngine(
+        sceneEngine,
+        body,
+        phase === 'up' ? 'up' : 'down'
+      )
+      requestSceneEngineTick({ source: 'pointer-edge' })
+    }
+    if (phase === 'down' && !body.sceneUi) setWorkerPointerButtonHeld(button, true)
+    else setWorkerPointerButtonHeld(button, false)
+    workerLog(
+      'warn',
+      `[sceneWorker] ${label} — IA_POINTER level-state (PET+PPI; skip no-target RTS)`
+    )
+    postPointerDeliverDone(`${label}-pointer-level`)
     return
   }
   // Track held buttons for press lifecycle. No-target also defers cooperative
@@ -3310,12 +3270,12 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
     // Wire CRDT alone often lands partial UiTransform (Planetangzaar: 1/255) while mount=255.
     const uiMountSnapshot =
       attachUiMount && sceneEngine ? collectWorkerUiMountSnapshot(sceneEngine) : undefined
-    const snapshotMountIds =
-      uiMountSnapshot?.length ? extractSnapshotMountEntityIds(uiMountSnapshot) : []
     const uiEntities = attachUiMount
-      ? snapshotMountIds.length
-        ? snapshotMountIds
-        : collectWorkerUiEntityIds()
+      ? sceneEngine
+        ? collectWorkerUiMountEntityIds(sceneEngine)
+        : uiMountSnapshot?.length
+          ? extractSnapshotMountEntityIds(uiMountSnapshot)
+          : collectWorkerUiEntityIds()
       : undefined
     const uiKey = attachUiMount ? uiEntities!.join(',') : lastOutboundUiEntitiesKey
     if (copy.byteLength === 0) {
@@ -3349,7 +3309,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
             type: 'crdt-outbound',
             data: copy,
             uiEntities,
-            ...(uiMountSnapshot?.length ? { uiMountSnapshot } : {})
+            uiMountSnapshot: uiMountSnapshot ?? []
           } satisfies SceneWorkerOutbound)
         : ({ type: 'crdt-outbound', data: copy } satisfies SceneWorkerOutbound)
       ctx.postMessage(msg)
@@ -3382,7 +3342,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
             id,
             data: copy,
             uiEntities,
-            ...(uiMountSnapshot?.length ? { uiMountSnapshot } : {})
+            uiMountSnapshot: uiMountSnapshot ?? []
           } satisfies SceneWorkerOutbound)
         : ({ type: 'crdt-outbound', id, data: copy } satisfies SceneWorkerOutbound)
       ctx.postMessage(msg, [copy.buffer])
@@ -3520,7 +3480,7 @@ function takeBufferedSendBinaryInbound(): Uint8Array[] {
 }
 
 const CUSTOM_EVENT_NAME_RE =
-  /teamAssigned|weatherState|paintDelta|snapshot|joinRoster|paintTick|botPositions|roundReset|requestSnapshot|updateName/
+  /teamAssigned|weatherState|paintDelta|snapshot|joinRoster|paintTick|botPositions|roundReset|requestSnapshot|updateName|move|join|split|eatFood|eatPlayer|respawn|blobKnock|massUpdate|foodSpawn|foodGone|leaderboard|boostStart|spikeStart|spikeHit/
 
 function peekCustomEventName(payload: Uint8Array): string {
   const n = Math.min(payload.byteLength, 96)
@@ -3543,12 +3503,10 @@ function inboundHasRoomReadyTypes(chunks: Uint8Array[]): boolean {
   for (const chunk of chunks) {
     const decoded = decodeCommsBinaryMessage(chunk)
     if (!decoded) continue
-    if (
-      decoded.messageType === 6 ||
-      decoded.messageType === 9 ||
-      decoded.messageType === 3 ||
-      decoded.messageType === 7
-    ) {
+    // AUTH_RES / RES only. AUTH_CRDT (7) and ongoing CUSTOM_EVENT are the
+    // play hot path — treating them as join-critical logged every packet and
+    // stalled the debug panel / main thread (auth-server combat rooms).
+    if (decoded.messageType === 9 || decoded.messageType === 3 || decoded.messageType === 8) {
       return true
     }
   }
@@ -3611,7 +3569,9 @@ function mergeSendBinaryResponse(body: SendBinaryResponse): SendBinaryResponse {
   // Explorer: drain the inbound queue as-is (Bevy sendBinary → recv_binary).
   // RES-first is order only so snapshot sets isRoomReady before same-batch CRDT.
   const merged = resCrdtFirst(
-    isolateSendBinaryInbound([...(body.data ?? []), ...takeBufferedSendBinaryInbound()])
+    dropObsoleteAuthSnapshots(
+      isolateSendBinaryInbound([...(body.data ?? []), ...takeBufferedSendBinaryInbound()])
+    )
   )
   noteSendBinaryInbound(merged)
   return { data: merged }
@@ -3863,10 +3823,23 @@ async function startSceneLoop(exports: ReturnType<typeof evaluateSceneBundle>): 
       forceRecoverStuckSceneEngineTick('heartbeat-stuck-engine-tick')
     }
     lastHeartbeatAt = now
+    let realmConnected = '-'
+    if (sceneEngine) {
+      try {
+        const RealmInfo = generated.RealmInfo(sceneEngine)
+        const realm = RealmInfo.getOrNull(sceneEngine.RootEntity) as
+          | { isConnectedSceneRoom?: boolean }
+          | null
+        realmConnected = realm?.isConnectedSceneRoom === true ? '1' : '0'
+      } catch {
+        realmConnected = '?'
+      }
+    }
     workerLog(
       'log',
-      `[sceneWorker] heartbeat — tick=${heartbeatPass} sceneUpdateInFlight=${sceneUpdateInFlight} sceneUpdatePromiseActive=${sceneUpdatePromiseActive} pointerDeliveryInFlight=${pointerDeliveryInFlight} engineTickInFlight=${isSceneEngineTickInFlight()} pendingCrdt=${pendingCrdt.size} sceneEngine=${sceneEngine ? 'ok' : 'missing'} sceneTickIntervalMs=${sceneTickIntervalMs}`
+      `[sceneWorker] heartbeat — tick=${heartbeatPass} sceneUpdateInFlight=${sceneUpdateInFlight} sceneUpdatePromiseActive=${sceneUpdatePromiseActive} pointerDeliveryInFlight=${pointerDeliveryInFlight} engineTickInFlight=${isSceneEngineTickInFlight()} pendingCrdt=${pendingCrdt.size} sceneEngine=${sceneEngine ? 'ok' : 'missing'} sceneTickIntervalMs=${sceneTickIntervalMs} realmConnected=${realmConnected}`
     )
+    flushInboundGuestLwwApplyProof()
   }, 5000)
 
   const runCooperativeTick = (): void => {
@@ -3910,6 +3883,7 @@ async function completeSceneBoot(exports: import('../system/createSystemStubs').
   if (!sceneEngine) {
     sceneEngine = resolveSceneEngine(exports)
   }
+  if (sceneEngine) registerWorkerTjsComponent(sceneEngine)
   drainPendingInjectPointer()
   if (!sceneEngine) {
     const message =
@@ -4131,6 +4105,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
       (msg.player ||
         msg.camera ||
         msg.primaryPointer ||
+        msg.pointerLock !== undefined ||
         msg.avatarAttach?.length ||
         msg.tweenTransforms?.length)
     ) {
@@ -4139,7 +4114,8 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
         msg.camera,
         msg.primaryPointer,
         msg.avatarAttach,
-        msg.tweenTransforms
+        msg.tweenTransforms,
+        msg.pointerLock
       )
     }
     // Snap active PE-follow anchors even when UI holds engine.update (pointer select / menus).
@@ -4355,6 +4331,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     sceneOnStartComplete = false
     sceneBootInProgress = true
     resetInboundGuestLwwForward()
+    resetAuthResCoalesceClock()
     lastUserData = null
     lastRealmInfo = null
     cacheHostReserved(msg.reserved)
@@ -4575,6 +4552,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     )
     ctx.postMessage({ type: 'eval-done' } satisfies SceneWorkerOutbound)
     sceneEngine = resolveSceneEngine(exports)
+    if (sceneEngine) registerWorkerTjsComponent(sceneEngine)
     bindSceneEngineScheduler(sceneEngine)
     if (sceneEngine) {
       ensureReservedEntityTransforms(sceneEngine)

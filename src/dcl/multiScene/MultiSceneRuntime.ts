@@ -26,7 +26,7 @@ export type MultiSceneRuntimeOptions = {
  * World-attached multi-scene runtime: secondary live workers + PE tick hooks.
  * Primary remains World.sceneScript (not managed here) until promote handoff.
  *
- * Priority: primary (World) > PE > secondary > tertiary (AOI, no workers).
+ * Priority: occupancy world scene (World) > PE (always occupied) > secondary > tertiary.
  */
 export class MultiSceneRuntime {
   readonly arbiter = new PrivilegedIntentArbiter()
@@ -42,6 +42,8 @@ export class MultiSceneRuntime {
   private lastMultiPhysIds = new Set<number>()
   /** Live secondary tick/reconcile gated until primary play-ready. */
   private secondaryActivityEnabled = false
+  /** Last AOI candidates — flushed when activity turns on (do not drop Spring). */
+  private pendingSecondaryCandidates: SecondaryLiveRequest[] | null = null
 
   constructor(opts: MultiSceneRuntimeOptions) {
     this.pe = opts.peManager
@@ -87,6 +89,18 @@ export class MultiSceneRuntime {
   /** Sticky/live secondary-offset colliders for immediate PhysX keep-alive after demote. */
   collectResidentColliders(): import('../../physics/PhysXWorld').PhysicsColliderDesc[] {
     return this.secondary?.collectAllCachedColliders() ?? []
+  }
+
+  collectResidentCollidersFor(
+    entityId: string
+  ): import('../../physics/PhysXWorld').PhysicsColliderDesc[] {
+    return this.secondary?.collectCachedCollidersFor(entityId) ?? []
+  }
+
+  recaptureResidentColliders(
+    entityId: string
+  ): import('../../physics/PhysXWorld').PhysicsColliderDesc[] {
+    return this.secondary?.recaptureColliders(entityId) ?? []
   }
 
   markResidentCollidersSynced(): void {
@@ -205,9 +219,17 @@ export class MultiSceneRuntime {
   }
 
   setSecondaryActivityEnabled(enabled: boolean): void {
-    if (this.secondaryActivityEnabled === enabled) return
+    if (this.secondaryActivityEnabled === enabled) {
+      if (enabled && this.pendingSecondaryCandidates) {
+        this.secondary?.reconcile(this.pendingSecondaryCandidates)
+      }
+      return
+    }
     this.secondaryActivityEnabled = enabled
     console.info(`[multi-scene] secondary activity ${enabled ? 'ON' : 'OFF'}`)
+    if (enabled && this.pendingSecondaryCandidates) {
+      this.secondary?.reconcile(this.pendingSecondaryCandidates)
+    }
   }
 
   /** When false, soft-route must not force-boot neighbors (promote settle). */
@@ -216,8 +238,29 @@ export class MultiSceneRuntime {
   }
 
   reconcileSecondaries(candidates: SecondaryLiveRequest[]): void {
+    this.pendingSecondaryCandidates = candidates
     if (!this.secondaryActivityEnabled) return
     this.secondary?.reconcile(candidates)
+  }
+
+  setLiveGuestLoadBoot(enabled: boolean): void {
+    this.secondary?.setLoadBoot(enabled)
+  }
+
+  liveGuestLoadStats(): {
+    ready: number
+    target: number
+    booting: number
+    titles: string[]
+  } {
+    return (
+      this.secondary?.liveGuestLoadStats() ?? {
+        ready: 0,
+        target: 0,
+        booting: 0,
+        titles: []
+      }
+    )
   }
 
   /** Prefer live-secondary boot for the parcel under feet (promote without /goto). */

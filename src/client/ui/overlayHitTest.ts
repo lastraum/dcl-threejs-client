@@ -43,6 +43,7 @@ export function isClientOverlayTarget(target: EventTarget | null): boolean {
       '.trade-invite-host',
       '.trade-result-host',
       '.trade-window-host',
+      '.iwm-panel',
       '#threejs-hud-confirm-overlay',
       '#threejs-external-link-overlay',
       '#threejs-nft-dialog-overlay'

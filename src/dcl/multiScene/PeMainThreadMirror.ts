@@ -22,7 +22,8 @@ import type { PortableExperienceManager } from './PortableExperienceManager'
 
 export type PeMainThreadMirrorContext = {
   pe: PortableExperienceManager
-  primary: SceneScriptSystem
+  /** FocusOwner occupancy scene (primary or live guest under feet). */
+  occupancy: SceneScriptSystem
   player: PlayerSystem | null
   /** Apply movePlayer / emote / teleport from arbiter (primary-silent only). */
   drainPrivilegedIntents: () => void
@@ -100,8 +101,8 @@ export class PeMainThreadMirror {
     ctx: PeMainThreadMirrorContext,
     systems: SceneScriptSystem[]
   ): void {
-    const { InputModifier } = ctx.primary.readComponents
-    const player = ctx.primary.view.PlayerEntity as Entity
+    const { InputModifier } = ctx.occupancy.readComponents
+    const player = ctx.occupancy.view.PlayerEntity as Entity
 
     let peMod: unknown | null = null
     for (const sys of systems) {
@@ -147,8 +148,8 @@ export class PeMainThreadMirror {
     ctx: PeMainThreadMirrorContext,
     systems: SceneScriptSystem[]
   ): void {
-    const primary = ctx.primary.readComponents
-    const player = ctx.primary.view.PlayerEntity as Entity
+    const occupancy = ctx.occupancy.readComponents
+    const player = ctx.occupancy.view.PlayerEntity as Entity
 
     // Continuous force — last PE write wins among PEs (primary component only holds one vector).
     let force: unknown | null = null
@@ -175,28 +176,29 @@ export class PeMainThreadMirror {
       }
     }
 
-    if (force && primary.PhysicsCombinedForce) {
-      primary.PhysicsCombinedForce.createOrReplace(player, cloneJson(force) as never)
+    if (force && occupancy.PhysicsCombinedForce) {
+      occupancy.PhysicsCombinedForce.createOrReplace(player, cloneJson(force) as never)
       this.forceMirrored = true
-    } else if (this.forceMirrored && primary.PhysicsCombinedForce) {
-      primary.PhysicsCombinedForce.deleteFrom(player)
+    } else if (this.forceMirrored && occupancy.PhysicsCombinedForce) {
+      occupancy.PhysicsCombinedForce.deleteFrom(player)
       this.forceMirrored = false
     }
 
-    if (impulse && primary.PhysicsCombinedImpulse) {
-      primary.PhysicsCombinedImpulse.createOrReplace(player, cloneJson(impulse) as never)
+    if (impulse && occupancy.PhysicsCombinedImpulse) {
+      occupancy.PhysicsCombinedImpulse.createOrReplace(player, cloneJson(impulse) as never)
       this.impulseMirrored = true
-    } else if (this.impulseMirrored && primary.PhysicsCombinedImpulse) {
-      // Don't delete impulse if primary scene also writes — only clear if we put it and PE gone.
+    } else if (this.impulseMirrored && occupancy.PhysicsCombinedImpulse) {
+      // Don't delete impulse if occupancy scene also writes — only clear if we put it and PE gone.
       // Keep last impulse for one frame then clear when PE has no component.
-      primary.PhysicsCombinedImpulse.deleteFrom(player)
+      occupancy.PhysicsCombinedImpulse.deleteFrom(player)
       this.impulseMirrored = false
     }
   }
 
   private clearAllMirrored(ctx: PeMainThreadMirrorContext): void {
-    const { InputModifier, PhysicsCombinedForce, PhysicsCombinedImpulse } = ctx.primary.readComponents
-    const player = ctx.primary.view.PlayerEntity as Entity
+    const { InputModifier, PhysicsCombinedForce, PhysicsCombinedImpulse } =
+      ctx.occupancy.readComponents
+    const player = ctx.occupancy.view.PlayerEntity as Entity
 
     if (this.inputMirrored) {
       InputModifier.deleteFrom(player)

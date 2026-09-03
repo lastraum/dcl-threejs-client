@@ -5,25 +5,38 @@
 # Dev panel Community tab renders this as a single workflow table.
 
 schema_version: 2
-updated: 2026-08-23
+updated: 2026-09-03
 source: github
 base_branch: dev-latest
 workflow:
-  - stage: pending_review
-    integration_ref: pr:62
-    title: deploy confirmation on Barn cards + update-available refresh for library
-      pets
-    owner: awedjob
-    pr: 62
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/62
-    updated: 2026-08-12
-  - stage: pending_review
-    integration_ref: pr:56
-    title: re-add foil pack and retriever, compressed (1.1 MB total)
-    owner: awedjob
-    pr: 56
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/56
-    updated: 2026-07-29
+  - stage: merged
+    integration_ref: pr:74
+    title: "plaza open-world three rings (dev-latest, PR #73)"
+    owner: lastraum
+    pr: 74
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/74
+    updated: 2026-09-02
+  - stage: merged
+    integration_ref: pr:75
+    title: first-class ECS component for shaders and CCTV
+    owner: lastraum
+    pr: 75
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/75
+    updated: 2026-09-02
+  - stage: merged
+    integration_ref: pr:73
+    title: plaza nested look at 200m, nearest live JS, walk-safe collide
+    owner: lastraum
+    pr: 73
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/73
+    updated: 2026-09-02
+  - stage: merged
+    integration_ref: pr:71
+    title: confirm deploys and refresh stale barn pets
+    owner: lastraum
+    pr: 71
+    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/71
+    updated: 2026-08-24
   - stage: merged
     integration_ref: pr:70
     title: Snow Drift UI borders, sky wash, name tags, avatar materials
@@ -137,32 +150,3 @@ workflow:
     pr: 52
     pr_url: https://github.com/lastraum/dcl-threejs-client/pull/52
     updated: 2026-07-26
-  - stage: merged
-    integration_ref: pr:51
-    title: rest DCL shoes on the ground disc instead of clipping through
-    owner: awedjob
-    pr: 51
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/51
-    updated: 2026-07-26
-  - stage: merged
-    integration_ref: pr:50
-    title: drop duplicate bone tracks and honor the Catalyst loop flag
-    owner: awedjob
-    pr: 50
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/50
-    updated: 2026-07-26
-  - stage: merged
-    integration_ref: pr:48
-    title: item provenance in detail panes + clickable filter chips; official exotic
-      color
-    owner: awedjob
-    pr: 48
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/48
-    updated: 2026-07-25
-  - stage: merged
-    integration_ref: pr:47
-    title: export equipped DCL avatar as VRM 0.0
-    owner: lastraum
-    pr: 47
-    pr_url: https://github.com/lastraum/dcl-threejs-client/pull/47
-    updated: 2026-07-24

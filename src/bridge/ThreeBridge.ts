@@ -631,7 +631,7 @@ export class ThreeBridge {
       return this.meshRendererInstancer.writeWorldMatrix(entity, world)
     }
     if (this.instancer.has(entity)) {
-      return this.instancer.writeWorldMatrix(entity, world)
+      return this.instancer.writeWorldMatrix(entity, world, obj ?? undefined)
     }
     return false
   }
@@ -1092,12 +1092,26 @@ export class ThreeBridge {
     this.zeroHiddenGltfInstances()
   }
 
+  /**
+   * Present extract: same hide law as DrawWorld.sync for clones.
+   * InstancedMesh does not inherit pose.visible — rewrite hidden slots every frame.
+   */
+  syncInstancedVisibilityExtract(): void {
+    this.zeroHiddenGltfInstances()
+  }
+
   /** GPU instance slots whose pose chain is hidden must be zero-scale. */
   private zeroHiddenGltfInstances(): void {
     const extra: Entity[] = []
+    const vis = this.ecs.VisibilityComponent
     for (const entity of this.instancer.entities()) {
       const obj = this.store.nodes.get(entity)
       if (!obj) continue
+      if (vis?.has(entity) && vis.get(entity).visible === false) {
+        obj.visible = false
+        extra.push(entity)
+        continue
+      }
       if (!obj.visible) {
         extra.push(entity)
         continue
@@ -1290,12 +1304,33 @@ export class ThreeBridge {
     if (visEntities.size) this.syncEcsVisibility(visEntities)
   }
 
+  private tjsGetTexture: ((entity: number) => THREE.Texture | null) | null = null
+
+  setTjsTextureGetter(getter: (entity: number) => THREE.Texture | null): void {
+    this.tjsGetTexture = getter
+    this.bindVideoTextureResolver()
+  }
+
   setVideoPlayerBridge(bridge: VideoPlayerBridge): void {
     this.videoPlayerBridge = bridge
-    this.materials.setVideoTextureResolver((entity) => bridge.getTexture(entity as Entity))
+    this.bindVideoTextureResolver()
     bridge.onTextureReady = (videoPlayerEntity) => {
       this.invalidateMaterialsForVideoPlayer(videoPlayerEntity)
     }
+  }
+
+  notifyVideoTextureReady(entity: Entity): void {
+    this.invalidateMaterialsForVideoPlayer(entity)
+  }
+
+  private bindVideoTextureResolver(): void {
+    this.materials.setVideoTextureResolver((entity) => {
+      return (
+        this.videoPlayerBridge?.getTexture(entity as Entity) ??
+        this.tjsGetTexture?.(entity) ??
+        null
+      )
+    })
   }
 
   setAvatarTextureResolver(resolver: (userId: string) => Promise<THREE.Texture | null>): void {
@@ -3805,14 +3840,9 @@ export class ThreeBridge {
 
   /** Unbind every scene draw slot so recycle /reload actually hides GLBs + primitives. */
   private detachAllSceneDrawVisuals(): void {
-    let n = 0
     for (const [entity, obj] of this.store.nodes) {
       if (this.store.getOwner(entity) === 'avatar') continue
       this.removeEntityVisuals(entity, obj)
-      n++
-    }
-    if (n > 0) {
-      console.info(`[reload] hid ${n} scene draw visual(s)`)
     }
   }
 
@@ -4003,11 +4033,14 @@ export class ThreeBridge {
    * Entity visibility is the clone root only. Per-mesh rewrite unhides
    * `*_collider` hulls (ice-rink Glass_collider) and would skip click_area
    * volumes when hiding (mesh.visible=false drops them from pointer collect).
+   *
+   * Missing VisibilityComponent must not force-show — LO() can hide the pose
+   * before the vis PUT is on the host; attach used to flip those benches back on.
    */
   private applyAuthoredVisibility(entity: Entity, obj: THREE.Object3D): void {
     const { VisibilityComponent } = this.ecs
-    const visible =
-      !VisibilityComponent?.has(entity) || VisibilityComponent.get(entity).visible !== false
+    if (!VisibilityComponent?.has(entity)) return
+    const visible = VisibilityComponent.get(entity).visible !== false
     obj.visible = visible
     const drawn = obj.userData.dclDrawVisual as THREE.Object3D | undefined
     if (drawn) drawn.visible = visible
@@ -4516,6 +4549,10 @@ export class ThreeBridge {
       if (this.canInstanceAttach(entity, template)) {
         // Drop prior instance if re-attaching with new src
         if (obj.userData.dclInstanced) this.instancer.detach(entity, obj)
+        // LO() hides pond benches before the GLB attaches. First writeMatrix
+        // reads Object3D.visible — apply ECS Visibility on the pose first or the
+        // GPU slot lands at full scale and stays until a later vis PUT.
+        this.applyAuthoredVisibility(entity, obj)
         const result = this.instancer.attach(entity, obj, hash, template.root, mk)
         if (result.ok) {
           obj.userData.gltfSrcKey = srcKey
@@ -4525,10 +4562,7 @@ export class ThreeBridge {
           obj.matrixAutoUpdate = false
           obj.updateMatrix()
           obj.updateMatrixWorld(true)
-          const vis = this.ecs.VisibilityComponent
-          if (vis?.has(entity) && vis.get(entity).visible === false) {
-            obj.visible = false
-          }
+          this.applyAuthoredVisibility(entity, obj)
           this.instancer.update(entity, obj)
           enableSceneGltfVertexColors(template.root)
           // Material may have arrived before mesh attach — tint instance now.
@@ -4633,12 +4667,9 @@ export class ThreeBridge {
         obj.matrixAutoUpdate = true
         if (fishingMotion || waterSurface) unfreezeObject3D(clone)
       }
+      this.applyAuthoredVisibility(entity, obj)
       this.bindDrawVisual(obj, clone)
-      const visComp = this.ecs.VisibilityComponent
-      if (visComp?.has(entity) && visComp.get(entity).visible === false) {
-        obj.visible = false
-        clone.visible = false
-      }
+      this.applyAuthoredVisibility(entity, obj)
       this.notifyMeshComponent(entity, this.ecs.GltfContainer.componentId)
       this.notifyGltfAttached(entity)
       this.seenGltfAttachHashes.add(hash)

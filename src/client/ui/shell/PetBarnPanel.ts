@@ -15,6 +15,9 @@ import {
   sha256HexOfBlob,
   submitPetBarnListing,
   updatePetBarnListing,
+  watchBarnDeploy,
+  type BarnDeployAction,
+  type BarnDeploySnapshot,
   type PetBarnCatalog,
   type PetBarnListing
 } from '../../../pets/petBarn'
@@ -77,6 +80,20 @@ export class PetBarnPanel {
   private readonly onKeyDown: (ev: KeyboardEvent) => void
   /** Center overlay: loading (blocks UI) or result (dismissible). */
   private overlayMode: 'none' | 'loading' | 'error' | 'success' = 'none'
+  /** Keyed by listing id (update/delete) or Worker queue id (create). */
+  private deployWatchSeq = 0
+  private readonly pendingDeploys = new Map<
+    string,
+    {
+      petName: string
+      action: BarnDeployAction
+      state: 'deploying' | 'deployed' | 'timeout'
+      gen: number
+      abort: AbortController
+      doneTimer: ReturnType<typeof setTimeout> | null
+      listing?: PetBarnListing
+    }
+  >()
 
   constructor(private readonly options: PetBarnPanelOptions) {
     this.element = document.createElement('div')
@@ -165,6 +182,7 @@ export class PetBarnPanel {
   }
 
   dispose(): void {
+    this.abortAllDeployWatches()
     this.clearOverlay()
     this.hide()
     this.element.remove()
@@ -303,6 +321,77 @@ export class PetBarnPanel {
     this.setPublishLocked(false)
   }
 
+  /** Poll until the catalog confirms this queued action; resubmit aborts the previous poll. */
+  private beginDeployWatch(
+    key: string,
+    petName: string,
+    action: BarnDeployAction,
+    prev?: BarnDeploySnapshot,
+    listing?: PetBarnListing
+  ): void {
+    const existing = this.pendingDeploys.get(key)
+    if (existing) {
+      existing.abort.abort()
+      if (existing.doneTimer) clearTimeout(existing.doneTimer)
+    }
+    const gen = ++this.deployWatchSeq
+    const abort = new AbortController()
+    this.pendingDeploys.set(key, {
+      petName,
+      action,
+      state: 'deploying',
+      gen,
+      abort,
+      doneTimer: null,
+      listing
+    })
+    if (this.visible && this.view === 'catalog') this.renderCatalogPreservingSearchFocus()
+    void watchBarnDeploy({ action, targetId: key, prev, signal: abort.signal }).then(async (outcome) => {
+      const row = this.pendingDeploys.get(key)
+      if (!row || row.gen !== gen) return
+      row.state = outcome === 'deployed' ? 'deployed' : 'timeout'
+      if (outcome === 'deployed') {
+        await this.refreshCatalog()
+        const still = this.pendingDeploys.get(key)
+        if (!still || still.gen !== gen) return
+        const verb =
+          action === 'delete' ? 'removed from the world' : action === 'create' ? 'live in the world' : 'deployed'
+        this.setStatus(`✓ ${petName} ${verb}`)
+        still.doneTimer = setTimeout(() => {
+          const cur = this.pendingDeploys.get(key)
+          if (!cur || cur.gen !== gen) return
+          this.pendingDeploys.delete(key)
+          if (this.visible && this.view === 'catalog') this.renderCatalogPreservingSearchFocus()
+        }, 10_000)
+      } else {
+        this.setStatus(
+          `⚠ ${petName}: deploy not confirmed after 6 min — refresh the catalog later or resubmit.`
+        )
+      }
+      if (this.visible && this.view === 'catalog') this.renderCatalogPreservingSearchFocus()
+    })
+  }
+
+  private abortAllDeployWatches(): void {
+    for (const row of this.pendingDeploys.values()) {
+      row.abort.abort()
+      if (row.doneTimer) clearTimeout(row.doneTimer)
+    }
+    this.pendingDeploys.clear()
+  }
+
+  private deployChipHtml(listingId: string): string {
+    const row = this.pendingDeploys.get(listingId)
+    if (!row) return ''
+    if (row.state === 'deploying') {
+      return `<span class="petbarn-card__deploy is-deploying">Deploying…</span>`
+    }
+    if (row.state === 'deployed') {
+      return `<span class="petbarn-card__deploy is-deployed">Deployed ✓</span>`
+    }
+    return `<span class="petbarn-card__deploy is-timeout" title="Not confirmed after 6 minutes — refresh later">Unconfirmed ⚠</span>`
+  }
+
   private startPoll(): void {
     this.stopPoll()
     this.pollTimer = setInterval(() => {
@@ -418,9 +507,21 @@ export class PetBarnPanel {
     `
   }
 
+  /** Catalog plus in-flight deletes so the Deploying chip stays on the card. */
+  private catalogPets(): PetBarnListing[] {
+    const pets = [...(this.catalog?.pets ?? [])]
+    const have = new Set(pets.map((p) => p.id))
+    for (const [id, row] of this.pendingDeploys) {
+      if (row.action === 'delete' && row.listing && !have.has(id)) {
+        pets.push(row.listing)
+      }
+    }
+    return pets
+  }
+
   private filteredPets(): PetBarnListing[] {
     const q = this.searchQuery.trim().toLowerCase()
-    return (this.catalog?.pets ?? []).filter((p) => {
+    return this.catalogPets().filter((p) => {
       if (this.filter !== 'all' && p.type !== this.filter) return false
       if (!q) return true
       const hay = `${p.petName} ${p.creatorName}`.toLowerCase()
@@ -431,13 +532,14 @@ export class PetBarnPanel {
   private renderCatalog(): void {
     const toolbar = this.toolbarHtml()
     const base = this.catalog?.contentBaseUrl ?? ''
+    const all = this.catalogPets()
     const pets = this.filteredPets()
 
     if (!this.catalog) {
       this.bodyEl.innerHTML = `${toolbar}<div class="pets-panel__empty">Loading catalog…</div>`
       return
     }
-    if (!(this.catalog.pets ?? []).length) {
+    if (!all.length) {
       this.bodyEl.innerHTML = `${toolbar}<div class="pets-panel__empty">No pets in the barn yet. Be the first to Publish.</div>`
       return
     }
@@ -465,10 +567,11 @@ export class PetBarnPanel {
     const added = isPetBarnAdded(p.id)
     const typeLabel = p.type === 'flying' ? 'Flying' : 'Walking'
     const anims = p.animationCount ?? 0
+    const deletePending = this.pendingDeploys.get(p.id)?.action === 'delete'
     const isOwner =
       !this.options.getSession().isGuest() &&
       isPetBarnListingOwner(p.wallet, this.wallet() ?? undefined)
-    const ownerBtns = isOwner
+    const ownerBtns = isOwner && !deletePending
       ? `
         <button
           type="button"
@@ -514,13 +617,14 @@ export class PetBarnPanel {
           <div class="petbarn-card__name">${escapeHtml(p.petName)}</div>
           <div class="petbarn-card__meta">${escapeHtml(p.creatorName)} · ${typeLabel}</div>
           <div class="petbarn-card__meta">${anims} anim${anims === 1 ? '' : 's'}</div>
+          ${this.deployChipHtml(p.id)}
         </div>
         <div class="petbarn-card__actions">
           <button
             type="button"
             class="petbarn-card__add"
             data-add="${escapeHtml(p.id)}"
-            ${added ? 'disabled' : ''}
+            ${added || deletePending ? 'disabled' : ''}
           >${added ? 'Added' : 'Add'}</button>
           ${ownerBtns}
         </div>
@@ -997,16 +1101,10 @@ export class PetBarnPanel {
         return
       }
       const done =
-        'Delete queued. Catalog updates after GitHub Action finishes (listing disappears when deploy completes).'
+        'Delete queued — the card shows a confirmation when the deploy Action finishes (~1–2 min).'
       if (card) this.setCardOverlay(card, 'success', done)
       else this.showSuccessOverlay(done, 'Delete queued')
-      // Optimistic: drop from local catalog view until refresh
-      if (this.catalog) {
-        this.catalog = {
-          ...this.catalog,
-          pets: this.catalog.pets.filter((p) => p.id !== listing.id)
-        }
-      }
+      this.beginDeployWatch(listing.id, listing.petName, 'delete', undefined, listing)
     } finally {
       this.busy = false
     }
@@ -1086,10 +1184,16 @@ export class PetBarnPanel {
       this.updateTarget = null
       this.view = 'catalog'
       this.showSuccessOverlay(
-        'Update queued. Catalog refreshes after GitHub Action finishes.',
+        `Update queued — “${target.petName}” shows Deployed ✓ on its card when the world has the new model (~1–2 min).`,
         'Update queued'
       )
-      void this.refreshCatalog({ manual: true })
+      this.beginDeployWatch(target.id, petName.trim() || target.petName, 'update', {
+        glbCid: target.glbCid,
+        thumbnailCid: target.thumbnailCid,
+        petName: target.petName,
+        type: target.type,
+        deployedAt: target.deployedAt
+      })
     } catch (err) {
       this.showErrorOverlay(err instanceof Error ? err.message : 'Update failed', 'Update failed')
     } finally {
@@ -1179,9 +1283,10 @@ export class PetBarnPanel {
       this.glbFile = null
       this.thumbFile = null
       this.showSuccessOverlay(
-        'Queued for Worlds deploy. Catalog updates after GitHub Action finishes.',
+        `Queued for Worlds deploy — “${petName.trim()}” appears in the catalog when the deploy Action finishes (~1–2 min).`,
         'Published'
       )
+      this.beginDeployWatch(result.id, petName.trim(), 'create')
     } catch (err) {
       this.showErrorOverlay(err instanceof Error ? err.message : 'Publish failed', 'Publish failed')
     } finally {

@@ -23,6 +23,7 @@ import {
 import { PointerHighlightFeedback, pointerShowHighlight } from './PointerHighlightFeedback'
 import { PointerHoverFeedback } from './PointerHoverFeedback'
 import { clientDebugLog } from '../client/debug/ClientDebugLog'
+import { enablePickLayers } from '../rendering/drawLayers'
 import { findPeerPillAtPointer, tryOpenPeerContextMenu } from '../client/ui/overlayHitTest'
 import type { InjectPointerClickBody } from '../player/injectPointerClick'
 import {
@@ -77,6 +78,11 @@ type PointerDeps = {
    * was only looking / running.
    */
   isPointerLocked?: () => boolean
+  /**
+   * Scene VirtualCamera owns the lens (MainCamera bound). Unlocked LMB is then
+   * scene `isPressed(IA_POINTER)` + PPI drag — not freecam orbit.
+   */
+  isLookBlocked?: () => boolean
   /** Worker mount snapshot fallback when projection PointerEvents lags paint. */
   pointerEventsOf?: (entity: Entity) => { pointerEvents: ReadonlyArray<PBPointerEvents_Entry> } | null | undefined
   flushPointerCrdt?: () => void
@@ -444,9 +450,14 @@ export class PointerEventsSystem {
   private computeCurrentHit(): PointerHit | null {
     if (!this.deps) return null
 
+    // Hit-map UI hover first — Explorer cursor-over-control. Do not require DOM
+    // `--interactive` (partial UI snapshots can drop that class while PE still exists).
+    // react-ecs desktop buttons (Sky Chaser Start / How To Play close) fire onMouseUp
+    // only after onMouseEnter; missing hover-enter means the overlay never dismisses.
+    const uiHoverHit = this.deps.pickUiHoverHit?.(this.screenX, this.screenY)
+    if (uiHoverHit) return uiHoverHit
+
     if (isPointerOverSceneUi(this.screenX, this.screenY)) {
-      const uiHoverHit = this.deps.pickUiHoverHit?.(this.screenX, this.screenY)
-      if (uiHoverHit) return uiHoverHit
       const uiRegionHit = this.deps.pickUiRegionHit?.(this.screenX, this.screenY)
       if (uiRegionHit) return uiRegionHit
       // DOM has an interactive node under the cursor but hit-map did not claim a BLOCK
@@ -531,10 +542,13 @@ export class PointerEventsSystem {
     // on in-range PointerEvents (Creator Hub on_click / getClick). Skipping all
     // unlocked clicks ate VoxBoards halfpipe teleports. Misses stay orbit-only —
     // do not inject level-state PET_DOWN on PlayerEntity (that spammed every drag).
+    // Exception: scene VirtualCamera owns look — LMB is scene orbit (isPressed + PPI).
+    const sceneLookOwnsPointer = this.deps.isLookBlocked?.() === true
     const unlockedPointer =
       button === InputAction.IA_POINTER &&
       !!this.deps.isPointerLocked &&
-      !this.deps.isPointerLocked()
+      !this.deps.isPointerLocked() &&
+      !sceneLookOwnsPointer
     const coords = this.pointerClientCoords(e.clientX, e.clientY)
     const hit = this.resolveWorldInteractHit(button)
     // Real PE / UI when in range. On IA_POINTER miss/OOR: level-state PET on PlayerEntity so
@@ -686,6 +700,9 @@ export class PointerEventsSystem {
     this.uiPointerButtons.add(button)
     this.downEntityByButton.set(button, targetEntity)
     this.pendingPointerDown.set(button, hit)
+    // Click implies the cursor is over the control — deliver PET_HOVER_ENTER before DOWN
+    // so react-ecs onMouseUp (desktop: callback only while hovered) can fire.
+    if (hit.isSceneUi) this.syncSceneUiHover(hit)
     if (button === InputAction.IA_POINTER) {
       const owner = uiPointerOwnerOf(e) ?? ownRoot ?? '?'
       clientDebugLog.log(
@@ -826,6 +843,24 @@ export class PointerEventsSystem {
   /** True after syncInput PET edge — direct worker inject will carry the click. */
   hasPendingInjectPayload(): boolean {
     return this.pendingInjectPayload !== null
+  }
+
+  /** Browser pointer lock on the game canvas (Explorer PointerLock component). */
+  isBrowserPointerLocked(): boolean {
+    return this.deps?.isPointerLocked?.() === true
+  }
+
+  /** Scene VirtualCamera owns the lens — unlocked LMB is scene input, not freecam. */
+  isLookOwnedByScene(): boolean {
+    return this.deps?.isLookBlocked?.() === true
+  }
+
+  /**
+   * Physical press still open (browser down, PET not yet UP).
+   * Default IA_POINTER — scene `isPressed(POINTER)` / PointerLock-while-held.
+   */
+  isPointerActionHeld(button: InputActionValue = InputAction.IA_POINTER): boolean {
+    return this.downEntityByButton.has(button) || this.pendingPointerDown.has(button)
   }
 
   /** Mobile HUD — same path as E/F keyboard interact. */
@@ -1332,7 +1367,7 @@ export class PointerEventsSystem {
         }
       }
       try {
-        this.raycaster.layers.set(0)
+        enablePickLayers(this.raycaster)
         this.raycaster.set(ray.origin, ray.direction)
         const hits = this.raycaster.intersectObjects(this.pointerTargets, true)
 
@@ -1471,7 +1506,7 @@ export class PointerEventsSystem {
       }
     }
     try {
-      this.raycaster.layers.set(0)
+      enablePickLayers(this.raycaster)
       this.raycaster.set(ray.origin, ray.direction)
       const hits = this.raycaster.intersectObjects(gltfTargets, true)
       for (const hit of hits) {
@@ -1678,17 +1713,16 @@ export class PointerEventsSystem {
   }
 
   /**
-   * Scene hide signals that drop PE: Visibility=false, or Transform.scale collapsed
-   * (plaza LO() sets watering clickboxes to 0.001 while fishing_pond is scheduled).
+   * Drop PE only when the scene collapsed the volume (plaza LO() scale 0.001).
+   * VisibilityComponent hides drawing, not colliders / PointerEvents — Creator Hub
+   * `click_area` (Winterfest X/Twitch/marketplace) is authored `visible: false`
+   * with `visibleMeshesCollisionMask: CL_POINTER`.
    */
   private isPointerEntityInactive(
     entity: Entity,
     obj: THREE.Object3D | undefined
   ): boolean {
     const { ecs } = this.deps!
-    if (ecs.VisibilityComponent?.has(entity) && ecs.VisibilityComponent.get(entity).visible === false) {
-      return true
-    }
     if (obj) {
       obj.updateMatrixWorld(true)
       const e = obj.matrixWorld.elements

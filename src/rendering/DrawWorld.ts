@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { DRAW_LAYER_WORLD, setLayer } from './drawLayers'
 
 /**
  * Present extract list (Bevy-shaped).
@@ -24,6 +25,12 @@ export class DrawWorld {
     visual.matrixWorldAutoUpdate = false
     this.drawRoot.add(visual)
     this.links.set(visual, pose)
+    // ECS lights keep extra bits (they must share layers with avatars + SFX).
+    // Avatar extracts stamp `dclDrawLayer` so register does not shove them onto world 0.
+    if (!(visual as THREE.Light).isLight) {
+      const bit = visual.userData.dclDrawLayer
+      setLayer(visual, typeof bit === 'number' ? bit : DRAW_LAYER_WORLD)
+    }
     if (visual.userData.dclDrawAnimated === true) {
       visual.matrixAutoUpdate = true
       prepareAnimatedDrawLocal(visual)
@@ -139,10 +146,11 @@ export class DrawWorld {
     _billPos.setFromMatrixPosition(billedPose.matrixWorld)
     billedPose.matrixWorld.decompose(_billDummy, _billQuat, _billScale)
     if (mode === 2 || mode === 3) {
-      // BM_Y / BM_X|Y — yaw only (same as BillboardBridge).
+      // BM_Y / BM_X|Y — yaw-only BM_ALL: Three −Z toward camera, no pitch.
+      // atan2 without π aimed +Z (180° from lookAt) and turned TextShape names around.
       const dx = camera.position.x - _billPos.x
       const dz = camera.position.z - _billPos.z
-      _billQuat.setFromAxisAngle(_billUp, Math.atan2(dx, dz))
+      _billQuat.setFromAxisAngle(_billUp, Math.atan2(dx, dz) + Math.PI)
     } else {
       _billLook.lookAt(_billPos, camera.position, _billUp)
       _billQuat.setFromRotationMatrix(_billLook)

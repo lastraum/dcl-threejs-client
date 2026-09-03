@@ -15,8 +15,9 @@ import {
   extractUiTextureSrc,
   hasUiBackgroundTexture,
   hasUiVisualBackground,
+  isTjsProjectionSrc,
   normalizeBackgroundTextureMode,
-  parseUiBackgroundUvRect,
+  parseTjsProjectionEntity,
   resolveUiBackgroundImageUrl
 } from './uiBackgroundStyle'
 import {
@@ -229,6 +230,11 @@ export class SceneUiDomRenderer {
   private readonly callbacks: SceneUiDomCallbacks
   private readonly boundInputs = new WeakSet<HTMLInputElement>()
   private readonly boundSelects = new WeakSet<HTMLSelectElement>()
+  /** UiBackground texture.src `tjs:<entity>` → canvas overlay blit targets. */
+  private readonly tjsProjections = new Map<
+    Entity,
+    { canvas: HTMLCanvasElement; cameraEntity: number | null }
+  >()
 
   constructor(host: HTMLElement, callbacks: SceneUiDomCallbacks = {}) {
     this.host = host
@@ -314,6 +320,22 @@ export class SceneUiDomRenderer {
 
   getNode(entity: Entity): HTMLElement | null {
     return this.nodes.get(entity) ?? null
+  }
+
+  /**
+   * Blit camera RTs onto `tjs:<entity>` UI canvases.
+   * Call after SceneTjsBridge renders cameras. Missing lenses early-return inside blit.
+   */
+  blitTjsProjections(blit: (cameraEntity: number, canvas: HTMLCanvasElement) => boolean): void {
+    for (const slot of this.tjsProjections.values()) {
+      const cam = slot.cameraEntity
+      if (cam == null || cam === 0) continue
+      const ok = blit(cam, slot.canvas)
+      if (!ok) {
+        const ctx = slot.canvas.getContext('2d')
+        ctx?.clearRect(0, 0, slot.canvas.width, slot.canvas.height)
+      }
+    }
   }
 
   getFieldDom(entity: Entity): HTMLInputElement | HTMLSelectElement | null {
@@ -687,52 +709,60 @@ export class SceneUiDomRenderer {
 
     applySceneUiNodePointerState(shell, interactive, !!uiInput || !!uiDropdown)
 
-    const imageUrl = resolveUiBackgroundImageUrl(bg, input.scene)
-    const hasBg = hasUiVisualBackground(bg, imageUrl)
-    const colorOnlyBg = hasBg && !imageUrl && !hasUiBackgroundTexture(bg)
     const rawTexSrc = bg ? extractUiTextureSrc(bg.texture) : null
+    const tjsSrc = isTjsProjectionSrc(rawTexSrc)
+    // tjs: never goes through the file / HTTP image loader.
+    const imageUrl = tjsSrc ? null : resolveUiBackgroundImageUrl(bg, input.scene)
+    const hasBg = hasUiVisualBackground(bg, imageUrl) || tjsSrc
+    const colorOnlyBg = hasBg && !imageUrl && !hasUiBackgroundTexture(bg) && !tjsSrc
     const texMode =
-      bg && (imageUrl || rawTexSrc)
+      bg && (imageUrl || rawTexSrc) && !tjsSrc
         ? normalizeBackgroundTextureMode(bg.textureMode, rawTexSrc, bg.textureSlices, bg.uvs)
         : BackgroundTextureMode.STRETCH
-    // Atlas UV sprites must never take the nine-slice border-image path.
-    const useNineSlice =
-      imageUrl &&
-      texMode === BackgroundTextureMode.NINE_SLICES &&
-      !parseUiBackgroundUvRect(bg?.uvs)
-    if (hasBg) {
-      if (colorOnlyBg) {
-        el.querySelector('.scene-ui-node__bg')?.remove()
-        el.querySelector('.scene-ui-node__bg-img')?.remove()
-        applyUiBackgroundStyles(el, bg, null, scale)
-      } else if (useNineSlice) {
-        el.style.backgroundColor = 'transparent'
-        el.querySelector('.scene-ui-node__bg-img')?.remove()
-        const bgEl = ensureBgLayer(el)
-        bgEl.style.position = 'absolute'
-        bgEl.style.inset = '0'
-        bgEl.style.width = '100%'
-        bgEl.style.height = '100%'
-        bgEl.style.pointerEvents = 'none'
-        bgEl.style.zIndex = '0'
-        if (radius) bgEl.style.borderRadius = radius
-        else bgEl.style.borderRadius = ''
-        applyUiBackgroundStyles(bgEl, bg, imageUrl, scale)
-      } else {
-        el.querySelector('.scene-ui-node__bg')?.remove()
-        el.style.backgroundColor = 'transparent'
-        // Do not clear el.opacity here — applyUiBackgroundStyles owns it. Clearing every
-        // paint then early-returning on a stable sig left reel bar BGs flashing.
-        applyUiBackgroundStyles(el, bg, imageUrl, scale)
-      }
-    } else {
-      el.style.backgroundColor = 'transparent'
-      el.style.borderImage = ''
-      el.style.borderImageSource = ''
-      el.style.opacity = ''
-      el.style.overflow = ''
+    // Same UiBackground law as every scene: crop UVs, then textureMode (nine-slice or stretch).
+    const useNineSlice = !!(imageUrl && texMode === BackgroundTextureMode.NINE_SLICES)
+    if (tjsSrc) {
       el.querySelector('.scene-ui-node__bg')?.remove()
       el.querySelector('.scene-ui-node__bg-img')?.remove()
+      applyUiBackgroundStyles(el, bg, null, scale)
+      if (parseTjsProjectionEntity(rawTexSrc) == null) this.unbindTjsProjection(entity)
+      else this.bindTjsProjection(entity, el, rawTexSrc, radius)
+    } else {
+      this.unbindTjsProjection(entity)
+      if (hasBg) {
+        if (colorOnlyBg) {
+          el.querySelector('.scene-ui-node__bg')?.remove()
+          el.querySelector('.scene-ui-node__bg-img')?.remove()
+          applyUiBackgroundStyles(el, bg, null, scale)
+        } else if (useNineSlice) {
+          el.style.backgroundColor = 'transparent'
+          el.querySelector('.scene-ui-node__bg-img')?.remove()
+          const bgEl = ensureBgLayer(el)
+          bgEl.style.position = 'absolute'
+          bgEl.style.inset = '0'
+          bgEl.style.width = '100%'
+          bgEl.style.height = '100%'
+          bgEl.style.pointerEvents = 'none'
+          bgEl.style.zIndex = '0'
+          if (radius) bgEl.style.borderRadius = radius
+          else bgEl.style.borderRadius = ''
+          applyUiBackgroundStyles(bgEl, bg, imageUrl, scale)
+        } else {
+          el.querySelector('.scene-ui-node__bg')?.remove()
+          el.style.backgroundColor = 'transparent'
+          // Do not clear el.opacity here — applyUiBackgroundStyles owns it. Clearing every
+          // paint then early-returning on a stable sig left reel bar BGs flashing.
+          applyUiBackgroundStyles(el, bg, imageUrl, scale)
+        }
+      } else {
+        el.style.backgroundColor = 'transparent'
+        el.style.borderImage = ''
+        el.style.borderImageSource = ''
+        el.style.opacity = ''
+        el.style.overflow = ''
+        el.querySelector('.scene-ui-node__bg')?.remove()
+        el.querySelector('.scene-ui-node__bg-img')?.remove()
+      }
     }
 
     if (uiInput) {
@@ -909,6 +939,40 @@ export class SceneUiDomRenderer {
     }
   }
 
+  private bindTjsProjection(
+    entity: Entity,
+    el: HTMLElement,
+    src: string | null,
+    radius: string
+  ): void {
+    const cameraEntity = parseTjsProjectionEntity(src)
+    let canvas = el.querySelector(':scope > .scene-ui-node__tjs-proj') as HTMLCanvasElement | null
+    if (!canvas) {
+      canvas = document.createElement('canvas')
+      canvas.className = 'scene-ui-node__tjs-proj'
+      canvas.width = 512
+      canvas.height = 512
+      el.prepend(canvas)
+    }
+    canvas.style.position = 'absolute'
+    canvas.style.inset = '0'
+    canvas.style.width = '100%'
+    canvas.style.height = '100%'
+    canvas.style.pointerEvents = 'none'
+    canvas.style.zIndex = '0'
+    canvas.style.display = 'block'
+    if (radius) canvas.style.borderRadius = radius
+    else canvas.style.borderRadius = ''
+    this.tjsProjections.set(entity, { canvas, cameraEntity })
+  }
+
+  private unbindTjsProjection(entity: Entity): void {
+    const slot = this.tjsProjections.get(entity)
+    if (!slot) return
+    slot.canvas.remove()
+    this.tjsProjections.delete(entity)
+  }
+
   private applyHiddenDomState(shell: HTMLElement): void {
     shell.classList.remove('scene-ui-node--interactive')
     shell.style.display = 'none'
@@ -935,12 +999,14 @@ export class SceneUiDomRenderer {
       const entity = id as Entity
       if (alive.has(entity)) continue
       this.callbacks.onEntityReleased?.(entity)
+      this.unbindTjsProjection(entity)
       this.nodes.delete(entity)
       el.remove()
     }
   }
 
   private releaseNode(entity: Entity, el: HTMLElement): void {
+    this.unbindTjsProjection(entity)
     const field = el.querySelector('.scene-ui-node__input, .scene-ui-node__select') as
       | HTMLInputElement
       | HTMLSelectElement
@@ -953,7 +1019,10 @@ export class SceneUiDomRenderer {
     this.callbacks.onEntityReleased?.(entity)
     for (const [id, node] of [...this.nodes]) {
       if (id === entity || el.contains(node)) {
-        if (id !== entity) this.callbacks.onEntityReleased?.(id)
+        if (id !== entity) {
+          this.unbindTjsProjection(id)
+          this.callbacks.onEntityReleased?.(id)
+        }
         this.nodes.delete(id)
       }
     }
@@ -964,6 +1033,7 @@ export class SceneUiDomRenderer {
   private purgeDisconnectedNodes(): void {
     for (const [entity, el] of [...this.nodes]) {
       if (el.isConnected) continue
+      this.unbindTjsProjection(entity)
       this.callbacks.onEntityReleased?.(entity)
       this.nodes.delete(entity)
     }

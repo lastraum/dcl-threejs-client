@@ -20,6 +20,7 @@ import {
   customServerFavoriteAsPlacesWorld,
   formatOwnerShort,
   genesisPlaceJumpRoute,
+  parsePlaceCoordQuery,
   matchesPlaceSearch,
   matchesWorldSearch,
   mergeUniqueById,
@@ -78,7 +79,7 @@ const OVERLAY_SHELL = `
     <button type="button" class="places-view__subtab" data-subtab="favorites" role="tab" aria-selected="false">Favorites</button>
   </nav>
   <div class="places-view__toolbar">
-    <input type="search" class="places-view__search" data-search placeholder="Search places, worlds, and people…" aria-label="Search places, worlds, and people" autocomplete="off" spellcheck="false" />
+    <input type="search" class="places-view__search" data-search placeholder="Search places, worlds, people, or 12,34" aria-label="Search places, worlds, people, or coordinates" autocomplete="off" spellcheck="false" />
   </div>
   <div class="places-view__cat-bar" data-cat-bar role="toolbar" aria-label="Filter by category"></div>
   <p class="places-view__status" data-status hidden></p>
@@ -99,7 +100,7 @@ const EXPLORER_SHELL = `
         <button type="button" class="places-view__subtab" data-subtab="recent" role="tab" aria-selected="false">My Places</button>
       </nav>
       <div class="places-view__browse-filters">
-        <input type="search" class="places-view__search" data-search placeholder="Search places, worlds, and people" aria-label="Search places, worlds, and people" autocomplete="off" spellcheck="false" />
+        <input type="search" class="places-view__search" data-search placeholder="Search places, worlds, people, or 12,34" aria-label="Search places, worlds, people, or coordinates" autocomplete="off" spellcheck="false" />
         <select class="places-view__sort" data-sort aria-label="Sort list">
           <option value="most_users">Most visiting now</option>
           <option value="name_az">A–Z</option>
@@ -308,7 +309,10 @@ export class PlacesView {
       const item = this.itemById.get(`${kind}:${id}`)
       if (!item) return
       const open = this.onOpenScene ?? this.onJumpIn
-      if (item.kind === 'scene') open?.(genesisPlaceJumpRoute(item.place))
+      if (item.kind === 'scene') {
+        const landing = parsePlaceCoordQuery(this.searchQuery)
+        open?.(genesisPlaceJumpRoute(item.place, landing ?? undefined))
+      }
       else open?.(placesWorldJumpRoute(item.world))
     })
   }
@@ -421,13 +425,19 @@ export class PlacesView {
       const onlyFavorites = this.subTab === 'favorites'
       const order = this.orderByForTab()
       const q = this.searchDebounced.trim()
+      const coord = parsePlaceCoordQuery(q)
       const cat = PLACES_SCENE_CATEGORIES.find((c) => c.id === this.categoryId)
 
       const [places, worldsList] = await Promise.all([
         fetchDclGenesisPlaces({
-          search: q.length >= 3 ? q : undefined,
+          search: coord ? undefined : q.length >= 3 ? q : undefined,
+          positions: coord ? [`${coord.x},${coord.y}`] : undefined,
           orderBy: order.places,
-          categories: this.subTab === 'explore' && cat?.slug ? [cat.slug] : undefined,
+          categories: coord
+            ? undefined
+            : this.subTab === 'explore' && cat?.slug
+              ? [cat.slug]
+              : undefined,
           limit: PLACES_PAGE_SIZE,
           offset: 0,
           onlyFavorites,
@@ -442,7 +452,7 @@ export class PlacesView {
               identity
             })
           : fetchDclWorldsWithNameFallback({
-              search: q.length > 0 ? q : undefined,
+              search: coord ? undefined : q.length > 0 ? q : undefined,
               orderBy: order.worlds,
               limit: PLACES_PAGE_SIZE,
               offset: 0
@@ -513,6 +523,7 @@ export class PlacesView {
       const onlyFavorites = this.subTab === 'favorites'
       const order = this.orderByForTab()
       const q = this.searchDebounced.trim()
+      const coord = parsePlaceCoordQuery(q)
       const cat = PLACES_SCENE_CATEGORIES.find((c) => c.id === this.categoryId)
 
       const tasks: Promise<void>[] = []
@@ -520,9 +531,14 @@ export class PlacesView {
       if (this.placesHasMore) {
         tasks.push(
           fetchDclGenesisPlaces({
-            search: q.length >= 3 ? q : undefined,
+            search: coord ? undefined : q.length >= 3 ? q : undefined,
+            positions: coord ? [`${coord.x},${coord.y}`] : undefined,
             orderBy: order.places,
-            categories: this.subTab === 'explore' && cat?.slug ? [cat.slug] : undefined,
+            categories: coord
+              ? undefined
+              : this.subTab === 'explore' && cat?.slug
+                ? [cat.slug]
+                : undefined,
             limit: PLACES_PAGE_SIZE,
             offset: this.placesOffset,
             onlyFavorites,
@@ -539,7 +555,7 @@ export class PlacesView {
       if (this.worldsHasMore) {
         tasks.push(
           fetchDclWorldsWithNameFallback({
-            search: onlyFavorites ? undefined : q.length > 0 ? q : undefined,
+            search: onlyFavorites || coord ? undefined : q.length > 0 ? q : undefined,
             orderBy: order.worlds,
             limit: PLACES_PAGE_SIZE,
             offset: this.worldsOffset,

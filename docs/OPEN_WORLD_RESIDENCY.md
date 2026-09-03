@@ -4,25 +4,33 @@
 | --- | --- |
 | **Author** | LastSlice (perfv2 city chapter) |
 | **Date** | 2026-08-13 |
-| **Status** | Live guests + Scene Distance disc **on**. Shells **on `v3`**. Promote **off**. |
-| **Branch** | `v3` (city chapter after v2.2.0 clock) |
+| **Status** | **Three rings on `dev-latest`** (PR #73 · `f14c7f34`, 2026-09-01). Look 200 m · collide 64 m toggle · live JS ~22 m cap 4. Promote **on**. |
+| **Branch** | `dev-latest` (QA trunk) |
 | **Audience** | Senior engineers who already know FocusOwner, SceneLoop, extract, and the multi-scene handoff |
 
 ---
 
 ## Overview
 
-As of **v2.2.0** the clock is 🟢 and **live SceneLoop guests are compile-default on** (enter ≤20 m, cap 4). Scene Distance disc (roads / empty) is on. **`v3` turns neighbor composite shells on** so claimed estates are extract GLBs, not dirt. Stand-on promote stays **off**. Soft-route already updates the URL without a reload.
+As of **2026-09-01** (`dev-latest`, PR #73) open-world loading is **three rings**:
 
-This document is the phased plan to make plaza → street → neighbor estate feel like one continuous verse: **no void, no loading screen, no full reload**, neighbor buildings actually there, FocusOwner correct under feet. It does that on `perfv2` by turning the existing (disabled) residency machine back on **in the host-invert shape**: pose vs draw, 20 Hz SceneLoop guests, extract-registered shells, leftover apply. Kill-switches that we invented (80 m GLB cliff, 16/8 clone caps used as “never show”, `LOAD_AOI_SCENE_VISUALS = false`, never-promote) are replaced by **budgets inside official Scene Distance**.
+| Ring | Radius | Behavior |
+| ---- | ------ | -------- |
+| **Look** | 200 m | Neighbor GLBs + textures. Player → occupied footprint. Nested plaza parcels are first-class (no `coveredSkip`). |
+| **Collide** | 64 m | Enable/disable already-cooked PhysX. No recook / compact / first-walk expand. |
+| **Live JS** | ~22 m enter, cap 4 | Nearest occupied footprints get SceneLoop guests. Boot concurrency 1. First-frame does not eat a live slot. Parcel count never gates JS. |
 
-Ship order is mandatory: **shells → Scene Distance LOD → live guests → stand-on promote**. Each step is a feature-flagged PR whose **merge default is off** until a CBD walk log is pasted, then a one-line const flip. FPS bar is non-negotiable: **30–60 always, 60 on high**.
+Stand-on promote is **on** (`AOI_STAND_ON_PROMOTE`). Soft-route updates the URL without a reload. Same-primary plaza walks hold LiveKit (no remount).
+
+The phased plan below is the historical residency chapter (shells → disc → guests → promote). **Phases 1–4 defaults are now compile-on** in `caps.ts`; treat the body as design rationale and file map, not “still disabled” product truth. For the shipping contract see [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) and [PROGRESS.md](./PROGRESS.md) (2026-09-01 milestone).
 
 ---
 
 ## Background & Motivation
 
 ### What we actually ship today (verified in tree)
+
+> **2026-09-01 update:** The table below describes **pre–PR #73** kill-switches. On `dev-latest`, compile defaults in `caps.ts` are shells + disc + live guests + promote **on**, with **200 m look**, **64 m collide toggle**, and **~22 m live JS (cap 4)**. See [Overview](#overview) and [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md).
 
 | Lever | Value | File |
 | --- | --- | --- |
@@ -498,6 +506,8 @@ Clock / budget (write this in PR-2 or the sampler blows the FPS bar):
 Default Scene Distance **stays 64 m**. Players who want 100 set the slider. Do not raise the default in this chapter.
 
 Near-band shells **do not cast shadows** (`castShadow = false`). Measure before giving them a caster cap.
+
+**Status:** First-frame sampling is **on** under this budget (`queueFirstFrameSecondaries` + `SecondaryFirstFrameSampler`). SDK7 script scenes (`bin/index.js`) bake via first-frame even when `main.composite` exists; the **composite shell still attaches** on the same entity (Explorer path: composite + script GLBs). CityTiles/SDK6 `game.js` composites are shell-only. Live secondary boot is **distance + hard cap** (`min(Scene Distance×0.35, 32)` enter, cap 4) — not parcel count.
 
 ---
 

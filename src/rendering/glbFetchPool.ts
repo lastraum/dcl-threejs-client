@@ -1,5 +1,7 @@
 import { normalizeGlbCacheKey } from './glbByteCache'
 import { toSceneHttpProxyUrl } from '../network/sceneHttpProxy'
+import { isAppleTouchDevice, isIphoneDevice } from '../util/appleTouch'
+import { isMobilePhone } from '../client/ui/touchPlayLayout'
 
 function proxiedFetchUrl(url: string): string {
   const rewritten = toSceneHttpProxyUrl(url)
@@ -25,13 +27,9 @@ type Pending = {
 /** Parallel Catalyst downloads — cold scenes have dozens of GLBs (Genesis ~100+). */
 const POOL_SIZE = (() => {
   if (typeof navigator === 'undefined') return 10
-  const iphone = /iPhone|iPod/i.test(navigator.userAgent)
-  const appleTouch =
-    iphone ||
-    /iPad/i.test(navigator.userAgent) ||
-    ((navigator.maxTouchPoints ?? 0) > 1 && /Mac/i.test(navigator.platform || navigator.userAgent))
-  if (iphone) return 2
-  if (appleTouch) return 3
+  // Phones share the iPhone jetsam cap (2). iPad stays 3.
+  if (isMobilePhone() || isIphoneDevice()) return 2
+  if (isAppleTouchDevice()) return 3
   const cores = navigator.hardwareConcurrency ?? 4
   // Was max 8 — pair with AssetCache prefetch 12 + cold hash kicks 12–24.
   return Math.min(12, Math.max(8, Math.floor(cores * 1.5)))

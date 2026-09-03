@@ -10,6 +10,7 @@ import { SpaceSkyField } from './SpaceSkyField'
 import type { MirrorComponents } from '../bridge/mirrorComponents'
 import type { ProjectionView } from '../bridge/ProjectionView'
 import type { SceneHost } from '../rendering/SceneHost'
+import { enableDrawLayers } from '../rendering/drawLayers'
 import type { LightManager } from '../rendering/LightManager'
 import { renderQuality, TONE_MAPPING_EXPOSURE } from '../rendering/RenderQualitySettings'
 import {
@@ -160,6 +161,10 @@ export class EnvironmentSystem {
 
     this.sun.target = new THREE.Object3D()
     this.moon.target = new THREE.Object3D()
+    enableDrawLayers(this.hemi)
+    enableDrawLayers(this.equatorAmbient)
+    enableDrawLayers(this.sun)
+    enableDrawLayers(this.moon)
     this.outdoorIbl = new OutdoorIbl(this.host.renderer)
   }
 

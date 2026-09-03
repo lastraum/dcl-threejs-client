@@ -2,38 +2,22 @@ import * as THREE from 'three'
 import type { AssetCache } from '../../rendering/AssetCache'
 import type { PhysicsColliderDesc } from '../../physics/PhysXWorld'
 import { EMPTY_LAND } from '../landscape/Data/EmptyLandCatalog'
+import type { EzTreeGrassFieldHandle } from '../landscape/EzTreeGrassField'
+import { buildExplorerVacantGrassField } from '../landscape/ExplorerVacantGrassField'
 import { buildInstancedScatter, type ScatterInstance } from '../landscape/gltfInstancing'
-import { distributedParcelPositions } from '../landscape/parcelDistribution'
+import {
+  distributedParcelPositions,
+  horizontalDiskFitsParcel,
+  horizontalDiskHitsAabb
+} from '../landscape/parcelDistribution'
 import { dclSceneToLandscapeThree } from '../landscape/Utils/SceneSpace'
 import { hashParcelCoords, mulberry32, pickInt } from '../landscape/Utils/SeededRandom'
 import { parseParcelKey } from '../content/parseParcel'
-import type { ActiveSceneEntity } from './fetchActiveEntities'
+import { PARCEL_SIZE } from '../content/types'
+import { isCatalystEmptyLandEntity, type ActiveSceneEntity } from './fetchActiveEntities'
 import { parcelSwSceneLocal } from './parcelAoi'
 
-/**
- * Catalyst "empty land" placeholders (Builder interactive-text + SCENE.glb)
- * and true vacant parcels (no entity) — visual fill only, no scripts.
- */
-export function isCatalystEmptyLandEntity(ent: ActiveSceneEntity): boolean {
-  const title = ent.title.trim().toLowerCase()
-  if (title === 'interactive-text' || title === 'empty' || title === 'empty parcel') {
-    return true
-  }
-  const main = ent.main.toLowerCase()
-  if (!(main === 'game.js' || main.endsWith('/game.js') || main === 'bin/game.js')) {
-    return false
-  }
-  // Single-parcel SDK6 with only floor / scene.json — treat as empty land.
-  const parcels = ent.parcels.length ? ent.parcels : ent.pointers
-  if (parcels.length !== 1) return false
-  const glbs = ent.content.filter((c) => /\.glb$/i.test(c.file))
-  if (glbs.length === 0) return true
-  if (glbs.length === 1) {
-    const f = (glbs[0]!.file.split('/').pop() ?? '').toLowerCase()
-    if (f === 'scene.glb' || f.includes('floorbase') || f.includes('empty')) return true
-  }
-  return false
-}
+export { isCatalystEmptyLandEntity }
 
 /** Parcel should get client empty-land prop scatter (trees/rocks). */
 export function isVacantForEmptyLayer(ent: ActiveSceneEntity | undefined): boolean {
@@ -61,38 +45,72 @@ type EmptyScatterCounts = {
   trees: [number, number]
   bushes: [number, number]
   rocks: [number, number]
-  grass: [number, number]
 }
 
-/** Sparse Genesis City empty-land look (not forest density). */
+/** Sparse Genesis City empty-land look (not forest density). Grass is GPU blades. */
 const EMPTY_SCATTER: EmptyScatterCounts = {
   trees: [0, 2],
   bushes: [2, 5],
-  rocks: [0, 1],
-  grass: [4, 9]
+  rocks: [0, 1]
 }
+
+type ScatterKind = 'tree' | 'rock' | 'bush'
 
 /** Simple box half-size in meters (scale multiplies) for tree trunks / rock boulders. */
 const TREE_COLLIDER = { w: 0.55, h: 2.4, d: 0.55 }
 const ROCK_COLLIDER = { w: 0.7, h: 0.55, d: 0.7 }
-
-type ScatterKind = 'tree' | 'rock' | 'bush' | 'grass'
+/**
+ * Horizontal visual radius at scale 1 — canopy/bush volume, not the thin trunk box.
+ * Placement must keep this disk inside the vacant parcel so trees do not hang into
+ * occupied scenes (Atelier walls with a tree through the window).
+ */
+const SCATTER_VISUAL_RADIUS_M: Record<ScatterKind, number> = {
+  tree: 3.6,
+  bush: 1.4,
+  rock: 0.85
+}
 
 /**
- * Build instanced trees/bushes/rocks/grass on vacant AOI parcels + simple box colliders
+ * Build instanced trees/bushes/rocks on vacant AOI parcels + simple box colliders
  * for trees and rocks (instanced positions, not full mesh cooks).
+ * Grass is Unity Explorer tufts + wildflowers, not ez-tree blades or EMPTY_LAND glTF.
  */
 export async function buildEmptyParcelScatter(opts: {
   cache: AssetCache
   parcelKeys: string[]
   primaryBase: string
-}): Promise<{ root: THREE.Group; colliders: PhysicsColliderDesc[] }> {
+  /** Occupied scene parcels — scatter disks must not overlap these. */
+  occupiedParcelKeys?: Iterable<string>
+}): Promise<{
+  root: THREE.Group
+  colliders: PhysicsColliderDesc[]
+  grass: EzTreeGrassFieldHandle | null
+}> {
   const root = new THREE.Group()
   root.name = 'aoi-empty-scatter'
   const colliders: PhysicsColliderDesc[] = []
-  if (!opts.parcelKeys.length) return { root, colliders }
+  if (!opts.parcelKeys.length) return { root, colliders, grass: null }
 
   const base = parseParcelKey(opts.primaryBase)
+  const occupied = new Set<string>()
+  for (const raw of opts.occupiedParcelKeys ?? []) {
+    const k = raw.trim()
+    if (k) occupied.add(k)
+  }
+  const occupiedAabbs: Array<{ minX: number; minZ: number; maxX: number; maxZ: number }> = []
+  for (const key of occupied) {
+    try {
+      const sw = parcelSwSceneLocal(key, opts.primaryBase)
+      occupiedAabbs.push({
+        minX: sw.x,
+        minZ: sw.z,
+        maxX: sw.x + PARCEL_SIZE,
+        maxZ: sw.z + PARCEL_SIZE
+      })
+    } catch {
+      /* skip */
+    }
+  }
   const byHash = new Map<string, ScatterInstance[]>()
   const kindByHash = new Map<string, ScatterKind>()
 
@@ -127,21 +145,33 @@ export async function buildEmptyParcelScatter(opts: {
         inset,
         minSeparation: sep
       })
+      const r0 = SCATTER_VISUAL_RADIUS_M[kind]
       for (const loc of locals) {
+        const scale = scaleMin + rng() * scaleSpan
+        const radius = r0 * scale
+        if (!horizontalDiskFitsParcel(loc.x, loc.z, radius)) continue
+        const wx = sw.x + loc.x
+        const wz = sw.z + loc.z
+        if (
+          occupiedAabbs.some((b) =>
+            horizontalDiskHitsAabb(wx, wz, radius, b.minX, b.minZ, b.maxX, b.maxZ)
+          )
+        ) {
+          continue
+        }
         const hash = pool[Math.floor(rng() * pool.length)]!
         push(hash, kind, {
-          x: sw.x + loc.x,
-          z: sw.z + loc.z,
+          x: wx,
+          z: wz,
           rotY: rng() * Math.PI * 2,
-          scale: scaleMin + rng() * scaleSpan
+          scale
         })
       }
     }
 
-    place(EMPTY_LAND.landscapeTrees, 'tree', EMPTY_SCATTER.trees, 4.5, 2.2, 0.75, 0.35)
-    place(EMPTY_LAND.bushes, 'bush', EMPTY_SCATTER.bushes, 2.2, 1.4, 0.7, 0.4)
-    place(EMPTY_LAND.rocks, 'rock', EMPTY_SCATTER.rocks, 3, 1.6, 0.6, 0.5)
-    place(EMPTY_LAND.grass, 'grass', EMPTY_SCATTER.grass, 1.4, 1.0, 0.85, 0.3)
+    place(EMPTY_LAND.landscapeTrees, 'tree', EMPTY_SCATTER.trees, 5.5, 5.8, 1.45, 0.5)
+    place(EMPTY_LAND.bushes, 'bush', EMPTY_SCATTER.bushes, 2.8, 2.2, 1.15, 0.4)
+    place(EMPTY_LAND.rocks, 'rock', EMPTY_SCATTER.rocks, 3, 1.8, 0.85, 0.4)
   }
 
   // Cap total instances per prop type for large radii
@@ -155,7 +185,7 @@ export async function buildEmptyParcelScatter(opts: {
   await Promise.all(
     [...byHash.entries()].map(async ([hash, instances]) => {
       const slice = instances.slice(0, MAX_PER_HASH)
-      const kind = kindByHash.get(hash) ?? 'grass'
+      const kind = kindByHash.get(hash) ?? 'bush'
       try {
         const group = await buildInstancedScatter(
           opts.cache,
@@ -192,8 +222,18 @@ export async function buildEmptyParcelScatter(opts: {
     })
   )
 
+  let grass: EzTreeGrassFieldHandle | null = null
+  try {
+    grass = await buildExplorerVacantGrassField(opts.parcelKeys, opts.primaryBase)
+    if (grass) root.add(grass.group)
+  } catch (err) {
+    console.warn('[aoi] vacant grass field failed', err)
+    grass = null
+  }
+
   root.userData.emptyParcelCount = opts.parcelKeys.length
   root.userData.instanceHashes = byHash.size
   root.userData.colliderCount = colliders.length
-  return { root, colliders }
+  root.userData.grassInstanceCount = grass?.group.userData.grassInstanceCount ?? 0
+  return { root, colliders, grass }
 }

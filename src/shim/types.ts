@@ -172,14 +172,6 @@ export type SceneWorkerTriggerEmote = {
   body: TriggerEmoteRequest
 }
 
-/** Scene code → ShaderManager. Fire-and-forget (`tjs.shader(name, fn, params)`). */
-export type SceneWorkerTjsShader = {
-  type: 'tjs-shader'
-  name: string
-  fn: string
-  params: Record<string, string>
-}
-
 export type SceneWorkerTriggerSceneEmote = {
   type: 'trigger-scene-emote'
   id: number
@@ -312,7 +304,6 @@ export type SceneWorkerOutbound =
   | SceneWorkerChangeRealm
   | SceneWorkerCopyToClipboard
   | SceneWorkerTriggerEmote
-  | SceneWorkerTjsShader
   | SceneWorkerTriggerSceneEmote
   | SceneWorkerOpenExternalUrl
   | SceneWorkerOpenNftDialog
@@ -471,6 +462,11 @@ export type MainToWorker =
         screenDelta: { x: number; y: number }
         worldRayDirection: { x: number; y: number; z: number }
       }
+      /**
+       * Host PointerLock on CameraEntity before engine.update.
+       * Scenes read `PointerLock.get(CameraEntity).isPointerLocked` + PPI.screenDelta.
+       */
+      pointerLock?: boolean
       /**
        * AvatarAttach relative Transform — applied after PE write, before systems.
        * Explorer: bone pose is on the store when getWorldPosition/Hle runs (fishing line).

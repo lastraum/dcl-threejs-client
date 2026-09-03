@@ -11,8 +11,9 @@
  *
  * App-owned same-origin bases (/api/places, /api/marketplace, /api/dcl-auth-api, …)
  * stay as fixed contracts for main-thread UI — they are not replaced by this helper.
- * Scene worker `fetch` uses this pipe for all cross-origin http(s) (CORS).
- * SignedFetch still transports via this pipe so the signature stays on the original URL.
+ * Scene worker `fetch` tries the real URL first; this pipe is the CORS/404 fallback
+ * (`installSceneWorkerFetchProxy`). SignedFetch still transports via this pipe so
+ * the signature stays on the original URL.
  */
 
 export const SCENE_HTTP_PROXY_PREFIX = '/api/scene-http'
@@ -40,6 +41,16 @@ function shouldBypassProxyHost(hostname: string): boolean {
   if (h.includes('content-assets')) return true
 
   return false
+}
+
+/**
+ * Worker `fetch` law: try the real URL first. Fall back to `/api/scene-http` when
+ * the browser cannot read the response (CORS / network TypeError, status 0) or
+ * the origin returned 404 (some hosts 404 the browser and 200 the proxy).
+ * Sticky remember happens in the worker only when the proxy recovers.
+ */
+export function sceneFetchShouldFallbackToProxy(status: number | 'network-error'): boolean {
+  return status === 'network-error' || status === 0 || status === 404
 }
 
 /**

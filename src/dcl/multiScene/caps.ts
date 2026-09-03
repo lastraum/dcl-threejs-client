@@ -1,6 +1,7 @@
 import type { PerformanceTier } from '../../shim/types'
 import { renderQuality } from '../../rendering/RenderQualitySettings'
 import { skipAoiNeighbors } from '../../client/devFlags'
+import { isHandheldDevice } from '../../client/ui/touchPlayLayout'
 
 /**
  * Open-world residency (docs/OPEN_WORLD_RESIDENCY.md).
@@ -14,24 +15,34 @@ const AOI_LIVE_GUESTS = true
 const AOI_STAND_ON_PROMOTE = true
 
 /**
- * Live JS workers (scripts + CRDT). Official desktop: ~10 m load + ~10 m extra
- * keep, 4 scene threads. Player → scene footprint (any parcel), not a ring.
- * Snow @ 14 m from plaza still enters. Scene Distance is the visual disc.
+ * Live guests (secondary workers with scripts). Enter is a fraction of Scene
+ * Distance (not the full visual disc); keep = hysteresis band. Ranking is
+ * player→occupied-footprint (empty/road excluded).
  */
-const LIVE_SCENE_MAX_M = 20
 const LIVE_SCENE_UNLOAD_EXTRA_M = 16
-/** Concurrent live isolates — desktop uses 4 threads; Three.js is costlier. */
+/** Concurrent live guests — nearest occupied scenes in the inner ring only. */
 const AOI_LIVE_SECONDARY_HARD_CAP = 4
-const TERTIARY_RESIDENT_HARD_CAP = 8
-/**
- * Sticky restore after promote-settle turns scripts back on. Plaza-scale
- * deployments stay tertiary (meshes + LOD). Stand-on still promotes from
- * tertiary via takeForPromote. Matches SceneWorkerSlot modest cutoff.
- */
-export const STICKY_RESTORE_MAX_PARCELS = 16
+const TERTIARY_RESIDENT_HARD_CAP = 16
 
 export const ROAD_PHYS_RADIUS_M = 48
 export const EMPTY_LAND_PHYS_RADIUS_M = 48
+/**
+ * Occupied-neighbor collision arm — enable/disable already-cooked hulls.
+ * Visual shells may cook out to Scene Distance (~200 m) but stay disabled until
+ * the player is within this ring. Walk out → disable (no destroy/recook).
+ */
+export const NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M = 64
+/** Hysteresis past the collide ring before disabling (reduces edge flicker). */
+export const NEIGHBOR_SCENE_PHYS_COLLIDE_KEEP_M = 72
+/**
+ * Occupied-scene PhysX (floors/walls / live guests / composite shells).
+ * Live guests cook from the worker; SDK6/composite shells cook `_collider`
+ * hulls from the attached GLB (CityTiles like JR Art are never live guests).
+ */
+export const LIVE_SCENE_PHYS_RADIUS_M = NEIGHBOR_SCENE_PHYS_COLLIDE_RADIUS_M
+
+/** 200m look disc — GLBs + textures stay loaded regardless of the 64m collide arm. */
+export const AOI_VISUAL_LOOK_RADIUS_M = 200
 
 /** Shadow / env-caster / near-PhysX keep. Also the visual cliff while !aoiSceneDistanceVisuals(). */
 export const AOI_SHELL_ENTER_M = 48
@@ -96,14 +107,28 @@ export function visualWarmRadiusM(): number {
   const pref = renderQuality.getSceneLoadRadiusM()
   if (pref <= 0) return 0
   if (!aoiSceneDistanceVisuals()) return Math.min(pref, AOI_SHELL_KEEP_M)
-  return pref
+  // Handheld: honor the slider (do not max to the 200 m plaza look ring).
+  // Raising Scene Distance above the auto default undoes neighbor skip.
+  if (isHandheldDevice()) return pref
+  // Product look ring is 200m. Preferences SD may be 64 (default) — do not clip
+  // Winterfest / nested plaza neighbors to the collide arm.
+  return Math.max(pref, AOI_VISUAL_LOOK_RADIUS_M)
 }
 
 export function secondaryLiveCap(tier: PerformanceTier): number {
   if (!aoiLiveGuests()) return 0
+  // Phone + iPad stay at 1 even if `?aoi` re-enables neighbor guests.
+  if (isHandheldDevice()) return 1
   if (tier === 'low') return 1
   if (tier === 'medium') return 2
   return AOI_LIVE_SECONDARY_HARD_CAP
+}
+
+/** Near band edge — same as composite shell near LOD (min(48, SD×0.35)). */
+export function aoiNearBandRadiusM(): number {
+  const d = visualWarmRadiusM()
+  if (d <= 0) return 0
+  return Math.min(48, d * 0.35)
 }
 
 /** @deprecated Prefer secondaryLiveEnterRadiusM — kept for call sites. */
@@ -114,23 +139,25 @@ export const SECONDARY_LIVE_MAX_RADIUS_M = SECONDARY_LIVE_ENTER_M
 
 export function secondaryLiveEnterRadiusM(): number {
   if (!aoiLiveGuests()) return 0
-  const d = visualWarmRadiusM()
+  const d = renderQuality.getSceneLoadRadiusM()
   if (d <= 0) return 0
-  return Math.min(d, LIVE_SCENE_MAX_M)
+  return Math.min(d * 0.35, 22)
 }
 
 export function secondaryLiveKeepRadiusM(): number {
   if (!aoiLiveGuests()) return 0
+  const d = renderQuality.getSceneLoadRadiusM()
+  if (d <= 0) return 0
   const enter = secondaryLiveEnterRadiusM()
   if (enter <= 0) return 0
-  return enter + LIVE_SCENE_UNLOAD_EXTRA_M
+  return Math.min(d, Math.max(enter + LIVE_SCENE_UNLOAD_EXTRA_M, d * 0.6))
 }
 
 export function secondaryLiveRadiusM(): number {
   return secondaryLiveEnterRadiusM()
 }
 
-/** One cold boot at a time — stacked neighbor hydrate was 7 FPS on CBD walk. */
+/** One cold boot at a time — stacked isolate soak guard. */
 export const SECONDARY_LIVE_BOOT_CONCURRENCY = 1
 
 export function tertiaryResidentCap(_tier: PerformanceTier): number {
@@ -159,7 +186,10 @@ export function secondaryTickIntervalMs(_tier: PerformanceTier): number {
   return 50
 }
 
-/** PE workers are SceneLoop 20 Hz — never a 0 ms present pump. */
+/**
+ * Fallback pose-rebase interval when SceneLoop does not own the PE clock.
+ * Occupied PE send due is 16 ms in PeSlotGuest — this must stay 50 (never 0).
+ */
 export function peTickIntervalMs(_tier: PerformanceTier): number {
   return 50
 }

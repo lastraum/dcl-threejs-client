@@ -383,6 +383,7 @@ export class DevProgressPanel {
     if (route.kind === 'coords') return `${route.x},${route.y}`
     if (route.kind === 'world') return route.worldName
     if (route.kind === 'map') return 'map'
+    if (route.kind === 'forest') return 'worlds'
     if (route.kind === 'events') return 'events'
     if (route.kind === 'communities') return 'communities'
     if (route.kind === 'profile') return 'profile'

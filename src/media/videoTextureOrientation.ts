@@ -7,9 +7,9 @@ import * as THREE from 'three'
  * the texture to fix one mesh — that inverts every other consumer.
  *
  * - Texture `flipY` stays **false** at create (LiveKit / ThrottledVideoTexture).
- * - **glTF video** (GltfNodeModifiers): FrontSide + **geometry V** (1−v) only
- *   when the VideoTexture is bound. Do not DoubleSide, geometry-U-flip, or
- *   mutate UVs on the first unlit/black modifier pass.
+ * - **glTF video** (GltfNodeModifiers): FrontSide. Geometry V (1−v) only when
+ *   the VideoTexture is bound **and** the GLB authored V=0 at the mesh bottom.
+ *   Creator Hub `video_player.glb` already maps V=0 to the top — do not invert.
  * - **MeshRenderer planes**: apply path may set flipY=true for that plane's UVs.
  */
 export function configureSceneVideoTexture(tex: THREE.Texture, flipY = false): void {

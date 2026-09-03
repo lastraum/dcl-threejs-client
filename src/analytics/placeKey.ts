@@ -37,6 +37,7 @@ export function placeFieldsFromRoute(target: RouteTarget | null | undefined): Pl
   if (
     target.kind === 'blank' ||
     target.kind === 'map' ||
+    target.kind === 'forest' ||
     target.kind === 'events' ||
     target.kind === 'communities' ||
     target.kind === 'profile' ||

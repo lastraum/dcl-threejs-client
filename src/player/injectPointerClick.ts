@@ -61,4 +61,9 @@ export type InjectPointerClickBody = {
     position: { x: number; y: number; z: number }
     rotation: { x: number; y: number; z: number; w: number }
   }
+  /**
+   * CameraEntity PointerLock for this edge (same tick as PET + PPI).
+   * Browser lock, or VC-owned LMB hold (scene mouse-look without freecam).
+   */
+  pointerLock?: boolean
 }

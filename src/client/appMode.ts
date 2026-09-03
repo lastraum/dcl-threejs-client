@@ -2,6 +2,7 @@
 export type AppMode =
   | 'explorer'
   | 'map'
+  | 'forest'
   | 'communities'
   | 'events'
   | 'live'

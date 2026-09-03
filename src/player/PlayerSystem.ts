@@ -61,7 +61,6 @@ import type { SceneSpawn } from '../dcl/content/types'
 import type { MovePlayerToRequest } from './movePlayerTo'
 import {
   DCL_PLAYER_ENTITY_Y_OFFSET,
-  playerEntityPositionFromThreeFeet,
   resolveMovePlayerToTargetFeetDcl,
   threePlayerYawToDclEntityQuat
 } from './dclPlayerEntity'
@@ -282,6 +281,12 @@ export class PlayerSystem {
   private avatarLoadGen = 0
   private playerIdentity: ProfileIdentity | null = null
   private walkBounds: PlayerWalkBounds | null = null
+  /**
+   * FocusOwner SW in Genesis meters. Capsule / PhysX / scene graphs are genesis-stable;
+   * scene.js and RFC4 still speak FocusOwner-local DCL via this origin.
+   */
+  private focusOriginX = 0
+  private focusOriginZ = 0
   private moveTask: {
     from: THREE.Vector3
     to: THREE.Vector3
@@ -354,6 +359,10 @@ export class PlayerSystem {
   private photoModeActive = false
   /** Tour Focus follower — blocks locomotion + freecam; external controller owns the lens. */
   private tourFocusActive = false
+  /** In-world teleport rune — freeze WASD/look until Jump In tears the World down. */
+  private teleportLock = false
+  /** Hide local mesh + name tag at the seal burst beat. */
+  private ritualHidden = false
   /**
    * Authored scene.json spawn for PlayerEntity/CameraEntity **before** the CCT exists.
    * Without this, clientPoseProvider reports origin (y≈0) during script boot/hydration and
@@ -440,12 +449,14 @@ export class PlayerSystem {
         this.collidersReadyBlock ||
         this.photoModeActive ||
         this.tourFocusActive ||
+        this.teleportLock ||
         !canLocomote(this.getLocomotionConfig())
     )
     this.input.setLookBlocked(
       () =>
         this.photoModeActive ||
         this.tourFocusActive ||
+        this.teleportLock ||
         this.isSceneVirtualCameraDriving()
     )
     const feetY = spawn.fromSpawnPoints
@@ -453,8 +464,8 @@ export class PlayerSystem {
       : spawn.y <= 0.01
         ? DEFAULT_SPAWN_FEET_Y
         : spawn.y
-    // Authored scene.json feet — no CCT settle; gravity lands on cooked colliders.
-    const spawnThree = dclToThreeVec(new THREE.Vector3(spawn.x, feetY, spawn.z))
+    // Authored scene.json feet (FocusOwner-local) → genesis Three for the CCT.
+    const spawnThree = this.genesisThreeFromSceneLocalDcl(new THREE.Vector3(spawn.x, feetY, spawn.z))
     this.root.position.copy(spawnThree)
     this.physics.spawnPlayer(spawnThree)
     this.physics.warmStaticScene()
@@ -481,8 +492,14 @@ export class PlayerSystem {
     this.syncCamera(true)
     this.clearStagedSpawnPoses()
     const feet = this.physics.positionOut
+    const local = this.sceneLocalDclFromGenesisThree(feet)
+    const parcelX = Math.floor((local.x + this.focusOriginX) / 16)
+    const parcelZ = Math.floor((local.z + this.focusOriginZ) / 16)
     console.info(
-      `[player] spawn drop-in — feet=(${feet.x.toFixed(1)}, ${feet.y.toFixed(2)}, ${feet.z.toFixed(1)})` +
+      `[player] spawn drop-in — feet three=(${feet.x.toFixed(1)}, ${feet.y.toFixed(2)}, ${feet.z.toFixed(1)})` +
+        ` local=(${local.x.toFixed(1)}, ${local.y.toFixed(2)}, ${local.z.toFixed(1)})` +
+        ` parcel=${parcelX},${parcelZ}` +
+        ` origin=(${this.focusOriginX.toFixed(0)},${this.focusOriginZ.toFixed(0)})` +
         ` scene.jsonY=${feetY.toFixed(2)} grounded=false`
     )
     onProgress?.('Player ready')
@@ -586,7 +603,7 @@ export class PlayerSystem {
   forceRefreshBodyVisibility(): void {
     if (!this.avatar) return
     const fpv = this.isFirstPerson()
-    this.avatar.setBodyVisible(!this.modifierHidden && !fpv)
+    this.avatar.setBodyVisible(!this.modifierHidden && !this.ritualHidden && !fpv)
     this.syncNameTag()
   }
 
@@ -595,7 +612,10 @@ export class PlayerSystem {
     this.syncNameTag()
     if (this.nameTag) {
       this.nameTag.object.visible =
-        !this.modifierHidden && areSceneNameTagsVisible() && !this.isFirstPerson()
+        !this.modifierHidden &&
+        !this.ritualHidden &&
+        areSceneNameTagsVisible() &&
+        !this.isFirstPerson()
     }
   }
 
@@ -754,11 +774,39 @@ export class PlayerSystem {
    * `Transform.get(PlayerEntity).position` — **feet** in scene-relative DCL meters.
    * (Chest attach for PE-parented meshes lives on {@link getPlayerRoot}, not here.)
    */
+  /**
+   * FocusOwner SW (Genesis meters). Does **not** move the capsule — PhysX stays put
+   * on promote; scene-local getters subtract the new origin.
+   */
+  setFocusOriginMeters(x: number, z: number): void {
+    this.focusOriginX = x
+    this.focusOriginZ = z
+  }
+
+  /** FocusOwner-local walk box — clamp converts genesis Three ↔ this space. */
+  setWalkBounds(walkBounds: PlayerWalkBounds): void {
+    this.walkBounds = walkBounds
+  }
+
+  private sceneLocalDclFromGenesisThree(feetThree: THREE.Vector3, out = new THREE.Vector3()): THREE.Vector3 {
+    const g = threeToDclVec(feetThree)
+    return out.set(g.x - this.focusOriginX, g.y, g.z - this.focusOriginZ)
+  }
+
+  private genesisThreeFromSceneLocalDcl(feetDcl: THREE.Vector3, out = new THREE.Vector3()): THREE.Vector3 {
+    return dclToThreePos(
+      feetDcl.x + this.focusOriginX,
+      feetDcl.y,
+      feetDcl.z + this.focusOriginZ,
+      out
+    )
+  }
+
   getPlayerEntityPositionDcl(): THREE.Vector3 {
     if (!this.enabled && this.stagedPlayerPose) {
       return this.stagedPlayerPose.position.clone()
     }
-    return playerEntityPositionFromThreeFeet(this.root.position)
+    return this.sceneLocalDclFromGenesisThree(this.root.position)
   }
 
   /** PlayerEntity pose for CRDT / scene reads — position is feet; rotation aims DCL Forward at body facing. */
@@ -789,7 +837,6 @@ export class PlayerSystem {
     return this.root
   }
 
-  /** Scene-local DCL meters (+X east, +Z north). */
   /** Apply PhysX foot position to the avatar root (after prewarm / teleport snap). */
   syncFromPhysics(): void {
     this.root.position.copy(this.physics.positionOut)
@@ -797,8 +844,9 @@ export class PlayerSystem {
     this.syncCamera(true)
   }
 
+  /** Scene-local DCL meters (+X east, +Z north). */
   getPosition(): THREE.Vector3 {
-    return threeToDclVec(this.root.position)
+    return this.sceneLocalDclFromGenesisThree(this.root.position)
   }
 
   /** Three.js world position for renderer raycast distance checks. */
@@ -957,10 +1005,31 @@ export class PlayerSystem {
    */
   setModifierHidden(hidden: boolean): void {
     this.modifierHidden = hidden
-    this.avatar?.setBodyVisible(!hidden && !this.isFirstPerson())
+    this.avatar?.setBodyVisible(!hidden && !this.ritualHidden && !this.isFirstPerson())
     if (this.nameTag) {
-      this.nameTag.object.visible = !hidden && areSceneNameTagsVisible() && !this.isFirstPerson()
+      this.nameTag.object.visible =
+        !hidden && !this.ritualHidden && areSceneNameTagsVisible() && !this.isFirstPerson()
     }
+  }
+
+  /**
+   * Lock WASD / look for the in-world teleport rune. Camera still follows;
+   * World applies rumble after {@link syncCamera}.
+   */
+  setTeleportLock(locked: boolean): void {
+    this.teleportLock = locked
+    if (locked) {
+      this.clearMoveKeys()
+      this.input?.stopOrbitIfActive()
+    }
+  }
+
+  /** Hide local body + name tag as the teleport beam rises. */
+  setRitualHidden(hidden: boolean): void {
+    this.ritualHidden = hidden
+    // Whole player group (mesh, name tag, PlayerEntity attach) — camera is not a child.
+    this.root.visible = !hidden
+    this.forceRefreshBodyVisibility()
   }
 
   setNameTagVoiceLevel(level: number): void {
@@ -1050,7 +1119,7 @@ export class PlayerSystem {
     const pos = request.newRelativePosition
     if (!pos) return false
 
-    const currentFeetDcl = threeToDclVec(this.root.position)
+    const currentFeetDcl = this.sceneLocalDclFromGenesisThree(this.root.position)
     const requestedFeetDcl = new THREE.Vector3(
       pos.x ?? currentFeetDcl.x,
       pos.y ?? currentFeetDcl.y,
@@ -1062,7 +1131,7 @@ export class PlayerSystem {
       request.avatarTarget
     )
     clampToWalkBounds(targetFeetDcl, this.walkBounds)
-    const target = dclToThreeVec(targetFeetDcl)
+    const target = this.genesisThreeFromSceneLocalDcl(targetFeetDcl)
     const reposition =
       Math.hypot(target.x - this.root.position.x, target.z - this.root.position.z) > 1e-3 ||
       Math.abs(target.y - this.root.position.y) > 1e-3
@@ -1078,8 +1147,13 @@ export class PlayerSystem {
         // Ground-level long jumps: one-shot CCT settle when floor already under feet.
         const horiz = Math.hypot(target.x - from.x, target.z - from.z)
         const vert = Math.abs(target.y - from.y)
-        const longRespawn = horiz > 2.5 || vert > 2
-        const settle = longRespawn || !avatarTarget
+        // Ground-follow snaps (agar / lock-avatar-under-cell) are duration-0 feet
+        // puts, not Flagtag drown respawns. Treating horiz>2.5 as longRespawn
+        // settled the CCT every ~0.4s and made locomotion glitchy.
+        const authoredY = requestedFeetDcl.y
+        const groundFollow = vert < 1.25 && authoredY < 3
+        const longRespawn = !groundFollow && (horiz > 2.5 || vert > 2)
+        const settle = groundFollow ? false : longRespawn || !avatarTarget
         const reqDcl = requestedFeetDcl
         const tgtDcl = threeToDclVec(target)
         clientDebugLog.consoleOnly(
@@ -1095,11 +1169,9 @@ export class PlayerSystem {
           this.lastLongTeleportFeet = target.clone()
           this.lastLongTeleportAt = performance.now()
         }
-        // Pin authored feet while InputModifier.disableAll (map rebuild / freeze death).
-        // Retarget an already-armed hold even if this frame's IM mirror still says
-        // canLocomote — otherwise the next disableAll tick snaps back to snow feet
-        // and the campfire movePlayerTo never sticks.
-        if (this.disableAllHoldFeet || !canLocomote(this.getLocomotionConfig())) {
+        // Pin authored feet only for intentional InputModifier.disableAll
+        // (SpaceRunner lobby). Walk/jog/run freeze must not arm this hold.
+        if (this.getLocomotionConfig().disableAll) {
           this.disableAllHoldFeet = target.clone()
           const f = this.disableAllHoldFeet
           physLog(
@@ -1171,7 +1243,10 @@ export class PlayerSystem {
         rotation: this.stagedCameraPose.rotation.clone()
       }
     }
-    return ReservedEntitiesSync.cameraPose(this.host.camera)
+    const pose = ReservedEntitiesSync.cameraPose(this.host.camera)
+    pose.position.x -= this.focusOriginX
+    pose.position.z -= this.focusOriginZ
+    return pose
   }
 
   /**
@@ -1182,7 +1257,12 @@ export class PlayerSystem {
     const pos = request.position
     const rot = request.rotation
     if (!pos || !rot) return false
-    dclToThreePos(pos.x ?? 0, pos.y ?? 0, pos.z ?? 0, this.host.camera.position)
+    dclToThreePos(
+      (pos.x ?? 0) + this.focusOriginX,
+      pos.y ?? 0,
+      (pos.z ?? 0) + this.focusOriginZ,
+      this.host.camera.position
+    )
     dclToThreeQuat(rot.x ?? 0, rot.y ?? 0, rot.z ?? 0, rot.w ?? 1, this.host.camera.quaternion)
     this.host.camera.updateMatrixWorld(true)
     // Align freecam orbit so release of the hold does not hard-snap.
@@ -1196,6 +1276,31 @@ export class PlayerSystem {
   update(delta: number): void {
     if (!this.enabled || !this.input) return
     delta = Math.min(delta, 1 / 20)
+
+    // In-world teleport rune: freeze WASD / look; camera still tracks so rumble can apply.
+    if (this.teleportLock) {
+      this.physics.step(delta)
+      this.root.position.copy(this.physics.positionOut)
+      this.syncNameTag()
+      this.avatar?.setYaw(this.playerYaw)
+      this.avatar?.update(delta, {
+        horizontalSpeed: 0,
+        grounded: this.grounded,
+        nearGround: this.nearGround,
+        verticalVelocity: 0,
+        locomotionMode: this.locomotionMode,
+        jumping: false,
+        doubleJumping: false,
+        doubleJumpTriggered: false,
+        falling: false,
+        gliding: false,
+        moveAxisX: 0,
+        moveAxisZ: 0
+      })
+      this.syncCamera(false, delta)
+      this.input.endFrame()
+      return
+    }
 
     // Escape while MainCamera→VC is bound (plaza theater stuck, VIEW SHOT hang).
     this.pollVirtualCameraEscape()
@@ -1788,7 +1893,7 @@ export class PlayerSystem {
 
     this.root.position.copy(this.physics.positionOut)
     if (this.walkBounds) {
-      const dclPos = threeToDclVec(this.root.position)
+      const dclPos = this.sceneLocalDclFromGenesisThree(this.root.position)
       const beforeX = dclPos.x
       const beforeZ = dclPos.z
       if (clampToWalkBounds(dclPos, this.walkBounds)) {
@@ -1809,7 +1914,7 @@ export class PlayerSystem {
             this.physics.logStaticCollidersNear(three.x, three.y, three.z, 14, 'walk-clamp-probe')
           }
         }
-        this.physics.teleport(dclToThreeVec(dclPos))
+        this.physics.teleport(this.genesisThreeFromSceneLocalDcl(dclPos))
         this.root.position.copy(this.physics.positionOut)
         _velocity.x = 0
         _velocity.z = 0
@@ -2086,10 +2191,10 @@ export class PlayerSystem {
 
   private releaseFreecamLookForVirtualCamera(): void {
     if (!this.input) return
+    // Stop client freecam orbit so it cannot fight the VC lens. Do **not** exit
+    // pointer lock: PointerLock on CameraEntity is a scene-readable API
+    // (isPointerLocked + PrimaryPointerInfo.screenDelta). VC owns pose, not lock.
     this.input.stopOrbitIfActive()
-    if (this.input.pointer.locked) {
-      document.exitPointerLock()
-    }
   }
 
   /**
@@ -2299,9 +2404,10 @@ export class PlayerSystem {
     // Testing hold: keep the authored Testing.setCameraTransform lens for a few frames.
     if (this.testingCameraHoldFrames > 0) {
       this.testingCameraHoldFrames--
-      this.avatar?.setBodyVisible(!this.modifierHidden)
+      this.avatar?.setBodyVisible(!this.modifierHidden && !this.ritualHidden)
       if (this.nameTag) {
-        this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
+        this.nameTag.object.visible =
+          !this.modifierHidden && !this.ritualHidden && areSceneNameTagsVisible()
       }
       return
     }
@@ -2327,9 +2433,10 @@ export class PlayerSystem {
           this.camPitch = CAM_PITCH_DEFAULT
         }
       }
-      this.avatar?.setBodyVisible(!this.modifierHidden)
+      this.avatar?.setBodyVisible(!this.modifierHidden && !this.ritualHidden)
       if (this.nameTag) {
-        this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
+        this.nameTag.object.visible =
+          !this.modifierHidden && !this.ritualHidden && areSceneNameTagsVisible()
       }
       return
     }
@@ -2337,9 +2444,10 @@ export class PlayerSystem {
     // hold last lens pose; do not let freecam/orbit steal the shot.
     if (this.virtualCamera?.isMainCameraVcBound()) {
       this.wasVirtualCameraActive = true
-      this.avatar?.setBodyVisible(!this.modifierHidden)
+      this.avatar?.setBodyVisible(!this.modifierHidden && !this.ritualHidden)
       if (this.nameTag) {
-        this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible()
+        this.nameTag.object.visible =
+          !this.modifierHidden && !this.ritualHidden && areSceneNameTagsVisible()
       }
       return
     }
@@ -2357,9 +2465,10 @@ export class PlayerSystem {
     if (this.freecamSnapAfterVc) this.freecamSnapAfterVc = false
 
     const fpv = this.isFirstPerson()
-    this.avatar?.setBodyVisible(!this.modifierHidden && !fpv)
+    this.avatar?.setBodyVisible(!this.modifierHidden && !this.ritualHidden && !fpv)
     if (this.nameTag) {
-      this.nameTag.object.visible = !this.modifierHidden && areSceneNameTagsVisible() && !fpv
+      this.nameTag.object.visible =
+        !this.modifierHidden && !this.ritualHidden && areSceneNameTagsVisible() && !fpv
     }
 
     // Walk follow may lerp. Mouse look / left-drag orbit must snap — exp(-14Δ)
@@ -2470,9 +2579,9 @@ export class PlayerSystem {
    */
   private teleportTo(positionThree: THREE.Vector3, settle = true, longRespawn = false): void {
     if (this.walkBounds) {
-      const dclPos = threeToDclVec(positionThree)
+      const dclPos = this.sceneLocalDclFromGenesisThree(positionThree)
       clampToWalkBounds(dclPos, this.walkBounds)
-      positionThree.copy(dclToThreeVec(dclPos))
+      this.genesisThreeFromSceneLocalDcl(dclPos, positionThree)
     }
     this.physics.teleport(positionThree)
     _velocity.set(0, 0, 0)
@@ -2592,12 +2701,12 @@ export class PlayerSystem {
     from: THREE.Vector3,
     targetDcl: { x?: number; y?: number; z?: number }
   ): { dx: number; dz: number } {
-    const fromDcl = threeToDclVec(from)
-    const targetThree = dclToThreeVec(
+    const fromLocal = this.sceneLocalDclFromGenesisThree(from)
+    const targetThree = this.genesisThreeFromSceneLocalDcl(
       new THREE.Vector3(
-        targetDcl.x ?? fromDcl.x,
-        targetDcl.y ?? fromDcl.y,
-        targetDcl.z ?? fromDcl.z
+        targetDcl.x ?? fromLocal.x,
+        targetDcl.y ?? fromLocal.y,
+        targetDcl.z ?? fromLocal.z
       )
     )
     return { dx: targetThree.x - from.x, dz: targetThree.z - from.z }

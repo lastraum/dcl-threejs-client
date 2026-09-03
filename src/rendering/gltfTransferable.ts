@@ -512,21 +512,26 @@ export async function flattenGltf(
 
 export function collectTransfers(payload: XferGltfPayload): Transferable[] {
   const out: Transferable[] = []
+  const seen = new Set<Transferable>()
+  const push = (buf: Transferable | null | undefined) => {
+    if (!buf || seen.has(buf)) return
+    seen.add(buf)
+    out.push(buf)
+  }
   for (const geo of payload.geometries) {
-    for (const a of geo.attributes) out.push(a.array)
-    if (geo.index) out.push(geo.index.array)
+    for (const a of geo.attributes) push(a.array)
+    if (geo.index) push(geo.index.array)
     for (const morph of geo.morphAttributes) {
-      for (const a of morph.attrs) out.push(a.array)
+      for (const a of morph.attrs) push(a.array)
     }
   }
-  for (const tex of payload.textures) out.push(tex.bitmap)
-  for (const node of payload.nodes) {
-    if (node.inverseBind) out.push(node.inverseBind)
-    if (node.bindMatrix) out.push(node.bindMatrix)
-  }
+  for (const tex of payload.textures) push(tex.bitmap)
+  // Do NOT transfer inverseBind / bindMatrix — they are tiny and Brave/structured-clone
+  // + transfer has neutered them, leaving skinned extremities (feet) in bind pose.
   for (const clip of payload.clips) {
     for (const track of clip.tracks) {
-      out.push(track.times, track.values)
+      push(track.times)
+      push(track.values)
     }
   }
   return out
@@ -669,6 +674,32 @@ function createNodeShell(node: XferNode): THREE.Object3D {
   }
 }
 
+/** Keep skeleton.bones[i] aligned with boneInverses[i] — filtering drops foot joints. */
+function ensureBoneAt(
+  objects: THREE.Object3D[],
+  id: number,
+  fallbackName: string
+): THREE.Bone {
+  const existing = id >= 0 ? objects[id] : undefined
+  if (existing && (existing as THREE.Bone).isBone) return existing as THREE.Bone
+
+  const bone = new THREE.Bone()
+  bone.name = existing?.name || fallbackName
+  if (existing) {
+    bone.position.copy(existing.position)
+    bone.quaternion.copy(existing.quaternion)
+    bone.scale.copy(existing.scale)
+    const parent = existing.parent
+    if (parent) {
+      parent.add(bone)
+      existing.removeFromParent()
+    }
+    for (const child of [...existing.children]) bone.add(child)
+    if (id >= 0) objects[id] = bone
+  }
+  return bone
+}
+
 /** Rebuild a THREE graph from a transferable payload (main thread, cheap vs parse). */
 export function inflateGltf(payload: XferGltfPayload): {
   scene: THREE.Group
@@ -719,17 +750,22 @@ export function inflateGltf(payload: XferGltfPayload): {
     const spec = payload.nodes[i]!
     if (!spec.bones || spec.kind !== 'skinned') continue
     const mesh = objects[i] as THREE.SkinnedMesh
-    const bones = spec.bones.map((id) => objects[id]).filter((b): b is THREE.Bone => !!(b as THREE.Bone)?.isBone)
-    if (!bones.length || !spec.inverseBind) continue
+    if (!spec.inverseBind) continue
     const invSrc = new Float32Array(spec.inverseBind)
+    const bones: THREE.Bone[] = []
     const inverses: THREE.Matrix4[] = []
-    for (let b = 0; b < bones.length; b++) {
+    for (let b = 0; b < spec.bones.length; b++) {
+      bones.push(ensureBoneAt(objects, spec.bones[b]!, `bone_${b}`))
       inverses.push(new THREE.Matrix4().fromArray(invSrc, b * 16))
     }
+    if (!bones.length) continue
     const skeleton = new THREE.Skeleton(bones, inverses)
     const bind = new THREE.Matrix4()
     if (spec.bindMatrix) bind.fromArray(new Float32Array(spec.bindMatrix))
     mesh.bind(skeleton, bind)
+    if (!mesh.geometry.getAttribute('skinIndex') || !mesh.geometry.getAttribute('skinWeight')) {
+      throw new Error(`inflateGltf: skinned mesh "${mesh.name}" missing skin attributes`)
+    }
   }
 
   const rootObj = objects[payload.root] ?? objects[0]

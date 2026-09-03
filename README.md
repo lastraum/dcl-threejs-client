@@ -2,7 +2,7 @@
 
 A **browser-native Decentraland SDK7 Explorer** — Three.js renderer, Web Worker scene runtime, PhysX, and LiveKit/RFC4 multiplayer. Runs published scene bundles (`bin/index.js`) with CRDT sync, avatars, and an Explorer-style HUD. Built for the open web.
 
-**Current release:** **v2.2.0** (one guest clock / SceneLoop). **v2.1.0** was local preview + this-client shaders. **v2.0.0** was host world + city walk. Latest tagged on `main`. QA continues on `dev-latest`.
+**Current release:** **v2.3.0** (plaza rings · tjs · handheld). **v2.2.0** was one guest clock / SceneLoop. **v2.1.0** was local preview + this-client shaders. **v2.0.0** was host world + city walk. Latest tagged on `main`. QA continues on `dev-latest`.
 
 [Goals](#goals) · [Contributions](#contributions) · [Local preview](#local-preview) · [Environments](#environments) · [Pets](#pets) · [Shaders](#shaders)
 
@@ -279,57 +279,182 @@ Leave the scene `npm start` / Hub Play running. Closing it stops `/about` and th
 
 ## Shaders
 
-There is no `tjs` in the scene. **Creating the Tag is the call.**
+Scenes drive this client's shaders and cameras with one mirrored custom component named **`tjs`**. `kind` is a string: `shader`, `texture`, `camera`, `projection`. Other explorers ignore unknown custom components, so a published SDK7 scene that defines `tjs` stays valid.
+
+Copy this spec once. **Field order must match.** Skip any field on `tjs.create` you do not use — the SDK fills zeros / empty / false.
+
+### Declare `tjs`
 
 ```ts
-// load only (does not fire)
-Tags.createOrReplace(engine.RootEntity, {
-  tags: [
-    'tjs.shader(ice, assets/shaders/IceAbility.js)',
-    'tjs.shader(cinder, assets/shaders/MeteorAbility.js)'
-  ]
-})
+import {
+  engine,
+  Transform,
+  VirtualCamera,
+  Schemas
+} from '@dcl/sdk/ecs'
+import { Color4, Quaternion, Vector3 } from '@dcl/sdk/math'
 
-// fire — any time, any entity (this tab only)
-pointerEventsSystem.onPointerDown(
-  { entity: button, opts: { button: InputAction.IA_POINTER, hoverText: 'Cast Ice' } },
-  function () {
-    const ox = 42, oy = 0, oz = 46
-    const dx = 0.83, dy = 0, dz = -0.55
-    const distance = 14
-    Tags.createOrReplace(engine.addEntity(), {
-      tags: [`tjs.ice.spawn(${ox}, ${oy}, ${oz}, ${dx}, ${dy}, ${dz}, ${distance})`]
-    })
-  }
-)
-
-// same cast, other people in this client also see it
-Tags.createOrReplace(engine.addEntity(), {
-  tags: [
-    `tjs.ice.spawn(${ox}, ${oy}, ${oz}, ${dx}, ${dy}, ${dz}, ${distance})`,
-    'tjs.sync'
-  ]
+const tjs = engine.defineComponent('tjs', {
+  kind: Schemas.String,
+  name: Schemas.String,
+  sync: Schemas.Boolean,
+  enabled: Schemas.Boolean,
+  path: Schemas.String,
+  ox: Schemas.Float,
+  oy: Schemas.Float,
+  oz: Schemas.Float,
+  dx: Schemas.Float,
+  dy: Schemas.Float,
+  dz: Schemas.Float,
+  dist: Schemas.Float,
+  camera: Schemas.Entity,
+  layers: Schemas.String,
+  background: Schemas.Color4,
+  fov: Schemas.Float
 })
 ```
 
-That **is** `ability.spawn(origin, direction, distance)`. `${}` is just JS inside the string.
-
-Add the spawn Tag **anywhere you want to trigger** the shader — a pointer callback, a timer, another system, not only a click.
-
-**Default is local-only.** Add sibling Tag `tjs.sync` to put that one cast on the comms topic so other ThreejsClient tabs see it. Do not `syncEntity` the spawn entity — a cast is a one-shot, not lasting ECS state.
-
-This client only — Unity / Bevy do not treat Tags as a shader bus.
-
-| You write | Role |
+| Field | Role |
 | --- | --- |
-| `tjs.shader(ice, assets/shaders/IceAbility.js)` | Load that file as `ice` |
-| `` tjs.ice.spawn(${ox}, ${oy}, ${oz}, ${dx}, ${dy}, ${dz}, ${distance}) `` | `spawn(origin, direction, distance)` — this tab |
-| `tjs.sync` | Sibling Tag — other ThreejsClient tabs see that cast |
+| `kind` | `'shader'` / `'camera'` / `'projection'` / `'texture'` (reserved). |
+| `name` | Shader: the export that file exposes. |
+| `sync` | `true` shares that shot with other ThreejsClient sessions. |
+| `enabled` | Shader: `false` loads, `true` fires. Camera/screen: on/off. |
+| `path` | Shader file. Already-warmed files are not fetched again on `/reload` or HMR. |
+| `ox` | Origin X. Where the effect starts (scene meters). Optional. |
+| `oy` | Origin Y. Optional. |
+| `oz` | Origin Z. Optional. |
+| `dx` | Direction X. Toward the target (usually normalized). Optional. |
+| `dy` | Direction Y. Optional. |
+| `dz` | Direction Z. Optional. |
+| `dist` | Travel distance in meters. Optional. `0` / omit → 32 m. Unused origin/direction fall back to the entity Transform. |
+| `camera` | Projection only. The lens **entity** (not a number). |
+| `layers` | Camera only. `"0,1,2"` string. Empty / omit = all. |
+| `background` | Color4 clear for empty feeds. Default black. |
+| `fov` | Camera only. Vertical FOV, default 60. |
 
-Copies: VFX scene `assets/shaders/`.
+### Shader example
+
+Load once (`enabled: false`). That fetches the file. `enabled: true` is the trigger — the file is not fetched again. Set `enabled: false` to stop / to fire again on the same entity.
+
+```ts
+const fx = engine.addEntity()
+tjs.create(fx, {
+  kind: 'shader',
+  name: 'geyser',
+  path: 'assets/shaders/GeyserAbility.js',
+  enabled: false
+})
+
+function cast(
+  origin: ReturnType<typeof Vector3.create>,
+  target: { x: number; y: number; z: number }
+) {
+  const dx = target.x - origin.x
+  const dz = target.z - origin.z
+  const distance = Math.sqrt(dx * dx + dz * dz) || 1
+  const row = tjs.getMutable(fx)
+  row.ox = origin.x
+  row.oy = origin.y
+  row.oz = origin.z
+  row.dx = dx / distance
+  row.dy = 0
+  row.dz = dz / distance
+  row.dist = distance
+  row.enabled = true
+}
+
+function stop() {
+  tjs.getMutable(fx).enabled = false
+}
+
+cast(Vector3.create(42, 0, 46), Vector3.create(54, 0, 38))
+stop()
+cast(Vector3.create(42, 0, 46), Vector3.create(60, 0, 40))
+```
+
+Set `sync: true` on the row if other ThreejsClient sessions should see that shot.
+
+Need two of the same effect at once? Create a second entity. The file is already warm, so skip `path` on the extra row.
+
+### Cameras and projection screens
+
+Each **`kind: 'camera'`** lens is a full extra render of the world every frame (512×512 RT). Two lenses means the city is drawn three times (your view plus both feeds). More cameras and screens cost FPS. Keep the count small.
+
+Draw bits live on the **camera** row (comma-separated string), not the screen:
+
+| Token | What the lens sees |
+| --- | --- |
+| `0` | Buildings, GLBs, MeshRenderer, terrain |
+| `1` | Avatars (local, remote, AvatarShape) |
+| `2` | SFX / `tjs` shaders |
+| omit / `""` | All three (`0,1,2`) |
+
+Examples: `"0,1,2"` full feed, `"1"` avatars only, `"0,2"` world + SFX (no avatars).
+
+**Lens** — `Transform` + SDK `VirtualCamera` + `tjs` `kind: 'camera'`. Do **not** set `tjs.camera` on this entity (that field is only for screens). Viewpoint is `VirtualCamera.lookAtEntity`, or Transform **+Z** if omitted. `enabled` typically starts `true`.
+
+```ts
+const lookAt = engine.addEntity()
+Transform.create(lookAt, { position: Vector3.create(54, 0, 38) })
+
+const cam = engine.addEntity()
+Transform.create(cam, {
+  position: Vector3.create(54, 5, 52),
+  rotation: Quaternion.fromEulerDegrees(-20, 0, 0)
+})
+VirtualCamera.create(cam, { lookAtEntity: lookAt })
+tjs.create(cam, {
+  kind: 'camera',
+  enabled: true,
+  layers: '0,1,2',
+  fov: 40,
+  background: Color4.create(0, 0, 0, 1)
+})
+```
+
+`fov` is vertical degrees (default `60`, clamped 1–170). `background` is the RT clear / empty-feed color (default black).
+
+**World screen** — `Transform` + `tjs` `kind: 'projection'` with **`camera: cam`** (the lens **entity**, not a dummy number). Do **not** put `MeshRenderer`, SDK `Material`, or `MeshCollider` on the screen. This client draws the plane from the Transform.
+
+```ts
+const screen = engine.addEntity()
+Transform.create(screen, {
+  position: Vector3.create(46, 2.2, 42),
+  rotation: Quaternion.fromEulerDegrees(0, 35, 0),
+  scale: Vector3.create(4.2, 2.6, 1)
+})
+tjs.create(screen, {
+  kind: 'projection',
+  enabled: true,
+  camera: cam
+})
+```
+
+Toggle the picture on the **projection** (leave the camera `enabled`):
+
+```ts
+const row = tjs.getMutable(screen)
+row.enabled = !row.enabled
+```
+
+**UI screen** — same lens, no second `kind: 'projection'`. On a `UiEntity` background, set `texture.src` to `tjs:${cam}`. This client never file-loads that src. If the lens is not up yet, the panel stays on `uiBackground.color` until it is.
+
+```ts
+<UiEntity
+  uiTransform={{ width: 420, height: 236 }}
+  uiBackground={{
+    color: Color4.create(0, 0, 0, 1),
+    textureMode: 'stretch',
+    texture: { src: `tjs:${cam}` }
+  }}
+/>
+```
 
 ## Credits
 
+- **Kenney** ([@KenneyNL](https://x.com/KenneyNL)) — CC0 3D kits (city, roads, cars). [kenney.nl](https://kenney.nl)
+- **Chiro Visuals** ([@chirovisuals](https://x.com/chirovisuals)) — Three.js ability VFX shaders. [LinearAbiltyCastingThreeJS](https://github.com/achrefelouafi/LinearAbiltyCastingThreeJS)
 - **FFT ocean / waves** — GPGPU Phillips-spectrum water ported from [gioeledallapozza/FFTOCEAN](https://github.com/gioeledallapozza/FFTOCEAN). Scene knobs: `scene.json` → `environment.water` (ThreejsClient-only; ignored by Unity/Godot Explorer).
 
 ## License

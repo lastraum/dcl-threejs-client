@@ -300,6 +300,11 @@ export class SceneUiBridge {
     // on every setUiVisible(true) from PE policy ticks.
   }
 
+  /** Blit `tjs:<entity>` UI backgrounds after SceneTjsBridge renders cameras. */
+  blitTjsProjections(blit: (cameraEntity: number, canvas: HTMLCanvasElement) => boolean): void {
+    this.dom.blitTjsProjections(blit)
+  }
+
   /** Force Yoga+DOM rebuild + interactive hit regions (rare: late mount / debug). */
   forceRepaint(): void {
     if (!this.domVisible) return
@@ -339,15 +344,32 @@ export class SceneUiBridge {
     this.writeback = writeback
   }
 
-  /** Pointer phase-4 structured mount — feed DOM paint + hit tests before projection fold. */
-  ingestMountSnapshot(rows: readonly WorkerUiMountSnapshotRow[]): void {
-    this.mountSnapshotPointerEvents.clear()
+  /**
+   * Pointer phase-4 structured mount — feed DOM paint + hit tests before projection fold.
+   *
+   * Partial dirty snapshots (timer text, 2–8 rows) omit unchanged PointerEvents by design.
+   * Clearing the whole PE map on those payloads left How To Play / Start buttons with no
+   * lag-fill PE, so DOM `--interactive` dropped and desktop onMouseUp never fired.
+   * `replace` is full-mount only; empty rows still wipe (welcome unmount).
+   */
+  ingestMountSnapshot(
+    rows: readonly WorkerUiMountSnapshotRow[],
+    opts?: { replace?: boolean }
+  ): void {
+    if (rows.length === 0 || opts?.replace) {
+      this.mountSnapshotPointerEvents.clear()
+    }
     for (const row of rows) {
       if (row.componentId !== POINTER_EVENTS_COMPONENT_ID) continue
       const entity = row.entity as Entity
       this.mountSnapshotPointerEvents.set(entity, row.value)
       // New snapshot may re-open PE on an entity that previously lost it — allow snapshot lead.
       this.livePointerEventsSeen.delete(entity)
+    }
+    if (this.workerUiEntitiesKnown && this.workerUiEntities) {
+      for (const entity of [...this.mountSnapshotPointerEvents.keys()]) {
+        if (!this.workerUiEntities.has(entity)) this.mountSnapshotPointerEvents.delete(entity)
+      }
     }
   }
 
@@ -420,6 +442,8 @@ export class SceneUiBridge {
     if (next.size === 0) {
       this.dom.releaseAll()
       this.hitMap.clear()
+      this.mountSnapshotPointerEvents.clear()
+      this.livePointerEventsSeen.clear()
       this.lastMountedUiEntities.clear()
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
@@ -596,6 +620,7 @@ export class SceneUiBridge {
 
     if (!this.workerUiEntitiesKnown || !this.workerUiEntities?.size) {
       this.scrubUnauthoritativeDom()
+      this.hitMap.clear()
       disposeSceneUiDebug()
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
@@ -616,6 +641,7 @@ export class SceneUiBridge {
 
     if (records.length === 0) {
       this.scrubUnauthoritativeDom()
+      this.hitMap.clear()
       disposeSceneUiDebug()
       this.lastPaintLayoutKey = ''
       this.lastPaintVisualKey = ''
@@ -1496,6 +1522,10 @@ export class SceneUiBridge {
     this.lastPointerClientX = clientX
     this.lastPointerClientY = clientY
     if (!this.domVisible) return null
+    // Worker mount=[] — no ghost PE/DOM after welcome dissolve (CBD Plaza spawn).
+    if (this.workerUiEntitiesKnown && (this.workerUiEntities?.size ?? 0) === 0) {
+      return null
+    }
     // Primary hit-map still covers the full screen under a PX enable/close popup.
     // Only the topmost interactive root (`#pe-ui-root` vs `#scene-ui-root`) may inject.
     if (isForeignUiRootOnTop(this.root.id, clientX, clientY, eventTarget)) return null

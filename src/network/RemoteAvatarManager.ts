@@ -63,6 +63,7 @@ import { GliderProp, GlideStateWire, glideStateWantsOpen } from '../avatar/Glide
 import { perfNoteComposeMs } from '../util/perfCounters'
 import { logMainHitch } from '../debug/MainHitchLog'
 import { setMeshDesiredCastShadow } from '../rendering/shadowCastPolicy'
+import { DRAW_LAYER_AVATAR, setLayer } from '../rendering/drawLayers'
 
 /** Packet / lerp settle epsilon (meters / radians). */
 const POSE_EPS = 0.02
@@ -163,6 +164,8 @@ type RemotePeerRecord = {
   bodyShape: BodyShape
   loading: Promise<void> | null
   hasPosition: boolean
+  /** Held in-scene for the leave rune; ignore new RFC4 until removePeer. */
+  departing: boolean
   /** AvatarModifierArea hide — keeps peer but invisible. */
   modifierHidden: boolean
   pendingProfile: AvatarProfile | null
@@ -303,6 +306,9 @@ export class RemoteAvatarManager {
   /** Local player feet (Three world) — LOD / load / tags / shadows; not freecam. */
   private readonly localPlayerWorldPos = new THREE.Vector3()
   private hasLocalPlayerPos = false
+  /** FocusOwner SW meters — inbound RFC4 is scene-local; Three world is genesis. */
+  private focusOriginX = 0
+  private focusOriginZ = 0
   /** Active camera for frustum anim skip (looking away from a huddle). */
   private camera: THREE.Camera | null = null
 
@@ -324,6 +330,10 @@ export class RemoteAvatarManager {
     this.scene = parent instanceof THREE.Scene ? parent : (drawRoot as unknown as THREE.Scene)
     this.root.name = 'remote-avatars'
     drawRoot.add(this.root)
+  }
+
+  private stampAvatarLayer(root: THREE.Object3D): void {
+    setLayer(root, DRAW_LAYER_AVATAR)
   }
 
   setOnComposeSettled(handler: (() => void) | null): void {
@@ -502,29 +512,32 @@ export class RemoteAvatarManager {
    * Stand-on origin rebase: cached peer poses are scene-local. Convert through
    * genesis so remotes stay put in the world instead of jumping to the new SW.
    */
+  setFocusOriginMeters(x: number, z: number): void {
+    this.focusOriginX = x
+    this.focusOriginZ = z
+  }
+
+  /**
+   * Genesis-stable remotes: inbound scene-local is converted at ingest.
+   * Promote must not slide peer roots.
+   */
   rebaseSceneOrigin(
-    oldOriginMeters: { x: number; z: number },
+    _oldOriginMeters: { x: number; z: number },
     newOriginMeters: { x: number; z: number }
   ): void {
-    const dclDx = oldOriginMeters.x - newOriginMeters.x
-    const dclDz = oldOriginMeters.z - newOriginMeters.z
-    if (dclDx === 0 && dclDz === 0) return
-    let n = 0
-    for (const record of this.peers.values()) {
-      if (!record.hasPosition) continue
-      // three.x = -dcl.x, three.z = dcl.z
-      record.root.position.x -= dclDx
-      record.root.position.z += dclDz
-      record.targetPosition.copy(record.root.position)
-      n++
-    }
-    if (n > 0) {
-      clientDebugLog.log(
-        'network',
-        `Remote origin rebase n=${n} dclΔ=(${dclDx.toFixed(1)},${dclDz.toFixed(1)}) ` +
-          `origin (${oldOriginMeters.x},${oldOriginMeters.z})→(${newOriginMeters.x},${newOriginMeters.z})`
-      )
-    }
+    this.focusOriginX = newOriginMeters.x
+    this.focusOriginZ = newOriginMeters.z
+  }
+
+  private genesisThreeFromSceneLocalDcl(positionDcl: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
+    return dclToThreeVec(
+      new THREE.Vector3(
+        positionDcl.x + this.focusOriginX,
+        positionDcl.y,
+        positionDcl.z + this.focusOriginZ
+      ),
+      out
+    )
   }
 
   setLocalPlayerPosition(position: THREE.Vector3): void {
@@ -782,6 +795,46 @@ export class RemoteAvatarManager {
     return record.currentYaw + AVATAR_YAW_OFFSET
   }
 
+  /**
+   * Freeze a leaving peer at their last RFC4 pose for the teleport rune.
+   * Returns null when there is no mesh pose — caller should remove immediately.
+   */
+  holdPeerForDepart(address: string): { x: number; y: number; z: number; yaw: number } | null {
+    const record = this.peers.get(address.toLowerCase())
+    if (!record || !record.hasPosition) return null
+    record.departing = true
+    record.velocity.set(0, 0, 0)
+    record.horizontalSpeed = 0
+    record.smoothedSpeed = 0
+    record.verticalVelocity = 0
+    record.remoteJumping = false
+    record.targetPosition.copy(record.root.position)
+    record.targetYaw = record.currentYaw
+    return {
+      x: record.root.position.x,
+      y: record.root.position.y,
+      z: record.root.position.z,
+      yaw: record.currentYaw
+    }
+  }
+
+  hideDepartingPeer(address: string): void {
+    const record = this.peers.get(address.toLowerCase())
+    if (!record) return
+    record.root.visible = false
+    if (record.model) record.model.visible = false
+    if (record.placeholder) record.placeholder.visible = false
+    if (record.nameTag) record.nameTag.object.visible = false
+  }
+
+  /** Rejoin while the leave rune is still playing — unfreeze as a live peer. */
+  resumeDepartingPeer(address: string): void {
+    const record = this.peers.get(address.toLowerCase())
+    if (!record || !record.departing) return
+    record.departing = false
+    record.root.visible = !record.modifierHidden
+  }
+
   /** World Y of the peer nametag anchor (for tour flag badge above the name). */
   getPeerNameTagWorldY(address: string): number | null {
     const record = this.peers.get(address.toLowerCase())
@@ -851,7 +904,14 @@ export class RemoteAvatarManager {
     for (const [key, record] of this.peers) {
       if (!record.hasPosition) continue
       const pos = threeToDclVec(record.root.position)
-      out.push({ id: key, position: { x: pos.x, y: pos.y, z: pos.z } })
+      out.push({
+        id: key,
+        position: {
+          x: pos.x - this.focusOriginX,
+          y: pos.y,
+          z: pos.z - this.focusOriginZ
+        }
+      })
     }
   }
 
@@ -1202,6 +1262,7 @@ export class RemoteAvatarManager {
       // EntityStore lives on poseRoot (not rendered). Remotes must stay under
       // this.root on the live scene or only CSS name tags appear.
       if (root.parent !== this.root) this.root.add(root)
+      this.stampAvatarLayer(root)
 
       record = {
         address: key,
@@ -1225,6 +1286,7 @@ export class RemoteAvatarManager {
         bodyShape: 'male',
         loading: null,
         hasPosition: false,
+        departing: false,
         modifierHidden: false,
         pendingProfile: null,
         lastEmoteId: -1,
@@ -1262,8 +1324,13 @@ export class RemoteAvatarManager {
       this.flushPendingVrmHash(key)
     }
 
+    if (record.departing) {
+      record.departing = false
+      record.root.visible = !record.modifierHidden
+    }
+
     if (positionDcl) {
-      const position = dclToThreeVec(positionDcl)
+      const position = this.genesisThreeFromSceneLocalDcl(positionDcl, new THREE.Vector3())
       record.hasPosition = true
       record.targetPosition.copy(position)
       record.root.position.copy(position)
@@ -1356,7 +1423,7 @@ export class RemoteAvatarManager {
       if (this.peers.has(key)) this.removePeer(key)
       return
     }
-    const position = dclToThreeVec(positionDcl)
+    const position = this.genesisThreeFromSceneLocalDcl(positionDcl, new THREE.Vector3())
     const yaw = dclYawToThreeYaw(yawDcl)
     if (!this.peers.has(key)) {
       this.upsertPeer(key, positionDcl)
@@ -1368,7 +1435,7 @@ export class RemoteAvatarManager {
       return
     }
     const record = this.peers.get(key)
-    if (!record) return
+    if (!record || record.departing) return
 
     const now = performance.now()
     const prevTargetX = record.targetPosition.x
@@ -1531,6 +1598,10 @@ export class RemoteAvatarManager {
     this.loadQueue.setIgnoreDistance(fullRateCrowd)
 
     for (const [key, record] of this.peers.entries()) {
+      if (record.departing) {
+        if (record.nameTag) record.nameTag.object.visible = false
+        continue
+      }
       const remoteGlidingEarly =
         glideStateWantsOpen(record.glideState) ||
         record.glideState === GlideStateWire.CLOSING_PROP
@@ -1984,6 +2055,7 @@ export class RemoteAvatarManager {
     if (!record.placeholder) {
       record.placeholder = createRemoteAvatarPlaceholder()
       record.pivot.add(record.placeholder)
+      this.stampAvatarLayer(record.root)
     }
     // No name tag / spinner until the full avatar mesh is ready.
     if (record.nameTag) {
@@ -2130,6 +2202,7 @@ export class RemoteAvatarManager {
       this.clearLoadingPresentation(record)
 
       record.pivot.add(record.model)
+      this.stampAvatarLayer(record.root)
       applyAvatarPivotOffset(record.pivot, record.model)
       record.model.visible = true
       record.pivot.visible = true
@@ -2222,6 +2295,7 @@ export class RemoteAvatarManager {
 
       this.clearLoadingPresentation(record)
       record.pivot.add(odkAvatar.root)
+      this.stampAvatarLayer(record.root)
       prepareCustomAvatarScene(odkAvatar.root)
       applyOdkPivotOffset(record.pivot, odkAvatar.root)
       prepareCustomAvatarScene(odkAvatar.root)
@@ -2318,6 +2392,7 @@ export class RemoteAvatarManager {
 
       this.clearLoadingPresentation(record)
       record.pivot.add(vrmAvatar.root)
+      this.stampAvatarLayer(record.root)
       prepareCustomAvatarScene(vrmAvatar.root)
       this.setModelCastShadow(vrmAvatar.root, false)
       this.applyRemoteShadowBudget()

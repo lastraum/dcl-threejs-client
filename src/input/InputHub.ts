@@ -74,7 +74,8 @@ export type InputHubOptions = {
  */
 export class InputHub {
   private readonly pressed = new Set<InputActionValue>()
-  private readonly codeDownCount = new Map<string, number>()
+  /** Physical `KeyboardEvent.code` currently down — not a refcount (extra DOWN would stick WASD). */
+  private readonly codesDown = new Set<string>()
   private readonly subscribers = new Map<string, InputHubSubscriber>()
   private opts: InputHubOptions | null = null
   private tickNumber = 0
@@ -107,7 +108,7 @@ export class InputHub {
     this.subscribers.clear()
     this.lastSigBySub.clear()
     this.pressed.clear()
-    this.codeDownCount.clear()
+    this.codesDown.clear()
     this.opts = null
   }
 
@@ -175,7 +176,7 @@ export class InputHub {
     const hadFlight = [...this.pressed].some((a) => FLIGHT_TICK_ACTIONS.has(a))
     const hadKeys = this.pressed.size > 0
     this.pressed.clear()
-    this.codeDownCount.clear()
+    this.codesDown.clear()
     for (const sub of this.subscribers.values()) {
       this.publishToOne(sub, true)
       if (hadFlight) sub.onFlightKeysReleased?.()
@@ -196,9 +197,8 @@ export class InputHub {
     const actions = actionsForCode(e.code)
     if (!actions?.length) return
 
-    const count = this.codeDownCount.get(e.code) ?? 0
-    this.codeDownCount.set(e.code, count + 1)
-    if (count > 0) return
+    if (this.codesDown.has(e.code)) return
+    this.codesDown.add(e.code)
 
     let changed = false
     for (const action of actions) {
@@ -224,13 +224,7 @@ export class InputHub {
     const actions = actionsForCode(e.code)
     if (!actions?.length) return
 
-    const count = this.codeDownCount.get(e.code) ?? 0
-    const next = Math.max(0, count - 1)
-    if (next > 0) {
-      this.codeDownCount.set(e.code, next)
-      return
-    }
-    this.codeDownCount.delete(e.code)
+    this.codesDown.delete(e.code)
 
     let releasedFlight = false
     let changed = false
@@ -274,8 +268,7 @@ export class InputHub {
   }
 
   private isActionPhysicallyDown(action: InputActionValue): boolean {
-    for (const [code, count] of this.codeDownCount) {
-      if (count <= 0) continue
+    for (const code of this.codesDown) {
       if (actionsForCode(code).includes(action)) return true
     }
     return false

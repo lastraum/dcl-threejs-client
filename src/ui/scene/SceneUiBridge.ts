@@ -305,6 +305,11 @@ export class SceneUiBridge {
     this.dom.blitTjsProjections(blit)
   }
 
+  /** Unique lens entities bound to live UI `tjs:<entity>` projection slots. */
+  listTjsProjectionCameraEntities(): number[] {
+    return this.dom.listTjsProjectionCameraEntities()
+  }
+
   /** Force Yoga+DOM rebuild + interactive hit regions (rare: late mount / debug). */
   forceRepaint(): void {
     if (!this.domVisible) return

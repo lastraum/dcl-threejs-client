@@ -619,6 +619,8 @@ export class SceneScriptSystem {
   }
 
   private updateTjsBridge(dt: number): void {
+    const uiCamIds = this.sceneUiBridge?.listTjsProjectionCameraEntities() ?? []
+    this.tjsBridge?.setUiCameraConsumers(uiCamIds)
     this.tjsBridge?.update(dt)
     const tjs = this.tjsBridge
     if (!tjs) return

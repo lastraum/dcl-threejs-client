@@ -310,7 +310,8 @@ const tjs = engine.defineComponent('tjs', {
   camera: Schemas.Entity,
   layers: Schemas.String,
   background: Schemas.Color4,
-  fov: Schemas.Float
+  fov: Schemas.Float,
+  showWhenDisabled: Schemas.Boolean
 })
 ```
 
@@ -332,6 +333,9 @@ const tjs = engine.defineComponent('tjs', {
 | `layers` | Camera only. `"0,1,2"` string. Empty / omit = all. |
 | `background` | Color4 clear for empty feeds. Default black. |
 | `fov` | Camera only. Vertical FOV, default 60. |
+| `showWhenDisabled` | Projection only. When `enabled` is false, `true` keeps the unmapped plane visible (background color); default `false` hides the mesh without destroying it. |
+
+Cameras with no enabled world projection and no UI `tjs:` feed skip their RT render pass that frame (the lens stays registered; prior RT contents are kept).
 
 ### Shader example
 
@@ -413,7 +417,7 @@ tjs.create(cam, {
 })
 ```
 
-`fov` is vertical degrees (default `60`, clamped 1–170). `background` is the RT clear / empty-feed color (default black).
+`fov` is vertical degrees (default `60`, clamped 1–170). `background` is the RT clear / empty-feed color (default black). On projections, `showWhenDisabled` (default `false`) controls whether the plane stays visible when `enabled` is false — set `true` to show the background color instead of hiding the mesh.
 
 **World screen** — `Transform` + `tjs` `kind: 'projection'` with **`camera: cam`** (the lens **entity**, not a dummy number). Do **not** put `MeshRenderer`, SDK `Material`, or `MeshCollider` on the screen. This client draws the plane from the Transform.
 

@@ -80,25 +80,33 @@ export const YGDisplay = {
   NONE: 1
 } as const
 
-/** react-ecs JSX may use `"flex"` / `"none"` strings; protobuf uses numeric enums. */
-export function normalizeYGDisplay(display: unknown): number {
+/** Read display only when the value is actually present. Empty/unknown is not flex. */
+export function readYGDisplay(display: unknown): number | undefined {
+  if (display === undefined || display === null) return undefined
   if (display === YGDisplay.NONE || display === 1 || display === true) return YGDisplay.NONE
   if (display === YGDisplay.FLEX || display === 0 || display === false) return YGDisplay.FLEX
   if (typeof display === 'string') {
     const key = display.toLowerCase().trim()
     if (key === 'none' || key === '1' || key === 'hidden') return YGDisplay.NONE
     if (key === 'flex' || key === '0' || key === 'visible') return YGDisplay.FLEX
+    return undefined
   }
-  // protobufjs / CRDT may box enums as { value: 1 } or Long-like
-  if (display != null && typeof display === 'object') {
+  if (typeof display === 'object') {
     const v = (display as { value?: unknown }).value ?? (display as { low?: unknown }).low
+    if (v === undefined || v === null) return undefined
     if (v === 1 || v === '1') return YGDisplay.NONE
     if (v === 0 || v === '0') return YGDisplay.FLEX
+    return undefined
   }
   const n = Number(display)
   if (n === 1) return YGDisplay.NONE
   if (n === 0) return YGDisplay.FLEX
-  return YGDisplay.FLEX
+  return undefined
+}
+
+/** react-ecs JSX may use `"flex"` / `"none"` strings; protobuf uses numeric enums. */
+export function normalizeYGDisplay(display: unknown): number {
+  return readYGDisplay(display) ?? YGDisplay.FLEX
 }
 
 export function isYGDisplayNone(display: unknown): boolean {

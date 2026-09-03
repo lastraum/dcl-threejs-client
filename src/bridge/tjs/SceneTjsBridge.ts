@@ -31,11 +31,15 @@ const _entityDisplayQuat = new THREE.Quaternion()
 const TJS_CAMERA_RT_SIZE = 512
 const TJS_CAMERA_FOV = 60
 const TJS_CAMERA_FAR = 256
+/** Projection / UI feeds — not display-rate. Last frame stays in the RT between passes. */
+const TJS_CAMERA_FPS = 20
+const TJS_CAMERA_RT_MIN_MS = 1000 / TJS_CAMERA_FPS
 
 type TjsCameraRuntime = {
   entity: Entity
   rt: THREE.WebGLRenderTarget
   cam: THREE.PerspectiveCamera
+  lastRtAt: number
 }
 
 type TjsProjectionRuntime = {
@@ -104,6 +108,14 @@ function projectionMeshVisible(row: TjsValue): boolean {
   if (row.enabled) return true
   return !!row.showWhenDisabled
 }
+
+function applyProjectionVisibility(pose: THREE.Object3D, mesh: THREE.Mesh, row: TjsValue): void {
+  const show = projectionMeshVisible(row)
+  pose.visible = show
+  mesh.userData.tjsHide = !show
+  mesh.visible = show
+}
+
 
 function projectionMapped(mesh: THREE.Mesh): boolean {
   return !!(mesh.material as THREE.MeshBasicMaterial).map
@@ -251,7 +263,8 @@ export class SceneTjsBridge {
     private readonly getNodes: () => Map<Entity, THREE.Group> | undefined,
     private readonly getWorldDeps: () => EntityWorldTransformDeps | null,
     private readonly bindDrawSlot: (pose: THREE.Object3D, visual: THREE.Object3D) => void,
-    private readonly unbindDrawSlot: (pose: THREE.Object3D) => void
+    private readonly unbindDrawSlot: (pose: THREE.Object3D) => void,
+    private readonly ensureNode?: (entity: Entity) => THREE.Object3D | undefined
   ) {
     getShaderManager().setScene(worldScene)
   }
@@ -347,6 +360,15 @@ export class SceneTjsBridge {
     const nodes = this.getNodes()
     const deps = this.getWorldDeps()
     if (!nodes || !deps) return
+    const now = performance.now()
+    let due = 0
+    for (const runtime of this.cameras.values()) {
+      if (!this.ecs.VirtualCamera.has(runtime.entity)) continue
+      if (!this.cameraHasConsumers(runtime.entity)) continue
+      if (now - runtime.lastRtAt < TJS_CAMERA_RT_MIN_MS) continue
+      due++
+    }
+    if (due === 0) return
     const prevTarget = this.renderer.getRenderTarget()
     const prevAutoClear = this.renderer.autoClear
     const prevClearAlpha = this.renderer.getClearAlpha()
@@ -356,6 +378,7 @@ export class SceneTjsBridge {
     for (const runtime of this.cameras.values()) {
       if (!this.ecs.VirtualCamera.has(runtime.entity)) continue
       if (!this.cameraHasConsumers(runtime.entity)) continue
+      if (now - runtime.lastRtAt < TJS_CAMERA_RT_MIN_MS) continue
       const pose = resolveCctvLensPose(runtime.entity, this.ecs, deps)
       if (!pose) continue
       runtime.cam.position.copy(pose.position)
@@ -372,6 +395,7 @@ export class SceneTjsBridge {
         this.renderer.clear()
         this.renderer.render(this.worldScene, runtime.cam)
       })
+      runtime.lastRtAt = now
       this.renderer.toneMapping = prevTone
     }
     this.revealProjectionMeshes()
@@ -466,7 +490,7 @@ export class SceneTjsBridge {
       rt.texture.colorSpace = THREE.SRGBColorSpace
       const cam = new THREE.PerspectiveCamera(TJS_CAMERA_FOV, 1, 0.1, TJS_CAMERA_FAR)
       cam.matrixAutoUpdate = true
-      runtime = { entity, rt, cam }
+      runtime = { entity, rt, cam, lastRtAt: 0 }
       this.cameras.set(entity, runtime)
       clientDebugLog.log('scene', `tjs camera on e${entity as number}`, { alsoConsole: true })
       this.onTextureReady?.(entity)
@@ -482,8 +506,20 @@ export class SceneTjsBridge {
     const cameraEntity = lensEntityFromRow(row.camera)
     const nodes = this.getNodes()
     // Transform pose is enough — MeshRenderer is not required (tjs-only screens).
-    const screenNode = nodes?.get(entity)
-    if (!screenNode) return
+    let screenNode = nodes?.get(entity)
+    if (!screenNode && this.ensureNode) {
+      screenNode = this.ensureNode(entity) as THREE.Group | undefined
+    }
+    if (!screenNode) {
+      if (row.enabled) {
+        clientDebugLog.log(
+          'scene',
+          `tjs projection wait e${entity as number} — no Transform pose node yet`,
+          { alsoConsole: true }
+        )
+      }
+      return
+    }
 
     let runtime = this.projections.get(entity)
     if (!runtime) {
@@ -500,6 +536,7 @@ export class SceneTjsBridge {
       if (cameraEntity) runtime.cameraEntity = cameraEntity
     }
 
+    applyProjectionVisibility(screenNode, runtime.mesh, row)
     // Hydration can spawn before ThreeBridge bind is live — retry until drawRoot parents us.
     if (runtime.mesh.parent?.name !== 'draw-root') {
       screenNode.updateWorldMatrix(true, false)
@@ -523,7 +560,7 @@ export class SceneTjsBridge {
         { alsoConsole: true }
       )
     }
-    runtime.mesh.visible = projectionMeshVisible(row)
+    applyProjectionVisibility(runtime.pose, runtime.mesh, row)
   }
 
   private revealProjectionMeshes(): void {
@@ -532,7 +569,12 @@ export class SceneTjsBridge {
     for (const proj of list) {
       proj.pose.updateWorldMatrix(true, false)
       const row = Tjs.getOrNull(proj.entity) as TjsValue | null
-      proj.mesh.visible = row ? projectionMeshVisible(row) : false
+      if (row) applyProjectionVisibility(proj.pose, proj.mesh, row)
+      else {
+        proj.pose.visible = false
+        proj.mesh.userData.tjsHide = true
+        proj.mesh.visible = false
+      }
       proj.mesh.renderOrder = projectionMapped(proj.mesh) ? 2 : 0
     }
     for (let i = 0; i < list.length; i++) {

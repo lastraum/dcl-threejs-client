@@ -22,6 +22,7 @@ import {
   resolveWorkerUiText,
   resolveWorkerUiTransform
 } from './resolveBundledUiComponents'
+import { normalizeYGDisplay, readYGDisplay } from '../../ui/scene/yogaEnums'
 
 /** Worker-authoritative LWW — main must not echo these back during an open pointer session. */
 export const WORKER_AUTHORITATIVE_COMPONENT_IDS = new Set([
@@ -857,8 +858,26 @@ export const UI_TRANSFORM_COMPONENT_ID = 1050
  * Content-aware UI mount snapshot fingerprint (worker post dedupe + main reseed skip).
  * Must track real paint-affecting fields — entity:componentId alone made timer/score
  * (and display/opacity/input) look identical and get dropped after the first post.
+ * display MUST be normalized (flex=0 / none=1). Boxed enums stringify to the same
+ * "[object Object]" and were treated as identical content → Yoga never saw F-off.
  * Keep worker + main on this single helper (COD C3).
  */
+/** Per-entity UiTransform.display (flex=0 / none=1). Platform law: this is content. */
+export function uiMountSnapshotDisplayFp(
+  snapshot: readonly WorkerUiMountSnapshotRow[]
+): string {
+  const parts: string[] = []
+  for (const r of snapshot) {
+    if (r.componentId !== UI_TRANSFORM_COMPONENT_ID) continue
+    const o = r.value as Record<string, unknown> | null | undefined
+    const d = readYGDisplay(o?.display)
+    if (d === undefined) continue
+    parts.push(`${r.entity}:d${d}`)
+  }
+  parts.sort()
+  return parts.join('|')
+}
+
 export function uiMountSnapshotContentFp(
   snapshot: readonly WorkerUiMountSnapshotRow[]
 ): string {
@@ -925,7 +944,7 @@ export function uiMountSnapshotContentFp(
       else if (cid === 1050 || o.width !== undefined || o.height !== undefined || o.display !== undefined) {
         const pos = o.position as Record<string, unknown> | undefined
         payload = [
-          `d${o.display ?? ''}`,
+          `d${readYGDisplay(o.display) ?? "_"}`,
           `o${o.opacity ?? ''}`,
           `p${o.parent ?? ''}`,
           `wh${o.width ?? ''},${o.height ?? ''}`,
@@ -1019,7 +1038,14 @@ export function collectWorkerUiMountSnapshot(
       if (!read.has(id)) continue
       const value = read.getOrNull(id)
       if (value == null) continue
-      rows.push({ entity: id as number, componentId, value: toPlainComponentValue(value) })
+      let plain = toPlainComponentValue(value)
+      if (componentId === UI_TRANSFORM_COMPONENT_ID && plain && typeof plain === 'object') {
+        // Only stamp a real 0/1. normalize(undefined)=flex was forcing the tjs feed on.
+        const d = readYGDisplay((value as { display?: unknown }).display)
+        if (d !== undefined) (plain as { display: number }).display = d
+        else delete (plain as { display?: number }).display
+      }
+      rows.push({ entity: id as number, componentId, value: plain })
     }
   }
   if (onlyEntities) {
@@ -1042,7 +1068,8 @@ export function collectWorkerUiMountSnapshot(
  */
 export function encodeWorkerSceneUiCrdtOutbound(
   engine: IEngine,
-  prevFingerprint: string
+  prevFingerprint: string,
+  onlyEntities?: ReadonlySet<number>
 ): WorkerSceneUiEncodeResult | null {
   preregisterRendererInjectedComponents(engine)
   const schemas = rendererAlignedUiSchemas()
@@ -1069,12 +1096,26 @@ export function encodeWorkerSceneUiCrdtOutbound(
   }
   let wrote = false
 
-  for (const [entity] of engine.getEntitiesWith(UiTransformComponent)) {
-    const id = entity as Entity
+  const mountIds: Entity[] = []
+  if (onlyEntities) {
+    for (const raw of onlyEntities) {
+      const id = raw as Entity
+      if (UiTransformComponent.has(id)) mountIds.push(id)
+    }
+  } else {
+    for (const [entity] of engine.getEntitiesWith(UiTransformComponent)) {
+      mountIds.push(entity as Entity)
+    }
+  }
+  for (const id of mountIds) {
     for (const { read, write } of pairs) {
       if (!read.has(id)) continue
-      const value = read.getOrNull(id)
+      let value = read.getOrNull(id)
       if (value == null) continue
+      if (write.componentId === UI_TRANSFORM_COMPONENT_ID && value && typeof value === 'object') {
+        const d = readYGDisplay((value as { display?: unknown }).display)
+        if (d !== undefined) value = { ...(value as object), display: d }
+      }
       const data = encodeComponentWire(read.schema, write.schema, value)
       if (!data?.byteLength) {
         stats.skipped++
@@ -1086,17 +1127,19 @@ export function encodeWorkerSceneUiCrdtOutbound(
     }
   }
 
-  const prevKeys = parseFingerprintEntityKeys(prevFingerprint)
-  const liveKeys = new Set<string>()
-  for (const [entity] of engine.getEntitiesWith(UiTransformComponent)) {
-    liveKeys.add(String(entity))
-  }
-  for (const entityKey of prevKeys) {
-    if (liveKeys.has(entityKey)) continue
-    const id = Number(entityKey) as Entity
-    for (const componentId of WORKER_SCENE_UI_COMPONENT_IDS) {
-      DeleteComponent.write(id, componentId, nextLamport(id, componentId), buf)
-      wrote = true
+  if (!onlyEntities) {
+    const prevKeys = parseFingerprintEntityKeys(prevFingerprint)
+    const liveKeys = new Set<string>()
+    for (const [entity] of engine.getEntitiesWith(UiTransformComponent)) {
+      liveKeys.add(String(entity))
+    }
+    for (const entityKey of prevKeys) {
+      if (liveKeys.has(entityKey)) continue
+      const id = Number(entityKey) as Entity
+      for (const componentId of WORKER_SCENE_UI_COMPONENT_IDS) {
+        DeleteComponent.write(id, componentId, nextLamport(id, componentId), buf)
+        wrote = true
+      }
     }
   }
 

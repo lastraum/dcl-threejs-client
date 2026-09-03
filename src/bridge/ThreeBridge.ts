@@ -992,6 +992,12 @@ export class ThreeBridge {
     return this.store.nodes
   }
 
+  /** Pose node for Transform entities (tjs projection screens may be Transform-only). */
+  ensureEntityNode(entity: Entity): THREE.Group | undefined {
+    if (!this.ecs.Transform.has(entity)) return undefined
+    return this.store.getOrCreateNode(entity, 'scene')
+  }
+
   entitiesWithVisibility(): Entity[] {
     const vis = this.ecs.VisibilityComponent
     if (!vis) return []

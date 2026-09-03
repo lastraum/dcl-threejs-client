@@ -335,7 +335,7 @@ const tjs = engine.defineComponent('tjs', {
 | `fov` | Camera only. Vertical FOV, default 60. |
 | `showWhenDisabled` | Projection only. When `enabled` is false, `true` keeps the unmapped plane visible (background color); default `false` hides the mesh without destroying it. |
 
-Cameras with no enabled world projection and no UI `tjs:` feed skip their RT render pass that frame (the lens stays registered; prior RT contents are kept).
+Camera RTs run at 20 fps (last frame stays in the target). Cameras with no enabled world projection and no UI `tjs:` feed skip the pass entirely (the lens stays registered).
 
 ### Shader example
 

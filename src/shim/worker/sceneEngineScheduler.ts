@@ -16,11 +16,13 @@ import {
   didSkipCooperativeReactEcsThisTick,
   enterCooperativeSchedulerTick,
   getLastPlannedUiDirtyEntities,
+  lastPlannedUiEmitWasFullTouch,
   leaveCooperativeSchedulerTick,
   releaseCooperativeReactEcsHold,
   armCooperativeReactEcsPaintFollowup,
   notePlayModePointerUiEgress,
   planSceneUiCrdtEmit,
+  computeWorkerUiDisplayFp,
   resetPlayModePointerUiEgress,
   seedWorkerUiFingerprint,
   shouldUsePartialUiMountSnapshot
@@ -32,6 +34,7 @@ import {
 import {
   collectWorkerUiMountEntityIds,
   collectWorkerUiMountSnapshot,
+  encodeWorkerSceneUiCrdtOutbound,
   type WorkerUiMountSnapshotRow
 } from './workerSceneUiCrdtOutbound'
 import {
@@ -167,6 +170,8 @@ export type SceneEngineSchedulerConfig = {
     snapshot: WorkerUiMountSnapshotRow[],
     mountEntityIds: number[]
   ) => boolean | void
+  /** Live play: Ui* LWW PUTs (no mount snapshot). */
+  postUiLwwPuts?: (data: Uint8Array) => void
   onStuckRecover: () => void
   /**
    * Explorer: reserved LWW (PlayerIdentityData, RealmInfo) exists on the scene store
@@ -512,33 +517,61 @@ export function sceneEngineTickDue(now: number): boolean {
 }
 
 /**
- * Structured UI mount when worker fingerprint changes.
- *
- * Hydration: splash/composite.
- * Play mode: async react-ecs updates after a pointer open (QR texture mint, remote lists,
- * timers). Pointer phase-4 is still the click boundary; this path only ships fingerprint
- * deltas via postUiMountSnapshot — never Ui* CRDT on the cooperative rpcCrdt wire.
- *
- * Safe after inject-only PE append discard: cooperative remount no longer re-fires CAM toggle.
+ * Snapshot is hydrate and empty unmount only.
+ * Live play UI is LWW PUT on the engine.update CRDT wire (Yoga runs because
+ * the component changed). Pointer phase-4 still snapshots a full open.
  */
 /** Play-mode: cap cooperative UI snapshot posts — menu thrash was 10+/s and starved inject. */
 let lastUiMountSnapshotPostAt = 0
 let lastUiMountSnapshotMountLen = -1
+let lastPostedUiDisplayFp = ''
 const PLAY_UI_SNAPSHOT_MIN_MS = 50
 
 async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
   const cfg = config!
   if (cfg.pointerBlocksTick()) return
-  if (!planSceneUiCrdtEmit(eng, cfg.log)) return
   const mountEntityIds = collectWorkerUiMountEntityIds(eng)
-  const partial = shouldUsePartialUiMountSnapshot(mountEntityIds.length)
-  const dirtyOnly = partial
-    ? new Set(getLastPlannedUiDirtyEntities().map((e) => e as number))
-    : undefined
-  const snapshot = collectWorkerUiMountSnapshot(eng, dirtyOnly)
-  // Always post — including mount=[] + empty rows when react-ecs unmounts the last UI
-  // (CBD welcome: Hr<=0 → return null). Skipping empty left main PE/DOM ghosts.
-  const mode = cfg.isHydration() ? 'hydration' : 'play'
+  const mountEmpty = mountEntityIds.length === 0
+  const hydration = cfg.isHydration()
+  // Live play: after react-ecs wrote JSX, PUT dirty Ui* as LWW. Snapshot is hydrate/unmount.
+  if (!hydration && !mountEmpty) {
+    lastUiMountSnapshotMountLen = mountEntityIds.length
+    const liveDisplayFp = computeWorkerUiDisplayFp(eng)
+    const displayChanged = liveDisplayFp !== lastPostedUiDisplayFp
+    const planned = planSceneUiCrdtEmit(eng, cfg.log)
+    if (!planned && !displayChanged) return
+    const dirty = new Set<number>()
+    if (displayChanged) {
+      const prev = new Map<string, string>()
+      for (const part of lastPostedUiDisplayFp.split('|')) {
+        if (!part) continue
+        prev.set(part.slice(0, part.indexOf(':')), part)
+      }
+      for (const part of liveDisplayFp.split('|')) {
+        if (!part) continue
+        const key = part.slice(0, part.indexOf(':'))
+        if (prev.get(key) !== part) dirty.add(Number(key))
+      }
+    }
+    if (planned && !lastPlannedUiEmitWasFullTouch()) {
+      for (const e of getLastPlannedUiDirtyEntities()) dirty.add(e as number)
+    }
+    const only = planned && lastPlannedUiEmitWasFullTouch() ? undefined : dirty.size ? dirty : undefined
+    const encoded = encodeWorkerSceneUiCrdtOutbound(eng, '', only)
+    if (encoded?.data.byteLength && cfg.postUiLwwPuts) {
+      cfg.log(
+        `[sceneWorker] ui lww — bytes=${encoded.data.byteLength} entities=${only?.size ?? 'all'} displayChanged=${displayChanged ? 1 : 0}`
+      )
+      cfg.postUiLwwPuts(encoded.data)
+      lastPostedUiDisplayFp = liveDisplayFp
+      commitSceneUiCrdtBaseline(eng)
+    }
+    return
+  }
+  const planned = planSceneUiCrdtEmit(eng, cfg.log)
+  if (!planned && !mountEmpty && !hydration) return
+  const snapshot = collectWorkerUiMountSnapshot(eng)
+  const mode = hydration ? 'hydration' : 'play'
   let texSamples = 0
   for (const row of snapshot) {
     if (row.componentId !== 1053) continue
@@ -546,10 +579,7 @@ async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
     if (src) texSamples++
   }
   const nowLog = performance.now()
-  const mountEmpty = mountEntityIds.length === 0
   const mountLenChanged = mountEntityIds.length !== lastUiMountSnapshotMountLen
-  // Play: throttle same-size remounts (~50ms = Color4.a fade without 60Hz posts).
-  // Always allow mount-size change / unmount / hydration.
   if (mode === 'play' && !mountEmpty && !mountLenChanged) {
     if (nowLog - lastUiMountSnapshotPostAt < PLAY_UI_SNAPSHOT_MIN_MS) {
       return
@@ -562,7 +592,7 @@ async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
     lastUiDirtySnapshotLogAt = nowLog
     cfg.log(
       `[sceneWorker] ui dirty snapshot — mount=${mountEntityIds.length} rows=${snapshot.length}` +
-        `${partial ? ' partial' : ' full'} mode=${mode}` +
+        ` full mode=${mode}` +
         (texSamples > 0 ? ` bgTextures=${texSamples}` : '') +
         (mountEmpty ? ' emptyMount' : '')
     )
@@ -571,7 +601,9 @@ async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
     const posted = cfg.postUiMountSnapshot(snapshot, mountEntityIds)
     // Commit fingerprint only after a real post — otherwise timer text was "sent" on the
     // worker while main never received it (rate-limit / content-blind dedupe).
-    if (posted !== false) commitSceneUiCrdtBaseline(eng)
+    if (posted !== false) {
+      commitSceneUiCrdtBaseline(eng)
+    }
     return
   }
   commitSceneUiCrdtBaseline(eng)
@@ -700,7 +732,7 @@ async function runCooperativeEngineTickPhases(engineDt: number): Promise<void> {
     return
   }
   cfg.onAfterEngineTick?.()
-  // UI fingerprint only when react-ecs ran — skipped ticks cannot flip display/text via react.
+  // UI fingerprint only when react-ecs ran — keyboard/level-state ticks are systems-only.
   if (!didSkipCooperativeReactEcsThisTick()) {
     await emitSceneUiMountSnapshotIfDirty(eng)
   }

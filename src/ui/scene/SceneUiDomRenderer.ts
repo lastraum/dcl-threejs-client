@@ -161,6 +161,21 @@ function applySceneUiNodePointerState(
   }
 }
 
+
+/** True when a tjs UI blit target is actually shown (display != none up the tree). */
+function isTjsProjectionDomVisible(el: HTMLElement, host: HTMLElement): boolean {
+  let n: HTMLElement | null = el
+  while (n) {
+    const style = n.style
+    if (style.display === 'none' || style.visibility === 'hidden') return false
+    if (n.getAttribute('aria-hidden') === 'true') return false
+    if (n.dataset.uiUnusable === '1') return false
+    if (n === host) break
+    n = n.parentElement
+  }
+  return true
+}
+
 function ensureContentRoot(shell: HTMLElement): HTMLElement {
   let content = shell.querySelector(':scope > .scene-ui-node__content') as HTMLElement | null
   if (!content) {
@@ -326,10 +341,52 @@ export class SceneUiDomRenderer {
    * Blit camera RTs onto `tjs:<entity>` UI canvases.
    * Call after SceneTjsBridge renders cameras. Missing lenses early-return inside blit.
    */
-  blitTjsProjections(blit: (cameraEntity: number, canvas: HTMLCanvasElement) => boolean): void {
-    for (const slot of this.tjsProjections.values()) {
+  /**
+   * Hide `tjs:` feed shells when UiTransform.display is none.
+   * Paint can early-out on epoch/fingerprint and leave the last RT frame on screen;
+   * F-off must still collapse those canvases.
+   */
+  hideInvisibleTjsProjections(
+    isVisible: (entity: Entity) => boolean,
+    transformOf?: (entity: Entity) => { parent?: number } | null
+  ): void {
+    for (const [entity, slot] of this.tjsProjections) {
+      if (isVisible(entity)) continue
+      const shell = this.nodes.get(entity)
+      if (shell) this.applyHiddenDomState(shell)
+      slot.canvas.style.display = 'none'
+      if (!transformOf) continue
+      let current: Entity | null = entity
+      const seen = new Set<Entity>()
+      while (current != null && !seen.has(current)) {
+        seen.add(current)
+        const t = transformOf(current)
+        const parent = (t?.parent ?? 0) as Entity
+        if (!parent) break
+        if (!isVisible(parent)) {
+          const node = this.nodes.get(parent)
+          if (node) this.applyHiddenDomState(node)
+        }
+        current = parent
+      }
+    }
+  }
+
+  blitTjsProjections(
+    blit: (cameraEntity: number, canvas: HTMLCanvasElement) => boolean,
+    isVisible?: (entity: Entity) => boolean
+  ): void {
+    if (isVisible) this.hideInvisibleTjsProjections(isVisible)
+    for (const [entity, slot] of this.tjsProjections) {
       const cam = slot.cameraEntity
       if (cam == null || cam === 0) continue
+      if (isVisible) {
+        if (!isVisible(entity)) continue
+      } else {
+        const shell = this.nodes.get(entity)
+        if (!shell || !isTjsProjectionDomVisible(shell, this.host)) continue
+      }
+      slot.canvas.style.display = 'block'
       const ok = blit(cam, slot.canvas)
       if (!ok) {
         const ctx = slot.canvas.getContext('2d')
@@ -338,13 +395,18 @@ export class SceneUiDomRenderer {
     }
   }
 
-  /** Unique lens entities referenced by live UI `tjs:<entity>` blit slots. */
-  listTjsProjectionCameraEntities(): number[] {
+  listTjsProjectionCameraEntities(isVisible?: (entity: Entity) => boolean): number[] {
     const seen = new Set<number>()
     const out: number[] = []
-    for (const slot of this.tjsProjections.values()) {
+    for (const [entity, slot] of this.tjsProjections) {
       const cam = slot.cameraEntity
       if (cam == null || cam === 0) continue
+      if (isVisible) {
+        if (!isVisible(entity)) continue
+      } else {
+        const shell = this.nodes.get(entity)
+        if (!shell || !isTjsProjectionDomVisible(shell, this.host)) continue
+      }
       if (seen.has(cam)) continue
       seen.add(cam)
       out.push(cam)
@@ -648,6 +710,9 @@ export class SceneUiDomRenderer {
     yogaZeroBoxStreak.delete(entity as number)
     delete shell.dataset.uiUnusable
     // Undo applyHiddenDomState — display:none stuck after prior hide left dead shells.
+    // Prefer block for the yoga shell; flex lives on the content root (not the shell).
+    // Clear first so a sticky inline 'none' cannot win over Yoga.
+    shell.style.removeProperty('display')
     shell.style.display = 'block'
     shell.style.visibility = 'visible'
     applyUiTransformContentStyles(el, transform, scale)

@@ -145,7 +145,8 @@ import {
   stripRendererHostGrowOnlyAppendsBytes,
   stripSceneUiCrdtBytes,
   stripWorkerAuthoritativeCrdtBytes,
-  uiMountSnapshotContentFp
+  uiMountSnapshotContentFp,
+  uiMountSnapshotDisplayFp
 } from './workerSceneUiCrdtOutbound'
 import { writeHostLwwNoDirty } from './injectHostLww'
 import {
@@ -175,6 +176,9 @@ import {
   worldFlattenedVcTransform
 } from './workerVcBindHydrate'
 import { runPlayFramePollPhase } from './workerPlayFrameScheduler'
+import {
+  armCooperativeReactEcsPaintFollowup
+} from './sceneEngineUiScheduler'
 import {
   awaitEngineUpdateIdle,
   forceReleaseEngineUpdateMutex,
@@ -348,6 +352,25 @@ let portableExperienceWorker = false
 let debugSceneInputSnapshot = false
 let debugPointerDeliver = false
 let workerSnapshotPressed = new Set<InputActionValue>()
+
+/** Latest hub pressed set. Applied at engine tick start (not on each postMessage). */
+let pendingHubPressed: readonly InputActionValue[] | null = null
+let pendingHubTickNumber = 0
+/** Keys that went down since the last applied tick — still isPressed this tick. */
+const downsThisInterval = new Set<InputActionValue>()
+/** After a folded tap tick, next tick applies hub without the released key. */
+let pendingTapRelease = false
+const KEYBOARD_INTERACT_ACTIONS: readonly InputActionValue[] = [
+  InputAction.IA_PRIMARY,
+  InputAction.IA_SECONDARY
+]
+
+function resetPendingSceneInput(): void {
+  pendingHubPressed = null
+  pendingHubTickNumber = 0
+  downsThisInterval.clear()
+  pendingTapRelease = false
+}
 /** Serialize pointer batches — launcher must fully finish before CREATOR starts (no drainInFlight deadlock). */
 let pointerDeliverSerial: Promise<void> = Promise.resolve()
 let pointerDeliverWorkInFlight = false
@@ -745,7 +768,8 @@ async function flushPointerDeferredOutboundsAsync(): Promise<void> {
     lastOutboundUiEntitiesKey = mountIds.join(',')
     // Content fp so cooperative postUiMountSnapshot does not drop as "identical" forever.
     const snapFp = uiMountSnapshotContentFp(uiSnapshot ?? [])
-    lastUiMountSnapshotFp = `${lastOutboundUiEntitiesKey}@@${snapFp}`
+    const displayFp = uiMountSnapshotDisplayFp(uiSnapshot ?? [])
+    lastUiMountSnapshotFp = `${lastOutboundUiEntitiesKey}@@d${displayFp}@@${snapFp}`
     // Never await UI mount ack — main paint of large HUDs must not stall pointer lifecycle.
     postOutbound(
       new Uint8Array(0),
@@ -962,7 +986,6 @@ function applySceneInputSnapshotNow(body: SceneInputSnapshotBody): boolean {
       body,
       workerSnapshotPressed
     )
-    // PE always logs; others with ?sceneinputsnapshot or non-empty pressed.
     if (portableExperienceWorker || debugSceneInputSnapshot || body.pressed.length > 0) {
       workerLog(
         'log',
@@ -980,23 +1003,49 @@ function applySceneInputSnapshotNow(body: SceneInputSnapshotBody): boolean {
   }
 }
 
-function applyCoalescedKeyboardSnapshot(body: SceneInputSnapshotBody): void {
+function applyPendingSceneInputAtTick(): void {
   if (!sceneEngine) return
-  const changed = applySceneInputSnapshotNow(body)
-  if (changed || body.pressed.length > 0) queueSceneEngineTick()
+  if (!pendingHubPressed && downsThisInterval.size === 0 && !pendingTapRelease) return
+  const hub = pendingHubPressed ?? [...workerSnapshotPressed]
+  const thisTick = new Set(hub)
+  let folded = false
+  for (const action of downsThisInterval) {
+    if (!thisTick.has(action)) {
+      thisTick.add(action)
+      folded = true
+    }
+  }
+  applySceneInputSnapshotNow({
+    tickNumber: pendingHubTickNumber,
+    pressed: [...thisTick]
+  })
+  const sawInteract = KEYBOARD_INTERACT_ACTIONS.some((action) => downsThisInterval.has(action))
+  downsThisInterval.clear()
+  if (folded) {
+    pendingHubPressed = hub
+    pendingTapRelease = true
+  } else {
+    pendingHubPressed = null
+    pendingTapRelease = false
+  }
+  if (sawInteract) armCooperativeReactEcsPaintFollowup(180)
+}
+
+function applyCoalescedKeyboardSnapshot(body: SceneInputSnapshotBody): void {
+  executeSceneInputSnapshot(body)
 }
 
 function executeSceneInputSnapshot(body: SceneInputSnapshotBody): void {
   if (!sceneEngine) return
-  // Always apply level state immediately. Coalesce-only during pointer session used to
-  // *swallow* WASD without updating workerSnapshotPressed — PE drone reassert then no-op'd
-  // (empty pressed set) after UI clicks left the session open or mid-batch.
   if (coalesceKeyboardSnapshotDuringPointerSession(body)) {
-    // Keep latest for leavePointerInputSession re-apply; still apply now for holds.
-    applyCoalescedKeyboardSnapshot(body)
-    return
+    // Keep latest for leavePointerInputSession; still sample at tick start.
   }
-  applyCoalescedKeyboardSnapshot(body)
+  for (const action of body.pressed) {
+    if (!workerSnapshotPressed.has(action)) downsThisInterval.add(action)
+  }
+  pendingHubPressed = body.pressed
+  pendingHubTickNumber = body.tickNumber
+  queueSceneEngineTick()
 }
 
 function postPlayModeColdCrdtFireAndForget(data: Uint8Array): void {
@@ -1605,10 +1654,16 @@ initSceneEngineScheduler({
   isHydration: () => sceneOnUpdatePaused,
   resolvePlayIntervalMs: () => engineTickIntervalMs,
   pointerBlocksTick: () => pointerBlocksEngineTick(),
-  onBeforeEngineUpdate: () => applyHostReservedSceneStore(),
+  onBeforeEngineUpdate: () => {
+    applyPendingSceneInputAtTick()
+    applyHostReservedSceneStore()
+  },
   queuePointerUiEgress: (snapshot) => {
     pointerUiMountSnapshot = snapshot
     pointerUiMountEgressPending = true
+  },
+  postUiLwwPuts: (data) => {
+    postPlayModeColdCrdtFireAndForget(data)
   },
   postUiMountSnapshot: (snapshot, mountEntityIds) => {
     // Prefer explicit full mount list — empty is valid (welcome unmount → mount=[]).
@@ -1623,11 +1678,13 @@ initSceneEngineScheduler({
     // Content-aware fingerprint — entity:componentId alone dropped timer/score UiText
     // updates forever (same rows, new values → fpKey match → silent skip → clock skips).
     const snapFp = uiMountSnapshotContentFp(snapshot) // shared content fp (workerSceneUiCrdtOutbound)
-    const fpKey = `${uiKey}@@${snapFp}`
+    const displayFp = uiMountSnapshotDisplayFp(snapshot)
+    const fpKey = `${uiKey}@@d${displayFp}@@${snapFp}`
     if (fpKey === lastUiMountSnapshotFp) {
       return false
     }
-    // Platform law: identical content+mount never re-posts. No wall-clock rate limit.
+    // Platform law: identical normalized content+mount never re-posts.
+    // UiTransform.display (flex/none) is its own key — never fold it into other fields.
     lastUiMountSnapshotFp = fpKey
     lastOutboundUiEntitiesKey = uiKey
     logSceneUiOutbound(new Uint8Array(0), uiEntities, snapshot.length)
@@ -1745,6 +1802,9 @@ function reassertPressedKeysOnEngine(): void {
   const player = sceneEngine.PlayerEntity as number
   const tickNumber = 0
   for (const action of SCENE_INPUT_SNAPSHOT_ACTIONS) {
+    // E/F are tap edges, not holds. Reasserting PET_DOWN every play-frame while
+    // WASD is held keeps isPressed(F) true and eats the next rising edge.
+    if (action === InputAction.IA_PRIMARY || action === InputAction.IA_SECONDARY) continue
     const want = workerSnapshotPressed.has(action)
     if (want) {
       // Fresh DOWN every frame — isTriggered edge + isPressed both stay live.
@@ -3228,7 +3288,9 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
   // Post-onStart: empty nudges are fire-and-forget; non-empty awaits crdt-outbound-ack.
   if (sceneOnStartComplete && !sceneBootInProgress) {
     if (!shouldAttachUiMountSnapshot() && copy.byteLength > 0) {
-      const stripped = stripHostOwnedLwwBytes(stripSceneUiCrdtBytes(copy))
+      // Hydration: snapshot is the UI path. Play: Ui* stays on the LWW wire.
+      const withoutHost = stripHostOwnedLwwBytes(copy)
+      const stripped = sceneOnUpdatePaused ? stripSceneUiCrdtBytes(withoutHost) : withoutHost
       if (!stripped.byteLength) {
         note(false, 'strip-ui', 0)
         return Promise.resolve([])
@@ -3247,9 +3309,9 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
         return Promise.resolve([])
       }
     }
-    // Explorer: scene CRDT presents this tick (Bevy take_updates). No cold buffer.
+    // Play: present this tick. Ui* LWW stays on the wire. No cold buffer.
     if (!sceneOnUpdatePaused && copy.byteLength > 0) {
-      const present = stripHostOwnedLwwBytes(stripSceneUiCrdtBytes(copy))
+      const present = stripHostOwnedLwwBytes(copy)
       if (present.byteLength) {
         const outLen = present.byteLength
         postPlayModeColdCrdtFireAndForget(present)
@@ -4349,6 +4411,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     debugSceneInputSnapshot = msg.debug?.sceneInputSnapshot === true
     debugPointerDeliver = msg.debug?.pointerDeliver === true
     resetWorkerInputSnapshotState()
+    resetPendingSceneInput()
     workerSnapshotPressed = new Set()
     clearWorkerPointerButtonsHeld()
     resetPointerInputSession()

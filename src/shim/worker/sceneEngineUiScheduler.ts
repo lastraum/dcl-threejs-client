@@ -1,7 +1,7 @@
 import type { Entity, IEngine } from '@dcl/ecs'
 import * as generated from '@dcl/ecs/dist/components/generated/index.gen'
 import { extractUiTextureSrc } from '../../ui/scene/uiBackgroundStyle'
-import { normalizePointerFilterMode, normalizeYGDisplay } from '../../ui/scene/yogaEnums'
+import { normalizePointerFilterMode, normalizeYGDisplay, readYGDisplay } from '../../ui/scene/yogaEnums'
 
 import { preregisterRendererInjectedComponents } from './preregisterRendererInjectedComponents'
 import { ensureWorkerLocomotionFreezePersisted } from './workerPlayerFrameEgress'
@@ -69,6 +69,13 @@ export function enterCooperativeSchedulerTick(): void {
 
 export function leaveCooperativeSchedulerTick(): void {
   cooperativeSchedulerTickDepth = Math.max(0, cooperativeSchedulerTickDepth - 1)
+}
+
+/** Runs after scene systems and before react-ecs (same eng.update). */
+let afterSceneSystemsHook: ((engine: IEngine) => void) | null = null
+
+export function setAfterSceneSystemsHook(fn: ((engine: IEngine) => void) | null): void {
+  afterSceneSystemsHook = fn
 }
 
 /**
@@ -205,10 +212,13 @@ export function shouldDeferCooperativeReactEcs(): boolean {
   // react-ecs Layer/Toast kits tween UiTransform.position via engine.addSystem
   // (showFrom / hideTo) — not core::Tween. After a scene-UI click the followup
   // window must reconcile every tick or the panel stays parked off-canvas.
+  // Keyboard E/F (and other level-state edges): systems only on the DOWN tick.
+  // Play-loop react writes JSX on the next frame (paint followup). Edge wins over
+  // followup so the input tick itself never runs react-ecs.
+  if (isLevelStatePointerEdgeActive()) return true
   if (isCooperativeReactEcsPaintFollowupActive()) return false
-  // No-target pointer edge / hold: systems only (defer react-ecs). Any scene may use
-  // isPressed between DOWN and UP — do not thrash full UI reconcile on the hold window.
-  if (isLevelStatePointerEdgeActive() || isLevelStatePointerHeld()) return true
+  // Empty-ground / level-state pointer hold: systems only for the hold window.
+  if (isLevelStatePointerHeld()) return true
   // isPointerInteractiveTickActive is false during non-ui phase — fall through to session suppress.
   if (isPointerInteractiveTickActive()) return false
   // World PE / UI hold (not empty-ground): marquee and select HUD need live react-ecs.
@@ -305,6 +315,7 @@ export function installEngineSystemLoopPartition(): void {
       noteSystemRun(system.name, () => safeRunSystem(system, dt, runOne))
     }
     addSystemsWallMs(performance.now() - sysT0)
+    if (boundWorkerEngine) afterSceneSystemsHook?.(boundWorkerEngine)
 
     const suppressReact = shouldDeferCooperativeReactEcs()
     if (suppressReact && cooperativeSchedulerTickDepth > 0 && !isPointerInteractiveTickActive()) {
@@ -397,6 +408,22 @@ function pointerEventsKey(
     .map((entry) => `${entry.eventType ?? -1}.${entry.interactionType ?? 0}`)
     .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
     .join(',')
+}
+
+/** Live UiTransform.display map. Platform law: this changing must post a UI snapshot. */
+export function computeWorkerUiDisplayFp(engine: IEngine): string {
+  preregisterRendererInjectedComponents(engine)
+  const UiTransform = resolveWorkerUiTransform(engine)
+  const parts: string[] = []
+  for (const [entity] of engine.getEntitiesWith(UiTransform)) {
+    const t = UiTransform.getOrNull(entity) as { display?: unknown } | null
+    if (!t) continue
+    const d = readYGDisplay(t.display)
+    if (d === undefined) continue
+    parts.push(`${entity as number}:d${d}`)
+  }
+  parts.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+  return parts.join('|')
 }
 
 export function computeWorkerUiFingerprint(engine: IEngine): string {
@@ -509,7 +536,12 @@ function touchWorkerUiEntityForCrdt(
   let touched = 0
   const transform = components.UiTransform.getOrNull(id)
   if (transform) {
-    components.UiTransform.createOrReplace(id, { ...transform })
+    const d = readYGDisplay((transform as { display?: unknown }).display)
+    if (d === undefined) {
+      // Skip replace — protobuf default would clobber none→flex.
+    } else {
+      components.UiTransform.createOrReplace(id, { ...transform, display: d })
+    }
     touched++
   }
   const background = components.UiBackground.getOrNull(id)

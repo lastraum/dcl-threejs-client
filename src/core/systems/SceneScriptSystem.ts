@@ -121,11 +121,13 @@ import { isGltfLoadingStateVerbose } from '../../bridge/gltfLoadingStateConfig'
 import type { PhysXWorld } from '../../physics/PhysXWorld'
 import { EngineApiEventBridge } from './EngineApiEventBridge'
 import {
+  extractSceneUiCrdtBytes,
   extractSnapshotMountEntityIds,
   stripEntityDeletesFromCrdtBytes,
   stripSceneUiCrdtBytes,
   stripWorkerAuthoritativeCrdtBytes,
-  uiMountSnapshotContentFp
+  uiMountSnapshotContentFp,
+  uiMountSnapshotDisplayFp
 } from '../../shim/worker/workerSceneUiCrdtOutbound'
 type MovePlayerHandler = (request: MovePlayerToRequest) => boolean
 type TeleportToHandler = (request: TeleportToRequest) => boolean | Promise<boolean>
@@ -649,7 +651,8 @@ export class SceneScriptSystem {
       },
       (pose) => {
         this.bridge?.unbindEntityDrawSlot(pose, 'tjsProjection')
-      }
+      },
+      (entity) => this.bridge?.ensureEntityNode(entity as Entity)
     )
     if (this.shaderResolveUrl) getShaderManager().setResolveUrl(this.shaderResolveUrl)
     this.bridge?.setTjsTextureGetter((entity) => this.tjsBridge?.getTexture(entity as Entity) ?? null)
@@ -3015,6 +3018,7 @@ export class SceneScriptSystem {
    * timer/score rows stuck and paired badly with clear-before-skip.
    */
   private lastAppliedUiMountContentFp = ''
+  private lastAppliedUiDisplayFp = ''
 
   private enqueueCrdtOutbound(item: {
     id?: number
@@ -3105,6 +3109,7 @@ export class SceneScriptSystem {
       if (!data?.byteLength) continue
       const mayCarryInboundUi = item.uiEntities !== undefined && item.uiMountSnapshot === undefined
       if (!mayCarryInboundUi) {
+        // CCT fold is motion-only. Live Ui* LWW applies in the UI batch below.
         data = stripSceneUiCrdtBytes(data)
         if (frozenMountIds?.size) {
           data = stripEntityDeletesFromCrdtBytes(data, frozenMountIds)
@@ -3313,7 +3318,13 @@ export class SceneScriptSystem {
       let skipUiMountReseed = false
       if (hasUiMountSnapshot && latestUiMountSnapshot !== undefined && !mountChanged) {
         const contentFp = uiMountSnapshotContentFp(latestUiMountSnapshot)
-        if (contentFp === this.lastAppliedUiMountContentFp && latestUiMountSnapshot.length > 0) {
+        const displayFp = uiMountSnapshotDisplayFp(latestUiMountSnapshot)
+        // Platform law: display flex↔none is never an identical snapshot.
+        if (
+          contentFp === this.lastAppliedUiMountContentFp &&
+          displayFp === this.lastAppliedUiDisplayFp &&
+          latestUiMountSnapshot.length > 0
+        ) {
           skipUiMountReseed = true
         }
       }
@@ -3327,7 +3338,13 @@ export class SceneScriptSystem {
       }
       // 15-widget Yoga (BrandonManus timer) is ~30ms — never reseed on a dying rAF.
       const leftoverDying = this.leftoverBlocksUiPaint()
-      if (leftoverDying) skipUiMountReseed = true
+      if (
+        leftoverDying &&
+        (latestUiMountSnapshot === undefined ||
+          uiMountSnapshotDisplayFp(latestUiMountSnapshot) === this.lastAppliedUiDisplayFp)
+      ) {
+        skipUiMountReseed = true
+      }
       if (skipUiMountReseed) {
         perfNoteUiMountReseedSkip()
       }
@@ -3345,19 +3362,19 @@ export class SceneScriptSystem {
           // SceneLoop already applied+folded gameplay CRDT. Re-applying the same
           // PUT after DELETE_ENTITY revives the projection (timestamps were cleared)
           // without a second consumeDiff — blood splat GLBs / burst boxes stayed.
+          // Live Ui* was stripped from that fold — apply it here.
+          let data = item.data
+          if (!data?.byteLength) continue
+          const mayCarryInboundUi =
+            item.uiEntities !== undefined && item.uiMountSnapshot === undefined
           if (
             item.motionFolded &&
             item.uiEntities === undefined &&
             item.uiMountSnapshot === undefined
           ) {
-            continue
-          }
-          let data = item.data
-          if (!data?.byteLength) continue
-          const mayCarryInboundUi =
-            item.uiEntities !== undefined && item.uiMountSnapshot === undefined
-          if (!mayCarryInboundUi) {
-            data = stripSceneUiCrdtBytes(data)
+            data = extractSceneUiCrdtBytes(data)
+            if (!data.byteLength) continue
+          } else if (!mayCarryInboundUi) {
             if (frozenMountIds?.size) {
               data = stripEntityDeletesFromCrdtBytes(data, frozenMountIds)
             }
@@ -3404,8 +3421,9 @@ export class SceneScriptSystem {
             // every select open — 180 entities × 5 comps). Force-puts overwrite; PE strip
             // drops removed catchers without a full clear.
             if (snapEntities.size > 0 && !fullMount) {
+              // Never wipe UiTransform on a partial dirty reseed. F-key 3-row
+              // snapshots then defaulted missing display back to flex and unhid tjs:.
               this.projection.clearLwwSlotsForEntities(snapEntities, [
-                UiTransform.componentId,
                 UiText.componentId,
                 UiBackground.componentId,
                 UiInput.componentId,
@@ -3434,6 +3452,7 @@ export class SceneScriptSystem {
             batchTouchesUi = true
             this.foldProjectionChanges()
             this.lastAppliedUiMountContentFp = uiMountSnapshotContentFp(latestUiMountSnapshot)
+            this.lastAppliedUiDisplayFp = uiMountSnapshotDisplayFp(latestUiMountSnapshot)
             // Partial snapshot must not force commit of a larger mount set (163 ids / 10 rows).
             // That left projection 10/163 and deferred paint forever.
             if (!fullMount && mountChanged && latestUiEntities?.length) {
@@ -3452,6 +3471,7 @@ export class SceneScriptSystem {
             perfNoteUiMountPost()
             batchTouchesUi = true
             this.lastAppliedUiMountContentFp = '0'
+            this.lastAppliedUiDisplayFp = ''
             this.foldProjectionChanges()
           }
         }
@@ -3502,12 +3522,15 @@ export class SceneScriptSystem {
               { throttleMs: 1500, throttleKey: 'scene-ui-crdt-batch' }
             )
           }
-          // Never defer DOM paint during pointer delivery when this batch touched UI (modal open/close).
+          // Live Ui* LWW paints even on a dying leftover. Snapshot-only remounts still wait.
           if (
-            !leftoverDying &&
-            (mountEntitiesForFrame !== undefined || !this.pointerHoldTicksUntilMount || batchTouchesUi)
+            batchTouchesUi ||
+            (!leftoverDying &&
+              (mountEntitiesForFrame !== undefined || !this.pointerHoldTicksUntilMount))
           ) {
-            this.applyUiFrame(projectionDeletes, mountEntitiesForFrame)
+            this.applyUiFrame(projectionDeletes, mountEntitiesForFrame, {
+              forcePaint: batchTouchesUi
+            })
           }
         } else if (this.projectionLagPendingUi && batchTouchesUi) {
           this.flushUiFrame()
@@ -3808,7 +3831,8 @@ export class SceneScriptSystem {
    */
   private applyUiFrame(
     projectionDeletes: readonly ProjectionChange[] = [],
-    uiEntities?: number[]
+    uiEntities?: number[],
+    opts?: { forcePaint?: boolean }
   ): void {
     const bridge = this.sceneUiBridge
     if (!bridge) return
@@ -3816,7 +3840,8 @@ export class SceneScriptSystem {
     // for promote resume — must not fight #scene-ui-root with the new primary).
     if (this.focusPolicy === 'secondary') return
     // PE HUD must paint even when plaza PhysX leftover is dying.
-    if (this.focusPolicy !== 'pe' && this.leftoverBlocksUiPaint()) return
+    // Live Ui* LWW also paints — leftover must not swallow a real component change.
+    if (this.focusPolicy !== 'pe' && this.leftoverBlocksUiPaint() && !opts?.forcePaint) return
 
     // Asset hydration: commit mount only — no Yoga/DOM thrash (was flooding "paint deferred"
     // and stealing main-thread from GLB attach → 60s hang at ~79%).
@@ -3843,7 +3868,7 @@ export class SceneScriptSystem {
     bridge.applyProjectionChanges(projectionDeletes)
     // Phase C: any UI CRDT/mount path dirties paint; redundant flushes no-op via epoch.
     bridge.markContentDirty()
-    this.flushUiFrame(uiEntities)
+    this.flushUiFrame(uiEntities, opts)
   }
 
   /** Committed/pending mount ids — strip DELETE_ENTITY from cooperative non-UI egress on main. */
@@ -3890,16 +3915,17 @@ export class SceneScriptSystem {
   }
 
   /** Resume a deferred applyUiFrame after pointer-deliver-done or when projection catches up. */
-  private flushUiFrame(uiEntities?: number[]): void {
+  private flushUiFrame(uiEntities?: number[], opts?: { forcePaint?: boolean }): void {
     const bridge = this.sceneUiBridge
     if (!bridge) return
 
     const mountUpdate = uiEntities ?? this.pendingUiEntities
     this.pendingUiEntities = undefined
 
-    // Hydration / dying leftover: never paint / Yoga — attach bandwidth only.
+    // Asset hydration: never Yoga (attach bandwidth). Dying leftover yields to live Ui* LWW.
     const hydrationFreeze =
-      this.bridge?.isAssetHydrationMode() === true || this.leftoverBlocksUiPaint()
+      this.bridge?.isAssetHydrationMode() === true ||
+      (this.leftoverBlocksUiPaint() && !opts?.forcePaint)
 
     if (mountUpdate !== undefined) {
       const nextSet = new Set(mountUpdate.map((e) => e as Entity))
@@ -7863,6 +7889,7 @@ export class SceneScriptSystem {
     this.projectionLagSinceMs = 0
     this.projectionLagLoggedAt = 0
     this.lastAppliedUiMountContentFp = ''
+    this.lastAppliedUiDisplayFp = ''
     this.lastOutboundUiEntitiesKey = ''
     this.nftShapeBridge?.dispose()
     this.nftShapeBridge = null

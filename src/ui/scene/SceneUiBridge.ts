@@ -65,6 +65,7 @@ import {
 } from './fastLayoutPatch'
 import { onSceneUiImageLoaded } from './uiImageLoad'
 import { isUiEntityVisible } from './uiVisibility'
+import { normalizeYGDisplay } from './yogaEnums'
 
 const _camPos = new THREE.Vector3()
 const POINTER_EVENTS_COMPONENT_ID = 1062
@@ -127,6 +128,8 @@ export class SceneUiBridge {
    */
   private contentEpoch = 0
   private paintedEpoch = -1
+  /** UiTransform.display map — flex/none must paint even if epoch looks clean. */
+  private lastUiDisplayFp = ''
   /** False until AppController reveals 3D play chrome — avoids UI on 2D landing during hydration. */
   private domVisible = false
   /** True while this bridge owns the on-document `#scene-ui-root` (or PE root). */
@@ -300,14 +303,33 @@ export class SceneUiBridge {
     // on every setUiVisible(true) from PE policy ticks.
   }
 
-  /** Blit `tjs:<entity>` UI backgrounds after SceneTjsBridge renders cameras. */
-  blitTjsProjections(blit: (cameraEntity: number, canvas: HTMLCanvasElement) => boolean): void {
-    this.dom.blitTjsProjections(blit)
+  /** True when UiTransform.display != none on this entity and ancestors. */
+  private isTjsUiProjectionVisible(entity: Entity): boolean {
+    const ecs = this.mirrorEcs
+    if (!ecs?.UiTransform) return false
+    const transformOf = (e: Entity) => ecs.UiTransform.getOrNull(e) as PBUiTransform | null
+    return isUiEntityVisible(entity, transformOf)
   }
 
-  /** Unique lens entities bound to live UI `tjs:<entity>` projection slots. */
+  /** Blit `tjs:<entity>` UI backgrounds after SceneTjsBridge renders cameras. */
+  blitTjsProjections(blit: (cameraEntity: number, canvas: HTMLCanvasElement) => boolean): void {
+    const ecs = this.mirrorEcs
+    const transformOf = ecs?.UiTransform
+      ? (e: Entity) => ecs.UiTransform.getOrNull(e) as PBUiTransform | null
+      : undefined
+    this.dom.hideInvisibleTjsProjections(
+      (entity) => this.isTjsUiProjectionVisible(entity),
+      transformOf
+    )
+    this.dom.blitTjsProjections(blit, (entity) => this.isTjsUiProjectionVisible(entity))
+  }
+
+  /**
+   * Unique lens entities whose UI `tjs:` panel is display != none.
+   * Hidden (display:none) feeds are not camera consumers — no RT pass.
+   */
   listTjsProjectionCameraEntities(): number[] {
-    return this.dom.listTjsProjectionCameraEntities()
+    return this.dom.listTjsProjectionCameraEntities((entity) => this.isTjsUiProjectionVisible(entity))
   }
 
   /** Force Yoga+DOM rebuild + interactive hit regions (rare: late mount / debug). */
@@ -613,15 +635,36 @@ export class SceneUiBridge {
     alignSceneUiRoot(this.root, interactable)
     const viewport = computeUiViewport(this.virtual, interactable)
     this.injectCanvasInfo(view, ecs, interactable, viewport)
+    if (this.domVisible && ecs.UiTransform) {
+      const transformOf = (e: Entity) => ecs.UiTransform.getOrNull(e) as PBUiTransform | null
+      this.dom.hideInvisibleTjsProjections(
+        (entity) => this.isTjsUiProjectionVisible(entity),
+        transformOf
+      )
+    }
     if (!this.domVisible) {
       // Mount still commits while hidden; revealPlayChrome → setVisible(true) repaints.
       // Never log per-frame (was flooding console + main-thread during 60s attach).
       return
     }
+    let displayFp = ''
+    if (ecs.UiTransform && this.workerUiEntities) {
+      const parts: string[] = []
+      for (const entity of this.workerUiEntities) {
+        const row = ecs.UiTransform.getOrNull(entity) as PBUiTransform | null
+        if (!row) continue
+        parts.push(`${entity as number}:d${normalizeYGDisplay(row.display)}`)
+      }
+      parts.sort()
+      displayFp = parts.join('|')
+    }
+    const displayChanged = displayFp !== this.lastUiDisplayFp
     // Phase C: skip full mount/record walk when nothing marked dirty since last paint.
-    if (this.paintCount > 0 && this.paintedEpoch === this.contentEpoch) {
+    // Platform law: display flex↔none still paints.
+    if (this.paintCount > 0 && this.paintedEpoch === this.contentEpoch && !displayChanged) {
       return
     }
+    if (displayChanged) this.lastUiDisplayFp = displayFp
 
     if (!this.workerUiEntitiesKnown || !this.workerUiEntities?.size) {
       this.scrubUnauthoritativeDom()
@@ -774,7 +817,12 @@ export class SceneUiBridge {
         if (hasUiPointerDownOrUp(this.pointerEventsLookup(r.entity))) peIds.push(id)
       }
       peIds.sort((a, b) => a - b)
-      const peStr = peIds.length ? ` pe=[${peIds.map((e) => `e${e}`).join(',')}]` : ' pe=[]'
+      const peStr =
+        peIds.length <= 8
+          ? peIds.length
+            ? ` pe=[${peIds.map((e) => `e${e}`).join(',')}]`
+            : ' pe=[]'
+          : ` pe=${peIds.length}`
       // visibleYoga filled after layout; log mount vs canvas here, layout completeness later in debug.
       if (!this.firstPaintLogged) {
         this.firstPaintLogged = true
@@ -783,17 +831,12 @@ export class SceneUiBridge {
           `first paint — mount=${mountSize} canvas=${records.length} text=${withText} bg=${withBg}` +
             ` virtual=${this.virtual.width}×${this.virtual.height}${sampleStr}${peStr}`
         )
-      } else if (this.paintCount <= 12) {
-        clientDebugLog.log(
-          'scene-ui',
-          `repaint #${this.paintCount} — mount=${mountSize} canvas=${records.length}` +
-            ` text=${withText} bg=${withBg}${sampleStr}${peStr}`
-        )
       } else {
         clientDebugLog.log(
           'scene-ui',
-          `repaint mount change — mount=${mountSize} canvas=${records.length} text=${withText} bg=${withBg}${peStr}`,
-          { throttleMs: 2000, throttleKey: 'scene-ui-repaint-mount' }
+          `repaint #${this.paintCount} — mount=${mountSize} canvas=${records.length}` +
+            ` text=${withText} bg=${withBg}`,
+          { throttleMs: 2000, throttleKey: 'scene-ui-repaint' }
         )
       }
       this.lastLoggedPaintMount = mountSize

@@ -4,6 +4,7 @@ import type { PBUiText } from '@dcl/ecs/dist/components/generated/pb/decentralan
 import type { PBUiTransform } from '@dcl/ecs/dist/components/generated/pb/decentraland/sdk/components/ui_transform.gen'
 import type { LayoutBox } from './yogaLayout'
 import { isUiEntityVisible } from './uiVisibility'
+import { normalizeYGDisplay } from './yogaEnums'
 import type { UiEntityRecord } from './uiTree'
 import type { VirtualCanvasSize } from './virtualCanvas'
 
@@ -16,7 +17,7 @@ export function layoutTransformFingerprint(transform: PBUiTransform): string {
   for (const [key, value] of Object.entries(transform)) {
     if (LAYOUT_STRIP_KEYS.has(key)) continue
     if (value === undefined) continue
-    out[key] = value
+    out[key] = key === 'display' ? normalizeYGDisplay(value) : value
   }
   return JSON.stringify(out)
 }
@@ -75,7 +76,7 @@ export function entityUiVisualPaintKey(
   const o = transform.opacity ?? 1
   const z = transform.zIndex ?? 0
   const pf = transform.pointerFilter ?? 0
-  const d = transform.display ?? 0
+  const d = normalizeYGDisplay(transform.display)
   let t = ''
   if (text?.value != null) {
     t = `t${text.value.length}:${text.value.slice(0, 48)}:${text.fontSize ?? 10}:${text.textWrap ?? 0}:${text.color?.r ?? 1},${text.color?.g ?? 1},${text.color?.b ?? 1},${text.color?.a ?? 1}`

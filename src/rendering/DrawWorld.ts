@@ -70,7 +70,8 @@ export class DrawWorld {
     for (const [visual, pose] of this.links) {
       // Pose Visibility is law — static extract must not keep a pre-hide visible flag
       // (LO() hides plaza benches after the frozen clone was registered).
-      visual.visible = isPoseChainVisible(pose)
+      // tjs projection: hide when enabled=false (pose.visible + this flag).
+      visual.visible = visual.userData.tjsHide === true ? false : isPoseChainVisible(pose)
       const billed = camera ? findBillboardAncestor(pose) : null
       if (billed) {
         this.writeBillboard(visual, pose, billed.pose, camera!, billed.mode)
@@ -98,7 +99,7 @@ export class DrawWorld {
     pose.updateWorldMatrix(true, false)
     for (const [visual, linked] of this.links) {
       if (linked !== pose) continue
-      visual.visible = isPoseChainVisible(pose)
+      visual.visible = visual.userData.tjsHide === true ? false : isPoseChainVisible(pose)
       if (visual.userData.dclDrawAnimated === true) this.writeAnimated(visual, pose)
       else this.writeMatrix(visual, pose)
     }

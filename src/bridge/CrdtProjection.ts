@@ -8,6 +8,7 @@ import type { CrdtMessage } from '@dcl/ecs/dist/serialization/crdt/types'
 import { fixTransformParent } from '@dcl/ecs/dist/serialization/crdt/network/utils'
 import { dataCompare } from '@dcl/ecs/dist/systems/crdt/utils'
 import type { MirrorComponents } from './mirrorComponents'
+import { normalizeYGDisplay, readYGDisplay } from '../ui/scene/yogaEnums'
 
 /** Network identity stored on a local entity (`NetworkEntity` / `NetworkParent` value). */
 export type NetworkIdentityValue = {
@@ -247,8 +248,38 @@ export class CrdtProjection {
       if (row.componentId === POINTER_EVENTS_ID) entitiesWithPe.add(row.entity)
       // UiBackground (1053) / UiText (1052): force numeric color.a so transparent
       // textures (blood_frame a=0) stay hidden after omit-zero serialization.
-      const value = normalizeUiColorFields(row.componentId, row.value)
+      let value = normalizeUiColorFields(row.componentId, row.value)
+      if (row.componentId === UI_TRANSFORM_ID && value && typeof value === 'object') {
+        const v = value as Record<string, unknown>
+        const prev = this.components.get(UI_TRANSFORM_ID)?.get(row.entity) as
+          | Record<string, unknown>
+          | undefined
+        const incoming = readYGDisplay(v.display)
+        const kept = readYGDisplay(prev?.display)
+        if (incoming !== undefined) {
+          value = { ...(prev ?? {}), ...v, display: incoming }
+        } else if (kept !== undefined) {
+          const rest = { ...v }
+          delete rest.display
+          value = { ...(prev ?? {}), ...rest, display: kept }
+        } else {
+          value = { ...(prev ?? {}), ...v }
+        }
+      }
       this.storeComponentPut(row.entity, row.componentId, tsBase + ++seq, value)
+    }
+    if (rows.length > 0 && rows.length <= 12) {
+      const bits: string[] = []
+      for (const row of rows) {
+        if (row.componentId !== UI_TRANSFORM_ID) continue
+        const stored = this.components.get(UI_TRANSFORM_ID)?.get(row.entity) as
+          | { display?: unknown }
+          | undefined
+        bits.push(`e${row.entity as number}:d${normalizeYGDisplay(stored?.display)}`)
+      }
+      if (bits.length) {
+        console.warn(`[ui-snap] n=${rows.length} ${bits.join(' ')}`)
+      }
     }
     // Full-mount only: drop PE on snapshot entities that no longer ship a PE row.
     // Partial dirty reseeds omit PE rows by design — never strip then (COD C3).

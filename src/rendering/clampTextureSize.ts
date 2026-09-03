@@ -104,6 +104,14 @@ function releaseTextureCpu(texture: THREE.Texture): void {
   const h = typeof image.height === 'number' && image.height > 0 ? image.height : 1
   texture.userData.dclTexW = w
   texture.userData.dclTexH = h
+  const blobUrl = (image as { _dclBlobUrl?: string })._dclBlobUrl
+  if (blobUrl) {
+    try {
+      URL.revokeObjectURL(blobUrl)
+    } catch {
+      /* already revoked */
+    }
+  }
   closeDecodedImage(image)
   texture.image = { width: w, height: h }
   texture.userData.dclCpuDropped = true

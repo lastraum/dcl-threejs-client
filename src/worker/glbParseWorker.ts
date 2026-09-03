@@ -8,6 +8,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
 import { safeDecodeURIComponent } from '../util/safeDecodeURIComponent'
 import { collectTransfers, flattenGltf, type XferGltfPayload } from '../rendering/gltfTransferable'
+import { installFetchTextureHandler } from '../rendering/fetchImageTextureLoader'
 
 type ParseRequest = {
   type: 'parse'
@@ -67,6 +68,7 @@ function resolveMappedUrl(url: string, mappings: Record<string, string>): string
 function createLoader(urlMappings: Record<string, string>): GLTFLoader {
   const manager = new THREE.LoadingManager()
   manager.setURLModifier((url) => resolveMappedUrl(url, urlMappings))
+  installFetchTextureHandler(manager)
   const draco = new DRACOLoader()
   draco.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/')
   const loader = new GLTFLoader(manager)

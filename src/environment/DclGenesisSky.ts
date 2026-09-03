@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { ENVIRONMENT_TEXTURES } from './environmentAssets'
 import { loadCrossCubemap } from './crossCubemap'
+import { clampTextureSize } from '../rendering/clampTextureSize'
 import { sampleSkyGradients } from './skyGradients'
 import { normalizedTimeOfDay } from './skyboxTime'
 import { isSunPeriod } from './sunCycleSampler'
@@ -338,8 +339,14 @@ export class DclGenesisSky {
   async loadTextures(): Promise<void> {
     const loader = new THREE.TextureLoader()
     const [moon, stars, farClouds, nearClouds, horizonClouds, topClouds] = await Promise.all([
-      loader.loadAsync(ENVIRONMENT_TEXTURES.moon),
-      loader.loadAsync(ENVIRONMENT_TEXTURES.stars),
+      loader.loadAsync(ENVIRONMENT_TEXTURES.moon).then((tex) => {
+        clampTextureSize(tex)
+        return tex
+      }),
+      loader.loadAsync(ENVIRONMENT_TEXTURES.stars).then((tex) => {
+        clampTextureSize(tex)
+        return tex
+      }),
       loadCrossCubemap(ENVIRONMENT_TEXTURES.farClouds),
       loadCrossCubemap(ENVIRONMENT_TEXTURES.nearClouds),
       loadCrossCubemap(ENVIRONMENT_TEXTURES.horizonClouds),

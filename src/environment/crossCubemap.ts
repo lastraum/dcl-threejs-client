@@ -15,57 +15,65 @@ const CROSS_FACE_LAYOUT: ReadonlyArray<{ x: number; y: number }> = [
 ]
 
 /**
- * Unity WebGL platform override on those cubemaps: `maxTextureSize: 1024`.
- * Source PNGs are 8192×6144 (2048² faces). Sampling a 2048 face across the
- * whole sky without mips aliases as faint vertical hairlines.
+ * Unity WebGL platform override + scene map cap: never decode or upload a cube
+ * face larger than 1024. Cross PNG is 4×3, so that is 4096×3072 source.
  */
 const UNITY_WEBGL_CUBE_FACE = 1024
 
-function loadImage(url: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image()
-    img.onload = () => resolve(img)
-    img.onerror = () => reject(new Error(`Failed to load cubemap source: ${url}`))
-    img.src = url
-  })
+function pngIhdrSize(buffer: ArrayBuffer): { width: number; height: number } | null {
+  if (buffer.byteLength < 24) return null
+  const view = new DataView(buffer)
+  if (view.getUint32(0) !== 0x89504e47 || view.getUint32(4) !== 0x0d0a1a0a) return null
+  return { width: view.getUint32(16), height: view.getUint32(20) }
 }
 
 /** Build a Three.js cubemap from a 4-wide × 3-tall cross image (DCL sky assets). */
 export async function loadCrossCubemap(url: string): Promise<THREE.CubeTexture> {
-  const img = await loadImage(url)
-  const srcFace = img.width / 4
-  if (srcFace * 3 !== img.height) {
-    throw new Error(`Invalid cross cubemap layout: ${url} (${img.width}×${img.height})`)
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`Failed to load cubemap source: ${url} (HTTP ${res.status})`)
+  const buffer = await res.arrayBuffer()
+  const header = pngIhdrSize(buffer)
+  if (header && (header.width / 4) * 3 !== header.height) {
+    throw new Error(`Invalid cross cubemap layout: ${url} (${header.width}×${header.height})`)
   }
 
+  const srcFace = header ? header.width / 4 : UNITY_WEBGL_CUBE_FACE
   const faceSize = Math.min(srcFace, UNITY_WEBGL_CUBE_FACE)
-  const canvas = document.createElement('canvas')
-  canvas.width = faceSize
-  canvas.height = faceSize
-  const ctx = canvas.getContext('2d')
-  if (!ctx) throw new Error('Canvas 2D unavailable')
-
-  const faces = CROSS_FACE_LAYOUT.map(({ x, y }) => {
-    ctx.clearRect(0, 0, faceSize, faceSize)
-    ctx.drawImage(img, x * srcFace, y * srcFace, srcFace, srcFace, 0, 0, faceSize, faceSize)
-    const faceCanvas = document.createElement('canvas')
-    faceCanvas.width = faceSize
-    faceCanvas.height = faceSize
-    faceCanvas.getContext('2d')!.drawImage(canvas, 0, 0)
-    return faceCanvas
+  const blob = new Blob([buffer], { type: 'image/png' })
+  const img = await createImageBitmap(blob, {
+    resizeWidth: faceSize * 4,
+    resizeHeight: faceSize * 3,
+    resizeQuality: 'high'
   })
 
-  const cube = new THREE.CubeTexture(faces)
-  cube.colorSpace = THREE.SRGBColorSpace
-  cube.wrapS = THREE.ClampToEdgeWrapping
-  cube.wrapT = THREE.ClampToEdgeWrapping
-  // Unity TextureImporter on these assets: enableMipMap=1, filterMode=Bilinear,
-  // aniso=1, mipBias=0. WebGL2 cubemap filtering is seamless — mips are what
-  // stop 2048² faces minifying into hairlines. Aniso>1 on cubes streaks.
-  cube.generateMipmaps = true
-  cube.minFilter = THREE.LinearMipmapLinearFilter
-  cube.magFilter = THREE.LinearFilter
-  cube.anisotropy = 1
-  cube.needsUpdate = true
-  return cube
+  try {
+    const canvas = document.createElement('canvas')
+    canvas.width = faceSize
+    canvas.height = faceSize
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('Canvas 2D unavailable')
+
+    const faces = CROSS_FACE_LAYOUT.map(({ x, y }) => {
+      ctx.clearRect(0, 0, faceSize, faceSize)
+      ctx.drawImage(img, x * faceSize, y * faceSize, faceSize, faceSize, 0, 0, faceSize, faceSize)
+      const faceCanvas = document.createElement('canvas')
+      faceCanvas.width = faceSize
+      faceCanvas.height = faceSize
+      faceCanvas.getContext('2d')!.drawImage(canvas, 0, 0)
+      return faceCanvas
+    })
+
+    const cube = new THREE.CubeTexture(faces)
+    cube.colorSpace = THREE.SRGBColorSpace
+    cube.wrapS = THREE.ClampToEdgeWrapping
+    cube.wrapT = THREE.ClampToEdgeWrapping
+    cube.generateMipmaps = true
+    cube.minFilter = THREE.LinearMipmapLinearFilter
+    cube.magFilter = THREE.LinearFilter
+    cube.anisotropy = 1
+    cube.needsUpdate = true
+    return cube
+  } finally {
+    img.close()
+  }
 }

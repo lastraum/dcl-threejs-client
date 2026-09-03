@@ -100,6 +100,11 @@ const _projPosB = new THREE.Vector3()
 const _prevClearColor = new THREE.Color()
 const _rtClearColor = new THREE.Color()
 
+function projectionMeshVisible(row: TjsValue): boolean {
+  if (row.enabled) return true
+  return !!row.showWhenDisabled
+}
+
 function projectionMapped(mesh: THREE.Mesh): boolean {
   return !!(mesh.material as THREE.MeshBasicMaterial).map
 }
@@ -233,6 +238,8 @@ export class SceneTjsBridge {
   private readonly declared = new Set<string>()
   private readonly cameras = new Map<Entity, TjsCameraRuntime>()
   private readonly projections = new Map<Entity, TjsProjectionRuntime>()
+  /** Lens entities referenced by live UI `tjs:<entity>` blit slots (set each frame before update). */
+  private readonly uiCameraConsumers = new Set<number>()
   /** Scratch for UI canvas blit (512×512 RGBA, reused). */
   private uiBlitPixels: Uint8Array | null = null
   private uiBlitFlipped: Uint8ClampedArray | null = null
@@ -258,6 +265,14 @@ export class SceneTjsBridge {
   /** True when the lens entity has a live camera RT. */
   hasCamera(entity: Entity): boolean {
     return this.cameras.has(entity)
+  }
+
+  /** UI `tjs:<entity>` backgrounds that blit from these lens entities (unique ids). */
+  setUiCameraConsumers(cameraEntities: readonly number[]): void {
+    this.uiCameraConsumers.clear()
+    for (const id of cameraEntities) {
+      if (id != null && id !== 0) this.uiCameraConsumers.add(id)
+    }
   }
 
   /**
@@ -340,6 +355,7 @@ export class SceneTjsBridge {
     for (const proj of this.projections.values()) proj.mesh.visible = false
     for (const runtime of this.cameras.values()) {
       if (!this.ecs.VirtualCamera.has(runtime.entity)) continue
+      if (!this.cameraHasConsumers(runtime.entity)) continue
       const pose = resolveCctvLensPose(runtime.entity, this.ecs, deps)
       if (!pose) continue
       runtime.cam.position.copy(pose.position)
@@ -371,6 +387,7 @@ export class SceneTjsBridge {
     this.cameras.clear()
     this.shaderFireFp.clear()
     this.declared.clear()
+    this.uiCameraConsumers.clear()
     this.uiBlitPixels = null
     this.uiBlitFlipped = null
     // Keep ShaderManager warm cache across scene /reload — World.dispose resets it.
@@ -506,20 +523,25 @@ export class SceneTjsBridge {
         { alsoConsole: true }
       )
     }
+    runtime.mesh.visible = projectionMeshVisible(row)
   }
 
   private revealProjectionMeshes(): void {
+    const { Tjs } = this.ecs
     const list = [...this.projections.values()]
     for (const proj of list) {
       proj.pose.updateWorldMatrix(true, false)
-      proj.mesh.visible = true
+      const row = Tjs.getOrNull(proj.entity) as TjsValue | null
+      proj.mesh.visible = row ? projectionMeshVisible(row) : false
       proj.mesh.renderOrder = projectionMapped(proj.mesh) ? 2 : 0
     }
     for (let i = 0; i < list.length; i++) {
       const a = list[i]
+      if (!a.mesh.visible) continue
       _projPosA.setFromMatrixPosition(a.pose.matrixWorld)
       for (let j = i + 1; j < list.length; j++) {
         const b = list[j]
+        if (!b.mesh.visible) continue
         _projPosB.setFromMatrixPosition(b.pose.matrixWorld)
         if (_projPosA.distanceToSquared(_projPosB) > 0.05) continue
         const aOn = projectionMapped(a.mesh)
@@ -529,6 +551,18 @@ export class SceneTjsBridge {
         else b.mesh.visible = false
       }
     }
+  }
+
+  /** Any enabled world projection or live UI blit slot bound to this lens. */
+  private cameraHasConsumers(cameraEntity: Entity): boolean {
+    if (this.uiCameraConsumers.has(cameraEntity as number)) return true
+    const { Tjs } = this.ecs
+    for (const proj of this.projections.values()) {
+      if (proj.cameraEntity !== cameraEntity) continue
+      const row = Tjs.getOrNull(proj.entity) as TjsValue | null
+      if (row?.enabled) return true
+    }
+    return false
   }
 
   /** Projection row that binds this camera, else the camera row, else opaque black. */

@@ -3,8 +3,8 @@
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-09-03  
-> **Current phase:** **iPad / Apple-touch texture + avatar bind parity** (merging to `dev-latest`) + **`tjs` shaders/CCTV** + **plaza open-world three rings** on **`dev-latest`**. **v2.2.0** on `main`. QA: https://dev.decentraland.social  
-> **Shipped:** **`tjs` ECS shaders/CCTV** · **plaza rings** 200 m look · 64 m collide toggle · ~22 m live JS (cap 4) · nested plaza first-class · **v2.2.0** one guest clock · plaza Cast Line walk-log · Genesis sky · Explore live search · **v2.1.0** `/localpreview` · stay-in-play reload · shaders off until Jump In · preview tabs · **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
+> **Current phase:** **v2.3.0** on `main` (plaza rings · tjs · handheld · iPad parity). Prior **v2.2.0** sealed the guest clock. QA: https://dev.decentraland.social  
+> **Shipped:** **v2.3.0** plaza three rings · `tjs` shaders/projection · handheld/iPad parity · Worlds catalog · marketplace v1 · teleport anim · **v2.2.0** one guest clock · plaza Cast Line walk-log · Genesis sky · Explore live search · **v2.1.0** `/localpreview` · stay-in-play reload · shaders off until Jump In · preview tabs · **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
 
 > **After 2.2 (`v3` butter — historical):** neighbor composite **shells on** · Landscape + Shadows Distance live · FXAA when bloom is on · GPU warm covers shadow+bloom · stacked live-guest FPS measure. Superseded for open-world policy by plaza rings on `dev-latest` (2026-09-01).  
 > **After 2.0 (parked shell):** RTS box-select / pad-drag · saved outfits · create-community / invites · gallery multi-page · Social WS reliability · PE P3 pad/wind QA · multi-shape GLTF `40M+` riding. Scene UI = **one-off bugs only**. Shell marketplace browse ≠ **P2P peer trade**.  
@@ -20,9 +20,42 @@
 
 ---
 
+## 🎉 Milestone — v2.3.0 release (plaza rings · tjs · handheld) (2026-09-03)
+
+**Status: release cut** — `dev-latest` → `main` · tag `v2.3.0`.
+
+v2.2 sealed the guest clock. v2.3 is the open city plus creators and phones: plaza walks without the slideshow, Three.js scene tools, a 3D catalog you can Jump Into, and iPad/phone that actually load and keep their head on.
+
+### What's new
+
+- **Plaza three rings** — 200 m textured look, 64 m collide toggle, ~22 m live JS (cap 4); nested plazas are first-class
+- **`tjs` (Three.js) for creators** — one ECS component for Three.js shaders and projection cameras; fire with `enabled`, project with `tjs:${entity}`
+- **Projection cameras** — lens layers / fov / background; blit to screens or UI via `tjs:${entity}`; each camera is a full extra world render (keep the count small)
+- **Handheld that survives Jump In** — phones + iPad auto-Low, smarter neighbors, collapsed HUD, profile FAB, no top location pill
+- **iPad load + head parity** — sky at 1024 (no 12% hang), GLTF textures on first load, hair/head merge like desktop, head stays on when you walk
+- **3D Worlds catalog viewer** — browse worlds in 3D at `/worlds` and Jump In from the scene
+- **Marketplace v1.0** — in-world purchasing: browse, details, cart, credits / listing MANA
+- **Genesis vacant parcels** — Explorer-style GPU grass + flowers; live-guest GLBs on the overlay
+- **Mobile landing** — QR beside Jump In + deep link into the DCL app at the current place
+- **Teleport animation** — plays on `/goto` and when a peer leaves
+
+| Area | Status | Notes |
+| ---- | ------ | ----- |
+| **Plaza three rings** | 🟢 | PR #73 · 200 / 64 / ~22 m |
+| **`tjs` + projection cameras** | 🟢 | #75 · shaders + CCTV-as-projection |
+| **Handheld / iPad** | 🟢 | Low AOI · HUD · load + head bind |
+| **Worlds catalog / market v1** | 🟢 | `/worlds` · in-world purchasing |
+| **SceneLoop (2.2)** | 🟢 | Unchanged |
+
+**QA:** https://dev.decentraland.social — plaza nested walk · iPad Jump In head stays on · Kenney/`tjs` projection · `/worlds` Jump In · marketplace cart.
+
+**Tip:** `v2.3.0` on `main`. Toast reads this first What's new block.
+
+---
+
 ## Milestone — iPad / Apple-touch load + avatar bind parity (2026-09-03)
 
-**Status: merging to `dev-latest`.** QA: https://dev.decentraland.social
+**Status: folded into v2.3.0.** QA: https://dev.decentraland.social
 
 iPad Chrome is WebKit. Texture decode and avatar bind now match desktop instead of a separate Apple path that skipped head merge and transferred ImageBitmaps.
 

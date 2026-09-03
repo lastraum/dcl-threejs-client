@@ -2,7 +2,7 @@
 
 > Browser-native Decentraland client: load deployed Worlds/scenes, shim SDK7 runtime, mirror ECS → Three.js, expand to open world.
 
-**Status:** **v2.2.0** on `main` ✅ (one guest clock). **`dev-latest`:** plaza open-world **three rings** shipped (PR #73 · `f14c7f34`, 2026-09-01). **iPad / Apple-touch texture + avatar bind parity** (2026-09-03). QA: https://dev.decentraland.social. See [`PROGRESS.md`](./PROGRESS.md).  
+**Status:** **v2.3.0** on `main` ✅ (plaza rings · tjs · handheld · iPad parity). Prior **v2.2.0** sealed the guest clock. See [`PROGRESS.md`](./PROGRESS.md). QA: https://dev.decentraland.social.  
 **ECS reference:** [`INTEGRATION.md`](./INTEGRATION.md)  
 **Note:** Historical phase plan. Prefer [PROGRESS.md](./PROGRESS.md) + [ARCHITECTURE.md](./ARCHITECTURE.md) + [INTEGRATION.md](./INTEGRATION.md) + [COLLIDER_MOTION_POLICY.md](./COLLIDER_MOTION_POLICY.md) + [RIDING_TRANSFER_LAW.md](./RIDING_TRANSFER_LAW.md) + [MULTI_SCENE_CONTINUITY.md](./MULTI_SCENE_CONTINUITY.md) for current work.
 

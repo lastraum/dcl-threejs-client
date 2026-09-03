@@ -2,7 +2,7 @@
 
 A **browser-native Decentraland SDK7 Explorer** — Three.js renderer, Web Worker scene runtime, PhysX, and LiveKit/RFC4 multiplayer. Runs published scene bundles (`bin/index.js`) with CRDT sync, avatars, and an Explorer-style HUD. Built for the open web.
 
-**Current release:** **v2.2.0** (one guest clock / SceneLoop). **v2.1.0** was local preview + this-client shaders. **v2.0.0** was host world + city walk. Latest tagged on `main`. QA continues on `dev-latest`.
+**Current release:** **v2.3.0** (plaza rings · tjs · handheld). **v2.2.0** was one guest clock / SceneLoop. **v2.1.0** was local preview + this-client shaders. **v2.0.0** was host world + city walk. Latest tagged on `main`. QA continues on `dev-latest`.
 
 [Goals](#goals) · [Contributions](#contributions) · [Local preview](#local-preview) · [Environments](#environments) · [Pets](#pets) · [Shaders](#shaders)
 

@@ -5,7 +5,7 @@
 > **In-app:** Dev panel (`</>`) → **Integration status** tab  
 > **Milestone log:** [PROGRESS.md](./PROGRESS.md) (also loaded live from GitHub in dev panel)  
 > **Community claims:** [CLAIMS.yaml](./CLAIMS.yaml) (synced from GitHub `in-progress` issues)
-> **Last updated:** 2026-09-02 (**dev-latest**). **`tjs`** custom component (shaders + projection screens). **v2.2.0** one guest clock (SceneLoop). **v2.1.0** was local preview + stay-in-play reload. **v2.0.0** was host world + city walk. **In-scene ECS UI = production / smoke-pass** (one-off bugs only). See [PROGRESS.md](./PROGRESS.md)
+> **Last updated:** 2026-09-03 (**v2.3.0** on `main`). Plaza rings · **`tjs`** shaders/projection · handheld/iPad · Worlds catalog · marketplace v1. Prior **v2.2.0** one guest clock (SceneLoop). **v2.1.0** was local preview + stay-in-play reload. **v2.0.0** was host world + city walk. **In-scene ECS UI = production / smoke-pass** (one-off bugs only). See [PROGRESS.md](./PROGRESS.md)
 
 ---
 

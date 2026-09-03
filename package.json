@@ -7,7 +7,7 @@
     "dev": "vite",
     "dev:tailscale": "vite --host 0.0.0.0 --port 5173",
     "build": "VITE_ANALYTICS_ENABLED=false tsc && VITE_ANALYTICS_ENABLED=false vite build",
-    "build:prod": "VITE_ANALYTICS_ENABLED=true tsc && VITE_ANALYTICS_ENABLED=true vite build",
+    "build:prod": "VITE_ANALYTICS_ENABLED=true tsc && VITE_ANALYTICS_ENABLED=true vite build && rsync -avz --exclude .DS_Store -e 'ssh -i ~/.ssh/dcl-threejs-gha -o IdentitiesOnly=yes -p 22' dist/ root@decentraland.social:/var/www/dcl-threejs/",
     "build:staging": "VITE_ANALYTICS_ENABLED=false tsc && VITE_ANALYTICS_ENABLED=false vite build",
     "build:qa": "VITE_ANALYTICS_ENABLED=false tsc && VITE_ANALYTICS_ENABLED=false vite build && rsync -avz --exclude .DS_Store -e 'ssh -i ~/.ssh/dcl-threejs-gha -o IdentitiesOnly=yes -p 22' dist/ root@decentraland.social:/var/www/dcl-threejs-dev/",
     "preview": "vite preview",

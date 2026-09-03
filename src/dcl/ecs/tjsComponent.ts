@@ -29,6 +29,8 @@ export type TjsValue = {
   background: Color4Type
   /** Vertical FOV degrees (kind=camera). 0 / missing / NaN → 60. Clamped 1–170. */
   fov: number
+  /** When kind=projection and enabled=false: true keeps unmapped/bg mesh visible; false hides mesh (default). */
+  showWhenDisabled: boolean
 }
 
 export const tjsSpec = {
@@ -47,7 +49,8 @@ export const tjsSpec = {
   camera: Schemas.Entity,
   layers: Schemas.String,
   background: Schemas.Color4,
-  fov: Schemas.Float
+  fov: Schemas.Float,
+  showWhenDisabled: Schemas.Boolean
 } as const
 
 export type TjsComponent = LastWriteWinElementSetComponentDefinition<TjsValue>
@@ -69,7 +72,8 @@ export function emptyTjsValue(): TjsValue {
     camera: 0 as Entity,
     layers: '',
     background: { r: 0, g: 0, b: 0, a: 1 },
-    fov: 60
+    fov: 60,
+    showWhenDisabled: false
   }
 }
 
@@ -127,6 +131,7 @@ export function tjsValueFingerprint(row: TjsValue): string {
     row.background?.g,
     row.background?.b,
     row.background?.a,
-    row.fov
+    row.fov,
+    row.showWhenDisabled
   ].join('|')
 }

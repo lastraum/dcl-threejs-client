@@ -338,6 +338,20 @@ export class SceneUiDomRenderer {
     }
   }
 
+  /** Unique lens entities referenced by live UI `tjs:<entity>` blit slots. */
+  listTjsProjectionCameraEntities(): number[] {
+    const seen = new Set<number>()
+    const out: number[] = []
+    for (const slot of this.tjsProjections.values()) {
+      const cam = slot.cameraEntity
+      if (cam == null || cam === 0) continue
+      if (seen.has(cam)) continue
+      seen.add(cam)
+      out.push(cam)
+    }
+    return out
+  }
+
   getFieldDom(entity: Entity): HTMLInputElement | HTMLSelectElement | null {
     const el = this.nodes.get(entity)
     if (!el) return null

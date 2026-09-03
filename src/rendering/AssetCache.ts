@@ -28,8 +28,12 @@ import { clearLocomotionClipCache } from '../avatar/locomotionClipCache'
 import { disposeSessionAudioBufferCache } from '../media/AudioBufferCache'
 import { collectManifestAssets } from './manifestAssets'
 import { isSceneBytesWarm } from './sceneLoadWarm'
-import { proxiedTextureUrl } from './textureProxy'
-import { decodeFetchedImage, installFetchTextureHandler } from './fetchImageTextureLoader'
+import {
+  guessImageMimeFromBytes,
+  guessImageMimeFromUrl,
+  preferFetchTextureLoad,
+  proxiedTextureUrl
+} from './textureProxy'
 
 const LANDSCAPE_CACHE_SUFFIX = '#landscape'
 const WEARABLE_CACHE_SUFFIX = '#wearable'
@@ -182,7 +186,6 @@ export class AssetCache {
     this.loader = new GLTFLoader(manager)
     this.loader.setDRACOLoader(draco)
     this.textureLoader = new THREE.TextureLoader(manager)
-    installFetchTextureHandler(manager)
   }
 
   /** Wire scene content manifest into the global glTF URL rewriter. */
@@ -604,9 +607,8 @@ export class AssetCache {
       return hit
     }
 
-    const retryAt = this.failedUntil.get(url) ?? 0
-    if (performance.now() < retryAt) {
-      throw new Error(`texture load backing off: ${url}`)
+    if (this.givenUp.has(url)) {
+      throw new Error(`texture load given up: ${url}`)
     }
 
     const pending = this.textureInflight.get(url)
@@ -625,12 +627,12 @@ export class AssetCache {
         this.textureInflight.delete(url)
         const attempts = (this.failCount.get(url) ?? 0) + 1
         this.failCount.set(url, attempts)
-        // Do not givenUp — that forced a full page reload before maps could recover.
-        const backoff = Math.min(
-          30_000,
-          AssetCache.FAILED_RETRY_MS * 2 ** Math.min(attempts - 1, 4)
-        )
-        this.failedUntil.set(url, performance.now() + backoff)
+        if (attempts >= AssetCache.MAX_LOAD_ATTEMPTS) {
+          this.givenUp.add(url)
+          this.failedUntil.delete(url)
+        } else {
+          this.failedUntil.set(url, performance.now() + AssetCache.FAILED_RETRY_MS)
+        }
         if (!this.warnedFailed.has(url)) {
           this.warnedFailed.add(url)
           const detail = err instanceof Error ? err.message : String(err?.type ?? err)
@@ -644,12 +646,21 @@ export class AssetCache {
   }
 
   private async loadTextureData(url: string): Promise<THREE.Texture> {
-    if (url.startsWith('data:') || url.startsWith('blob:')) {
+    if (preferFetchTextureLoad(url)) {
+      return this.loadTextureViaFetch(url)
+    }
+    try {
       const tex = await this.textureLoader.loadAsync(url)
       clampTextureSize(tex)
       return tex
+    } catch (err) {
+      // Peer content can flip between image/* and octet-stream+nosniff; retry via fetch.
+      try {
+        return await this.loadTextureViaFetch(url)
+      } catch {
+        throw err
+      }
     }
-    return this.loadTextureViaFetch(url)
   }
 
   /**
@@ -663,8 +674,26 @@ export class AssetCache {
    * avoids the prior blank-texture race without needing ImageBitmap.
    */
   private async loadTextureViaFetch(url: string): Promise<THREE.Texture> {
+    const res = await fetch(url, { redirect: 'follow', credentials: 'omit' })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const buffer = await res.arrayBuffer()
+    if (!buffer.byteLength) throw new Error('empty texture response')
+    const headerType = (res.headers.get('content-type') ?? '').split(';')[0]!.trim()
+    const generic =
+      !headerType ||
+      headerType === 'application/octet-stream' ||
+      headerType === 'binary/octet-stream' ||
+      headerType === 'application/binary' ||
+      !headerType.startsWith('image/')
+    const mime =
+      (generic ? guessImageMimeFromUrl(url) : null) ??
+      (generic ? guessImageMimeFromBytes(buffer) : null) ??
+      (headerType.startsWith('image/') ? headerType : null) ??
+      'image/png'
+    const blob = new Blob([buffer], { type: mime })
+
     // HTMLImageElement — flipY honored by WebGL upload (ImageBitmap ignores it).
-    const image = await decodeFetchedImage(url)
+    const image = await loadImageFromBlob(blob)
     const tex = new THREE.Texture(image)
     tex.colorSpace = THREE.SRGBColorSpace
     tex.needsUpdate = true
@@ -672,6 +701,36 @@ export class AssetCache {
     clampTextureSize(tex)
     return tex
   }
+}
+
+/** Fallback when createImageBitmap is missing/fails — keep blob URL until onload. */
+function loadImageFromBlob(blob: Blob): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(blob)
+    const img = new Image()
+    img.onload = () => {
+      const finish = (): void => {
+        // iOS Safari uploads WebGL on a later frame — revoke-on-0 leaves white textures.
+        const ios =
+          typeof navigator !== 'undefined' &&
+          (/iPad|iPhone|iPod/i.test(navigator.userAgent) ||
+            ((navigator.maxTouchPoints ?? 0) > 1 && /Mac/i.test(navigator.platform || '')))
+        // Never revoke on iOS — GPU may sample the blob URL on later frames.
+        if (!ios) setTimeout(() => URL.revokeObjectURL(objectUrl), 0)
+        resolve(img)
+      }
+      if (typeof img.decode === 'function') {
+        void img.decode().then(finish, finish)
+        return
+      }
+      finish()
+    }
+    img.onerror = () => {
+      URL.revokeObjectURL(objectUrl)
+      reject(new Error('image decode failed'))
+    }
+    img.src = objectUrl
+  })
 }
 
 const TEXTURE_SLOTS = [

@@ -314,17 +314,24 @@ const tjs = engine.defineComponent('tjs', {
 })
 ```
 
-A `kind: 'shader'` row **loads** when the component appears (even with `enabled: false`). `path` is the shader file. `name` is the export that file exposes (whatever that file calls it). Already-warmed shaders are not fetched again on `/reload` or HMR.
-
-Cast pose fields are only for shaders that fire from a point toward a target. Omit them otherwise (`0` / empty means unused: origin and direction come from the entity Transform, distance is 32 m). Same for `layers`, `background`, `fov`, `camera`: skip them on rows that do not use them.
-
-- `ox` — origin X (where the effect starts, scene meters)
-- `oy` — origin Y
-- `oz` — origin Z
-- `dx` — direction X (toward the target, usually normalized)
-- `dy` — direction Y
-- `dz` — direction Z
-- `dist` — how far it travels, in meters (`0` / omit → 32)
+| Field | Role |
+| --- | --- |
+| `kind` | `'shader'` / `'camera'` / `'projection'` / `'texture'` (reserved). |
+| `name` | Shader: the export that file exposes. |
+| `sync` | `true` shares that shot with other ThreejsClient sessions. |
+| `enabled` | Shader: `false` loads, `true` fires. Camera/screen: on/off. |
+| `path` | Shader file. Already-warmed files are not fetched again on `/reload` or HMR. |
+| `ox` | Origin X. Where the effect starts (scene meters). Optional. |
+| `oy` | Origin Y. Optional. |
+| `oz` | Origin Z. Optional. |
+| `dx` | Direction X. Toward the target (usually normalized). Optional. |
+| `dy` | Direction Y. Optional. |
+| `dz` | Direction Z. Optional. |
+| `dist` | Travel distance in meters. Optional. `0` / omit → 32 m. Unused origin/direction fall back to the entity Transform. |
+| `camera` | Projection only. The lens **entity** (not a number). |
+| `layers` | Camera only. `"0,1,2"` string. Empty / omit = all. |
+| `background` | Color4 clear for empty feeds. Default black. |
+| `fov` | Camera only. Vertical FOV, default 60. |
 
 ### Shader example
 
@@ -443,27 +450,6 @@ row.enabled = !row.enabled
   }}
 />
 ```
-
-| Field | Role |
-| --- | --- |
-| `kind: 'shader'` | Loads when the row appears. `enabled: true` fires it. |
-| `path` | Shader file. |
-| `name` | Export in that file (the function it exposes). |
-| `ox` | Origin X. Where the effect starts (scene meters). Optional. |
-| `oy` | Origin Y. Optional. |
-| `oz` | Origin Z. Optional. |
-| `dx` | Direction X. Toward the target (usually normalized). Optional. |
-| `dy` | Direction Y. Optional. |
-| `dz` | Direction Z. Optional. |
-| `dist` | Travel distance in meters. Optional. `0` / omit → 32 m. |
-| `sync: true` | That one-shot is shared with other ThreejsClient sessions. |
-| `kind: 'camera'` | Same entity as `Transform` + `VirtualCamera`. `layers`, `fov`, `background` live here. Do not set `camera`. |
-| `layers` | Camera only. `"0,1,2"` string. Empty / omit = all. |
-| `fov` | Camera only. Vertical FOV, default 60. |
-| `background` | Color4 clear for empty feeds. Default black. |
-| `kind: 'projection'` + `camera` | Host-drawn world plane. `camera` is the **lens entity**. |
-| UI `texture.src` `tjs:${cam}` | Same RT on a UiBackground. No file loader. |
-| `kind: 'texture'` | Reserved. Unused for cameras. |
 
 ## Credits
 

@@ -22,7 +22,7 @@ import {
   resolveWorkerUiText,
   resolveWorkerUiTransform
 } from './resolveBundledUiComponents'
-import { normalizeYGDisplay, readYGDisplay } from '../../ui/scene/yogaEnums'
+import { readYGDisplay } from '../../ui/scene/yogaEnums'
 
 /** Worker-authoritative LWW — main must not echo these back during an open pointer session. */
 export const WORKER_AUTHORITATIVE_COMPONENT_IDS = new Set([

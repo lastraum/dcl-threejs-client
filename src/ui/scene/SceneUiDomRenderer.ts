@@ -351,10 +351,13 @@ export class SceneUiDomRenderer {
     transformOf?: (entity: Entity) => { parent?: number } | null
   ): void {
     for (const [entity, slot] of this.tjsProjections) {
-      if (isVisible(entity)) continue
+      if (isVisible(entity)) {
+        this.revealTjsProjectionShell(entity, slot.canvas, transformOf, isVisible)
+        continue
+      }
       const shell = this.nodes.get(entity)
       if (shell) this.applyHiddenDomState(shell)
-      slot.canvas.style.display = 'none'
+      if (slot.canvas.style.display !== 'none') slot.canvas.style.display = 'none'
       if (!transformOf) continue
       let current: Entity | null = entity
       const seen = new Set<Entity>()
@@ -386,7 +389,7 @@ export class SceneUiDomRenderer {
         const shell = this.nodes.get(entity)
         if (!shell || !isTjsProjectionDomVisible(shell, this.host)) continue
       }
-      slot.canvas.style.display = 'block'
+      if (slot.canvas.style.display !== 'block') slot.canvas.style.display = 'block'
       const ok = blit(cam, slot.canvas)
       if (!ok) {
         const ctx = slot.canvas.getContext('2d')
@@ -1053,6 +1056,7 @@ export class SceneUiDomRenderer {
   }
 
   private applyHiddenDomState(shell: HTMLElement): void {
+    if (shell.style.display === 'none' && shell.getAttribute('aria-hidden') === 'true') return
     shell.classList.remove('scene-ui-node--interactive')
     shell.style.display = 'none'
     shell.style.pointerEvents = 'none'
@@ -1061,6 +1065,42 @@ export class SceneUiDomRenderer {
     shell.style.transform = ''
     shell.setAttribute('inert', '')
     shell.setAttribute('aria-hidden', 'true')
+  }
+
+  /** Undo applyHiddenDomState so F-on / display:flex is not stuck behind a dead shell. */
+  private clearHiddenDomState(shell: HTMLElement): void {
+    if (shell.style.display !== 'none' && shell.getAttribute('aria-hidden') !== 'true') return
+    shell.style.removeProperty('display')
+    shell.style.display = 'block'
+    shell.style.visibility = 'visible'
+    shell.style.pointerEvents = ''
+    shell.removeAttribute('aria-hidden')
+    shell.removeAttribute('inert')
+  }
+
+  private revealTjsProjectionShell(
+    entity: Entity,
+    canvas: HTMLCanvasElement,
+    transformOf: ((entity: Entity) => { parent?: number } | null) | undefined,
+    isVisible: (entity: Entity) => boolean
+  ): void {
+    const shell = this.nodes.get(entity)
+    if (shell) this.clearHiddenDomState(shell)
+    if (canvas.style.display !== 'block') canvas.style.display = 'block'
+    if (!transformOf) return
+    let current: Entity | null = entity
+    const seen = new Set<Entity>()
+    while (current != null && !seen.has(current)) {
+      seen.add(current)
+      const t = transformOf(current)
+      const parent = (t?.parent ?? 0) as Entity
+      if (!parent) break
+      if (isVisible(parent)) {
+        const node = this.nodes.get(parent)
+        if (node) this.clearHiddenDomState(node)
+      }
+      current = parent
+    }
   }
 
   /**

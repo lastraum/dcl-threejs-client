@@ -42,6 +42,27 @@ type TjsCameraRuntime = {
   lastRtAt: number
 }
 
+/** Cached GPU→canvas blit. World planes sample `rt.texture` (no readback). */
+type UiBlitState = {
+  lastRtAt: number
+  imageData: ImageData | null
+  pixels: Uint8Array
+  flipped: Uint8ClampedArray
+  inFlight: boolean
+  painted: WeakSet<HTMLCanvasElement>
+}
+
+type RendererPixelsAsync = {
+  readRenderTargetPixelsAsync?: (
+    rt: THREE.WebGLRenderTarget,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    buffer: Uint8Array
+  ) => Promise<ArrayBufferView>
+}
+
 type TjsProjectionRuntime = {
   entity: Entity
   cameraEntity: Entity
@@ -252,9 +273,8 @@ export class SceneTjsBridge {
   private readonly projections = new Map<Entity, TjsProjectionRuntime>()
   /** Lens entities referenced by live UI `tjs:<entity>` blit slots (set each frame before update). */
   private readonly uiCameraConsumers = new Set<number>()
-  /** Scratch for UI canvas blit (512×512 RGBA, reused). */
-  private uiBlitPixels: Uint8Array | null = null
-  private uiBlitFlipped: Uint8ClampedArray | null = null
+  /** Per-lens UI blit cache — read the RT only when it actually updates (20 fps). */
+  private readonly uiBlit = new Map<number, UiBlitState>()
 
   constructor(
     private readonly ecs: MirrorComponents,
@@ -290,6 +310,9 @@ export class SceneTjsBridge {
 
   /**
    * Copy the camera RT into a 2d canvas (UI projection).
+   * World planes sample `rt.texture` on the GPU. This path is DOM, so it must read
+   * pixels — but only when the 20 fps RT actually changes, and async when the
+   * renderer supports it so present is not GPU-stalled.
    * Early-returns false when the lens is not in `this.cameras` yet — never throws, never fetches.
    */
   blitCameraToCanvas(cameraEntity: Entity, canvas: HTMLCanvasElement): boolean {
@@ -299,32 +322,93 @@ export class SceneTjsBridge {
     const w = runtime.rt.width
     const h = runtime.rt.height
     if (w < 1 || h < 1) return false
-    const bytes = w * h * 4
-    if (!this.uiBlitPixels || this.uiBlitPixels.byteLength !== bytes) {
-      this.uiBlitPixels = new Uint8Array(bytes)
-      this.uiBlitFlipped = new Uint8ClampedArray(bytes)
+    const key = cameraEntity as number
+    const state = this.uiBlitState(key, w, h)
+    if (state.imageData && state.lastRtAt === runtime.lastRtAt) {
+      this.paintUiCanvas(canvas, state)
+      return true
     }
-    const src = this.uiBlitPixels
-    const dst = this.uiBlitFlipped!
+    if (state.inFlight) {
+      if (state.imageData) this.paintUiCanvas(canvas, state)
+      return true
+    }
+    const asyncRead = (this.renderer as RendererPixelsAsync).readRenderTargetPixelsAsync
+    if (typeof asyncRead === 'function') {
+      state.inFlight = true
+      const capturedRtAt = runtime.lastRtAt
+      void asyncRead
+        .call(this.renderer, runtime.rt, 0, 0, w, h, state.pixels)
+        .then((buf) => {
+          if (!this.cameras.has(cameraEntity)) {
+            state.inFlight = false
+            return
+          }
+          this.commitUiBlit(state, buf as Uint8Array, w, h, capturedRtAt)
+        })
+        .catch(() => {
+          state.inFlight = false
+        })
+      if (state.imageData) this.paintUiCanvas(canvas, state)
+      return true
+    }
     try {
-      this.renderer.readRenderTargetPixels(runtime.rt, 0, 0, w, h, src)
+      this.renderer.readRenderTargetPixels(runtime.rt, 0, 0, w, h, state.pixels)
     } catch {
       return false
     }
-    // GL origin is bottom-left; canvas ImageData is top-left.
+    this.commitUiBlit(state, state.pixels, w, h, runtime.lastRtAt)
+    this.paintUiCanvas(canvas, state)
+    return true
+  }
+
+  private uiBlitState(cameraKey: number, w: number, h: number): UiBlitState {
+    const bytes = w * h * 4
+    let state = this.uiBlit.get(cameraKey)
+    if (!state || state.pixels.byteLength !== bytes) {
+      state = {
+        lastRtAt: -1,
+        imageData: null,
+        pixels: new Uint8Array(bytes),
+        flipped: new Uint8ClampedArray(bytes),
+        inFlight: false,
+        painted: new WeakSet()
+      }
+      this.uiBlit.set(cameraKey, state)
+    }
+    return state
+  }
+
+  private commitUiBlit(
+    state: UiBlitState,
+    src: Uint8Array,
+    w: number,
+    h: number,
+    rtAt: number
+  ): void {
     const stride = w * 4
     for (let y = 0; y < h; y++) {
       const srcOff = (h - 1 - y) * stride
-      dst.set(src.subarray(srcOff, srcOff + stride), y * stride)
+      state.flipped.set(src.subarray(srcOff, srcOff + stride), y * stride)
     }
-    if (canvas.width !== w) canvas.width = w
-    if (canvas.height !== h) canvas.height = h
+    if (!state.imageData || state.imageData.width !== w || state.imageData.height !== h) {
+      state.imageData = new ImageData(w, h)
+    }
+    state.imageData.data.set(state.flipped)
+    state.lastRtAt = rtAt
+    state.painted = new WeakSet()
+    state.inFlight = false
+  }
+
+  private paintUiCanvas(canvas: HTMLCanvasElement, state: UiBlitState): void {
+    const image = state.imageData
+    if (!image) return
+    if (state.painted.has(canvas)) return
+    if (canvas.width !== image.width) canvas.width = image.width
+    if (canvas.height !== image.height) canvas.height = image.height
     const ctx = canvas.getContext('2d')
-    if (!ctx) return false
-    const imageData = ctx.createImageData(w, h)
-    imageData.data.set(dst)
-    ctx.putImageData(imageData, 0, 0)
-    return true
+    if (!ctx) return
+    ctx.putImageData(image, 0, 0)
+    state.painted.add(canvas)
   }
 
   sync(view: ProjectionView): void {
@@ -372,36 +456,47 @@ export class SceneTjsBridge {
     const prevTarget = this.renderer.getRenderTarget()
     const prevAutoClear = this.renderer.autoClear
     const prevClearAlpha = this.renderer.getClearAlpha()
+    const prevTone = this.renderer.toneMapping
+    const prevShadowAuto = this.renderer.shadowMap.autoUpdate
+    const prevShadowNeeds = this.renderer.shadowMap.needsUpdate
     this.renderer.getClearColor(_prevClearColor)
     this.renderer.autoClear = true
+    // CCTV must not recast sun cascades — that second shadow pass is what
+    // dropped play from ~36fps to ~18. Sample the last main-view maps.
+    this.renderer.shadowMap.autoUpdate = false
+    this.renderer.shadowMap.needsUpdate = false
+    this.renderer.toneMapping = THREE.NoToneMapping
     for (const proj of this.projections.values()) proj.mesh.visible = false
-    for (const runtime of this.cameras.values()) {
-      if (!this.ecs.VirtualCamera.has(runtime.entity)) continue
-      if (!this.cameraHasConsumers(runtime.entity)) continue
-      if (now - runtime.lastRtAt < TJS_CAMERA_RT_MIN_MS) continue
-      const pose = resolveCctvLensPose(runtime.entity, this.ecs, deps)
-      if (!pose) continue
-      runtime.cam.position.copy(pose.position)
-      runtime.cam.quaternion.copy(pose.quaternion)
-      runtime.cam.updateMatrixWorld(true)
-      const lensNode = nodes.get(runtime.entity)
-      const prevTone = this.renderer.toneMapping
-      this.renderer.toneMapping = THREE.NoToneMapping
-      const bg = this.resolveCameraClearColor(runtime.entity)
-      _rtClearColor.setRGB(bg.r, bg.g, bg.b)
-      this.renderer.setClearColor(_rtClearColor, bg.a)
-      withSubtreeHidden(lensNode, () => {
-        this.renderer.setRenderTarget(runtime.rt)
-        this.renderer.clear()
-        this.renderer.render(this.worldScene, runtime.cam)
-      })
-      runtime.lastRtAt = now
+    try {
+      for (const runtime of this.cameras.values()) {
+        if (!this.ecs.VirtualCamera.has(runtime.entity)) continue
+        if (!this.cameraHasConsumers(runtime.entity)) continue
+        if (now - runtime.lastRtAt < TJS_CAMERA_RT_MIN_MS) continue
+        const pose = resolveCctvLensPose(runtime.entity, this.ecs, deps)
+        if (!pose) continue
+        runtime.cam.position.copy(pose.position)
+        runtime.cam.quaternion.copy(pose.quaternion)
+        runtime.cam.updateMatrixWorld(true)
+        const lensNode = nodes.get(runtime.entity)
+        const bg = this.resolveCameraClearColor(runtime.entity)
+        _rtClearColor.setRGB(bg.r, bg.g, bg.b)
+        this.renderer.setClearColor(_rtClearColor, bg.a)
+        withSubtreeHidden(lensNode, () => {
+          this.renderer.setRenderTarget(runtime.rt)
+          this.renderer.clear()
+          this.renderer.render(this.worldScene, runtime.cam)
+        })
+        runtime.lastRtAt = now
+      }
+    } finally {
+      this.revealProjectionMeshes()
+      this.renderer.setRenderTarget(prevTarget)
+      this.renderer.autoClear = prevAutoClear
       this.renderer.toneMapping = prevTone
+      this.renderer.shadowMap.autoUpdate = prevShadowAuto
+      this.renderer.shadowMap.needsUpdate = prevShadowNeeds
+      this.renderer.setClearColor(_prevClearColor, prevClearAlpha)
     }
-    this.revealProjectionMeshes()
-    this.renderer.setRenderTarget(prevTarget)
-    this.renderer.autoClear = prevAutoClear
-    this.renderer.setClearColor(_prevClearColor, prevClearAlpha)
   }
 
   dispose(): void {
@@ -412,8 +507,7 @@ export class SceneTjsBridge {
     this.shaderFireFp.clear()
     this.declared.clear()
     this.uiCameraConsumers.clear()
-    this.uiBlitPixels = null
-    this.uiBlitFlipped = null
+    this.uiBlit.clear()
     // Keep ShaderManager warm cache across scene /reload — World.dispose resets it.
   }
 
@@ -630,6 +724,7 @@ export class SceneTjsBridge {
     if (!runtime) return
     runtime.rt.dispose()
     this.cameras.delete(entity)
+    this.uiBlit.delete(entity as number)
     clientDebugLog.log('scene', `tjs camera off e${entity as number}`, { alsoConsole: true })
   }
 

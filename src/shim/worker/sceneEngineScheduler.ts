@@ -35,6 +35,8 @@ import {
   collectWorkerUiMountEntityIds,
   collectWorkerUiMountSnapshot,
   encodeWorkerSceneUiCrdtOutbound,
+  resetWorkerSceneUiCrdtLamport,
+  uiMountIdsFingerprint,
   type WorkerUiMountSnapshotRow
 } from './workerSceneUiCrdtOutbound'
 import {
@@ -126,8 +128,7 @@ function diagnoseWorldMeshPet(eng: IEngine, entity: number, tag: string): void {
  *
  * Cooperative tick phases:
  *   1. engine.update(dt) — closure/timers + deferred react-ecs
- *   2. emitSceneUiMountSnapshotIfDirty — structured snapshot when fingerprint changes
- *      (hydration splash + play-mode async UI: QR textures, remote lists — not Ui* CRDT wire)
+ *   2. emitSceneUiMountSnapshotIfDirty — live play LWW PUTs; snapshot is hydrate / empty unmount
  *   3. onUnifiedPlayFrameComplete (pollEvents) — runs AFTER tickInFlight clears so a slow
  *      plaza onUpdate cannot starve the next eng.update (welcome Color4.a fade / timers).
  *
@@ -345,6 +346,8 @@ export function resetSceneEngineScheduler(): void {
   pendingGuestTickSource = null
   resetPlayModePointerUiEgress()
   resetEngUpdatePhases()
+  resetPlayUiLwwBaselines()
+  resetWorkerSceneUiCrdtLamport()
 }
 
 export function resetSceneEngineDiagCount(): void {
@@ -525,7 +528,20 @@ export function sceneEngineTickDue(now: number): boolean {
 let lastUiMountSnapshotPostAt = 0
 let lastUiMountSnapshotMountLen = -1
 let lastPostedUiDisplayFp = ''
+let lastPostedUiMountIds: number[] = []
 const PLAY_UI_SNAPSHOT_MIN_MS = 50
+
+function resetPlayUiLwwBaselines(): void {
+  lastUiMountSnapshotPostAt = 0
+  lastUiMountSnapshotMountLen = -1
+  lastPostedUiDisplayFp = ''
+  lastPostedUiMountIds = []
+}
+
+function displayFpEntityKey(part: string): string {
+  const colon = part.indexOf(':')
+  return colon > 0 ? part.slice(0, colon) : part
+}
 
 async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
   const cfg = config!
@@ -539,31 +555,41 @@ async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
     const liveDisplayFp = computeWorkerUiDisplayFp(eng)
     const displayChanged = liveDisplayFp !== lastPostedUiDisplayFp
     const planned = planSceneUiCrdtEmit(eng, cfg.log)
-    if (!planned && !displayChanged) return
+    const liveMount = new Set(mountEntityIds)
     const dirty = new Set<number>()
+    for (const id of lastPostedUiMountIds) {
+      if (!liveMount.has(id)) dirty.add(id)
+    }
+    if (!planned && !displayChanged && !dirty.size) return
     if (displayChanged) {
       const prev = new Map<string, string>()
       for (const part of lastPostedUiDisplayFp.split('|')) {
         if (!part) continue
-        prev.set(part.slice(0, part.indexOf(':')), part)
+        prev.set(displayFpEntityKey(part), part)
       }
+      const live = new Set<string>()
       for (const part of liveDisplayFp.split('|')) {
         if (!part) continue
-        const key = part.slice(0, part.indexOf(':'))
+        const key = displayFpEntityKey(part)
+        live.add(key)
         if (prev.get(key) !== part) dirty.add(Number(key))
+      }
+      for (const key of prev.keys()) {
+        if (!live.has(key)) dirty.add(Number(key))
       }
     }
     if (planned && !lastPlannedUiEmitWasFullTouch()) {
       for (const e of getLastPlannedUiDirtyEntities()) dirty.add(e as number)
     }
     const only = planned && lastPlannedUiEmitWasFullTouch() ? undefined : dirty.size ? dirty : undefined
-    const encoded = encodeWorkerSceneUiCrdtOutbound(eng, '', only)
+    const encoded = encodeWorkerSceneUiCrdtOutbound(eng, uiMountIdsFingerprint(lastPostedUiMountIds), only)
     if (encoded?.data.byteLength && cfg.postUiLwwPuts) {
       cfg.log(
         `[sceneWorker] ui lww — bytes=${encoded.data.byteLength} entities=${only?.size ?? 'all'} displayChanged=${displayChanged ? 1 : 0}`
       )
       cfg.postUiLwwPuts(encoded.data)
       lastPostedUiDisplayFp = liveDisplayFp
+      lastPostedUiMountIds = mountEntityIds.slice()
       commitSceneUiCrdtBaseline(eng)
     }
     return
@@ -603,6 +629,8 @@ async function emitSceneUiMountSnapshotIfDirty(eng: IEngine): Promise<void> {
     // worker while main never received it (rate-limit / content-blind dedupe).
     if (posted !== false) {
       commitSceneUiCrdtBaseline(eng)
+      lastPostedUiDisplayFp = mountEmpty ? '' : computeWorkerUiDisplayFp(eng)
+      lastPostedUiMountIds = mountEmpty ? [] : mountEntityIds.slice()
     }
     return
   }
@@ -808,7 +836,7 @@ export function forceRecoverStuckSceneEngineTick(reason: string): void {
 }
 
 export function preemptSceneEngineTick(): void {
-  // Bevy: never abort a live engine.update — skip-if-in-flight after SceneLoop owns dt.
+  // Never abort a live engine.update — skip-if-in-flight after SceneLoop owns dt.
   if (sceneLoopOwnsPositiveDt || engineUpdateInFlight) return
   if (!tickInFlight) return
   tickEpoch++
@@ -1208,7 +1236,7 @@ export async function runSceneEnginePointerTick(
       )
     }
 
-    // World mesh — Bevy / Unity: write PET, then **one** serialized wakeup tick.
+    // World mesh — write PET, then **one** serialized wakeup tick.
     // Never queue-until-play-frame: asset-pack on_click is getInputCommand this tick.
     // Mutex waits if a play-frame is in native update (skip-if-in-flight, no stack).
     if (!isLevelState && (phase === 'click' || phase === 'down' || phase === 'up')) {

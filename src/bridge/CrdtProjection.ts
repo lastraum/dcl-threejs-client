@@ -8,7 +8,7 @@ import type { CrdtMessage } from '@dcl/ecs/dist/serialization/crdt/types'
 import { fixTransformParent } from '@dcl/ecs/dist/serialization/crdt/network/utils'
 import { dataCompare } from '@dcl/ecs/dist/systems/crdt/utils'
 import type { MirrorComponents } from './mirrorComponents'
-import { normalizeYGDisplay, readYGDisplay } from '../ui/scene/yogaEnums'
+import { readYGDisplay } from '../ui/scene/yogaEnums'
 
 /** Network identity stored on a local entity (`NetworkEntity` / `NetworkParent` value). */
 export type NetworkIdentityValue = {
@@ -45,6 +45,27 @@ export const WORKER_OWNED_UI_COMPONENT_IDS = new Set([
   1094, // UiDropdown
   1062 // PointerEvents (UI mount snapshot rows only)
 ])
+
+const UI_TRANSFORM_ID = 1050
+/** Must match worker `UI_OUTBOUND_TS_BASE` — live PUTs increment past this. */
+const UI_MOUNT_SNAPSHOT_TS = 1_000_000
+
+function mergeUiTransformDisplay(prev: unknown, incoming: unknown): unknown {
+  if (!incoming || typeof incoming !== 'object') return incoming
+  const v = incoming as Record<string, unknown>
+  const p = prev && typeof prev === 'object' ? (prev as Record<string, unknown>) : undefined
+  const incomingDisplay = readYGDisplay(v.display)
+  const kept = readYGDisplay(p?.display)
+  if (incomingDisplay !== undefined) {
+    return { ...(p ?? {}), ...v, display: incomingDisplay }
+  }
+  if (kept !== undefined) {
+    const rest = { ...v }
+    delete rest.display
+    return { ...(p ?? {}), ...rest, display: kept }
+  }
+  return { ...(p ?? {}), ...v }
+}
 
 /** UiBackground / UiText — ensure color.a is a concrete number (0 must not become "missing"). */
 function normalizeUiColorFields(componentId: number, value: unknown): unknown {
@@ -128,7 +149,7 @@ export class CrdtProjection {
   readonly components = new Map<number, Map<Entity, unknown>>()
   /** componentId → (entity → last applied Lamport timestamp). */
   private readonly timestamps = new Map<number, Map<Entity, number>>()
-  /** Last applied LWW payload bytes — equal-timestamp compare matches @dcl/ecs / Bevy. */
+  /** Last applied LWW payload bytes — equal-timestamp compare matches @dcl/ecs. */
   private readonly lastLwwPayload = new Map<number, Map<Entity, Uint8Array>>()
   private vcLiveSeq = 0
   /** Entities holding live Transform priority (bound VC + lookAt/parent follow rig). */
@@ -234,10 +255,7 @@ export class CrdtProjection {
     rows: readonly { entity: Entity; componentId: number; value: unknown }[],
     opts?: { stripMissingPe?: boolean }
   ): void {
-    const tsBase = 1_000_000
-    let seq = 0
     const POINTER_EVENTS_ID = 1062
-    const UI_TRANSFORM_ID = 1050
     const entitiesWithTransform = new Set<Entity>()
     const entitiesWithPe = new Set<Entity>()
     for (const row of rows) {
@@ -249,37 +267,10 @@ export class CrdtProjection {
       // UiBackground (1053) / UiText (1052): force numeric color.a so transparent
       // textures (blood_frame a=0) stay hidden after omit-zero serialization.
       let value = normalizeUiColorFields(row.componentId, row.value)
-      if (row.componentId === UI_TRANSFORM_ID && value && typeof value === 'object') {
-        const v = value as Record<string, unknown>
-        const prev = this.components.get(UI_TRANSFORM_ID)?.get(row.entity) as
-          | Record<string, unknown>
-          | undefined
-        const incoming = readYGDisplay(v.display)
-        const kept = readYGDisplay(prev?.display)
-        if (incoming !== undefined) {
-          value = { ...(prev ?? {}), ...v, display: incoming }
-        } else if (kept !== undefined) {
-          const rest = { ...v }
-          delete rest.display
-          value = { ...(prev ?? {}), ...rest, display: kept }
-        } else {
-          value = { ...(prev ?? {}), ...v }
-        }
+      if (row.componentId === UI_TRANSFORM_ID) {
+        value = mergeUiTransformDisplay(this.components.get(UI_TRANSFORM_ID)?.get(row.entity), value)
       }
-      this.storeComponentPut(row.entity, row.componentId, tsBase + ++seq, value)
-    }
-    if (rows.length > 0 && rows.length <= 12) {
-      const bits: string[] = []
-      for (const row of rows) {
-        if (row.componentId !== UI_TRANSFORM_ID) continue
-        const stored = this.components.get(UI_TRANSFORM_ID)?.get(row.entity) as
-          | { display?: unknown }
-          | undefined
-        bits.push(`e${row.entity as number}:d${normalizeYGDisplay(stored?.display)}`)
-      }
-      if (bits.length) {
-        console.warn(`[ui-snap] n=${rows.length} ${bits.join(' ')}`)
-      }
+      this.storeComponentPut(row.entity, row.componentId, UI_MOUNT_SNAPSHOT_TS, value)
     }
     // Full-mount only: drop PE on snapshot entities that no longer ship a PE row.
     // Partial dirty reseeds omit PE rows by design — never strip then (COD C3).
@@ -349,7 +340,7 @@ export class CrdtProjection {
         ? fixTransformParent({ data } as never)
         : data
 
-    // Explorer LWW (@dcl/ecs createUpdateLwwFromCrdt / Bevy try_update):
+    // Explorer LWW (@dcl/ecs createUpdateLwwFromCrdt):
     // older ts ignore; newer apply; equal ts → byte-compare (keep current if >= incoming).
     if (!forceUi && existing !== undefined) {
       if (timestamp < existing) return
@@ -368,6 +359,10 @@ export class CrdtProjection {
 
     if (componentId === this.transformId && this.hasNetworkParent(entity)) {
       value = this.withResolvedNetworkParent(entity, value)
+    }
+
+    if (componentId === UI_TRANSFORM_ID) {
+      value = mergeUiTransformDisplay(this.components.get(UI_TRANSFORM_ID)?.get(entity), value)
     }
 
     // Always commit MainCamera immediately. Deferring until VC Transform+VirtualCamera
@@ -597,7 +592,7 @@ export class CrdtProjection {
 
     const tsMap = this.timestamps.get(componentId)!
     const existing = tsMap.get(entity)
-    // Bevy/SDK: older ignore; equal-ts DELETE does not beat an existing PUT.
+    // SDK LWW: older ignore; equal-ts DELETE does not beat an existing PUT.
     if (existing !== undefined && timestamp < existing) return
     if (existing !== undefined && timestamp === existing && this.components.get(componentId)?.has(entity)) {
       return

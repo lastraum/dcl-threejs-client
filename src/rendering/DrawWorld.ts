@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { DRAW_LAYER_WORLD, setLayer } from './drawLayers'
 
 /**
- * Present extract list (Bevy-shaped).
+ * Present extract list.
  *
  * Pose graph (EntityStore) owns parent/child and matrixWorld.
  * Draw list owns GPU objects. Present walks `drawRoot` only — not 3k empty entity Groups.
@@ -70,7 +70,8 @@ export class DrawWorld {
     for (const [visual, pose] of this.links) {
       // Pose Visibility is law — static extract must not keep a pre-hide visible flag
       // (LO() hides plaza benches after the frozen clone was registered).
-      // tjs projection: hide when enabled=false (pose.visible + this flag).
+      // Extract overwrites mesh.visible every frame; tjsHide must win or a disabled
+      // projection reappears without destroying the mesh.
       visual.visible = visual.userData.tjsHide === true ? false : isPoseChainVisible(pose)
       const billed = camera ? findBillboardAncestor(pose) : null
       if (billed) {

@@ -637,7 +637,7 @@ function drainQueuedPointerDeliver(): void {
   executePointerDelivery(chunks)
 }
 
-/** Bevy: never abort a live engine.update for pointer (skip-if-in-flight). */
+/** Never abort a live engine.update for pointer (skip-if-in-flight). */
 function canPreemptSceneEngineTick(): boolean {
   return (
     !isSceneLoopOwnsPositiveDt() &&
@@ -3288,9 +3288,9 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
   // Post-onStart: empty nudges are fire-and-forget; non-empty awaits crdt-outbound-ack.
   if (sceneOnStartComplete && !sceneBootInProgress) {
     if (!shouldAttachUiMountSnapshot() && copy.byteLength > 0) {
-      // Hydration: snapshot is the UI path. Play: Ui* stays on the LWW wire.
+      // Ui* leaves on encoded LWW / mount snapshot — never cooperative rpcCrdt.
       const withoutHost = stripHostOwnedLwwBytes(copy)
-      const stripped = sceneOnUpdatePaused ? stripSceneUiCrdtBytes(withoutHost) : withoutHost
+      const stripped = stripSceneUiCrdtBytes(withoutHost)
       if (!stripped.byteLength) {
         note(false, 'strip-ui', 0)
         return Promise.resolve([])
@@ -3309,7 +3309,7 @@ function rpcCrdt(data: Uint8Array): Promise<Uint8Array[]> {
         return Promise.resolve([])
       }
     }
-    // Play: present this tick. Ui* LWW stays on the wire. No cold buffer.
+    // Play: present this tick (Ui* already stripped). No cold buffer.
     if (!sceneOnUpdatePaused && copy.byteLength > 0) {
       const present = stripHostOwnedLwwBytes(copy)
       if (present.byteLength) {
@@ -3628,7 +3628,7 @@ function mergeSendBinaryResponse(body: SendBinaryResponse): SendBinaryResponse {
   // RealmInfo must exist before AUTH_RES is processed or isRoomReady never flips
   // (joinRoster stays queued → no team → Snow Drift look-ahead melt never starts).
   applyHostReservedSceneStore()
-  // Explorer: drain the inbound queue as-is (Bevy sendBinary → recv_binary).
+  // Explorer: drain the inbound queue as-is (sendBinary → recv_binary).
   // RES-first is order only so snapshot sets isRoomReady before same-batch CRDT.
   const merged = resCrdtFirst(
     dropObsoleteAuthSnapshots(
@@ -4557,7 +4557,7 @@ async function handleMainToWorkerMessage(msg: MainToWorker): Promise<void> {
     // Yield so main can paint progress and process heartbeats before the long new Function.
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     reportCompileProgress('compiling scene bundle (new Function) — may take minutes for multi-MB scripts')
-    // ADR-133 / Unity TweenPlugin / Bevy: kernel owns TweenSequence at renderer
+    // ADR-133 / Unity TweenPlugin: kernel owns TweenSequence at renderer
     // framerate. Must be false *before* bundle eval — createTweenSystem reads it
     // at engine init. If unset, SDK Sequence hops on leftover COMPLETED and zips
     // multi-leg paths (plaza cast 15×~60ms).

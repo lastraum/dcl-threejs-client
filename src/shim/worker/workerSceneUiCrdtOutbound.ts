@@ -45,7 +45,7 @@ export const RENDERER_HOST_GROW_ONLY_COMPONENT_IDS = new Set([
 ])
 
 /**
- * Scene UI LWW ids stripped from cooperative CRDT (phase-4 mount snapshot only).
+ * Scene UI LWW ids stripped from cooperative CRDT (snapshot / encoded LWW instead).
  *
  * Do NOT include PointerEvents (1062) — PE is shared by world props and UI. Stripping
  * it left main with only UI-snapshot PE (entities=1 meshes=0) and killed in-world hover/click.
@@ -59,10 +59,19 @@ export const WORKER_SCENE_UI_COMPONENT_IDS = new Set([
   1094 // UiDropdown
 ])
 
-/** Beat recycled-entity stale timestamps on main projection. */
-const UI_OUTBOUND_TS_BASE = 1_000_000
+/**
+ * Snapshot rows on main stamp this exact ts (see CrdtProjection.applyWorkerUiMountSnapshot).
+ * Live PUTs/DELETEs always increment past it so they win LWW after hydration / phase-4.
+ */
+export const UI_OUTBOUND_TS_BASE = 1_000_000
+
+/** Ui* + PE — unmount deletes only. Do not add 1062 to WORKER_SCENE_UI_COMPONENT_IDS (world PE). */
+const WORKER_SCENE_UI_UNMOUNT_DELETE_IDS = [1050, 1052, 1053, 1093, 1094, 1062] as const
 
 const lamport = new Map<string, number>()
+let lamportHighWater = UI_OUTBOUND_TS_BASE
+/** UI entities that last live-encode posted PointerEvents — used to DELETE dropped PE. */
+let lastPostedUiPeIds = new Set<number>()
 
 let rendererSchemaEngine: IEngine | null = null
 
@@ -123,6 +132,8 @@ function rendererAlignedUiSchemas(): {
 
 export function resetWorkerSceneUiCrdtLamport(): void {
   lamport.clear()
+  lamportHighWater = UI_OUTBOUND_TS_BASE
+  lastPostedUiPeIds = new Set()
   resetMainCameraEgressBaseline()
   resetInputModifierEgressBaseline()
 }
@@ -133,8 +144,9 @@ function lamportKey(entity: Entity, componentId: number): string {
 
 function nextLamport(entity: Entity, componentId: number): number {
   const key = lamportKey(entity, componentId)
-  const ts = (lamport.get(key) ?? UI_OUTBOUND_TS_BASE) + 1
+  const ts = Math.max(lamport.get(key) ?? 0, lamportHighWater) + 1
   lamport.set(key, ts)
+  lamportHighWater = ts
   return ts
 }
 
@@ -830,10 +842,20 @@ function parseFingerprintEntityKeys(fingerprint: string): Set<string> {
   const keys = new Set<string>()
   if (!fingerprint) return keys
   for (const line of fingerprint.split('|')) {
+    if (!line) continue
     const colon = line.indexOf(':')
-    if (colon > 0) keys.add(line.slice(0, colon))
+    keys.add(colon > 0 ? line.slice(0, colon) : line)
   }
   return keys
+}
+
+/** Mount-id fingerprint for live encode deletes (`123:m|456:m`). */
+export function uiMountIdsFingerprint(ids: readonly number[]): string {
+  if (!ids.length) return ''
+  return [...ids]
+    .sort((a, b) => a - b)
+    .map((id) => `${id}:m`)
+    .join('|')
 }
 
 type UiReadWritePair = {
@@ -1127,22 +1149,33 @@ export function encodeWorkerSceneUiCrdtOutbound(
     }
   }
 
-  if (!onlyEntities) {
-    const prevKeys = parseFingerprintEntityKeys(prevFingerprint)
-    const liveKeys = new Set<string>()
-    for (const [entity] of engine.getEntitiesWith(UiTransformComponent)) {
-      liveKeys.add(String(entity))
+  const prevKeys = parseFingerprintEntityKeys(prevFingerprint)
+  const liveKeys = new Set<string>()
+  for (const [entity] of engine.getEntitiesWith(UiTransformComponent)) {
+    liveKeys.add(String(entity))
+  }
+  const PointerEventsRead = resolveWorkerPointerEvents(engine) as unknown as BundledUiRead
+  for (const entityKey of prevKeys) {
+    if (liveKeys.has(entityKey)) continue
+    const id = Number(entityKey) as Entity
+    for (const componentId of WORKER_SCENE_UI_UNMOUNT_DELETE_IDS) {
+      DeleteComponent.write(id, componentId, nextLamport(id, componentId), buf)
+      wrote = true
     }
-    for (const entityKey of prevKeys) {
-      if (liveKeys.has(entityKey)) continue
-      const id = Number(entityKey) as Entity
-      for (const componentId of WORKER_SCENE_UI_COMPONENT_IDS) {
-        DeleteComponent.write(id, componentId, nextLamport(id, componentId), buf)
-        wrote = true
-      }
-    }
+  }
+  const nextPe = new Set<number>()
+  for (const [entity] of engine.getEntitiesWith(UiTransformComponent)) {
+    if (PointerEventsRead.has(entity as Entity)) nextPe.add(entity as number)
+  }
+  for (const id of lastPostedUiPeIds) {
+    if (nextPe.has(id)) continue
+    if (!liveKeys.has(String(id))) continue
+    const entity = id as Entity
+    DeleteComponent.write(entity, 1062, nextLamport(entity, 1062), buf)
+    wrote = true
   }
 
   if (!wrote) return null
+  lastPostedUiPeIds = nextPe
   return { data: buf.toBinary(), stats }
 }

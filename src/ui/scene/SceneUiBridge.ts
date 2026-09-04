@@ -65,7 +65,7 @@ import {
 } from './fastLayoutPatch'
 import { onSceneUiImageLoaded } from './uiImageLoad'
 import { isUiEntityVisible } from './uiVisibility'
-import { normalizeYGDisplay } from './yogaEnums'
+import { readYGDisplay } from './yogaEnums'
 
 const _camPos = new THREE.Vector3()
 const POINTER_EVENTS_COMPONENT_ID = 1062
@@ -653,7 +653,9 @@ export class SceneUiBridge {
       for (const entity of this.workerUiEntities) {
         const row = ecs.UiTransform.getOrNull(entity) as PBUiTransform | null
         if (!row) continue
-        parts.push(`${entity as number}:d${normalizeYGDisplay(row.display)}`)
+        const d = readYGDisplay(row.display)
+        if (d === undefined) continue
+        parts.push(`${entity as number}:d${d}`)
       }
       parts.sort()
       displayFp = parts.join('|')

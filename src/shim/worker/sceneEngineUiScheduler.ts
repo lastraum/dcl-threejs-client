@@ -71,13 +71,6 @@ export function leaveCooperativeSchedulerTick(): void {
   cooperativeSchedulerTickDepth = Math.max(0, cooperativeSchedulerTickDepth - 1)
 }
 
-/** Runs after scene systems and before react-ecs (same eng.update). */
-let afterSceneSystemsHook: ((engine: IEngine) => void) | null = null
-
-export function setAfterSceneSystemsHook(fn: ((engine: IEngine) => void) | null): void {
-  afterSceneSystemsHook = fn
-}
-
 /**
  * Min spacing between cooperative react-ecs reconciles (not pointer ticks).
  * Systems still run every engine tick (timers, LoadingScreen wall-clock).
@@ -212,9 +205,6 @@ export function shouldDeferCooperativeReactEcs(): boolean {
   // react-ecs Layer/Toast kits tween UiTransform.position via engine.addSystem
   // (showFrom / hideTo) — not core::Tween. After a scene-UI click the followup
   // window must reconcile every tick or the panel stays parked off-canvas.
-  // Keyboard E/F (and other level-state edges): systems only on the DOWN tick.
-  // Play-loop react writes JSX on the next frame (paint followup). Edge wins over
-  // followup so the input tick itself never runs react-ecs.
   if (isLevelStatePointerEdgeActive()) return true
   if (isCooperativeReactEcsPaintFollowupActive()) return false
   // Empty-ground / level-state pointer hold: systems only for the hold window.
@@ -315,7 +305,6 @@ export function installEngineSystemLoopPartition(): void {
       noteSystemRun(system.name, () => safeRunSystem(system, dt, runOne))
     }
     addSystemsWallMs(performance.now() - sysT0)
-    if (boundWorkerEngine) afterSceneSystemsHook?.(boundWorkerEngine)
 
     const suppressReact = shouldDeferCooperativeReactEcs()
     if (suppressReact && cooperativeSchedulerTickDepth > 0 && !isPointerInteractiveTickActive()) {

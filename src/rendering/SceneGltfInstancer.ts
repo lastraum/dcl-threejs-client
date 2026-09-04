@@ -77,13 +77,21 @@ function geometryHasMorphTargets(geometry: THREE.BufferGeometry | undefined): bo
 }
 
 /**
- * InstancedMesh is for repeated low-leaf props (chairs, pipes). Multi-mesh
- * environment kits share one hash but one entity — GPU slots + combined leaf
- * bounds vanish the only copy (Object3D.visible does not hide InstancedMesh).
+ * InstancedMesh is for repeated low-leaf props (chairs, pipes). Unmerged
+ * environment kits (875 shack bricks) must not become 875 InstancedMeshes —
+ * combined leaf bounds + Object3D.visible not hiding GPU slots.
+ *
+ * After material-content merge, a kit is ~7–24 leaves (one per unique PBR).
+ * That *is* instancable: 24 shacks → 15 draws, not 21k.
  */
 export const MAX_INSTANCER_LEAVES = 12
+/** Cap for already-merged static kits (one InstancedMesh per material). */
+export const MAX_MERGED_INSTANCER_LEAVES = 64
 
-export function templateIsInstancable(root: THREE.Object3D): boolean {
+export function templateIsInstancable(
+  root: THREE.Object3D,
+  maxLeaves: number = MAX_INSTANCER_LEAVES
+): boolean {
   let hasRenderMesh = false
   let hasSkinned = false
   let hasMorph = false
@@ -109,7 +117,7 @@ export function templateIsInstancable(root: THREE.Object3D): boolean {
   // Morph targets need per-instance morphTargetInfluences + AnimationMixer (weights tracks).
   // InstancedMesh shares geometry with morphAttributes but no influences → WebGL crash
   // (objectInfluences.length on undefined) — Dead Surge arrow.glb / blinking path arrows.
-  return hasRenderMesh && !hasSkinned && !hasMorph && leaves <= MAX_INSTANCER_LEAVES
+  return hasRenderMesh && !hasSkinned && !hasMorph && leaves <= maxLeaves
 }
 
 /**
@@ -201,7 +209,9 @@ export class SceneGltfInstancer {
     entityObj: THREE.Group,
     hash: string,
     templateRoot: THREE.Object3D,
-    meshKey: string
+    meshKey: string,
+    /** Unmerged GLB graph — PhysX vis/inv names. Defaults to `templateRoot`. */
+    colliderRoot?: THREE.Object3D
   ): { ok: boolean; templateTris: number } {
     if (this.entityHash.has(entity)) {
       this.update(entity, entityObj)
@@ -212,7 +222,7 @@ export class SceneGltfInstancer {
     if (!bucket) {
       const leaves = collectInstancerLeaves(templateRoot)
       if (!leaves.length) return { ok: false, templateTris: 0 }
-      const colliderShapes = collectTemplateColliderShapes(templateRoot, hash)
+      const colliderShapes = collectTemplateColliderShapes(colliderRoot ?? templateRoot, hash)
       bucket = this.createBucket(hash, leaves, colliderShapes)
       this.buckets.set(hash, bucket)
     }

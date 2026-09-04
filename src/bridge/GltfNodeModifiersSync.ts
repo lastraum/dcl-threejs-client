@@ -59,6 +59,15 @@ export function gltfNodeModifiersReferenceVideo(
   return false
 }
 
+/** True when any modifier targets a named node (not `""` = whole visual). */
+export function gltfNodeModifiersHaveNamedPath(mods: PBGltfNodeModifiers | undefined | null): boolean {
+  if (!mods?.modifiers?.length) return false
+  for (const mod of mods.modifiers) {
+    if ((mod.path ?? '').trim()) return true
+  }
+  return false
+}
+
 export function gltfNodeModifiersSignature(mods: PBGltfNodeModifiers): string {
   // Stable-enough dirty key for re-apply / skip
   try {

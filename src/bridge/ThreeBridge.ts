@@ -58,14 +58,20 @@ import { disposeOwnedObject3D } from '../rendering/sharedAsset'
 import { enableSceneGltfVertexColors } from '../rendering/LandscapeAssetSanitizer'
 import { applySceneGltfEmissives } from '../rendering/sceneGltfEmissives'
 import { cloneGltfInstance } from '../rendering/skinnedMeshInstance'
-import { mergeStaticGltfLeaves } from '../rendering/mergeStaticGltfLeaves'
+import {
+  ensureMergedStaticGltfRoot,
+  mergeStaticGltfLeaves,
+  staticGltfUnmergedRoot
+} from '../rendering/mergeStaticGltfLeaves'
 import {
   INSTANCE_COLLIDER_SHAPES_KEY,
+  MAX_MERGED_INSTANCER_LEAVES,
   SceneGltfInstancer,
   templateIsInstancable
 } from '../rendering/SceneGltfInstancer'
 import {
   applyGltfNodeModifiersToEntity,
+  gltfNodeModifiersHaveNamedPath,
   gltfNodeModifiersMirrorStale,
   gltfNodeModifiersReferenceVideo,
   restoreGltfNodeModifierOriginals
@@ -4241,8 +4247,15 @@ export class ThreeBridge {
     if (this.gltfPointerWantsHighlight(entity)) return false
     // AvatarAttach (or child of attach) — always clone (fishing rod/line hierarchy).
     if (this.isAvatarAttachDriven(entity)) return false
-    // Explicit ECS Animator needs a private hierarchy for the mixer.
-    if (this.ecs.Animator.has(entity)) return false
+    // Mixer needs a private hierarchy only when there is a clip to play.
+    // Creator Hub stamps empty Animator on static kits — that must not
+    // force 24× shack clones after merge.
+    if (this.ecs.Animator.has(entity)) {
+      const spec = this.ecs.Animator.get(entity) as { states?: { clip?: string }[] }
+      if (template.animations.length > 0 || spec?.states?.some((s) => !!s.clip?.trim())) {
+        return false
+      }
+    }
     // Embedded clips (Spring flower scale 0.003, plaza banners) never play on
     // InstancedMesh — they stay at bind scale and fill the sky.
     if (template.animations.length > 0) return false
@@ -4286,7 +4299,34 @@ export class ThreeBridge {
       const mods = this.ecs.GltfNodeModifiers.get(entity) as PBGltfNodeModifiers
       if (!this.scalarTintFromGltfNodeModifiers(mods)) return false
     }
+    if (this.entityAllowsNamedStaticMerge(entity, template)) {
+      const merged = ensureMergedStaticGltfRoot(template.root)
+      return templateIsInstancable(merged, MAX_MERGED_INSTANCER_LEAVES)
+    }
     return templateIsInstancable(template.root)
+  }
+
+  /**
+   * Use the in-place merged cache graph unless this entity needs authored names:
+   * embedded clips, GltfNodeModifiers.path, fishing motion kits, water surface.
+   * Empty Animator / sit-spot GLBs must still merge — Creator Hub stamps Animator
+   * without clips.
+   */
+  private entityAllowsNamedStaticMerge(
+    entity: Entity,
+    template: { root: THREE.Group; animations: THREE.AnimationClip[] }
+  ): boolean {
+    if (template.animations.length > 0) return false
+    if (this.ecs.GltfContainer.has(entity)) {
+      const src = this.ecs.GltfContainer.get(entity).src?.trim() ?? ''
+      if (isFishingMotionGltfSrc(src)) return false
+      if (isGltfWaterSurfaceSrc(src) || isGltfWaterSurfaceRoot(template.root)) return false
+    }
+    if (this.ecs.GltfNodeModifiers?.has(entity)) {
+      const mods = this.ecs.GltfNodeModifiers.get(entity) as PBGltfNodeModifiers
+      if (gltfNodeModifiersHaveNamedPath(mods)) return false
+    }
+    return true
   }
 
   /**
@@ -4551,7 +4591,10 @@ export class ThreeBridge {
     templateTris: number
   ): boolean {
     try {
-      // Static multi-instance path (parcel tiles, props) — no SkeletonUtils.clone.
+      const namedMerge = this.entityAllowsNamedStaticMerge(entity, template)
+      if (namedMerge) ensureMergedStaticGltfRoot(template.root)
+      const renderRoot = namedMerge ? template.root : staticGltfUnmergedRoot(template.root)
+      // Static multi-instance path (parcel tiles, props, merged building kits).
       if (this.canInstanceAttach(entity, template)) {
         // Drop prior instance if re-attaching with new src
         if (obj.userData.dclInstanced) this.instancer.detach(entity, obj)
@@ -4559,7 +4602,14 @@ export class ThreeBridge {
         // reads Object3D.visible — apply ECS Visibility on the pose first or the
         // GPU slot lands at full scale and stays until a later vis PUT.
         this.applyAuthoredVisibility(entity, obj)
-        const result = this.instancer.attach(entity, obj, hash, template.root, mk)
+        const result = this.instancer.attach(
+          entity,
+          obj,
+          hash,
+          renderRoot,
+          mk,
+          staticGltfUnmergedRoot(template.root)
+        )
         if (result.ok) {
           obj.userData.gltfSrcKey = srcKey
           // Static instance host — skip per-frame local matrix rebuild.
@@ -4570,7 +4620,7 @@ export class ThreeBridge {
           obj.updateMatrixWorld(true)
           this.applyAuthoredVisibility(entity, obj)
           this.instancer.update(entity, obj)
-          enableSceneGltfVertexColors(template.root)
+          enableSceneGltfVertexColors(renderRoot)
           // Material may have arrived before mesh attach — tint instance now.
           if (this.ecs.Material.has(entity)) {
             const pb = this.ecs.Material.get(entity) as PbMaterial
@@ -4601,7 +4651,7 @@ export class ThreeBridge {
         applySceneGltfEmissives(template.root)
       }
 
-      const clone = cloneGltfInstance(template.root)
+      const clone = cloneGltfInstance(renderRoot)
       enableSceneGltfVertexColors(clone)
       obj.userData.gltfSrcKey = srcKey
       obj.userData.dclAttachedTris = templateTris
@@ -4656,17 +4706,17 @@ export class ThreeBridge {
       // frozen host matrices left aim/cast meshes invisible or stuck at origin under load.
       const fishingMotion = isFishingMotionGltfSrc(src)
       const waterSurface = isGltfWaterSurfaceSrc(src) || isGltfWaterSurfaceRoot(clone)
-      if (
-        !fishingMotion &&
-        !waterSurface &&
-        !this.ecs.Animator.has(entity) &&
-        template.animations.length === 0
-      ) {
+      const hasAnimClips =
+        template.animations.length > 0 ||
+        (this.ecs.Animator.has(entity) &&
+          (this.ecs.Animator.get(entity) as { states?: { clip?: string }[] }).states?.some(
+            (s) => !!s.clip?.trim()
+          ))
+      if (!fishingMotion && !waterSurface && !hasAnimClips) {
         freezeStaticObject3D(clone)
-        // Generic exporter names only. Authored names are GltfNodeModifiers.path
-        // targets (Updates banners, store windows) — merging them leaves the
-        // default GLB albedo on every clone.
-        mergeStaticGltfLeaves(clone, { namedOk: false })
+        // Always merge this clone. namedOk folds authored bricks when safe;
+        // otherwise generic exporter names only (GltfNodeModifiers.path targets).
+        mergeStaticGltfLeaves(clone, { namedOk: namedMerge })
         obj.matrixAutoUpdate = false
         obj.updateMatrix()
       } else {
@@ -4890,9 +4940,16 @@ export class ThreeBridge {
 
         // First copy of a hash that cannot GPU-instance (high-leaf env kit, water,
         // motion) attaches now. Repeat large clones wait in the idle queue.
+        // Merge the cached kit *before* the instance check so 875-brick shacks
+        // become ~15 leaves and take the InstancedMesh path.
+        if (this.entityAllowsNamedStaticMerge(entity, template)) {
+          ensureMergedStaticGltfRoot(template.root)
+        }
         const uniqueClone = firstOfHash && !this.canInstanceAttach(entity, template)
         const attachNow = presentNow || uniqueClone
-        if (attachNow) obj.userData.dclForceCloneAttach = true
+        if (attachNow && !this.canInstanceAttach(entity, template)) {
+          obj.userData.dclForceCloneAttach = true
+        }
 
         if (!attachNow && this.gltfBudgetRemaining <= 0) return
 

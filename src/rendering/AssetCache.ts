@@ -21,8 +21,9 @@ import { isGlbOffThreadParseEnabled } from './gltfWorkerTransfer'
 import { flattenGltf, inflateGltf } from './gltfTransferable'
 import { prepareGlbBytes } from './glbSanitizer'
 import { clampObject3DTextures, clampTextureSize } from './clampTextureSize'
-import { markSharedAssetResources } from './sharedAsset'
+import { disposeOwnedObject3D, markSharedAssetResources } from './sharedAsset'
 import { cloneGltfInstance } from './skinnedMeshInstance'
+import { mergeStaticGltfInPlace } from './mergeStaticGltfLeaves'
 import { prepareAvatarMaterials, prepareEmotePropMaterials } from '../avatar/materials'
 import { prepareWearableCacheRoot } from '../avatar/wearableCache'
 import { clearLocomotionClipCache } from '../avatar/locomotionClipCache'
@@ -450,6 +451,11 @@ export class AssetCache {
       sanitizeSceneGltfMaterials(entry.root)
       applySceneGltfEmissives(entry.root)
       bindGltfWaterSurface(entry.root, url, (texUrl) => this.loadTexture(texUrl))
+      if (entry.animations.length === 0) {
+        mergeStaticGltfInPlace(entry.root)
+        const backup = entry.root.userData.dclUnmergedRoot as THREE.Object3D | undefined
+        if (backup) markSharedAssetResources(backup)
+      }
     } else {
       // Emote props (dontsee cards, money particles, hammer) need the same material
       // prep as wearables — sRGB maps + double-side alpha cards; hide colliders only.
@@ -795,6 +801,11 @@ function disposeTexture(texture: THREE.Texture): void {
 }
 
 function disposeCachedRoot(root: THREE.Object3D): void {
+  const backup = root.userData.dclUnmergedRoot as THREE.Object3D | undefined
+  if (backup && backup !== root) {
+    disposeOwnedObject3D(backup)
+    delete root.userData.dclUnmergedRoot
+  }
   const seen = new Set<THREE.Texture>()
   root.traverse((node) => {
     if (!(node instanceof THREE.Mesh)) return

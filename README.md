@@ -259,14 +259,14 @@ https://decentraland.org/play/?realm=http://127.0.0.1:8000
 | You want | Open |
 | --- | --- |
 | Local Vite | `http://localhost:5173/localpreview` |
-| Staging | `https://dev.decentraland.social/localpreview` |
-| Production | `https://decentraland.social/localpreview` |
+| Staging | `https://dev.dclopen.com/localpreview` |
+| Production | `https://dclopen.com/localpreview` |
 
 Same scene, other port:
 
 ```text
 http://localhost:5173/localpreview?origin=http://127.0.0.1:8000
-https://dev.decentraland.social/localpreview?port=8001
+https://dev.dclopen.com/localpreview?port=8001
 ```
 
 `/preview` is the same route as `/localpreview`. Default preview origin is `http://127.0.0.1:8000`.

@@ -3,7 +3,7 @@
 > Living document. Update after each meaningful milestone.  
 > **Pick-up backlog:** [TASKS.yaml](./TASKS.yaml) — claim tasks via [CONTRIBUTING.md](../CONTRIBUTING.md).  
 > **Last updated:** 2026-09-03  
-> **Current phase:** **v2.3.0** on `main` (plaza rings · tjs · handheld · iPad parity). Prior **v2.2.0** sealed the guest clock. QA: https://dev.decentraland.social  
+> **Current phase:** **v2.3.0** on `main` (plaza rings · tjs · handheld · iPad parity). Prior **v2.2.0** sealed the guest clock. QA: https://dev.dclopen.com  
 > **Shipped:** **v2.3.0** plaza three rings · `tjs` shaders/projection · handheld/iPad parity · Worlds catalog · marketplace v1 · teleport anim · **v2.2.0** one guest clock · plaza Cast Line walk-log · Genesis sky · Explore live search · **v2.1.0** `/localpreview` · stay-in-play reload · shaders off until Jump In · preview tabs · **v2.0.0** host present · guest VM · instanced city · live neighbors · riding · ECS UI · P2P trade · auth-server join/paint · **v1.7.0** community voice · live polls/Q&A/trivia · pets/Pet Barn · loot bag · AudioAnalysis · FocusOwner · **v1.6.0** Camera Reel · admin tools · **v1.5.0** PART/ROOT · Animator · tours · cast · **v1.4.0** worlds map · AOI · shell.  
 
 > **After 2.2 (`v3` butter — historical):** neighbor composite **shells on** · Landscape + Shadows Distance live · FXAA when bloom is on · GPU warm covers shadow+bloom · stacked live-guest FPS measure. Superseded for open-world policy by plaza rings on `dev-latest` (2026-09-01).  
@@ -47,7 +47,7 @@ v2.2 sealed the guest clock. v2.3 is the open city plus creators and phones: pla
 | **Worlds catalog / market v1** | 🟢 | `/worlds` · in-world purchasing |
 | **SceneLoop (2.2)** | 🟢 | Unchanged |
 
-**QA:** https://dev.decentraland.social — plaza nested walk · iPad Jump In head stays on · Kenney/`tjs` projection · `/worlds` Jump In · marketplace cart.
+**QA:** https://dev.dclopen.com — plaza nested walk · iPad Jump In head stays on · Kenney/`tjs` projection · `/worlds` Jump In · marketplace cart.
 
 **Tip:** `v2.3.0` on `main`. Toast reads this first What's new block.
 
@@ -55,7 +55,7 @@ v2.2 sealed the guest clock. v2.3 is the open city plus creators and phones: pla
 
 ## Milestone — iPad / Apple-touch load + avatar bind parity (2026-09-03)
 
-**Status: folded into v2.3.0.** QA: https://dev.decentraland.social
+**Status: folded into v2.3.0.** QA: https://dev.dclopen.com
 
 iPad Chrome is WebKit. Texture decode and avatar bind now match desktop instead of a separate Apple path that skipped head merge and transferred ImageBitmaps.
 
@@ -119,7 +119,7 @@ Open-world loading is **three rings**. Distance is always **player → that scen
 | **Stand-on promote** | 🟢 on | `AOI_STAND_ON_PROMOTE` · handoff + sticky demote · origin rebind |
 | **SceneLoop clock** | 🟢 | Unchanged since v2.2.0 |
 
-**QA:** https://dev.decentraland.social — walk plaza → nested Spring in the Snow (~7 m) → confirm `[multi-scene] secondary live "Spring in the Snow"` · Winterfest / neighbors visible to 200 m with textures · no PhysX hitch on first plaza step · same-primary walk does not bounce LiveKit.
+**QA:** https://dev.dclopen.com — walk plaza → nested Spring in the Snow (~7 m) → confirm `[multi-scene] secondary live "Spring in the Snow"` · Winterfest / neighbors visible to 200 m with textures · no PhysX hitch on first plaza step · same-primary walk does not bounce LiveKit.
 
 **Open leftovers (honest):** small PhysX CCT parent→1 expands still log (not a merge stopper). Official `npm run build` `tsc` `noUnusedLocals` cleanup (`ROAD_PHYS_RADIUS_M`, unused `key`/`px`/`py`) may still be in flight on a local Mac — not claimed merged here.
 

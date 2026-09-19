@@ -3,8 +3,8 @@
 > **Status:** Phase 1–2 shipped on `lastraum` / `dev-latest` (JSONL + optional Supabase mirror, public landing stats modal).  
 > **Scope:** explorer **presence / place engagement** (landing, jump-in, `/goto`, dwell, uniques).  
 > **Out of scope:** Forge quests/rewards/items, Privy MAU identity for every visitor, spatial heatmaps v1.  
-> **Prod client build:** `npm run build:prod` (sets `VITE_ANALYTICS_ENABLED=true`) → deploy to `decentraland.social`.  
-> **Local + staging:** `npm run build` (forces analytics **off**) → `dev.decentraland.social` / local.  
+> **Prod client build:** `npm run build:prod` (sets `VITE_ANALYTICS_ENABLED=true`) → deploy to `dclopen.com`.  
+> **Local + staging:** `npm run build` (forces analytics **off**) → `dev.dclopen.com` / local.  
 > **Dev API (local only):** Vite middleware serves `/api/analytics/*` if you set the flag for a manual opt-in test.  
 > **Prod API:** PM2 (`server/ecosystem.config.cjs`) + nginx `/api/analytics/` → `:8787`.
 

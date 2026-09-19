@@ -41,7 +41,7 @@ export const META_TX_URL = (() => {
 /**
  * Marketplace API for rarity / names.
  * Same-origin only — marketplace-api returns Access-Control-Allow-Origin: false
- * for dev.decentraland.social etc.
+ * for dev.dclopen.com etc.
  *   /api/marketplace/v1/... → marketplace-api.decentraland.org/v1/...
  */
 export const MARKETPLACE_API_BASE = (() => {

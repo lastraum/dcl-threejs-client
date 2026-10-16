@@ -4,8 +4,8 @@
 
 | Domain | Config | Web root |
 | ------ | ------ | -------- |
-| **decentraland.social** (prod) | [`../remote/decentraland.social`](../remote/decentraland.social) | `/var/www/dcl-threejs` |
-| **dev.decentraland.social** (staging) | [`../remote/dev.decentraland.social`](../remote/dev.decentraland.social) | `/var/www/dcl-threejs-dev` |
+| **dclopen.com** (prod) | [`../remote/dclopen.com`](../remote/dclopen.com) | `/var/www/dcl-threejs` |
+| **dev.dclopen.com** (staging) | [`../remote/dev.dclopen.com`](../remote/dev.dclopen.com) | `/var/www/dcl-threejs-dev` |
 | decentraland.lastslice.co (legacy) | [`../remote/decentraland.lastslice.co`](../remote/decentraland.lastslice.co) | `/var/www/dcl-threejs` |
 
 The v0.5.0 explorer loads places/worlds via **same-origin** `/api/places/*` (see `src/map/mapConfig.ts`). Vite proxies this in dev; production needs nginx.
@@ -29,8 +29,8 @@ Without rewrite, upstream receives `/api/places/worlds` → Places API `not_foun
 
 ```bash
 sudo nginx -t && sudo systemctl reload nginx
-curl -sS 'https://decentraland.social/api/places/worlds?limit=1' | head -c 80
-curl -sS 'https://dev.decentraland.social/api/places/worlds?limit=1' | head -c 80
+curl -sS 'https://dclopen.com/api/places/worlds?limit=1' | head -c 80
+curl -sS 'https://dev.dclopen.com/api/places/worlds?limit=1' | head -c 80
 ```
 
 ## Full site config
@@ -52,8 +52,8 @@ Fix (already in the site configs):
 ```bash
 # After copying the site file from remote/:
 sudo nginx -t && sudo systemctl reload nginx
-curl -sI 'https://decentraland.social/lootbag' | head -5   # expect 200, not 403
-curl -sI 'https://decentraland.social/lootbag/' | head -5  # expect 200, not 403
+curl -sI 'https://dclopen.com/lootbag' | head -5   # expect 200, not 403
+curl -sI 'https://dclopen.com/lootbag/' | head -5  # expect 200, not 403
 ```
 
 ### Meta-tx POST 405 (Loot Bag approve / claim)
@@ -65,12 +65,12 @@ returns **405 Method Not Allowed** on POST.
 
 ```bash
 # Prod — install site config + reload
-sudo cp remote/decentraland.social /etc/nginx/sites-available/decentraland.social
+sudo cp remote/dclopen.com /etc/nginx/sites-available/dclopen.com
 # ensure sites-enabled symlink exists
 sudo nginx -t && sudo systemctl reload nginx
 
 # Smoke (expect JSON from relay, not HTML 405)
-curl -sS -X POST 'https://decentraland.social/api/meta-tx/v1/transactions' \
+curl -sS -X POST 'https://dclopen.com/api/meta-tx/v1/transactions' \
   -H 'Content-Type: application/json' -d '{}' | head -c 200
 # e.g. {"ok":false,"message":"Missing transaction data..."}
 ```
@@ -112,7 +112,7 @@ sudo systemctl enable --now dcl-suggestion-api
 sudo systemctl status dcl-suggestion-api
 ```
 
-**4. nginx** — add `location = /api/suggestions` from [`nginx.conf`](./nginx.conf) or [`../remote/decentraland.social`](../remote/decentraland.social), then:
+**4. nginx** — add `location = /api/suggestions` from [`nginx.conf`](./nginx.conf) or [`../remote/dclopen.com`](../remote/dclopen.com), then:
 
 ```bash
 sudo nginx -t && sudo systemctl reload nginx
@@ -121,7 +121,7 @@ sudo nginx -t && sudo systemctl reload nginx
 **5. Smoke test**
 
 ```bash
-curl -sS -X POST https://decentraland.social/api/suggestions \
+curl -sS -X POST https://dclopen.com/api/suggestions \
   -H 'Content-Type: application/json' \
   -d '{"summary":"prod smoke test","category":"Other","details":"ignore — droplet curl smoke test","client_version":"0.5.0"}'
 ```

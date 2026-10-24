@@ -8,7 +8,7 @@
  *   Storage defaults missing parcel to `0,0`; multi-scene worlds need the scene base.
  *
  * CORS: storage.decentraland.org returns `Access-Control-Allow-Origin: false` for
- * localhost and custom domains (e.g. decentraland.social). Browser calls go through
+ * localhost and custom domains (e.g. dclopen.com). Browser calls go through
  * same-origin `/api/storage` (Vite/nginx proxy). Signature is still over the real
  * API path (`/env`, `/values/…`) so the service verifies correctly after rewrite.
  *

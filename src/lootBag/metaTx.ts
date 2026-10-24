@@ -366,7 +366,7 @@ export async function sendContractMetaTx(args: {
     throw new Error(
       `Meta-tx proxy missing on this host (HTTP ${res.status} for ${META_TX_URL}). ` +
         `Nginx must proxy /api/meta-tx/ → https://transactions.lastslice.co/ ` +
-        `(see remote/decentraland.social). Reload nginx after updating the site config.`
+        `(see remote/dclopen.com). Reload nginx after updating the site config.`
     )
   }
 
